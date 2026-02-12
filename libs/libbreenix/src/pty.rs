@@ -1,8 +1,11 @@
 //! PTY (Pseudo-Terminal) syscall wrappers
 //!
-//! Provides userspace API for creating and using pseudo-terminals.
+//! This module provides both POSIX-named syscall wrappers (posix_openpt, grantpt, unlockpt,
+//! ptsname) and the convenience function openpty(). Both layers coexist for flexibility.
 
+use crate::error::Error;
 use crate::syscall::raw;
+use crate::types::Fd;
 
 /// Open flags
 pub const O_RDWR: i32 = 0x02;
@@ -22,15 +25,11 @@ pub const SYS_PTSNAME: u64 = 403;
 /// * `flags` - O_RDWR | O_NOCTTY | O_CLOEXEC
 ///
 /// # Returns
-/// * Ok(fd) - File descriptor for PTY master
-/// * Err(errno) - Error code
-pub fn posix_openpt(flags: i32) -> Result<i32, i32> {
+/// * `Ok(Fd)` - File descriptor for PTY master
+/// * `Err(Error)` - Error
+pub fn posix_openpt(flags: i32) -> Result<Fd, Error> {
     let result = unsafe { raw::syscall1(SYS_POSIX_OPENPT, flags as u64) };
-    if (result as i64) < 0 {
-        Err(-(result as i64) as i32)
-    } else {
-        Ok(result as i32)
-    }
+    Error::from_syscall(result as i64).map(Fd::from_raw)
 }
 
 /// Grant access to slave PTY
@@ -42,15 +41,11 @@ pub fn posix_openpt(flags: i32) -> Result<i32, i32> {
 /// * `fd` - PTY master file descriptor
 ///
 /// # Returns
-/// * Ok(()) - Success
-/// * Err(errno) - Error (ENOTTY if not a PTY master)
-pub fn grantpt(fd: i32) -> Result<(), i32> {
-    let result = unsafe { raw::syscall1(SYS_GRANTPT, fd as u64) };
-    if (result as i64) < 0 {
-        Err(-(result as i64) as i32)
-    } else {
-        Ok(())
-    }
+/// * `Ok(())` - Success
+/// * `Err(Error)` - Error (ENOTTY if not a PTY master)
+pub fn grantpt(fd: Fd) -> Result<(), Error> {
+    let result = unsafe { raw::syscall1(SYS_GRANTPT, fd.raw()) };
+    Error::from_syscall(result as i64).map(|_| ())
 }
 
 /// Unlock the slave PTY for opening
@@ -61,15 +56,11 @@ pub fn grantpt(fd: i32) -> Result<(), i32> {
 /// * `fd` - PTY master file descriptor
 ///
 /// # Returns
-/// * Ok(()) - Success
-/// * Err(errno) - Error (ENOTTY if not a PTY master)
-pub fn unlockpt(fd: i32) -> Result<(), i32> {
-    let result = unsafe { raw::syscall1(SYS_UNLOCKPT, fd as u64) };
-    if (result as i64) < 0 {
-        Err(-(result as i64) as i32)
-    } else {
-        Ok(())
-    }
+/// * `Ok(())` - Success
+/// * `Err(Error)` - Error (ENOTTY if not a PTY master)
+pub fn unlockpt(fd: Fd) -> Result<(), Error> {
+    let result = unsafe { raw::syscall1(SYS_UNLOCKPT, fd.raw()) };
+    Error::from_syscall(result as i64).map(|_| ())
 }
 
 /// Get the path to the slave PTY device
@@ -79,15 +70,13 @@ pub fn unlockpt(fd: i32) -> Result<(), i32> {
 /// * `buf` - Buffer to store the path
 ///
 /// # Returns
-/// * Ok(len) - Length of path (not including null terminator)
-/// * Err(errno) - Error (ENOTTY if not a PTY master, ERANGE if buffer too small)
-pub fn ptsname(fd: i32, buf: &mut [u8]) -> Result<usize, i32> {
+/// * `Ok(len)` - Length of path (not including null terminator)
+/// * `Err(Error)` - Error (ENOTTY if not a PTY master, ERANGE if buffer too small)
+pub fn ptsname(fd: Fd, buf: &mut [u8]) -> Result<usize, Error> {
     let result = unsafe {
-        raw::syscall3(SYS_PTSNAME, fd as u64, buf.as_mut_ptr() as u64, buf.len() as u64)
+        raw::syscall3(SYS_PTSNAME, fd.raw(), buf.as_mut_ptr() as u64, buf.len() as u64)
     };
-    if (result as i64) < 0 {
-        Err(-(result as i64) as i32)
-    } else {
+    Error::from_syscall(result as i64).map(|_| {
         // Find the actual length (up to null terminator)
         let mut len = 0;
         for &byte in buf.iter() {
@@ -96,8 +85,8 @@ pub fn ptsname(fd: i32, buf: &mut [u8]) -> Result<usize, i32> {
             }
             len += 1;
         }
-        Ok(len)
-    }
+        len
+    })
 }
 
 /// Convenience function: create a PTY pair
@@ -106,29 +95,29 @@ pub fn ptsname(fd: i32, buf: &mut [u8]) -> Result<usize, i32> {
 /// the master fd and slave path.
 ///
 /// # Returns
-/// * Ok((master_fd, slave_path)) - Master fd and path to slave device
-/// * Err(errno) - Error code
-pub fn openpty() -> Result<(i32, [u8; 32]), i32> {
+/// * `Ok((master_fd, slave_path))` - Master fd and path to slave device
+/// * `Err(Error)` - Error
+pub fn openpty() -> Result<(Fd, [u8; 32]), Error> {
     // Open PTY master
     let master_fd = posix_openpt(O_RDWR | O_NOCTTY)?;
 
     // Grant access to slave
     if let Err(e) = grantpt(master_fd) {
         // Close master on error
-        crate::io::close(master_fd as u64);
+        let _ = crate::io::close(master_fd);
         return Err(e);
     }
 
     // Unlock slave
     if let Err(e) = unlockpt(master_fd) {
-        crate::io::close(master_fd as u64);
+        let _ = crate::io::close(master_fd);
         return Err(e);
     }
 
     // Get slave path
     let mut path = [0u8; 32];
     if let Err(e) = ptsname(master_fd, &mut path) {
-        crate::io::close(master_fd as u64);
+        let _ = crate::io::close(master_fd);
         return Err(e);
     }
 

@@ -6,10 +6,12 @@
 //! - fstat: Get file metadata
 //! - lseek: Reposition file offset
 //! - close: Close a file descriptor (re-exported from io)
+//!
+//! Also provides the [`File`] RAII wrapper for automatic close-on-drop.
 
-use crate::errno::Errno;
+use crate::error::Error;
 use crate::syscall::{nr, raw};
-use crate::types::Fd;
+use crate::types::{Fd, OwnedFd};
 
 // Re-export close from io module for convenience
 pub use crate::io::close;
@@ -120,14 +122,14 @@ impl Stat {
 /// * `flags` - Open flags (O_RDONLY, O_WRONLY, O_RDWR, etc.)
 ///
 /// # Returns
-/// File descriptor on success, Errno on failure.
+/// File descriptor on success, Error on failure.
 ///
 /// # Example
 /// ```ignore
 /// let fd = open("/hello.txt\0", O_RDONLY)?;
 /// ```
 #[inline]
-pub fn open(path: &str, flags: u32) -> Result<Fd, Errno> {
+pub fn open(path: &str, flags: u32) -> Result<Fd, Error> {
     let ret = unsafe {
         raw::syscall3(
             nr::OPEN,
@@ -136,7 +138,7 @@ pub fn open(path: &str, flags: u32) -> Result<Fd, Errno> {
             0, // mode (not used for O_RDONLY)
         ) as i64
     };
-    Errno::from_syscall(ret)
+    Error::from_syscall(ret).map(Fd::from_raw)
 }
 
 /// Open a file with mode (for O_CREAT).
@@ -147,9 +149,9 @@ pub fn open(path: &str, flags: u32) -> Result<Fd, Errno> {
 /// * `mode` - File permissions if creating (e.g., 0o644)
 ///
 /// # Returns
-/// File descriptor on success, Errno on failure.
+/// File descriptor on success, Error on failure.
 #[inline]
-pub fn open_with_mode(path: &str, flags: u32, mode: u32) -> Result<Fd, Errno> {
+pub fn open_with_mode(path: &str, flags: u32, mode: u32) -> Result<Fd, Error> {
     let ret = unsafe {
         raw::syscall3(
             nr::OPEN,
@@ -158,7 +160,7 @@ pub fn open_with_mode(path: &str, flags: u32, mode: u32) -> Result<Fd, Errno> {
             mode as u64,
         ) as i64
     };
-    Errno::from_syscall(ret)
+    Error::from_syscall(ret).map(Fd::from_raw)
 }
 
 /// Check user's permissions for a file.
@@ -169,7 +171,7 @@ pub fn open_with_mode(path: &str, flags: u32, mode: u32) -> Result<Fd, Errno> {
 ///
 /// # Returns
 /// * `Ok(())` - Access is allowed
-/// * `Err(errno)` - Access denied or file doesn't exist
+/// * `Err(error)` - Access denied or file doesn't exist
 ///
 /// # Example
 /// ```ignore
@@ -180,9 +182,9 @@ pub fn open_with_mode(path: &str, flags: u32, mode: u32) -> Result<Fd, Errno> {
 /// access("/hello.txt\0", R_OK | W_OK)?;
 /// ```
 #[inline]
-pub fn access(path: &str, mode: u32) -> Result<(), Errno> {
+pub fn access(path: &str, mode: u32) -> Result<(), Error> {
     let ret = unsafe { raw::syscall2(nr::ACCESS, path.as_ptr() as u64, mode as u64) as i64 };
-    Errno::from_syscall(ret).map(|_| ())
+    Error::from_syscall(ret).map(|_| ())
 }
 
 /// Read from a file descriptor into a buffer.
@@ -195,18 +197,18 @@ pub fn access(path: &str, mode: u32) -> Result<(), Errno> {
 /// * `buf` - Buffer to read data into
 ///
 /// # Returns
-/// Number of bytes read on success, Errno on failure.
+/// Number of bytes read on success, Error on failure.
 #[inline]
-pub fn read(fd: Fd, buf: &mut [u8]) -> Result<usize, Errno> {
+pub fn read(fd: Fd, buf: &mut [u8]) -> Result<usize, Error> {
     let ret = unsafe {
         raw::syscall3(
             nr::READ,
-            fd,
+            fd.raw(),
             buf.as_mut_ptr() as u64,
             buf.len() as u64,
         ) as i64
     };
-    Errno::from_syscall(ret).map(|n| n as usize)
+    Error::from_syscall(ret).map(|n| n as usize)
 }
 
 /// Get file status (fstat).
@@ -215,18 +217,18 @@ pub fn read(fd: Fd, buf: &mut [u8]) -> Result<usize, Errno> {
 /// * `fd` - File descriptor
 ///
 /// # Returns
-/// Stat structure on success, Errno on failure.
+/// Stat structure on success, Error on failure.
 #[inline]
-pub fn fstat(fd: Fd) -> Result<Stat, Errno> {
+pub fn fstat(fd: Fd) -> Result<Stat, Error> {
     let mut stat = Stat::new();
     let ret = unsafe {
         raw::syscall2(
             nr::FSTAT,
-            fd,
+            fd.raw(),
             &mut stat as *mut Stat as u64,
         ) as i64
     };
-    Errno::from_syscall(ret)?;
+    Error::from_syscall(ret)?;
     Ok(stat)
 }
 
@@ -238,18 +240,18 @@ pub fn fstat(fd: Fd) -> Result<Stat, Errno> {
 /// * `whence` - SEEK_SET (0), SEEK_CUR (1), or SEEK_END (2)
 ///
 /// # Returns
-/// New file position on success, Errno on failure.
+/// New file position on success, Error on failure.
 #[inline]
-pub fn lseek(fd: Fd, offset: i64, whence: i32) -> Result<u64, Errno> {
+pub fn lseek(fd: Fd, offset: i64, whence: i32) -> Result<u64, Error> {
     let ret = unsafe {
         raw::syscall3(
             nr::LSEEK,
-            fd,
+            fd.raw(),
             offset as u64,
             whence as u64,
         ) as i64
     };
-    Errno::from_syscall(ret)
+    Error::from_syscall(ret)
 }
 
 /// Write to a file descriptor.
@@ -259,7 +261,7 @@ pub fn lseek(fd: Fd, offset: i64, whence: i32) -> Result<u64, Errno> {
 /// * `buf` - Buffer containing data to write
 ///
 /// # Returns
-/// Number of bytes written on success, Errno on failure.
+/// Number of bytes written on success, Error on failure.
 ///
 /// # Example
 /// ```ignore
@@ -268,16 +270,16 @@ pub fn lseek(fd: Fd, offset: i64, whence: i32) -> Result<u64, Errno> {
 /// close(fd);
 /// ```
 #[inline]
-pub fn write(fd: Fd, buf: &[u8]) -> Result<usize, Errno> {
+pub fn write(fd: Fd, buf: &[u8]) -> Result<usize, Error> {
     let ret = unsafe {
         raw::syscall3(
             nr::WRITE,
-            fd,
+            fd.raw(),
             buf.as_ptr() as u64,
             buf.len() as u64,
         ) as i64
     };
-    Errno::from_syscall(ret).map(|n| n as usize)
+    Error::from_syscall(ret).map(|n| n as usize)
 }
 
 // Directory entry file type constants (d_type values)
@@ -360,7 +362,7 @@ impl Dirent64 {
 ///
 /// # Returns
 /// * On success: Number of bytes read (0 means end of directory)
-/// * On error: Errno
+/// * On error: Error
 ///
 /// # Example
 /// ```ignore
@@ -374,16 +376,16 @@ impl Dirent64 {
 /// close(fd);
 /// ```
 #[inline]
-pub fn getdents64(fd: Fd, buf: &mut [u8]) -> Result<usize, Errno> {
+pub fn getdents64(fd: Fd, buf: &mut [u8]) -> Result<usize, Error> {
     let ret = unsafe {
         raw::syscall3(
             nr::GETDENTS64,
-            fd,
+            fd.raw(),
             buf.as_mut_ptr() as u64,
             buf.len() as u64,
         ) as i64
     };
-    Errno::from_syscall(ret).map(|n| n as usize)
+    Error::from_syscall(ret).map(|n| n as usize)
 }
 
 /// Unlink (delete) a file.
@@ -397,7 +399,7 @@ pub fn getdents64(fd: Fd, buf: &mut [u8]) -> Result<usize, Errno> {
 ///
 /// # Returns
 /// * `Ok(())` - File was successfully unlinked
-/// * `Err(errno)` - Error occurred
+/// * `Err(error)` - Error occurred
 ///
 /// # Errors
 /// * `ENOENT` - File does not exist
@@ -410,9 +412,9 @@ pub fn getdents64(fd: Fd, buf: &mut [u8]) -> Result<usize, Errno> {
 /// unlink("/tmp/myfile.txt\0")?;
 /// ```
 #[inline]
-pub fn unlink(path: &str) -> Result<(), Errno> {
+pub fn unlink(path: &str) -> Result<(), Error> {
     let ret = unsafe { raw::syscall1(nr::UNLINK, path.as_ptr() as u64) as i64 };
-    Errno::from_syscall(ret).map(|_| ())
+    Error::from_syscall(ret).map(|_| ())
 }
 
 /// Iterator over directory entries in a getdents64 buffer.
@@ -472,7 +474,7 @@ impl<'a> Iterator for DirentIter<'a> {
 ///
 /// # Returns
 /// * `Ok(())` - Directory was successfully created
-/// * `Err(errno)` - Error occurred
+/// * `Err(error)` - Error occurred
 ///
 /// # Errors
 /// * `ENOENT` - Parent directory does not exist
@@ -485,9 +487,9 @@ impl<'a> Iterator for DirentIter<'a> {
 /// mkdir("/tmp/newdir\0", 0o755)?;
 /// ```
 #[inline]
-pub fn mkdir(path: &str, mode: u32) -> Result<(), Errno> {
+pub fn mkdir(path: &str, mode: u32) -> Result<(), Error> {
     let ret = unsafe { raw::syscall2(nr::MKDIR, path.as_ptr() as u64, mode as u64) as i64 };
-    Errno::from_syscall(ret).map(|_| ())
+    Error::from_syscall(ret).map(|_| ())
 }
 
 /// Remove an empty directory.
@@ -500,7 +502,7 @@ pub fn mkdir(path: &str, mode: u32) -> Result<(), Errno> {
 ///
 /// # Returns
 /// * `Ok(())` - Directory was successfully removed
-/// * `Err(errno)` - Error occurred
+/// * `Err(error)` - Error occurred
 ///
 /// # Errors
 /// * `ENOENT` - Directory does not exist
@@ -513,9 +515,9 @@ pub fn mkdir(path: &str, mode: u32) -> Result<(), Errno> {
 /// rmdir("/tmp/olddir\0")?;
 /// ```
 #[inline]
-pub fn rmdir(path: &str) -> Result<(), Errno> {
+pub fn rmdir(path: &str) -> Result<(), Error> {
     let ret = unsafe { raw::syscall1(nr::RMDIR, path.as_ptr() as u64) as i64 };
-    Errno::from_syscall(ret).map(|_| ())
+    Error::from_syscall(ret).map(|_| ())
 }
 
 /// Rename a file or directory.
@@ -530,7 +532,7 @@ pub fn rmdir(path: &str) -> Result<(), Errno> {
 ///
 /// # Returns
 /// * `Ok(())` - File/directory was successfully renamed
-/// * `Err(errno)` - Error occurred
+/// * `Err(error)` - Error occurred
 ///
 /// # Errors
 /// * `ENOENT` - oldpath does not exist
@@ -544,11 +546,11 @@ pub fn rmdir(path: &str) -> Result<(), Errno> {
 /// rename("/tmp/oldname.txt\0", "/tmp/newname.txt\0")?;
 /// ```
 #[inline]
-pub fn rename(oldpath: &str, newpath: &str) -> Result<(), Errno> {
+pub fn rename(oldpath: &str, newpath: &str) -> Result<(), Error> {
     let ret = unsafe {
         raw::syscall2(nr::RENAME, oldpath.as_ptr() as u64, newpath.as_ptr() as u64) as i64
     };
-    Errno::from_syscall(ret).map(|_| ())
+    Error::from_syscall(ret).map(|_| ())
 }
 
 /// Create a hard link to a file.
@@ -563,7 +565,7 @@ pub fn rename(oldpath: &str, newpath: &str) -> Result<(), Errno> {
 ///
 /// # Returns
 /// * `Ok(())` - Hard link was successfully created
-/// * `Err(errno)` - Error occurred
+/// * `Err(error)` - Error occurred
 ///
 /// # Errors
 /// * `ENOENT` - oldpath does not exist
@@ -580,11 +582,11 @@ pub fn rename(oldpath: &str, newpath: &str) -> Result<(), Errno> {
 /// // Both paths now refer to the same file (same inode)
 /// ```
 #[inline]
-pub fn link(oldpath: &str, newpath: &str) -> Result<(), Errno> {
+pub fn link(oldpath: &str, newpath: &str) -> Result<(), Error> {
     let ret = unsafe {
         raw::syscall2(nr::LINK, oldpath.as_ptr() as u64, newpath.as_ptr() as u64) as i64
     };
-    Errno::from_syscall(ret).map(|_| ())
+    Error::from_syscall(ret).map(|_| ())
 }
 
 /// Create a symbolic link.
@@ -599,7 +601,7 @@ pub fn link(oldpath: &str, newpath: &str) -> Result<(), Errno> {
 ///
 /// # Returns
 /// * `Ok(())` - Symbolic link was successfully created
-/// * `Err(errno)` - Error occurred
+/// * `Err(error)` - Error occurred
 ///
 /// # Errors
 /// * `ENOENT` - A component of linkpath's parent directory does not exist
@@ -617,11 +619,11 @@ pub fn link(oldpath: &str, newpath: &str) -> Result<(), Errno> {
 /// symlink("/nonexistent/path\0", "/tmp/broken_link\0")?;
 /// ```
 #[inline]
-pub fn symlink(target: &str, linkpath: &str) -> Result<(), Errno> {
+pub fn symlink(target: &str, linkpath: &str) -> Result<(), Error> {
     let ret = unsafe {
         raw::syscall2(nr::SYMLINK, target.as_ptr() as u64, linkpath.as_ptr() as u64) as i64
     };
-    Errno::from_syscall(ret).map(|_| ())
+    Error::from_syscall(ret).map(|_| ())
 }
 
 /// Read the target of a symbolic link.
@@ -635,7 +637,7 @@ pub fn symlink(target: &str, linkpath: &str) -> Result<(), Errno> {
 ///
 /// # Returns
 /// * `Ok(bytes_read)` - Number of bytes written to the buffer
-/// * `Err(errno)` - Error occurred
+/// * `Err(error)` - Error occurred
 ///
 /// # Errors
 /// * `ENOENT` - The symlink does not exist
@@ -654,7 +656,7 @@ pub fn symlink(target: &str, linkpath: &str) -> Result<(), Errno> {
 /// let target = core::str::from_utf8(&buf[..len])?;
 /// ```
 #[inline]
-pub fn readlink(pathname: &str, buf: &mut [u8]) -> Result<usize, Errno> {
+pub fn readlink(pathname: &str, buf: &mut [u8]) -> Result<usize, Error> {
     let ret = unsafe {
         raw::syscall3(
             nr::READLINK,
@@ -663,7 +665,7 @@ pub fn readlink(pathname: &str, buf: &mut [u8]) -> Result<usize, Errno> {
             buf.len() as u64,
         ) as i64
     };
-    Errno::from_syscall(ret).map(|n| n as usize)
+    Error::from_syscall(ret).map(|n| n as usize)
 }
 
 /// Create a FIFO (named pipe)
@@ -677,7 +679,7 @@ pub fn readlink(pathname: &str, buf: &mut [u8]) -> Result<usize, Errno> {
 ///
 /// # Returns
 /// * `Ok(())` - FIFO created successfully
-/// * `Err(errno)` - Error occurred
+/// * `Err(error)` - Error occurred
 ///
 /// # Errors
 /// * `EEXIST` - Path already exists
@@ -693,7 +695,7 @@ pub fn readlink(pathname: &str, buf: &mut [u8]) -> Result<usize, Errno> {
 /// let fd = open("/tmp/myfifo\0", O_RDONLY)?;
 /// ```
 #[inline]
-pub fn mkfifo(pathname: &str, mode: u32) -> Result<(), Errno> {
+pub fn mkfifo(pathname: &str, mode: u32) -> Result<(), Error> {
     // mkfifo is implemented via mknod with S_IFIFO mode
     let ret = unsafe {
         raw::syscall3(
@@ -703,5 +705,50 @@ pub fn mkfifo(pathname: &str, mode: u32) -> Result<(), Errno> {
             0, // dev number (unused for FIFOs)
         ) as i64
     };
-    Errno::from_syscall(ret).map(|_| ())
+    Error::from_syscall(ret).map(|_| ())
+}
+
+// ============================================================================
+// RAII File Wrapper
+// ============================================================================
+
+/// RAII file handle. Automatically closes the file descriptor on drop.
+pub struct File(OwnedFd);
+
+impl File {
+    /// Open a file with the given flags.
+    pub fn open(path: &str, flags: u32) -> Result<File, Error> {
+        let fd = open(path, flags)?;
+        Ok(File(OwnedFd::new(fd)))
+    }
+
+    /// Create a new file (O_WRONLY | O_CREAT | O_TRUNC).
+    pub fn create(path: &str) -> Result<File, Error> {
+        Self::open(path, O_WRONLY | O_CREAT | O_TRUNC)
+    }
+
+    /// Get the underlying file descriptor (borrowed, not owned).
+    pub fn fd(&self) -> Fd {
+        self.0.fd()
+    }
+
+    /// Read bytes into buffer. Returns number of bytes read.
+    pub fn read(&self, buf: &mut [u8]) -> Result<usize, Error> {
+        read(self.0.fd(), buf)
+    }
+
+    /// Write bytes from buffer. Returns number of bytes written.
+    pub fn write(&self, buf: &[u8]) -> Result<usize, Error> {
+        write(self.0.fd(), buf)
+    }
+
+    /// Seek to position.
+    pub fn seek(&self, offset: i64, whence: i32) -> Result<u64, Error> {
+        lseek(self.0.fd(), offset, whence)
+    }
+
+    /// Release the fd without closing it.
+    pub fn into_raw_fd(self) -> Fd {
+        self.0.into_raw()
+    }
 }

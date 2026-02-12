@@ -22,7 +22,7 @@ use libgfx::shapes;
 // ---------------------------------------------------------------------------
 
 fn clock_monotonic_ns() -> u64 {
-    let ts = time::now_monotonic();
+    let ts = time::now_monotonic().unwrap_or_default();
     (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
 }
 
@@ -167,7 +167,7 @@ fn main() {
 
     let info = match graphics::fbinfo() {
         Ok(info) => info,
-        Err(e) => { println!("Error: Could not get framebuffer info"); process::exit(e); }
+        Err(_e) => { println!("Error: Could not get framebuffer info"); process::exit(1); }
     };
 
     let width = info.left_pane_width() as i32;
@@ -176,7 +176,7 @@ fn main() {
 
     let fb_ptr = match graphics::fb_mmap() {
         Ok(ptr) => ptr,
-        Err(e) => { println!("Error: Could not mmap framebuffer ({})", e); process::exit(e); }
+        Err(e) => { println!("Error: Could not mmap framebuffer ({})", e); process::exit(1); }
     };
 
     let mut fb = unsafe {
@@ -247,6 +247,6 @@ fn main() {
             let _ = graphics::fb_flush();
         }
 
-        time::sleep_ms(16); // ~60 FPS target
+        let _ = time::sleep_ms(16); // ~60 FPS target
     }
 }

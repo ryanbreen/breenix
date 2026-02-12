@@ -1,7 +1,12 @@
 //! I/O syscall wrappers
+//!
+//! This module provides both POSIX-named syscall wrappers (read, write, close, pipe, dup, dup2,
+//! fcntl, poll, select) and Rust convenience functions (println, eprintln, Stdout, Stderr).
+//! Both layers coexist for flexibility.
 
+use crate::error::Error;
 use crate::syscall::{nr, raw};
-use crate::types::{fd, Fd};
+use crate::types::Fd;
 
 /// Write bytes to a file descriptor.
 ///
@@ -10,10 +15,11 @@ use crate::types::{fd, Fd};
 /// * `buf` - Buffer containing data to write
 ///
 /// # Returns
-/// Number of bytes written on success, negative errno on error.
+/// Number of bytes written on success, `Err(Error)` on error.
 #[inline]
-pub fn write(file: Fd, buf: &[u8]) -> i64 {
-    unsafe { raw::syscall3(nr::WRITE, file, buf.as_ptr() as u64, buf.len() as u64) as i64 }
+pub fn write(fd: Fd, buf: &[u8]) -> Result<usize, Error> {
+    let ret = unsafe { raw::syscall3(nr::WRITE, fd.raw(), buf.as_ptr() as u64, buf.len() as u64) };
+    Error::from_syscall(ret as i64).map(|v| v as usize)
 }
 
 /// Read bytes from a file descriptor.
@@ -25,10 +31,11 @@ pub fn write(file: Fd, buf: &[u8]) -> i64 {
 /// * `buf` - Buffer to read data into
 ///
 /// # Returns
-/// Number of bytes read on success, negative errno on error.
+/// Number of bytes read on success, `Err(Error)` on error.
 #[inline]
-pub fn read(file: Fd, buf: &mut [u8]) -> i64 {
-    unsafe { raw::syscall3(nr::READ, file, buf.as_mut_ptr() as u64, buf.len() as u64) as i64 }
+pub fn read(fd: Fd, buf: &mut [u8]) -> Result<usize, Error> {
+    let ret = unsafe { raw::syscall3(nr::READ, fd.raw(), buf.as_mut_ptr() as u64, buf.len() as u64) };
+    Error::from_syscall(ret as i64).map(|v| v as usize)
 }
 
 /// Standard output writer
@@ -37,13 +44,13 @@ pub struct Stdout;
 impl Stdout {
     /// Write bytes to stdout
     #[inline]
-    pub fn write(&self, buf: &[u8]) -> i64 {
-        write(fd::STDOUT, buf)
+    pub fn write(&self, buf: &[u8]) -> Result<usize, Error> {
+        write(Fd::STDOUT, buf)
     }
 
     /// Write a string to stdout
     #[inline]
-    pub fn write_str(&self, s: &str) -> i64 {
+    pub fn write_str(&self, s: &str) -> Result<usize, Error> {
         self.write(s.as_bytes())
     }
 }
@@ -54,13 +61,13 @@ pub struct Stderr;
 impl Stderr {
     /// Write bytes to stderr
     #[inline]
-    pub fn write(&self, buf: &[u8]) -> i64 {
-        write(fd::STDERR, buf)
+    pub fn write(&self, buf: &[u8]) -> Result<usize, Error> {
+        write(Fd::STDERR, buf)
     }
 
     /// Write a string to stderr
     #[inline]
-    pub fn write_str(&self, s: &str) -> i64 {
+    pub fn write_str(&self, s: &str) -> Result<usize, Error> {
         self.write(s.as_bytes())
     }
 }
@@ -80,14 +87,14 @@ pub fn stderr() -> Stderr {
 /// Print a string to stdout (convenience function)
 #[inline]
 pub fn print(s: &str) {
-    stdout().write_str(s);
+    let _ = stdout().write_str(s);
 }
 
 /// Print a string to stdout with newline (convenience function)
 #[inline]
 pub fn println(s: &str) {
-    stdout().write_str(s);
-    stdout().write(b"\n");
+    let _ = stdout().write_str(s);
+    let _ = stdout().write(b"\n");
 }
 
 /// Close a file descriptor.
@@ -96,25 +103,26 @@ pub fn println(s: &str) {
 /// * `fd` - File descriptor to close
 ///
 /// # Returns
-/// 0 on success, negative errno on error.
+/// `Ok(())` on success, `Err(Error)` on error.
 #[inline]
-pub fn close(file: Fd) -> i64 {
-    unsafe { raw::syscall1(nr::CLOSE, file) as i64 }
+pub fn close(fd: Fd) -> Result<(), Error> {
+    let ret = unsafe { raw::syscall1(nr::CLOSE, fd.raw()) };
+    Error::from_syscall(ret as i64).map(|_| ())
 }
 
 /// Create a pipe.
 ///
-/// Creates a unidirectional data channel. pipefd[0] is the read end,
-/// pipefd[1] is the write end.
-///
-/// # Arguments
-/// * `pipefd` - Array to receive the two file descriptors
+/// Creates a unidirectional data channel. Returns (read_end, write_end).
 ///
 /// # Returns
-/// 0 on success, negative errno on error.
+/// `Ok((read_fd, write_fd))` on success, `Err(Error)` on error.
 #[inline]
-pub fn pipe(pipefd: &mut [i32; 2]) -> i64 {
-    unsafe { raw::syscall1(nr::PIPE, pipefd.as_mut_ptr() as u64) as i64 }
+pub fn pipe() -> Result<(Fd, Fd), Error> {
+    let mut pipefd = [0i32; 2];
+    let ret = unsafe { raw::syscall1(nr::PIPE, pipefd.as_mut_ptr() as u64) };
+    Error::from_syscall(ret as i64).map(|_| {
+        (Fd::from_raw(pipefd[0] as u64), Fd::from_raw(pipefd[1] as u64))
+    })
 }
 
 /// Create a pipe with flags.
@@ -122,16 +130,19 @@ pub fn pipe(pipefd: &mut [i32; 2]) -> i64 {
 /// Like pipe(), but allows setting additional flags on the pipe file descriptors.
 ///
 /// # Arguments
-/// * `pipefd` - Array to receive the two file descriptors
 /// * `flags` - Flags to apply:
 ///   - O_CLOEXEC (0x80000): Set close-on-exec flag on both fds
 ///   - O_NONBLOCK (0x800): Set non-blocking mode on both fds
 ///
 /// # Returns
-/// 0 on success, negative errno on error.
+/// `Ok((read_fd, write_fd))` on success, `Err(Error)` on error.
 #[inline]
-pub fn pipe2(pipefd: &mut [i32; 2], flags: i32) -> i64 {
-    unsafe { raw::syscall2(nr::PIPE2, pipefd.as_mut_ptr() as u64, flags as u64) as i64 }
+pub fn pipe2(flags: i32) -> Result<(Fd, Fd), Error> {
+    let mut pipefd = [0i32; 2];
+    let ret = unsafe { raw::syscall2(nr::PIPE2, pipefd.as_mut_ptr() as u64, flags as u64) };
+    Error::from_syscall(ret as i64).map(|_| {
+        (Fd::from_raw(pipefd[0] as u64), Fd::from_raw(pipefd[1] as u64))
+    })
 }
 
 /// Duplicate a file descriptor.
@@ -143,10 +154,11 @@ pub fn pipe2(pipefd: &mut [i32; 2], flags: i32) -> i64 {
 /// * `old_fd` - File descriptor to duplicate
 ///
 /// # Returns
-/// New file descriptor on success, negative errno on error.
+/// New file descriptor on success, `Err(Error)` on error.
 #[inline]
-pub fn dup(old_fd: Fd) -> i64 {
-    unsafe { raw::syscall1(nr::DUP, old_fd) as i64 }
+pub fn dup(old_fd: Fd) -> Result<Fd, Error> {
+    let ret = unsafe { raw::syscall1(nr::DUP, old_fd.raw()) };
+    Error::from_syscall(ret as i64).map(|v| Fd::from_raw(v))
 }
 
 /// Duplicate a file descriptor to a specific number.
@@ -162,10 +174,11 @@ pub fn dup(old_fd: Fd) -> i64 {
 /// * `new_fd` - Target file descriptor number
 ///
 /// # Returns
-/// `new_fd` on success, negative errno on error.
+/// `new_fd` on success, `Err(Error)` on error.
 #[inline]
-pub fn dup2(old_fd: Fd, new_fd: Fd) -> i64 {
-    unsafe { raw::syscall2(nr::DUP2, old_fd, new_fd) as i64 }
+pub fn dup2(old_fd: Fd, new_fd: Fd) -> Result<Fd, Error> {
+    let ret = unsafe { raw::syscall2(nr::DUP2, old_fd.raw(), new_fd.raw()) };
+    Error::from_syscall(ret as i64).map(|v| Fd::from_raw(v))
 }
 
 /// fcntl command constants
@@ -208,18 +221,19 @@ pub mod status_flags {
 /// * `arg` - Command-specific argument
 ///
 /// # Returns
-/// Command-dependent value on success, negative errno on error.
+/// Command-dependent value on success, `Err(Error)` on error.
 #[inline]
-pub fn fcntl(fd: Fd, cmd: i32, arg: i64) -> i64 {
-    unsafe { raw::syscall3(nr::FCNTL, fd, cmd as u64, arg as u64) as i64 }
+pub fn fcntl(fd: Fd, cmd: i32, arg: i64) -> Result<i64, Error> {
+    let ret = unsafe { raw::syscall3(nr::FCNTL, fd.raw(), cmd as u64, arg as u64) };
+    Error::from_syscall(ret as i64).map(|v| v as i64)
 }
 
 /// Get file descriptor flags.
 ///
 /// # Returns
-/// Flags on success (FD_CLOEXEC), negative errno on error.
+/// Flags on success (FD_CLOEXEC), `Err(Error)` on error.
 #[inline]
-pub fn fcntl_getfd(fd: Fd) -> i64 {
+pub fn fcntl_getfd(fd: Fd) -> Result<i64, Error> {
     fcntl(fd, fcntl_cmd::F_GETFD, 0)
 }
 
@@ -230,18 +244,18 @@ pub fn fcntl_getfd(fd: Fd) -> i64 {
 /// * `flags` - New flags (typically FD_CLOEXEC)
 ///
 /// # Returns
-/// 0 on success, negative errno on error.
+/// `Ok(0)` on success, `Err(Error)` on error.
 #[inline]
-pub fn fcntl_setfd(fd: Fd, flags: i32) -> i64 {
+pub fn fcntl_setfd(fd: Fd, flags: i32) -> Result<i64, Error> {
     fcntl(fd, fcntl_cmd::F_SETFD, flags as i64)
 }
 
 /// Get file status flags.
 ///
 /// # Returns
-/// Flags on success (O_NONBLOCK, etc.), negative errno on error.
+/// Flags on success (O_NONBLOCK, etc.), `Err(Error)` on error.
 #[inline]
-pub fn fcntl_getfl(fd: Fd) -> i64 {
+pub fn fcntl_getfl(fd: Fd) -> Result<i64, Error> {
     fcntl(fd, fcntl_cmd::F_GETFL, 0)
 }
 
@@ -252,9 +266,9 @@ pub fn fcntl_getfl(fd: Fd) -> i64 {
 /// * `flags` - New flags (O_NONBLOCK, O_APPEND)
 ///
 /// # Returns
-/// 0 on success, negative errno on error.
+/// `Ok(0)` on success, `Err(Error)` on error.
 #[inline]
-pub fn fcntl_setfl(fd: Fd, flags: i32) -> i64 {
+pub fn fcntl_setfl(fd: Fd, flags: i32) -> Result<i64, Error> {
     fcntl(fd, fcntl_cmd::F_SETFL, flags as i64)
 }
 
@@ -286,9 +300,9 @@ pub struct PollFd {
 
 impl PollFd {
     /// Create a new pollfd for a given fd and events
-    pub fn new(fd: i32, events: i16) -> Self {
+    pub fn new(fd: Fd, events: i16) -> Self {
         PollFd {
-            fd,
+            fd: fd.raw() as i32,
             events,
             revents: 0,
         }
@@ -304,17 +318,18 @@ impl PollFd {
 /// * `timeout` - Timeout in milliseconds (-1 = infinite, 0 = return immediately)
 ///
 /// # Returns
-/// Number of fds with non-zero revents on success, 0 on timeout, negative errno on error.
+/// Number of fds with non-zero revents on success, 0 on timeout, `Err(Error)` on error.
 #[inline]
-pub fn poll(fds: &mut [PollFd], timeout: i32) -> i64 {
-    unsafe {
+pub fn poll(fds: &mut [PollFd], timeout: i32) -> Result<usize, Error> {
+    let ret = unsafe {
         raw::syscall3(
             nr::POLL,
             fds.as_mut_ptr() as u64,
             fds.len() as u64,
             timeout as u64,
-        ) as i64
-    }
+        )
+    };
+    Error::from_syscall(ret as i64).map(|v| v as usize)
 }
 
 // ============ select() implementation ============
@@ -330,25 +345,28 @@ pub fn fd_zero(set: &mut FdSet) {
 
 /// Set a bit in an fd_set
 #[inline]
-pub fn fd_set_bit(fd: i32, set: &mut FdSet) {
-    if fd >= 0 && fd < 64 {
-        *set |= 1u64 << fd;
+pub fn fd_set_bit(fd: Fd, set: &mut FdSet) {
+    let raw = fd.raw() as i32;
+    if raw >= 0 && raw < 64 {
+        *set |= 1u64 << raw;
     }
 }
 
 /// Clear a bit in an fd_set
 #[inline]
-pub fn fd_clr(fd: i32, set: &mut FdSet) {
-    if fd >= 0 && fd < 64 {
-        *set &= !(1u64 << fd);
+pub fn fd_clr(fd: Fd, set: &mut FdSet) {
+    let raw = fd.raw() as i32;
+    if raw >= 0 && raw < 64 {
+        *set &= !(1u64 << raw);
     }
 }
 
 /// Check if a bit is set in an fd_set
 #[inline]
-pub fn fd_isset(fd: i32, set: &FdSet) -> bool {
-    if fd >= 0 && fd < 64 {
-        (*set & (1u64 << fd)) != 0
+pub fn fd_isset(fd: Fd, set: &FdSet) -> bool {
+    let raw = fd.raw() as i32;
+    if raw >= 0 && raw < 64 {
+        (*set & (1u64 << raw)) != 0
     } else {
         false
     }
@@ -366,7 +384,7 @@ pub fn fd_isset(fd: i32, set: &FdSet) -> bool {
 /// * `timeout_ptr` - Timeout pointer (0 for non-blocking, currently only 0 supported)
 ///
 /// # Returns
-/// Number of ready fds on success, 0 on timeout, negative errno on error.
+/// Number of ready fds on success, 0 on timeout, `Err(Error)` on error.
 ///
 /// # Note
 /// Currently only non-blocking select (timeout=0/NULL) is supported.
@@ -378,12 +396,12 @@ pub fn select(
     writefds: Option<&mut FdSet>,
     exceptfds: Option<&mut FdSet>,
     timeout_ptr: u64,
-) -> i64 {
+) -> Result<usize, Error> {
     let readfds_ptr = readfds.map(|p| p as *mut FdSet as u64).unwrap_or(0);
     let writefds_ptr = writefds.map(|p| p as *mut FdSet as u64).unwrap_or(0);
     let exceptfds_ptr = exceptfds.map(|p| p as *mut FdSet as u64).unwrap_or(0);
 
-    unsafe {
+    let ret = unsafe {
         raw::syscall5(
             nr::SELECT,
             nfds as u64,
@@ -391,6 +409,7 @@ pub fn select(
             writefds_ptr,
             exceptfds_ptr,
             timeout_ptr,
-        ) as i64
-    }
+        )
+    };
+    Error::from_syscall(ret as i64).map(|v| v as usize)
 }

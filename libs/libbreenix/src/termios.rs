@@ -1,8 +1,12 @@
 //! Terminal I/O control for userspace
 //!
-//! Provides tcgetattr(), tcsetattr(), and related functions.
+//! This module provides both POSIX-named syscall wrappers (tcgetattr, tcsetattr, tcgetpgrp,
+//! tcsetpgrp, isatty) and Rust convenience functions (cfmakeraw). Both layers coexist
+//! for flexibility.
 
+use crate::error::Error;
 use crate::syscall::raw;
+use crate::types::Fd;
 
 /// Syscall number for ioctl
 pub const SYS_IOCTL: u64 = 16;
@@ -89,40 +93,32 @@ impl Default for Termios {
 }
 
 /// Get terminal attributes
-pub fn tcgetattr(fd: i32, termios: &mut Termios) -> Result<(), i32> {
+pub fn tcgetattr(fd: Fd, termios: &mut Termios) -> Result<(), Error> {
     let ret = unsafe {
-        raw::syscall3(SYS_IOCTL, fd as u64, request::TCGETS, termios as *mut _ as u64)
+        raw::syscall3(SYS_IOCTL, fd.raw(), request::TCGETS, termios as *mut _ as u64)
     };
 
-    if (ret as i64) < 0 {
-        Err(-(ret as i64) as i32)
-    } else {
-        Ok(())
-    }
+    Error::from_syscall(ret as i64).map(|_| ())
 }
 
 /// Set terminal attributes
-pub fn tcsetattr(fd: i32, action: i32, termios: &Termios) -> Result<(), i32> {
+pub fn tcsetattr(fd: Fd, action: i32, termios: &Termios) -> Result<(), Error> {
     let request = match action {
         TCSANOW => request::TCSETS,
         TCSADRAIN => request::TCSETSW,
         TCSAFLUSH => request::TCSETSF,
-        _ => return Err(22), // EINVAL
+        _ => return Err(Error::from_syscall(-22).unwrap_err()), // EINVAL
     };
 
     let ret = unsafe {
-        raw::syscall3(SYS_IOCTL, fd as u64, request, termios as *const _ as u64)
+        raw::syscall3(SYS_IOCTL, fd.raw(), request, termios as *const _ as u64)
     };
 
-    if (ret as i64) < 0 {
-        Err(-(ret as i64) as i32)
-    } else {
-        Ok(())
-    }
+    Error::from_syscall(ret as i64).map(|_| ())
 }
 
 /// Check if fd refers to a terminal
-pub fn isatty(fd: i32) -> bool {
+pub fn isatty(fd: Fd) -> bool {
     let mut termios = Termios::default();
     tcgetattr(fd, &mut termios).is_ok()
 }
@@ -136,24 +132,20 @@ pub fn isatty(fd: i32) -> bool {
 /// * `fd` - File descriptor referring to a terminal
 ///
 /// # Returns
-/// * On success: the foreground process group ID (positive)
-/// * On error: negative errno
-pub fn tcgetpgrp(fd: i32) -> i32 {
+/// * On success: the foreground process group ID (as i32 for POSIX compatibility)
+/// * On error: `Err(Error)`
+pub fn tcgetpgrp(fd: Fd) -> Result<i32, Error> {
     let mut pgrp: i32 = 0;
     let ret = unsafe {
         raw::syscall3(
             SYS_IOCTL,
-            fd as u64,
+            fd.raw(),
             request::TIOCGPGRP,
             &mut pgrp as *mut i32 as u64,
         )
     };
 
-    if (ret as i64) < 0 {
-        -(-(ret as i64)) as i32 // Return negative errno
-    } else {
-        pgrp
-    }
+    Error::from_syscall(ret as i64).map(|_| pgrp)
 }
 
 /// Set the foreground process group ID of a terminal
@@ -167,23 +159,19 @@ pub fn tcgetpgrp(fd: i32) -> i32 {
 ///
 /// # Returns
 /// * `Ok(())` on success
-/// * `Err(errno)` on failure
-pub fn tcsetpgrp(fd: i32, pgrp: i32) -> Result<(), i32> {
+/// * `Err(Error)` on failure
+pub fn tcsetpgrp(fd: Fd, pgrp: i32) -> Result<(), Error> {
     let pgrp_val = pgrp;
     let ret = unsafe {
         raw::syscall3(
             SYS_IOCTL,
-            fd as u64,
+            fd.raw(),
             request::TIOCSPGRP,
             &pgrp_val as *const i32 as u64,
         )
     };
 
-    if (ret as i64) < 0 {
-        Err(-(ret as i64) as i32)
-    } else {
-        Ok(())
-    }
+    Error::from_syscall(ret as i64).map(|_| ())
 }
 
 /// Make raw mode termios settings

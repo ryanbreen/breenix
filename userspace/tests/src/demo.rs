@@ -151,7 +151,7 @@ fn draw_wave(fb: &mut FrameBuf, y_base: i32, width: i32, frame: i32, color: Colo
 // ---------------------------------------------------------------------------
 
 fn clock_monotonic_ns() -> u64 {
-    let ts = time::now_monotonic();
+    let ts = time::now_monotonic().unwrap_or_default();
     (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
 }
 
@@ -220,9 +220,9 @@ fn main() {
 
     let info = match graphics::fbinfo() {
         Ok(info) => info,
-        Err(e) => {
+        Err(_e) => {
             println!("Error: Could not get framebuffer info");
-            process::exit(e);
+            process::exit(1);
         }
     };
 
@@ -234,7 +234,7 @@ fn main() {
         Ok(ptr) => ptr,
         Err(e) => {
             println!("Error: Could not mmap framebuffer ({})", e);
-            process::exit(e);
+            process::exit(1);
         }
     };
 
@@ -300,7 +300,7 @@ fn main() {
         }
 
         // Small delay for animation timing
-        time::sleep_ms(16); // ~60 FPS
+        let _ = time::sleep_ms(16); // ~60 FPS
 
         frame = frame.wrapping_add(1);
     }

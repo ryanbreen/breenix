@@ -18,8 +18,10 @@
 //! ```
 
 use crate::dns::{resolve, DnsError, SLIRP_DNS};
-use crate::io::{close, read, write};
-use crate::socket::{connect, socket, AF_INET, SOCK_STREAM, SockAddrIn};
+use crate::error::Error;
+use crate::socket::{connect_inet, recv, send, socket, AF_INET, SOCK_STREAM, SockAddrIn};
+use crate::syscall::{nr, raw};
+use crate::types::Fd;
 
 // ============================================================================
 // Constants
@@ -62,7 +64,7 @@ pub enum HttpError {
     /// Failed to create socket
     SocketError,
     /// Failed to connect to server
-    ConnectError(i32),
+    ConnectError,
     /// Failed to send request
     SendError,
     /// Failed to receive response
@@ -75,6 +77,13 @@ pub enum HttpError {
     ParseError,
     /// HTTP scheme required (HTTPS not supported)
     HttpsNotSupported,
+}
+
+impl From<Error> for HttpError {
+    fn from(_e: Error) -> Self {
+        // Map OS errors to the closest HttpError variant.
+        HttpError::SocketError
+    }
 }
 
 // ============================================================================
@@ -269,6 +278,17 @@ fn parse_response(buf: &[u8], len: usize) -> Option<HttpResponse> {
 }
 
 // ============================================================================
+// Internal helpers
+// ============================================================================
+
+/// Close a file descriptor (used internally for cleanup).
+fn close_fd(fd: Fd) {
+    unsafe {
+        raw::syscall1(nr::CLOSE, fd.raw());
+    }
+}
+
+// ============================================================================
 // High-Level API
 // ============================================================================
 
@@ -314,24 +334,26 @@ pub fn http_get_with_buf(url: &str, response_buf: &mut [u8]) -> Result<(HttpResp
 
     // Connect to server
     let server_addr = SockAddrIn::new(ip, parsed.port);
-    if let Err(e) = connect(fd, &server_addr) {
-        let _ = close(fd as u64);
-        return Err(HttpError::ConnectError(e));
+    if let Err(_e) = connect_inet(fd, &server_addr) {
+        close_fd(fd);
+        return Err(HttpError::ConnectError);
     }
 
     // Build request
     let mut request_buf = [0u8; REQUEST_BUF_SIZE];
     let request_len = build_request(parsed.host, parsed.path, &mut request_buf);
     if request_len == 0 {
-        let _ = close(fd as u64);
+        close_fd(fd);
         return Err(HttpError::InvalidUrl);
     }
 
     // Send request
-    let written = write(fd as u64, &request_buf[..request_len]);
-    if written != request_len as i64 {
-        let _ = close(fd as u64);
-        return Err(HttpError::SendError);
+    match send(fd, &request_buf[..request_len]) {
+        Ok(written) if written == request_len => {}
+        _ => {
+            close_fd(fd);
+            return Err(HttpError::SendError);
+        }
     }
 
     // Receive response
@@ -342,26 +364,25 @@ pub fn http_get_with_buf(url: &str, response_buf: &mut [u8]) -> Result<(HttpResp
     for _ in 0..100 {
         // Safety limit on iterations
         if total_received >= max_read {
-            let _ = close(fd as u64);
+            close_fd(fd);
             return Err(HttpError::ResponseTooLarge);
         }
 
-        let bytes_read = read(fd as u64, &mut response_buf[total_received..]);
-        if bytes_read <= 0 {
-            // Connection closed or error
-            break;
-        }
-
-        total_received += bytes_read as usize;
-
-        // Check if we have complete headers
-        if find_header_end(&response_buf[..total_received]).is_some() {
-            // For Connection: close, keep reading until EOF
-            // We'll break when read returns 0
+        match recv(fd, &mut response_buf[total_received..]) {
+            Ok(0) => break, // Connection closed
+            Ok(n) => {
+                total_received += n;
+                // Check if we have complete headers
+                if find_header_end(&response_buf[..total_received]).is_some() {
+                    // For Connection: close, keep reading until EOF
+                    // We'll break when read returns 0
+                }
+            }
+            Err(_) => break, // Error or connection closed
         }
     }
 
-    let _ = close(fd as u64);
+    close_fd(fd);
 
     if total_received == 0 {
         return Err(HttpError::Timeout);

@@ -14,10 +14,12 @@
 //! }
 //! ```
 
-use crate::io::close;
+use crate::error::Error;
 use crate::process::yield_now;
-use crate::socket::{bind, recvfrom, sendto, socket, SockAddrIn, AF_INET, SOCK_DGRAM, SOCK_NONBLOCK};
+use crate::socket::{bind_inet, recvfrom, sendto, socket, SockAddrIn, AF_INET, SOCK_DGRAM, SOCK_NONBLOCK};
+use crate::syscall::{nr, raw};
 use crate::time::now_monotonic;
+use crate::types::{Fd, Timespec};
 
 // ============================================================================
 // Constants
@@ -78,6 +80,14 @@ pub enum DnsError {
     HostnameTooLong,
     /// Invalid hostname format
     InvalidHostname,
+}
+
+impl From<Error> for DnsError {
+    fn from(_e: Error) -> Self {
+        // Map OS errors to the closest DnsError variant.
+        // Since DnsError predates the unified Error type, we map generically.
+        DnsError::SocketError
+    }
 }
 
 // ============================================================================
@@ -453,6 +463,17 @@ pub fn parse_response(buf: &[u8]) -> Option<DnsResponse> {
 }
 
 // ============================================================================
+// Internal helpers
+// ============================================================================
+
+/// Close a file descriptor (used internally for cleanup).
+fn close_fd(fd: Fd) {
+    unsafe {
+        raw::syscall1(nr::CLOSE, fd.raw());
+    }
+}
+
+// ============================================================================
 // High-Level API
 // ============================================================================
 
@@ -488,8 +509,8 @@ pub fn resolve(hostname: &str, dns_server: [u8; 4]) -> Result<DnsResult, DnsErro
 
     // Bind to ephemeral port (port 0 = kernel assigns)
     let local_addr = SockAddrIn::new([0, 0, 0, 0], 0);
-    if bind(fd, &local_addr).is_err() {
-        let _ = close(fd as u64);
+    if bind_inet(fd, &local_addr).is_err() {
+        close_fd(fd);
         return Err(DnsError::BindError);
     }
 
@@ -501,14 +522,14 @@ pub fn resolve(hostname: &str, dns_server: [u8; 4]) -> Result<DnsResult, DnsErro
 
     let query_len = encode_query(hostname, txid, &mut query_buf);
     if query_len == 0 {
-        let _ = close(fd as u64);
+        close_fd(fd);
         return Err(DnsError::InvalidHostname);
     }
 
     // Send query to DNS server
     let dns_addr = SockAddrIn::new(dns_server, DNS_PORT);
     if sendto(fd, &query_buf[..query_len], &dns_addr).is_err() {
-        let _ = close(fd as u64);
+        close_fd(fd);
         return Err(DnsError::SendError);
     }
 
@@ -517,11 +538,11 @@ pub fn resolve(hostname: &str, dns_server: [u8; 4]) -> Result<DnsResult, DnsErro
     let mut received = false;
     let mut resp_len = 0;
 
-    // Network packets arrive via interrupt → softirq → process_rx().
+    // Network packets arrive via interrupt -> softirq -> process_rx().
     // We poll recvfrom() with yield_now() between attempts.
     // DNS resolution via QEMU SLIRP forwards to host DNS, which can take time.
     const TIMEOUT_SECS: u64 = 5;
-    let start = now_monotonic();
+    let start = now_monotonic().unwrap_or(Timespec { tv_sec: 0, tv_nsec: 0 });
     let deadline_secs = start.tv_sec as u64 + TIMEOUT_SECS;
 
     loop {
@@ -533,17 +554,17 @@ pub fn resolve(hostname: &str, dns_server: [u8; 4]) -> Result<DnsResult, DnsErro
             }
             _ => {
                 // Check timeout
-                let now = now_monotonic();
+                let now = now_monotonic().unwrap_or(Timespec { tv_sec: 0, tv_nsec: 0 });
                 if now.tv_sec as u64 >= deadline_secs {
                     break; // Timeout
                 }
                 // Yield to scheduler - allows timer interrupt to fire and process softirqs
-                yield_now();
+                let _ = yield_now();
             }
         }
     }
 
-    let _ = close(fd as u64);
+    close_fd(fd);
 
     if !received {
         return Err(DnsError::Timeout);

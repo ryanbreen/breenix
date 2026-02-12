@@ -362,7 +362,7 @@ fn sin_cos_table(angle: usize) -> (i32, i32) {
 // ---------------------------------------------------------------------------
 
 fn clock_monotonic_ns() -> u64 {
-    let ts = time::now_monotonic();
+    let ts = time::now_monotonic().unwrap_or_default();
     (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
 }
 
@@ -431,9 +431,9 @@ fn main() {
 
     let info = match graphics::fbinfo() {
         Ok(info) => info,
-        Err(e) => {
+        Err(_e) => {
             println!("Error: Could not get framebuffer info");
-            process::exit(e);
+            process::exit(1);
         }
     };
 
@@ -445,7 +445,7 @@ fn main() {
         Ok(ptr) => ptr,
         Err(e) => {
             println!("Error: Could not mmap framebuffer ({})", e);
-            process::exit(e);
+            process::exit(1);
         }
     };
 
@@ -483,6 +483,6 @@ fn main() {
         }
 
         // ~60 FPS
-        time::sleep_ms(16);
+        let _ = time::sleep_ms(16);
     }
 }

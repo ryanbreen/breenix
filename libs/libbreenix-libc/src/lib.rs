@@ -23,6 +23,8 @@
 
 #![no_std]
 
+use libbreenix::types::Fd;
+use libbreenix::error::Error;
 use core::slice;
 
 // =============================================================================
@@ -94,6 +96,60 @@ fn syscall_result_to_c_ssize(result: i64) -> isize {
     }
 }
 
+/// Extract raw errno value from an Error
+#[inline]
+fn error_to_errno(e: &Error) -> i32 {
+    match e {
+        Error::Os(errno) => *errno as i32,
+    }
+}
+
+/// Set errno from an Error and return -1
+#[inline]
+fn set_errno_from_error(e: Error) -> i32 {
+    unsafe { ERRNO = error_to_errno(&e); }
+    -1
+}
+
+/// Convert Result<usize, Error> to C ssize_t convention
+#[inline]
+fn result_usize_to_c_ssize(result: Result<usize, Error>) -> isize {
+    match result {
+        Ok(v) => v as isize,
+        Err(e) => {
+            set_errno_from_error(e);
+            -1
+        }
+    }
+}
+
+/// Convert Result<(), Error> to C int convention (0 success, -1 error)
+#[inline]
+fn result_unit_to_c_int(result: Result<(), Error>) -> i32 {
+    match result {
+        Ok(()) => 0,
+        Err(e) => set_errno_from_error(e),
+    }
+}
+
+/// Convert Result<Fd, Error> to C int convention (fd on success, -1 error)
+#[inline]
+fn result_fd_to_c_int(result: Result<Fd, Error>) -> i32 {
+    match result {
+        Ok(fd) => fd.raw() as i32,
+        Err(e) => set_errno_from_error(e),
+    }
+}
+
+/// Convert Result<i64, Error> to C int convention
+#[inline]
+fn result_i64_to_c_int(result: Result<i64, Error>) -> i32 {
+    match result {
+        Ok(v) => v as i32,
+        Err(e) => set_errno_from_error(e),
+    }
+}
+
 // =============================================================================
 // I/O Functions
 // =============================================================================
@@ -106,15 +162,15 @@ pub unsafe extern "C" fn write(fd: i32, buf: *const u8, count: usize) -> isize {
         return -1;
     }
 
-    let fd_u64 = fd as u64;
+    let fd_val = Fd::from_raw(fd as u64);
     let slice = if count == 0 {
         &[]
     } else {
         slice::from_raw_parts(buf, count)
     };
 
-    let result = libbreenix::io::write(fd_u64, slice);
-    syscall_result_to_c_ssize(result)
+    let result = libbreenix::io::write(fd_val, slice);
+    result_usize_to_c_ssize(result)
 }
 
 /// Read bytes from a file descriptor.
@@ -125,38 +181,38 @@ pub unsafe extern "C" fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
         return -1;
     }
 
-    let fd_u64 = fd as u64;
+    let fd_val = Fd::from_raw(fd as u64);
     let slice = if count == 0 {
         &mut []
     } else {
         slice::from_raw_parts_mut(buf, count)
     };
 
-    let result = libbreenix::io::read(fd_u64, slice);
-    syscall_result_to_c_ssize(result)
+    let result = libbreenix::io::read(fd_val, slice);
+    result_usize_to_c_ssize(result)
 }
 
 /// Close a file descriptor.
 #[no_mangle]
 pub extern "C" fn close(fd: i32) -> i32 {
-    let fd_u64 = fd as u64;
-    let result = libbreenix::io::close(fd_u64);
-    syscall_result_to_c_int(result)
+    let fd_val = Fd::from_raw(fd as u64);
+    let result = libbreenix::io::close(fd_val);
+    result_unit_to_c_int(result)
 }
 
 /// Duplicate a file descriptor.
 #[no_mangle]
 pub extern "C" fn dup(oldfd: i32) -> i32 {
-    let fd_u64 = oldfd as u64;
-    let result = libbreenix::io::dup(fd_u64);
-    syscall_result_to_c_int(result)
+    let fd_val = Fd::from_raw(oldfd as u64);
+    let result = libbreenix::io::dup(fd_val);
+    result_fd_to_c_int(result)
 }
 
 /// Duplicate a file descriptor to a specific number.
 #[no_mangle]
 pub extern "C" fn dup2(oldfd: i32, newfd: i32) -> i32 {
-    let result = libbreenix::io::dup2(oldfd as u64, newfd as u64);
-    syscall_result_to_c_int(result)
+    let result = libbreenix::io::dup2(Fd::from_raw(oldfd as u64), Fd::from_raw(newfd as u64));
+    result_fd_to_c_int(result)
 }
 
 /// Create a pipe.
@@ -167,16 +223,13 @@ pub unsafe extern "C" fn pipe(pipefd: *mut i32) -> i32 {
         return -1;
     }
 
-    let mut fds: [i32; 2] = [0, 0];
-    let result = libbreenix::io::pipe(&mut fds);
-
-    if result < 0 {
-        set_errno_from_result(result);
-        -1
-    } else {
-        *pipefd = fds[0];
-        *pipefd.add(1) = fds[1];
-        0
+    match libbreenix::io::pipe() {
+        Ok((fd0, fd1)) => {
+            *pipefd = fd0.raw() as i32;
+            *pipefd.add(1) = fd1.raw() as i32;
+            0
+        }
+        Err(e) => set_errno_from_error(e),
     }
 }
 
@@ -188,16 +241,13 @@ pub unsafe extern "C" fn pipe2(pipefd: *mut i32, flags: i32) -> i32 {
         return -1;
     }
 
-    let mut fds: [i32; 2] = [0, 0];
-    let result = libbreenix::io::pipe2(&mut fds, flags);
-
-    if result < 0 {
-        set_errno_from_result(result);
-        -1
-    } else {
-        *pipefd = fds[0];
-        *pipefd.add(1) = fds[1];
-        0
+    match libbreenix::io::pipe2(flags) {
+        Ok((fd0, fd1)) => {
+            *pipefd = fd0.raw() as i32;
+            *pipefd.add(1) = fd1.raw() as i32;
+            0
+        }
+        Err(e) => set_errno_from_error(e),
     }
 }
 
@@ -648,8 +698,8 @@ pub unsafe extern "C" fn utimes(_path: *const u8, _times: *const u8) -> i32 {
 /// fcntl - file control
 #[no_mangle]
 pub unsafe extern "C" fn fcntl(fd: i32, cmd: i32, arg: u64) -> i32 {
-    let result = libbreenix::io::fcntl(fd as u64, cmd, arg as i64);
-    syscall_result_to_c_int(result)
+    let result = libbreenix::io::fcntl(Fd::from_raw(fd as u64), cmd, arg as i64);
+    result_i64_to_c_int(result)
 }
 
 // =============================================================================
@@ -693,13 +743,13 @@ pub extern "C" fn set_tid_address(tidptr: *mut i32) -> i32 {
 /// Get the process ID of the calling process.
 #[no_mangle]
 pub extern "C" fn getpid() -> i32 {
-    libbreenix::process::getpid() as i32
+    match libbreenix::process::getpid() { Ok(pid) => pid.raw() as i32, Err(_) => -1, }
 }
 
 /// Get the thread ID of the calling thread.
 #[no_mangle]
 pub extern "C" fn gettid() -> i32 {
-    libbreenix::process::gettid() as i32
+    match libbreenix::process::gettid() { Ok(tid) => tid.raw() as i32, Err(_) => -1, }
 }
 
 /// Get the parent process ID.
@@ -738,14 +788,17 @@ pub extern "C" fn getegid() -> u32 {
 /// setpgid - set process group ID
 #[no_mangle]
 pub extern "C" fn setpgid(pid: i32, pgid: i32) -> i32 {
-    libbreenix::process::setpgid(pid, pgid)
+    result_unit_to_c_int(libbreenix::process::setpgid(pid, pgid))
 }
 
 /// fork - create a child process
 #[no_mangle]
 pub extern "C" fn fork() -> i32 {
-    let result = libbreenix::process::fork();
-    syscall_result_to_c_int(result)
+    match libbreenix::process::fork() {
+        Ok(libbreenix::process::ForkResult::Child) => 0,
+        Ok(libbreenix::process::ForkResult::Parent(pid)) => pid.raw() as i32,
+        Err(e) => set_errno_from_error(e),
+    }
 }
 
 /// execve - execute a program
@@ -774,20 +827,16 @@ pub unsafe extern "C" fn execve(
 /// waitpid - wait for a child process
 #[no_mangle]
 pub unsafe extern "C" fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32 {
-    let result = libbreenix::process::waitpid(pid, status, options);
-    syscall_result_to_c_int(result)
+    match libbreenix::process::waitpid(pid, status, options) {
+        Ok(pid) => pid.raw() as i32,
+        Err(e) => set_errno_from_error(e),
+    }
 }
 
 /// kill - send signal to a process
 #[no_mangle]
 pub extern "C" fn kill(pid: i32, sig: i32) -> i32 {
-    match libbreenix::signal::kill(pid, sig) {
-        Ok(()) => 0,
-        Err(errno) => {
-            unsafe { ERRNO = errno; }
-            -1
-        }
-    }
+    result_unit_to_c_int(libbreenix::signal::kill(pid, sig))
 }
 
 /// raise - send a signal to the calling process
@@ -832,27 +881,13 @@ pub unsafe extern "C" fn mmap(
 /// Unmap memory from the process address space.
 #[no_mangle]
 pub unsafe extern "C" fn munmap(addr: *mut u8, len: usize) -> i32 {
-    let result = libbreenix::memory::munmap(addr, len);
-
-    if result < 0 {
-        set_errno_from_result(result as i64);
-        -1
-    } else {
-        0
-    }
+    result_unit_to_c_int(libbreenix::memory::munmap(addr, len))
 }
 
 /// Change protection on a region of memory.
 #[no_mangle]
 pub unsafe extern "C" fn mprotect(addr: *mut u8, len: usize, prot: i32) -> i32 {
-    let result = libbreenix::memory::mprotect(addr, len, prot);
-
-    if result < 0 {
-        set_errno_from_result(result as i64);
-        -1
-    } else {
-        0
-    }
+    result_unit_to_c_int(libbreenix::memory::mprotect(addr, len, prot))
 }
 
 /// Change the program break (heap end).
@@ -1371,10 +1406,7 @@ pub unsafe extern "C" fn sigaction(signum: i32, act: *const u8, oldact: *mut u8)
             }
             0
         }
-        Err(errno) => {
-            ERRNO = errno;
-            -1
-        }
+        Err(e) => set_errno_from_error(e),
     }
 }
 
@@ -1430,10 +1462,7 @@ pub unsafe extern "C" fn sigaltstack(ss: *const u8, old_ss: *mut u8) -> i32 {
             }
             0
         }
-        Err(errno) => {
-            ERRNO = errno;
-            -1
-        }
+        Err(e) => set_errno_from_error(e),
     }
 }
 
@@ -1449,10 +1478,7 @@ pub unsafe extern "C" fn sigprocmask(
 
     match libbreenix::signal::sigprocmask(how, set_opt, oldset_opt) {
         Ok(()) => 0,
-        Err(errno) => {
-            ERRNO = errno;
-            -1
-        }
+        Err(e) => set_errno_from_error(e),
     }
 }
 
@@ -1501,13 +1527,7 @@ pub unsafe extern "C" fn nanosleep(req: *const u8, rem: *mut u8) -> i32 {
 /// socket - create a socket
 #[no_mangle]
 pub extern "C" fn socket(domain: i32, sock_type: i32, protocol: i32) -> i32 {
-    match libbreenix::socket::socket(domain, sock_type, protocol) {
-        Ok(fd) => fd,
-        Err(errno) => {
-            unsafe { ERRNO = errno; }
-            -1
-        }
-    }
+    result_fd_to_c_int(libbreenix::socket::socket(domain, sock_type, protocol))
 }
 
 /// bind - bind a socket to an address
@@ -1530,13 +1550,7 @@ pub unsafe extern "C" fn bind(sockfd: i32, addr: *const u8, addrlen: u32) -> i32
 /// listen - listen for connections on a socket
 #[no_mangle]
 pub extern "C" fn listen(sockfd: i32, backlog: i32) -> i32 {
-    match libbreenix::socket::listen(sockfd, backlog) {
-        Ok(()) => 0,
-        Err(errno) => {
-            unsafe { ERRNO = errno; }
-            -1
-        }
-    }
+    result_unit_to_c_int(libbreenix::socket::listen(Fd::from_raw(sockfd as u64), backlog))
 }
 
 /// accept - accept a connection on a socket
@@ -1727,13 +1741,7 @@ pub unsafe extern "C" fn getsockname(
 /// shutdown - shut down part of a full-duplex connection
 #[no_mangle]
 pub extern "C" fn shutdown(sockfd: i32, how: i32) -> i32 {
-    match libbreenix::socket::shutdown(sockfd, how) {
-        Ok(()) => 0,
-        Err(errno) => {
-            unsafe { ERRNO = errno; }
-            -1
-        }
-    }
+    result_unit_to_c_int(libbreenix::socket::shutdown(Fd::from_raw(sockfd as u64), how))
 }
 
 /// socketpair - create a pair of connected sockets
@@ -1751,14 +1759,11 @@ pub unsafe extern "C" fn socketpair(
 
     match libbreenix::socket::socketpair(domain, sock_type, protocol) {
         Ok((fd0, fd1)) => {
-            *sv = fd0;
-            *sv.add(1) = fd1;
+            *sv = fd0.raw() as i32;
+            *sv.add(1) = fd1.raw() as i32;
             0
         }
-        Err(errno) => {
-            ERRNO = errno;
-            -1
-        }
+        Err(e) => set_errno_from_error(e),
     }
 }
 
@@ -1805,8 +1810,7 @@ pub unsafe extern "C" fn poll(fds: *mut u8, nfds: u64, timeout: i32) -> i32 {
 /// pause - suspend until signal
 #[no_mangle]
 pub extern "C" fn pause() -> i32 {
-    let result = libbreenix::signal::pause();
-    syscall_result_to_c_int(result)
+    result_unit_to_c_int(libbreenix::signal::pause())
 }
 
 /// syscall - generic syscall interface
@@ -1844,7 +1848,7 @@ pub unsafe extern "C" fn syscall(num: i64, a1: i64, a2: i64, a3: i64, a4: i64, a
 /// sched_yield - yield the processor
 #[no_mangle]
 pub extern "C" fn sched_yield() -> i32 {
-    libbreenix::process::yield_now();
+    let _ = libbreenix::process::yield_now();
     0
 }
 
@@ -2558,10 +2562,7 @@ pub unsafe extern "C" fn setitimer(which: i32, new_value: *const CItimerval, old
             }
             0
         }
-        Err(e) => {
-            ERRNO = e;
-            -1
-        }
+        Err(e) => set_errno_from_error(e),
     }
 }
 
@@ -2584,10 +2585,7 @@ pub unsafe extern "C" fn getitimer(which: i32, curr_value: *mut CItimerval) -> i
             (*curr_value).it_value.tv_usec = val.it_value.tv_usec;
             0
         }
-        Err(e) => {
-            ERRNO = e;
-            -1
-        }
+        Err(e) => set_errno_from_error(e),
     }
 }
 
@@ -2615,13 +2613,7 @@ pub unsafe extern "C" fn sigsuspend(mask: *const u64) -> i32 {
 /// Returns a file descriptor on success, -1 on error (errno set).
 #[no_mangle]
 pub unsafe extern "C" fn posix_openpt(flags: i32) -> i32 {
-    match libbreenix::pty::posix_openpt(flags) {
-        Ok(fd) => fd,
-        Err(e) => {
-            ERRNO = e;
-            -1
-        }
-    }
+    result_fd_to_c_int(libbreenix::pty::posix_openpt(flags))
 }
 
 /// grantpt - grant access to slave PTY
@@ -2629,13 +2621,7 @@ pub unsafe extern "C" fn posix_openpt(flags: i32) -> i32 {
 /// Returns 0 on success, -1 on error (errno set).
 #[no_mangle]
 pub unsafe extern "C" fn grantpt(fd: i32) -> i32 {
-    match libbreenix::pty::grantpt(fd) {
-        Ok(()) => 0,
-        Err(e) => {
-            ERRNO = e;
-            -1
-        }
-    }
+    result_unit_to_c_int(libbreenix::pty::grantpt(Fd::from_raw(fd as u64)))
 }
 
 /// unlockpt - unlock the slave PTY for opening
@@ -2643,13 +2629,7 @@ pub unsafe extern "C" fn grantpt(fd: i32) -> i32 {
 /// Returns 0 on success, -1 on error (errno set).
 #[no_mangle]
 pub unsafe extern "C" fn unlockpt(fd: i32) -> i32 {
-    match libbreenix::pty::unlockpt(fd) {
-        Ok(()) => 0,
-        Err(e) => {
-            ERRNO = e;
-            -1
-        }
-    }
+    result_unit_to_c_int(libbreenix::pty::unlockpt(Fd::from_raw(fd as u64)))
 }
 
 /// ptsname_r - get the path to the slave PTY device (reentrant)
@@ -2662,9 +2642,9 @@ pub unsafe extern "C" fn ptsname_r(fd: i32, buf: *mut u8, buflen: usize) -> i32 
     }
 
     let slice = slice::from_raw_parts_mut(buf, buflen);
-    match libbreenix::pty::ptsname(fd, slice) {
+    match libbreenix::pty::ptsname(Fd::from_raw(fd as u64), slice) {
         Ok(_len) => 0,
-        Err(e) => e,
+        Err(e) => error_to_errno(&e),
     }
 }
 
@@ -2677,13 +2657,7 @@ pub unsafe extern "C" fn ptsname_r(fd: i32, buf: *mut u8, buflen: usize) -> i32 
 /// Returns 0 on success, -1 on error (errno set).
 #[no_mangle]
 pub unsafe extern "C" fn simulate_oom(enable: i32) -> i32 {
-    let result = libbreenix::memory::simulate_oom(enable != 0);
-    if result < 0 {
-        ERRNO = -result;
-        -1
-    } else {
-        0
-    }
+    result_unit_to_c_int(libbreenix::memory::simulate_oom(enable != 0))
 }
 
 // =============================================================================
@@ -2695,7 +2669,7 @@ pub unsafe extern "C" fn simulate_oom(enable: i32) -> i32 {
 /// This is a busy-wait implementation using clock_gettime(CLOCK_MONOTONIC).
 #[no_mangle]
 pub unsafe extern "C" fn sleep_ms(ms: u64) {
-    libbreenix::time::sleep_ms(ms);
+    let _ = libbreenix::time::sleep_ms(ms);
 }
 
 // =============================================================================

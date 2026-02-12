@@ -1,7 +1,11 @@
 //! Graphics syscall wrappers
 //!
 //! Provides userspace API for querying framebuffer information and drawing.
+//!
+//! Also provides the [`Framebuffer`] RAII wrapper for direct pixel writes
+//! via memory-mapped access.
 
+use crate::error::Error;
 use crate::syscall::{nr, raw};
 
 /// Framebuffer information structure.
@@ -57,16 +61,12 @@ impl FbInfo {
 ///
 /// # Returns
 /// * Ok(FbInfo) - Framebuffer information
-/// * Err(errno) - Error code (ENODEV if no framebuffer)
-pub fn fbinfo() -> Result<FbInfo, i32> {
+/// * Err(Error) - Error (ENODEV if no framebuffer)
+pub fn fbinfo() -> Result<FbInfo, Error> {
     let mut info = FbInfo::zeroed();
-    let result = unsafe { raw::syscall1(nr::FBINFO, &mut info as *mut FbInfo as u64) };
-
-    if (result as i64) < 0 {
-        Err(-(result as i64) as i32)
-    } else {
-        Ok(info)
-    }
+    let ret = unsafe { raw::syscall1(nr::FBINFO, &mut info as *mut FbInfo as u64) as i64 };
+    Error::from_syscall(ret)?;
+    Ok(info)
 }
 
 /// Draw command structure for sys_fbdraw.
@@ -112,18 +112,14 @@ pub const fn rgb(r: u8, g: u8, b: u8) -> u32 {
 }
 
 /// Execute a draw command
-fn fbdraw(cmd: &FbDrawCmd) -> Result<(), i32> {
-    let result = unsafe { raw::syscall1(nr::FBDRAW, cmd as *const FbDrawCmd as u64) };
-
-    if (result as i64) < 0 {
-        Err(-(result as i64) as i32)
-    } else {
-        Ok(())
-    }
+fn fbdraw(cmd: &FbDrawCmd) -> Result<(), Error> {
+    let ret = unsafe { raw::syscall1(nr::FBDRAW, cmd as *const FbDrawCmd as u64) as i64 };
+    Error::from_syscall(ret)?;
+    Ok(())
 }
 
 /// Clear the left pane with a color
-pub fn fb_clear(color: u32) -> Result<(), i32> {
+pub fn fb_clear(color: u32) -> Result<(), Error> {
     let cmd = FbDrawCmd {
         op: draw_op::CLEAR,
         p1: 0,
@@ -136,7 +132,7 @@ pub fn fb_clear(color: u32) -> Result<(), i32> {
 }
 
 /// Fill a rectangle on the left pane
-pub fn fb_fill_rect(x: i32, y: i32, width: i32, height: i32, color: u32) -> Result<(), i32> {
+pub fn fb_fill_rect(x: i32, y: i32, width: i32, height: i32, color: u32) -> Result<(), Error> {
     let cmd = FbDrawCmd {
         op: draw_op::FILL_RECT,
         p1: x,
@@ -149,7 +145,7 @@ pub fn fb_fill_rect(x: i32, y: i32, width: i32, height: i32, color: u32) -> Resu
 }
 
 /// Draw a rectangle outline on the left pane
-pub fn fb_draw_rect(x: i32, y: i32, width: i32, height: i32, color: u32) -> Result<(), i32> {
+pub fn fb_draw_rect(x: i32, y: i32, width: i32, height: i32, color: u32) -> Result<(), Error> {
     let cmd = FbDrawCmd {
         op: draw_op::DRAW_RECT,
         p1: x,
@@ -162,7 +158,7 @@ pub fn fb_draw_rect(x: i32, y: i32, width: i32, height: i32, color: u32) -> Resu
 }
 
 /// Fill a circle on the left pane
-pub fn fb_fill_circle(cx: i32, cy: i32, radius: i32, color: u32) -> Result<(), i32> {
+pub fn fb_fill_circle(cx: i32, cy: i32, radius: i32, color: u32) -> Result<(), Error> {
     let cmd = FbDrawCmd {
         op: draw_op::FILL_CIRCLE,
         p1: cx,
@@ -175,7 +171,7 @@ pub fn fb_fill_circle(cx: i32, cy: i32, radius: i32, color: u32) -> Result<(), i
 }
 
 /// Draw a circle outline on the left pane
-pub fn fb_draw_circle(cx: i32, cy: i32, radius: i32, color: u32) -> Result<(), i32> {
+pub fn fb_draw_circle(cx: i32, cy: i32, radius: i32, color: u32) -> Result<(), Error> {
     let cmd = FbDrawCmd {
         op: draw_op::DRAW_CIRCLE,
         p1: cx,
@@ -188,7 +184,7 @@ pub fn fb_draw_circle(cx: i32, cy: i32, radius: i32, color: u32) -> Result<(), i
 }
 
 /// Draw a line on the left pane
-pub fn fb_draw_line(x1: i32, y1: i32, x2: i32, y2: i32, color: u32) -> Result<(), i32> {
+pub fn fb_draw_line(x1: i32, y1: i32, x2: i32, y2: i32, color: u32) -> Result<(), Error> {
     let cmd = FbDrawCmd {
         op: draw_op::DRAW_LINE,
         p1: x1,
@@ -208,17 +204,13 @@ pub fn fb_draw_line(x1: i32, y1: i32, x2: i32, y2: i32, color: u32) -> Result<()
 ///
 /// The buffer layout is: `stride = left_pane_width * bytes_per_pixel` (compact).
 /// Use `fbinfo()` to get dimensions and pixel format.
-pub fn fb_mmap() -> Result<*mut u8, i32> {
-    let result = unsafe { raw::syscall0(nr::FBMMAP) };
-    if (result as i64) < 0 {
-        Err(-(result as i64) as i32)
-    } else {
-        Ok(result as *mut u8)
-    }
+pub fn fb_mmap() -> Result<*mut u8, Error> {
+    let ret = unsafe { raw::syscall0(nr::FBMMAP) as i64 };
+    Error::from_syscall(ret).map(|v| v as *mut u8)
 }
 
 /// Flush the framebuffer (sync double buffer to screen)
-pub fn fb_flush() -> Result<(), i32> {
+pub fn fb_flush() -> Result<(), Error> {
     let cmd = FbDrawCmd {
         op: draw_op::FLUSH,
         p1: 0,
@@ -234,7 +226,7 @@ pub fn fb_flush() -> Result<(), i32> {
 ///
 /// Only the specified rect (x, y, w, h) is transferred to the display.
 /// Falls back to full flush in the kernel if the rect covers the entire screen.
-pub fn fb_flush_rect(x: i32, y: i32, w: i32, h: i32) -> Result<(), i32> {
+pub fn fb_flush_rect(x: i32, y: i32, w: i32, h: i32) -> Result<(), Error> {
     let cmd = FbDrawCmd {
         op: draw_op::FLUSH,
         p1: x,
@@ -245,3 +237,128 @@ pub fn fb_flush_rect(x: i32, y: i32, w: i32, h: i32) -> Result<(), i32> {
     };
     fbdraw(&cmd)
 }
+
+// ============================================================================
+// RAII Framebuffer Wrapper
+// ============================================================================
+
+/// Safe, RAII framebuffer handle for direct pixel writes.
+///
+/// Maps the framebuffer into userspace memory. All drawing operations write
+/// directly to the buffer with no syscall overhead. Call `flush()` to sync
+/// to the display (1 syscall per frame).
+pub struct Framebuffer {
+    ptr: *mut u8,
+    width: u32,
+    height: u32,
+    stride: u32,  // row stride in bytes
+    bpp: u32,     // bytes per pixel
+    bgr: bool,
+}
+
+impl Framebuffer {
+    /// Map the framebuffer and return a safe handle.
+    pub fn new() -> Result<Framebuffer, Error> {
+        let info = fbinfo()?;
+        let ptr = fb_mmap()?;
+        Ok(Framebuffer {
+            ptr,
+            width: info.left_pane_width() as u32,
+            height: info.height as u32,
+            stride: info.left_pane_width() as u32 * info.bytes_per_pixel as u32,
+            bpp: info.bytes_per_pixel as u32,
+            bgr: info.is_bgr(),
+        })
+    }
+
+    /// Get the width in pixels.
+    pub fn width(&self) -> u32 { self.width }
+
+    /// Get the height in pixels.
+    pub fn height(&self) -> u32 { self.height }
+
+    /// Get the row stride in bytes.
+    pub fn stride(&self) -> u32 { self.stride }
+
+    /// Get bytes per pixel.
+    pub fn bpp(&self) -> u32 { self.bpp }
+
+    /// Check if pixel format is BGR.
+    pub fn is_bgr(&self) -> bool { self.bgr }
+
+    /// Set a single pixel. No-op if coordinates are out of bounds.
+    #[inline]
+    pub fn set_pixel(&mut self, x: u32, y: u32, color: u32) {
+        if x < self.width && y < self.height {
+            let offset = (y * self.stride + x * self.bpp) as usize;
+            unsafe {
+                let p = self.ptr.add(offset) as *mut u32;
+                *p = color;
+            }
+        }
+    }
+
+    /// Get a mutable pointer to the start of a row (for bulk operations).
+    /// Returns None if y is out of bounds.
+    pub fn row_ptr(&mut self, y: u32) -> Option<*mut u8> {
+        if y < self.height {
+            Some(unsafe { self.ptr.add((y * self.stride) as usize) })
+        } else {
+            None
+        }
+    }
+
+    /// Raw mutable access to the entire buffer.
+    ///
+    /// # Safety
+    /// Caller must not write beyond pixel boundaries.
+    pub unsafe fn as_mut_slice(&mut self) -> &mut [u8] {
+        core::slice::from_raw_parts_mut(self.ptr, (self.height * self.stride) as usize)
+    }
+
+    /// Raw const access to the entire buffer.
+    ///
+    /// # Safety
+    /// Caller must not hold this reference while mutating the buffer.
+    pub unsafe fn as_slice(&self) -> &[u8] {
+        core::slice::from_raw_parts(self.ptr, (self.height * self.stride) as usize)
+    }
+
+    /// Flush entire buffer to display (1 syscall).
+    pub fn flush(&self) -> Result<(), Error> {
+        fb_flush()
+    }
+
+    /// Flush a rectangular region to display.
+    pub fn flush_rect(&self, x: u32, y: u32, w: u32, h: u32) -> Result<(), Error> {
+        fb_flush_rect(x as i32, y as i32, w as i32, h as i32)
+    }
+
+    /// Convert RGB to this framebuffer's native pixel format.
+    pub fn color(&self, r: u8, g: u8, b: u8) -> u32 {
+        if self.bgr {
+            (b as u32) | ((g as u32) << 8) | ((r as u32) << 16)
+        } else {
+            (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
+        }
+    }
+
+    /// Fill a rectangular region with a solid color.
+    pub fn fill_rect(&mut self, x: u32, y: u32, w: u32, h: u32, color: u32) {
+        let x_end = (x + w).min(self.width);
+        let y_end = (y + h).min(self.height);
+        for row in y..y_end {
+            let row_offset = (row * self.stride) as usize;
+            for col in x..x_end {
+                let offset = row_offset + (col * self.bpp) as usize;
+                unsafe {
+                    let p = self.ptr.add(offset) as *mut u32;
+                    *p = color;
+                }
+            }
+        }
+    }
+}
+
+// Note: No Drop impl needed. The mmap'd buffer is cleaned up by the kernel
+// when the process exits. Explicitly munmapping is optional.

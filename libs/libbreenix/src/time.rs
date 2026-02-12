@@ -1,5 +1,10 @@
 //! Time-related syscall wrappers
+//!
+//! This module provides both POSIX-named syscall wrappers (clock_gettime) and
+//! Rust-idiomatic convenience functions (now_monotonic, now_realtime, sleep_ms).
+//! Both layers coexist for flexibility.
 
+use crate::error::Error;
 use crate::syscall::{nr, raw};
 use crate::types::{clock, Timespec};
 
@@ -10,7 +15,7 @@ use crate::types::{clock, Timespec};
 /// * `ts` - Timespec struct to fill with the result
 ///
 /// # Returns
-/// 0 on success, negative errno on error.
+/// `Ok(())` on success, `Err(Error)` on error.
 ///
 /// # Example
 /// ```rust,ignore
@@ -18,13 +23,15 @@ use crate::types::{clock, Timespec};
 /// use libbreenix::Timespec;
 ///
 /// let mut ts = Timespec::new();
-/// if clock_gettime(CLOCK_MONOTONIC, &mut ts) == 0 {
-///     // ts now contains the monotonic time
-/// }
+/// clock_gettime(CLOCK_MONOTONIC, &mut ts).unwrap();
+/// // ts now contains the monotonic time
 /// ```
 #[inline]
-pub fn clock_gettime(clock_id: u32, ts: &mut Timespec) -> i64 {
-    unsafe { raw::syscall2(nr::CLOCK_GETTIME, clock_id as u64, ts as *mut Timespec as u64) as i64 }
+pub fn clock_gettime(clock_id: u32, ts: &mut Timespec) -> Result<(), Error> {
+    let ret = unsafe {
+        raw::syscall2(nr::CLOCK_GETTIME, clock_id as u64, ts as *mut Timespec as u64)
+    };
+    Error::from_syscall(ret as i64).map(|_| ())
 }
 
 /// Get the monotonic time since boot (deprecated, use clock_gettime).
@@ -39,23 +46,23 @@ pub fn get_time_ms() -> u64 {
 /// Get current wall-clock (real) time.
 ///
 /// # Returns
-/// Timespec with current time, or Timespec::new() on error.
+/// `Ok(Timespec)` with current time, or `Err(Error)` on failure.
 #[inline]
-pub fn now_realtime() -> Timespec {
+pub fn now_realtime() -> Result<Timespec, Error> {
     let mut ts = Timespec::new();
-    clock_gettime(clock::REALTIME, &mut ts);
-    ts
+    clock_gettime(clock::REALTIME, &mut ts)?;
+    Ok(ts)
 }
 
 /// Get current monotonic time (time since boot).
 ///
 /// # Returns
-/// Timespec with monotonic time, or Timespec::new() on error.
+/// `Ok(Timespec)` with monotonic time, or `Err(Error)` on failure.
 #[inline]
-pub fn now_monotonic() -> Timespec {
+pub fn now_monotonic() -> Result<Timespec, Error> {
     let mut ts = Timespec::new();
-    clock_gettime(clock::MONOTONIC, &mut ts);
-    ts
+    clock_gettime(clock::MONOTONIC, &mut ts)?;
+    Ok(ts)
 }
 
 /// Sleep for the specified number of milliseconds.
@@ -65,13 +72,16 @@ pub fn now_monotonic() -> Timespec {
 ///
 /// # Arguments
 /// * `ms` - Number of milliseconds to sleep
+///
+/// # Returns
+/// `Ok(())` on success, `Err(Error)` if clock_gettime fails.
 #[inline]
-pub fn sleep_ms(ms: u64) {
-    let start = now_monotonic();
+pub fn sleep_ms(ms: u64) -> Result<(), Error> {
+    let start = now_monotonic()?;
     let target_ns = ms * 1_000_000;
 
     loop {
-        let now = now_monotonic();
+        let now = now_monotonic()?;
 
         // Calculate elapsed time in nanoseconds using signed arithmetic.
         // This handles all edge cases including timer jitter where nanoseconds
@@ -83,7 +93,8 @@ pub fn sleep_ms(ms: u64) {
         // If elapsed time is negative (shouldn't happen with monotonic clock,
         // but could due to jitter or bugs), treat as 0 and keep waiting
         if elapsed_ns < 0 {
-            crate::process::yield_now();
+            // yield_now can fail, but we ignore the error during sleep
+            let _ = crate::process::yield_now();
             continue;
         }
 
@@ -92,8 +103,9 @@ pub fn sleep_ms(ms: u64) {
         }
 
         // Yield to other processes while waiting
-        crate::process::yield_now();
+        let _ = crate::process::yield_now();
     }
+    Ok(())
 }
 
 // Re-export clock constants for convenience
