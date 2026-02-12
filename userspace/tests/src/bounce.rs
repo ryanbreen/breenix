@@ -8,6 +8,9 @@
 
 use std::process;
 
+use libbreenix::graphics;
+use libbreenix::time;
+
 use libgfx::color::Color;
 use libgfx::font;
 use libgfx::framebuf::FrameBuf;
@@ -15,107 +18,13 @@ use libgfx::math::isqrt_i64;
 use libgfx::shapes;
 
 // ---------------------------------------------------------------------------
-// Syscall plumbing (minimal — only what libgfx doesn't handle)
+// Helpers
 // ---------------------------------------------------------------------------
 
-#[repr(C)]
-struct FbInfo {
-    width: u64,
-    height: u64,
-    stride: u64,
-    bytes_per_pixel: u64,
-    pixel_format: u64,
-}
-
-impl FbInfo {
-    fn zeroed() -> Self {
-        Self { width: 0, height: 0, stride: 0, bytes_per_pixel: 0, pixel_format: 0 }
-    }
-    fn left_pane_width(&self) -> u64 { self.width / 2 }
-    fn is_bgr(&self) -> bool { self.pixel_format == 1 }
-}
-
-#[repr(C)]
-struct FbDrawCmd { op: u32, p1: i32, p2: i32, p3: i32, p4: i32, color: u32 }
-
-#[repr(C)]
-struct Timespec { tv_sec: i64, tv_nsec: i64 }
-
-const SYS_FBINFO: u64 = 410;
-const SYS_FBDRAW: u64 = 411;
-const SYS_FBMMAP: u64 = 412;
-const SYS_CLOCK_GETTIME: u64 = 228;
-const CLOCK_MONOTONIC: u64 = 1;
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn syscall0(num: u64) -> u64 {
-    let ret: u64;
-    core::arch::asm!("int 0x80", in("rax") num, lateout("rax") ret,
-        options(nostack, preserves_flags));
-    ret
-}
-#[cfg(target_arch = "aarch64")]
-unsafe fn syscall0(num: u64) -> u64 {
-    let ret: u64;
-    core::arch::asm!("svc #0", in("x8") num, lateout("x0") ret, options(nostack));
-    ret
-}
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn syscall1(num: u64, a1: u64) -> u64 {
-    let ret: u64;
-    core::arch::asm!("int 0x80", in("rax") num, in("rdi") a1, lateout("rax") ret,
-        options(nostack, preserves_flags));
-    ret
-}
-#[cfg(target_arch = "aarch64")]
-unsafe fn syscall1(num: u64, a1: u64) -> u64 {
-    let ret: u64;
-    core::arch::asm!("svc #0", in("x8") num, inlateout("x0") a1 => ret, options(nostack));
-    ret
-}
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn syscall2(num: u64, a1: u64, a2: u64) -> u64 {
-    let ret: u64;
-    core::arch::asm!("int 0x80", in("rax") num, in("rdi") a1, in("rsi") a2,
-        lateout("rax") ret, options(nostack, preserves_flags));
-    ret
-}
-#[cfg(target_arch = "aarch64")]
-unsafe fn syscall2(num: u64, a1: u64, a2: u64) -> u64 {
-    let ret: u64;
-    core::arch::asm!("svc #0", in("x8") num, inlateout("x0") a1 => ret, in("x1") a2,
-        options(nostack));
-    ret
-}
-
-fn fbinfo() -> Result<FbInfo, i32> {
-    let mut info = FbInfo::zeroed();
-    let r = unsafe { syscall1(SYS_FBINFO, &mut info as *mut FbInfo as u64) };
-    if (r as i64) < 0 { Err(-(r as i64) as i32) } else { Ok(info) }
-}
-fn fbmmap() -> Result<*mut u8, i32> {
-    let r = unsafe { syscall0(SYS_FBMMAP) };
-    if (r as i64) < 0 { Err(-(r as i64) as i32) } else { Ok(r as *mut u8) }
-}
-fn fb_flush_rect(x: i32, y: i32, w: i32, h: i32) -> Result<(), i32> {
-    let cmd = FbDrawCmd { op: 6, p1: x, p2: y, p3: w, p4: h, color: 0 };
-    let r = unsafe { syscall1(SYS_FBDRAW, &cmd as *const FbDrawCmd as u64) };
-    if (r as i64) < 0 { Err(-(r as i64) as i32) } else { Ok(()) }
-}
-fn fb_flush_full() -> Result<(), i32> {
-    let cmd = FbDrawCmd { op: 6, p1: 0, p2: 0, p3: 0, p4: 0, color: 0 };
-    let r = unsafe { syscall1(SYS_FBDRAW, &cmd as *const FbDrawCmd as u64) };
-    if (r as i64) < 0 { Err(-(r as i64) as i32) } else { Ok(()) }
-}
 fn clock_monotonic_ns() -> u64 {
-    let mut ts = Timespec { tv_sec: 0, tv_nsec: 0 };
-    unsafe { syscall2(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, &mut ts as *mut Timespec as u64) };
+    let ts = time::now_monotonic();
     (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
 }
-
-extern "C" { fn sleep_ms(ms: u64); }
 
 // ---------------------------------------------------------------------------
 // Ball physics
@@ -256,7 +165,7 @@ impl FpsCounter {
 fn main() {
     println!("Bounce demo starting (for Gus!)");
 
-    let info = match fbinfo() {
+    let info = match graphics::fbinfo() {
         Ok(info) => info,
         Err(e) => { println!("Error: Could not get framebuffer info"); process::exit(e); }
     };
@@ -265,7 +174,7 @@ fn main() {
     let height = info.height as i32;
     let bpp = info.bytes_per_pixel as usize;
 
-    let fb_ptr = match fbmmap() {
+    let fb_ptr = match graphics::fb_mmap() {
         Ok(ptr) => ptr,
         Err(e) => { println!("Error: Could not mmap framebuffer ({})", e); process::exit(e); }
     };
@@ -333,11 +242,11 @@ fn main() {
 
         // Flush only the dirty region
         if let Some(dirty) = fb.take_dirty() {
-            let _ = fb_flush_rect(dirty.x, dirty.y, dirty.w, dirty.h);
+            let _ = graphics::fb_flush_rect(dirty.x, dirty.y, dirty.w, dirty.h);
         } else {
-            let _ = fb_flush_full();
+            let _ = graphics::fb_flush();
         }
 
-        unsafe { sleep_ms(16); } // ~60 FPS target
+        time::sleep_ms(16); // ~60 FPS target
     }
 }

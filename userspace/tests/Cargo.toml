@@ -8,6 +8,7 @@ description = "Userspace test programs and utilities for Breenix"
 # It links against libbreenix-libc (libc.a) for system calls
 
 [dependencies]
+libbreenix = { path = "../../libs/libbreenix" }
 libgfx = { path = "../../libs/libgfx" }
 
 [[bin]]

@@ -5,122 +5,8 @@
 
 use std::process;
 
-/// Framebuffer information structure.
-#[repr(C)]
-struct FbInfo {
-    width: u64,
-    height: u64,
-    stride: u64,
-    bytes_per_pixel: u64,
-    pixel_format: u64,
-}
-
-impl FbInfo {
-    fn zeroed() -> Self {
-        Self {
-            width: 0,
-            height: 0,
-            stride: 0,
-            bytes_per_pixel: 0,
-            pixel_format: 0,
-        }
-    }
-
-    fn left_pane_width(&self) -> u64 {
-        self.width / 2
-    }
-}
-
-/// Draw command structure for sys_fbdraw.
-#[repr(C)]
-struct FbDrawCmd {
-    op: u32,
-    p1: i32,
-    p2: i32,
-    p3: i32,
-    p4: i32,
-    color: u32,
-}
-
-/// Draw operation codes
-mod draw_op {
-    pub const CLEAR: u32 = 0;
-    pub const FILL_CIRCLE: u32 = 3;
-    pub const FLUSH: u32 = 6;
-}
-
-/// Syscall numbers
-const SYS_FBINFO: u64 = 410;
-const SYS_FBDRAW: u64 = 411;
-
-/// Raw syscall1
-#[cfg(target_arch = "x86_64")]
-unsafe fn syscall1(num: u64, arg1: u64) -> u64 {
-    let ret: u64;
-    core::arch::asm!(
-        "int 0x80",
-        in("rax") num,
-        in("rdi") arg1,
-        lateout("rax") ret,
-        options(nostack, preserves_flags),
-    );
-    ret
-}
-
-#[cfg(target_arch = "aarch64")]
-unsafe fn syscall1(num: u64, arg1: u64) -> u64 {
-    let ret: u64;
-    core::arch::asm!(
-        "svc #0",
-        in("x8") num,
-        inlateout("x0") arg1 => ret,
-        options(nostack),
-    );
-    ret
-}
-
-/// Pack RGB color into u32
-#[inline]
-const fn rgb(r: u8, g: u8, b: u8) -> u32 {
-    ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
-}
-
-/// Get framebuffer information
-fn fbinfo() -> Result<FbInfo, i32> {
-    let mut info = FbInfo::zeroed();
-    let result = unsafe { syscall1(SYS_FBINFO, &mut info as *mut FbInfo as u64) };
-    if (result as i64) < 0 {
-        Err(-(result as i64) as i32)
-    } else {
-        Ok(info)
-    }
-}
-
-/// Execute a draw command
-fn fbdraw(cmd: &FbDrawCmd) -> Result<(), i32> {
-    let result = unsafe { syscall1(SYS_FBDRAW, cmd as *const FbDrawCmd as u64) };
-    if (result as i64) < 0 {
-        Err(-(result as i64) as i32)
-    } else {
-        Ok(())
-    }
-}
-
-fn fb_clear(color: u32) -> Result<(), i32> {
-    fbdraw(&FbDrawCmd { op: draw_op::CLEAR, p1: 0, p2: 0, p3: 0, p4: 0, color })
-}
-
-fn fb_fill_circle(cx: i32, cy: i32, radius: i32, color: u32) -> Result<(), i32> {
-    fbdraw(&FbDrawCmd { op: draw_op::FILL_CIRCLE, p1: cx, p2: cy, p3: radius, p4: 0, color })
-}
-
-fn fb_flush() -> Result<(), i32> {
-    fbdraw(&FbDrawCmd { op: draw_op::FLUSH, p1: 0, p2: 0, p3: 0, p4: 0, color: 0 })
-}
-
-extern "C" {
-    fn sleep_ms(ms: u64);
-}
+use libbreenix::graphics::{self, rgb};
+use libbreenix::time;
 
 /// Fixed-point scale factor (8 bits of fractional precision)
 const FP_SCALE: i32 = 256;
@@ -357,7 +243,7 @@ impl ParticleSystem {
     fn render(&self) {
         let (left, top, _right, _bottom) = self.bounds;
 
-        let _ = fb_clear(self.bg_color);
+        let _ = graphics::fb_clear(self.bg_color);
 
         for i in 0..self.count {
             let p = &self.particles[i];
@@ -374,29 +260,28 @@ impl ParticleSystem {
                     ((g as u16 * glow_intensity as u16) / 255) as u8,
                     ((b as u16 * glow_intensity as u16) / 255) as u8,
                 );
-                let _ = fb_fill_circle(px, py, glow_radius, glow_color);
+                let _ = graphics::fb_fill_circle(px, py, glow_radius, glow_color);
             }
 
             // Draw main particle
-            let _ = fb_fill_circle(px, py, p.radius, p.color);
+            let _ = graphics::fb_fill_circle(px, py, p.radius, p.color);
 
             // Draw highlight (small white dot for 3D effect)
             if p.radius > 6 {
                 let highlight_x = px - p.radius / 3;
                 let highlight_y = py - p.radius / 3;
                 let highlight_r = (p.radius / 4).max(2);
-                let _ = fb_fill_circle(highlight_x, highlight_y, highlight_r, rgb(255, 255, 255));
+                let _ = graphics::fb_fill_circle(highlight_x, highlight_y, highlight_r, rgb(255, 255, 255));
             }
         }
 
         // Draw boundary indicator
-        let _ = fb_fill_circle(left + 5, top + 5, 3, rgb(100, 100, 100));
+        let _ = graphics::fb_fill_circle(left + 5, top + 5, 3, rgb(100, 100, 100));
     }
 
     fn spawn_demo_particles(&mut self) {
         let (left, top, right, bottom) = self.bounds;
         let width = right - left;
-        let _height = bottom - top;
         let cx = left + width / 2;
         let cy = top + (bottom - top) / 3;
 
@@ -489,7 +374,7 @@ fn main() {
     println!("Particle Physics Simulation starting...");
 
     // Get framebuffer info
-    let info = match fbinfo() {
+    let info = match graphics::fbinfo() {
         Ok(info) => info,
         Err(e) => {
             println!("Error: Could not get framebuffer info");
@@ -527,14 +412,14 @@ fn main() {
             println!("Frame 0: flushing...");
         }
 
-        let _ = fb_flush();
+        let _ = graphics::fb_flush();
 
         if frame == 0 {
             println!("Frame 0: sleeping...");
         }
 
         // ~60 FPS
-        unsafe { sleep_ms(16); }
+        time::sleep_ms(16);
 
         if frame == 0 {
             println!("Frame 0: complete!");
