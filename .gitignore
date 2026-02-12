@@ -30,6 +30,8 @@ libs/*
 !libs/breenix_std/**
 !libs/libbreenix-libc/
 !libs/libbreenix-libc/**
+!libs/libgfx/
+!libs/libgfx/**
 !libs/libc/
 !libs/libc/**
 

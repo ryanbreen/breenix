@@ -1,126 +1,19 @@
 //! Particle physics simulation for Breenix (std version)
 //!
 //! Bouncing particles with gravity, damping, and collision detection.
+//! Uses mmap'd framebuffer for zero-syscall drawing via libgfx.
 //! Run it from the shell with: particles
 
 use std::process;
 
-/// Framebuffer information structure.
-#[repr(C)]
-struct FbInfo {
-    width: u64,
-    height: u64,
-    stride: u64,
-    bytes_per_pixel: u64,
-    pixel_format: u64,
-}
+use libbreenix::graphics;
+use libbreenix::time;
 
-impl FbInfo {
-    fn zeroed() -> Self {
-        Self {
-            width: 0,
-            height: 0,
-            stride: 0,
-            bytes_per_pixel: 0,
-            pixel_format: 0,
-        }
-    }
-
-    fn left_pane_width(&self) -> u64 {
-        self.width / 2
-    }
-}
-
-/// Draw command structure for sys_fbdraw.
-#[repr(C)]
-struct FbDrawCmd {
-    op: u32,
-    p1: i32,
-    p2: i32,
-    p3: i32,
-    p4: i32,
-    color: u32,
-}
-
-/// Draw operation codes
-mod draw_op {
-    pub const CLEAR: u32 = 0;
-    pub const FILL_CIRCLE: u32 = 3;
-    pub const FLUSH: u32 = 6;
-}
-
-/// Syscall numbers
-const SYS_FBINFO: u64 = 410;
-const SYS_FBDRAW: u64 = 411;
-
-/// Raw syscall1
-#[cfg(target_arch = "x86_64")]
-unsafe fn syscall1(num: u64, arg1: u64) -> u64 {
-    let ret: u64;
-    core::arch::asm!(
-        "int 0x80",
-        in("rax") num,
-        in("rdi") arg1,
-        lateout("rax") ret,
-        options(nostack, preserves_flags),
-    );
-    ret
-}
-
-#[cfg(target_arch = "aarch64")]
-unsafe fn syscall1(num: u64, arg1: u64) -> u64 {
-    let ret: u64;
-    core::arch::asm!(
-        "svc #0",
-        in("x8") num,
-        inlateout("x0") arg1 => ret,
-        options(nostack),
-    );
-    ret
-}
-
-/// Pack RGB color into u32
-#[inline]
-const fn rgb(r: u8, g: u8, b: u8) -> u32 {
-    ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
-}
-
-/// Get framebuffer information
-fn fbinfo() -> Result<FbInfo, i32> {
-    let mut info = FbInfo::zeroed();
-    let result = unsafe { syscall1(SYS_FBINFO, &mut info as *mut FbInfo as u64) };
-    if (result as i64) < 0 {
-        Err(-(result as i64) as i32)
-    } else {
-        Ok(info)
-    }
-}
-
-/// Execute a draw command
-fn fbdraw(cmd: &FbDrawCmd) -> Result<(), i32> {
-    let result = unsafe { syscall1(SYS_FBDRAW, cmd as *const FbDrawCmd as u64) };
-    if (result as i64) < 0 {
-        Err(-(result as i64) as i32)
-    } else {
-        Ok(())
-    }
-}
-
-fn fb_clear(color: u32) -> Result<(), i32> {
-    fbdraw(&FbDrawCmd { op: draw_op::CLEAR, p1: 0, p2: 0, p3: 0, p4: 0, color })
-}
-
-fn fb_fill_circle(cx: i32, cy: i32, radius: i32, color: u32) -> Result<(), i32> {
-    fbdraw(&FbDrawCmd { op: draw_op::FILL_CIRCLE, p1: cx, p2: cy, p3: radius, p4: 0, color })
-}
-
-fn fb_flush() -> Result<(), i32> {
-    fbdraw(&FbDrawCmd { op: draw_op::FLUSH, p1: 0, p2: 0, p3: 0, p4: 0, color: 0 })
-}
-
-extern "C" {
-    fn sleep_ms(ms: u64);
-}
+use libgfx::color::Color;
+use libgfx::font;
+use libgfx::framebuf::FrameBuf;
+use libgfx::math::isqrt_i64;
+use libgfx::shapes;
 
 /// Fixed-point scale factor (8 bits of fractional precision)
 const FP_SCALE: i32 = 256;
@@ -143,13 +36,13 @@ struct Particle {
     vx: i32,
     vy: i32,
     radius: i32,
-    color: u32,
+    color: Color,
     mass: i32,
     trail: u8,
 }
 
 impl Particle {
-    fn new(x: i32, y: i32, radius: i32, color: u32) -> Self {
+    fn new(x: i32, y: i32, radius: i32, color: Color) -> Self {
         Self {
             x: to_fp(x),
             y: to_fp(y),
@@ -205,17 +98,17 @@ struct ParticleSystem {
     count: usize,
     bounds: (i32, i32, i32, i32),
     config: Config,
-    bg_color: u32,
+    bg_color: Color,
 }
 
 impl ParticleSystem {
     fn new(left: i32, top: i32, right: i32, bottom: i32) -> Self {
         Self {
-            particles: [Particle::new(0, 0, 0, 0); MAX_PARTICLES],
+            particles: [Particle::new(0, 0, 0, Color::BLACK); MAX_PARTICLES],
             count: 0,
             bounds: (left, top, right, bottom),
             config: Config::default_config(),
-            bg_color: rgb(15, 20, 35),
+            bg_color: Color::rgb(15, 20, 35),
         }
     }
 
@@ -251,7 +144,8 @@ impl ParticleSystem {
         // Phase 5: Update trail effects
         for i in 0..self.count {
             let p = &mut self.particles[i];
-            let speed = isqrt((p.vx * p.vx + p.vy * p.vy) as u32);
+            let speed_sq = (p.vx as i64) * (p.vx as i64) + (p.vy as i64) * (p.vy as i64);
+            let speed = isqrt_i64(speed_sq) as u32;
             p.trail = (speed.min(255) as u8).saturating_mul(2).min(255);
         }
     }
@@ -314,7 +208,7 @@ impl ParticleSystem {
                 let min_dist_sq = min_dist * min_dist;
 
                 if dist_sq < min_dist_sq && dist_sq > 0 {
-                    let dist = isqrt(dist_sq as u32) as i32 * 16;
+                    let dist = isqrt_i64(dist_sq as i64) as i32 * 16;
                     if dist == 0 {
                         continue;
                     }
@@ -329,7 +223,8 @@ impl ParticleSystem {
 
                     if dvn > 0 {
                         let total_mass = p1_m + p2_m;
-                        let impulse = (dvn * self.config.restitution * 2) / (FP_SCALE * total_mass / p1_m);
+                        let impulse = (dvn * self.config.restitution * 2)
+                            / (FP_SCALE * total_mass / p1_m);
 
                         let impulse1 = (impulse * p2_m) / total_mass;
                         let impulse2 = (impulse * p1_m) / total_mass;
@@ -354,10 +249,8 @@ impl ParticleSystem {
         }
     }
 
-    fn render(&self) {
-        let (left, top, _right, _bottom) = self.bounds;
-
-        let _ = fb_clear(self.bg_color);
+    fn render(&self, fb: &mut FrameBuf) {
+        fb.clear(self.bg_color);
 
         for i in 0..self.count {
             let p = &self.particles[i];
@@ -368,47 +261,46 @@ impl ParticleSystem {
             if p.trail > 30 {
                 let glow_radius = p.radius + 3;
                 let glow_intensity = p.trail / 4;
-                let (r, g, b) = unpack_rgb(p.color);
-                let glow_color = rgb(
-                    ((r as u16 * glow_intensity as u16) / 255) as u8,
-                    ((g as u16 * glow_intensity as u16) / 255) as u8,
-                    ((b as u16 * glow_intensity as u16) / 255) as u8,
+                let glow_color = Color::rgb(
+                    ((p.color.r as u16 * glow_intensity as u16) / 255) as u8,
+                    ((p.color.g as u16 * glow_intensity as u16) / 255) as u8,
+                    ((p.color.b as u16 * glow_intensity as u16) / 255) as u8,
                 );
-                let _ = fb_fill_circle(px, py, glow_radius, glow_color);
+                shapes::fill_circle(fb, px, py, glow_radius, glow_color);
             }
 
             // Draw main particle
-            let _ = fb_fill_circle(px, py, p.radius, p.color);
+            shapes::fill_circle(fb, px, py, p.radius, p.color);
 
             // Draw highlight (small white dot for 3D effect)
             if p.radius > 6 {
                 let highlight_x = px - p.radius / 3;
                 let highlight_y = py - p.radius / 3;
                 let highlight_r = (p.radius / 4).max(2);
-                let _ = fb_fill_circle(highlight_x, highlight_y, highlight_r, rgb(255, 255, 255));
+                shapes::fill_circle(fb, highlight_x, highlight_y, highlight_r, Color::WHITE);
             }
         }
 
         // Draw boundary indicator
-        let _ = fb_fill_circle(left + 5, top + 5, 3, rgb(100, 100, 100));
+        let (left, top, _, _) = self.bounds;
+        shapes::fill_circle(fb, left + 5, top + 5, 3, Color::rgb(100, 100, 100));
     }
 
     fn spawn_demo_particles(&mut self) {
         let (left, top, right, bottom) = self.bounds;
         let width = right - left;
-        let _height = bottom - top;
         let cx = left + width / 2;
         let cy = top + (bottom - top) / 3;
 
         let colors = [
-            rgb(255, 100, 100),  // Coral red
-            rgb(100, 255, 150),  // Mint green
-            rgb(100, 150, 255),  // Sky blue
-            rgb(255, 200, 100),  // Golden yellow
-            rgb(255, 100, 255),  // Magenta
-            rgb(100, 255, 255),  // Cyan
-            rgb(255, 150, 100),  // Orange
-            rgb(200, 100, 255),  // Purple
+            Color::rgb(255, 100, 100), // Coral red
+            Color::rgb(100, 255, 150), // Mint green
+            Color::rgb(100, 150, 255), // Sky blue
+            Color::rgb(255, 200, 100), // Golden yellow
+            Color::rgb(255, 100, 255), // Magenta
+            Color::rgb(100, 255, 255), // Cyan
+            Color::rgb(255, 150, 100), // Orange
+            Color::rgb(200, 100, 255), // Purple
         ];
 
         let num_particles: i32 = 12;
@@ -432,43 +324,23 @@ impl ParticleSystem {
         }
 
         self.add(
-            Particle::new(cx - 60, cy - 80, 20, rgb(255, 220, 100)).with_velocity(150, -400),
+            Particle::new(cx - 60, cy - 80, 20, Color::rgb(255, 220, 100))
+                .with_velocity(150, -400),
         );
         self.add(
-            Particle::new(cx + 60, cy - 80, 18, rgb(100, 200, 255)).with_velocity(-150, -350),
+            Particle::new(cx + 60, cy - 80, 18, Color::rgb(100, 200, 255))
+                .with_velocity(-150, -350),
         );
     }
-}
-
-/// Integer square root
-fn isqrt(n: u32) -> u32 {
-    if n == 0 {
-        return 0;
-    }
-    let mut x = n;
-    let mut y = (x + 1) / 2;
-    while y < x {
-        x = y;
-        y = (x + n / x) / 2;
-    }
-    x
-}
-
-/// Unpack RGB color
-fn unpack_rgb(color: u32) -> (u8, u8, u8) {
-    let r = ((color >> 16) & 0xFF) as u8;
-    let g = ((color >> 8) & 0xFF) as u8;
-    let b = (color & 0xFF) as u8;
-    (r, g, b)
 }
 
 /// Simple sin/cos lookup table (256 entries = full circle)
 fn sin_cos_table(angle: usize) -> (i32, i32) {
     const SIN_TABLE: [i32; 64] = [
-        0, 6, 13, 19, 25, 31, 37, 44, 50, 56, 62, 68, 74, 80, 86, 92, 97, 103, 109, 114, 120, 125,
-        131, 136, 141, 147, 152, 157, 162, 166, 171, 176, 180, 185, 189, 193, 197, 201, 205, 209,
-        212, 216, 219, 222, 225, 228, 231, 233, 236, 238, 240, 242, 244, 246, 247, 249, 250, 251,
-        252, 253, 254, 254, 255, 255,
+        0, 6, 13, 19, 25, 31, 37, 44, 50, 56, 62, 68, 74, 80, 86, 92, 97, 103, 109, 114, 120,
+        125, 131, 136, 141, 147, 152, 157, 162, 166, 171, 176, 180, 185, 189, 193, 197, 201, 205,
+        209, 212, 216, 219, 222, 225, 228, 231, 233, 236, 238, 240, 242, 244, 246, 247, 249, 250,
+        251, 252, 253, 254, 254, 255, 255,
     ];
 
     let angle = angle & 0xFF;
@@ -485,11 +357,79 @@ fn sin_cos_table(angle: usize) -> (i32, i32) {
     (sin_val, cos_val)
 }
 
+// ---------------------------------------------------------------------------
+// FPS counter
+// ---------------------------------------------------------------------------
+
+fn clock_monotonic_ns() -> u64 {
+    let ts = time::now_monotonic();
+    (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
+}
+
+struct FpsCounter {
+    last_time_ns: u64,
+    frame_count: u32,
+    display_fps: u32,
+}
+
+impl FpsCounter {
+    fn new() -> Self {
+        Self {
+            last_time_ns: clock_monotonic_ns(),
+            frame_count: 0,
+            display_fps: 0,
+        }
+    }
+
+    fn tick(&mut self) {
+        self.frame_count += 1;
+        if self.frame_count >= 16 {
+            let now = clock_monotonic_ns();
+            let elapsed = now.saturating_sub(self.last_time_ns);
+            if elapsed > 0 {
+                self.display_fps =
+                    (self.frame_count as u64 * 1_000_000_000 / elapsed) as u32;
+            }
+            self.frame_count = 0;
+            self.last_time_ns = now;
+        }
+    }
+
+    fn draw(&self, fb: &mut FrameBuf) {
+        let y = fb.height.saturating_sub(20);
+        let mut buf = [b' '; 12];
+        buf[0] = b'F';
+        buf[1] = b'P';
+        buf[2] = b'S';
+        buf[3] = b':';
+        buf[4] = b' ';
+
+        let mut fps = self.display_fps;
+        if fps == 0 {
+            buf[5] = b'0';
+        } else {
+            let mut pos = 8;
+            while fps > 0 && pos >= 5 {
+                buf[pos] = b'0' + (fps % 10) as u8;
+                fps /= 10;
+                if pos == 0 {
+                    break;
+                }
+                pos -= 1;
+            }
+        }
+        font::draw_text(fb, &buf, 8, y, Color::GRAY, 2);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
 fn main() {
     println!("Particle Physics Simulation starting...");
 
-    // Get framebuffer info
-    let info = match fbinfo() {
+    let info = match graphics::fbinfo() {
         Ok(info) => info,
         Err(e) => {
             println!("Error: Could not get framebuffer info");
@@ -499,47 +439,50 @@ fn main() {
 
     let width = info.left_pane_width() as i32;
     let height = info.height as i32;
+    let bpp = info.bytes_per_pixel as usize;
+
+    let fb_ptr = match graphics::fb_mmap() {
+        Ok(ptr) => ptr,
+        Err(e) => {
+            println!("Error: Could not mmap framebuffer ({})", e);
+            process::exit(e);
+        }
+    };
+
+    let mut fb = unsafe {
+        FrameBuf::from_raw(
+            fb_ptr,
+            width as usize,
+            height as usize,
+            (width as usize) * bpp,
+            bpp,
+            info.is_bgr(),
+        )
+    };
 
     println!("Creating particle system...");
 
     let mut system = ParticleSystem::new(0, 0, width, height);
     system.spawn_demo_particles();
 
-    println!("Starting animation loop...");
+    println!("Starting animation loop (mmap mode)...");
 
-    let mut frame = 0u32;
+    let mut fps = FpsCounter::new();
 
-    // Animation loop
     loop {
-        if frame == 0 {
-            println!("Frame 0: updating...");
-        }
-
         system.update();
+        system.render(&mut fb);
 
-        if frame == 0 {
-            println!("Frame 0: rendering...");
-        }
+        fps.tick();
+        fps.draw(&mut fb);
 
-        system.render();
-
-        if frame == 0 {
-            println!("Frame 0: flushing...");
-        }
-
-        let _ = fb_flush();
-
-        if frame == 0 {
-            println!("Frame 0: sleeping...");
+        if let Some(dirty) = fb.take_dirty() {
+            let _ = graphics::fb_flush_rect(dirty.x, dirty.y, dirty.w, dirty.h);
+        } else {
+            let _ = graphics::fb_flush();
         }
 
         // ~60 FPS
-        unsafe { sleep_ms(16); }
-
-        if frame == 0 {
-            println!("Frame 0: complete!");
-        }
-
-        frame = frame.wrapping_add(1);
+        time::sleep_ms(16);
     }
 }

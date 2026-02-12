@@ -1,141 +1,18 @@
 //! Animated graphics demo for Breenix (std version)
 //!
-//! This program draws animated graphics on the left pane of the screen.
+//! Draws rotating lines, bouncing balls, pulsing rectangles, and wave patterns.
+//! Uses mmap'd framebuffer for zero-syscall drawing via libgfx.
 //! Run it from the shell with: demo
 
 use std::process;
 
-/// Framebuffer information structure.
-#[repr(C)]
-struct FbInfo {
-    width: u64,
-    height: u64,
-    stride: u64,
-    bytes_per_pixel: u64,
-    pixel_format: u64,
-}
+use libbreenix::graphics;
+use libbreenix::time;
 
-impl FbInfo {
-    fn zeroed() -> Self {
-        Self {
-            width: 0,
-            height: 0,
-            stride: 0,
-            bytes_per_pixel: 0,
-            pixel_format: 0,
-        }
-    }
-
-    fn left_pane_width(&self) -> u64 {
-        self.width / 2
-    }
-}
-
-/// Draw command structure for sys_fbdraw.
-#[repr(C)]
-struct FbDrawCmd {
-    op: u32,
-    p1: i32,
-    p2: i32,
-    p3: i32,
-    p4: i32,
-    color: u32,
-}
-
-/// Draw operation codes
-mod draw_op {
-    pub const CLEAR: u32 = 0;
-    pub const FILL_RECT: u32 = 1;
-    pub const DRAW_RECT: u32 = 2;
-    pub const FILL_CIRCLE: u32 = 3;
-    pub const DRAW_LINE: u32 = 5;
-    pub const FLUSH: u32 = 6;
-}
-
-/// Syscall numbers
-const SYS_FBINFO: u64 = 410;
-const SYS_FBDRAW: u64 = 411;
-
-/// Raw syscall1
-#[cfg(target_arch = "x86_64")]
-unsafe fn syscall1(num: u64, arg1: u64) -> u64 {
-    let ret: u64;
-    core::arch::asm!(
-        "int 0x80",
-        in("rax") num,
-        in("rdi") arg1,
-        lateout("rax") ret,
-        options(nostack, preserves_flags),
-    );
-    ret
-}
-
-#[cfg(target_arch = "aarch64")]
-unsafe fn syscall1(num: u64, arg1: u64) -> u64 {
-    let ret: u64;
-    core::arch::asm!(
-        "svc #0",
-        in("x8") num,
-        inlateout("x0") arg1 => ret,
-        options(nostack),
-    );
-    ret
-}
-
-/// Pack RGB color into u32
-#[inline]
-const fn rgb(r: u8, g: u8, b: u8) -> u32 {
-    ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
-}
-
-/// Get framebuffer information
-fn fbinfo() -> Result<FbInfo, i32> {
-    let mut info = FbInfo::zeroed();
-    let result = unsafe { syscall1(SYS_FBINFO, &mut info as *mut FbInfo as u64) };
-    if (result as i64) < 0 {
-        Err(-(result as i64) as i32)
-    } else {
-        Ok(info)
-    }
-}
-
-/// Execute a draw command
-fn fbdraw(cmd: &FbDrawCmd) -> Result<(), i32> {
-    let result = unsafe { syscall1(SYS_FBDRAW, cmd as *const FbDrawCmd as u64) };
-    if (result as i64) < 0 {
-        Err(-(result as i64) as i32)
-    } else {
-        Ok(())
-    }
-}
-
-fn fb_clear(color: u32) -> Result<(), i32> {
-    fbdraw(&FbDrawCmd { op: draw_op::CLEAR, p1: 0, p2: 0, p3: 0, p4: 0, color })
-}
-
-fn fb_fill_rect(x: i32, y: i32, width: i32, height: i32, color: u32) -> Result<(), i32> {
-    fbdraw(&FbDrawCmd { op: draw_op::FILL_RECT, p1: x, p2: y, p3: width, p4: height, color })
-}
-
-fn fb_draw_rect(x: i32, y: i32, width: i32, height: i32, color: u32) -> Result<(), i32> {
-    fbdraw(&FbDrawCmd { op: draw_op::DRAW_RECT, p1: x, p2: y, p3: width, p4: height, color })
-}
-
-fn fb_fill_circle(cx: i32, cy: i32, radius: i32, color: u32) -> Result<(), i32> {
-    fbdraw(&FbDrawCmd { op: draw_op::FILL_CIRCLE, p1: cx, p2: cy, p3: radius, p4: 0, color })
-}
-
-fn fb_draw_line(x1: i32, y1: i32, x2: i32, y2: i32, color: u32) -> Result<(), i32> {
-    fbdraw(&FbDrawCmd { op: draw_op::DRAW_LINE, p1: x1, p2: y1, p3: x2, p4: y2, color })
-}
-
-fn fb_flush() -> Result<(), i32> {
-    fbdraw(&FbDrawCmd { op: draw_op::FLUSH, p1: 0, p2: 0, p3: 0, p4: 0, color: 0 })
-}
-
-extern "C" {
-    fn sleep_ms(ms: u64);
-}
+use libgfx::color::Color;
+use libgfx::font;
+use libgfx::framebuf::FrameBuf;
+use libgfx::shapes;
 
 /// Pre-computed sine table (0-359 degrees, scaled by 1000)
 const SIN_TABLE: [i32; 360] = [
@@ -180,11 +57,11 @@ struct Ball {
     vx: i32,
     vy: i32,
     radius: i32,
-    color: u32,
+    color: Color,
 }
 
 impl Ball {
-    fn new(x: i32, y: i32, vx: i32, vy: i32, radius: i32, color: u32) -> Self {
+    fn new(x: i32, y: i32, vx: i32, vy: i32, radius: i32, color: Color) -> Self {
         Self { x, y, vx, vy, radius, color }
     }
 
@@ -210,13 +87,28 @@ impl Ball {
         }
     }
 
-    fn draw(&self) {
-        let _ = fb_fill_circle(self.x, self.y, self.radius, self.color);
+    fn draw(&self, fb: &mut FrameBuf) {
+        shapes::fill_circle(fb, self.x, self.y, self.radius, self.color);
+    }
+}
+
+/// Convert hue (0-359) to RGB color
+fn hue_to_rgb(hue: u32) -> Color {
+    let h = hue % 360;
+    let x = (255 * (60 - (h % 60).min(60 - (h % 60)))) / 60;
+
+    match h / 60 {
+        0 => Color::rgb(255, x as u8, 0),
+        1 => Color::rgb(x as u8, 255, 0),
+        2 => Color::rgb(0, 255, x as u8),
+        3 => Color::rgb(0, x as u8, 255),
+        4 => Color::rgb(x as u8, 0, 255),
+        _ => Color::rgb(255, 0, x as u8),
     }
 }
 
 /// Draw rotating lines from center
-fn draw_rotating_lines(cx: i32, cy: i32, radius: i32, angle: i32, num_lines: i32) {
+fn draw_rotating_lines(fb: &mut FrameBuf, cx: i32, cy: i32, radius: i32, angle: i32, num_lines: i32) {
     for i in 0..num_lines {
         let a = angle + (i * 360 / num_lines);
         let x2 = cx + (radius * cos(a)) / 1000;
@@ -224,56 +116,109 @@ fn draw_rotating_lines(cx: i32, cy: i32, radius: i32, angle: i32, num_lines: i32
 
         let hue = ((a % 360) + 360) % 360;
         let color = hue_to_rgb(hue as u32);
-        let _ = fb_draw_line(cx, cy, x2, y2, color);
-    }
-}
-
-/// Convert hue (0-359) to RGB color
-fn hue_to_rgb(hue: u32) -> u32 {
-    let h = hue % 360;
-    let x = (255 * (60 - (h % 60).min(60 - (h % 60)))) / 60;
-
-    match h / 60 {
-        0 => rgb(255, x as u8, 0),
-        1 => rgb(x as u8, 255, 0),
-        2 => rgb(0, 255, x as u8),
-        3 => rgb(0, x as u8, 255),
-        4 => rgb(x as u8, 0, 255),
-        _ => rgb(255, 0, x as u8),
+        shapes::draw_line(fb, cx, cy, x2, y2, color);
     }
 }
 
 /// Draw pulsing rectangles
-fn draw_pulsing_rects(cx: i32, cy: i32, frame: i32) {
+fn draw_pulsing_rects(fb: &mut FrameBuf, cx: i32, cy: i32, frame: i32) {
     let pulse = (sin(frame * 3) + 1000) / 20;
 
     for i in 0..5 {
         let size = 20 + i * 15 + pulse / 5;
         let alpha = 255 - i * 40;
-        let color = rgb(alpha as u8, (100 + i * 30) as u8, (200 - i * 20) as u8);
-        let _ = fb_draw_rect(cx - size, cy - size, size * 2, size * 2, color);
+        let color = Color::rgb(alpha as u8, (100 + i * 30) as u8, (200 - i * 20) as u8);
+        shapes::draw_rect(fb, cx - size, cy - size, size * 2, size * 2, color);
     }
 }
 
 /// Draw wave pattern
-fn draw_wave(y_base: i32, width: i32, frame: i32, color: u32) {
+fn draw_wave(fb: &mut FrameBuf, y_base: i32, width: i32, frame: i32, color: Color) {
     let mut prev_y = y_base + (sin(frame) * 30) / 1000;
 
     let mut x = 0;
     while x < width {
         let phase = frame + x * 2;
         let y = y_base + (sin(phase) * 30) / 1000;
-        let _ = fb_draw_line(x - 4, prev_y, x, y, color);
+        shapes::draw_line(fb, x - 4, prev_y, x, y, color);
         prev_y = y;
         x += 4;
     }
 }
 
+// ---------------------------------------------------------------------------
+// FPS counter
+// ---------------------------------------------------------------------------
+
+fn clock_monotonic_ns() -> u64 {
+    let ts = time::now_monotonic();
+    (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
+}
+
+struct FpsCounter {
+    last_time_ns: u64,
+    frame_count: u32,
+    display_fps: u32,
+}
+
+impl FpsCounter {
+    fn new() -> Self {
+        Self {
+            last_time_ns: clock_monotonic_ns(),
+            frame_count: 0,
+            display_fps: 0,
+        }
+    }
+
+    fn tick(&mut self) {
+        self.frame_count += 1;
+        if self.frame_count >= 16 {
+            let now = clock_monotonic_ns();
+            let elapsed = now.saturating_sub(self.last_time_ns);
+            if elapsed > 0 {
+                self.display_fps =
+                    (self.frame_count as u64 * 1_000_000_000 / elapsed) as u32;
+            }
+            self.frame_count = 0;
+            self.last_time_ns = now;
+        }
+    }
+
+    fn draw(&self, fb: &mut FrameBuf) {
+        let y = fb.height.saturating_sub(20);
+        let mut buf = [b' '; 12];
+        buf[0] = b'F';
+        buf[1] = b'P';
+        buf[2] = b'S';
+        buf[3] = b':';
+        buf[4] = b' ';
+
+        let mut fps = self.display_fps;
+        if fps == 0 {
+            buf[5] = b'0';
+        } else {
+            let mut pos = 8;
+            while fps > 0 && pos >= 5 {
+                buf[pos] = b'0' + (fps % 10) as u8;
+                fps /= 10;
+                if pos == 0 {
+                    break;
+                }
+                pos -= 1;
+            }
+        }
+        font::draw_text(fb, &buf, 8, y, Color::GRAY, 2);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
 fn main() {
     println!("Breenix Graphics Demo starting...");
 
-    // Get framebuffer info
-    let info = match fbinfo() {
+    let info = match graphics::fbinfo() {
         Ok(info) => info,
         Err(e) => {
             println!("Error: Could not get framebuffer info");
@@ -283,52 +228,79 @@ fn main() {
 
     let width = info.left_pane_width() as i32;
     let height = info.height as i32;
+    let bpp = info.bytes_per_pixel as usize;
 
-    println!("Starting animation loop...");
+    let fb_ptr = match graphics::fb_mmap() {
+        Ok(ptr) => ptr,
+        Err(e) => {
+            println!("Error: Could not mmap framebuffer ({})", e);
+            process::exit(e);
+        }
+    };
 
-    // Create bouncing balls
+    let mut fb = unsafe {
+        FrameBuf::from_raw(
+            fb_ptr,
+            width as usize,
+            height as usize,
+            (width as usize) * bpp,
+            bpp,
+            info.is_bgr(),
+        )
+    };
+
+    println!("Starting animation loop (mmap mode)...");
+
     let mut balls = [
-        Ball::new(100, 100, 3, 2, 20, rgb(255, 100, 100)),
-        Ball::new(200, 150, -2, 3, 15, rgb(100, 255, 100)),
-        Ball::new(150, 200, 2, -2, 25, rgb(100, 100, 255)),
-        Ball::new(300, 100, -3, -2, 18, rgb(255, 255, 100)),
+        Ball::new(100, 100, 3, 2, 20, Color::rgb(255, 100, 100)),
+        Ball::new(200, 150, -2, 3, 15, Color::rgb(100, 255, 100)),
+        Ball::new(150, 200, 2, -2, 25, Color::rgb(100, 100, 255)),
+        Ball::new(300, 100, -3, -2, 18, Color::rgb(255, 255, 100)),
     ];
 
     let mut frame = 0i32;
     let center_x = width / 2;
     let center_y = height / 2;
+    let bg = Color::rgb(10, 20, 40);
 
-    // Animation loop
+    let mut fps = FpsCounter::new();
+
     loop {
-        // Clear to dark blue
-        let _ = fb_clear(rgb(10, 20, 40));
+        fb.clear(bg);
 
         // Draw rotating lines in center
-        draw_rotating_lines(center_x, center_y - 100, 80, frame * 2, 12);
+        draw_rotating_lines(&mut fb, center_x, center_y - 100, 80, frame * 2, 12);
 
         // Draw pulsing rectangles
-        draw_pulsing_rects(center_x, center_y + 150, frame);
+        draw_pulsing_rects(&mut fb, center_x, center_y + 150, frame);
 
         // Draw wave patterns
-        draw_wave(height - 100, width, frame * 3, rgb(0, 150, 255));
-        draw_wave(height - 130, width, frame * 3 + 60, rgb(0, 200, 150));
-        draw_wave(height - 160, width, frame * 3 + 120, rgb(100, 100, 255));
+        draw_wave(&mut fb, height - 100, width, frame * 3, Color::rgb(0, 150, 255));
+        draw_wave(&mut fb, height - 130, width, frame * 3 + 60, Color::rgb(0, 200, 150));
+        draw_wave(&mut fb, height - 160, width, frame * 3 + 120, Color::rgb(100, 100, 255));
 
         // Update and draw bouncing balls
         for ball in balls.iter_mut() {
             ball.update(width, height);
-            ball.draw();
+            ball.draw(&mut fb);
         }
 
         // Draw frame counter (simple rectangle indicator)
         let indicator_width = (frame % 100) * 2;
-        let _ = fb_fill_rect(10, 10, indicator_width, 5, rgb(255, 255, 255));
+        shapes::fill_rect(&mut fb, 10, 10, indicator_width, 5, Color::WHITE);
 
-        // Flush to screen
-        let _ = fb_flush();
+        fps.tick();
+        fps.draw(&mut fb);
+
+        // Flush only the dirty region
+        if let Some(dirty) = fb.take_dirty() {
+            let _ = graphics::fb_flush_rect(dirty.x, dirty.y, dirty.w, dirty.h);
+        } else {
+            let _ = graphics::fb_flush();
+        }
 
         // Small delay for animation timing
-        unsafe { sleep_ms(16); } // ~60 FPS
+        time::sleep_ms(16); // ~60 FPS
 
         frame = frame.wrapping_add(1);
     }

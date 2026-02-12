@@ -8,7 +8,8 @@ description = "Userspace test programs and utilities for Breenix"
 # It links against libbreenix-libc (libc.a) for system calls
 
 [dependencies]
-# No dependencies - we use pure std!
+libbreenix = { path = "../../libs/libbreenix" }
+libgfx = { path = "../../libs/libgfx" }
 
 [[bin]]
 name = "hello_std_real"
