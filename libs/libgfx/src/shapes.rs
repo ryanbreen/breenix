@@ -115,3 +115,62 @@ pub fn draw_rect(fb: &mut FrameBuf, x: i32, y: i32, w: i32, h: i32, color: Color
     // Right edge
     fill_rect(fb, x + w - 1, y, 1, h, color);
 }
+
+/// Draw a line from (x0, y0) to (x1, y1) using Bresenham's algorithm.
+pub fn draw_line(fb: &mut FrameBuf, x0: i32, y0: i32, x1: i32, y1: i32, color: Color) {
+    let (c0, c1, c2) = if fb.is_bgr {
+        (color.b, color.g, color.r)
+    } else {
+        (color.r, color.g, color.b)
+    };
+    let w = fb.width as i32;
+    let h = fb.height as i32;
+    let ptr = fb.raw_ptr();
+    let stride = fb.stride;
+    let bpp = fb.bpp;
+
+    let dx = (x1 - x0).abs();
+    let dy = -(y1 - y0).abs();
+    let sx: i32 = if x0 < x1 { 1 } else { -1 };
+    let sy: i32 = if y0 < y1 { 1 } else { -1 };
+    let mut err = dx + dy;
+    let mut cx = x0;
+    let mut cy = y0;
+
+    loop {
+        // Plot pixel if in bounds
+        if cx >= 0 && cx < w && cy >= 0 && cy < h {
+            let o = (cy as usize) * stride + (cx as usize) * bpp;
+            unsafe {
+                *ptr.add(o) = c0;
+                *ptr.add(o + 1) = c1;
+                *ptr.add(o + 2) = c2;
+                if bpp == 4 {
+                    *ptr.add(o + 3) = 0;
+                }
+            }
+        }
+
+        if cx == x1 && cy == y1 {
+            break;
+        }
+        let e2 = 2 * err;
+        if e2 >= dy {
+            err += dy;
+            cx += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            cy += sy;
+        }
+    }
+
+    // Mark bounding box dirty
+    let min_x = x0.min(x1).max(0);
+    let min_y = y0.min(y1).max(0);
+    let max_x = (x0.max(x1) + 1).min(w);
+    let max_y = (y0.max(y1) + 1).min(h);
+    if max_x > min_x && max_y > min_y {
+        fb.mark_dirty(min_x, min_y, max_x - min_x, max_y - min_y);
+    }
+}
