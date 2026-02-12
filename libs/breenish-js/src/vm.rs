@@ -18,6 +18,22 @@ const MAX_STACK_SIZE: usize = 4096;
 /// Maximum call depth.
 const MAX_CALL_DEPTH: usize = 256;
 
+/// What kind of function call to perform.
+enum CallKind {
+    /// JavaScript function (func_index, optional closure object).
+    Js(usize, Option<u32>),
+    /// Native function (native_index).
+    Native(u32),
+}
+
+/// Result of executing one VM step.
+enum StepResult {
+    /// Continue to next step.
+    Continue,
+    /// Execution complete; return this value.
+    Return(JsValue),
+}
+
 /// A call frame representing a function invocation.
 #[derive(Debug)]
 struct CallFrame {
@@ -38,8 +54,32 @@ struct Global {
     value: JsValue,
 }
 
+/// An exception handler pushed by TryStart.
+#[derive(Debug)]
+struct ExceptionHandler {
+    /// Bytecode address of the catch block.
+    catch_addr: u16,
+    /// Stack depth when TryStart was executed (to restore on catch).
+    stack_depth: usize,
+    /// Call frame depth when TryStart was executed.
+    frame_depth: usize,
+}
+
 /// Host callback type for print output.
 pub type PrintFn = fn(&str);
+
+/// A native function callable from JavaScript.
+///
+/// Receives the arguments as a slice and access to the string pool and object heap.
+/// Returns a JsResult<JsValue>.
+pub type NativeFn = fn(args: &[JsValue], strings: &mut StringPool, heap: &mut ObjectHeap) -> JsResult<JsValue>;
+
+/// A registered native function entry.
+struct NativeEntry {
+    /// The function name (stored for re-interning across string pools).
+    name_str: String,
+    func: NativeFn,
+}
 
 /// The JavaScript virtual machine.
 pub struct Vm {
@@ -53,6 +93,12 @@ pub struct Vm {
     pub heap: ObjectHeap,
     /// Host print callback.
     print_fn: PrintFn,
+    /// Exception handler stack for try/catch/finally.
+    exception_handlers: Vec<ExceptionHandler>,
+    /// Native function table.
+    native_functions: Vec<NativeEntry>,
+    /// Heap object indices for each native function.
+    native_obj_indices: Vec<u32>,
 }
 
 fn default_print(s: &str) {
@@ -75,12 +121,64 @@ impl Vm {
             globals: Vec::new(),
             heap: ObjectHeap::new(),
             print_fn: default_print,
+            exception_handlers: Vec::new(),
+            native_functions: Vec::new(),
+            native_obj_indices: Vec::new(),
         }
     }
 
     /// Set the host print callback.
     pub fn set_print_fn(&mut self, f: PrintFn) {
         self.print_fn = f;
+    }
+
+    /// Register a native function that can be called from JavaScript.
+    ///
+    /// The function will be available as a global variable with the given name.
+    /// Must be called before `execute()` and the StringPool must be the same
+    /// one used during compilation.
+    /// Register a native function by name.
+    ///
+    /// The function will be available as a global variable with the given name.
+    /// Call `sync_natives` with the compiler's string pool before execution.
+    pub fn register_native(&mut self, name: &str, func: NativeFn) -> u32 {
+        let idx = self.native_functions.len() as u32;
+        // Create a NativeFunction object on the heap
+        let obj = JsObject::new_native_function(idx);
+        let obj_idx = self.heap.alloc(obj);
+        self.native_functions.push(NativeEntry {
+            name_str: String::from(name),
+            func,
+        });
+        // Store the heap object index for later global registration
+        self.native_obj_indices.push(obj_idx);
+        idx
+    }
+
+    /// Re-register native function globals using the given string pool.
+    ///
+    /// This must be called before execution so that global lookups use the
+    /// correct string IDs for the current compilation's string pool.
+    pub fn sync_natives(&mut self, strings: &mut StringPool) {
+        for (entry, &obj_idx) in self.native_functions.iter().zip(self.native_obj_indices.iter()) {
+            let name = strings.intern(&entry.name_str);
+            // Update or add the global
+            let mut found = false;
+            for g in &mut self.globals {
+                // Compare by looking up the string content
+                if g.value == JsValue::object(obj_idx) {
+                    g.name = name;
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                self.globals.push(Global {
+                    name,
+                    value: JsValue::object(obj_idx),
+                });
+            }
+        }
     }
 
     /// Execute a compiled program.
@@ -160,35 +258,54 @@ impl Vm {
         functions: &[CodeBlock],
     ) -> JsResult<JsValue> {
         loop {
-            let fi = self.frames.len() - 1;
-            let code = self.get_code(fi, main, functions);
-
-            if self.frames[fi].ip >= code.code.len() {
-                if self.frames.len() == 1 {
-                    return Ok(if self.stack.is_empty() {
-                        JsValue::undefined()
-                    } else {
-                        *self.stack.last().unwrap()
-                    });
+            let result = self.run_step(main, strings, functions);
+            match result {
+                Ok(StepResult::Continue) => continue,
+                Ok(StepResult::Return(val)) => return Ok(val),
+                Err(err) => {
+                    // Try to route the error through an exception handler
+                    self.handle_runtime_error(err, strings)?;
+                    // If handle_runtime_error returned Ok, we caught it; continue
                 }
-                let result = self.stack.pop().unwrap_or(JsValue::undefined());
-                let old_base = self.frames[fi].base;
-                self.frames.pop();
-                self.stack.truncate(old_base);
-                self.stack.push(result);
-                continue;
             }
+        }
+    }
 
-            let op_byte = self.read_byte(code);
+    fn run_step(
+        &mut self,
+        main: &CodeBlock,
+        strings: &mut StringPool,
+        functions: &[CodeBlock],
+    ) -> Result<StepResult, JsError> {
+        let fi = self.frames.len() - 1;
+        let code = self.get_code(fi, main, functions);
 
-            let Some(op) = Op::from_byte(op_byte) else {
-                return Err(JsError::internal(alloc::format!(
-                    "unknown opcode 0x{:02x}",
-                    op_byte
-                )));
-            };
+        if self.frames[fi].ip >= code.code.len() {
+            if self.frames.len() == 1 {
+                return Ok(StepResult::Return(if self.stack.is_empty() {
+                    JsValue::undefined()
+                } else {
+                    *self.stack.last().unwrap()
+                }));
+            }
+            let result = self.stack.pop().unwrap_or(JsValue::undefined());
+            let old_base = self.frames[fi].base;
+            self.frames.pop();
+            self.stack.truncate(old_base);
+            self.stack.push(result);
+            return Ok(StepResult::Continue);
+        }
 
-            match op {
+        let op_byte = self.read_byte(code);
+
+        let Some(op) = Op::from_byte(op_byte) else {
+            return Err(JsError::internal(alloc::format!(
+                "unknown opcode 0x{:02x}",
+                op_byte
+            )));
+        };
+
+        match op {
                 Op::LoadConst => {
                     let idx = self.read_u16_advance(code) as usize;
                     let value = match &code.constants[idx] {
@@ -357,7 +474,7 @@ impl Vm {
                     let type_name = if a.is_object() {
                         // Check if it's a function or closure
                         if let Some(obj) = self.heap.get(a.as_object_index()) {
-                            if matches!(obj.kind, ObjectKind::Function(_) | ObjectKind::Closure(_, _)) {
+                            if matches!(obj.kind, ObjectKind::Function(_) | ObjectKind::Closure(_, _) | ObjectKind::NativeFunction(_)) {
                                 "function"
                             } else {
                                 "object"
@@ -395,14 +512,14 @@ impl Vm {
 
                 Op::Call => {
                     let argc = self.read_u8_advance(code) as usize;
-                    self.do_call(argc, functions)?;
+                    self.do_call(argc, strings, functions)?;
                 }
 
                 Op::Return => {
                     let result = self.pop();
 
                     if self.frames.len() <= 1 {
-                        return Ok(result);
+                        return Ok(StepResult::Return(result));
                     }
 
                     let old_frame = self.frames.pop().unwrap();
@@ -601,7 +718,7 @@ impl Vm {
                                     for arg in &args {
                                         self.push(*arg)?;
                                     }
-                                    self.do_call(args.len(), functions)?;
+                                    self.do_call(args.len(), strings, functions)?;
                                     // Result will be placed by the run loop
                                 } else {
                                     return Err(JsError::type_error(alloc::format!(
@@ -700,19 +817,71 @@ impl Vm {
                     }
                 }
 
+                Op::TryStart => {
+                    let catch_addr = self.read_u16_advance(code);
+                    let _finally_addr = self.read_u16_advance(code);
+                    self.exception_handlers.push(ExceptionHandler {
+                        catch_addr,
+                        stack_depth: self.stack.len(),
+                        frame_depth: self.frames.len(),
+                    });
+                }
+
+                Op::TryEnd => {
+                    self.exception_handlers.pop();
+                }
+
+                Op::Throw => {
+                    let error_val = self.pop();
+                    if let Some(handler) = self.exception_handlers.pop() {
+                        // Restore stack to depth at TryStart
+                        self.stack.truncate(handler.stack_depth);
+                        // Unwind call frames if needed
+                        self.frames.truncate(handler.frame_depth);
+                        // Push error value for catch block
+                        self.push(error_val)?;
+                        // Jump to catch block
+                        self.set_ip(handler.catch_addr as usize);
+                    } else {
+                        // No handler - convert to string and return error
+                        let msg = self.value_to_string(error_val, strings);
+                        return Err(JsError::runtime(msg));
+                    }
+                }
+
+                Op::CallSpread => {
+                    // Stack: [func, args_array]
+                    let args_val = self.pop();
+                    // Expand array elements onto the stack as individual args
+                    let argc = if args_val.is_object() {
+                        let obj = self.heap.get(args_val.as_object_index())
+                            .ok_or_else(|| JsError::type_error("spread: expected array"))?;
+                        let elems: Vec<JsValue> = obj.elements().to_vec();
+                        let count = elems.len();
+                        for elem in elems {
+                            self.push(elem)?;
+                        }
+                        count
+                    } else {
+                        0
+                    };
+                    self.do_call(argc, strings, functions)?;
+                }
+
                 Op::Halt => {
-                    return Ok(if self.stack.is_empty() {
+                    return Ok(StepResult::Return(if self.stack.is_empty() {
                         JsValue::undefined()
                     } else {
                         self.pop()
-                    });
+                    }));
                 }
             }
-        }
+
+            Ok(StepResult::Continue)
     }
 
     /// Execute a function call with argc arguments on the stack.
-    fn do_call(&mut self, argc: usize, functions: &[CodeBlock]) -> JsResult<()> {
+    fn do_call(&mut self, argc: usize, strings: &mut StringPool, functions: &[CodeBlock]) -> JsResult<()> {
         let func_pos = self.stack.len() - argc - 1;
         let func_val = self.stack[func_pos];
 
@@ -721,43 +890,58 @@ impl Vm {
         }
 
         let obj_idx = func_val.as_object_index();
-        let (func_index, closure_obj) = match self.heap.get(obj_idx) {
+        let call_kind = match self.heap.get(obj_idx) {
             Some(obj) => match &obj.kind {
-                ObjectKind::Function(fi) => (*fi as usize, None),
-                ObjectKind::Closure(fi, _) => (*fi as usize, Some(obj_idx)),
+                ObjectKind::Function(fi) => CallKind::Js(*fi as usize, None),
+                ObjectKind::Closure(fi, _) => CallKind::Js(*fi as usize, Some(obj_idx)),
+                ObjectKind::NativeFunction(ni) => CallKind::Native(*ni),
                 _ => return Err(JsError::type_error("not a function")),
             },
             None => return Err(JsError::type_error("not a function")),
         };
 
-        if func_index >= functions.len() {
-            return Err(JsError::internal("invalid function index"));
+        match call_kind {
+            CallKind::Native(native_idx) => {
+                // Collect args and call native function
+                let args: Vec<JsValue> = self.stack[func_pos + 1..].to_vec();
+                // Remove func + args from stack
+                self.stack.truncate(func_pos);
+                let func = self.native_functions[native_idx as usize].func;
+                let result = func(&args, strings, &mut self.heap)?;
+                self.push(result)?;
+                Ok(())
+            }
+            CallKind::Js(func_index, closure_obj) => {
+                if func_index >= functions.len() {
+                    return Err(JsError::internal("invalid function index"));
+                }
+
+                if self.frames.len() >= MAX_CALL_DEPTH {
+                    return Err(JsError::range_error("maximum call stack size exceeded"));
+                }
+
+                let func = &functions[func_index];
+                let needed_locals = func.local_count as usize;
+
+                // Remove the function value from the stack, shifting args down
+                self.stack.remove(func_pos);
+                let base = func_pos;
+
+                // Pad with undefined if fewer args than params
+                while self.stack.len() - base < needed_locals {
+                    self.stack.push(JsValue::undefined());
+                }
+
+                self.frames.push(CallFrame {
+                    func_index,
+                    ip: 0,
+                    base,
+                    closure_obj,
+                });
+
+                Ok(())
+            }
         }
-
-        if self.frames.len() >= MAX_CALL_DEPTH {
-            return Err(JsError::range_error("maximum call stack size exceeded"));
-        }
-
-        let func = &functions[func_index];
-        let needed_locals = func.local_count as usize;
-
-        // Remove the function value from the stack, shifting args down
-        self.stack.remove(func_pos);
-        let base = func_pos;
-
-        // Pad with undefined if fewer args than params
-        while self.stack.len() - base < needed_locals {
-            self.stack.push(JsValue::undefined());
-        }
-
-        self.frames.push(CallFrame {
-            func_index,
-            ip: 0,
-            base,
-            closure_obj,
-        });
-
-        Ok(())
     }
 
     /// Try to call a built-in method on a value. Returns Err if no built-in matches.
@@ -1169,6 +1353,26 @@ impl Vm {
         // Regular property lookup
         let value = obj.get(key_sid);
         Ok(value)
+    }
+
+    /// Handle a runtime error: if there's an active exception handler, route
+    /// the error to its catch block by pushing the error message as a JS value
+    /// and jumping to the catch address. Returns Ok(()) if caught, Err if not.
+    fn handle_runtime_error(
+        &mut self,
+        error: JsError,
+        strings: &mut StringPool,
+    ) -> JsResult<()> {
+        if let Some(handler) = self.exception_handlers.pop() {
+            self.stack.truncate(handler.stack_depth);
+            self.frames.truncate(handler.frame_depth);
+            let msg_id = strings.intern(&error.message);
+            self.stack.push(JsValue::string(msg_id));
+            self.set_ip(handler.catch_addr as usize);
+            Ok(())
+        } else {
+            Err(error)
+        }
     }
 
     fn push(&mut self, value: JsValue) -> JsResult<()> {

@@ -33,6 +33,8 @@ pub enum ObjectKind {
     Function(u32),
     /// A closure (function index + captured upvalue values).
     Closure(u32, Vec<JsValue>),
+    /// A native function (index into native function table).
+    NativeFunction(u32),
 }
 
 /// A JavaScript object with named properties and optional indexed storage.
@@ -77,6 +79,17 @@ impl JsObject {
     pub fn new_function(func_index: u32) -> Self {
         Self {
             kind: ObjectKind::Function(func_index),
+            properties: Vec::new(),
+            elements: Vec::new(),
+            prototype: None,
+            marked: false,
+        }
+    }
+
+    /// Create a new native function object.
+    pub fn new_native_function(native_index: u32) -> Self {
+        Self {
+            kind: ObjectKind::NativeFunction(native_index),
             properties: Vec::new(),
             elements: Vec::new(),
             prototype: None,

@@ -125,6 +125,8 @@ impl<'a> Compiler<'a> {
             TokenKind::Return => self.compile_return_statement()?,
             TokenKind::Break => self.compile_break_statement()?,
             TokenKind::Continue => self.compile_continue_statement()?,
+            TokenKind::Try => self.compile_try_statement()?,
+            TokenKind::Throw => self.compile_throw_statement()?,
             TokenKind::LeftBrace => self.compile_block()?,
             TokenKind::Semicolon => {
                 self.lexer.next_token();
@@ -137,6 +139,14 @@ impl<'a> Compiler<'a> {
     fn compile_variable_declaration(&mut self) -> JsResult<()> {
         let is_const = self.lexer.peek().kind == TokenKind::Const;
         self.lexer.next_token(); // consume 'let' or 'const'
+
+        // Check for destructuring patterns
+        if self.lexer.peek().kind == TokenKind::LeftBrace {
+            return self.compile_object_destructuring(is_const);
+        }
+        if self.lexer.peek().kind == TokenKind::LeftBracket {
+            return self.compile_array_destructuring(is_const);
+        }
 
         loop {
             let tok = self.lexer.next_token().clone();
@@ -173,6 +183,122 @@ impl<'a> Compiler<'a> {
             if !self.lexer.eat(&TokenKind::Comma) {
                 break;
             }
+        }
+
+        self.eat_semicolon();
+        Ok(())
+    }
+
+    /// Compile `let { a, b: x, c = default } = expr;`
+    fn compile_object_destructuring(&mut self, is_const: bool) -> JsResult<()> {
+        self.lexer.next_token(); // consume '{'
+
+        // Collect bindings: (property_name, local_name)
+        let mut bindings: Vec<(String, String)> = Vec::new();
+        while self.lexer.peek().kind != TokenKind::RightBrace
+            && self.lexer.peek().kind != TokenKind::Eof
+        {
+            let tok = self.lexer.next_token().clone();
+            let prop_name = match &tok.kind {
+                TokenKind::Identifier(n) => n.clone(),
+                _ => {
+                    return Err(JsError::syntax(
+                        "expected property name in destructuring",
+                        tok.span.line,
+                        tok.span.column,
+                    ));
+                }
+            };
+
+            let local_name = if self.lexer.eat(&TokenKind::Colon) {
+                // { prop: localName }
+                let name_tok = self.lexer.next_token().clone();
+                match &name_tok.kind {
+                    TokenKind::Identifier(n) => n.clone(),
+                    _ => {
+                        return Err(JsError::syntax(
+                            "expected variable name",
+                            name_tok.span.line,
+                            name_tok.span.column,
+                        ));
+                    }
+                }
+            } else {
+                // Shorthand: { prop } means { prop: prop }
+                prop_name.clone()
+            };
+
+            bindings.push((prop_name, local_name));
+            if !self.lexer.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.lexer.expect(&TokenKind::RightBrace)?;
+        self.lexer.expect(&TokenKind::Assign)?;
+
+        // Compile the RHS expression (the object to destructure)
+        self.compile_expression()?;
+
+        // Store in a temporary local
+        let temp_slot = self.declare_local(String::from("__destruct_obj__"), false);
+        self.code.emit_op_u16(Op::StoreLocal, temp_slot);
+
+        // For each binding, load the property and store in a new local
+        for (prop_name, local_name) in bindings {
+            let slot = self.declare_local(local_name, is_const);
+            self.code.emit_op_u16(Op::LoadLocal, temp_slot);
+            let prop_id = self.strings.intern(&prop_name);
+            let prop_idx = self.code.add_string(prop_id.0);
+            self.code.emit_op_u16(Op::GetPropertyConst, prop_idx);
+            self.code.emit_op_u16(Op::StoreLocal, slot);
+        }
+
+        self.eat_semicolon();
+        Ok(())
+    }
+
+    /// Compile `let [a, b, c] = expr;`
+    fn compile_array_destructuring(&mut self, is_const: bool) -> JsResult<()> {
+        self.lexer.next_token(); // consume '['
+
+        let mut names: Vec<String> = Vec::new();
+        while self.lexer.peek().kind != TokenKind::RightBracket
+            && self.lexer.peek().kind != TokenKind::Eof
+        {
+            let tok = self.lexer.next_token().clone();
+            let name = match &tok.kind {
+                TokenKind::Identifier(n) => n.clone(),
+                _ => {
+                    return Err(JsError::syntax(
+                        "expected variable name in destructuring",
+                        tok.span.line,
+                        tok.span.column,
+                    ));
+                }
+            };
+            names.push(name);
+            if !self.lexer.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.lexer.expect(&TokenKind::RightBracket)?;
+        self.lexer.expect(&TokenKind::Assign)?;
+
+        // Compile the RHS expression (the array to destructure)
+        self.compile_expression()?;
+
+        // Store in a temporary local
+        let temp_slot = self.declare_local(String::from("__destruct_arr__"), false);
+        self.code.emit_op_u16(Op::StoreLocal, temp_slot);
+
+        // For each binding, load the index and store
+        for (i, name) in names.into_iter().enumerate() {
+            let slot = self.declare_local(name, is_const);
+            self.code.emit_op_u16(Op::LoadLocal, temp_slot);
+            let idx_const = self.code.add_number(i as f64);
+            self.code.emit_op_u16(Op::LoadConst, idx_const);
+            self.code.emit_op(Op::GetIndex);
+            self.code.emit_op_u16(Op::StoreLocal, slot);
         }
 
         self.eat_semicolon();
@@ -693,6 +819,136 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    fn compile_try_statement(&mut self) -> JsResult<()> {
+        self.lexer.next_token(); // consume 'try'
+
+        // Layout:
+        //   TryStart(catch_addr, finally_addr)
+        //   <try body>
+        //   TryEnd
+        //   Jump -> after_catch (or to finally)
+        //   catch_addr: <catch body> (error value on stack)
+        //   Jump -> finally (or end)
+        //   finally_addr: <finally body>
+        //   end:
+
+        // Emit TryStart with placeholders
+        self.code.emit_op(Op::TryStart);
+        let catch_placeholder = self.code.code.len();
+        self.code.emit(0); self.code.emit(0); // catch addr placeholder
+        let finally_placeholder = self.code.code.len();
+        self.code.emit(0); self.code.emit(0); // finally addr placeholder
+
+        // Compile try body
+        self.lexer.expect(&TokenKind::LeftBrace)?;
+        while self.lexer.peek().kind != TokenKind::RightBrace
+            && self.lexer.peek().kind != TokenKind::Eof
+        {
+            self.compile_statement()?;
+        }
+        self.lexer.expect(&TokenKind::RightBrace)?;
+
+        // TryEnd - we completed the try body without error
+        self.code.emit_op(Op::TryEnd);
+
+        let has_catch = self.lexer.peek().kind == TokenKind::Catch;
+        let has_finally;
+
+        if has_catch {
+            // Jump over catch block (no error occurred)
+            let skip_catch_jump = self.code.emit_jump(Op::Jump);
+
+            // Patch catch address
+            let catch_addr = self.code.current_offset();
+            self.code.patch_jump(catch_placeholder, catch_addr);
+
+            self.lexer.next_token(); // consume 'catch'
+
+            // Optional catch parameter: catch (e) { ... }
+            if self.lexer.eat(&TokenKind::LeftParen) {
+                let tok = self.lexer.next_token().clone();
+                let err_name = match &tok.kind {
+                    TokenKind::Identifier(n) => n.clone(),
+                    _ => {
+                        return Err(JsError::syntax(
+                            "expected catch parameter name",
+                            tok.span.line,
+                            tok.span.column,
+                        ));
+                    }
+                };
+                self.lexer.expect(&TokenKind::RightParen)?;
+
+                // The error value is on the stack; store it in a local
+                let slot = self.declare_local(err_name, false);
+                self.code.emit_op_u16(Op::StoreLocal, slot);
+            } else {
+                // catch { ... } without parameter - pop the error
+                self.code.emit_op(Op::Pop);
+            }
+
+            // Compile catch body
+            self.lexer.expect(&TokenKind::LeftBrace)?;
+            while self.lexer.peek().kind != TokenKind::RightBrace
+                && self.lexer.peek().kind != TokenKind::Eof
+            {
+                self.compile_statement()?;
+            }
+            self.lexer.expect(&TokenKind::RightBrace)?;
+
+            let end_catch = self.code.current_offset();
+            self.code.patch_jump(skip_catch_jump, end_catch);
+
+            has_finally = self.lexer.peek().kind == TokenKind::Finally;
+        } else {
+            // No catch block - patch catch address to point to finally/end
+            has_finally = self.lexer.peek().kind == TokenKind::Finally;
+            if !has_finally {
+                return Err(JsError::syntax(
+                    "try without catch or finally",
+                    0,
+                    0,
+                ));
+            }
+            // Point catch to the finally block (will be patched below)
+            // For now, leave it as a forward reference
+        }
+
+        if has_finally {
+            let finally_addr = self.code.current_offset();
+            self.code.patch_jump(finally_placeholder, finally_addr);
+
+            if !has_catch {
+                // No catch - patch catch addr to finally too
+                self.code.patch_jump(catch_placeholder, finally_addr);
+            }
+
+            self.lexer.next_token(); // consume 'finally'
+            self.lexer.expect(&TokenKind::LeftBrace)?;
+            while self.lexer.peek().kind != TokenKind::RightBrace
+                && self.lexer.peek().kind != TokenKind::Eof
+            {
+                self.compile_statement()?;
+            }
+            self.lexer.expect(&TokenKind::RightBrace)?;
+        } else {
+            // No finally - set finally addr to 0xFFFF (no-op marker)
+            let no_finally: u16 = 0xFFFF;
+            self.code.code[finally_placeholder] = (no_finally >> 8) as u8;
+            self.code.code[finally_placeholder + 1] = no_finally as u8;
+        }
+
+        Ok(())
+    }
+
+    fn compile_throw_statement(&mut self) -> JsResult<()> {
+        self.lexer.next_token(); // consume 'throw'
+        self.compile_expression()?;
+        self.code.emit_op(Op::Throw);
+        self.eat_semicolon();
+        Ok(())
+    }
+
     fn compile_function_declaration(&mut self) -> JsResult<()> {
         self.lexer.next_token(); // consume 'function'
 
@@ -1184,8 +1440,13 @@ impl<'a> Compiler<'a> {
                 TokenKind::LeftParen => {
                     self.lexer.next_token(); // consume '('
                     let mut argc: u8 = 0;
+                    let mut has_spread = false;
                     if self.lexer.peek().kind != TokenKind::RightParen {
                         loop {
+                            if self.lexer.peek().kind == TokenKind::Spread {
+                                self.lexer.next_token(); // consume '...'
+                                has_spread = true;
+                            }
                             self.compile_expression()?;
                             argc += 1;
                             if !self.lexer.eat(&TokenKind::Comma) {
@@ -1194,7 +1455,17 @@ impl<'a> Compiler<'a> {
                         }
                     }
                     self.lexer.expect(&TokenKind::RightParen)?;
-                    self.code.emit_op_u8(Op::Call, argc);
+                    if has_spread && argc == 1 {
+                        // Simple case: f(...args) - single spread arg
+                        self.code.emit_op(Op::CallSpread);
+                    } else if has_spread {
+                        // Mixed args with spread - build combined array then CallSpread
+                        // For now, fall back to regular call (spread in mixed position
+                        // would need more complex handling)
+                        self.code.emit_op_u8(Op::Call, argc);
+                    } else {
+                        self.code.emit_op_u8(Op::Call, argc);
+                    }
                 }
                 TokenKind::Dot => {
                     self.lexer.next_token(); // consume '.'

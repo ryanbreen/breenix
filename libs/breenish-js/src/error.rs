@@ -23,6 +23,8 @@ pub enum ErrorKind {
     ReferenceError,
     /// Range error (out of bounds, etc).
     RangeError,
+    /// Runtime error (uncaught throw).
+    RuntimeError,
     /// Internal engine error (should not happen).
     InternalError,
 }
@@ -64,6 +66,15 @@ impl JsError {
         }
     }
 
+    pub fn runtime(message: impl Into<String>) -> Self {
+        Self {
+            kind: ErrorKind::RuntimeError,
+            message: message.into(),
+            line: 0,
+            column: 0,
+        }
+    }
+
     pub fn internal(message: impl Into<String>) -> Self {
         Self {
             kind: ErrorKind::InternalError,
@@ -81,6 +92,7 @@ impl fmt::Display for JsError {
             ErrorKind::TypeError => "TypeError",
             ErrorKind::ReferenceError => "ReferenceError",
             ErrorKind::RangeError => "RangeError",
+            ErrorKind::RuntimeError => "Error",
             ErrorKind::InternalError => "InternalError",
         };
         if self.line > 0 {

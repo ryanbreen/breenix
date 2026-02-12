@@ -44,6 +44,9 @@ use value::JsValue;
 use vm::{PrintFn, Vm};
 use bytecode::CodeBlock;
 
+// Re-export types needed by native function implementors.
+pub use vm::NativeFn;
+
 /// The main entry point for the breenish-js engine.
 ///
 /// A Context holds the VM state and string pool, allowing multiple
@@ -67,14 +70,27 @@ impl Context {
         self.vm.set_print_fn(f);
     }
 
+    /// Register a native function that can be called from JavaScript.
+    ///
+    /// Must be called before any `eval()` calls that reference the function.
+    pub fn register_native(&mut self, name: &str, func: NativeFn) {
+        self.vm.register_native(name, func);
+    }
+
+    /// Get a mutable reference to the string pool (for native functions).
+    pub fn strings_mut(&mut self) -> &mut StringPool {
+        &mut self.strings
+    }
+
     /// Evaluate a JavaScript source string.
     pub fn eval(&mut self, source: &str) -> JsResult<JsValue> {
         let compiler = Compiler::new(source);
         let (code, mut compile_strings, functions) = compiler.compile()?;
 
-        // Merge compiled strings into our persistent pool
-        // For Phase 1, we just use the compiler's string pool directly
-        // since we create a new compiler each time
+        // Re-register native function globals using the compiler's string pool
+        // so that global lookups match the correct string IDs.
+        self.vm.sync_natives(&mut compile_strings);
+
         self.vm.execute(&code, &mut compile_strings, &functions)
     }
 
@@ -737,5 +753,229 @@ mod tests {
         let freed = heap.sweep();
         assert_eq!(freed, 0, "all objects reachable from root should survive");
         assert_eq!(heap.live_count(), 3);
+    }
+
+    // --- Try/catch/finally tests ---
+
+    #[test]
+    fn test_try_catch_basic() {
+        assert_eq!(
+            eval_and_capture(
+                "try { throw \"oops\"; } catch (e) { print(e); }"
+            ),
+            "oops\n"
+        );
+    }
+
+    #[test]
+    fn test_try_catch_no_error() {
+        assert_eq!(
+            eval_and_capture(
+                "try { print(\"ok\"); } catch (e) { print(\"caught\"); }"
+            ),
+            "ok\n"
+        );
+    }
+
+    #[test]
+    fn test_try_catch_finally() {
+        assert_eq!(
+            eval_and_capture(
+                "try { throw \"err\"; } catch (e) { print(e); } finally { print(\"done\"); }"
+            ),
+            "err\ndone\n"
+        );
+    }
+
+    #[test]
+    fn test_try_finally_no_error() {
+        assert_eq!(
+            eval_and_capture(
+                "try { print(\"ok\"); } catch (e) { print(\"caught\"); } finally { print(\"fin\"); }"
+            ),
+            "ok\nfin\n"
+        );
+    }
+
+    #[test]
+    fn test_try_catch_runtime_error() {
+        // TypeError from calling a non-function should be caught by try/catch
+        assert_eq!(
+            eval_and_capture(
+                "let result = \"no error\"; try { let x = 5; x(); } catch (e) { result = \"caught\"; } print(result);"
+            ),
+            "caught\n"
+        );
+    }
+
+    #[test]
+    fn test_try_catch_throw_number() {
+        assert_eq!(
+            eval_and_capture(
+                "try { throw 42; } catch (e) { print(e); }"
+            ),
+            "42\n"
+        );
+    }
+
+    #[test]
+    fn test_try_catch_nested() {
+        assert_eq!(
+            eval_and_capture(
+                "try { try { throw \"inner\"; } catch (e) { print(e); } throw \"outer\"; } catch (e) { print(e); }"
+            ),
+            "inner\nouter\n"
+        );
+    }
+
+    #[test]
+    fn test_try_catch_in_function() {
+        assert_eq!(
+            eval_and_capture(
+                "function safe(f) { try { return f(); } catch (e) { return \"error: \" + e; } } function bad() { throw \"boom\"; } print(safe(bad));"
+            ),
+            "error: boom\n"
+        );
+    }
+
+    // --- Destructuring tests ---
+
+    #[test]
+    fn test_object_destructuring_basic() {
+        assert_eq!(
+            eval_and_capture(
+                "let o = { x: 10, y: 20 }; let { x, y } = o; print(x, y);"
+            ),
+            "10 20\n"
+        );
+    }
+
+    #[test]
+    fn test_object_destructuring_renamed() {
+        assert_eq!(
+            eval_and_capture(
+                "let o = { name: \"breenish\", version: 1 }; let { name: n, version: v } = o; print(n, v);"
+            ),
+            "breenish 1\n"
+        );
+    }
+
+    #[test]
+    fn test_object_destructuring_from_function() {
+        assert_eq!(
+            eval_and_capture(
+                "function getPoint() { return { x: 3, y: 4 }; } let { x, y } = getPoint(); print(x + y);"
+            ),
+            "7\n"
+        );
+    }
+
+    #[test]
+    fn test_array_destructuring_basic() {
+        assert_eq!(
+            eval_and_capture(
+                "let [a, b, c] = [10, 20, 30]; print(a, b, c);"
+            ),
+            "10 20 30\n"
+        );
+    }
+
+    #[test]
+    fn test_array_destructuring_from_split() {
+        assert_eq!(
+            eval_and_capture(
+                "let [first, second] = \"hello world\".split(\" \"); print(first, second);"
+            ),
+            "hello world\n"
+        );
+    }
+
+    // --- Spread operator tests ---
+
+    #[test]
+    fn test_spread_call() {
+        assert_eq!(
+            eval_and_capture(
+                "function add(a, b, c) { return a + b + c; } let args = [1, 2, 3]; print(add(...args));"
+            ),
+            "6\n"
+        );
+    }
+
+    #[test]
+    fn test_spread_call_with_function() {
+        assert_eq!(
+            eval_and_capture(
+                "function greet(first, last) { return \"Hello \" + first + \" \" + last; } let names = [\"Breen\", \"ix\"]; print(greet(...names));"
+            ),
+            "Hello Breen ix\n"
+        );
+    }
+
+    // --- Native function tests ---
+
+    #[test]
+    fn test_native_function_basic() {
+        use crate::object::ObjectHeap;
+        use crate::string::StringPool;
+        use crate::value::JsValue;
+        use crate::error::JsResult;
+
+        fn my_add(args: &[JsValue], _strings: &mut StringPool, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let a = args.get(0).copied().unwrap_or(JsValue::undefined()).to_number();
+            let b = args.get(1).copied().unwrap_or(JsValue::undefined()).to_number();
+            Ok(JsValue::number(a + b))
+        }
+
+        let mut ctx = Context::new();
+        ctx.set_print_fn(capture_print);
+        ctx.register_native("nativeAdd", my_add);
+        ctx.eval("print(nativeAdd(10, 20));").unwrap();
+        assert_eq!(take_output(), "30\n");
+    }
+
+    #[test]
+    fn test_native_function_returns_string() {
+        use crate::object::ObjectHeap;
+        use crate::string::StringPool;
+        use crate::value::JsValue;
+        use crate::error::JsResult;
+
+        fn get_greeting(_args: &[JsValue], strings: &mut StringPool, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let id = strings.intern("hello from native");
+            Ok(JsValue::string(id))
+        }
+
+        let mut ctx = Context::new();
+        ctx.set_print_fn(capture_print);
+        ctx.register_native("getGreeting", get_greeting);
+        ctx.eval("print(getGreeting());").unwrap();
+        assert_eq!(take_output(), "hello from native\n");
+    }
+
+    #[test]
+    fn test_native_function_returns_object() {
+        use crate::object::{JsObject, ObjectHeap};
+        use crate::string::StringPool;
+        use crate::value::JsValue;
+        use crate::error::JsResult;
+
+        fn make_point(args: &[JsValue], strings: &mut StringPool, heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let x = args.get(0).copied().unwrap_or(JsValue::number(0.0));
+            let y = args.get(1).copied().unwrap_or(JsValue::number(0.0));
+            let mut obj = JsObject::new();
+            let x_key = strings.intern("x");
+            let y_key = strings.intern("y");
+            obj.set(x_key, x);
+            obj.set(y_key, y);
+            let idx = heap.alloc(obj);
+            Ok(JsValue::object(idx))
+        }
+
+        let mut ctx = Context::new();
+        ctx.set_print_fn(capture_print);
+        ctx.register_native("makePoint", make_point);
+        ctx.eval("let p = makePoint(3, 4); print(p.x + p.y);").unwrap();
+        assert_eq!(take_output(), "7\n");
     }
 }
