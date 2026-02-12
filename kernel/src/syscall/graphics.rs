@@ -292,6 +292,11 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
         }
         6 => {
             // Flush: sync buffer to screen
+            // If p3 (width) and p4 (height) are non-zero, interpret p1-p4 as
+            // a dirty rectangle (x, y, w, h) for partial flush. Otherwise,
+            // fall back to full flush.
+            let has_rect = cmd.p3 > 0 && cmd.p4 > 0;
+
             // If this process has an mmap'd framebuffer, copy user buffer → shadow
             // buffer's left pane before flushing.
             #[cfg(target_arch = "x86_64")]
@@ -317,6 +322,15 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                 };
 
                 if let Some(mmap_info) = fb_mmap_info {
+                    // Determine which rows to copy
+                    let (y_start, y_end) = if has_rect {
+                        let ys = (cmd.p2.max(0) as usize).min(mmap_info.height);
+                        let ye = (cmd.p2.max(0) as usize + cmd.p4 as usize).min(mmap_info.height);
+                        (ys, ye)
+                    } else {
+                        (0, mmap_info.height)
+                    };
+
                     // Copy user buffer → shadow buffer's left pane row by row
                     use crate::graphics::primitives::Canvas;
                     let fb_stride_bytes = fb_guard.stride() * fb_guard.bytes_per_pixel();
@@ -324,7 +338,7 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
 
                     if let Some(db) = fb_guard.double_buffer_mut() {
                         let shadow = db.buffer_mut();
-                        for y in 0..mmap_info.height {
+                        for y in y_start..y_end {
                             let user_row_ptr = (mmap_info.user_addr as usize) + y * mmap_info.user_stride;
                             let shadow_row_offset = y * fb_stride_bytes;
 
@@ -339,8 +353,15 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                             }
                         }
 
-                        // Mark the left pane dirty and flush incrementally
-                        db.mark_region_dirty_rect(0, mmap_info.height, 0, mmap_info.width);
+                        // Mark dirty region and flush incrementally
+                        let (dx_start, dx_end) = if has_rect {
+                            let xs = (cmd.p1.max(0) as usize).min(mmap_info.width);
+                            let xe = (cmd.p1.max(0) as usize + cmd.p3 as usize).min(mmap_info.width);
+                            (xs, xe)
+                        } else {
+                            (0, mmap_info.width)
+                        };
+                        db.mark_region_dirty_rect(y_start, y_end, dx_start, dx_end);
                         db.flush();
                     }
                 } else {
@@ -370,13 +391,22 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                 };
 
                 if let Some(mmap_info) = fb_mmap_info {
-                    // Copy user buffer → GPU framebuffer's left pane row by row.
+                    // Determine which rows to copy
+                    let (y_start, y_end) = if has_rect {
+                        let ys = (cmd.p2.max(0) as usize).min(mmap_info.height);
+                        let ye = (cmd.p2.max(0) as usize + cmd.p4 as usize).min(mmap_info.height);
+                        (ys, ye)
+                    } else {
+                        (0, mmap_info.height)
+                    };
+
+                    // Copy dirty rows from user buffer → GPU framebuffer.
                     // ARM64 has no double buffer; writes go directly to VirtIO GPU memory.
                     let fb_stride_bytes = fb_guard.stride() * fb_guard.bytes_per_pixel();
                     let row_bytes = mmap_info.width * mmap_info.bpp;
                     let gpu_buf = fb_guard.buffer_mut();
 
-                    for y in 0..mmap_info.height {
+                    for y in y_start..y_end {
                         let user_row_ptr = (mmap_info.user_addr as usize) + y * mmap_info.user_stride;
                         let gpu_row_offset = y * fb_stride_bytes;
 
@@ -391,8 +421,17 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                         }
                     }
                 }
-                // Flush VirtIO GPU (transfer to host + display)
-                let _ = fb_guard.flush();
+                // Flush VirtIO GPU — use rect flush if specified
+                if has_rect {
+                    fb_guard.flush_rect(
+                        cmd.p1.max(0) as u32,
+                        cmd.p2.max(0) as u32,
+                        cmd.p3 as u32,
+                        cmd.p4 as u32,
+                    );
+                } else {
+                    let _ = fb_guard.flush();
+                }
             }
         }
         _ => {

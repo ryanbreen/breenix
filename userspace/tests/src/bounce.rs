@@ -1,14 +1,21 @@
 //! Bouncing balls with collision detection demo for Breenix (std version)
 //!
-//! Uses mmap'd framebuffer for zero-syscall drawing. All pixel writes go
-//! directly to a userspace buffer; only flush (1 syscall/frame) copies to VRAM.
+//! Uses mmap'd framebuffer for zero-syscall drawing via libgfx. All pixel
+//! writes go directly to a userspace buffer; only flush (1 syscall/frame)
+//! copies the dirty region to VRAM.
 //!
 //! Created for Gus!
 
 use std::process;
 
+use libgfx::color::Color;
+use libgfx::font;
+use libgfx::framebuf::FrameBuf;
+use libgfx::math::isqrt_i64;
+use libgfx::shapes;
+
 // ---------------------------------------------------------------------------
-// Syscall plumbing
+// Syscall plumbing (minimal — only what libgfx doesn't handle)
 // ---------------------------------------------------------------------------
 
 #[repr(C)]
@@ -92,7 +99,12 @@ fn fbmmap() -> Result<*mut u8, i32> {
     let r = unsafe { syscall0(SYS_FBMMAP) };
     if (r as i64) < 0 { Err(-(r as i64) as i32) } else { Ok(r as *mut u8) }
 }
-fn fb_flush() -> Result<(), i32> {
+fn fb_flush_rect(x: i32, y: i32, w: i32, h: i32) -> Result<(), i32> {
+    let cmd = FbDrawCmd { op: 6, p1: x, p2: y, p3: w, p4: h, color: 0 };
+    let r = unsafe { syscall1(SYS_FBDRAW, &cmd as *const FbDrawCmd as u64) };
+    if (r as i64) < 0 { Err(-(r as i64) as i32) } else { Ok(()) }
+}
+fn fb_flush_full() -> Result<(), i32> {
     let cmd = FbDrawCmd { op: 6, p1: 0, p2: 0, p3: 0, p4: 0, color: 0 };
     let r = unsafe { syscall1(SYS_FBDRAW, &cmd as *const FbDrawCmd as u64) };
     if (r as i64) < 0 { Err(-(r as i64) as i32) } else { Ok(()) }
@@ -106,144 +118,6 @@ fn clock_monotonic_ns() -> u64 {
 extern "C" { fn sleep_ms(ms: u64); }
 
 // ---------------------------------------------------------------------------
-// Framebuffer
-// ---------------------------------------------------------------------------
-
-struct FrameBuf {
-    ptr: *mut u8,
-    width: usize,
-    height: usize,
-    stride: usize,
-    bpp: usize,
-    is_bgr: bool,
-}
-
-impl FrameBuf {
-    fn clear(&mut self, r: u8, g: u8, b: u8) {
-        let buf = unsafe { core::slice::from_raw_parts_mut(self.ptr, self.stride * self.height) };
-        let (c0, c1, c2) = if self.is_bgr { (b, g, r) } else { (r, g, b) };
-        if self.bpp == 4 {
-            for x in 0..self.width {
-                let o = x * 4;
-                buf[o] = c0; buf[o+1] = c1; buf[o+2] = c2; buf[o+3] = 0;
-            }
-        } else {
-            for x in 0..self.width {
-                let o = x * 3;
-                buf[o] = c0; buf[o+1] = c1; buf[o+2] = c2;
-            }
-        }
-        for y in 1..self.height {
-            unsafe {
-                core::ptr::copy_nonoverlapping(buf.as_ptr(), buf.as_mut_ptr().add(y * self.stride), self.stride);
-            }
-        }
-    }
-
-    #[inline]
-    fn put_pixel(&mut self, x: usize, y: usize, r: u8, g: u8, b: u8) {
-        let off = y * self.stride + x * self.bpp;
-        let (c0, c1, c2) = if self.is_bgr { (b, g, r) } else { (r, g, b) };
-        unsafe {
-            *self.ptr.add(off) = c0;
-            *self.ptr.add(off + 1) = c1;
-            *self.ptr.add(off + 2) = c2;
-            if self.bpp == 4 { *self.ptr.add(off + 3) = 0; }
-        }
-    }
-
-    fn fill_circle(&mut self, cx: i32, cy: i32, radius: i32, r: u8, g: u8, b: u8) {
-        let r2 = (radius as i64) * (radius as i64);
-        let (c0, c1, c2) = if self.is_bgr { (b, g, r) } else { (r, g, b) };
-        for dy in -radius..=radius {
-            let dx_max_sq = r2 - (dy as i64) * (dy as i64);
-            if dx_max_sq < 0 { continue; }
-            let dx_max = isqrt_i64(dx_max_sq) as i32;
-            let y = cy + dy;
-            if y < 0 || y >= self.height as i32 { continue; }
-            let x_start = (cx - dx_max).max(0) as usize;
-            let x_end = (cx + dx_max).min(self.width as i32 - 1) as usize;
-            if x_start > x_end { continue; }
-            let row = (y as usize) * self.stride;
-            if self.bpp == 4 {
-                for x in x_start..=x_end {
-                    let o = row + x * 4;
-                    unsafe {
-                        *self.ptr.add(o) = c0; *self.ptr.add(o+1) = c1;
-                        *self.ptr.add(o+2) = c2; *self.ptr.add(o+3) = 0;
-                    }
-                }
-            } else {
-                for x in x_start..=x_end {
-                    let o = row + x * 3;
-                    unsafe {
-                        *self.ptr.add(o) = c0; *self.ptr.add(o+1) = c1;
-                        *self.ptr.add(o+2) = c2;
-                    }
-                }
-            }
-        }
-    }
-
-    /// Draw a character from a 5x7 bitmap font, scaled 2x (10x14 pixels)
-    fn draw_char(&mut self, ch: u8, x0: usize, y0: usize, r: u8, g: u8, b: u8) {
-        let glyph = match ch {
-            b'0' => [0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E],
-            b'1' => [0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E],
-            b'2' => [0x0E, 0x11, 0x01, 0x06, 0x08, 0x10, 0x1F],
-            b'3' => [0x0E, 0x11, 0x01, 0x06, 0x01, 0x11, 0x0E],
-            b'4' => [0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02],
-            b'5' => [0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E],
-            b'6' => [0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E],
-            b'7' => [0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08],
-            b'8' => [0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E],
-            b'9' => [0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C],
-            b'F' => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10],
-            b'P' => [0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10],
-            b'S' => [0x0E, 0x11, 0x10, 0x0E, 0x01, 0x11, 0x0E],
-            b':' => [0x00, 0x04, 0x04, 0x00, 0x04, 0x04, 0x00],
-            b' ' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            _    => [0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F], // block
-        };
-        for row in 0..7usize {
-            let bits = glyph[row];
-            for col in 0..5usize {
-                if bits & (0x10 >> col) != 0 {
-                    // 2x scale
-                    let px = x0 + col * 2;
-                    let py = y0 + row * 2;
-                    for sy in 0..2usize {
-                        for sx in 0..2usize {
-                            let xx = px + sx;
-                            let yy = py + sy;
-                            if xx < self.width && yy < self.height {
-                                self.put_pixel(xx, yy, r, g, b);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Draw a string of ASCII characters
-    fn draw_text(&mut self, text: &[u8], x: usize, y: usize, r: u8, g: u8, b: u8) {
-        for (i, &ch) in text.iter().enumerate() {
-            self.draw_char(ch, x + i * 12, y, r, g, b);
-        }
-    }
-}
-
-fn isqrt_i64(n: i64) -> i64 {
-    if n < 0 { return 0; }
-    if n < 2 { return n; }
-    let mut x = n;
-    let mut y = (x + 1) / 2;
-    while y < x { x = y; y = (x + n / x) / 2; }
-    x
-}
-
-// ---------------------------------------------------------------------------
 // Ball physics
 // ---------------------------------------------------------------------------
 
@@ -253,13 +127,13 @@ struct Ball {
     vx: i32,
     vy: i32,
     radius: i32,
-    r: u8, g: u8, b: u8,
+    color: Color,
     mass: i32,
 }
 
 impl Ball {
-    fn new(x: i32, y: i32, vx: i32, vy: i32, radius: i32, r: u8, g: u8, b: u8) -> Self {
-        Self { x: x * 100, y: y * 100, vx, vy, radius, r, g, b, mass: radius }
+    fn new(x: i32, y: i32, vx: i32, vy: i32, radius: i32, color: Color) -> Self {
+        Self { x: x * 100, y: y * 100, vx, vy, radius, color, mass: radius }
     }
     fn px(&self) -> i32 { self.x / 100 }
     fn py(&self) -> i32 { self.y / 100 }
@@ -279,7 +153,7 @@ impl Ball {
     }
 
     fn draw(&self, fb: &mut FrameBuf) {
-        fb.fill_circle(self.px(), self.py(), self.radius, self.r, self.g, self.b);
+        shapes::fill_circle(fb, self.px(), self.py(), self.radius, self.color);
     }
 }
 
@@ -346,7 +220,6 @@ impl FpsCounter {
             let now = clock_monotonic_ns();
             let elapsed = now.saturating_sub(self.last_time_ns);
             if elapsed > 0 {
-                // fps = frame_count * 1_000_000_000 / elapsed
                 self.display_fps = (self.frame_count as u64 * 1_000_000_000 / elapsed) as u32;
             }
             self.frame_count = 0;
@@ -364,7 +237,6 @@ impl FpsCounter {
         if fps == 0 {
             buf[5] = b'0';
         } else {
-            // Write digits right-to-left
             let mut pos = 8;
             while fps > 0 && pos >= 5 {
                 buf[pos] = b'0' + (fps % 10) as u8;
@@ -373,7 +245,7 @@ impl FpsCounter {
                 pos -= 1;
             }
         }
-        fb.draw_text(&buf, 8, y, 200, 200, 200);
+        font::draw_text(fb, &buf, 8, y, Color::GRAY, 2);
     }
 }
 
@@ -398,31 +270,35 @@ fn main() {
         Err(e) => { println!("Error: Could not mmap framebuffer ({})", e); process::exit(e); }
     };
 
-    let mut fb = FrameBuf {
-        ptr: fb_ptr,
-        width: width as usize,
-        height: height as usize,
-        stride: (width as usize) * bpp,
-        bpp,
-        is_bgr: info.is_bgr(),
+    let mut fb = unsafe {
+        FrameBuf::from_raw(
+            fb_ptr,
+            width as usize,
+            height as usize,
+            (width as usize) * bpp,
+            bpp,
+            info.is_bgr(),
+        )
     };
 
     println!("Starting collision demo (12 balls, mmap mode)...");
 
+    let bg = Color::rgb(15, 15, 30);
+
     // 12 balls, fast velocities. Sub-stepping catches edge collisions.
     let mut balls = [
-        Ball::new(100, 100,  1100,  800, 38, 255,  50,  50),  // Red
-        Ball::new(300, 200, -1000,  700, 33,  50, 255,  50),  // Green
-        Ball::new(200, 400,   900, -950, 42,  50,  50, 255),  // Blue
-        Ball::new(400, 300,  -850, -800, 28, 255, 255,  50),  // Yellow
-        Ball::new(150, 300,  1050,  600, 24, 255,  50, 255),  // Magenta
-        Ball::new(350, 150,  -900,  750, 26,  50, 255, 255),  // Cyan
-        Ball::new(450, 500,   800, -700, 35, 255, 150,  50),  // Orange
-        Ball::new(250, 550,  -750,  850, 30, 150,  50, 255),  // Purple
-        Ball::new(500, 100,   950,  950, 22, 200, 200, 200),  // White
-        Ball::new(120, 500, -1100, -650, 20, 255, 100, 100),  // Salmon
-        Ball::new(380, 450,   700,  900, 32, 100, 255, 100),  // Lime
-        Ball::new(520, 350,  -800, -850, 27, 100, 150, 255),  // Sky
+        Ball::new(100, 100,  1100,  800, 38, Color::rgb(255,  50,  50)),  // Red
+        Ball::new(300, 200, -1000,  700, 33, Color::rgb( 50, 255,  50)),  // Green
+        Ball::new(200, 400,   900, -950, 42, Color::rgb( 50,  50, 255)),  // Blue
+        Ball::new(400, 300,  -850, -800, 28, Color::rgb(255, 255,  50)),  // Yellow
+        Ball::new(150, 300,  1050,  600, 24, Color::rgb(255,  50, 255)),  // Magenta
+        Ball::new(350, 150,  -900,  750, 26, Color::rgb( 50, 255, 255)),  // Cyan
+        Ball::new(450, 500,   800, -700, 35, Color::rgb(255, 150,  50)),  // Orange
+        Ball::new(250, 550,  -750,  850, 30, Color::rgb(150,  50, 255)),  // Purple
+        Ball::new(500, 100,   950,  950, 22, Color::rgb(200, 200, 200)),  // White
+        Ball::new(120, 500, -1100, -650, 20, Color::rgb(255, 100, 100)),  // Salmon
+        Ball::new(380, 450,   700,  900, 32, Color::rgb(100, 255, 100)),  // Lime
+        Ball::new(520, 350,  -800, -850, 27, Color::rgb(100, 150, 255)),  // Sky
     ];
 
     // With velocities ~1000 (10 px/frame), 16 sub-steps = ~0.6 px per step.
@@ -447,15 +323,21 @@ fn main() {
             }
         }
 
-        // Draw
-        fb.clear(15, 15, 30);
+        // Draw — libgfx tracks dirty rects automatically
+        fb.clear(bg);
         for ball in balls.iter() {
             ball.draw(&mut fb);
         }
         fps.tick();
         fps.draw(&mut fb);
 
-        let _ = fb_flush();
+        // Flush only the dirty region
+        if let Some(dirty) = fb.take_dirty() {
+            let _ = fb_flush_rect(dirty.x, dirty.y, dirty.w, dirty.h);
+        } else {
+            let _ = fb_flush_full();
+        }
+
         unsafe { sleep_ms(16); } // ~60 FPS target
     }
 }

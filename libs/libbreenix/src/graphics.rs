@@ -229,3 +229,19 @@ pub fn fb_flush() -> Result<(), i32> {
     };
     fbdraw(&cmd)
 }
+
+/// Flush a rectangular region of the framebuffer.
+///
+/// Only the specified rect (x, y, w, h) is transferred to the display.
+/// Falls back to full flush in the kernel if the rect covers the entire screen.
+pub fn fb_flush_rect(x: i32, y: i32, w: i32, h: i32) -> Result<(), i32> {
+    let cmd = FbDrawCmd {
+        op: draw_op::FLUSH,
+        p1: x,
+        p2: y,
+        p3: w,
+        p4: h,
+        color: 0,
+    };
+    fbdraw(&cmd)
+}

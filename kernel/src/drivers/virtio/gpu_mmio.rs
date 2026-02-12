@@ -689,6 +689,15 @@ pub fn flush() -> Result<(), &'static str> {
     })
 }
 
+/// Flush a rectangular region of the framebuffer to the display.
+pub fn flush_rect(x: u32, y: u32, width: u32, height: u32) -> Result<(), &'static str> {
+    with_device_state(|device, state| {
+        fence(Ordering::SeqCst);
+        transfer_to_host(device, state, x, y, width, height)?;
+        resource_flush(device, state, x, y, width, height)
+    })
+}
+
 /// Get the framebuffer dimensions
 pub fn dimensions() -> Option<(u32, u32)> {
     unsafe {

@@ -1,0 +1,13 @@
+[package]
+name = "libgfx"
+version = "0.1.0"
+edition = "2021"
+description = "Breenix userspace graphics library — drawing primitives, fonts, and framebuffer management"
+
+[workspace]
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+# No dependencies — pure drawing library operating on raw pixel buffers

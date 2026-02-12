@@ -45,6 +45,11 @@ impl Arm64FrameBuffer {
     pub fn flush(&self) -> Result<(), &'static str> {
         gpu_mmio::flush()
     }
+
+    /// Flush a rectangular region of the framebuffer to the display
+    pub fn flush_rect(&self, x: u32, y: u32, w: u32, h: u32) -> Result<(), &'static str> {
+        gpu_mmio::flush_rect(x, y, w, h)
+    }
 }
 
 impl Canvas for Arm64FrameBuffer {
@@ -259,6 +264,11 @@ impl ShellFrameBuffer {
     /// Unlike x86_64 which has double buffering, we flush directly to the GPU.
     pub fn flush(&self) {
         let _ = self.fb.flush();
+    }
+
+    /// Flush a rectangular region of the framebuffer to the display
+    pub fn flush_rect(&self, x: u32, y: u32, w: u32, h: u32) {
+        let _ = self.fb.flush_rect(x, y, w, h);
     }
 
     /// Flush the framebuffer, returning any GPU errors.
