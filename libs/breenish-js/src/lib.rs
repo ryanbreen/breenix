@@ -44,6 +44,9 @@ use value::JsValue;
 use vm::{PrintFn, Vm};
 use bytecode::CodeBlock;
 
+// Re-export types needed by native function implementors.
+pub use vm::NativeFn;
+
 /// The main entry point for the breenish-js engine.
 ///
 /// A Context holds the VM state and string pool, allowing multiple
@@ -65,6 +68,19 @@ impl Context {
     /// Set the print output callback.
     pub fn set_print_fn(&mut self, f: PrintFn) {
         self.vm.set_print_fn(f);
+    }
+
+    /// Register a native function that can be called from JavaScript.
+    ///
+    /// Must be called before any `eval()` calls that reference the function.
+    pub fn register_native(&mut self, name: &str, func: NativeFn) {
+        let name_id = self.strings.intern(name);
+        self.vm.register_native(name_id, func);
+    }
+
+    /// Get a mutable reference to the string pool (for native functions).
+    pub fn strings_mut(&mut self) -> &mut StringPool {
+        &mut self.strings
     }
 
     /// Evaluate a JavaScript source string.
@@ -894,5 +910,72 @@ mod tests {
             ),
             "Hello Breen ix\n"
         );
+    }
+
+    // --- Native function tests ---
+
+    #[test]
+    fn test_native_function_basic() {
+        use crate::object::ObjectHeap;
+        use crate::string::StringPool;
+        use crate::value::JsValue;
+        use crate::error::JsResult;
+
+        fn my_add(args: &[JsValue], _strings: &mut StringPool, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let a = args.get(0).copied().unwrap_or(JsValue::undefined()).to_number();
+            let b = args.get(1).copied().unwrap_or(JsValue::undefined()).to_number();
+            Ok(JsValue::number(a + b))
+        }
+
+        let mut ctx = Context::new();
+        ctx.set_print_fn(capture_print);
+        ctx.register_native("nativeAdd", my_add);
+        ctx.eval("print(nativeAdd(10, 20));").unwrap();
+        assert_eq!(take_output(), "30\n");
+    }
+
+    #[test]
+    fn test_native_function_returns_string() {
+        use crate::object::ObjectHeap;
+        use crate::string::StringPool;
+        use crate::value::JsValue;
+        use crate::error::JsResult;
+
+        fn get_greeting(_args: &[JsValue], strings: &mut StringPool, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let id = strings.intern("hello from native");
+            Ok(JsValue::string(id))
+        }
+
+        let mut ctx = Context::new();
+        ctx.set_print_fn(capture_print);
+        ctx.register_native("getGreeting", get_greeting);
+        ctx.eval("print(getGreeting());").unwrap();
+        assert_eq!(take_output(), "hello from native\n");
+    }
+
+    #[test]
+    fn test_native_function_returns_object() {
+        use crate::object::{JsObject, ObjectHeap};
+        use crate::string::StringPool;
+        use crate::value::JsValue;
+        use crate::error::JsResult;
+
+        fn make_point(args: &[JsValue], strings: &mut StringPool, heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let x = args.get(0).copied().unwrap_or(JsValue::number(0.0));
+            let y = args.get(1).copied().unwrap_or(JsValue::number(0.0));
+            let mut obj = JsObject::new();
+            let x_key = strings.intern("x");
+            let y_key = strings.intern("y");
+            obj.set(x_key, x);
+            obj.set(y_key, y);
+            let idx = heap.alloc(obj);
+            Ok(JsValue::object(idx))
+        }
+
+        let mut ctx = Context::new();
+        ctx.set_print_fn(capture_print);
+        ctx.register_native("makePoint", make_point);
+        ctx.eval("let p = makePoint(3, 4); print(p.x + p.y);").unwrap();
+        assert_eq!(take_output(), "7\n");
     }
 }

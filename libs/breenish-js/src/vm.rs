@@ -18,6 +18,14 @@ const MAX_STACK_SIZE: usize = 4096;
 /// Maximum call depth.
 const MAX_CALL_DEPTH: usize = 256;
 
+/// What kind of function call to perform.
+enum CallKind {
+    /// JavaScript function (func_index, optional closure object).
+    Js(usize, Option<u32>),
+    /// Native function (native_index).
+    Native(u32),
+}
+
 /// Result of executing one VM step.
 enum StepResult {
     /// Continue to next step.
@@ -60,6 +68,17 @@ struct ExceptionHandler {
 /// Host callback type for print output.
 pub type PrintFn = fn(&str);
 
+/// A native function callable from JavaScript.
+///
+/// Receives the arguments as a slice and access to the string pool and object heap.
+/// Returns a JsResult<JsValue>.
+pub type NativeFn = fn(args: &[JsValue], strings: &mut StringPool, heap: &mut ObjectHeap) -> JsResult<JsValue>;
+
+/// A registered native function entry.
+struct NativeEntry {
+    func: NativeFn,
+}
+
 /// The JavaScript virtual machine.
 pub struct Vm {
     /// The value stack.
@@ -74,6 +93,8 @@ pub struct Vm {
     print_fn: PrintFn,
     /// Exception handler stack for try/catch/finally.
     exception_handlers: Vec<ExceptionHandler>,
+    /// Native function table.
+    native_functions: Vec<NativeEntry>,
 }
 
 fn default_print(s: &str) {
@@ -97,12 +118,32 @@ impl Vm {
             heap: ObjectHeap::new(),
             print_fn: default_print,
             exception_handlers: Vec::new(),
+            native_functions: Vec::new(),
         }
     }
 
     /// Set the host print callback.
     pub fn set_print_fn(&mut self, f: PrintFn) {
         self.print_fn = f;
+    }
+
+    /// Register a native function that can be called from JavaScript.
+    ///
+    /// The function will be available as a global variable with the given name.
+    /// Must be called before `execute()` and the StringPool must be the same
+    /// one used during compilation.
+    pub fn register_native(&mut self, name: StringId, func: NativeFn) -> u32 {
+        let idx = self.native_functions.len() as u32;
+        self.native_functions.push(NativeEntry { func });
+        // Create a NativeFunction object on the heap
+        let obj = JsObject::new_native_function(idx);
+        let obj_idx = self.heap.alloc(obj);
+        // Register as a global
+        self.globals.push(Global {
+            name,
+            value: JsValue::object(obj_idx),
+        });
+        idx
     }
 
     /// Execute a compiled program.
@@ -398,7 +439,7 @@ impl Vm {
                     let type_name = if a.is_object() {
                         // Check if it's a function or closure
                         if let Some(obj) = self.heap.get(a.as_object_index()) {
-                            if matches!(obj.kind, ObjectKind::Function(_) | ObjectKind::Closure(_, _)) {
+                            if matches!(obj.kind, ObjectKind::Function(_) | ObjectKind::Closure(_, _) | ObjectKind::NativeFunction(_)) {
                                 "function"
                             } else {
                                 "object"
@@ -436,7 +477,7 @@ impl Vm {
 
                 Op::Call => {
                     let argc = self.read_u8_advance(code) as usize;
-                    self.do_call(argc, functions)?;
+                    self.do_call(argc, strings, functions)?;
                 }
 
                 Op::Return => {
@@ -642,7 +683,7 @@ impl Vm {
                                     for arg in &args {
                                         self.push(*arg)?;
                                     }
-                                    self.do_call(args.len(), functions)?;
+                                    self.do_call(args.len(), strings, functions)?;
                                     // Result will be placed by the run loop
                                 } else {
                                     return Err(JsError::type_error(alloc::format!(
@@ -789,7 +830,7 @@ impl Vm {
                     } else {
                         0
                     };
-                    self.do_call(argc, functions)?;
+                    self.do_call(argc, strings, functions)?;
                 }
 
                 Op::Halt => {
@@ -805,7 +846,7 @@ impl Vm {
     }
 
     /// Execute a function call with argc arguments on the stack.
-    fn do_call(&mut self, argc: usize, functions: &[CodeBlock]) -> JsResult<()> {
+    fn do_call(&mut self, argc: usize, strings: &mut StringPool, functions: &[CodeBlock]) -> JsResult<()> {
         let func_pos = self.stack.len() - argc - 1;
         let func_val = self.stack[func_pos];
 
@@ -814,43 +855,58 @@ impl Vm {
         }
 
         let obj_idx = func_val.as_object_index();
-        let (func_index, closure_obj) = match self.heap.get(obj_idx) {
+        let call_kind = match self.heap.get(obj_idx) {
             Some(obj) => match &obj.kind {
-                ObjectKind::Function(fi) => (*fi as usize, None),
-                ObjectKind::Closure(fi, _) => (*fi as usize, Some(obj_idx)),
+                ObjectKind::Function(fi) => CallKind::Js(*fi as usize, None),
+                ObjectKind::Closure(fi, _) => CallKind::Js(*fi as usize, Some(obj_idx)),
+                ObjectKind::NativeFunction(ni) => CallKind::Native(*ni),
                 _ => return Err(JsError::type_error("not a function")),
             },
             None => return Err(JsError::type_error("not a function")),
         };
 
-        if func_index >= functions.len() {
-            return Err(JsError::internal("invalid function index"));
+        match call_kind {
+            CallKind::Native(native_idx) => {
+                // Collect args and call native function
+                let args: Vec<JsValue> = self.stack[func_pos + 1..].to_vec();
+                // Remove func + args from stack
+                self.stack.truncate(func_pos);
+                let func = self.native_functions[native_idx as usize].func;
+                let result = func(&args, strings, &mut self.heap)?;
+                self.push(result)?;
+                Ok(())
+            }
+            CallKind::Js(func_index, closure_obj) => {
+                if func_index >= functions.len() {
+                    return Err(JsError::internal("invalid function index"));
+                }
+
+                if self.frames.len() >= MAX_CALL_DEPTH {
+                    return Err(JsError::range_error("maximum call stack size exceeded"));
+                }
+
+                let func = &functions[func_index];
+                let needed_locals = func.local_count as usize;
+
+                // Remove the function value from the stack, shifting args down
+                self.stack.remove(func_pos);
+                let base = func_pos;
+
+                // Pad with undefined if fewer args than params
+                while self.stack.len() - base < needed_locals {
+                    self.stack.push(JsValue::undefined());
+                }
+
+                self.frames.push(CallFrame {
+                    func_index,
+                    ip: 0,
+                    base,
+                    closure_obj,
+                });
+
+                Ok(())
+            }
         }
-
-        if self.frames.len() >= MAX_CALL_DEPTH {
-            return Err(JsError::range_error("maximum call stack size exceeded"));
-        }
-
-        let func = &functions[func_index];
-        let needed_locals = func.local_count as usize;
-
-        // Remove the function value from the stack, shifting args down
-        self.stack.remove(func_pos);
-        let base = func_pos;
-
-        // Pad with undefined if fewer args than params
-        while self.stack.len() - base < needed_locals {
-            self.stack.push(JsValue::undefined());
-        }
-
-        self.frames.push(CallFrame {
-            func_index,
-            ip: 0,
-            base,
-            closure_obj,
-        });
-
-        Ok(())
     }
 
     /// Try to call a built-in method on a value. Returns Err if no built-in matches.
