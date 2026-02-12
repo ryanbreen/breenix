@@ -398,6 +398,35 @@ impl CodeBlock {
                     out.push_str(&format!("{:04}: CallMethod name={} argc={}\n", ip, name_idx, argc));
                     ip += 4;
                 }
+                Some(Op::CreateClosure) => {
+                    let const_idx = self.read_u16(ip + 1);
+                    let upvalue_count = self.read_u8(ip + 3);
+                    out.push_str(&format!(
+                        "{:04}: CreateClosure func={} upvalues={}\n",
+                        ip, const_idx, upvalue_count
+                    ));
+                    ip += 4 + (upvalue_count as usize) * 3;
+                }
+                Some(Op::LoadUpvalue) => {
+                    let idx = self.read_u16(ip + 1);
+                    out.push_str(&format!("{:04}: LoadUpvalue {}\n", ip, idx));
+                    ip += 3;
+                }
+                Some(Op::StoreUpvalue) => {
+                    let idx = self.read_u16(ip + 1);
+                    out.push_str(&format!("{:04}: StoreUpvalue {}\n", ip, idx));
+                    ip += 3;
+                }
+                Some(Op::SetPropertyConst) | Some(Op::GetPropertyConst) => {
+                    let idx = self.read_u16(ip + 1);
+                    out.push_str(&format!("{:04}: {:?} {}\n", ip, op.unwrap(), idx));
+                    ip += 3;
+                }
+                Some(Op::CreateArray) => {
+                    let count = self.read_u16(ip + 1);
+                    out.push_str(&format!("{:04}: CreateArray count={}\n", ip, count));
+                    ip += 3;
+                }
                 Some(op) => {
                     out.push_str(&format!("{:04}: {:?}\n", ip, op));
                     ip += 1;

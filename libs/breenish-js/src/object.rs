@@ -23,7 +23,7 @@ struct Property {
 }
 
 /// Object kind determines special behavior.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ObjectKind {
     /// A plain object `{}`.
     Ordinary,
@@ -31,6 +31,8 @@ pub enum ObjectKind {
     Array,
     /// A function object (index into function table).
     Function(u32),
+    /// A closure (function index + captured upvalue values).
+    Closure(u32, Vec<JsValue>),
 }
 
 /// A JavaScript object with named properties and optional indexed storage.
@@ -44,6 +46,8 @@ pub struct JsObject {
     elements: Vec<JsValue>,
     /// Prototype object index (None = null prototype).
     pub prototype: Option<u32>,
+    /// GC mark bit for mark-sweep collection.
+    pub marked: bool,
 }
 
 impl JsObject {
@@ -54,6 +58,7 @@ impl JsObject {
             properties: Vec::new(),
             elements: Vec::new(),
             prototype: None,
+            marked: false,
         }
     }
 
@@ -64,6 +69,7 @@ impl JsObject {
             properties: Vec::new(),
             elements: Vec::new(),
             prototype: None,
+            marked: false,
         }
     }
 
@@ -74,6 +80,18 @@ impl JsObject {
             properties: Vec::new(),
             elements: Vec::new(),
             prototype: None,
+            marked: false,
+        }
+    }
+
+    /// Create a new closure object (function + captured upvalue values).
+    pub fn new_closure(func_index: u32, upvalues: Vec<JsValue>) -> Self {
+        Self {
+            kind: ObjectKind::Closure(func_index, upvalues),
+            properties: Vec::new(),
+            elements: Vec::new(),
+            prototype: None,
+            marked: false,
         }
     }
 
@@ -161,6 +179,23 @@ impl JsObject {
     pub fn property_count(&self) -> usize {
         self.properties.len()
     }
+
+    /// Iterate over all JsValues referenced by this object (for GC tracing).
+    pub fn referenced_values(&self) -> Vec<JsValue> {
+        let mut refs = Vec::new();
+        for prop in &self.properties {
+            refs.push(prop.value);
+        }
+        for elem in &self.elements {
+            refs.push(*elem);
+        }
+        if let ObjectKind::Closure(_, ref upvalues) = self.kind {
+            for uv in upvalues {
+                refs.push(*uv);
+            }
+        }
+        refs
+    }
 }
 
 /// A managed object heap.
@@ -215,5 +250,59 @@ impl ObjectHeap {
     /// Get the total number of live objects.
     pub fn live_count(&self) -> usize {
         self.objects.iter().filter(|o| o.is_some()).count()
+    }
+
+    /// Clear all mark bits in preparation for a mark phase.
+    pub fn unmark_all(&mut self) {
+        for slot in &mut self.objects {
+            if let Some(obj) = slot {
+                obj.marked = false;
+            }
+        }
+    }
+
+    /// Mark an object as reachable and recursively mark all objects it references.
+    /// Returns without action if the object is already marked or doesn't exist.
+    pub fn mark(&mut self, index: u32) {
+        let idx = index as usize;
+        if idx >= self.objects.len() {
+            return;
+        }
+        if let Some(ref obj) = self.objects[idx] {
+            if obj.marked {
+                return;
+            }
+        } else {
+            return;
+        }
+
+        // Mark this object
+        self.objects[idx].as_mut().unwrap().marked = true;
+
+        // Collect values that reference other objects, then mark them
+        let refs = self.objects[idx].as_ref().unwrap().referenced_values();
+        if let Some(proto) = self.objects[idx].as_ref().unwrap().prototype {
+            self.mark(proto);
+        }
+        for val in refs {
+            if val.is_object() {
+                self.mark(val.as_object_index());
+            }
+        }
+    }
+
+    /// Sweep phase: free all unmarked objects and return the number freed.
+    pub fn sweep(&mut self) -> usize {
+        let mut freed = 0;
+        for i in 0..self.objects.len() {
+            if let Some(ref obj) = self.objects[i] {
+                if !obj.marked {
+                    self.objects[i] = None;
+                    self.free_list.push(i as u32);
+                    freed += 1;
+                }
+            }
+        }
+        freed
     }
 }

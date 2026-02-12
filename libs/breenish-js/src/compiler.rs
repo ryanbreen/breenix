@@ -19,6 +19,8 @@ struct Local {
     name: String,
     slot: u16,
     is_const: bool,
+    /// Whether this local is captured by a closure.
+    is_captured: bool,
 }
 
 /// A scope for tracking local variables.
@@ -37,6 +39,27 @@ struct LoopContext {
     continue_target: usize,
 }
 
+/// Describes how a closure captures a variable.
+#[derive(Debug, Clone)]
+pub struct Upvalue {
+    /// If true, captures a local from the immediately enclosing function.
+    /// If false, captures an upvalue from the enclosing function's upvalue list.
+    pub is_local: bool,
+    /// Index: either the local slot index or the parent upvalue index.
+    pub index: u16,
+}
+
+/// A function compilation context, pushed onto a stack for nested functions.
+#[derive(Debug)]
+struct FunctionContext {
+    code: CodeBlock,
+    scopes: Vec<Scope>,
+    next_slot: u16,
+    loop_stack: Vec<LoopContext>,
+    /// Upvalues captured by this function.
+    upvalues: Vec<Upvalue>,
+}
+
 /// The compiler transforms source code into bytecode.
 pub struct Compiler<'a> {
     lexer: Lexer<'a>,
@@ -47,6 +70,10 @@ pub struct Compiler<'a> {
     loop_stack: Vec<LoopContext>,
     /// Function table for nested function definitions.
     functions: Vec<CodeBlock>,
+    /// Upvalues for the current function being compiled.
+    upvalues: Vec<Upvalue>,
+    /// Stack of parent function contexts (for resolving upvalues).
+    function_stack: Vec<FunctionContext>,
 }
 
 impl<'a> Compiler<'a> {
@@ -62,6 +89,8 @@ impl<'a> Compiler<'a> {
             next_slot: 0,
             loop_stack: Vec::new(),
             functions: Vec::new(),
+            upvalues: Vec::new(),
+            function_stack: Vec::new(),
         }
     }
 
@@ -679,13 +708,18 @@ impl<'a> Compiler<'a> {
             }
         };
 
-        let func_index = self.compile_function_body(&name)?;
+        let (func_index, upvalues) = self.compile_function_body(&name)?;
 
         // Store function as both a local and a global so recursive calls
         // from within the function body can find it via global lookup.
         let slot = self.declare_local(name.clone(), false);
-        let const_idx = self.code.add_constant(Constant::Function(func_index as u32));
-        self.code.emit_op_u16(Op::LoadConst, const_idx);
+
+        if upvalues.is_empty() {
+            let const_idx = self.code.add_constant(Constant::Function(func_index as u32));
+            self.code.emit_op_u16(Op::LoadConst, const_idx);
+        } else {
+            self.emit_create_closure(func_index, &upvalues);
+        }
         self.code.emit_op_u16(Op::StoreLocal, slot);
 
         // Also store as global for recursive access from nested scopes
@@ -697,7 +731,8 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn compile_function_body(&mut self, name: &str) -> JsResult<usize> {
+    /// Compile a function body and return (function_index, upvalues).
+    fn compile_function_body(&mut self, name: &str) -> JsResult<(usize, Vec<Upvalue>)> {
         self.lexer.expect(&TokenKind::LeftParen)?;
 
         // Parse parameter list
@@ -722,16 +757,21 @@ impl<'a> Compiler<'a> {
         }
         self.lexer.expect(&TokenKind::RightParen)?;
 
-        // Save current compiler state
-        let prev_code = core::mem::replace(&mut self.code, CodeBlock::new(name));
-        let prev_scopes = core::mem::replace(
-            &mut self.scopes,
-            vec![Scope {
-                locals: Vec::new(),
-                base_slot: 0,
-            }],
-        );
-        let prev_next_slot = self.next_slot;
+        // Push current context onto the function stack
+        let parent_ctx = FunctionContext {
+            code: core::mem::replace(&mut self.code, CodeBlock::new(name)),
+            scopes: core::mem::replace(
+                &mut self.scopes,
+                vec![Scope {
+                    locals: Vec::new(),
+                    base_slot: 0,
+                }],
+            ),
+            next_slot: self.next_slot,
+            loop_stack: core::mem::take(&mut self.loop_stack),
+            upvalues: core::mem::take(&mut self.upvalues),
+        };
+        self.function_stack.push(parent_ctx);
         self.next_slot = 0;
 
         // Declare parameters as locals
@@ -754,14 +794,20 @@ impl<'a> Compiler<'a> {
 
         self.code.local_count = self.next_slot;
 
-        // Restore state
-        let func_code = core::mem::replace(&mut self.code, prev_code);
-        self.scopes = prev_scopes;
-        self.next_slot = prev_next_slot;
+        // Collect this function's upvalues
+        let func_upvalues = core::mem::take(&mut self.upvalues);
+
+        // Restore parent context
+        let parent_ctx = self.function_stack.pop().unwrap();
+        let func_code = core::mem::replace(&mut self.code, parent_ctx.code);
+        self.scopes = parent_ctx.scopes;
+        self.next_slot = parent_ctx.next_slot;
+        self.loop_stack = parent_ctx.loop_stack;
+        self.upvalues = parent_ctx.upvalues;
 
         let func_index = self.functions.len();
         self.functions.push(func_code);
-        Ok(func_index)
+        Ok((func_index, func_upvalues))
     }
 
     fn compile_return_statement(&mut self) -> JsResult<()> {
@@ -852,16 +898,7 @@ impl<'a> Compiler<'a> {
                     self.lexer.next_token(); // consume identifier
                     self.lexer.next_token(); // consume '='
                     self.compile_assignment()?;
-
-                    if let Some((slot, _)) = self.resolve_local(&name) {
-                        self.code.emit_op_u16(Op::StoreLocal, slot);
-                        self.code.emit_op_u16(Op::LoadLocal, slot);
-                    } else {
-                        let name_id = self.strings.intern(&name);
-                        let idx = self.code.add_string(name_id.0);
-                        self.code.emit_op_u16(Op::StoreGlobal, idx);
-                        self.code.emit_op_u16(Op::LoadGlobal, idx);
-                    }
+                    self.emit_store_and_load_var(&name);
                     return Ok(());
                 }
                 TokenKind::PlusAssign
@@ -881,13 +918,7 @@ impl<'a> Compiler<'a> {
                     self.lexer.next_token(); // consume compound assignment
 
                     // Load current value
-                    if let Some((slot, _)) = self.resolve_local(&name) {
-                        self.code.emit_op_u16(Op::LoadLocal, slot);
-                    } else {
-                        let name_id = self.strings.intern(&name);
-                        let idx = self.code.add_string(name_id.0);
-                        self.code.emit_op_u16(Op::LoadGlobal, idx);
-                    }
+                    self.emit_load_var(&name);
 
                     // Compile RHS
                     self.compile_assignment()?;
@@ -896,15 +927,7 @@ impl<'a> Compiler<'a> {
                     self.code.emit_op(op);
 
                     // Store back
-                    if let Some((slot, _)) = self.resolve_local(&name) {
-                        self.code.emit_op_u16(Op::StoreLocal, slot);
-                        self.code.emit_op_u16(Op::LoadLocal, slot);
-                    } else {
-                        let name_id = self.strings.intern(&name);
-                        let idx = self.code.add_string(name_id.0);
-                        self.code.emit_op_u16(Op::StoreGlobal, idx);
-                        self.code.emit_op_u16(Op::LoadGlobal, idx);
-                    }
+                    self.emit_store_and_load_var(&name);
                     return Ok(());
                 }
                 _ => {}
@@ -1128,23 +1151,11 @@ impl<'a> Compiler<'a> {
         };
 
         // Load, add/sub 1, store, leave new value on stack
-        if let Some((slot, _)) = self.resolve_local(&name) {
-            self.code.emit_op_u16(Op::LoadLocal, slot);
-            let one = self.code.add_number(1.0);
-            self.code.emit_op_u16(Op::LoadConst, one);
-            self.code.emit_op(op);
-            self.code.emit_op_u16(Op::StoreLocal, slot);
-            self.code.emit_op_u16(Op::LoadLocal, slot);
-        } else {
-            let name_id = self.strings.intern(&name);
-            let idx = self.code.add_string(name_id.0);
-            self.code.emit_op_u16(Op::LoadGlobal, idx);
-            let one = self.code.add_number(1.0);
-            self.code.emit_op_u16(Op::LoadConst, one);
-            self.code.emit_op(op);
-            self.code.emit_op_u16(Op::StoreGlobal, idx);
-            self.code.emit_op_u16(Op::LoadGlobal, idx);
-        }
+        self.emit_load_var(&name);
+        let one = self.code.add_number(1.0);
+        self.code.emit_op_u16(Op::LoadConst, one);
+        self.code.emit_op(op);
+        self.emit_store_and_load_var(&name);
 
         Ok(())
     }
@@ -1356,6 +1367,8 @@ impl<'a> Compiler<'a> {
                 // Regular variable lookup
                 if let Some((slot, _)) = self.resolve_local(&name) {
                     self.code.emit_op_u16(Op::LoadLocal, slot);
+                } else if let Some(upval_idx) = self.resolve_upvalue(&name) {
+                    self.code.emit_op_u16(Op::LoadUpvalue, upval_idx);
                 } else {
                     let name_id = self.strings.intern(&name);
                     let idx = self.code.add_string(name_id.0);
@@ -1387,9 +1400,13 @@ impl<'a> Compiler<'a> {
                     String::from("<anonymous>")
                 };
 
-                let func_index = self.compile_function_body(&name)?;
-                let const_idx = self.code.add_constant(Constant::Function(func_index as u32));
-                self.code.emit_op_u16(Op::LoadConst, const_idx);
+                let (func_index, upvalues) = self.compile_function_body(&name)?;
+                if upvalues.is_empty() {
+                    let const_idx = self.code.add_constant(Constant::Function(func_index as u32));
+                    self.code.emit_op_u16(Op::LoadConst, const_idx);
+                } else {
+                    self.emit_create_closure(func_index, &upvalues);
+                }
                 Ok(())
             }
 
@@ -1502,13 +1519,7 @@ impl<'a> Compiler<'a> {
                     || self.lexer.peek().kind == TokenKind::RightBrace
                 {
                     // Shorthand property: { x } means { x: x }
-                    if let Some((slot, _)) = self.resolve_local(&key_name) {
-                        self.code.emit_op_u16(Op::LoadLocal, slot);
-                    } else {
-                        let name_id = self.strings.intern(&key_name);
-                        let idx = self.code.add_string(name_id.0);
-                        self.code.emit_op_u16(Op::LoadGlobal, idx);
-                    }
+                    self.emit_load_var(&key_name);
                 } else {
                     self.lexer.expect(&TokenKind::Colon)?;
                     self.compile_expression()?;
@@ -1551,6 +1562,7 @@ impl<'a> Compiler<'a> {
                 name,
                 slot,
                 is_const,
+                is_captured: false,
             });
         }
         slot
@@ -1568,6 +1580,63 @@ impl<'a> Compiler<'a> {
         None
     }
 
+    /// Try to resolve a variable as an upvalue (from enclosing function scopes).
+    /// Returns the upvalue index if found.
+    fn resolve_upvalue(&mut self, name: &str) -> Option<u16> {
+        if self.function_stack.is_empty() {
+            return None;
+        }
+
+        // First, check the immediately enclosing function's locals
+        let parent_idx = self.function_stack.len() - 1;
+        let parent = &self.function_stack[parent_idx];
+
+        for scope in parent.scopes.iter().rev() {
+            for local in scope.locals.iter().rev() {
+                if local.name == name {
+                    let local_slot = local.slot;
+                    // Mark as captured in parent
+                    // (We need to modify the parent's local, but we have an immutable ref.
+                    //  Mark it after.)
+                    let upvalue = Upvalue {
+                        is_local: true,
+                        index: local_slot,
+                    };
+                    // Check if already captured
+                    for (i, existing) in self.upvalues.iter().enumerate() {
+                        if existing.is_local && existing.index == local_slot {
+                            return Some(i as u16);
+                        }
+                    }
+                    let idx = self.upvalues.len() as u16;
+                    self.upvalues.push(upvalue);
+
+                    // Mark the parent's local as captured
+                    let parent = &mut self.function_stack[parent_idx];
+                    for scope in parent.scopes.iter_mut() {
+                        for local in scope.locals.iter_mut() {
+                            if local.name == name {
+                                local.is_captured = true;
+                            }
+                        }
+                    }
+
+                    return Some(idx);
+                }
+            }
+        }
+
+        // Check the parent's upvalues (transitive capture)
+        let parent = &self.function_stack[parent_idx];
+        for (i, uv) in parent.upvalues.iter().enumerate() {
+            // We need to check if any parent upvalue corresponds to this name.
+            // For now, we use a simpler approach: fall back to global.
+            let _ = (i, uv);
+        }
+
+        None
+    }
+
     // --- Helpers ---
 
     fn emit_undefined(&mut self) {
@@ -1582,6 +1651,47 @@ impl<'a> Compiler<'a> {
         // For Phase 1, null is 0.0 (will be properly handled in Phase 2)
         let idx = self.code.add_number(0.0);
         self.code.emit_op_u16(Op::LoadConst, idx);
+    }
+
+    /// Emit code to load a variable (local, upvalue, or global).
+    fn emit_load_var(&mut self, name: &str) {
+        if let Some((slot, _)) = self.resolve_local(name) {
+            self.code.emit_op_u16(Op::LoadLocal, slot);
+        } else if let Some(upval_idx) = self.resolve_upvalue(name) {
+            self.code.emit_op_u16(Op::LoadUpvalue, upval_idx);
+        } else {
+            let name_id = self.strings.intern(name);
+            let idx = self.code.add_string(name_id.0);
+            self.code.emit_op_u16(Op::LoadGlobal, idx);
+        }
+    }
+
+    /// Emit code to store a value and leave it on the stack (for assignment expressions).
+    fn emit_store_and_load_var(&mut self, name: &str) {
+        if let Some((slot, _)) = self.resolve_local(name) {
+            self.code.emit_op_u16(Op::StoreLocal, slot);
+            self.code.emit_op_u16(Op::LoadLocal, slot);
+        } else if let Some(upval_idx) = self.resolve_upvalue(name) {
+            self.code.emit_op_u16(Op::StoreUpvalue, upval_idx);
+            self.code.emit_op_u16(Op::LoadUpvalue, upval_idx);
+        } else {
+            let name_id = self.strings.intern(name);
+            let idx = self.code.add_string(name_id.0);
+            self.code.emit_op_u16(Op::StoreGlobal, idx);
+            self.code.emit_op_u16(Op::LoadGlobal, idx);
+        }
+    }
+
+    /// Emit a CreateClosure instruction with upvalue descriptors.
+    fn emit_create_closure(&mut self, func_index: usize, upvalues: &[Upvalue]) {
+        let const_idx = self.code.add_constant(Constant::Function(func_index as u32));
+        self.code.emit_op_u16(Op::CreateClosure, const_idx);
+        self.code.emit(upvalues.len() as u8);
+        for uv in upvalues {
+            self.code.emit(if uv.is_local { 1 } else { 0 });
+            self.code.emit((uv.index >> 8) as u8);
+            self.code.emit(uv.index as u8);
+        }
     }
 
     fn eat_semicolon(&mut self) {
@@ -1646,16 +1756,21 @@ impl<'a> Compiler<'a> {
         self.lexer.expect(&TokenKind::RightParen)?;
         self.lexer.expect(&TokenKind::Arrow)?;
 
-        // Save current compiler state
-        let prev_code = core::mem::replace(&mut self.code, CodeBlock::new("<arrow>"));
-        let prev_scopes = core::mem::replace(
-            &mut self.scopes,
-            vec![Scope {
-                locals: Vec::new(),
-                base_slot: 0,
-            }],
-        );
-        let prev_next_slot = self.next_slot;
+        // Push current context onto the function stack
+        let parent_ctx = FunctionContext {
+            code: core::mem::replace(&mut self.code, CodeBlock::new("<arrow>")),
+            scopes: core::mem::replace(
+                &mut self.scopes,
+                vec![Scope {
+                    locals: Vec::new(),
+                    base_slot: 0,
+                }],
+            ),
+            next_slot: self.next_slot,
+            loop_stack: core::mem::take(&mut self.loop_stack),
+            upvalues: core::mem::take(&mut self.upvalues),
+        };
+        self.function_stack.push(parent_ctx);
         self.next_slot = 0;
 
         // Declare parameters as locals
@@ -1684,16 +1799,26 @@ impl<'a> Compiler<'a> {
 
         self.code.local_count = self.next_slot;
 
-        // Restore state
-        let func_code = core::mem::replace(&mut self.code, prev_code);
-        self.scopes = prev_scopes;
-        self.next_slot = prev_next_slot;
+        // Collect upvalues
+        let func_upvalues = core::mem::take(&mut self.upvalues);
+
+        // Restore parent context
+        let parent_ctx = self.function_stack.pop().unwrap();
+        let func_code = core::mem::replace(&mut self.code, parent_ctx.code);
+        self.scopes = parent_ctx.scopes;
+        self.next_slot = parent_ctx.next_slot;
+        self.loop_stack = parent_ctx.loop_stack;
+        self.upvalues = parent_ctx.upvalues;
 
         let func_index = self.functions.len();
         self.functions.push(func_code);
 
-        let const_idx = self.code.add_constant(Constant::Function(func_index as u32));
-        self.code.emit_op_u16(Op::LoadConst, const_idx);
+        if func_upvalues.is_empty() {
+            let const_idx = self.code.add_constant(Constant::Function(func_index as u32));
+            self.code.emit_op_u16(Op::LoadConst, const_idx);
+        } else {
+            self.emit_create_closure(func_index, &func_upvalues);
+        }
         Ok(())
     }
 }

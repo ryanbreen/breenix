@@ -27,6 +27,9 @@ struct CallFrame {
     ip: usize,
     /// Base index in the value stack for this frame's locals.
     base: usize,
+    /// If this frame executes a closure, the heap index of the closure object.
+    /// Upvalues are read/written directly on the heap object.
+    closure_obj: Option<u32>,
 }
 
 /// A global variable.
@@ -97,6 +100,7 @@ impl Vm {
             func_index: usize::MAX,
             ip: 0,
             base: 0,
+            closure_obj: None,
         });
 
         self.run(code, strings, functions)
@@ -351,9 +355,9 @@ impl Vm {
                 Op::TypeOf => {
                     let a = self.pop();
                     let type_name = if a.is_object() {
-                        // Check if it's a function
+                        // Check if it's a function or closure
                         if let Some(obj) = self.heap.get(a.as_object_index()) {
-                            if matches!(obj.kind, ObjectKind::Function(_)) {
+                            if matches!(obj.kind, ObjectKind::Function(_) | ObjectKind::Closure(_, _)) {
                                 "function"
                             } else {
                                 "object"
@@ -615,9 +619,85 @@ impl Vm {
                     }
                 }
 
-                // Closure operations (Phase 2 stubs - full implementation later)
-                Op::CreateClosure | Op::LoadUpvalue | Op::StoreUpvalue => {
-                    return Err(JsError::internal("closures not yet implemented"));
+                Op::CreateClosure => {
+                    let const_idx = self.read_u16_advance(code) as usize;
+                    let upvalue_count = self.read_u8_advance(code) as usize;
+
+                    let func_idx = match &code.constants[const_idx] {
+                        Constant::Function(fi) => *fi,
+                        _ => return Err(JsError::internal("CreateClosure: expected function constant")),
+                    };
+
+                    let mut captured = Vec::with_capacity(upvalue_count);
+                    for _ in 0..upvalue_count {
+                        let is_local = self.read_u8_advance(code) != 0;
+                        let hi = self.read_u8_advance(code) as u16;
+                        let lo = self.read_u8_advance(code) as u16;
+                        let index = ((hi << 8) | lo) as usize;
+
+                        if is_local {
+                            // Capture from current frame's local variables
+                            let base = self.current_base();
+                            let val = self.stack[base + index];
+                            captured.push(val);
+                        } else {
+                            // Capture from current frame's closure upvalues
+                            let closure_obj_idx = self.frames.last().unwrap().closure_obj;
+                            if let Some(obj_idx) = closure_obj_idx {
+                                if let Some(obj) = self.heap.get(obj_idx) {
+                                    if let ObjectKind::Closure(_, ref upvals) = obj.kind {
+                                        captured.push(
+                                            upvals.get(index).copied().unwrap_or(JsValue::undefined()),
+                                        );
+                                    } else {
+                                        captured.push(JsValue::undefined());
+                                    }
+                                } else {
+                                    captured.push(JsValue::undefined());
+                                }
+                            } else {
+                                captured.push(JsValue::undefined());
+                            }
+                        }
+                    }
+
+                    let obj = JsObject::new_closure(func_idx, captured);
+                    let obj_idx = self.heap.alloc(obj);
+                    self.push(JsValue::object(obj_idx))?;
+                }
+
+                Op::LoadUpvalue => {
+                    let upval_idx = self.read_u16_advance(code) as usize;
+                    let closure_obj_idx = self.frames.last().unwrap().closure_obj;
+                    let val = if let Some(obj_idx) = closure_obj_idx {
+                        if let Some(obj) = self.heap.get(obj_idx) {
+                            if let ObjectKind::Closure(_, ref upvals) = obj.kind {
+                                upvals.get(upval_idx).copied().unwrap_or(JsValue::undefined())
+                            } else {
+                                JsValue::undefined()
+                            }
+                        } else {
+                            JsValue::undefined()
+                        }
+                    } else {
+                        JsValue::undefined()
+                    };
+                    self.push(val)?;
+                }
+
+                Op::StoreUpvalue => {
+                    let upval_idx = self.read_u16_advance(code) as usize;
+                    let val = self.pop();
+                    let closure_obj_idx = self.frames.last().unwrap().closure_obj;
+                    if let Some(obj_idx) = closure_obj_idx {
+                        if let Some(obj) = self.heap.get_mut(obj_idx) {
+                            if let ObjectKind::Closure(_, ref mut upvals) = obj.kind {
+                                if upval_idx < upvals.len() {
+                                    upvals[upval_idx] = val;
+                                }
+                            }
+                        }
+                    }
                 }
 
                 Op::Halt => {
@@ -641,9 +721,10 @@ impl Vm {
         }
 
         let obj_idx = func_val.as_object_index();
-        let func_index = match self.heap.get(obj_idx) {
-            Some(obj) => match obj.kind {
-                ObjectKind::Function(fi) => fi as usize,
+        let (func_index, closure_obj) = match self.heap.get(obj_idx) {
+            Some(obj) => match &obj.kind {
+                ObjectKind::Function(fi) => (*fi as usize, None),
+                ObjectKind::Closure(fi, _) => (*fi as usize, Some(obj_idx)),
                 _ => return Err(JsError::type_error("not a function")),
             },
             None => return Err(JsError::type_error("not a function")),
@@ -673,6 +754,7 @@ impl Vm {
             func_index,
             ip: 0,
             base,
+            closure_obj,
         });
 
         Ok(())
@@ -697,12 +779,14 @@ impl Vm {
         }
 
         let obj_idx = obj_val.as_object_index();
-        let kind = self.heap.get(obj_idx)
-            .ok_or_else(|| JsError::internal("CallMethod: invalid object"))?
-            .kind;
+        let is_array = {
+            let obj = self.heap.get(obj_idx)
+                .ok_or_else(|| JsError::internal("CallMethod: invalid object"))?;
+            obj.kind == ObjectKind::Array
+        };
 
         // Array built-in methods
-        if kind == ObjectKind::Array {
+        if is_array {
             return self.call_array_method(obj_idx, method_name, args, strings);
         }
 
@@ -1136,5 +1220,47 @@ impl Vm {
         } else {
             value.to_number_string()
         }
+    }
+
+    /// Clear all GC roots (stack, frames, globals). Used for testing.
+    pub fn clear_roots(&mut self) {
+        self.stack.clear();
+        self.frames.clear();
+        self.globals.clear();
+    }
+
+    /// Run garbage collection (mark-sweep).
+    ///
+    /// Marks all objects reachable from roots (stack, globals, call frames),
+    /// then frees unreachable objects. Returns the number of objects freed.
+    pub fn gc(&mut self) -> usize {
+        // Phase 1: Clear all marks
+        self.heap.unmark_all();
+
+        // Phase 2: Mark from roots
+
+        // Mark objects on the value stack
+        for val in &self.stack {
+            if val.is_object() {
+                self.heap.mark(val.as_object_index());
+            }
+        }
+
+        // Mark objects in globals
+        for g in &self.globals {
+            if g.value.is_object() {
+                self.heap.mark(g.value.as_object_index());
+            }
+        }
+
+        // Mark closure objects referenced by call frames
+        for frame in &self.frames {
+            if let Some(obj_idx) = frame.closure_obj {
+                self.heap.mark(obj_idx);
+            }
+        }
+
+        // Phase 3: Sweep unreachable objects
+        self.heap.sweep()
     }
 }

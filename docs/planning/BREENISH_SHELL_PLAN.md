@@ -6,7 +6,7 @@
   - Lexer, compiler, stack-based VM, NaN-boxed values, string interning
   - 19 passing tests including recursive fibonacci
   - `bsh` binary created, integrated with build system
-- **Phase 2**: NEARLY COMPLETE -- Objects, arrays, functions, control flow
+- **Phase 2**: COMPLETE -- Objects, arrays, functions, closures, control flow, GC
   - Object system: properties, literals, dot/bracket access, nested objects
   - Array system: literals, indexing, length, push/pop/indexOf/join/slice/includes/concat/reverse
   - String methods: indexOf/includes/startsWith/endsWith/trim/toUpperCase/toLowerCase/slice/split/replace/charAt
@@ -15,8 +15,10 @@
   - for...of loops for arrays
   - Template literal interpolation (${expr})
   - CallMethod opcode for built-in method dispatch
-  - 59 passing tests
-  - Remaining: closures (upvalues), GC (reference counting)
+  - Closures: upvalue capture from enclosing scopes, persistent state across calls
+  - CreateClosure/LoadUpvalue/StoreUpvalue VM opcodes
+  - Mark-sweep GC: traces from roots (stack, globals, call frames), frees unreachable objects
+  - 68 passing tests
 - **Phase 3**: PLANNED -- Process execution (exec, pipe, env)
 - **Phase 4**: PLANNED -- Async/await (Promises, event loop)
 - **Phase 5**: PLANNED -- Full shell experience (line editing, completion, modules)

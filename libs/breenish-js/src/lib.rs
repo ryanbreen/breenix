@@ -605,4 +605,137 @@ mod tests {
             "2 + 3 = 5\n"
         );
     }
+
+    // --- Closure tests ---
+
+    #[test]
+    fn test_closure_basic_capture() {
+        assert_eq!(
+            eval_and_capture(
+                "function makeAdder(x) { return (y) => x + y; } let add5 = makeAdder(5); print(add5(3));"
+            ),
+            "8\n"
+        );
+    }
+
+    #[test]
+    fn test_closure_counter() {
+        assert_eq!(
+            eval_and_capture(
+                "function makeCounter() { let count = 0; return () => { count += 1; return count; }; } let c = makeCounter(); print(c(), c(), c());"
+            ),
+            "1 2 3\n"
+        );
+    }
+
+    #[test]
+    fn test_closure_preserves_environment() {
+        assert_eq!(
+            eval_and_capture(
+                "function outer(x) { function inner() { return x * 2; } return inner(); } print(outer(21));"
+            ),
+            "42\n"
+        );
+    }
+
+    #[test]
+    fn test_closure_arrow_capture() {
+        assert_eq!(
+            eval_and_capture(
+                "function make() { let val = 10; return () => val; } print(make()());"
+            ),
+            "10\n"
+        );
+    }
+
+    #[test]
+    fn test_closure_multiple_captures() {
+        assert_eq!(
+            eval_and_capture(
+                "function f(a, b) { return () => a + b; } let g = f(3, 4); print(g());"
+            ),
+            "7\n"
+        );
+    }
+
+    // --- GC tests ---
+
+    #[test]
+    fn test_gc_frees_unreachable_objects() {
+        let mut ctx = Context::new();
+        ctx.set_print_fn(capture_print);
+        // Create objects then clear all VM state so everything is unreachable
+        ctx.eval("let x = { a: 1 }; let y = [1, 2, 3];").unwrap();
+        assert!(ctx.vm.heap.live_count() > 0, "should have allocated objects");
+        // Clear roots manually so all objects become unreachable
+        ctx.vm.clear_roots();
+        ctx.vm.gc();
+        assert_eq!(ctx.vm.heap.live_count(), 0, "GC should free all objects when no roots exist");
+    }
+
+    #[test]
+    fn test_gc_preserves_stack_roots() {
+        let mut ctx = Context::new();
+        ctx.set_print_fn(capture_print);
+        // After eval, Halt pops one value but leaves remaining locals on the stack.
+        // Those remaining locals should be preserved by GC.
+        ctx.eval("let x = { a: 1 }; let y = [1, 2, 3];").unwrap();
+        let before = ctx.vm.heap.live_count();
+        ctx.vm.gc();
+        let after = ctx.vm.heap.live_count();
+        // At least one object should survive (whatever is still on the stack)
+        assert!(after > 0, "GC should preserve objects still on the stack");
+        assert!(after <= before, "GC should not create objects");
+    }
+
+    #[test]
+    fn test_gc_heap_mark_sweep_mechanics() {
+        use crate::object::{JsObject, ObjectHeap};
+        // Test the mark/sweep mechanics directly
+        let mut heap = ObjectHeap::new();
+        let a = heap.alloc(JsObject::new());
+        let b = heap.alloc(JsObject::new());
+        let c = heap.alloc(JsObject::new());
+        assert_eq!(heap.live_count(), 3);
+
+        // Mark only 'a', sweep should free b and c
+        heap.unmark_all();
+        heap.mark(a);
+        let freed = heap.sweep();
+        assert_eq!(freed, 2);
+        assert_eq!(heap.live_count(), 1);
+        assert!(heap.get(a).is_some());
+        assert!(heap.get(b).is_none());
+        assert!(heap.get(c).is_none());
+    }
+
+    #[test]
+    fn test_gc_mark_traces_object_graph() {
+        use crate::object::{JsObject, ObjectHeap};
+        use crate::string::StringPool;
+        // Create an object graph: root -> child -> grandchild
+        let mut heap = ObjectHeap::new();
+        let mut strings = StringPool::new();
+
+        let grandchild = heap.alloc(JsObject::new());
+        let child_idx = {
+            let mut child = JsObject::new();
+            let key = strings.intern("gc");
+            child.set(key, JsValue::object(grandchild));
+            heap.alloc(child)
+        };
+        let root = {
+            let mut root_obj = JsObject::new();
+            let key = strings.intern("child");
+            root_obj.set(key, JsValue::object(child_idx));
+            heap.alloc(root_obj)
+        };
+
+        // Mark only root - child and grandchild should also be marked via tracing
+        heap.unmark_all();
+        heap.mark(root);
+        let freed = heap.sweep();
+        assert_eq!(freed, 0, "all objects reachable from root should survive");
+        assert_eq!(heap.live_count(), 3);
+    }
 }
