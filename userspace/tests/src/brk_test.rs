@@ -1,15 +1,10 @@
 //! brk syscall test program (std version)
 //!
 //! Tests the POSIX-compliant brk() syscall for heap management.
-//! Uses FFI to call brk/sbrk from libbreenix-libc.
 
+use libbreenix::memory;
 use std::process;
 use std::ptr::{read_volatile, write_volatile};
-
-extern "C" {
-    fn brk(addr: *mut u8) -> i32;
-    fn sbrk(increment: isize) -> *mut u8;
-}
 
 fn fail(msg: &str) -> ! {
     println!("USERSPACE BRK: FAIL - {}", msg);
@@ -21,7 +16,7 @@ fn main() {
 
     // Phase 1: Query current program break
     println!("Phase 1: Querying initial program break with sbrk(0)...");
-    let initial_brk = unsafe { sbrk(0) } as usize;
+    let initial_brk = memory::get_brk() as usize;
 
     println!("  Initial break: {:#018x}", initial_brk);
 
@@ -36,11 +31,10 @@ fn main() {
     let new_brk_requested = initial_brk + 4096;
     println!("  Requesting break at: {:#018x}", new_brk_requested);
 
-    let ret = unsafe { brk(new_brk_requested as *mut u8) };
-    let new_brk = unsafe { sbrk(0) } as usize;
+    let new_brk = memory::brk(new_brk_requested as u64) as usize;
     println!("  Returned break: {:#018x}", new_brk);
 
-    if ret != 0 || new_brk < new_brk_requested {
+    if new_brk < new_brk_requested {
         fail("Heap expansion failed");
     }
     println!("  Heap expanded successfully");
@@ -81,10 +75,9 @@ fn main() {
     // Phase 5: Expand again and test second region
     println!("Phase 5: Expanding by another 4KB and testing...");
     let second_brk_requested = new_brk + 4096;
-    let ret = unsafe { brk(second_brk_requested as *mut u8) };
-    let second_brk = unsafe { sbrk(0) } as usize;
+    let second_brk = memory::brk(second_brk_requested as u64) as usize;
 
-    if ret != 0 || second_brk < second_brk_requested {
+    if second_brk < second_brk_requested {
         fail("Second heap expansion failed");
     }
 
@@ -107,11 +100,10 @@ fn main() {
     println!("  Current break: {:#018x}", second_brk);
     println!("  Requesting: {:#018x}", initial_brk);
 
-    let ret = unsafe { brk(initial_brk as *mut u8) };
-    let contracted_brk = unsafe { sbrk(0) } as usize;
+    let contracted_brk = memory::brk(initial_brk as u64) as usize;
     println!("  Returned break: {:#018x}", contracted_brk);
 
-    if ret != 0 || contracted_brk != initial_brk {
+    if contracted_brk != initial_brk {
         println!("  FAIL: Expected break at {:#018x} but got {:#018x}", initial_brk, contracted_brk);
         fail("Heap contraction failed");
     }
@@ -119,10 +111,9 @@ fn main() {
 
     // Phase 7: Verify we can expand again after contraction
     println!("Phase 7: Re-expanding heap after contraction...");
-    let ret = unsafe { brk((initial_brk + 4096) as *mut u8) };
-    let reexpand_brk = unsafe { sbrk(0) } as usize;
+    let reexpand_brk = memory::brk((initial_brk + 4096) as u64) as usize;
 
-    if ret != 0 || reexpand_brk < initial_brk + 4096 {
+    if reexpand_brk < initial_brk + 4096 {
         fail("Re-expansion after contraction failed");
     }
 

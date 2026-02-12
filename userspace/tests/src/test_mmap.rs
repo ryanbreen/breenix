@@ -2,20 +2,8 @@
 //!
 //! Tests mmap, munmap, and mprotect syscalls.
 
+use libbreenix::memory::{mmap, munmap, mprotect, PROT_READ, PROT_WRITE, MAP_PRIVATE, MAP_ANONYMOUS};
 use std::ptr::null_mut;
-
-const PROT_READ: i32 = 0x1;
-const PROT_WRITE: i32 = 0x2;
-const MAP_PRIVATE: i32 = 0x02;
-const MAP_ANONYMOUS: i32 = 0x20;
-const MAP_FAILED: *mut u8 = !0usize as *mut u8;
-
-extern "C" {
-    fn mmap(addr: *mut u8, length: usize, prot: i32, flags: i32, fd: i32, offset: i64)
-        -> *mut u8;
-    fn munmap(addr: *mut u8, length: usize) -> i32;
-    fn mprotect(addr: *mut u8, length: usize, prot: i32) -> i32;
-}
 
 fn main() {
     println!("=== mmap Test Suite ===");
@@ -23,21 +11,20 @@ fn main() {
     // Test 1: Basic anonymous mmap
     println!("Test 1: Anonymous mmap...");
     let size = 4096usize; // One page
-    let ptr = unsafe {
-        mmap(
-            null_mut(),
-            size,
-            PROT_READ | PROT_WRITE,
-            MAP_PRIVATE | MAP_ANONYMOUS,
-            -1,
-            0,
-        )
+    let ptr = match mmap(
+        null_mut(),
+        size,
+        PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS,
+        -1,
+        0,
+    ) {
+        Ok(p) => p,
+        Err(_) => {
+            println!("FAIL: mmap returned error");
+            std::process::exit(1);
+        }
     };
-
-    if ptr == MAP_FAILED {
-        println!("FAIL: mmap returned MAP_FAILED");
-        std::process::exit(1);
-    }
     println!("  mmap succeeded");
 
     // Write a pattern
@@ -68,8 +55,7 @@ fn main() {
 
     // Test 2: munmap
     println!("Test 2: munmap...");
-    let result = unsafe { munmap(ptr, size) };
-    if result == 0 {
+    if munmap(ptr, size).is_ok() {
         println!("  munmap succeeded: PASS");
     } else {
         println!("  munmap failed: FAIL");
@@ -80,21 +66,20 @@ fn main() {
     println!("Test 3: mprotect...");
 
     // Create a new mmap region for mprotect testing
-    let ptr2 = unsafe {
-        mmap(
-            null_mut(),
-            size,
-            PROT_READ | PROT_WRITE,
-            MAP_PRIVATE | MAP_ANONYMOUS,
-            -1,
-            0,
-        )
+    let ptr2 = match mmap(
+        null_mut(),
+        size,
+        PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS,
+        -1,
+        0,
+    ) {
+        Ok(p) => p,
+        Err(_) => {
+            println!("  FAIL: mmap for mprotect test returned error");
+            std::process::exit(1);
+        }
     };
-
-    if ptr2 == MAP_FAILED {
-        println!("  FAIL: mmap for mprotect test returned MAP_FAILED");
-        std::process::exit(1);
-    }
     println!("  mmap for mprotect test succeeded");
 
     // Write a pattern while we have write permission
@@ -106,8 +91,7 @@ fn main() {
     println!("  Write pattern succeeded");
 
     // Change protection to read-only
-    let prot_result = unsafe { mprotect(ptr2, size, PROT_READ) };
-    if prot_result == 0 {
+    if mprotect(ptr2, size, PROT_READ).is_ok() {
         println!("  mprotect to PROT_READ succeeded");
     } else {
         println!("  mprotect failed: FAIL");
@@ -133,8 +117,7 @@ fn main() {
     }
 
     // Clean up
-    let result2 = unsafe { munmap(ptr2, size) };
-    if result2 == 0 {
+    if munmap(ptr2, size).is_ok() {
         println!("  Cleanup munmap: PASS");
     } else {
         println!("  Cleanup munmap: FAIL");

@@ -7,26 +7,13 @@
 //! 3. yield_now in a forked child (to ensure scheduler works)
 //! 4. A short sleep_ms() call in a forked child
 
-#[repr(C)]
-struct Timespec {
-    tv_sec: i64,
-    tv_nsec: i64,
-}
-
-extern "C" {
-    fn clock_gettime(clockid: i32, tp: *mut Timespec) -> i32;
-    fn fork() -> i32;
-    fn getpid() -> i32;
-    fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
-    fn sched_yield() -> i32;
-    fn nanosleep(req: *const Timespec, rem: *mut Timespec) -> i32;
-}
-
-const CLOCK_MONOTONIC: i32 = 1;
+use libbreenix::process::{fork, getpid, waitpid, wifexited, wexitstatus, yield_now, ForkResult};
+use libbreenix::time::{clock_gettime, nanosleep, CLOCK_MONOTONIC};
+use libbreenix::Timespec;
 
 fn now_monotonic() -> Timespec {
-    let mut ts = Timespec { tv_sec: 0, tv_nsec: 0 };
-    unsafe { clock_gettime(CLOCK_MONOTONIC, &mut ts); }
+    let mut ts = Timespec::new();
+    let _ = clock_gettime(CLOCK_MONOTONIC, &mut ts);
     ts
 }
 
@@ -41,21 +28,11 @@ fn sleep_ms(ms: u64) {
         tv_sec: (ms / 1000) as i64,
         tv_nsec: ((ms % 1000) * 1_000_000) as i64,
     };
-    unsafe { nanosleep(&req, std::ptr::null_mut()); }
+    let _ = nanosleep(&req);
 }
 
 fn print_timespec(ts: &Timespec) {
     print!("{{ tv_sec: {}, tv_nsec: {} }}", ts.tv_sec, ts.tv_nsec);
-}
-
-/// Check WIFEXITED: (status & 0x7f) == 0
-fn wifexited(status: i32) -> bool {
-    (status & 0x7f) == 0
-}
-
-/// Get WEXITSTATUS: (status >> 8) & 0xff
-fn wexitstatus(status: i32) -> i32 {
-    (status >> 8) & 0xff
 }
 
 fn main() {
@@ -73,7 +50,7 @@ fn main() {
     println!();
 
     // Small yield
-    unsafe { sched_yield(); }
+    let _ = yield_now();
 
     let t2 = now_monotonic();
     print!("  Second call: ");
@@ -95,131 +72,139 @@ fn main() {
     // =========================================================================
     println!("=== TEST 2: clock_gettime in forked child ===");
 
-    let _parent_pid = unsafe { getpid() };
-    let fork_result = unsafe { fork() };
+    let _parent_pid = getpid().unwrap().raw();
 
-    if fork_result < 0 {
-        println!("  FAIL - fork failed");
-        std::process::exit(2);
-    }
-
-    if fork_result == 0 {
-        // ===== CHILD PROCESS =====
-        let child_pid = unsafe { getpid() };
-        println!("  [CHILD] Forked successfully, PID={}", child_pid);
-
-        // Test 2a: First clock call in child
-        println!("  [CHILD] Getting first timestamp...");
-        let c1 = now_monotonic();
-        print!("  [CHILD] First call:  ");
-        print_timespec(&c1);
-        println!();
-
-        // Test 2b: Yield in child
-        println!("  [CHILD] Calling yield_now()...");
-        unsafe { sched_yield(); }
-        println!("  [CHILD] yield_now() returned");
-
-        // Test 2c: Second clock call in child
-        println!("  [CHILD] Getting second timestamp...");
-        let c2 = now_monotonic();
-        print!("  [CHILD] Second call: ");
-        print_timespec(&c2);
-        println!();
-
-        let c_elapsed = elapsed_ns(&c1, &c2);
-        println!("  [CHILD] Elapsed: {} ns", c_elapsed);
-
-        if c_elapsed < 0 {
-            println!("  [CHILD] WARNING: Time went backwards!");
-        }
-
-        // Test 2d: Manual elapsed time calculation (like sleep_ms does)
-        println!("\n  [CHILD] Testing manual elapsed calculation (like sleep_ms)...");
-        let start = now_monotonic();
-        print!("  [CHILD] Start: ");
-        print_timespec(&start);
-        println!();
-
-        // Do 5 yields and check time
-        for i in 0..5 {
-            unsafe { sched_yield(); }
-            let now = now_monotonic();
-
-            // Calculate elapsed like sleep_ms does
-            let elapsed_sec = now.tv_sec - start.tv_sec;
-            let elapsed_nsec = if now.tv_nsec >= start.tv_nsec {
-                now.tv_nsec - start.tv_nsec
-            } else {
-                // Handle nanosecond underflow
-                1_000_000_000 - (start.tv_nsec - now.tv_nsec)
-            };
-
-            // Correct calculation for comparison
-            let correct_elapsed_sec = if now.tv_nsec >= start.tv_nsec {
-                elapsed_sec
-            } else {
-                elapsed_sec - 1  // Borrow from seconds
-            };
-
-            let elapsed_ns_buggy = (elapsed_sec as u64) * 1_000_000_000 + (elapsed_nsec as u64);
-            let elapsed_ns_correct = (correct_elapsed_sec as u64) * 1_000_000_000 + (elapsed_nsec as u64);
-
-            print!("  [CHILD] Iteration {}: now=", i);
-            print_timespec(&now);
-            println!();
-
-            println!("           elapsed_sec={}, elapsed_nsec={}", elapsed_sec, elapsed_nsec);
-
-            print!("           buggy_elapsed_ns={}, correct_elapsed_ns={}",
-                   elapsed_ns_buggy, elapsed_ns_correct);
-
-            if elapsed_ns_buggy != elapsed_ns_correct {
-                print!(" *** BUG TRIGGERED ***");
-            }
-            println!();
-        }
-
-        // Test 2e: Try a very short sleep_ms
-        println!("\n  [CHILD] Testing sleep_ms(10)...");
-        let before_sleep = now_monotonic();
-        print!("  [CHILD] Before sleep: ");
-        print_timespec(&before_sleep);
-        println!();
-
-        sleep_ms(10);
-
-        let after_sleep = now_monotonic();
-        print!("  [CHILD] After sleep: ");
-        print_timespec(&after_sleep);
-        println!();
-
-        let sleep_elapsed = elapsed_ns(&before_sleep, &after_sleep);
-        println!("  [CHILD] Sleep elapsed: {} ns ({} ms)", sleep_elapsed, sleep_elapsed / 1_000_000);
-
-        if sleep_elapsed >= 10_000_000 {
-            println!("  [CHILD] sleep_ms(10) completed successfully!");
-        } else {
-            println!("  [CHILD] WARNING: sleep returned too early");
-        }
-
-        println!("  [CHILD] TEST 2: PASS - all clock tests passed in child");
-        std::process::exit(0);
-    } else {
-        // ===== PARENT PROCESS =====
-        println!("  [PARENT] Forked child PID={}", fork_result);
-
-        // Wait for child
-        let mut status: i32 = 0;
-        let wait_result = unsafe { waitpid(fork_result, &mut status, 0) };
-
-        println!("  [PARENT] waitpid returned {}, status={}", wait_result, status);
-
-        if wait_result == fork_result && wifexited(status) && wexitstatus(status) == 0 {
-            println!("  TEST 2: PASS - child completed successfully\n");
-        } else {
-            println!("  TEST 2: FAIL - child did not complete successfully\n");
+    match fork() {
+        Err(_) => {
+            println!("  FAIL - fork failed");
             std::process::exit(2);
+        }
+        Ok(ForkResult::Child) => {
+            // ===== CHILD PROCESS =====
+            let child_pid = getpid().unwrap().raw();
+            println!("  [CHILD] Forked successfully, PID={}", child_pid);
+
+            // Test 2a: First clock call in child
+            println!("  [CHILD] Getting first timestamp...");
+            let c1 = now_monotonic();
+            print!("  [CHILD] First call:  ");
+            print_timespec(&c1);
+            println!();
+
+            // Test 2b: Yield in child
+            println!("  [CHILD] Calling yield_now()...");
+            let _ = yield_now();
+            println!("  [CHILD] yield_now() returned");
+
+            // Test 2c: Second clock call in child
+            println!("  [CHILD] Getting second timestamp...");
+            let c2 = now_monotonic();
+            print!("  [CHILD] Second call: ");
+            print_timespec(&c2);
+            println!();
+
+            let c_elapsed = elapsed_ns(&c1, &c2);
+            println!("  [CHILD] Elapsed: {} ns", c_elapsed);
+
+            if c_elapsed < 0 {
+                println!("  [CHILD] WARNING: Time went backwards!");
+            }
+
+            // Test 2d: Manual elapsed time calculation (like sleep_ms does)
+            println!("\n  [CHILD] Testing manual elapsed calculation (like sleep_ms)...");
+            let start = now_monotonic();
+            print!("  [CHILD] Start: ");
+            print_timespec(&start);
+            println!();
+
+            // Do 5 yields and check time
+            for i in 0..5 {
+                let _ = yield_now();
+                let now = now_monotonic();
+
+                // Calculate elapsed like sleep_ms does
+                let elapsed_sec = now.tv_sec - start.tv_sec;
+                let elapsed_nsec = if now.tv_nsec >= start.tv_nsec {
+                    now.tv_nsec - start.tv_nsec
+                } else {
+                    // Handle nanosecond underflow
+                    1_000_000_000 - (start.tv_nsec - now.tv_nsec)
+                };
+
+                // Correct calculation for comparison
+                let correct_elapsed_sec = if now.tv_nsec >= start.tv_nsec {
+                    elapsed_sec
+                } else {
+                    elapsed_sec - 1  // Borrow from seconds
+                };
+
+                let elapsed_ns_buggy = (elapsed_sec as u64) * 1_000_000_000 + (elapsed_nsec as u64);
+                let elapsed_ns_correct = (correct_elapsed_sec as u64) * 1_000_000_000 + (elapsed_nsec as u64);
+
+                print!("  [CHILD] Iteration {}: now=", i);
+                print_timespec(&now);
+                println!();
+
+                println!("           elapsed_sec={}, elapsed_nsec={}", elapsed_sec, elapsed_nsec);
+
+                print!("           buggy_elapsed_ns={}, correct_elapsed_ns={}",
+                       elapsed_ns_buggy, elapsed_ns_correct);
+
+                if elapsed_ns_buggy != elapsed_ns_correct {
+                    print!(" *** BUG TRIGGERED ***");
+                }
+                println!();
+            }
+
+            // Test 2e: Try a very short sleep_ms
+            println!("\n  [CHILD] Testing sleep_ms(10)...");
+            let before_sleep = now_monotonic();
+            print!("  [CHILD] Before sleep: ");
+            print_timespec(&before_sleep);
+            println!();
+
+            sleep_ms(10);
+
+            let after_sleep = now_monotonic();
+            print!("  [CHILD] After sleep: ");
+            print_timespec(&after_sleep);
+            println!();
+
+            let sleep_elapsed = elapsed_ns(&before_sleep, &after_sleep);
+            println!("  [CHILD] Sleep elapsed: {} ns ({} ms)", sleep_elapsed, sleep_elapsed / 1_000_000);
+
+            if sleep_elapsed >= 10_000_000 {
+                println!("  [CHILD] sleep_ms(10) completed successfully!");
+            } else {
+                println!("  [CHILD] WARNING: sleep returned too early");
+            }
+
+            println!("  [CHILD] TEST 2: PASS - all clock tests passed in child");
+            std::process::exit(0);
+        }
+        Ok(ForkResult::Parent(child_pid)) => {
+            // ===== PARENT PROCESS =====
+            println!("  [PARENT] Forked child PID={}", child_pid.raw());
+
+            // Wait for child
+            let mut status: i32 = 0;
+            let wait_result = waitpid(child_pid.raw() as i32, &mut status, 0);
+
+            match wait_result {
+                Ok(waited_pid) => {
+                    println!("  [PARENT] waitpid returned {}, status={}", waited_pid.raw(), status);
+                    if waited_pid.raw() == child_pid.raw() && wifexited(status) && wexitstatus(status) == 0 {
+                        println!("  TEST 2: PASS - child completed successfully\n");
+                    } else {
+                        println!("  TEST 2: FAIL - child did not complete successfully\n");
+                        std::process::exit(2);
+                    }
+                }
+                Err(_) => {
+                    println!("  TEST 2: FAIL - waitpid failed\n");
+                    std::process::exit(2);
+                }
+            }
         }
     }
 

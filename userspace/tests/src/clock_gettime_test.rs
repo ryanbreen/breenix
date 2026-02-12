@@ -3,19 +3,9 @@
 //! Tests POSIX-compliant clock_gettime with CLOCK_MONOTONIC.
 //! Validates TSC-based high-resolution timing from userspace.
 
+use libbreenix::time::{clock_gettime, CLOCK_MONOTONIC};
+use libbreenix::Timespec;
 use std::time::Instant;
-
-const CLOCK_MONOTONIC: i32 = 1;
-
-#[repr(C)]
-struct Timespec {
-    tv_sec: i64,
-    tv_nsec: i64,
-}
-
-extern "C" {
-    fn clock_gettime(clk_id: i32, tp: *mut Timespec) -> i32;
-}
 
 fn main() {
     println!("=== clock_gettime Userspace Test ===");
@@ -26,13 +16,13 @@ fn main() {
     // Test 1: Basic syscall functionality
     println!("\nTest 1: Basic syscall functionality");
     let mut ts = Timespec { tv_sec: -1, tv_nsec: -1 };
-    let ret = unsafe { clock_gettime(CLOCK_MONOTONIC, &mut ts) };
+    let ret = clock_gettime(CLOCK_MONOTONIC, &mut ts);
 
-    println!("  Return value: {}", ret);
+    println!("  Return value: {}", if ret.is_ok() { 0 } else { -1 });
     println!("  tv_sec:  {}", ts.tv_sec);
     println!("  tv_nsec: {}", ts.tv_nsec);
 
-    if ret == 0 && ts.tv_sec >= 0 && ts.tv_nsec >= 0 && ts.tv_nsec < 1_000_000_000 {
+    if ret.is_ok() && ts.tv_sec >= 0 && ts.tv_nsec >= 0 && ts.tv_nsec < 1_000_000_000 {
         println!("  PASS: Syscall returned valid time");
         passed += 1;
     } else {
@@ -42,12 +32,10 @@ fn main() {
 
     // Test 2: Time advances between calls
     println!("\nTest 2: Time advances between calls");
-    let mut t1 = Timespec { tv_sec: 0, tv_nsec: 0 };
-    let mut t2 = Timespec { tv_sec: 0, tv_nsec: 0 };
-    unsafe {
-        clock_gettime(CLOCK_MONOTONIC, &mut t1);
-        clock_gettime(CLOCK_MONOTONIC, &mut t2);
-    }
+    let mut t1 = Timespec::new();
+    let mut t2 = Timespec::new();
+    let _ = clock_gettime(CLOCK_MONOTONIC, &mut t1);
+    let _ = clock_gettime(CLOCK_MONOTONIC, &mut t2);
 
     let t1_ns = t1.tv_sec * 1_000_000_000 + t1.tv_nsec;
     let t2_ns = t2.tv_sec * 1_000_000_000 + t2.tv_nsec;
@@ -80,8 +68,8 @@ fn main() {
     println!("\nTest 4: Nanosecond precision (not millisecond-aligned)");
     let mut aligned_count = 0;
     for _ in 0..10 {
-        let mut ts_sample = Timespec { tv_sec: 0, tv_nsec: 0 };
-        unsafe { clock_gettime(CLOCK_MONOTONIC, &mut ts_sample); }
+        let mut ts_sample = Timespec::new();
+        let _ = clock_gettime(CLOCK_MONOTONIC, &mut ts_sample);
         if ts_sample.tv_nsec % 1_000_000 == 0 {
             aligned_count += 1;
         }
@@ -102,8 +90,8 @@ fn main() {
     let mut monotonic = true;
 
     for _ in 0..10 {
-        let mut ts_check = Timespec { tv_sec: 0, tv_nsec: 0 };
-        unsafe { clock_gettime(CLOCK_MONOTONIC, &mut ts_check); }
+        let mut ts_check = Timespec::new();
+        let _ = clock_gettime(CLOCK_MONOTONIC, &mut ts_check);
         let now_ns = ts_check.tv_sec * 1_000_000_000 + ts_check.tv_nsec;
         if now_ns < prev_ns {
             monotonic = false;

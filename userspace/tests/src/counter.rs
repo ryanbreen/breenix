@@ -3,9 +3,7 @@
 //! Counts from 0 to 9, yielding between each count,
 //! then exits with code 10.
 
-extern "C" {
-    fn sched_yield() -> i32;
-}
+use libbreenix::process::yield_now;
 
 fn main() {
     // Print greeting
@@ -16,9 +14,7 @@ fn main() {
         println!("Counter: {}", i);
 
         // Yield to allow other processes to run
-        unsafe {
-            sched_yield();
-        }
+        let _ = yield_now();
 
         // Do some busy work to simulate computation
         let mut sum = 0u64;

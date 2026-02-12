@@ -2,22 +2,13 @@
 //!
 //! Tests timing functionality using clock_gettime and sched_yield.
 
-#[repr(C)]
-struct Timespec {
-    tv_sec: i64,
-    tv_nsec: i64,
-}
-
-extern "C" {
-    fn clock_gettime(clockid: i32, tp: *mut Timespec) -> i32;
-    fn sched_yield() -> i32;
-}
-
-const CLOCK_MONOTONIC: i32 = 1;
+use libbreenix::process::yield_now;
+use libbreenix::time::{clock_gettime, CLOCK_MONOTONIC};
+use libbreenix::Timespec;
 
 fn get_time_ms() -> u64 {
-    let mut ts = Timespec { tv_sec: 0, tv_nsec: 0 };
-    unsafe { clock_gettime(CLOCK_MONOTONIC, &mut ts); }
+    let mut ts = Timespec::new();
+    let _ = clock_gettime(CLOCK_MONOTONIC, &mut ts);
     (ts.tv_sec as u64) * 1000 + (ts.tv_nsec as u64) / 1_000_000
 }
 
@@ -31,7 +22,7 @@ fn main() {
     // Test 2: Yield 10 times and check time
     println!("Test 2: Yielding 10 times...");
     for _ in 0..10 {
-        unsafe { sched_yield(); }
+        let _ = yield_now();
     }
 
     let time2 = get_time_ms();
@@ -61,7 +52,7 @@ fn main() {
     for i in 0..10 {
         // Wait ~100ms
         for _ in 0..100 {
-            unsafe { sched_yield(); }
+            let _ = yield_now();
         }
 
         let current = get_time_ms();

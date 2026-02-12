@@ -108,5 +108,23 @@ pub fn sleep_ms(ms: u64) -> Result<(), Error> {
     Ok(())
 }
 
+/// Sleep for the specified duration using the nanosleep syscall.
+///
+/// Unlike `sleep_ms` which busy-waits, this suspends the process until
+/// the kernel timer expires.
+///
+/// # Arguments
+/// * `req` - Requested sleep duration
+///
+/// # Returns
+/// `Ok(())` on success, `Err(Error)` on error (typically EINTR if interrupted by a signal).
+#[inline]
+pub fn nanosleep(req: &Timespec) -> Result<(), Error> {
+    let ret = unsafe {
+        raw::syscall2(nr::NANOSLEEP, req as *const Timespec as u64, 0)
+    };
+    Error::from_syscall(ret as i64).map(|_| ())
+}
+
 // Re-export clock constants for convenience
 pub use crate::types::clock::{MONOTONIC as CLOCK_MONOTONIC, REALTIME as CLOCK_REALTIME};
