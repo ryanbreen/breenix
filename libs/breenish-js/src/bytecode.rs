@@ -192,6 +192,11 @@ pub enum Op {
     /// Used by async functions to wrap their return value.
     WrapPromise = 132,
 
+    /// Get the string keys of an object as an array.
+    /// Stack: [object] -> [array_of_keys]
+    /// Used by for...in loops to iterate over object keys.
+    GetKeys = 133,
+
     /// Halt execution.
     Halt = 255,
 }
@@ -248,6 +253,7 @@ impl Op {
             130 => Some(Op::CallSpread),
             131 => Some(Op::Await),
             132 => Some(Op::WrapPromise),
+            133 => Some(Op::GetKeys),
             255 => Some(Op::Halt),
             _ => None,
         }
@@ -263,6 +269,12 @@ pub enum Constant {
     String(u32),
     /// A function constant (index into function table).
     Function(u32),
+    /// A boolean constant.
+    Boolean(bool),
+    /// The null constant.
+    Null,
+    /// The undefined constant.
+    Undefined,
 }
 
 /// A compiled block of bytecode.

@@ -469,6 +469,171 @@ fn native_pipe(
     Ok(JsValue::object(idx))
 }
 
+/// glob(pattern) -> array of matching file paths
+///
+/// Performs basic glob expansion on the given pattern string.
+/// Supports `*` (match any sequence of chars) and `?` (match single char).
+/// If the pattern has no wildcards, returns the pattern as-is in an array.
+/// For patterns with a directory prefix (e.g., `/bin/*.rs`), splits into
+/// directory + filename pattern.
+fn native_glob(
+    args: &[JsValue],
+    strings: &mut StringPool,
+    heap: &mut ObjectHeap,
+) -> JsResult<JsValue> {
+    if args.is_empty() || !args[0].is_string() {
+        return Err(JsError::type_error("glob: expected string pattern"));
+    }
+
+    let pattern = String::from(strings.get(args[0].as_string_id()));
+
+    // If no wildcards, return the pattern as a single-element array
+    if !pattern.contains('*') && !pattern.contains('?') {
+        let mut arr = JsObject::new_array();
+        let id = strings.intern(&pattern);
+        arr.push(JsValue::string(id));
+        let idx = heap.alloc(arr);
+        return Ok(JsValue::object(idx));
+    }
+
+    // Split pattern into directory and filename pattern
+    let (dir, file_pattern) = if let Some(pos) = pattern.rfind('/') {
+        let d = &pattern[..pos];
+        let f = &pattern[pos + 1..];
+        (if d.is_empty() { "/" } else { d }, f.to_string())
+    } else {
+        (".", pattern.clone())
+    };
+
+    let mut arr = JsObject::new_array();
+
+    // Read directory entries and filter by pattern
+    match std::fs::read_dir(dir) {
+        Ok(entries) => {
+            let mut names: Vec<String> = Vec::new();
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy().to_string();
+                    if glob_match(&file_pattern, &name_str) {
+                        // Build full path
+                        let full = if dir == "." {
+                            name_str
+                        } else if dir == "/" {
+                            format!("/{}", name_str)
+                        } else {
+                            format!("{}/{}", dir, name_str)
+                        };
+                        names.push(full);
+                    }
+                }
+            }
+            names.sort();
+            for name in &names {
+                let id = strings.intern(name);
+                arr.push(JsValue::string(id));
+            }
+        }
+        Err(_) => {
+            // Directory not readable: return empty array
+        }
+    }
+
+    let idx = heap.alloc(arr);
+    Ok(JsValue::object(idx))
+}
+
+/// Simple glob pattern matching supporting `*` and `?`.
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let pat: Vec<char> = pattern.chars().collect();
+    let txt: Vec<char> = text.chars().collect();
+    glob_match_inner(&pat, &txt)
+}
+
+fn glob_match_inner(pat: &[char], txt: &[char]) -> bool {
+    let mut pi = 0;
+    let mut ti = 0;
+    let mut star_pi = usize::MAX;
+    let mut star_ti = 0;
+
+    while ti < txt.len() {
+        if pi < pat.len() && (pat[pi] == '?' || pat[pi] == txt[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < pat.len() && pat[pi] == '*' {
+            star_pi = pi;
+            star_ti = ti;
+            pi += 1;
+        } else if star_pi != usize::MAX {
+            pi = star_pi + 1;
+            star_ti += 1;
+            ti = star_ti;
+        } else {
+            return false;
+        }
+    }
+
+    while pi < pat.len() && pat[pi] == '*' {
+        pi += 1;
+    }
+
+    pi == pat.len()
+}
+
+/// env() -> object with all env vars
+/// env(name) -> get environment variable value
+/// env(name, value) -> set environment variable, returns undefined
+fn native_env(
+    args: &[JsValue],
+    strings: &mut StringPool,
+    heap: &mut ObjectHeap,
+) -> JsResult<JsValue> {
+    match args.len() {
+        0 => {
+            // Return an object with all environment variables
+            let mut obj = JsObject::new();
+            for (key, value) in std::env::vars() {
+                let k = strings.intern(&key);
+                let v_id = strings.intern(&value);
+                obj.set(k, JsValue::string(v_id));
+            }
+            let idx = heap.alloc(obj);
+            Ok(JsValue::object(idx))
+        }
+        1 => {
+            // Get environment variable
+            if !args[0].is_string() {
+                return Err(JsError::type_error("env: expected string name"));
+            }
+            let name = String::from(strings.get(args[0].as_string_id()));
+            match std::env::var(&name) {
+                Ok(val) => {
+                    let id = strings.intern(&val);
+                    Ok(JsValue::string(id))
+                }
+                Err(_) => Ok(JsValue::undefined()),
+            }
+        }
+        _ => {
+            // Set environment variable
+            if !args[0].is_string() {
+                return Err(JsError::type_error("env: expected string name"));
+            }
+            let name = String::from(strings.get(args[0].as_string_id()));
+            if args[1].is_string() {
+                let value = String::from(strings.get(args[1].as_string_id()));
+                std::env::set_var(&name, &value);
+            } else if args[1].is_undefined() || args[1].is_null() {
+                std::env::remove_var(&name);
+            } else {
+                let value = format!("{}", args[1].to_number());
+                std::env::set_var(&name, &value);
+            }
+            Ok(JsValue::undefined())
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------
@@ -527,6 +692,8 @@ fn create_shell_context() -> Context {
     ctx.register_native("writeFile", native_write_file);
     ctx.register_native("exit", native_exit);
     ctx.register_native("pipe", native_pipe);
+    ctx.register_native("glob", native_glob);
+    ctx.register_native("env", native_env);
 
     // Register built-in objects
     ctx.register_promise_builtins();
@@ -548,7 +715,10 @@ fn print_fn(s: &str) {
 fn run_repl() {
     let mut ctx = create_shell_context();
 
-    let _ = io::stdout().write_all(b"breenish v0.4.0 -- ECMAScript shell for Breenix\n");
+    // Load startup scripts
+    load_rc_file(&mut ctx, "/etc/bshrc");
+
+    let _ = io::stdout().write_all(b"breenish v0.5.0 -- ECMAScript shell for Breenix\n");
     let _ = io::stdout().flush();
 
     let mut line_buf = Vec::new();
@@ -587,6 +757,12 @@ fn run_repl() {
             continue;
         }
 
+        // Handle `source <path>` as a shell builtin
+        if let Some(path) = parse_source_command(line) {
+            source_file(&mut ctx, &path);
+            continue;
+        }
+
         // Handle bare command shorthand: if it looks like a command (starts with
         // a letter, no JS operators), wrap it in exec() automatically
         let code = if should_auto_exec(line) {
@@ -619,7 +795,8 @@ fn should_auto_exec(line: &str) -> bool {
         "for ", "for(", "switch ", "switch(", "try ", "try{", "return ",
         "throw ", "class ", "import ", "export ", "async ", "await ",
         "print(", "exec(", "cd(", "pwd(", "which(", "readFile(", "writeFile(",
-        "exit(", "pipe(", "{", "[", "(", "//", "/*",
+        "exit(", "pipe(", "glob(", "env(", "source ", "source(",
+        "{", "[", "(", "//", "/*",
     ];
     for prefix in &js_starts {
         if line.starts_with(prefix) {
@@ -668,6 +845,67 @@ fn auto_exec_wrap(line: &str) -> String {
     }
     call.push_str("); if (__r.stdout.length > 0) print(__r.stdout);");
     call
+}
+
+/// Load and evaluate an RC (startup) file, silently ignoring missing files.
+/// Errors during evaluation are printed to stderr but do not abort the shell.
+fn load_rc_file(ctx: &mut Context, path: &str) {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => {
+            if let Err(e) = ctx.eval(&contents) {
+                let msg = format!("bsh: error in {}: {}\n", path, e);
+                let _ = io::stderr().write_all(msg.as_bytes());
+            }
+        }
+        Err(_) => {
+            // File doesn't exist or can't be read -- silently ignore
+        }
+    }
+}
+
+/// Parse a `source <path>` command line. Returns the path if the line
+/// is a source command, or None otherwise.
+///
+/// Accepted forms:
+///   source path/to/file
+///   source "path/to/file"
+///   source 'path/to/file'
+///   source("path/to/file")
+fn parse_source_command(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+
+    if let Some(rest) = trimmed.strip_prefix("source(") {
+        // source("path") or source('path')
+        let rest = rest.trim_end_matches(')').trim();
+        let path = rest.trim_matches('"').trim_matches('\'');
+        if !path.is_empty() {
+            return Some(path.to_string());
+        }
+    } else if let Some(rest) = trimmed.strip_prefix("source ") {
+        // source path or source "path" or source 'path'
+        let path = rest.trim().trim_matches('"').trim_matches('\'');
+        if !path.is_empty() {
+            return Some(path.to_string());
+        }
+    }
+
+    None
+}
+
+/// Read a file and evaluate its contents in the given context.
+fn source_file(ctx: &mut Context, path: &str) {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => {
+            if let Err(e) = ctx.eval(&contents) {
+                let msg = format!("{}\n", e);
+                let _ = io::stderr().write_all(msg.as_bytes());
+            }
+        }
+        Err(e) => {
+            let msg = format!("source: {}: {}\n", path, e);
+            let _ = io::stderr().write_all(msg.as_bytes());
+        }
+    }
 }
 
 /// Get a shortened version of the current working directory.

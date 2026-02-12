@@ -364,6 +364,9 @@ impl Vm {
                             let obj_idx = self.heap.alloc(obj);
                             JsValue::object(obj_idx)
                         }
+                        Constant::Boolean(b) => JsValue::boolean(*b),
+                        Constant::Null => JsValue::null(),
+                        Constant::Undefined => JsValue::undefined(),
                     };
                     self.push(value)?;
                 }
@@ -950,6 +953,21 @@ impl Vm {
                         0
                     };
                     self.do_call(argc, strings, functions)?;
+                }
+
+                Op::GetKeys => {
+                    let obj_val = self.pop();
+                    let mut arr = JsObject::new_array();
+                    if obj_val.is_object() {
+                        if let Some(obj) = self.heap.get(obj_val.as_object_index()) {
+                            let keys = obj.keys();
+                            for key_sid in keys {
+                                arr.push(JsValue::string(key_sid));
+                            }
+                        }
+                    }
+                    let idx = self.heap.alloc(arr);
+                    self.push(JsValue::object(idx))?;
                 }
 
                 Op::Halt => {
