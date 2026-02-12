@@ -18,6 +18,14 @@ const MAX_STACK_SIZE: usize = 4096;
 /// Maximum call depth.
 const MAX_CALL_DEPTH: usize = 256;
 
+/// Result of executing one VM step.
+enum StepResult {
+    /// Continue to next step.
+    Continue,
+    /// Execution complete; return this value.
+    Return(JsValue),
+}
+
 /// A call frame representing a function invocation.
 #[derive(Debug)]
 struct CallFrame {
@@ -38,6 +46,17 @@ struct Global {
     value: JsValue,
 }
 
+/// An exception handler pushed by TryStart.
+#[derive(Debug)]
+struct ExceptionHandler {
+    /// Bytecode address of the catch block.
+    catch_addr: u16,
+    /// Stack depth when TryStart was executed (to restore on catch).
+    stack_depth: usize,
+    /// Call frame depth when TryStart was executed.
+    frame_depth: usize,
+}
+
 /// Host callback type for print output.
 pub type PrintFn = fn(&str);
 
@@ -53,6 +72,8 @@ pub struct Vm {
     pub heap: ObjectHeap,
     /// Host print callback.
     print_fn: PrintFn,
+    /// Exception handler stack for try/catch/finally.
+    exception_handlers: Vec<ExceptionHandler>,
 }
 
 fn default_print(s: &str) {
@@ -75,6 +96,7 @@ impl Vm {
             globals: Vec::new(),
             heap: ObjectHeap::new(),
             print_fn: default_print,
+            exception_handlers: Vec::new(),
         }
     }
 
@@ -160,35 +182,54 @@ impl Vm {
         functions: &[CodeBlock],
     ) -> JsResult<JsValue> {
         loop {
-            let fi = self.frames.len() - 1;
-            let code = self.get_code(fi, main, functions);
-
-            if self.frames[fi].ip >= code.code.len() {
-                if self.frames.len() == 1 {
-                    return Ok(if self.stack.is_empty() {
-                        JsValue::undefined()
-                    } else {
-                        *self.stack.last().unwrap()
-                    });
+            let result = self.run_step(main, strings, functions);
+            match result {
+                Ok(StepResult::Continue) => continue,
+                Ok(StepResult::Return(val)) => return Ok(val),
+                Err(err) => {
+                    // Try to route the error through an exception handler
+                    self.handle_runtime_error(err, strings)?;
+                    // If handle_runtime_error returned Ok, we caught it; continue
                 }
-                let result = self.stack.pop().unwrap_or(JsValue::undefined());
-                let old_base = self.frames[fi].base;
-                self.frames.pop();
-                self.stack.truncate(old_base);
-                self.stack.push(result);
-                continue;
             }
+        }
+    }
 
-            let op_byte = self.read_byte(code);
+    fn run_step(
+        &mut self,
+        main: &CodeBlock,
+        strings: &mut StringPool,
+        functions: &[CodeBlock],
+    ) -> Result<StepResult, JsError> {
+        let fi = self.frames.len() - 1;
+        let code = self.get_code(fi, main, functions);
 
-            let Some(op) = Op::from_byte(op_byte) else {
-                return Err(JsError::internal(alloc::format!(
-                    "unknown opcode 0x{:02x}",
-                    op_byte
-                )));
-            };
+        if self.frames[fi].ip >= code.code.len() {
+            if self.frames.len() == 1 {
+                return Ok(StepResult::Return(if self.stack.is_empty() {
+                    JsValue::undefined()
+                } else {
+                    *self.stack.last().unwrap()
+                }));
+            }
+            let result = self.stack.pop().unwrap_or(JsValue::undefined());
+            let old_base = self.frames[fi].base;
+            self.frames.pop();
+            self.stack.truncate(old_base);
+            self.stack.push(result);
+            return Ok(StepResult::Continue);
+        }
 
-            match op {
+        let op_byte = self.read_byte(code);
+
+        let Some(op) = Op::from_byte(op_byte) else {
+            return Err(JsError::internal(alloc::format!(
+                "unknown opcode 0x{:02x}",
+                op_byte
+            )));
+        };
+
+        match op {
                 Op::LoadConst => {
                     let idx = self.read_u16_advance(code) as usize;
                     let value = match &code.constants[idx] {
@@ -402,7 +443,7 @@ impl Vm {
                     let result = self.pop();
 
                     if self.frames.len() <= 1 {
-                        return Ok(result);
+                        return Ok(StepResult::Return(result));
                     }
 
                     let old_frame = self.frames.pop().unwrap();
@@ -700,15 +741,67 @@ impl Vm {
                     }
                 }
 
+                Op::TryStart => {
+                    let catch_addr = self.read_u16_advance(code);
+                    let _finally_addr = self.read_u16_advance(code);
+                    self.exception_handlers.push(ExceptionHandler {
+                        catch_addr,
+                        stack_depth: self.stack.len(),
+                        frame_depth: self.frames.len(),
+                    });
+                }
+
+                Op::TryEnd => {
+                    self.exception_handlers.pop();
+                }
+
+                Op::Throw => {
+                    let error_val = self.pop();
+                    if let Some(handler) = self.exception_handlers.pop() {
+                        // Restore stack to depth at TryStart
+                        self.stack.truncate(handler.stack_depth);
+                        // Unwind call frames if needed
+                        self.frames.truncate(handler.frame_depth);
+                        // Push error value for catch block
+                        self.push(error_val)?;
+                        // Jump to catch block
+                        self.set_ip(handler.catch_addr as usize);
+                    } else {
+                        // No handler - convert to string and return error
+                        let msg = self.value_to_string(error_val, strings);
+                        return Err(JsError::runtime(msg));
+                    }
+                }
+
+                Op::CallSpread => {
+                    // Stack: [func, args_array]
+                    let args_val = self.pop();
+                    // Expand array elements onto the stack as individual args
+                    let argc = if args_val.is_object() {
+                        let obj = self.heap.get(args_val.as_object_index())
+                            .ok_or_else(|| JsError::type_error("spread: expected array"))?;
+                        let elems: Vec<JsValue> = obj.elements().to_vec();
+                        let count = elems.len();
+                        for elem in elems {
+                            self.push(elem)?;
+                        }
+                        count
+                    } else {
+                        0
+                    };
+                    self.do_call(argc, functions)?;
+                }
+
                 Op::Halt => {
-                    return Ok(if self.stack.is_empty() {
+                    return Ok(StepResult::Return(if self.stack.is_empty() {
                         JsValue::undefined()
                     } else {
                         self.pop()
-                    });
+                    }));
                 }
             }
-        }
+
+            Ok(StepResult::Continue)
     }
 
     /// Execute a function call with argc arguments on the stack.
@@ -1169,6 +1262,26 @@ impl Vm {
         // Regular property lookup
         let value = obj.get(key_sid);
         Ok(value)
+    }
+
+    /// Handle a runtime error: if there's an active exception handler, route
+    /// the error to its catch block by pushing the error message as a JS value
+    /// and jumping to the catch address. Returns Ok(()) if caught, Err if not.
+    fn handle_runtime_error(
+        &mut self,
+        error: JsError,
+        strings: &mut StringPool,
+    ) -> JsResult<()> {
+        if let Some(handler) = self.exception_handlers.pop() {
+            self.stack.truncate(handler.stack_depth);
+            self.frames.truncate(handler.frame_depth);
+            let msg_id = strings.intern(&error.message);
+            self.stack.push(JsValue::string(msg_id));
+            self.set_ip(handler.catch_addr as usize);
+            Ok(())
+        } else {
+            Err(error)
+        }
     }
 
     fn push(&mut self, value: JsValue) -> JsResult<()> {

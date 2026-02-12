@@ -163,6 +163,23 @@ pub enum Op {
     /// Operand: u16 (upvalue index)
     StoreUpvalue = 112,
 
+    // --- Exception handling ---
+
+    /// Start a try block. Pushes an exception handler.
+    /// Operand: u16 (catch block address), u16 (finally block address, 0xFFFF if none)
+    TryStart = 120,
+    /// End a try block. Pops the exception handler.
+    TryEnd = 121,
+    /// Throw the top-of-stack value as an exception.
+    Throw = 122,
+
+    // --- Spread operations ---
+
+    /// Call a function with spread arguments.
+    /// Stack: [func, array] -> [result]
+    /// The array's elements become the function's arguments.
+    CallSpread = 130,
+
     /// Halt execution.
     Halt = 255,
 }
@@ -213,6 +230,10 @@ impl Op {
             110 => Some(Op::CreateClosure),
             111 => Some(Op::LoadUpvalue),
             112 => Some(Op::StoreUpvalue),
+            120 => Some(Op::TryStart),
+            121 => Some(Op::TryEnd),
+            122 => Some(Op::Throw),
+            130 => Some(Op::CallSpread),
             255 => Some(Op::Halt),
             _ => None,
         }
@@ -274,6 +295,15 @@ impl CodeBlock {
     pub fn emit_op_u8(&mut self, op: Op, operand: u8) {
         self.code.push(op as u8);
         self.code.push(operand);
+    }
+
+    /// Emit an opcode followed by two u16 operands.
+    pub fn emit_op_u16_u16(&mut self, op: Op, op1: u16, op2: u16) {
+        self.code.push(op as u8);
+        self.code.push((op1 >> 8) as u8);
+        self.code.push(op1 as u8);
+        self.code.push((op2 >> 8) as u8);
+        self.code.push(op2 as u8);
     }
 
     /// Emit an opcode followed by a u16 and u8 operand.
@@ -416,6 +446,15 @@ impl CodeBlock {
                     let idx = self.read_u16(ip + 1);
                     out.push_str(&format!("{:04}: StoreUpvalue {}\n", ip, idx));
                     ip += 3;
+                }
+                Some(Op::TryStart) => {
+                    let catch_addr = self.read_u16(ip + 1);
+                    let finally_addr = self.read_u16(ip + 3);
+                    out.push_str(&format!(
+                        "{:04}: TryStart catch={} finally={}\n",
+                        ip, catch_addr, finally_addr
+                    ));
+                    ip += 5;
                 }
                 Some(Op::SetPropertyConst) | Some(Op::GetPropertyConst) => {
                     let idx = self.read_u16(ip + 1);
