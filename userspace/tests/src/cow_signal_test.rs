@@ -1,4 +1,4 @@
-//! Copy-on-Write Signal Delivery Test (std version)
+//! Copy-on-Write Signal Delivery Test
 //!
 //! This test specifically verifies that signal delivery works correctly
 //! when the user stack is a CoW-shared page. This was the root cause of
@@ -20,95 +20,15 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::ptr;
 
+use libbreenix::process::{fork, waitpid, getpid, yield_now, wifexited, wexitstatus, ForkResult};
+use libbreenix::signal::{self, Sigaction, SIGUSR1, SA_RESTORER, __restore_rt};
+use libbreenix::kill;
+
 /// Static flag to track if handler was called
 static HANDLER_CALLED: AtomicBool = AtomicBool::new(false);
 
 /// Static variable that handler will modify (on CoW page)
 static HANDLER_MODIFIED_VALUE: AtomicU64 = AtomicU64::new(0);
-
-// Signal constants
-const SIGUSR1: i32 = 10;
-const SA_RESTORER: u64 = 0x04000000;
-
-// Sigaction struct matching the kernel layout (all u64 fields)
-#[repr(C)]
-struct KernelSigaction {
-    handler: u64,
-    mask: u64,
-    flags: u64,
-    restorer: u64,
-}
-
-extern "C" {
-    fn fork() -> i32;
-    fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
-    fn getpid() -> i32;
-    fn kill(pid: i32, sig: i32) -> i32;
-    fn sched_yield() -> i32;
-}
-
-/// Raw syscall for sigaction
-#[cfg(target_arch = "x86_64")]
-unsafe fn raw_sigaction(sig: i32, act: *const KernelSigaction, oldact: *mut KernelSigaction) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "int 0x80",
-        in("rax") 13u64,  // SYS_SIGACTION
-        in("rdi") sig as u64,
-        in("rsi") act as u64,
-        in("rdx") oldact as u64,
-        in("r10") 8u64,   // sigsetsize
-        lateout("rax") ret,
-        options(nostack, preserves_flags),
-    );
-    ret as i64
-}
-
-#[cfg(target_arch = "aarch64")]
-unsafe fn raw_sigaction(sig: i32, act: *const KernelSigaction, oldact: *mut KernelSigaction) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "svc #0",
-        in("x8") 13u64,  // SYS_SIGACTION
-        inlateout("x0") sig as u64 => ret,
-        in("x1") act as u64,
-        in("x2") oldact as u64,
-        in("x3") 8u64,   // sigsetsize
-        options(nostack),
-    );
-    ret as i64
-}
-
-// Signal restorer trampoline
-#[cfg(target_arch = "x86_64")]
-#[unsafe(naked)]
-extern "C" fn __restore_rt() -> ! {
-    std::arch::naked_asm!(
-        "mov rax, 15",  // SYS_rt_sigreturn
-        "int 0x80",
-        "ud2",
-    )
-}
-
-#[cfg(target_arch = "aarch64")]
-#[unsafe(naked)]
-extern "C" fn __restore_rt() -> ! {
-    std::arch::naked_asm!(
-        "mov x8, 15",  // SYS_rt_sigreturn
-        "svc #0",
-        "brk #1",
-    )
-}
-
-/// POSIX WIFEXITED: true if child terminated normally
-fn wifexited(status: i32) -> bool {
-    (status & 0x7f) == 0
-}
-
-/// POSIX WEXITSTATUS: extract exit code from status
-fn wexitstatus(status: i32) -> i32 {
-    (status >> 8) & 0xff
-}
 
 /// Signal handler for SIGUSR1
 /// This handler writes to stack and static memory - both may be CoW pages
@@ -139,111 +59,116 @@ fn main() {
 
     // Step 2: Fork - child inherits parent's address space with CoW
     println!("Step 2: Forking process...");
-    let fork_result = unsafe { fork() };
+    match fork() {
+        Ok(ForkResult::Child) => {
+            // ========== CHILD PROCESS ==========
+            println!("[CHILD] Process started");
 
-    if fork_result < 0 {
-        println!("  FAIL: fork() failed with error {}", fork_result);
-        println!("COW_SIGNAL_TEST_FAILED");
-        std::process::exit(1);
-    }
+            let my_pid = getpid().unwrap();
+            println!("[CHILD] PID: {}", my_pid.raw());
 
-    if fork_result == 0 {
-        // ========== CHILD PROCESS ==========
-        println!("[CHILD] Process started");
+            // Step 3: Register signal handler
+            println!("[CHILD] Step 3: Register SIGUSR1 handler");
+            let action = Sigaction {
+                handler: sigusr1_handler as u64,
+                mask: 0,
+                flags: SA_RESTORER,
+                restorer: __restore_rt as u64,
+            };
 
-        let my_pid = unsafe { getpid() };
-        println!("[CHILD] PID: {}", my_pid);
-
-        // Step 3: Register signal handler
-        println!("[CHILD] Step 3: Register SIGUSR1 handler");
-        let action = KernelSigaction {
-            handler: sigusr1_handler as u64,
-            mask: 0,
-            flags: SA_RESTORER,
-            restorer: __restore_rt as u64,
-        };
-
-        let ret = unsafe { raw_sigaction(SIGUSR1, &action, std::ptr::null_mut()) };
-        if ret < 0 {
-            println!("[CHILD]   FAIL: sigaction returned error {}", -ret);
-            println!("COW_SIGNAL_TEST_FAILED");
-            std::process::exit(1);
-        }
-        println!("[CHILD]   sigaction registered handler");
-
-        // Step 4: Send SIGUSR1 to self
-        // This triggers the critical path:
-        // - Signal delivery holds PROCESS_MANAGER lock
-        // - Signal delivery writes to user stack (signal frame)
-        // - User stack is CoW page (shared with parent)
-        // - CoW fault must be handled WITHOUT deadlocking
-        println!("[CHILD] Step 4: Sending SIGUSR1 to self (triggers CoW on stack)...");
-        let ret = unsafe { kill(my_pid, SIGUSR1) };
-        if ret != 0 {
-            println!("[CHILD]   FAIL: kill() returned error");
-            println!("COW_SIGNAL_TEST_FAILED");
-            std::process::exit(1);
-        }
-        println!("[CHILD]   kill() succeeded");
-
-        // Step 5: Yield to allow signal delivery
-        println!("[CHILD] Step 5: Yielding for signal delivery...");
-        for i in 0..20 {
-            unsafe { sched_yield() };
-            if HANDLER_CALLED.load(Ordering::SeqCst) {
-                println!("[CHILD]   Handler called after {} yields", i + 1);
-                break;
+            match signal::sigaction(SIGUSR1, Some(&action), None) {
+                Ok(()) => println!("[CHILD]   sigaction registered handler"),
+                Err(_) => {
+                    println!("[CHILD]   FAIL: sigaction returned error");
+                    println!("COW_SIGNAL_TEST_FAILED");
+                    std::process::exit(1);
+                }
             }
-        }
 
-        // Step 6: Verify handler was called
-        println!("[CHILD] Step 6: Verify handler execution");
-        if HANDLER_CALLED.load(Ordering::SeqCst)
-            && HANDLER_MODIFIED_VALUE.load(Ordering::SeqCst) == 0xCAFEBABE
-        {
-            println!("[CHILD]   PASS: Handler executed and modified memory!");
-            println!("[CHILD]   CoW fault during signal delivery was handled correctly");
-            std::process::exit(0);
-        } else if !HANDLER_CALLED.load(Ordering::SeqCst) {
-            println!("[CHILD]   FAIL: Handler was NOT called");
-            println!("[CHILD]   This could indicate deadlock in CoW fault handling");
-            println!("COW_SIGNAL_TEST_FAILED");
-            std::process::exit(1);
-        } else {
-            println!("[CHILD]   FAIL: Handler called but didn't modify value");
-            println!("COW_SIGNAL_TEST_FAILED");
-            std::process::exit(1);
-        }
-    } else {
-        // ========== PARENT PROCESS ==========
-        println!("[PARENT] Forked child PID: {}", fork_result);
+            // Step 4: Send SIGUSR1 to self
+            // This triggers the critical path:
+            // - Signal delivery holds PROCESS_MANAGER lock
+            // - Signal delivery writes to user stack (signal frame)
+            // - User stack is CoW page (shared with parent)
+            // - CoW fault must be handled WITHOUT deadlocking
+            println!("[CHILD] Step 4: Sending SIGUSR1 to self (triggers CoW on stack)...");
+            match kill(my_pid.raw() as i32, SIGUSR1) {
+                Ok(()) => println!("[CHILD]   kill() succeeded"),
+                Err(_) => {
+                    println!("[CHILD]   FAIL: kill() returned error");
+                    println!("COW_SIGNAL_TEST_FAILED");
+                    std::process::exit(1);
+                }
+            }
 
-        // Wait for child to complete
-        println!("[PARENT] Waiting for child...");
-        let mut status: i32 = 0;
-        let wait_result = unsafe { waitpid(fork_result, &mut status, 0) };
+            // Step 5: Yield to allow signal delivery
+            println!("[CHILD] Step 5: Yielding for signal delivery...");
+            for i in 0..20 {
+                let _ = yield_now();
+                if HANDLER_CALLED.load(Ordering::SeqCst) {
+                    println!("[CHILD]   Handler called after {} yields", i + 1);
+                    break;
+                }
+            }
 
-        if wait_result != fork_result {
-            println!("[PARENT] FAIL: waitpid returned wrong PID");
-            println!("COW_SIGNAL_TEST_FAILED");
-            std::process::exit(1);
-        }
-
-        // Check if child exited normally with code 0
-        if wifexited(status) {
-            let exit_code = wexitstatus(status);
-            if exit_code == 0 {
-                println!("[PARENT] Child exited successfully");
-                println!("\n=== CoW Signal Delivery Test PASSED ===");
-                println!("COW_SIGNAL_TEST_PASSED");
+            // Step 6: Verify handler was called
+            println!("[CHILD] Step 6: Verify handler execution");
+            if HANDLER_CALLED.load(Ordering::SeqCst)
+                && HANDLER_MODIFIED_VALUE.load(Ordering::SeqCst) == 0xCAFEBABE
+            {
+                println!("[CHILD]   PASS: Handler executed and modified memory!");
+                println!("[CHILD]   CoW fault during signal delivery was handled correctly");
                 std::process::exit(0);
+            } else if !HANDLER_CALLED.load(Ordering::SeqCst) {
+                println!("[CHILD]   FAIL: Handler was NOT called");
+                println!("[CHILD]   This could indicate deadlock in CoW fault handling");
+                println!("COW_SIGNAL_TEST_FAILED");
+                std::process::exit(1);
             } else {
-                println!("[PARENT] Child exited with non-zero code: {}", exit_code);
+                println!("[CHILD]   FAIL: Handler called but didn't modify value");
                 println!("COW_SIGNAL_TEST_FAILED");
                 std::process::exit(1);
             }
-        } else {
-            println!("[PARENT] Child did not exit normally");
+        }
+        Ok(ForkResult::Parent(child_pid)) => {
+            // ========== PARENT PROCESS ==========
+            println!("[PARENT] Forked child PID: {}", child_pid.raw());
+
+            // Wait for child to complete
+            println!("[PARENT] Waiting for child...");
+            let mut status: i32 = 0;
+            let wait_result = waitpid(child_pid.raw() as i32, &mut status, 0);
+
+            match wait_result {
+                Ok(pid) if pid.raw() as i32 == child_pid.raw() as i32 => {}
+                _ => {
+                    println!("[PARENT] FAIL: waitpid returned wrong PID");
+                    println!("COW_SIGNAL_TEST_FAILED");
+                    std::process::exit(1);
+                }
+            }
+
+            // Check if child exited normally with code 0
+            if wifexited(status) {
+                let exit_code = wexitstatus(status);
+                if exit_code == 0 {
+                    println!("[PARENT] Child exited successfully");
+                    println!("\n=== CoW Signal Delivery Test PASSED ===");
+                    println!("COW_SIGNAL_TEST_PASSED");
+                    std::process::exit(0);
+                } else {
+                    println!("[PARENT] Child exited with non-zero code: {}", exit_code);
+                    println!("COW_SIGNAL_TEST_FAILED");
+                    std::process::exit(1);
+                }
+            } else {
+                println!("[PARENT] Child did not exit normally");
+                println!("COW_SIGNAL_TEST_FAILED");
+                std::process::exit(1);
+            }
+        }
+        Err(_) => {
+            println!("  FAIL: fork() failed");
             println!("COW_SIGNAL_TEST_FAILED");
             std::process::exit(1);
         }

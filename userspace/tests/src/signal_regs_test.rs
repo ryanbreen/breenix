@@ -8,75 +8,11 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use libbreenix::signal::SIGUSR1;
+use libbreenix::{kill, sigaction, Sigaction};
+use libbreenix::process::{getpid, yield_now};
+
 static HANDLER_RAN: AtomicBool = AtomicBool::new(false);
-
-const SIGUSR1: i32 = 10;
-const SA_RESTORER: u64 = 0x04000000;
-
-#[repr(C)]
-struct KernelSigaction {
-    handler: u64,
-    mask: u64,
-    flags: u64,
-    restorer: u64,
-}
-
-extern "C" {
-    fn kill(pid: i32, sig: i32) -> i32;
-    fn getpid() -> i32;
-    fn sched_yield() -> i32;
-}
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn raw_sigaction(sig: i32, act: *const KernelSigaction, oldact: *mut KernelSigaction) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "int 0x80",
-        in("rax") 13u64,
-        in("rdi") sig as u64,
-        in("rsi") act as u64,
-        in("rdx") oldact as u64,
-        in("r10") 8u64,
-        lateout("rax") ret,
-        options(nostack, preserves_flags),
-    );
-    ret as i64
-}
-
-#[cfg(target_arch = "aarch64")]
-unsafe fn raw_sigaction(sig: i32, act: *const KernelSigaction, oldact: *mut KernelSigaction) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "svc #0",
-        in("x8") 13u64,
-        inlateout("x0") sig as u64 => ret,
-        in("x1") act as u64,
-        in("x2") oldact as u64,
-        in("x3") 8u64,
-        options(nostack),
-    );
-    ret as i64
-}
-
-#[cfg(target_arch = "x86_64")]
-#[unsafe(naked)]
-extern "C" fn __restore_rt() -> ! {
-    std::arch::naked_asm!(
-        "mov rax, 15",
-        "int 0x80",
-        "ud2",
-    )
-}
-
-#[cfg(target_arch = "aarch64")]
-#[unsafe(naked)]
-extern "C" fn __restore_rt() -> ! {
-    std::arch::naked_asm!(
-        "mov x8, 15",
-        "svc #0",
-        "brk #1",
-    )
-}
 
 /// Signal handler - intentionally clobbers callee-saved registers
 extern "C" fn handler(_sig: i32) {
@@ -148,25 +84,18 @@ fn main() {
 
         // Register signal handler
         println!("\nStep 2: Registering signal handler for SIGUSR1");
-        let action = KernelSigaction {
-            handler: handler as u64,
-            mask: 0,
-            flags: SA_RESTORER,
-            restorer: __restore_rt as u64,
-        };
+        let action = Sigaction::new(handler);
 
-        let ret = unsafe { raw_sigaction(SIGUSR1, &action, std::ptr::null_mut()) };
-        if ret < 0 {
-            println!("  FAIL: sigaction failed with error {}", -ret);
+        if sigaction(SIGUSR1, Some(&action), None).is_err() {
+            println!("  FAIL: sigaction failed");
             std::process::exit(1);
         }
         println!("  Handler registered successfully");
 
         // Send signal to self
         println!("\nStep 3: Sending SIGUSR1 to self");
-        let my_pid = unsafe { getpid() };
-        let ret = unsafe { kill(my_pid, SIGUSR1) };
-        if ret != 0 {
+        let my_pid = getpid().unwrap().raw() as i32;
+        if kill(my_pid, SIGUSR1).is_err() {
             println!("  FAIL: kill failed");
             std::process::exit(1);
         }
@@ -175,7 +104,7 @@ fn main() {
         // Yield to allow signal delivery
         println!("\nStep 4: Yielding to allow signal delivery");
         for i in 0..100 {
-            unsafe { sched_yield(); }
+            let _ = yield_now();
             if HANDLER_RAN.load(Ordering::SeqCst) && i > 10 {
                 break;
             }
@@ -267,21 +196,15 @@ fn main() {
         println!("  X23 = {:#018x}", x23_expected);
 
         println!("\nStep 2: Registering signal handler for SIGUSR1");
-        let action = KernelSigaction {
-            handler: handler as u64,
-            mask: 0,
-            flags: SA_RESTORER,
-            restorer: __restore_rt as u64,
-        };
+        let action = Sigaction::new(handler);
 
-        let ret = unsafe { raw_sigaction(SIGUSR1, &action, std::ptr::null_mut()) };
-        if ret < 0 {
-            println!("  FAIL: sigaction failed with error {}", -ret);
+        if sigaction(SIGUSR1, Some(&action), None).is_err() {
+            println!("  FAIL: sigaction failed");
             std::process::exit(1);
         }
         println!("  Handler registered successfully");
 
-        let my_pid = unsafe { getpid() };
+        let my_pid = getpid().unwrap().raw() as i32;
 
         // Use a single asm block for the critical path: set registers, send
         // signal via syscall, yield to allow delivery, then read registers back.

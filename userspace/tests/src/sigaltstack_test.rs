@@ -4,122 +4,15 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use libbreenix::signal::{SIGUSR1, SA_ONSTACK, SS_DISABLE, SS_ONSTACK, MINSIGSTKSZ, SIGSTKSZ};
+use libbreenix::{kill, sigaction, sigaltstack, Sigaction, StackT};
+use libbreenix::process::{getpid, yield_now};
+
 static HANDLER_CALLED: AtomicBool = AtomicBool::new(false);
 static HANDLER_RSP: AtomicU64 = AtomicU64::new(0);
 
-const SIGUSR1: i32 = 10;
-const SA_RESTORER: u64 = 0x04000000;
-const SA_ONSTACK: u64 = 0x08000000;
-const SS_DISABLE: i32 = 2;
-const SS_ONSTACK: i32 = 1;
-const MINSIGSTKSZ: usize = 2048;
-const SIGSTKSZ: usize = 8192;
-
 /// Alternate stack buffer
 static mut ALT_STACK: [u8; SIGSTKSZ] = [0; SIGSTKSZ];
-
-#[repr(C)]
-struct KernelSigaction {
-    handler: u64,
-    mask: u64,
-    flags: u64,
-    restorer: u64,
-}
-
-/// Kernel stack_t layout: ss_sp(u64), ss_flags(i32), _pad(i32), ss_size(usize)
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct StackT {
-    ss_sp: u64,
-    ss_flags: i32,
-    _pad: i32,
-    ss_size: usize,
-}
-
-extern "C" {
-    fn kill(pid: i32, sig: i32) -> i32;
-    fn getpid() -> i32;
-    fn sched_yield() -> i32;
-}
-
-// Raw syscall wrappers
-#[cfg(target_arch = "x86_64")]
-unsafe fn raw_sigaction(sig: i32, act: *const KernelSigaction, oldact: *mut KernelSigaction) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "int 0x80",
-        in("rax") 13u64,
-        in("rdi") sig as u64,
-        in("rsi") act as u64,
-        in("rdx") oldact as u64,
-        in("r10") 8u64,
-        lateout("rax") ret,
-        options(nostack, preserves_flags),
-    );
-    ret as i64
-}
-
-#[cfg(target_arch = "aarch64")]
-unsafe fn raw_sigaction(sig: i32, act: *const KernelSigaction, oldact: *mut KernelSigaction) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "svc #0",
-        in("x8") 13u64,
-        inlateout("x0") sig as u64 => ret,
-        in("x1") act as u64,
-        in("x2") oldact as u64,
-        in("x3") 8u64,
-        options(nostack),
-    );
-    ret as i64
-}
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn raw_sigaltstack(ss: *const StackT, old_ss: *mut StackT) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "int 0x80",
-        in("rax") 131u64,  // SYS_SIGALTSTACK
-        in("rdi") ss as u64,
-        in("rsi") old_ss as u64,
-        lateout("rax") ret,
-        options(nostack, preserves_flags),
-    );
-    ret as i64
-}
-
-#[cfg(target_arch = "aarch64")]
-unsafe fn raw_sigaltstack(ss: *const StackT, old_ss: *mut StackT) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "svc #0",
-        in("x8") 131u64,
-        inlateout("x0") ss as u64 => ret,
-        in("x1") old_ss as u64,
-        options(nostack),
-    );
-    ret as i64
-}
-
-#[cfg(target_arch = "x86_64")]
-#[unsafe(naked)]
-extern "C" fn __restore_rt() -> ! {
-    std::arch::naked_asm!(
-        "mov rax, 15",
-        "int 0x80",
-        "ud2",
-    )
-}
-
-#[cfg(target_arch = "aarch64")]
-#[unsafe(naked)]
-extern "C" fn __restore_rt() -> ! {
-    std::arch::naked_asm!(
-        "mov x8, 15",
-        "svc #0",
-        "brk #1",
-    )
-}
 
 /// Signal handler that runs on alternate stack
 extern "C" fn handler_on_altstack(_sig: i32) {
@@ -181,9 +74,8 @@ fn main() {
         ss_size: alt_stack_size,
     };
 
-    let ret = unsafe { raw_sigaltstack(&new_ss, std::ptr::null_mut()) };
-    if ret < 0 {
-        println!("  FAIL: sigaltstack() returned error {}", -ret);
+    if sigaltstack(Some(&new_ss), None).is_err() {
+        println!("  FAIL: sigaltstack() returned error");
         println!("SIGALTSTACK_TEST_FAILED");
         std::process::exit(1);
     }
@@ -192,9 +84,8 @@ fn main() {
     // Test 2: Query current alternate stack
     println!("\nTest 2: Querying alternate stack configuration");
     let mut old_ss = StackT { ss_sp: 0, ss_flags: SS_DISABLE, _pad: 0, ss_size: 0 };
-    let ret = unsafe { raw_sigaltstack(std::ptr::null(), &mut old_ss) };
-    if ret < 0 {
-        println!("  FAIL: sigaltstack(NULL, &old_ss) returned error {}", -ret);
+    if sigaltstack(None, Some(&mut old_ss)).is_err() {
+        println!("  FAIL: sigaltstack(None, &old_ss) returned error");
         println!("SIGALTSTACK_TEST_FAILED");
         std::process::exit(1);
     }
@@ -222,16 +113,11 @@ fn main() {
 
     // Test 3: Register signal handler with SA_ONSTACK flag
     println!("\nTest 3: Registering handler with SA_ONSTACK flag");
-    let action = KernelSigaction {
-        handler: handler_on_altstack as u64,
-        mask: 0,
-        flags: SA_RESTORER | SA_ONSTACK,
-        restorer: __restore_rt as u64,
-    };
+    let mut action = Sigaction::new(handler_on_altstack);
+    action.flags |= SA_ONSTACK;
 
-    let ret = unsafe { raw_sigaction(SIGUSR1, &action, std::ptr::null_mut()) };
-    if ret < 0 {
-        println!("  FAIL: sigaction() returned error {}", -ret);
+    if sigaction(SIGUSR1, Some(&action), None).is_err() {
+        println!("  FAIL: sigaction() returned error");
         println!("SIGALTSTACK_TEST_FAILED");
         std::process::exit(1);
     }
@@ -239,9 +125,8 @@ fn main() {
 
     // Test 4: Send signal and verify handler runs on alternate stack
     println!("\nTest 4: Sending signal to trigger handler");
-    let my_pid = unsafe { getpid() };
-    let ret = unsafe { kill(my_pid, SIGUSR1) };
-    if ret != 0 {
+    let my_pid = getpid().unwrap().raw() as i32;
+    if kill(my_pid, SIGUSR1).is_err() {
         println!("  FAIL: kill() returned error");
         println!("SIGALTSTACK_TEST_FAILED");
         std::process::exit(1);
@@ -250,7 +135,7 @@ fn main() {
 
     println!("  Yielding to allow signal delivery...");
     for _ in 0..10 {
-        unsafe { sched_yield(); }
+        let _ = yield_now();
         if HANDLER_CALLED.load(Ordering::SeqCst) {
             break;
         }
@@ -300,9 +185,8 @@ fn main() {
         ss_size: 0,
     };
 
-    let ret = unsafe { raw_sigaltstack(&disable_ss, std::ptr::null_mut()) };
-    if ret < 0 {
-        println!("  FAIL: sigaltstack(SS_DISABLE) returned error {}", -ret);
+    if sigaltstack(Some(&disable_ss), None).is_err() {
+        println!("  FAIL: sigaltstack(SS_DISABLE) returned error");
         println!("SIGALTSTACK_TEST_FAILED");
         std::process::exit(1);
     }
@@ -310,9 +194,8 @@ fn main() {
 
     // Verify it was disabled
     let mut query_ss = StackT { ss_sp: 0, ss_flags: 0, _pad: 0, ss_size: 0 };
-    let ret = unsafe { raw_sigaltstack(std::ptr::null(), &mut query_ss) };
-    if ret < 0 {
-        println!("  FAIL: Query after disable returned error {}", -ret);
+    if sigaltstack(None, Some(&mut query_ss)).is_err() {
+        println!("  FAIL: Query after disable returned error");
         println!("SIGALTSTACK_TEST_FAILED");
         std::process::exit(1);
     }
@@ -335,9 +218,8 @@ fn main() {
         ss_size: MINSIGSTKSZ - 1,
     };
 
-    let ret = unsafe { raw_sigaltstack(&too_small_ss, std::ptr::null_mut()) };
-    if ret < 0 {
-        println!("  PASS: sigaltstack() rejected too-small stack (error {})", -ret);
+    if sigaltstack(Some(&too_small_ss), None).is_err() {
+        println!("  PASS: sigaltstack() rejected too-small stack");
     } else {
         println!("  WARN: sigaltstack() accepted stack smaller than MINSIGSTKSZ");
         println!("  (Some systems allow this, continuing test...)");
@@ -350,9 +232,8 @@ fn main() {
         ss_size: MINSIGSTKSZ,
     };
 
-    let ret = unsafe { raw_sigaltstack(&min_ss, std::ptr::null_mut()) };
-    if ret < 0 {
-        println!("  FAIL: sigaltstack() rejected MINSIGSTKSZ stack (error {})", -ret);
+    if sigaltstack(Some(&min_ss), None).is_err() {
+        println!("  FAIL: sigaltstack() rejected MINSIGSTKSZ stack");
         println!("SIGALTSTACK_TEST_FAILED");
         std::process::exit(1);
     }
