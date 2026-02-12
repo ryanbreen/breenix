@@ -29,14 +29,17 @@
   - cd(), pwd(), which(), readFile(), writeFile(), exit() builtins
   - Auto-exec mode for bare commands; directory-aware prompt
   - 86 passing tests, bsh.elf cross-compiles to 303KB
-- **Phase 4**: IN PROGRESS -- Async/await (Promises, event loop)
+- **Phase 4**: COMPLETE (PRs #194-195) -- Async/await (Promises, event loop)
   - Promise object: PromiseState (Fulfilled/Rejected/Pending), ObjectKind::Promise
-  - Promise.resolve(), Promise.reject(), Promise.all() as native functions
+  - Promise.resolve(), Promise.reject(), Promise.all(), Promise.race(), Promise.allSettled()
   - Await opcode: extracts fulfilled value, throws on rejected, passes through non-promises
   - .then()/.catch()/.finally() built-in methods on Promise objects
   - Persistent globals with cross-pool property re-keying for Promise global
-  - 94 passing tests, bsh.elf includes Promise builtins
-- **Phase 5**: IN PROGRESS -- Full shell experience
+  - Async function declarations and async arrow functions
+  - WrapPromise opcode for implicit Promise wrapping
+  - pipe() native function for pipeline execution
+  - 102 passing tests
+- **Phase 5**: COMPLETE (PRs #196-201) -- Full shell experience
   - JSON.parse/JSON.stringify with recursive descent JSON parser
   - Math object: floor, ceil, round, abs, min, max, pow, sqrt, random, log, trunc, PI, E
   - Number object: isInteger, isFinite, isNaN, parseInt, parseFloat
@@ -60,7 +63,10 @@
   - Map and Set collections with full method support (get/set/has/delete/size/clear/keys/values/forEach)
   - do...while loops with continue fix (deferred forward-jump patching)
   - 182 passing tests, bsh v0.5.0 with full shell builtins
-- **Phase 6**: PLANNED -- Advanced features (class, Proxy, JIT)
+  - CI: ecosystem-tests job runs all 182 tests in GitHub Actions (PR #201)
+  - aarch64: libbreenix-libc provides environ/pow/log for cross-compilation (PR #202)
+  - **Default shell**: init.rs and telnetd.rs launch /bin/bsh instead of /bin/init_shell
+- **Phase 6**: PLANNED -- Advanced features (class, regex, modules, Proxy, JIT)
 
 ## Architecture
 
