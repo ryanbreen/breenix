@@ -14,7 +14,7 @@ use libbreenix::socket::{socket, bind_inet, listen, accept, SockAddrIn, AF_INET,
 use libbreenix::types::Fd;
 
 const TELNET_PORT: u16 = 2323;
-const SHELL_PATH: &[u8] = b"/bin/init_shell\0";
+const SHELL_PATH: &[u8] = b"/bin/bsh\0";
 
 // setsockopt constants (not yet in libbreenix)
 const SOL_SOCKET: i32 = 1;
