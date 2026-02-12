@@ -74,8 +74,7 @@ impl Context {
     ///
     /// Must be called before any `eval()` calls that reference the function.
     pub fn register_native(&mut self, name: &str, func: NativeFn) {
-        let name_id = self.strings.intern(name);
-        self.vm.register_native(name_id, func);
+        self.vm.register_native(name, func);
     }
 
     /// Get a mutable reference to the string pool (for native functions).
@@ -88,9 +87,10 @@ impl Context {
         let compiler = Compiler::new(source);
         let (code, mut compile_strings, functions) = compiler.compile()?;
 
-        // Merge compiled strings into our persistent pool
-        // For Phase 1, we just use the compiler's string pool directly
-        // since we create a new compiler each time
+        // Re-register native function globals using the compiler's string pool
+        // so that global lookups match the correct string IDs.
+        self.vm.sync_natives(&mut compile_strings);
+
         self.vm.execute(&code, &mut compile_strings, &functions)
     }
 

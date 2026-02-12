@@ -76,6 +76,8 @@ pub type NativeFn = fn(args: &[JsValue], strings: &mut StringPool, heap: &mut Ob
 
 /// A registered native function entry.
 struct NativeEntry {
+    /// The function name (stored for re-interning across string pools).
+    name_str: String,
     func: NativeFn,
 }
 
@@ -95,6 +97,8 @@ pub struct Vm {
     exception_handlers: Vec<ExceptionHandler>,
     /// Native function table.
     native_functions: Vec<NativeEntry>,
+    /// Heap object indices for each native function.
+    native_obj_indices: Vec<u32>,
 }
 
 fn default_print(s: &str) {
@@ -119,6 +123,7 @@ impl Vm {
             print_fn: default_print,
             exception_handlers: Vec::new(),
             native_functions: Vec::new(),
+            native_obj_indices: Vec::new(),
         }
     }
 
@@ -132,18 +137,48 @@ impl Vm {
     /// The function will be available as a global variable with the given name.
     /// Must be called before `execute()` and the StringPool must be the same
     /// one used during compilation.
-    pub fn register_native(&mut self, name: StringId, func: NativeFn) -> u32 {
+    /// Register a native function by name.
+    ///
+    /// The function will be available as a global variable with the given name.
+    /// Call `sync_natives` with the compiler's string pool before execution.
+    pub fn register_native(&mut self, name: &str, func: NativeFn) -> u32 {
         let idx = self.native_functions.len() as u32;
-        self.native_functions.push(NativeEntry { func });
         // Create a NativeFunction object on the heap
         let obj = JsObject::new_native_function(idx);
         let obj_idx = self.heap.alloc(obj);
-        // Register as a global
-        self.globals.push(Global {
-            name,
-            value: JsValue::object(obj_idx),
+        self.native_functions.push(NativeEntry {
+            name_str: String::from(name),
+            func,
         });
+        // Store the heap object index for later global registration
+        self.native_obj_indices.push(obj_idx);
         idx
+    }
+
+    /// Re-register native function globals using the given string pool.
+    ///
+    /// This must be called before execution so that global lookups use the
+    /// correct string IDs for the current compilation's string pool.
+    pub fn sync_natives(&mut self, strings: &mut StringPool) {
+        for (entry, &obj_idx) in self.native_functions.iter().zip(self.native_obj_indices.iter()) {
+            let name = strings.intern(&entry.name_str);
+            // Update or add the global
+            let mut found = false;
+            for g in &mut self.globals {
+                // Compare by looking up the string content
+                if g.value == JsValue::object(obj_idx) {
+                    g.name = name;
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                self.globals.push(Global {
+                    name,
+                    value: JsValue::object(obj_idx),
+                });
+            }
+        }
     }
 
     /// Execute a compiled program.
