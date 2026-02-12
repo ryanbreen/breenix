@@ -248,6 +248,9 @@ STD_BINARIES=(
     "pty_test"
     "signal_exec_check"
 
+    # Shells
+    "bsh"
+
     # Services
     "init"
     "telnetd"

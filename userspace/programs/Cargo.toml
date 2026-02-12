@@ -10,6 +10,7 @@ description = "Userspace programs and utilities for Breenix"
 [dependencies]
 libbreenix = { path = "../../libs/libbreenix" }
 libgfx = { path = "../../libs/libgfx" }
+breenish-js = { path = "../../libs/breenish-js" }
 
 [[bin]]
 name = "hello_std_real"
@@ -504,6 +505,10 @@ path = "src/wc_test.rs"
 [[bin]]
 name = "which_test"
 path = "src/which_test.rs"
+
+[[bin]]
+name = "bsh"
+path = "src/bsh.rs"
 
 [profile.release]
 panic = "abort"
