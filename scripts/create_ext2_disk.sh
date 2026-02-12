@@ -43,7 +43,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "$ARCH" == "aarch64" ]]; then
-    USERSPACE_DIR="$PROJECT_ROOT/userspace/tests/aarch64"
+    USERSPACE_DIR="$PROJECT_ROOT/userspace/programs/aarch64"
     OUTPUT_FILE="$TARGET_DIR/ext2-aarch64.img"
     TESTDATA_FILE="$PROJECT_ROOT/testdata/ext2-aarch64.img"
     # ARM64 binaries are larger, use 48MB default
@@ -51,7 +51,7 @@ if [[ "$ARCH" == "aarch64" ]]; then
         SIZE_MB=48
     fi
 else
-    USERSPACE_DIR="$PROJECT_ROOT/userspace/tests"
+    USERSPACE_DIR="$PROJECT_ROOT/userspace/programs"
     OUTPUT_FILE="$TARGET_DIR/ext2.img"
     TESTDATA_FILE="$PROJECT_ROOT/testdata/ext2.img"
 fi

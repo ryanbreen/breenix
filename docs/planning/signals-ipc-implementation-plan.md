@@ -1287,7 +1287,7 @@ BootStage {
 
 ### Test Programs
 
-Create test programs in `userspace/tests/`:
+Create test programs in `userspace/programs/`:
 
 #### Test 1: Basic kill (SIGTERM)
 ```rust

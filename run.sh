@@ -133,7 +133,7 @@ if [ "$CLEAN" = true ]; then
 
     if [ "$ARCH" = "arm64" ]; then
         echo "[1/3] Building userspace binaries (aarch64)..."
-        "$BREENIX_ROOT/userspace/tests/build.sh" --arch aarch64
+        "$BREENIX_ROOT/userspace/programs/build.sh" --arch aarch64
 
         echo ""
         echo "[2/3] Creating ext2 disk image..."
@@ -143,7 +143,7 @@ if [ "$CLEAN" = true ]; then
         echo "[3/3] Building kernel..."
     else
         echo "[1/3] Building userspace binaries (x86_64)..."
-        "$BREENIX_ROOT/userspace/tests/build.sh"
+        "$BREENIX_ROOT/userspace/programs/build.sh"
 
         echo ""
         echo "[2/3] Creating ext2 disk image..."

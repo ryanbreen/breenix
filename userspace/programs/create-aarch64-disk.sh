@@ -16,7 +16,7 @@ MAGIC="BXTEST"
 
 if [ ! -d "$AARCH64_DIR" ]; then
     echo "Error: ARM64 binaries directory not found: $AARCH64_DIR"
-    echo "Build with: cd userspace/tests && ./build-aarch64.sh"
+    echo "Build with: cd userspace/programs && ./build-aarch64.sh"
     exit 1
 fi
 

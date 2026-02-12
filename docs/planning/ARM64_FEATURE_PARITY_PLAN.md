@@ -223,7 +223,7 @@ Deliverables:
 
 Primary files:
 - `tests/*`
-- `userspace/tests/*`
+- `userspace/programs/*`
 - `scripts/run-arm64-qemu.sh`
 - `xtask/src/main.rs`
 

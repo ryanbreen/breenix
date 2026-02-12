@@ -322,7 +322,7 @@ pub fn ntohs(x: u16) -> u16 { u16::from_be(x) }
 
 **Goal:** E2E test proving UDP works.
 
-**Test Program:** `userspace/tests/udp_echo_test.rs`
+**Test Program:** `userspace/programs/udp_echo_test.rs`
 ```rust
 // 1. Create UDP socket
 // 2. Bind to port 12345
@@ -377,7 +377,7 @@ Since QEMU SLIRP doesn't echo UDP, test by:
 - `kernel/src/net/udp.rs`
 - `kernel/src/syscall/socket.rs`
 - `libs/libbreenix/src/socket.rs`
-- `userspace/tests/udp_echo_test.rs`
+- `userspace/programs/udp_echo_test.rs`
 
 **Modified Files:**
 - `kernel/src/lib.rs` - Add socket module

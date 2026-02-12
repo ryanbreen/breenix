@@ -58,7 +58,7 @@ jobs:
       - name: Build userspace tests
         run: |
           export PATH="$PATH:$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin"
-          cd userspace/tests
+          cd userspace/programs
           ./build.sh
 
       - name: Pre-build kernel to avoid timeout during QEMU wait
@@ -190,9 +190,9 @@ jobs:
       - name: Build userspace for aarch64
         run: |
           # build.sh copies .elf files to this directory; it must exist
-          mkdir -p userspace/tests/aarch64
+          mkdir -p userspace/programs/aarch64
           export PATH="$PATH:$(rustc --print sysroot)/lib/rustlib/aarch64-unknown-linux-gnu/bin"
-          cd userspace/tests
+          cd userspace/programs
           ./build.sh --arch aarch64
 
       - name: Create ext2 disk image
@@ -213,16 +213,16 @@ jobs:
           SIZE=$(stat -c%s "$IMG")
           echo "ext2 image: $IMG ($SIZE bytes)"
           # Verify actual binaries were installed (not just an empty filesystem)
-          ELF_COUNT=$(ls -1 userspace/tests/aarch64/*.elf 2>/dev/null | wc -l | tr -d ' ')
+          ELF_COUNT=$(ls -1 userspace/programs/aarch64/*.elf 2>/dev/null | wc -l | tr -d ' ')
           echo "ELF binaries staged: $ELF_COUNT"
           if [ "$ELF_COUNT" -lt 10 ]; then
-            echo "FAIL: Only $ELF_COUNT .elf files in userspace/tests/aarch64/ (expected 100+)"
+            echo "FAIL: Only $ELF_COUNT .elf files in userspace/programs/aarch64/ (expected 100+)"
             echo "build.sh may have skipped the copy step"
             exit 1
           fi
           # Spot-check critical binaries
           for bin in init.elf init_shell.elf ls.elf cat.elf; do
-            if [ ! -f "userspace/tests/aarch64/$bin" ]; then
+            if [ ! -f "userspace/programs/aarch64/$bin" ]; then
               echo "FAIL: Missing critical binary: $bin"
               exit 1
             fi

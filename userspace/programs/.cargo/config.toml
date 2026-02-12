@@ -23,7 +23,7 @@ rustflags = [
     # Link against libbreenix-libc which provides all C ABI functions
     "-L", "native=../../libs/libbreenix-libc/target/x86_64-breenix/release",
     # Use our linker script to place the binary at 0x40000000
-    "-C", "link-arg=-T../../userspace/tests/linker.ld",
+    "-C", "link-arg=-T../../userspace/programs/linker.ld",
     # Allow our libc.a to override any duplicate symbols
     "-C", "link-arg=--allow-multiple-definition",
     # Don't link default system libraries (-lc, -lm, -lrt, -lpthread)
@@ -37,7 +37,7 @@ rustflags = [
     # Link against libbreenix-libc which provides all C ABI functions
     "-L", "native=../../libs/libbreenix-libc/target/aarch64-breenix/release",
     # Use our linker script to place the binary at 0x40000000
-    "-C", "link-arg=-T../../userspace/tests/linker.ld",
+    "-C", "link-arg=-T../../userspace/programs/linker.ld",
     # Allow our libc.a to override any duplicate symbols
     "-C", "link-arg=--allow-multiple-definition",
     # Don't link default system libraries (-lc, -lm, -lrt, -lpthread)

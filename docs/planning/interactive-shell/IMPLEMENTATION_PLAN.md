@@ -274,7 +274,7 @@ pub fn create_thread_waker(thread_id: ThreadId) -> Waker {
 3. **Boot stage:** "Stdin read returns keyboard input"
 
 ```rust
-// userspace/tests/stdin_test.rs
+// userspace/programs/stdin_test.rs
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     io::print("Type something: ");

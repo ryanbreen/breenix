@@ -34,7 +34,7 @@ Feb 11: ext2 lock converted Mutex→RwLock — ARM64 184/184 passing locally
 
 ### Shared Infrastructure (163 stages)
 
-Both architectures validate identical userspace test markers. The test binaries are compiled from the same Rust source (`userspace/tests/src/`) and emit the same `*_PASSED` / `*_FAILED` markers to serial output. Categories:
+Both architectures validate identical userspace test markers. The test binaries are compiled from the same Rust source (`userspace/programs/src/`) and emit the same `*_PASSED` / `*_FAILED` markers to serial output. Categories:
 
 | Category | Shared Stages | Notes |
 |----------|--------------|-------|

@@ -67,7 +67,7 @@ All kernel tests require QEMU and supporting tools:
 - name: Build userspace tests
   run: |
     export PATH="$PATH:$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin"
-    cd userspace/tests
+    cd userspace/programs
     ./build.sh
 ```
 
@@ -357,7 +357,7 @@ on:
     paths:
       - 'kernel/src/process/**'
       - 'kernel/src/syscall/**'
-      - 'userspace/tests/fork_test*'
+      - 'userspace/programs/fork_test*'
 
 jobs:
   fork-test:
@@ -392,7 +392,7 @@ jobs:
       - name: Build userspace tests
         run: |
           export PATH="$PATH:$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin"
-          cd userspace/tests
+          cd userspace/programs
           ./build.sh
 
       - name: Run fork test

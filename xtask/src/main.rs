@@ -133,10 +133,10 @@ fn build_std_test_binaries() -> Result<()> {
 
     // Step 2: Build userspace tests (produces hello_std_real)
     println!("  [2/2] Building userspace tests...");
-    let tests_std_dir = Path::new("userspace/tests");
+    let tests_std_dir = Path::new("userspace/programs");
 
     if !tests_std_dir.exists() {
-        println!("    Note: userspace/tests not found, skipping");
+        println!("    Note: userspace/programs not found, skipping");
         return Ok(());
     }
 
@@ -440,9 +440,9 @@ fn prepare_boot_test_artifacts(arch: &qemu_config::Arch) -> Result<()> {
                 println!("ext2 disk image already exists at target/ext2-aarch64.img, skipping build steps");
             } else {
                 println!("Building userspace test binaries for aarch64...");
-                let userspace_dir = Path::new("userspace/tests");
+                let userspace_dir = Path::new("userspace/programs");
                 if userspace_dir.exists() {
-                    let _ = fs::create_dir_all("userspace/tests/aarch64");
+                    let _ = fs::create_dir_all("userspace/programs/aarch64");
                     let status = Command::new("./build.sh")
                         .args(&["--arch", "aarch64"])
                         .current_dir(userspace_dir)
@@ -453,7 +453,7 @@ fn prepare_boot_test_artifacts(arch: &qemu_config::Arch) -> Result<()> {
                     }
                     println!("  aarch64 userspace binaries built successfully");
                 } else {
-                    println!("  Note: userspace/tests not found, skipping userspace build");
+                    println!("  Note: userspace/programs not found, skipping userspace build");
                 }
 
                 println!("\nCreating ext2 disk image for aarch64...");
@@ -1922,9 +1922,9 @@ fn boot_test_btrt(arch: &str) -> Result<()> {
         if !ext2_img.exists() {
             // Build ARM64 userspace binaries
             println!("  Building ARM64 userspace binaries...");
-            let userspace_dir = Path::new("userspace/tests");
+            let userspace_dir = Path::new("userspace/programs");
             if userspace_dir.exists() {
-                let _ = fs::create_dir_all("userspace/tests/aarch64");
+                let _ = fs::create_dir_all("userspace/programs/aarch64");
                 let status = Command::new("./build.sh")
                     .args(["--arch", "aarch64"])
                     .current_dir(userspace_dir)
@@ -1935,7 +1935,7 @@ fn boot_test_btrt(arch: &str) -> Result<()> {
                 }
                 println!("  ARM64 userspace binaries built successfully");
             } else {
-                bail!("userspace/tests directory not found");
+                bail!("userspace/programs directory not found");
             }
 
             // Create ARM64 ext2 disk image

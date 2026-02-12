@@ -24,7 +24,7 @@
 //! never resumes.
 //!
 //! For userspace syscall validation, see:
-//! - hello_time.elf (userspace/tests/hello_time.rs) - calls SYS_GET_TIME from Ring 3
+//! - hello_time.elf (userspace/programs/hello_time.rs) - calls SYS_GET_TIME from Ring 3
 //! - Boot stage "Userspace clock_gettime validated" - validates userspace syscall path
 
 use crate::syscall::time::{clock_gettime, CLOCK_MONOTONIC, CLOCK_REALTIME};

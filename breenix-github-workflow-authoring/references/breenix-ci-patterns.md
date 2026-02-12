@@ -33,7 +33,7 @@ Must be done before kernel tests that execute userspace code:
 
 ```bash
 export PATH="$PATH:$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin"
-cd userspace/tests
+cd userspace/programs
 ./build.sh
 ```
 
@@ -201,7 +201,7 @@ jobs:
       - name: Build userspace tests
         run: |
           export PATH="$PATH:$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin"
-          cd userspace/tests
+          cd userspace/programs
           ./build.sh
 
       - name: Run test

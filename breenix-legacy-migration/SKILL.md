@@ -286,7 +286,7 @@ fn sys_feature(args: ...) -> u64 {
 }
 
 // 4. Test from userspace
-// userspace/tests/feature_test.rs
+// userspace/programs/feature_test.rs
 ```
 
 ### Pattern: Infrastructure

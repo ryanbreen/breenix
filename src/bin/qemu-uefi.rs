@@ -123,7 +123,7 @@ fn main() {
                 eprintln!("║                                                              ║");
                 eprintln!("║  To fix:                                                     ║");
                 eprintln!("║    1. cargo run -p xtask -- create-test-disk                ║");
-                eprintln!("║    2. Ensure userspace/tests/ binaries are compiled         ║");
+                eprintln!("║    2. Ensure userspace/programs/ binaries are compiled         ║");
                 eprintln!("║                                                              ║");
                 eprintln!("║  Exiting now to prevent silent test failures.               ║");
                 eprintln!("╚══════════════════════════════════════════════════════════════╝");
@@ -141,7 +141,7 @@ fn main() {
                 eprintln!("║                                                              ║");
                 eprintln!("║  To fix:                                                     ║");
                 eprintln!("║    1. cargo run -p xtask -- create-test-disk                ║");
-                eprintln!("║    2. Ensure userspace/tests/ binaries are compiled         ║");
+                eprintln!("║    2. Ensure userspace/programs/ binaries are compiled         ║");
                 eprintln!("║                                                              ║");
                 eprintln!("║  Exiting now to prevent silent test failures.               ║");
                 eprintln!("╚══════════════════════════════════════════════════════════════╝");

@@ -9,8 +9,8 @@
 #   - libs/libbreenix-libc (provides libc.a for std's Unix PAL)
 #
 # Usage:
-#   ./userspace/tests/build.sh                  # x86_64 (default)
-#   ./userspace/tests/build.sh --arch aarch64   # aarch64
+#   ./userspace/programs/build.sh                  # x86_64 (default)
+#   ./userspace/programs/build.sh --arch aarch64   # aarch64
 
 set -e
 
@@ -36,7 +36,7 @@ done
 if [[ "$ARCH" == "aarch64" ]]; then
     TARGET_JSON="../../aarch64-breenix.json"
     TARGET_DIR="aarch64-breenix"
-    TESTS_DIR="$PROJECT_ROOT/userspace/tests/aarch64"
+    TESTS_DIR="$PROJECT_ROOT/userspace/programs/aarch64"
     LIBC_RELEASE_DIR="$PROJECT_ROOT/libs/libbreenix-libc/target/aarch64-breenix/release"
 else
     TARGET_JSON="../../x86_64-breenix.json"
@@ -98,7 +98,7 @@ fi
 echo "  Userspace build successful"
 echo ""
 
-# Step 3: Copy all binaries as .elf to userspace/tests/ for ext2 inclusion
+# Step 3: Copy all binaries as .elf to userspace/programs/ for ext2 inclusion
 echo "[3/3] Installing std binaries..."
 
 # All std binaries to install
@@ -256,6 +256,8 @@ STD_BINARIES=(
 RELEASE_DIR="$SCRIPT_DIR/target/$TARGET_DIR/release"
 INSTALLED=0
 FAILED=0
+
+mkdir -p "$TESTS_DIR"
 
 if [ -d "$TESTS_DIR" ]; then
     for entry in "${STD_BINARIES[@]}"; do

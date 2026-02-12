@@ -1,8 +1,8 @@
 [package]
-name = "userspace-tests"
+name = "userspace-programs"
 version = "0.1.0"
 edition = "2021"
-description = "Userspace test programs and utilities for Breenix"
+description = "Userspace programs and utilities for Breenix"
 
 # This crate builds with -Z build-std to use the real Rust standard library
 # It links against libbreenix-libc (libc.a) for system calls
