@@ -197,6 +197,11 @@ pub enum Op {
     /// Used by for...in loops to iterate over object keys.
     GetKeys = 133,
 
+    /// Check if the top of stack is null or undefined.
+    /// Stack: [value] -> [boolean]
+    /// Pushes true (1) if null or undefined, false (0) otherwise.
+    IsNullish = 134,
+
     /// Halt execution.
     Halt = 255,
 }
@@ -254,6 +259,7 @@ impl Op {
             131 => Some(Op::Await),
             132 => Some(Op::WrapPromise),
             133 => Some(Op::GetKeys),
+            134 => Some(Op::IsNullish),
             255 => Some(Op::Halt),
             _ => None,
         }

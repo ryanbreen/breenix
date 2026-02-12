@@ -78,6 +78,8 @@ pub struct Compiler<'a> {
     function_stack: Vec<FunctionContext>,
     /// Whether the current function being compiled is async.
     is_async: bool,
+    /// Tracks the last identifier compiled in compile_primary, for postfix ++/--.
+    last_primary_name: Option<String>,
 }
 
 impl<'a> Compiler<'a> {
@@ -96,6 +98,7 @@ impl<'a> Compiler<'a> {
             upvalues: Vec::new(),
             function_stack: Vec::new(),
             is_async: false,
+            last_primary_name: None,
         }
     }
 
@@ -1344,13 +1347,34 @@ impl<'a> Compiler<'a> {
     }
 
     fn compile_or(&mut self) -> JsResult<()> {
-        self.compile_and()?;
+        self.compile_nullish_coalesce()?;
 
         while self.lexer.peek().kind == TokenKind::Or {
             self.lexer.next_token();
             // Short-circuit: if truthy, skip RHS
             self.code.emit_op(Op::Dup);
             let skip = self.code.emit_jump(Op::JumpIfTrue);
+            self.code.emit_op(Op::Pop);
+            self.compile_nullish_coalesce()?;
+            let end = self.code.current_offset();
+            self.code.patch_jump(skip, end);
+        }
+
+        Ok(())
+    }
+
+    fn compile_nullish_coalesce(&mut self) -> JsResult<()> {
+        self.compile_and()?;
+
+        while self.lexer.peek().kind == TokenKind::NullishCoalesce {
+            self.lexer.next_token();
+            // Nullish coalescing: if left is NOT nullish, keep it; otherwise use right.
+            // Stack: [left]
+            // Dup left, check IsNullish, if false (not nullish) jump over right side
+            self.code.emit_op(Op::Dup);
+            self.code.emit_op(Op::IsNullish);
+            let skip = self.code.emit_jump(Op::JumpIfFalse);
+            // Left is nullish: pop the duplicated left, compile right
             self.code.emit_op(Op::Pop);
             self.compile_and()?;
             let end = self.code.current_offset();
@@ -1556,13 +1580,30 @@ impl<'a> Compiler<'a> {
     fn compile_postfix(&mut self) -> JsResult<()> {
         self.compile_call()?;
 
-        // Postfix ++ and -- (Phase 1: handle simple identifier case)
+        // Postfix ++ and -- for simple identifiers
         if matches!(
             self.lexer.peek().kind,
             TokenKind::PlusPlus | TokenKind::MinusMinus
         ) {
-            // For Phase 1, just consume and ignore postfix ops on non-identifiers
-            self.lexer.next_token();
+            let is_increment = self.lexer.peek().kind == TokenKind::PlusPlus;
+            self.lexer.next_token(); // consume ++ or --
+
+            if let Some(name) = self.last_primary_name.take() {
+                // Stack currently has: [old_value]
+                // For postfix: the expression result is the OLD value.
+                // We need to: dup (keep old for expression result), add/sub 1, store back.
+                // Stack: [old_value]
+                self.code.emit_op(Op::Dup);          // [old_value, old_value]
+                let one = self.code.add_number(1.0);
+                self.code.emit_op_u16(Op::LoadConst, one); // [old_value, old_value, 1]
+                if is_increment {
+                    self.code.emit_op(Op::Add);       // [old_value, new_value]
+                } else {
+                    self.code.emit_op(Op::Sub);       // [old_value, new_value]
+                }
+                self.emit_store_var(&name);           // [old_value] (new_value stored)
+            }
+            // If not a simple identifier, postfix op is silently ignored (like before)
         }
 
         Ok(())
@@ -1573,6 +1614,13 @@ impl<'a> Compiler<'a> {
 
         // Handle postfix operations: calls, property access, indexing
         loop {
+            match &self.lexer.peek().kind {
+                TokenKind::LeftParen | TokenKind::Dot | TokenKind::LeftBracket => {
+                    // Any postfix operation invalidates the simple identifier tracking
+                    self.last_primary_name = None;
+                }
+                _ => {}
+            }
             match &self.lexer.peek().kind {
                 TokenKind::LeftParen => {
                     self.lexer.next_token(); // consume '('
@@ -1675,6 +1723,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn compile_primary(&mut self) -> JsResult<()> {
+        self.last_primary_name = None;
         let tok = self.lexer.peek().clone();
         match &tok.kind {
             TokenKind::Number(n) => {
@@ -1782,6 +1831,7 @@ impl<'a> Compiler<'a> {
                     let idx = self.code.add_string(name_id.0);
                     self.code.emit_op_u16(Op::LoadGlobal, idx);
                 }
+                self.last_primary_name = Some(name);
                 Ok(())
             }
 
@@ -2096,6 +2146,19 @@ impl<'a> Compiler<'a> {
             let name_id = self.strings.intern(name);
             let idx = self.code.add_string(name_id.0);
             self.code.emit_op_u16(Op::LoadGlobal, idx);
+        }
+    }
+
+    /// Emit code to store the top of stack into a variable (pops the value).
+    fn emit_store_var(&mut self, name: &str) {
+        if let Some((slot, _)) = self.resolve_local(name) {
+            self.code.emit_op_u16(Op::StoreLocal, slot);
+        } else if let Some(upval_idx) = self.resolve_upvalue(name) {
+            self.code.emit_op_u16(Op::StoreUpvalue, upval_idx);
+        } else {
+            let name_id = self.strings.intern(name);
+            let idx = self.code.add_string(name_id.0);
+            self.code.emit_op_u16(Op::StoreGlobal, idx);
         }
     }
 

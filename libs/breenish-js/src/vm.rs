@@ -586,6 +586,16 @@ impl Vm {
                     self.push(val)?;
                 }
 
+                Op::IsNullish => {
+                    let val = self.pop();
+                    let result = if val.is_nullish() {
+                        JsValue::boolean(true)
+                    } else {
+                        JsValue::boolean(false)
+                    };
+                    self.push(result)?;
+                }
+
                 Op::Print => {
                     let argc = self.read_u8_advance(code) as usize;
 
