@@ -28,12 +28,11 @@ fn main() {
             let arg0 = b"/bin/hello_world\0".as_ptr();
             let argv: [*const u8; 2] = [arg0, std::ptr::null()];
 
-            let result = execv(program, argv.as_ptr());
+            let err = execv(program, argv.as_ptr()).unwrap_err();
             // If we get here, exec failed
             println!("exec /bin/hello_world failed");
-            if let Err(Error::Os(e)) = result {
-                println!("exec returned: errno {:?}", e);
-            }
+            let Error::Os(e) = err;
+            println!("exec returned: errno {:?}", e);
             std::process::exit(1);
         }
         Ok(ForkResult::Parent(child_pid)) => {
@@ -166,11 +165,10 @@ fn main() {
             let arg1 = b"/\0".as_ptr();
             let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
-            let result = execv(program, argv.as_ptr());
+            let err = execv(program, argv.as_ptr()).unwrap_err();
             // If we get here, exec failed
-            if let Err(Error::Os(e)) = result {
-                println!("exec /bin/ls failed: errno={:?}", e);
-            }
+            let Error::Os(e) = err;
+            println!("exec /bin/ls failed: errno={:?}", e);
             std::process::exit(1);
         }
         Ok(ForkResult::Parent(child_pid)) => {

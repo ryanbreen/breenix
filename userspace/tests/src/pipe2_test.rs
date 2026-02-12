@@ -9,7 +9,6 @@
 use libbreenix::io;
 use libbreenix::io::fd_flags::FD_CLOEXEC;
 use libbreenix::io::status_flags::{O_CLOEXEC, O_NONBLOCK};
-use libbreenix::types::Fd;
 use std::process;
 
 fn main() {

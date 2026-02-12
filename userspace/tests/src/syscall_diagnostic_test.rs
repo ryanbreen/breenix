@@ -13,14 +13,19 @@
 //! NOTE: This is an x86_64-only test due to inline assembly using int 0x80.
 
 // System call numbers
+#[cfg(target_arch = "x86_64")]
 const SYS_WRITE: u64 = 1;
+#[cfg(target_arch = "x86_64")]
 const SYS_GETPID: u64 = 39;
+#[cfg(target_arch = "x86_64")]
 const SYS_CLOCK_GETTIME: u64 = 228;
 
 // Clock IDs
+#[cfg(target_arch = "x86_64")]
 const CLOCK_MONOTONIC: u32 = 1;
 
 /// Timespec structure for clock_gettime
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 struct Timespec {
     tv_sec: i64,

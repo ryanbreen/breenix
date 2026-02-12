@@ -9,8 +9,12 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use libbreenix::signal::SIGUSR1;
-use libbreenix::{kill, sigaction, Sigaction};
-use libbreenix::process::{getpid, yield_now};
+use libbreenix::{sigaction, Sigaction};
+use libbreenix::process::getpid;
+#[cfg(target_arch = "x86_64")]
+use libbreenix::kill;
+#[cfg(target_arch = "x86_64")]
+use libbreenix::process::yield_now;
 
 static HANDLER_RAN: AtomicBool = AtomicBool::new(false);
 

@@ -32,7 +32,7 @@ use libbreenix::process::{
 };
 use libbreenix::signal::{sigaction, Sigaction, SIGINT, SIGCHLD, SIGCONT};
 use libbreenix::termios::{
-    self, Termios, tcgetattr, tcsetattr, tcsetpgrp, cfmakeraw, TCSANOW,
+    self, Termios, tcgetattr, tcsetattr, tcsetpgrp, TCSANOW,
     lflag, iflag, oflag,
 };
 use libbreenix::types::Fd;

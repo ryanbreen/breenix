@@ -4,7 +4,7 @@
 //! Must emit "FS_DIRECTORY_TEST_PASSED" on success.
 
 use libbreenix::fs::{self, O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC, O_DIRECTORY, F_OK};
-use libbreenix::fs::{Dirent64, DirentIter};
+use libbreenix::fs::DirentIter;
 use libbreenix::io::close;
 
 fn main() {

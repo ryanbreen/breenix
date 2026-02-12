@@ -9,7 +9,6 @@
 use libbreenix::io;
 use libbreenix::io::status_flags::O_NONBLOCK;
 use libbreenix::error::Error;
-use libbreenix::types::Fd;
 use libbreenix::Errno;
 use std::process;
 

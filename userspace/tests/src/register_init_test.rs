@@ -62,6 +62,7 @@ mod register_capture {
 }
 
 /// Helper to write a hex number
+#[cfg(target_arch = "x86_64")]
 fn format_hex(n: u64) -> String {
     format!("0x{:016x}", n)
 }

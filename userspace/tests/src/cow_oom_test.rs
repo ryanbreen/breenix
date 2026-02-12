@@ -39,7 +39,7 @@ fn main() {
     // Step 1: Check if OOM simulation syscall is available
     println!("Step 1: Testing OOM simulation syscall availability");
     match simulate_oom(false) {
-        Err(e) => {
+        Err(_e) => {
             // Check if it's ENOSYS
             println!("  SKIP: OOM simulation syscall not available");
             println!("  (kernel not compiled with 'testing' feature)");

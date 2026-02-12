@@ -2,7 +2,7 @@
 //!
 //! Must emit "DEVFS_TEST_PASSED" on success.
 
-use libbreenix::fs::{self, O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC, F_OK};
+use libbreenix::fs::{self, O_RDONLY, O_WRONLY, F_OK};
 use libbreenix::io::close;
 
 fn main() {

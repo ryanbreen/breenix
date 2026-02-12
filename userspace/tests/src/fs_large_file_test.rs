@@ -3,7 +3,7 @@
 //! Writes a file larger than 12 direct blocks (>48KB) to exercise indirect blocks.
 //! Must emit "FS_LARGE_FILE_TEST_PASSED" on success.
 
-use libbreenix::fs::{self, O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC, SEEK_SET};
+use libbreenix::fs::{self, O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC};
 use libbreenix::io::close;
 
 fn main() {

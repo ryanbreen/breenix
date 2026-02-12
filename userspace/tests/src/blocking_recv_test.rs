@@ -4,7 +4,6 @@
 
 use libbreenix::io;
 use libbreenix::socket::{self, SockAddrIn, AF_INET, SOCK_DGRAM};
-use libbreenix::types::Fd;
 use std::process;
 
 fn main() {

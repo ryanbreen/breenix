@@ -8,7 +8,6 @@
 
 use libbreenix::io;
 use libbreenix::process::{self, ForkResult};
-use libbreenix::types::Fd;
 use libbreenix::Errno;
 
 /// Helper to fail with an error message

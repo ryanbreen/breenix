@@ -23,10 +23,6 @@ const NUM_CHILDREN: usize = 4;
 /// Base port number (children use BASE_PORT + child_index)
 const BASE_PORT: u16 = 56000;
 
-fn sock_addr_len() -> u32 {
-    core::mem::size_of::<SockAddrIn>() as u32
-}
-
 /// Child process: bind to port and wait for packet
 fn child_receiver(child_index: usize) -> ! {
     let port = BASE_PORT + child_index as u16;
@@ -160,7 +156,7 @@ fn main() {
         let pid = child_pids[i] as i32;
         let mut status: i32 = 0;
         match process::waitpid(pid, &mut status, 0) {
-            Ok(result_pid) => {
+            Ok(_result_pid) => {
                 if wifexited(status) && wexitstatus(status) == 0 {
                     println!("CONCURRENT_RECV_STRESS: child {} (pid {}) succeeded", i, pid);
                 } else {

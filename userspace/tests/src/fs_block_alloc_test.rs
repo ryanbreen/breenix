@@ -5,7 +5,7 @@
 //! 2. Multi-file operations don't corrupt other files' data blocks
 //! 3. Block reuse after truncate
 
-use libbreenix::fs::{self, O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC, O_DIRECTORY, Dirent64, DirentIter};
+use libbreenix::fs::{self, O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC, O_DIRECTORY, DirentIter};
 use libbreenix::io::close;
 use libbreenix::process::{fork, waitpid, execv, wifexited, wexitstatus, ForkResult};
 
