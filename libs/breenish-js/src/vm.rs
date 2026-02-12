@@ -926,6 +926,13 @@ impl Vm {
                     }
                 }
 
+                Op::WrapPromise => {
+                    let val = self.pop();
+                    let obj = JsObject::new_promise_fulfilled(val);
+                    let idx = self.heap.alloc(obj);
+                    self.push(JsValue::object(idx))?;
+                }
+
                 Op::CallSpread => {
                     // Stack: [func, args_array]
                     let args_val = self.pop();

@@ -114,7 +114,7 @@ fn native_exec(
             // Wait for child
             let mut status: i32 = 0;
             let _ = libbreenix::process::waitpid(
-                child_pid.0 as i32,
+                child_pid.raw() as i32,
                 &mut status as *mut i32,
                 0,
             );
@@ -140,7 +140,7 @@ fn native_exec(
             let stderr_id = strings.intern(&stderr_str);
             obj.set(k_stderr, JsValue::string(stderr_id));
 
-            obj.set(k_pid, JsValue::number(child_pid.0 as f64));
+            obj.set(k_pid, JsValue::number(child_pid.raw() as f64));
 
             let idx = heap.alloc(obj);
             Ok(JsValue::object(idx))
@@ -266,6 +266,209 @@ fn native_exit(
     std::process::exit(code);
 }
 
+/// pipe("cmd1 arg1", "cmd2 arg2", ...) -> { exitCode, stdout, stderr }
+///
+/// Creates a Unix pipeline connecting N commands via pipes. Each argument is
+/// a string containing the command and its arguments, separated by whitespace.
+/// Returns the result of the last command in the pipeline.
+fn native_pipe(
+    args: &[JsValue],
+    strings: &mut StringPool,
+    heap: &mut ObjectHeap,
+) -> JsResult<JsValue> {
+    if args.is_empty() {
+        return Err(JsError::type_error("pipe: expected at least one command string"));
+    }
+
+    // Parse each argument into a command string
+    let mut commands: Vec<Vec<String>> = Vec::new();
+    for arg in args {
+        if !arg.is_string() {
+            return Err(JsError::type_error("pipe: each argument must be a command string"));
+        }
+        let cmd_str = String::from(strings.get(arg.as_string_id()));
+        let parts: Vec<String> = cmd_str.split_whitespace().map(String::from).collect();
+        if parts.is_empty() {
+            return Err(JsError::type_error("pipe: empty command string"));
+        }
+        commands.push(parts);
+    }
+
+    let n = commands.len();
+
+    // If only one command, just execute it directly (no pipes needed)
+    if n == 1 {
+        let mut exec_args = Vec::new();
+        for part in &commands[0] {
+            let id = strings.intern(part);
+            exec_args.push(JsValue::string(id));
+        }
+        return native_exec(&exec_args, strings, heap);
+    }
+
+    // Create N-1 pipes for inter-process communication
+    let mut pipes: Vec<(libbreenix::types::Fd, libbreenix::types::Fd)> = Vec::new();
+    for _ in 0..(n - 1) {
+        match libbreenix::io::pipe() {
+            Ok(p) => pipes.push(p),
+            Err(_) => {
+                for (r, w) in &pipes {
+                    let _ = libbreenix::io::close(*r);
+                    let _ = libbreenix::io::close(*w);
+                }
+                return Err(JsError::runtime("pipe: pipe() syscall failed"));
+            }
+        }
+    }
+
+    // Create pipes to capture stdout and stderr of the last command
+    let (last_stdout_r, last_stdout_w) = match libbreenix::io::pipe() {
+        Ok(p) => p,
+        Err(_) => {
+            for (r, w) in &pipes {
+                let _ = libbreenix::io::close(*r);
+                let _ = libbreenix::io::close(*w);
+            }
+            return Err(JsError::runtime("pipe: pipe() syscall failed"));
+        }
+    };
+
+    let (last_stderr_r, last_stderr_w) = match libbreenix::io::pipe() {
+        Ok(p) => p,
+        Err(_) => {
+            for (r, w) in &pipes {
+                let _ = libbreenix::io::close(*r);
+                let _ = libbreenix::io::close(*w);
+            }
+            let _ = libbreenix::io::close(last_stdout_r);
+            let _ = libbreenix::io::close(last_stdout_w);
+            return Err(JsError::runtime("pipe: pipe() syscall failed"));
+        }
+    };
+
+    // Fork each child in the pipeline
+    let mut child_pids: Vec<i32> = Vec::new();
+    for i in 0..n {
+        let fork_result = match libbreenix::process::fork() {
+            Ok(r) => r,
+            Err(_) => {
+                for (r, w) in &pipes {
+                    let _ = libbreenix::io::close(*r);
+                    let _ = libbreenix::io::close(*w);
+                }
+                let _ = libbreenix::io::close(last_stdout_r);
+                let _ = libbreenix::io::close(last_stdout_w);
+                let _ = libbreenix::io::close(last_stderr_r);
+                let _ = libbreenix::io::close(last_stderr_w);
+                for pid in &child_pids {
+                    let mut status: i32 = 0;
+                    let _ = libbreenix::process::waitpid(*pid, &mut status as *mut i32, 0);
+                }
+                return Err(JsError::runtime("pipe: fork() failed"));
+            }
+        };
+
+        match fork_result {
+            libbreenix::process::ForkResult::Child => {
+                // Set up stdin: first child keeps original stdin,
+                // others read from previous pipe
+                if i > 0 {
+                    let _ = libbreenix::io::dup2(pipes[i - 1].0, libbreenix::types::Fd::STDIN);
+                }
+
+                // Set up stdout: last child writes to capture pipe,
+                // others write to next pipe
+                if i < n - 1 {
+                    let _ = libbreenix::io::dup2(pipes[i].1, libbreenix::types::Fd::STDOUT);
+                } else {
+                    let _ = libbreenix::io::dup2(last_stdout_w, libbreenix::types::Fd::STDOUT);
+                    let _ = libbreenix::io::dup2(last_stderr_w, libbreenix::types::Fd::STDERR);
+                }
+
+                // Close all pipe fds in the child
+                for (r, w) in &pipes {
+                    let _ = libbreenix::io::close(*r);
+                    let _ = libbreenix::io::close(*w);
+                }
+                let _ = libbreenix::io::close(last_stdout_r);
+                let _ = libbreenix::io::close(last_stdout_w);
+                let _ = libbreenix::io::close(last_stderr_r);
+                let _ = libbreenix::io::close(last_stderr_w);
+
+                // Resolve and exec the command
+                let cmd = &commands[i][0];
+                let resolved = resolve_command(cmd);
+                let exec_path = resolved.as_deref().unwrap_or(cmd.as_str());
+
+                let mut c_args: Vec<Vec<u8>> = Vec::new();
+                for a in &commands[i] {
+                    let mut v: Vec<u8> = a.as_bytes().to_vec();
+                    v.push(0);
+                    c_args.push(v);
+                }
+                let mut argv_ptrs: Vec<*const u8> = c_args.iter().map(|a| a.as_ptr()).collect();
+                argv_ptrs.push(core::ptr::null());
+
+                let mut path_bytes: Vec<u8> = exec_path.as_bytes().to_vec();
+                path_bytes.push(0);
+
+                let _ = libbreenix::process::execv(&path_bytes, argv_ptrs.as_ptr());
+                libbreenix::process::exit(127);
+            }
+            libbreenix::process::ForkResult::Parent(child_pid) => {
+                child_pids.push(child_pid.raw() as i32);
+            }
+        }
+    }
+
+    // Parent: close all inter-process pipe ends
+    for (r, w) in &pipes {
+        let _ = libbreenix::io::close(*r);
+        let _ = libbreenix::io::close(*w);
+    }
+    let _ = libbreenix::io::close(last_stdout_w);
+    let _ = libbreenix::io::close(last_stderr_w);
+
+    // Read stdout and stderr of the last command
+    let stdout_str = read_fd_to_string(last_stdout_r);
+    let _ = libbreenix::io::close(last_stdout_r);
+
+    let stderr_str = read_fd_to_string(last_stderr_r);
+    let _ = libbreenix::io::close(last_stderr_r);
+
+    // Wait for all children, capturing the exit code of the last one
+    let last_pid = *child_pids.last().unwrap();
+    let mut last_exit_code: i32 = -1;
+    for pid in &child_pids {
+        let mut status: i32 = 0;
+        let _ = libbreenix::process::waitpid(*pid, &mut status as *mut i32, 0);
+        if *pid == last_pid {
+            last_exit_code = if libbreenix::process::wifexited(status) {
+                libbreenix::process::wexitstatus(status)
+            } else {
+                -1
+            };
+        }
+    }
+
+    // Build result object: { exitCode, stdout, stderr }
+    let mut obj = JsObject::new();
+    let k_exit = strings.intern("exitCode");
+    let k_stdout = strings.intern("stdout");
+    let k_stderr = strings.intern("stderr");
+
+    obj.set(k_exit, JsValue::number(last_exit_code as f64));
+
+    let stdout_id = strings.intern(&stdout_str);
+    obj.set(k_stdout, JsValue::string(stdout_id));
+
+    let stderr_id = strings.intern(&stderr_str);
+    obj.set(k_stderr, JsValue::string(stderr_id));
+
+    let idx = heap.alloc(obj);
+    Ok(JsValue::object(idx))
+}
+
 // ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------
@@ -323,6 +526,7 @@ fn create_shell_context() -> Context {
     ctx.register_native("readFile", native_read_file);
     ctx.register_native("writeFile", native_write_file);
     ctx.register_native("exit", native_exit);
+    ctx.register_native("pipe", native_pipe);
 
     // Register Promise builtins (Promise.resolve, .reject, .all + await)
     ctx.register_promise_builtins();
@@ -413,7 +617,7 @@ fn should_auto_exec(line: &str) -> bool {
         "for ", "for(", "switch ", "switch(", "try ", "try{", "return ",
         "throw ", "class ", "import ", "export ", "async ", "await ",
         "print(", "exec(", "cd(", "pwd(", "which(", "readFile(", "writeFile(",
-        "exit(", "{", "[", "(", "//", "/*",
+        "exit(", "pipe(", "{", "[", "(", "//", "/*",
     ];
     for prefix in &js_starts {
         if line.starts_with(prefix) {
