@@ -749,6 +749,166 @@ impl Vm {
                     }
                     let obj_val = self.pop();
 
+                    // Check for higher-order array methods that need callback invocation
+                    if obj_val.is_object() {
+                        let is_array = self.heap.get(obj_val.as_object_index())
+                            .map(|o| o.kind == ObjectKind::Array)
+                            .unwrap_or(false);
+
+                        if is_array {
+                            let handled = match method_name.as_str() {
+                                "forEach" => {
+                                    let callback = args.first().copied().unwrap_or(JsValue::undefined());
+                                    let elements: Vec<JsValue> = self.heap.get(obj_val.as_object_index())
+                                        .unwrap().elements().to_vec();
+                                    for (i, elem) in elements.iter().enumerate() {
+                                        self.call_function_sync(
+                                            callback,
+                                            &[*elem, JsValue::number(i as f64), obj_val],
+                                            main, strings, functions,
+                                        )?;
+                                    }
+                                    self.push(JsValue::undefined())?;
+                                    true
+                                }
+                                "map" => {
+                                    let callback = args.first().copied().unwrap_or(JsValue::undefined());
+                                    let elements: Vec<JsValue> = self.heap.get(obj_val.as_object_index())
+                                        .unwrap().elements().to_vec();
+                                    let mut result_arr = JsObject::new_array();
+                                    for (i, elem) in elements.iter().enumerate() {
+                                        let result = self.call_function_sync(
+                                            callback,
+                                            &[*elem, JsValue::number(i as f64), obj_val],
+                                            main, strings, functions,
+                                        )?;
+                                        result_arr.push(result);
+                                    }
+                                    let idx = self.heap.alloc(result_arr);
+                                    self.push(JsValue::object(idx))?;
+                                    true
+                                }
+                                "filter" => {
+                                    let callback = args.first().copied().unwrap_or(JsValue::undefined());
+                                    let elements: Vec<JsValue> = self.heap.get(obj_val.as_object_index())
+                                        .unwrap().elements().to_vec();
+                                    let mut result_arr = JsObject::new_array();
+                                    for (i, elem) in elements.iter().enumerate() {
+                                        let result = self.call_function_sync(
+                                            callback,
+                                            &[*elem, JsValue::number(i as f64), obj_val],
+                                            main, strings, functions,
+                                        )?;
+                                        if result.to_boolean() {
+                                            result_arr.push(*elem);
+                                        }
+                                    }
+                                    let idx = self.heap.alloc(result_arr);
+                                    self.push(JsValue::object(idx))?;
+                                    true
+                                }
+                                "reduce" => {
+                                    let callback = args.first().copied().unwrap_or(JsValue::undefined());
+                                    let elements: Vec<JsValue> = self.heap.get(obj_val.as_object_index())
+                                        .unwrap().elements().to_vec();
+                                    let has_initial = args.len() >= 2;
+                                    let (mut accumulator, start_idx) = if has_initial {
+                                        (args[1], 0)
+                                    } else if !elements.is_empty() {
+                                        (elements[0], 1)
+                                    } else {
+                                        return Err(JsError::type_error(
+                                            "Reduce of empty array with no initial value"
+                                        ));
+                                    };
+                                    for i in start_idx..elements.len() {
+                                        accumulator = self.call_function_sync(
+                                            callback,
+                                            &[accumulator, elements[i], JsValue::number(i as f64), obj_val],
+                                            main, strings, functions,
+                                        )?;
+                                    }
+                                    self.push(accumulator)?;
+                                    true
+                                }
+                                "find" => {
+                                    let callback = args.first().copied().unwrap_or(JsValue::undefined());
+                                    let elements: Vec<JsValue> = self.heap.get(obj_val.as_object_index())
+                                        .unwrap().elements().to_vec();
+                                    let mut found = JsValue::undefined();
+                                    for (i, elem) in elements.iter().enumerate() {
+                                        let result = self.call_function_sync(
+                                            callback,
+                                            &[*elem, JsValue::number(i as f64), obj_val],
+                                            main, strings, functions,
+                                        )?;
+                                        if result.to_boolean() {
+                                            found = *elem;
+                                            break;
+                                        }
+                                    }
+                                    self.push(found)?;
+                                    true
+                                }
+                                "some" => {
+                                    let callback = args.first().copied().unwrap_or(JsValue::undefined());
+                                    let elements: Vec<JsValue> = self.heap.get(obj_val.as_object_index())
+                                        .unwrap().elements().to_vec();
+                                    let mut any_true = false;
+                                    for (i, elem) in elements.iter().enumerate() {
+                                        let result = self.call_function_sync(
+                                            callback,
+                                            &[*elem, JsValue::number(i as f64), obj_val],
+                                            main, strings, functions,
+                                        )?;
+                                        if result.to_boolean() {
+                                            any_true = true;
+                                            break;
+                                        }
+                                    }
+                                    self.push(JsValue::number(if any_true { 1.0 } else { 0.0 }))?;
+                                    true
+                                }
+                                "every" => {
+                                    let callback = args.first().copied().unwrap_or(JsValue::undefined());
+                                    let elements: Vec<JsValue> = self.heap.get(obj_val.as_object_index())
+                                        .unwrap().elements().to_vec();
+                                    let mut all_true = true;
+                                    for (i, elem) in elements.iter().enumerate() {
+                                        let result = self.call_function_sync(
+                                            callback,
+                                            &[*elem, JsValue::number(i as f64), obj_val],
+                                            main, strings, functions,
+                                        )?;
+                                        if !result.to_boolean() {
+                                            all_true = false;
+                                            break;
+                                        }
+                                    }
+                                    self.push(JsValue::number(if all_true { 1.0 } else { 0.0 }))?;
+                                    true
+                                }
+                                "flat" => {
+                                    let depth = args.first()
+                                        .map(|v| v.to_number() as usize)
+                                        .unwrap_or(1);
+                                    let elements: Vec<JsValue> = self.heap.get(obj_val.as_object_index())
+                                        .unwrap().elements().to_vec();
+                                    let mut result_arr = JsObject::new_array();
+                                    self.flatten_into(&mut result_arr, &elements, depth);
+                                    let idx = self.heap.alloc(result_arr);
+                                    self.push(JsValue::object(idx))?;
+                                    true
+                                }
+                                _ => false,
+                            };
+
+                            if handled {
+                                return Ok(StepResult::Continue);
+                            }
+                        }
+                    }
+
                     // Try built-in methods first
                     match self.call_builtin_method(obj_val, &method_name, &args, strings) {
                         Ok(result) => {
@@ -1042,6 +1202,55 @@ impl Vm {
                 });
 
                 Ok(())
+            }
+        }
+    }
+
+    /// Call a JS function synchronously and return the result.
+    ///
+    /// This is used by higher-order array methods (map, filter, etc.) that need
+    /// to invoke a callback function and get the result back immediately.
+    /// It sets up the call frame, then runs the VM loop until that frame returns.
+    fn call_function_sync(
+        &mut self,
+        func: JsValue,
+        args: &[JsValue],
+        main: &CodeBlock,
+        strings: &mut StringPool,
+        functions: &[CodeBlock],
+    ) -> JsResult<JsValue> {
+        let saved_frame_count = self.frames.len();
+        self.push(func)?;
+        for arg in args {
+            self.push(*arg)?;
+        }
+        self.do_call(args.len(), strings, functions)?;
+
+        // If do_call handled a native function, the result is already on the stack
+        // and no new frame was pushed. Check if we're still at the same frame level.
+        if self.frames.len() <= saved_frame_count {
+            return Ok(self.pop());
+        }
+
+        // Run the VM loop until the called function's frame is popped
+        loop {
+            match self.run_step(main, strings, functions) {
+                Ok(StepResult::Continue) => {
+                    if self.frames.len() <= saved_frame_count {
+                        // The function returned; its result is on the stack
+                        return Ok(self.pop());
+                    }
+                }
+                Ok(StepResult::Return(val)) => {
+                    // This means we hit a Return at the outermost frame level,
+                    // which shouldn't happen in a sync call. Return the value.
+                    return Ok(val);
+                }
+                Err(err) => {
+                    // Try to route through exception handler
+                    self.handle_runtime_error(err, strings)?;
+                    // If caught, continue the loop
+                }
             }
         }
     }
@@ -1640,6 +1849,22 @@ impl Vm {
             }
         }
         self.globals.push(Global { name, value });
+    }
+
+    /// Recursively flatten array elements into a target array up to the given depth.
+    fn flatten_into(&self, target: &mut JsObject, elements: &[JsValue], depth: usize) {
+        for elem in elements {
+            if depth > 0 && elem.is_object() {
+                if let Some(obj) = self.heap.get(elem.as_object_index()) {
+                    if obj.kind == ObjectKind::Array {
+                        let sub_elements: Vec<JsValue> = obj.elements().to_vec();
+                        self.flatten_into(target, &sub_elements, depth - 1);
+                        continue;
+                    }
+                }
+            }
+            target.push(*elem);
+        }
     }
 
     fn value_to_string(&self, value: JsValue, strings: &StringPool) -> String {

@@ -48,7 +48,13 @@
   - env() native function: get/set/enumerate environment variables
   - source command: load and evaluate script files in current context
   - .bshrc startup script: auto-loads /etc/bshrc on REPL start
-  - 134 passing tests, bsh v0.5.0 with full shell builtins
+  - Array HOF methods: map, filter, reduce, forEach, find, some, every, flat
+  - call_function_sync helper for synchronous callback invocation
+  - Single-parameter arrow functions without parens: `x => expr`
+  - Interactive line editing: cursor movement, Home/End, Ctrl+A/E/U/K/W/C/D
+  - Command history with Up/Down arrow navigation
+  - Raw mode terminal handling via libbreenix termios
+  - 149 passing tests, bsh v0.5.0 with full shell builtins
 - **Phase 6**: PLANNED -- Advanced features (class, Proxy, JIT)
 
 ## Architecture

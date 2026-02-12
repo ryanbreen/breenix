@@ -709,6 +709,476 @@ fn print_fn(s: &str) {
 }
 
 // ---------------------------------------------------------------------------
+// Line editor with history and cursor movement
+// ---------------------------------------------------------------------------
+
+/// Result of reading a single key press from the terminal.
+enum Key {
+    /// A printable ASCII character
+    Char(u8),
+    /// Enter / Return
+    Enter,
+    /// Backspace (0x7F or 0x08)
+    Backspace,
+    /// Escape sequence: arrow up
+    Up,
+    /// Escape sequence: arrow down
+    Down,
+    /// Escape sequence: arrow left
+    Left,
+    /// Escape sequence: arrow right
+    Right,
+    /// Home key (ESC [ H)
+    Home,
+    /// End key (ESC [ F)
+    End,
+    /// Delete key (ESC [ 3 ~)
+    Delete,
+    /// Ctrl+A - move to start of line
+    CtrlA,
+    /// Ctrl+C - cancel current line
+    CtrlC,
+    /// Ctrl+D - EOF on empty line
+    CtrlD,
+    /// Ctrl+E - move to end of line
+    CtrlE,
+    /// Ctrl+K - kill to end of line
+    CtrlK,
+    /// Ctrl+U - kill to start of line
+    CtrlU,
+    /// Ctrl+W - delete word before cursor
+    CtrlW,
+    /// End of file (read returned 0 bytes)
+    Eof,
+    /// Unknown or unhandled key
+    Unknown,
+}
+
+/// Interactive line editor with history support, cursor movement, and editing.
+///
+/// Handles raw terminal I/O, ANSI escape sequences, and maintains command
+/// history across invocations.
+struct LineEditor {
+    /// Current line buffer (ASCII bytes)
+    buffer: Vec<u8>,
+    /// Cursor position within the buffer (byte offset)
+    cursor: usize,
+    /// Command history (oldest first)
+    history: Vec<String>,
+    /// Current position in history during navigation.
+    /// `history.len()` means we are editing a new line (not in history).
+    history_pos: usize,
+    /// Saved line content when the user navigates into history so we can
+    /// restore it when they come back to the bottom.
+    saved_line: String,
+    /// Original terminal attributes, saved on entry to raw mode.
+    orig_termios: Option<libbreenix::termios::Termios>,
+}
+
+impl LineEditor {
+    fn new() -> Self {
+        LineEditor {
+            buffer: Vec::new(),
+            cursor: 0,
+            history: Vec::new(),
+            history_pos: 0,
+            saved_line: String::new(),
+            orig_termios: None,
+        }
+    }
+
+    /// Enter raw mode: disable canonical mode and echo so we get individual
+    /// key presses and handle display ourselves.
+    fn enable_raw_mode(&mut self) {
+        let fd = libbreenix::types::Fd::STDIN;
+        let mut termios = libbreenix::termios::Termios::default();
+        if libbreenix::termios::tcgetattr(fd, &mut termios).is_ok() {
+            self.orig_termios = Some(termios);
+            let mut raw = termios;
+            // Disable canonical mode (line buffering) and echo
+            raw.c_lflag &= !(libbreenix::termios::lflag::ICANON
+                | libbreenix::termios::lflag::ECHO
+                | libbreenix::termios::lflag::ECHOE
+                | libbreenix::termios::lflag::ECHOK
+                | libbreenix::termios::lflag::ECHONL);
+            // Disable signal generation for Ctrl+C/Ctrl+Z so we handle them
+            raw.c_lflag &= !libbreenix::termios::lflag::ISIG;
+            // Read one byte at a time, no timeout
+            raw.c_cc[libbreenix::termios::cc::VMIN] = 1;
+            raw.c_cc[libbreenix::termios::cc::VTIME] = 0;
+            let _ = libbreenix::termios::tcsetattr(
+                fd,
+                libbreenix::termios::TCSAFLUSH,
+                &raw,
+            );
+        }
+    }
+
+    /// Restore the original terminal attributes saved by `enable_raw_mode`.
+    fn disable_raw_mode(&mut self) {
+        if let Some(ref orig) = self.orig_termios {
+            let fd = libbreenix::types::Fd::STDIN;
+            let _ = libbreenix::termios::tcsetattr(
+                fd,
+                libbreenix::termios::TCSAFLUSH,
+                orig,
+            );
+        }
+    }
+
+    /// Read a single byte from stdin. Returns `None` on EOF or error.
+    fn read_byte() -> Option<u8> {
+        let mut buf = [0u8; 1];
+        match io::stdin().read(&mut buf) {
+            Ok(1) => Some(buf[0]),
+            _ => None,
+        }
+    }
+
+    /// Read a single key press, decoding multi-byte escape sequences.
+    fn read_key() -> Key {
+        let byte = match Self::read_byte() {
+            Some(b) => b,
+            None => return Key::Eof,
+        };
+
+        match byte {
+            // Ctrl+A
+            0x01 => Key::CtrlA,
+            // Ctrl+C
+            0x03 => Key::CtrlC,
+            // Ctrl+D
+            0x04 => Key::CtrlD,
+            // Ctrl+E
+            0x05 => Key::CtrlE,
+            // Ctrl+K
+            0x0B => Key::CtrlK,
+            // Ctrl+U
+            0x15 => Key::CtrlU,
+            // Ctrl+W
+            0x17 => Key::CtrlW,
+            // Enter (carriage return)
+            b'\r' | b'\n' => Key::Enter,
+            // Backspace (DEL or BS)
+            0x7F | 0x08 => Key::Backspace,
+            // Escape - start of escape sequence
+            0x1B => Self::read_escape_sequence(),
+            // Printable ASCII
+            0x20..=0x7E => Key::Char(byte),
+            _ => Key::Unknown,
+        }
+    }
+
+    /// Parse an escape sequence after the initial ESC byte.
+    fn read_escape_sequence() -> Key {
+        let b1 = match Self::read_byte() {
+            Some(b) => b,
+            None => return Key::Unknown,
+        };
+
+        if b1 != b'[' {
+            return Key::Unknown;
+        }
+
+        let b2 = match Self::read_byte() {
+            Some(b) => b,
+            None => return Key::Unknown,
+        };
+
+        match b2 {
+            b'A' => Key::Up,
+            b'B' => Key::Down,
+            b'C' => Key::Right,
+            b'D' => Key::Left,
+            b'H' => Key::Home,
+            b'F' => Key::End,
+            // ESC [ 1 ~ (Home alternate) or ESC [ 3 ~ (Delete) or ESC [ 4 ~ (End alternate)
+            b'1' | b'3' | b'4' => {
+                let b3 = match Self::read_byte() {
+                    Some(b) => b,
+                    None => return Key::Unknown,
+                };
+                if b3 == b'~' {
+                    match b2 {
+                        b'1' => Key::Home,
+                        b'3' => Key::Delete,
+                        b'4' => Key::End,
+                        _ => Key::Unknown,
+                    }
+                } else {
+                    Key::Unknown
+                }
+            }
+            _ => Key::Unknown,
+        }
+    }
+
+    /// Write raw bytes to stdout (used for terminal control).
+    fn write_out(data: &[u8]) {
+        let _ = io::stdout().write_all(data);
+    }
+
+    /// Flush stdout.
+    fn flush_out() {
+        let _ = io::stdout().flush();
+    }
+
+    /// Redraw the current line: prompt + buffer, then position the cursor
+    /// correctly.
+    fn refresh_line(&self, prompt: &str) {
+        // Move to start of line
+        Self::write_out(b"\r");
+        // Print prompt and buffer
+        Self::write_out(prompt.as_bytes());
+        Self::write_out(&self.buffer);
+        // Clear from cursor to end of line (in case text was deleted)
+        Self::write_out(b"\x1b[K");
+        // Move cursor back to the correct position if not at end of buffer
+        let chars_after_cursor = self.buffer.len() - self.cursor;
+        if chars_after_cursor > 0 {
+            let seq = format!("\x1b[{}D", chars_after_cursor);
+            Self::write_out(seq.as_bytes());
+        }
+        Self::flush_out();
+    }
+
+    /// Insert a character at the current cursor position.
+    fn insert_char(&mut self, ch: u8) {
+        self.buffer.insert(self.cursor, ch);
+        self.cursor += 1;
+    }
+
+    /// Delete the character before the cursor (backspace).
+    fn delete_back(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= 1;
+            self.buffer.remove(self.cursor);
+        }
+    }
+
+    /// Delete the character at the cursor (delete key).
+    fn delete_at(&mut self) {
+        if self.cursor < self.buffer.len() {
+            self.buffer.remove(self.cursor);
+        }
+    }
+
+    /// Move cursor one position to the left.
+    fn move_left(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= 1;
+        }
+    }
+
+    /// Move cursor one position to the right.
+    fn move_right(&mut self) {
+        if self.cursor < self.buffer.len() {
+            self.cursor += 1;
+        }
+    }
+
+    /// Move cursor to the start of the line.
+    fn move_home(&mut self) {
+        self.cursor = 0;
+    }
+
+    /// Move cursor to the end of the line.
+    fn move_end(&mut self) {
+        self.cursor = self.buffer.len();
+    }
+
+    /// Clear everything before the cursor (Ctrl+U).
+    fn kill_line_before(&mut self) {
+        if self.cursor > 0 {
+            self.buffer.drain(..self.cursor);
+            self.cursor = 0;
+        }
+    }
+
+    /// Clear everything from the cursor to end of line (Ctrl+K).
+    fn kill_line_after(&mut self) {
+        self.buffer.truncate(self.cursor);
+    }
+
+    /// Delete the word before the cursor (Ctrl+W).
+    /// Skips trailing whitespace, then deletes back to the previous whitespace
+    /// boundary.
+    fn delete_word_back(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let orig = self.cursor;
+        // Skip whitespace before cursor
+        while self.cursor > 0 && self.buffer[self.cursor - 1] == b' ' {
+            self.cursor -= 1;
+        }
+        // Delete back to the next whitespace or start of line
+        while self.cursor > 0 && self.buffer[self.cursor - 1] != b' ' {
+            self.cursor -= 1;
+        }
+        self.buffer.drain(self.cursor..orig);
+    }
+
+    /// Replace the buffer with a history entry or the saved line.
+    fn set_buffer_from_str(&mut self, s: &str) {
+        self.buffer.clear();
+        self.buffer.extend_from_slice(s.as_bytes());
+        self.cursor = self.buffer.len();
+    }
+
+    /// Navigate up in history (older entries).
+    fn history_up(&mut self) {
+        if self.history.is_empty() {
+            return;
+        }
+        if self.history_pos == self.history.len() {
+            // Save the current line before entering history
+            self.saved_line = String::from_utf8_lossy(&self.buffer).into_owned();
+        }
+        if self.history_pos > 0 {
+            self.history_pos -= 1;
+            let entry = self.history[self.history_pos].clone();
+            self.set_buffer_from_str(&entry);
+        }
+    }
+
+    /// Navigate down in history (newer entries).
+    fn history_down(&mut self) {
+        if self.history_pos >= self.history.len() {
+            return;
+        }
+        self.history_pos += 1;
+        if self.history_pos == self.history.len() {
+            // Back to the line being edited
+            let saved = self.saved_line.clone();
+            self.set_buffer_from_str(&saved);
+        } else {
+            let entry = self.history[self.history_pos].clone();
+            self.set_buffer_from_str(&entry);
+        }
+    }
+
+    /// Add a completed line to the history, avoiding consecutive duplicates.
+    fn add_to_history(&mut self, line: &str) {
+        if line.is_empty() {
+            return;
+        }
+        // Don't add if it's the same as the last entry
+        if let Some(last) = self.history.last() {
+            if last == line {
+                return;
+            }
+        }
+        self.history.push(line.to_string());
+    }
+
+    /// Read a complete line from the user with full editing support.
+    ///
+    /// Returns `Some(line)` when the user presses Enter, or `None` on
+    /// EOF (Ctrl+D on an empty line).
+    fn read_line(&mut self, prompt: &str) -> Option<String> {
+        self.buffer.clear();
+        self.cursor = 0;
+        self.history_pos = self.history.len();
+        self.saved_line.clear();
+
+        self.enable_raw_mode();
+
+        // Print the prompt
+        Self::write_out(prompt.as_bytes());
+        Self::flush_out();
+
+        let result = loop {
+            match Self::read_key() {
+                Key::Enter => {
+                    // Print newline and return the line
+                    Self::write_out(b"\r\n");
+                    Self::flush_out();
+                    let line = String::from_utf8_lossy(&self.buffer).into_owned();
+                    break Some(line);
+                }
+                Key::Eof => {
+                    Self::write_out(b"\r\n");
+                    Self::flush_out();
+                    break None;
+                }
+                Key::CtrlD => {
+                    if self.buffer.is_empty() {
+                        Self::write_out(b"\r\n");
+                        Self::flush_out();
+                        break None;
+                    }
+                    // Non-empty line: Ctrl+D does nothing (or could delete-at)
+                }
+                Key::CtrlC => {
+                    // Clear current line, print ^C and a new prompt
+                    Self::write_out(b"^C\r\n");
+                    Self::flush_out();
+                    self.buffer.clear();
+                    self.cursor = 0;
+                    Self::write_out(prompt.as_bytes());
+                    Self::flush_out();
+                }
+                Key::Backspace => {
+                    self.delete_back();
+                    self.refresh_line(prompt);
+                }
+                Key::Delete => {
+                    self.delete_at();
+                    self.refresh_line(prompt);
+                }
+                Key::Left => {
+                    self.move_left();
+                    self.refresh_line(prompt);
+                }
+                Key::Right => {
+                    self.move_right();
+                    self.refresh_line(prompt);
+                }
+                Key::Home | Key::CtrlA => {
+                    self.move_home();
+                    self.refresh_line(prompt);
+                }
+                Key::End | Key::CtrlE => {
+                    self.move_end();
+                    self.refresh_line(prompt);
+                }
+                Key::Up => {
+                    self.history_up();
+                    self.refresh_line(prompt);
+                }
+                Key::Down => {
+                    self.history_down();
+                    self.refresh_line(prompt);
+                }
+                Key::CtrlU => {
+                    self.kill_line_before();
+                    self.refresh_line(prompt);
+                }
+                Key::CtrlK => {
+                    self.kill_line_after();
+                    self.refresh_line(prompt);
+                }
+                Key::CtrlW => {
+                    self.delete_word_back();
+                    self.refresh_line(prompt);
+                }
+                Key::Char(ch) => {
+                    self.insert_char(ch);
+                    self.refresh_line(prompt);
+                }
+                Key::Unknown => {
+                    // Ignore unrecognized keys
+                }
+            }
+        };
+
+        self.disable_raw_mode();
+        result
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Shell modes
 // ---------------------------------------------------------------------------
 
@@ -721,7 +1191,7 @@ fn run_repl() {
     let _ = io::stdout().write_all(b"breenish v0.5.0 -- ECMAScript shell for Breenix\n");
     let _ = io::stdout().flush();
 
-    let mut line_buf = Vec::new();
+    let mut editor = LineEditor::new();
 
     loop {
         // Show current directory in prompt
@@ -729,33 +1199,19 @@ fn run_repl() {
             Some(cwd) => format!("bsh {}> ", cwd),
             None => String::from("bsh> "),
         };
-        let _ = io::stdout().write_all(prompt.as_bytes());
-        let _ = io::stdout().flush();
 
-        // Read one line from stdin
-        line_buf.clear();
-        loop {
-            let mut byte = [0u8; 1];
-            match io::stdin().read(&mut byte) {
-                Ok(0) => return, // EOF
-                Ok(_) => {
-                    if byte[0] == b'\n' {
-                        break;
-                    }
-                    line_buf.push(byte[0]);
-                }
-                Err(_) => return,
-            }
-        }
-
-        let line = match std::str::from_utf8(&line_buf) {
-            Ok(s) => s.trim(),
-            Err(_) => continue,
+        let line = match editor.read_line(&prompt) {
+            Some(line) => line,
+            None => return, // EOF / Ctrl+D
         };
+
+        let line = line.trim();
 
         if line.is_empty() {
             continue;
         }
+
+        editor.add_to_history(line);
 
         // Handle `source <path>` as a shell builtin
         if let Some(path) = parse_source_command(line) {
