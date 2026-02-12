@@ -35,6 +35,7 @@ pub mod token;
 pub mod value;
 pub mod vm;
 
+use alloc::string::String as AllocString;
 use alloc::vec::Vec;
 
 use compiler::Compiler;
@@ -311,6 +312,689 @@ impl Context {
 
         let obj_idx = self.vm.heap.alloc(promise_obj);
         self.vm.set_global_by_name("Promise", JsValue::object(obj_idx), &mut self.strings);
+    }
+
+    /// Register built-in JSON support.
+    ///
+    /// This registers JSON.parse and JSON.stringify as native functions
+    /// and creates a JSON global object.
+    pub fn register_json_builtins(&mut self) {
+        use crate::object::{JsObject, ObjectHeap};
+        use crate::string::StringPool as SP;
+        use crate::value::JsValue;
+        use crate::error::{JsError, JsResult};
+
+        // --- JSON parser (recursive descent on &[u8]) ---
+
+        struct JsonParser<'a> {
+            data: &'a [u8],
+            pos: usize,
+        }
+
+        impl<'a> JsonParser<'a> {
+            fn new(data: &'a [u8]) -> Self {
+                Self { data, pos: 0 }
+            }
+
+            fn skip_whitespace(&mut self) {
+                while self.pos < self.data.len() {
+                    match self.data[self.pos] {
+                        b' ' | b'\t' | b'\n' | b'\r' => self.pos += 1,
+                        _ => break,
+                    }
+                }
+            }
+
+            fn peek(&mut self) -> Option<u8> {
+                self.skip_whitespace();
+                self.data.get(self.pos).copied()
+            }
+
+            fn advance(&mut self) -> Option<u8> {
+                if self.pos < self.data.len() {
+                    let c = self.data[self.pos];
+                    self.pos += 1;
+                    Some(c)
+                } else {
+                    None
+                }
+            }
+
+            fn expect(&mut self, ch: u8) -> JsResult<()> {
+                self.skip_whitespace();
+                match self.advance() {
+                    Some(c) if c == ch => Ok(()),
+                    Some(c) => Err(JsError::syntax(
+                        alloc::format!("expected '{}', got '{}'", ch as char, c as char),
+                        0, self.pos as u32,
+                    )),
+                    None => Err(JsError::syntax(
+                        alloc::format!("expected '{}', got EOF", ch as char),
+                        0, self.pos as u32,
+                    )),
+                }
+            }
+
+            fn parse_value(&mut self, strings: &mut SP, heap: &mut ObjectHeap) -> JsResult<JsValue> {
+                match self.peek() {
+                    Some(b'"') => self.parse_string_value(strings),
+                    Some(b'{') => self.parse_object(strings, heap),
+                    Some(b'[') => self.parse_array(strings, heap),
+                    Some(b't') => self.parse_true(),
+                    Some(b'f') => self.parse_false(),
+                    Some(b'n') => self.parse_null(),
+                    Some(c) if c == b'-' || c.is_ascii_digit() => self.parse_number(),
+                    Some(c) => Err(JsError::syntax(
+                        alloc::format!("unexpected character '{}' in JSON", c as char),
+                        0, self.pos as u32,
+                    )),
+                    None => Err(JsError::syntax("unexpected end of JSON input", 0, 0)),
+                }
+            }
+
+            fn parse_string_raw(&mut self) -> JsResult<AllocString> {
+                self.skip_whitespace();
+                self.expect(b'"')?;
+                let mut s = AllocString::new();
+                loop {
+                    match self.advance() {
+                        Some(b'"') => return Ok(s),
+                        Some(b'\\') => {
+                            match self.advance() {
+                                Some(b'"') => s.push('"'),
+                                Some(b'\\') => s.push('\\'),
+                                Some(b'/') => s.push('/'),
+                                Some(b'n') => s.push('\n'),
+                                Some(b't') => s.push('\t'),
+                                Some(b'r') => s.push('\r'),
+                                Some(b'b') => s.push('\u{0008}'),
+                                Some(b'f') => s.push('\u{000C}'),
+                                Some(b'u') => {
+                                    let mut hex = AllocString::new();
+                                    for _ in 0..4 {
+                                        match self.advance() {
+                                            Some(c) if c.is_ascii_hexdigit() => hex.push(c as char),
+                                            _ => return Err(JsError::syntax(
+                                                "invalid unicode escape in JSON string",
+                                                0, self.pos as u32,
+                                            )),
+                                        }
+                                    }
+                                    let code = u32::from_str_radix(&hex, 16).map_err(|_| {
+                                        JsError::syntax("invalid unicode escape", 0, self.pos as u32)
+                                    })?;
+                                    if let Some(ch) = char::from_u32(code) {
+                                        s.push(ch);
+                                    } else {
+                                        return Err(JsError::syntax(
+                                            "invalid unicode code point",
+                                            0, self.pos as u32,
+                                        ));
+                                    }
+                                }
+                                Some(c) => {
+                                    return Err(JsError::syntax(
+                                        alloc::format!("invalid escape '\\{}'", c as char),
+                                        0, self.pos as u32,
+                                    ));
+                                }
+                                None => return Err(JsError::syntax(
+                                    "unterminated string escape",
+                                    0, self.pos as u32,
+                                )),
+                            }
+                        }
+                        Some(c) => s.push(c as char),
+                        None => return Err(JsError::syntax(
+                            "unterminated JSON string",
+                            0, self.pos as u32,
+                        )),
+                    }
+                }
+            }
+
+            fn parse_string_value(&mut self, strings: &mut SP) -> JsResult<JsValue> {
+                let s = self.parse_string_raw()?;
+                let id = strings.intern(&s);
+                Ok(JsValue::string(id))
+            }
+
+            fn parse_number(&mut self) -> JsResult<JsValue> {
+                self.skip_whitespace();
+                let start = self.pos;
+                // optional leading minus
+                if self.pos < self.data.len() && self.data[self.pos] == b'-' {
+                    self.pos += 1;
+                }
+                // integer part
+                while self.pos < self.data.len() && self.data[self.pos].is_ascii_digit() {
+                    self.pos += 1;
+                }
+                // fractional part
+                if self.pos < self.data.len() && self.data[self.pos] == b'.' {
+                    self.pos += 1;
+                    while self.pos < self.data.len() && self.data[self.pos].is_ascii_digit() {
+                        self.pos += 1;
+                    }
+                }
+                // exponent
+                if self.pos < self.data.len() && (self.data[self.pos] == b'e' || self.data[self.pos] == b'E') {
+                    self.pos += 1;
+                    if self.pos < self.data.len() && (self.data[self.pos] == b'+' || self.data[self.pos] == b'-') {
+                        self.pos += 1;
+                    }
+                    while self.pos < self.data.len() && self.data[self.pos].is_ascii_digit() {
+                        self.pos += 1;
+                    }
+                }
+                let num_str = core::str::from_utf8(&self.data[start..self.pos])
+                    .map_err(|_| JsError::syntax("invalid number", 0, start as u32))?;
+                let val: f64 = num_str.parse()
+                    .map_err(|_| JsError::syntax(
+                        alloc::format!("invalid number: {}", num_str),
+                        0, start as u32,
+                    ))?;
+                Ok(JsValue::number(val))
+            }
+
+            fn parse_true(&mut self) -> JsResult<JsValue> {
+                self.skip_whitespace();
+                if self.data[self.pos..].starts_with(b"true") {
+                    self.pos += 4;
+                    Ok(JsValue::boolean(true))
+                } else {
+                    Err(JsError::syntax("invalid JSON value", 0, self.pos as u32))
+                }
+            }
+
+            fn parse_false(&mut self) -> JsResult<JsValue> {
+                self.skip_whitespace();
+                if self.data[self.pos..].starts_with(b"false") {
+                    self.pos += 5;
+                    Ok(JsValue::boolean(false))
+                } else {
+                    Err(JsError::syntax("invalid JSON value", 0, self.pos as u32))
+                }
+            }
+
+            fn parse_null(&mut self) -> JsResult<JsValue> {
+                self.skip_whitespace();
+                if self.data[self.pos..].starts_with(b"null") {
+                    self.pos += 4;
+                    Ok(JsValue::null())
+                } else {
+                    Err(JsError::syntax("invalid JSON value", 0, self.pos as u32))
+                }
+            }
+
+            fn parse_object(&mut self, strings: &mut SP, heap: &mut ObjectHeap) -> JsResult<JsValue> {
+                self.skip_whitespace();
+                self.expect(b'{')?;
+                let mut obj = JsObject::new();
+
+                if self.peek() == Some(b'}') {
+                    self.advance();
+                    let idx = heap.alloc(obj);
+                    return Ok(JsValue::object(idx));
+                }
+
+                loop {
+                    let key = self.parse_string_raw()?;
+                    self.expect(b':')?;
+                    let value = self.parse_value(strings, heap)?;
+                    let key_id = strings.intern(&key);
+                    obj.set(key_id, value);
+
+                    match self.peek() {
+                        Some(b',') => { self.advance(); }
+                        Some(b'}') => { self.advance(); break; }
+                        _ => return Err(JsError::syntax(
+                            "expected ',' or '}' in JSON object",
+                            0, self.pos as u32,
+                        )),
+                    }
+                }
+
+                let idx = heap.alloc(obj);
+                Ok(JsValue::object(idx))
+            }
+
+            fn parse_array(&mut self, strings: &mut SP, heap: &mut ObjectHeap) -> JsResult<JsValue> {
+                self.skip_whitespace();
+                self.expect(b'[')?;
+                let mut arr = JsObject::new_array();
+
+                if self.peek() == Some(b']') {
+                    self.advance();
+                    let idx = heap.alloc(arr);
+                    return Ok(JsValue::object(idx));
+                }
+
+                loop {
+                    let value = self.parse_value(strings, heap)?;
+                    arr.push(value);
+
+                    match self.peek() {
+                        Some(b',') => { self.advance(); }
+                        Some(b']') => { self.advance(); break; }
+                        _ => return Err(JsError::syntax(
+                            "expected ',' or ']' in JSON array",
+                            0, self.pos as u32,
+                        )),
+                    }
+                }
+
+                let idx = heap.alloc(arr);
+                Ok(JsValue::object(idx))
+            }
+        }
+
+        // --- JSON stringify ---
+
+        fn json_stringify_value(
+            value: JsValue,
+            strings: &SP,
+            heap: &ObjectHeap,
+            visited: &mut Vec<u32>,
+        ) -> JsResult<AllocString> {
+            if value.is_null() {
+                Ok(AllocString::from("null"))
+            } else if value.is_undefined() {
+                // undefined is not valid JSON, but we output it for consistency
+                Ok(AllocString::from("undefined"))
+            } else if value.is_boolean() {
+                if value.as_boolean() {
+                    Ok(AllocString::from("true"))
+                } else {
+                    Ok(AllocString::from("false"))
+                }
+            } else if value.is_number() {
+                let n = value.to_number();
+                if n.is_nan() {
+                    Ok(AllocString::from("null"))
+                } else if n.is_infinite() {
+                    Ok(AllocString::from("null"))
+                } else if n == n.floor() && n.abs() < 1e15 {
+                    Ok(alloc::format!("{}", n as i64))
+                } else {
+                    Ok(alloc::format!("{}", n))
+                }
+            } else if value.is_string() {
+                let s = strings.get(value.as_string_id());
+                Ok(json_escape_string(s))
+            } else if value.is_object() {
+                let obj_idx = value.as_object_index();
+                // Circular reference detection
+                if visited.contains(&obj_idx) {
+                    return Err(JsError::type_error("circular reference in JSON.stringify"));
+                }
+                visited.push(obj_idx);
+
+                let result = if let Some(obj) = heap.get(obj_idx) {
+                    if obj.kind == crate::object::ObjectKind::Array {
+                        stringify_array(obj_idx, strings, heap, visited)
+                    } else {
+                        stringify_object(obj_idx, strings, heap, visited)
+                    }
+                } else {
+                    Ok(AllocString::from("null"))
+                };
+
+                visited.pop();
+                result
+            } else {
+                Ok(AllocString::from("null"))
+            }
+        }
+
+        fn json_escape_string(s: &str) -> AllocString {
+            let mut out = AllocString::from("\"");
+            for ch in s.chars() {
+                match ch {
+                    '"' => out.push_str("\\\""),
+                    '\\' => out.push_str("\\\\"),
+                    '\n' => out.push_str("\\n"),
+                    '\r' => out.push_str("\\r"),
+                    '\t' => out.push_str("\\t"),
+                    '\u{0008}' => out.push_str("\\b"),
+                    '\u{000C}' => out.push_str("\\f"),
+                    c if (c as u32) < 0x20 => {
+                        out.push_str(&alloc::format!("\\u{:04x}", c as u32));
+                    }
+                    c => out.push(c),
+                }
+            }
+            out.push('"');
+            out
+        }
+
+        fn stringify_array(
+            obj_idx: u32,
+            strings: &SP,
+            heap: &ObjectHeap,
+            visited: &mut Vec<u32>,
+        ) -> JsResult<AllocString> {
+            let elements: Vec<JsValue> = heap.get(obj_idx)
+                .map(|obj| obj.elements().to_vec())
+                .unwrap_or_default();
+
+            let mut out = AllocString::from("[");
+            for (i, elem) in elements.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                let s = json_stringify_value(*elem, strings, heap, visited)?;
+                out.push_str(&s);
+            }
+            out.push(']');
+            Ok(out)
+        }
+
+        fn stringify_object(
+            obj_idx: u32,
+            strings: &SP,
+            heap: &ObjectHeap,
+            visited: &mut Vec<u32>,
+        ) -> JsResult<AllocString> {
+            let (keys, values): (Vec<crate::string::StringId>, Vec<JsValue>) = heap.get(obj_idx)
+                .map(|obj| {
+                    let ks = obj.keys();
+                    let vs: Vec<JsValue> = ks.iter().map(|k| obj.get(*k)).collect();
+                    (ks, vs)
+                })
+                .unwrap_or_default();
+
+            let mut out = AllocString::from("{");
+            let mut first = true;
+            for (key, value) in keys.iter().zip(values.iter()) {
+                // Skip undefined values in objects per JSON spec
+                if value.is_undefined() {
+                    continue;
+                }
+                if !first {
+                    out.push(',');
+                }
+                first = false;
+                let key_str = strings.get(*key);
+                out.push_str(&json_escape_string(key_str));
+                out.push(':');
+                let val_str = json_stringify_value(*value, strings, heap, visited)?;
+                out.push_str(&val_str);
+            }
+            out.push('}');
+            Ok(out)
+        }
+
+        // --- Native function implementations ---
+
+        fn json_parse(args: &[JsValue], strings: &mut SP, heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let input = args.first().copied().unwrap_or(JsValue::undefined());
+            if !input.is_string() {
+                return Err(JsError::syntax("JSON.parse: expected string argument", 0, 0));
+            }
+            let s = AllocString::from(strings.get(input.as_string_id()));
+            let mut parser = JsonParser::new(s.as_bytes());
+            let result = parser.parse_value(strings, heap)?;
+            // Ensure no trailing content
+            parser.skip_whitespace();
+            if parser.pos < parser.data.len() {
+                return Err(JsError::syntax("unexpected content after JSON value", 0, parser.pos as u32));
+            }
+            Ok(result)
+        }
+
+        fn json_stringify(args: &[JsValue], strings: &mut SP, heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let value = args.first().copied().unwrap_or(JsValue::undefined());
+            let mut visited = Vec::new();
+            let result = json_stringify_value(value, strings, heap, &mut visited)?;
+            let id = strings.intern(&result);
+            Ok(JsValue::string(id))
+        }
+
+        // Register the native functions
+        self.vm.register_native("JSON_parse", json_parse);
+        self.vm.register_native("JSON_stringify", json_stringify);
+
+        // Build the JSON global object
+        let parse_idx = self.vm.native_obj_indices[self.vm.native_obj_indices.len() - 2];
+        let stringify_idx = self.vm.native_obj_indices[self.vm.native_obj_indices.len() - 1];
+
+        let mut json_obj = JsObject::new();
+        let parse_key = self.strings.intern("parse");
+        let stringify_key = self.strings.intern("stringify");
+        json_obj.set(parse_key, JsValue::object(parse_idx));
+        json_obj.set(stringify_key, JsValue::object(stringify_idx));
+
+        let obj_idx = self.vm.heap.alloc(json_obj);
+        self.vm.set_global_by_name("JSON", JsValue::object(obj_idx), &mut self.strings);
+    }
+
+    /// Register built-in Math and Number objects.
+    ///
+    /// This registers Math.floor, Math.ceil, Math.round, Math.abs, Math.min,
+    /// Math.max, Math.pow, Math.sqrt, Math.random, Math.log, Math.trunc,
+    /// Math.PI, Math.E, Number.isInteger, Number.isFinite, Number.isNaN,
+    /// Number.parseInt, Number.parseFloat, and global parseInt/parseFloat.
+    pub fn register_math_builtins(&mut self) {
+        use crate::object::{JsObject, ObjectHeap};
+        use crate::string::StringPool as SP;
+        use crate::value::JsValue;
+        use crate::error::JsResult;
+
+        fn math_floor(args: &[JsValue], _strings: &mut SP, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let x = args.first().copied().unwrap_or(JsValue::undefined()).to_number();
+            Ok(JsValue::number(x.floor()))
+        }
+
+        fn math_ceil(args: &[JsValue], _strings: &mut SP, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let x = args.first().copied().unwrap_or(JsValue::undefined()).to_number();
+            Ok(JsValue::number(x.ceil()))
+        }
+
+        fn math_round(args: &[JsValue], _strings: &mut SP, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let x = args.first().copied().unwrap_or(JsValue::undefined()).to_number();
+            Ok(JsValue::number(x.round()))
+        }
+
+        fn math_abs(args: &[JsValue], _strings: &mut SP, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let x = args.first().copied().unwrap_or(JsValue::undefined()).to_number();
+            Ok(JsValue::number(x.abs()))
+        }
+
+        fn math_min(args: &[JsValue], _strings: &mut SP, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let a = args.first().copied().unwrap_or(JsValue::undefined()).to_number();
+            let b = args.get(1).copied().unwrap_or(JsValue::undefined()).to_number();
+            Ok(JsValue::number(a.min(b)))
+        }
+
+        fn math_max(args: &[JsValue], _strings: &mut SP, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let a = args.first().copied().unwrap_or(JsValue::undefined()).to_number();
+            let b = args.get(1).copied().unwrap_or(JsValue::undefined()).to_number();
+            Ok(JsValue::number(a.max(b)))
+        }
+
+        fn math_pow(args: &[JsValue], _strings: &mut SP, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let base = args.first().copied().unwrap_or(JsValue::undefined()).to_number();
+            let exp = args.get(1).copied().unwrap_or(JsValue::undefined()).to_number();
+            Ok(JsValue::number(base.powf(exp)))
+        }
+
+        fn math_sqrt(args: &[JsValue], _strings: &mut SP, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let x = args.first().copied().unwrap_or(JsValue::undefined()).to_number();
+            Ok(JsValue::number(x.sqrt()))
+        }
+
+        fn math_random(_args: &[JsValue], _strings: &mut SP, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            // Simple xorshift64 PRNG (single-threaded, suitable for no_std)
+            static mut RANDOM_STATE: u64 = 0x12345678;
+            unsafe {
+                RANDOM_STATE ^= RANDOM_STATE << 13;
+                RANDOM_STATE ^= RANDOM_STATE >> 7;
+                RANDOM_STATE ^= RANDOM_STATE << 17;
+                let val = (RANDOM_STATE as f64) / (u64::MAX as f64);
+                Ok(JsValue::number(val))
+            }
+        }
+
+        fn math_log(args: &[JsValue], _strings: &mut SP, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let x = args.first().copied().unwrap_or(JsValue::undefined()).to_number();
+            Ok(JsValue::number(x.ln()))
+        }
+
+        fn math_trunc(args: &[JsValue], _strings: &mut SP, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let x = args.first().copied().unwrap_or(JsValue::undefined()).to_number();
+            Ok(JsValue::number(x.trunc()))
+        }
+
+        fn number_is_integer(args: &[JsValue], _strings: &mut SP, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let val = args.first().copied().unwrap_or(JsValue::undefined());
+            if !val.is_number() {
+                return Ok(JsValue::number(0.0));
+            }
+            let x = val.to_number();
+            let result = x.is_finite() && x == x.floor();
+            Ok(JsValue::number(if result { 1.0 } else { 0.0 }))
+        }
+
+        fn number_is_finite(args: &[JsValue], _strings: &mut SP, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let val = args.first().copied().unwrap_or(JsValue::undefined());
+            if !val.is_number() {
+                return Ok(JsValue::number(0.0));
+            }
+            let x = val.to_number();
+            Ok(JsValue::number(if x.is_finite() { 1.0 } else { 0.0 }))
+        }
+
+        fn number_is_nan(args: &[JsValue], _strings: &mut SP, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let val = args.first().copied().unwrap_or(JsValue::undefined());
+            if !val.is_number() {
+                return Ok(JsValue::number(0.0));
+            }
+            let x = val.to_number();
+            Ok(JsValue::number(if x.is_nan() { 1.0 } else { 0.0 }))
+        }
+
+        fn parse_int(args: &[JsValue], strings: &mut SP, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let val = args.first().copied().unwrap_or(JsValue::undefined());
+            if val.is_number() {
+                let x = val.to_number();
+                return Ok(JsValue::number(x.trunc()));
+            }
+            if val.is_string() {
+                let s = strings.get(val.as_string_id());
+                let trimmed = s.trim();
+                if let Ok(n) = trimmed.parse::<i64>() {
+                    return Ok(JsValue::number(n as f64));
+                }
+                // Try parsing as float and truncating
+                if let Ok(n) = trimmed.parse::<f64>() {
+                    return Ok(JsValue::number(n.trunc()));
+                }
+            }
+            Ok(JsValue::number(f64::NAN))
+        }
+
+        fn parse_float(args: &[JsValue], strings: &mut SP, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let val = args.first().copied().unwrap_or(JsValue::undefined());
+            if val.is_number() {
+                return Ok(val);
+            }
+            if val.is_string() {
+                let s = strings.get(val.as_string_id());
+                let trimmed = s.trim();
+                if let Ok(n) = trimmed.parse::<f64>() {
+                    return Ok(JsValue::number(n));
+                }
+            }
+            Ok(JsValue::number(f64::NAN))
+        }
+
+        // Register all native functions
+        self.vm.register_native("Math_floor", math_floor);
+        self.vm.register_native("Math_ceil", math_ceil);
+        self.vm.register_native("Math_round", math_round);
+        self.vm.register_native("Math_abs", math_abs);
+        self.vm.register_native("Math_min", math_min);
+        self.vm.register_native("Math_max", math_max);
+        self.vm.register_native("Math_pow", math_pow);
+        self.vm.register_native("Math_sqrt", math_sqrt);
+        self.vm.register_native("Math_random", math_random);
+        self.vm.register_native("Math_log", math_log);
+        self.vm.register_native("Math_trunc", math_trunc);
+        self.vm.register_native("Number_isInteger", number_is_integer);
+        self.vm.register_native("Number_isFinite", number_is_finite);
+        self.vm.register_native("Number_isNaN", number_is_nan);
+        self.vm.register_native("parseInt", parse_int);
+        self.vm.register_native("parseFloat", parse_float);
+
+        // Build the Math global object
+        let num_natives = 16;
+        let base = self.vm.native_obj_indices.len() - num_natives;
+        let floor_obj_idx = self.vm.native_obj_indices[base];
+        let ceil_obj_idx = self.vm.native_obj_indices[base + 1];
+        let round_obj_idx = self.vm.native_obj_indices[base + 2];
+        let abs_obj_idx = self.vm.native_obj_indices[base + 3];
+        let min_obj_idx = self.vm.native_obj_indices[base + 4];
+        let max_obj_idx = self.vm.native_obj_indices[base + 5];
+        let pow_obj_idx = self.vm.native_obj_indices[base + 6];
+        let sqrt_obj_idx = self.vm.native_obj_indices[base + 7];
+        let random_obj_idx = self.vm.native_obj_indices[base + 8];
+        let log_obj_idx = self.vm.native_obj_indices[base + 9];
+        let trunc_obj_idx = self.vm.native_obj_indices[base + 10];
+        let is_integer_obj_idx = self.vm.native_obj_indices[base + 11];
+        let is_finite_obj_idx = self.vm.native_obj_indices[base + 12];
+        let is_nan_obj_idx = self.vm.native_obj_indices[base + 13];
+
+        let mut math_obj = JsObject::new();
+        let floor_key = self.strings.intern("floor");
+        let ceil_key = self.strings.intern("ceil");
+        let round_key = self.strings.intern("round");
+        let abs_key = self.strings.intern("abs");
+        let min_key = self.strings.intern("min");
+        let max_key = self.strings.intern("max");
+        let pow_key = self.strings.intern("pow");
+        let sqrt_key = self.strings.intern("sqrt");
+        let random_key = self.strings.intern("random");
+        let log_key = self.strings.intern("log");
+        let trunc_key = self.strings.intern("trunc");
+        let pi_key = self.strings.intern("PI");
+        let e_key = self.strings.intern("E");
+
+        math_obj.set(floor_key, JsValue::object(floor_obj_idx));
+        math_obj.set(ceil_key, JsValue::object(ceil_obj_idx));
+        math_obj.set(round_key, JsValue::object(round_obj_idx));
+        math_obj.set(abs_key, JsValue::object(abs_obj_idx));
+        math_obj.set(min_key, JsValue::object(min_obj_idx));
+        math_obj.set(max_key, JsValue::object(max_obj_idx));
+        math_obj.set(pow_key, JsValue::object(pow_obj_idx));
+        math_obj.set(sqrt_key, JsValue::object(sqrt_obj_idx));
+        math_obj.set(random_key, JsValue::object(random_obj_idx));
+        math_obj.set(log_key, JsValue::object(log_obj_idx));
+        math_obj.set(trunc_key, JsValue::object(trunc_obj_idx));
+        math_obj.set(pi_key, JsValue::number(core::f64::consts::PI));
+        math_obj.set(e_key, JsValue::number(core::f64::consts::E));
+
+        let math_idx = self.vm.heap.alloc(math_obj);
+        self.vm.set_global_by_name("Math", JsValue::object(math_idx), &mut self.strings);
+
+        // Build the Number global object
+        let mut number_obj = JsObject::new();
+        let is_integer_key = self.strings.intern("isInteger");
+        let is_finite_key = self.strings.intern("isFinite");
+        let is_nan_key = self.strings.intern("isNaN");
+        let parse_int_key = self.strings.intern("parseInt");
+        let parse_float_key = self.strings.intern("parseFloat");
+
+        number_obj.set(is_integer_key, JsValue::object(is_integer_obj_idx));
+        number_obj.set(is_finite_key, JsValue::object(is_finite_obj_idx));
+        number_obj.set(is_nan_key, JsValue::object(is_nan_obj_idx));
+        let parse_int_obj_idx = self.vm.native_obj_indices[base + 14];
+        let parse_float_obj_idx = self.vm.native_obj_indices[base + 15];
+        number_obj.set(parse_int_key, JsValue::object(parse_int_obj_idx));
+        number_obj.set(parse_float_key, JsValue::object(parse_float_obj_idx));
+
+        let number_idx = self.vm.heap.alloc(number_obj);
+        self.vm.set_global_by_name("Number", JsValue::object(number_idx), &mut self.strings);
     }
 
     /// Get a mutable reference to the string pool (for native functions).
@@ -1387,5 +2071,195 @@ mod tests {
             ),
             "42\n"
         );
+    }
+
+    // --- JSON tests ---
+
+    fn eval_json(source: &str) -> String {
+        let mut ctx = Context::new();
+        ctx.set_print_fn(capture_print);
+        ctx.register_promise_builtins();
+        ctx.register_json_builtins();
+        ctx.eval(source).unwrap();
+        take_output()
+    }
+
+    #[test]
+    fn test_json_parse_number() {
+        assert_eq!(eval_json("print(JSON.parse(\"42\"));"), "42\n");
+    }
+
+    #[test]
+    fn test_json_parse_string() {
+        assert_eq!(
+            eval_json("print(JSON.parse('\"hello\"'));"),
+            "hello\n"
+        );
+    }
+
+    #[test]
+    fn test_json_parse_object() {
+        assert_eq!(
+            eval_json("let o = JSON.parse('{\"a\":1,\"b\":\"two\"}'); print(o.a, o.b);"),
+            "1 two\n"
+        );
+    }
+
+    #[test]
+    fn test_json_parse_array() {
+        assert_eq!(
+            eval_json("let a = JSON.parse('[1,2,3]'); print(a[0], a[1], a[2]);"),
+            "1 2 3\n"
+        );
+    }
+
+    #[test]
+    fn test_json_parse_nested() {
+        assert_eq!(
+            eval_json("let o = JSON.parse('{\"arr\":[1,2],\"obj\":{\"x\":true}}'); print(o.arr[0], o.arr[1], o.obj.x);"),
+            "1 2 true\n"
+        );
+    }
+
+    #[test]
+    fn test_json_parse_null() {
+        assert_eq!(eval_json("print(JSON.parse(\"null\"));"), "null\n");
+    }
+
+    #[test]
+    fn test_json_stringify_number() {
+        assert_eq!(eval_json("print(JSON.stringify(42));"), "42\n");
+    }
+
+    #[test]
+    fn test_json_stringify_string() {
+        assert_eq!(
+            eval_json("print(JSON.stringify(\"hello\"));"),
+            "\"hello\"\n"
+        );
+    }
+
+    #[test]
+    fn test_json_stringify_object() {
+        assert_eq!(
+            eval_json("print(JSON.stringify({a: 1, b: \"two\"}));"),
+            "{\"a\":1,\"b\":\"two\"}\n"
+        );
+    }
+
+    #[test]
+    fn test_json_stringify_array() {
+        assert_eq!(
+            eval_json("print(JSON.stringify([1, 2, 3]));"),
+            "[1,2,3]\n"
+        );
+    }
+
+    #[test]
+    fn test_json_stringify_nested() {
+        // Note: the JS compiler represents `true` as JsValue::number(1.0),
+        // so JSON.stringify outputs 1 instead of true for JS-created booleans.
+        // JSON.parse("true") creates a proper JsValue::boolean which roundtrips correctly.
+        assert_eq!(
+            eval_json("let o = {arr: [1, 2], obj: {x: true}}; print(JSON.stringify(o));"),
+            "{\"arr\":[1,2],\"obj\":{\"x\":1}}\n"
+        );
+    }
+
+    #[test]
+    fn test_json_roundtrip() {
+        assert_eq!(
+            eval_json("let o = {x: [1,2,3]}; let s = JSON.stringify(o); let o2 = JSON.parse(s); print(o2.x[0], o2.x[1], o2.x[2]);"),
+            "1 2 3\n"
+        );
+    }
+
+    #[test]
+    fn test_json_boolean_roundtrip() {
+        // JSON.parse creates proper JsValue::boolean values,
+        // which JSON.stringify correctly serializes as true/false
+        assert_eq!(
+            eval_json("let s = JSON.stringify(JSON.parse('{\"a\":true,\"b\":false}')); print(s);"),
+            "{\"a\":true,\"b\":false}\n"
+        );
+    }
+
+    // --- Math and Number tests ---
+
+    fn eval_math(source: &str) -> String {
+        let mut ctx = Context::new();
+        ctx.set_print_fn(capture_print);
+        ctx.register_math_builtins();
+        ctx.eval(source).unwrap();
+        take_output()
+    }
+
+    #[test]
+    fn test_math_floor() {
+        assert_eq!(eval_math("print(Math.floor(3.7));"), "3\n");
+    }
+
+    #[test]
+    fn test_math_ceil() {
+        assert_eq!(eval_math("print(Math.ceil(3.2));"), "4\n");
+    }
+
+    #[test]
+    fn test_math_round() {
+        assert_eq!(eval_math("print(Math.round(3.5));"), "4\n");
+    }
+
+    #[test]
+    fn test_math_abs() {
+        assert_eq!(eval_math("print(Math.abs(-5));"), "5\n");
+    }
+
+    #[test]
+    fn test_math_min_max() {
+        assert_eq!(eval_math("print(Math.min(3, 7));"), "3\n");
+        assert_eq!(eval_math("print(Math.max(3, 7));"), "7\n");
+    }
+
+    #[test]
+    fn test_math_sqrt() {
+        assert_eq!(eval_math("print(Math.sqrt(16));"), "4\n");
+    }
+
+    #[test]
+    fn test_math_pow() {
+        assert_eq!(eval_math("print(Math.pow(2, 10));"), "1024\n");
+    }
+
+    #[test]
+    fn test_math_pi() {
+        assert_eq!(eval_math("print(Math.PI);"), "3.141592653589793\n");
+    }
+
+    #[test]
+    fn test_math_trunc() {
+        assert_eq!(eval_math("print(Math.trunc(3.7));"), "3\n");
+        assert_eq!(eval_math("print(Math.trunc(-3.7));"), "-3\n");
+    }
+
+    #[test]
+    fn test_number_is_integer() {
+        assert_eq!(eval_math("print(Number.isInteger(5));"), "1\n");
+        assert_eq!(eval_math("print(Number.isInteger(5.5));"), "0\n");
+    }
+
+    #[test]
+    fn test_number_is_nan() {
+        assert_eq!(eval_math("print(Number.isNaN(0/0));"), "1\n");
+        assert_eq!(eval_math("print(Number.isNaN(5));"), "0\n");
+    }
+
+    #[test]
+    fn test_parse_int() {
+        assert_eq!(eval_math("print(parseInt(\"42\"));"), "42\n");
+    }
+
+    #[test]
+    fn test_parse_float() {
+        assert_eq!(eval_math("print(parseFloat(\"3.14\"));"), "3.14\n");
     }
 }

@@ -36,7 +36,13 @@
   - .then()/.catch()/.finally() built-in methods on Promise objects
   - Persistent globals with cross-pool property re-keying for Promise global
   - 94 passing tests, bsh.elf includes Promise builtins
-- **Phase 5**: PLANNED -- Full shell experience (line editing, completion, modules)
+- **Phase 5**: IN PROGRESS -- Full shell experience
+  - JSON.parse/JSON.stringify with recursive descent JSON parser
+  - Math object: floor, ceil, round, abs, min, max, pow, sqrt, random, log, trunc, PI, E
+  - Number object: isInteger, isFinite, isNaN, parseInt, parseFloat
+  - Global parseInt/parseFloat functions
+  - Fixed NaN-boxing QNAN constant for correct null/boolean tag encoding
+  - 128 passing tests, bsh.elf includes JSON/Math/Number builtins
 - **Phase 6**: PLANNED -- Advanced features (class, Proxy, JIT)
 
 ## Architecture
