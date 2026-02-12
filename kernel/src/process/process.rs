@@ -13,6 +13,24 @@ use x86_64::VirtAddr;
 #[cfg(not(target_arch = "x86_64"))]
 use crate::memory::arch_stub::VirtAddr;
 
+/// Info about a framebuffer mmap'd into a process's address space.
+/// The user buffer is a compact left-pane buffer (no right-pane padding).
+#[derive(Debug, Clone, Copy)]
+pub struct FbMmapInfo {
+    /// Userspace virtual address of the mapping
+    pub user_addr: u64,
+    /// Width in pixels (left pane only)
+    pub width: usize,
+    /// Height in pixels
+    pub height: usize,
+    /// User buffer stride in bytes (width * bpp, compact)
+    pub user_stride: usize,
+    /// Bytes per pixel
+    pub bpp: usize,
+    /// Total mapping size in bytes (page-aligned)
+    pub mapping_size: u64,
+}
+
 /// Process ID type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ProcessId(u64);
@@ -144,6 +162,9 @@ pub struct Process {
     /// start of the next exec (by which point CR3 has definitely switched) or
     /// when the process exits.
     pub pending_old_page_tables: Vec<Box<ProcessPageTable>>,
+
+    /// Framebuffer mmap info (if this process has an mmap'd framebuffer)
+    pub fb_mmap: Option<FbMmapInfo>,
 }
 
 /// Memory usage tracking
@@ -194,6 +215,7 @@ impl Process {
             user_stack_bottom: 0,
             user_stack_top: 0,
             pending_old_page_tables: Vec::new(),
+            fb_mmap: None,
         }
     }
 
