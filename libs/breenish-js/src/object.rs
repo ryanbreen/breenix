@@ -37,6 +37,10 @@ pub enum ObjectKind {
     NativeFunction(u32),
     /// A Promise with its fulfillment state.
     Promise(PromiseState),
+    /// A Map object (ordered key-value pairs).
+    Map(Vec<(JsValue, JsValue)>),
+    /// A Set object (ordered unique values).
+    Set(Vec<JsValue>),
 }
 
 /// The state of a Promise.
@@ -125,6 +129,28 @@ impl JsObject {
     pub fn new_promise_pending() -> Self {
         Self {
             kind: ObjectKind::Promise(PromiseState::Pending),
+            properties: Vec::new(),
+            elements: Vec::new(),
+            prototype: None,
+            marked: false,
+        }
+    }
+
+    /// Create a new Map object.
+    pub fn new_map() -> Self {
+        Self {
+            kind: ObjectKind::Map(Vec::new()),
+            properties: Vec::new(),
+            elements: Vec::new(),
+            prototype: None,
+            marked: false,
+        }
+    }
+
+    /// Create a new Set object.
+    pub fn new_set() -> Self {
+        Self {
+            kind: ObjectKind::Set(Vec::new()),
             properties: Vec::new(),
             elements: Vec::new(),
             prototype: None,
@@ -267,6 +293,17 @@ impl JsObject {
             }
             ObjectKind::Promise(PromiseState::Fulfilled(v)) => refs.push(*v),
             ObjectKind::Promise(PromiseState::Rejected(v)) => refs.push(*v),
+            ObjectKind::Map(ref entries) => {
+                for (k, v) in entries {
+                    refs.push(*k);
+                    refs.push(*v);
+                }
+            }
+            ObjectKind::Set(ref values) => {
+                for v in values {
+                    refs.push(*v);
+                }
+            }
             _ => {}
         }
         refs

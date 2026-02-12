@@ -699,6 +699,7 @@ fn create_shell_context() -> Context {
     ctx.register_promise_builtins();
     ctx.register_json_builtins();
     ctx.register_math_builtins();
+    ctx.register_collection_builtins();
 
     ctx
 }

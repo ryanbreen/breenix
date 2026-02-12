@@ -37,6 +37,9 @@ struct LoopContext {
     break_jumps: Vec<usize>,
     /// The bytecode offset of the loop start (for continue).
     continue_target: usize,
+    /// Offsets of continue jumps that need patching (for do-while where
+    /// the continue target is not known until after body compilation).
+    continue_jumps: Vec<usize>,
 }
 
 /// Describes how a closure captures a variable.
@@ -389,6 +392,7 @@ impl<'a> Compiler<'a> {
         self.loop_stack.push(LoopContext {
             break_jumps: Vec::new(),
             continue_target: loop_start,
+            continue_jumps: Vec::new(),
         });
 
         self.lexer.expect(&TokenKind::LeftParen)?;
@@ -480,6 +484,7 @@ impl<'a> Compiler<'a> {
         self.loop_stack.push(LoopContext {
             break_jumps: Vec::new(),
             continue_target: increment_offset,
+            continue_jumps: Vec::new(),
         });
 
         self.compile_statement()?;
@@ -579,6 +584,7 @@ impl<'a> Compiler<'a> {
         self.loop_stack.push(LoopContext {
             break_jumps: Vec::new(),
             continue_target: increment_offset,
+            continue_jumps: Vec::new(),
         });
 
         self.compile_statement()?;
@@ -679,6 +685,7 @@ impl<'a> Compiler<'a> {
         self.loop_stack.push(LoopContext {
             break_jumps: Vec::new(),
             continue_target: increment_offset,
+            continue_jumps: Vec::new(),
         });
 
         self.compile_statement()?;
@@ -704,15 +711,19 @@ impl<'a> Compiler<'a> {
         let loop_start = self.code.current_offset();
         self.loop_stack.push(LoopContext {
             break_jumps: Vec::new(),
-            continue_target: loop_start, // Will be updated
+            continue_target: usize::MAX, // Not yet known; continue_jumps will be patched
+            continue_jumps: Vec::new(),
         });
 
         self.compile_statement()?;
 
-        // continue target is the condition check
+        // continue target is the condition check; patch deferred continue jumps
         let condition_start = self.code.current_offset();
-        if let Some(ctx) = self.loop_stack.last_mut() {
-            ctx.continue_target = condition_start;
+        let continue_patches: Vec<usize> = self.loop_stack.last()
+            .map(|ctx| ctx.continue_jumps.clone())
+            .unwrap_or_default();
+        for cont in continue_patches {
+            self.code.patch_jump(cont, condition_start);
         }
 
         self.lexer.expect(&TokenKind::While)?;
@@ -760,6 +771,7 @@ impl<'a> Compiler<'a> {
         self.loop_stack.push(LoopContext {
             break_jumps: Vec::new(),
             continue_target: 0, // switch doesn't support continue
+            continue_jumps: Vec::new(),
         });
 
         // We need to save and restore the lexer position to do two passes.
@@ -1238,7 +1250,14 @@ impl<'a> Compiler<'a> {
             ));
         }
         let target = self.loop_stack.last().unwrap().continue_target;
-        self.code.emit_op_u16(Op::Jump, target as u16);
+        if target == usize::MAX {
+            // Continue target not yet known (do-while); emit a forward jump to be patched
+            let jump = self.code.emit_jump(Op::Jump);
+            self.loop_stack.last_mut().unwrap().continue_jumps.push(jump);
+        } else {
+            // Continue target is known (while/for); emit a direct backward jump
+            self.code.emit_op_u16(Op::Jump, target as u16);
+        }
         self.eat_semicolon();
         Ok(())
     }

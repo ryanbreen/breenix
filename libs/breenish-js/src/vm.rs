@@ -1290,6 +1290,8 @@ impl Vm {
             match &obj.kind {
                 ObjectKind::Array => 0u8,
                 ObjectKind::Promise(_) => 1,
+                ObjectKind::Map(_) => 3,
+                ObjectKind::Set(_) => 4,
                 _ => 2,
             }
         };
@@ -1302,6 +1304,16 @@ impl Vm {
         // Promise built-in methods
         if obj_kind == 1 {
             return self.call_promise_method(obj_idx, method_name, args, strings);
+        }
+
+        // Map built-in methods
+        if obj_kind == 3 {
+            return self.call_map_method(obj_idx, method_name, args, strings);
+        }
+
+        // Set built-in methods
+        if obj_kind == 4 {
+            return self.call_set_method(obj_idx, method_name, args, strings);
         }
 
         Err(JsError::type_error("not a built-in method"))
@@ -1568,6 +1580,224 @@ impl Vm {
             }
             _ => Err(JsError::type_error(alloc::format!(
                 "Promise has no method '{}'", method_name
+            ))),
+        }
+    }
+
+    /// Call a built-in Map method.
+    fn call_map_method(
+        &mut self,
+        obj_idx: u32,
+        method_name: &str,
+        args: &[JsValue],
+        _strings: &mut StringPool,
+    ) -> JsResult<JsValue> {
+        match method_name {
+            "set" => {
+                let key = args.first().copied().unwrap_or(JsValue::undefined());
+                let value = args.get(1).copied().unwrap_or(JsValue::undefined());
+                let obj = self.heap.get_mut(obj_idx)
+                    .ok_or_else(|| JsError::internal("map method: invalid object"))?;
+                if let ObjectKind::Map(ref mut entries) = obj.kind {
+                    // Update existing key or add new entry
+                    let mut found = false;
+                    for entry in entries.iter_mut() {
+                        if entry.0.strict_equal(&key) {
+                            entry.1 = value;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        entries.push((key, value));
+                    }
+                }
+                // Return the map itself for chaining
+                Ok(JsValue::object(obj_idx))
+            }
+            "get" => {
+                let key = args.first().copied().unwrap_or(JsValue::undefined());
+                let obj = self.heap.get(obj_idx)
+                    .ok_or_else(|| JsError::internal("map method: invalid object"))?;
+                if let ObjectKind::Map(ref entries) = obj.kind {
+                    for entry in entries {
+                        if entry.0.strict_equal(&key) {
+                            return Ok(entry.1);
+                        }
+                    }
+                }
+                Ok(JsValue::undefined())
+            }
+            "has" => {
+                let key = args.first().copied().unwrap_or(JsValue::undefined());
+                let obj = self.heap.get(obj_idx)
+                    .ok_or_else(|| JsError::internal("map method: invalid object"))?;
+                if let ObjectKind::Map(ref entries) = obj.kind {
+                    for entry in entries {
+                        if entry.0.strict_equal(&key) {
+                            return Ok(JsValue::boolean(true));
+                        }
+                    }
+                }
+                Ok(JsValue::boolean(false))
+            }
+            "delete" => {
+                let key = args.first().copied().unwrap_or(JsValue::undefined());
+                let obj = self.heap.get_mut(obj_idx)
+                    .ok_or_else(|| JsError::internal("map method: invalid object"))?;
+                if let ObjectKind::Map(ref mut entries) = obj.kind {
+                    if let Some(pos) = entries.iter().position(|e| e.0.strict_equal(&key)) {
+                        entries.remove(pos);
+                        return Ok(JsValue::boolean(true));
+                    }
+                }
+                Ok(JsValue::boolean(false))
+            }
+            "size" => {
+                let obj = self.heap.get(obj_idx)
+                    .ok_or_else(|| JsError::internal("map method: invalid object"))?;
+                if let ObjectKind::Map(ref entries) = obj.kind {
+                    return Ok(JsValue::number(entries.len() as f64));
+                }
+                Ok(JsValue::number(0.0))
+            }
+            "clear" => {
+                let obj = self.heap.get_mut(obj_idx)
+                    .ok_or_else(|| JsError::internal("map method: invalid object"))?;
+                if let ObjectKind::Map(ref mut entries) = obj.kind {
+                    entries.clear();
+                }
+                Ok(JsValue::undefined())
+            }
+            "keys" => {
+                let obj = self.heap.get(obj_idx)
+                    .ok_or_else(|| JsError::internal("map method: invalid object"))?;
+                let keys: Vec<JsValue> = if let ObjectKind::Map(ref entries) = obj.kind {
+                    entries.iter().map(|e| e.0).collect()
+                } else {
+                    Vec::new()
+                };
+                let mut arr = JsObject::new_array();
+                for k in keys {
+                    arr.push(k);
+                }
+                let idx = self.heap.alloc(arr);
+                Ok(JsValue::object(idx))
+            }
+            "values" => {
+                let obj = self.heap.get(obj_idx)
+                    .ok_or_else(|| JsError::internal("map method: invalid object"))?;
+                let values: Vec<JsValue> = if let ObjectKind::Map(ref entries) = obj.kind {
+                    entries.iter().map(|e| e.1).collect()
+                } else {
+                    Vec::new()
+                };
+                let mut arr = JsObject::new_array();
+                for v in values {
+                    arr.push(v);
+                }
+                let idx = self.heap.alloc(arr);
+                Ok(JsValue::object(idx))
+            }
+            "forEach" => {
+                // Map.forEach takes a callback(value, key, map) - note: value first, then key
+                let _callback = args.first().copied().unwrap_or(JsValue::undefined());
+                // For now, forEach without callback execution (would need call_function_sync)
+                // Just return undefined; full support requires the main/functions context
+                Ok(JsValue::undefined())
+            }
+            _ => Err(JsError::type_error(alloc::format!(
+                "Map has no method '{}'", method_name
+            ))),
+        }
+    }
+
+    /// Call a built-in Set method.
+    fn call_set_method(
+        &mut self,
+        obj_idx: u32,
+        method_name: &str,
+        args: &[JsValue],
+        _strings: &mut StringPool,
+    ) -> JsResult<JsValue> {
+        match method_name {
+            "add" => {
+                let value = args.first().copied().unwrap_or(JsValue::undefined());
+                let obj = self.heap.get_mut(obj_idx)
+                    .ok_or_else(|| JsError::internal("set method: invalid object"))?;
+                if let ObjectKind::Set(ref mut values) = obj.kind {
+                    // Only add if not already present
+                    let exists = values.iter().any(|v| v.strict_equal(&value));
+                    if !exists {
+                        values.push(value);
+                    }
+                }
+                // Return the set itself for chaining
+                Ok(JsValue::object(obj_idx))
+            }
+            "has" => {
+                let value = args.first().copied().unwrap_or(JsValue::undefined());
+                let obj = self.heap.get(obj_idx)
+                    .ok_or_else(|| JsError::internal("set method: invalid object"))?;
+                if let ObjectKind::Set(ref values) = obj.kind {
+                    for v in values {
+                        if v.strict_equal(&value) {
+                            return Ok(JsValue::boolean(true));
+                        }
+                    }
+                }
+                Ok(JsValue::boolean(false))
+            }
+            "delete" => {
+                let value = args.first().copied().unwrap_or(JsValue::undefined());
+                let obj = self.heap.get_mut(obj_idx)
+                    .ok_or_else(|| JsError::internal("set method: invalid object"))?;
+                if let ObjectKind::Set(ref mut values) = obj.kind {
+                    if let Some(pos) = values.iter().position(|v| v.strict_equal(&value)) {
+                        values.remove(pos);
+                        return Ok(JsValue::boolean(true));
+                    }
+                }
+                Ok(JsValue::boolean(false))
+            }
+            "size" => {
+                let obj = self.heap.get(obj_idx)
+                    .ok_or_else(|| JsError::internal("set method: invalid object"))?;
+                if let ObjectKind::Set(ref values) = obj.kind {
+                    return Ok(JsValue::number(values.len() as f64));
+                }
+                Ok(JsValue::number(0.0))
+            }
+            "clear" => {
+                let obj = self.heap.get_mut(obj_idx)
+                    .ok_or_else(|| JsError::internal("set method: invalid object"))?;
+                if let ObjectKind::Set(ref mut values) = obj.kind {
+                    values.clear();
+                }
+                Ok(JsValue::undefined())
+            }
+            "values" | "keys" => {
+                // Set.keys() is an alias for Set.values()
+                let obj = self.heap.get(obj_idx)
+                    .ok_or_else(|| JsError::internal("set method: invalid object"))?;
+                let vals: Vec<JsValue> = if let ObjectKind::Set(ref values) = obj.kind {
+                    values.clone()
+                } else {
+                    Vec::new()
+                };
+                let mut arr = JsObject::new_array();
+                for v in vals {
+                    arr.push(v);
+                }
+                let idx = self.heap.alloc(arr);
+                Ok(JsValue::object(idx))
+            }
+            "forEach" => {
+                // Similar to Map.forEach - would need call_function_sync
+                Ok(JsValue::undefined())
+            }
+            _ => Err(JsError::type_error(alloc::format!(
+                "Set has no method '{}'", method_name
             ))),
         }
     }

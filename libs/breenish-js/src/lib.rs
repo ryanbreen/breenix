@@ -997,6 +997,32 @@ impl Context {
         self.vm.set_global_by_name("Number", JsValue::object(number_idx), &mut self.strings);
     }
 
+    /// Register built-in Map and Set collection constructors.
+    ///
+    /// This registers `Map()` and `Set()` as global factory functions that
+    /// create Map and Set objects respectively.
+    pub fn register_collection_builtins(&mut self) {
+        use crate::object::{JsObject, ObjectHeap};
+        use crate::string::StringPool as SP;
+        use crate::value::JsValue;
+        use crate::error::JsResult;
+
+        fn map_constructor(_args: &[JsValue], _strings: &mut SP, heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let obj = JsObject::new_map();
+            let idx = heap.alloc(obj);
+            Ok(JsValue::object(idx))
+        }
+
+        fn set_constructor(_args: &[JsValue], _strings: &mut SP, heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let obj = JsObject::new_set();
+            let idx = heap.alloc(obj);
+            Ok(JsValue::object(idx))
+        }
+
+        self.vm.register_native("Map", map_constructor);
+        self.vm.register_native("Set", set_constructor);
+    }
+
     /// Get a mutable reference to the string pool (for native functions).
     pub fn strings_mut(&mut self) -> &mut StringPool {
         &mut self.strings
@@ -2546,6 +2572,178 @@ mod tests {
         assert_eq!(
             eval_and_capture("let sum = 0; for (let i = 0; i < 5; i++) { sum += i; } print(sum);"),
             "10\n"
+        );
+    }
+
+    // --- do...while tests ---
+
+    #[test]
+    fn test_do_while() {
+        assert_eq!(
+            eval_and_capture("let i = 0; do { i++; } while (i < 5); print(i);"),
+            "5\n"
+        );
+    }
+
+    #[test]
+    fn test_do_while_runs_once() {
+        assert_eq!(
+            eval_and_capture("let i = 10; do { i++; } while (i < 5); print(i);"),
+            "11\n"
+        );
+    }
+
+    #[test]
+    fn test_do_while_with_break() {
+        assert_eq!(
+            eval_and_capture("let i = 0; do { i++; if (i === 3) break; } while (i < 10); print(i);"),
+            "3\n"
+        );
+    }
+
+    #[test]
+    fn test_do_while_with_continue() {
+        assert_eq!(
+            eval_and_capture("let sum = 0; let i = 0; do { i++; if (i % 2 === 0) continue; sum += i; } while (i < 6); print(sum);"),
+            "9\n"
+        );
+    }
+
+    // --- Map and Set tests ---
+
+    fn eval_collections(source: &str) -> String {
+        let mut ctx = Context::new();
+        ctx.set_print_fn(capture_print);
+        ctx.register_collection_builtins();
+        ctx.eval(source).unwrap();
+        take_output()
+    }
+
+    #[test]
+    fn test_map_basic() {
+        assert_eq!(
+            eval_collections("let m = Map(); m.set('a', 1); m.set('b', 2); print(m.get('a'), m.get('b'));"),
+            "1 2\n"
+        );
+    }
+
+    #[test]
+    fn test_map_has_delete() {
+        assert_eq!(
+            eval_collections("let m = Map(); m.set('x', 42); print(m.has('x')); m.delete('x'); print(m.has('x'));"),
+            "true\nfalse\n"
+        );
+    }
+
+    #[test]
+    fn test_map_size() {
+        assert_eq!(
+            eval_collections("let m = Map(); m.set('a', 1); m.set('b', 2); print(m.size());"),
+            "2\n"
+        );
+    }
+
+    #[test]
+    fn test_map_overwrite() {
+        assert_eq!(
+            eval_collections("let m = Map(); m.set('a', 1); m.set('a', 99); print(m.get('a')); print(m.size());"),
+            "99\n1\n"
+        );
+    }
+
+    #[test]
+    fn test_map_get_missing() {
+        assert_eq!(
+            eval_collections("let m = Map(); print(m.get('missing'));"),
+            "undefined\n"
+        );
+    }
+
+    #[test]
+    fn test_map_clear() {
+        assert_eq!(
+            eval_collections("let m = Map(); m.set('a', 1); m.set('b', 2); m.clear(); print(m.size());"),
+            "0\n"
+        );
+    }
+
+    #[test]
+    fn test_map_keys_values() {
+        assert_eq!(
+            eval_collections("let m = Map(); m.set('x', 10); m.set('y', 20); let k = m.keys(); let v = m.values(); print(k[0], k[1]); print(v[0], v[1]);"),
+            "x y\n10 20\n"
+        );
+    }
+
+    #[test]
+    fn test_map_numeric_keys() {
+        assert_eq!(
+            eval_collections("let m = Map(); m.set(1, 'one'); m.set(2, 'two'); print(m.get(1)); print(m.has(2));"),
+            "one\ntrue\n"
+        );
+    }
+
+    #[test]
+    fn test_map_chaining() {
+        assert_eq!(
+            eval_collections("let m = Map(); m.set('a', 1).set('b', 2).set('c', 3); print(m.size());"),
+            "3\n"
+        );
+    }
+
+    #[test]
+    fn test_set_basic() {
+        assert_eq!(
+            eval_collections("let s = Set(); s.add(1); s.add(2); s.add(1); print(s.size()); print(s.has(1)); print(s.has(3));"),
+            "2\ntrue\nfalse\n"
+        );
+    }
+
+    #[test]
+    fn test_set_delete() {
+        assert_eq!(
+            eval_collections("let s = Set(); s.add(42); s.delete(42); print(s.has(42));"),
+            "false\n"
+        );
+    }
+
+    #[test]
+    fn test_set_clear() {
+        assert_eq!(
+            eval_collections("let s = Set(); s.add(1); s.add(2); s.add(3); s.clear(); print(s.size());"),
+            "0\n"
+        );
+    }
+
+    #[test]
+    fn test_set_values() {
+        assert_eq!(
+            eval_collections("let s = Set(); s.add(10); s.add(20); s.add(30); let v = s.values(); print(v[0], v[1], v[2]);"),
+            "10 20 30\n"
+        );
+    }
+
+    #[test]
+    fn test_set_string_values() {
+        assert_eq!(
+            eval_collections("let s = Set(); s.add('hello'); s.add('world'); s.add('hello'); print(s.size()); print(s.has('hello')); print(s.has('missing'));"),
+            "2\ntrue\nfalse\n"
+        );
+    }
+
+    #[test]
+    fn test_set_chaining() {
+        assert_eq!(
+            eval_collections("let s = Set(); s.add(1).add(2).add(3); print(s.size());"),
+            "3\n"
+        );
+    }
+
+    #[test]
+    fn test_set_delete_return() {
+        assert_eq!(
+            eval_collections("let s = Set(); s.add(1); print(s.delete(1)); print(s.delete(1));"),
+            "true\nfalse\n"
         );
     }
 }
