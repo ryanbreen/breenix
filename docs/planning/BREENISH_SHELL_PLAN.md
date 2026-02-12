@@ -2,11 +2,21 @@
 
 ## Status
 
-- **Phase 1**: COMPLETE -- Minimal JavaScript interpreter (`breenish-js`)
+- **Phase 1**: COMPLETE (PR #191) -- Minimal JavaScript interpreter (`breenish-js`)
   - Lexer, compiler, stack-based VM, NaN-boxed values, string interning
   - 19 passing tests including recursive fibonacci
   - `bsh` binary created, integrated with build system
-- **Phase 2**: PLANNED -- Control flow and functions (objects, arrays, closures)
+- **Phase 2**: NEARLY COMPLETE -- Objects, arrays, functions, control flow
+  - Object system: properties, literals, dot/bracket access, nested objects
+  - Array system: literals, indexing, length, push/pop/indexOf/join/slice/includes/concat/reverse
+  - String methods: indexOf/includes/startsWith/endsWith/trim/toUpperCase/toLowerCase/slice/split/replace/charAt
+  - Arrow functions: expression body and block body
+  - Switch/case with fallthrough and break
+  - for...of loops for arrays
+  - Template literal interpolation (${expr})
+  - CallMethod opcode for built-in method dispatch
+  - 59 passing tests
+  - Remaining: closures (upvalues), GC (reference counting)
 - **Phase 3**: PLANNED -- Process execution (exec, pipe, env)
 - **Phase 4**: PLANNED -- Async/await (Promises, event loop)
 - **Phase 5**: PLANNED -- Full shell experience (line editing, completion, modules)
@@ -26,6 +36,7 @@ libs/breenish-js/           # JS engine (no_std + alloc capable, std by default)
     bytecode.rs             # Opcode definitions, CodeBlock
     vm.rs                   # Stack-based interpreter loop
     value.rs                # NaN-boxed JsValue
+    object.rs               # Object/array heap and property storage
     string.rs               # String interning table
     error.rs                # JS Error types
 

@@ -33,8 +33,66 @@ impl<'a> Lexer<'a> {
 
     /// Tokenize the entire source into a token buffer.
     pub fn tokenize_all(&mut self) -> JsResult<()> {
+        // Track template literal nesting depth so we know when a `}` closes
+        // a template expression rather than a block.
+        let mut template_depth: usize = 0;
+        // Track brace depth within each template expression to handle
+        // nested blocks like `${obj ? {a:1} : {b:2}}`
+        let mut brace_depth_stack: Vec<usize> = Vec::new();
+
         loop {
+            // If we're inside a template expression and hit a `}` that closes it,
+            // scan the template continuation instead of emitting RightBrace.
+            if template_depth > 0 {
+                if let Some(&depth) = brace_depth_stack.last() {
+                    if depth == 0 && self.peek_byte() == Some(b'}') {
+                        // This `}` closes the template expression
+                        self.advance(); // consume '}'
+                        let tok = self.scan_template_continuation()?;
+                        template_depth -= 1;
+                        brace_depth_stack.pop();
+                        match &tok.kind {
+                            TokenKind::TemplateMiddle(_) => {
+                                // Another expression follows
+                                template_depth += 1;
+                                brace_depth_stack.push(0);
+                            }
+                            TokenKind::TemplateTail(_) => {
+                                // Template is done
+                            }
+                            _ => {}
+                        }
+                        let is_eof = tok.kind == TokenKind::Eof;
+                        self.tokens.push(tok);
+                        if is_eof {
+                            break;
+                        }
+                        continue;
+                    }
+                }
+            }
+
             let tok = self.scan_token()?;
+
+            // Track template and brace depth
+            match &tok.kind {
+                TokenKind::TemplateHead(_) => {
+                    template_depth += 1;
+                    brace_depth_stack.push(0);
+                }
+                TokenKind::LeftBrace if template_depth > 0 => {
+                    if let Some(depth) = brace_depth_stack.last_mut() {
+                        *depth += 1;
+                    }
+                }
+                TokenKind::RightBrace if template_depth > 0 => {
+                    if let Some(depth) = brace_depth_stack.last_mut() {
+                        *depth -= 1;
+                    }
+                }
+                _ => {}
+            }
+
             let is_eof = tok.kind == TokenKind::Eof;
             self.tokens.push(tok);
             if is_eof {
@@ -74,6 +132,16 @@ impl<'a> Lexer<'a> {
         } else {
             &self.tokens[self.tokens.len() - 1]
         }
+    }
+
+    /// Save the current token position (for backtracking).
+    pub fn save_pos(&self) -> usize {
+        self.token_pos
+    }
+
+    /// Restore the token position (for backtracking).
+    pub fn restore_pos(&mut self, pos: usize) {
+        self.token_pos = pos;
     }
 
     /// Check if the current token matches the given kind and advance if so.

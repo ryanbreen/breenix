@@ -91,6 +91,7 @@ impl<'a> Compiler<'a> {
             TokenKind::While => self.compile_while_statement()?,
             TokenKind::For => self.compile_for_statement()?,
             TokenKind::Do => self.compile_do_while_statement()?,
+            TokenKind::Switch => self.compile_switch_statement()?,
             TokenKind::Function => self.compile_function_declaration()?,
             TokenKind::Return => self.compile_return_statement()?,
             TokenKind::Break => self.compile_break_statement()?,
@@ -246,6 +247,16 @@ impl<'a> Compiler<'a> {
         self.lexer.next_token(); // consume 'for'
         self.lexer.expect(&TokenKind::LeftParen)?;
 
+        // Check for `for (let/const x of expr)` pattern
+        if matches!(self.lexer.peek().kind, TokenKind::Let | TokenKind::Const) {
+            // Check if this is for...of by peeking ahead: let IDENT of
+            if let TokenKind::Identifier(_) = &self.lexer.peek_ahead(1).kind {
+                if self.lexer.peek_ahead(2).kind == TokenKind::Of {
+                    return self.compile_for_of_statement();
+                }
+            }
+        }
+
         // Initializer
         match &self.lexer.peek().kind {
             TokenKind::Semicolon => {
@@ -318,6 +329,102 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    /// Compile `for (let x of iterable) { body }`
+    /// Currently supports arrays by iterating over indices.
+    fn compile_for_of_statement(&mut self) -> JsResult<()> {
+        let is_const = self.lexer.peek().kind == TokenKind::Const;
+        self.lexer.next_token(); // consume 'let' or 'const'
+
+        let tok = self.lexer.next_token().clone();
+        let var_name = match &tok.kind {
+            TokenKind::Identifier(n) => n.clone(),
+            _ => {
+                return Err(JsError::syntax(
+                    "expected variable name in for...of",
+                    tok.span.line,
+                    tok.span.column,
+                ));
+            }
+        };
+
+        self.lexer.expect(&TokenKind::Of)?;
+
+        // Compile the iterable expression
+        self.compile_expression()?;
+        self.lexer.expect(&TokenKind::RightParen)?;
+
+        // Store iterable in a temp local
+        let iterable_slot = self.declare_local(String::from("__for_of_iterable__"), false);
+        self.code.emit_op_u16(Op::StoreLocal, iterable_slot);
+
+        // Initialize index counter to 0
+        let index_slot = self.declare_local(String::from("__for_of_index__"), false);
+        let zero_idx = self.code.add_number(0.0);
+        self.code.emit_op_u16(Op::LoadConst, zero_idx);
+        self.code.emit_op_u16(Op::StoreLocal, index_slot);
+
+        // Declare the loop variable
+        let var_slot = self.declare_local(var_name, is_const);
+
+        // Loop start: check index < iterable.length
+        let loop_start = self.code.current_offset();
+
+        // Load index
+        self.code.emit_op_u16(Op::LoadLocal, index_slot);
+        // Load iterable.length
+        self.code.emit_op_u16(Op::LoadLocal, iterable_slot);
+        let length_id = self.strings.intern("length");
+        let length_idx = self.code.add_string(length_id.0);
+        self.code.emit_op_u16(Op::GetPropertyConst, length_idx);
+        // Compare: index < length
+        self.code.emit_op(Op::LessThan);
+        let exit_jump = self.code.emit_jump(Op::JumpIfFalse);
+
+        // Set loop variable = iterable[index]
+        self.code.emit_op_u16(Op::LoadLocal, iterable_slot);
+        self.code.emit_op_u16(Op::LoadLocal, index_slot);
+        self.code.emit_op(Op::GetIndex);
+        self.code.emit_op_u16(Op::StoreLocal, var_slot);
+
+        // Jump over the increment code (to the body)
+        let body_jump = self.code.emit_jump(Op::Jump);
+
+        // Increment code (continue target and end-of-body target)
+        let increment_offset = self.code.current_offset();
+        self.code.emit_op_u16(Op::LoadLocal, index_slot);
+        let one_idx = self.code.add_number(1.0);
+        self.code.emit_op_u16(Op::LoadConst, one_idx);
+        self.code.emit_op(Op::Add);
+        self.code.emit_op_u16(Op::StoreLocal, index_slot);
+        // Jump back to condition check
+        self.code.emit_op_u16(Op::Jump, loop_start as u16);
+
+        // Body
+        let body_start = self.code.current_offset();
+        self.code.patch_jump(body_jump, body_start);
+
+        self.loop_stack.push(LoopContext {
+            break_jumps: Vec::new(),
+            continue_target: increment_offset,
+        });
+
+        self.compile_statement()?;
+
+        // Jump to increment
+        self.code.emit_op_u16(Op::Jump, increment_offset as u16);
+
+        let end = self.code.current_offset();
+        self.code.patch_jump(exit_jump, end);
+
+        // Patch break jumps
+        let ctx = self.loop_stack.pop().unwrap();
+        for brk in ctx.break_jumps {
+            self.code.patch_jump(brk, end);
+        }
+
+        Ok(())
+    }
+
     fn compile_do_while_statement(&mut self) -> JsResult<()> {
         self.lexer.next_token(); // consume 'do'
 
@@ -350,6 +457,210 @@ impl<'a> Compiler<'a> {
         }
 
         self.eat_semicolon();
+        Ok(())
+    }
+
+    fn compile_switch_statement(&mut self) -> JsResult<()> {
+        self.lexer.next_token(); // consume 'switch'
+        self.lexer.expect(&TokenKind::LeftParen)?;
+        self.compile_expression()?; // discriminant on stack
+        self.lexer.expect(&TokenKind::RightParen)?;
+        self.lexer.expect(&TokenKind::LeftBrace)?;
+
+        // Compile switch with proper fallthrough support.
+        // Strategy: emit all case comparisons first (each jumps to its body),
+        // then emit all bodies in order. Fallthrough works naturally because
+        // bodies are sequential.
+        //
+        // Layout:
+        //   [discriminant on stack]
+        //   Dup, case1_val, StrictEqual, JumpIfTrue -> body1
+        //   Dup, case2_val, StrictEqual, JumpIfTrue -> body2
+        //   ...
+        //   Jump -> default_body (or end if no default)
+        //   Pop discriminant
+        //   body1: statements...
+        //   body2: statements...
+        //   default_body: statements...
+        //   end:
+
+        self.loop_stack.push(LoopContext {
+            break_jumps: Vec::new(),
+            continue_target: 0, // switch doesn't support continue
+        });
+
+        // We need to save and restore the lexer position to do two passes.
+        // Since we use a pre-tokenized buffer, we can save/restore token_pos.
+        let save_pos = self.lexer.save_pos();
+
+        // First pass: emit comparisons and collect body start positions
+        let mut case_body_jumps: Vec<usize> = Vec::new(); // JumpIfTrue targets to patch
+        let mut default_index: Option<usize> = None;
+        let mut case_count = 0usize;
+
+        while self.lexer.peek().kind != TokenKind::RightBrace
+            && self.lexer.peek().kind != TokenKind::Eof
+        {
+            match &self.lexer.peek().kind {
+                TokenKind::Case => {
+                    self.lexer.next_token(); // consume 'case'
+                    // Dup discriminant, compile case value, compare
+                    self.code.emit_op(Op::Dup);
+                    self.compile_expression()?;
+                    self.code.emit_op(Op::StrictEqual);
+                    // JumpIfTrue to body (will be patched in second pass)
+                    let jump = self.code.emit_jump(Op::JumpIfTrue);
+                    case_body_jumps.push(jump);
+                    self.lexer.expect(&TokenKind::Colon)?;
+                    case_count += 1;
+
+                    // Skip body tokens
+                    while self.lexer.peek().kind != TokenKind::Case
+                        && self.lexer.peek().kind != TokenKind::Default
+                        && self.lexer.peek().kind != TokenKind::RightBrace
+                        && self.lexer.peek().kind != TokenKind::Eof
+                    {
+                        self.lexer.next_token();
+                    }
+                }
+                TokenKind::Default => {
+                    self.lexer.next_token(); // consume 'default'
+                    self.lexer.expect(&TokenKind::Colon)?;
+                    default_index = Some(case_count);
+                    case_count += 1;
+
+                    // Skip body tokens
+                    while self.lexer.peek().kind != TokenKind::Case
+                        && self.lexer.peek().kind != TokenKind::RightBrace
+                        && self.lexer.peek().kind != TokenKind::Eof
+                    {
+                        self.lexer.next_token();
+                    }
+                }
+                _ => {
+                    let tok = self.lexer.peek().clone();
+                    return Err(JsError::syntax(
+                        "expected 'case' or 'default'",
+                        tok.span.line,
+                        tok.span.column,
+                    ));
+                }
+            }
+        }
+
+        // After all case comparisons, jump to default or end
+        let default_or_end_jump = self.code.emit_jump(Op::Jump);
+
+        // Pop discriminant before entering bodies
+        self.code.emit_op(Op::Pop);
+
+        // Second pass: emit bodies
+        self.lexer.restore_pos(save_pos);
+        let mut body_offsets: Vec<usize> = Vec::new();
+
+        while self.lexer.peek().kind != TokenKind::RightBrace
+            && self.lexer.peek().kind != TokenKind::Eof
+        {
+            match &self.lexer.peek().kind {
+                TokenKind::Case => {
+                    self.lexer.next_token(); // consume 'case'
+                    // Skip case expression (already compiled in first pass)
+                    self.skip_expression()?;
+                    self.lexer.expect(&TokenKind::Colon)?;
+
+                    body_offsets.push(self.code.current_offset());
+
+                    // Compile body statements
+                    while self.lexer.peek().kind != TokenKind::Case
+                        && self.lexer.peek().kind != TokenKind::Default
+                        && self.lexer.peek().kind != TokenKind::RightBrace
+                        && self.lexer.peek().kind != TokenKind::Eof
+                    {
+                        self.compile_statement()?;
+                    }
+                }
+                TokenKind::Default => {
+                    self.lexer.next_token(); // consume 'default'
+                    self.lexer.expect(&TokenKind::Colon)?;
+
+                    body_offsets.push(self.code.current_offset());
+
+                    // Compile default body
+                    while self.lexer.peek().kind != TokenKind::Case
+                        && self.lexer.peek().kind != TokenKind::RightBrace
+                        && self.lexer.peek().kind != TokenKind::Eof
+                    {
+                        self.compile_statement()?;
+                    }
+                }
+                _ => break,
+            }
+        }
+
+        self.lexer.expect(&TokenKind::RightBrace)?;
+
+        let end = self.code.current_offset();
+
+        // Patch case jumps to their body offsets
+        let mut case_jump_idx = 0;
+        for (i, offset) in body_offsets.iter().enumerate() {
+            if Some(i) == default_index {
+                // Default doesn't have a case jump
+                continue;
+            }
+            if case_jump_idx < case_body_jumps.len() {
+                self.code.patch_jump(case_body_jumps[case_jump_idx], *offset);
+                case_jump_idx += 1;
+            }
+        }
+
+        // Patch default-or-end jump
+        if let Some(di) = default_index {
+            if di < body_offsets.len() {
+                self.code.patch_jump(default_or_end_jump, body_offsets[di]);
+            } else {
+                self.code.patch_jump(default_or_end_jump, end);
+            }
+        } else {
+            // No default: jump past the Pop and to end
+            self.code.patch_jump(default_or_end_jump, end);
+        }
+
+        // Patch break jumps
+        let ctx = self.loop_stack.pop().unwrap();
+        for brk in ctx.break_jumps {
+            self.code.patch_jump(brk, end);
+        }
+
+        Ok(())
+    }
+
+    /// Skip over an expression in the token stream without compiling it.
+    /// Used during switch statement's first pass.
+    fn skip_expression(&mut self) -> JsResult<()> {
+        let mut depth = 0;
+        loop {
+            let kind = &self.lexer.peek().kind;
+            match kind {
+                TokenKind::Colon if depth == 0 => break,
+                TokenKind::Semicolon if depth == 0 => break,
+                TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::LeftBrace => {
+                    depth += 1;
+                    self.lexer.next_token();
+                }
+                TokenKind::RightParen | TokenKind::RightBracket | TokenKind::RightBrace => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                    self.lexer.next_token();
+                }
+                TokenKind::Eof => break,
+                _ => {
+                    self.lexer.next_token();
+                }
+            }
+        }
         Ok(())
     }
 
@@ -856,21 +1167,89 @@ impl<'a> Compiler<'a> {
     fn compile_call(&mut self) -> JsResult<()> {
         self.compile_primary()?;
 
-        // Handle function calls
-        while self.lexer.peek().kind == TokenKind::LeftParen {
-            self.lexer.next_token(); // consume '('
-            let mut argc: u8 = 0;
-            if self.lexer.peek().kind != TokenKind::RightParen {
-                loop {
-                    self.compile_expression()?;
-                    argc += 1;
-                    if !self.lexer.eat(&TokenKind::Comma) {
-                        break;
+        // Handle postfix operations: calls, property access, indexing
+        loop {
+            match &self.lexer.peek().kind {
+                TokenKind::LeftParen => {
+                    self.lexer.next_token(); // consume '('
+                    let mut argc: u8 = 0;
+                    if self.lexer.peek().kind != TokenKind::RightParen {
+                        loop {
+                            self.compile_expression()?;
+                            argc += 1;
+                            if !self.lexer.eat(&TokenKind::Comma) {
+                                break;
+                            }
+                        }
+                    }
+                    self.lexer.expect(&TokenKind::RightParen)?;
+                    self.code.emit_op_u8(Op::Call, argc);
+                }
+                TokenKind::Dot => {
+                    self.lexer.next_token(); // consume '.'
+                    let tok = self.lexer.next_token().clone();
+                    let name = match &tok.kind {
+                        TokenKind::Identifier(n) => n.clone(),
+                        // Allow keywords as property names
+                        _ if tok.kind.is_keyword() => alloc::format!("{}", tok.kind),
+                        _ => {
+                            return Err(JsError::syntax(
+                                "expected property name",
+                                tok.span.line,
+                                tok.span.column,
+                            ));
+                        }
+                    };
+
+                    // Check for assignment to property: obj.prop = value
+                    if self.lexer.peek().kind == TokenKind::Assign {
+                        self.lexer.next_token(); // consume '='
+                        self.compile_expression()?;
+                        let name_id = self.strings.intern(&name);
+                        let idx = self.code.add_string(name_id.0);
+                        self.code.emit_op_u16(Op::SetPropertyConst, idx);
+                    } else if self.lexer.peek().kind == TokenKind::LeftParen {
+                        // Method call: obj.method(args)
+                        self.lexer.next_token(); // consume '('
+                        let mut argc: u8 = 0;
+                        if self.lexer.peek().kind != TokenKind::RightParen {
+                            loop {
+                                self.compile_expression()?;
+                                argc += 1;
+                                if !self.lexer.eat(&TokenKind::Comma) {
+                                    break;
+                                }
+                            }
+                        }
+                        self.lexer.expect(&TokenKind::RightParen)?;
+                        let name_id = self.strings.intern(&name);
+                        let idx = self.code.add_string(name_id.0);
+                        self.code.emit_op_u16_u8(Op::CallMethod, idx, argc);
+                    } else {
+                        let name_id = self.strings.intern(&name);
+                        let idx = self.code.add_string(name_id.0);
+                        self.code.emit_op_u16(Op::GetPropertyConst, idx);
                     }
                 }
+                TokenKind::LeftBracket => {
+                    self.lexer.next_token(); // consume '['
+                    self.compile_expression()?;
+
+                    if self.lexer.peek().kind == TokenKind::RightBracket
+                        && self.lexer.peek_ahead(1).kind == TokenKind::Assign
+                    {
+                        // obj[key] = value
+                        self.lexer.next_token(); // consume ']'
+                        self.lexer.next_token(); // consume '='
+                        self.compile_expression()?;
+                        self.code.emit_op(Op::SetProperty);
+                    } else {
+                        self.lexer.expect(&TokenKind::RightBracket)?;
+                        self.code.emit_op(Op::GetProperty);
+                    }
+                }
+                _ => break,
             }
-            self.lexer.expect(&TokenKind::RightParen)?;
-            self.code.emit_op_u8(Op::Call, argc);
         }
 
         Ok(())
@@ -986,6 +1365,10 @@ impl<'a> Compiler<'a> {
             }
 
             TokenKind::LeftParen => {
+                // Check if this is an arrow function: (...) =>
+                if self.is_arrow_function() {
+                    return self.compile_arrow_function();
+                }
                 self.lexer.next_token();
                 self.compile_expression()?;
                 self.lexer.expect(&TokenKind::RightParen)?;
@@ -1010,6 +1393,33 @@ impl<'a> Compiler<'a> {
                 Ok(())
             }
 
+            // Array literal: [expr, expr, ...]
+            TokenKind::LeftBracket => {
+                self.lexer.next_token(); // consume '['
+                let mut count: u16 = 0;
+                if self.lexer.peek().kind != TokenKind::RightBracket {
+                    loop {
+                        // Allow trailing comma
+                        if self.lexer.peek().kind == TokenKind::RightBracket {
+                            break;
+                        }
+                        self.compile_expression()?;
+                        count += 1;
+                        if !self.lexer.eat(&TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                }
+                self.lexer.expect(&TokenKind::RightBracket)?;
+                self.code.emit_op_u16(Op::CreateArray, count);
+                Ok(())
+            }
+
+            // Object literal: { key: value, ... }
+            TokenKind::LeftBrace => {
+                self.compile_object_literal()
+            }
+
             _ => Err(JsError::syntax(
                 alloc::format!("unexpected token '{}'", tok.kind),
                 tok.span.line,
@@ -1019,12 +1429,16 @@ impl<'a> Compiler<'a> {
     }
 
     fn compile_template_continuation(&mut self) -> JsResult<()> {
+        // After TemplateHead + expression + Concat, the next token from
+        // tokenize_all() is either TemplateTail or TemplateMiddle.
         loop {
-            let tok = self.lexer.scan_template_continuation()?;
+            let tok = self.lexer.peek().clone();
             match &tok.kind {
                 TokenKind::TemplateTail(s) => {
+                    let s = s.clone();
+                    self.lexer.next_token();
                     if !s.is_empty() {
-                        let id = self.strings.intern(s);
+                        let id = self.strings.intern(&s);
                         let idx = self.code.add_string(id.0);
                         self.code.emit_op_u16(Op::LoadConst, idx);
                         self.code.emit_op(Op::Concat);
@@ -1032,14 +1446,18 @@ impl<'a> Compiler<'a> {
                     break;
                 }
                 TokenKind::TemplateMiddle(s) => {
+                    let s = s.clone();
+                    self.lexer.next_token();
                     if !s.is_empty() {
-                        let id = self.strings.intern(s);
+                        let id = self.strings.intern(&s);
                         let idx = self.code.add_string(id.0);
                         self.code.emit_op_u16(Op::LoadConst, idx);
                         self.code.emit_op(Op::Concat);
                     }
+                    // Compile the next expression and concatenate
                     self.compile_expression()?;
                     self.code.emit_op(Op::Concat);
+                    // Continue loop to read next tail/middle
                 }
                 _ => {
                     return Err(JsError::syntax(
@@ -1050,6 +1468,63 @@ impl<'a> Compiler<'a> {
                 }
             }
         }
+        Ok(())
+    }
+
+    fn compile_object_literal(&mut self) -> JsResult<()> {
+        self.lexer.next_token(); // consume '{'
+        self.code.emit_op(Op::CreateObject);
+
+        if self.lexer.peek().kind != TokenKind::RightBrace {
+            loop {
+                if self.lexer.peek().kind == TokenKind::RightBrace {
+                    break;
+                }
+
+                // Parse property key
+                let key_tok = self.lexer.next_token().clone();
+                let key_name = match &key_tok.kind {
+                    TokenKind::Identifier(n) => n.clone(),
+                    TokenKind::String(s) => s.clone(),
+                    TokenKind::Number(n) => alloc::format!("{}", *n as i64),
+                    _ if key_tok.kind.is_keyword() => alloc::format!("{}", key_tok.kind),
+                    _ => {
+                        return Err(JsError::syntax(
+                            "expected property name",
+                            key_tok.span.line,
+                            key_tok.span.column,
+                        ));
+                    }
+                };
+
+                // Check for shorthand { name } (identifier only, no colon)
+                if self.lexer.peek().kind == TokenKind::Comma
+                    || self.lexer.peek().kind == TokenKind::RightBrace
+                {
+                    // Shorthand property: { x } means { x: x }
+                    if let Some((slot, _)) = self.resolve_local(&key_name) {
+                        self.code.emit_op_u16(Op::LoadLocal, slot);
+                    } else {
+                        let name_id = self.strings.intern(&key_name);
+                        let idx = self.code.add_string(name_id.0);
+                        self.code.emit_op_u16(Op::LoadGlobal, idx);
+                    }
+                } else {
+                    self.lexer.expect(&TokenKind::Colon)?;
+                    self.compile_expression()?;
+                }
+
+                let key_id = self.strings.intern(&key_name);
+                let key_idx = self.code.add_string(key_id.0);
+                self.code.emit_op_u16(Op::SetPropertyConst, key_idx);
+
+                if !self.lexer.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+
+        self.lexer.expect(&TokenKind::RightBrace)?;
         Ok(())
     }
 
@@ -1112,5 +1587,113 @@ impl<'a> Compiler<'a> {
     fn eat_semicolon(&mut self) {
         // Auto-semicolon insertion: just consume if present
         self.lexer.eat(&TokenKind::Semicolon);
+    }
+
+    /// Check if the current position is the start of an arrow function.
+    /// Looks ahead past balanced parentheses for `=>`.
+    fn is_arrow_function(&self) -> bool {
+        // Current token must be '('
+        if self.lexer.peek().kind != TokenKind::LeftParen {
+            return false;
+        }
+
+        // Scan ahead to find matching ')' then check for '=>'
+        let mut depth = 0;
+        let mut offset = 0;
+        loop {
+            let tok = self.lexer.peek_ahead(offset);
+            match &tok.kind {
+                TokenKind::LeftParen => depth += 1,
+                TokenKind::RightParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        // Check if next token after ')' is '=>'
+                        let after = self.lexer.peek_ahead(offset + 1);
+                        return after.kind == TokenKind::Arrow;
+                    }
+                }
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            offset += 1;
+        }
+    }
+
+    /// Compile an arrow function: (params) => expr  or  (params) => { body }
+    fn compile_arrow_function(&mut self) -> JsResult<()> {
+        self.lexer.expect(&TokenKind::LeftParen)?;
+
+        // Parse parameter list
+        let mut params: Vec<String> = Vec::new();
+        if self.lexer.peek().kind != TokenKind::RightParen {
+            loop {
+                let tok = self.lexer.next_token().clone();
+                match &tok.kind {
+                    TokenKind::Identifier(n) => params.push(n.clone()),
+                    _ => {
+                        return Err(JsError::syntax(
+                            "expected parameter name",
+                            tok.span.line,
+                            tok.span.column,
+                        ));
+                    }
+                }
+                if !self.lexer.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+        self.lexer.expect(&TokenKind::RightParen)?;
+        self.lexer.expect(&TokenKind::Arrow)?;
+
+        // Save current compiler state
+        let prev_code = core::mem::replace(&mut self.code, CodeBlock::new("<arrow>"));
+        let prev_scopes = core::mem::replace(
+            &mut self.scopes,
+            vec![Scope {
+                locals: Vec::new(),
+                base_slot: 0,
+            }],
+        );
+        let prev_next_slot = self.next_slot;
+        self.next_slot = 0;
+
+        // Declare parameters as locals
+        for param in &params {
+            self.declare_local(param.clone(), false);
+        }
+
+        // Compile body: either a block or a single expression
+        if self.lexer.peek().kind == TokenKind::LeftBrace {
+            // Block body: { statements }
+            self.lexer.next_token(); // consume '{'
+            while self.lexer.peek().kind != TokenKind::RightBrace
+                && self.lexer.peek().kind != TokenKind::Eof
+            {
+                self.compile_statement()?;
+            }
+            self.lexer.expect(&TokenKind::RightBrace)?;
+            // Implicit undefined return if no explicit return
+            self.emit_undefined();
+            self.code.emit_op(Op::Return);
+        } else {
+            // Expression body: the expression result is the return value
+            self.compile_assignment()?;
+            self.code.emit_op(Op::Return);
+        }
+
+        self.code.local_count = self.next_slot;
+
+        // Restore state
+        let func_code = core::mem::replace(&mut self.code, prev_code);
+        self.scopes = prev_scopes;
+        self.next_slot = prev_next_slot;
+
+        let func_index = self.functions.len();
+        self.functions.push(func_code);
+
+        let const_idx = self.code.add_constant(Constant::Function(func_index as u32));
+        self.code.emit_op_u16(Op::LoadConst, const_idx);
+        Ok(())
     }
 }

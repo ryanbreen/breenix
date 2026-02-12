@@ -113,6 +113,56 @@ pub enum Op {
     /// Concatenate top two stack values as strings.
     Concat = 80,
 
+    // --- Object operations ---
+
+    /// Create a new empty object and push it.
+    CreateObject = 90,
+    /// Pop value and key (string), peek object, set property.
+    /// Stack: [obj, key, value] -> [obj]
+    /// Operand: none (key is on stack as a string constant index via LoadConst)
+    SetProperty = 91,
+    /// Pop key (string) and object, push property value.
+    /// Stack: [obj, key] -> [value]
+    GetProperty = 92,
+    /// Set a property using a constant key name.
+    /// Operand: u16 (constant pool index for property name string)
+    /// Stack: [obj, value] -> [obj]
+    SetPropertyConst = 93,
+    /// Get a property using a constant key name.
+    /// Operand: u16 (constant pool index for property name string)
+    /// Stack: [obj] -> [value]
+    GetPropertyConst = 94,
+
+    // --- Array operations ---
+
+    /// Create a new array with N elements from the stack.
+    /// Operand: u16 (element count)
+    /// Stack: [elem0, elem1, ..., elemN-1] -> [array]
+    CreateArray = 100,
+    /// Get an indexed element.
+    /// Stack: [obj, index] -> [value]
+    GetIndex = 101,
+    /// Set an indexed element.
+    /// Stack: [obj, index, value] -> [obj]
+    SetIndex = 102,
+
+    /// Call a method on an object.
+    /// Operand: u16 (method name constant pool index), u8 (argument count)
+    /// Stack: [obj, arg0, arg1, ...argN] -> [result]
+    CallMethod = 103,
+
+    // --- Closure operations ---
+
+    /// Create a closure (function + captured environment).
+    /// Operand: u16 (function constant pool index), u8 (upvalue count)
+    CreateClosure = 110,
+    /// Load an upvalue (captured variable from enclosing scope).
+    /// Operand: u16 (upvalue index)
+    LoadUpvalue = 111,
+    /// Store into an upvalue.
+    /// Operand: u16 (upvalue index)
+    StoreUpvalue = 112,
+
     /// Halt execution.
     Halt = 255,
 }
@@ -151,6 +201,18 @@ impl Op {
             61 => Some(Op::Dup),
             70 => Some(Op::Print),
             80 => Some(Op::Concat),
+            90 => Some(Op::CreateObject),
+            91 => Some(Op::SetProperty),
+            92 => Some(Op::GetProperty),
+            93 => Some(Op::SetPropertyConst),
+            94 => Some(Op::GetPropertyConst),
+            100 => Some(Op::CreateArray),
+            101 => Some(Op::GetIndex),
+            102 => Some(Op::SetIndex),
+            103 => Some(Op::CallMethod),
+            110 => Some(Op::CreateClosure),
+            111 => Some(Op::LoadUpvalue),
+            112 => Some(Op::StoreUpvalue),
             255 => Some(Op::Halt),
             _ => None,
         }
@@ -212,6 +274,14 @@ impl CodeBlock {
     pub fn emit_op_u8(&mut self, op: Op, operand: u8) {
         self.code.push(op as u8);
         self.code.push(operand);
+    }
+
+    /// Emit an opcode followed by a u16 and u8 operand.
+    pub fn emit_op_u16_u8(&mut self, op: Op, operand16: u16, operand8: u8) {
+        self.code.push(op as u8);
+        self.code.push((operand16 >> 8) as u8);
+        self.code.push(operand16 as u8);
+        self.code.push(operand8);
     }
 
     /// Get the current bytecode offset (for jump targets).
@@ -321,6 +391,12 @@ impl CodeBlock {
                     let argc = self.read_u8(ip + 1);
                     out.push_str(&format!("{:04}: {:?} argc={}\n", ip, op.unwrap(), argc));
                     ip += 2;
+                }
+                Some(Op::CallMethod) => {
+                    let name_idx = self.read_u16(ip + 1);
+                    let argc = self.read_u8(ip + 3);
+                    out.push_str(&format!("{:04}: CallMethod name={} argc={}\n", ip, name_idx, argc));
+                    ip += 4;
                 }
                 Some(op) => {
                     out.push_str(&format!("{:04}: {:?}\n", ip, op));
