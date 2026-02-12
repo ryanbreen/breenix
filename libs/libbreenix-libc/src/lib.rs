@@ -2739,3 +2739,205 @@ pub unsafe extern "C" fn _Unwind_Backtrace(
 pub unsafe extern "C" fn _Unwind_GetIP(_context: *mut u8) -> usize {
     0
 }
+
+// =============================================================================
+// Environment Variables
+// =============================================================================
+
+/// environ - global environment pointer required by Rust std's env module.
+/// Stored as usize (which is Sync) to avoid raw pointer Sync issues.
+/// A value of 0 means NULL, which std interprets as an empty environment.
+#[no_mangle]
+pub static mut environ: usize = 0;
+
+// =============================================================================
+// Math Functions (libm replacements for no_std targets)
+// =============================================================================
+
+/// Truncate f64 toward zero (bit manipulation, no libm needed).
+fn trunc_f64(x: f64) -> f64 {
+    if x.is_nan() || x.is_infinite() {
+        return x;
+    }
+    let bits = x.to_bits();
+    let exp = ((bits >> 52) & 0x7FF) as i64 - 1023;
+    if exp < 0 {
+        // |x| < 1, truncate to +-0
+        f64::from_bits(bits & (1u64 << 63))
+    } else if exp >= 52 {
+        x
+    } else {
+        let mask = !((1u64 << (52 - exp as u64)) - 1);
+        f64::from_bits(bits & mask)
+    }
+}
+
+/// Floor: largest integer <= x (bit manipulation, no libm needed).
+fn floor_f64(x: f64) -> f64 {
+    let t = trunc_f64(x);
+    if x < 0.0 && t != x {
+        t - 1.0
+    } else {
+        t
+    }
+}
+
+/// Absolute value of f64 (bit manipulation).
+fn abs_f64(x: f64) -> f64 {
+    f64::from_bits(x.to_bits() & !(1u64 << 63))
+}
+
+/// pow - raise base to the power of exp
+#[no_mangle]
+pub extern "C" fn pow(base: f64, exp: f64) -> f64 {
+    // Handle special cases
+    if exp == 0.0 {
+        return 1.0;
+    }
+    if base == 1.0 {
+        return 1.0;
+    }
+    if base == 0.0 {
+        if exp > 0.0 {
+            return 0.0;
+        }
+        return f64::INFINITY;
+    }
+    if exp == 1.0 {
+        return base;
+    }
+    if exp == 2.0 {
+        return base * base;
+    }
+
+    // For integer exponents, use exponentiation by squaring
+    let exp_trunc = trunc_f64(exp);
+    if exp == exp_trunc && abs_f64(exp) < 1e15 {
+        let mut n = abs_f64(exp) as u64;
+        let mut result = 1.0;
+        let mut b = base;
+        while n > 0 {
+            if n & 1 == 1 {
+                result *= b;
+            }
+            b *= b;
+            n >>= 1;
+        }
+        if exp < 0.0 {
+            1.0 / result
+        } else {
+            result
+        }
+    } else {
+        // General case: base^exp = exp2(exp * log2(base))
+        if base < 0.0 {
+            return f64::NAN;
+        }
+        exp2_soft(exp * log2_soft(base))
+    }
+}
+
+/// log - natural logarithm
+#[no_mangle]
+pub extern "C" fn log(x: f64) -> f64 {
+    if x < 0.0 {
+        return f64::NAN;
+    }
+    if x == 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    if x == 1.0 {
+        return 0.0;
+    }
+    if x.is_infinite() {
+        return f64::INFINITY;
+    }
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    // ln(x) = log2(x) / log2(e) = log2(x) * ln(2)
+    log2_soft(x) * core::f64::consts::LN_2
+}
+
+/// log2 - base-2 logarithm (software implementation)
+///
+/// Uses the identity: log2(m * 2^e) = e + log2(m) where 1 <= m < 2,
+/// then computes log2(m) via a polynomial approximation.
+fn log2_soft(x: f64) -> f64 {
+    if x <= 0.0 {
+        if x == 0.0 {
+            return f64::NEG_INFINITY;
+        }
+        return f64::NAN;
+    }
+
+    // Decompose x = m * 2^e where 1 <= m < 2
+    let bits = x.to_bits();
+    let exp_bits = ((bits >> 52) & 0x7FF) as i64 - 1023;
+    // Reconstruct mantissa with exponent = 0 (biased 1023)
+    let m_bits = (bits & 0x000F_FFFF_FFFF_FFFF) | (1023u64 << 52);
+    let m = f64::from_bits(m_bits);
+
+    // log2(m) for m in [1, 2) using a minimax polynomial
+    // log2(1+f) where f = m-1, f in [0, 1)
+    let f = m - 1.0;
+    // Approximation: log2(1+f) ≈ (1/ln2) * (f - f²/2 + f³/3 - f⁴/4 + f⁵/5 - f⁶/6 + f⁷/7)
+    let inv_ln2 = 1.0 / core::f64::consts::LN_2;
+    let f2 = f * f;
+    let f3 = f2 * f;
+    let f4 = f2 * f2;
+    let f5 = f4 * f;
+    let f6 = f4 * f2;
+    let f7 = f6 * f;
+    let f8 = f4 * f4;
+    let log2_m = inv_ln2 * (f - f2 / 2.0 + f3 / 3.0 - f4 / 4.0 + f5 / 5.0 - f6 / 6.0 + f7 / 7.0 - f8 / 8.0);
+
+    exp_bits as f64 + log2_m
+}
+
+/// exp2 - base-2 exponential (software implementation)
+///
+/// Computes 2^x by decomposing x = n + f where n is integer and 0 <= f < 1,
+/// then 2^x = 2^n * 2^f with 2^f approximated by polynomial.
+fn exp2_soft(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    if x >= 1024.0 {
+        return f64::INFINITY;
+    }
+    if x <= -1075.0 {
+        return 0.0;
+    }
+
+    // Split x = n + f, where n = floor(x), 0 <= f < 1
+    let n = floor_f64(x) as i64;
+    let f = x - n as f64;
+
+    // 2^f for f in [0, 1) using a polynomial approximation
+    // 2^f = e^(f * ln2), and e^y ≈ 1 + y + y²/2! + y³/3! + ...
+    let y = f * core::f64::consts::LN_2;
+    let y2 = y * y;
+    let y3 = y2 * y;
+    let y4 = y2 * y2;
+    let y5 = y4 * y;
+    let y6 = y4 * y2;
+    let y7 = y6 * y;
+    let y8 = y4 * y4;
+    let y9 = y8 * y;
+    let y10 = y8 * y2;
+    let exp_f = 1.0 + y + y2 / 2.0 + y3 / 6.0 + y4 / 24.0 + y5 / 120.0
+        + y6 / 720.0 + y7 / 5040.0 + y8 / 40320.0 + y9 / 362880.0 + y10 / 3628800.0;
+
+    // 2^n by manipulating IEEE 754 exponent bits
+    if n >= -1022 && n <= 1023 {
+        let pow2_n = f64::from_bits(((n + 1023) as u64) << 52);
+        pow2_n * exp_f
+    } else if n < -1022 {
+        // Subnormal range
+        let pow2_n = f64::from_bits(1u64 << 52) * f64::from_bits(((n + 1023 + 52) as u64) << 52);
+        pow2_n * exp_f
+    } else {
+        f64::INFINITY
+    }
+}
