@@ -7,38 +7,19 @@
 //! 1. Create pipe with O_CLOEXEC
 //! 2. Verify FD_CLOEXEC is set via fcntl
 //! 3. Fork, child re-execs self with "--exec-check <fd_num>"
-//! 4. In exec-check mode: attempt read from fd, expect EBADF (-9)
+//! 4. In exec-check mode: attempt read from fd, expect EBADF
 
+use libbreenix::io;
+use libbreenix::io::fd_flags::FD_CLOEXEC;
+use libbreenix::io::status_flags::O_CLOEXEC;
+use libbreenix::process::{self, ForkResult, execv, wifexited, wexitstatus};
+use libbreenix::types::Fd;
+use libbreenix::Errno;
 use std::env;
-
-const O_CLOEXEC: i32 = 0o2000000;
-const FD_CLOEXEC: i32 = 1;
-const F_GETFD: i32 = 1;
-
-extern "C" {
-    fn fork() -> i32;
-    fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
-    fn pipe2(pipefd: *mut i32, flags: i32) -> i32;
-    fn fcntl(fd: i32, cmd: i32, ...) -> i32;
-    fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
-    fn write(fd: i32, buf: *const u8, count: usize) -> isize;
-    fn close(fd: i32) -> i32;
-    fn execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> i32;
-}
-
-/// POSIX WIFEXITED: true if child terminated normally
-fn wifexited(status: i32) -> bool {
-    (status & 0x7f) == 0
-}
-
-/// POSIX WEXITSTATUS: extract exit code from status
-fn wexitstatus(status: i32) -> i32 {
-    (status >> 8) & 0xff
-}
 
 /// Exec-check mode: verify that the given fd is closed (EBADF)
 fn exec_check(fd_str: &str) -> ! {
-    let fd: i32 = match fd_str.parse() {
+    let fd: u64 = match fd_str.parse() {
         Ok(v) => v,
         Err(_) => {
             println!("FAIL: invalid fd argument '{}'", fd_str);
@@ -46,14 +27,19 @@ fn exec_check(fd_str: &str) -> ! {
         }
     };
 
+    let fd = Fd::from_raw(fd);
     let mut buf = [0u8; 4];
-    let ret = unsafe { read(fd, buf.as_mut_ptr(), buf.len()) };
-    if ret >= 0 {
-        println!("FAIL: read succeeded after exec (fd {} should be closed)", fd);
-        std::process::exit(1);
-    }
-    if ret != -9 {
-        println!("WARN: expected EBADF (-9), got {}", ret);
+    match io::read(fd, &mut buf) {
+        Ok(_) => {
+            println!("FAIL: read succeeded after exec (fd {} should be closed)", fd.raw());
+            std::process::exit(1);
+        }
+        Err(libbreenix::error::Error::Os(Errno::EBADF)) => {
+            // Expected
+        }
+        Err(e) => {
+            println!("WARN: expected EBADF, got {:?}", e);
+        }
     }
     println!("CLOEXEC_TEST_PASSED");
     std::process::exit(0);
@@ -69,20 +55,18 @@ fn main() {
     println!("=== Close-on-Exec Test ===");
 
     // Step 1: Create pipe with O_CLOEXEC
-    let mut fds = [0i32; 2];
-    let ret = unsafe { pipe2(fds.as_mut_ptr(), O_CLOEXEC) };
-    if ret < 0 {
-        println!("pipe2 failed with {}", ret);
-        std::process::exit(1);
-    }
-
-    let read_fd = fds[0];
-    let write_fd = fds[1];
-    println!("Created pipe with O_CLOEXEC: read_fd={}, write_fd={}", read_fd, write_fd);
+    let (read_fd, write_fd) = match io::pipe2(O_CLOEXEC) {
+        Ok(fds) => fds,
+        Err(e) => {
+            println!("pipe2 failed with {:?}", e);
+            std::process::exit(1);
+        }
+    };
+    println!("Created pipe with O_CLOEXEC: read_fd={}, write_fd={}", read_fd.raw() as i32, write_fd.raw() as i32);
 
     // Step 2: Verify FD_CLOEXEC is set
-    let flags = unsafe { fcntl(read_fd, F_GETFD) };
-    if flags != FD_CLOEXEC {
+    let flags = io::fcntl_getfd(read_fd).unwrap();
+    if flags != FD_CLOEXEC as i64 {
         println!("FAIL: FD_CLOEXEC not set on pipe read fd (flags={})", flags);
         std::process::exit(1);
     }
@@ -90,51 +74,55 @@ fn main() {
 
     // Write some data so the fd is "readable" if not closed
     let data = b"test";
-    let write_ret = unsafe { write(write_fd, data.as_ptr(), data.len()) };
-    if write_ret < 0 {
-        println!("write failed with {}", write_ret);
+    let write_ret = io::write(write_fd, data).unwrap();
+    if write_ret == 0 {
+        println!("write failed");
         std::process::exit(1);
     }
-    unsafe { close(write_fd); }
+    let _ = io::close(write_fd);
 
     // Step 3: Fork and re-exec self with --exec-check
-    let pid = unsafe { fork() };
-    if pid == 0 {
-        // Child: re-exec self with --exec-check <read_fd>
-        let fd_string = format!("{}\0", read_fd);
-
-        let program = b"cloexec_test\0";
-        let arg0 = b"cloexec_test\0";
-        let arg1 = b"--exec-check\0";
-        let argv: [*const u8; 4] = [
-            arg0.as_ptr(),
-            arg1.as_ptr(),
-            fd_string.as_ptr(),
-            std::ptr::null(),
-        ];
-        let envp: [*const u8; 1] = [std::ptr::null()];
-
-        unsafe {
-            execve(program.as_ptr(), argv.as_ptr(), envp.as_ptr());
+    let fork_result = match process::fork() {
+        Ok(result) => result,
+        Err(_) => {
+            println!("fork failed");
+            std::process::exit(1);
         }
+    };
 
-        // If we get here, exec failed
-        println!("exec failed");
-        std::process::exit(1);
-    } else if pid > 0 {
-        // Parent: close our copy of read_fd, then wait for child
-        unsafe { close(read_fd); }
+    match fork_result {
+        ForkResult::Child => {
+            // Child: re-exec self with --exec-check <read_fd>
+            let fd_string = format!("{}\0", read_fd.raw());
 
-        let mut status: i32 = 0;
-        unsafe { waitpid(pid, &mut status, 0); }
+            let program = b"cloexec_test\0";
+            let arg0 = b"cloexec_test\0";
+            let arg1 = b"--exec-check\0";
+            let argv: [*const u8; 4] = [
+                arg0.as_ptr(),
+                arg1.as_ptr(),
+                fd_string.as_ptr(),
+                std::ptr::null(),
+            ];
 
-        if wifexited(status) {
-            std::process::exit(wexitstatus(status));
+            let _ = execv(program, argv.as_ptr());
+
+            // If we get here, exec failed
+            println!("exec failed");
+            std::process::exit(1);
         }
-        println!("child did not exit cleanly");
-        std::process::exit(1);
-    } else {
-        println!("fork failed");
-        std::process::exit(1);
+        ForkResult::Parent(child_pid) => {
+            // Parent: close our copy of read_fd, then wait for child
+            let _ = io::close(read_fd);
+
+            let mut status: i32 = 0;
+            let _ = process::waitpid(child_pid.raw() as i32, &mut status, 0);
+
+            if wifexited(status) {
+                std::process::exit(wexitstatus(status));
+            }
+            println!("child did not exit cleanly");
+            std::process::exit(1);
+        }
     }
 }

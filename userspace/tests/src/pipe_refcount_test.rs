@@ -9,31 +9,82 @@
 //! - dup2 reference counting (Tests 7-10): verifies that duplicated fds
 //!   correctly increment/decrement ref counts and that dup2(fd, fd) is a no-op
 
+use libbreenix::io;
+use libbreenix::error::Error;
+use libbreenix::types::Fd;
+use libbreenix::Errno;
 use std::process;
-
-// Error codes
-const EPIPE: isize = -32;  // Broken pipe (write with no readers)
-const EBADF: isize = -9;   // Bad file descriptor
-
-extern "C" {
-    fn pipe(pipefd: *mut i32) -> i32;
-    fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
-    fn write(fd: i32, buf: *const u8, count: usize) -> isize;
-    fn close(fd: i32) -> i32;
-    fn dup2(oldfd: i32, newfd: i32) -> i32;
-}
 
 fn fail(msg: &str) -> ! {
     println!("PIPE_REFCOUNT: FAIL - {}", msg);
     process::exit(1);
 }
 
-fn assert_eq_val(actual: isize, expected: isize, msg: &str) {
-    if actual != expected {
+/// Check that a write returns a specific errno
+fn assert_write_err(fd: Fd, data: &[u8], expected_errno: Errno, msg: &str) {
+    match io::write(fd, data) {
+        Ok(n) => {
+            println!("ASSERTION FAILED: {}", msg);
+            println!("  Expected error {:?}, but write succeeded with {} bytes", expected_errno, n);
+            fail("Assertion failed");
+        }
+        Err(Error::Os(e)) if e == expected_errno => {
+            // Expected error
+        }
+        Err(Error::Os(e)) => {
+            println!("ASSERTION FAILED: {}", msg);
+            println!("  Expected: {:?}", expected_errno);
+            println!("  Got: {:?}", e);
+            fail("Assertion failed");
+        }
+    }
+}
+
+/// Check that a read returns the expected number of bytes
+fn assert_read_ok(fd: Fd, buf: &mut [u8], expected: usize, msg: &str) -> usize {
+    match io::read(fd, buf) {
+        Ok(n) => {
+            if n != expected {
+                println!("ASSERTION FAILED: {}", msg);
+                println!("  Expected: {} bytes", expected);
+                println!("  Got: {} bytes", n);
+                fail("Assertion failed");
+            }
+            n
+        }
+        Err(e) => {
+            println!("ASSERTION FAILED: {}", msg);
+            println!("  Expected: {} bytes, got error: {:?}", expected, e);
+            fail("Assertion failed");
+        }
+    }
+}
+
+/// Check that close succeeds
+fn assert_close_ok(fd: Fd, msg: &str) {
+    if let Err(e) = io::close(fd) {
         println!("ASSERTION FAILED: {}", msg);
-        println!("  Expected: {}", expected);
-        println!("  Got: {}", actual);
+        println!("  close failed with: {:?}", e);
         fail("Assertion failed");
+    }
+}
+
+/// Check that close returns EBADF
+fn assert_close_ebadf(fd: Fd, msg: &str) {
+    match io::close(fd) {
+        Ok(()) => {
+            println!("ASSERTION FAILED: {}", msg);
+            println!("  Expected EBADF, but close succeeded");
+            fail("Assertion failed");
+        }
+        Err(Error::Os(Errno::EBADF)) => {
+            // Expected
+        }
+        Err(Error::Os(e)) => {
+            println!("ASSERTION FAILED: {}", msg);
+            println!("  Expected EBADF, got {:?}", e);
+            fail("Assertion failed");
+        }
     }
 }
 
@@ -41,31 +92,21 @@ fn assert_eq_val(actual: isize, expected: isize, msg: &str) {
 fn test_write_after_close_write() {
     println!("\n=== Test 1: Write After Close Write End ===");
 
-    let mut pipefd: [i32; 2] = [0, 0];
-    let ret = unsafe { pipe(pipefd.as_mut_ptr()) };
+    let (read_fd, write_fd) = io::pipe().unwrap_or_else(|_| fail("pipe() failed in test 1"));
 
-    if ret < 0 {
-        fail("pipe() failed in test 1");
-    }
-
-    println!("  Pipe created: read_fd={}, write_fd={}", pipefd[0], pipefd[1]);
+    println!("  Pipe created: read_fd={}, write_fd={}", read_fd.raw() as i32, write_fd.raw() as i32);
 
     // Close write end
-    let close_ret = unsafe { close(pipefd[1]) };
-    assert_eq_val(close_ret as isize, 0, "close(write_fd) should succeed");
+    assert_close_ok(write_fd, "close(write_fd) should succeed");
     println!("  Closed write end");
 
     // Attempt to write to closed write fd - should get EBADF
     let test_data = b"Should fail";
-    let write_ret = unsafe {
-        write(pipefd[1], test_data.as_ptr(), test_data.len())
-    };
-
-    assert_eq_val(write_ret, EBADF, "write to closed fd should return EBADF");
+    assert_write_err(write_fd, test_data, Errno::EBADF, "write to closed fd should return EBADF");
     println!("  Write to closed fd correctly returned EBADF");
 
     // Clean up
-    unsafe { close(pipefd[0]); }
+    let _ = io::close(read_fd);
     println!("  Test 1: PASSED");
 }
 
@@ -73,30 +114,21 @@ fn test_write_after_close_write() {
 fn test_read_eof_after_close_write() {
     println!("\n=== Test 2: Read EOF After Close Write End ===");
 
-    let mut pipefd: [i32; 2] = [0, 0];
-    let ret = unsafe { pipe(pipefd.as_mut_ptr()) };
-
-    if ret < 0 {
-        fail("pipe() failed in test 2");
-    }
+    let (read_fd, write_fd) = io::pipe().unwrap_or_else(|_| fail("pipe() failed in test 2"));
 
     println!("  Pipe created");
 
     // Close write end immediately (no data written)
-    unsafe { close(pipefd[1]); }
+    let _ = io::close(write_fd);
     println!("  Closed write end");
 
     // Read should return EOF (0)
     let mut buf = [0u8; 32];
-    let read_ret = unsafe {
-        read(pipefd[0], buf.as_mut_ptr(), buf.len())
-    };
-
-    assert_eq_val(read_ret, 0, "read should return EOF (0) when all writers closed");
+    assert_read_ok(read_fd, &mut buf, 0, "read should return EOF (0) when all writers closed");
     println!("  Read correctly returned EOF");
 
     // Clean up
-    unsafe { close(pipefd[0]); }
+    let _ = io::close(read_fd);
     println!("  Test 2: PASSED");
 }
 
@@ -104,53 +136,39 @@ fn test_read_eof_after_close_write() {
 fn test_read_data_then_eof() {
     println!("\n=== Test 3: Read Data Then EOF ===");
 
-    let mut pipefd: [i32; 2] = [0, 0];
-    let ret = unsafe { pipe(pipefd.as_mut_ptr()) };
-
-    if ret < 0 {
-        fail("pipe() failed in test 3");
-    }
+    let (read_fd, write_fd) = io::pipe().unwrap_or_else(|_| fail("pipe() failed in test 3"));
 
     println!("  Pipe created");
 
     // Write some data
     let test_data = b"Test data";
-    let write_ret = unsafe {
-        write(pipefd[1], test_data.as_ptr(), test_data.len())
-    };
-
-    assert_eq_val(write_ret, test_data.len() as isize, "write should succeed");
+    let write_ret = io::write(write_fd, test_data).unwrap();
+    if write_ret != test_data.len() {
+        fail("write should succeed");
+    }
     println!("  Wrote {} bytes", write_ret);
 
     // Close write end
-    unsafe { close(pipefd[1]); }
+    let _ = io::close(write_fd);
     println!("  Closed write end");
 
     // First read should get the data
     let mut buf = [0u8; 32];
-    let read_ret = unsafe {
-        read(pipefd[0], buf.as_mut_ptr(), buf.len())
-    };
-
-    assert_eq_val(read_ret, test_data.len() as isize, "first read should get all data");
+    let read_ret = assert_read_ok(read_fd, &mut buf, test_data.len(), "first read should get all data");
     println!("  First read got {} bytes", read_ret);
 
     // Verify data
-    if &buf[..read_ret as usize] != test_data {
+    if &buf[..read_ret] != test_data {
         fail("data mismatch");
     }
     println!("  Data verified");
 
     // Second read should return EOF
-    let read_ret2 = unsafe {
-        read(pipefd[0], buf.as_mut_ptr(), buf.len())
-    };
-
-    assert_eq_val(read_ret2, 0, "second read should return EOF");
+    assert_read_ok(read_fd, &mut buf, 0, "second read should return EOF");
     println!("  Second read correctly returned EOF");
 
     // Clean up
-    unsafe { close(pipefd[0]); }
+    let _ = io::close(read_fd);
     println!("  Test 3: PASSED");
 }
 
@@ -158,30 +176,21 @@ fn test_read_data_then_eof() {
 fn test_write_epipe_after_close_read() {
     println!("\n=== Test 4: Write EPIPE After Close Read End ===");
 
-    let mut pipefd: [i32; 2] = [0, 0];
-    let ret = unsafe { pipe(pipefd.as_mut_ptr()) };
-
-    if ret < 0 {
-        fail("pipe() failed in test 4");
-    }
+    let (read_fd, write_fd) = io::pipe().unwrap_or_else(|_| fail("pipe() failed in test 4"));
 
     println!("  Pipe created");
 
     // Close read end
-    unsafe { close(pipefd[0]); }
+    let _ = io::close(read_fd);
     println!("  Closed read end");
 
     // Write should get EPIPE (broken pipe)
     let test_data = b"Should get EPIPE";
-    let write_ret = unsafe {
-        write(pipefd[1], test_data.as_ptr(), test_data.len())
-    };
-
-    assert_eq_val(write_ret, EPIPE, "write should return EPIPE when all readers closed");
+    assert_write_err(write_fd, test_data, Errno::EPIPE, "write should return EPIPE when all readers closed");
     println!("  Write correctly returned EPIPE");
 
     // Clean up
-    unsafe { close(pipefd[1]); }
+    let _ = io::close(write_fd);
     println!("  Test 4: PASSED");
 }
 
@@ -189,28 +198,20 @@ fn test_write_epipe_after_close_read() {
 fn test_close_both_ends() {
     println!("\n=== Test 5: Close Both Ends ===");
 
-    let mut pipefd: [i32; 2] = [0, 0];
-    let ret = unsafe { pipe(pipefd.as_mut_ptr()) };
-
-    if ret < 0 {
-        fail("pipe() failed in test 5");
-    }
+    let (read_fd, write_fd) = io::pipe().unwrap_or_else(|_| fail("pipe() failed in test 5"));
 
     println!("  Pipe created");
 
     // Close read end first
-    let close_read = unsafe { close(pipefd[0]) };
-    assert_eq_val(close_read as isize, 0, "close(read_fd) should succeed");
+    assert_close_ok(read_fd, "close(read_fd) should succeed");
     println!("  Closed read end");
 
     // Close write end second
-    let close_write = unsafe { close(pipefd[1]) };
-    assert_eq_val(close_write as isize, 0, "close(write_fd) should succeed");
+    assert_close_ok(write_fd, "close(write_fd) should succeed");
     println!("  Closed write end");
 
     // Verify double-close fails
-    let close_again = unsafe { close(pipefd[0]) };
-    assert_eq_val(close_again as isize, EBADF, "closing already-closed fd should return EBADF");
+    assert_close_ebadf(read_fd, "closing already-closed fd should return EBADF");
     println!("  Double-close correctly returned EBADF");
 
     println!("  Test 5: PASSED");
@@ -220,12 +221,7 @@ fn test_close_both_ends() {
 fn test_multiple_operations() {
     println!("\n=== Test 6: Multiple Operations ===");
 
-    let mut pipefd: [i32; 2] = [0, 0];
-    let ret = unsafe { pipe(pipefd.as_mut_ptr()) };
-
-    if ret < 0 {
-        fail("pipe() failed in test 6");
-    }
+    let (read_fd, write_fd) = io::pipe().unwrap_or_else(|_| fail("pipe() failed in test 6"));
 
     println!("  Pipe created");
 
@@ -234,11 +230,9 @@ fn test_multiple_operations() {
     let msg2 = b"Second";
     let msg3 = b"Third";
 
-    unsafe {
-        write(pipefd[1], msg1.as_ptr(), msg1.len());
-        write(pipefd[1], msg2.as_ptr(), msg2.len());
-        write(pipefd[1], msg3.as_ptr(), msg3.len());
-    }
+    let _ = io::write(write_fd, msg1);
+    let _ = io::write(write_fd, msg2);
+    let _ = io::write(write_fd, msg3);
     println!("  Wrote 3 messages");
 
     // Read all data
@@ -247,16 +241,11 @@ fn test_multiple_operations() {
     let mut total_read = 0usize;
 
     while total_read < total_expected {
-        let read_ret = unsafe {
-            read(pipefd[0],
-                 buf.as_mut_ptr().add(total_read),
-                 buf.len() - total_read)
-        };
-
-        if read_ret <= 0 {
-            break;
+        match io::read(read_fd, &mut buf[total_read..]) {
+            Ok(n) if n == 0 => break,
+            Ok(n) => { total_read += n; }
+            Err(_) => break,
         }
-        total_read += read_ret as usize;
     }
 
     println!("  Read {} bytes total", total_read);
@@ -273,10 +262,8 @@ fn test_multiple_operations() {
     println!("  Data integrity verified");
 
     // Clean up
-    unsafe {
-        close(pipefd[0]);
-        close(pipefd[1]);
-    }
+    let _ = io::close(read_fd);
+    let _ = io::close(write_fd);
     println!("  Test 6: PASSED");
 }
 
@@ -284,53 +271,45 @@ fn test_multiple_operations() {
 fn test_dup2_write_end() {
     println!("\n=== Test 7: Dup2 Write End ===");
 
-    let mut pipefd: [i32; 2] = [0, 0];
-    let ret = unsafe { pipe(pipefd.as_mut_ptr()) };
-    if ret < 0 {
-        fail("pipe() failed in test 7");
-    }
+    let (read_fd, write_fd) = io::pipe().unwrap_or_else(|_| fail("pipe() failed in test 7"));
 
-    println!("  Pipe created: read_fd={}, write_fd={}", pipefd[0], pipefd[1]);
+    println!("  Pipe created: read_fd={}, write_fd={}", read_fd.raw() as i32, write_fd.raw() as i32);
 
     // Duplicate write end to fd 10
-    let new_write_fd: i32 = 10;
-    let dup_ret = unsafe { dup2(pipefd[1], new_write_fd) };
-    assert_eq_val(dup_ret as isize, new_write_fd as isize, "dup2 should return new_fd");
-    println!("  Duplicated write_fd to fd {}", new_write_fd);
+    let new_write_fd = Fd::from_raw(10);
+    let dup_ret = io::dup2(write_fd, new_write_fd).unwrap();
+    if dup_ret != new_write_fd {
+        fail("dup2 should return new_fd");
+    }
+    println!("  Duplicated write_fd to fd {}", new_write_fd.raw() as i32);
 
     // Close original write end
-    unsafe { close(pipefd[1]); }
+    let _ = io::close(write_fd);
     println!("  Closed original write_fd");
 
     // Write via duplicated fd should still work (ref count was incremented)
     let test_data = b"via dup";
-    let write_ret = unsafe {
-        write(new_write_fd, test_data.as_ptr(), test_data.len())
-    };
-    assert_eq_val(write_ret, test_data.len() as isize, "write via dup'd fd should succeed");
+    let write_ret = io::write(new_write_fd, test_data).unwrap();
+    if write_ret != test_data.len() {
+        fail("write via dup'd fd should succeed");
+    }
     println!("  Write via duplicated fd succeeded");
 
     // Read should get the data
     let mut buf = [0u8; 32];
-    let read_ret = unsafe {
-        read(pipefd[0], buf.as_mut_ptr(), buf.len())
-    };
-    assert_eq_val(read_ret, test_data.len() as isize, "read should get data");
+    assert_read_ok(read_fd, &mut buf, test_data.len(), "read should get data");
     println!("  Read got data correctly");
 
     // Close dup'd write fd - now all writers are closed
-    unsafe { close(new_write_fd); }
+    let _ = io::close(new_write_fd);
     println!("  Closed duplicated write_fd");
 
     // Read should now return EOF
-    let read_eof = unsafe {
-        read(pipefd[0], buf.as_mut_ptr(), buf.len())
-    };
-    assert_eq_val(read_eof, 0, "read should return EOF after all writers closed");
+    assert_read_ok(read_fd, &mut buf, 0, "read should return EOF after all writers closed");
     println!("  Read correctly returned EOF");
 
     // Clean up
-    unsafe { close(pipefd[0]); }
+    let _ = io::close(read_fd);
     println!("  Test 7: PASSED");
 }
 
@@ -338,52 +317,42 @@ fn test_dup2_write_end() {
 fn test_dup2_read_end() {
     println!("\n=== Test 8: Dup2 Read End ===");
 
-    let mut pipefd: [i32; 2] = [0, 0];
-    let ret = unsafe { pipe(pipefd.as_mut_ptr()) };
-    if ret < 0 {
-        fail("pipe() failed in test 8");
-    }
+    let (read_fd, write_fd) = io::pipe().unwrap_or_else(|_| fail("pipe() failed in test 8"));
 
     println!("  Pipe created");
 
     // Duplicate read end to fd 11
-    let new_read_fd: i32 = 11;
-    let dup_ret = unsafe { dup2(pipefd[0], new_read_fd) };
-    assert_eq_val(dup_ret as isize, new_read_fd as isize, "dup2 should return new_fd");
-    println!("  Duplicated read_fd to fd {}", new_read_fd);
+    let new_read_fd = Fd::from_raw(11);
+    let dup_ret = io::dup2(read_fd, new_read_fd).unwrap();
+    if dup_ret != new_read_fd {
+        fail("dup2 should return new_fd");
+    }
+    println!("  Duplicated read_fd to fd {}", new_read_fd.raw() as i32);
 
     // Write some data
     let test_data = b"test data";
-    unsafe {
-        write(pipefd[1], test_data.as_ptr(), test_data.len());
-    }
+    let _ = io::write(write_fd, test_data);
     println!("  Wrote data");
 
     // Close original read end
-    unsafe { close(pipefd[0]); }
+    let _ = io::close(read_fd);
     println!("  Closed original read_fd");
 
     // Read via duplicated fd should work
     let mut buf = [0u8; 32];
-    let read_ret = unsafe {
-        read(new_read_fd, buf.as_mut_ptr(), buf.len())
-    };
-    assert_eq_val(read_ret, test_data.len() as isize, "read via dup'd fd should succeed");
+    assert_read_ok(new_read_fd, &mut buf, test_data.len(), "read via dup'd fd should succeed");
     println!("  Read via duplicated fd succeeded");
 
     // Close duplicated read fd - now all readers are closed
-    unsafe { close(new_read_fd); }
+    let _ = io::close(new_read_fd);
     println!("  Closed duplicated read_fd");
 
     // Write should now get EPIPE
-    let write_ret = unsafe {
-        write(pipefd[1], test_data.as_ptr(), test_data.len())
-    };
-    assert_eq_val(write_ret, EPIPE, "write should return EPIPE after all readers closed");
+    assert_write_err(write_fd, test_data, Errno::EPIPE, "write should return EPIPE after all readers closed");
     println!("  Write correctly returned EPIPE");
 
     // Clean up
-    unsafe { close(pipefd[1]); }
+    let _ = io::close(write_fd);
     println!("  Test 8: PASSED");
 }
 
@@ -391,39 +360,32 @@ fn test_dup2_read_end() {
 fn test_dup2_same_fd() {
     println!("\n=== Test 9: Dup2 Same FD (No-op) ===");
 
-    let mut pipefd: [i32; 2] = [0, 0];
-    let ret = unsafe { pipe(pipefd.as_mut_ptr()) };
-    if ret < 0 {
-        fail("pipe() failed in test 9");
-    }
+    let (read_fd, write_fd) = io::pipe().unwrap_or_else(|_| fail("pipe() failed in test 9"));
 
     println!("  Pipe created");
 
     // dup2(read_fd, read_fd) should just validate and return read_fd
-    let dup_ret = unsafe { dup2(pipefd[0], pipefd[0]) };
-    assert_eq_val(dup_ret as isize, pipefd[0] as isize, "dup2(fd, fd) should return fd unchanged");
+    let dup_ret = io::dup2(read_fd, read_fd).unwrap();
+    if dup_ret != read_fd {
+        fail("dup2(fd, fd) should return fd unchanged");
+    }
     println!("  dup2(read_fd, read_fd) returned correctly");
 
     // Pipe should still work normally
     let test_data = b"still works";
-    let write_ret = unsafe {
-        write(pipefd[1], test_data.as_ptr(), test_data.len())
-    };
-    assert_eq_val(write_ret, test_data.len() as isize, "write should succeed");
+    let write_ret = io::write(write_fd, test_data).unwrap();
+    if write_ret != test_data.len() {
+        fail("write should succeed");
+    }
     println!("  Write still works");
 
     let mut buf = [0u8; 32];
-    let read_ret = unsafe {
-        read(pipefd[0], buf.as_mut_ptr(), buf.len())
-    };
-    assert_eq_val(read_ret, test_data.len() as isize, "read should succeed");
+    assert_read_ok(read_fd, &mut buf, test_data.len(), "read should succeed");
     println!("  Read still works");
 
     // Clean up
-    unsafe {
-        close(pipefd[0]);
-        close(pipefd[1]);
-    }
+    let _ = io::close(read_fd);
+    let _ = io::close(write_fd);
     println!("  Test 9: PASSED");
 }
 
@@ -432,71 +394,52 @@ fn test_dup2_overwrite_fd() {
     println!("\n=== Test 10: Dup2 Overwrite Existing FD ===");
 
     // Create two pipes
-    let mut pipe1: [i32; 2] = [0, 0];
-    let mut pipe2: [i32; 2] = [0, 0];
-
-    let ret1 = unsafe { pipe(pipe1.as_mut_ptr()) };
-    if ret1 < 0 {
-        fail("pipe() #1 failed in test 10");
-    }
-    let ret2 = unsafe { pipe(pipe2.as_mut_ptr()) };
-    if ret2 < 0 {
-        fail("pipe() #2 failed in test 10");
-    }
+    let (pipe1_read, pipe1_write) = io::pipe().unwrap_or_else(|_| fail("pipe() #1 failed in test 10"));
+    let (pipe2_read, pipe2_write) = io::pipe().unwrap_or_else(|_| fail("pipe() #2 failed in test 10"));
 
     println!("  Created two pipes");
-    println!("  Pipe1: read={}, write={}", pipe1[0], pipe1[1]);
-    println!("  Pipe2: read={}, write={}", pipe2[0], pipe2[1]);
+    println!("  Pipe1: read={}, write={}", pipe1_read.raw() as i32, pipe1_write.raw() as i32);
+    println!("  Pipe2: read={}, write={}", pipe2_read.raw() as i32, pipe2_write.raw() as i32);
 
     // Write to pipe1 before overwriting
     let msg1 = b"pipe1";
-    unsafe {
-        write(pipe1[1], msg1.as_ptr(), msg1.len());
-    }
+    let _ = io::write(pipe1_write, msg1);
     println!("  Wrote to pipe1");
 
     // dup2(pipe2_write, pipe1_write) - this should:
     // 1. Close pipe1's write fd (decrementing writer count)
     // 2. Make pipe1[1] point to pipe2's write end
-    let dup_ret = unsafe { dup2(pipe2[1], pipe1[1]) };
-    assert_eq_val(dup_ret as isize, pipe1[1] as isize, "dup2 should return new_fd");
+    let dup_ret = io::dup2(pipe2_write, pipe1_write).unwrap();
+    if dup_ret != pipe1_write {
+        fail("dup2 should return new_fd");
+    }
     println!("  dup2'd pipe2 write to pipe1 write fd");
 
-    // Now pipe1[1] writes to pipe2, not pipe1
+    // Now pipe1_write writes to pipe2, not pipe1
     let msg2 = b"pipe2";
-    unsafe {
-        write(pipe1[1], msg2.as_ptr(), msg2.len());
-    }
+    let _ = io::write(pipe1_write, msg2);
     println!("  Wrote 'pipe2' via overwritten fd");
 
     // Read from pipe2 should get the data we just wrote
     let mut buf = [0u8; 32];
-    let read2 = unsafe {
-        read(pipe2[0], buf.as_mut_ptr(), buf.len())
-    };
-    assert_eq_val(read2, msg2.len() as isize, "should read from pipe2");
-    if &buf[..read2 as usize] != msg2 {
+    let read2 = assert_read_ok(pipe2_read, &mut buf, msg2.len(), "should read from pipe2");
+    if &buf[..read2] != msg2 {
         fail("read wrong data from pipe2");
     }
     println!("  Read 'pipe2' from pipe2 correctly");
 
     // Read from pipe1 should get the original data we wrote
-    let read1 = unsafe {
-        read(pipe1[0], buf.as_mut_ptr(), buf.len())
-    };
-    assert_eq_val(read1, msg1.len() as isize, "should read from pipe1");
-    if &buf[..read1 as usize] != msg1 {
+    let read1 = assert_read_ok(pipe1_read, &mut buf, msg1.len(), "should read from pipe1");
+    if &buf[..read1] != msg1 {
         fail("read wrong data from pipe1");
     }
     println!("  Read 'pipe1' from pipe1 correctly");
 
     // Clean up
-    unsafe {
-        close(pipe1[0]);
-        close(pipe1[1]);  // Actually closes a pipe2 writer
-        close(pipe2[0]);
-        close(pipe2[1]);
-    }
+    let _ = io::close(pipe1_read);
+    let _ = io::close(pipe1_write);  // Actually closes a pipe2 writer
+    let _ = io::close(pipe2_read);
+    let _ = io::close(pipe2_write);
     println!("  Test 10: PASSED");
 }
 

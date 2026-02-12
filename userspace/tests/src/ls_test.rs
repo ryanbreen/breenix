@@ -3,27 +3,9 @@
 //! Verifies that /bin/ls correctly lists directory contents.
 //! Uses pipe+dup2 to capture stdout and verify actual output content.
 
-extern "C" {
-    fn fork() -> i32;
-    fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
-    fn execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> i32;
-    fn pipe(pipefd: *mut i32) -> i32;
-    fn dup2(oldfd: i32, newfd: i32) -> i32;
-    fn close(fd: i32) -> i32;
-    fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
-}
-
-const STDOUT: i32 = 1;
-
-/// POSIX WIFEXITED: true if child terminated normally
-fn wifexited(status: i32) -> bool {
-    (status & 0x7f) == 0
-}
-
-/// POSIX WEXITSTATUS: extract exit code from status
-fn wexitstatus(status: i32) -> i32 {
-    (status >> 8) & 0xff
-}
+use libbreenix::Fd;
+use libbreenix::io;
+use libbreenix::process::{self, ForkResult};
 
 /// Check if output contains a line that equals the given string
 fn contains_line(output: &[u8], needle: &[u8]) -> bool {
@@ -40,56 +22,51 @@ fn contains_line(output: &[u8], needle: &[u8]) -> bool {
 
 /// Run a command with args and capture stdout. Returns (exit_code, output)
 fn run_and_capture(program: &[u8], argv: &[*const u8]) -> (i32, Vec<u8>) {
-    let mut capture_pipe = [0i32; 2];
-    let ret = unsafe { pipe(capture_pipe.as_mut_ptr()) };
-    if ret < 0 {
-        return (-1, Vec::new());
-    }
-
-    let pid = unsafe { fork() };
-    if pid < 0 {
-        unsafe {
-            close(capture_pipe[0]);
-            close(capture_pipe[1]);
-        }
-        return (-1, Vec::new());
-    }
-
-    if pid == 0 {
-        unsafe {
-            close(capture_pipe[0]);
-            dup2(capture_pipe[1], STDOUT);
-            close(capture_pipe[1]);
-            execve(program.as_ptr(), argv.as_ptr(), std::ptr::null());
-        }
-        std::process::exit(127);
-    }
-
-    unsafe { close(capture_pipe[1]); }
-
-    let mut output = Vec::new();
-    let mut buf = [0u8; 4096];
-    loop {
-        let n = unsafe { read(capture_pipe[0], buf.as_mut_ptr(), buf.len()) };
-        if n > 0 {
-            output.extend_from_slice(&buf[..n as usize]);
-        } else {
-            break;
-        }
-    }
-
-    unsafe { close(capture_pipe[0]); }
-
-    let mut status = 0;
-    unsafe { waitpid(pid, &mut status, 0); }
-
-    let exit_code = if wifexited(status) {
-        wexitstatus(status)
-    } else {
-        -1
+    let (read_fd, write_fd) = match io::pipe() {
+        Ok(fds) => fds,
+        Err(_) => return (-1, Vec::new()),
     };
 
-    (exit_code, output)
+    match process::fork() {
+        Ok(ForkResult::Child) => {
+            let _ = io::close(read_fd);
+            let _ = io::dup2(write_fd, Fd::STDOUT);
+            let _ = io::close(write_fd);
+            let _ = process::execv(program, argv.as_ptr());
+            std::process::exit(127);
+        }
+        Ok(ForkResult::Parent(child_pid)) => {
+            let _ = io::close(write_fd);
+
+            let mut output = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                match io::read(read_fd, &mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => output.extend_from_slice(&buf[..n]),
+                    Err(_) => break,
+                }
+            }
+
+            let _ = io::close(read_fd);
+
+            let mut status = 0;
+            let _ = process::waitpid(child_pid.raw() as i32, &mut status, 0);
+
+            let exit_code = if process::wifexited(status) {
+                process::wexitstatus(status)
+            } else {
+                -1
+            };
+
+            (exit_code, output)
+        }
+        Err(_) => {
+            let _ = io::close(read_fd);
+            let _ = io::close(write_fd);
+            (-1, Vec::new())
+        }
+    }
 }
 
 fn main() {

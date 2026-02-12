@@ -3,76 +3,56 @@
 //! This test verifies that rm correctly parses the file argument
 //! passed via fork+exec.
 
-extern "C" {
-    fn fork() -> i32;
-    fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
-    fn execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> i32;
-    fn access(path: *const u8, mode: i32) -> i32;
-    fn open(path: *const u8, flags: i32, mode: i32) -> i32;
-    fn write(fd: i32, buf: *const u8, count: usize) -> isize;
-    fn close(fd: i32) -> i32;
-}
-
-const F_OK: i32 = 0;
-const O_WRONLY: i32 = 0x01;
-const O_CREAT: i32 = 0x40;
+use libbreenix::fs;
+use libbreenix::io;
+use libbreenix::process::{self, ForkResult};
 
 /// Check if a path exists using access()
-fn path_exists(path: &[u8]) -> bool {
-    unsafe { access(path.as_ptr(), F_OK) == 0 }
+fn path_exists(path: &str) -> bool {
+    fs::access(path, fs::F_OK).is_ok()
 }
 
-/// POSIX WIFEXITED: true if child terminated normally
-fn wifexited(status: i32) -> bool {
-    (status & 0x7f) == 0
-}
-
-/// POSIX WEXITSTATUS: extract exit code from status
-fn wexitstatus(status: i32) -> i32 {
-    (status >> 8) & 0xff
-}
-
-const TEST_FILE: &[u8] = b"/test_rm_argv_file\0";
+const TEST_FILE: &str = "/test_rm_argv_file\0";
 
 fn create_test_file() -> bool {
-    let fd = unsafe { open(TEST_FILE.as_ptr(), O_WRONLY | O_CREAT, 0o644) };
-    if fd < 0 {
-        return false;
-    }
+    let fd = match fs::open_with_mode(TEST_FILE, fs::O_WRONLY | fs::O_CREAT, 0o644) {
+        Ok(fd) => fd,
+        Err(_) => return false,
+    };
     let content = b"test content";
-    unsafe {
-        write(fd, content.as_ptr(), content.len());
-        close(fd);
-    }
+    let _ = fs::write(fd, content);
+    let _ = io::close(fd);
     true
 }
 
 /// Fork and exec rm with file argument
 fn run_rm() -> i32 {
-    let pid = unsafe { fork() };
-    if pid == 0 {
-        // Child: exec rm with file argument
-        let program = b"rm\0";
-        let arg0 = b"rm\0".as_ptr();
-        let arg1 = b"/test_rm_argv_file\0".as_ptr();
-        let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
-        let envp: [*const u8; 1] = [std::ptr::null()];
+    match process::fork() {
+        Ok(ForkResult::Child) => {
+            // Child: exec rm with file argument
+            let program = b"rm\0";
+            let arg0 = b"rm\0".as_ptr();
+            let arg1 = b"/test_rm_argv_file\0".as_ptr();
+            let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
-        unsafe { execve(program.as_ptr(), argv.as_ptr(), envp.as_ptr()) };
-        println!("  exec rm failed");
-        std::process::exit(127);
-    } else if pid > 0 {
-        let mut status: i32 = 0;
-        unsafe { waitpid(pid, &mut status, 0) };
+            let _ = process::execv(program, argv.as_ptr());
+            println!("  exec rm failed");
+            std::process::exit(127);
+        }
+        Ok(ForkResult::Parent(child_pid)) => {
+            let mut status: i32 = 0;
+            let _ = process::waitpid(child_pid.raw() as i32, &mut status, 0);
 
-        if wifexited(status) {
-            wexitstatus(status)
-        } else {
+            if process::wifexited(status) {
+                process::wexitstatus(status)
+            } else {
+                -1
+            }
+        }
+        Err(_) => {
+            println!("  fork failed");
             -1
         }
-    } else {
-        println!("  fork failed");
-        -1
     }
 }
 

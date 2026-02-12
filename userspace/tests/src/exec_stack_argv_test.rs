@@ -12,21 +12,7 @@
 //! The fix uses std::hint::black_box() to prevent the compiler from
 //! optimizing away the stack buffers.
 
-extern "C" {
-    fn fork() -> i32;
-    fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
-    fn execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> i32;
-}
-
-/// POSIX WIFEXITED: true if child terminated normally
-fn wifexited(status: i32) -> bool {
-    (status & 0x7f) == 0
-}
-
-/// POSIX WEXITSTATUS: extract exit code from status
-fn wexitstatus(status: i32) -> i32 {
-    (status >> 8) & 0xff
-}
+use libbreenix::process::{fork, waitpid, execv, wifexited, wexitstatus, ForkResult};
 
 /// Build a null-terminated string on the stack from a source string.
 /// Returns a pointer to the buffer that is kept alive by black_box.
@@ -59,55 +45,56 @@ fn main() {
     println!("=== Exec Stack Argv Test ===");
     println!("Testing stack-allocated argument buffers through execv");
 
-    let pid = unsafe { fork() };
-    if pid == 0 {
-        // Child: build argv with STACK-ALLOCATED buffers
-        // This mimics how init_shell.rs try_execute_external() builds argv
+    match fork() {
+        Ok(ForkResult::Child) => {
+            // Child: build argv with STACK-ALLOCATED buffers
+            // This mimics how init_shell.rs try_execute_external() builds argv
 
-        // Program path - must be null-terminated for the kernel
-        let program = b"argv_test\0";
+            // Program path - must be null-terminated for the kernel
+            let program = b"argv_test\0";
 
-        // Build argument strings ON THE STACK (not static)
-        let mut arg0_buf = [0u8; 64];
-        let mut arg1_buf = [0u8; 64];
-        let mut arg2_buf = [0u8; 64];
+            // Build argument strings ON THE STACK (not static)
+            let mut arg0_buf = [0u8; 64];
+            let mut arg1_buf = [0u8; 64];
+            let mut arg2_buf = [0u8; 64];
 
-        // Build argv[0]: program name
-        let arg0_ptr = build_stack_string(b"argv_test", &mut arg0_buf);
+            // Build argv[0]: program name
+            let arg0_ptr = build_stack_string(b"argv_test", &mut arg0_buf);
 
-        // Build argv[1]: dynamically constructed argument
-        let arg1_ptr = build_dynamic_arg(b"stack", b"arg", &mut arg1_buf);
+            // Build argv[1]: dynamically constructed argument
+            let arg1_ptr = build_dynamic_arg(b"stack", b"arg", &mut arg1_buf);
 
-        // Build argv[2]: another dynamic argument
-        let arg2_ptr = build_dynamic_arg(b"test", b"123", &mut arg2_buf);
+            // Build argv[2]: another dynamic argument
+            let arg2_ptr = build_dynamic_arg(b"test", b"123", &mut arg2_buf);
 
-        // Build the argv array on the stack
-        let argv: [*const u8; 4] = [arg0_ptr, arg1_ptr, arg2_ptr, std::ptr::null()];
-        let argv_ptr = std::hint::black_box(argv.as_ptr());
+            // Build the argv array on the stack
+            let argv: [*const u8; 4] = [arg0_ptr, arg1_ptr, arg2_ptr, std::ptr::null()];
+            let argv_ptr = std::hint::black_box(argv.as_ptr());
 
-        unsafe {
-            execve(program.as_ptr(), argv_ptr, std::ptr::null());
-        }
+            let _ = execv(program, argv_ptr);
 
-        // If we get here, exec failed
-        println!("exec failed");
-        std::process::exit(1);
-    } else if pid > 0 {
-        // Parent: wait for child
-        let mut status: i32 = 0;
-        unsafe { waitpid(pid, &mut status, 0); }
-
-        if wifexited(status) && wexitstatus(status) == 0 {
-            println!("Child process executed successfully with stack-allocated argv");
-            println!("EXEC_STACK_ARGV_TEST_PASSED");
-            std::process::exit(0);
-        } else {
-            println!("Child process failed");
-            println!("EXEC_STACK_ARGV_TEST_FAILED");
+            // If we get here, exec failed
+            println!("exec failed");
             std::process::exit(1);
         }
-    } else {
-        println!("fork failed");
-        std::process::exit(1);
+        Ok(ForkResult::Parent(child_pid)) => {
+            // Parent: wait for child
+            let mut status: i32 = 0;
+            let _ = waitpid(child_pid.raw() as i32, &mut status, 0);
+
+            if wifexited(status) && wexitstatus(status) == 0 {
+                println!("Child process executed successfully with stack-allocated argv");
+                println!("EXEC_STACK_ARGV_TEST_PASSED");
+                std::process::exit(0);
+            } else {
+                println!("Child process failed");
+                println!("EXEC_STACK_ARGV_TEST_FAILED");
+                std::process::exit(1);
+            }
+        }
+        Err(_) => {
+            println!("fork failed");
+            std::process::exit(1);
+        }
     }
 }

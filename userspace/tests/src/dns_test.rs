@@ -1,6 +1,6 @@
 //! DNS resolution userspace test (std version)
 //!
-//! Tests the DNS client from userspace using the dns_resolve() FFI:
+//! Tests the DNS client from userspace using libbreenix::dns::resolve:
 //! 1. Resolve a well-known hostname (www.google.com)
 //! 2. Verify we get a valid IPv4 address
 //! 3. Test NXDOMAIN handling for nonexistent domains
@@ -13,42 +13,29 @@
 //!
 //! Requires QEMU SLIRP networking (10.0.2.3 is SLIRP's DNS server)
 
+use libbreenix::dns::{self, DnsError, SLIRP_DNS};
 use std::process;
 
-extern "C" {
-    fn dns_resolve(host: *const u8, host_len: usize, server: *const u8, result_ip: *mut u8) -> i32;
-}
-
-/// QEMU SLIRP's built-in DNS server
-const SLIRP_DNS: [u8; 4] = [10, 0, 2, 3];
-
-/// EINVAL errno value
-const EINVAL: i32 = 22;
-
-/// EIO errno value (dns_resolve returns this for all DNS errors)
-const EIO: i32 = 5;
-
 /// Resolve a hostname and return the result
-fn resolve(hostname: &str) -> Result<[u8; 4], i32> {
-    let mut result_ip = [0u8; 4];
-    let ret = unsafe {
-        dns_resolve(
-            hostname.as_ptr(),
-            hostname.len(),
-            SLIRP_DNS.as_ptr(),
-            result_ip.as_mut_ptr(),
-        )
-    };
-    if ret == 0 {
-        Ok(result_ip)
-    } else {
-        Err(-ret) // Convert negative errno to positive
-    }
+fn resolve(hostname: &str) -> Result<[u8; 4], DnsError> {
+    dns::resolve(hostname, SLIRP_DNS).map(|result| result.addr)
 }
 
 /// Print an IPv4 address
 fn format_ip(ip: [u8; 4]) -> String {
     format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])
+}
+
+/// Check if a DNS error is a network-related error (timeout, send, recv, socket)
+fn is_network_error(e: &DnsError) -> bool {
+    matches!(
+        e,
+        DnsError::Timeout
+            | DnsError::SendError
+            | DnsError::RecvError
+            | DnsError::SocketError
+            | DnsError::BindError
+    )
 }
 
 fn main() {
@@ -71,11 +58,10 @@ fn main() {
         }
         Err(e) => {
             // Network may be unavailable - SKIP, not fail
-            // dns_resolve returns EIO for all DNS errors (timeout, send error, etc.)
-            if e == EIO {
+            if is_network_error(&e) {
                 println!("DNS_TEST: google_resolve SKIP (network unavailable)");
             } else {
-                println!("DNS_TEST: google_resolve FAILED err={}", e);
+                println!("DNS_TEST: google_resolve FAILED err={:?}", e);
                 process::exit(1);
             }
         }
@@ -97,10 +83,10 @@ fn main() {
             }
         }
         Err(e) => {
-            if e == EIO {
+            if is_network_error(&e) {
                 println!("DNS_TEST: example_resolve SKIP (network unavailable)");
             } else {
-                println!("DNS_TEST: example_resolve FAILED err={}", e);
+                println!("DNS_TEST: example_resolve FAILED err={:?}", e);
                 process::exit(2);
             }
         }
@@ -110,8 +96,7 @@ fn main() {
     println!("DNS_TEST: testing NXDOMAIN...");
     match resolve("this.domain.does.not.exist.invalid") {
         Err(e) => {
-            // dns_resolve returns EIO for all DNS errors including NXDOMAIN
-            println!("DNS_TEST: nxdomain OK (error={})", e);
+            println!("DNS_TEST: nxdomain OK (error={:?})", e);
         }
         Ok(addr) => {
             println!("DNS_TEST: nxdomain FAILED (should not resolve, got {})", format_ip(addr));
@@ -119,16 +104,15 @@ fn main() {
         }
     }
 
-    // Test 4: Empty hostname should return EINVAL
+    // Test 4: Empty hostname should return InvalidHostname
     println!("DNS_TEST: testing empty hostname...");
     match resolve("") {
+        Err(DnsError::InvalidHostname) => {
+            println!("DNS_TEST: empty_hostname OK");
+        }
         Err(e) => {
-            if e == EINVAL {
-                println!("DNS_TEST: empty_hostname OK");
-            } else {
-                println!("DNS_TEST: empty_hostname FAILED wrong err={}", e);
-                process::exit(4);
-            }
+            println!("DNS_TEST: empty_hostname FAILED wrong err={:?}", e);
+            process::exit(4);
         }
         Ok(_) => {
             println!("DNS_TEST: empty_hostname FAILED (should not resolve)");
@@ -137,14 +121,12 @@ fn main() {
     }
 
     // Test 5: Hostname too long should return error
-    // The dns_resolve FFI passes the hostname through to libbreenix::dns::resolve
-    // which checks hostname length > 255
     println!("DNS_TEST: testing long hostname...");
     // Create a hostname > 255 chars: 260 'a's + ".com" = 264 chars
     let long_hostname = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com";
     match resolve(long_hostname) {
         Err(_) => {
-            // Any error is acceptable (EINVAL or EIO depending on where the check happens)
+            // Any error is acceptable (InvalidHostname or HostnameTooLong)
             println!("DNS_TEST: long_hostname OK");
         }
         Ok(_) => {
@@ -166,7 +148,7 @@ fn main() {
                 // Success - txid matched
             }
             Err(e) => {
-                if e == EIO {
+                if is_network_error(&e) {
                     // Network unavailable - SKIP, not fail
                     network_skip = true;
                     break;

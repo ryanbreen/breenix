@@ -3,7 +3,9 @@
 //! Tests mkdir, rmdir, and directory listing.
 //! Must emit "FS_DIRECTORY_TEST_PASSED" on success.
 
-use std::fs;
+use libbreenix::fs::{self, O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC, O_DIRECTORY, F_OK};
+use libbreenix::fs::{Dirent64, DirentIter};
+use libbreenix::io::close;
 
 fn main() {
     println!("=== Filesystem Directory Test ===");
@@ -13,40 +15,58 @@ fn main() {
 
     // Test 1: Create a directory
     println!("\nTest 1: Create directory");
-    match fs::create_dir("/tmp/test_dir") {
+    match fs::mkdir("/tmp/test_dir\0", 0o755) {
         Ok(()) => {
             println!("  PASS: mkdir succeeded");
             passed += 1;
         }
-        Err(e) => {
-            println!("  FAIL: mkdir error: {}", e);
+        Err(_) => {
+            println!("  FAIL: mkdir error");
             failed += 1;
         }
     }
 
     // Test 2: Create a file inside the directory
     println!("\nTest 2: Create file in directory");
-    match fs::write("/tmp/test_dir/file1.txt", "content1\n") {
-        Ok(()) => {
+    match fs::open_with_mode("/tmp/test_dir/file1.txt\0", O_WRONLY | O_CREAT | O_TRUNC, 0o644) {
+        Ok(fd) => {
+            let _ = fs::write(fd, b"content1\n");
+            let _ = close(fd);
             println!("  PASS: Created file in directory");
             passed += 1;
         }
-        Err(e) => {
-            println!("  FAIL: Cannot create file in directory: {}", e);
+        Err(_) => {
+            println!("  FAIL: Cannot create file in directory");
             failed += 1;
         }
     }
 
-    // Test 3: List directory contents
+    // Test 3: List directory contents using getdents64
     println!("\nTest 3: Read directory");
-    match fs::read_dir("/tmp/test_dir") {
-        Ok(entries) => {
-            let names: Vec<String> = entries
-                .filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect();
-            println!("  Found entries: {:?}", names);
-            if names.contains(&"file1.txt".to_string()) {
+    match fs::open("/tmp/test_dir\0", O_RDONLY | O_DIRECTORY) {
+        Ok(fd) => {
+            let mut buf = [0u8; 1024];
+            let mut found_file1 = false;
+
+            loop {
+                match fs::getdents64(fd, &mut buf) {
+                    Ok(0) => break, // End of directory
+                    Ok(n) => {
+                        let iter = DirentIter::new(&buf, n);
+                        for entry in iter {
+                            if let Some(name) = unsafe { entry.name_str() } {
+                                if name == "file1.txt" {
+                                    found_file1 = true;
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let _ = close(fd);
+
+            if found_file1 {
                 println!("  PASS: Directory lists file1.txt");
                 passed += 1;
             } else {
@@ -54,33 +74,33 @@ fn main() {
                 failed += 1;
             }
         }
-        Err(e) => {
-            println!("  FAIL: read_dir error: {}", e);
+        Err(_) => {
+            println!("  FAIL: Cannot open directory");
             failed += 1;
         }
     }
 
     // Test 4: Create nested directory
     println!("\nTest 4: Create nested directory");
-    match fs::create_dir("/tmp/test_dir/subdir") {
+    match fs::mkdir("/tmp/test_dir/subdir\0", 0o755) {
         Ok(()) => {
             println!("  PASS: Created nested directory");
             passed += 1;
         }
-        Err(e) => {
-            println!("  FAIL: Cannot create nested dir: {}", e);
+        Err(_) => {
+            println!("  FAIL: Cannot create nested dir");
             failed += 1;
         }
     }
 
     // Cleanup
-    let _ = fs::remove_file("/tmp/test_dir/file1.txt");
-    let _ = fs::remove_dir("/tmp/test_dir/subdir");
-    let _ = fs::remove_dir("/tmp/test_dir");
+    let _ = fs::unlink("/tmp/test_dir/file1.txt\0");
+    let _ = fs::rmdir("/tmp/test_dir/subdir\0");
+    let _ = fs::rmdir("/tmp/test_dir\0");
 
     // Test 5: Verify cleanup
     println!("\nTest 5: Verify directory removed");
-    if fs::metadata("/tmp/test_dir").is_err() {
+    if fs::access("/tmp/test_dir\0", F_OK).is_err() {
         println!("  PASS: Directory removed successfully");
         passed += 1;
     } else {

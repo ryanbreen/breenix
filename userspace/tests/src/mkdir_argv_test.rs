@@ -3,89 +3,77 @@
 //! This test verifies that mkdir and rmdir correctly parse command-line
 //! arguments passed via fork+exec.
 
-extern "C" {
-    fn fork() -> i32;
-    fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
-    fn execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> i32;
-    fn access(path: *const u8, mode: i32) -> i32;
-}
-
-const F_OK: i32 = 0;
+use libbreenix::fs;
+use libbreenix::process::{self, ForkResult};
 
 /// Check if a path exists using access()
-fn path_exists(path: &[u8]) -> bool {
-    unsafe { access(path.as_ptr(), F_OK) == 0 }
-}
-
-/// POSIX WIFEXITED: true if child terminated normally
-fn wifexited(status: i32) -> bool {
-    (status & 0x7f) == 0
-}
-
-/// POSIX WEXITSTATUS: extract exit code from status
-fn wexitstatus(status: i32) -> i32 {
-    (status >> 8) & 0xff
+fn path_exists(path: &str) -> bool {
+    fs::access(path, fs::F_OK).is_ok()
 }
 
 /// Fork and exec mkdir with the test directory as argument
 fn run_mkdir() -> i32 {
-    let pid = unsafe { fork() };
-    if pid == 0 {
-        // Child: exec mkdir with directory argument
-        let program = b"mkdir\0";
-        let arg0 = b"mkdir\0".as_ptr();
-        let arg1 = b"/test_mkdir_argv\0".as_ptr();
-        let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
-        let envp: [*const u8; 1] = [std::ptr::null()];
+    match process::fork() {
+        Ok(ForkResult::Child) => {
+            // Child: exec mkdir with directory argument
+            let program = b"mkdir\0";
+            let arg0 = b"mkdir\0".as_ptr();
+            let arg1 = b"/test_mkdir_argv\0".as_ptr();
+            let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
-        unsafe { execve(program.as_ptr(), argv.as_ptr(), envp.as_ptr()) };
-        // If we get here, exec failed
-        println!("  exec mkdir failed");
-        std::process::exit(127);
-    } else if pid > 0 {
-        // Parent: wait for child
-        let mut status: i32 = 0;
-        unsafe { waitpid(pid, &mut status, 0) };
+            let _ = process::execv(program, argv.as_ptr());
+            // If we get here, exec failed
+            println!("  exec mkdir failed");
+            std::process::exit(127);
+        }
+        Ok(ForkResult::Parent(child_pid)) => {
+            // Parent: wait for child
+            let mut status: i32 = 0;
+            let _ = process::waitpid(child_pid.raw() as i32, &mut status, 0);
 
-        if wifexited(status) {
-            wexitstatus(status)
-        } else {
+            if process::wifexited(status) {
+                process::wexitstatus(status)
+            } else {
+                -1
+            }
+        }
+        Err(_) => {
+            println!("  fork failed");
             -1
         }
-    } else {
-        println!("  fork failed");
-        -1
     }
 }
 
 /// Fork and exec rmdir with the test directory as argument
 fn run_rmdir() -> i32 {
-    let pid = unsafe { fork() };
-    if pid == 0 {
-        // Child: exec rmdir with directory argument
-        let program = b"rmdir\0";
-        let arg0 = b"rmdir\0".as_ptr();
-        let arg1 = b"/test_mkdir_argv\0".as_ptr();
-        let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
-        let envp: [*const u8; 1] = [std::ptr::null()];
+    match process::fork() {
+        Ok(ForkResult::Child) => {
+            // Child: exec rmdir with directory argument
+            let program = b"rmdir\0";
+            let arg0 = b"rmdir\0".as_ptr();
+            let arg1 = b"/test_mkdir_argv\0".as_ptr();
+            let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
-        unsafe { execve(program.as_ptr(), argv.as_ptr(), envp.as_ptr()) };
-        // If we get here, exec failed
-        println!("  exec rmdir failed");
-        std::process::exit(127);
-    } else if pid > 0 {
-        // Parent: wait for child
-        let mut status: i32 = 0;
-        unsafe { waitpid(pid, &mut status, 0) };
+            let _ = process::execv(program, argv.as_ptr());
+            // If we get here, exec failed
+            println!("  exec rmdir failed");
+            std::process::exit(127);
+        }
+        Ok(ForkResult::Parent(child_pid)) => {
+            // Parent: wait for child
+            let mut status: i32 = 0;
+            let _ = process::waitpid(child_pid.raw() as i32, &mut status, 0);
 
-        if wifexited(status) {
-            wexitstatus(status)
-        } else {
+            if process::wifexited(status) {
+                process::wexitstatus(status)
+            } else {
+                -1
+            }
+        }
+        Err(_) => {
+            println!("  fork failed");
             -1
         }
-    } else {
-        println!("  fork failed");
-        -1
     }
 }
 
@@ -93,7 +81,7 @@ fn main() {
     println!("=== Mkdir/Rmdir Argv Integration Test ===");
 
     // First, ensure the test directory doesn't exist
-    if path_exists(b"/test_mkdir_argv\0") {
+    if path_exists("/test_mkdir_argv\0") {
         println!("Test directory already exists, cleaning up first...");
         run_rmdir();
     }
@@ -107,7 +95,7 @@ fn main() {
     }
 
     // Verify directory was created
-    if !path_exists(b"/test_mkdir_argv\0") {
+    if !path_exists("/test_mkdir_argv\0") {
         println!("MKDIR_ARGV_TEST_FAILED: directory not created");
         std::process::exit(1);
     }
@@ -122,7 +110,7 @@ fn main() {
     }
 
     // Verify directory was removed
-    if path_exists(b"/test_mkdir_argv\0") {
+    if path_exists("/test_mkdir_argv\0") {
         println!("MKDIR_ARGV_TEST_FAILED: directory not removed");
         std::process::exit(1);
     }

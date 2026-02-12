@@ -3,118 +3,97 @@
 //! This test verifies that cp and mv correctly parse multiple command-line
 //! arguments (source and destination) passed via fork+exec.
 
-extern "C" {
-    fn fork() -> i32;
-    fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
-    fn execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> i32;
-    fn access(path: *const u8, mode: i32) -> i32;
-    fn open(path: *const u8, flags: i32, mode: i32) -> i32;
-    fn write(fd: i32, buf: *const u8, count: usize) -> isize;
-    fn close(fd: i32) -> i32;
-    fn unlink(path: *const u8) -> i32;
-}
+use libbreenix::fs;
+use libbreenix::io;
+use libbreenix::process::{self, ForkResult};
 
-const F_OK: i32 = 0;
-const O_WRONLY: i32 = 0x01;
-const O_CREAT: i32 = 0x40;
-
-const TEST_FILE: &[u8] = b"/test_cp_mv_src\0";
-const COPY_FILE: &[u8] = b"/test_cp_mv_copy\0";
-const MOVE_FILE: &[u8] = b"/test_cp_mv_moved\0";
+const TEST_FILE: &str = "/test_cp_mv_src\0";
+const COPY_FILE: &str = "/test_cp_mv_copy\0";
+const MOVE_FILE: &str = "/test_cp_mv_moved\0";
 const TEST_CONTENT: &[u8] = b"test content for cp/mv";
 
 /// Check if a path exists using access()
-fn path_exists(path: &[u8]) -> bool {
-    unsafe { access(path.as_ptr(), F_OK) == 0 }
-}
-
-/// POSIX WIFEXITED: true if child terminated normally
-fn wifexited(status: i32) -> bool {
-    (status & 0x7f) == 0
-}
-
-/// POSIX WEXITSTATUS: extract exit code from status
-fn wexitstatus(status: i32) -> i32 {
-    (status >> 8) & 0xff
+fn path_exists(path: &str) -> bool {
+    fs::access(path, fs::F_OK).is_ok()
 }
 
 fn create_test_file() -> bool {
-    let fd = unsafe { open(TEST_FILE.as_ptr(), O_WRONLY | O_CREAT, 0o644) };
-    if fd < 0 {
-        return false;
-    }
-    unsafe {
-        write(fd, TEST_CONTENT.as_ptr(), TEST_CONTENT.len());
-        close(fd);
-    }
+    let fd = match fs::open_with_mode(TEST_FILE, fs::O_WRONLY | fs::O_CREAT, 0o644) {
+        Ok(fd) => fd,
+        Err(_) => return false,
+    };
+    let _ = fs::write(fd, TEST_CONTENT);
+    let _ = io::close(fd);
     true
 }
 
 fn cleanup() {
-    unsafe {
-        unlink(TEST_FILE.as_ptr());
-        unlink(COPY_FILE.as_ptr());
-        unlink(MOVE_FILE.as_ptr());
-    }
+    let _ = fs::unlink(TEST_FILE);
+    let _ = fs::unlink(COPY_FILE);
+    let _ = fs::unlink(MOVE_FILE);
 }
 
 /// Fork and exec cp with source and dest arguments
 fn run_cp() -> i32 {
-    let pid = unsafe { fork() };
-    if pid == 0 {
-        // Child: exec cp with two arguments
-        let program = b"cp\0";
-        let arg0 = b"cp\0".as_ptr();
-        let arg1 = b"/test_cp_mv_src\0".as_ptr();
-        let arg2 = b"/test_cp_mv_copy\0".as_ptr();
-        let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];
-        let envp: [*const u8; 1] = [std::ptr::null()];
+    match process::fork() {
+        Ok(ForkResult::Child) => {
+            // Child: exec cp with two arguments
+            let program = b"cp\0";
+            let arg0 = b"cp\0".as_ptr();
+            let arg1 = b"/test_cp_mv_src\0".as_ptr();
+            let arg2 = b"/test_cp_mv_copy\0".as_ptr();
+            let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];
 
-        unsafe { execve(program.as_ptr(), argv.as_ptr(), envp.as_ptr()) };
-        println!("  exec cp failed");
-        std::process::exit(127);
-    } else if pid > 0 {
-        let mut status: i32 = 0;
-        unsafe { waitpid(pid, &mut status, 0) };
+            let _ = process::execv(program, argv.as_ptr());
+            println!("  exec cp failed");
+            std::process::exit(127);
+        }
+        Ok(ForkResult::Parent(child_pid)) => {
+            let mut status: i32 = 0;
+            let _ = process::waitpid(child_pid.raw() as i32, &mut status, 0);
 
-        if wifexited(status) {
-            wexitstatus(status)
-        } else {
+            if process::wifexited(status) {
+                process::wexitstatus(status)
+            } else {
+                -1
+            }
+        }
+        Err(_) => {
+            println!("  fork failed");
             -1
         }
-    } else {
-        println!("  fork failed");
-        -1
     }
 }
 
 /// Fork and exec mv with source and dest arguments
 fn run_mv() -> i32 {
-    let pid = unsafe { fork() };
-    if pid == 0 {
-        // Child: exec mv with two arguments
-        let program = b"mv\0";
-        let arg0 = b"mv\0".as_ptr();
-        let arg1 = b"/test_cp_mv_copy\0".as_ptr();
-        let arg2 = b"/test_cp_mv_moved\0".as_ptr();
-        let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];
-        let envp: [*const u8; 1] = [std::ptr::null()];
+    match process::fork() {
+        Ok(ForkResult::Child) => {
+            // Child: exec mv with two arguments
+            let program = b"mv\0";
+            let arg0 = b"mv\0".as_ptr();
+            let arg1 = b"/test_cp_mv_copy\0".as_ptr();
+            let arg2 = b"/test_cp_mv_moved\0".as_ptr();
+            let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];
 
-        unsafe { execve(program.as_ptr(), argv.as_ptr(), envp.as_ptr()) };
-        println!("  exec mv failed");
-        std::process::exit(127);
-    } else if pid > 0 {
-        let mut status: i32 = 0;
-        unsafe { waitpid(pid, &mut status, 0) };
+            let _ = process::execv(program, argv.as_ptr());
+            println!("  exec mv failed");
+            std::process::exit(127);
+        }
+        Ok(ForkResult::Parent(child_pid)) => {
+            let mut status: i32 = 0;
+            let _ = process::waitpid(child_pid.raw() as i32, &mut status, 0);
 
-        if wifexited(status) {
-            wexitstatus(status)
-        } else {
+            if process::wifexited(status) {
+                process::wexitstatus(status)
+            } else {
+                -1
+            }
+        }
+        Err(_) => {
+            println!("  fork failed");
             -1
         }
-    } else {
-        println!("  fork failed");
-        -1
     }
 }
 

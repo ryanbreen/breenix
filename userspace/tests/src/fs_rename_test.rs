@@ -3,7 +3,8 @@
 //! Tests renaming files and directories.
 //! Must emit "FS_RENAME_TEST_PASSED" on success.
 
-use std::fs;
+use libbreenix::fs::{self, O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC, F_OK};
+use libbreenix::io::close;
 
 fn main() {
     println!("=== Filesystem Rename Test ===");
@@ -13,28 +14,47 @@ fn main() {
 
     // Test 1: Rename a file
     println!("\nTest 1: Rename a file");
-    let content = "rename test content\n";
-    fs::write("/tmp/rename_src.txt", content).unwrap_or_else(|e| {
-        println!("  FAIL: Cannot create source file: {}", e);
-        std::process::exit(1);
-    });
+    let content = b"rename test content\n";
 
-    match fs::rename("/tmp/rename_src.txt", "/tmp/rename_dst.txt") {
+    // Create source file
+    match fs::open_with_mode("/tmp/rename_src.txt\0", O_WRONLY | O_CREAT | O_TRUNC, 0o644) {
+        Ok(fd) => {
+            let _ = fs::write(fd, content);
+            let _ = close(fd);
+        }
+        Err(_) => {
+            println!("  FAIL: Cannot create source file");
+            std::process::exit(1);
+        }
+    }
+
+    match fs::rename("/tmp/rename_src.txt\0", "/tmp/rename_dst.txt\0") {
         Ok(()) => {
             // Verify old name gone
-            if fs::metadata("/tmp/rename_src.txt").is_err() {
+            if fs::access("/tmp/rename_src.txt\0", F_OK).is_err() {
                 // Verify new name has content
-                match fs::read_to_string("/tmp/rename_dst.txt") {
-                    Ok(c) if c == content => {
-                        println!("  PASS: File renamed successfully");
-                        passed += 1;
+                match fs::open("/tmp/rename_dst.txt\0", O_RDONLY) {
+                    Ok(fd) => {
+                        let mut buf = [0u8; 256];
+                        match fs::read(fd, &mut buf) {
+                            Ok(n) if n == content.len() && &buf[..n] == content => {
+                                println!("  PASS: File renamed successfully");
+                                passed += 1;
+                            }
+                            Ok(n) => {
+                                let c = core::str::from_utf8(&buf[..n]).unwrap_or("<invalid>");
+                                println!("  FAIL: Content mismatch after rename: {:?}", c);
+                                failed += 1;
+                            }
+                            Err(_) => {
+                                println!("  FAIL: Cannot read renamed file");
+                                failed += 1;
+                            }
+                        }
+                        let _ = close(fd);
                     }
-                    Ok(c) => {
-                        println!("  FAIL: Content mismatch after rename: {:?}", c);
-                        failed += 1;
-                    }
-                    Err(e) => {
-                        println!("  FAIL: Cannot read renamed file: {}", e);
+                    Err(_) => {
+                        println!("  FAIL: Cannot open renamed file");
                         failed += 1;
                     }
                 }
@@ -43,53 +63,76 @@ fn main() {
                 failed += 1;
             }
         }
-        Err(e) => {
-            println!("  FAIL: rename() error: {}", e);
+        Err(_) => {
+            println!("  FAIL: rename() error");
             failed += 1;
         }
     }
 
     // Test 2: Rename to overwrite existing file
     println!("\nTest 2: Rename overwriting existing file");
-    let content2 = "second file\n";
-    fs::write("/tmp/rename_over_src.txt", content2).unwrap_or_else(|e| {
-        println!("  FAIL: Cannot create source: {}", e);
-        failed += 1;
-        return;
-    });
-    // Create target file to be overwritten
-    fs::write("/tmp/rename_over_dst.txt", "old content\n").unwrap_or_else(|e| {
-        println!("  FAIL: Cannot create target: {}", e);
-        failed += 1;
-        return;
-    });
+    let content2 = b"second file\n";
 
-    match fs::rename("/tmp/rename_over_src.txt", "/tmp/rename_over_dst.txt") {
+    // Create source
+    match fs::open_with_mode("/tmp/rename_over_src.txt\0", O_WRONLY | O_CREAT | O_TRUNC, 0o644) {
+        Ok(fd) => {
+            let _ = fs::write(fd, content2);
+            let _ = close(fd);
+        }
+        Err(_) => {
+            println!("  FAIL: Cannot create source");
+            failed += 1;
+        }
+    }
+    // Create target file to be overwritten
+    match fs::open_with_mode("/tmp/rename_over_dst.txt\0", O_WRONLY | O_CREAT | O_TRUNC, 0o644) {
+        Ok(fd) => {
+            let _ = fs::write(fd, b"old content\n");
+            let _ = close(fd);
+        }
+        Err(_) => {
+            println!("  FAIL: Cannot create target");
+            failed += 1;
+        }
+    }
+
+    match fs::rename("/tmp/rename_over_src.txt\0", "/tmp/rename_over_dst.txt\0") {
         Ok(()) => {
-            match fs::read_to_string("/tmp/rename_over_dst.txt") {
-                Ok(c) if c == content2 => {
-                    println!("  PASS: Rename-overwrite successful");
-                    passed += 1;
+            match fs::open("/tmp/rename_over_dst.txt\0", O_RDONLY) {
+                Ok(fd) => {
+                    let mut buf = [0u8; 256];
+                    match fs::read(fd, &mut buf) {
+                        Ok(n) if n == content2.len() && &buf[..n] == content2 => {
+                            println!("  PASS: Rename-overwrite successful");
+                            passed += 1;
+                        }
+                        Ok(n) => {
+                            let c = core::str::from_utf8(&buf[..n]).unwrap_or("<invalid>");
+                            println!("  FAIL: Content should be new, got: {:?}", c);
+                            failed += 1;
+                        }
+                        Err(_) => {
+                            println!("  FAIL: Cannot read after rename-overwrite");
+                            failed += 1;
+                        }
+                    }
+                    let _ = close(fd);
                 }
-                Ok(c) => {
-                    println!("  FAIL: Content should be new, got: {:?}", c);
-                    failed += 1;
-                }
-                Err(e) => {
-                    println!("  FAIL: Cannot read after rename-overwrite: {}", e);
+                Err(_) => {
+                    println!("  FAIL: Cannot open after rename-overwrite");
                     failed += 1;
                 }
             }
         }
-        Err(e) => {
-            println!("  FAIL: rename-overwrite error: {}", e);
+        Err(_) => {
+            println!("  FAIL: rename-overwrite error");
             failed += 1;
         }
     }
 
     // Cleanup
-    let _ = fs::remove_file("/tmp/rename_dst.txt");
-    let _ = fs::remove_file("/tmp/rename_over_dst.txt");
+    let _ = fs::unlink("/tmp/rename_dst.txt\0");
+    let _ = fs::unlink("/tmp/rename_over_dst.txt\0");
 
     println!("\n=== Results: {}/{} passed ===", passed, passed + failed);
     if failed == 0 {

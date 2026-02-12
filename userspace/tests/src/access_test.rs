@@ -3,17 +3,10 @@
 //! Tests access() for checking file permissions.
 //! Must emit "ACCESS_TEST_PASSED" on success.
 
-// access() is not directly exposed by Rust std, so use FFI
-extern "C" {
-    fn access(path: *const u8, mode: i32) -> i32;
-}
+use libbreenix::fs::{self, F_OK, R_OK};
 
-const F_OK: i32 = 0; // File exists
-const R_OK: i32 = 4; // Read permission
-
-fn check_access(path: &str, mode: i32) -> bool {
-    let path_c = format!("{}\0", path);
-    unsafe { access(path_c.as_ptr(), mode) == 0 }
+fn check_access(path: &str, mode: u32) -> bool {
+    fs::access(path, mode).is_ok()
 }
 
 fn main() {
@@ -24,7 +17,7 @@ fn main() {
 
     // Test 1: Existing file exists (F_OK)
     println!("\nTest 1: /hello.txt exists (F_OK)");
-    if check_access("/hello.txt", F_OK) {
+    if check_access("/hello.txt\0", F_OK) {
         println!("  PASS: /hello.txt exists");
         passed += 1;
     } else {
@@ -34,7 +27,7 @@ fn main() {
 
     // Test 2: Existing file is readable (R_OK)
     println!("\nTest 2: /hello.txt is readable (R_OK)");
-    if check_access("/hello.txt", R_OK) {
+    if check_access("/hello.txt\0", R_OK) {
         println!("  PASS: /hello.txt is readable");
         passed += 1;
     } else {
@@ -44,7 +37,7 @@ fn main() {
 
     // Test 3: Nonexistent file does not exist
     println!("\nTest 3: Nonexistent file (F_OK)");
-    if !check_access("/nonexistent_file_12345.txt", F_OK) {
+    if !check_access("/nonexistent_file_12345.txt\0", F_OK) {
         println!("  PASS: Nonexistent file correctly not found");
         passed += 1;
     } else {
@@ -54,7 +47,7 @@ fn main() {
 
     // Test 4: Root directory exists
     println!("\nTest 4: / exists (F_OK)");
-    if check_access("/", F_OK) {
+    if check_access("/\0", F_OK) {
         println!("  PASS: Root directory exists");
         passed += 1;
     } else {

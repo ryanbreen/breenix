@@ -2,8 +2,8 @@
 //!
 //! Must emit "DEVFS_TEST_PASSED" on success.
 
-use std::fs::File;
-use std::io::{Read, Write};
+use libbreenix::fs::{self, O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC, F_OK};
+use libbreenix::io::close;
 
 fn main() {
     println!("=== DevFS Test ===");
@@ -13,31 +13,32 @@ fn main() {
 
     // Test 1: Write to /dev/null succeeds
     println!("\nTest 1: Write to /dev/null");
-    match File::create("/dev/null") {
-        Ok(mut f) => {
-            match f.write_all(b"this should be discarded") {
-                Ok(()) => {
+    match fs::open("/dev/null\0", O_WRONLY) {
+        Ok(fd) => {
+            match fs::write(fd, b"this should be discarded") {
+                Ok(_) => {
                     println!("  PASS: Write to /dev/null succeeded");
                     passed += 1;
                 }
-                Err(e) => {
-                    println!("  FAIL: Write error: {}", e);
+                Err(_) => {
+                    println!("  FAIL: Write error");
                     failed += 1;
                 }
             }
+            let _ = close(fd);
         }
-        Err(e) => {
-            println!("  FAIL: Cannot open /dev/null: {}", e);
+        Err(_) => {
+            println!("  FAIL: Cannot open /dev/null");
             failed += 1;
         }
     }
 
     // Test 2: Read from /dev/null returns EOF
     println!("\nTest 2: Read from /dev/null (should be EOF)");
-    match File::open("/dev/null") {
-        Ok(mut f) => {
+    match fs::open("/dev/null\0", O_RDONLY) {
+        Ok(fd) => {
             let mut buf = [0u8; 16];
-            match f.read(&mut buf) {
+            match fs::read(fd, &mut buf) {
                 Ok(0) => {
                     println!("  PASS: Read from /dev/null returns 0 (EOF)");
                     passed += 1;
@@ -46,24 +47,25 @@ fn main() {
                     println!("  FAIL: Read returned {} bytes, expected 0", n);
                     failed += 1;
                 }
-                Err(e) => {
-                    println!("  FAIL: Read error: {}", e);
+                Err(_) => {
+                    println!("  FAIL: Read error");
                     failed += 1;
                 }
             }
+            let _ = close(fd);
         }
-        Err(e) => {
-            println!("  FAIL: Cannot open /dev/null for reading: {}", e);
+        Err(_) => {
+            println!("  FAIL: Cannot open /dev/null for reading");
             failed += 1;
         }
     }
 
     // Test 3: Read from /dev/zero returns zeroes
     println!("\nTest 3: Read from /dev/zero");
-    match File::open("/dev/zero") {
-        Ok(mut f) => {
+    match fs::open("/dev/zero\0", O_RDONLY) {
+        Ok(fd) => {
             let mut buf = [0xFFu8; 32];
-            match f.read(&mut buf) {
+            match fs::read(fd, &mut buf) {
                 Ok(n) if n > 0 => {
                     if buf[..n].iter().all(|&b| b == 0) {
                         println!("  PASS: Read {} zero bytes from /dev/zero", n);
@@ -77,50 +79,49 @@ fn main() {
                     println!("  FAIL: Read 0 bytes from /dev/zero");
                     failed += 1;
                 }
-                Err(e) => {
-                    println!("  FAIL: Read error: {}", e);
+                Err(_) => {
+                    println!("  FAIL: Read error");
                     failed += 1;
                 }
             }
+            let _ = close(fd);
         }
-        Err(e) => {
-            println!("  FAIL: Cannot open /dev/zero: {}", e);
+        Err(_) => {
+            println!("  FAIL: Cannot open /dev/zero");
             failed += 1;
         }
     }
 
     // Test 4: /dev/console is writable
     println!("\nTest 4: Write to /dev/console");
-    match File::create("/dev/console") {
-        Ok(mut f) => {
-            match f.write_all(b"devfs console test\n") {
-                Ok(()) => {
+    match fs::open("/dev/console\0", O_WRONLY) {
+        Ok(fd) => {
+            match fs::write(fd, b"devfs console test\n") {
+                Ok(_) => {
                     println!("  PASS: Write to /dev/console succeeded");
                     passed += 1;
                 }
-                Err(e) => {
-                    println!("  FAIL: Write error: {}", e);
+                Err(_) => {
+                    println!("  FAIL: Write error");
                     failed += 1;
                 }
             }
+            let _ = close(fd);
         }
-        Err(e) => {
-            println!("  FAIL: Cannot open /dev/console: {}", e);
+        Err(_) => {
+            println!("  FAIL: Cannot open /dev/console");
             failed += 1;
         }
     }
 
     // Test 5: /dev/tty exists
     println!("\nTest 5: /dev/tty exists");
-    match std::fs::metadata("/dev/tty") {
-        Ok(_) => {
-            println!("  PASS: /dev/tty exists");
-            passed += 1;
-        }
-        Err(e) => {
-            println!("  FAIL: /dev/tty not found: {}", e);
-            failed += 1;
-        }
+    if fs::access("/dev/tty\0", F_OK).is_ok() {
+        println!("  PASS: /dev/tty exists");
+        passed += 1;
+    } else {
+        println!("  FAIL: /dev/tty not found");
+        failed += 1;
     }
 
     println!("\n=== Results: {}/{} passed ===", passed, passed + failed);

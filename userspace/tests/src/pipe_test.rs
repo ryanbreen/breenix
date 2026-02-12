@@ -1,16 +1,10 @@
 //! Pipe syscall test program (std version)
 //!
 //! Tests the pipe() and close() syscalls for IPC.
-//! Uses FFI for pipe/read/write/close.
+//! Uses libbreenix for pipe/read/write/close.
 
+use libbreenix::io;
 use std::process;
-
-extern "C" {
-    fn pipe(pipefd: *mut i32) -> i32;
-    fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
-    fn write(fd: i32, buf: *const u8, count: usize) -> isize;
-    fn close(fd: i32) -> i32;
-}
 
 fn fail(msg: &str) -> ! {
     println!("USERSPACE PIPE: FAIL - {}", msg);
@@ -22,23 +16,23 @@ fn main() {
 
     // Phase 1: Create a pipe
     println!("Phase 1: Creating pipe with pipe()...");
-    let mut pipefd: [i32; 2] = [0, 0];
-    let ret = unsafe { pipe(pipefd.as_mut_ptr()) };
-
-    if ret < 0 {
-        println!("  pipe() returned error: {}", ret);
-        fail("pipe() failed");
-    }
+    let (read_fd, write_fd) = match io::pipe() {
+        Ok(fds) => fds,
+        Err(e) => {
+            println!("  pipe() returned error: {:?}", e);
+            fail("pipe() failed");
+        }
+    };
 
     println!("  Pipe created successfully");
-    println!("  Read fd: {}", pipefd[0]);
-    println!("  Write fd: {}", pipefd[1]);
+    println!("  Read fd: {}", read_fd.raw() as i32);
+    println!("  Write fd: {}", write_fd.raw() as i32);
 
     // Validate fd numbers are reasonable (should be >= 3 after stdin/stdout/stderr)
-    if pipefd[0] < 3 || pipefd[1] < 3 {
+    if (read_fd.raw() as i32) < 3 || (write_fd.raw() as i32) < 3 {
         fail("Pipe fds should be >= 3 (after stdin/stdout/stderr)");
     }
-    if pipefd[0] == pipefd[1] {
+    if read_fd == write_fd {
         fail("Read and write fds should be different");
     }
     println!("  FD numbers are valid");
@@ -46,14 +40,13 @@ fn main() {
     // Phase 2: Write data to pipe
     println!("Phase 2: Writing data to pipe...");
     let test_data = b"Hello, Pipe!";
-    let write_ret = unsafe {
-        write(pipefd[1], test_data.as_ptr(), test_data.len())
+    let write_ret = match io::write(write_fd, test_data) {
+        Ok(n) => n as isize,
+        Err(e) => {
+            println!("  write() returned error: {:?}", e);
+            fail("write to pipe failed");
+        }
     };
-
-    if write_ret < 0 {
-        println!("  write() returned error: {}", write_ret);
-        fail("write to pipe failed");
-    }
 
     println!("  Wrote {} bytes to pipe", write_ret);
 
@@ -64,14 +57,13 @@ fn main() {
     // Phase 3: Read data from pipe
     println!("Phase 3: Reading data from pipe...");
     let mut read_buf = [0u8; 32];
-    let read_ret = unsafe {
-        read(pipefd[0], read_buf.as_mut_ptr(), read_buf.len())
+    let read_ret = match io::read(read_fd, &mut read_buf) {
+        Ok(n) => n as isize,
+        Err(e) => {
+            println!("  read() returned error: {:?}", e);
+            fail("read from pipe failed");
+        }
     };
-
-    if read_ret < 0 {
-        println!("  read() returned error: {}", read_ret);
-        fail("read from pipe failed");
-    }
 
     println!("  Read {} bytes from pipe", read_ret);
 
@@ -95,16 +87,14 @@ fn main() {
     // Phase 5: Close the pipe ends
     println!("Phase 5: Closing pipe file descriptors...");
 
-    let close_read = unsafe { close(pipefd[0]) };
-    if close_read < 0 {
-        println!("  close(read_fd) returned error: {}", close_read);
+    if let Err(e) = io::close(read_fd) {
+        println!("  close(read_fd) returned error: {:?}", e);
         fail("close(read_fd) failed");
     }
     println!("  Closed read fd");
 
-    let close_write = unsafe { close(pipefd[1]) };
-    if close_write < 0 {
-        println!("  close(write_fd) returned error: {}", close_write);
+    if let Err(e) = io::close(write_fd) {
+        println!("  close(write_fd) returned error: {:?}", e);
         fail("close(write_fd) failed");
     }
     println!("  Closed write fd");

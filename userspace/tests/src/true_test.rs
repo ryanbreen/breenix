@@ -3,27 +3,11 @@
 //! Verifies that /bin/true exits with code 0 and produces no output.
 //! Uses pipe+dup2 to capture stdout and verify no output is produced.
 
-extern "C" {
-    fn fork() -> i32;
-    fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
-    fn execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> i32;
-    fn pipe(pipefd: *mut i32) -> i32;
-    fn dup2(oldfd: i32, newfd: i32) -> i32;
-    fn close(fd: i32) -> i32;
-    fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
-}
-
-const STDOUT_FD: i32 = 1;
-
-/// POSIX WIFEXITED: true if child terminated normally
-fn wifexited(status: i32) -> bool {
-    (status & 0x7f) == 0
-}
-
-/// POSIX WEXITSTATUS: extract exit code from status
-fn wexitstatus(status: i32) -> i32 {
-    (status >> 8) & 0xff
-}
+use libbreenix::Errno;
+use libbreenix::Fd;
+use libbreenix::error::Error;
+use libbreenix::io;
+use libbreenix::process::{self, ForkResult};
 
 /// Run a command with args and capture stdout. Returns (exit_code, output_len)
 fn run_and_capture(
@@ -32,76 +16,65 @@ fn run_and_capture(
     output_buf: &mut [u8],
 ) -> (i32, usize) {
     // Create pipe to capture stdout
-    let mut capture_pipe = [0i32; 2];
-    let ret = unsafe { pipe(capture_pipe.as_mut_ptr()) };
-    if ret < 0 {
-        return (-1, 0);
-    }
-
-    let pid = unsafe { fork() };
-    if pid < 0 {
-        unsafe {
-            close(capture_pipe[0]);
-            close(capture_pipe[1]);
-        }
-        return (-1, 0);
-    }
-
-    if pid == 0 {
-        // Child: redirect stdout to pipe, exec the command
-        unsafe {
-            close(capture_pipe[0]); // Close read end
-            dup2(capture_pipe[1], STDOUT_FD);
-            close(capture_pipe[1]);
-
-            let envp: [*const u8; 1] = [std::ptr::null()];
-            execve(program.as_ptr(), argv.as_ptr(), envp.as_ptr());
-        }
-        std::process::exit(127);
-    }
-
-    // Parent: read from pipe, wait for child
-    unsafe { close(capture_pipe[1]) }; // Close write end
-
-    let mut total_read = 0usize;
-    loop {
-        let n = unsafe {
-            read(
-                capture_pipe[0],
-                output_buf[total_read..].as_mut_ptr(),
-                output_buf.len() - total_read,
-            )
-        };
-        if n > 0 {
-            total_read += n as usize;
-            if total_read >= output_buf.len() {
-                break; // Buffer full
-            }
-        } else if n == 0 {
-            break; // EOF
-        } else if n == -11 {
-            // EAGAIN - try again briefly
-            for _ in 0..100 {
-                core::hint::spin_loop();
-            }
-        } else {
-            break; // Error
-        }
-    }
-
-    unsafe { close(capture_pipe[0]) };
-
-    // Wait for child
-    let mut status: i32 = 0;
-    unsafe { waitpid(pid, &mut status, 0) };
-
-    let exit_code = if wifexited(status) {
-        wexitstatus(status)
-    } else {
-        -1
+    let (read_fd, write_fd) = match io::pipe() {
+        Ok(fds) => fds,
+        Err(_) => return (-1, 0),
     };
 
-    (exit_code, total_read)
+    match process::fork() {
+        Ok(ForkResult::Child) => {
+            // Child: redirect stdout to pipe, exec the command
+            let _ = io::close(read_fd); // Close read end
+            let _ = io::dup2(write_fd, Fd::STDOUT);
+            let _ = io::close(write_fd);
+
+            let _ = process::execv(program, argv.as_ptr());
+            std::process::exit(127);
+        }
+        Ok(ForkResult::Parent(child_pid)) => {
+            // Parent: read from pipe, wait for child
+            let _ = io::close(write_fd); // Close write end
+
+            let mut total_read = 0usize;
+            loop {
+                match io::read(read_fd, &mut output_buf[total_read..]) {
+                    Ok(0) => break, // EOF
+                    Ok(n) => {
+                        total_read += n;
+                        if total_read >= output_buf.len() {
+                            break; // Buffer full
+                        }
+                    }
+                    Err(Error::Os(Errno::EAGAIN)) => {
+                        // EAGAIN - try again briefly
+                        for _ in 0..100 {
+                            core::hint::spin_loop();
+                        }
+                    }
+                    Err(_) => break, // Error
+                }
+            }
+
+            let _ = io::close(read_fd);
+
+            // Wait for child
+            let mut status: i32 = 0;
+            let _ = process::waitpid(child_pid.raw() as i32, &mut status, 0);
+
+            let exit_code = if process::wifexited(status) {
+                process::wexitstatus(status)
+            } else {
+                -1
+            };
+
+            (exit_code, total_read)
+        }
+        Err(_) => {
+            let _ = io::close(read_fd);
+            let _ = io::close(write_fd);
+            (-1, 0)
+        }
+    }
 }
 
 fn main() {

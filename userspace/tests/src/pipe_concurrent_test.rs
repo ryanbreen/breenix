@@ -3,15 +3,10 @@
 //! Tests concurrent access to the pipe buffer from multiple processes.
 //! This stress-tests the Arc<Mutex<PipeBuffer>> under concurrent writes.
 
-extern "C" {
-    fn fork() -> i32;
-    fn getpid() -> i32;
-    fn pipe(pipefd: *mut i32) -> i32;
-    fn close(fd: i32) -> i32;
-    fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
-    fn write(fd: i32, buf: *const u8, count: usize) -> isize;
-    fn sched_yield() -> i32;
-}
+use libbreenix::io;
+use libbreenix::process::{self, ForkResult};
+use libbreenix::types::Fd;
+use libbreenix::Errno;
 
 /// Number of concurrent writer processes
 const NUM_WRITERS: usize = 4;
@@ -31,14 +26,14 @@ fn fail(msg: &str) -> ! {
 /// Helper to yield CPU multiple times
 fn yield_cpu() {
     for _ in 0..10 {
-        unsafe { sched_yield(); }
+        let _ = process::yield_now();
     }
 }
 
 /// Child writer process
-fn child_writer(writer_id: usize, write_fd: i32) -> ! {
-    let pid = unsafe { getpid() };
-    println!("  Writer {} started (PID {})", writer_id, pid);
+fn child_writer(writer_id: usize, write_fd: Fd) -> ! {
+    let pid = process::getpid().unwrap();
+    println!("  Writer {} started (PID {})", writer_id, pid.raw());
 
     // Each writer sends MESSAGES_PER_WRITER messages
     // Format: "W[id]M[msg]XXXXXXXXXXXXXXXX\n" (32 bytes total)
@@ -50,11 +45,13 @@ fn child_writer(writer_id: usize, write_fd: i32) -> ! {
         msg_buf[3] = b'0' + (msg_num as u8);
         msg_buf[MESSAGE_SIZE - 1] = b'\n';
 
-        let ret = unsafe { write(write_fd, msg_buf.as_ptr(), msg_buf.len()) };
-        if ret < 0 {
-            println!("  Writer {} FAILED to write message {}", writer_id, msg_num);
-            std::process::exit(1);
-        }
+        let ret = match io::write(write_fd, &msg_buf) {
+            Ok(n) => n as isize,
+            Err(_) => {
+                println!("  Writer {} FAILED to write message {}", writer_id, msg_num);
+                std::process::exit(1);
+            }
+        };
 
         if ret != MESSAGE_SIZE as isize {
             println!("  Writer {} wrote {} bytes, expected {}", writer_id, ret, MESSAGE_SIZE);
@@ -62,7 +59,7 @@ fn child_writer(writer_id: usize, write_fd: i32) -> ! {
         }
 
         // Small yield to encourage interleaving
-        unsafe { sched_yield(); }
+        let _ = process::yield_now();
     }
 
     println!("  Writer {} completed all messages", writer_id);
@@ -76,22 +73,22 @@ fn main() {
 
     // Phase 1: Create pipe
     println!("Phase 1: Creating pipe...");
-    let mut pipefd: [i32; 2] = [0, 0];
-    let ret = unsafe { pipe(pipefd.as_mut_ptr()) };
+    let (read_fd, write_fd) = match io::pipe() {
+        Ok(fds) => fds,
+        Err(e) => {
+            println!("  pipe() returned error: {:?}", e);
+            fail("pipe() failed");
+        }
+    };
 
-    if ret < 0 {
-        println!("  pipe() returned error: {}", -ret);
-        fail("pipe() failed");
-    }
-
-    println!("  Read fd: {}", pipefd[0]);
-    println!("  Write fd: {}", pipefd[1]);
+    println!("  Read fd: {}", read_fd.raw() as i32);
+    println!("  Write fd: {}", write_fd.raw() as i32);
 
     // Validate fd numbers
-    if pipefd[0] < 3 || pipefd[1] < 3 {
+    if (read_fd.raw() as i32) < 3 || (write_fd.raw() as i32) < 3 {
         fail("Pipe fds should be >= 3");
     }
-    if pipefd[0] == pipefd[1] {
+    if read_fd == write_fd {
         fail("Read and write fds should be different");
     }
 
@@ -100,37 +97,39 @@ fn main() {
     // Phase 2: Fork multiple writer processes
     println!("Phase 2: Forking {} writer processes...", NUM_WRITERS);
 
-    let mut child_pids = [0i32; NUM_WRITERS];
+    let mut child_pids = [0u64; NUM_WRITERS];
 
     for i in 0..NUM_WRITERS {
-        let fork_result = unsafe { fork() };
-
-        if fork_result < 0 {
-            println!("  fork() failed with error: {}", -fork_result);
-            fail("fork() failed");
-        }
-
-        if fork_result == 0 {
-            // Child process - close read end and become a writer
-            let close_ret = unsafe { close(pipefd[0]) };
-            if close_ret < 0 {
-                fail("child failed to close read fd");
+        let fork_result = match process::fork() {
+            Ok(result) => result,
+            Err(e) => {
+                println!("  fork() failed with error: {:?}", e);
+                fail("fork() failed");
             }
-            child_writer(i, pipefd[1]);
-            // Never returns
-        }
+        };
 
-        // Parent: record child PID
-        child_pids[i] = fork_result;
-        println!("  Forked writer {} with PID {}", i, fork_result);
+        match fork_result {
+            ForkResult::Child => {
+                // Child process - close read end and become a writer
+                if let Err(_) = io::close(read_fd) {
+                    fail("child failed to close read fd");
+                }
+                child_writer(i, write_fd);
+                // Never returns
+            }
+            ForkResult::Parent(child_pid) => {
+                // Parent: record child PID
+                child_pids[i] = child_pid.raw();
+                println!("  Forked writer {} with PID {}", i, child_pid.raw());
+            }
+        }
     }
 
     println!("  All writers forked\n");
 
     // Phase 3: Parent closes write end and reads all data
     println!("Phase 3: Parent closing write end and reading data...");
-    let close_ret = unsafe { close(pipefd[1]) };
-    if close_ret < 0 {
+    if let Err(_) = io::close(write_fd) {
         fail("parent failed to close write fd");
     }
     println!("  Parent closed write fd");
@@ -149,60 +148,60 @@ fn main() {
     let mut consecutive_eagain: u32 = 0;
 
     loop {
-        let ret = unsafe { read(pipefd[0], read_buf.as_mut_ptr(), read_buf.len()) };
-
-        if ret == -11 {
-            // EAGAIN - buffer empty but writers still exist
-            consecutive_eagain += 1;
-            if consecutive_eagain >= MAX_EAGAIN_RETRIES {
-                println!("  Too many EAGAIN retries, giving up");
-                println!("  Total bytes read so far: {}", total_read);
-                fail("read timed out waiting for data");
+        match io::read(read_fd, &mut read_buf) {
+            Err(libbreenix::error::Error::Os(Errno::EAGAIN)) => {
+                // EAGAIN - buffer empty but writers still exist
+                consecutive_eagain += 1;
+                if consecutive_eagain >= MAX_EAGAIN_RETRIES {
+                    println!("  Too many EAGAIN retries, giving up");
+                    println!("  Total bytes read so far: {}", total_read);
+                    fail("read timed out waiting for data");
+                }
+                yield_cpu();
+                continue;
             }
-            yield_cpu();
-            continue;
+            Err(e) => {
+                println!("  read() failed with error: {:?}", e);
+                fail("read from pipe failed");
+            }
+            Ok(ret) => {
+                // Reset counter on successful operation
+                consecutive_eagain = 0;
+
+                if ret == 0 {
+                    // EOF - all writers have closed
+                    println!("  EOF reached");
+                    break;
+                }
+
+                if ret != MESSAGE_SIZE {
+                    println!("  WARNING: Read {} bytes, expected {} bytes per message",
+                        ret, MESSAGE_SIZE);
+                }
+
+                total_read += ret as u64;
+
+                // Validate message format: "W[id]M[msg]..."
+                if read_buf[0] != b'W' {
+                    println!("  Invalid message format: first byte is not 'W'");
+                    fail("Invalid message format");
+                }
+
+                let writer_id = (read_buf[1] - b'0') as usize;
+                if writer_id >= NUM_WRITERS {
+                    println!("  Invalid writer ID: {}", writer_id);
+                    fail("Writer ID out of range");
+                }
+
+                if read_buf[2] != b'M' {
+                    println!("  Invalid message format: byte 2 is not 'M'");
+                    fail("Invalid message format");
+                }
+
+                // Track this message
+                writer_msg_counts[writer_id] += 1;
+            }
         }
-
-        // Reset counter on successful operation
-        consecutive_eagain = 0;
-
-        if ret < 0 {
-            println!("  read() failed with error: {}", -ret);
-            fail("read from pipe failed");
-        }
-
-        if ret == 0 {
-            // EOF - all writers have closed
-            println!("  EOF reached");
-            break;
-        }
-
-        if ret != MESSAGE_SIZE as isize {
-            println!("  WARNING: Read {} bytes, expected {} bytes per message",
-                ret, MESSAGE_SIZE);
-        }
-
-        total_read += ret as u64;
-
-        // Validate message format: "W[id]M[msg]..."
-        if read_buf[0] != b'W' {
-            println!("  Invalid message format: first byte is not 'W'");
-            fail("Invalid message format");
-        }
-
-        let writer_id = (read_buf[1] - b'0') as usize;
-        if writer_id >= NUM_WRITERS {
-            println!("  Invalid writer ID: {}", writer_id);
-            fail("Writer ID out of range");
-        }
-
-        if read_buf[2] != b'M' {
-            println!("  Invalid message format: byte 2 is not 'M'");
-            fail("Invalid message format");
-        }
-
-        // Track this message
-        writer_msg_counts[writer_id] += 1;
     }
 
     println!();
@@ -236,8 +235,7 @@ fn main() {
 
     // Phase 5: Close read end
     println!("Phase 5: Closing read fd...");
-    let close_ret = unsafe { close(pipefd[0]) };
-    if close_ret < 0 {
+    if let Err(_) = io::close(read_fd) {
         fail("parent failed to close read fd");
     }
     println!("  Read fd closed\n");

@@ -1,4 +1,4 @@
-//! Copy-on-Write Cleanup Test (std version)
+//! Copy-on-Write Cleanup Test
 //!
 //! This test verifies that when forked children exit, the shared CoW frame
 //! reference counts are properly decremented. If cleanup is broken, the
@@ -18,21 +18,8 @@
 
 use std::ptr;
 
-extern "C" {
-    fn fork() -> i32;
-    fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
-    fn sbrk(incr: isize) -> *mut u8;
-}
-
-/// POSIX WIFEXITED: true if child terminated normally
-fn wifexited(status: i32) -> bool {
-    (status & 0x7f) == 0
-}
-
-/// POSIX WEXITSTATUS: extract exit code from status
-fn wexitstatus(status: i32) -> i32 {
-    (status >> 8) & 0xff
-}
+use libbreenix::memory::sbrk;
+use libbreenix::process::{fork, waitpid, wifexited, wexitstatus, ForkResult};
 
 /// Number of children to fork
 const NUM_CHILDREN: usize = 3;
@@ -46,7 +33,7 @@ fn main() {
 
     // Step 1: Allocate heap memory
     println!("Step 1: Allocating heap memory via sbrk");
-    let heap_ptr = unsafe { sbrk(HEAP_SIZE as isize) as *mut u64 };
+    let heap_ptr = sbrk(HEAP_SIZE) as *mut u64;
 
     if heap_ptr.is_null() || (heap_ptr as usize) == usize::MAX {
         println!("  FAIL: sbrk failed");
@@ -72,57 +59,60 @@ fn main() {
     for child_num in 0..NUM_CHILDREN {
         println!("  Forking child {}...", child_num + 1);
 
-        let fork_result = unsafe { fork() };
+        match fork() {
+            Ok(ForkResult::Child) => {
+                // ========== CHILD PROCESS ==========
+                println!("    [CHILD {}] Writing to heap (triggers CoW copy)", child_num + 1);
 
-        if fork_result < 0 {
-            println!("  FAIL: fork() failed");
-            println!("COW_CLEANUP_TEST_FAILED");
-            std::process::exit(1);
-        }
-
-        if fork_result == 0 {
-            // ========== CHILD PROCESS ==========
-            println!("    [CHILD {}] Writing to heap (triggers CoW copy)", child_num + 1);
-
-            // Write child-specific values to heap (triggers CoW)
-            for i in 0..num_slots {
-                unsafe {
-                    let p = heap_ptr.add(i);
-                    let child_value = 0xCAFE000000000000u64
-                        + ((child_num as u64) << 32)
-                        + i as u64;
-                    ptr::write_volatile(p, child_value);
+                // Write child-specific values to heap (triggers CoW)
+                for i in 0..num_slots {
+                    unsafe {
+                        let p = heap_ptr.add(i);
+                        let child_value = 0xCAFE000000000000u64
+                            + ((child_num as u64) << 32)
+                            + i as u64;
+                        ptr::write_volatile(p, child_value);
+                    }
                 }
+
+                // Verify write
+                let test_val = unsafe { ptr::read_volatile(heap_ptr) };
+                if (test_val >> 48) != 0xCAFE {
+                    println!("    [CHILD] Write verification failed");
+                    std::process::exit(1);
+                }
+
+                println!("    [CHILD {}] Exiting", child_num + 1);
+                std::process::exit(0);
             }
+            Ok(ForkResult::Parent(child_pid)) => {
+                // ========== PARENT PROCESS ==========
+                // Wait for this child before forking next
+                let mut status: i32 = 0;
+                let wait_result = waitpid(child_pid.raw() as i32, &mut status, 0);
 
-            // Verify write
-            let test_val = unsafe { ptr::read_volatile(heap_ptr) };
-            if (test_val >> 48) != 0xCAFE {
-                println!("    [CHILD] Write verification failed");
-                std::process::exit(1);
+                match wait_result {
+                    Ok(pid) if pid.raw() as i32 == child_pid.raw() as i32 => {}
+                    _ => {
+                        println!("  FAIL: waitpid returned wrong PID");
+                        println!("COW_CLEANUP_TEST_FAILED");
+                        std::process::exit(1);
+                    }
+                }
+
+                if !wifexited(status) || wexitstatus(status) != 0 {
+                    println!("  FAIL: Child exited abnormally");
+                    println!("COW_CLEANUP_TEST_FAILED");
+                    std::process::exit(1);
+                }
+
+                println!("    Child {} completed successfully", child_num + 1);
             }
-
-            println!("    [CHILD {}] Exiting", child_num + 1);
-            std::process::exit(0);
-        } else {
-            // ========== PARENT PROCESS ==========
-            // Wait for this child before forking next
-            let mut status: i32 = 0;
-            let wait_result = unsafe { waitpid(fork_result, &mut status, 0) };
-
-            if wait_result != fork_result {
-                println!("  FAIL: waitpid returned wrong PID");
+            Err(_) => {
+                println!("  FAIL: fork() failed");
                 println!("COW_CLEANUP_TEST_FAILED");
                 std::process::exit(1);
             }
-
-            if !wifexited(status) || wexitstatus(status) != 0 {
-                println!("  FAIL: Child exited abnormally");
-                println!("COW_CLEANUP_TEST_FAILED");
-                std::process::exit(1);
-            }
-
-            println!("    Child {} completed successfully", child_num + 1);
         }
     }
 

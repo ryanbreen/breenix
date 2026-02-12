@@ -1,4 +1,4 @@
-//! Copy-on-Write Read-Only Page Sharing Test (std version)
+//! Copy-on-Write Read-Only Page Sharing Test
 //!
 //! This test verifies that read-only pages (like code/text sections) are shared
 //! directly between parent and child after fork WITHOUT the COW flag.
@@ -17,20 +17,7 @@
 //! - COW_READONLY_TEST_PASSED: All tests passed
 //! - COW_READONLY_TEST_FAILED: A test failed
 
-extern "C" {
-    fn fork() -> i32;
-    fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
-}
-
-/// POSIX WIFEXITED: true if child terminated normally
-fn wifexited(status: i32) -> bool {
-    (status & 0x7f) == 0
-}
-
-/// POSIX WEXITSTATUS: extract exit code from status
-fn wexitstatus(status: i32) -> i32 {
-    (status >> 8) & 0xff
-}
+use libbreenix::process::{fork, waitpid, wifexited, wexitstatus, ForkResult};
 
 /// A function that performs some computation
 /// This function exists in read-only code section
@@ -82,122 +69,124 @@ fn main() {
 
     // Step 2: Fork the process
     println!("Step 2: Forking process...");
-    let fork_result = unsafe { fork() };
+    match fork() {
+        Ok(ForkResult::Child) => {
+            // ========== CHILD PROCESS ==========
+            println!("[CHILD] Process started");
 
-    if fork_result < 0 {
-        println!("  FAIL: fork() failed with error {}", fork_result);
-        println!("COW_READONLY_TEST_FAILED");
-        std::process::exit(1);
-    }
+            // Step 3: Child executes the SAME code functions
+            // If read-only page sharing works, this code is on the same
+            // physical frame as the parent's code - shared without COW
+            println!("[CHILD] Step 3: Execute code functions (shared code section)");
 
-    if fork_result == 0 {
-        // ========== CHILD PROCESS ==========
-        println!("[CHILD] Process started");
+            // Execute fibonacci - this runs code from shared read-only page
+            let child_fib_10 = compute_fibonacci(10);
+            println!("[CHILD]   Fibonacci(10) = {}", child_fib_10);
 
-        // Step 3: Child executes the SAME code functions
-        // If read-only page sharing works, this code is on the same
-        // physical frame as the parent's code - shared without COW
-        println!("[CHILD] Step 3: Execute code functions (shared code section)");
+            // Execute factorial - another function in shared code section
+            let child_fact_5 = compute_factorial(5);
+            println!("[CHILD]   Factorial(5) = {}", child_fact_5);
 
-        // Execute fibonacci - this runs code from shared read-only page
-        let child_fib_10 = compute_fibonacci(10);
-        println!("[CHILD]   Fibonacci(10) = {}", child_fib_10);
+            // Execute with different arguments to further exercise the code
+            let child_fib_15 = compute_fibonacci(15);
+            println!("[CHILD]   Fibonacci(15) = {} (expected 610)", child_fib_15);
 
-        // Execute factorial - another function in shared code section
-        let child_fact_5 = compute_factorial(5);
-        println!("[CHILD]   Factorial(5) = {}", child_fact_5);
+            let child_fact_10 = compute_factorial(10);
+            println!("[CHILD]   Factorial(10) = {} (expected 3628800)", child_fact_10);
 
-        // Execute with different arguments to further exercise the code
-        let child_fib_15 = compute_fibonacci(15);
-        println!("[CHILD]   Fibonacci(15) = {} (expected 610)", child_fib_15);
-
-        let child_fact_10 = compute_factorial(10);
-        println!("[CHILD]   Factorial(10) = {} (expected 3628800)", child_fact_10);
-
-        // Verify all computations
-        if child_fib_10 != 55 {
-            println!("[CHILD]   FAIL: Fibonacci(10) incorrect");
-            println!("COW_READONLY_TEST_FAILED");
-            std::process::exit(1);
-        }
-        if child_fact_5 != 120 {
-            println!("[CHILD]   FAIL: Factorial(5) incorrect");
-            println!("COW_READONLY_TEST_FAILED");
-            std::process::exit(1);
-        }
-        if child_fib_15 != 610 {
-            println!("[CHILD]   FAIL: Fibonacci(15) incorrect");
-            println!("COW_READONLY_TEST_FAILED");
-            std::process::exit(1);
-        }
-        if child_fact_10 != 3628800 {
-            println!("[CHILD]   FAIL: Factorial(10) incorrect");
-            println!("COW_READONLY_TEST_FAILED");
-            std::process::exit(1);
-        }
-
-        println!("[CHILD]   PASS: All code functions executed correctly!");
-        println!("[CHILD]   This proves read-only pages are properly shared");
-        std::process::exit(0);
-    } else {
-        // ========== PARENT PROCESS ==========
-        let child_pid = fork_result;
-        println!("[PARENT] Forked child PID: {}", child_pid);
-
-        // Step 4: Parent also executes code functions after fork
-        // This proves parent still has access to shared code pages
-        println!("[PARENT] Step 4: Execute code functions after fork");
-
-        let parent_fib_20 = compute_fibonacci(20);
-        println!("[PARENT]   Fibonacci(20) = {} (expected 6765)", parent_fib_20);
-
-        let parent_fact_8 = compute_factorial(8);
-        println!("[PARENT]   Factorial(8) = {} (expected 40320)", parent_fact_8);
-
-        if parent_fib_20 != 6765 {
-            println!("[PARENT]   FAIL: Fibonacci(20) incorrect");
-            println!("COW_READONLY_TEST_FAILED");
-            std::process::exit(1);
-        }
-        if parent_fact_8 != 40320 {
-            println!("[PARENT]   FAIL: Factorial(8) incorrect");
-            println!("COW_READONLY_TEST_FAILED");
-            std::process::exit(1);
-        }
-
-        println!("[PARENT]   PASS: Code functions still work in parent");
-
-        // Wait for child to complete
-        println!("[PARENT] Waiting for child...");
-        let mut status: i32 = 0;
-        let wait_result = unsafe { waitpid(child_pid, &mut status, 0) };
-
-        if wait_result != child_pid {
-            println!("[PARENT] FAIL: waitpid returned wrong PID: {}", wait_result);
-            println!("COW_READONLY_TEST_FAILED");
-            std::process::exit(1);
-        }
-
-        // Check child exit status
-        if wifexited(status) {
-            let exit_code = wexitstatus(status);
-            if exit_code == 0 {
-                println!("[PARENT] Child exited successfully\n");
-                println!("=== Summary ===");
-                println!("1. Parent executed code before fork - PASS");
-                println!("2. Child executed shared code after fork - PASS");
-                println!("3. Parent executed code after fork - PASS");
-                println!("4. No page faults on code execution (read-only sharing works)");
-                println!("\n=== CoW Read-Only Page Sharing Test PASSED ===");
-                println!("COW_READONLY_TEST_PASSED");
-                std::process::exit(0);
-            } else {
-                println!("[PARENT] Child exited with error code: {}", exit_code);
+            // Verify all computations
+            if child_fib_10 != 55 {
+                println!("[CHILD]   FAIL: Fibonacci(10) incorrect");
                 println!("COW_READONLY_TEST_FAILED");
                 std::process::exit(1);
             }
-        } else {
-            println!("[PARENT] Child did not exit normally");
+            if child_fact_5 != 120 {
+                println!("[CHILD]   FAIL: Factorial(5) incorrect");
+                println!("COW_READONLY_TEST_FAILED");
+                std::process::exit(1);
+            }
+            if child_fib_15 != 610 {
+                println!("[CHILD]   FAIL: Fibonacci(15) incorrect");
+                println!("COW_READONLY_TEST_FAILED");
+                std::process::exit(1);
+            }
+            if child_fact_10 != 3628800 {
+                println!("[CHILD]   FAIL: Factorial(10) incorrect");
+                println!("COW_READONLY_TEST_FAILED");
+                std::process::exit(1);
+            }
+
+            println!("[CHILD]   PASS: All code functions executed correctly!");
+            println!("[CHILD]   This proves read-only pages are properly shared");
+            std::process::exit(0);
+        }
+        Ok(ForkResult::Parent(child_pid)) => {
+            // ========== PARENT PROCESS ==========
+            println!("[PARENT] Forked child PID: {}", child_pid.raw());
+
+            // Step 4: Parent also executes code functions after fork
+            // This proves parent still has access to shared code pages
+            println!("[PARENT] Step 4: Execute code functions after fork");
+
+            let parent_fib_20 = compute_fibonacci(20);
+            println!("[PARENT]   Fibonacci(20) = {} (expected 6765)", parent_fib_20);
+
+            let parent_fact_8 = compute_factorial(8);
+            println!("[PARENT]   Factorial(8) = {} (expected 40320)", parent_fact_8);
+
+            if parent_fib_20 != 6765 {
+                println!("[PARENT]   FAIL: Fibonacci(20) incorrect");
+                println!("COW_READONLY_TEST_FAILED");
+                std::process::exit(1);
+            }
+            if parent_fact_8 != 40320 {
+                println!("[PARENT]   FAIL: Factorial(8) incorrect");
+                println!("COW_READONLY_TEST_FAILED");
+                std::process::exit(1);
+            }
+
+            println!("[PARENT]   PASS: Code functions still work in parent");
+
+            // Wait for child to complete
+            println!("[PARENT] Waiting for child...");
+            let mut status: i32 = 0;
+            let wait_result = waitpid(child_pid.raw() as i32, &mut status, 0);
+
+            match wait_result {
+                Ok(pid) if pid.raw() as i32 == child_pid.raw() as i32 => {}
+                _ => {
+                    println!("[PARENT] FAIL: waitpid returned wrong PID");
+                    println!("COW_READONLY_TEST_FAILED");
+                    std::process::exit(1);
+                }
+            }
+
+            // Check child exit status
+            if wifexited(status) {
+                let exit_code = wexitstatus(status);
+                if exit_code == 0 {
+                    println!("[PARENT] Child exited successfully\n");
+                    println!("=== Summary ===");
+                    println!("1. Parent executed code before fork - PASS");
+                    println!("2. Child executed shared code after fork - PASS");
+                    println!("3. Parent executed code after fork - PASS");
+                    println!("4. No page faults on code execution (read-only sharing works)");
+                    println!("\n=== CoW Read-Only Page Sharing Test PASSED ===");
+                    println!("COW_READONLY_TEST_PASSED");
+                    std::process::exit(0);
+                } else {
+                    println!("[PARENT] Child exited with error code: {}", exit_code);
+                    println!("COW_READONLY_TEST_FAILED");
+                    std::process::exit(1);
+                }
+            } else {
+                println!("[PARENT] Child did not exit normally");
+                println!("COW_READONLY_TEST_FAILED");
+                std::process::exit(1);
+            }
+        }
+        Err(_) => {
+            println!("  FAIL: fork() failed");
             println!("COW_READONLY_TEST_FAILED");
             std::process::exit(1);
         }

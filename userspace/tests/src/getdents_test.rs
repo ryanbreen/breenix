@@ -1,9 +1,41 @@
 //! getdents64 / directory listing test
 //!
-//! Tests directory listing via std::fs::read_dir.
+//! Tests directory listing via libbreenix getdents64.
 //! Must emit "GETDENTS_TEST_PASSED" on success.
 
-use std::fs;
+use libbreenix::fs::{self, O_RDONLY, O_DIRECTORY, DirentIter};
+use libbreenix::io::close;
+
+/// List directory and collect entry names
+fn list_dir(path: &str) -> Result<Vec<String>, ()> {
+    let fd = fs::open(path, O_RDONLY | O_DIRECTORY).map_err(|_| ())?;
+    let mut names = Vec::new();
+    let mut buf = [0u8; 4096];
+
+    loop {
+        match fs::getdents64(fd, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                let iter = DirentIter::new(&buf, n);
+                for entry in iter {
+                    if let Some(name) = unsafe { entry.name_str() } {
+                        // Skip . and ..
+                        if name != "." && name != ".." {
+                            names.push(name.to_string());
+                        }
+                    }
+                }
+            }
+            Err(_) => {
+                let _ = close(fd);
+                return Err(());
+            }
+        }
+    }
+
+    let _ = close(fd);
+    Ok(names)
+}
 
 fn main() {
     println!("=== getdents64 Test ===");
@@ -13,12 +45,8 @@ fn main() {
 
     // Test 1: List root directory
     println!("\nTest 1: List root directory /");
-    match fs::read_dir("/") {
-        Ok(entries) => {
-            let names: Vec<String> = entries
-                .filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect();
+    match list_dir("/\0") {
+        Ok(names) => {
             println!("  Found {} entries: {:?}", names.len(), names);
             if !names.is_empty() {
                 println!("  PASS: Root directory is not empty");
@@ -28,20 +56,16 @@ fn main() {
                 failed += 1;
             }
         }
-        Err(e) => {
-            println!("  FAIL: read_dir error: {}", e);
+        Err(_) => {
+            println!("  FAIL: read_dir error");
             failed += 1;
         }
     }
 
     // Test 2: Root contains expected entries (hello.txt should exist)
     println!("\nTest 2: Root contains hello.txt");
-    match fs::read_dir("/") {
-        Ok(entries) => {
-            let names: Vec<String> = entries
-                .filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect();
+    match list_dir("/\0") {
+        Ok(names) => {
             if names.iter().any(|n| n == "hello.txt") {
                 println!("  PASS: Found hello.txt in root");
                 passed += 1;
@@ -51,20 +75,16 @@ fn main() {
                 failed += 1;
             }
         }
-        Err(e) => {
-            println!("  FAIL: read_dir error: {}", e);
+        Err(_) => {
+            println!("  FAIL: read_dir error");
             failed += 1;
         }
     }
 
     // Test 3: List /dev directory
     println!("\nTest 3: List /dev directory");
-    match fs::read_dir("/dev") {
-        Ok(entries) => {
-            let names: Vec<String> = entries
-                .filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect();
+    match list_dir("/dev\0") {
+        Ok(names) => {
             println!("  /dev entries: {:?}", names);
             if names.iter().any(|n| n == "null") {
                 println!("  PASS: Found null device in /dev");
@@ -74,15 +94,15 @@ fn main() {
                 failed += 1;
             }
         }
-        Err(e) => {
-            println!("  FAIL: Cannot list /dev: {}", e);
+        Err(_) => {
+            println!("  FAIL: Cannot list /dev");
             failed += 1;
         }
     }
 
     // Test 4: Nonexistent directory fails
     println!("\nTest 4: Nonexistent directory");
-    match fs::read_dir("/nonexistent_dir_12345") {
+    match list_dir("/nonexistent_dir_12345\0") {
         Err(_) => {
             println!("  PASS: Correctly fails for nonexistent directory");
             passed += 1;

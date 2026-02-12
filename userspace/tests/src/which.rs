@@ -5,21 +5,17 @@
 //! Search PATH (/bin, /sbin) for COMMAND and print its full path.
 //! Exits 0 if found, 1 if not found.
 
+use libbreenix::fs;
+
 /// PATH directories to search, in order
 const PATH_DIRS: &[&str] = &["/bin/", "/sbin/"];
 
 /// Check if a file exists and is executable at the given path.
 ///
-/// Uses the C access() function with X_OK to check execute permission,
-/// matching the behavior of the no_std version.
+/// Uses libbreenix::fs::access() with X_OK to check execute permission.
 fn is_executable(path: &str) -> bool {
-    extern "C" {
-        fn access(path: *const u8, mode: i32) -> i32;
-    }
-    const X_OK: i32 = 1;
-
     let c_path = format!("{}\0", path);
-    unsafe { access(c_path.as_ptr(), X_OK) == 0 }
+    fs::access(&c_path, fs::X_OK).is_ok()
 }
 
 fn main() {

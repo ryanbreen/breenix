@@ -5,124 +5,7 @@
 //! - getpgrp() - get calling process's process group
 //! - getsid()/setsid() - session get/create
 
-extern "C" {
-    fn getpid() -> i32;
-    fn fork() -> i32;
-    fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
-}
-
-// Raw syscall wrappers for session/process group operations
-// These are not in the libbreenix-libc so we use raw syscalls
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn raw_syscall1(num: u64, arg1: u64) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "int 0x80",
-        in("rax") num,
-        in("rdi") arg1,
-        lateout("rax") ret,
-        options(nostack, preserves_flags),
-    );
-    ret as i64
-}
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn raw_syscall2(num: u64, arg1: u64, arg2: u64) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "int 0x80",
-        in("rax") num,
-        in("rdi") arg1,
-        in("rsi") arg2,
-        lateout("rax") ret,
-        options(nostack, preserves_flags),
-    );
-    ret as i64
-}
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn raw_syscall0(num: u64) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "int 0x80",
-        in("rax") num,
-        lateout("rax") ret,
-        options(nostack, preserves_flags),
-    );
-    ret as i64
-}
-
-#[cfg(target_arch = "aarch64")]
-unsafe fn raw_syscall1(num: u64, arg1: u64) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "svc #0",
-        in("x8") num,
-        inlateout("x0") arg1 => ret,
-        options(nostack),
-    );
-    ret as i64
-}
-
-#[cfg(target_arch = "aarch64")]
-unsafe fn raw_syscall2(num: u64, arg1: u64, arg2: u64) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "svc #0",
-        in("x8") num,
-        inlateout("x0") arg1 => ret,
-        in("x1") arg2,
-        options(nostack),
-    );
-    ret as i64
-}
-
-#[cfg(target_arch = "aarch64")]
-unsafe fn raw_syscall0(num: u64) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "svc #0",
-        in("x8") num,
-        lateout("x0") ret,
-        options(nostack),
-    );
-    ret as i64
-}
-
-// Syscall numbers
-const SYS_SETPGID: u64 = 109;
-const SYS_GETPGID: u64 = 121;
-const SYS_SETSID: u64 = 112;
-const SYS_GETSID: u64 = 124;
-
-fn getpgid(pid: i32) -> i32 {
-    unsafe { raw_syscall1(SYS_GETPGID, pid as u64) as i32 }
-}
-
-fn setpgid(pid: i32, pgid: i32) -> i32 {
-    unsafe { raw_syscall2(SYS_SETPGID, pid as u64, pgid as u64) as i32 }
-}
-
-fn getpgrp() -> i32 {
-    getpgid(0)
-}
-
-fn setsid() -> i32 {
-    unsafe { raw_syscall0(SYS_SETSID) as i32 }
-}
-
-fn getsid(pid: i32) -> i32 {
-    unsafe { raw_syscall1(SYS_GETSID, pid as u64) as i32 }
-}
-
-fn wifexited(status: i32) -> bool {
-    (status & 0x7f) == 0
-}
-
-fn wexitstatus(status: i32) -> i32 {
-    (status >> 8) & 0xff
-}
+use libbreenix::process::{self, ForkResult};
 
 fn fail(msg: &str) -> ! {
     println!("SESSION_TEST: FAIL - {}", msg);
@@ -132,28 +15,35 @@ fn fail(msg: &str) -> ! {
 fn test_getpgid_self() {
     println!("\nTest 1: getpgid(0) returns current process's pgid");
 
-    let pgid = getpgid(0);
-    if pgid <= 0 {
-        println!("  getpgid(0) returned: {}", pgid);
-        fail("getpgid(0) should return positive value");
+    match process::getpgid(0) {
+        Ok(pgid) => {
+            let pgid_i32 = pgid.raw() as i32;
+            if pgid_i32 <= 0 {
+                println!("  getpgid(0) returned: {}", pgid_i32);
+                fail("getpgid(0) should return positive value");
+            }
+            println!("  getpgid(0) = {}", pgid_i32);
+            println!("  test_getpgid_self: PASS");
+        }
+        Err(_) => {
+            fail("getpgid(0) failed");
+        }
     }
-
-    println!("  getpgid(0) = {}", pgid);
-    println!("  test_getpgid_self: PASS");
 }
 
 fn test_getpgid_with_pid() {
     println!("\nTest 2: getpgid(getpid()) returns same as getpgid(0)");
 
-    let pid = unsafe { getpid() };
-    let pgid_0 = getpgid(0);
-    let pgid_pid = getpgid(pid);
+    let pid = process::getpid().unwrap_or_else(|_| fail("getpid failed"));
+    let pid_i32 = pid.raw() as i32;
+    let pgid_0 = process::getpgid(0).unwrap_or_else(|_| fail("getpgid(0) failed"));
+    let pgid_pid = process::getpgid(pid_i32).unwrap_or_else(|_| fail("getpgid(pid) failed"));
 
-    println!("  pid = {}", pid);
-    println!("  getpgid(0) = {}", pgid_0);
-    println!("  getpgid(pid) = {}", pgid_pid);
+    println!("  pid = {}", pid_i32);
+    println!("  getpgid(0) = {}", pgid_0.raw() as i32);
+    println!("  getpgid(pid) = {}", pgid_pid.raw() as i32);
 
-    if pgid_0 != pgid_pid {
+    if pgid_0.raw() != pgid_pid.raw() {
         fail("getpgid(0) should equal getpgid(getpid())");
     }
 
@@ -163,20 +53,23 @@ fn test_getpgid_with_pid() {
 fn test_setpgid_self() {
     println!("\nTest 3: setpgid(0, 0) sets pgid to own pid");
 
-    let pid = unsafe { getpid() };
-    let result = setpgid(0, 0);
-
-    println!("  pid = {}", pid);
-    println!("  setpgid(0, 0) returned: {}", result);
-
-    if result != 0 {
-        fail("setpgid(0, 0) should succeed");
+    let pid = process::getpid().unwrap_or_else(|_| fail("getpid failed"));
+    let pid_i32 = pid.raw() as i32;
+    match process::setpgid(0, 0) {
+        Ok(()) => {}
+        Err(_) => {
+            fail("setpgid(0, 0) should succeed");
+        }
     }
 
-    let pgid = getpgid(0);
-    println!("  getpgid(0) after setpgid = {}", pgid);
+    println!("  pid = {}", pid_i32);
+    println!("  setpgid(0, 0) returned: 0");
 
-    if pgid != pid {
+    let pgid = process::getpgid(0).unwrap_or_else(|_| fail("getpgid failed"));
+    let pgid_i32 = pgid.raw() as i32;
+    println!("  getpgid(0) after setpgid = {}", pgid_i32);
+
+    if pgid_i32 != pid_i32 {
         fail("after setpgid(0, 0), pgid should equal pid");
     }
 
@@ -186,13 +79,13 @@ fn test_setpgid_self() {
 fn test_getpgrp() {
     println!("\nTest 4: getpgrp() returns same as getpgid(0)");
 
-    let pgrp = getpgrp();
-    let pgid = getpgid(0);
+    let pgrp = process::getpgrp().unwrap_or_else(|_| fail("getpgrp failed"));
+    let pgid = process::getpgid(0).unwrap_or_else(|_| fail("getpgid(0) failed"));
 
-    println!("  getpgrp() = {}", pgrp);
-    println!("  getpgid(0) = {}", pgid);
+    println!("  getpgrp() = {}", pgrp.raw() as i32);
+    println!("  getpgid(0) = {}", pgid.raw() as i32);
 
-    if pgrp != pgid {
+    if pgrp.raw() != pgid.raw() {
         fail("getpgrp() should equal getpgid(0)");
     }
 
@@ -202,28 +95,35 @@ fn test_getpgrp() {
 fn test_getsid_self() {
     println!("\nTest 5: getsid(0) returns current session id");
 
-    let sid = getsid(0);
-    if sid <= 0 {
-        println!("  getsid(0) returned: {}", sid);
-        fail("getsid(0) should return positive value");
+    match process::getsid(0) {
+        Ok(sid) => {
+            let sid_i32 = sid.raw() as i32;
+            if sid_i32 <= 0 {
+                println!("  getsid(0) returned: {}", sid_i32);
+                fail("getsid(0) should return positive value");
+            }
+            println!("  getsid(0) = {}", sid_i32);
+            println!("  test_getsid_self: PASS");
+        }
+        Err(_) => {
+            fail("getsid(0) failed");
+        }
     }
-
-    println!("  getsid(0) = {}", sid);
-    println!("  test_getsid_self: PASS");
 }
 
 fn test_getsid_with_pid() {
     println!("\nTest 6: getsid(getpid()) returns same as getsid(0)");
 
-    let pid = unsafe { getpid() };
-    let sid_0 = getsid(0);
-    let sid_pid = getsid(pid);
+    let pid = process::getpid().unwrap_or_else(|_| fail("getpid failed"));
+    let pid_i32 = pid.raw() as i32;
+    let sid_0 = process::getsid(0).unwrap_or_else(|_| fail("getsid(0) failed"));
+    let sid_pid = process::getsid(pid_i32).unwrap_or_else(|_| fail("getsid(pid) failed"));
 
-    println!("  pid = {}", pid);
-    println!("  getsid(0) = {}", sid_0);
-    println!("  getsid(pid) = {}", sid_pid);
+    println!("  pid = {}", pid_i32);
+    println!("  getsid(0) = {}", sid_0.raw() as i32);
+    println!("  getsid(pid) = {}", sid_pid.raw() as i32);
 
-    if sid_0 != sid_pid {
+    if sid_0.raw() != sid_pid.raw() {
         fail("getsid(0) should equal getsid(getpid())");
     }
 
@@ -233,92 +133,106 @@ fn test_getsid_with_pid() {
 fn test_setsid_in_child() {
     println!("\nTest 7: setsid() in child creates new session");
 
-    let fork_result = unsafe { fork() };
+    match process::fork() {
+        Ok(ForkResult::Child) => {
+            // Child process
+            let my_pid = process::getpid().unwrap_or_else(|_| std::process::exit(1));
+            let my_pid_i32 = my_pid.raw() as i32;
+            println!("  CHILD: pid = {}", my_pid_i32);
 
-    if fork_result < 0 {
-        println!("  fork() failed with error: {}", fork_result);
-        fail("fork failed");
-    }
+            match process::setpgid(0, 0) {
+                Ok(()) => println!("  CHILD: setpgid(0, 0) returned: 0"),
+                Err(_) => println!("  CHILD: setpgid(0, 0) failed"),
+            }
 
-    if fork_result == 0 {
-        // Child process
-        let my_pid = unsafe { getpid() };
-        println!("  CHILD: pid = {}", my_pid);
+            match process::setsid() {
+                Ok(new_sid) => {
+                    println!("  CHILD: setsid() returned: {}", new_sid.raw() as i32);
+                }
+                Err(_) => {
+                    println!("  CHILD: setsid() failed");
+                    std::process::exit(1);
+                }
+            }
 
-        let setpgid_result = setpgid(0, 0);
-        println!("  CHILD: setpgid(0, 0) returned: {}", setpgid_result);
+            let sid = process::getsid(0).unwrap_or_else(|_| std::process::exit(1));
+            let pgid = process::getpgid(0).unwrap_or_else(|_| std::process::exit(1));
 
-        let new_sid = setsid();
-        println!("  CHILD: setsid() returned: {}", new_sid);
+            println!("  CHILD: getsid(0) = {}", sid.raw() as i32);
+            println!("  CHILD: getpgid(0) = {}", pgid.raw() as i32);
 
-        if new_sid < 0 {
-            println!("  CHILD: setsid() failed");
-            std::process::exit(1);
+            if sid.raw() as i32 != my_pid_i32 {
+                println!("  CHILD: ERROR - sid should equal pid after setsid");
+                std::process::exit(1);
+            }
+
+            if pgid.raw() as i32 != my_pid_i32 {
+                println!("  CHILD: ERROR - pgid should equal pid after setsid");
+                std::process::exit(1);
+            }
+
+            println!("  CHILD: setsid test PASS");
+            std::process::exit(0);
         }
+        Ok(ForkResult::Parent(child_pid)) => {
+            let child = child_pid.raw() as i32;
+            println!("  PARENT: waiting for child {}", child);
 
-        let sid = getsid(0);
-        let pgid = getpgid(0);
+            let mut status: i32 = 0;
+            match process::waitpid(child, &mut status, 0) {
+                Ok(pid) => {
+                    println!("  PARENT: waitpid returned: {}", pid.raw() as i32);
 
-        println!("  CHILD: getsid(0) = {}", sid);
-        println!("  CHILD: getpgid(0) = {}", pgid);
+                    if pid.raw() as i32 != child {
+                        fail("waitpid returned wrong pid");
+                    }
+                }
+                Err(_) => {
+                    fail("waitpid failed");
+                }
+            }
 
-        if sid != my_pid {
-            println!("  CHILD: ERROR - sid should equal pid after setsid");
-            std::process::exit(1);
+            if !process::wifexited(status) {
+                println!("  PARENT: child did not exit normally, status = {}", status);
+                fail("child did not exit normally");
+            }
+
+            let exit_code = process::wexitstatus(status);
+            println!("  PARENT: child exit code = {}", exit_code);
+
+            if exit_code != 0 {
+                fail("child reported test failure");
+            }
+
+            println!("  test_setsid_in_child: PASS");
         }
-
-        if pgid != my_pid {
-            println!("  CHILD: ERROR - pgid should equal pid after setsid");
-            std::process::exit(1);
+        Err(_) => {
+            fail("fork failed");
         }
-
-        println!("  CHILD: setsid test PASS");
-        std::process::exit(0);
-    } else {
-        // Parent: wait for child
-        let child_pid = fork_result;
-        println!("  PARENT: waiting for child {}", child_pid);
-
-        let mut status: i32 = 0;
-        let result = unsafe { waitpid(child_pid, &mut status, 0) };
-
-        println!("  PARENT: waitpid returned: {}", result);
-
-        if result != fork_result {
-            fail("waitpid returned wrong pid");
-        }
-
-        if !wifexited(status) {
-            println!("  PARENT: child did not exit normally, status = {}", status);
-            fail("child did not exit normally");
-        }
-
-        let exit_code = wexitstatus(status);
-        println!("  PARENT: child exit code = {}", exit_code);
-
-        if exit_code != 0 {
-            fail("child reported test failure");
-        }
-
-        println!("  test_setsid_in_child: PASS");
     }
 }
 
 fn test_error_cases() {
     println!("\nTest 8: Error cases for invalid PIDs");
 
-    let result = getpgid(-1);
-    println!("  getpgid(-1) = {}", result);
-
-    if result >= 0 {
-        fail("getpgid(-1) should return error (negative value)");
+    match process::getpgid(-1) {
+        Ok(pgid) => {
+            println!("  getpgid(-1) = {}", pgid.raw() as i32);
+            fail("getpgid(-1) should return error (negative value)");
+        }
+        Err(_) => {
+            println!("  getpgid(-1) returned error (as expected)");
+        }
     }
 
-    let result = getsid(-1);
-    println!("  getsid(-1) = {}", result);
-
-    if result >= 0 {
-        fail("getsid(-1) should return error (negative value)");
+    match process::getsid(-1) {
+        Ok(sid) => {
+            println!("  getsid(-1) = {}", sid.raw() as i32);
+            fail("getsid(-1) should return error (negative value)");
+        }
+        Err(_) => {
+            println!("  getsid(-1) returned error (as expected)");
+        }
     }
 
     println!("  test_error_cases: PASS");
