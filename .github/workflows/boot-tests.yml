@@ -143,6 +143,34 @@ jobs:
             logs/*.log
           if-no-files-found: warn
 
+  ecosystem-tests:
+    name: Ecosystem Library Tests (breenish-js)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-06-24
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-ecosystem-cargo-registry-${{ hashFiles('libs/breenish-js/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-ecosystem-cargo-registry-
+
+      - name: Run breenish-js tests
+        run: cargo test --manifest-path libs/breenish-js/Cargo.toml --features std
+
+      - name: Verify breenish-js builds without std (no_std + alloc)
+        run: cargo build --manifest-path libs/breenish-js/Cargo.toml
+
   arm64-boot:
     name: ARM64 Boot Stages Test
     runs-on: ubuntu-24.04-arm
