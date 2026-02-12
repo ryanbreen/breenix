@@ -1379,6 +1379,12 @@ impl<'a> Compiler<'a> {
                 self.code.emit_op(Op::TypeOf);
                 Ok(())
             }
+            TokenKind::Await => {
+                self.lexer.next_token();
+                self.compile_unary()?;
+                self.code.emit_op(Op::Await);
+                Ok(())
+            }
             TokenKind::PlusPlus => {
                 self.lexer.next_token();
                 self.compile_prefix_update(Op::Add)?;

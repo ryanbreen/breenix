@@ -180,6 +180,13 @@ pub enum Op {
     /// The array's elements become the function's arguments.
     CallSpread = 130,
 
+    /// Await a Promise value.
+    /// Stack: [value] -> [resolved_value]
+    /// If the value is a fulfilled Promise, pushes the resolved value.
+    /// If it's a rejected Promise, throws the rejection reason.
+    /// If it's not a Promise, pushes the value unchanged.
+    Await = 131,
+
     /// Halt execution.
     Halt = 255,
 }
@@ -234,6 +241,7 @@ impl Op {
             121 => Some(Op::TryEnd),
             122 => Some(Op::Throw),
             130 => Some(Op::CallSpread),
+            131 => Some(Op::Await),
             255 => Some(Op::Halt),
             _ => None,
         }
