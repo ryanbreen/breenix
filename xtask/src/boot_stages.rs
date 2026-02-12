@@ -62,7 +62,7 @@ pub fn get_dns_stages() -> Vec<BootStage> {
             name: "DNS test starting",
             marker: "DNS Test: Starting",
             failure_meaning: "DNS test binary did not start executing",
-            check_hint: "Check scheduler is running userspace, check userspace/tests/dns_test.rs",
+            check_hint: "Check scheduler is running userspace, check userspace/programs/dns_test.rs",
         },
         BootStage {
             name: "DNS google resolve",
@@ -80,7 +80,7 @@ pub fn get_dns_stages() -> Vec<BootStage> {
             name: "DNS test completed",
             marker: "DNS Test: All tests passed",
             failure_meaning: "DNS test did not complete all tests",
-            check_hint: "Check userspace/tests/dns_test.rs for which step failed",
+            check_hint: "Check userspace/programs/dns_test.rs for which step failed",
         },
     ]
 }
@@ -711,7 +711,7 @@ fn shared_userspace_stages() -> Vec<BootStage> {
             name: "UDP socket test completed",
             marker: "UDP Socket Test: All tests passed",
             failure_meaning: "UDP socket test did not complete successfully",
-            check_hint: "Check userspace/tests/udp_socket_test.rs for which step failed",
+            check_hint: "Check userspace/programs/udp_socket_test.rs for which step failed",
         },
 
         // TCP Socket tests
@@ -972,7 +972,7 @@ fn shared_userspace_stages() -> Vec<BootStage> {
             name: "TCP socket test passed",
             marker: "TCP Socket Test: PASSED",
             failure_meaning: "TCP socket test did not complete successfully",
-            check_hint: "Check userspace/tests/tcp_socket_test.rs for which step failed",
+            check_hint: "Check userspace/programs/tcp_socket_test.rs for which step failed",
         },
 
         // DNS resolution tests
@@ -1016,7 +1016,7 @@ fn shared_userspace_stages() -> Vec<BootStage> {
             name: "DNS test completed",
             marker: "DNS Test: All tests passed",
             failure_meaning: "DNS test did not complete successfully",
-            check_hint: "Check userspace/tests/dns_test.rs for which step failed",
+            check_hint: "Check userspace/programs/dns_test.rs for which step failed",
         },
 
         // HTTP client tests
@@ -1066,7 +1066,7 @@ fn shared_userspace_stages() -> Vec<BootStage> {
             name: "HTTP test completed",
             marker: "HTTP Test: All tests passed",
             failure_meaning: "HTTP test did not complete successfully",
-            check_hint: "Check userspace/tests/http_test.rs for which step failed",
+            check_hint: "Check userspace/programs/http_test.rs for which step failed",
         },
 
         // IPC tests

@@ -2943,7 +2943,7 @@ fn test_arm64_pty_ioctl_path() -> TestResult {
 
             const ELF: &[u8] = include_bytes!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../userspace/tests/aarch64/simple_exit.elf"
+                "/../userspace/programs/aarch64/simple_exit.elf"
             ));
 
             let pid = match manager.create_process(String::from("pty_ioctl_test"), ELF) {

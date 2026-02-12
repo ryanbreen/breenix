@@ -21,8 +21,8 @@ Successfully vendored and patched the libc crate to add Breenix support:
 2. `libs/libc/src/unix/mod.rs` - Added Breenix to OS selection cfg_if
 3. `libs/libc/src/new/mod.rs` - Excluded Breenix from unsupported modules
 4. `libs/libc/Cargo.toml` - Version set to 0.2.174 for compatibility
-5. `userspace/tests/Cargo.toml` - Added patch.crates-io for libc
-6. `userspace/tests/.cargo/config.toml` - Added patch.crates-io for build-std
+5. `userspace/programs/Cargo.toml` - Added patch.crates-io for libc
+6. `userspace/programs/.cargo/config.toml` - Added patch.crates-io for build-std
 
 **Breenix libc module includes**:
 - All core C types (c_char, c_int, c_long, etc.)
@@ -149,7 +149,7 @@ Once Breenix has a stable syscall interface and core functionality, properly add
 
 ### 2. Created Test Program
 
-**Location**: `userspace/tests/`
+**Location**: `userspace/programs/`
 
 Created a new crate with:
 - `Cargo.toml` - Configured for `-Z build-std`
@@ -166,8 +166,8 @@ Created a new crate with:
 1. `libs/libc/src/unix/mod.rs` - Added Breenix to OS selection
 2. `libs/libc/src/new/mod.rs` - Excluded Breenix from unsupported new-style modules
 3. `libs/libc/Cargo.toml` - Set version to 0.2.174
-4. `userspace/tests/Cargo.toml` - Added libc patch
-5. `userspace/tests/.cargo/config.toml` - Added libc patch for build-std
+4. `userspace/programs/Cargo.toml` - Added libc patch
+5. `userspace/programs/.cargo/config.toml` - Added libc patch for build-std
 
 ## Conclusion
 

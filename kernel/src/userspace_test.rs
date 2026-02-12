@@ -588,7 +588,7 @@ fn fork_creator_thread_fn() {
 /// 2. Calls sys_exit(0) via INT 0x80
 ///
 /// This is a simple stub used when external_test_bins is not enabled.
-/// For real tests, use the compiled ELF binaries in userspace/tests/*.elf
+/// For real tests, use the compiled ELF binaries in userspace/programs/*.elf
 #[allow(dead_code)]
 fn create_minimal_valid_elf() -> alloc::vec::Vec<u8> {
     use alloc::vec::Vec;

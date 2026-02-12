@@ -8,7 +8,7 @@ Based on: arm64-parity.md (last updated 2026-02-02)
 
 | Metric | Count | Notes |
 |--------|-------|-------|
-| **Total test binaries** | 106 | All .elf files in `userspace/tests/aarch64/` |
+| **Total test binaries** | 106 | All .elf files in `userspace/programs/aarch64/` |
 | **Passing (genuine)** | ~46 | Tests with verified implementations |
 | **Passing (suspicious)** | 4 | Tests may pass for wrong reasons |
 | **Failing** | ~30 | Known failures per arm64-parity.md |

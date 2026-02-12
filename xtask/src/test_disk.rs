@@ -24,7 +24,7 @@
 //! cargo run -p xtask -- create-test-disk
 //! ```
 //!
-//! Reads compiled ELF binaries from `userspace/tests/*.elf` and creates
+//! Reads compiled ELF binaries from `userspace/programs/*.elf` and creates
 //! `target/test_binaries.img`.
 
 use std::fs::{self, File};
@@ -109,11 +109,11 @@ impl BinaryEntry {
 pub fn create_test_disk() -> Result<()> {
     println!("Creating test disk image...");
 
-    let userspace_dir = Path::new("userspace/tests");
-    let userspace_std_dir = Path::new("userspace/tests/target/x86_64-breenix/release");
+    let userspace_dir = Path::new("userspace/programs");
+    let userspace_std_dir = Path::new("userspace/programs/target/x86_64-breenix/release");
     let output_path = Path::new("target/test_binaries.img");
 
-    // Find all .elf files from userspace/tests/
+    // Find all .elf files from userspace/programs/
     let mut binaries = Vec::new();
 
     if !userspace_dir.exists() {
@@ -135,7 +135,7 @@ pub fn create_test_disk() -> Result<()> {
         }
     }
 
-    // Also include binaries from userspace/tests (Rust std tests)
+    // Also include binaries from userspace/programs (Rust std tests)
     // These are ELF binaries without the .elf extension, built with cargo
     if userspace_std_dir.exists() {
         // List of known std test binaries to include
@@ -156,13 +156,13 @@ pub fn create_test_disk() -> Result<()> {
                     println!("  Warning: {} is not an ELF file, skipping", bin_name);
                 }
             } else {
-                println!("  Note: std test binary {} not found (build with: cd userspace/tests && cargo build --release)", bin_name);
+                println!("  Note: std test binary {} not found (build with: cd userspace/programs && cargo build --release)", bin_name);
             }
         }
     }
 
     if binaries.is_empty() {
-        bail!("No test binaries found (checked {}/**.elf and userspace/tests/)", userspace_dir.display());
+        bail!("No test binaries found (checked {}/**.elf and userspace/programs/)", userspace_dir.display());
     }
 
     if binaries.len() > MAX_BINARIES {
@@ -270,14 +270,14 @@ pub fn create_test_disk() -> Result<()> {
 pub fn create_test_disk_aarch64() -> Result<()> {
     println!("Creating ARM64 test disk image...");
 
-    let userspace_dir = Path::new("userspace/tests/aarch64");
+    let userspace_dir = Path::new("userspace/programs/aarch64");
     let output_path = Path::new("target/aarch64_test_binaries.img");
 
     // Find all .elf files
     let mut binaries = Vec::new();
 
     if !userspace_dir.exists() {
-        bail!("ARM64 userspace directory not found: {}\nRun: cd userspace/tests && ./build-aarch64.sh", userspace_dir.display());
+        bail!("ARM64 userspace directory not found: {}\nRun: cd userspace/programs && ./build-aarch64.sh", userspace_dir.display());
     }
 
     for entry in fs::read_dir(userspace_dir)? {

@@ -32,21 +32,78 @@ impl Timespec {
     }
 }
 
+/// A file descriptor. This is a lightweight copyable handle.
+/// For automatic close-on-drop, wrap in `OwnedFd`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct Fd(u64);
+
+impl Fd {
+    pub const STDIN: Fd = Fd(0);
+    pub const STDOUT: Fd = Fd(1);
+    pub const STDERR: Fd = Fd(2);
+
+    pub const fn from_raw(raw: u64) -> Self {
+        Fd(raw)
+    }
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+}
+
 /// Process ID type
-pub type Pid = u64;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct Pid(u64);
+
+impl Pid {
+    pub const fn from_raw(raw: u64) -> Self {
+        Pid(raw)
+    }
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+}
 
 /// Thread ID type
-pub type Tid = u64;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct Tid(u64);
 
-/// File descriptor type
-pub type Fd = u64;
+impl Tid {
+    pub const fn from_raw(raw: u64) -> Self {
+        Tid(raw)
+    }
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+}
 
-/// Standard file descriptors
-pub mod fd {
-    use super::Fd;
-    pub const STDIN: Fd = 0;
-    pub const STDOUT: Fd = 1;
-    pub const STDERR: Fd = 2;
+/// A file descriptor with RAII close-on-drop semantics.
+pub struct OwnedFd(Fd);
+
+impl OwnedFd {
+    pub fn new(fd: Fd) -> Self {
+        OwnedFd(fd)
+    }
+    pub fn fd(&self) -> Fd {
+        self.0
+    }
+
+    /// Consume self and return the raw Fd without closing.
+    pub fn into_raw(self) -> Fd {
+        let fd = self.0;
+        core::mem::forget(self);
+        fd
+    }
+}
+
+impl Drop for OwnedFd {
+    fn drop(&mut self) {
+        unsafe {
+            crate::syscall::raw::syscall1(crate::syscall::nr::CLOSE, self.0.raw());
+        }
+    }
 }
 
 /// Clock IDs for clock_gettime (Linux conventions)

@@ -615,7 +615,7 @@ pub fn openpty() -> Result<(i32, [u8; 32]), i32> {
 **Goal**: Create telnetd using PTY infrastructure
 
 ```rust
-// userspace/tests/telnetd.rs
+// userspace/programs/telnetd.rs
 
 //! Simple telnet server using PTY
 //!

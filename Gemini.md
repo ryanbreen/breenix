@@ -109,7 +109,7 @@ Do NOT modify these without explicit user approval and justification (GDB is usu
 ### Testing
 *   Most tests use `tests/shared_qemu.rs`.
 *   Tests wait for signals like `🎯 KERNEL_POST_TESTS_COMPLETE 🎯`.
-*   Userspace tests are in `userspace/tests/`.
+*   Userspace tests are in `userspace/programs/`.
 
 ## Userland Development Stages (Reference)
 *   **Stage 1**: libbreenix (Rust) - ~80% Complete (syscall wrappers)

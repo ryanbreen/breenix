@@ -51,7 +51,7 @@ Replace `init_shell` as PID 1 with a proper init system that:
 **Goal:** Create init binary that starts services and shells
 
 **Files:**
-- `userspace/tests/init.rs` - Main init process
+- `userspace/programs/init.rs` - Main init process
 - `kernel/src/main.rs` - Load init instead of init_shell
 
 **Behavior:**
@@ -99,8 +99,8 @@ fn main() {
 **Goal:** Proper login flow on consoles
 
 **Files:**
-- `userspace/tests/getty.rs` - Open TTY, prompt for login
-- `userspace/tests/login.rs` - Authenticate and exec shell (future)
+- `userspace/programs/getty.rs` - Open TTY, prompt for login
+- `userspace/programs/login.rs` - Authenticate and exec shell (future)
 
 **Flow:**
 ```
@@ -145,7 +145,7 @@ For now (single-user): getty → shell directly
 ## File Structure
 
 ```
-userspace/tests/
+userspace/programs/
 ├── init.rs          # PID 1 init process
 ├── getty.rs         # TTY login prompt
 ├── init_shell.rs    # Interactive shell (unchanged)

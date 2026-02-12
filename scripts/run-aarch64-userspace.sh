@@ -13,10 +13,10 @@ if [ ! -f "$KERNEL" ]; then
 fi
 
 # Build ARM64 userspace if needed
-USERSPACE_DIR="$BREENIX_ROOT/userspace/tests/aarch64"
+USERSPACE_DIR="$BREENIX_ROOT/userspace/programs/aarch64"
 if [ ! -d "$USERSPACE_DIR" ] || [ -z "$(ls -A $USERSPACE_DIR/*.elf 2>/dev/null)" ]; then
     echo "Building ARM64 userspace binaries..."
-    cd "$BREENIX_ROOT/userspace/tests"
+    cd "$BREENIX_ROOT/userspace/programs"
     ./build-aarch64.sh
     cd "$BREENIX_ROOT"
 fi

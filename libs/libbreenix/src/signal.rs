@@ -1,7 +1,10 @@
 //! Signal handling for userspace programs
 //!
-//! This module provides userspace wrappers for signal-related syscalls.
+//! This module provides both POSIX-named syscall wrappers (sigaction, sigprocmask, kill, alarm,
+//! setitimer, etc.) and Rust convenience functions (sigmask, signame). Both layers coexist
+//! for flexibility.
 
+use crate::error::Error;
 use crate::syscall::raw;
 
 // Syscall numbers (must match kernel/src/syscall/mod.rs)
@@ -233,7 +236,7 @@ impl Default for StackT {
 ///
 /// # Returns
 /// * `Ok(())` on success
-/// * `Err(errno)` on failure
+/// * `Err(Error)` on failure
 ///
 /// # Example
 /// ```ignore
@@ -245,14 +248,9 @@ impl Default for StackT {
 ///     // Process exists
 /// }
 /// ```
-pub fn kill(pid: i32, sig: i32) -> Result<(), i32> {
+pub fn kill(pid: i32, sig: i32) -> Result<(), Error> {
     let ret = unsafe { raw::syscall2(SYS_KILL, pid as u64, sig as u64) };
-    // Return value is 0 on success, negative errno on failure
-    if (ret as i64) < 0 {
-        Err(-(ret as i64) as i32)
-    } else {
-        Ok(())
-    }
+    Error::from_syscall(ret as i64).map(|_| ())
 }
 
 /// Set signal handler
@@ -264,7 +262,7 @@ pub fn kill(pid: i32, sig: i32) -> Result<(), i32> {
 ///
 /// # Returns
 /// * `Ok(())` on success
-/// * `Err(errno)` on failure
+/// * `Err(Error)` on failure
 ///
 /// # Example
 /// ```ignore
@@ -279,7 +277,7 @@ pub fn sigaction(
     sig: i32,
     act: Option<&Sigaction>,
     oldact: Option<&mut Sigaction>,
-) -> Result<(), i32> {
+) -> Result<(), Error> {
     let act_ptr = act.map_or(0, |a| a as *const _ as u64);
     let oldact_ptr = oldact.map_or(0, |a| a as *mut _ as u64);
 
@@ -287,11 +285,7 @@ pub fn sigaction(
         raw::syscall4(SYS_SIGACTION, sig as u64, act_ptr, oldact_ptr, 8)
     };
 
-    if (ret as i64) < 0 {
-        Err(-(ret as i64) as i32)
-    } else {
-        Ok(())
-    }
+    Error::from_syscall(ret as i64).map(|_| ())
 }
 
 /// Block, unblock, or set the signal mask
@@ -303,7 +297,7 @@ pub fn sigaction(
 ///
 /// # Returns
 /// * `Ok(())` on success
-/// * `Err(errno)` on failure
+/// * `Err(Error)` on failure
 ///
 /// # Example
 /// ```ignore
@@ -315,7 +309,7 @@ pub fn sigaction(
 /// let empty = 0u64;
 /// sigprocmask(SIG_SETMASK, Some(&empty), None)?;
 /// ```
-pub fn sigprocmask(how: i32, set: Option<&u64>, oldset: Option<&mut u64>) -> Result<(), i32> {
+pub fn sigprocmask(how: i32, set: Option<&u64>, oldset: Option<&mut u64>) -> Result<(), Error> {
     let set_ptr = set.map_or(0, |s| s as *const _ as u64);
     let oldset_ptr = oldset.map_or(0, |s| s as *mut _ as u64);
 
@@ -323,11 +317,7 @@ pub fn sigprocmask(how: i32, set: Option<&u64>, oldset: Option<&mut u64>) -> Res
         raw::syscall4(SYS_SIGPROCMASK, how as u64, set_ptr, oldset_ptr, 8)
     };
 
-    if (ret as i64) < 0 {
-        Err(-(ret as i64) as i32)
-    } else {
-        Ok(())
-    }
+    Error::from_syscall(ret as i64).map(|_| ())
 }
 
 /// Return from signal handler
@@ -353,7 +343,7 @@ pub unsafe fn sigreturn() -> ! {
 /// either terminates the process or causes a signal handler to be called.
 ///
 /// # Returns
-/// * Always returns -EINTR (interrupted by signal)
+/// * Always returns `Err(Error)` with EINTR (interrupted by signal)
 ///
 /// # Example
 /// ```ignore
@@ -365,10 +355,12 @@ pub unsafe fn sigreturn() -> ! {
 /// sigaction(SIGUSR1, Some(&action), None)?;
 ///
 /// // Wait for a signal
-/// pause();  // Will return when SIGUSR1 is received
+/// let _ = pause();  // Will return when SIGUSR1 is received
 /// ```
-pub fn pause() -> i64 {
-    unsafe { raw::syscall0(crate::syscall::nr::PAUSE) as i64 }
+pub fn pause() -> Result<(), Error> {
+    let ret = unsafe { raw::syscall0(crate::syscall::nr::PAUSE) };
+    // pause always returns -EINTR when a signal is caught
+    Error::from_syscall(ret as i64).map(|_| ())
 }
 
 /// Convert signal number to bitmask
@@ -429,16 +421,12 @@ pub fn signame(sig: i32) -> &'static str {
 ///
 /// # Returns
 /// * `Ok(())` on success
-/// * `Err(errno)` on failure
-pub fn sigpending(set: &mut u64) -> Result<(), i32> {
+/// * `Err(Error)` on failure
+pub fn sigpending(set: &mut u64) -> Result<(), Error> {
     let ret = unsafe {
         raw::syscall2(SYS_SIGPENDING, set as *mut u64 as u64, 8)
     };
-    if (ret as i64) < 0 {
-        Err(-(ret as i64) as i32)
-    } else {
-        Ok(())
-    }
+    Error::from_syscall(ret as i64).map(|_| ())
 }
 
 /// Wait for a signal, temporarily replacing the signal mask
@@ -451,11 +439,13 @@ pub fn sigpending(set: &mut u64) -> Result<(), i32> {
 /// * `mask` - Signal mask to use while suspended
 ///
 /// # Returns
-/// * Always returns -EINTR (interrupted by signal)
-pub fn sigsuspend(mask: &u64) -> i64 {
-    unsafe {
-        raw::syscall2(SYS_SIGSUSPEND, mask as *const u64 as u64, 8) as i64
-    }
+/// * Always returns `Err(Error)` with EINTR (interrupted by signal)
+pub fn sigsuspend(mask: &u64) -> Result<(), Error> {
+    let ret = unsafe {
+        raw::syscall2(SYS_SIGSUSPEND, mask as *const u64 as u64, 8)
+    };
+    // sigsuspend always returns -EINTR when a signal is caught
+    Error::from_syscall(ret as i64).map(|_| ())
 }
 
 /// Set or get the alternate signal stack
@@ -466,8 +456,8 @@ pub fn sigsuspend(mask: &u64) -> i64 {
 ///
 /// # Returns
 /// * `Ok(())` on success
-/// * `Err(errno)` on failure
-pub fn sigaltstack(ss: Option<&StackT>, old_ss: Option<&mut StackT>) -> Result<(), i32> {
+/// * `Err(Error)` on failure
+pub fn sigaltstack(ss: Option<&StackT>, old_ss: Option<&mut StackT>) -> Result<(), Error> {
     let ss_ptr = ss.map_or(0, |s| s as *const _ as u64);
     let old_ss_ptr = old_ss.map_or(0, |s| s as *mut _ as u64);
 
@@ -475,11 +465,7 @@ pub fn sigaltstack(ss: Option<&StackT>, old_ss: Option<&mut StackT>) -> Result<(
         raw::syscall2(SYS_SIGALTSTACK, ss_ptr, old_ss_ptr)
     };
 
-    if (ret as i64) < 0 {
-        Err(-(ret as i64) as i32)
-    } else {
-        Ok(())
-    }
+    Error::from_syscall(ret as i64).map(|_| ())
 }
 
 /// Schedule a SIGALRM signal to be delivered
@@ -506,17 +492,13 @@ pub fn alarm(seconds: u32) -> u32 {
 ///
 /// # Returns
 /// * `Ok(())` on success
-/// * `Err(errno)` on failure
-pub fn getitimer(which: i32, curr_value: &mut Itimerval) -> Result<(), i32> {
+/// * `Err(Error)` on failure
+pub fn getitimer(which: i32, curr_value: &mut Itimerval) -> Result<(), Error> {
     let ret = unsafe {
         raw::syscall2(SYS_GETITIMER, which as u64, curr_value as *mut _ as u64)
     };
 
-    if (ret as i64) < 0 {
-        Err(-(ret as i64) as i32)
-    } else {
-        Ok(())
-    }
+    Error::from_syscall(ret as i64).map(|_| ())
 }
 
 /// Set an interval timer
@@ -531,7 +513,7 @@ pub fn getitimer(which: i32, curr_value: &mut Itimerval) -> Result<(), i32> {
 ///
 /// # Returns
 /// * `Ok(())` on success
-/// * `Err(errno)` on failure
+/// * `Err(Error)` on failure
 ///
 /// # Example
 /// ```ignore
@@ -549,16 +531,12 @@ pub fn getitimer(which: i32, curr_value: &mut Itimerval) -> Result<(), i32> {
 /// };
 /// setitimer(ITIMER_REAL, &repeating, None)?;
 /// ```
-pub fn setitimer(which: i32, new_value: &Itimerval, old_value: Option<&mut Itimerval>) -> Result<(), i32> {
+pub fn setitimer(which: i32, new_value: &Itimerval, old_value: Option<&mut Itimerval>) -> Result<(), Error> {
     let old_ptr = old_value.map_or(0, |v| v as *mut _ as u64);
 
     let ret = unsafe {
         raw::syscall3(SYS_SETITIMER, which as u64, new_value as *const _ as u64, old_ptr)
     };
 
-    if (ret as i64) < 0 {
-        Err(-(ret as i64) as i32)
-    } else {
-        Ok(())
-    }
+    Error::from_syscall(ret as i64).map(|_| ())
 }

@@ -275,7 +275,7 @@ fn test_allocator() {
 
 ```rust
 // Create userspace test program
-// userspace/tests/my_test.rs
+// userspace/programs/my_test.rs
 
 #![no_std]
 #![no_main]
@@ -288,12 +288,12 @@ pub extern "C" fn _start() -> ! {
     sys_exit(0);
 }
 
-// Build with userspace/tests/build.sh
+// Build with userspace/programs/build.sh
 
 // Kernel side - load and execute
 #[cfg(feature = "testing")]
 pub fn test_userspace_my_feature() {
-    let binary = include_bytes!("../../userspace/tests/my_test.elf");
+    let binary = include_bytes!("../../userspace/programs/my_test.elf");
     create_and_run_process("my_test", binary);
     // Process will print "My test output" via syscall
 }

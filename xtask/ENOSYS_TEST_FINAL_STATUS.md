@@ -6,7 +6,7 @@ The ENOSYS test infrastructure has been fully implemented as requested in "BABY-
 ## Implementation Complete ✅
 
 ### 1. Userspace Test Created
-- **File**: `userspace/tests/syscall_enosys.rs`
+- **File**: `userspace/programs/syscall_enosys.rs`
 - **Functionality**: Makes syscall 999 and checks if it returns -38 (ENOSYS)
 - **Output**: Prints "ENOSYS OK" on success, "ENOSYS FAIL" on failure
 

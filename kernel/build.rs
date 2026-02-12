@@ -81,10 +81,10 @@ fn main() {
     // Build userspace test programs with libbreenix
     // Use absolute path derived from CARGO_MANIFEST_DIR (kernel/)
     // NOTE: Skipped for aarch64 targets - ARM64 userspace binaries are built
-    // separately via `userspace/tests/build.sh --arch aarch64` and the xtask
+    // separately via `userspace/programs/build.sh --arch aarch64` and the xtask
     // arm64-boot-stages command handles this.
     let repo_root = kernel_dir.parent().expect("kernel dir should have parent");
-    let userspace_test_dir = repo_root.join("userspace/tests");
+    let userspace_test_dir = repo_root.join("userspace/programs");
 
     if userspace_test_dir.exists() && !target.contains("aarch64") {
         let build_script = userspace_test_dir.join("build.sh");
@@ -133,13 +133,15 @@ fn main() {
             println!("cargo:rerun-if-changed={}/lib.rs", libbreenix_dir.to_str().unwrap());
 
             // Also watch std build files
-            let std_tests_dir = repo_root.join("userspace/tests");
+            let std_tests_dir = repo_root.join("userspace/programs");
             println!("cargo:rerun-if-changed={}", std_tests_dir.join("build.sh").display());
             println!("cargo:rerun-if-changed={}", std_tests_dir.join("Cargo.toml").display());
             let libbreenix_libc_dir = repo_root.join("libs/libbreenix-libc/src");
             println!("cargo:rerun-if-changed={}", libbreenix_libc_dir.join("lib.rs").display());
         }
-    } else {
-        println!("cargo:warning=Userspace test directory not found at {:?}", userspace_test_dir);
+    } else if !userspace_test_dir.exists() {
+        println!("cargo:warning=Userspace programs directory not found at {:?}", userspace_test_dir);
+        println!("cargo:warning=Build userspace first: bash userspace/programs/build.sh");
     }
+    // For aarch64 targets, userspace is built externally via build.sh --arch aarch64
 }

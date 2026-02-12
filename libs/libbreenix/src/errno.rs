@@ -74,8 +74,26 @@ pub enum Errno {
     ENOSYS = 38,
     /// Directory not empty
     ENOTEMPTY = 39,
+    /// Operation not supported
+    EOPNOTSUPP = 95,
     /// Address family not supported
     EAFNOSUPPORT = 97,
+    /// Address already in use
+    EADDRINUSE = 98,
+    /// Cannot assign requested address
+    EADDRNOTAVAIL = 99,
+    /// Connection reset by peer
+    ECONNRESET = 104,
+    /// Transport endpoint is already connected
+    EISCONN = 106,
+    /// Transport endpoint is not connected
+    ENOTCONN = 107,
+    /// Connection timed out
+    ETIMEDOUT = 110,
+    /// Connection refused
+    ECONNREFUSED = 111,
+    /// Operation now in progress
+    EINPROGRESS = 115,
 }
 
 impl Errno {
@@ -127,7 +145,16 @@ impl Errno {
             32 => Errno::EPIPE,
             38 => Errno::ENOSYS,
             39 => Errno::ENOTEMPTY,
+            95 => Errno::EOPNOTSUPP,
             97 => Errno::EAFNOSUPPORT,
+            98 => Errno::EADDRINUSE,
+            99 => Errno::EADDRNOTAVAIL,
+            104 => Errno::ECONNRESET,
+            106 => Errno::EISCONN,
+            107 => Errno::ENOTCONN,
+            110 => Errno::ETIMEDOUT,
+            111 => Errno::ECONNREFUSED,
+            115 => Errno::EINPROGRESS,
             _ => Errno::EINVAL, // Unknown error
         }
     }

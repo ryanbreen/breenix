@@ -1,5 +1,9 @@
 //! Memory management syscall wrappers
+//!
+//! This module provides both POSIX-named syscall wrappers (brk, mmap, munmap, mprotect) and
+//! Rust convenience functions (sbrk, get_brk). Both layers coexist for flexibility.
 
+use crate::error::Error;
 use crate::syscall::{nr, raw};
 
 /// Change the program break (heap end).
@@ -9,6 +13,10 @@ use crate::syscall::{nr, raw};
 ///
 /// # Returns
 /// Current program break on success, or unchanged break on error.
+///
+/// Note: brk on Linux returns the new break on success, or the current (unchanged)
+/// break on error. It does not use the standard negative-errno convention, so we
+/// keep the raw u64 return here.
 ///
 /// # Example
 /// ```rust,ignore
@@ -74,7 +82,7 @@ pub const MAP_PRIVATE: i32 = 0x02;
 pub const MAP_FIXED: i32 = 0x10;
 pub const MAP_ANONYMOUS: i32 = 0x20;
 
-/// Error return value for mmap
+/// Error return value for mmap (kept for backward compatibility)
 pub const MAP_FAILED: *mut u8 = usize::MAX as *mut u8;
 
 /// Map memory into the process address space.
@@ -88,7 +96,7 @@ pub const MAP_FAILED: *mut u8 = usize::MAX as *mut u8;
 /// * `offset` - File offset
 ///
 /// # Returns
-/// Pointer to mapped region, or MAP_FAILED on error
+/// `Ok(pointer)` to the mapped region on success, `Err(Error)` on failure.
 ///
 /// # Example
 /// ```rust,ignore
@@ -102,7 +110,7 @@ pub const MAP_FAILED: *mut u8 = usize::MAX as *mut u8;
 ///     MAP_PRIVATE | MAP_ANONYMOUS,
 ///     -1,
 ///     0,
-/// );
+/// ).unwrap();
 /// ```
 #[inline]
 pub fn mmap(
@@ -112,7 +120,7 @@ pub fn mmap(
     flags: i32,
     fd: i32,
     offset: i64,
-) -> *mut u8 {
+) -> Result<*mut u8, Error> {
     let result = unsafe {
         raw::syscall6(
             nr::MMAP,
@@ -125,12 +133,7 @@ pub fn mmap(
         )
     };
 
-    // Check for error (negative values)
-    if (result as i64) < 0 {
-        MAP_FAILED
-    } else {
-        result as *mut u8
-    }
+    Error::from_syscall(result as i64).map(|v| v as *mut u8)
 }
 
 /// Unmap memory from the process address space.
@@ -140,23 +143,20 @@ pub fn mmap(
 /// * `length` - Size of mapping
 ///
 /// # Returns
-/// 0 on success, -1 on error
+/// `Ok(())` on success, `Err(Error)` on failure.
 ///
 /// # Example
 /// ```rust,ignore
 /// use libbreenix::memory::munmap;
 ///
-/// let result = munmap(ptr, 4096);
-/// if result == 0 {
-///     // Success
-/// }
+/// munmap(ptr, 4096).unwrap();
 /// ```
 #[inline]
-pub fn munmap(addr: *mut u8, length: usize) -> i32 {
+pub fn munmap(addr: *mut u8, length: usize) -> Result<(), Error> {
     let result = unsafe {
         raw::syscall2(nr::MUNMAP, addr as u64, length as u64)
     };
-    result as i32
+    Error::from_syscall(result as i64).map(|_| ())
 }
 
 /// Change protection of a memory region.
@@ -167,7 +167,7 @@ pub fn munmap(addr: *mut u8, length: usize) -> i32 {
 /// * `prot` - New protection flags (PROT_READ, PROT_WRITE, PROT_EXEC)
 ///
 /// # Returns
-/// 0 on success, -1 on error
+/// `Ok(())` on success, `Err(Error)` on failure.
 ///
 /// # Example
 /// ```rust,ignore
@@ -175,20 +175,17 @@ pub fn munmap(addr: *mut u8, length: usize) -> i32 {
 /// use core::ptr::null_mut;
 ///
 /// // Map read-write
-/// let ptr = mmap(null_mut(), 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+/// let ptr = mmap(null_mut(), 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0).unwrap();
 ///
 /// // Change to read-only
-/// let result = mprotect(ptr, 4096, PROT_READ);
-/// if result == 0 {
-///     // Success - memory is now read-only
-/// }
+/// mprotect(ptr, 4096, PROT_READ).unwrap();
 /// ```
 #[inline]
-pub fn mprotect(addr: *mut u8, length: usize, prot: i32) -> i32 {
+pub fn mprotect(addr: *mut u8, length: usize, prot: i32) -> Result<(), Error> {
     let result = unsafe {
         raw::syscall3(nr::MPROTECT, addr as u64, length as u64, prot as u64)
     };
-    result as i32
+    Error::from_syscall(result as i64).map(|_| ())
 }
 
 /// Copy-on-Write statistics
@@ -217,28 +214,22 @@ pub struct CowStats {
 /// working as expected.
 ///
 /// # Returns
-/// Some(CowStats) on success, None on error.
+/// `Ok(CowStats)` on success, `Err(Error)` on error.
 ///
 /// # Example
 /// ```rust,ignore
 /// use libbreenix::memory::cow_stats;
 ///
-/// if let Some(stats) = cow_stats() {
-///     println!("Total CoW faults: {}", stats.total_faults);
-///     println!("Sole owner optimizations: {}", stats.sole_owner_opt);
-/// }
+/// let stats = cow_stats().unwrap();
+/// // stats.total_faults, stats.sole_owner_opt, etc.
 /// ```
 #[inline]
-pub fn cow_stats() -> Option<CowStats> {
+pub fn cow_stats() -> Result<CowStats, Error> {
     let mut stats = CowStats::default();
     let result = unsafe {
         raw::syscall1(nr::COW_STATS, &mut stats as *mut CowStats as u64)
     };
-    if (result as i64) < 0 {
-        None
-    } else {
-        Some(stats)
-    }
+    Error::from_syscall(result as i64).map(|_| stats)
 }
 
 /// Enable or disable OOM simulation for testing.
@@ -254,41 +245,15 @@ pub fn cow_stats() -> Option<CowStats> {
 /// * `enable` - true to enable OOM simulation, false to disable
 ///
 /// # Returns
-/// 0 on success, -ENOSYS if the testing feature is not compiled into the kernel.
+/// `Ok(())` on success, `Err(Error)` if the testing feature is not compiled into the kernel.
 ///
 /// # Safety
 /// Only enable OOM simulation briefly for testing! Extended OOM simulation will
 /// crash the kernel because it affects ALL frame allocations.
-///
-/// # Example
-/// ```rust,ignore
-/// use libbreenix::memory::simulate_oom;
-/// use libbreenix::process::{fork, exit, waitpid, wifexited, wexitstatus};
-///
-/// // Enable OOM simulation
-/// simulate_oom(true);
-///
-/// let pid = fork();
-/// if pid == 0 {
-///     // Child process
-///     // This write will trigger a CoW fault that fails due to OOM
-///     // The child will be killed with SIGSEGV
-///     let ptr = some_shared_memory;
-///     *ptr = 42; // Triggers CoW fault -> SIGSEGV
-///     // Never reaches here
-/// } else {
-///     // Parent process
-///     simulate_oom(false); // Disable OOM simulation
-///     let mut status = 0;
-///     waitpid(pid, &mut status, 0);
-///     // Child should have been killed with SIGSEGV (exit code -11)
-///     assert!(!wifexited(status)); // Killed by signal, not normal exit
-/// }
-/// ```
 #[inline]
-pub fn simulate_oom(enable: bool) -> i32 {
+pub fn simulate_oom(enable: bool) -> Result<(), Error> {
     let result = unsafe {
         raw::syscall1(nr::SIMULATE_OOM, if enable { 1 } else { 0 })
     };
-    result as i32
+    Error::from_syscall(result as i64).map(|_| ())
 }

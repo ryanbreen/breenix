@@ -77,7 +77,7 @@ FAILURE_PATTERNS = [
         "Userspace Binary Missing",
         r"Userspace binary not found|Error loading ELF",
         "Userspace test binary not built before kernel test",
-        "Add userspace build step before kernel test: 'cd userspace/tests && ./build.sh'",
+        "Add userspace build step before kernel test: 'cd userspace/programs && ./build.sh'",
         is_regex=True
     ),
     FailurePattern(

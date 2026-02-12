@@ -216,7 +216,7 @@ cargo build -Z build-std=std,panic_abort --target x86_64-breenix.json
 
 **Test Program**:
 ```rust
-// userspace/tests/hello_std_real.rs
+// userspace/programs/hello_std_real.rs
 // NO #![no_std] - using real std!
 
 fn main() {
@@ -548,7 +548,7 @@ fn main() {
 The following should be removed as it represents the wrong approach:
 
 1. **libs/breenix_std/** - Delete entire directory
-2. **userspace/tests/hello_std.rs** - Delete (uses fake std)
+2. **userspace/programs/hello_std.rs** - Delete (uses fake std)
 3. **kernel/src/test_exec.rs::test_hello_std()** - Remove test function
 
 These were created under the mistaken assumption that a "std-like" library was the goal. The real goal is supporting the actual Rust standard library.

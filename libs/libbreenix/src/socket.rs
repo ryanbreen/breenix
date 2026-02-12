@@ -1,25 +1,30 @@
 //! Socket system call wrappers for Breenix
 //!
-//! Provides userspace API for UDP sockets.
+//! Provides userspace API for UDP and TCP sockets.
+//!
+//! Also provides [`TcpStream`] and [`UdpSocket`] RAII wrappers with
+//! automatic close-on-drop semantics.
 //!
 //! # Example
 //!
 //! ```rust,ignore
-//! use libbreenix::socket::{socket, bind, sendto, SockAddrIn, AF_INET, SOCK_DGRAM};
+//! use libbreenix::socket::{socket, bind_inet, sendto, SockAddrIn, AF_INET, SOCK_DGRAM};
 //!
 //! // Create UDP socket
 //! let fd = socket(AF_INET, SOCK_DGRAM, 0).expect("socket failed");
 //!
 //! // Bind to port 12345
 //! let addr = SockAddrIn::new([0, 0, 0, 0], 12345);
-//! bind(fd, &addr).expect("bind failed");
+//! bind_inet(fd, &addr).expect("bind failed");
 //!
 //! // Send data
 //! let dest = SockAddrIn::new([10, 0, 2, 2], 1234);
 //! sendto(fd, b"Hello UDP!", &dest).expect("sendto failed");
 //! ```
 
+use crate::error::Error;
 use crate::syscall::{nr, raw};
+use crate::types::{Fd, OwnedFd};
 
 /// Address family: Unix (local)
 pub const AF_UNIX: i32 = 1;
@@ -196,6 +201,10 @@ pub fn ntohl(x: u32) -> u32 {
     u32::from_be(x)
 }
 
+// ============================================================================
+// Raw Socket Operations (Free Functions)
+// ============================================================================
+
 /// Create a socket
 ///
 /// # Arguments
@@ -204,17 +213,12 @@ pub fn ntohl(x: u32) -> u32 {
 /// * `protocol` - Protocol (0 for default)
 ///
 /// # Returns
-/// File descriptor on success, or negative errno on error
-pub fn socket(domain: i32, sock_type: i32, protocol: i32) -> Result<i32, i32> {
+/// File descriptor on success, or Error on failure
+pub fn socket(domain: i32, sock_type: i32, protocol: i32) -> Result<Fd, Error> {
     let ret = unsafe {
-        raw::syscall3(nr::SOCKET, domain as u64, sock_type as u64, protocol as u64)
+        raw::syscall3(nr::SOCKET, domain as u64, sock_type as u64, protocol as u64) as i64
     };
-
-    if (ret as i64) < 0 {
-        Err(-(ret as i64) as i32)
-    } else {
-        Ok(ret as i32)
-    }
+    Error::from_syscall(ret).map(Fd::from_raw)
 }
 
 /// Bind a socket to a local IPv4 address
@@ -224,22 +228,17 @@ pub fn socket(domain: i32, sock_type: i32, protocol: i32) -> Result<i32, i32> {
 /// * `addr` - Local address to bind to
 ///
 /// # Returns
-/// 0 on success, or negative errno on error
-pub fn bind(fd: i32, addr: &SockAddrIn) -> Result<(), i32> {
+/// Ok(()) on success, or Error on failure
+pub fn bind_inet(fd: Fd, addr: &SockAddrIn) -> Result<(), Error> {
     let ret = unsafe {
         raw::syscall3(
             nr::BIND,
-            fd as u64,
+            fd.raw(),
             addr as *const SockAddrIn as u64,
             core::mem::size_of::<SockAddrIn>() as u64,
-        )
+        ) as i64
     };
-
-    if (ret as i64) < 0 {
-        Err(-(ret as i64) as i32)
-    } else {
-        Ok(())
-    }
+    Error::from_syscall(ret).map(|_| ())
 }
 
 /// Bind a Unix domain socket to an address
@@ -249,22 +248,17 @@ pub fn bind(fd: i32, addr: &SockAddrIn) -> Result<(), i32> {
 /// * `addr` - Unix socket address to bind to
 ///
 /// # Returns
-/// 0 on success, or negative errno on error
-pub fn bind_unix(fd: i32, addr: &SockAddrUn) -> Result<(), i32> {
+/// Ok(()) on success, or Error on failure
+pub fn bind_unix(fd: Fd, addr: &SockAddrUn) -> Result<(), Error> {
     let ret = unsafe {
         raw::syscall3(
             nr::BIND,
-            fd as u64,
+            fd.raw(),
             addr as *const SockAddrUn as u64,
             addr.len() as u64,
-        )
+        ) as i64
     };
-
-    if (ret as i64) < 0 {
-        Err(-(ret as i64) as i32)
-    } else {
-        Ok(())
-    }
+    Error::from_syscall(ret).map(|_| ())
 }
 
 /// Send data to a destination address
@@ -275,25 +269,20 @@ pub fn bind_unix(fd: i32, addr: &SockAddrUn) -> Result<(), i32> {
 /// * `dest_addr` - Destination address
 ///
 /// # Returns
-/// Number of bytes sent on success, or negative errno on error
-pub fn sendto(fd: i32, buf: &[u8], dest_addr: &SockAddrIn) -> Result<usize, i32> {
+/// Number of bytes sent on success, or Error on failure
+pub fn sendto(fd: Fd, buf: &[u8], dest_addr: &SockAddrIn) -> Result<usize, Error> {
     let ret = unsafe {
         raw::syscall6(
             nr::SENDTO,
-            fd as u64,
+            fd.raw(),
             buf.as_ptr() as u64,
             buf.len() as u64,
             0, // flags
             dest_addr as *const SockAddrIn as u64,
             core::mem::size_of::<SockAddrIn>() as u64,
-        )
+        ) as i64
     };
-
-    if (ret as i64) < 0 {
-        Err(-(ret as i64) as i32)
-    } else {
-        Ok(ret as usize)
-    }
+    Error::from_syscall(ret).map(|n| n as usize)
 }
 
 /// Receive data from a socket
@@ -304,8 +293,8 @@ pub fn sendto(fd: i32, buf: &[u8], dest_addr: &SockAddrIn) -> Result<usize, i32>
 /// * `src_addr` - Optional buffer to receive source address
 ///
 /// # Returns
-/// Number of bytes received on success, or negative errno on error
-pub fn recvfrom(fd: i32, buf: &mut [u8], src_addr: Option<&mut SockAddrIn>) -> Result<usize, i32> {
+/// Number of bytes received on success, or Error on failure
+pub fn recvfrom(fd: Fd, buf: &mut [u8], src_addr: Option<&mut SockAddrIn>) -> Result<usize, Error> {
     let (addr_ptr, addrlen_ptr) = match src_addr {
         Some(addr) => {
             // We need a mutable length variable
@@ -324,45 +313,35 @@ pub fn recvfrom(fd: i32, buf: &mut [u8], src_addr: Option<&mut SockAddrIn>) -> R
     let ret = unsafe {
         raw::syscall6(
             nr::RECVFROM,
-            fd as u64,
+            fd.raw(),
             buf.as_mut_ptr() as u64,
             buf.len() as u64,
             0, // flags
             addr_ptr,
             addrlen_ptr,
-        )
+        ) as i64
     };
-
-    if (ret as i64) < 0 {
-        Err(-(ret as i64) as i32)
-    } else {
-        Ok(ret as usize)
-    }
+    Error::from_syscall(ret).map(|n| n as usize)
 }
 
-/// Connect a socket to a remote address (TCP)
+/// Connect a socket to a remote IPv4 address (TCP)
 ///
 /// # Arguments
 /// * `fd` - Socket file descriptor
 /// * `addr` - Remote address to connect to
 ///
 /// # Returns
-/// 0 on success, or negative errno on error
-pub fn connect(fd: i32, addr: &SockAddrIn) -> Result<(), i32> {
+/// Ok(()) on success, or Error on failure
+pub fn connect_inet(fd: Fd, addr: &SockAddrIn) -> Result<(), Error> {
     let ret = unsafe {
         raw::syscall3(
             nr::CONNECT,
-            fd as u64,
+            fd.raw(),
             addr as *const SockAddrIn as u64,
             core::mem::size_of::<SockAddrIn>() as u64,
-        )
+        ) as i64
     };
-
-    if (ret as i64) < 0 {
-        Err(-(ret as i64) as i32)
-    } else {
-        Ok(())
-    }
+    Error::from_syscall(ret).map(|_| ())
 }
 
 /// Connect a Unix domain socket to a server
@@ -372,22 +351,17 @@ pub fn connect(fd: i32, addr: &SockAddrIn) -> Result<(), i32> {
 /// * `addr` - Unix socket address to connect to
 ///
 /// # Returns
-/// 0 on success, or negative errno on error
-pub fn connect_unix(fd: i32, addr: &SockAddrUn) -> Result<(), i32> {
+/// Ok(()) on success, or Error on failure
+pub fn connect_unix(fd: Fd, addr: &SockAddrUn) -> Result<(), Error> {
     let ret = unsafe {
         raw::syscall3(
             nr::CONNECT,
-            fd as u64,
+            fd.raw(),
             addr as *const SockAddrUn as u64,
             addr.len() as u64,
-        )
+        ) as i64
     };
-
-    if (ret as i64) < 0 {
-        Err(-(ret as i64) as i32)
-    } else {
-        Ok(())
-    }
+    Error::from_syscall(ret).map(|_| ())
 }
 
 /// Mark a socket as listening for connections (TCP)
@@ -397,17 +371,12 @@ pub fn connect_unix(fd: i32, addr: &SockAddrUn) -> Result<(), i32> {
 /// * `backlog` - Maximum pending connections (usually 128)
 ///
 /// # Returns
-/// 0 on success, or negative errno on error
-pub fn listen(fd: i32, backlog: i32) -> Result<(), i32> {
+/// Ok(()) on success, or Error on failure
+pub fn listen(fd: Fd, backlog: i32) -> Result<(), Error> {
     let ret = unsafe {
-        raw::syscall2(nr::LISTEN, fd as u64, backlog as u64)
+        raw::syscall2(nr::LISTEN, fd.raw(), backlog as u64) as i64
     };
-
-    if (ret as i64) < 0 {
-        Err(-(ret as i64) as i32)
-    } else {
-        Ok(())
-    }
+    Error::from_syscall(ret).map(|_| ())
 }
 
 /// Accept a connection on a listening socket (TCP)
@@ -417,8 +386,8 @@ pub fn listen(fd: i32, backlog: i32) -> Result<(), i32> {
 /// * `addr` - Optional buffer to receive client address
 ///
 /// # Returns
-/// New socket file descriptor for the connection on success, or negative errno on error
-pub fn accept(fd: i32, addr: Option<&mut SockAddrIn>) -> Result<i32, i32> {
+/// New socket file descriptor for the connection on success, or Error on failure
+pub fn accept(fd: Fd, addr: Option<&mut SockAddrIn>) -> Result<Fd, Error> {
     let (addr_ptr, addrlen_ptr) = match addr {
         Some(a) => {
             static mut ADDRLEN: u32 = core::mem::size_of::<SockAddrIn>() as u32;
@@ -434,14 +403,9 @@ pub fn accept(fd: i32, addr: Option<&mut SockAddrIn>) -> Result<i32, i32> {
     };
 
     let ret = unsafe {
-        raw::syscall3(nr::ACCEPT, fd as u64, addr_ptr, addrlen_ptr)
+        raw::syscall3(nr::ACCEPT, fd.raw(), addr_ptr, addrlen_ptr) as i64
     };
-
-    if (ret as i64) < 0 {
-        Err(-(ret as i64) as i32)
-    } else {
-        Ok(ret as i32)
-    }
+    Error::from_syscall(ret).map(Fd::from_raw)
 }
 
 /// Shutdown a socket connection (TCP)
@@ -451,17 +415,12 @@ pub fn accept(fd: i32, addr: Option<&mut SockAddrIn>) -> Result<i32, i32> {
 /// * `how` - SHUT_RD (stop receiving), SHUT_WR (stop sending), or SHUT_RDWR (both)
 ///
 /// # Returns
-/// 0 on success, or negative errno on error
-pub fn shutdown(fd: i32, how: i32) -> Result<(), i32> {
+/// Ok(()) on success, or Error on failure
+pub fn shutdown(fd: Fd, how: i32) -> Result<(), Error> {
     let ret = unsafe {
-        raw::syscall2(nr::SHUTDOWN, fd as u64, how as u64)
+        raw::syscall2(nr::SHUTDOWN, fd.raw(), how as u64) as i64
     };
-
-    if (ret as i64) < 0 {
-        Err(-(ret as i64) as i32)
-    } else {
-        Ok(())
-    }
+    Error::from_syscall(ret).map(|_| ())
 }
 
 /// Create a pair of connected Unix domain sockets
@@ -472,8 +431,8 @@ pub fn shutdown(fd: i32, how: i32) -> Result<(), i32> {
 /// * `protocol` - Protocol (must be 0)
 ///
 /// # Returns
-/// Tuple of two file descriptors (sv[0], sv[1]) on success, or negative errno on error
-pub fn socketpair(domain: i32, sock_type: i32, protocol: i32) -> Result<(i32, i32), i32> {
+/// Tuple of two file descriptors (sv[0], sv[1]) on success, or Error on failure
+pub fn socketpair(domain: i32, sock_type: i32, protocol: i32) -> Result<(Fd, Fd), Error> {
     let mut sv: [i32; 2] = [0, 0];
     let ret = unsafe {
         raw::syscall4(
@@ -482,12 +441,146 @@ pub fn socketpair(domain: i32, sock_type: i32, protocol: i32) -> Result<(i32, i3
             sock_type as u64,
             protocol as u64,
             sv.as_mut_ptr() as u64,
-        )
+        ) as i64
     };
+    Error::from_syscall(ret)?;
+    Ok((Fd::from_raw(sv[0] as u64), Fd::from_raw(sv[1] as u64)))
+}
 
-    if (ret as i64) < 0 {
-        Err(-(ret as i64) as i32)
-    } else {
-        Ok((sv[0], sv[1]))
+/// Send data on a connected socket (TCP)
+///
+/// # Arguments
+/// * `fd` - Socket file descriptor
+/// * `buf` - Data to send
+///
+/// # Returns
+/// Number of bytes sent on success, or Error on failure
+pub fn send(fd: Fd, buf: &[u8]) -> Result<usize, Error> {
+    let ret = unsafe {
+        raw::syscall6(
+            nr::SENDTO,
+            fd.raw(),
+            buf.as_ptr() as u64,
+            buf.len() as u64,
+            0, // flags
+            0, // NULL addr (connected socket)
+            0, // addrlen
+        ) as i64
+    };
+    Error::from_syscall(ret).map(|n| n as usize)
+}
+
+/// Receive data from a connected socket (TCP)
+///
+/// # Arguments
+/// * `fd` - Socket file descriptor
+/// * `buf` - Buffer to receive into
+///
+/// # Returns
+/// Number of bytes received on success, or Error on failure
+pub fn recv(fd: Fd, buf: &mut [u8]) -> Result<usize, Error> {
+    let ret = unsafe {
+        raw::syscall6(
+            nr::RECVFROM,
+            fd.raw(),
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+            0, // flags
+            0, // NULL addr
+            0, // NULL addrlen
+        ) as i64
+    };
+    Error::from_syscall(ret).map(|n| n as usize)
+}
+
+/// Close a socket file descriptor.
+///
+/// This is a convenience wrapper around the raw close syscall for sockets.
+fn close_fd(fd: Fd) {
+    unsafe {
+        raw::syscall1(nr::CLOSE, fd.raw());
+    }
+}
+
+// ============================================================================
+// RAII Socket Wrappers
+// ============================================================================
+
+/// RAII TCP connection.
+pub struct TcpStream(OwnedFd);
+
+impl TcpStream {
+    /// Connect to a remote address.
+    pub fn connect(addr: &SockAddrIn) -> Result<TcpStream, Error> {
+        let fd = socket(AF_INET as i32, SOCK_STREAM as i32, 0)?;
+        // If connect fails, we need to close the fd
+        if let Err(e) = connect_inet(fd, addr) {
+            close_fd(fd);
+            return Err(e);
+        }
+        Ok(TcpStream(OwnedFd::new(fd)))
+    }
+
+    /// Get the underlying file descriptor (borrowed, not owned).
+    pub fn fd(&self) -> Fd {
+        self.0.fd()
+    }
+
+    /// Read data from the connection.
+    pub fn read(&self, buf: &mut [u8]) -> Result<usize, Error> {
+        recv(self.0.fd(), buf)
+    }
+
+    /// Write data to the connection.
+    pub fn write(&self, buf: &[u8]) -> Result<usize, Error> {
+        send(self.0.fd(), buf)
+    }
+
+    /// Release the fd without closing it.
+    pub fn into_raw_fd(self) -> Fd {
+        self.0.into_raw()
+    }
+}
+
+/// RAII UDP socket.
+pub struct UdpSocket(OwnedFd);
+
+impl UdpSocket {
+    /// Create and bind a UDP socket.
+    pub fn bind(addr: &SockAddrIn) -> Result<UdpSocket, Error> {
+        let fd = socket(AF_INET as i32, SOCK_DGRAM as i32, 0)?;
+        if let Err(e) = bind_inet(fd, addr) {
+            close_fd(fd);
+            return Err(e);
+        }
+        Ok(UdpSocket(OwnedFd::new(fd)))
+    }
+
+    /// Create an unbound UDP socket.
+    pub fn new() -> Result<UdpSocket, Error> {
+        let fd = socket(AF_INET as i32, SOCK_DGRAM as i32, 0)?;
+        Ok(UdpSocket(OwnedFd::new(fd)))
+    }
+
+    /// Get the underlying file descriptor (borrowed, not owned).
+    pub fn fd(&self) -> Fd {
+        self.0.fd()
+    }
+
+    /// Send data to a destination address.
+    pub fn send_to(&self, buf: &[u8], addr: &SockAddrIn) -> Result<usize, Error> {
+        sendto(self.0.fd(), buf, addr)
+    }
+
+    /// Receive data and the sender's address.
+    pub fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SockAddrIn), Error> {
+        let mut src_addr = SockAddrIn::default();
+        let n = recvfrom(self.0.fd(), buf, Some(&mut src_addr))?;
+        Ok((n, src_addr))
+    }
+
+    /// Release the fd without closing it.
+    pub fn into_raw_fd(self) -> Fd {
+        self.0.into_raw()
     }
 }
