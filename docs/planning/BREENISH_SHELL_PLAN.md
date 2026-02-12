@@ -57,7 +57,9 @@
   - Tab completion for commands (PATH scan) and filenames (directory listing)
   - Nullish coalescing operator (??) with IsNullish opcode
   - Prefix/postfix increment/decrement operators (++/--)
-  - 162 passing tests, bsh v0.5.0 with full shell builtins
+  - Map and Set collections with full method support (get/set/has/delete/size/clear/keys/values/forEach)
+  - do...while loops with continue fix (deferred forward-jump patching)
+  - 182 passing tests, bsh v0.5.0 with full shell builtins
 - **Phase 6**: PLANNED -- Advanced features (class, Proxy, JIT)
 
 ## Architecture
