@@ -414,12 +414,15 @@ impl<'a> Compiler<'a> {
         self.lexer.next_token(); // consume 'for'
         self.lexer.expect(&TokenKind::LeftParen)?;
 
-        // Check for `for (let/const x of expr)` pattern
+        // Check for `for (let/const x of expr)` or `for (let/const x in expr)` pattern
         if matches!(self.lexer.peek().kind, TokenKind::Let | TokenKind::Const) {
             // Check if this is for...of by peeking ahead: let IDENT of
             if let TokenKind::Identifier(_) = &self.lexer.peek_ahead(1).kind {
                 if self.lexer.peek_ahead(2).kind == TokenKind::Of {
                     return self.compile_for_of_statement();
+                }
+                if self.lexer.peek_ahead(2).kind == TokenKind::In {
+                    return self.compile_for_in_statement();
                 }
             }
         }
@@ -548,6 +551,106 @@ impl<'a> Compiler<'a> {
         let exit_jump = self.code.emit_jump(Op::JumpIfFalse);
 
         // Set loop variable = iterable[index]
+        self.code.emit_op_u16(Op::LoadLocal, iterable_slot);
+        self.code.emit_op_u16(Op::LoadLocal, index_slot);
+        self.code.emit_op(Op::GetIndex);
+        self.code.emit_op_u16(Op::StoreLocal, var_slot);
+
+        // Jump over the increment code (to the body)
+        let body_jump = self.code.emit_jump(Op::Jump);
+
+        // Increment code (continue target and end-of-body target)
+        let increment_offset = self.code.current_offset();
+        self.code.emit_op_u16(Op::LoadLocal, index_slot);
+        let one_idx = self.code.add_number(1.0);
+        self.code.emit_op_u16(Op::LoadConst, one_idx);
+        self.code.emit_op(Op::Add);
+        self.code.emit_op_u16(Op::StoreLocal, index_slot);
+        // Jump back to condition check
+        self.code.emit_op_u16(Op::Jump, loop_start as u16);
+
+        // Body
+        let body_start = self.code.current_offset();
+        self.code.patch_jump(body_jump, body_start);
+
+        self.loop_stack.push(LoopContext {
+            break_jumps: Vec::new(),
+            continue_target: increment_offset,
+        });
+
+        self.compile_statement()?;
+
+        // Jump to increment
+        self.code.emit_op_u16(Op::Jump, increment_offset as u16);
+
+        let end = self.code.current_offset();
+        self.code.patch_jump(exit_jump, end);
+
+        // Patch break jumps
+        let ctx = self.loop_stack.pop().unwrap();
+        for brk in ctx.break_jumps {
+            self.code.patch_jump(brk, end);
+        }
+
+        Ok(())
+    }
+
+    /// Compile `for (let key in obj) { body }`
+    /// Gets the object's string keys via GetKeys, then iterates over the keys array.
+    fn compile_for_in_statement(&mut self) -> JsResult<()> {
+        let is_const = self.lexer.peek().kind == TokenKind::Const;
+        self.lexer.next_token(); // consume 'let' or 'const'
+
+        let tok = self.lexer.next_token().clone();
+        let var_name = match &tok.kind {
+            TokenKind::Identifier(n) => n.clone(),
+            _ => {
+                return Err(JsError::syntax(
+                    "expected variable name in for...in",
+                    tok.span.line,
+                    tok.span.column,
+                ));
+            }
+        };
+
+        self.lexer.expect(&TokenKind::In)?;
+
+        // Compile the object expression
+        self.compile_expression()?;
+        self.lexer.expect(&TokenKind::RightParen)?;
+
+        // Emit GetKeys to convert object to array of string keys
+        self.code.emit_op(Op::GetKeys);
+
+        // From here, reuse the same for-of iteration pattern over the keys array
+        // Store keys array in a temp local
+        let iterable_slot = self.declare_local(String::from("__for_in_keys__"), false);
+        self.code.emit_op_u16(Op::StoreLocal, iterable_slot);
+
+        // Initialize index counter to 0
+        let index_slot = self.declare_local(String::from("__for_in_index__"), false);
+        let zero_idx = self.code.add_number(0.0);
+        self.code.emit_op_u16(Op::LoadConst, zero_idx);
+        self.code.emit_op_u16(Op::StoreLocal, index_slot);
+
+        // Declare the loop variable
+        let var_slot = self.declare_local(var_name, is_const);
+
+        // Loop start: check index < keys.length
+        let loop_start = self.code.current_offset();
+
+        // Load index
+        self.code.emit_op_u16(Op::LoadLocal, index_slot);
+        // Load keys.length
+        self.code.emit_op_u16(Op::LoadLocal, iterable_slot);
+        let length_id = self.strings.intern("length");
+        let length_idx = self.code.add_string(length_id.0);
+        self.code.emit_op_u16(Op::GetPropertyConst, length_idx);
+        // Compare: index < length
+        self.code.emit_op(Op::LessThan);
+        let exit_jump = self.code.emit_jump(Op::JumpIfFalse);
+
+        // Set loop variable = keys[index]
         self.code.emit_op_u16(Op::LoadLocal, iterable_slot);
         self.code.emit_op_u16(Op::LoadLocal, index_slot);
         self.code.emit_op(Op::GetIndex);
@@ -1619,14 +1722,14 @@ impl<'a> Compiler<'a> {
 
             TokenKind::True => {
                 self.lexer.next_token();
-                let idx = self.code.add_number(1.0);
+                let idx = self.code.add_constant(Constant::Boolean(true));
                 self.code.emit_op_u16(Op::LoadConst, idx);
                 Ok(())
             }
 
             TokenKind::False => {
                 self.lexer.next_token();
-                let idx = self.code.add_number(0.0);
+                let idx = self.code.add_constant(Constant::Boolean(false));
                 self.code.emit_op_u16(Op::LoadConst, idx);
                 Ok(())
             }
@@ -1970,16 +2073,12 @@ impl<'a> Compiler<'a> {
     // --- Helpers ---
 
     fn emit_undefined(&mut self) {
-        // Emit undefined as a special constant
-        // For Phase 1, we use NaN to represent undefined in the constant pool
-        // The VM will handle this correctly
-        let idx = self.code.add_constant(Constant::Number(f64::NAN));
+        let idx = self.code.add_constant(Constant::Undefined);
         self.code.emit_op_u16(Op::LoadConst, idx);
     }
 
     fn emit_null(&mut self) {
-        // For Phase 1, null is 0.0 (will be properly handled in Phase 2)
-        let idx = self.code.add_number(0.0);
+        let idx = self.code.add_constant(Constant::Null);
         self.code.emit_op_u16(Op::LoadConst, idx);
     }
 

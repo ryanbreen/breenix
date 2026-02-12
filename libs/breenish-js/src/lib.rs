@@ -2157,12 +2157,9 @@ mod tests {
 
     #[test]
     fn test_json_stringify_nested() {
-        // Note: the JS compiler represents `true` as JsValue::number(1.0),
-        // so JSON.stringify outputs 1 instead of true for JS-created booleans.
-        // JSON.parse("true") creates a proper JsValue::boolean which roundtrips correctly.
         assert_eq!(
             eval_json("let o = {arr: [1, 2], obj: {x: true}}; print(JSON.stringify(o));"),
-            "{\"arr\":[1,2],\"obj\":{\"x\":1}}\n"
+            "{\"arr\":[1,2],\"obj\":{\"x\":true}}\n"
         );
     }
 
@@ -2261,5 +2258,57 @@ mod tests {
     #[test]
     fn test_parse_float() {
         assert_eq!(eval_math("print(parseFloat(\"3.14\"));"), "3.14\n");
+    }
+
+    // --- for...in tests ---
+
+    #[test]
+    fn test_for_in_object() {
+        assert_eq!(
+            eval_and_capture("let obj = {a: 1, b: 2, c: 3}; let keys = ''; for (let k in obj) { keys += k + ' '; } print(keys);"),
+            "a b c \n"
+        );
+    }
+
+    #[test]
+    fn test_for_in_empty_object() {
+        assert_eq!(
+            eval_and_capture("let obj = {}; let count = 0; for (let k in obj) { count += 1; } print(count);"),
+            "0\n"
+        );
+    }
+
+    #[test]
+    fn test_for_in_with_values() {
+        assert_eq!(
+            eval_and_capture("let obj = {x: 10, y: 20}; let sum = 0; for (let k in obj) { sum += obj[k]; } print(sum);"),
+            "30\n"
+        );
+    }
+
+    // --- typeof tests ---
+
+    #[test]
+    fn test_typeof_basic() {
+        assert_eq!(
+            eval_and_capture("print(typeof 42); print(typeof 'hello'); print(typeof undefined); print(typeof null);"),
+            "number\nstring\nundefined\nobject\n"
+        );
+    }
+
+    #[test]
+    fn test_typeof_function() {
+        assert_eq!(
+            eval_and_capture("function foo() {} print(typeof foo);"),
+            "function\n"
+        );
+    }
+
+    #[test]
+    fn test_typeof_boolean() {
+        assert_eq!(
+            eval_and_capture("print(typeof true); print(typeof false);"),
+            "boolean\nboolean\n"
+        );
     }
 }

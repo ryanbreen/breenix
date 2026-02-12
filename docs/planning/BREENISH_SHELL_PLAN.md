@@ -42,7 +42,13 @@
   - Number object: isInteger, isFinite, isNaN, parseInt, parseFloat
   - Global parseInt/parseFloat functions
   - Fixed NaN-boxing QNAN constant for correct null/boolean tag encoding
-  - 128 passing tests, bsh.elf includes JSON/Math/Number builtins
+  - for...in loops (iterating object keys via GetKeys opcode)
+  - Proper typeof for booleans, null, undefined (Constant::Boolean/Null/Undefined)
+  - glob() native function with * and ? pattern matching
+  - env() native function: get/set/enumerate environment variables
+  - source command: load and evaluate script files in current context
+  - .bshrc startup script: auto-loads /etc/bshrc on REPL start
+  - 134 passing tests, bsh v0.5.0 with full shell builtins
 - **Phase 6**: PLANNED -- Advanced features (class, Proxy, JIT)
 
 ## Architecture
