@@ -24,7 +24,11 @@ use core::fmt;
 use crate::string::StringId;
 
 /// Quiet NaN prefix used as tag base.
-const QNAN: u64 = 0x7FFC_0000_0000_0000;
+///
+/// We use 0x7FF8 (bit 51 set = quiet NaN indicator) rather than 0x7FFC,
+/// because 0x7FFC has bit 50 set which overlaps with TAG_MASK bits 48-50
+/// and corrupts tag extraction for tags 1-3 (int, bool, null).
+const QNAN: u64 = 0x7FF8_0000_0000_0000;
 
 /// Tag bits (shifted into bits 48-50).
 const TAG_INT: u64 = 0x0001_0000_0000_0000;
