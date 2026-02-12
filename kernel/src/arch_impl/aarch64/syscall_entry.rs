@@ -357,6 +357,7 @@ mod syscall_nums {
     // Graphics syscalls (Breenix-specific)
     pub const FBINFO: u64 = 410;
     pub const FBDRAW: u64 = 411;
+    pub const FBMMAP: u64 = 412;
     // Testing syscalls (Breenix-specific)
     pub const COW_STATS: u64 = 500;
     pub const SIMULATE_OOM: u64 = 501;
@@ -836,6 +837,12 @@ fn dispatch_syscall(
         }
         syscall_nums::FBDRAW => {
             match crate::syscall::graphics::sys_fbdraw(arg1) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::FBMMAP => {
+            match crate::syscall::graphics::sys_fbmmap() {
                 crate::syscall::SyscallResult::Ok(result) => result,
                 crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
             }
@@ -1418,7 +1425,7 @@ fn load_elf_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, i32> {
     // Trace: entering load_elf_from_ext2
     super::trace::trace_exec(b'1');
 
-    let fs_guard = ext2::root_fs();
+    let fs_guard = ext2::root_fs_read();
     // Trace: got fs_guard
     super::trace::trace_exec(b'2');
 

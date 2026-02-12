@@ -2,6 +2,8 @@
 //!
 //! Provides syscalls for querying and drawing to the framebuffer.
 
+extern crate alloc;
+
 // Architecture-specific framebuffer imports
 #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
 use crate::logger::SHELL_FRAMEBUFFER;
@@ -9,7 +11,7 @@ use crate::logger::SHELL_FRAMEBUFFER;
 use crate::graphics::arm64_fb::SHELL_FRAMEBUFFER;
 
 #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-use crate::graphics::primitives::{Color, Rect, fill_rect, draw_rect, fill_circle, draw_circle, draw_line};
+use crate::graphics::primitives::{Canvas, Color, Rect, fill_rect, draw_rect, fill_circle, draw_circle, draw_line};
 use super::SyscallResult;
 
 /// Framebuffer info structure returned by sys_fbinfo.
@@ -290,13 +292,106 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
         }
         6 => {
             // Flush: sync buffer to screen
+            // If this process has an mmap'd framebuffer, copy user buffer → shadow
+            // buffer's left pane before flushing.
             #[cfg(target_arch = "x86_64")]
-            if let Some(db) = fb_guard.double_buffer_mut() {
-                db.flush_full();
+            {
+                // Check if this process has an fb_mmap by reading process state.
+                // We read fb_mmap info while we already hold the FB lock, but since
+                // fb_mmap is on the process (not the FB), we need the process manager lock.
+                // To avoid deadlock, we drop the FB guard, read process info, then re-acquire.
+                let fb_mmap_info = {
+                    use crate::syscall::memory_common::get_current_thread_id;
+                    let thread_id = get_current_thread_id();
+                    if let Some(tid) = thread_id {
+                        let mgr_guard = crate::process::manager();
+                        if let Some(ref mgr) = *mgr_guard {
+                            mgr.find_process_by_thread(tid)
+                                .and_then(|(_pid, proc)| proc.fb_mmap)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                };
+
+                if let Some(mmap_info) = fb_mmap_info {
+                    // Copy user buffer → shadow buffer's left pane row by row
+                    use crate::graphics::primitives::Canvas;
+                    let fb_stride_bytes = fb_guard.stride() * fb_guard.bytes_per_pixel();
+                    let row_bytes = mmap_info.width * mmap_info.bpp;
+
+                    if let Some(db) = fb_guard.double_buffer_mut() {
+                        let shadow = db.buffer_mut();
+                        for y in 0..mmap_info.height {
+                            let user_row_ptr = (mmap_info.user_addr as usize) + y * mmap_info.user_stride;
+                            let shadow_row_offset = y * fb_stride_bytes;
+
+                            if shadow_row_offset + row_bytes <= shadow.len() {
+                                unsafe {
+                                    core::ptr::copy_nonoverlapping(
+                                        user_row_ptr as *const u8,
+                                        shadow[shadow_row_offset..].as_mut_ptr(),
+                                        row_bytes,
+                                    );
+                                }
+                            }
+                        }
+
+                        // Mark the left pane dirty and flush incrementally
+                        db.mark_region_dirty_rect(0, mmap_info.height, 0, mmap_info.width);
+                        db.flush();
+                    }
+                } else {
+                    // No mmap: existing flush_full behavior
+                    if let Some(db) = fb_guard.double_buffer_mut() {
+                        db.flush_full();
+                    }
+                }
             }
             #[cfg(target_arch = "aarch64")]
             {
-                // ARM64 uses VirtIO GPU flush
+                // Check if this process has an fb_mmap
+                let fb_mmap_info = {
+                    use crate::syscall::memory_common::get_current_thread_id;
+                    let thread_id = get_current_thread_id();
+                    if let Some(tid) = thread_id {
+                        let mgr_guard = crate::process::manager();
+                        if let Some(ref mgr) = *mgr_guard {
+                            mgr.find_process_by_thread(tid)
+                                .and_then(|(_pid, proc)| proc.fb_mmap)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                };
+
+                if let Some(mmap_info) = fb_mmap_info {
+                    // Copy user buffer → GPU framebuffer's left pane row by row.
+                    // ARM64 has no double buffer; writes go directly to VirtIO GPU memory.
+                    let fb_stride_bytes = fb_guard.stride() * fb_guard.bytes_per_pixel();
+                    let row_bytes = mmap_info.width * mmap_info.bpp;
+                    let gpu_buf = fb_guard.buffer_mut();
+
+                    for y in 0..mmap_info.height {
+                        let user_row_ptr = (mmap_info.user_addr as usize) + y * mmap_info.user_stride;
+                        let gpu_row_offset = y * fb_stride_bytes;
+
+                        if gpu_row_offset + row_bytes <= gpu_buf.len() {
+                            unsafe {
+                                core::ptr::copy_nonoverlapping(
+                                    user_row_ptr as *const u8,
+                                    gpu_buf[gpu_row_offset..].as_mut_ptr(),
+                                    row_bytes,
+                                );
+                            }
+                        }
+                    }
+                }
+                // Flush VirtIO GPU (transfer to host + display)
                 let _ = fb_guard.flush();
             }
         }
@@ -311,5 +406,156 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
 /// sys_fbdraw - Stub for non-interactive mode
 #[cfg(not(any(target_arch = "aarch64", feature = "interactive")))]
 pub fn sys_fbdraw(_cmd_ptr: u64) -> SyscallResult {
+    SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
+}
+
+/// sys_fbmmap - Map a framebuffer buffer into the calling process's address space
+///
+/// Allocates physical frames, maps them into the process as a compact left-pane
+/// buffer, and returns the userspace pointer. Drawing can then happen with zero
+/// syscalls; only the flush requires a syscall.
+///
+/// # Returns
+/// * Userspace address of the mapped buffer on success
+/// * -EBUSY if already mapped
+/// * -ENOMEM if allocation fails
+/// * -ENODEV if no framebuffer is available
+#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+pub fn sys_fbmmap() -> SyscallResult {
+    use crate::memory::vma::{MmapFlags, Protection, Vma};
+    use crate::syscall::memory_common::{
+        cleanup_mapped_pages, flush_tlb, get_current_thread_id, prot_to_page_flags,
+        round_down_to_page, round_up_to_page, PAGE_SIZE,
+    };
+    #[cfg(target_arch = "x86_64")]
+    use x86_64::structures::paging::{Page, Size4KiB};
+    #[cfg(target_arch = "x86_64")]
+    use x86_64::VirtAddr;
+    #[cfg(not(target_arch = "x86_64"))]
+    use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
+
+    // Get framebuffer dimensions (acquire and release FB lock quickly)
+    let (pane_width, height, bpp) = {
+        let fb = match SHELL_FRAMEBUFFER.get() {
+            Some(fb) => fb,
+            None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+        };
+        let fb_guard = fb.lock();
+        (fb_guard.width() / 2, fb_guard.height(), fb_guard.bytes_per_pixel())
+    };
+
+    let user_stride = pane_width * bpp;
+    let buf_size = (user_stride * height) as u64;
+    let mapping_size = round_up_to_page(buf_size);
+
+    // Get current process
+    let current_thread_id = match get_current_thread_id() {
+        Some(id) => id,
+        None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
+    };
+
+    let mut manager_guard = crate::process::manager();
+    let manager = match *manager_guard {
+        Some(ref mut m) => m,
+        None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
+    };
+
+    let (_pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
+        Some(p) => p,
+        None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
+    };
+
+    // Check not already mapped
+    if process.fb_mmap.is_some() {
+        return SyscallResult::Err(16); // EBUSY
+    }
+
+    // Allocate virtual address range from mmap_hint (grows downward)
+    let new_addr = round_down_to_page(process.mmap_hint.saturating_sub(mapping_size));
+    if new_addr < 0x1000_0000 {
+        return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
+    }
+    process.mmap_hint = new_addr;
+
+    let start_addr = new_addr;
+    let end_addr = start_addr + mapping_size;
+
+    // Get the process page table
+    let page_table = match process.page_table.as_mut() {
+        Some(pt) => pt,
+        None => return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64),
+    };
+
+    // Map pages with USER_ACCESSIBLE | WRITABLE (PROT_READ=1 | PROT_WRITE=2 = 3)
+    let prot = Protection::from_bits_truncate(3);
+    let page_flags = prot_to_page_flags(prot);
+    let start_page = Page::<Size4KiB>::containing_address(VirtAddr::new(start_addr));
+    let end_page = Page::<Size4KiB>::containing_address(VirtAddr::new(end_addr - 1));
+    let physical_memory_offset = crate::memory::physical_memory_offset();
+
+    let mut mapped_pages = alloc::vec::Vec::new();
+    let mut current_page = start_page;
+
+    loop {
+        let frame = match crate::memory::frame_allocator::allocate_frame() {
+            Some(f) => f,
+            None => {
+                cleanup_mapped_pages(page_table, &mapped_pages);
+                return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
+            }
+        };
+
+        if let Err(_e) = page_table.map_page(current_page, frame, page_flags) {
+            crate::memory::frame_allocator::deallocate_frame(frame);
+            cleanup_mapped_pages(page_table, &mapped_pages);
+            return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
+        }
+
+        // Zero the page
+        let phys_addr = frame.start_address().as_u64();
+        let virt_ptr = (physical_memory_offset.as_u64() + phys_addr) as *mut u8;
+        unsafe {
+            core::ptr::write_bytes(virt_ptr, 0, PAGE_SIZE as usize);
+        }
+
+        flush_tlb(current_page.start_address());
+        mapped_pages.push((current_page, frame));
+
+        if current_page >= end_page {
+            break;
+        }
+        current_page += 1;
+    }
+
+    // Create VMA (MAP_ANONYMOUS=0x20 | MAP_PRIVATE=0x02 = 0x22)
+    let vma = Vma::new(
+        VirtAddr::new(start_addr),
+        VirtAddr::new(end_addr),
+        prot,
+        MmapFlags::from_bits_truncate(0x22),
+    );
+    process.vmas.push(vma);
+
+    // Store FbMmapInfo
+    process.fb_mmap = Some(crate::process::process::FbMmapInfo {
+        user_addr: start_addr,
+        width: pane_width,
+        height,
+        user_stride,
+        bpp,
+        mapping_size,
+    });
+
+    log::info!(
+        "sys_fbmmap: mapped {}x{} fb buffer at {:#x} ({} pages)",
+        pane_width, height, start_addr, mapped_pages.len()
+    );
+
+    SyscallResult::Ok(start_addr)
+}
+
+/// sys_fbmmap - Stub for non-interactive mode
+#[cfg(not(any(target_arch = "aarch64", feature = "interactive")))]
+pub fn sys_fbmmap() -> SyscallResult {
     SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
 }

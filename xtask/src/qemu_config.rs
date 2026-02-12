@@ -229,6 +229,37 @@ impl QemuConfig {
         }
     }
 
+    /// Create configuration for the boot-stages validator.
+    pub fn for_boot_stages(arch: Arch) -> Self {
+        match &arch {
+            Arch::X86_64 => {
+                let user = PathBuf::from("target/xtask_user_output.txt");
+                let kernel = PathBuf::from("target/xtask_boot_stages_output.txt");
+                QemuConfig {
+                    arch,
+                    features: vec!["testing".into(), "external_test_bins".into()],
+                    serial_files: vec![user, kernel.clone()],
+                    kernel_log_file: kernel,
+                    qmp_socket: None,
+                    extra_qemu_args: vec![],
+                    ext2_disk: None,
+                }
+            }
+            Arch::Arm64 => {
+                let output = PathBuf::from("target/arm64_boot_stages_output.txt");
+                QemuConfig {
+                    arch,
+                    features: vec!["testing".into()],
+                    serial_files: vec![output.clone()],
+                    kernel_log_file: output,
+                    qmp_socket: None,
+                    extra_qemu_args: vec![],
+                    ext2_disk: Some(PathBuf::from("target/arm64_boot_stages_ext2.img")),
+                }
+            }
+        }
+    }
+
     /// Create configuration for the BTRT boot test.
     pub fn for_btrt(arch: Arch) -> Self {
         let serial_file = match &arch {

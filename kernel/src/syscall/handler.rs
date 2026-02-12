@@ -392,6 +392,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         // Graphics syscalls
         Some(SyscallNumber::FbInfo) => super::graphics::sys_fbinfo(args.0),
         Some(SyscallNumber::FbDraw) => super::graphics::sys_fbdraw(args.0),
+        Some(SyscallNumber::FbMmap) => super::graphics::sys_fbmmap(),
         None => {
             log::warn!("Unknown syscall number: {} - returning ENOSYS", syscall_num);
             SyscallResult::Err(super::ErrorCode::NoSys as u64)

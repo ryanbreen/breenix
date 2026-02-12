@@ -18,7 +18,7 @@ pub use file::*;
 use crate::block::virtio::VirtioBlockWrapper;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use spin::Mutex;
+use spin::RwLock;
 
 /// A mounted ext2 filesystem instance
 ///
@@ -1349,7 +1349,12 @@ impl Ext2Fs {
 }
 
 /// Global mounted ext2 root filesystem
-static ROOT_EXT2: Mutex<Option<Ext2Fs>> = Mutex::new(None);
+///
+/// Uses RwLock to allow concurrent read access (exec, file reads, getdents)
+/// while exclusive write access is needed only for mutations (create, truncate,
+/// rename, link, unlink, write). This prevents spinlock contention under slow
+/// I/O where a writer holding the lock blocks all readers.
+static ROOT_EXT2: RwLock<Option<Ext2Fs>> = RwLock::new(None);
 
 /// Initialize the root ext2 filesystem
 ///
@@ -1388,19 +1393,35 @@ pub fn init_root_fs() -> Result<(), &'static str> {
     );
 
     // Store globally
-    *ROOT_EXT2.lock() = Some(fs);
+    *ROOT_EXT2.write() = Some(fs);
 
     Ok(())
 }
 
-/// Access the root ext2 filesystem
+/// Access the root ext2 filesystem for read-only operations
 ///
-/// Returns None if the filesystem hasn't been initialized yet.
-pub fn root_fs() -> spin::MutexGuard<'static, Option<Ext2Fs>> {
-    ROOT_EXT2.lock()
+/// Multiple readers can hold this lock concurrently, allowing parallel
+/// exec, file reads, getdents, and stat operations without contention.
+pub fn root_fs_read() -> spin::RwLockReadGuard<'static, Option<Ext2Fs>> {
+    ROOT_EXT2.read()
+}
+
+/// Access the root ext2 filesystem for write operations
+///
+/// Exclusive access — blocks all readers and other writers.
+/// Use only for operations that modify filesystem state: create, truncate,
+/// rename, link, unlink, mkdir, rmdir, write.
+///
+/// Uses upgradeable_read() + upgrade() to prevent writer starvation.
+/// spin::RwLock is reader-preferring: write() spins until all readers release,
+/// but new readers can keep arriving indefinitely. The upgradeable guard sets
+/// the UPGRADED bit, which causes try_read() to reject new readers. The writer
+/// then only waits for existing readers to drain, guaranteeing forward progress.
+pub fn root_fs_write() -> spin::RwLockWriteGuard<'static, Option<Ext2Fs>> {
+    ROOT_EXT2.upgradeable_read().upgrade()
 }
 
 /// Check if the root filesystem is mounted
 pub fn is_mounted() -> bool {
-    ROOT_EXT2.lock().is_some()
+    ROOT_EXT2.read().is_some()
 }

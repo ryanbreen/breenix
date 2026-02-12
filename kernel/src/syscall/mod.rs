@@ -140,6 +140,7 @@ pub enum SyscallNumber {
     // Graphics syscalls (Breenix-specific)
     FbInfo = 410,       // Breenix: get framebuffer info
     FbDraw = 411,       // Breenix: draw to framebuffer (left pane)
+    FbMmap = 412,       // Breenix: mmap framebuffer into userspace
     CowStats = 500,     // Breenix: get Copy-on-Write statistics (for testing)
     SimulateOom = 501,  // Breenix: enable/disable OOM simulation (for testing)
 }
@@ -232,6 +233,7 @@ impl SyscallNumber {
             // Graphics syscalls
             410 => Some(Self::FbInfo),
             411 => Some(Self::FbDraw),
+            412 => Some(Self::FbMmap),
             500 => Some(Self::CowStats),
             501 => Some(Self::SimulateOom),
             _ => None,

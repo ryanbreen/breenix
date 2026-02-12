@@ -200,6 +200,23 @@ pub fn fb_draw_line(x1: i32, y1: i32, x2: i32, y2: i32, color: u32) -> Result<()
     fbdraw(&cmd)
 }
 
+/// Map a framebuffer buffer into this process's address space.
+///
+/// Returns a pointer to a compact left-pane buffer that can be drawn to
+/// directly with zero syscalls. Call `fb_flush()` after drawing to sync
+/// the buffer to the screen.
+///
+/// The buffer layout is: `stride = left_pane_width * bytes_per_pixel` (compact).
+/// Use `fbinfo()` to get dimensions and pixel format.
+pub fn fb_mmap() -> Result<*mut u8, i32> {
+    let result = unsafe { raw::syscall0(nr::FBMMAP) };
+    if (result as i64) < 0 {
+        Err(-(result as i64) as i32)
+    } else {
+        Ok(result as *mut u8)
+    }
+}
+
 /// Flush the framebuffer (sync double buffer to screen)
 pub fn fb_flush() -> Result<(), i32> {
     let cmd = FbDrawCmd {
