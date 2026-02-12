@@ -180,12 +180,15 @@ fn native_pwd(
 ) -> JsResult<JsValue> {
     let mut buf = [0u8; 1024];
     match libbreenix::process::getcwd(&mut buf) {
-        Ok(len) => {
-            let path = core::str::from_utf8(&buf[..len]).unwrap_or("");
+        Ok(len) if len <= buf.len() => {
+            let path = core::str::from_utf8(&buf[..len]).unwrap_or("/");
             let id = strings.intern(path);
             Ok(JsValue::string(id))
         }
-        Err(_) => Err(JsError::runtime("pwd: failed to get working directory")),
+        _ => {
+            let id = strings.intern("/");
+            Ok(JsValue::string(id))
+        }
     }
 }
 
@@ -1588,7 +1591,7 @@ fn source_file(ctx: &mut Context, path: &str) {
 fn get_short_cwd() -> Option<String> {
     let mut buf = [0u8; 1024];
     match libbreenix::process::getcwd(&mut buf) {
-        Ok(len) => {
+        Ok(len) if len <= buf.len() => {
             let cwd = std::str::from_utf8(&buf[..len]).ok()?;
             if cwd == "/" {
                 Some(String::from("/"))
@@ -1597,7 +1600,7 @@ fn get_short_cwd() -> Option<String> {
                 cwd.rsplit('/').next().map(String::from)
             }
         }
-        Err(_) => None,
+        _ => None,
     }
 }
 
