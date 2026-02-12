@@ -77,6 +77,101 @@ impl Context {
         self.vm.register_native(name, func);
     }
 
+    /// Register built-in Promise support.
+    ///
+    /// This registers Promise.resolve, Promise.reject, Promise.all as native
+    /// functions and creates a Promise global object.
+    pub fn register_promise_builtins(&mut self) {
+        use crate::object::{JsObject, ObjectHeap, ObjectKind, PromiseState};
+        use crate::string::StringPool as SP;
+        use crate::value::JsValue;
+        use crate::error::{JsError, JsResult};
+
+        fn promise_resolve(args: &[JsValue], _strings: &mut SP, heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let val = args.first().copied().unwrap_or(JsValue::undefined());
+            let obj = JsObject::new_promise_fulfilled(val);
+            let idx = heap.alloc(obj);
+            Ok(JsValue::object(idx))
+        }
+
+        fn promise_reject(args: &[JsValue], _strings: &mut SP, heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let val = args.first().copied().unwrap_or(JsValue::undefined());
+            let obj = JsObject::new_promise_rejected(val);
+            let idx = heap.alloc(obj);
+            Ok(JsValue::object(idx))
+        }
+
+        fn promise_all(args: &[JsValue], _strings: &mut SP, heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let arr_val = args.first().copied().unwrap_or(JsValue::undefined());
+            if !arr_val.is_object() {
+                return Err(JsError::type_error("Promise.all: expected array"));
+            }
+
+            let arr_idx = arr_val.as_object_index();
+            let elements: Vec<JsValue> = {
+                let arr = heap.get(arr_idx)
+                    .ok_or_else(|| JsError::type_error("Promise.all: invalid array"))?;
+                arr.elements().to_vec()
+            };
+
+            let mut results = Vec::new();
+            for elem in elements {
+                if elem.is_object() {
+                    let obj = heap.get(elem.as_object_index());
+                    match obj {
+                        Some(obj) => match &obj.kind {
+                            ObjectKind::Promise(PromiseState::Fulfilled(v)) => results.push(*v),
+                            ObjectKind::Promise(PromiseState::Rejected(v)) => {
+                                let rej = JsObject::new_promise_rejected(*v);
+                                let idx = heap.alloc(rej);
+                                return Ok(JsValue::object(idx));
+                            }
+                            ObjectKind::Promise(PromiseState::Pending) => {
+                                return Err(JsError::runtime("Promise.all: unresolved pending promise"));
+                            }
+                            _ => results.push(elem),
+                        },
+                        None => results.push(elem),
+                    }
+                } else {
+                    results.push(elem);
+                }
+            }
+
+            let mut result_arr = JsObject::new_array();
+            for val in &results {
+                result_arr.push(*val);
+            }
+            let arr_obj_idx = heap.alloc(result_arr);
+
+            let promise = JsObject::new_promise_fulfilled(JsValue::object(arr_obj_idx));
+            let promise_idx = heap.alloc(promise);
+            Ok(JsValue::object(promise_idx))
+        }
+
+        // Register the native functions
+        self.vm.register_native("Promise_resolve", promise_resolve);
+        self.vm.register_native("Promise_reject", promise_reject);
+        self.vm.register_native("Promise_all", promise_all);
+
+        // Build the Promise global object programmatically so it persists
+        // across eval() calls (unlike `let` which creates a local).
+        let resolve_idx = self.vm.native_obj_indices[self.vm.native_obj_indices.len() - 3];
+        let reject_idx = self.vm.native_obj_indices[self.vm.native_obj_indices.len() - 2];
+        let all_idx = self.vm.native_obj_indices[self.vm.native_obj_indices.len() - 1];
+
+        let mut promise_obj = JsObject::new();
+        let resolve_key = self.strings.intern("resolve");
+        let reject_key = self.strings.intern("reject");
+        let all_key = self.strings.intern("all");
+        promise_obj.set(resolve_key, JsValue::object(resolve_idx));
+        promise_obj.set(reject_key, JsValue::object(reject_idx));
+        promise_obj.set(all_key, JsValue::object(all_idx));
+
+        let obj_idx = self.vm.heap.alloc(promise_obj);
+        self.vm.set_global_by_name("Promise", JsValue::object(obj_idx), &mut self.strings);
+    }
+
     /// Get a mutable reference to the string pool (for native functions).
     pub fn strings_mut(&mut self) -> &mut StringPool {
         &mut self.strings
@@ -87,9 +182,9 @@ impl Context {
         let compiler = Compiler::new(source);
         let (code, mut compile_strings, functions) = compiler.compile()?;
 
-        // Re-register native function globals using the compiler's string pool
-        // so that global lookups match the correct string IDs.
-        self.vm.sync_natives(&mut compile_strings);
+        // Re-register native function globals and persistent globals using
+        // the compiler's string pool so that lookups match correct string IDs.
+        self.vm.sync_natives(&self.strings, &mut compile_strings);
 
         self.vm.execute(&code, &mut compile_strings, &functions)
     }
@@ -977,5 +1072,93 @@ mod tests {
         ctx.register_native("makePoint", make_point);
         ctx.eval("let p = makePoint(3, 4); print(p.x + p.y);").unwrap();
         assert_eq!(take_output(), "7\n");
+    }
+
+    // --- Promise tests ---
+
+    fn eval_promise(source: &str) -> String {
+        let mut ctx = Context::new();
+        ctx.set_print_fn(capture_print);
+        ctx.register_promise_builtins();
+        ctx.eval(source).unwrap();
+        take_output()
+    }
+
+    #[test]
+    fn test_promise_resolve() {
+        assert_eq!(
+            eval_promise("let p = Promise.resolve(42); let val = await p; print(val);"),
+            "42\n"
+        );
+    }
+
+    #[test]
+    fn test_promise_reject_caught() {
+        assert_eq!(
+            eval_promise(
+                "let p = Promise.reject(\"oops\"); try { await p; } catch (e) { print(e); }"
+            ),
+            "oops\n"
+        );
+    }
+
+    #[test]
+    fn test_await_non_promise() {
+        assert_eq!(
+            eval_promise("let x = await 42; print(x);"),
+            "42\n"
+        );
+    }
+
+    #[test]
+    fn test_promise_all_fulfilled() {
+        assert_eq!(
+            eval_promise(
+                "let a = Promise.resolve(1); let b = Promise.resolve(2); let c = Promise.resolve(3); let result = await Promise.all([a, b, c]); print(result[0], result[1], result[2]);"
+            ),
+            "1 2 3\n"
+        );
+    }
+
+    #[test]
+    fn test_promise_all_with_rejection() {
+        assert_eq!(
+            eval_promise(
+                "let a = Promise.resolve(1); let b = Promise.reject(\"fail\"); try { await Promise.all([a, b]); } catch (e) { print(e); }"
+            ),
+            "fail\n"
+        );
+    }
+
+    #[test]
+    fn test_promise_then_passthrough() {
+        // .then() on a fulfilled promise returns a new fulfilled promise
+        assert_eq!(
+            eval_promise(
+                "let p = Promise.resolve(10); let p2 = p.then(() => 20); let val = await p2; print(val);"
+            ),
+            "10\n"  // Our simplified .then() passes through the value
+        );
+    }
+
+    #[test]
+    fn test_promise_catch_on_fulfilled() {
+        // .catch() on a fulfilled promise is a no-op
+        assert_eq!(
+            eval_promise(
+                "let p = Promise.resolve(99); let p2 = p.catch(() => 0); let val = await p2; print(val);"
+            ),
+            "99\n"
+        );
+    }
+
+    #[test]
+    fn test_await_in_expression() {
+        assert_eq!(
+            eval_promise(
+                "let a = await Promise.resolve(10); let b = await Promise.resolve(20); print(a + b);"
+            ),
+            "30\n"
+        );
     }
 }

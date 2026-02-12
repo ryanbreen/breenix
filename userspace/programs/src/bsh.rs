@@ -324,6 +324,9 @@ fn create_shell_context() -> Context {
     ctx.register_native("writeFile", native_write_file);
     ctx.register_native("exit", native_exit);
 
+    // Register Promise builtins (Promise.resolve, .reject, .all + await)
+    ctx.register_promise_builtins();
+
     ctx
 }
 
@@ -339,7 +342,7 @@ fn print_fn(s: &str) {
 fn run_repl() {
     let mut ctx = create_shell_context();
 
-    let _ = io::stdout().write_all(b"breenish v0.2.0 -- ECMAScript shell for Breenix\n");
+    let _ = io::stdout().write_all(b"breenish v0.3.0 -- ECMAScript shell for Breenix\n");
     let _ = io::stdout().flush();
 
     let mut line_buf = Vec::new();

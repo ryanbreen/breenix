@@ -35,6 +35,19 @@ pub enum ObjectKind {
     Closure(u32, Vec<JsValue>),
     /// A native function (index into native function table).
     NativeFunction(u32),
+    /// A Promise with its fulfillment state.
+    Promise(PromiseState),
+}
+
+/// The state of a Promise.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PromiseState {
+    /// The promise is fulfilled with a value.
+    Fulfilled(JsValue),
+    /// The promise is rejected with a reason.
+    Rejected(JsValue),
+    /// The promise is pending (not yet resolved).
+    Pending,
 }
 
 /// A JavaScript object with named properties and optional indexed storage.
@@ -86,6 +99,39 @@ impl JsObject {
         }
     }
 
+    /// Create a new fulfilled Promise object.
+    pub fn new_promise_fulfilled(value: JsValue) -> Self {
+        Self {
+            kind: ObjectKind::Promise(PromiseState::Fulfilled(value)),
+            properties: Vec::new(),
+            elements: Vec::new(),
+            prototype: None,
+            marked: false,
+        }
+    }
+
+    /// Create a new rejected Promise object.
+    pub fn new_promise_rejected(reason: JsValue) -> Self {
+        Self {
+            kind: ObjectKind::Promise(PromiseState::Rejected(reason)),
+            properties: Vec::new(),
+            elements: Vec::new(),
+            prototype: None,
+            marked: false,
+        }
+    }
+
+    /// Create a new pending Promise object.
+    pub fn new_promise_pending() -> Self {
+        Self {
+            kind: ObjectKind::Promise(PromiseState::Pending),
+            properties: Vec::new(),
+            elements: Vec::new(),
+            prototype: None,
+            marked: false,
+        }
+    }
+
     /// Create a new native function object.
     pub fn new_native_function(native_index: u32) -> Self {
         Self {
@@ -116,6 +162,17 @@ impl JsObject {
             }
         }
         JsValue::undefined()
+    }
+
+    /// Re-key all properties using the given string pool.
+    ///
+    /// For each existing property, looks up the original key string in `old_pool`,
+    /// interns it in `new_pool`, and updates the stored key.
+    pub fn rekey_properties(&mut self, old_pool: &crate::string::StringPool, new_pool: &mut crate::string::StringPool) {
+        for prop in &mut self.properties {
+            let name = old_pool.get(prop.key);
+            prop.key = new_pool.intern(name);
+        }
     }
 
     /// Set a named property.
@@ -202,10 +259,15 @@ impl JsObject {
         for elem in &self.elements {
             refs.push(*elem);
         }
-        if let ObjectKind::Closure(_, ref upvalues) = self.kind {
-            for uv in upvalues {
-                refs.push(*uv);
+        match &self.kind {
+            ObjectKind::Closure(_, ref upvalues) => {
+                for uv in upvalues {
+                    refs.push(*uv);
+                }
             }
+            ObjectKind::Promise(PromiseState::Fulfilled(v)) => refs.push(*v),
+            ObjectKind::Promise(PromiseState::Rejected(v)) => refs.push(*v),
+            _ => {}
         }
         refs
     }

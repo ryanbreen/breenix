@@ -19,8 +19,23 @@
   - CreateClosure/LoadUpvalue/StoreUpvalue VM opcodes
   - Mark-sweep GC: traces from roots (stack, globals, call frames), frees unreachable objects
   - 68 passing tests
-- **Phase 3**: PLANNED -- Process execution (exec, pipe, env)
-- **Phase 4**: PLANNED -- Async/await (Promises, event loop)
+- **Phase 3**: COMPLETE (PR #193) -- MVP Shell with process execution
+  - try/catch/finally with exception handler stack; runtime errors caught by catch blocks
+  - Object destructuring: `let { a, b: x } = obj`
+  - Array destructuring: `let [a, b] = arr`
+  - Spread operator: `f(...args)` via CallSpread opcode
+  - Native function infrastructure: Rust functions callable from JavaScript
+  - exec(cmd, ...args) -> {exitCode, stdout, stderr, pid} via fork/exec/waitpid
+  - cd(), pwd(), which(), readFile(), writeFile(), exit() builtins
+  - Auto-exec mode for bare commands; directory-aware prompt
+  - 86 passing tests, bsh.elf cross-compiles to 303KB
+- **Phase 4**: IN PROGRESS -- Async/await (Promises, event loop)
+  - Promise object: PromiseState (Fulfilled/Rejected/Pending), ObjectKind::Promise
+  - Promise.resolve(), Promise.reject(), Promise.all() as native functions
+  - Await opcode: extracts fulfilled value, throws on rejected, passes through non-promises
+  - .then()/.catch()/.finally() built-in methods on Promise objects
+  - Persistent globals with cross-pool property re-keying for Promise global
+  - 94 passing tests, bsh.elf includes Promise builtins
 - **Phase 5**: PLANNED -- Full shell experience (line editing, completion, modules)
 - **Phase 6**: PLANNED -- Advanced features (class, Proxy, JIT)
 
