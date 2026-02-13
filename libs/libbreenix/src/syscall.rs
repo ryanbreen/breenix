@@ -98,6 +98,8 @@ pub mod nr {
     pub const CLONE: u64 = 56;           // Linux x86_64 clone
     pub const FUTEX: u64 = 202;          // Linux x86_64 futex
     pub const GETRANDOM: u64 = 318;    // Linux x86_64 getrandom
+    // Display takeover (Breenix-specific)
+    pub const TAKE_OVER_DISPLAY: u64 = 431; // Breenix: userspace takes over display
     // Testing syscalls (Breenix-specific)
     pub const COW_STATS: u64 = 500;   // Breenix: get CoW statistics (for testing)
     pub const SIMULATE_OOM: u64 = 501; // Breenix: enable/disable OOM simulation (for testing)

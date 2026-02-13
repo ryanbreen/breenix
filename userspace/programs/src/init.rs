@@ -1,10 +1,10 @@
 //! Breenix init process (/sbin/init) - std version
 //!
-//! PID 1 - spawns system services and the interactive shell, then reaps zombies.
+//! PID 1 - spawns system services and the shell, then reaps zombies.
 //!
 //! Spawns:
 //!   - /sbin/telnetd (background service, optional)
-//!   - /bin/bsh (Breenish ECMAScript shell, foreground on serial console)
+//!   - /bin/bsh (Breenix Shell)
 //!
 //! Main loop reaps terminated children with waitpid(WNOHANG) and respawns
 //! crashed services with backoff to prevent tight respawn loops.
@@ -61,7 +61,7 @@ fn main() {
     let mut telnetd_pid = spawn(TELNETD_PATH, "telnetd");
     let mut telnetd_failures: u32 = 0;
 
-    // Start Breenish shell
+    // Start the shell directly
     print!("[init] Starting /bin/bsh...\n");
     let mut shell_pid = spawn(SHELL_PATH, "bsh");
     let mut shell_failures: u32 = 0;

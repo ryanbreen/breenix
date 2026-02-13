@@ -697,6 +697,7 @@ impl ProcessManager {
             blocked_in_syscall: false,
             saved_userspace_context: None,
             wake_time_ns: None,
+            run_start_ticks: 0,
         };
 
         Ok(thread)
@@ -769,6 +770,7 @@ impl ProcessManager {
             blocked_in_syscall: false,
             saved_userspace_context: None,
             wake_time_ns: None,
+            run_start_ticks: 0,
         };
 
         Ok(thread)
@@ -846,6 +848,7 @@ impl ProcessManager {
             blocked_in_syscall: false,
             saved_userspace_context: None,
             wake_time_ns: None,
+            run_start_ticks: 0,
         };
 
         Ok(thread)
@@ -1546,9 +1549,8 @@ impl ProcessManager {
             child_thread.context.x0
         );
 
-        // Set the child process's main thread
-        child_process.main_thread = Some(child_thread);
-
+        // Set the child process's main thread (also transitions Creating → Ready)
+        child_process.set_main_thread(child_thread);
 
         // Inherit parent's user stack bounds for demand-paged growth
         if let Some(parent) = self.processes.get(&parent_pid) {
@@ -1752,8 +1754,8 @@ impl ProcessManager {
             child_process.entry_point
         );
 
-        // Set the child process's main thread
-        child_process.main_thread = Some(child_thread);
+        // Set the child process's main thread (also transitions Creating → Ready)
+        child_process.set_main_thread(child_thread);
 
         // CoW fork: no separate stack allocation, so no stack to store
         child_process.stack = None;
@@ -2006,6 +2008,7 @@ impl ProcessManager {
             blocked_in_syscall: false,
             saved_userspace_context: None,
             wake_time_ns: None,
+            run_start_ticks: 0,
         };
 
         // CoW fork: Child uses the same stack virtual addresses as the parent.

@@ -3337,6 +3337,17 @@ pub struct CowStatsResult {
     pub sole_owner_opt: u64,
 }
 
+/// Take over the display from the kernel terminal manager.
+/// After this syscall, the kernel terminal manager is deactivated and
+/// the calling process is responsible for rendering to the framebuffer.
+pub fn sys_take_over_display() -> SyscallResult {
+    #[cfg(any(feature = "interactive", target_arch = "aarch64"))]
+    {
+        crate::graphics::terminal_manager::deactivate();
+    }
+    SyscallResult::Ok(0)
+}
+
 /// sys_cow_stats - Get Copy-on-Write statistics (for testing)
 ///
 /// This syscall is used to verify that the CoW optimization paths are working.

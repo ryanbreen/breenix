@@ -79,6 +79,7 @@ pub fn write_byte(byte: u8) {
     unsafe { crate::arch_disable_interrupts(); }
 
     SERIAL1.lock().send(byte);
+    crate::log_buffer::capture_byte(byte);
 
     // Only re-enable if they were enabled before
     // This prevents race condition in syscall handler where interrupts must stay disabled

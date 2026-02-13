@@ -492,6 +492,8 @@ fn dispatch_syscall(
         SyscallNumber::AudioInit => result_to_u64(crate::syscall::audio::sys_audio_init()),
         SyscallNumber::AudioWrite => result_to_u64(crate::syscall::audio::sys_audio_write(arg1, arg2)),
 
+        // Display takeover
+        SyscallNumber::TakeOverDisplay => result_to_u64(crate::syscall::handlers::sys_take_over_display()),
         // Testing/diagnostic syscalls
         SyscallNumber::CowStats => sys_cow_stats_aarch64(arg1),
         SyscallNumber::SimulateOom => sys_simulate_oom_aarch64(arg1),

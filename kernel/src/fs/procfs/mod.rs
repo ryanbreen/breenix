@@ -78,6 +78,10 @@ pub enum ProcEntryType {
     BreenixDir,
     /// /proc/breenix/testing - whether testing mode is active
     BreenixTesting,
+    /// /proc/pids - list of all process IDs
+    Pids,
+    /// /proc/kmsg - kernel log messages
+    Kmsg,
     /// /proc/[pid] - per-process directory (dynamic, not registered)
     PidDir(u64),
     /// /proc/[pid]/status - per-process status (dynamic, not registered)
@@ -107,6 +111,8 @@ impl ProcEntryType {
             ProcEntryType::Mounts => "mounts",
             ProcEntryType::BreenixDir => "breenix",
             ProcEntryType::BreenixTesting => "testing",
+            ProcEntryType::Pids => "pids",
+            ProcEntryType::Kmsg => "kmsg",
             ProcEntryType::PidDir(_) => "pid",
             ProcEntryType::PidStatus(_) => "status",
         }
@@ -134,6 +140,8 @@ impl ProcEntryType {
             ProcEntryType::Mounts => "/proc/mounts",
             ProcEntryType::BreenixDir => "/proc/breenix",
             ProcEntryType::BreenixTesting => "/proc/breenix/testing",
+            ProcEntryType::Pids => "/proc/pids",
+            ProcEntryType::Kmsg => "/proc/kmsg",
             // Dynamic entries don't have static paths
             ProcEntryType::PidDir(_) => "/proc/<pid>",
             ProcEntryType::PidStatus(_) => "/proc/<pid>/status",
@@ -163,6 +171,8 @@ impl ProcEntryType {
             ProcEntryType::Mounts => 8,
             ProcEntryType::BreenixDir => 200,
             ProcEntryType::BreenixTesting => 201,
+            ProcEntryType::Pids => 9,
+            ProcEntryType::Kmsg => 10,
             ProcEntryType::PidDir(pid) => 10000 + pid,
             ProcEntryType::PidStatus(pid) => 20000 + pid,
         }
@@ -231,6 +241,9 @@ pub fn init() {
     // Register /proc/breenix directory and entries
     procfs.entries.push(ProcEntry::new(ProcEntryType::BreenixDir));
     procfs.entries.push(ProcEntry::new(ProcEntryType::BreenixTesting));
+
+    procfs.entries.push(ProcEntry::new(ProcEntryType::Pids));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::Kmsg));
 
     // Register /proc/trace directory and entries
     procfs.entries.push(ProcEntry::new(ProcEntryType::TraceDir));
@@ -401,6 +414,8 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<String, i32> {
         ProcEntryType::SlabInfo => Ok(generate_slabinfo()),
         ProcEntryType::Stat => Ok(generate_stat()),
         ProcEntryType::CowInfo => Ok(generate_cowinfo()),
+        ProcEntryType::Pids => Ok(generate_pids()),
+        ProcEntryType::Kmsg => Ok(generate_kmsg()),
         ProcEntryType::Mounts => Ok(generate_mounts()),
         ProcEntryType::BreenixDir => {
             // Directory listing
@@ -732,6 +747,27 @@ fn generate_mounts() -> String {
     out
 }
 
+/// Generate /proc/pids content (newline-separated PID list)
+fn generate_pids() -> String {
+    use alloc::format;
+
+    let manager_guard = crate::process::manager();
+    let mut out = String::new();
+    if let Some(ref manager) = *manager_guard {
+        let mut pids = manager.all_pids();
+        pids.sort();
+        for pid in pids {
+            out.push_str(&format!("{}\n", pid.as_u64()));
+        }
+    }
+    out
+}
+
+/// Generate /proc/kmsg content (kernel log ring buffer)
+fn generate_kmsg() -> String {
+    crate::log_buffer::read_all()
+}
+
 // =============================================================================
 // Dynamic Per-PID Entries
 // =============================================================================
@@ -878,7 +914,8 @@ fn generate_pid_status(pid: u64) -> String {
          FdCount:\t{}\n\
          VmCode:\t{} kB\n\
          VmHeap:\t{} kB\n\
-         VmStack:\t{} kB\n",
+         VmStack:\t{} kB\n\
+         CpuTicks:\t{}\n",
         process.name,
         pid,
         ppid,
@@ -888,5 +925,6 @@ fn generate_pid_status(pid: u64) -> String {
         vm_code_kb,
         vm_heap_kb,
         vm_stack_kb,
+        process.cpu_ticks,
     )
 }

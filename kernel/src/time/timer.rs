@@ -71,6 +71,7 @@ pub fn timer_interrupt() {
             // Toggle cursor - uses try_lock so won't block
             crate::logger::toggle_cursor_blink();
         }
+
     }
 }
 

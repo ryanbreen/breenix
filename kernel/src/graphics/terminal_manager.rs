@@ -2,13 +2,16 @@
 //!
 //! Provides a terminal manager that supports multiple terminal panes
 //! with keyboard-based navigation and a tabbed header UI.
+//! Includes Shell (F1), Logs (F2), and Monitor (F3) tabs.
 
 use super::font::Font;
 use super::primitives::{draw_text, fill_rect, Canvas, Color, Rect, TextStyle};
 use super::terminal::TerminalPane;
 use alloc::collections::VecDeque;
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
 // Architecture-specific framebuffer imports
@@ -35,19 +38,23 @@ const SCROLLBAR_TRACK_COLOR: Color = Color::rgb(30, 40, 55);
 /// Scrollbar thumb color
 const SCROLLBAR_THUMB_COLOR: Color = Color::rgb(100, 120, 150);
 
+/// Number of tabs
+const TAB_COUNT: usize = 3;
+
 /// Terminal identifiers
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalId {
     Shell = 0,
     Logs = 1,
+    Monitor = 2,
 }
 
 impl TerminalId {
-    #[allow(dead_code)]
     pub fn from_index(idx: usize) -> Option<Self> {
         match idx {
             0 => Some(TerminalId::Shell),
             1 => Some(TerminalId::Logs),
+            2 => Some(TerminalId::Monitor),
             _ => None,
         }
     }
@@ -98,16 +105,20 @@ pub struct TerminalManager {
     /// Log buffer for the Logs terminal
     log_buffer: LogBuffer,
     /// Tab information
-    tab_titles: [&'static str; 2],
-    tab_shortcuts: [&'static str; 2],
+    tab_titles: [&'static str; TAB_COUNT],
+    tab_shortcuts: [&'static str; TAB_COUNT],
     /// Unread indicators
-    has_unread: [bool; 2],
+    has_unread: [bool; TAB_COUNT],
     /// Scroll offset for Logs tab (0 = following tail, >0 = scrolled up)
     logs_scroll_offset: usize,
     /// Saved pixel data for the shell terminal area (saved when switching away)
     shell_pixel_backup: Option<Vec<u8>>,
     /// Saved cursor position for the shell terminal (col, row)
     shell_cursor_backup: (usize, usize),
+    /// Saved pixel data for the monitor terminal area (saved when switching away)
+    monitor_pixel_backup: Option<Vec<u8>>,
+    /// Saved cursor position for the monitor terminal (col, row)
+    monitor_cursor_backup: (usize, usize),
 }
 
 impl TerminalManager {
@@ -137,12 +148,14 @@ impl TerminalManager {
             cursor_visible: true,
             font,
             log_buffer: LogBuffer::new(LOG_BUFFER_SIZE),
-            tab_titles: ["Shell", "Logs"],
-            tab_shortcuts: ["F1", "F2"],
-            has_unread: [false, false],
+            tab_titles: ["Shell", "Logs", "Monitor"],
+            tab_shortcuts: ["F1", "F2", "F3"],
+            has_unread: [false, false, false],
             logs_scroll_offset: 0,
             shell_pixel_backup: None,
             shell_cursor_backup: (0, 0),
+            monitor_pixel_backup: None,
+            monitor_cursor_backup: (0, 0),
         }
     }
 
@@ -155,17 +168,24 @@ impl TerminalManager {
     /// Switch to a different terminal.
     pub fn switch_to(&mut self, id: TerminalId, canvas: &mut impl Canvas) {
         let new_idx = id as usize;
-        if new_idx >= 2 || new_idx == self.active_idx {
+        if new_idx >= TAB_COUNT || new_idx == self.active_idx {
             return;
         }
 
         // Hide cursor
         self.terminal_pane.draw_cursor(canvas, false);
 
-        // If leaving the Shell tab, save its pixel content and cursor position
-        if self.active_idx == TerminalId::Shell as usize {
-            self.shell_cursor_backup = self.terminal_pane.cursor();
-            self.shell_pixel_backup = Some(self.save_terminal_pixels(canvas));
+        // Save pixel content and cursor for the tab we're leaving
+        match TerminalId::from_index(self.active_idx) {
+            Some(TerminalId::Shell) => {
+                self.shell_cursor_backup = self.terminal_pane.cursor();
+                self.shell_pixel_backup = Some(self.save_terminal_pixels(canvas));
+            }
+            Some(TerminalId::Monitor) => {
+                self.monitor_cursor_backup = self.terminal_pane.cursor();
+                self.monitor_pixel_backup = Some(self.save_terminal_pixels(canvas));
+            }
+            _ => {}
         }
 
         self.active_idx = new_idx;
@@ -189,6 +209,16 @@ impl TerminalManager {
                 // Reset scroll to follow tail when switching to Logs
                 self.logs_scroll_offset = 0;
                 self.render_logs_view(canvas);
+            }
+            TerminalId::Monitor => {
+                // Restore saved monitor pixels if available, otherwise render fresh
+                if let Some(ref saved) = self.monitor_pixel_backup {
+                    self.restore_terminal_pixels(canvas, saved);
+                    let (col, row) = self.monitor_cursor_backup;
+                    self.terminal_pane.set_cursor(col, row);
+                } else {
+                    self.render_btop_view(canvas);
+                }
             }
         }
 
@@ -274,7 +304,8 @@ impl TerminalManager {
         // Write shell welcome message
         self.terminal_pane.write_str(canvas, "Breenix Shell\r\n");
         self.terminal_pane.write_str(canvas, "=============\r\n\r\n");
-        self.terminal_pane.write_str(canvas, "Press F1 for Shell, F2 for Logs\r\n\r\n");
+        self.terminal_pane
+            .write_str(canvas, "Press F1 for Shell, F2 for Logs, F3 for Monitor\r\n\r\n");
         self.terminal_pane.draw_cursor(canvas, true);
     }
 
@@ -296,7 +327,7 @@ impl TerminalManager {
 
         // Draw tabs
         let mut tab_x = self.region_x + 4;
-        for idx in 0..2 {
+        for idx in 0..TAB_COUNT {
             let is_active = idx == self.active_idx;
             let title = self.tab_titles[idx];
             let shortcut = self.tab_shortcuts[idx];
@@ -348,7 +379,7 @@ impl TerminalManager {
                 .with_color(Color::rgb(120, 140, 160))
                 .with_font(self.font);
 
-            let shortcut_text = alloc::format!("[{}]", shortcut);
+            let shortcut_text = format!("[{}]", shortcut);
             draw_text(
                 canvas,
                 (tab_x + TAB_PADDING / 2 + title_width + 4) as i32,
@@ -539,7 +570,9 @@ impl TerminalManager {
         let max_offset = total_lines.saturating_sub(visible_rows);
         let scroll_range = pane_height.saturating_sub(thumb_height);
         let thumb_y = if max_offset > 0 {
-            pane_y + (self.logs_scroll_offset as u64 * scroll_range as u64 / max_offset as u64) as usize
+            pane_y
+                + (self.logs_scroll_offset as u64 * scroll_range as u64 / max_offset as u64)
+                    as usize
         } else {
             pane_y
         };
@@ -558,6 +591,177 @@ impl TerminalManager {
         );
     }
 
+    /// Render the btop system monitor view.
+    ///
+    /// Collects system statistics (process list, memory, uptime, counters)
+    /// and renders them to the terminal pane.
+    fn render_btop_view(&mut self, canvas: &mut impl Canvas) {
+        self.clear_terminal_area(canvas);
+
+        let cols = self.terminal_pane.cols();
+
+        // --- Header ---
+        // get_ticks() returns raw tick count at 200 Hz (5ms per tick)
+        let uptime_ticks = crate::time::timer::get_ticks();
+        let uptime_secs = uptime_ticks / 200; // 200 ticks per second
+        let hours = uptime_secs / 3600;
+        let minutes = (uptime_secs % 3600) / 60;
+        let seconds = uptime_secs % 60;
+
+        let header = format!(
+            "btop - Breenix System Monitor     Uptime: {}:{:02}:{:02}",
+            hours, minutes, seconds
+        );
+        self.terminal_pane.write_str(canvas, &header);
+        self.terminal_pane.write_str(canvas, "\r\n");
+
+        // --- Memory ---
+        let mem_stats = crate::memory::frame_allocator::memory_stats();
+        let total_bytes = mem_stats.total_bytes;
+        let allocated_bytes =
+            (mem_stats.allocated_frames.saturating_sub(mem_stats.free_list_frames) as u64) * 4096;
+        let pct = if total_bytes > 0 {
+            (allocated_bytes * 100 / total_bytes) as usize
+        } else {
+            0
+        };
+
+        // Draw a text-based memory bar
+        let bar_width = 20usize;
+        let filled = (pct * bar_width / 100).min(bar_width);
+        let mut bar = String::with_capacity(bar_width);
+        for i in 0..bar_width {
+            if i < filled {
+                bar.push('#');
+            } else {
+                bar.push('.');
+            }
+        }
+
+        // Use integer formatting to avoid f64 Display (not available in no_std)
+        let total_mb_int = (total_bytes / (1024 * 1024)) as usize;
+        let total_mb_frac = ((total_bytes % (1024 * 1024)) * 10 / (1024 * 1024)) as usize;
+        let used_mb_int = (allocated_bytes / (1024 * 1024)) as usize;
+        let used_mb_frac = ((allocated_bytes % (1024 * 1024)) * 10 / (1024 * 1024)) as usize;
+
+        let mem_line = format!(
+            "Memory [{}] {}.{} MB / {}.{} MB ({}%)",
+            bar, used_mb_int, used_mb_frac, total_mb_int, total_mb_frac, pct
+        );
+        self.terminal_pane.write_str(canvas, "\r\n");
+        self.terminal_pane.write_str(canvas, &mem_line);
+        self.terminal_pane.write_str(canvas, "\r\n");
+
+        // --- Process list header ---
+        self.terminal_pane.write_str(canvas, "\r\n");
+        self.terminal_pane
+            .write_str(canvas, "  PID  PPID STATE        CPU%  MEM(kB)  NAME\r\n");
+
+        // Separator line sized to terminal width
+        let sep_len = cols.min(48);
+        let mut sep = String::with_capacity(sep_len);
+        for _ in 0..sep_len {
+            sep.push('-');
+        }
+        self.terminal_pane.write_str(canvas, &sep);
+        self.terminal_pane.write_str(canvas, "\r\n");
+
+        // --- Process list ---
+        // Snapshot process data under the lock, then release it before formatting.
+        // Holding the process manager lock across format!/rendering can deadlock
+        // on single-CPU ARM64 if a timer interrupt triggers a context switch that
+        // needs the same lock.
+        struct ProcSnapshot {
+            pid: u64,
+            ppid: u64,
+            state: &'static str,
+            cpu_ticks: u64,
+            mem_kb: usize,
+            name: String,
+        }
+        let visible_rows = self.terminal_pane.rows();
+        let max_procs = visible_rows.saturating_sub(9);
+        let mut proc_snapshots: Vec<ProcSnapshot> = Vec::new();
+        let mut total_procs = 0usize;
+        let mut got_lock = false;
+
+        if let Some(mgr_guard) = crate::process::try_manager() {
+            if let Some(ref mgr) = *mgr_guard {
+                let processes = mgr.all_processes();
+                total_procs = processes.len();
+                for (i, proc) in processes.iter().enumerate() {
+                    if i >= max_procs {
+                        break;
+                    }
+                    proc_snapshots.push(ProcSnapshot {
+                        pid: proc.id.as_u64(),
+                        ppid: proc.parent.map(|p| p.as_u64()).unwrap_or(0),
+                        state: match proc.state {
+                            crate::process::ProcessState::Creating => "Creating",
+                            crate::process::ProcessState::Ready => "Ready",
+                            crate::process::ProcessState::Running => "Running",
+                            crate::process::ProcessState::Blocked => "Blocked",
+                            crate::process::ProcessState::Terminated(_) => "Terminated",
+                        },
+                        cpu_ticks: proc.cpu_ticks,
+                        mem_kb: (proc.memory_usage.code_size + proc.memory_usage.stack_size)
+                            / 1024,
+                        name: proc.name.clone(),
+                    });
+                }
+                got_lock = true;
+            }
+            // mgr_guard dropped here — process manager lock released before formatting
+        }
+
+        if got_lock {
+            for snap in &proc_snapshots {
+                let line = format!(
+                    " {:4} {:5} {:10} {:5}  {:6}  {}",
+                    snap.pid, snap.ppid, snap.state, snap.cpu_ticks, snap.mem_kb, &snap.name,
+                );
+                self.terminal_pane.write_str(canvas, &line);
+                self.terminal_pane.write_str(canvas, "\r\n");
+            }
+            if total_procs > proc_snapshots.len() {
+                let remaining = total_procs - proc_snapshots.len();
+                let more_line = format!("  ... {} more processes", remaining);
+                self.terminal_pane.write_str(canvas, &more_line);
+                self.terminal_pane.write_str(canvas, "\r\n");
+            }
+        } else {
+            self.terminal_pane
+                .write_str(canvas, "  (process manager busy)\r\n");
+        }
+
+        // --- Counters footer ---
+        let (syscalls, irqs, ctx_switches, _timer_ticks) =
+            crate::tracing::providers::counters::get_all_counters();
+        let (forks, execs, _cow_faults) =
+            crate::tracing::providers::counters::get_process_counters();
+
+        self.terminal_pane.write_str(canvas, "\r\n");
+        let counter_line = format!(
+            "Syscalls: {} | IRQs: {} | Ctx Sw: {}",
+            syscalls, irqs, ctx_switches
+        );
+        self.terminal_pane.write_str(canvas, &counter_line);
+        self.terminal_pane.write_str(canvas, "\r\n");
+
+        let proc_counter_line = format!("Forks: {} | Execs: {}", forks, execs);
+        self.terminal_pane.write_str(canvas, &proc_counter_line);
+        self.terminal_pane.write_str(canvas, "\r\n");
+    }
+
+    /// Refresh the btop view if the Monitor tab is active.
+    ///
+    /// Called from the render thread when the btop refresh flag is set.
+    pub fn refresh_btop(&mut self, canvas: &mut impl Canvas) {
+        if self.active_idx == TerminalId::Monitor as usize {
+            self.render_btop_view(canvas);
+        }
+    }
+
     /// Toggle cursor visibility.
     pub fn toggle_cursor(&mut self, canvas: &mut impl Canvas) {
         self.cursor_visible = !self.cursor_visible;
@@ -571,12 +775,25 @@ impl TerminalManager {
     }
 }
 
+/// Whether the terminal manager is active (set to false by take_over_display syscall)
+static DISPLAY_ACTIVE: AtomicBool =
+    AtomicBool::new(true);
+
 /// Global terminal manager
 pub static TERMINAL_MANAGER: Mutex<Option<TerminalManager>> = Mutex::new(None);
 
 /// Flag to prevent recursive calls
-static IN_TERMINAL_CALL: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
+static IN_TERMINAL_CALL: AtomicBool =
+    AtomicBool::new(false);
+
+/// Tick count at last btop refresh (used by render thread to throttle refreshes)
+static BTOP_LAST_REFRESH_TICK: AtomicU64 = AtomicU64::new(0);
+
+/// Btop refresh interval in ticks (~1 second).
+/// The timer fires at 200 Hz (5ms per tick), so 200 ticks = 1 second.
+/// Note: get_monotonic_time() returns raw tick count, not milliseconds,
+/// despite the misleading comment in timer.rs.
+const BTOP_REFRESH_INTERVAL_TICKS: u64 = 200;
 
 /// Initialize the terminal manager.
 pub fn init_terminal_manager(x: usize, y: usize, width: usize, height: usize) {
@@ -593,10 +810,70 @@ pub fn is_terminal_manager_active() -> bool {
     }
 }
 
+/// Deactivate the terminal manager (called by take_over_display syscall).
+/// After this, all write functions become no-ops and handle_terminal_key returns false.
+pub fn deactivate() {
+    DISPLAY_ACTIVE.store(false, Ordering::SeqCst);
+    log::info!("Terminal manager deactivated (userspace taking over display)");
+}
+
+/// Check if the display is still under kernel control.
+pub fn is_display_active() -> bool {
+    DISPLAY_ACTIVE.load(Ordering::Relaxed)
+}
+
+/// Check if enough time has passed and refresh the btop view.
+///
+/// Called from the render thread on every iteration. Uses `get_ticks()` to
+/// determine if ~1 second has elapsed since the last refresh. This avoids
+/// modifying the timer ISR and works on all architectures regardless of
+/// feature flags.
+pub fn refresh_btop_if_needed() {
+    if !is_display_active() {
+        return;
+    }
+
+    // Check if enough ticks have elapsed (cheap atomic read, no lock)
+    let now = crate::time::timer::get_ticks();
+    let last = BTOP_LAST_REFRESH_TICK.load(Ordering::Relaxed);
+    if now.wrapping_sub(last) < BTOP_REFRESH_INTERVAL_TICKS {
+        return;
+    }
+
+    // Use blocking lock — this runs on the render thread, not in interrupt context
+    let mut guard = TERMINAL_MANAGER.lock();
+    let manager = match guard.as_mut() {
+        Some(m) => m,
+        None => return,
+    };
+
+    // Only refresh if Monitor tab is active
+    if manager.active_idx != TerminalId::Monitor as usize {
+        // Still update the tick so we don't do the lock dance every iteration
+        BTOP_LAST_REFRESH_TICK.store(now, Ordering::Relaxed);
+        return;
+    }
+
+    let fb = match SHELL_FRAMEBUFFER.get() {
+        Some(f) => f,
+        None => return,
+    };
+
+    let mut fb_guard = fb.lock();
+
+    manager.refresh_btop(&mut *fb_guard);
+
+    // Update last refresh tick AFTER rendering
+    BTOP_LAST_REFRESH_TICK.store(now, Ordering::Relaxed);
+}
+
 /// Write a character to the shell terminal.
 pub fn write_char_to_shell(c: char) -> bool {
+    if !is_display_active() {
+        return false;
+    }
     // Prevent recursive calls
-    if IN_TERMINAL_CALL.swap(true, core::sync::atomic::Ordering::SeqCst) {
+    if IN_TERMINAL_CALL.swap(true, Ordering::SeqCst) {
         return false;
     }
 
@@ -619,14 +896,14 @@ pub fn write_char_to_shell(c: char) -> bool {
     })()
     .is_some();
 
-    IN_TERMINAL_CALL.store(false, core::sync::atomic::Ordering::SeqCst);
+    IN_TERMINAL_CALL.store(false, Ordering::SeqCst);
     result
 }
 
 /// Write a string to the shell terminal.
 #[allow(dead_code)]
 pub fn write_str_to_shell(s: &str) -> bool {
-    if IN_TERMINAL_CALL.swap(true, core::sync::atomic::Ordering::SeqCst) {
+    if IN_TERMINAL_CALL.swap(true, Ordering::SeqCst) {
         return false;
     }
 
@@ -649,7 +926,7 @@ pub fn write_str_to_shell(s: &str) -> bool {
     })()
     .is_some();
 
-    IN_TERMINAL_CALL.store(false, core::sync::atomic::Ordering::SeqCst);
+    IN_TERMINAL_CALL.store(false, Ordering::SeqCst);
     result
 }
 
@@ -659,6 +936,9 @@ pub fn write_str_to_shell(s: &str) -> bool {
 /// as it acquires locks once for the entire buffer and batches cursor operations.
 #[allow(dead_code)]
 pub fn write_bytes_to_shell(bytes: &[u8]) -> bool {
+    if !is_display_active() {
+        return false;
+    }
     if !write_bytes_to_shell_internal(bytes) {
         return false;
     }
@@ -688,7 +968,7 @@ pub fn write_bytes_to_shell(bytes: &[u8]) -> bool {
 /// Internal version for use by render thread which handles its own flushing.
 /// This avoids double-flushing when the render thread batches work.
 pub fn write_bytes_to_shell_internal(bytes: &[u8]) -> bool {
-    if IN_TERMINAL_CALL.swap(true, core::sync::atomic::Ordering::SeqCst) {
+    if IN_TERMINAL_CALL.swap(true, Ordering::SeqCst) {
         return false;
     }
 
@@ -705,7 +985,7 @@ pub fn write_bytes_to_shell_internal(bytes: &[u8]) -> bool {
     })()
     .is_some();
 
-    IN_TERMINAL_CALL.store(false, core::sync::atomic::Ordering::SeqCst);
+    IN_TERMINAL_CALL.store(false, Ordering::SeqCst);
     result
 }
 
@@ -719,6 +999,9 @@ pub fn write_bytes_to_shell_internal(bytes: &[u8]) -> bool {
 /// is a separate thread that can safely wait for locks. The IN_TERMINAL_CALL
 /// guard is for preventing recursion within the same thread.
 pub fn write_bytes_to_shell_blocking(bytes: &[u8]) -> bool {
+    if !is_display_active() {
+        return false;
+    }
     // Use blocking locks - this is safe because render thread is not in interrupt context
     let mut guard = TERMINAL_MANAGER.lock();
     let manager = match guard.as_mut() {
@@ -741,7 +1024,7 @@ pub fn write_bytes_to_shell_blocking(bytes: &[u8]) -> bool {
 
 /// Add a log line to the logs terminal.
 pub fn write_str_to_logs(s: &str) -> bool {
-    if IN_TERMINAL_CALL.swap(true, core::sync::atomic::Ordering::SeqCst) {
+    if IN_TERMINAL_CALL.swap(true, Ordering::SeqCst) {
         return false;
     }
 
@@ -766,7 +1049,7 @@ pub fn write_str_to_logs(s: &str) -> bool {
     })()
     .is_some();
 
-    IN_TERMINAL_CALL.store(false, core::sync::atomic::Ordering::SeqCst);
+    IN_TERMINAL_CALL.store(false, Ordering::SeqCst);
     result
 }
 
@@ -842,7 +1125,10 @@ pub fn handle_logs_arrow_key(keycode: u8) -> bool {
 
 /// Toggle cursor in active terminal.
 pub fn toggle_cursor() {
-    if IN_TERMINAL_CALL.swap(true, core::sync::atomic::Ordering::SeqCst) {
+    if !is_display_active() {
+        return;
+    }
+    if IN_TERMINAL_CALL.swap(true, Ordering::SeqCst) {
         return;
     }
 
@@ -864,12 +1150,12 @@ pub fn toggle_cursor() {
         Some(())
     })();
 
-    IN_TERMINAL_CALL.store(false, core::sync::atomic::Ordering::SeqCst);
+    IN_TERMINAL_CALL.store(false, Ordering::SeqCst);
 }
 
 /// Switch to a specific terminal.
 pub fn switch_terminal(id: TerminalId) {
-    if IN_TERMINAL_CALL.swap(true, core::sync::atomic::Ordering::SeqCst) {
+    if IN_TERMINAL_CALL.swap(true, Ordering::SeqCst) {
         return;
     }
 
@@ -893,12 +1179,12 @@ pub fn switch_terminal(id: TerminalId) {
         Some(())
     })();
 
-    IN_TERMINAL_CALL.store(false, core::sync::atomic::Ordering::SeqCst);
+    IN_TERMINAL_CALL.store(false, Ordering::SeqCst);
 }
 
 /// Clear the shell terminal.
 pub fn clear_shell() {
-    if IN_TERMINAL_CALL.swap(true, core::sync::atomic::Ordering::SeqCst) {
+    if IN_TERMINAL_CALL.swap(true, Ordering::SeqCst) {
         return;
     }
 
@@ -912,7 +1198,9 @@ pub fn clear_shell() {
         if manager.active_idx == TerminalId::Shell as usize {
             manager.clear_terminal_area(&mut *fb_guard);
             manager.draw_tab_bar(&mut *fb_guard);
-            manager.terminal_pane.draw_cursor(&mut *fb_guard, manager.cursor_visible);
+            manager
+                .terminal_pane
+                .draw_cursor(&mut *fb_guard, manager.cursor_visible);
         }
 
         // Flush framebuffer
@@ -925,7 +1213,7 @@ pub fn clear_shell() {
         Some(())
     })();
 
-    IN_TERMINAL_CALL.store(false, core::sync::atomic::Ordering::SeqCst);
+    IN_TERMINAL_CALL.store(false, Ordering::SeqCst);
 }
 
 /// Handle a mouse click for tab switching.
@@ -951,7 +1239,7 @@ pub fn handle_mouse_click(x: usize, y: usize) -> bool {
     // Hit-test tabs (same layout as draw_tab_bar)
     let metrics = manager.font.metrics();
     let mut tab_x = manager.region_x + 4;
-    for idx in 0..2 {
+    for idx in 0..TAB_COUNT {
         let title = manager.tab_titles[idx];
         let shortcut = manager.tab_shortcuts[idx];
         let title_width = title.len() * metrics.char_advance();
@@ -962,8 +1250,9 @@ pub fn handle_mouse_click(x: usize, y: usize) -> bool {
             // Clicked on this tab
             if idx != manager.active_idx {
                 drop(guard); // Release lock before calling switch_terminal
-                let id = if idx == 0 { TerminalId::Shell } else { TerminalId::Logs };
-                switch_terminal(id);
+                if let Some(id) = TerminalId::from_index(idx) {
+                    switch_terminal(id);
+                }
                 return true;
             }
             return false; // Already on this tab
@@ -978,13 +1267,23 @@ pub fn handle_mouse_click(x: usize, y: usize) -> bool {
 /// Handle keyboard input for terminal switching.
 /// Returns true if the key was handled.
 pub fn handle_terminal_key(scancode: u8) -> bool {
+    if !is_display_active() {
+        return false;
+    }
     match scancode {
         0x3B => {
+            // F1
             switch_terminal(TerminalId::Shell);
             true
         }
         0x3C => {
+            // F2
             switch_terminal(TerminalId::Logs);
+            true
+        }
+        0x3D => {
+            // F3
+            switch_terminal(TerminalId::Monitor);
             true
         }
         _ => false,

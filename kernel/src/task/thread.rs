@@ -402,6 +402,9 @@ pub struct Thread {
     /// When set, the scheduler will unblock this thread when the monotonic
     /// clock reaches this value.
     pub wake_time_ns: Option<u64>,
+
+    /// Tick count when this thread started its current run (for CPU accounting)
+    pub run_start_ticks: u64,
 }
 
 impl Clone for Thread {
@@ -424,6 +427,7 @@ impl Clone for Thread {
             blocked_in_syscall: self.blocked_in_syscall,
             saved_userspace_context: self.saved_userspace_context.clone(),
             wake_time_ns: self.wake_time_ns,
+            run_start_ticks: self.run_start_ticks,
         }
     }
 }
@@ -483,6 +487,7 @@ impl Thread {
             blocked_in_syscall: false, // New thread is not blocked in syscall
             saved_userspace_context: None,
             wake_time_ns: None,
+            run_start_ticks: 0,
         })
     }
 
@@ -537,6 +542,7 @@ impl Thread {
             blocked_in_syscall: false,
             saved_userspace_context: None,
             wake_time_ns: None,
+            run_start_ticks: 0,
         })
     }
 
@@ -578,6 +584,7 @@ impl Thread {
             blocked_in_syscall: false, // New thread is not blocked in syscall
             saved_userspace_context: None,
             wake_time_ns: None,
+            run_start_ticks: 0,
         }
     }
 
@@ -622,6 +629,7 @@ impl Thread {
             blocked_in_syscall: false,
             saved_userspace_context: None,
             wake_time_ns: None,
+            run_start_ticks: 0,
         }
     }
 
@@ -675,6 +683,7 @@ impl Thread {
             blocked_in_syscall: false, // New thread is not blocked in syscall
             saved_userspace_context: None,
             wake_time_ns: None,
+            run_start_ticks: 0,
         }
     }
 
@@ -723,6 +732,7 @@ impl Thread {
             blocked_in_syscall: false,
             saved_userspace_context: None,
             wake_time_ns: None,
+            run_start_ticks: 0,
         }
     }
 
@@ -796,6 +806,7 @@ impl Thread {
             blocked_in_syscall: false, // New thread is not blocked in syscall
             saved_userspace_context: None,
             wake_time_ns: None,
+            run_start_ticks: 0,
         }
     }
 
@@ -836,6 +847,7 @@ impl Thread {
             blocked_in_syscall: false,
             saved_userspace_context: None,
             wake_time_ns: None,
+            run_start_ticks: 0,
         }
     }
 }
