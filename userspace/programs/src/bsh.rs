@@ -1265,7 +1265,7 @@ impl LineEditor {
     /// Perform tab completion. Determines whether we are completing a
     /// command (first word) or a filename (subsequent words), collects
     /// candidates, and inserts the completion into the buffer.
-    fn complete(&mut self, prompt: &str) {
+    fn complete(&mut self, prompt: &str, global_names: &[String]) {
         let word_start = self.find_word_start();
         let partial = String::from_utf8_lossy(&self.buffer[word_start..self.cursor]).to_string();
 
@@ -1276,7 +1276,7 @@ impl LineEditor {
             .all(|b| b.is_ascii_whitespace());
 
         let completions = if is_command {
-            self.complete_command(&partial)
+            self.complete_command(&partial, global_names)
         } else {
             self.complete_filename(&partial)
         };
@@ -1322,14 +1322,23 @@ impl LineEditor {
         // No matches: do nothing (bell could be added later)
     }
 
-    /// Complete a command name by searching PATH directories for executables
-    /// whose names start with `partial`.
-    fn complete_command(&self, partial: &str) -> Vec<String> {
+    /// Complete a command name by matching JS globals/builtins and searching
+    /// PATH directories for executables whose names start with `partial`.
+    fn complete_command(&self, partial: &str, global_names: &[String]) -> Vec<String> {
         if partial.is_empty() {
             return Vec::new();
         }
 
         let mut matches: Vec<String> = Vec::new();
+
+        // 1. Match JS globals and builtins
+        for name in global_names {
+            if name.starts_with(partial) && !matches.contains(name) {
+                matches.push(name.clone());
+            }
+        }
+
+        // 2. Match PATH executables
         let path_dirs =
             std::env::var("PATH").unwrap_or_else(|_| String::from("/bin:/usr/bin"));
 
@@ -1342,7 +1351,6 @@ impl LineEditor {
                     let name = entry.file_name();
                     let name_str = name.to_string_lossy();
                     if name_str.starts_with(partial) {
-                        // Avoid duplicates (same command name in multiple PATH dirs)
                         let name = name_str.to_string();
                         if !matches.contains(&name) {
                             matches.push(name);
@@ -1490,7 +1498,7 @@ impl LineEditor {
     ///
     /// Returns `Some(line)` when the user presses Enter, or `None` on
     /// EOF (Ctrl+D on an empty line).
-    fn read_line(&mut self, prompt: &str) -> Option<String> {
+    fn read_line(&mut self, prompt: &str, global_names: &[String]) -> Option<String> {
         self.buffer.clear();
         self.cursor = 0;
         self.history_pos = self.history.len();
@@ -1578,7 +1586,7 @@ impl LineEditor {
                     self.refresh_line(prompt);
                 }
                 Key::Tab => {
-                    self.complete(prompt);
+                    self.complete(prompt, global_names);
                 }
                 Key::Char(ch) => {
                     self.insert_char(ch);
@@ -1617,7 +1625,8 @@ fn run_repl() {
             None => String::from("bsh> "),
         };
 
-        let line = match editor.read_line(&prompt) {
+        let global_names = ctx.global_names();
+        let line = match editor.read_line(&prompt, &global_names) {
             Some(line) => line,
             None => return, // EOF / Ctrl+D
         };

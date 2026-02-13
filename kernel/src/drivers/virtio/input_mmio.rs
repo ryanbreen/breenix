@@ -644,6 +644,18 @@ pub fn handle_interrupt() {
                     }
                 }
 
+                // Generate VT100 escape sequences for special keys
+                // (arrows, Home, End, Delete) that can't be represented
+                // as a single character.
+                if let Some(seq) = keycode_to_escape_seq(keycode) {
+                    for &b in seq {
+                        if !crate::tty::push_char_nonblock(b) {
+                            crate::ipc::stdin::push_byte_from_irq(b);
+                        }
+                    }
+                    continue;
+                }
+
                 let shift = SHIFT_PRESSED.load(core::sync::atomic::Ordering::Relaxed);
                 let caps = CAPS_LOCK_ACTIVE.load(core::sync::atomic::Ordering::Relaxed);
                 let ctrl = CTRL_PRESSED.load(core::sync::atomic::Ordering::Relaxed);
@@ -898,6 +910,21 @@ pub fn keycode_to_char(code: u16, shift: bool) -> Option<char> {
     };
 
     Some(c)
+}
+
+/// Convert a Linux keycode to a VT100 escape sequence for special keys
+/// that require multi-byte output (arrow keys, Home, End, Delete).
+fn keycode_to_escape_seq(code: u16) -> Option<&'static [u8]> {
+    match code {
+        103 => Some(b"\x1b[A"),  // Up
+        108 => Some(b"\x1b[B"),  // Down
+        106 => Some(b"\x1b[C"),  // Right
+        105 => Some(b"\x1b[D"),  // Left
+        102 => Some(b"\x1b[H"),  // Home
+        107 => Some(b"\x1b[F"),  // End
+        111 => Some(b"\x1b[3~"), // Delete
+        _ => None,
+    }
 }
 
 /// Check if a keycode is a modifier key

@@ -222,6 +222,29 @@ impl Vm {
         }
     }
 
+    /// Return names of user-defined globals (set by `StoreGlobal` during eval),
+    /// excluding native functions and persistent globals.
+    pub fn user_global_names(&self, strings: &StringPool) -> Vec<String> {
+        let native_values: Vec<JsValue> = self
+            .native_obj_indices
+            .iter()
+            .map(|&idx| JsValue::object(idx))
+            .collect();
+        let persistent_values: Vec<JsValue> =
+            self.persistent_globals.iter().map(|pg| pg.value).collect();
+        let mut names = Vec::new();
+        for g in &self.globals {
+            if native_values.contains(&g.value) || persistent_values.contains(&g.value) {
+                continue;
+            }
+            let name = String::from(strings.get(g.name));
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        names
+    }
+
     /// Re-register native function globals using the given string pool.
     ///
     /// This must be called before execution so that global lookups use the

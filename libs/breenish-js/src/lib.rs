@@ -56,6 +56,7 @@ pub use vm::{CommandResolverFn, CommandExecutorFn};
 pub struct Context {
     vm: Vm,
     strings: StringPool,
+    visible_names: Vec<AllocString>,
 }
 
 impl Context {
@@ -64,6 +65,7 @@ impl Context {
         Self {
             vm: Vm::new(),
             strings: StringPool::new(),
+            visible_names: Vec::from([AllocString::from("print")]),
         }
     }
 
@@ -87,6 +89,7 @@ impl Context {
     /// Must be called before any `eval()` calls that reference the function.
     pub fn register_native(&mut self, name: &str, func: NativeFn) {
         self.vm.register_native(name, func);
+        self.visible_names.push(AllocString::from(name));
     }
 
     /// Register built-in Promise support.
@@ -323,6 +326,7 @@ impl Context {
 
         let obj_idx = self.vm.heap.alloc(promise_obj);
         self.vm.set_global_by_name("Promise", JsValue::object(obj_idx), &mut self.strings);
+        self.visible_names.push(AllocString::from("Promise"));
     }
 
     /// Register built-in JSON support.
@@ -778,6 +782,7 @@ impl Context {
 
         let obj_idx = self.vm.heap.alloc(json_obj);
         self.vm.set_global_by_name("JSON", JsValue::object(obj_idx), &mut self.strings);
+        self.visible_names.push(AllocString::from("JSON"));
     }
 
     /// Register built-in Math and Number objects.
@@ -1006,6 +1011,10 @@ impl Context {
 
         let number_idx = self.vm.heap.alloc(number_obj);
         self.vm.set_global_by_name("Number", JsValue::object(number_idx), &mut self.strings);
+        self.visible_names.push(AllocString::from("Math"));
+        self.visible_names.push(AllocString::from("Number"));
+        self.visible_names.push(AllocString::from("parseInt"));
+        self.visible_names.push(AllocString::from("parseFloat"));
     }
 
     /// Register built-in Map and Set collection constructors.
@@ -1032,6 +1041,8 @@ impl Context {
 
         self.vm.register_native("Map", map_constructor);
         self.vm.register_native("Set", set_constructor);
+        self.visible_names.push(AllocString::from("Map"));
+        self.visible_names.push(AllocString::from("Set"));
     }
 
     /// Get a mutable reference to the string pool (for native functions).
@@ -1058,6 +1069,7 @@ impl Context {
         }
         let heap_idx = self.vm.heap.alloc(obj);
         self.vm.set_global_by_name(obj_name, JsValue::object(heap_idx), &mut self.strings);
+        self.visible_names.push(AllocString::from(obj_name));
     }
 
     /// Evaluate a JavaScript source string.
@@ -1097,6 +1109,18 @@ impl Context {
     /// Get a reference to the string pool.
     pub fn strings(&self) -> &StringPool {
         &self.strings
+    }
+
+    /// Return all completable global names: built-in visible names plus
+    /// user-defined globals from eval'd code.
+    pub fn global_names(&self) -> Vec<AllocString> {
+        let mut names = self.visible_names.clone();
+        for ug in self.vm.user_global_names(&self.strings) {
+            if !names.iter().any(|n| n.as_str() == ug.as_str()) {
+                names.push(ug);
+            }
+        }
+        names
     }
 }
 
