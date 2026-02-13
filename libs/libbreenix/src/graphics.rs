@@ -383,3 +383,11 @@ pub fn take_over_display() -> Result<(), Error> {
     let result = unsafe { raw::syscall0(nr::TAKE_OVER_DISPLAY) };
     Error::from_syscall(result as i64).map(|_| ())
 }
+
+/// Reactivate the kernel's terminal manager after userspace releases the display.
+///
+/// Called by init when BWM crashes to restore kernel terminal rendering.
+pub fn give_back_display() -> Result<(), Error> {
+    let result = unsafe { raw::syscall0(nr::GIVE_BACK_DISPLAY) };
+    Error::from_syscall(result as i64).map(|_| ())
+}

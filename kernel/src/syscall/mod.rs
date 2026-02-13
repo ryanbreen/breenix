@@ -140,6 +140,7 @@ pub enum SyscallNumber {
     AudioWrite = 421,   // Breenix: write PCM data to audio device
     // Display takeover (Breenix-specific)
     TakeOverDisplay = 431, // Breenix: userspace takes over display from kernel terminal manager
+    GiveBackDisplay = 432, // Breenix: userspace gives display back to kernel terminal manager
     CowStats = 500,     // Breenix: get Copy-on-Write statistics (for testing)
     SimulateOom = 501,  // Breenix: enable/disable OOM simulation (for testing)
 }
@@ -238,6 +239,7 @@ impl SyscallNumber {
             420 => Some(Self::AudioInit),
             421 => Some(Self::AudioWrite),
             431 => Some(Self::TakeOverDisplay),
+            432 => Some(Self::GiveBackDisplay),
             500 => Some(Self::CowStats),
             501 => Some(Self::SimulateOom),
             _ => None,

@@ -515,6 +515,10 @@ name = "tones"
 path = "src/tones.rs"
 
 [[bin]]
+name = "fart"
+path = "src/fart.rs"
+
+[[bin]]
 name = "bsh"
 path = "src/bsh.rs"
 

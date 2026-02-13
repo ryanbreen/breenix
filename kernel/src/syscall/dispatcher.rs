@@ -125,6 +125,7 @@ pub fn dispatch_syscall(
         SyscallNumber::AudioWrite => super::audio::sys_audio_write(arg1, arg2),
         // Display takeover (Breenix-specific)
         SyscallNumber::TakeOverDisplay => super::handlers::sys_take_over_display(),
+        SyscallNumber::GiveBackDisplay => super::handlers::sys_give_back_display(),
         // Testing/diagnostic syscalls (Breenix-specific)
         SyscallNumber::CowStats => super::handlers::sys_cow_stats(arg1),
         SyscallNumber::SimulateOom => super::handlers::sys_simulate_oom(arg1),

@@ -509,14 +509,20 @@ pub fn sys_fbmmap() -> SyscallResult {
     use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
 
     // Get framebuffer dimensions (acquire and release FB lock quickly)
-    // Always map only the left pane (for demo programs that coexist with the kernel terminal).
+    // If the kernel terminal is still active, map only the left pane.
+    // If userspace has taken over the display, map the full framebuffer.
     let (pane_width, height, bpp) = {
         let fb = match SHELL_FRAMEBUFFER.get() {
             Some(fb) => fb,
             None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
         };
         let fb_guard = fb.lock();
-        (fb_guard.width() / 2, fb_guard.height(), fb_guard.bytes_per_pixel())
+        let pane_width = if crate::graphics::terminal_manager::is_display_active() {
+            fb_guard.width() / 2
+        } else {
+            fb_guard.width()
+        };
+        (pane_width, fb_guard.height(), fb_guard.bytes_per_pixel())
     };
 
     let user_stride = pane_width * bpp;

@@ -213,6 +213,7 @@ STD_BINARIES=(
     "particles"
     "confetti"
     "tones"
+    "fart"
     "http_test"
     "register_init_test"
 

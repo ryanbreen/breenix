@@ -104,6 +104,202 @@ fn play_bell() {
 }
 
 // ---------------------------------------------------------------------------
+// Fart sound builtin (synthesized low-frequency rumble with noise)
+// ---------------------------------------------------------------------------
+
+/// Simple LCG PRNG for fart randomization.
+struct FartRng {
+    state: u64,
+}
+
+impl FartRng {
+    fn new(seed: u64) -> Self {
+        FartRng { state: seed.wrapping_add(1) }
+    }
+
+    fn next(&mut self) -> u32 {
+        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (self.state >> 33) as u32
+    }
+
+    fn range(&mut self, lo: u32, hi: u32) -> u32 {
+        if lo >= hi {
+            return lo;
+        }
+        lo + (self.next() % (hi - lo + 1))
+    }
+}
+
+/// Fixed-point scale for fart synthesis
+const FART_FP_SHIFT: u32 = 16;
+const FART_FP_ONE: u32 = 1 << FART_FP_SHIFT;
+const FART_SAMPLE_RATE: u32 = 44100;
+
+/// Look up sine value using fixed-point phase
+fn fart_sine_fp(phase: u32) -> i16 {
+    let idx = ((phase >> (FART_FP_SHIFT - 8)) & 0xFF) as usize;
+    BELL_SINE[idx]
+}
+
+/// Phase increment for a given frequency in Hz
+fn fart_freq_to_phase_inc(freq_hz: u32) -> u32 {
+    (freq_hz as u64 * FART_FP_ONE as u64 / FART_SAMPLE_RATE as u64) as u32
+}
+
+/// Fart envelope: quick attack, sustain with decay, tail-off
+fn fart_envelope(sample_idx: u32, total_samples: u32) -> u32 {
+    let attack = FART_SAMPLE_RATE * 30 / 1000;
+    let release = total_samples * 30 / 100;
+
+    if sample_idx < attack {
+        (sample_idx * 256) / attack
+    } else if sample_idx >= total_samples.saturating_sub(release) {
+        let remaining = total_samples.saturating_sub(sample_idx);
+        (remaining * 256) / release
+    } else {
+        let sustain_pos = sample_idx - attack;
+        let sustain_len = total_samples.saturating_sub(attack + release);
+        if sustain_len == 0 {
+            256
+        } else {
+            256 - (sustain_pos * 80 / sustain_len)
+        }
+    }
+}
+
+/// Synthesize and play one fart sound.
+///
+/// Buzzy low-frequency tone (fundamental + harmonics) with downward pitch
+/// sweep and a small amount of low-pass filtered noise for texture.
+fn play_one_fart_sound(rng: &mut FartRng) {
+    let base_freq = rng.range(70, 130);
+    let duration_ms = rng.range(300, 900);
+    let total_samples = FART_SAMPLE_RATE * duration_ms / 1000;
+
+    // Pitch sweep: start higher, end lower
+    let start_freq = base_freq * rng.range(110, 140) / 100;
+    let end_freq = base_freq * rng.range(60, 90) / 100;
+
+    let lfo_freq = rng.range(4, 10);
+    let wobble_hz = rng.range(5, 15);
+
+    // Harmonic levels (out of 256)
+    let h2_level: i32 = rng.range(80, 140) as i32;
+    let h3_level: i32 = rng.range(40, 90) as i32;
+    let h4_level: i32 = rng.range(10, 50) as i32;
+
+    // Low-pass filtered noise, mixed gently
+    let noise_mix: i32 = rng.range(20, 50) as i32;
+    let noise_alpha: i32 = rng.range(5, 12) as i32;
+
+    let lfo_phase_inc = fart_freq_to_phase_inc(lfo_freq);
+
+    let mut phase: u32 = 0;
+    let mut lfo_phase: u32 = 0;
+    let mut filtered_noise: i32 = 0;
+    let mut samples_written: u32 = 0;
+    let chunk_frames: u32 = 1024;
+    let mut buf = [0i16; 1024 * 2];
+
+    while samples_written < total_samples {
+        let remaining = total_samples - samples_written;
+        let frames = core::cmp::min(chunk_frames, remaining);
+
+        for i in 0..frames as usize {
+            let sample_idx = samples_written + i as u32;
+
+            // Linear pitch sweep
+            let sweep_freq = start_freq as i64
+                + ((end_freq as i64 - start_freq as i64) * sample_idx as i64)
+                    / total_samples as i64;
+
+            // LFO wobble
+            let lfo_val = fart_sine_fp(lfo_phase) as i64;
+            let wobble = wobble_hz as i64 * lfo_val / 32767;
+            let current_freq = (sweep_freq + wobble).max(20) as u32;
+
+            let phase_inc = fart_freq_to_phase_inc(current_freq);
+
+            // Fundamental + harmonics for buzzy tone
+            let fund = fart_sine_fp(phase) as i32;
+            let h2 = fart_sine_fp(phase.wrapping_mul(2) % FART_FP_ONE) as i32;
+            let h3 = fart_sine_fp(phase.wrapping_mul(3) % FART_FP_ONE) as i32;
+            let h4 = fart_sine_fp(phase.wrapping_mul(4) % FART_FP_ONE) as i32;
+
+            let tone = fund as i64
+                + (h2 as i64 * h2_level as i64 / 256)
+                + (h3 as i64 * h3_level as i64 / 256)
+                + (h4 as i64 * h4_level as i64 / 256);
+            let tone = tone * 160 / 256;
+
+            // Low-pass filtered noise
+            let raw_noise = ((rng.next() as i32) >> 16) - 16384;
+            filtered_noise = (noise_alpha * raw_noise
+                + (256 - noise_alpha) * filtered_noise)
+                / 256;
+            let noise_sample = filtered_noise as i64 * 2;
+
+            // Mix tone and noise
+            let mixed = (tone * (256 - noise_mix as i64)
+                + noise_sample * noise_mix as i64)
+                / 256;
+
+            let env = fart_envelope(sample_idx, total_samples);
+            let sample = (mixed * env as i64 / 256) as i32;
+            let sample = sample.max(-32767).min(32767) as i16;
+
+            buf[i * 2] = sample;
+            buf[i * 2 + 1] = sample;
+
+            phase = phase.wrapping_add(phase_inc) % FART_FP_ONE;
+            lfo_phase = lfo_phase.wrapping_add(lfo_phase_inc) % FART_FP_ONE;
+        }
+
+        if audio::write_samples(&buf[..frames as usize * 2]).is_err() {
+            break;
+        }
+
+        samples_written += frames;
+    }
+}
+
+/// Play fart sound(s). Lazily initializes audio. `count` is how many farts.
+fn play_fart(count: u32) {
+    static mut AUDIO_OK: Option<bool> = None;
+
+    let ok = unsafe {
+        if let Some(v) = AUDIO_OK {
+            v
+        } else {
+            let v = audio::init().is_ok();
+            AUDIO_OK = Some(v);
+            v
+        }
+    };
+    if !ok {
+        let _ = io::stderr().write_all(b"fart: audio unavailable\n");
+        return;
+    }
+
+    let seed = match libbreenix::time::now_monotonic() {
+        Ok(ts) => (ts.tv_sec as u64).wrapping_mul(1_000_000_000).wrapping_add(ts.tv_nsec as u64),
+        Err(_) => 42,
+    };
+    let mut rng = FartRng::new(seed);
+
+    for i in 0..count {
+        play_one_fart_sound(&mut rng);
+
+        if i + 1 < count {
+            let gap_ms = rng.range(50, 200);
+            let gap_samples = FART_SAMPLE_RATE * gap_ms / 1000;
+            let silence = vec![0i16; gap_samples as usize * 2];
+            let _ = audio::write_samples(&silence);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Native function implementations
 // ---------------------------------------------------------------------------
 
@@ -1835,8 +2031,17 @@ fn builtin_wrap(line: &str) -> Option<String> {
                 Some(format!("print(which(\"{}\") ?? \"not found\")", escaped))
             }
         }
+        "fart" => {
+            let count: u32 = if args_str.is_empty() {
+                1
+            } else {
+                args_str.parse().unwrap_or(1).max(1)
+            };
+            play_fart(count);
+            Some(String::from("undefined"))
+        }
         "help" => {
-            Some(String::from(r#"print("bsh -- Breenish ECMAScript Shell\n\nShell builtins:\n  cd <dir>       Change directory\n  pwd            Print working directory\n  exit [code]    Exit the shell\n  which <cmd>    Find command in PATH\n  source <file>  Execute a script file\n  help           Show this help\n\nProcess execution:\n  exec(cmd, ...args)    Run a command, returns {exitCode, stdout, stderr}\n  pipe(cmd1, cmd2, ...) Pipeline commands\n  bls /bin              Bare commands are auto-wrapped in exec()\n\nFile operations:\n  readFile(path)          Read file contents\n  writeFile(path, data)   Write to file\n  glob(pattern)           Wildcard expansion (*.rs)\n\nEnvironment:\n  env()              All environment variables\n  env(name)          Get variable\n  env(name, value)   Set variable\n\nJavaScript:\n  Full ECMAScript: let/const, functions, arrows, closures,\n  if/else, for/while, try/catch, async/await, template literals,\n  destructuring, spread, Map, Set, JSON, Math, Promise\n\nUse Tab for auto-completion. Up/Down for history.\nSee: docs/user-guide/bsh-shell-guide.md for full documentation.")"#))
+            Some(String::from(r#"print("bsh -- Breenish ECMAScript Shell\n\nShell builtins:\n  cd <dir>       Change directory\n  pwd            Print working directory\n  exit [code]    Exit the shell\n  which <cmd>    Find command in PATH\n  source <file>  Execute a script file\n  fart [count]   Play fart sound(s)\n  help           Show this help\n\nProcess execution:\n  exec(cmd, ...args)    Run a command, returns {exitCode, stdout, stderr}\n  pipe(cmd1, cmd2, ...) Pipeline commands\n  bls /bin              Bare commands are auto-wrapped in exec()\n\nFile operations:\n  readFile(path)          Read file contents\n  writeFile(path, data)   Write to file\n  glob(pattern)           Wildcard expansion (*.rs)\n\nEnvironment:\n  env()              All environment variables\n  env(name)          Get variable\n  env(name, value)   Set variable\n\nJavaScript:\n  Full ECMAScript: let/const, functions, arrows, closures,\n  if/else, for/while, try/catch, async/await, template literals,\n  destructuring, spread, Map, Set, JSON, Math, Promise\n\nUse Tab for auto-completion. Up/Down for history.\nSee: docs/user-guide/bsh-shell-guide.md for full documentation.")"#))
         }
         _ => None,
     }

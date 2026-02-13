@@ -3348,6 +3348,16 @@ pub fn sys_take_over_display() -> SyscallResult {
     SyscallResult::Ok(0)
 }
 
+/// Give back the display to the kernel terminal manager.
+/// Called by init when BWM crashes so the kernel can resume rendering.
+pub fn sys_give_back_display() -> SyscallResult {
+    #[cfg(any(feature = "interactive", target_arch = "aarch64"))]
+    {
+        crate::graphics::terminal_manager::reactivate();
+    }
+    SyscallResult::Ok(0)
+}
+
 /// sys_cow_stats - Get Copy-on-Write statistics (for testing)
 ///
 /// This syscall is used to verify that the CoW optimization paths are working.

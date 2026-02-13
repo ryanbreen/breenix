@@ -494,6 +494,7 @@ fn dispatch_syscall(
 
         // Display takeover
         SyscallNumber::TakeOverDisplay => result_to_u64(crate::syscall::handlers::sys_take_over_display()),
+        SyscallNumber::GiveBackDisplay => result_to_u64(crate::syscall::handlers::sys_give_back_display()),
         // Testing/diagnostic syscalls
         SyscallNumber::CowStats => sys_cow_stats_aarch64(arg1),
         SyscallNumber::SimulateOom => sys_simulate_oom_aarch64(arg1),
