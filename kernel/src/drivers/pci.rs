@@ -45,6 +45,10 @@ pub const VIRTIO_VENDOR_ID: u16 = 0x1AF4;
 pub const VIRTIO_BLOCK_DEVICE_ID_LEGACY: u16 = 0x1001;
 /// VirtIO block device ID (modern)
 pub const VIRTIO_BLOCK_DEVICE_ID_MODERN: u16 = 0x1042;
+/// VirtIO sound device ID (legacy)
+pub const VIRTIO_SOUND_DEVICE_ID_LEGACY: u16 = 0x1019;
+/// VirtIO sound device ID (modern)
+pub const VIRTIO_SOUND_DEVICE_ID_MODERN: u16 = 0x1059;
 /// VirtIO network device ID (legacy)
 pub const VIRTIO_NET_DEVICE_ID_LEGACY: u16 = 0x1000;
 /// VirtIO network device ID (modern)
@@ -196,6 +200,12 @@ impl Device {
     }
 
     /// Check if this is any network controller
+    pub fn is_virtio_sound(&self) -> bool {
+        self.is_virtio()
+            && (self.device_id == VIRTIO_SOUND_DEVICE_ID_LEGACY
+                || self.device_id == VIRTIO_SOUND_DEVICE_ID_MODERN)
+    }
+
     pub fn is_network(&self) -> bool {
         self.class == DeviceClass::Network
     }
@@ -676,6 +686,16 @@ pub fn find_virtio_net_devices() -> Vec<Device> {
     let devices = PCI_DEVICES.lock();
     match devices.as_ref() {
         Some(devs) => devs.iter().filter(|d| d.is_virtio_net()).cloned().collect(),
+        None => Vec::new(),
+    }
+}
+
+/// Find all VirtIO sound devices
+#[allow(dead_code)] // Part of public API, will be used by VirtIO sound driver
+pub fn find_virtio_sound_devices() -> Vec<Device> {
+    let devices = PCI_DEVICES.lock();
+    match devices.as_ref() {
+        Some(devs) => devs.iter().filter(|d| d.is_virtio_sound()).cloned().collect(),
         None => Vec::new(),
     }
 }

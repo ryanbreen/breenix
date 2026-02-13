@@ -120,6 +120,9 @@ pub fn dispatch_syscall(
         SyscallNumber::FbDraw => super::graphics::sys_fbdraw(arg1),
         SyscallNumber::FbMmap => super::graphics::sys_fbmmap(),
         SyscallNumber::GetMousePos => super::graphics::sys_get_mouse_pos(arg1),
+        // Audio syscalls (Breenix-specific)
+        SyscallNumber::AudioInit => super::audio::sys_audio_init(),
+        SyscallNumber::AudioWrite => super::audio::sys_audio_write(arg1, arg2),
         // Testing/diagnostic syscalls (Breenix-specific)
         SyscallNumber::CowStats => super::handlers::sys_cow_stats(arg1),
         SyscallNumber::SimulateOom => super::handlers::sys_simulate_oom(arg1),

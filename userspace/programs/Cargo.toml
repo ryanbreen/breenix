@@ -511,6 +511,10 @@ name = "confetti"
 path = "src/confetti.rs"
 
 [[bin]]
+name = "tones"
+path = "src/tones.rs"
+
+[[bin]]
 name = "bsh"
 path = "src/bsh.rs"
 

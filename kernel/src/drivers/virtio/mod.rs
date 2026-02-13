@@ -33,6 +33,11 @@ pub mod net_mmio;
 pub mod gpu_mmio;
 #[cfg(target_arch = "aarch64")]
 pub mod input_mmio;
+#[cfg(target_arch = "aarch64")]
+pub mod sound_mmio;
+
+#[cfg(target_arch = "x86_64")]
+pub mod sound;
 
 #[cfg(target_arch = "x86_64")]
 use x86_64::instructions::port::Port;

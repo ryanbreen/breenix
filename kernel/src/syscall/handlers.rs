@@ -3,15 +3,24 @@
 //! This module contains the actual implementation of each system call.
 
 use super::SyscallResult;
+#[cfg(target_arch = "x86_64")]
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::Translate;
+#[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
-use crate::arch_impl::traits::CpuOps;
 
-// Architecture-specific CPU type for interrupt control
-type Cpu = crate::arch_impl::x86_64::X86Cpu;
+/// Architecture-conditional reset_quantum helper.
+/// Same pattern as syscall/socket.rs.
+#[inline]
+fn reset_quantum() {
+    #[cfg(target_arch = "x86_64")]
+    crate::interrupts::timer::reset_quantum();
+    #[cfg(target_arch = "aarch64")]
+    crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
+}
 
 /// Global flag to signal that userspace testing is complete and kernel should exit
 pub static USERSPACE_TEST_COMPLETE: AtomicBool = AtomicBool::new(false);
@@ -26,30 +35,26 @@ const FD_STDERR: u64 = 2;
 
 /// Copy data from userspace memory
 ///
-/// CRITICAL: This function now works WITHOUT switching CR3 registers.
+/// CRITICAL: This function works WITHOUT switching page tables.
 /// The kernel mappings MUST be present in all process page tables for this to work.
 /// We rely on the fact that userspace memory is mapped in the current page table.
 fn copy_from_user(user_ptr: u64, len: usize) -> Result<Vec<u8>, &'static str> {
-    // SIMPLIFIED: Just validate address range and copy directly
-    // No logging, no process lookups - to avoid any potential double faults
-
     if user_ptr == 0 {
         return Err("null pointer");
     }
 
-    // Validate address is in valid userspace region (code/data or stack)
-    if !crate::memory::layout::is_valid_user_address(user_ptr) {
+    // Validate the entire buffer is within the broad userspace address range.
+    // We use the same range check as userptr::validate_user_buffer rather than
+    // is_valid_user_address(), because the latter only checks specific sub-regions
+    // (code/data, mmap, stack) and misses valid addresses like heap allocations
+    // that may extend beyond the code/data region.
+    if super::userptr::validate_user_buffer(user_ptr as *const u8, len).is_err() {
         return Err("invalid userspace address");
     }
 
-    // CRITICAL: Access user memory WITHOUT switching CR3
-    // This works because when we're in a syscall from userspace, we're already
-    // using the process's page table, which has both kernel and user mappings
     let mut buffer = Vec::with_capacity(len);
-    
+
     unsafe {
-        // Directly copy the data - the memory should be accessible
-        // because we're already in the process's context
         let slice = core::slice::from_raw_parts(user_ptr as *const u8, len);
         buffer.extend_from_slice(slice);
     }
@@ -57,6 +62,7 @@ fn copy_from_user(user_ptr: u64, len: usize) -> Result<Vec<u8>, &'static str> {
     Ok(buffer)
 }
 
+#[cfg(target_arch = "x86_64")]
 fn copy_string_from_user(user_ptr: u64, max_len: usize) -> Result<Vec<u8>, &'static str> {
     if user_ptr == 0 {
         return Err("null pointer");
@@ -103,8 +109,8 @@ pub fn copy_to_user(user_ptr: u64, kernel_ptr: u64, len: usize) -> Result<(), &'
         return Err("null pointer");
     }
 
-    // Validate address is in valid userspace region (code/data or stack)
-    if !crate::memory::layout::is_valid_user_address(user_ptr) {
+    // Validate the entire buffer is within the broad userspace address range
+    if super::userptr::validate_user_buffer(user_ptr as *const u8, len).is_err() {
         log::error!("copy_to_user: Invalid userspace address {:#x}", user_ptr);
         return Err("invalid userspace address");
     }
@@ -174,8 +180,11 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
             log::info!("No more userspace threads remaining");
 
             // Wake the keyboard task to ensure it can process any pending input
-            crate::keyboard::stream::wake_keyboard_task();
-            log::info!("Woke keyboard task to ensure input processing continues");
+            #[cfg(target_arch = "x86_64")]
+            {
+                crate::keyboard::stream::wake_keyboard_task();
+                log::info!("Woke keyboard task to ensure input processing continues");
+            }
 
             // Signal that userspace testing is complete with clear markers
             log::info!("🎯 USERSPACE TEST COMPLETE - All processes finished successfully");
@@ -614,7 +623,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             }
 
                             crate::task::scheduler::yield_current();
-                            Cpu::halt_with_interrupts();
+                            crate::arch_halt_with_interrupts();
 
                             // Check if we were unblocked (thread state changed from Blocked)
                             let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
@@ -758,7 +767,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             }
 
                             crate::task::scheduler::yield_current();
-                            Cpu::halt_with_interrupts();
+                            crate::arch_halt_with_interrupts();
 
                             let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                                 if let Some(thread) = sched.current_thread_mut() {
@@ -781,7 +790,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                 thread.blocked_in_syscall = false;
                             }
                         });
-                        crate::interrupts::timer::reset_quantum();
+                        reset_quantum();
                         crate::task::scheduler::check_and_clear_need_resched();
 
                         // Continue loop to retry read
@@ -898,7 +907,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             }
 
                             crate::task::scheduler::yield_current();
-                            Cpu::halt_with_interrupts();
+                            crate::arch_halt_with_interrupts();
 
                             let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                                 if let Some(thread) = sched.current_thread_mut() {
@@ -921,7 +930,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                 thread.blocked_in_syscall = false;
                             }
                         });
-                        crate::interrupts::timer::reset_quantum();
+                        reset_quantum();
                         crate::task::scheduler::check_and_clear_need_resched();
 
                         // Continue loop to retry read
@@ -1136,7 +1145,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     }
 
                     crate::task::scheduler::yield_current();
-                    Cpu::halt_with_interrupts();
+                    crate::arch_halt_with_interrupts();
 
                     let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                         if let Some(thread) = sched.current_thread_mut() {
@@ -1240,7 +1249,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     }
 
                     crate::task::scheduler::yield_current();
-                    Cpu::halt_with_interrupts();
+                    crate::arch_halt_with_interrupts();
 
                     let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                         if let Some(thread) = sched.current_thread_mut() {
@@ -1339,7 +1348,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     }
 
                     crate::task::scheduler::yield_current();
-                    Cpu::halt_with_interrupts();
+                    crate::arch_halt_with_interrupts();
 
                     let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                         if let Some(thread) = sched.current_thread_mut() {
@@ -1460,7 +1469,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             }
 
                             crate::task::scheduler::yield_current();
-                            Cpu::halt_with_interrupts();
+                            crate::arch_halt_with_interrupts();
 
                             let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                                 if let Some(thread) = sched.current_thread_mut() {
@@ -1482,7 +1491,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                 thread.blocked_in_syscall = false;
                             }
                         });
-                        crate::interrupts::timer::reset_quantum();
+                        reset_quantum();
                         crate::task::scheduler::check_and_clear_need_resched();
 
                         // Unregister and retry
@@ -1566,6 +1575,7 @@ pub fn sys_get_time() -> SyscallResult {
 
 /// sys_fork - Basic fork implementation
 /// sys_fork with syscall frame - provides access to actual userspace context
+#[cfg(target_arch = "x86_64")]
 pub fn sys_fork_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResult {
     // Create a CpuContext from the syscall frame - this captures the ACTUAL register
     // values at the time of the syscall, not the stale values from the last context switch
@@ -1593,9 +1603,10 @@ pub fn sys_fork_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResul
 }
 
 /// sys_fork with full parent context - captures all registers from syscall frame
+#[cfg(target_arch = "x86_64")]
 fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext) -> SyscallResult {
     // Disable interrupts for the entire fork operation to ensure atomicity
-    Cpu::without_interrupts(|| {
+    crate::arch_without_interrupts(|| {
         log::info!(
             "sys_fork_with_parent_context called with RSP {:#x}, RIP {:#x}",
             parent_context.rsp,
@@ -1706,6 +1717,7 @@ fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext)
     })
 }
 
+#[cfg(target_arch = "x86_64")]
 pub fn sys_fork() -> SyscallResult {
     // DEPRECATED: This function should not be used - use sys_fork_with_frame instead
     // to get the actual register values at syscall time.
@@ -1726,6 +1738,7 @@ pub fn sys_fork() -> SyscallResult {
 ///
 /// Returns: Never returns on success (frame is modified to jump to new program)
 /// Returns: Error code on failure
+#[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
 #[allow(unused_variables)]
 #[allow(unreachable_code)]
@@ -1734,7 +1747,7 @@ pub fn sys_exec_with_frame(
     program_name_ptr: u64,
     elf_data_ptr: u64,
 ) -> SyscallResult {
-    Cpu::without_interrupts(|| {
+    crate::arch_without_interrupts(|| {
         log::info!(
             "sys_exec_with_frame called: program_name_ptr={:#x}, elf_data_ptr={:#x}",
             program_name_ptr,
@@ -1936,7 +1949,7 @@ pub fn sys_exec_with_frame(
 ///
 /// NOTE: This function intentionally has NO logging to avoid timing overhead.
 /// It's called on every exec syscall, and serial I/O causes CI timing issues.
-#[cfg(feature = "testing")]
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
 fn load_elf_from_ext2(path: &str) -> Result<Vec<u8>, i32> {
     use super::errno::{EACCES, EIO, ENOENT, ENOTDIR};
     use crate::fs::ext2;
@@ -1992,6 +2005,7 @@ fn load_elf_from_ext2(path: &str) -> Result<Vec<u8>, i32> {
 ///
 /// Returns: Never returns on success (frame is modified to jump to new program)
 /// Returns: Error code on failure
+#[cfg(target_arch = "x86_64")]
 #[allow(unused_variables)]
 pub fn sys_execv_with_frame(
     frame: &mut super::handler::SyscallFrame,
@@ -2152,7 +2166,7 @@ pub fn sys_execv_with_frame(
 
         // CRITICAL SECTION: Frame manipulation and process state changes
         // Only this part needs interrupts disabled for atomicity
-        Cpu::without_interrupts(|| {
+        crate::arch_without_interrupts(|| {
             let mut manager_guard = crate::process::manager();
             if let Some(ref mut manager) = *manager_guard {
                 match manager.exec_process_with_argv(current_pid, elf_data, Some(program_name), &argv_slices) {
@@ -2239,8 +2253,9 @@ pub fn sys_execv_with_frame(
 /// Returns: Error code on failure
 ///
 /// DEPRECATED: Use sys_exec_with_frame instead to properly update the syscall frame
+#[cfg(target_arch = "x86_64")]
 pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
-    Cpu::without_interrupts(|| {
+    crate::arch_without_interrupts(|| {
         log::info!(
             "sys_exec called: program_name_ptr={:#x}, elf_data_ptr={:#x}",
             program_name_ptr,
@@ -2390,7 +2405,7 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
 /// sys_getpid - Get the current process ID
 pub fn sys_getpid() -> SyscallResult {
     // Disable interrupts when accessing process manager
-    Cpu::without_interrupts(|| {
+    crate::arch_without_interrupts(|| {
         log::info!("sys_getpid called");
 
         // Get current thread ID from scheduler
@@ -2444,7 +2459,7 @@ pub fn sys_gettid() -> SyscallResult {
 
 /// sys_getppid - Get the parent process ID
 pub fn sys_getppid() -> SyscallResult {
-    Cpu::without_interrupts(|| {
+    crate::arch_without_interrupts(|| {
         // Get current thread ID from scheduler
         if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
             // Find the process that owns this thread
@@ -2615,7 +2630,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                 // Yield and halt - timer interrupt will switch to another thread
                 // since current thread is blocked
                 crate::task::scheduler::yield_current();
-                Cpu::halt_with_interrupts();
+                crate::arch_halt_with_interrupts();
 
                 // After being rescheduled, check if child terminated
                 let manager_guard = crate::process::manager();
@@ -2699,7 +2714,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                 // Yield and halt - timer interrupt will switch to another thread
                 // since current thread is blocked
                 crate::task::scheduler::yield_current();
-                Cpu::halt_with_interrupts();
+                crate::arch_halt_with_interrupts();
 
                 // After being rescheduled, check if any child terminated
                 let manager_guard = crate::process::manager();
@@ -3332,7 +3347,7 @@ pub struct CowStatsResult {
 ///
 /// Returns: 0 on success, negative error code on failure
 pub fn sys_cow_stats(stats_ptr: u64) -> SyscallResult {
-    use crate::interrupts::cow_stats;
+    use crate::memory::cow_stats;
 
     if stats_ptr == 0 {
         return SyscallResult::Err(14); // EFAULT - null pointer

@@ -281,7 +281,7 @@ pub fn load_elf_into_page_table(
     // Validate ELF header
     let header = validate_elf_header(data)?;
 
-    crate::serial_println!(
+    log::debug!(
         "[elf-arm64] Loading ELF into process page table: entry={:#x}, {} program headers",
         header.entry,
         header.phnum
@@ -323,7 +323,7 @@ pub fn load_elf_into_page_table(
     // Page-align the heap start (4KB alignment)
     let heap_start = (max_segment_end + 0xfff) & !0xfff;
 
-    crate::serial_println!(
+    log::debug!(
         "[elf-arm64] Loaded: base={:#x}, end={:#x}, entry={:#x}",
         if min_load_addr == u64::MAX { 0 } else { min_load_addr },
         heap_start,
@@ -359,7 +359,7 @@ fn load_segment_into_page_table(
         return Err("Segment data out of bounds");
     }
 
-    crate::serial_println!(
+    log::trace!(
         "[elf-arm64] Loading segment: vaddr={:#x}, filesz={:#x}, memsz={:#x}, flags={:#x}",
         vaddr.as_u64(),
         file_size,
@@ -388,7 +388,7 @@ fn load_segment_into_page_table(
         page_flags |= PageTableFlags::NO_EXECUTE;
     }
 
-    crate::serial_println!(
+    log::trace!(
         "[elf-arm64] Segment permissions: R={}, W={}, X={}",
         segment_readable,
         segment_writable,
@@ -411,7 +411,7 @@ fn load_segment_into_page_table(
 
         let (frame, already_mapped) = if let Some(existing_phys) = existing_phys_opt {
             let existing_frame = PhysFrame::containing_address(PhysAddr::new(existing_phys.as_u64()));
-            crate::serial_println!(
+            log::trace!(
                 "[elf-arm64] Page {:#x} already mapped to frame {:#x}, reusing",
                 page_vaddr.as_u64(),
                 existing_frame.start_address().as_u64()
@@ -422,7 +422,7 @@ fn load_segment_into_page_table(
             let new_frame = crate::memory::frame_allocator::allocate_frame()
                 .ok_or("Out of memory allocating frame for ELF segment")?;
 
-            crate::serial_println!(
+            log::trace!(
                 "[elf-arm64] Allocated frame {:#x} for page {:#x}",
                 new_frame.start_address().as_u64(),
                 page_vaddr.as_u64()
@@ -473,7 +473,7 @@ fn load_segment_into_page_table(
                 core::ptr::copy_nonoverlapping(src, dst, copy_size);
             }
 
-            crate::serial_println!(
+            log::trace!(
                 "[elf-arm64] Copied {} bytes to frame {:#x} (page {:#x}) at offset {}",
                 copy_size,
                 frame_phys_addr.as_u64(),
@@ -491,7 +491,7 @@ fn load_segment_into_page_table(
         count
     };
 
-    crate::serial_println!(
+    log::trace!(
         "[elf-arm64] Successfully loaded segment with {} pages",
         page_count
     );
