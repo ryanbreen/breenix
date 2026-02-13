@@ -15,6 +15,7 @@
 //! 5. On exception return, check need_resched and perform context switch if needed
 
 use crate::task::scheduler;
+use crate::tracing::providers::irq::trace_timer_tick;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// Virtual timer interrupt ID (PPI 27)
@@ -142,6 +143,9 @@ pub extern "C" fn timer_interrupt_handler() {
     if cpu_id == 0 {
         crate::time::timer_interrupt();
     }
+
+    // Trace timer tick (lock-free counter + optional event recording)
+    trace_timer_tick(crate::time::get_ticks());
 
     // Increment timer interrupt counter (used for debugging when needed)
     let _count = TIMER_INTERRUPT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;

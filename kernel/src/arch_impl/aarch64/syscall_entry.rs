@@ -23,6 +23,7 @@ use super::cpu::without_interrupts;
 use super::exception_frame::Aarch64ExceptionFrame;
 use super::percpu::Aarch64PerCpu;
 use crate::arch_impl::traits::{PerCpuOps, SyscallFrame};
+use crate::tracing::providers::syscall::{trace_entry, trace_exit};
 
 // Include the syscall entry assembly
 global_asm!(include_str!("syscall_entry.S"));
@@ -101,6 +102,7 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
     }
 
     let syscall_num = frame.syscall_number();
+    trace_entry(syscall_num);
     let arg1 = frame.arg1();
     let arg2 = frame.arg2();
     let arg3 = frame.arg3();
@@ -145,6 +147,7 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
     };
 
     // Set return value in X0
+    trace_exit(result as i64);
     frame.set_return_value(result);
 
     // Check for pending signals before returning to userspace
