@@ -74,6 +74,10 @@ pub enum ProcEntryType {
     CowInfo,
     /// /proc/mounts - mounted filesystems
     Mounts,
+    /// /proc/breenix - breenix info directory
+    BreenixDir,
+    /// /proc/breenix/testing - whether testing mode is active
+    BreenixTesting,
     /// /proc/[pid] - per-process directory (dynamic, not registered)
     PidDir(u64),
     /// /proc/[pid]/status - per-process status (dynamic, not registered)
@@ -101,6 +105,8 @@ impl ProcEntryType {
             ProcEntryType::Stat => "stat",
             ProcEntryType::CowInfo => "cowinfo",
             ProcEntryType::Mounts => "mounts",
+            ProcEntryType::BreenixDir => "breenix",
+            ProcEntryType::BreenixTesting => "testing",
             ProcEntryType::PidDir(_) => "pid",
             ProcEntryType::PidStatus(_) => "status",
         }
@@ -126,6 +132,8 @@ impl ProcEntryType {
             ProcEntryType::Stat => "/proc/stat",
             ProcEntryType::CowInfo => "/proc/cowinfo",
             ProcEntryType::Mounts => "/proc/mounts",
+            ProcEntryType::BreenixDir => "/proc/breenix",
+            ProcEntryType::BreenixTesting => "/proc/breenix/testing",
             // Dynamic entries don't have static paths
             ProcEntryType::PidDir(_) => "/proc/<pid>",
             ProcEntryType::PidStatus(_) => "/proc/<pid>/status",
@@ -153,6 +161,8 @@ impl ProcEntryType {
             ProcEntryType::Stat => 6,
             ProcEntryType::CowInfo => 7,
             ProcEntryType::Mounts => 8,
+            ProcEntryType::BreenixDir => 200,
+            ProcEntryType::BreenixTesting => 201,
             ProcEntryType::PidDir(pid) => 10000 + pid,
             ProcEntryType::PidStatus(pid) => 20000 + pid,
         }
@@ -160,7 +170,10 @@ impl ProcEntryType {
 
     /// Check if this is a directory
     pub fn is_directory(&self) -> bool {
-        matches!(self, ProcEntryType::TraceDir | ProcEntryType::PidDir(_))
+        matches!(
+            self,
+            ProcEntryType::TraceDir | ProcEntryType::BreenixDir | ProcEntryType::PidDir(_)
+        )
     }
 }
 
@@ -214,6 +227,10 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::Stat));
     procfs.entries.push(ProcEntry::new(ProcEntryType::CowInfo));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Mounts));
+
+    // Register /proc/breenix directory and entries
+    procfs.entries.push(ProcEntry::new(ProcEntryType::BreenixDir));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::BreenixTesting));
 
     // Register /proc/trace directory and entries
     procfs.entries.push(ProcEntry::new(ProcEntryType::TraceDir));
@@ -304,6 +321,7 @@ pub fn list_entries() -> Vec<String> {
                     | ProcEntryType::TraceBuffer
                     | ProcEntryType::TraceCounters
                     | ProcEntryType::TraceProviders
+                    | ProcEntryType::BreenixTesting
             ))
             .map(|e| String::from(e.entry_type.name()))
             .collect()
@@ -341,6 +359,17 @@ pub fn list_trace_entries() -> Vec<String> {
         .collect()
 }
 
+/// List entries in the /proc/breenix directory
+pub fn list_breenix_entries() -> Vec<String> {
+    let procfs = PROCFS.lock();
+    procfs
+        .entries
+        .iter()
+        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting))
+        .map(|e| String::from(e.entry_type.name()))
+        .collect()
+}
+
 /// Check if procfs is initialized
 pub fn is_initialized() -> bool {
     PROCFS.lock().initialized
@@ -373,6 +402,20 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<String, i32> {
         ProcEntryType::Stat => Ok(generate_stat()),
         ProcEntryType::CowInfo => Ok(generate_cowinfo()),
         ProcEntryType::Mounts => Ok(generate_mounts()),
+        ProcEntryType::BreenixDir => {
+            // Directory listing
+            Ok(String::from("testing\n"))
+        }
+        ProcEntryType::BreenixTesting => {
+            #[cfg(feature = "testing")]
+            {
+                Ok(String::from("1\n"))
+            }
+            #[cfg(not(feature = "testing"))]
+            {
+                Ok(String::from("0\n"))
+            }
+        }
         ProcEntryType::PidDir(pid) => Ok(generate_pid_dir(pid)),
         ProcEntryType::PidStatus(pid) => Ok(generate_pid_status(pid)),
     }
