@@ -87,9 +87,15 @@ pub struct Compiler<'a> {
 
 impl<'a> Compiler<'a> {
     pub fn new(source: &'a str) -> Self {
+        Self::new_with_pool(source, StringPool::new())
+    }
+
+    /// Create a compiler that reuses an existing string pool.
+    /// This preserves StringId stability across multiple eval calls.
+    pub fn new_with_pool(source: &'a str, strings: StringPool) -> Self {
         Self {
             lexer: Lexer::new(source),
-            strings: StringPool::new(),
+            strings,
             code: CodeBlock::new("<main>"),
             scopes: vec![Scope {
                 locals: Vec::new(),
@@ -109,6 +115,13 @@ impl<'a> Compiler<'a> {
     pub fn compile(mut self) -> JsResult<(CodeBlock, StringPool, Vec<CodeBlock>)> {
         self.lexer.tokenize_all()?;
         self.compile_program()?;
+        // REPL completion value: if the last opcode is Pop (from an expression
+        // statement), remove it so the expression result stays on the stack.
+        // This makes `1+1` return 2 instead of undefined — matching Node.js
+        // and Chrome DevTools REPL behavior.
+        if self.code.code.last() == Some(&(Op::Pop as u8)) {
+            self.code.code.pop();
+        }
         self.code.emit_op(Op::Halt);
         self.code.local_count = self.next_slot;
         Ok((self.code, self.strings, self.functions))

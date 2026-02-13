@@ -2573,7 +2573,7 @@ pub fn sys_getcwd(buf: u64, size: u64) -> SyscallResult {
     }
 
     log::debug!("sys_getcwd: returning {:?}", cwd);
-    SyscallResult::Ok(buf)
+    SyscallResult::Ok(cwd_bytes.len() as u64)
 }
 
 /// sys_chdir - Change current working directory

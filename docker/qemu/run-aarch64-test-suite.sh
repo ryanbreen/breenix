@@ -92,9 +92,9 @@ kernel_src = sys.argv[1]
 test_name = sys.argv[2]
 with open(kernel_src, 'r') as f:
     content = f.read()
-# Replace the path in run_userspace_from_ext2 call
+# Replace the path in run_userspace_from_ext2 call (handles both init_shell and bsh)
 content = re.sub(
-    r'run_userspace_from_ext2\("/bin/init_shell"\)',
+    r'run_userspace_from_ext2\("/bin/(init_shell|bsh)"\)',
     f'run_userspace_from_ext2("/bin/{test_name}")',
     content
 )
@@ -123,6 +123,7 @@ PYTHON
         -display none -no-reboot \
         -device virtio-gpu-device \
         -device virtio-keyboard-device \
+        -device virtio-tablet-device \
         -device virtio-blk-device,drive=ext2 \
         -drive if=none,id=ext2,format=raw,file="$EXT2_DISK_WRITABLE" \
         -device virtio-net-device,netdev=net0 \

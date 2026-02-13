@@ -47,6 +47,7 @@ use bytecode::CodeBlock;
 
 // Re-export types needed by native function implementors.
 pub use vm::NativeFn;
+pub use vm::{CommandResolverFn, CommandExecutorFn};
 
 /// The main entry point for the breenish-js engine.
 ///
@@ -69,6 +70,16 @@ impl Context {
     /// Set the print output callback.
     pub fn set_print_fn(&mut self, f: PrintFn) {
         self.vm.set_print_fn(f);
+    }
+
+    /// Set the command resolver callback (checks if a command exists in PATH).
+    pub fn set_command_resolver(&mut self, f: CommandResolverFn) {
+        self.vm.set_command_resolver(f);
+    }
+
+    /// Set the command executor callback (fork+exec with direct terminal output).
+    pub fn set_command_executor(&mut self, f: CommandExecutorFn) {
+        self.vm.set_command_executor(f);
     }
 
     /// Register a native function that can be called from JavaScript.
@@ -1028,16 +1039,44 @@ impl Context {
         &mut self.strings
     }
 
+    /// Register a global object with native function methods.
+    ///
+    /// Creates a JS object with the given name as a global variable, where
+    /// each `(method_name, func)` pair becomes a property on the object.
+    /// This is useful for building namespaced APIs like `console.log()`.
+    pub fn register_native_object(&mut self, obj_name: &str, methods: &[(&str, NativeFn)]) {
+        use object::JsObject;
+        use value::JsValue;
+
+        let mut obj = JsObject::new();
+        for &(method_name, func) in methods {
+            // Register the native function (creates heap object)
+            let native_idx = self.vm.register_native(method_name, func);
+            let obj_idx = self.vm.native_obj_indices[native_idx as usize];
+            let key = self.strings.intern(method_name);
+            obj.set(key, JsValue::object(obj_idx));
+        }
+        let heap_idx = self.vm.heap.alloc(obj);
+        self.vm.set_global_by_name(obj_name, JsValue::object(heap_idx), &mut self.strings);
+    }
+
     /// Evaluate a JavaScript source string.
     pub fn eval(&mut self, source: &str) -> JsResult<JsValue> {
-        let compiler = Compiler::new(source);
-        let (code, mut compile_strings, functions) = compiler.compile()?;
+        // Take ownership of the shared string pool so the compiler reuses it.
+        // This keeps StringIds stable across multiple eval() calls (REPL).
+        let mut pool = core::mem::replace(&mut self.strings, StringPool::new());
 
-        // Re-register native function globals and persistent globals using
-        // the compiler's string pool so that lookups match correct string IDs.
-        self.vm.sync_natives(&self.strings, &mut compile_strings);
+        // Ensure all native and persistent globals are interned in the pool.
+        self.vm.ensure_globals(&mut pool);
 
-        self.vm.execute(&code, &mut compile_strings, &functions)
+        let compiler = Compiler::new_with_pool(source, pool);
+        let (code, mut strings, functions) = compiler.compile()?;
+
+        let result = self.vm.execute(&code, &mut strings, &functions);
+
+        // Put the enriched pool back so subsequent evals share it.
+        self.strings = strings;
+        result
     }
 
     /// Compile source to bytecode without executing.
@@ -1045,6 +1084,14 @@ impl Context {
     pub fn compile(&self, source: &str) -> JsResult<(CodeBlock, StringPool, Vec<CodeBlock>)> {
         let compiler = Compiler::new(source);
         compiler.compile()
+    }
+
+    /// Format a JsValue for REPL display (inspect-style, like Node.js).
+    ///
+    /// Shows structural info: strings are quoted, objects show properties,
+    /// arrays show elements with brackets, etc.
+    pub fn format_value(&self, value: JsValue) -> String {
+        self.vm.inspect_value(value, &self.strings, 0)
     }
 
     /// Get a reference to the string pool.
@@ -2745,5 +2792,176 @@ mod tests {
             eval_collections("let s = Set(); s.add(1); print(s.delete(1)); print(s.delete(1));"),
             "true\nfalse\n"
         );
+    }
+
+    // --- Multi-eval (REPL simulation) tests ---
+
+    #[test]
+    fn test_multi_eval_no_string_pool_crash() {
+        // The critical bug: calling eval() multiple times must not crash
+        // with a string pool index-out-of-bounds panic.
+        let mut ctx = Context::new();
+        ctx.set_print_fn(capture_print);
+        ctx.eval("print(1 + 1);").unwrap();
+        assert_eq!(take_output(), "2\n");
+        ctx.eval("print(2 + 3);").unwrap();
+        assert_eq!(take_output(), "5\n");
+        ctx.eval("print('hello');").unwrap();
+        assert_eq!(take_output(), "hello\n");
+    }
+
+    #[test]
+    fn test_multi_eval_natives_across_evals() {
+        // Native functions must remain callable across multiple evals.
+        let mut ctx = Context::new();
+        ctx.set_print_fn(capture_print);
+        ctx.register_math_builtins();
+        ctx.eval("print(Math.floor(3.7));").unwrap();
+        assert_eq!(take_output(), "3\n");
+        ctx.eval("print(Math.ceil(1.2));").unwrap();
+        assert_eq!(take_output(), "2\n");
+    }
+
+    #[test]
+    fn test_multi_eval_collections_across_evals() {
+        let mut ctx = Context::new();
+        ctx.set_print_fn(capture_print);
+        ctx.register_collection_builtins();
+        ctx.eval("print(typeof Map);").unwrap();
+        assert_eq!(take_output(), "function\n");
+        ctx.eval("let m = Map(); m.set('x', 42); print(m.get('x'));").unwrap();
+        assert_eq!(take_output(), "42\n");
+    }
+
+    #[test]
+    fn test_native_object_method_call() {
+        use crate::vm::NativeFn;
+        use crate::object::ObjectHeap;
+
+        fn my_log(args: &[JsValue], strings: &mut StringPool, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let mut parts = alloc::vec::Vec::new();
+            for arg in args {
+                if arg.is_string() {
+                    parts.push(String::from(strings.get(arg.as_string_id())));
+                } else if arg.is_number() {
+                    parts.push(alloc::format!("{}", arg.to_number()));
+                } else {
+                    parts.push(String::from("?"));
+                }
+            }
+            let msg = parts.join(" ");
+            OUTPUT.with(|o| {
+                o.borrow_mut().push_str(&msg);
+                o.borrow_mut().push('\n');
+            });
+            Ok(JsValue::undefined())
+        }
+
+        let mut ctx = Context::new();
+        ctx.set_print_fn(capture_print);
+        ctx.register_native_object("console", &[
+            ("log", my_log as NativeFn),
+        ]);
+
+        // First eval: console.log should work
+        let result = ctx.eval("console.log('hello world');");
+        match &result {
+            Ok(_) => {},
+            Err(e) => panic!("console.log failed on first eval: {:?}", e),
+        }
+        assert_eq!(take_output(), "hello world\n");
+
+        // Second eval (REPL-like): should still work with reused pool
+        let result = ctx.eval("console.log('second call');");
+        match &result {
+            Ok(_) => {},
+            Err(e) => panic!("console.log failed on second eval: {:?}", e),
+        }
+        assert_eq!(take_output(), "second call\n");
+
+        // Third eval with other evals in between
+        ctx.eval("let x = 42;").unwrap();
+        let result = ctx.eval("console.log('third call', 123);");
+        match &result {
+            Ok(_) => {},
+            Err(e) => panic!("console.log failed on third eval: {:?}", e),
+        }
+        assert_eq!(take_output(), "third call 123\n");
+    }
+
+    #[test]
+    fn test_native_object_with_many_natives() {
+        // Mimics the bsh.rs setup: multiple register_native calls, then register_native_object,
+        // then builtin registrations (JSON, Math, Collections).
+        use crate::vm::NativeFn;
+        use crate::object::ObjectHeap;
+
+        fn dummy_native(_args: &[JsValue], _strings: &mut StringPool, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            Ok(JsValue::undefined())
+        }
+        fn my_log(args: &[JsValue], strings: &mut StringPool, _heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let mut parts = alloc::vec::Vec::new();
+            for arg in args {
+                if arg.is_string() {
+                    parts.push(String::from(strings.get(arg.as_string_id())));
+                } else if arg.is_number() {
+                    parts.push(alloc::format!("{}", arg.to_number()));
+                } else {
+                    parts.push(String::from("?"));
+                }
+            }
+            OUTPUT.with(|o| {
+                let msg = parts.join(" ");
+                o.borrow_mut().push_str(&msg);
+                o.borrow_mut().push('\n');
+            });
+            Ok(JsValue::undefined())
+        }
+
+        let mut ctx = Context::new();
+        ctx.set_print_fn(capture_print);
+
+        // Register direct natives (like exec, pipe, glob, env in bsh.rs)
+        ctx.register_native("exec", dummy_native);
+        ctx.register_native("pipe", dummy_native);
+        ctx.register_native("glob", dummy_native);
+        ctx.register_native("env", dummy_native);
+
+        // Register native object (like console in bsh.rs)
+        ctx.register_native_object("console", &[
+            ("log", my_log as NativeFn),
+            ("error", my_log as NativeFn),
+            ("warn", my_log as NativeFn),
+            ("info", my_log as NativeFn),
+        ]);
+
+        // Register builtins
+        ctx.register_json_builtins();
+        ctx.register_math_builtins();
+        ctx.register_collection_builtins();
+
+        // Now test console.log
+        let result = ctx.eval("console.log('hello');");
+        match &result {
+            Ok(_) => {},
+            Err(e) => panic!("console.log failed: {:?}", e),
+        }
+        assert_eq!(take_output(), "hello\n");
+
+        // Test console.error
+        let result = ctx.eval("console.error('oops');");
+        match &result {
+            Ok(_) => {},
+            Err(e) => panic!("console.error failed: {:?}", e),
+        }
+        assert_eq!(take_output(), "oops\n");
+
+        // Test with multiple args
+        let result = ctx.eval("console.log('a', 1, 'b', 2);");
+        match &result {
+            Ok(_) => {},
+            Err(e) => panic!("console.log with multiple args failed: {:?}", e),
+        }
+        assert_eq!(take_output(), "a 1 b 2\n");
     }
 }

@@ -871,6 +871,53 @@ pub fn clear_shell() {
     IN_TERMINAL_CALL.store(false, core::sync::atomic::Ordering::SeqCst);
 }
 
+/// Handle a mouse click for tab switching.
+///
+/// Called from the tablet interrupt handler when BTN_LEFT is pressed.
+/// Uses try_lock to remain safe in interrupt context. Returns true
+/// if the click was in the tab bar and a terminal switch occurred.
+pub fn handle_mouse_click(x: usize, y: usize) -> bool {
+    let mut guard = match TERMINAL_MANAGER.try_lock() {
+        Some(g) => g,
+        None => return false,
+    };
+    let manager = match guard.as_mut() {
+        Some(m) => m,
+        None => return false,
+    };
+
+    // Check if click is in the tab bar region
+    if y < manager.region_y || y >= manager.region_y + TAB_HEIGHT {
+        return false;
+    }
+
+    // Hit-test tabs (same layout as draw_tab_bar)
+    let metrics = manager.font.metrics();
+    let mut tab_x = manager.region_x + 4;
+    for idx in 0..2 {
+        let title = manager.tab_titles[idx];
+        let shortcut = manager.tab_shortcuts[idx];
+        let title_width = title.len() * metrics.char_advance();
+        let shortcut_width = (shortcut.len() + 2) * metrics.char_advance();
+        let tab_width = title_width + shortcut_width + TAB_PADDING * 2;
+
+        if x >= tab_x && x < tab_x + tab_width {
+            // Clicked on this tab
+            if idx != manager.active_idx {
+                drop(guard); // Release lock before calling switch_terminal
+                let id = if idx == 0 { TerminalId::Shell } else { TerminalId::Logs };
+                switch_terminal(id);
+                return true;
+            }
+            return false; // Already on this tab
+        }
+
+        tab_x += tab_width + 4;
+    }
+
+    false
+}
+
 /// Handle keyboard input for terminal switching.
 /// Returns true if the key was handled.
 pub fn handle_terminal_key(scancode: u8) -> bool {

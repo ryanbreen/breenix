@@ -59,6 +59,7 @@ timeout "$TIMEOUT" qemu-system-aarch64 \
     -display none -no-reboot \
     -device virtio-gpu-device \
     -device virtio-keyboard-device \
+    -device virtio-tablet-device \
     -device virtio-blk-device,drive=ext2 \
     -drive if=none,id=ext2,format=raw,file="$EXT2_WRITABLE" \
     -device virtio-net-device,netdev=net0 \
@@ -72,7 +73,7 @@ QEMU_PID=$!
 echo "Waiting for shell prompt..."
 FOUND_PROMPT=false
 for i in $(seq 1 30); do
-    if [ -f "$OUTPUT_DIR/serial.txt" ] && grep -q "breenix>" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+    if [ -f "$OUTPUT_DIR/serial.txt" ] && grep -qE "(breenix>|bsh )" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
         FOUND_PROMPT=true
         break
     fi

@@ -63,6 +63,7 @@ for i in $(seq 1 $COUNT); do
         -display none -no-reboot \
         -device virtio-gpu-device \
         -device virtio-keyboard-device \
+        -device virtio-tablet-device \
         -device virtio-blk-device,drive=ext2 \
         -drive if=none,id=ext2,format=raw,file="$EXT2_WRITABLE" \
         -device virtio-net-device,netdev=net0 \
@@ -82,9 +83,9 @@ for i in $(seq 1 $COUNT); do
     OUTPUT_DIR="/tmp/breenix_aarch64_kthread_$i"
 
     # Wait up to 60 seconds for this test
-    # Look for userspace shell prompt "breenix>" which indicates:
+    # Look for userspace shell prompt ("breenix>" or "bsh ") which indicates:
     # - Scheduler initialized successfully
-    # - Context switching works (idle thread -> init_shell)
+    # - Context switching works (idle thread -> shell)
     # - Timer interrupts firing correctly
     # - Per-CPU data working
     #
@@ -93,7 +94,7 @@ for i in $(seq 1 $COUNT); do
     FOUND=false
     for j in $(seq 1 30); do
         if [ -f "$OUTPUT_DIR/serial.txt" ]; then
-            if grep -q "breenix>" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            if grep -qE "(breenix>|bsh )" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
                 FOUND=true
                 break
             fi
@@ -110,14 +111,14 @@ for i in $(seq 1 $COUNT); do
     wait ${QEMU_PIDS[$i]} 2>/dev/null || true
 
     if $FOUND; then
-        # Verify no excessive init_shell spawning (would indicate scheduler bugs)
-        SHELL_COUNT=$(grep -o "init_shell" "$OUTPUT_DIR/serial.txt" 2>/dev/null | wc -l | tr -d ' ')
+        # Verify no excessive shell spawning (would indicate scheduler bugs)
+        SHELL_COUNT=$(grep -oE "(init_shell|/bin/bsh)" "$OUTPUT_DIR/serial.txt" 2>/dev/null | wc -l | tr -d ' ')
         SHELL_COUNT=${SHELL_COUNT:-0}
         if [ "$SHELL_COUNT" -le 5 ]; then
-            echo "  Test $i: PASS (${SHELL_COUNT} init_shell mentions)"
+            echo "  Test $i: PASS (${SHELL_COUNT} shell mentions)"
             PASSED=$((PASSED + 1))
         else
-            echo "  Test $i: FAIL (too many init_shell: $SHELL_COUNT)"
+            echo "  Test $i: FAIL (too many shell spawns: $SHELL_COUNT)"
             FAILED=$((FAILED + 1))
         fi
     else

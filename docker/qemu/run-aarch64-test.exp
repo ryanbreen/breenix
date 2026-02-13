@@ -36,7 +36,7 @@ spawn qemu-system-aarch64 \
 
 # Wait for shell prompt
 expect {
-    "breenix>" {
+    -re {breenix>|bsh } {
         puts "\n\[expect\] Shell prompt found"
     }
     timeout {
@@ -64,7 +64,7 @@ expect {
         set test_result "FAIL"
         puts "\n\[expect\] Test failed marker found"
     }
-    "breenix>" {
+    -re {breenix>|bsh } {
         # Test completed, check output
         puts "\n\[expect\] Test completed (shell returned)"
     }

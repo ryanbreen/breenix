@@ -22,4 +22,7 @@ pub mod split_screen;
 pub mod terminal;
 pub mod terminal_manager;
 
+#[cfg(target_arch = "aarch64")]
+pub mod cursor;
+
 pub use double_buffer::DoubleBufferedFrameBuffer;

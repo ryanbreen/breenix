@@ -49,6 +49,7 @@ docker run --rm \
         -display none \
         -device virtio-gpu-device \
         -device virtio-keyboard-device \
+        -device virtio-tablet-device \
         -device virtio-net-device,netdev=net0 \
         -netdev user,id=net0 \
         -no-reboot \

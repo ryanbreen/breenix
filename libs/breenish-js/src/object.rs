@@ -41,6 +41,8 @@ pub enum ObjectKind {
     Map(Vec<(JsValue, JsValue)>),
     /// A Set object (ordered unique values).
     Set(Vec<JsValue>),
+    /// A command function resolved from PATH (stores the command name).
+    CommandFunction(StringId),
 }
 
 /// The state of a Promise.
@@ -162,6 +164,17 @@ impl JsObject {
     pub fn new_native_function(native_index: u32) -> Self {
         Self {
             kind: ObjectKind::NativeFunction(native_index),
+            properties: Vec::new(),
+            elements: Vec::new(),
+            prototype: None,
+            marked: false,
+        }
+    }
+
+    /// Create a new command function object (PATH-resolved executable).
+    pub fn new_command_function(name_sid: StringId) -> Self {
+        Self {
+            kind: ObjectKind::CommandFunction(name_sid),
             properties: Vec::new(),
             elements: Vec::new(),
             prototype: None,

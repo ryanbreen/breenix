@@ -83,6 +83,7 @@ docker run --rm \
         -device virtio-blk-device,drive=ext2disk \
         -device virtio-gpu-device \
         -device virtio-keyboard-device \
+        -device virtio-tablet-device \
         -device virtio-net-device,netdev=net0 \
         -netdev user,id=net0 \
         -display none \

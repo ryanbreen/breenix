@@ -112,6 +112,11 @@ pub struct VirtioMmioDevice {
 }
 
 impl VirtioMmioDevice {
+    /// Get the base (virtual) MMIO address for this device.
+    pub fn base(&self) -> u64 {
+        self.base
+    }
+
     /// Read a 32-bit register
     #[inline]
     fn read32(&self, offset: usize) -> u32 {
