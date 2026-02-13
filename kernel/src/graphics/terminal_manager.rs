@@ -8,6 +8,7 @@ use super::primitives::{draw_text, fill_rect, Canvas, Color, Rect, TextStyle};
 use super::terminal::TerminalPane;
 use alloc::collections::VecDeque;
 use alloc::string::String;
+use alloc::vec::Vec;
 use spin::Mutex;
 
 // Architecture-specific framebuffer imports
@@ -103,6 +104,10 @@ pub struct TerminalManager {
     has_unread: [bool; 2],
     /// Scroll offset for Logs tab (0 = following tail, >0 = scrolled up)
     logs_scroll_offset: usize,
+    /// Saved pixel data for the shell terminal area (saved when switching away)
+    shell_pixel_backup: Option<Vec<u8>>,
+    /// Saved cursor position for the shell terminal (col, row)
+    shell_cursor_backup: (usize, usize),
 }
 
 impl TerminalManager {
@@ -136,6 +141,8 @@ impl TerminalManager {
             tab_shortcuts: ["F1", "F2"],
             has_unread: [false, false],
             logs_scroll_offset: 0,
+            shell_pixel_backup: None,
+            shell_cursor_backup: (0, 0),
         }
     }
 
@@ -155,6 +162,12 @@ impl TerminalManager {
         // Hide cursor
         self.terminal_pane.draw_cursor(canvas, false);
 
+        // If leaving the Shell tab, save its pixel content and cursor position
+        if self.active_idx == TerminalId::Shell as usize {
+            self.shell_cursor_backup = self.terminal_pane.cursor();
+            self.shell_pixel_backup = Some(self.save_terminal_pixels(canvas));
+        }
+
         self.active_idx = new_idx;
         self.has_unread[new_idx] = false;
 
@@ -165,8 +178,12 @@ impl TerminalManager {
         // Restore content for the new active terminal
         match id {
             TerminalId::Shell => {
-                // Shell: just show prompt (shell will redraw its state)
-                self.terminal_pane.write_str(canvas, "breenix> ");
+                // Restore the saved shell pixel content
+                if let Some(ref saved) = self.shell_pixel_backup {
+                    self.restore_terminal_pixels(canvas, saved);
+                }
+                let (col, row) = self.shell_cursor_backup;
+                self.terminal_pane.set_cursor(col, row);
             }
             TerminalId::Logs => {
                 // Reset scroll to follow tail when switching to Logs
@@ -196,6 +213,46 @@ impl TerminalManager {
 
         // Reset terminal pane cursor position
         self.terminal_pane.set_cursor(0, 0);
+    }
+
+    /// Save the terminal content area pixels to a Vec.
+    fn save_terminal_pixels(&self, canvas: &impl Canvas) -> Vec<u8> {
+        let pane_y = self.region_y + TAB_HEIGHT + 2;
+        let pane_height = self.region_height.saturating_sub(TAB_HEIGHT + 2);
+        let bpp = canvas.bytes_per_pixel();
+        let stride = canvas.stride();
+        let buffer = canvas.buffer();
+        let row_bytes = self.region_width * bpp;
+
+        let mut saved = Vec::with_capacity(row_bytes * pane_height);
+        for row in 0..pane_height {
+            let offset = (pane_y + row) * stride * bpp + self.region_x * bpp;
+            if offset + row_bytes <= buffer.len() {
+                saved.extend_from_slice(&buffer[offset..offset + row_bytes]);
+            }
+        }
+        saved
+    }
+
+    /// Restore previously saved terminal content area pixels.
+    fn restore_terminal_pixels(&self, canvas: &mut impl Canvas, saved: &[u8]) {
+        let pane_y = self.region_y + TAB_HEIGHT + 2;
+        let pane_height = self.region_height.saturating_sub(TAB_HEIGHT + 2);
+        let bpp = canvas.bytes_per_pixel();
+        let stride = canvas.stride();
+        let row_bytes = self.region_width * bpp;
+
+        let buffer = canvas.buffer_mut();
+        let mut src_offset = 0;
+        for row in 0..pane_height {
+            let dst_offset = (pane_y + row) * stride * bpp + self.region_x * bpp;
+            if dst_offset + row_bytes <= buffer.len() && src_offset + row_bytes <= saved.len() {
+                buffer[dst_offset..dst_offset + row_bytes]
+                    .copy_from_slice(&saved[src_offset..src_offset + row_bytes]);
+            }
+            src_offset += row_bytes;
+        }
+        canvas.mark_dirty_region(self.region_x, pane_y, self.region_width, pane_height);
     }
 
     /// Initialize the terminal manager.

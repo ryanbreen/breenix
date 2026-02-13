@@ -119,6 +119,7 @@ pub fn dispatch_syscall(
         SyscallNumber::FbInfo => super::graphics::sys_fbinfo(arg1),
         SyscallNumber::FbDraw => super::graphics::sys_fbdraw(arg1),
         SyscallNumber::FbMmap => super::graphics::sys_fbmmap(),
+        SyscallNumber::GetMousePos => super::graphics::sys_get_mouse_pos(arg1),
         // Testing/diagnostic syscalls (Breenix-specific)
         SyscallNumber::CowStats => super::handlers::sys_cow_stats(arg1),
         SyscallNumber::SimulateOom => super::handlers::sys_simulate_oom(arg1),

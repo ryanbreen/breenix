@@ -507,6 +507,10 @@ name = "which_test"
 path = "src/which_test.rs"
 
 [[bin]]
+name = "confetti"
+path = "src/confetti.rs"
+
+[[bin]]
 name = "bsh"
 path = "src/bsh.rs"
 

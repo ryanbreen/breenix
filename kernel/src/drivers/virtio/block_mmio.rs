@@ -6,6 +6,14 @@
 use super::mmio::{VirtioMmioDevice, device_id, VIRTIO_MMIO_BASE, VIRTIO_MMIO_SIZE, VIRTIO_MMIO_COUNT};
 use core::ptr::read_volatile;
 use core::sync::atomic::{fence, Ordering};
+use spin::Mutex;
+
+/// Lock protecting all shared DMA buffers (REQ_HEADER, DATA_BUF, STATUS_BUF, QUEUE_MEM).
+///
+/// The x86_64 PCI block driver uses Mutex<Virtqueue> for the same purpose (block.rs:81).
+/// Without this lock, concurrent exec() calls (e.g., init spawning telnetd + bsh) corrupt
+/// each other's request headers mid-flight, causing ELF load failures.
+static BLOCK_IO_LOCK: Mutex<()> = Mutex::new(());
 
 // Import dsb_sy from the shared CPU module to avoid duplication
 use crate::arch_impl::aarch64::cpu::dsb_sy;
@@ -267,8 +275,36 @@ fn init_device(device: &mut VirtioMmioDevice, base: u64) -> Result<(), &'static 
     Ok(())
 }
 
-/// Read a sector from the block device
+/// Read a sector from the block device.
+///
+/// Serializes access with BLOCK_IO_LOCK to prevent concurrent DMA buffer corruption.
+/// Disables interrupts before acquiring the lock to prevent same-core deadlock
+/// (matches the pattern in `kernel/src/process/mod.rs:85-88`).
 pub fn read_sector(sector: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), &'static str> {
+    // Save DAIF and disable interrupts to prevent same-core deadlock:
+    // if a timer interrupt preempts while we hold the spinlock, the scheduler
+    // could switch to another thread on this core that tries to acquire the
+    // same lock, spinning forever.
+    let saved_daif: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, daif", out(reg) saved_daif, options(nomem, nostack));
+        core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
+    }
+
+    let _guard = BLOCK_IO_LOCK.lock();
+    let result = read_sector_inner(sector, buffer);
+    drop(_guard);
+
+    // Restore interrupt state
+    unsafe {
+        core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
+    }
+
+    result
+}
+
+/// Inner implementation of read_sector, called with BLOCK_IO_LOCK held.
+fn read_sector_inner(sector: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), &'static str> {
     // Use raw pointers to avoid references to mutable statics
     let state = unsafe {
         let ptr = &raw mut BLOCK_DEVICE;
@@ -390,8 +426,29 @@ pub fn read_sector(sector: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), &'
     Ok(())
 }
 
-/// Write a sector to the block device
+/// Write a sector to the block device.
+///
+/// Serializes access with BLOCK_IO_LOCK (same as read_sector).
 pub fn write_sector(sector: u64, buffer: &[u8; SECTOR_SIZE]) -> Result<(), &'static str> {
+    let saved_daif: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, daif", out(reg) saved_daif, options(nomem, nostack));
+        core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
+    }
+
+    let _guard = BLOCK_IO_LOCK.lock();
+    let result = write_sector_inner(sector, buffer);
+    drop(_guard);
+
+    unsafe {
+        core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
+    }
+
+    result
+}
+
+/// Inner implementation of write_sector, called with BLOCK_IO_LOCK held.
+fn write_sector_inner(sector: u64, buffer: &[u8; SECTOR_SIZE]) -> Result<(), &'static str> {
     // Use raw pointers to avoid references to mutable statics
     let state = unsafe {
         let ptr = &raw mut BLOCK_DEVICE;

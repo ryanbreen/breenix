@@ -91,6 +91,7 @@ pub mod nr {
     pub const FBINFO: u64 = 410;       // Breenix: get framebuffer info
     pub const FBDRAW: u64 = 411;       // Breenix: draw to framebuffer
     pub const FBMMAP: u64 = 412;       // Breenix: mmap framebuffer into userspace
+    pub const GET_MOUSE_POS: u64 = 413; // Breenix: get mouse cursor position
     pub const CLONE: u64 = 56;           // Linux x86_64 clone
     pub const FUTEX: u64 = 202;          // Linux x86_64 futex
     pub const GETRANDOM: u64 = 318;    // Linux x86_64 getrandom
