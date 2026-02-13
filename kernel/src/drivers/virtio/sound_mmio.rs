@@ -276,13 +276,7 @@ where
     let _guard = SOUND_LOCK.lock();
     let state = unsafe {
         let ptr = &raw mut SOUND_DEVICE;
-        match (*ptr).as_mut() {
-            Some(s) => s,
-            None => {
-                crate::serial_println!("[virtio-sound] ERROR: Sound device not initialized");
-                return Err("Sound device not initialized");
-            }
-        }
+        (*ptr).as_mut().ok_or("Sound device not initialized")?
     };
     let device = VirtioMmioDevice::probe(state.base).ok_or("Device disappeared")?;
     f(&device, state)
@@ -323,18 +317,6 @@ fn send_ctrl_command(
         fence(Ordering::SeqCst);
     }
 
-    // Log queue state before notify
-    let avail_idx_before = unsafe {
-        let ptr = &raw const CTRL_QUEUE;
-        read_volatile(&(*ptr).avail.idx)
-    };
-    let used_idx_before = unsafe {
-        let ptr = &raw const CTRL_QUEUE;
-        read_volatile(&(*ptr).used.idx)
-    };
-    crate::serial_println!("[virtio-sound] Notifying queue 0: avail_idx={}, used_idx={}, last_used={}, cmd_phys={:#x}, resp_phys={:#x}",
-        avail_idx_before, used_idx_before, state.ctrl_last_used_idx, cmd_phys, resp_phys);
-
     // Notify device (queue 0 = controlq)
     device.notify_queue(0);
 
@@ -352,11 +334,6 @@ fn send_ctrl_command(
         }
         timeout -= 1;
         if timeout == 0 {
-            let used_idx = unsafe {
-                let ptr = &raw const CTRL_QUEUE;
-                read_volatile(&(*ptr).used.idx)
-            };
-            crate::serial_println!("[virtio-sound] Control command timeout! ctrl_last_used={}, used_idx={}", state.ctrl_last_used_idx, used_idx);
             return Err("Sound control command timeout");
         }
         core::hint::spin_loop();
@@ -367,14 +344,11 @@ fn send_ctrl_command(
 
 /// Set up the PCM stream for playback (S16_LE, 44100 Hz, stereo)
 pub fn setup_stream() -> Result<(), &'static str> {
-    crate::serial_println!("[virtio-sound] setup_stream() called");
     with_device_state(|device, state| {
         if state.stream_started {
-            crate::serial_println!("[virtio-sound] Stream already started");
             return Ok(());
         }
 
-        crate::serial_println!("[virtio-sound] Setting up stream (format={}, rate={}, ch=2)", pcm_format::S16, pcm_rate::RATE_44100);
         let cmd_phys = virt_to_phys(&raw const CMD_BUF as u64);
         let resp_phys = virt_to_phys(&raw const RESP_BUF as u64);
 
