@@ -238,6 +238,18 @@ pub fn fb_flush_rect(x: i32, y: i32, w: i32, h: i32) -> Result<(), Error> {
     fbdraw(&cmd)
 }
 
+/// Get the current mouse cursor position.
+///
+/// # Returns
+/// * Ok((x, y)) - Mouse position in screen coordinates
+/// * Err(Error) - Error (ENODEV if no pointer device)
+pub fn mouse_pos() -> Result<(u32, u32), Error> {
+    let mut pos: [u32; 2] = [0, 0];
+    let ret = unsafe { raw::syscall1(nr::GET_MOUSE_POS, &mut pos as *mut [u32; 2] as u64) as i64 };
+    Error::from_syscall(ret)?;
+    Ok((pos[0], pos[1]))
+}
+
 // ============================================================================
 // RAII Framebuffer Wrapper
 // ============================================================================

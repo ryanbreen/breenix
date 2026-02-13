@@ -211,6 +211,7 @@ STD_BINARIES=(
     "demo"
     "bounce"
     "particles"
+    "confetti"
     "http_test"
     "register_init_test"
 

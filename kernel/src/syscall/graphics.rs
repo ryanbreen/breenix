@@ -448,6 +448,41 @@ pub fn sys_fbdraw(_cmd_ptr: u64) -> SyscallResult {
     SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
 }
 
+/// sys_get_mouse_pos - Get current mouse cursor position
+///
+/// # Arguments
+/// * `out_ptr` - Pointer to a [u32; 2] array in userspace: [x, y]
+///
+/// # Returns
+/// * 0 on success
+/// * -EFAULT if out_ptr is invalid
+#[cfg(target_arch = "aarch64")]
+pub fn sys_get_mouse_pos(out_ptr: u64) -> SyscallResult {
+    if out_ptr == 0 || out_ptr >= USER_SPACE_MAX {
+        return SyscallResult::Err(super::ErrorCode::Fault as u64);
+    }
+
+    let end_ptr = out_ptr.saturating_add(8); // 2 * u32
+    if end_ptr > USER_SPACE_MAX {
+        return SyscallResult::Err(super::ErrorCode::Fault as u64);
+    }
+
+    let (mx, my) = crate::drivers::virtio::input_mmio::mouse_position();
+
+    unsafe {
+        let out = out_ptr as *mut [u32; 2];
+        core::ptr::write(out, [mx, my]);
+    }
+
+    SyscallResult::Ok(0)
+}
+
+/// sys_get_mouse_pos - Stub for non-aarch64
+#[cfg(not(target_arch = "aarch64"))]
+pub fn sys_get_mouse_pos(_out_ptr: u64) -> SyscallResult {
+    SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
+}
+
 /// sys_fbmmap - Map a framebuffer buffer into the calling process's address space
 ///
 /// Allocates physical frames, maps them into the process as a compact left-pane
