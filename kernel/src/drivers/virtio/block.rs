@@ -266,7 +266,14 @@ impl VirtioBlockDevice {
             return Err("Sector out of range");
         }
 
-        // Use cached DMA buffers (allocated once during device init)
+        // Acquire the queue lock BEFORE touching the shared DMA buffers.
+        // The DMA header/data/status buffers are shared across all callers,
+        // so writing the sector number and request type without holding the
+        // lock causes a race when two processes exec() concurrently — one
+        // overwrites the other's sector number, reading the wrong block.
+        let mut queue = self.queue.lock();
+
+        // Use cached DMA buffers (protected by queue mutex)
         let (header_phys, header_virt) = self.dma_buffers.header;
         let (data_phys, data_virt) = self.dma_buffers.data;
         let (status_phys, status_virt) = self.dma_buffers.status;
@@ -289,7 +296,6 @@ impl VirtioBlockDevice {
             (status_phys, 1, true),                          // Status: device writes
         ];
 
-        let mut queue = self.queue.lock();
         queue.add_chain(&buffers).ok_or("Queue full")?;
 
         // Notify device
@@ -350,7 +356,10 @@ impl VirtioBlockDevice {
             return Err("Sector out of range");
         }
 
-        // Use cached DMA buffers (allocated once during device init)
+        // Acquire the queue lock BEFORE touching the shared DMA buffers.
+        let mut queue = self.queue.lock();
+
+        // Use cached DMA buffers (protected by queue mutex)
         let (header_phys, header_virt) = self.dma_buffers.header;
         let (data_phys, data_virt) = self.dma_buffers.data;
         let (status_phys, status_virt) = self.dma_buffers.status;
@@ -375,7 +384,6 @@ impl VirtioBlockDevice {
             (status_phys, 1, true),                          // Status: device writes
         ];
 
-        let mut queue = self.queue.lock();
         let _desc_head = queue
             .add_chain(&buffers)
             .ok_or("Queue full")?;

@@ -1,5 +1,5 @@
 #!/bin/bash
-# ARM64 stability test - ensures kernel stays stable after init_shell prompt.
+# ARM64 stability test - ensures kernel stays stable after shell prompt.
 #
 # This test boots to the userspace shell, then continues monitoring serial
 # output for aborts/exceptions for a short window (post-boot stability).
@@ -65,6 +65,7 @@ timeout "$QEMU_TIMEOUT_SECS" qemu-system-aarch64 \
     -display none -no-reboot \
     -device virtio-gpu-device \
     -device virtio-keyboard-device \
+    -device virtio-tablet-device \
     -device virtio-blk-device,drive=ext2 \
     -drive if=none,id=ext2,format=raw,file="$EXT2_WRITABLE" \
     -device virtio-net-device,netdev=net0 \
@@ -72,16 +73,16 @@ timeout "$QEMU_TIMEOUT_SECS" qemu-system-aarch64 \
     -serial file:"$OUTPUT_DIR/serial.txt" &
 QEMU_PID=$!
 
-# Wait for USERSPACE shell prompt (init_shell)
-# ONLY accept "breenix>" - the actual userspace shell prompt
+# Wait for USERSPACE shell prompt (init_shell or bsh)
+# Accept "breenix>" (init_shell) or "bsh " (bsh shell) as valid userspace prompts
 # DO NOT accept "Interactive Shell" - that's the KERNEL FALLBACK when userspace FAILS
 BOOT_COMPLETE=false
 PROMPT_LINE=0
 for _ in $(seq 1 $((WAIT_FOR_PROMPT_SECS / CHECK_INTERVAL_SECS))); do
     if [ -f "$OUTPUT_DIR/serial.txt" ]; then
-        if grep -q "breenix>" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+        if grep -qE "(breenix>|bsh )" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
             BOOT_COMPLETE=true
-            PROMPT_LINE=$(grep -n "breenix>" "$OUTPUT_DIR/serial.txt" | tail -1 | cut -d: -f1)
+            PROMPT_LINE=$(grep -nE "(breenix>|bsh )" "$OUTPUT_DIR/serial.txt" | tail -1 | cut -d: -f1)
             break
         fi
         if grep -qiE "(KERNEL PANIC|panic!)" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
@@ -102,11 +103,11 @@ if ! $BOOT_COMPLETE; then
     exit 1
 fi
 
-# Verify init_shell appears at least once
-SHELL_COUNT=$(grep -o "init_shell" "$OUTPUT_DIR/serial.txt" 2>/dev/null | wc -l | tr -d ' ')
+# Verify shell (init_shell or bsh) appears at least once
+SHELL_COUNT=$(grep -oE "(init_shell|bsh)" "$OUTPUT_DIR/serial.txt" 2>/dev/null | wc -l | tr -d ' ')
 SHELL_COUNT=${SHELL_COUNT:-0}
 if [ "$SHELL_COUNT" -lt 1 ]; then
-    echo "FAIL: init_shell marker not found after prompt"
+    echo "FAIL: shell marker (init_shell or bsh) not found after prompt"
     tail -10 "$OUTPUT_DIR/serial.txt" 2>/dev/null || true
     exit 1
 fi

@@ -57,6 +57,7 @@ run_single_test() {
         -display none -no-reboot \
         -device virtio-gpu-device \
         -device virtio-keyboard-device \
+        -device virtio-tablet-device \
         -device virtio-blk-device,drive=ext2 \
         -drive if=none,id=ext2,format=raw,file="$EXT2_WRITABLE" \
         -device virtio-net-device,netdev=net0 \
@@ -65,12 +66,12 @@ run_single_test() {
     local QEMU_PID=$!
 
     # Wait for USERSPACE shell prompt (18s max, checking every 1.5s)
-    # ONLY accept "breenix>" - the actual userspace shell prompt
+    # Accept "breenix>" (init_shell) or "bsh " (bsh shell) as valid userspace prompts
     # DO NOT accept "Interactive Shell" - that's the KERNEL FALLBACK when userspace FAILS
     local BOOT_COMPLETE=false
     for i in $(seq 1 12); do
         if [ -f "$OUTPUT_DIR/serial.txt" ]; then
-            if grep -q "breenix>" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            if grep -qE "(breenix>|bsh )" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
                 BOOT_COMPLETE=true
                 break
             fi
@@ -85,14 +86,14 @@ run_single_test() {
     wait $QEMU_PID 2>/dev/null || true
 
     if $BOOT_COMPLETE; then
-        # Verify no excessive init_shell spawning
-        local SHELL_COUNT=$(grep -o "init_shell" "$OUTPUT_DIR/serial.txt" 2>/dev/null | wc -l | tr -d ' ')
+        # Verify no excessive shell spawning (init_shell or bsh)
+        local SHELL_COUNT=$(grep -oE "(init_shell|/bin/bsh)" "$OUTPUT_DIR/serial.txt" 2>/dev/null | wc -l | tr -d ' ')
         SHELL_COUNT=${SHELL_COUNT:-0}
         if [ "$SHELL_COUNT" -le 5 ]; then
-            echo "  [OK] Boot $iteration: SUCCESS (${SHELL_COUNT} init_shell mentions)"
+            echo "  [OK] Boot $iteration: SUCCESS (${SHELL_COUNT} shell mentions)"
             return 0
         else
-            echo "  [FAIL] Boot $iteration: Too many init_shell mentions: $SHELL_COUNT"
+            echo "  [FAIL] Boot $iteration: Too many shell mentions: $SHELL_COUNT"
             return 1
         fi
     else

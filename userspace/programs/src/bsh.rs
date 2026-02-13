@@ -11,7 +11,7 @@
 use std::io::{self, Read, Write};
 
 use breenish_js::error::{JsError, JsResult};
-use breenish_js::object::{JsObject, ObjectHeap};
+use breenish_js::object::{JsObject, ObjectHeap, ObjectKind};
 use breenish_js::string::StringPool;
 use breenish_js::value::JsValue;
 use breenish_js::Context;
@@ -678,6 +678,188 @@ fn resolve_command(cmd: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// PATH-as-scope: command resolver and executor for JS global lookup
+// ---------------------------------------------------------------------------
+
+/// Command resolver: returns true if a command name exists in PATH.
+fn command_resolver_fn(name: &str) -> bool {
+    resolve_command(name).is_some()
+}
+
+/// Command executor: fork+exec with direct terminal output (no pipe capture).
+/// Returns the exit code as a JsValue number.
+fn command_executor_fn(
+    cmd: &str,
+    args: &[JsValue],
+    strings: &mut StringPool,
+    _heap: &mut ObjectHeap,
+) -> JsResult<JsValue> {
+    // Build argument list: command name + JsValue args converted to strings
+    let mut cmd_args: Vec<String> = Vec::new();
+    cmd_args.push(String::from(cmd));
+    for arg in args {
+        if arg.is_string() {
+            cmd_args.push(String::from(strings.get(arg.as_string_id())));
+        } else if arg.is_number() {
+            let n = arg.to_number();
+            if n == (n as i64) as f64 && n.abs() < 1e15 {
+                cmd_args.push(format!("{}", n as i64));
+            } else {
+                cmd_args.push(format!("{}", n));
+            }
+        } else if arg.is_boolean() {
+            cmd_args.push(if arg.as_boolean() { String::from("true") } else { String::from("false") });
+        } else {
+            cmd_args.push(String::from("undefined"));
+        }
+    }
+
+    // Resolve command path
+    let resolved = resolve_command(cmd);
+    let exec_path = resolved.as_deref().unwrap_or(cmd);
+
+    // Fork
+    let fork_result = match libbreenix::process::fork() {
+        Ok(r) => r,
+        Err(_) => return Err(JsError::runtime("command exec: fork() failed")),
+    };
+
+    match fork_result {
+        libbreenix::process::ForkResult::Child => {
+            // Child: inherits stdin/stdout/stderr directly (no pipe capture)
+            let mut c_args: Vec<Vec<u8>> = Vec::new();
+            for a in &cmd_args {
+                let mut v: Vec<u8> = a.as_bytes().to_vec();
+                v.push(0);
+                c_args.push(v);
+            }
+            let mut argv_ptrs: Vec<*const u8> = c_args.iter().map(|a| a.as_ptr()).collect();
+            argv_ptrs.push(core::ptr::null());
+
+            let mut path_bytes: Vec<u8> = exec_path.as_bytes().to_vec();
+            path_bytes.push(0);
+
+            let _ = libbreenix::process::execv(&path_bytes, argv_ptrs.as_ptr());
+            libbreenix::process::exit(127);
+        }
+        libbreenix::process::ForkResult::Parent(child_pid) => {
+            let mut status: i32 = 0;
+            let _ = libbreenix::process::waitpid(
+                child_pid.raw() as i32,
+                &mut status as *mut i32,
+                0,
+            );
+
+            let exit_code = if libbreenix::process::wifexited(status) {
+                libbreenix::process::wexitstatus(status)
+            } else {
+                -1
+            };
+
+            Ok(JsValue::number(exit_code as f64))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Context setup
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Console native functions
+// ---------------------------------------------------------------------------
+
+/// console.log(...args) - print args to stdout separated by spaces, with newline
+fn native_console_log(
+    args: &[JsValue],
+    strings: &mut StringPool,
+    heap: &mut ObjectHeap,
+) -> JsResult<JsValue> {
+    let msg = format_console_args(args, strings, heap);
+    let _ = io::stdout().write_all(msg.as_bytes());
+    let _ = io::stdout().write_all(b"\n");
+    let _ = io::stdout().flush();
+    Ok(JsValue::undefined())
+}
+
+/// console.error(...args) - print args to stderr separated by spaces, with newline
+fn native_console_error(
+    args: &[JsValue],
+    strings: &mut StringPool,
+    heap: &mut ObjectHeap,
+) -> JsResult<JsValue> {
+    let msg = format_console_args(args, strings, heap);
+    let _ = io::stderr().write_all(msg.as_bytes());
+    let _ = io::stderr().write_all(b"\n");
+    Ok(JsValue::undefined())
+}
+
+/// Format arguments for console.log/error/warn: space-separated string representations.
+fn format_console_args(args: &[JsValue], strings: &mut StringPool, heap: &mut ObjectHeap) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for arg in args {
+        if arg.is_string() {
+            parts.push(String::from(strings.get(arg.as_string_id())));
+        } else if arg.is_undefined() {
+            parts.push(String::from("undefined"));
+        } else if arg.is_null() {
+            parts.push(String::from("null"));
+        } else if arg.is_boolean() {
+            parts.push(if arg.as_boolean() { String::from("true") } else { String::from("false") });
+        } else if arg.is_number() {
+            let n = arg.to_number();
+            if n == (n as i64) as f64 && n.abs() < 1e15 {
+                parts.push(format!("{}", n as i64));
+            } else {
+                parts.push(format!("{}", n));
+            }
+        } else if arg.is_object() {
+            // Simple object representation
+            let idx = arg.as_object_index();
+            // Extract array info before releasing the borrow on heap
+            let arr_info = heap.get(idx).map(|obj| {
+                if obj.kind == ObjectKind::Array {
+                    let len = obj.elements_len();
+                    let elements: Vec<JsValue> = (0..len.min(10))
+                        .map(|i| obj.get_index(i))
+                        .collect();
+                    Some((len, elements))
+                } else {
+                    None
+                }
+            });
+            match arr_info {
+                Some(Some((len, elements))) => {
+                    let mut elems = Vec::new();
+                    for v in &elements {
+                        if !v.is_undefined() {
+                            if v.is_string() {
+                                elems.push(format!("'{}'", strings.get(v.as_string_id())));
+                            } else {
+                                elems.push(format_console_args(&[*v], strings, heap));
+                            }
+                        }
+                    }
+                    if len > 10 {
+                        elems.push(String::from("..."));
+                    }
+                    parts.push(format!("[{}]", elems.join(", ")));
+                }
+                Some(None) => {
+                    parts.push(String::from("[object Object]"));
+                }
+                None => {
+                    parts.push(String::from("[object]"));
+                }
+            }
+        } else {
+            parts.push(format!("{}", arg.to_number()));
+        }
+    }
+    parts.join(" ")
+}
+
+// ---------------------------------------------------------------------------
 // Context setup
 // ---------------------------------------------------------------------------
 
@@ -685,6 +867,10 @@ fn resolve_command(cmd: &str) -> Option<String> {
 fn create_shell_context() -> Context {
     let mut ctx = Context::new();
     ctx.set_print_fn(print_fn);
+
+    // Register PATH-as-scope callbacks
+    ctx.set_command_resolver(command_resolver_fn);
+    ctx.set_command_executor(command_executor_fn);
 
     // Register native shell functions
     ctx.register_native("exec", native_exec);
@@ -697,6 +883,14 @@ fn create_shell_context() -> Context {
     ctx.register_native("pipe", native_pipe);
     ctx.register_native("glob", native_glob);
     ctx.register_native("env", native_env);
+
+    // Register console object (console.log, console.error, console.warn, console.info)
+    ctx.register_native_object("console", &[
+        ("log", native_console_log as breenish_js::NativeFn),
+        ("error", native_console_error as breenish_js::NativeFn),
+        ("warn", native_console_error as breenish_js::NativeFn),
+        ("info", native_console_log as breenish_js::NativeFn),
+    ]);
 
     // Register built-in objects
     ctx.register_promise_builtins();
@@ -1442,16 +1636,46 @@ fn run_repl() {
             continue;
         }
 
+        // Handle shell builtins (cd, pwd, exit, which, help) in shell syntax
+        if let Some(code) = builtin_wrap(line) {
+            match ctx.eval(&code) {
+                Ok(result) => {
+                    if !result.is_undefined() {
+                        let formatted = ctx.format_value(result);
+                        let msg = format!("{}\n", formatted);
+                        let _ = io::stdout().write_all(msg.as_bytes());
+                        let _ = io::stdout().flush();
+                    }
+                }
+                Err(e) => {
+                    let msg = format!("{}\n", e);
+                    let _ = io::stderr().write_all(msg.as_bytes());
+                }
+            }
+            continue;
+        }
+
         // Handle bare command shorthand: if it looks like a command (starts with
         // a letter, no JS operators), wrap it in exec() automatically
-        let code = if should_auto_exec(line) {
+        let is_auto_exec = should_auto_exec(line);
+        let code = if is_auto_exec {
             auto_exec_wrap(line)
         } else {
             line.to_string()
         };
 
         match ctx.eval(&code) {
-            Ok(_) => {}
+            Ok(result) => {
+                // Auto-print non-undefined expression results (like Node REPL),
+                // but only for JS expressions -- auto-exec'd commands handle
+                // their own output via auto_exec_wrap().
+                if !is_auto_exec && !result.is_undefined() {
+                    let formatted = ctx.format_value(result);
+                    let msg = format!("{}\n", formatted);
+                    let _ = io::stdout().write_all(msg.as_bytes());
+                    let _ = io::stdout().flush();
+                }
+            }
             Err(e) => {
                 let msg = format!("{}\n", e);
                 let _ = io::stderr().write_all(msg.as_bytes());
@@ -1460,8 +1684,55 @@ fn run_repl() {
     }
 }
 
+/// Convert shell-style builtin commands to JS function calls.
+///
+/// Returns `Some(js_code)` if the line is a recognized builtin, `None` otherwise.
+/// This handles commands like `cd /bin` -> `cd("/bin")`, `help` -> print help text, etc.
+fn builtin_wrap(line: &str) -> Option<String> {
+    let line = line.trim();
+    let mut parts = line.splitn(2, char::is_whitespace);
+    let cmd = parts.next().unwrap_or("");
+    let args_str = parts.next().unwrap_or("").trim();
+
+    match cmd {
+        "cd" => {
+            if args_str.is_empty() {
+                Some(String::from("cd(\"/\")"))
+            } else {
+                let escaped = args_str.replace('\\', "\\\\").replace('"', "\\\"");
+                Some(format!("cd(\"{}\")", escaped))
+            }
+        }
+        "pwd" => Some(String::from("print(pwd())")),
+        "exit" => {
+            if args_str.is_empty() {
+                Some(String::from("exit(0)"))
+            } else {
+                Some(format!("exit({})", args_str))
+            }
+        }
+        "which" => {
+            if args_str.is_empty() {
+                Some(String::from("print(\"usage: which <command>\")"))
+            } else {
+                let escaped = args_str.replace('\\', "\\\\").replace('"', "\\\"");
+                Some(format!("print(which(\"{}\") ?? \"not found\")", escaped))
+            }
+        }
+        "help" => {
+            Some(String::from(r#"print("bsh -- Breenish ECMAScript Shell\n\nShell builtins:\n  cd <dir>       Change directory\n  pwd            Print working directory\n  exit [code]    Exit the shell\n  which <cmd>    Find command in PATH\n  source <file>  Execute a script file\n  help           Show this help\n\nProcess execution:\n  exec(cmd, ...args)    Run a command, returns {exitCode, stdout, stderr}\n  pipe(cmd1, cmd2, ...) Pipeline commands\n  ls /bin               Bare commands are auto-wrapped in exec()\n\nFile operations:\n  readFile(path)          Read file contents\n  writeFile(path, data)   Write to file\n  glob(pattern)           Wildcard expansion (*.rs)\n\nEnvironment:\n  env()              All environment variables\n  env(name)          Get variable\n  env(name, value)   Set variable\n\nJavaScript:\n  Full ECMAScript: let/const, functions, arrows, closures,\n  if/else, for/while, try/catch, async/await, template literals,\n  destructuring, spread, Map, Set, JSON, Math, Promise\n\nUse Tab for auto-completion. Up/Down for history.\nSee: docs/user-guide/bsh-shell-guide.md for full documentation.")"#))
+        }
+        _ => None,
+    }
+}
+
 /// Check if a line looks like a shell command rather than JavaScript.
-/// Simple heuristic: starts with a command name (no JS keywords or operators).
+///
+/// The heuristic: a line is treated as a command if it looks like
+/// `command arg1 arg2 ...` — an unadorned identifier (possibly a path)
+/// followed by whitespace-separated arguments. Anything that looks like
+/// a JS expression (contains `.`, `(`, `=`, etc. in the first token) is
+/// evaluated as JavaScript instead.
 fn should_auto_exec(line: &str) -> bool {
     let line = line.trim();
     if line.is_empty() {
@@ -1473,9 +1744,8 @@ fn should_auto_exec(line: &str) -> bool {
         "let ", "const ", "var ", "function ", "if ", "if(", "while ", "while(",
         "for ", "for(", "switch ", "switch(", "try ", "try{", "return ",
         "throw ", "class ", "import ", "export ", "async ", "await ",
-        "print(", "exec(", "cd(", "pwd(", "which(", "readFile(", "writeFile(",
-        "exit(", "pipe(", "glob(", "env(", "source ", "source(",
-        "{", "[", "(", "//", "/*",
+        "new ", "delete ", "typeof ", "void ",
+        "{", "[", "(", "//", "/*", "\"", "'", "`",
     ];
     for prefix in &js_starts {
         if line.starts_with(prefix) {
@@ -1483,13 +1753,33 @@ fn should_auto_exec(line: &str) -> bool {
         }
     }
 
-    // Lines with assignment or declaration syntax
-    if line.contains("=>") || line.contains("= ") || line.starts_with("//") {
+    // Lines with assignment, arrow, or comparison syntax are JS
+    if line.contains("=>") || line.contains("= ") || line.contains("==") {
         return false;
     }
 
-    // Lines that start with a valid identifier and look like commands
+    // Numeric literals are JS (e.g. "1+1", "42", "3.14")
     let first_char = line.chars().next().unwrap();
+    if first_char.is_ascii_digit() {
+        return false;
+    }
+
+    // Extract the first token (before whitespace). If it contains `.` or `(`
+    // it's a JS expression (method call like `console.log(...)`, function call
+    // like `foo(1)`), not a shell command. Exception: tokens starting with
+    // `./` or `../` are relative paths (commands).
+    let first_token = line.split_whitespace().next().unwrap_or("");
+    if first_token.contains('(') {
+        return false; // Function call: foo(), console.log("hi"), etc.
+    }
+    if first_token.contains('.')
+        && !first_token.starts_with("./")
+        && !first_token.starts_with("../")
+    {
+        return false; // Method chain: console.log, obj.method, etc.
+    }
+
+    // Lines that start with a valid command character: letter, '/', './'
     if first_char.is_ascii_alphabetic() || first_char == '/' || first_char == '.' {
         return true;
     }
@@ -1522,7 +1812,18 @@ fn auto_exec_wrap(line: &str) -> String {
         }
         call.push('"');
     }
-    call.push_str("); if (__r.stdout.length > 0) print(__r.stdout);");
+    call.push_str("); if (__r.exitCode === 127) { console.error(\"");
+    // Escape the command name for the error message
+    for c in parts[0].chars() {
+        if c == '"' {
+            call.push_str("\\\"");
+        } else if c == '\\' {
+            call.push_str("\\\\");
+        } else {
+            call.push(c);
+        }
+    }
+    call.push_str(": command not found\"); } else { if (__r.stdout.length > 0) print(__r.stdout); }");
     call
 }
 

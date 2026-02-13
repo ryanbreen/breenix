@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Breenish (bsh) Shell Guide</title>
+<style>
+/* ── Layout ────────────────────────────────────────────────────────── */
+body {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 45px 28px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  line-height: 1.6;
+  color: #24292f;
+  background: #fff;
+}
+
+/* ── Code blocks ───────────────────────────────────────────────────── */
+pre {
+  background: #0d1117;
+  color: #e6edf3;
+  padding: 16px 20px;
+  border-radius: 8px;
+  overflow-x: auto;
+  line-height: 1.5;
+  font-size: 14px;
+  tab-size: 4;
+  margin: 1.2em 0;
+  border: 1px solid #30363d;
+}
+pre code {
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+  font-size: 14px;
+  background: none;
+  padding: 0;
+  color: inherit;
+}
+
+/* ── Inline code ───────────────────────────────────────────────────── */
+code {
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+  font-size: 14px;
+}
+:not(pre) > code {
+  background: #eff1f3;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: #24292f;
+  font-size: 85%;
+}
+
+/* ── Syntax highlighting (GitHub Dark) ─────────────────────────────── */
+.hl-keyword  { color: #ff7b72; }
+.hl-string   { color: #a5d6ff; }
+.hl-comment  { color: #8b949e; font-style: italic; }
+.hl-number   { color: #79c0ff; }
+.hl-literal  { color: #79c0ff; }
+.hl-built_in { color: #ffa657; }
+.hl-title    { color: #d2a8ff; }
+.hl-subst    { color: #e6edf3; }
+
+/* ── Tables ────────────────────────────────────────────────────────── */
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+}
+th, td {
+  border: 1px solid #d0d7de;
+  padding: 8px 12px;
+  text-align: left;
+}
+th {
+  background: #f6f8fa;
+  font-weight: 600;
+}
+
+/* ── Headings ──────────────────────────────────────────────────────── */
+h1 {
+  border-bottom: 2px solid #d0d7de;
+  padding-bottom: 12px;
+  font-size: 2em;
+}
+h2 {
+  border-bottom: 1px solid #d0d7de;
+  padding-bottom: 8px;
+  margin-top: 2em;
+  font-size: 1.5em;
+}
+h3 {
+  margin-top: 1.5em;
+  font-size: 1.25em;
+}
+
+/* ── Other elements ────────────────────────────────────────────────── */
+hr {
+  border: none;
+  border-top: 1px solid #d0d7de;
+  margin: 2em 0;
+}
+ul {
+  padding-left: 2em;
+}
+li {
+  margin: 0.25em 0;
+}
+p {
+  margin: 0.8em 0;
+}
+
+/* ── Dark mode overrides ───────────────────────────────────────────── */
+@media (prefers-color-scheme: dark) {
+  body {
+    background: #0d1117;
+    color: #e6edf3;
+  }
+  :not(pre) > code {
+    background: #161b22;
+    color: #e6edf3;
+  }
+  th {
+    background: #161b22;
+  }
+  th, td {
+    border-color: #30363d;
+  }
+  h1, h2 {
+    border-color: #30363d;
+  }
+  hr {
+    border-color: #30363d;
+  }
+}
+</style>
+</head>
+<body>
+<h1>Breenish (bsh) Shell Guide</h1>
+
+<p>Breenish is the ECMAScript-powered shell for Breenix. It combines a full JavaScript engine with POSIX process execution, giving you real data structures, closures, async/await, and <code>try/catch</code> instead of bash's ad-hoc scripting.</p>
+
+<hr>
+
+<h2>Quick Start</h2>
+
+<pre><code>./run.sh --clean           # ARM64 (default) - full rebuild
+./run.sh --clean --x86     # x86_64 - full rebuild</code></pre>
+
+<p>Once Breenix boots, you'll see:</p>
+
+<pre><code>bsh /bin&gt;</code></pre>
+
+<p>Type JavaScript or shell commands directly.</p>
+
+<hr>
+
+<h2>Running Commands</h2>
+
+<h3>Bare Commands (Auto-Exec)</h3>
+
+<p>Type a command name and bsh auto-wraps it in <code>exec()</code>:</p>
+
+<pre><code>bsh /&gt; ls /bin
+bsh /&gt; cat /etc/bshrc
+bsh /&gt; echo hello world</code></pre>
+
+<p>Behind the scenes, <code>ls /bin</code> becomes <code>exec(&quot;ls&quot;, &quot;/bin&quot;)</code>.</p>
+
+<h3>Explicit Process Execution</h3>
+
+<pre><code><span class="hl-keyword">let</span> r = <span class="hl-title">exec</span>(<span class="hl-string">&quot;ls&quot;</span>, <span class="hl-string">&quot;-la&quot;</span>, <span class="hl-string">&quot;/bin&quot;</span>);
+<span class="hl-comment">// r = { exitCode: 0, stdout: &quot;...&quot;, stderr: &quot;&quot;, pid: 42 }</span>
+
+<span class="hl-title">print</span>(r.stdout);
+<span class="hl-title">print</span>(r.exitCode);</code></pre>
+
+<h3>Pipelines</h3>
+
+<pre><code><span class="hl-keyword">let</span> r = <span class="hl-title">pipe</span>(<span class="hl-string">&quot;cat /etc/bshrc&quot;</span>, <span class="hl-string">&quot;grep let&quot;</span>, <span class="hl-string">&quot;wc -l&quot;</span>);
+<span class="hl-title">print</span>(r.stdout);</code></pre>
+
+<p>Each argument is a space-separated command string. Pipe connects stdout of each stage to stdin of the next.</p>
+
+<h3>Command Resolution</h3>
+
+<pre><code><span class="hl-title">which</span>(<span class="hl-string">&quot;ls&quot;</span>)      <span class="hl-comment">// &quot;/bin/ls&quot;</span>
+<span class="hl-title">which</span>(<span class="hl-string">&quot;nope&quot;</span>)    <span class="hl-comment">// null</span></code></pre>
+
+<h3>Background and Parallel Execution</h3>
+
+<pre><code><span class="hl-comment">// Don&#x27;t await = runs in background (when async is available)</span>
+<span class="hl-keyword">let</span> server = <span class="hl-title">exec</span>(<span class="hl-string">&quot;telnetd&quot;</span>);
+
+<span class="hl-comment">// Parallel</span>
+<span class="hl-keyword">let</span> [a, b] = <span class="hl-keyword">await</span> <span class="hl-built_in">Promise</span>.<span class="hl-title">all</span>([
+    <span class="hl-title">exec</span>(<span class="hl-string">&quot;echo&quot;</span>, <span class="hl-string">&quot;one&quot;</span>),
+    <span class="hl-title">exec</span>(<span class="hl-string">&quot;echo&quot;</span>, <span class="hl-string">&quot;two&quot;</span>)
+]);</code></pre>
+
+<hr>
+
+<h2>File Operations</h2>
+
+<pre><code><span class="hl-comment">// Read a file</span>
+<span class="hl-keyword">let</span> contents = <span class="hl-title">readFile</span>(<span class="hl-string">&quot;/etc/bshrc&quot;</span>);
+<span class="hl-title">print</span>(contents);
+
+<span class="hl-comment">// Write a file</span>
+<span class="hl-title">writeFile</span>(<span class="hl-string">&quot;/tmp/hello.txt&quot;</span>, <span class="hl-string">&quot;Hello from bsh!\n&quot;</span>);
+
+<span class="hl-comment">// Glob (wildcard expansion)</span>
+<span class="hl-keyword">let</span> files = <span class="hl-title">glob</span>(<span class="hl-string">&quot;/bin/*&quot;</span>);
+<span class="hl-title">print</span>(files.length + <span class="hl-string">&quot; files in /bin&quot;</span>);
+
+<span class="hl-keyword">let</span> rust = <span class="hl-title">glob</span>(<span class="hl-string">&quot;/src/*.rs&quot;</span>);
+<span class="hl-keyword">for</span> (<span class="hl-keyword">let</span> f <span class="hl-keyword">of</span> rust) {
+    <span class="hl-title">print</span>(f);
+}</code></pre>
+
+<hr>
+
+<h2>Environment Variables</h2>
+
+<pre><code><span class="hl-comment">// Get all env vars as an object</span>
+<span class="hl-keyword">let</span> all = <span class="hl-title">env</span>();
+<span class="hl-title">print</span>(<span class="hl-built_in">JSON</span>.<span class="hl-title">stringify</span>(all));
+
+<span class="hl-comment">// Get one</span>
+<span class="hl-keyword">let</span> path = <span class="hl-title">env</span>(<span class="hl-string">&quot;PATH&quot;</span>);
+<span class="hl-title">print</span>(path);
+
+<span class="hl-comment">// Set one</span>
+<span class="hl-title">env</span>(<span class="hl-string">&quot;MY_VAR&quot;</span>, <span class="hl-string">&quot;hello&quot;</span>);
+<span class="hl-title">print</span>(<span class="hl-title">env</span>(<span class="hl-string">&quot;MY_VAR&quot;</span>));   <span class="hl-comment">// &quot;hello&quot;</span></code></pre>
+
+<hr>
+
+<h2>Navigation</h2>
+
+<pre><code><span class="hl-title">cd</span>(<span class="hl-string">&quot;/bin&quot;</span>);      <span class="hl-comment">// Change directory</span>
+<span class="hl-title">pwd</span>()            <span class="hl-comment">// Print working directory: &quot;/bin&quot;</span>
+<span class="hl-title">cd</span>(<span class="hl-string">&quot;/&quot;</span>);         <span class="hl-comment">// Back to root</span>
+
+<span class="hl-comment">// The prompt shows your current directory:</span>
+<span class="hl-comment">// bsh /bin&gt;</span></code></pre>
+
+<hr>
+
+<h2>JavaScript Language Features</h2>
+
+<p>bsh runs full ECMAScript. Everything below works at the REPL or in scripts.</p>
+
+<h3>Variables and Types</h3>
+
+<pre><code><span class="hl-keyword">let</span> name = <span class="hl-string">&quot;Breenix&quot;</span>;
+<span class="hl-keyword">const</span> version = <span class="hl-number">1</span>;
+<span class="hl-keyword">let</span> items = [<span class="hl-number">1</span>, <span class="hl-number">2</span>, <span class="hl-number">3</span>];
+<span class="hl-keyword">let</span> config = { debug: <span class="hl-literal">true</span>, port: <span class="hl-number">8080</span> };</code></pre>
+
+<h3>Template Literals</h3>
+
+<pre><code><span class="hl-keyword">let</span> user = <span class="hl-string">&quot;root&quot;</span>;
+<span class="hl-title">print</span>(<span class="hl-string">`</span><span class="hl-string">Hello </span><span class="hl-subst">${</span>user<span class="hl-subst">}</span><span class="hl-string">, you have </span><span class="hl-subst">${</span>items.length<span class="hl-subst">}</span><span class="hl-string"> items</span><span class="hl-string">`</span>);</code></pre>
+
+<h3>Functions and Closures</h3>
+
+<pre><code><span class="hl-keyword">function</span> <span class="hl-title">greet</span>(name) {
+    <span class="hl-keyword">return</span> <span class="hl-string">`</span><span class="hl-string">Hello, </span><span class="hl-subst">${</span>name<span class="hl-subst">}</span><span class="hl-string">!</span><span class="hl-string">`</span>;
+}
+<span class="hl-title">print</span>(<span class="hl-title">greet</span>(<span class="hl-string">&quot;world&quot;</span>));
+
+<span class="hl-comment">// Arrow functions</span>
+<span class="hl-keyword">let</span> double = (x) <span class="hl-keyword">=&gt;</span> x * <span class="hl-number">2</span>;
+<span class="hl-keyword">let</span> nums = [<span class="hl-number">1</span>, <span class="hl-number">2</span>, <span class="hl-number">3</span>].<span class="hl-title">map</span>(x <span class="hl-keyword">=&gt;</span> x * <span class="hl-number">10</span>);
+<span class="hl-title">print</span>(nums);  <span class="hl-comment">// [10, 20, 30]</span>
+
+<span class="hl-comment">// Closures</span>
+<span class="hl-keyword">function</span> <span class="hl-title">counter</span>() {
+    <span class="hl-keyword">let</span> n = <span class="hl-number">0</span>;
+    <span class="hl-keyword">return</span> () <span class="hl-keyword">=&gt;</span> { n++; <span class="hl-keyword">return</span> n; };
+}
+<span class="hl-keyword">let</span> c = <span class="hl-title">counter</span>();
+<span class="hl-title">print</span>(<span class="hl-title">c</span>());  <span class="hl-comment">// 1</span>
+<span class="hl-title">print</span>(<span class="hl-title">c</span>());  <span class="hl-comment">// 2</span></code></pre>
+
+<h3>Control Flow</h3>
+
+<pre><code><span class="hl-comment">// if/else</span>
+<span class="hl-keyword">if</span> (<span class="hl-title">env</span>(<span class="hl-string">&quot;DEBUG&quot;</span>)) {
+    <span class="hl-title">print</span>(<span class="hl-string">&quot;debug mode&quot;</span>);
+} <span class="hl-keyword">else</span> {
+    <span class="hl-title">print</span>(<span class="hl-string">&quot;production&quot;</span>);
+}
+
+<span class="hl-comment">// Ternary</span>
+<span class="hl-keyword">let</span> mode = <span class="hl-title">env</span>(<span class="hl-string">&quot;DEBUG&quot;</span>) ? <span class="hl-string">&quot;debug&quot;</span> : <span class="hl-string">&quot;prod&quot;</span>;
+
+<span class="hl-comment">// for loops</span>
+<span class="hl-keyword">for</span> (<span class="hl-keyword">let</span> i = <span class="hl-number">0</span>; i &lt; <span class="hl-number">5</span>; i++) {
+    <span class="hl-title">print</span>(i);
+}
+
+<span class="hl-comment">// for...of (arrays)</span>
+<span class="hl-keyword">for</span> (<span class="hl-keyword">let</span> file <span class="hl-keyword">of</span> <span class="hl-title">glob</span>(<span class="hl-string">&quot;/bin/*&quot;</span>)) {
+    <span class="hl-title">print</span>(file);
+}
+
+<span class="hl-comment">// for...in (object keys)</span>
+<span class="hl-keyword">let</span> obj = { a: <span class="hl-number">1</span>, b: <span class="hl-number">2</span>, c: <span class="hl-number">3</span> };
+<span class="hl-keyword">for</span> (<span class="hl-keyword">let</span> key <span class="hl-keyword">in</span> obj) {
+    <span class="hl-title">print</span>(<span class="hl-string">`</span><span class="hl-subst">${</span>key<span class="hl-subst">}</span><span class="hl-string"> = </span><span class="hl-subst">${</span>obj[key]<span class="hl-subst">}</span><span class="hl-string">`</span>);
+}
+
+<span class="hl-comment">// while / do-while</span>
+<span class="hl-keyword">let</span> x = <span class="hl-number">10</span>;
+<span class="hl-keyword">while</span> (x &gt; <span class="hl-number">0</span>) { x--; }
+<span class="hl-keyword">do</span> { x++; } <span class="hl-keyword">while</span> (x &lt; <span class="hl-number">5</span>);
+
+<span class="hl-comment">// switch</span>
+<span class="hl-keyword">switch</span> (<span class="hl-title">env</span>(<span class="hl-string">&quot;SHELL&quot;</span>)) {
+    <span class="hl-keyword">case</span> <span class="hl-string">&quot;/bin/bsh&quot;</span>:
+        <span class="hl-title">print</span>(<span class="hl-string">&quot;breenish!&quot;</span>);
+        <span class="hl-keyword">break</span>;
+    <span class="hl-keyword">default</span>:
+        <span class="hl-title">print</span>(<span class="hl-string">&quot;other shell&quot;</span>);
+}</code></pre>
+
+<h3>Error Handling</h3>
+
+<pre><code><span class="hl-keyword">try</span> {
+    <span class="hl-keyword">let</span> r = <span class="hl-title">exec</span>(<span class="hl-string">&quot;nonexistent-command&quot;</span>);
+    <span class="hl-keyword">if</span> (r.exitCode !== <span class="hl-number">0</span>) {
+        <span class="hl-keyword">throw</span> <span class="hl-keyword">new</span> <span class="hl-built_in">Error</span>(<span class="hl-string">&quot;command failed: &quot;</span> + r.exitCode);
+    }
+} <span class="hl-keyword">catch</span> (e) {
+    <span class="hl-built_in">console</span>.<span class="hl-title">error</span>(<span class="hl-string">&quot;Caught:&quot;</span>, e.message);
+} <span class="hl-keyword">finally</span> {
+    <span class="hl-title">print</span>(<span class="hl-string">&quot;cleanup done&quot;</span>);
+}</code></pre>
+
+<h3>Destructuring</h3>
+
+<pre><code><span class="hl-comment">// Object destructuring</span>
+<span class="hl-keyword">let</span> { stdout, exitCode } = <span class="hl-title">exec</span>(<span class="hl-string">&quot;uname&quot;</span>);
+<span class="hl-title">print</span>(stdout);
+
+<span class="hl-comment">// Array destructuring</span>
+<span class="hl-keyword">let</span> [first, second] = [<span class="hl-string">&quot;hello&quot;</span>, <span class="hl-string">&quot;world&quot;</span>];
+
+<span class="hl-comment">// In function params</span>
+<span class="hl-keyword">function</span> <span class="hl-title">show</span>({ stdout, exitCode }) {
+    <span class="hl-title">print</span>(<span class="hl-string">`</span><span class="hl-string">exit=</span><span class="hl-subst">${</span>exitCode<span class="hl-subst">}</span><span class="hl-string">: </span><span class="hl-subst">${</span>stdout<span class="hl-subst">}</span><span class="hl-string">`</span>);
+}
+<span class="hl-title">show</span>(<span class="hl-title">exec</span>(<span class="hl-string">&quot;echo&quot;</span>, <span class="hl-string">&quot;hi&quot;</span>));</code></pre>
+
+<h3>Spread and Nullish Coalescing</h3>
+
+<pre><code><span class="hl-comment">// Spread in function calls</span>
+<span class="hl-keyword">let</span> args = [<span class="hl-string">&quot;-la&quot;</span>, <span class="hl-string">&quot;/bin&quot;</span>];
+<span class="hl-title">exec</span>(<span class="hl-string">&quot;ls&quot;</span>, <span class="hl-keyword">...</span>args);
+
+<span class="hl-comment">// Nullish coalescing</span>
+<span class="hl-keyword">let</span> port = <span class="hl-title">env</span>(<span class="hl-string">&quot;PORT&quot;</span>) ?? <span class="hl-string">&quot;8080&quot;</span>;</code></pre>
+
+<h3>Async/Await</h3>
+
+<pre><code><span class="hl-keyword">async</span> <span class="hl-keyword">function</span> <span class="hl-title">deploy</span>() {
+    <span class="hl-keyword">let</span> build = <span class="hl-keyword">await</span> <span class="hl-title">exec</span>(<span class="hl-string">&quot;make&quot;</span>);
+    <span class="hl-keyword">if</span> (build.exitCode !== <span class="hl-number">0</span>) {
+        <span class="hl-keyword">throw</span> <span class="hl-keyword">new</span> <span class="hl-built_in">Error</span>(<span class="hl-string">&quot;build failed&quot;</span>);
+    }
+    <span class="hl-keyword">let</span> test = <span class="hl-keyword">await</span> <span class="hl-title">exec</span>(<span class="hl-string">&quot;make&quot;</span>, <span class="hl-string">&quot;test&quot;</span>);
+    <span class="hl-keyword">return</span> test.exitCode;
+}</code></pre>
+
+<hr>
+
+<h2>Built-in Objects</h2>
+
+<h3>console</h3>
+
+<pre><code><span class="hl-built_in">console</span>.<span class="hl-title">log</span>(<span class="hl-string">&quot;info message&quot;</span>);           <span class="hl-comment">// stdout</span>
+<span class="hl-built_in">console</span>.<span class="hl-title">error</span>(<span class="hl-string">&quot;error message&quot;</span>);        <span class="hl-comment">// stderr</span>
+<span class="hl-built_in">console</span>.<span class="hl-title">warn</span>(<span class="hl-string">&quot;same as error&quot;</span>);         <span class="hl-comment">// stderr</span>
+<span class="hl-built_in">console</span>.<span class="hl-title">info</span>(<span class="hl-string">&quot;same as log&quot;</span>);           <span class="hl-comment">// stdout</span>
+<span class="hl-built_in">console</span>.<span class="hl-title">log</span>(<span class="hl-string">&quot;multiple&quot;</span>, <span class="hl-string">&quot;args&quot;</span>, <span class="hl-number">42</span>);   <span class="hl-comment">// space-separated</span></code></pre>
+
+<h3>JSON</h3>
+
+<pre><code><span class="hl-keyword">let</span> data = <span class="hl-built_in">JSON</span>.<span class="hl-title">parse</span>(<span class="hl-string">&#x27;{&quot;name&quot;: &quot;bsh&quot;, &quot;version&quot;: 1}&#x27;</span>);
+<span class="hl-title">print</span>(data.name);    <span class="hl-comment">// &quot;bsh&quot;</span>
+<span class="hl-title">print</span>(data.version); <span class="hl-comment">// 1</span>
+
+<span class="hl-keyword">let</span> s = <span class="hl-built_in">JSON</span>.<span class="hl-title">stringify</span>({ a: [<span class="hl-number">1</span>, <span class="hl-number">2</span>, <span class="hl-number">3</span>], b: <span class="hl-literal">true</span> });
+<span class="hl-title">print</span>(s);  <span class="hl-comment">// &#x27;{&quot;a&quot;:[1,2,3],&quot;b&quot;:true}&#x27;</span></code></pre>
+
+<h3>Math</h3>
+
+<pre><code><span class="hl-built_in">Math</span>.<span class="hl-title">floor</span>(<span class="hl-number">3.7</span>)    <span class="hl-comment">// 3</span>
+<span class="hl-built_in">Math</span>.<span class="hl-title">ceil</span>(<span class="hl-number">3.2</span>)     <span class="hl-comment">// 4</span>
+<span class="hl-built_in">Math</span>.<span class="hl-title">round</span>(<span class="hl-number">3.5</span>)    <span class="hl-comment">// 4</span>
+<span class="hl-built_in">Math</span>.<span class="hl-title">abs</span>(-<span class="hl-number">5</span>)       <span class="hl-comment">// 5</span>
+<span class="hl-built_in">Math</span>.<span class="hl-title">min</span>(<span class="hl-number">1</span>, <span class="hl-number">2</span>)     <span class="hl-comment">// 1</span>
+<span class="hl-built_in">Math</span>.<span class="hl-title">max</span>(<span class="hl-number">1</span>, <span class="hl-number">2</span>)     <span class="hl-comment">// 2</span>
+<span class="hl-built_in">Math</span>.<span class="hl-title">pow</span>(<span class="hl-number">2</span>, <span class="hl-number">10</span>)    <span class="hl-comment">// 1024</span>
+<span class="hl-built_in">Math</span>.<span class="hl-title">sqrt</span>(<span class="hl-number">144</span>)     <span class="hl-comment">// 12</span>
+<span class="hl-built_in">Math</span>.<span class="hl-title">random</span>()      <span class="hl-comment">// 0.0 to 1.0</span>
+<span class="hl-built_in">Math</span>.PI            <span class="hl-comment">// 3.14159...</span>
+<span class="hl-built_in">Math</span>.E             <span class="hl-comment">// 2.71828...</span>
+<span class="hl-built_in">Math</span>.<span class="hl-title">log</span>(<span class="hl-built_in">Math</span>.E)   <span class="hl-comment">// 1</span>
+<span class="hl-built_in">Math</span>.<span class="hl-title">trunc</span>(<span class="hl-number">3.9</span>)    <span class="hl-comment">// 3</span></code></pre>
+
+<h3>Number</h3>
+
+<pre><code><span class="hl-built_in">Number</span>.<span class="hl-title">isInteger</span>(<span class="hl-number">5</span>)       <span class="hl-comment">// true</span>
+<span class="hl-built_in">Number</span>.<span class="hl-title">isFinite</span>(<span class="hl-literal">Infinity</span>) <span class="hl-comment">// false</span>
+<span class="hl-built_in">Number</span>.<span class="hl-title">isNaN</span>(<span class="hl-literal">NaN</span>)         <span class="hl-comment">// true</span>
+<span class="hl-built_in">Number</span>.<span class="hl-built_in">parseInt</span>(<span class="hl-string">&quot;42abc&quot;</span>)  <span class="hl-comment">// 42</span>
+<span class="hl-built_in">Number</span>.<span class="hl-built_in">parseFloat</span>(<span class="hl-string">&quot;3.14&quot;</span>) <span class="hl-comment">// 3.14</span>
+
+<span class="hl-comment">// Also available as globals</span>
+<span class="hl-built_in">parseInt</span>(<span class="hl-string">&quot;10&quot;</span>)
+<span class="hl-built_in">parseFloat</span>(<span class="hl-string">&quot;2.5&quot;</span>)</code></pre>
+
+<h3>Map</h3>
+
+<pre><code><span class="hl-keyword">let</span> m = <span class="hl-built_in">Map</span>();
+m.<span class="hl-title">set</span>(<span class="hl-string">&quot;name&quot;</span>, <span class="hl-string">&quot;bsh&quot;</span>);
+m.<span class="hl-title">set</span>(<span class="hl-string">&quot;version&quot;</span>, <span class="hl-number">1</span>);
+<span class="hl-title">print</span>(m.<span class="hl-title">get</span>(<span class="hl-string">&quot;name&quot;</span>));     <span class="hl-comment">// &quot;bsh&quot;</span>
+<span class="hl-title">print</span>(m.<span class="hl-title">has</span>(<span class="hl-string">&quot;name&quot;</span>));     <span class="hl-comment">// true</span>
+<span class="hl-title">print</span>(m.size);             <span class="hl-comment">// 2</span>
+<span class="hl-title">print</span>(m.<span class="hl-title">keys</span>());           <span class="hl-comment">// [&quot;name&quot;, &quot;version&quot;]</span>
+<span class="hl-title">print</span>(m.<span class="hl-title">values</span>());         <span class="hl-comment">// [&quot;bsh&quot;, 1]</span>
+m.<span class="hl-keyword">delete</span>(<span class="hl-string">&quot;version&quot;</span>);
+m.<span class="hl-title">clear</span>();</code></pre>
+
+<h3>Set</h3>
+
+<pre><code><span class="hl-keyword">let</span> s = <span class="hl-built_in">Set</span>();
+s.<span class="hl-title">add</span>(<span class="hl-string">&quot;apple&quot;</span>);
+s.<span class="hl-title">add</span>(<span class="hl-string">&quot;banana&quot;</span>);
+s.<span class="hl-title">add</span>(<span class="hl-string">&quot;apple&quot;</span>);            <span class="hl-comment">// duplicate ignored</span>
+<span class="hl-title">print</span>(s.size);             <span class="hl-comment">// 2</span>
+<span class="hl-title">print</span>(s.<span class="hl-title">has</span>(<span class="hl-string">&quot;apple&quot;</span>));     <span class="hl-comment">// true</span>
+<span class="hl-title">print</span>(s.<span class="hl-title">values</span>());         <span class="hl-comment">// [&quot;apple&quot;, &quot;banana&quot;]</span>
+s.<span class="hl-keyword">delete</span>(<span class="hl-string">&quot;apple&quot;</span>);</code></pre>
+
+<h3>Promise</h3>
+
+<pre><code><span class="hl-built_in">Promise</span>.<span class="hl-title">resolve</span>(<span class="hl-number">42</span>)               <span class="hl-comment">// fulfilled with 42</span>
+<span class="hl-built_in">Promise</span>.<span class="hl-title">reject</span>(<span class="hl-string">&quot;oops&quot;</span>)            <span class="hl-comment">// rejected</span>
+<span class="hl-built_in">Promise</span>.<span class="hl-title">all</span>([p1, p2, p3])         <span class="hl-comment">// wait for all</span>
+<span class="hl-built_in">Promise</span>.<span class="hl-title">race</span>([p1, p2, p3])        <span class="hl-comment">// first to settle</span>
+<span class="hl-built_in">Promise</span>.<span class="hl-title">allSettled</span>([p1, p2, p3])   <span class="hl-comment">// all results with status</span></code></pre>
+
+<hr>
+
+<h2>Array Methods</h2>
+
+<pre><code><span class="hl-keyword">let</span> a = [<span class="hl-number">3</span>, <span class="hl-number">1</span>, <span class="hl-number">4</span>, <span class="hl-number">1</span>, <span class="hl-number">5</span>];
+
+<span class="hl-comment">// Basics</span>
+a.<span class="hl-title">push</span>(<span class="hl-number">9</span>);               <span class="hl-comment">// [3,1,4,1,5,9], returns new length</span>
+a.<span class="hl-title">pop</span>();                  <span class="hl-comment">// returns 9, array is [3,1,4,1,5]</span>
+a.<span class="hl-title">indexOf</span>(<span class="hl-number">4</span>);             <span class="hl-comment">// 2</span>
+a.<span class="hl-title">includes</span>(<span class="hl-number">7</span>);            <span class="hl-comment">// false</span>
+a.<span class="hl-title">join</span>(<span class="hl-string">&quot; - &quot;</span>);            <span class="hl-comment">// &quot;3 - 1 - 4 - 1 - 5&quot;</span>
+a.<span class="hl-title">slice</span>(<span class="hl-number">1</span>, <span class="hl-number">3</span>);            <span class="hl-comment">// [1, 4] (new array)</span>
+a.<span class="hl-title">concat</span>([<span class="hl-number">6</span>, <span class="hl-number">7</span>]);         <span class="hl-comment">// [3,1,4,1,5,6,7] (new array)</span>
+a.<span class="hl-title">reverse</span>();              <span class="hl-comment">// reverses in place</span>
+
+<span class="hl-comment">// Higher-order</span>
+a.<span class="hl-title">map</span>(x <span class="hl-keyword">=&gt;</span> x * <span class="hl-number">2</span>);                    <span class="hl-comment">// [6,2,8,2,10]</span>
+a.<span class="hl-title">filter</span>(x <span class="hl-keyword">=&gt;</span> x &gt; <span class="hl-number">2</span>);                 <span class="hl-comment">// [3,4,5]</span>
+a.<span class="hl-title">reduce</span>((sum, x) <span class="hl-keyword">=&gt;</span> sum + x, <span class="hl-number">0</span>);     <span class="hl-comment">// 14</span>
+a.<span class="hl-title">forEach</span>(x <span class="hl-keyword">=&gt;</span> <span class="hl-title">print</span>(x));             <span class="hl-comment">// prints each</span>
+a.<span class="hl-title">find</span>(x <span class="hl-keyword">=&gt;</span> x &gt; <span class="hl-number">3</span>);                   <span class="hl-comment">// 4</span>
+a.<span class="hl-title">some</span>(x <span class="hl-keyword">=&gt;</span> x &gt; <span class="hl-number">4</span>);                   <span class="hl-comment">// true</span>
+a.<span class="hl-title">every</span>(x <span class="hl-keyword">=&gt;</span> x &gt; <span class="hl-number">0</span>);                  <span class="hl-comment">// true</span>
+a.<span class="hl-title">flat</span>();                              <span class="hl-comment">// flatten nested arrays</span>
+
+<span class="hl-comment">// Length</span>
+<span class="hl-title">print</span>(a.length);</code></pre>
+
+<hr>
+
+<h2>String Methods</h2>
+
+<pre><code><span class="hl-keyword">let</span> s = <span class="hl-string">&quot;Hello, World!&quot;</span>;
+
+s.length                    <span class="hl-comment">// 13</span>
+s.<span class="hl-title">indexOf</span>(<span class="hl-string">&quot;World&quot;</span>)          <span class="hl-comment">// 7</span>
+s.<span class="hl-title">includes</span>(<span class="hl-string">&quot;World&quot;</span>)         <span class="hl-comment">// true</span>
+s.<span class="hl-title">startsWith</span>(<span class="hl-string">&quot;Hello&quot;</span>)       <span class="hl-comment">// true</span>
+s.<span class="hl-title">endsWith</span>(<span class="hl-string">&quot;!&quot;</span>)             <span class="hl-comment">// true</span>
+s.<span class="hl-title">toUpperCase</span>()             <span class="hl-comment">// &quot;HELLO, WORLD!&quot;</span>
+s.<span class="hl-title">toLowerCase</span>()             <span class="hl-comment">// &quot;hello, world!&quot;</span>
+s.<span class="hl-title">trim</span>()                    <span class="hl-comment">// removes whitespace</span>
+s.<span class="hl-title">replace</span>(<span class="hl-string">&quot;World&quot;</span>, <span class="hl-string">&quot;Breenix&quot;</span>)  <span class="hl-comment">// &quot;Hello, Breenix!&quot;</span>
+s.<span class="hl-title">slice</span>(<span class="hl-number">0</span>, <span class="hl-number">5</span>)               <span class="hl-comment">// &quot;Hello&quot;</span>
+s.<span class="hl-title">charAt</span>(<span class="hl-number">0</span>)                 <span class="hl-comment">// &quot;H&quot;</span>
+s.<span class="hl-title">split</span>(<span class="hl-string">&quot;, &quot;</span>)               <span class="hl-comment">// [&quot;Hello&quot;, &quot;World!&quot;]</span></code></pre>
+
+<hr>
+
+<h2>REPL Features</h2>
+
+<h3>Line Editing</h3>
+
+<table>
+<tr><th>Key</th><th>Action</th></tr>
+<tr><td>Left/Right</td><td>Move cursor</td></tr>
+<tr><td>Home / Ctrl+A</td><td>Start of line</td></tr>
+<tr><td>End / Ctrl+E</td><td>End of line</td></tr>
+<tr><td>Backspace</td><td>Delete before cursor</td></tr>
+<tr><td>Delete</td><td>Delete at cursor</td></tr>
+<tr><td>Ctrl+K</td><td>Delete to end of line</td></tr>
+<tr><td>Ctrl+U</td><td>Delete to start of line</td></tr>
+<tr><td>Ctrl+W</td><td>Delete previous word</td></tr>
+<tr><td>Ctrl+C</td><td>Cancel current line</td></tr>
+<tr><td>Ctrl+D</td><td>Exit shell (empty line)</td></tr>
+<tr><td>Up/Down</td><td>Command history</td></tr>
+<tr><td>Tab</td><td>Auto-complete</td></tr>
+</table>
+
+<h3>Tab Completion</h3>
+
+<ul>
+<li><strong>Command position</strong>: Searches PATH for matching executables</li>
+<li><strong>Argument position</strong>: Searches current or specified directory for files</li>
+<li><strong>Single match</strong>: Completes fully (adds space for commands, <code>/</code> for directories)</li>
+<li><strong>Multiple matches</strong>: Shows all options and completes common prefix</li>
+</ul>
+
+<h3>Expression Results</h3>
+
+<p>The REPL auto-prints non-undefined results (like Node.js):</p>
+
+<pre><code>bsh /&gt; 1 + 2
+3
+bsh /&gt; &quot;hello&quot;.toUpperCase()
+&#x27;HELLO&#x27;
+bsh /&gt; [1,2,3].map(x =&gt; x * 2)
+[2, 4, 6]</code></pre>
+
+<h3>Startup Script</h3>
+
+<p>bsh loads <code>/etc/bshrc</code> on startup. Put your aliases, environment setup, and helpers there:</p>
+
+<pre><code><span class="hl-comment">// /etc/bshrc</span>
+<span class="hl-title">env</span>(<span class="hl-string">&quot;PATH&quot;</span>, <span class="hl-string">&quot;/bin:/usr/bin&quot;</span>);
+<span class="hl-title">env</span>(<span class="hl-string">&quot;EDITOR&quot;</span>, <span class="hl-string">&quot;vi&quot;</span>);
+
+<span class="hl-keyword">function</span> <span class="hl-title">ll</span>() { <span class="hl-keyword">return</span> <span class="hl-title">exec</span>(<span class="hl-string">&quot;ls&quot;</span>, <span class="hl-string">&quot;-la&quot;</span>); }</code></pre>
+
+<h3>Script Execution</h3>
+
+<pre><code>bsh script.js         <span class="hl-comment"># Run a file</span>
+bsh -e <span class="hl-string">&#x27;print(1+1)&#x27;</span>   <span class="hl-comment"># Evaluate a string</span>
+source(<span class="hl-string">&quot;helpers.js&quot;</span>)   <span class="hl-comment"># Load a file in the REPL</span></code></pre>
+
+<hr>
+
+<h2>Recipes</h2>
+
+<h3>List files with details</h3>
+
+<pre><code><span class="hl-keyword">let</span> { stdout } = <span class="hl-title">exec</span>(<span class="hl-string">&quot;ls&quot;</span>, <span class="hl-string">&quot;-la&quot;</span>, <span class="hl-string">&quot;/bin&quot;</span>);
+<span class="hl-keyword">let</span> lines = stdout.<span class="hl-title">split</span>(<span class="hl-string">&quot;\n&quot;</span>);
+<span class="hl-keyword">for</span> (<span class="hl-keyword">let</span> line <span class="hl-keyword">of</span> lines) {
+    <span class="hl-keyword">if</span> (line.<span class="hl-title">includes</span>(<span class="hl-string">&quot;.elf&quot;</span>)) {
+        <span class="hl-title">print</span>(line);
+    }
+}</code></pre>
+
+<h3>Simple build script</h3>
+
+<pre><code><span class="hl-keyword">function</span> <span class="hl-title">build</span>(target) {
+    <span class="hl-keyword">let</span> r = <span class="hl-title">exec</span>(<span class="hl-string">&quot;make&quot;</span>, target);
+    <span class="hl-keyword">if</span> (r.exitCode !== <span class="hl-number">0</span>) {
+        <span class="hl-built_in">console</span>.<span class="hl-title">error</span>(<span class="hl-string">`</span><span class="hl-string">Build failed for </span><span class="hl-subst">${</span>target<span class="hl-subst">}</span><span class="hl-string">:</span><span class="hl-string">`</span>);
+        <span class="hl-built_in">console</span>.<span class="hl-title">error</span>(r.stderr);
+        <span class="hl-keyword">return</span> <span class="hl-literal">false</span>;
+    }
+    <span class="hl-title">print</span>(<span class="hl-string">`</span><span class="hl-string">Built </span><span class="hl-subst">${</span>target<span class="hl-subst">}</span><span class="hl-string"> successfully</span><span class="hl-string">`</span>);
+    <span class="hl-keyword">return</span> <span class="hl-literal">true</span>;
+}
+
+<span class="hl-keyword">if</span> (<span class="hl-title">build</span>(<span class="hl-string">&quot;kernel&quot;</span>) &amp;&amp; <span class="hl-title">build</span>(<span class="hl-string">&quot;userspace&quot;</span>)) {
+    <span class="hl-title">print</span>(<span class="hl-string">&quot;All builds passed!&quot;</span>);
+}</code></pre>
+
+<h3>Process output as data</h3>
+
+<pre><code><span class="hl-keyword">let</span> { stdout } = <span class="hl-title">exec</span>(<span class="hl-string">&quot;ls&quot;</span>, <span class="hl-string">&quot;/bin&quot;</span>);
+<span class="hl-keyword">let</span> files = stdout.<span class="hl-title">trim</span>().<span class="hl-title">split</span>(<span class="hl-string">&quot;\n&quot;</span>);
+<span class="hl-keyword">let</span> elfs = files.<span class="hl-title">filter</span>(f <span class="hl-keyword">=&gt;</span> f.<span class="hl-title">endsWith</span>(<span class="hl-string">&quot;.elf&quot;</span>));
+<span class="hl-title">print</span>(<span class="hl-string">`</span><span class="hl-subst">${</span>elfs.length<span class="hl-subst">}</span><span class="hl-string"> ELF binaries in /bin</span><span class="hl-string">`</span>);</code></pre>
+
+<h3>Environment-aware configuration</h3>
+
+<pre><code><span class="hl-keyword">let</span> debug = <span class="hl-title">env</span>(<span class="hl-string">&quot;DEBUG&quot;</span>) ?? <span class="hl-string">&quot;0&quot;</span>;
+<span class="hl-keyword">let</span> port = <span class="hl-built_in">parseInt</span>(<span class="hl-title">env</span>(<span class="hl-string">&quot;PORT&quot;</span>) ?? <span class="hl-string">&quot;8080&quot;</span>);
+<span class="hl-keyword">let</span> config = {
+    debug: debug !== <span class="hl-string">&quot;0&quot;</span>,
+    port: port,
+    host: <span class="hl-title">env</span>(<span class="hl-string">&quot;HOST&quot;</span>) ?? <span class="hl-string">&quot;0.0.0.0&quot;</span>
+};
+<span class="hl-title">print</span>(<span class="hl-built_in">JSON</span>.<span class="hl-title">stringify</span>(config));</code></pre>
+
+<h3>Glob and iterate</h3>
+
+<pre><code><span class="hl-keyword">for</span> (<span class="hl-keyword">let</span> f <span class="hl-keyword">of</span> <span class="hl-title">glob</span>(<span class="hl-string">&quot;/bin/*.elf&quot;</span>)) {
+    <span class="hl-keyword">let</span> name = f.<span class="hl-title">split</span>(<span class="hl-string">&quot;/&quot;</span>).<span class="hl-title">pop</span>().<span class="hl-title">replace</span>(<span class="hl-string">&quot;.elf&quot;</span>, <span class="hl-string">&quot;&quot;</span>);
+    <span class="hl-title">print</span>(<span class="hl-string">`</span><span class="hl-string">  </span><span class="hl-subst">${</span>name<span class="hl-subst">}</span><span class="hl-string">`</span>);
+}</code></pre>
+
+</body>
+</html>

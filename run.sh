@@ -196,9 +196,9 @@ if [ "$ARCH" = "arm64" ]; then
     # ARM64: Always add GPU and keyboard devices (needed for VirtIO enumeration)
     # The -display option only controls whether a window appears
     if [ "$HEADLESS" = true ]; then
-        DISPLAY_OPTS="-display none -device virtio-gpu-device -device virtio-keyboard-device"
+        DISPLAY_OPTS="-display none -device virtio-gpu-device -device virtio-keyboard-device -device virtio-tablet-device"
     else
-        DISPLAY_OPTS="-display cocoa -device virtio-gpu-device -device virtio-keyboard-device"
+        DISPLAY_OPTS="-display cocoa -device virtio-gpu-device -device virtio-keyboard-device -device virtio-tablet-device"
     fi
 else
     # x86_64 uses virtio-vga
@@ -237,6 +237,7 @@ if [ "$ARCH" = "arm64" ]; then
         $DISK_OPTS \
         -device virtio-net-device,netdev=net0 \
         -netdev user,id=net0,hostfwd=tcp::2323-:2323 \
+        -monitor tcp:127.0.0.1:4444,server,nowait \
         -serial mon:stdio \
         -no-reboot \
         &
@@ -268,11 +269,15 @@ else
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
         -netdev user,id=net0 \
         -device e1000,netdev=net0,mac=52:54:00:12:34:56 \
+        -monitor tcp:127.0.0.1:4444,server,nowait \
         -serial mon:stdio \
         &
 fi
 
 QEMU_PID=$!
+
+echo "Paste:  echo 'code' | ./scripts/paste.sh"
+echo "Monitor: tcp://127.0.0.1:4444"
 
 # If x86_64 graphics mode, try to open VNC viewer
 if [ "$ARCH" = "x86_64" ] && [ "$HEADLESS" = false ] && [ "$(uname)" = "Darwin" ]; then

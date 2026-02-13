@@ -88,7 +88,7 @@ def run_test(test_name, timeout=45):
             try:
                 line = output_queue.get(timeout=0.5)
                 output_lines.append(line)
-                if "breenix>" in line:
+                if "breenix>" in line or "bsh " in line:
                     prompt_found = True
                     break
             except queue.Empty:

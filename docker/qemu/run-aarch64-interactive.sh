@@ -88,6 +88,7 @@ docker run --rm \
         -device virtio-gpu-device \
         -vnc :0 \
         -device virtio-keyboard-device \
+        -device virtio-tablet-device \
         $DISK_OPTS \
         -device virtio-net-device,netdev=net0 \
         -netdev user,id=net0 \

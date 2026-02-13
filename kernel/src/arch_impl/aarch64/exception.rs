@@ -696,6 +696,12 @@ pub extern "C" fn handle_irq() {
                         crate::drivers::virtio::input_mmio::handle_interrupt();
                     }
                 }
+                // VirtIO tablet (pointer) interrupt dispatch
+                if let Some(tablet_irq) = crate::drivers::virtio::input_mmio::get_tablet_irq() {
+                    if irq_id == tablet_irq {
+                        crate::drivers::virtio::input_mmio::handle_tablet_interrupt();
+                    }
+                }
                 // VirtIO network interrupt dispatch
                 if let Some(net_irq) = crate::drivers::virtio::net_mmio::get_irq() {
                     if irq_id == net_irq {

@@ -79,6 +79,10 @@ fn render_thread_main_kthread() {
         // Drain captured serial output to the Logs terminal
         drain_log_capture();
 
+        // Update mouse cursor position from tablet input device
+        #[cfg(target_arch = "aarch64")]
+        update_mouse_cursor();
+
         // Always flush — the render thread is the sole owner of GPU flushing.
         // Besides render queue text, the particle thread and log capture also
         // write pixels that need to be transferred to the VirtIO GPU.
@@ -180,6 +184,26 @@ fn drain_log_capture() {
         }
 
         LOG_LINE_LEN.store(line_len, Ordering::Relaxed);
+    }
+}
+
+/// Update the mouse cursor on the framebuffer if the tablet device is active.
+///
+/// Reads the current mouse position from the input driver atomics and
+/// redraws the cursor sprite if the position has changed. This runs on
+/// the render thread's stack, not in interrupt context.
+#[cfg(target_arch = "aarch64")]
+fn update_mouse_cursor() {
+    if !crate::drivers::virtio::input_mmio::is_tablet_initialized() {
+        return;
+    }
+
+    let (mx, my) = crate::drivers::virtio::input_mmio::mouse_position();
+
+    if let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() {
+        if let Some(mut fb_guard) = fb.try_lock() {
+            super::cursor::update_cursor(&mut *fb_guard, mx as usize, my as usize);
+        }
     }
 }
 

@@ -24,6 +24,8 @@ enum CallKind {
     Js(usize, Option<u32>),
     /// Native function (native_index).
     Native(u32),
+    /// Command function resolved from PATH (command name StringId).
+    Command(StringId),
 }
 
 /// Result of executing one VM step.
@@ -74,6 +76,13 @@ pub type PrintFn = fn(&str);
 /// Returns a JsResult<JsValue>.
 pub type NativeFn = fn(args: &[JsValue], strings: &mut StringPool, heap: &mut ObjectHeap) -> JsResult<JsValue>;
 
+/// Callback to check if a command name exists in PATH.
+pub type CommandResolverFn = fn(&str) -> bool;
+
+/// Callback to execute a command with arguments, printing output directly.
+/// Returns exit code as JsValue (number).
+pub type CommandExecutorFn = fn(&str, &[JsValue], &mut StringPool, &mut ObjectHeap) -> JsResult<JsValue>;
+
 /// A registered native function entry.
 struct NativeEntry {
     /// The function name (stored for re-interning across string pools).
@@ -107,6 +116,10 @@ pub struct Vm {
     pub native_obj_indices: Vec<u32>,
     /// Persistent globals that survive across eval() calls.
     persistent_globals: Vec<PersistentGlobal>,
+    /// Optional callback to check if a command exists in PATH.
+    command_resolver: Option<CommandResolverFn>,
+    /// Optional callback to execute a command with arguments.
+    command_executor: Option<CommandExecutorFn>,
 }
 
 fn default_print(s: &str) {
@@ -133,12 +146,24 @@ impl Vm {
             native_functions: Vec::new(),
             native_obj_indices: Vec::new(),
             persistent_globals: Vec::new(),
+            command_resolver: None,
+            command_executor: None,
         }
     }
 
     /// Set the host print callback.
     pub fn set_print_fn(&mut self, f: PrintFn) {
         self.print_fn = f;
+    }
+
+    /// Set the command resolver callback (checks if a command exists in PATH).
+    pub fn set_command_resolver(&mut self, f: CommandResolverFn) {
+        self.command_resolver = Some(f);
+    }
+
+    /// Set the command executor callback (fork+exec with direct terminal output).
+    pub fn set_command_executor(&mut self, f: CommandExecutorFn) {
+        self.command_executor = Some(f);
     }
 
     /// Register a native function that can be called from JavaScript.
@@ -175,6 +200,26 @@ impl Vm {
             name_str: String::from(name),
             value,
         });
+    }
+
+    /// Ensure all native function and persistent globals are registered in the pool.
+    ///
+    /// When using a shared string pool across eval() calls, this replaces
+    /// sync_natives -- no re-keying is needed since IDs are stable.
+    pub fn ensure_globals(&mut self, strings: &mut StringPool) {
+        for (entry, &obj_idx) in self.native_functions.iter().zip(self.native_obj_indices.iter()) {
+            let name = strings.intern(&entry.name_str);
+            let val = JsValue::object(obj_idx);
+            if !self.globals.iter().any(|g| g.value == val) {
+                self.globals.push(Global { name, value: val });
+            }
+        }
+        for pg in &self.persistent_globals {
+            let name = strings.intern(&pg.name_str);
+            if !self.globals.iter().any(|g| g.value == pg.value) {
+                self.globals.push(Global { name, value: pg.value });
+            }
+        }
     }
 
     /// Re-register native function globals using the given string pool.
@@ -235,6 +280,13 @@ impl Vm {
         strings: &mut StringPool,
         functions: &[CodeBlock],
     ) -> JsResult<JsValue> {
+        // Reset execution state for this eval. The stack and frames may have
+        // leftover data from a previous eval() call (REPL mode). Without
+        // clearing, the base offset and local slots would be wrong.
+        self.stack.clear();
+        self.frames.clear();
+        self.exception_handlers.clear();
+
         // Initialize locals for main script
         let local_count = code.local_count as usize;
         for _ in 0..local_count {
@@ -394,7 +446,25 @@ impl Vm {
                         }
                     };
                     let value = self.get_global(name_sid);
-                    self.push(value)?;
+                    if value.is_undefined() {
+                        if let Some(resolver) = self.command_resolver {
+                            let name_str = strings.get(name_sid);
+                            if resolver(name_str) {
+                                // Create a CommandFunction object and cache it as a global
+                                let obj = JsObject::new_command_function(name_sid);
+                                let obj_idx = self.heap.alloc(obj);
+                                let cmd_val = JsValue::object(obj_idx);
+                                self.set_global(name_sid, cmd_val);
+                                self.push(cmd_val)?;
+                            } else {
+                                self.push(value)?;
+                            }
+                        } else {
+                            self.push(value)?;
+                        }
+                    } else {
+                        self.push(value)?;
+                    }
                 }
 
                 Op::StoreGlobal => {
@@ -524,7 +594,7 @@ impl Vm {
                     let type_name = if a.is_object() {
                         // Check if it's a function or closure
                         if let Some(obj) = self.heap.get(a.as_object_index()) {
-                            if matches!(obj.kind, ObjectKind::Function(_) | ObjectKind::Closure(_, _) | ObjectKind::NativeFunction(_)) {
+                            if matches!(obj.kind, ObjectKind::Function(_) | ObjectKind::Closure(_, _) | ObjectKind::NativeFunction(_) | ObjectKind::CommandFunction(_)) {
                                 "function"
                             } else {
                                 "object"
@@ -1167,6 +1237,7 @@ impl Vm {
                 ObjectKind::Function(fi) => CallKind::Js(*fi as usize, None),
                 ObjectKind::Closure(fi, _) => CallKind::Js(*fi as usize, Some(obj_idx)),
                 ObjectKind::NativeFunction(ni) => CallKind::Native(*ni),
+                ObjectKind::CommandFunction(name_sid) => CallKind::Command(*name_sid),
                 _ => return Err(JsError::type_error("not a function")),
             },
             None => return Err(JsError::type_error("not a function")),
@@ -1211,6 +1282,16 @@ impl Vm {
                     closure_obj,
                 });
 
+                Ok(())
+            }
+            CallKind::Command(name_sid) => {
+                let args: Vec<JsValue> = self.stack[func_pos + 1..].to_vec();
+                self.stack.truncate(func_pos);
+                let executor = self.command_executor
+                    .ok_or_else(|| JsError::internal("no command executor configured"))?;
+                let name_str = String::from(strings.get(name_sid));
+                let result = executor(&name_str, &args, strings, &mut self.heap)?;
+                self.push(result)?;
                 Ok(())
             }
         }
@@ -2107,7 +2188,7 @@ impl Vm {
         }
     }
 
-    fn value_to_string(&self, value: JsValue, strings: &StringPool) -> String {
+    pub fn value_to_string(&self, value: JsValue, strings: &StringPool) -> String {
         if value.is_string() {
             String::from(strings.get(value.as_string_id()))
         } else if value.is_object() {
@@ -2122,6 +2203,113 @@ impl Vm {
                 }
             }
             String::from("[object Object]")
+        } else {
+            value.to_number_string()
+        }
+    }
+
+    /// Format a JsValue for REPL display (like Node.js `util.inspect`).
+    ///
+    /// Unlike `value_to_string` (which follows JS `ToString` semantics),
+    /// this shows structural information: strings are quoted, objects show
+    /// their properties, arrays show elements with brackets, etc.
+    pub fn inspect_value(&self, value: JsValue, strings: &StringPool, depth: usize) -> String {
+        if depth > 3 {
+            return String::from("[...]");
+        }
+
+        if value.is_undefined() {
+            String::from("undefined")
+        } else if value.is_null() {
+            String::from("null")
+        } else if value.is_boolean() {
+            if value.as_boolean() { String::from("true") } else { String::from("false") }
+        } else if value.is_number() {
+            let n = value.to_number();
+            if n != n {
+                String::from("NaN")
+            } else if n == f64::INFINITY {
+                String::from("Infinity")
+            } else if n == f64::NEG_INFINITY {
+                String::from("-Infinity")
+            } else if n == (n as i64) as f64 && n.abs() < 1e15 {
+                alloc::format!("{}", n as i64)
+            } else {
+                alloc::format!("{}", n)
+            }
+        } else if value.is_string() {
+            let s = strings.get(value.as_string_id());
+            alloc::format!("'{}'", s)
+        } else if value.is_object() {
+            let idx = value.as_object_index();
+            if let Some(obj) = self.heap.get(idx) {
+                match &obj.kind {
+                    ObjectKind::Array => {
+                        let mut parts = Vec::new();
+                        let len = obj.elements_len();
+                        for i in 0..len.min(20) {
+                            let elem = obj.get_index(i);
+                            parts.push(self.inspect_value(elem, strings, depth + 1));
+                        }
+                        if len > 20 {
+                            parts.push(String::from("..."));
+                        }
+                        alloc::format!("[{}]", parts.join(", "))
+                    }
+                    ObjectKind::Function(_) | ObjectKind::Closure(_, _) => {
+                        String::from("[Function]")
+                    }
+                    ObjectKind::NativeFunction(_) => {
+                        String::from("[Function: native]")
+                    }
+                    ObjectKind::CommandFunction(name_sid) => {
+                        alloc::format!("[Function: {}]", strings.get(*name_sid))
+                    }
+                    ObjectKind::Promise(_) => {
+                        String::from("[Promise]")
+                    }
+                    ObjectKind::Map(entries) => {
+                        let mut parts = Vec::new();
+                        for (k, v) in entries.iter().take(10) {
+                            let ks = self.inspect_value(*k, strings, depth + 1);
+                            let vs = self.inspect_value(*v, strings, depth + 1);
+                            parts.push(alloc::format!("{} => {}", ks, vs));
+                        }
+                        alloc::format!("Map({}){{{}}}", entries.len(),
+                            if parts.is_empty() { String::new() }
+                            else { alloc::format!(" {} ", parts.join(", ")) })
+                    }
+                    ObjectKind::Set(items) => {
+                        let mut parts = Vec::new();
+                        for v in items.iter().take(10) {
+                            parts.push(self.inspect_value(*v, strings, depth + 1));
+                        }
+                        alloc::format!("Set({}){{{}}}", items.len(),
+                            if parts.is_empty() { String::new() }
+                            else { alloc::format!(" {} ", parts.join(", ")) })
+                    }
+                    ObjectKind::Ordinary => {
+                        let keys = obj.keys();
+                        if keys.is_empty() {
+                            String::from("{}")
+                        } else {
+                            let mut parts = Vec::new();
+                            for key in keys.iter().take(20) {
+                                let key_str = strings.get(*key);
+                                let val = obj.get(*key);
+                                let val_str = self.inspect_value(val, strings, depth + 1);
+                                parts.push(alloc::format!("{}: {}", key_str, val_str));
+                            }
+                            if keys.len() > 20 {
+                                parts.push(String::from("..."));
+                            }
+                            alloc::format!("{{ {} }}", parts.join(", "))
+                        }
+                    }
+                }
+            } else {
+                String::from("[object]")
+            }
         } else {
             value.to_number_string()
         }

@@ -2418,9 +2418,12 @@ impl ProcessManager {
         // For now, assume non-current processes are not actively running
         let is_scheduled = false;
 
-        // Get thread ID and take old page table before dropping the mutable borrow
-        // We need to do this early so we can call setup_argv_on_stack later
-        let (thread_id, old_page_table) = {
+        // Get thread ID before dropping the mutable borrow (needed for later updates).
+        // NOTE: We deliberately do NOT take the old page table here. Taking it early caused
+        // a use-after-free on exec failure: if any subsequent operation fails, the Err return
+        // would drop the old Box<ProcessPageTable>, freeing physical memory while CR3 still
+        // points to it. The old page table is taken later, after all fallible ops succeed.
+        let thread_id = {
             let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
             // Drain any pending old page tables from previous exec() calls.
             process.drain_old_page_tables();
@@ -2428,9 +2431,7 @@ impl ProcessManager {
                 .main_thread
                 .as_ref()
                 .ok_or("Process has no main thread")?;
-            let thread_id = main_thread.id;
-            let old_page_table = process.page_table.take();
-            (thread_id, old_page_table)
+            main_thread.id
         };
 
         log::info!(
@@ -2523,8 +2524,10 @@ impl ProcessManager {
         )
         .map_err(|_| "Failed to create stack object")?;
 
-        // Re-borrow the process for the remaining updates
+        // Re-borrow the process for the remaining updates.
+        // All fallible operations have succeeded — now it's safe to take the old page table.
         let process = self.processes.get_mut(&pid).ok_or("Process not found during update")?;
+        let old_page_table = process.page_table.take();
 
         // Update the process with new program data
         if let Some(name) = program_name {
@@ -2648,7 +2651,12 @@ impl ProcessManager {
 
         let is_scheduled = false;
 
-        let (thread_id, old_page_table) = {
+        // Get thread ID before dropping the mutable borrow (needed for later updates).
+        // NOTE: We deliberately do NOT take the old page table here. Taking it early caused
+        // a use-after-free on exec failure: if any subsequent operation fails, the Err return
+        // would drop the old Box<ProcessPageTable>, freeing physical memory while TTBR0_EL1
+        // still points to it. The old page table is taken later, after all fallible ops succeed.
+        let thread_id = {
             let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
             // Drain any pending old page tables from previous exec() calls.
             process.drain_old_page_tables();
@@ -2656,9 +2664,7 @@ impl ProcessManager {
                 .main_thread
                 .as_ref()
                 .ok_or("Process has no main thread")?;
-            let thread_id = main_thread.id;
-            let old_page_table = process.page_table.take();
-            (thread_id, old_page_table)
+            main_thread.id
         };
 
         log::info!(
@@ -2742,10 +2748,12 @@ impl ProcessManager {
         )
         .map_err(|_| "Failed to create stack object")?;
 
+        // All fallible operations have succeeded — now it's safe to take the old page table.
         let process = self
             .processes
             .get_mut(&pid)
             .ok_or("Process not found during update")?;
+        let old_page_table = process.page_table.take();
 
         if let Some(name) = program_name {
             process.name = String::from(name);

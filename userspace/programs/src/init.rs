@@ -3,16 +3,21 @@
 //! PID 1 - spawns system services and the interactive shell, then reaps zombies.
 //!
 //! Spawns:
-//!   - /sbin/telnetd (background service)
+//!   - /sbin/telnetd (background service, optional)
 //!   - /bin/bsh (Breenish ECMAScript shell, foreground on serial console)
 //!
 //! Main loop reaps terminated children with waitpid(WNOHANG) and respawns
-//! crashed services.
+//! crashed services with backoff to prevent tight respawn loops.
 
 use libbreenix::process::{fork, exec, waitpid, getpid, yield_now, ForkResult, WNOHANG};
+use libbreenix::time::nanosleep;
+use libbreenix::types::Timespec;
 
 const TELNETD_PATH: &[u8] = b"/sbin/telnetd\0";
 const SHELL_PATH: &[u8] = b"/bin/bsh\0";
+
+/// Maximum number of rapid respawns before giving up on a service.
+const MAX_RESPAWN_FAILURES: u32 = 3;
 
 /// Fork and exec a binary. Returns the child PID on success, -1 on failure.
 fn spawn(path: &[u8], name: &str) -> i64 {
@@ -34,17 +39,32 @@ fn spawn(path: &[u8], name: &str) -> i64 {
     }
 }
 
+/// Try to spawn a service, returning its PID or -1 if max failures reached.
+fn try_respawn(path: &[u8], name: &str, failures: &mut u32) -> i64 {
+    if *failures >= MAX_RESPAWN_FAILURES {
+        return -1; // Gave up
+    }
+    *failures += 1;
+    // Brief delay before respawn to avoid tight loops
+    let delay = Timespec { tv_sec: 0, tv_nsec: 100_000_000 }; // 100ms
+    let _ = nanosleep(&delay);
+    print!("[init] Respawning {}... (attempt {})\n", name, *failures);
+    spawn(path, name)
+}
+
 fn main() {
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
     print!("[init] Breenix init starting (PID {})\n", pid);
 
-    // Start telnetd
+    // Start telnetd (optional -- may not exist on all disk images)
     print!("[init] Starting /sbin/telnetd...\n");
     let mut telnetd_pid = spawn(TELNETD_PATH, "telnetd");
+    let mut telnetd_failures: u32 = 0;
 
     // Start Breenish shell
     print!("[init] Starting /bin/bsh...\n");
     let mut shell_pid = spawn(SHELL_PATH, "bsh");
+    let mut shell_failures: u32 = 0;
 
     // Main loop: reap zombies and respawn crashed services
     let mut status: i32 = 0;
@@ -54,13 +74,16 @@ fn main() {
                 let reaped = reaped_pid.raw() as i64;
                 if reaped > 0 {
                     if reaped == shell_pid {
-                        // Shell exited -- respawn it
-                        print!("[init] Shell exited, respawning...\n");
-                        shell_pid = spawn(SHELL_PATH, "bsh");
+                        print!("[init] Shell exited (status {})\n", status);
+                        shell_pid = try_respawn(SHELL_PATH, "bsh", &mut shell_failures);
+                        if shell_pid == -1 {
+                            print!("[init] Shell failed {} times, giving up\n", MAX_RESPAWN_FAILURES);
+                        }
                     } else if reaped == telnetd_pid {
-                        // Telnetd crashed -- respawn it
-                        print!("[init] telnetd exited, respawning...\n");
-                        telnetd_pid = spawn(TELNETD_PATH, "telnetd");
+                        telnetd_pid = try_respawn(TELNETD_PATH, "telnetd", &mut telnetd_failures);
+                        if telnetd_pid == -1 && telnetd_failures >= MAX_RESPAWN_FAILURES {
+                            print!("[init] telnetd unavailable, continuing without it\n");
+                        }
                     }
                 }
             }
