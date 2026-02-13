@@ -1,6 +1,6 @@
 //! Test for cat coreutil (std version)
 //!
-//! Verifies that /bin/cat correctly outputs file contents.
+//! Verifies that /bin/bcat correctly outputs file contents.
 //! Uses pipe+dup2 to capture stdout and verify actual output content.
 
 use libbreenix::Fd;
@@ -66,8 +66,8 @@ fn main() {
     // Test 1: cat /hello.txt should output "Hello from ext2!\n"
     println!("Test 1: cat /hello.txt");
     {
-        let program = b"/bin/cat\0";
-        let arg0 = b"cat\0".as_ptr();
+        let program = b"/bin/bcat\0";
+        let arg0 = b"bcat\0".as_ptr();
         let arg1 = b"/hello.txt\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
@@ -86,8 +86,8 @@ fn main() {
     // Test 2: cat /lines.txt should output all 15 lines (111 bytes)
     println!("Test 2: cat /lines.txt (15 lines)");
     {
-        let program = b"/bin/cat\0";
-        let arg0 = b"cat\0".as_ptr();
+        let program = b"/bin/bcat\0";
+        let arg0 = b"bcat\0".as_ptr();
         let arg1 = b"/lines.txt\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
@@ -107,8 +107,8 @@ fn main() {
     // Test 3: cat /empty.txt should produce empty output
     println!("Test 3: cat /empty.txt (empty file)");
     {
-        let program = b"/bin/cat\0";
-        let arg0 = b"cat\0".as_ptr();
+        let program = b"/bin/bcat\0";
+        let arg0 = b"bcat\0".as_ptr();
         let arg1 = b"/empty.txt\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
@@ -126,8 +126,8 @@ fn main() {
     // Test 4: cat /test/nested.txt (nested path)
     println!("Test 4: cat /test/nested.txt (nested path)");
     {
-        let program = b"/bin/cat\0";
-        let arg0 = b"cat\0".as_ptr();
+        let program = b"/bin/bcat\0";
+        let arg0 = b"bcat\0".as_ptr();
         let arg1 = b"/test/nested.txt\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
@@ -146,8 +146,8 @@ fn main() {
     // Test 5: cat /deep/path/to/file/data.txt (deep nested path)
     println!("Test 5: cat /deep/path/to/file/data.txt (deep path)");
     {
-        let program = b"/bin/cat\0";
-        let arg0 = b"cat\0".as_ptr();
+        let program = b"/bin/bcat\0";
+        let arg0 = b"bcat\0".as_ptr();
         let arg1 = b"/deep/path/to/file/data.txt\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
@@ -166,8 +166,8 @@ fn main() {
     // Test 6: cat on nonexistent file should fail
     println!("Test 6: cat /nonexistent returns error");
     {
-        let program = b"/bin/cat\0";
-        let arg0 = b"cat\0".as_ptr();
+        let program = b"/bin/bcat\0";
+        let arg0 = b"bcat\0".as_ptr();
         let arg1 = b"/nonexistent_file_xyz\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
@@ -185,8 +185,8 @@ fn main() {
     // Test 7: cat multiple files should concatenate them
     println!("Test 7: cat /hello.txt /test/nested.txt (concatenation)");
     {
-        let program = b"/bin/cat\0";
-        let arg0 = b"cat\0".as_ptr();
+        let program = b"/bin/bcat\0";
+        let arg0 = b"bcat\0".as_ptr();
         let arg1 = b"/hello.txt\0".as_ptr();
         let arg2 = b"/test/nested.txt\0".as_ptr();
         let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];
@@ -206,8 +206,8 @@ fn main() {
     // Test 8: cat with partial failure (one file exists, one doesn't)
     println!("Test 8: cat /hello.txt /nonexistent (partial failure)");
     {
-        let program = b"/bin/cat\0";
-        let arg0 = b"cat\0".as_ptr();
+        let program = b"/bin/bcat\0";
+        let arg0 = b"bcat\0".as_ptr();
         let arg1 = b"/hello.txt\0".as_ptr();
         let arg2 = b"/nonexistent_file\0".as_ptr();
         let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];

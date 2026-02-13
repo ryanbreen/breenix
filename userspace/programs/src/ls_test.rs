@@ -1,6 +1,6 @@
 //! Test for ls coreutil (std version)
 //!
-//! Verifies that /bin/ls correctly lists directory contents.
+//! Verifies that /bin/bls correctly lists directory contents.
 //! Uses pipe+dup2 to capture stdout and verify actual output content.
 
 use libbreenix::Fd;
@@ -79,8 +79,8 @@ fn main() {
     // Test 1: ls / should list root directory contents
     println!("Test 1: ls / (root directory)");
     {
-        let program = b"/bin/ls\0";
-        let arg0 = b"ls\0".as_ptr();
+        let program = b"/bin/bls\0";
+        let arg0 = b"bls\0".as_ptr();
         let arg1 = b"/\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
@@ -105,20 +105,20 @@ fn main() {
     // Test 2: ls /bin should list all binaries
     println!("Test 2: ls /bin (binaries)");
     {
-        let program = b"/bin/ls\0";
-        let arg0 = b"ls\0".as_ptr();
+        let program = b"/bin/bls\0";
+        let arg0 = b"bls\0".as_ptr();
         let arg1 = b"/bin\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
         let (exit_code, output) = run_and_capture(program, &argv);
 
-        let has_cat = contains_line(&output, b"cat");
-        let has_ls = contains_line(&output, b"ls");
-        let has_echo = contains_line(&output, b"echo");
-        let has_head = contains_line(&output, b"head");
-        let has_tail = contains_line(&output, b"tail");
-        let has_wc = contains_line(&output, b"wc");
-        let has_which = contains_line(&output, b"which");
+        let has_cat = contains_line(&output, b"bcat");
+        let has_ls = contains_line(&output, b"bls");
+        let has_echo = contains_line(&output, b"becho");
+        let has_head = contains_line(&output, b"bhead");
+        let has_tail = contains_line(&output, b"btail");
+        let has_wc = contains_line(&output, b"bwc");
+        let has_which = contains_line(&output, b"bwhich");
         let has_hello = contains_line(&output, b"hello_world");
 
         let all_present = has_cat && has_ls && has_echo && has_head && has_tail && has_wc && has_which && has_hello;
@@ -136,13 +136,13 @@ fn main() {
     // Test 3: ls /sbin should list sbin binaries
     println!("Test 3: ls /sbin (sbin directory)");
     {
-        let program = b"/bin/ls\0";
-        let arg0 = b"ls\0".as_ptr();
+        let program = b"/bin/bls\0";
+        let arg0 = b"bls\0".as_ptr();
         let arg1 = b"/sbin\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
         let (exit_code, output) = run_and_capture(program, &argv);
-        let has_true = contains_line(&output, b"true");
+        let has_true = contains_line(&output, b"btrue");
 
         if exit_code == 0 && has_true {
             println!("LS_SBIN_OK");
@@ -156,8 +156,8 @@ fn main() {
     // Test 4: ls /test should show nested.txt
     println!("Test 4: ls /test (nested directory)");
     {
-        let program = b"/bin/ls\0";
-        let arg0 = b"ls\0".as_ptr();
+        let program = b"/bin/bls\0";
+        let arg0 = b"bls\0".as_ptr();
         let arg1 = b"/test\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
@@ -176,8 +176,8 @@ fn main() {
     // Test 5: ls /deep/path/to/file should show data.txt
     println!("Test 5: ls /deep/path/to/file (deep path)");
     {
-        let program = b"/bin/ls\0";
-        let arg0 = b"ls\0".as_ptr();
+        let program = b"/bin/bls\0";
+        let arg0 = b"bls\0".as_ptr();
         let arg1 = b"/deep/path/to/file\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
@@ -196,8 +196,8 @@ fn main() {
     // Test 6: ls on nonexistent directory should fail
     println!("Test 6: ls /nonexistent returns error");
     {
-        let program = b"/bin/ls\0";
-        let arg0 = b"ls\0".as_ptr();
+        let program = b"/bin/bls\0";
+        let arg0 = b"bls\0".as_ptr();
         let arg1 = b"/nonexistent_dir_xyz\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
@@ -215,8 +215,8 @@ fn main() {
     // Test 7: ls /deep shows path/ subdirectory with directory marker
     println!("Test 7: ls /deep (directory markers)");
     {
-        let program = b"/bin/ls\0";
-        let arg0 = b"ls\0".as_ptr();
+        let program = b"/bin/bls\0";
+        let arg0 = b"bls\0".as_ptr();
         let arg1 = b"/deep\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
@@ -235,8 +235,8 @@ fn main() {
     // Test 8: ls with no argument should default to current directory
     println!("Test 8: ls (no argument, defaults to cwd)");
     {
-        let program = b"/bin/ls\0";
-        let arg0 = b"ls\0".as_ptr();
+        let program = b"/bin/bls\0";
+        let arg0 = b"bls\0".as_ptr();
         let argv: [*const u8; 2] = [arg0, std::ptr::null()];
 
         let (exit_code, output) = run_and_capture(program, &argv);
@@ -256,8 +256,8 @@ fn main() {
     // Test 9: Verify ls does NOT output . and .. entries
     println!("Test 9: ls / excludes . and .. entries");
     {
-        let program = b"/bin/ls\0";
-        let arg0 = b"ls\0".as_ptr();
+        let program = b"/bin/bls\0";
+        let arg0 = b"bls\0".as_ptr();
         let arg1 = b"/\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 

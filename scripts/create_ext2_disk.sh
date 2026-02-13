@@ -3,8 +3,8 @@
 #
 # This script creates an ext2 filesystem image (32MB x86_64, 48MB aarch64) with:
 #   - Test files for filesystem testing
-#   - Coreutils binaries in /bin/ (cat, ls, echo, mkdir, rmdir, rm, cp, mv, false, head, tail, wc, which)
-#   - /sbin/true for PATH order testing
+#   - Coreutils binaries in /bin/ (bcat, bls, becho, bmkdir, brmdir, brm, bcp, bmv, bfalse, bhead, btail, bwc, bwhich)
+#   - /sbin/btrue for PATH order testing
 #   - hello_world binary for exec testing
 #
 # Requires Docker on macOS (or mke2fs on Linux).
@@ -56,8 +56,8 @@ else
     TESTDATA_FILE="$PROJECT_ROOT/testdata/ext2.img"
 fi
 
-# Coreutils to install in /bin
-COREUTILS="cat ls echo mkdir rmdir rm cp mv true false head tail wc which"
+# Coreutils to install in /bin (b-prefixed Breenix coreutils)
+COREUTILS="bcat bls becho bmkdir brmdir brm bcp bmv btrue bfalse bhead btail bwc bwhich"
 
 echo "Creating ext2 disk image..."
 echo "  Arch: $ARCH"
@@ -108,19 +108,27 @@ if [[ "$(uname)" == "Darwin" ]]; then
             mkdir -p /mnt/ext2
             mount /work/$OUTPUT_FILENAME /mnt/ext2
 
-            # Create /bin and /sbin directories for coreutils
+            # Create /bin, /sbin, and /usr/local/test/bin directories
             mkdir -p /mnt/ext2/bin
             mkdir -p /mnt/ext2/sbin
+            mkdir -p /mnt/ext2/usr/local/test/bin
 
             # Copy ALL binaries from /binaries directory
-            # Special handling: true and telnetd go to /sbin, everything else to /bin
+            # Routing: test binaries (*_test, test_*) -> /usr/local/test/bin
+            #          system binaries (true, telnetd, init) -> /sbin
+            #          everything else -> /bin
             echo "Installing all binaries..."
             bin_count=0
             sbin_count=0
+            test_count=0
             for elf_file in /binaries/*.elf; do
                 if [ -f "$elf_file" ]; then
                     bin_name=$(basename "$elf_file" .elf)
-                    if [ "$bin_name" = "true" ] || [ "$bin_name" = "telnetd" ] || [ "$bin_name" = "init" ]; then
+                    if echo "$bin_name" | grep -qE "_test$|^test_"; then
+                        cp "$elf_file" /mnt/ext2/usr/local/test/bin/${bin_name}
+                        chmod 755 /mnt/ext2/usr/local/test/bin/${bin_name}
+                        test_count=$((test_count + 1))
+                    elif [ "$bin_name" = "btrue" ] || [ "$bin_name" = "telnetd" ] || [ "$bin_name" = "init" ]; then
                         cp "$elf_file" /mnt/ext2/sbin/${bin_name}
                         chmod 755 /mnt/ext2/sbin/${bin_name}
                         sbin_count=$((sbin_count + 1))
@@ -133,6 +141,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
             done
             echo "  Installed $bin_count binaries in /bin"
             echo "  Installed $sbin_count binaries in /sbin"
+            echo "  Installed $test_count test binaries in /usr/local/test/bin"
 
             # Create /tmp for filesystem write tests
             mkdir -p /mnt/ext2/tmp
@@ -172,8 +181,10 @@ EOF
             echo "ext2 filesystem contents:"
             echo "  Binaries in /bin:"
             ls -la /mnt/ext2/bin/ 2>/dev/null || echo "    (none)"
+            echo "  Test binaries in /usr/local/test/bin:"
+            ls -la /mnt/ext2/usr/local/test/bin/ 2>/dev/null || echo "    (none)"
             echo "  Test files:"
-            find /mnt/ext2 -type f -not -path "/mnt/ext2/bin/*" -exec ls -la {} \;
+            find /mnt/ext2 -type f -not -path "/mnt/ext2/bin/*" -not -path "/mnt/ext2/usr/local/test/bin/*" -exec ls -la {} \;
 
             # Unmount
             umount /mnt/ext2
@@ -206,19 +217,27 @@ else
     MOUNT_DIR=$(mktemp -d)
     mount "$OUTPUT_FILE" "$MOUNT_DIR"
 
-    # Create /bin and /sbin directories
+    # Create /bin, /sbin, and /usr/local/test/bin directories
     mkdir -p "$MOUNT_DIR/bin"
     mkdir -p "$MOUNT_DIR/sbin"
+    mkdir -p "$MOUNT_DIR/usr/local/test/bin"
 
     # Copy ALL binaries from userspace directory
-    # Special handling: true and telnetd go to /sbin, everything else to /bin
+    # Routing: test binaries (*_test, test_*) -> /usr/local/test/bin
+    #          system binaries (true, telnetd, init) -> /sbin
+    #          everything else -> /bin
     echo "Installing all binaries..."
     bin_count=0
     sbin_count=0
+    test_count=0
     for elf_file in "$USERSPACE_DIR"/*.elf; do
         if [ -f "$elf_file" ]; then
             bin_name=$(basename "$elf_file" .elf)
-            if [ "$bin_name" = "true" ] || [ "$bin_name" = "telnetd" ] || [ "$bin_name" = "init" ]; then
+            if echo "$bin_name" | grep -qE '_test$|^test_'; then
+                cp "$elf_file" "$MOUNT_DIR/usr/local/test/bin/${bin_name}"
+                chmod 755 "$MOUNT_DIR/usr/local/test/bin/${bin_name}"
+                test_count=$((test_count + 1))
+            elif [ "$bin_name" = "btrue" ] || [ "$bin_name" = "telnetd" ] || [ "$bin_name" = "init" ]; then
                 cp "$elf_file" "$MOUNT_DIR/sbin/${bin_name}"
                 chmod 755 "$MOUNT_DIR/sbin/${bin_name}"
                 sbin_count=$((sbin_count + 1))
@@ -231,6 +250,7 @@ else
     done
     echo "  Installed $bin_count binaries in /bin"
     echo "  Installed $sbin_count binaries in /sbin"
+    echo "  Installed $test_count test binaries in /usr/local/test/bin"
 
     # Create /tmp for filesystem write tests
     mkdir -p "$MOUNT_DIR/tmp"
@@ -267,7 +287,9 @@ EOF
     echo ""
     echo "ext2 filesystem contents:"
     ls -la "$MOUNT_DIR/bin/"
-    find "$MOUNT_DIR" -type f -not -path "$MOUNT_DIR/bin/*" -exec ls -la {} \;
+    echo "  Test binaries in /usr/local/test/bin:"
+    ls -la "$MOUNT_DIR/usr/local/test/bin/" 2>/dev/null || echo "    (none)"
+    find "$MOUNT_DIR" -type f -not -path "$MOUNT_DIR/bin/*" -not -path "$MOUNT_DIR/usr/local/test/bin/*" -exec ls -la {} \;
 
     # Unmount and cleanup
     umount "$MOUNT_DIR"
@@ -287,8 +309,9 @@ if [[ -f "$OUTPUT_FILE" ]]; then
     echo "  Size: $SIZE"
     echo ""
     echo "Contents:"
-    echo "  /bin/* - All userspace binaries (coreutils, tests, demos)"
-    echo "  /sbin/true - exit status coreutil (for PATH testing)"
+    echo "  /bin/* - Userspace binaries (coreutils, demos)"
+    echo "  /usr/local/test/bin/* - Test binaries (*_test, test_*)"
+    echo "  /sbin/btrue - exit status coreutil (for PATH testing)"
     echo "  /sbin/telnetd - telnet daemon"
     echo "  /hello.txt - test file (1 line)"
     echo "  /lines.txt - multi-line test file (15 lines) for head/tail/wc"

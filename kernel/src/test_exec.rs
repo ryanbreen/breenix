@@ -3000,11 +3000,11 @@ pub fn test_shell_pipe() {
     }
 }
 
-/// Test the `true` coreutil
+/// Test the `btrue` coreutil
 ///
-/// Verifies that /bin/true correctly exits with code 0.
+/// Verifies that /bin/btrue correctly exits with code 0.
 pub fn test_true_coreutil() {
-    log::info!("Testing true coreutil (exit code 0)");
+    log::info!("Testing btrue coreutil (exit code 0)");
 
     #[cfg(feature = "testing")]
     let true_test_elf_buf = crate::userspace_test::get_test_binary("true_test");
@@ -3033,11 +3033,11 @@ pub fn test_true_coreutil() {
     }
 }
 
-/// Test the `false` coreutil
+/// Test the `bfalse` coreutil
 ///
-/// Verifies that /bin/false correctly exits with code 1.
+/// Verifies that /bin/bfalse correctly exits with code 1.
 pub fn test_false_coreutil() {
-    log::info!("Testing false coreutil (exit code 1)");
+    log::info!("Testing bfalse coreutil (exit code 1)");
 
     #[cfg(feature = "testing")]
     let false_test_elf_buf = crate::userspace_test::get_test_binary("false_test");
@@ -3066,11 +3066,11 @@ pub fn test_false_coreutil() {
     }
 }
 
-/// Test the `head` coreutil
+/// Test the `bhead` coreutil
 ///
-/// Verifies that /bin/head correctly outputs the first N lines of files.
+/// Verifies that /bin/bhead correctly outputs the first N lines of files.
 pub fn test_head_coreutil() {
-    log::info!("Testing head coreutil (first N lines)");
+    log::info!("Testing bhead coreutil (first N lines)");
 
     #[cfg(feature = "testing")]
     let head_test_elf_buf = crate::userspace_test::get_test_binary("head_test");
@@ -3099,11 +3099,11 @@ pub fn test_head_coreutil() {
     }
 }
 
-/// Test the `tail` coreutil
+/// Test the `btail` coreutil
 ///
-/// Verifies that /bin/tail correctly outputs the last N lines of files.
+/// Verifies that /bin/btail correctly outputs the last N lines of files.
 pub fn test_tail_coreutil() {
-    log::info!("Testing tail coreutil (last N lines)");
+    log::info!("Testing btail coreutil (last N lines)");
 
     #[cfg(feature = "testing")]
     let tail_test_elf_buf = crate::userspace_test::get_test_binary("tail_test");
@@ -3132,11 +3132,11 @@ pub fn test_tail_coreutil() {
     }
 }
 
-/// Test the `wc` coreutil
+/// Test the `bwc` coreutil
 ///
-/// Verifies that /bin/wc correctly counts lines, words, and bytes.
+/// Verifies that /bin/bwc correctly counts lines, words, and bytes.
 pub fn test_wc_coreutil() {
-    log::info!("Testing wc coreutil (line/word/byte counts)");
+    log::info!("Testing bwc coreutil (line/word/byte counts)");
 
     #[cfg(feature = "testing")]
     let wc_test_elf_buf = crate::userspace_test::get_test_binary("wc_test");
@@ -3165,11 +3165,11 @@ pub fn test_wc_coreutil() {
     }
 }
 
-/// Test the `which` coreutil
+/// Test the `bwhich` coreutil
 ///
-/// Verifies that /bin/which correctly locates commands in PATH.
+/// Verifies that /bin/bwhich correctly locates commands in PATH.
 pub fn test_which_coreutil() {
-    log::info!("Testing which coreutil (command location)");
+    log::info!("Testing bwhich coreutil (command location)");
 
     #[cfg(feature = "testing")]
     let which_test_elf_buf = crate::userspace_test::get_test_binary("which_test");
@@ -3198,11 +3198,11 @@ pub fn test_which_coreutil() {
     }
 }
 
-/// Test the `cat` coreutil
+/// Test the `bcat` coreutil
 ///
-/// Verifies that /bin/cat correctly outputs file contents.
+/// Verifies that /bin/bcat correctly outputs file contents.
 pub fn test_cat_coreutil() {
-    log::info!("Testing cat coreutil (file concatenation)");
+    log::info!("Testing bcat coreutil (file concatenation)");
 
     #[cfg(feature = "testing")]
     let cat_test_elf_buf = crate::userspace_test::get_test_binary("cat_test");
@@ -3231,11 +3231,11 @@ pub fn test_cat_coreutil() {
     }
 }
 
-/// Test the `ls` coreutil
+/// Test the `bls` coreutil
 ///
-/// Verifies that /bin/ls correctly lists directory contents.
+/// Verifies that /bin/bls correctly lists directory contents.
 pub fn test_ls_coreutil() {
-    log::info!("Testing ls coreutil (directory listing)");
+    log::info!("Testing bls coreutil (directory listing)");
 
     #[cfg(feature = "testing")]
     let ls_test_elf_buf = crate::userspace_test::get_test_binary("ls_test");

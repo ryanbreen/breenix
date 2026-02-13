@@ -235,62 +235,62 @@ path = "src/cow_readonly_test.rs"
 name = "cow_signal_test"
 path = "src/cow_signal_test.rs"
 
-# Phase 3: Coreutils
+# Phase 3: Coreutils (b-prefixed to avoid collision with GNU coreutils)
 [[bin]]
-name = "true"
-path = "src/true.rs"
+name = "btrue"
+path = "src/btrue.rs"
 
 [[bin]]
-name = "false"
-path = "src/false.rs"
+name = "bfalse"
+path = "src/bfalse.rs"
 
 [[bin]]
-name = "echo"
-path = "src/echo.rs"
+name = "becho"
+path = "src/becho.rs"
 
 [[bin]]
-name = "cat"
-path = "src/cat.rs"
+name = "bcat"
+path = "src/bcat.rs"
 
 [[bin]]
-name = "head"
-path = "src/head.rs"
+name = "bhead"
+path = "src/bhead.rs"
 
 [[bin]]
-name = "tail"
-path = "src/tail.rs"
+name = "btail"
+path = "src/btail.rs"
 
 [[bin]]
-name = "wc"
-path = "src/wc.rs"
+name = "bwc"
+path = "src/bwc.rs"
 
 [[bin]]
-name = "which"
-path = "src/which.rs"
+name = "bwhich"
+path = "src/bwhich.rs"
 
 [[bin]]
-name = "ls"
-path = "src/ls.rs"
+name = "bls"
+path = "src/bls.rs"
 
 [[bin]]
-name = "mkdir"
-path = "src/mkdir.rs"
+name = "bmkdir"
+path = "src/bmkdir.rs"
 
 [[bin]]
-name = "rmdir"
-path = "src/rmdir.rs"
+name = "brmdir"
+path = "src/brmdir.rs"
 
 [[bin]]
-name = "rm"
-path = "src/rm.rs"
+name = "brm"
+path = "src/brm.rs"
 
 [[bin]]
-name = "cp"
-path = "src/cp.rs"
+name = "bcp"
+path = "src/bcp.rs"
 
 [[bin]]
-name = "mv"
-path = "src/mv.rs"
+name = "bmv"
+path = "src/bmv.rs"
 
 [[bin]]
 name = "resolution"

@@ -1,6 +1,6 @@
 //! Test for which coreutil (std version)
 //!
-//! Verifies that /bin/which correctly locates commands in PATH.
+//! Verifies that /bin/bwhich correctly locates commands in PATH.
 //! Uses pipe+dup2 to capture stdout and verify actual output content.
 
 use libbreenix::Fd;
@@ -75,17 +75,17 @@ fn main() {
     let mut tests_passed = 0;
     let mut tests_failed = 0;
 
-    // Test 1: which ls -> /bin/ls (found in /bin)
-    println!("Test 1: which ls returns /bin/ls");
+    // Test 1: which bls -> /bin/bls (found in /bin)
+    println!("Test 1: which bls returns /bin/bls");
     {
-        let program = b"/bin/which\0";
-        let arg0 = b"which\0".as_ptr();
-        let arg1 = b"ls\0".as_ptr();
+        let program = b"/bin/bwhich\0";
+        let arg0 = b"bwhich\0".as_ptr();
+        let arg1 = b"bls\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
         let (exit_code, output) = run_and_capture(program, &argv);
 
-        if exit_code == 0 && output_matches(&output, b"/bin/ls") {
+        if exit_code == 0 && output_matches(&output, b"/bin/bls") {
             println!("WHICH_LS_OK");
             tests_passed += 1;
         } else {
@@ -94,17 +94,17 @@ fn main() {
         }
     }
 
-    // Test 2: which true -> /sbin/true (found in /sbin, not /bin)
-    println!("Test 2: which true returns /sbin/true");
+    // Test 2: which btrue -> /sbin/btrue (found in /sbin, not /bin)
+    println!("Test 2: which btrue returns /sbin/btrue");
     {
-        let program = b"/bin/which\0";
-        let arg0 = b"which\0".as_ptr();
-        let arg1 = b"true\0".as_ptr();
+        let program = b"/bin/bwhich\0";
+        let arg0 = b"bwhich\0".as_ptr();
+        let arg1 = b"btrue\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
         let (exit_code, output) = run_and_capture(program, &argv);
 
-        if exit_code == 0 && output_matches(&output, b"/sbin/true") {
+        if exit_code == 0 && output_matches(&output, b"/sbin/btrue") {
             println!("WHICH_TRUE_OK");
             tests_passed += 1;
         } else {
@@ -116,8 +116,8 @@ fn main() {
     // Test 3: which nonexistent -> exit 1 (not found)
     println!("Test 3: which nonexistent_cmd exits 1");
     {
-        let program = b"/bin/which\0";
-        let arg0 = b"which\0".as_ptr();
+        let program = b"/bin/bwhich\0";
+        let arg0 = b"bwhich\0".as_ptr();
         let arg1 = b"nonexistent_cmd_xyz\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
@@ -132,17 +132,17 @@ fn main() {
         }
     }
 
-    // Test 4: which /bin/ls -> /bin/ls (explicit path, if executable)
-    println!("Test 4: which /bin/ls (explicit path)");
+    // Test 4: which /bin/bls -> /bin/bls (explicit path, if executable)
+    println!("Test 4: which /bin/bls (explicit path)");
     {
-        let program = b"/bin/which\0";
-        let arg0 = b"which\0".as_ptr();
-        let arg1 = b"/bin/ls\0".as_ptr();
+        let program = b"/bin/bwhich\0";
+        let arg0 = b"bwhich\0".as_ptr();
+        let arg1 = b"/bin/bls\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
         let (exit_code, output) = run_and_capture(program, &argv);
 
-        if exit_code == 0 && output_matches(&output, b"/bin/ls") {
+        if exit_code == 0 && output_matches(&output, b"/bin/bls") {
             println!("WHICH_EXPLICIT_OK");
             tests_passed += 1;
         } else {
@@ -154,8 +154,8 @@ fn main() {
     // Test 5: which (no args) -> exit 1 with usage
     println!("Test 5: which with no args exits 1");
     {
-        let program = b"/bin/which\0";
-        let arg0 = b"which\0".as_ptr();
+        let program = b"/bin/bwhich\0";
+        let arg0 = b"bwhich\0".as_ptr();
         let argv: [*const u8; 2] = [arg0, std::ptr::null()];
 
         let (exit_code, _) = run_and_capture(program, &argv);
@@ -169,17 +169,17 @@ fn main() {
         }
     }
 
-    // Test 6: which cat -> /bin/cat (another /bin command)
-    println!("Test 6: which cat returns /bin/cat");
+    // Test 6: which bcat -> /bin/bcat (another /bin command)
+    println!("Test 6: which bcat returns /bin/bcat");
     {
-        let program = b"/bin/which\0";
-        let arg0 = b"which\0".as_ptr();
-        let arg1 = b"cat\0".as_ptr();
+        let program = b"/bin/bwhich\0";
+        let arg0 = b"bwhich\0".as_ptr();
+        let arg1 = b"bcat\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
         let (exit_code, output) = run_and_capture(program, &argv);
 
-        if exit_code == 0 && output_matches(&output, b"/bin/cat") {
+        if exit_code == 0 && output_matches(&output, b"/bin/bcat") {
             println!("WHICH_CAT_OK");
             tests_passed += 1;
         } else {

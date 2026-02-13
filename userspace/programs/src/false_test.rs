@@ -1,6 +1,6 @@
 //! Test for false coreutil (std version)
 //!
-//! Verifies that /bin/false exits with code 1 and produces no output.
+//! Verifies that /bin/bfalse exits with code 1 and produces no output.
 //! Uses pipe+dup2 to capture stdout and verify no output is produced.
 
 use libbreenix::Errno;
@@ -85,11 +85,11 @@ fn main() {
     let mut tests_failed = 0;
     let mut output_buf = [0u8; 64];
 
-    // Test 1: /bin/false should exit with 1 and produce no output
-    println!("Test 1: /bin/false exits with 1 and no output");
+    // Test 1: /bin/bfalse should exit with 1 and produce no output
+    println!("Test 1: /bin/bfalse exits with 1 and no output");
     {
-        let program = b"/bin/false\0";
-        let arg0 = b"false\0".as_ptr();
+        let program = b"/bin/bfalse\0";
+        let arg0 = b"bfalse\0".as_ptr();
         let argv: [*const u8; 2] = [arg0, std::ptr::null()];
 
         let (exit_code, output_len) = run_and_capture(program, &argv, &mut output_buf);
@@ -106,11 +106,11 @@ fn main() {
         }
     }
 
-    // Test 2: /bin/false with arguments should still exit 1 (ignores args)
-    println!("Test 2: /bin/false --ignored arguments exits with 1");
+    // Test 2: /bin/bfalse with arguments should still exit 1 (ignores args)
+    println!("Test 2: /bin/bfalse --ignored arguments exits with 1");
     {
-        let program = b"/bin/false\0";
-        let arg0 = b"false\0".as_ptr();
+        let program = b"/bin/bfalse\0";
+        let arg0 = b"bfalse\0".as_ptr();
         let arg1 = b"--ignored\0".as_ptr();
         let arg2 = b"arguments\0".as_ptr();
         let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];

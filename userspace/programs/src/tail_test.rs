@@ -1,6 +1,6 @@
 //! Test for tail coreutil (std version)
 //!
-//! Verifies that /bin/tail correctly outputs the last N lines of files.
+//! Verifies that /bin/btail correctly outputs the last N lines of files.
 //! Uses pipe+dup2 to capture stdout and verify actual output content.
 
 use libbreenix::Fd;
@@ -73,8 +73,8 @@ fn main() {
     // Last 10 lines are: Line 6 through Line 15
     println!("Test 1: tail /lines.txt outputs last 10 lines");
     {
-        let program = b"/bin/tail\0";
-        let arg0 = b"tail\0".as_ptr();
+        let program = b"/bin/btail\0";
+        let arg0 = b"btail\0".as_ptr();
         let arg1 = b"/lines.txt\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
@@ -95,8 +95,8 @@ fn main() {
     // Test 2: tail -n5 /lines.txt should output last 5 lines (Line 11-15)
     println!("Test 2: tail -n5 /lines.txt outputs last 5 lines");
     {
-        let program = b"/bin/tail\0";
-        let arg0 = b"tail\0".as_ptr();
+        let program = b"/bin/btail\0";
+        let arg0 = b"btail\0".as_ptr();
         let arg1 = b"-n5\0".as_ptr();
         let arg2 = b"/lines.txt\0".as_ptr();
         let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];
@@ -118,8 +118,8 @@ fn main() {
     // Test 3: tail -n 3 /lines.txt (space-separated) outputs last 3 lines
     println!("Test 3: tail -n 3 /lines.txt outputs last 3 lines");
     {
-        let program = b"/bin/tail\0";
-        let arg0 = b"tail\0".as_ptr();
+        let program = b"/bin/btail\0";
+        let arg0 = b"btail\0".as_ptr();
         let arg1 = b"-n\0".as_ptr();
         let arg2 = b"3\0".as_ptr();
         let arg3 = b"/lines.txt\0".as_ptr();
@@ -142,8 +142,8 @@ fn main() {
     // Test 4: tail -n1 /lines.txt should output exactly "Line 15\n"
     println!("Test 4: tail -n1 /lines.txt outputs last line");
     {
-        let program = b"/bin/tail\0";
-        let arg0 = b"tail\0".as_ptr();
+        let program = b"/bin/btail\0";
+        let arg0 = b"btail\0".as_ptr();
         let arg1 = b"-n1\0".as_ptr();
         let arg2 = b"/lines.txt\0".as_ptr();
         let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];
@@ -165,8 +165,8 @@ fn main() {
     // Test 5: tail -n0 /lines.txt should produce no output
     println!("Test 5: tail -n0 /lines.txt outputs nothing");
     {
-        let program = b"/bin/tail\0";
-        let arg0 = b"tail\0".as_ptr();
+        let program = b"/bin/btail\0";
+        let arg0 = b"btail\0".as_ptr();
         let arg1 = b"-n0\0".as_ptr();
         let arg2 = b"/lines.txt\0".as_ptr();
         let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];
@@ -185,8 +185,8 @@ fn main() {
     // Test 6: tail on nonexistent file should fail
     println!("Test 6: tail /nonexistent returns error");
     {
-        let program = b"/bin/tail\0";
-        let arg0 = b"tail\0".as_ptr();
+        let program = b"/bin/btail\0";
+        let arg0 = b"btail\0".as_ptr();
         let arg1 = b"/nonexistent_file_xyz\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
@@ -204,8 +204,8 @@ fn main() {
     // Test 7: tail on file with fewer lines than requested
     println!("Test 7: tail -n10 /hello.txt (file has only 1 line)");
     {
-        let program = b"/bin/tail\0";
-        let arg0 = b"tail\0".as_ptr();
+        let program = b"/bin/btail\0";
+        let arg0 = b"btail\0".as_ptr();
         let arg1 = b"-n10\0".as_ptr();
         let arg2 = b"/hello.txt\0".as_ptr();
         let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];
