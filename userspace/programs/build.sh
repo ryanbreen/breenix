@@ -253,6 +253,10 @@ STD_BINARIES=(
     # Shells
     "bsh"
 
+    # Window manager and system monitor
+    "bwm"
+    "btop"
+
     # Services
     "init"
     "telnetd"

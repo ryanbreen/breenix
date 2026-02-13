@@ -79,6 +79,9 @@ fn render_thread_main_kthread() {
         // Drain captured serial output to the Logs terminal
         drain_log_capture();
 
+        // Refresh btop monitor view if flag is set and Monitor tab is active
+        crate::graphics::terminal_manager::refresh_btop_if_needed();
+
         // Update mouse cursor position from tablet input device
         #[cfg(target_arch = "aarch64")]
         update_mouse_cursor();

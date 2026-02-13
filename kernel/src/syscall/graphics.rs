@@ -509,6 +509,7 @@ pub fn sys_fbmmap() -> SyscallResult {
     use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
 
     // Get framebuffer dimensions (acquire and release FB lock quickly)
+    // Always map only the left pane (for demo programs that coexist with the kernel terminal).
     let (pane_width, height, bpp) = {
         let fb = match SHELL_FRAMEBUFFER.get() {
             Some(fb) => fb,

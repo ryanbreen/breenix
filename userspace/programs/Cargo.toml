@@ -518,6 +518,14 @@ path = "src/tones.rs"
 name = "bsh"
 path = "src/bsh.rs"
 
+[[bin]]
+name = "bwm"
+path = "src/bwm.rs"
+
+[[bin]]
+name = "btop"
+path = "src/btop.rs"
+
 [profile.release]
 panic = "abort"
 lto = "thin"

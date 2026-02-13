@@ -174,6 +174,17 @@ pub fn drain_and_render() -> usize {
         return 0;
     }
 
+    // Skip rendering when userspace has taken over the display
+    if !crate::graphics::terminal_manager::is_display_active() {
+        // Still consume the data to prevent buffer backup
+        let head = QUEUE_HEAD.load(Ordering::Acquire);
+        let tail = QUEUE_TAIL.load(Ordering::Acquire);
+        if head != tail {
+            QUEUE_HEAD.store(tail, Ordering::Release);
+        }
+        return 0;
+    }
+
     // Read current indices
     let head = QUEUE_HEAD.load(Ordering::Acquire);
     let tail = QUEUE_TAIL.load(Ordering::Acquire);

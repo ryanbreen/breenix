@@ -73,6 +73,8 @@ pub mod boot;
 pub mod trace;
 // DTrace-style tracing framework with per-CPU ring buffers
 pub mod tracing;
+// Kernel log ring buffer for /proc/kmsg
+pub mod log_buffer;
 // Parallel boot test framework and BTRT
 #[cfg(any(feature = "boot_tests", feature = "btrt"))]
 pub mod test_framework;

@@ -165,6 +165,9 @@ pub struct Process {
 
     /// Framebuffer mmap info (if this process has an mmap'd framebuffer)
     pub fb_mmap: Option<FbMmapInfo>,
+
+    /// Accumulated CPU ticks for this process (for btop display)
+    pub cpu_ticks: u64,
 }
 
 /// Memory usage tracking
@@ -216,6 +219,7 @@ impl Process {
             user_stack_top: 0,
             pending_old_page_tables: Vec::new(),
             fb_mmap: None,
+            cpu_ticks: 0,
         }
     }
 

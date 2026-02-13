@@ -374,3 +374,12 @@ impl Framebuffer {
 
 // Note: No Drop impl needed. The mmap'd buffer is cleaned up by the kernel
 // when the process exits. Explicitly munmapping is optional.
+
+/// Deactivate the kernel's terminal manager so userspace can take over the display.
+///
+/// After this call, the kernel will no longer render to the right-side terminal pane.
+/// The calling process is responsible for all display rendering via fb_mmap.
+pub fn take_over_display() -> Result<(), Error> {
+    let result = unsafe { raw::syscall0(nr::TAKE_OVER_DISPLAY) };
+    Error::from_syscall(result as i64).map(|_| ())
+}

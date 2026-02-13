@@ -490,6 +490,7 @@ impl Scheduler {
         // Mark new thread as running
         if let Some(next) = self.get_thread_mut(next_thread_id) {
             next.set_running();
+            next.run_start_ticks = crate::time::get_ticks();
         }
 
         // Get mutable reference to old thread and immutable to new
@@ -615,6 +616,7 @@ impl Scheduler {
 
         if let Some(next) = self.get_thread_mut(next_thread_id) {
             next.set_running();
+            next.run_start_ticks = crate::time::get_ticks();
         }
 
         Some((old_thread_id, next_thread_id, should_requeue_old))
