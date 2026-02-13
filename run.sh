@@ -225,6 +225,14 @@ else
     echo ""
 fi
 
+# Audio options (VirtIO sound device)
+AUDIO_OPTS="-audiodev coreaudio,id=audio0"
+if [ "$ARCH" = "arm64" ]; then
+    AUDIO_OPTS="$AUDIO_OPTS -device virtio-sound-device,audiodev=audio0"
+else
+    AUDIO_OPTS="$AUDIO_OPTS -device virtio-sound-pci,audiodev=audio0"
+fi
+
 # Build the full QEMU command based on architecture
 if [ "$ARCH" = "arm64" ]; then
     # ARM64 QEMU invocation (native)
@@ -237,6 +245,7 @@ if [ "$ARCH" = "arm64" ]; then
         $DISK_OPTS \
         -device virtio-net-device,netdev=net0 \
         -netdev user,id=net0,hostfwd=tcp::2323-:2323 \
+        $AUDIO_OPTS \
         -monitor tcp:127.0.0.1:4444,server,nowait \
         -serial mon:stdio \
         -no-reboot \
@@ -269,6 +278,7 @@ else
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
         -netdev user,id=net0 \
         -device e1000,netdev=net0,mac=52:54:00:12:34:56 \
+        $AUDIO_OPTS \
         -monitor tcp:127.0.0.1:4444,server,nowait \
         -serial mon:stdio \
         &

@@ -54,6 +54,16 @@ pub fn init() -> usize {
         }
     }
 
+    // Initialize VirtIO sound driver
+    match virtio::sound::init() {
+        Ok(()) => {
+            log::info!("VirtIO sound driver initialized successfully");
+        }
+        Err(e) => {
+            log::warn!("VirtIO sound driver initialization failed: {}", e);
+        }
+    }
+
     log::info!("Driver subsystem initialized");
     device_count
 }
@@ -120,6 +130,16 @@ pub fn init() -> usize {
         }
         Err(e) => {
             serial_println!("[drivers] VirtIO GPU driver init failed: {}", e);
+        }
+    }
+
+    // Initialize VirtIO sound driver
+    match virtio::sound_mmio::init() {
+        Ok(()) => {
+            serial_println!("[drivers] VirtIO sound driver initialized");
+        }
+        Err(e) => {
+            serial_println!("[drivers] VirtIO sound driver init failed: {}", e);
         }
     }
 

@@ -56,6 +56,7 @@ pub mod device_id {
     pub const SCSI: u32 = 8;
     pub const GPU: u32 = 16;
     pub const INPUT: u32 = 18;
+    pub const SOUND: u32 = 25;
 }
 
 /// VirtIO MMIO register offsets
@@ -403,6 +404,7 @@ pub fn device_type_name(device_id: u32) -> &'static str {
         device_id::SCSI => "SCSI",
         device_id::GPU => "GPU",
         device_id::INPUT => "input",
+        device_id::SOUND => "sound",
         _ => "unknown",
     }
 }

@@ -396,14 +396,14 @@ fn dispatch_syscall(
         SyscallNumber::Pause | SyscallNumber::Sigsuspend => (-38_i64) as u64,
 
         // I/O syscalls (ARM64 io module)
-        SyscallNumber::Write => result_to_u64(crate::syscall::io::sys_write(arg1, arg2, arg3)),
-        SyscallNumber::Read => result_to_u64(crate::syscall::io::sys_read(arg1, arg2, arg3)),
+        SyscallNumber::Write => result_to_u64(crate::syscall::handlers::sys_write(arg1, arg2, arg3)),
+        SyscallNumber::Read => result_to_u64(crate::syscall::handlers::sys_read(arg1, arg2, arg3)),
         SyscallNumber::Close => result_to_u64(crate::syscall::pipe::sys_close(arg1 as i32)),
-        SyscallNumber::Dup => result_to_u64(crate::syscall::io::sys_dup(arg1)),
-        SyscallNumber::Dup2 => result_to_u64(crate::syscall::io::sys_dup2(arg1, arg2)),
-        SyscallNumber::Fcntl => result_to_u64(crate::syscall::io::sys_fcntl(arg1, arg2, arg3)),
-        SyscallNumber::Poll => result_to_u64(crate::syscall::io::sys_poll(arg1, arg2, arg3 as i32)),
-        SyscallNumber::Select => result_to_u64(crate::syscall::io::sys_select(arg1 as i32, arg2, arg3, arg4, arg5)),
+        SyscallNumber::Dup => result_to_u64(crate::syscall::handlers::sys_dup(arg1)),
+        SyscallNumber::Dup2 => result_to_u64(crate::syscall::handlers::sys_dup2(arg1, arg2)),
+        SyscallNumber::Fcntl => result_to_u64(crate::syscall::handlers::sys_fcntl(arg1, arg2, arg3)),
+        SyscallNumber::Poll => result_to_u64(crate::syscall::handlers::sys_poll(arg1, arg2, arg3 as i32)),
+        SyscallNumber::Select => result_to_u64(crate::syscall::handlers::sys_select(arg1 as i32, arg2, arg3, arg4, arg5)),
         SyscallNumber::Ioctl => result_to_u64(crate::syscall::ioctl::sys_ioctl(arg1, arg2, arg3)),
         SyscallNumber::Pipe => result_to_u64(crate::syscall::pipe::sys_pipe(arg1)),
         SyscallNumber::Pipe2 => result_to_u64(crate::syscall::pipe::sys_pipe2(arg1, arg2)),
@@ -487,6 +487,10 @@ fn dispatch_syscall(
         SyscallNumber::FbDraw => result_to_u64(crate::syscall::graphics::sys_fbdraw(arg1)),
         SyscallNumber::FbMmap => result_to_u64(crate::syscall::graphics::sys_fbmmap()),
         SyscallNumber::GetMousePos => result_to_u64(crate::syscall::graphics::sys_get_mouse_pos(arg1)),
+
+        // Audio syscalls
+        SyscallNumber::AudioInit => result_to_u64(crate::syscall::audio::sys_audio_init()),
+        SyscallNumber::AudioWrite => result_to_u64(crate::syscall::audio::sys_audio_write(arg1, arg2)),
 
         // Testing/diagnostic syscalls
         SyscallNumber::CowStats => sys_cow_stats_aarch64(arg1),

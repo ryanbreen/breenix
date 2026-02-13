@@ -38,6 +38,7 @@ pub use syscall::raw;
 pub use types::*;
 
 pub mod argv;
+pub mod audio;
 pub mod dns;
 pub mod errno;
 pub mod error;

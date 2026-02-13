@@ -15,6 +15,93 @@ use breenish_js::object::{JsObject, ObjectHeap, ObjectKind};
 use breenish_js::string::StringPool;
 use breenish_js::value::JsValue;
 use breenish_js::Context;
+use libbreenix::audio;
+
+// ---------------------------------------------------------------------------
+// Terminal bell (short chime on ambiguous tab completion)
+// ---------------------------------------------------------------------------
+
+/// 256-entry sine table, amplitude 32767
+const BELL_SINE: [i16; 256] = [
+         0,    804,   1608,   2410,   3212,   4011,   4808,   5602,
+      6393,   7179,   7962,   8739,   9512,  10278,  11039,  11793,
+     12539,  13279,  14010,  14732,  15446,  16151,  16846,  17530,
+     18204,  18868,  19519,  20159,  20787,  21403,  22005,  22594,
+     23170,  23731,  24279,  24811,  25329,  25832,  26319,  26790,
+     27245,  27683,  28105,  28510,  28898,  29268,  29621,  29956,
+     30273,  30571,  30852,  31113,  31356,  31580,  31785,  31971,
+     32137,  32285,  32412,  32521,  32609,  32678,  32728,  32757,
+     32767,  32757,  32728,  32678,  32609,  32521,  32412,  32285,
+     32137,  31971,  31785,  31580,  31356,  31113,  30852,  30571,
+     30273,  29956,  29621,  29268,  28898,  28510,  28105,  27683,
+     27245,  26790,  26319,  25832,  25329,  24811,  24279,  23731,
+     23170,  22594,  22005,  21403,  20787,  20159,  19519,  18868,
+     18204,  17530,  16846,  16151,  15446,  14732,  14010,  13279,
+     12539,  11793,  11039,  10278,   9512,   8739,   7962,   7179,
+      6393,   5602,   4808,   4011,   3212,   2410,   1608,    804,
+         0,   -804,  -1608,  -2410,  -3212,  -4011,  -4808,  -5602,
+     -6393,  -7179,  -7962,  -8739,  -9512, -10278, -11039, -11793,
+    -12539, -13279, -14010, -14732, -15446, -16151, -16846, -17530,
+    -18204, -18868, -19519, -20159, -20787, -21403, -22005, -22594,
+    -23170, -23731, -24279, -24811, -25329, -25832, -26319, -26790,
+    -27245, -27683, -28105, -28510, -28898, -29268, -29621, -29956,
+    -30273, -30571, -30852, -31113, -31356, -31580, -31785, -31971,
+    -32137, -32285, -32412, -32521, -32609, -32678, -32728, -32757,
+    -32767, -32757, -32728, -32678, -32609, -32521, -32412, -32285,
+    -32137, -31971, -31785, -31580, -31356, -31113, -30852, -30571,
+    -30273, -29956, -29621, -29268, -28898, -28510, -28105, -27683,
+    -27245, -26790, -26319, -25832, -25329, -24811, -24279, -23731,
+    -23170, -22594, -22005, -21403, -20787, -20159, -19519, -18868,
+    -18204, -17530, -16846, -16151, -15446, -14732, -14010, -13279,
+    -12539, -11793, -11039, -10278,  -9512,  -8739,  -7962,  -7179,
+     -6393,  -5602,  -4808,  -4011,  -3212,  -2410,  -1608,   -804,
+];
+
+/// Play a short bell/chime tone for tab completion feedback.
+/// Lazily initializes audio on first call; silently does nothing if audio
+/// is unavailable.
+fn play_bell() {
+    static mut AUDIO_OK: Option<bool> = None;
+
+    let ok = unsafe {
+        if let Some(v) = AUDIO_OK {
+            v
+        } else {
+            let v = audio::init().is_ok();
+            AUDIO_OK = Some(v);
+            v
+        }
+    };
+    if !ok {
+        return;
+    }
+
+    // Bell: 880 Hz (A5), ~60ms, exponential-ish decay
+    const SAMPLE_RATE: u32 = 44100;
+    const DURATION_SAMPLES: u32 = SAMPLE_RATE * 60 / 1000; // 2646 samples
+    const FREQ: u32 = 880;
+    // Phase increment per sample: freq * 65536 / sample_rate
+    const PHASE_INC: u32 = FREQ * 65536 / SAMPLE_RATE; // ~1306
+
+    let mut samples = [0i16; (DURATION_SAMPLES as usize) * 2]; // stereo
+    let mut phase: u32 = 0;
+
+    for i in 0..DURATION_SAMPLES as usize {
+        let idx = ((phase >> 8) & 0xFF) as usize;
+        let raw = BELL_SINE[idx] as i32;
+
+        // Envelope: linear decay over the full duration (simulates a bell strike)
+        let env = ((DURATION_SAMPLES as usize - i) * 256 / DURATION_SAMPLES as usize) as i32;
+        // Keep volume moderate (1/4 of full scale)
+        let sample = ((raw * env) >> 10) as i16;
+
+        samples[i * 2] = sample;
+        samples[i * 2 + 1] = sample;
+        phase = phase.wrapping_add(PHASE_INC);
+    }
+
+    let _ = audio::write_samples(&samples);
+}
 
 // ---------------------------------------------------------------------------
 // Native function implementations
@@ -1265,7 +1352,7 @@ impl LineEditor {
     /// Perform tab completion. Determines whether we are completing a
     /// command (first word) or a filename (subsequent words), collects
     /// candidates, and inserts the completion into the buffer.
-    fn complete(&mut self, prompt: &str) {
+    fn complete(&mut self, prompt: &str, global_names: &[String]) {
         let word_start = self.find_word_start();
         let partial = String::from_utf8_lossy(&self.buffer[word_start..self.cursor]).to_string();
 
@@ -1276,7 +1363,7 @@ impl LineEditor {
             .all(|b| b.is_ascii_whitespace());
 
         let completions = if is_command {
-            self.complete_command(&partial)
+            self.complete_command(&partial, global_names)
         } else {
             self.complete_filename(&partial)
         };
@@ -1299,7 +1386,8 @@ impl LineEditor {
             }
             self.refresh_line(prompt);
         } else if completions.len() > 1 {
-            // Multiple matches: show them and complete the common prefix
+            // Multiple matches: bell + show them and complete the common prefix
+            play_bell();
             Self::write_out(b"\r\n");
             for c in &completions {
                 Self::write_out(c.as_bytes());
@@ -1319,17 +1407,29 @@ impl LineEditor {
             // Redraw the prompt and current line
             self.refresh_line(prompt);
         }
-        // No matches: do nothing (bell could be added later)
+        // No matches: just bell
+        if completions.is_empty() {
+            play_bell();
+        }
     }
 
-    /// Complete a command name by searching PATH directories for executables
-    /// whose names start with `partial`.
-    fn complete_command(&self, partial: &str) -> Vec<String> {
+    /// Complete a command name by matching JS globals/builtins and searching
+    /// PATH directories for executables whose names start with `partial`.
+    fn complete_command(&self, partial: &str, global_names: &[String]) -> Vec<String> {
         if partial.is_empty() {
             return Vec::new();
         }
 
         let mut matches: Vec<String> = Vec::new();
+
+        // 1. Match JS globals and builtins
+        for name in global_names {
+            if name.starts_with(partial) && !matches.contains(name) {
+                matches.push(name.clone());
+            }
+        }
+
+        // 2. Match PATH executables
         let path_dirs =
             std::env::var("PATH").unwrap_or_else(|_| String::from("/bin:/usr/bin"));
 
@@ -1342,7 +1442,6 @@ impl LineEditor {
                     let name = entry.file_name();
                     let name_str = name.to_string_lossy();
                     if name_str.starts_with(partial) {
-                        // Avoid duplicates (same command name in multiple PATH dirs)
                         let name = name_str.to_string();
                         if !matches.contains(&name) {
                             matches.push(name);
@@ -1490,7 +1589,7 @@ impl LineEditor {
     ///
     /// Returns `Some(line)` when the user presses Enter, or `None` on
     /// EOF (Ctrl+D on an empty line).
-    fn read_line(&mut self, prompt: &str) -> Option<String> {
+    fn read_line(&mut self, prompt: &str, global_names: &[String]) -> Option<String> {
         self.buffer.clear();
         self.cursor = 0;
         self.history_pos = self.history.len();
@@ -1578,7 +1677,7 @@ impl LineEditor {
                     self.refresh_line(prompt);
                 }
                 Key::Tab => {
-                    self.complete(prompt);
+                    self.complete(prompt, global_names);
                 }
                 Key::Char(ch) => {
                     self.insert_char(ch);
@@ -1617,7 +1716,8 @@ fn run_repl() {
             None => String::from("bsh> "),
         };
 
-        let line = match editor.read_line(&prompt) {
+        let global_names = ctx.global_names();
+        let line = match editor.read_line(&prompt, &global_names) {
             Some(line) => line,
             None => return, // EOF / Ctrl+D
         };

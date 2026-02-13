@@ -17,9 +17,6 @@ pub mod memory_common;
 pub mod mmap;
 pub mod time;
 pub mod userptr;
-#[cfg(target_arch = "aarch64")]
-pub mod io;
-
 // Syscall handler - the main dispatcher
 // x86_64: Full handler with signal delivery and process management
 // ARM64: Handler is in arch_impl/aarch64/syscall_entry.rs
@@ -27,8 +24,8 @@ pub mod io;
 pub mod handler;
 
 // Syscall implementations
-// - dispatcher/handlers remain x86_64-only for now
-// - other modules are shared across architectures
+// - dispatcher is x86_64-only (ARM64 dispatch is in arch_impl/aarch64/syscall_entry.rs)
+// - handlers is shared across architectures (arch-specific parts are cfg-gated internally)
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod dispatcher;
 pub mod clone;
@@ -36,18 +33,14 @@ pub mod fifo;
 pub mod fs;
 pub mod futex;
 pub mod graphics;
-// handlers module has deep dependencies on x86_64-only subsystems
-// ARM64 uses arch_impl/aarch64/syscall_entry.rs for dispatch
-#[cfg(target_arch = "x86_64")]
 pub mod handlers;
 pub mod ioctl;
 pub mod pipe;
 pub mod pty;
+pub mod audio;
 pub mod random;
 pub mod session;
 pub mod signal;
-// Socket syscalls - enabled for both architectures
-// Unix domain sockets are fully arch-independent
 pub mod socket;
 #[cfg(target_arch = "aarch64")]
 pub mod wait;
@@ -142,6 +135,9 @@ pub enum SyscallNumber {
     FbDraw = 411,       // Breenix: draw to framebuffer (left pane)
     FbMmap = 412,       // Breenix: mmap framebuffer into userspace
     GetMousePos = 413,  // Breenix: get mouse cursor position
+    // Audio syscalls (Breenix-specific)
+    AudioInit = 420,    // Breenix: initialize audio stream
+    AudioWrite = 421,   // Breenix: write PCM data to audio device
     CowStats = 500,     // Breenix: get Copy-on-Write statistics (for testing)
     SimulateOom = 501,  // Breenix: enable/disable OOM simulation (for testing)
 }
@@ -236,6 +232,9 @@ impl SyscallNumber {
             411 => Some(Self::FbDraw),
             412 => Some(Self::FbMmap),
             413 => Some(Self::GetMousePos),
+            // Audio syscalls
+            420 => Some(Self::AudioInit),
+            421 => Some(Self::AudioWrite),
             500 => Some(Self::CowStats),
             501 => Some(Self::SimulateOom),
             _ => None,
