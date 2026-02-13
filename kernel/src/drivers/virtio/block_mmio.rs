@@ -396,7 +396,6 @@ fn read_sector_inner(sector: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), 
         };
         if used_idx != state.last_used_idx {
             state.last_used_idx = used_idx;
-            raw_char(b'.'); // Block read completed
             break;
         }
         timeout -= 1;
