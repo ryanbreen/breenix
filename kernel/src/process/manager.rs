@@ -698,6 +698,8 @@ impl ProcessManager {
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
+            cpu_ticks_total: 0,
+            owner_pid: Some(process.id.as_u64()),
         };
 
         Ok(thread)
@@ -771,6 +773,8 @@ impl ProcessManager {
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
+            cpu_ticks_total: 0,
+            owner_pid: Some(process.id.as_u64()),
         };
 
         Ok(thread)
@@ -849,6 +853,8 @@ impl ProcessManager {
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
+            cpu_ticks_total: 0,
+            owner_pid: Some(process.id.as_u64()),
         };
 
         Ok(thread)
@@ -2009,6 +2015,8 @@ impl ProcessManager {
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
+            cpu_ticks_total: 0,
+            owner_pid: Some(child_pid.as_u64()),
         };
 
         // CoW fork: Child uses the same stack virtual addresses as the parent.

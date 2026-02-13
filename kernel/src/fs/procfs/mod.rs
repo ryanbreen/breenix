@@ -905,6 +905,15 @@ fn generate_pid_status(pid: u64) -> String {
     let vm_heap_kb = process.memory_usage.heap_size / 1024;
     let vm_stack_kb = process.memory_usage.stack_size / 1024;
 
+    // Get real CPU ticks from the scheduler (accumulated from all threads of this process)
+    let cpu_ticks = {
+        let all_ticks = crate::task::scheduler::get_process_cpu_ticks();
+        all_ticks.iter()
+            .filter(|&&(p, _)| p == pid)
+            .map(|&(_, t)| t)
+            .sum::<u64>()
+    };
+
     format!(
         "Name:\t{}\n\
          Pid:\t{}\n\
@@ -925,6 +934,6 @@ fn generate_pid_status(pid: u64) -> String {
         vm_code_kb,
         vm_heap_kb,
         vm_stack_kb,
-        process.cpu_ticks,
+        cpu_ticks,
     )
 }

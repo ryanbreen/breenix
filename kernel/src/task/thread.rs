@@ -405,6 +405,14 @@ pub struct Thread {
 
     /// Tick count when this thread started its current run (for CPU accounting)
     pub run_start_ticks: u64,
+
+    /// Accumulated CPU ticks consumed by this thread across all scheduling quanta.
+    /// Updated in schedule() when the thread is switched out.
+    pub cpu_ticks_total: u64,
+
+    /// Owner process PID (for mapping thread CPU time to process in btop).
+    /// None for idle threads and kernel-internal threads not associated with a process.
+    pub owner_pid: Option<u64>,
 }
 
 impl Clone for Thread {
@@ -428,6 +436,8 @@ impl Clone for Thread {
             saved_userspace_context: self.saved_userspace_context.clone(),
             wake_time_ns: self.wake_time_ns,
             run_start_ticks: self.run_start_ticks,
+            cpu_ticks_total: self.cpu_ticks_total,
+            owner_pid: self.owner_pid,
         }
     }
 }
@@ -488,6 +498,8 @@ impl Thread {
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
+            cpu_ticks_total: 0,
+            owner_pid: None,
         })
     }
 
@@ -543,6 +555,8 @@ impl Thread {
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
+            cpu_ticks_total: 0,
+            owner_pid: None,
         })
     }
 
@@ -585,6 +599,8 @@ impl Thread {
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
+            cpu_ticks_total: 0,
+            owner_pid: None,
         }
     }
 
@@ -630,6 +646,8 @@ impl Thread {
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
+            cpu_ticks_total: 0,
+            owner_pid: None,
         }
     }
 
@@ -684,6 +702,8 @@ impl Thread {
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
+            cpu_ticks_total: 0,
+            owner_pid: None,
         }
     }
 
@@ -733,6 +753,8 @@ impl Thread {
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
+            cpu_ticks_total: 0,
+            owner_pid: None,
         }
     }
 
@@ -807,6 +829,8 @@ impl Thread {
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
+            cpu_ticks_total: 0,
+            owner_pid: None,
         }
     }
 
@@ -848,6 +872,8 @@ impl Thread {
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
+            cpu_ticks_total: 0,
+            owner_pid: None,
         }
     }
 }
