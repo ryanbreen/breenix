@@ -38,7 +38,7 @@ if [ "$1" = "--all" ]; then
             apk add --no-cache e2fsprogs >/dev/null 2>&1
             mkdir -p /mnt/ext2
             mount -o ro /ext2.img /mnt/ext2
-            ls /mnt/ext2/bin/ | grep -E "_test$" | sort
+            ls /mnt/ext2/usr/local/test/bin/ 2>/dev/null | grep -E "_test$|^test_" | sort
         ' 2>/dev/null)
 elif [ -n "$1" ]; then
     TESTS="$@"
@@ -95,12 +95,12 @@ with open(kernel_src, 'r') as f:
 # Replace the path in run_userspace_from_ext2 call (handles both init_shell and bsh)
 content = re.sub(
     r'run_userspace_from_ext2\("/bin/(init_shell|bsh)"\)',
-    f'run_userspace_from_ext2("/bin/{test_name}")',
+    f'run_userspace_from_ext2("/usr/local/test/bin/{test_name}")',
     content
 )
 with open(kernel_src, 'w') as f:
     f.write(content)
-print(f"Modified kernel to load: /bin/{test_name}")
+print(f"Modified kernel to load: /usr/local/test/bin/{test_name}")
 PYTHON
     
     # Build (with testing feature to enable exec() and other test syscalls)
