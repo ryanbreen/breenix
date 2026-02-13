@@ -742,6 +742,17 @@ fn read_fd_to_string(fd: libbreenix::types::Fd) -> String {
     String::from_utf8_lossy(&result).into_owned()
 }
 
+/// Return the default PATH, including /usr/local/test/bin if the kernel
+/// is built with the `testing` feature (detected via /proc/breenix/testing).
+fn default_path() -> String {
+    if let Ok(content) = std::fs::read_to_string("/proc/breenix/testing") {
+        if content.trim() == "1" {
+            return String::from("/bin:/usr/bin:/usr/local/test/bin");
+        }
+    }
+    String::from("/bin:/usr/bin")
+}
+
 /// Resolve a command name to a full path by searching PATH directories.
 fn resolve_command(cmd: &str) -> Option<String> {
     // If cmd contains '/', use it directly
@@ -750,7 +761,7 @@ fn resolve_command(cmd: &str) -> Option<String> {
     }
 
     // Search PATH
-    let path_dirs = std::env::var("PATH").unwrap_or_else(|_| String::from("/bin:/usr/bin"));
+    let path_dirs = std::env::var("PATH").unwrap_or_else(|_| default_path());
     for dir in path_dirs.split(':') {
         let full_path = format!("{}/{}", dir, cmd);
         // Check if file exists and is executable
@@ -1431,7 +1442,7 @@ impl LineEditor {
 
         // 2. Match PATH executables
         let path_dirs =
-            std::env::var("PATH").unwrap_or_else(|_| String::from("/bin:/usr/bin"));
+            std::env::var("PATH").unwrap_or_else(|_| default_path());
 
         for dir in path_dirs.split(':') {
             if dir.is_empty() {
@@ -1699,6 +1710,11 @@ impl LineEditor {
 // ---------------------------------------------------------------------------
 
 fn run_repl() {
+    // Set default PATH based on kernel testing mode
+    if std::env::var("PATH").is_err() {
+        std::env::set_var("PATH", default_path());
+    }
+
     let mut ctx = create_shell_context();
 
     // Load startup scripts
@@ -1820,7 +1836,7 @@ fn builtin_wrap(line: &str) -> Option<String> {
             }
         }
         "help" => {
-            Some(String::from(r#"print("bsh -- Breenish ECMAScript Shell\n\nShell builtins:\n  cd <dir>       Change directory\n  pwd            Print working directory\n  exit [code]    Exit the shell\n  which <cmd>    Find command in PATH\n  source <file>  Execute a script file\n  help           Show this help\n\nProcess execution:\n  exec(cmd, ...args)    Run a command, returns {exitCode, stdout, stderr}\n  pipe(cmd1, cmd2, ...) Pipeline commands\n  ls /bin               Bare commands are auto-wrapped in exec()\n\nFile operations:\n  readFile(path)          Read file contents\n  writeFile(path, data)   Write to file\n  glob(pattern)           Wildcard expansion (*.rs)\n\nEnvironment:\n  env()              All environment variables\n  env(name)          Get variable\n  env(name, value)   Set variable\n\nJavaScript:\n  Full ECMAScript: let/const, functions, arrows, closures,\n  if/else, for/while, try/catch, async/await, template literals,\n  destructuring, spread, Map, Set, JSON, Math, Promise\n\nUse Tab for auto-completion. Up/Down for history.\nSee: docs/user-guide/bsh-shell-guide.md for full documentation.")"#))
+            Some(String::from(r#"print("bsh -- Breenish ECMAScript Shell\n\nShell builtins:\n  cd <dir>       Change directory\n  pwd            Print working directory\n  exit [code]    Exit the shell\n  which <cmd>    Find command in PATH\n  source <file>  Execute a script file\n  help           Show this help\n\nProcess execution:\n  exec(cmd, ...args)    Run a command, returns {exitCode, stdout, stderr}\n  pipe(cmd1, cmd2, ...) Pipeline commands\n  bls /bin              Bare commands are auto-wrapped in exec()\n\nFile operations:\n  readFile(path)          Read file contents\n  writeFile(path, data)   Write to file\n  glob(pattern)           Wildcard expansion (*.rs)\n\nEnvironment:\n  env()              All environment variables\n  env(name)          Get variable\n  env(name, value)   Set variable\n\nJavaScript:\n  Full ECMAScript: let/const, functions, arrows, closures,\n  if/else, for/while, try/catch, async/await, template literals,\n  destructuring, spread, Map, Set, JSON, Math, Promise\n\nUse Tab for auto-completion. Up/Down for history.\nSee: docs/user-guide/bsh-shell-guide.md for full documentation.")"#))
         }
         _ => None,
     }

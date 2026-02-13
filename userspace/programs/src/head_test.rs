@@ -1,6 +1,6 @@
 //! Test for head coreutil (std version)
 //!
-//! Verifies that /bin/head correctly outputs the first N lines of files.
+//! Verifies that /bin/bhead correctly outputs the first N lines of files.
 //! Uses pipe+dup2 to capture stdout and verify actual output content.
 
 use libbreenix::Fd;
@@ -73,8 +73,8 @@ fn main() {
     // Test 1: head /lines.txt should output first 10 lines (default)
     println!("Test 1: head /lines.txt outputs 10 lines (default)");
     {
-        let program = b"/bin/head\0";
-        let arg0 = b"head\0".as_ptr();
+        let program = b"/bin/bhead\0";
+        let arg0 = b"bhead\0".as_ptr();
         let arg1 = b"/lines.txt\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
@@ -93,8 +93,8 @@ fn main() {
     // Test 2: head -n5 /lines.txt should output exactly 5 lines
     println!("Test 2: head -n5 /lines.txt outputs 5 lines");
     {
-        let program = b"/bin/head\0";
-        let arg0 = b"head\0".as_ptr();
+        let program = b"/bin/bhead\0";
+        let arg0 = b"bhead\0".as_ptr();
         let arg1 = b"-n5\0".as_ptr();
         let arg2 = b"/lines.txt\0".as_ptr();
         let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];
@@ -115,8 +115,8 @@ fn main() {
     // Test 3: head -n 3 /lines.txt (space-separated arg)
     println!("Test 3: head -n 3 /lines.txt outputs 3 lines");
     {
-        let program = b"/bin/head\0";
-        let arg0 = b"head\0".as_ptr();
+        let program = b"/bin/bhead\0";
+        let arg0 = b"bhead\0".as_ptr();
         let arg1 = b"-n\0".as_ptr();
         let arg2 = b"3\0".as_ptr();
         let arg3 = b"/lines.txt\0".as_ptr();
@@ -138,8 +138,8 @@ fn main() {
     // Test 4: head -n1 /lines.txt should output exactly 1 line
     println!("Test 4: head -n1 /lines.txt outputs 1 line");
     {
-        let program = b"/bin/head\0";
-        let arg0 = b"head\0".as_ptr();
+        let program = b"/bin/bhead\0";
+        let arg0 = b"bhead\0".as_ptr();
         let arg1 = b"-n1\0".as_ptr();
         let arg2 = b"/lines.txt\0".as_ptr();
         let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];
@@ -161,8 +161,8 @@ fn main() {
     // Test 5: head -n0 should output nothing
     println!("Test 5: head -n0 /lines.txt outputs 0 lines");
     {
-        let program = b"/bin/head\0";
-        let arg0 = b"head\0".as_ptr();
+        let program = b"/bin/bhead\0";
+        let arg0 = b"bhead\0".as_ptr();
         let arg1 = b"-n0\0".as_ptr();
         let arg2 = b"/lines.txt\0".as_ptr();
         let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];
@@ -181,8 +181,8 @@ fn main() {
     // Test 6: head on nonexistent file should fail (exit 1)
     println!("Test 6: head /nonexistent returns error");
     {
-        let program = b"/bin/head\0";
-        let arg0 = b"head\0".as_ptr();
+        let program = b"/bin/bhead\0";
+        let arg0 = b"bhead\0".as_ptr();
         let arg1 = b"/nonexistent_file_xyz\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
@@ -200,8 +200,8 @@ fn main() {
     // Test 7: head on file with fewer lines than requested
     println!("Test 7: head -n10 /hello.txt (file has only 1 line)");
     {
-        let program = b"/bin/head\0";
-        let arg0 = b"head\0".as_ptr();
+        let program = b"/bin/bhead\0";
+        let arg0 = b"bhead\0".as_ptr();
         let arg1 = b"-n10\0".as_ptr();
         let arg2 = b"/hello.txt\0".as_ptr();
         let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];

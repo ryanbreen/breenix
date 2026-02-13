@@ -1,6 +1,6 @@
 //! Test for wc coreutil (std version)
 //!
-//! Verifies that /bin/wc correctly counts lines, words, and bytes.
+//! Verifies that /bin/bwc correctly counts lines, words, and bytes.
 //! Uses pipe+dup2 to capture stdout and verify actual output content.
 
 use libbreenix::Fd;
@@ -86,8 +86,8 @@ fn main() {
     // /hello.txt contains "Hello from ext2!\n" (1 line, 3 words, 17 bytes)
     println!("Test 1: wc /hello.txt (1 line, 3 words, 17 bytes)");
     {
-        let program = b"/bin/wc\0";
-        let arg0 = b"wc\0".as_ptr();
+        let program = b"/bin/bwc\0";
+        let arg0 = b"bwc\0".as_ptr();
         let arg1 = b"/hello.txt\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
@@ -124,8 +124,8 @@ fn main() {
     // Test 2: wc /lines.txt (15 lines, 30 words, 111 bytes)
     println!("Test 2: wc /lines.txt (15 lines, 30 words, 111 bytes)");
     {
-        let program = b"/bin/wc\0";
-        let arg0 = b"wc\0".as_ptr();
+        let program = b"/bin/bwc\0";
+        let arg0 = b"bwc\0".as_ptr();
         let arg1 = b"/lines.txt\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
@@ -162,8 +162,8 @@ fn main() {
     // Test 3: wc -l /lines.txt should output just line count (15)
     println!("Test 3: wc -l /lines.txt (lines only)");
     {
-        let program = b"/bin/wc\0";
-        let arg0 = b"wc\0".as_ptr();
+        let program = b"/bin/bwc\0";
+        let arg0 = b"bwc\0".as_ptr();
         let arg1 = b"-l\0".as_ptr();
         let arg2 = b"/lines.txt\0".as_ptr();
         let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];
@@ -188,8 +188,8 @@ fn main() {
     // Test 4: wc -w /lines.txt should output just word count (30)
     println!("Test 4: wc -w /lines.txt (words only)");
     {
-        let program = b"/bin/wc\0";
-        let arg0 = b"wc\0".as_ptr();
+        let program = b"/bin/bwc\0";
+        let arg0 = b"bwc\0".as_ptr();
         let arg1 = b"-w\0".as_ptr();
         let arg2 = b"/lines.txt\0".as_ptr();
         let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];
@@ -214,8 +214,8 @@ fn main() {
     // Test 5: wc -c /lines.txt should output just byte count (111)
     println!("Test 5: wc -c /lines.txt (bytes only)");
     {
-        let program = b"/bin/wc\0";
-        let arg0 = b"wc\0".as_ptr();
+        let program = b"/bin/bwc\0";
+        let arg0 = b"bwc\0".as_ptr();
         let arg1 = b"-c\0".as_ptr();
         let arg2 = b"/lines.txt\0".as_ptr();
         let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];
@@ -240,8 +240,8 @@ fn main() {
     // Test 6: wc -lw /lines.txt should output lines and words (15, 30)
     println!("Test 6: wc -lw /lines.txt (lines and words)");
     {
-        let program = b"/bin/wc\0";
-        let arg0 = b"wc\0".as_ptr();
+        let program = b"/bin/bwc\0";
+        let arg0 = b"bwc\0".as_ptr();
         let arg1 = b"-lw\0".as_ptr();
         let arg2 = b"/lines.txt\0".as_ptr();
         let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];
@@ -273,8 +273,8 @@ fn main() {
     // Test 7: wc on empty file should return 0 0 0
     println!("Test 7: wc /empty.txt (empty file)");
     {
-        let program = b"/bin/wc\0";
-        let arg0 = b"wc\0".as_ptr();
+        let program = b"/bin/bwc\0";
+        let arg0 = b"bwc\0".as_ptr();
         let arg1 = b"/empty.txt\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
@@ -311,8 +311,8 @@ fn main() {
     // Test 8: wc on nonexistent file should fail
     println!("Test 8: wc /nonexistent returns error");
     {
-        let program = b"/bin/wc\0";
-        let arg0 = b"wc\0".as_ptr();
+        let program = b"/bin/bwc\0";
+        let arg0 = b"bwc\0".as_ptr();
         let arg1 = b"/nonexistent_file_xyz\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 

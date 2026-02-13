@@ -38,8 +38,8 @@ fn run_cp() -> i32 {
     match process::fork() {
         Ok(ForkResult::Child) => {
             // Child: exec cp with two arguments
-            let program = b"cp\0";
-            let arg0 = b"cp\0".as_ptr();
+            let program = b"bcp\0";
+            let arg0 = b"bcp\0".as_ptr();
             let arg1 = b"/test_cp_mv_src\0".as_ptr();
             let arg2 = b"/test_cp_mv_copy\0".as_ptr();
             let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];
@@ -70,8 +70,8 @@ fn run_mv() -> i32 {
     match process::fork() {
         Ok(ForkResult::Child) => {
             // Child: exec mv with two arguments
-            let program = b"mv\0";
-            let arg0 = b"mv\0".as_ptr();
+            let program = b"bmv\0";
+            let arg0 = b"bmv\0".as_ptr();
             let arg1 = b"/test_cp_mv_copy\0".as_ptr();
             let arg2 = b"/test_cp_mv_moved\0".as_ptr();
             let argv: [*const u8; 4] = [arg0, arg1, arg2, std::ptr::null()];

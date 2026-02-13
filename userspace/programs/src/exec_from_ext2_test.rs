@@ -156,19 +156,19 @@ fn main() {
         }
     }
 
-    // Test 5: exec("/bin/ls", ...) should succeed and exit 0
-    println!("Test 5: exec /bin/ls");
+    // Test 5: exec("/bin/bls", ...) should succeed and exit 0
+    println!("Test 5: exec /bin/bls");
     match fork() {
         Ok(ForkResult::Child) => {
-            let program = b"/bin/ls\0";
-            let arg0 = b"ls\0".as_ptr();
+            let program = b"/bin/bls\0";
+            let arg0 = b"bls\0".as_ptr();
             let arg1 = b"/\0".as_ptr();
             let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
             let err = execv(program, argv.as_ptr()).unwrap_err();
             // If we get here, exec failed
             let Error::Os(e) = err;
-            println!("exec /bin/ls failed: errno={:?}", e);
+            println!("exec /bin/bls failed: errno={:?}", e);
             std::process::exit(1);
         }
         Ok(ForkResult::Parent(child_pid)) => {

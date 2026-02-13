@@ -9,8 +9,8 @@ use libbreenix::process::{self, ForkResult};
 fn run_echo_no_args() -> i32 {
     match process::fork() {
         Ok(ForkResult::Child) => {
-            let program = b"echo\0";
-            let arg0 = b"echo\0".as_ptr();
+            let program = b"becho\0";
+            let arg0 = b"becho\0".as_ptr();
             let argv: [*const u8; 2] = [arg0, std::ptr::null()];
 
             let _ = process::execv(program, argv.as_ptr());
@@ -34,8 +34,8 @@ fn run_echo_no_args() -> i32 {
 fn run_echo_single_arg() -> i32 {
     match process::fork() {
         Ok(ForkResult::Child) => {
-            let program = b"echo\0";
-            let arg0 = b"echo\0".as_ptr();
+            let program = b"becho\0";
+            let arg0 = b"becho\0".as_ptr();
             let arg1 = b"hello\0".as_ptr();
             let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
@@ -60,8 +60,8 @@ fn run_echo_single_arg() -> i32 {
 fn run_echo_multi_args() -> i32 {
     match process::fork() {
         Ok(ForkResult::Child) => {
-            let program = b"echo\0";
-            let arg0 = b"echo\0".as_ptr();
+            let program = b"becho\0";
+            let arg0 = b"becho\0".as_ptr();
             let arg1 = b"hello\0".as_ptr();
             let arg2 = b"world\0".as_ptr();
             let arg3 = b"test\0".as_ptr();
