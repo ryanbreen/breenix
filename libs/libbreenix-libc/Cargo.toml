@@ -17,4 +17,4 @@ name = "c"  # Produces libc.a
 default = []
 
 [dependencies]
-libbreenix = { path = "../libbreenix" }
+libbreenix = { path = "../libbreenix", default-features = false }

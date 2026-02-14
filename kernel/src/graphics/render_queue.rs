@@ -3,8 +3,8 @@
 //! This module provides a ring buffer for queueing text output that will be
 //! rendered to the framebuffer by a dedicated kernel task. This architecture
 //! solves the kernel stack overflow problem: the deep call stack through
-//! terminal_manager → terminal_pane → font rendering (500KB+) now runs on
-//! the render task's own stack, not on syscall/interrupt stacks.
+//! font rendering now runs on the render task's own stack, not on
+//! syscall/interrupt stacks.
 //!
 //! ## Architecture
 //!
@@ -174,17 +174,6 @@ pub fn drain_and_render() -> usize {
         return 0;
     }
 
-    // Skip rendering when userspace has taken over the display
-    if !crate::graphics::terminal_manager::is_display_active() {
-        // Still consume the data to prevent buffer backup
-        let head = QUEUE_HEAD.load(Ordering::Acquire);
-        let tail = QUEUE_TAIL.load(Ordering::Acquire);
-        if head != tail {
-            QUEUE_HEAD.store(tail, Ordering::Release);
-        }
-        return 0;
-    }
-
     // Read current indices
     let head = QUEUE_HEAD.load(Ordering::Acquire);
     let tail = QUEUE_TAIL.load(Ordering::Acquire);
@@ -238,15 +227,7 @@ pub fn drain_and_render() -> usize {
 /// blocking locks. This ensures echo characters always get rendered rather than
 /// being dropped due to lock contention.
 fn render_batch(bytes: &[u8]) {
-    // Use terminal manager if active
-    // The render thread can use blocking writes since it's not in interrupt context
-    if crate::graphics::terminal_manager::is_terminal_manager_active() {
-        // Use the blocking version that waits for locks
-        let _ = crate::graphics::terminal_manager::write_bytes_to_shell_blocking(bytes);
-        return;
-    }
-
-    // Fallback to split-screen mode
+    // Try split-screen mode
     if crate::graphics::split_screen::is_split_screen_active() {
         for &byte in bytes {
             let _ = crate::graphics::split_screen::write_char_to_terminal(byte as char);
@@ -255,7 +236,6 @@ fn render_batch(bytes: &[u8]) {
     }
 
     // Fallback to direct framebuffer (x86_64 only)
-    // On ARM64, terminal_manager is always active, so this path won't be reached
     #[cfg(target_arch = "x86_64")]
     if let Some(fb) = crate::logger::SHELL_FRAMEBUFFER.get() {
         if let Some(mut guard) = fb.try_lock() {

@@ -900,30 +900,6 @@ impl Log for CombinedLogger {
                         );
                     }
 
-                    // Route log output to Logs terminal (F2) in interactive mode
-                    // This uses the terminal_manager's proper routing to the Logs pane
-                    #[cfg(feature = "interactive")]
-                    if crate::graphics::terminal_manager::is_terminal_manager_active() {
-                        let msg = if timestamp > 0 {
-                            alloc::format!(
-                                "{} - [{:>5}] {}: {}\n",
-                                timestamp,
-                                record.level(),
-                                record.target(),
-                                record.args()
-                            )
-                        } else {
-                            alloc::format!(
-                                "[{:>5}] {}: {}\n",
-                                record.level(),
-                                record.target(),
-                                record.args()
-                            )
-                        };
-                        // Route to Logs terminal (F2) - not Shell (F1)
-                        write_to_logs_terminal(&msg);
-                    }
-
                     // In non-interactive mode, also write to framebuffer
                     #[cfg(not(feature = "interactive"))]
                     {
@@ -1030,17 +1006,11 @@ pub fn write_to_framebuffer(s: &str) {
 
 /// Write a single character to framebuffer console (for keyboard echo in interactive mode)
 ///
-/// In terminal manager mode, this routes to the shell terminal.
-/// Otherwise falls back to split-screen mode or full framebuffer.
+/// Routes to split-screen terminal or falls back to full framebuffer.
 #[cfg(feature = "interactive")]
 #[allow(dead_code)]
 pub fn write_char_to_framebuffer(byte: u8) {
-    // Try terminal manager first (multi-terminal mode)
-    if crate::graphics::terminal_manager::write_char_to_shell(byte as char) {
-        return;
-    }
-
-    // Try split-screen mode as fallback
+    // Try split-screen mode
     if crate::graphics::split_screen::write_char_to_terminal(byte as char) {
         return;
     }
@@ -1058,17 +1028,11 @@ pub fn write_char_to_framebuffer(byte: u8) {
 /// This is more efficient than calling write_char_to_framebuffer per character
 /// as it acquires locks once for the entire buffer and uses a shallower call stack.
 ///
-/// In terminal manager mode, routes to the shell terminal using batched string write.
-/// Otherwise falls back to split-screen mode or full framebuffer.
+/// Routes to split-screen terminal or falls back to full framebuffer.
 #[cfg(feature = "interactive")]
 #[allow(dead_code)]
 pub fn write_bytes_to_framebuffer(bytes: &[u8]) {
-    // Try terminal manager first (multi-terminal mode) - uses batched write
-    if crate::graphics::terminal_manager::write_bytes_to_shell(bytes) {
-        return;
-    }
-
-    // Try split-screen mode as fallback
+    // Try split-screen mode
     if crate::graphics::split_screen::is_split_screen_active() {
         for &byte in bytes {
             if !crate::graphics::split_screen::write_char_to_terminal(byte as char) {
@@ -1092,17 +1056,9 @@ pub fn write_bytes_to_framebuffer(bytes: &[u8]) {
 ///
 /// This is called from the timer interrupt at ~500ms intervals to create
 /// a blinking cursor effect. Uses try_lock to avoid blocking in interrupt context.
-///
-/// In terminal manager mode, this toggles the active terminal's cursor.
 #[cfg(feature = "interactive")]
 pub fn toggle_cursor_blink() {
-    // Try terminal manager first (multi-terminal mode)
-    if crate::graphics::terminal_manager::is_terminal_manager_active() {
-        crate::graphics::terminal_manager::toggle_cursor();
-        return;
-    }
-
-    // Try split-screen mode as fallback
+    // Try split-screen mode
     if crate::graphics::split_screen::is_split_screen_active() {
         crate::graphics::split_screen::toggle_terminal_cursor();
         return;
@@ -1114,16 +1070,6 @@ pub fn toggle_cursor_blink() {
             guard.toggle_cursor();
         }
     }
-}
-
-/// Write a log message to the logs terminal (interactive mode only)
-///
-/// This is called by the logger to route kernel log output to the
-/// Logs terminal pane in multi-terminal mode.
-#[cfg(feature = "interactive")]
-#[allow(dead_code)]
-pub fn write_to_logs_terminal(s: &str) {
-    let _ = crate::graphics::terminal_manager::write_str_to_logs(s);
 }
 
 /// Upgrade the shell framebuffer to double-buffered mode.

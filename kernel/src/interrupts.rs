@@ -475,19 +475,6 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     // Enter hardware IRQ context
     crate::per_cpu::irq_enter();
 
-    // Handle terminal switching keys (F1/F2) in interactive mode
-    #[cfg(feature = "interactive")]
-    {
-        if crate::graphics::terminal_manager::handle_terminal_key(scancode) {
-            unsafe {
-                PICS.lock()
-                    .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
-            }
-            crate::per_cpu::irq_exit();
-            return;
-        }
-    }
-
     // Convert F-key scancodes to VT100 escape sequences for userspace
     if let Some(seq) = scancode_to_fkey_escape(scancode) {
         for &b in seq {

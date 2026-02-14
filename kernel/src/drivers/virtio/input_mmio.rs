@@ -629,21 +629,6 @@ pub fn handle_interrupt() {
 
             // Only process key presses and repeats (not releases)
             if value != 0 {
-                // Handle function keys for terminal switching (F1=59, F2=60, etc.)
-                // Linux evdev keycodes 59-68 match PS/2 scancodes 0x3B-0x44
-                if keycode >= 59 && keycode <= 68 {
-                    if crate::graphics::terminal_manager::handle_terminal_key(keycode as u8) {
-                        continue;
-                    }
-                }
-
-                // Arrow keys for log scrolling (UP=103, DOWN=108)
-                if keycode == 103 || keycode == 108 {
-                    if crate::graphics::terminal_manager::handle_logs_arrow_key(keycode as u8) {
-                        continue;
-                    }
-                }
-
                 // Generate VT100 escape sequences for special keys
                 // (arrows, Home, End, Delete) that can't be represented
                 // as a single character.
@@ -829,10 +814,6 @@ pub fn handle_tablet_interrupt() {
                     let pressed = event.value != 0;
                     if pressed {
                         MOUSE_BUTTONS.store(1, Ordering::Relaxed);
-                        // Dispatch click to terminal manager for tab switching
-                        let x = MOUSE_X.load(Ordering::Relaxed) as usize;
-                        let y = MOUSE_Y.load(Ordering::Relaxed) as usize;
-                        crate::graphics::terminal_manager::handle_mouse_click(x, y);
                     } else {
                         MOUSE_BUTTONS.store(0, Ordering::Relaxed);
                     }

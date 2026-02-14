@@ -222,11 +222,7 @@ use kernel::graphics::particles;
 #[cfg(target_arch = "aarch64")]
 use kernel::graphics::primitives::{draw_vline, fill_rect, Color, Rect};
 #[cfg(target_arch = "aarch64")]
-use kernel::graphics::terminal_manager;
-#[cfg(target_arch = "aarch64")]
 use kernel::drivers::virtio::input_mmio;
-// event_type and ShellState are used in the shell loop (unreachable in test-only modes)
-// Use fully qualified paths at usage sites to avoid unused import warnings.
 
 /// Kernel entry point called from assembly boot code.
 #[cfg(target_arch = "aarch64")]
@@ -429,7 +425,7 @@ pub extern "C" fn kernel_main() -> ! {
     // - Both architectures use render_task::spawn_render_thread() for deferred rendering
     // - Both use SHELL_FRAMEBUFFER (arm64_fb.rs on ARM64, logger.rs on x86_64)
     // - Both use graphics::render_queue for lock-free echo from interrupt context
-    // - Both use graphics::terminal_manager for split-screen terminal UI
+    // - BWM (userspace window manager) handles terminal rendering
     // - Boot test progress display (test_framework::display) renders to SHELL_FRAMEBUFFER
     // - Boot milestones are tracked via BTRT (test_framework::btrt) on both platforms
     match kernel::graphics::render_task::spawn_render_thread() {
@@ -622,94 +618,12 @@ pub extern "C" fn kernel_main() -> ! {
         }
     }
 
-    // Write welcome message to the terminal (right pane)
-    terminal_manager::write_str_to_shell("Breenix ARM64 Interactive Shell\n");
-    terminal_manager::write_str_to_shell("================================\n\n");
-    terminal_manager::write_str_to_shell("Type 'help' for available commands.\n\n");
-    terminal_manager::write_str_to_shell("breenix> ");
-
-    serial_println!("[interactive] Entering interactive mode");
-    serial_println!("[interactive] Input via VirtIO keyboard");
-    serial_println!();
-    // Always print prompt to serial so test harness can detect it
-    serial_print!("breenix> ");
-
-    // Create shell state for command processing
-    let mut shell = kernel::shell::ShellState::new();
-
-    // Check if we have graphics (VirtIO GPU) or running in serial-only mode
-    let has_graphics = kernel::graphics::arm64_fb::SHELL_FRAMEBUFFER.get().is_some();
-    if !has_graphics {
-        serial_println!("[interactive] Running in serial-only mode (no VirtIO GPU)");
-        serial_println!("[interactive] Type commands at the serial console");
-        serial_println!();
-    }
-
-    // Input sources:
-    // 1. VirtIO keyboard - polled from virtqueue, used with graphics mode
-    // 2. Serial UART - interrupt-driven, bytes pushed to stdin buffer by handle_uart_interrupt()
-    //
-    // The kernel shell reads from both:
-    // - VirtIO events are processed directly via poll_events()
-    // - Serial bytes are read from stdin buffer (same buffer userspace would use)
-    let mut shift_pressed = false;
-
+    // No userspace init loaded — idle the kernel.
+    // With the kernel shell removed, there's nothing to do here except
+    // keep the kernel alive so interrupt-driven subsystems (timer, scheduler)
+    // continue running.
+    serial_println!("[interactive] No userspace init — idling");
     loop {
-        // Poll VirtIO input device for keyboard events (when GPU is available)
-        // VirtIO uses a different mechanism (virtqueues) that requires polling,
-        // unlike UART which generates interrupts.
-        if input_mmio::is_initialized() {
-            for event in input_mmio::poll_events() {
-                // Only process key events (EV_KEY = 1)
-                if event.event_type == input_mmio::event_type::EV_KEY {
-                    let keycode = event.code;
-                    let pressed = event.value != 0;
-
-                    // Track shift key state
-                    if input_mmio::is_shift(keycode) {
-                        shift_pressed = pressed;
-                        continue;
-                    }
-
-                    // Only process key presses (not releases)
-                    if pressed {
-                        // Convert keycode to character
-                        if let Some(c) = input_mmio::keycode_to_char(keycode, shift_pressed) {
-                            serial_println!("[key] code={} char='{}'", keycode, c);
-                            // Pass character to shell for processing
-                            shell.process_char(c);
-                        } else if !input_mmio::is_modifier(keycode) {
-                            // Unknown non-modifier key
-                            serial_println!("[key] code={} (no mapping)", keycode);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Read any bytes from stdin buffer (populated by UART interrupt handler
-        // or VirtIO keyboard via timer interrupt polling)
-        let mut stdin_buf = [0u8; 16];
-        if let Ok(n) = kernel::ipc::stdin::read_bytes(&mut stdin_buf) {
-            for i in 0..n {
-                let byte = stdin_buf[i];
-                // Convert byte to char for shell processing
-                let c = match byte {
-                    0x0D => '\n',        // CR -> newline
-                    0x7F | 0x08 => '\x08', // DEL or BS -> backspace
-                    b => b as char,
-                };
-                // Echo to serial (UART interrupt handler doesn't echo for kernel shell)
-                if !has_graphics {
-                    serial_print!("{}", c);
-                }
-                // Process the character in the shell
-                shell.process_char(c);
-            }
-        }
-
-        // Wait for interrupt instead of busy-spinning to save CPU
-        // WFI will wake on any interrupt (timer, UART RX, VirtIO, etc.)
         unsafe {
             core::arch::asm!("wfi", options(nomem, nostack));
         }
@@ -1097,7 +1011,6 @@ fn init_graphics() -> Result<(), &'static str> {
     // Initialize VirtIO GPU driver
     kernel::drivers::virtio::gpu_mmio::init()?;
 
-    // Initialize the shell framebuffer (this is what terminal_manager uses)
     arm64_fb::init_shell_framebuffer()?;
 
     // Get framebuffer dimensions
@@ -1108,8 +1021,6 @@ fn init_graphics() -> Result<(), &'static str> {
     let divider_width = 4usize;
     let divider_x = width / 2;
     let left_width = divider_x;
-    let right_x = divider_x + divider_width;
-    let right_width = width.saturating_sub(right_x);
 
     // Get the framebuffer and draw initial frame
     if let Some(fb) = arm64_fb::SHELL_FRAMEBUFFER.get() {
@@ -1147,21 +1058,6 @@ fn init_graphics() -> Result<(), &'static str> {
         (height - margin) as i32,
     );
     serial_println!("[graphics] Particle system initialized");
-
-    // Initialize terminal manager for the right side
-    terminal_manager::init_terminal_manager(right_x, 0, right_width, height);
-
-    // Initialize the terminal manager UI
-    if let Some(fb) = arm64_fb::SHELL_FRAMEBUFFER.get() {
-        let mut fb_guard = fb.lock();
-        if let Some(mut mgr) = terminal_manager::TERMINAL_MANAGER.try_lock() {
-            if let Some(manager) = mgr.as_mut() {
-                manager.init(&mut *fb_guard);
-            }
-        }
-        // Flush after terminal init
-        fb_guard.flush();
-    }
 
     // Initialize the render queue for deferred framebuffer rendering
     // This enables lock-free echo from interrupt context

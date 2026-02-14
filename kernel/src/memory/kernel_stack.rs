@@ -23,7 +23,7 @@ const KERNEL_STACK_END: u64 = 0xffffc900_0800_0000;
 /// Increased to 512KB to handle interactive mode's deep call stacks.
 /// The keyboard interrupt handler path triggers framebuffer echo rendering:
 /// keyboard_interrupt → push_char_nonblock → input_char_nonblock → output_char_nonblock
-/// → write_char_to_framebuffer → terminal_manager → terminal_pane → font rendering
+/// → write_char_to_framebuffer → split_screen → font rendering
 /// This path can use 300KB+ of stack when combined with interrupt frame overhead
 /// and nested help command processing with terminal output formatting.
 const KERNEL_STACK_SIZE: u64 = 512 * 1024;
