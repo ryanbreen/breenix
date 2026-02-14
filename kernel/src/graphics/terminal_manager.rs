@@ -737,10 +737,7 @@ impl TerminalManager {
                             crate::process::ProcessState::Terminated(_) => "Terminated",
                         },
                         cpu_pct_x10,
-                        mem_kb: (proc.memory_usage.code_size
-                            + proc.memory_usage.heap_size
-                            + proc.memory_usage.stack_size)
-                            / 1024,
+                        mem_kb: (proc.memory_usage.code_size + proc.memory_usage.stack_size) / 1024,
                         name: proc.name.clone(),
                     });
                 }
@@ -762,7 +759,7 @@ impl TerminalManager {
                 let cpu_int = snap.cpu_pct_x10 / 10;
                 let cpu_frac = snap.cpu_pct_x10 % 10;
                 let line = format!(
-                    " {:4} {:5} {:10} {:3}.{}%  {:6}  {}",
+                    " {:4} {:5} {:10} {:3}.{}% {:7}  {}",
                     snap.pid, snap.ppid, snap.state, cpu_int, cpu_frac, snap.mem_kb, &snap.name,
                 );
                 self.terminal_pane.write_str(canvas, &line);

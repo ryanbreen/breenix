@@ -24,4 +24,17 @@ impl Color {
     pub const ORANGE: Self = Self::rgb(255, 150, 50);
     pub const PURPLE: Self = Self::rgb(150, 50, 255);
     pub const GRAY: Self = Self::rgb(200, 200, 200);
+
+    /// Blend this color (foreground) over another (background) using an 8-bit intensity.
+    /// intensity=255 means fully foreground, intensity=0 means fully background.
+    #[inline]
+    pub fn blend(self, bg: Color, intensity: u8) -> Color {
+        let a = intensity as u16;
+        let inv = 255 - a;
+        Color {
+            r: ((self.r as u16 * a + bg.r as u16 * inv) / 255) as u8,
+            g: ((self.g as u16 * a + bg.g as u16 * inv) / 255) as u8,
+            b: ((self.b as u16 * a + bg.b as u16 * inv) / 255) as u8,
+        }
+    }
 }

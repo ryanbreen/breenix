@@ -142,6 +142,27 @@ impl FrameBuf {
         }
     }
 
+    /// Read a single pixel. Returns BLACK if coordinates are out of bounds.
+    #[inline]
+    pub fn get_pixel(&self, x: usize, y: usize) -> Color {
+        if x >= self.width || y >= self.height {
+            return Color::rgb(0, 0, 0);
+        }
+        let off = y * self.stride + x * self.bpp;
+        let (c0, c1, c2) = unsafe {
+            (
+                *self.ptr.add(off),
+                *self.ptr.add(off + 1),
+                *self.ptr.add(off + 2),
+            )
+        };
+        if self.is_bgr {
+            Color::rgb(c2, c1, c0)
+        } else {
+            Color::rgb(c0, c1, c2)
+        }
+    }
+
     /// Raw pointer to the buffer (for direct scanline writes in shapes).
     #[inline]
     pub fn raw_ptr(&self) -> *mut u8 {

@@ -355,6 +355,9 @@ impl Scheduler {
                         // Charge elapsed CPU ticks to the outgoing thread
                         let now = crate::time::get_ticks();
                         current.cpu_ticks_total += now.wrapping_sub(current.run_start_ticks);
+                        // Reset run_start_ticks so that if no context switch happens
+                        // (function returns None), the next call won't double-count.
+                        current.run_start_ticks = now;
 
                         let was_terminated = current.state == ThreadState::Terminated;
                         // Check for any blocked state
@@ -434,7 +437,15 @@ impl Scheduler {
                         .map(|t| t.privilege == super::thread::ThreadPrivilege::User)
                         .unwrap_or(false);
                     if is_userspace {
-                        // Userspace thread is alone - keep running it, don't switch to idle
+                        // Userspace thread is alone - keep running it, don't switch to idle.
+                        // Restore Running state (was set to Ready above).
+                        if let Some(t) = self.get_thread_mut(next_thread_id) {
+                            t.set_running();
+                        }
+                        // Remove from ready queue (was pushed above).
+                        if let Some(pos) = self.ready_queue.iter().position(|&id| id == next_thread_id) {
+                            self.ready_queue.remove(pos);
+                        }
                         if debug_log {
                             log_serial_println!(
                                 "Thread {} is userspace and alone, continuing (no idle switch)",
@@ -532,6 +543,9 @@ impl Scheduler {
                         // Charge elapsed CPU ticks to the outgoing thread
                         let now = crate::time::get_ticks();
                         current.cpu_ticks_total += now.wrapping_sub(current.run_start_ticks);
+                        // Reset run_start_ticks so that if no context switch happens
+                        // (function returns None), the next call won't double-count.
+                        current.run_start_ticks = now;
 
                         let was_terminated = current.state == ThreadState::Terminated;
                         let was_blocked = current.state == ThreadState::Blocked
@@ -589,6 +603,10 @@ impl Scheduler {
                     // No switch needed. The current thread continues running on
                     // this CPU. Don't requeue — it's still "current" and will be
                     // handled next time schedule_deferred_requeue is called.
+                    // Restore Running state (was set to Ready at line 541 above).
+                    if let Some(t) = self.get_thread_mut(next_thread_id) {
+                        t.set_running();
+                    }
                     return None;
                 }
                 // For non-userspace same-thread-alone: switch to idle.

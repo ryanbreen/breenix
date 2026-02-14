@@ -17,8 +17,8 @@ use libbreenix::process::{fork, exec, waitpid, setsid, ForkResult, WNOHANG};
 use libbreenix::pty;
 use libbreenix::types::Fd;
 
+use libgfx::bitmap_font;
 use libgfx::color::Color;
-use libgfx::font;
 use libgfx::framebuf::FrameBuf;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -37,18 +37,11 @@ const SEPARATOR_HEIGHT: usize = 2;
 /// Pane padding (matches kernel terminal_manager pane_padding)
 const PANE_PADDING: usize = 4;
 
-/// Font scale (libgfx 5x7 glyphs at 1x = 5x7, giving ~80+ column terminal)
-const FONT_SCALE: usize = 1;
-const GLYPH_W: usize = 5 * FONT_SCALE; // 5px
-const GLYPH_H: usize = 7 * FONT_SCALE; // 7px
-
-/// Cell padding (CELL_PAD_X matches font::draw_text advance gap of 1*FONT_SCALE)
-const CELL_PAD_X: usize = 1 * FONT_SCALE; // 1px gap between characters, matching font advance
-const CELL_PAD_Y: usize = 2;
-
-/// Cell dimensions
-const CELL_W: usize = GLYPH_W + CELL_PAD_X;
-const CELL_H: usize = GLYPH_H + CELL_PAD_Y;
+/// Noto Sans Mono 16px font metrics (matches kernel font exactly).
+/// char_width=10, char_height=16, line_spacing=2.
+/// Cell dimensions equal the font advance (no extra padding needed).
+const CELL_W: usize = 10; // noto 16px char width
+const CELL_H: usize = 18; // 16px char height + 2px line spacing
 
 /// Colors (match kernel terminal_manager exactly)
 const BG_COLOR: Color = Color::rgb(20, 30, 50);
@@ -489,7 +482,7 @@ impl TermEmu {
                     }
                 }
 
-                // Draw character
+                // Draw character (anti-aliased noto font)
                 if cell.ch > b' ' && cell.ch < 127 {
                     let fg = if cell.bold {
                         Color::rgb(
@@ -500,7 +493,7 @@ impl TermEmu {
                     } else {
                         cell.fg
                     };
-                    font::draw_char(fb, cell.ch, px, py + 1, fg, FONT_SCALE);
+                    bitmap_font::draw_char(fb, cell.ch as char, px, py + 1, fg);
                 }
             }
         }
@@ -700,9 +693,6 @@ fn read_kmsg() -> Vec<u8> {
 /// `local_x` is in pane-local coordinates (0 = left edge of right pane).
 /// Returns the tab index if a tab was hit, None otherwise.
 fn hit_test_tab_bar(tabs: &[Tab], local_x: usize, _width: usize) -> Option<usize> {
-    const TAB_FONT_SCALE: usize = 2;
-    const TAB_CHAR_W: usize = (5 + 1) * TAB_FONT_SCALE; // 12px advance per char
-
     let mut tab_x: usize = 4;
     for (i, tab) in tabs.iter().enumerate() {
         let title_width = tab.name.as_bytes().len() * TAB_CHAR_W;
@@ -721,12 +711,12 @@ fn hit_test_tab_bar(tabs: &[Tab], local_x: usize, _width: usize) -> Option<usize
 
 // ─── Tab Bar Rendering ───────────────────────────────────────────────────────
 
-fn draw_tab_bar(fb: &mut FrameBuf, tabs: &[Tab], active: usize, width: usize) {
-    // Tab bar uses 2x scale for readable labels in the 24px header
-    const TAB_FONT_SCALE: usize = 2;
-    const TAB_CHAR_W: usize = (5 + 1) * TAB_FONT_SCALE; // 12px advance per char
-    const TAB_GLYPH_H: usize = 7 * TAB_FONT_SCALE; // 14px glyph height
+/// Noto font advance width for tab labels (same as terminal).
+const TAB_CHAR_W: usize = 10;
+/// Noto glyph height for vertical centering in tab bar.
+const TAB_GLYPH_H: usize = 16;
 
+fn draw_tab_bar(fb: &mut FrameBuf, tabs: &[Tab], active: usize, width: usize) {
     // Tab bar background (matches kernel: rgb(40, 50, 70))
     for y in 0..TAB_BAR_HEIGHT {
         for x in 0..width {
@@ -763,11 +753,11 @@ fn draw_tab_bar(fb: &mut FrameBuf, tabs: &[Tab], active: usize, width: usize) {
             }
         }
 
-        // Title text
+        // Title text (anti-aliased noto font)
         let title_color = if i == active { TAB_TEXT } else { TAB_INACTIVE_TEXT };
         let text_x = tab_x + tab_padding / 2;
         let text_y = (TAB_BAR_HEIGHT - TAB_GLYPH_H) / 2;
-        font::draw_text(fb, title_bytes, text_x, text_y, title_color, TAB_FONT_SCALE);
+        bitmap_font::draw_text(fb, title_bytes, text_x, text_y, title_color);
 
         // Shortcut text "[F1]"
         let mut shortcut_label = [0u8; 8];
@@ -778,7 +768,7 @@ fn draw_tab_bar(fb: &mut FrameBuf, tabs: &[Tab], active: usize, width: usize) {
         }
         if sp < 8 { shortcut_label[sp] = b']'; sp += 1; }
         let shortcut_x = text_x + title_width + 4;
-        font::draw_text(fb, &shortcut_label[..sp], shortcut_x, text_y, TAB_SHORTCUT_TEXT, TAB_FONT_SCALE);
+        bitmap_font::draw_text(fb, &shortcut_label[..sp], shortcut_x, text_y, TAB_SHORTCUT_TEXT);
 
         // Unread indicator: 4x4 dot at top-right of tab
         if tab.has_unread && i != active {

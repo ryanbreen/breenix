@@ -5,6 +5,7 @@
 
 #![no_std]
 
+pub mod bitmap_font;
 pub mod color;
 pub mod font;
 pub mod framebuf;
