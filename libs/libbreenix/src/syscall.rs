@@ -100,6 +100,7 @@ pub mod nr {
     pub const GETRANDOM: u64 = 318;    // Linux x86_64 getrandom
     // Display takeover (Breenix-specific)
     pub const TAKE_OVER_DISPLAY: u64 = 431; // Breenix: userspace takes over display
+    pub const GIVE_BACK_DISPLAY: u64 = 432; // Breenix: userspace gives display back
     // Testing syscalls (Breenix-specific)
     pub const COW_STATS: u64 = 500;   // Breenix: get CoW statistics (for testing)
     pub const SIMULATE_OOM: u64 = 501; // Breenix: enable/disable OOM simulation (for testing)

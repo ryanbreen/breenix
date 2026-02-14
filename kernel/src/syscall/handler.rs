@@ -399,6 +399,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::AudioWrite) => super::audio::sys_audio_write(args.0, args.1),
         // Display takeover
         Some(SyscallNumber::TakeOverDisplay) => super::handlers::sys_take_over_display(),
+        Some(SyscallNumber::GiveBackDisplay) => super::handlers::sys_give_back_display(),
         None => {
             log::warn!("Unknown syscall number: {} - returning ENOSYS", syscall_num);
             SyscallResult::Err(super::ErrorCode::NoSys as u64)

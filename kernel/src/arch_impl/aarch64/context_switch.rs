@@ -16,6 +16,7 @@ use super::exception_frame::Aarch64ExceptionFrame;
 use super::percpu::Aarch64PerCpu;
 use crate::arch_impl::traits::PerCpuOps;
 use crate::task::thread::{CpuContext, ThreadPrivilege, ThreadState};
+use crate::tracing::providers::sched::trace_ctx_switch;
 
 /// Per-CPU deferred requeue storage.
 ///
@@ -282,6 +283,9 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             fix_eret_cpu_state(frame, b'E');
             return;
         }
+
+        // Trace context switch (lock-free counter + optional event recording)
+        trace_ctx_switch(old_thread_id, new_thread_id);
 
         // Save current thread's context FIRST (before updating cpu_state or requeuing)
         //

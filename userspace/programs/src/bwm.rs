@@ -23,38 +23,45 @@ use libgfx::framebuf::FrameBuf;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-/// Number of tabs
-const NUM_TABS: usize = 3;
-
 /// Tab indices
 const TAB_SHELL: usize = 0;
 const TAB_LOGS: usize = 1;
 const TAB_BTOP: usize = 2;
 
-/// Tab bar height in pixels
-const TAB_BAR_HEIGHT: usize = 22;
+/// Tab bar height in pixels (matches kernel terminal_manager TAB_HEIGHT)
+const TAB_BAR_HEIGHT: usize = 24;
 
-/// Font scale (libgfx 5x7 glyphs rendered at 2x = 10x14)
-const FONT_SCALE: usize = 2;
-const GLYPH_W: usize = 5 * FONT_SCALE; // 10px
-const GLYPH_H: usize = 7 * FONT_SCALE; // 14px
+/// Separator height below tab bar (matches kernel terminal_manager)
+const SEPARATOR_HEIGHT: usize = 2;
 
-/// Cell padding
-const CELL_PAD_X: usize = 0;
+/// Pane padding (matches kernel terminal_manager pane_padding)
+const PANE_PADDING: usize = 4;
+
+/// Font scale (libgfx 5x7 glyphs at 1x = 5x7, giving ~80+ column terminal)
+const FONT_SCALE: usize = 1;
+const GLYPH_W: usize = 5 * FONT_SCALE; // 5px
+const GLYPH_H: usize = 7 * FONT_SCALE; // 7px
+
+/// Cell padding (CELL_PAD_X matches font::draw_text advance gap of 1*FONT_SCALE)
+const CELL_PAD_X: usize = 1 * FONT_SCALE; // 1px gap between characters, matching font advance
 const CELL_PAD_Y: usize = 2;
 
 /// Cell dimensions
 const CELL_W: usize = GLYPH_W + CELL_PAD_X;
 const CELL_H: usize = GLYPH_H + CELL_PAD_Y;
 
-/// Colors
-const BG_COLOR: Color = Color::rgb(10, 12, 30);
-const FG_COLOR: Color = Color::rgb(200, 200, 200);
-const TAB_BG: Color = Color::rgb(30, 40, 80);
-const TAB_ACTIVE_BG: Color = Color::rgb(60, 80, 160);
-const TAB_TEXT: Color = Color::rgb(200, 210, 240);
-const CURSOR_COLOR: Color = Color::rgb(200, 200, 200);
-const UNREAD_DOT: Color = Color::rgb(255, 60, 60);
+/// Colors (match kernel terminal_manager exactly)
+const BG_COLOR: Color = Color::rgb(20, 30, 50);
+const FG_COLOR: Color = Color::rgb(255, 255, 255);
+const TAB_BG: Color = Color::rgb(40, 50, 70);
+const TAB_ACTIVE_BG: Color = Color::rgb(60, 80, 120);
+const TAB_INACTIVE_UNREAD_BG: Color = Color::rgb(80, 60, 60);
+const TAB_TEXT: Color = Color::rgb(255, 255, 255);
+const TAB_INACTIVE_TEXT: Color = Color::rgb(180, 180, 180);
+const TAB_SHORTCUT_TEXT: Color = Color::rgb(120, 140, 160);
+const SEPARATOR_COLOR: Color = Color::rgb(60, 80, 100);
+const CURSOR_COLOR: Color = Color::rgb(255, 255, 255);
+const UNREAD_DOT: Color = Color::rgb(255, 100, 100);
 
 // ANSI color palette (standard 8 colors)
 const ANSI_COLORS: [Color; 8] = [
@@ -185,6 +192,7 @@ impl TermEmu {
             AnsiState::Normal => match byte {
                 0x1b => self.ansi_state = AnsiState::Escape,
                 b'\n' => {
+                    self.cursor_x = 0; // LF implies CR in terminal emulators
                     self.cursor_y += 1;
                     if self.cursor_y >= self.rows {
                         self.scroll_up();
@@ -686,64 +694,113 @@ fn read_kmsg() -> Vec<u8> {
     }
 }
 
+// ─── Tab Bar Hit Testing ─────────────────────────────────────────────────────
+
+/// Hit-test the tab bar to determine which tab was clicked.
+/// `local_x` is in pane-local coordinates (0 = left edge of right pane).
+/// Returns the tab index if a tab was hit, None otherwise.
+fn hit_test_tab_bar(tabs: &[Tab], local_x: usize, _width: usize) -> Option<usize> {
+    const TAB_FONT_SCALE: usize = 2;
+    const TAB_CHAR_W: usize = (5 + 1) * TAB_FONT_SCALE; // 12px advance per char
+
+    let mut tab_x: usize = 4;
+    for (i, tab) in tabs.iter().enumerate() {
+        let title_width = tab.name.as_bytes().len() * TAB_CHAR_W;
+        let shortcut_width = (tab.shortcut.as_bytes().len() + 2) * TAB_CHAR_W;
+        let tab_padding = 12;
+        let tab_width = title_width + shortcut_width + tab_padding * 2;
+
+        if local_x >= tab_x && local_x < tab_x + tab_width {
+            return Some(i);
+        }
+
+        tab_x += tab_width + 4;
+    }
+    None
+}
+
 // ─── Tab Bar Rendering ───────────────────────────────────────────────────────
 
 fn draw_tab_bar(fb: &mut FrameBuf, tabs: &[Tab], active: usize, width: usize) {
-    // Background
+    // Tab bar uses 2x scale for readable labels in the 24px header
+    const TAB_FONT_SCALE: usize = 2;
+    const TAB_CHAR_W: usize = (5 + 1) * TAB_FONT_SCALE; // 12px advance per char
+    const TAB_GLYPH_H: usize = 7 * TAB_FONT_SCALE; // 14px glyph height
+
+    // Tab bar background (matches kernel: rgb(40, 50, 70))
     for y in 0..TAB_BAR_HEIGHT {
         for x in 0..width {
             fb.put_pixel(x, y, TAB_BG);
         }
     }
 
-    let tab_w = width / NUM_TABS;
+    // Draw variable-width tabs matching kernel terminal_manager layout
+    let mut tab_x: usize = 4;
     for (i, tab) in tabs.iter().enumerate() {
-        let tx = i * tab_w;
-        let bg = if i == active { TAB_ACTIVE_BG } else { TAB_BG };
+        let title_bytes = tab.name.as_bytes();
+        let shortcut_bytes = tab.shortcut.as_bytes();
 
-        // Tab background
-        for y in 1..TAB_BAR_HEIGHT - 1 {
-            for x in tx + 1..tx + tab_w - 1 {
+        let title_width = title_bytes.len() * TAB_CHAR_W;
+        let shortcut_width = (shortcut_bytes.len() + 2) * TAB_CHAR_W; // +2 for []
+        let tab_padding = 12;
+        let tab_width = title_width + shortcut_width + tab_padding * 2;
+
+        // Tab background color (matches kernel colors exactly)
+        let bg = if i == active {
+            TAB_ACTIVE_BG
+        } else if tabs[i].has_unread {
+            TAB_INACTIVE_UNREAD_BG
+        } else {
+            Color::rgb(30, 40, 55)
+        };
+
+        // Tab background rect
+        for y in 2..TAB_BAR_HEIGHT - 2 {
+            for x in tab_x..tab_x + tab_width {
                 if x < width {
                     fb.put_pixel(x, y, bg);
                 }
             }
         }
 
-        // Tab label: "Shell [F1]"
-        let mut label = [0u8; 20];
-        let mut lp = 0;
-        for &b in tab.name.as_bytes() {
-            if lp < 20 { label[lp] = b; lp += 1; }
-        }
-        if lp < 18 {
-            label[lp] = b' '; lp += 1;
-            label[lp] = b'['; lp += 1;
-            for &b in tab.shortcut.as_bytes() {
-                if lp < 19 { label[lp] = b; lp += 1; }
-            }
-            if lp < 20 { label[lp] = b']'; lp += 1; }
-        }
+        // Title text
+        let title_color = if i == active { TAB_TEXT } else { TAB_INACTIVE_TEXT };
+        let text_x = tab_x + tab_padding / 2;
+        let text_y = (TAB_BAR_HEIGHT - TAB_GLYPH_H) / 2;
+        font::draw_text(fb, title_bytes, text_x, text_y, title_color, TAB_FONT_SCALE);
 
-        let text_x = tx + 6;
-        let text_y = 4;
-        font::draw_text(fb, &label[..lp], text_x, text_y, TAB_TEXT, FONT_SCALE);
+        // Shortcut text "[F1]"
+        let mut shortcut_label = [0u8; 8];
+        let mut sp = 0;
+        shortcut_label[sp] = b'['; sp += 1;
+        for &b in shortcut_bytes {
+            if sp < 7 { shortcut_label[sp] = b; sp += 1; }
+        }
+        if sp < 8 { shortcut_label[sp] = b']'; sp += 1; }
+        let shortcut_x = text_x + title_width + 4;
+        font::draw_text(fb, &shortcut_label[..sp], shortcut_x, text_y, TAB_SHORTCUT_TEXT, TAB_FONT_SCALE);
 
-        // Unread indicator
+        // Unread indicator: 4x4 dot at top-right of tab
         if tab.has_unread && i != active {
-            let dot_x = tx + tab_w - 12;
-            let dot_y = TAB_BAR_HEIGHT / 2;
+            let dot_x = tab_x + tab_width - 8;
+            let dot_y = 6;
             for dy in 0..4_usize {
                 for dx in 0..4_usize {
-                    fb.put_pixel(dot_x + dx, dot_y - 2 + dy, UNREAD_DOT);
+                    if dot_x + dx < width {
+                        fb.put_pixel(dot_x + dx, dot_y + dy, UNREAD_DOT);
+                    }
                 }
             }
         }
+
+        tab_x += tab_width + 4;
     }
 
-    // Bottom border
-    for x in 0..width {
-        fb.put_pixel(x, TAB_BAR_HEIGHT - 1, Color::rgb(80, 100, 180));
+    // Separator line below tab bar
+    for y in TAB_BAR_HEIGHT..TAB_BAR_HEIGHT + SEPARATOR_HEIGHT {
+        for x in 0..width {
+            fb.put_pixel(x, y, SEPARATOR_COLOR);
+        }
     }
 }
 
@@ -774,29 +831,33 @@ fn main() {
         }
     };
 
-    // After take_over_display, fb_mmap maps the full screen (not just left pane)
-    let width = info.width as usize;
+    // After take_over_display, fb_mmap maps the right pane (local coords 0,0 = top-left of right pane)
+    let full_width = info.width as usize;
     let height = info.height as usize;
     let bpp = info.bytes_per_pixel as usize;
+    let pane_width = full_width - (full_width / 2 + 4); // right pane after divider
 
     let mut fb = unsafe {
         FrameBuf::from_raw(
             fb_ptr,
-            width,
+            pane_width,
             height,
-            width * bpp,
+            pane_width * bpp,
             bpp,
             info.is_bgr(),
         )
     };
 
-    // Calculate terminal dimensions
-    let term_y_offset = TAB_BAR_HEIGHT;
-    let term_height = height - term_y_offset;
-    let term_cols = width / CELL_W;
-    let term_rows = term_height / CELL_H;
+    // Calculate terminal dimensions (below tab bar + separator + padding)
+    let term_y_offset = TAB_BAR_HEIGHT + SEPARATOR_HEIGHT + PANE_PADDING;
+    let term_x_offset = PANE_PADDING;
+    let term_pixel_width = pane_width.saturating_sub(PANE_PADDING * 2);
+    let term_pixel_height = height.saturating_sub(term_y_offset + PANE_PADDING);
+    let term_cols = term_pixel_width / CELL_W;
+    let term_rows = term_pixel_height / CELL_H;
 
-    print!("[bwm] Display: {}x{}, terminal: {}x{} cells\n", width, height, term_cols, term_rows);
+    print!("[bwm] Display: {}x{}, pane: {}x{}, terminal: {}x{} cells\n",
+           full_width, height, pane_width, height, term_cols, term_rows);
 
     // Step 3: Enter raw mode on stdin
     let mut orig_termios = libbreenix::termios::Termios::default();
@@ -810,6 +871,16 @@ fn main() {
     let (btop_master, btop_pid) = spawn_child(b"/bin/btop\0", "btop");
 
     print!("[bwm] Shell PID: {}, btop PID: {}\n", shell_pid, btop_pid);
+
+    // Set PTY window size so child processes know the terminal dimensions
+    let ws = libbreenix::termios::Winsize {
+        ws_row: term_rows as u16,
+        ws_col: term_cols as u16,
+        ws_xpixel: term_pixel_width as u16,
+        ws_ypixel: term_pixel_height as u16,
+    };
+    let _ = libbreenix::termios::set_winsize(shell_master, &ws);
+    let _ = libbreenix::termios::set_winsize(btop_master, &ws);
 
     let mut tabs = [
         Tab {
@@ -842,11 +913,13 @@ fn main() {
     let mut input_parser = InputParser::new();
     let mut kmsg_offset: usize = 0; // Track how much of /proc/kmsg we've shown
     let mut frame: u32 = 0;
+    let mut prev_mouse_buttons: u32 = 0; // For detecting click transitions
+    let pane_x_offset = full_width / 2 + 4; // Right pane starts after divider
 
     // Initial render
     fb.clear(BG_COLOR);
-    draw_tab_bar(&mut fb, &tabs, active_tab, width);
-    tabs[active_tab].emu.render(&mut fb, 0, term_y_offset);
+    draw_tab_bar(&mut fb, &tabs, active_tab, pane_width);
+    tabs[active_tab].emu.render(&mut fb, term_x_offset, term_y_offset);
     let _ = graphics::fb_flush();
 
     // Step 5: Main loop
@@ -901,7 +974,7 @@ fn main() {
                                     active_tab = TAB_SHELL;
                                     tabs[TAB_SHELL].has_unread = false;
                                     tabs[active_tab].emu.dirty = true;
-                                    draw_tab_bar(&mut fb, &tabs, active_tab, width);
+                                    draw_tab_bar(&mut fb, &tabs, active_tab, pane_width);
                                     needs_flush = true;
                                 }
                             }
@@ -910,7 +983,7 @@ fn main() {
                                     active_tab = TAB_LOGS;
                                     tabs[TAB_LOGS].has_unread = false;
                                     tabs[active_tab].emu.dirty = true;
-                                    draw_tab_bar(&mut fb, &tabs, active_tab, width);
+                                    draw_tab_bar(&mut fb, &tabs, active_tab, pane_width);
                                     needs_flush = true;
                                 }
                             }
@@ -919,7 +992,7 @@ fn main() {
                                     active_tab = TAB_BTOP;
                                     tabs[TAB_BTOP].has_unread = false;
                                     tabs[active_tab].emu.dirty = true;
-                                    draw_tab_bar(&mut fb, &tabs, active_tab, width);
+                                    draw_tab_bar(&mut fb, &tabs, active_tab, pane_width);
                                     needs_flush = true;
                                 }
                             }
@@ -976,6 +1049,27 @@ fn main() {
             }
         }
 
+        // Check for mouse clicks on tab bar
+        if let Ok((mx, my, buttons)) = graphics::mouse_state() {
+            // Detect rising edge (button just pressed)
+            if buttons & 1 != 0 && prev_mouse_buttons & 1 == 0 {
+                // Convert screen coords to pane-local coords
+                if mx as usize >= pane_x_offset && (my as usize) < TAB_BAR_HEIGHT {
+                    let local_x = mx as usize - pane_x_offset;
+                    if let Some(clicked_tab) = hit_test_tab_bar(&tabs, local_x, pane_width) {
+                        if clicked_tab != active_tab {
+                            active_tab = clicked_tab;
+                            tabs[active_tab].has_unread = false;
+                            tabs[active_tab].emu.dirty = true;
+                            draw_tab_bar(&mut fb, &tabs, active_tab, pane_width);
+                            needs_flush = true;
+                        }
+                    }
+                }
+            }
+            prev_mouse_buttons = buttons;
+        }
+
         // Periodic: read /proc/kmsg for Logs tab (~every 10 frames = ~1 Hz)
         if frame % 10 == 0 {
             let kmsg = read_kmsg();
@@ -1014,13 +1108,13 @@ fn main() {
 
         // Render active tab (only if dirty)
         if tabs[active_tab].emu.dirty {
-            tabs[active_tab].emu.render(&mut fb, 0, term_y_offset);
+            tabs[active_tab].emu.render(&mut fb, term_x_offset, term_y_offset);
             needs_flush = true;
         }
 
         // Redraw tab bar periodically (for unread indicators)
         if frame % 10 == 0 {
-            draw_tab_bar(&mut fb, &tabs, active_tab, width);
+            draw_tab_bar(&mut fb, &tabs, active_tab, pane_width);
             needs_flush = true;
         }
 

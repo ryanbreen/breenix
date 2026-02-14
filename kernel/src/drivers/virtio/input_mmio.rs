@@ -778,6 +778,15 @@ pub fn mouse_position() -> (u32, u32) {
     (MOUSE_X.load(Ordering::Relaxed), MOUSE_Y.load(Ordering::Relaxed))
 }
 
+/// Get current mouse position and button state.
+pub fn mouse_state() -> (u32, u32, u32) {
+    (
+        MOUSE_X.load(Ordering::Relaxed),
+        MOUSE_Y.load(Ordering::Relaxed),
+        MOUSE_BUTTONS.load(Ordering::Relaxed),
+    )
+}
+
 /// Tablet interrupt handler.
 ///
 /// Processes EV_ABS (mouse movement) and EV_KEY (mouse buttons).
@@ -913,13 +922,26 @@ pub fn keycode_to_char(code: u16, shift: bool) -> Option<char> {
 }
 
 /// Convert a Linux keycode to a VT100 escape sequence for special keys
-/// that require multi-byte output (arrow keys, Home, End, Delete).
+/// that require multi-byte output (arrow keys, Home, End, Delete, F-keys).
 fn keycode_to_escape_seq(code: u16) -> Option<&'static [u8]> {
     match code {
+        // Function keys (SS3 sequences for F1-F4, CSI sequences for F5+)
+        59 => Some(b"\x1bOP"),   // F1
+        60 => Some(b"\x1bOQ"),   // F2
+        61 => Some(b"\x1bOR"),   // F3
+        62 => Some(b"\x1bOS"),   // F4
+        63 => Some(b"\x1b[15~"), // F5
+        64 => Some(b"\x1b[17~"), // F6
+        65 => Some(b"\x1b[18~"), // F7
+        66 => Some(b"\x1b[19~"), // F8
+        67 => Some(b"\x1b[20~"), // F9
+        68 => Some(b"\x1b[21~"), // F10
+        // Arrow keys
         103 => Some(b"\x1b[A"),  // Up
         108 => Some(b"\x1b[B"),  // Down
         106 => Some(b"\x1b[C"),  // Right
         105 => Some(b"\x1b[D"),  // Left
+        // Navigation
         102 => Some(b"\x1b[H"),  // Home
         107 => Some(b"\x1b[F"),  // End
         111 => Some(b"\x1b[3~"), // Delete

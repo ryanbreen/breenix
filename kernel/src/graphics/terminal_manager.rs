@@ -666,16 +666,32 @@ impl TerminalManager {
         self.terminal_pane.write_str(canvas, &sep);
         self.terminal_pane.write_str(canvas, "\r\n");
 
+        // --- Collect per-process CPU ticks from the scheduler ---
+        // This reads accumulated cpu_ticks_total from each thread, keyed by owner_pid.
+        let cpu_ticks_by_pid = crate::task::scheduler::get_process_cpu_ticks();
+
+        // Compute CPU% delta from last refresh snapshot
+        let now_ticks = crate::time::timer::get_ticks();
+        let prev = unsafe { &mut *(&raw mut BTOP_PREV_CPU_SNAPSHOT) };
+        let elapsed_ticks = now_ticks.wrapping_sub(prev.timestamp);
+
+        // Build a quick lookup: pid -> current total ticks (sum threads per process)
+        let mut pid_current_ticks: Vec<(u64, u64)> = Vec::new();
+        for &(pid, ticks) in &cpu_ticks_by_pid {
+            if let Some(entry) = pid_current_ticks.iter_mut().find(|e| e.0 == pid) {
+                entry.1 += ticks;
+            } else {
+                pid_current_ticks.push((pid, ticks));
+            }
+        }
+
         // --- Process list ---
         // Snapshot process data under the lock, then release it before formatting.
-        // Holding the process manager lock across format!/rendering can deadlock
-        // on single-CPU ARM64 if a timer interrupt triggers a context switch that
-        // needs the same lock.
         struct ProcSnapshot {
             pid: u64,
             ppid: u64,
             state: &'static str,
-            cpu_ticks: u64,
+            cpu_pct_x10: u64, // CPU% * 10 (e.g. 15 = 1.5%)
             mem_kb: usize,
             name: String,
         }
@@ -693,8 +709,25 @@ impl TerminalManager {
                     if i >= max_procs {
                         break;
                     }
+                    let pid = proc.id.as_u64();
+                    let current = pid_current_ticks.iter()
+                        .find(|e| e.0 == pid)
+                        .map(|e| e.1)
+                        .unwrap_or(0);
+                    let previous = prev.entries.iter()
+                        .find(|e| e.0 == pid)
+                        .map(|e| e.1)
+                        .unwrap_or(0);
+                    let delta = current.wrapping_sub(previous);
+                    // CPU% = delta_ticks / elapsed_ticks * 100
+                    // Compute as permille (x10) for one decimal place
+                    let cpu_pct_x10 = if elapsed_ticks > 0 {
+                        delta * 1000 / elapsed_ticks
+                    } else {
+                        0
+                    };
                     proc_snapshots.push(ProcSnapshot {
-                        pid: proc.id.as_u64(),
+                        pid,
                         ppid: proc.parent.map(|p| p.as_u64()).unwrap_or(0),
                         state: match proc.state {
                             crate::process::ProcessState::Creating => "Creating",
@@ -703,8 +736,10 @@ impl TerminalManager {
                             crate::process::ProcessState::Blocked => "Blocked",
                             crate::process::ProcessState::Terminated(_) => "Terminated",
                         },
-                        cpu_ticks: proc.cpu_ticks,
-                        mem_kb: (proc.memory_usage.code_size + proc.memory_usage.stack_size)
+                        cpu_pct_x10,
+                        mem_kb: (proc.memory_usage.code_size
+                            + proc.memory_usage.heap_size
+                            + proc.memory_usage.stack_size)
                             / 1024,
                         name: proc.name.clone(),
                     });
@@ -714,11 +749,21 @@ impl TerminalManager {
             // mgr_guard dropped here — process manager lock released before formatting
         }
 
+        // Save current snapshot for next delta computation
+        prev.timestamp = now_ticks;
+        prev.entries.clear();
+        for &(pid, ticks) in &pid_current_ticks {
+            prev.entries.push((pid, ticks));
+        }
+
         if got_lock {
             for snap in &proc_snapshots {
+                // Format CPU% with one decimal place: cpu_pct_x10=15 => "1.5%"
+                let cpu_int = snap.cpu_pct_x10 / 10;
+                let cpu_frac = snap.cpu_pct_x10 % 10;
                 let line = format!(
-                    " {:4} {:5} {:10} {:5}  {:6}  {}",
-                    snap.pid, snap.ppid, snap.state, snap.cpu_ticks, snap.mem_kb, &snap.name,
+                    " {:4} {:5} {:10} {:3}.{}%  {:6}  {}",
+                    snap.pid, snap.ppid, snap.state, cpu_int, cpu_frac, snap.mem_kb, &snap.name,
                 );
                 self.terminal_pane.write_str(canvas, &line);
                 self.terminal_pane.write_str(canvas, "\r\n");
@@ -795,6 +840,18 @@ static BTOP_LAST_REFRESH_TICK: AtomicU64 = AtomicU64::new(0);
 /// despite the misleading comment in timer.rs.
 const BTOP_REFRESH_INTERVAL_TICKS: u64 = 200;
 
+/// Previous CPU tick snapshot for computing per-process CPU% deltas.
+/// Only accessed from the render thread (single writer), so `static mut` is safe.
+struct CpuSnapshot {
+    timestamp: u64,
+    entries: Vec<(u64, u64)>, // (pid, total_cpu_ticks)
+}
+
+static mut BTOP_PREV_CPU_SNAPSHOT: CpuSnapshot = CpuSnapshot {
+    timestamp: 0,
+    entries: Vec::new(),
+};
+
 /// Initialize the terminal manager.
 pub fn init_terminal_manager(x: usize, y: usize, width: usize, height: usize) {
     let manager = TerminalManager::new(x, y, width, height);
@@ -815,6 +872,13 @@ pub fn is_terminal_manager_active() -> bool {
 pub fn deactivate() {
     DISPLAY_ACTIVE.store(false, Ordering::SeqCst);
     log::info!("Terminal manager deactivated (userspace taking over display)");
+}
+
+/// Reactivate the terminal manager after userspace releases the display.
+/// Called by init when BWM crashes to restore kernel terminal rendering.
+pub fn reactivate() {
+    DISPLAY_ACTIVE.store(true, Ordering::SeqCst);
+    log::info!("Terminal manager reactivated (userspace released display)");
 }
 
 /// Check if the display is still under kernel control.

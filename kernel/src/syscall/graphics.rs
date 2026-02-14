@@ -331,16 +331,17 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                         (0, mmap_info.height)
                     };
 
-                    // Copy user buffer → shadow buffer's left pane row by row
+                    // Copy user buffer → shadow buffer at correct x_offset row by row
                     use crate::graphics::primitives::Canvas;
                     let fb_stride_bytes = fb_guard.stride() * fb_guard.bytes_per_pixel();
                     let row_bytes = mmap_info.width * mmap_info.bpp;
+                    let x_byte_offset = mmap_info.x_offset * mmap_info.bpp;
 
                     if let Some(db) = fb_guard.double_buffer_mut() {
                         let shadow = db.buffer_mut();
                         for y in y_start..y_end {
                             let user_row_ptr = (mmap_info.user_addr as usize) + y * mmap_info.user_stride;
-                            let shadow_row_offset = y * fb_stride_bytes;
+                            let shadow_row_offset = y * fb_stride_bytes + x_byte_offset;
 
                             if shadow_row_offset + row_bytes <= shadow.len() {
                                 unsafe {
@@ -353,13 +354,13 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                             }
                         }
 
-                        // Mark dirty region and flush incrementally
+                        // Mark dirty region and flush incrementally (in framebuffer coords)
                         let (dx_start, dx_end) = if has_rect {
-                            let xs = (cmd.p1.max(0) as usize).min(mmap_info.width);
-                            let xe = (cmd.p1.max(0) as usize + cmd.p3 as usize).min(mmap_info.width);
+                            let xs = mmap_info.x_offset + (cmd.p1.max(0) as usize).min(mmap_info.width);
+                            let xe = mmap_info.x_offset + (cmd.p1.max(0) as usize + cmd.p3 as usize).min(mmap_info.width);
                             (xs, xe)
                         } else {
-                            (0, mmap_info.width)
+                            (mmap_info.x_offset, mmap_info.x_offset + mmap_info.width)
                         };
                         db.mark_region_dirty_rect(y_start, y_end, dx_start, dx_end);
                         db.flush();
@@ -400,15 +401,16 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                         (0, mmap_info.height)
                     };
 
-                    // Copy dirty rows from user buffer → GPU framebuffer.
+                    // Copy dirty rows from user buffer → GPU framebuffer at correct x_offset.
                     // ARM64 has no double buffer; writes go directly to VirtIO GPU memory.
                     let fb_stride_bytes = fb_guard.stride() * fb_guard.bytes_per_pixel();
                     let row_bytes = mmap_info.width * mmap_info.bpp;
+                    let x_byte_offset = mmap_info.x_offset * mmap_info.bpp;
                     let gpu_buf = fb_guard.buffer_mut();
 
                     for y in y_start..y_end {
                         let user_row_ptr = (mmap_info.user_addr as usize) + y * mmap_info.user_stride;
-                        let gpu_row_offset = y * fb_stride_bytes;
+                        let gpu_row_offset = y * fb_stride_bytes + x_byte_offset;
 
                         if gpu_row_offset + row_bytes <= gpu_buf.len() {
                             unsafe {
@@ -421,8 +423,19 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                         }
                     }
                 }
-                // Flush VirtIO GPU — use rect flush if specified
-                if has_rect {
+                // Flush VirtIO GPU — use rect flush if specified (in framebuffer coords)
+                if let Some(mmap_info) = fb_mmap_info {
+                    if has_rect {
+                        fb_guard.flush_rect(
+                            (mmap_info.x_offset as u32) + cmd.p1.max(0) as u32,
+                            cmd.p2.max(0) as u32,
+                            cmd.p3 as u32,
+                            cmd.p4 as u32,
+                        );
+                    } else {
+                        let _ = fb_guard.flush();
+                    }
+                } else if has_rect {
                     fb_guard.flush_rect(
                         cmd.p1.max(0) as u32,
                         cmd.p2.max(0) as u32,
@@ -448,10 +461,11 @@ pub fn sys_fbdraw(_cmd_ptr: u64) -> SyscallResult {
     SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
 }
 
-/// sys_get_mouse_pos - Get current mouse cursor position
+/// sys_get_mouse_pos - Get current mouse cursor position and button state
 ///
 /// # Arguments
-/// * `out_ptr` - Pointer to a [u32; 2] array in userspace: [x, y]
+/// * `out_ptr` - Pointer to a [u32; 3] array in userspace: [x, y, buttons]
+///   buttons: bit 0 = left button pressed
 ///
 /// # Returns
 /// * 0 on success
@@ -462,16 +476,16 @@ pub fn sys_get_mouse_pos(out_ptr: u64) -> SyscallResult {
         return SyscallResult::Err(super::ErrorCode::Fault as u64);
     }
 
-    let end_ptr = out_ptr.saturating_add(8); // 2 * u32
+    let end_ptr = out_ptr.saturating_add(12); // 3 * u32
     if end_ptr > USER_SPACE_MAX {
         return SyscallResult::Err(super::ErrorCode::Fault as u64);
     }
 
-    let (mx, my) = crate::drivers::virtio::input_mmio::mouse_position();
+    let (mx, my, buttons) = crate::drivers::virtio::input_mmio::mouse_state();
 
     unsafe {
-        let out = out_ptr as *mut [u32; 2];
-        core::ptr::write(out, [mx, my]);
+        let out = out_ptr as *mut [u32; 3];
+        core::ptr::write(out, [mx, my, buttons]);
     }
 
     SyscallResult::Ok(0)
@@ -508,26 +522,47 @@ pub fn sys_fbmmap() -> SyscallResult {
     #[cfg(not(target_arch = "x86_64"))]
     use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
 
+    // Get current process thread ID first (needed for per-process display ownership check)
+    let current_thread_id = match get_current_thread_id() {
+        Some(id) => id,
+        None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
+    };
+
+    // Check if the calling process owns the display (called take_over_display)
+    let caller_owns_display = {
+        let mgr_guard = crate::process::manager();
+        if let Some(ref mgr) = *mgr_guard {
+            mgr.find_process_by_thread(current_thread_id)
+                .map(|(_pid, proc)| proc.has_display_ownership)
+                .unwrap_or(false)
+        } else {
+            false
+        }
+    };
+
     // Get framebuffer dimensions (acquire and release FB lock quickly)
-    // Always map only the left pane (for demo programs that coexist with the kernel terminal).
-    let (pane_width, height, bpp) = {
+    // The display owner (BWM) gets the right pane. All other processes get the left pane.
+    let (pane_width, x_offset, height, bpp) = {
         let fb = match SHELL_FRAMEBUFFER.get() {
             Some(fb) => fb,
             None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
         };
         let fb_guard = fb.lock();
-        (fb_guard.width() / 2, fb_guard.height(), fb_guard.bytes_per_pixel())
+        if caller_owns_display {
+            // BWM mode: right half for window manager (after divider)
+            let divider_width = 4;
+            let right_x = fb_guard.width() / 2 + divider_width;
+            let right_width = fb_guard.width().saturating_sub(right_x);
+            (right_width, right_x, fb_guard.height(), fb_guard.bytes_per_pixel())
+        } else {
+            // Normal mode: left half for graphics demos
+            (fb_guard.width() / 2, 0, fb_guard.height(), fb_guard.bytes_per_pixel())
+        }
     };
 
     let user_stride = pane_width * bpp;
     let buf_size = (user_stride * height) as u64;
     let mapping_size = round_up_to_page(buf_size);
-
-    // Get current process
-    let current_thread_id = match get_current_thread_id() {
-        Some(id) => id,
-        None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
-    };
 
     let mut manager_guard = crate::process::manager();
     let manager = match *manager_guard {
@@ -619,6 +654,7 @@ pub fn sys_fbmmap() -> SyscallResult {
         user_stride,
         bpp,
         mapping_size,
+        x_offset,
     });
 
     log::info!(

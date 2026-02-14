@@ -488,8 +488,13 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
         }
     }
 
-    // Process scancode to get key event
-    if let Some(event) = crate::keyboard::process_scancode(scancode) {
+    // Convert F-key scancodes to VT100 escape sequences for userspace
+    if let Some(seq) = scancode_to_fkey_escape(scancode) {
+        for &b in seq {
+            let _ = crate::tty::driver::push_char_nonblock(b);
+        }
+    } else if let Some(event) = crate::keyboard::process_scancode(scancode) {
+        // Process scancode to get key event
         if let Some(character) = event.character {
             let c = character as u8;
             // Route through TTY
@@ -503,6 +508,24 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     }
 
     crate::per_cpu::irq_exit();
+}
+
+/// Convert PS/2 F-key scancodes to VT100 escape sequences.
+/// Returns None for non-F-key scancodes so regular processing continues.
+fn scancode_to_fkey_escape(scancode: u8) -> Option<&'static [u8]> {
+    match scancode {
+        0x3B => Some(b"\x1bOP"),   // F1
+        0x3C => Some(b"\x1bOQ"),   // F2
+        0x3D => Some(b"\x1bOR"),   // F3
+        0x3E => Some(b"\x1bOS"),   // F4
+        0x3F => Some(b"\x1b[15~"), // F5
+        0x40 => Some(b"\x1b[17~"), // F6
+        0x41 => Some(b"\x1b[18~"), // F7
+        0x42 => Some(b"\x1b[19~"), // F8
+        0x43 => Some(b"\x1b[20~"), // F9
+        0x44 => Some(b"\x1b[21~"), // F10
+        _ => None,
+    }
 }
 
 extern "x86-interrupt" fn serial_interrupt_handler(_stack_frame: InterruptStackFrame) {

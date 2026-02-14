@@ -3344,6 +3344,27 @@ pub fn sys_take_over_display() -> SyscallResult {
     #[cfg(any(feature = "interactive", target_arch = "aarch64"))]
     {
         crate::graphics::terminal_manager::deactivate();
+
+        // Mark the calling process as the display owner
+        use crate::syscall::memory_common::get_current_thread_id;
+        if let Some(tid) = get_current_thread_id() {
+            let mut mgr_guard = crate::process::manager();
+            if let Some(ref mut mgr) = *mgr_guard {
+                if let Some((_pid, process)) = mgr.find_process_by_thread_mut(tid) {
+                    process.has_display_ownership = true;
+                }
+            }
+        }
+    }
+    SyscallResult::Ok(0)
+}
+
+/// Give back the display to the kernel terminal manager.
+/// Called by init when BWM crashes so the kernel can resume rendering.
+pub fn sys_give_back_display() -> SyscallResult {
+    #[cfg(any(feature = "interactive", target_arch = "aarch64"))]
+    {
+        crate::graphics::terminal_manager::reactivate();
     }
     SyscallResult::Ok(0)
 }

@@ -171,6 +171,8 @@ pub fn sys_clone(
         saved_userspace_context: None,
         wake_time_ns: None,
         run_start_ticks: 0,
+        cpu_ticks_total: 0,
+        owner_pid: Some(child_pid.as_u64()),
     };
 
     // Set has_started to true so we go through the restore path (not first_entry)

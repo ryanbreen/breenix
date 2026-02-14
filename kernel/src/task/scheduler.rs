@@ -352,6 +352,10 @@ impl Scheduler {
                 // Check the state and determine what to do
                 let (is_terminated, is_blocked) =
                     if let Some(current) = self.get_thread_mut(current_id) {
+                        // Charge elapsed CPU ticks to the outgoing thread
+                        let now = crate::time::get_ticks();
+                        current.cpu_ticks_total += now.wrapping_sub(current.run_start_ticks);
+
                         let was_terminated = current.state == ThreadState::Terminated;
                         // Check for any blocked state
                         let was_blocked = current.state == ThreadState::Blocked
@@ -525,6 +529,10 @@ impl Scheduler {
             if current_id != self.cpu_state[Self::current_cpu_id()].idle_thread {
                 let (is_terminated, is_blocked) =
                     if let Some(current) = self.get_thread_mut(current_id) {
+                        // Charge elapsed CPU ticks to the outgoing thread
+                        let now = crate::time::get_ticks();
+                        current.cpu_ticks_total += now.wrapping_sub(current.run_start_ticks);
+
                         let was_terminated = current.state == ThreadState::Terminated;
                         let was_blocked = current.state == ThreadState::Blocked
                             || current.state == ThreadState::BlockedOnSignal
@@ -1350,6 +1358,38 @@ where
         scheduler_lock
             .as_mut()
             .and_then(|sched| sched.get_thread_mut(thread_id).map(f))
+    })
+}
+
+/// Get per-process accumulated CPU ticks from all threads in the scheduler.
+///
+/// Returns a Vec of (owner_pid, cpu_ticks_total) for each thread that has an
+/// owner_pid set. For currently-running threads, includes the in-flight ticks
+/// since their last schedule (now - run_start_ticks).
+///
+/// Used by btop monitor to display CPU% per process.
+pub fn get_process_cpu_ticks() -> alloc::vec::Vec<(u64, u64)> {
+    without_interrupts(|| {
+        if let Some(scheduler_lock) = SCHEDULER.try_lock() {
+            if let Some(scheduler) = scheduler_lock.as_ref() {
+                let now = crate::time::get_ticks();
+                return scheduler
+                    .threads
+                    .iter()
+                    .filter_map(|t| {
+                        t.owner_pid.map(|pid| {
+                            let mut ticks = t.cpu_ticks_total;
+                            // If thread is currently running, add in-flight ticks
+                            if t.state == super::thread::ThreadState::Running {
+                                ticks += now.wrapping_sub(t.run_start_ticks);
+                            }
+                            (pid, ticks)
+                        })
+                    })
+                    .collect();
+            }
+        }
+        alloc::vec::Vec::new()
     })
 }
 
