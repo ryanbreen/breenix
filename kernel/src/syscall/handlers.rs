@@ -3337,14 +3337,12 @@ pub struct CowStatsResult {
     pub sole_owner_opt: u64,
 }
 
-/// Take over the display from the kernel terminal manager.
-/// After this syscall, the kernel terminal manager is deactivated and
-/// the calling process is responsible for rendering to the framebuffer.
+/// Take over the display from the kernel.
+/// After this syscall, the calling process is responsible for rendering
+/// to the framebuffer.
 pub fn sys_take_over_display() -> SyscallResult {
     #[cfg(any(feature = "interactive", target_arch = "aarch64"))]
     {
-        crate::graphics::terminal_manager::deactivate();
-
         // Mark the calling process as the display owner
         use crate::syscall::memory_common::get_current_thread_id;
         if let Some(tid) = get_current_thread_id() {
@@ -3359,13 +3357,9 @@ pub fn sys_take_over_display() -> SyscallResult {
     SyscallResult::Ok(0)
 }
 
-/// Give back the display to the kernel terminal manager.
+/// Give back the display to the kernel.
 /// Called by init when BWM crashes so the kernel can resume rendering.
 pub fn sys_give_back_display() -> SyscallResult {
-    #[cfg(any(feature = "interactive", target_arch = "aarch64"))]
-    {
-        crate::graphics::terminal_manager::reactivate();
-    }
     SyscallResult::Ok(0)
 }
 

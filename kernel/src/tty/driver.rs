@@ -361,8 +361,8 @@ impl TtyDevice {
         // Write to serial and queue for deferred framebuffer rendering.
         // Both architectures use the render queue — it's lock-free on the
         // producer side and never drops data unless the buffer overflows.
-        // The previous ARM64 path wrote directly to terminal_manager with
-        // try_lock(), silently dropping entire buffers on lock contention.
+        // The render queue is preferred over direct framebuffer writes
+        // because try_lock() can silently drop entire buffers on lock contention.
         for &c in buf {
             if do_onlcr && c == b'\n' {
                 crate::serial::write_byte(b'\r');

@@ -1104,7 +1104,7 @@ impl ProcessManager {
     ) -> Result<ProcessId, &'static str> {
         // Get the parent process info we need (including page table for memory copying)
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
-        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_cwd, parent_thread_info, parent_heap_start, parent_heap_end, parent_mmap_hint, parent_vmas) = {
+        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_cwd, parent_thread_info, parent_heap_start, parent_heap_end, parent_mmap_hint, parent_vmas, parent_code_size, parent_heap_size, parent_stack_size) = {
             let parent = self
                 .processes
                 .get(&parent_pid)
@@ -1127,6 +1127,9 @@ impl ProcessManager {
                 parent.heap_end,
                 parent.mmap_hint,
                 parent.vmas.clone(),
+                parent.memory_usage.code_size,
+                parent.memory_usage.heap_size,
+                parent.memory_usage.stack_size,
             )
         };
 
@@ -1183,6 +1186,11 @@ impl ProcessManager {
             child_process.heap_end = parent_heap_end;
             child_process.mmap_hint = parent_mmap_hint;
             child_process.vmas = parent_vmas;
+
+            // Child inherits parent's memory usage (CoW shares the same pages)
+            child_process.memory_usage.code_size = parent_code_size;
+            child_process.memory_usage.heap_size = parent_heap_size;
+            child_process.memory_usage.stack_size = parent_stack_size;
         }
         #[cfg(not(feature = "testing"))]
         {
@@ -1222,7 +1230,7 @@ impl ProcessManager {
     ) -> Result<ProcessId, &'static str> {
         // Get the parent process info we need (including page table for memory copying)
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
-        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_cwd, parent_thread_info, parent_heap_start, parent_heap_end, parent_mmap_hint, parent_vmas) = {
+        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_cwd, parent_thread_info, parent_heap_start, parent_heap_end, parent_mmap_hint, parent_vmas, parent_code_size, parent_heap_size, parent_stack_size) = {
             let parent = self
                 .processes
                 .get(&parent_pid)
@@ -1245,6 +1253,9 @@ impl ProcessManager {
                 parent.heap_end,
                 parent.mmap_hint,
                 parent.vmas.clone(),
+                parent.memory_usage.code_size,
+                parent.memory_usage.heap_size,
+                parent.memory_usage.stack_size,
             )
         };
 
@@ -1303,6 +1314,11 @@ impl ProcessManager {
             child_process.heap_end = parent_heap_end;
             child_process.mmap_hint = parent_mmap_hint;
             child_process.vmas = parent_vmas;
+
+            // Child inherits parent's memory usage (CoW shares the same pages)
+            child_process.memory_usage.code_size = parent_code_size;
+            child_process.memory_usage.heap_size = parent_heap_size;
+            child_process.memory_usage.stack_size = parent_stack_size;
         }
         #[cfg(not(feature = "testing"))]
         {
@@ -1342,7 +1358,7 @@ impl ProcessManager {
         crate::tracing::providers::process::trace_fork_entry(parent_pid.as_u64() as u32);
 
         // Get the parent process info
-        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_cwd, parent_thread_info, parent_heap_start, parent_heap_end, parent_mmap_hint, parent_vmas) = {
+        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_cwd, parent_thread_info, parent_heap_start, parent_heap_end, parent_mmap_hint, parent_vmas, parent_code_size, parent_heap_size, parent_stack_size) = {
             let parent = self
                 .processes
                 .get(&parent_pid)
@@ -1364,6 +1380,9 @@ impl ProcessManager {
                 parent.heap_end,
                 parent.mmap_hint,
                 parent.vmas.clone(),
+                parent.memory_usage.code_size,
+                parent.memory_usage.heap_size,
+                parent.memory_usage.stack_size,
             )
         };
 
@@ -1422,6 +1441,11 @@ impl ProcessManager {
             // CoW-shared pages that are already mapped in the child's page table
             child_process.mmap_hint = parent_mmap_hint;
             child_process.vmas = parent_vmas;
+
+            // Child inherits parent's memory usage (CoW shares the same pages)
+            child_process.memory_usage.code_size = parent_code_size;
+            child_process.memory_usage.heap_size = parent_heap_size;
+            child_process.memory_usage.stack_size = parent_stack_size;
         }
 
         child_process.page_table = Some(child_page_table);
@@ -1508,9 +1532,10 @@ impl ProcessManager {
             parent_thread.privilege,
         );
 
-        // Set the ID and kernel stack
+        // Set the ID, kernel stack, and owner PID
         child_thread.id = child_thread_id;
         child_thread.kernel_stack_top = Some(child_kernel_stack_top);
+        child_thread.owner_pid = Some(child_pid.as_u64());
 
         // Copy parent's thread context from the exception frame
         log::debug!("ARM64 fork: Copying parent context to child");
@@ -1872,7 +1897,7 @@ impl ProcessManager {
         child_process.sid = parent_sid;
         child_process.cwd = parent_cwd;
 
-        // Extract parent heap/mmap bounds before we drop the parent borrow
+        // Extract parent heap/mmap bounds and memory usage before we drop the parent borrow
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         let parent_heap_start = parent.heap_start;
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
@@ -1881,6 +1906,12 @@ impl ProcessManager {
         let parent_mmap_hint = parent.mmap_hint;
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         let parent_vmas = parent.vmas.clone();
+        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
+        let parent_code_size = parent.memory_usage.code_size;
+        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
+        let parent_heap_size = parent.memory_usage.heap_size;
+        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
+        let parent_stack_size = parent.memory_usage.stack_size;
 
         // Verify parent has a page table
         if parent.page_table.is_none() {
@@ -1938,6 +1969,11 @@ impl ProcessManager {
             child_process.heap_end = parent_heap_end;
             child_process.mmap_hint = parent_mmap_hint;
             child_process.vmas = parent_vmas;
+
+            // Child inherits parent's memory usage (CoW shares the same pages)
+            child_process.memory_usage.code_size = parent_code_size;
+            child_process.memory_usage.heap_size = parent_heap_size;
+            child_process.memory_usage.stack_size = parent_stack_size;
         }
         #[cfg(not(feature = "testing"))]
         {

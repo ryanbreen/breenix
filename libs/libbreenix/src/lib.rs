@@ -30,7 +30,7 @@
 //! }
 //! ```
 
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 // Re-export all public APIs
 pub use errno::Errno;
@@ -39,6 +39,8 @@ pub use types::*;
 
 pub mod argv;
 pub mod audio;
+#[cfg(feature = "std")]
+pub mod crypto;
 pub mod dns;
 pub mod errno;
 pub mod error;
@@ -56,8 +58,12 @@ pub mod socket;
 pub mod synth;
 pub mod syscall;
 pub mod termios;
+#[cfg(feature = "std")]
+pub mod tls;
 pub mod time;
 pub mod types;
+#[cfg(feature = "std")]
+pub mod x509;
 
 // Re-export commonly used signal functions
 pub use signal::{

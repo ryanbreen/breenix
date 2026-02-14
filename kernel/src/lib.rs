@@ -64,9 +64,6 @@ pub mod framebuffer;
 // Graphics module: available on x86_64 with "interactive" feature, or always on ARM64
 #[cfg(any(feature = "interactive", target_arch = "aarch64"))]
 pub mod graphics;
-// Shell module: ARM64-only for now (kernel-mode shell)
-#[cfg(target_arch = "aarch64")]
-pub mod shell;
 // Boot utilities (test disk loader, etc.)
 pub mod boot;
 // Lock-free tracing for critical paths (interrupt handlers, context switch, etc.)

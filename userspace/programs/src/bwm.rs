@@ -37,11 +37,13 @@ const SEPARATOR_HEIGHT: usize = 2;
 /// Pane padding (matches kernel terminal_manager pane_padding)
 const PANE_PADDING: usize = 4;
 
-/// Noto Sans Mono 16px font metrics (matches kernel font exactly).
-/// char_width=10, char_height=16, line_spacing=2.
-/// Cell dimensions equal the font advance (no extra padding needed).
-const CELL_W: usize = 10; // noto 16px char width
-const CELL_H: usize = 18; // 16px char height + 2px line spacing
+/// Noto Sans Mono 16px cell dimensions.
+/// Raster width is 7px but we use 6px cell advance for tighter terminal text.
+/// Characters overlap by 1px at their anti-aliased edges.
+const CELL_W: usize = 6;
+const CELL_H: usize = 18;
+/// Actual glyph raster width (for clipping / two-pass render).
+const GLYPH_W: usize = 7;
 
 /// Colors (match kernel terminal_manager exactly)
 const BG_COLOR: Color = Color::rgb(20, 30, 50);
@@ -462,7 +464,11 @@ impl TermEmu {
         }
     }
 
-    /// Render the terminal emulator content to a framebuffer region
+    /// Render the terminal emulator content to a framebuffer region.
+    ///
+    /// Two-pass rendering: backgrounds first, then glyphs. This allows
+    /// glyphs (GLYPH_W=7) to overflow beyond their cell (CELL_W=5) without
+    /// being erased by the next cell's background fill.
     fn render(&mut self, fb: &mut FrameBuf, x_off: usize, y_off: usize) {
         if !self.dirty {
             return;
@@ -470,19 +476,29 @@ impl TermEmu {
         self.dirty = false;
 
         for row in 0..self.rows {
+            let py = y_off + row * CELL_H;
+
+            // Pass 1: draw all cell backgrounds for this row
             for col in 0..self.cols {
                 let cell = self.cell(col, row);
                 let px = x_off + col * CELL_W;
-                let py = y_off + row * CELL_H;
-
-                // Draw background
                 for dy in 0..CELL_H {
                     for dx in 0..CELL_W {
                         fb.put_pixel(px + dx, py + dy, cell.bg);
                     }
                 }
+            }
+            // Clear the overflow region after the last cell (GLYPH_W - CELL_W pixels)
+            let overflow_start = x_off + self.cols * CELL_W;
+            for dy in 0..CELL_H {
+                for dx in 0..GLYPH_W {
+                    fb.put_pixel(overflow_start + dx, py + dy, BG_COLOR);
+                }
+            }
 
-                // Draw character (anti-aliased noto font)
+            // Pass 2: draw all glyphs for this row (may extend into next cell)
+            for col in 0..self.cols {
+                let cell = self.cell(col, row);
                 if cell.ch > b' ' && cell.ch < 127 {
                     let fg = if cell.bold {
                         Color::rgb(
@@ -493,6 +509,7 @@ impl TermEmu {
                     } else {
                         cell.fg
                     };
+                    let px = x_off + col * CELL_W;
                     bitmap_font::draw_char(fb, cell.ch as char, px, py + 1, fg);
                 }
             }
@@ -711,10 +728,17 @@ fn hit_test_tab_bar(tabs: &[Tab], local_x: usize, _width: usize) -> Option<usize
 
 // ─── Tab Bar Rendering ───────────────────────────────────────────────────────
 
-/// Noto font advance width for tab labels (same as terminal).
-const TAB_CHAR_W: usize = 10;
+/// Tab label character advance width (same as terminal CELL_W).
+const TAB_CHAR_W: usize = CELL_W;
 /// Noto glyph height for vertical centering in tab bar.
 const TAB_GLYPH_H: usize = 16;
+
+/// Draw text at CELL_W spacing (tighter than the default font raster width).
+fn draw_text_tight(fb: &mut FrameBuf, text: &[u8], x: usize, y: usize, fg: Color) {
+    for (i, &ch) in text.iter().enumerate() {
+        bitmap_font::draw_char(fb, ch as char, x + i * CELL_W, y, fg);
+    }
+}
 
 fn draw_tab_bar(fb: &mut FrameBuf, tabs: &[Tab], active: usize, width: usize) {
     // Tab bar background (matches kernel: rgb(40, 50, 70))
@@ -753,11 +777,11 @@ fn draw_tab_bar(fb: &mut FrameBuf, tabs: &[Tab], active: usize, width: usize) {
             }
         }
 
-        // Title text (anti-aliased noto font)
+        // Title text (anti-aliased noto font, at CELL_W spacing)
         let title_color = if i == active { TAB_TEXT } else { TAB_INACTIVE_TEXT };
         let text_x = tab_x + tab_padding / 2;
         let text_y = (TAB_BAR_HEIGHT - TAB_GLYPH_H) / 2;
-        bitmap_font::draw_text(fb, title_bytes, text_x, text_y, title_color);
+        draw_text_tight(fb, title_bytes, text_x, text_y, title_color);
 
         // Shortcut text "[F1]"
         let mut shortcut_label = [0u8; 8];
@@ -768,7 +792,7 @@ fn draw_tab_bar(fb: &mut FrameBuf, tabs: &[Tab], active: usize, width: usize) {
         }
         if sp < 8 { shortcut_label[sp] = b']'; sp += 1; }
         let shortcut_x = text_x + title_width + 4;
-        bitmap_font::draw_text(fb, &shortcut_label[..sp], shortcut_x, text_y, TAB_SHORTCUT_TEXT);
+        draw_text_tight(fb, &shortcut_label[..sp], shortcut_x, text_y, TAB_SHORTCUT_TEXT);
 
         // Unread indicator: 4x4 dot at top-right of tab
         if tab.has_unread && i != active {
@@ -846,6 +870,10 @@ fn main() {
     let term_cols = term_pixel_width / CELL_W;
     let term_rows = term_pixel_height / CELL_H;
 
+    let font_m = bitmap_font::metrics();
+    print!("[bwm] Font metrics: char_width={}, char_height={}, line_height={}\n",
+           font_m.char_width, font_m.char_height, font_m.line_height());
+    print!("[bwm] Cell: {}x{} (CELL_W x CELL_H)\n", CELL_W, CELL_H);
     print!("[bwm] Display: {}x{}, pane: {}x{}, terminal: {}x{} cells\n",
            full_width, height, pane_width, height, term_cols, term_rows);
 

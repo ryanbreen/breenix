@@ -2,18 +2,13 @@
 //!
 //! This module provides a kernel thread that drains the render queue and
 //! draws to the framebuffer. By running rendering on a dedicated thread with
-//! its own stack, we avoid stack overflow in syscall/interrupt context.
-//!
-//! The deep call stack through terminal_manager → terminal_pane → font rendering
-//! requires approximately 500KB of stack space. Running this on a separate thread
-//! isolates this from the main kernel stack. The kthread API provides 512 KiB stacks
-//! which is sufficient for the rendering workload.
+//! its own 512 KiB stack, we avoid stack overflow in syscall/interrupt context.
 
 use super::render_queue;
 #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
 use super::log_capture;
 use crate::task::kthread::{kthread_run, kthread_should_stop, KthreadHandle};
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
 /// Flag indicating if the render thread is running
@@ -59,9 +54,8 @@ pub fn spawn_render_thread() -> Result<u64, &'static str> {
 /// It contains the main rendering loop and checks for shutdown signals.
 ///
 /// CRITICAL: No logging allowed in this function! The render thread processes
-/// the render queue which routes to terminal_manager. If we log here, we'd try
-/// to write to the logs terminal while the render thread holds locks, causing
-/// a deadlock via IN_TERMINAL_CALL.
+/// the render queue. Logging here could cause deadlocks if the logger tries
+/// to write to the render queue while this thread holds locks.
 fn render_thread_main_kthread() {
     // Main rendering loop - runs until kthread_stop() is called
     while !kthread_should_stop() {
@@ -75,12 +69,6 @@ fn render_thread_main_kthread() {
             }
             total_rendered += rendered;
         }
-
-        // Drain captured serial output to the Logs terminal
-        drain_log_capture();
-
-        // Refresh btop monitor view if flag is set and Monitor tab is active
-        crate::graphics::terminal_manager::refresh_btop_if_needed();
 
         // Update mouse cursor position from tablet input device
         #[cfg(target_arch = "aarch64")]
@@ -138,56 +126,6 @@ fn arch_halt() {
 /// approach.
 pub fn wake_render_thread() {
     RENDER_WAKE.store(true, Ordering::Release);
-}
-
-// =============================================================================
-// Log Capture Drain
-// =============================================================================
-
-/// Maximum line length for log capture line accumulation
-const LOG_LINE_MAX: usize = 256;
-
-/// Line accumulator buffer (persists across drain calls)
-static mut LOG_LINE_BUF: [u8; LOG_LINE_MAX] = [0u8; LOG_LINE_MAX];
-
-/// Current position in the line accumulator
-static LOG_LINE_LEN: AtomicUsize = AtomicUsize::new(0);
-
-/// Drain captured serial bytes from the log_capture ring buffer,
-/// split them into lines, and feed each line to the Logs terminal.
-///
-/// Line accumulation state persists across calls via static storage.
-fn drain_log_capture() {
-    let mut buf = [0u8; 512];
-
-    loop {
-        let n = log_capture::drain(&mut buf);
-        if n == 0 {
-            break;
-        }
-
-        let mut line_len = LOG_LINE_LEN.load(Ordering::Relaxed);
-
-        for &byte in &buf[..n] {
-            if byte == b'\n' {
-                // Complete line — send to terminal_manager logs
-                if line_len > 0 {
-                    let line = unsafe {
-                        core::str::from_utf8_unchecked(&LOG_LINE_BUF[..line_len])
-                    };
-                    let _ = crate::graphics::terminal_manager::write_str_to_logs_blocking(line);
-                }
-                line_len = 0;
-            } else if byte != b'\r' && line_len < LOG_LINE_MAX {
-                unsafe {
-                    LOG_LINE_BUF[line_len] = byte;
-                }
-                line_len += 1;
-            }
-        }
-
-        LOG_LINE_LEN.store(line_len, Ordering::Relaxed);
-    }
 }
 
 /// Update the mouse cursor on the framebuffer if the tablet device is active.

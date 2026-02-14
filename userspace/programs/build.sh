@@ -258,6 +258,9 @@ STD_BINARIES=(
     "bwm"
     "btop"
 
+    # Network tools
+    "burl"
+
     # Services
     "init"
     "telnetd"

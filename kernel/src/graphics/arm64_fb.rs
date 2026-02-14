@@ -4,7 +4,7 @@
 //! enabling the graphics primitives to work on ARM64.
 //!
 //! This module also provides a SHELL_FRAMEBUFFER interface compatible with
-//! the x86_64 version in logger.rs, allowing split_screen.rs and terminal_manager.rs
+//! the x86_64 version in logger.rs, allowing split_screen.rs
 //! to work on both architectures.
 
 #![cfg(target_arch = "aarch64")]
@@ -234,7 +234,7 @@ pub fn clear_screen(color: Color) -> Result<(), &'static str> {
 /// Shell framebuffer wrapper for ARM64
 ///
 /// This provides an interface compatible with x86_64's ShellFrameBuffer in logger.rs,
-/// allowing the split_screen and terminal_manager modules to work on both architectures.
+/// allowing the split_screen module to work on both architectures.
 pub struct ShellFrameBuffer {
     /// The underlying framebuffer
     fb: Arm64FrameBuffer,

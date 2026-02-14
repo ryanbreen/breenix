@@ -203,9 +203,6 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
             // Calculate layout: 50% left for demo, 50% right for terminals
             let divider_x = width / 2;
             let divider_width = 4;
-            let right_x = divider_x + divider_width;
-            let right_width = width.saturating_sub(right_x);
-
             // Clear entire screen with dark background
             graphics::primitives::fill_rect(
                 &mut *fb_guard,
@@ -238,16 +235,6 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
                 );
             }
 
-            // Initialize terminal manager for right side
-            graphics::terminal_manager::init_terminal_manager(right_x, 0, right_width, height);
-
-            // Initialize the terminal manager (draws tabs and welcome messages)
-            if let Some(mut manager_guard) = graphics::terminal_manager::TERMINAL_MANAGER.try_lock() {
-                if let Some(ref mut manager) = *manager_guard {
-                    manager.init(&mut *fb_guard);
-                }
-            }
-
             // Initialize the render queue for deferred framebuffer rendering
             graphics::render_queue::init();
 
@@ -259,7 +246,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
                 db.flush_full();
             }
 
-            log::info!("Multi-terminal display ready - F1: Shell, F2: Logs");
+            log::info!("Split-screen display ready");
         }
     }
 
@@ -594,7 +581,7 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     // - Both architectures use render_task::spawn_render_thread() for deferred rendering
     // - Both use SHELL_FRAMEBUFFER (logger.rs on x86_64, arm64_fb.rs on ARM64)
     // - Both use graphics::render_queue for lock-free echo from interrupt context
-    // - Both use graphics::terminal_manager for split-screen terminal UI
+    // - BWM (userspace window manager) handles terminal rendering
     // - Boot test progress display (test_framework::display) renders to SHELL_FRAMEBUFFER
     // - Boot milestones are tracked via BTRT (test_framework::btrt) on both platforms
     #[cfg(feature = "interactive")]
