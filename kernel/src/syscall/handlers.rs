@@ -3052,6 +3052,7 @@ pub fn sys_fcntl(fd: u64, cmd: u64, arg: u64) -> SyscallResult {
 ///
 /// Note: Currently only non-blocking poll (timeout=0) is fully supported.
 pub fn sys_poll(fds_ptr: u64, nfds: u64, _timeout: i32) -> SyscallResult {
+    use crate::ipc::fd::FileDescriptor;
     use crate::ipc::poll::{self, events, PollFd};
 
     log::debug!("sys_poll: fds_ptr={:#x}, nfds={}, timeout={}", fds_ptr, nfds, _timeout);
@@ -3073,37 +3074,8 @@ pub fn sys_poll(fds_ptr: u64, nfds: u64, _timeout: i32) -> SyscallResult {
         return SyscallResult::Ok(0);
     }
 
-    // Get current process
-    let thread_id = match crate::task::scheduler::current_thread_id() {
-        Some(id) => id,
-        None => {
-            log::error!("sys_poll: No current thread");
-            return SyscallResult::Err(22); // EINVAL
-        }
-    };
-
-    let manager_guard = crate::process::manager();
-    let process = match &*manager_guard {
-        Some(manager) => match manager.find_process_by_thread(thread_id) {
-            Some((_pid, p)) => p,
-            None => {
-                log::error!("sys_poll: Thread {} not in any process", thread_id);
-                return SyscallResult::Err(22); // EINVAL
-            }
-        },
-        None => {
-            log::error!("sys_poll: No process manager");
-            return SyscallResult::Err(22); // EINVAL
-        }
-    };
-
     // Read pollfd array from userspace
-    let _pollfd_size = core::mem::size_of::<PollFd>();
-
-    // Allocate buffer for pollfds
     let mut pollfds: Vec<PollFd> = Vec::with_capacity(nfds as usize);
-
-    // Copy from userspace
     unsafe {
         let src = fds_ptr as *const PollFd;
         for i in 0..nfds as usize {
@@ -3111,32 +3083,67 @@ pub fn sys_poll(fds_ptr: u64, nfds: u64, _timeout: i32) -> SyscallResult {
         }
     }
 
-    // Poll each fd
+    // Snapshot fd entries under PROCESS_MANAGER lock, then release it.
+    // On ARM64, manager() disables all interrupts (DAIF mask 0xF). Holding PM
+    // across poll_fd() calls risks deadlock: poll_fd acquires PTY buffer locks,
+    // TCP connection locks, etc., all with interrupts masked. By cloning the
+    // Arc-based FileDescriptor entries and dropping PM first, we re-enable
+    // interrupts before touching any I/O subsystem locks.
+    let mut fd_snapshots: Vec<Option<FileDescriptor>> = Vec::with_capacity(nfds as usize);
+    {
+        let thread_id = match crate::task::scheduler::current_thread_id() {
+            Some(id) => id,
+            None => {
+                log::error!("sys_poll: No current thread");
+                return SyscallResult::Err(22); // EINVAL
+            }
+        };
+
+        let manager_guard = crate::process::manager();
+        let process = match &*manager_guard {
+            Some(manager) => match manager.find_process_by_thread(thread_id) {
+                Some((_pid, p)) => p,
+                None => {
+                    log::error!("sys_poll: Thread {} not in any process", thread_id);
+                    return SyscallResult::Err(22); // EINVAL
+                }
+            },
+            None => {
+                log::error!("sys_poll: No process manager");
+                return SyscallResult::Err(22); // EINVAL
+            }
+        };
+
+        for pollfd in pollfds.iter() {
+            if pollfd.fd < 0 {
+                fd_snapshots.push(None);
+            } else {
+                fd_snapshots.push(process.fd_table.get(pollfd.fd).cloned());
+            }
+        }
+        // manager_guard (and PM lock) dropped here
+    }
+
+    // Poll each fd without holding PROCESS_MANAGER
     let mut ready_count: u64 = 0;
 
-    for pollfd in pollfds.iter_mut() {
-        // Clear revents
+    for (i, pollfd) in pollfds.iter_mut().enumerate() {
         pollfd.revents = 0;
 
-        // Check if fd is valid
         if pollfd.fd < 0 {
             // Negative fd - skip it (per POSIX, ignore negative fds)
             continue;
         }
 
-        // Check if fd exists
-        let fd_entry = match process.fd_table.get(pollfd.fd) {
-            Some(entry) => entry,
+        match &fd_snapshots[i] {
+            Some(fd_entry) => {
+                pollfd.revents = poll::poll_fd(fd_entry, pollfd.events);
+            }
             None => {
                 // Invalid fd - set POLLNVAL
                 pollfd.revents = events::POLLNVAL;
-                ready_count += 1;
-                continue;
             }
-        };
-
-        // Poll this fd
-        pollfd.revents = poll::poll_fd(fd_entry, pollfd.events);
+        }
 
         if pollfd.revents != 0 {
             ready_count += 1;
@@ -3181,6 +3188,7 @@ pub fn sys_select(
     exceptfds_ptr: u64,
     _timeout_ptr: u64,
 ) -> SyscallResult {
+    use crate::ipc::fd::FileDescriptor;
     use crate::ipc::poll;
 
     log::debug!(
@@ -3208,30 +3216,6 @@ pub fn sys_select(
         return SyscallResult::Ok(0);
     }
 
-    // Get current process
-    let thread_id = match crate::task::scheduler::current_thread_id() {
-        Some(id) => id,
-        None => {
-            log::error!("sys_select: No current thread");
-            return SyscallResult::Err(super::errno::EINVAL as u64);
-        }
-    };
-
-    let manager_guard = crate::process::manager();
-    let process = match &*manager_guard {
-        Some(manager) => match manager.find_process_by_thread(thread_id) {
-            Some((_pid, p)) => p,
-            None => {
-                log::error!("sys_select: Thread {} not in any process", thread_id);
-                return SyscallResult::Err(super::errno::EINVAL as u64);
-            }
-        },
-        None => {
-            log::error!("sys_select: No process manager");
-            return SyscallResult::Err(super::errno::EINVAL as u64);
-        }
-    };
-
     // Read fd_set bitmaps from userspace (only if pointer is non-NULL)
     let readfds: u64 = if readfds_ptr != 0 {
         unsafe { *(readfds_ptr as *const u64) }
@@ -3256,28 +3240,60 @@ pub fn sys_select(
         readfds, writefds, exceptfds
     );
 
-    // Track ready fds
+    // Snapshot fd entries under PROCESS_MANAGER lock, then release it.
+    // Same rationale as sys_poll: avoid holding PM (which masks interrupts on
+    // ARM64) across poll_fd/check_readable/check_writable calls that acquire
+    // PTY buffer locks, TCP connection locks, etc.
+    let mut fd_snapshots: Vec<(i32, Option<FileDescriptor>)> = Vec::new();
+    {
+        let thread_id = match crate::task::scheduler::current_thread_id() {
+            Some(id) => id,
+            None => {
+                log::error!("sys_select: No current thread");
+                return SyscallResult::Err(super::errno::EINVAL as u64);
+            }
+        };
+
+        let manager_guard = crate::process::manager();
+        let process = match &*manager_guard {
+            Some(manager) => match manager.find_process_by_thread(thread_id) {
+                Some((_pid, p)) => p,
+                None => {
+                    log::error!("sys_select: Thread {} not in any process", thread_id);
+                    return SyscallResult::Err(super::errno::EINVAL as u64);
+                }
+            },
+            None => {
+                log::error!("sys_select: No process manager");
+                return SyscallResult::Err(super::errno::EINVAL as u64);
+            }
+        };
+
+        for fd in 0..nfds {
+            let fd_bit = 1u64 << fd;
+            let in_any = (readfds & fd_bit) != 0
+                || (writefds & fd_bit) != 0
+                || (exceptfds & fd_bit) != 0;
+            if in_any {
+                fd_snapshots.push((fd, process.fd_table.get(fd).cloned()));
+            }
+        }
+        // manager_guard (and PM lock) dropped here
+    }
+
+    // Check each fd without holding PROCESS_MANAGER
     let mut ready_count: u64 = 0;
     let mut result_readfds: u64 = 0;
     let mut result_writefds: u64 = 0;
     let mut result_exceptfds: u64 = 0;
 
-    // Check each fd up to nfds
-    for fd in 0..nfds {
+    for (fd, snapshot) in fd_snapshots.iter() {
         let fd_bit = 1u64 << fd;
-
-        // Check if this fd is in any of the sets
         let in_readfds = (readfds & fd_bit) != 0;
         let in_writefds = (writefds & fd_bit) != 0;
         let in_exceptfds = (exceptfds & fd_bit) != 0;
 
-        // Skip if fd is not in any set
-        if !in_readfds && !in_writefds && !in_exceptfds {
-            continue;
-        }
-
-        // Look up the file descriptor
-        let fd_entry = match process.fd_table.get(fd) {
+        let fd_entry = match snapshot {
             Some(entry) => entry,
             None => {
                 // Invalid fd - return EBADF
@@ -3351,6 +3367,10 @@ pub fn sys_take_over_display() -> SyscallResult {
                 }
             }
         }
+
+        // Tell the render thread to stop flushing the framebuffer.
+        // BWM will handle all GPU operations via its own fb_flush() syscall.
+        crate::graphics::render_task::set_display_taken();
     }
     SyscallResult::Ok(0)
 }

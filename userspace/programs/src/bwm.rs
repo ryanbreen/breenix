@@ -892,8 +892,6 @@ fn main() {
     let (shell_master, shell_pid) = spawn_child(b"/bin/bsh\0", "bsh");
     let (btop_master, btop_pid) = spawn_child(b"/bin/btop\0", "btop");
 
-    print!("[bwm] Shell PID: {}, btop PID: {}\n", shell_pid, btop_pid);
-
     // Set PTY window size so child processes know the terminal dimensions
     let ws = libbreenix::termios::Winsize {
         ws_row: term_rows as u16,

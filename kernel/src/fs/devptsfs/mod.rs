@@ -93,18 +93,21 @@ pub fn init() {
 /// * `None` if the PTY doesn't exist or is still locked
 pub fn lookup(name: &str) -> Option<u32> {
     // Parse the PTY number from name
-    let pty_num: u32 = name.parse().ok()?;
+    let pty_num: u32 = match name.parse() {
+        Ok(n) => n,
+        Err(_) => {
+            return None;
+        }
+    };
 
     // Check if PTY exists and is unlocked
     let pair = match pty::get(pty_num) {
         Some(p) => p,
         None => {
-            crate::serial_println!("[devpts] lookup({}): PTY not in allocator", pty_num);
             return None;
         }
     };
     if !pair.is_unlocked() {
-        crate::serial_println!("[devpts] lookup({}): PTY exists but LOCKED", pty_num);
         return None;
     }
 

@@ -1889,13 +1889,10 @@ fn handle_devpts_open(pty_name: &str) -> SyscallResult {
     use super::errno::{EMFILE, ENOENT};
     use crate::fs::devptsfs;
 
-    crate::serial_println!("[pty] handle_devpts_open({})", pty_name);
-
     // Look up the PTY slave in devptsfs
     let pty_num = match devptsfs::lookup(pty_name) {
         Some(num) => num,
         None => {
-            // devpts::lookup already printed the specific reason
             return SyscallResult::Err(ENOENT as u64);
         }
     };
@@ -1904,7 +1901,6 @@ fn handle_devpts_open(pty_name: &str) -> SyscallResult {
     let thread_id = match crate::task::scheduler::current_thread_id() {
         Some(id) => id,
         None => {
-            log::error!("handle_devpts_open: No current thread");
             return SyscallResult::Err(3); // ESRCH
         }
     };
@@ -1914,12 +1910,10 @@ fn handle_devpts_open(pty_name: &str) -> SyscallResult {
         Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
             Some((_, p)) => p,
             None => {
-                log::error!("handle_devpts_open: Process not found for thread {}", thread_id);
                 return SyscallResult::Err(3); // ESRCH
             }
         },
         None => {
-            log::error!("handle_devpts_open: Process manager not initialized");
             return SyscallResult::Err(3); // ESRCH
         }
     };
@@ -1932,11 +1926,9 @@ fn handle_devpts_open(pty_name: &str) -> SyscallResult {
             if let Some(pair) = crate::tty::pty::get(pty_num) {
                 pair.slave_open();
             }
-            crate::serial_println!("[pty] Opened slave /dev/pts/{} as fd {}", pty_num, fd);
             SyscallResult::Ok(fd as u64)
         }
         Err(_) => {
-            crate::serial_println!("[pty] handle_devpts_open: EMFILE");
             SyscallResult::Err(EMFILE as u64)
         }
     }

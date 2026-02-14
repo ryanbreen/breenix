@@ -17,6 +17,11 @@ static RENDER_THREAD_RUNNING: AtomicBool = AtomicBool::new(false);
 /// Flag to signal the render thread to check for work
 static RENDER_WAKE: AtomicBool = AtomicBool::new(false);
 
+/// Flag set when a userspace process (BWM) takes display ownership.
+/// When set, the render thread skips framebuffer flushing and cursor
+/// updates — the display owner handles all GPU operations directly.
+static DISPLAY_TAKEN: AtomicBool = AtomicBool::new(false);
+
 /// Handle to the render kthread (for potential cleanup/stopping)
 static RENDER_KTHREAD: Mutex<Option<KthreadHandle>> = Mutex::new(None);
 
@@ -70,14 +75,19 @@ fn render_thread_main_kthread() {
             total_rendered += rendered;
         }
 
-        // Update mouse cursor position from tablet input device
-        #[cfg(target_arch = "aarch64")]
-        update_mouse_cursor();
+        // When BWM owns the display, skip framebuffer operations — BWM
+        // handles all GPU flushing via its own fb_flush() syscall.  Competing
+        // for SHELL_FRAMEBUFFER here with a blocking lock caused deadlocks
+        // when BWM held the lock during GPU busy-waits.
+        if !DISPLAY_TAKEN.load(Ordering::Acquire) {
+            // Update mouse cursor position from tablet input device
+            #[cfg(target_arch = "aarch64")]
+            update_mouse_cursor();
 
-        // Always flush — the render thread is the sole owner of GPU flushing.
-        // Besides render queue text, the particle thread and log capture also
-        // write pixels that need to be transferred to the VirtIO GPU.
-        flush_framebuffer();
+            // Flush — the render thread is the sole owner of GPU flushing
+            // when no userspace process has taken the display.
+            flush_framebuffer();
+        }
 
         // Yield to give other threads a chance to run
         crate::task::scheduler::yield_current();
@@ -126,6 +136,18 @@ fn arch_halt() {
 /// approach.
 pub fn wake_render_thread() {
     RENDER_WAKE.store(true, Ordering::Release);
+}
+
+/// Mark that a userspace process has taken over display ownership.
+/// The render thread will stop flushing the framebuffer and updating
+/// the cursor — the display owner (BWM) handles GPU operations directly.
+pub fn set_display_taken() {
+    DISPLAY_TAKEN.store(true, Ordering::Release);
+}
+
+/// Check whether a userspace process owns the display.
+pub fn is_display_taken() -> bool {
+    DISPLAY_TAKEN.load(Ordering::Acquire)
 }
 
 /// Update the mouse cursor on the framebuffer if the tablet device is active.
