@@ -14,7 +14,6 @@ use libbreenix::time::nanosleep;
 use libbreenix::types::Timespec;
 
 const TELNETD_PATH: &[u8] = b"/sbin/telnetd\0";
-const BWM_PATH: &[u8] = b"/bin/bwm\0";
 const SHELL_PATH: &[u8] = b"/bin/bsh\0";
 
 /// Maximum number of rapid respawns before giving up on a service.
@@ -62,13 +61,9 @@ fn main() {
     let mut telnetd_pid = spawn(TELNETD_PATH, "telnetd");
     let mut telnetd_failures: u32 = 0;
 
-    // Start BWM (Breenix Window Manager) - manages shell and terminal tabs
-    print!("[init] Starting /bin/bwm...\n");
-    let mut bwm_pid = spawn(BWM_PATH, "bwm");
-    let mut bwm_failures: u32 = 0;
-
-    // Fallback shell PID (only used if BWM fails too many times)
-    let mut shell_pid: i64 = -1;
+    // Start bsh (Breenix Shell)
+    print!("[init] Starting /bin/bsh...\n");
+    let mut shell_pid = spawn(SHELL_PATH, "bsh");
     let mut shell_failures: u32 = 0;
 
     // Main loop: reap zombies and respawn crashed services
@@ -78,16 +73,7 @@ fn main() {
             Ok(reaped_pid) => {
                 let reaped = reaped_pid.raw() as i64;
                 if reaped > 0 {
-                    if reaped == bwm_pid {
-                        print!("[init] BWM exited (status {})\n", status);
-                        // Restore kernel terminal rendering before respawning
-                        let _ = libbreenix::graphics::give_back_display();
-                        bwm_pid = try_respawn(BWM_PATH, "bwm", &mut bwm_failures);
-                        if bwm_pid == -1 {
-                            print!("[init] BWM failed {} times, falling back to bare shell\n", MAX_RESPAWN_FAILURES);
-                            shell_pid = spawn(SHELL_PATH, "bsh");
-                        }
-                    } else if reaped == shell_pid {
+                    if reaped == shell_pid {
                         print!("[init] Shell exited (status {})\n", status);
                         shell_pid = try_respawn(SHELL_PATH, "bsh", &mut shell_failures);
                         if shell_pid == -1 {

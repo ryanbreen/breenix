@@ -117,10 +117,12 @@ fn fart_envelope(sample_idx: u32, total_samples: u32) -> i64 {
 
 /// Synthesize and play one fart sound using source-filter model.
 ///
-/// Based on acoustic research: sphincter pulses (100-200 Hz) excite rectal
-/// cavity resonance (~270 Hz), producing perceived peak at 250-300 Hz.
-/// Closed tube = odd harmonics. Pulsatile waveform. -10 dB/octave rolloff.
+/// Based on acoustic research: sphincter pulses (100-200 Hz) filtered through
+/// rectal cavity resonance (~270 Hz bandpass) and mixed with brown noise
+/// turbulence. Uses synth::Biquad for resonance and synth::Noise for airflow.
 fn play_one_fart_sound(rng: &mut FartRng) {
+    // --- Randomize parameters ---
+
     let base_freq = rng.range(100, 185) as i64;
     let duration_ms = rng.range(800, 2500);
     let total_samples = FART_SAMPLE_RATE * duration_ms / 1000;
@@ -131,9 +133,12 @@ fn play_one_fart_sound(rng: &mut FartRng) {
     let duty_start = rng.range(30, 55) as i64;
     let duty_end = rng.range(40, 65) as i64;
 
-    let resonant_freq = rng.range(230, 340) as i64;
-    let resonance_mix: i64 = rng.range(80, 160) as i64;
-    let resonance_decay: i64 = rng.range(252, 255) as i64;
+    let resonant_freq = rng.range(230, 340);
+    let resonant_q = rng.range(200, 600);
+    let filter_mix: i64 = rng.range(100, 200) as i64;
+
+    let noise_cutoff = rng.range(200, 500);
+    let noise_mix: i64 = rng.range(25, 70) as i64;
 
     let jitter_hz = rng.range(8, 25) as i32;
     let jitter_interval = rng.range(80, 200);
@@ -146,18 +151,28 @@ fn play_one_fart_sound(rng: &mut FartRng) {
     let sputter_onset_pct = rng.range(55, 75) as i64;
     let sputter_ramp = FART_SAMPLE_RATE * 10 / 1000;
 
+    // --- Initialize DSP ---
+
+    let mut resonance = synth::Biquad::bandpass(resonant_freq, resonant_q);
+    let mut turbulence = synth::Noise::brown(
+        rng.next() as u64 | ((rng.next() as u64) << 32),
+        noise_cutoff,
+    );
+
+    // --- Synthesis state ---
+
     let mut phase: u32 = 0;
-    let mut resonant_phase: u32 = 0;
-    let resonant_inc = fart_freq_to_inc(resonant_freq);
-    let mut resonant_amp: i64 = 0;
 
     let mut jitter_offset: i32 = 0;
     let mut jitter_target: i32 = 0;
     let mut jitter_counter: u32 = 0;
+
     let mut shimmer_current: i64 = 256;
     let mut prev_in_pulse = false;
+
     let mut subharm_active = false;
     let mut subharm_counter: u32 = 0;
+
     let mut sputter_gate: i64 = 256;
     let mut sputter_target: i64 = 256;
     let mut sputter_counter: u32 = 0;
@@ -174,7 +189,8 @@ fn play_one_fart_sound(rng: &mut FartRng) {
             let sample_idx = samples_written + i as u32;
             let progress = sample_idx as i64 * 256 / total_samples as i64;
 
-            // Pitch contour
+            // --- Pitch: contour + jitter + sub-harmonic ---
+
             let contour_freq = if progress < 38 {
                 let t = progress * 256 / 38;
                 start_freq + (base_freq - start_freq) * t / 256
@@ -185,16 +201,15 @@ fn play_one_fart_sound(rng: &mut FartRng) {
                 base_freq + (end_freq - base_freq) * t / 256
             };
 
-            // Frequency jitter
             jitter_counter += 1;
             if jitter_counter >= jitter_interval {
                 jitter_counter = 0;
                 jitter_target = (rng.next() as i32 % (jitter_hz * 2 + 1)) - jitter_hz;
             }
             jitter_offset += (jitter_target - jitter_offset + 4) / 8;
+
             let mut current_freq = contour_freq + jitter_offset as i64;
 
-            // Sub-harmonic drops
             subharm_counter += 1;
             if subharm_counter >= subharm_block {
                 subharm_counter = 0;
@@ -204,14 +219,17 @@ fn play_one_fart_sound(rng: &mut FartRng) {
                     subharm_active = false;
                 }
             }
-            if subharm_active { current_freq /= 2; }
+            if subharm_active {
+                current_freq /= 2;
+            }
 
-            let phase_inc = fart_freq_to_inc(current_freq);
+            let phase_inc = synth::freq_to_inc(current_freq.max(15) as u32);
 
-            // Sphincter pulse waveform
+            // --- Source: sphincter pulse waveform ---
+
             let duty = duty_start + (duty_end - duty_start) * progress / 256;
             let duty_threshold = (duty * 256 / 100) as u32;
-            let cycle_pos = ((phase >> (FART_FP_SHIFT - 8)) & 0xFF) as u32;
+            let cycle_pos = ((phase >> (synth::FP_SHIFT - 8)) & 0xFF) as u32;
             let in_pulse = cycle_pos < duty_threshold;
 
             if in_pulse && !prev_in_pulse {
@@ -228,21 +246,22 @@ fn play_one_fart_sound(rng: &mut FartRng) {
                 0i64
             };
 
-            // Rectal cavity resonance
-            if in_pulse {
-                let excitation = pulse.abs() / 128;
-                resonant_amp = resonant_amp + (excitation - resonant_amp) / 4;
-                if resonant_amp > 300 { resonant_amp = 300; }
-            } else {
-                resonant_amp = resonant_amp * resonance_decay / 256;
-            }
-            let resonant_out = fart_sine_fp(resonant_phase) as i64 * resonant_amp / 256;
+            // --- Filter: resonant bandpass (rectal cavity) ---
 
-            // Mix source and resonance
-            let mixed = pulse * (256 - resonance_mix) / 256
-                + resonant_out * resonance_mix / 256;
+            let filtered = resonance.process(pulse as i16) as i64;
 
-            // Sputtering gate
+            let source = pulse * (256 - filter_mix) / 256
+                + filtered * filter_mix / 256;
+
+            // --- Turbulence: brown noise for airflow ---
+
+            let noise = turbulence.sample() as i64;
+
+            let mixed = source * (256 - noise_mix) / 256
+                + noise * noise_mix / 256;
+
+            // --- Sputtering gate ---
+
             let sputter_threshold = sputter_onset_pct * 256 / 100;
             sputter_counter += 1;
             if sputter_counter >= sputter_block {
@@ -266,7 +285,8 @@ fn play_one_fart_sound(rng: &mut FartRng) {
                 if sputter_gate < sputter_target { sputter_gate = sputter_target; }
             }
 
-            // Final output
+            // --- Final output ---
+
             let env = fart_envelope(sample_idx, total_samples);
             let sample = (mixed * sputter_gate / 256 * env / 256) as i32;
             let sample = sample.max(-32767).min(32767) as i16;
@@ -274,8 +294,7 @@ fn play_one_fart_sound(rng: &mut FartRng) {
             buf[i * 2] = sample;
             buf[i * 2 + 1] = sample;
 
-            phase = phase.wrapping_add(phase_inc) % FART_FP_ONE;
-            resonant_phase = resonant_phase.wrapping_add(resonant_inc) % FART_FP_ONE;
+            phase = phase.wrapping_add(phase_inc) % synth::FP_ONE;
         }
 
         if audio::write_samples(&buf[..frames as usize * 2]).is_err() {

@@ -10,4 +10,4 @@ description = "Breenix userspace graphics library — drawing primitives, fonts,
 crate-type = ["rlib"]
 
 [dependencies]
-# No dependencies — pure drawing library operating on raw pixel buffers
+noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "regular", "unicode-basic-latin", "unicode-specials"] }
