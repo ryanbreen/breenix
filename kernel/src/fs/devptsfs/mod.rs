@@ -93,12 +93,22 @@ pub fn init() {
 /// * `None` if the PTY doesn't exist or is still locked
 pub fn lookup(name: &str) -> Option<u32> {
     // Parse the PTY number from name
-    let pty_num: u32 = name.parse().ok()?;
+    let pty_num: u32 = match name.parse() {
+        Ok(n) => n,
+        Err(_) => {
+            return None;
+        }
+    };
 
     // Check if PTY exists and is unlocked
-    let pair = pty::get(pty_num)?;
+    let pair = match pty::get(pty_num) {
+        Some(p) => p,
+        None => {
+            return None;
+        }
+    };
     if !pair.is_unlocked() {
-        return None;  // PTY exists but hasn't been unlocked yet
+        return None;
     }
 
     Some(pty_num)

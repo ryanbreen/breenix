@@ -16,6 +16,46 @@ use crate::types::{Fd, OwnedFd};
 // Re-export close from io module for convenience
 pub use crate::io::close;
 
+/// Maximum path length for stack-allocated C-string buffers.
+const CPATH_MAX: usize = 256;
+
+/// Stack-allocated null-terminated C string for kernel syscalls.
+///
+/// Kernel syscalls expect null-terminated strings (C convention),
+/// but Rust `&str` is NOT null-terminated. Without an explicit null
+/// terminator, the compiler may optimize away zero bytes following
+/// the string data in stack buffers, causing the kernel to read
+/// garbage bytes past the end of the path.
+struct CPath {
+    buf: [u8; CPATH_MAX],
+}
+
+impl CPath {
+    /// Create a null-terminated C string from a Rust `&str`.
+    ///
+    /// Returns `Err(ENAMETOOLONG)` if the path exceeds `CPATH_MAX - 1` bytes.
+    #[inline]
+    fn new(path: &str) -> Result<Self, Error> {
+        let bytes = path.as_bytes();
+        let len = bytes.len();
+        if len >= CPATH_MAX {
+            return Err(Error::Os(crate::errno::Errno::from_raw(36))); // ENAMETOOLONG
+        }
+        let mut buf = [0u8; CPATH_MAX];
+        buf[..len].copy_from_slice(bytes);
+        // Force the null terminator write — write_volatile prevents the
+        // compiler from optimizing it away, which is critical when the
+        // asm! block in the syscall wrapper reads memory via this pointer.
+        unsafe { core::ptr::write_volatile(buf.as_mut_ptr().add(len), 0u8); }
+        Ok(CPath { buf })
+    }
+
+    #[inline]
+    fn as_u64(&self) -> u64 {
+        self.buf.as_ptr() as u64
+    }
+}
+
 /// Open flags (POSIX compatible)
 pub const O_RDONLY: u32 = 0;
 pub const O_WRONLY: u32 = 1;
@@ -130,10 +170,11 @@ impl Stat {
 /// ```
 #[inline]
 pub fn open(path: &str, flags: u32) -> Result<Fd, Error> {
+    let cpath = CPath::new(path)?;
     let ret = unsafe {
         raw::syscall3(
             nr::OPEN,
-            path.as_ptr() as u64,
+            cpath.as_u64(),
             flags as u64,
             0, // mode (not used for O_RDONLY)
         ) as i64
@@ -152,10 +193,11 @@ pub fn open(path: &str, flags: u32) -> Result<Fd, Error> {
 /// File descriptor on success, Error on failure.
 #[inline]
 pub fn open_with_mode(path: &str, flags: u32, mode: u32) -> Result<Fd, Error> {
+    let cpath = CPath::new(path)?;
     let ret = unsafe {
         raw::syscall3(
             nr::OPEN,
-            path.as_ptr() as u64,
+            cpath.as_u64(),
             flags as u64,
             mode as u64,
         ) as i64
@@ -183,7 +225,8 @@ pub fn open_with_mode(path: &str, flags: u32, mode: u32) -> Result<Fd, Error> {
 /// ```
 #[inline]
 pub fn access(path: &str, mode: u32) -> Result<(), Error> {
-    let ret = unsafe { raw::syscall2(nr::ACCESS, path.as_ptr() as u64, mode as u64) as i64 };
+    let cpath = CPath::new(path)?;
+    let ret = unsafe { raw::syscall2(nr::ACCESS, cpath.as_u64(), mode as u64) as i64 };
     Error::from_syscall(ret).map(|_| ())
 }
 
@@ -413,7 +456,8 @@ pub fn getdents64(fd: Fd, buf: &mut [u8]) -> Result<usize, Error> {
 /// ```
 #[inline]
 pub fn unlink(path: &str) -> Result<(), Error> {
-    let ret = unsafe { raw::syscall1(nr::UNLINK, path.as_ptr() as u64) as i64 };
+    let cpath = CPath::new(path)?;
+    let ret = unsafe { raw::syscall1(nr::UNLINK, cpath.as_u64()) as i64 };
     Error::from_syscall(ret).map(|_| ())
 }
 
@@ -488,7 +532,8 @@ impl<'a> Iterator for DirentIter<'a> {
 /// ```
 #[inline]
 pub fn mkdir(path: &str, mode: u32) -> Result<(), Error> {
-    let ret = unsafe { raw::syscall2(nr::MKDIR, path.as_ptr() as u64, mode as u64) as i64 };
+    let cpath = CPath::new(path)?;
+    let ret = unsafe { raw::syscall2(nr::MKDIR, cpath.as_u64(), mode as u64) as i64 };
     Error::from_syscall(ret).map(|_| ())
 }
 
@@ -516,7 +561,8 @@ pub fn mkdir(path: &str, mode: u32) -> Result<(), Error> {
 /// ```
 #[inline]
 pub fn rmdir(path: &str) -> Result<(), Error> {
-    let ret = unsafe { raw::syscall1(nr::RMDIR, path.as_ptr() as u64) as i64 };
+    let cpath = CPath::new(path)?;
+    let ret = unsafe { raw::syscall1(nr::RMDIR, cpath.as_u64()) as i64 };
     Error::from_syscall(ret).map(|_| ())
 }
 
@@ -547,8 +593,10 @@ pub fn rmdir(path: &str) -> Result<(), Error> {
 /// ```
 #[inline]
 pub fn rename(oldpath: &str, newpath: &str) -> Result<(), Error> {
+    let cold = CPath::new(oldpath)?;
+    let cnew = CPath::new(newpath)?;
     let ret = unsafe {
-        raw::syscall2(nr::RENAME, oldpath.as_ptr() as u64, newpath.as_ptr() as u64) as i64
+        raw::syscall2(nr::RENAME, cold.as_u64(), cnew.as_u64()) as i64
     };
     Error::from_syscall(ret).map(|_| ())
 }
@@ -583,8 +631,10 @@ pub fn rename(oldpath: &str, newpath: &str) -> Result<(), Error> {
 /// ```
 #[inline]
 pub fn link(oldpath: &str, newpath: &str) -> Result<(), Error> {
+    let cold = CPath::new(oldpath)?;
+    let cnew = CPath::new(newpath)?;
     let ret = unsafe {
-        raw::syscall2(nr::LINK, oldpath.as_ptr() as u64, newpath.as_ptr() as u64) as i64
+        raw::syscall2(nr::LINK, cold.as_u64(), cnew.as_u64()) as i64
     };
     Error::from_syscall(ret).map(|_| ())
 }
@@ -620,8 +670,10 @@ pub fn link(oldpath: &str, newpath: &str) -> Result<(), Error> {
 /// ```
 #[inline]
 pub fn symlink(target: &str, linkpath: &str) -> Result<(), Error> {
+    let ctarget = CPath::new(target)?;
+    let clink = CPath::new(linkpath)?;
     let ret = unsafe {
-        raw::syscall2(nr::SYMLINK, target.as_ptr() as u64, linkpath.as_ptr() as u64) as i64
+        raw::syscall2(nr::SYMLINK, ctarget.as_u64(), clink.as_u64()) as i64
     };
     Error::from_syscall(ret).map(|_| ())
 }
@@ -657,10 +709,11 @@ pub fn symlink(target: &str, linkpath: &str) -> Result<(), Error> {
 /// ```
 #[inline]
 pub fn readlink(pathname: &str, buf: &mut [u8]) -> Result<usize, Error> {
+    let cpath = CPath::new(pathname)?;
     let ret = unsafe {
         raw::syscall3(
             nr::READLINK,
-            pathname.as_ptr() as u64,
+            cpath.as_u64(),
             buf.as_mut_ptr() as u64,
             buf.len() as u64,
         ) as i64
@@ -696,11 +749,12 @@ pub fn readlink(pathname: &str, buf: &mut [u8]) -> Result<usize, Error> {
 /// ```
 #[inline]
 pub fn mkfifo(pathname: &str, mode: u32) -> Result<(), Error> {
+    let cpath = CPath::new(pathname)?;
     // mkfifo is implemented via mknod with S_IFIFO mode
     let ret = unsafe {
         raw::syscall3(
             nr::MKNOD,
-            pathname.as_ptr() as u64,
+            cpath.as_u64(),
             (S_IFIFO | (mode & 0o777)) as u64,
             0, // dev number (unused for FIFOs)
         ) as i64

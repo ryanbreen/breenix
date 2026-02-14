@@ -986,7 +986,6 @@ fn sys_exec_aarch64(
                             frame.elr,
                             new_rsp
                         );
-
                         // Trace: about to return 0 from exec syscall
                         super::trace::trace_exec(b'R');
 
