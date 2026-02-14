@@ -887,6 +887,12 @@ impl ProcessManager {
         self.processes.insert(pid, process);
     }
 
+    /// Remove a terminated process from the process table (reap).
+    /// Called after waitpid() has collected the exit status.
+    pub fn remove_process(&mut self, pid: ProcessId) {
+        self.processes.remove(&pid);
+    }
+
     /// Get a reference to a process
     #[allow(dead_code)]
     pub fn get_process(&self, pid: ProcessId) -> Option<&Process> {

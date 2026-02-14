@@ -656,6 +656,8 @@ fn raw_serial_str(s: &[u8]) {
 /// This is the main IRQ dispatch point for ARM64.
 #[no_mangle]
 pub extern "C" fn handle_irq() {
+    crate::tracing::providers::counters::count_irq();
+
     // Acknowledge the interrupt from GIC
     if let Some(irq_id) = gic::acknowledge_irq() {
         // Handle the interrupt based on ID

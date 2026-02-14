@@ -297,7 +297,7 @@ fn complete_wait(child_pid: crate::process::ProcessId, exit_code: i32, status_pt
         }
     }
 
-    // Remove child from parent's children list
+    // Remove child from parent's children list and reap from process table
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
         let mut manager_guard = crate::process::manager();
         if let Some(ref mut manager) = *manager_guard {
@@ -308,6 +308,8 @@ fn complete_wait(child_pid: crate::process::ProcessId, exit_code: i32, status_pt
                     child_pid.as_u64()
                 );
             }
+            manager.remove_process(child_pid);
+            log::debug!("complete_wait: Reaped process {} from process table", child_pid.as_u64());
         }
     }
 

@@ -2785,8 +2785,7 @@ fn complete_wait(
         }
     }
 
-    // Remove child from parent's children list
-    // Get current thread to find parent process
+    // Remove child from parent's children list and reap from process table
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
         let mut manager_guard = crate::process::manager();
         if let Some(ref mut manager) = *manager_guard {
@@ -2795,6 +2794,8 @@ fn complete_wait(
                 log::debug!("complete_wait: Removed child {} from parent's children list",
                            child_pid.as_u64());
             }
+            manager.remove_process(child_pid);
+            log::debug!("complete_wait: Reaped process {} from process table", child_pid.as_u64());
         }
     }
 
@@ -2808,9 +2809,6 @@ fn complete_wait(
             }
         }
     });
-
-    // TODO: Actually remove/reap the child process from the process table
-    // For now, we leave it in the table but in Terminated state
 
     SyscallResult::Ok(child_pid.as_u64())
 }
