@@ -1220,8 +1220,8 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     }
                 });
 
-                // Double-check for data after setting Blocked state
-                if pair.has_master_data() {
+                // Double-check for data or hangup after setting Blocked state
+                if pair.should_wake_master() {
                     crate::task::scheduler::with_scheduler(|sched| {
                         if let Some(thread) = sched.current_thread_mut() {
                             thread.blocked_in_syscall = false;

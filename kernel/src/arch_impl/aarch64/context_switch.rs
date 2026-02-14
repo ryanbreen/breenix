@@ -287,6 +287,11 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         // Trace context switch (lock-free counter + optional event recording)
         trace_ctx_switch(old_thread_id, new_thread_id);
 
+        // Increment the watchdog context switch counter (used by soft lockup detector).
+        // On x86_64 this is done inside schedule(), but on ARM64 the scheduling decision
+        // (schedule_deferred_requeue) and the actual context switch are separate steps.
+        crate::task::scheduler::increment_context_switch_count();
+
         // Save current thread's context FIRST (before updating cpu_state or requeuing)
         //
         // SMP SAFETY: If from_el0=true but old_thread_id is an idle thread,
@@ -359,7 +364,17 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         // the deferred requeue.
         let cpu_id = Aarch64PerCpu::cpu_id() as usize;
         if cpu_id < DEFERRED_REQUEUE.len() {
-            DEFERRED_REQUEUE[cpu_id].store(old_thread_id, Ordering::Release);
+            // SAFETY NET: If the slot already has a pending requeue (non-zero),
+            // process it immediately before storing the new one. This handles
+            // the theoretical case where two context switches happen on the
+            // same CPU without process_deferred_requeue() running in between.
+            // The old-old thread's context is definitely saved (we've completed
+            // at least one full context switch since it was stored), so it's
+            // safe to requeue it now.
+            let previous = DEFERRED_REQUEUE[cpu_id].swap(old_thread_id, Ordering::AcqRel);
+            if previous != 0 {
+                crate::task::scheduler::requeue_old_thread(previous);
+            }
         }
 
         // Switch to the new thread

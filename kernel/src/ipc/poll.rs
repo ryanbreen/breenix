@@ -226,6 +226,10 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                     // Master can always write (goes through line discipline)
                     revents |= events::POLLOUT;
                 }
+                // POLLHUP when all slave FDs are closed
+                if !pair.has_slave_open() {
+                    revents |= events::POLLHUP;
+                }
             } else {
                 revents |= events::POLLERR;
             }

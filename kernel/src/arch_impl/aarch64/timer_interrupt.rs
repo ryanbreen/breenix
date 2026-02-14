@@ -63,6 +63,29 @@ static RESET_QUANTUM_CALL_COUNT: AtomicU64 = AtomicU64::new(0);
 /// At 200 Hz: print interval 200 = print once per second
 const TIMER_COUNT_PRINT_INTERVAL: u64 = 200;
 
+// ─── Soft Lockup Detector ────────────────────────────────────────────────────
+//
+// Detects when no context switch has occurred for LOCKUP_THRESHOLD_TICKS timer
+// interrupts (~5 seconds at 200 Hz). When triggered, dumps diagnostic state to
+// serial using lock-free raw_serial_str(). Fires once per stall, resets when
+// context switches resume.
+
+/// Threshold in timer ticks before declaring a soft lockup (5 seconds at 200 Hz)
+const LOCKUP_THRESHOLD_TICKS: u64 = 200 * 5;
+
+/// Last observed context switch count (CPU 0 only)
+static WATCHDOG_LAST_CTX_SWITCH: AtomicU64 = AtomicU64::new(0);
+
+/// Last observed syscall count (CPU 0 only, tracks system liveness)
+static WATCHDOG_LAST_SYSCALL: AtomicU64 = AtomicU64::new(0);
+
+/// Timer tick when progress was last observed (ctx switch OR syscall)
+static WATCHDOG_LAST_PROGRESS_TICK: AtomicU64 = AtomicU64::new(0);
+
+/// Whether we've already reported a lockup (avoid spamming serial)
+static WATCHDOG_REPORTED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 /// Initialize the timer interrupt system
 ///
 /// Sets up the virtual timer to fire periodically for scheduling.
@@ -155,6 +178,11 @@ pub extern "C" fn timer_interrupt_handler() {
         poll_keyboard_to_stdin();
     }
 
+    // CPU 0 only: soft lockup detector
+    if cpu_id == 0 {
+        check_soft_lockup(_count);
+    }
+
     // Decrement per-CPU quantum and check for reschedule
     let quantum_idx = if cpu_id < crate::arch_impl::aarch64::constants::MAX_CPUS {
         cpu_id
@@ -166,6 +194,16 @@ pub extern "C" fn timer_interrupt_handler() {
         // Quantum expired - request reschedule (all CPUs participate)
         scheduler::set_need_resched();
         CURRENT_QUANTUM[quantum_idx].store(TIME_QUANTUM, Ordering::Relaxed);
+    }
+
+    // IDLE CPU FAST PATH: If this CPU is running its idle thread, always
+    // request reschedule on every timer tick. This ensures that threads
+    // added to the ready queue (by unblock() on another CPU) are picked up
+    // within one timer tick (~5ms) instead of waiting for a full quantum
+    // (~50ms). The scheduling decision quickly returns None if the ready
+    // queue is empty, so the overhead is negligible for idle CPUs.
+    if scheduler::is_cpu_idle(cpu_id) {
+        scheduler::set_need_resched();
     }
 
     // Exit IRQ context (decrement HARDIRQ count)
@@ -207,6 +245,149 @@ fn print_timer_count_decimal(count: u64) {
             raw_serial_char(digits[i]);
         }
     }
+}
+
+/// Check for soft lockup (CPU 0 only, called from timer interrupt).
+///
+/// Compares the current context switch count against the last observed value.
+/// If no context switches have occurred for LOCKUP_THRESHOLD_TICKS timer
+/// interrupts (~5 seconds), checks whether this is a real stall:
+/// - If the scheduler lock is held → likely deadlock, report immediately
+/// - If the ready queue is empty → single runnable thread, not a lockup
+/// - If the ready queue has threads → scheduler is stuck, report
+fn check_soft_lockup(current_tick: u64) {
+    let ctx_count = crate::task::scheduler::context_switch_count();
+    let last_ctx = WATCHDOG_LAST_CTX_SWITCH.load(Ordering::Relaxed);
+
+    // Check context switch progress
+    let ctx_progressed = ctx_count != last_ctx;
+    if ctx_progressed {
+        WATCHDOG_LAST_CTX_SWITCH.store(ctx_count, Ordering::Relaxed);
+    }
+
+    // Check syscall progress (system is alive if syscalls are being made)
+    let syscall_count = crate::tracing::providers::counters::SYSCALL_TOTAL.aggregate();
+    let last_syscall = WATCHDOG_LAST_SYSCALL.load(Ordering::Relaxed);
+    let syscall_progressed = syscall_count != last_syscall;
+    if syscall_progressed {
+        WATCHDOG_LAST_SYSCALL.store(syscall_count, Ordering::Relaxed);
+    }
+
+    if ctx_progressed || syscall_progressed {
+        // System is making progress — update baseline
+        WATCHDOG_LAST_PROGRESS_TICK.store(current_tick, Ordering::Relaxed);
+        WATCHDOG_REPORTED.store(false, Ordering::Relaxed);
+        return;
+    }
+
+    // No progress on either metric — check how long
+    let stall_start = WATCHDOG_LAST_PROGRESS_TICK.load(Ordering::Relaxed);
+    if stall_start == 0 {
+        // Not yet initialized
+        WATCHDOG_LAST_PROGRESS_TICK.store(current_tick, Ordering::Relaxed);
+        return;
+    }
+
+    let stall_ticks = current_tick.wrapping_sub(stall_start);
+    if stall_ticks >= LOCKUP_THRESHOLD_TICKS && !WATCHDOG_REPORTED.load(Ordering::Relaxed) {
+        // Before reporting, check if this is a real stall or just a single-thread scenario
+        if let Some(info) = crate::task::scheduler::try_dump_state() {
+            if info.ready_queue_len == 0 {
+                // Only one runnable thread — no context switch expected. Not a lockup.
+                return;
+            }
+        }
+        // Either the scheduler lock is held (can't check) or the ready queue has
+        // threads waiting — this is a real stall.
+        WATCHDOG_REPORTED.store(true, Ordering::Relaxed);
+        dump_lockup_state(stall_ticks);
+    }
+}
+
+/// Dump diagnostic state when a soft lockup is detected.
+/// Uses only lock-free serial output — safe to call from interrupt context.
+fn dump_lockup_state(stall_ticks: u64) {
+    raw_serial_str(b"\n\n!!! SOFT LOCKUP DETECTED !!!\n");
+    raw_serial_str(b"No context switch for ~");
+    print_timer_count_decimal(stall_ticks / TARGET_TIMER_HZ);
+    raw_serial_str(b" seconds (");
+    print_timer_count_decimal(stall_ticks);
+    raw_serial_str(b" ticks)\n");
+
+    // Try to get scheduler info without blocking (try_lock)
+    // If the scheduler lock is held, that itself is diagnostic info
+    raw_serial_str(b"Scheduler lock: ");
+    // We use the global SCHEDULER directly via the public with_scheduler_try_lock helper
+    if let Some(info) = crate::task::scheduler::try_dump_state() {
+        raw_serial_str(b"acquired\n");
+        raw_serial_str(b"  CPU 0 current thread: ");
+        print_timer_count_decimal(info.current_thread_id);
+        raw_serial_str(b"\n  Ready queue length: ");
+        print_timer_count_decimal(info.ready_queue_len);
+        raw_serial_str(b"\n  Total threads: ");
+        print_timer_count_decimal(info.total_threads);
+        raw_serial_str(b"\n  Blocked threads: ");
+        print_timer_count_decimal(info.blocked_count);
+        raw_serial_str(b"\n");
+    } else {
+        raw_serial_str(b"HELD (possible deadlock)\n");
+    }
+
+    // Try to get process manager info
+    raw_serial_str(b"Process manager lock: ");
+    if let Some(info) = crate::process::try_dump_state() {
+        raw_serial_str(b"acquired\n");
+        raw_serial_str(b"  Total processes: ");
+        print_timer_count_decimal(info.total_processes);
+        raw_serial_str(b"\n  Running: ");
+        print_timer_count_decimal(info.running_count);
+        raw_serial_str(b"\n  Blocked: ");
+        print_timer_count_decimal(info.blocked_count);
+        raw_serial_str(b"\n");
+        // Dump individual process names and states
+        for p in &info.processes {
+            raw_serial_str(b"  PID ");
+            print_timer_count_decimal(p.pid);
+            raw_serial_str(b" [");
+            raw_serial_str(p.state_str.as_bytes());
+            raw_serial_str(b"] ");
+            raw_serial_str(p.name.as_bytes());
+            raw_serial_str(b"\n");
+        }
+    } else {
+        raw_serial_str(b"HELD (possible deadlock)\n");
+    }
+
+    // Dump trace counters (lock-free atomics, always safe from interrupt context)
+    dump_trace_counters();
+
+    raw_serial_str(b"!!! END SOFT LOCKUP DUMP !!!\n\n");
+}
+
+/// Dump trace counter values using lock-free serial output.
+/// Safe to call from interrupt context since TraceCounter uses per-CPU atomics.
+fn dump_trace_counters() {
+    use crate::tracing::providers::counters;
+
+    raw_serial_str(b"Trace counters:\n");
+
+    raw_serial_str(b"  SYSCALL_TOTAL:    ");
+    print_timer_count_decimal(counters::SYSCALL_TOTAL.aggregate());
+    raw_serial_str(b"\n  IRQ_TOTAL:        ");
+    print_timer_count_decimal(counters::IRQ_TOTAL.aggregate());
+    raw_serial_str(b"\n  CTX_SWITCH_TOTAL: ");
+    print_timer_count_decimal(counters::CTX_SWITCH_TOTAL.aggregate());
+    raw_serial_str(b"\n  TIMER_TICK_TOTAL: ");
+    print_timer_count_decimal(counters::TIMER_TICK_TOTAL.aggregate());
+    raw_serial_str(b"\n  FORK_TOTAL:       ");
+    print_timer_count_decimal(counters::FORK_TOTAL.aggregate());
+    raw_serial_str(b"\n  EXEC_TOTAL:       ");
+    print_timer_count_decimal(counters::EXEC_TOTAL.aggregate());
+    raw_serial_str(b"\n  Global ticks:     ");
+    print_timer_count_decimal(crate::time::get_ticks());
+    raw_serial_str(b"\n  Timer IRQ count:  ");
+    print_timer_count_decimal(TIMER_INTERRUPT_COUNT.load(Ordering::Relaxed));
+    raw_serial_str(b"\n");
 }
 
 /// Poll VirtIO keyboard and push characters to TTY

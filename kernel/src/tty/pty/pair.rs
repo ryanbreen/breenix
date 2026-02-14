@@ -93,6 +93,9 @@ pub struct PtyPair {
     /// Master side reference count
     pub master_refcount: AtomicU32,
 
+    /// Slave side reference count (tracks open slave FDs)
+    pub slave_refcount: AtomicU32,
+
     /// Foreground process group ID
     pub foreground_pgid: spin::Mutex<Option<u32>>,
 
@@ -117,6 +120,7 @@ impl PtyPair {
             winsize: spin::Mutex::new(Winsize::default_pty()),
             locked: AtomicBool::new(true), // Locked until unlockpt()
             master_refcount: AtomicU32::new(1),
+            slave_refcount: AtomicU32::new(0), // No slave FDs open initially
             foreground_pgid: spin::Mutex::new(None),
             controlling_pid: spin::Mutex::new(None),
             master_waiters: spin::Mutex::new(Vec::new()),
@@ -186,9 +190,37 @@ impl PtyPair {
         }
     }
 
+    /// Increment slave reference count (called when a slave FD is created)
+    pub fn slave_open(&self) {
+        self.slave_refcount.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Decrement slave reference count. Returns true if this was the last slave.
+    /// When the last slave closes, wakes master waiters so they can detect hangup.
+    pub fn slave_close(&self) -> bool {
+        let old = self.slave_refcount.fetch_sub(1, Ordering::SeqCst);
+        if old == 1 {
+            // Last slave closed — wake master readers so they see EOF/POLLHUP
+            self.wake_master_waiters();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Check if any slave FDs are still open
+    pub fn has_slave_open(&self) -> bool {
+        self.slave_refcount.load(Ordering::SeqCst) > 0
+    }
+
     /// Check if there is data available for the master to read
     pub fn has_master_data(&self) -> bool {
         !self.slave_to_master.lock().is_empty()
+    }
+
+    /// Check if master should be woken (data available OR slave hung up)
+    pub fn should_wake_master(&self) -> bool {
+        self.has_master_data() || !self.has_slave_open()
     }
 
     /// Check if there is data available for the slave to read
@@ -207,22 +239,38 @@ impl PtyPair {
     /// is responsible for displaying what it writes. The echo callback is still
     /// called for line discipline state tracking, but output isn't sent to the
     /// slave_to_master buffer to avoid polluting slave->master data flow.
+    ///
+    /// If the line discipline generates a signal (e.g., SIGINT from Ctrl+C),
+    /// it is delivered to the foreground process group.
     pub fn master_write(&self, data: &[u8]) -> Result<usize, i32> {
-        let mut ldisc = self.ldisc.lock();
-        let _termios = self.termios.lock();
+        let mut signal_to_deliver = None;
+        let written;
 
-        let mut written = 0;
-        for &byte in data {
-            // Process through line discipline - echo callback is a no-op
-            // because the master (terminal emulator) handles its own display
-            let _signal = ldisc.input_char(byte, &mut |_echo_byte| {
-                // Discard echo - master handles its own display
-            });
-            written += 1;
+        {
+            let mut ldisc = self.ldisc.lock();
+            let _termios = self.termios.lock();
+
+            let mut count = 0;
+            for &byte in data {
+                // Process through line discipline - echo callback is a no-op
+                // because the master (terminal emulator) handles its own display
+                let signal = ldisc.input_char(byte, &mut |_echo_byte| {
+                    // Discard echo - master handles its own display
+                });
+                if signal.is_some() {
+                    signal_to_deliver = signal;
+                }
+                count += 1;
+            }
+            written = count;
+            // ldisc and termios locks dropped here
         }
 
-        drop(_termios);
-        drop(ldisc);
+        // Deliver signal to foreground process group if one was generated
+        // (must be done after releasing ldisc/termios locks to avoid deadlock)
+        if let Some(sig) = signal_to_deliver {
+            self.send_signal_to_foreground(sig);
+        }
 
         if written > 0 {
             // Wake threads blocked on slave_read
@@ -232,11 +280,94 @@ impl PtyPair {
         Ok(written)
     }
 
+    /// Send a signal to the foreground process group
+    ///
+    /// Called when the line discipline generates a signal character
+    /// (e.g., Ctrl+C -> SIGINT, Ctrl+\ -> SIGQUIT, Ctrl+Z -> SIGTSTP).
+    fn send_signal_to_foreground(&self, sig: u32) {
+        let pgid = match *self.foreground_pgid.lock() {
+            Some(pgid) => pgid,
+            None => {
+                log::debug!("PTY{}: Signal {} but no foreground pgid", self.pty_num, sig);
+                return;
+            }
+        };
+
+        let pgid_as_pid = crate::process::ProcessId::new(pgid as u64);
+
+        // Collect target PIDs and thread IDs for all non-terminated processes
+        // in the foreground group (collect first, then deliver, to avoid
+        // holding the manager lock while waking threads)
+        let targets: Vec<(crate::process::ProcessId, Option<u64>)> = {
+            let manager_guard = crate::process::manager();
+            if let Some(ref manager) = *manager_guard {
+                manager
+                    .all_processes()
+                    .iter()
+                    .filter(|p| p.pgid == pgid_as_pid && !p.is_terminated())
+                    .map(|p| (p.id, p.main_thread.as_ref().map(|t| t.id)))
+                    .collect()
+            } else {
+                return;
+            }
+        };
+
+        if targets.is_empty() {
+            log::debug!(
+                "PTY{}: No processes in foreground group {} for signal {}",
+                self.pty_num,
+                pgid,
+                sig
+            );
+            return;
+        }
+
+        // Set signal pending on each process
+        {
+            let mut manager_guard = crate::process::manager();
+            if let Some(ref mut pm) = *manager_guard {
+                for &(pid, _) in &targets {
+                    if let Some(proc) = pm.get_process_mut(pid) {
+                        proc.signals.set_pending(sig);
+                        if matches!(proc.state, crate::process::ProcessState::Blocked) {
+                            proc.set_ready();
+                        }
+                        log::info!(
+                            "PTY{}: Sent signal {} to process {} (PID {})",
+                            self.pty_num,
+                            sig,
+                            proc.name,
+                            pid.as_u64()
+                        );
+                    }
+                }
+            }
+        }
+
+        // Wake threads that may be blocked on signals or waitpid
+        for &(_, thread_id) in &targets {
+            if let Some(tid) = thread_id {
+                crate::task::scheduler::with_scheduler(|sched| {
+                    sched.unblock_for_signal(tid);
+                    sched.unblock_for_child_exit(tid);
+                });
+            }
+        }
+        crate::task::scheduler::set_need_resched();
+    }
+
     /// Read data from master (slave's output)
+    ///
+    /// Returns Ok(n) if data was read, Err(EAGAIN) if no data available but
+    /// slave is still open, or Ok(0) (EOF) if slave has closed and buffer is empty.
     pub fn master_read(&self, buf: &mut [u8]) -> Result<usize, i32> {
         let mut buffer = self.slave_to_master.lock();
         let n = buffer.read(buf);
         if n == 0 {
+            // No data — check if slave is gone (hangup)
+            if !self.has_slave_open() {
+                return Ok(0); // EOF — slave hung up
+            }
             return Err(EAGAIN);
         }
         Ok(n)

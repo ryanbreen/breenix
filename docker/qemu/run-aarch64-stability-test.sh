@@ -1,17 +1,19 @@
 #!/bin/bash
-# ARM64 stability test - ensures kernel stays stable after shell prompt.
+# ARM64 Stability Test (Native QEMU)
 #
-# This test boots to the userspace shell, then continues monitoring serial
-# output for aborts/exceptions for a short window (post-boot stability).
+# Multi-phase test that verifies sustained operation under GPU load:
+#   Phase 1: Boot → BWM initializes (20s timeout)
+#   Phase 2: Services → bounce demo + shell prompt appear (10s timeout)
+#   Phase 3: Stability soak → 15 seconds of monitoring for lockups/panics
+#   Phase 4: Report
+#
+# Unlike the basic boot test which exits as soon as the shell prompt appears,
+# this test continues monitoring to catch deadlocks and soft lockups that
+# only manifest under sustained GPU load (e.g., bounce.elf running).
 #
 # Usage: ./run-aarch64-stability-test.sh
 
 set -e
-
-WAIT_FOR_PROMPT_SECS=20
-POST_PROMPT_WAIT_SECS=8
-CHECK_INTERVAL_SECS=1
-QEMU_TIMEOUT_SECS=40
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -24,7 +26,7 @@ if [ ! -f "$KERNEL" ]; then
     exit 1
 fi
 
-# Find ext2 disk (required for init_shell)
+# Find ext2 disk (required for userspace)
 EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
 if [ ! -f "$EXT2_DISK" ]; then
     echo "Error: ext2 disk not found at $EXT2_DISK"
@@ -35,7 +37,7 @@ OUTPUT_DIR="/tmp/breenix_aarch64_stability"
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 
-# Create writable copy of ext2 disk to allow filesystem write tests
+# Create writable copy of ext2 disk
 EXT2_WRITABLE="$OUTPUT_DIR/ext2-writable.img"
 cp "$EXT2_DISK" "$EXT2_WRITABLE"
 
@@ -48,18 +50,14 @@ cleanup() {
 trap cleanup EXIT
 
 echo "========================================="
-echo "ARM64 Stability Test"
+echo "ARM64 Stability Test (Native QEMU)"
 echo "========================================="
 echo "Kernel: $KERNEL"
 echo "ext2 disk: $EXT2_DISK"
-echo "Wait for prompt: ${WAIT_FOR_PROMPT_SECS}s"
-echo "Post-prompt window: ${POST_PROMPT_WAIT_SECS}s"
 echo ""
 
-# Run QEMU with timeout
-# Always include GPU, keyboard, and network so kernel VirtIO enumeration finds them
-# Use writable disk copy (no readonly=on) to allow filesystem writes
-timeout "$QEMU_TIMEOUT_SECS" qemu-system-aarch64 \
+# Start QEMU in background (60s total timeout)
+timeout 60 qemu-system-aarch64 \
     -M virt -cpu cortex-a72 -m 512 -smp 4 \
     -kernel "$KERNEL" \
     -display none -no-reboot \
@@ -73,66 +71,152 @@ timeout "$QEMU_TIMEOUT_SECS" qemu-system-aarch64 \
     -serial file:"$OUTPUT_DIR/serial.txt" &
 QEMU_PID=$!
 
-# Wait for USERSPACE shell prompt (init_shell or bsh)
-# Accept "breenix>" (init_shell) or "bsh " (bsh shell) as valid userspace prompts
-# DO NOT accept "Interactive Shell" - that's the KERNEL FALLBACK when userspace FAILS
-BOOT_COMPLETE=false
-PROMPT_LINE=0
-for _ in $(seq 1 $((WAIT_FOR_PROMPT_SECS / CHECK_INTERVAL_SECS))); do
+FAIL_REASON=""
+
+# Helper: check for fatal markers in serial output
+check_fatal() {
+    if grep -qiE "soft lockup detected" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+        echo "Soft lockup detected"
+        return 0
+    fi
+    if grep -qiE "(KERNEL PANIC|panic!)" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+        echo "Kernel panic"
+        return 0
+    fi
+    if grep -qiE "(DATA_ABORT|INSTRUCTION_ABORT|Unhandled sync exception)" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+        echo "CPU exception"
+        return 0
+    fi
+    return 1
+}
+
+# --- Phase 1: Boot (20s timeout) ---
+echo "Phase 1: Boot (waiting for BWM or shell)..."
+PHASE1_OK=false
+for i in $(seq 1 10); do
     if [ -f "$OUTPUT_DIR/serial.txt" ]; then
-        if grep -qE "(breenix>|bsh )" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
-            BOOT_COMPLETE=true
-            PROMPT_LINE=$(grep -nE "(breenix>|bsh )" "$OUTPUT_DIR/serial.txt" | tail -1 | cut -d: -f1)
+        # Accept BWM display init or shell prompt as boot success
+        if grep -qE "(\[bwm\] Display:|breenix>|bsh )" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            PHASE1_OK=true
             break
         fi
-        if grep -qiE "(KERNEL PANIC|panic!)" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+        if FATAL=$(check_fatal); then
+            FAIL_REASON="Phase 1: $FATAL during boot"
             break
         fi
     fi
-    sleep "$CHECK_INTERVAL_SECS"
+    sleep 2
 done
 
-if ! $BOOT_COMPLETE; then
-    LINES=$(wc -l < "$OUTPUT_DIR/serial.txt" 2>/dev/null || echo 0)
-    if grep -qiE "(KERNEL PANIC|panic!)" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
-        echo "FAIL: Kernel panic before shell prompt ($LINES lines)"
-    else
-        echo "FAIL: Shell prompt not detected ($LINES lines)"
+if ! $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
+    FAIL_REASON="Phase 1 timeout: neither BWM nor shell prompt detected"
+fi
+
+# --- Phase 2: Services (10s timeout) ---
+# In BWM mode, shell writes to its PTY (rendered to framebuffer by BWM),
+# so "bsh " won't appear on serial. We accept either:
+#   - Direct shell prompt on serial (non-BWM mode)
+#   - BWM reporting shell PID (BWM mode — shell was spawned successfully)
+if [ -z "$FAIL_REASON" ]; then
+    echo "Phase 1: PASS"
+    echo "Phase 2: Services (waiting for shell or BWM shell spawn)..."
+    SHELL_OK=false
+    BOUNCE_OK=false
+    for i in $(seq 1 5); do
+        # Direct shell prompt on serial
+        if grep -qE "(breenix>|bsh )" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            SHELL_OK=true
+        fi
+        # BWM spawned a shell process (shell output goes to PTY, not serial)
+        if grep -qE "\[bwm\] Shell PID:" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            SHELL_OK=true
+        fi
+        if grep -q "Bounce demo starting" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            BOUNCE_OK=true
+        fi
+        if $SHELL_OK; then
+            break
+        fi
+        if FATAL=$(check_fatal); then
+            FAIL_REASON="Phase 2: $FATAL during service startup"
+            break
+        fi
+        sleep 2
+    done
+
+    if [ -z "$FAIL_REASON" ]; then
+        if $BOUNCE_OK; then
+            echo "  bounce demo: detected"
+        else
+            echo "  bounce demo: not detected (optional)"
+        fi
+        if ! $SHELL_OK; then
+            FAIL_REASON="Phase 2 timeout: shell not detected"
+        else
+            echo "Phase 2: PASS (shell spawned)"
+        fi
     fi
-    tail -10 "$OUTPUT_DIR/serial.txt" 2>/dev/null || true
-    exit 1
 fi
 
-# Verify shell (init_shell or bsh) appears at least once
-SHELL_COUNT=$(grep -oE "(init_shell|bsh)" "$OUTPUT_DIR/serial.txt" 2>/dev/null | wc -l | tr -d ' ')
-SHELL_COUNT=${SHELL_COUNT:-0}
-if [ "$SHELL_COUNT" -lt 1 ]; then
-    echo "FAIL: shell marker (init_shell or bsh) not found after prompt"
-    tail -10 "$OUTPUT_DIR/serial.txt" 2>/dev/null || true
-    exit 1
+# --- Phase 3: Stability soak (15s, check every 3s) ---
+# Monitor for panics, lockups, and exceptions over a sustained period.
+# Note: serial output may NOT grow after boot — the kernel doesn't produce
+# periodic serial output by default (particle thread is disabled, and in BWM
+# mode all output goes through PTYs to the framebuffer). So we only check
+# for negative markers, not output growth.
+if [ -z "$FAIL_REASON" ]; then
+    echo "Phase 3: Stability soak (15s)..."
+
+    for check in $(seq 1 5); do
+        sleep 3
+
+        # Check for fatal markers that may appear during sustained operation
+        if FATAL=$(check_fatal); then
+            FAIL_REASON="Phase 3: $FATAL during soak (check $check)"
+            break
+        fi
+
+        # Check QEMU is still running (hasn't crashed or rebooted)
+        if ! kill -0 $QEMU_PID 2>/dev/null; then
+            FAIL_REASON="Phase 3: QEMU exited unexpectedly during soak (check $check)"
+            break
+        fi
+
+        CURR_LINES=$(wc -l < "$OUTPUT_DIR/serial.txt" 2>/dev/null | tr -d ' ')
+        echo "  Check $check/5: OK (${CURR_LINES:-0} lines, QEMU alive)"
+    done
+
+    if [ -z "$FAIL_REASON" ]; then
+        echo "Phase 3: PASS (stable for 15s)"
+    fi
 fi
 
-echo "Boot complete. Monitoring post-prompt output..."
-sleep "$POST_PROMPT_WAIT_SECS"
+# --- Cleanup QEMU ---
+kill $QEMU_PID 2>/dev/null || true
+wait $QEMU_PID 2>/dev/null || true
+unset QEMU_PID  # Prevent trap from trying to kill again
 
-POST_PROMPT_FILE="$OUTPUT_DIR/post_prompt.txt"
-if [ "$PROMPT_LINE" -gt 0 ]; then
-    tail -n +"$((PROMPT_LINE + 1))" "$OUTPUT_DIR/serial.txt" > "$POST_PROMPT_FILE"
+# --- Phase 4: Report ---
+echo ""
+TOTAL_LINES=$(wc -l < "$OUTPUT_DIR/serial.txt" 2>/dev/null | tr -d ' ')
+TOTAL_LINES=${TOTAL_LINES:-0}
+
+if [ -z "$FAIL_REASON" ]; then
+    echo "========================================="
+    echo "ARM64 STABILITY TEST: PASSED"
+    echo "========================================="
+    echo "Serial output: ${TOTAL_LINES} lines"
+    echo "Log: $OUTPUT_DIR/serial.txt"
+    exit 0
 else
-    cp "$OUTPUT_DIR/serial.txt" "$POST_PROMPT_FILE"
-fi
-
-if grep -qiE "(DATA_ABORT|INSTRUCTION_ABORT|Unhandled sync exception)" "$POST_PROMPT_FILE"; then
-    echo "FAIL: Exception detected after shell prompt"
-    grep -inE "(DATA_ABORT|INSTRUCTION_ABORT|Unhandled sync exception)" "$POST_PROMPT_FILE" | head -5
+    echo "========================================="
+    echo "ARM64 STABILITY TEST: FAILED"
+    echo "========================================="
+    echo "Reason: $FAIL_REASON"
+    echo "Serial output: ${TOTAL_LINES} lines"
+    echo "Log: $OUTPUT_DIR/serial.txt"
+    echo ""
+    echo "Last 15 lines:"
+    tail -15 "$OUTPUT_DIR/serial.txt" 2>/dev/null || echo "(no output)"
     exit 1
 fi
-
-if grep -qiE "(KERNEL PANIC|panic!)" "$POST_PROMPT_FILE"; then
-    echo "FAIL: Kernel panic detected after shell prompt"
-    grep -inE "(KERNEL PANIC|panic!)" "$POST_PROMPT_FILE" | head -5
-    exit 1
-fi
-
-echo "SUCCESS: No aborts/exceptions detected after shell prompt"
-exit 0

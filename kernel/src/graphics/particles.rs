@@ -71,6 +71,8 @@ pub fn animation_thread_entry() {
                 if let Some(system) = PARTICLE_SYSTEM.get() {
                     if let Some(sys) = system.try_lock() {
                         sys.render(&mut *fb_guard);
+                        // Mark full screen dirty — particles can be anywhere
+                        arm64_fb::mark_full_dirty();
                     }
                 }
             }

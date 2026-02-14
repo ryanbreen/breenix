@@ -9,6 +9,7 @@ pub use pair::PtyPair;
 
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use spin::{Mutex, Once};
 use crate::syscall::errno::{ENOMEM, ENOSPC};
 
@@ -20,6 +21,8 @@ static PTY_ALLOCATOR: Once<Mutex<PtyAllocator>> = Once::new();
 
 struct PtyAllocator {
     next_pty_num: u32,
+    /// Released PTY numbers available for reuse
+    free_list: Vec<u32>,
     pairs: BTreeMap<u32, Arc<PtyPair>>,
 }
 
@@ -27,6 +30,7 @@ impl PtyAllocator {
     fn new() -> Self {
         Self {
             next_pty_num: 0,
+            free_list: Vec::new(),
             pairs: BTreeMap::new(),
         }
     }
@@ -42,12 +46,16 @@ pub fn init() {
 pub fn allocate() -> Result<Arc<PtyPair>, i32> {
     let mut alloc = PTY_ALLOCATOR.get().ok_or(ENOMEM)?.lock();
 
-    if alloc.next_pty_num >= MAX_PTYS {
+    // Prefer recycling a released PTY number
+    let pty_num = if let Some(recycled) = alloc.free_list.pop() {
+        recycled
+    } else if alloc.next_pty_num < MAX_PTYS {
+        let num = alloc.next_pty_num;
+        alloc.next_pty_num += 1;
+        num
+    } else {
         return Err(ENOSPC);
-    }
-
-    let pty_num = alloc.next_pty_num;
-    alloc.next_pty_num += 1;
+    };
 
     let pair = Arc::new(PtyPair::new(pty_num));
     alloc.pairs.insert(pty_num, pair.clone());
@@ -60,10 +68,13 @@ pub fn get(pty_num: u32) -> Option<Arc<PtyPair>> {
     PTY_ALLOCATOR.get()?.lock().pairs.get(&pty_num).cloned()
 }
 
-/// Release a PTY pair
+/// Release a PTY pair, returning its number to the free list for reuse
 pub fn release(pty_num: u32) {
     if let Some(alloc) = PTY_ALLOCATOR.get() {
-        alloc.lock().pairs.remove(&pty_num);
+        let mut alloc = alloc.lock();
+        if alloc.pairs.remove(&pty_num).is_some() {
+            alloc.free_list.push(pty_num);
+        }
     }
 }
 
