@@ -192,6 +192,27 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     // Read the command from userspace
     let cmd: FbDrawCmd = unsafe { core::ptr::read(cmd_ptr as *const FbDrawCmd) };
 
+    // On ARM64, read fb_mmap info BEFORE acquiring SHELL_FRAMEBUFFER.
+    // This prevents holding PROCESS_MANAGER (which disables interrupts on ARM64)
+    // while also holding the framebuffer lock — that nested lock pattern caused
+    // contention with the render thread and other syscall paths.
+    #[cfg(target_arch = "aarch64")]
+    let fb_mmap_info_pre: Option<crate::process::process::FbMmapInfo> = {
+        use crate::syscall::memory_common::get_current_thread_id;
+        let thread_id = get_current_thread_id();
+        if let Some(tid) = thread_id {
+            let mgr_guard = crate::process::manager();
+            if let Some(ref mgr) = *mgr_guard {
+                mgr.find_process_by_thread(tid)
+                    .and_then(|(_pid, proc)| proc.fb_mmap)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
     // Get framebuffer
     let fb = match SHELL_FRAMEBUFFER.get() {
         Some(fb) => fb,
@@ -374,22 +395,9 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
             }
             #[cfg(target_arch = "aarch64")]
             {
-                // Check if this process has an fb_mmap
-                let fb_mmap_info = {
-                    use crate::syscall::memory_common::get_current_thread_id;
-                    let thread_id = get_current_thread_id();
-                    if let Some(tid) = thread_id {
-                        let mgr_guard = crate::process::manager();
-                        if let Some(ref mgr) = *mgr_guard {
-                            mgr.find_process_by_thread(tid)
-                                .and_then(|(_pid, proc)| proc.fb_mmap)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                };
+                // Use fb_mmap info that was read BEFORE acquiring SHELL_FRAMEBUFFER
+                // to avoid holding PM (interrupts disabled) inside the FB lock.
+                let fb_mmap_info = fb_mmap_info_pre;
 
                 if let Some(mmap_info) = fb_mmap_info {
                     // Determine which rows to copy

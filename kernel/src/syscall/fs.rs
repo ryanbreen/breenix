@@ -1889,13 +1889,10 @@ fn handle_devpts_open(pty_name: &str) -> SyscallResult {
     use super::errno::{EMFILE, ENOENT};
     use crate::fs::devptsfs;
 
-    log::debug!("handle_devpts_open: pty_name={:?}", pty_name);
-
     // Look up the PTY slave in devptsfs
     let pty_num = match devptsfs::lookup(pty_name) {
         Some(num) => num,
         None => {
-            log::debug!("handle_devpts_open: PTY slave not found or locked: {}", pty_name);
             return SyscallResult::Err(ENOENT as u64);
         }
     };
@@ -1904,7 +1901,6 @@ fn handle_devpts_open(pty_name: &str) -> SyscallResult {
     let thread_id = match crate::task::scheduler::current_thread_id() {
         Some(id) => id,
         None => {
-            log::error!("handle_devpts_open: No current thread");
             return SyscallResult::Err(3); // ESRCH
         }
     };
@@ -1914,12 +1910,10 @@ fn handle_devpts_open(pty_name: &str) -> SyscallResult {
         Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
             Some((_, p)) => p,
             None => {
-                log::error!("handle_devpts_open: Process not found for thread {}", thread_id);
                 return SyscallResult::Err(3); // ESRCH
             }
         },
         None => {
-            log::error!("handle_devpts_open: Process manager not initialized");
             return SyscallResult::Err(3); // ESRCH
         }
     };
@@ -1928,11 +1922,9 @@ fn handle_devpts_open(pty_name: &str) -> SyscallResult {
     let fd_kind = FdKind::PtySlave(pty_num);
     match process.fd_table.alloc(fd_kind) {
         Ok(fd) => {
-            log::info!("handle_devpts_open: opened /dev/pts/{} as fd {}", pty_num, fd);
             SyscallResult::Ok(fd as u64)
         }
         Err(_) => {
-            log::error!("handle_devpts_open: too many open files");
             SyscallResult::Err(EMFILE as u64)
         }
     }
