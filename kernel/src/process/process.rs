@@ -14,12 +14,12 @@ use x86_64::VirtAddr;
 use crate::memory::arch_stub::VirtAddr;
 
 /// Info about a framebuffer mmap'd into a process's address space.
-/// The user buffer is a compact left-pane buffer (no right-pane padding).
+/// The user buffer is a compact pane buffer (no cross-pane padding).
 #[derive(Debug, Clone, Copy)]
 pub struct FbMmapInfo {
     /// Userspace virtual address of the mapping
     pub user_addr: u64,
-    /// Width in pixels (left pane only)
+    /// Width in pixels (pane only)
     pub width: usize,
     /// Height in pixels
     pub height: usize,
@@ -29,6 +29,8 @@ pub struct FbMmapInfo {
     pub bpp: usize,
     /// Total mapping size in bytes (page-aligned)
     pub mapping_size: u64,
+    /// Pixel X offset in the physical framebuffer (0 for left pane, width/2+4 for right pane)
+    pub x_offset: usize,
 }
 
 /// Process ID type
@@ -166,6 +168,9 @@ pub struct Process {
     /// Framebuffer mmap info (if this process has an mmap'd framebuffer)
     pub fb_mmap: Option<FbMmapInfo>,
 
+    /// Whether this process has taken over the display (called take_over_display syscall)
+    pub has_display_ownership: bool,
+
     /// Accumulated CPU ticks for this process (for btop display)
     pub cpu_ticks: u64,
 }
@@ -219,6 +224,7 @@ impl Process {
             user_stack_top: 0,
             pending_old_page_tables: Vec::new(),
             fb_mmap: None,
+            has_display_ownership: false,
             cpu_ticks: 0,
         }
     }

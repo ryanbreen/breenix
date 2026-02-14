@@ -16,46 +16,11 @@ use breenish_js::string::StringPool;
 use breenish_js::value::JsValue;
 use breenish_js::Context;
 use libbreenix::audio;
+use libbreenix::synth;
 
 // ---------------------------------------------------------------------------
 // Terminal bell (short chime on ambiguous tab completion)
 // ---------------------------------------------------------------------------
-
-/// 256-entry sine table, amplitude 32767
-const BELL_SINE: [i16; 256] = [
-         0,    804,   1608,   2410,   3212,   4011,   4808,   5602,
-      6393,   7179,   7962,   8739,   9512,  10278,  11039,  11793,
-     12539,  13279,  14010,  14732,  15446,  16151,  16846,  17530,
-     18204,  18868,  19519,  20159,  20787,  21403,  22005,  22594,
-     23170,  23731,  24279,  24811,  25329,  25832,  26319,  26790,
-     27245,  27683,  28105,  28510,  28898,  29268,  29621,  29956,
-     30273,  30571,  30852,  31113,  31356,  31580,  31785,  31971,
-     32137,  32285,  32412,  32521,  32609,  32678,  32728,  32757,
-     32767,  32757,  32728,  32678,  32609,  32521,  32412,  32285,
-     32137,  31971,  31785,  31580,  31356,  31113,  30852,  30571,
-     30273,  29956,  29621,  29268,  28898,  28510,  28105,  27683,
-     27245,  26790,  26319,  25832,  25329,  24811,  24279,  23731,
-     23170,  22594,  22005,  21403,  20787,  20159,  19519,  18868,
-     18204,  17530,  16846,  16151,  15446,  14732,  14010,  13279,
-     12539,  11793,  11039,  10278,   9512,   8739,   7962,   7179,
-      6393,   5602,   4808,   4011,   3212,   2410,   1608,    804,
-         0,   -804,  -1608,  -2410,  -3212,  -4011,  -4808,  -5602,
-     -6393,  -7179,  -7962,  -8739,  -9512, -10278, -11039, -11793,
-    -12539, -13279, -14010, -14732, -15446, -16151, -16846, -17530,
-    -18204, -18868, -19519, -20159, -20787, -21403, -22005, -22594,
-    -23170, -23731, -24279, -24811, -25329, -25832, -26319, -26790,
-    -27245, -27683, -28105, -28510, -28898, -29268, -29621, -29956,
-    -30273, -30571, -30852, -31113, -31356, -31580, -31785, -31971,
-    -32137, -32285, -32412, -32521, -32609, -32678, -32728, -32757,
-    -32767, -32757, -32728, -32678, -32609, -32521, -32412, -32285,
-    -32137, -31971, -31785, -31580, -31356, -31113, -30852, -30571,
-    -30273, -29956, -29621, -29268, -28898, -28510, -28105, -27683,
-    -27245, -26790, -26319, -25832, -25329, -24811, -24279, -23731,
-    -23170, -22594, -22005, -21403, -20787, -20159, -19519, -18868,
-    -18204, -17530, -16846, -16151, -15446, -14732, -14010, -13279,
-    -12539, -11793, -11039, -10278,  -9512,  -8739,  -7962,  -7179,
-     -6393,  -5602,  -4808,  -4011,  -3212,  -2410,  -1608,   -804,
-];
 
 /// Play a short bell/chime tone for tab completion feedback.
 /// Lazily initializes audio on first call; silently does nothing if audio
@@ -88,7 +53,7 @@ fn play_bell() {
 
     for i in 0..DURATION_SAMPLES as usize {
         let idx = ((phase >> 8) & 0xFF) as usize;
-        let raw = BELL_SINE[idx] as i32;
+        let raw = synth::SINE_TABLE[idx] as i32;
 
         // Envelope: linear decay over the full duration (simulates a bell strike)
         let env = ((DURATION_SAMPLES as usize - i) * 256 / DURATION_SAMPLES as usize) as i32;
@@ -130,73 +95,73 @@ impl FartRng {
     }
 }
 
-/// Fixed-point scale for fart synthesis
-const FART_FP_SHIFT: u32 = 16;
-const FART_FP_ONE: u32 = 1 << FART_FP_SHIFT;
 const FART_SAMPLE_RATE: u32 = 44100;
 
-/// Look up sine value using fixed-point phase
-fn fart_sine_fp(phase: u32) -> i16 {
-    let idx = ((phase >> (FART_FP_SHIFT - 8)) & 0xFF) as usize;
-    BELL_SINE[idx]
-}
-
-/// Phase increment for a given frequency in Hz
-fn fart_freq_to_phase_inc(freq_hz: u32) -> u32 {
-    (freq_hz as u64 * FART_FP_ONE as u64 / FART_SAMPLE_RATE as u64) as u32
-}
-
-/// Fart envelope: quick attack, sustain with decay, tail-off
-fn fart_envelope(sample_idx: u32, total_samples: u32) -> u32 {
-    let attack = FART_SAMPLE_RATE * 30 / 1000;
-    let release = total_samples * 30 / 100;
+/// Overall pressure envelope: quick attack, sustain with decay, long tail-off.
+fn fart_envelope(sample_idx: u32, total_samples: u32) -> i64 {
+    let attack = FART_SAMPLE_RATE * 20 / 1000;
+    let release = total_samples * 35 / 100;
 
     if sample_idx < attack {
-        (sample_idx * 256) / attack
+        (sample_idx as i64 * 256) / attack as i64
     } else if sample_idx >= total_samples.saturating_sub(release) {
         let remaining = total_samples.saturating_sub(sample_idx);
-        (remaining * 256) / release
+        (remaining as i64 * 256) / release as i64
     } else {
         let sustain_pos = sample_idx - attack;
         let sustain_len = total_samples.saturating_sub(attack + release);
-        if sustain_len == 0 {
-            256
-        } else {
-            256 - (sustain_pos * 80 / sustain_len)
-        }
+        if sustain_len == 0 { 256 }
+        else { 256 - (sustain_pos as i64 * 70 / sustain_len as i64) }
     }
 }
 
-/// Synthesize and play one fart sound.
+/// Synthesize and play one fart sound using source-filter model.
 ///
-/// Buzzy low-frequency tone (fundamental + harmonics) with downward pitch
-/// sweep and a small amount of low-pass filtered noise for texture.
+/// Based on acoustic research: sphincter pulses (100-200 Hz) excite rectal
+/// cavity resonance (~270 Hz), producing perceived peak at 250-300 Hz.
+/// Closed tube = odd harmonics. Pulsatile waveform. -10 dB/octave rolloff.
 fn play_one_fart_sound(rng: &mut FartRng) {
-    let base_freq = rng.range(70, 130);
-    let duration_ms = rng.range(300, 900);
+    let base_freq = rng.range(100, 185) as i64;
+    let duration_ms = rng.range(800, 2500);
     let total_samples = FART_SAMPLE_RATE * duration_ms / 1000;
 
-    // Pitch sweep: start higher, end lower
-    let start_freq = base_freq * rng.range(110, 140) / 100;
-    let end_freq = base_freq * rng.range(60, 90) / 100;
+    let start_freq = base_freq * rng.range(108, 135) as i64 / 100;
+    let end_freq = base_freq * rng.range(50, 80) as i64 / 100;
 
-    let lfo_freq = rng.range(4, 10);
-    let wobble_hz = rng.range(5, 15);
+    let duty_start = rng.range(30, 55) as i64;
+    let duty_end = rng.range(40, 65) as i64;
 
-    // Harmonic levels (out of 256)
-    let h2_level: i32 = rng.range(80, 140) as i32;
-    let h3_level: i32 = rng.range(40, 90) as i32;
-    let h4_level: i32 = rng.range(10, 50) as i32;
+    let resonant_freq = rng.range(230, 340) as i64;
+    let resonance_mix: i64 = rng.range(80, 160) as i64;
+    let resonance_decay: i64 = rng.range(252, 255) as i64;
 
-    // Low-pass filtered noise, mixed gently
-    let noise_mix: i32 = rng.range(20, 50) as i32;
-    let noise_alpha: i32 = rng.range(5, 12) as i32;
+    let jitter_hz = rng.range(8, 25) as i32;
+    let jitter_interval = rng.range(80, 200);
+    let shimmer_amount: i64 = rng.range(30, 80) as i64;
 
-    let lfo_phase_inc = fart_freq_to_phase_inc(lfo_freq);
+    let subharm_block = FART_SAMPLE_RATE * 50 / 1000;
+    let subharm_chance = rng.range(5, 18);
+
+    let sputter_block = FART_SAMPLE_RATE * 30 / 1000;
+    let sputter_onset_pct = rng.range(55, 75) as i64;
+    let sputter_ramp = FART_SAMPLE_RATE * 10 / 1000;
 
     let mut phase: u32 = 0;
-    let mut lfo_phase: u32 = 0;
-    let mut filtered_noise: i32 = 0;
+    let mut resonant_phase: u32 = 0;
+    let resonant_inc = fart_freq_to_inc(resonant_freq);
+    let mut resonant_amp: i64 = 0;
+
+    let mut jitter_offset: i32 = 0;
+    let mut jitter_target: i32 = 0;
+    let mut jitter_counter: u32 = 0;
+    let mut shimmer_current: i64 = 256;
+    let mut prev_in_pulse = false;
+    let mut subharm_active = false;
+    let mut subharm_counter: u32 = 0;
+    let mut sputter_gate: i64 = 256;
+    let mut sputter_target: i64 = 256;
+    let mut sputter_counter: u32 = 0;
+
     let mut samples_written: u32 = 0;
     let chunk_frames: u32 = 1024;
     let mut buf = [0i16; 1024 * 2];
@@ -207,52 +172,110 @@ fn play_one_fart_sound(rng: &mut FartRng) {
 
         for i in 0..frames as usize {
             let sample_idx = samples_written + i as u32;
+            let progress = sample_idx as i64 * 256 / total_samples as i64;
 
-            // Linear pitch sweep
-            let sweep_freq = start_freq as i64
-                + ((end_freq as i64 - start_freq as i64) * sample_idx as i64)
-                    / total_samples as i64;
+            // Pitch contour
+            let contour_freq = if progress < 38 {
+                let t = progress * 256 / 38;
+                start_freq + (base_freq - start_freq) * t / 256
+            } else if progress < 166 {
+                base_freq
+            } else {
+                let t = (progress - 166) * 256 / (256 - 166);
+                base_freq + (end_freq - base_freq) * t / 256
+            };
 
-            // LFO wobble
-            let lfo_val = fart_sine_fp(lfo_phase) as i64;
-            let wobble = wobble_hz as i64 * lfo_val / 32767;
-            let current_freq = (sweep_freq + wobble).max(20) as u32;
+            // Frequency jitter
+            jitter_counter += 1;
+            if jitter_counter >= jitter_interval {
+                jitter_counter = 0;
+                jitter_target = (rng.next() as i32 % (jitter_hz * 2 + 1)) - jitter_hz;
+            }
+            jitter_offset += (jitter_target - jitter_offset + 4) / 8;
+            let mut current_freq = contour_freq + jitter_offset as i64;
 
-            let phase_inc = fart_freq_to_phase_inc(current_freq);
+            // Sub-harmonic drops
+            subharm_counter += 1;
+            if subharm_counter >= subharm_block {
+                subharm_counter = 0;
+                if rng.range(0, 99) < subharm_chance {
+                    subharm_active = !subharm_active;
+                } else {
+                    subharm_active = false;
+                }
+            }
+            if subharm_active { current_freq /= 2; }
 
-            // Fundamental + harmonics for buzzy tone
-            let fund = fart_sine_fp(phase) as i32;
-            let h2 = fart_sine_fp(phase.wrapping_mul(2) % FART_FP_ONE) as i32;
-            let h3 = fart_sine_fp(phase.wrapping_mul(3) % FART_FP_ONE) as i32;
-            let h4 = fart_sine_fp(phase.wrapping_mul(4) % FART_FP_ONE) as i32;
+            let phase_inc = fart_freq_to_inc(current_freq);
 
-            let tone = fund as i64
-                + (h2 as i64 * h2_level as i64 / 256)
-                + (h3 as i64 * h3_level as i64 / 256)
-                + (h4 as i64 * h4_level as i64 / 256);
-            let tone = tone * 160 / 256;
+            // Sphincter pulse waveform
+            let duty = duty_start + (duty_end - duty_start) * progress / 256;
+            let duty_threshold = (duty * 256 / 100) as u32;
+            let cycle_pos = ((phase >> (FART_FP_SHIFT - 8)) & 0xFF) as u32;
+            let in_pulse = cycle_pos < duty_threshold;
 
-            // Low-pass filtered noise
-            let raw_noise = ((rng.next() as i32) >> 16) - 16384;
-            filtered_noise = (noise_alpha * raw_noise
-                + (256 - noise_alpha) * filtered_noise)
-                / 256;
-            let noise_sample = filtered_noise as i64 * 2;
+            if in_pulse && !prev_in_pulse {
+                let var = (rng.next() % (shimmer_amount as u32 * 2 + 1)) as i64
+                    - shimmer_amount;
+                shimmer_current = (256 + var).max(80).min(256);
+            }
+            prev_in_pulse = in_pulse;
 
-            // Mix tone and noise
-            let mixed = (tone * (256 - noise_mix as i64)
-                + noise_sample * noise_mix as i64)
-                / 256;
+            let pulse = if in_pulse && duty_threshold > 0 {
+                let remapped = (cycle_pos * 128 / duty_threshold) as usize;
+                synth::SINE_TABLE[remapped.min(127)] as i64 * shimmer_current / 256
+            } else {
+                0i64
+            };
 
+            // Rectal cavity resonance
+            if in_pulse {
+                let excitation = pulse.abs() / 128;
+                resonant_amp = resonant_amp + (excitation - resonant_amp) / 4;
+                if resonant_amp > 300 { resonant_amp = 300; }
+            } else {
+                resonant_amp = resonant_amp * resonance_decay / 256;
+            }
+            let resonant_out = fart_sine_fp(resonant_phase) as i64 * resonant_amp / 256;
+
+            // Mix source and resonance
+            let mixed = pulse * (256 - resonance_mix) / 256
+                + resonant_out * resonance_mix / 256;
+
+            // Sputtering gate
+            let sputter_threshold = sputter_onset_pct * 256 / 100;
+            sputter_counter += 1;
+            if sputter_counter >= sputter_block {
+                sputter_counter = 0;
+                if progress > sputter_threshold {
+                    let depth = (progress - sputter_threshold) * 256
+                        / (256 - sputter_threshold);
+                    let gap_prob = 15 + depth * 65 / 256;
+                    if rng.range(0, 99) < gap_prob as u32 {
+                        sputter_target = rng.range(0, 30) as i64;
+                    } else {
+                        sputter_target = 256;
+                    }
+                }
+            }
+            if sputter_gate < sputter_target {
+                sputter_gate += 256 / sputter_ramp.max(1) as i64;
+                if sputter_gate > sputter_target { sputter_gate = sputter_target; }
+            } else if sputter_gate > sputter_target {
+                sputter_gate -= 256 / sputter_ramp.max(1) as i64;
+                if sputter_gate < sputter_target { sputter_gate = sputter_target; }
+            }
+
+            // Final output
             let env = fart_envelope(sample_idx, total_samples);
-            let sample = (mixed * env as i64 / 256) as i32;
+            let sample = (mixed * sputter_gate / 256 * env / 256) as i32;
             let sample = sample.max(-32767).min(32767) as i16;
 
             buf[i * 2] = sample;
             buf[i * 2 + 1] = sample;
 
             phase = phase.wrapping_add(phase_inc) % FART_FP_ONE;
-            lfo_phase = lfo_phase.wrapping_add(lfo_phase_inc) % FART_FP_ONE;
+            resonant_phase = resonant_phase.wrapping_add(resonant_inc) % FART_FP_ONE;
         }
 
         if audio::write_samples(&buf[..frames as usize * 2]).is_err() {
@@ -291,7 +314,7 @@ fn play_fart(count: u32) {
         play_one_fart_sound(&mut rng);
 
         if i + 1 < count {
-            let gap_ms = rng.range(50, 200);
+            let gap_ms = rng.range(200, 800);
             let gap_samples = FART_SAMPLE_RATE * gap_ms / 1000;
             let silence = vec![0i16; gap_samples as usize * 2];
             let _ = audio::write_samples(&silence);

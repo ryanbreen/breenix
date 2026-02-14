@@ -477,6 +477,8 @@ pub fn handle_pty_tcsets(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
     };
 
     *pair.termios.lock() = termios;
+    // Also update the line discipline so input processing matches the new settings
+    pair.ldisc.lock().set_termios(termios);
     log::debug!("PTY{}: TCSETS applied - lflag={:#x}", pair.pty_num, termios.c_lflag);
 
     Ok(())

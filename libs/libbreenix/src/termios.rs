@@ -20,6 +20,17 @@ pub mod request {
     pub const TIOCGPGRP: u64 = 0x540F;
     pub const TIOCSPGRP: u64 = 0x5410;
     pub const TIOCGWINSZ: u64 = 0x5413;
+    pub const TIOCSWINSZ: u64 = 0x5414;
+}
+
+/// Terminal window size (matches kernel Winsize)
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct Winsize {
+    pub ws_row: u16,
+    pub ws_col: u16,
+    pub ws_xpixel: u16,
+    pub ws_ypixel: u16,
 }
 
 /// tcsetattr action values
@@ -114,6 +125,14 @@ pub fn tcsetattr(fd: Fd, action: i32, termios: &Termios) -> Result<(), Error> {
         raw::syscall3(SYS_IOCTL, fd.raw(), request, termios as *const _ as u64)
     };
 
+    Error::from_syscall(ret as i64).map(|_| ())
+}
+
+/// Set terminal window size (TIOCSWINSZ)
+pub fn set_winsize(fd: Fd, ws: &Winsize) -> Result<(), Error> {
+    let ret = unsafe {
+        raw::syscall3(SYS_IOCTL, fd.raw(), request::TIOCSWINSZ, ws as *const _ as u64)
+    };
     Error::from_syscall(ret as i64).map(|_| ())
 }
 

@@ -53,6 +53,7 @@ pub mod pty;
 pub mod runtime;
 pub mod signal;
 pub mod socket;
+pub mod synth;
 pub mod syscall;
 pub mod termios;
 pub mod time;
