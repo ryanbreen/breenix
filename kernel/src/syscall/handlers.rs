@@ -1220,8 +1220,8 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     }
                 });
 
-                // Double-check for data after setting Blocked state
-                if pair.has_master_data() {
+                // Double-check for data or hangup after setting Blocked state
+                if pair.should_wake_master() {
                     crate::task::scheduler::with_scheduler(|sched| {
                         if let Some(thread) = sched.current_thread_mut() {
                             thread.blocked_in_syscall = false;
@@ -2785,8 +2785,7 @@ fn complete_wait(
         }
     }
 
-    // Remove child from parent's children list
-    // Get current thread to find parent process
+    // Remove child from parent's children list and reap from process table
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
         let mut manager_guard = crate::process::manager();
         if let Some(ref mut manager) = *manager_guard {
@@ -2795,6 +2794,8 @@ fn complete_wait(
                 log::debug!("complete_wait: Removed child {} from parent's children list",
                            child_pid.as_u64());
             }
+            manager.remove_process(child_pid);
+            log::debug!("complete_wait: Reaped process {} from process table", child_pid.as_u64());
         }
     }
 
@@ -2808,9 +2809,6 @@ fn complete_wait(
             }
         }
     });
-
-    // TODO: Actually remove/reap the child process from the process table
-    // For now, we leave it in the table but in Terminated state
 
     SyscallResult::Ok(child_pid.as_u64())
 }

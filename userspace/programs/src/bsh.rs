@@ -1362,12 +1362,17 @@ impl LineEditor {
         }
     }
 
-    /// Read a single byte from stdin. Returns `None` on EOF or error.
+    /// Read a single byte from stdin. Returns `None` on EOF.
     fn read_byte() -> Option<u8> {
         let mut buf = [0u8; 1];
-        match io::stdin().read(&mut buf) {
-            Ok(1) => Some(buf[0]),
-            _ => None,
+        loop {
+            match io::stdin().read(&mut buf) {
+                Ok(1) => return Some(buf[0]),
+                Ok(0) => return None, // EOF
+                Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue, // EINTR retry
+                Ok(_) => return None,
+                Err(_) => return None,
+            }
         }
     }
 
@@ -1973,7 +1978,10 @@ fn run_repl() {
         let global_names = ctx.global_names();
         let line = match editor.read_line(&prompt, &global_names) {
             Some(line) => line,
-            None => return, // EOF / Ctrl+D
+            None => {
+                let _ = io::stderr().write_all(b"[bsh] EOF on stdin, exiting REPL\n");
+                return;
+            }
         };
 
         let line = line.trim();

@@ -239,7 +239,7 @@ pub fn write_char_to_terminal(c: char) -> bool {
                         db.flush_if_dirty();
                     }
                     #[cfg(target_arch = "aarch64")]
-                    fb_guard.flush();
+                    super::arm64_fb::mark_full_dirty();
 
                     return true;
                 }
@@ -267,7 +267,7 @@ pub fn write_str_to_terminal(s: &str) -> bool {
                         db.flush_if_dirty();
                     }
                     #[cfg(target_arch = "aarch64")]
-                    fb_guard.flush();
+                    super::arm64_fb::mark_full_dirty();
 
                     return true;
                 }
@@ -292,7 +292,7 @@ pub fn toggle_terminal_cursor() {
                         db.flush_if_dirty();
                     }
                     #[cfg(target_arch = "aarch64")]
-                    fb_guard.flush();
+                    super::arm64_fb::mark_full_dirty();
                 }
             }
         }

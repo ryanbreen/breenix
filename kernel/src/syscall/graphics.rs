@@ -74,6 +74,9 @@ pub fn sys_fbinfo(info_ptr: u64) -> SyscallResult {
         }
     };
 
+    // sys_fbinfo is a one-time startup call (not a hot loop like fbdraw), so
+    // using the blocking lock is acceptable. The deadlock risk from try_lock
+    // failure here (BWM crashes on EBUSY) is worse than a brief spin.
     let fb_guard = fb.lock();
 
     // Get info through Canvas trait methods
@@ -147,8 +150,11 @@ pub struct FbDrawCmd {
 #[allow(dead_code)]
 fn left_pane_width() -> usize {
     if let Some(fb) = SHELL_FRAMEBUFFER.get() {
-        let fb_guard = fb.lock();
-        fb_guard.width() / 2
+        if let Some(fb_guard) = fb.try_lock() {
+            fb_guard.width() / 2
+        } else {
+            0
+        }
     } else {
         0
     }
@@ -159,8 +165,11 @@ fn left_pane_width() -> usize {
 #[allow(dead_code)]
 fn fb_height() -> usize {
     if let Some(fb) = SHELL_FRAMEBUFFER.get() {
-        let fb_guard = fb.lock();
-        fb_guard.height()
+        if let Some(fb_guard) = fb.try_lock() {
+            fb_guard.height()
+        } else {
+            0
+        }
     } else {
         0
     }
@@ -219,6 +228,9 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
         None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
     };
 
+    // Blocking lock is safe here: the SHELL_FRAMEBUFFER lock is now held only
+    // for fast pixel operations (memcpy/memset), never during slow GPU flushes.
+    // GPU submission is deferred to the render thread via dirty rect atomics.
     let mut fb_guard = fb.lock();
 
     // Get left pane dimensions (half the screen width)
@@ -245,6 +257,8 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                 },
                 color,
             );
+            #[cfg(target_arch = "aarch64")]
+            crate::graphics::arm64_fb::mark_dirty(0, 0, pane_width as u32, pane_height as u32);
         }
         1 => {
             // FillRect: x, y, width, height, color
@@ -262,6 +276,8 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                     Rect { x, y, width: clipped_w, height: h },
                     color,
                 );
+                #[cfg(target_arch = "aarch64")]
+                crate::graphics::arm64_fb::mark_dirty(x as u32, y as u32, clipped_w, h);
             }
         }
         2 => {
@@ -277,6 +293,8 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                     Rect { x, y, width: w, height: h },
                     color,
                 );
+                #[cfg(target_arch = "aarch64")]
+                crate::graphics::arm64_fb::mark_dirty(x as u32, y as u32, w, h);
             }
         }
         3 => {
@@ -287,6 +305,13 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
 
             if (cx as usize) < pane_width {
                 fill_circle(&mut *fb_guard, cx, cy, radius, color);
+                #[cfg(target_arch = "aarch64")]
+                crate::graphics::arm64_fb::mark_dirty(
+                    (cx - radius as i32).max(0) as u32,
+                    (cy - radius as i32).max(0) as u32,
+                    radius * 2,
+                    radius * 2,
+                );
             }
         }
         4 => {
@@ -297,6 +322,13 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
 
             if (cx as usize) < pane_width {
                 draw_circle(&mut *fb_guard, cx, cy, radius, color);
+                #[cfg(target_arch = "aarch64")]
+                crate::graphics::arm64_fb::mark_dirty(
+                    (cx - radius as i32).max(0) as u32,
+                    (cy - radius as i32).max(0) as u32,
+                    radius * 2,
+                    radius * 2,
+                );
             }
         }
         5 => {
@@ -309,6 +341,18 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
             // Allow lines that start or end in left pane
             if (x1 as usize) < pane_width || (x2 as usize) < pane_width {
                 draw_line(&mut *fb_guard, x1, y1, x2, y2, color);
+                #[cfg(target_arch = "aarch64")]
+                {
+                    let min_x = x1.min(x2).max(0) as u32;
+                    let min_y = y1.min(y2).max(0) as u32;
+                    let max_x = x1.max(x2).max(0) as u32;
+                    let max_y = y1.max(y2).max(0) as u32;
+                    crate::graphics::arm64_fb::mark_dirty(
+                        min_x, min_y,
+                        max_x.saturating_sub(min_x) + 1,
+                        max_y.saturating_sub(min_y) + 1,
+                    );
+                }
             }
         }
         6 => {
@@ -431,28 +475,40 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                         }
                     }
                 }
-                // Flush VirtIO GPU — use rect flush if specified (in framebuffer coords)
+
+                // Mark dirty rect for the render thread to flush (no GPU calls here).
+                // This decouples fast pixel copies from slow GPU submission, preventing
+                // the deadlock where sys_fbdraw held SHELL_FRAMEBUFFER + GPU_LOCK with
+                // IRQs disabled while the render thread waited on SHELL_FRAMEBUFFER.
                 if let Some(mmap_info) = fb_mmap_info {
                     if has_rect {
-                        fb_guard.flush_rect(
+                        crate::graphics::arm64_fb::mark_dirty(
                             (mmap_info.x_offset as u32) + cmd.p1.max(0) as u32,
                             cmd.p2.max(0) as u32,
                             cmd.p3 as u32,
                             cmd.p4 as u32,
                         );
                     } else {
-                        let _ = fb_guard.flush();
+                        crate::graphics::arm64_fb::mark_dirty(
+                            mmap_info.x_offset as u32,
+                            0,
+                            mmap_info.width as u32,
+                            mmap_info.height as u32,
+                        );
                     }
                 } else if has_rect {
-                    fb_guard.flush_rect(
+                    crate::graphics::arm64_fb::mark_dirty(
                         cmd.p1.max(0) as u32,
                         cmd.p2.max(0) as u32,
                         cmd.p3 as u32,
                         cmd.p4 as u32,
                     );
                 } else {
-                    let _ = fb_guard.flush();
+                    crate::graphics::arm64_fb::mark_full_dirty();
                 }
+
+                // Wake the render thread to flush the dirty region promptly
+                crate::graphics::render_task::wake_render_thread();
             }
         }
         _ => {
@@ -555,6 +611,7 @@ pub fn sys_fbmmap() -> SyscallResult {
             Some(fb) => fb,
             None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
         };
+        // sys_fbmmap is a one-time startup call, so blocking lock is acceptable.
         let fb_guard = fb.lock();
         if caller_owns_display {
             // BWM mode: right half for window manager (after divider)
@@ -585,7 +642,7 @@ pub fn sys_fbmmap() -> SyscallResult {
 
     // Check not already mapped
     if process.fb_mmap.is_some() {
-        return SyscallResult::Err(16); // EBUSY
+        return SyscallResult::Err(super::ErrorCode::Busy as u64);
     }
 
     // Allocate virtual address range from mmap_hint (grows downward)

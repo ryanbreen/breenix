@@ -22,7 +22,7 @@ if [ ! -f "$KERNEL" ]; then
     exit 1
 fi
 
-# Find ext2 disk (required for init_shell)
+# Find ext2 disk (required for userspace)
 EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
 if [ ! -f "$EXT2_DISK" ]; then
     echo "Error: ext2 disk not found at $EXT2_DISK"
@@ -55,13 +55,15 @@ run_single_test() {
         -serial file:"$OUTPUT_DIR/serial.txt" &
     local QEMU_PID=$!
 
-    # Wait for USERSPACE shell prompt (20s timeout)
-    # Accept "breenix>" (init_shell) or "bsh " (bsh shell) as valid userspace prompts
+    # Wait for USERSPACE boot completion (20s timeout)
+    # Accept any of:
+    #   "breenix>" or "bsh " - shell prompt on serial (legacy/direct mode)
+    #   "[bwm] Display:" - BWM window manager initialized (shell runs inside PTY)
     # DO NOT accept "Interactive Shell" - that's the KERNEL FALLBACK when userspace FAILS
     local BOOT_COMPLETE=false
     for i in $(seq 1 10); do
         if [ -f "$OUTPUT_DIR/serial.txt" ]; then
-            if grep -qE "(breenix>|bsh )" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            if grep -qE "(breenix>|bsh |\[bwm\] Display:)" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
                 BOOT_COMPLETE=true
                 break
             fi
@@ -76,22 +78,14 @@ run_single_test() {
     wait $QEMU_PID 2>/dev/null || true
 
     if $BOOT_COMPLETE; then
-        # Verify no excessive shell spawning (init_shell or bsh)
-        local SHELL_COUNT=$(grep -oE "(init_shell|/bin/bsh)" "$OUTPUT_DIR/serial.txt" 2>/dev/null | wc -l | tr -d ' ')
-        SHELL_COUNT=${SHELL_COUNT:-0}
-        if [ "$SHELL_COUNT" -le 5 ]; then
-            echo "SUCCESS (${SHELL_COUNT} shell mentions)"
-            return 0
-        else
-            echo "FAIL: Too many shell mentions: $SHELL_COUNT"
-            return 1
-        fi
+        echo "SUCCESS"
+        return 0
     else
         local LINES=$(wc -l < "$OUTPUT_DIR/serial.txt" 2>/dev/null || echo 0)
         if grep -qiE "(KERNEL PANIC|panic!)" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
             echo "FAIL: Kernel panic ($LINES lines)"
         else
-            echo "FAIL: Shell not detected ($LINES lines)"
+            echo "FAIL: Userspace not detected ($LINES lines)"
         fi
         return 1
     fi

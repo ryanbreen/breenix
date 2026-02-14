@@ -1922,6 +1922,10 @@ fn handle_devpts_open(pty_name: &str) -> SyscallResult {
     let fd_kind = FdKind::PtySlave(pty_num);
     match process.fd_table.alloc(fd_kind) {
         Ok(fd) => {
+            // Increment slave reference count so master can detect hangup
+            if let Some(pair) = crate::tty::pty::get(pty_num) {
+                pair.slave_open();
+            }
             SyscallResult::Ok(fd as u64)
         }
         Err(_) => {

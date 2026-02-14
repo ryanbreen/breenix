@@ -636,8 +636,12 @@ fn spawn_child(path: &[u8], _name: &str) -> (Fd, i64) {
             // Child process: set up PTY slave as stdin/stdout/stderr
             let _ = setsid(); // New session
 
-            // Close the master fd in child
-            let _ = io::close(master_fd);
+            // Close ALL inherited FDs > 2 (master PTY FDs from parent BWM)
+            // This prevents leaking master FDs to child processes which would
+            // keep PTY refcounts elevated and prevent proper cleanup.
+            for fd_num in 3..20 {
+                let _ = io::close(Fd::from_raw(fd_num));
+            }
 
             // Build null-terminated path for open
             let mut open_path = [0u8; 64];
@@ -1108,11 +1112,19 @@ fn main() {
                     // Check if a child died and respawn
                     if rpid == tabs[TAB_SHELL].child_pid {
                         print!("[bwm] Shell exited, respawning...\n");
+                        // Close old master FD to release the PTY pair
+                        if let Some(old_fd) = tabs[TAB_SHELL].master_fd.take() {
+                            let _ = io::close(old_fd);
+                        }
                         let (m, p) = spawn_child(b"/bin/bsh\0", "bsh");
                         tabs[TAB_SHELL].master_fd = Some(m);
                         tabs[TAB_SHELL].child_pid = p;
                     } else if rpid == tabs[TAB_BTOP].child_pid {
                         print!("[bwm] btop exited, respawning...\n");
+                        // Close old master FD to release the PTY pair
+                        if let Some(old_fd) = tabs[TAB_BTOP].master_fd.take() {
+                            let _ = io::close(old_fd);
+                        }
                         let (m, p) = spawn_child(b"/bin/btop\0", "btop");
                         tabs[TAB_BTOP].master_fd = Some(m);
                         tabs[TAB_BTOP].child_pid = p;

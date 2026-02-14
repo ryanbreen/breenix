@@ -207,7 +207,10 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                     }
                 }
                 FdKind::PtySlave(pty_num) => {
-                    // PTY slave doesn't own the pair, just log closure
+                    // Decrement slave refcount — master will see POLLHUP when last slave closes
+                    if let Some(pair) = crate::tty::pty::get(pty_num) {
+                        pair.slave_close();
+                    }
                     log::debug!("sys_close: Closed PTY slave fd={} (pty {})", fd, pty_num);
                 }
                 FdKind::UnixStream(socket) => {

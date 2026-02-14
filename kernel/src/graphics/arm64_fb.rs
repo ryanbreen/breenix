@@ -12,7 +12,116 @@
 use super::primitives::{Canvas, Color};
 use crate::drivers::virtio::gpu_mmio;
 use conquer_once::spin::OnceCell;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use spin::Mutex;
+
+// =============================================================================
+// Dirty Rect Tracking (lock-free, used to decouple pixel writes from GPU flush)
+// =============================================================================
+
+/// Whether any region has been modified since the last flush.
+static FB_DIRTY: AtomicBool = AtomicBool::new(false);
+/// Dirty rect left edge (minimum x).
+static DIRTY_X_MIN: AtomicU32 = AtomicU32::new(u32::MAX);
+/// Dirty rect top edge (minimum y).
+static DIRTY_Y_MIN: AtomicU32 = AtomicU32::new(u32::MAX);
+/// Dirty rect right edge (maximum x + width, exclusive).
+static DIRTY_X_MAX: AtomicU32 = AtomicU32::new(0);
+/// Dirty rect bottom edge (maximum y + height, exclusive).
+static DIRTY_Y_MAX: AtomicU32 = AtomicU32::new(0);
+
+/// Mark a rectangular region as dirty (union with existing dirty rect).
+///
+/// This is lock-free and safe to call from any context (syscall, kthread, etc.).
+/// Uses atomic min/max to expand the dirty rect to include the new region.
+pub fn mark_dirty(x: u32, y: u32, w: u32, h: u32) {
+    if w == 0 || h == 0 {
+        return;
+    }
+    let x2 = x.saturating_add(w);
+    let y2 = y.saturating_add(h);
+
+    // Expand dirty rect using atomic min/max
+    fetch_min_u32(&DIRTY_X_MIN, x);
+    fetch_min_u32(&DIRTY_Y_MIN, y);
+    fetch_max_u32(&DIRTY_X_MAX, x2);
+    fetch_max_u32(&DIRTY_Y_MAX, y2);
+
+    // Set dirty flag last — readers check this first
+    FB_DIRTY.store(true, Ordering::Release);
+}
+
+/// Mark the entire framebuffer as dirty.
+pub fn mark_full_dirty() {
+    if let Some((w, h)) = gpu_mmio::dimensions() {
+        mark_dirty(0, 0, w, h);
+    }
+}
+
+/// Take the dirty rect, resetting to clean.
+///
+/// Returns `Some((x, y, w, h))` if any region was dirty, `None` if clean.
+/// The dirty state is atomically cleared so the next call returns None
+/// unless new dirty regions are marked in between.
+///
+/// The returned rect is clamped to the display dimensions. This prevents
+/// out-of-bounds coordinates (e.g., from cursor mark_dirty near screen edges)
+/// from being sent to the VirtIO GPU, which rejects invalid rects.
+pub fn take_dirty_rect() -> Option<(u32, u32, u32, u32)> {
+    if !FB_DIRTY.swap(false, Ordering::Acquire) {
+        return None;
+    }
+
+    // Read and reset the rect bounds
+    let x_min = DIRTY_X_MIN.swap(u32::MAX, Ordering::Relaxed);
+    let y_min = DIRTY_Y_MIN.swap(u32::MAX, Ordering::Relaxed);
+    let x_max = DIRTY_X_MAX.swap(0, Ordering::Relaxed);
+    let y_max = DIRTY_Y_MAX.swap(0, Ordering::Relaxed);
+
+    if x_min >= x_max || y_min >= y_max {
+        return None;
+    }
+
+    // Clamp to display dimensions — cursor mark_dirty near screen edges can
+    // produce rects that extend beyond the display (e.g., cursor at x=1270
+    // marks dirty (1254, y, 32, 32) → x_max = 1286 > 1280). VirtIO GPU
+    // rejects transfer_to_host with out-of-bounds coordinates.
+    let (x_min, y_min, x_max, y_max) = if let Some((dw, dh)) = gpu_mmio::dimensions() {
+        (x_min.min(dw), y_min.min(dh), x_max.min(dw), y_max.min(dh))
+    } else {
+        (x_min, y_min, x_max, y_max)
+    };
+
+    if x_min >= x_max || y_min >= y_max {
+        return None;
+    }
+
+    Some((x_min, y_min, x_max - x_min, y_max - y_min))
+}
+
+/// Atomic fetch_min for u32 (CAS loop).
+#[inline]
+fn fetch_min_u32(atom: &AtomicU32, val: u32) {
+    let mut current = atom.load(Ordering::Relaxed);
+    while val < current {
+        match atom.compare_exchange_weak(current, val, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+/// Atomic fetch_max for u32 (CAS loop).
+#[inline]
+fn fetch_max_u32(atom: &AtomicU32, val: u32) {
+    let mut current = atom.load(Ordering::Relaxed);
+    while val > current {
+        match atom.compare_exchange_weak(current, val, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(actual) => current = actual,
+        }
+    }
+}
 
 /// ARM64 framebuffer wrapper that implements Canvas trait
 pub struct Arm64FrameBuffer {

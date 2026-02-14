@@ -619,6 +619,15 @@ fn transfer_to_host(
     width: u32,
     height: u32,
 ) -> Result<(), &'static str> {
+    // The offset is the byte position in the guest's backing buffer where QEMU
+    // starts reading. QEMU reads each row h at (offset + stride * h), where
+    // stride = resource_width * bpp. For sub-rect transfers, offset must point
+    // to (x, y) in the backing buffer so the correct pixels are transferred.
+    // With offset=0, QEMU copies from row 0 of the buffer to display position
+    // (x, y), producing wrong pixels for any partial flush.
+    let stride = state.width as u64 * BYTES_PER_PIXEL as u64;
+    let offset = y as u64 * stride + x as u64 * BYTES_PER_PIXEL as u64;
+
     unsafe {
         let cmd_ptr = &raw mut CMD_BUF;
         let cmd = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut VirtioGpuTransferToHost2d);
@@ -634,7 +643,7 @@ fn transfer_to_host(
             r_y: y,
             r_width: width,
             r_height: height,
-            offset: 0,
+            offset,
             resource_id: state.resource_id,
             padding: 0,
         };

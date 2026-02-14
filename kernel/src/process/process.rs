@@ -361,8 +361,11 @@ impl Process {
                             }
                         }
                     }
-                    FdKind::PtySlave(_pty_num) => {
-                        // PTY slave doesn't own the pair, just decrement reference
+                    FdKind::PtySlave(pty_num) => {
+                        // Decrement slave refcount — master sees POLLHUP when last slave closes
+                        if let Some(pair) = crate::tty::pty::get(pty_num) {
+                            pair.slave_close();
+                        }
                         log::debug!("Process::close_all_fds() - released PTY slave fd {}", fd);
                     }
                     FdKind::UnixStream(socket) => {
@@ -440,12 +443,20 @@ impl Process {
                         log::debug!("Process::close_all_fds() - closed Unix listener fd {}", fd);
                     }
                     FdKind::PtyMaster(pty_num) => {
-                        // Release PTY pair when master is closed
-                        crate::tty::pty::release(pty_num);
+                        // PTY master cleanup - decrement refcount, only release when all masters closed
+                        if let Some(pair) = crate::tty::pty::get(pty_num) {
+                            let old_count = pair.master_refcount.fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+                            if old_count == 1 {
+                                crate::tty::pty::release(pty_num);
+                            }
+                        }
                         log::debug!("Process::close_all_fds() - closed PTY master fd {}", fd);
                     }
-                    FdKind::PtySlave(_) => {
-                        // Slave cleanup handled by PTY subsystem
+                    FdKind::PtySlave(pty_num) => {
+                        // Decrement slave refcount — master sees POLLHUP when last slave closes
+                        if let Some(pair) = crate::tty::pty::get(pty_num) {
+                            pair.slave_close();
+                        }
                         log::debug!("Process::close_all_fds() - closed PTY slave fd {}", fd);
                     }
                     FdKind::RegularFile(_) => {

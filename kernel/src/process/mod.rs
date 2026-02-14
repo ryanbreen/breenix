@@ -133,6 +133,56 @@ pub fn try_manager() -> Option<spin::MutexGuard<'static, Option<ProcessManager>>
     PROCESS_MANAGER.try_lock()
 }
 
+/// Per-process info for lockup diagnostics (small, stack-allocated).
+pub struct ProcessDumpEntry {
+    pub pid: u64,
+    pub name: alloc::string::String,
+    pub state_str: alloc::string::String,
+}
+
+/// Diagnostic snapshot of process manager state for the soft lockup detector.
+pub struct ProcessDumpInfo {
+    pub total_processes: u64,
+    pub running_count: u64,
+    pub blocked_count: u64,
+    pub processes: alloc::vec::Vec<ProcessDumpEntry>,
+}
+
+/// Try to get a snapshot of process manager state without blocking.
+/// Returns None if the lock is held (which is itself diagnostic info).
+/// Safe to call from interrupt context.
+pub fn try_dump_state() -> Option<ProcessDumpInfo> {
+    let guard = PROCESS_MANAGER.try_lock()?;
+    let pm = guard.as_ref()?;
+
+    let procs = pm.all_processes();
+    let mut running_count = 0u64;
+    let mut blocked_count = 0u64;
+    let mut entries = alloc::vec::Vec::new();
+
+    for p in &procs {
+        let state_str = match p.state {
+            ProcessState::Creating => "creating",
+            ProcessState::Ready => "ready",
+            ProcessState::Running => { running_count += 1; "running" }
+            ProcessState::Blocked => { blocked_count += 1; "blocked" }
+            ProcessState::Terminated(_) => "terminated",
+        };
+        entries.push(ProcessDumpEntry {
+            pid: p.id.as_u64(),
+            name: p.name.clone(),
+            state_str: alloc::string::String::from(state_str),
+        });
+    }
+
+    Some(ProcessDumpInfo {
+        total_processes: procs.len() as u64,
+        running_count,
+        blocked_count,
+        processes: entries,
+    })
+}
+
 /// Create a new user process using the new architecture
 /// Note: Uses architecture-specific ELF loader and process creation
 #[allow(dead_code)]

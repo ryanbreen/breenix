@@ -261,6 +261,12 @@ impl Clone for FdTable {
                             pair.master_refcount.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
                         }
                     }
+                    FdKind::PtySlave(pty_num) => {
+                        // Increment PTY slave reference count for the clone
+                        if let Some(pair) = crate::tty::pty::get(*pty_num) {
+                            pair.slave_open();
+                        }
+                    }
                     FdKind::TcpConnection(conn_id) => {
                         // Increment TCP connection reference count for the clone
                         crate::net::tcp::tcp_add_ref(conn_id);
@@ -381,7 +387,7 @@ impl FdTable {
 
         let fd_entry = self.fds[old_fd as usize].clone().ok_or(9)?;
 
-        // If new_fd is open, close it and decrement pipe ref counts
+        // If new_fd is open, close it and decrement ref counts
         if let Some(old_entry) = self.fds[new_fd as usize].take() {
             match old_entry.kind {
                 FdKind::PipeRead(buffer) => buffer.lock().close_read(),
@@ -394,11 +400,24 @@ impl FdTable {
                     super::fifo::close_fifo_write(path);
                     buffer.lock().close_write();
                 }
+                FdKind::PtyMaster(pty_num) => {
+                    if let Some(pair) = crate::tty::pty::get(pty_num) {
+                        let old_count = pair.master_refcount.fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+                        if old_count == 1 {
+                            crate::tty::pty::release(pty_num);
+                        }
+                    }
+                }
+                FdKind::PtySlave(pty_num) => {
+                    if let Some(pair) = crate::tty::pty::get(pty_num) {
+                        pair.slave_close();
+                    }
+                }
                 _ => {}
             }
         }
 
-        // Increment pipe/FIFO reference counts for the duplicated fd
+        // Increment ref counts for the duplicated fd
         match &fd_entry.kind {
             FdKind::PipeRead(buffer) => buffer.lock().add_reader(),
             FdKind::PipeWrite(buffer) => buffer.lock().add_writer(),
@@ -413,6 +432,16 @@ impl FdTable {
                     entry.lock().writers += 1;
                 }
                 buffer.lock().add_writer();
+            }
+            FdKind::PtyMaster(pty_num) => {
+                if let Some(pair) = crate::tty::pty::get(*pty_num) {
+                    pair.master_refcount.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            FdKind::PtySlave(pty_num) => {
+                if let Some(pair) = crate::tty::pty::get(*pty_num) {
+                    pair.slave_open();
+                }
             }
             _ => {}
         }
@@ -443,7 +472,7 @@ impl FdTable {
         // POSIX: dup and F_DUPFD clear FD_CLOEXEC, F_DUPFD_CLOEXEC sets it
         fd_entry.flags = if set_cloexec { flags::FD_CLOEXEC } else { 0 };
 
-        // Increment pipe/FIFO reference counts for the duplicated fd
+        // Increment reference counts for the duplicated fd
         match &fd_entry.kind {
             FdKind::PipeRead(buffer) => buffer.lock().add_reader(),
             FdKind::PipeWrite(buffer) => buffer.lock().add_writer(),
@@ -458,6 +487,16 @@ impl FdTable {
                     entry.lock().writers += 1;
                 }
                 buffer.lock().add_writer();
+            }
+            FdKind::PtyMaster(pty_num) => {
+                if let Some(pair) = crate::tty::pty::get(*pty_num) {
+                    pair.master_refcount.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            FdKind::PtySlave(pty_num) => {
+                if let Some(pair) = crate::tty::pty::get(*pty_num) {
+                    pair.slave_open();
+                }
             }
             _ => {}
         }
@@ -481,6 +520,19 @@ impl FdTable {
             FdKind::FifoWrite(path, buffer) => {
                 super::fifo::close_fifo_write(path);
                 buffer.lock().close_write();
+            }
+            FdKind::PtyMaster(pty_num) => {
+                if let Some(pair) = crate::tty::pty::get(*pty_num) {
+                    let old = pair.master_refcount.fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+                    if old == 1 {
+                        crate::tty::pty::release(*pty_num);
+                    }
+                }
+            }
+            FdKind::PtySlave(pty_num) => {
+                if let Some(pair) = crate::tty::pty::get(*pty_num) {
+                    pair.slave_close();
+                }
             }
             _ => {}
         }
@@ -622,8 +674,11 @@ impl Drop for FdTable {
                             }
                         }
                     }
-                    FdKind::PtySlave(_pty_num) => {
-                        // PTY slave doesn't own the pair, just decrement reference
+                    FdKind::PtySlave(pty_num) => {
+                        // Decrement slave refcount — master sees POLLHUP when last slave closes
+                        if let Some(pair) = crate::tty::pty::get(pty_num) {
+                            pair.slave_close();
+                        }
                         log::debug!("FdTable::drop() - released PTY slave fd {}", i);
                     }
                     FdKind::UnixStream(socket) => {

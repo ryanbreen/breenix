@@ -28,6 +28,7 @@ ARCH="arm64"
 HEADLESS=false
 CLEAN=false
 BTRT=false
+DEBUG=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -48,6 +49,10 @@ while [[ $# -gt 0 ]]; do
             BTRT=true
             shift
             ;;
+        --debug)
+            DEBUG=true
+            shift
+            ;;
         --headless|--serial)
             HEADLESS=true
             shift
@@ -66,7 +71,13 @@ while [[ $# -gt 0 ]]; do
             echo "  --headless, --serial       Run without display (serial only)"
             echo "  --graphics, --vnc          Run with VNC display (default)"
             echo "  --btrt                     Run BTRT structured boot test"
+            echo "  --debug                    Enable GDB stub (port 1234) for debugging"
             echo "  -h, --help                 Show this help"
+            echo ""
+            echo "Debugging:"
+            echo "  QMP socket always at: /tmp/breenix-qmp.sock"
+            echo "  GDB (--debug):  target remote :1234"
+            echo "  Forensics:      scripts/forensic-capture.sh"
             echo ""
             echo "Display:"
             echo "  ARM64:  Native window (cocoa)"
@@ -233,6 +244,18 @@ else
     AUDIO_OPTS="$AUDIO_OPTS -device virtio-sound-pci,audiodev=audio0"
 fi
 
+# QMP socket for programmatic VM control (always enabled)
+QMP_SOCK="/tmp/breenix-qmp.sock"
+rm -f "$QMP_SOCK"
+QMP_OPTS="-qmp unix:${QMP_SOCK},server,nowait"
+
+# GDB stub (--debug flag)
+GDB_OPTS=""
+if [ "$DEBUG" = true ]; then
+    GDB_OPTS="-s"
+    echo "GDB stub: target remote :1234"
+fi
+
 # Build the full QEMU command based on architecture
 if [ "$ARCH" = "arm64" ]; then
     # ARM64 QEMU invocation (native)
@@ -247,6 +270,8 @@ if [ "$ARCH" = "arm64" ]; then
         -netdev user,id=net0,hostfwd=tcp::2323-:2323 \
         $AUDIO_OPTS \
         -monitor tcp:127.0.0.1:4444,server,nowait \
+        $QMP_OPTS \
+        $GDB_OPTS \
         -serial mon:stdio \
         -no-reboot \
         &
@@ -280,14 +305,21 @@ else
         -device e1000,netdev=net0,mac=52:54:00:12:34:56 \
         $AUDIO_OPTS \
         -monitor tcp:127.0.0.1:4444,server,nowait \
+        $QMP_OPTS \
+        $GDB_OPTS \
         -serial mon:stdio \
         &
 fi
 
 QEMU_PID=$!
 
-echo "Paste:  echo 'code' | ./scripts/paste.sh"
-echo "Monitor: tcp://127.0.0.1:4444"
+echo "Paste:     echo 'code' | ./scripts/paste.sh"
+echo "Monitor:   tcp://127.0.0.1:4444"
+echo "QMP:       $QMP_SOCK"
+if [ "$DEBUG" = true ]; then
+    echo "GDB:       target remote :1234"
+fi
+echo "Forensics: scripts/forensic-capture.sh"
 
 # If x86_64 graphics mode, try to open VNC viewer
 if [ "$ARCH" = "x86_64" ] && [ "$HEADLESS" = false ] && [ "$(uname)" = "Darwin" ]; then

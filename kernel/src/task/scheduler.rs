@@ -64,6 +64,27 @@ static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
 /// Global need_resched flag for timer interrupt
 static NEED_RESCHED: AtomicBool = AtomicBool::new(false);
 
+/// Global context switch counter - incremented on every successful context switch.
+/// Used by the soft lockup detector to detect CPU stalls.
+static CONTEXT_SWITCH_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Per-CPU "is idle" flags. Set to true when a CPU is running its idle thread,
+/// false when running a real thread. Updated lock-free during scheduling
+/// decisions. Used by the timer interrupt handler to always request reschedule
+/// on idle CPUs, ensuring threads added to the ready queue are picked up
+/// within one timer tick (~5ms) instead of waiting for quantum expiry (~50ms).
+///
+/// IMPORTANT: Initialized to false (not idle). CPU 0 is the boot CPU and
+/// starts running init — it must NOT be marked idle. Secondary CPUs will be
+/// marked idle when they enter their idle loops and the first scheduling
+/// decision runs. This prevents the timer handler from falsely setting
+/// need_resched on every tick for CPUs that are actually running real work.
+#[cfg(target_arch = "aarch64")]
+static CPU_IS_IDLE: [AtomicBool; MAX_CPUS] = [
+    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
+    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
+];
+
 /// Counter for unblock() calls - used for testing pipe wake mechanism
 /// This is a global atomic because:
 /// 1. unblock() is called via with_scheduler() which already holds the scheduler lock
@@ -79,6 +100,73 @@ static UNBLOCK_CALL_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::A
 #[allow(dead_code)] // Used by test_framework when boot_tests feature is enabled
 pub fn unblock_call_count() -> u64 {
     UNBLOCK_CALL_COUNT.load(Ordering::SeqCst)
+}
+
+/// Get the global context switch count (for soft lockup detection).
+/// This is lock-free and safe to call from interrupt context.
+pub fn context_switch_count() -> u64 {
+    CONTEXT_SWITCH_COUNT.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// Increment the global context switch count.
+/// Called from the ARM64 context switch path (context_switch.rs) where the
+/// actual switch happens outside of schedule_deferred_requeue().
+/// On x86_64, the count is incremented inside schedule() directly.
+#[cfg(target_arch = "aarch64")]
+pub fn increment_context_switch_count() {
+    CONTEXT_SWITCH_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Check if a specific CPU is running its idle thread (lock-free).
+/// Safe to call from interrupt context (timer handler).
+#[cfg(target_arch = "aarch64")]
+pub fn is_cpu_idle(cpu_id: usize) -> bool {
+    cpu_id < MAX_CPUS && CPU_IS_IDLE[cpu_id].load(Ordering::Relaxed)
+}
+
+/// Mark a CPU as idle or non-idle (lock-free).
+/// Called from the scheduling decision path.
+#[cfg(target_arch = "aarch64")]
+fn set_cpu_idle(cpu_id: usize, idle: bool) {
+    if cpu_id < MAX_CPUS {
+        CPU_IS_IDLE[cpu_id].store(idle, Ordering::Relaxed);
+    }
+}
+
+/// Diagnostic snapshot of scheduler state for the soft lockup detector.
+pub struct SchedulerDumpInfo {
+    pub current_thread_id: u64,
+    pub ready_queue_len: u64,
+    pub total_threads: u64,
+    pub blocked_count: u64,
+}
+
+/// Try to get a snapshot of scheduler state without blocking.
+/// Returns None if the scheduler lock is held (which is itself diagnostic).
+/// Safe to call from interrupt context.
+pub fn try_dump_state() -> Option<SchedulerDumpInfo> {
+    let guard = SCHEDULER.try_lock()?;
+    let sched = guard.as_ref()?;
+
+    let current_thread_id = sched.cpu_state[0].current_thread.unwrap_or(0);
+    let ready_queue_len = sched.ready_queue.len() as u64;
+    let total_threads = sched.threads.len() as u64;
+    let blocked_count = sched.threads.iter().filter(|t| {
+        matches!(
+            t.state,
+            ThreadState::Blocked
+                | ThreadState::BlockedOnSignal
+                | ThreadState::BlockedOnChildExit
+                | ThreadState::BlockedOnTimer
+        )
+    }).count() as u64;
+
+    Some(SchedulerDumpInfo {
+        current_thread_id,
+        ready_queue_len,
+        total_threads,
+        blocked_count,
+    })
 }
 
 /// Maximum CPUs for scheduler state arrays.
@@ -494,6 +582,9 @@ impl Scheduler {
         let old_thread_id = self.cpu_state[Self::current_cpu_id()].current_thread.unwrap_or(self.cpu_state[Self::current_cpu_id()].idle_thread);
         self.cpu_state[Self::current_cpu_id()].current_thread = Some(next_thread_id);
 
+        // Track context switches for soft lockup detection
+        CONTEXT_SWITCH_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+
         if debug_log {
             log_serial_println!(
                 "Switching from thread {} to thread {}",
@@ -534,6 +625,13 @@ impl Scheduler {
     /// the ready queue after its context is saved.
     #[cfg(target_arch = "aarch64")]
     pub fn schedule_deferred_requeue(&mut self) -> Option<(u64, u64, bool)> {
+        // Update per-CPU idle flag based on CURRENT state (before scheduling decision).
+        // This ensures the flag is always accurate, even when this function returns None.
+        // If we return Some(...), the flag is overwritten with the post-switch state later.
+        let cpu = Self::current_cpu_id();
+        let current_is_idle = self.cpu_state[cpu].current_thread == Some(self.cpu_state[cpu].idle_thread);
+        set_cpu_idle(cpu, current_is_idle);
+
         // If current thread is still runnable, mark it as Ready but DON'T add to queue
         let mut should_requeue_old = false;
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
@@ -550,7 +648,8 @@ impl Scheduler {
                         let was_terminated = current.state == ThreadState::Terminated;
                         let was_blocked = current.state == ThreadState::Blocked
                             || current.state == ThreadState::BlockedOnSignal
-                            || current.state == ThreadState::BlockedOnChildExit;
+                            || current.state == ThreadState::BlockedOnChildExit
+                            || current.state == ThreadState::BlockedOnTimer;
                         if !was_terminated && !was_blocked {
                             current.set_ready();
                         }
@@ -566,6 +665,9 @@ impl Scheduler {
                 // The caller will do so after saving context via requeue_thread_after_save().
             }
         }
+
+        // Check for expired timer-blocked threads and wake them
+        self.wake_expired_timers();
 
         // Get next thread from ready queue, skipping terminated threads.
         // Terminated threads can end up in the queue if a process was killed
@@ -644,6 +746,10 @@ impl Scheduler {
             next.set_running();
             next.run_start_ticks = crate::time::get_ticks();
         }
+
+        // Update per-CPU idle flag (lock-free, used by timer handler)
+        let is_switching_to_idle = next_thread_id == self.cpu_state[Self::current_cpu_id()].idle_thread;
+        set_cpu_idle(Self::current_cpu_id(), is_switching_to_idle);
 
         Some((old_thread_id, next_thread_id, should_requeue_old))
     }
@@ -735,11 +841,19 @@ impl Scheduler {
         }
     }
 
-    /// Send a reschedule IPI (SGI 0) to an idle CPU.
+    /// Send reschedule IPIs (SGI 0) to all idle CPUs.
     ///
-    /// Called after adding a thread to the ready queue to wake a CPU that's
-    /// sitting in WFI so it can pick up the newly-runnable thread.
-    /// Only sends to one idle CPU (the first one found) to avoid thundering herd.
+    /// Called after adding a thread to the ready queue to wake CPUs that are
+    /// sitting in WFI so they can pick up newly-runnable threads.
+    ///
+    /// Uses cpu_state (authoritative, protected by scheduler lock which is
+    /// held when this is called) to identify idle CPUs. We wake ALL idle
+    /// CPUs because during burst scheduling (e.g., init forking 4 children),
+    /// multiple threads may be added to the queue in quick succession. Since
+    /// cpu_state isn't updated until after the deferred commit, waking only
+    /// one CPU would repeatedly target the same idle CPU while others sleep.
+    /// Waking all ensures prompt thread pickup; idle CPUs that find nothing
+    /// in the queue return immediately with negligible overhead.
     #[cfg(target_arch = "aarch64")]
     fn send_resched_ipi(&self) {
         use crate::arch_impl::aarch64::smp;
@@ -751,16 +865,14 @@ impl Scheduler {
             if cpu == current_cpu {
                 continue;
             }
-            // Check if this CPU is running its idle thread
             if cpu < MAX_CPUS {
                 if let Some(current) = self.cpu_state[cpu].current_thread {
                     if current == self.cpu_state[cpu].idle_thread {
-                        // This CPU is idle - send it a reschedule IPI
                         crate::arch_impl::aarch64::gic::send_sgi(
                             crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
                             cpu as u8,
                         );
-                        return; // Only wake one CPU
+                        // Continue to wake ALL idle CPUs
                     }
                 }
             }

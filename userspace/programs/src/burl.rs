@@ -16,7 +16,7 @@
 //!   --help           Show help
 
 use libbreenix::http::{
-    http_request, HttpError, HttpMethod, HttpRequest, HttpResponse, MAX_RESPONSE_SIZE,
+    http_request, HttpError, HttpMethod, HttpRequest, MAX_RESPONSE_SIZE,
 };
 use std::env;
 use std::process;

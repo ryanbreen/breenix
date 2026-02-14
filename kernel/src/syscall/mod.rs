@@ -262,6 +262,8 @@ pub enum ErrorCode {
     OutOfMemory = 12, // ENOMEM
     /// Bad address
     Fault = 14, // EFAULT
+    /// Device or resource busy
+    Busy = 16, // EBUSY
     /// Invalid argument
     InvalidArgument = 22, // EINVAL
     /// Function not implemented

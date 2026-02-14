@@ -31,6 +31,8 @@ const O_CLOEXEC: u32 = 0x80000;
 pub fn sys_posix_openpt(flags: u64) -> SyscallResult {
     let flags_u32 = flags as u32;
 
+    crate::serial_println!("[pty] sys_posix_openpt(flags={:#x})", flags_u32);
+
     // Validate flags - O_RDWR must be set
     if (flags_u32 & O_RDWR) != O_RDWR {
         log::error!("sys_posix_openpt: O_RDWR not set in flags {:#x}", flags_u32);
@@ -96,12 +98,7 @@ pub fn sys_posix_openpt(flags: u64) -> SyscallResult {
         }
     };
 
-    log::info!(
-        "sys_posix_openpt: Created PTY master fd={} (pty {}), flags={:#x}",
-        fd,
-        pty_num,
-        flags_u32
-    );
+    crate::serial_println!("[pty] Created master fd={} (pty {})", fd, pty_num);
 
     SyscallResult::Ok(fd as u64)
 }
@@ -226,7 +223,7 @@ pub fn sys_unlockpt(fd: u64) -> SyscallResult {
             match pty::get(*pty_num) {
                 Some(pair) => {
                     pair.unlock();
-                    log::info!("sys_unlockpt: Unlocked PTY {} (fd {})", pty_num, fd_i32);
+                    crate::serial_println!("[pty] Unlocked PTY {} (fd {})", pty_num, fd_i32);
                     SyscallResult::Ok(0)
                 }
                 None => {

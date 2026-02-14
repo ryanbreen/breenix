@@ -166,6 +166,13 @@ fn update_mouse_cursor() {
     if let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() {
         if let Some(mut fb_guard) = fb.try_lock() {
             super::cursor::update_cursor(&mut *fb_guard, mx as usize, my as usize);
+            // Cursor writes pixels directly; mark dirty so render thread flushes
+            crate::graphics::arm64_fb::mark_dirty(
+                mx.saturating_sub(16),
+                my.saturating_sub(16),
+                32,
+                32,
+            );
         }
     }
 }
@@ -184,14 +191,18 @@ fn flush_framebuffer() {
     }
     #[cfg(target_arch = "aarch64")]
     {
-        if let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() {
-            // Use blocking lock — the render thread is not in interrupt context,
-            // so it's safe to wait. try_lock() caused silent flush drops when the
-            // particle animation thread held the lock, leaving text undrawn on screen.
-            let guard = fb.lock();
-            if let Err(e) = guard.flush_result() {
-                // Log GPU flush failures to serial — these would otherwise be
-                // silently swallowed, leaving the display stale.
+        // Only flush if pixels have changed. The dirty rect is set by:
+        //   - sys_fbdraw (syscall path, after fast pixel copies)
+        //   - particles thread (after rendering)
+        //   - cursor updates (above)
+        //   - render_queue/split_screen text rendering
+        //
+        // No SHELL_FRAMEBUFFER lock needed here — we're not touching the pixel
+        // buffer, just submitting GPU commands via gpu_mmio. This eliminates the
+        // two-lock nesting (SHELL_FRAMEBUFFER + GPU_LOCK) that caused deadlocks
+        // when sys_fbdraw held SHELL_FRAMEBUFFER with IRQs disabled.
+        if let Some((x, y, w, h)) = crate::graphics::arm64_fb::take_dirty_rect() {
+            if let Err(e) = crate::drivers::virtio::gpu_mmio::flush_rect(x, y, w, h) {
                 crate::serial_println!("[render] GPU flush failed: {}", e);
             }
         }
