@@ -25,6 +25,8 @@ use crate::arch_impl::aarch64::constants::{
     PERCPU_KERNEL_CR3_OFFSET,
     PERCPU_SAVED_PROCESS_CR3_OFFSET,
     PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET,
+    PERCPU_DISPATCH_ELR_OFFSET,
+    PERCPU_DISPATCH_SPSR_OFFSET,
     HARDIRQ_MASK,
     SOFTIRQ_MASK,
     NMI_MASK,
@@ -384,6 +386,30 @@ impl Aarch64PerCpu {
         if let Some(atomic) = percpu_atomic_u32(PERCPU_SOFTIRQ_PENDING_OFFSET) {
             atomic.fetch_and(!(1 << nr), Ordering::Relaxed);
         }
+    }
+
+    /// Get dispatch ELR (per-CPU copy for race-free ERET).
+    #[inline(always)]
+    pub fn dispatch_elr() -> u64 {
+        percpu_read_u64(PERCPU_DISPATCH_ELR_OFFSET)
+    }
+
+    /// Set dispatch ELR (per-CPU copy for race-free ERET).
+    #[inline(always)]
+    pub unsafe fn set_dispatch_elr(val: u64) {
+        percpu_write_u64(PERCPU_DISPATCH_ELR_OFFSET, val);
+    }
+
+    /// Get dispatch SPSR (per-CPU copy for race-free ERET).
+    #[inline(always)]
+    pub fn dispatch_spsr() -> u64 {
+        percpu_read_u64(PERCPU_DISPATCH_SPSR_OFFSET)
+    }
+
+    /// Set dispatch SPSR (per-CPU copy for race-free ERET).
+    #[inline(always)]
+    pub unsafe fn set_dispatch_spsr(val: u64) {
+        percpu_write_u64(PERCPU_DISPATCH_SPSR_OFFSET, val);
     }
 
     /// Get exception cleanup context flag.

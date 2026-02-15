@@ -228,10 +228,27 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
         None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
     };
 
-    // Blocking lock is safe here: the SHELL_FRAMEBUFFER lock is now held only
-    // for fast pixel operations (memcpy/memset), never during slow GPU flushes.
-    // GPU submission is deferred to the render thread via dirty rect atomics.
-    let mut fb_guard = fb.lock();
+    // Use try_lock with bounded spin to avoid deadlocking with the render thread.
+    // ARM64 syscalls run with DAIF=1111 (all interrupts disabled). If the render
+    // thread holds this lock with interrupts enabled and gets preempted, a blocking
+    // lock() here would spin forever — no timer interrupt can fire to reschedule
+    // the render thread back. The render thread only holds the lock for brief pixel
+    // ops (microseconds), so 4096 spins (~4μs) handles the common case. If the
+    // lock holder was preempted, we return EBUSY and let userspace retry next frame.
+    let mut fb_guard = {
+        let mut guard = None;
+        for _ in 0..4096 {
+            if let Some(g) = fb.try_lock() {
+                guard = Some(g);
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        match guard {
+            Some(g) => g,
+            None => return SyscallResult::Err(super::ErrorCode::Busy as u64),
+        }
+    };
 
     // Get left pane dimensions (half the screen width)
     let pane_width = fb_guard.width() / 2;

@@ -97,12 +97,23 @@ static GIC_INITIALIZED: AtomicBool = AtomicBool::new(false);
 // Register Access Helpers
 // =============================================================================
 
+/// HHDM base address for GIC MMIO access.
+///
+/// Using the compile-time constant directly instead of `physical_memory_offset()`
+/// (which goes through a OnceCell) eliminates an atomic load-acquire (`ldar`) on
+/// every GIC register access.  The compiler was hoisting the OnceCell state pointer
+/// into a callee-saved register (x19) and reusing it across the entire `handle_irq`
+/// function.  If any callee's stack frame was corrupted (the saved x19 slot
+/// overwritten with zero), the post-handler EOI write would dereference NULL and
+/// DATA_ABORT.  Since HHDM_BASE is a link-time constant on ARM64, there is no
+/// reason to go through a runtime cell.
+const GIC_HHDM: usize = crate::arch_impl::aarch64::constants::HHDM_BASE as usize;
+
 /// Read a 32-bit GICD register
 #[inline]
 fn gicd_read(offset: usize) -> u32 {
     unsafe {
-        let base = crate::memory::physical_memory_offset().as_u64() as usize;
-        let addr = (base + GICD_BASE as usize + offset) as *const u32;
+        let addr = (GIC_HHDM + GICD_BASE as usize + offset) as *const u32;
         core::ptr::read_volatile(addr)
     }
 }
@@ -111,8 +122,7 @@ fn gicd_read(offset: usize) -> u32 {
 #[inline]
 fn gicd_write(offset: usize, value: u32) {
     unsafe {
-        let base = crate::memory::physical_memory_offset().as_u64() as usize;
-        let addr = (base + GICD_BASE as usize + offset) as *mut u32;
+        let addr = (GIC_HHDM + GICD_BASE as usize + offset) as *mut u32;
         core::ptr::write_volatile(addr, value);
     }
 }
@@ -121,8 +131,7 @@ fn gicd_write(offset: usize, value: u32) {
 #[inline]
 fn gicc_read(offset: usize) -> u32 {
     unsafe {
-        let base = crate::memory::physical_memory_offset().as_u64() as usize;
-        let addr = (base + GICC_BASE as usize + offset) as *const u32;
+        let addr = (GIC_HHDM + GICC_BASE as usize + offset) as *const u32;
         core::ptr::read_volatile(addr)
     }
 }
@@ -131,8 +140,7 @@ fn gicc_read(offset: usize) -> u32 {
 #[inline]
 fn gicc_write(offset: usize, value: u32) {
     unsafe {
-        let base = crate::memory::physical_memory_offset().as_u64() as usize;
-        let addr = (base + GICC_BASE as usize + offset) as *mut u32;
+        let addr = (GIC_HHDM + GICC_BASE as usize + offset) as *mut u32;
         core::ptr::write_volatile(addr, value);
     }
 }
@@ -320,8 +328,20 @@ pub fn acknowledge_irq() -> Option<u32> {
     }
 }
 
-/// Signal end of interrupt by ID
-#[inline]
+/// Signal end of interrupt by ID.
+///
+/// CRITICAL: This MUST be `#[inline(never)]` to prevent the compiler from
+/// hoisting the GICC base address into a callee-saved register (x19) and
+/// sharing it with `acknowledge_irq` across the entire `handle_irq` function.
+/// When both IAR read and EOIR write are inlined into handle_irq, the compiler
+/// merges the shared base address into x19 and reuses it across IRQ handler
+/// function calls (timer_interrupt_handler, etc.).  If any callee's stack
+/// frame is corrupted on SMP (zeroing the saved x19 slot), the EOIR write
+/// dereferences NULL → DATA_ABORT at FAR=0x4.
+///
+/// With `#[inline(never)]`, end_of_interrupt computes the EOIR address in
+/// its own temporary registers (x0-x7), independent of handle_irq's state.
+#[inline(never)]
 pub fn end_of_interrupt(irq_id: u32) {
     gicc_write(GICC_EOIR, irq_id);
 }

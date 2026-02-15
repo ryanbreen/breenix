@@ -449,6 +449,9 @@ pub fn socketpair(domain: i32, sock_type: i32, protocol: i32) -> Result<(Fd, Fd)
 
 /// Send data on a connected socket (TCP)
 ///
+/// Uses the WRITE syscall for connected TCP sockets, since the kernel routes
+/// FdKind::TcpConnection through WriteOperation::TcpConnection on WRITE.
+///
 /// # Arguments
 /// * `fd` - Socket file descriptor
 /// * `buf` - Data to send
@@ -457,20 +460,20 @@ pub fn socketpair(domain: i32, sock_type: i32, protocol: i32) -> Result<(Fd, Fd)
 /// Number of bytes sent on success, or Error on failure
 pub fn send(fd: Fd, buf: &[u8]) -> Result<usize, Error> {
     let ret = unsafe {
-        raw::syscall6(
-            nr::SENDTO,
+        raw::syscall3(
+            nr::WRITE,
             fd.raw(),
             buf.as_ptr() as u64,
             buf.len() as u64,
-            0, // flags
-            0, // NULL addr (connected socket)
-            0, // addrlen
         ) as i64
     };
     Error::from_syscall(ret).map(|n| n as usize)
 }
 
 /// Receive data from a connected socket (TCP)
+///
+/// Uses the READ syscall for connected TCP sockets, since the kernel routes
+/// FdKind::TcpConnection through ReadOperation::TcpConnection on READ.
 ///
 /// # Arguments
 /// * `fd` - Socket file descriptor
@@ -480,14 +483,11 @@ pub fn send(fd: Fd, buf: &[u8]) -> Result<usize, Error> {
 /// Number of bytes received on success, or Error on failure
 pub fn recv(fd: Fd, buf: &mut [u8]) -> Result<usize, Error> {
     let ret = unsafe {
-        raw::syscall6(
-            nr::RECVFROM,
+        raw::syscall3(
+            nr::READ,
             fd.raw(),
             buf.as_mut_ptr() as u64,
             buf.len() as u64,
-            0, // flags
-            0, // NULL addr
-            0, // NULL addrlen
         ) as i64
     };
     Error::from_syscall(ret).map(|n| n as usize)

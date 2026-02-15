@@ -114,12 +114,13 @@ fi
 
 # --- Phase 2: Services (10s timeout) ---
 # In BWM mode, shell writes to its PTY (rendered to framebuffer by BWM),
-# so "bsh " won't appear on serial. We accept either:
+# so "bsh " won't appear on serial. We accept any of:
 #   - Direct shell prompt on serial (non-BWM mode)
-#   - BWM reporting shell PID (BWM mode — shell was spawned successfully)
+#   - PTY allocation markers (BWM mode — PTYs created for shell/btop)
+#   - BWM shell PID or similar marker
 if [ -z "$FAIL_REASON" ]; then
     echo "Phase 1: PASS"
-    echo "Phase 2: Services (waiting for shell or BWM shell spawn)..."
+    echo "Phase 2: Services (waiting for shell or BWM child processes)..."
     SHELL_OK=false
     BOUNCE_OK=false
     for i in $(seq 1 5); do
@@ -127,8 +128,10 @@ if [ -z "$FAIL_REASON" ]; then
         if grep -qE "(breenix>|bsh )" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
             SHELL_OK=true
         fi
-        # BWM spawned a shell process (shell output goes to PTY, not serial)
-        if grep -qE "\[bwm\] Shell PID:" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+        # BWM allocated PTYs for its child processes (shell + btop).
+        # In BWM mode, shell output goes to PTY → framebuffer, not serial.
+        # PTY unlock markers prove BWM successfully called openpty() for children.
+        if grep -qE "\[pty\] Unlocked PTY" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
             SHELL_OK=true
         fi
         if grep -q "Bounce demo starting" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then

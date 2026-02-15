@@ -211,6 +211,7 @@ syscall_entry_from_el0:
     cbz x9, .Lskip_rsp_scratch_set
     add x10, sp, #272
     str x10, [x9, #40]
+
 .Lskip_rsp_scratch_set:
 
     /*
@@ -227,27 +228,47 @@ syscall_entry_from_el0:
     /*
      * Restore registers from exception frame.
      *
-     * CRITICAL: Do TTBR0 switch BEFORE restoring x0/x1 and deallocating frame.
-     * If a context switch occurred, SP/TTBR0 must be consistent. By doing the
-     * TTBR0 switch while the frame is still valid, we avoid the race condition
-     * where x0/x1 would be saved to a stack address that becomes invalid after
-     * the TTBR0 switch.
+     * Read ELR/SPSR from the exception frame (written by dispatch function
+     * if a context switch occurred). The deferred requeue mechanism prevents
+     * cross-CPU frame overwrite: the old thread stays in per-CPU
+     * DEFERRED_REQUEUE until the next timer tick on THIS CPU.
      *
      * Order:
-     * 1. Restore system registers (SPSR, ELR)
-     * 2. Restore x2-x30 (skip x0/x1 for now)
+     * 1. Restore system registers (SPSR, ELR) from frame
+     * 2. Restore x2-x30 from frame (skip x0/x1 for now)
      * 3. Do TTBR0 switch using x0/x1 as scratch (they're not restored yet)
      * 4. Restore x0/x1 from frame (still valid - frame not deallocated)
      * 5. Deallocate frame and ERET
      */
 
-    /* Restore SPSR_EL1 first */
-    ldr x10, [sp, #256]
-    msr spsr_el1, x10
+    /* Read ELR from exception frame */
+    ldr x10, [sp, #248]      /* x10 = frame.elr */
 
-    /* Restore ELR_EL1 (return address) */
-    ldr x10, [sp, #248]
+    /* DIAGNOSTIC: Check for corrupted ELR before ERET (was missing in SVC path) */
+    cmp x10, #0x1000
+    b.hs .Lsvc_elr_ok
+    /* ELR < 0x1000 — write diagnostic to UART */
+    mov x0, #0x09000000
+    movk x0, #0xFFFF, lsl #48
+    mov x1, #'!'
+    strb w1, [x0]
+    mov x1, #'S'             /* 'S' = SVC ERET with bad ELR */
+    strb w1, [x0]
+    mov x1, #'\n'
+    strb w1, [x0]
+    /* Redirect to idle_loop_arm64 */
+    adrp x10, idle_loop_arm64
+    add x10, x10, :lo12:idle_loop_arm64
+    /* Force SPSR to EL1h - write to frame */
+    mov x1, #0x5
+    str x1, [sp, #256]       /* frame.spsr = 0x5 (EL1h) */
+    str x10, [sp, #248]      /* frame.elr = idle_loop_arm64 */
+.Lsvc_elr_ok:
     msr elr_el1, x10
+
+    /* Read SPSR from exception frame */
+    ldr x10, [sp, #256]      /* x10 = frame.spsr */
+    msr spsr_el1, x10
 
     /* Restore x30 (link register) */
     ldr x30, [sp, #240]
@@ -420,6 +441,23 @@ syscall_return_to_userspace_aarch64:
 
 .Lfirst_entry_after_ttbr:
 .Lfirst_entry_no_ttbr:
+
+    /*
+     * Set SP to this thread's kernel_stack_top so that subsequent
+     * exceptions from EL0 (timer IRQs, syscalls) use the correct
+     * kernel stack instead of the stale boot stack.
+     *
+     * Without this, SP_EL1 retains whatever value it had before
+     * this function was called (typically the boot stack from
+     * kernel_main), so the first timer IRQ from userspace would
+     * push its exception frame on the wrong stack.
+     */
+    mrs x9, tpidr_el1
+    cbz x9, .Lskip_sp_fix
+    ldr x10, [x9, #16]          /* kernel_stack_top (per-CPU offset 16) */
+    cbz x10, .Lskip_sp_fix
+    mov sp, x10
+.Lskip_sp_fix:
 
     /*
      * Clear all registers to prevent information leaks.

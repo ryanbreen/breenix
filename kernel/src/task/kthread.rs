@@ -222,12 +222,20 @@ pub fn kthread_exit(code: i32) -> ! {
     // Store exit_code BEFORE setting exited flag with a release fence.
     // This ensures kthread_join() sees the exit_code when it observes exited=true.
     handle.inner.exit_code.store(code, Ordering::Release);
-    // Use SeqCst for exited to provide a total order with kthread_join()'s acquire load
-    handle.inner.exited.store(true, Ordering::SeqCst);
     handle.inner.parked.store(false, Ordering::Release);
 
-    // Remove from registry AFTER setting exited, so kthread_join() can still find us
-    KTHREAD_REGISTRY.lock().remove(&handle.inner.tid);
+    // CRITICAL: Perform all lock-protected cleanup BEFORE setting exited=true.
+    // kthread_join() returns as soon as it sees exited=true, and the caller may
+    // immediately call kthread_run() which acquires KTHREAD_REGISTRY and SCHEDULER
+    // locks with interrupts disabled. If we set exited=true first and then try to
+    // acquire these locks with interrupts enabled, we can be preempted while
+    // holding them — and the caller's kthread_run (with IRQs disabled) deadlocks.
+    //
+    // Use without_interrupts to match kthread_run's locking pattern and prevent
+    // preemption while holding KTHREAD_REGISTRY lock.
+    without_interrupts(|| {
+        KTHREAD_REGISTRY.lock().remove(&handle.inner.tid);
+    });
 
     scheduler::with_scheduler(|sched| {
         if let Some(thread) = sched.current_thread_mut() {
@@ -235,6 +243,10 @@ pub fn kthread_exit(code: i32) -> ! {
         }
     });
     scheduler::set_need_resched();
+
+    // Set exited LAST — after all lock-protected cleanup is done.
+    // Use SeqCst to provide a total order with kthread_join()'s acquire load.
+    handle.inner.exited.store(true, Ordering::SeqCst);
 
     loop {
         unsafe { arch_enable_interrupts(); }
@@ -245,11 +257,17 @@ pub fn kthread_exit(code: i32) -> ! {
 /// Get handle for current kthread (if running in one)
 pub fn current_kthread() -> Option<KthreadHandle> {
     let tid = scheduler::current_thread_id()?;
-    KTHREAD_REGISTRY
-        .lock()
-        .get(&tid)
-        .cloned()
-        .map(|inner| KthreadHandle { inner })
+    // Disable interrupts while holding KTHREAD_REGISTRY to match kthread_run's
+    // locking pattern. Without this, a timer interrupt could preempt us while
+    // holding the lock, and another thread calling kthread_run (with IRQs disabled)
+    // would deadlock trying to acquire the same lock.
+    without_interrupts(|| {
+        KTHREAD_REGISTRY
+            .lock()
+            .get(&tid)
+            .cloned()
+            .map(|inner| KthreadHandle { inner })
+    })
 }
 
 extern "C" fn kthread_entry(arg: u64) -> ! {

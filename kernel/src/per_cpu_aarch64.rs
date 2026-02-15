@@ -190,6 +190,13 @@ pub fn set_kernel_stack_top(stack_top: u64) {
     }
 }
 
+/// Set user_rsp_scratch (SP restored by boot.S ERET path)
+pub fn set_user_rsp_scratch(sp: u64) {
+    unsafe {
+        hal_percpu::Aarch64PerCpu::set_user_rsp_scratch(sp);
+    }
+}
+
 /// Check if we need to reschedule
 pub fn need_resched() -> bool {
     if PER_CPU_INITIALIZED.load(Ordering::Acquire) {

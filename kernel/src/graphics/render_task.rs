@@ -75,19 +75,23 @@ fn render_thread_main_kthread() {
             total_rendered += rendered;
         }
 
-        // When BWM owns the display, skip framebuffer operations — BWM
-        // handles all GPU flushing via its own fb_flush() syscall.  Competing
-        // for SHELL_FRAMEBUFFER here with a blocking lock caused deadlocks
-        // when BWM held the lock during GPU busy-waits.
+        // When BWM owns the display, skip cursor updates (BWM draws its
+        // own cursor) but still flush dirty regions to the GPU. The
+        // sys_fbdraw Flush syscall (op=6) copies pixels to the GPU buffer
+        // and marks dirty rects, but doesn't call gpu_mmio::flush_rect()
+        // itself (to avoid holding the GPU lock with interrupts disabled
+        // in syscall context). The render thread must submit those
+        // dirty rects to the GPU regardless of display ownership.
         if !DISPLAY_TAKEN.load(Ordering::Acquire) {
             // Update mouse cursor position from tablet input device
             #[cfg(target_arch = "aarch64")]
             update_mouse_cursor();
-
-            // Flush — the render thread is the sole owner of GPU flushing
-            // when no userspace process has taken the display.
-            flush_framebuffer();
         }
+
+        // Always flush dirty regions — on ARM64, flush_framebuffer()
+        // reads the dirty rect atomically and submits GPU commands
+        // without acquiring SHELL_FRAMEBUFFER, so no deadlock risk.
+        flush_framebuffer();
 
         // Yield to give other threads a chance to run
         crate::task::scheduler::yield_current();

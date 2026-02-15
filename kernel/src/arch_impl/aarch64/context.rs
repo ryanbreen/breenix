@@ -213,6 +213,27 @@ pub unsafe fn return_to_userspace(entry: u64, user_sp: u64) -> ! {
         "mov x0, #0",
         "msr spsr_el1, x0",
 
+        // CRITICAL: Set SP to per-CPU kernel_stack_top before ERET.
+        //
+        // After ERET to EL0, SP_EL1 retains whatever value SP had before
+        // the ERET instruction. On the first exception from EL0 (timer IRQ,
+        // syscall, page fault), hardware uses SP_EL1 for the exception frame.
+        //
+        // Without this, SP_EL1 retains the boot stack from kernel_main,
+        // causing the first timer IRQ to push its frame on the boot stack
+        // instead of the thread's allocated kernel stack. This shares the
+        // boot stack between the user thread's IRQ handling and the idle
+        // thread, leading to stack corruption and crashes (e.g., x19=0 in
+        // handle_irq after timer_interrupt_handler returns).
+        //
+        // Per-CPU layout: tpidr_el1 + 16 = kernel_stack_top
+        "mrs x0, tpidr_el1",
+        "cbz x0, 1f",
+        "ldr x0, [x0, #16]",
+        "cbz x0, 1f",
+        "mov sp, x0",
+        "1:",
+
         // Clear all general purpose registers for security
         "mov x0, #0",
         "mov x1, #0",

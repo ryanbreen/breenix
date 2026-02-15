@@ -38,6 +38,26 @@ SUCCESSES=0
 FAILURES=0
 FAILED_ITERATIONS=""
 
+# Check serial output for crash markers. Prints the crash type and returns 0
+# if a crash is found, 1 if clean.
+check_crash_markers() {
+    local serial_file="$1"
+    [ -f "$serial_file" ] || return 1
+    if grep -qiE "(KERNEL PANIC|panic!)" "$serial_file" 2>/dev/null; then
+        echo "Kernel panic"
+        return 0
+    fi
+    if grep -qiE "(DATA_ABORT|INSTRUCTION_ABORT|Unhandled sync exception)" "$serial_file" 2>/dev/null; then
+        echo "CPU exception"
+        return 0
+    fi
+    if grep -qiE "soft lockup detected" "$serial_file" 2>/dev/null; then
+        echo "Soft lockup"
+        return 0
+    fi
+    return 1
+}
+
 run_single_test() {
     local iteration=$1
     local OUTPUT_DIR="/tmp/breenix_aarch64_strict_$iteration"
@@ -71,13 +91,14 @@ run_single_test() {
     #   "[bwm] Display:" - BWM window manager initialized (shell runs inside PTY)
     # DO NOT accept "Interactive Shell" - that's the KERNEL FALLBACK when userspace FAILS
     local BOOT_COMPLETE=false
+    local CRASH_TYPE=""
     for i in $(seq 1 12); do
         if [ -f "$OUTPUT_DIR/serial.txt" ]; then
             if grep -qE "(breenix>|bsh |\[bwm\] Display:)" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
                 BOOT_COMPLETE=true
                 break
             fi
-            if grep -qiE "(KERNEL PANIC|panic!)" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            if CRASH_TYPE=$(check_crash_markers "$OUTPUT_DIR/serial.txt"); then
                 break
             fi
         fi
@@ -88,12 +109,18 @@ run_single_test() {
     wait $QEMU_PID 2>/dev/null || true
 
     if $BOOT_COMPLETE; then
+        # Even if boot appeared successful, scan for crash markers
+        if CRASH_TYPE=$(check_crash_markers "$OUTPUT_DIR/serial.txt"); then
+            local LINES=$(wc -l < "$OUTPUT_DIR/serial.txt" 2>/dev/null || echo 0)
+            echo "  [FAIL] Boot $iteration: $CRASH_TYPE after boot ($LINES lines)"
+            return 1
+        fi
         echo "  [OK] Boot $iteration: SUCCESS"
         return 0
     else
         local LINES=$(wc -l < "$OUTPUT_DIR/serial.txt" 2>/dev/null || echo 0)
-        if grep -qiE "(KERNEL PANIC|panic!)" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
-            echo "  [FAIL] Boot $iteration: Kernel panic ($LINES lines)"
+        if [ -n "$CRASH_TYPE" ]; then
+            echo "  [FAIL] Boot $iteration: $CRASH_TYPE ($LINES lines)"
         else
             echo "  [FAIL] Boot $iteration: Userspace not detected ($LINES lines)"
         fi

@@ -14,6 +14,7 @@ use crate::arch_impl::aarch64::gic;
 use crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame;
 use crate::arch_impl::aarch64::syscall_entry::rust_syscall_handler_aarch64;
 use crate::arch_impl::traits::SyscallFrame;
+use crate::arch_impl::traits::PerCpuOps;
 
 /// Set the per-CPU idle/boot stack in `user_rsp_scratch` so the assembly ERET
 /// path restores SP to a safe stack when redirecting to idle_loop_arm64.
@@ -183,20 +184,71 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
                     raw_uart_str(" cpu=");
                     raw_uart_dec(cpu_id as u64);
-                    raw_uart_str("\n  x29=");
+                    raw_uart_str("\n  x19=");
+                    raw_uart_hex(frame_ref.x19);
+                    raw_uart_str(" x20=");
+                    raw_uart_hex(frame_ref.x20);
+                    raw_uart_str(" x29=");
                     raw_uart_hex(frame_ref.x29);
                     raw_uart_str(" x30=");
                     raw_uart_hex(frame_ref.x30);
+                    // SP at crash = frame address + 272 (exception frame size)
+                    raw_uart_str(" sp=");
+                    raw_uart_hex(frame as u64 + 272);
                     if let Some(tid) = crate::task::scheduler::current_thread_id() {
                         raw_uart_str(" tid=");
                         raw_uart_dec(tid);
-                        let _name = crate::task::scheduler::with_thread_mut(tid, |thread| {
-                            thread.name.clone()
-                        });
-                        if let Some(ref name) = _name {
+                        crate::task::scheduler::with_thread_mut(tid, |thread| {
                             raw_uart_str(" name=");
-                            raw_uart_str(name);
+                            raw_uart_str(&thread.name);
+                        });
+                    }
+
+                    // Per-CPU state diagnostic: shows whether kernel_stack_top and
+                    // user_rsp_scratch are correct for the current thread.
+                    let percpu_kst = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::kernel_stack_top();
+                    raw_uart_str("\n  percpu_kst=");
+                    raw_uart_hex(percpu_kst);
+                    let user_rsp: u64;
+                    unsafe {
+                        let percpu_base: u64;
+                        core::arch::asm!("mrs {}, tpidr_el1", out(reg) percpu_base, options(nomem, nostack));
+                        user_rsp = if percpu_base != 0 {
+                            core::ptr::read_volatile((percpu_base + 40) as *const u64)
+                        } else {
+                            0
+                        };
+                    }
+                    raw_uart_str(" user_rsp_scratch=");
+                    raw_uart_hex(user_rsp);
+
+                    // Check thread's expected kernel_stack_top from scheduler
+                    if let Some(tid) = crate::task::scheduler::current_thread_id() {
+                        let thread_kst = crate::task::scheduler::with_thread_mut(tid, |thread| {
+                            thread.kernel_stack_top.map(|v| v.as_u64()).unwrap_or(0)
+                        });
+                        if let Some(kst) = thread_kst {
+                            raw_uart_str(" thread_kst=");
+                            raw_uart_hex(kst);
                         }
+                    }
+
+                    // Classify which stack region the frame is on
+                    let frame_addr = frame as u64;
+                    const HHDM_BASE_DIAG: u64 = 0xFFFF_0000_0000_0000;
+                    const BOOT_STACK_BASE: u64 = HHDM_BASE_DIAG + 0x4100_0000;
+                    const BOOT_STACK_END: u64 = HHDM_BASE_DIAG + 0x4200_0000;
+                    const KSTACK_BASE: u64 = HHDM_BASE_DIAG + 0x5200_0000;
+                    const KSTACK_END: u64 = HHDM_BASE_DIAG + 0x5400_0000;
+                    if frame_addr >= BOOT_STACK_BASE && frame_addr < BOOT_STACK_END {
+                        raw_uart_str("\n  STACK=boot_cpu");
+                        let offset_from_base = frame_addr - BOOT_STACK_BASE;
+                        let boot_cpu = offset_from_base / 0x20_0000;
+                        raw_uart_dec(boot_cpu);
+                    } else if frame_addr >= KSTACK_BASE && frame_addr < KSTACK_END {
+                        raw_uart_str("\n  STACK=alloc_kstack");
+                    } else {
+                        raw_uart_str("\n  STACK=unknown");
                     }
                 }
                 raw_uart_str("\n");
@@ -238,19 +290,49 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     // must already have safe ELR/SPSR for the assembly ERET path.
                     frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
                     frame_ref.spsr = 0x5; // EL1h, DAIF clear (interrupts enabled)
+
                     set_idle_stack_for_eret();
                     crate::task::scheduler::switch_to_idle();
                     return;
                 }
             }
 
-            // From kernel or couldn't terminate — redirect to idle loop.
+            // From kernel or couldn't terminate — try to terminate the user
+            // process (best effort, using try_lock to avoid deadlock) then
+            // redirect to idle loop.
+            {
+                use crate::arch_impl::aarch64::context_switch::raw_uart_str;
+                raw_uart_str("[DATA_ABORT] kernel-mode fault, attempting process cleanup\n");
+            }
+
+            // Best-effort process termination: use try_manager() to avoid
+            // deadlock if another CPU holds PROCESS_MANAGER.
+            let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
+            if let Some(mut guard) = crate::process::try_manager() {
+                if let Some(pm) = guard.as_mut() {
+                    if let Some((pid, process)) = pm.find_process_by_cr3_mut(page_table_phys) {
+                        if !process.is_terminated() {
+                            crate::tracing::providers::process::trace_process_exit(
+                                pid.as_u64() as u16, (-11i16) as u16,
+                            );
+                            pm.exit_process(pid, -11); // SIGSEGV
+                        }
+                    }
+                }
+                drop(guard);
+            }
+
+            // Mark scheduler thread as terminated (best effort)
+            terminate_current_scheduler_thread();
+            switch_ttbr0_to_kernel();
+
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort() —
             // if switch_to_idle panics or hits a nested exception, the frame
             // must already have safe ELR/SPSR for the assembly ERET path.
             frame_ref.elr =
                 crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
             frame_ref.spsr = 0x5; // EL1h, interrupts enabled
+
             set_idle_stack_for_eret();
             // Use best_effort (try_lock) to avoid deadlock if SCHEDULER is held.
             crate::task::scheduler::switch_to_idle_best_effort();
@@ -290,16 +372,15 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     raw_uart_str(" from EL1 cpu=");
                     raw_uart_dec(cpu_id as u64);
                     // Identify current thread
+                    // CRITICAL: Print name directly inside closure to avoid
+                    // heap allocation (String::clone) in exception context.
                     if let Some(tid) = crate::task::scheduler::current_thread_id() {
                         raw_uart_str(" tid=");
                         raw_uart_dec(tid);
-                        let _name = crate::task::scheduler::with_thread_mut(tid, |thread| {
-                            thread.name.clone()
-                        });
-                        if let Some(ref name) = _name {
+                        crate::task::scheduler::with_thread_mut(tid, |thread| {
                             raw_uart_str(" name=");
-                            raw_uart_str(name);
-                        }
+                            raw_uart_str(&thread.name);
+                        });
                     }
                     raw_uart_str("\n  x0=");
                     raw_uart_hex(frame_ref.x0);
@@ -313,6 +394,74 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     raw_uart_hex(frame_ref.spsr);
                     raw_uart_str(" sp_at_frame=");
                     raw_uart_hex(frame_ref as *const _ as u64);
+
+                    // Per-CPU state diagnostic: shows whether kernel_stack_top and
+                    // user_rsp_scratch are correct for the current thread.
+                    let percpu_kst = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::kernel_stack_top();
+                    raw_uart_str("\n  percpu_kst=");
+                    raw_uart_hex(percpu_kst);
+                    // Read user_rsp_scratch from per-CPU data
+                    let user_rsp: u64;
+                    unsafe {
+                        let percpu_base: u64;
+                        core::arch::asm!("mrs {}, tpidr_el1", out(reg) percpu_base, options(nomem, nostack));
+                        user_rsp = if percpu_base != 0 {
+                            core::ptr::read_volatile((percpu_base + 40) as *const u64)
+                        } else {
+                            0
+                        };
+                    }
+                    raw_uart_str(" user_rsp_scratch=");
+                    raw_uart_hex(user_rsp);
+
+                    // Check thread's expected kernel_stack_top from scheduler
+                    if let Some(tid) = crate::task::scheduler::current_thread_id() {
+                        let thread_kst = crate::task::scheduler::with_thread_mut(tid, |thread| {
+                            thread.kernel_stack_top.map(|v| v.as_u64()).unwrap_or(0)
+                        });
+                        if let Some(kst) = thread_kst {
+                            raw_uart_str(" thread_kst=");
+                            raw_uart_hex(kst);
+                        }
+                    }
+
+                    // Classify which stack region the frame is on
+                    let frame_addr = frame_ref as *const _ as u64;
+                    const HHDM_BASE_DIAG: u64 = 0xFFFF_0000_0000_0000;
+                    const BOOT_STACK_BASE: u64 = HHDM_BASE_DIAG + 0x4100_0000;
+                    const BOOT_STACK_END: u64 = HHDM_BASE_DIAG + 0x4200_0000;
+                    const KSTACK_BASE: u64 = HHDM_BASE_DIAG + 0x5200_0000;
+                    const KSTACK_END: u64 = HHDM_BASE_DIAG + 0x5400_0000;
+                    if frame_addr >= BOOT_STACK_BASE && frame_addr < BOOT_STACK_END {
+                        raw_uart_str("\n  STACK=boot_cpu");
+                        // Calculate which CPU's boot stack
+                        let offset_from_base = frame_addr - BOOT_STACK_BASE;
+                        let boot_cpu = offset_from_base / 0x20_0000;
+                        raw_uart_dec(boot_cpu);
+                    } else if frame_addr >= KSTACK_BASE && frame_addr < KSTACK_END {
+                        raw_uart_str("\n  STACK=alloc_kstack");
+                    } else {
+                        raw_uart_str("\n  STACK=unknown");
+                    }
+
+                    // OUTER FRAME: Read the frame 272 bytes above (if on a valid stack)
+                    let outer_frame_addr = frame_addr + 272;
+                    if outer_frame_addr + 272 <= BOOT_STACK_END
+                        || (outer_frame_addr >= KSTACK_BASE && outer_frame_addr + 272 <= KSTACK_END)
+                    {
+                        let outer = outer_frame_addr as *const u64;
+                        unsafe {
+                            let outer_x30 = core::ptr::read_volatile(outer.add(30));
+                            let outer_elr = core::ptr::read_volatile(outer.add(31));
+                            let outer_spsr = core::ptr::read_volatile(outer.add(32));
+                            raw_uart_str("\n  OUTER_FRAME(stale?): elr=");
+                            raw_uart_hex(outer_elr);
+                            raw_uart_str(" x30=");
+                            raw_uart_hex(outer_x30);
+                            raw_uart_str(" spsr=");
+                            raw_uart_hex(outer_spsr);
+                        }
+                    }
                     raw_uart_str("\n");
                 }
             }
@@ -355,6 +504,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     frame_ref.elr =
                         crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
                     frame_ref.spsr = 0x5; // EL1h, DAIF clear (interrupts enabled)
+
                     set_idle_stack_for_eret();
                     crate::task::scheduler::switch_to_idle();
                     return;
@@ -372,6 +522,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             frame_ref.elr =
                 crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
             frame_ref.spsr = 0x5; // EL1h, DAIF clear (interrupts enabled)
+
             set_idle_stack_for_eret();
             // Use best_effort (try_lock) to avoid deadlock if SCHEDULER is held.
             crate::task::scheduler::switch_to_idle_best_effort();
@@ -416,6 +567,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
             frame_ref.spsr = 0x5;
+
             set_idle_stack_for_eret();
             crate::task::scheduler::switch_to_idle_best_effort();
         }
@@ -453,6 +605,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
             frame_ref.spsr = 0x5;
+
             set_idle_stack_for_eret();
             crate::task::scheduler::switch_to_idle_best_effort();
         }
@@ -471,6 +624,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
             frame_ref.spsr = 0x5;
+
             set_idle_stack_for_eret();
             crate::task::scheduler::switch_to_idle_best_effort();
         }
