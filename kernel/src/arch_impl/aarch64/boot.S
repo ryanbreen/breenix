@@ -411,8 +411,8 @@ sync_exception_handler:
     mrs x2, far_el1         // Pass FAR
     bl handle_sync_exception
 
-    // Restore registers
-    ldp x0, x1, [sp, #240]   // x0 = frame.x30, x1 = frame.elr
+    // Read ELR from exception frame (modified by Rust handler if redirected)
+    ldr x1, [sp, #248]       // x1 = frame.elr
 
     // DIAGNOSTIC: Check for corrupted ELR before ERET (sync handler path)
     cmp x1, #0x1000
@@ -460,13 +460,13 @@ sync_exception_handler:
     // Redirect to idle_loop_arm64 instead of crashing
     adrp x1, idle_loop_arm64
     add x1, x1, :lo12:idle_loop_arm64
-    // Force SPSR to EL1h — frame.spsr may be 0x0 (EL0t) from contamination,
-    // which would cause ERET to drop to EL0 and fault on kernel code.
+    // Write safe values to frame
+    str x1, [sp, #248]       // frame.elr = idle_loop_arm64
     mov x2, #0x5              // EL1h, interrupts enabled
-    str x2, [sp, #256]        // Overwrite frame.spsr with safe value
+    str x2, [sp, #256]       // frame.spsr = 0x5
 10:
     msr elr_el1, x1
-    ldr x1, [sp, #256]
+    ldr x1, [sp, #256]       // x1 = frame.spsr
     msr spsr_el1, x1
     ldp x0, x1, [sp, #0]
     ldp x2, x3, [sp, #16]
@@ -494,11 +494,22 @@ sync_exception_handler:
     // Re-restore x17 from frame (was used as temp above)
     ldr x17, [sp, #136]      // x17 = frame.x17 (final value)
 
-    // Set SP from user_rsp_scratch (offset 40).
-    // Normal path: user_rsp_scratch was pre-set to sp+272 (original SP).
-    // Redirect-to-idle path: Rust set user_rsp_scratch to idle boot stack.
+    // Set SP based on ERET destination (same logic as IRQ handler):
+    // - EL0 return: use kernel_stack_top (offset 16) — always correct
+    // - EL1 return: use user_rsp_scratch (offset 40) — kernel resume SP
+    // CRITICAL: Use x16 (scratch, saved in eret_scratch) for SPSR check.
+    // Do NOT use x17 — it holds the restored frame value needed after ERET.
+    mrs x16, spsr_el1        // x16 = SPSR (x16 is scratch)
+    and x16, x16, #0xF       // x16 = M[3:0]
+    cbnz x16, 70f            // If M != 0 (EL1), use user_rsp_scratch
+    // EL0 return: use kernel_stack_top (offset 16)
+    mrs x16, tpidr_el1
+    ldr x16, [x16, #16]      // x16 = kernel_stack_top
+    b 71f
+70: // EL1 return: use user_rsp_scratch (offset 40)
+    mrs x16, tpidr_el1
     ldr x16, [x16, #40]      // x16 = user_rsp_scratch
-    mov sp, x16               // SP = correct stack
+71: mov sp, x16               // SP = correct stack
 
     // Restore x16 from per-CPU ERET scratch
     mrs x16, tpidr_el1
@@ -556,14 +567,13 @@ irq_handler:
     mov x0, sp
     bl check_need_resched_and_switch_arm64
 
-    // Restore registers from exception frame (may have been modified by Rust for new thread)
-    // First restore ELR and SPSR using x16 as scratch
-    ldr x16, [sp, #248]      // x16 = frame.elr (offset 248 = 240 + 8)
+    // Read ELR from exception frame (written by dispatch function if context switched).
+    // The deferred requeue mechanism prevents cross-CPU frame overwrite: the old
+    // thread stays in per-CPU DEFERRED_REQUEUE until the next timer tick on THIS
+    // CPU, so no other CPU can dispatch it while we still read from the frame.
+    ldr x16, [sp, #248]      // x16 = frame.elr
 
     // DIAGNOSTIC: Check for corrupted ELR before ERET.
-    // Valid kernel addresses are >= 0xFFFF000000000000 (high half).
-    // Valid user addresses are >= 0x41000000 (Breenix userspace base).
-    // Anything < 0x1000 is corrupted — dump SP and frame address to UART.
     cmp x16, #0x1000
     b.hs 1f
     // ELR < 0x1000 — write diagnostic breadcrumbs to PL011 UART
@@ -575,7 +585,6 @@ irq_handler:
     mov x1, #'E'
     strb w1, [x0]
     // Print the corrupted ELR value (x16) as hex
-    // Use a simple loop to print 16 hex digits
     mov x1, x16              // x1 = ELR value to print
     mov x3, #60              // shift = 60 (start with highest nibble)
 2:  lsr x4, x1, x3           // x4 = (ELR >> shift) & 0xF
@@ -609,10 +618,10 @@ irq_handler:
     // Redirect to idle_loop_arm64 instead of crashing
     adrp x16, idle_loop_arm64
     add x16, x16, :lo12:idle_loop_arm64
-    // Force SPSR to EL1h — frame.spsr may be 0x0 (EL0t) from contamination,
-    // which would cause ERET to drop to EL0 and fault on kernel code.
+    // Write safe values to frame
+    str x16, [sp, #248]      // frame.elr = idle_loop_arm64
     mov x1, #0x5              // EL1h, interrupts enabled
-    str x1, [sp, #256]        // Overwrite frame.spsr with safe value
+    str x1, [sp, #256]       // frame.spsr = 0x5
     ldr x1, [sp, #8]          // Re-restore x1 from frame
 1:
     msr elr_el1, x16
@@ -648,9 +657,28 @@ irq_handler:
     // Re-restore x17 from frame (was used as temp above)
     ldr x17, [sp, #136]      // x17 = frame.x17 (final value)
 
-    // Set SP from user_rsp_scratch (offset 40)
+    // Set SP based on ERET destination:
+    // - EL0 return (SPSR.M[3:0] == 0): use kernel_stack_top (offset 16).
+    //   This is the definitive source for where the next exception frame
+    //   should be pushed. kernel_stack_top is always kept in sync by
+    //   the context switch dispatch path, unlike user_rsp_scratch which
+    //   can become stale if a thread was initially launched via
+    //   return_to_userspace() or if context.sp was saved from a wrong stack.
+    // - EL1 return (SPSR.M[3:0] != 0): use user_rsp_scratch (offset 40).
+    //   For kernel threads, this is the kernel SP where execution resumes.
+    // CRITICAL: Use x16 (scratch, saved in eret_scratch) for SPSR check.
+    // Do NOT use x17 — it holds the restored frame value needed after ERET.
+    mrs x16, spsr_el1        // x16 = SPSR (x16 is scratch)
+    and x16, x16, #0xF       // x16 = M[3:0]
+    cbnz x16, 60f            // If M != 0 (EL1), use user_rsp_scratch
+    // EL0 return: use kernel_stack_top (offset 16)
+    mrs x16, tpidr_el1
+    ldr x16, [x16, #16]      // x16 = kernel_stack_top
+    b 61f
+60: // EL1 return: use user_rsp_scratch (offset 40)
+    mrs x16, tpidr_el1
     ldr x16, [x16, #40]      // x16 = user_rsp_scratch
-    mov sp, x16               // SP = correct stack top
+61: mov sp, x16               // SP = correct stack
 
     // Restore x16 from per-CPU ERET scratch
     mrs x16, tpidr_el1

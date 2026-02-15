@@ -180,6 +180,14 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
         kernel::per_cpu_aarch64::set_current_thread(thread_ptr);
         if let Some(kernel_stack_top) = thread.kernel_stack_top {
             kernel::per_cpu_aarch64::set_kernel_stack_top(kernel_stack_top.as_u64());
+            // CRITICAL: Also set user_rsp_scratch so the boot.S ERET path
+            // restores SP to the correct kernel stack. return_to_userspace()
+            // sets SP_EL1 from percpu.kernel_stack_top, but the boot.S ERET
+            // path uses user_rsp_scratch (offset 40) to set SP before ERET.
+            // Without this, the first timer IRQ return without a context switch
+            // would set SP_EL1 to the stale boot stack from user_rsp_scratch,
+            // causing subsequent exception frames to be pushed on the wrong stack.
+            kernel::per_cpu_aarch64::set_user_rsp_scratch(kernel_stack_top.as_u64());
         }
     });
     raw_char(b'J'); // Per-CPU set

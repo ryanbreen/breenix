@@ -117,6 +117,20 @@ pub fn increment_context_switch_count() {
     CONTEXT_SWITCH_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
+/// Acquire the scheduler lock for a full context switch operation.
+///
+/// Returns the raw lock guard, allowing the caller to perform all
+/// context switch operations under a single lock hold. This eliminates
+/// TOCTOU races from separate lock acquisitions.
+///
+/// SAFETY: Must be called from interrupt context (interrupts already disabled).
+/// The caller must not call any other scheduler public functions that acquire
+/// SCHEDULER.lock() while holding this guard (would deadlock).
+#[cfg(target_arch = "aarch64")]
+pub fn lock_for_context_switch() -> spin::MutexGuard<'static, Option<Scheduler>> {
+    SCHEDULER.lock()
+}
+
 /// Check if a specific CPU is running its idle thread (lock-free).
 /// Safe to call from interrupt context (timer handler).
 #[cfg(target_arch = "aarch64")]
@@ -246,11 +260,11 @@ pub fn dump_cpu_state_history(cpu: usize) {
 }
 
 /// Per-CPU scheduler state.
-struct CpuSchedulerState {
+pub(crate) struct CpuSchedulerState {
     /// Currently running thread ID on this CPU
-    current_thread: Option<u64>,
+    pub(crate) current_thread: Option<u64>,
     /// Idle thread ID for this CPU
-    idle_thread: u64,
+    pub(crate) idle_thread: u64,
 }
 
 /// The kernel scheduler
@@ -262,7 +276,7 @@ pub struct Scheduler {
     ready_queue: VecDeque<u64>,
 
     /// Per-CPU scheduler state (current_thread + idle_thread per CPU)
-    cpu_state: [CpuSchedulerState; MAX_CPUS],
+    pub(crate) cpu_state: [CpuSchedulerState; MAX_CPUS],
 }
 
 impl Scheduler {
@@ -1186,6 +1200,38 @@ impl Scheduler {
     pub fn set_current_thread(&mut self, thread_id: u64) {
         self.cpu_state[Self::current_cpu_id()].current_thread = Some(thread_id);
     }
+
+    /// Check if a thread is an idle thread on any CPU (called from within lock hold).
+    ///
+    /// Unlike the module-level `is_idle_thread()` which acquires the SCHEDULER lock,
+    /// this method works directly on `&self` for use inside a single lock hold.
+    #[cfg(target_arch = "aarch64")]
+    pub fn is_idle_thread_inner(&self, thread_id: u64) -> bool {
+        (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].idle_thread == thread_id)
+    }
+
+    /// Set the need_resched flag (called from within lock hold, no lock needed).
+    #[cfg(target_arch = "aarch64")]
+    pub fn set_need_resched_inner(&self) {
+        NEED_RESCHED.store(true, Ordering::Release);
+        crate::per_cpu_aarch64::set_need_resched(true);
+    }
+
+    /// Fix stale cpu_state where it says idle but a real thread is running.
+    ///
+    /// Called from within the consolidated context switch lock hold, before
+    /// the scheduling decision. This prevents TOCTOU races where cpu_state
+    /// is stale (says idle) but a real user thread is running on this CPU.
+    #[cfg(target_arch = "aarch64")]
+    pub fn fix_stale_idle_cpu_state(&mut self, real_tid: u64) {
+        let cpu = Self::current_cpu_id();
+        let current = self.cpu_state[cpu].current_thread;
+        let idle = self.cpu_state[cpu].idle_thread;
+        if current == Some(idle) && real_tid != idle {
+            record_cpu_state_change(cpu, 1, idle, real_tid);
+            self.cpu_state[cpu].current_thread = Some(real_tid);
+        }
+    }
 }
 
 /// Initialize the global scheduler
@@ -1311,97 +1357,6 @@ pub fn schedule() -> Option<(u64, u64)> {
     };
 
     result
-}
-
-/// Schedule with deferred requeue for ARM64 SMP.
-///
-/// Like `schedule()`, but does NOT add the old thread to the ready queue.
-/// Returns `(old_thread_id, new_thread_id, should_requeue_old)`.
-///
-/// CRITICAL: The caller MUST call `requeue_old_thread()` after saving the old
-/// thread's context. Failure to do so will leak the thread (it will never be
-/// scheduled again).
-///
-/// This prevents the SMP race where another CPU picks up the old thread from
-/// the ready queue before its context has been saved, causing:
-/// - Double-scheduling (same thread on two CPUs with same kernel stack)
-/// - Stale context dispatch (thread runs with initial/outdated register values)
-/// - ELR=0 crashes (ERET to address 0 from unsaved elr_el1)
-#[cfg(target_arch = "aarch64")]
-pub fn schedule_deferred() -> Option<(u64, u64, bool)> {
-    schedule_deferred_with_fixup(None)
-}
-
-/// Schedule with optional cpu_state fixup for stale idle state.
-///
-/// When `real_thread_id` is Some(tid), and the current cpu_state says idle,
-/// fix cpu_state to tid BEFORE making the scheduling decision. This prevents
-/// the TOCTOU race where cpu_state is stale (says idle) but the real user
-/// thread is running on this CPU.
-///
-/// This must run under a single lock hold with schedule_deferred_requeue to
-/// prevent another CPU from changing state between the fixup and the decision.
-#[cfg(target_arch = "aarch64")]
-pub fn schedule_deferred_with_fixup(real_thread_id: Option<u64>) -> Option<(u64, u64, bool)> {
-    // Already in interrupt context on ARM64 (called from IRQ handler)
-    let mut scheduler_lock = SCHEDULER.lock();
-    if let Some(scheduler) = scheduler_lock.as_mut() {
-        // Fix stale cpu_state if needed (atomically with the scheduling decision)
-        if let Some(real_tid) = real_thread_id {
-            let cpu = Scheduler::current_cpu_id();
-            let current = scheduler.cpu_state[cpu].current_thread;
-            let idle = scheduler.cpu_state[cpu].idle_thread;
-            if current == Some(idle) && real_tid != idle {
-                record_cpu_state_change(cpu, 1, idle, real_tid);
-                scheduler.cpu_state[cpu].current_thread = Some(real_tid);
-            }
-        }
-        scheduler.schedule_deferred_requeue()
-    } else {
-        None
-    }
-}
-
-/// Finalize the cpu_state update after saving context.
-///
-/// CRITICAL: Must be called after save_kernel_context_arm64 / save_userspace_context_arm64
-/// and BEFORE requeue_old_thread. This updates cpu_state[cpu].current_thread to the new
-/// thread, which:
-/// 1. Removes the old thread from is_current_on_any_cpu() protection
-/// 2. Allows unblock() on other CPUs to add the old thread to the ready queue
-///
-/// The ordering is: schedule_deferred -> save_context -> commit_schedule -> requeue_old
-#[cfg(target_arch = "aarch64")]
-pub fn commit_schedule_after_save(new_thread_id: u64) {
-    // Already in interrupt context on ARM64
-    let mut scheduler_lock = SCHEDULER.lock();
-    if let Some(scheduler) = scheduler_lock.as_mut() {
-        scheduler.commit_cpu_state_after_save(new_thread_id);
-    }
-}
-
-/// Complete the deferred requeue after saving context.
-///
-/// Must be called after `schedule_deferred()` returns `should_requeue_old = true`
-/// and the old thread's context has been fully saved.
-#[cfg(target_arch = "aarch64")]
-pub fn requeue_old_thread(thread_id: u64) {
-    // Already in interrupt context on ARM64
-    let mut scheduler_lock = SCHEDULER.lock();
-    if let Some(scheduler) = scheduler_lock.as_mut() {
-        scheduler.requeue_thread_after_save(thread_id);
-    }
-}
-
-/// Check if a thread is an idle thread on any CPU.
-#[cfg(target_arch = "aarch64")]
-pub fn is_idle_thread(thread_id: u64) -> bool {
-    let scheduler_lock = SCHEDULER.lock();
-    if let Some(scheduler) = scheduler_lock.as_ref() {
-        (0..MAX_CPUS).any(|cpu| scheduler.cpu_state[cpu].idle_thread == thread_id)
-    } else {
-        false
-    }
 }
 
 /// Special scheduling point called from IRQ exit path
@@ -1670,10 +1625,10 @@ pub fn switch_to_idle_best_effort() {
             sched.cpu_state[cpu_id].current_thread = Some(idle_id);
         }
     }
-    // If try_lock fails, the scheduler state will be stale, but the CPU
-    // will be executing idle_loop_arm64 which only does WFI. The next
-    // timer-driven schedule() call will see the idle thread running and
-    // correct the state.
+    // If try_lock fails, the scheduler state will be stale. This function
+    // is only safe for exception handlers where the lock might be held by
+    // this CPU. The consolidated context switch path handles dispatch failures
+    // directly under the scheduler lock hold.
 }
 
 /// Test module for scheduler state invariants

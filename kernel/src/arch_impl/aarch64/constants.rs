@@ -144,6 +144,16 @@ pub const PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET: usize = 88;
 /// Used by assembly ERET paths to save/restore one register across SP switches.
 pub const PERCPU_ERET_SCRATCH_OFFSET: usize = 96;
 
+/// Offset of dispatch ELR in PerCpuData.
+/// Written by context switch Rust code, read by assembly ERET path.
+/// Immune to cross-CPU frame overwrite race (per-CPU, not on shared stack).
+pub const PERCPU_DISPATCH_ELR_OFFSET: usize = 104;
+
+/// Offset of dispatch SPSR in PerCpuData.
+/// Written by context switch Rust code, read by assembly ERET path.
+/// Immune to cross-CPU frame overwrite race (per-CPU, not on shared stack).
+pub const PERCPU_DISPATCH_SPSR_OFFSET: usize = 112;
+
 // ============================================================================
 // Preempt Count Bit Layout (Linux-compatible)
 // ============================================================================
