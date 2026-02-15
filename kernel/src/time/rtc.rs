@@ -305,20 +305,88 @@ pub fn init() {
     }
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+// ---------------------------------------------------------------------------
+// ARM64: PL031 Real-Time Clock (QEMU virt machine)
+// ---------------------------------------------------------------------------
+//
+// The PL031 is a simple memory-mapped RTC on QEMU's ARM64 virt machine.
+// Physical address: 0x0901_0000 (standard QEMU virt layout).
+// The Data Register (offset 0x000) returns the current Unix timestamp
+// as a 32-bit value, synchronized to the host system clock.
+// ---------------------------------------------------------------------------
+
+/// PL031 RTC physical base address on QEMU virt machine.
+#[cfg(target_arch = "aarch64")]
+const PL031_BASE_PHYS: u64 = 0x0901_0000;
+
+/// PL031 Data Register offset (read-only, returns Unix timestamp).
+#[cfg(target_arch = "aarch64")]
+const PL031_DR: usize = 0x000;
+
+/// Read the PL031 Data Register via the higher-half direct map.
+#[cfg(target_arch = "aarch64")]
+fn pl031_read(offset: usize) -> u32 {
+    use crate::arch_impl::aarch64::constants::HHDM_BASE;
+    let addr = (HHDM_BASE as usize + PL031_BASE_PHYS as usize + offset) as *const u32;
+    unsafe { core::ptr::read_volatile(addr) }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn read_rtc_time() -> Result<u64, &'static str> {
+    let timestamp = pl031_read(PL031_DR) as u64;
+    if timestamp == 0 {
+        return Err("PL031 RTC returned 0");
+    }
+    Ok(timestamp)
+}
+
+/// Read the current date and time from the RTC
+#[cfg(target_arch = "aarch64")]
+#[allow(dead_code)]
+pub fn read_datetime() -> DateTime {
+    match read_rtc_time() {
+        Ok(ts) => DateTime::from_unix_timestamp(ts),
+        Err(_) => DateTime::from_unix_timestamp(0),
+    }
+}
+
+/// Initialize RTC and cache boot time
+#[cfg(target_arch = "aarch64")]
+pub fn init() {
+    match read_rtc_time() {
+        Ok(timestamp) => {
+            BOOT_WALL_TIME.store(timestamp, Ordering::Relaxed);
+            let dt = DateTime::from_unix_timestamp(timestamp);
+            log::info!(
+                "PL031 RTC initialized: {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+                dt.year,
+                dt.month,
+                dt.day,
+                dt.hour,
+                dt.minute,
+                dt.second
+            );
+        }
+        Err(e) => {
+            log::error!("Failed to initialize PL031 RTC: {}", e);
+            BOOT_WALL_TIME.store(0, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Fallback for other non-x86, non-aarch64 architectures
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub fn read_rtc_time() -> Result<u64, &'static str> {
     Err("RTC not supported on this architecture")
 }
 
-/// Read the current date and time from the RTC
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[allow(dead_code)]
 pub fn read_datetime() -> DateTime {
     DateTime::from_unix_timestamp(0)
 }
 
-/// Initialize RTC and cache boot time
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub fn init() {
     BOOT_WALL_TIME.store(0, Ordering::Relaxed);
 }

@@ -93,6 +93,9 @@ const MAX_VALID_IRQ: u32 = 1019;
 /// Whether GIC has been initialized
 static GIC_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
+/// Peripheral ID Register 2 (contains GIC architecture version)
+const GICD_PIDR2: usize = 0xFE8;
+
 // =============================================================================
 // Register Access Helpers
 // =============================================================================
@@ -240,10 +243,23 @@ impl Gicv2 {
 /// SGIs (0-15) and PPIs (16-31) are per-CPU by definition and do not need
 /// distributor re-configuration.
 pub fn init_cpu_interface_secondary() {
-    // Same configuration as primary CPU
+    // Safety: if we got here, GIC_INITIALIZED is true, which means
+    // init() already verified GICv2 is present. No need to re-check.
     gicc_write(GICC_PMR, PRIORITY_MASK as u32);
     gicc_write(GICC_BPR, 7);
     gicc_write(GICC_CTLR, 0x7); // EnableGrp0 | EnableGrp1 | AckCtl
+}
+
+impl Gicv2 {
+    /// Detect the GIC architecture version by reading GICD_PIDR2.
+    ///
+    /// The GICD base address (0x0800_0000) is present on both GICv2 and GICv3
+    /// on QEMU virt, so this read is safe regardless of GIC version.
+    /// Returns the architecture version (2, 3, or 4).
+    fn detect_version() -> u8 {
+        let pidr2 = gicd_read(GICD_PIDR2);
+        ((pidr2 >> 4) & 0xF) as u8
+    }
 }
 
 impl InterruptController for Gicv2 {
@@ -251,6 +267,20 @@ impl InterruptController for Gicv2 {
     fn init() {
         if GIC_INITIALIZED.load(Ordering::Relaxed) {
             return;
+        }
+
+        // Detect GIC version before accessing GICC (CPU interface) registers.
+        // The GICC MMIO region only exists for GICv2. GICv3 uses system
+        // registers (ICC_*) instead, and the GICC address range is unmapped —
+        // accessing it would cause a synchronous external abort (DATA_ABORT).
+        let version = Self::detect_version();
+        if version != 2 {
+            panic!(
+                "GIC architecture version {} detected, but only GICv2 is supported. \
+                 Launch QEMU with '-M virt' (default GICv2) instead of \
+                 '-machine virt,gic-version=3'.",
+                version
+            );
         }
 
         Self::init_distributor();

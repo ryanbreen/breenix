@@ -58,6 +58,14 @@ pub fn mark_full_dirty() {
     }
 }
 
+/// Check if any region is dirty without consuming the state.
+///
+/// Used by the render thread to decide whether to yield or loop back
+/// for another flush. Does not reset the dirty flag.
+pub fn has_dirty_rect() -> bool {
+    FB_DIRTY.load(Ordering::Acquire)
+}
+
 /// Take the dirty rect, resetting to clean.
 ///
 /// Returns `Some((x, y, w, h))` if any region was dirty, `None` if clean.

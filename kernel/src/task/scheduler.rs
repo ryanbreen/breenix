@@ -265,6 +265,20 @@ pub(crate) struct CpuSchedulerState {
     pub(crate) current_thread: Option<u64>,
     /// Idle thread ID for this CPU
     pub(crate) idle_thread: u64,
+    /// Thread that was just switched out on this CPU.
+    ///
+    /// After a context switch, the old thread's kernel stack is still in use
+    /// by this CPU until ERET completes (post-switch code runs on the old
+    /// thread's stack). This field prevents wakeup paths (unblock, wake_expired_timers)
+    /// from adding the thread to the ready_queue too early — which would allow
+    /// another CPU to dispatch it while this CPU still has stack frames on
+    /// the same kernel stack, causing register/stack corruption.
+    ///
+    /// Set when committing a context switch, cleared when processing the
+    /// deferred requeue on the NEXT context switch (by which time ERET has
+    /// completed and the stack is free).
+    #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+    pub(crate) previous_thread: Option<u64>,
 }
 
 /// The kernel scheduler
@@ -288,11 +302,13 @@ impl Scheduler {
         const EMPTY_STATE: CpuSchedulerState = CpuSchedulerState {
             current_thread: None,
             idle_thread: 0,
+            previous_thread: None,
         };
         let mut cpu_state = [EMPTY_STATE; MAX_CPUS];
         cpu_state[0] = CpuSchedulerState {
             current_thread: Some(idle_id),
             idle_thread: idle_id,
+            previous_thread: None,
         };
 
         let scheduler = Self {
@@ -793,6 +809,22 @@ impl Scheduler {
         if (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].idle_thread == thread_id) {
             return;
         }
+        // CRITICAL: Don't requeue threads that are currently running on any CPU.
+        // Race condition: wake_expired_timers (or unblock) can wake a thread and
+        // dispatch it on another CPU while this CPU's DEFERRED_REQUEUE still holds
+        // the thread's ID. Without this check, the deferred requeue would add the
+        // thread to the ready queue AGAIN, causing it to be dispatched on a second
+        // CPU simultaneously — sharing the same kernel stack and Thread context,
+        // leading to register/stack corruption (DATA_ABORT, INSTRUCTION_ABORT, etc.).
+        if (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].current_thread == Some(thread_id)) {
+            return;
+        }
+        // Don't requeue threads still pending deferred requeue on another CPU.
+        // This is a defense-in-depth check — the primary protection is in
+        // the wakeup paths (unblock, wake_expired_timers, etc.).
+        if self.is_in_deferred_requeue(thread_id) {
+            return;
+        }
         // Safety checks: only requeue if the thread is in Ready state and not already queued
         if let Some(thread) = self.get_thread(thread_id) {
             if thread.state != ThreadState::Ready {
@@ -824,6 +856,7 @@ impl Scheduler {
         if let Some(thread) = self.get_thread_mut(thread_id) {
             if thread.state == ThreadState::Blocked || thread.state == ThreadState::BlockedOnSignal || thread.state == ThreadState::BlockedOnTimer {
                 thread.set_ready();
+                thread.blocked_in_syscall = false;
 
                 // SMP safety: Don't add to ready_queue if thread is currently
                 // running on any CPU. If a thread is blocked in a syscall's WFI
@@ -838,7 +871,17 @@ impl Scheduler {
                     self.cpu_state[cpu].current_thread == Some(thread_id)
                 });
 
+                // SMP safety: Don't add to ready_queue if thread was just
+                // context-switched out and the old CPU's ERET hasn't completed.
+                // State was already set to Ready above; the deferred requeue
+                // will add it to ready_queue when the kernel stack is free.
+                #[cfg(target_arch = "aarch64")]
+                let is_in_deferred = self.is_in_deferred_requeue(thread_id);
+                #[cfg(not(target_arch = "aarch64"))]
+                let is_in_deferred = false;
+
                 if !is_current_on_any_cpu
+                    && !is_in_deferred
                     && thread_id != self.cpu_state[Self::current_cpu_id()].idle_thread
                     && !self.ready_queue.contains(&thread_id)
                 {
@@ -991,7 +1034,13 @@ impl Scheduler {
                     self.cpu_state[cpu].current_thread == Some(thread_id)
                 });
 
+                #[cfg(target_arch = "aarch64")]
+                let is_in_deferred = self.is_in_deferred_requeue(thread_id);
+                #[cfg(not(target_arch = "aarch64"))]
+                let is_in_deferred = false;
+
                 if !is_current_on_any_cpu
+                    && !is_in_deferred
                     && thread_id != self.cpu_state[Self::current_cpu_id()].idle_thread
                     && !self.ready_queue.contains(&thread_id)
                 {
@@ -1076,7 +1125,13 @@ impl Scheduler {
                     self.cpu_state[cpu].current_thread == Some(thread_id)
                 });
 
+                #[cfg(target_arch = "aarch64")]
+                let is_in_deferred = self.is_in_deferred_requeue(thread_id);
+                #[cfg(not(target_arch = "aarch64"))]
+                let is_in_deferred = false;
+
                 if !is_current_on_any_cpu
+                    && !is_in_deferred
                     && thread_id != self.cpu_state[Self::current_cpu_id()].idle_thread
                     && !self.ready_queue.contains(&thread_id)
                 {
@@ -1097,7 +1152,6 @@ impl Scheduler {
         }
     }
 
-    #[allow(dead_code)] // Will be used when voluntary preemption from syscall handlers is implemented
     /// Block current thread until a timer expires (nanosleep syscall)
     pub fn block_current_for_timer(&mut self, wake_time_ns: u64) {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
@@ -1111,8 +1165,10 @@ impl Scheduler {
     }
 
     /// Check all threads for expired timer-based sleep and wake them.
-    /// Called from schedule() on every reschedule.
-    fn wake_expired_timers(&mut self) {
+    /// Called from schedule() on every reschedule, and from the nanosleep
+    /// HLT loop to immediately detect timer expiry without waiting for
+    /// a scheduling decision on another CPU.
+    pub fn wake_expired_timers(&mut self) {
         let (secs, nanos) = crate::time::get_monotonic_time_ns();
         let now_ns = secs as u64 * 1_000_000_000 + nanos as u64;
 
@@ -1131,6 +1187,22 @@ impl Scheduler {
             if let Some(thread) = self.get_thread_mut(id) {
                 thread.state = ThreadState::Ready;
                 thread.wake_time_ns = None;
+                // CRITICAL: Clear blocked_in_syscall so the context switch
+                // dispatches the thread through the correct path (userspace vs
+                // kernel) on its next run. Without this, the thread runs to
+                // completion of the syscall, returns to EL0, gets preempted
+                // with a userspace ELR — but blocked_in_syscall=true routes it
+                // through the kernel restore path which rejects the userspace ELR.
+                thread.blocked_in_syscall = false;
+
+                // SMP safety: Don't add to ready_queue if thread was just
+                // context-switched out and the old CPU's ERET hasn't completed.
+                // The deferred requeue will add it when the kernel stack is free.
+                #[cfg(target_arch = "aarch64")]
+                if self.is_in_deferred_requeue(id) {
+                    continue;
+                }
+
                 if id != self.cpu_state[Self::current_cpu_id()].idle_thread && !self.ready_queue.contains(&id) {
                     self.ready_queue.push_back(id);
                 }
@@ -1208,6 +1280,16 @@ impl Scheduler {
     #[cfg(target_arch = "aarch64")]
     pub fn is_idle_thread_inner(&self, thread_id: u64) -> bool {
         (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].idle_thread == thread_id)
+    }
+
+    /// Check if a thread is in the deferred requeue state on any CPU.
+    ///
+    /// Returns true if the thread was recently context-switched out on some CPU
+    /// and that CPU's ERET hasn't completed yet (the thread's kernel stack is
+    /// still in use). Wakeup paths must not add such threads to the ready_queue.
+    #[cfg(target_arch = "aarch64")]
+    pub fn is_in_deferred_requeue(&self, thread_id: u64) -> bool {
+        (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].previous_thread == Some(thread_id))
     }
 
     /// Set the need_resched flag (called from within lock hold, no lock needed).

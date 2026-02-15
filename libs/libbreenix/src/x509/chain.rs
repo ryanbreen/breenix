@@ -69,16 +69,24 @@ pub fn validate_chain(
     // Step 2: Walk the chain from leaf to root.
     // At each step, find the issuer of the current certificate, verify the
     // signature, check validity, and check CA constraints on intermediates.
+    //
+    // If the system clock is clearly wrong (before 2020-01-01), skip time
+    // validation. This handles embedded/boot scenarios without RTC or NTP.
+    const MIN_SANE_TIME: u64 = 1_577_836_800; // 2020-01-01 00:00:00 UTC
+    let clock_valid = now >= MIN_SANE_TIME;
+
     let mut current = leaf;
     let mut depth = 0;
 
     loop {
-        // Check validity period for the current certificate.
-        if now < current.not_before {
-            return Err(ChainError::NotYetValid);
-        }
-        if now > current.not_after {
-            return Err(ChainError::Expired);
+        // Check validity period for the current certificate (only if clock is sane).
+        if clock_valid {
+            if now < current.not_before {
+                return Err(ChainError::NotYetValid);
+            }
+            if now > current.not_after {
+                return Err(ChainError::Expired);
+            }
         }
 
         // Try to find the issuer of the current certificate.
@@ -89,6 +97,20 @@ pub fn validate_chain(
             verify_signature(current, &root_cert)?;
             // Chain terminates at a trusted root -- success.
             return Ok(());
+        }
+
+        // Handle cross-signing: if the current certificate shares the same
+        // public key as a root CA, it's a cross-signed version of that root.
+        // The same key = the same trust, regardless of the issuer name.
+        // This is common when CAs transition between roots (e.g., SSL.com
+        // Transit RSA CA R2 cross-signed by AAA Certificate Services shares
+        // its key with SSL.com Root Certification Authority RSA).
+        if depth > 0 && current.is_ca {
+            if let Some(current_pk) = &current.public_key {
+                if root_store.find_by_public_key(&current_pk.modulus, &current_pk.exponent).is_some() {
+                    return Ok(());
+                }
+            }
         }
 
         // Next, search the remaining chain certificates for the issuer.

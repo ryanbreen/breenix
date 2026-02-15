@@ -66,7 +66,7 @@ const TIMER_COUNT_PRINT_INTERVAL: u64 = 200;
 // ─── Soft Lockup Detector ────────────────────────────────────────────────────
 //
 // Detects when no context switch has occurred for LOCKUP_THRESHOLD_TICKS timer
-// interrupts (~5 seconds at 200 Hz). When triggered, dumps diagnostic state to
+// interrupts (~5 seconds at 1000 Hz). When triggered, dumps diagnostic state to
 // serial using lock-free raw_serial_str(). Fires once per stall, resets when
 // context switches resume.
 

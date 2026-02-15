@@ -290,6 +290,10 @@ pub extern "C" fn kernel_main() -> ! {
     let freq = timer::frequency_hz();
     serial_println!("[boot] Timer frequency: {} Hz ({} MHz)", freq, freq / 1_000_000);
 
+    // Initialize RTC for wall-clock time (PL031 on QEMU virt)
+    serial_println!("[boot] Initializing PL031 RTC...");
+    kernel::time::rtc::init();
+
     // Read current timestamp
     let ts = timer::rdtsc();
     serial_println!("[boot] Current timestamp: {}", ts);

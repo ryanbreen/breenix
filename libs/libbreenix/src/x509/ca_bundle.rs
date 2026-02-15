@@ -234,6 +234,24 @@ impl RootStore {
         }
         None
     }
+
+    /// Find a root CA by matching its RSA public key (modulus + exponent).
+    ///
+    /// This handles cross-signing: when a CA transitions between roots, the
+    /// same key pair may appear in both a self-signed root and a cross-signed
+    /// intermediate. Matching by key is a fast byte comparison.
+    pub fn find_by_public_key(&self, modulus: &[u8], exponent: &[u8]) -> Option<Certificate> {
+        for i in 0..self.index.len() {
+            if let Some(cert) = self.get(i) {
+                if let Some(pk) = &cert.public_key {
+                    if pk.modulus == modulus && pk.exponent == exponent {
+                        return Some(cert);
+                    }
+                }
+            }
+        }
+        None
+    }
 }
 
 /// Compare two distinguished names for equality
