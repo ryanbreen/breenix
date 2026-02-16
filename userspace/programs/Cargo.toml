@@ -10,6 +10,7 @@ description = "Userspace programs and utilities for Breenix"
 [dependencies]
 libbreenix = { path = "../../libs/libbreenix", features = ["std"] }
 libgfx = { path = "../../libs/libgfx" }
+libimg = { path = "../../libs/libimg" }
 breenish-js = { path = "../../libs/breenish-js" }
 
 [[bin]]
@@ -533,6 +534,18 @@ path = "src/btop.rs"
 [[bin]]
 name = "burl"
 path = "src/burl.rs"
+
+[[bin]]
+name = "blogd"
+path = "src/blogd.rs"
+
+[[bin]]
+name = "bless"
+path = "src/bless.rs"
+
+[[bin]]
+name = "guskit"
+path = "src/guskit.rs"
 
 [profile.release]
 panic = "abort"

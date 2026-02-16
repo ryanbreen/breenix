@@ -13,6 +13,7 @@
 use libbreenix::process::{fork, exec, waitpid, getpid, yield_now, ForkResult, WNOHANG};
 
 const TELNETD_PATH: &[u8] = b"/sbin/telnetd\0";
+const BLOGD_PATH: &[u8] = b"/sbin/blogd\0";
 const BWM_PATH: &[u8] = b"/bin/bwm\0";
 
 /// Maximum number of rapid respawns before giving up on a service.
@@ -57,6 +58,11 @@ fn main() {
     let mut telnetd_pid = spawn(TELNETD_PATH, "telnetd");
     let mut telnetd_failures: u32 = 0;
 
+    // Start blogd (kernel log daemon — persists /proc/kmsg to /var/log/kernel.log)
+    print!("[init] Starting /sbin/blogd...\n");
+    let mut blogd_pid = spawn(BLOGD_PATH, "blogd");
+    let mut blogd_failures: u32 = 0;
+
     // Start BWM (window manager -- owns keyboard stdin, renders right-side display,
     // spawns its own bsh + btop on PTYs)
     print!("[init] Starting /bin/bwm...\n");
@@ -75,6 +81,12 @@ fn main() {
                         bwm_pid = try_respawn(BWM_PATH, "bwm", &mut bwm_failures);
                         if bwm_pid == -1 {
                             print!("[init] BWM failed {} times, giving up\n", MAX_RESPAWN_FAILURES);
+                        }
+                    } else if reaped == blogd_pid {
+                        print!("[init] blogd exited (status {})\n", status);
+                        blogd_pid = try_respawn(BLOGD_PATH, "blogd", &mut blogd_failures);
+                        if blogd_pid == -1 {
+                            print!("[init] blogd failed {} times, giving up\n", MAX_RESPAWN_FAILURES);
                         }
                     } else if reaped == telnetd_pid {
                         telnetd_pid = try_respawn(TELNETD_PATH, "telnetd", &mut telnetd_failures);

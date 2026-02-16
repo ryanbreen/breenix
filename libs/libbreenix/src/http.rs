@@ -321,7 +321,7 @@ fn build_full_request(
     pos += 2;
 
     // Default headers
-    let defaults = b"Connection: close\r\nUser-Agent: burl/1.0 (Breenix)\r\n";
+    let defaults = b"Connection: close\r\nUser-Agent: burl/1.0 (Breenix)\r\nAccept-Encoding: identity\r\n";
     if pos + defaults.len() > buf.len() {
         return 0;
     }
@@ -421,6 +421,35 @@ impl ContentLengthBuf {
 // Response Parsing
 // ============================================================================
 
+/// Convert ASCII byte to lowercase.
+fn to_lower(b: u8) -> u8 {
+    if b >= b'A' && b <= b'Z' {
+        b + 32
+    } else {
+        b
+    }
+}
+
+/// Case-insensitive search for `needle` in `haystack` (ASCII only).
+fn contains_bytes_ci(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    for i in 0..=haystack.len() - needle.len() {
+        let mut matched = true;
+        for k in 0..needle.len() {
+            if to_lower(haystack[i + k]) != to_lower(needle[k]) {
+                matched = false;
+                break;
+            }
+        }
+        if matched {
+            return true;
+        }
+    }
+    false
+}
+
 /// Find the end of HTTP headers (double CRLF)
 fn find_header_end(buf: &[u8]) -> Option<usize> {
     for i in 0..buf.len().saturating_sub(3) {
@@ -458,6 +487,186 @@ fn parse_status_line(buf: &[u8]) -> Option<u16> {
     let d2 = (after_space[2] as char).to_digit(10)? as u16;
 
     Some(d0 * 100 + d1 * 10 + d2)
+}
+
+/// Find Content-Length value in HTTP headers.
+///
+/// Scans header lines for a "Content-Length: N" header (case-insensitive)
+/// and returns the parsed value. Only matches at line starts to avoid
+/// false positives from header values containing the string.
+fn find_content_length(buf: &[u8], header_end: usize) -> Option<usize> {
+    let headers = &buf[..header_end];
+    let cl = b"content-length:";
+
+    let mut i = 0;
+    while i + cl.len() <= headers.len() {
+        // Only match at header line starts (i == 0 or preceded by \n)
+        if i == 0 || headers[i - 1] == b'\n' {
+            let mut matched = true;
+            for k in 0..cl.len() {
+                if to_lower(headers[i + k]) != cl[k] {
+                    matched = false;
+                    break;
+                }
+            }
+
+            if matched {
+                // Skip optional whitespace after ':'
+                let mut j = i + cl.len();
+                while j < headers.len() && headers[j] == b' ' {
+                    j += 1;
+                }
+                // Parse digits
+                let mut val = 0usize;
+                let mut found = false;
+                while j < headers.len() && headers[j] >= b'0' && headers[j] <= b'9' {
+                    val = val * 10 + (headers[j] - b'0') as usize;
+                    found = true;
+                    j += 1;
+                }
+                if found {
+                    return Some(val);
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Check if Transfer-Encoding: chunked is present in headers.
+///
+/// Scans header lines for "Transfer-Encoding:" (case-insensitive) and checks
+/// if the value contains "chunked". Only matches at line starts.
+fn is_chunked_encoding(buf: &[u8], header_end: usize) -> bool {
+    let headers = &buf[..header_end];
+    let te = b"transfer-encoding:";
+
+    let mut i = 0;
+    while i + te.len() <= headers.len() {
+        // Only match at header line starts (i == 0 or preceded by \n)
+        if i == 0 || headers[i - 1] == b'\n' {
+            let mut matched = true;
+            for k in 0..te.len() {
+                if to_lower(headers[i + k]) != te[k] {
+                    matched = false;
+                    break;
+                }
+            }
+
+            if matched {
+                // Find end of this header line
+                let mut j = i + te.len();
+                while j < headers.len() && headers[j] != b'\r' && headers[j] != b'\n' {
+                    j += 1;
+                }
+                // Check if value contains "chunked"
+                let value = &headers[i + te.len()..j];
+                if contains_bytes_ci(value, b"chunked") {
+                    return true;
+                }
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Check if a chunked response is complete (ends with "0\r\n\r\n" or "0\r\n...\r\n\r\n").
+fn is_chunked_complete(buf: &[u8], body_start: usize, total_len: usize) -> bool {
+    if total_len < body_start + 5 {
+        return false;
+    }
+    let body = &buf[body_start..total_len];
+    // The final chunk is "0\r\n\r\n" (possibly with trailer headers between the CRLFs)
+    // Simple check: look for "\r\n0\r\n" near the end, or the body ending with "0\r\n\r\n"
+    if body.len() >= 5 && &body[body.len() - 5..] == b"0\r\n\r\n" {
+        return true;
+    }
+    // Also check for the pattern with trailing CRLF after headers
+    if body.len() >= 7 && &body[body.len() - 7..] == b"\r\n0\r\n\r\n" {
+        return true;
+    }
+    false
+}
+
+/// Decode a chunked transfer-encoded body in place.
+///
+/// Strips chunk size markers and CRLFs, leaving only the raw body data.
+/// Returns the decoded body length.
+fn decode_chunked_body(buf: &mut [u8], body_start: usize, body_end: usize) -> usize {
+    let mut rp = body_start; // read position
+    let mut wp = body_start; // write position
+
+    loop {
+        // Parse chunk size (hex digits)
+        let mut chunk_size: usize = 0;
+        let mut found_digit = false;
+
+        while rp < body_end {
+            let b = buf[rp];
+            let digit = match b {
+                b'0'..=b'9' => Some((b - b'0') as usize),
+                b'a'..=b'f' => Some((b - b'a' + 10) as usize),
+                b'A'..=b'F' => Some((b - b'A' + 10) as usize),
+                _ => None,
+            };
+
+            if let Some(d) = digit {
+                chunk_size = chunk_size * 16 + d;
+                found_digit = true;
+                rp += 1;
+            } else {
+                break;
+            }
+        }
+
+        if !found_digit {
+            break;
+        }
+
+        // Skip optional chunk extensions (after ';')
+        while rp < body_end && buf[rp] != b'\r' && buf[rp] != b'\n' {
+            rp += 1;
+        }
+
+        // Skip CRLF after chunk size
+        if rp + 1 < body_end && buf[rp] == b'\r' && buf[rp + 1] == b'\n' {
+            rp += 2;
+        } else if rp < body_end && buf[rp] == b'\n' {
+            rp += 1;
+        } else {
+            break; // Malformed
+        }
+
+        // Terminal chunk (size 0)
+        if chunk_size == 0 {
+            break;
+        }
+
+        // Copy chunk data (in-place safe: wp <= rp always)
+        let data_end = rp + chunk_size;
+        if data_end > body_end {
+            // Truncated chunk - copy what we have
+            let available = body_end - rp;
+            buf.copy_within(rp..rp + available, wp);
+            wp += available;
+            break;
+        }
+
+        buf.copy_within(rp..data_end, wp);
+        wp += chunk_size;
+        rp = data_end;
+
+        // Skip trailing CRLF after chunk data
+        if rp + 1 < body_end && buf[rp] == b'\r' && buf[rp + 1] == b'\n' {
+            rp += 2;
+        } else if rp < body_end && buf[rp] == b'\n' {
+            rp += 1;
+        }
+    }
+
+    wp - body_start
 }
 
 /// Parse HTTP response
@@ -613,6 +822,11 @@ pub fn http_request(
     let mut total_received = 0usize;
     let max_read = response_buf.len();
 
+    // Track whether we've found the header end and what the body completion condition is
+    let mut header_end: Option<usize> = None;
+    let mut content_length: Option<usize> = None;
+    let mut chunked = false;
+
     for _ in 0..1000 {
         if total_received >= max_read {
             conn.close();
@@ -625,6 +839,45 @@ pub fn http_request(
                 total_received += n;
                 #[cfg(feature = "std")]
                 if verbose { eprint!("* Received {} bytes (total: {})\n", n, total_received); }
+
+                // Once we have headers, determine body completion strategy
+                if header_end.is_none() {
+                    header_end = find_header_end(&response_buf[..total_received]);
+                    if let Some(hend) = header_end {
+                        content_length = find_content_length(&response_buf[..total_received], hend);
+                        chunked = is_chunked_encoding(&response_buf[..total_received], hend);
+                        #[cfg(feature = "std")]
+                        if verbose {
+                            if let Some(cl) = content_length {
+                                eprint!("* Content-Length: {}\n", cl);
+                            }
+                            if chunked {
+                                eprint!("* Transfer-Encoding: chunked\n");
+                            }
+                        }
+                    }
+                }
+
+                // Check if response is complete
+                if let Some(hend) = header_end {
+                    if let Some(cl) = content_length {
+                        // Content-Length: stop when we have all body bytes
+                        let body_received = total_received - hend;
+                        if body_received >= cl {
+                            #[cfg(feature = "std")]
+                            if verbose { eprint!("* Body complete ({}/{} bytes)\n", body_received, cl); }
+                            break;
+                        }
+                    } else if chunked {
+                        // Chunked: stop when we see the final chunk marker
+                        if is_chunked_complete(response_buf, hend, total_received) {
+                            #[cfg(feature = "std")]
+                            if verbose { eprint!("* Chunked body complete\n"); }
+                            break;
+                        }
+                    }
+                    // No Content-Length and not chunked: read until EOF/error
+                }
             }
             Err(_) => break,
         }
@@ -641,8 +894,27 @@ pub fn http_request(
     #[cfg(feature = "std")]
     if verbose { eprint!("* Total received: {} bytes\n", total_received); }
 
-    let response =
+    // Decode chunked transfer encoding if detected
+    let decoded_body_len = if chunked {
+        if let Some(hend) = header_end {
+            let decoded = decode_chunked_body(response_buf, hend, total_received);
+            #[cfg(feature = "std")]
+            if verbose { eprint!("* Decoded chunked body: {} bytes\n", decoded); }
+            Some(decoded)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let mut response =
         parse_response(response_buf, total_received).ok_or(HttpError::ParseError)?;
+
+    // Override body_len with decoded length if chunked
+    if let Some(dbl) = decoded_body_len {
+        response.body_len = dbl;
+    }
 
     Ok((response, total_received))
 }

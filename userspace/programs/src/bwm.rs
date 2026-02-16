@@ -719,31 +719,6 @@ fn spawn_child(path: &[u8], _name: &str) -> (Fd, i64) {
     }
 }
 
-/// Read /proc/kmsg for kernel log content
-fn read_kmsg() -> Vec<u8> {
-    let mut buf = vec![0u8; 4096];
-    match libbreenix::fs::open("/proc/kmsg", 0) {
-        Ok(fd) => {
-            let mut total = 0;
-            loop {
-                match io::read(fd, &mut buf[total..]) {
-                    Ok(n) if n > 0 => {
-                        total += n;
-                        if total >= buf.len() - 256 {
-                            buf.resize(buf.len() + 4096, 0);
-                        }
-                    }
-                    _ => break,
-                }
-            }
-            let _ = io::close(fd);
-            buf.truncate(total);
-            buf
-        }
-        Err(_) => Vec::new(),
-    }
-}
-
 // ─── Tab Bar Hit Testing ─────────────────────────────────────────────────────
 
 /// Hit-test the tab bar to determine which tab was clicked.
@@ -945,6 +920,7 @@ fn main() {
 
     // Step 4: Create tabs with PTY children
     let (shell_master, shell_pid) = spawn_child(b"/bin/bsh\0", "bsh");
+    let (bless_master, bless_pid) = spawn_child(b"/bin/bless\0", "bless");
     let (btop_master, btop_pid) = spawn_child(b"/bin/btop\0", "btop");
 
     // Set PTY window size so child processes know the terminal dimensions
@@ -955,6 +931,7 @@ fn main() {
         ws_ypixel: term_pixel_height as u16,
     };
     let _ = libbreenix::termios::set_winsize(shell_master, &ws);
+    let _ = libbreenix::termios::set_winsize(bless_master, &ws);
     let _ = libbreenix::termios::set_winsize(btop_master, &ws);
 
     let mut tabs = [
@@ -970,8 +947,8 @@ fn main() {
             name: "Logs",
             shortcut: "F2",
             emu: TermEmu::new(term_cols, term_rows),
-            master_fd: None, // Logs tab reads /proc/kmsg directly
-            child_pid: -1,
+            master_fd: Some(bless_master),
+            child_pid: bless_pid,
             has_unread: false,
         },
         Tab {
@@ -986,7 +963,6 @@ fn main() {
 
     let mut active_tab: usize = TAB_SHELL;
     let mut input_parser = InputParser::new();
-    let mut kmsg_offset: usize = 0; // Track how much of /proc/kmsg we've shown
     let mut frame: u32 = 0;
     let mut prev_mouse_buttons: u32 = 0; // For detecting click transitions
     let pane_x_offset = full_width / 2 + 4; // Right pane starts after divider
@@ -1003,6 +979,7 @@ fn main() {
 
     // Pre-allocate poll fds (avoid Vec allocation per frame)
     let mut poll_fds = [
+        io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 },
         io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 },
         io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 },
         io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 },
@@ -1024,6 +1001,17 @@ fn main() {
             None
         };
 
+        // Bless PTY master (Logs tab)
+        let bless_poll_idx = if let Some(fd) = tabs[TAB_LOGS].master_fd {
+            poll_fds[nfds].fd = fd.raw() as i32;
+            poll_fds[nfds].revents = 0;
+            let idx = nfds;
+            nfds += 1;
+            Some(idx)
+        } else {
+            None
+        };
+
         // Btop PTY master
         let btop_poll_idx = if let Some(fd) = tabs[TAB_BTOP].master_fd {
             poll_fds[nfds].fd = fd.raw() as i32;
@@ -1035,7 +1023,7 @@ fn main() {
             None
         };
 
-        // Poll with 100ms timeout (for periodic /proc/kmsg reads)
+        // Poll with 100ms timeout
         let _nready = io::poll(&mut poll_fds[..nfds], 100).unwrap_or(0);
 
         // Check stdin
@@ -1154,6 +1142,29 @@ fn main() {
             }
         }
 
+        // Check Bless PTY master (Logs tab)
+        if let Some(idx) = bless_poll_idx {
+            if poll_fds[idx].revents & (io::poll_events::POLLIN as i16) != 0 {
+                if let Some(fd) = tabs[TAB_LOGS].master_fd {
+                    match io::read(fd, &mut read_buf) {
+                        Ok(n) if n > 0 => {
+                            tabs[TAB_LOGS].emu.feed_bytes(&read_buf[..n]);
+                            if active_tab != TAB_LOGS {
+                                tabs[TAB_LOGS].has_unread = true;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // Handle hangup: child exited, stop polling this fd
+            if poll_fds[idx].revents & (io::poll_events::POLLHUP as i16) != 0 {
+                if let Some(fd) = tabs[TAB_LOGS].master_fd.take() {
+                    let _ = io::close(fd);
+                }
+            }
+        }
+
         // Check Btop PTY master
         if let Some(idx) = btop_poll_idx {
             if poll_fds[idx].revents & (io::poll_events::POLLIN as i16) != 0 {
@@ -1198,19 +1209,6 @@ fn main() {
             prev_mouse_buttons = buttons;
         }
 
-        // Periodic: read /proc/kmsg for Logs tab (~every 10 frames = ~1 Hz)
-        if frame % 10 == 0 {
-            let kmsg = read_kmsg();
-            if kmsg.len() > kmsg_offset {
-                let new_data = &kmsg[kmsg_offset..];
-                tabs[TAB_LOGS].emu.feed_bytes(new_data);
-                kmsg_offset = kmsg.len();
-                if active_tab != TAB_LOGS {
-                    tabs[TAB_LOGS].has_unread = true;
-                }
-            }
-        }
-
         // Reap dead children (non-blocking)
         let mut status: i32 = 0;
         loop {
@@ -1227,6 +1225,14 @@ fn main() {
                         let (m, p) = spawn_child(b"/bin/bsh\0", "bsh");
                         tabs[TAB_SHELL].master_fd = Some(m);
                         tabs[TAB_SHELL].child_pid = p;
+                    } else if rpid == tabs[TAB_LOGS].child_pid {
+                        print!("[bwm] bless exited, respawning...\n");
+                        if let Some(old_fd) = tabs[TAB_LOGS].master_fd.take() {
+                            let _ = io::close(old_fd);
+                        }
+                        let (m, p) = spawn_child(b"/bin/bless\0", "bless");
+                        tabs[TAB_LOGS].master_fd = Some(m);
+                        tabs[TAB_LOGS].child_pid = p;
                     } else if rpid == tabs[TAB_BTOP].child_pid {
                         print!("[bwm] btop exited, respawning...\n");
                         // Close old master FD to release the PTY pair
