@@ -403,10 +403,16 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     SyscallResult::Ok(n as u64)
                 }
                 Err(e) => {
-                    log::debug!("sys_write: TCP write error: {}", e);
-                    // Return EPIPE if the connection was shutdown for writing
+                    log::warn!("sys_write: TCP write error: {}", e);
+                    // Map error string to specific errno
                     if e.contains("shutdown") {
                         SyscallResult::Err(super::errno::EPIPE as u64)
+                    } else if e.contains("not found") {
+                        SyscallResult::Err(super::errno::EBADF as u64)
+                    } else if e.contains("not established") {
+                        // Connection exists but state is not Established
+                        // (RST received -> Closed, or FIN received -> CloseWait)
+                        SyscallResult::Err(super::errno::ENOTCONN as u64)
                     } else {
                         SyscallResult::Err(super::errno::EIO as u64)
                     }

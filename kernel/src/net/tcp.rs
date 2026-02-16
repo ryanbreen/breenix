@@ -588,12 +588,23 @@ fn handle_tcp_for_connection(
                 wake_connection_waiters(conn);
             }
 
-            // Handle FIN
+            // Handle FIN — only process when the FIN is in sequence.
+            // FIN occupies one byte of sequence space AFTER any payload.
+            // A retransmitted or out-of-order packet with FIN must be ignored
+            // to prevent premature CloseWait transition.
             if header.flags.fin {
+                let fin_seq = header.seq_num.wrapping_add(payload.len() as u32);
+                if fin_seq != conn.recv_next {
+                    log::debug!("TCP: Ignoring out-of-order FIN (fin_seq={}, recv_next={})",
+                        fin_seq, conn.recv_next);
+                } else {
                 conn.recv_next = conn.recv_next.wrapping_add(1); // FIN consumes sequence
                 conn.state = TcpState::CloseWait;
 
-                log::debug!("TCP: Received FIN, moving to CLOSE_WAIT");
+                log::warn!("TCP: Received FIN in Established, moving to CLOSE_WAIT (local={}:{}, remote={}:{}, rx_buf={})",
+                    conn.id.local_ip[3], conn.id.local_port,
+                    conn.id.remote_ip[3], conn.id.remote_port,
+                    conn.rx_buffer.len());
 
                 // Send ACK for FIN
                 send_tcp_packet(
@@ -610,13 +621,25 @@ fn handle_tcp_for_connection(
 
                 // Wake threads blocked in recv() so they see EOF
                 wake_connection_waiters(conn);
+                }
             }
 
+            // Handle RST — validate seq_num is within receive window
+            // to prevent spoofed or stale RST from killing the connection.
             if header.flags.rst {
-                log::info!("TCP: Connection reset by peer");
-                conn.state = TcpState::Closed;
-                // Wake threads blocked in recv() so they see the error
-                wake_connection_waiters(conn);
+                let seq_delta = header.seq_num.wrapping_sub(conn.recv_next);
+                if seq_delta == 0 || seq_delta < conn.recv_window as u32 {
+                    log::warn!("TCP: Connection reset by peer (local={}:{}, remote={}:{}, rx_buf={}, seq={}, recv_next={})",
+                        conn.id.local_ip[3], conn.id.local_port,
+                        conn.id.remote_ip[3], conn.id.remote_port,
+                        conn.rx_buffer.len(), header.seq_num, conn.recv_next);
+                    conn.state = TcpState::Closed;
+                    // Wake threads blocked in recv() so they see the error
+                    wake_connection_waiters(conn);
+                } else {
+                    log::debug!("TCP: Ignoring out-of-window RST (seq={}, recv_next={}, window={})",
+                        header.seq_num, conn.recv_next, conn.recv_window);
+                }
             }
         }
         TcpState::FinWait1 => {
@@ -993,13 +1016,25 @@ pub fn tcp_send(conn_id: &ConnectionId, data: &[u8]) -> Result<usize, &'static s
     let config = super::config();
 
     let mut connections = TCP_CONNECTIONS.lock();
-    let conn = connections.get_mut(conn_id).ok_or("Connection not found")?;
+    let conn = match connections.get_mut(conn_id) {
+        Some(c) => c,
+        None => {
+            log::warn!("tcp_send: Connection not found (local={}:{}, remote={}:{})",
+                conn_id.local_ip[3], conn_id.local_port,
+                conn_id.remote_ip[3], conn_id.remote_port);
+            return Err("Connection not found");
+        }
+    };
 
     if conn.send_shutdown {
+        log::warn!("tcp_send: Connection shutdown for writing (state={:?})", conn.state);
         return Err("Connection shutdown for writing");
     }
 
     if conn.state != TcpState::Established {
+        log::warn!("tcp_send: Connection not established (state={:?}, local={}:{}, remote={}:{})",
+            conn.state, conn.id.local_ip[3], conn.id.local_port,
+            conn.id.remote_ip[3], conn.id.remote_port);
         return Err("Connection not established");
     }
 

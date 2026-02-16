@@ -64,8 +64,10 @@ const HANDSHAKE_BUF_SIZE: usize = 18000;
 /// Errors that can occur during the TLS handshake.
 #[derive(Debug)]
 pub enum HandshakeError {
-    /// Socket I/O error (send or recv failed)
+    /// Socket I/O error (send or recv failed), with errno and context
     IoError,
+    /// Socket I/O error with details: (errno, context string)
+    IoErrorDetail(i32, &'static str),
     /// Received a message type we did not expect at this stage
     UnexpectedMessage,
     /// Server selected a cipher suite we do not support
@@ -145,14 +147,25 @@ fn get_u24(buf: &[u8], pos: usize) -> u32 {
 // ---------------------------------------------------------------------------
 
 /// Send all bytes in `data` to the socket, looping on partial writes.
-fn send_all(fd: Fd, data: &[u8]) -> Result<(), HandshakeError> {
+fn send_all(fd: Fd, data: &[u8], verbose: bool) -> Result<(), HandshakeError> {
     let mut offset = 0;
     while offset < data.len() {
-        let n = send(fd, &data[offset..]).map_err(|_| HandshakeError::IoError)?;
-        if n == 0 {
-            return Err(HandshakeError::IoError);
+        match send(fd, &data[offset..]) {
+            Ok(n) => {
+                if n == 0 {
+                    if verbose { eprint!("* TLS send: got 0 bytes at offset {}/{}\n", offset, data.len()); }
+                    return Err(HandshakeError::IoErrorDetail(0, "send returned 0"));
+                }
+                offset += n;
+            }
+            Err(e) => {
+                let errno = match e {
+                    crate::error::Error::Os(en) => en as i32,
+                };
+                if verbose { eprint!("* TLS send: error errno={} at offset {}/{}\n", errno, offset, data.len()); }
+                return Err(HandshakeError::IoErrorDetail(errno, "send failed"));
+            }
         }
-        offset += n;
     }
     Ok(())
 }
@@ -164,20 +177,33 @@ fn send_all(fd: Fd, data: &[u8]) -> Result<(), HandshakeError> {
 ///
 /// Returns `(content_type, header_end, payload_end)` where the payload
 /// occupies `buf[5..payload_end]` and the full record is `buf[0..payload_end]`.
-fn read_full_record(fd: Fd, buf: &mut [u8]) -> Result<(u8, usize, usize), HandshakeError> {
+fn read_full_record(fd: Fd, buf: &mut [u8], verbose: bool) -> Result<(u8, usize, usize), HandshakeError> {
     // Read the 5-byte TLS record header
     let mut hdr_read = 0;
     while hdr_read < 5 {
-        let n = recv(fd, &mut buf[hdr_read..5]).map_err(|_| HandshakeError::IoError)?;
-        if n == 0 {
-            return Err(HandshakeError::IoError);
+        match recv(fd, &mut buf[hdr_read..5]) {
+            Ok(n) => {
+                if n == 0 {
+                    if verbose { eprint!("* TLS recv: got EOF reading header at {}/5\n", hdr_read); }
+                    return Err(HandshakeError::IoErrorDetail(0, "recv header EOF"));
+                }
+                hdr_read += n;
+            }
+            Err(e) => {
+                let errno = match e {
+                    crate::error::Error::Os(en) => en as i32,
+                };
+                if verbose { eprint!("* TLS recv: error errno={} reading header at {}/5\n", errno, hdr_read); }
+                return Err(HandshakeError::IoErrorDetail(errno, "recv header failed"));
+            }
         }
-        hdr_read += n;
     }
 
     let content_type = buf[0];
     // buf[1..3] is the protocol version (ignored during read)
     let payload_len = get_u16(buf, 3) as usize;
+
+    if verbose { eprint!("* TLS recv: record type={} payload_len={}\n", content_type, payload_len); }
 
     if 5 + payload_len > buf.len() {
         return Err(HandshakeError::BufferTooSmall);
@@ -186,12 +212,22 @@ fn read_full_record(fd: Fd, buf: &mut [u8]) -> Result<(u8, usize, usize), Handsh
     // Read the full payload
     let mut payload_read = 0;
     while payload_read < payload_len {
-        let n = recv(fd, &mut buf[5 + payload_read..5 + payload_len])
-            .map_err(|_| HandshakeError::IoError)?;
-        if n == 0 {
-            return Err(HandshakeError::IoError);
+        match recv(fd, &mut buf[5 + payload_read..5 + payload_len]) {
+            Ok(n) => {
+                if n == 0 {
+                    if verbose { eprint!("* TLS recv: got EOF reading payload at {}/{}\n", payload_read, payload_len); }
+                    return Err(HandshakeError::IoErrorDetail(0, "recv payload EOF"));
+                }
+                payload_read += n;
+            }
+            Err(e) => {
+                let errno = match e {
+                    crate::error::Error::Os(en) => en as i32,
+                };
+                if verbose { eprint!("* TLS recv: error errno={} reading payload at {}/{}\n", errno, payload_read, payload_len); }
+                return Err(HandshakeError::IoErrorDetail(errno, "recv payload failed"));
+            }
         }
-        payload_read += n;
     }
 
     Ok((content_type, 5, 5 + payload_len))
@@ -314,7 +350,7 @@ pub fn perform_handshake(
 
     // Wrap in a TLS record and send.
     let record_len = wrap_handshake_record(&mut send_buf, hs_msg_len);
-    send_all(fd, &send_buf[..record_len])?;
+    send_all(fd, &send_buf[..record_len], verbose)?;
     if verbose { eprint!("* TLS: ClientHello sent\n"); }
 
     // -----------------------------------------------------------------------
@@ -322,7 +358,7 @@ pub fn perform_handshake(
     // -----------------------------------------------------------------------
 
     if verbose { eprint!("* TLS: waiting for ServerHello...\n"); }
-    let (ct, _hdr_end, rec_end) = read_full_record(fd, &mut recv_buf)?;
+    let (ct, _hdr_end, rec_end) = read_full_record(fd, &mut recv_buf, verbose)?;
     if verbose { eprint!("* TLS: received record type={} len={}\n", ct, rec_end - 5); }
     if ct != CONTENT_HANDSHAKE {
         if verbose { eprint!("* TLS: expected handshake (22), got {}\n", ct); }
@@ -346,7 +382,7 @@ pub fn perform_handshake(
     // -----------------------------------------------------------------------
 
     if verbose { eprint!("* TLS: waiting for Certificate...\n"); }
-    let (ct, _hdr_end, rec_end) = read_full_record(fd, &mut recv_buf)?;
+    let (ct, _hdr_end, rec_end) = read_full_record(fd, &mut recv_buf, verbose)?;
     if verbose { eprint!("* TLS: received record type={} len={}\n", ct, rec_end - 5); }
     if ct != CONTENT_HANDSHAKE {
         return Err(HandshakeError::UnexpectedMessage);
@@ -436,7 +472,7 @@ pub fn perform_handshake(
     // -----------------------------------------------------------------------
 
     if verbose { eprint!("* TLS: waiting for ServerKeyExchange...\n"); }
-    let (ct, _hdr_end, rec_end) = read_full_record(fd, &mut recv_buf)?;
+    let (ct, _hdr_end, rec_end) = read_full_record(fd, &mut recv_buf, verbose)?;
     if verbose { eprint!("* TLS: received record type={} len={}\n", ct, rec_end - 5); }
     if ct != CONTENT_HANDSHAKE {
         return Err(HandshakeError::UnexpectedMessage);
@@ -460,7 +496,7 @@ pub fn perform_handshake(
     // -----------------------------------------------------------------------
 
     if verbose { eprint!("* TLS: waiting for ServerHelloDone...\n"); }
-    let (ct, _hdr_end, rec_end) = read_full_record(fd, &mut recv_buf)?;
+    let (ct, _hdr_end, rec_end) = read_full_record(fd, &mut recv_buf, verbose)?;
     if ct != CONTENT_HANDSHAKE {
         return Err(HandshakeError::UnexpectedMessage);
     }
@@ -504,8 +540,16 @@ pub fn perform_handshake(
     transcript.update(&send_buf[..hs_msg_len]);
 
     let record_len = wrap_handshake_record(&mut send_buf, hs_msg_len);
-    if verbose { eprint!("* TLS: sending ClientKeyExchange ({} bytes)...\n", record_len); }
-    send_all(fd, &send_buf[..record_len])?;
+    if verbose {
+        // Poll the socket to check connection state before sending
+        let mut poll_fds = [crate::io::PollFd { fd: fd.raw() as i32, events: 0x0004 | 0x0001, revents: 0 }]; // POLLOUT|POLLIN
+        match crate::io::poll(&mut poll_fds, 0) {
+            Ok(n) => eprint!("* TLS: pre-send poll: n={} revents=0x{:04x} (fd={})\n", n, poll_fds[0].revents, fd.raw()),
+            Err(e) => eprint!("* TLS: pre-send poll: error {:?} (fd={})\n", e, fd.raw()),
+        }
+        eprint!("* TLS: sending ClientKeyExchange ({} bytes)...\n", record_len);
+    }
+    send_all(fd, &send_buf[..record_len], verbose)?;
     if verbose { eprint!("* TLS: ClientKeyExchange sent\n"); }
 
     // -----------------------------------------------------------------------
@@ -521,7 +565,8 @@ pub fn perform_handshake(
     ccs_buf[3] = 0x00;
     ccs_buf[4] = 0x01; // length = 1
     ccs_buf[5] = 0x01; // payload
-    send_all(fd, &ccs_buf)?;
+    if verbose { eprint!("* TLS: sending ChangeCipherSpec...\n"); }
+    send_all(fd, &ccs_buf, verbose)?;
     if verbose { eprint!("* TLS: ChangeCipherSpec sent\n"); }
 
     // -----------------------------------------------------------------------
@@ -567,7 +612,8 @@ pub fn perform_handshake(
     // encrypt_record writes header(5) + explicit_nonce(8) + ciphertext(16) + tag(16) = 45 bytes
     let mut encrypted = [0u8; 64];
     let enc_len = encryptor.encrypt_record(CONTENT_HANDSHAKE, &send_buf[..finished_msg_len], &mut encrypted)?;
-    send_all(fd, &encrypted[..enc_len])?;
+    if verbose { eprint!("* TLS: sending encrypted Finished ({} bytes)...\n", enc_len); }
+    send_all(fd, &encrypted[..enc_len], verbose)?;
     if verbose { eprint!("* TLS: client Finished sent\n"); }
 
     // -----------------------------------------------------------------------
@@ -575,7 +621,7 @@ pub fn perform_handshake(
     // -----------------------------------------------------------------------
 
     if verbose { eprint!("* TLS: waiting for server ChangeCipherSpec...\n"); }
-    let (ct, _hdr_end, _rec_end) = read_full_record(fd, &mut recv_buf)?;
+    let (ct, _hdr_end, _rec_end) = read_full_record(fd, &mut recv_buf, verbose)?;
     if ct != CONTENT_CHANGE_CIPHER_SPEC {
         return Err(HandshakeError::UnexpectedMessage);
     }
@@ -587,7 +633,7 @@ pub fn perform_handshake(
     // -----------------------------------------------------------------------
 
     if verbose { eprint!("* TLS: waiting for server Finished...\n"); }
-    let (ct, _hdr_end, rec_end) = read_full_record(fd, &mut recv_buf)?;
+    let (ct, _hdr_end, rec_end) = read_full_record(fd, &mut recv_buf, verbose)?;
     if ct != CONTENT_HANDSHAKE {
         return Err(HandshakeError::UnexpectedMessage);
     }

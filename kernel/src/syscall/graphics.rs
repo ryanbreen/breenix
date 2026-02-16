@@ -78,10 +78,27 @@ pub fn sys_fbinfo(info_ptr: u64) -> SyscallResult {
         }
     };
 
-    // sys_fbinfo is a one-time startup call (not a hot loop like fbdraw), so
-    // using the blocking lock is acceptable. The deadlock risk from try_lock
-    // failure here (BWM crashes on EBUSY) is worse than a brief spin.
-    let fb_guard = fb.lock();
+    // Use try_lock with bounded spin. On ARM64, syscalls run with interrupts
+    // disabled (DAIF=1111), so a blocking lock() would spin forever if the
+    // holder was preempted or terminated while holding the lock. Use a generous
+    // spin count since this is a one-time startup call.
+    let fb_guard = {
+        let mut guard = None;
+        for _ in 0..65536 {
+            if let Some(g) = fb.try_lock() {
+                guard = Some(g);
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        match guard {
+            Some(g) => g,
+            None => {
+                log::warn!("sys_fbinfo: framebuffer lock busy after 65536 spins");
+                return SyscallResult::Err(super::ErrorCode::Busy as u64);
+            }
+        }
+    };
 
     // Get info through Canvas trait methods
     use crate::graphics::primitives::Canvas;
@@ -645,8 +662,24 @@ pub fn sys_fbmmap() -> SyscallResult {
             Some(fb) => fb,
             None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
         };
-        // sys_fbmmap is a one-time startup call, so blocking lock is acceptable.
-        let fb_guard = fb.lock();
+        // Use try_lock with bounded spin (same rationale as sys_fbinfo).
+        let fb_guard = {
+            let mut guard = None;
+            for _ in 0..65536 {
+                if let Some(g) = fb.try_lock() {
+                    guard = Some(g);
+                    break;
+                }
+                core::hint::spin_loop();
+            }
+            match guard {
+                Some(g) => g,
+                None => {
+                    log::warn!("sys_fbmmap: framebuffer lock busy");
+                    return SyscallResult::Err(super::ErrorCode::Busy as u64);
+                }
+            }
+        };
         if caller_owns_display {
             // BWM mode: right half for window manager (after divider)
             let divider_width = 4;

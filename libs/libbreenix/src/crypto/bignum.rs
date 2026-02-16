@@ -289,8 +289,8 @@ impl BigNum {
             return self.div_rem_single(divisor.limbs[0]);
         }
 
-        // Binary long division (bit-by-bit).
-        self.div_rem_binary(divisor)
+        // Knuth's Algorithm D (word-by-word).
+        self.div_rem_knuth(divisor)
     }
 
     /// Division by a single `u64` limb.
@@ -310,54 +310,127 @@ impl BigNum {
         (q, BigNum::from_u64(rem as u64))
     }
 
-    /// Binary long division (bit-by-bit).
-    fn div_rem_binary(&self, divisor: &BigNum) -> (BigNum, BigNum) {
-        let nbits = self.bit_len();
-        let mut quotient = BigNum::zero();
-        let mut remainder = BigNum::zero();
+    /// Knuth's Algorithm D: multi-word long division.
+    ///
+    /// Processes one machine word at a time instead of one bit at a time.
+    /// For a 2048-bit modulus, this is ~32 iterations instead of ~4096.
+    fn div_rem_knuth(&self, divisor: &BigNum) -> (BigNum, BigNum) {
+        let n = divisor.limbs.len();
+        let m = self.limbs.len() - n; // quotient has m+1 limbs at most
 
-        // Pre-allocate quotient limbs.
-        let q_limbs = (nbits + 63) / 64;
-        quotient.limbs.resize(q_limbs, 0);
+        // Step D1: Normalize — shift so that the top bit of divisor is set.
+        let shift = divisor.limbs[n - 1].leading_zeros();
 
-        for i in (0..nbits).rev() {
-            // Shift remainder left by 1 bit.
-            remainder = remainder.shl_one();
+        // Shift dividend (u) and divisor (v) left by `shift` bits.
+        let mut u = vec![0u64; self.limbs.len() + 1];
+        if shift > 0 {
+            let mut carry = 0u64;
+            for i in 0..self.limbs.len() {
+                u[i] = (self.limbs[i] << shift) | carry;
+                carry = self.limbs[i] >> (64 - shift);
+            }
+            u[self.limbs.len()] = carry;
+        } else {
+            u[..self.limbs.len()].copy_from_slice(&self.limbs);
+        }
 
-            // Bring down next bit from self.
-            if self.get_bit(i) {
-                remainder.limbs[0] |= 1;
+        let mut v = vec![0u64; n];
+        if shift > 0 {
+            let mut carry = 0u64;
+            for i in 0..n {
+                v[i] = (divisor.limbs[i] << shift) | carry;
+                carry = divisor.limbs[i] >> (64 - shift);
+            }
+        } else {
+            v.copy_from_slice(&divisor.limbs);
+        }
+
+        let mut q = vec![0u64; m + 1];
+
+        // Step D2-D7: Main loop — compute one quotient limb per iteration.
+        for j in (0..=m).rev() {
+            // Step D3: Calculate trial quotient qhat.
+            let u_hi = u[j + n] as u128;
+            let u_lo = u[j + n - 1] as u128;
+            let v_top = v[n - 1] as u128;
+
+            let mut qhat = if u_hi == v_top {
+                u64::MAX as u128
+            } else {
+                (u_hi * (1u128 << 64) + u_lo) / v_top
+            };
+
+            // Refine estimate: check with second divisor limb to reduce
+            // probability of qhat being too large from ~2/b to ~2/b^2.
+            if n >= 2 {
+                let mut rhat = (u_hi * (1u128 << 64) + u_lo) - qhat * v_top;
+                let v_second = v[n - 2] as u128;
+                let u_third = if j + n >= 2 { u[j + n - 2] as u128 } else { 0 };
+
+                while qhat * v_second > (rhat << 64) + u_third {
+                    qhat -= 1;
+                    rhat += v_top;
+                    if rhat >= (1u128 << 64) {
+                        break;
+                    }
+                }
             }
 
-            // If remainder >= divisor, subtract and set quotient bit.
-            if remainder.cmp(divisor) != Ordering::Less {
-                remainder = remainder.sub(divisor);
-                let limb_idx = i / 64;
-                let bit_idx = i % 64;
-                quotient.limbs[limb_idx] |= 1u64 << bit_idx;
+            // Step D4: Multiply and subtract — u[j..j+n+1] -= qhat * v[0..n].
+            // Use unsigned arithmetic with separate carry and borrow to avoid
+            // i128 overflow when qhat * v[i] exceeds i128::MAX.
+            let qhat_u64 = qhat as u64;
+            let mut carry = 0u64;
+            let mut borrow = 0u64;
+            for i in 0..n {
+                // Multiply: product = qhat * v[i] + carry
+                let product = qhat_u64 as u128 * v[i] as u128 + carry as u128;
+                carry = (product >> 64) as u64;
+                let prod_lo = product as u64;
+
+                // Subtract: u[j+i] -= prod_lo + borrow
+                let (diff1, b1) = u[j + i].overflowing_sub(prod_lo);
+                let (diff2, b2) = diff1.overflowing_sub(borrow);
+                u[j + i] = diff2;
+                borrow = b1 as u64 + b2 as u64;
+            }
+            // Final limb
+            let (diff1, b1) = u[j + n].overflowing_sub(carry);
+            let (diff2, b2) = diff1.overflowing_sub(borrow);
+            u[j + n] = diff2;
+            let overflowed = b1 || b2;
+
+            // Step D5: Test remainder — if negative, add back.
+            q[j] = qhat_u64;
+            if overflowed {
+                // Step D6: Add back (happens with probability ~2/b).
+                q[j] -= 1;
+                let mut carry = 0u64;
+                for i in 0..n {
+                    let sum = u[j + i] as u128 + v[i] as u128 + carry as u128;
+                    u[j + i] = sum as u64;
+                    carry = (sum >> 64) as u64;
+                }
+                u[j + n] = u[j + n].wrapping_add(carry);
             }
         }
 
+        // Step D8: Unnormalize — shift remainder right by `shift` bits.
+        let mut rem_limbs = u[..n].to_vec();
+        if shift > 0 {
+            let mut carry = 0u64;
+            for i in (0..rem_limbs.len()).rev() {
+                let new_carry = rem_limbs[i] << (64 - shift);
+                rem_limbs[i] = (rem_limbs[i] >> shift) | carry;
+                carry = new_carry;
+            }
+        }
+
+        let mut quotient = BigNum { limbs: q };
         quotient.trim();
+        let mut remainder = BigNum { limbs: rem_limbs };
         remainder.trim();
         (quotient, remainder)
-    }
-
-    /// Left-shift by one bit (internal helper for division).
-    fn shl_one(&self) -> BigNum {
-        let mut result = Vec::with_capacity(self.limbs.len() + 1);
-        let mut carry = 0u64;
-
-        for &limb in &self.limbs {
-            result.push((limb << 1) | carry);
-            carry = limb >> 63;
-        }
-
-        if carry > 0 {
-            result.push(carry);
-        }
-
-        BigNum { limbs: result }
     }
 
     /// Compute `self % modulus`.
@@ -671,6 +744,45 @@ mod tests {
         let base_cubed = base.mul(&base).mul(&base);
         let expected = base_cubed.mod_val(&modulus);
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_mod_exp_2048bit() {
+        // Exercise div_rem_knuth with RSA-2048-sized numbers.
+        // Use a 2048-bit modulus (32 limbs) and verify mod_exp consistency:
+        // base^1 mod n == base mod n, and (base^2 mod n)^2 == base^4 mod n.
+
+        // Create a 2048-bit modulus: all 0xFF...FF limbs with the last byte different
+        // to make it odd (required for RSA).
+        let mut mod_limbs = vec![u64::MAX; 32];
+        mod_limbs[0] = u64::MAX - 2; // Make it odd but slightly less than 2^2048-1
+        let modulus = BigNum { limbs: mod_limbs };
+
+        // Base: a 2048-bit value slightly less than modulus
+        let mut base_limbs = vec![0xAAAA_AAAA_AAAA_AAAAu64; 32];
+        base_limbs[31] = 0x7FFF_FFFF_FFFF_FFFF; // Ensure base < modulus
+        let base = BigNum { limbs: base_limbs };
+
+        // Verify base^1 mod n == base mod n
+        let exp1 = BigNum::one();
+        let r1 = base.mod_exp(&exp1, &modulus);
+        let expected1 = base.mod_val(&modulus);
+        assert_eq!(r1, expected1);
+
+        // Verify (base^2)^2 == base^4 mod n
+        let exp2 = BigNum::from_u64(2);
+        let exp4 = BigNum::from_u64(4);
+        let r2 = base.mod_exp(&exp2, &modulus);
+        let r4_via_square = r2.mod_exp(&exp2, &modulus);
+        let r4_direct = base.mod_exp(&exp4, &modulus);
+        assert_eq!(r4_via_square, r4_direct);
+
+        // Verify with e=65537 (RSA public exponent) — just check it doesn't panic
+        // and that result < modulus.
+        let exp_rsa = BigNum::from_u64(65537);
+        let r_rsa = base.mod_exp(&exp_rsa, &modulus);
+        assert!(r_rsa.cmp(&modulus) == Ordering::Less);
+        assert!(!r_rsa.is_zero());
     }
 
     // -- Comparison tests --
