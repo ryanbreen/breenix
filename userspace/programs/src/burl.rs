@@ -18,6 +18,7 @@
 use libbreenix::http::{
     http_request, HttpError, HttpMethod, HttpRequest, MAX_RESPONSE_SIZE,
 };
+use libbreenix::types::Fd;
 use std::env;
 use std::process;
 
@@ -163,12 +164,14 @@ fn main() {
                 }
             }
 
+            if verbose {
+                eprintln!("* Body: offset={} len={}", response.body_offset, response.body_len);
+            }
+
             if head_only {
                 // Print headers to stdout
                 let header_bytes = &response_buf[..response.body_offset.min(total_len)];
-                if let Ok(header_str) = core::str::from_utf8(header_bytes) {
-                    print!("{}", header_str);
-                }
+                write_all_stdout(header_bytes);
             } else {
                 // Print or save body
                 let body_end = response.body_offset + response.body_len;
@@ -179,10 +182,12 @@ fn main() {
                     if !silent {
                         eprintln!("burl: -o not yet implemented, writing to stdout");
                     }
-                    print_body(body);
+                    write_all_stdout(body);
                 } else {
-                    print_body(body);
+                    write_all_stdout(body);
                 }
+                // Trailing newline
+                let _ = libbreenix::io::write(Fd::STDOUT, b"\n");
             }
         }
         Err(e) => {
@@ -194,13 +199,17 @@ fn main() {
     }
 }
 
-fn print_body(body: &[u8]) {
-    // Try to print as UTF-8, fall back to lossy
-    if let Ok(s) = core::str::from_utf8(body) {
-        print!("{}", s);
-    } else {
-        let s = String::from_utf8_lossy(body);
-        print!("{}", s);
+/// Write all bytes to stdout using direct syscalls, bypassing Rust's BufWriter.
+/// This ensures data is written immediately to the fd (pipe or terminal)
+/// without relying on Rust std's stdout buffering which may not flush on exit.
+fn write_all_stdout(data: &[u8]) {
+    let mut offset = 0;
+    while offset < data.len() {
+        match libbreenix::io::write(Fd::STDOUT, &data[offset..]) {
+            Ok(0) => break,
+            Ok(n) => offset += n,
+            Err(_) => break,
+        }
     }
 }
 

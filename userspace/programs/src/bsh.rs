@@ -1187,6 +1187,32 @@ fn command_executor_fn(
     }
 }
 
+/// run(cmd, arg1, arg2, ...) -> exitCode
+///
+/// Forks a child process, executes the command with direct terminal I/O
+/// (no pipe capture), waits for it to finish, and returns the exit code.
+/// Unlike exec(), stdout and stderr go directly to the terminal.
+fn native_run(
+    args: &[JsValue],
+    strings: &mut StringPool,
+    heap: &mut ObjectHeap,
+) -> JsResult<JsValue> {
+    if args.is_empty() {
+        return Err(JsError::type_error("run: expected at least one argument"));
+    }
+
+    // Extract command name
+    let cmd = if args[0].is_string() {
+        String::from(strings.get(args[0].as_string_id()))
+    } else if args[0].is_number() {
+        format!("{}", args[0].to_number())
+    } else {
+        return Err(JsError::type_error("run: command must be a string"));
+    };
+
+    command_executor_fn(&cmd, &args[1..], strings, heap)
+}
+
 // ---------------------------------------------------------------------------
 // Context setup
 // ---------------------------------------------------------------------------
@@ -1300,6 +1326,7 @@ fn create_shell_context() -> Context {
 
     // Register native shell functions
     ctx.register_native("exec", native_exec);
+    ctx.register_native("run", native_run);
     ctx.register_native("cd", native_cd);
     ctx.register_native("pwd", native_pwd);
     ctx.register_native("which", native_which);
@@ -2251,7 +2278,12 @@ fn should_auto_exec(line: &str) -> bool {
     false
 }
 
-/// Wrap a bare command line in exec() and print the result.
+/// Wrap a bare command line in run() for direct terminal I/O.
+///
+/// Uses run() instead of exec() so that the child process inherits the
+/// terminal's stdout/stderr directly. This avoids the pipe-capture-reprint
+/// chain that exec() uses, which is essential for commands that produce
+/// large output (like burl).
 fn auto_exec_wrap(line: &str) -> String {
     // Split the line into command and args by whitespace
     let parts: Vec<&str> = line.split_whitespace().collect();
@@ -2259,8 +2291,8 @@ fn auto_exec_wrap(line: &str) -> String {
         return line.to_string();
     }
 
-    // Build exec call: exec("cmd", "arg1", "arg2")
-    let mut call = String::from("let __r = exec(");
+    // Build run call: run("cmd", "arg1", "arg2")
+    let mut call = String::from("let __ec = run(");
     for (i, part) in parts.iter().enumerate() {
         if i > 0 {
             call.push_str(", ");
@@ -2276,7 +2308,7 @@ fn auto_exec_wrap(line: &str) -> String {
         }
         call.push('"');
     }
-    call.push_str("); if (__r.exitCode === 127) { console.error(\"");
+    call.push_str("); if (__ec === 127) { console.error(\"");
     // Escape the command name for the error message
     for c in parts[0].chars() {
         if c == '"' {
@@ -2287,7 +2319,7 @@ fn auto_exec_wrap(line: &str) -> String {
             call.push(c);
         }
     }
-    call.push_str(": command not found\"); } else { if (__r.stderr.length > 0) print(__r.stderr); if (__r.stdout.length > 0) print(__r.stdout); }");
+    call.push_str(": command not found\"); }");
     call
 }
 
