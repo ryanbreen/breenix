@@ -1725,20 +1725,24 @@ pub fn set_need_resched() {
 pub fn check_and_clear_need_resched() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
-        let need = crate::per_cpu::need_resched();
-        if need { crate::per_cpu::set_need_resched(false); }
-        let _ = NEED_RESCHED.swap(false, Ordering::Relaxed);
-        need
+        let per_cpu = crate::per_cpu::need_resched();
+        if per_cpu { crate::per_cpu::set_need_resched(false); }
+        let global = NEED_RESCHED.swap(false, Ordering::Relaxed);
+        per_cpu || global
     }
     #[cfg(target_arch = "aarch64")]
     {
-        // ARM64: Check per-CPU flag and global atomic
-        let need = crate::per_cpu_aarch64::need_resched();
-        if need {
+        // ARM64: Check per-CPU flag AND global atomic.
+        // CRITICAL: Both sources must be checked. spawn/spawn_front set the
+        // global flag from one CPU but the target CPU may be different.
+        // Previously, the global flag was cleared but its value was discarded,
+        // meaning cross-CPU need_resched signals were silently lost.
+        let per_cpu = crate::per_cpu_aarch64::need_resched();
+        if per_cpu {
             crate::per_cpu_aarch64::set_need_resched(false);
         }
-        let _ = NEED_RESCHED.swap(false, Ordering::Relaxed);
-        need
+        let global = NEED_RESCHED.swap(false, Ordering::Relaxed);
+        per_cpu || global
     }
 }
 

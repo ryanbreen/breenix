@@ -663,72 +663,118 @@ pub fn sys_fbmmap() -> SyscallResult {
     let buf_size = (user_stride * height) as u64;
     let mapping_size = round_up_to_page(buf_size);
 
+    // Phase 1: Quick PM acquisition — reserve address range and check preconditions.
+    // Release PM before the expensive frame allocation + zeroing.
+    let (start_addr, end_addr) = {
+        let mut manager_guard = crate::process::manager();
+        let manager = match *manager_guard {
+            Some(ref mut m) => m,
+            None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
+        };
+
+        let (_pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
+            Some(p) => p,
+            None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
+        };
+
+        if process.fb_mmap.is_some() {
+            return SyscallResult::Err(super::ErrorCode::Busy as u64);
+        }
+
+        let new_addr = round_down_to_page(process.mmap_hint.saturating_sub(mapping_size));
+        if new_addr < 0x1000_0000 {
+            return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
+        }
+        process.mmap_hint = new_addr;
+
+        (new_addr, new_addr + mapping_size)
+    }; // PM released — other threads can dispatch with TTBR0
+
+    // Phase 2: Pre-allocate and zero all frames WITHOUT holding PM.
+    // This is the expensive part (~500 frames × 4KB zero = ~2MB memset).
+    let physical_memory_offset = crate::memory::physical_memory_offset();
+    let start_page = Page::<Size4KiB>::containing_address(VirtAddr::new(start_addr));
+    let end_page = Page::<Size4KiB>::containing_address(VirtAddr::new(end_addr - 1));
+
+    let mut frames = alloc::vec::Vec::new();
+    {
+        let mut page = start_page;
+        loop {
+            let frame = match crate::memory::frame_allocator::allocate_frame() {
+                Some(f) => f,
+                None => {
+                    for f in &frames {
+                        crate::memory::frame_allocator::deallocate_frame(*f);
+                    }
+                    return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
+                }
+            };
+
+            // Zero via physical address (no page table or PM needed)
+            let phys_addr = frame.start_address().as_u64();
+            let virt_ptr = (physical_memory_offset.as_u64() + phys_addr) as *mut u8;
+            unsafe {
+                core::ptr::write_bytes(virt_ptr, 0, PAGE_SIZE as usize);
+            }
+
+            frames.push(frame);
+            if page >= end_page {
+                break;
+            }
+            page += 1;
+        }
+    }
+
+    // Phase 3: Quick PM acquisition — map pre-allocated frames into page table.
+    // Only page table entry writes + TLB flushes here (fast).
     let mut manager_guard = crate::process::manager();
     let manager = match *manager_guard {
         Some(ref mut m) => m,
-        None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
+        None => {
+            for f in &frames {
+                crate::memory::frame_allocator::deallocate_frame(*f);
+            }
+            return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64);
+        }
     };
 
     let (_pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
         Some(p) => p,
-        None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
+        None => {
+            for f in &frames {
+                crate::memory::frame_allocator::deallocate_frame(*f);
+            }
+            return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64);
+        }
     };
 
-    // Check not already mapped
-    if process.fb_mmap.is_some() {
-        return SyscallResult::Err(super::ErrorCode::Busy as u64);
-    }
-
-    // Allocate virtual address range from mmap_hint (grows downward)
-    let new_addr = round_down_to_page(process.mmap_hint.saturating_sub(mapping_size));
-    if new_addr < 0x1000_0000 {
-        return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
-    }
-    process.mmap_hint = new_addr;
-
-    let start_addr = new_addr;
-    let end_addr = start_addr + mapping_size;
-
-    // Get the process page table
     let page_table = match process.page_table.as_mut() {
         Some(pt) => pt,
-        None => return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64),
+        None => {
+            for f in &frames {
+                crate::memory::frame_allocator::deallocate_frame(*f);
+            }
+            return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
+        }
     };
 
-    // Map pages with USER_ACCESSIBLE | WRITABLE (PROT_READ=1 | PROT_WRITE=2 = 3)
     let prot = Protection::from_bits_truncate(3);
     let page_flags = prot_to_page_flags(prot);
-    let start_page = Page::<Size4KiB>::containing_address(VirtAddr::new(start_addr));
-    let end_page = Page::<Size4KiB>::containing_address(VirtAddr::new(end_addr - 1));
-    let physical_memory_offset = crate::memory::physical_memory_offset();
-
     let mut mapped_pages = alloc::vec::Vec::new();
     let mut current_page = start_page;
 
-    loop {
-        let frame = match crate::memory::frame_allocator::allocate_frame() {
-            Some(f) => f,
-            None => {
-                cleanup_mapped_pages(page_table, &mapped_pages);
-                return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
-            }
-        };
-
-        if let Err(_e) = page_table.map_page(current_page, frame, page_flags) {
-            crate::memory::frame_allocator::deallocate_frame(frame);
+    for frame in &frames {
+        if let Err(_e) = page_table.map_page(current_page, *frame, page_flags) {
             cleanup_mapped_pages(page_table, &mapped_pages);
+            // Deallocate remaining unmapped frames
+            for f in frames.iter().skip(mapped_pages.len()) {
+                crate::memory::frame_allocator::deallocate_frame(*f);
+            }
             return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
         }
 
-        // Zero the page
-        let phys_addr = frame.start_address().as_u64();
-        let virt_ptr = (physical_memory_offset.as_u64() + phys_addr) as *mut u8;
-        unsafe {
-            core::ptr::write_bytes(virt_ptr, 0, PAGE_SIZE as usize);
-        }
-
         flush_tlb(current_page.start_address());
-        mapped_pages.push((current_page, frame));
+        mapped_pages.push((current_page, *frame));
 
         if current_page >= end_page {
             break;

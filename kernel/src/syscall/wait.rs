@@ -72,8 +72,20 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
         }
     };
 
-    // Find current process
-    let mut manager_guard = crate::process::manager();
+    // Find current process.
+    // For WNOHANG, use try_manager_guarded() (non-blocking) to avoid starving
+    // other PM users (e.g., CoW fault handlers on forked children). A tight
+    // waitpid(WNOHANG) loop can hold PM ~200K/sec, preventing CoW handlers
+    // from ever acquiring PM and causing forked children to hang.
+    let is_wnohang = (options & WNOHANG) != 0;
+    let mut manager_guard = if is_wnohang {
+        match crate::process::try_manager_guarded() {
+            Some(guard) => guard,
+            None => return SyscallResult::Ok(0),
+        }
+    } else {
+        crate::process::manager()
+    };
     let (current_pid, current_process) = match &mut *manager_guard {
         Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
             Some((pid, process)) => (pid, process),
@@ -187,7 +199,15 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
             drop(manager_guard);
 
             let terminated_child = {
-                let manager_guard = crate::process::manager();
+                // For WNOHANG, use non-blocking try to avoid starving CoW handlers.
+                let manager_guard = if is_wnohang {
+                    match crate::process::try_manager_guarded() {
+                        Some(guard) => guard,
+                        None => return SyscallResult::Ok(0),
+                    }
+                } else {
+                    crate::process::manager()
+                };
                 if let Some(ref manager) = *manager_guard {
                     let mut result = None;
                     for &child_pid in &children_copy {
@@ -208,7 +228,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                 return complete_wait(child_pid, exit_code, status_ptr);
             }
 
-            if options & WNOHANG != 0 {
+            if is_wnohang {
                 log::debug!("sys_waitpid: WNOHANG set, no children terminated");
                 return SyscallResult::Ok(0);
             }

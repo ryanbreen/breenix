@@ -172,6 +172,7 @@ pub fn sys_clone(
         wake_time_ns: None,
         run_start_ticks: 0,
         cpu_ticks_total: 0,
+        fork_return_pending: false,
         owner_pid: Some(child_pid.as_u64()),
     };
 

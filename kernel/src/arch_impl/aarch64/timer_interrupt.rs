@@ -201,12 +201,28 @@ pub extern "C" fn timer_interrupt_handler() {
             print_timer_count_decimal(crate::tracing::providers::counters::FORK_TOTAL.aggregate());
             raw_serial_str(b" exec=");
             print_timer_count_decimal(crate::tracing::providers::counters::EXEC_TOTAL.aggregate());
+            raw_serial_str(b" exE=");
+            print_timer_count_decimal(crate::arch_impl::aarch64::syscall_entry::EXEC_ENTERED.load(Ordering::SeqCst));
             raw_serial_str(b" cow=");
             print_timer_count_decimal(crate::memory::cow_stats::TOTAL_FAULTS.load(Ordering::Relaxed));
+            raw_serial_str(b" cowpm=");
+            print_timer_count_decimal(crate::memory::cow_stats::MANAGER_PATH.load(Ordering::Relaxed));
             raw_serial_str(b" cowcp=");
             print_timer_count_decimal(crate::memory::cow_stats::PAGES_COPIED.load(Ordering::Relaxed));
+            raw_serial_str(b" cowso=");
+            print_timer_count_decimal(crate::memory::cow_stats::SOLE_OWNER_OPT.load(Ordering::Relaxed));
             raw_serial_str(b" pty=");
             print_timer_count_decimal(crate::tty::pty::pair::PTY_SLAVE_BYTES_WRITTEN.load(Ordering::Relaxed));
+            raw_serial_str(b" fkd=");
+            print_timer_count_decimal(crate::arch_impl::aarch64::context_switch::FORK_DISPATCH_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" fks=");
+            print_timer_count_decimal(crate::arch_impl::aarch64::syscall_entry::FORK_SYSCALL_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" tgn=");
+            print_timer_count_decimal(crate::arch_impl::aarch64::context_switch::TTBR_PROCESS_GONE_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" tlb=");
+            print_timer_count_decimal(crate::arch_impl::aarch64::context_switch::TTBR_PM_LOCK_BUSY_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" fkp=");
+            print_timer_count_decimal(crate::arch_impl::aarch64::context_switch::FORK_PREEMPT_COUNT.load(Ordering::Relaxed));
             raw_serial_str(b"]\n");
         }
     }

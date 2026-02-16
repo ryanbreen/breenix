@@ -10,7 +10,7 @@
 //! Main loop reaps terminated children with waitpid(WNOHANG) and respawns
 //! crashed services with backoff to prevent tight respawn loops.
 
-use libbreenix::process::{fork, exec, waitpid, getpid, yield_now, ForkResult, WNOHANG};
+use libbreenix::process::{fork, exec, waitpid, getpid, ForkResult, WNOHANG};
 use libbreenix::time::nanosleep;
 use libbreenix::types::Timespec;
 
@@ -24,6 +24,8 @@ const MAX_RESPAWN_FAILURES: u32 = 3;
 fn spawn(path: &[u8], name: &str) -> i64 {
     match fork() {
         Ok(ForkResult::Child) => {
+            // Diagnostic: child reached exec path
+            print!("[init:child:{}:pre_exec]\n", name);
             // Child: exec the binary
             let _ = exec(path);
             // exec failed
@@ -31,6 +33,7 @@ fn spawn(path: &[u8], name: &str) -> i64 {
             std::process::exit(127);
         }
         Ok(ForkResult::Parent(child_pid)) => {
+            print!("[init:parent:{}:pid={}]\n", name, child_pid.raw());
             child_pid.raw() as i64
         }
         Err(_) => {
@@ -68,7 +71,11 @@ fn main() {
     let mut bwm_pid = spawn(BWM_PATH, "bwm");
     let mut bwm_failures: u32 = 0;
 
-    // Main loop: reap zombies and respawn crashed services
+    // Main loop: reap zombies and respawn crashed services.
+    // Sleep between iterations to avoid starving the PROCESS_MANAGER lock
+    // (waitpid acquires PM, and a tight loop can prevent CoW fault handlers
+    // on newly forked children from ever acquiring PM).
+    let poll_delay = Timespec { tv_sec: 0, tv_nsec: 10_000_000 }; // 10ms
     let mut status: i32 = 0;
     loop {
         match waitpid(-1, &mut status as *mut i32, WNOHANG) {
@@ -91,6 +98,6 @@ fn main() {
             }
             Err(_) => {}
         }
-        let _ = yield_now();
+        let _ = nanosleep(&poll_delay);
     }
 }
