@@ -744,33 +744,13 @@ impl Scheduler {
         self.wake_expired_timers();
 
         // Get next thread from ready queue, skipping terminated threads
-        // and threads running on other CPUs (defense-in-depth against
-        // double-dispatch — primary protection is in wake_expired_timers
-        // and unblock, but this catches any remaining edge cases).
         let current_cpu = Self::current_cpu_id();
-        let queue_len = self.ready_queue.len();
-        let mut skipped = 0usize;
         let mut next_thread_id = loop {
             if let Some(n) = self.ready_queue.pop_front() {
                 if let Some(thread) = self.get_thread(n) {
                     if thread.state == ThreadState::Terminated {
                         continue;
                     }
-                }
-                // Defense-in-depth: don't dispatch a thread that's currently
-                // running on a different CPU. Put it back at the end of the
-                // queue; it will be properly handled after context switch.
-                let running_on_other_cpu = (0..MAX_CPUS).any(|cpu| {
-                    cpu != current_cpu && self.cpu_state[cpu].current_thread == Some(n)
-                });
-                if running_on_other_cpu {
-                    self.ready_queue.push_back(n);
-                    skipped += 1;
-                    // Prevent infinite loop: if we've checked every entry, go idle
-                    if skipped >= queue_len {
-                        break self.cpu_state[current_cpu].idle_thread;
-                    }
-                    continue;
                 }
                 break n;
             } else {

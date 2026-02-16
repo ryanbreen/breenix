@@ -414,12 +414,6 @@ pub struct Thread {
     /// None for idle threads and kernel-internal threads not associated with a process.
     pub owner_pid: Option<u64>,
 
-    /// True for newly forked children until their first syscall.
-    /// Protects x0=0 (fork return value) from context switch corruption:
-    /// - Save path skips writing x0 when this is true
-    /// - Restore path forces frame.x0 = 0 when this is true
-    /// - Cleared on first syscall entry (child has consumed x0)
-    pub fork_return_pending: bool,
 }
 
 impl Clone for Thread {
@@ -445,7 +439,6 @@ impl Clone for Thread {
             run_start_ticks: self.run_start_ticks,
             cpu_ticks_total: self.cpu_ticks_total,
             owner_pid: self.owner_pid,
-            fork_return_pending: self.fork_return_pending,
         }
     }
 }
@@ -508,7 +501,6 @@ impl Thread {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
-            fork_return_pending: false,
         })
     }
 
@@ -566,7 +558,6 @@ impl Thread {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
-            fork_return_pending: false,
         })
     }
 
@@ -611,7 +602,6 @@ impl Thread {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
-            fork_return_pending: false,
         }
     }
 
@@ -659,7 +649,6 @@ impl Thread {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
-            fork_return_pending: false,
         }
     }
 
@@ -716,7 +705,6 @@ impl Thread {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
-            fork_return_pending: false,
         }
     }
 
@@ -768,7 +756,6 @@ impl Thread {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
-            fork_return_pending: false,
         }
     }
 
@@ -845,7 +832,6 @@ impl Thread {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
-            fork_return_pending: false,
         }
     }
 
@@ -889,7 +875,6 @@ impl Thread {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
-            fork_return_pending: false,
         }
     }
 }

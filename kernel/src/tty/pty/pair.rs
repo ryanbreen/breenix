@@ -252,15 +252,17 @@ impl PtyPair {
 
     /// Write data to master (goes to slave's input via line discipline)
     ///
-    /// Echo output is discarded - in a real PTY, the terminal emulator (master)
-    /// is responsible for displaying what it writes. The echo callback is still
-    /// called for line discipline state tracking, but output isn't sent to the
-    /// slave_to_master buffer to avoid polluting slave->master data flow.
+    /// Echo output from the line discipline (e.g., ^C when ISIG+ECHO are set)
+    /// is written to the slave_to_master buffer so the terminal emulator can
+    /// display it. Echo bytes are collected during line discipline processing
+    /// and flushed after releasing the ldisc lock to avoid nested locking.
     ///
     /// If the line discipline generates a signal (e.g., SIGINT from Ctrl+C),
     /// it is delivered to the foreground process group.
     pub fn master_write(&self, data: &[u8]) -> Result<usize, i32> {
         let mut signal_to_deliver = None;
+        let mut echo_buf = [0u8; 256];
+        let mut echo_len = 0usize;
         let written;
 
         {
@@ -269,10 +271,12 @@ impl PtyPair {
 
             let mut count = 0;
             for &byte in data {
-                // Process through line discipline - echo callback is a no-op
-                // because the master (terminal emulator) handles its own display
-                let signal = ldisc.input_char(byte, &mut |_echo_byte| {
-                    // Discard echo - master handles its own display
+                // Process through line discipline, collecting echo output
+                let signal = ldisc.input_char(byte, &mut |echo_byte| {
+                    if echo_len < echo_buf.len() {
+                        echo_buf[echo_len] = echo_byte;
+                        echo_len += 1;
+                    }
                 });
                 if signal.is_some() {
                     signal_to_deliver = signal;
@@ -281,6 +285,13 @@ impl PtyPair {
             }
             written = count;
             // ldisc and termios locks dropped here
+        }
+
+        // Write echo bytes to slave_to_master so the terminal emulator can
+        // display them (e.g., ^C echo). Done after releasing ldisc lock.
+        if echo_len > 0 {
+            let mut buffer = self.slave_to_master.lock();
+            buffer.write(&echo_buf[..echo_len]);
         }
 
         // Deliver signal to foreground process group if one was generated
@@ -292,6 +303,11 @@ impl PtyPair {
         if written > 0 {
             // Wake threads blocked on slave_read
             self.wake_slave_waiters();
+        }
+
+        // Also wake master readers if echo was produced (they need to see echo output)
+        if echo_len > 0 {
+            self.wake_master_waiters();
         }
 
         Ok(written)

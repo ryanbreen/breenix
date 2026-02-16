@@ -133,52 +133,6 @@ pub fn try_manager() -> Option<spin::MutexGuard<'static, Option<ProcessManager>>
     PROCESS_MANAGER.try_lock()
 }
 
-/// Try to get the process manager without blocking, with proper interrupt handling.
-///
-/// Like `manager()` but non-blocking: disables interrupts, tries the lock,
-/// and returns `None` (re-enabling interrupts) if the lock is contended.
-/// Returns `Some(ProcessManagerGuard)` on success, with interrupts disabled
-/// until the guard is dropped.
-///
-/// Use this for non-blocking paths (e.g., waitpid with WNOHANG) to avoid
-/// starving other PM users like CoW fault handlers.
-pub fn try_manager_guarded() -> Option<ProcessManagerGuard> {
-    #[cfg(target_arch = "aarch64")]
-    {
-        let saved_daif: u64;
-        unsafe {
-            core::arch::asm!("mrs {}, daif", out(reg) saved_daif, options(nomem, nostack));
-            core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
-        }
-        match PROCESS_MANAGER.try_lock() {
-            Some(guard) => Some(ProcessManagerGuard {
-                _guard: core::mem::ManuallyDrop::new(guard),
-                saved_daif,
-            }),
-            None => {
-                // Lock contended — restore interrupts and return None
-                unsafe {
-                    core::arch::asm!(
-                        "msr daif, {}",
-                        in(reg) saved_daif,
-                        options(nomem, nostack)
-                    );
-                }
-                None
-            }
-        }
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        match PROCESS_MANAGER.try_lock() {
-            Some(guard) => Some(ProcessManagerGuard {
-                _guard: core::mem::ManuallyDrop::new(guard),
-            }),
-            None => None,
-        }
-    }
-}
-
 /// Per-process info for lockup diagnostics (small, stack-allocated).
 pub struct ProcessDumpEntry {
     pub pid: u64,

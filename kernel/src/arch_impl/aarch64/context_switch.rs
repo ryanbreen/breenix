@@ -27,10 +27,6 @@ use crate::task::scheduler::Scheduler;
 use crate::task::thread::{CpuContext, Thread, ThreadPrivilege, ThreadState};
 use crate::tracing::providers::sched::trace_ctx_switch;
 
-/// Diagnostic counter: number of times a forked child (fork_return_pending=true)
-/// is dispatched via restore_userspace_context_inline.
-pub static FORK_DISPATCH_COUNT: AtomicU64 = AtomicU64::new(0);
-
 /// Diagnostic counter: number of times a thread dispatch hit ProcessGone
 /// (TTBR0 lookup couldn't find the thread's process).
 pub static TTBR_PROCESS_GONE_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -38,10 +34,6 @@ pub static TTBR_PROCESS_GONE_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Diagnostic counter: number of times a thread dispatch hit PmLockBusy
 /// (PROCESS_MANAGER lock was contended during TTBR0 lookup).
 pub static TTBR_PM_LOCK_BUSY_COUNT: AtomicU64 = AtomicU64::new(0);
-
-/// Diagnostic counter: number of times a fork child (fork_return_pending=true)
-/// was preempted (context saved) before making its first syscall.
-pub static FORK_PREEMPT_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Per-CPU deferred requeue storage.
 ///
@@ -258,15 +250,7 @@ fn save_userspace_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFr
     // CRITICAL: When a userspace thread is context-switched (e.g., for blocking I/O
     // or preemption), its caller-saved registers (x1-x18) may contain important
     // values that must be preserved for correct execution when resumed.
-    //
-    // Protect fork return value: if this thread is a newly forked child that
-    // hasn't made its first syscall yet, x0 MUST stay 0. Skip saving x0
-    // to prevent TOCTOU corruption from overwriting the fork return value.
-    if !thread.fork_return_pending {
-        thread.context.x0 = frame.x0;
-    } else {
-        FORK_PREEMPT_COUNT.fetch_add(1, Ordering::Relaxed);
-    }
+    thread.context.x0 = frame.x0;
     thread.context.x1 = frame.x1;
     thread.context.x2 = frame.x2;
     thread.context.x3 = frame.x3;
@@ -319,13 +303,7 @@ fn save_kernel_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFrame
     // This is critical for context switching: when a thread is preempted in the
     // middle of a loop (like kthread_join's WFI loop), its caller-saved registers
     // (x0-x18) contain important values (loop variables, pointers, etc.).
-    //
-    // Protect fork return value (same as userspace save).
-    if !thread.fork_return_pending {
-        thread.context.x0 = frame.x0;
-    } else {
-        FORK_PREEMPT_COUNT.fetch_add(1, Ordering::Relaxed);
-    }
+    thread.context.x0 = frame.x0;
     thread.context.x1 = frame.x1;
     thread.context.x2 = frame.x2;
     thread.context.x3 = frame.x3;
@@ -436,13 +414,7 @@ fn restore_kernel_context_inline(
     }
 
     // Restore ALL general-purpose registers directly from thread.context.
-    // Protect fork return value: if this is a newly forked child that hasn't
-    // made its first syscall yet, force x0=0 regardless of saved context.
-    if thread.fork_return_pending {
-        frame.x0 = 0;
-    } else {
-        frame.x0 = thread.context.x0;
-    }
+    frame.x0 = thread.context.x0;
     frame.x1 = thread.context.x1;
     frame.x2 = thread.context.x2;
     frame.x3 = thread.context.x3;
@@ -512,15 +484,7 @@ fn restore_kernel_context_inline(
 
 /// Restore userspace context into frame — called inside scheduler lock hold.
 fn restore_userspace_context_inline(thread: &mut Thread, frame: &mut Aarch64ExceptionFrame) {
-    // Protect fork return value: if this is a newly forked child that hasn't
-    // made its first syscall yet, force x0=0 regardless of saved context.
-    // This prevents TOCTOU corruption from overwriting the fork return value.
-    if thread.fork_return_pending {
-        frame.x0 = 0;
-        FORK_DISPATCH_COUNT.fetch_add(1, Ordering::Relaxed);
-    } else {
-        frame.x0 = thread.context.x0;
-    }
+    frame.x0 = thread.context.x0;
     frame.x1 = thread.context.x1;
     frame.x2 = thread.context.x2;
     frame.x3 = thread.context.x3;
