@@ -392,8 +392,19 @@ fn native_exec(
         Err(_) => return Err(JsError::runtime("exec: fork() failed")),
     };
 
+    // Save shell's process group for terminal reclaim after child exits
+    let shell_pgid = libbreenix::process::getpgrp().map(|p| p.raw() as i32).unwrap_or(0);
+
     match fork_result {
         libbreenix::process::ForkResult::Child => {
+            // Put child in its own process group (for signal delivery)
+            let _ = libbreenix::process::setpgid(0, 0);
+
+            // Ensure default signal handling so Ctrl+C can kill the child
+            let dfl = libbreenix::signal::Sigaction::default_action();
+            let _ = libbreenix::signal::sigaction(libbreenix::signal::SIGINT, Some(&dfl), None);
+            let _ = libbreenix::signal::sigaction(libbreenix::signal::SIGQUIT, Some(&dfl), None);
+
             // Child: redirect stdout/stderr to pipes, close read ends
             let _ = libbreenix::io::close(stdout_r);
             let _ = libbreenix::io::close(stderr_r);
@@ -424,11 +435,21 @@ fn native_exec(
             libbreenix::process::exit(127);
         }
         libbreenix::process::ForkResult::Parent(child_pid) => {
+            let child_pid_raw = child_pid.raw() as i32;
+
+            // Set child's process group from parent side (POSIX race avoidance)
+            let _ = libbreenix::process::setpgid(child_pid_raw, child_pid_raw);
+
+            // Give the terminal to the child's process group so Ctrl+C sends
+            // SIGINT to the child, not the shell
+            let stdin_fd = libbreenix::types::Fd::STDIN;
+            let _ = libbreenix::termios::tcsetpgrp(stdin_fd, child_pid_raw);
+
             // Parent: close write ends, read from pipes
             let _ = libbreenix::io::close(stdout_w);
             let _ = libbreenix::io::close(stderr_w);
 
-            // Read stdout
+            // Read stdout (blocks until child closes stdout / exits)
             let stdout_str = read_fd_to_string(stdout_r);
             let _ = libbreenix::io::close(stdout_r);
 
@@ -439,13 +460,20 @@ fn native_exec(
             // Wait for child
             let mut status: i32 = 0;
             let _ = libbreenix::process::waitpid(
-                child_pid.raw() as i32,
+                child_pid_raw,
                 &mut status as *mut i32,
                 0,
             );
 
+            // Reclaim the terminal for the shell
+            if shell_pgid > 0 {
+                let _ = libbreenix::termios::tcsetpgrp(stdin_fd, shell_pgid);
+            }
+
             let exit_code = if libbreenix::process::wifexited(status) {
                 libbreenix::process::wexitstatus(status)
+            } else if libbreenix::process::wifsignaled(status) {
+                128 + libbreenix::process::wtermsig(status)
             } else {
                 -1
             };
@@ -674,8 +702,9 @@ fn native_pipe(
         }
     };
 
-    // Fork each child in the pipeline
+    // Fork each child in the pipeline, all in the same process group
     let mut child_pids: Vec<i32> = Vec::new();
+    let mut pipeline_pgid: i32 = 0; // First child's pid becomes the pipeline group
     for i in 0..n {
         let fork_result = match libbreenix::process::fork() {
             Ok(r) => r,
@@ -698,6 +727,16 @@ fn native_pipe(
 
         match fork_result {
             libbreenix::process::ForkResult::Child => {
+                // Put all pipeline children in the same process group
+                // (first child creates the group, others join it)
+                let target_pgid = if pipeline_pgid == 0 { 0 } else { pipeline_pgid };
+                let _ = libbreenix::process::setpgid(0, target_pgid);
+
+                // Ensure default signal handling
+                let dfl = libbreenix::signal::Sigaction::default_action();
+                let _ = libbreenix::signal::sigaction(libbreenix::signal::SIGINT, Some(&dfl), None);
+                let _ = libbreenix::signal::sigaction(libbreenix::signal::SIGQUIT, Some(&dfl), None);
+
                 // Set up stdin: first child keeps original stdin,
                 // others read from previous pipe
                 if i > 0 {
@@ -744,9 +783,24 @@ fn native_pipe(
                 libbreenix::process::exit(127);
             }
             libbreenix::process::ForkResult::Parent(child_pid) => {
-                child_pids.push(child_pid.raw() as i32);
+                let cpid = child_pid.raw() as i32;
+                if i == 0 {
+                    pipeline_pgid = cpid;
+                }
+                // Set child's process group from parent side (POSIX race avoidance)
+                let _ = libbreenix::process::setpgid(cpid, pipeline_pgid);
+                child_pids.push(cpid);
             }
         }
+    }
+
+    // Save shell's process group for terminal reclaim
+    let shell_pgid = libbreenix::process::getpgrp().map(|p| p.raw() as i32).unwrap_or(0);
+
+    // Give the terminal to the pipeline's process group
+    let stdin_fd = libbreenix::types::Fd::STDIN;
+    if pipeline_pgid > 0 {
+        let _ = libbreenix::termios::tcsetpgrp(stdin_fd, pipeline_pgid);
     }
 
     // Parent: close all inter-process pipe ends
@@ -773,10 +827,17 @@ fn native_pipe(
         if *pid == last_pid {
             last_exit_code = if libbreenix::process::wifexited(status) {
                 libbreenix::process::wexitstatus(status)
+            } else if libbreenix::process::wifsignaled(status) {
+                128 + libbreenix::process::wtermsig(status)
             } else {
                 -1
             };
         }
+    }
+
+    // Reclaim the terminal for the shell
+    if shell_pgid > 0 {
+        let _ = libbreenix::termios::tcsetpgrp(stdin_fd, shell_pgid);
     }
 
     // Build result object: { exitCode, stdout, stderr }
