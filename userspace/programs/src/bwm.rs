@@ -662,6 +662,11 @@ fn spawn_child(path: &[u8], _name: &str) -> (Fd, i64) {
     match fork() {
         Ok(ForkResult::Child) => {
             // Child process: set up PTY slave as stdin/stdout/stderr
+            // Diagnostic markers to serial (fd 1 = StdIo before dup2)
+            let _ = io::write(Fd::from_raw(1), b"[child:");
+            let _ = io::write(Fd::from_raw(1), _name.as_bytes());
+            let _ = io::write(Fd::from_raw(1), b":fork]\n");
+
             let _ = setsid(); // New session
 
             // Close ALL inherited FDs > 2 (master PTY FDs from parent BWM)
@@ -683,6 +688,9 @@ fn spawn_child(path: &[u8], _name: &str) -> (Fd, i64) {
                 // O_RDWR
                 Ok(fd) => fd,
                 Err(_) => {
+                    let _ = io::write(Fd::from_raw(1), b"[child:");
+                    let _ = io::write(Fd::from_raw(1), _name.as_bytes());
+                    let _ = io::write(Fd::from_raw(1), b":open_fail]\n");
                     libbreenix::process::exit(126);
                 }
             };
@@ -697,7 +705,7 @@ fn spawn_child(path: &[u8], _name: &str) -> (Fd, i64) {
                 let _ = io::close(slave_fd);
             }
 
-            // Exec the program
+            // Exec the program (after dup2, stdout goes to PTY slave)
             let _ = exec(path);
             libbreenix::process::exit(127);
         }
@@ -1119,6 +1127,12 @@ fn main() {
                     }
                 }
             }
+            // Handle hangup: child exited, stop polling this fd
+            if poll_fds[idx].revents & (io::poll_events::POLLHUP as i16) != 0 {
+                if let Some(fd) = tabs[TAB_SHELL].master_fd.take() {
+                    let _ = io::close(fd);
+                }
+            }
         }
 
         // Check Btop PTY master
@@ -1134,6 +1148,12 @@ fn main() {
                         }
                         _ => {}
                     }
+                }
+            }
+            // Handle hangup: child exited, stop polling this fd
+            if poll_fds[idx].revents & (io::poll_events::POLLHUP as i16) != 0 {
+                if let Some(fd) = tabs[TAB_BTOP].master_fd.take() {
+                    let _ = io::close(fd);
                 }
             }
         }

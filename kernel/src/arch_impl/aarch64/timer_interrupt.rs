@@ -183,6 +183,34 @@ pub extern "C" fn timer_interrupt_handler() {
         check_soft_lockup(_count);
     }
 
+    // CPU 0 only: periodic heartbeat every 2000 CPU 0 ticks (~10 seconds at 200Hz)
+    // Uses a dedicated CPU 0 counter to avoid non-determinism from the global counter.
+    if cpu_id == 0 {
+        static CPU0_TICK: AtomicU64 = AtomicU64::new(0);
+        let cpu0_tick = CPU0_TICK.fetch_add(1, Ordering::Relaxed) + 1;
+        if cpu0_tick % 2000 == 0 {
+            raw_serial_str(b"\n[HB t=");
+            print_timer_count_decimal(cpu0_tick / TARGET_TIMER_HZ);
+            raw_serial_str(b"s ctx=");
+            print_timer_count_decimal(crate::task::scheduler::context_switch_count());
+            raw_serial_str(b" sys=");
+            print_timer_count_decimal(crate::tracing::providers::counters::SYSCALL_TOTAL.aggregate());
+            raw_serial_str(b" flush=");
+            print_timer_count_decimal(crate::syscall::graphics::FB_FLUSH_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" fork=");
+            print_timer_count_decimal(crate::tracing::providers::counters::FORK_TOTAL.aggregate());
+            raw_serial_str(b" exec=");
+            print_timer_count_decimal(crate::tracing::providers::counters::EXEC_TOTAL.aggregate());
+            raw_serial_str(b" cow=");
+            print_timer_count_decimal(crate::memory::cow_stats::TOTAL_FAULTS.load(Ordering::Relaxed));
+            raw_serial_str(b" cowcp=");
+            print_timer_count_decimal(crate::memory::cow_stats::PAGES_COPIED.load(Ordering::Relaxed));
+            raw_serial_str(b" pty=");
+            print_timer_count_decimal(crate::tty::pty::pair::PTY_SLAVE_BYTES_WRITTEN.load(Ordering::Relaxed));
+            raw_serial_str(b"]\n");
+        }
+    }
+
     // Decrement per-CPU quantum and check for reschedule
     let quantum_idx = if cpu_id < crate::arch_impl::aarch64::constants::MAX_CPUS {
         cpu_id
@@ -290,15 +318,9 @@ fn check_soft_lockup(current_tick: u64) {
 
     let stall_ticks = current_tick.wrapping_sub(stall_start);
     if stall_ticks >= LOCKUP_THRESHOLD_TICKS && !WATCHDOG_REPORTED.load(Ordering::Relaxed) {
-        // Before reporting, check if this is a real stall or just a single-thread scenario
-        if let Some(info) = crate::task::scheduler::try_dump_state() {
-            if info.ready_queue_len == 0 {
-                // Only one runnable thread — no context switch expected. Not a lockup.
-                return;
-            }
-        }
-        // Either the scheduler lock is held (can't check) or the ready queue has
-        // threads waiting — this is a real stall.
+        // Always report stall — even if ready_queue is empty, userspace threads
+        // might be stuck in BlockedOnTimer/Blocked state without being woken.
+        // The dump includes per-thread state so we can diagnose the exact issue.
         WATCHDOG_REPORTED.store(true, Ordering::Relaxed);
         dump_lockup_state(stall_ticks);
     }
@@ -320,15 +342,55 @@ fn dump_lockup_state(stall_ticks: u64) {
     // We use the global SCHEDULER directly via the public with_scheduler_try_lock helper
     if let Some(info) = crate::task::scheduler::try_dump_state() {
         raw_serial_str(b"acquired\n");
-        raw_serial_str(b"  CPU 0 current thread: ");
-        print_timer_count_decimal(info.current_thread_id);
-        raw_serial_str(b"\n  Ready queue length: ");
+        raw_serial_str(b"  Ready queue length: ");
         print_timer_count_decimal(info.ready_queue_len);
         raw_serial_str(b"\n  Total threads: ");
         print_timer_count_decimal(info.total_threads);
         raw_serial_str(b"\n  Blocked threads: ");
         print_timer_count_decimal(info.blocked_count);
-        raw_serial_str(b"\n");
+
+        // Per-CPU current/previous threads
+        raw_serial_str(b"\n  Per-CPU state:\n");
+        for cpu in 0..4usize {
+            raw_serial_str(b"    CPU ");
+            raw_serial_char(b'0' + cpu as u8);
+            raw_serial_str(b": current=");
+            print_timer_count_decimal(info.per_cpu_current[cpu]);
+            raw_serial_str(b" previous=");
+            print_timer_count_decimal(info.per_cpu_previous[cpu]);
+            raw_serial_str(b"\n");
+        }
+
+        // Ready queue contents
+        raw_serial_str(b"  Ready queue: [");
+        for (i, &tid) in info.ready_queue_ids.iter().enumerate() {
+            if i > 0 { raw_serial_str(b", "); }
+            print_timer_count_decimal(tid);
+        }
+        raw_serial_str(b"]\n");
+
+        // Per-thread state (state names: R=Ready, X=Running, B=Blocked, S=Signal, C=ChildExit, T=Timer, D=Terminated)
+        raw_serial_str(b"  Threads:\n");
+        for t in &info.threads {
+            raw_serial_str(b"    tid=");
+            print_timer_count_decimal(t.id);
+            raw_serial_str(b" state=");
+            let state_ch = match t.state {
+                0 => b'R', // Ready
+                1 => b'X', // Running
+                2 => b'B', // Blocked
+                3 => b'S', // BlockedOnSignal
+                4 => b'C', // BlockedOnChildExit
+                5 => b'T', // BlockedOnTimer
+                6 => b'D', // Terminated
+                _ => b'?',
+            };
+            raw_serial_char(state_ch);
+            if t.blocked_in_syscall { raw_serial_str(b" bis"); }
+            if t.has_wake_time { raw_serial_str(b" wt"); }
+            if t.privilege == 1 { raw_serial_str(b" user"); }
+            raw_serial_str(b"\n");
+        }
     } else {
         raw_serial_str(b"HELD (possible deadlock)\n");
     }

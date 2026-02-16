@@ -1,8 +1,11 @@
 //! PTY pair (master/slave) implementation
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use crate::tty::termios::Termios;
+
+/// Global counter: total bytes written through PTY slave_write (diagnostic)
+pub static PTY_SLAVE_BYTES_WRITTEN: AtomicU64 = AtomicU64::new(0);
 use crate::tty::ioctl::Winsize;
 use crate::tty::line_discipline::LineDiscipline;
 use crate::syscall::errno::EAGAIN;
@@ -96,6 +99,11 @@ pub struct PtyPair {
     /// Slave side reference count (tracks open slave FDs)
     pub slave_refcount: AtomicU32,
 
+    /// Whether a slave FD was ever opened (for POLLHUP semantics)
+    /// POLLHUP should only be reported when the slave was connected and then
+    /// disconnected — not when it was never connected.
+    pub slave_was_opened: AtomicBool,
+
     /// Foreground process group ID
     pub foreground_pgid: spin::Mutex<Option<u32>>,
 
@@ -121,6 +129,7 @@ impl PtyPair {
             locked: AtomicBool::new(true), // Locked until unlockpt()
             master_refcount: AtomicU32::new(1),
             slave_refcount: AtomicU32::new(0), // No slave FDs open initially
+            slave_was_opened: AtomicBool::new(false),
             foreground_pgid: spin::Mutex::new(None),
             controlling_pid: spin::Mutex::new(None),
             master_waiters: spin::Mutex::new(Vec::new()),
@@ -192,6 +201,7 @@ impl PtyPair {
 
     /// Increment slave reference count (called when a slave FD is created)
     pub fn slave_open(&self) {
+        self.slave_was_opened.store(true, Ordering::SeqCst);
         self.slave_refcount.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -213,6 +223,13 @@ impl PtyPair {
         self.slave_refcount.load(Ordering::SeqCst) > 0
     }
 
+    /// Check if the slave has hung up (was opened and then all slave FDs closed).
+    /// Returns false if the slave was never opened — this is the "not yet connected"
+    /// state, not a hangup.
+    pub fn has_slave_hung_up(&self) -> bool {
+        self.slave_was_opened.load(Ordering::SeqCst) && !self.has_slave_open()
+    }
+
     /// Check if there is data available for the master to read
     pub fn has_master_data(&self) -> bool {
         !self.slave_to_master.lock().is_empty()
@@ -220,7 +237,7 @@ impl PtyPair {
 
     /// Check if master should be woken (data available OR slave hung up)
     pub fn should_wake_master(&self) -> bool {
-        self.has_master_data() || !self.has_slave_open()
+        self.has_master_data() || self.has_slave_hung_up()
     }
 
     /// Check if there is data available for the slave to read
@@ -359,13 +376,14 @@ impl PtyPair {
     /// Read data from master (slave's output)
     ///
     /// Returns Ok(n) if data was read, Err(EAGAIN) if no data available but
-    /// slave is still open, or Ok(0) (EOF) if slave has closed and buffer is empty.
+    /// slave is still connected (or never connected), or Ok(0) (EOF) if slave
+    /// was connected and then all slave FDs were closed (hangup).
     pub fn master_read(&self, buf: &mut [u8]) -> Result<usize, i32> {
         let mut buffer = self.slave_to_master.lock();
         let n = buffer.read(buf);
         if n == 0 {
-            // No data — check if slave is gone (hangup)
-            if !self.has_slave_open() {
+            // No data — check if slave hung up (was opened then closed)
+            if self.has_slave_hung_up() {
                 return Ok(0); // EOF — slave hung up
             }
             return Err(EAGAIN);
@@ -381,6 +399,7 @@ impl PtyPair {
         if n == 0 {
             return Err(EAGAIN);
         }
+        PTY_SLAVE_BYTES_WRITTEN.fetch_add(n as u64, Ordering::Relaxed);
         // Wake threads blocked on master_read
         self.wake_master_waiters();
         Ok(n)

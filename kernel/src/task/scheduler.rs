@@ -147,12 +147,25 @@ fn set_cpu_idle(cpu_id: usize, idle: bool) {
     }
 }
 
+/// Per-thread diagnostic entry for soft lockup dump.
+pub struct ThreadDumpEntry {
+    pub id: u64,
+    pub state: u8,          // 0=Ready,1=Running,2=Blocked,3=BlockedOnSignal,4=BlockedOnChildExit,5=BlockedOnTimer,6=Terminated
+    pub blocked_in_syscall: bool,
+    pub has_wake_time: bool,
+    pub privilege: u8,       // 0=Kernel, 1=User
+}
+
 /// Diagnostic snapshot of scheduler state for the soft lockup detector.
 pub struct SchedulerDumpInfo {
     pub current_thread_id: u64,
     pub ready_queue_len: u64,
     pub total_threads: u64,
     pub blocked_count: u64,
+    pub per_cpu_current: [u64; 8],    // current_thread per CPU (0 = none)
+    pub per_cpu_previous: [u64; 8],   // previous_thread per CPU (0 = none)
+    pub threads: alloc::vec::Vec<ThreadDumpEntry>,
+    pub ready_queue_ids: alloc::vec::Vec<u64>,
 }
 
 /// Try to get a snapshot of scheduler state without blocking.
@@ -175,11 +188,42 @@ pub fn try_dump_state() -> Option<SchedulerDumpInfo> {
         )
     }).count() as u64;
 
+    let mut per_cpu_current = [0u64; 8];
+    let mut per_cpu_previous = [0u64; 8];
+    for cpu in 0..MAX_CPUS.min(8) {
+        per_cpu_current[cpu] = sched.cpu_state[cpu].current_thread.unwrap_or(0);
+        per_cpu_previous[cpu] = sched.cpu_state[cpu].previous_thread.unwrap_or(0);
+    }
+
+    let threads: alloc::vec::Vec<ThreadDumpEntry> = sched.threads.iter().map(|t| {
+        ThreadDumpEntry {
+            id: t.id(),
+            state: match t.state {
+                ThreadState::Ready => 0,
+                ThreadState::Running => 1,
+                ThreadState::Blocked => 2,
+                ThreadState::BlockedOnSignal => 3,
+                ThreadState::BlockedOnChildExit => 4,
+                ThreadState::BlockedOnTimer => 5,
+                ThreadState::Terminated => 6,
+            },
+            blocked_in_syscall: t.blocked_in_syscall,
+            has_wake_time: t.wake_time_ns.is_some(),
+            privilege: if t.privilege == super::thread::ThreadPrivilege::Kernel { 0 } else { 1 },
+        }
+    }).collect();
+
+    let ready_queue_ids: alloc::vec::Vec<u64> = sched.ready_queue.iter().copied().collect();
+
     Some(SchedulerDumpInfo {
         current_thread_id,
         ready_queue_len,
         total_threads,
         blocked_count,
+        per_cpu_current,
+        per_cpu_previous,
+        threads,
+        ready_queue_ids,
     })
 }
 
@@ -699,9 +743,13 @@ impl Scheduler {
         // Check for expired timer-blocked threads and wake them
         self.wake_expired_timers();
 
-        // Get next thread from ready queue, skipping terminated threads.
-        // Terminated threads can end up in the queue if a process was killed
-        // by an exception handler on another CPU between requeue and pop.
+        // Get next thread from ready queue, skipping terminated threads
+        // and threads running on other CPUs (defense-in-depth against
+        // double-dispatch — primary protection is in wake_expired_timers
+        // and unblock, but this catches any remaining edge cases).
+        let current_cpu = Self::current_cpu_id();
+        let queue_len = self.ready_queue.len();
+        let mut skipped = 0usize;
         let mut next_thread_id = loop {
             if let Some(n) = self.ready_queue.pop_front() {
                 if let Some(thread) = self.get_thread(n) {
@@ -709,14 +757,29 @@ impl Scheduler {
                         continue;
                     }
                 }
+                // Defense-in-depth: don't dispatch a thread that's currently
+                // running on a different CPU. Put it back at the end of the
+                // queue; it will be properly handled after context switch.
+                let running_on_other_cpu = (0..MAX_CPUS).any(|cpu| {
+                    cpu != current_cpu && self.cpu_state[cpu].current_thread == Some(n)
+                });
+                if running_on_other_cpu {
+                    self.ready_queue.push_back(n);
+                    skipped += 1;
+                    // Prevent infinite loop: if we've checked every entry, go idle
+                    if skipped >= queue_len {
+                        break self.cpu_state[current_cpu].idle_thread;
+                    }
+                    continue;
+                }
                 break n;
             } else {
-                break self.cpu_state[Self::current_cpu_id()].idle_thread;
+                break self.cpu_state[current_cpu].idle_thread;
             }
         };
 
         // Handle same-thread cases
-        if Some(next_thread_id) == self.cpu_state[Self::current_cpu_id()].current_thread && !self.ready_queue.is_empty() {
+        if Some(next_thread_id) == self.cpu_state[current_cpu].current_thread && !self.ready_queue.is_empty() {
             // Current thread was popped but other threads are waiting.
             // DON'T push current back to queue yet — defer until after context save.
             // Just pop the next different thread.
@@ -725,8 +788,8 @@ impl Scheduler {
                 Some(id) => id,
                 None => return None,
             };
-        } else if Some(next_thread_id) == self.cpu_state[Self::current_cpu_id()].current_thread {
-            if next_thread_id != self.cpu_state[Self::current_cpu_id()].idle_thread {
+        } else if Some(next_thread_id) == self.cpu_state[current_cpu].current_thread {
+            if next_thread_id != self.cpu_state[current_cpu].idle_thread {
                 let is_userspace = self
                     .get_thread(next_thread_id)
                     .map(|t| t.privilege == super::thread::ThreadPrivilege::User)
@@ -747,15 +810,15 @@ impl Scheduler {
                 // the thread was in the queue from unblock() or from the
                 // deferred push, either way we must save context first.
                 should_requeue_old = true;
-                next_thread_id = self.cpu_state[Self::current_cpu_id()].idle_thread;
+                next_thread_id = self.cpu_state[current_cpu].idle_thread;
                 crate::per_cpu_aarch64::set_need_resched(true);
             } else {
                 return None;
             }
         }
 
-        let old_thread_id = self.cpu_state[Self::current_cpu_id()].current_thread
-            .unwrap_or(self.cpu_state[Self::current_cpu_id()].idle_thread);
+        let old_thread_id = self.cpu_state[current_cpu].current_thread
+            .unwrap_or(self.cpu_state[current_cpu].idle_thread);
 
         // CRITICAL SMP FIX: Do NOT update cpu_state[cpu].current_thread here!
         //
@@ -778,8 +841,8 @@ impl Scheduler {
         }
 
         // Update per-CPU idle flag (lock-free, used by timer handler)
-        let is_switching_to_idle = next_thread_id == self.cpu_state[Self::current_cpu_id()].idle_thread;
-        set_cpu_idle(Self::current_cpu_id(), is_switching_to_idle);
+        let is_switching_to_idle = next_thread_id == self.cpu_state[current_cpu].idle_thread;
+        set_cpu_idle(current_cpu, is_switching_to_idle);
 
         Some((old_thread_id, next_thread_id, should_requeue_old))
     }
@@ -1184,9 +1247,52 @@ impl Scheduler {
         }
 
         for id in to_wake {
+            // SMP safety: Don't add to ready_queue if thread is currently
+            // running on any CPU. Same protection as unblock() — a thread
+            // in BlockedOnTimer state might still be executing its WFI poll
+            // loop (e.g., sys_poll, sys_nanosleep). Adding it to the
+            // ready_queue would allow another CPU to dispatch it, causing
+            // double-scheduling: two CPUs executing the same thread with
+            // the same kernel stack, leading to context corruption and
+            // crashes (ELR=0x0, SPSR corruption).
+            //
+            // The CPU running the thread will detect the state change
+            // (BlockedOnTimer → Ready) when its poll loop checks the thread
+            // state after waking from WFI. If the thread is context-switched
+            // out before detecting it, DEFERRED_REQUEUE will properly add it
+            // to the ready_queue when the kernel stack is free.
+            //
+            // NOTE: These checks use &self borrows (cpu_state, is_in_deferred_requeue)
+            // and must happen BEFORE get_thread_mut() to avoid borrow conflicts.
+            let is_current_on_any_cpu = (0..MAX_CPUS).any(|cpu| {
+                self.cpu_state[cpu].current_thread == Some(id)
+            });
+            if is_current_on_any_cpu {
+                // Still update state so the running thread detects the change,
+                // but don't clear blocked_in_syscall — the running thread
+                // manages this flag itself when it detects the state change.
+                if let Some(thread) = self.get_thread_mut(id) {
+                    thread.state = ThreadState::Ready;
+                    thread.wake_time_ns = None;
+                }
+                continue;
+            }
+
+            // SMP safety: Don't add to ready_queue if thread was just
+            // context-switched out and the old CPU's ERET hasn't completed.
+            // The deferred requeue will add it when the kernel stack is free.
+            #[cfg(target_arch = "aarch64")]
+            let in_deferred_requeue = self.is_in_deferred_requeue(id);
+            #[cfg(not(target_arch = "aarch64"))]
+            let in_deferred_requeue = false;
+
+            let is_idle = id == self.cpu_state[Self::current_cpu_id()].idle_thread;
+            let already_queued = self.ready_queue.contains(&id);
+
             if let Some(thread) = self.get_thread_mut(id) {
                 thread.state = ThreadState::Ready;
                 thread.wake_time_ns = None;
+
                 // CRITICAL: Clear blocked_in_syscall so the context switch
                 // dispatches the thread through the correct path (userspace vs
                 // kernel) on its next run. Without this, the thread runs to
@@ -1195,15 +1301,7 @@ impl Scheduler {
                 // through the kernel restore path which rejects the userspace ELR.
                 thread.blocked_in_syscall = false;
 
-                // SMP safety: Don't add to ready_queue if thread was just
-                // context-switched out and the old CPU's ERET hasn't completed.
-                // The deferred requeue will add it when the kernel stack is free.
-                #[cfg(target_arch = "aarch64")]
-                if self.is_in_deferred_requeue(id) {
-                    continue;
-                }
-
-                if id != self.cpu_state[Self::current_cpu_id()].idle_thread && !self.ready_queue.contains(&id) {
+                if !in_deferred_requeue && !is_idle && !already_queued {
                     self.ready_queue.push_back(id);
                 }
             }

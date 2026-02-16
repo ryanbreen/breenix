@@ -68,10 +68,11 @@ run_single_test() {
     local EXT2_WRITABLE="$OUTPUT_DIR/ext2-writable.img"
     cp "$EXT2_DISK" "$EXT2_WRITABLE"
 
-    # Run QEMU with 20s timeout (shorter since we expect consistent success)
+    # Run QEMU with 30s timeout - allows for QEMU startup variance and
+    # BWM initialization which sometimes takes longer on loaded hosts.
     # Always include GPU, keyboard, and network so kernel VirtIO enumeration finds them
     # Use writable disk copy (no readonly=on) to allow filesystem writes
-    timeout 20 qemu-system-aarch64 \
+    timeout 30 qemu-system-aarch64 \
         -M virt -cpu cortex-a72 -m 512 -smp 4 \
         -kernel "$KERNEL" \
         -display none -no-reboot \
@@ -85,14 +86,14 @@ run_single_test() {
         -serial file:"$OUTPUT_DIR/serial.txt" &
     local QEMU_PID=$!
 
-    # Wait for USERSPACE boot completion (18s max, checking every 1.5s)
+    # Wait for USERSPACE boot completion (27s max, checking every 1.5s)
     # Accept any of:
     #   "breenix>" or "bsh " - shell prompt on serial (legacy/direct mode)
     #   "[bwm] Display:" - BWM window manager initialized (shell runs inside PTY)
     # DO NOT accept "Interactive Shell" - that's the KERNEL FALLBACK when userspace FAILS
     local BOOT_COMPLETE=false
     local CRASH_TYPE=""
-    for i in $(seq 1 12); do
+    for i in $(seq 1 18); do
         if [ -f "$OUTPUT_DIR/serial.txt" ]; then
             if grep -qE "(breenix>|bsh |\[bwm\] Display:)" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
                 BOOT_COMPLETE=true

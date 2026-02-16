@@ -226,8 +226,9 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                     // Master can always write (goes through line discipline)
                     revents |= events::POLLOUT;
                 }
-                // POLLHUP when all slave FDs are closed
-                if !pair.has_slave_open() {
+                // POLLHUP only when slave was opened and then all slave FDs closed.
+                // If slave was never opened (child hasn't connected yet), no hangup.
+                if pair.has_slave_hung_up() {
                     revents |= events::POLLHUP;
                 }
             } else {
