@@ -521,8 +521,8 @@ fn write_sector_inner(sector: u64, buffer: &[u8; SECTOR_SIZE]) -> Result<(), &'s
     let device = VirtioMmioDevice::probe(state.base).ok_or("Device disappeared")?;
     device.notify_queue(0);
 
-    // Poll for completion
-    let mut timeout = 1_000_000u32;
+    // Poll for completion - use same timeout as read_sector for sequential writes
+    let mut timeout = 100_000_000u32;
     loop {
         fence(Ordering::SeqCst);
         let used_idx = unsafe {

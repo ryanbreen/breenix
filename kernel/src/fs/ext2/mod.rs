@@ -130,11 +130,6 @@ impl Ext2Fs {
 
             // Make sure it's a directory
             if !current_inode.is_dir() {
-                let mode = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(current_inode.i_mode)) };
-                log::error!(
-                    "resolve_path: inode {} has mode=0x{:04x} (type={:?}), expected directory",
-                    current_inode_num, mode, current_inode.file_type()
-                );
                 return Err("Not a directory in path");
             }
 
@@ -242,12 +237,14 @@ impl Ext2Fs {
         }
 
         // Write the data
-        write_file_range(self.device.as_ref(), &mut inode, &self.superblock, &mut self.block_groups, offset, data)
-            .map_err(|_| "Failed to write file data")?;
+        if let Err(_) = write_file_range(self.device.as_ref(), &mut inode, &self.superblock, &mut self.block_groups, offset, data) {
+            return Err("Failed to write file data");
+        }
 
         // Write the modified inode back to disk
-        inode.write_to(self.device.as_ref(), inode_num, &self.superblock, &self.block_groups)
-            .map_err(|_| "Failed to write inode")?;
+        if let Err(_) = inode.write_to(self.device.as_ref(), inode_num, &self.superblock, &self.block_groups) {
+            return Err("Failed to write inode");
+        }
 
         Ok(data.len())
     }
