@@ -467,15 +467,7 @@ pub fn init_shell_framebuffer() -> Result<(), &'static str> {
 
 /// Get the framebuffer dimensions
 pub fn dimensions() -> Option<(usize, usize)> {
-    SHELL_FRAMEBUFFER.get().map(|fb| {
-        let guard = fb.lock();
-        (guard.width(), guard.height())
+    SHELL_FRAMEBUFFER.get().and_then(|fb| {
+        fb.try_lock().map(|guard| (guard.width(), guard.height()))
     })
-}
-
-/// Flush the shell framebuffer to the display
-pub fn flush_shell_framebuffer() {
-    if let Some(fb) = SHELL_FRAMEBUFFER.get() {
-        fb.lock().flush();
-    }
 }

@@ -868,21 +868,40 @@ fn main() {
         print!("[bwm] WARNING: take_over_display failed: {}\n", e);
     }
 
-    // Step 2: Get framebuffer info and mmap
-    let info = match graphics::fbinfo() {
-        Ok(info) => info,
-        Err(e) => {
-            print!("[bwm] ERROR: fbinfo failed: {}\n", e);
-            process::exit(1);
+    // Step 2: Get framebuffer info and mmap (retry on EBUSY — the kernel
+    // returns EBUSY if the framebuffer lock is contended at startup)
+    let info = {
+        let mut result = None;
+        for attempt in 0..10 {
+            match graphics::fbinfo() {
+                Ok(info) => { result = Some(info); break; }
+                Err(_) if attempt < 9 => {
+                    let _ = libbreenix::time::nanosleep(&libbreenix::types::Timespec { tv_sec: 0, tv_nsec: 10_000_000 });
+                }
+                Err(e) => {
+                    print!("[bwm] ERROR: fbinfo failed after retries: {}\n", e);
+                    process::exit(1);
+                }
+            }
         }
+        result.unwrap()
     };
 
-    let fb_ptr = match graphics::fb_mmap() {
-        Ok(ptr) => ptr,
-        Err(e) => {
-            print!("[bwm] ERROR: fb_mmap failed: {}\n", e);
-            process::exit(1);
+    let fb_ptr = {
+        let mut result = None;
+        for attempt in 0..10 {
+            match graphics::fb_mmap() {
+                Ok(ptr) => { result = Some(ptr); break; }
+                Err(_) if attempt < 9 => {
+                    let _ = libbreenix::time::nanosleep(&libbreenix::types::Timespec { tv_sec: 0, tv_nsec: 10_000_000 });
+                }
+                Err(e) => {
+                    print!("[bwm] ERROR: fb_mmap failed after retries: {}\n", e);
+                    process::exit(1);
+                }
+            }
         }
+        result.unwrap()
     };
 
     // After take_over_display, fb_mmap maps the right pane (local coords 0,0 = top-left of right pane)
