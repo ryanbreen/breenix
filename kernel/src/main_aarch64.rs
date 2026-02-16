@@ -249,6 +249,9 @@ pub extern "C" fn kernel_main() -> ! {
     // Initialize serial output first so we can print
     serial::init_serial();
 
+    // Initialize the /proc/kmsg log buffer early so ALL serial output is captured
+    kernel::log_buffer::init();
+
     serial_println!();
     serial_println!("========================================");
     serial_println!("  Breenix ARM64 Kernel Starting");

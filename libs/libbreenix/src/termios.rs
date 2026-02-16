@@ -136,6 +136,15 @@ pub fn set_winsize(fd: Fd, ws: &Winsize) -> Result<(), Error> {
     Error::from_syscall(ret as i64).map(|_| ())
 }
 
+/// Get terminal window size (TIOCGWINSZ)
+pub fn get_winsize(fd: Fd) -> Result<Winsize, Error> {
+    let mut ws = Winsize::default();
+    let ret = unsafe {
+        raw::syscall3(SYS_IOCTL, fd.raw(), request::TIOCGWINSZ, &mut ws as *mut _ as u64)
+    };
+    Error::from_syscall(ret as i64).map(|_| ws)
+}
+
 /// Check if fd refers to a terminal
 pub fn isatty(fd: Fd) -> bool {
     let mut termios = Termios::default();

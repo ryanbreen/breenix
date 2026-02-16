@@ -113,6 +113,9 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     log::info!("Initializing serial port...");
     serial::init();
 
+    // Initialize the /proc/kmsg log buffer early so ALL serial output is captured
+    kernel::log_buffer::init();
+
     // Tell logger that serial is ready - this will flush buffered messages
     logger::serial_ready();
 

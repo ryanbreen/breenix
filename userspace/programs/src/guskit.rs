@@ -613,6 +613,27 @@ fn format_save_path(counter: u32) -> ([u8; 32], usize) {
     (buf, pos)
 }
 
+/// Write all bytes to a file, looping on short writes. Returns total bytes written.
+fn write_all(file: &File, data: &[u8]) -> usize {
+    let mut offset = 0;
+    while offset < data.len() {
+        match file.write(&data[offset..]) {
+            Ok(0) => {
+                println!("[write_all] write returned 0 at offset {}/{}", offset, data.len());
+                break;
+            }
+            Ok(n) => {
+                offset += n;
+            }
+            Err(e) => {
+                println!("[write_all] write error at offset {}/{}: {}", offset, data.len(), e);
+                break;
+            }
+        }
+    }
+    offset
+}
+
 // ---------------------------------------------------------------------------
 // Add to recent colors
 // ---------------------------------------------------------------------------
@@ -779,9 +800,17 @@ fn main() {
                     Action::Save => {
                         let (path_buf, path_len) = format_save_path(save_counter);
                         let path = core::str::from_utf8(&path_buf[..path_len]).unwrap_or("/home/guskit.bmp");
+                        println!("[save] path={} canvas={}x{}", path, canvas_w, canvas_h);
                         let bmp_data = bmp::encode_bmp_24(canvas_w as u32, canvas_h as u32, &canvas);
-                        if let Ok(file) = File::create(path) {
-                            let _ = file.write(&bmp_data);
+                        println!("[save] bmp encoded: {} bytes", bmp_data.len());
+                        match File::create(path) {
+                            Ok(file) => {
+                                let written = write_all(&file, &bmp_data);
+                                println!("[save] wrote {} of {} bytes", written, bmp_data.len());
+                            }
+                            Err(e) => {
+                                println!("[save] File::create failed: {}", e);
+                            }
                         }
                         save_counter += 1;
                     }

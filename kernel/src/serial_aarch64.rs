@@ -235,6 +235,7 @@ impl fmt::Write for TeeWriter<'_> {
         for byte in s.bytes() {
             self.0.send(byte);
             crate::graphics::log_capture::capture_byte(byte);
+            crate::log_buffer::capture_byte(byte);
         }
         Ok(())
     }
