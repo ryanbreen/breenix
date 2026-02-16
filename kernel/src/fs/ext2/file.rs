@@ -554,15 +554,21 @@ pub fn write_file_range<B: BlockDevice>(
 
     for logical_block in start_block..end_block {
         // Get physical block number, allocating if necessary
-        let physical_block = match get_block_num(device, inode, superblock, logical_block)? {
-            Some(block_num) => block_num,
-            None => {
+        let physical_block = match get_block_num(device, inode, superblock, logical_block) {
+            Ok(Some(block_num)) => block_num,
+            Ok(None) => {
                 // Sparse hole or no block allocated - allocate a new block
-                let new_block = super::block_group::allocate_block(device, superblock, block_groups)
-                    .map_err(|_| BlockError::IoError)?;
+                let new_block = match super::block_group::allocate_block(device, superblock, block_groups) {
+                    Ok(b) => b,
+                    Err(_) => {
+                        return Err(BlockError::IoError);
+                    }
+                };
 
                 // Set the block pointer in the inode
-                set_block_num(device, inode, superblock, block_groups, logical_block, new_block)?;
+                if let Err(e) = set_block_num(device, inode, superblock, block_groups, logical_block, new_block) {
+                    return Err(e);
+                }
 
                 // Update i_blocks count (in 512-byte sectors)
                 let sectors_per_block = (block_size / 512) as u32;
@@ -573,6 +579,9 @@ pub fn write_file_range<B: BlockDevice>(
                 }
 
                 new_block
+            }
+            Err(e) => {
+                return Err(e);
             }
         };
 
@@ -592,7 +601,9 @@ pub fn write_file_range<B: BlockDevice>(
 
         // Read-modify-write if we're not writing a full block
         if start_in_block != 0 || end_in_block != block_size {
-            read_ext2_block(device, physical_block, block_size, &mut block_buf[..block_size])?;
+            if let Err(e) = read_ext2_block(device, physical_block, block_size, &mut block_buf[..block_size]) {
+                return Err(e);
+            }
         }
 
         // Copy data into block buffer
@@ -601,7 +612,9 @@ pub fn write_file_range<B: BlockDevice>(
         data_pos += bytes_to_write;
 
         // Write the block back
-        write_ext2_block(device, physical_block, block_size, &block_buf[..block_size])?;
+        if let Err(e) = write_ext2_block(device, physical_block, block_size, &block_buf[..block_size]) {
+            return Err(e);
+        }
     }
 
     // Update inode size if we extended the file

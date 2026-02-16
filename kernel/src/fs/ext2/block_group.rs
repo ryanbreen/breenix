@@ -234,8 +234,9 @@ pub fn allocate_block<B: BlockDevice>(
                 bitmap_buf[byte_index] |= 1 << bit_index;
 
                 // Write the updated bitmap back to disk
-                write_ext2_block(device, bitmap_block, block_size, &bitmap_buf[..block_size])
-                    .map_err(|_| "Failed to write block bitmap")?;
+                if let Err(_) = write_ext2_block(device, bitmap_block, block_size, &bitmap_buf[..block_size]) {
+                    return Err("Failed to write block bitmap");
+                }
 
                 // Update the free block count in the block group descriptor
                 // Safety: Writing to packed struct
@@ -248,8 +249,9 @@ pub fn allocate_block<B: BlockDevice>(
 
                 // Zero out the newly allocated block
                 let zero_buf = [0u8; 4096]; // Max block size
-                write_ext2_block(device, global_block, block_size, &zero_buf[..block_size])
-                    .map_err(|_| "Failed to zero allocated block")?;
+                if let Err(_) = write_ext2_block(device, global_block, block_size, &zero_buf[..block_size]) {
+                    return Err("Failed to zero allocated block");
+                }
 
                 return Ok(global_block);
             }
