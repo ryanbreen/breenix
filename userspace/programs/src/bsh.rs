@@ -1060,8 +1060,19 @@ fn command_executor_fn(
         Err(_) => return Err(JsError::runtime("command exec: fork() failed")),
     };
 
+    // Save the shell's process group so we can reclaim the terminal after the child exits
+    let shell_pgid = libbreenix::process::getpgrp().map(|p| p.raw() as i32).unwrap_or(0);
+
     match fork_result {
         libbreenix::process::ForkResult::Child => {
+            // Put child in its own process group (for job control / signal delivery)
+            let _ = libbreenix::process::setpgid(0, 0);
+
+            // Ensure default signal handling so Ctrl+C can kill the child
+            let dfl = libbreenix::signal::Sigaction::default_action();
+            let _ = libbreenix::signal::sigaction(libbreenix::signal::SIGINT, Some(&dfl), None);
+            let _ = libbreenix::signal::sigaction(libbreenix::signal::SIGQUIT, Some(&dfl), None);
+
             // Child: inherits stdin/stdout/stderr directly (no pipe capture)
             let mut c_args: Vec<Vec<u8>> = Vec::new();
             for a in &cmd_args {
@@ -1079,15 +1090,33 @@ fn command_executor_fn(
             libbreenix::process::exit(127);
         }
         libbreenix::process::ForkResult::Parent(child_pid) => {
+            let child_pid_raw = child_pid.raw() as i32;
+
+            // Set child's process group from parent side too (POSIX race avoidance)
+            let _ = libbreenix::process::setpgid(child_pid_raw, child_pid_raw);
+
+            // Give the terminal to the child's process group so Ctrl+C sends
+            // SIGINT to the child, not the shell
+            let stdin_fd = libbreenix::types::Fd::STDIN;
+            let _ = libbreenix::termios::tcsetpgrp(stdin_fd, child_pid_raw);
+
             let mut status: i32 = 0;
             let _ = libbreenix::process::waitpid(
-                child_pid.raw() as i32,
+                child_pid_raw,
                 &mut status as *mut i32,
                 0,
             );
 
+            // Reclaim the terminal for the shell
+            if shell_pgid > 0 {
+                let _ = libbreenix::termios::tcsetpgrp(stdin_fd, shell_pgid);
+            }
+
             let exit_code = if libbreenix::process::wifexited(status) {
                 libbreenix::process::wexitstatus(status)
+            } else if libbreenix::process::wifsignaled(status) {
+                // Process was killed by a signal — return 128 + signal number
+                128 + libbreenix::process::wtermsig(status)
             } else {
                 -1
             };
@@ -1953,6 +1982,9 @@ impl LineEditor {
 // ---------------------------------------------------------------------------
 
 fn run_repl() {
+    // Make the shell a process group leader so we can manage foreground groups
+    let _ = libbreenix::process::setpgid(0, 0);
+
     // Set default PATH based on kernel testing mode
     if std::env::var("PATH").is_err() {
         std::env::set_var("PATH", default_path());

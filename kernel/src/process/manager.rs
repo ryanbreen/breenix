@@ -699,7 +699,6 @@ impl ProcessManager {
             wake_time_ns: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
-            fork_return_pending: false,
             owner_pid: Some(process.id.as_u64()),
         };
 
@@ -775,7 +774,6 @@ impl ProcessManager {
             wake_time_ns: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
-            fork_return_pending: false,
             owner_pid: Some(process.id.as_u64()),
         };
 
@@ -856,7 +854,6 @@ impl ProcessManager {
             wake_time_ns: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
-            fork_return_pending: false,
             owner_pid: Some(process.id.as_u64()),
         };
 
@@ -1581,11 +1578,6 @@ impl ProcessManager {
         // The child process must receive 0 from fork(), while the parent gets child_pid
         child_thread.context.x0 = 0;
 
-        // Protect x0=0 from context switch corruption until the child's first syscall.
-        // Without this, a TOCTOU race in the multi-lock context switch path can
-        // overwrite x0 with a stale value, causing the child to take the parent branch.
-        child_thread.fork_return_pending = true;
-
         log::info!(
             "ARM64 fork: Created child thread {} with ELR={:#x}, SP_EL0={:#x}, X0={}",
             child_thread_id,
@@ -2066,7 +2058,6 @@ impl ProcessManager {
             wake_time_ns: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
-            fork_return_pending: false,
             owner_pid: Some(child_pid.as_u64()),
         };
 
