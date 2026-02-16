@@ -2689,6 +2689,9 @@ impl ProcessManager {
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
         use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
 
+        // Lock-free trace: exec entry (must be before any early returns)
+        crate::tracing::providers::process::trace_exec_entry(pid.as_u64() as u32);
+
         log::info!(
             "exec_process_with_argv [ARM64]: Replacing process {} with new program, argc={}",
             pid.as_u64(),

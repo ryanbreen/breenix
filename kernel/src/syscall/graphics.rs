@@ -14,6 +14,10 @@ use crate::graphics::arm64_fb::SHELL_FRAMEBUFFER;
 use crate::graphics::primitives::{Canvas, Color, Rect, fill_rect, draw_rect, fill_circle, draw_circle, draw_line};
 use super::SyscallResult;
 
+/// Counter for fb_flush syscalls (diagnostic — read from timer heartbeat)
+#[cfg(target_arch = "aarch64")]
+pub static FB_FLUSH_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 /// Framebuffer info structure returned by sys_fbinfo.
 /// This matches the userspace FbInfo struct in libbreenix.
 #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
@@ -374,6 +378,8 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
         }
         6 => {
             // Flush: sync buffer to screen
+            #[cfg(target_arch = "aarch64")]
+            FB_FLUSH_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             // If p3 (width) and p4 (height) are non-zero, interpret p1-p4 as
             // a dirty rectangle (x, y, w, h) for partial flush. Otherwise,
             // fall back to full flush.
