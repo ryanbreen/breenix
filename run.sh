@@ -9,6 +9,7 @@
 #   ./run.sh --x86        # x86_64 with VNC display
 #   ./run.sh --headless   # ARM64 with serial output only
 #   ./run.sh --x86 --headless  # x86_64 with serial output only
+#   ./run.sh --no-build        # Skip all builds, use existing artifacts
 #   ./run.sh --btrt            # ARM64 BTRT structured boot test
 #   ./run.sh --btrt --x86      # x86_64 BTRT structured boot test
 #
@@ -27,6 +28,7 @@ BREENIX_ROOT="$SCRIPT_DIR"
 ARCH="arm64"
 HEADLESS=false
 CLEAN=false
+NO_BUILD=false
 BTRT=false
 DEBUG=false
 
@@ -43,6 +45,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --clean)
             CLEAN=true
+            shift
+            ;;
+        --no-build)
+            NO_BUILD=true
             shift
             ;;
         --btrt)
@@ -66,6 +72,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  --clean                    Full rebuild: userspace, ext2 disk, kernel"
+            echo "  --no-build                 Skip all builds, use existing artifacts"
             echo "  --x86, --x86_64, --amd64   Run x86_64 kernel (default: ARM64)"
             echo "  --arm64, --aarch64         Run ARM64 kernel (default)"
             echo "  --headless, --serial       Run without display (serial only)"
@@ -136,8 +143,10 @@ echo ""
 echo "Architecture: $ARCH"
 echo "Mode: $([ "$HEADLESS" = true ] && echo "headless (serial only)" || echo "graphics (VNC)")"
 
-# --clean: full rebuild of userspace, ext2 disk, and kernel
-if [ "$CLEAN" = true ]; then
+if [ "$NO_BUILD" = true ]; then
+    echo "Skipping all builds (--no-build)"
+elif [ "$CLEAN" = true ]; then
+    # --clean: full rebuild of userspace, ext2 disk, and kernel
     echo ""
     echo "Clean build: rebuilding everything..."
     echo ""
@@ -165,12 +174,12 @@ if [ "$CLEAN" = true ]; then
     fi
     eval $BUILD_CMD
     echo ""
+else
+    # Always rebuild to ensure correct features (boot_tests, etc.)
+    # Cargo is incremental — this is fast if nothing changed
+    echo "Building kernel..."
+    eval $BUILD_CMD
 fi
-
-# Always rebuild to ensure correct features (boot_tests, etc.)
-# Cargo is incremental — this is fast if nothing changed
-echo "Building kernel..."
-eval $BUILD_CMD
 
 if [ ! -f "$KERNEL" ]; then
     echo "Error: Kernel not found after build"
@@ -184,10 +193,12 @@ OUTPUT_DIR=$(mktemp -d)
 echo "Serial output: $OUTPUT_DIR/serial.txt"
 
 # Add ext2 disk if it exists (writable copy to allow filesystem writes)
+# Use a known path so extraction scripts can find the session disk
 DISK_OPTS=""
+EXT2_SESSION="$BREENIX_ROOT/target/ext2-session.img"
 if [ -f "$EXT2_DISK" ]; then
     echo "Disk image: $EXT2_DISK"
-    EXT2_WRITABLE="$OUTPUT_DIR/ext2-writable.img"
+    EXT2_WRITABLE="$EXT2_SESSION"
     cp "$EXT2_DISK" "$EXT2_WRITABLE"
     if [ "$ARCH" = "arm64" ]; then
         DISK_OPTS="-device virtio-blk-device,drive=ext2disk -drive if=none,id=ext2disk,format=raw,file=$EXT2_WRITABLE"
@@ -342,3 +353,7 @@ echo "========================================="
 echo "Breenix stopped"
 echo "========================================="
 echo "Serial output saved to: $OUTPUT_DIR/serial.txt"
+if [ -f "$EXT2_SESSION" ]; then
+    echo "Session disk: $EXT2_SESSION"
+    echo "Extract saved files: ./scripts/extract-saves.sh"
+fi

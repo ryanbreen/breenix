@@ -1,4 +1,4 @@
-//! BMP 24-bit uncompressed encoding.
+//! BMP 24-bit uncompressed encoding and decoding.
 
 
 /// Encode a top-down RGB pixel buffer as a 24-bit uncompressed BMP file.
@@ -65,6 +65,77 @@ pub fn encode_bmp_24(width: u32, height: u32, rgb_data: &[u8]) -> Vec<u8> {
     }
 
     buf
+}
+
+/// Decode a 24-bit uncompressed BMP file into a top-down RGB pixel buffer.
+///
+/// Returns `(width, height, rgb_data)` where `rgb_data` is `width * height * 3`
+/// bytes: rows top-to-bottom, pixels left-to-right, 3 bytes per pixel (R, G, B).
+///
+/// Returns `None` if the data is not a valid 24-bit uncompressed BMP.
+pub fn decode_bmp_24(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    // Need at least 54 bytes for headers
+    if data.len() < 54 {
+        return None;
+    }
+
+    // Check BM signature
+    if data[0] != b'B' || data[1] != b'M' {
+        return None;
+    }
+
+    let pixel_offset = read_u32_le(data, 10) as usize;
+    let width = read_u32_le(data, 18);
+    let height_raw = read_u32_le(data, 22) as i32;
+    let bits_per_pixel = read_u16_le(data, 28);
+    let compression = read_u32_le(data, 30);
+
+    // Only support 24-bit uncompressed
+    if bits_per_pixel != 24 || compression != 0 {
+        return None;
+    }
+
+    let height = height_raw.unsigned_abs();
+    let bottom_up = height_raw > 0;
+
+    let row_bytes = (width * 3) as usize;
+    let padding = (4 - (row_bytes % 4)) % 4;
+    let padded_row = row_bytes + padding;
+
+    let pixel_data = data.get(pixel_offset..)?;
+    if pixel_data.len() < padded_row * height as usize {
+        return None;
+    }
+
+    let mut rgb = vec![0u8; row_bytes * height as usize];
+
+    for row in 0..height as usize {
+        // BMP bottom-up: first row in file is bottom of image
+        let src_row = if bottom_up { (height as usize) - 1 - row } else { row };
+        let src_off = src_row * padded_row;
+        let dst_off = row * row_bytes;
+
+        for col in 0..width as usize {
+            let si = src_off + col * 3;
+            let di = dst_off + col * 3;
+            rgb[di] = pixel_data[si + 2];     // R (from BGR)
+            rgb[di + 1] = pixel_data[si + 1]; // G
+            rgb[di + 2] = pixel_data[si];     // B
+        }
+    }
+
+    Some((width, height, rgb))
+}
+
+fn read_u32_le(buf: &[u8], offset: usize) -> u32 {
+    buf[offset] as u32
+        | (buf[offset + 1] as u32) << 8
+        | (buf[offset + 2] as u32) << 16
+        | (buf[offset + 3] as u32) << 24
+}
+
+fn read_u16_le(buf: &[u8], offset: usize) -> u16 {
+    buf[offset] as u16 | (buf[offset + 1] as u16) << 8
 }
 
 fn write_u32_le(buf: &mut [u8], offset: usize, val: u32) {

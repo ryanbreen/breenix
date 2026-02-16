@@ -4,13 +4,13 @@
 //! - Drawing tools: Pencil, Brush, Line, Rectangle, Circle, Fill, Eraser
 //! - HSV color picker with hue bar, saturation/value square, recent colors
 //! - Variable brush sizes (S/M/L)
-//! - BMP file saving to /tmp/guskit_N.bmp
+//! - BMP file saving to /home/guskit_N.bmp (persists across reboots on ext2)
 //!
 //! Created for Gus!
 
 use std::process;
 
-use libbreenix::fs::File;
+use libbreenix::fs::{self, File};
 use libbreenix::graphics;
 use libbreenix::time;
 
@@ -369,7 +369,7 @@ fn draw_size_bar(fb: &mut FrameBuf, current_size: BrushSize, width: usize) {
     }
 
     // Action buttons on the right
-    let actions: [&[u8]; 3] = [b"Save", b"Clr", b"Quit"];
+    let actions: [&[u8]; 4] = [b"Open", b"Save", b"Clr", b"Quit"];
     let action_w = 32;
     let mut ax = width - (actions.len() * (action_w + BUTTON_PAD)) - BUTTON_PAD;
     for label in actions {
@@ -505,6 +505,7 @@ fn hit_size(mx: usize, my: usize) -> Option<BrushSize> {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Action {
+    Open,
     Save,
     Clear,
     Quit,
@@ -514,7 +515,7 @@ fn hit_action(mx: usize, my: usize, width: usize) -> Option<Action> {
     if my < SIZE_BAR_Y + 1 || my >= SIZE_BAR_Y + 1 + BUTTON_H {
         return None;
     }
-    let actions = [Action::Save, Action::Clear, Action::Quit];
+    let actions = [Action::Open, Action::Save, Action::Clear, Action::Quit];
     let action_w = 32;
     let mut ax = width - (actions.len() * (action_w + BUTTON_PAD)) - BUTTON_PAD;
     for action in actions {
@@ -575,7 +576,7 @@ fn hit_canvas(mx: usize, my: usize, cw: usize, ch: usize) -> Option<(i32, i32)> 
 // ---------------------------------------------------------------------------
 
 fn format_save_path(counter: u32) -> ([u8; 32], usize) {
-    let prefix = b"/tmp/guskit_";
+    let prefix = b"/home/guskit_";
     let suffix = b".bmp";
     let mut buf = [0u8; 32];
     let mut pos = 0;
@@ -731,9 +732,53 @@ fn main() {
             } else if let Some(action) = hit_action(umx, umy, width) {
                 mouse_down = false;
                 match action {
+                    Action::Open => {
+                        // Try to open guskit_N.bmp, scanning backwards from
+                        // save_counter to find the most recent file
+                        let mut found = false;
+                        let start = if save_counter > 0 { save_counter - 1 } else { 99 };
+                        for attempt in 0..100u32 {
+                            let n = if attempt <= start { start - attempt } else { break };
+                            let (path_buf, path_len) = format_save_path(n);
+                            let path = core::str::from_utf8(&path_buf[..path_len]).unwrap_or("");
+                            if let Ok(file) = File::open(path, fs::O_RDONLY) {
+                                // Read the whole file
+                                let mut file_data = Vec::new();
+                                let mut chunk = [0u8; 4096];
+                                loop {
+                                    match file.read(&mut chunk) {
+                                        Ok(0) => break,
+                                        Ok(n) => file_data.extend_from_slice(&chunk[..n]),
+                                        Err(_) => break,
+                                    }
+                                }
+                                if let Some((bw, bh, rgb)) = bmp::decode_bmp_24(&file_data) {
+                                    // Blit decoded image onto canvas (clipped to canvas size)
+                                    let copy_w = (bw as usize).min(canvas_w);
+                                    let copy_h = (bh as usize).min(canvas_h);
+                                    // Clear canvas first
+                                    for b in canvas.iter_mut() {
+                                        *b = 255;
+                                    }
+                                    for y in 0..copy_h {
+                                        for x in 0..copy_w {
+                                            let si = (y * bw as usize + x) * 3;
+                                            let di = (y * canvas_w + x) * 3;
+                                            canvas[di] = rgb[si];
+                                            canvas[di + 1] = rgb[si + 1];
+                                            canvas[di + 2] = rgb[si + 2];
+                                        }
+                                    }
+                                    found = true;
+                                }
+                                break;
+                            }
+                        }
+                        let _ = found; // suppress unused warning
+                    }
                     Action::Save => {
                         let (path_buf, path_len) = format_save_path(save_counter);
-                        let path = core::str::from_utf8(&path_buf[..path_len]).unwrap_or("/tmp/guskit.bmp");
+                        let path = core::str::from_utf8(&path_buf[..path_len]).unwrap_or("/home/guskit.bmp");
                         let bmp_data = bmp::encode_bmp_24(canvas_w as u32, canvas_h as u32, &canvas);
                         if let Ok(file) = File::create(path) {
                             let _ = file.write(&bmp_data);
