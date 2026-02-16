@@ -116,6 +116,56 @@ pub fn draw_rect(fb: &mut FrameBuf, x: i32, y: i32, w: i32, h: i32, color: Color
     fill_rect(fb, x + w - 1, y, 1, h, color);
 }
 
+/// Draw a circle outline at (cx, cy) with the given radius using the midpoint circle algorithm.
+pub fn draw_circle(fb: &mut FrameBuf, cx: i32, cy: i32, radius: i32, color: Color) {
+    if radius <= 0 {
+        if radius == 0 {
+            fb.put_pixel(cx as usize, cy as usize, color);
+        }
+        return;
+    }
+
+    let w = fb.width as i32;
+    let h = fb.height as i32;
+
+    let mut x = radius;
+    let mut y = 0i32;
+    let mut d = 1 - radius;
+
+    while x >= y {
+        // Plot 8 symmetric points
+        let points: [(i32, i32); 8] = [
+            (cx + x, cy + y),
+            (cx - x, cy + y),
+            (cx + x, cy - y),
+            (cx - x, cy - y),
+            (cx + y, cy + x),
+            (cx - y, cy + x),
+            (cx + y, cy - x),
+            (cx - y, cy - x),
+        ];
+        for (px, py) in points {
+            if px >= 0 && px < w && py >= 0 && py < h {
+                fb.put_pixel(px as usize, py as usize, color);
+            }
+        }
+
+        y += 1;
+        if d <= 0 {
+            d += 2 * y + 1;
+        } else {
+            x -= 1;
+            d += 2 * (y - x) + 1;
+        }
+    }
+
+    let bx = (cx - radius).max(0);
+    let by = (cy - radius).max(0);
+    let bw = ((cx + radius + 1).min(w) - bx).max(0);
+    let bh = ((cy + radius + 1).min(h) - by).max(0);
+    fb.mark_dirty(bx, by, bw, bh);
+}
+
 /// Draw a line from (x0, y0) to (x1, y1) using Bresenham's algorithm.
 pub fn draw_line(fb: &mut FrameBuf, x0: i32, y0: i32, x1: i32, y1: i32, color: Color) {
     let (c0, c1, c2) = if fb.is_bgr {

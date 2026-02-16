@@ -264,6 +264,13 @@ STD_BINARIES=(
     # Services
     "init"
     "telnetd"
+    "blogd"
+
+    # Log viewer
+    "bless"
+
+    # Apps
+    "guskit"
 )
 
 RELEASE_DIR="$SCRIPT_DIR/target/$TARGET_DIR/release"

@@ -1,0 +1,12 @@
+[package]
+name = "libimg"
+version = "0.1.0"
+edition = "2021"
+description = "Image format encoding for Breenix userspace"
+
+[workspace]
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
