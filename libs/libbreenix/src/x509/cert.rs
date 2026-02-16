@@ -10,7 +10,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use super::asn1::{Asn1Error, DerParser, TAG_CONTEXT_0, TAG_CONTEXT_2, TAG_CONTEXT_3};
+use super::asn1::{Asn1Error, DerParser, TAG_CONTEXT_0, TAG_CONTEXT_3};
 
 // ---------------------------------------------------------------------------
 // OID constants
@@ -336,8 +336,9 @@ fn parse_san_extension(
 
     while !seq_parser.is_empty() {
         let (tag, value) = seq_parser.read_any()?;
-        // dNSName is context-specific [2] implicit
-        if tag == TAG_CONTEXT_2 {
+        // dNSName is [2] IMPLICIT IA5String — context-specific primitive tag
+        // 0x82 = context class (10) + primitive (0) + tag number 2 (00010)
+        if tag == 0x82 {
             san_dns_names.push(value.to_vec());
         }
         // Other GeneralName types are ignored.

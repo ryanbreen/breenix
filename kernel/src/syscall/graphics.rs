@@ -460,6 +460,36 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                 // to avoid holding PM (interrupts disabled) inside the FB lock.
                 let fb_mmap_info = fb_mmap_info_pre;
 
+                // Compute the flush rect BEFORE copying pixels (need mmap_info).
+                let flush_rect: Option<(u32, u32, u32, u32)> = if let Some(mmap_info) = fb_mmap_info {
+                    if has_rect {
+                        Some((
+                            (mmap_info.x_offset as u32) + cmd.p1.max(0) as u32,
+                            cmd.p2.max(0) as u32,
+                            cmd.p3 as u32,
+                            cmd.p4 as u32,
+                        ))
+                    } else {
+                        Some((
+                            mmap_info.x_offset as u32,
+                            0,
+                            mmap_info.width as u32,
+                            mmap_info.height as u32,
+                        ))
+                    }
+                } else if has_rect {
+                    Some((
+                        cmd.p1.max(0) as u32,
+                        cmd.p2.max(0) as u32,
+                        cmd.p3 as u32,
+                        cmd.p4 as u32,
+                    ))
+                } else {
+                    // Full flush — get display dimensions
+                    crate::drivers::virtio::gpu_mmio::dimensions()
+                        .map(|(w, h)| (0u32, 0u32, w, h))
+                };
+
                 if let Some(mmap_info) = fb_mmap_info {
                     // Determine which rows to copy
                     let (y_start, y_end) = if has_rect {
@@ -493,39 +523,20 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                     }
                 }
 
-                // Mark dirty rect for the render thread to flush (no GPU calls here).
-                // This decouples fast pixel copies from slow GPU submission, preventing
-                // the deadlock where sys_fbdraw held SHELL_FRAMEBUFFER + GPU_LOCK with
-                // IRQs disabled while the render thread waited on SHELL_FRAMEBUFFER.
-                if let Some(mmap_info) = fb_mmap_info {
-                    if has_rect {
-                        crate::graphics::arm64_fb::mark_dirty(
-                            (mmap_info.x_offset as u32) + cmd.p1.max(0) as u32,
-                            cmd.p2.max(0) as u32,
-                            cmd.p3 as u32,
-                            cmd.p4 as u32,
-                        );
-                    } else {
-                        crate::graphics::arm64_fb::mark_dirty(
-                            mmap_info.x_offset as u32,
-                            0,
-                            mmap_info.width as u32,
-                            mmap_info.height as u32,
-                        );
-                    }
-                } else if has_rect {
-                    crate::graphics::arm64_fb::mark_dirty(
-                        cmd.p1.max(0) as u32,
-                        cmd.p2.max(0) as u32,
-                        cmd.p3 as u32,
-                        cmd.p4 as u32,
-                    );
-                } else {
-                    crate::graphics::arm64_fb::mark_full_dirty();
-                }
+                // Drop SHELL_FRAMEBUFFER lock BEFORE GPU flush to avoid holding
+                // both SHELL_FRAMEBUFFER + GPU_LOCK simultaneously. The pixel
+                // copy is done; the render thread can now access the framebuffer
+                // for terminal text while we submit GPU commands.
+                drop(fb_guard);
 
-                // Wake the render thread to flush the dirty region promptly
-                crate::graphics::render_task::wake_render_thread();
+                // Synchronous GPU flush — submit transfer_to_host + resource_flush
+                // directly in the syscall instead of deferring to the render thread.
+                // This eliminates scheduling latency: bounce's frame is displayed
+                // immediately rather than waiting for the render thread to wake up
+                // (which could take 5ms+ due to timer tick granularity).
+                if let Some((fx, fy, fw, fh)) = flush_rect {
+                    let _ = crate::drivers::virtio::gpu_mmio::flush_rect(fx, fy, fw, fh);
+                }
             }
         }
         _ => {

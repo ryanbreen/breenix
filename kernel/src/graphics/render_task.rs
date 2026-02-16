@@ -64,56 +64,59 @@ pub fn spawn_render_thread() -> Result<u64, &'static str> {
 fn render_thread_main_kthread() {
     // Main rendering loop - runs until kthread_stop() is called
     while !kthread_should_stop() {
-        // Process all pending data before yielding to ensure responsive UI
-        // This batches multiple render operations per scheduling quantum
-        let mut total_rendered = 0;
+        // When BWM owns the display, the render thread has no work to do.
+        // BWM handles all pixel drawing, cursor, and GPU flushing via
+        // fbdraw syscalls. Sleep until the next interrupt and re-check.
+        if DISPLAY_TAKEN.load(Ordering::Acquire) {
+            arch_halt();
+            continue;
+        }
+
+        let mut did_work = false;
+
+        // Process all pending render queue data (terminal text, log capture)
         while render_queue::has_pending_data() {
             let rendered = render_queue::drain_and_render();
             if rendered == 0 {
                 break; // Queue was empty or locked
             }
-            total_rendered += rendered;
+            did_work = true;
         }
 
-        // When BWM owns the display, skip cursor updates (BWM draws its
-        // own cursor) but still flush dirty regions to the GPU. The
-        // sys_fbdraw Flush syscall (op=6) copies pixels to the GPU buffer
-        // and marks dirty rects, but doesn't call gpu_mmio::flush_rect()
-        // itself (to avoid holding the GPU lock with interrupts disabled
-        // in syscall context). The render thread must submit those
-        // dirty rects to the GPU regardless of display ownership.
-        if !DISPLAY_TAKEN.load(Ordering::Acquire) {
-            // Update mouse cursor position from tablet input device
-            #[cfg(target_arch = "aarch64")]
-            update_mouse_cursor();
+        #[cfg(target_arch = "aarch64")]
+        update_mouse_cursor();
+
+        // Flush dirty regions to the GPU. Returns true if a flush happened.
+        if flush_framebuffer() {
+            did_work = true;
         }
 
-        // Always flush dirty regions — on ARM64, flush_framebuffer()
-        // reads the dirty rect atomically and submits GPU commands
-        // without acquiring SHELL_FRAMEBUFFER, so no deadlock risk.
-        flush_framebuffer();
+        if did_work {
+            // Work was done — loop immediately to check for more.
+            // When bounce submits frames at 60fps, the render thread must
+            // flush each one promptly. Yielding here caused the thread to
+            // wait for rescheduling, dropping frames.
+            // Timer preemption (200Hz) still prevents CPU starvation.
+            continue;
+        }
 
-        // Yield to give other threads a chance to run
+        // No work was done — yield CPU to other threads
         crate::task::scheduler::yield_current();
 
-        if total_rendered == 0 {
-            // No work was done this iteration. Clear the wake flag and check
-            // one more time for data before halting.
-            //
-            // NOTE: We intentionally do NOT use kthread_park/unpark here.
-            // There is a fundamental race between checking for data and parking:
-            // if data arrives after the check but before park sets parked=true,
-            // wake_render_thread's kthread_unpark is lost (it sets parked=false
-            // which park immediately overwrites with true). RENDER_WAKE then
-            // stays stuck at true, so all future wakes are no-ops, permanently
-            // freezing the render thread. Instead, we use WFI/HLT to sleep
-            // until the next interrupt (timer at 200Hz = 5ms max latency).
-            if !RENDER_WAKE.swap(false, Ordering::Acquire)
-                && !render_queue::has_pending_data()
-                && !log_capture::has_pending_data()
-            {
-                arch_halt();
-            }
+        // Check one more time for data before halting. We use WFI/HLT
+        // to sleep until the next interrupt (timer at 200Hz = 5ms max).
+        //
+        // NOTE: We intentionally do NOT use kthread_park/unpark here.
+        // There is a fundamental race between checking for data and parking:
+        // if data arrives after the check but before park sets parked=true,
+        // wake_render_thread's kthread_unpark is lost. Instead, WFI wakes
+        // on any interrupt (timer tick) and we re-check all data sources.
+        if !RENDER_WAKE.swap(false, Ordering::Acquire)
+            && !render_queue::has_pending_data()
+            && !log_capture::has_pending_data()
+            && !has_pending_flush()
+        {
+            arch_halt();
         }
     }
 
@@ -135,7 +138,7 @@ fn arch_halt() {
 ///
 /// Sets RENDER_WAKE so the render thread skips the WFI halt on its next
 /// idle check. The render thread wakes on timer interrupts (200 Hz) and
-/// checks this flag, so worst-case latency is ~5ms. This avoids the
+/// checks this flag, so worst-case latency is ~1ms. This avoids the
 /// lost-wakeup race that existed with the previous kthread_park/unpark
 /// approach.
 pub fn wake_render_thread() {
@@ -169,29 +172,42 @@ fn update_mouse_cursor() {
 
     if let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() {
         if let Some(mut fb_guard) = fb.try_lock() {
-            super::cursor::update_cursor(&mut *fb_guard, mx as usize, my as usize);
-            // Cursor writes pixels directly; mark dirty so render thread flushes
-            crate::graphics::arm64_fb::mark_dirty(
-                mx.saturating_sub(16),
-                my.saturating_sub(16),
-                32,
-                32,
-            );
+            // Only mark dirty if the cursor actually moved
+            if super::cursor::update_cursor(&mut *fb_guard, mx as usize, my as usize) {
+                crate::graphics::arm64_fb::mark_dirty(
+                    mx.saturating_sub(16),
+                    my.saturating_sub(16),
+                    32,
+                    32,
+                );
+            }
         }
     }
 }
 
-/// Flush the framebuffer's double buffer if present.
-fn flush_framebuffer() {
+/// Check if there's a pending GPU flush without consuming the dirty state.
+fn has_pending_flush() -> bool {
+    #[cfg(target_arch = "aarch64")]
+    { crate::graphics::arm64_fb::has_dirty_rect() }
+    #[cfg(not(target_arch = "aarch64"))]
+    { false }
+}
+
+/// Flush the framebuffer if dirty. Returns true if a flush was performed.
+fn flush_framebuffer() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
         if let Some(fb) = crate::logger::SHELL_FRAMEBUFFER.get() {
             if let Some(mut guard) = fb.try_lock() {
                 if let Some(db) = guard.double_buffer_mut() {
                     db.flush_if_dirty();
+                    // x86_64 double buffer handles its own dirty tracking;
+                    // return false to avoid tight-looping on x86.
+                    return false;
                 }
             }
         }
+        false
     }
     #[cfg(target_arch = "aarch64")]
     {
@@ -209,6 +225,9 @@ fn flush_framebuffer() {
             if let Err(e) = crate::drivers::virtio::gpu_mmio::flush_rect(x, y, w, h) {
                 crate::serial_println!("[render] GPU flush failed: {}", e);
             }
+            true
+        } else {
+            false
         }
     }
 }

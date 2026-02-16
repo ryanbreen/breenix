@@ -67,45 +67,21 @@ pub fn now_monotonic() -> Result<Timespec, Error> {
 
 /// Sleep for the specified number of milliseconds.
 ///
-/// This is a busy-wait implementation since we don't have nanosleep yet.
-/// It uses clock_gettime(CLOCK_MONOTONIC) for timing.
+/// Uses the nanosleep syscall which blocks the thread in the kernel scheduler,
+/// allowing other threads to run. The kernel wakes us via timer expiry.
 ///
 /// # Arguments
 /// * `ms` - Number of milliseconds to sleep
 ///
 /// # Returns
-/// `Ok(())` on success, `Err(Error)` if clock_gettime fails.
+/// `Ok(())` on success, `Err(Error)` on error.
 #[inline]
 pub fn sleep_ms(ms: u64) -> Result<(), Error> {
-    let start = now_monotonic()?;
-    let target_ns = ms * 1_000_000;
-
-    loop {
-        let now = now_monotonic()?;
-
-        // Calculate elapsed time in nanoseconds using signed arithmetic.
-        // This handles all edge cases including timer jitter where nanoseconds
-        // might appear to briefly go backwards within the same second.
-        let total_start_ns = (start.tv_sec as i128) * 1_000_000_000 + (start.tv_nsec as i128);
-        let total_now_ns = (now.tv_sec as i128) * 1_000_000_000 + (now.tv_nsec as i128);
-        let elapsed_ns = total_now_ns - total_start_ns;
-
-        // If elapsed time is negative (shouldn't happen with monotonic clock,
-        // but could due to jitter or bugs), treat as 0 and keep waiting
-        if elapsed_ns < 0 {
-            // yield_now can fail, but we ignore the error during sleep
-            let _ = crate::process::yield_now();
-            continue;
-        }
-
-        if elapsed_ns as u64 >= target_ns {
-            break;
-        }
-
-        // Yield to other processes while waiting
-        let _ = crate::process::yield_now();
-    }
-    Ok(())
+    let req = Timespec {
+        tv_sec: (ms / 1000) as i64,
+        tv_nsec: ((ms % 1000) * 1_000_000) as i64,
+    };
+    nanosleep(&req)
 }
 
 /// Sleep for the specified duration using the nanosleep syscall.

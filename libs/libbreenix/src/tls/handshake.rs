@@ -284,13 +284,19 @@ pub fn perform_handshake(
     fd: Fd,
     hostname: &str,
     insecure: bool,
+    verbose: bool,
 ) -> Result<HandshakeResult, HandshakeError> {
+    if verbose { eprint!("* TLS: initializing CSPRNG...\n"); }
     let mut rng = Csprng::new();
+    if verbose { eprint!("* TLS: CSPRNG ready\n"); }
     let mut transcript = Sha256::new();
 
     // Scratch buffers -- large enough for any single TLS record.
-    let mut send_buf = [0u8; HANDSHAKE_BUF_SIZE];
-    let mut recv_buf = [0u8; HANDSHAKE_BUF_SIZE];
+    // Heap-allocated to avoid stack overflow (3 × 18 KB would exceed the 64 KB
+    // user stack).
+    let mut send_buf = vec![0u8; HANDSHAKE_BUF_SIZE];
+    let mut recv_buf = vec![0u8; HANDSHAKE_BUF_SIZE];
+    if verbose { eprint!("* TLS: buffers allocated ({} bytes each)\n", HANDSHAKE_BUF_SIZE); }
 
     // -----------------------------------------------------------------------
     // 1. Send ClientHello
@@ -300,6 +306,7 @@ pub fn perform_handshake(
     rng.fill(&mut client_random);
 
     let hs_msg_len = build_client_hello(&mut send_buf, &client_random, hostname);
+    if verbose { eprint!("* TLS: sending ClientHello ({} bytes)...\n", hs_msg_len); }
 
     // The handshake message (type + length + body) starts at send_buf[0].
     // Hash the handshake message (NOT the record header) into the transcript.
@@ -308,18 +315,23 @@ pub fn perform_handshake(
     // Wrap in a TLS record and send.
     let record_len = wrap_handshake_record(&mut send_buf, hs_msg_len);
     send_all(fd, &send_buf[..record_len])?;
+    if verbose { eprint!("* TLS: ClientHello sent\n"); }
 
     // -----------------------------------------------------------------------
     // 2. Receive ServerHello
     // -----------------------------------------------------------------------
 
+    if verbose { eprint!("* TLS: waiting for ServerHello...\n"); }
     let (ct, _hdr_end, rec_end) = read_full_record(fd, &mut recv_buf)?;
+    if verbose { eprint!("* TLS: received record type={} len={}\n", ct, rec_end - 5); }
     if ct != CONTENT_HANDSHAKE {
+        if verbose { eprint!("* TLS: expected handshake (22), got {}\n", ct); }
         return Err(HandshakeError::UnexpectedMessage);
     }
 
     let payload = &recv_buf[5..rec_end];
     if payload.is_empty() || payload[0] != HS_SERVER_HELLO {
+        if verbose { eprint!("* TLS: expected ServerHello (2), got msg type {}\n", if payload.is_empty() { 255 } else { payload[0] }); }
         return Err(HandshakeError::UnexpectedMessage);
     }
 
@@ -327,31 +339,95 @@ pub fn perform_handshake(
     transcript.update(payload);
 
     let server_random = parse_server_hello(payload)?;
+    if verbose { eprint!("* TLS: ServerHello parsed OK\n"); }
 
     // -----------------------------------------------------------------------
     // 3. Receive Certificate
     // -----------------------------------------------------------------------
 
+    if verbose { eprint!("* TLS: waiting for Certificate...\n"); }
     let (ct, _hdr_end, rec_end) = read_full_record(fd, &mut recv_buf)?;
+    if verbose { eprint!("* TLS: received record type={} len={}\n", ct, rec_end - 5); }
     if ct != CONTENT_HANDSHAKE {
         return Err(HandshakeError::UnexpectedMessage);
     }
 
     let payload = &recv_buf[5..rec_end];
     if payload.is_empty() || payload[0] != HS_CERTIFICATE {
+        if verbose { eprint!("* TLS: expected Certificate (11), got msg type {}\n", if payload.is_empty() { 255 } else { payload[0] }); }
         return Err(HandshakeError::UnexpectedMessage);
     }
 
     transcript.update(payload);
 
     let certs = parse_certificate_message(payload)?;
+    if verbose { eprint!("* TLS: parsed {} certificate(s)\n", certs.len()); }
+    if verbose && !certs.is_empty() {
+        let leaf = &certs[0];
+        eprint!("* TLS: leaf cert SAN DNS names ({}):\n", leaf.san_dns_names.len());
+        for san in &leaf.san_dns_names {
+            if let Ok(s) = core::str::from_utf8(san) {
+                eprint!("*   {}\n", s);
+            } else {
+                eprint!("*   <non-utf8: {} bytes>\n", san.len());
+            }
+        }
+    }
 
     // Validate the certificate chain.
     if !insecure {
+        if verbose { eprint!("* TLS: validating certificate chain...\n"); }
         let root_store = RootStore::mozilla();
+        if verbose {
+            eprint!("* TLS: root store has {} CA certs\n", root_store.len());
+            // Count how many root certs actually parse
+            let mut parse_ok = 0usize;
+            let mut parse_fail = 0usize;
+            for i in 0..root_store.len() {
+                if root_store.get(i).is_some() {
+                    parse_ok += 1;
+                } else {
+                    parse_fail += 1;
+                }
+            }
+            eprint!("* TLS: root certs parseable: {} ok, {} failed\n", parse_ok, parse_fail);
+
+            // Show issuer chain
+            for (i, c) in certs.iter().enumerate() {
+                let subj = crate::x509::cert::get_common_name(&c.subject)
+                    .and_then(|b| core::str::from_utf8(b).ok())
+                    .unwrap_or("<no CN>");
+                let iss = crate::x509::cert::get_common_name(&c.issuer)
+                    .and_then(|b| core::str::from_utf8(b).ok())
+                    .unwrap_or("<no CN>");
+                eprint!("*   cert[{}]: subj='{}' issuer='{}' is_ca={}\n", i, subj, iss, c.is_ca);
+            }
+
+            // Try to find the top cert's issuer in root store
+            let top_issuer = &certs[certs.len() - 1].issuer;
+            let top_iss_cn = crate::x509::cert::get_common_name(top_issuer)
+                .and_then(|b| core::str::from_utf8(b).ok())
+                .unwrap_or("<no CN>");
+            eprint!("* TLS: looking for root with subject='{}'\n", top_iss_cn);
+        }
         let now = current_unix_time();
-        validate_chain(&certs, hostname, root_store, now).map_err(HandshakeError::CertificateError)?;
+        if verbose {
+            eprint!("* TLS: current_unix_time = {}\n", now);
+            if now < 1_577_836_800 {
+                eprint!("* TLS: WARNING: system clock not set, skipping time validation\n");
+            }
+        }
+        match validate_chain(&certs, hostname, root_store, now) {
+            Ok(()) => {
+                if verbose { eprint!("* TLS: certificate chain valid\n"); }
+            }
+            Err(e) => {
+                if verbose { eprint!("* TLS: certificate chain INVALID: {:?}\n", e); }
+                return Err(HandshakeError::CertificateError(e));
+            }
+        }
     } else {
+        if verbose { eprint!("* TLS: skipping cert validation (insecure)\n"); }
         validate_chain_insecure(&certs, hostname).map_err(HandshakeError::CertificateError)?;
     }
 
@@ -359,25 +435,31 @@ pub fn perform_handshake(
     // 4. Receive ServerKeyExchange
     // -----------------------------------------------------------------------
 
+    if verbose { eprint!("* TLS: waiting for ServerKeyExchange...\n"); }
     let (ct, _hdr_end, rec_end) = read_full_record(fd, &mut recv_buf)?;
+    if verbose { eprint!("* TLS: received record type={} len={}\n", ct, rec_end - 5); }
     if ct != CONTENT_HANDSHAKE {
         return Err(HandshakeError::UnexpectedMessage);
     }
 
     let payload = &recv_buf[5..rec_end];
     if payload.is_empty() || payload[0] != HS_SERVER_KEY_EXCHANGE {
+        if verbose { eprint!("* TLS: expected ServerKeyExchange (12), got msg type {}\n", if payload.is_empty() { 255 } else { payload[0] }); }
         return Err(HandshakeError::UnexpectedMessage);
     }
 
     transcript.update(payload);
 
+    if verbose { eprint!("* TLS: verifying server key exchange signature...\n"); }
     let server_pubkey =
         parse_and_verify_server_key_exchange(payload, &client_random, &server_random, &certs[0])?;
+    if verbose { eprint!("* TLS: ServerKeyExchange verified\n"); }
 
     // -----------------------------------------------------------------------
     // 5. Receive ServerHelloDone
     // -----------------------------------------------------------------------
 
+    if verbose { eprint!("* TLS: waiting for ServerHelloDone...\n"); }
     let (ct, _hdr_end, rec_end) = read_full_record(fd, &mut recv_buf)?;
     if ct != CONTENT_HANDSHAKE {
         return Err(HandshakeError::UnexpectedMessage);
@@ -390,16 +472,21 @@ pub fn perform_handshake(
 
     // ServerHelloDone is just the 4-byte handshake header with length 0.
     transcript.update(payload);
+    if verbose { eprint!("* TLS: ServerHelloDone received\n"); }
 
     // -----------------------------------------------------------------------
     // 6. Send ClientKeyExchange
     // -----------------------------------------------------------------------
 
+    if verbose { eprint!("* TLS: computing X25519 key exchange...\n"); }
     let mut client_privkey = [0u8; 32];
     rng.fill(&mut client_privkey);
+    if verbose { eprint!("* TLS: X25519 basepoint...\n"); }
 
     let client_pubkey = x25519_basepoint(&client_privkey);
+    if verbose { eprint!("* TLS: X25519 shared secret...\n"); }
     let pre_master_secret = x25519(&client_privkey, &server_pubkey);
+    if verbose { eprint!("* TLS: X25519 done\n"); }
 
     // Build ClientKeyExchange handshake message.
     // Body: pubkey_length(1) + client_pubkey(32)
@@ -417,7 +504,9 @@ pub fn perform_handshake(
     transcript.update(&send_buf[..hs_msg_len]);
 
     let record_len = wrap_handshake_record(&mut send_buf, hs_msg_len);
+    if verbose { eprint!("* TLS: sending ClientKeyExchange ({} bytes)...\n", record_len); }
     send_all(fd, &send_buf[..record_len])?;
+    if verbose { eprint!("* TLS: ClientKeyExchange sent\n"); }
 
     // -----------------------------------------------------------------------
     // 7. Send ChangeCipherSpec
@@ -433,11 +522,13 @@ pub fn perform_handshake(
     ccs_buf[4] = 0x01; // length = 1
     ccs_buf[5] = 0x01; // payload
     send_all(fd, &ccs_buf)?;
+    if verbose { eprint!("* TLS: ChangeCipherSpec sent\n"); }
 
     // -----------------------------------------------------------------------
     // 8. Derive keys
     // -----------------------------------------------------------------------
 
+    if verbose { eprint!("* TLS: deriving session keys...\n"); }
     let master_secret =
         derive_master_secret(&pre_master_secret, &client_random, &server_random);
 
@@ -447,6 +538,7 @@ pub fn perform_handshake(
         RecordEncryptor::new(&key_block.client_write_key, &key_block.client_write_iv);
     let mut decryptor =
         RecordDecryptor::new(&key_block.server_write_key, &key_block.server_write_iv);
+    if verbose { eprint!("* TLS: session keys derived\n"); }
 
     // -----------------------------------------------------------------------
     // 9. Send client Finished
@@ -472,32 +564,37 @@ pub fn perform_handshake(
     transcript.update(&send_buf[..finished_msg_len]);
 
     // Encrypt and send as a handshake record.
-    // encrypt_record writes header + explicit_nonce(8) + ciphertext + tag(16)
-    let mut encrypted = [0u8; HANDSHAKE_BUF_SIZE];
+    // encrypt_record writes header(5) + explicit_nonce(8) + ciphertext(16) + tag(16) = 45 bytes
+    let mut encrypted = [0u8; 64];
     let enc_len = encryptor.encrypt_record(CONTENT_HANDSHAKE, &send_buf[..finished_msg_len], &mut encrypted)?;
     send_all(fd, &encrypted[..enc_len])?;
+    if verbose { eprint!("* TLS: client Finished sent\n"); }
 
     // -----------------------------------------------------------------------
     // 10. Receive ChangeCipherSpec from server
     // -----------------------------------------------------------------------
 
+    if verbose { eprint!("* TLS: waiting for server ChangeCipherSpec...\n"); }
     let (ct, _hdr_end, _rec_end) = read_full_record(fd, &mut recv_buf)?;
     if ct != CONTENT_CHANGE_CIPHER_SPEC {
         return Err(HandshakeError::UnexpectedMessage);
     }
+    if verbose { eprint!("* TLS: server ChangeCipherSpec received\n"); }
     // Do NOT hash ChangeCipherSpec.
 
     // -----------------------------------------------------------------------
     // 11. Receive server Finished
     // -----------------------------------------------------------------------
 
+    if verbose { eprint!("* TLS: waiting for server Finished...\n"); }
     let (ct, _hdr_end, rec_end) = read_full_record(fd, &mut recv_buf)?;
     if ct != CONTENT_HANDSHAKE {
         return Err(HandshakeError::UnexpectedMessage);
     }
 
     let encrypted_payload = &recv_buf[5..rec_end];
-    let mut plaintext_buf = [0u8; HANDSHAKE_BUF_SIZE];
+    // Finished message is 4-byte header + 12-byte verify_data = 16 bytes plaintext.
+    let mut plaintext_buf = [0u8; 64];
     let pt_len = decryptor.decrypt_record(CONTENT_HANDSHAKE, encrypted_payload, &mut plaintext_buf)?;
     let plaintext = &plaintext_buf[..pt_len];
 
@@ -520,12 +617,14 @@ pub fn perform_handshake(
         compute_verify_data(&master_secret, b"server finished", &handshake_hash);
 
     if !constant_time_eq(server_verify_data, &expected_verify_data) {
+        if verbose { eprint!("* TLS: server Finished verify FAILED\n"); }
         return Err(HandshakeError::FinishedVerifyFailed);
     }
 
     // Hash the server Finished into the transcript (for session resumption, if
     // we ever support it).
     transcript.update(plaintext);
+    if verbose { eprint!("* TLS: handshake complete, connection encrypted\n"); }
 
     Ok(HandshakeResult {
         encryptor,

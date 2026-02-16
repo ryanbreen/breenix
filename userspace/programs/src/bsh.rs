@@ -2194,7 +2194,7 @@ fn auto_exec_wrap(line: &str) -> String {
             call.push(c);
         }
     }
-    call.push_str(": command not found\"); } else { if (__r.stdout.length > 0) print(__r.stdout); }");
+    call.push_str(": command not found\"); } else { if (__r.stderr.length > 0) print(__r.stderr); if (__r.stdout.length > 0) print(__r.stdout); }");
     call
 }
 

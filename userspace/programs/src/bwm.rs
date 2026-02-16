@@ -542,6 +542,7 @@ struct Tab {
 
 enum KeyEvent {
     Char(u8),
+    EscSeq([u8; 8], usize),
     F1,
     F2,
     F3,
@@ -575,27 +576,54 @@ impl InputParser {
                 self.len = 0;
                 return KeyEvent::Char(byte);
             }
-            if self.len >= 3 {
-                let result = match &self.buf[..self.len] {
-                    [0x1b, b'O', b'P'] => KeyEvent::F1,
-                    [0x1b, b'O', b'Q'] => KeyEvent::F2,
-                    [0x1b, b'O', b'R'] => KeyEvent::F3,
-                    [0x1b, b'[', b'1', b'1', b'~'] if self.len == 5 => KeyEvent::F1,
-                    [0x1b, b'[', b'1', b'2', b'~'] if self.len == 5 => KeyEvent::F2,
-                    [0x1b, b'[', b'1', b'3', b'~'] if self.len == 5 => KeyEvent::F3,
+            // len >= 3: check for complete sequences
+
+            // SS3 F-keys (ESC O P/Q/R)
+            if self.len == 3 && self.buf[1] == b'O' {
+                let result = match self.buf[2] {
+                    b'P' => KeyEvent::F1,
+                    b'Q' => KeyEvent::F2,
+                    b'R' => KeyEvent::F3,
                     _ => {
-                        // Incomplete or unrecognized, wait for more or timeout
-                        if self.len >= 6 {
-                            // Too long, give up
-                            self.len = 0;
-                            return KeyEvent::Char(byte);
-                        }
-                        return KeyEvent::None;
+                        self.len = 0;
+                        return KeyEvent::Char(byte);
                     }
                 };
                 self.len = 0;
                 return result;
             }
+
+            // CSI sequences (ESC [ ...)
+            if self.buf[1] == b'[' {
+                let last = self.buf[self.len - 1];
+                // CSI final byte is in 0x40-0x7E (@..~)
+                if last >= 0x40 && last <= 0x7E {
+                    // Check CSI F-key forms first (ESC [ 1 1 ~ etc.)
+                    if self.len == 5 {
+                        match (self.buf[2], self.buf[3], self.buf[4]) {
+                            (b'1', b'1', b'~') => { self.len = 0; return KeyEvent::F1; }
+                            (b'1', b'2', b'~') => { self.len = 0; return KeyEvent::F2; }
+                            (b'1', b'3', b'~') => { self.len = 0; return KeyEvent::F3; }
+                            _ => {}
+                        }
+                    }
+                    // Complete CSI sequence (arrows, home, end, delete, etc.)
+                    let buf = self.buf;
+                    let len = self.len;
+                    self.len = 0;
+                    return KeyEvent::EscSeq(buf, len);
+                }
+                // Not complete yet
+                if self.len >= 8 {
+                    self.len = 0;
+                    return KeyEvent::Char(byte);
+                }
+                return KeyEvent::None;
+            }
+
+            // Unknown escape sequence, give up
+            self.len = 0;
+            return KeyEvent::Char(byte);
         }
 
         // Regular character
@@ -984,12 +1012,37 @@ fn main() {
         let _nready = io::poll(&mut poll_fds[..nfds], 100).unwrap_or(0);
 
         // Check stdin
-        if poll_fds[0].revents & (io::poll_events::POLLIN as i16) != 0 {
+        let stdin_had_data = poll_fds[0].revents & (io::poll_events::POLLIN as i16) != 0;
+        if stdin_had_data {
             match io::read(Fd::from_raw(0), &mut read_buf) {
                 Ok(n) if n > 0 => {
+                    let mut char_buf = [0u8; 512];
+                    let mut char_count = 0;
                     for i in 0..n {
                         match input_parser.feed(read_buf[i]) {
+                            KeyEvent::Char(ch) => {
+                                char_buf[char_count] = ch;
+                                char_count += 1;
+                            }
+                            KeyEvent::EscSeq(buf, len) => {
+                                // Flush accumulated chars first
+                                if char_count > 0 {
+                                    if let Some(fd) = tabs[active_tab].master_fd {
+                                        let _ = io::write(fd, &char_buf[..char_count]);
+                                    }
+                                    char_count = 0;
+                                }
+                                if let Some(fd) = tabs[active_tab].master_fd {
+                                    let _ = io::write(fd, &buf[..len]);
+                                }
+                            }
                             KeyEvent::F1 => {
+                                if char_count > 0 {
+                                    if let Some(fd) = tabs[active_tab].master_fd {
+                                        let _ = io::write(fd, &char_buf[..char_count]);
+                                    }
+                                    char_count = 0;
+                                }
                                 if active_tab != TAB_SHELL {
                                     active_tab = TAB_SHELL;
                                     tabs[TAB_SHELL].has_unread = false;
@@ -999,6 +1052,12 @@ fn main() {
                                 }
                             }
                             KeyEvent::F2 => {
+                                if char_count > 0 {
+                                    if let Some(fd) = tabs[active_tab].master_fd {
+                                        let _ = io::write(fd, &char_buf[..char_count]);
+                                    }
+                                    char_count = 0;
+                                }
                                 if active_tab != TAB_LOGS {
                                     active_tab = TAB_LOGS;
                                     tabs[TAB_LOGS].has_unread = false;
@@ -1008,6 +1067,12 @@ fn main() {
                                 }
                             }
                             KeyEvent::F3 => {
+                                if char_count > 0 {
+                                    if let Some(fd) = tabs[active_tab].master_fd {
+                                        let _ = io::write(fd, &char_buf[..char_count]);
+                                    }
+                                    char_count = 0;
+                                }
                                 if active_tab != TAB_BTOP {
                                     active_tab = TAB_BTOP;
                                     tabs[TAB_BTOP].has_unread = false;
@@ -1016,13 +1081,13 @@ fn main() {
                                     needs_flush = true;
                                 }
                             }
-                            KeyEvent::Char(ch) => {
-                                // Forward to active tab's PTY master
-                                if let Some(fd) = tabs[active_tab].master_fd {
-                                    let _ = io::write(fd, &[ch]);
-                                }
-                            }
-                            KeyEvent::None => {} // Waiting for more input
+                            KeyEvent::None => {}
+                        }
+                    }
+                    // Flush remaining accumulated chars
+                    if char_count > 0 {
+                        if let Some(fd) = tabs[active_tab].master_fd {
+                            let _ = io::write(fd, &char_buf[..char_count]);
                         }
                     }
                 }
@@ -1030,9 +1095,13 @@ fn main() {
             }
         }
 
-        // Flush any pending escape sequence bytes after a timeout
-        while let Some(_byte) = input_parser.flush() {
-            // Could forward to PTY, but usually these are partial escapes
+        // Flush pending escape bytes only when stdin had no data (poll timeout)
+        if !stdin_had_data {
+            while let Some(byte) = input_parser.flush() {
+                if let Some(fd) = tabs[active_tab].master_fd {
+                    let _ = io::write(fd, &[byte]);
+                }
+            }
         }
 
         // Check Shell PTY master

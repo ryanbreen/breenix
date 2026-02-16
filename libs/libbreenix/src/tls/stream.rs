@@ -112,7 +112,12 @@ impl TlsStream {
     ///
     /// On success, returns a [`TlsStream`] ready for encrypted I/O.
     pub fn connect(fd: Fd, hostname: &str, insecure: bool) -> Result<TlsStream, TlsError> {
-        let result: HandshakeResult = perform_handshake(fd, hostname, insecure)?;
+        Self::connect_verbose(fd, hostname, insecure, false)
+    }
+
+    /// Like [`connect`], but with optional verbose progress logging to stderr.
+    pub fn connect_verbose(fd: Fd, hostname: &str, insecure: bool, verbose: bool) -> Result<TlsStream, TlsError> {
+        let result: HandshakeResult = perform_handshake(fd, hostname, insecure, verbose)?;
         Ok(TlsStream {
             fd,
             encryptor: result.encryptor,

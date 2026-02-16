@@ -48,6 +48,107 @@ static DEFERRED_REQUEUE: [AtomicU64; 8] = [
     AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
 ];
 
+// =============================================================================
+// Per-CPU dispatch trace ring buffer — diagnostic instrumentation
+//
+// Records the last DISPATCH_RING_SIZE dispatches per CPU. On crash, the
+// exception handler calls dump_dispatch_trace() to show exactly what
+// context was dispatched before the fault.
+// =============================================================================
+
+const DISPATCH_RING_SIZE: usize = 8;
+const MAX_CPUS_TRACE: usize = 4;
+
+/// One dispatch event — what was written to the exception frame.
+#[repr(C)]
+struct DispatchEntry {
+    tid: u64,
+    old_tid: u64,
+    elr: u64,
+    spsr: u64,
+    x30: u64,
+    sp: u64,
+    path: u8,    // K=kernel, U=userspace, I=idle, F=first_entry, B=BUG-terminated
+    from_el0: u8,
+}
+
+/// Per-CPU ring buffer of dispatch events.
+struct DispatchRing {
+    entries: [DispatchEntry; DISPATCH_RING_SIZE],
+    write_idx: usize,
+    count: usize,
+}
+
+static mut DISPATCH_TRACE: [DispatchRing; MAX_CPUS_TRACE] = {
+    const EMPTY_ENTRY: DispatchEntry = DispatchEntry {
+        tid: 0, old_tid: 0, elr: 0, spsr: 0, x30: 0, sp: 0, path: 0, from_el0: 0,
+    };
+    const EMPTY_RING: DispatchRing = DispatchRing {
+        entries: [EMPTY_ENTRY; DISPATCH_RING_SIZE],
+        write_idx: 0,
+        count: 0,
+    };
+    [EMPTY_RING; MAX_CPUS_TRACE]
+};
+
+/// Record a dispatch event. Called at the END of dispatch_thread_locked
+/// after all frame writes are complete.
+fn record_dispatch(cpu_id: usize, old_tid: u64, tid: u64, elr: u64, spsr: u64, x30: u64, sp: u64, path: u8, from_el0: bool) {
+    if cpu_id >= MAX_CPUS_TRACE { return; }
+    unsafe {
+        let ring = &mut DISPATCH_TRACE[cpu_id];
+        let idx = ring.write_idx;
+        ring.entries[idx] = DispatchEntry {
+            tid, old_tid, elr, spsr, x30, sp, path, from_el0: from_el0 as u8,
+        };
+        ring.write_idx = (idx + 1) % DISPATCH_RING_SIZE;
+        if ring.count < DISPATCH_RING_SIZE { ring.count += 1; }
+    }
+}
+
+/// Dump the dispatch trace for a specific CPU. Called from the crash handler.
+pub fn dump_dispatch_trace(cpu_id: usize) {
+    if cpu_id >= MAX_CPUS_TRACE { return; }
+    unsafe {
+        let ring = &DISPATCH_TRACE[cpu_id];
+        let count = ring.count;
+        if count == 0 {
+            raw_uart_str("  (no dispatches recorded)\n");
+            return;
+        }
+        // Print from oldest to newest
+        let start = if count < DISPATCH_RING_SIZE {
+            0
+        } else {
+            ring.write_idx
+        };
+        for i in 0..count {
+            let idx = (start + i) % DISPATCH_RING_SIZE;
+            let e = &ring.entries[idx];
+            raw_uart_str("  [");
+            raw_uart_dec(i as u64);
+            raw_uart_str("] ");
+            raw_uart_char(e.path);
+            raw_uart_str(" old=");
+            raw_uart_dec(e.old_tid);
+            raw_uart_str("->tid=");
+            raw_uart_dec(e.tid);
+            raw_uart_str(" elr=");
+            raw_uart_hex(e.elr);
+            raw_uart_str(" spsr=");
+            raw_uart_hex(e.spsr);
+            raw_uart_str(" x30=");
+            raw_uart_hex(e.x30);
+            raw_uart_str(" sp=");
+            raw_uart_hex(e.sp);
+            if e.from_el0 != 0 {
+                raw_uart_str(" EL0");
+            }
+            raw_uart_str("\n");
+        }
+    }
+}
+
 /// Raw serial debug output - single character, no locks, no allocations.
 /// Use this for debugging context switch paths where any allocation/locking
 /// could perturb timing or cause deadlocks.
@@ -247,11 +348,14 @@ fn save_kernel_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFrame
 /// Restore kernel thread context into frame — called inside scheduler lock hold.
 ///
 /// Handles both first-run (has_started=false) and resume (has_started=true) cases.
+/// Returns `true` if the context was valid and restored successfully.
+/// Returns `false` if the context was corrupt — caller MUST redirect to idle
+/// and update cpu_state to avoid saving garbage into this thread on next preemption.
 fn restore_kernel_context_inline(
     thread: &mut Thread,
     frame: &mut Aarch64ExceptionFrame,
     thread_id: u64,
-) {
+) -> bool {
     let has_started = thread.has_started;
 
     if !has_started {
@@ -260,6 +364,45 @@ fn restore_kernel_context_inline(
         thread.has_started = true;
         thread.context.elr_el1 = thread.context.x30;  // Entry point
         thread.context.spsr_el1 = 0x5;  // EL1h, interrupts enabled
+    }
+
+    // Validate ELR before restoring any registers.
+    // If the context is corrupt, return false immediately — the caller will
+    // redirect to idle and update cpu_state so that the next preemption
+    // doesn't save idle-loop registers into this thread's context.
+    const KERNEL_VIRT_BASE: u64 = 0xFFFF_0000_0000_0000;
+    let elr_valid = if !has_started {
+        // First run: x30 must be a valid kernel address
+        thread.context.x30 >= KERNEL_VIRT_BASE
+    } else {
+        // Resume: elr_el1 must be in kernel space or zero (handled below)
+        thread.context.elr_el1 >= KERNEL_VIRT_BASE || thread.context.elr_el1 == 0
+    };
+
+    if !elr_valid {
+        raw_uart_str("\n!!! BUG: invalid context for kernel dispatch tid=");
+        raw_uart_dec(thread_id);
+        raw_uart_str("\n  elr_el1=");
+        raw_uart_hex(thread.context.elr_el1);
+        raw_uart_str(" spsr_el1=");
+        raw_uart_hex(thread.context.spsr_el1);
+        raw_uart_str(" x30=");
+        raw_uart_hex(thread.context.x30);
+        raw_uart_str(" sp=");
+        raw_uart_hex(thread.context.sp);
+        raw_uart_str("\n  has_started=");
+        raw_uart_char(if has_started { b'1' } else { b'0' });
+        raw_uart_str(" priv=");
+        raw_uart_char(match thread.privilege {
+            ThreadPrivilege::Kernel => b'K',
+            ThreadPrivilege::User => b'U',
+        });
+        raw_uart_str(" blocked_in_syscall=");
+        raw_uart_char(if thread.blocked_in_syscall { b'1' } else { b'0' });
+        raw_uart_str(" cpu=");
+        raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
+        raw_uart_str("\n");
+        return false;
     }
 
     // Restore ALL general-purpose registers directly from thread.context.
@@ -296,35 +439,18 @@ fn restore_kernel_context_inline(
     frame.x30 = thread.context.x30;
 
     // Set return address and SPSR
-    const KERNEL_VIRT_BASE: u64 = 0xFFFF_0000_0000_0000;
     if !has_started {
         frame.elr = thread.context.x30;  // First run: jump to entry point
         frame.spsr = 0x5;  // EL1h, DAIF clear (interrupts enabled)
     } else if thread.context.elr_el1 >= KERNEL_VIRT_BASE {
         frame.elr = thread.context.elr_el1;  // Resume: return to where we left off
         frame.spsr = thread.context.spsr_el1;  // Restore saved processor state
-    } else if thread.context.elr_el1 == 0 {
+    } else {
+        // elr_el1 == 0: thread was started but has zero ELR — redirect to idle
         raw_uart_str("WARN: elr=0 for started kthread tid=");
         raw_uart_dec(thread_id);
         raw_uart_str(", redirecting to idle\n");
-        frame.elr = idle_loop_arm64 as *const () as u64;
-        frame.spsr = 0x5;
-    } else {
-        raw_uart_str("\n!!! BUG: invalid elr_el1 for kthread tid=");
-        raw_uart_dec(thread_id);
-        raw_uart_str("\n  elr_el1=");
-        raw_uart_hex(thread.context.elr_el1);
-        raw_uart_str(" spsr_el1=");
-        raw_uart_hex(thread.context.spsr_el1);
-        raw_uart_str(" x30=");
-        raw_uart_hex(thread.context.x30);
-        raw_uart_str(" sp=");
-        raw_uart_hex(thread.context.sp);
-        raw_uart_str("\n  has_started=1 cpu=");
-        raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
-        raw_uart_str("\n");
-        frame.elr = idle_loop_arm64 as *const () as u64;
-        frame.spsr = 0x5;
+        return false;
     }
 
     // Store kernel SP for restoration after ERET
@@ -345,22 +471,7 @@ fn restore_kernel_context_inline(
 
     // Memory barrier to ensure all writes are visible
     core::sync::atomic::fence(Ordering::SeqCst);
-
-    // DIAGNOSTIC: Catch ELR=0 before ERET
-    if frame.elr == 0 {
-        raw_uart_str("\n\n!!! FATAL: frame.elr=0 in restore_kernel_context_inline !!!\n");
-        raw_uart_str("  thread_id=");
-        raw_uart_dec(thread_id);
-        raw_uart_str("  has_started=");
-        raw_uart_char(if has_started { b'1' } else { b'0' });
-        raw_uart_str("  frame.spsr=");
-        raw_uart_hex(frame.spsr);
-        raw_uart_str("  cpu=");
-        raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
-        raw_uart_str("\n");
-        frame.elr = idle_loop_arm64 as *const () as u64;
-        frame.spsr = 0x5;
-    }
+    true
 }
 
 /// Restore userspace context into frame — called inside scheduler lock hold.
@@ -577,8 +688,11 @@ fn dispatch_idle_locked(
         }).unwrap_or(false);
 
         if has_saved_context {
-            if let Some(thread) = sched.get_thread_mut(thread_id) {
-                restore_kernel_context_inline(thread, frame, thread_id);
+            let ok = sched.get_thread_mut(thread_id)
+                .map(|thread| restore_kernel_context_inline(thread, frame, thread_id))
+                .unwrap_or(false);
+            if !ok {
+                setup_idle_return_locked(sched, frame, cpu_id);
             }
         } else {
             setup_idle_return_locked(sched, frame, cpu_id);
@@ -649,16 +763,57 @@ fn dispatch_thread_locked(
         // Kernel threads, userspace threads blocked in syscall, and userspace
         // threads interrupted while in kernel mode all need kernel context
         // restoration (they're running in kernel mode with a kernel SP)
-        if let Some(thread) = sched.get_thread_mut(thread_id) {
-            restore_kernel_context_inline(thread, frame, thread_id);
-        }
 
         // CRITICAL: For userspace threads in kernel mode, set up TTBR0 so
         // the correct process page table is active when the syscall completes.
+        // Must succeed BEFORE restoring context — if TTBR0 setup fails,
+        // redirect to idle (same pattern as regular userspace threads).
         if (blocked_in_syscall || is_in_kernel_mode) && !is_kernel {
-            if set_next_ttbr0_for_thread(thread_id) {
-                switch_ttbr0_if_needed(thread_id);
+            match set_next_ttbr0_for_thread(thread_id) {
+                TtbrResult::Ok => {
+                    switch_ttbr0_if_needed(thread_id);
+                }
+                TtbrResult::PmLockBusy => {
+                    // PM lock contended — requeue for retry next tick.
+                    if let Some(thread) = sched.get_thread_mut(thread_id) {
+                        thread.state = ThreadState::Ready;
+                    }
+                    sched.requeue_thread_after_save(thread_id);
+                    sched.set_need_resched_inner();
+                    setup_idle_return_locked(sched, frame, cpu_id);
+                    let idle_id = sched.cpu_state[cpu_id].idle_thread;
+                    sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+                    return;
+                }
+                TtbrResult::ProcessGone => {
+                    // Process no longer exists — terminate orphaned thread.
+                    if let Some(thread) = sched.get_thread_mut(thread_id) {
+                        thread.state = ThreadState::Terminated;
+                    }
+                    setup_idle_return_locked(sched, frame, cpu_id);
+                    let idle_id = sched.cpu_state[cpu_id].idle_thread;
+                    sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+                    return;
+                }
             }
+        }
+
+        let restore_ok = sched.get_thread_mut(thread_id)
+            .map(|thread| restore_kernel_context_inline(thread, frame, thread_id))
+            .unwrap_or(false);
+
+        if !restore_ok {
+            // Context was corrupt or thread not found. Terminate the thread
+            // and redirect to idle. CRITICAL: We must update cpu_state here,
+            // otherwise the next timer preemption will save idle-loop registers
+            // into this thread's context slot, compounding the corruption.
+            if let Some(thread) = sched.get_thread_mut(thread_id) {
+                thread.state = ThreadState::Terminated;
+            }
+            setup_idle_return_locked(sched, frame, cpu_id);
+            let idle_id = sched.cpu_state[cpu_id].idle_thread;
+            sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+            return;
         }
     } else {
         // Userspace thread
@@ -682,14 +837,16 @@ fn dispatch_thread_locked(
                 raw_uart_hex(frame.spsr);
                 raw_uart_str(" cpu=");
                 raw_uart_dec(cpu_id as u64);
-                raw_uart_str(", redirecting to idle\n");
+                raw_uart_str(", terminating thread\n");
 
-                // Requeue thread and redirect to idle
+                // Terminate the thread — a corrupt context (ELR=0 or garbage SPSR)
+                // is unrecoverable. Previously this requeued the thread, which
+                // caused an infinite BUG loop as every CPU that dispatched it
+                // would hit the same corrupt context. Termination lets the parent
+                // process (init) detect the exit and respawn if needed.
                 if let Some(thread) = sched.get_thread_mut(thread_id) {
-                    thread.state = ThreadState::Ready;
+                    thread.state = ThreadState::Terminated;
                 }
-                sched.requeue_thread_after_save(thread_id);
-                sched.set_need_resched_inner();
                 setup_idle_return_locked(sched, frame, cpu_id);
                 let idle_id = sched.cpu_state[cpu_id].idle_thread;
                 sched.cpu_state[cpu_id].current_thread = Some(idle_id);
@@ -700,22 +857,33 @@ fn dispatch_thread_locked(
         // Set TTBR0 target for this thread's process address space.
         // If PM lock is contended, redirect to idle — we cannot dispatch to
         // userspace without the correct page table (TTBR0).
-        if !set_next_ttbr0_for_thread(thread_id) {
-            // PM lock held — can't determine TTBR0 for this thread.
-            // CRITICAL: Reset state from Running to Ready before requeue.
-            if let Some(thread) = sched.get_thread_mut(thread_id) {
-                thread.state = ThreadState::Ready;
+        match set_next_ttbr0_for_thread(thread_id) {
+            TtbrResult::Ok => {
+                switch_ttbr0_if_needed(thread_id);
             }
-            sched.requeue_thread_after_save(thread_id);
-            sched.set_need_resched_inner();
-            setup_idle_return_locked(sched, frame, cpu_id);
-            let idle_id = sched.cpu_state[cpu_id].idle_thread;
-            sched.cpu_state[cpu_id].current_thread = Some(idle_id);
-            return;
+            TtbrResult::PmLockBusy => {
+                // PM lock held — requeue for retry next tick.
+                if let Some(thread) = sched.get_thread_mut(thread_id) {
+                    thread.state = ThreadState::Ready;
+                }
+                sched.requeue_thread_after_save(thread_id);
+                sched.set_need_resched_inner();
+                setup_idle_return_locked(sched, frame, cpu_id);
+                let idle_id = sched.cpu_state[cpu_id].idle_thread;
+                sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+                return;
+            }
+            TtbrResult::ProcessGone => {
+                // Process no longer exists — terminate orphaned thread.
+                if let Some(thread) = sched.get_thread_mut(thread_id) {
+                    thread.state = ThreadState::Terminated;
+                }
+                setup_idle_return_locked(sched, frame, cpu_id);
+                let idle_id = sched.cpu_state[cpu_id].idle_thread;
+                sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+                return;
+            }
         }
-
-        // Switch TTBR0 for this thread's address space
-        switch_ttbr0_if_needed(thread_id);
 
         // CRITICAL: Set user_rsp_scratch to this thread's kernel stack top.
         unsafe {
@@ -784,7 +952,11 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     };
 
     // 1. Process deferred requeue from PREVIOUS context switch.
-    //    Safe because we're now on the current thread's kernel stack.
+    //    Safe because we're now on the current thread's kernel stack
+    //    (ERET from the previous switch has completed).
+    //    Clear previous_thread FIRST so wakeup paths know the old thread's
+    //    kernel stack is free and the thread can be safely dispatched.
+    sched.cpu_state[cpu_id].previous_thread = None;
     if deferred_tid != 0 {
         sched.requeue_thread_after_save(deferred_tid);
     }
@@ -796,6 +968,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             ThreadState::Blocked
                 | ThreadState::BlockedOnSignal
                 | ThreadState::BlockedOnChildExit
+                | ThreadState::BlockedOnTimer
                 | ThreadState::Terminated
         )
     } else {
@@ -880,6 +1053,16 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     // 7. Commit cpu_state to reflect the new thread as "current" on this CPU
     sched.commit_cpu_state_after_save(new_id);
 
+    // Mark the old thread as "switching out" — its kernel stack is still in use
+    // by this CPU until ERET completes. This prevents wakeup paths (unblock,
+    // wake_expired_timers, etc.) from adding the old thread to the ready_queue,
+    // which would allow another CPU to dispatch it while this CPU still has
+    // stack frames on the same kernel stack, causing register/stack corruption.
+    // Cleared at the start of the NEXT context switch on this CPU (step 1).
+    if !sched.is_idle_thread_inner(old_id) {
+        sched.cpu_state[cpu_id].previous_thread = Some(old_id);
+    }
+
     // 8. Store deferred requeue for NEXT switch
     //    The exception frame lives on the old thread's kernel stack and must
     //    not be overwritten until after ERET.
@@ -892,6 +1075,29 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
 
     // 9. Dispatch new thread (all checks + restore inside lock hold)
     dispatch_thread_locked(sched, new_id, frame, cpu_id);
+
+    // Record dispatch trace AFTER all frame writes are complete.
+    // This captures EXACTLY what the assembly ERET path will read.
+    let idle_addr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
+    let dispatch_path = if frame.elr == idle_addr {
+        b'I' // redirected to idle
+    } else if (frame.spsr & 0xF) == 0 {
+        b'U' // userspace (EL0)
+    } else {
+        b'K' // kernel (EL1)
+    };
+    let dispatch_sp = unsafe {
+        let base: u64;
+        core::arch::asm!("mrs {}, tpidr_el1", out(reg) base, options(nomem, nostack));
+        core::ptr::read_volatile((base + 40) as *const u64) // user_rsp_scratch
+    };
+    record_dispatch(cpu_id, old_id, new_id, frame.elr, frame.spsr, frame.x30, dispatch_sp, dispatch_path, from_el0);
+
+    // Also store in per-CPU fields for crash diagnostics
+    unsafe {
+        Aarch64PerCpu::set_dispatch_elr(frame.elr);
+        Aarch64PerCpu::set_dispatch_spsr(frame.spsr);
+    }
 
     // ── Release lock ──────────────────────────────────────────────
     drop(guard);
@@ -1013,44 +1219,61 @@ fn switch_ttbr0_if_needed(_thread_id: u64) {
     }
 }
 
+/// Result of attempting to set TTBR0 for a thread.
+#[derive(PartialEq)]
+enum TtbrResult {
+    /// TTBR0 was successfully set.
+    Ok,
+    /// PM lock contended — temporary failure, safe to retry next tick.
+    PmLockBusy,
+    /// Process not found or has no page table — thread is orphaned.
+    ProcessGone,
+}
+
 /// Determine and set the next TTBR0 value for a userspace thread.
 ///
-/// Returns true if TTBR0 was successfully set, false if the process manager
-/// lock couldn't be acquired (another CPU holds it).
+/// Returns `TtbrResult::Ok` on success, `PmLockBusy` if the PM lock is held
+/// (temporary, retry later), or `ProcessGone` if the thread's process no
+/// longer exists (permanent — thread should be terminated).
 ///
 /// CRITICAL: Uses try_manager() (non-blocking) instead of manager() to prevent
 /// an AB-BA deadlock between PROCESS_MANAGER and SCHEDULER locks.
-fn set_next_ttbr0_for_thread(thread_id: u64) -> bool {
-    let next_ttbr0 = {
-        let manager_guard = match crate::process::try_manager() {
-            Some(guard) => guard,
-            None => {
-                return false;
-            }
-        };
-        if let Some(ref manager) = *manager_guard {
-            if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
-                process
-                    .page_table
-                    .as_ref()
-                    .map(|pt| pt.level_4_frame().start_address().as_u64())
-                    .or(process.inherited_cr3)
-            } else {
-                None
-            }
-        } else {
-            None
+fn set_next_ttbr0_for_thread(thread_id: u64) -> TtbrResult {
+    let manager_guard = match crate::process::try_manager() {
+        Some(guard) => guard,
+        None => {
+            return TtbrResult::PmLockBusy;
         }
     };
+
+    let next_ttbr0 = if let Some(ref manager) = *manager_guard {
+        if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+            process
+                .page_table
+                .as_ref()
+                .map(|pt| pt.level_4_frame().start_address().as_u64())
+                .or(process.inherited_cr3)
+        } else {
+            // Thread's process not found — orphaned thread
+            drop(manager_guard);
+            return TtbrResult::ProcessGone;
+        }
+    } else {
+        // Process manager not initialized yet
+        drop(manager_guard);
+        return TtbrResult::ProcessGone;
+    };
+
+    drop(manager_guard);
 
     if let Some(ttbr0) = next_ttbr0 {
         unsafe {
             Aarch64PerCpu::set_next_cr3(ttbr0);
         }
-        true
+        TtbrResult::Ok
     } else {
-        raw_uart_str("TTBR0_ERR\n");
-        true // Proceed — error condition, not lock contention
+        // Process exists but has no page table — shouldn't happen
+        TtbrResult::ProcessGone
     }
 }
 

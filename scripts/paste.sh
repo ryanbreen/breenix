@@ -12,7 +12,7 @@
 #
 # Options:
 #   -p PORT   Monitor port (default: 4444)
-#   -d DELAY  Delay between keys in seconds (default: 0.04)
+#   -d DELAY  Delay between keys in seconds (default: 0.01)
 #   -f FILE   Read input from file instead of stdin
 #   -n        Send Enter at the end
 #   -h        Show help
@@ -20,7 +20,7 @@
 set -e
 
 PORT=4444
-DELAY=0.04
+DELAY=0.01
 SEND_ENTER=false
 INPUT_FILE=""
 
@@ -38,7 +38,7 @@ while getopts "p:d:f:nh" opt; do
             echo ""
             echo "Options:"
             echo "  -p PORT   Monitor port (default: 4444)"
-            echo "  -d DELAY  Delay between keys in seconds (default: 0.04)"
+            echo "  -d DELAY  Delay between keys in seconds (default: 0.01)"
             echo "  -f FILE   Read from file"
             echo "  -n        Send Enter at the end"
             exit 0
@@ -54,8 +54,23 @@ if ! nc -z 127.0.0.1 "$PORT" 2>/dev/null; then
     exit 1
 fi
 
+# Set up persistent connection to QEMU monitor
+FIFO=$(mktemp -u /tmp/breenix_paste.XXXXXX)
+mkfifo "$FIFO"
+nc 127.0.0.1 "$PORT" < "$FIFO" > /dev/null 2>&1 &
+NC_PID=$!
+exec 3>"$FIFO"
+
+cleanup() {
+    exec 3>&- 2>/dev/null
+    kill $NC_PID 2>/dev/null
+    wait $NC_PID 2>/dev/null
+    rm -f "$FIFO"
+}
+trap cleanup EXIT
+
 send_key() {
-    echo "sendkey $1" | nc -w 1 127.0.0.1 "$PORT" >/dev/null 2>&1 || true
+    echo "sendkey $1" >&3
     sleep "$DELAY"
 }
 

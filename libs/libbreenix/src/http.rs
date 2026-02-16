@@ -92,6 +92,8 @@ pub struct HttpRequest<'a> {
     pub body: Option<&'a [u8]>,
     /// Skip TLS certificate validation
     pub insecure: bool,
+    /// Print progress/debug info to stderr
+    pub verbose: bool,
 }
 
 // ============================================================================
@@ -497,6 +499,10 @@ pub fn http_request(
     request: &HttpRequest<'_>,
     response_buf: &mut [u8],
 ) -> Result<(HttpResponse, usize), HttpError> {
+    let _verbose = request.verbose;
+    #[cfg(feature = "std")]
+    let verbose = _verbose;
+
     // Validate URL length
     if request.url.len() > MAX_URL_LEN {
         return Err(HttpError::UrlTooLong);
@@ -504,28 +510,58 @@ pub fn http_request(
 
     // Parse URL
     let parsed = parse_url(request.url)?;
+    #[cfg(feature = "std")]
+    if verbose {
+        eprint!("* Parsed: host={} port={} path={} tls={}\n",
+            parsed.host, parsed.port, parsed.path, parsed.is_tls);
+    }
 
     // Resolve hostname to IP
+    #[cfg(feature = "std")]
+    if verbose { eprint!("* Resolving {}...\n", parsed.host); }
     let dns_result = resolve(parsed.host, SLIRP_DNS).map_err(HttpError::DnsError)?;
     let ip = dns_result.addr;
+    #[cfg(feature = "std")]
+    if verbose {
+        eprint!("* Resolved to {}.{}.{}.{}\n", ip[0], ip[1], ip[2], ip[3]);
+    }
 
     // Create TCP socket
+    #[cfg(feature = "std")]
+    if verbose { eprint!("* Creating TCP socket...\n"); }
     let fd = socket(AF_INET, SOCK_STREAM, 0).map_err(|_| HttpError::SocketError)?;
+    #[cfg(feature = "std")]
+    if verbose { eprint!("* Socket created (fd={})\n", fd.raw()); }
 
     // Connect to server
+    #[cfg(feature = "std")]
+    if verbose { eprint!("* Connecting to port {}...\n", parsed.port); }
     let server_addr = SockAddrIn::new(ip, parsed.port);
     if let Err(_e) = connect_inet(fd, &server_addr) {
+        #[cfg(feature = "std")]
+        if verbose { eprint!("* Connect failed\n"); }
         close_fd(fd);
         return Err(HttpError::ConnectError);
     }
+    #[cfg(feature = "std")]
+    if verbose { eprint!("* Connected\n"); }
 
     // Establish connection (plain or TLS)
     let mut conn = if parsed.is_tls {
         #[cfg(feature = "std")]
         {
-            match crate::tls::stream::TlsStream::connect(fd, parsed.host, request.insecure) {
-                Ok(stream) => Connection::Tls(stream),
-                Err(_) => {
+            #[cfg(feature = "std")]
+            if verbose { eprint!("* Starting TLS handshake...\n"); }
+            match crate::tls::stream::TlsStream::connect_verbose(fd, parsed.host, request.insecure, verbose) {
+                Ok(stream) => {
+                    #[cfg(feature = "std")]
+                    if verbose { eprint!("* TLS handshake complete\n"); }
+                    Connection::Tls(stream)
+                }
+                Err(e) => {
+                    #[cfg(feature = "std")]
+                    if verbose { eprint!("* TLS handshake FAILED: {:?}\n", e); }
+                    let _ = e;
                     close_fd(fd);
                     return Err(HttpError::TlsError);
                 }
@@ -554,17 +590,26 @@ pub fn http_request(
         conn.close();
         return Err(HttpError::InvalidUrl);
     }
+    #[cfg(feature = "std")]
+    if verbose { eprint!("* Sending {} request ({} bytes)...\n", request.method.as_str(), request_len); }
 
     // Send request
     match conn.send(&request_buf[..request_len]) {
-        Ok(written) if written == request_len => {}
+        Ok(written) if written == request_len => {
+            #[cfg(feature = "std")]
+            if verbose { eprint!("* Request sent\n"); }
+        }
         _ => {
+            #[cfg(feature = "std")]
+            if verbose { eprint!("* Send failed\n"); }
             conn.close();
             return Err(HttpError::SendError);
         }
     }
 
     // Receive response
+    #[cfg(feature = "std")]
+    if verbose { eprint!("* Waiting for response...\n"); }
     let mut total_received = 0usize;
     let max_read = response_buf.len();
 
@@ -578,6 +623,8 @@ pub fn http_request(
             Ok(0) => break,
             Ok(n) => {
                 total_received += n;
+                #[cfg(feature = "std")]
+                if verbose { eprint!("* Received {} bytes (total: {})\n", n, total_received); }
             }
             Err(_) => break,
         }
@@ -586,8 +633,13 @@ pub fn http_request(
     conn.close();
 
     if total_received == 0 {
+        #[cfg(feature = "std")]
+        if verbose { eprint!("* No data received\n"); }
         return Err(HttpError::Timeout);
     }
+
+    #[cfg(feature = "std")]
+    if verbose { eprint!("* Total received: {} bytes\n", total_received); }
 
     let response =
         parse_response(response_buf, total_received).ok_or(HttpError::ParseError)?;
@@ -609,6 +661,7 @@ pub fn http_get_with_buf(
         headers: &[],
         body: None,
         insecure: false,
+        verbose: false,
     };
     http_request(&request, response_buf)
 }

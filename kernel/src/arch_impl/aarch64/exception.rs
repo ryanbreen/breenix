@@ -365,15 +365,46 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 raw_uart_str(" from_el0=");
                 raw_uart_char(if from_el0 { b'1' } else { b'0' });
 
+                // Register dump for EL0 instruction abort at low address —
+                // helps diagnose whether context switch corrupted a register
+                // (e.g., x30=0x18 → ret jumps to 0x18) vs a BWM code bug.
+                if from_el0 && frame_ref.elr < 0x1000 {
+                    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
+                    raw_uart_str("\n[EL0_DIAG] cpu=");
+                    raw_uart_dec(cpu_id as u64);
+                    if let Some(tid) = crate::task::scheduler::current_thread_id() {
+                        raw_uart_str(" tid=");
+                        raw_uart_dec(tid);
+                    }
+                    raw_uart_str("\n  x0=");
+                    raw_uart_hex(frame_ref.x0);
+                    raw_uart_str(" x1=");
+                    raw_uart_hex(frame_ref.x1);
+                    raw_uart_str(" x8=");
+                    raw_uart_hex(frame_ref.x8);
+                    raw_uart_str("\n  x16=");
+                    raw_uart_hex(frame_ref.x16);
+                    raw_uart_str(" x17=");
+                    raw_uart_hex(frame_ref.x17);
+                    raw_uart_str(" x29=");
+                    raw_uart_hex(frame_ref.x29);
+                    raw_uart_str(" x30=");
+                    raw_uart_hex(frame_ref.x30);
+                    let sp_el0: u64;
+                    unsafe {
+                        core::arch::asm!("mrs {}, sp_el0", out(reg) sp_el0, options(nomem, nostack));
+                    }
+                    raw_uart_str("\n  sp_el0=");
+                    raw_uart_hex(sp_el0);
+                    raw_uart_str("\n");
+                }
+
                 if !from_el0 && frame_ref.elr < 0x1000 {
                     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
                     raw_uart_str("\n[DIAG] ELR=");
                     raw_uart_hex(frame_ref.elr);
                     raw_uart_str(" from EL1 cpu=");
                     raw_uart_dec(cpu_id as u64);
-                    // Identify current thread
-                    // CRITICAL: Print name directly inside closure to avoid
-                    // heap allocation (String::clone) in exception context.
                     if let Some(tid) = crate::task::scheduler::current_thread_id() {
                         raw_uart_str(" tid=");
                         raw_uart_dec(tid);
@@ -382,10 +413,65 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                             raw_uart_str(&thread.name);
                         });
                     }
+                    // Full register dump — ALL registers, not just a subset
                     raw_uart_str("\n  x0=");
                     raw_uart_hex(frame_ref.x0);
+                    raw_uart_str(" x1=");
+                    raw_uart_hex(frame_ref.x1);
+                    raw_uart_str(" x2=");
+                    raw_uart_hex(frame_ref.x2);
+                    raw_uart_str(" x3=");
+                    raw_uart_hex(frame_ref.x3);
+                    raw_uart_str("\n  x4=");
+                    raw_uart_hex(frame_ref.x4);
+                    raw_uart_str(" x5=");
+                    raw_uart_hex(frame_ref.x5);
+                    raw_uart_str(" x6=");
+                    raw_uart_hex(frame_ref.x6);
+                    raw_uart_str(" x7=");
+                    raw_uart_hex(frame_ref.x7);
+                    raw_uart_str("\n  x8=");
+                    raw_uart_hex(frame_ref.x8);
+                    raw_uart_str(" x9=");
+                    raw_uart_hex(frame_ref.x9);
+                    raw_uart_str(" x10=");
+                    raw_uart_hex(frame_ref.x10);
+                    raw_uart_str(" x11=");
+                    raw_uart_hex(frame_ref.x11);
+                    raw_uart_str("\n  x12=");
+                    raw_uart_hex(frame_ref.x12);
+                    raw_uart_str(" x13=");
+                    raw_uart_hex(frame_ref.x13);
+                    raw_uart_str(" x14=");
+                    raw_uart_hex(frame_ref.x14);
+                    raw_uart_str(" x15=");
+                    raw_uart_hex(frame_ref.x15);
+                    raw_uart_str("\n  x16=");
+                    raw_uart_hex(frame_ref.x16);
+                    raw_uart_str(" x17=");
+                    raw_uart_hex(frame_ref.x17);
+                    raw_uart_str(" x18=");
+                    raw_uart_hex(frame_ref.x18);
                     raw_uart_str(" x19=");
                     raw_uart_hex(frame_ref.x19);
+                    raw_uart_str("\n  x20=");
+                    raw_uart_hex(frame_ref.x20);
+                    raw_uart_str(" x21=");
+                    raw_uart_hex(frame_ref.x21);
+                    raw_uart_str(" x22=");
+                    raw_uart_hex(frame_ref.x22);
+                    raw_uart_str(" x23=");
+                    raw_uart_hex(frame_ref.x23);
+                    raw_uart_str("\n  x24=");
+                    raw_uart_hex(frame_ref.x24);
+                    raw_uart_str(" x25=");
+                    raw_uart_hex(frame_ref.x25);
+                    raw_uart_str(" x26=");
+                    raw_uart_hex(frame_ref.x26);
+                    raw_uart_str(" x27=");
+                    raw_uart_hex(frame_ref.x27);
+                    raw_uart_str("\n  x28=");
+                    raw_uart_hex(frame_ref.x28);
                     raw_uart_str(" x29=");
                     raw_uart_hex(frame_ref.x29);
                     raw_uart_str(" x30=");
@@ -395,12 +481,10 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     raw_uart_str(" sp_at_frame=");
                     raw_uart_hex(frame_ref as *const _ as u64);
 
-                    // Per-CPU state diagnostic: shows whether kernel_stack_top and
-                    // user_rsp_scratch are correct for the current thread.
+                    // Per-CPU state
                     let percpu_kst = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::kernel_stack_top();
                     raw_uart_str("\n  percpu_kst=");
                     raw_uart_hex(percpu_kst);
-                    // Read user_rsp_scratch from per-CPU data
                     let user_rsp: u64;
                     unsafe {
                         let percpu_base: u64;
@@ -414,7 +498,14 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     raw_uart_str(" user_rsp_scratch=");
                     raw_uart_hex(user_rsp);
 
-                    // Check thread's expected kernel_stack_top from scheduler
+                    // Last dispatched ELR/SPSR from per-CPU data
+                    let dispatch_elr = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::dispatch_elr();
+                    let dispatch_spsr = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::dispatch_spsr();
+                    raw_uart_str("\n  last_dispatch_elr=");
+                    raw_uart_hex(dispatch_elr);
+                    raw_uart_str(" last_dispatch_spsr=");
+                    raw_uart_hex(dispatch_spsr);
+
                     if let Some(tid) = crate::task::scheduler::current_thread_id() {
                         let thread_kst = crate::task::scheduler::with_thread_mut(tid, |thread| {
                             thread.kernel_stack_top.map(|v| v.as_u64()).unwrap_or(0)
@@ -425,7 +516,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                         }
                     }
 
-                    // Classify which stack region the frame is on
+                    // Stack classification
                     let frame_addr = frame_ref as *const _ as u64;
                     const HHDM_BASE_DIAG: u64 = 0xFFFF_0000_0000_0000;
                     const BOOT_STACK_BASE: u64 = HHDM_BASE_DIAG + 0x4100_0000;
@@ -434,7 +525,6 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     const KSTACK_END: u64 = HHDM_BASE_DIAG + 0x5400_0000;
                     if frame_addr >= BOOT_STACK_BASE && frame_addr < BOOT_STACK_END {
                         raw_uart_str("\n  STACK=boot_cpu");
-                        // Calculate which CPU's boot stack
                         let offset_from_base = frame_addr - BOOT_STACK_BASE;
                         let boot_cpu = offset_from_base / 0x20_0000;
                         raw_uart_dec(boot_cpu);
@@ -443,6 +533,12 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     } else {
                         raw_uart_str("\n  STACK=unknown");
                     }
+
+                    // DISPATCH TRACE: last 8 dispatches on this CPU
+                    raw_uart_str("\n  DISPATCH_TRACE cpu=");
+                    raw_uart_dec(cpu_id as u64);
+                    raw_uart_str(":\n");
+                    crate::arch_impl::aarch64::context_switch::dump_dispatch_trace(cpu_id as usize);
 
                     // OUTER FRAME: Read the frame 272 bytes above (if on a valid stack)
                     let outer_frame_addr = frame_addr + 272;
@@ -454,7 +550,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                             let outer_x30 = core::ptr::read_volatile(outer.add(30));
                             let outer_elr = core::ptr::read_volatile(outer.add(31));
                             let outer_spsr = core::ptr::read_volatile(outer.add(32));
-                            raw_uart_str("\n  OUTER_FRAME(stale?): elr=");
+                            raw_uart_str("  OUTER_FRAME(stale?): elr=");
                             raw_uart_hex(outer_elr);
                             raw_uart_str(" x30=");
                             raw_uart_hex(outer_x30);

@@ -3050,27 +3050,28 @@ pub fn sys_fcntl(fd: u64, cmd: u64, arg: u64) -> SyscallResult {
 /// - On timeout: 0
 /// - On error: negative errno
 ///
-/// Note: Currently only non-blocking poll (timeout=0) is fully supported.
-pub fn sys_poll(fds_ptr: u64, nfds: u64, _timeout: i32) -> SyscallResult {
+pub fn sys_poll(fds_ptr: u64, nfds: u64, timeout: i32) -> SyscallResult {
     use crate::ipc::fd::FileDescriptor;
     use crate::ipc::poll::{self, events, PollFd};
 
-    log::debug!("sys_poll: fds_ptr={:#x}, nfds={}, timeout={}", fds_ptr, nfds, _timeout);
-
     // Drain loopback queue for localhost connections (127.x.x.x, own IP).
-    // Hardware-received packets arrive via interrupt → softirq → process_rx().
     crate::net::drain_loopback_queue();
 
     // Validate parameters
     if fds_ptr == 0 && nfds > 0 {
         return SyscallResult::Err(14); // EFAULT
     }
-
     if nfds > 256 {
-        return SyscallResult::Err(22); // EINVAL - too many fds
+        return SyscallResult::Err(22); // EINVAL
     }
-
     if nfds == 0 {
+        if timeout > 0 {
+            // poll(NULL, 0, timeout) is a valid way to sleep
+            let req_ns = (timeout as u64) * 1_000_000;
+            let (s, n) = crate::time::get_monotonic_time_ns();
+            let wake = (s as u64) * 1_000_000_000 + (n as u64) + req_ns;
+            poll_block_until(wake);
+        }
         return SyscallResult::Ok(0);
     }
 
@@ -3084,34 +3085,20 @@ pub fn sys_poll(fds_ptr: u64, nfds: u64, _timeout: i32) -> SyscallResult {
     }
 
     // Snapshot fd entries under PROCESS_MANAGER lock, then release it.
-    // On ARM64, manager() disables all interrupts (DAIF mask 0xF). Holding PM
-    // across poll_fd() calls risks deadlock: poll_fd acquires PTY buffer locks,
-    // TCP connection locks, etc., all with interrupts masked. By cloning the
-    // Arc-based FileDescriptor entries and dropping PM first, we re-enable
-    // interrupts before touching any I/O subsystem locks.
     let mut fd_snapshots: Vec<Option<FileDescriptor>> = Vec::with_capacity(nfds as usize);
     {
         let thread_id = match crate::task::scheduler::current_thread_id() {
             Some(id) => id,
-            None => {
-                log::error!("sys_poll: No current thread");
-                return SyscallResult::Err(22); // EINVAL
-            }
+            None => return SyscallResult::Err(22),
         };
 
         let manager_guard = crate::process::manager();
         let process = match &*manager_guard {
             Some(manager) => match manager.find_process_by_thread(thread_id) {
                 Some((_pid, p)) => p,
-                None => {
-                    log::error!("sys_poll: Thread {} not in any process", thread_id);
-                    return SyscallResult::Err(22); // EINVAL
-                }
+                None => return SyscallResult::Err(22),
             },
-            None => {
-                log::error!("sys_poll: No process manager");
-                return SyscallResult::Err(22); // EINVAL
-            }
+            None => return SyscallResult::Err(22),
         };
 
         for pollfd in pollfds.iter() {
@@ -3121,32 +3108,137 @@ pub fn sys_poll(fds_ptr: u64, nfds: u64, _timeout: i32) -> SyscallResult {
                 fd_snapshots.push(process.fd_table.get(pollfd.fd).cloned());
             }
         }
-        // manager_guard (and PM lock) dropped here
     }
 
-    // Poll each fd without holding PROCESS_MANAGER
-    let mut ready_count: u64 = 0;
+    // Helper: scan all fds and set revents. Returns number of ready fds.
+    let scan_fds = |pollfds: &mut [PollFd], snapshots: &[Option<FileDescriptor>]| -> u64 {
+        let mut count = 0u64;
+        for (i, pollfd) in pollfds.iter_mut().enumerate() {
+            pollfd.revents = 0;
+            if pollfd.fd < 0 { continue; }
+            match &snapshots[i] {
+                Some(fd_entry) => { pollfd.revents = poll::poll_fd(fd_entry, pollfd.events); }
+                None => { pollfd.revents = events::POLLNVAL; }
+            }
+            if pollfd.revents != 0 { count += 1; }
+        }
+        count
+    };
 
-    for (i, pollfd) in pollfds.iter_mut().enumerate() {
-        pollfd.revents = 0;
+    // Initial scan
+    let mut ready_count = scan_fds(&mut pollfds, &fd_snapshots);
 
-        if pollfd.fd < 0 {
-            // Negative fd - skip it (per POSIX, ignore negative fds)
-            continue;
+    // If fds are ready or this is a non-blocking poll, return immediately
+    if ready_count > 0 || timeout == 0 {
+        unsafe {
+            let dst = fds_ptr as *mut PollFd;
+            for (i, pollfd) in pollfds.iter().enumerate() {
+                core::ptr::write(dst.add(i), *pollfd);
+            }
+        }
+        return SyscallResult::Ok(ready_count);
+    }
+
+    // timeout > 0 or timeout == -1 (infinite): block until fds ready or timeout
+    // Use the same blocking pattern as nanosleep: block_current_for_timer +
+    // preempt_enable + HLT loop. Wake every timer tick (~5ms at 200Hz) to
+    // re-check fds for responsiveness.
+    let (s, n) = crate::time::get_monotonic_time_ns();
+    let now_ns = (s as u64) * 1_000_000_000 + (n as u64);
+    let deadline_ns = if timeout < 0 {
+        u64::MAX // infinite — will keep looping until fds ready or signal
+    } else {
+        now_ns.saturating_add((timeout as u64) * 1_000_000)
+    };
+
+    // Block for a short interval (5ms) at a time so we can re-check fds.
+    // Use block_current_for_timer to properly yield the CPU.
+    let poll_interval_ns: u64 = 5_000_000; // 5ms — one timer tick at 200Hz
+
+    loop {
+        let (s, n) = crate::time::get_monotonic_time_ns();
+        let now = (s as u64) * 1_000_000_000 + (n as u64);
+        if now >= deadline_ns {
+            break; // Timeout expired
         }
 
-        match &fd_snapshots[i] {
-            Some(fd_entry) => {
-                pollfd.revents = poll::poll_fd(fd_entry, pollfd.events);
+        // Block for min(poll_interval, remaining time)
+        let remaining = deadline_ns.saturating_sub(now);
+        let sleep_until = now.saturating_add(remaining.min(poll_interval_ns));
+
+        crate::task::scheduler::with_scheduler(|sched| {
+            sched.block_current_for_timer(sleep_until);
+        });
+
+        #[cfg(target_arch = "aarch64")]
+        crate::per_cpu_aarch64::preempt_enable();
+        #[cfg(target_arch = "x86_64")]
+        crate::per_cpu::preempt_enable();
+
+        // HLT loop — sleep until timer expires
+        loop {
+            if let Some(_e) = crate::syscall::check_signals_for_eintr() {
+                crate::task::scheduler::with_scheduler(|sched| {
+                    if let Some(thread) = sched.current_thread_mut() {
+                        thread.blocked_in_syscall = false;
+                        thread.wake_time_ns = None;
+                        thread.set_ready();
+                    }
+                });
+                #[cfg(target_arch = "aarch64")]
+                crate::per_cpu_aarch64::preempt_disable();
+                #[cfg(target_arch = "x86_64")]
+                crate::per_cpu::preempt_disable();
+                #[cfg(target_arch = "aarch64")]
+                poll_ensure_address_space();
+                // Write back current revents (all zero) before returning EINTR
+                unsafe {
+                    let dst = fds_ptr as *mut PollFd;
+                    for (i, pollfd) in pollfds.iter().enumerate() {
+                        core::ptr::write(dst.add(i), *pollfd);
+                    }
+                }
+                return SyscallResult::Err(4); // EINTR
             }
-            None => {
-                // Invalid fd - set POLLNVAL
-                pollfd.revents = events::POLLNVAL;
+
+            let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                sched.wake_expired_timers();
+                sched.current_thread_mut()
+                    .map(|t| t.state == crate::task::thread::ThreadState::BlockedOnTimer)
+                    .unwrap_or(false)
+            });
+
+            if !still_blocked.unwrap_or(false) {
+                break;
             }
+
+            crate::task::scheduler::yield_current();
+            #[cfg(target_arch = "aarch64")]
+            unsafe { core::arch::asm!("msr daifclr, #2", "wfi", options(nomem, nostack)); }
+            #[cfg(target_arch = "x86_64")]
+            x86_64::instructions::hlt();
         }
 
-        if pollfd.revents != 0 {
-            ready_count += 1;
+        // Clear blocked state + re-disable preemption
+        crate::task::scheduler::with_scheduler(|sched| {
+            if let Some(thread) = sched.current_thread_mut() {
+                thread.blocked_in_syscall = false;
+            }
+        });
+
+        #[cfg(target_arch = "aarch64")]
+        crate::per_cpu_aarch64::preempt_disable();
+        #[cfg(target_arch = "x86_64")]
+        crate::per_cpu::preempt_disable();
+
+        #[cfg(target_arch = "aarch64")]
+        poll_ensure_address_space();
+
+        // Re-check fds after waking
+        crate::net::drain_loopback_queue();
+        ready_count = scan_fds(&mut pollfds, &fd_snapshots);
+        if ready_count > 0 {
+            break;
         }
     }
 
@@ -3158,8 +3250,78 @@ pub fn sys_poll(fds_ptr: u64, nfds: u64, _timeout: i32) -> SyscallResult {
         }
     }
 
-    log::debug!("sys_poll: {} fds ready", ready_count);
     SyscallResult::Ok(ready_count)
+}
+
+/// Block the current thread until `wake_ns` (monotonic nanoseconds).
+/// Used by poll(NULL, 0, timeout) as a simple sleep.
+fn poll_block_until(wake_ns: u64) {
+    crate::task::scheduler::with_scheduler(|sched| {
+        sched.block_current_for_timer(wake_ns);
+    });
+
+    #[cfg(target_arch = "aarch64")]
+    crate::per_cpu_aarch64::preempt_enable();
+    #[cfg(target_arch = "x86_64")]
+    crate::per_cpu::preempt_enable();
+
+    loop {
+        let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+            sched.wake_expired_timers();
+            sched.current_thread_mut()
+                .map(|t| t.state == crate::task::thread::ThreadState::BlockedOnTimer)
+                .unwrap_or(false)
+        });
+        if !still_blocked.unwrap_or(false) { break; }
+        crate::task::scheduler::yield_current();
+        #[cfg(target_arch = "aarch64")]
+        unsafe { core::arch::asm!("msr daifclr, #2", "wfi", options(nomem, nostack)); }
+        #[cfg(target_arch = "x86_64")]
+        x86_64::instructions::hlt();
+    }
+
+    crate::task::scheduler::with_scheduler(|sched| {
+        if let Some(thread) = sched.current_thread_mut() {
+            thread.blocked_in_syscall = false;
+        }
+    });
+
+    #[cfg(target_arch = "aarch64")]
+    crate::per_cpu_aarch64::preempt_disable();
+    #[cfg(target_arch = "x86_64")]
+    crate::per_cpu::preempt_disable();
+
+    #[cfg(target_arch = "aarch64")]
+    poll_ensure_address_space();
+}
+
+/// Restore TTBR0 after blocking in poll. Same pattern as nanosleep/waitpid.
+#[cfg(target_arch = "aarch64")]
+fn poll_ensure_address_space() {
+    let thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => return,
+    };
+    let manager_guard = crate::process::manager();
+    if let Some(ref manager) = *manager_guard {
+        if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+            if let Some(ref page_table) = process.page_table {
+                let ttbr0_value = page_table.level_4_frame().start_address().as_u64();
+                unsafe {
+                    core::arch::asm!(
+                        "dsb ishst",
+                        "msr ttbr0_el1, {}",
+                        "isb",
+                        "tlbi vmalle1is",
+                        "dsb ish",
+                        "isb",
+                        in(reg) ttbr0_value,
+                        options(nomem, nostack)
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// sys_select - Synchronous I/O multiplexing

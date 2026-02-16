@@ -144,6 +144,7 @@ fn main() {
         headers: &header_strs,
         body: body.as_deref().map(|s| s.as_bytes()),
         insecure,
+        verbose,
     };
 
     let mut response_buf = vec![0u8; MAX_RESPONSE_SIZE];
