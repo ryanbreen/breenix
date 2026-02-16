@@ -31,6 +31,9 @@ global_asm!(include_str!("syscall_entry.S"));
 // Static flag to track first EL0 syscall (mirrors x86_64's RING3_CONFIRMED)
 static EL0_CONFIRMED: AtomicBool = AtomicBool::new(false);
 
+/// Diagnostic counter: number of times fork_return_pending is cleared on first syscall.
+pub static FORK_SYSCALL_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 /// Returns true if userspace has started (first EL0 syscall received).
 /// Used by scheduler to determine if idle thread should use idle_loop or
 /// restore saved context from boot.
@@ -99,6 +102,19 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
     if !EL0_CONFIRMED.swap(true, Ordering::Relaxed) {
         // First syscall from userspace! Print marker via raw UART (no locks)
         emit_el0_syscall_marker();
+    }
+
+    // Clear fork_return_pending on first syscall from a forked child.
+    // The child has consumed x0=0 (fork return value) by branching on it.
+    // After this point, x0 should be saved/restored normally by context switches.
+    // Safe: preemption is disabled, so no context switch can race with this write.
+    let thread_ptr = Aarch64PerCpu::current_thread_ptr();
+    if !thread_ptr.is_null() {
+        let thread = unsafe { &mut *(thread_ptr as *mut crate::task::thread::Thread) };
+        if thread.fork_return_pending {
+            thread.fork_return_pending = false;
+            FORK_SYSCALL_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     let syscall_num = frame.syscall_number();
@@ -730,11 +746,17 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
 /// Returns:
 /// - 0 on success (though exec() never returns on success)
 /// - Negative errno on error
+/// Counter: number of times sys_exec_aarch64 is entered (diagnostic)
+pub static EXEC_ENTERED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 fn sys_exec_aarch64(
     frame: &mut Aarch64ExceptionFrame,
     program_name_ptr: u64,
     argv_ptr: u64,
 ) -> u64 {
+    // Diagnostic: count every exec syscall entry with SeqCst for cross-CPU visibility
+    EXEC_ENTERED.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+
     // Trace: exec syscall entered
     super::trace::trace_exec(b'E');
 
@@ -775,6 +797,11 @@ fn sys_exec_aarch64(
 
         // Trace: program name parsed successfully
         super::trace::trace_exec(b'N');
+
+        // Diagnostic: show which program is being exec'd on serial
+        crate::serial_aarch64::raw_serial_str(b"[exec:");
+        crate::serial_aarch64::raw_serial_str(program_name.as_bytes());
+        crate::serial_aarch64::raw_serial_str(b"]\n");
 
         log::info!("sys_exec_aarch64: Loading program '{}'", program_name);
 
@@ -858,6 +885,11 @@ fn sys_exec_aarch64(
 
         // Trace: ELF file loaded from filesystem
         super::trace::trace_exec(b'L');
+
+        // Diagnostic: ELF loaded successfully
+        crate::serial_aarch64::raw_serial_str(b"[exec_loaded:");
+        crate::serial_aarch64::raw_serial_str(program_name.as_bytes());
+        crate::serial_aarch64::raw_serial_str(b"]\n");
 
         let elf_data = elf_vec.as_slice();
 
