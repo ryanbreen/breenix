@@ -28,6 +28,7 @@ pub mod handler;
 // - handlers is shared across architectures (arch-specific parts are cfg-gated internally)
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod dispatcher;
+pub mod iovec;
 pub mod clone;
 pub mod fifo;
 pub mod fs;
@@ -45,109 +46,234 @@ pub mod socket;
 #[cfg(target_arch = "aarch64")]
 pub mod wait;
 
-/// System call numbers following Linux conventions
+/// System call numbers - semantic names only.
+///
+/// The numeric mapping is architecture-specific and handled by `from_u64()`.
+/// x86_64 uses Linux x86_64 ABI numbers for musl libc compatibility.
+/// ARM64 uses legacy Breenix numbers (ARM64 Linux renumbering is a future effort).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u64)]
 #[allow(dead_code)]
 pub enum SyscallNumber {
-    Exit = 0,
-    Write = 1,
-    Read = 2,
-    Yield = 3,          // Note: Linux uses sched_yield = 24, but we use 3
-    GetTime = 4,
-    Fork = 5,
-    Close = 6,          // Custom number (Linux close = 3, conflicts with our Yield)
-    Poll = 7,           // Linux syscall number for poll
-    Mmap = 9,           // Linux syscall number for mmap
-    Mprotect = 10,      // Linux syscall number for mprotect
-    Munmap = 11,        // Linux syscall number for munmap
-    Brk = 12,           // Linux syscall number for brk (heap management)
-    Sigaction = 13,     // Linux syscall number for rt_sigaction
-    Sigprocmask = 14,   // Linux syscall number for rt_sigprocmask
-    Sigreturn = 15,     // Linux syscall number for rt_sigreturn
-    Ioctl = 16,         // Linux syscall number for ioctl
-    Pipe = 22,          // Linux syscall number for pipe
-    Select = 23,        // Linux syscall number for select
-    Dup = 32,           // Linux syscall number for dup
-    Dup2 = 33,          // Linux syscall number for dup2
-    Pause = 34,         // Linux syscall number for pause
-    Nanosleep = 35,     // Linux syscall number for nanosleep
-    Getitimer = 36,     // Linux syscall number for getitimer
-    Alarm = 37,         // Linux syscall number for alarm
-    Setitimer = 38,     // Linux syscall number for setitimer
-    Fcntl = 72,         // Linux syscall number for fcntl
-    GetPid = 39,        // Linux syscall number for getpid
-    Socket = 41,        // Linux syscall number for socket
-    Connect = 42,       // Linux syscall number for connect
-    Accept = 43,        // Linux syscall number for accept
-    SendTo = 44,        // Linux syscall number for sendto
-    RecvFrom = 45,      // Linux syscall number for recvfrom
-    Shutdown = 48,      // Linux syscall number for shutdown
-    Bind = 49,          // Linux syscall number for bind
-    Listen = 50,        // Linux syscall number for listen
-    Socketpair = 53,    // Linux syscall number for socketpair
-    Exec = 59,          // Linux syscall number for execve
-    Wait4 = 61,         // Linux syscall number for wait4/waitpid
-    Kill = 62,          // Linux syscall number for kill
-    Getsockname = 51,    // Linux syscall number for getsockname
-    Getpeername = 52,    // Linux syscall number for getpeername
-    Setsockopt = 54,     // Linux syscall number for setsockopt
-    Clone = 56,          // Linux syscall number for clone
-    Getsockopt = 55,     // Linux syscall number for getsockopt
-    SetPgid = 109,      // Linux syscall number for setpgid
-    Getppid = 110,      // Linux syscall number for getppid
-    SetSid = 112,       // Linux syscall number for setsid
-    GetPgid = 121,      // Linux syscall number for getpgid
-    GetSid = 124,       // Linux syscall number for getsid
-    Sigpending = 127,   // Linux syscall number for rt_sigpending
-    Sigsuspend = 130,   // Linux syscall number for rt_sigsuspend
-    Sigaltstack = 131,  // Linux syscall number for sigaltstack
-    GetTid = 186,       // Linux syscall number for gettid
-    SetTidAddress = 218, // Linux syscall number for set_tid_address
-    ClockGetTime = 228, // Linux syscall number for clock_gettime
-    ExitGroup = 231,    // Linux syscall number for exit_group
-    Pipe2 = 293,        // Linux syscall number for pipe2
-    Futex = 202,        // Linux syscall number for futex
-    GetRandom = 318,    // Linux syscall number for getrandom
+    // Core syscalls
+    Exit,
+    Write,
+    Read,
+    Yield,
+    GetTime,        // Legacy: ARM64 only (x86_64 uses ClockGetTime)
+    Fork,
+    Close,
+    Poll,
+    Mmap,
+    Mprotect,
+    Munmap,
+    Brk,
+    Sigaction,
+    Sigprocmask,
+    Sigreturn,
+    Ioctl,
+    Readv,          // Vectored read (musl stdio)
+    Writev,         // Vectored write (musl stdio)
+    Pipe,
+    Select,
+    Mremap,         // Stub: returns -ENOMEM
+    Madvise,        // Stub: returns 0 (advisory)
+    Dup,
+    Dup2,
+    Pause,
+    Nanosleep,
+    Getitimer,
+    Alarm,
+    Setitimer,
+    Fcntl,
+    GetPid,
+    Socket,
+    Connect,
+    Accept,
+    SendTo,
+    RecvFrom,
+    Shutdown,
+    Bind,
+    Listen,
+    Socketpair,
+    Exec,
+    Wait4,
+    Kill,
+    Getsockname,
+    Getpeername,
+    Setsockopt,
+    Clone,
+    Getsockopt,
+    SetPgid,
+    Getppid,
+    SetSid,
+    GetPgid,
+    GetSid,
+    Sigpending,
+    Sigsuspend,
+    Sigaltstack,
+    ArchPrctl,      // x86_64 TLS setup (FS/GS base)
+    GetTid,
+    Futex,
+    SetTidAddress,
+    ClockGetTime,
+    ExitGroup,
+    Ppoll,          // Stub: returns -ENOSYS
+    SetRobustList,  // Stub: returns 0
+    Pipe2,
+    GetRandom,
     // Filesystem syscalls
-    Access = 21,        // Linux syscall number for access
-    Getcwd = 79,        // Linux syscall number for getcwd
-    Chdir = 80,         // Linux syscall number for chdir
-    Rename = 82,        // Linux syscall number for rename
-    Mkdir = 83,         // Linux syscall number for mkdir
-    Rmdir = 84,         // Linux syscall number for rmdir
-    Link = 86,          // Linux syscall number for link (hard links)
-    Unlink = 87,        // Linux syscall number for unlink
-    Symlink = 88,       // Linux syscall number for symlink
-    Readlink = 89,      // Linux syscall number for readlink
-    Mknod = 133,        // Linux syscall number for mknod (used for mkfifo)
-    Open = 257,         // Breenix: filesystem open syscall
-    Lseek = 258,        // Breenix: filesystem lseek syscall
-    Fstat = 259,        // Breenix: filesystem fstat syscall
-    Getdents64 = 260,   // Breenix: directory listing syscall
+    Access,
+    Getcwd,
+    Chdir,
+    Rename,
+    Mkdir,
+    Rmdir,
+    Link,
+    Unlink,
+    Symlink,
+    Readlink,
+    Mknod,
+    Open,
+    Lseek,
+    Fstat,
+    Getdents64,
+    Newfstatat,     // Path-based file stat (AT_FDCWD support)
     // PTY syscalls (Breenix-specific numbers)
-    PosixOpenpt = 400,  // Breenix: open PTY master
-    Grantpt = 401,      // Breenix: grant access to PTY slave
-    Unlockpt = 402,     // Breenix: unlock PTY slave
-    Ptsname = 403,      // Breenix: get PTY slave path
+    PosixOpenpt,
+    Grantpt,
+    Unlockpt,
+    Ptsname,
     // Graphics syscalls (Breenix-specific)
-    FbInfo = 410,       // Breenix: get framebuffer info
-    FbDraw = 411,       // Breenix: draw to framebuffer (left pane)
-    FbMmap = 412,       // Breenix: mmap framebuffer into userspace
-    GetMousePos = 413,  // Breenix: get mouse cursor position
+    FbInfo,
+    FbDraw,
+    FbMmap,
+    GetMousePos,
     // Audio syscalls (Breenix-specific)
-    AudioInit = 420,    // Breenix: initialize audio stream
-    AudioWrite = 421,   // Breenix: write PCM data to audio device
+    AudioInit,
+    AudioWrite,
     // Display takeover (Breenix-specific)
-    TakeOverDisplay = 431, // Breenix: userspace takes over display from kernel terminal manager
-    GiveBackDisplay = 432, // Breenix: userspace gives display back to kernel terminal manager
-    CowStats = 500,     // Breenix: get Copy-on-Write statistics (for testing)
-    SimulateOom = 501,  // Breenix: enable/disable OOM simulation (for testing)
+    TakeOverDisplay,
+    GiveBackDisplay,
+    // Testing (Breenix-specific)
+    CowStats,
+    SimulateOom,
 }
 
 #[allow(dead_code)]
 impl SyscallNumber {
-    /// Try to convert a u64 to a SyscallNumber
+    /// Try to convert a raw syscall number to a SyscallNumber.
+    ///
+    /// x86_64: Uses Linux x86_64 ABI numbers for musl libc compatibility.
+    /// ARM64: Uses legacy Breenix numbers (ARM64 Linux renumbering is future work).
+    #[cfg(target_arch = "x86_64")]
+    pub fn from_u64(value: u64) -> Option<Self> {
+        match value {
+            // Linux x86_64 ABI numbers
+            0 => Some(Self::Read),          // was Breenix Exit=0
+            1 => Some(Self::Write),
+            3 => Some(Self::Close),         // was Breenix Yield=3
+            5 => Some(Self::Fstat),         // was Breenix Fork=5
+            7 => Some(Self::Poll),
+            8 => Some(Self::Lseek),         // was Breenix 258
+            9 => Some(Self::Mmap),
+            10 => Some(Self::Mprotect),
+            11 => Some(Self::Munmap),
+            12 => Some(Self::Brk),
+            13 => Some(Self::Sigaction),
+            14 => Some(Self::Sigprocmask),
+            15 => Some(Self::Sigreturn),
+            16 => Some(Self::Ioctl),
+            19 => Some(Self::Readv),        // NEW
+            20 => Some(Self::Writev),       // NEW
+            21 => Some(Self::Access),
+            22 => Some(Self::Pipe),
+            23 => Some(Self::Select),
+            24 => Some(Self::Yield),        // was Breenix 3
+            25 => Some(Self::Mremap),       // NEW stub
+            28 => Some(Self::Madvise),      // NEW stub
+            32 => Some(Self::Dup),
+            33 => Some(Self::Dup2),
+            34 => Some(Self::Pause),
+            35 => Some(Self::Nanosleep),
+            36 => Some(Self::Getitimer),
+            37 => Some(Self::Alarm),
+            38 => Some(Self::Setitimer),
+            39 => Some(Self::GetPid),
+            41 => Some(Self::Socket),
+            42 => Some(Self::Connect),
+            43 => Some(Self::Accept),
+            44 => Some(Self::SendTo),
+            45 => Some(Self::RecvFrom),
+            48 => Some(Self::Shutdown),
+            49 => Some(Self::Bind),
+            50 => Some(Self::Listen),
+            51 => Some(Self::Getsockname),
+            52 => Some(Self::Getpeername),
+            53 => Some(Self::Socketpair),
+            54 => Some(Self::Setsockopt),
+            55 => Some(Self::Getsockopt),
+            56 => Some(Self::Clone),
+            57 => Some(Self::Fork),         // was Breenix 5
+            59 => Some(Self::Exec),
+            60 => Some(Self::Exit),         // was Breenix 0
+            61 => Some(Self::Wait4),
+            62 => Some(Self::Kill),
+            72 => Some(Self::Fcntl),
+            79 => Some(Self::Getcwd),
+            80 => Some(Self::Chdir),
+            82 => Some(Self::Rename),
+            83 => Some(Self::Mkdir),
+            84 => Some(Self::Rmdir),
+            86 => Some(Self::Link),
+            87 => Some(Self::Unlink),
+            88 => Some(Self::Symlink),
+            89 => Some(Self::Readlink),
+            109 => Some(Self::SetPgid),
+            110 => Some(Self::Getppid),
+            112 => Some(Self::SetSid),
+            121 => Some(Self::GetPgid),
+            124 => Some(Self::GetSid),
+            127 => Some(Self::Sigpending),
+            130 => Some(Self::Sigsuspend),
+            131 => Some(Self::Sigaltstack),
+            133 => Some(Self::Mknod),
+            158 => Some(Self::ArchPrctl),   // NEW
+            186 => Some(Self::GetTid),
+            202 => Some(Self::Futex),
+            217 => Some(Self::Getdents64),  // was Breenix 260
+            218 => Some(Self::SetTidAddress),
+            228 => Some(Self::ClockGetTime),
+            231 => Some(Self::ExitGroup),
+            257 => Some(Self::Open),
+            262 => Some(Self::Newfstatat),  // NEW
+            271 => Some(Self::Ppoll),       // NEW stub
+            273 => Some(Self::SetRobustList), // NEW stub
+            293 => Some(Self::Pipe2),
+            318 => Some(Self::GetRandom),
+            // PTY syscalls (Breenix-specific, same on both archs)
+            400 => Some(Self::PosixOpenpt),
+            401 => Some(Self::Grantpt),
+            402 => Some(Self::Unlockpt),
+            403 => Some(Self::Ptsname),
+            // Graphics syscalls (Breenix-specific)
+            410 => Some(Self::FbInfo),
+            411 => Some(Self::FbDraw),
+            412 => Some(Self::FbMmap),
+            413 => Some(Self::GetMousePos),
+            // Audio syscalls (Breenix-specific)
+            420 => Some(Self::AudioInit),
+            421 => Some(Self::AudioWrite),
+            431 => Some(Self::TakeOverDisplay),
+            432 => Some(Self::GiveBackDisplay),
+            500 => Some(Self::CowStats),
+            501 => Some(Self::SimulateOom),
+            _ => None,
+        }
+    }
+
+    /// ARM64: Uses legacy Breenix numbers (unchanged).
+    /// ARM64 Linux ABI renumbering is a separate future effort.
+    #[cfg(target_arch = "aarch64")]
     pub fn from_u64(value: u64) -> Option<Self> {
         match value {
             0 => Some(Self::Exit),
@@ -166,8 +292,13 @@ impl SyscallNumber {
             14 => Some(Self::Sigprocmask),
             15 => Some(Self::Sigreturn),
             16 => Some(Self::Ioctl),
+            19 => Some(Self::Readv),
+            20 => Some(Self::Writev),
+            21 => Some(Self::Access),
             22 => Some(Self::Pipe),
             23 => Some(Self::Select),
+            25 => Some(Self::Mremap),
+            28 => Some(Self::Madvise),
             32 => Some(Self::Dup),
             33 => Some(Self::Dup2),
             34 => Some(Self::Pause),
@@ -176,7 +307,6 @@ impl SyscallNumber {
             37 => Some(Self::Alarm),
             38 => Some(Self::Setitimer),
             39 => Some(Self::GetPid),
-            72 => Some(Self::Fcntl),
             41 => Some(Self::Socket),
             42 => Some(Self::Connect),
             43 => Some(Self::Accept),
@@ -194,23 +324,7 @@ impl SyscallNumber {
             59 => Some(Self::Exec),
             61 => Some(Self::Wait4),
             62 => Some(Self::Kill),
-            109 => Some(Self::SetPgid),
-            110 => Some(Self::Getppid),
-            112 => Some(Self::SetSid),
-            121 => Some(Self::GetPgid),
-            124 => Some(Self::GetSid),
-            127 => Some(Self::Sigpending),
-            130 => Some(Self::Sigsuspend),
-            131 => Some(Self::Sigaltstack),
-            186 => Some(Self::GetTid),
-            202 => Some(Self::Futex),
-            218 => Some(Self::SetTidAddress),
-            228 => Some(Self::ClockGetTime),
-            231 => Some(Self::ExitGroup),
-            293 => Some(Self::Pipe2),
-            318 => Some(Self::GetRandom),
-            // Filesystem syscalls
-            21 => Some(Self::Access),
+            72 => Some(Self::Fcntl),
             79 => Some(Self::Getcwd),
             80 => Some(Self::Chdir),
             82 => Some(Self::Rename),
@@ -220,22 +334,40 @@ impl SyscallNumber {
             87 => Some(Self::Unlink),
             88 => Some(Self::Symlink),
             89 => Some(Self::Readlink),
+            109 => Some(Self::SetPgid),
+            110 => Some(Self::Getppid),
+            112 => Some(Self::SetSid),
+            121 => Some(Self::GetPgid),
+            124 => Some(Self::GetSid),
+            127 => Some(Self::Sigpending),
+            130 => Some(Self::Sigsuspend),
+            131 => Some(Self::Sigaltstack),
             133 => Some(Self::Mknod),
+            186 => Some(Self::GetTid),
+            202 => Some(Self::Futex),
+            218 => Some(Self::SetTidAddress),
+            228 => Some(Self::ClockGetTime),
+            231 => Some(Self::ExitGroup),
             257 => Some(Self::Open),
             258 => Some(Self::Lseek),
             259 => Some(Self::Fstat),
             260 => Some(Self::Getdents64),
-            // PTY syscalls
+            262 => Some(Self::Newfstatat),
+            271 => Some(Self::Ppoll),
+            273 => Some(Self::SetRobustList),
+            293 => Some(Self::Pipe2),
+            318 => Some(Self::GetRandom),
+            // PTY syscalls (Breenix-specific)
             400 => Some(Self::PosixOpenpt),
             401 => Some(Self::Grantpt),
             402 => Some(Self::Unlockpt),
             403 => Some(Self::Ptsname),
-            // Graphics syscalls
+            // Graphics syscalls (Breenix-specific)
             410 => Some(Self::FbInfo),
             411 => Some(Self::FbDraw),
             412 => Some(Self::FbMmap),
             413 => Some(Self::GetMousePos),
-            // Audio syscalls
+            // Audio syscalls (Breenix-specific)
             420 => Some(Self::AudioInit),
             421 => Some(Self::AudioWrite),
             431 => Some(Self::TakeOverDisplay),

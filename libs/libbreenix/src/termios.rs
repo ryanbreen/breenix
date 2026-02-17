@@ -8,8 +8,7 @@ use crate::error::Error;
 use crate::syscall::raw;
 use crate::types::Fd;
 
-/// Syscall number for ioctl
-pub const SYS_IOCTL: u64 = 16;
+use crate::syscall::nr;
 
 /// ioctl request codes
 pub mod request {
@@ -106,7 +105,7 @@ impl Default for Termios {
 /// Get terminal attributes
 pub fn tcgetattr(fd: Fd, termios: &mut Termios) -> Result<(), Error> {
     let ret = unsafe {
-        raw::syscall3(SYS_IOCTL, fd.raw(), request::TCGETS, termios as *mut _ as u64)
+        raw::syscall3(nr::IOCTL, fd.raw(), request::TCGETS, termios as *mut _ as u64)
     };
 
     Error::from_syscall(ret as i64).map(|_| ())
@@ -122,7 +121,7 @@ pub fn tcsetattr(fd: Fd, action: i32, termios: &Termios) -> Result<(), Error> {
     };
 
     let ret = unsafe {
-        raw::syscall3(SYS_IOCTL, fd.raw(), request, termios as *const _ as u64)
+        raw::syscall3(nr::IOCTL, fd.raw(), request, termios as *const _ as u64)
     };
 
     Error::from_syscall(ret as i64).map(|_| ())
@@ -131,7 +130,7 @@ pub fn tcsetattr(fd: Fd, action: i32, termios: &Termios) -> Result<(), Error> {
 /// Set terminal window size (TIOCSWINSZ)
 pub fn set_winsize(fd: Fd, ws: &Winsize) -> Result<(), Error> {
     let ret = unsafe {
-        raw::syscall3(SYS_IOCTL, fd.raw(), request::TIOCSWINSZ, ws as *const _ as u64)
+        raw::syscall3(nr::IOCTL, fd.raw(), request::TIOCSWINSZ, ws as *const _ as u64)
     };
     Error::from_syscall(ret as i64).map(|_| ())
 }
@@ -140,7 +139,7 @@ pub fn set_winsize(fd: Fd, ws: &Winsize) -> Result<(), Error> {
 pub fn get_winsize(fd: Fd) -> Result<Winsize, Error> {
     let mut ws = Winsize::default();
     let ret = unsafe {
-        raw::syscall3(SYS_IOCTL, fd.raw(), request::TIOCGWINSZ, &mut ws as *mut _ as u64)
+        raw::syscall3(nr::IOCTL, fd.raw(), request::TIOCGWINSZ, &mut ws as *mut _ as u64)
     };
     Error::from_syscall(ret as i64).map(|_| ws)
 }
@@ -166,7 +165,7 @@ pub fn tcgetpgrp(fd: Fd) -> Result<i32, Error> {
     let mut pgrp: i32 = 0;
     let ret = unsafe {
         raw::syscall3(
-            SYS_IOCTL,
+            nr::IOCTL,
             fd.raw(),
             request::TIOCGPGRP,
             &mut pgrp as *mut i32 as u64,
@@ -192,7 +191,7 @@ pub fn tcsetpgrp(fd: Fd, pgrp: i32) -> Result<(), Error> {
     let pgrp_val = pgrp;
     let ret = unsafe {
         raw::syscall3(
-            SYS_IOCTL,
+            nr::IOCTL,
             fd.raw(),
             request::TIOCSPGRP,
             &pgrp_val as *const i32 as u64,

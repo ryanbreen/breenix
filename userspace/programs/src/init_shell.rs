@@ -65,8 +65,9 @@ const CSIZE: u32 = 0x0030;
 const CS8: u32 = 0x0030;
 const PARENB: u32 = 0x0100;
 
-// Syscall numbers for calls not yet in libbreenix
-const SYS_OPEN: u64 = 2;
+// Use the canonical syscall number from libbreenix
+use libbreenix::syscall::nr;
+const SYS_OPEN: u64 = nr::OPEN;
 
 /// Raw execve wrapper using libbreenix syscall primitives.
 /// This replaces the `extern "C" { fn execve(...) }` FFI import.

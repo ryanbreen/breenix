@@ -219,7 +219,6 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Write) => super::handlers::sys_write(args.0, args.1, args.2),
         Some(SyscallNumber::Read) => super::handlers::sys_read(args.0, args.1, args.2),
         Some(SyscallNumber::Yield) => super::handlers::sys_yield(),
-        Some(SyscallNumber::GetTime) => super::handlers::sys_get_time(),
         Some(SyscallNumber::Fork) => super::handlers::sys_fork_with_frame(frame),
         Some(SyscallNumber::Mmap) => {
             let addr = args.0;
@@ -389,6 +388,42 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Futex) => {
             super::futex::sys_futex(args.0, args.1 as u32, args.2 as u32, args.3, args.4, args.5 as u32)
         }
+        // Vectored I/O
+        Some(SyscallNumber::Readv) => super::iovec::sys_readv(args.0, args.1, args.2),
+        Some(SyscallNumber::Writev) => super::iovec::sys_writev(args.0, args.1, args.2),
+        // Stubs for musl libc compatibility
+        Some(SyscallNumber::Mremap) => SyscallResult::Err(super::errno::ENOMEM as u64),
+        Some(SyscallNumber::Madvise) => SyscallResult::Ok(0),
+        Some(SyscallNumber::Ppoll) => SyscallResult::Err(super::errno::ENOSYS as u64),
+        Some(SyscallNumber::SetRobustList) => SyscallResult::Ok(0),
+        // arch_prctl - x86_64 TLS setup
+        Some(SyscallNumber::ArchPrctl) => {
+            const ARCH_SET_FS: u64 = 0x1002;
+            const ARCH_GET_FS: u64 = 0x1003;
+            match args.0 {
+                ARCH_SET_FS => {
+                    x86_64::registers::model_specific::FsBase::write(
+                        x86_64::VirtAddr::new(args.1),
+                    );
+                    SyscallResult::Ok(0)
+                }
+                ARCH_GET_FS => {
+                    let fs_base = x86_64::registers::model_specific::FsBase::read().as_u64();
+                    match super::userptr::copy_to_user(args.1 as *mut u64, &fs_base) {
+                        Ok(()) => SyscallResult::Ok(0),
+                        Err(e) => SyscallResult::Err(e),
+                    }
+                }
+                _ => SyscallResult::Err(super::errno::EINVAL as u64),
+            }
+        }
+        // Filesystem: newfstatat
+        Some(SyscallNumber::Newfstatat) => {
+            super::fs::sys_newfstatat(args.0 as i32, args.1, args.2, args.3 as u32)
+        }
+        // GetTime is not mapped on x86_64 (use ClockGetTime instead)
+        // It only exists in the enum for ARM64 compatibility
+        Some(SyscallNumber::GetTime) => SyscallResult::Err(super::ErrorCode::NoSys as u64),
         // Graphics syscalls
         Some(SyscallNumber::FbInfo) => super::graphics::sys_fbinfo(args.0),
         Some(SyscallNumber::FbDraw) => super::graphics::sys_fbdraw(args.0),

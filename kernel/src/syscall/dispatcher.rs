@@ -31,7 +31,6 @@ pub fn dispatch_syscall(
         SyscallNumber::Write => handlers::sys_write(arg1, arg2, arg3),
         SyscallNumber::Read => handlers::sys_read(arg1, arg2, arg3),
         SyscallNumber::Yield => handlers::sys_yield(),
-        SyscallNumber::GetTime => handlers::sys_get_time(),
         SyscallNumber::Fork => handlers::sys_fork(),
         SyscallNumber::Exec => handlers::sys_exec(arg1, arg2),
         SyscallNumber::GetPid => handlers::sys_getpid(),
@@ -126,6 +125,39 @@ pub fn dispatch_syscall(
         // Display takeover (Breenix-specific)
         SyscallNumber::TakeOverDisplay => super::handlers::sys_take_over_display(),
         SyscallNumber::GiveBackDisplay => super::handlers::sys_give_back_display(),
+        // Vectored I/O
+        SyscallNumber::Readv => super::iovec::sys_readv(arg1, arg2, arg3),
+        SyscallNumber::Writev => super::iovec::sys_writev(arg1, arg2, arg3),
+        // Stubs for musl libc compatibility
+        SyscallNumber::Mremap => SyscallResult::Err(super::errno::ENOMEM as u64),
+        SyscallNumber::Madvise => SyscallResult::Ok(0),
+        SyscallNumber::Ppoll => SyscallResult::Err(super::errno::ENOSYS as u64),
+        SyscallNumber::SetRobustList => SyscallResult::Ok(0),
+        // arch_prctl (x86_64 only)
+        SyscallNumber::ArchPrctl => {
+            const ARCH_SET_FS: u64 = 0x1002;
+            const ARCH_GET_FS: u64 = 0x1003;
+            match arg1 {
+                ARCH_SET_FS => {
+                    x86_64::registers::model_specific::FsBase::write(
+                        x86_64::VirtAddr::new(arg2),
+                    );
+                    SyscallResult::Ok(0)
+                }
+                ARCH_GET_FS => {
+                    let fs_base = x86_64::registers::model_specific::FsBase::read().as_u64();
+                    match super::userptr::copy_to_user(arg2 as *mut u64, &fs_base) {
+                        Ok(()) => SyscallResult::Ok(0),
+                        Err(e) => SyscallResult::Err(e),
+                    }
+                }
+                _ => SyscallResult::Err(super::errno::EINVAL as u64),
+            }
+        }
+        // Filesystem: newfstatat
+        SyscallNumber::Newfstatat => super::fs::sys_newfstatat(arg1 as i32, arg2, arg3, arg4 as u32),
+        // GetTime is not mapped on x86_64 (kept for ARM64 compat)
+        SyscallNumber::GetTime => SyscallResult::Err(38), // ENOSYS
         // Testing/diagnostic syscalls (Breenix-specific)
         SyscallNumber::CowStats => super::handlers::sys_cow_stats(arg1),
         SyscallNumber::SimulateOom => super::handlers::sys_simulate_oom(arg1),

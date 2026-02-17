@@ -37,6 +37,8 @@ pub fn clock_gettime(clock_id: u32, ts: &mut Timespec) -> Result<(), Error> {
 /// Get the monotonic time since boot (deprecated, use clock_gettime).
 ///
 /// Returns time in milliseconds.
+/// Only available on ARM64 (x86_64 no longer maps GetTime syscall number 4).
+#[cfg(target_arch = "aarch64")]
 #[inline]
 #[deprecated(note = "Use clock_gettime with CLOCK_MONOTONIC for better precision")]
 pub fn get_time_ms() -> u64 {

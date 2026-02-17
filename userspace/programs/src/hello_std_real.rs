@@ -58,11 +58,11 @@ fn main() {
             #[cfg(target_arch = "x86_64")]
             unsafe {
                 core::arch::asm!(
-                    "int 0x80",        // SYS_exit(0) - Breenix Exit=0
+                    "int 0x80",        // SYS_exit(0) - Linux x86_64 Exit=60
                     "2:",
                     "pause",           // Spin-loop hint (valid in Ring 3)
                     "jmp 2b",
-                    in("rax") 0u64,    // SYS_EXIT = 0 in Breenix
+                    in("rax") 60u64,   // SYS_EXIT = 60 (Linux x86_64 ABI)
                     in("rdi") 0u64,
                     options(noreturn),
                 );
@@ -159,9 +159,9 @@ fn main() {
                 if tid_val == 0 {
                     break;
                 }
-                // Yield CPU: Breenix Yield=3
+                // Yield CPU: Linux x86_64 sched_yield=24
                 #[cfg(target_arch = "x86_64")]
-                core::arch::asm!("int 0x80", in("rax") 3u64, options(nostack));
+                core::arch::asm!("int 0x80", in("rax") 24u64, options(nostack));
                 #[cfg(target_arch = "aarch64")]
                 core::arch::asm!("svc #0", in("x8") 3u64, in("x0") 0u64, options(nostack));
                 // Print progress every 1M iterations

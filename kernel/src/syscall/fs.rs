@@ -3269,3 +3269,105 @@ fn handle_fifo_open(path: &str, flags: u32) -> SyscallResult {
         }
     }
 }
+
+/// newfstatat(dirfd, pathname, statbuf, flags) - Get file status by path
+///
+/// Linux syscall 262. Supports AT_FDCWD (-100) as dirfd to stat relative
+/// to the current working directory. Required by musl libc.
+pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, _flags: u32) -> SyscallResult {
+    use super::errno::{EFAULT, ENOENT};
+    use super::userptr::copy_cstr_from_user;
+    use crate::fs::ext2;
+
+    const AT_FDCWD: i32 = -100;
+
+    if statbuf == 0 {
+        return SyscallResult::Err(EFAULT as u64);
+    }
+    if pathname == 0 {
+        return SyscallResult::Err(EFAULT as u64);
+    }
+
+    // Read pathname from userspace
+    let path = match copy_cstr_from_user(pathname) {
+        Ok(s) => s,
+        Err(e) => return SyscallResult::Err(e as u64),
+    };
+
+    // We only support AT_FDCWD for now
+    if dirfd != AT_FDCWD && !path.starts_with('/') {
+        // Relative paths with non-AT_FDCWD dirfd not yet supported
+        return SyscallResult::Err(super::errno::ENOSYS as u64);
+    }
+
+    // Resolve the path to a full path (handle CWD for relative paths)
+    let full_path = if path.starts_with('/') {
+        path.clone()
+    } else {
+        // Get CWD from current process
+        let cwd = get_current_cwd().unwrap_or_else(|| alloc::string::String::from("/"));
+        if cwd.ends_with('/') {
+            alloc::format!("{}{}", cwd, path)
+        } else {
+            alloc::format!("{}/{}", cwd, path)
+        }
+    };
+
+    // Determine which filesystem to use
+    let is_home = ext2::is_home_path(&full_path);
+    let fs_path = if is_home { ext2::strip_home_prefix(&full_path) } else { &full_path };
+
+    // Look up inode by path
+    let (inode_num, mount_id) = if is_home {
+        let fs_guard = ext2::home_fs_read();
+        let fs = match fs_guard.as_ref() {
+            Some(f) => f,
+            None => return SyscallResult::Err(ENOENT as u64),
+        };
+        let mid = fs.mount_id;
+        match fs.resolve_path(fs_path) {
+            Ok(inum) => (inum as u64, mid),
+            Err(_) => return SyscallResult::Err(ENOENT as u64),
+        }
+    } else {
+        let fs_guard = ext2::root_fs_read();
+        let fs = match fs_guard.as_ref() {
+            Some(f) => f,
+            None => return SyscallResult::Err(ENOENT as u64),
+        };
+        let mid = fs.mount_id;
+        match fs.resolve_path(fs_path) {
+            Ok(inum) => (inum as u64, mid),
+            Err(_) => return SyscallResult::Err(ENOENT as u64),
+        }
+    };
+
+    // Build stat from inode
+    let mut stat = Stat::zeroed();
+    stat.st_dev = mount_id as u64;
+    stat.st_ino = inode_num;
+    stat.st_blksize = 4096;
+    stat.st_nlink = 1;
+    stat.st_mode = S_IFREG | 0o644; // Default
+
+    if let Some(inode_stat) = load_ext2_inode_stat_for_mount(inode_num, mount_id) {
+        stat.st_mode = inode_stat.mode;
+        stat.st_uid = inode_stat.uid;
+        stat.st_gid = inode_stat.gid;
+        stat.st_size = inode_stat.size;
+        stat.st_nlink = inode_stat.nlink;
+        stat.st_atime = inode_stat.atime;
+        stat.st_mtime = inode_stat.mtime;
+        stat.st_ctime = inode_stat.ctime;
+        stat.st_blocks = inode_stat.blocks;
+    }
+
+    // Copy stat to userspace using raw pointer write
+    // (Stat doesn't implement Copy, so we can't use copy_to_user)
+    unsafe {
+        let user_stat = statbuf as *mut Stat;
+        core::ptr::write(user_stat, stat);
+    }
+
+    SyscallResult::Ok(0)
+}

@@ -113,38 +113,58 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
 
     // Dispatch to syscall handler.
     // Some syscalls need special handling because they require access to the frame.
-    // These use SyscallNumber enum values to stay in sync with the shared enum.
+    // First, resolve the raw number to a SyscallNumber via from_u64().
     use crate::syscall::SyscallNumber;
-    let result = if syscall_num == SyscallNumber::Fork as u64 {
-        sys_fork_aarch64(frame)
-    } else if syscall_num == SyscallNumber::Exec as u64 {
-        let exec_result = sys_exec_aarch64(frame, arg1, arg2);
-        // Trace: exec syscall handler returned to dispatcher
-        super::trace::trace_exec(b'H');
-        exec_result
-    } else if syscall_num == SyscallNumber::Sigreturn as u64 {
-        // SIGRETURN restores ALL registers from signal frame - don't overwrite X0 after
-        match crate::syscall::signal::sys_sigreturn_with_frame_aarch64(frame) {
-            crate::syscall::SyscallResult::Ok(_) => {
-                // X0 was already restored from signal frame - don't overwrite it
-                check_and_deliver_signals_aarch64(frame);
-                Aarch64PerCpu::preempt_enable();
-                return;
+
+    // Handle Linux ARM64 compatibility numbers before enum lookup
+    let resolved_num = match syscall_num {
+        arm64_compat::EXIT | arm64_compat::EXIT_GROUP => {
+            trace_exit(0);
+            frame.set_return_value(sys_exit_aarch64(arg1 as i32));
+            check_and_deliver_signals_aarch64(frame);
+            super::trace::trace_exec(b'D');
+            Aarch64PerCpu::preempt_enable();
+            return;
+        }
+        arm64_compat::WRITE => Some(SyscallNumber::Write),
+        other => SyscallNumber::from_u64(other),
+    };
+
+    let result = match resolved_num {
+        Some(SyscallNumber::Fork) => sys_fork_aarch64(frame),
+        Some(SyscallNumber::Exec) => {
+            let exec_result = sys_exec_aarch64(frame, arg1, arg2);
+            super::trace::trace_exec(b'H');
+            exec_result
+        }
+        Some(SyscallNumber::Sigreturn) => {
+            // SIGRETURN restores ALL registers from signal frame - don't overwrite X0 after
+            match crate::syscall::signal::sys_sigreturn_with_frame_aarch64(frame) {
+                crate::syscall::SyscallResult::Ok(_) => {
+                    check_and_deliver_signals_aarch64(frame);
+                    Aarch64PerCpu::preempt_enable();
+                    return;
+                }
+                crate::syscall::SyscallResult::Err(errno) => (-(errno as i64)) as u64,
             }
-            crate::syscall::SyscallResult::Err(errno) => (-(errno as i64)) as u64,
         }
-    } else if syscall_num == SyscallNumber::Pause as u64 {
-        match crate::syscall::signal::sys_pause_with_frame_aarch64(frame) {
-            crate::syscall::SyscallResult::Ok(r) => r,
-            crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+        Some(SyscallNumber::Pause) => {
+            match crate::syscall::signal::sys_pause_with_frame_aarch64(frame) {
+                crate::syscall::SyscallResult::Ok(r) => r,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
         }
-    } else if syscall_num == SyscallNumber::Sigsuspend as u64 {
-        match crate::syscall::signal::sys_sigsuspend_with_frame_aarch64(arg1, arg2, frame) {
-            crate::syscall::SyscallResult::Ok(r) => r,
-            crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+        Some(SyscallNumber::Sigsuspend) => {
+            match crate::syscall::signal::sys_sigsuspend_with_frame_aarch64(arg1, arg2, frame) {
+                crate::syscall::SyscallResult::Ok(r) => r,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
         }
-    } else {
-        dispatch_syscall(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6, frame)
+        Some(syscall) => dispatch_syscall_enum(syscall, arg1, arg2, arg3, arg4, arg5, arg6, frame),
+        None => {
+            crate::serial_println!("[syscall] Unknown ARM64 syscall {} - returning ENOSYS", syscall_num);
+            (-38_i64) as u64 // -ENOSYS
+        }
     };
 
     // Set return value in X0
@@ -351,15 +371,15 @@ fn sys_exit_aarch64(exit_code: i32) -> u64 {
     0
 }
 
-/// Dispatch a syscall to the appropriate handler.
+/// Dispatch a syscall to the appropriate handler using the resolved SyscallNumber.
 ///
 /// Uses the shared SyscallNumber enum to ensure new syscalls are automatically
 /// picked up by both architectures. Only EXIT requires arch-specific handling
 /// (wfi vs hlt). All other syscalls delegate to shared implementations.
 ///
 /// Returns the syscall result (positive for success, negative errno for error).
-fn dispatch_syscall(
-    num: u64,
+fn dispatch_syscall_enum(
+    syscall: crate::syscall::SyscallNumber,
     arg1: u64,
     arg2: u64,
     arg3: u64,
@@ -370,22 +390,6 @@ fn dispatch_syscall(
 ) -> u64 {
     use crate::syscall::SyscallNumber;
 
-    // Handle Linux ARM64 compatibility numbers first (map to Breenix ABI)
-    let num = match num {
-        arm64_compat::EXIT | arm64_compat::EXIT_GROUP => return sys_exit_aarch64(arg1 as i32),
-        arm64_compat::WRITE => 1, // Map to Breenix WRITE
-        other => other,
-    };
-
-    // Look up in the shared SyscallNumber enum
-    let syscall = match SyscallNumber::from_u64(num) {
-        Some(s) => s,
-        None => {
-            crate::serial_println!("[syscall] Unknown ARM64 syscall {} - returning ENOSYS", num);
-            return (-38_i64) as u64; // -ENOSYS
-        }
-    };
-
     // Dispatch using the shared enum — adding a new SyscallNumber variant
     // without adding a match arm here will produce a compiler warning.
     match syscall {
@@ -393,7 +397,7 @@ fn dispatch_syscall(
         SyscallNumber::Exit | SyscallNumber::ExitGroup => sys_exit_aarch64(arg1 as i32),
 
         // FORK, EXEC, SIGRETURN, PAUSE, SIGSUSPEND are handled before
-        // dispatch_syscall is called (they need frame access).
+        // dispatch_syscall_enum is called (they need frame access).
         // If they somehow reach here, return ENOSYS.
         SyscallNumber::Fork | SyscallNumber::Exec | SyscallNumber::Sigreturn => (-38_i64) as u64,
         // PAUSE and SIGSUSPEND also handled before dispatch
@@ -499,6 +503,18 @@ fn dispatch_syscall(
         // Display takeover
         SyscallNumber::TakeOverDisplay => result_to_u64(crate::syscall::handlers::sys_take_over_display()),
         SyscallNumber::GiveBackDisplay => result_to_u64(crate::syscall::handlers::sys_give_back_display()),
+        // Vectored I/O
+        SyscallNumber::Readv => result_to_u64(crate::syscall::iovec::sys_readv(arg1, arg2, arg3)),
+        SyscallNumber::Writev => result_to_u64(crate::syscall::iovec::sys_writev(arg1, arg2, arg3)),
+        // Stubs for musl libc compatibility
+        SyscallNumber::Mremap => (-(crate::syscall::errno::ENOMEM as i64)) as u64,
+        SyscallNumber::Madvise => 0,
+        SyscallNumber::Ppoll => (-(crate::syscall::errno::ENOSYS as i64)) as u64,
+        SyscallNumber::SetRobustList => 0,
+        // arch_prctl is x86_64 only - return ENOSYS on ARM64
+        SyscallNumber::ArchPrctl => (-(crate::syscall::errno::ENOSYS as i64)) as u64,
+        // Filesystem: newfstatat
+        SyscallNumber::Newfstatat => result_to_u64(crate::syscall::fs::sys_newfstatat(arg1 as i32, arg2, arg3, arg4 as u32)),
         // Testing/diagnostic syscalls
         SyscallNumber::CowStats => sys_cow_stats_aarch64(arg1),
         SyscallNumber::SimulateOom => sys_simulate_oom_aarch64(arg1),
