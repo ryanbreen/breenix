@@ -11,11 +11,16 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-EXT2_IMG="$BREENIX_ROOT/target/ext2-session.img"
+EXT2_IMG="$BREENIX_ROOT/target/ext2-home-session.img"
 OUTPUT_DIR="${1:-$HOME/breenix-saves}"
 
 if [ ! -f "$EXT2_IMG" ]; then
-    echo "Error: No session disk found at $EXT2_IMG"
+    # Fall back to old system session disk for backward compatibility
+    EXT2_IMG="$BREENIX_ROOT/target/ext2-session.img"
+fi
+
+if [ ! -f "$EXT2_IMG" ]; then
+    echo "Error: No session disk found"
     echo "Run Breenix first with ./run.sh, then try again."
     exit 1
 fi
@@ -52,18 +57,19 @@ echo "Extracting saves from: $EXT2_IMG"
 echo "Output directory: $OUTPUT_DIR"
 echo ""
 
-# List files in /home/ on the ext2 image
-FILES=$($DEBUGFS -R "ls -l /home" "$EXT2_IMG" 2>/dev/null | grep -o 'guskit_[0-9]*\.bmp' || true)
+# List files at the root of the home disk image
+# (The home disk is mounted at /home, so saves are at / within the image)
+FILES=$($DEBUGFS -R "ls -l /" "$EXT2_IMG" 2>/dev/null | grep -o 'guskit_[0-9]*\.bmp' || true)
 
 if [ -z "$FILES" ]; then
-    echo "No saved drawings found in /home/"
+    echo "No saved drawings found"
     exit 0
 fi
 
 COUNT=0
 for f in $FILES; do
     echo "  Extracting $f..."
-    $DEBUGFS -R "dump /home/$f $OUTPUT_DIR/$f" "$EXT2_IMG" 2>/dev/null
+    $DEBUGFS -R "dump /$f $OUTPUT_DIR/$f" "$EXT2_IMG" 2>/dev/null
     COUNT=$((COUNT + 1))
 done
 

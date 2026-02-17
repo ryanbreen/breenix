@@ -32,6 +32,7 @@ CLEAN=false
 NO_BUILD=false
 BTRT=false
 DEBUG=false
+REBUILD_HOME=false
 RESOLUTION=""
 
 # Parse arguments
@@ -61,6 +62,10 @@ while [[ $# -gt 0 ]]; do
             DEBUG=true
             shift
             ;;
+        --rebuild-home)
+            REBUILD_HOME=true
+            shift
+            ;;
         --resolution)
             RESOLUTION="$2"
             shift 2
@@ -77,7 +82,8 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: ./run.sh [options]"
             echo ""
             echo "Options:"
-            echo "  --clean                    Full rebuild: userspace, ext2 disk, kernel"
+            echo "  --clean                    Full rebuild: userspace, system ext2, kernel"
+            echo "  --rebuild-home             Recreate home disk (destroys user data)"
             echo "  --no-build                 Skip all builds, use existing artifacts"
             echo "  --x86, --x86_64, --amd64   Run x86_64 kernel (default: ARM64)"
             echo "  --arm64, --aarch64         Run ARM64 kernel (default)"
@@ -127,12 +133,14 @@ if [ "$ARCH" = "arm64" ]; then
     # ARM64 path - direct kernel boot
     KERNEL="$BREENIX_ROOT/target/aarch64-breenix/release/kernel-aarch64"
     EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
+    HOME_DISK="$BREENIX_ROOT/target/ext2-home-aarch64.img"
 
     # Build command for ARM64
     BUILD_CMD="cargo build --release --features boot_tests --target aarch64-breenix.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64"
 else
     # x86_64 path - uses UEFI boot
     EXT2_DISK="$BREENIX_ROOT/target/ext2.img"
+    HOME_DISK="$BREENIX_ROOT/target/ext2-home.img"
     VNC_PORT=5900
 
     # Build command for x86_64
@@ -184,7 +192,7 @@ echo "Mode: $([ "$HEADLESS" = true ] && echo "headless (serial only)" || echo "g
 if [ "$NO_BUILD" = true ]; then
     echo "Skipping all builds (--no-build)"
 elif [ "$CLEAN" = true ]; then
-    # --clean: full rebuild of userspace, ext2 disk, and kernel
+    # --clean: full rebuild of userspace, system ext2 disk, and kernel
     echo ""
     echo "Clean build: rebuilding everything..."
     echo ""
@@ -194,7 +202,7 @@ elif [ "$CLEAN" = true ]; then
         "$BREENIX_ROOT/userspace/programs/build.sh" --arch aarch64
 
         echo ""
-        echo "[2/3] Creating ext2 disk image..."
+        echo "[2/3] Creating system ext2 disk image..."
         "$BREENIX_ROOT/scripts/create_ext2_disk.sh" --arch aarch64
 
         echo ""
@@ -204,7 +212,7 @@ elif [ "$CLEAN" = true ]; then
         "$BREENIX_ROOT/userspace/programs/build.sh"
 
         echo ""
-        echo "[2/3] Creating ext2 disk image..."
+        echo "[2/3] Creating system ext2 disk image..."
         "$BREENIX_ROOT/scripts/create_ext2_disk.sh"
 
         echo ""
@@ -217,6 +225,22 @@ else
     # Cargo is incremental — this is fast if nothing changed
     echo "Building kernel..."
     eval $BUILD_CMD
+fi
+
+# Create home disk if it doesn't exist (never recreated unless --rebuild-home)
+if [ "$REBUILD_HOME" = true ] || [ ! -f "$HOME_DISK" ]; then
+    if [ "$REBUILD_HOME" = true ] && [ -f "$HOME_DISK" ]; then
+        echo ""
+        echo "Rebuilding home disk (--rebuild-home)..."
+    elif [ ! -f "$HOME_DISK" ]; then
+        echo ""
+        echo "Creating home disk (first run)..."
+    fi
+    if [ "$ARCH" = "arm64" ]; then
+        "$BREENIX_ROOT/scripts/create_home_disk.sh" --arch aarch64
+    else
+        "$BREENIX_ROOT/scripts/create_home_disk.sh"
+    fi
 fi
 
 if [ ! -f "$KERNEL" ]; then
@@ -253,6 +277,24 @@ else
     echo "Disk image: (none - shell commands will be limited)"
     if [ "$ARCH" = "arm64" ]; then
         DISK_OPTS="-device virtio-blk-device,drive=hd0 -drive if=none,id=hd0,format=raw,file=/dev/null"
+    fi
+fi
+
+# Add home disk if it exists (writable copy for user data persistence)
+HOME_DISK_OPTS=""
+HOME_SESSION="$BREENIX_ROOT/target/ext2-home-session.img"
+if [ -f "$HOME_DISK" ]; then
+    echo "Home disk: $HOME_DISK"
+    if [ "$REBUILD_HOME" = true ] || [ ! -f "$HOME_SESSION" ]; then
+        echo "Creating fresh home session disk from $HOME_DISK"
+        cp "$HOME_DISK" "$HOME_SESSION"
+    else
+        echo "Reusing existing home session disk (use --rebuild-home to reset)"
+    fi
+    if [ "$ARCH" = "arm64" ]; then
+        HOME_DISK_OPTS="-device virtio-blk-device,drive=homedisk -drive if=none,id=homedisk,format=raw,file=$HOME_SESSION"
+    else
+        HOME_DISK_OPTS="-drive if=none,id=homedisk,format=raw,file=$HOME_SESSION -device virtio-blk-pci,drive=homedisk,disable-modern=on,disable-legacy=off"
     fi
 fi
 
@@ -317,12 +359,17 @@ FW_CFG_OPTS="-fw_cfg name=opt/breenix/resolution,string=${RES_W}x${RES_H}"
 # Build the full QEMU command based on architecture
 if [ "$ARCH" = "arm64" ]; then
     # ARM64 QEMU invocation (native)
+    # NOTE: Home disk must come BEFORE system disk because QEMU virt assigns
+    # MMIO addresses in reverse command-line order. The kernel discovers devices
+    # by scanning MMIO addresses low-to-high, so the LAST device here gets the
+    # lowest address and becomes device 0 (the system/root disk).
     qemu-system-aarch64 \
         -M virt -cpu cortex-a72 \
         -smp 4 \
         -m 512M \
         -kernel "$KERNEL" \
         $DISPLAY_OPTS \
+        $HOME_DISK_OPTS \
         $DISK_OPTS \
         -device virtio-net-device,netdev=net0 \
         -netdev user,id=net0,hostfwd=tcp::2323-:2323,hostfwd=tcp::7890-:7890 \
@@ -353,6 +400,7 @@ else
         -device virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off \
         $TEST_BIN_OPTS \
         $DISK_OPTS \
+        $HOME_DISK_OPTS \
         -machine pc,accel=tcg \
         -cpu qemu64 \
         -smp 4 \
@@ -402,6 +450,9 @@ echo "Breenix stopped"
 echo "========================================="
 echo "Serial output saved to: $OUTPUT_DIR/serial.txt"
 if [ -f "$EXT2_SESSION" ]; then
-    echo "Session disk: $EXT2_SESSION"
+    echo "System session disk: $EXT2_SESSION"
+fi
+if [ -f "$HOME_SESSION" ]; then
+    echo "Home session disk: $HOME_SESSION"
     echo "Extract saved files: ./scripts/extract-saves.sh"
 fi

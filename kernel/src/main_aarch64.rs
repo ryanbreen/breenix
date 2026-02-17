@@ -366,6 +366,12 @@ pub extern "C" fn kernel_main() -> ! {
         }
     }
 
+    // Initialize ext2 home filesystem (/home on separate disk)
+    match kernel::fs::ext2::init_home_fs() {
+        Ok(()) => serial_println!("[boot] ext2 home filesystem mounted at /home"),
+        Err(e) => serial_println!("[boot] No home filesystem: {} (continuing)", e),
+    }
+
     // Initialize devfs (/dev virtual filesystem)
     kernel::fs::devfs::init();
     serial_println!("[boot] devfs initialized at /dev");

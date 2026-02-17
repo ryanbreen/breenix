@@ -1422,3 +1422,98 @@ pub fn root_fs_write() -> spin::RwLockWriteGuard<'static, Option<Ext2Fs>> {
 pub fn is_mounted() -> bool {
     ROOT_EXT2.read().is_some()
 }
+
+/// Global mounted ext2 home filesystem (/home)
+///
+/// Separate from ROOT_EXT2 so that user data lives on a different disk
+/// from the system binaries. This allows syncing the system disk to
+/// other machines without overwriting their local user data.
+static HOME_EXT2: RwLock<Option<Ext2Fs>> = RwLock::new(None);
+
+/// Initialize the home ext2 filesystem
+///
+/// Mounts a second ext2 disk as the /home filesystem.
+/// Device layout:
+///   - x86_64: Device 3 (boot=0, test=1, root=2, home=3)
+///   - ARM64: Device 1 (root=0, home=1)
+///
+/// This is non-fatal — if no home disk is attached, /home falls through
+/// to the root ext2 filesystem (backward compatible).
+pub fn init_home_fs() -> Result<(), &'static str> {
+    // Try x86_64 layout first (device index 3), then ARM64 layout (device index 1).
+    let device = VirtioBlockWrapper::new(3)
+        .or_else(|| VirtioBlockWrapper::new(1))
+        .ok_or("No home block device available (expected at device index 3 or 1)")?;
+    let device = Arc::new(device);
+
+    // Register with VFS mount system
+    let mount_id = crate::fs::vfs::mount("/home", "ext2");
+
+    // Create the ext2 filesystem instance
+    let fs = Ext2Fs::new(device, mount_id)?;
+
+    // Read packed struct fields safely before logging
+    let blocks_count = unsafe {
+        core::ptr::read_unaligned(core::ptr::addr_of!(fs.superblock.s_blocks_count))
+    };
+    log::info!(
+        "ext2: Mounted home filesystem at /home - {} blocks, block size {}",
+        blocks_count,
+        fs.superblock.block_size()
+    );
+
+    // Store globally
+    *HOME_EXT2.write() = Some(fs);
+
+    Ok(())
+}
+
+/// Access the home ext2 filesystem for read-only operations
+pub fn home_fs_read() -> spin::RwLockReadGuard<'static, Option<Ext2Fs>> {
+    HOME_EXT2.read()
+}
+
+/// Access the home ext2 filesystem for write operations
+///
+/// Uses upgradeable_read() + upgrade() to prevent writer starvation (same as root_fs_write).
+pub fn home_fs_write() -> spin::RwLockWriteGuard<'static, Option<Ext2Fs>> {
+    HOME_EXT2.upgradeable_read().upgrade()
+}
+
+/// Check if the home filesystem is mounted
+pub fn is_home_mounted() -> bool {
+    HOME_EXT2.read().is_some()
+}
+
+/// Get the mount_id of the home filesystem, if mounted.
+///
+/// Used by FD-based syscall dispatch to determine which filesystem
+/// a file descriptor belongs to.
+pub fn home_mount_id() -> Option<usize> {
+    HOME_EXT2.read().as_ref().map(|fs| fs.mount_id)
+}
+
+/// Strip the /home prefix from a path, returning the path within the home filesystem.
+///
+/// "/home/foo.bmp" → "/foo.bmp"
+/// "/home" → "/"
+/// "/home/" → "/"
+pub fn strip_home_prefix(path: &str) -> &str {
+    if path == "/home" || path == "/home/" {
+        "/"
+    } else if path.starts_with("/home/") {
+        // rest is "foo.bmp" — we need to return "/foo.bmp"
+        // Since we can't allocate, we return the slice starting at the '/' before the rest
+        // path = "/home/foo.bmp"
+        //         01234567...
+        // We want &path[5..] = "/foo.bmp"
+        &path[5..]
+    } else {
+        path
+    }
+}
+
+/// Check if a resolved path should be routed to the home filesystem.
+pub fn is_home_path(path: &str) -> bool {
+    (path == "/home" || path.starts_with("/home/")) && is_home_mounted()
+}

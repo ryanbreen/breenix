@@ -434,35 +434,53 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         }
         WriteOperation::RegularFile { file } => {
             // Write to ext2 regular file
-            let (inode_num, position, flags) = {
+            let (inode_num, position, flags, file_mount_id) = {
                 let file_guard = file.lock();
-                (file_guard.inode_num, file_guard.position, file_guard.flags)
+                (file_guard.inode_num, file_guard.position, file_guard.flags, file_guard.mount_id)
             };
 
-            // Acquire write lock once for the entire operation.
-            // O_APPEND needs to read inode size and then write atomically under
-            // the same lock to avoid TOCTOU races.
-            let mut root_fs = crate::fs::ext2::root_fs_write();
-            let fs = match root_fs.as_mut() {
-                Some(fs) => fs,
-                None => return SyscallResult::Err(super::errno::ENOSYS as u64),
-            };
+            // Dispatch to correct filesystem based on mount_id
+            let is_home = crate::fs::ext2::home_mount_id().map_or(false, |id| id == file_mount_id);
 
-            let write_offset = if (flags & crate::syscall::fs::O_APPEND) != 0 {
-                match fs.read_inode(inode_num as u32) {
-                    Ok(inode) => inode.size(),
+            let (write_offset, bytes_written) = if is_home {
+                let mut fs_guard = crate::fs::ext2::home_fs_write();
+                let fs = match fs_guard.as_mut() {
+                    Some(fs) => fs,
+                    None => return SyscallResult::Err(super::errno::ENOSYS as u64),
+                };
+                let wo = if (flags & crate::syscall::fs::O_APPEND) != 0 {
+                    match fs.read_inode(inode_num as u32) {
+                        Ok(inode) => inode.size(),
+                        Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
+                    }
+                } else {
+                    position
+                };
+                let bw = match fs.write_file_range(inode_num as u32, wo, &buffer) {
+                    Ok(n) => n,
                     Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
-                }
+                };
+                (wo, bw)
             } else {
-                position
+                let mut fs_guard = crate::fs::ext2::root_fs_write();
+                let fs = match fs_guard.as_mut() {
+                    Some(fs) => fs,
+                    None => return SyscallResult::Err(super::errno::ENOSYS as u64),
+                };
+                let wo = if (flags & crate::syscall::fs::O_APPEND) != 0 {
+                    match fs.read_inode(inode_num as u32) {
+                        Ok(inode) => inode.size(),
+                        Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
+                    }
+                } else {
+                    position
+                };
+                let bw = match fs.write_file_range(inode_num as u32, wo, &buffer) {
+                    Ok(n) => n,
+                    Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
+                };
+                (wo, bw)
             };
-
-            let bytes_written = match fs.write_file_range(inode_num as u32, write_offset, &buffer) {
-                Ok(n) => n,
-                Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
-            };
-
-            drop(root_fs);
 
             // Update file position
             {
@@ -962,41 +980,60 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // Read from ext2 regular file
             //
             // Get file info under the lock, then drop lock before filesystem operations
-            let (inode_num, position) = {
+            let (inode_num, position, file_mount_id) = {
                 let file = file_ref.lock();
-                (file.inode_num, file.position)
+                (file.inode_num, file.position, file.mount_id)
             };
 
-            // Access the mounted ext2 filesystem
-            let root_fs = crate::fs::ext2::root_fs_read();
-            let fs = match root_fs.as_ref() {
-                Some(fs) => fs,
-                None => {
-                    log::error!("sys_read: ext2 filesystem not mounted");
-                    return SyscallResult::Err(super::errno::ENOSYS as u64);
+            // Dispatch to correct filesystem based on mount_id
+            let is_home = crate::fs::ext2::home_mount_id().map_or(false, |id| id == file_mount_id);
+            let data = if is_home {
+                let fs_guard = crate::fs::ext2::home_fs_read();
+                let fs = match fs_guard.as_ref() {
+                    Some(fs) => fs,
+                    None => {
+                        log::error!("sys_read: ext2 home filesystem not mounted");
+                        return SyscallResult::Err(super::errno::ENOSYS as u64);
+                    }
+                };
+                let inode = match fs.read_inode(inode_num as u32) {
+                    Ok(inode) => inode,
+                    Err(e) => {
+                        log::error!("sys_read: Failed to read inode {}: {}", inode_num, e);
+                        return SyscallResult::Err(super::errno::EIO as u64);
+                    }
+                };
+                match fs.read_file_range(&inode, position, count as usize) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        log::error!("sys_read: Failed to read file data: {}", e);
+                        return SyscallResult::Err(super::errno::EIO as u64);
+                    }
+                }
+            } else {
+                let fs_guard = crate::fs::ext2::root_fs_read();
+                let fs = match fs_guard.as_ref() {
+                    Some(fs) => fs,
+                    None => {
+                        log::error!("sys_read: ext2 filesystem not mounted");
+                        return SyscallResult::Err(super::errno::ENOSYS as u64);
+                    }
+                };
+                let inode = match fs.read_inode(inode_num as u32) {
+                    Ok(inode) => inode,
+                    Err(e) => {
+                        log::error!("sys_read: Failed to read inode {}: {}", inode_num, e);
+                        return SyscallResult::Err(super::errno::EIO as u64);
+                    }
+                };
+                match fs.read_file_range(&inode, position, count as usize) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        log::error!("sys_read: Failed to read file data: {}", e);
+                        return SyscallResult::Err(super::errno::EIO as u64);
+                    }
                 }
             };
-
-            // Read the inode
-            let inode = match fs.read_inode(inode_num as u32) {
-                Ok(inode) => inode,
-                Err(e) => {
-                    log::error!("sys_read: Failed to read inode {}: {}", inode_num, e);
-                    return SyscallResult::Err(super::errno::EIO as u64);
-                }
-            };
-
-            // Read the file data
-            let data = match fs.read_file_range(&inode, position, count as usize) {
-                Ok(data) => data,
-                Err(e) => {
-                    log::error!("sys_read: Failed to read file data: {}", e);
-                    return SyscallResult::Err(super::errno::EIO as u64);
-                }
-            };
-
-            // Drop the filesystem lock before copying to userspace
-            drop(root_fs);
 
             let bytes_read = data.len();
 
@@ -1957,39 +1994,49 @@ pub fn sys_exec_with_frame(
 /// It's called on every exec syscall, and serial I/O causes CI timing issues.
 #[cfg(all(target_arch = "x86_64", feature = "testing"))]
 fn load_elf_from_ext2(path: &str) -> Result<Vec<u8>, i32> {
-    use super::errno::{EACCES, EIO, ENOENT, ENOTDIR};
+    use super::errno::EIO;
     use crate::fs::ext2;
 
-    // Get ext2 filesystem
-    let fs_guard = ext2::root_fs_read();
-    let fs = fs_guard.as_ref().ok_or(EIO)?;
+    // Determine which filesystem to use based on path
+    let is_home = ext2::is_home_path(path);
+    let fs_path = if is_home { ext2::strip_home_prefix(path) } else { path };
 
-    // Resolve path to inode number
+    if is_home {
+        let fs_guard = ext2::home_fs_read();
+        let fs = fs_guard.as_ref().ok_or(EIO)?;
+        load_elf_from_ext2_fs(fs, fs_path)
+    } else {
+        let fs_guard = ext2::root_fs_read();
+        let fs = fs_guard.as_ref().ok_or(EIO)?;
+        load_elf_from_ext2_fs(fs, fs_path)
+    }
+}
+
+/// Inner helper for loading ELF from any ext2 filesystem instance.
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
+fn load_elf_from_ext2_fs(fs: &crate::fs::ext2::Ext2Fs, path: &str) -> Result<Vec<u8>, i32> {
+    use super::errno::{EACCES, EIO, ENOTDIR};
+
     let inode_num = fs.resolve_path(path).map_err(|e| {
         if e.contains("not found") {
-            ENOENT
+            super::errno::ENOENT
         } else {
             EIO
         }
     })?;
 
-    // Read inode metadata
     let inode = fs.read_inode(inode_num).map_err(|_| EIO)?;
 
-    // Check it's a regular file (not directory)
     if inode.is_dir() {
         return Err(ENOTDIR);
     }
 
-    // Check execute permission (S_IXUSR = 0o100)
     let perms = inode.permissions();
     if (perms & 0o100) == 0 {
         return Err(EACCES);
     }
 
-    // Read file content
     let data = fs.read_file_content(&inode).map_err(|_| EIO)?;
-
     Ok(data)
 }
 

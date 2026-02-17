@@ -1,7 +1,7 @@
 #!/bin/bash
 # Create ext2 disk image for Breenix kernel testing
 #
-# This script creates an ext2 filesystem image (1GB default) with:
+# This script creates an ext2 filesystem image (64MB default) with:
 #   - Test files for filesystem testing
 #   - Coreutils binaries in /bin/ (bcat, bls, becho, bmkdir, brmdir, brm, bcp, bmv, bfalse, bhead, btail, bwc, bwhich)
 #   - /sbin/btrue for PATH order testing
@@ -22,7 +22,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TARGET_DIR="$PROJECT_ROOT/target"
-SIZE_MB=1024
+SIZE_MB=64
 
 ARCH="x86_64"
 while [[ $# -gt 0 ]]; do
@@ -46,7 +46,7 @@ if [[ "$ARCH" == "aarch64" ]]; then
     USERSPACE_DIR="$PROJECT_ROOT/userspace/programs/aarch64"
     OUTPUT_FILE="$TARGET_DIR/ext2-aarch64.img"
     TESTDATA_FILE="$PROJECT_ROOT/testdata/ext2-aarch64.img"
-    # ARM64 uses same 1GB default as x86_64
+    # ARM64 uses same 64MB default as x86_64
 else
     USERSPACE_DIR="$PROJECT_ROOT/userspace/programs"
     OUTPUT_FILE="$TARGET_DIR/ext2.img"

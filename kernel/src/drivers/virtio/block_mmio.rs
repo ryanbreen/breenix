@@ -8,12 +8,15 @@ use core::ptr::read_volatile;
 use core::sync::atomic::{fence, Ordering};
 use spin::Mutex;
 
-/// Lock protecting all shared DMA buffers (REQ_HEADER, DATA_BUF, STATUS_BUF, QUEUE_MEM).
+/// Maximum number of block devices supported
+pub const MAX_BLOCK_DEVICES: usize = 2;
+
+/// Per-device locks protecting DMA buffers.
 ///
 /// The x86_64 PCI block driver uses Mutex<Virtqueue> for the same purpose (block.rs:81).
 /// Without this lock, concurrent exec() calls (e.g., init spawning telnetd + bsh) corrupt
 /// each other's request headers mid-flight, causing ELF load failures.
-static BLOCK_IO_LOCK: Mutex<()> = Mutex::new(());
+static BLOCK_IO_LOCKS: [Mutex<()>; MAX_BLOCK_DEVICES] = [Mutex::new(()), Mutex::new(())];
 
 // Import dsb_sy from the shared CPU module to avoid duplication
 use crate::arch_impl::aarch64::cpu::dsb_sy;
@@ -121,29 +124,34 @@ struct StatusBuffer {
     _padding: [u8; 15],
 }
 
-// Static buffers for the block driver
-static mut QUEUE_MEM: QueueMemory = QueueMemory {
+// Static buffers for device 0
+static mut QUEUE_MEM_0: QueueMemory = QueueMemory {
     desc: [VirtqDesc { addr: 0, len: 0, flags: 0, next: 0 }; 16],
     avail: VirtqAvail { flags: 0, idx: 0, ring: [0; 16] },
     _padding: [0; 4096 - 256 - 36],
     used: VirtqUsed { flags: 0, idx: 0, ring: [VirtqUsedElem { id: 0, len: 0 }; 16] },
 };
-
-static mut REQ_HEADER: RequestHeader = RequestHeader {
+static mut REQ_HEADER_0: RequestHeader = RequestHeader {
     req: VirtioBlkReq { type_: 0, reserved: 0, sector: 0 },
 };
+static mut DATA_BUF_0: DataBuffer = DataBuffer { data: [0; SECTOR_SIZE] };
+static mut STATUS_BUF_0: StatusBuffer = StatusBuffer { status: 0xff, _padding: [0; 15] };
 
-static mut DATA_BUF: DataBuffer = DataBuffer {
-    data: [0; SECTOR_SIZE],
+// Static buffers for device 1
+static mut QUEUE_MEM_1: QueueMemory = QueueMemory {
+    desc: [VirtqDesc { addr: 0, len: 0, flags: 0, next: 0 }; 16],
+    avail: VirtqAvail { flags: 0, idx: 0, ring: [0; 16] },
+    _padding: [0; 4096 - 256 - 36],
+    used: VirtqUsed { flags: 0, idx: 0, ring: [VirtqUsedElem { id: 0, len: 0 }; 16] },
 };
-
-static mut STATUS_BUF: StatusBuffer = StatusBuffer {
-    status: 0xff,
-    _padding: [0; 15],
+static mut REQ_HEADER_1: RequestHeader = RequestHeader {
+    req: VirtioBlkReq { type_: 0, reserved: 0, sector: 0 },
 };
+static mut DATA_BUF_1: DataBuffer = DataBuffer { data: [0; SECTOR_SIZE] };
+static mut STATUS_BUF_1: StatusBuffer = StatusBuffer { status: 0xff, _padding: [0; 15] };
 
-/// VirtIO block device state
-static mut BLOCK_DEVICE: Option<BlockDeviceState> = None;
+/// VirtIO block device states (one per device)
+static mut BLOCK_DEVICES: [Option<BlockDeviceState>; MAX_BLOCK_DEVICES] = [None, None];
 
 struct BlockDeviceState {
     base: u64,
@@ -153,32 +161,88 @@ struct BlockDeviceState {
     last_used_idx: u16,
 }
 
+/// Helper struct providing raw pointers to a device's static DMA buffers.
+/// These pointers are only valid while the corresponding BLOCK_IO_LOCKS entry is held.
+struct DeviceBuffers {
+    queue_mem: *mut QueueMemory,
+    req_header: *mut RequestHeader,
+    data_buf: *mut DataBuffer,
+    status_buf: *mut StatusBuffer,
+}
+
+/// Get pointers to the static DMA buffers for a given device index.
+///
+/// # Safety
+/// Caller must hold BLOCK_IO_LOCKS[device_index] before accessing returned pointers.
+fn device_buffers(device_index: usize) -> DeviceBuffers {
+    match device_index {
+        0 => DeviceBuffers {
+            queue_mem: &raw mut QUEUE_MEM_0,
+            req_header: &raw mut REQ_HEADER_0,
+            data_buf: &raw mut DATA_BUF_0,
+            status_buf: &raw mut STATUS_BUF_0,
+        },
+        1 => DeviceBuffers {
+            queue_mem: &raw mut QUEUE_MEM_1,
+            req_header: &raw mut REQ_HEADER_1,
+            data_buf: &raw mut DATA_BUF_1,
+            status_buf: &raw mut STATUS_BUF_1,
+        },
+        _ => panic!("device_index out of range"),
+    }
+}
+
+/// Get const pointers to the static DMA buffers for physical address calculation.
+fn device_buffers_const(device_index: usize) -> (*const QueueMemory, *const RequestHeader, *const DataBuffer, *const StatusBuffer) {
+    match device_index {
+        0 => (&raw const QUEUE_MEM_0, &raw const REQ_HEADER_0, &raw const DATA_BUF_0, &raw const STATUS_BUF_0),
+        1 => (&raw const QUEUE_MEM_1, &raw const REQ_HEADER_1, &raw const DATA_BUF_1, &raw const STATUS_BUF_1),
+        _ => panic!("device_index out of range"),
+    }
+}
+
 #[inline(always)]
 fn virt_to_phys(addr: u64) -> u64 {
     addr - crate::memory::physical_memory_offset().as_u64()
 }
 
-/// Initialize the VirtIO block device
-pub fn init() -> Result<(), &'static str> {
-    crate::serial_println!("[virtio-blk] Searching for block device...");
+/// Number of initialized block devices
+static DEVICE_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
-    // Find a block device in MMIO space
+/// Initialize all VirtIO block devices
+pub fn init() -> Result<(), &'static str> {
+    crate::serial_println!("[virtio-blk] Searching for block devices...");
+
+    let mut found = 0usize;
+
+    // Find block devices in MMIO space
     for i in 0..VIRTIO_MMIO_COUNT {
+        if found >= MAX_BLOCK_DEVICES {
+            break;
+        }
         let base = VIRTIO_MMIO_BASE + (i as u64) * VIRTIO_MMIO_SIZE;
         if let Some(mut device) = VirtioMmioDevice::probe(base) {
             if device.device_id() == device_id::BLOCK {
-                crate::serial_println!("[virtio-blk] Found block device at {:#x}", base);
-                return init_device(&mut device, base);
+                crate::serial_println!("[virtio-blk] Found block device {} at {:#x}", found, base);
+                init_device(&mut device, base, found)?;
+                found += 1;
             }
         }
     }
 
-    Err("No VirtIO block device found")
+    DEVICE_COUNT.store(found, core::sync::atomic::Ordering::Release);
+
+    if found == 0 {
+        Err("No VirtIO block device found")
+    } else {
+        crate::serial_println!("[virtio-blk] Initialized {} block device(s)", found);
+        Ok(())
+    }
 }
 
-fn init_device(device: &mut VirtioMmioDevice, base: u64) -> Result<(), &'static str> {
+fn init_device(device: &mut VirtioMmioDevice, base: u64, device_index: usize) -> Result<(), &'static str> {
     let version = device.version();
-    crate::serial_println!("[virtio-blk] Device version: {}", version);
+    crate::serial_println!("[virtio-blk] Device {} version: {}", device_index, version);
 
     // For v1 (legacy), we must set guest page size BEFORE init
     if version == 1 {
@@ -191,14 +255,15 @@ fn init_device(device: &mut VirtioMmioDevice, base: u64) -> Result<(), &'static 
     // Get device features to check for read-only flag
     let device_features = device.device_features();
     if device_features & features::RO != 0 {
-        crate::serial_println!("[virtio-blk] Device is read-only");
+        crate::serial_println!("[virtio-blk] Device {} is read-only", device_index);
     }
 
     // Read capacity from config space
     // For VirtIO block: offset 0 = capacity (u64)
     let capacity = device.read_config_u64(0);
     crate::serial_println!(
-        "[virtio-blk] Capacity: {} sectors ({} MB)",
+        "[virtio-blk] Device {} capacity: {} sectors ({} MB)",
+        device_index,
         capacity,
         (capacity * SECTOR_SIZE as u64) / (1024 * 1024)
     );
@@ -206,7 +271,7 @@ fn init_device(device: &mut VirtioMmioDevice, base: u64) -> Result<(), &'static 
     // Set up the request queue (queue 0)
     device.select_queue(0);
     let queue_num_max = device.get_queue_num_max();
-    crate::serial_println!("[virtio-blk] Queue max size: {}", queue_num_max);
+    crate::serial_println!("[virtio-blk] Device {} queue max size: {}", device_index, queue_num_max);
 
     if queue_num_max == 0 {
         return Err("Device reports queue size 0");
@@ -216,40 +281,40 @@ fn init_device(device: &mut VirtioMmioDevice, base: u64) -> Result<(), &'static 
     let queue_size = core::cmp::min(queue_num_max, 16);
     device.set_queue_num(queue_size);
 
+    // Get pointers to this device's static buffers
+    let bufs = device_buffers(device_index);
+    let (queue_const, _, _, _) = device_buffers_const(device_index);
+
     // Get physical address of queue memory from high-half direct map
-    let queue_phys = virt_to_phys(&raw const QUEUE_MEM as u64);
+    let queue_phys = virt_to_phys(queue_const as u64);
 
     // Initialize descriptor free list and rings
     unsafe {
-        let queue_ptr = &raw mut QUEUE_MEM;
         for i in 0..15 {
-            (*queue_ptr).desc[i].next = (i + 1) as u16;
+            (*bufs.queue_mem).desc[i].next = (i + 1) as u16;
         }
-        (*queue_ptr).desc[15].next = 0;  // End of list
-        (*queue_ptr).avail.flags = 0;
-        (*queue_ptr).avail.idx = 0;
-        (*queue_ptr).used.flags = 0;
-        (*queue_ptr).used.idx = 0;
+        (*bufs.queue_mem).desc[15].next = 0;  // End of list
+        (*bufs.queue_mem).avail.flags = 0;
+        (*bufs.queue_mem).avail.idx = 0;
+        (*bufs.queue_mem).used.flags = 0;
+        (*bufs.queue_mem).used.idx = 0;
     }
 
     if version == 1 {
         // VirtIO MMIO v1 (legacy) queue setup
-        // Memory layout: desc table, then avail ring, then used ring (page-aligned)
-        // The PFN is the physical address divided by page size
-        crate::serial_println!("[virtio-blk] Using v1 (legacy) queue setup at PFN {:#x}",
-            queue_phys / 4096);
+        crate::serial_println!("[virtio-blk] Device {} using v1 (legacy) queue setup at PFN {:#x}",
+            device_index, queue_phys / 4096);
 
         device.set_queue_align(4096);
         device.set_queue_pfn((queue_phys / 4096) as u32);
-        // In v1, writing to QUEUE_PFN enables the queue
     } else {
         // VirtIO MMIO v2 (modern) queue setup
         let desc_addr = queue_phys;
         let avail_addr = queue_phys + 256;  // After desc table
         let used_addr = queue_phys + 4096;  // After padding, 4KB aligned
 
-        crate::serial_println!("[virtio-blk] Using v2 queue setup: desc={:#x} avail={:#x} used={:#x}",
-            desc_addr, avail_addr, used_addr);
+        crate::serial_println!("[virtio-blk] Device {} using v2 queue setup: desc={:#x} avail={:#x} used={:#x}",
+            device_index, desc_addr, avail_addr, used_addr);
 
         device.set_queue_desc(desc_addr);
         device.set_queue_avail(avail_addr);
@@ -262,8 +327,8 @@ fn init_device(device: &mut VirtioMmioDevice, base: u64) -> Result<(), &'static 
 
     // Store device state
     unsafe {
-        let ptr = &raw mut BLOCK_DEVICE;
-        *ptr = Some(BlockDeviceState {
+        let ptr = &raw mut BLOCK_DEVICES;
+        (*ptr)[device_index] = Some(BlockDeviceState {
             base,
             capacity,
             device_features,
@@ -271,16 +336,20 @@ fn init_device(device: &mut VirtioMmioDevice, base: u64) -> Result<(), &'static 
         });
     }
 
-    crate::serial_println!("[virtio-blk] Block device initialized successfully");
+    crate::serial_println!("[virtio-blk] Block device {} initialized successfully", device_index);
     Ok(())
 }
 
-/// Read a sector from the block device.
+/// Read a sector from the block device at given device_index.
 ///
-/// Serializes access with BLOCK_IO_LOCK to prevent concurrent DMA buffer corruption.
+/// Serializes access with per-device BLOCK_IO_LOCKS to prevent concurrent DMA buffer corruption.
 /// Disables interrupts before acquiring the lock to prevent same-core deadlock
 /// (matches the pattern in `kernel/src/process/mod.rs:85-88`).
-pub fn read_sector(sector: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), &'static str> {
+pub fn read_sector(device_index: usize, sector: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), &'static str> {
+    if device_index >= MAX_BLOCK_DEVICES {
+        return Err("Invalid device index");
+    }
+
     // Save DAIF and disable interrupts to prevent same-core deadlock:
     // if a timer interrupt preempts while we hold the spinlock, the scheduler
     // could switch to another thread on this core that tries to acquire the
@@ -291,8 +360,8 @@ pub fn read_sector(sector: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), &'
         core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
     }
 
-    let _guard = BLOCK_IO_LOCK.lock();
-    let result = read_sector_inner(sector, buffer);
+    let _guard = BLOCK_IO_LOCKS[device_index].lock();
+    let result = read_sector_inner(device_index, sector, buffer);
     drop(_guard);
 
     // Restore interrupt state
@@ -303,42 +372,41 @@ pub fn read_sector(sector: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), &'
     result
 }
 
-/// Inner implementation of read_sector, called with BLOCK_IO_LOCK held.
-fn read_sector_inner(sector: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), &'static str> {
+/// Inner implementation of read_sector, called with BLOCK_IO_LOCKS[device_index] held.
+fn read_sector_inner(device_index: usize, sector: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), &'static str> {
     // Use raw pointers to avoid references to mutable statics
     let state = unsafe {
-        let ptr = &raw mut BLOCK_DEVICE;
-        (*ptr).as_mut().ok_or("Block device not initialized")?
+        let ptr = &raw mut BLOCK_DEVICES;
+        (*ptr)[device_index].as_mut().ok_or("Block device not initialized")?
     };
 
     if sector >= state.capacity {
         return Err("Sector out of range");
     }
 
+    let bufs = device_buffers(device_index);
+    let (_, req_const, data_const, status_const) = device_buffers_const(device_index);
+
     // Set up request header
     unsafe {
-        let req_ptr = &raw mut REQ_HEADER;
-        (*req_ptr).req = VirtioBlkReq {
+        (*bufs.req_header).req = VirtioBlkReq {
             type_: request_type::IN,
             reserved: 0,
             sector,
         };
-        let status_ptr = &raw mut STATUS_BUF;
-        (*status_ptr).status = 0xff;  // Not yet completed
+        (*bufs.status_buf).status = 0xff;  // Not yet completed
     }
 
-    // Get physical addresses using raw pointers (safe for &raw const)
-    let header_phys = virt_to_phys(&raw const REQ_HEADER as u64);
-    let data_phys = virt_to_phys(&raw const DATA_BUF as u64);
-    let status_phys = virt_to_phys(&raw const STATUS_BUF as u64);
+    // Get physical addresses
+    let header_phys = virt_to_phys(req_const as u64);
+    let data_phys = virt_to_phys(data_const as u64);
+    let status_phys = virt_to_phys(status_const as u64);
 
     // Build descriptor chain:
     // [0] header (device reads) -> [1] data (device writes) -> [2] status (device writes)
     unsafe {
-        let queue_ptr = &raw mut QUEUE_MEM;
-
         // Descriptor 0: header
-        (*queue_ptr).desc[0] = VirtqDesc {
+        (*bufs.queue_mem).desc[0] = VirtqDesc {
             addr: header_phys,
             len: core::mem::size_of::<VirtioBlkReq>() as u32,
             flags: DESC_F_NEXT,
@@ -346,7 +414,7 @@ fn read_sector_inner(sector: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), 
         };
 
         // Descriptor 1: data buffer
-        (*queue_ptr).desc[1] = VirtqDesc {
+        (*bufs.queue_mem).desc[1] = VirtqDesc {
             addr: data_phys,
             len: SECTOR_SIZE as u32,
             flags: DESC_F_NEXT | DESC_F_WRITE,  // Device writes to this
@@ -354,7 +422,7 @@ fn read_sector_inner(sector: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), 
         };
 
         // Descriptor 2: status
-        (*queue_ptr).desc[2] = VirtqDesc {
+        (*bufs.queue_mem).desc[2] = VirtqDesc {
             addr: status_phys,
             len: 1,
             flags: DESC_F_WRITE,  // Device writes status
@@ -362,10 +430,10 @@ fn read_sector_inner(sector: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), 
         };
 
         // Add to available ring
-        let avail_idx = (*queue_ptr).avail.idx;
-        (*queue_ptr).avail.ring[(avail_idx % 16) as usize] = 0;  // Head of chain
+        let avail_idx = (*bufs.queue_mem).avail.idx;
+        (*bufs.queue_mem).avail.ring[(avail_idx % 16) as usize] = 0;  // Head of chain
         fence(Ordering::SeqCst);
-        (*queue_ptr).avail.idx = avail_idx.wrapping_add(1);
+        (*bufs.queue_mem).avail.idx = avail_idx.wrapping_add(1);
         fence(Ordering::SeqCst);
     }
 
@@ -391,8 +459,7 @@ fn read_sector_inner(sector: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), 
     loop {
         fence(Ordering::SeqCst);
         let used_idx = unsafe {
-            let ptr = &raw const QUEUE_MEM;
-            read_volatile(&(*ptr).used.idx)
+            read_volatile(&(*bufs.queue_mem).used.idx)
         };
         if used_idx != state.last_used_idx {
             state.last_used_idx = used_idx;
@@ -409,8 +476,7 @@ fn read_sector_inner(sector: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), 
 
     // Check status
     let status = unsafe {
-        let ptr = &raw const STATUS_BUF;
-        read_volatile(&(*ptr).status)
+        read_volatile(&(*bufs.status_buf).status)
     };
     if status != status_code::OK {
         return Err("Block read failed");
@@ -418,25 +484,28 @@ fn read_sector_inner(sector: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), 
 
     // Copy data to caller's buffer
     unsafe {
-        let ptr = &raw const DATA_BUF;
-        buffer.copy_from_slice(&(*ptr).data);
+        buffer.copy_from_slice(&(*bufs.data_buf).data);
     }
 
     Ok(())
 }
 
-/// Write a sector to the block device.
+/// Write a sector to the block device at given device_index.
 ///
-/// Serializes access with BLOCK_IO_LOCK (same as read_sector).
-pub fn write_sector(sector: u64, buffer: &[u8; SECTOR_SIZE]) -> Result<(), &'static str> {
+/// Serializes access with per-device BLOCK_IO_LOCKS (same as read_sector).
+pub fn write_sector(device_index: usize, sector: u64, buffer: &[u8; SECTOR_SIZE]) -> Result<(), &'static str> {
+    if device_index >= MAX_BLOCK_DEVICES {
+        return Err("Invalid device index");
+    }
+
     let saved_daif: u64;
     unsafe {
         core::arch::asm!("mrs {}, daif", out(reg) saved_daif, options(nomem, nostack));
         core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
     }
 
-    let _guard = BLOCK_IO_LOCK.lock();
-    let result = write_sector_inner(sector, buffer);
+    let _guard = BLOCK_IO_LOCKS[device_index].lock();
+    let result = write_sector_inner(device_index, sector, buffer);
     drop(_guard);
 
     unsafe {
@@ -446,71 +515,69 @@ pub fn write_sector(sector: u64, buffer: &[u8; SECTOR_SIZE]) -> Result<(), &'sta
     result
 }
 
-/// Inner implementation of write_sector, called with BLOCK_IO_LOCK held.
-fn write_sector_inner(sector: u64, buffer: &[u8; SECTOR_SIZE]) -> Result<(), &'static str> {
+/// Inner implementation of write_sector, called with BLOCK_IO_LOCKS[device_index] held.
+fn write_sector_inner(device_index: usize, sector: u64, buffer: &[u8; SECTOR_SIZE]) -> Result<(), &'static str> {
     // Use raw pointers to avoid references to mutable statics
     let state = unsafe {
-        let ptr = &raw mut BLOCK_DEVICE;
-        (*ptr).as_mut().ok_or("Block device not initialized")?
+        let ptr = &raw mut BLOCK_DEVICES;
+        (*ptr)[device_index].as_mut().ok_or("Block device not initialized")?
     };
 
     if sector >= state.capacity {
         return Err("Sector out of range");
     }
 
+    let bufs = device_buffers(device_index);
+    let (_, req_const, data_const, status_const) = device_buffers_const(device_index);
+
     // Copy data to our buffer
     unsafe {
-        let ptr = &raw mut DATA_BUF;
-        (*ptr).data.copy_from_slice(buffer);
+        (*bufs.data_buf).data.copy_from_slice(buffer);
     }
 
     // Set up request header
     unsafe {
-        let req_ptr = &raw mut REQ_HEADER;
-        (*req_ptr).req = VirtioBlkReq {
+        (*bufs.req_header).req = VirtioBlkReq {
             type_: request_type::OUT,
             reserved: 0,
             sector,
         };
-        let status_ptr = &raw mut STATUS_BUF;
-        (*status_ptr).status = 0xff;
+        (*bufs.status_buf).status = 0xff;
     }
 
-    // Get physical addresses using raw pointers (safe for &raw const)
-    let header_phys = virt_to_phys(&raw const REQ_HEADER as u64);
-    let data_phys = virt_to_phys(&raw const DATA_BUF as u64);
-    let status_phys = virt_to_phys(&raw const STATUS_BUF as u64);
+    // Get physical addresses
+    let header_phys = virt_to_phys(req_const as u64);
+    let data_phys = virt_to_phys(data_const as u64);
+    let status_phys = virt_to_phys(status_const as u64);
 
     // Build descriptor chain for write:
     // [0] header (device reads) -> [1] data (device reads) -> [2] status (device writes)
     unsafe {
-        let queue_ptr = &raw mut QUEUE_MEM;
-
-        (*queue_ptr).desc[0] = VirtqDesc {
+        (*bufs.queue_mem).desc[0] = VirtqDesc {
             addr: header_phys,
             len: core::mem::size_of::<VirtioBlkReq>() as u32,
             flags: DESC_F_NEXT,
             next: 1,
         };
 
-        (*queue_ptr).desc[1] = VirtqDesc {
+        (*bufs.queue_mem).desc[1] = VirtqDesc {
             addr: data_phys,
             len: SECTOR_SIZE as u32,
             flags: DESC_F_NEXT,  // Device reads this (no WRITE flag)
             next: 2,
         };
 
-        (*queue_ptr).desc[2] = VirtqDesc {
+        (*bufs.queue_mem).desc[2] = VirtqDesc {
             addr: status_phys,
             len: 1,
             flags: DESC_F_WRITE,
             next: 0,
         };
 
-        let avail_idx = (*queue_ptr).avail.idx;
-        (*queue_ptr).avail.ring[(avail_idx % 16) as usize] = 0;
+        let avail_idx = (*bufs.queue_mem).avail.idx;
+        (*bufs.queue_mem).avail.ring[(avail_idx % 16) as usize] = 0;
         fence(Ordering::SeqCst);
-        (*queue_ptr).avail.idx = avail_idx.wrapping_add(1);
+        (*bufs.queue_mem).avail.idx = avail_idx.wrapping_add(1);
         fence(Ordering::SeqCst);
     }
 
@@ -526,8 +593,7 @@ fn write_sector_inner(sector: u64, buffer: &[u8; SECTOR_SIZE]) -> Result<(), &'s
     loop {
         fence(Ordering::SeqCst);
         let used_idx = unsafe {
-            let ptr = &raw const QUEUE_MEM;
-            read_volatile(&(*ptr).used.idx)
+            read_volatile(&(*bufs.queue_mem).used.idx)
         };
         if used_idx != state.last_used_idx {
             state.last_used_idx = used_idx;
@@ -542,8 +608,7 @@ fn write_sector_inner(sector: u64, buffer: &[u8; SECTOR_SIZE]) -> Result<(), &'s
 
     // Check status
     let status = unsafe {
-        let ptr = &raw const STATUS_BUF;
-        read_volatile(&(*ptr).status)
+        read_volatile(&(*bufs.status_buf).status)
     };
     if status != status_code::OK {
         return Err("Block write failed");
@@ -552,11 +617,19 @@ fn write_sector_inner(sector: u64, buffer: &[u8; SECTOR_SIZE]) -> Result<(), &'s
     Ok(())
 }
 
-/// Get the capacity in sectors
-pub fn capacity() -> Option<u64> {
+/// Get the number of initialized block devices
+pub fn device_count() -> usize {
+    DEVICE_COUNT.load(core::sync::atomic::Ordering::Acquire)
+}
+
+/// Get the capacity in sectors for a given device
+pub fn capacity(device_index: usize) -> Option<u64> {
+    if device_index >= MAX_BLOCK_DEVICES {
+        return None;
+    }
     unsafe {
-        let ptr = &raw const BLOCK_DEVICE;
-        (*ptr).as_ref().map(|s| s.capacity)
+        let ptr = &raw const BLOCK_DEVICES;
+        (*ptr)[device_index].as_ref().map(|s| s.capacity)
     }
 }
 
@@ -564,10 +637,13 @@ pub fn capacity() -> Option<u64> {
 ///
 /// Returns true if the device has the VIRTIO_BLK_F_RO feature bit set,
 /// meaning write operations will fail. Returns None if device not initialized.
-pub fn is_readonly() -> Option<bool> {
+pub fn is_readonly(device_index: usize) -> Option<bool> {
+    if device_index >= MAX_BLOCK_DEVICES {
+        return None;
+    }
     unsafe {
-        let ptr = &raw const BLOCK_DEVICE;
-        (*ptr).as_ref().map(|s| s.device_features & features::RO != 0)
+        let ptr = &raw const BLOCK_DEVICES;
+        (*ptr)[device_index].as_ref().map(|s| s.device_features & features::RO != 0)
     }
 }
 
@@ -576,7 +652,7 @@ pub fn test_read() -> Result<(), &'static str> {
     crate::serial_println!("[virtio-blk] Testing read of sector 0...");
 
     let mut buffer = [0u8; SECTOR_SIZE];
-    read_sector(0, &mut buffer)?;
+    read_sector(0, 0, &mut buffer)?;
 
     // Print first 32 bytes
     crate::serial_print!("[virtio-blk] Sector 0 data: ");
@@ -598,7 +674,7 @@ pub fn test_multi_read() -> Result<(), &'static str> {
     let mut buffer = [0u8; SECTOR_SIZE];
 
     for i in 0..READ_COUNT {
-        read_sector(0, &mut buffer)?;
+        read_sector(0, 0, &mut buffer)?;
         crate::serial_println!("[virtio-blk] Read {} of {} complete", i + 1, READ_COUNT);
     }
 
@@ -621,7 +697,7 @@ pub fn test_sequential_read() -> Result<(), &'static str> {
     let mut buffer = [0u8; SECTOR_SIZE];
 
     for sector in 0..NUM_SECTORS {
-        read_sector(sector, &mut buffer)?;
+        read_sector(0, sector, &mut buffer)?;
 
         // Log progress every 8 sectors
         if sector % 8 == 7 {
@@ -643,14 +719,14 @@ pub fn test_invalid_sector() -> Result<(), &'static str> {
     crate::serial_println!("[virtio-blk] Testing invalid sector read...");
 
     // First verify device is initialized and get capacity
-    let cap = capacity().ok_or("Block device not initialized for invalid sector test")?;
+    let cap = capacity(0).ok_or("Block device not initialized for invalid sector test")?;
     crate::serial_println!("[virtio-blk] Device capacity: {} sectors", cap);
 
     // Try to read a sector that's definitely beyond capacity
     let invalid_sector = cap + 1000; // Well beyond the end
     let mut buffer = [0u8; SECTOR_SIZE];
 
-    match read_sector(invalid_sector, &mut buffer) {
+    match read_sector(0, invalid_sector, &mut buffer) {
         Ok(_) => {
             crate::serial_println!("[virtio-blk] ERROR: Read of invalid sector {} succeeded unexpectedly!", invalid_sector);
             Err("Invalid sector read should have failed but succeeded")
@@ -683,7 +759,7 @@ pub fn test_uninitialized_read() -> Result<(), &'static str> {
     crate::serial_println!("[virtio-blk] Testing uninitialized device handling...");
 
     // Check current initialization state
-    let is_initialized = capacity().is_some();
+    let is_initialized = capacity(0).is_some();
 
     if is_initialized {
         // Device is already initialized - this is expected in normal boot
@@ -697,7 +773,7 @@ pub fn test_uninitialized_read() -> Result<(), &'static str> {
         crate::serial_println!("[virtio-blk] Device is NOT initialized, testing error path...");
 
         let mut buffer = [0u8; SECTOR_SIZE];
-        match read_sector(0, &mut buffer) {
+        match read_sector(0, 0, &mut buffer) {
             Ok(_) => {
                 crate::serial_println!("[virtio-blk] ERROR: Read succeeded on uninitialized device!");
                 Err("Read should fail on uninitialized device")
@@ -734,7 +810,7 @@ pub fn test_write_read_verify() -> Result<(), &'static str> {
     crate::serial_println!("[virtio-blk] Testing write-read-verify cycle...");
 
     // Check if device is initialized
-    let cap = capacity().ok_or("Block device not initialized")?;
+    let cap = capacity(0).ok_or("Block device not initialized")?;
     crate::serial_println!("[virtio-blk] Device capacity: {} sectors", cap);
 
     // Verify test sector is within capacity
@@ -744,7 +820,7 @@ pub fn test_write_read_verify() -> Result<(), &'static str> {
     }
 
     // Check if device is read-only
-    if let Some(true) = is_readonly() {
+    if let Some(true) = is_readonly(0) {
         crate::serial_println!("[virtio-blk] Device is read-only, skipping write test");
         return Ok(()); // Skip gracefully
     }
@@ -752,7 +828,7 @@ pub fn test_write_read_verify() -> Result<(), &'static str> {
     // Save original sector data
     let mut original = [0u8; SECTOR_SIZE];
     crate::serial_println!("[virtio-blk] Reading original data from sector {}...", TEST_SECTOR);
-    read_sector(TEST_SECTOR, &mut original)?;
+    read_sector(0, TEST_SECTOR, &mut original)?;
     crate::serial_println!("[virtio-blk] Original first 16 bytes: {:02x?}", &original[..16]);
 
     // Create test pattern: alternating 0xAA and sequence bytes
@@ -764,7 +840,7 @@ pub fn test_write_read_verify() -> Result<(), &'static str> {
 
     // Write test pattern
     crate::serial_println!("[virtio-blk] Writing test pattern to sector {}...", TEST_SECTOR);
-    match write_sector(TEST_SECTOR, &test_pattern) {
+    match write_sector(0, TEST_SECTOR, &test_pattern) {
         Ok(()) => {
             crate::serial_println!("[virtio-blk] Write succeeded");
         }
@@ -779,7 +855,7 @@ pub fn test_write_read_verify() -> Result<(), &'static str> {
     // Read back
     let mut readback = [0u8; SECTOR_SIZE];
     crate::serial_println!("[virtio-blk] Reading back sector {}...", TEST_SECTOR);
-    read_sector(TEST_SECTOR, &mut readback)?;
+    read_sector(0, TEST_SECTOR, &mut readback)?;
     crate::serial_println!("[virtio-blk] Readback first 16 bytes: {:02x?}", &readback[..16]);
 
     // Verify data matches
@@ -796,7 +872,7 @@ pub fn test_write_read_verify() -> Result<(), &'static str> {
 
     // Restore original data (best effort)
     crate::serial_println!("[virtio-blk] Restoring original data to sector {}...", TEST_SECTOR);
-    if let Err(e) = write_sector(TEST_SECTOR, &original) {
+    if let Err(e) = write_sector(0, TEST_SECTOR, &original) {
         crate::serial_println!("[virtio-blk] Warning: Failed to restore original data: {}", e);
     }
 

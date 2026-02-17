@@ -1011,55 +1011,62 @@ fn sys_exec_aarch64(
 /// NOTE: This function intentionally has NO logging to avoid timing overhead.
 fn load_elf_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, i32> {
     use crate::fs::ext2;
-    use crate::syscall::errno::{EACCES, EIO, ENOENT, ENOTDIR};
+    use crate::syscall::errno::EIO;
 
     // Trace: entering load_elf_from_ext2
     super::trace::trace_exec(b'1');
 
-    let fs_guard = ext2::root_fs_read();
-    // Trace: got fs_guard
-    super::trace::trace_exec(b'2');
+    // Determine which filesystem to use based on path
+    let is_home = ext2::is_home_path(path);
+    let fs_path = if is_home { ext2::strip_home_prefix(path) } else { path };
 
-    let fs = fs_guard.as_ref().ok_or(EIO)?;
-    // Trace: got fs reference
-    super::trace::trace_exec(b'3');
+    if is_home {
+        let fs_guard = ext2::home_fs_read();
+        super::trace::trace_exec(b'2');
+        let fs = fs_guard.as_ref().ok_or(EIO)?;
+        super::trace::trace_exec(b'3');
+        load_elf_from_ext2_inner(fs, fs_path)
+    } else {
+        let fs_guard = ext2::root_fs_read();
+        super::trace::trace_exec(b'2');
+        let fs = fs_guard.as_ref().ok_or(EIO)?;
+        super::trace::trace_exec(b'3');
+        load_elf_from_ext2_inner(fs, fs_path)
+    }
+}
+
+/// Inner helper for loading ELF from any ext2 filesystem instance (ARM64).
+fn load_elf_from_ext2_inner(fs: &crate::fs::ext2::Ext2Fs, path: &str) -> Result<alloc::vec::Vec<u8>, i32> {
+    use crate::syscall::errno::{EACCES, EIO, ENOENT, ENOTDIR};
 
     let inode_num = fs.resolve_path(path).map_err(|e| {
-        super::trace::trace_exec(b'!'); // Error in resolve_path
-        if e.contains("not found") {
-            ENOENT
-        } else {
-            EIO
-        }
+        super::trace::trace_exec(b'!');
+        if e.contains("not found") { ENOENT } else { EIO }
     })?;
-    // Trace: resolved path
     super::trace::trace_exec(b'4');
 
     let inode = fs.read_inode(inode_num).map_err(|_| {
-        super::trace::trace_exec(b'@'); // Error in read_inode
+        super::trace::trace_exec(b'@');
         EIO
     })?;
-    // Trace: got inode
     super::trace::trace_exec(b'5');
 
     if inode.is_dir() {
-        super::trace::trace_exec(b'#'); // Is directory
+        super::trace::trace_exec(b'#');
         return Err(ENOTDIR);
     }
 
     let perms = inode.permissions();
     if (perms & 0o100) == 0 {
-        super::trace::trace_exec(b'$'); // No exec permission
+        super::trace::trace_exec(b'$');
         return Err(EACCES);
     }
-    // Trace: permissions OK
     super::trace::trace_exec(b'6');
 
     let data = fs.read_file_content(&inode).map_err(|_| {
-        super::trace::trace_exec(b'%'); // Error reading content
+        super::trace::trace_exec(b'%');
         EIO
     })?;
-    // Trace: read complete
     super::trace::trace_exec(b'7');
 
     Ok(data)
