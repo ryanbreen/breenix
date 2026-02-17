@@ -88,6 +88,12 @@ pub struct LoadedElf {
     pub segments_end: u64,
     /// Lowest loaded address
     pub load_base: u64,
+    /// Virtual address of program headers (from PT_PHDR or load_base + phoff)
+    pub phdr_vaddr: u64,
+    /// Number of program headers
+    pub phnum: u16,
+    /// Size of each program header entry
+    pub phentsize: u16,
 }
 
 /// Validate an ELF header for ARM64
@@ -146,6 +152,7 @@ pub unsafe fn load_elf_kernel_space(data: &[u8]) -> Result<LoadedElf, &'static s
 
     let mut max_segment_end: u64 = 0;
     let mut min_load_addr: u64 = u64::MAX;
+    let mut phdr_vaddr: Option<u64> = None;
 
     // Process program headers
     let ph_offset = header.phoff as usize;
@@ -159,6 +166,11 @@ pub unsafe fn load_elf_kernel_space(data: &[u8]) -> Result<LoadedElf, &'static s
         }
 
         let ph = &*(data.as_ptr().add(ph_start) as *const Elf64ProgramHeader);
+
+        // Check for PT_PHDR segment
+        if ph.p_type == SegmentType::Phdr as u32 {
+            phdr_vaddr = Some(ph.p_vaddr);
+        }
 
         if ph.p_type == SegmentType::Load as u32 {
             load_segment(data, ph)?;
@@ -177,6 +189,10 @@ pub unsafe fn load_elf_kernel_space(data: &[u8]) -> Result<LoadedElf, &'static s
     // Page-align the heap start
     let heap_start = (max_segment_end + 0xfff) & !0xfff;
 
+    let load_base = if min_load_addr == u64::MAX { 0 } else { min_load_addr };
+    // If no PT_PHDR was found, compute from load_base + phoff
+    let phdr_vaddr = phdr_vaddr.unwrap_or(load_base + header.phoff);
+
     crate::serial_println!(
         "[elf] Loaded: base={:#x}, end={:#x}, entry={:#x}",
         min_load_addr,
@@ -187,7 +203,10 @@ pub unsafe fn load_elf_kernel_space(data: &[u8]) -> Result<LoadedElf, &'static s
     Ok(LoadedElf {
         entry_point: header.entry,
         segments_end: heap_start,
-        load_base: if min_load_addr == u64::MAX { 0 } else { min_load_addr },
+        load_base,
+        phdr_vaddr,
+        phnum: header.phnum,
+        phentsize: header.phentsize,
     })
 }
 
@@ -289,6 +308,7 @@ pub fn load_elf_into_page_table(
 
     let mut max_segment_end: u64 = 0;
     let mut min_load_addr: u64 = u64::MAX;
+    let mut phdr_vaddr: Option<u64> = None;
 
     // Process program headers
     let ph_offset = header.phoff as usize;
@@ -305,6 +325,11 @@ pub fn load_elf_into_page_table(
         let mut ph_bytes = [0u8; mem::size_of::<Elf64ProgramHeader>()];
         ph_bytes.copy_from_slice(&data[ph_start..ph_start + mem::size_of::<Elf64ProgramHeader>()]);
         let ph: &Elf64ProgramHeader = unsafe { &*(ph_bytes.as_ptr() as *const Elf64ProgramHeader) };
+
+        // Check for PT_PHDR segment
+        if ph.p_type == SegmentType::Phdr as u32 {
+            phdr_vaddr = Some(ph.p_vaddr);
+        }
 
         if ph.p_type == SegmentType::Load as u32 {
             load_segment_into_page_table(data, ph, page_table)?;
@@ -323,9 +348,13 @@ pub fn load_elf_into_page_table(
     // Page-align the heap start (4KB alignment)
     let heap_start = (max_segment_end + 0xfff) & !0xfff;
 
+    let load_base = if min_load_addr == u64::MAX { 0 } else { min_load_addr };
+    // If no PT_PHDR was found, compute from load_base + phoff
+    let phdr_vaddr = phdr_vaddr.unwrap_or(load_base + header.phoff);
+
     log::debug!(
         "[elf-arm64] Loaded: base={:#x}, end={:#x}, entry={:#x}",
-        if min_load_addr == u64::MAX { 0 } else { min_load_addr },
+        load_base,
         heap_start,
         header.entry
     );
@@ -333,7 +362,10 @@ pub fn load_elf_into_page_table(
     Ok(LoadedElf {
         entry_point: header.entry,
         segments_end: heap_start,
-        load_base: if min_load_addr == u64::MAX { 0 } else { min_load_addr },
+        load_base,
+        phdr_vaddr,
+        phnum: header.phnum,
+        phentsize: header.phentsize,
     })
 }
 

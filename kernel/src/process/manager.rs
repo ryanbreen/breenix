@@ -582,10 +582,18 @@ impl ProcessManager {
             return Err("Process page table not available for stack mapping");
         }
 
-        // Set up argc/argv on the stack following Linux ABI
+        // Set up argc/argv/envp/auxv on the stack following Linux ABI
         // The stack is now mapped, so we can write to it via physical addresses
         let initial_sp = if let Some(ref page_table) = process.page_table {
-            self.setup_argv_on_stack(page_table, user_stack_top, argv)?
+            self.setup_argv_on_stack(
+                page_table,
+                user_stack_top,
+                argv,
+                loaded_elf.phdr_vaddr,
+                loaded_elf.phnum,
+                loaded_elf.phentsize,
+                loaded_elf.entry_point,
+            )?
         } else {
             return Err("Process page table not available for argv setup");
         };
@@ -2559,11 +2567,19 @@ impl ProcessManager {
             )?;
         }
 
-        // Set up argc/argv on the stack following Linux ABI
+        // Set up argc/argv/envp/auxv on the stack following Linux ABI
         // We need to write to the new stack pages that we just mapped
         // Since the new page table is not active yet, we need to translate addresses
         // and write via the physical frames
-        let initial_rsp = self.setup_argv_on_stack(&new_page_table, USER_STACK_TOP, argv)?;
+        let initial_rsp = self.setup_argv_on_stack(
+            &new_page_table,
+            USER_STACK_TOP,
+            argv,
+            loaded_elf.phdr_vaddr,
+            loaded_elf.phnum,
+            loaded_elf.phentsize,
+            loaded_elf.entry_point.as_u64(),
+        )?;
 
         log::info!(
             "exec_process_with_argv: argc/argv set up on stack, RSP={:#x}",
@@ -2791,7 +2807,15 @@ impl ProcessManager {
             )?;
         }
 
-        let initial_rsp = self.setup_argv_on_stack(&new_page_table, user_stack_top, argv)?;
+        let initial_rsp = self.setup_argv_on_stack(
+            &new_page_table,
+            user_stack_top,
+            argv,
+            loaded_elf.phdr_vaddr,
+            loaded_elf.phnum,
+            loaded_elf.phentsize,
+            loaded_elf.entry_point,
+        )?;
 
         log::info!(
             "exec_process_with_argv [ARM64]: argc/argv set up on stack, SP_EL0={:#x}",
@@ -3212,25 +3236,39 @@ impl ProcessManager {
         Ok(new_entry_point)
     }
 
-    /// Set up argc/argv on the stack for a new process
+    /// Set up argc/argv/envp/auxv on the stack for a new process
     ///
-    /// This function writes the argc/argv structure to the stack following the
-    /// Linux x86_64 ABI convention. The stack layout at _start is:
+    /// This function writes the full Linux ABI initial stack structure including
+    /// argc, argv pointers, envp (empty), and auxiliary vector entries needed by
+    /// musl libc.
     ///
-    /// High addresses:
-    ///   argv strings (null-terminated, packed)
-    ///   padding for 16-byte alignment
-    ///   NULL (end of argv)
+    /// Stack layout (high to low addresses):
+    ///
+    ///   16 random bytes (for AT_RANDOM)
+    ///   argv string data (null-terminated strings)
+    ///   --- 8-byte alignment padding ---
+    ///   AT_NULL (0, 0)                    // auxv terminator
+    ///   AT_RANDOM (25, ptr_to_random)     // pointer to 16 random bytes
+    ///   AT_PAGESZ (6, 4096)              // page size
+    ///   AT_PHENT (4, phentsize)           // size of program header entry
+    ///   AT_PHNUM (5, phnum)              // number of program headers
+    ///   AT_PHDR (3, phdr_vaddr)           // address of program headers in memory
+    ///   AT_ENTRY (9, entry_point)         // program entry point
+    ///   NULL (envp terminator)            // 8 bytes of 0
+    ///   NULL (argv terminator)            // 8 bytes of 0
     ///   argv[n-1] pointer
     ///   ...
     ///   argv[0] pointer
-    ///   argc               <- RSP points here
-    /// Low addresses:
+    ///   argc                              <- RSP points here (16-byte aligned)
     ///
     /// Parameters:
     /// - page_table: The process's page table (for translating virtual to physical addresses)
     /// - stack_top: The top of the stack (highest address)
     /// - argv: Array of argument strings (each must be null-terminated)
+    /// - phdr_vaddr: Virtual address of program headers in memory
+    /// - phnum: Number of program headers
+    /// - phentsize: Size of each program header entry
+    /// - entry_point: Program entry point address
     ///
     /// Returns: The initial RSP value (pointing to argc)
     #[allow(dead_code)]
@@ -3239,16 +3277,52 @@ impl ProcessManager {
         page_table: &crate::memory::process_memory::ProcessPageTable,
         stack_top: u64,
         argv: &[&[u8]],
+        phdr_vaddr: u64,
+        phnum: u16,
+        phentsize: u16,
+        entry_point: u64,
     ) -> Result<u64, &'static str> {
         let argc = argv.len();
 
         // We need to access the stack memory directly via physical addresses
         // since the new page table isn't active yet
 
-        // Calculate total space needed for strings
+        // --- Phase 1: Write data at the top of the stack (strings + random bytes) ---
+
+        // Start from the top of the stack and work downward
+        let mut cursor = stack_top;
+
+        // Write 16 pseudo-random bytes for AT_RANDOM
+        // Use a simple mix of the stack address and fixed values since we don't
+        // have a strong PRNG requirement at boot time
+        cursor -= 16;
+        let random_addr = cursor;
+        let random_seed = stack_top.wrapping_mul(0x5851F42D4C957F2D).wrapping_add(0x14057B7EF767814F);
+        let random_bytes: [u8; 16] = [
+            (random_seed >> 0) as u8,
+            (random_seed >> 8) as u8,
+            (random_seed >> 16) as u8,
+            (random_seed >> 24) as u8,
+            (random_seed >> 32) as u8,
+            (random_seed >> 40) as u8,
+            (random_seed >> 48) as u8,
+            (random_seed >> 56) as u8,
+            (random_seed.wrapping_mul(0x2545F4914F6CDD1D) >> 0) as u8,
+            (random_seed.wrapping_mul(0x2545F4914F6CDD1D) >> 8) as u8,
+            (random_seed.wrapping_mul(0x2545F4914F6CDD1D) >> 16) as u8,
+            (random_seed.wrapping_mul(0x2545F4914F6CDD1D) >> 24) as u8,
+            (random_seed.wrapping_mul(0x2545F4914F6CDD1D) >> 32) as u8,
+            (random_seed.wrapping_mul(0x2545F4914F6CDD1D) >> 40) as u8,
+            (random_seed.wrapping_mul(0x2545F4914F6CDD1D) >> 48) as u8,
+            (random_seed.wrapping_mul(0x2545F4914F6CDD1D) >> 56) as u8,
+        ];
+        for (i, byte) in random_bytes.iter().enumerate() {
+            self.write_byte_to_stack(page_table, random_addr + i as u64, *byte)?;
+        }
+
+        // Calculate total space needed for argv strings
         let mut total_string_space: usize = 0;
         for arg in argv.iter() {
-            // Each string + null terminator (if not already null-terminated)
             let len = arg.len();
             if len > 0 && arg[len - 1] == 0 {
                 total_string_space += len;
@@ -3257,25 +3331,20 @@ impl ProcessManager {
             }
         }
 
-        // Start placing strings at the top of the stack and work down
-        let mut string_ptr = stack_top;
-
-        // Reserve space for strings
-        string_ptr -= total_string_space as u64;
+        // Reserve space for strings below the random bytes
+        cursor -= total_string_space as u64;
 
         // Align down to 8 bytes for string area
-        string_ptr = string_ptr & !7;
+        cursor = cursor & !7;
+        let string_area_start = cursor;
 
-        // We'll collect the string addresses as we write them
+        // Write argv strings and collect their addresses
         let mut string_addresses: Vec<u64> = Vec::with_capacity(argc);
-
-        // Write strings from the reserved area upward
-        let mut current_string_addr = string_ptr;
+        let mut current_string_addr = string_area_start;
 
         for arg in argv.iter() {
             string_addresses.push(current_string_addr);
 
-            // Write the string bytes
             for byte in arg.iter() {
                 self.write_byte_to_stack(page_table, current_string_addr, *byte)?;
                 current_string_addr += 1;
@@ -3289,42 +3358,102 @@ impl ProcessManager {
             }
         }
 
-        // Now place the pointer array and argc below the strings
-        // Layout (from high to low):
-        //   strings (already placed)
-        //   NULL (8 bytes)
-        //   argv[n-1] pointer (8 bytes)
-        //   ...
-        //   argv[0] pointer (8 bytes)
-        //   argc (8 bytes)
+        // --- Phase 2: Build the pointer/value section below the strings ---
 
-        // Calculate space needed for pointers + argc
-        let pointers_space = (argc + 1) * 8 + 8; // argc pointers + NULL + argc value
+        // Auxiliary vector entries (each is two u64 values: type, value)
+        // AT_ENTRY, AT_PHDR, AT_PHNUM, AT_PHENT, AT_PAGESZ, AT_RANDOM, AT_NULL = 7 entries = 14 u64s
+        let auxv_count = 7;
+        let auxv_space = auxv_count * 2 * 8; // 7 entries * 2 u64s * 8 bytes
 
-        // Start of pointer area (below strings)
-        let mut ptr_area = string_ptr - pointers_space as u64;
+        // envp: just a NULL terminator (empty environment) = 1 u64
+        let envp_space = 8;
 
-        // Align to 16 bytes (required by x86_64 ABI)
+        // argv: argc pointers + NULL terminator = (argc + 1) u64s
+        let argv_space = (argc + 1) * 8;
+
+        // argc: 1 u64
+        let argc_space = 8;
+
+        let total_ptr_space = argc_space + argv_space + envp_space + auxv_space;
+
+        // Position the pointer area below the string area
+        let mut ptr_area = string_area_start - total_ptr_space as u64;
+
+        // Align to 16 bytes (required by x86_64/ARM64 ABI)
         ptr_area = ptr_area & !15;
 
-        // Write argc at the bottom
+        // Write from the bottom up
         let rsp = ptr_area;
-        self.write_u64_to_stack(page_table, rsp, argc as u64)?;
+        let mut write_pos = rsp;
 
-        // Write argv pointers
-        let argv_start = rsp + 8;
-        for (i, addr) in string_addresses.iter().enumerate() {
-            self.write_u64_to_stack(page_table, argv_start + (i * 8) as u64, *addr)?;
+        // 1. Write argc
+        self.write_u64_to_stack(page_table, write_pos, argc as u64)?;
+        write_pos += 8;
+
+        // 2. Write argv pointers
+        for addr in string_addresses.iter() {
+            self.write_u64_to_stack(page_table, write_pos, *addr)?;
+            write_pos += 8;
         }
 
-        // Write NULL terminator for argv array
-        self.write_u64_to_stack(page_table, argv_start + (argc * 8) as u64, 0)?;
+        // 3. Write argv NULL terminator
+        self.write_u64_to_stack(page_table, write_pos, 0)?;
+        write_pos += 8;
+
+        // 4. Write envp NULL terminator (empty environment)
+        self.write_u64_to_stack(page_table, write_pos, 0)?;
+        write_pos += 8;
+
+        // 5. Write auxiliary vector entries
+        // AT_ENTRY (9) - program entry point
+        self.write_u64_to_stack(page_table, write_pos, 9)?; // AT_ENTRY
+        write_pos += 8;
+        self.write_u64_to_stack(page_table, write_pos, entry_point)?;
+        write_pos += 8;
+
+        // AT_PHDR (3) - address of program headers
+        self.write_u64_to_stack(page_table, write_pos, 3)?; // AT_PHDR
+        write_pos += 8;
+        self.write_u64_to_stack(page_table, write_pos, phdr_vaddr)?;
+        write_pos += 8;
+
+        // AT_PHNUM (5) - number of program headers
+        self.write_u64_to_stack(page_table, write_pos, 5)?; // AT_PHNUM
+        write_pos += 8;
+        self.write_u64_to_stack(page_table, write_pos, phnum as u64)?;
+        write_pos += 8;
+
+        // AT_PHENT (4) - size of each program header entry
+        self.write_u64_to_stack(page_table, write_pos, 4)?; // AT_PHENT
+        write_pos += 8;
+        self.write_u64_to_stack(page_table, write_pos, phentsize as u64)?;
+        write_pos += 8;
+
+        // AT_PAGESZ (6) - page size
+        self.write_u64_to_stack(page_table, write_pos, 6)?; // AT_PAGESZ
+        write_pos += 8;
+        self.write_u64_to_stack(page_table, write_pos, 4096)?;
+        write_pos += 8;
+
+        // AT_RANDOM (25) - pointer to 16 random bytes
+        self.write_u64_to_stack(page_table, write_pos, 25)?; // AT_RANDOM
+        write_pos += 8;
+        self.write_u64_to_stack(page_table, write_pos, random_addr)?;
+        write_pos += 8;
+
+        // AT_NULL (0) - terminator
+        self.write_u64_to_stack(page_table, write_pos, 0)?; // AT_NULL
+        write_pos += 8;
+        self.write_u64_to_stack(page_table, write_pos, 0)?;
 
         log::debug!(
-            "setup_argv_on_stack: argc={}, RSP={:#x}, argv[0] at {:#x}",
+            "setup_argv_on_stack: argc={}, RSP={:#x}, argv[0] at {:#x}, auxv with phdr={:#x} phnum={} entry={:#x}",
             argc,
             rsp,
-            if !string_addresses.is_empty() { string_addresses[0] } else { 0 }
+            if !string_addresses.is_empty() { string_addresses[0] } else { 0 },
+            phdr_vaddr,
+            phnum,
+            entry_point,
         );
 
         Ok(rsp)
