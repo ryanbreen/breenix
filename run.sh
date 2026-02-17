@@ -10,6 +10,7 @@
 #   ./run.sh --headless   # ARM64 with serial output only
 #   ./run.sh --x86 --headless  # x86_64 with serial output only
 #   ./run.sh --no-build        # Skip all builds, use existing artifacts
+#   ./run.sh --resolution 1920x1080  # Custom resolution
 #   ./run.sh --btrt            # ARM64 BTRT structured boot test
 #   ./run.sh --btrt --x86      # x86_64 BTRT structured boot test
 #
@@ -31,6 +32,7 @@ CLEAN=false
 NO_BUILD=false
 BTRT=false
 DEBUG=false
+RESOLUTION=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -59,6 +61,10 @@ while [[ $# -gt 0 ]]; do
             DEBUG=true
             shift
             ;;
+        --resolution)
+            RESOLUTION="$2"
+            shift 2
+            ;;
         --headless|--serial)
             HEADLESS=true
             shift
@@ -79,6 +85,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --graphics, --vnc          Run with VNC display (default)"
             echo "  --btrt                     Run BTRT structured boot test"
             echo "  --debug                    Enable GDB stub (port 1234) for debugging"
+            echo "  --resolution WxH           Set display resolution (e.g. 1920x1080)"
+            echo "                             Default: auto-detect from screen"
             echo "  -h, --help                 Show this help"
             echo ""
             echo "Debugging:"
@@ -135,13 +143,43 @@ else
     KERNEL="$UEFI_IMG"  # Reuse KERNEL var for existence check
 fi
 
+# Resolve display resolution
+if [ -z "$RESOLUTION" ] && [ "$HEADLESS" = false ]; then
+    # Auto-detect: use macOS screen size minus menu bar (37px)
+    if [ "$(uname)" = "Darwin" ]; then
+        SCREEN_INFO=$(system_profiler SPDisplaysDataType 2>/dev/null | grep "Resolution:" | head -1)
+        if [[ "$SCREEN_INFO" =~ ([0-9]+)\ x\ ([0-9]+) ]]; then
+            NATIVE_W="${BASH_REMATCH[1]}"
+            NATIVE_H="${BASH_REMATCH[2]}"
+            # Retina displays: divide by 2 for effective resolution
+            if echo "$SCREEN_INFO" | grep -q "Retina"; then
+                NATIVE_W=$((NATIVE_W / 2))
+                NATIVE_H=$((NATIVE_H / 2))
+            fi
+            # Subtract menu bar height
+            RES_W="$NATIVE_W"
+            RES_H=$((NATIVE_H - 37))
+            RESOLUTION="${RES_W}x${RES_H}"
+        fi
+    fi
+fi
+# Fallback default
+if [ -z "$RESOLUTION" ]; then
+    RESOLUTION="1280x800"
+fi
+
+# Parse WxH
+RES_W="${RESOLUTION%%x*}"
+RES_H="${RESOLUTION##*x}"
+
 echo ""
 echo "========================================="
 echo "Breenix Interactive Mode"
 echo "========================================="
 echo ""
 echo "Architecture: $ARCH"
-echo "Mode: $([ "$HEADLESS" = true ] && echo "headless (serial only)" || echo "graphics (VNC)")"
+echo "Resolution: ${RES_W}x${RES_H}"
+echo "Mode: $([ "$HEADLESS" = true ] && echo "headless (serial only)" || echo "graphics")"
 
 if [ "$NO_BUILD" = true ]; then
     echo "Skipping all builds (--no-build)"
@@ -217,6 +255,7 @@ fi
 if [ "$ARCH" = "arm64" ]; then
     # ARM64: Always add GPU and keyboard devices (needed for VirtIO enumeration)
     # The -display option only controls whether a window appears
+    # Resolution is configured by the kernel's virtio-gpu driver via fw_cfg
     if [ "$HEADLESS" = true ]; then
         DISPLAY_OPTS="-display none -device virtio-gpu-device -device virtio-keyboard-device -device virtio-tablet-device"
     else
@@ -267,6 +306,9 @@ if [ "$DEBUG" = true ]; then
     echo "GDB stub: target remote :1234"
 fi
 
+# Pass resolution to kernel via fw_cfg
+FW_CFG_OPTS="-fw_cfg name=opt/breenix/resolution,string=${RES_W}x${RES_H}"
+
 # Build the full QEMU command based on architecture
 if [ "$ARCH" = "arm64" ]; then
     # ARM64 QEMU invocation (native)
@@ -283,6 +325,7 @@ if [ "$ARCH" = "arm64" ]; then
         -monitor tcp:127.0.0.1:4444,server,nowait \
         $QMP_OPTS \
         $GDB_OPTS \
+        $FW_CFG_OPTS \
         -serial mon:stdio \
         -no-reboot \
         &

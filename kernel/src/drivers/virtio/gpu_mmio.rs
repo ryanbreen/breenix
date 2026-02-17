@@ -214,12 +214,49 @@ struct CmdBuffer {
 static mut CMD_BUF: CmdBuffer = CmdBuffer { data: [0; 512] };
 static mut RESP_BUF: CmdBuffer = CmdBuffer { data: [0; 512] };
 
-// Framebuffer - 1280x800 @ 32bpp = 4MB
-const FB_WIDTH: u32 = 1280;
-const FB_HEIGHT: u32 = 800;
-const FB_SIZE: usize = (FB_WIDTH * FB_HEIGHT * 4) as usize;
+// Default framebuffer dimensions (used when fw_cfg doesn't specify)
+const DEFAULT_FB_WIDTH: u32 = 1280;
+const DEFAULT_FB_HEIGHT: u32 = 800;
+// Max supported resolution: 1920x1200 @ 32bpp = ~9.2MB
+const FB_MAX_WIDTH: u32 = 1920;
+const FB_MAX_HEIGHT: u32 = 1200;
+const FB_SIZE: usize = (FB_MAX_WIDTH * FB_MAX_HEIGHT * 4) as usize;
 const BYTES_PER_PIXEL: usize = 4;
 const RESOURCE_ID: u32 = 1;
+
+/// Requested resolution from fw_cfg (set during init, before GPU probe)
+static mut REQUESTED_WIDTH: u32 = 0;
+static mut REQUESTED_HEIGHT: u32 = 0;
+
+/// Read desired resolution from fw_cfg opt/breenix/resolution (e.g. "1728x1080")
+pub fn load_resolution_from_fw_cfg() {
+    if let Some(res) = crate::drivers::fw_cfg::read_string("opt/breenix/resolution") {
+        if let Some(idx) = res.find('x') {
+            if let (Ok(w), Ok(h)) = (res[..idx].parse::<u32>(), res[idx+1..].parse::<u32>()) {
+                if w > 0 && h > 0 && w <= FB_MAX_WIDTH && h <= FB_MAX_HEIGHT {
+                    unsafe {
+                        REQUESTED_WIDTH = w;
+                        REQUESTED_HEIGHT = h;
+                    }
+                    crate::serial_println!("[virtio-gpu] fw_cfg resolution: {}x{}", w, h);
+                    return;
+                }
+            }
+        }
+        crate::serial_println!("[virtio-gpu] fw_cfg resolution invalid: {:?}", res);
+    }
+}
+
+/// Get the configured resolution (fw_cfg > default)
+fn configured_resolution() -> (u32, u32) {
+    unsafe {
+        if REQUESTED_WIDTH > 0 && REQUESTED_HEIGHT > 0 {
+            (REQUESTED_WIDTH, REQUESTED_HEIGHT)
+        } else {
+            (DEFAULT_FB_WIDTH, DEFAULT_FB_HEIGHT)
+        }
+    }
+}
 
 #[repr(C, align(4096))]
 struct Framebuffer {
@@ -320,23 +357,36 @@ fn init_device(device: &mut VirtioMmioDevice, base: u64) -> Result<(), &'static 
     // Mark device ready
     device.driver_ok();
 
-    // Store initial state
+    // Store initial state with configured resolution
+    let (init_w, init_h) = configured_resolution();
     unsafe {
         let ptr = &raw mut GPU_DEVICE;
         *ptr = Some(GpuDeviceState {
             base,
-            width: FB_WIDTH,
-            height: FB_HEIGHT,
+            width: init_w,
+            height: init_h,
             resource_id: RESOURCE_ID,
             last_used_idx: 0,
         });
     }
 
-    // Get display info
-    let (width, height) = get_display_info()?;
-    crate::serial_println!("[virtio-gpu] Display: {}x{}", width, height);
+    // Determine display dimensions:
+    // fw_cfg resolution takes priority over GET_DISPLAY_INFO
+    let (width, height) = {
+        let (req_w, req_h) = configured_resolution();
+        if req_w != DEFAULT_FB_WIDTH || req_h != DEFAULT_FB_HEIGHT {
+            // fw_cfg provided a custom resolution — use it
+            crate::serial_println!("[virtio-gpu] Display: {}x{} (from fw_cfg)", req_w, req_h);
+            (req_w, req_h)
+        } else {
+            // No fw_cfg override — query the GPU
+            let (gpu_w, gpu_h) = get_display_info()?;
+            crate::serial_println!("[virtio-gpu] Display: {}x{}", gpu_w, gpu_h);
+            (gpu_w, gpu_h)
+        }
+    };
 
-    // Update state with actual dimensions
+    // Update state with final dimensions
     unsafe {
         let ptr = &raw mut GPU_DEVICE;
         if let Some(ref mut state) = *ptr {
@@ -399,8 +449,8 @@ fn get_display_info() -> Result<(u32, u32), &'static str> {
                 }
             }
 
-            // Default if no display found
-            Ok((FB_WIDTH, FB_HEIGHT))
+            // Default if no display found — use configured resolution
+            Ok(configured_resolution())
         }
     })
 }

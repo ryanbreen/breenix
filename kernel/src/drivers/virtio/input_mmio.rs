@@ -190,12 +190,14 @@ static TABLET_LAST_USED_IDX: AtomicU16 = AtomicU16::new(0);
 // Mouse State (written by tablet interrupt, read by render thread)
 // =============================================================================
 
-/// Screen dimensions for coordinate scaling (VirtIO GPU is 1280x800)
-const SCREEN_WIDTH: u32 = 1280;
-const SCREEN_HEIGHT: u32 = 800;
-
 /// Tablet absolute position range (0..32767 for virtio-tablet-device)
 const TABLET_ABS_MAX: u32 = 32767;
+
+/// Get current screen dimensions from the GPU driver (fallback to 1280x800)
+#[inline]
+fn screen_dimensions() -> (u32, u32) {
+    super::gpu_mmio::dimensions().unwrap_or((1280, 800))
+}
 
 /// Current mouse X position in screen coordinates
 static MOUSE_X: AtomicU32 = AtomicU32::new(0);
@@ -798,13 +800,14 @@ pub fn handle_tablet_interrupt() {
             event_type::EV_ABS => {
                 match event.code {
                     abs_code::ABS_X => {
-                        // Scale from 0..32767 to 0..SCREEN_WIDTH-1
-                        let x = (event.value as u64 * SCREEN_WIDTH as u64 / (TABLET_ABS_MAX as u64 + 1)) as u32;
-                        MOUSE_X.store(x.min(SCREEN_WIDTH - 1), Ordering::Relaxed);
+                        let (sw, _) = screen_dimensions();
+                        let x = (event.value as u64 * sw as u64 / (TABLET_ABS_MAX as u64 + 1)) as u32;
+                        MOUSE_X.store(x.min(sw - 1), Ordering::Relaxed);
                     }
                     abs_code::ABS_Y => {
-                        let y = (event.value as u64 * SCREEN_HEIGHT as u64 / (TABLET_ABS_MAX as u64 + 1)) as u32;
-                        MOUSE_Y.store(y.min(SCREEN_HEIGHT - 1), Ordering::Relaxed);
+                        let (_, sh) = screen_dimensions();
+                        let y = (event.value as u64 * sh as u64 / (TABLET_ABS_MAX as u64 + 1)) as u32;
+                        MOUSE_Y.store(y.min(sh - 1), Ordering::Relaxed);
                     }
                     _ => {}
                 }

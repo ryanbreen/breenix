@@ -5,6 +5,7 @@
 
 #[cfg(target_arch = "x86_64")]
 pub mod e1000;
+pub mod fw_cfg;
 pub mod pci;
 pub mod virtio;  // Now available on both x86_64 and aarch64
 
