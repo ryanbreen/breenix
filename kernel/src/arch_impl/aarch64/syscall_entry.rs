@@ -113,22 +113,10 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
 
     // Dispatch to syscall handler.
     // Some syscalls need special handling because they require access to the frame.
-    // First, resolve the raw number to a SyscallNumber via from_u64().
+    // Resolve the raw number to a SyscallNumber via from_u64().
     use crate::syscall::SyscallNumber;
 
-    // Handle Linux ARM64 compatibility numbers before enum lookup
-    let resolved_num = match syscall_num {
-        arm64_compat::EXIT | arm64_compat::EXIT_GROUP => {
-            trace_exit(0);
-            frame.set_return_value(sys_exit_aarch64(arg1 as i32));
-            check_and_deliver_signals_aarch64(frame);
-            super::trace::trace_exec(b'D');
-            Aarch64PerCpu::preempt_enable();
-            return;
-        }
-        arm64_compat::WRITE => Some(SyscallNumber::Write),
-        other => SyscallNumber::from_u64(other),
-    };
+    let resolved_num = SyscallNumber::from_u64(syscall_num);
 
     let result = match resolved_num {
         Some(SyscallNumber::Fork) => sys_fork_aarch64(frame),
@@ -158,6 +146,17 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
             match crate::syscall::signal::sys_sigsuspend_with_frame_aarch64(arg1, arg2, frame) {
                 crate::syscall::SyscallResult::Ok(r) => r,
                 crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        Some(SyscallNumber::Clone) => {
+            // ARM64 has no fork syscall; libbreenix emulates fork via clone(SIGCHLD, 0, 0, 0, 0).
+            // Detect fork-style clone (no CLONE_VM) and route to sys_fork_aarch64 which
+            // needs the exception frame to snapshot parent registers.
+            const CLONE_VM: u64 = 0x00000100;
+            if arg1 & CLONE_VM == 0 {
+                sys_fork_aarch64(frame)
+            } else {
+                result_to_u64(crate::syscall::clone::sys_clone(arg1, arg2, arg3, arg4, arg5))
             }
         }
         Some(syscall) => dispatch_syscall_enum(syscall, arg1, arg2, arg3, arg4, arg5, arg6, frame),
@@ -295,13 +294,6 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
 // =============================================================================
 // Syscall dispatch
 // =============================================================================
-
-// Linux ARM64 syscall number aliases (for compatibility with standard ARM64 binaries)
-mod arm64_compat {
-    pub const EXIT: u64 = 93;
-    pub const EXIT_GROUP: u64 = 94;
-    pub const WRITE: u64 = 64;
-}
 
 /// Convert SyscallResult to raw u64 return value (positive or negative errno)
 #[inline]
@@ -468,6 +460,19 @@ fn dispatch_syscall_enum(
         SyscallNumber::Symlink => result_to_u64(crate::syscall::fs::sys_symlink(arg1, arg2)),
         SyscallNumber::Readlink => result_to_u64(crate::syscall::fs::sys_readlink(arg1, arg2, arg3)),
         SyscallNumber::Mknod => result_to_u64(crate::syscall::fifo::sys_mknod(arg1, arg2 as u32, arg3)),
+
+        // *at variants (ARM64 Linux uses these instead of legacy syscalls)
+        SyscallNumber::Openat => result_to_u64(crate::syscall::fs::sys_openat(arg1 as i32, arg2, arg3 as u32, arg4 as u32)),
+        SyscallNumber::Faccessat => result_to_u64(crate::syscall::fs::sys_faccessat(arg1 as i32, arg2, arg3 as u32, arg4 as u32)),
+        SyscallNumber::Mkdirat => result_to_u64(crate::syscall::fs::sys_mkdirat(arg1 as i32, arg2, arg3 as u32)),
+        SyscallNumber::Mknodat => result_to_u64(crate::syscall::fs::sys_mknodat(arg1 as i32, arg2, arg3 as u32, arg4)),
+        SyscallNumber::Unlinkat => result_to_u64(crate::syscall::fs::sys_unlinkat(arg1 as i32, arg2, arg3 as i32)),
+        SyscallNumber::Symlinkat => result_to_u64(crate::syscall::fs::sys_symlinkat(arg1, arg2 as i32, arg3)),
+        SyscallNumber::Linkat => result_to_u64(crate::syscall::fs::sys_linkat(arg1 as i32, arg2, arg3 as i32, arg4, arg5 as i32)),
+        SyscallNumber::Renameat => result_to_u64(crate::syscall::fs::sys_renameat(arg1 as i32, arg2, arg3 as i32, arg4)),
+        SyscallNumber::Readlinkat => result_to_u64(crate::syscall::fs::sys_readlinkat(arg1 as i32, arg2, arg3, arg4)),
+        SyscallNumber::Dup3 => result_to_u64(crate::syscall::handlers::sys_dup2(arg1, arg2)), // dup3 with flags=0 is dup2
+        SyscallNumber::Pselect6 => result_to_u64(crate::syscall::handlers::sys_select(arg1 as i32, arg2, arg3, arg4, arg5)), // simplified
 
         // PTY syscalls
         SyscallNumber::PosixOpenpt => result_to_u64(crate::syscall::pty::sys_posix_openpt(arg1)),

@@ -123,7 +123,7 @@ pub extern "C" fn __restore_rt() -> ! {
 #[unsafe(naked)]
 pub extern "C" fn __restore_rt() -> ! {
     core::arch::naked_asm!(
-        "mov x8, 15",   // SYS_rt_sigreturn
+        "mov x8, 139",  // SYS_rt_sigreturn (Linux ARM64)
         "svc #0",       // Trigger syscall
         "brk #1",       // Should never reach here
     )
@@ -348,7 +348,17 @@ pub unsafe fn sigreturn() -> ! {
 /// let _ = pause();  // Will return when SIGUSR1 is received
 /// ```
 pub fn pause() -> Result<(), Error> {
-    let ret = unsafe { raw::syscall0(crate::syscall::nr::PAUSE) };
+    let ret = unsafe {
+        #[cfg(target_arch = "x86_64")]
+        { raw::syscall0(crate::syscall::nr::PAUSE) }
+        // ARM64 Linux has no pause syscall; use sigsuspend with empty mask
+        // (unblocks all signals, waits for any signal delivery)
+        #[cfg(target_arch = "aarch64")]
+        {
+            let mask: u64 = 0;
+            raw::syscall2(crate::syscall::nr::SIGSUSPEND, &mask as *const u64 as u64, 8)
+        }
+    };
     // pause always returns -EINTR when a signal is caught
     Error::from_syscall(ret as i64).map(|_| ())
 }
@@ -469,8 +479,23 @@ pub fn sigaltstack(ss: Option<&StackT>, old_ss: Option<&mut StackT>) -> Result<(
 /// # Returns
 /// * The number of seconds remaining from a previous alarm (0 if none)
 pub fn alarm(seconds: u32) -> u32 {
-    unsafe {
-        raw::syscall1(nr::ALARM, seconds as u64) as u32
+    #[cfg(target_arch = "x86_64")]
+    {
+        unsafe { raw::syscall1(nr::ALARM, seconds as u64) as u32 }
+    }
+    // ARM64 Linux has no alarm syscall; implement via setitimer(ITIMER_REAL)
+    #[cfg(target_arch = "aarch64")]
+    {
+        let new_val = Itimerval {
+            it_interval: Timeval { tv_sec: 0, tv_usec: 0 },
+            it_value: Timeval { tv_sec: seconds as i64, tv_usec: 0 },
+        };
+        let mut old_val = Itimerval {
+            it_interval: Timeval { tv_sec: 0, tv_usec: 0 },
+            it_value: Timeval { tv_sec: 0, tv_usec: 0 },
+        };
+        let _ = setitimer(ITIMER_REAL, &new_val, Some(&mut old_val));
+        old_val.it_value.tv_sec as u32
     }
 }
 

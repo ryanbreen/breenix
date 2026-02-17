@@ -50,7 +50,7 @@ pub mod wait;
 ///
 /// The numeric mapping is architecture-specific and handled by `from_u64()`.
 /// x86_64 uses Linux x86_64 ABI numbers for musl libc compatibility.
-/// ARM64 uses legacy Breenix numbers (ARM64 Linux renumbering is a future effort).
+/// ARM64 uses Linux ARM64 (asm-generic) numbers for musl libc compatibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum SyscallNumber {
@@ -138,6 +138,18 @@ pub enum SyscallNumber {
     Fstat,
     Getdents64,
     Newfstatat,     // Path-based file stat (AT_FDCWD support)
+    // *at variants (Linux ARM64 has these instead of legacy syscalls)
+    Openat,         // openat(dirfd, path, flags, mode) - replacement for open
+    Dup3,           // dup3(oldfd, newfd, flags) - replacement for dup2
+    Faccessat,      // faccessat(dirfd, path, mode, flags)
+    Mkdirat,        // mkdirat(dirfd, path, mode)
+    Mknodat,        // mknodat(dirfd, path, mode, dev)
+    Unlinkat,       // unlinkat(dirfd, path, flags) - replaces unlink + rmdir
+    Symlinkat,      // symlinkat(target, dirfd, linkpath)
+    Linkat,         // linkat(olddirfd, oldpath, newdirfd, newpath, flags)
+    Renameat,       // renameat(olddirfd, oldpath, newdirfd, newpath)
+    Readlinkat,     // readlinkat(dirfd, path, buf, bufsiz)
+    Pselect6,       // pselect6(nfds, readfds, writefds, exceptfds, timeout, sigmask)
     // PTY syscalls (Breenix-specific numbers)
     PosixOpenpt,
     Grantpt,
@@ -171,6 +183,7 @@ impl SyscallNumber {
             // Linux x86_64 ABI numbers
             0 => Some(Self::Read),          // was Breenix Exit=0
             1 => Some(Self::Write),
+            2 => Some(Self::Open),          // Linux x86_64 open
             3 => Some(Self::Close),         // was Breenix Yield=3
             5 => Some(Self::Fstat),         // was Breenix Fork=5
             7 => Some(Self::Poll),
@@ -244,10 +257,20 @@ impl SyscallNumber {
             218 => Some(Self::SetTidAddress),
             228 => Some(Self::ClockGetTime),
             231 => Some(Self::ExitGroup),
-            257 => Some(Self::Open),
+            257 => Some(Self::Openat),        // Linux x86_64 openat (was Breenix Open)
+            258 => Some(Self::Mkdirat),
+            259 => Some(Self::Mknodat),
             262 => Some(Self::Newfstatat),  // NEW
+            263 => Some(Self::Unlinkat),
+            264 => Some(Self::Renameat),
+            265 => Some(Self::Linkat),
+            266 => Some(Self::Symlinkat),
+            267 => Some(Self::Readlinkat),
+            269 => Some(Self::Faccessat),
+            270 => Some(Self::Pselect6),
             271 => Some(Self::Ppoll),       // NEW stub
             273 => Some(Self::SetRobustList), // NEW stub
+            292 => Some(Self::Dup3),
             293 => Some(Self::Pipe2),
             318 => Some(Self::GetRandom),
             // PTY syscalls (Breenix-specific, same on both archs)
@@ -271,93 +294,99 @@ impl SyscallNumber {
         }
     }
 
-    /// ARM64: Uses legacy Breenix numbers (unchanged).
-    /// ARM64 Linux ABI renumbering is a separate future effort.
+    /// ARM64: Uses Linux ARM64 (asm-generic/unistd.h) numbers for musl compatibility.
     #[cfg(target_arch = "aarch64")]
     pub fn from_u64(value: u64) -> Option<Self> {
         match value {
-            0 => Some(Self::Exit),
-            1 => Some(Self::Write),
-            2 => Some(Self::Read),
-            3 => Some(Self::Yield),
-            4 => Some(Self::GetTime),
-            5 => Some(Self::Fork),
-            6 => Some(Self::Close),
-            7 => Some(Self::Poll),
-            9 => Some(Self::Mmap),
-            10 => Some(Self::Mprotect),
-            11 => Some(Self::Munmap),
-            12 => Some(Self::Brk),
-            13 => Some(Self::Sigaction),
-            14 => Some(Self::Sigprocmask),
-            15 => Some(Self::Sigreturn),
-            16 => Some(Self::Ioctl),
-            19 => Some(Self::Readv),
-            20 => Some(Self::Writev),
-            21 => Some(Self::Access),
-            22 => Some(Self::Pipe),
-            23 => Some(Self::Select),
-            25 => Some(Self::Mremap),
-            28 => Some(Self::Madvise),
-            32 => Some(Self::Dup),
-            33 => Some(Self::Dup2),
-            34 => Some(Self::Pause),
-            35 => Some(Self::Nanosleep),
-            36 => Some(Self::Getitimer),
-            37 => Some(Self::Alarm),
-            38 => Some(Self::Setitimer),
-            39 => Some(Self::GetPid),
-            41 => Some(Self::Socket),
-            42 => Some(Self::Connect),
-            43 => Some(Self::Accept),
-            44 => Some(Self::SendTo),
-            45 => Some(Self::RecvFrom),
-            48 => Some(Self::Shutdown),
-            49 => Some(Self::Bind),
-            50 => Some(Self::Listen),
-            51 => Some(Self::Getsockname),
-            52 => Some(Self::Getpeername),
-            53 => Some(Self::Socketpair),
-            54 => Some(Self::Setsockopt),
-            55 => Some(Self::Getsockopt),
-            56 => Some(Self::Clone),
-            59 => Some(Self::Exec),
-            61 => Some(Self::Wait4),
-            62 => Some(Self::Kill),
-            72 => Some(Self::Fcntl),
-            79 => Some(Self::Getcwd),
-            80 => Some(Self::Chdir),
-            82 => Some(Self::Rename),
-            83 => Some(Self::Mkdir),
-            84 => Some(Self::Rmdir),
-            86 => Some(Self::Link),
-            87 => Some(Self::Unlink),
-            88 => Some(Self::Symlink),
-            89 => Some(Self::Readlink),
-            109 => Some(Self::SetPgid),
-            110 => Some(Self::Getppid),
-            112 => Some(Self::SetSid),
-            121 => Some(Self::GetPgid),
-            124 => Some(Self::GetSid),
-            127 => Some(Self::Sigpending),
-            130 => Some(Self::Sigsuspend),
-            131 => Some(Self::Sigaltstack),
-            133 => Some(Self::Mknod),
-            186 => Some(Self::GetTid),
-            202 => Some(Self::Futex),
-            218 => Some(Self::SetTidAddress),
-            228 => Some(Self::ClockGetTime),
-            231 => Some(Self::ExitGroup),
-            257 => Some(Self::Open),
-            258 => Some(Self::Lseek),
-            259 => Some(Self::Fstat),
-            260 => Some(Self::Getdents64),
-            262 => Some(Self::Newfstatat),
-            271 => Some(Self::Ppoll),
-            273 => Some(Self::SetRobustList),
-            293 => Some(Self::Pipe2),
-            318 => Some(Self::GetRandom),
-            // PTY syscalls (Breenix-specific)
+            // Linux ARM64 generic syscall numbers (from asm-generic/unistd.h)
+            // I/O
+            17 => Some(Self::Getcwd),
+            23 => Some(Self::Dup),
+            24 => Some(Self::Dup3),
+            25 => Some(Self::Fcntl),
+            29 => Some(Self::Ioctl),
+            // Filesystem *at variants (ARM64 has no legacy open/mkdir/etc.)
+            33 => Some(Self::Mknodat),
+            34 => Some(Self::Mkdirat),
+            35 => Some(Self::Unlinkat),
+            36 => Some(Self::Symlinkat),
+            37 => Some(Self::Linkat),
+            38 => Some(Self::Renameat),
+            48 => Some(Self::Faccessat),
+            49 => Some(Self::Chdir),
+            56 => Some(Self::Openat),
+            57 => Some(Self::Close),
+            59 => Some(Self::Pipe2),
+            61 => Some(Self::Getdents64),
+            62 => Some(Self::Lseek),
+            63 => Some(Self::Read),
+            64 => Some(Self::Write),
+            65 => Some(Self::Readv),
+            66 => Some(Self::Writev),
+            // I/O multiplexing
+            72 => Some(Self::Pselect6),
+            73 => Some(Self::Ppoll),
+            78 => Some(Self::Readlinkat),
+            79 => Some(Self::Newfstatat),
+            80 => Some(Self::Fstat),
+            // Process management
+            93 => Some(Self::Exit),
+            94 => Some(Self::ExitGroup),
+            96 => Some(Self::SetTidAddress),
+            98 => Some(Self::Futex),
+            99 => Some(Self::SetRobustList),
+            // Timers
+            101 => Some(Self::Nanosleep),
+            102 => Some(Self::Getitimer),
+            103 => Some(Self::Setitimer),
+            113 => Some(Self::ClockGetTime),
+            // Scheduling
+            124 => Some(Self::Yield),
+            // Signals
+            129 => Some(Self::Kill),
+            132 => Some(Self::Sigaltstack),
+            133 => Some(Self::Sigsuspend),
+            134 => Some(Self::Sigaction),
+            135 => Some(Self::Sigprocmask),
+            136 => Some(Self::Sigpending),
+            139 => Some(Self::Sigreturn),
+            // Session/process group
+            154 => Some(Self::SetPgid),
+            155 => Some(Self::GetPgid),
+            156 => Some(Self::GetSid),
+            157 => Some(Self::SetSid),
+            // Process info
+            172 => Some(Self::GetPid),
+            173 => Some(Self::Getppid),
+            178 => Some(Self::GetTid),
+            // Socket
+            198 => Some(Self::Socket),
+            199 => Some(Self::Socketpair),
+            200 => Some(Self::Bind),
+            201 => Some(Self::Listen),
+            202 => Some(Self::Accept),
+            203 => Some(Self::Connect),
+            204 => Some(Self::Getsockname),
+            205 => Some(Self::Getpeername),
+            206 => Some(Self::SendTo),
+            207 => Some(Self::RecvFrom),
+            208 => Some(Self::Setsockopt),
+            209 => Some(Self::Getsockopt),
+            210 => Some(Self::Shutdown),
+            // Memory
+            214 => Some(Self::Brk),
+            215 => Some(Self::Munmap),
+            216 => Some(Self::Mremap),
+            220 => Some(Self::Clone),
+            221 => Some(Self::Exec),
+            222 => Some(Self::Mmap),
+            226 => Some(Self::Mprotect),
+            233 => Some(Self::Madvise),
+            // Wait
+            260 => Some(Self::Wait4),
+            // Random
+            278 => Some(Self::GetRandom),
+            // PTY syscalls (Breenix-specific, same on both archs)
             400 => Some(Self::PosixOpenpt),
             401 => Some(Self::Grantpt),
             402 => Some(Self::Unlockpt),

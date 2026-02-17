@@ -3371,3 +3371,95 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, _flags: u32) -> S
 
     SyscallResult::Ok(0)
 }
+
+// =============================================================================
+// *at syscall variants (Linux ARM64 uses these instead of legacy syscalls)
+// =============================================================================
+//
+// ARM64 Linux has no open, mkdir, rmdir, link, unlink, symlink, readlink,
+// mknod, rename, access. Instead it has *at variants that take a dirfd.
+// These wrappers validate AT_FDCWD and delegate to the existing implementations.
+
+/// AT_FDCWD: Use current working directory for relative paths
+const AT_FDCWD: i32 = -100;
+/// AT_REMOVEDIR flag for unlinkat (behave like rmdir)
+const AT_REMOVEDIR: i32 = 0x200;
+
+/// openat(dirfd, pathname, flags, mode) - replacement for open
+pub fn sys_openat(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallResult {
+    if dirfd != AT_FDCWD {
+        return SyscallResult::Err(super::errno::ENOSYS as u64);
+    }
+    sys_open(pathname, flags, mode)
+}
+
+/// faccessat(dirfd, pathname, mode, flags) - replacement for access
+pub fn sys_faccessat(dirfd: i32, pathname: u64, mode: u32, _flags: u32) -> SyscallResult {
+    if dirfd != AT_FDCWD {
+        return SyscallResult::Err(super::errno::ENOSYS as u64);
+    }
+    sys_access(pathname, mode)
+}
+
+/// mkdirat(dirfd, pathname, mode) - replacement for mkdir
+pub fn sys_mkdirat(dirfd: i32, pathname: u64, mode: u32) -> SyscallResult {
+    if dirfd != AT_FDCWD {
+        return SyscallResult::Err(super::errno::ENOSYS as u64);
+    }
+    sys_mkdir(pathname, mode)
+}
+
+/// mknodat(dirfd, pathname, mode, dev) - replacement for mknod
+pub fn sys_mknodat(dirfd: i32, pathname: u64, mode: u32, dev: u64) -> SyscallResult {
+    if dirfd != AT_FDCWD {
+        return SyscallResult::Err(super::errno::ENOSYS as u64);
+    }
+    super::fifo::sys_mknod(pathname, mode, dev)
+}
+
+/// unlinkat(dirfd, pathname, flags) - replacement for unlink and rmdir
+///
+/// If flags contains AT_REMOVEDIR, behaves like rmdir.
+/// Otherwise behaves like unlink.
+pub fn sys_unlinkat(dirfd: i32, pathname: u64, flags: i32) -> SyscallResult {
+    if dirfd != AT_FDCWD {
+        return SyscallResult::Err(super::errno::ENOSYS as u64);
+    }
+    if (flags & AT_REMOVEDIR) != 0 {
+        sys_rmdir(pathname)
+    } else {
+        sys_unlink(pathname)
+    }
+}
+
+/// symlinkat(target, newdirfd, linkpath) - replacement for symlink
+pub fn sys_symlinkat(target: u64, newdirfd: i32, linkpath: u64) -> SyscallResult {
+    if newdirfd != AT_FDCWD {
+        return SyscallResult::Err(super::errno::ENOSYS as u64);
+    }
+    sys_symlink(target, linkpath)
+}
+
+/// linkat(olddirfd, oldpath, newdirfd, newpath, flags) - replacement for link
+pub fn sys_linkat(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64, _flags: i32) -> SyscallResult {
+    if olddirfd != AT_FDCWD || newdirfd != AT_FDCWD {
+        return SyscallResult::Err(super::errno::ENOSYS as u64);
+    }
+    sys_link(oldpath, newpath)
+}
+
+/// renameat(olddirfd, oldpath, newdirfd, newpath) - replacement for rename
+pub fn sys_renameat(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> SyscallResult {
+    if olddirfd != AT_FDCWD || newdirfd != AT_FDCWD {
+        return SyscallResult::Err(super::errno::ENOSYS as u64);
+    }
+    sys_rename(oldpath, newpath)
+}
+
+/// readlinkat(dirfd, pathname, buf, bufsiz) - replacement for readlink
+pub fn sys_readlinkat(dirfd: i32, pathname: u64, buf: u64, bufsiz: u64) -> SyscallResult {
+    if dirfd != AT_FDCWD {
+        return SyscallResult::Err(super::errno::ENOSYS as u64);
+    }
+    sys_readlink(pathname, buf, bufsiz)
+}

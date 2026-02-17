@@ -228,16 +228,16 @@ fn main() {
                 "mov x21, {e21}",
                 "mov x22, {e22}",
                 "mov x23, {e23}",
-                // kill(my_pid, SIGUSR1) - syscall 62
-                "mov x8, 62",
+                // kill(my_pid, SIGUSR1) - syscall 129 (Linux ARM64)
+                "mov x8, 129",
                 "mov x0, {pid}",
                 "mov x1, 10",
                 "svc #0",
                 // Yield loop to allow signal delivery (100 iterations)
-                // sched_yield = syscall 3
+                // sched_yield = syscall 124 (Linux ARM64)
                 "mov x9, 100",
                 "2:",
-                "mov x8, 3",
+                "mov x8, 124",
                 "svc #0",
                 "sub x9, x9, 1",
                 "cbnz x9, 2b",

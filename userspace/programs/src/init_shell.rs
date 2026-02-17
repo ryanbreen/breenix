@@ -67,7 +67,7 @@ const PARENB: u32 = 0x0100;
 
 // Use the canonical syscall number from libbreenix
 use libbreenix::syscall::nr;
-const SYS_OPEN: u64 = nr::OPEN;
+const AT_FDCWD: u64 = (-100i64) as u64;
 
 /// Raw execve wrapper using libbreenix syscall primitives.
 /// This replaces the `extern "C" { fn execve(...) }` FFI import.
@@ -87,15 +87,17 @@ fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -
 // ============================================================================
 
 fn sys_open(path: *const u8, flags: i32) -> i64 {
-    unsafe { libbreenix::raw::syscall3(SYS_OPEN, path as u64, flags as u64, 0) as i64 }
+    unsafe { libbreenix::raw::syscall4(nr::OPENAT, AT_FDCWD, path as u64, flags as u64, 0) as i64 }
 }
 
 fn sys_access(pathname: *const u8, mode: i32) -> i32 {
     unsafe {
-        libbreenix::raw::syscall2(
-            libbreenix::syscall::nr::ACCESS,
+        libbreenix::raw::syscall4(
+            libbreenix::syscall::nr::FACCESSAT,
+            AT_FDCWD,
             pathname as u64,
             mode as u64,
+            0, // flags
         ) as i32
     }
 }

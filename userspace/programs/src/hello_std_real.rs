@@ -70,11 +70,11 @@ fn main() {
             #[cfg(target_arch = "aarch64")]
             unsafe {
                 core::arch::asm!(
-                    "svc #0",          // SYS_exit(0) - Breenix Exit=0
+                    "svc #0",          // SYS_exit(0)
                     "2:",
                     "yield",           // Spin-loop hint (ARM64 equivalent of PAUSE)
                     "b 2b",
-                    in("x8") 0u64,     // SYS_EXIT = 0 in Breenix
+                    in("x8") 93u64,    // SYS_EXIT = 93 (Linux ARM64)
                     in("x0") 0u64,
                     options(noreturn),
                 );
@@ -134,7 +134,7 @@ fn main() {
             #[cfg(target_arch = "aarch64")]
             core::arch::asm!(
                 "svc #0",
-                in("x8") 56u64,         // SYS_clone
+                in("x8") 220u64,        // SYS_clone (Linux ARM64)
                 inlateout("x0") flags as u64 => ret,
                 in("x1") stack_top as u64,
                 in("x2") child_fn as u64,
@@ -163,7 +163,7 @@ fn main() {
                 #[cfg(target_arch = "x86_64")]
                 core::arch::asm!("int 0x80", in("rax") 24u64, options(nostack));
                 #[cfg(target_arch = "aarch64")]
-                core::arch::asm!("svc #0", in("x8") 3u64, in("x0") 0u64, options(nostack));
+                core::arch::asm!("svc #0", in("x8") 124u64, in("x0") 0u64, options(nostack));
                 // Print progress every 1M iterations
                 if i > 0 && i % 1_000_000 == 0 {
                     let digit = b'0' + (i / 1_000_000) as u8;

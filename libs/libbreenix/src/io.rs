@@ -119,7 +119,12 @@ pub fn close(fd: Fd) -> Result<(), Error> {
 #[inline]
 pub fn pipe() -> Result<(Fd, Fd), Error> {
     let mut pipefd = [0i32; 2];
-    let ret = unsafe { raw::syscall1(nr::PIPE, pipefd.as_mut_ptr() as u64) };
+    let ret = unsafe {
+        #[cfg(target_arch = "x86_64")]
+        { raw::syscall1(nr::PIPE, pipefd.as_mut_ptr() as u64) }
+        #[cfg(target_arch = "aarch64")]
+        { raw::syscall2(nr::PIPE2, pipefd.as_mut_ptr() as u64, 0) }
+    };
     Error::from_syscall(ret as i64).map(|_| {
         (Fd::from_raw(pipefd[0] as u64), Fd::from_raw(pipefd[1] as u64))
     })
@@ -177,7 +182,12 @@ pub fn dup(old_fd: Fd) -> Result<Fd, Error> {
 /// `new_fd` on success, `Err(Error)` on error.
 #[inline]
 pub fn dup2(old_fd: Fd, new_fd: Fd) -> Result<Fd, Error> {
-    let ret = unsafe { raw::syscall2(nr::DUP2, old_fd.raw(), new_fd.raw()) };
+    let ret = unsafe {
+        #[cfg(target_arch = "x86_64")]
+        { raw::syscall2(nr::DUP2, old_fd.raw(), new_fd.raw()) }
+        #[cfg(target_arch = "aarch64")]
+        { raw::syscall3(nr::DUP3, old_fd.raw(), new_fd.raw(), 0) }
+    };
     Error::from_syscall(ret as i64).map(|v| Fd::from_raw(v))
 }
 
@@ -322,12 +332,44 @@ impl PollFd {
 #[inline]
 pub fn poll(fds: &mut [PollFd], timeout: i32) -> Result<usize, Error> {
     let ret = unsafe {
-        raw::syscall3(
-            nr::POLL,
-            fds.as_mut_ptr() as u64,
-            fds.len() as u64,
-            timeout as u64,
-        )
+        #[cfg(target_arch = "x86_64")]
+        {
+            raw::syscall3(
+                nr::POLL,
+                fds.as_mut_ptr() as u64,
+                fds.len() as u64,
+                timeout as u64,
+            )
+        }
+        // ARM64 Linux has no poll; use ppoll(fds, nfds, timeout_ts, NULL, 0)
+        #[cfg(target_arch = "aarch64")]
+        {
+            if timeout < 0 {
+                // Infinite timeout: pass NULL timespec
+                raw::syscall5(
+                    nr::PPOLL,
+                    fds.as_mut_ptr() as u64,
+                    fds.len() as u64,
+                    0, // NULL timespec = infinite
+                    0, // NULL sigmask
+                    0, // sigsetsize
+                )
+            } else {
+                // Convert milliseconds to timespec
+                let ts = crate::types::Timespec {
+                    tv_sec: (timeout / 1000) as i64,
+                    tv_nsec: ((timeout % 1000) as i64) * 1_000_000,
+                };
+                raw::syscall5(
+                    nr::PPOLL,
+                    fds.as_mut_ptr() as u64,
+                    fds.len() as u64,
+                    &ts as *const crate::types::Timespec as u64,
+                    0, // NULL sigmask
+                    0, // sigsetsize
+                )
+            }
+        }
     };
     Error::from_syscall(ret as i64).map(|v| v as usize)
 }
@@ -402,14 +444,30 @@ pub fn select(
     let exceptfds_ptr = exceptfds.map(|p| p as *mut FdSet as u64).unwrap_or(0);
 
     let ret = unsafe {
-        raw::syscall5(
-            nr::SELECT,
-            nfds as u64,
-            readfds_ptr,
-            writefds_ptr,
-            exceptfds_ptr,
-            timeout_ptr,
-        )
+        #[cfg(target_arch = "x86_64")]
+        {
+            raw::syscall5(
+                nr::SELECT,
+                nfds as u64,
+                readfds_ptr,
+                writefds_ptr,
+                exceptfds_ptr,
+                timeout_ptr,
+            )
+        }
+        // ARM64 Linux has no select; use pselect6(nfds, readfds, writefds, exceptfds, timeout, NULL)
+        #[cfg(target_arch = "aarch64")]
+        {
+            raw::syscall6(
+                nr::PSELECT6,
+                nfds as u64,
+                readfds_ptr,
+                writefds_ptr,
+                exceptfds_ptr,
+                timeout_ptr,
+                0, // NULL sigmask
+            )
+        }
     };
     Error::from_syscall(ret as i64).map(|v| v as usize)
 }

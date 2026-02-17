@@ -372,6 +372,18 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Symlink) => super::fs::sys_symlink(args.0, args.1),
         Some(SyscallNumber::Readlink) => super::fs::sys_readlink(args.0, args.1, args.2),
         Some(SyscallNumber::Mknod) => super::fifo::sys_mknod(args.0, args.1 as u32, args.2),
+        // *at variants (ARM64 Linux has no legacy syscalls; x86_64 also supports these)
+        Some(SyscallNumber::Openat) => super::fs::sys_openat(args.0 as i32, args.1, args.2 as u32, args.3 as u32),
+        Some(SyscallNumber::Faccessat) => super::fs::sys_faccessat(args.0 as i32, args.1, args.2 as u32, args.3 as u32),
+        Some(SyscallNumber::Mkdirat) => super::fs::sys_mkdirat(args.0 as i32, args.1, args.2 as u32),
+        Some(SyscallNumber::Mknodat) => super::fs::sys_mknodat(args.0 as i32, args.1, args.2 as u32, args.3),
+        Some(SyscallNumber::Unlinkat) => super::fs::sys_unlinkat(args.0 as i32, args.1, args.2 as i32),
+        Some(SyscallNumber::Symlinkat) => super::fs::sys_symlinkat(args.0, args.1 as i32, args.2),
+        Some(SyscallNumber::Linkat) => super::fs::sys_linkat(args.0 as i32, args.1, args.2 as i32, args.3, args.4 as i32),
+        Some(SyscallNumber::Renameat) => super::fs::sys_renameat(args.0 as i32, args.1, args.2 as i32, args.3),
+        Some(SyscallNumber::Readlinkat) => super::fs::sys_readlinkat(args.0 as i32, args.1, args.2, args.3),
+        Some(SyscallNumber::Dup3) => super::handlers::sys_dup2(args.0, args.1),
+        Some(SyscallNumber::Pselect6) => super::handlers::sys_select(args.0 as i32, args.1, args.2, args.3, args.4),
         Some(SyscallNumber::CowStats) => super::handlers::sys_cow_stats(args.0),
         Some(SyscallNumber::SimulateOom) => super::handlers::sys_simulate_oom(args.0),
         // PTY syscalls

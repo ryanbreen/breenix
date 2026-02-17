@@ -106,6 +106,18 @@ pub fn dispatch_syscall(
         SyscallNumber::Symlink => super::fs::sys_symlink(arg1, arg2),
         SyscallNumber::Readlink => super::fs::sys_readlink(arg1, arg2, arg3),
         SyscallNumber::Mknod => super::fifo::sys_mknod(arg1, arg2 as u32, arg3),
+        // *at variants (Linux ARM64 uses these, x86_64 also supports them)
+        SyscallNumber::Openat => super::fs::sys_openat(arg1 as i32, arg2, arg3 as u32, arg4 as u32),
+        SyscallNumber::Faccessat => super::fs::sys_faccessat(arg1 as i32, arg2, arg3 as u32, arg4 as u32),
+        SyscallNumber::Mkdirat => super::fs::sys_mkdirat(arg1 as i32, arg2, arg3 as u32),
+        SyscallNumber::Mknodat => super::fs::sys_mknodat(arg1 as i32, arg2, arg3 as u32, arg4),
+        SyscallNumber::Unlinkat => super::fs::sys_unlinkat(arg1 as i32, arg2, arg3 as i32),
+        SyscallNumber::Symlinkat => super::fs::sys_symlinkat(arg1, arg2 as i32, arg3),
+        SyscallNumber::Linkat => super::fs::sys_linkat(arg1 as i32, arg2, arg3 as i32, arg4, arg5 as i32),
+        SyscallNumber::Renameat => super::fs::sys_renameat(arg1 as i32, arg2, arg3 as i32, arg4),
+        SyscallNumber::Readlinkat => super::fs::sys_readlinkat(arg1 as i32, arg2, arg3, arg4),
+        SyscallNumber::Dup3 => handlers::sys_dup2(arg1, arg2), // dup3 with flags=0 is dup2
+        SyscallNumber::Pselect6 => handlers::sys_select(arg1 as i32, arg2, arg3, arg4, arg5), // simplified
         // PTY syscalls
         SyscallNumber::PosixOpenpt => super::pty::sys_posix_openpt(arg1),
         SyscallNumber::Grantpt => super::pty::sys_grantpt(arg1),
