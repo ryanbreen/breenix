@@ -1,0 +1,13 @@
+[package]
+name = "libcollab"
+version = "0.1.0"
+edition = "2021"
+description = "Breenix collaboration protocol library — real-time multi-user session support"
+
+[workspace]
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+libbreenix = { path = "../libbreenix", features = ["std"] }

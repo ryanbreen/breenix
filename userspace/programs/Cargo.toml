@@ -9,7 +9,9 @@ description = "Userspace programs and utilities for Breenix"
 
 [dependencies]
 libbreenix = { path = "../../libs/libbreenix", features = ["std"] }
+libcollab = { path = "../../libs/libcollab" }
 libgfx = { path = "../../libs/libgfx" }
+libbui = { path = "../../libs/libbui" }
 libimg = { path = "../../libs/libimg" }
 breenish-js = { path = "../../libs/breenish-js" }
 

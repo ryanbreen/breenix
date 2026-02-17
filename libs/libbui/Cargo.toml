@@ -1,0 +1,13 @@
+[package]
+name = "libbui"
+version = "0.1.0"
+edition = "2021"
+description = "Breenix UI Widget Toolkit"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+libgfx = { path = "../libgfx" }
+
+[workspace]

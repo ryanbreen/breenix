@@ -38,6 +38,10 @@ libs/*
 !libs/breenish-js/**
 !libs/libimg/
 !libs/libimg/**
+!libs/libbui/
+!libs/libbui/**
+!libs/libcollab/
+!libs/libcollab/**
 
 # Log files
 *.log

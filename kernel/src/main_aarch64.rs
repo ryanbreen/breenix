@@ -329,6 +329,9 @@ pub extern "C" fn kernel_main() -> ! {
     let irq_enabled = Aarch64Cpu::interrupts_enabled();
     serial_println!("[boot] Interrupts enabled: {}", irq_enabled);
 
+    // Read display resolution from fw_cfg before driver init
+    kernel::drivers::virtio::gpu_mmio::load_resolution_from_fw_cfg();
+
     // Initialize device drivers (VirtIO MMIO enumeration)
     serial_println!("[boot] Initializing device drivers...");
     let device_count = kernel::drivers::init();
