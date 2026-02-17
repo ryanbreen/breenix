@@ -416,19 +416,13 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
     let (header, payload) = match TcpHeader::parse(data) {
         Some(h) => h,
         None => {
-            log::warn!("TCP: Failed to parse header");
-            crate::serial_println!("[TCP] Failed to parse header from {}.{}.{}.{}", ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3]);
+            log::warn!("TCP: Failed to parse header from {}.{}.{}.{}", ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3]);
             return;
         }
     };
 
-    crate::serial_println!("[TCP] RX {}.{}.{}.{}:{} -> port {} flags={:?} seq={} ack={} len={}",
-        ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3],
-        header.src_port, header.dst_port, header.flags,
-        header.seq_num, header.ack_num, payload.len());
-
-    log::debug!(
-        "TCP: Received {} bytes from {}.{}.{}.{}:{} -> port {} seq={} ack={} flags={:?}",
+    log::trace!(
+        "TCP: RX {} bytes {}.{}.{}.{}:{} -> port {} seq={} ack={} flags={:?}",
         payload.len(),
         ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3],
         header.src_port,
@@ -458,9 +452,7 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
     // No existing connection - check for listening socket
     {
         let mut listeners = TCP_LISTENERS.lock();
-        crate::serial_println!("[TCP] Checking listeners for port {} (have {} listeners)", header.dst_port, listeners.len());
         if let Some(listener) = listeners.get_mut(&header.dst_port) {
-            crate::serial_println!("[TCP] Found listener on port {}", header.dst_port);
             if header.flags.syn && !header.flags.ack {
                 // SYN received on listening socket - add to pending queue
                 handle_syn_for_listener(listener, ip.src_ip, &header, &config);
@@ -491,7 +483,6 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
     }
 
     // No connection and no listener - send RST
-    crate::serial_println!("[TCP] No socket for port {}, sending RST", header.dst_port);
     log::debug!("TCP: No socket for port {}, sending RST", header.dst_port);
     send_rst(&config, ip.src_ip, &header);
 }
@@ -770,12 +761,7 @@ fn handle_syn_for_listener(
     header: &TcpHeader,
     config: &super::NetConfig,
 ) {
-    crate::serial_println!("[TCP] handle_syn_for_listener: port {} from {}.{}.{}.{}:{} (pending={}/{})",
-        header.dst_port, src_ip[0], src_ip[1], src_ip[2], src_ip[3], header.src_port,
-        listener.pending.len(), listener.backlog);
-
     if listener.pending.len() >= listener.backlog {
-        crate::serial_println!("[TCP] Backlog full, sending RST for port {}", header.dst_port);
         log::warn!("TCP: Backlog full, sending RST for port {}", header.dst_port);
         // Send RST to tell client the connection was refused
         send_rst(config, src_ip, header);
@@ -795,8 +781,7 @@ fn handle_syn_for_listener(
         recv_next: header.seq_num.wrapping_add(1), // +1 for SYN
     });
 
-    crate::serial_println!("[TCP] SYN received on port {}, sending SYN+ACK (ISN={})", header.dst_port, send_isn);
-    log::debug!("TCP: SYN received, sending SYN+ACK");
+    log::debug!("TCP: SYN received on port {}, sending SYN+ACK", header.dst_port);
 
     // Send SYN+ACK
     send_tcp_packet(
@@ -862,10 +847,7 @@ pub fn send_tcp_packet(
         payload,
     );
 
-    crate::serial_println!("[TCP] TX -> {}.{}.{}.{}:{} from port {} flags={:?} seq={} ack={}",
-        dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3], dst_port, src_port, flags, seq_num, ack_num);
     if let Err(e) = super::send_ipv4(dst_ip, PROTOCOL_TCP, &packet) {
-        crate::serial_println!("[TCP] Failed to send packet: {}", e);
         log::warn!("TCP: Failed to send packet: {}", e);
     }
 }
@@ -948,8 +930,7 @@ pub fn tcp_listen(
         ref_count: core::sync::atomic::AtomicUsize::new(1),
     });
 
-    crate::serial_println!("[TCP] Listening on port {} (backlog={}, pid={:?})", local_port, backlog, owner_pid);
-    log::info!("TCP: Listening on port {}", local_port);
+    log::info!("TCP: Listening on port {} (backlog={})", local_port, backlog);
 
     Ok(())
 }

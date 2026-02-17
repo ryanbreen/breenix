@@ -145,6 +145,155 @@ impl Stat {
 
 /// sys_open - Open a file or directory
 ///
+/// Helper: sys_open write path (O_CREAT/O_TRUNC) — works on any Ext2Fs instance.
+/// Returns (inode_num, file_type, is_directory, is_regular, mount_id) or Err.
+fn sys_open_write_path(
+    fs: &mut crate::fs::ext2::Ext2Fs,
+    fs_path: &str,
+    display_path: &str,
+    want_creat: bool,
+    want_excl: bool,
+    want_trunc: bool,
+    mode: u32,
+) -> Result<(u32, crate::fs::ext2::FileType, bool, bool, usize), SyscallResult> {
+    use super::errno::{EEXIST, ENOENT, ENOSPC, ENOTDIR};
+    use crate::fs::ext2::FileType as Ext2FileType;
+
+    let resolve_result = fs.resolve_path(fs_path);
+
+    let (ino, file_created) = match resolve_result {
+        Ok(ino) => {
+            if want_creat && want_excl {
+                log::debug!("sys_open: file exists and O_EXCL set");
+                return Err(SyscallResult::Err(EEXIST as u64));
+            }
+            (ino, false)
+        }
+        Err(e) => {
+            if e.contains("not found") && want_creat {
+                log::debug!("sys_open: creating new file {}", display_path);
+
+                let (parent_path, filename) = match fs_path.rfind('/') {
+                    Some(0) => ("/", &fs_path[1..]),
+                    Some(idx) => (&fs_path[..idx], &fs_path[idx + 1..]),
+                    None => {
+                        log::error!("sys_open: invalid path format");
+                        return Err(SyscallResult::Err(ENOENT as u64));
+                    }
+                };
+
+                if filename.is_empty() {
+                    log::error!("sys_open: empty filename");
+                    return Err(SyscallResult::Err(ENOENT as u64));
+                }
+
+                let parent_inode = match fs.resolve_path(parent_path) {
+                    Ok(ino) => ino,
+                    Err(_) => {
+                        log::error!("sys_open: parent directory not found: {}", parent_path);
+                        return Err(SyscallResult::Err(ENOENT as u64));
+                    }
+                };
+
+                let parent = match fs.read_inode(parent_inode) {
+                    Ok(ino) => ino,
+                    Err(_) => {
+                        log::error!("sys_open: failed to read parent inode");
+                        return Err(SyscallResult::Err(5)); // EIO
+                    }
+                };
+                if !parent.is_dir() {
+                    return Err(SyscallResult::Err(ENOTDIR as u64));
+                }
+
+                let file_mode = if mode == 0 { 0o644 } else { (mode & 0o777) as u16 };
+                match fs.create_file(parent_inode, filename, file_mode) {
+                    Ok(new_inode) => {
+                        log::info!("sys_open: created file {} with inode {}", display_path, new_inode);
+                        (new_inode, true)
+                    }
+                    Err(e) => {
+                        log::error!("sys_open: failed to create file: {}", e);
+                        if e.contains("No free inodes") || e.contains("No space") {
+                            return Err(SyscallResult::Err(ENOSPC as u64));
+                        }
+                        return Err(SyscallResult::Err(5)); // EIO
+                    }
+                }
+            } else {
+                log::debug!("sys_open: path resolution failed: {}", e);
+                if e.contains("not found") {
+                    return Err(SyscallResult::Err(ENOENT as u64));
+                } else if e.contains("Not a directory") {
+                    return Err(SyscallResult::Err(ENOTDIR as u64));
+                } else {
+                    return Err(SyscallResult::Err(5)); // EIO
+                }
+            }
+        }
+    };
+
+    let inode = match fs.read_inode(ino) {
+        Ok(i) => i,
+        Err(_) => {
+            log::error!("sys_open: failed to read inode {}", ino);
+            return Err(SyscallResult::Err(5)); // EIO
+        }
+    };
+
+    let ft = inode.file_type();
+    let is_dir = matches!(ft, Ext2FileType::Directory);
+    let is_reg = matches!(ft, Ext2FileType::Regular);
+
+    if want_trunc && is_reg && !file_created {
+        log::debug!("sys_open: truncating file inode {}", ino);
+        if let Err(e) = fs.truncate_file(ino) {
+            log::error!("sys_open: failed to truncate file: {}", e);
+            return Err(SyscallResult::Err(5)); // EIO
+        }
+    }
+
+    let mid = fs.mount_id;
+    Ok((ino, ft, is_dir, is_reg, mid))
+}
+
+/// Helper: sys_open read path — works on any Ext2Fs instance.
+fn sys_open_read_path(
+    fs: &crate::fs::ext2::Ext2Fs,
+    fs_path: &str,
+) -> Result<(u32, crate::fs::ext2::FileType, bool, bool, usize), SyscallResult> {
+    use super::errno::{ENOENT, ENOTDIR};
+    use crate::fs::ext2::FileType as Ext2FileType;
+
+    let ino = match fs.resolve_path(fs_path) {
+        Ok(ino) => ino,
+        Err(e) => {
+            log::debug!("sys_open: path resolution failed: {}", e);
+            if e.contains("not found") {
+                return Err(SyscallResult::Err(ENOENT as u64));
+            } else if e.contains("Not a directory") {
+                return Err(SyscallResult::Err(ENOTDIR as u64));
+            } else {
+                return Err(SyscallResult::Err(5)); // EIO
+            }
+        }
+    };
+
+    let inode = match fs.read_inode(ino) {
+        Ok(i) => i,
+        Err(_) => {
+            log::error!("sys_open: failed to read inode {}", ino);
+            return Err(SyscallResult::Err(5)); // EIO
+        }
+    };
+
+    let ft = inode.file_type();
+    let is_dir = matches!(ft, Ext2FileType::Directory);
+    let is_reg = matches!(ft, Ext2FileType::Regular);
+    let mid = fs.mount_id;
+    Ok((ino, ft, is_dir, is_reg, mid))
+}
+
 /// # Arguments
 /// * `pathname` - Path to the file (userspace pointer)
 /// * `flags` - Open flags (O_RDONLY, O_WRONLY, O_RDWR, O_DIRECTORY, etc.)
@@ -153,7 +302,7 @@ impl Stat {
 /// # Returns
 /// File descriptor on success, negative errno on failure
 pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
-    use super::errno::{EACCES, EEXIST, EISDIR, EMFILE, ENOENT, ENOSPC, ENOTDIR};
+    use super::errno::{EACCES, EISDIR, EMFILE, ENOENT, ENOTDIR};
     use super::userptr::copy_cstr_from_user;
     use crate::fs::ext2::{self, FileType as Ext2FileType};
     use crate::ipc::fd::{DirectoryFile, RegularFile};
@@ -216,156 +365,60 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
     // being blocked by another process creating or writing files.
     let needs_write = want_creat || want_trunc;
 
+    // Determine which filesystem to use based on path
+    let is_home = ext2::is_home_path(&path);
+    let fs_path = if is_home { ext2::strip_home_prefix(&path) } else { &path };
+
     let (inode_num, file_type, is_directory, is_regular, mount_id) = if needs_write {
         // === WRITE PATH: O_CREAT or O_TRUNC requires exclusive filesystem access ===
-        let mut fs_guard = ext2::root_fs_write();
-        let fs = match fs_guard.as_mut() {
-            Some(fs) => fs,
-            None => {
-                log::error!("sys_open: ext2 root filesystem not mounted");
-                return SyscallResult::Err(ENOENT as u64);
-            }
-        };
-
-        // Try to resolve the path to an inode number
-        let resolve_result = fs.resolve_path(&path);
-
-        // Handle O_CREAT flag
-        let (ino, file_created) = match resolve_result {
-            Ok(ino) => {
-                if want_creat && want_excl {
-                    log::debug!("sys_open: file exists and O_EXCL set");
-                    return SyscallResult::Err(EEXIST as u64);
+        let result = if is_home {
+            let mut fs_guard = ext2::home_fs_write();
+            match fs_guard.as_mut() {
+                Some(fs) => sys_open_write_path(fs, fs_path, &path, want_creat, want_excl, want_trunc, mode),
+                None => {
+                    log::error!("sys_open: ext2 home filesystem not mounted");
+                    return SyscallResult::Err(ENOENT as u64);
                 }
-                (ino, false)
             }
-            Err(e) => {
-                if e.contains("not found") && want_creat {
-                    log::debug!("sys_open: creating new file {}", path);
-
-                    let (parent_path, filename) = match path.rfind('/') {
-                        Some(0) => ("/", &path[1..]),
-                        Some(idx) => (&path[..idx], &path[idx + 1..]),
-                        None => {
-                            log::error!("sys_open: invalid path format");
-                            return SyscallResult::Err(ENOENT as u64);
-                        }
-                    };
-
-                    if filename.is_empty() {
-                        log::error!("sys_open: empty filename");
-                        return SyscallResult::Err(ENOENT as u64);
-                    }
-
-                    let parent_inode = match fs.resolve_path(parent_path) {
-                        Ok(ino) => ino,
-                        Err(_) => {
-                            log::error!("sys_open: parent directory not found: {}", parent_path);
-                            return SyscallResult::Err(ENOENT as u64);
-                        }
-                    };
-
-                    let parent = match fs.read_inode(parent_inode) {
-                        Ok(ino) => ino,
-                        Err(_) => {
-                            log::error!("sys_open: failed to read parent inode");
-                            return SyscallResult::Err(5); // EIO
-                        }
-                    };
-                    if !parent.is_dir() {
-                        return SyscallResult::Err(ENOTDIR as u64);
-                    }
-
-                    let file_mode = if mode == 0 { 0o644 } else { (mode & 0o777) as u16 };
-                    match fs.create_file(parent_inode, filename, file_mode) {
-                        Ok(new_inode) => {
-                            log::info!("sys_open: created file {} with inode {}", path, new_inode);
-                            (new_inode, true)
-                        }
-                        Err(e) => {
-                            log::error!("sys_open: failed to create file: {}", e);
-                            if e.contains("No free inodes") || e.contains("No space") {
-                                return SyscallResult::Err(ENOSPC as u64);
-                            }
-                            return SyscallResult::Err(5); // EIO
-                        }
-                    }
-                } else {
-                    log::debug!("sys_open: path resolution failed: {}", e);
-                    if e.contains("not found") {
-                        return SyscallResult::Err(ENOENT as u64);
-                    } else if e.contains("Not a directory") {
-                        return SyscallResult::Err(ENOTDIR as u64);
-                    } else {
-                        return SyscallResult::Err(5); // EIO
-                    }
+        } else {
+            let mut fs_guard = ext2::root_fs_write();
+            match fs_guard.as_mut() {
+                Some(fs) => sys_open_write_path(fs, fs_path, &path, want_creat, want_excl, want_trunc, mode),
+                None => {
+                    log::error!("sys_open: ext2 root filesystem not mounted");
+                    return SyscallResult::Err(ENOENT as u64);
                 }
             }
         };
-
-        let inode = match fs.read_inode(ino) {
-            Ok(i) => i,
-            Err(_) => {
-                log::error!("sys_open: failed to read inode {}", ino);
-                return SyscallResult::Err(5); // EIO
-            }
-        };
-
-        let ft = inode.file_type();
-        let is_dir = matches!(ft, Ext2FileType::Directory);
-        let is_reg = matches!(ft, Ext2FileType::Regular);
-
-        // Handle O_TRUNC for existing regular files
-        if want_trunc && is_reg && !file_created {
-            log::debug!("sys_open: truncating file inode {}", ino);
-            if let Err(e) = fs.truncate_file(ino) {
-                log::error!("sys_open: failed to truncate file: {}", e);
-                return SyscallResult::Err(5); // EIO
-            }
+        match result {
+            Ok(v) => v,
+            Err(e) => return e,
         }
-
-        let mid = fs.mount_id;
-        drop(fs_guard);
-        (ino, ft, is_dir, is_reg, mid)
     } else {
         // === READ PATH: No filesystem modification needed, use shared read lock ===
-        let fs_guard = ext2::root_fs_read();
-        let fs = match fs_guard.as_ref() {
-            Some(fs) => fs,
-            None => {
-                log::error!("sys_open: ext2 root filesystem not mounted");
-                return SyscallResult::Err(ENOENT as u64);
-            }
-        };
-
-        let ino = match fs.resolve_path(&path) {
-            Ok(ino) => ino,
-            Err(e) => {
-                log::debug!("sys_open: path resolution failed: {}", e);
-                if e.contains("not found") {
+        let result = if is_home {
+            let fs_guard = ext2::home_fs_read();
+            match fs_guard.as_ref() {
+                Some(fs) => sys_open_read_path(fs, fs_path),
+                None => {
+                    log::error!("sys_open: ext2 home filesystem not mounted");
                     return SyscallResult::Err(ENOENT as u64);
-                } else if e.contains("Not a directory") {
-                    return SyscallResult::Err(ENOTDIR as u64);
-                } else {
-                    return SyscallResult::Err(5); // EIO
+                }
+            }
+        } else {
+            let fs_guard = ext2::root_fs_read();
+            match fs_guard.as_ref() {
+                Some(fs) => sys_open_read_path(fs, fs_path),
+                None => {
+                    log::error!("sys_open: ext2 root filesystem not mounted");
+                    return SyscallResult::Err(ENOENT as u64);
                 }
             }
         };
-
-        let inode = match fs.read_inode(ino) {
-            Ok(i) => i,
-            Err(_) => {
-                log::error!("sys_open: failed to read inode {}", ino);
-                return SyscallResult::Err(5); // EIO
-            }
-        };
-
-        let ft = inode.file_type();
-        let is_dir = matches!(ft, Ext2FileType::Directory);
-        let is_reg = matches!(ft, Ext2FileType::Regular);
-        let mid = fs.mount_id;
-        drop(fs_guard);
-        (ino, ft, is_dir, is_reg, mid)
+        match result {
+            Ok(v) => v,
+            Err(e) => return e,
+        }
     };
 
     let _ = file_type;
@@ -527,7 +580,7 @@ pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
                 SEEK_CUR => (file.position as i64 + offset) as u64,
                 SEEK_END => {
                     // Get file size from ext2 inode
-                    let file_size = match get_ext2_file_size(file.inode_num) {
+                    let file_size = match get_ext2_file_size_for_mount(file.inode_num, file.mount_id) {
                         Some(size) => size as i64,
                         None => {
                             log::error!("sys_lseek: cannot get file size for inode {}", file.inode_num);
@@ -638,7 +691,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             stat.st_nlink = 1;
 
             // Try to load inode metadata from ext2 filesystem
-            if let Some(inode_stat) = load_ext2_inode_stat(file_guard.inode_num) {
+            if let Some(inode_stat) = load_ext2_inode_stat_for_mount(file_guard.inode_num, file_guard.mount_id) {
                 stat.st_mode = inode_stat.mode;
                 stat.st_uid = inode_stat.uid;
                 stat.st_gid = inode_stat.gid;
@@ -658,7 +711,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             stat.st_nlink = 2; // . and ..
 
             // Try to load inode metadata from ext2 filesystem
-            if let Some(inode_stat) = load_ext2_inode_stat(dir_guard.inode_num) {
+            if let Some(inode_stat) = load_ext2_inode_stat_for_mount(dir_guard.inode_num, dir_guard.mount_id) {
                 stat.st_mode = inode_stat.mode;
                 stat.st_uid = inode_stat.uid;
                 stat.st_gid = inode_stat.gid;
@@ -781,20 +834,8 @@ struct InodeStat {
     blocks: i64,
 }
 
-/// Load inode metadata from ext2 filesystem
-///
-/// Returns None if the ext2 filesystem is not available or inode cannot be read.
-fn load_ext2_inode_stat(inode_num: u64) -> Option<InodeStat> {
-    use crate::fs::ext2;
-
-    // Get the mounted root filesystem
-    let fs_guard = ext2::root_fs_read();
-    let fs = fs_guard.as_ref()?;
-
-    // Read the inode using the cached filesystem
-    let inode = fs.read_inode(inode_num as u32).ok()?;
-
-    // Extract metadata from packed struct using safe unaligned reads
+/// Extract InodeStat from an already-loaded ext2 inode
+fn load_inode_stat_from_inode(inode: &crate::fs::ext2::Ext2Inode) -> Option<InodeStat> {
     let mode = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_mode)) };
     let uid = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_uid)) };
     let gid = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_gid)) };
@@ -805,7 +846,7 @@ fn load_ext2_inode_stat(inode_num: u64) -> Option<InodeStat> {
     let blocks = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_blocks)) };
 
     Some(InodeStat {
-        mode: mode as u32, // ext2 mode is 16-bit, fstat expects 32-bit
+        mode: mode as u32,
         uid: uid as u32,
         gid: gid as u32,
         size: inode.size() as i64,
@@ -817,19 +858,42 @@ fn load_ext2_inode_stat(inode_num: u64) -> Option<InodeStat> {
     })
 }
 
-/// Get file size from ext2 inode
+/// Load inode metadata from ext2 filesystem, dispatching to correct mount
 ///
 /// Returns None if the ext2 filesystem is not available or inode cannot be read.
-fn get_ext2_file_size(inode_num: u64) -> Option<u64> {
+fn load_ext2_inode_stat_for_mount(inode_num: u64, mount_id: usize) -> Option<InodeStat> {
     use crate::fs::ext2;
 
-    // Get the mounted root filesystem
+    // Dispatch to home or root filesystem based on mount_id
+    let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
+    if is_home {
+        let fs_guard = ext2::home_fs_read();
+        let fs = fs_guard.as_ref()?;
+        let inode = fs.read_inode(inode_num as u32).ok()?;
+        return load_inode_stat_from_inode(&inode);
+    }
+
     let fs_guard = ext2::root_fs_read();
     let fs = fs_guard.as_ref()?;
-
-    // Read the inode using the cached filesystem
     let inode = fs.read_inode(inode_num as u32).ok()?;
+    load_inode_stat_from_inode(&inode)
+}
 
+/// Get file size from ext2 inode, dispatching to correct mount
+fn get_ext2_file_size_for_mount(inode_num: u64, mount_id: usize) -> Option<u64> {
+    use crate::fs::ext2;
+
+    let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
+    if is_home {
+        let fs_guard = ext2::home_fs_read();
+        let fs = fs_guard.as_ref()?;
+        let inode = fs.read_inode(inode_num as u32).ok()?;
+        return Some(inode.size());
+    }
+
+    let fs_guard = ext2::root_fs_read();
+    let fs = fs_guard.as_ref()?;
+    let inode = fs.read_inode(inode_num as u32).ok()?;
     Some(inode.size())
 }
 
@@ -943,41 +1007,65 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
     // Get directory info
     let dir_guard = dir_file.lock();
     let inode_num = dir_guard.inode_num;
+    let dir_mount_id = dir_guard.mount_id;
     let start_position = dir_guard.position;
     drop(dir_guard);
 
     // Drop process manager lock before acquiring filesystem lock
     drop(manager_guard);
 
-    // Read directory data from ext2
-    let fs_guard = ext2::root_fs_read();
-    let fs = match fs_guard.as_ref() {
-        Some(fs) => fs,
-        None => {
-            log::error!("sys_getdents64: ext2 root filesystem not mounted");
-            return SyscallResult::Err(EIO as u64);
-        }
+    // Read directory data from ext2, dispatching to correct filesystem
+    let is_home_dir = ext2::home_mount_id().map_or(false, |id| id == dir_mount_id);
+    let (inode, dir_data) = if is_home_dir {
+        let fs_guard = ext2::home_fs_read();
+        let fs = match fs_guard.as_ref() {
+            Some(fs) => fs,
+            None => {
+                log::error!("sys_getdents64: ext2 home filesystem not mounted");
+                return SyscallResult::Err(EIO as u64);
+            }
+        };
+        let inode = match fs.read_inode(inode_num as u32) {
+            Ok(ino) => ino,
+            Err(_) => {
+                log::error!("sys_getdents64: failed to read inode {}", inode_num);
+                return SyscallResult::Err(EIO as u64);
+            }
+        };
+        let dir_data = match fs.read_directory(&inode) {
+            Ok(data) => data,
+            Err(e) => {
+                log::error!("sys_getdents64: failed to read directory: {}", e);
+                return SyscallResult::Err(EIO as u64);
+            }
+        };
+        (inode, dir_data)
+    } else {
+        let fs_guard = ext2::root_fs_read();
+        let fs = match fs_guard.as_ref() {
+            Some(fs) => fs,
+            None => {
+                log::error!("sys_getdents64: ext2 root filesystem not mounted");
+                return SyscallResult::Err(EIO as u64);
+            }
+        };
+        let inode = match fs.read_inode(inode_num as u32) {
+            Ok(ino) => ino,
+            Err(_) => {
+                log::error!("sys_getdents64: failed to read inode {}", inode_num);
+                return SyscallResult::Err(EIO as u64);
+            }
+        };
+        let dir_data = match fs.read_directory(&inode) {
+            Ok(data) => data,
+            Err(e) => {
+                log::error!("sys_getdents64: failed to read directory: {}", e);
+                return SyscallResult::Err(EIO as u64);
+            }
+        };
+        (inode, dir_data)
     };
-
-    // Read the directory inode
-    let inode = match fs.read_inode(inode_num as u32) {
-        Ok(ino) => ino,
-        Err(_) => {
-            log::error!("sys_getdents64: failed to read inode {}", inode_num);
-            return SyscallResult::Err(EIO as u64);
-        }
-    };
-
-    // Read directory data
-    let dir_data = match fs.read_directory(&inode) {
-        Ok(data) => data,
-        Err(e) => {
-            log::error!("sys_getdents64: failed to read directory: {}", e);
-            return SyscallResult::Err(EIO as u64);
-        }
-    };
-
-    drop(fs_guard);
+    let _ = inode; // inode used above, data extracted
 
     // Parse directory entries and write to user buffer
     let buffer = dirp as *mut u8;
@@ -1118,18 +1206,37 @@ pub fn sys_unlink(pathname: u64) -> SyscallResult {
         }
     }
 
-    // Get the root filesystem (with mutable access)
-    let mut fs_guard = ext2::root_fs_write();
-    let fs = match fs_guard.as_mut() {
-        Some(fs) => fs,
-        None => {
-            log::error!("sys_unlink: ext2 root filesystem not mounted");
-            return SyscallResult::Err(EIO as u64);
+    // Determine which filesystem to use
+    let is_home = ext2::is_home_path(&path);
+    let fs_path: alloc::string::String = if is_home {
+        alloc::string::String::from(ext2::strip_home_prefix(&path))
+    } else {
+        path.clone()
+    };
+
+    // Get the filesystem (with mutable access)
+    let unlink_result = if is_home {
+        let mut fs_guard = ext2::home_fs_write();
+        match fs_guard.as_mut() {
+            Some(fs) => fs.unlink_file(&fs_path),
+            None => {
+                log::error!("sys_unlink: ext2 home filesystem not mounted");
+                return SyscallResult::Err(EIO as u64);
+            }
+        }
+    } else {
+        let mut fs_guard = ext2::root_fs_write();
+        match fs_guard.as_mut() {
+            Some(fs) => fs.unlink_file(&fs_path),
+            None => {
+                log::error!("sys_unlink: ext2 root filesystem not mounted");
+                return SyscallResult::Err(EIO as u64);
+            }
         }
     };
 
-    // Perform the unlink operation
-    match fs.unlink_file(&path) {
+    // Handle the unlink result
+    match unlink_result {
         Ok(()) => {
             log::info!("sys_unlink: successfully unlinked {}", path);
             SyscallResult::Ok(0)
@@ -1186,18 +1293,39 @@ pub fn sys_rename(oldpath: u64, newpath: u64) -> SyscallResult {
 
     log::debug!("sys_rename: old={:?}, new={:?}", old, new);
 
-    // Get the root filesystem (with mutable access)
-    let mut fs_guard = ext2::root_fs_write();
-    let fs = match fs_guard.as_mut() {
-        Some(fs) => fs,
-        None => {
-            log::error!("sys_rename: ext2 root filesystem not mounted");
-            return SyscallResult::Err(EIO as u64);
+    // Both paths must be on the same filesystem
+    let old_is_home = ext2::is_home_path(&old);
+    let new_is_home = ext2::is_home_path(&new);
+    if old_is_home != new_is_home {
+        log::error!("sys_rename: cross-filesystem rename not supported");
+        return SyscallResult::Err(18); // EXDEV
+    }
+
+    let fs_old = if old_is_home { alloc::string::String::from(ext2::strip_home_prefix(&old)) } else { old.clone() };
+    let fs_new = if new_is_home { alloc::string::String::from(ext2::strip_home_prefix(&new)) } else { new.clone() };
+
+    // Perform the rename operation on the correct filesystem
+    let rename_result = if old_is_home {
+        let mut fs_guard = ext2::home_fs_write();
+        match fs_guard.as_mut() {
+            Some(fs) => fs.rename_file(&fs_old, &fs_new),
+            None => {
+                log::error!("sys_rename: ext2 home filesystem not mounted");
+                return SyscallResult::Err(EIO as u64);
+            }
+        }
+    } else {
+        let mut fs_guard = ext2::root_fs_write();
+        match fs_guard.as_mut() {
+            Some(fs) => fs.rename_file(&fs_old, &fs_new),
+            None => {
+                log::error!("sys_rename: ext2 root filesystem not mounted");
+                return SyscallResult::Err(EIO as u64);
+            }
         }
     };
 
-    // Perform the rename operation
-    match fs.rename_file(&old, &new) {
+    match rename_result {
         Ok(()) => {
             log::info!("sys_rename: successfully renamed {} to {}", old, new);
             SyscallResult::Ok(0)
@@ -1257,18 +1385,36 @@ pub fn sys_rmdir(pathname: u64) -> SyscallResult {
         return SyscallResult::Err(EINVAL as u64);
     }
 
-    // Get the root filesystem (with mutable access)
-    let mut fs_guard = ext2::root_fs_write();
-    let fs = match fs_guard.as_mut() {
-        Some(fs) => fs,
-        None => {
-            log::error!("sys_rmdir: ext2 root filesystem not mounted");
-            return SyscallResult::Err(EIO as u64);
+    // Determine which filesystem to use
+    let is_home = ext2::is_home_path(&path);
+    let fs_path: alloc::string::String = if is_home {
+        alloc::string::String::from(ext2::strip_home_prefix(&path))
+    } else {
+        path.clone()
+    };
+
+    // Perform the rmdir operation on the correct filesystem
+    let rmdir_result = if is_home {
+        let mut fs_guard = ext2::home_fs_write();
+        match fs_guard.as_mut() {
+            Some(fs) => fs.remove_directory(&fs_path),
+            None => {
+                log::error!("sys_rmdir: ext2 home filesystem not mounted");
+                return SyscallResult::Err(EIO as u64);
+            }
+        }
+    } else {
+        let mut fs_guard = ext2::root_fs_write();
+        match fs_guard.as_mut() {
+            Some(fs) => fs.remove_directory(&fs_path),
+            None => {
+                log::error!("sys_rmdir: ext2 root filesystem not mounted");
+                return SyscallResult::Err(EIO as u64);
+            }
         }
     };
 
-    // Perform the rmdir operation
-    match fs.remove_directory(&path) {
+    match rmdir_result {
         Ok(()) => {
             log::info!("sys_rmdir: successfully removed directory {}", path);
             SyscallResult::Ok(0)
@@ -1333,18 +1479,39 @@ pub fn sys_link(oldpath: u64, newpath: u64) -> SyscallResult {
 
     log::debug!("sys_link: oldpath={:?}, newpath={:?}", old, new);
 
-    // Get the root filesystem (with mutable access)
-    let mut fs_guard = ext2::root_fs_write();
-    let fs = match fs_guard.as_mut() {
-        Some(fs) => fs,
-        None => {
-            log::error!("sys_link: ext2 root filesystem not mounted");
-            return SyscallResult::Err(EIO as u64);
+    // Both paths must be on the same filesystem
+    let old_is_home = ext2::is_home_path(&old);
+    let new_is_home = ext2::is_home_path(&new);
+    if old_is_home != new_is_home {
+        log::error!("sys_link: cross-filesystem link not supported");
+        return SyscallResult::Err(18); // EXDEV
+    }
+
+    let fs_old = if old_is_home { alloc::string::String::from(ext2::strip_home_prefix(&old)) } else { old.clone() };
+    let fs_new = if new_is_home { alloc::string::String::from(ext2::strip_home_prefix(&new)) } else { new.clone() };
+
+    // Perform the hard link operation on the correct filesystem
+    let link_result = if old_is_home {
+        let mut fs_guard = ext2::home_fs_write();
+        match fs_guard.as_mut() {
+            Some(fs) => fs.create_hard_link(&fs_old, &fs_new),
+            None => {
+                log::error!("sys_link: ext2 home filesystem not mounted");
+                return SyscallResult::Err(EIO as u64);
+            }
+        }
+    } else {
+        let mut fs_guard = ext2::root_fs_write();
+        match fs_guard.as_mut() {
+            Some(fs) => fs.create_hard_link(&fs_old, &fs_new),
+            None => {
+                log::error!("sys_link: ext2 root filesystem not mounted");
+                return SyscallResult::Err(EIO as u64);
+            }
         }
     };
 
-    // Perform the hard link operation
-    match fs.create_hard_link(&old, &new) {
+    match link_result {
         Ok(()) => {
             log::info!("sys_link: successfully created hard link {} -> {}", new, old);
             SyscallResult::Ok(0)
@@ -1402,20 +1569,37 @@ pub fn sys_mkdir(pathname: u64, mode: u32) -> SyscallResult {
 
     log::debug!("sys_mkdir: path={:?}, mode={:#o}", path, mode);
 
-    // Get the root filesystem (with mutable access)
-    let mut fs_guard = ext2::root_fs_write();
-    let fs = match fs_guard.as_mut() {
-        Some(fs) => fs,
-        None => {
-            log::error!("sys_mkdir: ext2 root filesystem not mounted");
-            return SyscallResult::Err(EIO as u64);
+    // Determine which filesystem to use
+    let is_home = ext2::is_home_path(&path);
+    let fs_path: alloc::string::String = if is_home {
+        alloc::string::String::from(ext2::strip_home_prefix(&path))
+    } else {
+        path.clone()
+    };
+
+    // Create the directory on the correct filesystem
+    let dir_mode = if mode == 0 { 0o755 } else { (mode & 0o777) as u16 };
+    let mkdir_result = if is_home {
+        let mut fs_guard = ext2::home_fs_write();
+        match fs_guard.as_mut() {
+            Some(fs) => fs.create_directory(&fs_path, dir_mode),
+            None => {
+                log::error!("sys_mkdir: ext2 home filesystem not mounted");
+                return SyscallResult::Err(EIO as u64);
+            }
+        }
+    } else {
+        let mut fs_guard = ext2::root_fs_write();
+        match fs_guard.as_mut() {
+            Some(fs) => fs.create_directory(&fs_path, dir_mode),
+            None => {
+                log::error!("sys_mkdir: ext2 root filesystem not mounted");
+                return SyscallResult::Err(EIO as u64);
+            }
         }
     };
 
-    // Create the directory
-    // Default mode is 0o755 if mode is 0 (common convention)
-    let dir_mode = if mode == 0 { 0o755 } else { (mode & 0o777) as u16 };
-    match fs.create_directory(&path, dir_mode) {
+    match mkdir_result {
         Ok(inode_num) => {
             log::info!("sys_mkdir: successfully created directory {} (inode {})", path, inode_num);
             SyscallResult::Ok(0)
@@ -1482,18 +1666,37 @@ pub fn sys_symlink(target: u64, linkpath: u64) -> SyscallResult {
         return SyscallResult::Err(EINVAL as u64);
     }
 
-    // Get the root filesystem (with mutable access)
-    let mut fs_guard = ext2::root_fs_write();
-    let fs = match fs_guard.as_mut() {
-        Some(fs) => fs,
-        None => {
-            log::error!("sys_symlink: ext2 root filesystem not mounted");
-            return SyscallResult::Err(EIO as u64);
+    // Determine which filesystem to use based on linkpath
+    let is_home = ext2::is_home_path(&linkpath_str);
+    let fs_target = target_str.clone();
+    let fs_linkpath: alloc::string::String = if is_home {
+        alloc::string::String::from(ext2::strip_home_prefix(&linkpath_str))
+    } else {
+        linkpath_str.clone()
+    };
+
+    // Create the symbolic link on the correct filesystem
+    let symlink_result = if is_home {
+        let mut fs_guard = ext2::home_fs_write();
+        match fs_guard.as_mut() {
+            Some(fs) => fs.create_symlink(&fs_target, &fs_linkpath),
+            None => {
+                log::error!("sys_symlink: ext2 home filesystem not mounted");
+                return SyscallResult::Err(EIO as u64);
+            }
+        }
+    } else {
+        let mut fs_guard = ext2::root_fs_write();
+        match fs_guard.as_mut() {
+            Some(fs) => fs.create_symlink(&fs_target, &fs_linkpath),
+            None => {
+                log::error!("sys_symlink: ext2 root filesystem not mounted");
+                return SyscallResult::Err(EIO as u64);
+            }
         }
     };
 
-    // Create the symbolic link
-    match fs.create_symlink(&target_str, &linkpath_str) {
+    match symlink_result {
         Ok(()) => {
             log::info!("sys_symlink: successfully created symlink {} -> {}", linkpath_str, target_str);
             SyscallResult::Ok(0)
@@ -1557,38 +1760,58 @@ pub fn sys_readlink(pathname: u64, buf: u64, bufsize: u64) -> SyscallResult {
 
     log::debug!("sys_readlink: pathname={:?}, bufsize={}", path, bufsize);
 
-    // Get the root filesystem
-    let fs_guard = ext2::root_fs_read();
-    let fs = match fs_guard.as_ref() {
-        Some(fs) => fs,
-        None => {
-            log::error!("sys_readlink: ext2 root filesystem not mounted");
-            return SyscallResult::Err(EIO as u64);
-        }
-    };
+    // Determine which filesystem to use
+    let is_home = ext2::is_home_path(&path);
+    let fs_path = if is_home { ext2::strip_home_prefix(&path) } else { &path };
 
-    // Resolve path to inode number (don't follow the final symlink - we want the symlink itself)
-    let inode_num = match fs.resolve_path_no_follow(&path) {
-        Ok(ino) => ino,
-        Err(e) => {
-            log::debug!("sys_readlink: path resolution failed: {}", e);
-            return SyscallResult::Err(ENOENT as u64);
+    // Resolve path and read symlink from the correct filesystem
+    let target = if is_home {
+        let fs_guard = ext2::home_fs_read();
+        let fs = match fs_guard.as_ref() {
+            Some(fs) => fs,
+            None => {
+                log::error!("sys_readlink: ext2 home filesystem not mounted");
+                return SyscallResult::Err(EIO as u64);
+            }
+        };
+        let inode_num = match fs.resolve_path_no_follow(fs_path) {
+            Ok(ino) => ino,
+            Err(e) => {
+                log::debug!("sys_readlink: path resolution failed: {}", e);
+                return SyscallResult::Err(ENOENT as u64);
+            }
+        };
+        match fs.read_symlink(inode_num) {
+            Ok(t) => t,
+            Err(e) => {
+                log::debug!("sys_readlink: failed to read symlink: {}", e);
+                let errno = if e.contains("Not a symbolic link") { EINVAL } else if e.contains("not found") { ENOENT } else { EIO };
+                return SyscallResult::Err(errno as u64);
+            }
         }
-    };
-
-    // Read the symlink target
-    let target = match fs.read_symlink(inode_num) {
-        Ok(t) => t,
-        Err(e) => {
-            log::debug!("sys_readlink: failed to read symlink: {}", e);
-            let errno = if e.contains("Not a symbolic link") {
-                EINVAL
-            } else if e.contains("not found") {
-                ENOENT
-            } else {
-                EIO
-            };
-            return SyscallResult::Err(errno as u64);
+    } else {
+        let fs_guard = ext2::root_fs_read();
+        let fs = match fs_guard.as_ref() {
+            Some(fs) => fs,
+            None => {
+                log::error!("sys_readlink: ext2 root filesystem not mounted");
+                return SyscallResult::Err(EIO as u64);
+            }
+        };
+        let inode_num = match fs.resolve_path_no_follow(fs_path) {
+            Ok(ino) => ino,
+            Err(e) => {
+                log::debug!("sys_readlink: path resolution failed: {}", e);
+                return SyscallResult::Err(ENOENT as u64);
+            }
+        };
+        match fs.read_symlink(inode_num) {
+            Ok(t) => t,
+            Err(e) => {
+                log::debug!("sys_readlink: failed to read symlink: {}", e);
+                let errno = if e.contains("Not a symbolic link") { EINVAL } else if e.contains("not found") { ENOENT } else { EIO };
+                return SyscallResult::Err(errno as u64);
+            }
         }
     };
 
@@ -1664,46 +1887,63 @@ pub fn sys_access(pathname: u64, mode: u32) -> SyscallResult {
         return SyscallResult::Err(ENOENT as u64);
     }
 
-    // Get the root filesystem
-    let fs_guard = ext2::root_fs_read();
-    let fs = match fs_guard.as_ref() {
-        Some(fs) => fs,
-        None => {
-            log::error!("sys_access: ext2 root filesystem not mounted");
-            return SyscallResult::Err(ENOENT as u64);
-        }
-    };
+    // Determine which filesystem to use
+    let is_home = ext2::is_home_path(&path);
+    let fs_path = if is_home { ext2::strip_home_prefix(&path) } else { &path };
 
-    // Try to resolve the path to an inode number
-    let inode_num = match fs.resolve_path(&path) {
-        Ok(ino) => ino,
-        Err(e) => {
-            log::debug!("sys_access: path resolution failed: {}", e);
-            let errno = if e.contains("not found") {
-                ENOENT
-            } else if e.contains("Not a directory") {
-                ENOTDIR
-            } else {
-                5 // EIO
-            };
-            return SyscallResult::Err(errno as u64);
+    // Resolve path and read inode from the correct filesystem
+    let (inode_num, inode) = if is_home {
+        let fs_guard = ext2::home_fs_read();
+        let fs = match fs_guard.as_ref() {
+            Some(fs) => fs,
+            None => {
+                log::error!("sys_access: ext2 home filesystem not mounted");
+                return SyscallResult::Err(ENOENT as u64);
+            }
+        };
+        let ino = match fs.resolve_path(fs_path) {
+            Ok(ino) => ino,
+            Err(e) => {
+                log::debug!("sys_access: path resolution failed: {}", e);
+                let errno = if e.contains("not found") { ENOENT } else if e.contains("Not a directory") { ENOTDIR } else { 5 };
+                return SyscallResult::Err(errno as u64);
+            }
+        };
+        if mode == F_OK {
+            return SyscallResult::Ok(0);
         }
-    };
-
-    // F_OK just checks existence - we already found it
-    if mode == F_OK {
-        log::debug!("sys_access: file exists, F_OK check passed");
-        return SyscallResult::Ok(0);
-    }
-
-    // Read the inode to check permissions
-    let inode = match fs.read_inode(inode_num) {
-        Ok(ino) => ino,
-        Err(_) => {
-            log::error!("sys_access: failed to read inode {}", inode_num);
-            return SyscallResult::Err(5); // EIO
+        let inode = match fs.read_inode(ino) {
+            Ok(i) => i,
+            Err(_) => return SyscallResult::Err(5),
+        };
+        (ino, inode)
+    } else {
+        let fs_guard = ext2::root_fs_read();
+        let fs = match fs_guard.as_ref() {
+            Some(fs) => fs,
+            None => {
+                log::error!("sys_access: ext2 root filesystem not mounted");
+                return SyscallResult::Err(ENOENT as u64);
+            }
+        };
+        let ino = match fs.resolve_path(fs_path) {
+            Ok(ino) => ino,
+            Err(e) => {
+                log::debug!("sys_access: path resolution failed: {}", e);
+                let errno = if e.contains("not found") { ENOENT } else if e.contains("Not a directory") { ENOTDIR } else { 5 };
+                return SyscallResult::Err(errno as u64);
+            }
+        };
+        if mode == F_OK {
+            return SyscallResult::Ok(0);
         }
+        let inode = match fs.read_inode(ino) {
+            Ok(i) => i,
+            Err(_) => return SyscallResult::Err(5),
+        };
+        (ino, inode)
     };
+    let _ = inode_num;
 
     // Get permission bits from inode mode (owner permissions in bits 8-6)
     let inode_mode = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_mode)) };
@@ -2670,51 +2910,61 @@ pub fn sys_chdir(pathname: u64) -> SyscallResult {
         }
     }
 
-    // Get the root filesystem
-    let fs_guard = ext2::root_fs_read();
-    let fs = match fs_guard.as_ref() {
-        Some(fs) => fs,
-        None => {
-            log::error!("sys_chdir: ext2 root filesystem not mounted");
-            return SyscallResult::Err(EIO as u64);
-        }
+    // Determine which filesystem to use
+    let is_home = ext2::is_home_path(&normalized);
+    let fs_path = if is_home { ext2::strip_home_prefix(&normalized) } else { normalized.as_str() };
+
+    // Resolve path and verify it's a directory
+    let is_dir = if is_home {
+        let fs_guard = ext2::home_fs_read();
+        let fs = match fs_guard.as_ref() {
+            Some(fs) => fs,
+            None => {
+                log::error!("sys_chdir: ext2 home filesystem not mounted");
+                return SyscallResult::Err(EIO as u64);
+            }
+        };
+        let inode_num = match fs.resolve_path(fs_path) {
+            Ok(ino) => ino,
+            Err(e) => {
+                log::debug!("sys_chdir: path resolution failed: {}", e);
+                let errno = if e.contains("not found") { ENOENT } else if e.contains("Not a directory") { ENOTDIR } else if e.contains("permission") { EACCES } else { EIO };
+                return SyscallResult::Err(errno as u64);
+            }
+        };
+        let inode = match fs.read_inode(inode_num) {
+            Ok(ino) => ino,
+            Err(_) => return SyscallResult::Err(EIO as u64),
+        };
+        matches!(inode.file_type(), Ext2FileType::Directory)
+    } else {
+        let fs_guard = ext2::root_fs_read();
+        let fs = match fs_guard.as_ref() {
+            Some(fs) => fs,
+            None => {
+                log::error!("sys_chdir: ext2 root filesystem not mounted");
+                return SyscallResult::Err(EIO as u64);
+            }
+        };
+        let inode_num = match fs.resolve_path(fs_path) {
+            Ok(ino) => ino,
+            Err(e) => {
+                log::debug!("sys_chdir: path resolution failed: {}", e);
+                let errno = if e.contains("not found") { ENOENT } else if e.contains("Not a directory") { ENOTDIR } else if e.contains("permission") { EACCES } else { EIO };
+                return SyscallResult::Err(errno as u64);
+            }
+        };
+        let inode = match fs.read_inode(inode_num) {
+            Ok(ino) => ino,
+            Err(_) => return SyscallResult::Err(EIO as u64),
+        };
+        matches!(inode.file_type(), Ext2FileType::Directory)
     };
 
-    // Resolve the path to an inode number
-    let inode_num = match fs.resolve_path(&normalized) {
-        Ok(ino) => ino,
-        Err(e) => {
-            log::debug!("sys_chdir: path resolution failed: {}", e);
-            let errno = if e.contains("not found") {
-                ENOENT
-            } else if e.contains("Not a directory") {
-                ENOTDIR
-            } else if e.contains("permission") {
-                EACCES
-            } else {
-                EIO
-            };
-            return SyscallResult::Err(errno as u64);
-        }
-    };
-
-    // Read the inode to verify it's a directory
-    let inode = match fs.read_inode(inode_num) {
-        Ok(ino) => ino,
-        Err(_) => {
-            log::error!("sys_chdir: failed to read inode {}", inode_num);
-            return SyscallResult::Err(EIO as u64);
-        }
-    };
-
-    // Check if it's a directory
-    if !matches!(inode.file_type(), Ext2FileType::Directory) {
+    if !is_dir {
         log::debug!("sys_chdir: {} is not a directory", normalized);
         return SyscallResult::Err(ENOTDIR as u64);
     }
-
-    // Drop filesystem lock before getting process lock
-    drop(fs_guard);
 
     // Update the process's cwd
     let mut manager_guard = crate::process::manager();

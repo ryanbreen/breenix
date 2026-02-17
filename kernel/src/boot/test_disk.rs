@@ -66,7 +66,7 @@ impl TestDisk {
 
         // Read sector 0 (header)
         let mut sector0 = [0u8; SECTOR_SIZE];
-        read_sector(0, &mut sector0)?;
+        read_sector(0, 0, &mut sector0)?;
 
         // Parse header
         let header: TestDiskHeader = unsafe {
@@ -92,7 +92,7 @@ impl TestDisk {
 
         for sector_idx in 0..sectors_to_read {
             let mut sector_data = [0u8; SECTOR_SIZE];
-            read_sector(1 + sector_idx as u64, &mut sector_data)?;
+            read_sector(0, 1 + sector_idx as u64, &mut sector_data)?;
 
             // Parse up to 8 entries per sector
             for entry_idx in 0..8 {
@@ -151,7 +151,7 @@ impl TestDisk {
                 crate::serial_println!("[test_disk]   Reading sector {}/{}", i, sectors_needed);
             }
             let mut sector = [0u8; SECTOR_SIZE];
-            read_sector(entry.sector_offset + i as u64, &mut sector)?;
+            read_sector(0, entry.sector_offset + i as u64, &mut sector)?;
             data.extend_from_slice(&sector);
         }
 

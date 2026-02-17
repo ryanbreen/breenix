@@ -285,6 +285,12 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         }
     }
 
+    // Initialize ext2 home filesystem (/home on separate disk)
+    match kernel::fs::ext2::init_home_fs() {
+        Ok(()) => log::info!("ext2 home filesystem mounted at /home"),
+        Err(e) => log::warn!("No home filesystem: {}", e),
+    }
+
     // Initialize devfs (/dev virtual filesystem)
     kernel::fs::devfs::init();
     log::info!("devfs initialized at /dev");

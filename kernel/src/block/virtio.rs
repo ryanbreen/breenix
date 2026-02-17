@@ -122,19 +122,19 @@ impl VirtioBlockWrapper {
     /// Create a new VirtIO block device wrapper
     ///
     /// # Arguments
-    /// * `device_index` - Index of the VirtIO block device to wrap (only 0 supported)
+    /// * `device_index` - Index of the VirtIO block device to wrap (0 or 1)
     ///
     /// # Returns
     /// `Some(VirtioBlockWrapper)` if the device exists, `None` otherwise
     #[allow(dead_code)] // Part of public block device API, will be used by ext2 filesystem
     pub fn new(device_index: usize) -> Option<Self> {
-        // On ARM64, we only support device index 0 (the primary device)
-        if device_index != 0 {
+        // Check if device index is within the supported range
+        if device_index >= block_driver::MAX_BLOCK_DEVICES {
             return None;
         }
 
         // Check if the block device is initialized by trying to get capacity
-        if block_driver::capacity().is_none() {
+        if block_driver::capacity(device_index).is_none() {
             return None;
         }
 
@@ -166,7 +166,7 @@ impl BlockDevice for VirtioBlockWrapper {
 
         // The MMIO driver expects a fixed-size buffer
         let mut sector_buf = [0u8; 512];
-        block_driver::read_sector(block_num, &mut sector_buf)
+        block_driver::read_sector(self.device_index, block_num, &mut sector_buf)
             .map_err(|_| BlockError::IoError)?;
         buf[..512].copy_from_slice(&sector_buf);
         Ok(())
@@ -186,7 +186,7 @@ impl BlockDevice for VirtioBlockWrapper {
         // The MMIO driver expects a fixed-size buffer
         let mut sector_buf = [0u8; 512];
         sector_buf.copy_from_slice(&buf[..512]);
-        block_driver::write_sector(block_num, &sector_buf)
+        block_driver::write_sector(self.device_index, block_num, &sector_buf)
             .map_err(|_| BlockError::IoError)
     }
 
@@ -196,7 +196,7 @@ impl BlockDevice for VirtioBlockWrapper {
 
     fn num_blocks(&self) -> u64 {
         // VirtIO reports capacity in sectors (512-byte blocks)
-        block_driver::capacity().unwrap_or(0)
+        block_driver::capacity(self.device_index).unwrap_or(0)
     }
 
     fn flush(&self) -> Result<(), BlockError> {

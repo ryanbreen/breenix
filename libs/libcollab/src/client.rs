@@ -17,10 +17,6 @@ pub struct ClientState {
     canvas_h: u16,
     next_seqno: u32,
     connected: bool,
-    /// Whether we are currently receiving a canvas sync
-    syncing: bool,
-    /// Draw ops buffered during sync (replayed after SyncEnd)
-    sync_buffer: Vec<DrawOp>,
     event_queue: Vec<CollabEvent>,
     peers: Vec<PeerInfo>,
 }
@@ -48,8 +44,6 @@ impl ClientState {
             canvas_h: 0,
             next_seqno: 0,
             connected: true,
-            syncing: false,
-            sync_buffer: Vec::new(),
             event_queue: Vec::new(),
             peers: Vec::new(),
         };
@@ -244,8 +238,6 @@ impl ClientState {
                 if payload.len() >= 10 {
                     self.canvas_w = wire::get_u16(payload, 0);
                     self.canvas_h = wire::get_u16(payload, 2);
-                    self.syncing = true;
-                    self.sync_buffer.clear();
                 }
             }
 
@@ -262,12 +254,7 @@ impl ClientState {
             }
 
             MessageType::SyncEnd => {
-                self.syncing = false;
                 self.event_queue.push(CollabEvent::SyncComplete);
-                // Replay buffered draw ops
-                for op in self.sync_buffer.drain(..) {
-                    self.event_queue.push(CollabEvent::DrawOp(op));
-                }
             }
 
             MessageType::Cursor => {
@@ -302,12 +289,7 @@ impl ClientState {
 
             _ if DrawOp::is_draw_op(msg_type) => {
                 if let Some(op) = DrawOp::decode(msg_type, payload) {
-                    if self.syncing {
-                        // Buffer ops during sync
-                        self.sync_buffer.push(op);
-                    } else {
-                        self.event_queue.push(CollabEvent::DrawOp(op));
-                    }
+                    self.event_queue.push(CollabEvent::DrawOp(op));
                 }
             }
 
