@@ -73,7 +73,6 @@ coverage/
 # QEMU/emulator files
 *.qcow2
 *.img
-!testdata/ext2.img
 ovmf/
 
 **/target/*

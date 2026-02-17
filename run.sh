@@ -237,7 +237,12 @@ EXT2_SESSION="$BREENIX_ROOT/target/ext2-session.img"
 if [ -f "$EXT2_DISK" ]; then
     echo "Disk image: $EXT2_DISK"
     EXT2_WRITABLE="$EXT2_SESSION"
-    cp "$EXT2_DISK" "$EXT2_WRITABLE"
+    if [ "$CLEAN" = true ] || [ ! -f "$EXT2_WRITABLE" ]; then
+        echo "Creating fresh session disk from $EXT2_DISK"
+        cp "$EXT2_DISK" "$EXT2_WRITABLE"
+    else
+        echo "Reusing existing session disk (use --clean to reset)"
+    fi
     if [ "$ARCH" = "arm64" ]; then
         DISK_OPTS="-device virtio-blk-device,drive=ext2disk -drive if=none,id=ext2disk,format=raw,file=$EXT2_WRITABLE"
     else
