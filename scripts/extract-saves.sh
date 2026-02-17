@@ -5,7 +5,7 @@
 #   ./scripts/extract-saves.sh              # Extract to ~/breenix-saves/
 #   ./scripts/extract-saves.sh /path/to/dir # Extract to specific directory
 #
-# Requires: e2fsprogs (brew install e2fsprogs)
+# Requires: e2fsprogs (auto-installed via Homebrew if missing)
 
 set -e
 
@@ -20,18 +20,30 @@ if [ ! -f "$EXT2_IMG" ]; then
     exit 1
 fi
 
-# Find debugfs (e2fsprogs)
-DEBUGFS=""
-if command -v debugfs &>/dev/null; then
-    DEBUGFS="debugfs"
-elif [ -x /opt/homebrew/opt/e2fsprogs/sbin/debugfs ]; then
-    DEBUGFS="/opt/homebrew/opt/e2fsprogs/sbin/debugfs"
-elif [ -x /usr/local/opt/e2fsprogs/sbin/debugfs ]; then
-    DEBUGFS="/usr/local/opt/e2fsprogs/sbin/debugfs"
-else
-    echo "Error: debugfs not found. Install e2fsprogs:"
-    echo "  brew install e2fsprogs"
-    exit 1
+# Find debugfs (e2fsprogs), auto-installing via Homebrew if needed
+find_debugfs() {
+    if command -v debugfs &>/dev/null; then
+        echo "debugfs"
+    elif [ -x /opt/homebrew/opt/e2fsprogs/sbin/debugfs ]; then
+        echo "/opt/homebrew/opt/e2fsprogs/sbin/debugfs"
+    elif [ -x /usr/local/opt/e2fsprogs/sbin/debugfs ]; then
+        echo "/usr/local/opt/e2fsprogs/sbin/debugfs"
+    fi
+}
+
+DEBUGFS=$(find_debugfs)
+if [ -z "$DEBUGFS" ]; then
+    if command -v brew &>/dev/null; then
+        echo "Installing e2fsprogs via Homebrew..."
+        brew install e2fsprogs
+        DEBUGFS=$(find_debugfs)
+    fi
+    if [ -z "$DEBUGFS" ]; then
+        echo "Error: debugfs not found and could not be installed."
+        echo "  Install Homebrew (https://brew.sh) then re-run, or:"
+        echo "  brew install e2fsprogs"
+        exit 1
+    fi
 fi
 
 mkdir -p "$OUTPUT_DIR"
