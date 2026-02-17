@@ -320,7 +320,7 @@ if [ "$ARCH" = "arm64" ]; then
         $DISPLAY_OPTS \
         $DISK_OPTS \
         -device virtio-net-device,netdev=net0 \
-        -netdev user,id=net0,hostfwd=tcp::2323-:2323 \
+        -netdev user,id=net0,hostfwd=tcp::2323-:2323,hostfwd=tcp::7890-:7890 \
         $AUDIO_OPTS \
         -monitor tcp:127.0.0.1:4444,server,nowait \
         $QMP_OPTS \
