@@ -45,7 +45,7 @@ LDFLAGS := -T $(LINKER_SCRIPT) --static \
 AARCH64_DIR := $(BREENIX_ROOT)/userspace/programs/aarch64
 
 # Programs
-PROGRAMS := hello_musl env_musl_test uname_musl_test rlimit_musl_test
+PROGRAMS := hello_musl env_musl_test uname_musl_test rlimit_musl_test identity_musl_test
 
 .PHONY: all install clean
 
@@ -64,6 +64,9 @@ uname_musl_test.elf: uname_test.o
 	$(LLD) $(LDFLAGS) $< -o $@
 
 rlimit_musl_test.elf: rlimit_test.o
+	$(LLD) $(LDFLAGS) $< -o $@
+
+identity_musl_test.elf: identity_test.o
 	$(LLD) $(LDFLAGS) $< -o $@
 
 install: all

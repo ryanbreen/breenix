@@ -182,5 +182,19 @@ pub fn dispatch_syscall(
         SyscallNumber::EpollCtl => super::epoll::sys_epoll_ctl(arg1 as i32, arg2 as i32, arg3 as i32, arg4),
         SyscallNumber::EpollWait => super::epoll::sys_epoll_pwait(arg1 as i32, arg2, arg3 as i32, arg4 as i32, 0, 0),
         SyscallNumber::EpollPwait => super::epoll::sys_epoll_pwait(arg1 as i32, arg2, arg3 as i32, arg4 as i32, arg5, arg6),
+        // Identity syscalls
+        SyscallNumber::Getuid => handlers::sys_getuid(),
+        SyscallNumber::Geteuid => handlers::sys_geteuid(),
+        SyscallNumber::Getgid => handlers::sys_getgid(),
+        SyscallNumber::Getegid => handlers::sys_getegid(),
+        SyscallNumber::Setuid => handlers::sys_setuid(arg1 as u32),
+        SyscallNumber::Setgid => handlers::sys_setgid(arg1 as u32),
+        // File creation mask
+        SyscallNumber::Umask => handlers::sys_umask(arg1 as u32),
+        // Timestamps
+        SyscallNumber::Utimensat => super::fs::sys_utimensat(arg1 as i32, arg2, arg3, arg4 as u32),
+        // Positional I/O
+        SyscallNumber::Pread64 => handlers::sys_pread64(arg1 as i32, arg2, arg3, arg4 as i64),
+        SyscallNumber::Pwrite64 => handlers::sys_pwrite64(arg1 as i32, arg2, arg3, arg4 as i64),
     }
 }

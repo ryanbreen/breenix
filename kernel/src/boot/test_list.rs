@@ -82,6 +82,7 @@ pub const TEST_BINARIES: &[&str] = &[
     "env_musl_test",
     "uname_musl_test",
     "rlimit_musl_test",
+    "identity_musl_test",
     // Fork / CoW tests
     "fork_memory_test",
     "fork_state_test",

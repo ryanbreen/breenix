@@ -77,6 +77,17 @@ pub struct Process {
     /// a controlling terminal. Initially set to pid on process creation.
     pub sid: ProcessId,
 
+    /// Real user ID
+    pub uid: u32,
+    /// Real group ID
+    pub gid: u32,
+    /// Effective user ID
+    pub euid: u32,
+    /// Effective group ID
+    pub egid: u32,
+    /// File creation mask (umask)
+    pub umask: u32,
+
     /// Current working directory (absolute path)
     pub cwd: String,
 
@@ -196,6 +207,13 @@ impl Process {
             pgid: id,
             // By default, a process's sid equals its pid (process is its own session leader)
             sid: id,
+            // Single-user OS: everything runs as root (uid=0, gid=0)
+            uid: 0,
+            gid: 0,
+            euid: 0,
+            egid: 0,
+            // Standard default umask: owner rwx, group/other rx
+            umask: 0o022,
             // Default working directory is root
             cwd: String::from("/"),
             name,

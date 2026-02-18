@@ -249,6 +249,16 @@ impl Ext2Fs {
         Ok(data.len())
     }
 
+    /// Write a modified inode back to disk
+    ///
+    /// # Arguments
+    /// * `inode_num` - The inode number to write
+    /// * `inode` - The modified inode data
+    pub fn write_inode(&mut self, inode_num: u32, inode: &Ext2Inode) -> Result<(), &'static str> {
+        inode.write_to(self.device.as_ref(), inode_num, &self.superblock, &self.block_groups)
+            .map_err(|_| "Failed to write inode")
+    }
+
     /// Create a new file in the filesystem
     ///
     /// # Arguments
