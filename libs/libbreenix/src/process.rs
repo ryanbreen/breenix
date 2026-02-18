@@ -37,7 +37,13 @@ pub fn exit(code: i32) -> ! {
 /// - `Err(Error)` on failure
 #[inline]
 pub fn fork() -> Result<ForkResult, Error> {
-    let ret = unsafe { raw::syscall0(nr::FORK) };
+    let ret = unsafe {
+        #[cfg(target_arch = "x86_64")]
+        { raw::syscall0(nr::FORK) }
+        // ARM64 Linux has no fork syscall; use clone(SIGCHLD, 0, 0, 0, 0)
+        #[cfg(target_arch = "aarch64")]
+        { raw::syscall5(nr::CLONE, 17, 0, 0, 0, 0) } // 17 = SIGCHLD
+    };
     let val = Error::from_syscall(ret as i64)?;
     if val == 0 {
         Ok(ForkResult::Child)

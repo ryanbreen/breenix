@@ -56,6 +56,13 @@ impl CPath {
     }
 }
 
+/// AT_FDCWD: Use current working directory for *at syscall variants (ARM64 Linux)
+#[cfg(target_arch = "aarch64")]
+const AT_FDCWD: u64 = (-100i64) as u64;
+/// AT_REMOVEDIR flag for unlinkat (behave like rmdir)
+#[cfg(target_arch = "aarch64")]
+const AT_REMOVEDIR: u64 = 0x200;
+
 /// Open flags (POSIX compatible)
 pub const O_RDONLY: u32 = 0;
 pub const O_WRONLY: u32 = 1;
@@ -172,12 +179,10 @@ impl Stat {
 pub fn open(path: &str, flags: u32) -> Result<Fd, Error> {
     let cpath = CPath::new(path)?;
     let ret = unsafe {
-        raw::syscall3(
-            nr::OPEN,
-            cpath.as_u64(),
-            flags as u64,
-            0, // mode (not used for O_RDONLY)
-        ) as i64
+        #[cfg(target_arch = "x86_64")]
+        { raw::syscall3(nr::OPEN, cpath.as_u64(), flags as u64, 0) as i64 }
+        #[cfg(target_arch = "aarch64")]
+        { raw::syscall4(nr::OPENAT, AT_FDCWD, cpath.as_u64(), flags as u64, 0) as i64 }
     };
     Error::from_syscall(ret).map(Fd::from_raw)
 }
@@ -195,12 +200,10 @@ pub fn open(path: &str, flags: u32) -> Result<Fd, Error> {
 pub fn open_with_mode(path: &str, flags: u32, mode: u32) -> Result<Fd, Error> {
     let cpath = CPath::new(path)?;
     let ret = unsafe {
-        raw::syscall3(
-            nr::OPEN,
-            cpath.as_u64(),
-            flags as u64,
-            mode as u64,
-        ) as i64
+        #[cfg(target_arch = "x86_64")]
+        { raw::syscall3(nr::OPEN, cpath.as_u64(), flags as u64, mode as u64) as i64 }
+        #[cfg(target_arch = "aarch64")]
+        { raw::syscall4(nr::OPENAT, AT_FDCWD, cpath.as_u64(), flags as u64, mode as u64) as i64 }
     };
     Error::from_syscall(ret).map(Fd::from_raw)
 }
@@ -226,7 +229,12 @@ pub fn open_with_mode(path: &str, flags: u32, mode: u32) -> Result<Fd, Error> {
 #[inline]
 pub fn access(path: &str, mode: u32) -> Result<(), Error> {
     let cpath = CPath::new(path)?;
-    let ret = unsafe { raw::syscall2(nr::ACCESS, cpath.as_u64(), mode as u64) as i64 };
+    let ret = unsafe {
+        #[cfg(target_arch = "x86_64")]
+        { raw::syscall2(nr::ACCESS, cpath.as_u64(), mode as u64) as i64 }
+        #[cfg(target_arch = "aarch64")]
+        { raw::syscall4(nr::FACCESSAT, AT_FDCWD, cpath.as_u64(), mode as u64, 0) as i64 }
+    };
     Error::from_syscall(ret).map(|_| ())
 }
 
@@ -457,7 +465,12 @@ pub fn getdents64(fd: Fd, buf: &mut [u8]) -> Result<usize, Error> {
 #[inline]
 pub fn unlink(path: &str) -> Result<(), Error> {
     let cpath = CPath::new(path)?;
-    let ret = unsafe { raw::syscall1(nr::UNLINK, cpath.as_u64()) as i64 };
+    let ret = unsafe {
+        #[cfg(target_arch = "x86_64")]
+        { raw::syscall1(nr::UNLINK, cpath.as_u64()) as i64 }
+        #[cfg(target_arch = "aarch64")]
+        { raw::syscall3(nr::UNLINKAT, AT_FDCWD, cpath.as_u64(), 0) as i64 }
+    };
     Error::from_syscall(ret).map(|_| ())
 }
 
@@ -533,7 +546,12 @@ impl<'a> Iterator for DirentIter<'a> {
 #[inline]
 pub fn mkdir(path: &str, mode: u32) -> Result<(), Error> {
     let cpath = CPath::new(path)?;
-    let ret = unsafe { raw::syscall2(nr::MKDIR, cpath.as_u64(), mode as u64) as i64 };
+    let ret = unsafe {
+        #[cfg(target_arch = "x86_64")]
+        { raw::syscall2(nr::MKDIR, cpath.as_u64(), mode as u64) as i64 }
+        #[cfg(target_arch = "aarch64")]
+        { raw::syscall3(nr::MKDIRAT, AT_FDCWD, cpath.as_u64(), mode as u64) as i64 }
+    };
     Error::from_syscall(ret).map(|_| ())
 }
 
@@ -562,7 +580,12 @@ pub fn mkdir(path: &str, mode: u32) -> Result<(), Error> {
 #[inline]
 pub fn rmdir(path: &str) -> Result<(), Error> {
     let cpath = CPath::new(path)?;
-    let ret = unsafe { raw::syscall1(nr::RMDIR, cpath.as_u64()) as i64 };
+    let ret = unsafe {
+        #[cfg(target_arch = "x86_64")]
+        { raw::syscall1(nr::RMDIR, cpath.as_u64()) as i64 }
+        #[cfg(target_arch = "aarch64")]
+        { raw::syscall3(nr::UNLINKAT, AT_FDCWD, cpath.as_u64(), AT_REMOVEDIR) as i64 }
+    };
     Error::from_syscall(ret).map(|_| ())
 }
 
@@ -596,7 +619,10 @@ pub fn rename(oldpath: &str, newpath: &str) -> Result<(), Error> {
     let cold = CPath::new(oldpath)?;
     let cnew = CPath::new(newpath)?;
     let ret = unsafe {
-        raw::syscall2(nr::RENAME, cold.as_u64(), cnew.as_u64()) as i64
+        #[cfg(target_arch = "x86_64")]
+        { raw::syscall2(nr::RENAME, cold.as_u64(), cnew.as_u64()) as i64 }
+        #[cfg(target_arch = "aarch64")]
+        { raw::syscall4(nr::RENAMEAT, AT_FDCWD, cold.as_u64(), AT_FDCWD, cnew.as_u64()) as i64 }
     };
     Error::from_syscall(ret).map(|_| ())
 }
@@ -634,7 +660,10 @@ pub fn link(oldpath: &str, newpath: &str) -> Result<(), Error> {
     let cold = CPath::new(oldpath)?;
     let cnew = CPath::new(newpath)?;
     let ret = unsafe {
-        raw::syscall2(nr::LINK, cold.as_u64(), cnew.as_u64()) as i64
+        #[cfg(target_arch = "x86_64")]
+        { raw::syscall2(nr::LINK, cold.as_u64(), cnew.as_u64()) as i64 }
+        #[cfg(target_arch = "aarch64")]
+        { raw::syscall5(nr::LINKAT, AT_FDCWD, cold.as_u64(), AT_FDCWD, cnew.as_u64(), 0) as i64 }
     };
     Error::from_syscall(ret).map(|_| ())
 }
@@ -673,7 +702,10 @@ pub fn symlink(target: &str, linkpath: &str) -> Result<(), Error> {
     let ctarget = CPath::new(target)?;
     let clink = CPath::new(linkpath)?;
     let ret = unsafe {
-        raw::syscall2(nr::SYMLINK, ctarget.as_u64(), clink.as_u64()) as i64
+        #[cfg(target_arch = "x86_64")]
+        { raw::syscall2(nr::SYMLINK, ctarget.as_u64(), clink.as_u64()) as i64 }
+        #[cfg(target_arch = "aarch64")]
+        { raw::syscall3(nr::SYMLINKAT, ctarget.as_u64(), AT_FDCWD, clink.as_u64()) as i64 }
     };
     Error::from_syscall(ret).map(|_| ())
 }
@@ -711,12 +743,10 @@ pub fn symlink(target: &str, linkpath: &str) -> Result<(), Error> {
 pub fn readlink(pathname: &str, buf: &mut [u8]) -> Result<usize, Error> {
     let cpath = CPath::new(pathname)?;
     let ret = unsafe {
-        raw::syscall3(
-            nr::READLINK,
-            cpath.as_u64(),
-            buf.as_mut_ptr() as u64,
-            buf.len() as u64,
-        ) as i64
+        #[cfg(target_arch = "x86_64")]
+        { raw::syscall3(nr::READLINK, cpath.as_u64(), buf.as_mut_ptr() as u64, buf.len() as u64) as i64 }
+        #[cfg(target_arch = "aarch64")]
+        { raw::syscall4(nr::READLINKAT, AT_FDCWD, cpath.as_u64(), buf.as_mut_ptr() as u64, buf.len() as u64) as i64 }
     };
     Error::from_syscall(ret).map(|n| n as usize)
 }
@@ -752,12 +782,10 @@ pub fn mkfifo(pathname: &str, mode: u32) -> Result<(), Error> {
     let cpath = CPath::new(pathname)?;
     // mkfifo is implemented via mknod with S_IFIFO mode
     let ret = unsafe {
-        raw::syscall3(
-            nr::MKNOD,
-            cpath.as_u64(),
-            (S_IFIFO | (mode & 0o777)) as u64,
-            0, // dev number (unused for FIFOs)
-        ) as i64
+        #[cfg(target_arch = "x86_64")]
+        { raw::syscall3(nr::MKNOD, cpath.as_u64(), (S_IFIFO | (mode & 0o777)) as u64, 0) as i64 }
+        #[cfg(target_arch = "aarch64")]
+        { raw::syscall4(nr::MKNODAT, AT_FDCWD, cpath.as_u64(), (S_IFIFO | (mode & 0o777)) as u64, 0) as i64 }
     };
     Error::from_syscall(ret).map(|_| ())
 }

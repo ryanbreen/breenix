@@ -31,7 +31,6 @@ pub fn dispatch_syscall(
         SyscallNumber::Write => handlers::sys_write(arg1, arg2, arg3),
         SyscallNumber::Read => handlers::sys_read(arg1, arg2, arg3),
         SyscallNumber::Yield => handlers::sys_yield(),
-        SyscallNumber::GetTime => handlers::sys_get_time(),
         SyscallNumber::Fork => handlers::sys_fork(),
         SyscallNumber::Exec => handlers::sys_exec(arg1, arg2),
         SyscallNumber::GetPid => handlers::sys_getpid(),
@@ -107,6 +106,18 @@ pub fn dispatch_syscall(
         SyscallNumber::Symlink => super::fs::sys_symlink(arg1, arg2),
         SyscallNumber::Readlink => super::fs::sys_readlink(arg1, arg2, arg3),
         SyscallNumber::Mknod => super::fifo::sys_mknod(arg1, arg2 as u32, arg3),
+        // *at variants (Linux ARM64 uses these, x86_64 also supports them)
+        SyscallNumber::Openat => super::fs::sys_openat(arg1 as i32, arg2, arg3 as u32, arg4 as u32),
+        SyscallNumber::Faccessat => super::fs::sys_faccessat(arg1 as i32, arg2, arg3 as u32, arg4 as u32),
+        SyscallNumber::Mkdirat => super::fs::sys_mkdirat(arg1 as i32, arg2, arg3 as u32),
+        SyscallNumber::Mknodat => super::fs::sys_mknodat(arg1 as i32, arg2, arg3 as u32, arg4),
+        SyscallNumber::Unlinkat => super::fs::sys_unlinkat(arg1 as i32, arg2, arg3 as i32),
+        SyscallNumber::Symlinkat => super::fs::sys_symlinkat(arg1, arg2 as i32, arg3),
+        SyscallNumber::Linkat => super::fs::sys_linkat(arg1 as i32, arg2, arg3 as i32, arg4, arg5 as i32),
+        SyscallNumber::Renameat => super::fs::sys_renameat(arg1 as i32, arg2, arg3 as i32, arg4),
+        SyscallNumber::Readlinkat => super::fs::sys_readlinkat(arg1 as i32, arg2, arg3, arg4),
+        SyscallNumber::Dup3 => handlers::sys_dup2(arg1, arg2), // dup3 with flags=0 is dup2
+        SyscallNumber::Pselect6 => handlers::sys_select(arg1 as i32, arg2, arg3, arg4, arg5), // simplified
         // PTY syscalls
         SyscallNumber::PosixOpenpt => super::pty::sys_posix_openpt(arg1),
         SyscallNumber::Grantpt => super::pty::sys_grantpt(arg1),
@@ -126,6 +137,39 @@ pub fn dispatch_syscall(
         // Display takeover (Breenix-specific)
         SyscallNumber::TakeOverDisplay => super::handlers::sys_take_over_display(),
         SyscallNumber::GiveBackDisplay => super::handlers::sys_give_back_display(),
+        // Vectored I/O
+        SyscallNumber::Readv => super::iovec::sys_readv(arg1, arg2, arg3),
+        SyscallNumber::Writev => super::iovec::sys_writev(arg1, arg2, arg3),
+        // Stubs for musl libc compatibility
+        SyscallNumber::Mremap => SyscallResult::Err(super::errno::ENOMEM as u64),
+        SyscallNumber::Madvise => SyscallResult::Ok(0),
+        SyscallNumber::Ppoll => super::handlers::sys_ppoll(arg1, arg2, arg3, arg4, arg5),
+        SyscallNumber::SetRobustList => SyscallResult::Ok(0),
+        // arch_prctl (x86_64 only)
+        SyscallNumber::ArchPrctl => {
+            const ARCH_SET_FS: u64 = 0x1002;
+            const ARCH_GET_FS: u64 = 0x1003;
+            match arg1 {
+                ARCH_SET_FS => {
+                    x86_64::registers::model_specific::FsBase::write(
+                        x86_64::VirtAddr::new(arg2),
+                    );
+                    SyscallResult::Ok(0)
+                }
+                ARCH_GET_FS => {
+                    let fs_base = x86_64::registers::model_specific::FsBase::read().as_u64();
+                    match super::userptr::copy_to_user(arg2 as *mut u64, &fs_base) {
+                        Ok(()) => SyscallResult::Ok(0),
+                        Err(e) => SyscallResult::Err(e),
+                    }
+                }
+                _ => SyscallResult::Err(super::errno::EINVAL as u64),
+            }
+        }
+        // Filesystem: newfstatat
+        SyscallNumber::Newfstatat => super::fs::sys_newfstatat(arg1 as i32, arg2, arg3, arg4 as u32),
+        // GetTime is not mapped on x86_64 (kept for ARM64 compat)
+        SyscallNumber::GetTime => SyscallResult::Err(38), // ENOSYS
         // Testing/diagnostic syscalls (Breenix-specific)
         SyscallNumber::CowStats => super::handlers::sys_cow_stats(arg1),
         SyscallNumber::SimulateOom => super::handlers::sys_simulate_oom(arg1),

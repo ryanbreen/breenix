@@ -2866,35 +2866,57 @@ fn test_arm64_signal_frame_conversion() -> TestResult {
 fn test_syscall_dispatch() -> TestResult {
     use crate::syscall::SyscallNumber;
 
-    // Test that we can convert known syscall numbers
-    // These are fundamental syscalls that should always exist
+    // Test that we can convert known syscall numbers.
+    // Numbers differ per architecture (Linux ABI):
+    //   x86_64: exit=60, write=1, read=0, getpid=39
+    //   ARM64:  exit=93, write=64, read=63, getpid=172
 
-    // Test SYS_exit (0)
-    match SyscallNumber::from_u64(0) {
-        Some(SyscallNumber::Exit) => {}
-        Some(_) => return TestResult::Fail("syscall 0 should be Exit"),
-        None => return TestResult::Fail("syscall 0 not recognized"),
+    #[cfg(target_arch = "x86_64")]
+    {
+        match SyscallNumber::from_u64(60) {
+            Some(SyscallNumber::Exit) => {}
+            Some(_) => return TestResult::Fail("syscall 60 should be Exit"),
+            None => return TestResult::Fail("syscall 60 not recognized"),
+        }
+        match SyscallNumber::from_u64(1) {
+            Some(SyscallNumber::Write) => {}
+            Some(_) => return TestResult::Fail("syscall 1 should be Write"),
+            None => return TestResult::Fail("syscall 1 not recognized"),
+        }
+        match SyscallNumber::from_u64(0) {
+            Some(SyscallNumber::Read) => {}
+            Some(_) => return TestResult::Fail("syscall 0 should be Read"),
+            None => return TestResult::Fail("syscall 0 not recognized"),
+        }
+        match SyscallNumber::from_u64(39) {
+            Some(SyscallNumber::GetPid) => {}
+            Some(_) => return TestResult::Fail("syscall 39 should be GetPid"),
+            None => return TestResult::Fail("syscall 39 not recognized"),
+        }
     }
 
-    // Test SYS_write (1)
-    match SyscallNumber::from_u64(1) {
-        Some(SyscallNumber::Write) => {}
-        Some(_) => return TestResult::Fail("syscall 1 should be Write"),
-        None => return TestResult::Fail("syscall 1 not recognized"),
-    }
-
-    // Test SYS_read (2)
-    match SyscallNumber::from_u64(2) {
-        Some(SyscallNumber::Read) => {}
-        Some(_) => return TestResult::Fail("syscall 2 should be Read"),
-        None => return TestResult::Fail("syscall 2 not recognized"),
-    }
-
-    // Test SYS_getpid (39)
-    match SyscallNumber::from_u64(39) {
-        Some(SyscallNumber::GetPid) => {}
-        Some(_) => return TestResult::Fail("syscall 39 should be GetPid"),
-        None => return TestResult::Fail("syscall 39 not recognized"),
+    #[cfg(target_arch = "aarch64")]
+    {
+        match SyscallNumber::from_u64(93) {
+            Some(SyscallNumber::Exit) => {}
+            Some(_) => return TestResult::Fail("syscall 93 should be Exit"),
+            None => return TestResult::Fail("syscall 93 not recognized"),
+        }
+        match SyscallNumber::from_u64(64) {
+            Some(SyscallNumber::Write) => {}
+            Some(_) => return TestResult::Fail("syscall 64 should be Write"),
+            None => return TestResult::Fail("syscall 64 not recognized"),
+        }
+        match SyscallNumber::from_u64(63) {
+            Some(SyscallNumber::Read) => {}
+            Some(_) => return TestResult::Fail("syscall 63 should be Read"),
+            None => return TestResult::Fail("syscall 63 not recognized"),
+        }
+        match SyscallNumber::from_u64(172) {
+            Some(SyscallNumber::GetPid) => {}
+            Some(_) => return TestResult::Fail("syscall 172 should be GetPid"),
+            None => return TestResult::Fail("syscall 172 not recognized"),
+        }
     }
 
     // Test that invalid syscall numbers return None

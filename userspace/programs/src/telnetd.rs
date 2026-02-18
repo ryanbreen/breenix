@@ -19,7 +19,8 @@ const SHELL_PATH: &[u8] = b"/bin/bsh\0";
 // setsockopt constants (not yet in libbreenix)
 const SOL_SOCKET: i32 = 1;
 const SO_REUSEADDR: i32 = 2;
-const SYS_SETSOCKOPT: u64 = 54;
+use libbreenix::syscall::nr;
+const SYS_SETSOCKOPT: u64 = nr::SETSOCKOPT;
 
 /// Set a file descriptor to non-blocking mode
 fn set_nonblocking(fd: Fd) {

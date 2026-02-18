@@ -307,6 +307,21 @@ impl FdTable {
         FdTable { fds }
     }
 
+    /// Take all file descriptor entries out of the table, leaving it empty.
+    ///
+    /// Returns a Vec of (fd_number, FileDescriptor) pairs for deferred cleanup.
+    /// Used by process exit to extract FD entries while holding PM lock,
+    /// then close them outside the lock to minimize lock hold time.
+    pub fn take_all(&mut self) -> alloc::vec::Vec<(usize, FileDescriptor)> {
+        let mut entries = alloc::vec::Vec::new();
+        for fd in 0..MAX_FDS {
+            if let Some(entry) = self.fds[fd].take() {
+                entries.push((fd, entry));
+            }
+        }
+        entries
+    }
+
     /// Allocate a new file descriptor with the given kind
     /// Returns the fd number on success, or an error code
     pub fn alloc(&mut self, kind: FdKind) -> Result<i32, i32> {

@@ -12,12 +12,7 @@ pub const O_RDWR: i32 = 0x02;
 pub const O_NOCTTY: i32 = 0x100;
 pub const O_CLOEXEC: i32 = 0x80000;
 
-// PTY syscall numbers (will be assigned in kernel)
-// For now, use high numbers that won't conflict
-pub const SYS_POSIX_OPENPT: u64 = 400;
-pub const SYS_GRANTPT: u64 = 401;
-pub const SYS_UNLOCKPT: u64 = 402;
-pub const SYS_PTSNAME: u64 = 403;
+use crate::syscall::nr;
 
 /// Open a new PTY master device
 ///
@@ -28,7 +23,7 @@ pub const SYS_PTSNAME: u64 = 403;
 /// * `Ok(Fd)` - File descriptor for PTY master
 /// * `Err(Error)` - Error
 pub fn posix_openpt(flags: i32) -> Result<Fd, Error> {
-    let result = unsafe { raw::syscall1(SYS_POSIX_OPENPT, flags as u64) };
+    let result = unsafe { raw::syscall1(nr::POSIX_OPENPT, flags as u64) };
     Error::from_syscall(result as i64).map(Fd::from_raw)
 }
 
@@ -44,7 +39,7 @@ pub fn posix_openpt(flags: i32) -> Result<Fd, Error> {
 /// * `Ok(())` - Success
 /// * `Err(Error)` - Error (ENOTTY if not a PTY master)
 pub fn grantpt(fd: Fd) -> Result<(), Error> {
-    let result = unsafe { raw::syscall1(SYS_GRANTPT, fd.raw()) };
+    let result = unsafe { raw::syscall1(nr::GRANTPT, fd.raw()) };
     Error::from_syscall(result as i64).map(|_| ())
 }
 
@@ -59,7 +54,7 @@ pub fn grantpt(fd: Fd) -> Result<(), Error> {
 /// * `Ok(())` - Success
 /// * `Err(Error)` - Error (ENOTTY if not a PTY master)
 pub fn unlockpt(fd: Fd) -> Result<(), Error> {
-    let result = unsafe { raw::syscall1(SYS_UNLOCKPT, fd.raw()) };
+    let result = unsafe { raw::syscall1(nr::UNLOCKPT, fd.raw()) };
     Error::from_syscall(result as i64).map(|_| ())
 }
 
@@ -74,7 +69,7 @@ pub fn unlockpt(fd: Fd) -> Result<(), Error> {
 /// * `Err(Error)` - Error (ENOTTY if not a PTY master, ERANGE if buffer too small)
 pub fn ptsname(fd: Fd, buf: &mut [u8]) -> Result<usize, Error> {
     let result = unsafe {
-        raw::syscall3(SYS_PTSNAME, fd.raw(), buf.as_mut_ptr() as u64, buf.len() as u64)
+        raw::syscall3(nr::PTSNAME, fd.raw(), buf.as_mut_ptr() as u64, buf.len() as u64)
     };
     Error::from_syscall(result as i64).map(|_| {
         // Find the actual length (up to null terminator)

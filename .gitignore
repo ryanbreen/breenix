@@ -77,3 +77,6 @@ ovmf/
 
 **/target/*
 scripts/__pycache__
+
+# Third-party sources and build artifacts (cloned/built locally)
+third-party/

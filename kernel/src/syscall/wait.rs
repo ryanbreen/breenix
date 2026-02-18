@@ -144,10 +144,39 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                 return SyscallResult::Ok(0);
             }
 
-            // Blocking wait
+            // Blocking wait: mark ourselves as BlockedOnChildExit FIRST, then re-check.
+            //
+            // CRITICAL: This ordering prevents a lost-wakeup TOCTOU race:
+            //   1. Set BlockedOnChildExit (now unblock_for_child_exit WILL find us)
+            //   2. Re-check child state (catches exit that happened during the window
+            //      between our first check above and step 1)
+            //
+            // If the child exits BEFORE step 1: step 2 catches it (self-unblock + return)
+            // If the child exits AFTER step 1: unblock_for_child_exit succeeds (we're blocked)
+            // If the child exits DURING step 1: scheduler lock serializes the operations
             crate::task::scheduler::with_scheduler(|sched| {
                 sched.block_current_for_child_exit();
             });
+
+            // Re-check child state to close the race window
+            {
+                let mg = crate::process::manager();
+                if let Some(ref manager) = *mg {
+                    if let Some(child) = manager.get_process(target_pid) {
+                        if let crate::process::ProcessState::Terminated(exit_code) = child.state {
+                            drop(mg);
+                            // Child exited during the race window — self-unblock and return
+                            crate::task::scheduler::with_scheduler(|sched| {
+                                if let Some(thread) = sched.current_thread_mut() {
+                                    thread.blocked_in_syscall = false;
+                                    thread.set_ready();
+                                }
+                            });
+                            return complete_wait(target_pid, exit_code, status_ptr);
+                        }
+                    }
+                }
+            }
 
             crate::per_cpu::preempt_enable();
 
@@ -214,9 +243,33 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                 return SyscallResult::Ok(0);
             }
 
+            // Blocking wait: same TOCTOU prevention as the pid>0 path above.
+            // Set BlockedOnChildExit FIRST, then re-check all children.
             crate::task::scheduler::with_scheduler(|sched| {
                 sched.block_current_for_child_exit();
             });
+
+            // Re-check all children to close the race window
+            {
+                let mg = crate::process::manager();
+                if let Some(ref manager) = *mg {
+                    for &child_pid in &children_copy {
+                        if let Some(child) = manager.get_process(child_pid) {
+                            if let crate::process::ProcessState::Terminated(exit_code) = child.state {
+                                drop(mg);
+                                // Child exited during the race window — self-unblock and return
+                                crate::task::scheduler::with_scheduler(|sched| {
+                                    if let Some(thread) = sched.current_thread_mut() {
+                                        thread.blocked_in_syscall = false;
+                                        thread.set_ready();
+                                    }
+                                });
+                                return complete_wait(child_pid, exit_code, status_ptr);
+                            }
+                        }
+                    }
+                }
+            }
 
             crate::per_cpu::preempt_enable();
 

@@ -2651,18 +2651,34 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                 return SyscallResult::Ok(0);
             }
 
-            // Blocking wait - block until child terminates
-            // Mark thread as blocked then enter HLT loop. The timer interrupt will
-            // see that current thread is blocked and switch to another thread.
-            // When the child exits, unblock_for_child_exit() puts us back in ready queue.
+            // Blocking wait: set BlockedOnChildExit FIRST, then re-check child.
+            //
+            // CRITICAL: This ordering prevents a lost-wakeup TOCTOU race:
+            //   1. Set BlockedOnChildExit (now unblock_for_child_exit WILL find us)
+            //   2. Re-check child state (catches exit during the race window)
             crate::task::scheduler::with_scheduler(|sched| {
                 sched.block_current_for_child_exit();
             });
 
-            // Enable preemption before entering HLT loop so scheduler can switch threads.
-            // The syscall handler called preempt_disable() at entry, so we balance it here
-            // to allow context switches while blocked. We must re-disable before returning
-            // to match the preempt_enable() at syscall exit.
+            // Re-check child state to close the race window
+            {
+                let mg = crate::process::manager();
+                if let Some(ref manager) = *mg {
+                    if let Some(child) = manager.get_process(target_pid) {
+                        if let crate::process::ProcessState::Terminated(exit_code) = child.state {
+                            drop(mg);
+                            crate::task::scheduler::with_scheduler(|sched| {
+                                if let Some(thread) = sched.current_thread_mut() {
+                                    thread.blocked_in_syscall = false;
+                                    thread.set_ready();
+                                }
+                            });
+                            return complete_wait(target_pid, exit_code, status_ptr, &children_copy);
+                        }
+                    }
+                }
+            }
+
             crate::per_cpu::preempt_enable();
 
             loop {
@@ -2691,13 +2707,11 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                     if let Some(child) = manager.get_process(target_pid) {
                         if let crate::process::ProcessState::Terminated(exit_code) = child.state {
                             drop(manager_guard);
-                            // Re-disable preemption before returning to balance syscall exit's preempt_enable()
                             crate::per_cpu::preempt_disable();
                             return complete_wait(target_pid, exit_code, status_ptr, &children_copy);
                         }
                     }
                 }
-                // If not terminated yet (spurious wakeup), continue waiting
             }
         }
 
@@ -2735,18 +2749,32 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                 return SyscallResult::Ok(0);
             }
 
-            // Blocking wait - block until any child terminates
-            // Mark thread as blocked then enter HLT loop. The timer interrupt will
-            // see that current thread is blocked and switch to another thread.
-            // When a child exits, unblock_for_child_exit() puts us back in ready queue.
+            // Blocking wait: same TOCTOU prevention as the pid>0 path.
             crate::task::scheduler::with_scheduler(|sched| {
                 sched.block_current_for_child_exit();
             });
 
-            // Enable preemption before entering HLT loop so scheduler can switch threads.
-            // The syscall handler called preempt_disable() at entry, so we balance it here
-            // to allow context switches while blocked. We must re-disable before returning
-            // to match the preempt_enable() at syscall exit.
+            // Re-check all children to close the race window
+            {
+                let mg = crate::process::manager();
+                if let Some(ref manager) = *mg {
+                    for &child_pid in &children_copy {
+                        if let Some(child) = manager.get_process(child_pid) {
+                            if let crate::process::ProcessState::Terminated(exit_code) = child.state {
+                                drop(mg);
+                                crate::task::scheduler::with_scheduler(|sched| {
+                                    if let Some(thread) = sched.current_thread_mut() {
+                                        thread.blocked_in_syscall = false;
+                                        thread.set_ready();
+                                    }
+                                });
+                                return complete_wait(child_pid, exit_code, status_ptr, &children_copy);
+                            }
+                        }
+                    }
+                }
+            }
+
             crate::per_cpu::preempt_enable();
 
             loop {
@@ -2776,14 +2804,12 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                         if let Some(child) = manager.get_process(child_pid) {
                             if let crate::process::ProcessState::Terminated(exit_code) = child.state {
                                 drop(manager_guard);
-                                // Re-disable preemption before returning to balance syscall exit's preempt_enable()
                                 crate::per_cpu::preempt_disable();
                                 return complete_wait(child_pid, exit_code, status_ptr, &children_copy);
                             }
                         }
                     }
                 }
-                // If no child terminated yet (spurious wakeup), continue waiting
             }
         }
 
@@ -3375,6 +3401,37 @@ fn poll_ensure_address_space() {
             }
         }
     }
+}
+
+/// sys_ppoll - Poll file descriptors with timespec timeout
+///
+/// This implements the ppoll() syscall, which is the same as poll() but takes
+/// a timespec instead of milliseconds and an optional signal mask (ignored).
+///
+/// Arguments:
+/// - fds_ptr: Pointer to array of pollfd structures
+/// - nfds: Number of file descriptors to poll
+/// - timeout_ts_ptr: Pointer to timespec (NULL = infinite timeout)
+/// - sigmask: Signal mask pointer (ignored)
+/// - sigsetsize: Size of signal mask (ignored)
+///
+/// Delegates to sys_poll after converting timespec to milliseconds.
+pub fn sys_ppoll(fds_ptr: u64, nfds: u64, timeout_ts_ptr: u64, _sigmask: u64, _sigsetsize: u64) -> SyscallResult {
+    let timeout_ms: i32 = if timeout_ts_ptr == 0 {
+        -1 // NULL timespec = infinite timeout
+    } else {
+        // Read timespec from userspace
+        #[repr(C)]
+        struct Timespec {
+            tv_sec: i64,
+            tv_nsec: i64,
+        }
+        let ts = unsafe { core::ptr::read(timeout_ts_ptr as *const Timespec) };
+        // Convert to milliseconds, clamping to i32 range
+        let ms = ts.tv_sec.saturating_mul(1000).saturating_add(ts.tv_nsec / 1_000_000);
+        if ms > i32::MAX as i64 { i32::MAX } else { ms as i32 }
+    };
+    sys_poll(fds_ptr, nfds, timeout_ms)
 }
 
 /// sys_select - Synchronous I/O multiplexing

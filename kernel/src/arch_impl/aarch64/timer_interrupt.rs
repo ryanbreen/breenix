@@ -482,22 +482,29 @@ fn poll_keyboard_to_stdin() {
             let keycode = event.code;
             let pressed = event.value != 0;
 
-            // Track shift key state
+            // Track modifier key state
             if input_mmio::is_shift(keycode) {
                 SHIFT_PRESSED.store(pressed, core::sync::atomic::Ordering::Relaxed);
                 continue;
             }
 
-            // Only process key presses (not releases)
+            // Only process key presses and repeats (not releases)
             if pressed {
+                // Generate VT100 escape sequences for special keys
+                // (F-keys, arrows, Home, End, Delete)
+                if let Some(seq) = input_mmio::keycode_to_escape_seq(keycode) {
+                    for &b in seq {
+                        if !crate::tty::push_char_nonblock(b) {
+                            crate::ipc::stdin::push_byte_from_irq(b);
+                        }
+                    }
+                    continue;
+                }
+
                 let shift = SHIFT_PRESSED.load(core::sync::atomic::Ordering::Relaxed);
                 if let Some(c) = input_mmio::keycode_to_char(keycode, shift) {
                     // Route through TTY for echo and line discipline processing.
                     // This is the non-blocking version safe for interrupt context.
-                    // The TTY will:
-                    // 1. Echo the character to the display
-                    // 2. Process it through line discipline (handle backspace, Ctrl-C, etc.)
-                    // 3. Add it to the TTY input buffer for userspace to read
                     if !crate::tty::push_char_nonblock(c as u8) {
                         // TTY busy - fall back to raw stdin buffer
                         // (no echo, but at least input isn't lost)

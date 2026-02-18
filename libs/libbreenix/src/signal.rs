@@ -7,17 +7,7 @@
 use crate::error::Error;
 use crate::syscall::raw;
 
-// Syscall numbers (must match kernel/src/syscall/mod.rs)
-pub const SYS_SIGACTION: u64 = 13;
-pub const SYS_SIGPROCMASK: u64 = 14;
-pub const SYS_SIGRETURN: u64 = 15;
-pub const SYS_GETITIMER: u64 = 36;
-pub const SYS_ALARM: u64 = 37;
-pub const SYS_SETITIMER: u64 = 38;
-pub const SYS_KILL: u64 = 62;
-pub const SYS_SIGPENDING: u64 = 127;
-pub const SYS_SIGSUSPEND: u64 = 130;
-pub const SYS_SIGALTSTACK: u64 = 131;
+use crate::syscall::nr;
 
 // Signal numbers (must match kernel/src/signal/constants.rs)
 pub const SIGHUP: i32 = 1;
@@ -133,7 +123,7 @@ pub extern "C" fn __restore_rt() -> ! {
 #[unsafe(naked)]
 pub extern "C" fn __restore_rt() -> ! {
     core::arch::naked_asm!(
-        "mov x8, 15",   // SYS_rt_sigreturn
+        "mov x8, 139",  // SYS_rt_sigreturn (Linux ARM64)
         "svc #0",       // Trigger syscall
         "brk #1",       // Should never reach here
     )
@@ -249,7 +239,7 @@ impl Default for StackT {
 /// }
 /// ```
 pub fn kill(pid: i32, sig: i32) -> Result<(), Error> {
-    let ret = unsafe { raw::syscall2(SYS_KILL, pid as u64, sig as u64) };
+    let ret = unsafe { raw::syscall2(nr::KILL, pid as u64, sig as u64) };
     Error::from_syscall(ret as i64).map(|_| ())
 }
 
@@ -282,7 +272,7 @@ pub fn sigaction(
     let oldact_ptr = oldact.map_or(0, |a| a as *mut _ as u64);
 
     let ret = unsafe {
-        raw::syscall4(SYS_SIGACTION, sig as u64, act_ptr, oldact_ptr, 8)
+        raw::syscall4(nr::SIGACTION, sig as u64, act_ptr, oldact_ptr, 8)
     };
 
     Error::from_syscall(ret as i64).map(|_| ())
@@ -314,7 +304,7 @@ pub fn sigprocmask(how: i32, set: Option<&u64>, oldset: Option<&mut u64>) -> Res
     let oldset_ptr = oldset.map_or(0, |s| s as *mut _ as u64);
 
     let ret = unsafe {
-        raw::syscall4(SYS_SIGPROCMASK, how as u64, set_ptr, oldset_ptr, 8)
+        raw::syscall4(nr::SIGPROCMASK, how as u64, set_ptr, oldset_ptr, 8)
     };
 
     Error::from_syscall(ret as i64).map(|_| ())
@@ -330,7 +320,7 @@ pub fn sigprocmask(how: i32, set: Option<&u64>, oldset: Option<&mut u64>) -> Res
 /// This function never returns normally. It restores execution to
 /// the point where the signal was delivered.
 pub unsafe fn sigreturn() -> ! {
-    raw::syscall0(SYS_SIGRETURN);
+    raw::syscall0(nr::SIGRETURN);
     // Should never reach here, but if it does, loop forever
     loop {
         core::hint::spin_loop();
@@ -358,7 +348,17 @@ pub unsafe fn sigreturn() -> ! {
 /// let _ = pause();  // Will return when SIGUSR1 is received
 /// ```
 pub fn pause() -> Result<(), Error> {
-    let ret = unsafe { raw::syscall0(crate::syscall::nr::PAUSE) };
+    let ret = unsafe {
+        #[cfg(target_arch = "x86_64")]
+        { raw::syscall0(crate::syscall::nr::PAUSE) }
+        // ARM64 Linux has no pause syscall; use sigsuspend with empty mask
+        // (unblocks all signals, waits for any signal delivery)
+        #[cfg(target_arch = "aarch64")]
+        {
+            let mask: u64 = 0;
+            raw::syscall2(crate::syscall::nr::SIGSUSPEND, &mask as *const u64 as u64, 8)
+        }
+    };
     // pause always returns -EINTR when a signal is caught
     Error::from_syscall(ret as i64).map(|_| ())
 }
@@ -424,7 +424,7 @@ pub fn signame(sig: i32) -> &'static str {
 /// * `Err(Error)` on failure
 pub fn sigpending(set: &mut u64) -> Result<(), Error> {
     let ret = unsafe {
-        raw::syscall2(SYS_SIGPENDING, set as *mut u64 as u64, 8)
+        raw::syscall2(nr::SIGPENDING, set as *mut u64 as u64, 8)
     };
     Error::from_syscall(ret as i64).map(|_| ())
 }
@@ -442,7 +442,7 @@ pub fn sigpending(set: &mut u64) -> Result<(), Error> {
 /// * Always returns `Err(Error)` with EINTR (interrupted by signal)
 pub fn sigsuspend(mask: &u64) -> Result<(), Error> {
     let ret = unsafe {
-        raw::syscall2(SYS_SIGSUSPEND, mask as *const u64 as u64, 8)
+        raw::syscall2(nr::SIGSUSPEND, mask as *const u64 as u64, 8)
     };
     // sigsuspend always returns -EINTR when a signal is caught
     Error::from_syscall(ret as i64).map(|_| ())
@@ -462,7 +462,7 @@ pub fn sigaltstack(ss: Option<&StackT>, old_ss: Option<&mut StackT>) -> Result<(
     let old_ss_ptr = old_ss.map_or(0, |s| s as *mut _ as u64);
 
     let ret = unsafe {
-        raw::syscall2(SYS_SIGALTSTACK, ss_ptr, old_ss_ptr)
+        raw::syscall2(nr::SIGALTSTACK, ss_ptr, old_ss_ptr)
     };
 
     Error::from_syscall(ret as i64).map(|_| ())
@@ -479,8 +479,23 @@ pub fn sigaltstack(ss: Option<&StackT>, old_ss: Option<&mut StackT>) -> Result<(
 /// # Returns
 /// * The number of seconds remaining from a previous alarm (0 if none)
 pub fn alarm(seconds: u32) -> u32 {
-    unsafe {
-        raw::syscall1(SYS_ALARM, seconds as u64) as u32
+    #[cfg(target_arch = "x86_64")]
+    {
+        unsafe { raw::syscall1(nr::ALARM, seconds as u64) as u32 }
+    }
+    // ARM64 Linux has no alarm syscall; implement via setitimer(ITIMER_REAL)
+    #[cfg(target_arch = "aarch64")]
+    {
+        let new_val = Itimerval {
+            it_interval: Timeval { tv_sec: 0, tv_usec: 0 },
+            it_value: Timeval { tv_sec: seconds as i64, tv_usec: 0 },
+        };
+        let mut old_val = Itimerval {
+            it_interval: Timeval { tv_sec: 0, tv_usec: 0 },
+            it_value: Timeval { tv_sec: 0, tv_usec: 0 },
+        };
+        let _ = setitimer(ITIMER_REAL, &new_val, Some(&mut old_val));
+        old_val.it_value.tv_sec as u32
     }
 }
 
@@ -495,7 +510,7 @@ pub fn alarm(seconds: u32) -> u32 {
 /// * `Err(Error)` on failure
 pub fn getitimer(which: i32, curr_value: &mut Itimerval) -> Result<(), Error> {
     let ret = unsafe {
-        raw::syscall2(SYS_GETITIMER, which as u64, curr_value as *mut _ as u64)
+        raw::syscall2(nr::GETITIMER, which as u64, curr_value as *mut _ as u64)
     };
 
     Error::from_syscall(ret as i64).map(|_| ())
@@ -535,7 +550,7 @@ pub fn setitimer(which: i32, new_value: &Itimerval, old_value: Option<&mut Itime
     let old_ptr = old_value.map_or(0, |v| v as *mut _ as u64);
 
     let ret = unsafe {
-        raw::syscall3(SYS_SETITIMER, which as u64, new_value as *const _ as u64, old_ptr)
+        raw::syscall3(nr::SETITIMER, which as u64, new_value as *const _ as u64, old_ptr)
     };
 
     Error::from_syscall(ret as i64).map(|_| ())

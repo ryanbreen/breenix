@@ -69,45 +69,63 @@ pub fn sys_fbinfo(info_ptr: u64) -> SyscallResult {
         return SyscallResult::Err(super::ErrorCode::Fault as u64);
     }
 
-    // Get framebuffer info from the shell framebuffer
-    let fb = match SHELL_FRAMEBUFFER.get() {
-        Some(fb) => fb,
-        None => {
-            log::warn!("sys_fbinfo: No framebuffer available");
-            return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
-        }
-    };
-
-    // Use try_lock with bounded spin. On ARM64, syscalls run with interrupts
-    // disabled (DAIF=1111), so a blocking lock() would spin forever if the
-    // holder was preempted or terminated while holding the lock. Use a generous
-    // spin count since this is a one-time startup call.
-    let fb_guard = {
-        let mut guard = None;
-        for _ in 0..65536 {
-            if let Some(g) = fb.try_lock() {
-                guard = Some(g);
-                break;
-            }
-            core::hint::spin_loop();
-        }
-        match guard {
-            Some(g) => g,
+    // On ARM64, use the lock-free FbInfoCache to avoid contention with BWM's
+    // fb_flush, which holds SHELL_FRAMEBUFFER for ~400μs during full-screen
+    // pixel copies. Framebuffer dimensions are immutable after init.
+    #[cfg(target_arch = "aarch64")]
+    let info = {
+        let cache = match crate::graphics::arm64_fb::FB_INFO_CACHE.get() {
+            Some(c) => c,
             None => {
-                log::warn!("sys_fbinfo: framebuffer lock busy after 65536 spins");
-                return SyscallResult::Err(super::ErrorCode::Busy as u64);
+                log::warn!("sys_fbinfo: No framebuffer available");
+                return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
             }
+        };
+        FbInfo {
+            width: cache.width as u64,
+            height: cache.height as u64,
+            stride: cache.stride as u64,
+            bytes_per_pixel: cache.bytes_per_pixel as u64,
+            pixel_format: if cache.is_bgr { 1 } else { 0 },
         }
     };
 
-    // Get info through Canvas trait methods
-    use crate::graphics::primitives::Canvas;
-    let info = FbInfo {
-        width: fb_guard.width() as u64,
-        height: fb_guard.height() as u64,
-        stride: fb_guard.stride() as u64,
-        bytes_per_pixel: fb_guard.bytes_per_pixel() as u64,
-        pixel_format: if fb_guard.is_bgr() { 1 } else { 0 },
+    // On x86_64, acquire the framebuffer lock to read dimensions.
+    // Use try_lock with bounded spin since this is a one-time startup call.
+    #[cfg(not(target_arch = "aarch64"))]
+    let info = {
+        let fb = match SHELL_FRAMEBUFFER.get() {
+            Some(fb) => fb,
+            None => {
+                log::warn!("sys_fbinfo: No framebuffer available");
+                return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+            }
+        };
+        let fb_guard = {
+            let mut guard = None;
+            for _ in 0..65536 {
+                if let Some(g) = fb.try_lock() {
+                    guard = Some(g);
+                    break;
+                }
+                core::hint::spin_loop();
+            }
+            match guard {
+                Some(g) => g,
+                None => {
+                    log::warn!("sys_fbinfo: framebuffer lock busy after 65536 spins");
+                    return SyscallResult::Err(super::ErrorCode::Busy as u64);
+                }
+            }
+        };
+        use crate::graphics::primitives::Canvas;
+        FbInfo {
+            width: fb_guard.width() as u64,
+            height: fb_guard.height() as u64,
+            stride: fb_guard.stride() as u64,
+            bytes_per_pixel: fb_guard.bytes_per_pixel() as u64,
+            pixel_format: if fb_guard.is_bgr() { 1 } else { 0 },
+        }
     };
 
     // Copy to userspace (pointer already validated above)
@@ -655,14 +673,34 @@ pub fn sys_fbmmap() -> SyscallResult {
         }
     };
 
-    // Get framebuffer dimensions (acquire and release FB lock quickly)
+    // Get framebuffer dimensions.
     // The display owner (BWM) gets the right pane. All other processes get the left pane.
+    //
+    // On ARM64, use the lock-free FbInfoCache to avoid contention with BWM's
+    // fb_flush, which holds SHELL_FRAMEBUFFER for ~400μs during full-screen
+    // pixel copies. Dimensions are immutable after init.
+    #[cfg(target_arch = "aarch64")]
+    let (pane_width, x_offset, height, bpp) = {
+        let cache = match crate::graphics::arm64_fb::FB_INFO_CACHE.get() {
+            Some(c) => c,
+            None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+        };
+        if caller_owns_display {
+            let divider_width = 4;
+            let right_x = cache.width / 2 + divider_width;
+            let right_width = cache.width.saturating_sub(right_x);
+            (right_width, right_x, cache.height, cache.bytes_per_pixel)
+        } else {
+            (cache.width / 2, 0, cache.height, cache.bytes_per_pixel)
+        }
+    };
+
+    #[cfg(not(target_arch = "aarch64"))]
     let (pane_width, x_offset, height, bpp) = {
         let fb = match SHELL_FRAMEBUFFER.get() {
             Some(fb) => fb,
             None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
         };
-        // Use try_lock with bounded spin (same rationale as sys_fbinfo).
         let fb_guard = {
             let mut guard = None;
             for _ in 0..65536 {
@@ -681,13 +719,11 @@ pub fn sys_fbmmap() -> SyscallResult {
             }
         };
         if caller_owns_display {
-            // BWM mode: right half for window manager (after divider)
             let divider_width = 4;
             let right_x = fb_guard.width() / 2 + divider_width;
             let right_width = fb_guard.width().saturating_sub(right_x);
             (right_width, right_x, fb_guard.height(), fb_guard.bytes_per_pixel())
         } else {
-            // Normal mode: left half for graphics demos
             (fb_guard.width() / 2, 0, fb_guard.height(), fb_guard.bytes_per_pixel())
         }
     };

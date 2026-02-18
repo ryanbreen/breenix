@@ -27,6 +27,13 @@ use libbreenix::types::Fd;
 use libbreenix::error::Error;
 use core::slice;
 
+/// AT_FDCWD as raw u64 for direct syscall use (-100 as u64)
+#[cfg(target_arch = "aarch64")]
+const AT_FDCWD_RAW: u64 = (-100i32) as u32 as u64;
+/// AT_REMOVEDIR flag for unlinkat
+#[cfg(target_arch = "aarch64")]
+const AT_REMOVEDIR: u64 = 0x200;
+
 // =============================================================================
 // Panic Handler
 // =============================================================================
@@ -285,19 +292,31 @@ pub unsafe extern "C" fn open(path: *const u8, flags: i32, mode: u32) -> i32 {
         return -1;
     }
 
-    let result = libbreenix::raw::syscall3(
-        libbreenix::syscall::nr::OPEN,
-        path as u64,
-        flags as u64,
-        mode as u64,
-    ) as i64;
+    let result = {
+        #[cfg(target_arch = "x86_64")]
+        {
+            libbreenix::raw::syscall3(
+                libbreenix::syscall::nr::OPEN,
+                path as u64,
+                flags as u64,
+                mode as u64,
+            ) as i64
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            libbreenix::raw::syscall4(
+                libbreenix::syscall::nr::OPENAT,
+                AT_FDCWD_RAW,
+                path as u64,
+                flags as u64,
+                mode as u64,
+            ) as i64
+        }
+    };
     syscall_result_to_c_int(result)
 }
 
 /// openat - open a file relative to a directory fd
-///
-/// If dirfd is AT_FDCWD (-100), delegates to open() with the given path.
-/// Otherwise, returns -ENOSYS (not yet supported).
 #[no_mangle]
 pub unsafe extern "C" fn openat(dirfd: i32, path: *const u8, flags: i32, mode: u32) -> i32 {
     if path.is_null() {
@@ -305,14 +324,14 @@ pub unsafe extern "C" fn openat(dirfd: i32, path: *const u8, flags: i32, mode: u
         return -1;
     }
 
-    // AT_FDCWD = -100: use current working directory (same as open)
-    if dirfd == -100 {
-        return open(path, flags, mode);
-    }
-
-    // Non-AT_FDCWD dirfd not supported yet
-    ERRNO = ENOSYS;
-    -1
+    let result = libbreenix::raw::syscall4(
+        libbreenix::syscall::nr::OPENAT,
+        dirfd as u64,
+        path as u64,
+        flags as u64,
+        mode as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
 }
 
 /// fstat - get file status by fd
@@ -409,12 +428,27 @@ pub unsafe extern "C" fn readlink(path: *const u8, buf: *mut u8, bufsiz: usize) 
         return -1;
     }
 
-    let result = libbreenix::raw::syscall3(
-        libbreenix::syscall::nr::READLINK,
-        path as u64,
-        buf as u64,
-        bufsiz as u64,
-    ) as i64;
+    let result = {
+        #[cfg(target_arch = "x86_64")]
+        {
+            libbreenix::raw::syscall3(
+                libbreenix::syscall::nr::READLINK,
+                path as u64,
+                buf as u64,
+                bufsiz as u64,
+            ) as i64
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            libbreenix::raw::syscall4(
+                libbreenix::syscall::nr::READLINKAT,
+                AT_FDCWD_RAW,
+                path as u64,
+                buf as u64,
+                bufsiz as u64,
+            ) as i64
+        }
+    };
     syscall_result_to_c_ssize(result)
 }
 
@@ -426,10 +460,24 @@ pub unsafe extern "C" fn unlink(path: *const u8) -> i32 {
         return -1;
     }
 
-    let result = libbreenix::raw::syscall1(
-        libbreenix::syscall::nr::UNLINK,
-        path as u64,
-    ) as i64;
+    let result = {
+        #[cfg(target_arch = "x86_64")]
+        {
+            libbreenix::raw::syscall1(
+                libbreenix::syscall::nr::UNLINK,
+                path as u64,
+            ) as i64
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            libbreenix::raw::syscall3(
+                libbreenix::syscall::nr::UNLINKAT,
+                AT_FDCWD_RAW,
+                path as u64,
+                0, // flags=0 means unlink (not rmdir)
+            ) as i64
+        }
+    };
     syscall_result_to_c_int(result)
 }
 
@@ -441,11 +489,26 @@ pub unsafe extern "C" fn rename(oldpath: *const u8, newpath: *const u8) -> i32 {
         return -1;
     }
 
-    let result = libbreenix::raw::syscall2(
-        libbreenix::syscall::nr::RENAME,
-        oldpath as u64,
-        newpath as u64,
-    ) as i64;
+    let result = {
+        #[cfg(target_arch = "x86_64")]
+        {
+            libbreenix::raw::syscall2(
+                libbreenix::syscall::nr::RENAME,
+                oldpath as u64,
+                newpath as u64,
+            ) as i64
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            libbreenix::raw::syscall4(
+                libbreenix::syscall::nr::RENAMEAT,
+                AT_FDCWD_RAW,
+                oldpath as u64,
+                AT_FDCWD_RAW,
+                newpath as u64,
+            ) as i64
+        }
+    };
     syscall_result_to_c_int(result)
 }
 
@@ -457,11 +520,25 @@ pub unsafe extern "C" fn mkdir(path: *const u8, mode: u32) -> i32 {
         return -1;
     }
 
-    let result = libbreenix::raw::syscall2(
-        libbreenix::syscall::nr::MKDIR,
-        path as u64,
-        mode as u64,
-    ) as i64;
+    let result = {
+        #[cfg(target_arch = "x86_64")]
+        {
+            libbreenix::raw::syscall2(
+                libbreenix::syscall::nr::MKDIR,
+                path as u64,
+                mode as u64,
+            ) as i64
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            libbreenix::raw::syscall3(
+                libbreenix::syscall::nr::MKDIRAT,
+                AT_FDCWD_RAW,
+                path as u64,
+                mode as u64,
+            ) as i64
+        }
+    };
     syscall_result_to_c_int(result)
 }
 
@@ -473,10 +550,24 @@ pub unsafe extern "C" fn rmdir(path: *const u8) -> i32 {
         return -1;
     }
 
-    let result = libbreenix::raw::syscall1(
-        libbreenix::syscall::nr::RMDIR,
-        path as u64,
-    ) as i64;
+    let result = {
+        #[cfg(target_arch = "x86_64")]
+        {
+            libbreenix::raw::syscall1(
+                libbreenix::syscall::nr::RMDIR,
+                path as u64,
+            ) as i64
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            libbreenix::raw::syscall3(
+                libbreenix::syscall::nr::UNLINKAT,
+                AT_FDCWD_RAW,
+                path as u64,
+                AT_REMOVEDIR,
+            ) as i64
+        }
+    };
     syscall_result_to_c_int(result)
 }
 
@@ -488,27 +579,53 @@ pub unsafe extern "C" fn link(oldpath: *const u8, newpath: *const u8) -> i32 {
         return -1;
     }
 
-    let result = libbreenix::raw::syscall2(
-        libbreenix::syscall::nr::LINK,
-        oldpath as u64,
-        newpath as u64,
-    ) as i64;
+    let result = {
+        #[cfg(target_arch = "x86_64")]
+        {
+            libbreenix::raw::syscall2(
+                libbreenix::syscall::nr::LINK,
+                oldpath as u64,
+                newpath as u64,
+            ) as i64
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            libbreenix::raw::syscall5(
+                libbreenix::syscall::nr::LINKAT,
+                AT_FDCWD_RAW,
+                oldpath as u64,
+                AT_FDCWD_RAW,
+                newpath as u64,
+                0, // flags
+            ) as i64
+        }
+    };
     syscall_result_to_c_int(result)
 }
 
 /// linkat - create a hard link relative to directory file descriptors
-///
-/// We ignore dirfd and flags, treating paths as absolute (Breenix doesn't
-/// support AT_FDCWD/AT_ operations yet). This is sufficient for std::fs::hard_link.
 #[no_mangle]
 pub unsafe extern "C" fn linkat(
-    _olddirfd: i32,
+    olddirfd: i32,
     oldpath: *const u8,
-    _newdirfd: i32,
+    newdirfd: i32,
     newpath: *const u8,
-    _flags: i32,
+    flags: i32,
 ) -> i32 {
-    link(oldpath, newpath)
+    if oldpath.is_null() || newpath.is_null() {
+        ERRNO = EFAULT;
+        return -1;
+    }
+
+    let result = libbreenix::raw::syscall5(
+        libbreenix::syscall::nr::LINKAT,
+        olddirfd as u64,
+        oldpath as u64,
+        newdirfd as u64,
+        newpath as u64,
+        flags as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
 }
 
 /// symlink - create a symbolic link
@@ -519,11 +636,25 @@ pub unsafe extern "C" fn symlink(target: *const u8, linkpath: *const u8) -> i32 
         return -1;
     }
 
-    let result = libbreenix::raw::syscall2(
-        libbreenix::syscall::nr::SYMLINK,
-        target as u64,
-        linkpath as u64,
-    ) as i64;
+    let result = {
+        #[cfg(target_arch = "x86_64")]
+        {
+            libbreenix::raw::syscall2(
+                libbreenix::syscall::nr::SYMLINK,
+                target as u64,
+                linkpath as u64,
+            ) as i64
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            libbreenix::raw::syscall3(
+                libbreenix::syscall::nr::SYMLINKAT,
+                target as u64,
+                AT_FDCWD_RAW,
+                linkpath as u64,
+            ) as i64
+        }
+    };
     syscall_result_to_c_int(result)
 }
 
@@ -535,11 +666,26 @@ pub unsafe extern "C" fn access(path: *const u8, mode: i32) -> i32 {
         return -1;
     }
 
-    let result = libbreenix::raw::syscall2(
-        libbreenix::syscall::nr::ACCESS,
-        path as u64,
-        mode as u64,
-    ) as i64;
+    let result = {
+        #[cfg(target_arch = "x86_64")]
+        {
+            libbreenix::raw::syscall2(
+                libbreenix::syscall::nr::ACCESS,
+                path as u64,
+                mode as u64,
+            ) as i64
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            libbreenix::raw::syscall4(
+                libbreenix::syscall::nr::FACCESSAT,
+                AT_FDCWD_RAW,
+                path as u64,
+                mode as u64,
+                0, // flags
+            ) as i64
+        }
+    };
     syscall_result_to_c_int(result)
 }
 
@@ -860,7 +1006,7 @@ pub unsafe extern "C" fn mmap(
     offset: i64,
 ) -> *mut u8 {
     let result = libbreenix::raw::syscall6(
-        9, // MMAP syscall number
+        libbreenix::syscall::nr::MMAP,
         addr as u64,
         len as u64,
         prot as u64,
@@ -1776,14 +1922,31 @@ pub unsafe extern "C" fn select(
     exceptfds: *mut u8,
     timeout: *mut u8,
 ) -> i32 {
-    let result = libbreenix::raw::syscall5(
-        libbreenix::syscall::nr::SELECT,
-        nfds as u64,
-        readfds as u64,
-        writefds as u64,
-        exceptfds as u64,
-        timeout as u64,
-    ) as i64;
+    let result = {
+        #[cfg(target_arch = "x86_64")]
+        {
+            libbreenix::raw::syscall5(
+                libbreenix::syscall::nr::SELECT,
+                nfds as u64,
+                readfds as u64,
+                writefds as u64,
+                exceptfds as u64,
+                timeout as u64,
+            ) as i64
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            libbreenix::raw::syscall6(
+                libbreenix::syscall::nr::PSELECT6,
+                nfds as u64,
+                readfds as u64,
+                writefds as u64,
+                exceptfds as u64,
+                timeout as u64,
+                0, // NULL sigmask
+            ) as i64
+        }
+    };
     syscall_result_to_c_int(result)
 }
 
@@ -1794,12 +1957,43 @@ pub unsafe extern "C" fn select(
 /// poll - wait for events on file descriptors
 #[no_mangle]
 pub unsafe extern "C" fn poll(fds: *mut u8, nfds: u64, timeout: i32) -> i32 {
-    let result = libbreenix::raw::syscall3(
-        libbreenix::syscall::nr::POLL,
-        fds as u64,
-        nfds,
-        timeout as u64,
-    ) as i64;
+    let result = {
+        #[cfg(target_arch = "x86_64")]
+        {
+            libbreenix::raw::syscall3(
+                libbreenix::syscall::nr::POLL,
+                fds as u64,
+                nfds,
+                timeout as u64,
+            ) as i64
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            if timeout < 0 {
+                libbreenix::raw::syscall5(
+                    libbreenix::syscall::nr::PPOLL,
+                    fds as u64,
+                    nfds,
+                    0, // NULL timespec = infinite
+                    0, // NULL sigmask
+                    0, // sigsetsize
+                ) as i64
+            } else {
+                let ts = libbreenix::types::Timespec {
+                    tv_sec: (timeout / 1000) as i64,
+                    tv_nsec: ((timeout % 1000) as i64) * 1_000_000,
+                };
+                libbreenix::raw::syscall5(
+                    libbreenix::syscall::nr::PPOLL,
+                    fds as u64,
+                    nfds,
+                    &ts as *const libbreenix::types::Timespec as u64,
+                    0, // NULL sigmask
+                    0, // sigsetsize
+                ) as i64
+            }
+        }
+    };
     syscall_result_to_c_int(result)
 }
 
@@ -1816,14 +2010,14 @@ pub extern "C" fn pause() -> i32 {
 /// syscall - generic syscall interface
 #[no_mangle]
 pub unsafe extern "C" fn syscall(num: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64) -> i64 {
-    const SYS_FUTEX: i64 = 202;
-    const SYS_GETRANDOM: i64 = 318;
+    let sys_futex = libbreenix::syscall::nr::FUTEX as i64;
+    let sys_getrandom = libbreenix::syscall::nr::GETRANDOM as i64;
 
     match num {
-        SYS_FUTEX => {
+        n if n == sys_futex => {
             0
         }
-        SYS_GETRANDOM => {
+        n if n == sys_getrandom => {
             -(ENOSYS as i64)
         }
         _ => {

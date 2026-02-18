@@ -3269,3 +3269,197 @@ fn handle_fifo_open(path: &str, flags: u32) -> SyscallResult {
         }
     }
 }
+
+/// newfstatat(dirfd, pathname, statbuf, flags) - Get file status by path
+///
+/// Linux syscall 262. Supports AT_FDCWD (-100) as dirfd to stat relative
+/// to the current working directory. Required by musl libc.
+pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, _flags: u32) -> SyscallResult {
+    use super::errno::{EFAULT, ENOENT};
+    use super::userptr::copy_cstr_from_user;
+    use crate::fs::ext2;
+
+    const AT_FDCWD: i32 = -100;
+
+    if statbuf == 0 {
+        return SyscallResult::Err(EFAULT as u64);
+    }
+    if pathname == 0 {
+        return SyscallResult::Err(EFAULT as u64);
+    }
+
+    // Read pathname from userspace
+    let path = match copy_cstr_from_user(pathname) {
+        Ok(s) => s,
+        Err(e) => return SyscallResult::Err(e as u64),
+    };
+
+    // We only support AT_FDCWD for now
+    if dirfd != AT_FDCWD && !path.starts_with('/') {
+        // Relative paths with non-AT_FDCWD dirfd not yet supported
+        return SyscallResult::Err(super::errno::ENOSYS as u64);
+    }
+
+    // Resolve the path to a full path (handle CWD for relative paths)
+    let full_path = if path.starts_with('/') {
+        path.clone()
+    } else {
+        // Get CWD from current process
+        let cwd = get_current_cwd().unwrap_or_else(|| alloc::string::String::from("/"));
+        if cwd.ends_with('/') {
+            alloc::format!("{}{}", cwd, path)
+        } else {
+            alloc::format!("{}/{}", cwd, path)
+        }
+    };
+
+    // Determine which filesystem to use
+    let is_home = ext2::is_home_path(&full_path);
+    let fs_path = if is_home { ext2::strip_home_prefix(&full_path) } else { &full_path };
+
+    // Look up inode by path
+    let (inode_num, mount_id) = if is_home {
+        let fs_guard = ext2::home_fs_read();
+        let fs = match fs_guard.as_ref() {
+            Some(f) => f,
+            None => return SyscallResult::Err(ENOENT as u64),
+        };
+        let mid = fs.mount_id;
+        match fs.resolve_path(fs_path) {
+            Ok(inum) => (inum as u64, mid),
+            Err(_) => return SyscallResult::Err(ENOENT as u64),
+        }
+    } else {
+        let fs_guard = ext2::root_fs_read();
+        let fs = match fs_guard.as_ref() {
+            Some(f) => f,
+            None => return SyscallResult::Err(ENOENT as u64),
+        };
+        let mid = fs.mount_id;
+        match fs.resolve_path(fs_path) {
+            Ok(inum) => (inum as u64, mid),
+            Err(_) => return SyscallResult::Err(ENOENT as u64),
+        }
+    };
+
+    // Build stat from inode
+    let mut stat = Stat::zeroed();
+    stat.st_dev = mount_id as u64;
+    stat.st_ino = inode_num;
+    stat.st_blksize = 4096;
+    stat.st_nlink = 1;
+    stat.st_mode = S_IFREG | 0o644; // Default
+
+    if let Some(inode_stat) = load_ext2_inode_stat_for_mount(inode_num, mount_id) {
+        stat.st_mode = inode_stat.mode;
+        stat.st_uid = inode_stat.uid;
+        stat.st_gid = inode_stat.gid;
+        stat.st_size = inode_stat.size;
+        stat.st_nlink = inode_stat.nlink;
+        stat.st_atime = inode_stat.atime;
+        stat.st_mtime = inode_stat.mtime;
+        stat.st_ctime = inode_stat.ctime;
+        stat.st_blocks = inode_stat.blocks;
+    }
+
+    // Copy stat to userspace using raw pointer write
+    // (Stat doesn't implement Copy, so we can't use copy_to_user)
+    unsafe {
+        let user_stat = statbuf as *mut Stat;
+        core::ptr::write(user_stat, stat);
+    }
+
+    SyscallResult::Ok(0)
+}
+
+// =============================================================================
+// *at syscall variants (Linux ARM64 uses these instead of legacy syscalls)
+// =============================================================================
+//
+// ARM64 Linux has no open, mkdir, rmdir, link, unlink, symlink, readlink,
+// mknod, rename, access. Instead it has *at variants that take a dirfd.
+// These wrappers validate AT_FDCWD and delegate to the existing implementations.
+
+/// AT_FDCWD: Use current working directory for relative paths
+const AT_FDCWD: i32 = -100;
+/// AT_REMOVEDIR flag for unlinkat (behave like rmdir)
+const AT_REMOVEDIR: i32 = 0x200;
+
+/// openat(dirfd, pathname, flags, mode) - replacement for open
+pub fn sys_openat(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallResult {
+    if dirfd != AT_FDCWD {
+        return SyscallResult::Err(super::errno::ENOSYS as u64);
+    }
+    sys_open(pathname, flags, mode)
+}
+
+/// faccessat(dirfd, pathname, mode, flags) - replacement for access
+pub fn sys_faccessat(dirfd: i32, pathname: u64, mode: u32, _flags: u32) -> SyscallResult {
+    if dirfd != AT_FDCWD {
+        return SyscallResult::Err(super::errno::ENOSYS as u64);
+    }
+    sys_access(pathname, mode)
+}
+
+/// mkdirat(dirfd, pathname, mode) - replacement for mkdir
+pub fn sys_mkdirat(dirfd: i32, pathname: u64, mode: u32) -> SyscallResult {
+    if dirfd != AT_FDCWD {
+        return SyscallResult::Err(super::errno::ENOSYS as u64);
+    }
+    sys_mkdir(pathname, mode)
+}
+
+/// mknodat(dirfd, pathname, mode, dev) - replacement for mknod
+pub fn sys_mknodat(dirfd: i32, pathname: u64, mode: u32, dev: u64) -> SyscallResult {
+    if dirfd != AT_FDCWD {
+        return SyscallResult::Err(super::errno::ENOSYS as u64);
+    }
+    super::fifo::sys_mknod(pathname, mode, dev)
+}
+
+/// unlinkat(dirfd, pathname, flags) - replacement for unlink and rmdir
+///
+/// If flags contains AT_REMOVEDIR, behaves like rmdir.
+/// Otherwise behaves like unlink.
+pub fn sys_unlinkat(dirfd: i32, pathname: u64, flags: i32) -> SyscallResult {
+    if dirfd != AT_FDCWD {
+        return SyscallResult::Err(super::errno::ENOSYS as u64);
+    }
+    if (flags & AT_REMOVEDIR) != 0 {
+        sys_rmdir(pathname)
+    } else {
+        sys_unlink(pathname)
+    }
+}
+
+/// symlinkat(target, newdirfd, linkpath) - replacement for symlink
+pub fn sys_symlinkat(target: u64, newdirfd: i32, linkpath: u64) -> SyscallResult {
+    if newdirfd != AT_FDCWD {
+        return SyscallResult::Err(super::errno::ENOSYS as u64);
+    }
+    sys_symlink(target, linkpath)
+}
+
+/// linkat(olddirfd, oldpath, newdirfd, newpath, flags) - replacement for link
+pub fn sys_linkat(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64, _flags: i32) -> SyscallResult {
+    if olddirfd != AT_FDCWD || newdirfd != AT_FDCWD {
+        return SyscallResult::Err(super::errno::ENOSYS as u64);
+    }
+    sys_link(oldpath, newpath)
+}
+
+/// renameat(olddirfd, oldpath, newdirfd, newpath) - replacement for rename
+pub fn sys_renameat(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> SyscallResult {
+    if olddirfd != AT_FDCWD || newdirfd != AT_FDCWD {
+        return SyscallResult::Err(super::errno::ENOSYS as u64);
+    }
+    sys_rename(oldpath, newpath)
+}
+
+/// readlinkat(dirfd, pathname, buf, bufsiz) - replacement for readlink
+pub fn sys_readlinkat(dirfd: i32, pathname: u64, buf: u64, bufsiz: u64) -> SyscallResult {
+    if dirfd != AT_FDCWD {
+        return SyscallResult::Err(super::errno::ENOSYS as u64);
+    }
+    sys_readlink(pathname, buf, bufsiz)
+}

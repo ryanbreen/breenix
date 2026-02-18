@@ -34,14 +34,6 @@ pub fn clock_gettime(clock_id: u32, ts: &mut Timespec) -> Result<(), Error> {
     Error::from_syscall(ret as i64).map(|_| ())
 }
 
-/// Get the monotonic time since boot (deprecated, use clock_gettime).
-///
-/// Returns time in milliseconds.
-#[inline]
-#[deprecated(note = "Use clock_gettime with CLOCK_MONOTONIC for better precision")]
-pub fn get_time_ms() -> u64 {
-    unsafe { raw::syscall0(nr::GET_TIME) }
-}
 
 /// Get current wall-clock (real) time.
 ///

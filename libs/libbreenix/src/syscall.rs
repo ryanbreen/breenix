@@ -15,38 +15,42 @@
 use core::arch::asm;
 
 /// Syscall numbers matching kernel/src/syscall/mod.rs
+///
+/// x86_64: Uses Linux x86_64 ABI numbers for musl libc compatibility.
+/// ARM64: Uses Linux ARM64 (asm-generic/unistd.h) numbers for musl libc compatibility.
+#[cfg(target_arch = "x86_64")]
 pub mod nr {
-    pub const EXIT: u64 = 0;
+    // Linux x86_64 ABI numbers
+    pub const READ: u64 = 0;
     pub const WRITE: u64 = 1;
-    pub const READ: u64 = 2;
-    pub const YIELD: u64 = 3;
-    pub const GET_TIME: u64 = 4;
-    pub const FORK: u64 = 5;
-    pub const CLOSE: u64 = 6;        // Custom number (not Linux standard)
-    pub const POLL: u64 = 7;          // Linux x86_64 poll
-    pub const MMAP: u64 = 9;         // Linux x86_64 mmap
-    pub const MPROTECT: u64 = 10;    // Linux x86_64 mprotect
-    pub const MUNMAP: u64 = 11;      // Linux x86_64 munmap
+    pub const CLOSE: u64 = 3;
+    pub const FSTAT: u64 = 5;
+    pub const POLL: u64 = 7;
+    pub const LSEEK: u64 = 8;
+    pub const MMAP: u64 = 9;
+    pub const MPROTECT: u64 = 10;
+    pub const MUNMAP: u64 = 11;
     pub const BRK: u64 = 12;
-    pub const SIGACTION: u64 = 13;   // Linux x86_64 rt_sigaction
-    pub const SIGPROCMASK: u64 = 14; // Linux x86_64 rt_sigprocmask
-    pub const SIGRETURN: u64 = 15;   // Linux x86_64 rt_sigreturn
-    pub const IOCTL: u64 = 16;       // Linux x86_64 ioctl
-    pub const ACCESS: u64 = 21;      // Linux x86_64 access
-    pub const PIPE: u64 = 22;        // Linux x86_64 pipe
-    pub const GETCWD: u64 = 79;      // Linux x86_64 getcwd
-    pub const CHDIR: u64 = 80;       // Linux x86_64 chdir
-    pub const SELECT: u64 = 23;       // Linux x86_64 select
-    pub const PIPE2: u64 = 293;       // Linux x86_64 pipe2
-    pub const DUP: u64 = 32;          // Linux x86_64 dup
-    pub const DUP2: u64 = 33;         // Linux x86_64 dup2
-    pub const PAUSE: u64 = 34;        // Linux x86_64 pause
-    pub const NANOSLEEP: u64 = 35;    // Linux x86_64 nanosleep
-    pub const GETITIMER: u64 = 36;    // Linux x86_64 getitimer
-    pub const ALARM: u64 = 37;        // Linux x86_64 alarm
-    pub const SETITIMER: u64 = 38;    // Linux x86_64 setitimer
+    pub const SIGACTION: u64 = 13;
+    pub const SIGPROCMASK: u64 = 14;
+    pub const SIGRETURN: u64 = 15;
+    pub const IOCTL: u64 = 16;
+    pub const READV: u64 = 19;
+    pub const WRITEV: u64 = 20;
+    pub const ACCESS: u64 = 21;
+    pub const PIPE: u64 = 22;
+    pub const SELECT: u64 = 23;
+    pub const YIELD: u64 = 24;
+    pub const MREMAP: u64 = 25;
+    pub const MADVISE: u64 = 28;
+    pub const DUP: u64 = 32;
+    pub const DUP2: u64 = 33;
+    pub const PAUSE: u64 = 34;
+    pub const NANOSLEEP: u64 = 35;
+    pub const GETITIMER: u64 = 36;
+    pub const ALARM: u64 = 37;
+    pub const SETITIMER: u64 = 38;
     pub const GETPID: u64 = 39;
-    pub const FCNTL: u64 = 72;        // Linux x86_64 fcntl
     pub const SOCKET: u64 = 41;
     pub const CONNECT: u64 = 42;
     pub const ACCEPT: u64 = 43;
@@ -55,55 +59,213 @@ pub mod nr {
     pub const SHUTDOWN: u64 = 48;
     pub const BIND: u64 = 49;
     pub const LISTEN: u64 = 50;
-    pub const GETSOCKNAME: u64 = 51; // Linux x86_64 getsockname
-    pub const GETPEERNAME: u64 = 52; // Linux x86_64 getpeername
-    pub const SOCKETPAIR: u64 = 53;  // Linux x86_64 socketpair
-    pub const SETSOCKOPT: u64 = 54;  // Linux x86_64 setsockopt
-    pub const GETSOCKOPT: u64 = 55;  // Linux x86_64 getsockopt
-    pub const EXEC: u64 = 59;        // Linux x86_64 execve
-    pub const WAIT4: u64 = 61;       // Linux x86_64 wait4/waitpid
-    pub const KILL: u64 = 62;        // Linux x86_64 kill
-    pub const SETPGID: u64 = 109;    // Linux x86_64 setpgid
-    pub const GETPPID: u64 = 110;    // Linux x86_64 getppid
-    pub const SETSID: u64 = 112;     // Linux x86_64 setsid
-    pub const GETPGID: u64 = 121;    // Linux x86_64 getpgid
-    pub const GETSID: u64 = 124;     // Linux x86_64 getsid
-    pub const SIGPENDING: u64 = 127; // Linux x86_64 rt_sigpending
-    pub const SIGSUSPEND: u64 = 130; // Linux x86_64 rt_sigsuspend
-    pub const SIGALTSTACK: u64 = 131; // Linux x86_64 sigaltstack
-    pub const RENAME: u64 = 82;       // Linux x86_64 rename
-    pub const MKDIR: u64 = 83;        // Linux x86_64 mkdir
-    pub const RMDIR: u64 = 84;        // Linux x86_64 rmdir
-    pub const LINK: u64 = 86;         // Linux x86_64 link (hard links)
-    pub const UNLINK: u64 = 87;       // Linux x86_64 unlink
-    pub const SYMLINK: u64 = 88;      // Linux x86_64 symlink
-    pub const READLINK: u64 = 89;     // Linux x86_64 readlink
-    pub const MKNOD: u64 = 133;       // Linux x86_64 mknod (used for mkfifo)
+    pub const GETSOCKNAME: u64 = 51;
+    pub const GETPEERNAME: u64 = 52;
+    pub const SOCKETPAIR: u64 = 53;
+    pub const SETSOCKOPT: u64 = 54;
+    pub const GETSOCKOPT: u64 = 55;
+    pub const CLONE: u64 = 56;
+    pub const FORK: u64 = 57;
+    pub const EXEC: u64 = 59;
+    pub const EXIT: u64 = 60;
+    pub const WAIT4: u64 = 61;
+    pub const KILL: u64 = 62;
+    pub const FCNTL: u64 = 72;
+    pub const GETCWD: u64 = 79;
+    pub const CHDIR: u64 = 80;
+    pub const RENAME: u64 = 82;
+    pub const MKDIR: u64 = 83;
+    pub const RMDIR: u64 = 84;
+    pub const LINK: u64 = 86;
+    pub const UNLINK: u64 = 87;
+    pub const SYMLINK: u64 = 88;
+    pub const READLINK: u64 = 89;
+    pub const SETPGID: u64 = 109;
+    pub const GETPPID: u64 = 110;
+    pub const SETSID: u64 = 112;
+    pub const GETPGID: u64 = 121;
+    pub const GETSID: u64 = 124;
+    pub const SIGPENDING: u64 = 127;
+    pub const SIGSUSPEND: u64 = 130;
+    pub const SIGALTSTACK: u64 = 131;
+    pub const MKNOD: u64 = 133;
+    pub const ARCH_PRCTL: u64 = 158;
     pub const GETTID: u64 = 186;
-    pub const SET_TID_ADDRESS: u64 = 218; // Linux x86_64 set_tid_address
+    pub const FUTEX: u64 = 202;
+    pub const GETDENTS64: u64 = 217;
+    pub const SET_TID_ADDRESS: u64 = 218;
     pub const CLOCK_GETTIME: u64 = 228;
-    pub const EXIT_GROUP: u64 = 231; // Linux x86_64 exit_group
-    pub const OPEN: u64 = 257;        // Breenix: filesystem open syscall
-    pub const LSEEK: u64 = 258;       // Breenix: filesystem lseek syscall
-    pub const FSTAT: u64 = 259;       // Breenix: filesystem fstat syscall
-    pub const GETDENTS64: u64 = 260;  // Breenix: directory listing syscall
+    pub const EXIT_GROUP: u64 = 231;
+    pub const OPEN: u64 = 2;           // Linux x86_64 open
+    pub const NEWFSTATAT: u64 = 262;
+    pub const OPENAT: u64 = 257;
+    pub const MKDIRAT: u64 = 258;
+    pub const MKNODAT: u64 = 259;
+    pub const UNLINKAT: u64 = 263;
+    pub const RENAMEAT: u64 = 264;
+    pub const LINKAT: u64 = 265;
+    pub const SYMLINKAT: u64 = 266;
+    pub const READLINKAT: u64 = 267;
+    pub const FACCESSAT: u64 = 269;
+    pub const PSELECT6: u64 = 270;
+    pub const PPOLL: u64 = 271;
+    pub const SET_ROBUST_LIST: u64 = 273;
+    pub const DUP3: u64 = 292;
+    pub const PIPE2: u64 = 293;
+    pub const GETRANDOM: u64 = 318;
+    // PTY syscalls (Breenix-specific, same on both architectures)
+    pub const POSIX_OPENPT: u64 = 400;
+    pub const GRANTPT: u64 = 401;
+    pub const UNLOCKPT: u64 = 402;
+    pub const PTSNAME: u64 = 403;
     // Graphics syscalls (Breenix-specific)
-    pub const FBINFO: u64 = 410;       // Breenix: get framebuffer info
-    pub const FBDRAW: u64 = 411;       // Breenix: draw to framebuffer
-    pub const FBMMAP: u64 = 412;       // Breenix: mmap framebuffer into userspace
-    pub const GET_MOUSE_POS: u64 = 413; // Breenix: get mouse cursor position
+    pub const FBINFO: u64 = 410;
+    pub const FBDRAW: u64 = 411;
+    pub const FBMMAP: u64 = 412;
+    pub const GET_MOUSE_POS: u64 = 413;
     // Audio syscalls (Breenix-specific)
-    pub const AUDIO_INIT: u64 = 420;   // Breenix: initialize audio stream
-    pub const AUDIO_WRITE: u64 = 421;  // Breenix: write PCM data to audio device
-    pub const CLONE: u64 = 56;           // Linux x86_64 clone
-    pub const FUTEX: u64 = 202;          // Linux x86_64 futex
-    pub const GETRANDOM: u64 = 318;    // Linux x86_64 getrandom
+    pub const AUDIO_INIT: u64 = 420;
+    pub const AUDIO_WRITE: u64 = 421;
     // Display takeover (Breenix-specific)
-    pub const TAKE_OVER_DISPLAY: u64 = 431; // Breenix: userspace takes over display
-    pub const GIVE_BACK_DISPLAY: u64 = 432; // Breenix: userspace gives display back
+    pub const TAKE_OVER_DISPLAY: u64 = 431;
+    pub const GIVE_BACK_DISPLAY: u64 = 432;
     // Testing syscalls (Breenix-specific)
-    pub const COW_STATS: u64 = 500;   // Breenix: get CoW statistics (for testing)
-    pub const SIMULATE_OOM: u64 = 501; // Breenix: enable/disable OOM simulation (for testing)
+    pub const COW_STATS: u64 = 500;
+    pub const SIMULATE_OOM: u64 = 501;
+}
+
+#[cfg(target_arch = "aarch64")]
+pub mod nr {
+    // Linux ARM64 ABI numbers (asm-generic/unistd.h)
+    // ARM64 Linux has NO legacy syscalls: use *at variants instead of
+    // open/mkdir/rmdir/link/unlink/symlink/readlink/mknod/rename/access.
+    // Use dup3 instead of dup2, pipe2 instead of pipe, clone instead of fork.
+
+    // I/O
+    pub const GETCWD: u64 = 17;
+    pub const DUP: u64 = 23;
+    pub const DUP3: u64 = 24;
+    pub const FCNTL: u64 = 25;
+    pub const IOCTL: u64 = 29;
+
+    // Filesystem *at variants
+    pub const MKNODAT: u64 = 33;
+    pub const MKDIRAT: u64 = 34;
+    pub const UNLINKAT: u64 = 35;
+    pub const SYMLINKAT: u64 = 36;
+    pub const LINKAT: u64 = 37;
+    pub const RENAMEAT: u64 = 38;
+    pub const FACCESSAT: u64 = 48;
+    pub const CHDIR: u64 = 49;
+    pub const OPENAT: u64 = 56;
+    pub const CLOSE: u64 = 57;
+    pub const PIPE2: u64 = 59;
+    pub const GETDENTS64: u64 = 61;
+    pub const LSEEK: u64 = 62;
+    pub const READ: u64 = 63;
+    pub const WRITE: u64 = 64;
+    pub const READV: u64 = 65;
+    pub const WRITEV: u64 = 66;
+
+    // I/O multiplexing
+    pub const PSELECT6: u64 = 72;
+    pub const PPOLL: u64 = 73;
+    pub const READLINKAT: u64 = 78;
+    pub const NEWFSTATAT: u64 = 79;
+    pub const FSTAT: u64 = 80;
+
+    // Process management
+    pub const EXIT: u64 = 93;
+    pub const EXIT_GROUP: u64 = 94;
+    pub const SET_TID_ADDRESS: u64 = 96;
+    pub const FUTEX: u64 = 98;
+    pub const SET_ROBUST_LIST: u64 = 99;
+
+    // Timers
+    pub const NANOSLEEP: u64 = 101;
+    pub const GETITIMER: u64 = 102;
+    pub const SETITIMER: u64 = 103;
+    pub const CLOCK_GETTIME: u64 = 113;
+
+    // Scheduling
+    pub const YIELD: u64 = 124;
+
+    // Signals
+    pub const KILL: u64 = 129;
+    pub const SIGALTSTACK: u64 = 132;
+    pub const SIGSUSPEND: u64 = 133;
+    pub const SIGACTION: u64 = 134;
+    pub const SIGPROCMASK: u64 = 135;
+    pub const SIGPENDING: u64 = 136;
+    pub const SIGRETURN: u64 = 139;
+
+    // Session/process group
+    pub const SETPGID: u64 = 154;
+    pub const GETPGID: u64 = 155;
+    pub const GETSID: u64 = 156;
+    pub const SETSID: u64 = 157;
+
+    // Process info
+    pub const GETPID: u64 = 172;
+    pub const GETPPID: u64 = 173;
+    pub const GETTID: u64 = 178;
+
+    // Socket
+    pub const SOCKET: u64 = 198;
+    pub const SOCKETPAIR: u64 = 199;
+    pub const BIND: u64 = 200;
+    pub const LISTEN: u64 = 201;
+    pub const ACCEPT: u64 = 202;
+    pub const CONNECT: u64 = 203;
+    pub const GETSOCKNAME: u64 = 204;
+    pub const GETPEERNAME: u64 = 205;
+    pub const SENDTO: u64 = 206;
+    pub const RECVFROM: u64 = 207;
+    pub const SETSOCKOPT: u64 = 208;
+    pub const GETSOCKOPT: u64 = 209;
+    pub const SHUTDOWN: u64 = 210;
+
+    // Memory
+    pub const BRK: u64 = 214;
+    pub const MUNMAP: u64 = 215;
+    pub const MREMAP: u64 = 216;
+    pub const CLONE: u64 = 220;
+    pub const EXEC: u64 = 221;
+    pub const MMAP: u64 = 222;
+    pub const MPROTECT: u64 = 226;
+    pub const MADVISE: u64 = 233;
+
+    // Wait
+    pub const WAIT4: u64 = 260;
+
+    // Random
+    pub const GETRANDOM: u64 = 278;
+
+    // NOTE: ARM64 Linux has NO legacy syscalls: open, dup2, pipe, fork,
+    // access, rename, mkdir, rmdir, link, unlink, symlink, readlink,
+    // mknod, select, poll, alarm, pause. Callers must use the *at variants
+    // (openat, mkdirat, etc.) or modern replacements (dup3, pipe2, clone)
+    // with the correct argument counts. See libbreenix/src/fs.rs for examples.
+
+    // PTY syscalls (Breenix-specific, same on both architectures)
+    pub const POSIX_OPENPT: u64 = 400;
+    pub const GRANTPT: u64 = 401;
+    pub const UNLOCKPT: u64 = 402;
+    pub const PTSNAME: u64 = 403;
+    // Graphics syscalls (Breenix-specific)
+    pub const FBINFO: u64 = 410;
+    pub const FBDRAW: u64 = 411;
+    pub const FBMMAP: u64 = 412;
+    pub const GET_MOUSE_POS: u64 = 413;
+    // Audio syscalls (Breenix-specific)
+    pub const AUDIO_INIT: u64 = 420;
+    pub const AUDIO_WRITE: u64 = 421;
+    // Display takeover (Breenix-specific)
+    pub const TAKE_OVER_DISPLAY: u64 = 431;
+    pub const GIVE_BACK_DISPLAY: u64 = 432;
+    // Testing syscalls (Breenix-specific)
+    pub const COW_STATS: u64 = 500;
+    pub const SIMULATE_OOM: u64 = 501;
 }
 
 /// Raw syscall functions - use higher-level wrappers when possible
