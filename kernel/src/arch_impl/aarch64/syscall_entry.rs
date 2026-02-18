@@ -386,8 +386,21 @@ fn sys_exit_aarch64(exit_code: i32) -> u64 {
     // NEVER return to userspace. The thread is terminated; wait for the timer
     // interrupt to context-switch away. The scheduler will not re-schedule a
     // terminated thread, so this loop runs at most until the next timer tick.
+    //
+    // CRITICAL: Must unmask IRQ before WFI. The syscall entry assembly masks IRQ
+    // (daifset #0x2) and we never return to the assembly epilogue (which would
+    // call check_need_resched_and_switch_arm64 and restore interrupt state via
+    // ERET). Without unmasking IRQ here, the timer interrupt is pending but never
+    // handled — this CPU becomes permanently stuck, unable to process deferred
+    // thread requeues or context-switch to other threads.
     loop {
-        unsafe { core::arch::asm!("wfi"); }
+        unsafe {
+            core::arch::asm!(
+                "msr daifclr, #2",  // Unmask IRQ so timer interrupt can fire
+                "wfi",              // Wait for interrupt — timer will context-switch us away
+                options(nomem, nostack)
+            );
+        }
     }
 }
 
