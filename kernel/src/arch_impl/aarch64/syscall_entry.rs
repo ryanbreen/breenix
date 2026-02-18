@@ -573,6 +573,20 @@ fn dispatch_syscall_enum(
         SyscallNumber::EpollCtl => result_to_u64(crate::syscall::epoll::sys_epoll_ctl(arg1 as i32, arg2 as i32, arg3 as i32, arg4)),
         SyscallNumber::EpollWait => result_to_u64(crate::syscall::epoll::sys_epoll_pwait(arg1 as i32, arg2, arg3 as i32, arg4 as i32, 0, 0)),
         SyscallNumber::EpollPwait => result_to_u64(crate::syscall::epoll::sys_epoll_pwait(arg1 as i32, arg2, arg3 as i32, arg4 as i32, arg5, arg6)),
+        // Identity syscalls
+        SyscallNumber::Getuid => result_to_u64(crate::syscall::handlers::sys_getuid()),
+        SyscallNumber::Geteuid => result_to_u64(crate::syscall::handlers::sys_geteuid()),
+        SyscallNumber::Getgid => result_to_u64(crate::syscall::handlers::sys_getgid()),
+        SyscallNumber::Getegid => result_to_u64(crate::syscall::handlers::sys_getegid()),
+        SyscallNumber::Setuid => result_to_u64(crate::syscall::handlers::sys_setuid(arg1 as u32)),
+        SyscallNumber::Setgid => result_to_u64(crate::syscall::handlers::sys_setgid(arg1 as u32)),
+        // File creation mask
+        SyscallNumber::Umask => result_to_u64(crate::syscall::handlers::sys_umask(arg1 as u32)),
+        // Timestamps
+        SyscallNumber::Utimensat => result_to_u64(crate::syscall::fs::sys_utimensat(arg1 as i32, arg2, arg3, arg4 as u32)),
+        // Positional I/O
+        SyscallNumber::Pread64 => result_to_u64(crate::syscall::handlers::sys_pread64(arg1 as i32, arg2, arg3, arg4 as i64)),
+        SyscallNumber::Pwrite64 => result_to_u64(crate::syscall::handlers::sys_pwrite64(arg1 as i32, arg2, arg3, arg4 as i64)),
     }
 }
 

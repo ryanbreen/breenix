@@ -140,6 +140,17 @@ if [[ "$(uname)" == "Darwin" ]]; then
             echo "  Installed $sbin_count binaries in /sbin"
             echo "  Installed $test_count test binaries in /usr/local/test/bin"
 
+            # Create /etc with passwd and group for musl getpwuid/getgrgid
+            mkdir -p /mnt/ext2/etc
+            cat > /mnt/ext2/etc/passwd << PASSWD
+root:x:0:0:root:/root:/bin/bsh
+nobody:x:65534:65534:nobody:/nonexistent:/bin/false
+PASSWD
+            cat > /mnt/ext2/etc/group << GROUP
+root:x:0:
+nobody:x:65534:
+GROUP
+
             # Create /tmp for filesystem write tests
             mkdir -p /mnt/ext2/tmp
 
@@ -254,6 +265,17 @@ else
     echo "  Installed $bin_count binaries in /bin"
     echo "  Installed $sbin_count binaries in /sbin"
     echo "  Installed $test_count test binaries in /usr/local/test/bin"
+
+    # Create /etc with passwd and group for musl getpwuid/getgrgid
+    mkdir -p "$MOUNT_DIR/etc"
+    cat > "$MOUNT_DIR/etc/passwd" << PASSWD
+root:x:0:0:root:/root:/bin/bsh
+nobody:x:65534:65534:nobody:/nonexistent:/bin/false
+PASSWD
+    cat > "$MOUNT_DIR/etc/group" << GROUP
+root:x:0:
+nobody:x:65534:
+GROUP
 
     # Create /tmp for filesystem write tests
     mkdir -p "$MOUNT_DIR/tmp"

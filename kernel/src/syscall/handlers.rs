@@ -3840,3 +3840,312 @@ pub fn sys_uname(buf_ptr: u64) -> SyscallResult {
     }
     SyscallResult::Ok(0)
 }
+
+// =============================================================================
+// Identity syscalls (getuid, geteuid, getgid, getegid, setuid, setgid)
+// =============================================================================
+
+/// getuid - Get real user ID
+pub fn sys_getuid() -> SyscallResult {
+    crate::arch_without_interrupts(|| {
+        if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+            if let Some(ref manager) = *crate::process::manager() {
+                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+                    return SyscallResult::Ok(process.uid as u64);
+                }
+            }
+        }
+        SyscallResult::Ok(0)
+    })
+}
+
+/// geteuid - Get effective user ID
+pub fn sys_geteuid() -> SyscallResult {
+    crate::arch_without_interrupts(|| {
+        if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+            if let Some(ref manager) = *crate::process::manager() {
+                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+                    return SyscallResult::Ok(process.euid as u64);
+                }
+            }
+        }
+        SyscallResult::Ok(0)
+    })
+}
+
+/// getgid - Get real group ID
+pub fn sys_getgid() -> SyscallResult {
+    crate::arch_without_interrupts(|| {
+        if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+            if let Some(ref manager) = *crate::process::manager() {
+                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+                    return SyscallResult::Ok(process.gid as u64);
+                }
+            }
+        }
+        SyscallResult::Ok(0)
+    })
+}
+
+/// getegid - Get effective group ID
+pub fn sys_getegid() -> SyscallResult {
+    crate::arch_without_interrupts(|| {
+        if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+            if let Some(ref manager) = *crate::process::manager() {
+                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+                    return SyscallResult::Ok(process.egid as u64);
+                }
+            }
+        }
+        SyscallResult::Ok(0)
+    })
+}
+
+/// setuid - Set user ID
+///
+/// If euid == 0 (root): set both uid and euid to the new value.
+/// Otherwise: can only set euid to uid or euid (no-op).
+pub fn sys_setuid(uid: u32) -> SyscallResult {
+    crate::arch_without_interrupts(|| {
+        if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+            let mut manager_guard = crate::process::manager();
+            if let Some(ref mut manager) = *manager_guard {
+                if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+                    if process.euid == 0 {
+                        process.uid = uid;
+                        process.euid = uid;
+                    } else if uid == process.uid || uid == process.euid {
+                        process.euid = uid;
+                    } else {
+                        return SyscallResult::Err(super::errno::EPERM as u64);
+                    }
+                    return SyscallResult::Ok(0);
+                }
+            }
+        }
+        SyscallResult::Err(super::errno::EPERM as u64)
+    })
+}
+
+/// setgid - Set group ID
+///
+/// If euid == 0 (root): set both gid and egid to the new value.
+/// Otherwise: can only set egid to gid or egid (no-op).
+pub fn sys_setgid(gid: u32) -> SyscallResult {
+    crate::arch_without_interrupts(|| {
+        if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+            let mut manager_guard = crate::process::manager();
+            if let Some(ref mut manager) = *manager_guard {
+                if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+                    if process.euid == 0 {
+                        process.gid = gid;
+                        process.egid = gid;
+                    } else if gid == process.gid || gid == process.egid {
+                        process.egid = gid;
+                    } else {
+                        return SyscallResult::Err(super::errno::EPERM as u64);
+                    }
+                    return SyscallResult::Ok(0);
+                }
+            }
+        }
+        SyscallResult::Err(super::errno::EPERM as u64)
+    })
+}
+
+// =============================================================================
+// umask syscall
+// =============================================================================
+
+/// umask - Set file creation mask
+///
+/// Sets the process's file creation mask to `mask & 0o777` and returns the old mask.
+pub fn sys_umask(mask: u32) -> SyscallResult {
+    crate::arch_without_interrupts(|| {
+        if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+            let mut manager_guard = crate::process::manager();
+            if let Some(ref mut manager) = *manager_guard {
+                if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+                    let old = process.umask;
+                    process.umask = mask & 0o777;
+                    return SyscallResult::Ok(old as u64);
+                }
+            }
+        }
+        SyscallResult::Ok(0o022)
+    })
+}
+
+// =============================================================================
+// pread64 / pwrite64 syscalls
+// =============================================================================
+
+/// pread64 - Read from file at given offset without changing file position
+pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallResult {
+    use crate::ipc::FdKind;
+
+    if buf_ptr == 0 || count == 0 {
+        return SyscallResult::Ok(0);
+    }
+    if offset < 0 {
+        return SyscallResult::Err(super::errno::EINVAL as u64);
+    }
+
+    let thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => return SyscallResult::Err(super::errno::EBADF as u64),
+    };
+
+    // Extract file info from fd table under process lock
+    let fd_result: Result<(u64, usize), u64> = crate::arch_without_interrupts(|| {
+        let manager_guard = crate::process::manager();
+        if let Some(ref manager) = *manager_guard {
+            if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+                if let Some(fd_entry) = process.fd_table.get(fd) {
+                    match &fd_entry.kind {
+                        FdKind::RegularFile(file_ref) => {
+                            let file = file_ref.lock();
+                            return Ok((file.inode_num, file.mount_id));
+                        }
+                        FdKind::PipeRead(_) | FdKind::PipeWrite(_) => {
+                            return Err(super::errno::ESPIPE as u64);
+                        }
+                        _ => return Err(super::errno::ESPIPE as u64),
+                    }
+                }
+                return Err(super::errno::EBADF as u64);
+            }
+            Err(super::errno::EBADF as u64)
+        } else {
+            Err(super::errno::EBADF as u64)
+        }
+    });
+
+    let (inode_num, mount_id) = match fd_result {
+        Ok((ino, mid)) => (ino, mid),
+        Err(e) => return SyscallResult::Err(e),
+    };
+
+    let file_offset = offset as u64;
+
+    // Read from ext2 at the given offset (no process lock held)
+    use crate::fs::ext2;
+    let read_fn = |fs: &ext2::Ext2Fs| -> SyscallResult {
+        let inode = match fs.read_inode(inode_num as u32) {
+            Ok(i) => i,
+            Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
+        };
+        let file_size = inode.size();
+        if file_offset >= file_size {
+            return SyscallResult::Ok(0);
+        }
+        let to_read = core::cmp::min(count, file_size - file_offset) as usize;
+        match fs.read_file_range(&inode, file_offset, to_read) {
+            Ok(data) => {
+                let actual = core::cmp::min(data.len(), to_read);
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        data.as_ptr(),
+                        buf_ptr as *mut u8,
+                        actual,
+                    );
+                }
+                SyscallResult::Ok(actual as u64)
+            }
+            Err(_) => SyscallResult::Err(super::errno::EIO as u64),
+        }
+    };
+
+    let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
+    if is_home {
+        let fs_guard = ext2::home_fs_read();
+        match fs_guard.as_ref() {
+            Some(fs) => read_fn(fs),
+            None => SyscallResult::Err(super::errno::EIO as u64),
+        }
+    } else {
+        let fs_guard = ext2::root_fs_read();
+        match fs_guard.as_ref() {
+            Some(fs) => read_fn(fs),
+            None => SyscallResult::Err(super::errno::EIO as u64),
+        }
+    }
+}
+
+/// pwrite64 - Write to file at given offset without changing file position
+pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallResult {
+    use crate::ipc::FdKind;
+
+    if buf_ptr == 0 || count == 0 {
+        return SyscallResult::Ok(0);
+    }
+    if offset < 0 {
+        return SyscallResult::Err(super::errno::EINVAL as u64);
+    }
+
+    let thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => return SyscallResult::Err(super::errno::EBADF as u64),
+    };
+
+    // Extract file info from fd table under process lock
+    let fd_result: Result<(u64, usize), u64> = crate::arch_without_interrupts(|| {
+        let manager_guard = crate::process::manager();
+        if let Some(ref manager) = *manager_guard {
+            if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+                if let Some(fd_entry) = process.fd_table.get(fd) {
+                    match &fd_entry.kind {
+                        FdKind::RegularFile(file_ref) => {
+                            let file = file_ref.lock();
+                            return Ok((file.inode_num, file.mount_id));
+                        }
+                        FdKind::PipeRead(_) | FdKind::PipeWrite(_) => {
+                            return Err(super::errno::ESPIPE as u64);
+                        }
+                        _ => return Err(super::errno::ESPIPE as u64),
+                    }
+                }
+                return Err(super::errno::EBADF as u64);
+            }
+            Err(super::errno::EBADF as u64)
+        } else {
+            Err(super::errno::EBADF as u64)
+        }
+    });
+
+    let (inode_num, mount_id) = match fd_result {
+        Ok((ino, mid)) => (ino, mid),
+        Err(e) => return SyscallResult::Err(e),
+    };
+
+    let file_offset = offset as u64;
+
+    // Read user data (no process lock held)
+    let data = match copy_from_user(buf_ptr, count as usize) {
+        Ok(d) => d,
+        Err(_) => return SyscallResult::Err(super::errno::EFAULT as u64),
+    };
+
+    use crate::fs::ext2;
+    let write_fn = |fs: &mut ext2::Ext2Fs| -> SyscallResult {
+        match fs.write_file_range(inode_num as u32, file_offset, &data) {
+            Ok(written) => SyscallResult::Ok(written as u64),
+            Err(_) => SyscallResult::Err(super::errno::EIO as u64),
+        }
+    };
+
+    let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
+    if is_home {
+        let mut fs_guard = ext2::home_fs_write();
+        match fs_guard.as_mut() {
+            Some(fs) => write_fn(fs),
+            None => SyscallResult::Err(super::errno::EIO as u64),
+        }
+    } else {
+        let mut fs_guard = ext2::root_fs_write();
+        match fs_guard.as_mut() {
+            Some(fs) => write_fn(fs),
+            None => SyscallResult::Err(super::errno::EIO as u64),
+        }
+    }
+}

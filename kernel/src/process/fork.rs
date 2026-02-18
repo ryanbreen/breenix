@@ -532,8 +532,12 @@ pub fn copy_process_state(
         child_process.sid = parent_process.sid;
     }
 
-    // 5. Copy umask (when per-process umask is implemented)
-    // TODO: child_process.umask = parent_process.umask;
+    // 5. Copy uid/gid/euid/egid/umask
+    child_process.uid = parent_process.uid;
+    child_process.gid = parent_process.gid;
+    child_process.euid = parent_process.euid;
+    child_process.egid = parent_process.egid;
+    child_process.umask = parent_process.umask;
 
     // 6. Current working directory: inherited from parent in fork_internal()
     //    (before copy_process_state is called)

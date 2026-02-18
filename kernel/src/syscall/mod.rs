@@ -179,6 +179,20 @@ pub enum SyscallNumber {
     EpollCtl,
     EpollWait,
     EpollPwait,
+    // Process identity
+    Getuid,
+    Geteuid,
+    Getgid,
+    Getegid,
+    Setuid,
+    Setgid,
+    // File creation mask
+    Umask,
+    // Timestamps
+    Utimensat,
+    // Positional I/O
+    Pread64,
+    Pwrite64,
 }
 
 #[allow(dead_code)]
@@ -289,6 +303,16 @@ impl SyscallNumber {
             281 => Some(Self::EpollPwait),
             291 => Some(Self::EpollCreate1),
             302 => Some(Self::Prlimit64),
+            95 => Some(Self::Umask),
+            102 => Some(Self::Getuid),
+            104 => Some(Self::Getgid),
+            105 => Some(Self::Setuid),
+            106 => Some(Self::Setgid),
+            107 => Some(Self::Geteuid),
+            108 => Some(Self::Getegid),
+            17 => Some(Self::Pread64),
+            18 => Some(Self::Pwrite64),
+            280 => Some(Self::Utimensat),
             318 => Some(Self::GetRandom),
             // PTY syscalls (Breenix-specific, same on both archs)
             400 => Some(Self::PosixOpenpt),
@@ -407,6 +431,19 @@ impl SyscallNumber {
             // Wait
             260 => Some(Self::Wait4),
             261 => Some(Self::Prlimit64),
+            // Positional I/O
+            67 => Some(Self::Pread64),
+            68 => Some(Self::Pwrite64),
+            // Timestamps
+            88 => Some(Self::Utimensat),
+            // Process identity
+            144 => Some(Self::Setgid),
+            146 => Some(Self::Setuid),
+            166 => Some(Self::Umask),
+            174 => Some(Self::Getuid),
+            175 => Some(Self::Geteuid),
+            176 => Some(Self::Getgid),
+            177 => Some(Self::Getegid),
             // Random
             278 => Some(Self::GetRandom),
             // PTY syscalls (Breenix-specific, same on both archs)

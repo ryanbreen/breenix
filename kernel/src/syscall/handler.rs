@@ -456,6 +456,20 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::EpollCtl) => super::epoll::sys_epoll_ctl(args.0 as i32, args.1 as i32, args.2 as i32, args.3),
         Some(SyscallNumber::EpollWait) => super::epoll::sys_epoll_pwait(args.0 as i32, args.1, args.2 as i32, args.3 as i32, 0, 0),
         Some(SyscallNumber::EpollPwait) => super::epoll::sys_epoll_pwait(args.0 as i32, args.1, args.2 as i32, args.3 as i32, args.4, args.5),
+        // Identity syscalls
+        Some(SyscallNumber::Getuid) => super::handlers::sys_getuid(),
+        Some(SyscallNumber::Geteuid) => super::handlers::sys_geteuid(),
+        Some(SyscallNumber::Getgid) => super::handlers::sys_getgid(),
+        Some(SyscallNumber::Getegid) => super::handlers::sys_getegid(),
+        Some(SyscallNumber::Setuid) => super::handlers::sys_setuid(args.0 as u32),
+        Some(SyscallNumber::Setgid) => super::handlers::sys_setgid(args.0 as u32),
+        // File creation mask
+        Some(SyscallNumber::Umask) => super::handlers::sys_umask(args.0 as u32),
+        // Timestamps
+        Some(SyscallNumber::Utimensat) => super::fs::sys_utimensat(args.0 as i32, args.1, args.2, args.3 as u32),
+        // Positional I/O
+        Some(SyscallNumber::Pread64) => super::handlers::sys_pread64(args.0 as i32, args.1, args.2, args.3 as i64),
+        Some(SyscallNumber::Pwrite64) => super::handlers::sys_pwrite64(args.0 as i32, args.1, args.2, args.3 as i64),
         None => {
             log::warn!("Unknown syscall number: {} - returning ENOSYS", syscall_num);
             SyscallResult::Err(super::ErrorCode::NoSys as u64)

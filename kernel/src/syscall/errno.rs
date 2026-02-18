@@ -61,6 +61,9 @@ pub const ENOTTY: i32 = 25;
 /// No space left on device
 pub const ENOSPC: i32 = 28;
 
+/// Illegal seek (not a seekable fd)
+pub const ESPIPE: i32 = 29;
+
 /// Broken pipe
 pub const EPIPE: i32 = 32;
 

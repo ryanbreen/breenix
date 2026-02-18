@@ -3470,3 +3470,215 @@ pub fn sys_readlinkat(dirfd: i32, pathname: u64, buf: u64, bufsiz: u64) -> Sysca
     }
     sys_readlink(pathname, buf, bufsiz)
 }
+
+// =============================================================================
+// utimensat - Update file timestamps
+// =============================================================================
+
+/// Special timespec value: set timestamp to current time
+const UTIME_NOW: i64 = 0x3FFFFFFF;
+/// Special timespec value: leave timestamp unchanged
+const UTIME_OMIT: i64 = 0x3FFFFFFE;
+/// AT_SYMLINK_NOFOLLOW flag
+#[allow(dead_code)]
+const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
+
+/// Timespec layout for utimensat (matches Linux ABI)
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct UtimeTimespec {
+    tv_sec: i64,
+    tv_nsec: i64,
+}
+
+/// utimensat(dirfd, pathname, times, flags) - Update file timestamps
+///
+/// If pathname is NULL and dirfd is a valid fd: operate on that fd (futimens behavior).
+/// If times is NULL: set atime and mtime to current time.
+/// Otherwise: read two Timespec structs from userspace for atime and mtime.
+/// UTIME_NOW (0x3FFFFFFF): use current time for that field.
+/// UTIME_OMIT (0x3FFFFFFE): don't change that timestamp.
+pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> SyscallResult {
+    use crate::fs::ext2;
+
+    let now = crate::time::current_unix_time() as u32;
+
+    // Determine what atime/mtime to set
+    let (set_atime, set_mtime) = if times_ptr == 0 {
+        // NULL times = set both to current time
+        (Some(now), Some(now))
+    } else {
+        // Read two Timespec structs from userspace
+        let times: [UtimeTimespec; 2] = match super::userptr::copy_from_user(times_ptr as *const [UtimeTimespec; 2]) {
+            Ok(t) => t,
+            Err(e) => return SyscallResult::Err(e),
+        };
+
+        let atime = if times[0].tv_nsec == UTIME_NOW {
+            Some(now)
+        } else if times[0].tv_nsec == UTIME_OMIT {
+            None
+        } else {
+            Some(times[0].tv_sec as u32)
+        };
+
+        let mtime = if times[1].tv_nsec == UTIME_NOW {
+            Some(now)
+        } else if times[1].tv_nsec == UTIME_OMIT {
+            None
+        } else {
+            Some(times[1].tv_sec as u32)
+        };
+
+        (atime, mtime)
+    };
+
+    // If both are OMIT, nothing to do
+    if set_atime.is_none() && set_mtime.is_none() {
+        return SyscallResult::Ok(0);
+    }
+
+    // Determine the target inode
+    if path_ptr == 0 {
+        // futimens behavior: operate on dirfd
+        if dirfd < 0 {
+            return SyscallResult::Err(super::errno::EBADF as u64);
+        }
+
+        let thread_id = match crate::task::scheduler::current_thread_id() {
+            Some(id) => id,
+            None => return SyscallResult::Err(super::errno::EBADF as u64),
+        };
+
+        let fd_info = crate::arch_without_interrupts(|| {
+            let manager_guard = crate::process::manager();
+            if let Some(ref manager) = *manager_guard {
+                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+                    if let Some(fd_entry) = process.fd_table.get(dirfd) {
+                        if let FdKind::RegularFile(file_ref) = &fd_entry.kind {
+                            let file = file_ref.lock();
+                            return Some((file.inode_num as u32, file.mount_id));
+                        }
+                    }
+                }
+            }
+            None
+        });
+
+        let (inode_num, mount_id) = match fd_info {
+            Some((ino, mid)) => (ino, mid),
+            None => return SyscallResult::Err(super::errno::EBADF as u64),
+        };
+
+        return update_inode_timestamps(inode_num, mount_id, set_atime, set_mtime);
+    }
+
+    // Path-based: resolve path
+    let path = match super::userptr::copy_cstr_from_user(path_ptr) {
+        Ok(s) => s,
+        Err(e) => return SyscallResult::Err(e as u64),
+    };
+
+    // Handle AT_FDCWD
+    if dirfd != AT_FDCWD && !path.starts_with('/') {
+        return SyscallResult::Err(super::errno::ENOSYS as u64);
+    }
+
+    let full_path = if path.starts_with('/') {
+        path.clone()
+    } else {
+        let cwd = get_current_cwd().unwrap_or_else(|| alloc::string::String::from("/"));
+        if cwd.ends_with('/') {
+            alloc::format!("{}{}", cwd, path)
+        } else {
+            alloc::format!("{}/{}", cwd, path)
+        }
+    };
+
+    let is_home = ext2::is_home_path(&full_path);
+    let fs_path = if is_home { ext2::strip_home_prefix(&full_path) } else { &full_path };
+    let no_follow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
+
+    // Resolve path first (read lock), then update timestamps (write lock)
+    let (inode_num, mount_id) = if is_home {
+        let fs_guard = ext2::home_fs_read();
+        let fs = match fs_guard.as_ref() {
+            Some(f) => f,
+            None => return SyscallResult::Err(super::errno::ENOENT as u64),
+        };
+        let ino = if no_follow {
+            fs.resolve_path_no_follow(fs_path)
+        } else {
+            fs.resolve_path(fs_path)
+        };
+        match ino {
+            Ok(n) => (n, fs.mount_id),
+            Err(_) => return SyscallResult::Err(super::errno::ENOENT as u64),
+        }
+    } else {
+        let fs_guard = ext2::root_fs_read();
+        let fs = match fs_guard.as_ref() {
+            Some(f) => f,
+            None => return SyscallResult::Err(super::errno::ENOENT as u64),
+        };
+        let ino = if no_follow {
+            fs.resolve_path_no_follow(fs_path)
+        } else {
+            fs.resolve_path(fs_path)
+        };
+        match ino {
+            Ok(n) => (n, fs.mount_id),
+            Err(_) => return SyscallResult::Err(super::errno::ENOENT as u64),
+        }
+    };
+
+    update_inode_timestamps(inode_num, mount_id, set_atime, set_mtime)
+}
+
+/// Helper: update an inode's atime/mtime on the ext2 filesystem
+fn update_inode_timestamps(
+    inode_num: u32,
+    mount_id: usize,
+    set_atime: Option<u32>,
+    set_mtime: Option<u32>,
+) -> SyscallResult {
+    use crate::fs::ext2;
+
+    let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
+
+    let do_update = |fs: &mut ext2::Ext2Fs| -> SyscallResult {
+        let mut inode = match fs.read_inode(inode_num) {
+            Ok(i) => i,
+            Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
+        };
+
+        if let Some(atime) = set_atime {
+            inode.i_atime = atime;
+        }
+        if let Some(mtime) = set_mtime {
+            inode.i_mtime = mtime;
+        }
+        // Always update ctime when timestamps change
+        inode.i_ctime = crate::time::current_unix_time() as u32;
+
+        match fs.write_inode(inode_num, &inode) {
+            Ok(()) => SyscallResult::Ok(0),
+            Err(_) => SyscallResult::Err(super::errno::EIO as u64),
+        }
+    };
+
+    if is_home {
+        let mut fs_guard = ext2::home_fs_write();
+        match fs_guard.as_mut() {
+            Some(fs) => do_update(fs),
+            None => SyscallResult::Err(super::errno::EIO as u64),
+        }
+    } else {
+        let mut fs_guard = ext2::root_fs_write();
+        match fs_guard.as_mut() {
+            Some(fs) => do_update(fs),
+            None => SyscallResult::Err(super::errno::EIO as u64),
+        }
+    }
+}
+
