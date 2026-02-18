@@ -448,6 +448,21 @@ impl Canvas for ShellFrameBuffer {
 /// Global shell framebuffer instance (compatible with x86_64 logger.rs interface)
 pub static SHELL_FRAMEBUFFER: OnceCell<Mutex<ShellFrameBuffer>> = OnceCell::uninit();
 
+/// Cached framebuffer dimensions, set once during init and never modified.
+/// This allows sys_fbinfo to read dimensions without acquiring the framebuffer lock,
+/// avoiding contention with BWM's flush operations which hold the lock for ~400μs
+/// during full-screen pixel copies.
+pub static FB_INFO_CACHE: OnceCell<FbInfoCache> = OnceCell::uninit();
+
+/// Immutable framebuffer info cached at initialization time.
+pub struct FbInfoCache {
+    pub width: usize,
+    pub height: usize,
+    pub stride: usize,
+    pub bytes_per_pixel: usize,
+    pub is_bgr: bool,
+}
+
 /// Initialize the shell framebuffer
 ///
 /// Must be called after VirtIO GPU initialization.
@@ -460,6 +475,15 @@ pub fn init_shell_framebuffer() -> Result<(), &'static str> {
         fb.width(),
         fb.height()
     );
+
+    // Cache immutable dimensions for lock-free access by sys_fbinfo
+    let _ = FB_INFO_CACHE.try_init_once(|| FbInfoCache {
+        width: fb.width(),
+        height: fb.height(),
+        stride: fb.stride(),
+        bytes_per_pixel: fb.bytes_per_pixel(),
+        is_bgr: fb.is_bgr(),
+    });
 
     let _ = SHELL_FRAMEBUFFER.try_init_once(|| Mutex::new(fb));
     Ok(())
