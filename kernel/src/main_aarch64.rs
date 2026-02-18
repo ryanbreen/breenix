@@ -680,10 +680,10 @@ fn load_test_binaries_from_ext2() {
     let mut loaded = 0;
     let mut failed = 0;
 
-    for name in test_binaries {
-        // create_ext2_disk.sh strips the .elf extension when installing binaries
-        let path = format!("/bin/{}", name);
+    // Search paths for test binaries - try each in order
+    let search_dirs = ["/bin", "/usr/local/cbin", "/usr/local/test/bin", "/sbin"];
 
+    for name in test_binaries {
         // Load ELF from ext2 - acquire and release lock for each binary
         let elf_data = {
             let fs_guard = kernel::fs::ext2::root_fs_read();
@@ -695,10 +695,20 @@ fn load_test_binaries_from_ext2() {
                 }
             };
 
-            let inode_num = match fs.resolve_path(&path) {
-                Ok(num) => num,
-                Err(_) => {
-                    // Binary not present in ext2 - skip silently
+            // Try each search directory until we find the binary
+            let mut found_inode = None;
+            for dir in &search_dirs {
+                let path = format!("{}/{}", dir, name);
+                if let Ok(num) = fs.resolve_path(&path) {
+                    found_inode = Some(num);
+                    break;
+                }
+            }
+
+            let inode_num = match found_inode {
+                Some(num) => num,
+                None => {
+                    // Binary not present in any search path - skip silently
                     continue;
                 }
             };

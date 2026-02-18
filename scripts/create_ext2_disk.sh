@@ -105,23 +105,30 @@ if [[ "$(uname)" == "Darwin" ]]; then
             mkdir -p /mnt/ext2
             mount /work/$OUTPUT_FILENAME /mnt/ext2
 
-            # Create /bin, /sbin, and /usr/local/test/bin directories
+            # Create /bin, /sbin, /usr/local/test/bin, and /usr/local/cbin directories
             mkdir -p /mnt/ext2/bin
             mkdir -p /mnt/ext2/sbin
             mkdir -p /mnt/ext2/usr/local/test/bin
+            mkdir -p /mnt/ext2/usr/local/cbin
 
             # Copy ALL binaries from /binaries directory
-            # Routing: test binaries (*_test, test_*) -> /usr/local/test/bin
+            # Routing: musl C programs (*_musl*) -> /usr/local/cbin
+            #          test binaries (*_test, test_*) -> /usr/local/test/bin
             #          system binaries (true, telnetd, init) -> /sbin
             #          everything else -> /bin
             echo "Installing all binaries..."
             bin_count=0
             sbin_count=0
             test_count=0
+            cbin_count=0
             for elf_file in /binaries/*.elf; do
                 if [ -f "$elf_file" ]; then
                     bin_name=$(basename "$elf_file" .elf)
-                    if echo "$bin_name" | grep -qE "_test$|^test_"; then
+                    if echo "$bin_name" | grep -qE "_musl"; then
+                        cp "$elf_file" /mnt/ext2/usr/local/cbin/${bin_name}
+                        chmod 755 /mnt/ext2/usr/local/cbin/${bin_name}
+                        cbin_count=$((cbin_count + 1))
+                    elif echo "$bin_name" | grep -qE "_test$|^test_"; then
                         cp "$elf_file" /mnt/ext2/usr/local/test/bin/${bin_name}
                         chmod 755 /mnt/ext2/usr/local/test/bin/${bin_name}
                         test_count=$((test_count + 1))
@@ -138,6 +145,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
             done
             echo "  Installed $bin_count binaries in /bin"
             echo "  Installed $sbin_count binaries in /sbin"
+            echo "  Installed $cbin_count C binaries in /usr/local/cbin"
             echo "  Installed $test_count test binaries in /usr/local/test/bin"
 
             # Create /etc with passwd and group for musl getpwuid/getgrgid
@@ -231,23 +239,30 @@ else
     MOUNT_DIR=$(mktemp -d)
     mount "$OUTPUT_FILE" "$MOUNT_DIR"
 
-    # Create /bin, /sbin, and /usr/local/test/bin directories
+    # Create /bin, /sbin, /usr/local/test/bin, and /usr/local/cbin directories
     mkdir -p "$MOUNT_DIR/bin"
     mkdir -p "$MOUNT_DIR/sbin"
     mkdir -p "$MOUNT_DIR/usr/local/test/bin"
+    mkdir -p "$MOUNT_DIR/usr/local/cbin"
 
     # Copy ALL binaries from userspace directory
-    # Routing: test binaries (*_test, test_*) -> /usr/local/test/bin
+    # Routing: musl C programs (*_musl*) -> /usr/local/cbin
+    #          test binaries (*_test, test_*) -> /usr/local/test/bin
     #          system binaries (true, telnetd, init) -> /sbin
     #          everything else -> /bin
     echo "Installing all binaries..."
     bin_count=0
     sbin_count=0
     test_count=0
+    cbin_count=0
     for elf_file in "$USERSPACE_DIR"/*.elf; do
         if [ -f "$elf_file" ]; then
             bin_name=$(basename "$elf_file" .elf)
-            if echo "$bin_name" | grep -qE '_test$|^test_'; then
+            if echo "$bin_name" | grep -qE '_musl'; then
+                cp "$elf_file" "$MOUNT_DIR/usr/local/cbin/${bin_name}"
+                chmod 755 "$MOUNT_DIR/usr/local/cbin/${bin_name}"
+                cbin_count=$((cbin_count + 1))
+            elif echo "$bin_name" | grep -qE '_test$|^test_'; then
                 cp "$elf_file" "$MOUNT_DIR/usr/local/test/bin/${bin_name}"
                 chmod 755 "$MOUNT_DIR/usr/local/test/bin/${bin_name}"
                 test_count=$((test_count + 1))
@@ -264,6 +279,7 @@ else
     done
     echo "  Installed $bin_count binaries in /bin"
     echo "  Installed $sbin_count binaries in /sbin"
+    echo "  Installed $cbin_count C binaries in /usr/local/cbin"
     echo "  Installed $test_count test binaries in /usr/local/test/bin"
 
     # Create /etc with passwd and group for musl getpwuid/getgrgid
