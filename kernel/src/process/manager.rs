@@ -585,7 +585,7 @@ impl ProcessManager {
         // Set up argc/argv/envp/auxv on the stack following Linux ABI
         // The stack is now mapped, so we can write to it via physical addresses
         let default_env: [&[u8]; 5] = [
-            b"PATH=/bin:/sbin\0",
+            b"PATH=/bin:/sbin:/usr/local/cbin\0",
             b"HOME=/\0",
             b"TERM=vt100\0",
             b"USER=root\0",
@@ -2585,7 +2585,7 @@ impl ProcessManager {
         // Since the new page table is not active yet, we need to translate addresses
         // and write via the physical frames
         let default_env: [&[u8]; 5] = [
-            b"PATH=/bin:/sbin\0",
+            b"PATH=/bin:/sbin:/usr/local/cbin\0",
             b"HOME=/\0",
             b"TERM=vt100\0",
             b"USER=root\0",
@@ -2829,7 +2829,7 @@ impl ProcessManager {
         }
 
         let default_env: [&[u8]; 5] = [
-            b"PATH=/bin:/sbin\0",
+            b"PATH=/bin:/sbin:/usr/local/cbin\0",
             b"HOME=/\0",
             b"TERM=vt100\0",
             b"USER=root\0",
