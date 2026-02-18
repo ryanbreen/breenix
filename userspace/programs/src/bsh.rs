@@ -1046,10 +1046,10 @@ fn read_fd_to_string(fd: libbreenix::types::Fd) -> String {
 fn default_path() -> String {
     if let Ok(content) = std::fs::read_to_string("/proc/breenix/testing") {
         if content.trim() == "1" {
-            return String::from("/bin:/usr/bin:/usr/local/test/bin");
+            return String::from("/bin:/sbin:/usr/local/cbin:/usr/local/test/bin");
         }
     }
-    String::from("/bin:/usr/bin")
+    String::from("/bin:/sbin:/usr/local/cbin")
 }
 
 /// Resolve a command name to a full path by searching PATH directories.
