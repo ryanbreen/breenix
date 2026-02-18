@@ -258,6 +258,11 @@ impl Process {
     /// Also cleans up Copy-on-Write frame references to avoid memory leaks.
     /// CRITICAL: Also marks the main thread as Terminated so the scheduler
     /// doesn't keep scheduling this thread after process termination.
+    ///
+    /// NOTE: This method does FD cleanup and CoW cleanup inline, which means
+    /// it acquires pipe locks, scheduler locks, and frame metadata locks.
+    /// For `handle_thread_exit`, use `terminate_minimal()` + deferred cleanup
+    /// to reduce PM lock hold time on ARM64 SMP.
     pub fn terminate(&mut self, exit_code: i32) {
         // Guard against double-terminate: if the process is already terminated,
         // skip all cleanup to prevent double-decrementing COW page refcounts
@@ -284,240 +289,119 @@ impl Process {
         // getting scheduled forever in an infinite loop.
         if let Some(ref mut thread) = self.main_thread {
             thread.set_terminated();
-            log::info!(
-                "Process {} terminated (exit_code={}), marked thread {} as Terminated",
-                self.id.as_u64(),
-                exit_code,
-                thread.id()
-            );
         }
+    }
+
+    /// Minimal terminate: mark process and thread as terminated without cleanup.
+    ///
+    /// Used by `handle_thread_exit` to mark the process as terminated under PM lock,
+    /// then perform FD closure and CoW cleanup OUTSIDE the PM lock. This prevents
+    /// a system-wide hang on ARM64 SMP where logging, pipe wakeups, and scheduler
+    /// calls inside close_all_fds create lock ordering violations with the serial
+    /// output lock and framebuffer lock while all CPUs have interrupts disabled.
+    pub fn terminate_minimal(&mut self, exit_code: i32) {
+        if matches!(self.state, ProcessState::Terminated(_)) {
+            return;
+        }
+        self.state = ProcessState::Terminated(exit_code);
+        self.exit_code = Some(exit_code);
+        if let Some(ref mut thread) = self.main_thread {
+            thread.set_terminated();
+        }
+    }
+
+    /// Extract all file descriptor entries for deferred cleanup outside PM lock.
+    ///
+    /// Returns the FD entries without closing them — the caller is responsible
+    /// for pipe close_read/close_write, PTY refcounting, etc.
+    pub fn take_fd_entries(&mut self) -> alloc::vec::Vec<(usize, crate::ipc::fd::FileDescriptor)> {
+        self.fd_table.take_all()
     }
 
     /// Close all file descriptors in this process
     ///
     /// This properly decrements pipe reader/writer counts, ensuring that
     /// when all writers close, readers get EOF instead of EAGAIN.
+    ///
+    /// CRITICAL: No logging in this function — it runs under PM lock where
+    /// log calls create lock ordering violations (PM → SERIAL → framebuffer).
     #[cfg(target_arch = "x86_64")]
     fn close_all_fds(&mut self) {
         use crate::ipc::FdKind;
 
-        log::debug!("Process::close_all_fds() for process '{}'", self.name);
-
-        // Close each fd, which will decrement pipe counts
         for fd in 0..crate::ipc::MAX_FDS {
             if let Ok(fd_entry) = self.fd_table.close(fd as i32) {
                 match fd_entry.kind {
-                    FdKind::PipeRead(buffer) => {
-                        buffer.lock().close_read();
-                        log::debug!("Process::close_all_fds() - closed pipe read fd {}", fd);
-                    }
-                    FdKind::PipeWrite(buffer) => {
-                        buffer.lock().close_write();
-                        log::debug!("Process::close_all_fds() - closed pipe write fd {}", fd);
-                    }
-                    FdKind::UdpSocket(_) => {
-                        // Socket cleanup handled by UdpSocket::Drop when Arc refcount reaches 0
-                        log::debug!("Process::close_all_fds() - released UDP socket fd {}", fd);
-                    }
-                    FdKind::TcpSocket(_) => {
-                        // Unbound TCP socket doesn't need cleanup
-                        log::debug!("Process::close_all_fds() - released TCP socket fd {}", fd);
-                    }
-                    FdKind::TcpListener(port) => {
-                        // Decrement ref count, remove only if it reaches 0
-                        crate::net::tcp::tcp_listener_ref_dec(port);
-                        log::debug!("Process::close_all_fds() - released TCP listener fd {} on port {}", fd, port);
-                    }
-                    FdKind::TcpConnection(conn_id) => {
-                        // Close the TCP connection
-                        let _ = crate::net::tcp::tcp_close(&conn_id);
-                        log::debug!("Process::close_all_fds() - closed TCP connection fd {}", fd);
-                    }
-                    FdKind::StdIo(_) => {
-                        // StdIo doesn't need cleanup
-                    }
-                    FdKind::RegularFile(_) => {
-                        // Regular file cleanup handled by Arc refcount
-                        log::debug!("Process::close_all_fds() - released regular file fd {}", fd);
-                    }
-                    FdKind::Directory(_) => {
-                        // Directory cleanup handled by Arc refcount
-                        log::debug!("Process::close_all_fds() - released directory fd {}", fd);
-                    }
-                    FdKind::Device(_) => {
-                        // Device files don't need cleanup
-                        log::debug!("Process::close_all_fds() - released device fd {}", fd);
-                    }
-                    FdKind::DevfsDirectory { .. } => {
-                        // Devfs directory doesn't need cleanup
-                        log::debug!("Process::close_all_fds() - released devfs directory fd {}", fd);
-                    }
-                    FdKind::DevptsDirectory { .. } => {
-                        // Devpts directory doesn't need cleanup
-                        log::debug!("Process::close_all_fds() - released devpts directory fd {}", fd);
-                    }
+                    FdKind::PipeRead(buffer) => { buffer.lock().close_read(); }
+                    FdKind::PipeWrite(buffer) => { buffer.lock().close_write(); }
+                    FdKind::TcpListener(port) => { crate::net::tcp::tcp_listener_ref_dec(port); }
+                    FdKind::TcpConnection(conn_id) => { let _ = crate::net::tcp::tcp_close(&conn_id); }
                     FdKind::PtyMaster(pty_num) => {
-                        // PTY master cleanup - decrement refcount, only release when all masters closed
                         if let Some(pair) = crate::tty::pty::get(pty_num) {
                             let old_count = pair.master_refcount.fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
-                            log::debug!("Process::close_all_fds() - PTY master fd {} (pty {}) refcount {} -> {}",
-                                fd, pty_num, old_count, old_count - 1);
                             if old_count == 1 {
                                 crate::tty::pty::release(pty_num);
-                                log::debug!("Process::close_all_fds() - released PTY {} (last master closed)", pty_num);
                             }
                         }
                     }
                     FdKind::PtySlave(pty_num) => {
-                        // Decrement slave refcount — master sees POLLHUP when last slave closes
                         if let Some(pair) = crate::tty::pty::get(pty_num) {
                             pair.slave_close();
                         }
-                        log::debug!("Process::close_all_fds() - released PTY slave fd {}", fd);
                     }
-                    FdKind::UnixStream(socket) => {
-                        // Close Unix socket endpoint
-                        socket.lock().close();
-                        log::debug!("Process::close_all_fds() - closed Unix stream socket fd {}", fd);
-                    }
-                    FdKind::UnixSocket(_) => {
-                        // Unbound/bound Unix socket doesn't need cleanup
-                        log::debug!("Process::close_all_fds() - released Unix socket fd {}", fd);
-                    }
-                    FdKind::UnixListener(_) => {
-                        // Unix listener socket cleanup handled by Arc refcount
-                        log::debug!("Process::close_all_fds() - released Unix listener fd {}", fd);
-                    }
+                    FdKind::UnixStream(socket) => { socket.lock().close(); }
                     FdKind::FifoRead(path, buffer) => {
-                        // Close FIFO read end
                         crate::ipc::fifo::close_fifo_read(&path);
                         buffer.lock().close_read();
-                        log::debug!("Process::close_all_fds() - closed FIFO read fd {} ({})", fd, path);
                     }
                     FdKind::FifoWrite(path, buffer) => {
-                        // Close FIFO write end
                         crate::ipc::fifo::close_fifo_write(&path);
                         buffer.lock().close_write();
-                        log::debug!("Process::close_all_fds() - closed FIFO write fd {} ({})", fd, path);
                     }
-                    FdKind::ProcfsFile { .. } => {
-                        // Procfs files are purely in-memory, nothing to clean up
-                    }
-                    FdKind::ProcfsDirectory { .. } => {
-                        // Procfs directory doesn't need cleanup
-                    }
+                    _ => {} // StdIo, RegularFile, Directory, Device, etc. — no action needed
                 }
             }
         }
     }
 
     /// Close all file descriptors in this process (ARM64)
+    ///
+    /// CRITICAL: No logging in this function — it runs under PM lock where
+    /// log calls create lock ordering violations (PM → SERIAL → framebuffer).
     #[cfg(not(target_arch = "x86_64"))]
     fn close_all_fds(&mut self) {
         use crate::ipc::FdKind;
 
-        log::debug!("Process::close_all_fds() for process '{}'", self.name);
-
-        // Close each fd, which will decrement pipe counts
         for fd in 0..crate::ipc::MAX_FDS {
             if let Ok(fd_entry) = self.fd_table.close(fd as i32) {
                 match fd_entry.kind {
-                    FdKind::PipeRead(buffer) => {
-                        buffer.lock().close_read();
-                        log::debug!("Process::close_all_fds() - closed pipe read fd {}", fd);
-                    }
-                    FdKind::PipeWrite(buffer) => {
-                        buffer.lock().close_write();
-                        log::debug!("Process::close_all_fds() - closed pipe write fd {}", fd);
-                    }
-                    FdKind::StdIo(_) => {
-                        // StdIo doesn't need cleanup
-                    }
-                    FdKind::UdpSocket(_) => {
-                        // UDP socket cleanup handled by Drop
-                        log::debug!("Process::close_all_fds() - closed UDP socket fd {}", fd);
-                    }
-                    FdKind::UnixStream(_) => {
-                        // Unix stream cleanup handled by Drop
-                        log::debug!("Process::close_all_fds() - closed Unix stream fd {}", fd);
-                    }
-                    FdKind::UnixSocket(_) => {
-                        // Unix socket cleanup handled by Drop
-                        log::debug!("Process::close_all_fds() - closed Unix socket fd {}", fd);
-                    }
-                    FdKind::UnixListener(_) => {
-                        // Unix listener cleanup handled by Drop
-                        log::debug!("Process::close_all_fds() - closed Unix listener fd {}", fd);
-                    }
+                    FdKind::PipeRead(buffer) => { buffer.lock().close_read(); }
+                    FdKind::PipeWrite(buffer) => { buffer.lock().close_write(); }
+                    FdKind::TcpListener(port) => { crate::net::tcp::tcp_listener_ref_dec(port); }
+                    FdKind::TcpConnection(conn_id) => { let _ = crate::net::tcp::tcp_close(&conn_id); }
                     FdKind::PtyMaster(pty_num) => {
-                        // PTY master cleanup - decrement refcount, only release when all masters closed
                         if let Some(pair) = crate::tty::pty::get(pty_num) {
                             let old_count = pair.master_refcount.fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
                             if old_count == 1 {
                                 crate::tty::pty::release(pty_num);
                             }
                         }
-                        log::debug!("Process::close_all_fds() - closed PTY master fd {}", fd);
                     }
                     FdKind::PtySlave(pty_num) => {
-                        // Decrement slave refcount — master sees POLLHUP when last slave closes
                         if let Some(pair) = crate::tty::pty::get(pty_num) {
                             pair.slave_close();
                         }
-                        log::debug!("Process::close_all_fds() - closed PTY slave fd {}", fd);
                     }
-                    FdKind::RegularFile(_) => {
-                        // Regular file cleanup handled by Arc refcount
-                        log::debug!("Process::close_all_fds() - released regular file fd {}", fd);
-                    }
-                    FdKind::Directory(_) => {
-                        // Directory cleanup handled by Arc refcount
-                        log::debug!("Process::close_all_fds() - released directory fd {}", fd);
-                    }
-                    FdKind::Device(_) => {
-                        // Device files don't need cleanup
-                        log::debug!("Process::close_all_fds() - released device fd {}", fd);
-                    }
-                    FdKind::DevfsDirectory { .. } => {
-                        // Devfs directory doesn't need cleanup
-                        log::debug!("Process::close_all_fds() - released devfs directory fd {}", fd);
-                    }
-                    FdKind::DevptsDirectory { .. } => {
-                        // Devpts directory doesn't need cleanup
-                        log::debug!("Process::close_all_fds() - released devpts directory fd {}", fd);
-                    }
+                    FdKind::UnixStream(socket) => { socket.lock().close(); }
                     FdKind::FifoRead(path, buffer) => {
-                        // Close FIFO read end
                         crate::ipc::fifo::close_fifo_read(&path);
                         buffer.lock().close_read();
-                        log::debug!("Process::close_all_fds() - closed FIFO read fd {} ({})", fd, path);
                     }
                     FdKind::FifoWrite(path, buffer) => {
-                        // Close FIFO write end
                         crate::ipc::fifo::close_fifo_write(&path);
                         buffer.lock().close_write();
-                        log::debug!("Process::close_all_fds() - closed FIFO write fd {} ({})", fd, path);
                     }
-                    FdKind::TcpSocket(_) => {
-                        // Unbound TCP socket doesn't need cleanup
-                        log::debug!("Process::close_all_fds() - closed TCP socket fd {}", fd);
-                    }
-                    FdKind::TcpListener(port) => {
-                        // Decrement ref count, remove only if it reaches 0
-                        crate::net::tcp::tcp_listener_ref_dec(port);
-                        log::debug!("Process::close_all_fds() - released TCP listener fd {} port {}", fd, port);
-                    }
-                    FdKind::TcpConnection(conn_id) => {
-                        // Close TCP connection
-                        let _ = crate::net::tcp::tcp_close(&conn_id);
-                        log::debug!("Process::close_all_fds() - closed TCP connection fd {}", fd);
-                    }
-                    FdKind::ProcfsFile { .. } => {
-                        // Procfs files are purely in-memory, nothing to clean up
-                    }
-                    FdKind::ProcfsDirectory { .. } => {
-                        // Procfs directory doesn't need cleanup
-                    }
+                    _ => {} // StdIo, RegularFile, Directory, Device, etc. — no action needed
                 }
             }
         }
@@ -529,7 +413,7 @@ impl Process {
     /// reference counts. Frames that are no longer shared (refcount reaches 0)
     /// are returned to the frame allocator for reuse.
     #[cfg(target_arch = "x86_64")]
-    fn cleanup_cow_frames(&mut self) {
+    pub(crate) fn cleanup_cow_frames(&mut self) {
         use crate::memory::frame_allocator::deallocate_frame;
         use crate::memory::frame_metadata::frame_decref;
         use x86_64::structures::paging::{PageTableFlags, PhysFrame};
@@ -537,17 +421,8 @@ impl Process {
         // Get the page table for this process
         let page_table = match self.page_table.as_ref() {
             Some(pt) => pt,
-            None => {
-                log::debug!(
-                    "Process {}: No page table to clean up",
-                    self.id.as_u64()
-                );
-                return;
-            }
+            None => return,
         };
-
-        let mut freed_count = 0;
-        let mut shared_count = 0;
 
         // Walk all user pages and decrement refcounts
         let _ = page_table.walk_mapped_pages(|_virt_addr, phys_addr, flags| {
@@ -565,20 +440,8 @@ impl Process {
             // Returns false if still shared (refcount > 0 after decrement).
             if frame_decref(frame) {
                 deallocate_frame(frame);
-                freed_count += 1;
-            } else {
-                shared_count += 1;
             }
         });
-
-        if freed_count > 0 || shared_count > 0 {
-            log::debug!(
-                "Process {}: CoW cleanup - freed {} frames, {} still shared",
-                self.id.as_u64(),
-                freed_count,
-                shared_count
-            );
-        }
     }
 
     /// Clean up Copy-on-Write frame references when process exits (ARM64)
@@ -586,8 +449,10 @@ impl Process {
     /// Walks all user pages in the process's page table and decrements their
     /// reference counts. Frames that are no longer shared (refcount reaches 0)
     /// are returned to the frame allocator for reuse.
+    ///
+    /// CRITICAL: No logging — may run under PM lock.
     #[cfg(not(target_arch = "x86_64"))]
-    fn cleanup_cow_frames(&mut self) {
+    pub(crate) fn cleanup_cow_frames(&mut self) {
         use crate::memory::frame_allocator::deallocate_frame;
         use crate::memory::frame_metadata::frame_decref;
         use crate::memory::arch_stub::{PageTableFlags, PhysFrame};
@@ -595,17 +460,8 @@ impl Process {
         // Get the page table for this process
         let page_table = match self.page_table.as_ref() {
             Some(pt) => pt,
-            None => {
-                log::debug!(
-                    "Process {}: No page table to clean up",
-                    self.id.as_u64()
-                );
-                return;
-            }
+            None => return,
         };
-
-        let mut freed_count = 0;
-        let mut shared_count = 0;
 
         // Walk all user pages and decrement refcounts
         let _ = page_table.walk_mapped_pages(|_virt_addr, phys_addr, flags| {
@@ -616,27 +472,10 @@ impl Process {
 
             let frame = PhysFrame::containing_address(phys_addr);
 
-            // Decrement reference count.
-            // Returns true if the frame should be freed:
-            // - Tracked frame whose refcount reached 0 (was shared, now sole owner exiting)
-            // - Untracked frame (private to this process, never shared via CoW)
-            // Returns false if still shared (refcount > 0 after decrement).
             if frame_decref(frame) {
                 deallocate_frame(frame);
-                freed_count += 1;
-            } else {
-                shared_count += 1;
             }
         });
-
-        if freed_count > 0 || shared_count > 0 {
-            log::debug!(
-                "Process {}: CoW cleanup - freed {} frames, {} still shared",
-                self.id.as_u64(),
-                freed_count,
-                shared_count
-            );
-        }
     }
 
     /// Drain and clean up any pending old page tables from previous exec() calls.
@@ -645,16 +484,8 @@ impl Process {
     /// page table (e.g., at the start of the next exec, or during process exit).
     /// Each old page table has its user-space frames freed via `cleanup_for_exec()`.
     pub fn drain_old_page_tables(&mut self) {
-        if !self.pending_old_page_tables.is_empty() {
-            let count = self.pending_old_page_tables.len();
-            for old_pt in self.pending_old_page_tables.drain(..) {
-                old_pt.cleanup_for_exec();
-            }
-            log::debug!(
-                "Process {}: drained {} pending old page table(s)",
-                self.id.as_u64(),
-                count
-            );
+        for old_pt in self.pending_old_page_tables.drain(..) {
+            old_pt.cleanup_for_exec();
         }
     }
 

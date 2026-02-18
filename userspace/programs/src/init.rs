@@ -51,13 +51,34 @@ fn try_respawn(path: &[u8], name: &str, failures: &mut u32) -> i64 {
     spawn(path, name)
 }
 
+/// Test: simple fork + exit + waitpid to exercise process lifecycle under SMP load.
+fn test_fork_exit() {
+    match fork() {
+        Ok(ForkResult::Child) => {
+            // Child: just exit immediately
+            libbreenix::process::exit(127);
+        }
+        Ok(ForkResult::Parent(child_pid)) => {
+            let child_raw = child_pid.raw() as i32;
+            let mut status: i32 = 0;
+            match waitpid(child_raw, &mut status as *mut i32, 0) {
+                Ok(reaped) => {
+                    print!("[init] TEST: child {} reaped, status={}\n", reaped.raw(), status);
+                }
+                Err(e) => {
+                    print!("[init] TEST: waitpid(pid={}) failed: {}\n", child_raw, e);
+                }
+            }
+        }
+        Err(e) => {
+            print!("[init] TEST: fork failed: {}\n", e);
+        }
+    }
+}
+
 fn main() {
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
     print!("[init] Breenix init starting (PID {})\n", pid);
-
-    // TEMPORARILY DISABLED: Run musl libc hello world (proof of concept)
-    // print!("[init] Starting /bin/hello_musl...\n");
-    // let _hello_musl_pid = spawn(HELLO_MUSL_PATH, "hello_musl");
 
     // Start telnetd (optional -- may not exist on all disk images)
     print!("[init] Starting /sbin/telnetd...\n");
@@ -74,6 +95,17 @@ fn main() {
     print!("[init] Starting /bin/bwm...\n");
     let mut bwm_pid = spawn(BWM_PATH, "bwm");
     let mut bwm_failures: u32 = 0;
+
+    // Test: simple fork + exit + waitpid under SMP load (process lifecycle regression)
+    // Run after BWM is started so there's full SMP contention.
+    // Keep at 5 iterations — enough to stress-test without delaying BWM init
+    // past the strict boot test's 18-second detection window.
+    for i in 0..5 {
+        print!("[init] TEST {}/5: fork+exit...\n", i + 1);
+        test_fork_exit();
+        let _ = yield_now();
+    }
+    print!("[init] TEST: all 5 iterations completed successfully\n");
 
     // Main loop: reap zombies and respawn crashed services.
     let mut status: i32 = 0;

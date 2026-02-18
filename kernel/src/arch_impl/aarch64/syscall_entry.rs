@@ -318,30 +318,43 @@ fn result_to_u64(result: crate::syscall::SyscallResult) -> u64 {
 /// double-terminate and double-decrement of COW page refcounts.
 fn sys_exit_aarch64(exit_code: i32) -> u64 {
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
-        // Handle clear_child_tid for clone threads (CLONE_CHILD_CLEARTID)
-        // Also log exit with process name for debugging (single lock acquisition).
-        {
+        // Handle clear_child_tid for clone threads (CLONE_CHILD_CLEARTID).
+        // Extract info under PM lock, but do NOT log while holding it.
+        let (pid_for_log, name_for_log, futex_info) = {
             let manager_guard = crate::process::manager();
             if let Some(ref manager) = *manager_guard {
                 if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
-                    crate::serial_println!("[syscall] exit({}) pid={} name={}", exit_code, _pid.as_u64(), process.name);
-                    if let Some(tid_addr) = process.clear_child_tid {
-                        let tg_id = process.thread_group_id.unwrap_or(_pid.as_u64());
+                    let pid_val = _pid.as_u64();
+                    let name_val = process.name.clone();
+                    let futex = process.clear_child_tid.map(|tid_addr| {
+                        let tg_id = process.thread_group_id.unwrap_or(pid_val);
                         unsafe {
                             let ptr = tid_addr as *mut u32;
                             if !ptr.is_null() && tid_addr < 0x7FFF_FFFF_FFFF {
                                 core::ptr::write_volatile(ptr, 0);
                             }
                         }
-                        drop(manager_guard);
-                        crate::syscall::futex::futex_wake_for_thread_group(tg_id, tid_addr, u32::MAX);
-                    }
+                        (tg_id, tid_addr)
+                    });
+                    (Some(pid_val), Some(name_val), futex)
                 } else {
-                    crate::serial_println!("[syscall] exit({}) thread={}", exit_code, thread_id);
+                    (None, None, None)
                 }
             } else {
-                crate::serial_println!("[syscall] exit({})", exit_code);
+                (None, None, None)
             }
+        }; // PM lock dropped here
+
+        // Futex wake outside PM lock
+        if let Some((tg_id, tid_addr)) = futex_info {
+            crate::syscall::futex::futex_wake_for_thread_group(tg_id, tid_addr, u32::MAX);
+        }
+
+        // Log outside PM lock
+        if let (Some(pid), Some(name)) = (pid_for_log, &name_for_log) {
+            crate::serial_println!("[syscall] exit({}) pid={} name={}", exit_code, pid, name);
+        } else {
+            crate::serial_println!("[syscall] exit({}) thread={}", exit_code, thread_id);
         }
 
         crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);

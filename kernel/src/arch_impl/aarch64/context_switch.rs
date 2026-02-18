@@ -1288,7 +1288,22 @@ fn set_next_ttbr0_for_thread(thread_id: u64) -> TtbrResult {
                 .map(|pt| pt.level_4_frame().start_address().as_u64())
                 .or(process.inherited_cr3)
         } else {
-            // Thread's process not found — orphaned thread
+            // Thread's process not found — orphaned thread.
+            // Diagnostic: dump all process thread IDs to identify the mismatch.
+            raw_uart_str("\n[TTBR_DIAG] wanted_tid=");
+            raw_uart_dec(thread_id);
+            raw_uart_str(" nproc=");
+            raw_uart_dec(manager.process_count() as u64);
+            for (pid, proc) in manager.iter_processes() {
+                raw_uart_str(" p");
+                raw_uart_dec(pid.as_u64());
+                raw_uart_str(":t");
+                match proc.main_thread.as_ref() {
+                    Some(t) => raw_uart_dec(t.id),
+                    None => raw_uart_str("X"),
+                }
+            }
+            raw_uart_str("\n");
             drop(manager_guard);
             return TtbrResult::ProcessGone;
         }

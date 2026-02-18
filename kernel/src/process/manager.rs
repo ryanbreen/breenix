@@ -1001,6 +1001,11 @@ impl ProcessManager {
         self.processes.len()
     }
 
+    /// Iterate over all processes (for diagnostics)
+    pub fn iter_processes(&self) -> impl Iterator<Item = (ProcessId, &Process)> {
+        self.processes.iter().map(|(pid, p)| (*pid, p))
+    }
+
     /// Remove a process from the ready queue
     pub fn remove_from_ready_queue(&mut self, pid: ProcessId) -> bool {
         if let Some(index) = self.ready_queue.iter().position(|&p| p == pid) {
