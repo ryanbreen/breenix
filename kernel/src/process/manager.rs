@@ -584,11 +584,19 @@ impl ProcessManager {
 
         // Set up argc/argv/envp/auxv on the stack following Linux ABI
         // The stack is now mapped, so we can write to it via physical addresses
+        let default_env: [&[u8]; 5] = [
+            b"PATH=/bin:/sbin\0",
+            b"HOME=/\0",
+            b"TERM=vt100\0",
+            b"USER=root\0",
+            b"SHELL=/bin/bsh\0",
+        ];
         let initial_sp = if let Some(ref page_table) = process.page_table {
             self.setup_argv_on_stack(
                 page_table,
                 user_stack_top,
                 argv,
+                &default_env,
                 loaded_elf.phdr_vaddr,
                 loaded_elf.phnum,
                 loaded_elf.phentsize,
@@ -2576,10 +2584,18 @@ impl ProcessManager {
         // We need to write to the new stack pages that we just mapped
         // Since the new page table is not active yet, we need to translate addresses
         // and write via the physical frames
+        let default_env: [&[u8]; 5] = [
+            b"PATH=/bin:/sbin\0",
+            b"HOME=/\0",
+            b"TERM=vt100\0",
+            b"USER=root\0",
+            b"SHELL=/bin/bsh\0",
+        ];
         let initial_rsp = self.setup_argv_on_stack(
             &new_page_table,
             USER_STACK_TOP,
             argv,
+            &default_env,
             loaded_elf.phdr_vaddr,
             loaded_elf.phnum,
             loaded_elf.phentsize,
@@ -2812,10 +2828,18 @@ impl ProcessManager {
             )?;
         }
 
+        let default_env: [&[u8]; 5] = [
+            b"PATH=/bin:/sbin\0",
+            b"HOME=/\0",
+            b"TERM=vt100\0",
+            b"USER=root\0",
+            b"SHELL=/bin/bsh\0",
+        ];
         let initial_rsp = self.setup_argv_on_stack(
             &new_page_table,
             user_stack_top,
             argv,
+            &default_env,
             loaded_elf.phdr_vaddr,
             loaded_elf.phnum,
             loaded_elf.phentsize,
@@ -3251,6 +3275,7 @@ impl ProcessManager {
     ///
     ///   16 random bytes (for AT_RANDOM)
     ///   argv string data (null-terminated strings)
+    ///   envp string data (null-terminated strings)
     ///   --- 8-byte alignment padding ---
     ///   AT_NULL (0, 0)                    // auxv terminator
     ///   AT_RANDOM (25, ptr_to_random)     // pointer to 16 random bytes
@@ -3260,6 +3285,9 @@ impl ProcessManager {
     ///   AT_PHDR (3, phdr_vaddr)           // address of program headers in memory
     ///   AT_ENTRY (9, entry_point)         // program entry point
     ///   NULL (envp terminator)            // 8 bytes of 0
+    ///   envp[m-1] pointer
+    ///   ...
+    ///   envp[0] pointer
     ///   NULL (argv terminator)            // 8 bytes of 0
     ///   argv[n-1] pointer
     ///   ...
@@ -3282,6 +3310,7 @@ impl ProcessManager {
         page_table: &crate::memory::process_memory::ProcessPageTable,
         stack_top: u64,
         argv: &[&[u8]],
+        envp: &[&[u8]],
         phdr_vaddr: u64,
         phnum: u16,
         phentsize: u16,
@@ -3325,11 +3354,19 @@ impl ProcessManager {
             self.write_byte_to_stack(page_table, random_addr + i as u64, *byte)?;
         }
 
-        // Calculate total space needed for argv strings
+        // Calculate total space needed for argv and envp strings
         let mut total_string_space: usize = 0;
         for arg in argv.iter() {
             let len = arg.len();
             if len > 0 && arg[len - 1] == 0 {
+                total_string_space += len;
+            } else {
+                total_string_space += len + 1;
+            }
+        }
+        for env in envp.iter() {
+            let len = env.len();
+            if len > 0 && env[len - 1] == 0 {
                 total_string_space += len;
             } else {
                 total_string_space += len + 1;
@@ -3363,6 +3400,25 @@ impl ProcessManager {
             }
         }
 
+        // Write envp strings and collect their addresses
+        let mut envp_addrs: Vec<u64> = Vec::with_capacity(envp.len());
+
+        for env in envp.iter() {
+            envp_addrs.push(current_string_addr);
+
+            for byte in env.iter() {
+                self.write_byte_to_stack(page_table, current_string_addr, *byte)?;
+                current_string_addr += 1;
+            }
+
+            // Add null terminator if not present
+            let len = env.len();
+            if len == 0 || env[len - 1] != 0 {
+                self.write_byte_to_stack(page_table, current_string_addr, 0)?;
+                current_string_addr += 1;
+            }
+        }
+
         // --- Phase 2: Build the pointer/value section below the strings ---
 
         // Auxiliary vector entries (each is two u64 values: type, value)
@@ -3370,8 +3426,8 @@ impl ProcessManager {
         let auxv_count = 7;
         let auxv_space = auxv_count * 2 * 8; // 7 entries * 2 u64s * 8 bytes
 
-        // envp: just a NULL terminator (empty environment) = 1 u64
-        let envp_space = 8;
+        // envp: envp.len() pointers + NULL terminator
+        let envp_space = (envp.len() + 1) * 8;
 
         // argv: argc pointers + NULL terminator = (argc + 1) u64s
         let argv_space = (argc + 1) * 8;
@@ -3405,11 +3461,17 @@ impl ProcessManager {
         self.write_u64_to_stack(page_table, write_pos, 0)?;
         write_pos += 8;
 
-        // 4. Write envp NULL terminator (empty environment)
+        // 4. Write envp pointers
+        for addr in envp_addrs.iter() {
+            self.write_u64_to_stack(page_table, write_pos, *addr)?;
+            write_pos += 8;
+        }
+
+        // 5. Write envp NULL terminator
         self.write_u64_to_stack(page_table, write_pos, 0)?;
         write_pos += 8;
 
-        // 5. Write auxiliary vector entries
+        // 6. Write auxiliary vector entries
         // AT_ENTRY (9) - program entry point
         self.write_u64_to_stack(page_table, write_pos, 9)?; // AT_ENTRY
         write_pos += 8;

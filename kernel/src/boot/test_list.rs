@@ -77,8 +77,11 @@ pub const TEST_BINARIES: &[&str] = &[
     "ls_test",
     // Rust std library test (installed as hello_world.elf on ext2)
     "hello_world",
-    // musl libc C program (cross-compiled with musl libc for aarch64)
+    // musl libc C programs (cross-compiled with musl libc for aarch64)
     "hello_musl",
+    "env_musl_test",
+    "uname_musl_test",
+    "rlimit_musl_test",
     // Fork / CoW tests
     "fork_memory_test",
     "fork_state_test",

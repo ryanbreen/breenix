@@ -244,6 +244,10 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                 FdKind::ProcfsDirectory { .. } => {
                     log::debug!("sys_close: Closed procfs directory fd={}", fd);
                 }
+                FdKind::Epoll(id) => {
+                    crate::syscall::epoll::remove_instance(id);
+                    log::debug!("sys_close: Closed epoll fd={}", fd);
+                }
             }
             log::debug!("sys_close: returning to userspace fd={}", fd);
             SyscallResult::Ok(0)

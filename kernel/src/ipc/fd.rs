@@ -133,6 +133,8 @@ pub enum FdKind {
     ProcfsFile { content: alloc::string::String, position: usize },
     /// Procfs directory listing (for /proc and /proc/[pid])
     ProcfsDirectory { path: alloc::string::String, position: u64 },
+    /// Epoll instance file descriptor
+    Epoll(u64),
 }
 
 impl core::fmt::Debug for FdKind {
@@ -168,6 +170,7 @@ impl core::fmt::Debug for FdKind {
             FdKind::FifoWrite(path, _) => write!(f, "FifoWrite({})", path),
             FdKind::ProcfsFile { content, position } => write!(f, "ProcfsFile(len={}, pos={})", content.len(), position),
             FdKind::ProcfsDirectory { path, position } => write!(f, "ProcfsDirectory(path={}, pos={})", path, position),
+            FdKind::Epoll(id) => write!(f, "Epoll({})", id),
         }
     }
 }
@@ -734,6 +737,10 @@ impl Drop for FdTable {
                     }
                     FdKind::ProcfsDirectory { .. } => {
                         // Procfs directory doesn't need cleanup
+                    }
+                    FdKind::Epoll(id) => {
+                        // Clean up the epoll instance
+                        crate::syscall::epoll::remove_instance(id);
                     }
                 }
             }

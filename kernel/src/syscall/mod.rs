@@ -30,6 +30,7 @@ pub mod handler;
 pub(crate) mod dispatcher;
 pub mod iovec;
 pub mod clone;
+pub mod epoll;
 pub mod fifo;
 pub mod fs;
 pub mod futex;
@@ -169,6 +170,15 @@ pub enum SyscallNumber {
     // Testing (Breenix-specific)
     CowStats,
     SimulateOom,
+    // Resource limits and system info
+    Getrlimit,
+    Prlimit64,
+    Uname,
+    // epoll
+    EpollCreate1,
+    EpollCtl,
+    EpollWait,
+    EpollPwait,
 }
 
 #[allow(dead_code)]
@@ -231,6 +241,7 @@ impl SyscallNumber {
             60 => Some(Self::Exit),         // was Breenix 0
             61 => Some(Self::Wait4),
             62 => Some(Self::Kill),
+            63 => Some(Self::Uname),
             72 => Some(Self::Fcntl),
             79 => Some(Self::Getcwd),
             80 => Some(Self::Chdir),
@@ -241,6 +252,7 @@ impl SyscallNumber {
             87 => Some(Self::Unlink),
             88 => Some(Self::Symlink),
             89 => Some(Self::Readlink),
+            97 => Some(Self::Getrlimit),
             109 => Some(Self::SetPgid),
             110 => Some(Self::Getppid),
             112 => Some(Self::SetSid),
@@ -272,6 +284,11 @@ impl SyscallNumber {
             273 => Some(Self::SetRobustList), // NEW stub
             292 => Some(Self::Dup3),
             293 => Some(Self::Pipe2),
+            232 => Some(Self::EpollWait),
+            233 => Some(Self::EpollCtl),
+            281 => Some(Self::EpollPwait),
+            291 => Some(Self::EpollCreate1),
+            302 => Some(Self::Prlimit64),
             318 => Some(Self::GetRandom),
             // PTY syscalls (Breenix-specific, same on both archs)
             400 => Some(Self::PosixOpenpt),
@@ -299,6 +316,10 @@ impl SyscallNumber {
     pub fn from_u64(value: u64) -> Option<Self> {
         match value {
             // Linux ARM64 generic syscall numbers (from asm-generic/unistd.h)
+            // epoll
+            20 => Some(Self::EpollCreate1),
+            21 => Some(Self::EpollCtl),
+            22 => Some(Self::EpollPwait),
             // I/O
             17 => Some(Self::Getcwd),
             23 => Some(Self::Dup),
@@ -355,6 +376,7 @@ impl SyscallNumber {
             155 => Some(Self::GetPgid),
             156 => Some(Self::GetSid),
             157 => Some(Self::SetSid),
+            160 => Some(Self::Uname),
             // Process info
             172 => Some(Self::GetPid),
             173 => Some(Self::Getppid),
@@ -384,6 +406,7 @@ impl SyscallNumber {
             233 => Some(Self::Madvise),
             // Wait
             260 => Some(Self::Wait4),
+            261 => Some(Self::Prlimit64),
             // Random
             278 => Some(Self::GetRandom),
             // PTY syscalls (Breenix-specific, same on both archs)

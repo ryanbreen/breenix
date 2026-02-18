@@ -45,7 +45,7 @@ LDFLAGS := -T $(LINKER_SCRIPT) --static \
 AARCH64_DIR := $(BREENIX_ROOT)/userspace/programs/aarch64
 
 # Programs
-PROGRAMS := hello_musl
+PROGRAMS := hello_musl env_musl_test uname_musl_test rlimit_musl_test
 
 .PHONY: all install clean
 
@@ -57,8 +57,17 @@ all: $(addsuffix .elf,$(PROGRAMS))
 hello_musl.elf: hello.o
 	$(LLD) $(LDFLAGS) $< -o $@
 
+env_musl_test.elf: env_test.o
+	$(LLD) $(LDFLAGS) $< -o $@
+
+uname_musl_test.elf: uname_test.o
+	$(LLD) $(LDFLAGS) $< -o $@
+
+rlimit_musl_test.elf: rlimit_test.o
+	$(LLD) $(LDFLAGS) $< -o $@
+
 install: all
-	cp hello_musl.elf $(AARCH64_DIR)/hello_musl.elf
+	for prog in $(PROGRAMS); do cp $$prog.elf $(AARCH64_DIR)/$$prog.elf; done
 
 clean:
 	rm -f *.o *.elf

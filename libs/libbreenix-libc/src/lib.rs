@@ -1168,11 +1168,17 @@ pub unsafe extern "C" fn _start() -> ! {
 
 /// Rust entry point called from _start with the stack pointer.
 ///
-/// Extracts argc and argv from the stack and calls main().
+/// Extracts argc, argv, and envp from the stack and calls main().
+/// Stack layout: [argc] [argv[0]..argv[argc-1]] [NULL] [envp[0]..envp[n]] [NULL] [auxv...]
 extern "C" fn _start_rust(sp: *const u64) -> ! {
     unsafe {
         let argc = *sp as isize;
         let argv = sp.add(1) as *const *const u8;
+
+        // envp starts after argv NULL terminator: sp + 1 (argc) + argc + 1 (NULL)
+        let envp = sp.add(1 + argc as usize + 1) as *const *const u8;
+        environ = envp as usize;
+
         extern "C" {
             fn main(argc: isize, argv: *const *const u8) -> isize;
         }
@@ -1362,9 +1368,55 @@ pub unsafe extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
     0
 }
 
-/// getenv - get environment variable (stub - always returns NULL)
+/// getenv - get environment variable
+///
+/// Searches the environment for a variable matching `name` and returns
+/// a pointer to the value (the part after '='). Returns NULL if not found.
 #[no_mangle]
-pub extern "C" fn getenv(_name: *const u8) -> *mut u8 {
+pub unsafe extern "C" fn getenv(name: *const u8) -> *mut u8 {
+    if name.is_null() {
+        return core::ptr::null_mut();
+    }
+
+    let env_ptr = environ as *const *const u8;
+    if env_ptr.is_null() {
+        return core::ptr::null_mut();
+    }
+
+    // Get name length (walk until null byte)
+    let mut name_len: usize = 0;
+    while *name.add(name_len) != 0 {
+        name_len += 1;
+    }
+    if name_len == 0 {
+        return core::ptr::null_mut();
+    }
+
+    // Walk environ array entries
+    let mut i: usize = 0;
+    loop {
+        let entry = *env_ptr.add(i);
+        if entry.is_null() {
+            break;
+        }
+
+        // Check if entry starts with name followed by '='
+        let mut matches = true;
+        for j in 0..name_len {
+            if *entry.add(j) != *name.add(j) {
+                matches = false;
+                break;
+            }
+        }
+
+        if matches && *entry.add(name_len) == b'=' {
+            // Return pointer to the character after '='
+            return entry.add(name_len + 1) as *mut u8;
+        }
+
+        i += 1;
+    }
+
     core::ptr::null_mut()
 }
 
@@ -1469,6 +1521,136 @@ pub extern "C" fn getauxval(type_: u64) -> u64 {
         AT_HWCAP | AT_HWCAP2 => 0,
         _ => 0,
     }
+}
+
+// =============================================================================
+// Resource Limits
+// =============================================================================
+
+/// Linux rlimit structure
+#[repr(C)]
+pub struct rlimit {
+    pub rlim_cur: u64,
+    pub rlim_max: u64,
+}
+
+/// Linux utsname structure
+#[repr(C)]
+pub struct utsname {
+    pub sysname: [u8; 65],
+    pub nodename: [u8; 65],
+    pub release: [u8; 65],
+    pub version: [u8; 65],
+    pub machine: [u8; 65],
+    pub domainname: [u8; 65],
+}
+
+/// getrlimit - get resource limits
+#[no_mangle]
+pub unsafe extern "C" fn getrlimit(resource: i32, rlim: *mut rlimit) -> i32 {
+    #[cfg(target_arch = "x86_64")]
+    let ret = libbreenix::syscall::raw::syscall2(
+        libbreenix::syscall::nr::GETRLIMIT,
+        resource as u64,
+        rlim as u64,
+    ) as i64;
+    #[cfg(target_arch = "aarch64")]
+    let ret = libbreenix::syscall::raw::syscall4(
+        libbreenix::syscall::nr::PRLIMIT64,
+        0u64,  // pid=0 means current process
+        resource as u64,
+        0u64,  // new_rlim = NULL
+        rlim as u64,
+    ) as i64;
+    if ret < 0 { set_errno_from_result(ret); -1 } else { 0 }
+}
+
+/// uname - get system identification
+#[no_mangle]
+pub unsafe extern "C" fn uname(buf: *mut utsname) -> i32 {
+    let ret = libbreenix::syscall::raw::syscall1(
+        libbreenix::syscall::nr::UNAME,
+        buf as u64,
+    ) as i64;
+    if ret < 0 { set_errno_from_result(ret); -1 } else { 0 }
+}
+
+// =============================================================================
+// epoll
+// =============================================================================
+
+/// epoll_event structure (matches Linux ABI)
+#[repr(C)]
+#[cfg_attr(target_arch = "x86_64", repr(packed))]
+pub struct epoll_event {
+    pub events: u32,
+    pub data: u64,
+}
+
+/// epoll_create - create an epoll instance (legacy, calls epoll_create1)
+#[no_mangle]
+pub unsafe extern "C" fn epoll_create(_size: i32) -> i32 {
+    epoll_create1(0)
+}
+
+/// epoll_create1 - create an epoll instance
+#[no_mangle]
+pub unsafe extern "C" fn epoll_create1(flags: i32) -> i32 {
+    let ret = libbreenix::syscall::raw::syscall1(
+        libbreenix::syscall::nr::EPOLL_CREATE1,
+        flags as u64,
+    ) as i64;
+    if ret < 0 { set_errno_from_result(ret); -1 } else { ret as i32 }
+}
+
+/// epoll_ctl - control interface for an epoll instance
+#[no_mangle]
+pub unsafe extern "C" fn epoll_ctl(
+    epfd: i32,
+    op: i32,
+    fd: i32,
+    event: *mut epoll_event,
+) -> i32 {
+    let ret = libbreenix::syscall::raw::syscall4(
+        libbreenix::syscall::nr::EPOLL_CTL,
+        epfd as u64,
+        op as u64,
+        fd as u64,
+        event as u64,
+    ) as i64;
+    if ret < 0 { set_errno_from_result(ret); -1 } else { 0 }
+}
+
+/// epoll_wait - wait for events on an epoll instance
+#[no_mangle]
+pub unsafe extern "C" fn epoll_wait(
+    epfd: i32,
+    events: *mut epoll_event,
+    maxevents: i32,
+    timeout: i32,
+) -> i32 {
+    epoll_pwait(epfd, events, maxevents, timeout, core::ptr::null())
+}
+
+/// epoll_pwait - wait for events on an epoll instance with signal mask
+#[no_mangle]
+pub unsafe extern "C" fn epoll_pwait(
+    epfd: i32,
+    events: *mut epoll_event,
+    maxevents: i32,
+    timeout: i32,
+    sigmask: *const u8,
+) -> i32 {
+    let ret = libbreenix::syscall::raw::syscall6(
+        libbreenix::syscall::nr::EPOLL_PWAIT,
+        epfd as u64,
+        events as u64,
+        maxevents as u64,
+        timeout as u64,
+        sigmask as u64,
+        8u64, // sigsetsize
+    ) as i64;
+    if ret < 0 { set_errno_from_result(ret); -1 } else { ret as i32 }
 }
 
 // =============================================================================
@@ -2069,6 +2251,7 @@ const CLONE_CHILD_SETTID: u64 = 0x01000000;
 
 /// Futex operation codes
 const FUTEX_WAIT: u32 = 0;
+const FUTEX_WAKE: u32 = 1;
 
 /// Thread start info passed through the heap to the child thread
 #[repr(C)]
@@ -2310,11 +2493,53 @@ pub extern "C" fn pthread_setname_np(_thread: usize, _name: *const u8) -> i32 {
 }
 
 // =============================================================================
-// Pthread Mutex Functions (no-op stubs for single-threaded)
+// Pthread Mutex Functions (futex-based)
 // =============================================================================
+//
+// Mutex state word (u32 at the start of pthread_mutex_t):
+//   0 = unlocked
+//   1 = locked, no waiters
+//   2 = locked, one or more waiters
+//
+// This is a standard futex-based mutex following the Drepper "Futexes Are Tricky" pattern.
+
+/// Helper: perform a futex_wait syscall on `addr`. Blocks if *addr == expected.
+#[inline]
+unsafe fn futex_wait(addr: *const u32, expected: u32) {
+    libbreenix::syscall::raw::syscall6(
+        libbreenix::syscall::nr::FUTEX,
+        addr as u64,
+        FUTEX_WAIT as u64,
+        expected as u64,
+        0, // no timeout
+        0,
+        0,
+    );
+}
+
+/// Helper: perform a futex_wake syscall on `addr`. Wakes up to `count` waiters.
+#[inline]
+unsafe fn futex_wake(addr: *const u32, count: u32) {
+    libbreenix::syscall::raw::syscall6(
+        libbreenix::syscall::nr::FUTEX,
+        addr as u64,
+        FUTEX_WAKE as u64,
+        count as u64,
+        0,
+        0,
+        0,
+    );
+}
 
 #[no_mangle]
-pub extern "C" fn pthread_mutex_init(_mutex: *mut u8, _attr: *const u8) -> i32 {
+pub extern "C" fn pthread_mutex_init(mutex: *mut u8, _attr: *const u8) -> i32 {
+    if mutex.is_null() {
+        return EINVAL;
+    }
+    // Zero-initialize the mutex state word
+    unsafe {
+        core::ptr::write_volatile(mutex as *mut u32, 0);
+    }
     0
 }
 
@@ -2324,18 +2549,78 @@ pub extern "C" fn pthread_mutex_destroy(_mutex: *mut u8) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn pthread_mutex_lock(_mutex: *mut u8) -> i32 {
+pub extern "C" fn pthread_mutex_lock(mutex: *mut u8) -> i32 {
+    if mutex.is_null() {
+        return EINVAL;
+    }
+    let state = mutex as *mut u32;
+    unsafe {
+        // Fast path: try CAS 0 -> 1 (unlocked -> locked, no waiters)
+        let old = atomic_cmpxchg_u32(state, 0, 1);
+        if old == 0 {
+            return 0; // Acquired
+        }
+
+        // Slow path: set state to 2 (locked with waiters) and wait
+        // If old was 1, swap to 2 so unlock knows to wake
+        let mut c = old;
+        if c != 2 {
+            c = atomic_xchg_u32(state, 2);
+        }
+        while c != 0 {
+            futex_wait(state, 2);
+            c = atomic_xchg_u32(state, 2);
+        }
+    }
     0
 }
 
 #[no_mangle]
-pub extern "C" fn pthread_mutex_trylock(_mutex: *mut u8) -> i32 {
-    0
+pub extern "C" fn pthread_mutex_trylock(mutex: *mut u8) -> i32 {
+    if mutex.is_null() {
+        return EINVAL;
+    }
+    let state = mutex as *mut u32;
+    unsafe {
+        let old = atomic_cmpxchg_u32(state, 0, 1);
+        if old == 0 { 0 } else { EBUSY }
+    }
 }
 
 #[no_mangle]
-pub extern "C" fn pthread_mutex_unlock(_mutex: *mut u8) -> i32 {
+pub extern "C" fn pthread_mutex_unlock(mutex: *mut u8) -> i32 {
+    if mutex.is_null() {
+        return EINVAL;
+    }
+    let state = mutex as *mut u32;
+    unsafe {
+        // Atomically decrement. If old state was 2 (waiters), we need to wake.
+        let old = atomic_xchg_u32(state, 0);
+        if old == 2 {
+            // There were waiters - wake one
+            futex_wake(state, 1);
+        }
+    }
     0
+}
+
+/// Atomic compare-and-exchange for u32. Returns the previous value.
+#[inline]
+unsafe fn atomic_cmpxchg_u32(ptr: *mut u32, expected: u32, desired: u32) -> u32 {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    let atomic = &*(ptr as *const AtomicU32);
+    match atomic.compare_exchange(expected, desired, Ordering::Acquire, Ordering::Relaxed) {
+        Ok(v) => v,
+        Err(v) => v,
+    }
+}
+
+/// Atomic exchange for u32. Returns the previous value.
+#[inline]
+unsafe fn atomic_xchg_u32(ptr: *mut u32, val: u32) -> u32 {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    let atomic = &*(ptr as *const AtomicU32);
+    atomic.swap(val, Ordering::AcqRel)
 }
 
 #[no_mangle]
@@ -2354,11 +2639,23 @@ pub extern "C" fn pthread_mutexattr_settype(_attr: *mut u8, _kind: i32) -> i32 {
 }
 
 // =============================================================================
-// Pthread Condition Variable Functions (no-op stubs)
+// Pthread Condition Variable Functions (futex-based)
 // =============================================================================
+//
+// Uses a sequence counter pattern:
+//   - The first u32 of pthread_cond_t is a sequence number.
+//   - signal/broadcast increments the sequence and wakes waiters.
+//   - wait reads the sequence, releases the mutex, then futex_waits on the
+//     sequence value. On wakeup it re-acquires the mutex.
 
 #[no_mangle]
-pub extern "C" fn pthread_cond_init(_cond: *mut u8, _attr: *const u8) -> i32 {
+pub extern "C" fn pthread_cond_init(cond: *mut u8, _attr: *const u8) -> i32 {
+    if cond.is_null() {
+        return EINVAL;
+    }
+    unsafe {
+        core::ptr::write_volatile(cond as *mut u32, 0);
+    }
     0
 }
 
@@ -2368,27 +2665,68 @@ pub extern "C" fn pthread_cond_destroy(_cond: *mut u8) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn pthread_cond_signal(_cond: *mut u8) -> i32 {
+pub extern "C" fn pthread_cond_signal(cond: *mut u8) -> i32 {
+    if cond.is_null() {
+        return EINVAL;
+    }
+    let seq = cond as *mut u32;
+    unsafe {
+        // Increment sequence counter
+        let atomic = &*(seq as *const core::sync::atomic::AtomicU32);
+        atomic.fetch_add(1, core::sync::atomic::Ordering::Release);
+        // Wake one waiter
+        futex_wake(seq, 1);
+    }
     0
 }
 
 #[no_mangle]
-pub extern "C" fn pthread_cond_broadcast(_cond: *mut u8) -> i32 {
+pub extern "C" fn pthread_cond_broadcast(cond: *mut u8) -> i32 {
+    if cond.is_null() {
+        return EINVAL;
+    }
+    let seq = cond as *mut u32;
+    unsafe {
+        let atomic = &*(seq as *const core::sync::atomic::AtomicU32);
+        atomic.fetch_add(1, core::sync::atomic::Ordering::Release);
+        // Wake all waiters
+        futex_wake(seq, u32::MAX);
+    }
     0
 }
 
 #[no_mangle]
-pub extern "C" fn pthread_cond_wait(_cond: *mut u8, _mutex: *mut u8) -> i32 {
+pub extern "C" fn pthread_cond_wait(cond: *mut u8, mutex: *mut u8) -> i32 {
+    if cond.is_null() || mutex.is_null() {
+        return EINVAL;
+    }
+    let seq = cond as *mut u32;
+    unsafe {
+        // Read current sequence before releasing mutex
+        let atomic = &*(seq as *const core::sync::atomic::AtomicU32);
+        let current_seq = atomic.load(core::sync::atomic::Ordering::Acquire);
+
+        // Release the mutex
+        pthread_mutex_unlock(mutex);
+
+        // Block until sequence changes (signal/broadcast increments it)
+        futex_wait(seq, current_seq);
+
+        // Re-acquire the mutex before returning
+        pthread_mutex_lock(mutex);
+    }
     0
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn pthread_cond_timedwait(
-    _cond: *mut u8,
-    _mutex: *mut u8,
+    cond: *mut u8,
+    mutex: *mut u8,
     _abstime: *const u8,
 ) -> i32 {
-    0
+    // For now, delegate to regular wait (no timeout support yet).
+    // Real timedwait would pass a timeout to futex_wait.
+    pthread_cond_wait(cond, mutex)
 }
 
 #[no_mangle]

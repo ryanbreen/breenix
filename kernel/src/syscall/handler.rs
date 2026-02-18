@@ -447,6 +447,15 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         // Display takeover
         Some(SyscallNumber::TakeOverDisplay) => super::handlers::sys_take_over_display(),
         Some(SyscallNumber::GiveBackDisplay) => super::handlers::sys_give_back_display(),
+        // Resource limits and system info
+        Some(SyscallNumber::Getrlimit) => super::handlers::sys_getrlimit(args.0, args.1),
+        Some(SyscallNumber::Prlimit64) => super::handlers::sys_prlimit64(args.0, args.1, args.2, args.3),
+        Some(SyscallNumber::Uname) => super::handlers::sys_uname(args.0),
+        // epoll
+        Some(SyscallNumber::EpollCreate1) => super::epoll::sys_epoll_create1(args.0 as u32),
+        Some(SyscallNumber::EpollCtl) => super::epoll::sys_epoll_ctl(args.0 as i32, args.1 as i32, args.2 as i32, args.3),
+        Some(SyscallNumber::EpollWait) => super::epoll::sys_epoll_pwait(args.0 as i32, args.1, args.2 as i32, args.3 as i32, 0, 0),
+        Some(SyscallNumber::EpollPwait) => super::epoll::sys_epoll_pwait(args.0 as i32, args.1, args.2 as i32, args.3 as i32, args.4, args.5),
         None => {
             log::warn!("Unknown syscall number: {} - returning ENOSYS", syscall_num);
             SyscallResult::Err(super::ErrorCode::NoSys as u64)

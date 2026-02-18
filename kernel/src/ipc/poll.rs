@@ -301,6 +301,9 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLIN;
             }
         }
+        FdKind::Epoll(_) => {
+            // Epoll fds are not directly pollable
+        }
     }
 
     revents
