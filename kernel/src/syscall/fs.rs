@@ -804,6 +804,13 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             stat.st_nlink = 2; // . and ..
             stat.st_size = 0;
         }
+        FdKind::Epoll(_) => {
+            // epoll fds report as anonymous inodes
+            stat.st_dev = 0;
+            stat.st_ino = 0;
+            stat.st_mode = S_IFREG | 0o600;
+            stat.st_nlink = 1;
+        }
     }
 
     // Copy stat structure to userspace

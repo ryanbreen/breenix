@@ -173,5 +173,14 @@ pub fn dispatch_syscall(
         // Testing/diagnostic syscalls (Breenix-specific)
         SyscallNumber::CowStats => super::handlers::sys_cow_stats(arg1),
         SyscallNumber::SimulateOom => super::handlers::sys_simulate_oom(arg1),
+        // Resource limits and system info
+        SyscallNumber::Getrlimit => handlers::sys_getrlimit(arg1, arg2),
+        SyscallNumber::Prlimit64 => handlers::sys_prlimit64(arg1, arg2, arg3, arg4),
+        SyscallNumber::Uname => handlers::sys_uname(arg1),
+        // epoll
+        SyscallNumber::EpollCreate1 => super::epoll::sys_epoll_create1(arg1 as u32),
+        SyscallNumber::EpollCtl => super::epoll::sys_epoll_ctl(arg1 as i32, arg2 as i32, arg3 as i32, arg4),
+        SyscallNumber::EpollWait => super::epoll::sys_epoll_pwait(arg1 as i32, arg2, arg3 as i32, arg4 as i32, 0, 0),
+        SyscallNumber::EpollPwait => super::epoll::sys_epoll_pwait(arg1 as i32, arg2, arg3 as i32, arg4 as i32, arg5, arg6),
     }
 }

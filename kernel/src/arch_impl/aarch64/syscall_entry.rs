@@ -564,6 +564,15 @@ fn dispatch_syscall_enum(
         // Testing/diagnostic syscalls
         SyscallNumber::CowStats => sys_cow_stats_aarch64(arg1),
         SyscallNumber::SimulateOom => sys_simulate_oom_aarch64(arg1),
+        // Resource limits and system info
+        SyscallNumber::Getrlimit => result_to_u64(crate::syscall::handlers::sys_getrlimit(arg1, arg2)),
+        SyscallNumber::Prlimit64 => result_to_u64(crate::syscall::handlers::sys_prlimit64(arg1, arg2, arg3, arg4)),
+        SyscallNumber::Uname => result_to_u64(crate::syscall::handlers::sys_uname(arg1)),
+        // epoll
+        SyscallNumber::EpollCreate1 => result_to_u64(crate::syscall::epoll::sys_epoll_create1(arg1 as u32)),
+        SyscallNumber::EpollCtl => result_to_u64(crate::syscall::epoll::sys_epoll_ctl(arg1 as i32, arg2 as i32, arg3 as i32, arg4)),
+        SyscallNumber::EpollWait => result_to_u64(crate::syscall::epoll::sys_epoll_pwait(arg1 as i32, arg2, arg3 as i32, arg4 as i32, 0, 0)),
+        SyscallNumber::EpollPwait => result_to_u64(crate::syscall::epoll::sys_epoll_pwait(arg1 as i32, arg2, arg3 as i32, arg4 as i32, arg5, arg6)),
     }
 }
 

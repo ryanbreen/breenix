@@ -325,6 +325,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             FdKind::PtySlave(pty_num) => WriteOperation::PtySlave(*pty_num),
             FdKind::ProcfsFile { .. } => WriteOperation::Ebadf,
             FdKind::ProcfsDirectory { .. } => WriteOperation::Eisdir,
+            FdKind::Epoll(_) => WriteOperation::Ebadf,
         }
         // manager_guard dropped here, releasing the lock before I/O
     };
@@ -1589,6 +1590,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // Cannot read from directory with read() - must use getdents
             log::debug!("sys_read: Cannot read from /proc directory, use getdents instead");
             SyscallResult::Err(super::errno::EISDIR as u64)
+        }
+        FdKind::Epoll(_) => {
+            // Cannot read from epoll fd directly
+            SyscallResult::Err(super::errno::EINVAL as u64)
         }
     }
 }
@@ -3742,4 +3747,96 @@ pub fn sys_simulate_oom(enable: u64) -> SyscallResult {
         log::warn!("sys_simulate_oom: testing feature not compiled in");
         SyscallResult::Err(38) // ENOSYS - function not implemented
     }
+}
+
+// =============================================================================
+// Resource Limits and System Information
+// =============================================================================
+
+/// Linux rlimit structure
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct Rlimit {
+    rlim_cur: u64,
+    rlim_max: u64,
+}
+
+const RLIMIT_STACK: u64 = 3;
+const RLIMIT_NOFILE: u64 = 7;
+const RLIMIT_CORE: u64 = 4;
+const RLIM_INFINITY: u64 = u64::MAX;
+
+/// getrlimit - Get resource limits
+pub fn sys_getrlimit(resource: u64, rlim_ptr: u64) -> SyscallResult {
+    if rlim_ptr == 0 {
+        return SyscallResult::Err(super::errno::EFAULT as u64);
+    }
+
+    let rlim = match resource {
+        RLIMIT_STACK => Rlimit { rlim_cur: 8 * 1024 * 1024, rlim_max: RLIM_INFINITY },
+        RLIMIT_NOFILE => Rlimit { rlim_cur: 1024, rlim_max: 4096 },
+        RLIMIT_CORE => Rlimit { rlim_cur: 0, rlim_max: RLIM_INFINITY },
+        _ => Rlimit { rlim_cur: RLIM_INFINITY, rlim_max: RLIM_INFINITY },
+    };
+
+    if super::userptr::copy_to_user(rlim_ptr as *mut Rlimit, &rlim).is_err() {
+        return SyscallResult::Err(super::errno::EFAULT as u64);
+    }
+    SyscallResult::Ok(0)
+}
+
+/// prlimit64 - Get/set resource limits
+pub fn sys_prlimit64(_pid: u64, resource: u64, _new_rlim_ptr: u64, old_rlim_ptr: u64) -> SyscallResult {
+    if old_rlim_ptr != 0 {
+        return sys_getrlimit(resource, old_rlim_ptr);
+    }
+    SyscallResult::Ok(0)
+}
+
+/// Linux utsname structure
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Utsname {
+    sysname: [u8; 65],
+    nodename: [u8; 65],
+    release: [u8; 65],
+    version: [u8; 65],
+    machine: [u8; 65],
+    domainname: [u8; 65],
+}
+
+fn copy_utsname_field(field: &mut [u8; 65], value: &[u8]) {
+    let len = core::cmp::min(value.len(), 64);
+    field[..len].copy_from_slice(&value[..len]);
+}
+
+/// uname - Get system identification
+pub fn sys_uname(buf_ptr: u64) -> SyscallResult {
+    if buf_ptr == 0 {
+        return SyscallResult::Err(super::errno::EFAULT as u64);
+    }
+
+    let mut utsname = Utsname {
+        sysname: [0u8; 65],
+        nodename: [0u8; 65],
+        release: [0u8; 65],
+        version: [0u8; 65],
+        machine: [0u8; 65],
+        domainname: [0u8; 65],
+    };
+
+    copy_utsname_field(&mut utsname.sysname, b"Breenix");
+    copy_utsname_field(&mut utsname.nodename, b"breenix");
+    copy_utsname_field(&mut utsname.release, b"0.1.0");
+    copy_utsname_field(&mut utsname.version, b"Breenix 0.1");
+    #[cfg(target_arch = "x86_64")]
+    copy_utsname_field(&mut utsname.machine, b"x86_64");
+    #[cfg(target_arch = "aarch64")]
+    copy_utsname_field(&mut utsname.machine, b"aarch64");
+    copy_utsname_field(&mut utsname.domainname, b"(none)");
+
+    if super::userptr::copy_to_user(buf_ptr as *mut Utsname, &utsname).is_err() {
+        return SyscallResult::Err(super::errno::EFAULT as u64);
+    }
+    SyscallResult::Ok(0)
 }

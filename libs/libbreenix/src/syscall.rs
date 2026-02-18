@@ -129,6 +129,15 @@ pub mod nr {
     // Display takeover (Breenix-specific)
     pub const TAKE_OVER_DISPLAY: u64 = 431;
     pub const GIVE_BACK_DISPLAY: u64 = 432;
+    // Resource limits and system info
+    pub const GETRLIMIT: u64 = 97;
+    pub const PRLIMIT64: u64 = 302;
+    pub const UNAME: u64 = 63;
+    // epoll
+    pub const EPOLL_WAIT: u64 = 232;
+    pub const EPOLL_CTL: u64 = 233;
+    pub const EPOLL_PWAIT: u64 = 281;
+    pub const EPOLL_CREATE1: u64 = 291;
     // Testing syscalls (Breenix-specific)
     pub const COW_STATS: u64 = 500;
     pub const SIMULATE_OOM: u64 = 501;
@@ -263,6 +272,13 @@ pub mod nr {
     // Display takeover (Breenix-specific)
     pub const TAKE_OVER_DISPLAY: u64 = 431;
     pub const GIVE_BACK_DISPLAY: u64 = 432;
+    // Resource limits and system info (ARM64 has no getrlimit; use prlimit64)
+    pub const PRLIMIT64: u64 = 261;
+    pub const UNAME: u64 = 160;
+    // epoll
+    pub const EPOLL_CREATE1: u64 = 20;
+    pub const EPOLL_CTL: u64 = 21;
+    pub const EPOLL_PWAIT: u64 = 22;
     // Testing syscalls (Breenix-specific)
     pub const COW_STATS: u64 = 500;
     pub const SIMULATE_OOM: u64 = 501;
