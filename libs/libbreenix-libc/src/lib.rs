@@ -28,8 +28,10 @@ use libbreenix::error::Error;
 use core::slice;
 
 /// AT_FDCWD as raw u64 for direct syscall use (-100 as u64)
+#[cfg(target_arch = "aarch64")]
 const AT_FDCWD_RAW: u64 = (-100i32) as u32 as u64;
 /// AT_REMOVEDIR flag for unlinkat
+#[cfg(target_arch = "aarch64")]
 const AT_REMOVEDIR: u64 = 0x200;
 
 // =============================================================================

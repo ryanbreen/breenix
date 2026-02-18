@@ -29,13 +29,16 @@ struct UsableRegion {
     end: u64,
 }
 
-/// Stores extracted memory information
+/// Stores extracted memory information (immutable after initialization)
 struct MemoryInfo {
     regions: [Option<UsableRegion>; MAX_REGIONS],
     region_count: usize,
 }
 
-static MEMORY_INFO: Mutex<Option<MemoryInfo>> = Mutex::new(None);
+/// Memory region info, initialized once during boot and never modified.
+/// Using spin::Once instead of Mutex eliminates lock contention on the
+/// frame allocation hot path - get() is a single atomic load after init.
+static MEMORY_INFO: spin::Once<MemoryInfo> = spin::Once::new();
 static NEXT_FREE_FRAME: AtomicUsize = AtomicUsize::new(0);
 
 /// Free list for deallocated frames
@@ -91,23 +94,9 @@ impl BootInfoFrameAllocator {
         Self
     }
 
-    /// Get the nth usable frame
+    /// Get the nth usable frame (lock-free after initialization)
     fn get_usable_frame(n: usize) -> Option<PhysFrame> {
-        // Check if we're in a problematic allocation
-        if n > 1500 && n < 1600 {
-            log::debug!("get_usable_frame: Allocating frame number {}", n);
-        }
-
-        // Try to detect potential deadlock
-        let info = match MEMORY_INFO.try_lock() {
-            Some(guard) => guard,
-            None => {
-                log::error!("MEMORY_INFO lock is already held - potential deadlock!");
-                // Force a panic with more info
-                panic!("Frame allocator deadlock detected during allocation #{}", n);
-            }
-        };
-        let info = info.as_ref()?;
+        let info = MEMORY_INFO.get()?;
 
         let mut count = 0;
         for i in 0..info.region_count {
@@ -124,13 +113,7 @@ impl BootInfoFrameAllocator {
                         "Attempting to allocate frame below low memory floor: {:#x}",
                         frame_addr
                     );
-                    
-                    // Log problematic frame allocations
-                    if frame_addr == 0x62f000 {
-                        log::warn!("Allocating problematic frame 0x62f000 (frame #{}, region {}, offset {})", 
-                                  n, i, frame_offset);
-                    }
-                    
+
                     // Production safety: Never return frames below the floor
                     if frame_addr < LOW_MEMORY_FLOOR {
                         log::error!(
@@ -211,7 +194,7 @@ pub fn init(memory_regions: &'static MemoryRegions) {
                 ignored_memory += region.end - region.start;
                 continue;
             }
-            
+
             if region_count < MAX_REGIONS {
                 // Adjust region start if it begins below the floor
                 let adjusted_start = if region.start < LOW_MEMORY_FLOOR {
@@ -223,7 +206,7 @@ pub fn init(memory_regions: &'static MemoryRegions) {
                 } else {
                     region.start
                 };
-                
+
                 regions[region_count] = Some(UsableRegion {
                     start: adjusted_start,
                     end: region.end,
@@ -238,8 +221,8 @@ pub fn init(memory_regions: &'static MemoryRegions) {
         }
     }
 
-    // Store the extracted information
-    *MEMORY_INFO.lock() = Some(MemoryInfo {
+    // Store the extracted information (once, immutable)
+    MEMORY_INFO.call_once(|| MemoryInfo {
         regions,
         region_count,
     });
@@ -280,7 +263,7 @@ pub fn init_aarch64(start: u64, end: u64) {
 
     let total_memory = end - aligned_start;
 
-    *MEMORY_INFO.lock() = Some(MemoryInfo {
+    MEMORY_INFO.call_once(|| MemoryInfo {
         regions,
         region_count: 1,
     });
@@ -381,19 +364,15 @@ pub struct MemoryStats {
 /// Returns total usable memory, allocated frame count, and free list size.
 /// These can be used to compute total, used, and free memory.
 pub fn memory_stats() -> MemoryStats {
-    // Calculate total memory from MEMORY_INFO regions
-    let total_bytes = if let Some(info_guard) = MEMORY_INFO.try_lock() {
-        if let Some(ref info) = *info_guard {
-            let mut total = 0u64;
-            for i in 0..info.region_count {
-                if let Some(region) = info.regions[i] {
-                    total += region.end - region.start;
-                }
+    // Calculate total memory from MEMORY_INFO regions (lock-free read)
+    let total_bytes = if let Some(info) = MEMORY_INFO.get() {
+        let mut total = 0u64;
+        for i in 0..info.region_count {
+            if let Some(region) = info.regions[i] {
+                total += region.end - region.start;
             }
-            total
-        } else {
-            0
         }
+        total
     } else {
         0
     };

@@ -15,8 +15,6 @@ use libbreenix::process::{fork, exec, waitpid, getpid, yield_now, ForkResult, WN
 const TELNETD_PATH: &[u8] = b"/sbin/telnetd\0";
 const BLOGD_PATH: &[u8] = b"/sbin/blogd\0";
 const BWM_PATH: &[u8] = b"/bin/bwm\0";
-const HELLO_MUSL_PATH: &[u8] = b"/bin/hello_musl\0";
-
 /// Maximum number of rapid respawns before giving up on a service.
 const MAX_RESPAWN_FAILURES: u32 = 3;
 
@@ -25,10 +23,13 @@ fn spawn(path: &[u8], name: &str) -> i64 {
     match fork() {
         Ok(ForkResult::Child) => {
             // Child: exec the binary
-            let _ = exec(path);
-            // exec failed
-            print!("[init] ERROR: exec failed for {}\n", name);
-            std::process::exit(127);
+            match exec(path) {
+                Ok(_) => unreachable!(),
+                Err(e) => {
+                    print!("[init] ERROR: exec failed for {} ({})\n", name, e);
+                    std::process::exit(127);
+                }
+            }
         }
         Ok(ForkResult::Parent(child_pid)) => {
             child_pid.raw() as i64
@@ -54,9 +55,9 @@ fn main() {
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
     print!("[init] Breenix init starting (PID {})\n", pid);
 
-    // Run musl libc hello world (proof of concept -- C program linked with musl)
-    print!("[init] Starting /bin/hello_musl...\n");
-    let _hello_musl_pid = spawn(HELLO_MUSL_PATH, "hello_musl");
+    // TEMPORARILY DISABLED: Run musl libc hello world (proof of concept)
+    // print!("[init] Starting /bin/hello_musl...\n");
+    // let _hello_musl_pid = spawn(HELLO_MUSL_PATH, "hello_musl");
 
     // Start telnetd (optional -- may not exist on all disk images)
     print!("[init] Starting /sbin/telnetd...\n");

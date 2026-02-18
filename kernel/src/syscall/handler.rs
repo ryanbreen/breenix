@@ -406,7 +406,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         // Stubs for musl libc compatibility
         Some(SyscallNumber::Mremap) => SyscallResult::Err(super::errno::ENOMEM as u64),
         Some(SyscallNumber::Madvise) => SyscallResult::Ok(0),
-        Some(SyscallNumber::Ppoll) => SyscallResult::Err(super::errno::ENOSYS as u64),
+        Some(SyscallNumber::Ppoll) => super::handlers::sys_ppoll(args.0, args.1, args.2, args.3, args.4),
         Some(SyscallNumber::SetRobustList) => SyscallResult::Ok(0),
         // arch_prctl - x86_64 TLS setup
         Some(SyscallNumber::ArchPrctl) => {

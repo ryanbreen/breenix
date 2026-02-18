@@ -259,6 +259,13 @@ impl Process {
     /// CRITICAL: Also marks the main thread as Terminated so the scheduler
     /// doesn't keep scheduling this thread after process termination.
     pub fn terminate(&mut self, exit_code: i32) {
+        // Guard against double-terminate: if the process is already terminated,
+        // skip all cleanup to prevent double-decrementing COW page refcounts
+        // (which would free pages still mapped by other processes).
+        if matches!(self.state, ProcessState::Terminated(_)) {
+            return;
+        }
+
         // Close all file descriptors before setting state to Terminated
         // This ensures pipe counts are properly decremented so readers get EOF
         self.close_all_fds();

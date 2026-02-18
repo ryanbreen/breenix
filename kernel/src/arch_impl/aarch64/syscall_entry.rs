@@ -309,6 +309,13 @@ fn result_to_u64(result: crate::syscall::SyscallResult) -> u64 {
 /// This is separate from the shared dispatcher because ARM64 needs to:
 /// 1. Use `wfi` (not `hlt`) when no more userspace threads remain
 /// 2. Inline the exit logic since `handlers::sys_exit` is x86_64-only
+///
+/// CRITICAL: This function must NEVER return. After terminating the thread,
+/// it enters a WFI loop. The timer interrupt will fire and context-switch
+/// to another thread; the terminated thread will never be re-scheduled.
+/// If this function returned, the userspace exit() caller (e.g., musl's
+/// `for(;;) __syscall(SYS_exit, ec)` loop) would re-enter exit, causing
+/// double-terminate and double-decrement of COW page refcounts.
 fn sys_exit_aarch64(exit_code: i32) -> u64 {
     crate::serial_println!("[syscall] exit({})", exit_code);
 
@@ -352,15 +359,19 @@ fn sys_exit_aarch64(exit_code: i32) -> u64 {
             crate::serial_println!("  Exit code: {}", exit_code);
             crate::serial_println!("========================================");
             crate::serial_println!();
-
-            loop {
-                unsafe { core::arch::asm!("wfi"); }
-            }
         }
     }
 
-    crate::task::scheduler::set_need_resched();
-    0
+    // Re-enable preemption (balances the preempt_disable in rust_syscall_handler_aarch64)
+    // so timer interrupts can trigger context-switch to another thread.
+    Aarch64PerCpu::preempt_enable();
+
+    // NEVER return to userspace. The thread is terminated; wait for the timer
+    // interrupt to context-switch away. The scheduler will not re-schedule a
+    // terminated thread, so this loop runs at most until the next timer tick.
+    loop {
+        unsafe { core::arch::asm!("wfi"); }
+    }
 }
 
 /// Dispatch a syscall to the appropriate handler using the resolved SyscallNumber.
@@ -514,7 +525,7 @@ fn dispatch_syscall_enum(
         // Stubs for musl libc compatibility
         SyscallNumber::Mremap => (-(crate::syscall::errno::ENOMEM as i64)) as u64,
         SyscallNumber::Madvise => 0,
-        SyscallNumber::Ppoll => (-(crate::syscall::errno::ENOSYS as i64)) as u64,
+        SyscallNumber::Ppoll => result_to_u64(crate::syscall::handlers::sys_ppoll(arg1, arg2, arg3, arg4, arg5)),
         SyscallNumber::SetRobustList => 0,
         // arch_prctl is x86_64 only - return ENOSYS on ARM64
         SyscallNumber::ArchPrctl => (-(crate::syscall::errno::ENOSYS as i64)) as u64,

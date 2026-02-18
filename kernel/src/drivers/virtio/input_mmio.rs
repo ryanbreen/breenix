@@ -907,7 +907,7 @@ pub fn keycode_to_char(code: u16, shift: bool) -> Option<char> {
 
 /// Convert a Linux keycode to a VT100 escape sequence for special keys
 /// that require multi-byte output (arrow keys, Home, End, Delete, F-keys).
-fn keycode_to_escape_seq(code: u16) -> Option<&'static [u8]> {
+pub fn keycode_to_escape_seq(code: u16) -> Option<&'static [u8]> {
     match code {
         // Function keys (SS3 sequences for F1-F4, CSI sequences for F5+)
         59 => Some(b"\x1bOP"),   // F1

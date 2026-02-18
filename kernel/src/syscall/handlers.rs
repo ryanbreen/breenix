@@ -3377,6 +3377,37 @@ fn poll_ensure_address_space() {
     }
 }
 
+/// sys_ppoll - Poll file descriptors with timespec timeout
+///
+/// This implements the ppoll() syscall, which is the same as poll() but takes
+/// a timespec instead of milliseconds and an optional signal mask (ignored).
+///
+/// Arguments:
+/// - fds_ptr: Pointer to array of pollfd structures
+/// - nfds: Number of file descriptors to poll
+/// - timeout_ts_ptr: Pointer to timespec (NULL = infinite timeout)
+/// - sigmask: Signal mask pointer (ignored)
+/// - sigsetsize: Size of signal mask (ignored)
+///
+/// Delegates to sys_poll after converting timespec to milliseconds.
+pub fn sys_ppoll(fds_ptr: u64, nfds: u64, timeout_ts_ptr: u64, _sigmask: u64, _sigsetsize: u64) -> SyscallResult {
+    let timeout_ms: i32 = if timeout_ts_ptr == 0 {
+        -1 // NULL timespec = infinite timeout
+    } else {
+        // Read timespec from userspace
+        #[repr(C)]
+        struct Timespec {
+            tv_sec: i64,
+            tv_nsec: i64,
+        }
+        let ts = unsafe { core::ptr::read(timeout_ts_ptr as *const Timespec) };
+        // Convert to milliseconds, clamping to i32 range
+        let ms = ts.tv_sec.saturating_mul(1000).saturating_add(ts.tv_nsec / 1_000_000);
+        if ms > i32::MAX as i64 { i32::MAX } else { ms as i32 }
+    };
+    sys_poll(fds_ptr, nfds, timeout_ms)
+}
+
 /// sys_select - Synchronous I/O multiplexing
 ///
 /// This implements the select() syscall which monitors multiple file descriptors
