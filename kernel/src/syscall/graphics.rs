@@ -673,14 +673,34 @@ pub fn sys_fbmmap() -> SyscallResult {
         }
     };
 
-    // Get framebuffer dimensions (acquire and release FB lock quickly)
+    // Get framebuffer dimensions.
     // The display owner (BWM) gets the right pane. All other processes get the left pane.
+    //
+    // On ARM64, use the lock-free FbInfoCache to avoid contention with BWM's
+    // fb_flush, which holds SHELL_FRAMEBUFFER for ~400μs during full-screen
+    // pixel copies. Dimensions are immutable after init.
+    #[cfg(target_arch = "aarch64")]
+    let (pane_width, x_offset, height, bpp) = {
+        let cache = match crate::graphics::arm64_fb::FB_INFO_CACHE.get() {
+            Some(c) => c,
+            None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+        };
+        if caller_owns_display {
+            let divider_width = 4;
+            let right_x = cache.width / 2 + divider_width;
+            let right_width = cache.width.saturating_sub(right_x);
+            (right_width, right_x, cache.height, cache.bytes_per_pixel)
+        } else {
+            (cache.width / 2, 0, cache.height, cache.bytes_per_pixel)
+        }
+    };
+
+    #[cfg(not(target_arch = "aarch64"))]
     let (pane_width, x_offset, height, bpp) = {
         let fb = match SHELL_FRAMEBUFFER.get() {
             Some(fb) => fb,
             None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
         };
-        // Use try_lock with bounded spin (same rationale as sys_fbinfo).
         let fb_guard = {
             let mut guard = None;
             for _ in 0..65536 {
@@ -699,13 +719,11 @@ pub fn sys_fbmmap() -> SyscallResult {
             }
         };
         if caller_owns_display {
-            // BWM mode: right half for window manager (after divider)
             let divider_width = 4;
             let right_x = fb_guard.width() / 2 + divider_width;
             let right_width = fb_guard.width().saturating_sub(right_x);
             (right_width, right_x, fb_guard.height(), fb_guard.bytes_per_pixel())
         } else {
-            // Normal mode: left half for graphics demos
             (fb_guard.width() / 2, 0, fb_guard.height(), fb_guard.bytes_per_pixel())
         }
     };
