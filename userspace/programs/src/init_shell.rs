@@ -425,146 +425,67 @@ fn builtin_fg(arg: &str) {
 }
 
 // ============================================================================
-// Program Registry - Lookup table for external commands
+// PATH-based command resolution
 // ============================================================================
 
-struct ProgramEntry {
-    name: &'static str,
-    binary_name: &'static [u8],
-    description: &'static str,
+const DEFAULT_PATH: &str = "/bin:/sbin:/usr/local/cbin";
+
+/// Resolve a command name to a full filesystem path by searching $PATH.
+/// Returns a null-terminated byte vector suitable for execve, or None if not found.
+fn resolve_command(cmd: &str) -> Option<Vec<u8>> {
+    // Absolute/relative paths used directly
+    if cmd.contains('/') {
+        let mut path = cmd.as_bytes().to_vec();
+        path.push(0);
+        if sys_access(path.as_ptr(), X_OK) == 0 {
+            return Some(path);
+        }
+        return None;
+    }
+
+    // Read $PATH from environment (kernel sets PATH=/bin:/sbin:/usr/local/cbin)
+    let path_var = std::env::var("PATH").unwrap_or_else(|_| String::from(DEFAULT_PATH));
+
+    for dir in path_var.split(':') {
+        if dir.is_empty() {
+            continue;
+        }
+        let candidate = format!("{}/{}\0", dir, cmd);
+        let candidate_bytes = candidate.into_bytes();
+        if sys_access(candidate_bytes.as_ptr(), X_OK) == 0 {
+            return Some(candidate_bytes);
+        }
+    }
+    None
 }
 
-static PROGRAM_REGISTRY: &[ProgramEntry] = &[
-    ProgramEntry {
-        name: "hello",
-        binary_name: b"hello_world\0",
-        description: "Print hello world message",
-    },
-    ProgramEntry {
-        name: "hello_world",
-        binary_name: b"hello_world\0",
-        description: "Print hello world message",
-    },
-    ProgramEntry {
-        name: "counter",
-        binary_name: b"counter\0",
-        description: "Count from 0 to 9",
-    },
-    ProgramEntry {
-        name: "spinner",
-        binary_name: b"spinner\0",
-        description: "Display spinning animation",
-    },
-    ProgramEntry {
-        name: "demo",
-        binary_name: b"demo\0",
-        description: "Animated graphics demo on left pane",
-    },
-    ProgramEntry {
-        name: "bounce",
-        binary_name: b"bounce\0",
-        description: "Bouncing balls with collision detection (for Gus!)",
-    },
-    ProgramEntry {
-        name: "hello_time",
-        binary_name: b"hello_time\0",
-        description: "Print hello with timestamp",
-    },
-    ProgramEntry {
-        name: "fork_test",
-        binary_name: b"fork_test\0",
-        description: "Test fork syscall",
-    },
-    ProgramEntry {
-        name: "pipe_test",
-        binary_name: b"pipe_test\0",
-        description: "Test pipe syscall",
-    },
-    ProgramEntry {
-        name: "signal_test",
-        binary_name: b"signal_test\0",
-        description: "Test signal handling",
-    },
-    // === Coreutils ===
-    ProgramEntry {
-        name: "cat",
-        binary_name: b"cat\0",
-        description: "Concatenate and print files",
-    },
-    ProgramEntry {
-        name: "ls",
-        binary_name: b"ls\0",
-        description: "List directory contents",
-    },
-    ProgramEntry {
-        name: "mkdir",
-        binary_name: b"mkdir\0",
-        description: "Create directories",
-    },
-    ProgramEntry {
-        name: "rmdir",
-        binary_name: b"rmdir\0",
-        description: "Remove empty directories",
-    },
-    ProgramEntry {
-        name: "rm",
-        binary_name: b"rm\0",
-        description: "Remove files",
-    },
-    ProgramEntry {
-        name: "cp",
-        binary_name: b"cp\0",
-        description: "Copy files",
-    },
-    ProgramEntry {
-        name: "mv",
-        binary_name: b"mv\0",
-        description: "Move/rename files",
-    },
-    ProgramEntry {
-        name: "echo",
-        binary_name: b"echo\0",
-        description: "Print arguments to stdout",
-    },
-    // === Network Tools ===
-    ProgramEntry {
-        name: "dns_test",
-        binary_name: b"dns_test\0",
-        description: "Test DNS resolution (google.com, example.com)",
-    },
-    ProgramEntry {
-        name: "tcpclient",
-        binary_name: b"tcp_client_test\0",
-        description: "Send TCP message to 10.0.2.2:18888",
-    },
-    ProgramEntry {
-        name: "telnetd",
-        binary_name: b"/sbin/telnetd\0",
-        description: "Telnet server on port 2323",
-    },
-    // === PTY Test ===
-    ProgramEntry {
-        name: "pty_test",
-        binary_name: b"pty_test\0",
-        description: "Test PTY functionality",
-    },
-];
-
-fn find_program(name: &str) -> Option<&'static ProgramEntry> {
-    PROGRAM_REGISTRY.iter().find(|e| e.name == name)
-}
-
-/// List all available external programs (for help command)
+/// List available external programs by scanning $PATH directories.
 fn list_external_programs() {
-    println!("External programs:");
-    for entry in PROGRAM_REGISTRY {
-        let padding = if entry.name.len() < 12 {
-            12 - entry.name.len()
-        } else {
-            1
-        };
-        let pad: String = " ".repeat(padding);
-        println!("  {}{}- {}", entry.name, pad, entry.description);
+    let path_var = std::env::var("PATH").unwrap_or_else(|_| String::from(DEFAULT_PATH));
+    println!("Programs in PATH ({}):", path_var);
+    for dir in path_var.split(':') {
+        if dir.is_empty() {
+            continue;
+        }
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            let mut names: Vec<String> = Vec::new();
+            for entry in entries.flatten() {
+                if let Ok(ft) = entry.file_type() {
+                    if ft.is_file() || ft.is_symlink() {
+                        if let Some(name) = entry.file_name().to_str() {
+                            names.push(name.to_string());
+                        }
+                    }
+                }
+            }
+            if !names.is_empty() {
+                names.sort();
+                println!("  {}:", dir);
+                for name in &names {
+                    println!("    {}", name);
+                }
+            }
+        }
     }
 }
 
@@ -572,48 +493,33 @@ fn list_external_programs() {
 // External command execution
 // ============================================================================
 
+/// Build envp pointer array from the current process environment.
+/// Returns (env_strings, envp_ptrs) where env_strings must be kept alive
+/// for the duration of the execve call.
+fn build_envp() -> (Vec<Vec<u8>>, Vec<*const u8>) {
+    let env_strings: Vec<Vec<u8>> = std::env::vars()
+        .map(|(k, v)| {
+            let mut s = format!("{}={}", k, v).into_bytes();
+            s.push(0);
+            s
+        })
+        .collect();
+    let mut envp_ptrs: Vec<*const u8> = env_strings.iter().map(|s| s.as_ptr()).collect();
+    envp_ptrs.push(std::ptr::null());
+    (env_strings, envp_ptrs)
+}
+
 /// Try to execute an external command via fork+exec.
 ///
-/// Search order:
-/// 1. PROGRAM_REGISTRY (for backwards compatibility with test disk binaries)
-/// 2. Explicit path (if cmd_name contains '/') - use directly
-/// 3. PATH-based lookup: /bin/{cmd_name}, /sbin/{cmd_name}
+/// Resolves the command via $PATH (or uses it directly if it contains '/').
+/// Passes the current process environment to the child.
 ///
 /// Returns Ok(exit_code) if executed, Err(()) if command not found.
 fn try_execute_external(cmd_name: &str, args: &str, background: bool) -> Result<i32, ()> {
-    let registry_entry = find_program(cmd_name);
-    let is_explicit_path = cmd_name.contains('/');
-
-    // Build path for execution
-    let mut path_buf = Vec::new();
-
-    let path_valid = if is_explicit_path {
-        path_buf.extend_from_slice(cmd_name.as_bytes());
-        path_buf.push(0);
-        true
-    } else {
-        // PATH-based lookup: try /bin/ first, then /sbin/
-        let prefixes: [&[u8]; 2] = [b"/bin/", b"/sbin/"];
-        let mut found = false;
-        for prefix in prefixes {
-            let mut candidate = Vec::new();
-            candidate.extend_from_slice(prefix);
-            candidate.extend_from_slice(cmd_name.as_bytes());
-            candidate.push(0);
-
-            if sys_access(candidate.as_ptr(), X_OK) == 0 {
-                path_buf = candidate;
-                found = true;
-                break;
-            }
-        }
-        found
+    let binary_path = match resolve_command(cmd_name) {
+        Some(path) => path,
+        None => return Err(()),
     };
-
-    // If not in registry and path is invalid, fail
-    if registry_entry.is_none() && !path_valid {
-        return Err(());
-    }
 
     if !background {
         println!("Running: {}", cmd_name);
@@ -627,19 +533,9 @@ fn try_execute_external(cmd_name: &str, args: &str, background: bool) -> Result<
 
             let args = args.trim();
 
-            // Determine which binary path to use
-            let binary_path: &[u8] = if let Some(entry) = registry_entry {
-                entry.binary_name
-            } else {
-                &path_buf
-            };
-
             // Build argv: [binary_path, arg1, arg2, ..., null]
-            // We need to keep the CString-like data alive through the execve call
             let mut arg_strings: Vec<Vec<u8>> = Vec::new();
 
-            // argv[0] = binary path (already null-terminated)
-            // For the rest, parse the args string
             if !args.is_empty() {
                 let mut i = 0;
                 let args_bytes = args.as_bytes();
@@ -671,13 +567,16 @@ fn try_execute_external(cmd_name: &str, args: &str, background: bool) -> Result<
             }
             argv_ptrs.push(std::ptr::null()); // null terminator
 
-            let envp: [*const u8; 1] = [std::ptr::null()];
+            // Build envp from current process environment
+            let (_env_strings, envp_ptrs) = build_envp();
 
             // Use black_box to prevent compiler from optimizing away buffers
+            let _keep_path = std::hint::black_box(&binary_path);
             let _keep_alive = std::hint::black_box(&arg_strings);
             let _keep_argv = std::hint::black_box(&argv_ptrs);
+            let _keep_env = std::hint::black_box(&_env_strings);
 
-            sys_execve(binary_path.as_ptr(), argv_ptrs.as_ptr(), envp.as_ptr());
+            sys_execve(binary_path.as_ptr(), argv_ptrs.as_ptr(), envp_ptrs.as_ptr());
 
             // If exec returns, it failed
             eprintln!("Error: exec failed");
@@ -854,31 +753,53 @@ fn execute_pipeline_command(cmd: &PipelineCommand) -> ! {
         std::process::exit(0);
     }
 
-    // Try external command from registry first
-    if let Some(entry) = find_program(cmd.name) {
-        let argv: [*const u8; 2] = [entry.binary_name.as_ptr(), std::ptr::null()];
-        let envp: [*const u8; 1] = [std::ptr::null()];
-        sys_execve(entry.binary_name.as_ptr(), argv.as_ptr(), envp.as_ptr());
+    // Resolve command via $PATH
+    if let Some(binary_path) = resolve_command(cmd.name) {
+        // Parse arguments from the full command string
+        let args_str = if cmd.full.len() > cmd.name.len() {
+            trim(&cmd.full[cmd.name.len()..])
+        } else {
+            ""
+        };
+
+        let mut arg_strings: Vec<Vec<u8>> = Vec::new();
+        if !args_str.is_empty() {
+            let mut i = 0;
+            let args_bytes = args_str.as_bytes();
+            while i < args_bytes.len() {
+                while i < args_bytes.len() && (args_bytes[i] == b' ' || args_bytes[i] == b'\t') {
+                    i += 1;
+                }
+                if i >= args_bytes.len() {
+                    break;
+                }
+                let start = i;
+                while i < args_bytes.len() && args_bytes[i] != b' ' && args_bytes[i] != b'\t' {
+                    i += 1;
+                }
+                let mut arg = args_bytes[start..i].to_vec();
+                arg.push(0);
+                arg_strings.push(arg);
+            }
+        }
+
+        let mut argv_ptrs: Vec<*const u8> = Vec::new();
+        argv_ptrs.push(binary_path.as_ptr()); // argv[0]
+        for arg in &arg_strings {
+            argv_ptrs.push(arg.as_ptr());
+        }
+        argv_ptrs.push(std::ptr::null());
+
+        let (_env_strings, envp_ptrs) = build_envp();
+
+        let _keep_path = std::hint::black_box(&binary_path);
+        let _keep_args = std::hint::black_box(&arg_strings);
+        let _keep_argv = std::hint::black_box(&argv_ptrs);
+        let _keep_env = std::hint::black_box(&_env_strings);
+
+        sys_execve(binary_path.as_ptr(), argv_ptrs.as_ptr(), envp_ptrs.as_ptr());
         eprintln!("exec failed");
         std::process::exit(1);
-    }
-
-    // Try /bin/{cmd_name} and /sbin/{cmd_name} PATH lookup
-    let prefixes: [&[u8]; 2] = [b"/bin/", b"/sbin/"];
-    for prefix in prefixes {
-        let mut path_buf: Vec<u8> = Vec::new();
-        path_buf.extend_from_slice(prefix);
-        path_buf.extend_from_slice(cmd.name.as_bytes());
-        path_buf.push(0);
-
-        if sys_access(path_buf.as_ptr(), X_OK) == 0 {
-            let argv: [*const u8; 2] = [path_buf.as_ptr(), std::ptr::null()];
-            let envp: [*const u8; 1] = [std::ptr::null()];
-            let _keep = std::hint::black_box(&path_buf);
-            sys_execve(path_buf.as_ptr(), argv.as_ptr(), envp.as_ptr());
-            eprintln!("exec failed");
-            std::process::exit(1);
-        }
     }
 
     eprintln!("command not found: {}", cmd.name);
@@ -901,24 +822,9 @@ fn execute_pipeline(input: &str) -> bool {
     // Verify all commands exist before starting pipeline
     for i in 0..cmd_count {
         let cmd = &commands[i];
-        if cmd.name != "echo" && find_program(cmd.name).is_none() {
-            // Check PATH too
-            let mut found = false;
-            let prefixes: [&[u8]; 2] = [b"/bin/", b"/sbin/"];
-            for prefix in prefixes {
-                let mut path_buf: Vec<u8> = Vec::new();
-                path_buf.extend_from_slice(prefix);
-                path_buf.extend_from_slice(cmd.name.as_bytes());
-                path_buf.push(0);
-                if sys_access(path_buf.as_ptr(), X_OK) == 0 {
-                    found = true;
-                    break;
-                }
-            }
-            if !found {
-                println!("command not found: {}", cmd.name);
-                return true;
-            }
+        if cmd.name != "echo" && resolve_command(cmd.name).is_none() {
+            println!("command not found: {}", cmd.name);
+            return true;
         }
     }
 
@@ -1148,10 +1054,12 @@ fn cmd_help() {
     println!("  fg     - Bring job to foreground (fg %N)");
     println!("  uptime - Show time since boot");
     println!("  clear  - Clear the screen (ANSI escape sequence)");
+    println!("  export - Set environment variable (export VAR=VALUE) or list all");
+    println!("  env    - Print all environment variables");
     println!("  raw    - Switch to raw mode and show keypresses");
     println!("  cooked - Switch back to canonical (cooked) mode");
     println!("  devtest- Test device files (/dev/null, /dev/zero, etc.)");
-    println!("  progs  - List available external programs");
+    println!("  progs  - List available external programs (scans $PATH)");
     println!("  exit   - Attempt to exit (init cannot exit)");
     println!();
     list_external_programs();
@@ -1432,6 +1340,34 @@ fn cmd_devtest() {
     println!("Device tests complete!");
 }
 
+fn cmd_export(args: &str) -> i32 {
+    let args = args.trim();
+    if args.is_empty() {
+        // List all env vars
+        for (k, v) in std::env::vars() {
+            println!("{}={}", k, v);
+        }
+        return 0;
+    }
+    // Parse VAR=VALUE
+    if let Some(eq_pos) = args.find('=') {
+        let key = &args[..eq_pos];
+        let value = &args[eq_pos + 1..];
+        std::env::set_var(key, value);
+    } else {
+        eprintln!("export: usage: export VAR=VALUE");
+        return 1;
+    }
+    0
+}
+
+fn cmd_env() -> i32 {
+    for (k, v) in std::env::vars() {
+        println!("{}={}", k, v);
+    }
+    0
+}
+
 fn cmd_unknown(cmd: &str) {
     println!("Unknown command: {}", cmd);
     println!("Type 'help' for available commands.");
@@ -1502,6 +1438,8 @@ fn handle_command(line: &str) {
         "clear" => cmd_clear(),
         "raw" => cmd_raw(),
         "cooked" => cmd_cooked(),
+        "export" => { cmd_export(args); },
+        "env" => { cmd_env(); },
         "devtest" => cmd_devtest(),
         "progs" => list_external_programs(),
         "exit" | "quit" => cmd_exit(),

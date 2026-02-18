@@ -159,6 +159,27 @@ root:x:0:
 nobody:x:65534:
 GROUP
 
+            # Create /etc/bshrc - startup config for the bsh ECMAScript shell
+            cat > /mnt/ext2/etc/bshrc << 'BSHRC'
+// Breenix Shell Configuration
+// This file is evaluated as ECMAScript by bsh on startup.
+
+// Global PATH - all standard binary directories
+env("PATH", "/bin:/sbin:/usr/local/cbin");
+
+// Home directory
+env("HOME", "/root");
+
+// Shell identification
+env("SHELL", "/bin/bsh");
+
+// Hostname
+env("HOSTNAME", "breenix");
+
+// Greeting
+console.log("Welcome to Breenix OS");
+BSHRC
+
             # Create /tmp for filesystem write tests
             mkdir -p /mnt/ext2/tmp
 
@@ -292,6 +313,27 @@ PASSWD
 root:x:0:
 nobody:x:65534:
 GROUP
+
+    # Create /etc/bshrc - startup config for the bsh ECMAScript shell
+    cat > "$MOUNT_DIR/etc/bshrc" << 'BSHRC'
+// Breenix Shell Configuration
+// This file is evaluated as ECMAScript by bsh on startup.
+
+// Global PATH - all standard binary directories
+env("PATH", "/bin:/sbin:/usr/local/cbin");
+
+// Home directory
+env("HOME", "/root");
+
+// Shell identification
+env("SHELL", "/bin/bsh");
+
+// Hostname
+env("HOSTNAME", "breenix");
+
+// Greeting
+console.log("Welcome to Breenix OS");
+BSHRC
 
     # Create /tmp for filesystem write tests
     mkdir -p "$MOUNT_DIR/tmp"
