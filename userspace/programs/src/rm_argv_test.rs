@@ -30,8 +30,8 @@ fn run_rm() -> i32 {
     match process::fork() {
         Ok(ForkResult::Child) => {
             // Child: exec rm with file argument
-            let program = b"brm\0";
-            let arg0 = b"brm\0".as_ptr();
+            let program = b"rm\0";
+            let arg0 = b"rm\0".as_ptr();
             let arg1 = b"/test_rm_argv_file\0".as_ptr();
             let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
