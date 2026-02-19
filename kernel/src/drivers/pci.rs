@@ -53,6 +53,8 @@ pub const VIRTIO_SOUND_DEVICE_ID_MODERN: u16 = 0x1059;
 pub const VIRTIO_NET_DEVICE_ID_LEGACY: u16 = 0x1000;
 /// VirtIO network device ID (modern)
 pub const VIRTIO_NET_DEVICE_ID_MODERN: u16 = 0x1041;
+/// VirtIO GPU device ID (modern only, no legacy transitional)
+pub const VIRTIO_GPU_DEVICE_ID_MODERN: u16 = 0x1050;
 
 /// Intel vendor ID (for reference - common in QEMU)
 pub const INTEL_VENDOR_ID: u16 = 0x8086;
@@ -295,13 +297,28 @@ fn pci_read_config_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
     }
 }
 
-/// Read a 32-bit value from PCI configuration space (ARM64 stub)
+/// Read a 32-bit value from PCI configuration space via ECAM.
+///
+/// ECAM maps each device's 4KB config space into contiguous physical memory:
+///   address = ECAM_BASE + (bus << 20) | (device << 15) | (function << 12) | offset
+///
+/// Returns 0xFFFFFFFF if no PCI ECAM is configured (no PCI bus available).
 #[cfg(target_arch = "aarch64")]
 fn pci_read_config_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
-    // ARM64: PCI config space is accessed via ECAM (memory-mapped)
-    // TODO: Implement ECAM access
-    let _ = (bus, device, function, offset);
-    0
+    let ecam_base = crate::platform_config::pci_ecam_base();
+    if ecam_base == 0 {
+        return 0xFFFF_FFFF; // No PCI
+    }
+
+    let addr = ecam_base
+        + ((bus as u64) << 20)
+        | ((device as u64) << 15)
+        | ((function as u64) << 12)
+        | ((offset & 0xFC) as u64);
+
+    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
+    let virt = (HHDM_BASE + addr) as *const u32;
+    unsafe { core::ptr::read_volatile(virt) }
 }
 
 /// Write a 32-bit value to PCI configuration space
@@ -322,17 +339,28 @@ fn pci_write_config_dword(bus: u8, device: u8, function: u8, offset: u8, value: 
     }
 }
 
-/// Write a 32-bit value to PCI configuration space (ARM64 stub)
+/// Write a 32-bit value to PCI configuration space via ECAM (ARM64).
 #[cfg(target_arch = "aarch64")]
 fn pci_write_config_dword(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
-    // ARM64: PCI config space is accessed via ECAM (memory-mapped)
-    // TODO: Implement ECAM access
-    let _ = (bus, device, function, offset, value);
+    let ecam_base = crate::platform_config::pci_ecam_base();
+    if ecam_base == 0 {
+        return; // No PCI
+    }
+
+    let addr = ecam_base
+        + ((bus as u64) << 20)
+        | ((device as u64) << 15)
+        | ((function as u64) << 12)
+        | ((offset & 0xFC) as u64);
+
+    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
+    let virt = (HHDM_BASE + addr) as *mut u32;
+    unsafe { core::ptr::write_volatile(virt, value) }
 }
 
 /// Read a 16-bit value from PCI configuration space
 #[allow(dead_code)] // Used by Device methods, which are part of public API
-fn pci_read_config_word(bus: u8, device: u8, function: u8, offset: u8) -> u16 {
+pub(crate) fn pci_read_config_word(bus: u8, device: u8, function: u8, offset: u8) -> u16 {
     let dword = pci_read_config_dword(bus, device, function, offset & 0xFC);
     let shift = ((offset & 2) * 8) as u32;
     ((dword >> shift) & 0xFFFF) as u16
@@ -351,7 +379,7 @@ fn pci_write_config_word(bus: u8, device: u8, function: u8, offset: u8, value: u
 
 /// Read an 8-bit value from PCI configuration space
 #[allow(dead_code)] // Part of low-level API, will be used by VirtIO driver
-fn pci_read_config_byte(bus: u8, device: u8, function: u8, offset: u8) -> u8 {
+pub(crate) fn pci_read_config_byte(bus: u8, device: u8, function: u8, offset: u8) -> u8 {
     let dword = pci_read_config_dword(bus, device, function, offset & 0xFC);
     let shift = ((offset & 3) * 8) as u32;
     ((dword >> shift) & 0xFF) as u8

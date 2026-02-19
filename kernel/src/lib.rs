@@ -59,6 +59,8 @@ pub mod net;
 pub mod block;
 pub mod fs;
 pub mod logger;
+#[cfg(target_arch = "aarch64")]
+pub mod platform_config;
 #[cfg(target_arch = "x86_64")]
 pub mod framebuffer;
 // Graphics module: available on x86_64 with "interactive" feature, or always on ARM64

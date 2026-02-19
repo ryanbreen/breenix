@@ -1,0 +1,26 @@
+           CPU0       CPU1       CPU2       CPU3       
+ 10:      42455      18750      20295      13682     GICv3  27 Level     arch_timer
+ 12:          1          0          0          0     GICv3  48 Edge      ACPI:Ged
+ 14:          0          0          0          0     GICv3  38 Edge      virtio0
+ 15:       1900          0          0          0     GICv3  34 Level     ahci[PRL4010:00]
+ 16:          0          0          0          0     GICv3  32 Level     uart-pl011
+ 17:          0          0          0          0     GICv3  23 Level     arm-pmu
+ 19:        498          0          0          0  GICv2m-PCI-MSI-0000:00:03.0   0 Edge      xhci_hcd
+ 23:          0          0          0          0     GICv3  35 Level     ehci_hcd:usb3
+ 24:          0          0          0          0  GICv2m-PCI-MSIX-0000:00:05.0   0 Edge      virtio1-config
+ 25:        175          0          0          0  GICv2m-PCI-MSIX-0000:00:05.0   1 Edge      virtio1-input.0
+ 26:        321          0          0          0  GICv2m-PCI-MSIX-0000:00:05.0   2 Edge      virtio1-output.0
+ 27:          1          0          0          0  GICv2m-PCI-MSIX-0000:00:0a.0   0 Edge      virtio2-config
+ 28:      21392          0          0          0  GICv2m-PCI-MSIX-0000:00:0a.0   1 Edge      virtio2-virtqueues
+ 30:        164          0          0          0  GICv2m-PCI-MSI-0000:00:01.0   0 Edge      snd_hda_intel:card0
+ 31:          0          0          0          0  GICv2m-PCI-MSIX-0000:00:0e.0   0 Edge      virtio3-config
+ 32:          0          0          0          0  GICv2m-PCI-MSIX-0000:00:0e.0   1 Edge      virtio3-virtqueues
+IPI0:       465        474        505        459       Rescheduling interrupts
+IPI1:      7387       6412       5950       3696       Function call interrupts
+IPI2:         0          0          0          0       CPU stop interrupts
+IPI3:         0          0          0          0       CPU stop NMIs
+IPI4:         0          0          0          0       Timer broadcast interrupts
+IPI5:         0          0          0          0       IRQ work interrupts
+IPI6:         0          0          0          0       CPU backtrace interrupts
+IPI7:         0          0          0          0       KGDB roundup interrupts
+Err:          0

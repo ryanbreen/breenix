@@ -1,23 +1,24 @@
-//! ARM64 GICv2 (Generic Interrupt Controller) interrupt controller.
+//! ARM64 GIC (Generic Interrupt Controller) - supports GICv2 and GICv3.
 //!
-//! The GICv2 has two main components:
+//! The GIC has these components:
 //! - GICD (Distributor): Routes interrupts to CPUs, manages priority/enable
-//! - GICC (CPU Interface): Per-CPU interface for acknowledging/completing IRQs
+//! - GICC (CPU Interface, GICv2): Per-CPU MMIO interface
+//! - ICC (CPU Interface, GICv3): Per-CPU system register interface
+//! - GICR (Redistributor, GICv3): Per-CPU SGI/PPI configuration
 //!
 //! Interrupt types:
 //! - SGI (0-15): Software Generated Interrupts (IPIs)
 //! - PPI (16-31): Private Peripheral Interrupts (per-CPU, e.g., timer)
 //! - SPI (32-1019): Shared Peripheral Interrupts (global, e.g., devices)
 //!
-//! For QEMU virt machine:
-//! - GICD base: 0x0800_0000
-//! - GICC base: 0x0801_0000
+//! Hardware addresses are read from platform_config at runtime:
+//! - QEMU virt: GICD=0x0800_0000, GICC=0x0801_0000 (GICv2)
+//! - Parallels:  GICD=0x0201_0000, GICR=0x0250_0000 (GICv3)
 
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use crate::arch_impl::traits::InterruptController;
-use crate::arch_impl::aarch64::constants::{GICD_BASE, GICC_BASE};
 
 // =============================================================================
 // GIC Distributor (GICD) Register Offsets
@@ -100,50 +101,69 @@ const GICD_PIDR2: usize = 0xFE8;
 // Register Access Helpers
 // =============================================================================
 
-/// HHDM base address for GIC MMIO access.
-///
-/// Using the compile-time constant directly instead of `physical_memory_offset()`
-/// (which goes through a OnceCell) eliminates an atomic load-acquire (`ldar`) on
-/// every GIC register access.  The compiler was hoisting the OnceCell state pointer
-/// into a callee-saved register (x19) and reusing it across the entire `handle_irq`
-/// function.  If any callee's stack frame was corrupted (the saved x19 slot
-/// overwritten with zero), the post-handler EOI write would dereference NULL and
-/// DATA_ABORT.  Since HHDM_BASE is a link-time constant on ARM64, there is no
-/// reason to go through a runtime cell.
+/// HHDM base address for GIC MMIO access (compile-time constant).
 const GIC_HHDM: usize = crate::arch_impl::aarch64::constants::HHDM_BASE as usize;
 
-/// Read a 32-bit GICD register
+/// Active GIC version: 2 for GICv2, 3 for GICv3. Set during init.
+static ACTIVE_GIC_VERSION: AtomicU8 = AtomicU8::new(0);
+
+/// Read a 32-bit GICD register (address from platform_config).
 #[inline]
 fn gicd_read(offset: usize) -> u32 {
     unsafe {
-        let addr = (GIC_HHDM + GICD_BASE as usize + offset) as *const u32;
+        let base = crate::platform_config::gicd_base_phys() as usize;
+        let addr = (GIC_HHDM + base + offset) as *const u32;
         core::ptr::read_volatile(addr)
     }
 }
 
-/// Write a 32-bit GICD register
+/// Write a 32-bit GICD register (address from platform_config).
 #[inline]
 fn gicd_write(offset: usize, value: u32) {
     unsafe {
-        let addr = (GIC_HHDM + GICD_BASE as usize + offset) as *mut u32;
+        let base = crate::platform_config::gicd_base_phys() as usize;
+        let addr = (GIC_HHDM + base + offset) as *mut u32;
         core::ptr::write_volatile(addr, value);
     }
 }
 
-/// Read a 32-bit GICC register
+/// Read a 32-bit GICC register (GICv2 only, address from platform_config).
 #[inline]
 fn gicc_read(offset: usize) -> u32 {
     unsafe {
-        let addr = (GIC_HHDM + GICC_BASE as usize + offset) as *const u32;
+        let base = crate::platform_config::gicc_base_phys() as usize;
+        let addr = (GIC_HHDM + base + offset) as *const u32;
         core::ptr::read_volatile(addr)
     }
 }
 
-/// Write a 32-bit GICC register
+/// Write a 32-bit GICC register (GICv2 only, address from platform_config).
 #[inline]
 fn gicc_write(offset: usize, value: u32) {
     unsafe {
-        let addr = (GIC_HHDM + GICC_BASE as usize + offset) as *mut u32;
+        let base = crate::platform_config::gicc_base_phys() as usize;
+        let addr = (GIC_HHDM + base + offset) as *mut u32;
+        core::ptr::write_volatile(addr, value);
+    }
+}
+
+/// Read a 32-bit GICR register (GICv3 only).
+/// `cpu_offset` is the redistributor offset for this CPU (cpu * 0x20000).
+#[inline]
+fn gicr_read(cpu_offset: usize, offset: usize) -> u32 {
+    unsafe {
+        let base = crate::platform_config::gicr_base_phys() as usize;
+        let addr = (GIC_HHDM + base + cpu_offset + offset) as *const u32;
+        core::ptr::read_volatile(addr)
+    }
+}
+
+/// Write a 32-bit GICR register (GICv3 only).
+#[inline]
+fn gicr_write(cpu_offset: usize, offset: usize, value: u32) {
+    unsafe {
+        let base = crate::platform_config::gicr_base_phys() as usize;
+        let addr = (GIC_HHDM + base + cpu_offset + offset) as *mut u32;
         core::ptr::write_volatile(addr, value);
     }
 }
@@ -238,16 +258,23 @@ impl Gicv2 {
 
 /// Initialize the GIC CPU interface for a secondary CPU.
 ///
-/// GICC registers are banked per-CPU, so each CPU must configure its own
-/// interface. The distributor (GICD) is global and already initialized by CPU 0.
-/// SGIs (0-15) and PPIs (16-31) are per-CPU by definition and do not need
-/// distributor re-configuration.
+/// Dispatches to GICv2 or GICv3 based on the detected version.
 pub fn init_cpu_interface_secondary() {
-    // Safety: if we got here, GIC_INITIALIZED is true, which means
-    // init() already verified GICv2 is present. No need to re-check.
-    gicc_write(GICC_PMR, PRIORITY_MASK as u32);
-    gicc_write(GICC_BPR, 7);
-    gicc_write(GICC_CTLR, 0x7); // EnableGrp0 | EnableGrp1 | AckCtl
+    let version = ACTIVE_GIC_VERSION.load(Ordering::Acquire);
+    match version {
+        2 => {
+            gicc_write(GICC_PMR, PRIORITY_MASK as u32);
+            gicc_write(GICC_BPR, 7);
+            gicc_write(GICC_CTLR, 0x7);
+        }
+        3 | 4 => {
+            // Get CPU ID from MPIDR_EL1 for redistributor offset
+            let cpu_id = get_cpu_id_from_mpidr();
+            init_gicv3_redistributor(cpu_id);
+            init_gicv3_cpu_interface();
+        }
+        _ => {}
+    }
 }
 
 impl Gicv2 {
@@ -263,63 +290,100 @@ impl Gicv2 {
 }
 
 impl InterruptController for Gicv2 {
-    /// Initialize the GIC
+    /// Initialize the GIC - auto-detects v2 vs v3 and dispatches accordingly.
     fn init() {
         if GIC_INITIALIZED.load(Ordering::Relaxed) {
             return;
         }
 
-        // Detect GIC version before accessing GICC (CPU interface) registers.
-        // The GICC MMIO region only exists for GICv2. GICv3 uses system
-        // registers (ICC_*) instead, and the GICC address range is unmapped —
-        // accessing it would cause a synchronous external abort (DATA_ABORT).
-        let version = Self::detect_version();
-        if version != 2 {
-            panic!(
-                "GIC architecture version {} detected, but only GICv2 is supported. \
-                 Launch QEMU with '-M virt' (default GICv2) instead of \
-                 '-machine virt,gic-version=3'.",
-                version
-            );
-        }
+        // Detect GIC version from GICD_PIDR2 or platform_config.
+        let platform_version = crate::platform_config::gic_version();
+        let hw_version = Self::detect_version();
+        let version = if platform_version != 0 { platform_version } else { hw_version };
 
-        Self::init_distributor();
-        Self::init_cpu_interface();
+        ACTIVE_GIC_VERSION.store(version, Ordering::Release);
+
+        match version {
+            2 => {
+                Self::init_distributor();
+                Self::init_cpu_interface();
+            }
+            3 | 4 => {
+                init_gicv3_distributor();
+                init_gicv3_redistributor(0); // CPU 0
+                init_gicv3_cpu_interface();
+            }
+            _ => {
+                panic!("Unknown GIC architecture version {}", version);
+            }
+        }
 
         GIC_INITIALIZED.store(true, Ordering::Release);
     }
 
     /// Enable an IRQ
     fn enable_irq(irq: u8) {
-        let irq = irq as u32;
-        let reg_index = irq / IRQS_PER_ENABLE_REG;
-        let bit = irq % IRQS_PER_ENABLE_REG;
+        let irq_num = irq as u32;
+        let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
 
-        // For SPIs (32+), ensure CPU target is set to CPU 0
-        if irq >= 32 {
-            let target_reg = irq / 4;
-            let target_byte = irq % 4;
-            let current = gicd_read(GICD_ITARGETSR + (target_reg as usize * 4));
-            let mask = 0xFFu32 << (target_byte * 8);
-            let target_val = 0x01u32 << (target_byte * 8); // CPU 0
-            gicd_write(
-                GICD_ITARGETSR + (target_reg as usize * 4),
-                (current & !mask) | target_val,
-            );
+        if irq_num < 32 {
+            // SGI/PPI: on GICv3, use GICR; on GICv2, use GICD
+            if version >= 3 {
+                // Enable in GICR_ISENABLER0 for current CPU
+                let cpu_id = get_cpu_id_from_mpidr();
+                let cpu_offset = cpu_id * GICR_FRAME_SIZE;
+                let sgi_offset = GICR_SGI_OFFSET; // SGI_base frame within redistributor
+                gicr_write(cpu_offset + sgi_offset, GICR_ISENABLER0, 1 << irq_num);
+            } else {
+                gicd_write(GICD_ISENABLER, 1 << irq_num);
+            }
+        } else {
+            // SPI: always in GICD
+            let reg_index = irq_num / IRQS_PER_ENABLE_REG;
+            let bit = irq_num % IRQS_PER_ENABLE_REG;
+
+            if version >= 3 {
+                // GICv3: Route SPI to current CPU via GICD_IROUTER
+                let mpidr: u64;
+                unsafe { core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack)); }
+                let affinity = mpidr & 0xFF_00FF_FFFF; // Aff3.Aff2.Aff1.Aff0
+                gicd_write(GICD_IROUTER + (irq_num as usize * 8), affinity as u32);
+                gicd_write(GICD_IROUTER + (irq_num as usize * 8) + 4, (affinity >> 32) as u32);
+            } else {
+                // GICv2: Route SPI to CPU 0 via ITARGETSR
+                let target_reg = irq_num / 4;
+                let target_byte = irq_num % 4;
+                let current = gicd_read(GICD_ITARGETSR + (target_reg as usize * 4));
+                let mask = 0xFFu32 << (target_byte * 8);
+                let target_val = 0x01u32 << (target_byte * 8);
+                gicd_write(
+                    GICD_ITARGETSR + (target_reg as usize * 4),
+                    (current & !mask) | target_val,
+                );
+            }
+
+            gicd_write(GICD_ISENABLER + (reg_index as usize * 4), 1 << bit);
         }
-
-        // Write 1 to ISENABLER to enable (writes of 0 have no effect)
-        gicd_write(GICD_ISENABLER + (reg_index as usize * 4), 1 << bit);
     }
 
     /// Disable an IRQ
     fn disable_irq(irq: u8) {
-        let irq = irq as u32;
-        let reg_index = irq / IRQS_PER_ENABLE_REG;
-        let bit = irq % IRQS_PER_ENABLE_REG;
+        let irq_num = irq as u32;
 
-        // Write 1 to ICENABLER to disable (writes of 0 have no effect)
-        gicd_write(GICD_ICENABLER + (reg_index as usize * 4), 1 << bit);
+        if irq_num < 32 {
+            let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
+            if version >= 3 {
+                let cpu_id = get_cpu_id_from_mpidr();
+                let cpu_offset = cpu_id * GICR_FRAME_SIZE;
+                gicr_write(cpu_offset + GICR_SGI_OFFSET, GICR_ICENABLER0, 1 << irq_num);
+            } else {
+                gicd_write(GICD_ICENABLER, 1 << irq_num);
+            }
+        } else {
+            let reg_index = irq_num / IRQS_PER_ENABLE_REG;
+            let bit = irq_num % IRQS_PER_ENABLE_REG;
+            gicd_write(GICD_ICENABLER + (reg_index as usize * 4), 1 << bit);
+        }
     }
 
     /// Signal End of Interrupt
@@ -338,19 +402,24 @@ impl InterruptController for Gicv2 {
 // Additional GIC Utilities
 // =============================================================================
 
-/// Acknowledge the current interrupt and get its ID
+/// Acknowledge the current interrupt and get its ID.
 ///
-/// Returns the interrupt ID, or None if spurious or invalid.
-/// GICv2 interrupt ID ranges:
-/// - 0-1019: Valid interrupts (SGI 0-15, PPI 16-31, SPI 32-1019)
-/// - 1020-1022: Reserved (treat as spurious)
-/// - 1023: Spurious interrupt (no pending interrupt when IAR was read)
+/// Dispatches to GICv2 MMIO or GICv3 system registers.
+/// Returns the interrupt ID, or None if spurious (1023).
 #[inline]
 pub fn acknowledge_irq() -> Option<u32> {
-    let iar = gicc_read(GICC_IAR);
-    let irq_id = iar & 0x3FF; // Bits 9:0 are the interrupt ID
+    let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
+    let irq_id = if version >= 3 {
+        // GICv3: Read ICC_IAR1_EL1
+        let iar: u64;
+        unsafe { core::arch::asm!("mrs {}, icc_iar1_el1", out(reg) iar, options(nomem, nostack)); }
+        (iar & 0xFFFFFF) as u32 // 24-bit INTID for GICv3
+    } else {
+        // GICv2: Read GICC_IAR
+        let iar = gicc_read(GICC_IAR);
+        iar & 0x3FF // 10-bit INTID for GICv2
+    };
 
-    // Filter out spurious (1023) and reserved/invalid IDs (1020-1022)
     if irq_id > MAX_VALID_IRQ {
         None
     } else {
@@ -360,20 +429,21 @@ pub fn acknowledge_irq() -> Option<u32> {
 
 /// Signal end of interrupt by ID.
 ///
-/// CRITICAL: This MUST be `#[inline(never)]` to prevent the compiler from
-/// hoisting the GICC base address into a callee-saved register (x19) and
-/// sharing it with `acknowledge_irq` across the entire `handle_irq` function.
-/// When both IAR read and EOIR write are inlined into handle_irq, the compiler
-/// merges the shared base address into x19 and reuses it across IRQ handler
-/// function calls (timer_interrupt_handler, etc.).  If any callee's stack
-/// frame is corrupted on SMP (zeroing the saved x19 slot), the EOIR write
-/// dereferences NULL → DATA_ABORT at FAR=0x4.
-///
-/// With `#[inline(never)]`, end_of_interrupt computes the EOIR address in
-/// its own temporary registers (x0-x7), independent of handle_irq's state.
+/// CRITICAL: `#[inline(never)]` prevents the compiler from hoisting the
+/// GICC/ICC base into a callee-saved register shared with acknowledge_irq.
+/// See original GICv2 comment for the full rationale.
 #[inline(never)]
 pub fn end_of_interrupt(irq_id: u32) {
-    gicc_write(GICC_EOIR, irq_id);
+    let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
+    if version >= 3 {
+        // GICv3: Write ICC_EOIR1_EL1
+        unsafe {
+            core::arch::asm!("msr icc_eoir1_el1, {}", in(reg) irq_id as u64, options(nomem, nostack));
+        }
+    } else {
+        // GICv2: Write GICC_EOIR
+        gicc_write(GICC_EOIR, irq_id);
+    }
 }
 
 /// Check if an IRQ is pending
@@ -407,13 +477,25 @@ pub fn send_sgi(sgi_id: u8, target_cpu: u8) {
         return;
     }
 
-    // GICD_SGIR format:
-    // Bits 25:24 = TargetListFilter (0 = use target list)
-    // Bits 23:16 = CPUTargetList (bitmask of target CPUs)
-    // Bits 3:0 = SGIINTID (SGI number)
-    let target_mask = 1u32 << (target_cpu as u32);
-    let sgir = (target_mask << 16) | (sgi_id as u32);
-    gicd_write(0xF00, sgir); // GICD_SGIR offset
+    let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
+    if version >= 3 {
+        // GICv3: Write ICC_SGI1R_EL1
+        // Bits 55:48 = Aff3, 39:32 = Aff2, 23:16 = Aff1
+        // Bits 15:0 = TargetList (bitmask within Aff1 group)
+        // Bits 27:24 = INTID (SGI number)
+        // For simple SMP (CPUs 0-7 in same affinity group):
+        let target_list = 1u64 << (target_cpu as u64);
+        let sgir = ((sgi_id as u64) << 24) | target_list;
+        unsafe {
+            core::arch::asm!("msr icc_sgi1r_el1, {}", in(reg) sgir, options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack));
+        }
+    } else {
+        // GICv2: Write GICD_SGIR
+        let target_mask = 1u32 << (target_cpu as u32);
+        let sgir = (target_mask << 16) | (sgi_id as u32);
+        gicd_write(0xF00, sgir);
+    }
 }
 
 /// Check if GIC is initialized
@@ -422,46 +504,179 @@ pub fn is_initialized() -> bool {
     GIC_INITIALIZED.load(Ordering::Acquire)
 }
 
-/// Debug function to dump GIC state for a specific IRQ
-///
-/// Useful for diagnosing interrupt routing issues.
+/// Debug function to dump GIC state for a specific IRQ.
 pub fn dump_irq_state(irq: u32) {
     let reg_index = irq / 32;
     let bit_index = irq % 32;
+    let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
 
-    // Read enable state
     let isenabler = gicd_read(GICD_ISENABLER + (reg_index as usize * 4));
     let enabled = (isenabler & (1 << bit_index)) != 0;
-
-    // Read group state
     let igroupr = gicd_read(GICD_IGROUPR + (reg_index as usize * 4));
     let group1 = (igroupr & (1 << bit_index)) != 0;
-
-    // Read pending state
     let ispendr = gicd_read(GICD_ISPENDR + (reg_index as usize * 4));
     let pending = (ispendr & (1 << bit_index)) != 0;
 
-    // Read priority (4 IRQs per register, 8 bits each)
     let priority_reg_index = irq / 4;
     let priority_byte_index = irq % 4;
     let ipriorityr = gicd_read(GICD_IPRIORITYR + (priority_reg_index as usize * 4));
     let priority = ((ipriorityr >> (priority_byte_index * 8)) & 0xFF) as u8;
 
-    // Read target (4 IRQs per register, 8 bits each)
-    let target_reg_index = irq / 4;
-    let target_byte_index = irq % 4;
-    let itargetsr = gicd_read(GICD_ITARGETSR + (target_reg_index as usize * 4));
-    let target = ((itargetsr >> (target_byte_index * 8)) & 0xFF) as u8;
-
-    // Read distributor control
     let gicd_ctlr = gicd_read(GICD_CTLR);
 
-    // Read CPU interface control and priority mask
-    let gicc_ctlr = gicc_read(GICC_CTLR);
-    let gicc_pmr = gicc_read(GICC_PMR);
-
-    crate::serial_println!("[gic] IRQ {} state:", irq);
+    crate::serial_println!("[gic] IRQ {} state (GICv{}):", irq, version);
     crate::serial_println!("  enabled={}, group1={}, pending={}", enabled, group1, pending);
-    crate::serial_println!("  priority={:#x}, target={:#x}", priority, target);
-    crate::serial_println!("  GICD_CTLR={:#x}, GICC_CTLR={:#x}, GICC_PMR={:#x}", gicd_ctlr, gicc_ctlr, gicc_pmr);
+    crate::serial_println!("  priority={:#x}, GICD_CTLR={:#x}", priority, gicd_ctlr);
+
+    if version >= 3 {
+        let pmr: u64;
+        unsafe { core::arch::asm!("mrs {}, icc_pmr_el1", out(reg) pmr, options(nomem, nostack)); }
+        crate::serial_println!("  ICC_PMR={:#x}", pmr);
+    } else {
+        let gicc_ctlr = gicc_read(GICC_CTLR);
+        let gicc_pmr = gicc_read(GICC_PMR);
+        crate::serial_println!("  GICC_CTLR={:#x}, GICC_PMR={:#x}", gicc_ctlr, gicc_pmr);
+    }
+}
+
+// =============================================================================
+// GICv3 Constants and Initialization
+// =============================================================================
+
+/// GICR (Redistributor) register offsets.
+/// Each redistributor has two 64KB frames: RD_base and SGI_base.
+const GICR_FRAME_SIZE: usize = 0x2_0000; // 128KB per CPU (2 x 64KB frames)
+const GICR_SGI_OFFSET: usize = 0x1_0000; // SGI_base is second 64KB frame
+
+/// GICR RD_base registers
+const GICR_CTLR: usize = 0x000;
+const GICR_WAKER: usize = 0x014;
+const GICR_TYPER: usize = 0x008;
+
+/// GICR SGI_base registers (at GICR_SGI_OFFSET from RD_base)
+const GICR_IGROUPR0: usize = 0x080;
+const GICR_ISENABLER0: usize = 0x100;
+const GICR_ICENABLER0: usize = 0x180;
+const GICR_IPRIORITYR0: usize = 0x400;
+const GICR_ICFGR0: usize = 0xC00;
+
+/// GICD register for SPI routing (GICv3)
+const GICD_IROUTER: usize = 0x6100;
+
+/// GICv3 GICD_CTLR bits
+const GICD_CTLR_ARE_NS: u32 = 1 << 4; // Affinity Routing Enable (Non-Secure)
+const GICD_CTLR_ENABLE_GRP1_NS: u32 = 1 << 1; // Enable Group 1 Non-Secure
+
+/// Get current CPU's linear ID from MPIDR_EL1.
+/// For simple SMP, Aff0 is the CPU number.
+fn get_cpu_id_from_mpidr() -> usize {
+    let mpidr: u64;
+    unsafe { core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack)); }
+    (mpidr & 0xFF) as usize
+}
+
+/// Initialize GICv3 Distributor (GICD).
+fn init_gicv3_distributor() {
+    // Disable distributor
+    gicd_write(GICD_CTLR, 0);
+
+    let num_irqs = {
+        let typer = gicd_read(GICD_TYPER);
+        ((typer & 0x1F) + 1) * 32
+    };
+
+    // Disable all SPIs
+    let num_regs = (num_irqs + 31) / 32;
+    for i in 1..num_regs {
+        // Skip reg 0 (SGI/PPI, handled by GICR)
+        gicd_write(GICD_ICENABLER + (i as usize * 4), 0xFFFF_FFFF);
+    }
+
+    // Clear all pending SPIs
+    for i in 1..num_regs {
+        gicd_write(GICD_ICPENDR + (i as usize * 4), 0xFFFF_FFFF);
+    }
+
+    // Set all SPIs to Group 1 Non-Secure
+    for i in 1..num_regs {
+        gicd_write(GICD_IGROUPR + (i as usize * 4), 0xFFFF_FFFF);
+    }
+
+    // Set default priority for all SPIs
+    let num_priority_regs = (num_irqs + 3) / 4;
+    let priority_val = (DEFAULT_PRIORITY as u32) * 0x0101_0101;
+    for i in 8..num_priority_regs {
+        // Skip first 8 regs (SGI/PPI priorities in GICR)
+        gicd_write(GICD_IPRIORITYR + (i as usize * 4), priority_val);
+    }
+
+    // Enable distributor with ARE_NS and Group 1 NS
+    gicd_write(GICD_CTLR, GICD_CTLR_ARE_NS | GICD_CTLR_ENABLE_GRP1_NS);
+}
+
+/// Initialize GICv3 Redistributor (GICR) for a specific CPU.
+fn init_gicv3_redistributor(cpu_id: usize) {
+    let cpu_offset = cpu_id * GICR_FRAME_SIZE;
+
+    // Wake up the redistributor
+    let waker = gicr_read(cpu_offset, GICR_WAKER);
+    gicr_write(cpu_offset, GICR_WAKER, waker & !(1 << 1)); // Clear ProcessorSleep
+
+    // Wait for ChildrenAsleep to clear
+    for _ in 0..10_000 {
+        let w = gicr_read(cpu_offset, GICR_WAKER);
+        if (w & (1 << 2)) == 0 {
+            break;
+        }
+        core::hint::spin_loop();
+    }
+
+    let sgi_base = cpu_offset + GICR_SGI_OFFSET;
+
+    // Configure SGIs (0-15) and PPIs (16-31) in the redistributor
+
+    // Set all SGI/PPI to Group 1
+    gicr_write(sgi_base, GICR_IGROUPR0, 0xFFFF_FFFF);
+
+    // Disable all SGI/PPI first
+    gicr_write(sgi_base, GICR_ICENABLER0, 0xFFFF_FFFF);
+
+    // Set default priority for SGIs and PPIs
+    for i in 0..8u32 {
+        let priority_val = (DEFAULT_PRIORITY as u32) * 0x0101_0101;
+        gicr_write(sgi_base, GICR_IPRIORITYR0 + (i as usize * 4), priority_val);
+    }
+
+    // Configure PPIs as level-triggered (default)
+    gicr_write(sgi_base, GICR_ICFGR0, 0); // SGIs: always edge
+    gicr_write(sgi_base, GICR_ICFGR0 + 4, 0); // PPIs: level-triggered
+}
+
+/// Initialize GICv3 CPU Interface via ICC system registers.
+fn init_gicv3_cpu_interface() {
+    unsafe {
+        // Enable system register interface (ICC_SRE_EL1)
+        let sre: u64 = 0x7; // SRE | DFB | DIB
+        core::arch::asm!("msr icc_sre_el1, {}", in(reg) sre, options(nomem, nostack));
+        core::arch::asm!("isb", options(nomem, nostack));
+
+        // Set priority mask to accept all (ICC_PMR_EL1)
+        let pmr: u64 = PRIORITY_MASK as u64;
+        core::arch::asm!("msr icc_pmr_el1, {}", in(reg) pmr, options(nomem, nostack));
+
+        // No preemption (ICC_BPR1_EL1)
+        let bpr: u64 = 7;
+        core::arch::asm!("msr icc_bpr1_el1, {}", in(reg) bpr, options(nomem, nostack));
+
+        // Enable Group 1 interrupts (ICC_IGRPEN1_EL1)
+        let grpen: u64 = 1;
+        core::arch::asm!("msr icc_igrpen1_el1, {}", in(reg) grpen, options(nomem, nostack));
+
+        core::arch::asm!("isb", options(nomem, nostack));
+    }
+}
+
+/// Get the active GIC version (for diagnostic purposes).
+pub fn active_version() -> u8 {
+    ACTIVE_GIC_VERSION.load(Ordering::Relaxed)
 }

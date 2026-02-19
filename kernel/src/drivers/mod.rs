@@ -3,6 +3,8 @@
 //! This module provides the driver infrastructure for Breenix, including
 //! PCI enumeration and device-specific drivers.
 
+#[cfg(target_arch = "aarch64")]
+pub mod ahci;
 #[cfg(target_arch = "x86_64")]
 pub mod e1000;
 pub mod fw_cfg;
@@ -71,12 +73,56 @@ pub fn init() -> usize {
 
 /// Initialize the driver subsystem (ARM64 version)
 ///
-/// Uses VirtIO MMIO enumeration instead of PCI on QEMU virt machine.
+/// Detects the platform at runtime:
+/// - If PCI ECAM is configured (Parallels/UEFI boot): enumerate PCI bus
+/// - Otherwise (QEMU virt): enumerate VirtIO MMIO devices
 #[cfg(target_arch = "aarch64")]
 pub fn init() -> usize {
     use crate::serial_println;
 
     serial_println!("[drivers] Initializing driver subsystem...");
+
+    let ecam_base = crate::platform_config::pci_ecam_base();
+
+    if ecam_base != 0 {
+        // PCI-based platform (Parallels): enumerate PCI bus
+        serial_println!("[drivers] PCI ECAM at {:#x}, enumerating PCI bus...", ecam_base);
+        let device_count = pci::enumerate();
+        serial_println!("[drivers] Found {} PCI devices", device_count);
+
+        // Enumerate VirtIO PCI devices with modern transport
+        let virtio_devices = virtio::pci_transport::enumerate_virtio_pci_devices();
+        for dev in &virtio_devices {
+            serial_println!(
+                "[drivers] VirtIO PCI device: {} (type={})",
+                virtio::pci_transport::device_type_name(dev.device_id()),
+                dev.device_id()
+            );
+        }
+        serial_println!("[drivers] Found {} VirtIO PCI devices", virtio_devices.len());
+
+        // Initialize AHCI storage driver
+        match ahci::init() {
+            Ok(count) => {
+                serial_println!("[drivers] AHCI initialized: {} SATA device(s)", count);
+            }
+            Err(e) => {
+                serial_println!("[drivers] AHCI init skipped: {}", e);
+            }
+        }
+
+        serial_println!("[drivers] Driver subsystem initialized (PCI)");
+        device_count
+    } else {
+        // MMIO-based platform (QEMU virt): enumerate VirtIO MMIO
+        init_virtio_mmio()
+    }
+}
+
+/// Initialize VirtIO MMIO devices (QEMU virt platform).
+#[cfg(target_arch = "aarch64")]
+fn init_virtio_mmio() -> usize {
+    use crate::serial_println;
 
     // Enumerate VirtIO MMIO devices
     let mut device_count = 0;
@@ -144,6 +190,6 @@ pub fn init() -> usize {
         }
     }
 
-    serial_println!("[drivers] Driver subsystem initialized");
+    serial_println!("[drivers] Driver subsystem initialized (MMIO)");
     device_count
 }

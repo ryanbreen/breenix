@@ -13,8 +13,12 @@ use spin::Mutex;
 // PL011 UART Register Map
 // =============================================================================
 
-/// PL011 UART base physical address for QEMU virt machine.
-const PL011_BASE_PHYS: usize = 0x0900_0000;
+/// PL011 UART base physical address.
+/// Reads from platform_config (defaults to QEMU virt 0x0900_0000).
+#[inline]
+fn pl011_base_phys() -> usize {
+    crate::platform_config::uart_base_phys() as usize
+}
 
 /// PL011 Register offsets - complete register map for UART configuration
 #[allow(dead_code)]
@@ -79,7 +83,7 @@ mod cr {
 fn read_reg(offset: usize) -> u32 {
     unsafe {
         let base = crate::memory::physical_memory_offset().as_u64() as usize;
-        let addr = (base + PL011_BASE_PHYS + offset) as *const u32;
+        let addr = (base + pl011_base_phys() + offset) as *const u32;
         core::ptr::read_volatile(addr)
     }
 }
@@ -88,7 +92,7 @@ fn read_reg(offset: usize) -> u32 {
 fn write_reg(offset: usize, value: u32) {
     unsafe {
         let base = crate::memory::physical_memory_offset().as_u64() as usize;
-        let addr = (base + PL011_BASE_PHYS + offset) as *mut u32;
+        let addr = (base + pl011_base_phys() + offset) as *mut u32;
         core::ptr::write_volatile(addr, value);
     }
 }
@@ -331,8 +335,7 @@ pub fn _log_print(args: fmt::Arguments) {
 /// - Syscall entry/exit
 #[inline(always)]
 pub fn raw_serial_char(c: u8) {
-    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
-    let addr = (HHDM_BASE + PL011_BASE_PHYS as u64) as *mut u32;
+    let addr = crate::platform_config::uart_virt() as *mut u32;
     unsafe { core::ptr::write_volatile(addr, c as u32); }
 }
 
@@ -346,8 +349,7 @@ pub fn raw_serial_char(c: u8) {
 /// This helps identify markers in test output without ambiguity.
 #[inline(always)]
 pub fn raw_serial_str(s: &[u8]) {
-    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
-    let addr = (HHDM_BASE + PL011_BASE_PHYS as u64) as *mut u32;
+    let addr = crate::platform_config::uart_virt() as *mut u32;
     for &c in s {
         unsafe { core::ptr::write_volatile(addr, c as u32); }
     }

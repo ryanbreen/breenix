@@ -44,16 +44,12 @@ pub fn is_el0_confirmed() -> bool {
 /// Also advances test framework to Userspace stage if boot_tests is enabled.
 #[inline(never)]
 fn emit_el0_syscall_marker() {
-    // PL011 UART virtual address (physical 0x0900_0000 mapped via HHDM)
-    // The HHDM base is 0xFFFF_0000_0000_0000, so UART is at that + 0x0900_0000
-    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
-    const PL011_PHYS: u64 = 0x0900_0000;
-    const PL011_VIRT: u64 = HHDM_BASE + PL011_PHYS;
+    let uart_addr = crate::platform_config::uart_virt();
 
     let msg = b"EL0_SYSCALL: First syscall from userspace (SPSR confirms EL0)\n[ OK ] syscall path verified\n";
     for &byte in msg {
         unsafe {
-            core::ptr::write_volatile(PL011_VIRT as *mut u8, byte);
+            core::ptr::write_volatile(uart_addr as *mut u8, byte);
         }
     }
 

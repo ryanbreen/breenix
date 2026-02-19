@@ -1,0 +1,300 @@
+
+======================================
+  PHYSICAL MEMORY MAP (/proc/iomem)
+======================================
+02010000-0201ffff : GICD
+02110000-02110fff : ARMH0011:00
+  02110000-02110fff : ARMH0011:00 ARMH0011:00
+02140000-02141fff : PRL4010:00
+  02140000-02141fff : PRL4010:00 PRL4010:00
+021a0000-021a3fff : PRL4006:00
+  021a0000-021a3fff : PRL4006:00 PRL4006:00
+02300000-023fffff : PCI ECAM
+02500000-0257ffff : GICR
+10000000-1fffffff : PCI Bus 0000:00
+  10000000-13ffffff : 0000:00:0a.0
+  14000000-14003fff : 0000:00:01.0
+    14000000-14003fff : ICH HD audio
+  14004000-14007fff : 0000:00:0a.0
+    14004000-14007fff : virtio-pci-modern
+  14008000-1400bfff : 0000:00:0e.0
+    14008000-1400bfff : virtio-pci-modern
+  1400c000-1400cfff : 0000:00:03.0
+    1400c000-1400cfff : xhci-hcd
+  1400d000-1400dfff : 0000:00:05.0
+    1400d000-1400dfff : virtio-pci-legacy
+  1400e000-1400efff : 0000:00:05.0
+  1400f000-1400ffff : 0000:00:09.0
+  14010000-14010fff : 0000:00:0a.0
+  14011000-14011fff : 0000:00:0e.0
+  14012000-140123ff : 0000:00:02.0
+    14012000-140123ff : ehci_hcd
+40000000-bbe0ffff : System RAM
+  40010000-4154ffff : Kernel code
+  41550000-4188ffff : reserved
+  41890000-41edffff : Kernel data
+  b7680000-b7680fff : reserved
+  b7880000-b8838fff : reserved
+  b8840000-b884ffff : reserved
+  bac00000-bbbfffff : reserved
+  bbc68000-bbc68fff : reserved
+bbe10000-bbeaffff : reserved
+bbeb0000-bbf0ffff : System RAM
+  bbeb0000-bbf0ffff : reserved
+bbf10000-bbf1ffff : reserved
+bbf20000-bbf2ffff : System RAM
+  bbf20000-bbf2ffff : reserved
+bbf30000-bbffffff : reserved
+bc000000-bc01ffff : System RAM
+bc020000-bc05ffff : reserved
+bc060000-bf54ffff : System RAM
+  bc060000-bc07ffff : reserved
+  bc600000-be5fffff : reserved
+  be6c4000-be6c4fff : reserved
+  bf007000-bf54ffff : reserved
+bf550000-bf92ffff : reserved
+bf930000-bfffffff : System RAM
+  bf950000-bf955fff : reserved
+  bf956000-bf956fff : reserved
+  bf957000-bf9defff : reserved
+  bf9e1000-bf9e3fff : reserved
+  bf9e4000-bfffffff : reserved
+
+======================================
+  DEVICE TREE
+======================================
+Raw DTB saved to /tmp/hwdump/guest.dtb
+Decompiled DTS saved to /tmp/hwdump/guest.dts
+
+--- Device Tree Summary ---
+	#size-cells = <0x02>;
+	#address-cells = <0x02>;
+
+======================================
+  ACPI TABLES
+======================================
+Available ACPI tables:
+total 0
+drwxr-xr-x    4 root     root             0 Feb 19 10:13 .
+drwxr-xr-x    4 root     root             0 Feb 19 10:13 ..
+-r--------    1 root     root           428 Feb 19 10:13 APIC
+-r--------    1 root     root            93 Feb 19 10:13 DBG2
+-r--------    1 root     root          4291 Feb 19 10:13 DSDT
+-r--------    1 root     root           276 Feb 19 10:13 FACP
+-r--------    1 root     root            64 Feb 19 10:13 FACS
+-r--------    1 root     root            96 Feb 19 10:13 GTDT
+-r--------    1 root     root            60 Feb 19 10:13 MCFG
+-r--------    1 root     root            48 Feb 19 10:13 PCCT
+drwxr-xr-x    2 root     root             0 Feb 19 10:13 data
+drwxr-xr-x    2 root     root             0 Feb 19 10:13 dynamic
+  Saved MCFG
+  Saved GTDT
+  Saved DSDT
+
+iasl not installed - install with: apk add acpica
+Raw binary tables saved to /tmp/hwdump/acpi/
+
+======================================
+  PCI DEVICES
+======================================
+--- PCI Device List ---
+00:01.0 Audio device [0403]: Intel Corporation 82801I (ICH9 Family) HD Audio Controller [8086:293e]
+00:02.0 USB controller [0c03]: Intel Corporation 82801FB/FBM/FR/FW/FRW (ICH6 Family) USB2 EHCI Controller [8086:265c] (rev 02)
+00:03.0 USB controller [0c03]: NEC Corporation uPD720200 USB 3.0 Host Controller [1033:0194] (rev 04)
+00:05.0 Ethernet controller [0200]: Red Hat, Inc. Virtio network device [1af4:1000]
+00:09.0 Unassigned class [ff00]: Parallels, Inc. Virtual Machine Communication Interface [1ab8:4000]
+00:0a.0 VGA compatible controller [0300]: Red Hat, Inc. Virtio 1.0 GPU [1af4:1050] (rev 01)
+00:0e.0 Communication controller [0780]: Red Hat, Inc. Virtio 1.0 socket [1af4:1053] (rev 01)
+
+Detailed PCI info saved to /tmp/hwdump/lspci-verbose.txt
+
+======================================
+  INTERRUPT CONTROLLER
+======================================
+--- Active Interrupts ---
+           CPU0       CPU1       CPU2       CPU3       
+ 10:      42455      18750      20295      13682     GICv3  27 Level     arch_timer
+ 12:          1          0          0          0     GICv3  48 Edge      ACPI:Ged
+ 14:          0          0          0          0     GICv3  38 Edge      virtio0
+ 15:       1900          0          0          0     GICv3  34 Level     ahci[PRL4010:00]
+ 16:          0          0          0          0     GICv3  32 Level     uart-pl011
+ 17:          0          0          0          0     GICv3  23 Level     arm-pmu
+ 19:        498          0          0          0  GICv2m-PCI-MSI-0000:00:03.0   0 Edge      xhci_hcd
+ 23:          0          0          0          0     GICv3  35 Level     ehci_hcd:usb3
+ 24:          0          0          0          0  GICv2m-PCI-MSIX-0000:00:05.0   0 Edge      virtio1-config
+ 25:        175          0          0          0  GICv2m-PCI-MSIX-0000:00:05.0   1 Edge      virtio1-input.0
+ 26:        321          0          0          0  GICv2m-PCI-MSIX-0000:00:05.0   2 Edge      virtio1-output.0
+ 27:          1          0          0          0  GICv2m-PCI-MSIX-0000:00:0a.0   0 Edge      virtio2-config
+ 28:      21392          0          0          0  GICv2m-PCI-MSIX-0000:00:0a.0   1 Edge      virtio2-virtqueues
+ 30:        164          0          0          0  GICv2m-PCI-MSI-0000:00:01.0   0 Edge      snd_hda_intel:card0
+ 31:          0          0          0          0  GICv2m-PCI-MSIX-0000:00:0e.0   0 Edge      virtio3-config
+ 32:          0          0          0          0  GICv2m-PCI-MSIX-0000:00:0e.0   1 Edge      virtio3-virtqueues
+IPI0:       467        476        505        459       Rescheduling interrupts
+IPI1:      7387       6413       5950       3699       Function call interrupts
+IPI2:         0          0          0          0       CPU stop interrupts
+IPI3:         0          0          0          0       CPU stop NMIs
+IPI4:         0          0          0          0       Timer broadcast interrupts
+IPI5:         0          0          0          0       IRQ work interrupts
+IPI6:         0          0          0          0       CPU backtrace interrupts
+IPI7:         0          0          0          0       KGDB roundup interrupts
+Err:          0
+
+--- GIC Detection ---
+[    0.000000] CPU features: detected: GIC system register CPU interface
+[    0.000000] GICv3: 988 SPIs implemented
+[    0.000000] GICv3: 0 Extended SPIs implemented
+[    0.000000] Root IRQ handler: gic_handle_irq
+[    0.000000] GICv3: GICv3 features: 16 PPIs, RSS
+[    0.000000] GICv3: GICD_CTRL.DS=1, SCR_EL3.FIQ=0
+[    0.000000] GICv3: CPU0: found redistributor 0 region 0:0x0000000002500000
+[    0.000000] GICv2m: range[mem 0x02250000-0x02250fff], SPI[53:116]
+[    0.045842] GICv3: CPU1: found redistributor 1 region 0:0x0000000002520000
+[    0.058275] GICv3: CPU2: found redistributor 2 region 0:0x0000000002560000
+[    0.066591] GICv3: CPU3: found redistributor 3 region 0:0x0000000002540000
+[    0.074928] ACPI: Using GIC for interrupt routing
+[    0.590786] sd 0:0:0:0: [sda] 16777216 512-byte logical blocks: (8.59 GB/8.00 GiB)
+
+======================================
+  CPU INFORMATION
+======================================
+processor	: 0
+BogoMIPS	: 48.00
+Features	: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 asimddp sha512 asimdfhm dit uscat ilrcpc flagm sb paca pacg dcpodp flagm2 frint
+CPU implementer	: 0x41
+CPU architecture: 8
+CPU variant	: 0x0
+CPU part	: 0x000
+CPU revision	: 0
+
+processor	: 1
+BogoMIPS	: 48.00
+Features	: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 asimddp sha512 asimdfhm dit uscat ilrcpc flagm sb paca pacg dcpodp flagm2 frint
+CPU implementer	: 0x41
+CPU architecture: 8
+CPU variant	: 0x0
+CPU part	: 0x000
+CPU revision	: 0
+
+processor	: 2
+BogoMIPS	: 48.00
+Features	: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 asimddp sha512 asimdfhm dit uscat ilrcpc flagm sb paca pacg dcpodp flagm2 frint
+CPU implementer	: 0x41
+CPU architecture: 8
+CPU variant	: 0x0
+CPU part	: 0x000
+CPU revision	: 0
+
+processor	: 3
+BogoMIPS	: 48.00
+Features	: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 asimddp sha512 asimdfhm dit uscat ilrcpc flagm sb paca pacg dcpodp flagm2 frint
+
+======================================
+  BOOT INFORMATION
+======================================
+Cmdline: BOOT_IMAGE=/boot/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage quiet
+
+EFI boot: YES
+EFI runtime services: efivars fw_platform_size systab 
+EFI vars count: 31
+
+======================================
+  MEMORY LAYOUT
+======================================
+--- /proc/meminfo ---
+MemTotal:        2017492 kB
+MemFree:         1713256 kB
+MemAvailable:    1847716 kB
+Buffers:             244 kB
+Cached:           203764 kB
+SwapCached:            0 kB
+Active:            19876 kB
+Inactive:         181944 kB
+Active(anon):      19876 kB
+Inactive(anon):        0 kB
+
+--- dmesg memory ---
+[    0.000000] NUMA: Faking a node at [mem 0x0000000040000000-0x00000000bfffffff]
+[    0.000000] Zone ranges:
+[    0.000000] Movable zone start for each node
+[    0.000000] Early memory node ranges
+[    0.000000]   node   0: [mem 0x0000000040000000-0x00000000bbe0ffff]
+[    0.000000]   node   0: [mem 0x00000000bbe10000-0x00000000bbeaffff]
+[    0.000000]   node   0: [mem 0x00000000bbeb0000-0x00000000bbf0ffff]
+[    0.000000]   node   0: [mem 0x00000000bbf10000-0x00000000bbf1ffff]
+[    0.000000]   node   0: [mem 0x00000000bbf20000-0x00000000bbf2ffff]
+[    0.000000]   node   0: [mem 0x00000000bbf30000-0x00000000bbffffff]
+[    0.000000]   node   0: [mem 0x00000000bc000000-0x00000000bc01ffff]
+[    0.000000]   node   0: [mem 0x00000000bc020000-0x00000000bc05ffff]
+[    0.000000]   node   0: [mem 0x00000000bc060000-0x00000000bf54ffff]
+[    0.000000]   node   0: [mem 0x00000000bf550000-0x00000000bf92ffff]
+[    0.000000]   node   0: [mem 0x00000000bf930000-0x00000000bfffffff]
+[    0.000000] Initmem setup node 0 [mem 0x0000000040000000-0x00000000bfffffff]
+[    0.000000] cma: Reserved 16 MiB at 0x00000000bac00000 on node -1
+[    0.000000] Fallback order for Node 0: 0 
+[    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 524288
+[    0.000000] Policy zone: DMA
+
+======================================
+  VIRTIO DEVICES
+======================================
+--- /sys/bus/virtio/devices ---
+  virtio0: vendor=0x1ab8 device=0x0005
+  virtio1: vendor=0x1ab8 device=0x0001
+  virtio2: vendor=0x1ab8 device=0x0010
+  virtio3: vendor=0x1ab8 device=0x0013
+
+======================================
+  SERIAL PORTS
+======================================
+[    0.070274] Serial: AMBA PL011 UART driver
+[    0.078424] ARMH0011:00: ttyAMA0 at MMIO 0x2110000 (irq = 16, base_baud = 0) is a SBSA
+[    0.088722] Serial: 8250/16550 driver, 4 ports, IRQ sharing enabled
+[    0.088941] Serial: AMBA driver
+[    2.249846] usb usb1: New USB device strings: Mfr=3, Product=2, SerialNumber=1
+[    2.249848] usb usb1: SerialNumber: 0000:00:03.0
+[    2.250265] usb usb2: New USB device strings: Mfr=3, Product=2, SerialNumber=1
+[    2.250269] usb usb2: SerialNumber: 0000:00:03.0
+[    2.270187] usb usb3: New USB device strings: Mfr=3, Product=2, SerialNumber=1
+[    2.270189] usb usb3: SerialNumber: 0000:00:02.0
+[    2.590428] usb 2-1: New USB device strings: Mfr=1, Product=2, SerialNumber=3
+[    2.590431] usb 2-1: SerialNumber: PW3.0
+[    2.720906] usb 2-2: New USB device strings: Mfr=1, Product=2, SerialNumber=3
+[    2.720910] usb 2-2: SerialNumber: KBD1.1
+[    2.957344] usb 2-3: New USB device strings: Mfr=1, Product=2, SerialNumber=3
+[    2.957348] usb 2-3: SerialNumber: 1F06D5FF-4C76-410E-9770-C04C467C1317
+
+======================================
+  TIMER
+======================================
+[    0.000000] arch_timer: cp15 timer(s) running at 24.00MHz (virt).
+[    0.000000] clocksource: arch_sys_counter: mask: 0xffffffffffffff max_cycles: 0x588fe9dc0, max_idle_ns: 440795202592 ns
+[    0.001977] Calibrating delay loop (skipped), value calculated using timer frequency.. 48.00 BogoMIPS (lpj=80000)
+[    0.026315] Timer migration: 1 hierarchy levels; 8 children per group; 1 crossnode level
+[    0.067529] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 6370867519511994 ns
+[    0.079316] clocksource: Switched to clocksource arch_sys_counter
+======================================
+  DUMP COMPLETE
+======================================
+
+All files saved to: /tmp/hwdump
+Files:
+total 52
+drwxr-xr-x    3 root     root           220 Feb 19 10:46 .
+drwxrwxrwt    5 root     root           100 Feb 19 10:46 ..
+drwxr-xr-x    2 root     root           100 Feb 19 10:46 acpi
+-rw-r--r--    1 root     root          1300 Feb 19 10:46 cpuinfo.txt
+-r--------    1 root     root           450 Feb 19 10:46 guest.dtb
+-rw-r--r--    1 root     root           375 Feb 19 10:46 guest.dts
+-rw-r--r--    1 root     root          2260 Feb 19 10:46 interrupts.txt
+-rw-r--r--    1 root     root          1883 Feb 19 10:46 iomem.txt
+-rw-r--r--    1 root     root           700 Feb 19 10:46 lspci-ids.txt
+-rw-r--r--    1 root     root          8352 Feb 19 10:46 lspci-verbose.txt
+-rw-r--r--    1 root     root         12883 Feb 19 10:46 summary.txt
+
+ACPI files:
+total 16
+drwxr-xr-x    2 root     root           100 Feb 19 10:46 .
+drwxr-xr-x    3 root     root           220 Feb 19 10:46 ..
+-r--------    1 root     root          4291 Feb 19 10:46 DSDT.bin
+-r--------    1 root     root            96 Feb 19 10:46 GTDT.bin
+-r--------    1 root     root            60 Feb 19 10:46 MCFG.bin

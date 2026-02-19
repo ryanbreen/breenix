@@ -1,0 +1,57 @@
+02010000-0201ffff : GICD
+02110000-02110fff : ARMH0011:00
+  02110000-02110fff : ARMH0011:00 ARMH0011:00
+02140000-02141fff : PRL4010:00
+  02140000-02141fff : PRL4010:00 PRL4010:00
+021a0000-021a3fff : PRL4006:00
+  021a0000-021a3fff : PRL4006:00 PRL4006:00
+02300000-023fffff : PCI ECAM
+02500000-0257ffff : GICR
+10000000-1fffffff : PCI Bus 0000:00
+  10000000-13ffffff : 0000:00:0a.0
+  14000000-14003fff : 0000:00:01.0
+    14000000-14003fff : ICH HD audio
+  14004000-14007fff : 0000:00:0a.0
+    14004000-14007fff : virtio-pci-modern
+  14008000-1400bfff : 0000:00:0e.0
+    14008000-1400bfff : virtio-pci-modern
+  1400c000-1400cfff : 0000:00:03.0
+    1400c000-1400cfff : xhci-hcd
+  1400d000-1400dfff : 0000:00:05.0
+    1400d000-1400dfff : virtio-pci-legacy
+  1400e000-1400efff : 0000:00:05.0
+  1400f000-1400ffff : 0000:00:09.0
+  14010000-14010fff : 0000:00:0a.0
+  14011000-14011fff : 0000:00:0e.0
+  14012000-140123ff : 0000:00:02.0
+    14012000-140123ff : ehci_hcd
+40000000-bbe0ffff : System RAM
+  40010000-4154ffff : Kernel code
+  41550000-4188ffff : reserved
+  41890000-41edffff : Kernel data
+  b7680000-b7680fff : reserved
+  b7880000-b8838fff : reserved
+  b8840000-b884ffff : reserved
+  bac00000-bbbfffff : reserved
+  bbc68000-bbc68fff : reserved
+bbe10000-bbeaffff : reserved
+bbeb0000-bbf0ffff : System RAM
+  bbeb0000-bbf0ffff : reserved
+bbf10000-bbf1ffff : reserved
+bbf20000-bbf2ffff : System RAM
+  bbf20000-bbf2ffff : reserved
+bbf30000-bbffffff : reserved
+bc000000-bc01ffff : System RAM
+bc020000-bc05ffff : reserved
+bc060000-bf54ffff : System RAM
+  bc060000-bc07ffff : reserved
+  bc600000-be5fffff : reserved
+  be6c4000-be6c4fff : reserved
+  bf007000-bf54ffff : reserved
+bf550000-bf92ffff : reserved
+bf930000-bfffffff : System RAM
+  bf950000-bf955fff : reserved
+  bf956000-bf956fff : reserved
+  bf957000-bf9defff : reserved
+  bf9e1000-bf9e3fff : reserved
+  bf9e4000-bfffffff : reserved

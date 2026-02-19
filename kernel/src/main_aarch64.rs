@@ -36,11 +36,7 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
 
     // Raw serial character output - no locks, minimal code
     fn raw_char(c: u8) {
-        // Use constant HHDM base instead of calling physical_memory_offset()
-        // to minimize code paths
-        const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
-        const PL011_BASE: u64 = 0x0900_0000;
-        let addr = (HHDM_BASE + PL011_BASE) as *mut u32;
+        let addr = kernel::platform_config::uart_virt() as *mut u32;
         unsafe { core::ptr::write_volatile(addr, c as u32); }
     }
 
@@ -242,7 +238,14 @@ use kernel::drivers::virtio::input_mmio;
 /// - MMU is already enabled by boot.S (high-half kernel)
 #[no_mangle]
 #[cfg_attr(feature = "kthread_test_only", allow(unreachable_code))]
-pub extern "C" fn kernel_main() -> ! {
+pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
+    // If the UEFI loader passed a HardwareConfig, use it to configure platform
+    // addresses before any hardware access. On QEMU (boot.S), x0 is 0.
+    if hw_config_ptr != 0 {
+        let config = unsafe { &*(hw_config_ptr as *const kernel::platform_config::HardwareConfig) };
+        kernel::platform_config::init_from_parallels(config);
+    }
+
     // Initialize physical memory offset (needed for MMIO access)
     kernel::memory::init_physical_memory_offset_aarch64();
 
@@ -266,10 +269,11 @@ pub extern "C" fn kernel_main() -> ! {
 
     // Initialize memory management for ARM64
     // ARM64 QEMU virt machine: RAM starts at 0x40000000
-    // We use 0x42000000..0x50000000 (224MB) for frame allocation
-    // Kernel stacks are at 0x51000000..0x52000000 (16MB)
-    serial_println!("[boot] Initializing memory management...");
-    kernel::memory::frame_allocator::init_aarch64(0x4200_0000, 0x5000_0000);
+    // Frame allocator range from platform_config (QEMU defaults or HardwareConfig)
+    let fa_start = kernel::platform_config::frame_alloc_start();
+    let fa_end = kernel::platform_config::frame_alloc_end();
+    serial_println!("[boot] Initializing memory management ({:#x}-{:#x})...", fa_start, fa_end);
+    kernel::memory::frame_allocator::init_aarch64(fa_start, fa_end);
     kernel::memory::init_aarch64_heap();
     kernel::memory::kernel_stack::init();
     serial_println!("[boot] Memory management ready");
@@ -574,9 +578,7 @@ pub extern "C" fn kernel_main() -> ! {
 
     // Raw char helper for debugging
     fn boot_raw_char(c: u8) {
-        const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
-        const PL011_BASE: u64 = 0x0900_0000;
-        let addr = (HHDM_BASE + PL011_BASE) as *mut u32;
+        let addr = kernel::platform_config::uart_virt() as *mut u32;
         unsafe { core::ptr::write_volatile(addr, c as u32); }
     }
 

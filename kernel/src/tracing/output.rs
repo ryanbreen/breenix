@@ -156,9 +156,8 @@ fn raw_serial_char(c: u8) {
 
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        // PL011 UART at 0x09000000 (QEMU virt)
-        let uart_base: *mut u8 = 0x0900_0000 as *mut u8;
-        core::ptr::write_volatile(uart_base, c);
+        let uart_addr = crate::platform_config::uart_virt() as *mut u8;
+        core::ptr::write_volatile(uart_addr, c);
     }
 }
 

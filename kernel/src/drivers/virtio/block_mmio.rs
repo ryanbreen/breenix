@@ -450,9 +450,7 @@ fn read_sector_inner(device_index: usize, sector: u64, buffer: &mut [u8; SECTOR_
     // Raw serial character for debugging (no locks)
     #[inline(always)]
     fn raw_char(c: u8) {
-        const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
-        const PL011_BASE: u64 = 0x0900_0000;
-        let addr = (HHDM_BASE + PL011_BASE) as *mut u32;
+        let addr = crate::platform_config::uart_virt() as *mut u32;
         unsafe { core::ptr::write_volatile(addr, c as u32); }
     }
 

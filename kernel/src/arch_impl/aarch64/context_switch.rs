@@ -163,13 +163,9 @@ pub fn dump_dispatch_trace(cpu_id: usize) {
 #[inline(always)]
 #[allow(dead_code)]
 pub fn raw_uart_char(c: u8) {
-    // QEMU virt machine UART via HHDM (TTBR1-mapped, safe during context switch)
-    // Physical 0x0900_0000 is mapped at HHDM_BASE + 0x0900_0000
-    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
-    const UART_VIRT: u64 = HHDM_BASE + 0x0900_0000;
+    let addr = crate::platform_config::uart_virt() as *mut u8;
     unsafe {
-        let ptr = UART_VIRT as *mut u8;
-        core::ptr::write_volatile(ptr, c);
+        core::ptr::write_volatile(addr, c);
     }
 }
 

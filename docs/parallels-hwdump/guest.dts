@@ -1,0 +1,15 @@
+/dts-v1/;
+
+/ {
+	#size-cells = <0x02>;
+	#address-cells = <0x02>;
+
+	chosen {
+		linux,uefi-mmap-desc-ver = <0x01>;
+		linux,uefi-mmap-desc-size = <0x30>;
+		linux,uefi-mmap-size = <0x7b0>;
+		linux,uefi-mmap-start = <0x00 0xb884e9c0>;
+		linux,uefi-system-table = <0x00 0xbf920018>;
+		bootargs = "BOOT_IMAGE=/boot/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage quiet";
+	};
+};

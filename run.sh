@@ -11,6 +11,8 @@
 #   ./run.sh --x86 --headless  # x86_64 with serial output only
 #   ./run.sh --no-build        # Skip all builds, use existing artifacts
 #   ./run.sh --resolution 1920x1080  # Custom resolution
+#   ./run.sh --parallels       # Build and boot on Parallels Desktop
+#   ./run.sh --parallels --no-build  # Deploy existing build to Parallels
 #   ./run.sh --btrt            # ARM64 BTRT structured boot test
 #   ./run.sh --btrt --x86      # x86_64 BTRT structured boot test
 #
@@ -31,6 +33,8 @@ HEADLESS=false
 CLEAN=false
 NO_BUILD=false
 BTRT=false
+PARALLELS=false
+PARALLELS_VM="breenix-dev"
 DEBUG=false
 REBUILD_HOME=false
 RESOLUTION=""
@@ -53,6 +57,15 @@ while [[ $# -gt 0 ]]; do
         --no-build)
             NO_BUILD=true
             shift
+            ;;
+        --parallels)
+            PARALLELS=true
+            ARCH="arm64"
+            shift
+            ;;
+        --vm)
+            PARALLELS_VM="$2"
+            shift 2
             ;;
         --btrt)
             BTRT=true
@@ -87,6 +100,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-build                 Skip all builds, use existing artifacts"
             echo "  --x86, --x86_64, --amd64   Run x86_64 kernel (default: ARM64)"
             echo "  --arm64, --aarch64         Run ARM64 kernel (default)"
+            echo "  --parallels                Build and boot on Parallels Desktop VM"
+            echo "  --vm NAME                  Parallels VM name (default: breenix-dev)"
             echo "  --headless, --serial       Run without display (serial only)"
             echo "  --graphics, --vnc          Run with VNC display (default)"
             echo "  --btrt                     Run BTRT structured boot test"
@@ -126,6 +141,150 @@ if [ "$BTRT" = true ]; then
     echo "========================================="
     echo ""
     exec cargo run -p xtask -- boot-test-btrt --arch "$BTRT_ARCH"
+fi
+
+# Parallels mode: build, deploy, boot on Parallels Desktop
+if [ "$PARALLELS" = true ]; then
+    echo ""
+    echo "========================================="
+    echo "Breenix on Parallels Desktop"
+    echo "========================================="
+    echo ""
+    echo "VM: $PARALLELS_VM"
+
+    if ! command -v prlctl &>/dev/null; then
+        echo "ERROR: prlctl not found. Is Parallels Desktop installed?"
+        exit 1
+    fi
+
+    EFI_IMG="$BREENIX_ROOT/target/parallels/breenix-efi.img"
+
+    if [ "$NO_BUILD" = true ]; then
+        echo "Skipping builds (--no-build)"
+        if [ ! -f "$EFI_IMG" ]; then
+            echo "ERROR: No EFI image found at $EFI_IMG"
+            echo "Run without --no-build first to create it."
+            exit 1
+        fi
+    else
+        # Build the UEFI loader
+        echo "[1/3] Building UEFI loader..."
+        cargo build --release --target aarch64-unknown-uefi -p parallels-loader
+
+        # Build the kernel
+        echo ""
+        echo "[2/3] Building kernel..."
+        cargo build --release --target aarch64-breenix.json \
+            -Z build-std=core,alloc \
+            -Z build-std-features=compiler-builtins-mem \
+            -p kernel --bin kernel-aarch64
+
+        # Create EFI disk image
+        echo ""
+        echo "[3/3] Creating EFI disk image..."
+
+        LOADER_EFI="$BREENIX_ROOT/target/aarch64-unknown-uefi/release/parallels-loader.efi"
+        KERNEL_ELF="$BREENIX_ROOT/target/aarch64-breenix/release/kernel-aarch64"
+
+        if [ ! -f "$LOADER_EFI" ]; then
+            echo "ERROR: UEFI loader not found at $LOADER_EFI"
+            exit 1
+        fi
+        if [ ! -f "$KERNEL_ELF" ]; then
+            echo "ERROR: Kernel not found at $KERNEL_ELF"
+            exit 1
+        fi
+
+        # Create ESP directory structure
+        ESP_DIR="$BREENIX_ROOT/target/parallels/esp"
+        rm -rf "$ESP_DIR"
+        mkdir -p "$ESP_DIR/EFI/BOOT"
+        mkdir -p "$ESP_DIR/EFI/BREENIX"
+        cp "$LOADER_EFI" "$ESP_DIR/EFI/BOOT/BOOTAA64.EFI"
+        cp "$KERNEL_ELF" "$ESP_DIR/EFI/BREENIX/KERNEL"
+
+        # Create FAT32 disk image (64 MB)
+        mkdir -p "$BREENIX_ROOT/target/parallels"
+        FAT_IMG="$BREENIX_ROOT/target/parallels/esp.fat32.img"
+        dd if=/dev/zero of="$FAT_IMG" bs=1m count=64 2>/dev/null
+
+        if command -v newfs_msdos &>/dev/null; then
+            newfs_msdos -F 32 -S 512 "$FAT_IMG" 2>/dev/null
+        elif command -v mkfs.fat &>/dev/null; then
+            mkfs.fat -F 32 "$FAT_IMG"
+        else
+            echo "ERROR: No FAT32 formatter found (need newfs_msdos or mkfs.fat)"
+            exit 1
+        fi
+
+        if command -v mcopy &>/dev/null; then
+            mmd -i "$FAT_IMG" ::EFI 2>/dev/null || true
+            mmd -i "$FAT_IMG" ::EFI/BOOT 2>/dev/null || true
+            mmd -i "$FAT_IMG" ::EFI/BREENIX 2>/dev/null || true
+            mcopy -i "$FAT_IMG" "$ESP_DIR/EFI/BOOT/BOOTAA64.EFI" ::EFI/BOOT/BOOTAA64.EFI
+            mcopy -i "$FAT_IMG" "$ESP_DIR/EFI/BREENIX/KERNEL" ::EFI/BREENIX/KERNEL
+        else
+            echo "ERROR: mtools not found. Install with: brew install mtools"
+            exit 1
+        fi
+
+        mv "$FAT_IMG" "$EFI_IMG"
+        echo "EFI image: $EFI_IMG"
+    fi
+
+    # Deploy to Parallels VM
+    echo ""
+    echo "--- Deploying to Parallels VM '$PARALLELS_VM' ---"
+
+    # Check if VM exists
+    if ! prlctl list --all 2>/dev/null | grep -q "$PARALLELS_VM"; then
+        echo "VM '$PARALLELS_VM' not found. Creating it..."
+        prlctl create "$PARALLELS_VM" --ostype linux --arch aarch64
+        prlctl set "$PARALLELS_VM" --efi-boot on
+        prlctl set "$PARALLELS_VM" --memsize 2048
+        prlctl set "$PARALLELS_VM" --cpus 4
+    fi
+
+    # Stop VM if running
+    VM_STATUS=$(prlctl status "$PARALLELS_VM" 2>/dev/null | awk '{print $NF}')
+    if [ "$VM_STATUS" = "running" ] || [ "$VM_STATUS" = "paused" ]; then
+        echo "Stopping VM..."
+        prlctl stop "$PARALLELS_VM" --kill 2>/dev/null || true
+        sleep 2
+    fi
+
+    # Attach the EFI disk image
+    prlctl set "$PARALLELS_VM" --device-del hdd0 2>/dev/null || true
+
+    VM_DIR=$(prlctl list --info "$PARALLELS_VM" 2>/dev/null | grep "Home:" | sed 's/.*Home: *//' | tr -d ' ')
+    if [ -z "$VM_DIR" ]; then
+        VM_DIR="$HOME/Parallels/$PARALLELS_VM.pvm"
+    fi
+
+    DEST_IMG="$VM_DIR/breenix-efi.img"
+    cp "$EFI_IMG" "$DEST_IMG"
+    prlctl set "$PARALLELS_VM" --device-add hdd --image "$DEST_IMG" --type plain --position 0 2>/dev/null || \
+        echo "WARNING: Could not attach disk via prlctl. Attach manually in Parallels settings."
+    prlctl set "$PARALLELS_VM" --efi-boot on 2>/dev/null || true
+
+    # Boot the VM
+    echo ""
+    echo "Starting VM '$PARALLELS_VM'..."
+    prlctl start "$PARALLELS_VM"
+
+    echo ""
+    echo "========================================="
+    echo "Breenix running on Parallels"
+    echo "========================================="
+    echo "VM:     $PARALLELS_VM"
+    echo "Stop:   prlctl stop $PARALLELS_VM"
+    echo "Serial: Check Parallels VM settings for serial port output"
+    echo ""
+    echo "To configure serial output to a file:"
+    echo "  prlctl set $PARALLELS_VM --device-add serial --output /tmp/breenix-parallels-serial.log"
+    echo "  tail -f /tmp/breenix-parallels-serial.log"
+
+    exit 0
 fi
 
 # Route to architecture-specific runner
