@@ -350,9 +350,15 @@ pub fn read_datetime() -> DateTime {
     }
 }
 
-/// Initialize RTC and cache boot time
+/// Initialize RTC and cache boot time.
+/// PL031 is only present on QEMU virt; skip on other platforms.
 #[cfg(target_arch = "aarch64")]
 pub fn init() {
+    if !crate::platform_config::is_qemu() {
+        log::info!("PL031 RTC not available on this platform, skipping");
+        BOOT_WALL_TIME.store(0, Ordering::Relaxed);
+        return;
+    }
     match read_rtc_time() {
         Ok(timestamp) => {
             BOOT_WALL_TIME.store(timestamp, Ordering::Relaxed);

@@ -28,6 +28,69 @@ use crate::drivers::pci;
 /// HHDM base for memory-mapped access.
 const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
 
+/// Convert a kernel virtual address to a physical address.
+///
+/// On QEMU, kernel statics are accessed via HHDM (>= 0xFFFF_0000_0000_0000),
+/// so phys = virt - HHDM_BASE.
+/// On Parallels, the kernel runs identity-mapped via TTBR0, so statics are
+/// at their physical addresses already (e.g., 0x400xxxxx).
+#[inline]
+fn virt_to_phys(virt: u64) -> u64 {
+    if virt >= HHDM_BASE {
+        virt - HHDM_BASE
+    } else {
+        virt // Already a physical address (identity-mapped kernel)
+    }
+}
+
+/// Clean (flush) a range of memory from CPU caches to the point of coherency.
+///
+/// Must be called after writing DMA descriptors/data and before issuing
+/// DMA commands, so the device sees the updated data in physical memory.
+#[cfg(target_arch = "aarch64")]
+fn dma_cache_clean(ptr: *const u8, len: usize) {
+    const CACHE_LINE: usize = 64;
+    let start = ptr as usize & !(CACHE_LINE - 1);
+    let end = (ptr as usize + len + CACHE_LINE - 1) & !(CACHE_LINE - 1);
+    for addr in (start..end).step_by(CACHE_LINE) {
+        unsafe {
+            core::arch::asm!("dc cvac, {}", in(reg) addr, options(nostack));
+        }
+    }
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+}
+
+/// Invalidate a range of memory in CPU caches after a device DMA write.
+///
+/// Must be called after a DMA read completes and before the CPU reads
+/// the DMA buffer, to ensure the CPU sees the device-written data.
+#[cfg(target_arch = "aarch64")]
+fn dma_cache_invalidate(ptr: *const u8, len: usize) {
+    const CACHE_LINE: usize = 64;
+    let start = ptr as usize & !(CACHE_LINE - 1);
+    let end = (ptr as usize + len + CACHE_LINE - 1) & !(CACHE_LINE - 1);
+    for addr in (start..end).step_by(CACHE_LINE) {
+        unsafe {
+            core::arch::asm!("dc civac, {}", in(reg) addr, options(nostack));
+        }
+    }
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+}
+
+/// No-op cache maintenance on x86_64 (DMA coherent by default).
+#[cfg(not(target_arch = "aarch64"))]
+#[inline]
+fn dma_cache_clean(_ptr: *const u8, _len: usize) {}
+
+/// No-op cache maintenance on x86_64 (DMA coherent by default).
+#[cfg(not(target_arch = "aarch64"))]
+#[inline]
+fn dma_cache_invalidate(_ptr: *const u8, _len: usize) {}
+
 /// Sector size in bytes (standard for SATA).
 pub const SECTOR_SIZE: usize = 512;
 
@@ -248,7 +311,7 @@ struct PortDmaMem {
 
 /// Static DMA memory for up to 2 ports.
 /// These are page-aligned for DMA safety.
-const MAX_AHCI_PORTS: usize = 2;
+const MAX_AHCI_PORTS: usize = 4;
 static PORT_DMA: Mutex<[Option<&'static mut PortDmaMem>; MAX_AHCI_PORTS]> =
     Mutex::new([const { None }; MAX_AHCI_PORTS]);
 
@@ -344,6 +407,26 @@ impl AhciController {
         pci_dev.enable_bus_master();
         pci_dev.enable_memory_space();
 
+        Self::init_common(abar_virt)
+    }
+
+    /// Create and initialize an AHCI controller from a known MMIO base address.
+    ///
+    /// Used for platform devices (e.g., Parallels Desktop) where the AHCI
+    /// controller is not on the PCI bus but at a fixed MMIO address.
+    fn init_from_mmio(abar_phys: u64) -> Result<Self, &'static str> {
+        let abar_virt = HHDM_BASE + abar_phys;
+
+        crate::serial_println!("[ahci] Platform AHCI at phys {:#x}, virt {:#x}", abar_phys, abar_virt);
+
+        Self::init_common(abar_virt)
+    }
+
+    /// Common AHCI controller initialization.
+    ///
+    /// Enables AHCI mode, reads capabilities, discovers ports, and
+    /// issues IDENTIFY DEVICE to each connected SATA drive.
+    fn init_common(abar_virt: u64) -> Result<Self, &'static str> {
         // Enable AHCI mode
         let ghc = hba_read(abar_virt, HBA_GHC);
         hba_write(abar_virt, HBA_GHC, ghc | GHC_AE);
@@ -428,16 +511,18 @@ impl AhciController {
             // But since we're using a static, we compute it differently.
             // The DMA storage is at a known kernel static address.
             // On ARM64, kernel statics are at HHDM + physical, so:
-            port_dma_addr as u64 - HHDM_BASE
+            virt_to_phys(port_dma_addr as u64)
         };
 
-        // Zero the DMA memory
+        // Zero the DMA memory and flush to physical RAM
         let dma_lock = PORT_DMA.lock();
         if let Some(dma_mem) = &dma_lock[dma_index] {
             let ptr = *dma_mem as *const PortDmaMem as *mut u8;
+            let size = core::mem::size_of::<PortDmaMem>();
             unsafe {
-                core::ptr::write_bytes(ptr, 0, core::mem::size_of::<PortDmaMem>());
+                core::ptr::write_bytes(ptr, 0, size);
             }
+            dma_cache_clean(ptr as *const u8, size);
         }
         drop(dma_lock);
 
@@ -587,12 +672,12 @@ impl AhciController {
         let cmd_table_phys = unsafe {
             let storage = &raw const DMA_STORAGE;
             let table_addr = core::ptr::addr_of!((*storage).ports[dma_index].cmd_table);
-            table_addr as u64 - HHDM_BASE
+            virt_to_phys(table_addr as u64)
         };
         let dma_buf_phys = unsafe {
             let storage = &raw const DMA_STORAGE;
             let buf_addr = core::ptr::addr_of!((*storage).ports[dma_index].dma_buf);
-            buf_addr as u64 - HHDM_BASE
+            virt_to_phys(buf_addr as u64)
         };
 
         // Command header: CFL=5 (5 dwords = 20 bytes for H2D FIS), 1 PRDT entry
@@ -617,17 +702,25 @@ impl AhciController {
         dma.cmd_table.prdt[0]._reserved = 0;
         dma.cmd_table.prdt[0].dbc = (SECTOR_SIZE as u32 - 1) | (1 << 31); // byte count - 1, IOC
 
-        // Ensure writes are visible before issuing command
+        // Ensure CPU writes are visible to the DMA device
         core::sync::atomic::fence(Ordering::SeqCst);
+        {
+            let dma_ptr = &**dma as *const PortDmaMem as *const u8;
+            dma_cache_clean(dma_ptr, core::mem::size_of::<PortDmaMem>());
+        }
 
         drop(dma_lock);
 
         // Issue the command
         self.issue_cmd_slot0(port)?;
 
-        // Read identify data from DMA buffer
+        // Invalidate cache for DMA buffer before reading device-written data
         let dma_lock = PORT_DMA.lock();
         let dma = dma_lock[dma_index].as_ref().ok_or("AHCI: no DMA memory")?;
+        {
+            let buf_ptr = dma.dma_buf.as_ptr();
+            dma_cache_invalidate(buf_ptr, SECTOR_SIZE);
+        }
 
         // Words 100-103 contain the 48-bit LBA sector count (u64)
         let buf = &dma.dma_buf;
@@ -662,12 +755,12 @@ impl AhciController {
         let cmd_table_phys = unsafe {
             let storage = &raw const DMA_STORAGE;
             let table_addr = core::ptr::addr_of!((*storage).ports[dma_index].cmd_table);
-            table_addr as u64 - HHDM_BASE
+            virt_to_phys(table_addr as u64)
         };
         let dma_buf_phys = unsafe {
             let storage = &raw const DMA_STORAGE;
             let buf_addr = core::ptr::addr_of!((*storage).ports[dma_index].dma_buf);
-            buf_addr as u64 - HHDM_BASE
+            virt_to_phys(buf_addr as u64)
         };
 
         // Command header: CFL=5, PRDTL=1, not a write
@@ -700,14 +793,23 @@ impl AhciController {
         dma.cmd_table.prdt[0]._reserved = 0;
         dma.cmd_table.prdt[0].dbc = (SECTOR_SIZE as u32 - 1) | (1 << 31);
 
+        // Ensure CPU writes are visible to the DMA device
         core::sync::atomic::fence(Ordering::SeqCst);
+        {
+            let dma_ptr = &**dma as *const PortDmaMem as *const u8;
+            dma_cache_clean(dma_ptr, core::mem::size_of::<PortDmaMem>());
+        }
         drop(dma_lock);
 
         self.issue_cmd_slot0(port)?;
 
-        // Copy data from DMA buffer
+        // Invalidate cache before reading device-written DMA buffer
         let dma_lock = PORT_DMA.lock();
         let dma = dma_lock[dma_index].as_ref().ok_or("AHCI: no DMA memory")?;
+        {
+            let buf_ptr = dma.dma_buf.as_ptr();
+            dma_cache_invalidate(buf_ptr, SECTOR_SIZE);
+        }
         buffer.copy_from_slice(&dma.dma_buf);
 
         Ok(())
@@ -723,12 +825,12 @@ impl AhciController {
         let cmd_table_phys = unsafe {
             let storage = &raw const DMA_STORAGE;
             let table_addr = core::ptr::addr_of!((*storage).ports[dma_index].cmd_table);
-            table_addr as u64 - HHDM_BASE
+            virt_to_phys(table_addr as u64)
         };
         let dma_buf_phys = unsafe {
             let storage = &raw const DMA_STORAGE;
             let buf_addr = core::ptr::addr_of!((*storage).ports[dma_index].dma_buf);
-            buf_addr as u64 - HHDM_BASE
+            virt_to_phys(buf_addr as u64)
         };
 
         // Copy data to DMA buffer first
@@ -764,7 +866,12 @@ impl AhciController {
         dma.cmd_table.prdt[0]._reserved = 0;
         dma.cmd_table.prdt[0].dbc = (SECTOR_SIZE as u32 - 1) | (1 << 31);
 
+        // Ensure CPU writes (command + data) are visible to the DMA device
         core::sync::atomic::fence(Ordering::SeqCst);
+        {
+            let dma_ptr = &**dma as *const PortDmaMem as *const u8;
+            dma_cache_clean(dma_ptr, core::mem::size_of::<PortDmaMem>());
+        }
         drop(dma_lock);
 
         self.issue_cmd_slot0(port)
@@ -780,7 +887,7 @@ impl AhciController {
         let cmd_table_phys = unsafe {
             let storage = &raw const DMA_STORAGE;
             let table_addr = core::ptr::addr_of!((*storage).ports[dma_index].cmd_table);
-            table_addr as u64 - HHDM_BASE
+            virt_to_phys(table_addr as u64)
         };
 
         // Command header: CFL=5, PRDTL=0 (no data transfer)
@@ -795,7 +902,12 @@ impl AhciController {
         dma.cmd_table.cfis[2] = ATA_CMD_FLUSH_EXT;
         dma.cmd_table.cfis[7] = 0x40;
 
+        // Ensure CPU writes are visible to the DMA device
         core::sync::atomic::fence(Ordering::SeqCst);
+        {
+            let dma_ptr = &**dma as *const PortDmaMem as *const u8;
+            dma_cache_clean(dma_ptr, core::mem::size_of::<PortDmaMem>());
+        }
         drop(dma_lock);
 
         self.issue_cmd_slot0(port)
@@ -908,24 +1020,70 @@ pub fn init() -> Result<usize, &'static str> {
     Ok(sata_count)
 }
 
+/// Initialize the AHCI driver from a known platform MMIO base address.
+///
+/// Used on platforms like Parallels Desktop where the SATA controller
+/// is an ACPI platform device at a fixed MMIO address, not a PCI device.
+///
+/// Returns the number of SATA devices found.
+pub fn init_platform(abar_phys: u64) -> Result<usize, &'static str> {
+    if AHCI_INITIALIZED.load(Ordering::Relaxed) {
+        return Ok(0);
+    }
+
+    let controller = AhciController::init_from_mmio(abar_phys)?;
+
+    let sata_count = controller
+        .ports
+        .iter()
+        .filter(|p| matches!(p, Some(port) if port.device_type == DeviceType::Sata))
+        .count();
+
+    *AHCI_CONTROLLER.lock() = Some(controller);
+    AHCI_INITIALIZED.store(true, Ordering::Release);
+
+    Ok(sata_count)
+}
+
 /// Get an AHCI block device for the first SATA port.
 ///
 /// Returns None if AHCI is not initialized or no SATA devices found.
 pub fn get_block_device() -> Option<AhciBlockDevice> {
+    get_block_device_by_index(0)
+}
+
+/// Get the Nth AHCI SATA block device (0-indexed).
+///
+/// Skips non-SATA ports and ports with 0 sectors.
+/// Returns None if the index is out of range.
+pub fn get_block_device_by_index(index: usize) -> Option<AhciBlockDevice> {
     let ctrl = AHCI_CONTROLLER.lock();
     let ctrl = ctrl.as_ref()?;
 
-    for port in ctrl.ports.iter().flatten() {
-        if port.device_type == DeviceType::Sata && port.sector_count > 0 {
-            return Some(AhciBlockDevice {
-                port_num: port.port_num,
-                dma_index: port.dma_index,
-                sector_count: port.sector_count,
-            });
-        }
-    }
+    ctrl.ports
+        .iter()
+        .flatten()
+        .filter(|port| port.device_type == DeviceType::Sata && port.sector_count > 0)
+        .nth(index)
+        .map(|port| AhciBlockDevice {
+            port_num: port.port_num,
+            dma_index: port.dma_index,
+            sector_count: port.sector_count,
+        })
+}
 
-    None
+/// Return the number of SATA block devices available.
+pub fn sata_device_count() -> usize {
+    let ctrl = AHCI_CONTROLLER.lock();
+    match ctrl.as_ref() {
+        Some(ctrl) => ctrl
+            .ports
+            .iter()
+            .flatten()
+            .filter(|port| port.device_type == DeviceType::Sata && port.sector_count > 0)
+            .count(),
+        None => 0,
+    }
 }
 
 /// Check if AHCI is initialized.

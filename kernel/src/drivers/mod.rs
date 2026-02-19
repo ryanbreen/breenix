@@ -101,13 +101,24 @@ pub fn init() -> usize {
         }
         serial_println!("[drivers] Found {} VirtIO PCI devices", virtio_devices.len());
 
-        // Initialize AHCI storage driver
+        // Initialize AHCI storage driver.
+        // First try PCI (standard AHCI), then platform MMIO (Parallels Desktop).
         match ahci::init() {
             Ok(count) => {
-                serial_println!("[drivers] AHCI initialized: {} SATA device(s)", count);
+                serial_println!("[drivers] AHCI initialized (PCI): {} SATA device(s)", count);
             }
-            Err(e) => {
-                serial_println!("[drivers] AHCI init skipped: {}", e);
+            Err(_) => {
+                // No PCI AHCI controller found. On Parallels Desktop, the SATA
+                // controller is an ACPI platform device at 0x0214_0000, not on PCI.
+                const PARALLELS_AHCI_BASE: u64 = 0x0214_0000;
+                match ahci::init_platform(PARALLELS_AHCI_BASE) {
+                    Ok(count) => {
+                        serial_println!("[drivers] AHCI initialized (platform MMIO): {} SATA device(s)", count);
+                    }
+                    Err(e) => {
+                        serial_println!("[drivers] AHCI init skipped: {}", e);
+                    }
+                }
             }
         }
 

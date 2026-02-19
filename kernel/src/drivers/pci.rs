@@ -32,7 +32,8 @@ const CONFIG_ADDRESS: u16 = 0xCF8;
 #[cfg(target_arch = "x86_64")]
 const CONFIG_DATA: u16 = 0xCFC;
 
-/// Maximum number of PCI buses to scan
+/// Maximum number of PCI buses to scan (x86 only; ARM64 uses platform_config bus range)
+#[cfg(not(target_arch = "aarch64"))]
 const MAX_BUS: u8 = 255;
 /// Maximum number of devices per bus
 const MAX_DEVICE: u8 = 32;
@@ -570,7 +571,16 @@ pub fn enumerate() -> usize {
     let mut virtio_block_count = 0;
     let mut network_count = 0;
 
-    for bus in 0..=MAX_BUS {
+    // Use platform-specific bus range on ARM64 (Parallels faults on out-of-range buses)
+    #[cfg(target_arch = "aarch64")]
+    let (bus_start, bus_end) = (
+        crate::platform_config::pci_bus_start(),
+        crate::platform_config::pci_bus_end(),
+    );
+    #[cfg(not(target_arch = "aarch64"))]
+    let (bus_start, bus_end) = (0u8, MAX_BUS);
+
+    for bus in bus_start..=bus_end {
         for device in 0..MAX_DEVICE {
             // First check function 0
             if let Some(dev) = probe_device(bus, device, 0) {

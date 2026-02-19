@@ -906,10 +906,13 @@ fn raw_serial_str(s: &[u8]) {
 /// This is the main IRQ dispatch point for ARM64.
 #[no_mangle]
 pub extern "C" fn handle_irq() {
+    // Diagnostic: confirm IRQ handler reached from Rust
+    crate::serial_aarch64::raw_serial_char(b'~');
     crate::tracing::providers::counters::count_irq();
 
     // Acknowledge the interrupt from GIC
     if let Some(irq_id) = gic::acknowledge_irq() {
+        crate::serial_aarch64::raw_serial_char(b'a'); // GIC acknowledged
         // Handle the interrupt based on ID
         match irq_id {
             // Virtual timer interrupt (PPI 27)
@@ -921,6 +924,7 @@ pub extern "C" fn handle_irq() {
                 // - Decrementing time quantum
                 // - Setting need_resched flag
                 crate::arch_impl::aarch64::timer_interrupt::timer_interrupt_handler();
+                crate::serial_aarch64::raw_serial_char(b't'); // timer handler done
             }
 
             // UART0 receive interrupt (SPI 1 = IRQ 33)
@@ -968,16 +972,22 @@ pub extern "C" fn handle_irq() {
 
         // Signal end of interrupt
         gic::end_of_interrupt(irq_id);
+        crate::serial_aarch64::raw_serial_char(b'e'); // EOI sent
 
         // Process pending softirqs (deferred work from interrupt handlers)
         // This must happen after EOI but before rescheduling, while still
         // in the IRQ exit path. Network RX processing runs here.
         crate::task::softirqd::do_softirq();
+        crate::serial_aarch64::raw_serial_char(b's'); // softirq done
 
         // Check if we need to reschedule after handling the interrupt
         // This is the ARM64 equivalent of x86's check_need_resched_and_switch
         check_need_resched_on_irq_exit();
+        crate::serial_aarch64::raw_serial_char(b'r'); // resched check done
+    } else {
+        crate::serial_aarch64::raw_serial_char(b'?'); // GIC returned None
     }
+    crate::serial_aarch64::raw_serial_char(b'!'); // handle_irq returning
 }
 
 /// Check if rescheduling is needed and perform context switch if necessary

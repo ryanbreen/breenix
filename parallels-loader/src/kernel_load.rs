@@ -195,8 +195,14 @@ fn parse_and_load_elf(elf: &[u8]) -> Result<LoadedKernel, &'static str> {
             addr
         }
         None => {
-            // Fallback: use ELF entry point with vaddr→paddr translation
-            let fallback = (e_entry as i64 + vaddr_to_paddr_offset) as u64;
+            // Fallback: use ELF entry point with vaddr→paddr translation.
+            // If e_entry is already a low physical address (e.g., boot.S _start),
+            // skip the offset to avoid corrupting it into an unmapped VA.
+            let fallback = if e_entry < 0x1_0000_0000 {
+                e_entry // Already a physical address (boot code)
+            } else {
+                (e_entry as i64 + vaddr_to_paddr_offset) as u64
+            };
             log::warn!("kernel_main not found, using ELF entry {:#x} (phys {:#x})", e_entry, fallback);
             fallback
         }
@@ -252,7 +258,7 @@ fn find_symbol(
             symtab_offset = read_u64(elf, sh + 24) as usize;
             symtab_size = read_u64(elf, sh + 32) as usize;
             symtab_entsize = read_u64(elf, sh + 56) as usize;
-            symtab_link = read_u32(elf, sh + 12);
+            symtab_link = read_u32(elf, sh + 40); // ELF64: sh_link is at offset 40
         }
     }
 
@@ -272,7 +278,7 @@ fn find_symbol(
                 symtab_offset = read_u64(elf, sh + 24) as usize;
                 symtab_size = read_u64(elf, sh + 32) as usize;
                 symtab_entsize = read_u64(elf, sh + 56) as usize;
-                symtab_link = read_u32(elf, sh + 12);
+                symtab_link = read_u32(elf, sh + 40); // ELF64: sh_link is at offset 40
             }
             let _ = sh_name_idx; // Suppress warning
         }

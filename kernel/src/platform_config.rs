@@ -44,6 +44,14 @@ static PCI_MMIO_BASE: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "aarch64")]
 static PCI_MMIO_SIZE: AtomicU64 = AtomicU64::new(0);
 
+// PCI bus range (from MCFG ACPI table). Default 0-255 for full scan on QEMU.
+// Parallels provides actual bus range; scanning beyond it faults.
+#[cfg(target_arch = "aarch64")]
+static PCI_BUS_START: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_arch = "aarch64")]
+static PCI_BUS_END: AtomicU64 = AtomicU64::new(255);
+
 // Memory layout defaults (QEMU virt, 512MB RAM at 0x40000000)
 // Kernel image:   0x4000_0000 - 0x4100_0000 (16 MB)
 // Per-CPU stacks: 0x4100_0000 - 0x4200_0000 (16 MB)
@@ -55,6 +63,28 @@ static FRAME_ALLOC_START: AtomicU64 = AtomicU64::new(0x4200_0000);
 
 #[cfg(target_arch = "aarch64")]
 static FRAME_ALLOC_END: AtomicU64 = AtomicU64::new(0x5000_0000);
+
+// =============================================================================
+// Framebuffer info (UEFI GOP, populated by init_from_parallels)
+// =============================================================================
+
+#[cfg(target_arch = "aarch64")]
+static FB_BASE_PHYS: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_arch = "aarch64")]
+static FB_SIZE: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_arch = "aarch64")]
+static FB_WIDTH: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_arch = "aarch64")]
+static FB_HEIGHT: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_arch = "aarch64")]
+static FB_STRIDE: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_arch = "aarch64")]
+static FB_IS_BGR: AtomicU8 = AtomicU8::new(0);
 
 // =============================================================================
 // Accessor functions
@@ -142,6 +172,21 @@ pub fn pci_mmio_size() -> u64 {
     PCI_MMIO_SIZE.load(Ordering::Relaxed)
 }
 
+/// PCI bus range start (from MCFG ACPI table).
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn pci_bus_start() -> u8 {
+    PCI_BUS_START.load(Ordering::Relaxed) as u8
+}
+
+/// PCI bus range end (from MCFG ACPI table).
+/// Scanning beyond this faults on Parallels.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn pci_bus_end() -> u8 {
+    PCI_BUS_END.load(Ordering::Relaxed) as u8
+}
+
 /// Frame allocator start physical address.
 /// QEMU: 0x4200_0000 (after kernel + stacks)
 #[cfg(target_arch = "aarch64")]
@@ -156,6 +201,63 @@ pub fn frame_alloc_start() -> u64 {
 #[inline]
 pub fn frame_alloc_end() -> u64 {
     FRAME_ALLOC_END.load(Ordering::Relaxed)
+}
+
+/// Returns true if running on QEMU (default platform).
+/// Detected by checking if the UART address is the QEMU virt default.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn is_qemu() -> bool {
+    uart_base_phys() == 0x0900_0000
+}
+
+/// Whether a UEFI GOP framebuffer was discovered by the loader.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn has_framebuffer() -> bool {
+    FB_BASE_PHYS.load(Ordering::Relaxed) != 0
+}
+
+/// GOP framebuffer physical base address.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn fb_base_phys() -> u64 {
+    FB_BASE_PHYS.load(Ordering::Relaxed)
+}
+
+/// GOP framebuffer size in bytes.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn fb_size() -> u64 {
+    FB_SIZE.load(Ordering::Relaxed)
+}
+
+/// GOP framebuffer width in pixels.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn fb_width() -> u32 {
+    FB_WIDTH.load(Ordering::Relaxed) as u32
+}
+
+/// GOP framebuffer height in pixels.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn fb_height() -> u32 {
+    FB_HEIGHT.load(Ordering::Relaxed) as u32
+}
+
+/// GOP framebuffer stride in pixels.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn fb_stride() -> u32 {
+    FB_STRIDE.load(Ordering::Relaxed) as u32
+}
+
+/// Whether the GOP framebuffer uses BGR pixel format (vs RGB).
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn fb_is_bgr() -> bool {
+    FB_IS_BGR.load(Ordering::Relaxed) != 0
 }
 
 // =============================================================================
@@ -252,6 +354,8 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
     if config.pci_ecam_base != 0 {
         PCI_ECAM_BASE.store(config.pci_ecam_base, Ordering::Relaxed);
         PCI_ECAM_SIZE.store(config.pci_ecam_size, Ordering::Relaxed);
+        PCI_BUS_START.store(config.pci_bus_start as u64, Ordering::Relaxed);
+        PCI_BUS_END.store(config.pci_bus_end as u64, Ordering::Relaxed);
     }
     if config.pci_mmio_base != 0 {
         PCI_MMIO_BASE.store(config.pci_mmio_base, Ordering::Relaxed);
@@ -286,6 +390,16 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
                 FRAME_ALLOC_END.store(fa_end, Ordering::Relaxed);
             }
         }
+    }
+
+    // Store framebuffer info if the loader discovered a GOP framebuffer
+    if config.has_framebuffer != 0 && config.framebuffer.base != 0 {
+        FB_BASE_PHYS.store(config.framebuffer.base, Ordering::Relaxed);
+        FB_SIZE.store(config.framebuffer.size, Ordering::Relaxed);
+        FB_WIDTH.store(config.framebuffer.width as u64, Ordering::Relaxed);
+        FB_HEIGHT.store(config.framebuffer.height as u64, Ordering::Relaxed);
+        FB_STRIDE.store(config.framebuffer.stride as u64, Ordering::Relaxed);
+        FB_IS_BGR.store(if config.framebuffer.pixel_format == 1 { 1 } else { 0 }, Ordering::Relaxed);
     }
 
     true

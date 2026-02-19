@@ -388,13 +388,25 @@ fn restore_kernel_context_inline(
     // If the context is corrupt, return false immediately — the caller will
     // redirect to idle and update cpu_state so that the next preemption
     // doesn't save idle-loop registers into this thread's context.
+    //
+    // On QEMU, kernel code runs from HHDM (>= 0xFFFF_0000_0000_0000).
+    // On Parallels, the UEFI loader jumps to kernel_main at a physical
+    // address and the kernel runs identity-mapped, so function pointers
+    // resolve to physical addresses in the RAM range (0x40080000+).
     const KERNEL_VIRT_BASE: u64 = 0xFFFF_0000_0000_0000;
+    const KERNEL_PHYS_BASE: u64 = 0x4008_0000;
+    const KERNEL_PHYS_LIMIT: u64 = 0xC000_0000;
+    #[inline]
+    fn is_kernel_addr(addr: u64) -> bool {
+        addr >= KERNEL_VIRT_BASE
+            || (addr >= KERNEL_PHYS_BASE && addr < KERNEL_PHYS_LIMIT)
+    }
     let elr_valid = if !has_started {
         // First run: x30 must be a valid kernel address
-        thread.context.x30 >= KERNEL_VIRT_BASE
+        is_kernel_addr(thread.context.x30)
     } else {
         // Resume: elr_el1 must be in kernel space or zero (handled below)
-        thread.context.elr_el1 >= KERNEL_VIRT_BASE || thread.context.elr_el1 == 0
+        is_kernel_addr(thread.context.elr_el1) || thread.context.elr_el1 == 0
     };
 
     if !elr_valid {

@@ -66,7 +66,7 @@ impl Ext2Superblock {
     /// # Returns
     /// * `Ok(Ext2Superblock)` - Successfully read and parsed superblock
     /// * `Err(BlockError)` - I/O error or invalid superblock
-    pub fn read_from<B: BlockDevice>(device: &B) -> Result<Self, BlockError> {
+    pub fn read_from<B: BlockDevice + ?Sized>(device: &B) -> Result<Self, BlockError> {
         // The superblock is always at byte offset 1024, which may span multiple
         // device blocks depending on the device's native block size
         let device_block_size = device.block_size();
@@ -183,7 +183,7 @@ impl Ext2Superblock {
     /// # Returns
     /// * `Ok(())` - Successfully wrote superblock
     /// * `Err(BlockError)` - I/O error during write
-    pub fn write_to<B: BlockDevice>(&self, device: &B) -> Result<(), BlockError> {
+    pub fn write_to<B: BlockDevice + ?Sized>(&self, device: &B) -> Result<(), BlockError> {
         let device_block_size = device.block_size();
         let superblock_size = mem::size_of::<Ext2Superblock>();
 

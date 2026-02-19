@@ -116,7 +116,7 @@ impl Ext2Inode {
     ///
     /// # Returns
     /// The inode structure, or a BlockError if reading fails
-    pub fn read_from<B: BlockDevice>(
+    pub fn read_from<B: BlockDevice + ?Sized>(
         device: &B,
         inode_num: u32,
         superblock: &super::Ext2Superblock,
@@ -309,7 +309,7 @@ pub const EXT2_FIRST_INO: u32 = 11;
 /// # Returns
 /// * `Ok(new_link_count)` - The new link count after decrement
 /// * `Err(msg)` - Error message
-pub fn decrement_inode_links<B: BlockDevice>(
+pub fn decrement_inode_links<B: BlockDevice + ?Sized>(
     device: &B,
     inode_num: u32,
     superblock: &super::Ext2Superblock,
@@ -364,7 +364,7 @@ pub fn decrement_inode_links<B: BlockDevice>(
 /// # Returns
 /// * `Ok(new_link_count)` - The new link count after increment
 /// * `Err(msg)` - Error message
-pub fn increment_inode_links<B: BlockDevice>(
+pub fn increment_inode_links<B: BlockDevice + ?Sized>(
     device: &B,
     inode_num: u32,
     superblock: &super::Ext2Superblock,
@@ -393,7 +393,7 @@ pub fn increment_inode_links<B: BlockDevice>(
 ///
 /// Marks the inode as free in the inode bitmap and updates the
 /// free inode count in the block group descriptor.
-fn free_inode_bitmap<B: BlockDevice>(
+fn free_inode_bitmap<B: BlockDevice + ?Sized>(
     device: &B,
     inode_num: u32,
     superblock: &super::Ext2Superblock,
@@ -458,7 +458,7 @@ fn free_inode_bitmap<B: BlockDevice>(
 /// # Returns
 /// * `Ok(blocks_freed)` - Number of blocks freed
 /// * `Err(msg)` - Error message if operation failed
-fn free_inode_blocks<B: BlockDevice>(
+fn free_inode_blocks<B: BlockDevice + ?Sized>(
     device: &B,
     superblock: &super::Ext2Superblock,
     block_groups: &mut [super::Ext2BlockGroupDesc],
@@ -511,7 +511,7 @@ fn free_inode_blocks<B: BlockDevice>(
 }
 
 /// Free all data blocks referenced by a single indirect block
-fn free_indirect_block<B: BlockDevice>(
+fn free_indirect_block<B: BlockDevice + ?Sized>(
     device: &B,
     superblock: &super::Ext2Superblock,
     block_groups: &mut [super::Ext2BlockGroupDesc],
@@ -547,7 +547,7 @@ fn free_indirect_block<B: BlockDevice>(
 }
 
 /// Free all data blocks referenced by a double indirect block
-fn free_double_indirect_block<B: BlockDevice>(
+fn free_double_indirect_block<B: BlockDevice + ?Sized>(
     device: &B,
     superblock: &super::Ext2Superblock,
     block_groups: &mut [super::Ext2BlockGroupDesc],
@@ -586,7 +586,7 @@ fn free_double_indirect_block<B: BlockDevice>(
 }
 
 /// Free all data blocks referenced by a triple indirect block
-fn free_triple_indirect_block<B: BlockDevice>(
+fn free_triple_indirect_block<B: BlockDevice + ?Sized>(
     device: &B,
     superblock: &super::Ext2Superblock,
     block_groups: &mut [super::Ext2BlockGroupDesc],
@@ -634,7 +634,7 @@ impl Ext2Inode {
     /// * `inode_num` - The inode number (1-indexed)
     /// * `superblock` - The ext2 superblock
     /// * `block_groups` - Array of block group descriptors
-    pub fn write_to<B: BlockDevice>(
+    pub fn write_to<B: BlockDevice + ?Sized>(
         &self,
         device: &B,
         inode_num: u32,
@@ -851,7 +851,7 @@ impl Ext2Inode {
 /// # Returns
 /// * `Ok(inode_num)` - The allocated inode number (1-indexed)
 /// * `Err(msg)` - Error if no free inodes available or I/O error
-pub fn allocate_inode<B: BlockDevice>(
+pub fn allocate_inode<B: BlockDevice + ?Sized>(
     device: &B,
     superblock: &super::Ext2Superblock,
     block_groups: &mut [super::Ext2BlockGroupDesc],

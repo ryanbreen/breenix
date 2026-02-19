@@ -150,38 +150,41 @@ if [ "$PARALLELS" = true ]; then
     echo "Breenix on Parallels Desktop"
     echo "========================================="
     echo ""
-    echo "VM: $PARALLELS_VM"
 
     if ! command -v prlctl &>/dev/null; then
         echo "ERROR: prlctl not found. Is Parallels Desktop installed?"
         exit 1
     fi
+    if ! command -v prl_disk_tool &>/dev/null; then
+        echo "ERROR: prl_disk_tool not found. Is Parallels Desktop installed?"
+        exit 1
+    fi
 
-    EFI_IMG="$BREENIX_ROOT/target/parallels/breenix-efi.img"
+    PARALLELS_DIR="$BREENIX_ROOT/target/parallels"
+    SERIAL_LOG="/tmp/breenix-parallels-serial.log"
+    HDD_DIR="$PARALLELS_DIR/breenix-efi.hdd"
+    EXT2_HDD_DIR="$PARALLELS_DIR/breenix-ext2.hdd"
+    EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
 
     if [ "$NO_BUILD" = true ]; then
         echo "Skipping builds (--no-build)"
-        if [ ! -f "$EFI_IMG" ]; then
-            echo "ERROR: No EFI image found at $EFI_IMG"
+        if [ ! -d "$HDD_DIR" ]; then
+            echo "ERROR: No Parallels disk found at $HDD_DIR"
             echo "Run without --no-build first to create it."
             exit 1
         fi
     else
         # Build the UEFI loader
-        echo "[1/3] Building UEFI loader..."
+        echo "[1/6] Building UEFI loader..."
         cargo build --release --target aarch64-unknown-uefi -p parallels-loader
 
         # Build the kernel
         echo ""
-        echo "[2/3] Building kernel..."
+        echo "[2/6] Building kernel..."
         cargo build --release --target aarch64-breenix.json \
             -Z build-std=core,alloc \
             -Z build-std-features=compiler-builtins-mem \
             -p kernel --bin kernel-aarch64
-
-        # Create EFI disk image
-        echo ""
-        echo "[3/3] Creating EFI disk image..."
 
         LOADER_EFI="$BREENIX_ROOT/target/aarch64-unknown-uefi/release/parallels-loader.efi"
         KERNEL_ELF="$BREENIX_ROOT/target/aarch64-breenix/release/kernel-aarch64"
@@ -195,81 +198,144 @@ if [ "$PARALLELS" = true ]; then
             exit 1
         fi
 
-        # Create ESP directory structure
-        ESP_DIR="$BREENIX_ROOT/target/parallels/esp"
-        rm -rf "$ESP_DIR"
-        mkdir -p "$ESP_DIR/EFI/BOOT"
-        mkdir -p "$ESP_DIR/EFI/BREENIX"
-        cp "$LOADER_EFI" "$ESP_DIR/EFI/BOOT/BOOTAA64.EFI"
-        cp "$KERNEL_ELF" "$ESP_DIR/EFI/BREENIX/KERNEL"
-
-        # Create FAT32 disk image (64 MB)
-        mkdir -p "$BREENIX_ROOT/target/parallels"
-        FAT_IMG="$BREENIX_ROOT/target/parallels/esp.fat32.img"
-        dd if=/dev/zero of="$FAT_IMG" bs=1m count=64 2>/dev/null
-
-        if command -v newfs_msdos &>/dev/null; then
-            newfs_msdos -F 32 -S 512 "$FAT_IMG" 2>/dev/null
-        elif command -v mkfs.fat &>/dev/null; then
-            mkfs.fat -F 32 "$FAT_IMG"
+        # Build userspace binaries and create ext2 data disk
+        echo ""
+        echo "[3/6] Building userspace binaries (aarch64)..."
+        if "$BREENIX_ROOT/userspace/programs/build.sh" --arch aarch64; then
+            echo "  Userspace build successful"
         else
-            echo "ERROR: No FAT32 formatter found (need newfs_msdos or mkfs.fat)"
+            echo "  WARNING: Userspace build failed (rust-fork may not be set up)"
+            echo "  Continuing without userspace binaries — ext2 will still have test files"
+        fi
+
+        echo ""
+        echo "[4/6] Creating ext2 data disk image..."
+        "$BREENIX_ROOT/scripts/create_ext2_disk.sh" --arch aarch64
+
+        echo ""
+        echo "[5/6] Creating FAT32 EFI disk image..."
+        mkdir -p "$PARALLELS_DIR"
+
+        # Create GPT+FAT32 disk image using hdiutil (native macOS, no mtools needed)
+        DMG_PATH="$PARALLELS_DIR/efi-temp.dmg"
+        rm -f "$DMG_PATH"
+        hdiutil create -size 64m -fs FAT32 -volname BREENIX -layout GPTSPUD "$DMG_PATH" >/dev/null 2>&1
+
+        # Mount the DMG, copy loader + kernel to ESP layout
+        VOLUME=$(hdiutil attach "$DMG_PATH" 2>/dev/null | grep -o '/Volumes/[^ ]*' | head -1)
+        if [ -z "$VOLUME" ] || [ ! -d "$VOLUME" ]; then
+            echo "ERROR: Failed to mount FAT32 disk image"
+            rm -f "$DMG_PATH"
             exit 1
         fi
 
-        if command -v mcopy &>/dev/null; then
-            mmd -i "$FAT_IMG" ::EFI 2>/dev/null || true
-            mmd -i "$FAT_IMG" ::EFI/BOOT 2>/dev/null || true
-            mmd -i "$FAT_IMG" ::EFI/BREENIX 2>/dev/null || true
-            mcopy -i "$FAT_IMG" "$ESP_DIR/EFI/BOOT/BOOTAA64.EFI" ::EFI/BOOT/BOOTAA64.EFI
-            mcopy -i "$FAT_IMG" "$ESP_DIR/EFI/BREENIX/KERNEL" ::EFI/BREENIX/KERNEL
-        else
-            echo "ERROR: mtools not found. Install with: brew install mtools"
+        mkdir -p "$VOLUME/EFI/BOOT"
+        mkdir -p "$VOLUME/EFI/BREENIX"
+        cp "$LOADER_EFI" "$VOLUME/EFI/BOOT/BOOTAA64.EFI"
+        cp "$KERNEL_ELF" "$VOLUME/EFI/BREENIX/KERNEL"
+        hdiutil detach "$VOLUME" >/dev/null 2>&1
+
+        echo "  Loader: $(stat -f%z "$LOADER_EFI") bytes"
+        echo "  Kernel: $(stat -f%z "$KERNEL_ELF") bytes"
+
+        # Convert DMG to raw disk image
+        echo ""
+        echo "[6/6] Creating Parallels disks..."
+        RAW_IMG="$PARALLELS_DIR/efi-raw.img"
+        rm -f "$RAW_IMG" "${RAW_IMG}.cdr"
+        hdiutil convert "$DMG_PATH" -format UDTO -o "$RAW_IMG" >/dev/null 2>&1
+        mv "${RAW_IMG}.cdr" "$RAW_IMG"
+        rm -f "$DMG_PATH"
+
+        # Patch GPT partition type from "Microsoft Basic Data" to "EFI System Partition"
+        # so UEFI firmware recognizes the ESP and auto-boots BOOTAA64.EFI
+        python3 "$BREENIX_ROOT/scripts/parallels/patch-gpt-esp.py" "$RAW_IMG"
+
+        # Wrap EFI disk in Parallels .hdd format
+        rm -rf "$HDD_DIR"
+        prl_disk_tool create --hdd "$HDD_DIR" --size 64M >/dev/null 2>&1
+        HDS_FILE=$(find "$HDD_DIR" -name "*.hds" | head -1)
+        if [ -z "$HDS_FILE" ]; then
+            echo "ERROR: No .hds file found in $HDD_DIR"
+            rm -f "$RAW_IMG"
             exit 1
         fi
+        cp "$RAW_IMG" "$HDS_FILE"
+        rm -f "$RAW_IMG"
+        echo "  EFI disk: $HDD_DIR"
 
-        mv "$FAT_IMG" "$EFI_IMG"
-        echo "EFI image: $EFI_IMG"
+        # Wrap ext2 data disk in Parallels .hdd format
+        if [ -f "$EXT2_DISK" ]; then
+            EXT2_SIZE_MB=$(( $(stat -f%z "$EXT2_DISK") / 1048576 ))
+            rm -rf "$EXT2_HDD_DIR"
+            prl_disk_tool create --hdd "$EXT2_HDD_DIR" --size "${EXT2_SIZE_MB}M" >/dev/null 2>&1
+            HDS_FILE=$(find "$EXT2_HDD_DIR" -name "*.hds" | head -1)
+            if [ -z "$HDS_FILE" ]; then
+                echo "WARNING: No .hds file in $EXT2_HDD_DIR, ext2 disk won't be attached"
+            else
+                cp "$EXT2_DISK" "$HDS_FILE"
+                echo "  ext2 disk: $EXT2_HDD_DIR (${EXT2_SIZE_MB}MB)"
+            fi
+        else
+            echo "WARNING: ext2 disk not found at $EXT2_DISK"
+        fi
     fi
 
-    # Deploy to Parallels VM
     echo ""
-    echo "--- Deploying to Parallels VM '$PARALLELS_VM' ---"
+    echo "--- Configuring Parallels VM '$PARALLELS_VM' ---"
 
-    # Check if VM exists
+    # Create VM if it doesn't exist
     if ! prlctl list --all 2>/dev/null | grep -q "$PARALLELS_VM"; then
-        echo "VM '$PARALLELS_VM' not found. Creating it..."
-        prlctl create "$PARALLELS_VM" --ostype linux --arch aarch64
-        prlctl set "$PARALLELS_VM" --efi-boot on
+        echo "Creating VM '$PARALLELS_VM'..."
+        prlctl create "$PARALLELS_VM" --ostype linux --distribution linux --no-hdd
         prlctl set "$PARALLELS_VM" --memsize 2048
         prlctl set "$PARALLELS_VM" --cpus 4
     fi
 
     # Stop VM if running
     VM_STATUS=$(prlctl status "$PARALLELS_VM" 2>/dev/null | awk '{print $NF}')
-    if [ "$VM_STATUS" = "running" ] || [ "$VM_STATUS" = "paused" ]; then
+    if [ "$VM_STATUS" = "running" ] || [ "$VM_STATUS" = "paused" ] || [ "$VM_STATUS" = "suspended" ]; then
         echo "Stopping VM..."
         prlctl stop "$PARALLELS_VM" --kill 2>/dev/null || true
         sleep 2
     fi
 
-    # Attach the EFI disk image
-    prlctl set "$PARALLELS_VM" --device-del hdd0 2>/dev/null || true
-
-    VM_DIR=$(prlctl list --info "$PARALLELS_VM" 2>/dev/null | grep "Home:" | sed 's/.*Home: *//' | tr -d ' ')
-    if [ -z "$VM_DIR" ]; then
-        VM_DIR="$HOME/Parallels/$PARALLELS_VM.pvm"
+    # Configure VM: EFI boot, remove all SATA devices (hdds + cdroms), attach our disks
+    prlctl set "$PARALLELS_VM" --efi-boot on 2>/dev/null || true
+    # Remove any existing hard disks and CD-ROM devices to free SATA positions
+    for dev in hdd0 hdd1 hdd2 hdd3 cdrom0 cdrom1; do
+        prlctl set "$PARALLELS_VM" --device-del "$dev" 2>/dev/null || true
+    done
+    # Attach EFI boot disk as hdd0 (sata:0)
+    prlctl set "$PARALLELS_VM" --device-add hdd --image "$HDD_DIR" --type plain --position 0
+    # Attach ext2 data disk as hdd1 (sata:1) — kernel probes all AHCI devices for ext2 magic
+    if [ -d "$EXT2_HDD_DIR" ]; then
+        prlctl set "$PARALLELS_VM" --device-add hdd --image "$EXT2_HDD_DIR" --type plain --position 1
+        echo "  hdd0: EFI boot disk (FAT32) at sata:0"
+        echo "  hdd1: ext2 data disk at sata:1"
+    else
+        echo "  hdd0: EFI boot disk (FAT32) at sata:0"
+        echo "  WARNING: No ext2 disk to attach (run without --no-build to create it)"
     fi
 
-    DEST_IMG="$VM_DIR/breenix-efi.img"
-    cp "$EFI_IMG" "$DEST_IMG"
-    prlctl set "$PARALLELS_VM" --device-add hdd --image "$DEST_IMG" --type plain --position 0 2>/dev/null || \
-        echo "WARNING: Could not attach disk via prlctl. Attach manually in Parallels settings."
-    prlctl set "$PARALLELS_VM" --efi-boot on 2>/dev/null || true
+    # Set boot order: hard disk first (default boots from cdrom which hangs)
+    prlctl set "$PARALLELS_VM" --device-bootorder "hdd0" 2>/dev/null || true
 
-    # Boot the VM
+    # Configure serial port output to file
+    prlctl set "$PARALLELS_VM" --device-del serial0 2>/dev/null || true
+    prlctl set "$PARALLELS_VM" --device-add serial --output "$SERIAL_LOG" 2>/dev/null || true
+    # Serial port must be explicitly connected or it stays disconnected
+    prlctl set "$PARALLELS_VM" --device-set serial0 --connect 2>/dev/null || true
+
+    # Delete NVRAM to ensure fresh UEFI boot state (avoids stale boot entries)
+    VM_DIR="$HOME/Parallels/${PARALLELS_VM}.pvm"
+    if [ -f "$VM_DIR/NVRAM.dat" ]; then
+        rm -f "$VM_DIR/NVRAM.dat"
+    fi
+
     echo ""
-    echo "Starting VM '$PARALLELS_VM'..."
+    echo "--- Starting VM ---"
+    > "$SERIAL_LOG"  # Truncate serial log
     prlctl start "$PARALLELS_VM"
 
     echo ""
@@ -277,12 +343,31 @@ if [ "$PARALLELS" = true ]; then
     echo "Breenix running on Parallels"
     echo "========================================="
     echo "VM:     $PARALLELS_VM"
-    echo "Stop:   prlctl stop $PARALLELS_VM"
-    echo "Serial: Check Parallels VM settings for serial port output"
+    echo "Serial: $SERIAL_LOG"
+    echo "Stop:   prlctl stop $PARALLELS_VM --kill"
     echo ""
-    echo "To configure serial output to a file:"
-    echo "  prlctl set $PARALLELS_VM --device-add serial --output /tmp/breenix-parallels-serial.log"
-    echo "  tail -f /tmp/breenix-parallels-serial.log"
+    echo "Tailing serial output (Ctrl+C to detach)..."
+    echo ""
+
+    # Monitor Parallels VM log for VCPU exceptions in background
+    VM_DIR="$HOME/Parallels/${PARALLELS_VM}.pvm"
+    VM_LOG="$VM_DIR/parallels.log"
+    if [ -f "$VM_LOG" ]; then
+        (
+            tail -f "$VM_LOG" 2>/dev/null | while IFS= read -r line; do
+                case "$line" in
+                    *VCPU*|*Exception*|*Synchronous*|*fault*|*FAULT*|*recursive*)
+                        echo "[parallels-log] $line" ;;
+                esac
+            done
+        ) &
+        LOGMON_PID=$!
+        trap "kill $LOGMON_PID 2>/dev/null" EXIT
+    fi
+
+    # Wait a moment for the VM to start producing output, then tail
+    sleep 1
+    tail -f "$SERIAL_LOG"
 
     exit 0
 fi

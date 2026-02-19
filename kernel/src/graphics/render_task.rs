@@ -222,7 +222,7 @@ fn flush_framebuffer() -> bool {
         // two-lock nesting (SHELL_FRAMEBUFFER + GPU_LOCK) that caused deadlocks
         // when sys_fbdraw held SHELL_FRAMEBUFFER with IRQs disabled.
         if let Some((x, y, w, h)) = crate::graphics::arm64_fb::take_dirty_rect() {
-            if let Err(e) = crate::drivers::virtio::gpu_mmio::flush_rect(x, y, w, h) {
+            if let Err(e) = crate::graphics::arm64_fb::flush_dirty_rect(x, y, w, h) {
                 crate::serial_println!("[render] GPU flush failed: {}", e);
             }
             true

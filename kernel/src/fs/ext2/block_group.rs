@@ -40,7 +40,7 @@ impl Ext2BlockGroupDesc {
     /// # Returns
     /// * `Ok(Vec<Ext2BlockGroupDesc>)` - Successfully read all block group descriptors
     /// * `Err(BlockError)` - I/O error during read
-    pub fn read_table<B: BlockDevice>(
+    pub fn read_table<B: BlockDevice + ?Sized>(
         device: &B,
         superblock: &Ext2Superblock,
     ) -> Result<Vec<Self>, BlockError> {
@@ -115,7 +115,7 @@ impl Ext2BlockGroupDesc {
     /// # Returns
     /// * `Ok(())` - Successfully wrote all block group descriptors
     /// * `Err(BlockError)` - I/O error during write
-    pub fn write_table<B: BlockDevice>(
+    pub fn write_table<B: BlockDevice + ?Sized>(
         device: &B,
         superblock: &Ext2Superblock,
         descriptors: &[Self],
@@ -185,7 +185,7 @@ impl Ext2BlockGroupDesc {
 /// # Returns
 /// * `Ok(block_num)` - The allocated block number
 /// * `Err(msg)` - Error if no free blocks available or I/O error
-pub fn allocate_block<B: BlockDevice>(
+pub fn allocate_block<B: BlockDevice + ?Sized>(
     device: &B,
     superblock: &Ext2Superblock,
     block_groups: &mut [Ext2BlockGroupDesc],
@@ -275,7 +275,7 @@ pub fn allocate_block<B: BlockDevice>(
 /// # Returns
 /// * `Ok(())` - Block was successfully freed
 /// * `Err(msg)` - Error message if operation failed
-pub fn free_block<B: BlockDevice>(
+pub fn free_block<B: BlockDevice + ?Sized>(
     device: &B,
     block_num: u32,
     superblock: &Ext2Superblock,

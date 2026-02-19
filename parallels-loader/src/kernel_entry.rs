@@ -5,8 +5,9 @@
 ///   1. Load kernel ELF from the ESP filesystem
 ///   2. Exit UEFI boot services (no more UEFI calls after this!)
 ///   3. Set MAIR, TCR, TTBR0, TTBR1 for our page tables
-///   4. TLB invalidate + ISB
-///   5. Jump to kernel_main(hw_config_ptr) -- same binary as QEMU
+///   4. Install minimal VBAR_EL1 exception handler (prevents recursive faults)
+///   5. TLB invalidate + ISB
+///   6. Jump to kernel_main(hw_config_ptr) -- same binary as QEMU
 
 use crate::hw_config::HardwareConfig;
 use crate::page_tables::{self, PageTableStorage};
@@ -45,6 +46,10 @@ pub fn jump_to_kernel(
 /// during the page table switch. The identity map ensures the code
 /// continues executing after TTBR0/TTBR1 are changed.
 ///
+/// Before jumping, installs a minimal VBAR_EL1 exception vector table
+/// that writes 'X' to UART and spins, preventing recursive faults if
+/// the kernel entry address is wrong.
+///
 /// Arguments:
 ///   x0 = TTBR0 physical address (identity map)
 ///   x1 = TTBR1 physical address (HHDM)
@@ -52,6 +57,12 @@ pub fn jump_to_kernel(
 ///   x3 = HardwareConfig pointer (physical, identity-mapped)
 #[inline(never)]
 unsafe fn switch_and_jump(ttbr0: u64, ttbr1: u64, entry: u64, hw_config_ptr: u64) -> ! {
+    // Get the address of our exception vector table (defined in global_asm! below).
+    extern "C" {
+        static loader_exception_vectors: u8;
+    }
+    let vbar_addr = &loader_exception_vectors as *const u8 as u64;
+
     core::arch::asm!(
         // Disable MMU first to safely switch page tables
         "mrs x4, sctlr_el1",
@@ -82,6 +93,13 @@ unsafe fn switch_and_jump(ttbr0: u64, ttbr1: u64, entry: u64, hw_config_ptr: u64
         "dsb sy",
         "isb",
 
+        // --- Install minimal VBAR_EL1 before re-enabling MMU ---
+        // This replaces the UEFI firmware's vectors (which may be in
+        // now-unmapped memory) with a handler that writes 'X' to UART
+        // and spins, preventing recursive silent crashes.
+        "msr vbar_el1, x5",
+        "isb",
+
         // Re-enable MMU with our page tables
         "mrs x4, sctlr_el1",
         "orr x4, x4, #1",         // Set M bit (MMU enable)
@@ -90,12 +108,28 @@ unsafe fn switch_and_jump(ttbr0: u64, ttbr1: u64, entry: u64, hw_config_ptr: u64
         "msr sctlr_el1, x4",
         "isb",
 
+        // UART breadcrumb: 'L' = MMU re-enabled, page tables work
+        "movz x4, #0x0211, lsl #16", // x4 = 0x02110000 (Parallels UART)
+        "mov x6, #0x4C",             // 'L'
+        "str w6, [x4]",
+
+        // Enable FP/SIMD (CPACR_EL1.FPEN = 0b11) to prevent traps
+        "mrs x4, cpacr_el1",
+        "orr x4, x4, #(3 << 20)",
+        "msr cpacr_el1, x4",
+        "isb",
+
         // Set up a temporary kernel stack in the identity-mapped region.
         // Use a fixed address in RAM: 0x4200_0000 (top of first 2MB after kernel)
         // The kernel will set up proper stacks during init.
         "mov x4, #0x4200",
         "lsl x4, x4, #16",        // x4 = 0x42000000
         "mov sp, x4",
+
+        // UART breadcrumb: 'J' = about to jump to kernel
+        "movz x4, #0x0211, lsl #16", // x4 = 0x02110000
+        "mov x6, #0x4A",             // 'J'
+        "str w6, [x4]",
 
         // Jump to kernel entry with HardwareConfig pointer in x0
         "mov x0, x3",             // x0 = hw_config_ptr
@@ -106,6 +140,155 @@ unsafe fn switch_and_jump(ttbr0: u64, ttbr1: u64, entry: u64, hw_config_ptr: u64
         in("x1") ttbr1,
         in("x2") entry,
         in("x3") hw_config_ptr,
+        in("x5") vbar_addr,
         options(noreturn),
     );
 }
+
+// Minimal exception vector table for the UEFI-to-kernel transition.
+//
+// Each vector entry is 128 bytes (0x80). The table must be 2KB aligned
+// (bits [10:0] of VBAR_EL1 are RES0, so the table must be 0x800-aligned).
+//
+// All 16 entries write 'X' to the Parallels UART and spin on WFI.
+// This catches any exception during the brief window between page table
+// switch and kernel_main installing its own vectors.
+//
+// Uses UART physical address 0x0211_0000 via identity map.
+core::arch::global_asm!(
+    ".balign 2048",
+    ".global loader_exception_vectors",
+    "loader_exception_vectors:",
+
+    // --- Current EL with SP0 (entries 0-3) ---
+    // Entry 0: Synchronous
+    "movz x4, #0x0211, lsl #16",  // x4 = 0x02110000
+    "mov x5, #0x58",              // 'X'
+    "str w5, [x4]",
+    "0: wfi",
+    "b 0b",
+    ".balign 128",
+
+    // Entry 1: IRQ
+    "movz x4, #0x0211, lsl #16",
+    "mov x5, #0x58",
+    "str w5, [x4]",
+    "0: wfi",
+    "b 0b",
+    ".balign 128",
+
+    // Entry 2: FIQ
+    "movz x4, #0x0211, lsl #16",
+    "mov x5, #0x58",
+    "str w5, [x4]",
+    "0: wfi",
+    "b 0b",
+    ".balign 128",
+
+    // Entry 3: SError
+    "movz x4, #0x0211, lsl #16",
+    "mov x5, #0x58",
+    "str w5, [x4]",
+    "0: wfi",
+    "b 0b",
+    ".balign 128",
+
+    // --- Current EL with SPx (entries 4-7) ---
+    // Entry 4: Synchronous
+    "movz x4, #0x0211, lsl #16",
+    "mov x5, #0x58",
+    "str w5, [x4]",
+    "0: wfi",
+    "b 0b",
+    ".balign 128",
+
+    // Entry 5: IRQ
+    "movz x4, #0x0211, lsl #16",
+    "mov x5, #0x58",
+    "str w5, [x4]",
+    "0: wfi",
+    "b 0b",
+    ".balign 128",
+
+    // Entry 6: FIQ
+    "movz x4, #0x0211, lsl #16",
+    "mov x5, #0x58",
+    "str w5, [x4]",
+    "0: wfi",
+    "b 0b",
+    ".balign 128",
+
+    // Entry 7: SError
+    "movz x4, #0x0211, lsl #16",
+    "mov x5, #0x58",
+    "str w5, [x4]",
+    "0: wfi",
+    "b 0b",
+    ".balign 128",
+
+    // --- Lower EL AArch64 (entries 8-11) ---
+    // Entry 8: Synchronous
+    "movz x4, #0x0211, lsl #16",
+    "mov x5, #0x58",
+    "str w5, [x4]",
+    "0: wfi",
+    "b 0b",
+    ".balign 128",
+
+    // Entry 9: IRQ
+    "movz x4, #0x0211, lsl #16",
+    "mov x5, #0x58",
+    "str w5, [x4]",
+    "0: wfi",
+    "b 0b",
+    ".balign 128",
+
+    // Entry 10: FIQ
+    "movz x4, #0x0211, lsl #16",
+    "mov x5, #0x58",
+    "str w5, [x4]",
+    "0: wfi",
+    "b 0b",
+    ".balign 128",
+
+    // Entry 11: SError
+    "movz x4, #0x0211, lsl #16",
+    "mov x5, #0x58",
+    "str w5, [x4]",
+    "0: wfi",
+    "b 0b",
+    ".balign 128",
+
+    // --- Lower EL AArch32 (entries 12-15) ---
+    // Entry 12: Synchronous
+    "movz x4, #0x0211, lsl #16",
+    "mov x5, #0x58",
+    "str w5, [x4]",
+    "0: wfi",
+    "b 0b",
+    ".balign 128",
+
+    // Entry 13: IRQ
+    "movz x4, #0x0211, lsl #16",
+    "mov x5, #0x58",
+    "str w5, [x4]",
+    "0: wfi",
+    "b 0b",
+    ".balign 128",
+
+    // Entry 14: FIQ
+    "movz x4, #0x0211, lsl #16",
+    "mov x5, #0x58",
+    "str w5, [x4]",
+    "0: wfi",
+    "b 0b",
+    ".balign 128",
+
+    // Entry 15: SError
+    "movz x4, #0x0211, lsl #16",
+    "mov x5, #0x58",
+    "str w5, [x4]",
+    "0: wfi",
+    "b 0b",
+    ".balign 128",
+);

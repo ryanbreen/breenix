@@ -6,8 +6,14 @@
 #![cfg(target_arch = "aarch64")]
 
 use core::fmt;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
+
+/// Global UART virtual address for assembly-level diagnostics.
+/// Set during serial init so boot.S exception vectors can output
+/// characters without calling into Rust (used for pre-SP diagnostics).
+#[no_mangle]
+pub static DIAG_UART_VIRT: AtomicU64 = AtomicU64::new(0);
 
 // =============================================================================
 // PL011 UART Register Map
@@ -124,6 +130,9 @@ impl SerialPort {
         write_reg(reg::CR, cr | cr::UARTEN | cr::TXE | cr::RXE);
 
         SERIAL_INITIALIZED.store(true, Ordering::Release);
+
+        // Publish UART virtual address for assembly-level diagnostics
+        DIAG_UART_VIRT.store(crate::platform_config::uart_virt(), Ordering::Release);
     }
 
     /// Send a single byte

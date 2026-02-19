@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 mod acpi_discovery;
+mod gop_discovery;
 pub mod hw_config;
 mod kernel_entry;
 mod kernel_load;
@@ -110,6 +111,23 @@ fn main() -> Status {
         let r = &config.ram_regions[i];
         log::info!("  RAM: {:#x} - {:#x} ({} MB)",
             r.base, r.base + r.size, r.size / (1024 * 1024));
+    }
+
+    // Discover UEFI GOP framebuffer (optional — kernel works without display)
+    log::info!("--- GOP Framebuffer Discovery ---");
+    match gop_discovery::discover_gop(config) {
+        Ok(()) => {
+            log::info!("GOP framebuffer: {}x{} stride={} fmt={} base={:#x} size={:#x}",
+                config.framebuffer.width,
+                config.framebuffer.height,
+                config.framebuffer.stride,
+                if config.framebuffer.pixel_format == 1 { "BGR" } else { "RGB" },
+                config.framebuffer.base,
+                config.framebuffer.size);
+        }
+        Err(e) => {
+            log::warn!("GOP not available: {} (continuing without display)", e);
+        }
     }
 
     log::info!("--- Exiting Boot Services ---");
