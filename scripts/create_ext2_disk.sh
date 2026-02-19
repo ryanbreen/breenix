@@ -3,9 +3,9 @@
 #
 # This script creates an ext2 filesystem image (64MB default) with:
 #   - Test files for filesystem testing
-#   - Coreutils binaries in /bin/ (bcat, bls, becho, bmkdir, brmdir, brm, bcp, bmv, bfalse, bhead, btail, bwc, bwhich)
-#   - /sbin/btrue for PATH order testing
+#   - BusyBox binary in /bin/busybox with symlinks for coreutils
 #   - hello_world binary for exec testing
+#   - Test binaries in /usr/local/test/bin
 #
 # Requires Docker on macOS (or mke2fs on Linux).
 #
@@ -53,14 +53,10 @@ else
     TESTDATA_FILE="$PROJECT_ROOT/testdata/ext2.img"
 fi
 
-# Coreutils to install in /bin (b-prefixed Breenix coreutils)
-COREUTILS="bcat bls becho bmkdir brmdir brm bcp bmv btrue bfalse bhead btail bwc bwhich"
-
 echo "Creating ext2 disk image..."
 echo "  Arch: $ARCH"
 echo "  Output: $OUTPUT_FILE"
 echo "  Size: ${SIZE_MB}MB"
-echo "  Coreutils: $COREUTILS"
 
 # Ensure target directory exists
 mkdir -p "$TARGET_DIR"
@@ -111,12 +107,37 @@ if [[ "$(uname)" == "Darwin" ]]; then
             mkdir -p /mnt/ext2/usr/local/test/bin
             mkdir -p /mnt/ext2/usr/local/cbin
 
-            # Copy ALL binaries from /binaries directory
+            # Install BusyBox with symlinks for coreutils
+            if [ -f /binaries/busybox.elf ]; then
+                cp /binaries/busybox.elf /mnt/ext2/bin/busybox
+                chmod 755 /mnt/ext2/bin/busybox
+
+                # Create hardlinks for all applets in /bin
+                # (hardlinks avoid needing symlink-following in kernel exec path)
+                for cmd in cat ls head tail wc grep more cp mv rm mkdir rmdir \
+                           echo which sh ash sed awk find sort uniq tee xargs \
+                           chmod chown chgrp df du free date sleep test expr seq \
+                           id whoami hostname basename dirname env printf cut tr \
+                           od hexdump md5sum sha256sum vi; do
+                    ln /mnt/ext2/bin/busybox /mnt/ext2/bin/$cmd
+                done
+
+                # /sbin applets (hardlinks)
+                for cmd in true false; do
+                    ln /mnt/ext2/bin/busybox /mnt/ext2/sbin/$cmd
+                done
+
+                echo "  Installed BusyBox with hardlinks in /bin and /sbin"
+            else
+                echo "  WARNING: busybox.elf not found, skipping coreutils"
+            fi
+
+            # Copy remaining binaries from /binaries directory
             # Routing: musl C programs (*_musl*) -> /usr/local/cbin
             #          test binaries (*_test, test_*) -> /usr/local/test/bin
-            #          system binaries (true, telnetd, init) -> /sbin
+            #          system binaries (telnetd, init, blogd) -> /sbin
             #          everything else -> /bin
-            echo "Installing all binaries..."
+            echo "Installing other binaries..."
             bin_count=0
             sbin_count=0
             test_count=0
@@ -124,6 +145,8 @@ if [[ "$(uname)" == "Darwin" ]]; then
             for elf_file in /binaries/*.elf; do
                 if [ -f "$elf_file" ]; then
                     bin_name=$(basename "$elf_file" .elf)
+                    # Skip busybox (already installed above)
+                    [ "$bin_name" = "busybox" ] && continue
                     if echo "$bin_name" | grep -qE "_musl"; then
                         cp "$elf_file" /mnt/ext2/usr/local/cbin/${bin_name}
                         chmod 755 /mnt/ext2/usr/local/cbin/${bin_name}
@@ -132,7 +155,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
                         cp "$elf_file" /mnt/ext2/usr/local/test/bin/${bin_name}
                         chmod 755 /mnt/ext2/usr/local/test/bin/${bin_name}
                         test_count=$((test_count + 1))
-                    elif [ "$bin_name" = "btrue" ] || [ "$bin_name" = "telnetd" ] || [ "$bin_name" = "init" ] || [ "$bin_name" = "blogd" ]; then
+                    elif [ "$bin_name" = "telnetd" ] || [ "$bin_name" = "init" ] || [ "$bin_name" = "blogd" ]; then
                         cp "$elf_file" /mnt/ext2/sbin/${bin_name}
                         chmod 755 /mnt/ext2/sbin/${bin_name}
                         sbin_count=$((sbin_count + 1))
@@ -266,12 +289,36 @@ else
     mkdir -p "$MOUNT_DIR/usr/local/test/bin"
     mkdir -p "$MOUNT_DIR/usr/local/cbin"
 
-    # Copy ALL binaries from userspace directory
+    # Install BusyBox with hardlinks for coreutils
+    if [[ -f "$USERSPACE_DIR/busybox.elf" ]]; then
+        cp "$USERSPACE_DIR/busybox.elf" "$MOUNT_DIR/bin/busybox"
+        chmod 755 "$MOUNT_DIR/bin/busybox"
+
+        # Create hardlinks for all applets in /bin
+        for cmd in cat ls head tail wc grep more cp mv rm mkdir rmdir \
+                   echo which sh ash sed awk find sort uniq tee xargs \
+                   chmod chown chgrp df du free date sleep test expr seq \
+                   id whoami hostname basename dirname env printf cut tr \
+                   od hexdump md5sum sha256sum vi; do
+            ln "$MOUNT_DIR/bin/busybox" "$MOUNT_DIR/bin/$cmd"
+        done
+
+        # /sbin applets (hardlinks)
+        for cmd in true false; do
+            ln "$MOUNT_DIR/bin/busybox" "$MOUNT_DIR/sbin/$cmd"
+        done
+
+        echo "  Installed BusyBox with hardlinks in /bin and /sbin"
+    else
+        echo "  WARNING: busybox.elf not found, skipping coreutils"
+    fi
+
+    # Copy remaining binaries from userspace directory
     # Routing: musl C programs (*_musl*) -> /usr/local/cbin
     #          test binaries (*_test, test_*) -> /usr/local/test/bin
-    #          system binaries (true, telnetd, init) -> /sbin
+    #          system binaries (telnetd, init, blogd) -> /sbin
     #          everything else -> /bin
-    echo "Installing all binaries..."
+    echo "Installing other binaries..."
     bin_count=0
     sbin_count=0
     test_count=0
@@ -279,6 +326,8 @@ else
     for elf_file in "$USERSPACE_DIR"/*.elf; do
         if [ -f "$elf_file" ]; then
             bin_name=$(basename "$elf_file" .elf)
+            # Skip busybox (already installed above)
+            [ "$bin_name" = "busybox" ] && continue
             if echo "$bin_name" | grep -qE '_musl'; then
                 cp "$elf_file" "$MOUNT_DIR/usr/local/cbin/${bin_name}"
                 chmod 755 "$MOUNT_DIR/usr/local/cbin/${bin_name}"
@@ -287,7 +336,7 @@ else
                 cp "$elf_file" "$MOUNT_DIR/usr/local/test/bin/${bin_name}"
                 chmod 755 "$MOUNT_DIR/usr/local/test/bin/${bin_name}"
                 test_count=$((test_count + 1))
-            elif [ "$bin_name" = "btrue" ] || [ "$bin_name" = "telnetd" ] || [ "$bin_name" = "init" ] || [ "$bin_name" = "blogd" ]; then
+            elif [ "$bin_name" = "telnetd" ] || [ "$bin_name" = "init" ] || [ "$bin_name" = "blogd" ]; then
                 cp "$elf_file" "$MOUNT_DIR/sbin/${bin_name}"
                 chmod 755 "$MOUNT_DIR/sbin/${bin_name}"
                 sbin_count=$((sbin_count + 1))
@@ -398,9 +447,11 @@ if [[ -f "$OUTPUT_FILE" ]]; then
     echo "  Size: $SIZE"
     echo ""
     echo "Contents:"
-    echo "  /bin/* - Userspace binaries (coreutils, demos)"
+    echo "  /bin/busybox - BusyBox multi-call binary"
+    echo "  /bin/{cat,ls,head,...} - BusyBox hardlinks"
+    echo "  /sbin/{true,false} - BusyBox hardlinks"
+    echo "  /bin/* - Other userspace binaries (demos)"
     echo "  /usr/local/test/bin/* - Test binaries (*_test, test_*)"
-    echo "  /sbin/btrue - exit status coreutil (for PATH testing)"
     echo "  /sbin/telnetd - telnet daemon"
     echo "  /hello.txt - test file (1 line)"
     echo "  /lines.txt - multi-line test file (15 lines) for head/tail/wc"

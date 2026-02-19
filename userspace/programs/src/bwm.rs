@@ -695,6 +695,11 @@ fn spawn_child(path: &[u8], _name: &str) -> (Fd, i64) {
                 }
             };
 
+            // Set the slave PTY as the controlling terminal for this session.
+            // Without this, shells like ash can't set up job control and print
+            // "can't access tty; job control turned off".
+            let _ = libbreenix::termios::set_controlling_terminal(slave_fd);
+
             // Dup to stdin/stdout/stderr
             let _ = io::dup2(slave_fd, Fd::from_raw(0));
             let _ = io::dup2(slave_fd, Fd::from_raw(1));

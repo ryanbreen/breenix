@@ -16,8 +16,8 @@ fn run_mkdir() -> i32 {
     match process::fork() {
         Ok(ForkResult::Child) => {
             // Child: exec mkdir with directory argument
-            let program = b"bmkdir\0";
-            let arg0 = b"bmkdir\0".as_ptr();
+            let program = b"mkdir\0";
+            let arg0 = b"mkdir\0".as_ptr();
             let arg1 = b"/test_mkdir_argv\0".as_ptr();
             let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
@@ -49,8 +49,8 @@ fn run_rmdir() -> i32 {
     match process::fork() {
         Ok(ForkResult::Child) => {
             // Child: exec rmdir with directory argument
-            let program = b"brmdir\0";
-            let arg0 = b"brmdir\0".as_ptr();
+            let program = b"rmdir\0";
+            let arg0 = b"rmdir\0".as_ptr();
             let arg1 = b"/test_mkdir_argv\0".as_ptr();
             let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 

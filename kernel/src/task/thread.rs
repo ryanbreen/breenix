@@ -236,6 +236,8 @@ pub struct CpuContext {
     pub elr_el1: u64,
     /// Saved program status (includes EL0 mode bits)
     pub spsr_el1: u64,
+    /// Thread pointer (TPIDR_EL0) - used by musl/libc for Thread Local Storage
+    pub tpidr_el0: u64,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -268,6 +270,7 @@ impl CpuContext {
             elr_el1: 0,
             // SPSR with EL1h mode, interrupts masked initially
             spsr_el1: 0x3c5, // EL1h, DAIF masked
+            tpidr_el0: 0,
         }
     }
 
@@ -295,6 +298,7 @@ impl CpuContext {
             elr_el1: entry_point,      // Where to jump in userspace
             // SPSR for EL0: mode=0 (EL0t), DAIF clear (interrupts enabled)
             spsr_el1: 0x0,             // EL0t with interrupts enabled
+            tpidr_el0: 0,              // TLS pointer, set by musl during __init_tls
         }
     }
 
@@ -303,6 +307,11 @@ impl CpuContext {
     /// This captures the userspace context from the exception frame saved by the syscall entry.
     /// The exception frame contains all registers as they were at the time of the SVC instruction.
     pub fn from_aarch64_frame(frame: &crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame, user_sp: u64) -> Self {
+        // Read TPIDR_EL0 (user TLS pointer) so forked children inherit it
+        let tpidr: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, tpidr_el0", out(reg) tpidr, options(nomem, nostack));
+        }
         Self {
             // All general-purpose registers from the exception frame
             x0: frame.x0,
@@ -340,6 +349,7 @@ impl CpuContext {
             sp_el0: user_sp, // User stack pointer (passed separately since it's in SP_EL0)
             elr_el1: frame.elr, // Return address (where to resume after syscall)
             spsr_el1: frame.spsr, // Saved program status
+            tpidr_el0: tpidr, // User TLS pointer (inherited by forked child)
         }
     }
 }

@@ -167,21 +167,7 @@ STD_BINARIES=(
     "cow_readonly_test"
     "cow_signal_test"
 
-    # Phase 3: Coreutils (b-prefixed)
-    "btrue"
-    "bfalse"
-    "becho"
-    "bcat"
-    "bhead"
-    "btail"
-    "bwc"
-    "bwhich"
-    "bls"
-    "bmkdir"
-    "brmdir"
-    "brm"
-    "bcp"
-    "bmv"
+    # Phase 3: Coreutils now provided by BusyBox (see scripts/build-busybox.sh)
     "resolution"
 
     # Phase 4: init_shell

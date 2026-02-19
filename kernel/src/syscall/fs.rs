@@ -93,8 +93,14 @@ pub const S_IFDIR: u32 = 0o040000;  // Directory
 pub const S_IFCHR: u32 = 0o020000;  // Character device
 pub const S_IFIFO: u32 = 0o010000;  // FIFO (pipe)
 
-/// stat structure (Linux compatible)
-/// Note: The layout is the same for x86_64 and aarch64 Linux.
+/// stat structure (Linux x86_64 compatible - 144 bytes)
+///
+/// x86_64 and aarch64 Linux have different struct stat layouts.
+/// x86_64 uses the layout from arch/x86/include/uapi/asm/stat.h (144 bytes).
+/// aarch64 uses the generic layout from include/uapi/asm-generic/stat.h (128 bytes).
+/// Key differences: field order (nlink/mode swapped), nlink width (u64 vs u32),
+/// blksize width (i64 vs i32), and trailing reserved space (24 vs 8 bytes).
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 pub struct Stat {
     pub st_dev: u64,
@@ -117,6 +123,10 @@ pub struct Stat {
     _reserved: [i64; 3],
 }
 
+#[cfg(target_arch = "x86_64")]
+const _: () = assert!(core::mem::size_of::<Stat>() == 144);
+
+#[cfg(target_arch = "x86_64")]
 impl Stat {
     /// Create a zeroed Stat structure
     pub fn zeroed() -> Self {
@@ -139,6 +149,64 @@ impl Stat {
             st_ctime: 0,
             st_ctime_nsec: 0,
             _reserved: [0; 3],
+        }
+    }
+}
+
+/// stat structure (Linux aarch64 compatible - 128 bytes)
+///
+/// Layout from include/uapi/asm-generic/stat.h used by aarch64 Linux.
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+pub struct Stat {
+    pub st_dev: u64,
+    pub st_ino: u64,
+    pub st_mode: u32,
+    pub st_nlink: u32,
+    pub st_uid: u32,
+    pub st_gid: u32,
+    pub st_rdev: u64,
+    _pad1: u64,
+    pub st_size: i64,
+    pub st_blksize: i32,
+    _pad2: i32,
+    pub st_blocks: i64,
+    pub st_atime: i64,
+    pub st_atime_nsec: i64,
+    pub st_mtime: i64,
+    pub st_mtime_nsec: i64,
+    pub st_ctime: i64,
+    pub st_ctime_nsec: i64,
+    _reserved: [u32; 2],
+}
+
+#[cfg(target_arch = "aarch64")]
+const _: () = assert!(core::mem::size_of::<Stat>() == 128);
+
+#[cfg(target_arch = "aarch64")]
+impl Stat {
+    /// Create a zeroed Stat structure
+    pub fn zeroed() -> Self {
+        Self {
+            st_dev: 0,
+            st_ino: 0,
+            st_mode: 0,
+            st_nlink: 0,
+            st_uid: 0,
+            st_gid: 0,
+            st_rdev: 0,
+            _pad1: 0,
+            st_size: 0,
+            st_blksize: 0,
+            _pad2: 0,
+            st_blocks: 0,
+            st_atime: 0,
+            st_atime_nsec: 0,
+            st_mtime: 0,
+            st_mtime_nsec: 0,
+            st_ctime: 0,
+            st_ctime_nsec: 0,
+            _reserved: [0; 2],
         }
     }
 }
@@ -696,7 +764,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                 stat.st_uid = inode_stat.uid;
                 stat.st_gid = inode_stat.gid;
                 stat.st_size = inode_stat.size;
-                stat.st_nlink = inode_stat.nlink;
+                stat.st_nlink = inode_stat.nlink as _;
                 stat.st_atime = inode_stat.atime;
                 stat.st_mtime = inode_stat.mtime;
                 stat.st_ctime = inode_stat.ctime;
@@ -716,7 +784,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                 stat.st_uid = inode_stat.uid;
                 stat.st_gid = inode_stat.gid;
                 stat.st_size = inode_stat.size;
-                stat.st_nlink = inode_stat.nlink;
+                stat.st_nlink = inode_stat.nlink as _;
                 stat.st_atime = inode_stat.atime;
                 stat.st_mtime = inode_stat.mtime;
                 stat.st_ctime = inode_stat.ctime;
@@ -2111,6 +2179,52 @@ fn handle_devfs_open(device_name: &str, _flags: u32) -> SyscallResult {
         }
     };
 
+    // For /dev/tty, redirect to the controlling PTY if one exists.
+    // On Linux, /dev/tty is a magic device that refers to the calling process's
+    // controlling terminal. The controlling terminal belongs to the SESSION,
+    // not a single process. Any process in the session can open /dev/tty.
+    if matches!(device.device_type, devfs::DeviceType::Tty) {
+        let sid = process.sid.as_u64() as u32;
+        // Drop manager lock before accessing PTY subsystem to avoid lock ordering issues
+        drop(manager_guard);
+
+        // Search active PTYs for one controlled by this session.
+        // controlling_pid stores the session leader's PID (== SID).
+        for pty_num in crate::tty::pty::list_active() {
+            if let Some(pair) = crate::tty::pty::get(pty_num) {
+                if pair.controlling_pid.lock().map_or(false, |p| p == sid) {
+                    // Found the controlling PTY — open as PtySlave
+                    let thread_id2 = crate::task::scheduler::current_thread_id().unwrap();
+                    let mut mg = crate::process::manager();
+                    let proc2 = mg.as_mut().unwrap()
+                        .find_process_by_thread_mut(thread_id2).unwrap().1;
+                    let fd_kind = FdKind::PtySlave(pty_num);
+                    return match proc2.fd_table.alloc(fd_kind) {
+                        Ok(fd) => {
+                            log::info!("handle_devfs_open: /dev/tty -> PTY slave {} as fd {}", pty_num, fd);
+                            SyscallResult::Ok(fd as u64)
+                        }
+                        Err(_) => SyscallResult::Err(EMFILE as u64),
+                    };
+                }
+            }
+        }
+        // No controlling terminal found — fall through to generic device
+        // Re-acquire manager lock for the generic path
+        let thread_id2 = crate::task::scheduler::current_thread_id().unwrap();
+        let mut manager_guard = crate::process::manager();
+        let process = manager_guard.as_mut().unwrap()
+            .find_process_by_thread_mut(thread_id2).unwrap().1;
+        let fd_kind = FdKind::Device(device.device_type);
+        return match process.fd_table.alloc(fd_kind) {
+            Ok(fd) => {
+                log::info!("handle_devfs_open: /dev/tty (no ctty) as fd {}", fd);
+                SyscallResult::Ok(fd as u64)
+            }
+            Err(_) => SyscallResult::Err(EMFILE as u64),
+        };
+    }
+
     // Allocate file descriptor with Device kind
     let fd_kind = FdKind::Device(device.device_type);
     match process.fd_table.alloc(fd_kind) {
@@ -3362,7 +3476,7 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, _flags: u32) -> S
         stat.st_uid = inode_stat.uid;
         stat.st_gid = inode_stat.gid;
         stat.st_size = inode_stat.size;
-        stat.st_nlink = inode_stat.nlink;
+        stat.st_nlink = inode_stat.nlink as _;
         stat.st_atime = inode_stat.atime;
         stat.st_mtime = inode_stat.mtime;
         stat.st_ctime = inode_stat.ctime;
