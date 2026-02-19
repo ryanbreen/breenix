@@ -293,6 +293,13 @@ fn save_userspace_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFr
     }
     thread.context.sp_el0 = sp_el0;
 
+    // Save TPIDR_EL0 (user TLS pointer) - critical for musl/libc TLS correctness
+    let tpidr: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, tpidr_el0", out(reg) tpidr, options(nomem, nostack));
+    }
+    thread.context.tpidr_el0 = tpidr;
+
     // CRITICAL: Save kernel stack pointer for blocked-in-syscall restoration.
     thread.context.sp = frame as *const _ as u64 + 272;
 }
@@ -351,6 +358,13 @@ fn save_kernel_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFrame
         core::arch::asm!("mrs {}, sp_el0", out(reg) sp_el0, options(nomem, nostack));
     }
     thread.context.sp_el0 = sp_el0;
+
+    // Save TPIDR_EL0 (user TLS pointer) - critical for musl/libc TLS correctness
+    let tpidr: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, tpidr_el0", out(reg) tpidr, options(nomem, nostack));
+    }
+    thread.context.tpidr_el0 = tpidr;
 }
 
 /// Restore kernel thread context into frame — called inside scheduler lock hold.
@@ -477,6 +491,15 @@ fn restore_kernel_context_inline(
         }
     }
 
+    // Restore TPIDR_EL0 (user TLS pointer) - critical for musl/libc TLS correctness
+    unsafe {
+        core::arch::asm!(
+            "msr tpidr_el0, {}",
+            in(reg) thread.context.tpidr_el0,
+            options(nomem, nostack)
+        );
+    }
+
     // Memory barrier to ensure all writes are visible
     core::sync::atomic::fence(Ordering::SeqCst);
     true
@@ -525,6 +548,15 @@ fn restore_userspace_context_inline(thread: &mut Thread, frame: &mut Aarch64Exce
         core::arch::asm!(
             "msr sp_el0, {}",
             in(reg) thread.context.sp_el0,
+            options(nomem, nostack)
+        );
+    }
+
+    // Restore TPIDR_EL0 (user TLS pointer) - critical for musl/libc TLS correctness
+    unsafe {
+        core::arch::asm!(
+            "msr tpidr_el0, {}",
+            in(reg) thread.context.tpidr_el0,
             options(nomem, nostack)
         );
     }
@@ -579,6 +611,14 @@ fn setup_first_entry_inline(thread: &mut Thread, frame: &mut Aarch64ExceptionFra
     frame.x28 = 0;
     frame.x29 = 0;
     frame.x30 = 0;
+
+    // Clear TPIDR_EL0 - musl will set it during __init_tls
+    unsafe {
+        core::arch::asm!(
+            "msr tpidr_el0, xzr",
+            options(nomem, nostack)
+        );
+    }
 }
 
 // =============================================================================

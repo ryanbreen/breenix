@@ -38,20 +38,23 @@ pub const SIGNAL_TRAMPOLINE_SIZE: usize = SIGNAL_TRAMPOLINE.len();
 /// This is the raw machine code that will be executed in userspace.
 ///
 /// Assembly (little-endian ARM64):
-///   mov x8, #15      ; SYS_rt_sigreturn (syscall number 15)
+///   mov x8, #139     ; SYS_rt_sigreturn (aarch64 syscall number 139)
 ///   svc #0           ; Trigger syscall
 ///   brk #1           ; Should never reach here (causes debug exception if it does)
 ///
 /// On ARM64, the signal handler returns via BLR/RET to x30 (link register),
 /// which we set to point to this trampoline.
 ///
+/// Note: ARM64 uses asm-generic syscall numbers, NOT x86_64 numbers.
+/// rt_sigreturn is 139 on ARM64, not 15 as on x86_64.
+///
 /// Instruction encoding (little-endian):
-/// - mov x8, #15:   0xD28001E8 -> E8 01 80 D2
+/// - mov x8, #139:  0xD2801168 -> 68 11 80 D2
 /// - svc #0:        0xD4000001 -> 01 00 00 D4
 /// - brk #1:        0xD4200020 -> 20 00 20 D4
 #[cfg(target_arch = "aarch64")]
 pub static SIGNAL_TRAMPOLINE: [u8; 12] = [
-    0xE8, 0x01, 0x80, 0xD2, // mov x8, #15 (rt_sigreturn syscall number)
+    0x68, 0x11, 0x80, 0xD2, // mov x8, #139 (rt_sigreturn - aarch64 syscall number)
     0x01, 0x00, 0x00, 0xD4, // svc #0 (supervisor call - trigger syscall)
     0x20, 0x00, 0x20, 0xD4, // brk #1 (should never reach here)
 ];
