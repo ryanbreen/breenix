@@ -523,6 +523,15 @@ fn load_segment_into_page_table(
         // Copy data if this page overlaps with file data
         let page_start_vaddr = page.start_address();
 
+        // Calculate offset within the page where data should go.
+        // For the first page of a non-page-aligned segment (p_vaddr not aligned),
+        // data starts partway into the page.
+        let page_offset = if vaddr > page_start_vaddr {
+            (vaddr.as_u64() - page_start_vaddr.as_u64()) as usize
+        } else {
+            0usize
+        };
+
         // Calculate which part of the file data maps to this page
         let page_file_offset = if page_start_vaddr >= vaddr {
             page_start_vaddr.as_u64() - vaddr.as_u64()
@@ -530,24 +539,24 @@ fn load_segment_into_page_table(
             0
         };
 
+        // Limit copy to the remaining space in this page to prevent buffer overflow.
+        // Without this, non-page-aligned segments (e.g., BusyBox data at 0x4005ff78)
+        // would write past the end of the physical frame, corrupting adjacent memory.
+        let bytes_available_in_page = (4096 - page_offset) as u64;
         let copy_start_in_file = page_file_offset;
-        let copy_end_in_file = core::cmp::min(page_file_offset + 4096, file_size as u64);
+        let copy_end_in_file = core::cmp::min(
+            page_file_offset + bytes_available_in_page,
+            file_size as u64,
+        );
 
         if copy_start_in_file < file_size as u64 && copy_end_in_file > copy_start_in_file {
             let file_data_start = (file_start as u64 + copy_start_in_file) as usize;
             let copy_size = (copy_end_in_file - copy_start_in_file) as usize;
 
-            // Calculate offset within the page where data should go
-            let page_offset = if vaddr > page_start_vaddr {
-                vaddr.as_u64() - page_start_vaddr.as_u64()
-            } else {
-                0
-            };
-
             // Copy using physical memory access (Linux-style approach)
             unsafe {
                 let src = data.as_ptr().add(file_data_start);
-                let dst = phys_ptr.add(page_offset as usize);
+                let dst = phys_ptr.add(page_offset);
                 core::ptr::copy_nonoverlapping(src, dst, copy_size);
             }
 
