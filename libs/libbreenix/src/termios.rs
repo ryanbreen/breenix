@@ -18,6 +18,7 @@ pub mod request {
     pub const TCSETSF: u64 = 0x5404;
     pub const TIOCGPGRP: u64 = 0x540F;
     pub const TIOCSPGRP: u64 = 0x5410;
+    pub const TIOCSCTTY: u64 = 0x540E;
     pub const TIOCGWINSZ: u64 = 0x5413;
     pub const TIOCSWINSZ: u64 = 0x5414;
 }
@@ -198,6 +199,17 @@ pub fn tcsetpgrp(fd: Fd, pgrp: i32) -> Result<(), Error> {
         )
     };
 
+    Error::from_syscall(ret as i64).map(|_| ())
+}
+
+/// Set the controlling terminal for the current session (TIOCSCTTY)
+///
+/// Must be called after setsid() and opening a PTY slave.
+/// This makes the PTY the controlling terminal, enabling job control.
+pub fn set_controlling_terminal(fd: Fd) -> Result<(), Error> {
+    let ret = unsafe {
+        raw::syscall3(nr::IOCTL, fd.raw(), request::TIOCSCTTY, 0)
+    };
     Error::from_syscall(ret as i64).map(|_| ())
 }
 

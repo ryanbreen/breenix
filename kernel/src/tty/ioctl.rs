@@ -383,7 +383,14 @@ pub fn handle_tiocsctty(pair: &Arc<PtyPair>, arg: u64, pid: u32) -> Result<(), i
     }
 
     *controlling = Some(pid);
-    log::debug!("PTY{}: Set controlling process to {}", pair.pty_num, pid);
+
+    // Also set the foreground process group to the caller's PGID.
+    // On Linux, TIOCSCTTY auto-sets the foreground pgrp so that tcgetpgrp()
+    // returns a valid value. Without this, shells like ash fail job control
+    // setup because tcgetpgrp() returns 0.
+    *pair.foreground_pgid.lock() = Some(pid);
+
+    log::debug!("PTY{}: Set controlling process to {}, foreground pgid to {}", pair.pty_num, pid, pid);
 
     Ok(())
 }

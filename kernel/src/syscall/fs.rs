@@ -2179,6 +2179,52 @@ fn handle_devfs_open(device_name: &str, _flags: u32) -> SyscallResult {
         }
     };
 
+    // For /dev/tty, redirect to the controlling PTY if one exists.
+    // On Linux, /dev/tty is a magic device that refers to the calling process's
+    // controlling terminal. The controlling terminal belongs to the SESSION,
+    // not a single process. Any process in the session can open /dev/tty.
+    if matches!(device.device_type, devfs::DeviceType::Tty) {
+        let sid = process.sid.as_u64() as u32;
+        // Drop manager lock before accessing PTY subsystem to avoid lock ordering issues
+        drop(manager_guard);
+
+        // Search active PTYs for one controlled by this session.
+        // controlling_pid stores the session leader's PID (== SID).
+        for pty_num in crate::tty::pty::list_active() {
+            if let Some(pair) = crate::tty::pty::get(pty_num) {
+                if pair.controlling_pid.lock().map_or(false, |p| p == sid) {
+                    // Found the controlling PTY — open as PtySlave
+                    let thread_id2 = crate::task::scheduler::current_thread_id().unwrap();
+                    let mut mg = crate::process::manager();
+                    let proc2 = mg.as_mut().unwrap()
+                        .find_process_by_thread_mut(thread_id2).unwrap().1;
+                    let fd_kind = FdKind::PtySlave(pty_num);
+                    return match proc2.fd_table.alloc(fd_kind) {
+                        Ok(fd) => {
+                            log::info!("handle_devfs_open: /dev/tty -> PTY slave {} as fd {}", pty_num, fd);
+                            SyscallResult::Ok(fd as u64)
+                        }
+                        Err(_) => SyscallResult::Err(EMFILE as u64),
+                    };
+                }
+            }
+        }
+        // No controlling terminal found — fall through to generic device
+        // Re-acquire manager lock for the generic path
+        let thread_id2 = crate::task::scheduler::current_thread_id().unwrap();
+        let mut manager_guard = crate::process::manager();
+        let process = manager_guard.as_mut().unwrap()
+            .find_process_by_thread_mut(thread_id2).unwrap().1;
+        let fd_kind = FdKind::Device(device.device_type);
+        return match process.fd_table.alloc(fd_kind) {
+            Ok(fd) => {
+                log::info!("handle_devfs_open: /dev/tty (no ctty) as fd {}", fd);
+                SyscallResult::Ok(fd as u64)
+            }
+            Err(_) => SyscallResult::Err(EMFILE as u64),
+        };
+    }
+
     // Allocate file descriptor with Device kind
     let fd_kind = FdKind::Device(device.device_type);
     match process.fd_table.alloc(fd_kind) {
