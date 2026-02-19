@@ -290,6 +290,15 @@ else
     mkdir -p "$MOUNT_DIR/usr/local/cbin"
 
     # Install BusyBox with hardlinks for coreutils
+    # Auto-build if missing but build script and source exist
+    if [[ ! -f "$USERSPACE_DIR/busybox.elf" ]] && [[ -x "$SCRIPT_DIR/build-busybox.sh" ]]; then
+        echo "  busybox.elf not found, attempting to build..."
+        if "$SCRIPT_DIR/build-busybox.sh" --arch "$ARCH"; then
+            echo "  BusyBox built successfully"
+        else
+            echo "  WARNING: BusyBox build failed (see build-busybox.sh for prerequisites)"
+        fi
+    fi
     if [[ -f "$USERSPACE_DIR/busybox.elf" ]]; then
         cp "$USERSPACE_DIR/busybox.elf" "$MOUNT_DIR/bin/busybox"
         chmod 755 "$MOUNT_DIR/bin/busybox"
