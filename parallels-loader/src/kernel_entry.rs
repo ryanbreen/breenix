@@ -71,8 +71,10 @@ unsafe fn switch_and_jump(ttbr0: u64, ttbr1: u64, entry: u64, hw_config_ptr: u64
         "isb",
 
         // Set MAIR_EL1 (Memory Attribute Indirection Register)
-        // Index 0: Normal WB (0xFF), Index 1: Device-nGnRnE (0x00)
-        "mov x4, #0xFF",
+        // Must match kernel boot.S layout:
+        //   Index 0: Device-nGnRnE (0x00)
+        //   Index 1: Normal WB (0xFF)
+        "mov x4, #0xFF00",
         "msr mair_el1, x4",
         "isb",
 

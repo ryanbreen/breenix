@@ -255,6 +255,74 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             }
 
             if from_el0 {
+                // Page table walk diagnostic: dump L0-L3 entries for the fault VA
+                // to understand why the mapping is missing or has wrong permissions.
+                {
+                    use crate::arch_impl::aarch64::context_switch::{raw_uart_str, raw_uart_hex};
+                    let pt_base = ttbr0 & 0x0000_FFFF_FFFF_F000;
+                    let hhdm: u64 = 0xFFFF_0000_0000_0000;
+                    raw_uart_str("\n[PT_WALK] VA=");
+                    raw_uart_hex(far);
+                    raw_uart_str(" TTBR0_phys=");
+                    raw_uart_hex(pt_base);
+
+                    // L0 index: bits [47:39]
+                    let l0_idx = ((far >> 39) & 0x1FF) as usize;
+                    let l0_table = (hhdm + pt_base) as *const u64;
+                    let l0_entry = unsafe { core::ptr::read_volatile(l0_table.add(l0_idx)) };
+                    raw_uart_str(" L0[");
+                    raw_uart_hex(l0_idx as u64);
+                    raw_uart_str("]=");
+                    raw_uart_hex(l0_entry);
+
+                    if l0_entry & 0x3 == 0x3 {
+                        // Valid table descriptor -> walk L1
+                        let l1_base = l0_entry & 0x0000_FFFF_FFFF_F000;
+                        let l1_idx = ((far >> 30) & 0x1FF) as usize;
+                        let l1_table = (hhdm + l1_base) as *const u64;
+                        let l1_entry = unsafe { core::ptr::read_volatile(l1_table.add(l1_idx)) };
+                        raw_uart_str(" L1[");
+                        raw_uart_hex(l1_idx as u64);
+                        raw_uart_str("]=");
+                        raw_uart_hex(l1_entry);
+
+                        if l1_entry & 0x3 == 0x3 {
+                            // Valid table descriptor -> walk L2
+                            let l2_base = l1_entry & 0x0000_FFFF_FFFF_F000;
+                            let l2_idx = ((far >> 21) & 0x1FF) as usize;
+                            let l2_table = (hhdm + l2_base) as *const u64;
+                            let l2_entry = unsafe { core::ptr::read_volatile(l2_table.add(l2_idx)) };
+                            raw_uart_str(" L2[");
+                            raw_uart_hex(l2_idx as u64);
+                            raw_uart_str("]=");
+                            raw_uart_hex(l2_entry);
+
+                            if l2_entry & 0x3 == 0x3 {
+                                // Valid table descriptor -> walk L3
+                                let l3_base = l2_entry & 0x0000_FFFF_FFFF_F000;
+                                let l3_idx = ((far >> 12) & 0x1FF) as usize;
+                                let l3_table = (hhdm + l3_base) as *const u64;
+                                let l3_entry = unsafe { core::ptr::read_volatile(l3_table.add(l3_idx)) };
+                                raw_uart_str(" L3[");
+                                raw_uart_hex(l3_idx as u64);
+                                raw_uart_str("]=");
+                                raw_uart_hex(l3_entry);
+                            } else if l1_entry & 0x1 == 0x1 {
+                                raw_uart_str(" (L2=block)");
+                            } else {
+                                raw_uart_str(" (L2=invalid)");
+                            }
+                        } else if l1_entry & 0x1 == 0x1 {
+                            raw_uart_str(" (L1=block)");
+                        } else {
+                            raw_uart_str(" (L1=invalid)");
+                        }
+                    } else {
+                        raw_uart_str(" (L0=invalid)");
+                    }
+                    raw_uart_str("\n");
+                }
+
                 // From userspace - terminate the process with SIGSEGV
                 // Get current TTBR0 to find the process
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
@@ -894,25 +962,16 @@ fn sys_clock_gettime(clock_id: u32, user_timespec_ptr: *mut Timespec) -> Syscall
 /// PL011 UART IRQ number (SPI 1, which is IRQ 33)
 const UART0_IRQ: u32 = 33;
 
-/// Raw serial write - write a string without locks, for use in interrupt handlers
-#[inline(always)]
-fn raw_serial_str(s: &[u8]) {
-    crate::serial_aarch64::raw_serial_str(s);
-}
-
 /// Handle IRQ interrupts
 ///
 /// Called from assembly after saving registers.
 /// This is the main IRQ dispatch point for ARM64.
 #[no_mangle]
 pub extern "C" fn handle_irq() {
-    // Diagnostic: confirm IRQ handler reached from Rust
-    crate::serial_aarch64::raw_serial_char(b'~');
     crate::tracing::providers::counters::count_irq();
 
     // Acknowledge the interrupt from GIC
     if let Some(irq_id) = gic::acknowledge_irq() {
-        crate::serial_aarch64::raw_serial_char(b'a'); // GIC acknowledged
         // Handle the interrupt based on ID
         match irq_id {
             // Virtual timer interrupt (PPI 27)
@@ -924,7 +983,6 @@ pub extern "C" fn handle_irq() {
                 // - Decrementing time quantum
                 // - Setting need_resched flag
                 crate::arch_impl::aarch64::timer_interrupt::timer_interrupt_handler();
-                crate::serial_aarch64::raw_serial_char(b't'); // timer handler done
             }
 
             // UART0 receive interrupt (SPI 1 = IRQ 33)
@@ -972,22 +1030,16 @@ pub extern "C" fn handle_irq() {
 
         // Signal end of interrupt
         gic::end_of_interrupt(irq_id);
-        crate::serial_aarch64::raw_serial_char(b'e'); // EOI sent
 
         // Process pending softirqs (deferred work from interrupt handlers)
         // This must happen after EOI but before rescheduling, while still
         // in the IRQ exit path. Network RX processing runs here.
         crate::task::softirqd::do_softirq();
-        crate::serial_aarch64::raw_serial_char(b's'); // softirq done
 
         // Check if we need to reschedule after handling the interrupt
         // This is the ARM64 equivalent of x86's check_need_resched_and_switch
         check_need_resched_on_irq_exit();
-        crate::serial_aarch64::raw_serial_char(b'r'); // resched check done
-    } else {
-        crate::serial_aarch64::raw_serial_char(b'?'); // GIC returned None
     }
-    crate::serial_aarch64::raw_serial_char(b'!'); // handle_irq returning
 }
 
 /// Check if rescheduling is needed and perform context switch if necessary
@@ -1149,7 +1201,7 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
         if page_table.update_page_flags(page, new_flags).is_err() {
             return false;
         }
-        // Flush TLB
+        // Flush TLB for the modified page
         unsafe {
             let va_for_tlbi = faulting_addr.as_u64() >> 12;
             core::arch::asm!(
@@ -1198,7 +1250,7 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
     // Decrement reference count on old frame
     frame_decref(old_frame);
 
-    // Flush TLB
+    // Flush TLB for the CoW-copied page
     unsafe {
         let va_for_tlbi = faulting_addr.as_u64() >> 12;
         core::arch::asm!(

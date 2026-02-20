@@ -231,14 +231,13 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
             if let Some(ref page_table) = process.page_table {
                 let ttbr0 = page_table.level_4_frame().start_address().as_u64();
                 unsafe {
-                    // CRITICAL: Flush TLB after TTBR0 switch for CoW correctness
                     core::arch::asm!(
-                        "dsb ishst",           // Ensure previous stores complete
-                        "msr ttbr0_el1, {}",   // Set new page table
-                        "isb",                 // Synchronize context
-                        "tlbi vmalle1is",      // FLUSH ENTIRE TLB
-                        "dsb ish",             // Ensure TLB flush completes
-                        "isb",                 // Synchronize instruction stream
+                        "dsb ishst",
+                        "msr ttbr0_el1, {}",
+                        "isb",
+                        "tlbi vmalle1is",
+                        "dsb ish",
+                        "isb",
                         in(reg) ttbr0,
                         options(nostack)
                     );

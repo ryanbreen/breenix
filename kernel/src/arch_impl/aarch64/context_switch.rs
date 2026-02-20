@@ -472,12 +472,18 @@ fn restore_kernel_context_inline(
     if !has_started {
         frame.elr = thread.context.x30;  // First run: jump to entry point
         frame.spsr = 0x5;  // EL1h, DAIF clear (interrupts enabled)
-    } else if thread.context.elr_el1 >= KERNEL_VIRT_BASE {
-        frame.elr = thread.context.elr_el1;  // Resume: return to where we left off
+    } else if is_kernel_addr(thread.context.elr_el1) {
+        // Resume: return to where we left off.
+        // On QEMU, kernel addresses are >= KERNEL_VIRT_BASE (HHDM).
+        // On Parallels, kernel runs identity-mapped at physical addresses
+        // (KERNEL_PHYS_BASE..KERNEL_PHYS_LIMIT), so we must accept both.
+        frame.elr = thread.context.elr_el1;
         frame.spsr = thread.context.spsr_el1;  // Restore saved processor state
     } else {
-        // elr_el1 == 0: thread was started but has zero ELR — redirect to idle
-        raw_uart_str("WARN: elr=0 for started kthread tid=");
+        // elr_el1 == 0 or not a valid kernel address — redirect to idle
+        raw_uart_str("WARN: bad elr=");
+        raw_uart_hex(thread.context.elr_el1);
+        raw_uart_str(" for started kthread tid=");
         raw_uart_dec(thread_id);
         raw_uart_str(", redirecting to idle\n");
         return false;
@@ -665,7 +671,8 @@ fn setup_idle_return_locked(
     cpu_id: usize,
 ) {
     // Set frame ELR and SPSR to safe values FIRST
-    frame.elr = idle_loop_arm64 as *const () as u64;
+    let idle_addr = idle_loop_arm64 as *const () as u64;
+    frame.elr = idle_addr;
     frame.spsr = 0x5; // EL1h with interrupts enabled
 
     // Get idle thread's kernel stack
@@ -674,7 +681,6 @@ fn setup_idle_return_locked(
         .and_then(|t| t.kernel_stack_top.map(|v| v.as_u64()))
         .unwrap_or_else(|| {
             let cpu_id64 = cpu_id as u64;
-            raw_uart_char(b'!');
             0xFFFF_0000_0000_0000u64 + 0x4100_0000 + (cpu_id64 + 1) * 0x20_0000
         });
 
@@ -732,13 +738,21 @@ fn dispatch_idle_locked(
         // case we need to restore the saved context so the boot thread resumes.
         let idle_loop_addr = idle_loop_arm64 as *const () as u64;
         const KERNEL_VIRT_BASE: u64 = 0xFFFF_0000_0000_0000;
+        // Also accept physical kernel addresses on Parallels
+        const KERNEL_PHYS_BASE: u64 = 0x4008_0000;
+        const KERNEL_PHYS_LIMIT: u64 = 0xC000_0000;
         let has_saved_context = sched.get_thread(thread_id).map(|thread| {
             let elr = thread.context.elr_el1;
             let sp = thread.context.sp;
             let spsr = thread.context.spsr_el1;
-            elr >= KERNEL_VIRT_BASE
-                && !(elr >= idle_loop_addr && elr < idle_loop_addr + 16)
-                && sp >= KERNEL_VIRT_BASE
+            let elr_is_kernel = elr >= KERNEL_VIRT_BASE
+                || (elr >= KERNEL_PHYS_BASE && elr < KERNEL_PHYS_LIMIT);
+            let sp_is_kernel = sp >= KERNEL_VIRT_BASE
+                || (sp >= KERNEL_PHYS_BASE && sp < KERNEL_PHYS_LIMIT);
+            let near_idle = elr >= idle_loop_addr && elr < idle_loop_addr + 16;
+            elr_is_kernel
+                && !near_idle
+                && sp_is_kernel
                 && (spsr & 0xF) != 0
         }).unwrap_or(false);
 
@@ -1215,7 +1229,6 @@ fn setup_idle_return_arm64(frame: &mut Aarch64ExceptionFrame) {
     .unwrap_or_else(|| {
         let cpu_id = Aarch64PerCpu::cpu_id() as u64;
         let boot_stack_top = 0xFFFF_0000_0000_0000u64 + 0x4100_0000 + (cpu_id + 1) * 0x20_0000;
-        raw_uart_char(b'!');
         boot_stack_top
     });
 
@@ -1364,8 +1377,12 @@ fn set_next_ttbr0_for_thread(thread_id: u64) -> TtbrResult {
     drop(manager_guard);
 
     if let Some(ttbr0) = next_ttbr0 {
+        // Tag TTBR0 with ASID=1 so stale boot identity map TLB entries
+        // (ASID=0) don't match user VA accesses. Combined with nG bits on
+        // process page table entries, this ensures ASID-based separation.
+        let tagged_ttbr0 = ttbr0 | (1u64 << 48); // ASID=1 in bits [55:48]
         unsafe {
-            Aarch64PerCpu::set_next_cr3(ttbr0);
+            Aarch64PerCpu::set_next_cr3(tagged_ttbr0);
         }
         TtbrResult::Ok
     } else {
@@ -1493,7 +1510,7 @@ fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aarch64Excepti
 
                 // Switch to process's page table for signal delivery
                 if let Some(ref page_table) = process.page_table {
-                    let ttbr0_value = page_table.level_4_frame().start_address().as_u64();
+                    let raw_ttbr0 = page_table.level_4_frame().start_address().as_u64();
                     unsafe {
                         core::arch::asm!(
                             "dsb ishst",
@@ -1502,7 +1519,7 @@ fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aarch64Excepti
                             "tlbi vmalle1is",
                             "dsb ish",
                             "isb",
-                            in(reg) ttbr0_value,
+                            in(reg) raw_ttbr0,
                             options(nomem, nostack)
                         );
                     }

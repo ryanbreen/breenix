@@ -152,8 +152,10 @@ bss_done:
     isb
 
     // Jump to Rust kernel_main (high)
-    ldr x0, =kernel_main
-    br x0
+    // x0 = hw_config_ptr (0 = QEMU, non-zero = Parallels loader passes HardwareConfig*)
+    ldr x1, =kernel_main
+    mov x0, #0
+    br x1
 
     // If kernel_main returns, hang
 hang:
@@ -220,24 +222,10 @@ curr_el_spx_serror:
 // Lower EL using AArch64 (user mode)
 .balign 0x80
 lower_el_aarch64_sync:
-    // Diagnostic: output '$' to confirm sync exception from EL0
-    // Clobbers x0/x1 (will be saved by sync_exception_handler before use)
-    adrp x0, DIAG_UART_VIRT
-    ldr x0, [x0, :lo12:DIAG_UART_VIRT]
-    cbz x0, 1f
-    mov w1, #'$'
-    strb w1, [x0]
-1:  b lower_el_sync_dispatch
+    b lower_el_sync_dispatch
 .balign 0x80
 lower_el_aarch64_irq:
-    // Diagnostic: output '#' to confirm IRQ from EL0
-    // Clobbers x0/x1 (will be saved by irq_handler before use)
-    adrp x0, DIAG_UART_VIRT
-    ldr x0, [x0, :lo12:DIAG_UART_VIRT]
-    cbz x0, 2f
-    mov w1, #'#'
-    strb w1, [x0]
-2:  b irq_handler
+    b irq_handler
 .balign 0x80
 lower_el_aarch64_fiq:
     b unhandled_exception
@@ -557,14 +545,6 @@ irq_handler:
     // Call Rust IRQ handler
     bl handle_irq
 
-    // Diagnostic: 'R' = handle_irq returned to assembly
-    adrp x0, DIAG_UART_VIRT
-    ldr x0, [x0, :lo12:DIAG_UART_VIRT]
-    cbz x0, 88f
-    mov w1, #'R'
-    strb w1, [x0]
-88:
-
     // Check if we need to reschedule before returning from IRQ
     // from_el0 = 1 if SPSR_EL1.M[3:2] indicates EL0 (bit 2 == 0)
     //
@@ -588,14 +568,6 @@ irq_handler:
 
     mov x0, sp
     bl check_need_resched_and_switch_arm64
-
-    // Diagnostic: 'C' = check_need_resched returned
-    adrp x0, DIAG_UART_VIRT
-    ldr x0, [x0, :lo12:DIAG_UART_VIRT]
-    cbz x0, 89f
-    mov w1, #'C'
-    strb w1, [x0]
-89:
 
     // Read ELR from exception frame (written by dispatch function if context switched).
     // The deferred requeue mechanism prevents cross-CPU frame overwrite: the old
@@ -657,20 +629,6 @@ irq_handler:
     msr elr_el1, x16
     ldr x16, [sp, #256]      // x16 = frame.spsr
     msr spsr_el1, x16
-
-    // Diagnostic: 'X' = ELR/SPSR set, about to restore regs and ERET
-    // x0/x1 are scratch here (will be re-loaded from frame below)
-    adrp x0, DIAG_UART_VIRT
-    ldr x0, [x0, :lo12:DIAG_UART_VIRT]
-    cbz x0, 90f
-    mov w1, #'X'
-    strb w1, [x0]
-    // Also print SPSR mode (EL0=0, EL1h=5) to see where we're returning
-    mrs x1, spsr_el1
-    and x1, x1, #0xF
-    add w1, w1, #'0'
-    strb w1, [x0]
-90:
 
     // Restore all general-purpose registers from the exception frame
     // x0 is particularly critical - it contains the fork() return value!

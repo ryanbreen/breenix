@@ -24,8 +24,11 @@ mod attr {
     pub const PAGE: u64 = 1 << 1;
 
     /// AttrIndx[2:0] in bits [4:2]
-    pub const ATTR_IDX_NORMAL: u64 = 0 << 2; // MAIR index 0: Normal WB
-    pub const ATTR_IDX_DEVICE: u64 = 1 << 2; // MAIR index 1: Device-nGnRnE
+    /// MUST match kernel boot.S MAIR layout:
+    ///   Index 0 = Device-nGnRnE (0x00)
+    ///   Index 1 = Normal WB-WA  (0xFF)
+    pub const ATTR_IDX_DEVICE: u64 = 0 << 2; // MAIR index 0: Device-nGnRnE
+    pub const ATTR_IDX_NORMAL: u64 = 1 << 2; // MAIR index 1: Normal WB
 
     /// Access flag (must be set, or access fault)
     pub const AF: u64 = 1 << 10;
@@ -53,9 +56,10 @@ mod attr {
 }
 
 /// MAIR (Memory Attribute Indirection Register) value.
-/// Index 0: Normal WB cacheable (0xFF = Inner WB RA WA, Outer WB RA WA)
-/// Index 1: Device-nGnRnE (0x00)
-pub const MAIR_VALUE: u64 = 0x00_00_00_00_00_00_00FF;
+/// MUST match kernel boot.S layout:
+///   Index 0: Device-nGnRnE (0x00)
+///   Index 1: Normal WB cacheable (0xFF = Inner WB RA WA, Outer WB RA WA)
+pub const MAIR_VALUE: u64 = 0x00_00_00_00_00_00_FF00;
 
 /// TCR (Translation Control Register) value for 4K granule, 48-bit VA.
 /// T0SZ = 16 (48-bit VA for TTBR0)
