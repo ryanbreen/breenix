@@ -383,8 +383,9 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
         if best_size > 0 {
             // Frame allocator starts after kernel + stacks (32 MB from RAM base)
             let fa_start = best_base + 0x0200_0000; // +32 MB
-            // Reserve 32 MB at the end for heap
-            let fa_end = best_base + best_size - 0x0200_0000;
+            // Frame allocator must end BEFORE the heap region.
+            // The heap is at fixed physical 0x5000_0000 (32 MB), so cap fa_end there.
+            let fa_end = (best_base + best_size).min(0x5000_0000);
             if fa_end > fa_start {
                 FRAME_ALLOC_START.store(fa_start, Ordering::Relaxed);
                 FRAME_ALLOC_END.store(fa_end, Ordering::Relaxed);

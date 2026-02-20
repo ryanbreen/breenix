@@ -173,9 +173,11 @@ pub extern "C" fn timer_interrupt_handler() {
     // Increment timer interrupt counter (used for debugging when needed)
     let _count = TIMER_INTERRUPT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
 
-    // CPU 0 only: poll VirtIO keyboard (single-device, not safe from multiple CPUs)
+    // CPU 0 only: poll input devices (single-device, not safe from multiple CPUs)
     if cpu_id == 0 {
         poll_keyboard_to_stdin();
+        // Poll XHCI USB HID events (needed when PCI interrupt routing isn't available)
+        crate::drivers::usb::xhci::poll_hid_events();
     }
 
     // CPU 0 only: soft lockup detector
@@ -215,6 +217,22 @@ pub extern "C" fn timer_interrupt_handler() {
             print_timer_count_decimal(crate::arch_impl::aarch64::context_switch::TTBR_PROCESS_GONE_COUNT.load(Ordering::Relaxed));
             raw_serial_str(b" tlb=");
             print_timer_count_decimal(crate::arch_impl::aarch64::context_switch::TTBR_PM_LOCK_BUSY_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" up=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::POLL_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" ue=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::EVENT_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" uk=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::KBD_EVENT_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" xo=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::XFER_OTHER_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" psc=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::PSC_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" r=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::EP0_RESET_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" rf=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::EP0_RESET_FAIL_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" ps=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::EP0_PENDING_STUCK_COUNT.load(Ordering::Relaxed));
             raw_serial_str(b"]\n");
         }
     }

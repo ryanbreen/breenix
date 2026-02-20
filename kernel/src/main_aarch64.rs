@@ -469,10 +469,48 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     kernel::tty::init();
     serial_println!("[boot] TTY subsystem initialized");
 
-    // Initialize graphics based on available hardware
+    // Initialize graphics based on available hardware (capability-based detection)
+    //
+    // Graphics initialization priority:
+    //   1. VirtIO GPU PCI (supports arbitrary resolutions, used on Parallels)
+    //   2. UEFI GOP framebuffer (fallback on Parallels if GPU PCI fails)
+    //   3. VirtIO GPU MMIO (QEMU virt platform)
     serial_println!("[boot] Initializing graphics...");
-    let has_display = if kernel::platform_config::has_framebuffer() {
-        // UEFI GOP framebuffer (Parallels or other UEFI platform)
+    let has_display = if kernel::drivers::virtio::gpu_pci::is_initialized()
+        && kernel::platform_config::has_framebuffer()
+    {
+        // Parallels hybrid mode: VirtIO GPU PCI controls the display mode
+        // (resolution, stride) but pixels are read from BAR0 (the GOP address).
+        // This gives us higher resolution than GOP's native 1024x768.
+        match arm64_fb::init_gpu_pci_gop_framebuffer() {
+            Ok(()) => {
+                serial_println!("[boot] GPU PCI+GOP hybrid display initialized");
+                // Draw initial split-screen layout
+                if let Err(e) = init_gop_display() {
+                    serial_println!("[boot] Display setup failed: {}", e);
+                }
+                true
+            }
+            Err(e) => {
+                serial_println!("[boot] GPU PCI+GOP hybrid failed: {}, trying pure GOP", e);
+                // Fall through to GOP
+                match arm64_fb::init_gop_framebuffer() {
+                    Ok(()) => {
+                        serial_println!("[boot] GOP framebuffer initialized (fallback)");
+                        if let Err(e) = init_gop_display() {
+                            serial_println!("[boot] GOP display setup failed: {}", e);
+                        }
+                        true
+                    }
+                    Err(e2) => {
+                        serial_println!("[boot] GOP framebuffer also failed: {}", e2);
+                        false
+                    }
+                }
+            }
+        }
+    } else if kernel::platform_config::has_framebuffer() {
+        // UEFI GOP framebuffer (fallback when GPU PCI not available)
         match arm64_fb::init_gop_framebuffer() {
             Ok(()) => {
                 serial_println!("[boot] GOP framebuffer initialized");
@@ -488,7 +526,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             }
         }
     } else if kernel::platform_config::is_qemu() {
-        // VirtIO GPU (QEMU)
+        // VirtIO GPU MMIO (QEMU virt platform)
         match init_graphics() {
             Ok(()) => true,
             Err(e) => {
@@ -501,8 +539,14 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         false
     };
 
-    // Initialize VirtIO keyboard (QEMU only)
-    if kernel::platform_config::is_qemu() {
+    // Initialize input devices (capability-based detection)
+    if kernel::drivers::usb::xhci::is_initialized() {
+        // USB HID keyboard/mouse via XHCI — already set up during drivers::init()
+        // Polling happens from timer interrupt (poll_hid_events) since PCI
+        // interrupt routing may not be available on all platforms (IRQ=255).
+        serial_println!("[boot] USB HID input active via XHCI (polled from timer)");
+    } else if kernel::platform_config::is_qemu() {
+        // VirtIO keyboard/mouse MMIO (QEMU)
         serial_println!("[boot] Initializing VirtIO keyboard...");
         match input_mmio::init() {
             Ok(()) => serial_println!("[boot] VirtIO keyboard initialized"),
@@ -1155,8 +1199,12 @@ fn current_exception_level() -> u8 {
 /// with graphics demo on the left and terminal on the right.
 #[cfg(target_arch = "aarch64")]
 fn init_graphics() -> Result<(), &'static str> {
-    // Initialize VirtIO GPU driver
-    kernel::drivers::virtio::gpu_mmio::init()?;
+    // Initialize VirtIO GPU backend.
+    // GPU PCI is initialized earlier in drivers::init() — only init GPU MMIO
+    // if PCI is not available (QEMU virt platform).
+    if !kernel::drivers::virtio::gpu_pci::is_initialized() {
+        kernel::drivers::virtio::gpu_mmio::init()?;
+    }
 
     arm64_fb::init_shell_framebuffer()?;
 

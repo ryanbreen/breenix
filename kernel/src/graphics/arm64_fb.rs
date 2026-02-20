@@ -59,8 +59,10 @@ pub fn mark_full_dirty() {
         mark_dirty(0, 0, cache.width as u32, cache.height as u32);
         return;
     }
-    // Fall back to VirtIO GPU dimensions
-    if let Some((w, h)) = gpu_mmio::dimensions() {
+    // Fall back to VirtIO GPU PCI, then MMIO
+    if let Some((w, h)) = crate::drivers::virtio::gpu_pci::dimensions() {
+        mark_dirty(0, 0, w, h);
+    } else if let Some((w, h)) = gpu_mmio::dimensions() {
         mark_dirty(0, 0, w, h);
     }
 }
@@ -104,6 +106,8 @@ pub fn take_dirty_rect() -> Option<(u32, u32, u32, u32)> {
         let dw = cache.width as u32;
         let dh = cache.height as u32;
         (x_min.min(dw), y_min.min(dh), x_max.min(dw), y_max.min(dh))
+    } else if let Some((dw, dh)) = crate::drivers::virtio::gpu_pci::dimensions() {
+        (x_min.min(dw), y_min.min(dh), x_max.min(dw), y_max.min(dh))
     } else if let Some((dw, dh)) = gpu_mmio::dimensions() {
         (x_min.min(dw), y_min.min(dh), x_max.min(dw), y_max.min(dh))
     } else {
@@ -127,6 +131,8 @@ pub fn flush_dirty_rect(x: u32, y: u32, w: u32, h: u32) -> Result<(), &'static s
         // GOP: writes go directly to display memory. DSB ensures visibility.
         unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
         Ok(())
+    } else if crate::drivers::virtio::gpu_pci::is_initialized() {
+        crate::drivers::virtio::gpu_pci::flush_rect(x, y, w, h)
     } else {
         gpu_mmio::flush_rect(x, y, w, h)
     }
@@ -253,6 +259,81 @@ pub fn init_gop_framebuffer() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Initialize framebuffer using VirtIO GPU PCI resolution but GOP/BAR0 memory.
+///
+/// On Parallels, VirtIO GPU `set_scanout` controls the display mode (resolution,
+/// stride) but actual pixels are read from BAR0 (the GOP framebuffer at 0x10000000).
+/// This function sets up a GOP-style framebuffer at the VirtIO GPU's configured
+/// resolution, giving us higher resolution than the GOP-reported 1024x768.
+///
+/// Must be called AFTER `drivers::init()` (which initializes GPU PCI).
+pub fn init_gpu_pci_gop_framebuffer() -> Result<(), &'static str> {
+    if !crate::drivers::virtio::gpu_pci::is_initialized() {
+        return Err("GPU PCI not initialized");
+    }
+
+    let (width, height) = crate::drivers::virtio::gpu_pci::dimensions()
+        .ok_or("GPU PCI has no dimensions")?;
+    let width = width as usize;
+    let height = height as usize;
+    let stride = width; // VirtIO GPU stride = width (no padding)
+    let bytes_per_pixel = 4usize;
+
+    // GOP framebuffer base: the BAR0/GOP address that the display reads from
+    let base = crate::platform_config::fb_base_phys();
+    if base == 0 {
+        return Err("No GOP framebuffer base address");
+    }
+
+    // Ensure the GOP memory is large enough for the new resolution.
+    // BAR0 is typically 64MB; we need width * height * 4 bytes.
+    let needed = width * height * bytes_per_pixel;
+    let gop_size = crate::platform_config::fb_size() as usize;
+    crate::serial_println!(
+        "[arm64-fb] GPU PCI+GOP hybrid: {}x{} stride={} need={} bytes, GOP region={} bytes",
+        width, height, stride, needed, gop_size
+    );
+    // GOP size from UEFI may report only 1024x768 worth; the actual BAR is larger.
+    // Proceed even if needed > gop_size — the BAR0 region extends well beyond.
+
+    // Map via HHDM
+    let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
+    let virt_ptr = hhdm_base + base;
+
+    // Update GOP globals with the new (larger) dimensions
+    GOP_FB_PTR.store(virt_ptr, Ordering::Relaxed);
+    GOP_FB_LEN.store(needed as u64, Ordering::Relaxed);
+    GOP_ACTIVE.store(true, Ordering::Relaxed);
+
+    // Create framebuffer with GPU PCI dimensions but GOP backend
+    let fb = Arm64FrameBuffer {
+        width,
+        height,
+        bytes_per_pixel,
+        stride,
+        is_gop: true, // Writes go to GOP memory, flush uses DSB
+        is_bgr_flag: true, // B8G8R8A8_UNORM
+    };
+
+    let shell_fb = ShellFrameBuffer { fb };
+
+    let _ = FB_INFO_CACHE.try_init_once(|| FbInfoCache {
+        width,
+        height,
+        stride,
+        bytes_per_pixel,
+        is_bgr: true,
+    });
+
+    let _ = SHELL_FRAMEBUFFER.try_init_once(|| Mutex::new(shell_fb));
+
+    crate::serial_println!(
+        "[arm64-fb] GPU PCI+GOP hybrid framebuffer: {}x{} base_phys={:#x}",
+        width, height, base
+    );
+    Ok(())
+}
+
 /// ARM64 framebuffer wrapper that implements Canvas trait
 pub struct Arm64FrameBuffer {
     /// Display width in pixels
@@ -272,9 +353,12 @@ pub struct Arm64FrameBuffer {
 impl Arm64FrameBuffer {
     /// Create a new ARM64 framebuffer wrapper
     ///
-    /// Returns None if the VirtIO GPU is not initialized
+    /// Tries GPU PCI first, then falls back to GPU MMIO.
+    /// Returns None if no VirtIO GPU is initialized.
     pub fn new() -> Option<Self> {
-        let (width, height) = gpu_mmio::dimensions()?;
+        // Try GPU PCI first (Parallels), then GPU MMIO (QEMU)
+        let (width, height) = crate::drivers::virtio::gpu_pci::dimensions()
+            .or_else(|| gpu_mmio::dimensions())?;
 
         Some(Self {
             width: width as usize,
@@ -292,6 +376,8 @@ impl Arm64FrameBuffer {
             // GOP: writes go directly to display memory. DSB ensures visibility.
             unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
             Ok(())
+        } else if crate::drivers::virtio::gpu_pci::is_initialized() {
+            crate::drivers::virtio::gpu_pci::flush()
         } else {
             gpu_mmio::flush()
         }
@@ -302,6 +388,8 @@ impl Arm64FrameBuffer {
         if self.is_gop {
             unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
             Ok(())
+        } else if crate::drivers::virtio::gpu_pci::is_initialized() {
+            crate::drivers::virtio::gpu_pci::flush_rect(x, y, w, h)
         } else {
             gpu_mmio::flush_rect(x, y, w, h)
         }
@@ -341,6 +429,8 @@ impl Canvas for Arm64FrameBuffer {
 
         let buffer = if self.is_gop {
             match gop_framebuffer() { Some(b) => b, None => return }
+        } else if crate::drivers::virtio::gpu_pci::is_initialized() {
+            match crate::drivers::virtio::gpu_pci::framebuffer() { Some(b) => b, None => return }
         } else {
             match gpu_mmio::framebuffer() { Some(b) => b, None => return }
         };
@@ -365,6 +455,8 @@ impl Canvas for Arm64FrameBuffer {
 
         let buffer: &[u8] = if self.is_gop {
             gop_framebuffer_ref()?
+        } else if crate::drivers::virtio::gpu_pci::is_initialized() {
+            crate::drivers::virtio::gpu_pci::framebuffer().map(|b| &*b)?
         } else {
             gpu_mmio::framebuffer().map(|b| &*b)?
         };
@@ -383,6 +475,8 @@ impl Canvas for Arm64FrameBuffer {
     fn buffer_mut(&mut self) -> &mut [u8] {
         if self.is_gop {
             gop_framebuffer().unwrap_or(&mut [])
+        } else if crate::drivers::virtio::gpu_pci::is_initialized() {
+            crate::drivers::virtio::gpu_pci::framebuffer().unwrap_or(&mut [])
         } else {
             gpu_mmio::framebuffer().unwrap_or(&mut [])
         }
@@ -391,6 +485,8 @@ impl Canvas for Arm64FrameBuffer {
     fn buffer(&self) -> &[u8] {
         if self.is_gop {
             gop_framebuffer_ref().unwrap_or(&[])
+        } else if crate::drivers::virtio::gpu_pci::is_initialized() {
+            crate::drivers::virtio::gpu_pci::framebuffer().map(|b| &*b).unwrap_or(&[])
         } else {
             gpu_mmio::framebuffer().map(|b| &*b).unwrap_or(&[])
         }

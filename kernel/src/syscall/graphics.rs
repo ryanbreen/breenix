@@ -526,9 +526,13 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                         cmd.p4 as u32,
                     ))
                 } else {
-                    // Full flush — get display dimensions
-                    crate::drivers::virtio::gpu_mmio::dimensions()
-                        .map(|(w, h)| (0u32, 0u32, w, h))
+                    // Full flush — get display dimensions.
+                    // Check FB_INFO_CACHE first (works for GOP and all backends),
+                    // then fall back to gpu_mmio::dimensions() for QEMU.
+                    crate::graphics::arm64_fb::FB_INFO_CACHE.get()
+                        .map(|c| (0u32, 0u32, c.width as u32, c.height as u32))
+                        .or_else(|| crate::drivers::virtio::gpu_mmio::dimensions()
+                            .map(|(w, h)| (0u32, 0u32, w, h)))
                 };
 
                 if let Some(mmap_info) = fb_mmap_info {
@@ -576,7 +580,7 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                 // immediately rather than waiting for the render thread to wake up
                 // (which could take 5ms+ due to timer tick granularity).
                 if let Some((fx, fy, fw, fh)) = flush_rect {
-                    let _ = crate::drivers::virtio::gpu_mmio::flush_rect(fx, fy, fw, fh);
+                    let _ = crate::graphics::arm64_fb::flush_dirty_rect(fx, fy, fw, fh);
                 }
             }
         }

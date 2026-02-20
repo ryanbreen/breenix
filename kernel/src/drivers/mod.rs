@@ -9,6 +9,8 @@ pub mod ahci;
 pub mod e1000;
 pub mod fw_cfg;
 pub mod pci;
+#[cfg(target_arch = "aarch64")]
+pub mod usb;
 pub mod virtio;  // Now available on both x86_64 and aarch64
 
 /// Initialize the driver subsystem
@@ -100,6 +102,35 @@ pub fn init() -> usize {
             );
         }
         serial_println!("[drivers] Found {} VirtIO PCI devices", virtio_devices.len());
+
+        // Initialize VirtIO GPU PCI driver.
+        // Even when a GOP framebuffer is available (Parallels), we try the VirtIO
+        // GPU PCI driver first — it supports arbitrary resolutions via
+        // CREATE_RESOURCE_2D, giving us control beyond the fixed GOP mode.
+        // If GPU PCI init fails, the GOP framebuffer is used as a fallback.
+        match virtio::gpu_pci::init() {
+            Ok(()) => {
+                serial_println!("[drivers] VirtIO GPU (PCI) initialized");
+            }
+            Err(e) => {
+                serial_println!("[drivers] VirtIO GPU (PCI) init failed: {}", e);
+            }
+        }
+
+        // Initialize XHCI USB host controller (keyboard + mouse)
+        // NEC uPD720200: vendor 0x1033, device 0x0194
+        if let Some(xhci_dev) = pci::find_device(0x1033, 0x0194) {
+            match usb::xhci::init(&xhci_dev) {
+                Ok(()) => {
+                    serial_println!("[drivers] XHCI USB controller initialized");
+                }
+                Err(e) => {
+                    serial_println!("[drivers] XHCI USB init failed: {}", e);
+                }
+            }
+        } else {
+            serial_println!("[drivers] No XHCI USB controller found");
+        }
 
         // Initialize AHCI storage driver.
         // First try PCI (standard AHCI), then platform MMIO (Parallels Desktop).

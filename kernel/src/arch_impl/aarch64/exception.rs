@@ -1022,6 +1022,12 @@ pub extern "C" fn handle_irq() {
                         crate::drivers::virtio::net_mmio::handle_interrupt();
                     }
                 }
+                // XHCI USB interrupt dispatch
+                if let Some(xhci_irq) = crate::drivers::usb::xhci::get_irq() {
+                    if irq_id == xhci_irq {
+                        crate::drivers::usb::xhci::handle_interrupt();
+                    }
+                }
             }
 
             // Should not happen - GIC filters invalid IDs (1020+)
