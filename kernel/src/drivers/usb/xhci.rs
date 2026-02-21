@@ -211,17 +211,23 @@ static mut EVENT_RING_CYCLE: bool = true;
 /// Event Ring Segment Table (1 entry).
 static mut ERST: Aligned64<[ErstEntry; 1]> = Aligned64([ErstEntry::zeroed(); 1]);
 
-/// Transfer rings per device slot.
+/// Base index for HID interrupt transfer rings, placed after per-slot EP0 rings
+/// to avoid index collisions. Keyboard = HID_RING_BASE + 0, Mouse = HID_RING_BASE + 1.
+const HID_RING_BASE: usize = MAX_SLOTS;
+
+/// Total number of transfer rings: MAX_SLOTS for EP0 + 2 for HID interrupt endpoints.
+const NUM_TRANSFER_RINGS: usize = MAX_SLOTS + 2;
+
+/// Transfer rings for device endpoints.
 ///
-/// During enumeration: indexed by slot_idx (slot_id - 1) for EP0 control transfers.
-/// After HID configuration: configure_interrupt_endpoint repurposes the hid_idx
-/// entry (0=keyboard, 1=mouse) for interrupt IN transfers.
-static mut TRANSFER_RINGS: [[Trb; TRANSFER_RING_SIZE]; MAX_SLOTS] =
-    [[Trb::zeroed(); TRANSFER_RING_SIZE]; MAX_SLOTS];
-/// Transfer ring enqueue indices per slot.
-static mut TRANSFER_ENQUEUE: [usize; MAX_SLOTS] = [0; MAX_SLOTS];
-/// Transfer ring cycle state per slot.
-static mut TRANSFER_CYCLE: [bool; MAX_SLOTS] = [true; MAX_SLOTS];
+/// Indices [0..MAX_SLOTS): EP0 control rings, indexed by slot_idx (slot_id - 1).
+/// Indices [HID_RING_BASE..HID_RING_BASE+2): HID interrupt rings (keyboard, mouse).
+static mut TRANSFER_RINGS: [[Trb; TRANSFER_RING_SIZE]; NUM_TRANSFER_RINGS] =
+    [[Trb::zeroed(); TRANSFER_RING_SIZE]; NUM_TRANSFER_RINGS];
+/// Transfer ring enqueue indices.
+static mut TRANSFER_ENQUEUE: [usize; NUM_TRANSFER_RINGS] = [0; NUM_TRANSFER_RINGS];
+/// Transfer ring cycle state.
+static mut TRANSFER_CYCLE: [bool; NUM_TRANSFER_RINGS] = [true; NUM_TRANSFER_RINGS];
 
 /// Input Contexts for device setup (2048 bytes each for 64-byte contexts).
 /// Used temporarily during AddressDevice and ConfigureEndpoint commands.
@@ -1104,8 +1110,9 @@ fn configure_interrupt_endpoint(
     state: &XhciState,
     slot_id: u8,
     ep_desc: &EndpointDescriptor,
-    hid_idx: usize, // 0 = keyboard, 1 = mouse
+    hid_idx: usize, // 0 = keyboard, 1 = mouse (offset by HID_RING_BASE for ring access)
 ) -> Result<u8, &'static str> {
+    let ring_idx = HID_RING_BASE + hid_idx; // Separate from EP0 slot rings
     let slot_idx = (slot_id - 1) as usize;
     let ctx_size = state.context_size;
 
@@ -1142,21 +1149,19 @@ fn configure_interrupt_endpoint(
         let dev_ctx = &raw const DEVICE_CONTEXTS[slot_idx];
         dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
 
-        // Copy current slot context DW0 and update Context Entries
-        let current_slot_dw0 = core::ptr::read_volatile(
-            (*dev_ctx).0.as_ptr().add(0) as *const u32,
-        );
-        // Context Entries = max(current, dci)
+        // Copy all 4 DWORDs of the current slot context from device context
+        for dw_offset in (0..16).step_by(4) {
+            let val = core::ptr::read_volatile(
+                (*dev_ctx).0.as_ptr().add(dw_offset) as *const u32,
+            );
+            core::ptr::write_volatile(slot_ctx.add(dw_offset) as *mut u32, val);
+        }
+        // Update Context Entries in DW0 to include the new endpoint DCI
+        let current_slot_dw0 = core::ptr::read_volatile(slot_ctx as *const u32);
         let current_entries = (current_slot_dw0 >> 27) & 0x1F;
         let new_entries = current_entries.max(dci as u32);
         let new_slot_dw0 = (current_slot_dw0 & !(0x1F << 27)) | (new_entries << 27);
         core::ptr::write_volatile(slot_ctx as *mut u32, new_slot_dw0);
-
-        // Copy DW1 (Root Hub Port Number, etc.)
-        let slot_dw1 = core::ptr::read_volatile(
-            (*dev_ctx).0.as_ptr().add(4) as *const u32,
-        );
-        core::ptr::write_volatile(slot_ctx.add(4) as *mut u32, slot_dw1);
 
         // Endpoint Context at offset (1 + dci) * ctx_size
         let ep_ctx = input_base.add((1 + dci as usize) * ctx_size);
@@ -1168,21 +1173,22 @@ fn configure_interrupt_endpoint(
         let ep_dw0: u32 = (interval as u32) << 16;
         core::ptr::write_volatile(ep_ctx as *mut u32, ep_dw0);
 
-        // EP DW1: EP Type (bits 5:3), CErr (bits 2:1)
+        // EP DW1: Max Packet Size (bits 31:16), EP Type (bits 5:3), CErr (bits 2:1)
         // EP Type for Interrupt IN = 7 (per xHCI spec: Isoch OUT=1, Bulk OUT=2, Int OUT=3,
         //   Control Bidir=4, Isoch IN=5, Bulk IN=6, Int IN=7)
         let ep_type: u32 = 7; // Interrupt IN
         let cerr: u32 = 3;    // Max error count
-        let ep_dw1: u32 = (ep_type << 3) | (cerr << 1);
+        let max_pkt = (ep_desc.w_max_packet_size & 0x07FF) as u32; // Bits 10:0
+        let ep_dw1: u32 = (max_pkt << 16) | (ep_type << 3) | (cerr << 1);
         core::ptr::write_volatile(ep_ctx.add(0x04) as *mut u32, ep_dw1);
 
         // Clear and set up the HID transfer ring for this device
-        let ring = &raw mut TRANSFER_RINGS[hid_idx];
+        let ring = &raw mut TRANSFER_RINGS[ring_idx];
         core::ptr::write_bytes(ring as *mut u8, 0, TRANSFER_RING_SIZE * 16);
-        TRANSFER_ENQUEUE[hid_idx] = 0;
-        TRANSFER_CYCLE[hid_idx] = true;
+        TRANSFER_ENQUEUE[ring_idx] = 0;
+        TRANSFER_CYCLE[ring_idx] = true;
 
-        let ring_phys = virt_to_phys(&raw const TRANSFER_RINGS[hid_idx] as u64);
+        let ring_phys = virt_to_phys(&raw const TRANSFER_RINGS[ring_idx] as u64);
 
         // EP DW2-DW3: TR Dequeue Pointer with DCS = 1
         core::ptr::write_volatile(
@@ -1194,11 +1200,12 @@ fn configure_interrupt_endpoint(
             (ring_phys >> 32) as u32,
         );
 
-        // EP DW4: Max Packet Size (bits 31:16), Max Burst Size (bits 15:8)=0,
-        //         Average TRB Length (bits 15:0)
-        let max_pkt = ep_desc.w_max_packet_size & 0x07FF; // Bits 10:0
+        // EP DW4: Max ESIT Payload Lo (bits 31:16), Average TRB Length (bits 15:0)
+        // ESIT Payload = MaxPacketSize × (MaxBurst+1) × (Mult+1)
+        // For interrupt endpoints: MaxBurst=0, Mult=0, so ESIT = MaxPacketSize
         let avg_trb_len = max_pkt; // For interrupt, average = max packet
-        let ep_dw4: u32 = ((max_pkt as u32) << 16) | (avg_trb_len as u32);
+        let esit_payload = max_pkt; // MaxPkt × 1 × 1
+        let ep_dw4: u32 = (esit_payload << 16) | avg_trb_len;
         core::ptr::write_volatile(ep_ctx.add(0x10) as *mut u32, ep_dw4);
 
         // Cache-clean the input context
@@ -1261,7 +1268,7 @@ fn configure_interrupt_endpoint(
         let ep_out_dw3 = core::ptr::read_volatile(ep_out.add(12) as *const u32);
         let tr_dequeue = (ep_out_dw2 as u64) | ((ep_out_dw3 as u64) << 32);
 
-        let ring_phys_verify = virt_to_phys(&raw const TRANSFER_RINGS[hid_idx] as u64);
+        let ring_phys_verify = virt_to_phys(&raw const TRANSFER_RINGS[ring_idx] as u64);
 
         crate::serial_println!(
             "[xhci] Configured endpoint DCI {} for slot {}: state={} type={} ring_phys={:#x} ctx_dequeue={:#x}",
@@ -1424,10 +1431,12 @@ fn configure_hid(
 /// Queue a Normal TRB on a HID transfer ring to receive an interrupt IN report.
 fn queue_hid_transfer(
     state: &XhciState,
-    hid_idx: usize,
+    hid_idx: usize, // 0 = keyboard, 1 = mouse
     slot_id: u8,
     dci: u8,
 ) -> Result<(), &'static str> {
+    let ring_idx = HID_RING_BASE + hid_idx;
+
     // Determine the physical address of the report buffer
     let buf_phys = if hid_idx == 0 {
         virt_to_phys((&raw const KBD_REPORT_BUF) as u64)
@@ -1444,8 +1453,8 @@ fn queue_hid_transfer(
 
     // Log the transfer ring state before enqueue
     unsafe {
-        let ring_phys = virt_to_phys(&raw const TRANSFER_RINGS[hid_idx] as u64);
-        let enq_idx = TRANSFER_ENQUEUE[hid_idx];
+        let ring_phys = virt_to_phys(&raw const TRANSFER_RINGS[ring_idx] as u64);
+        let enq_idx = TRANSFER_ENQUEUE[ring_idx];
         let trb_phys = ring_phys + (enq_idx as u64) * 16;
         crate::serial_println!(
             "[xhci] queue_hid_transfer: hid_idx={} ring_phys={:#x} enq_idx={} trb_phys={:#x} buf_phys={:#x}",
@@ -1460,7 +1469,7 @@ fn queue_hid_transfer(
         // Normal TRB type, IOC (bit 5), ISP (Interrupt on Short Packet, bit 2)
         control: (trb_type::NORMAL << 10) | (1 << 5) | (1 << 2),
     };
-    enqueue_transfer(hid_idx, trb);
+    enqueue_transfer(ring_idx, trb);
 
     // Ring the doorbell for this endpoint
     crate::serial_println!(
@@ -2277,6 +2286,7 @@ pub fn poll_hid_events() {
                                 let report_buf = &raw const KBD_REPORT_BUF;
                                 dma_cache_invalidate((*report_buf).0.as_ptr(), 8);
                                 let report = &(*report_buf).0;
+
                                 super::hid::process_keyboard_report(report);
                             }
                             // SHORT_PACKET for Data Stage: just acknowledge, data stage done
