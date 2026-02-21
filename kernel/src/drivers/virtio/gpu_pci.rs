@@ -232,12 +232,14 @@ struct PciCmdBuffer {
 static mut PCI_CMD_BUF: PciCmdBuffer = PciCmdBuffer { data: [0; 512] };
 static mut PCI_RESP_BUF: PciCmdBuffer = PciCmdBuffer { data: [0; 512] };
 
-// Default framebuffer dimensions
-const DEFAULT_FB_WIDTH: u32 = 1280;
-const DEFAULT_FB_HEIGHT: u32 = 800;
-// Max supported resolution: 1920x1200 @ 32bpp = ~9.2MB
-const FB_MAX_WIDTH: u32 = 1920;
-const FB_MAX_HEIGHT: u32 = 1200;
+// Default framebuffer dimensions (Parallels: set_scanout configures display mode)
+// 2560x1600 is the max that fits in the ~16MB GOP BAR0 region on Parallels.
+// On a Retina Mac, Parallels 2x-scales this to ~1280x800 window points.
+const DEFAULT_FB_WIDTH: u32 = 2560;
+const DEFAULT_FB_HEIGHT: u32 = 1600;
+// Max supported resolution: 2560x1600 @ 32bpp = ~16.4MB
+const FB_MAX_WIDTH: u32 = 2560;
+const FB_MAX_HEIGHT: u32 = 1600;
 const FB_SIZE: usize = (FB_MAX_WIDTH * FB_MAX_HEIGHT * 4) as usize;
 const BYTES_PER_PIXEL: usize = 4;
 const RESOURCE_ID: u32 = 1;

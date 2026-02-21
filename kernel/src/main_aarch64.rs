@@ -472,20 +472,24 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Initialize graphics based on available hardware (capability-based detection)
     //
     // Graphics initialization priority:
-    //   1. VirtIO GPU PCI (supports arbitrary resolutions, used on Parallels)
-    //   2. UEFI GOP framebuffer (fallback on Parallels if GPU PCI fails)
+    //   1. VirtIO GPU PCI + GOP hybrid (Parallels): GPU set_scanout configures
+    //      the display's reading stride/resolution (e.g. 1280x800), while pixel
+    //      data is written to GOP memory (0x10000000). VirtIO transfer_to_host
+    //      does NOT update the display — only GOP memory is scanned out. The
+    //      kernel MUST write at the GPU-configured stride, not the GOP stride.
+    //   2. UEFI GOP framebuffer (fallback if GPU PCI not available)
     //   3. VirtIO GPU MMIO (QEMU virt platform)
     serial_println!("[boot] Initializing graphics...");
     let has_display = if kernel::drivers::virtio::gpu_pci::is_initialized()
         && kernel::platform_config::has_framebuffer()
     {
-        // Parallels hybrid mode: VirtIO GPU PCI controls the display mode
-        // (resolution, stride) but pixels are read from BAR0 (the GOP address).
-        // This gives us higher resolution than GOP's native 1024x768.
+        // Parallels hybrid: VirtIO GPU PCI set_scanout changes the display's
+        // reading stride to the GPU-configured width (1280). Pixels are read
+        // from GOP memory at this new stride. The kernel must write at the
+        // GPU stride (1280), not the UEFI GOP stride (1024).
         match arm64_fb::init_gpu_pci_gop_framebuffer() {
             Ok(()) => {
                 serial_println!("[boot] GPU PCI+GOP hybrid display initialized");
-                // Draw initial split-screen layout
                 if let Err(e) = init_gop_display() {
                     serial_println!("[boot] Display setup failed: {}", e);
                 }
@@ -493,7 +497,6 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             }
             Err(e) => {
                 serial_println!("[boot] GPU PCI+GOP hybrid failed: {}, trying pure GOP", e);
-                // Fall through to GOP
                 match arm64_fb::init_gop_framebuffer() {
                     Ok(()) => {
                         serial_println!("[boot] GOP framebuffer initialized (fallback)");

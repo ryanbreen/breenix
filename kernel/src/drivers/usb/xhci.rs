@@ -264,6 +264,7 @@ struct XhciState {
     #[allow(dead_code)]
     max_slots: u8,
     /// Maximum root hub ports
+    #[allow(dead_code)] // Used by scan_ports (standard enumeration)
     max_ports: u8,
     /// Context entry size (32 or 64 bytes)
     context_size: usize,
