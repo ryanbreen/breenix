@@ -80,3 +80,10 @@ scripts/__pycache__
 
 # Third-party sources and build artifacts (cloned/built locally)
 third-party/
+
+# EFI System Partition build artifact
+esp/
+
+# Debug capture files
+serial-capture*.txt
+xhci_ftrace*.txt

@@ -173,6 +173,11 @@ pub extern "C" fn timer_interrupt_handler() {
     // Increment timer interrupt counter (used for debugging when needed)
     let _count = TIMER_INTERRUPT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
 
+    // Debug breadcrumb: print '.' every 200 ticks (~1 second) to verify timer is alive
+    if cpu_id == 0 && _count % 200 == 0 {
+        raw_serial_char(b'.');
+    }
+
     // CPU 0 only: poll input devices (single-device, not safe from multiple CPUs)
     if cpu_id == 0 {
         poll_keyboard_to_stdin();
@@ -227,20 +232,22 @@ pub extern "C" fn timer_interrupt_handler() {
             print_timer_count_decimal(crate::drivers::usb::xhci::KBD_EVENT_COUNT.load(Ordering::Relaxed));
             raw_serial_str(b" xo=");
             print_timer_count_decimal(crate::drivers::usb::xhci::XFER_OTHER_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" xe=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::XO_ERR_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" xi=");
+            print_hex_u64(crate::drivers::usb::xhci::XO_LAST_INFO.load(Ordering::Relaxed));
             raw_serial_str(b" mi=");
             print_timer_count_decimal(crate::drivers::usb::xhci::MSI_EVENT_COUNT.load(Ordering::Relaxed));
             raw_serial_str(b" psc=");
             print_timer_count_decimal(crate::drivers::usb::xhci::PSC_COUNT.load(Ordering::Relaxed));
-            raw_serial_str(b" r=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::EP0_RESET_COUNT.load(Ordering::Relaxed));
-            raw_serial_str(b" rf=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::EP0_RESET_FAIL_COUNT.load(Ordering::Relaxed));
-            raw_serial_str(b" ps=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::EP0_PENDING_STUCK_COUNT.load(Ordering::Relaxed));
             raw_serial_str(b" nz=");
             print_timer_count_decimal(crate::drivers::usb::hid::NONZERO_KBD_COUNT.load(Ordering::Relaxed));
             raw_serial_str(b" lr=");
             print_hex_u64(crate::drivers::usb::hid::LAST_KBD_REPORT_U64.load(Ordering::Relaxed));
+            raw_serial_str(b" nk=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::NKRO_EVENT_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" nr=");
+            print_hex_u64(crate::drivers::usb::xhci::LAST_NKRO_REPORT_U64.load(Ordering::Relaxed));
             raw_serial_str(b" DS=");
             print_timer_count_decimal(crate::drivers::usb::xhci::DMA_SENTINEL_SURVIVED.load(Ordering::SeqCst));
             raw_serial_str(b" DR=");
@@ -251,6 +258,40 @@ pub extern "C" fn timer_interrupt_handler() {
             print_timer_count_decimal(crate::drivers::usb::ehci::EHCI_CTL_ERRORS.load(Ordering::Relaxed) as u64);
             raw_serial_str(b" ei=");
             print_timer_count_decimal(crate::drivers::usb::ehci::EHCI_INT_COMPLETIONS.load(Ordering::Relaxed) as u64);
+            raw_serial_str(b" us=");
+            print_hex_u64(crate::drivers::usb::xhci::DIAG_USBSTS.load(Ordering::Relaxed) as u64);
+            raw_serial_str(b" ps=");
+            print_hex_u64(crate::drivers::usb::xhci::DIAG_KBD_PORTSC.load(Ordering::Relaxed) as u64);
+            raw_serial_str(b" ep=");
+            print_hex_u64(crate::drivers::usb::xhci::DIAG_KBD_EP_STATE.load(Ordering::Relaxed) as u64);
+            raw_serial_str(b" se=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::DIAG_SPI_ENABLE_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" er=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::ENDPOINT_RESET_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" ef=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::ENDPOINT_RESET_FAIL_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" db=");
+            print_hex_u64(crate::drivers::usb::xhci::DIAG_DOORBELL_EP_STATE.load(Ordering::Relaxed) as u64);
+            raw_serial_str(b" fd=");
+            print_hex_u64(crate::drivers::usb::xhci::DIAG_FIRST_DB.load(Ordering::Relaxed) as u64);
+            raw_serial_str(b" fc=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::DIAG_FIRST_XFER_CC.load(Ordering::Relaxed) as u64);
+            raw_serial_str(b" tp=");
+            print_hex_u64(crate::drivers::usb::xhci::DIAG_FIRST_XFER_PTR.load(Ordering::Relaxed));
+            raw_serial_str(b" qp=");
+            print_hex_u64(crate::drivers::usb::xhci::DIAG_FIRST_QUEUED_PHYS.load(Ordering::Relaxed));
+            raw_serial_str(b" fs=");
+            print_hex_u64(crate::drivers::usb::xhci::DIAG_FIRST_XFER_SLEP.load(Ordering::Relaxed) as u64);
+            raw_serial_str(b" ts=");
+            print_hex_u64(crate::drivers::usb::xhci::DIAG_FIRST_XFER_STATUS.load(Ordering::Relaxed) as u64);
+            raw_serial_str(b" tc=");
+            print_hex_u64(crate::drivers::usb::xhci::DIAG_FIRST_XFER_CONTROL.load(Ordering::Relaxed) as u64);
+            raw_serial_str(b" gr=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::EP0_GET_REPORT_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" gk=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::EP0_GET_REPORT_OK.load(Ordering::Relaxed));
+            raw_serial_str(b" ge=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::EP0_GET_REPORT_ERR.load(Ordering::Relaxed));
             raw_serial_str(b"]\n");
         }
     }
