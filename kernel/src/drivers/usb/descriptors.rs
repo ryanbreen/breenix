@@ -104,6 +104,7 @@ pub mod descriptor_type {
     pub const INTERFACE: u8 = 4;
     pub const ENDPOINT: u8 = 5;
     pub const HID_REPORT: u8 = 0x22;
+    pub const BOS: u8 = 0x0F;
 }
 
 /// USB Class Codes
@@ -126,10 +127,13 @@ pub mod hid_protocol {
 pub mod request {
     pub const GET_DESCRIPTOR: u8 = 0x06;
     pub const SET_CONFIGURATION: u8 = 0x09;
+    pub const SET_INTERFACE: u8 = 0x0B;
+    pub const SET_ISOCH_DELAY: u8 = 0x31;
 }
 
 /// USB HID Class Requests
 pub mod hid_request {
+    pub const SET_REPORT: u8 = 0x09;
     pub const SET_IDLE: u8 = 0x0A;
     pub const SET_PROTOCOL: u8 = 0x0B;
 }

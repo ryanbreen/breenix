@@ -524,6 +524,10 @@ pub fn configure_spi_edge_triggered(irq: u32) {
 ///
 /// Also routes the SPI to the current CPU via ITARGETSR (GICv2) or
 /// IROUTER (GICv3). Only valid for IRQs >= 32 (SPIs).
+///
+/// Includes DSB+ISB to ensure the GICD write completes before returning.
+/// Without this, the CPU write buffer may delay the enable, causing the
+/// caller to miss an immediate pending interrupt.
 pub fn enable_spi(irq: u32) {
     if irq < 32 {
         return; // Only SPIs (32+)
@@ -553,11 +557,22 @@ pub fn enable_spi(irq: u32) {
     }
 
     gicd_write(GICD_ISENABLER + (reg_index as usize * 4), 1 << bit);
+    // DSB ensures the GICD write has completed (drained from write buffer)
+    // before we return. ISB ensures subsequent instructions see the effect.
+    unsafe {
+        core::arch::asm!("dsb sy", options(nomem, nostack));
+        core::arch::asm!("isb", options(nomem, nostack));
+    }
 }
 
 /// Disable an SPI in the GIC distributor (GICD_ICENABLER).
 ///
 /// Only valid for IRQs >= 32 (SPIs).
+///
+/// Includes DSB+ISB to ensure the GICD write has completed before
+/// returning. Without this, subsequent MMIO operations (e.g., xHC ERDP
+/// writes) could trigger new MSIs before the disable takes effect,
+/// causing interrupt storms on virtual xHCI controllers.
 pub fn disable_spi(irq: u32) {
     if irq < 32 {
         return; // Only SPIs (32+)
@@ -565,6 +580,13 @@ pub fn disable_spi(irq: u32) {
     let reg_index = irq / 32;
     let bit = irq % 32;
     gicd_write(GICD_ICENABLER + (reg_index as usize * 4), 1 << bit);
+    // DSB ensures the GICD write has completed (drained from write buffer)
+    // before we return. This is critical in interrupt handlers where
+    // subsequent MMIO to other devices (xHC) could generate new MSIs.
+    unsafe {
+        core::arch::asm!("dsb sy", options(nomem, nostack));
+        core::arch::asm!("isb", options(nomem, nostack));
+    }
 }
 
 /// Clear any pending state for an SPI (write-1-to-clear via GICD_ICPENDR).
