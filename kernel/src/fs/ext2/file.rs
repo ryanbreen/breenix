@@ -18,7 +18,7 @@ use alloc::vec::Vec;
 /// * `ext2_block_num` - The ext2 block number to read
 /// * `ext2_block_size` - Size of an ext2 block in bytes (e.g., 1024)
 /// * `buf` - Buffer to read into (must be at least ext2_block_size bytes)
-pub fn read_ext2_block<B: BlockDevice>(
+pub fn read_ext2_block<B: BlockDevice + ?Sized>(
     device: &B,
     ext2_block_num: u32,
     ext2_block_size: usize,
@@ -49,7 +49,7 @@ pub fn read_ext2_block<B: BlockDevice>(
 /// * `ext2_block_num` - The ext2 block number to write
 /// * `ext2_block_size` - Size of an ext2 block in bytes (e.g., 1024)
 /// * `buf` - Buffer to write from (must be at least ext2_block_size bytes)
-pub fn write_ext2_block<B: BlockDevice>(
+pub fn write_ext2_block<B: BlockDevice + ?Sized>(
     device: &B,
     ext2_block_num: u32,
     ext2_block_size: usize,
@@ -96,7 +96,7 @@ const TRIPLE_INDIRECT: usize = 14;
 /// * `Ok(Some(block_num))` - Physical block number on disk
 /// * `Ok(None)` - Sparse hole (block pointer is 0)
 /// * `Err(BlockError)` - I/O error or out of bounds
-pub fn get_block_num<B: BlockDevice>(
+pub fn get_block_num<B: BlockDevice + ?Sized>(
     device: &B,
     inode: &Ext2Inode,
     superblock: &Ext2Superblock,
@@ -198,7 +198,7 @@ pub fn get_block_num<B: BlockDevice>(
 /// # Returns
 /// * `Ok(Vec<u8>)` - File contents
 /// * `Err(BlockError)` - I/O error
-pub fn read_file<B: BlockDevice>(
+pub fn read_file<B: BlockDevice + ?Sized>(
     device: &B,
     inode: &Ext2Inode,
     superblock: &Ext2Superblock,
@@ -223,7 +223,7 @@ pub fn read_file<B: BlockDevice>(
 /// # Returns
 /// * `Ok(Vec<u8>)` - File contents (may be shorter than length if EOF reached)
 /// * `Err(BlockError)` - I/O error
-pub fn read_file_range<B: BlockDevice>(
+pub fn read_file_range<B: BlockDevice + ?Sized>(
     device: &B,
     inode: &Ext2Inode,
     superblock: &Ext2Superblock,
@@ -294,7 +294,7 @@ pub fn read_file_range<B: BlockDevice>(
 /// # Returns
 /// * `Ok(Vec<u32>)` - Array of block pointers
 /// * `Err(BlockError)` - I/O error
-fn read_indirect_block<B: BlockDevice>(
+fn read_indirect_block<B: BlockDevice + ?Sized>(
     device: &B,
     block_num: u32,
     block_size: usize,
@@ -337,7 +337,7 @@ fn read_indirect_block<B: BlockDevice>(
 /// # Returns
 /// * `Ok(())` - Block pointer set successfully
 /// * `Err(BlockError)` - I/O error or allocation failure
-pub fn set_block_num<B: BlockDevice>(
+pub fn set_block_num<B: BlockDevice + ?Sized>(
     device: &B,
     inode: &mut Ext2Inode,
     superblock: &Ext2Superblock,
@@ -507,7 +507,7 @@ pub fn set_block_num<B: BlockDevice>(
 /// # Returns
 /// * `Ok(())` - Write successful
 /// * `Err(BlockError)` - I/O error
-pub fn write_file<B: BlockDevice>(
+pub fn write_file<B: BlockDevice + ?Sized>(
     device: &B,
     inode: &mut Ext2Inode,
     superblock: &Ext2Superblock,
@@ -530,7 +530,7 @@ pub fn write_file<B: BlockDevice>(
 /// # Returns
 /// * `Ok(())` - Write successful
 /// * `Err(BlockError)` - I/O error
-pub fn write_file_range<B: BlockDevice>(
+pub fn write_file_range<B: BlockDevice + ?Sized>(
     device: &B,
     inode: &mut Ext2Inode,
     superblock: &Ext2Superblock,
@@ -648,7 +648,7 @@ pub fn write_file_range<B: BlockDevice>(
 /// # Returns
 /// * `Ok(())` - Write successful
 /// * `Err(BlockError)` - I/O error
-fn write_indirect_block<B: BlockDevice>(
+fn write_indirect_block<B: BlockDevice + ?Sized>(
     device: &B,
     block_num: u32,
     block_size: usize,

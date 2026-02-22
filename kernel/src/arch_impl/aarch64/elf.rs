@@ -186,6 +186,22 @@ pub unsafe fn load_elf_kernel_space(data: &[u8]) -> Result<LoadedElf, &'static s
         }
     }
 
+    // All segments loaded — now invalidate the entire instruction cache.
+    // We must use ic iallu (invalidate ALL) rather than per-line ic ivau because
+    // on Apple Silicon the VIPT i-cache has index bits [14:12] that extend beyond
+    // the 4KB page offset. ic ivau with the HHDM virtual address may not
+    // invalidate the i-cache set used by the user virtual address when those
+    // index bits differ. ic iallu is heavier but guaranteed correct.
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!(
+            "ic iallu",     // Invalidate ALL instruction cache to PoU
+            "dsb ish",      // Ensure completion
+            "isb",          // Synchronize instruction stream
+            options(nostack, preserves_flags)
+        );
+    }
+
     // Page-align the heap start
     let heap_start = (max_segment_end + 0xfff) & !0xfff;
 
@@ -474,6 +490,14 @@ fn load_segment_into_page_table(
         if !already_mapped {
             unsafe {
                 core::ptr::write_bytes(phys_ptr, 0, 4096);
+                // Clean cache for zeroed page (same HHDM→TTBR0 coherency issue)
+                let mut addr = phys_ptr as usize;
+                let end = addr + 4096;
+                while addr < end {
+                    core::arch::asm!("dc cvau, {}", in(reg) addr, options(nostack));
+                    addr += 64;
+                }
+                core::arch::asm!("dsb ish", options(nostack, preserves_flags));
             }
         }
 
@@ -512,6 +536,29 @@ fn load_segment_into_page_table(
                 let src = data.as_ptr().add(file_data_start);
                 let dst = phys_ptr.add(page_offset);
                 core::ptr::copy_nonoverlapping(src, dst, copy_size);
+
+                // ARM64 cache maintenance: data was written through HHDM (TTBR1)
+                // virtual address but will be read/executed through TTBR0 (user)
+                // virtual address. Clean data cache to Point of Unification so
+                // the instruction cache and other observers see the written data.
+                let flush_start = dst as usize;
+                let flush_end = flush_start + copy_size;
+                let mut addr = flush_start & !63; // align to cache line
+                while addr < flush_end {
+                    core::arch::asm!(
+                        "dc cvau, {addr}",  // Clean data cache by VA to PoU
+                        addr = in(reg) addr,
+                        options(nostack)
+                    );
+                    addr += 64;
+                }
+                core::arch::asm!("dsb ish", options(nostack, preserves_flags));
+                // NOTE: i-cache invalidation is deferred to after all segments
+                // are loaded (ic iallu in load_elf_into_page_table). Per-line
+                // ic ivau with HHDM addresses doesn't reliably invalidate
+                // user VA cache sets on Apple Silicon where the VIPT i-cache
+                // index extends beyond the page offset (bits [14:12] differ
+                // between HHDM VA and user VA).
             }
 
             log::trace!(

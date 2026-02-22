@@ -34,70 +34,36 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
     use core::arch::asm;
     use kernel::arch_impl::aarch64::context::return_to_userspace;
 
-    // Raw serial character output - no locks, minimal code
-    fn raw_char(c: u8) {
-        // Use constant HHDM base instead of calling physical_memory_offset()
-        // to minimize code paths
-        const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
-        const PL011_BASE: u64 = 0x0900_0000;
-        let addr = (HHDM_BASE + PL011_BASE) as *mut u32;
-        unsafe { core::ptr::write_volatile(addr, c as u32); }
-    }
-
-    // Markers: A=entry, B=got fs, C=resolved, D=read inode, E=read content,
-    // F=ELF ok, G=process created, H=info extracted, I=scheduler reg,
-    // J=percpu set, K=pid set, L=ttbr0 set, M=jumping to userspace
-
-    raw_char(b'A'); // Entry - about to call root_fs_read()
-    raw_char(b'a'); // Calling root_fs_read() now
     let fs_guard = kernel::fs::ext2::root_fs_read();
-    raw_char(b'b'); // root_fs_read() returned, checking if Some
     let fs = fs_guard.as_ref().ok_or("ext2 root filesystem not mounted")?;
-    raw_char(b'B'); // Got fs
 
     let inode_num = fs.resolve_path(path).map_err(|_| "init_shell not found")?;
-    raw_char(b'C'); // Path resolved
 
     let inode = fs.read_inode(inode_num).map_err(|_| "failed to read inode")?;
-    raw_char(b'D'); // Inode read
 
     if inode.is_dir() {
         return Err("init_shell is a directory");
     }
 
-    raw_char(b'd'); // About to read file content
-
     // Disable interrupts during large file read to prevent timer overhead
     unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts(); }
 
     let elf_data = fs.read_file_content(&inode).map_err(|_| "failed to read init_shell")?;
-    raw_char(b'E'); // File content read
 
     // CRITICAL: Release ext2 lock BEFORE creating process and jumping to userspace.
     // return_to_userspace() never returns, so fs_guard would never be dropped.
     // If we hold the lock, fork/exec in userspace will deadlock trying to acquire it.
     drop(fs_guard);
 
-    // Re-enable interrupts
-    raw_char(b'e'); // About to enable interrupts
-
-    // Check timer status before enabling
-    let timer_ctl: u64;
-    unsafe {
-        core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) timer_ctl);
-    }
-    // Print timer status: bit 0 = enabled, bit 1 = masked, bit 2 = pending
-    raw_char(if timer_ctl & 1 != 0 { b'E' } else { b'-' });  // Timer enabled?
-    raw_char(if timer_ctl & 2 != 0 { b'M' } else { b'-' });  // Timer masked?
-    raw_char(if timer_ctl & 4 != 0 { b'P' } else { b'-' });  // Timer pending?
-
-    unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts(); }
-    raw_char(b'f'); // Interrupts enabled
+    // CRITICAL: Keep interrupts DISABLED through entire process setup.
+    // A pending timer interrupt would fire immediately on enable_interrupts(),
+    // context-switch the boot thread away before it registers with the scheduler,
+    // and it would never be scheduled back. Interrupts are re-enabled just before
+    // return_to_userspace() below.
 
     if elf_data.len() < 4 || &elf_data[0..4] != b"\x7fELF" {
         return Err("init_shell is not a valid ELF file");
     }
-    raw_char(b'F'); // ELF verified
 
     let proc_name = path.rsplit('/').next().unwrap_or(path);
 
@@ -113,7 +79,6 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
             return Err("process manager not initialized");
         }
     };
-    raw_char(b'G'); // Process created
 
     // Advance test stage to ProcessContext - a user process now exists with an fd_table
     // This allows tests that need process context (like sys_socket) to run
@@ -154,11 +119,9 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
             return Err("process manager not available");
         }
     };
-    raw_char(b'H'); // Process info extracted
 
     // Register the userspace thread with the scheduler as the current running thread.
     kernel::task::scheduler::spawn_as_current(alloc::boxed::Box::new(main_thread_clone));
-    raw_char(b'I'); // Scheduler registered
 
     // CRITICAL: Reset the idle thread's (thread 0) saved context to point to idle_loop_arm64.
     // Without this, timer interrupts during boot may have saved thread 0's ELR pointing to
@@ -190,7 +153,6 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
             kernel::per_cpu_aarch64::set_user_rsp_scratch(kernel_stack_top.as_u64());
         }
     });
-    raw_char(b'J'); // Per-CPU set
 
     // Mark the process as running.
     {
@@ -199,14 +161,46 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
             manager.set_current_pid(pid);
         }
     }
-    raw_char(b'K'); // Current PID set
 
-    unsafe {
-        asm!("msr ttbr0_el1, {0}", "isb", in(reg) ttbr0_phys, options(nostack, preserves_flags));
+    // Create TLB pressure before switching TTBR0 to the process page table.
+    // Touch many HHDM pages to help evict boot identity map entries from the
+    // TLB. The subsequent TLBI will do a full invalidation, but warming the
+    // HHDM entries in the TLB is still beneficial for early process execution.
+    // Interrupts are already disabled at this point (since step 'd').
+    for i in 0..4096u64 {
+        let addr = (0xFFFF_0000_4000_0000u64 + i * 4096) as *const u8;
+        unsafe { core::ptr::read_volatile(addr); }
     }
-    raw_char(b'L'); // TTBR0 set
 
-    raw_char(b'M'); // Jumping to userspace
+    // Switch to process page table with ASID=1 tagging. The TLB pressure
+    // above has evicted stale entries from the boot identity map. ASID=1
+    // ensures any remaining stale boot entries (ASID=0) don't match.
+    let ttbr0_value = ttbr0_phys | (1u64 << 48); // ASID=1
+    unsafe {
+        asm!(
+            "dsb ishst",
+            "msr ttbr0_el1, {0}",
+            "isb",
+            "tlbi vmalle1is",
+            "dsb ish",
+            "isb",
+            in(reg) ttbr0_value,
+            options(nostack, preserves_flags)
+        );
+    }
+    // DO NOT call enable_interrupts() here. Interrupts are currently disabled
+    // (since step 'd'). The ERET in return_to_userspace() loads SPSR_EL1=0
+    // into PSTATE, which has DAIF clear (interrupts enabled). The pending
+    // timer interrupt will fire immediately after ERET in EL0 context,
+    // entering via the Lower EL IRQ vector. This is correct because:
+    // - SP_EL1 is set to kernel_stack_top by return_to_userspace()
+    // - The init thread is registered with the scheduler
+    // - Per-CPU pointers are configured
+    // - TTBR0 is set to the process page table
+    //
+    // If we enabled interrupts HERE (before ERET), the pending timer would
+    // fire in EL1 context, the scheduler would context-switch the boot thread
+    // away (thinking it's the init process), and it would never reach ERET.
     unsafe { return_to_userspace(entry_point, user_sp); }
 }
 
@@ -242,7 +236,68 @@ use kernel::drivers::virtio::input_mmio;
 /// - MMU is already enabled by boot.S (high-half kernel)
 #[no_mangle]
 #[cfg_attr(feature = "kthread_test_only", allow(unreachable_code))]
-pub extern "C" fn kernel_main() -> ! {
+pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
+    // If the UEFI loader passed a HardwareConfig, use it to configure platform
+    // addresses before any hardware access. On QEMU (boot.S), x0 is 0.
+    if hw_config_ptr != 0 {
+        let config = unsafe { &*(hw_config_ptr as *const kernel::platform_config::HardwareConfig) };
+        kernel::platform_config::init_from_parallels(config);
+
+        // CRITICAL: Switch from identity-mapped physical addresses to HHDM.
+        //
+        // On Parallels, the UEFI loader jumps to kernel_main at a physical address
+        // (e.g., 0x400xxxxx). The CPU is executing through TTBR0 (identity map).
+        // TTBR1 also maps the same physical memory at HHDM addresses (0xFFFF_0000_...).
+        //
+        // Problem: if we continue at physical addresses, all ADRP-computed addresses
+        // (function pointers, statics, exception vectors) resolve to physical addresses.
+        // After TTBR0 is switched to a process page table, these addresses become
+        // inaccessible — timer IRQ vectors fault, kernel threads can't resume, etc.
+        //
+        // Solution: switch SP and PC to HHDM addresses now. After this, all code runs
+        // through TTBR1, which is never modified. This mirrors what boot.S does on QEMU
+        // (line 143-147: adds KERNEL_VIRT_BASE to SP and branches to high-half code).
+        unsafe {
+            core::arch::asm!(
+                // Add HHDM offset to SP (switch to HHDM stack)
+                "mov x8, #0xFFFF",
+                "lsl x8, x8, #48",        // x8 = 0xFFFF_0000_0000_0000
+                "add sp, sp, x8",          // SP now in HHDM
+
+                // Compute HHDM address of continuation label and branch there.
+                // ADR gives the physical address of the label (PC-relative).
+                // Adding x8 gives the HHDM address.
+                "adr x9, 1f",             // x9 = physical addr of label '1'
+                "add x9, x9, x8",         // x9 = HHDM addr of label '1'
+                "br x9",                   // Branch to HHDM
+                "1:",
+                // Now executing at HHDM address through TTBR1.
+                // All subsequent ADRP instructions will compute HHDM-relative addresses.
+                out("x8") _,
+                out("x9") _,
+                options(nostack),
+            );
+        }
+    }
+
+    // Install the kernel's exception vector table (VBAR_EL1).
+    // On QEMU, boot.S already did this before jumping to kernel_main.
+    // On Parallels, the UEFI loader installed minimal "write X and spin" vectors.
+    // We must install the real kernel vectors before any interrupt fires.
+    // NOTE: After the HHDM switch above, exception_vectors resolves to an HHDM address.
+    unsafe {
+        extern "C" {
+            fn exception_vectors();
+        }
+        let vectors_addr = exception_vectors as usize as u64;
+        core::arch::asm!(
+            "msr vbar_el1, {v}",
+            "isb",
+            v = in(reg) vectors_addr,
+            options(nostack, preserves_flags),
+        );
+    }
+
     // Initialize physical memory offset (needed for MMIO access)
     kernel::memory::init_physical_memory_offset_aarch64();
 
@@ -264,12 +319,23 @@ pub extern "C" fn kernel_main() -> ! {
 
     serial_println!("[boot] MMU already enabled (high-half kernel)");
 
+    // Zero the boot identity map L0 entry to prevent new TLB entries from
+    // being created for the user VA range while we're still in kernel init.
+    // This is a defense-in-depth measure; the TLBI in run_userspace_from_ext2
+    // will do a full invalidation before switching to the process page table.
+    //
+    // We can't use `extern "C" { static mut ttbr0_l0: u64; }` because the
+    // symbol is in .bss.boot (low physical memory) while the kernel runs in
+    // the high half -- the ADRP relocation would be out of range (~281 TB).
+    // Instead, read the current TTBR0_EL1 to get the physical address and
+    // access it through the HHDM.
     // Initialize memory management for ARM64
     // ARM64 QEMU virt machine: RAM starts at 0x40000000
-    // We use 0x42000000..0x50000000 (224MB) for frame allocation
-    // Kernel stacks are at 0x51000000..0x52000000 (16MB)
-    serial_println!("[boot] Initializing memory management...");
-    kernel::memory::frame_allocator::init_aarch64(0x4200_0000, 0x5000_0000);
+    // Frame allocator range from platform_config (QEMU defaults or HardwareConfig)
+    let fa_start = kernel::platform_config::frame_alloc_start();
+    let fa_end = kernel::platform_config::frame_alloc_end();
+    serial_println!("[boot] Initializing memory management ({:#x}-{:#x})...", fa_start, fa_end);
+    kernel::memory::frame_allocator::init_aarch64(fa_start, fa_end);
     kernel::memory::init_aarch64_heap();
     kernel::memory::kernel_stack::init();
     serial_println!("[boot] Memory management ready");
@@ -329,8 +395,11 @@ pub extern "C" fn kernel_main() -> ! {
     let irq_enabled = Aarch64Cpu::interrupts_enabled();
     serial_println!("[boot] Interrupts enabled: {}", irq_enabled);
 
-    // Read display resolution from fw_cfg before driver init
-    kernel::drivers::virtio::gpu_mmio::load_resolution_from_fw_cfg();
+    // Read display resolution from fw_cfg before driver init (QEMU only;
+    // fw_cfg device at 0x09020000 doesn't exist on Parallels)
+    if kernel::platform_config::is_qemu() {
+        kernel::drivers::virtio::gpu_mmio::load_resolution_from_fw_cfg();
+    }
 
     // Initialize device drivers (VirtIO MMIO enumeration)
     serial_println!("[boot] Initializing device drivers...");
@@ -400,18 +469,98 @@ pub extern "C" fn kernel_main() -> ! {
     kernel::tty::init();
     serial_println!("[boot] TTY subsystem initialized");
 
-    // Initialize graphics (if GPU is available)
+    // Initialize graphics based on available hardware (capability-based detection)
+    //
+    // Graphics initialization priority:
+    //   1. VirtIO GPU PCI + GOP hybrid (Parallels): GPU set_scanout configures
+    //      the display's reading stride/resolution (e.g. 1280x800), while pixel
+    //      data is written to GOP memory (0x10000000). VirtIO transfer_to_host
+    //      does NOT update the display — only GOP memory is scanned out. The
+    //      kernel MUST write at the GPU-configured stride, not the GOP stride.
+    //   2. UEFI GOP framebuffer (fallback if GPU PCI not available)
+    //   3. VirtIO GPU MMIO (QEMU virt platform)
     serial_println!("[boot] Initializing graphics...");
-    if let Err(e) = init_graphics() {
-        serial_println!("[boot] Graphics init failed: {} (continuing without graphics)", e);
+    let has_display = if kernel::drivers::virtio::gpu_pci::is_initialized()
+        && kernel::platform_config::has_framebuffer()
+    {
+        // Parallels hybrid: VirtIO GPU PCI set_scanout changes the display's
+        // reading stride to the GPU-configured width (1280). Pixels are read
+        // from GOP memory at this new stride. The kernel must write at the
+        // GPU stride (1280), not the UEFI GOP stride (1024).
+        match arm64_fb::init_gpu_pci_gop_framebuffer() {
+            Ok(()) => {
+                serial_println!("[boot] GPU PCI+GOP hybrid display initialized");
+                if let Err(e) = init_gop_display() {
+                    serial_println!("[boot] Display setup failed: {}", e);
+                }
+                true
+            }
+            Err(e) => {
+                serial_println!("[boot] GPU PCI+GOP hybrid failed: {}, trying pure GOP", e);
+                match arm64_fb::init_gop_framebuffer() {
+                    Ok(()) => {
+                        serial_println!("[boot] GOP framebuffer initialized (fallback)");
+                        if let Err(e) = init_gop_display() {
+                            serial_println!("[boot] GOP display setup failed: {}", e);
+                        }
+                        true
+                    }
+                    Err(e2) => {
+                        serial_println!("[boot] GOP framebuffer also failed: {}", e2);
+                        false
+                    }
+                }
+            }
+        }
+    } else if kernel::platform_config::has_framebuffer() {
+        // UEFI GOP framebuffer (fallback when GPU PCI not available)
+        match arm64_fb::init_gop_framebuffer() {
+            Ok(()) => {
+                serial_println!("[boot] GOP framebuffer initialized");
+                // Draw initial split-screen layout
+                if let Err(e) = init_gop_display() {
+                    serial_println!("[boot] GOP display setup failed: {}", e);
+                }
+                true
+            }
+            Err(e) => {
+                serial_println!("[boot] GOP framebuffer failed: {}", e);
+                false
+            }
+        }
+    } else if kernel::platform_config::is_qemu() {
+        // VirtIO GPU MMIO (QEMU virt platform)
+        match init_graphics() {
+            Ok(()) => true,
+            Err(e) => {
+                serial_println!("[boot] VirtIO graphics failed: {}", e);
+                false
+            }
+        }
+    } else {
+        serial_println!("[boot] No display device found");
+        false
+    };
+
+    // Initialize input devices (capability-based detection)
+    if kernel::drivers::usb::xhci::is_initialized() {
+        // USB HID keyboard/mouse via XHCI — already set up during drivers::init()
+        // Polling happens from timer interrupt (poll_hid_events) since PCI
+        // interrupt routing may not be available on all platforms (IRQ=255).
+        serial_println!("[boot] USB HID input active via XHCI (polled from timer)");
+    } else if kernel::platform_config::is_qemu() {
+        // VirtIO keyboard/mouse MMIO (QEMU)
+        serial_println!("[boot] Initializing VirtIO keyboard...");
+        match input_mmio::init() {
+            Ok(()) => serial_println!("[boot] VirtIO keyboard initialized"),
+            Err(e) => serial_println!("[boot] VirtIO keyboard init failed: {}", e),
+        }
     }
 
-    // Initialize VirtIO keyboard
-    serial_println!("[boot] Initializing VirtIO keyboard...");
-    match input_mmio::init() {
-        Ok(()) => serial_println!("[boot] VirtIO keyboard initialized"),
-        Err(e) => serial_println!("[boot] VirtIO keyboard init failed: {}", e),
-    }
+    // TLB eviction for TTBR0 identity map is handled in run_userspace_from_ext2()
+    // right before the TTBR0 switch. We cannot modify TTBR0 page tables earlier
+    // because Parallels monitors TTBR0/page table changes and hangs if they occur
+    // while timer interrupts and kthreads are active.
 
     // Initialize per-CPU data (required before scheduler and interrupts)
     serial_println!("[boot] Initializing per-CPU data...");
@@ -452,9 +601,12 @@ pub extern "C" fn kernel_main() -> ! {
     // - BWM (userspace window manager) handles terminal rendering
     // - Boot test progress display (test_framework::display) renders to SHELL_FRAMEBUFFER
     // - Boot milestones are tracked via BTRT (test_framework::btrt) on both platforms
-    match kernel::graphics::render_task::spawn_render_thread() {
-        Ok(tid) => serial_println!("[boot] Render thread spawned (tid={})", tid),
-        Err(e) => serial_println!("[boot] Failed to spawn render thread: {}", e),
+    // Spawn render thread if any display is available (GOP or VirtIO)
+    if has_display {
+        match kernel::graphics::render_task::spawn_render_thread() {
+            Ok(tid) => serial_println!("[boot] Render thread spawned (tid={})", tid),
+            Err(e) => serial_println!("[boot] Failed to spawn render thread: {}", e),
+        }
     }
 
     // Initialize timer interrupt for preemptive scheduling
@@ -466,24 +618,29 @@ pub extern "C" fn kernel_main() -> ! {
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::AARCH64_TIMER_INIT);
 
     // Bring up secondary CPUs via PSCI CPU_ON
-    serial_println!("[smp] Starting secondary CPUs...");
-    let expected_cpus: u64 = 4;
-    for cpu in 1..expected_cpus {
-        kernel::arch_impl::aarch64::smp::release_cpu(cpu as usize);
-    }
-    // Wait for all CPUs to come online (with timeout)
-    let start = timer::rdtsc();
-    let timeout_ticks = timer::frequency_hz() / 10; // 100ms timeout
-    while kernel::arch_impl::aarch64::smp::cpus_online() < expected_cpus {
-        if timer::rdtsc() - start > timeout_ticks {
-            break;
+    // Skip SMP on non-QEMU: secondary CPU entry (boot.S) uses QEMU-specific page tables
+    if kernel::platform_config::is_qemu() {
+        serial_println!("[smp] Starting secondary CPUs...");
+        let expected_cpus: u64 = 4;
+        for cpu in 1..expected_cpus {
+            kernel::arch_impl::aarch64::smp::release_cpu(cpu as usize);
         }
-        core::hint::spin_loop();
+        // Wait for all CPUs to come online (with timeout)
+        let start = timer::rdtsc();
+        let timeout_ticks = timer::frequency_hz() / 10; // 100ms timeout
+        while kernel::arch_impl::aarch64::smp::cpus_online() < expected_cpus {
+            if timer::rdtsc() - start > timeout_ticks {
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        serial_println!(
+            "[smp] {} CPUs online",
+            kernel::arch_impl::aarch64::smp::cpus_online()
+        );
+    } else {
+        serial_println!("[smp] Skipping secondary CPUs (non-QEMU platform, boot.S SMP not adapted)");
     }
-    serial_println!(
-        "[smp] {} CPUs online",
-        kernel::arch_impl::aarch64::smp::cpus_online()
-    );
 
     // Test kthread lifecycle BEFORE creating userspace processes
     // (must be done early so scheduler doesn't preempt to userspace)
@@ -572,14 +729,6 @@ pub extern "C" fn kernel_main() -> ! {
     serial_println!("Hello from ARM64!");
     serial_println!();
 
-    // Raw char helper for debugging
-    fn boot_raw_char(c: u8) {
-        const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
-        const PL011_BASE: u64 = 0x0900_0000;
-        let addr = (HHDM_BASE + PL011_BASE) as *mut u32;
-        unsafe { core::ptr::write_volatile(addr, c as u32); }
-    }
-
     // Spawn particle animation thread (if graphics is available and not running boot tests)
     // This MUST be done BEFORE userspace loading because run_userspace_from_ext2 never returns
     // DISABLED: Investigating EC=0x0 crash during fill_rect memcpy
@@ -618,13 +767,9 @@ pub extern "C" fn kernel_main() -> ! {
         }
     }
 
-    boot_raw_char(b'1'); // Before if statement
-
     // Try to load and run userspace init_shell from ext2 or test disk
     if device_count > 0 {
-        boot_raw_char(b'2'); // Inside if
         serial_println!("[boot] Loading userspace init from ext2...");
-        boot_raw_char(b'3'); // After serial_println
         match run_userspace_from_ext2("/sbin/init") {
             Err(e) => {
                 serial_println!("[boot] Failed to load init from ext2: {}", e);
@@ -782,13 +927,28 @@ fn init_scheduler() {
     use kernel::per_cpu_aarch64;
     use kernel::memory::arch_stub::VirtAddr;
 
-    // CPU 0 boot stack top address — must match boot.S layout:
-    // HHDM_BASE + STACK_REGION_BASE + (cpu_id + 1) * STACK_SIZE
+    // CPU 0 boot stack top address.
+    // On QEMU: boot.S sets SP to HHDM_BASE + STACK_REGION_BASE + STACK_SIZE
+    // On Parallels: UEFI loader sets SP to 0x42000000, then HHDM switch adds HHDM_BASE
+    // Use platform detection to pick the right boot stack address.
     const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
-    const STACK_REGION_BASE: u64 = 0x4100_0000;
-    const STACK_SIZE: u64 = 0x20_0000; // 2MB per CPU
-    let boot_stack_top = VirtAddr::new(HHDM_BASE + STACK_REGION_BASE + STACK_SIZE);
-    let boot_stack_bottom = VirtAddr::new(HHDM_BASE + STACK_REGION_BASE);
+    let (boot_stack_top, boot_stack_bottom) = if kernel::platform_config::is_qemu() {
+        const STACK_REGION_BASE: u64 = 0x4100_0000;
+        const STACK_SIZE: u64 = 0x20_0000; // 2MB per CPU
+        (
+            VirtAddr::new(HHDM_BASE + STACK_REGION_BASE + STACK_SIZE),
+            VirtAddr::new(HHDM_BASE + STACK_REGION_BASE),
+        )
+    } else {
+        // Parallels: UEFI loader stack at 0x42000000 (phys), now at HHDM
+        // The stack grows down from 0x42000000, assume 2MB range
+        const PARALLELS_STACK_TOP_PHYS: u64 = 0x4200_0000;
+        const PARALLELS_STACK_SIZE: u64 = 0x20_0000; // 2MB
+        (
+            VirtAddr::new(HHDM_BASE + PARALLELS_STACK_TOP_PHYS),
+            VirtAddr::new(HHDM_BASE + PARALLELS_STACK_TOP_PHYS - PARALLELS_STACK_SIZE),
+        )
+    };
     let dummy_tls = VirtAddr::zero();
 
     // Create the idle task (thread ID 0)
@@ -1042,8 +1202,12 @@ fn current_exception_level() -> u8 {
 /// with graphics demo on the left and terminal on the right.
 #[cfg(target_arch = "aarch64")]
 fn init_graphics() -> Result<(), &'static str> {
-    // Initialize VirtIO GPU driver
-    kernel::drivers::virtio::gpu_mmio::init()?;
+    // Initialize VirtIO GPU backend.
+    // GPU PCI is initialized earlier in drivers::init() — only init GPU MMIO
+    // if PCI is not available (QEMU virt platform).
+    if !kernel::drivers::virtio::gpu_pci::is_initialized() {
+        kernel::drivers::virtio::gpu_mmio::init()?;
+    }
 
     arm64_fb::init_shell_framebuffer()?;
 
@@ -1101,6 +1265,67 @@ fn init_graphics() -> Result<(), &'static str> {
     kernel::graphics::log_capture::init();
 
     serial_println!("[graphics] Split-screen terminal UI initialized");
+    Ok(())
+}
+
+/// Initialize GOP framebuffer display with split-screen terminal UI.
+///
+/// Called after init_gop_framebuffer() when a UEFI GOP framebuffer is available.
+/// Draws the same layout as VirtIO init_graphics() but without VirtIO-specific init.
+#[cfg(target_arch = "aarch64")]
+fn init_gop_display() -> Result<(), &'static str> {
+    // Get framebuffer dimensions
+    let (width, height) = arm64_fb::dimensions().ok_or("Failed to get framebuffer dimensions")?;
+    serial_println!("[graphics] GOP Framebuffer: {}x{}", width, height);
+
+    // Calculate layout: 50/50 split with 4-pixel divider
+    let divider_width = 4usize;
+    let divider_x = width / 2;
+    let left_width = divider_x;
+
+    // Get the framebuffer and draw initial frame
+    if let Some(fb) = arm64_fb::SHELL_FRAMEBUFFER.get() {
+        let mut fb_guard = fb.lock();
+
+        // Clear entire screen with dark background
+        fill_rect(
+            &mut *fb_guard,
+            Rect {
+                x: 0,
+                y: 0,
+                width: width as u32,
+                height: height as u32,
+            },
+            Color::rgb(15, 20, 35),
+        );
+
+        // Draw vertical divider
+        let divider_color = Color::rgb(60, 80, 100);
+        for i in 0..divider_width {
+            draw_vline(&mut *fb_guard, (divider_x + i) as i32, 0, height as i32 - 1, divider_color);
+        }
+
+        // Flush to display
+        fb_guard.flush();
+    }
+
+    // Initialize particle system for left pane
+    let margin = 10;
+    particles::start_animation(
+        margin as i32,
+        margin as i32,
+        (left_width - margin) as i32,
+        (height - margin) as i32,
+    );
+    serial_println!("[graphics] Particle system initialized");
+
+    // Initialize the render queue for deferred framebuffer rendering
+    kernel::graphics::render_queue::init();
+
+    // Initialize log capture ring buffer for serial output tee
+    kernel::graphics::log_capture::init();
+
+    serial_println!("[graphics] GOP split-screen terminal UI initialized");
     Ok(())
 }
 

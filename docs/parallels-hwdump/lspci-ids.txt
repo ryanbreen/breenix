@@ -1,0 +1,7 @@
+00:01.0 Audio device [0403]: Intel Corporation 82801I (ICH9 Family) HD Audio Controller [8086:293e]
+00:02.0 USB controller [0c03]: Intel Corporation 82801FB/FBM/FR/FW/FRW (ICH6 Family) USB2 EHCI Controller [8086:265c] (rev 02)
+00:03.0 USB controller [0c03]: NEC Corporation uPD720200 USB 3.0 Host Controller [1033:0194] (rev 04)
+00:05.0 Ethernet controller [0200]: Red Hat, Inc. Virtio network device [1af4:1000]
+00:09.0 Unassigned class [ff00]: Parallels, Inc. Virtual Machine Communication Interface [1ab8:4000]
+00:0a.0 VGA compatible controller [0300]: Red Hat, Inc. Virtio 1.0 GPU [1af4:1050] (rev 01)
+00:0e.0 Communication controller [0780]: Red Hat, Inc. Virtio 1.0 socket [1af4:1053] (rev 01)

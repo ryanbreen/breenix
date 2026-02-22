@@ -26,6 +26,8 @@ pub mod queue;
 #[cfg(target_arch = "aarch64")]
 pub mod mmio;
 #[cfg(target_arch = "aarch64")]
+pub mod pci_transport;
+#[cfg(target_arch = "aarch64")]
 pub mod block_mmio;
 #[cfg(target_arch = "aarch64")]
 pub mod net_mmio;
@@ -35,6 +37,8 @@ pub mod gpu_mmio;
 pub mod input_mmio;
 #[cfg(target_arch = "aarch64")]
 pub mod sound_mmio;
+#[cfg(target_arch = "aarch64")]
+pub mod gpu_pci;
 
 #[cfg(target_arch = "x86_64")]
 pub mod sound;

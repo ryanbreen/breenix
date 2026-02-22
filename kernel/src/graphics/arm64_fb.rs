@@ -1,7 +1,8 @@
-//! ARM64 Framebuffer implementation using VirtIO GPU
+//! ARM64 Framebuffer implementation (VirtIO GPU + UEFI GOP backends)
 //!
-//! Provides a Canvas implementation for the VirtIO GPU framebuffer,
-//! enabling the graphics primitives to work on ARM64.
+//! Provides a Canvas implementation for the ARM64 framebuffer with two backends:
+//! - **VirtIO GPU**: Used on QEMU with virtio-gpu-device (original backend)
+//! - **UEFI GOP**: Linear framebuffer in physical memory (used on Parallels)
 //!
 //! This module also provides a SHELL_FRAMEBUFFER interface compatible with
 //! the x86_64 version in logger.rs, allowing split_screen.rs
@@ -12,7 +13,7 @@
 use super::primitives::{Canvas, Color};
 use crate::drivers::virtio::gpu_mmio;
 use conquer_once::spin::OnceCell;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::Mutex;
 
 // =============================================================================
@@ -53,7 +54,15 @@ pub fn mark_dirty(x: u32, y: u32, w: u32, h: u32) {
 
 /// Mark the entire framebuffer as dirty.
 pub fn mark_full_dirty() {
-    if let Some((w, h)) = gpu_mmio::dimensions() {
+    // Try FB_INFO_CACHE first (works for both VirtIO and GOP)
+    if let Some(cache) = FB_INFO_CACHE.get() {
+        mark_dirty(0, 0, cache.width as u32, cache.height as u32);
+        return;
+    }
+    // Fall back to VirtIO GPU PCI, then MMIO
+    if let Some((w, h)) = crate::drivers::virtio::gpu_pci::dimensions() {
+        mark_dirty(0, 0, w, h);
+    } else if let Some((w, h)) = gpu_mmio::dimensions() {
         mark_dirty(0, 0, w, h);
     }
 }
@@ -91,10 +100,15 @@ pub fn take_dirty_rect() -> Option<(u32, u32, u32, u32)> {
     }
 
     // Clamp to display dimensions — cursor mark_dirty near screen edges can
-    // produce rects that extend beyond the display (e.g., cursor at x=1270
-    // marks dirty (1254, y, 32, 32) → x_max = 1286 > 1280). VirtIO GPU
-    // rejects transfer_to_host with out-of-bounds coordinates.
-    let (x_min, y_min, x_max, y_max) = if let Some((dw, dh)) = gpu_mmio::dimensions() {
+    // produce rects that extend beyond the display. Both VirtIO GPU and GOP
+    // need clamped coordinates.
+    let (x_min, y_min, x_max, y_max) = if let Some(cache) = FB_INFO_CACHE.get() {
+        let dw = cache.width as u32;
+        let dh = cache.height as u32;
+        (x_min.min(dw), y_min.min(dh), x_max.min(dw), y_max.min(dh))
+    } else if let Some((dw, dh)) = crate::drivers::virtio::gpu_pci::dimensions() {
+        (x_min.min(dw), y_min.min(dh), x_max.min(dw), y_max.min(dh))
+    } else if let Some((dw, dh)) = gpu_mmio::dimensions() {
         (x_min.min(dw), y_min.min(dh), x_max.min(dw), y_max.min(dh))
     } else {
         (x_min, y_min, x_max, y_max)
@@ -105,6 +119,23 @@ pub fn take_dirty_rect() -> Option<(u32, u32, u32, u32)> {
     }
 
     Some((x_min, y_min, x_max - x_min, y_max - y_min))
+}
+
+/// Flush a dirty rectangle to the display.
+///
+/// This is called by the render thread without holding the SHELL_FRAMEBUFFER lock.
+/// For GOP, this is a no-op data barrier (writes are already in display memory).
+/// For VirtIO GPU, this issues transfer_to_host + resource_flush commands.
+pub fn flush_dirty_rect(x: u32, y: u32, w: u32, h: u32) -> Result<(), &'static str> {
+    if is_gop_active() {
+        // GOP: writes go directly to display memory. DSB ensures visibility.
+        unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+        Ok(())
+    } else if crate::drivers::virtio::gpu_pci::is_initialized() {
+        crate::drivers::virtio::gpu_pci::flush_rect(x, y, w, h)
+    } else {
+        gpu_mmio::flush_rect(x, y, w, h)
+    }
 }
 
 /// Atomic fetch_min for u32 (CAS loop).
@@ -131,6 +162,178 @@ fn fetch_max_u32(atom: &AtomicU32, val: u32) {
     }
 }
 
+// =============================================================================
+// GOP Framebuffer Backend (UEFI linear buffer, used on Parallels)
+// =============================================================================
+
+/// GOP framebuffer virtual address (HHDM-mapped)
+static GOP_FB_PTR: AtomicU64 = AtomicU64::new(0);
+/// GOP framebuffer size in bytes
+static GOP_FB_LEN: AtomicU64 = AtomicU64::new(0);
+/// Whether GOP backend is active
+static GOP_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Check if GOP framebuffer is active (vs VirtIO GPU).
+pub fn is_gop_active() -> bool {
+    GOP_ACTIVE.load(Ordering::Relaxed)
+}
+
+/// Get the GOP framebuffer as a mutable byte slice.
+/// Returns None if GOP is not initialized.
+fn gop_framebuffer() -> Option<&'static mut [u8]> {
+    let ptr = GOP_FB_PTR.load(Ordering::Relaxed);
+    let len = GOP_FB_LEN.load(Ordering::Relaxed);
+    if ptr == 0 || len == 0 {
+        return None;
+    }
+    unsafe { Some(core::slice::from_raw_parts_mut(ptr as *mut u8, len as usize)) }
+}
+
+/// Get the GOP framebuffer as an immutable byte slice.
+fn gop_framebuffer_ref() -> Option<&'static [u8]> {
+    let ptr = GOP_FB_PTR.load(Ordering::Relaxed);
+    let len = GOP_FB_LEN.load(Ordering::Relaxed);
+    if ptr == 0 || len == 0 {
+        return None;
+    }
+    unsafe { Some(core::slice::from_raw_parts(ptr as *const u8, len as usize)) }
+}
+
+/// Initialize the GOP framebuffer from platform_config data.
+///
+/// Maps the framebuffer physical address via HHDM and sets up the
+/// SHELL_FRAMEBUFFER with GOP dimensions. Call this instead of
+/// init_shell_framebuffer() when a GOP framebuffer is available.
+pub fn init_gop_framebuffer() -> Result<(), &'static str> {
+    let base = crate::platform_config::fb_base_phys();
+    let size = crate::platform_config::fb_size();
+    let width = crate::platform_config::fb_width();
+    let height = crate::platform_config::fb_height();
+    let stride = crate::platform_config::fb_stride();
+    let is_bgr = crate::platform_config::fb_is_bgr();
+
+    if base == 0 || size == 0 {
+        return Err("No GOP framebuffer info in platform config");
+    }
+
+    // Map via HHDM (higher-half direct map)
+    let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
+    let virt_ptr = hhdm_base + base;
+
+    GOP_FB_PTR.store(virt_ptr, Ordering::Relaxed);
+    GOP_FB_LEN.store(size, Ordering::Relaxed);
+    GOP_ACTIVE.store(true, Ordering::Relaxed);
+
+    crate::serial_println!(
+        "[arm64-fb] GOP framebuffer: {}x{} stride={} {} base_phys={:#x} virt={:#x} size={:#x}",
+        width, height, stride,
+        if is_bgr { "BGR" } else { "RGB" },
+        base, virt_ptr, size
+    );
+
+    // Create Arm64FrameBuffer with GOP parameters
+    let fb = Arm64FrameBuffer {
+        width: width as usize,
+        height: height as usize,
+        bytes_per_pixel: 4,
+        stride: stride as usize,
+        is_gop: true,
+        is_bgr_flag: is_bgr,
+    };
+
+    // Initialize SHELL_FRAMEBUFFER
+    let shell_fb = ShellFrameBuffer { fb };
+
+    // Cache immutable dimensions for lock-free access by sys_fbinfo
+    let _ = FB_INFO_CACHE.try_init_once(|| FbInfoCache {
+        width: width as usize,
+        height: height as usize,
+        stride: stride as usize,
+        bytes_per_pixel: 4,
+        is_bgr,
+    });
+
+    let _ = SHELL_FRAMEBUFFER.try_init_once(|| Mutex::new(shell_fb));
+
+    crate::serial_println!("[arm64-fb] GOP shell framebuffer initialized: {}x{}", width, height);
+    Ok(())
+}
+
+/// Initialize framebuffer using VirtIO GPU PCI resolution but GOP/BAR0 memory.
+///
+/// On Parallels, VirtIO GPU `set_scanout` controls the display mode (resolution,
+/// stride) but actual pixels are read from BAR0 (the GOP framebuffer at 0x10000000).
+/// This function sets up a GOP-style framebuffer at the VirtIO GPU's configured
+/// resolution, giving us higher resolution than the GOP-reported 1024x768.
+///
+/// Must be called AFTER `drivers::init()` (which initializes GPU PCI).
+pub fn init_gpu_pci_gop_framebuffer() -> Result<(), &'static str> {
+    if !crate::drivers::virtio::gpu_pci::is_initialized() {
+        return Err("GPU PCI not initialized");
+    }
+
+    let (width, height) = crate::drivers::virtio::gpu_pci::dimensions()
+        .ok_or("GPU PCI has no dimensions")?;
+    let width = width as usize;
+    let height = height as usize;
+    let stride = width; // VirtIO GPU stride = width (no padding)
+    let bytes_per_pixel = 4usize;
+
+    // GOP framebuffer base: the BAR0/GOP address that the display reads from
+    let base = crate::platform_config::fb_base_phys();
+    if base == 0 {
+        return Err("No GOP framebuffer base address");
+    }
+
+    // Ensure the GOP memory is large enough for the new resolution.
+    // BAR0 is typically 64MB; we need width * height * 4 bytes.
+    let needed = width * height * bytes_per_pixel;
+    let gop_size = crate::platform_config::fb_size() as usize;
+    crate::serial_println!(
+        "[arm64-fb] GPU PCI+GOP hybrid: {}x{} stride={} need={} bytes, GOP region={} bytes",
+        width, height, stride, needed, gop_size
+    );
+    // GOP size from UEFI may report only 1024x768 worth; the actual BAR is larger.
+    // Proceed even if needed > gop_size — the BAR0 region extends well beyond.
+
+    // Map via HHDM
+    let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
+    let virt_ptr = hhdm_base + base;
+
+    // Update GOP globals with the new (larger) dimensions
+    GOP_FB_PTR.store(virt_ptr, Ordering::Relaxed);
+    GOP_FB_LEN.store(needed as u64, Ordering::Relaxed);
+    GOP_ACTIVE.store(true, Ordering::Relaxed);
+
+    // Create framebuffer with GPU PCI dimensions but GOP backend
+    let fb = Arm64FrameBuffer {
+        width,
+        height,
+        bytes_per_pixel,
+        stride,
+        is_gop: true, // Writes go to GOP memory, flush uses DSB
+        is_bgr_flag: true, // B8G8R8A8_UNORM
+    };
+
+    let shell_fb = ShellFrameBuffer { fb };
+
+    let _ = FB_INFO_CACHE.try_init_once(|| FbInfoCache {
+        width,
+        height,
+        stride,
+        bytes_per_pixel,
+        is_bgr: true,
+    });
+
+    let _ = SHELL_FRAMEBUFFER.try_init_once(|| Mutex::new(shell_fb));
+
+    crate::serial_println!(
+        "[arm64-fb] GPU PCI+GOP hybrid framebuffer: {}x{} base_phys={:#x}",
+        width, height, base
+    );
+    Ok(())
+}
+
 /// ARM64 framebuffer wrapper that implements Canvas trait
 pub struct Arm64FrameBuffer {
     /// Display width in pixels
@@ -141,31 +344,55 @@ pub struct Arm64FrameBuffer {
     bytes_per_pixel: usize,
     /// Stride in pixels (same as width for VirtIO GPU)
     stride: usize,
+    /// Whether this framebuffer uses the GOP backend (vs VirtIO GPU)
+    is_gop: bool,
+    /// Whether pixel format is BGR (true) or RGB (false)
+    is_bgr_flag: bool,
 }
 
 impl Arm64FrameBuffer {
     /// Create a new ARM64 framebuffer wrapper
     ///
-    /// Returns None if the VirtIO GPU is not initialized
+    /// Tries GPU PCI first, then falls back to GPU MMIO.
+    /// Returns None if no VirtIO GPU is initialized.
     pub fn new() -> Option<Self> {
-        let (width, height) = gpu_mmio::dimensions()?;
+        // Try GPU PCI first (Parallels), then GPU MMIO (QEMU)
+        let (width, height) = crate::drivers::virtio::gpu_pci::dimensions()
+            .or_else(|| gpu_mmio::dimensions())?;
 
         Some(Self {
             width: width as usize,
             height: height as usize,
             bytes_per_pixel: 4, // BGRA format
             stride: width as usize,
+            is_gop: false,
+            is_bgr_flag: true, // VirtIO GPU uses B8G8R8A8_UNORM
         })
     }
 
     /// Flush the framebuffer to the display
     pub fn flush(&self) -> Result<(), &'static str> {
-        gpu_mmio::flush()
+        if self.is_gop {
+            // GOP: writes go directly to display memory. DSB ensures visibility.
+            unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+            Ok(())
+        } else if crate::drivers::virtio::gpu_pci::is_initialized() {
+            crate::drivers::virtio::gpu_pci::flush()
+        } else {
+            gpu_mmio::flush()
+        }
     }
 
     /// Flush a rectangular region of the framebuffer to the display
     pub fn flush_rect(&self, x: u32, y: u32, w: u32, h: u32) -> Result<(), &'static str> {
-        gpu_mmio::flush_rect(x, y, w, h)
+        if self.is_gop {
+            unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+            Ok(())
+        } else if crate::drivers::virtio::gpu_pci::is_initialized() {
+            crate::drivers::virtio::gpu_pci::flush_rect(x, y, w, h)
+        } else {
+            gpu_mmio::flush_rect(x, y, w, h)
+        }
     }
 }
 
@@ -187,7 +414,7 @@ impl Canvas for Arm64FrameBuffer {
     }
 
     fn is_bgr(&self) -> bool {
-        true // VirtIO GPU uses B8G8R8A8_UNORM format
+        self.is_bgr_flag
     }
 
     fn set_pixel(&mut self, x: i32, y: i32, color: Color) {
@@ -200,14 +427,19 @@ impl Canvas for Arm64FrameBuffer {
             return;
         }
 
-        if let Some(buffer) = gpu_mmio::framebuffer() {
-            let pixel_bytes = color.to_pixel_bytes(self.bytes_per_pixel, true);
-            let offset = (y * self.stride + x) * self.bytes_per_pixel;
+        let buffer = if self.is_gop {
+            match gop_framebuffer() { Some(b) => b, None => return }
+        } else if crate::drivers::virtio::gpu_pci::is_initialized() {
+            match crate::drivers::virtio::gpu_pci::framebuffer() { Some(b) => b, None => return }
+        } else {
+            match gpu_mmio::framebuffer() { Some(b) => b, None => return }
+        };
 
-            if offset + self.bytes_per_pixel <= buffer.len() {
-                buffer[offset..offset + self.bytes_per_pixel]
-                    .copy_from_slice(&pixel_bytes[..self.bytes_per_pixel]);
-            }
+        let pixel_bytes = color.to_pixel_bytes(self.bytes_per_pixel, self.is_bgr_flag);
+        let offset = (y * self.stride + x) * self.bytes_per_pixel;
+        if offset + self.bytes_per_pixel <= buffer.len() {
+            buffer[offset..offset + self.bytes_per_pixel]
+                .copy_from_slice(&pixel_bytes[..self.bytes_per_pixel]);
         }
     }
 
@@ -221,27 +453,43 @@ impl Canvas for Arm64FrameBuffer {
             return None;
         }
 
-        let buffer = gpu_mmio::framebuffer()?;
-        let offset = (y * self.stride + x) * self.bytes_per_pixel;
+        let buffer: &[u8] = if self.is_gop {
+            gop_framebuffer_ref()?
+        } else if crate::drivers::virtio::gpu_pci::is_initialized() {
+            crate::drivers::virtio::gpu_pci::framebuffer().map(|b| &*b)?
+        } else {
+            gpu_mmio::framebuffer().map(|b| &*b)?
+        };
 
+        let offset = (y * self.stride + x) * self.bytes_per_pixel;
         if offset + self.bytes_per_pixel > buffer.len() {
             return None;
         }
-
         Some(Color::from_pixel_bytes(
             &buffer[offset..offset + self.bytes_per_pixel],
             self.bytes_per_pixel,
-            true,
+            self.is_bgr_flag,
         ))
     }
 
     fn buffer_mut(&mut self) -> &mut [u8] {
-        gpu_mmio::framebuffer().unwrap_or(&mut [])
+        if self.is_gop {
+            gop_framebuffer().unwrap_or(&mut [])
+        } else if crate::drivers::virtio::gpu_pci::is_initialized() {
+            crate::drivers::virtio::gpu_pci::framebuffer().unwrap_or(&mut [])
+        } else {
+            gpu_mmio::framebuffer().unwrap_or(&mut [])
+        }
     }
 
     fn buffer(&self) -> &[u8] {
-        // Safe because we're only reading
-        gpu_mmio::framebuffer().map(|b| &*b).unwrap_or(&[])
+        if self.is_gop {
+            gop_framebuffer_ref().unwrap_or(&[])
+        } else if crate::drivers::virtio::gpu_pci::is_initialized() {
+            crate::drivers::virtio::gpu_pci::framebuffer().map(|b| &*b).unwrap_or(&[])
+        } else {
+            gpu_mmio::framebuffer().map(|b| &*b).unwrap_or(&[])
+        }
     }
 }
 

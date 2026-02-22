@@ -152,8 +152,10 @@ bss_done:
     isb
 
     // Jump to Rust kernel_main (high)
-    ldr x0, =kernel_main
-    br x0
+    // x0 = hw_config_ptr (0 = QEMU, non-zero = Parallels loader passes HardwareConfig*)
+    ldr x1, =kernel_main
+    mov x0, #0
+    br x1
 
     // If kernel_main returns, hang
 hang:

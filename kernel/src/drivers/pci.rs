@@ -32,7 +32,8 @@ const CONFIG_ADDRESS: u16 = 0xCF8;
 #[cfg(target_arch = "x86_64")]
 const CONFIG_DATA: u16 = 0xCFC;
 
-/// Maximum number of PCI buses to scan
+/// Maximum number of PCI buses to scan (x86 only; ARM64 uses platform_config bus range)
+#[cfg(not(target_arch = "aarch64"))]
 const MAX_BUS: u8 = 255;
 /// Maximum number of devices per bus
 const MAX_DEVICE: u8 = 32;
@@ -53,6 +54,11 @@ pub const VIRTIO_SOUND_DEVICE_ID_MODERN: u16 = 0x1059;
 pub const VIRTIO_NET_DEVICE_ID_LEGACY: u16 = 0x1000;
 /// VirtIO network device ID (modern)
 pub const VIRTIO_NET_DEVICE_ID_MODERN: u16 = 0x1041;
+/// VirtIO GPU device ID (modern only, no legacy transitional)
+pub const VIRTIO_GPU_DEVICE_ID_MODERN: u16 = 0x1050;
+
+/// PCI Capability ID for MSI
+pub const PCI_CAP_ID_MSI: u8 = 0x05;
 
 /// Intel vendor ID (for reference - common in QEMU)
 pub const INTEL_VENDOR_ID: u16 = 0x8086;
@@ -245,6 +251,76 @@ impl Device {
         // Set bit 0 (I/O Space Enable)
         pci_write_config_word(self.bus, self.device, self.function, 0x04, command | 0x01);
     }
+
+    /// Disable legacy INTx interrupts (set DisINTx bit in PCI Command register).
+    pub fn disable_intx(&self) {
+        let command = pci_read_config_word(self.bus, self.device, self.function, 0x04);
+        // Bit 10: Interrupt Disable
+        pci_write_config_word(self.bus, self.device, self.function, 0x04, command | (1 << 10));
+    }
+
+    /// Find the MSI capability in the PCI capability list.
+    ///
+    /// Returns the config space offset of the MSI capability, or None if not found.
+    pub fn find_msi_capability(&self) -> Option<u8> {
+        // Check PCI Status register bit 4: Capabilities List exists
+        let status = pci_read_config_word(self.bus, self.device, self.function, 0x06);
+        if (status & (1 << 4)) == 0 {
+            return None;
+        }
+
+        // Capabilities pointer at offset 0x34
+        let mut cap_ptr = pci_read_config_byte(self.bus, self.device, self.function, 0x34);
+
+        while cap_ptr != 0 {
+            let cap_id = pci_read_config_byte(self.bus, self.device, self.function, cap_ptr);
+            if cap_id == PCI_CAP_ID_MSI {
+                return Some(cap_ptr);
+            }
+            cap_ptr = pci_read_config_byte(self.bus, self.device, self.function, cap_ptr + 1);
+        }
+        None
+    }
+
+    /// Configure and enable PCI MSI with a 32-bit message address.
+    ///
+    /// `cap_offset`: config space offset of the MSI capability
+    /// `address`: MSI target address (e.g., GICv2m doorbell register)
+    /// `data`: MSI data value (e.g., SPI number)
+    pub fn configure_msi(&self, cap_offset: u8, address: u32, data: u16) {
+        // Read Message Control to determine capability layout
+        let msg_ctrl = pci_read_config_word(self.bus, self.device, self.function, cap_offset + 2);
+        let is_64bit = (msg_ctrl & (1 << 7)) != 0;
+        let has_mask = (msg_ctrl & (1 << 8)) != 0;
+
+        // Write Message Address (always at cap+4)
+        pci_write_config_dword(self.bus, self.device, self.function, cap_offset + 4, address);
+
+        // Write Message Data
+        let data_offset = if is_64bit {
+            // 64-bit: upper address at cap+8, data at cap+12
+            pci_write_config_dword(self.bus, self.device, self.function, cap_offset + 8, 0);
+            cap_offset + 12
+        } else {
+            // 32-bit: data at cap+8
+            cap_offset + 8
+        };
+        pci_write_config_word(self.bus, self.device, self.function, data_offset, data);
+
+        // Clear mask bits if per-vector masking is supported
+        if has_mask {
+            let mask_offset = if is_64bit {
+                cap_offset + 16
+            } else {
+                cap_offset + 12
+            };
+            pci_write_config_dword(self.bus, self.device, self.function, mask_offset, 0);
+        }
+
+        // Enable MSI (bit 0 of Message Control), single message (bits 6:4 = 000)
+        let new_ctrl = (msg_ctrl & !0x0070) | 0x0001; // Clear MME, set Enable
+        pci_write_config_word(self.bus, self.device, self.function, cap_offset + 2, new_ctrl);
+    }
 }
 
 impl fmt::Display for Device {
@@ -278,7 +354,7 @@ impl fmt::Debug for Device {
 
 /// Read a 32-bit value from PCI configuration space
 #[cfg(target_arch = "x86_64")]
-fn pci_read_config_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
+pub(crate) fn pci_read_config_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
     // Build the configuration address
     let address: u32 = 0x8000_0000
         | ((bus as u32) << 16)
@@ -295,18 +371,33 @@ fn pci_read_config_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
     }
 }
 
-/// Read a 32-bit value from PCI configuration space (ARM64 stub)
+/// Read a 32-bit value from PCI configuration space via ECAM.
+///
+/// ECAM maps each device's 4KB config space into contiguous physical memory:
+///   address = ECAM_BASE + (bus << 20) | (device << 15) | (function << 12) | offset
+///
+/// Returns 0xFFFFFFFF if no PCI ECAM is configured (no PCI bus available).
 #[cfg(target_arch = "aarch64")]
-fn pci_read_config_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
-    // ARM64: PCI config space is accessed via ECAM (memory-mapped)
-    // TODO: Implement ECAM access
-    let _ = (bus, device, function, offset);
-    0
+pub(crate) fn pci_read_config_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
+    let ecam_base = crate::platform_config::pci_ecam_base();
+    if ecam_base == 0 {
+        return 0xFFFF_FFFF; // No PCI
+    }
+
+    let addr = ecam_base
+        + ((bus as u64) << 20)
+        | ((device as u64) << 15)
+        | ((function as u64) << 12)
+        | ((offset & 0xFC) as u64);
+
+    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
+    let virt = (HHDM_BASE + addr) as *const u32;
+    unsafe { core::ptr::read_volatile(virt) }
 }
 
 /// Write a 32-bit value to PCI configuration space
 #[cfg(target_arch = "x86_64")]
-fn pci_write_config_dword(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
+pub(crate) fn pci_write_config_dword(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
     let address: u32 = 0x8000_0000
         | ((bus as u32) << 16)
         | ((device as u32) << 11)
@@ -322,17 +413,28 @@ fn pci_write_config_dword(bus: u8, device: u8, function: u8, offset: u8, value: 
     }
 }
 
-/// Write a 32-bit value to PCI configuration space (ARM64 stub)
+/// Write a 32-bit value to PCI configuration space via ECAM (ARM64).
 #[cfg(target_arch = "aarch64")]
-fn pci_write_config_dword(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
-    // ARM64: PCI config space is accessed via ECAM (memory-mapped)
-    // TODO: Implement ECAM access
-    let _ = (bus, device, function, offset, value);
+pub(crate) fn pci_write_config_dword(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
+    let ecam_base = crate::platform_config::pci_ecam_base();
+    if ecam_base == 0 {
+        return; // No PCI
+    }
+
+    let addr = ecam_base
+        + ((bus as u64) << 20)
+        | ((device as u64) << 15)
+        | ((function as u64) << 12)
+        | ((offset & 0xFC) as u64);
+
+    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
+    let virt = (HHDM_BASE + addr) as *mut u32;
+    unsafe { core::ptr::write_volatile(virt, value) }
 }
 
 /// Read a 16-bit value from PCI configuration space
 #[allow(dead_code)] // Used by Device methods, which are part of public API
-fn pci_read_config_word(bus: u8, device: u8, function: u8, offset: u8) -> u16 {
+pub(crate) fn pci_read_config_word(bus: u8, device: u8, function: u8, offset: u8) -> u16 {
     let dword = pci_read_config_dword(bus, device, function, offset & 0xFC);
     let shift = ((offset & 2) * 8) as u32;
     ((dword >> shift) & 0xFFFF) as u16
@@ -351,7 +453,7 @@ fn pci_write_config_word(bus: u8, device: u8, function: u8, offset: u8, value: u
 
 /// Read an 8-bit value from PCI configuration space
 #[allow(dead_code)] // Part of low-level API, will be used by VirtIO driver
-fn pci_read_config_byte(bus: u8, device: u8, function: u8, offset: u8) -> u8 {
+pub(crate) fn pci_read_config_byte(bus: u8, device: u8, function: u8, offset: u8) -> u8 {
     let dword = pci_read_config_dword(bus, device, function, offset & 0xFC);
     let shift = ((offset & 3) * 8) as u32;
     ((dword >> shift) & 0xFF) as u8
@@ -542,7 +644,16 @@ pub fn enumerate() -> usize {
     let mut virtio_block_count = 0;
     let mut network_count = 0;
 
-    for bus in 0..=MAX_BUS {
+    // Use platform-specific bus range on ARM64 (Parallels faults on out-of-range buses)
+    #[cfg(target_arch = "aarch64")]
+    let (bus_start, bus_end) = (
+        crate::platform_config::pci_bus_start(),
+        crate::platform_config::pci_bus_end(),
+    );
+    #[cfg(not(target_arch = "aarch64"))]
+    let (bus_start, bus_end) = (0u8, MAX_BUS);
+
+    for bus in bus_start..=bus_end {
         for device in 0..MAX_DEVICE {
             // First check function 0
             if let Some(dev) = probe_device(bus, device, 0) {

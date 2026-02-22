@@ -329,10 +329,11 @@ syscall_entry_from_el0:
     /* Clear next_cr3 BEFORE switching (avoid accessing after switch) */
     str xzr, [x0, #64]
 
-    /* Perform TTBR0 switch with proper barriers */
+    /* Perform TTBR0 switch with full TLB invalidation */
+    dsb ishst
     msr ttbr0_el1, x1
     isb
-    tlbi vmalle1is              /* Invalidate TLB */
+    tlbi vmalle1is
     dsb ish
     isb
     b .Lafter_ttbr_check
@@ -341,7 +342,11 @@ syscall_entry_from_el0:
     /* No context switch - restore original process TTBR0 */
     ldr x1, [x0, #80]           /* saved_process_cr3 offset = 80 */
     cbz x1, .Lafter_ttbr_check
+    dsb ishst
     msr ttbr0_el1, x1
+    isb
+    tlbi vmalle1is
+    dsb ish
     isb
 
 .Lafter_ttbr_check:
@@ -423,8 +428,9 @@ syscall_return_to_userspace_aarch64:
     ldr x10, [x9, #64]          /* next_cr3 offset = 64 */
     cbz x10, .Lfirst_entry_restore_ttbr
 
-    /* Clear next_cr3 and switch */
+    /* Clear next_cr3 and switch with full TLB invalidation */
     str xzr, [x9, #64]
+    dsb ishst
     msr ttbr0_el1, x10
     isb
     tlbi vmalle1is
@@ -436,7 +442,11 @@ syscall_return_to_userspace_aarch64:
     /* Try saved process TTBR0 */
     ldr x10, [x9, #80]
     cbz x10, .Lfirst_entry_after_ttbr
+    dsb ishst
     msr ttbr0_el1, x10
+    isb
+    tlbi vmalle1is
+    dsb ish
     isb
 
 .Lfirst_entry_after_ttbr:

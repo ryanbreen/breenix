@@ -1,0 +1,15 @@
+[package]
+name = "parallels-loader"
+version = "0.1.0"
+edition = "2021"
+description = "UEFI loader for booting Breenix on Parallels Desktop (Apple Silicon)"
+
+[[bin]]
+name = "parallels-loader"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+uefi = { version = "0.33", features = ["panic_handler", "global_allocator"] }
+acpi = "5.0"
+log = { version = "0.4", default-features = false }

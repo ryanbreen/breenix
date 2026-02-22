@@ -44,16 +44,12 @@ pub fn is_el0_confirmed() -> bool {
 /// Also advances test framework to Userspace stage if boot_tests is enabled.
 #[inline(never)]
 fn emit_el0_syscall_marker() {
-    // PL011 UART virtual address (physical 0x0900_0000 mapped via HHDM)
-    // The HHDM base is 0xFFFF_0000_0000_0000, so UART is at that + 0x0900_0000
-    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
-    const PL011_PHYS: u64 = 0x0900_0000;
-    const PL011_VIRT: u64 = HHDM_BASE + PL011_PHYS;
+    let uart_addr = crate::platform_config::uart_virt();
 
     let msg = b"EL0_SYSCALL: First syscall from userspace (SPSR confirms EL0)\n[ OK ] syscall path verified\n";
     for &byte in msg {
         unsafe {
-            core::ptr::write_volatile(PL011_VIRT as *mut u8, byte);
+            core::ptr::write_volatile(uart_addr as *mut u8, byte);
         }
     }
 
@@ -235,14 +231,13 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
             if let Some(ref page_table) = process.page_table {
                 let ttbr0 = page_table.level_4_frame().start_address().as_u64();
                 unsafe {
-                    // CRITICAL: Flush TLB after TTBR0 switch for CoW correctness
                     core::arch::asm!(
-                        "dsb ishst",           // Ensure previous stores complete
-                        "msr ttbr0_el1, {}",   // Set new page table
-                        "isb",                 // Synchronize context
-                        "tlbi vmalle1is",      // FLUSH ENTIRE TLB
-                        "dsb ish",             // Ensure TLB flush completes
-                        "isb",                 // Synchronize instruction stream
+                        "dsb ishst",
+                        "msr ttbr0_el1, {}",
+                        "isb",
+                        "tlbi vmalle1is",
+                        "dsb ish",
+                        "isb",
                         in(reg) ttbr0,
                         options(nostack)
                     );

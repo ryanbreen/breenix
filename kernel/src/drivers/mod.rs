@@ -3,10 +3,14 @@
 //! This module provides the driver infrastructure for Breenix, including
 //! PCI enumeration and device-specific drivers.
 
+#[cfg(target_arch = "aarch64")]
+pub mod ahci;
 #[cfg(target_arch = "x86_64")]
 pub mod e1000;
 pub mod fw_cfg;
 pub mod pci;
+#[cfg(target_arch = "aarch64")]
+pub mod usb;
 pub mod virtio;  // Now available on both x86_64 and aarch64
 
 /// Initialize the driver subsystem
@@ -71,12 +75,123 @@ pub fn init() -> usize {
 
 /// Initialize the driver subsystem (ARM64 version)
 ///
-/// Uses VirtIO MMIO enumeration instead of PCI on QEMU virt machine.
+/// Detects the platform at runtime:
+/// - If PCI ECAM is configured (Parallels/UEFI boot): enumerate PCI bus
+/// - Otherwise (QEMU virt): enumerate VirtIO MMIO devices
 #[cfg(target_arch = "aarch64")]
 pub fn init() -> usize {
     use crate::serial_println;
 
     serial_println!("[drivers] Initializing driver subsystem...");
+
+    let ecam_base = crate::platform_config::pci_ecam_base();
+
+    if ecam_base != 0 {
+        // PCI-based platform (Parallels): enumerate PCI bus
+        serial_println!("[drivers] PCI ECAM at {:#x}, enumerating PCI bus...", ecam_base);
+        let device_count = pci::enumerate();
+        serial_println!("[drivers] Found {} PCI devices", device_count);
+
+        // Log all PCI devices for debugging
+        if let Some(devices) = pci::get_devices() {
+            for dev in &devices {
+                serial_println!(
+                    "[drivers] PCI {:02x}:{:02x}.{} [{:04x}:{:04x}] class={:?}/0x{:02x}",
+                    dev.bus, dev.device, dev.function,
+                    dev.vendor_id, dev.device_id,
+                    dev.class, dev.subclass,
+                );
+            }
+        }
+
+        // Enumerate VirtIO PCI devices with modern transport
+        let virtio_devices = virtio::pci_transport::enumerate_virtio_pci_devices();
+        for dev in &virtio_devices {
+            serial_println!(
+                "[drivers] VirtIO PCI device: {} (type={})",
+                virtio::pci_transport::device_type_name(dev.device_id()),
+                dev.device_id()
+            );
+        }
+        serial_println!("[drivers] Found {} VirtIO PCI devices", virtio_devices.len());
+
+        // Initialize VirtIO GPU PCI driver.
+        // Even when a GOP framebuffer is available (Parallels), we try the VirtIO
+        // GPU PCI driver first — it supports arbitrary resolutions via
+        // CREATE_RESOURCE_2D, giving us control beyond the fixed GOP mode.
+        // If GPU PCI init fails, the GOP framebuffer is used as a fallback.
+        match virtio::gpu_pci::init() {
+            Ok(()) => {
+                serial_println!("[drivers] VirtIO GPU (PCI) initialized");
+            }
+            Err(e) => {
+                serial_println!("[drivers] VirtIO GPU (PCI) init failed: {}", e);
+            }
+        }
+
+        // Initialize EHCI USB 2.0 host controller (keyboard input)
+        // Intel 82801FB EHCI: vendor 0x8086, device 0x265c
+        if let Some(ehci_dev) = pci::find_device(0x8086, 0x265c) {
+            match usb::ehci::init(&ehci_dev) {
+                Ok(()) => {
+                    serial_println!("[drivers] EHCI USB 2.0 controller initialized");
+                }
+                Err(e) => {
+                    serial_println!("[drivers] EHCI USB init failed: {}", e);
+                }
+            }
+        } else {
+            serial_println!("[drivers] No EHCI USB controller found");
+        }
+
+        // Initialize XHCI USB host controller (keyboard + mouse)
+        // NEC uPD720200: vendor 0x1033, device 0x0194
+        if let Some(xhci_dev) = pci::find_device(0x1033, 0x0194) {
+            match usb::xhci::init(&xhci_dev) {
+                Ok(()) => {
+                    serial_println!("[drivers] XHCI USB controller initialized");
+                }
+                Err(e) => {
+                    serial_println!("[drivers] XHCI USB init failed: {}", e);
+                }
+            }
+        } else {
+            serial_println!("[drivers] No XHCI USB controller found");
+        }
+
+        // Initialize AHCI storage driver.
+        // First try PCI (standard AHCI), then platform MMIO (Parallels Desktop).
+        match ahci::init() {
+            Ok(count) => {
+                serial_println!("[drivers] AHCI initialized (PCI): {} SATA device(s)", count);
+            }
+            Err(_) => {
+                // No PCI AHCI controller found. On Parallels Desktop, the SATA
+                // controller is an ACPI platform device at 0x0214_0000, not on PCI.
+                const PARALLELS_AHCI_BASE: u64 = 0x0214_0000;
+                match ahci::init_platform(PARALLELS_AHCI_BASE) {
+                    Ok(count) => {
+                        serial_println!("[drivers] AHCI initialized (platform MMIO): {} SATA device(s)", count);
+                    }
+                    Err(e) => {
+                        serial_println!("[drivers] AHCI init skipped: {}", e);
+                    }
+                }
+            }
+        }
+
+        serial_println!("[drivers] Driver subsystem initialized (PCI)");
+        device_count
+    } else {
+        // MMIO-based platform (QEMU virt): enumerate VirtIO MMIO
+        init_virtio_mmio()
+    }
+}
+
+/// Initialize VirtIO MMIO devices (QEMU virt platform).
+#[cfg(target_arch = "aarch64")]
+fn init_virtio_mmio() -> usize {
+    use crate::serial_println;
 
     // Enumerate VirtIO MMIO devices
     let mut device_count = 0;
@@ -144,6 +259,6 @@ pub fn init() -> usize {
         }
     }
 
-    serial_println!("[drivers] Driver subsystem initialized");
+    serial_println!("[drivers] Driver subsystem initialized (MMIO)");
     device_count
 }

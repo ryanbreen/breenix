@@ -33,6 +33,7 @@ test = false
 [workspace]
 members = [
     "kernel",
+    "parallels-loader",
     "xtask"
 ]
 

@@ -30,9 +30,7 @@ pub fn start_animation(left: i32, top: i32, right: i32, bottom: i32) {
 pub fn animation_thread_entry() {
     // Raw serial output - no locks, safe in any context
     fn raw_char(c: u8) {
-        const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
-        const PL011_BASE: u64 = 0x0900_0000;
-        let addr = (HHDM_BASE + PL011_BASE) as *mut u32;
+        let addr = crate::platform_config::uart_virt() as *mut u32;
         unsafe { core::ptr::write_volatile(addr, c as u32); }
     }
 

@@ -15,7 +15,7 @@ pub use dir::*;
 pub use inode::*;
 pub use file::*;
 
-use crate::block::virtio::VirtioBlockWrapper;
+use crate::block::BlockDevice;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::RwLock;
@@ -30,7 +30,7 @@ pub struct Ext2Fs {
     /// Block group descriptors
     pub block_groups: Vec<Ext2BlockGroupDesc>,
     /// The underlying block device
-    pub device: Arc<VirtioBlockWrapper>,
+    pub device: Arc<dyn BlockDevice>,
     /// Mount ID for VFS integration
     pub mount_id: usize,
 }
@@ -39,7 +39,7 @@ impl Ext2Fs {
     /// Create a new ext2 filesystem instance from a block device
     ///
     /// Reads and validates the superblock and block group descriptors.
-    pub fn new(device: Arc<VirtioBlockWrapper>, mount_id: usize) -> Result<Self, &'static str> {
+    pub fn new(device: Arc<dyn BlockDevice>, mount_id: usize) -> Result<Self, &'static str> {
         // Read the superblock
         let superblock = Ext2Superblock::read_from(device.as_ref())
             .map_err(|_| "Failed to read ext2 superblock")?;
@@ -1368,16 +1368,58 @@ static ROOT_EXT2: RwLock<Option<Ext2Fs>> = RwLock::new(None);
 /// Mounts the ext2 disk as the root filesystem.
 /// Device layout:
 ///   - x86_64: Device 0 UEFI boot disk, device 1 test binaries disk, device 2 ext2 disk
-///   - ARM64: Device 0 ext2 disk
+///   - ARM64 (QEMU): Device 0 ext2 disk (VirtIO MMIO)
+///   - ARM64 (Parallels): AHCI SATA port 0
 ///
-/// This should be called during kernel initialization after VirtIO
-/// block device initialization.
+/// This should be called during kernel initialization after block
+/// device driver initialization.
 pub fn init_root_fs() -> Result<(), &'static str> {
-    // Try x86_64 layout first (device index 2), then ARM64 layout (device index 0).
-    let device = VirtioBlockWrapper::new(2)
-        .or_else(|| VirtioBlockWrapper::new(0))
-        .ok_or("No ext2 block device available (expected at device index 2 or 0)")?;
-    let device = Arc::new(device);
+    // Try VirtIO block devices first (works on both x86_64 and QEMU ARM64)
+    let device: Arc<dyn BlockDevice> = {
+        use crate::block::virtio::VirtioBlockWrapper;
+        if let Some(dev) = VirtioBlockWrapper::new(2).or_else(|| VirtioBlockWrapper::new(0)) {
+            #[cfg(target_arch = "aarch64")]
+            crate::serial_println!("[ext2] Using VirtIO block device ({} sectors)", dev.num_blocks());
+            Arc::new(dev)
+        } else {
+            // Fall back to AHCI block devices (Parallels ARM64).
+            // Try each SATA device looking for one with a valid ext2 superblock.
+            // On Parallels, sata:0 is typically the FAT32 EFI boot disk.
+            #[cfg(target_arch = "aarch64")]
+            {
+                crate::serial_println!("[ext2] No VirtIO block device, trying AHCI...");
+                let count = crate::drivers::ahci::sata_device_count();
+                let mut found: Option<crate::drivers::ahci::AhciBlockDevice> = None;
+                for i in 0..count {
+                    if let Some(dev) = crate::drivers::ahci::get_block_device_by_index(i) {
+                        crate::serial_println!("[ext2] AHCI device {}: {} sectors ({} MB)",
+                            i, dev.num_blocks(), dev.num_blocks() * 512 / (1024 * 1024));
+                        // Try reading ext2 superblock (at byte offset 1024, sector 2)
+                        let mut buf = [0u8; 512];
+                        if dev.read_block(2, &mut buf).is_ok() {
+                            let magic = (buf[56] as u16) | ((buf[57] as u16) << 8);
+                            if magic == 0xEF53 {
+                                crate::serial_println!("[ext2] Found ext2 superblock on AHCI device {}", i);
+                                found = Some(dev);
+                                break;
+                            } else {
+                                crate::serial_println!("[ext2] AHCI device {}: not ext2 (magic={:#06x})", i, magic);
+                            }
+                        } else {
+                            crate::serial_println!("[ext2] AHCI device {}: read failed", i);
+                        }
+                    }
+                }
+                let ahci_dev = found
+                    .ok_or("No block device with ext2 filesystem (tried VirtIO and all AHCI devices)")?;
+                Arc::new(ahci_dev)
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                return Err("No ext2 block device available (expected at device index 2 or 0)");
+            }
+        }
+    };
 
     // Register with VFS mount system
     let mount_id = crate::fs::vfs::mount("/", "ext2");
@@ -1451,10 +1493,13 @@ static HOME_EXT2: RwLock<Option<Ext2Fs>> = RwLock::new(None);
 /// to the root ext2 filesystem (backward compatible).
 pub fn init_home_fs() -> Result<(), &'static str> {
     // Try x86_64 layout first (device index 3), then ARM64 layout (device index 1).
-    let device = VirtioBlockWrapper::new(3)
-        .or_else(|| VirtioBlockWrapper::new(1))
-        .ok_or("No home block device available (expected at device index 3 or 1)")?;
-    let device = Arc::new(device);
+    use crate::block::virtio::VirtioBlockWrapper;
+    let device: Arc<dyn BlockDevice> = {
+        let dev = VirtioBlockWrapper::new(3)
+            .or_else(|| VirtioBlockWrapper::new(1))
+            .ok_or("No home block device available (expected at device index 3 or 1)")?;
+        Arc::new(dev)
+    };
 
     // Register with VFS mount system
     let mount_id = crate::fs::vfs::mount("/home", "ext2");
