@@ -47,6 +47,15 @@ static PCI_MMIO_SIZE: AtomicU64 = AtomicU64::new(0);
 // PCI bus range (from MCFG ACPI table). Default 0-255 for full scan on QEMU.
 // Parallels provides actual bus range; scanning beyond it faults.
 #[cfg(target_arch = "aarch64")]
+static GICV2M_BASE_PHYS: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_arch = "aarch64")]
+static GICV2M_SPI_BASE: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_arch = "aarch64")]
+static GICV2M_SPI_COUNT: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_arch = "aarch64")]
 static PCI_BUS_START: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(target_arch = "aarch64")]
@@ -142,6 +151,66 @@ pub fn gicr_base_phys() -> u64 {
 #[inline]
 pub fn gicr_size() -> u64 {
     GICR_SIZE.load(Ordering::Relaxed)
+}
+
+/// GICv2m MSI frame physical base address. 0 if not probed/available.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn gicv2m_base_phys() -> u64 {
+    GICV2M_BASE_PHYS.load(Ordering::Relaxed)
+}
+
+/// GICv2m base SPI number (first available MSI SPI).
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn gicv2m_spi_base() -> u32 {
+    GICV2M_SPI_BASE.load(Ordering::Relaxed) as u32
+}
+
+/// GICv2m number of available MSI SPIs.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn gicv2m_spi_count() -> u32 {
+    GICV2M_SPI_COUNT.load(Ordering::Relaxed) as u32
+}
+
+/// Probe for GICv2m at the given physical address.
+///
+/// Reads MSI_TYPER (offset 0x008) to discover SPI range.
+/// Returns true if a valid GICv2m frame was found.
+#[cfg(target_arch = "aarch64")]
+pub fn probe_gicv2m(phys_base: u64) -> bool {
+    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
+    let virt = (HHDM_BASE + phys_base) as *const u32;
+
+    // DSB + ISB to ensure previous MMIO writes complete before reading device registers
+    unsafe {
+        core::arch::asm!("dsb sy", "isb", options(nomem, nostack));
+    }
+
+    // Read MSI_TYPER at offset 0x008
+    let msi_typer = unsafe { core::ptr::read_volatile(virt.add(2)) }; // offset 8 / 4
+
+    // MSI_TYPER (ARM IHI0048B §14.1):
+    //   bits [25:16] = BASE_SPI: lowest SPI assigned to MSI
+    //   bits [9:0]   = NUM_SPI: number of SPIs assigned to MSI
+    let spi_base = (msi_typer >> 16) & 0x3FF;
+    let spi_count = msi_typer & 0x3FF;
+
+    // Log raw value for debugging
+    crate::serial_println!(
+        "[gicv2m] MSI_TYPER raw={:#010x} -> base_spi={}, num_spi={}",
+        msi_typer, spi_base, spi_count,
+    );
+
+    if spi_count == 0 || spi_base == 0 || msi_typer == 0xFFFF_FFFF {
+        return false;
+    }
+
+    GICV2M_BASE_PHYS.store(phys_base, Ordering::Relaxed);
+    GICV2M_SPI_BASE.store(spi_base as u64, Ordering::Relaxed);
+    GICV2M_SPI_COUNT.store(spi_count as u64, Ordering::Relaxed);
+    true
 }
 
 /// PCI ECAM physical base address. 0 if no PCI.

@@ -9,7 +9,19 @@
 //! - Keyboard: 8 bytes (1 modifier + 1 reserved + 6 keycodes)
 //! - Mouse: 3-4 bytes (1 buttons + 1 dx + 1 dy + optional wheel)
 
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+
+// =============================================================================
+// Diagnostic counters (read by heartbeat in timer_interrupt.rs)
+// =============================================================================
+
+/// Counts keyboard reports where at least one byte is non-zero.
+/// If this stays 0 while user types, the USB reports are empty.
+pub static NONZERO_KBD_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Last keyboard report packed as a u64 (LE: byte[0] in LSB).
+/// Allows heartbeat to display the most recent report bytes.
+pub static LAST_KBD_REPORT_U64: AtomicU64 = AtomicU64::new(0);
 
 // =============================================================================
 // State tracking
@@ -143,6 +155,16 @@ fn hid_usage_to_linux_keycode(usage: u8) -> u16 {
 pub fn process_keyboard_report(report: &[u8]) {
     if report.len() < 8 {
         return;
+    }
+
+    // Diagnostic: track report contents for heartbeat visibility
+    let report_u64 = u64::from_le_bytes([
+        report[0], report[1], report[2], report[3],
+        report[4], report[5], report[6], report[7],
+    ]);
+    LAST_KBD_REPORT_U64.store(report_u64, Ordering::Relaxed);
+    if report_u64 != 0 {
+        NONZERO_KBD_COUNT.fetch_add(1, Ordering::Relaxed);
     }
 
     let modifiers = report[0];

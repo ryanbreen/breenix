@@ -176,6 +176,8 @@ pub extern "C" fn timer_interrupt_handler() {
     // CPU 0 only: poll input devices (single-device, not safe from multiple CPUs)
     if cpu_id == 0 {
         poll_keyboard_to_stdin();
+        // Poll EHCI USB 2.0 keyboard events
+        crate::drivers::usb::ehci::poll_keyboard();
         // Poll XHCI USB HID events (needed when PCI interrupt routing isn't available)
         crate::drivers::usb::xhci::poll_hid_events();
     }
@@ -225,6 +227,8 @@ pub extern "C" fn timer_interrupt_handler() {
             print_timer_count_decimal(crate::drivers::usb::xhci::KBD_EVENT_COUNT.load(Ordering::Relaxed));
             raw_serial_str(b" xo=");
             print_timer_count_decimal(crate::drivers::usb::xhci::XFER_OTHER_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" mi=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::MSI_EVENT_COUNT.load(Ordering::Relaxed));
             raw_serial_str(b" psc=");
             print_timer_count_decimal(crate::drivers::usb::xhci::PSC_COUNT.load(Ordering::Relaxed));
             raw_serial_str(b" r=");
@@ -233,6 +237,20 @@ pub extern "C" fn timer_interrupt_handler() {
             print_timer_count_decimal(crate::drivers::usb::xhci::EP0_RESET_FAIL_COUNT.load(Ordering::Relaxed));
             raw_serial_str(b" ps=");
             print_timer_count_decimal(crate::drivers::usb::xhci::EP0_PENDING_STUCK_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" nz=");
+            print_timer_count_decimal(crate::drivers::usb::hid::NONZERO_KBD_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" lr=");
+            print_hex_u64(crate::drivers::usb::hid::LAST_KBD_REPORT_U64.load(Ordering::Relaxed));
+            raw_serial_str(b" DS=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::DMA_SENTINEL_SURVIVED.load(Ordering::SeqCst));
+            raw_serial_str(b" DR=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::DMA_SENTINEL_REPLACED.load(Ordering::SeqCst));
+            raw_serial_str(b" ec=");
+            print_timer_count_decimal(crate::drivers::usb::ehci::EHCI_CTL_COMPLETIONS.load(Ordering::Relaxed) as u64);
+            raw_serial_str(b" ee=");
+            print_timer_count_decimal(crate::drivers::usb::ehci::EHCI_CTL_ERRORS.load(Ordering::Relaxed) as u64);
+            raw_serial_str(b" ei=");
+            print_timer_count_decimal(crate::drivers::usb::ehci::EHCI_INT_COMPLETIONS.load(Ordering::Relaxed) as u64);
             raw_serial_str(b"]\n");
         }
     }
@@ -298,6 +316,15 @@ fn print_timer_count_decimal(count: u64) {
             i -= 1;
             raw_serial_char(digits[i]);
         }
+    }
+}
+
+/// Print a u64 as 16-char zero-padded hexadecimal using raw serial output.
+fn print_hex_u64(val: u64) {
+    const HEX: [u8; 16] = *b"0123456789abcdef";
+    // Print 16 hex digits (big-endian nibble order)
+    for i in (0..16).rev() {
+        raw_serial_char(HEX[((val >> (i * 4)) & 0xF) as usize]);
     }
 }
 

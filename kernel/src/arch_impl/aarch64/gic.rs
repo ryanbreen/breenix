@@ -504,6 +504,79 @@ pub fn is_initialized() -> bool {
     GIC_INITIALIZED.load(Ordering::Acquire)
 }
 
+/// Configure an SPI as edge-triggered (required for MSI interrupts).
+///
+/// GICD_ICFGR has 2 bits per IRQ: 0b00 = level, 0b10 = edge.
+/// For IRQs 32+, register index = irq / 16, field = (irq % 16) * 2.
+pub fn configure_spi_edge_triggered(irq: u32) {
+    if irq < 32 {
+        return; // Only SPIs (32+)
+    }
+    let reg_index = irq / 16;
+    let field = (irq % 16) * 2;
+    let current = gicd_read(GICD_ICFGR + (reg_index as usize * 4));
+    // Set bit 1 of the 2-bit field to select edge-triggered
+    let new_val = current | (0b10 << field);
+    gicd_write(GICD_ICFGR + (reg_index as usize * 4), new_val);
+}
+
+/// Enable an SPI in the GIC distributor (GICD_ISENABLER).
+///
+/// Also routes the SPI to the current CPU via ITARGETSR (GICv2) or
+/// IROUTER (GICv3). Only valid for IRQs >= 32 (SPIs).
+pub fn enable_spi(irq: u32) {
+    if irq < 32 {
+        return; // Only SPIs (32+)
+    }
+    let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
+    let reg_index = irq / 32;
+    let bit = irq % 32;
+
+    if version >= 3 {
+        // GICv3: Route SPI to current CPU via GICD_IROUTER
+        let mpidr: u64;
+        unsafe { core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack)); }
+        let affinity = mpidr & 0xFF_00FF_FFFF; // Aff3.Aff2.Aff1.Aff0
+        gicd_write(GICD_IROUTER + (irq as usize * 8), affinity as u32);
+        gicd_write(GICD_IROUTER + (irq as usize * 8) + 4, (affinity >> 32) as u32);
+    } else {
+        // GICv2: Route SPI to CPU 0 via ITARGETSR
+        let target_reg = irq / 4;
+        let target_byte = irq % 4;
+        let current = gicd_read(GICD_ITARGETSR + (target_reg as usize * 4));
+        let mask = 0xFFu32 << (target_byte * 8);
+        let target_val = 0x01u32 << (target_byte * 8);
+        gicd_write(
+            GICD_ITARGETSR + (target_reg as usize * 4),
+            (current & !mask) | target_val,
+        );
+    }
+
+    gicd_write(GICD_ISENABLER + (reg_index as usize * 4), 1 << bit);
+}
+
+/// Disable an SPI in the GIC distributor (GICD_ICENABLER).
+///
+/// Only valid for IRQs >= 32 (SPIs).
+pub fn disable_spi(irq: u32) {
+    if irq < 32 {
+        return; // Only SPIs (32+)
+    }
+    let reg_index = irq / 32;
+    let bit = irq % 32;
+    gicd_write(GICD_ICENABLER + (reg_index as usize * 4), 1 << bit);
+}
+
+/// Clear any pending state for an SPI (write-1-to-clear via GICD_ICPENDR).
+pub fn clear_spi_pending(irq: u32) {
+    if irq < 32 {
+        return; // Only SPIs (32+)
+    }
+    let reg_index = irq / 32;
+    let bit = irq % 32;
+    gicd_write(GICD_ICPENDR + (reg_index as usize * 4), 1 << bit);
+}
+
 /// Debug function to dump GIC state for a specific IRQ.
 pub fn dump_irq_state(irq: u32) {
     let reg_index = irq / 32;

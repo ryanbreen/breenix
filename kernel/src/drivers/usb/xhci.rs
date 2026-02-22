@@ -66,6 +66,16 @@ const EVENT_RING_SIZE: usize = 64;
 const TRANSFER_RING_SIZE: usize = 256;
 /// Maximum number of HID transfer rings (keyboard + mouse).
 
+/// Work around Parallels CC=12 on interrupt endpoints by configuring as Bulk IN.
+///
+/// Parallels xHCI emulation appears to not implement periodic (interrupt)
+/// endpoint scheduling for SuperSpeed ports. ConfigureEndpoint succeeds and
+/// reports EP state=Running, but the first Normal TRB returns CC=12 (Endpoint
+/// Not Enabled). By telling the xHCI controller the endpoint is Bulk IN
+/// (ep_type=6) instead of Interrupt IN (ep_type=7), we bypass the periodic
+/// scheduler. The USB device still responds to IN tokens with its interrupt
+/// data, but the controller processes TRBs as bulk transfers.
+const USE_BULK_FOR_INTERRUPT: bool = true;
 
 // =============================================================================
 // TRB Type Constants
@@ -303,10 +313,16 @@ pub static KBD_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static XFER_OTHER_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Counts port status change events.
 pub static PSC_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Counts events processed via MSI interrupt handler (handle_interrupt).
+pub static MSI_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// When true, use EP0 GET_REPORT control transfers instead of interrupt endpoint.
 /// Set automatically when the first interrupt transfer returns CC=12 (Endpoint Not Enabled).
 static EP0_POLLING_MODE: AtomicBool = AtomicBool::new(false);
+/// Flags set by MSI interrupt handler to request requeue from timer poll.
+/// Requeuing from IRQ context causes MSI storms on virtual XHCI controllers.
+static MSI_KBD_NEEDS_REQUEUE: AtomicBool = AtomicBool::new(false);
+static MSI_MOUSE_NEEDS_REQUEUE: AtomicBool = AtomicBool::new(false);
 /// Track how many EP0 polls to skip (rate-limit: 1 GET_REPORT per N poll cycles).
 static EP0_POLL_SKIP: AtomicU64 = AtomicU64::new(0);
 
@@ -335,6 +351,11 @@ pub static EP0_RESET_FAIL_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static EP0_PENDING_STUCK_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Counts consecutive poll cycles in a non-IDLE state without progress.
 static EP0_STALL_POLLS: AtomicU64 = AtomicU64::new(0);
+
+/// Sentinel diagnostic: counts reports where the sentinel byte (0xDE) was NOT overwritten by DMA.
+pub static DMA_SENTINEL_SURVIVED: AtomicU64 = AtomicU64::new(0);
+/// Sentinel diagnostic: counts reports where the sentinel byte WAS overwritten (DMA worked).
+pub static DMA_SENTINEL_REPLACED: AtomicU64 = AtomicU64::new(0);
 
 // =============================================================================
 // Memory Helpers
@@ -1098,6 +1119,77 @@ fn set_idle(
     Ok(())
 }
 
+/// Fetch and log the HID Report Descriptor for diagnostic purposes.
+///
+/// The Report Descriptor reveals the actual report format: whether Report IDs
+/// are used, the field layout, and the report size. This is critical for
+/// understanding what data the interrupt endpoint delivers.
+fn fetch_hid_report_descriptor(state: &XhciState, slot_id: u8, interface: u8) {
+    // GET_DESCRIPTOR for HID Report Descriptor uses interface recipient
+    let setup = SetupPacket {
+        bm_request_type: 0x81, // Device-to-host, standard, interface
+        b_request: request::GET_DESCRIPTOR,
+        w_value: (descriptor_type::HID_REPORT as u16) << 8, // Report descriptor type
+        w_index: interface as u16,
+        w_length: 128, // Request up to 128 bytes
+    };
+
+    unsafe {
+        let data_buf = &raw mut CTRL_DATA_BUF;
+        core::ptr::write_bytes((*data_buf).0.as_mut_ptr(), 0, 128);
+        dma_cache_clean((*data_buf).0.as_ptr(), 128);
+
+        let data_phys = virt_to_phys(&raw const CTRL_DATA_BUF as u64);
+
+        match control_transfer(state, slot_id, &setup, data_phys, 128, true) {
+            Ok(()) => {
+                dma_cache_invalidate((*data_buf).0.as_ptr(), 128);
+                let buf = &(*data_buf).0;
+
+                // Find actual length (trim trailing zeros)
+                let mut len = 128;
+                while len > 0 && buf[len - 1] == 0 {
+                    len -= 1;
+                }
+
+                crate::serial_println!(
+                    "[xhci] HID Report Descriptor (iface {}, {} bytes):",
+                    interface, len
+                );
+
+                // Print in hex, 16 bytes per line
+                let mut i = 0;
+                while i < len {
+                    let end = if i + 16 < len { i + 16 } else { len };
+                    let mut hex_buf = [0u8; 48]; // 16 * 3 = 48
+                    let mut pos = 0;
+                    for j in i..end {
+                        let hi = buf[j] >> 4;
+                        let lo = buf[j] & 0x0F;
+                        hex_buf[pos] = if hi < 10 { b'0' + hi } else { b'a' + hi - 10 };
+                        pos += 1;
+                        hex_buf[pos] = if lo < 10 { b'0' + lo } else { b'a' + lo - 10 };
+                        pos += 1;
+                        hex_buf[pos] = b' ';
+                        pos += 1;
+                    }
+                    // Convert to str for serial_println
+                    if let Ok(s) = core::str::from_utf8(&hex_buf[..pos]) {
+                        crate::serial_println!("  {}", s);
+                    }
+                    i += 16;
+                }
+            }
+            Err(e) => {
+                crate::serial_println!(
+                    "[xhci] Failed to get HID Report Descriptor (iface {}): {}",
+                    interface, e
+                );
+            }
+        }
+    }
+}
+
 // =============================================================================
 // Endpoint Configuration (Configure Endpoint Command)
 // =============================================================================
@@ -1111,6 +1203,8 @@ fn configure_interrupt_endpoint(
     slot_id: u8,
     ep_desc: &EndpointDescriptor,
     hid_idx: usize, // 0 = keyboard, 1 = mouse (offset by HID_RING_BASE for ring access)
+    ss_max_burst: u8,       // from SS Endpoint Companion Descriptor (0 if not present)
+    ss_bytes_per_interval: u16, // from SS Endpoint Companion Descriptor (0 if not present)
 ) -> Result<u8, &'static str> {
     let ring_idx = HID_RING_BASE + hid_idx; // Separate from EP0 slot rings
     let slot_idx = (slot_id - 1) as usize;
@@ -1122,13 +1216,25 @@ fn configure_interrupt_endpoint(
     let dci = ep_num * 2 + if ep_desc.is_in() { 1 } else { 0 };
 
     let max_packet_size = ep_desc.w_max_packet_size;
+
+    // Read port speed from Slot Context to determine interval encoding
+    let port_speed = unsafe {
+        let dev_ctx = &raw const DEVICE_CONTEXTS[slot_idx];
+        dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
+        let slot_dw0 = core::ptr::read_volatile((*dev_ctx).0.as_ptr() as *const u32);
+        (slot_dw0 >> 20) & 0xF
+    };
+
     crate::serial_println!(
-        "[xhci] Configuring interrupt EP: addr={:#04x} num={} DCI={} maxpkt={} interval={}",
+        "[xhci] Configuring interrupt EP: addr={:#04x} num={} DCI={} maxpkt={} interval={} speed={} ss_burst={} ss_esit={}",
         ep_desc.b_endpoint_address,
         ep_num,
         dci,
         max_packet_size,
         ep_desc.b_interval,
+        port_speed,
+        ss_max_burst,
+        ss_bytes_per_interval,
     );
 
     unsafe {
@@ -1166,21 +1272,55 @@ fn configure_interrupt_endpoint(
         // Endpoint Context at offset (1 + dci) * ctx_size
         let ep_ctx = input_base.add((1 + dci as usize) * ctx_size);
 
-        // EP DW0: Interval (bits 23:16)
-        // xHCI interval = 2^(bInterval-1) for HS/SS, or bInterval for LS/FS in 125us units
-        // For simplicity, use the interval value directly
-        let interval = if ep_desc.b_interval == 0 { 1 } else { ep_desc.b_interval };
-        let ep_dw0: u32 = (interval as u32) << 16;
-        core::ptr::write_volatile(ep_ctx as *mut u32, ep_dw0);
-
-        // EP DW1: Max Packet Size (bits 31:16), EP Type (bits 5:3), CErr (bits 2:1)
-        // EP Type for Interrupt IN = 7 (per xHCI spec: Isoch OUT=1, Bulk OUT=2, Int OUT=3,
-        //   Control Bidir=4, Isoch IN=5, Bulk IN=6, Int IN=7)
-        let ep_type: u32 = 7; // Interrupt IN
-        let cerr: u32 = 3;    // Max error count
         let max_pkt = (ep_desc.w_max_packet_size & 0x07FF) as u32; // Bits 10:0
-        let ep_dw1: u32 = (max_pkt << 16) | (ep_type << 3) | (cerr << 1);
-        core::ptr::write_volatile(ep_ctx.add(0x04) as *mut u32, ep_dw1);
+        let max_burst = ss_max_burst as u32;
+
+        if USE_BULK_FOR_INTERRUPT {
+            // Bulk IN workaround: skip interval/ESIT, set EP Type = Bulk IN (6).
+            // EP DW0: all zeros (no interval, no ESIT hi for bulk)
+            core::ptr::write_volatile(ep_ctx as *mut u32, 0u32);
+
+            // EP DW1: Max Packet Size, Max Burst, EP Type=6 (Bulk IN), CErr=3
+            let ep_type: u32 = 6; // Bulk IN
+            let cerr: u32 = 3;
+            let ep_dw1: u32 = (max_pkt << 16) | (max_burst << 8) | (ep_type << 3) | (cerr << 1);
+            core::ptr::write_volatile(ep_ctx.add(0x04) as *mut u32, ep_dw1);
+
+            crate::serial_println!(
+                "[xhci] Using Bulk IN (type=6) workaround for interrupt EP DCI {}",
+                dci
+            );
+        } else {
+            // Standard Interrupt IN configuration
+            // EP DW0: Interval (bits 23:16), Max ESIT Payload Hi (bits 31:24)
+            let interval: u32 = if port_speed >= 3 {
+                let bi = ep_desc.b_interval.clamp(1, 16);
+                (bi - 1) as u32
+            } else {
+                let bi = ep_desc.b_interval.clamp(1, 255);
+                let ms_interval = bi as u32;
+                let mut n = 0u32;
+                while (125u32 << n) < ms_interval * 1000 && n < 15 {
+                    n += 1;
+                }
+                n
+            };
+
+            let esit_payload = if ss_bytes_per_interval > 0 {
+                ss_bytes_per_interval as u32
+            } else {
+                max_pkt * (max_burst + 1)
+            };
+            let esit_hi = (esit_payload >> 16) & 0xFF;
+            let ep_dw0: u32 = (esit_hi << 24) | (interval << 16);
+            core::ptr::write_volatile(ep_ctx as *mut u32, ep_dw0);
+
+            // EP DW1: Interrupt IN type = 7
+            let ep_type: u32 = 7; // Interrupt IN
+            let cerr: u32 = 3;
+            let ep_dw1: u32 = (max_pkt << 16) | (max_burst << 8) | (ep_type << 3) | (cerr << 1);
+            core::ptr::write_volatile(ep_ctx.add(0x04) as *mut u32, ep_dw1);
+        }
 
         // Clear and set up the HID transfer ring for this device
         let ring = &raw mut TRANSFER_RINGS[ring_idx];
@@ -1200,13 +1340,23 @@ fn configure_interrupt_endpoint(
             (ring_phys >> 32) as u32,
         );
 
-        // EP DW4: Max ESIT Payload Lo (bits 31:16), Average TRB Length (bits 15:0)
-        // ESIT Payload = MaxPacketSize × (MaxBurst+1) × (Mult+1)
-        // For interrupt endpoints: MaxBurst=0, Mult=0, so ESIT = MaxPacketSize
-        let avg_trb_len = max_pkt; // For interrupt, average = max packet
-        let esit_payload = max_pkt; // MaxPkt × 1 × 1
-        let ep_dw4: u32 = (esit_payload << 16) | avg_trb_len;
-        core::ptr::write_volatile(ep_ctx.add(0x10) as *mut u32, ep_dw4);
+        // EP DW4: Average TRB Length (bits 15:0), Max ESIT Payload Lo (bits 31:16)
+        if USE_BULK_FOR_INTERRUPT {
+            // For Bulk: Average TRB Length = max_pkt, no ESIT payload
+            let ep_dw4: u32 = max_pkt & 0xFFFF; // avg_trb_len only
+            core::ptr::write_volatile(ep_ctx.add(0x10) as *mut u32, ep_dw4);
+        } else {
+            // For Interrupt: ESIT Payload Lo + avg = max_esit_payload
+            let esit_payload = if ss_bytes_per_interval > 0 {
+                ss_bytes_per_interval as u32
+            } else {
+                max_pkt * (max_burst + 1)
+            };
+            let esit_lo = esit_payload & 0xFFFF;
+            let avg_trb_len = esit_payload;
+            let ep_dw4: u32 = (esit_lo << 16) | avg_trb_len;
+            core::ptr::write_volatile(ep_ctx.add(0x10) as *mut u32, ep_dw4);
+        }
 
         // Cache-clean the input context
         dma_cache_clean(input_base, 4096);
@@ -1364,6 +1514,27 @@ fn configure_hid(
                         };
 
                         if ep_desc.is_interrupt() && ep_desc.is_in() {
+                            // Check for SS Endpoint Companion Descriptor (type 0x30)
+                            // immediately following this endpoint descriptor
+                            let mut ss_max_burst: u8 = 0;
+                            let mut ss_bytes_per_interval: u16 = 0;
+                            let ss_offset = ep_offset + ep_len;
+                            if ss_offset + 2 <= config_len {
+                                let ss_len = config_buf[ss_offset] as usize;
+                                let ss_type = config_buf[ss_offset + 1];
+                                if ss_type == 0x30 && ss_len >= 6 && ss_offset + ss_len <= config_len {
+                                    ss_max_burst = config_buf[ss_offset + 2];
+                                    ss_bytes_per_interval = u16::from_le_bytes([
+                                        config_buf[ss_offset + 4],
+                                        config_buf[ss_offset + 5],
+                                    ]);
+                                    crate::serial_println!(
+                                        "[xhci] SS EP Companion: maxBurst={} bytesPerInterval={}",
+                                        ss_max_burst, ss_bytes_per_interval,
+                                    );
+                                }
+                            }
+
                             // First, set configuration if we haven't yet
                             if !found_hid {
                                 set_configuration(state, slot_id, config_value)?;
@@ -1379,12 +1550,25 @@ fn configure_hid(
                                 };
 
                             // Set boot protocol and idle
-                            let _ = set_boot_protocol(state, slot_id, iface.b_interface_number);
+                            match set_boot_protocol(state, slot_id, iface.b_interface_number) {
+                                Ok(()) => { crate::serial_println!(
+                                    "[xhci] SET_PROTOCOL(boot) succeeded on slot {} iface {}",
+                                    slot_id, iface.b_interface_number
+                                ); }
+                                Err(e) => { crate::serial_println!(
+                                    "[xhci] SET_PROTOCOL(boot) FAILED on slot {} iface {}: {}",
+                                    slot_id, iface.b_interface_number, e
+                                ); }
+                            }
                             let _ = set_idle(state, slot_id, iface.b_interface_number);
+
+                            // Fetch and log HID Report Descriptor to understand the report format
+                            fetch_hid_report_descriptor(state, slot_id, iface.b_interface_number);
 
                             // Configure the interrupt endpoint
                             let dci = configure_interrupt_endpoint(
                                 state, slot_id, ep_desc, hid_idx,
+                                ss_max_burst, ss_bytes_per_interval,
                             )?;
 
                             // Record the slot/endpoint for interrupt handling
@@ -1444,22 +1628,19 @@ fn queue_hid_transfer(
         virt_to_phys((&raw const MOUSE_REPORT_BUF) as u64)
     };
 
-    // Clean the report buffer before giving it to the controller
-    if hid_idx == 0 {
-        dma_cache_clean((&raw const KBD_REPORT_BUF) as *const u8, 8);
-    } else {
-        dma_cache_clean((&raw const MOUSE_REPORT_BUF) as *const u8, 8);
-    }
-
-    // Log the transfer ring state before enqueue
+    // Fill report buffer with sentinel (0xDE) before giving it to the controller.
+    // After DMA completion, we check if the sentinel was overwritten — this tells
+    // us definitively whether the XHCI DMA wrote actual data to the buffer.
     unsafe {
-        let ring_phys = virt_to_phys(&raw const TRANSFER_RINGS[ring_idx] as u64);
-        let enq_idx = TRANSFER_ENQUEUE[ring_idx];
-        let trb_phys = ring_phys + (enq_idx as u64) * 16;
-        crate::serial_println!(
-            "[xhci] queue_hid_transfer: hid_idx={} ring_phys={:#x} enq_idx={} trb_phys={:#x} buf_phys={:#x}",
-            hid_idx, ring_phys, enq_idx, trb_phys, buf_phys,
-        );
+        if hid_idx == 0 {
+            let buf = &raw mut KBD_REPORT_BUF;
+            core::ptr::write_bytes((*buf).0.as_mut_ptr(), 0xDE, 8);
+            dma_cache_clean((*buf).0.as_ptr(), 8);
+        } else {
+            let buf = &raw mut MOUSE_REPORT_BUF;
+            core::ptr::write_bytes((*buf).0.as_mut_ptr(), 0xDE, 8);
+            dma_cache_clean((*buf).0.as_ptr(), 8);
+        }
     }
 
     // Normal TRB for interrupt IN transfer
@@ -1472,10 +1653,6 @@ fn queue_hid_transfer(
     enqueue_transfer(ring_idx, trb);
 
     // Ring the doorbell for this endpoint
-    crate::serial_println!(
-        "[xhci] Ringing doorbell: slot={} target_dci={}",
-        slot_id, dci,
-    );
     ring_doorbell(state, slot_id, dci);
 
     Ok(())
@@ -1510,8 +1687,14 @@ fn submit_ep0_get_report(state: &XhciState, slot_id: u8) {
         core::ptr::read_unaligned(&setup as *const SetupPacket as *const u64)
     };
 
-    // Clean the report buffer
-    dma_cache_clean((&raw const KBD_REPORT_BUF) as *const u8, 8);
+    // Fill buffer with sentinel (0xDE) and clean+invalidate to ensure it's in RAM.
+    // After the transfer, we check if the sentinel was overwritten by DMA.
+    unsafe {
+        let buf = &raw mut KBD_REPORT_BUF;
+        core::ptr::write_bytes((*buf).0.as_mut_ptr(), 0xDE, 8);
+        dma_cache_clean((*buf).0.as_ptr(), 8);
+        dma_cache_invalidate((*buf).0.as_ptr(), 8);
+    }
 
     let buf_phys = virt_to_phys((&raw const KBD_REPORT_BUF) as u64);
 
@@ -1606,42 +1789,163 @@ fn drain_stale_events(state: &XhciState) {
     }
 }
 
+/// Test synchronous GET_REPORT and GET_PROTOCOL during init.
+///
+/// Called after keyboard is configured to diagnose whether Parallels echoes
+/// setup packet bytes for class-specific requests or if the issue is
+/// specific to the async EP0 polling path.
+fn test_sync_class_requests(state: &XhciState, slot_id: u8) {
+    // Log physical addresses for diagnostic comparison
+    let ctrl_buf_phys = virt_to_phys((&raw const CTRL_DATA_BUF) as u64);
+    let kbd_buf_phys = virt_to_phys((&raw const KBD_REPORT_BUF) as u64);
+    crate::serial_println!(
+        "[xhci] Buffer phys addrs: CTRL_DATA_BUF={:#010x} KBD_REPORT_BUF={:#010x}",
+        ctrl_buf_phys, kbd_buf_phys,
+    );
+
+    // Test 1: Synchronous GET_REPORT using CTRL_DATA_BUF
+    {
+        let setup = SetupPacket {
+            bm_request_type: 0xA1,
+            b_request: 0x01, // GET_REPORT
+            w_value: 0x0100, // Input report, ID 0
+            w_index: 0,
+            w_length: 8,
+        };
+
+        unsafe {
+            let data_buf = &raw mut CTRL_DATA_BUF;
+            core::ptr::write_bytes((*data_buf).0.as_mut_ptr(), 0xBB, 8);
+            dma_cache_clean((*data_buf).0.as_ptr(), 8);
+            dma_cache_invalidate((*data_buf).0.as_ptr(), 8);
+
+            let data_phys = virt_to_phys(&raw const CTRL_DATA_BUF as u64);
+
+            match control_transfer(state, slot_id, &setup, data_phys, 8, true) {
+                Ok(()) => {
+                    dma_cache_invalidate((*data_buf).0.as_ptr(), 8);
+                    let buf = &(*data_buf).0;
+                    crate::serial_println!(
+                        "[xhci] Sync GET_REPORT(CTRL_DATA): {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+                        buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+                    );
+                }
+                Err(e) => {
+                    crate::serial_println!("[xhci] Sync GET_REPORT(CTRL_DATA) failed: {}", e);
+                }
+            }
+        }
+    }
+
+    // Test 2: Synchronous GET_REPORT using KBD_REPORT_BUF
+    {
+        let setup = SetupPacket {
+            bm_request_type: 0xA1,
+            b_request: 0x01,
+            w_value: 0x0100,
+            w_index: 0,
+            w_length: 8,
+        };
+
+        unsafe {
+            let kbd_buf = &raw mut KBD_REPORT_BUF;
+            core::ptr::write_bytes((*kbd_buf).0.as_mut_ptr(), 0xCC, 8);
+            dma_cache_clean((*kbd_buf).0.as_ptr(), 8);
+            dma_cache_invalidate((*kbd_buf).0.as_ptr(), 8);
+
+            match control_transfer(state, slot_id, &setup, kbd_buf_phys, 8, true) {
+                Ok(()) => {
+                    dma_cache_invalidate((*kbd_buf).0.as_ptr(), 8);
+                    let buf = &(*kbd_buf).0;
+                    crate::serial_println!(
+                        "[xhci] Sync GET_REPORT(KBD_BUF):   {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+                        buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+                    );
+                }
+                Err(e) => {
+                    crate::serial_println!("[xhci] Sync GET_REPORT(KBD_BUF) failed: {}", e);
+                }
+            }
+        }
+    }
+
+    // Test 3: Synchronous GET_PROTOCOL (should return 1 byte: 0=boot, 1=report)
+    {
+        let setup = SetupPacket {
+            bm_request_type: 0xA1,
+            b_request: 0x03, // GET_PROTOCOL
+            w_value: 0,
+            w_index: 0,
+            w_length: 1,
+        };
+
+        unsafe {
+            let data_buf = &raw mut CTRL_DATA_BUF;
+            core::ptr::write_bytes((*data_buf).0.as_mut_ptr(), 0xDD, 8);
+            dma_cache_clean((*data_buf).0.as_ptr(), 8);
+
+            let data_phys = virt_to_phys(&raw const CTRL_DATA_BUF as u64);
+
+            match control_transfer(state, slot_id, &setup, data_phys, 1, true) {
+                Ok(()) => {
+                    dma_cache_invalidate((*data_buf).0.as_ptr(), 8);
+                    let buf = &(*data_buf).0;
+                    crate::serial_println!(
+                        "[xhci] Sync GET_PROTOCOL: {:02x} ({})",
+                        buf[0],
+                        if buf[0] == 0 { "boot" } else if buf[0] == 1 { "report" } else { "?" },
+                    );
+                }
+                Err(e) => {
+                    crate::serial_println!("[xhci] Sync GET_PROTOCOL failed: {}", e);
+                }
+            }
+        }
+    }
+
+    // Test 4: GET_DESCRIPTOR(Device) via sync to verify control transfers still work
+    {
+        let setup = SetupPacket {
+            bm_request_type: 0x80,
+            b_request: 0x06, // GET_DESCRIPTOR
+            w_value: 0x0100, // Device descriptor
+            w_index: 0,
+            w_length: 8,
+        };
+
+        unsafe {
+            let data_buf = &raw mut CTRL_DATA_BUF;
+            core::ptr::write_bytes((*data_buf).0.as_mut_ptr(), 0xEE, 8);
+            dma_cache_clean((*data_buf).0.as_ptr(), 8);
+
+            let data_phys = virt_to_phys(&raw const CTRL_DATA_BUF as u64);
+
+            match control_transfer(state, slot_id, &setup, data_phys, 8, true) {
+                Ok(()) => {
+                    dma_cache_invalidate((*data_buf).0.as_ptr(), 8);
+                    let buf = &(*data_buf).0;
+                    crate::serial_println!(
+                        "[xhci] Sync GET_DESC(Device): {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+                        buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+                    );
+                }
+                Err(e) => {
+                    crate::serial_println!("[xhci] Sync GET_DESC(Device) failed: {}", e);
+                }
+            }
+        }
+    }
+}
+
 /// Queue initial HID transfers for all configured HID devices.
 ///
 /// Must be called AFTER scan_ports completes, so that transfer events
 /// don't interfere with wait_for_event during port enumeration commands.
 fn start_hid_polling(state: &XhciState) {
-    // First, drain any leftover events from enumeration
+    // Drain any leftover events from enumeration
     drain_stale_events(state);
 
-    // Verify controller state
-    let usbcmd = read32(state.op_base);
-    let usbsts = read32(state.op_base + 0x04);
-    crate::serial_println!(
-        "[xhci] Pre-poll state: USBCMD={:#010x} USBSTS={:#010x}",
-        usbcmd, usbsts,
-    );
-
     if state.kbd_slot != 0 {
-        let slot_idx = (state.kbd_slot - 1) as usize;
-        let dci = state.kbd_endpoint as usize;
-
-        // Re-verify endpoint state right before queueing
-        unsafe {
-            let dev_ctx = &raw const DEVICE_CONTEXTS[slot_idx];
-            dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
-            let ep_out = (*dev_ctx).0.as_ptr().add(dci * state.context_size);
-            let ep_dw0 = core::ptr::read_volatile(ep_out as *const u32);
-            let ep_state = ep_dw0 & 0x7;
-            let ep_dw2 = core::ptr::read_volatile(ep_out.add(8) as *const u32);
-            let ep_dw3 = core::ptr::read_volatile(ep_out.add(12) as *const u32);
-            let tr_dequeue = (ep_dw2 as u64) | ((ep_dw3 as u64) << 32);
-            crate::serial_println!(
-                "[xhci] Pre-poll kbd EP DCI {}: state={} tr_dequeue={:#x}",
-                dci, ep_state, tr_dequeue & !0xF,
-            );
-        }
-
         crate::serial_println!(
             "[xhci] Starting keyboard polling: slot={} DCI={}",
             state.kbd_slot,
@@ -1673,6 +1977,21 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
         "[xhci] Scanning {} ports...",
         state.max_ports,
     );
+
+    // Dump PORTSC of all ports (especially USB 2.0 ports 12-13)
+    for port in 0..state.max_ports as u64 {
+        let portsc_addr = state.op_base + 0x400 + port * 0x10;
+        let portsc = read32(portsc_addr);
+        let speed = (portsc >> 10) & 0xF;
+        let ccs = portsc & 1;
+        let ped = (portsc >> 1) & 1;
+        if ccs != 0 || port >= 12 {
+            crate::serial_println!(
+                "[xhci] Port {} PORTSC={:#010x} CCS={} PED={} speed={}",
+                port, portsc, ccs, ped, speed,
+            );
+        }
+    }
 
     let mut slots_used: u8 = 0;
     let max_enumerate: u8 = 4; // Only enumerate first few connected devices
@@ -1802,6 +2121,89 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
 // Initialization
 // =============================================================================
 
+/// Set up PCI MSI for the XHCI controller through GICv2m.
+///
+/// Walks the PCI capability list to find the MSI capability, probes for
+/// GICv2m at the known Parallels address, allocates an SPI, programs the
+/// MSI registers, configures the GIC, and enables the interrupt.
+///
+/// Returns the GIC INTID (SPI number) for the allocated interrupt.
+/// Falls back to polling (returns 0) if MSI or GICv2m is unavailable.
+fn setup_xhci_msi(pci_dev: &crate::drivers::pci::Device) -> u32 {
+    use crate::arch_impl::aarch64::gic;
+
+    // Step 1: Find MSI capability in PCI config space
+    let msi_cap = match pci_dev.find_msi_capability() {
+        Some(offset) => {
+            crate::serial_println!("[xhci] Found MSI capability at PCI config offset {:#x}", offset);
+            offset
+        }
+        None => {
+            crate::serial_println!("[xhci] No MSI capability found, using polling mode");
+            return 0;
+        }
+    };
+
+    // Step 2: Probe for GICv2m
+    // On Parallels ARM64, GICv2m is at 0x02250000 (discovered from MADT).
+    const PARALLELS_GICV2M_BASE: u64 = 0x0225_0000;
+    let gicv2m_base = crate::platform_config::gicv2m_base_phys();
+    let (base, spi_base, spi_count) = if gicv2m_base != 0 {
+        // Already probed
+        (
+            gicv2m_base,
+            crate::platform_config::gicv2m_spi_base(),
+            crate::platform_config::gicv2m_spi_count(),
+        )
+    } else if crate::platform_config::probe_gicv2m(PARALLELS_GICV2M_BASE) {
+        (
+            PARALLELS_GICV2M_BASE,
+            crate::platform_config::gicv2m_spi_base(),
+            crate::platform_config::gicv2m_spi_count(),
+        )
+    } else {
+        crate::serial_println!("[xhci] GICv2m not found at {:#x}, using polling mode", PARALLELS_GICV2M_BASE);
+        return 0;
+    };
+
+    crate::serial_println!(
+        "[xhci] GICv2m at {:#x}: SPI base={}, count={}",
+        base, spi_base, spi_count,
+    );
+
+    if spi_count == 0 {
+        crate::serial_println!("[xhci] GICv2m has no available SPIs");
+        return 0;
+    }
+
+    // Step 3: Allocate first available SPI for XHCI
+    let spi = spi_base;
+    let intid = spi; // GIC INTID = SPI number for GICv2m
+
+    // Step 4: Program PCI MSI registers
+    // MSI address = GICv2m doorbell (MSI_SETSPI_NS at offset 0x40)
+    let msi_address = (base + 0x40) as u32;
+    let msi_data = spi as u16;
+    pci_dev.configure_msi(msi_cap, msi_address, msi_data);
+    pci_dev.disable_intx();
+
+    crate::serial_println!(
+        "[xhci] MSI configured: address={:#010x} data={:#06x} (SPI {}, INTID {})",
+        msi_address, msi_data, spi, intid,
+    );
+
+    // Step 5: Configure GIC for this SPI (edge-triggered).
+    //
+    // The SPI is NOT enabled here — init() enables it after disabling IMAN.IE
+    // to prevent an interrupt storm. With IMAN.IE=0, the XHCI won't write MSI
+    // doorbell writes, so the SPI won't fire even though it's enabled.
+    gic::configure_spi_edge_triggered(intid);
+
+    crate::serial_println!("[xhci] GIC SPI {} configured (edge-triggered, INTID {})", spi, intid);
+
+    intid
+}
+
 /// Initialize the XHCI controller from a discovered PCI device.
 ///
 /// Performs the full xHCI initialization sequence:
@@ -1878,6 +2280,53 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
         rts_offset,
         db_offset,
     );
+
+    // 3b. Walk Extended Capabilities list for Supported Protocol info.
+    // HCCPARAMS1 bits 31:16 = xECP (xHCI Extended Capabilities Pointer) in DWORDs from base.
+    let xecp_offset = ((hccparams1 >> 16) & 0xFFFF) as u64;
+    if xecp_offset != 0 {
+        let mut ecap_addr = base + xecp_offset * 4;
+        for _ in 0..16 {
+            let ecap_dw0 = read32(ecap_addr);
+            let cap_id = ecap_dw0 & 0xFF;
+            let next_ptr = (ecap_dw0 >> 8) & 0xFF;
+
+            if cap_id == 2 {
+                // Supported Protocol Capability (ID=2)
+                // DW0: cap_id(7:0), next(15:8), minor_rev(23:16), major_rev(31:24)
+                let minor_rev = (ecap_dw0 >> 16) & 0xFF;
+                let major_rev = (ecap_dw0 >> 24) & 0xFF;
+                // DW1: Name String (ASCII, e.g., "USB ")
+                let name = read32(ecap_addr + 4);
+                // DW2: compatible_port_offset(7:0), compatible_port_count(15:8),
+                //       protocol_defined(27:16), protocol_speed_id_count(31:28)
+                let dw2 = read32(ecap_addr + 8);
+                let port_offset = dw2 & 0xFF;
+                let port_count = (dw2 >> 8) & 0xFF;
+                // DW3: protocol slot type (3:0)
+                let _dw3 = read32(ecap_addr + 12);
+
+                let name_bytes = name.to_le_bytes();
+                crate::serial_println!(
+                    "[xhci] Supported Protocol: USB {}.{} name='{}{}{}{}' ports={}-{} (offset={} count={})",
+                    major_rev, minor_rev,
+                    name_bytes[0] as char, name_bytes[1] as char,
+                    name_bytes[2] as char, name_bytes[3] as char,
+                    port_offset, port_offset + port_count - 1,
+                    port_offset, port_count,
+                );
+            } else if cap_id != 0 {
+                crate::serial_println!("[xhci] ExtCap ID={} at offset {:#x}", cap_id, ecap_addr - base);
+            }
+
+            if next_ptr == 0 {
+                break;
+            }
+            ecap_addr += next_ptr as u64 * 4;
+        }
+    } else {
+        crate::serial_println!("[xhci] No Extended Capabilities list");
+    }
 
     // 4. Stop controller: clear USBCMD.RS, wait for USBSTS.HCH
     let usbcmd = read32(op_base);
@@ -1985,21 +2434,21 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
         crate::serial_println!("[xhci] WARNING: Controller halted after start (USBSTS={:#010x})", usbsts);
     }
 
-    // 12. Compute GIC INTID and enable interrupt
-    // On ARM64, PCI interrupt_line maps to GIC SPI.
-    // SPI INTID = interrupt_line + 32 (GIC SPI offset)
-    // IRQ line 255 means "not assigned" — use polling fallback.
-    let irq = pci_dev.interrupt_line as u32 + 32;
-    if pci_dev.interrupt_line != 0 && pci_dev.interrupt_line != 0xFF {
-        crate::serial_println!("[xhci] Enabling GIC IRQ {} (PCI interrupt_line={})", irq, pci_dev.interrupt_line);
-        use crate::arch_impl::aarch64::gic;
-        use crate::arch_impl::traits::InterruptController;
-        gic::Gicv2::enable_irq(irq as u8);
-    } else {
-        crate::serial_println!("[xhci] PCI interrupt_line={} (unassigned), using polling mode", pci_dev.interrupt_line);
-    }
+    // 12. Set up PCI MSI BEFORE device enumeration.
+    //
+    // The Parallels virtual XHCI controller requires MSI to be configured at
+    // the PCI level before interrupt endpoints work. Without MSI enabled,
+    // ConfigureEndpoint succeeds but transfers return CC=12 (Endpoint Not
+    // Enabled). By configuring MSI before scan_ports, the controller knows
+    // interrupt delivery is available when we ConfigureEndpoint for HID devices.
+    //
+    // Note: The GIC SPI is NOT enabled yet — only PCI MSI registers are
+    // programmed. This means MSI writes will set the GIC pending bit but
+    // won't deliver to the CPU. wait_for_event() polls the event ring directly
+    // and doesn't need GIC delivery.
+    let irq = setup_xhci_msi(pci_dev);
 
-    // 13. Store state
+    // 13. Create state with IRQ already set
     let mut xhci_state = XhciState {
         base,
         cap_length,
@@ -2016,29 +2465,59 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
         mouse_endpoint: 0,
     };
 
-    // 14. Scan ports and configure HID devices
+    // 14. Scan ports and configure HID devices.
+    //
+    // This uses command ring + event ring polling (wait_for_event). MSI is
+    // active at the PCI level (controller generates MSI writes) but the GIC
+    // SPI is disabled, so we won't receive interrupts. The controller writes
+    // events to the event ring regardless of interrupt delivery, so polling
+    // still works.
     if let Err(e) = scan_ports(&mut xhci_state) {
         crate::serial_println!("[xhci] Port scanning error: {}", e);
     }
 
-    // 15. Now that all port enumeration is complete, queue initial HID transfers.
-    // This must happen AFTER scan_ports so that transfer completion events
-    // don't get consumed by wait_for_event during command processing.
-    start_hid_polling(&xhci_state);
-
     crate::serial_println!(
-        "[xhci] Initialization complete: kbd_slot={} kbd_ep={} mouse_slot={} mouse_ep={}",
+        "[xhci] Scan complete: kbd_slot={} kbd_ep={} mouse_slot={} mouse_ep={}",
         xhci_state.kbd_slot,
         xhci_state.kbd_endpoint,
         xhci_state.mouse_slot,
         xhci_state.mouse_endpoint,
     );
 
-    // Store the final state
+    // 15. Store state and set INITIALIZED before enabling GIC SPI.
+    //
+    // Once the SPI is enabled, pending MSI writes will immediately fire
+    // the interrupt handler. The handler needs XHCI_INITIALIZED=true and
+    // XHCI_STATE=Some to process events correctly.
     unsafe {
         *(&raw mut XHCI_STATE) = Some(xhci_state);
     }
     XHCI_INITIALIZED.store(true, Ordering::Release);
+
+    // 16. Do NOT enable GIC SPI for now.
+    //
+    // The Parallels virtual XHCI generates back-to-back MSIs that cause
+    // interrupt storms, freezing the system. Instead, rely on timer-driven
+    // polling via poll_hid_events() at ~200Hz. The MSI is configured at
+    // the PCI level (so the controller knows interrupts are available for
+    // ConfigureEndpoint), but the GIC SPI is kept disabled to prevent storms.
+    crate::serial_println!("[xhci] GIC SPI {} configured but NOT enabled (polling mode)", irq);
+
+    // 17. Test class requests synchronously before starting async polling.
+    let xhci_state_ref = unsafe {
+        (*(&raw const XHCI_STATE)).as_ref().unwrap()
+    };
+    if xhci_state_ref.kbd_slot != 0 {
+        test_sync_class_requests(xhci_state_ref, xhci_state_ref.kbd_slot);
+    }
+
+    // 18. Queue initial HID transfers.
+    //
+    // With USE_BULK_FOR_INTERRUPT=true, the interrupt endpoint is configured
+    // as Bulk IN to bypass Parallels' broken periodic scheduler.
+    start_hid_polling(xhci_state_ref);
+
+    crate::serial_println!("[xhci] Initialization complete (MSI IRQ={})", irq);
 
     Ok(())
 }
@@ -2050,12 +2529,13 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
 /// Handle an XHCI interrupt.
 ///
 /// Called from the GIC interrupt handler when the XHCI IRQ fires.
-/// Processes all pending events on the event ring.
+/// Immediately disables the GIC SPI to prevent re-delivery storms,
+/// then processes all pending events. The SPI is re-enabled by
+/// poll_hid_events() on the next timer tick (~5ms later).
 pub fn handle_interrupt() {
     if !XHCI_INITIALIZED.load(Ordering::Acquire) {
         return;
     }
-    let _guard = XHCI_LOCK.lock();
 
     let state = unsafe {
         match (*(&raw const XHCI_STATE)).as_ref() {
@@ -2064,16 +2544,25 @@ pub fn handle_interrupt() {
         }
     };
 
-    // Read and acknowledge IMAN (Interrupt Management Register)
+    // FIRST: Disable the GIC SPI to prevent re-delivery after EOI.
+    // This is critical for Parallels where the virtual XHCI generates
+    // back-to-back MSI writes that cause interrupt storms.
+    if state.irq != 0 {
+        crate::arch_impl::aarch64::gic::disable_spi(state.irq);
+    }
+
+    // try_lock: IRQ context must never spin on a lock.
+    let _guard = match XHCI_LOCK.try_lock() {
+        Some(g) => g,
+        None => return, // Lock contended, skip — poll_hid_events will handle events
+    };
+
+    // Acknowledge IMAN and USBSTS
     let ir0 = state.rt_base + 0x20;
     let iman = read32(ir0);
-    if iman & 1 == 0 {
-        return; // No interrupt pending on this interrupter
+    if iman & 1 != 0 {
+        write32(ir0, iman | 1); // W1C to clear IP
     }
-    // Clear IP (Interrupt Pending) by writing 1 to bit 0 (W1C)
-    write32(ir0, iman | 1);
-
-    // Clear USBSTS.EINT (Event Interrupt, bit 3) - W1C
     let usbsts = read32(state.op_base + 0x04);
     if usbsts & (1 << 3) != 0 {
         write32(state.op_base + 0x04, 1 << 3);
@@ -2099,6 +2588,8 @@ pub fn handle_interrupt() {
                 break; // No more events
             }
 
+            MSI_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
+
             let trb_type_val = trb.trb_type();
             match trb_type_val {
                 trb_type::TRANSFER_EVENT => {
@@ -2108,7 +2599,8 @@ pub fn handle_interrupt() {
 
                     if cc == completion_code::SUCCESS || cc == completion_code::SHORT_PACKET {
                         if slot == state.kbd_slot && endpoint == state.kbd_endpoint {
-                            // Keyboard report received
+                            // Keyboard report received — process immediately
+                            KBD_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
                             let report_buf = &raw const KBD_REPORT_BUF;
                             dma_cache_invalidate(
                                 (*report_buf).0.as_ptr(),
@@ -2116,13 +2608,11 @@ pub fn handle_interrupt() {
                             );
                             let report = &(*report_buf).0;
                             super::hid::process_keyboard_report(report);
-                            // Requeue transfer for next report
-                            let _ = queue_hid_transfer(
-                                state,
-                                0,
-                                state.kbd_slot,
-                                state.kbd_endpoint,
-                            );
+                            // DON'T requeue here — let the timer poll requeue.
+                            // Requeuing from IRQ context creates an MSI storm
+                            // (virtual XHCI has no bus latency, so completions
+                            // fire instantly, starving the main thread).
+                            MSI_KBD_NEEDS_REQUEUE.store(true, Ordering::Release);
                         } else if slot == state.mouse_slot && endpoint == state.mouse_endpoint {
                             // Mouse report received
                             let report_buf = &raw const MOUSE_REPORT_BUF;
@@ -2132,13 +2622,8 @@ pub fn handle_interrupt() {
                             );
                             let report = &(*report_buf).0;
                             super::hid::process_mouse_report(report);
-                            // Requeue transfer for next report
-                            let _ = queue_hid_transfer(
-                                state,
-                                1,
-                                state.mouse_slot,
-                                state.mouse_endpoint,
-                            );
+                            // Same: let timer poll requeue
+                            MSI_MOUSE_NEEDS_REQUEUE.store(true, Ordering::Release);
                         }
                     }
                 }
@@ -2147,12 +2632,8 @@ pub fn handle_interrupt() {
                     // Any stray completions during interrupt handling are ignored.
                 }
                 trb_type::PORT_STATUS_CHANGE => {
-                    // Port status change - log but don't handle hot-plug for now.
-                    let port_id = ((trb.control >> 24) & 0xFF) as u8;
-                    crate::serial_println!(
-                        "[xhci] Port status change: port={}",
-                        port_id,
-                    );
+                    // Port status change - don't log from IRQ context (deadlock risk
+                    // with serial lock). Hot-plug not supported yet.
                 }
                 _ => {
                     // Unknown event type
@@ -2171,6 +2652,7 @@ pub fn handle_interrupt() {
             write64(ir0 + 0x18, erdp_phys | (1 << 3));
         }
     }
+
 }
 
 // =============================================================================
@@ -2233,24 +2715,12 @@ pub fn poll_hid_events() {
                 break; // No more events
             }
 
-            let evt_num = EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
+            let _evt_num = EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
 
             let trb_type_val = trb.trb_type();
 
-            // Log the first 8 events in detail for debugging
-            if evt_num < 8 {
-                crate::serial_println!(
-                    "[xhci-poll] event #{}: type={} slot={} ep={} cc={} param={:#x} status={:#x} ctrl={:#x}",
-                    evt_num,
-                    trb_type_val,
-                    trb.slot_id(),
-                    (trb.control >> 16) & 0x1F,
-                    trb.completion_code(),
-                    trb.param,
-                    trb.status,
-                    trb.control,
-                );
-            }
+            // No serial_println here — this runs in timer interrupt context.
+            // Use atomic counters (reported by heartbeat) instead of logging.
 
             match trb_type_val {
                 trb_type::TRANSFER_EVENT => {
@@ -2264,9 +2734,8 @@ pub fn poll_hid_events() {
                         && cc == completion_code::ENDPOINT_NOT_ENABLED
                         && !EP0_POLLING_MODE.load(Ordering::Relaxed)
                     {
-                        crate::serial_println!(
-                            "[xhci] Interrupt EP CC=12 (Endpoint Not Enabled) — switching to EP0 GET_REPORT polling"
-                        );
+                        // No serial_println — runs in timer interrupt context.
+                        // Heartbeat will report EP0_POLLING_MODE switch.
                         EP0_POLLING_MODE.store(true, Ordering::Release);
                     } else if cc == completion_code::SUCCESS || cc == completion_code::SHORT_PACKET {
                         // EP0 GET_REPORT completion (DCI=1) for keyboard
@@ -2287,6 +2756,13 @@ pub fn poll_hid_events() {
                                 dma_cache_invalidate((*report_buf).0.as_ptr(), 8);
                                 let report = &(*report_buf).0;
 
+                                // Sentinel check: 0xDE means DMA didn't write
+                                if report[0] == 0xDE && report[1] == 0xDE {
+                                    DMA_SENTINEL_SURVIVED.fetch_add(1, Ordering::SeqCst);
+                                } else {
+                                    DMA_SENTINEL_REPLACED.fetch_add(1, Ordering::SeqCst);
+                                }
+
                                 super::hid::process_keyboard_report(report);
                             }
                             // SHORT_PACKET for Data Stage: just acknowledge, data stage done
@@ -2298,9 +2774,13 @@ pub fn poll_hid_events() {
                             && endpoint == state.kbd_endpoint
                         {
                             KBD_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
+                            // Unconditional increment — MUST match uk if this path runs
+                            DMA_SENTINEL_REPLACED.fetch_add(1, Ordering::SeqCst);
+
                             let report_buf = &raw const KBD_REPORT_BUF;
                             dma_cache_invalidate((*report_buf).0.as_ptr(), 8);
                             let report = &(*report_buf).0;
+
                             super::hid::process_keyboard_report(report);
                             let _ = queue_hid_transfer(state, 0, state.kbd_slot, state.kbd_endpoint);
                         }
@@ -2355,6 +2835,17 @@ pub fn poll_hid_events() {
         }
     }
 
+    // Requeue HID transfers requested by the MSI interrupt handler.
+    // The IRQ handler can't requeue directly (MSI storm on virtual XHCI).
+    if !EP0_POLLING_MODE.load(Ordering::Relaxed) {
+        if MSI_KBD_NEEDS_REQUEUE.swap(false, Ordering::AcqRel) && state.kbd_slot != 0 {
+            let _ = queue_hid_transfer(state, 0, state.kbd_slot, state.kbd_endpoint);
+        }
+        if MSI_MOUSE_NEEDS_REQUEUE.swap(false, Ordering::AcqRel) && state.mouse_slot != 0 {
+            let _ = queue_hid_transfer(state, 1, state.mouse_slot, state.mouse_endpoint);
+        }
+    }
+
     // EP0 GET_REPORT polling async state machine (non-blocking).
     //
     // States:
@@ -2402,6 +2893,10 @@ pub fn poll_hid_events() {
             }
         }
     }
+
+    // GIC SPI is intentionally NOT enabled — polling mode only.
+    // The MSI is configured at PCI level (for ConfigureEndpoint) but
+    // the GIC doesn't deliver the MSIs to the CPU.
 }
 
 // =============================================================================

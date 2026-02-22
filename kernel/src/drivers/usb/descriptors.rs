@@ -103,6 +103,7 @@ pub mod descriptor_type {
     pub const CONFIGURATION: u8 = 2;
     pub const INTERFACE: u8 = 4;
     pub const ENDPOINT: u8 = 5;
+    pub const HID_REPORT: u8 = 0x22;
 }
 
 /// USB Class Codes

@@ -92,6 +92,18 @@ pub fn init() -> usize {
         let device_count = pci::enumerate();
         serial_println!("[drivers] Found {} PCI devices", device_count);
 
+        // Log all PCI devices for debugging
+        if let Some(devices) = pci::get_devices() {
+            for dev in &devices {
+                serial_println!(
+                    "[drivers] PCI {:02x}:{:02x}.{} [{:04x}:{:04x}] class={:?}/0x{:02x}",
+                    dev.bus, dev.device, dev.function,
+                    dev.vendor_id, dev.device_id,
+                    dev.class, dev.subclass,
+                );
+            }
+        }
+
         // Enumerate VirtIO PCI devices with modern transport
         let virtio_devices = virtio::pci_transport::enumerate_virtio_pci_devices();
         for dev in &virtio_devices {
@@ -115,6 +127,21 @@ pub fn init() -> usize {
             Err(e) => {
                 serial_println!("[drivers] VirtIO GPU (PCI) init failed: {}", e);
             }
+        }
+
+        // Initialize EHCI USB 2.0 host controller (keyboard input)
+        // Intel 82801FB EHCI: vendor 0x8086, device 0x265c
+        if let Some(ehci_dev) = pci::find_device(0x8086, 0x265c) {
+            match usb::ehci::init(&ehci_dev) {
+                Ok(()) => {
+                    serial_println!("[drivers] EHCI USB 2.0 controller initialized");
+                }
+                Err(e) => {
+                    serial_println!("[drivers] EHCI USB init failed: {}", e);
+                }
+            }
+        } else {
+            serial_println!("[drivers] No EHCI USB controller found");
         }
 
         // Initialize XHCI USB host controller (keyboard + mouse)

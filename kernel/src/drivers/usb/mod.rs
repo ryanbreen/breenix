@@ -6,5 +6,6 @@
 //! - USB standard descriptor types
 
 pub mod descriptors;
+pub mod ehci;
 pub mod hid;
 pub mod xhci;
