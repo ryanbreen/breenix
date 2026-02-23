@@ -101,6 +101,7 @@ pub struct SetupPacket {
 pub mod descriptor_type {
     pub const DEVICE: u8 = 1;
     pub const CONFIGURATION: u8 = 2;
+    pub const STRING: u8 = 3;
     pub const INTERFACE: u8 = 4;
     pub const ENDPOINT: u8 = 5;
     pub const HID_REPORT: u8 = 0x22;
@@ -133,6 +134,7 @@ pub mod request {
 
 /// USB HID Class Requests
 pub mod hid_request {
+    pub const GET_REPORT: u8 = 0x01;
     pub const SET_REPORT: u8 = 0x09;
     pub const SET_IDLE: u8 = 0x0A;
     pub const SET_PROTOCOL: u8 = 0x0B;

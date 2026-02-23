@@ -292,6 +292,12 @@ pub extern "C" fn timer_interrupt_handler() {
             print_timer_count_decimal(crate::drivers::usb::xhci::EP0_GET_REPORT_OK.load(Ordering::Relaxed));
             raw_serial_str(b" ge=");
             print_timer_count_decimal(crate::drivers::usb::xhci::EP0_GET_REPORT_ERR.load(Ordering::Relaxed));
+            raw_serial_str(b" mr=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::EP0_MOUSE_GET_REPORT_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" mk=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::EP0_MOUSE_GET_REPORT_OK.load(Ordering::Relaxed));
+            raw_serial_str(b" me=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::EP0_MOUSE_GET_REPORT_ERR.load(Ordering::Relaxed));
             raw_serial_str(b"]\n");
         }
     }
