@@ -46,13 +46,13 @@ const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
 /// Minimal init test: skip bandwidth dance and HID class setup.
 /// When true, the driver does only: Address → ConfigureEndpoint → SET_CONFIG → queue TRB.
 /// Used to isolate whether CC=12 is caused by the bandwidth dance or HID setup steps.
-const MINIMAL_INIT: bool = false;
+const MINIMAL_INIT: bool = true;
 
 /// Skip the bandwidth dance (StopEndpoint + re-ConfigureEndpoint per EP).
 /// When true, only the initial batch ConfigureEndpoint is issued.
-/// Linux performs this dance (3 ConfigureEndpoint commands per HID device),
-/// so we match it here. BSR=1 + bandwidth dance together = Linux's exact sequence.
-const SKIP_BW_DANCE: bool = false;
+/// Linux ftrace confirmed: Linux DOES perform the bandwidth dance for HID devices.
+/// Sequence: batch ConfigureEndpoint → Stop Ring per EP → re-ConfigureEndpoint per EP (different ctx addr) → SET_CONFIGURATION.
+const SKIP_BW_DANCE: bool = true;
 
 /// NEC XHCI vendor ID.
 pub const NEC_VENDOR_ID: u16 = 0x1033;
@@ -233,14 +233,14 @@ static mut ERST: Aligned64<[ErstEntry; 1]> = Aligned64([ErstEntry::zeroed(); 1])
 /// to avoid index collisions. Keyboard = HID_RING_BASE + 0, Mouse = HID_RING_BASE + 1.
 const HID_RING_BASE: usize = MAX_SLOTS;
 
-/// Total number of transfer rings: MAX_SLOTS for EP0 + 3 for HID interrupt endpoints.
-/// hid_idx 0 = boot keyboard (DCI 3), 1 = mouse, 2 = NKRO keyboard (DCI 5).
-const NUM_TRANSFER_RINGS: usize = MAX_SLOTS + 3;
+/// Total number of transfer rings: MAX_SLOTS for EP0 + 4 for HID interrupt endpoints.
+/// hid_idx 0 = boot keyboard (DCI 3), 1 = mouse (DCI 3), 2 = NKRO keyboard (DCI 5), 3 = mouse2 (DCI 5).
+const NUM_TRANSFER_RINGS: usize = MAX_SLOTS + 4;
 
 /// Transfer rings for device endpoints.
 ///
 /// Indices [0..MAX_SLOTS): EP0 control rings, indexed by slot_idx (slot_id - 1).
-/// Indices [HID_RING_BASE..HID_RING_BASE+3): HID interrupt rings (keyboard, mouse, NKRO keyboard).
+/// Indices [HID_RING_BASE..HID_RING_BASE+4): HID interrupt rings (kbd boot, mouse, kbd NKRO, mouse2).
 static mut TRANSFER_RINGS: [[Trb; TRANSFER_RING_SIZE]; NUM_TRANSFER_RINGS] =
     [[Trb::zeroed(); TRANSFER_RING_SIZE]; NUM_TRANSFER_RINGS];
 /// Transfer ring enqueue indices.
@@ -269,22 +269,21 @@ static mut DEVICE_CONTEXTS: [AlignedPage<[u8; 4096]>; MAX_SLOTS] =
     [const { AlignedPage([0u8; 4096]) }; MAX_SLOTS];
 
 /// HID report buffer for keyboard boot interface (8 bytes: modifier + reserved + 6 keycodes).
-static mut KBD_REPORT_BUF: Aligned64<[u8; 8]> = Aligned64([0u8; 8]);
+static mut KBD_REPORT_BUF: Aligned64<[u8; 64]> = Aligned64([0u8; 64]);
 
 /// HID report buffer for NKRO keyboard interface (64 bytes to accommodate any report ID).
 /// Reports include a Report ID prefix: [report_id, modifiers, reserved, key1..key6, ...].
 static mut NKRO_REPORT_BUF: Aligned64<[u8; 64]> = Aligned64([0u8; 64]);
 
 /// HID report buffer for mouse (8 bytes: buttons + X + Y + wheel + ...).
-static mut MOUSE_REPORT_BUF: Aligned64<[u8; 8]> = Aligned64([0u8; 8]);
+static mut MOUSE_REPORT_BUF: Aligned64<[u8; 64]> = Aligned64([0u8; 64]);
+
+/// HID report buffer for mouse2 (second mouse interface, DCI 5).
+static mut MOUSE2_REPORT_BUF: Aligned64<[u8; 64]> = Aligned64([0u8; 64]);
 
 /// Scratch buffer for control transfer data stages (256 bytes).
 static mut CTRL_DATA_BUF: Aligned64<[u8; 256]> = Aligned64([0u8; 256]);
 
-/// Separate DMA buffer for mouse EP0 GET_REPORT (16 bytes for absolute report).
-/// Must be separate from CTRL_DATA_BUF since keyboard and mouse EP0 polls
-/// can be in flight simultaneously on different slots.
-static mut MOUSE_CTRL_DATA_BUF: Aligned64<[u8; 16]> = Aligned64([0u8; 16]);
 
 // =============================================================================
 // Controller State
@@ -323,8 +322,11 @@ struct XhciState {
     kbd_nkro_endpoint: u8,
     /// Slot ID for mouse device (0 = not found)
     mouse_slot: u8,
-    /// Endpoint DCI for mouse interrupt IN
+    /// Endpoint DCI for mouse boot interrupt IN (interface 0, DCI 3)
     mouse_endpoint: u8,
+    /// Endpoint DCI for mouse2 interrupt IN (interface 1, DCI 5, 0 = not found)
+    /// Linux ftrace shows the Parallels virtual mouse has two interrupt endpoints.
+    mouse_nkro_endpoint: u8,
 }
 
 /// Global lock protecting XHCI controller access.
@@ -366,6 +368,7 @@ pub static MSI_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
 static MSI_KBD_NEEDS_REQUEUE: AtomicBool = AtomicBool::new(false);
 static MSI_MOUSE_NEEDS_REQUEUE: AtomicBool = AtomicBool::new(false);
 static MSI_NKRO_NEEDS_REQUEUE: AtomicBool = AtomicBool::new(false);
+static MSI_MOUSE2_NEEDS_REQUEUE: AtomicBool = AtomicBool::new(false);
 
 /// Sentinel diagnostic: counts reports where the sentinel byte (0xDE) was NOT overwritten by DMA.
 pub static DMA_SENTINEL_SURVIVED: AtomicU64 = AtomicU64::new(0);
@@ -405,6 +408,7 @@ pub static DIAG_FIRST_XFER_CONTROL: AtomicU32 = AtomicU32::new(0);
 static NEEDS_RESET_KBD_BOOT: AtomicBool = AtomicBool::new(false);
 static NEEDS_RESET_KBD_NKRO: AtomicBool = AtomicBool::new(false);
 static NEEDS_RESET_MOUSE: AtomicBool = AtomicBool::new(false);
+static NEEDS_RESET_MOUSE2: AtomicBool = AtomicBool::new(false);
 /// Diagnostic: counts successful endpoint resets.
 pub static ENDPOINT_RESET_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Diagnostic: counts failed endpoint reset attempts.
@@ -421,28 +425,6 @@ const MAX_ENDPOINT_RESETS: u64 = 10;
 /// processes the first interrupt endpoint transfer.
 static HID_TRBS_QUEUED: AtomicBool = AtomicBool::new(false);
 
-// EP0 GET_REPORT polling state machine.
-// Since interrupt endpoints always return CC=12 on Parallels virtual xHC,
-// we poll for keyboard data via GET_REPORT on the working EP0 control pipe.
-// State: 0 = IDLE (ready for next request), 1 = PENDING (TRBs queued)
-pub static EP0_POLL_STATE: AtomicU32 = AtomicU32::new(0);
-/// Count of EP0 GET_REPORT requests queued.
-pub static EP0_GET_REPORT_COUNT: AtomicU64 = AtomicU64::new(0);
-/// Count of successful EP0 GET_REPORT completions.
-pub static EP0_GET_REPORT_OK: AtomicU64 = AtomicU64::new(0);
-/// Count of failed EP0 GET_REPORT completions (non-SUCCESS CC).
-pub static EP0_GET_REPORT_ERR: AtomicU64 = AtomicU64::new(0);
-
-// EP0 GET_REPORT polling for mouse device (same approach as keyboard).
-// Mouse is on a separate slot with its own EP0 transfer ring.
-// State: 0 = IDLE, 1 = PENDING
-pub static EP0_MOUSE_POLL_STATE: AtomicU32 = AtomicU32::new(0);
-/// Count of EP0 GET_REPORT requests queued for mouse.
-pub static EP0_MOUSE_GET_REPORT_COUNT: AtomicU64 = AtomicU64::new(0);
-/// Count of successful EP0 GET_REPORT completions for mouse.
-pub static EP0_MOUSE_GET_REPORT_OK: AtomicU64 = AtomicU64::new(0);
-/// Count of failed EP0 GET_REPORT completions for mouse.
-pub static EP0_MOUSE_GET_REPORT_ERR: AtomicU64 = AtomicU64::new(0);
 
 // =============================================================================
 // Memory Helpers
@@ -1463,41 +1445,6 @@ fn set_report_leds(
     Ok(())
 }
 
-/// Send GET_REPORT(Feature) to a HID interface, matching Linux's init sequence.
-///
-/// Linux's HID driver reads Feature reports during probe. The Parallels virtual
-/// xHC may require this to "arm" interrupt endpoints — without it, interrupt
-/// transfers return CC=12 (Endpoint Not Enabled).
-///
-/// If the device doesn't support the requested Feature report, it will STALL.
-/// We handle the STALL gracefully (return Err).
-fn get_report_feature(
-    state: &XhciState,
-    slot_id: u8,
-    interface: u8,
-    report_id: u8,
-) -> Result<(), &'static str> {
-    // GET_REPORT: bmRequestType=0xA1 (D2H, Class, Interface),
-    //   bRequest=0x01, wValue=(ReportType << 8) | ReportID
-    //   ReportType: 1=Input, 2=Output, 3=Feature
-    let setup = SetupPacket {
-        bm_request_type: 0xA1, // Device-to-host, class, interface
-        b_request: hid_request::GET_REPORT,
-        w_value: (3u16 << 8) | (report_id as u16), // Feature report
-        w_index: interface as u16,
-        w_length: 64, // Max length (device may return less)
-    };
-
-    unsafe {
-        let data_buf = &raw mut CTRL_DATA_BUF;
-        core::ptr::write_bytes((*data_buf).0.as_mut_ptr(), 0, 64);
-        dma_cache_clean((*data_buf).0.as_ptr(), 64);
-    }
-    let data_phys = virt_to_phys((&raw const CTRL_DATA_BUF) as u64);
-
-    control_transfer(state, slot_id, &setup, data_phys, 64, true)?;
-    Ok(())
-}
 
 /// Fetch and log the HID Report Descriptor for diagnostic purposes.
 ///
@@ -1722,11 +1669,11 @@ fn configure_endpoints_batch(
                     max_pkt * (max_burst + 1)
                 };
                 let esit_hi = (esit_payload >> 16) & 0xFF;
-                // Mult=1 (bits 9:8) matching Linux's Input Context for this Parallels
-                // virtual xHC. Despite xHCI spec §6.2.3 saying Mult should be 0 for
-                // non-isoch, Linux sets Mult=1 and the Parallels vxHC requires it.
-                // Confirmed via byte-for-byte Input Context dump: Linux DW0=0x00030100.
-                let mult: u32 = 1;
+                // Mult=0 (bits 9:8): matches Linux's actual Input Context.
+                // Linux xhci_endpoint_init() returns Mult=0 for non-isoch SuperSpeed endpoints.
+                // Previous "Mult=1 confirmed" was based on a wrong trace; live kprobe dump
+                // shows Linux DW0=0x00030000 (Mult=0), not 0x00030100.
+                let mult: u32 = 0;
                 let ep_dw0: u32 = (esit_hi << 24) | (interval << 16) | (mult << 8);
                 core::ptr::write_volatile(ep_ctx as *mut u32, ep_dw0);
 
@@ -1764,6 +1711,17 @@ fn configure_endpoints_batch(
                     &TRANSFER_RINGS[ring_idx] as *const [Trb; TRANSFER_RING_SIZE] as *const u8,
                     TRANSFER_RING_SIZE * 16,
                 );
+
+                // Do NOT pre-populate ring[0] before ConfigureEndpoint.
+                // Linux never queues TRBs before ConfigureEndpoint completes and the
+                // bandwidth dance finishes. Doing so causes Parallels vxHC to auto-scan
+                // the ring on ConfigEP completion, return CC=12 (endpoint not yet truly
+                // enabled), and transition the endpoint to Halted. The subsequent BW dance
+                // then issues StopEP on a Halted endpoint (spec violation), and re-ConfigEP
+                // causes another auto-scan → CC=12 → Halted again. TRBs are queued by
+                // start_hid_polling() after the complete init sequence.
+                // ring[0] remains zeroed (cycle=0), so the hardware will not process it
+                // until a real TRB with cycle=1 is placed there and a doorbell is rung.
 
                 let ring_phys = virt_to_phys(&raw const TRANSFER_RINGS[ring_idx] as u64);
 
@@ -1879,33 +1837,15 @@ fn configure_endpoints_batch(
         // the same endpoint contexts. Only the Slot Context is refreshed from
         // the Output Context.
         if !SKIP_BW_DANCE {
-            // Build RECONFIG_INPUT_CTX once: copy initial Input Context, then
-            // refresh Slot Context from Output Context (xHC may have updated it).
+            // BW dance: per-endpoint StopEndpoint + re-ConfigureEndpoint.
+            // Linux ftrace confirmed: each re-ConfigEP Input Context contains
+            // ONLY the target EP's context block — all other EP blocks are zeros.
+            // Copying the full INPUT_CONTEXTS (all EPs) into RECONFIG_INPUT_CTX
+            // was causing the Parallels vxHC to incorrectly process non-target
+            // EP context data, resulting in CC=12 (Endpoint Not Enabled) on the
+            // first interrupt transfer.
             let reconfig = &raw mut RECONFIG_INPUT_CTX;
-            let src = &raw const INPUT_CONTEXTS[slot_idx];
-            core::ptr::copy_nonoverlapping(
-                (*src).0.as_ptr(),
-                (*reconfig).0.as_mut_ptr(),
-                4096,
-            );
-            // Refresh Slot Context (DW0-DW2) from Output Context, zero DW3
             let reconfig_base = (*reconfig).0.as_mut_ptr();
-            let rc_slot = reconfig_base.add(ctx_size);
-            for dw_offset in (0..12).step_by(4) {
-                let val = core::ptr::read_volatile(
-                    (*dev_ctx).0.as_ptr().add(dw_offset) as *const u32,
-                );
-                core::ptr::write_volatile(rc_slot.add(dw_offset) as *mut u32, val);
-            }
-            core::ptr::write_volatile(rc_slot.add(12) as *mut u32, 0u32);
-            // Update ctx_entries in DW0
-            let rc_dw0 = core::ptr::read_volatile(rc_slot as *const u32);
-            let rc_entries = (rc_dw0 >> 27) & 0x1F;
-            let new_entries = rc_entries.max(max_dci);
-            let new_dw0 = (rc_dw0 & !(0x1F << 27)) | (new_entries << 27);
-            core::ptr::write_volatile(rc_slot as *mut u32, new_dw0);
-
-            dma_cache_clean(reconfig_base, 4096);
 
             let reconfig_phys = virt_to_phys(&raw const RECONFIG_INPUT_CTX as u64);
 
@@ -1930,27 +1870,121 @@ fn configure_endpoints_batch(
                     ring_doorbell(state, 0, 0);
                     let stop_event = wait_for_command(state)?;
                     let stop_cc = stop_event.completion_code();
+                    // Read output context EP state after StopEP (should be 3=Stopped)
+                    dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
+                    let stop_ep_state = core::ptr::read_volatile(
+                        (*dev_ctx).0.as_ptr().add((dci as usize) * ctx_size) as *const u32
+                    ) & 0x7;
+                    let stop_deq_lo = core::ptr::read_volatile(
+                        (*dev_ctx).0.as_ptr().add((dci as usize) * ctx_size + 8) as *const u32
+                    );
                     crate::serial_println!(
-                        "[xhci] BW dance: StopEP slot={} DCI={} cc={}",
-                        slot_id, dci, stop_cc,
+                        "[xhci] BW dance: StopEP slot={} DCI={} cc={} → ep_state={} deq_lo={:#010x}",
+                        slot_id, dci, stop_cc, stop_ep_state, stop_deq_lo,
                     );
 
-                    // Step 2: re-ConfigureEndpoint with RECONFIG_INPUT_CTX
-                    // Uses ALL-EP add_flags and same endpoint contexts as initial.
-                    // The different physical address is critical for Parallels vxHC.
-                    let recfg_trb = Trb {
+                    // Do NOT pre-queue TRBs before re-ConfigEP.
+                    // Same as the initial ConfigEP: ring must be empty (all cycle=0)
+                    // when the endpoint transitions to Running. If ring[0] already
+                    // has cycle=1 when re-ConfigEP completes, Parallels auto-scans it
+                    // and generates a spurious CC=12 (Endpoint Not Enabled) event,
+                    // even though the endpoint shows Running in the output context.
+                    // Leave ring[0] empty here; start_hid_polling queues the first
+                    // real TRB and rings the doorbell after init is complete.
+
+                    // Step 2: Re-ConfigureEndpoint matching Linux's exact pattern.
+                    // Linux ftrace confirmed per-endpoint ICC bytes:
+                    //   drop_flags = (1 << dci)          — drop this endpoint
+                    //   add_flags  = (1 << dci) | A0     — re-add this endpoint + Slot
+                    //   Slot DW3 = output ctx DW3 (Slot State=Configured, Dev Addr)
+                    //   EP DW0 state bits = Stopped (3, from output ctx after StopEP)
+                    //   All other EP context blocks = ZEROS (critical: Linux only
+                    //   populates the target EP block; non-target blocks are zeroed)
+
+                    // Zero RECONFIG_INPUT_CTX — ensures non-target EP blocks are empty.
+                    core::ptr::write_bytes(reconfig_base as *mut u8, 0, 4096);
+
+                    // ICC: drop this endpoint, re-add Slot + this endpoint.
+                    core::ptr::write_volatile(reconfig_base as *mut u32, 1u32 << dci);
+                    core::ptr::write_volatile(
+                        reconfig_base.add(4) as *mut u32,
+                        1u32 | (1u32 << dci),
+                    );
+
+                    // Slot context (at ctx_size offset): copy DW0-DW3 from output ctx.
+                    // Output ctx Slot = offset 0, DW0-DW3 = first 16 bytes.
+                    let rc_slot = reconfig_base.add(ctx_size);
+                    for dw_offset in (0..16).step_by(4) {
+                        let val = core::ptr::read_volatile(
+                            (*dev_ctx).0.as_ptr().add(dw_offset) as *const u32,
+                        );
+                        core::ptr::write_volatile(rc_slot.add(dw_offset) as *mut u32, val);
+                    }
+                    // Update ctx_entries in Slot DW0 to max_dci.
+                    let rc_slot_dw0 = core::ptr::read_volatile(rc_slot as *const u32);
+                    core::ptr::write_volatile(
+                        rc_slot as *mut u32,
+                        (rc_slot_dw0 & !(0x1F << 27)) | (max_dci << 27),
+                    );
+
+                    // Target EP context (at (1+dci)*ctx_size): copy DW0-DW4 from
+                    // INPUT_CONTEXTS[slot_idx] (the initial configure_endpoints_batch values).
+                    let rc_ep = reconfig_base.add((1 + dci as usize) * ctx_size);
+                    let src_ep = (*(&raw const INPUT_CONTEXTS[slot_idx])).0.as_ptr()
+                        .add((1 + dci as usize) * ctx_size);
+                    for dw_offset in (0..20).step_by(4) {
+                        let val = core::ptr::read_volatile(src_ep.add(dw_offset) as *const u32);
+                        core::ptr::write_volatile(rc_ep.add(dw_offset) as *mut u32, val);
+                    }
+
+                    // Splice EP state bits (Stopped=3) from output ctx into EP DW0.
+                    // Output ctx EP DCI=N is at offset N*ctx_size.
+                    let ep_out_dw0 = core::ptr::read_volatile(
+                        (*dev_ctx).0.as_ptr().add((dci as usize) * ctx_size) as *const u32,
+                    );
+                    let rc_ep_cur_dw0 = core::ptr::read_volatile(rc_ep as *const u32);
+                    core::ptr::write_volatile(
+                        rc_ep as *mut u32,
+                        (rc_ep_cur_dw0 & !0x7) | (ep_out_dw0 & 0x7),
+                    );
+
+                    dma_cache_clean(reconfig_base, 4096);
+
+                    let reconfig_trb = Trb {
                         param: reconfig_phys,
                         status: 0,
                         control: (trb_type::CONFIGURE_ENDPOINT << 10)
-                            | ((slot_id as u32) << 24),
+                            | ((slot_id as u32) << 24)
+                            | 1u32,
                     };
-                    enqueue_command(recfg_trb);
+                    enqueue_command(reconfig_trb);
                     ring_doorbell(state, 0, 0);
-                    let recfg_event = wait_for_command(state)?;
-                    let recfg_cc = recfg_event.completion_code();
+                    let reconfig_event = wait_for_command(state)?;
+                    let reconfig_cc = reconfig_event.completion_code();
                     crate::serial_println!(
-                        "[xhci] BW dance: re-ConfigEP slot={} DCI={} cc={}",
-                        slot_id, dci, recfg_cc,
+                        "[xhci] BW dance: re-ConfigEP slot={} DCI={} drop={:#010x} add={:#010x} cc={}",
+                        slot_id, dci,
+                        1u32 << dci,
+                        1u32 | (1u32 << dci),
+                        reconfig_cc,
+                    );
+
+                    // Diagnostic: verify TR Dequeue pointer in output context after re-ConfigEP.
+                    // Critical: if tr_deq != ring_phys, the HC's internal dequeue is wrong.
+                    dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
+                    let ep_out_base = (*dev_ctx).0.as_ptr().add((dci as usize) * ctx_size);
+                    let post_dw0 = core::ptr::read_volatile(ep_out_base as *const u32);
+                    let post_dw2 = core::ptr::read_volatile(ep_out_base.add(8) as *const u32);
+                    let post_dw3 = core::ptr::read_volatile(ep_out_base.add(12) as *const u32);
+                    let post_tr_deq = ((post_dw3 as u64) << 32) | ((post_dw2 as u64) & !0xF);
+                    let post_dcs = post_dw2 & 1;
+                    let ring_phys_check = virt_to_phys(
+                        &raw const TRANSFER_RINGS[HID_RING_BASE + ep.hid_idx] as u64
+                    );
+                    crate::serial_println!(
+                        "[xhci] BW dance: post-reConfigEP DCI={} state={} tr_deq={:#010x} dcs={} ring_phys={:#010x} {}",
+                        dci, post_dw0 & 0x7, post_tr_deq, post_dcs, ring_phys_check,
+                        if post_tr_deq == ring_phys_check { "OK" } else { "MISMATCH!" },
                     );
                 }
             }
@@ -1974,9 +2008,18 @@ fn configure_endpoints_batch(
                 let ep_out_dw0 = core::ptr::read_volatile(ep_out as *const u32);
                 let ep_state = ep_out_dw0 & 0x7;
                 let ep_out_dw1 = core::ptr::read_volatile(ep_out.add(4) as *const u32);
+                let ep_out_dw2 = core::ptr::read_volatile(ep_out.add(8) as *const u32);
+                let ep_out_dw3 = core::ptr::read_volatile(ep_out.add(12) as *const u32);
+                let tr_deq = ((ep_out_dw3 as u64) << 32) | ((ep_out_dw2 as u64) & !0xF);
+                let dcs = ep_out_dw2 & 1;
+                let ring_phys_chk = virt_to_phys(
+                    &raw const TRANSFER_RINGS[HID_RING_BASE + ep.hid_idx] as u64
+                );
                 crate::serial_println!(
-                    "[xhci]   DCI={}: state={} type={} DW0={:#010x}",
+                    "[xhci]   DCI={}: state={} type={} DW0={:#010x} tr_deq={:#010x} dcs={} ring_phys={:#010x} {}",
                     ep.dci, ep_state, (ep_out_dw1 >> 3) & 0x7, ep_out_dw0,
+                    tr_deq, dcs, ring_phys_chk,
+                    if tr_deq == ring_phys_chk { "OK" } else { "MISMATCH!" },
                 );
                 if ep_state == 0 {
                     crate::serial_println!(
@@ -2026,6 +2069,7 @@ fn configure_hid(
         interface_number: u8,
         is_keyboard: bool,
         is_nkro: bool, // Non-boot HID interface (subclass=0, Report ID protocol)
+        hid_idx: usize, // Transfer ring index (0=kbd boot, 1=mouse, 2=kbd NKRO, 3=mouse2)
         dci: u8,
         hid_report_len: u16,   // wDescriptorLength from HID descriptor (0 = unknown)
     }
@@ -2033,6 +2077,7 @@ fn configure_hid(
     let mut iface_count: usize = 0;
     let mut found_boot_keyboard = false;
     let mut found_mouse = false;
+    let mut found_mouse2 = false;
 
     // Pending endpoints for batch ConfigureEndpoint (one command for all EPs)
     let mut pending_eps: [Option<PendingEp>; 4] = [None, None, None, None];
@@ -2145,20 +2190,28 @@ fn configure_hid(
 
                             // Determine HID device type and transfer ring index:
                             //   hid_idx 0 = boot keyboard (protocol=1, DCI 3)
-                            //   hid_idx 1 = boot mouse (protocol=2)
+                            //   hid_idx 1 = boot mouse (protocol=2, DCI 3)
                             //   hid_idx 2 = NKRO keyboard (subclass=0 protocol=0, DCI 5)
+                            //   hid_idx 3 = mouse2 (second mouse interface, DCI 5)
+                            // Linux ftrace: mouse has TWO interrupt EPs (DCI 3 + DCI 5),
+                            // both configured in one ConfigureEndpoint with add_flags=0x29.
                             let (hid_idx, is_keyboard, is_nkro) =
                                 if iface.b_interface_protocol == hid_protocol::KEYBOARD {
                                     found_boot_keyboard = true;
                                     (0usize, true, false)
                                 } else if iface.b_interface_protocol == hid_protocol::MOUSE {
                                     if found_mouse {
-                                        // Skip duplicate mouse interface to avoid ring collision
-                                        // (both endpoints would share the same transfer ring)
-                                        break;
+                                        // Second mouse interface — use ring 3 (DCI 5).
+                                        // Linux configures both mouse endpoints in one batch.
+                                        if found_mouse2 {
+                                            break; // Only support two mouse interfaces
+                                        }
+                                        found_mouse2 = true;
+                                        (3usize, false, false)
+                                    } else {
+                                        found_mouse = true;
+                                        (1usize, false, false)
                                     }
-                                    found_mouse = true;
-                                    (1usize, false, false)
                                 } else if found_boot_keyboard
                                     && iface.b_interface_sub_class == 0
                                     && iface.b_interface_protocol == 0
@@ -2195,6 +2248,7 @@ fn configure_hid(
                                     interface_number: iface.b_interface_number,
                                     is_keyboard,
                                     is_nkro,
+                                    hid_idx,
                                     dci,
                                     hid_report_len,
                                 });
@@ -2260,17 +2314,15 @@ fn configure_hid(
     // endpoint transfers. EP0 GET_REPORT polling is used as a workaround.
 
     // =========================================================================
-    // Phase 3: HID interface setup + INLINE interrupt TRB queueing
+    // Phase 3: HID interface setup
     // =========================================================================
-    // Linux's exact sequence per interface (from ftrace):
+    // Linux's sequence per interface (from ftrace):
     //   SET_IDLE(0, iface N) → GET_DESCRIPTOR(HID Report, exact_len) →
-    //   SET_REPORT(Output, 1 byte, keyboard only) → queue interrupt TRB + doorbell
+    //   SET_REPORT(Output, 1 byte, keyboard only)
     //
-    // The interrupt TRB is queued IMMEDIATELY after each interface's HID setup.
-    // This is critical: the Parallels virtual xHC may internally disable endpoints
-    // if no TRBs are available on the transfer ring shortly after ConfigureEndpoint.
-    // wait_for_command() ensures these Transfer Events don't interfere with
-    // subsequent command ring operations during port scanning.
+    // TRBs are NOT queued here. start_hid_polling() queues the first TRBs
+    // after the full init sequence completes. Ringing doorbells on empty rings
+    // causes Parallels vxHC to generate spurious CC=12 events that halt endpoints.
     for i in 0..iface_count {
         if let Some(ref info) = ifaces[i] {
             if !MINIMAL_INIT {
@@ -2293,22 +2345,6 @@ fn configure_hid(
             // GET_DESCRIPTOR(HID Report) with exact length from HID descriptor
             fetch_hid_report_descriptor(state, slot_id, info.interface_number, info.hid_report_len);
 
-            // GET_REPORT(Feature) — matching Linux's HID driver probe sequence.
-            let feature_id: u8 = if i == 0 { 0x11 } else { 0x12 };
-            match get_report_feature(state, slot_id, info.interface_number, feature_id) {
-                Ok(()) => {
-                    crate::serial_println!(
-                        "[xhci] GET_REPORT(Feature, ID={:#04x}) on slot {} iface {}",
-                        feature_id, slot_id, info.interface_number,
-                    );
-                }
-                Err(_) => {
-                    crate::serial_println!(
-                        "[xhci] GET_REPORT(Feature, ID={:#04x}) STALL on slot {} iface {} (expected)",
-                        feature_id, slot_id, info.interface_number,
-                    );
-                }
-            }
             } // end if !MINIMAL_INIT
 
             if info.is_nkro {
@@ -2320,14 +2356,7 @@ fn configure_hid(
                     slot_id, info.dci
                 );
 
-                // Queue interrupt TRB inline (matching Linux timing).
-                // wait_for_command already handles Transfer Events that arrive
-                // during subsequent enumeration commands.
-                let _ = queue_hid_transfer(state, 2, slot_id, info.dci);
-                crate::serial_println!(
-                    "[xhci] Inline-queued TRB: NKRO (slot={} DCI={})",
-                    slot_id, info.dci
-                );
+                // TRB will be queued by start_hid_polling() after full init.
             } else {
                 // Boot/standard HID interface
 
@@ -2351,19 +2380,51 @@ fn configure_hid(
 
                 // Record slot/endpoint and queue TRB inline.
                 if info.is_keyboard {
+                    // SET_PROTOCOL(boot=0) for boot keyboard interface.
+                    // The Parallels virtual xHC requires explicit protocol selection
+                    // on boot keyboard (subclass=1, protocol=1) interfaces before
+                    // it will accept interrupt IN transfers without CC=12.
+                    // Linux's usbhid driver sends this during boot device setup.
+                    let set_proto = SetupPacket {
+                        bm_request_type: 0x21,  // Host-to-Device, Class, Interface
+                        b_request: hid_request::SET_PROTOCOL,
+                        w_value: 0,             // Boot Protocol
+                        w_index: info.interface_number as u16,
+                        w_length: 0,
+                    };
+                    match control_transfer(state, slot_id, &set_proto, 0, 0, false) {
+                        Ok(()) => {
+                            crate::serial_println!(
+                                "[xhci] SET_PROTOCOL(boot) on slot {} iface {} (kbd)",
+                                slot_id, info.interface_number
+                            );
+                        }
+                        Err(e) => {
+                            crate::serial_println!(
+                                "[xhci] SET_PROTOCOL(boot) failed on slot {} iface {}: {}",
+                                slot_id, info.interface_number, e
+                            );
+                        }
+                    }
+
                     state.kbd_slot = slot_id;
                     state.kbd_endpoint = info.dci;
                     crate::serial_println!(
                         "[xhci] Boot keyboard configured: slot={} DCI={}",
                         slot_id, info.dci
                     );
-                    // Queue interrupt TRB inline (matching Linux timing).
-                    let _ = queue_hid_transfer(state, 0, slot_id, info.dci);
+                    // TRB will be queued by start_hid_polling() after full init.
+                } else if info.hid_idx == 3 {
+                    // Mouse2: second mouse interface (DCI 5).
+                    // Linux ftrace shows the Parallels mouse has two interrupt EPs.
+                    state.mouse_nkro_endpoint = info.dci;
                     crate::serial_println!(
-                        "[xhci] Inline-queued TRB: kbd boot (slot={} DCI={})",
+                        "[xhci] Mouse2 configured: slot={} DCI={}",
                         slot_id, info.dci
                     );
+                    // TRB will be queued by start_hid_polling() after full init.
                 } else {
+                    // Mouse: boot protocol mouse interface (DCI 3).
                     // Try SET_PROTOCOL(boot) so EP0 GET_REPORT works with
                     // standard 3-byte boot mouse format (no Report ID).
                     let set_proto = SetupPacket {
@@ -2394,12 +2455,7 @@ fn configure_hid(
                         "[xhci] Mouse configured: slot={} DCI={}",
                         slot_id, info.dci
                     );
-                    // Queue interrupt TRB inline (matching Linux timing).
-                    let _ = queue_hid_transfer(state, 1, slot_id, info.dci);
-                    crate::serial_println!(
-                        "[xhci] Inline-queued TRB: mouse (slot={} DCI={})",
-                        slot_id, info.dci
-                    );
+                    // TRB will be queued by start_hid_polling() after full init.
                 }
             }
         }
@@ -2411,16 +2467,19 @@ fn configure_hid(
 /// Queue a Normal TRB on a HID transfer ring to receive an interrupt IN report.
 fn queue_hid_transfer(
     state: &XhciState,
-    hid_idx: usize, // 0 = keyboard, 1 = mouse, 2 = NKRO keyboard
+    hid_idx: usize, // 0 = kbd boot, 1 = mouse, 2 = kbd NKRO, 3 = mouse2
     slot_id: u8,
     dci: u8,
 ) -> Result<(), &'static str> {
     let ring_idx = HID_RING_BASE + hid_idx;
 
-    // Determine the physical address and size of the report buffer
+    // Determine the physical address and size of the report buffer.
+    // Linux ftrace confirms: xhci_urb_enqueue lengths are the actual data sizes
+    // (8 bytes for kbd boot, 8 bytes for mouse, 9 bytes for NKRO/mouse2), NOT maxp.
     let (buf_phys, buf_len) = match hid_idx {
         0 => (virt_to_phys((&raw const KBD_REPORT_BUF) as u64), 8usize),
         2 => (virt_to_phys((&raw const NKRO_REPORT_BUF) as u64), 9usize),
+        3 => (virt_to_phys((&raw const MOUSE2_REPORT_BUF) as u64), 9usize),
         _ => (virt_to_phys((&raw const MOUSE_REPORT_BUF) as u64), 8usize),
     };
 
@@ -2431,18 +2490,23 @@ fn queue_hid_transfer(
         match hid_idx {
             0 => {
                 let buf = &raw mut KBD_REPORT_BUF;
-                core::ptr::write_bytes((*buf).0.as_mut_ptr(), 0xDE, 8);
-                dma_cache_clean((*buf).0.as_ptr(), 8);
+                core::ptr::write_bytes((*buf).0.as_mut_ptr(), 0xDE, 64);
+                dma_cache_clean((*buf).0.as_ptr(), 64);
             }
             2 => {
                 let buf = &raw mut NKRO_REPORT_BUF;
-                core::ptr::write_bytes((*buf).0.as_mut_ptr(), 0xDE, 9);
-                dma_cache_clean((*buf).0.as_ptr(), 9);
+                core::ptr::write_bytes((*buf).0.as_mut_ptr(), 0xDE, 64);
+                dma_cache_clean((*buf).0.as_ptr(), 64);
+            }
+            3 => {
+                let buf = &raw mut MOUSE2_REPORT_BUF;
+                core::ptr::write_bytes((*buf).0.as_mut_ptr(), 0xDE, 64);
+                dma_cache_clean((*buf).0.as_ptr(), 64);
             }
             _ => {
                 let buf = &raw mut MOUSE_REPORT_BUF;
-                core::ptr::write_bytes((*buf).0.as_mut_ptr(), 0xDE, 8);
-                dma_cache_clean((*buf).0.as_ptr(), 8);
+                core::ptr::write_bytes((*buf).0.as_mut_ptr(), 0xDE, 64);
+                dma_cache_clean((*buf).0.as_ptr(), 64);
             }
         }
     }
@@ -2499,245 +2563,16 @@ fn queue_hid_transfer(
         core::ptr::read_volatile(ep_base as *const u32) & 0x7
     };
 
+    crate::serial_println!(
+        "[xhci] queue_hid_transfer: slot={} DCI={} post_doorbell_ep_state={}",
+        slot_id, dci, post_state,
+    );
     let db_val = (pre_state << 4) | post_state;
     DIAG_DOORBELL_EP_STATE.store(db_val, Ordering::Relaxed);
     // Record first-time only (0xFF = unset sentinel)
     let _ = DIAG_FIRST_DB.compare_exchange(0xFF, db_val, Ordering::AcqRel, Ordering::Relaxed);
 
     Ok(())
-}
-
-/// Queue a GET_REPORT control transfer on EP0 for the keyboard device.
-///
-/// This is an asynchronous enqueue — completion is handled in the event loop
-/// of poll_hid_events and handle_interrupt. Uses CTRL_DATA_BUF as the DMA
-/// target (unused after init).
-///
-/// GET_REPORT: bmRequestType=0xA1, bRequest=0x01, wValue=0x0100 (Input, ID=0),
-/// wIndex=0 (interface 0 = boot keyboard), wLength=8.
-fn queue_ep0_get_report(state: &XhciState) {
-    let slot_id = state.kbd_slot;
-    if slot_id == 0 {
-        return;
-    }
-    let slot_idx = (slot_id - 1) as usize;
-
-    // Check ring capacity: if near the end, recycle the ring via
-    // StopEndpoint + SetTRDequeuePointer since the Parallels virtual xHC
-    // does not follow Link TRBs on transfer rings.
-    unsafe {
-        if TRANSFER_ENQUEUE[slot_idx] + 4 >= TRANSFER_RING_SIZE - 1 {
-            // Recycle the EP0 transfer ring
-            // Step 1: StopEndpoint for DCI=1 (EP0)
-            let stop_trb = Trb {
-                param: 0,
-                status: 0,
-                control: (trb_type::STOP_ENDPOINT << 10)
-                    | ((slot_id as u32) << 24)
-                    | (1u32 << 16), // DCI=1
-            };
-            enqueue_command(stop_trb);
-            ring_doorbell(state, 0, 0);
-            let _ = wait_for_command(state);
-
-            // Step 2: Zero the ring and reset state
-            let ring = &raw mut TRANSFER_RINGS[slot_idx];
-            core::ptr::write_bytes(ring as *mut u8, 0, TRANSFER_RING_SIZE * 16);
-            dma_cache_clean(
-                &TRANSFER_RINGS[slot_idx] as *const [Trb; TRANSFER_RING_SIZE] as *const u8,
-                TRANSFER_RING_SIZE * 16,
-            );
-            TRANSFER_ENQUEUE[slot_idx] = 0;
-            TRANSFER_CYCLE[slot_idx] = true;
-
-            // Step 3: SetTRDequeuePointer for DCI=1 back to ring start
-            let ring_phys = virt_to_phys(&raw const TRANSFER_RINGS[slot_idx] as u64);
-            let set_deq_trb = Trb {
-                param: ring_phys | 1, // DCS = 1
-                status: 0,
-                control: (trb_type::SET_TR_DEQUEUE_POINTER << 10)
-                    | ((slot_id as u32) << 24)
-                    | (1u32 << 16), // DCI=1
-            };
-            enqueue_command(set_deq_trb);
-            ring_doorbell(state, 0, 0);
-            let _ = wait_for_command(state);
-        }
-    }
-
-    // Prepare DMA buffer with sentinel
-    unsafe {
-        let data_buf = &raw mut CTRL_DATA_BUF;
-        core::ptr::write_bytes((*data_buf).0.as_mut_ptr(), 0xBB, 8);
-        dma_cache_clean((*data_buf).0.as_ptr(), 8);
-    }
-
-    let data_phys = virt_to_phys((&raw const CTRL_DATA_BUF) as u64);
-
-    let setup = SetupPacket {
-        bm_request_type: 0xA1,  // Class, Interface, Device-to-Host
-        b_request: 0x01,        // GET_REPORT
-        w_value: 0x0100,        // Input report, Report ID 0
-        w_index: 0,             // Interface 0 (boot keyboard)
-        w_length: 8,
-    };
-
-    let setup_data: u64 = unsafe {
-        core::ptr::read_unaligned(&setup as *const SetupPacket as *const u64)
-    };
-
-    // Setup Stage TRB: IDT (bit 6), TRT=3 (IN data stage), type = SETUP_STAGE
-    let setup_trb = Trb {
-        param: setup_data,
-        status: 8,
-        control: (trb_type::SETUP_STAGE << 10) | (1 << 6) | (3 << 16),
-    };
-    enqueue_transfer(slot_idx, setup_trb);
-
-    // Data Stage TRB: DIR=IN (bit 16), type = DATA_STAGE
-    let data_trb = Trb {
-        param: data_phys,
-        status: 8,
-        control: (trb_type::DATA_STAGE << 10) | (1 << 16),
-    };
-    enqueue_transfer(slot_idx, data_trb);
-
-    // Status Stage TRB: DIR=OUT (0) for IN data, IOC (bit 5)
-    let status_trb = Trb {
-        param: 0,
-        status: 0,
-        control: (trb_type::STATUS_STAGE << 10) | (1 << 5),
-    };
-    enqueue_transfer(slot_idx, status_trb);
-
-    // Ring doorbell for EP0 (DCI=1)
-    ring_doorbell(state, slot_id, 1);
-
-    EP0_POLL_STATE.store(1, Ordering::Release);
-    EP0_GET_REPORT_COUNT.fetch_add(1, Ordering::Relaxed);
-}
-
-/// Queue a GET_REPORT control transfer on EP0 for the mouse device.
-///
-/// Uses MOUSE_CTRL_DATA_BUF (separate from keyboard's CTRL_DATA_BUF).
-/// After SET_PROTOCOL(boot) during init, the mouse uses boot protocol format:
-/// 3 bytes (buttons, dx, dy) without Report ID.
-///
-/// GET_REPORT: bmRequestType=0xA1, bRequest=0x01, wValue=0x0100 (Input, ID=0),
-/// wIndex=0 (interface 0), wLength=8.
-fn queue_ep0_mouse_get_report(state: &XhciState) {
-    let slot_id = state.mouse_slot;
-    if slot_id == 0 {
-        return;
-    }
-
-    // Stop trying after 5 consecutive errors — the device likely doesn't
-    // support GET_REPORT for Input reports.
-    let err_count = EP0_MOUSE_GET_REPORT_ERR.load(Ordering::Relaxed);
-    let ok_count = EP0_MOUSE_GET_REPORT_OK.load(Ordering::Relaxed);
-    if err_count >= 5 && ok_count == 0 {
-        return;
-    }
-
-    let slot_idx = (slot_id - 1) as usize;
-
-    // Recycle the EP0 transfer ring:
-    // - When near the end (Parallels vxHC doesn't follow Link TRBs), OR
-    // - After errors (orphaned TRBs remain from failed transfers)
-    unsafe {
-        let needs_recycle = TRANSFER_ENQUEUE[slot_idx] + 4 >= TRANSFER_RING_SIZE - 1
-            || (err_count > ok_count && TRANSFER_ENQUEUE[slot_idx] > 0);
-
-        if needs_recycle {
-            // Step 1: StopEndpoint for DCI=1 (EP0)
-            let stop_trb = Trb {
-                param: 0,
-                status: 0,
-                control: (trb_type::STOP_ENDPOINT << 10)
-                    | ((slot_id as u32) << 24)
-                    | (1u32 << 16), // DCI=1
-            };
-            enqueue_command(stop_trb);
-            ring_doorbell(state, 0, 0);
-            let _ = wait_for_command(state);
-
-            // Step 2: Zero the ring and reset state
-            let ring = &raw mut TRANSFER_RINGS[slot_idx];
-            core::ptr::write_bytes(ring as *mut u8, 0, TRANSFER_RING_SIZE * 16);
-            dma_cache_clean(
-                &TRANSFER_RINGS[slot_idx] as *const [Trb; TRANSFER_RING_SIZE] as *const u8,
-                TRANSFER_RING_SIZE * 16,
-            );
-            TRANSFER_ENQUEUE[slot_idx] = 0;
-            TRANSFER_CYCLE[slot_idx] = true;
-
-            // Step 3: SetTRDequeuePointer for DCI=1 back to ring start
-            let ring_phys = virt_to_phys(&raw const TRANSFER_RINGS[slot_idx] as u64);
-            let set_deq_trb = Trb {
-                param: ring_phys | 1, // DCS = 1
-                status: 0,
-                control: (trb_type::SET_TR_DEQUEUE_POINTER << 10)
-                    | ((slot_id as u32) << 24)
-                    | (1u32 << 16), // DCI=1
-            };
-            enqueue_command(set_deq_trb);
-            ring_doorbell(state, 0, 0);
-            let _ = wait_for_command(state);
-        }
-    }
-
-    // Prepare DMA buffer with sentinel
-    unsafe {
-        let data_buf = &raw mut MOUSE_CTRL_DATA_BUF;
-        core::ptr::write_bytes((*data_buf).0.as_mut_ptr(), 0xBB, 8);
-        dma_cache_clean((*data_buf).0.as_ptr(), 8);
-    }
-
-    let data_phys = virt_to_phys((&raw const MOUSE_CTRL_DATA_BUF) as u64);
-
-    // After SET_PROTOCOL(boot) during init, use boot protocol format:
-    // 3 bytes (buttons, dx, dy), no Report ID.
-    let setup = SetupPacket {
-        bm_request_type: 0xA1,  // Class, Interface, Device-to-Host
-        b_request: 0x01,        // GET_REPORT
-        w_value: 0x0100,        // Input report, Report ID 0 (boot protocol)
-        w_index: 0,             // Interface 0 (mouse)
-        w_length: 8,            // Request up to 8 bytes (boot mouse: 3-4 bytes)
-    };
-
-    let setup_data: u64 = unsafe {
-        core::ptr::read_unaligned(&setup as *const SetupPacket as *const u64)
-    };
-
-    // Setup Stage TRB: IDT (bit 6), TRT=3 (IN data stage), type = SETUP_STAGE
-    let setup_trb = Trb {
-        param: setup_data,
-        status: 8,
-        control: (trb_type::SETUP_STAGE << 10) | (1 << 6) | (3 << 16),
-    };
-    enqueue_transfer(slot_idx, setup_trb);
-
-    // Data Stage TRB: DIR=IN (bit 16), type = DATA_STAGE, length=8
-    let data_trb = Trb {
-        param: data_phys,
-        status: 8,
-        control: (trb_type::DATA_STAGE << 10) | (1 << 16),
-    };
-    enqueue_transfer(slot_idx, data_trb);
-
-    // Status Stage TRB: DIR=OUT (0) for IN data, IOC (bit 5)
-    let status_trb = Trb {
-        param: 0,
-        status: 0,
-        control: (trb_type::STATUS_STAGE << 10) | (1 << 5),
-    };
-    enqueue_transfer(slot_idx, status_trb);
-
-    // Ring doorbell for EP0 (DCI=1)
-    ring_doorbell(state, slot_id, 1);
-
-    EP0_MOUSE_POLL_STATE.store(1, Ordering::Release);
-    EP0_MOUSE_GET_REPORT_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Drain any stale events left in the event ring after enumeration.
@@ -2801,156 +2636,21 @@ fn drain_stale_events(state: &XhciState) {
     }
 }
 
-/// Test synchronous GET_REPORT and GET_PROTOCOL during init.
+/// Read the endpoint state (bits[2:0] of output context DW0) for a given slot/DCI.
 ///
-/// Called after keyboard is configured to diagnose whether Parallels echoes
-/// setup packet bytes for class-specific requests or if the issue is
-/// specific to the async EP0 polling path.
-///
-/// NOTE: Currently disabled in the init sequence because the GET_REPORT
-/// responses contaminate KBD_REPORT_BUF with setup packet echoes.
-/// Kept for future diagnostics.
-#[allow(dead_code)]
-fn test_sync_class_requests(state: &XhciState, slot_id: u8) {
-    // Log physical addresses for diagnostic comparison
-    let ctrl_buf_phys = virt_to_phys((&raw const CTRL_DATA_BUF) as u64);
-    let kbd_buf_phys = virt_to_phys((&raw const KBD_REPORT_BUF) as u64);
-    crate::serial_println!(
-        "[xhci] Buffer phys addrs: CTRL_DATA_BUF={:#010x} KBD_REPORT_BUF={:#010x}",
-        ctrl_buf_phys, kbd_buf_phys,
-    );
-
-    // Test 1: Synchronous GET_REPORT using CTRL_DATA_BUF
-    {
-        let setup = SetupPacket {
-            bm_request_type: 0xA1,
-            b_request: 0x01, // GET_REPORT
-            w_value: 0x0100, // Input report, ID 0
-            w_index: 0,
-            w_length: 8,
-        };
-
-        unsafe {
-            let data_buf = &raw mut CTRL_DATA_BUF;
-            core::ptr::write_bytes((*data_buf).0.as_mut_ptr(), 0xBB, 8);
-            dma_cache_clean((*data_buf).0.as_ptr(), 8);
-            dma_cache_invalidate((*data_buf).0.as_ptr(), 8);
-
-            let data_phys = virt_to_phys(&raw const CTRL_DATA_BUF as u64);
-
-            match control_transfer(state, slot_id, &setup, data_phys, 8, true) {
-                Ok(()) => {
-                    dma_cache_invalidate((*data_buf).0.as_ptr(), 8);
-                    let buf = &(*data_buf).0;
-                    crate::serial_println!(
-                        "[xhci] Sync GET_REPORT(CTRL_DATA): {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
-                        buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
-                    );
-                }
-                Err(e) => {
-                    crate::serial_println!("[xhci] Sync GET_REPORT(CTRL_DATA) failed: {}", e);
-                }
-            }
-        }
+/// Returns: 0=Disabled, 1=Running, 2=Halted, 3=Stopped, 4=Error, 0=invalid slot/dci.
+fn read_output_ep_state(state: &XhciState, slot_id: u8, dci: u8) -> u8 {
+    if slot_id == 0 || dci == 0 {
+        return 0;
     }
-
-    // Test 2: Synchronous GET_REPORT using KBD_REPORT_BUF
-    {
-        let setup = SetupPacket {
-            bm_request_type: 0xA1,
-            b_request: 0x01,
-            w_value: 0x0100,
-            w_index: 0,
-            w_length: 8,
-        };
-
-        unsafe {
-            let kbd_buf = &raw mut KBD_REPORT_BUF;
-            core::ptr::write_bytes((*kbd_buf).0.as_mut_ptr(), 0xCC, 8);
-            dma_cache_clean((*kbd_buf).0.as_ptr(), 8);
-            dma_cache_invalidate((*kbd_buf).0.as_ptr(), 8);
-
-            match control_transfer(state, slot_id, &setup, kbd_buf_phys, 8, true) {
-                Ok(()) => {
-                    dma_cache_invalidate((*kbd_buf).0.as_ptr(), 8);
-                    let buf = &(*kbd_buf).0;
-                    crate::serial_println!(
-                        "[xhci] Sync GET_REPORT(KBD_BUF):   {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
-                        buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
-                    );
-                }
-                Err(e) => {
-                    crate::serial_println!("[xhci] Sync GET_REPORT(KBD_BUF) failed: {}", e);
-                }
-            }
-        }
-    }
-
-    // Test 3: Synchronous GET_PROTOCOL (should return 1 byte: 0=boot, 1=report)
-    {
-        let setup = SetupPacket {
-            bm_request_type: 0xA1,
-            b_request: 0x03, // GET_PROTOCOL
-            w_value: 0,
-            w_index: 0,
-            w_length: 1,
-        };
-
-        unsafe {
-            let data_buf = &raw mut CTRL_DATA_BUF;
-            core::ptr::write_bytes((*data_buf).0.as_mut_ptr(), 0xDD, 8);
-            dma_cache_clean((*data_buf).0.as_ptr(), 8);
-
-            let data_phys = virt_to_phys(&raw const CTRL_DATA_BUF as u64);
-
-            match control_transfer(state, slot_id, &setup, data_phys, 1, true) {
-                Ok(()) => {
-                    dma_cache_invalidate((*data_buf).0.as_ptr(), 8);
-                    let buf = &(*data_buf).0;
-                    crate::serial_println!(
-                        "[xhci] Sync GET_PROTOCOL: {:02x} ({})",
-                        buf[0],
-                        if buf[0] == 0 { "boot" } else if buf[0] == 1 { "report" } else { "?" },
-                    );
-                }
-                Err(e) => {
-                    crate::serial_println!("[xhci] Sync GET_PROTOCOL failed: {}", e);
-                }
-            }
-        }
-    }
-
-    // Test 4: GET_DESCRIPTOR(Device) via sync to verify control transfers still work
-    {
-        let setup = SetupPacket {
-            bm_request_type: 0x80,
-            b_request: 0x06, // GET_DESCRIPTOR
-            w_value: 0x0100, // Device descriptor
-            w_index: 0,
-            w_length: 8,
-        };
-
-        unsafe {
-            let data_buf = &raw mut CTRL_DATA_BUF;
-            core::ptr::write_bytes((*data_buf).0.as_mut_ptr(), 0xEE, 8);
-            dma_cache_clean((*data_buf).0.as_ptr(), 8);
-
-            let data_phys = virt_to_phys(&raw const CTRL_DATA_BUF as u64);
-
-            match control_transfer(state, slot_id, &setup, data_phys, 8, true) {
-                Ok(()) => {
-                    dma_cache_invalidate((*data_buf).0.as_ptr(), 8);
-                    let buf = &(*data_buf).0;
-                    crate::serial_println!(
-                        "[xhci] Sync GET_DESC(Device): {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
-                        buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
-                    );
-                }
-                Err(e) => {
-                    crate::serial_println!("[xhci] Sync GET_DESC(Device) failed: {}", e);
-                }
-            }
-        }
+    let slot_idx = (slot_id - 1) as usize;
+    let ctx_size = state.context_size;
+    unsafe {
+        let dev_ctx = &raw const DEVICE_CONTEXTS[slot_idx];
+        dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
+        let ep_base = (*dev_ctx).0.as_ptr().add(dci as usize * ctx_size);
+        let ep_dw0 = core::ptr::read_volatile(ep_base as *const u32);
+        (ep_dw0 & 0x7) as u8
     }
 }
 
@@ -3194,16 +2894,18 @@ fn start_hid_polling(state: &XhciState) {
         let kbd_buf_phys = virt_to_phys((&raw const KBD_REPORT_BUF) as u64);
         let mouse_buf_phys = virt_to_phys((&raw const MOUSE_REPORT_BUF) as u64);
         let nkro_buf_phys = virt_to_phys((&raw const NKRO_REPORT_BUF) as u64);
+        let mouse2_buf_phys = virt_to_phys((&raw const MOUSE2_REPORT_BUF) as u64);
         let ring0_phys = virt_to_phys(&raw const TRANSFER_RINGS[HID_RING_BASE] as u64);
         let ring1_phys = virt_to_phys(&raw const TRANSFER_RINGS[HID_RING_BASE + 1] as u64);
         let ring2_phys = virt_to_phys(&raw const TRANSFER_RINGS[HID_RING_BASE + 2] as u64);
+        let ring3_phys = virt_to_phys(&raw const TRANSFER_RINGS[HID_RING_BASE + 3] as u64);
         crate::serial_println!(
-            "[xhci] DMA phys: kbd_buf={:#010x} mouse_buf={:#010x} nkro_buf={:#010x}",
-            kbd_buf_phys, mouse_buf_phys, nkro_buf_phys,
+            "[xhci] DMA phys: kbd={:#010x} mouse={:#010x} nkro={:#010x} mouse2={:#010x}",
+            kbd_buf_phys, mouse_buf_phys, nkro_buf_phys, mouse2_buf_phys,
         );
         crate::serial_println!(
-            "[xhci] DMA phys: ring0={:#010x} ring1={:#010x} ring2={:#010x}",
-            ring0_phys, ring1_phys, ring2_phys,
+            "[xhci] DMA phys: ring0={:#010x} ring1={:#010x} ring2={:#010x} ring3={:#010x}",
+            ring0_phys, ring1_phys, ring2_phys, ring3_phys,
         );
     }
 
@@ -3226,6 +2928,11 @@ fn start_hid_polling(state: &XhciState) {
         let _ = queue_hid_transfer(state, 1, state.mouse_slot, state.mouse_endpoint);
         crate::serial_println!("[xhci] Re-queued TRB: mouse (slot={} DCI={})",
             state.mouse_slot, state.mouse_endpoint);
+    }
+    if state.mouse_slot != 0 && state.mouse_nkro_endpoint != 0 {
+        let _ = queue_hid_transfer(state, 3, state.mouse_slot, state.mouse_nkro_endpoint);
+        crate::serial_println!("[xhci] Re-queued TRB: mouse2 (slot={} DCI={})",
+            state.mouse_slot, state.mouse_nkro_endpoint);
     }
 }
 
@@ -3776,6 +3483,7 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
         kbd_nkro_endpoint: 0,
         mouse_slot: 0,
         mouse_endpoint: 0,
+        mouse_nkro_endpoint: 0,
     };
 
     // 14. Scan ports and configure HID devices.
@@ -3807,13 +3515,6 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     XHCI_INITIALIZED.store(true, Ordering::Release);
 
     // 16. Queue initial HID transfers.
-    //
-    // NOTE: test_sync_class_requests is intentionally DISABLED. It sends
-    // GET_REPORT on EP0 which writes stale data to KBD_REPORT_BUF. The Parallels
-    // xHCI emulation appears to cache this response and replay it on the interrupt
-    // endpoint, causing all interrupt transfers to return the GET_REPORT setup
-    // packet echo instead of actual HID reports. Linux doesn't do GET_REPORT
-    // during HID init — it just queues the interrupt URB and waits.
     let xhci_state_ref = unsafe {
         (*(&raw const XHCI_STATE)).as_ref().unwrap()
     };
@@ -3821,6 +3522,80 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     // Diagnostic: dump endpoint context states AFTER all init (Phase 1-3 complete).
     // This verifies SET_CONFIGURATION and Phase 3 didn't reset the endpoint states.
     dump_endpoint_contexts(xhci_state_ref);
+
+    // Post-init Halted endpoint recovery.
+    //
+    // Parallels virtual xHC fires CC=12 (Endpoint Not Enabled) immediately on the first
+    // TRB queued to each interrupt IN endpoint during configure_hid Phase 3. These Transfer
+    // Events are consumed by wait_for_command during subsequent enumeration commands, so
+    // poll_hid_events never sees them and NEEDS_RESET_* flags are never set.
+    //
+    // Detect any Halted endpoints in the output context and reset them synchronously NOW,
+    // before starting the polling loop. After reset+Set TR Deq+re-queue, the endpoint is
+    // Running with a fresh TRB — ready for poll_hid_events to observe CC=1 success events.
+    {
+        let s = xhci_state_ref;
+        let kbd_boot_state = read_output_ep_state(s, s.kbd_slot, s.kbd_endpoint);
+        if kbd_boot_state == 2 {
+            crate::serial_println!(
+                "[xhci] Post-init: kbd boot EP Halted (slot={} DCI={}) — resetting",
+                s.kbd_slot, s.kbd_endpoint,
+            );
+            if let Err(e) = reset_halted_endpoint(s, s.kbd_slot, s.kbd_endpoint, 0) {
+                crate::serial_println!("[xhci] Post-init kbd boot reset failed: {}", e);
+            }
+        } else {
+            crate::serial_println!(
+                "[xhci] Post-init: kbd boot EP state={} (not Halted)",
+                kbd_boot_state,
+            );
+        }
+        let kbd_nkro_state = read_output_ep_state(s, s.kbd_slot, s.kbd_nkro_endpoint);
+        if kbd_nkro_state == 2 {
+            crate::serial_println!(
+                "[xhci] Post-init: kbd NKRO EP Halted (slot={} DCI={}) — resetting",
+                s.kbd_slot, s.kbd_nkro_endpoint,
+            );
+            if let Err(e) = reset_halted_endpoint(s, s.kbd_slot, s.kbd_nkro_endpoint, 2) {
+                crate::serial_println!("[xhci] Post-init kbd NKRO reset failed: {}", e);
+            }
+        } else if s.kbd_nkro_endpoint != 0 {
+            crate::serial_println!(
+                "[xhci] Post-init: kbd NKRO EP state={} (not Halted)",
+                kbd_nkro_state,
+            );
+        }
+        let mouse_state = read_output_ep_state(s, s.mouse_slot, s.mouse_endpoint);
+        if mouse_state == 2 {
+            crate::serial_println!(
+                "[xhci] Post-init: mouse EP Halted (slot={} DCI={}) — resetting",
+                s.mouse_slot, s.mouse_endpoint,
+            );
+            if let Err(e) = reset_halted_endpoint(s, s.mouse_slot, s.mouse_endpoint, 1) {
+                crate::serial_println!("[xhci] Post-init mouse reset failed: {}", e);
+            }
+        } else if s.mouse_slot != 0 {
+            crate::serial_println!(
+                "[xhci] Post-init: mouse EP state={} (not Halted)",
+                mouse_state,
+            );
+        }
+        let mouse2_state = read_output_ep_state(s, s.mouse_slot, s.mouse_nkro_endpoint);
+        if mouse2_state == 2 {
+            crate::serial_println!(
+                "[xhci] Post-init: mouse2 EP Halted (slot={} DCI={}) — resetting",
+                s.mouse_slot, s.mouse_nkro_endpoint,
+            );
+            if let Err(e) = reset_halted_endpoint(s, s.mouse_slot, s.mouse_nkro_endpoint, 3) {
+                crate::serial_println!("[xhci] Post-init mouse2 reset failed: {}", e);
+            }
+        } else if s.mouse_nkro_endpoint != 0 {
+            crate::serial_println!(
+                "[xhci] Post-init: mouse2 EP state={} (not Halted)",
+                mouse2_state,
+            );
+        }
+    }
 
     // Drain stale events and re-queue HID transfer TRBs.
     // Initial TRBs were already queued inline in configure_hid() Phase 3 to prevent
@@ -4014,29 +3789,16 @@ pub fn handle_interrupt() {
                             let report = &(*report_buf).0;
                             super::hid::process_mouse_report(report);
                             MSI_MOUSE_NEEDS_REQUEUE.store(true, Ordering::Release);
-                        }
-                        // EP0 GET_REPORT completion (DCI=1, boot keyboard)
-                        else if endpoint == 1 && slot == state.kbd_slot
-                            && EP0_POLL_STATE.load(Ordering::Acquire) == 1
+                        } else if slot == state.mouse_slot
+                            && state.mouse_nkro_endpoint != 0
+                            && endpoint == state.mouse_nkro_endpoint
                         {
-                            let data_buf = &raw const CTRL_DATA_BUF;
-                            dma_cache_invalidate((*data_buf).0.as_ptr(), 8);
-                            let buf = &(*data_buf).0;
-                            super::hid::process_keyboard_report(buf);
-                            KBD_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
-                            EP0_GET_REPORT_OK.fetch_add(1, Ordering::Relaxed);
-                            EP0_POLL_STATE.store(0, Ordering::Release);
-                        }
-                        // EP0 GET_REPORT completion (DCI=1, mouse)
-                        else if endpoint == 1 && slot == state.mouse_slot
-                            && EP0_MOUSE_POLL_STATE.load(Ordering::Acquire) == 1
-                        {
-                            let data_buf = &raw const MOUSE_CTRL_DATA_BUF;
-                            dma_cache_invalidate((*data_buf).0.as_ptr(), 16);
-                            let buf = &(*data_buf).0;
-                            super::hid::process_mouse_report(buf);
-                            EP0_MOUSE_GET_REPORT_OK.fetch_add(1, Ordering::Relaxed);
-                            EP0_MOUSE_POLL_STATE.store(0, Ordering::Release);
+                            // Mouse2 (second mouse interface, DCI 5)
+                            let report_buf = &raw const MOUSE2_REPORT_BUF;
+                            dma_cache_invalidate((*report_buf).0.as_ptr(), 9);
+                            let report = &(*report_buf).0;
+                            super::hid::process_mouse_report(report);
+                            MSI_MOUSE2_NEEDS_REQUEUE.store(true, Ordering::Release);
                         }
                     } else {
                         // Error CC (e.g., CC=12 Endpoint Not Enabled) —
@@ -4047,17 +3809,7 @@ pub fn handle_interrupt() {
                             ((slot as u64) << 16) | ((endpoint as u64) << 8) | (cc as u64),
                             Ordering::Relaxed,
                         );
-                        if endpoint == 1 && slot == state.kbd_slot
-                            && EP0_POLL_STATE.load(Ordering::Acquire) == 1
-                        {
-                            EP0_GET_REPORT_ERR.fetch_add(1, Ordering::Relaxed);
-                            EP0_POLL_STATE.store(0, Ordering::Release);
-                        } else if endpoint == 1 && slot == state.mouse_slot
-                            && EP0_MOUSE_POLL_STATE.load(Ordering::Acquire) == 1
-                        {
-                            EP0_MOUSE_GET_REPORT_ERR.fetch_add(1, Ordering::Relaxed);
-                            EP0_MOUSE_POLL_STATE.store(0, Ordering::Release);
-                        } else if slot == state.kbd_slot && endpoint == state.kbd_endpoint {
+                        if slot == state.kbd_slot && endpoint == state.kbd_endpoint {
                             NEEDS_RESET_KBD_BOOT.store(true, Ordering::Release);
                         } else if slot == state.kbd_slot
                             && state.kbd_nkro_endpoint != 0
@@ -4066,6 +3818,11 @@ pub fn handle_interrupt() {
                             NEEDS_RESET_KBD_NKRO.store(true, Ordering::Release);
                         } else if slot == state.mouse_slot && endpoint == state.mouse_endpoint {
                             NEEDS_RESET_MOUSE.store(true, Ordering::Release);
+                        } else if slot == state.mouse_slot
+                            && state.mouse_nkro_endpoint != 0
+                            && endpoint == state.mouse_nkro_endpoint
+                        {
+                            NEEDS_RESET_MOUSE2.store(true, Ordering::Release);
                         }
                     }
                 }
@@ -4235,7 +3992,7 @@ pub fn poll_hid_events() {
                             super::hid::process_keyboard_report(report);
                             let _ = queue_hid_transfer(state, 0, state.kbd_slot, state.kbd_endpoint);
                         }
-                        // Mouse interrupt endpoint event
+                        // Mouse interrupt endpoint event (DCI 3)
                         else if slot == state.mouse_slot && endpoint == state.mouse_endpoint {
                             let report_buf = &raw const MOUSE_REPORT_BUF;
                             dma_cache_invalidate((*report_buf).0.as_ptr(), 8);
@@ -4243,28 +4000,16 @@ pub fn poll_hid_events() {
                             super::hid::process_mouse_report(report);
                             let _ = queue_hid_transfer(state, 1, state.mouse_slot, state.mouse_endpoint);
                         }
-                        // EP0 GET_REPORT completion (DCI=1, boot keyboard)
-                        else if endpoint == 1 && slot == state.kbd_slot
-                            && EP0_POLL_STATE.load(Ordering::Acquire) == 1
+                        // Mouse2 interrupt endpoint event (DCI 5)
+                        else if slot == state.mouse_slot
+                            && state.mouse_nkro_endpoint != 0
+                            && endpoint == state.mouse_nkro_endpoint
                         {
-                            let data_buf = &raw const CTRL_DATA_BUF;
-                            dma_cache_invalidate((*data_buf).0.as_ptr(), 8);
-                            let buf = &(*data_buf).0;
-                            super::hid::process_keyboard_report(buf);
-                            KBD_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
-                            EP0_GET_REPORT_OK.fetch_add(1, Ordering::Relaxed);
-                            EP0_POLL_STATE.store(0, Ordering::Release);
-                        }
-                        // EP0 GET_REPORT completion (DCI=1, mouse)
-                        else if endpoint == 1 && slot == state.mouse_slot
-                            && EP0_MOUSE_POLL_STATE.load(Ordering::Acquire) == 1
-                        {
-                            let data_buf = &raw const MOUSE_CTRL_DATA_BUF;
-                            dma_cache_invalidate((*data_buf).0.as_ptr(), 16);
-                            let buf = &(*data_buf).0;
-                            super::hid::process_mouse_report(buf);
-                            EP0_MOUSE_GET_REPORT_OK.fetch_add(1, Ordering::Relaxed);
-                            EP0_MOUSE_POLL_STATE.store(0, Ordering::Release);
+                            let report_buf = &raw const MOUSE2_REPORT_BUF;
+                            dma_cache_invalidate((*report_buf).0.as_ptr(), 9);
+                            let report = &(*report_buf).0;
+                            super::hid::process_mouse_report(report);
+                            let _ = queue_hid_transfer(state, 3, state.mouse_slot, state.mouse_nkro_endpoint);
                         } else {
                             XFER_OTHER_COUNT.fetch_add(1, Ordering::Relaxed);
                             XO_LAST_INFO.store(
@@ -4280,17 +4025,7 @@ pub fn poll_hid_events() {
                             ((slot as u64) << 16) | ((endpoint as u64) << 8) | (cc as u64),
                             Ordering::Relaxed,
                         );
-                        if endpoint == 1 && slot == state.kbd_slot
-                            && EP0_POLL_STATE.load(Ordering::Acquire) == 1
-                        {
-                            EP0_GET_REPORT_ERR.fetch_add(1, Ordering::Relaxed);
-                            EP0_POLL_STATE.store(0, Ordering::Release);
-                        } else if endpoint == 1 && slot == state.mouse_slot
-                            && EP0_MOUSE_POLL_STATE.load(Ordering::Acquire) == 1
-                        {
-                            EP0_MOUSE_GET_REPORT_ERR.fetch_add(1, Ordering::Relaxed);
-                            EP0_MOUSE_POLL_STATE.store(0, Ordering::Release);
-                        } else if slot == state.kbd_slot && endpoint == state.kbd_endpoint {
+                        if slot == state.kbd_slot && endpoint == state.kbd_endpoint {
                             NEEDS_RESET_KBD_BOOT.store(true, Ordering::Release);
                         } else if slot == state.kbd_slot
                             && state.kbd_nkro_endpoint != 0
@@ -4299,6 +4034,11 @@ pub fn poll_hid_events() {
                             NEEDS_RESET_KBD_NKRO.store(true, Ordering::Release);
                         } else if slot == state.mouse_slot && endpoint == state.mouse_endpoint {
                             NEEDS_RESET_MOUSE.store(true, Ordering::Release);
+                        } else if slot == state.mouse_slot
+                            && state.mouse_nkro_endpoint != 0
+                            && endpoint == state.mouse_nkro_endpoint
+                        {
+                            NEEDS_RESET_MOUSE2.store(true, Ordering::Release);
                         }
                     }
                 }
@@ -4339,28 +4079,11 @@ pub fn poll_hid_events() {
     if MSI_MOUSE_NEEDS_REQUEUE.swap(false, Ordering::AcqRel) && state.mouse_slot != 0 {
         let _ = queue_hid_transfer(state, 1, state.mouse_slot, state.mouse_endpoint);
     }
-
-    // EP0 GET_REPORT polling: queue periodic GET_REPORT on EP0 control pipe.
-    // Interrupt endpoints always return CC=12 on Parallels virtual xHC (a
-    // fundamental limitation of the virtual xHC — not fixable through command
-    // sequencing). EP0 control transfers work reliably. Poll at 20 Hz (every
-    // 10 timer ticks at 200 Hz = 50 ms latency).
-    let poll = POLL_COUNT.load(Ordering::Relaxed);
-    if EP0_POLL_STATE.load(Ordering::Acquire) == 0
-        && poll >= 400       // Wait 2 seconds after boot
-        && poll % 10 == 0    // 20 Hz
-    {
-        queue_ep0_get_report(state);
-    }
-
-    // EP0 GET_REPORT polling for mouse: same approach, staggered by 5 ticks
-    // so keyboard and mouse polls don't collide in the same timer tick.
-    if EP0_MOUSE_POLL_STATE.load(Ordering::Acquire) == 0
-        && poll >= 425       // Wait 2+ seconds after boot
-        && poll % 10 == 5    // 20 Hz, offset from keyboard
+    if MSI_MOUSE2_NEEDS_REQUEUE.swap(false, Ordering::AcqRel)
         && state.mouse_slot != 0
+        && state.mouse_nkro_endpoint != 0
     {
-        queue_ep0_mouse_get_report(state);
+        let _ = queue_hid_transfer(state, 3, state.mouse_slot, state.mouse_nkro_endpoint);
     }
 
     // Recover halted endpoints (CC=12 Endpoint Not Enabled, etc.)
@@ -4386,11 +4109,18 @@ pub fn poll_hid_events() {
         {
             let _ = reset_halted_endpoint(state, state.mouse_slot, state.mouse_endpoint, 1);
         }
+        if NEEDS_RESET_MOUSE2.swap(false, Ordering::AcqRel)
+            && state.mouse_slot != 0
+            && state.mouse_nkro_endpoint != 0
+        {
+            let _ = reset_halted_endpoint(state, state.mouse_slot, state.mouse_nkro_endpoint, 3);
+        }
     } else {
         // Clear flags without acting — command ring capacity exhausted
         NEEDS_RESET_KBD_BOOT.store(false, Ordering::Relaxed);
         NEEDS_RESET_KBD_NKRO.store(false, Ordering::Relaxed);
         NEEDS_RESET_MOUSE.store(false, Ordering::Relaxed);
+        NEEDS_RESET_MOUSE2.store(false, Ordering::Relaxed);
     }
 
     // Deferred MSI activation.
@@ -4418,6 +4148,9 @@ pub fn poll_hid_events() {
         }
         if state.kbd_slot != 0 && state.kbd_nkro_endpoint != 0 {
             let _ = queue_hid_transfer(state, 2, state.kbd_slot, state.kbd_nkro_endpoint);
+        }
+        if state.mouse_slot != 0 && state.mouse_nkro_endpoint != 0 {
+            let _ = queue_hid_transfer(state, 3, state.mouse_slot, state.mouse_nkro_endpoint);
         }
     }
 
