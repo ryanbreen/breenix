@@ -49,6 +49,50 @@ Test scripts are located in `docker/qemu/`:
 - `./docker/qemu/run-aarch64-boot-test-native.sh` - Native ARM64 boot test
 - `./docker/qemu/run-aarch64-boot-test-strict.sh` - Strict ARM64 boot test
 
+**Parallels (ARM64 hardware testing):**
+- `./run.sh --parallels` - Build and boot on Parallels Desktop VM (recommended)
+- `./scripts/parallels/build-efi.sh --kernel` - Build kernel + EFI image
+- `./scripts/parallels/deploy-to-vm.sh --boot` - Deploy image and boot VM
+
+### Parallels VM Workflow (CRITICAL)
+
+When testing on Parallels Desktop, **always ensure the previous VM instance is completely stopped** before deploying and booting a new image. Parallels can get into a stuck "stopping" state that causes the new image to be ignored.
+
+**Correct workflow:**
+```bash
+# 1. Force-stop any running/stuck VM
+prlctl stop breenix-dev --kill 2>/dev/null || true
+# If stuck in "stopping" state, restart Parallels service:
+#   sudo pkill -9 -f prl_disp_service   (requires terminal with sudo)
+
+# 2. Build fresh kernel (touch forces recompile)
+touch kernel/src/drivers/usb/xhci.rs
+scripts/parallels/build-efi.sh --kernel
+
+# 3. Deploy (writes new EFI image to HDS, truncates serial log, fresh NVRAM)
+# Preferred: use run.sh which properly truncates serial log + deletes NVRAM
+# NOTE: run.sh --parallels tails serial indefinitely; run in background or
+#       manually start the VM after build-efi.sh
+> /tmp/breenix-parallels-serial.log   # Truncate serial log
+rm -f ~/Parallels/breenix-dev.pvm/NVRAM.dat  # Fresh UEFI state
+scripts/parallels/deploy-to-vm.sh --boot
+
+# 4. Wait for boot (~15s) + heartbeats (~30-40s for 3 heartbeats)
+sleep 50
+
+# 5. Read serial log (contains ALL output since truncation)
+cat /tmp/breenix-parallels-serial.log
+```
+
+**WARNING: Never read `/tmp/breenix-parallels-serial.log` from a previous boot.**
+The file persists across reboots unless explicitly truncated. Always truncate it
+before starting the VM and wait for a full boot before reading it.
+
+**If the VM gets stuck in "stopping" state:**
+The only reliable fix is `sudo pkill -9 -f prl_disp_service` to restart the
+Parallels service. This requires a terminal with sudo access (not available from
+agent context). Ask the user to run this if the VM is stuck.
+
 ### Standard Workflow
 
 ```bash
@@ -284,6 +328,44 @@ When new implementation reaches parity:
 1. Remove code from `src.legacy/`
 2. Update `FEATURE_COMPARISON.md`
 3. Include removal in same commit as feature completion
+
+## 🚨 Parallels VM Testing — MANDATORY RESTART PROTOCOL 🚨
+
+When testing on the Parallels VM (`breenix-dev`), you **MUST** follow this exact restart procedure before every new test. Skipping any step may leave a stale VM running, producing misleading serial logs.
+
+### VM Restart Validation (REQUIRED BEFORE EVERY BOOT)
+
+```bash
+# Step 1: FORCIBLY stop the VM (kill, not graceful shutdown)
+prlctl stop breenix-dev --kill
+
+# Step 2: VALIDATE it is completely offline — poll until confirmed stopped
+# Run this in a loop until you see "stopped"
+prlctl status breenix-dev
+# Expected output: "breenix-dev stopped"
+# If not stopped yet, wait 2 seconds and try again. Never skip this check.
+
+# Step 3: TRUNCATE the serial log (it accumulates across boots)
+> /tmp/breenix-parallels-serial.log
+
+# Step 4: Start the VM
+prlctl start breenix-dev
+
+# Step 5: Wait for boot (at least 30 seconds for USB enumeration to complete)
+```
+
+**Why this matters:**
+- `prlctl stop` without `--kill` can leave the VM in a stopping state for seconds
+- The serial log at `/tmp/breenix-parallels-serial.log` accumulates across boots — reading stale data from a previous boot looks identical to fresh data
+- A "restarted" VM that was never stopped still has the old kernel running
+
+**Shell snippet for safe restart:**
+```bash
+prlctl stop breenix-dev --kill
+while ! prlctl status breenix-dev | grep -q stopped; do sleep 1; done
+> /tmp/breenix-parallels-serial.log
+prlctl start breenix-dev
+```
 
 ## Build Configuration
 

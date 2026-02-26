@@ -78,13 +78,17 @@ dd if=/dev/zero of="$EFI_IMG" bs=1m count=$IMG_SIZE_MB 2>/dev/null
 FAT_IMG="$OUTPUT_DIR/esp.fat32.img"
 dd if=/dev/zero of="$FAT_IMG" bs=1m count=$((IMG_SIZE_MB - 1)) 2>/dev/null
 
-# Format as FAT32 using newfs_msdos (macOS)
-if command -v newfs_msdos &>/dev/null; then
-    newfs_msdos -F 32 -S 512 "$FAT_IMG" 2>/dev/null
+# Format as FAT32. Prefer mformat (mtools) since it works on raw files on macOS.
+# newfs_msdos requires a block device and fails on plain files.
+if command -v mformat &>/dev/null; then
+    mformat -i "$FAT_IMG" -F ::
 elif command -v mkfs.fat &>/dev/null; then
     mkfs.fat -F 32 "$FAT_IMG"
+elif command -v newfs_msdos &>/dev/null; then
+    # newfs_msdos only works on block devices, not raw files; kept as last resort
+    newfs_msdos -F 32 -S 512 "$FAT_IMG"
 else
-    echo "ERROR: No FAT32 formatter found (need newfs_msdos or mkfs.fat)"
+    echo "ERROR: No FAT32 formatter found (need mtools/mformat, mkfs.fat, or newfs_msdos)"
     exit 1
 fi
 

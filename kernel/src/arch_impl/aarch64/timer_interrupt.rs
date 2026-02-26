@@ -198,106 +198,26 @@ pub extern "C" fn timer_interrupt_handler() {
         static CPU0_TICK: AtomicU64 = AtomicU64::new(0);
         let cpu0_tick = CPU0_TICK.fetch_add(1, Ordering::Relaxed) + 1;
         if cpu0_tick % 2000 == 0 {
+            // Minimal heartbeat: essential OS + xHCI fields only.
+            // Detailed xHCI diagnostics are in the lock-free xhci_trace buffer.
             raw_serial_str(b"\n[HB t=");
             print_timer_count_decimal(cpu0_tick / TARGET_TIMER_HZ);
             raw_serial_str(b"s ctx=");
             print_timer_count_decimal(crate::task::scheduler::context_switch_count());
             raw_serial_str(b" sys=");
             print_timer_count_decimal(crate::tracing::providers::counters::SYSCALL_TOTAL.aggregate());
-            raw_serial_str(b" flush=");
-            print_timer_count_decimal(crate::syscall::graphics::FB_FLUSH_COUNT.load(Ordering::Relaxed));
-            raw_serial_str(b" fork=");
-            print_timer_count_decimal(crate::tracing::providers::counters::FORK_TOTAL.aggregate());
-            raw_serial_str(b" exec=");
-            print_timer_count_decimal(crate::tracing::providers::counters::EXEC_TOTAL.aggregate());
-            raw_serial_str(b" cow=");
-            print_timer_count_decimal(crate::memory::cow_stats::TOTAL_FAULTS.load(Ordering::Relaxed));
-            raw_serial_str(b" cowpm=");
-            print_timer_count_decimal(crate::memory::cow_stats::MANAGER_PATH.load(Ordering::Relaxed));
-            raw_serial_str(b" cowcp=");
-            print_timer_count_decimal(crate::memory::cow_stats::PAGES_COPIED.load(Ordering::Relaxed));
-            raw_serial_str(b" cowso=");
-            print_timer_count_decimal(crate::memory::cow_stats::SOLE_OWNER_OPT.load(Ordering::Relaxed));
-            raw_serial_str(b" pty=");
-            print_timer_count_decimal(crate::tty::pty::pair::PTY_SLAVE_BYTES_WRITTEN.load(Ordering::Relaxed));
-            raw_serial_str(b" tgn=");
-            print_timer_count_decimal(crate::arch_impl::aarch64::context_switch::TTBR_PROCESS_GONE_COUNT.load(Ordering::Relaxed));
-            raw_serial_str(b" tlb=");
-            print_timer_count_decimal(crate::arch_impl::aarch64::context_switch::TTBR_PM_LOCK_BUSY_COUNT.load(Ordering::Relaxed));
-            raw_serial_str(b" up=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::POLL_COUNT.load(Ordering::Relaxed));
-            raw_serial_str(b" ue=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::EVENT_COUNT.load(Ordering::Relaxed));
-            raw_serial_str(b" uk=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::KBD_EVENT_COUNT.load(Ordering::Relaxed));
-            raw_serial_str(b" xo=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::XFER_OTHER_COUNT.load(Ordering::Relaxed));
             raw_serial_str(b" xe=");
             print_timer_count_decimal(crate::drivers::usb::xhci::XO_ERR_COUNT.load(Ordering::Relaxed));
-            raw_serial_str(b" xi=");
-            print_hex_u64(crate::drivers::usb::xhci::XO_LAST_INFO.load(Ordering::Relaxed));
-            raw_serial_str(b" mi=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::MSI_EVENT_COUNT.load(Ordering::Relaxed));
-            raw_serial_str(b" psc=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::PSC_COUNT.load(Ordering::Relaxed));
-            raw_serial_str(b" nz=");
-            print_timer_count_decimal(crate::drivers::usb::hid::NONZERO_KBD_COUNT.load(Ordering::Relaxed));
-            raw_serial_str(b" lr=");
-            print_hex_u64(crate::drivers::usb::hid::LAST_KBD_REPORT_U64.load(Ordering::Relaxed));
-            raw_serial_str(b" nk=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::NKRO_EVENT_COUNT.load(Ordering::Relaxed));
-            raw_serial_str(b" nr=");
-            print_hex_u64(crate::drivers::usb::xhci::LAST_NKRO_REPORT_U64.load(Ordering::Relaxed));
-            raw_serial_str(b" DS=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::DMA_SENTINEL_SURVIVED.load(Ordering::SeqCst));
-            raw_serial_str(b" DR=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::DMA_SENTINEL_REPLACED.load(Ordering::SeqCst));
-            raw_serial_str(b" ec=");
-            print_timer_count_decimal(crate::drivers::usb::ehci::EHCI_CTL_COMPLETIONS.load(Ordering::Relaxed) as u64);
-            raw_serial_str(b" ee=");
-            print_timer_count_decimal(crate::drivers::usb::ehci::EHCI_CTL_ERRORS.load(Ordering::Relaxed) as u64);
-            raw_serial_str(b" ei=");
-            print_timer_count_decimal(crate::drivers::usb::ehci::EHCI_INT_COMPLETIONS.load(Ordering::Relaxed) as u64);
-            raw_serial_str(b" us=");
-            print_hex_u64(crate::drivers::usb::xhci::DIAG_USBSTS.load(Ordering::Relaxed) as u64);
-            raw_serial_str(b" ps=");
-            print_hex_u64(crate::drivers::usb::xhci::DIAG_KBD_PORTSC.load(Ordering::Relaxed) as u64);
-            raw_serial_str(b" ep=");
-            print_hex_u64(crate::drivers::usb::xhci::DIAG_KBD_EP_STATE.load(Ordering::Relaxed) as u64);
-            raw_serial_str(b" se=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::DIAG_SPI_ENABLE_COUNT.load(Ordering::Relaxed));
-            raw_serial_str(b" er=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::ENDPOINT_RESET_COUNT.load(Ordering::Relaxed));
-            raw_serial_str(b" ef=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::ENDPOINT_RESET_FAIL_COUNT.load(Ordering::Relaxed));
-            raw_serial_str(b" db=");
-            print_hex_u64(crate::drivers::usb::xhci::DIAG_DOORBELL_EP_STATE.load(Ordering::Relaxed) as u64);
-            raw_serial_str(b" fd=");
-            print_hex_u64(crate::drivers::usb::xhci::DIAG_FIRST_DB.load(Ordering::Relaxed) as u64);
+            raw_serial_str(b" uk=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::KBD_EVENT_COUNT.load(Ordering::Relaxed));
             raw_serial_str(b" fc=");
             print_timer_count_decimal(crate::drivers::usb::xhci::DIAG_FIRST_XFER_CC.load(Ordering::Relaxed) as u64);
-            raw_serial_str(b" tp=");
-            print_hex_u64(crate::drivers::usb::xhci::DIAG_FIRST_XFER_PTR.load(Ordering::Relaxed));
-            raw_serial_str(b" qp=");
-            print_hex_u64(crate::drivers::usb::xhci::DIAG_FIRST_QUEUED_PHYS.load(Ordering::Relaxed));
-            raw_serial_str(b" fs=");
-            print_hex_u64(crate::drivers::usb::xhci::DIAG_FIRST_XFER_SLEP.load(Ordering::Relaxed) as u64);
-            raw_serial_str(b" ts=");
-            print_hex_u64(crate::drivers::usb::xhci::DIAG_FIRST_XFER_STATUS.load(Ordering::Relaxed) as u64);
-            raw_serial_str(b" tc=");
-            print_hex_u64(crate::drivers::usb::xhci::DIAG_FIRST_XFER_CONTROL.load(Ordering::Relaxed) as u64);
-            raw_serial_str(b" gr=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::EP0_GET_REPORT_COUNT.load(Ordering::Relaxed));
-            raw_serial_str(b" gk=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::EP0_GET_REPORT_OK.load(Ordering::Relaxed));
-            raw_serial_str(b" ge=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::EP0_GET_REPORT_ERR.load(Ordering::Relaxed));
-            raw_serial_str(b" mr=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::EP0_MOUSE_GET_REPORT_COUNT.load(Ordering::Relaxed));
-            raw_serial_str(b" mk=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::EP0_MOUSE_GET_REPORT_OK.load(Ordering::Relaxed));
-            raw_serial_str(b" me=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::EP0_MOUSE_GET_REPORT_ERR.load(Ordering::Relaxed));
+            raw_serial_str(b" er=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::ENDPOINT_RESET_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" mi=");
+            print_timer_count_decimal(crate::drivers::usb::xhci::MSI_EVENT_COUNT.load(Ordering::Relaxed));
+            raw_serial_str(b" mf=");
+            print_hex_u64(crate::drivers::usb::xhci::DIAG_MFINDEX.load(Ordering::Relaxed) as u64);
             raw_serial_str(b"]\n");
         }
     }
@@ -365,6 +285,7 @@ fn print_timer_count_decimal(count: u64) {
         }
     }
 }
+
 
 /// Print a u64 as 16-char zero-padded hexadecimal using raw serial output.
 fn print_hex_u64(val: u64) {

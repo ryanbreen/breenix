@@ -1,8 +1,24 @@
 use std::env;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() {
+    // Emit a unique build ID based on current timestamp (seconds + subsecond nanos).
+    // Baked into the kernel boot banner so stale builds are immediately detectable.
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let build_id = format!("{:010x}{:04x}", ts.as_secs(), (ts.subsec_nanos() >> 16) & 0xFFFF);
+    println!("cargo:rustc-env=BREENIX_BUILD_ID={}", build_id);
+    // Print to build output so agents and humans can capture the ID without
+    // extracting it from the binary. Visible as "warning: DEPLOY BUILD_ID: ..."
+    // during cargo build when build.rs reruns.
+    println!("cargo:warning=DEPLOY BUILD_ID: {}", build_id);
+    // Rerun whenever xhci.rs changes (we always `touch` it before building,
+    // so the build ID is always fresh for each deploy cycle).
+    println!("cargo:rerun-if-changed=src/drivers/usb/xhci.rs");
+
     // Get absolute paths from Cargo environment
     let out_dir = env::var("OUT_DIR").unwrap();
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();

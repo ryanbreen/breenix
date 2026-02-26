@@ -310,6 +310,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!();
     serial_println!("========================================");
     serial_println!("  Breenix ARM64 Kernel Starting");
+    serial_println!("  BUILD_ID: {}", env!("BREENIX_BUILD_ID"));
     serial_println!("========================================");
     serial_println!();
 

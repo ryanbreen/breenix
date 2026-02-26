@@ -32,7 +32,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
 use spin::Mutex;
 
 use super::descriptors::{
-    class_code, descriptor_type, hid_protocol, hid_request, hid_subclass, request,
+    class_code, descriptor_type, hid_protocol, hid_request, request,
     DeviceDescriptor, ConfigDescriptor, InterfaceDescriptor, EndpointDescriptor, SetupPacket,
 };
 
@@ -460,6 +460,8 @@ pub static DIAG_EP_STATE_AFTER_CC12: AtomicU32 = AtomicU32::new(0xFF);
 /// Diagnostic: endpoint output context state after NEC quirk + SetTRDeq reset (0xFF = not seen).
 /// Packed: slot<<16 | dci<<8 | state_bits[2:0]. Should be 1=Running if reset worked.
 pub static DIAG_EP_STATE_AFTER_RESET: AtomicU32 = AtomicU32::new(0xFF);
+/// Diagnostic: MFINDEX register value (microframe index) for timing analysis.
+pub static DIAG_MFINDEX: AtomicU32 = AtomicU32::new(0);
 /// Maximum number of endpoint resets before giving up.
 /// Each reset uses 2 command ring entries. With CMD_RING_SIZE=4096 (4095 usable)
 /// CC=12 always halts the endpoint; resets are issued continuously until CC=1.
@@ -537,6 +539,322 @@ fn dma_cache_invalidate(ptr: *const u8, len: usize) {
     unsafe {
         core::arch::asm!("dsb sy", options(nostack, preserves_flags));
     }
+}
+
+// =============================================================================
+// XHCI Trace Infrastructure (lock-free ring buffer)
+// =============================================================================
+
+/// Maximum number of trace records.
+const XHCI_TRACE_MAX_RECORDS: usize = 512;
+/// Maximum bytes for trace payload data.
+const XHCI_TRACE_DATA_SIZE: usize = 32768;
+
+/// Trace operation codes.
+#[repr(u8)]
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+enum XhciTraceOp {
+    MmioWrite32 = 1,
+    MmioWrite64 = 2,
+    MmioRead32 = 3,
+    CommandSubmit = 10,
+    CommandComplete = 11,
+    TransferSubmit = 12,
+    TransferEvent = 13,
+    Doorbell = 14,
+    InputContext = 20,
+    OutputContext = 21,
+    TransferRingSetup = 22,
+    CacheOp = 30,
+    SetTrDeq = 31,
+    EpState = 40,
+    PortStatusChange = 41,
+    Note = 50,
+}
+
+/// A single trace record.
+#[repr(C)]
+struct XhciTraceRecord {
+    seq: u32,
+    op: u8,
+    slot: u8,
+    dci: u8,
+    _pad: u8,
+    timestamp: u64,
+    data_offset: u32,
+    data_len: u32,
+}
+
+/// Whether tracing is active.
+static XHCI_TRACE_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Monotonic sequence number for trace records.
+static XHCI_TRACE_SEQ: AtomicU32 = AtomicU32::new(0);
+/// Data buffer write cursor.
+static XHCI_TRACE_DATA_CURSOR: AtomicU32 = AtomicU32::new(0);
+
+/// Trace record ring buffer.
+static mut XHCI_TRACE_RECORDS: [XhciTraceRecord; XHCI_TRACE_MAX_RECORDS] = {
+    const ZERO: XhciTraceRecord = XhciTraceRecord {
+        seq: 0, op: 0, slot: 0, dci: 0, _pad: 0,
+        timestamp: 0, data_offset: 0xFFFF_FFFF, data_len: 0,
+    };
+    [ZERO; XHCI_TRACE_MAX_RECORDS]
+};
+
+/// Trace data payload buffer.
+static mut XHCI_TRACE_DATA: [u8; XHCI_TRACE_DATA_SIZE] = [0u8; XHCI_TRACE_DATA_SIZE];
+
+/// Read the ARM64 counter register for timestamps.
+#[inline(always)]
+fn trace_timestamp() -> u64 {
+    let val: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, cntvct_el0", out(reg) val, options(nostack, nomem));
+    }
+    val
+}
+
+/// Record a trace event with optional payload data.
+fn xhci_trace(op: XhciTraceOp, slot: u8, dci: u8, data: &[u8]) {
+    if !XHCI_TRACE_ACTIVE.load(Ordering::Relaxed) {
+        return;
+    }
+
+    let seq = XHCI_TRACE_SEQ.fetch_add(1, Ordering::Relaxed);
+    let idx = seq as usize % XHCI_TRACE_MAX_RECORDS;
+    let ts = trace_timestamp();
+
+    let (data_offset, data_len) = if !data.is_empty() {
+        let len = data.len().min(256); // cap per-record payload
+        let cursor = XHCI_TRACE_DATA_CURSOR.fetch_add(len as u32, Ordering::Relaxed);
+        let off = cursor as usize % XHCI_TRACE_DATA_SIZE;
+        // Copy data (may wrap, but that's OK for a ring buffer)
+        let copy_len = len.min(XHCI_TRACE_DATA_SIZE - off);
+        unsafe {
+            let data_ptr = core::ptr::addr_of_mut!(XHCI_TRACE_DATA) as *mut u8;
+            core::ptr::copy_nonoverlapping(
+                data.as_ptr(),
+                data_ptr.add(off),
+                copy_len,
+            );
+            if copy_len < len {
+                core::ptr::copy_nonoverlapping(
+                    data.as_ptr().add(copy_len),
+                    data_ptr,
+                    len - copy_len,
+                );
+            }
+        }
+        (off as u32, len as u32)
+    } else {
+        (0xFFFF_FFFF, 0)
+    };
+
+    unsafe {
+        let rec = &mut *core::ptr::addr_of_mut!(XHCI_TRACE_RECORDS)
+            .cast::<XhciTraceRecord>()
+            .add(idx);
+        rec.seq = seq;
+        rec.op = op as u8;
+        rec.slot = slot;
+        rec.dci = dci;
+        rec.timestamp = ts;
+        rec.data_offset = data_offset;
+        rec.data_len = data_len;
+    }
+}
+
+/// Record a short text note (up to 64 chars) in the trace buffer.
+fn xhci_trace_note(slot: u8, note: &str) {
+    let bytes = note.as_bytes();
+    let len = bytes.len().min(64);
+    xhci_trace(XhciTraceOp::Note, slot, 0, &bytes[..len]);
+}
+
+/// Trace a TRB (16 bytes) with the given operation.
+#[allow(dead_code)]
+fn xhci_trace_trb(op: XhciTraceOp, slot: u8, dci: u8, trb: &Trb) {
+    let bytes: [u8; 16] = unsafe {
+        core::mem::transmute_copy(trb)
+    };
+    xhci_trace(op, slot, dci, &bytes);
+}
+
+/// Trace an Input Context before a command.
+#[allow(dead_code)]
+fn xhci_trace_input_ctx(slot: u8, base: *const u8, ctx_size: usize, max_dci: u8) {
+    // Capture Input Control Context (first ctx_size bytes) + slot + up to max_dci EP contexts
+    let total = ((2 + max_dci as usize) * ctx_size).min(256);
+    let data = unsafe { core::slice::from_raw_parts(base, total) };
+    xhci_trace(XhciTraceOp::InputContext, slot, max_dci, data);
+}
+
+/// Trace an Output Context after a command.
+#[allow(dead_code)]
+fn xhci_trace_output_ctx(slot: u8, base: *const u8, ctx_size: usize, max_dci: u8) {
+    let total = ((1 + max_dci as usize) * ctx_size).min(256);
+    let data = unsafe { core::slice::from_raw_parts(base, total) };
+    xhci_trace(XhciTraceOp::OutputContext, slot, max_dci, data);
+}
+
+/// Trace a doorbell write.
+#[allow(dead_code)]
+fn xhci_trace_doorbell(db_base: u64, slot: u8, target: u8) {
+    let mut buf = [0u8; 12];
+    buf[0..8].copy_from_slice(&db_base.to_le_bytes());
+    buf[8] = slot;
+    buf[9] = target;
+    xhci_trace(XhciTraceOp::Doorbell, slot, target, &buf);
+}
+
+/// Trace a 32-bit MMIO write.
+#[allow(dead_code)]
+fn xhci_trace_mmio_w32(addr: u64, val: u32) {
+    let mut buf = [0u8; 12];
+    buf[0..8].copy_from_slice(&addr.to_le_bytes());
+    buf[8..12].copy_from_slice(&val.to_le_bytes());
+    xhci_trace(XhciTraceOp::MmioWrite32, 0, 0, &buf);
+}
+
+/// Trace a 64-bit MMIO write.
+#[allow(dead_code)]
+fn xhci_trace_mmio_w64(addr: u64, val: u64) {
+    let mut buf = [0u8; 16];
+    buf[0..8].copy_from_slice(&addr.to_le_bytes());
+    buf[8..16].copy_from_slice(&val.to_le_bytes());
+    xhci_trace(XhciTraceOp::MmioWrite64, 0, 0, &buf);
+}
+
+/// Trace a cache operation.
+#[allow(dead_code)]
+fn xhci_trace_cache_op(addr: u64, len: u32) {
+    let mut buf = [0u8; 12];
+    buf[0..8].copy_from_slice(&addr.to_le_bytes());
+    buf[8..12].copy_from_slice(&len.to_le_bytes());
+    xhci_trace(XhciTraceOp::CacheOp, 0, 0, &buf);
+}
+
+/// Dump the xHCI trace buffer to serial in a parseable hex format.
+/// Called once after init completes. Uses serial_println which is fine post-init.
+#[allow(dead_code)]
+fn xhci_trace_dump() {
+    let total = XHCI_TRACE_SEQ.load(Ordering::Relaxed);
+    if total == 0 {
+        crate::serial_println!("=== XHCI_TRACE_START ===");
+        crate::serial_println!("(no records)");
+        crate::serial_println!("=== XHCI_TRACE_END ===");
+        return;
+    }
+
+    // Determine range: if total <= MAX, dump 0..total. If wrapped, dump last MAX records.
+    let start = if total as usize <= XHCI_TRACE_MAX_RECORDS {
+        0u32
+    } else {
+        total - XHCI_TRACE_MAX_RECORDS as u32
+    };
+
+    crate::serial_println!("=== XHCI_TRACE_START total={} ===", total);
+
+    for seq in start..total {
+        let idx = seq as usize % XHCI_TRACE_MAX_RECORDS;
+        let rec = unsafe {
+            &*core::ptr::addr_of!(XHCI_TRACE_RECORDS)
+                .cast::<XhciTraceRecord>()
+                .add(idx)
+        };
+
+        // Op name for readability
+        let op_name = match rec.op {
+            1 => "MMIO_W32",
+            2 => "MMIO_W64",
+            3 => "MMIO_R32",
+            10 => "CMD_SUBMIT",
+            11 => "CMD_COMPLETE",
+            12 => "XFER_SUBMIT",
+            13 => "XFER_EVENT",
+            14 => "DOORBELL",
+            20 => "INPUT_CTX",
+            21 => "OUTPUT_CTX",
+            22 => "XFER_RING_SETUP",
+            30 => "CACHE_OP",
+            31 => "SET_TR_DEQ",
+            40 => "EP_STATE",
+            41 => "PORT_SC",
+            50 => "NOTE",
+            _ => "UNKNOWN",
+        };
+
+        crate::serial_println!(
+            "T {:04} {:12} S={:02} E={:02} TS={:016X} LEN={:04X}",
+            rec.seq, op_name, rec.slot, rec.dci, rec.timestamp, rec.data_len,
+        );
+
+        // Dump payload in 16-byte hex lines
+        if rec.data_len > 0 && rec.data_offset != 0xFFFF_FFFF {
+            let off = rec.data_offset as usize;
+            let len = rec.data_len as usize;
+            if off + len <= XHCI_TRACE_DATA_SIZE {
+                let data = unsafe {
+                    core::slice::from_raw_parts(
+                        core::ptr::addr_of!(XHCI_TRACE_DATA)
+                            .cast::<u8>()
+                            .add(off),
+                        len,
+                    )
+                };
+
+                // For NOTE records, print as string
+                if rec.op == 50 {
+                    if let Ok(s) = core::str::from_utf8(data) {
+                        crate::serial_println!("  \"{}\"", s);
+                    }
+                    continue;
+                }
+
+                // Print hex in 16-byte rows with 4-byte grouping
+                let mut i = 0;
+                while i < len {
+                    let row_end = (i + 16).min(len);
+                    let mut row_str = [0u8; 80];
+                    let mut pos = 0;
+                    row_str[pos] = b' ';
+                    pos += 1;
+                    row_str[pos] = b' ';
+                    pos += 1;
+
+                    let mut j = i;
+                    while j < row_end {
+                        let dw_end = (j + 4).min(row_end);
+                        let mut k = j;
+                        while k < dw_end {
+                            let byte = data[k];
+                            let hi = byte >> 4;
+                            let lo = byte & 0xF;
+                            row_str[pos] = if hi < 10 { b'0' + hi } else { b'A' + hi - 10 };
+                            pos += 1;
+                            row_str[pos] = if lo < 10 { b'0' + lo } else { b'A' + lo - 10 };
+                            pos += 1;
+                            k += 1;
+                        }
+                        if dw_end < row_end {
+                            row_str[pos] = b' ';
+                            pos += 1;
+                        }
+                        j = dw_end;
+                    }
+
+                    if let Ok(s) = core::str::from_utf8(&row_str[..pos]) {
+                        crate::serial_println!("{}", s);
+                    }
+
+                    i += 16;
+                }
+            }
+        }
+    }
+
+    crate::serial_println!("=== XHCI_TRACE_END ===");
 }
 
 // =============================================================================
@@ -703,13 +1021,7 @@ fn wait_for_event_inner(state: &XhciState, command_only: bool) -> Result<Trb, &'
                 // Log consumed Transfer Events — these indicate interrupt TRBs
                 // completing while we're waiting for a command completion.
                 if trb_type_val == trb_type::TRANSFER_EVENT && command_only {
-                    let slot = trb.slot_id();
-                    let ep = (trb.control >> 16) & 0x1F;
-                    let cc = trb.completion_code();
-                    crate::serial_println!(
-                        "[xhci] wait_for_command consumed Transfer Event: slot={} ep={} cc={}",
-                        slot, ep, cc,
-                    );
+                    let _cc = trb.completion_code();
                 }
                 // Consumed non-matching event (Port Status Change, or Transfer
                 // Event in command_only mode) — fall through to timeout check.
@@ -753,12 +1065,12 @@ fn enable_slot(state: &XhciState) -> Result<u8, &'static str> {
     let event = wait_for_command(state)?;
     let cc = event.completion_code();
     if cc != completion_code::SUCCESS {
-        crate::serial_println!("[xhci] EnableSlot failed: completion code {}", cc);
+        xhci_trace_note(0, "err:enable_slot");
         return Err("XHCI EnableSlot failed");
     }
 
     let slot_id = event.slot_id();
-    crate::serial_println!("[xhci] Enabled slot {}", slot_id);
+    xhci_trace_note(slot_id, "enable_slot");
     Ok(slot_id)
 }
 
@@ -891,15 +1203,10 @@ fn address_device(state: &XhciState, slot_id: u8, port_id: u8) -> Result<(), &'s
         let event = wait_for_command(state)?;
         let cc = event.completion_code();
         if cc != completion_code::SUCCESS {
-            crate::serial_println!(
-                "[xhci] AddressDevice slot {} failed: completion code {}",
-                slot_id,
-                cc
-            );
             return Err("XHCI AddressDevice failed");
         }
 
-        crate::serial_println!("[xhci] Addressed device in slot {}", slot_id);
+        xhci_trace_note(slot_id, "address_device");
         Ok(())
     }
 }
@@ -1007,10 +1314,6 @@ fn reset_control_endpoint(state: &XhciState, slot_id: u8) {
     ring_doorbell(state, 0, 0);
     let _ = wait_for_command(state);
 
-    crate::serial_println!(
-        "[xhci] Reset EP0 after error on slot {}",
-        slot_id,
-    );
 }
 
 /// Execute a control transfer on a device's default control endpoint (EP0).
@@ -1099,11 +1402,6 @@ fn control_transfer(
                 // This is our EP0 completion
                 let cc = event.completion_code();
                 if cc != completion_code::SUCCESS && cc != completion_code::SHORT_PACKET {
-                    crate::serial_println!(
-                        "[xhci] Control transfer failed: slot={} cc={}",
-                        slot_id,
-                        cc
-                    );
                     // Any error on EP0 halts the endpoint (xHCI spec 4.10.2.2).
                     // Reset it so subsequent control transfers on this slot work.
                     reset_control_endpoint(state, slot_id);
@@ -1113,10 +1411,6 @@ fn control_transfer(
             }
 
             // Not our EP0 event — stale interrupt endpoint event, skip it
-            crate::serial_println!(
-                "[xhci] Skipping stale xfer event: slot={} ep={} cc={}",
-                ev_slot, ev_ep, event.completion_code(),
-            );
             continue;
         }
 
@@ -1151,10 +1445,6 @@ fn get_device_descriptor_short(
         control_transfer(state, slot_id, &setup, data_phys, 8, true)?;
         dma_cache_invalidate((*data_buf).0.as_ptr(), 8);
 
-        crate::serial_println!(
-            "[xhci] Device descriptor (8B): maxpkt0={}",
-            (*data_buf).0[7],
-        );
     }
 
     Ok(())
@@ -1186,21 +1476,6 @@ fn get_device_descriptor(
         buf.copy_from_slice(&(&(*data_buf).0)[..18]);
     }
 
-    let desc = unsafe { &*(buf.as_ptr() as *const DeviceDescriptor) };
-    let bcd_usb = desc.bcd_usb;
-    let id_vendor = desc.id_vendor;
-    let id_product = desc.id_product;
-    crate::serial_println!(
-        "[xhci] Device descriptor: USB{}.{} class={:#04x} subclass={:#04x} protocol={:#04x} vendor={:#06x} product={:#06x} maxpkt0={}",
-        bcd_usb >> 8,
-        (bcd_usb >> 4) & 0xF,
-        desc.b_device_class,
-        desc.b_device_sub_class,
-        desc.b_device_protocol,
-        id_vendor,
-        id_product,
-        desc.b_max_packet_size0,
-    );
 
     Ok(())
 }
@@ -1224,7 +1499,6 @@ fn set_isoch_delay(
     };
 
     control_transfer(state, slot_id, &setup, 0, 0, false)?;
-    crate::serial_println!("[xhci] SET_ISOCH_DELAY(40ns) sent to slot {}", slot_id);
     Ok(())
 }
 
@@ -1267,16 +1541,8 @@ fn read_string_descriptors(
             match control_transfer(state, slot_id, &setup, data_phys, 255, true) {
                 Ok(()) => {
                     dma_cache_invalidate((*data_buf).0.as_ptr(), 4);
-                    let actual_len = (*data_buf).0[0] as usize;
-                    crate::serial_println!(
-                        "[xhci] String descriptor #{}: {} bytes",
-                        idx, actual_len,
-                    );
                 }
                 Err(_) => {
-                    crate::serial_println!(
-                        "[xhci] String descriptor #{} failed (non-fatal)", idx,
-                    );
                 }
             }
         }
@@ -1311,12 +1577,7 @@ fn get_bos_descriptor(
 
         dma_cache_invalidate((*data_buf).0.as_ptr(), 5);
         let total_len = u16::from_le_bytes([(*data_buf).0[2], (*data_buf).0[3]]) as usize;
-        let num_caps = (*data_buf).0[4];
 
-        crate::serial_println!(
-            "[xhci] BOS descriptor: total_length={} num_device_caps={}",
-            total_len, num_caps,
-        );
 
         // Second read: full BOS descriptor
         if total_len > 5 && total_len <= 64 {
@@ -1334,10 +1595,6 @@ fn get_bos_descriptor(
             control_transfer(state, slot_id, &setup_full, data_phys, total_len as u16, true)?;
             dma_cache_invalidate((*data_buf).0.as_ptr(), total_len);
 
-            crate::serial_println!(
-                "[xhci] BOS descriptor read complete ({} bytes)",
-                total_len,
-            );
         }
     }
 
@@ -1372,15 +1629,8 @@ fn get_config_descriptor(
         let config_desc = &*((*data_buf).0.as_ptr() as *const ConfigDescriptor);
         let total_len = config_desc.w_total_length as usize;
 
-        crate::serial_println!(
-            "[xhci] Config descriptor: total_length={} num_interfaces={} config_value={}",
-            total_len,
-            config_desc.b_num_interfaces,
-            config_desc.b_configuration_value,
-        );
 
         if total_len > 256 {
-            crate::serial_println!("[xhci] Config descriptor too large ({} bytes), truncating", total_len);
         }
 
         let fetch_len = total_len.min(256) as u16;
@@ -1421,7 +1671,7 @@ fn set_configuration(
     };
 
     control_transfer(state, slot_id, &setup, 0, 0, false)?;
-    crate::serial_println!("[xhci] Set configuration {} on slot {}", config_value, slot_id);
+    xhci_trace_note(slot_id, "set_configuration");
     Ok(())
 }
 
@@ -1446,10 +1696,6 @@ fn set_interface(
     };
 
     control_transfer(state, slot_id, &setup, 0, 0, false)?;
-    crate::serial_println!(
-        "[xhci] SET_INTERFACE(alt={}) on slot {} iface {}",
-        alt_setting, slot_id, interface,
-    );
     Ok(())
 }
 
@@ -1581,52 +1827,10 @@ fn fetch_hid_report_descriptor(state: &XhciState, slot_id: u8, interface: u8, ex
 
         let data_phys = virt_to_phys(&raw const CTRL_DATA_BUF as u64);
 
-        match control_transfer(state, slot_id, &setup, data_phys, req_len, true) {
-            Ok(()) => {
-                dma_cache_invalidate((*data_buf).0.as_ptr(), req_len as usize);
-                let buf = &(*data_buf).0;
-
-                // Find actual length (trim trailing zeros)
-                let mut len = req_len as usize;
-                while len > 0 && buf[len - 1] == 0 {
-                    len -= 1;
-                }
-
-                crate::serial_println!(
-                    "[xhci] HID Report Descriptor (iface {}, {} bytes):",
-                    interface, len
-                );
-
-                // Print in hex, 16 bytes per line
-                let mut i = 0;
-                while i < len {
-                    let end = if i + 16 < len { i + 16 } else { len };
-                    let mut hex_buf = [0u8; 48]; // 16 * 3 = 48
-                    let mut pos = 0;
-                    for j in i..end {
-                        let hi = buf[j] >> 4;
-                        let lo = buf[j] & 0x0F;
-                        hex_buf[pos] = if hi < 10 { b'0' + hi } else { b'a' + hi - 10 };
-                        pos += 1;
-                        hex_buf[pos] = if lo < 10 { b'0' + lo } else { b'a' + lo - 10 };
-                        pos += 1;
-                        hex_buf[pos] = b' ';
-                        pos += 1;
-                    }
-                    // Convert to str for serial_println
-                    if let Ok(s) = core::str::from_utf8(&hex_buf[..pos]) {
-                        crate::serial_println!("  {}", s);
-                    }
-                    i += 16;
-                }
-            }
-            Err(e) => {
-                crate::serial_println!(
-                    "[xhci] Failed to get HID Report Descriptor (iface {}): {}",
-                    interface, e
-                );
-            }
-        }
+        // The control transfer itself is important (matches Linux enumeration
+        // sequence). Report descriptor data is captured by the trace system
+        // if tracing is active.
+        let _ = control_transfer(state, slot_id, &setup, data_phys, req_len, true);
     }
 }
 
@@ -1691,10 +1895,6 @@ fn configure_endpoints_batch(
         }
         core::ptr::write_volatile(input_base.add(0x04) as *mut u32, add_flags);
 
-        crate::serial_println!(
-            "[xhci] ConfigureEndpoint(batch): slot={} add_flags={:#010x} max_dci={}",
-            slot_id, add_flags, max_dci,
-        );
 
         // Slot Context: copy DW0-DW2 from device output context, zero DW3.
         // Linux's xhci_slot_copy() copies DW0 (dev_info), DW1 (dev_info2),
@@ -1829,10 +2029,6 @@ fn configure_endpoints_batch(
                 let ep_dw4: u32 = (esit_lo << 16) | avg_trb_len;
                 core::ptr::write_volatile(ep_ctx.add(0x10) as *mut u32, ep_dw4);
 
-                crate::serial_println!(
-                    "[xhci]   EP DCI={}: type=Intr_IN maxpkt={} interval={} ring={:#x}",
-                    ep.dci, max_pkt, interval, ring_phys,
-                );
             }
         }
 
@@ -1853,10 +2049,6 @@ fn configure_endpoints_batch(
             let event = wait_for_command(state)?;
             let cc = event.completion_code();
             if cc != completion_code::SUCCESS {
-                crate::serial_println!(
-                    "[xhci] ConfigureEndpoint failed: slot={} cc={}",
-                    slot_id, cc,
-                );
                 return Err("XHCI ConfigureEndpoint failed");
             }
         }
@@ -1900,10 +2092,6 @@ fn configure_endpoints_batch(
 
             let reconfig_phys = virt_to_phys(&raw const RECONFIG_INPUT_CTX as u64);
 
-            crate::serial_println!(
-                "[xhci] BW dance: ep_count={} slot={} reconfig_phys={:#x}",
-                ep_count, slot_id, reconfig_phys,
-            );
 
             for i in 0..ep_count {
                 if let Some(ref ep) = endpoints[i] {
@@ -1920,18 +2108,14 @@ fn configure_endpoints_batch(
                     enqueue_command(stop_trb);
                     ring_doorbell(state, 0, 0);
                     let stop_event = wait_for_command(state)?;
-                    let stop_cc = stop_event.completion_code();
+                    let _stop_cc = stop_event.completion_code();
                     // Read output context EP state after StopEP (should be 3=Stopped)
                     dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
-                    let stop_ep_state = core::ptr::read_volatile(
+                    let _stop_ep_state = core::ptr::read_volatile(
                         (*dev_ctx).0.as_ptr().add((dci as usize) * ctx_size) as *const u32
                     ) & 0x7;
-                    let stop_deq_lo = core::ptr::read_volatile(
+                    let _stop_deq_lo = core::ptr::read_volatile(
                         (*dev_ctx).0.as_ptr().add((dci as usize) * ctx_size + 8) as *const u32
-                    );
-                    crate::serial_println!(
-                        "[xhci] BW dance: StopEP slot={} DCI={} cc={} → ep_state={} deq_lo={:#010x}",
-                        slot_id, dci, stop_cc, stop_ep_state, stop_deq_lo,
                     );
 
                     // Step 2: Re-ConfigureEndpoint.
@@ -2000,27 +2184,16 @@ fn configure_endpoints_batch(
                     enqueue_command(reconfig_trb);
                     ring_doorbell(state, 0, 0);
                     let reconfig_event = wait_for_command(state)?;
-                    let reconfig_cc = reconfig_event.completion_code();
-                    crate::serial_println!(
-                        "[xhci] BW dance: re-ConfigEP slot={} DCI={} drop=0 add={:#010x} cc={}",
-                        slot_id, dci, per_ep_add_flags, reconfig_cc,
-                    );
+                    let _reconfig_cc = reconfig_event.completion_code();
 
                     // Diagnostic: verify TR Dequeue pointer in output context after re-ConfigEP.
                     dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
                     let ep_out_base = (*dev_ctx).0.as_ptr().add((dci as usize) * ctx_size);
-                    let post_dw0 = core::ptr::read_volatile(ep_out_base as *const u32);
-                    let post_dw2 = core::ptr::read_volatile(ep_out_base.add(8) as *const u32);
-                    let post_dw3 = core::ptr::read_volatile(ep_out_base.add(12) as *const u32);
-                    let post_tr_deq = ((post_dw3 as u64) << 32) | ((post_dw2 as u64) & !0xF);
-                    let post_dcs = post_dw2 & 1;
-                    let ring_phys_check = virt_to_phys(
+                    let _post_dw0 = core::ptr::read_volatile(ep_out_base as *const u32);
+                    let _post_dw2 = core::ptr::read_volatile(ep_out_base.add(8) as *const u32);
+                    let _post_dw3 = core::ptr::read_volatile(ep_out_base.add(12) as *const u32);
+                    let _ring_phys_check = virt_to_phys(
                         &raw const TRANSFER_RINGS[HID_RING_BASE + ep.hid_idx] as u64
-                    );
-                    crate::serial_println!(
-                        "[xhci] BW dance: post-reConfigEP DCI={} state={} tr_deq={:#010x} dcs={} ring_phys={:#010x} {}",
-                        dci, post_dw0 & 0x7, post_tr_deq, post_dcs, ring_phys_check,
-                        if post_tr_deq == ring_phys_check { "OK" } else { "MISMATCH!" },
                     );
                 }
             }
@@ -2029,39 +2202,21 @@ fn configure_endpoints_batch(
         // Verify: read back device context after ConfigureEndpoint
         dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
 
-        let slot_out_dw0 = core::ptr::read_volatile((*dev_ctx).0.as_ptr() as *const u32);
-        let ctx_entries = (slot_out_dw0 >> 27) & 0x1F;
-        let slot_out_dw3 = core::ptr::read_volatile((*dev_ctx).0.as_ptr().add(12) as *const u32);
-        let slot_st = (slot_out_dw3 >> 27) & 0x1F;
-        crate::serial_println!(
-            "[xhci] Slot {} after ConfigureEndpoint: ctx_entries={} slot_state={}",
-            slot_id, ctx_entries, slot_st,
-        );
+        let _slot_out_dw0 = core::ptr::read_volatile((*dev_ctx).0.as_ptr() as *const u32);
+        let _slot_out_dw3 = core::ptr::read_volatile((*dev_ctx).0.as_ptr().add(12) as *const u32);
 
         for i in 0..ep_count {
             if let Some(ref ep) = endpoints[i] {
                 let ep_out = (*dev_ctx).0.as_ptr().add((ep.dci as usize) * ctx_size);
                 let ep_out_dw0 = core::ptr::read_volatile(ep_out as *const u32);
                 let ep_state = ep_out_dw0 & 0x7;
-                let ep_out_dw1 = core::ptr::read_volatile(ep_out.add(4) as *const u32);
-                let ep_out_dw2 = core::ptr::read_volatile(ep_out.add(8) as *const u32);
-                let ep_out_dw3 = core::ptr::read_volatile(ep_out.add(12) as *const u32);
-                let tr_deq = ((ep_out_dw3 as u64) << 32) | ((ep_out_dw2 as u64) & !0xF);
-                let dcs = ep_out_dw2 & 1;
-                let ring_phys_chk = virt_to_phys(
+                let _ep_out_dw1 = core::ptr::read_volatile(ep_out.add(4) as *const u32);
+                let _ep_out_dw2 = core::ptr::read_volatile(ep_out.add(8) as *const u32);
+                let _ep_out_dw3 = core::ptr::read_volatile(ep_out.add(12) as *const u32);
+                let _ring_phys_chk = virt_to_phys(
                     &raw const TRANSFER_RINGS[HID_RING_BASE + ep.hid_idx] as u64
                 );
-                crate::serial_println!(
-                    "[xhci]   DCI={}: state={} type={} DW0={:#010x} tr_deq={:#010x} dcs={} ring_phys={:#010x} {}",
-                    ep.dci, ep_state, (ep_out_dw1 >> 3) & 0x7, ep_out_dw0,
-                    tr_deq, dcs, ring_phys_chk,
-                    if tr_deq == ring_phys_chk { "OK" } else { "MISMATCH!" },
-                );
                 if ep_state == 0 {
-                    crate::serial_println!(
-                        "[xhci]   WARNING: DCI {} still Disabled after ConfigureEndpoint!",
-                        ep.dci,
-                    );
                 }
             }
         }
@@ -2141,15 +2296,6 @@ fn configure_hid(
             };
 
             if iface.b_interface_class == class_code::HID {
-                let is_boot = iface.b_interface_sub_class == hid_subclass::BOOT;
-                crate::serial_println!(
-                    "[xhci] Found HID interface: number={} subclass={} protocol={} endpoints={}{}",
-                    iface.b_interface_number,
-                    iface.b_interface_sub_class,
-                    iface.b_interface_protocol,
-                    iface.b_num_endpoints,
-                    if is_boot { " (boot)" } else { " (report)" },
-                );
 
                 // Parse HID descriptor (type 0x21) for wDescriptorLength.
                 // The HID descriptor immediately follows the interface descriptor.
@@ -2169,10 +2315,6 @@ fn configure_hid(
                                 config_buf[hid_off + 7],
                                 config_buf[hid_off + 8],
                             ]);
-                            crate::serial_println!(
-                                "[xhci] HID descriptor: reportDescLen={}",
-                                hid_report_len,
-                            );
                             break;
                         }
                         hid_off += hd_len;
@@ -2220,10 +2362,6 @@ fn configure_hid(
                                         config_buf[ss_offset + 4],
                                         config_buf[ss_offset + 5],
                                     ]);
-                                    crate::serial_println!(
-                                        "[xhci] SS EP Companion: maxBurst={} mult={} bytesPerInterval={}",
-                                        ss_max_burst, ss_mult, ss_bytes_per_interval,
-                                    );
                                 }
                             }
 
@@ -2308,7 +2446,7 @@ fn configure_hid(
     }
 
     if iface_count == 0 {
-        crate::serial_println!("[xhci] No HID interfaces found on slot {}", slot_id);
+        xhci_trace_note(slot_id, "no_hid_ifaces");
         return Ok(());
     }
 
@@ -2341,11 +2479,7 @@ fn configure_hid(
             for i in 0..ep_count {
                 if let Some(ref ep) = pending_eps[i] {
                     let ep_out = (*dev_ctx).0.as_ptr().add((ep.dci as usize) * ctx_size);
-                    let ep_out_dw0 = core::ptr::read_volatile(ep_out as *const u32);
-                    crate::serial_println!(
-                        "[xhci]   After ConfigEP: DCI={} state={} DW0={:#010x}",
-                        ep.dci, ep_out_dw0 & 0x7, ep_out_dw0,
-                    );
+                    let _ep_out_dw0 = core::ptr::read_volatile(ep_out as *const u32);
                 }
             }
         }
@@ -2374,10 +2508,8 @@ fn configure_hid(
     // This matches Linux's behavior and avoids the Parallels vxHC timing issue:
     // endpoints in Running state with empty rings for too long become internally
     // invalid (output context still shows state=1 but HC returns CC=12 on doorbell).
-    crate::serial_println!("[xhci] Phase3: iface_count={} MINIMAL_INIT={}", iface_count, MINIMAL_INIT);
     for i in 0..iface_count {
         if let Some(ref info) = ifaces[i] {
-            crate::serial_println!("[xhci] Phase3[{}]: iface={} is_kbd={} is_nkro={}", i, info.interface_number, info.is_keyboard, info.is_nkro);
 
             if info.is_nkro {
                 // NKRO keyboard: SET_IDLE + GET_HID_REPORT_DESC then ep2in TRB.
@@ -2385,26 +2517,14 @@ fn configure_hid(
                 if !MINIMAL_INIT {
                     match set_idle(state, slot_id, info.interface_number) {
                         Ok(()) => {
-                            crate::serial_println!(
-                                "[xhci] SET_IDLE(0) on slot {} iface {}",
-                                slot_id, info.interface_number,
-                            );
                         }
-                        Err(e) => {
-                            crate::serial_println!(
-                                "[xhci] SET_IDLE failed on slot {} iface {}: {}",
-                                slot_id, info.interface_number, e,
-                            );
+                        Err(_) => {
                         }
                     }
                     fetch_hid_report_descriptor(state, slot_id, info.interface_number, info.hid_report_len);
                 }
                 state.kbd_slot = slot_id;
                 state.kbd_nkro_endpoint = info.dci;
-                crate::serial_println!(
-                    "[xhci] NKRO keyboard configured: slot={} DCI={}",
-                    slot_id, info.dci
-                );
                 // No interrupt TRB — keyboard uses EP0 GET_REPORT polling (CC=12 workaround).
 
             } else if info.is_keyboard {
@@ -2414,40 +2534,20 @@ fn configure_hid(
                 if !MINIMAL_INIT {
                     match set_idle(state, slot_id, info.interface_number) {
                         Ok(()) => {
-                            crate::serial_println!(
-                                "[xhci] SET_IDLE(0) on slot {} iface {}",
-                                slot_id, info.interface_number,
-                            );
                         }
-                        Err(e) => {
-                            crate::serial_println!(
-                                "[xhci] SET_IDLE failed on slot {} iface {}: {}",
-                                slot_id, info.interface_number, e,
-                            );
+                        Err(_) => {
                         }
                     }
                     fetch_hid_report_descriptor(state, slot_id, info.interface_number, info.hid_report_len);
                     match set_report_leds(state, slot_id, info.interface_number) {
                         Ok(()) => {
-                            crate::serial_println!(
-                                "[xhci] SET_REPORT(LED=0) on slot {} iface {}",
-                                slot_id, info.interface_number
-                            );
                         }
-                        Err(e) => {
-                            crate::serial_println!(
-                                "[xhci] SET_REPORT(LED) failed on slot {} iface {}: {}",
-                                slot_id, info.interface_number, e
-                            );
+                        Err(_) => {
                         }
                     }
                 }
                 state.kbd_slot = slot_id;
                 state.kbd_endpoint = info.dci;
-                crate::serial_println!(
-                    "[xhci] Boot keyboard configured: slot={} DCI={} iface={}",
-                    slot_id, info.dci, info.interface_number
-                );
                 // No interrupt TRB — keyboard uses EP0 GET_REPORT polling (CC=12 workaround).
 
             } else {
@@ -2458,32 +2558,16 @@ fn configure_hid(
                     let feature_id: u8 = if info.hid_idx == 3 { 0x12 } else { 0x11 };
                     match get_set_feature_report(state, slot_id, info.interface_number, feature_id) {
                         Ok(()) => {
-                            crate::serial_println!(
-                                "[xhci] GET/SET Feature report 0x{:02x} on slot {} iface {}",
-                                feature_id, slot_id, info.interface_number
-                            );
                         }
-                        Err(e) => {
-                            crate::serial_println!(
-                                "[xhci] GET/SET Feature report failed on slot {} iface {}: {}",
-                                slot_id, info.interface_number, e
-                            );
+                        Err(_) => {
                         }
                     }
                 }
                 if info.hid_idx == 3 {
                     state.mouse_nkro_endpoint = info.dci;
-                    crate::serial_println!(
-                        "[xhci] Mouse2 configured: slot={} DCI={}",
-                        slot_id, info.dci
-                    );
                 } else {
                     state.mouse_slot = slot_id;
                     state.mouse_endpoint = info.dci;
-                    crate::serial_println!(
-                        "[xhci] Mouse configured: slot={} DCI={}",
-                        slot_id, info.dci
-                    );
                 }
                 // No interrupt TRB for mouse — EP0 GET_REPORT Feature polling handles mouse input.
             }
@@ -2591,16 +2675,6 @@ fn drain_stale_events(state: &XhciState) {
                 break; // No more events
             }
 
-            let trb_type_val = trb.trb_type();
-            crate::serial_println!(
-                "[xhci] Draining stale event #{}: type={} slot={} ep={} cc={} param={:#x}",
-                drained,
-                trb_type_val,
-                trb.slot_id(),
-                (trb.control >> 16) & 0x1F,
-                trb.completion_code(),
-                trb.param,
-            );
 
             // Advance dequeue pointer
             EVENT_RING_DEQUEUE = (idx + 1) % EVENT_RING_SIZE;
@@ -2621,9 +2695,8 @@ fn drain_stale_events(state: &XhciState) {
         }
     }
     if drained > 0 {
-        crate::serial_println!("[xhci] Drained {} stale events from event ring", drained);
+        xhci_trace_note(0, "drain_stale");
     } else {
-        crate::serial_println!("[xhci] No stale events in event ring");
     }
 }
 
@@ -2659,34 +2732,18 @@ fn dump_endpoint_contexts(state: &XhciState) {
             dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
 
             // Slot Context DW0
-            let slot_dw0 = core::ptr::read_volatile((*dev_ctx).0.as_ptr() as *const u32);
-            let slot_state = (slot_dw0 >> 27) & 0x1F;
-            let ctx_entries = slot_dw0 >> 27;
+            let _slot_dw0 = core::ptr::read_volatile((*dev_ctx).0.as_ptr() as *const u32);
 
-            crate::serial_println!(
-                "[xhci] Post-init slot {} context: state={} entries={}",
-                state.kbd_slot, slot_state, ctx_entries & 0x1F,
-            );
 
             // Dump each endpoint DCI we care about (full 5 DWORDs)
             for &dci in &[state.kbd_endpoint, state.kbd_nkro_endpoint] {
                 if dci == 0 { continue; }
                 let ep_base = (*dev_ctx).0.as_ptr().add(dci as usize * ctx_size);
-                let ep_dw0 = core::ptr::read_volatile(ep_base as *const u32);
-                let ep_dw1 = core::ptr::read_volatile(ep_base.add(4) as *const u32);
-                let ep_dw2 = core::ptr::read_volatile(ep_base.add(8) as *const u32);
-                let ep_dw3 = core::ptr::read_volatile(ep_base.add(12) as *const u32);
-                let ep_state = ep_dw0 & 0x7;
-                let ep_type = (ep_dw1 >> 3) & 0x7;
-                let max_pkt = (ep_dw1 >> 16) & 0xFFFF;
-                let cerr = (ep_dw1 >> 1) & 0x3;
-                let tr_deq = ((ep_dw3 as u64) << 32) | (ep_dw2 as u64 & !0xF);
-                let dcs = ep_dw2 & 1;
+                let _ep_dw0 = core::ptr::read_volatile(ep_base as *const u32);
+                let _ep_dw1 = core::ptr::read_volatile(ep_base.add(4) as *const u32);
+                let _ep_dw2 = core::ptr::read_volatile(ep_base.add(8) as *const u32);
+                let _ep_dw3 = core::ptr::read_volatile(ep_base.add(12) as *const u32);
 
-                crate::serial_println!(
-                    "[xhci]   DCI={}: state={} type={} maxpkt={} cerr={} dcs={} deq={:#010x}",
-                    dci, ep_state, ep_type, max_pkt, cerr, dcs, tr_deq,
-                );
             }
         }
     }
@@ -2700,20 +2757,10 @@ fn dump_endpoint_contexts(state: &XhciState) {
             dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
             let dci = state.mouse_endpoint;
             let ep_base = (*dev_ctx).0.as_ptr().add(dci as usize * ctx_size);
-            let ep_dw0 = core::ptr::read_volatile(ep_base as *const u32);
-            let ep_dw1 = core::ptr::read_volatile(ep_base.add(4) as *const u32);
-            let ep_dw2 = core::ptr::read_volatile(ep_base.add(8) as *const u32);
-            let ep_dw3 = core::ptr::read_volatile(ep_base.add(12) as *const u32);
-            let ep_state = ep_dw0 & 0x7;
-            let ep_type = (ep_dw1 >> 3) & 0x7;
-            let max_pkt = (ep_dw1 >> 16) & 0xFFFF;
-            let cerr = (ep_dw1 >> 1) & 0x3;
-            let tr_deq = ((ep_dw3 as u64) << 32) | (ep_dw2 as u64 & !0xF);
-            let dcs = ep_dw2 & 1;
-            crate::serial_println!(
-                "[xhci]   DCI={}: state={} type={} maxpkt={} cerr={} dcs={} deq={:#010x}",
-                dci, ep_state, ep_type, max_pkt, cerr, dcs, tr_deq,
-            );
+            let _ep_dw0 = core::ptr::read_volatile(ep_base as *const u32);
+            let _ep_dw1 = core::ptr::read_volatile(ep_base.add(4) as *const u32);
+            let _ep_dw2 = core::ptr::read_volatile(ep_base.add(8) as *const u32);
+            let _ep_dw3 = core::ptr::read_volatile(ep_base.add(12) as *const u32);
         }
     }
 }
@@ -2982,23 +3029,13 @@ fn start_hid_polling(state: &XhciState) {
 
 /// Scan all root hub ports for connected devices, enumerate, and configure HID devices.
 fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
-    crate::serial_println!(
-        "[xhci] Scanning {} ports...",
-        state.max_ports,
-    );
 
     // Dump PORTSC of all ports (especially USB 2.0 ports 12-13)
     for port in 0..state.max_ports as u64 {
         let portsc_addr = state.op_base + 0x400 + port * 0x10;
         let portsc = read32(portsc_addr);
-        let speed = (portsc >> 10) & 0xF;
         let ccs = portsc & 1;
-        let ped = (portsc >> 1) & 1;
         if ccs != 0 || port >= 12 {
-            crate::serial_println!(
-                "[xhci] Port {} PORTSC={:#010x} CCS={} PED={} speed={}",
-                port, portsc, ccs, ped, speed,
-            );
         }
     }
 
@@ -3024,24 +3061,10 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
         }
 
 
-        let port_speed = (portsc >> 10) & 0xF;
-        crate::serial_println!(
-            "[xhci] Port {}: connected (PORTSC={:#010x}, speed={})",
-            port,
-            portsc,
-            match port_speed {
-                1 => "Full",
-                2 => "Low",
-                3 => "High",
-                4 => "Super",
-                _ => "Unknown",
-            },
-        );
 
         // Check if port is enabled (PED, bit 1)
         if portsc & (1 << 1) == 0 {
             // Port not enabled - perform a port reset
-            crate::serial_println!("[xhci] Port {}: resetting...", port);
 
             // Write PR (Port Reset, bit 4).
             // Note: PORTSC is a mix of RW, RW1C, and RO bits. We must preserve
@@ -3059,7 +3082,6 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
             )
             .is_err()
             {
-                crate::serial_println!("[xhci] Port {}: reset timeout", port);
                 continue;
             }
 
@@ -3069,35 +3091,26 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
 
             let portsc_final = read32(portsc_addr);
             if portsc_final & (1 << 1) == 0 {
-                crate::serial_println!("[xhci] Port {}: still not enabled after reset", port);
                 continue;
             }
 
-            crate::serial_println!(
-                "[xhci] Port {}: enabled after reset (PORTSC={:#010x})",
-                port,
-                portsc_final,
-            );
         }
 
         // Enable Slot for this device
         let slot_id = match enable_slot(state) {
             Ok(id) => id,
-            Err(e) => {
-                crate::serial_println!("[xhci] Port {}: enable_slot failed: {}", port, e);
+            Err(_) => {
                 continue;
             }
         };
         if slot_id == 0 {
-            crate::serial_println!("[xhci] Port {}: got slot_id 0, skipping", port);
             continue;
         }
 
         slots_used += 1;
 
         // Address Device (port numbers are 1-based)
-        if let Err(e) = address_device(state, slot_id, port as u8 + 1) {
-            crate::serial_println!("[xhci] Port {}: address_device failed: {}", port, e);
+        if let Err(_) = address_device(state, slot_id, port as u8 + 1) {
             continue;
         }
 
@@ -3111,38 +3124,29 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
         // This exact ordering is confirmed by Parallels Linux VM ftrace capture.
 
         // Step 1: Short device descriptor (8 bytes)
-        if let Err(e) = get_device_descriptor_short(state, slot_id) {
-            crate::serial_println!("[xhci] Port {}: get_device_descriptor(8) failed: {}", port, e);
+        if let Err(_) = get_device_descriptor_short(state, slot_id) {
             continue;
         }
 
         // Step 2: SET_ISOCH_DELAY (between the two descriptor reads)
-        if let Err(e) = set_isoch_delay(state, slot_id) {
-            crate::serial_println!(
-                "[xhci] Port {}: SET_ISOCH_DELAY failed: {} (non-fatal)", port, e
-            );
+        if let Err(_) = set_isoch_delay(state, slot_id) {
         }
 
         // Step 3: Full device descriptor (18 bytes)
         let mut desc_buf = [0u8; 18];
-        if let Err(e) = get_device_descriptor(state, slot_id, &mut desc_buf) {
-            crate::serial_println!("[xhci] Port {}: get_device_descriptor(18) failed: {}", port, e);
+        if let Err(_) = get_device_descriptor(state, slot_id, &mut desc_buf) {
             continue;
         }
 
         // Step 4: BOS descriptor
-        if let Err(e) = get_bos_descriptor(state, slot_id) {
-            crate::serial_println!(
-                "[xhci] Port {}: GET_BOS_DESCRIPTOR failed: {} (non-fatal)", port, e
-            );
+        if let Err(_) = get_bos_descriptor(state, slot_id) {
         }
 
         // Get Configuration Descriptor
         let mut config_buf = [0u8; 256];
         let config_len = match get_config_descriptor(state, slot_id, &mut config_buf) {
             Ok(len) => len,
-            Err(e) => {
-                crate::serial_println!("[xhci] Port {}: get_config_descriptor failed: {}", port, e);
+            Err(_) => {
                 continue;
             }
         };
@@ -3162,8 +3166,7 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
         }
 
         // Configure HID devices
-        if let Err(e) = configure_hid(state, slot_id, &config_buf, config_len) {
-            crate::serial_println!("[xhci] Port {}: configure_hid failed: {}", port, e);
+        if let Err(_) = configure_hid(state, slot_id, &config_buf, config_len) {
         }
     }
 
@@ -3188,11 +3191,10 @@ fn setup_xhci_msi(pci_dev: &crate::drivers::pci::Device) -> u32 {
     // Step 1: Find MSI capability in PCI config space
     let msi_cap = match pci_dev.find_msi_capability() {
         Some(offset) => {
-            crate::serial_println!("[xhci] Found MSI capability at PCI config offset {:#x}", offset);
             offset
         }
         None => {
-            crate::serial_println!("[xhci] No MSI capability found, using polling mode");
+            xhci_trace_note(0, "no_msi_cap");
             return 0;
         }
     };
@@ -3215,17 +3217,13 @@ fn setup_xhci_msi(pci_dev: &crate::drivers::pci::Device) -> u32 {
             crate::platform_config::gicv2m_spi_count(),
         )
     } else {
-        crate::serial_println!("[xhci] GICv2m not found at {:#x}, using polling mode", PARALLELS_GICV2M_BASE);
+        xhci_trace_note(0, "err:gicv2m");
         return 0;
     };
 
-    crate::serial_println!(
-        "[xhci] GICv2m at {:#x}: SPI base={}, count={}",
-        base, spi_base, spi_count,
-    );
 
     if spi_count == 0 {
-        crate::serial_println!("[xhci] GICv2m has no available SPIs");
+        xhci_trace_note(0, "err:no_spis");
         return 0;
     }
 
@@ -3240,10 +3238,6 @@ fn setup_xhci_msi(pci_dev: &crate::drivers::pci::Device) -> u32 {
     pci_dev.configure_msi(msi_cap, msi_address, msi_data);
     pci_dev.disable_intx();
 
-    crate::serial_println!(
-        "[xhci] MSI configured: address={:#010x} data={:#06x} (SPI {}, INTID {})",
-        msi_address, msi_data, spi, intid,
-    );
 
     // Step 5: Configure GIC for this SPI (edge-triggered).
     //
@@ -3252,7 +3246,6 @@ fn setup_xhci_msi(pci_dev: &crate::drivers::pci::Device) -> u32 {
     // doorbell writes, so the SPI won't fire even though it's enabled.
     gic::configure_spi_edge_triggered(intid);
 
-    crate::serial_println!("[xhci] GIC SPI {} configured (edge-triggered, INTID {})", spi, intid);
 
     intid
 }
@@ -3268,16 +3261,7 @@ fn setup_xhci_msi(pci_dev: &crate::drivers::pci::Device) -> u32 {
 /// 6. Start the controller
 /// 7. Scan ports and enumerate connected USB devices
 pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
-    crate::serial_println!("[xhci] Initializing XHCI controller...");
-    crate::serial_println!(
-        "[xhci] PCI device: {:02x}:{:02x}.{} [{:04x}:{:04x}] IRQ={}",
-        pci_dev.bus,
-        pci_dev.device,
-        pci_dev.function,
-        pci_dev.vendor_id,
-        pci_dev.device_id,
-        pci_dev.interrupt_line,
-    );
+    xhci_trace_note(0, "init_start");
 
     // 1. Enable bus mastering + memory space
     pci_dev.enable_bus_master();
@@ -3285,54 +3269,28 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
 
     // 2. Map BAR0 via HHDM
     let bar = pci_dev.get_mmio_bar().ok_or("XHCI: no MMIO BAR found")?;
-    crate::serial_println!(
-        "[xhci] BAR0: phys={:#010x} size={:#x}",
-        bar.address,
-        bar.size,
-    );
     let base = HHDM_BASE + bar.address;
 
     // 3. Read capability registers
     let cap_word = read32(base);
     let cap_length = (cap_word & 0xFF) as u8;
-    let hci_version = (cap_word >> 16) & 0xFFFF;
 
     let hcsparams1 = read32(base + 0x04);
-    let hcsparams2 = read32(base + 0x08);
+    let _hcsparams2 = read32(base + 0x08);
     let hccparams1 = read32(base + 0x10);
     let db_offset = read32(base + 0x14) & !0x3u32;
     let rts_offset = read32(base + 0x18) & !0x1Fu32;
 
     let max_slots = (hcsparams1 & 0xFF) as u8;
-    let max_intrs = ((hcsparams1 >> 8) & 0x7FF) as u16;
     let max_ports = ((hcsparams1 >> 24) & 0xFF) as u8;
     let context_size = if hccparams1 & (1 << 2) != 0 { 64 } else { 32 };
 
     // Check for scratchpad buffers
-    let scratch_hi = (hcsparams2 >> 21) & 0x1F;
-    let scratch_lo = (hcsparams2 >> 27) & 0x1F;
-    let num_scratch = (scratch_hi << 5) | scratch_lo;
 
     let op_base = base + cap_length as u64;
     let rt_base = base + rts_offset as u64;
     let db_base = base + db_offset as u64;
 
-    crate::serial_println!(
-        "[xhci] Capabilities: version={:#06x} caplength={} max_slots={} max_ports={} max_intrs={} ctx_size={} scratch={}",
-        hci_version,
-        cap_length,
-        max_slots,
-        max_ports,
-        max_intrs,
-        context_size,
-        num_scratch,
-    );
-    crate::serial_println!(
-        "[xhci] Offsets: op={:#x} rt={:#x} db={:#x}",
-        cap_length,
-        rts_offset,
-        db_offset,
-    );
 
     // 3b. Walk Extended Capabilities list for Supported Protocol info.
     // HCCPARAMS1 bits 31:16 = xECP (xHCI Extended Capabilities Pointer) in DWORDs from base.
@@ -3347,29 +3305,15 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
             if cap_id == 2 {
                 // Supported Protocol Capability (ID=2)
                 // DW0: cap_id(7:0), next(15:8), minor_rev(23:16), major_rev(31:24)
-                let minor_rev = (ecap_dw0 >> 16) & 0xFF;
-                let major_rev = (ecap_dw0 >> 24) & 0xFF;
                 // DW1: Name String (ASCII, e.g., "USB ")
-                let name = read32(ecap_addr + 4);
+                let _name = read32(ecap_addr + 4);
                 // DW2: compatible_port_offset(7:0), compatible_port_count(15:8),
                 //       protocol_defined(27:16), protocol_speed_id_count(31:28)
-                let dw2 = read32(ecap_addr + 8);
-                let port_offset = dw2 & 0xFF;
-                let port_count = (dw2 >> 8) & 0xFF;
+                let _dw2 = read32(ecap_addr + 8);
                 // DW3: protocol slot type (3:0)
                 let _dw3 = read32(ecap_addr + 12);
 
-                let name_bytes = name.to_le_bytes();
-                crate::serial_println!(
-                    "[xhci] Supported Protocol: USB {}.{} name='{}{}{}{}' ports={}-{} (offset={} count={})",
-                    major_rev, minor_rev,
-                    name_bytes[0] as char, name_bytes[1] as char,
-                    name_bytes[2] as char, name_bytes[3] as char,
-                    port_offset, port_offset + port_count - 1,
-                    port_offset, port_count,
-                );
             } else if cap_id != 0 {
-                crate::serial_println!("[xhci] ExtCap ID={} at offset {:#x}", cap_id, ecap_addr - base);
             }
 
             if next_ptr == 0 {
@@ -3378,7 +3322,6 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
             ecap_addr += next_ptr as u64 * 4;
         }
     } else {
-        crate::serial_println!("[xhci] No Extended Capabilities list");
     }
 
     // 4. Stop controller: clear USBCMD.RS, wait for USBSTS.HCH
@@ -3388,7 +3331,7 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
         write32(op_base, usbcmd & !1);
         wait_for(|| read32(op_base + 0x04) & 1 != 0, 100_000)
             .map_err(|_| "XHCI: timeout waiting for HCH")?;
-        crate::serial_println!("[xhci] Controller stopped");
+        xhci_trace_note(0, "ctrl_stopped");
     }
 
     // 5. Reset: set USBCMD.HCRST, wait for clear
@@ -3398,17 +3341,15 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     // Wait for CNR (Controller Not Ready, bit 11 of USBSTS) to clear
     wait_for(|| read32(op_base + 0x04) & (1 << 11) == 0, 100_000)
         .map_err(|_| "XHCI: timeout waiting for CNR clear")?;
-    crate::serial_println!("[xhci] Controller reset complete");
+    xhci_trace_note(0, "ctrl_reset");
 
     // 6. Set MaxSlotsEn
     let slots_en = max_slots.min(MAX_SLOTS as u8);
     write32(op_base + 0x38, slots_en as u32); // CONFIG register
-    crate::serial_println!("[xhci] MaxSlotsEn set to {}", slots_en);
 
     // 6b. Set DNCTRL (Device Notification Control) — match Linux (0x02)
     // Bit 1 (N1) enables Function Wake device notifications.
     write32(op_base + 0x14, 0x02);
-    crate::serial_println!("[xhci] DNCTRL set to {:#06x}", read32(op_base + 0x14));
 
     // 7. Set DCBAAP (Device Context Base Address Array Pointer)
     let dcbaa_phys = virt_to_phys((&raw const DCBAA) as u64);
@@ -3419,7 +3360,6 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
         dma_cache_clean((*dcbaa).0.as_ptr() as *const u8, 256 * core::mem::size_of::<u64>());
     }
     write64(op_base + 0x30, dcbaa_phys);
-    crate::serial_println!("[xhci] DCBAAP set to phys={:#010x}", dcbaa_phys);
 
     // 8. Set Command Ring Control Register (CRCR)
     let cmd_ring_phys = virt_to_phys((&raw const CMD_RING) as u64);
@@ -3433,7 +3373,6 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     }
     // CRCR: physical address | RCS (Ring Cycle State) = 1
     write64(op_base + 0x18, cmd_ring_phys | 1);
-    crate::serial_println!("[xhci] CRCR set to phys={:#010x}", cmd_ring_phys);
 
     // 9. Set up Event Ring for Interrupter 0
     let event_ring_phys = virt_to_phys((&raw const EVENT_RING) as u64);
@@ -3466,23 +3405,16 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     // ERSTBA (Event Ring Segment Table Base Address) - must be written AFTER ERSTSZ
     write64(ir0 + 0x10, erst_phys);
 
-    crate::serial_println!(
-        "[xhci] Event ring: phys={:#010x} ERST phys={:#010x}",
-        event_ring_phys,
-        erst_phys,
-    );
 
     // 10. Enable interrupts on Interrupter 0
     // Set IMOD (Interrupt Moderation) — match Linux (0xa0 = 160 * 250ns = 40µs)
     write32(ir0 + 0x04, 0x000000a0);
-    crate::serial_println!("[xhci] IMOD set to {:#06x}", read32(ir0 + 0x04));
     let iman = read32(ir0);
     write32(ir0, iman | 2); // IMAN.IE = 1
 
     // 11. Start controller: USBCMD.RS=1, INTE=1
     let usbcmd = read32(op_base);
     write32(op_base, usbcmd | 1 | (1 << 2)); // RS=1, INTE=1
-    crate::serial_println!("[xhci] Controller started (USBCMD={:#010x})", read32(op_base));
 
     // 12. Set up PCI MSI AFTER starting the controller.
     //
@@ -3505,7 +3437,7 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     // Verify controller is running
     let usbsts = read32(op_base + 0x04);
     if usbsts & 1 != 0 {
-        crate::serial_println!("[xhci] WARNING: Controller halted after start (USBSTS={:#010x})", usbsts);
+        xhci_trace_note(0, "err:ctrl_halted");
     }
 
     // 13. Create state with IRQ already set
@@ -3532,18 +3464,10 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     // MSI is configured at PCI level (address/data written to xHC before RS=1,
     // matching Linux's pci_alloc_irq_vectors). GIC SPI is NOT yet enabled —
     // enumeration uses direct event ring polling via wait_for_event/wait_for_command.
-    if let Err(e) = scan_ports(&mut xhci_state) {
-        crate::serial_println!("[xhci] Port scanning error: {}", e);
+    if let Err(_) = scan_ports(&mut xhci_state) {
+        xhci_trace_note(0, "err:port_scan");
     }
 
-    crate::serial_println!(
-        "[xhci] Scan complete: kbd_slot={} kbd_ep={} kbd_nkro_ep={} mouse_slot={} mouse_ep={}",
-        xhci_state.kbd_slot,
-        xhci_state.kbd_endpoint,
-        xhci_state.kbd_nkro_endpoint,
-        xhci_state.mouse_slot,
-        xhci_state.mouse_endpoint,
-    );
 
     // 15. Store state and set INITIALIZED before enabling GIC SPI.
     //
@@ -3575,48 +3499,22 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
         let s = xhci_state_ref;
         // Keyboard: just log state, do NOT reset (EP0 GET_REPORT polling handles input).
         if s.kbd_slot != 0 {
-            let kbd_boot_state = read_output_ep_state(s, s.kbd_slot, s.kbd_endpoint);
-            crate::serial_println!(
-                "[xhci] Post-init: kbd boot EP state={} (EP0-polled, no reset)",
-                kbd_boot_state,
-            );
+            let _kbd_boot_state = read_output_ep_state(s, s.kbd_slot, s.kbd_endpoint);
             if s.kbd_nkro_endpoint != 0 {
-                let kbd_nkro_state = read_output_ep_state(s, s.kbd_slot, s.kbd_nkro_endpoint);
-                crate::serial_println!(
-                    "[xhci] Post-init: kbd NKRO EP state={} (EP0-polled, no reset)",
-                    kbd_nkro_state,
-                );
+                let _kbd_nkro_state = read_output_ep_state(s, s.kbd_slot, s.kbd_nkro_endpoint);
             }
         }
         let mouse_state = read_output_ep_state(s, s.mouse_slot, s.mouse_endpoint);
         if mouse_state == 2 {
-            crate::serial_println!(
-                "[xhci] Post-init: mouse EP Halted (slot={} DCI={}) — resetting",
-                s.mouse_slot, s.mouse_endpoint,
-            );
-            if let Err(e) = reset_halted_endpoint(s, s.mouse_slot, s.mouse_endpoint, 1) {
-                crate::serial_println!("[xhci] Post-init mouse reset failed: {}", e);
+            if let Err(_) = reset_halted_endpoint(s, s.mouse_slot, s.mouse_endpoint, 1) {
             }
         } else if s.mouse_slot != 0 {
-            crate::serial_println!(
-                "[xhci] Post-init: mouse EP state={} (not Halted)",
-                mouse_state,
-            );
         }
         let mouse2_state = read_output_ep_state(s, s.mouse_slot, s.mouse_nkro_endpoint);
         if mouse2_state == 2 {
-            crate::serial_println!(
-                "[xhci] Post-init: mouse2 EP Halted (slot={} DCI={}) — resetting",
-                s.mouse_slot, s.mouse_nkro_endpoint,
-            );
-            if let Err(e) = reset_halted_endpoint(s, s.mouse_slot, s.mouse_nkro_endpoint, 3) {
-                crate::serial_println!("[xhci] Post-init mouse2 reset failed: {}", e);
+            if let Err(_) = reset_halted_endpoint(s, s.mouse_slot, s.mouse_nkro_endpoint, 3) {
             }
         } else if s.mouse_nkro_endpoint != 0 {
-            crate::serial_println!(
-                "[xhci] Post-init: mouse2 EP state={} (not Halted)",
-                mouse2_state,
-            );
         }
     }
 
@@ -3627,7 +3525,7 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     start_hid_polling(xhci_state_ref);
     HID_POLLING_STARTED.store(true, Ordering::Release);
 
-    crate::serial_println!("[xhci] Initialization complete (MSI IRQ={})", irq);
+    xhci_trace_note(0, "init_complete");
 
     Ok(())
 }

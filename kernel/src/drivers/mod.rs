@@ -147,15 +147,11 @@ pub fn init() -> usize {
         // Initialize XHCI USB host controller (keyboard + mouse)
         // NEC uPD720200: vendor 0x1033, device 0x0194
         if let Some(xhci_dev) = pci::find_device(0x1033, 0x0194) {
-            crate::serial_aarch64::raw_serial_str(b"[drv-dbg] calling xhci::init\n");
             match usb::xhci::init(&xhci_dev) {
                 Ok(()) => {
-                    crate::serial_aarch64::raw_serial_str(b"[drv-dbg] xhci init Ok\n");
                     serial_println!("[drivers] XHCI USB controller initialized");
-                    crate::serial_aarch64::raw_serial_str(b"[drv-dbg] after serial_println\n");
                 }
                 Err(e) => {
-                    crate::serial_aarch64::raw_serial_str(b"[drv-dbg] xhci init Err\n");
                     serial_println!("[drivers] XHCI USB init failed: {}", e);
                 }
             }

@@ -259,6 +259,29 @@ impl Device {
         pci_write_config_word(self.bus, self.device, self.function, 0x04, command | (1 << 10));
     }
 
+    /// Enable legacy INTx interrupts (clear DisINTx bit in PCI Command register).
+    pub fn enable_intx(&self) {
+        let command = pci_read_config_word(self.bus, self.device, self.function, 0x04);
+        pci_write_config_word(self.bus, self.device, self.function, 0x04, command & !(1 << 10));
+    }
+
+    /// Disable PCI MSI. Clears the MSI Enable bit in the MSI Message Control register.
+    /// Returns true if MSI was found and disabled, false if no MSI capability exists.
+    pub fn disable_msi(&self) -> bool {
+        if let Some(cap_offset) = self.find_msi_capability() {
+            let msg_ctrl = pci_read_config_word(self.bus, self.device, self.function, cap_offset + 2);
+            // Clear bit 0 (MSI Enable)
+            pci_write_config_word(
+                self.bus, self.device, self.function,
+                cap_offset + 2,
+                msg_ctrl & !0x0001,
+            );
+            true
+        } else {
+            false
+        }
+    }
+
     /// Find the MSI capability in the PCI capability list.
     ///
     /// Returns the config space offset of the MSI capability, or None if not found.
