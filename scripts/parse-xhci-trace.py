@@ -22,6 +22,7 @@ TRB_TYPES = {
     3: "Data Stage",
     4: "Status Stage",
     6: "Link",
+    8: "No-Op",
     9: "Enable Slot",
     10: "Disable Slot",
     11: "Address Device",

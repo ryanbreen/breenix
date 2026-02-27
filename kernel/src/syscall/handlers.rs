@@ -136,6 +136,10 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
     // Get current thread ID from scheduler
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
         log::debug!("sys_exit: Current thread ID from scheduler: {}", thread_id);
+        crate::tracing::providers::process::trace_thread_exit(
+            thread_id as u16,
+            exit_code as u16,
+        );
 
         // Handle clear_child_tid for clone threads (CLONE_CHILD_CLEARTID)
         // Write 0 to the tid address and futex-wake any joiners

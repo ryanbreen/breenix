@@ -8,6 +8,7 @@
 //! - `IRQ_ENTRY` (0x0100): Interrupt entry, payload = interrupt vector
 //! - `IRQ_EXIT` (0x0101): Interrupt exit, payload = interrupt vector
 //! - `TIMER_TICK` (0x0102): Timer tick, payload = tick count (low 32 bits)
+//! - `HEARTBEAT_MARKER` (0x0103): Heartbeat marker, payload = diagnostic value
 //!
 //! # Usage
 //!
@@ -52,6 +53,9 @@ pub const PROBE_EXIT: u8 = 0x01;
 /// Probe ID for timer tick.
 pub const PROBE_TIMER_TICK: u8 = 0x02;
 
+/// Probe ID for heartbeat marker.
+pub const PROBE_HEARTBEAT_MARKER: u8 = 0x03;
+
 /// Event type for interrupt entry.
 /// Payload: interrupt vector number.
 pub const IRQ_ENTRY: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_ENTRY as u16);
@@ -63,6 +67,10 @@ pub const IRQ_EXIT: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_EXIT as u16);
 /// Event type for timer tick.
 /// Payload: tick count (low 32 bits).
 pub const TIMER_TICK: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_TIMER_TICK as u16);
+
+/// Event type for heartbeat marker.
+/// Payload: uptime in seconds or diagnostic value.
+pub const HEARTBEAT_MARKER: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_HEARTBEAT_MARKER as u16);
 
 // =============================================================================
 // Initialization
@@ -127,5 +135,21 @@ pub fn trace_timer_tick(tick_count: u64) {
     // Only record trace event if tracing is enabled
     if IRQ_PROVIDER.is_enabled() && crate::tracing::is_enabled() {
         crate::tracing::record_event(TIMER_TICK, 0, tick_count as u32);
+    }
+}
+
+/// Trace heartbeat marker (inline for minimal overhead).
+///
+/// Records a periodic heartbeat in the trace buffer as a replacement
+/// for serial output in the timer interrupt.
+///
+/// # Parameters
+///
+/// - `payload`: Diagnostic value (e.g., uptime in seconds or xHCI completion code)
+#[inline(always)]
+#[allow(dead_code)]
+pub fn trace_heartbeat_marker(payload: u32) {
+    if IRQ_PROVIDER.is_enabled() && crate::tracing::is_enabled() {
+        crate::tracing::record_event(HEARTBEAT_MARKER, 0, payload);
     }
 }

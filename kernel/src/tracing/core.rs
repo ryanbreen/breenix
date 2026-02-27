@@ -143,11 +143,13 @@ impl TraceEventType {
     pub const IRQ_ENTRY: u16 = 0x0100;
     pub const IRQ_EXIT: u16 = 0x0101;
     pub const TIMER_TICK: u16 = 0x0102;
+    pub const HEARTBEAT_MARKER: u16 = 0x0103;
 
-    // Scheduler events (0x02xx)
+    // Scheduler events (0x02xx / 0x00xx with upper probe IDs)
     pub const SCHED_PICK: u16 = 0x0200;
     pub const SCHED_RESCHED: u16 = 0x0201;
     pub const SCHED_PREEMPT: u16 = 0x0202;
+    pub const SCHED_QUEUE_STATE: u16 = 0x0012;
 
     // Syscall events (0x03xx)
     pub const SYSCALL_ENTRY: u16 = 0x0300;
@@ -174,6 +176,10 @@ impl TraceEventType {
     pub const DATA_ABORT: u16 = 0x0607;
     pub const PROCESS_EXIT: u16 = 0x0608;
     pub const COW_LOCK_FAIL: u16 = 0x0609;
+    pub const SPAWN_FRONT: u16 = 0x060A;
+    pub const WAITPID_BLOCK: u16 = 0x060B;
+    pub const WAITPID_WAKE: u16 = 0x060C;
+    pub const THREAD_EXIT: u16 = 0x060D;
 
     // Debug markers (0xFFxx)
     pub const MARKER_A: u16 = 0xFF00;

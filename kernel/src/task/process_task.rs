@@ -121,6 +121,10 @@ impl ProcessScheduler {
                     sched.unblock_for_child_exit(parent_tid);
                     sched.unblock_for_signal(parent_tid);
                 });
+                crate::tracing::providers::process::trace_waitpid_wake(
+                    parent_tid as u16,
+                    pid.as_u64() as u16,
+                );
             }
 
             log::debug!(

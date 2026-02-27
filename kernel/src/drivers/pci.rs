@@ -465,7 +465,7 @@ pub(crate) fn pci_read_config_word(bus: u8, device: u8, function: u8, offset: u8
 
 /// Write a 16-bit value to PCI configuration space
 #[allow(dead_code)] // Used by Device methods, which are part of public API
-fn pci_write_config_word(bus: u8, device: u8, function: u8, offset: u8, value: u16) {
+pub(crate) fn pci_write_config_word(bus: u8, device: u8, function: u8, offset: u8, value: u16) {
     let dword_offset = offset & 0xFC;
     let mut dword = pci_read_config_dword(bus, device, function, dword_offset);
     let shift = ((offset & 2) * 8) as u32;

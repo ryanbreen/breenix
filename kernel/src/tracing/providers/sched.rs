@@ -9,6 +9,7 @@
 //! - `CTX_SWITCH_EXIT` (0x0002): Context switch complete, payload = new_tid
 //! - `SCHED_PICK` (0x0200): Scheduler picked a thread, payload = thread_id
 //! - `SCHED_RESCHED` (0x0201): Reschedule requested, payload = 0
+//! - `SCHED_QUEUE_STATE` (0x0012): Queue state snapshot, payload = packed(ready_queue_len, chosen_tid)
 //!
 //! # Usage
 //!
@@ -92,6 +93,9 @@ pub const PROBE_SCHED_PICK: u8 = 0x10;
 /// Probe ID for reschedule request.
 pub const PROBE_SCHED_RESCHED: u8 = 0x11;
 
+/// Probe ID for scheduler queue state snapshot.
+pub const PROBE_SCHED_QUEUE_STATE: u8 = 0x12;
+
 /// Event type for scheduler picking a thread.
 /// Payload: thread_id.
 pub const SCHED_PICK: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_SCHED_PICK as u16);
@@ -99,6 +103,11 @@ pub const SCHED_PICK: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_SCHED_PICK as u
 /// Event type for reschedule request.
 /// Payload: 0.
 pub const SCHED_RESCHED: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_SCHED_RESCHED as u16);
+
+/// Event type for scheduler queue state snapshot.
+/// Payload: packed(ready_queue_len, chosen_tid).
+pub const SCHED_QUEUE_STATE: u16 =
+    ((PROVIDER_ID as u16) << 8) | (PROBE_SCHED_QUEUE_STATE as u16);
 
 // =============================================================================
 // Initialization
@@ -141,5 +150,22 @@ pub fn trace_ctx_switch(old_tid: u64, new_tid: u64) {
 pub fn trace_switch_to_idle() {
     if SCHED_PROVIDER.is_enabled() && crate::tracing::is_enabled() {
         crate::tracing::record_event(CTX_SWITCH_TO_IDLE, 0, 0);
+    }
+}
+
+/// Trace scheduler queue state (inline for minimal overhead).
+///
+/// Records ready queue length and the chosen thread ID when a
+/// scheduling decision is made.
+///
+/// # Parameters
+///
+/// - `ready_queue_len`: Number of threads in the ready queue
+/// - `chosen_tid`: Thread ID of the thread chosen to run
+#[inline(always)]
+#[allow(dead_code)]
+pub fn trace_sched_queue_state(ready_queue_len: u16, chosen_tid: u16) {
+    if SCHED_PROVIDER.is_enabled() && crate::tracing::is_enabled() {
+        crate::tracing::record_event_2(SCHED_QUEUE_STATE, ready_queue_len, chosen_tid);
     }
 }

@@ -9,3 +9,5 @@ pub mod descriptors;
 pub mod ehci;
 pub mod hid;
 pub mod xhci;
+#[cfg(feature = "xhci_linux_harness")]
+pub mod xhci_linux;

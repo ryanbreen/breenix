@@ -1321,6 +1321,11 @@ impl Scheduler {
         self.ready_queue.retain(|&id| id != thread_id);
     }
 
+    /// Get the current ready queue length (for tracing)
+    pub fn ready_queue_length(&self) -> usize {
+        self.ready_queue.len()
+    }
+
     /// Get a thread by ID (public for timer.rs)
     pub fn get_thread(&self, id: u64) -> Option<&Thread> {
         self.threads

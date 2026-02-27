@@ -58,11 +58,6 @@ static TIMER_INTERRUPT_COUNT: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "boot_tests")]
 static RESET_QUANTUM_CALL_COUNT: AtomicU64 = AtomicU64::new(0);
 
-/// Interval for printing timer count (every N interrupts for frequency verification)
-/// Printing on every interrupt adds overhead; reduce frequency for more accurate measurement
-/// At 200 Hz: print interval 200 = print once per second
-const TIMER_COUNT_PRINT_INTERVAL: u64 = 200;
-
 // ─── Soft Lockup Detector ────────────────────────────────────────────────────
 //
 // Detects when no context switch has occurred for LOCKUP_THRESHOLD_TICKS timer
@@ -192,33 +187,15 @@ pub extern "C" fn timer_interrupt_handler() {
         check_soft_lockup(_count);
     }
 
-    // CPU 0 only: periodic heartbeat every 2000 CPU 0 ticks (~10 seconds at 200Hz)
-    // Uses a dedicated CPU 0 counter to avoid non-determinism from the global counter.
+    // CPU 0 only: record heartbeat as trace event (lock-free, ~5 instructions)
+    // All xHCI diagnostic atomics remain for GDB inspection; no serial output.
     if cpu_id == 0 {
         static CPU0_TICK: AtomicU64 = AtomicU64::new(0);
         let cpu0_tick = CPU0_TICK.fetch_add(1, Ordering::Relaxed) + 1;
         if cpu0_tick % 2000 == 0 {
-            // Minimal heartbeat: essential OS + xHCI fields only.
-            // Detailed xHCI diagnostics are in the lock-free xhci_trace buffer.
-            raw_serial_str(b"\n[HB t=");
-            print_timer_count_decimal(cpu0_tick / TARGET_TIMER_HZ);
-            raw_serial_str(b"s ctx=");
-            print_timer_count_decimal(crate::task::scheduler::context_switch_count());
-            raw_serial_str(b" sys=");
-            print_timer_count_decimal(crate::tracing::providers::counters::SYSCALL_TOTAL.aggregate());
-            raw_serial_str(b" xe=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::XO_ERR_COUNT.load(Ordering::Relaxed));
-            raw_serial_str(b" uk=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::KBD_EVENT_COUNT.load(Ordering::Relaxed));
-            raw_serial_str(b" fc=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::DIAG_FIRST_XFER_CC.load(Ordering::Relaxed) as u64);
-            raw_serial_str(b" er=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::ENDPOINT_RESET_COUNT.load(Ordering::Relaxed));
-            raw_serial_str(b" mi=");
-            print_timer_count_decimal(crate::drivers::usb::xhci::MSI_EVENT_COUNT.load(Ordering::Relaxed));
-            raw_serial_str(b" mf=");
-            print_hex_u64(crate::drivers::usb::xhci::DIAG_MFINDEX.load(Ordering::Relaxed) as u64);
-            raw_serial_str(b"]\n");
+            crate::tracing::providers::irq::trace_heartbeat_marker(
+                (cpu0_tick / TARGET_TIMER_HZ) as u32,
+            );
         }
     }
 
@@ -288,6 +265,7 @@ fn print_timer_count_decimal(count: u64) {
 
 
 /// Print a u64 as 16-char zero-padded hexadecimal using raw serial output.
+#[allow(dead_code)] // Debug utility for soft lockup dumps
 fn print_hex_u64(val: u64) {
     const HEX: [u8; 16] = *b"0123456789abcdef";
     // Print 16 hex digits (big-endian nibble order)

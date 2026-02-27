@@ -11,10 +11,6 @@ fn main() {
         .unwrap_or_default();
     let build_id = format!("{:010x}{:04x}", ts.as_secs(), (ts.subsec_nanos() >> 16) & 0xFFFF);
     println!("cargo:rustc-env=BREENIX_BUILD_ID={}", build_id);
-    // Print to build output so agents and humans can capture the ID without
-    // extracting it from the binary. Visible as "warning: DEPLOY BUILD_ID: ..."
-    // during cargo build when build.rs reruns.
-    println!("cargo:warning=DEPLOY BUILD_ID: {}", build_id);
     // Rerun whenever xhci.rs changes (we always `touch` it before building,
     // so the build ID is always fresh for each deploy cycle).
     println!("cargo:rerun-if-changed=src/drivers/usb/xhci.rs");
@@ -24,6 +20,7 @@ fn main() {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let kernel_dir = PathBuf::from(&manifest_dir);
     let target = env::var("TARGET").unwrap_or_default();
+    let use_linux_xhci = env::var("CARGO_FEATURE_XHCI_LINUX_HARNESS").is_ok();
 
     // Only build x86_64 assembly for x86_64 targets
     if target.contains("x86_64") {
@@ -86,6 +83,40 @@ fn main() {
         println!("cargo:rustc-link-arg=--fix-cortex-a53-843419");
     }
 
+    // Build the Linux C-based xHCI harness when the feature is enabled.
+    if use_linux_xhci {
+        let src = kernel_dir.join("src/drivers/usb/linux_xhci/linux_xhci.c");
+        let obj = PathBuf::from(&out_dir).join("linux_xhci.o");
+
+        let mut cmd = Command::new("clang");
+        cmd.arg("-c")
+            .arg(&src)
+            .arg("-o")
+            .arg(&obj)
+            .arg("-ffreestanding")
+            .arg("-fno-builtin")
+            .arg("-fno-stack-protector")
+            .arg("-fno-omit-frame-pointer")
+            .arg("-fno-pic")
+            .arg("-fno-common")
+            .arg("-Werror");
+
+        if target.contains("aarch64") {
+            cmd.arg("--target=aarch64-unknown-none");
+        } else if target.contains("x86_64") {
+            cmd.arg("--target=x86_64-unknown-none");
+        }
+
+        let status = cmd.status().expect("Failed to run clang for linux_xhci.c");
+        if !status.success() {
+            panic!("Failed to compile linux_xhci.c");
+        }
+
+        println!("cargo:rustc-link-arg={}", obj.display());
+        println!("cargo:rerun-if-changed=src/drivers/usb/linux_xhci/linux_xhci.c");
+        println!("cargo:rerun-if-changed=src/drivers/usb/linux_xhci/linux_xhci.h");
+    }
+
 
     // Rerun if the assembly files change
     println!("cargo:rerun-if-changed=src/syscall/entry.asm");
@@ -105,24 +136,13 @@ fn main() {
     if userspace_test_dir.exists() && !target.contains("aarch64") {
         let build_script = userspace_test_dir.join("build.sh");
         if build_script.exists() {
-            println!("cargo:warning=");
-            println!("cargo:warning=Building userspace binaries with libbreenix...");
-
             let output = Command::new("bash")
                 .arg(&build_script)
                 .current_dir(&userspace_test_dir)
                 .output()
                 .expect("Failed to run userspace build script");
 
-            // Print the build output so user sees libbreenix compilation
-            for line in String::from_utf8_lossy(&output.stdout).lines() {
-                println!("cargo:warning={}", line);
-            }
-
             if !output.status.success() {
-                for line in String::from_utf8_lossy(&output.stderr).lines() {
-                    println!("cargo:warning=STDERR: {}", line);
-                }
                 panic!("Failed to build userspace test programs with libbreenix");
             }
 
@@ -156,8 +176,10 @@ fn main() {
             println!("cargo:rerun-if-changed={}", libbreenix_libc_dir.join("lib.rs").display());
         }
     } else if !userspace_test_dir.exists() {
-        println!("cargo:warning=Userspace programs directory not found at {:?}", userspace_test_dir);
-        println!("cargo:warning=Build userspace first: bash userspace/programs/build.sh");
+        panic!(
+            "Userspace programs directory not found at {:?}. Build userspace first: bash userspace/programs/build.sh",
+            userspace_test_dir
+        );
     }
     // For aarch64 targets, userspace is built externally via build.sh --arch aarch64
 }

@@ -157,6 +157,10 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
             crate::task::scheduler::with_scheduler(|sched| {
                 sched.block_current_for_child_exit();
             });
+            crate::tracing::providers::process::trace_waitpid_block(
+                thread_id as u16,
+                target_pid.as_u64() as u16,
+            );
 
             // Re-check child state to close the race window
             {
@@ -248,6 +252,10 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
             crate::task::scheduler::with_scheduler(|sched| {
                 sched.block_current_for_child_exit();
             });
+            crate::tracing::providers::process::trace_waitpid_block(
+                thread_id as u16,
+                0, // pid == -1: waiting for any child
+            );
 
             // Re-check all children to close the race window
             {

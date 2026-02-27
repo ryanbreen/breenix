@@ -610,6 +610,13 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         }
     }
 
+    // Initialize tracing subsystem (must be after allocator, before timer)
+    kernel::tracing::init();
+    kernel::tracing::providers::init();
+    kernel::tracing::enable();
+    kernel::tracing::providers::enable_all();
+    serial_println!("[boot] Tracing subsystem initialized and enabled");
+
     // Initialize timer interrupt for preemptive scheduling
     // This MUST come after per-CPU data and scheduler are initialized
     serial_println!("[boot] Initializing timer interrupt...");
