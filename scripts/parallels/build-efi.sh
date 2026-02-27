@@ -17,6 +17,7 @@ OUTPUT_DIR="$PROJECT_ROOT/target/parallels"
 EFI_IMG="$OUTPUT_DIR/breenix-efi.img"
 ESP_DIR="$OUTPUT_DIR/esp"
 INCLUDE_KERNEL=false
+KERNEL_FEATURES=()
 
 for arg in "$@"; do
     case "$arg" in
@@ -41,10 +42,14 @@ echo "Loader built: $LOADER_EFI ($(stat -f%z "$LOADER_EFI" 2>/dev/null || stat -
 # Optionally build the kernel
 if [ "$INCLUDE_KERNEL" = true ]; then
     echo "=== Building Breenix ARM64 Kernel ==="
+    KERNEL_FEATURES=()
+    if [ "${BREENIX_XHCI_LINUX_HARNESS:-}" = "1" ]; then
+        KERNEL_FEATURES+=(--features xhci_linux_harness)
+    fi
     cargo build --release --target aarch64-breenix.json \
         -Z build-std=core,alloc \
         -Z build-std-features=compiler-builtins-mem \
-        -p kernel --bin kernel-aarch64
+        -p kernel --bin kernel-aarch64 ${KERNEL_FEATURES[@]+"${KERNEL_FEATURES[@]}"}
     KERNEL_ELF="$PROJECT_ROOT/target/aarch64-breenix/release/kernel-aarch64"
     if [ ! -f "$KERNEL_ELF" ]; then
         echo "ERROR: Kernel ELF not found at $KERNEL_ELF"
@@ -78,13 +83,17 @@ dd if=/dev/zero of="$EFI_IMG" bs=1m count=$IMG_SIZE_MB 2>/dev/null
 FAT_IMG="$OUTPUT_DIR/esp.fat32.img"
 dd if=/dev/zero of="$FAT_IMG" bs=1m count=$((IMG_SIZE_MB - 1)) 2>/dev/null
 
-# Format as FAT32 using newfs_msdos (macOS)
-if command -v newfs_msdos &>/dev/null; then
-    newfs_msdos -F 32 -S 512 "$FAT_IMG" 2>/dev/null
+# Format as FAT32. Prefer mformat (mtools) since it works on raw files on macOS.
+# newfs_msdos requires a block device and fails on plain files.
+if command -v mformat &>/dev/null; then
+    mformat -i "$FAT_IMG" -F ::
 elif command -v mkfs.fat &>/dev/null; then
     mkfs.fat -F 32 "$FAT_IMG"
+elif command -v newfs_msdos &>/dev/null; then
+    # newfs_msdos only works on block devices, not raw files; kept as last resort
+    newfs_msdos -F 32 -S 512 "$FAT_IMG"
 else
-    echo "ERROR: No FAT32 formatter found (need newfs_msdos or mkfs.fat)"
+    echo "ERROR: No FAT32 formatter found (need mtools/mformat, mkfs.fat, or newfs_msdos)"
     exit 1
 fi
 

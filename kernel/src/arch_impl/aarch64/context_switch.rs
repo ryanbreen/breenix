@@ -1117,8 +1117,12 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         return;
     }
 
-    // 5. Trace context switch + increment watchdog counter
+    // 5. Trace context switch + queue state + increment watchdog counter
     trace_ctx_switch(old_id, new_id);
+    crate::tracing::providers::sched::trace_sched_queue_state(
+        sched.ready_queue_length() as u16,
+        new_id as u16,
+    );
     crate::task::scheduler::increment_context_switch_count();
 
     // 6. Save old thread context (INLINE — no lock acquisition)

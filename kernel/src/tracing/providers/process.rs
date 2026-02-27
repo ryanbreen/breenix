@@ -15,6 +15,10 @@
 //! - `DATA_ABORT` (0x0607): Data abort from EL0, payload = packed(pid, dfsc)
 //! - `PROCESS_EXIT` (0x0608): Process exiting, payload = packed(pid, exit_code)
 //! - `COW_LOCK_FAIL` (0x0609): CoW handler couldn't acquire manager lock, payload = pid
+//! - `SPAWN_FRONT` (0x060A): Thread added to front of ready queue, payload = packed(parent_tid, child_tid)
+//! - `WAITPID_BLOCK` (0x060B): Parent blocking on waitpid, payload = packed(parent_tid, child_pid)
+//! - `WAITPID_WAKE` (0x060C): Parent unblocked by child exit, payload = packed(parent_tid, child_pid)
+//! - `THREAD_EXIT` (0x060D): Thread calling exit, payload = packed(thread_id, exit_code)
 //!
 //! # Usage
 //!
@@ -80,6 +84,18 @@ pub const PROBE_PROCESS_EXIT: u8 = 0x08;
 /// Probe ID for CoW lock acquisition failure.
 pub const PROBE_COW_LOCK_FAIL: u8 = 0x09;
 
+/// Probe ID for thread added to front of ready queue.
+pub const PROBE_SPAWN_FRONT: u8 = 0x0A;
+
+/// Probe ID for parent blocking on waitpid.
+pub const PROBE_WAITPID_BLOCK: u8 = 0x0B;
+
+/// Probe ID for parent unblocked by child exit.
+pub const PROBE_WAITPID_WAKE: u8 = 0x0C;
+
+/// Probe ID for thread calling exit.
+pub const PROBE_THREAD_EXIT: u8 = 0x0D;
+
 /// Event type for fork entry.
 /// Payload: parent_pid.
 pub const FORK_ENTRY: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_FORK_ENTRY as u16);
@@ -119,6 +135,22 @@ pub const PROCESS_EXIT: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_PROCESS_EXIT 
 /// Event type for CoW lock acquisition failure.
 /// Payload: pid.
 pub const COW_LOCK_FAIL: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_COW_LOCK_FAIL as u16);
+
+/// Event type for thread added to front of ready queue.
+/// Payload: packed(parent_tid, child_tid).
+pub const SPAWN_FRONT: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_SPAWN_FRONT as u16);
+
+/// Event type for parent blocking on waitpid.
+/// Payload: packed(parent_tid, child_pid).
+pub const WAITPID_BLOCK: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_WAITPID_BLOCK as u16);
+
+/// Event type for parent unblocked by child exit.
+/// Payload: packed(parent_tid, child_pid).
+pub const WAITPID_WAKE: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_WAITPID_WAKE as u16);
+
+/// Event type for thread calling exit.
+/// Payload: packed(thread_id, exit_code).
+pub const THREAD_EXIT: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_THREAD_EXIT as u16);
 
 // =============================================================================
 // Initialization
@@ -284,5 +316,61 @@ pub fn trace_process_exit(pid: u16, exit_code: u16) {
 pub fn trace_cow_lock_fail(pid: u32) {
     if PROCESS_PROVIDER.is_enabled() && crate::tracing::is_enabled() {
         crate::tracing::record_event(COW_LOCK_FAIL, 0, pid);
+    }
+}
+
+/// Trace thread added to front of ready queue (inline for minimal overhead).
+///
+/// # Parameters
+///
+/// - `parent_tid`: Thread ID of the parent that called fork
+/// - `child_tid`: Thread ID of the newly spawned child
+#[inline(always)]
+#[allow(dead_code)]
+pub fn trace_spawn_front(parent_tid: u16, child_tid: u16) {
+    if PROCESS_PROVIDER.is_enabled() && crate::tracing::is_enabled() {
+        crate::tracing::record_event_2(SPAWN_FRONT, parent_tid, child_tid);
+    }
+}
+
+/// Trace parent blocking on waitpid (inline for minimal overhead).
+///
+/// # Parameters
+///
+/// - `parent_tid`: Thread ID of the parent blocking
+/// - `child_pid`: PID of the child being waited on
+#[inline(always)]
+#[allow(dead_code)]
+pub fn trace_waitpid_block(parent_tid: u16, child_pid: u16) {
+    if PROCESS_PROVIDER.is_enabled() && crate::tracing::is_enabled() {
+        crate::tracing::record_event_2(WAITPID_BLOCK, parent_tid, child_pid);
+    }
+}
+
+/// Trace parent unblocked by child exit (inline for minimal overhead).
+///
+/// # Parameters
+///
+/// - `parent_tid`: Thread ID of the parent being unblocked
+/// - `child_pid`: PID of the child that exited
+#[inline(always)]
+#[allow(dead_code)]
+pub fn trace_waitpid_wake(parent_tid: u16, child_pid: u16) {
+    if PROCESS_PROVIDER.is_enabled() && crate::tracing::is_enabled() {
+        crate::tracing::record_event_2(WAITPID_WAKE, parent_tid, child_pid);
+    }
+}
+
+/// Trace thread calling exit (inline for minimal overhead).
+///
+/// # Parameters
+///
+/// - `thread_id`: Thread ID of the exiting thread
+/// - `exit_code`: The exit code
+#[inline(always)]
+#[allow(dead_code)]
+pub fn trace_thread_exit(thread_id: u16, exit_code: u16) {
+    if PROCESS_PROVIDER.is_enabled() && crate::tracing::is_enabled() {
+        crate::tracing::record_event_2(THREAD_EXIT, thread_id, exit_code);
     }
 }

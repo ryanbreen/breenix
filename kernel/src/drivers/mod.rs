@@ -129,33 +129,27 @@ pub fn init() -> usize {
             }
         }
 
-        // Initialize EHCI USB 2.0 host controller (keyboard input)
+        // EHCI USB 2.0 host controller SKIPPED — investigating whether EHCI
+        // init causes a second xHC reset in the Parallels hypervisor, which
+        // would destroy interrupt endpoint configurations and cause CC=12.
         // Intel 82801FB EHCI: vendor 0x8086, device 0x265c
-        if let Some(ehci_dev) = pci::find_device(0x8086, 0x265c) {
-            match usb::ehci::init(&ehci_dev) {
-                Ok(()) => {
-                    serial_println!("[drivers] EHCI USB 2.0 controller initialized");
-                }
-                Err(e) => {
-                    serial_println!("[drivers] EHCI USB init failed: {}", e);
-                }
-            }
-        } else {
-            serial_println!("[drivers] No EHCI USB controller found");
+        if pci::find_device(0x8086, 0x265c).is_some() {
+            serial_println!("[drivers] EHCI USB 2.0 controller found but SKIPPED (CC=12 investigation)");
         }
 
         // Initialize XHCI USB host controller (keyboard + mouse)
         // NEC uPD720200: vendor 0x1033, device 0x0194
         if let Some(xhci_dev) = pci::find_device(0x1033, 0x0194) {
-            crate::serial_aarch64::raw_serial_str(b"[drv-dbg] calling xhci::init\n");
-            match usb::xhci::init(&xhci_dev) {
+            #[cfg(feature = "xhci_linux_harness")]
+            let xhci_result = usb::xhci_linux::init(&xhci_dev);
+            #[cfg(not(feature = "xhci_linux_harness"))]
+            let xhci_result = usb::xhci::init(&xhci_dev);
+
+            match xhci_result {
                 Ok(()) => {
-                    crate::serial_aarch64::raw_serial_str(b"[drv-dbg] xhci init Ok\n");
                     serial_println!("[drivers] XHCI USB controller initialized");
-                    crate::serial_aarch64::raw_serial_str(b"[drv-dbg] after serial_println\n");
                 }
                 Err(e) => {
-                    crate::serial_aarch64::raw_serial_str(b"[drv-dbg] xhci init Err\n");
                     serial_println!("[drivers] XHCI USB init failed: {}", e);
                 }
             }

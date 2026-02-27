@@ -310,6 +310,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!();
     serial_println!("========================================");
     serial_println!("  Breenix ARM64 Kernel Starting");
+    serial_println!("  BUILD_ID: {}", env!("BREENIX_BUILD_ID"));
     serial_println!("========================================");
     serial_println!();
 
@@ -608,6 +609,13 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             Err(e) => serial_println!("[boot] Failed to spawn render thread: {}", e),
         }
     }
+
+    // Initialize tracing subsystem (must be after allocator, before timer)
+    kernel::tracing::init();
+    kernel::tracing::providers::init();
+    kernel::tracing::enable();
+    kernel::tracing::providers::enable_all();
+    serial_println!("[boot] Tracing subsystem initialized and enabled");
 
     // Initialize timer interrupt for preemptive scheduling
     // This MUST come after per-CPU data and scheduler are initialized
