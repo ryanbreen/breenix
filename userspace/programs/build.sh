@@ -252,6 +252,9 @@ STD_BINARIES=(
     "telnetd"
     "blogd"
 
+    # Diagnostics
+    "btrace"
+
     # Log viewer
     "bless"
 

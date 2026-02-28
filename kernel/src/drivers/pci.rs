@@ -344,6 +344,121 @@ impl Device {
         let new_ctrl = (msg_ctrl & !0x0070) | 0x0001; // Clear MME, set Enable
         pci_write_config_word(self.bus, self.device, self.function, cap_offset + 2, new_ctrl);
     }
+
+    /// Find any PCI capability by ID. Returns the config space offset, or None.
+    pub fn find_capability(&self, cap_id: u8) -> Option<u8> {
+        let status = pci_read_config_word(self.bus, self.device, self.function, 0x06);
+        if (status & (1 << 4)) == 0 {
+            return None;
+        }
+        let mut cap_ptr = pci_read_config_byte(self.bus, self.device, self.function, 0x34);
+        while cap_ptr != 0 {
+            let id = pci_read_config_byte(self.bus, self.device, self.function, cap_ptr);
+            if id == cap_id {
+                return Some(cap_ptr);
+            }
+            cap_ptr = pci_read_config_byte(self.bus, self.device, self.function, cap_ptr + 1);
+        }
+        None
+    }
+
+    /// Transition device to D0 power state via PM capability (cap ID 0x01).
+    /// This is what Linux's pci_enable_device() does internally via pci_set_power_state().
+    /// Returns the previous power state (0=D0, 1=D1, 2=D2, 3=D3hot), or None if no PM cap.
+    pub fn set_power_state_d0(&self) -> Option<u8> {
+        let pm_cap = self.find_capability(0x01)?; // PCI_CAP_ID_PM = 0x01
+        // PMCSR (Power Management Control/Status Register) is at PM_cap + 4
+        let pmcsr = pci_read_config_word(self.bus, self.device, self.function, pm_cap + 4);
+        let current_state = (pmcsr & 0x03) as u8; // Bits [1:0] = power state
+        if current_state != 0 {
+            // Not in D0 — transition to D0 by clearing bits [1:0]
+            let new_pmcsr = pmcsr & !0x03;
+            pci_write_config_word(self.bus, self.device, self.function, pm_cap + 4, new_pmcsr);
+            // PCI spec requires 10ms delay after D3hot->D0 transition
+            // (We always wait this since it's safe)
+            for _ in 0..10_000_000u64 {
+                core::hint::spin_loop();
+            }
+        }
+        Some(current_state)
+    }
+
+    /// Set Cache Line Size register (offset 0x0C).
+    /// Linux sets this based on the CPU's cache line size (typically 64 bytes = 16 DWORDs).
+    pub fn set_cache_line_size(&self, size_dwords: u8) {
+        pci_write_config_byte(self.bus, self.device, self.function, 0x0C, size_dwords);
+    }
+
+    /// Set Latency Timer register (offset 0x0D).
+    /// Linux's pci_set_master() sets this to 64 on conventional PCI if it's < 16.
+    pub fn set_latency_timer(&self, timer: u8) {
+        pci_write_config_byte(self.bus, self.device, self.function, 0x0D, timer);
+    }
+
+    /// Dump all PCI capabilities for diagnostics (prints to serial).
+    pub fn dump_capabilities(&self) {
+        let status = pci_read_config_word(self.bus, self.device, self.function, 0x06);
+        if (status & (1 << 4)) == 0 {
+            crate::serial_println!("[pci] {:02x}:{:02x}.{}: no capabilities list", self.bus, self.device, self.function);
+            return;
+        }
+        let mut cap_ptr = pci_read_config_byte(self.bus, self.device, self.function, 0x34);
+        crate::serial_println!("[pci] {:02x}:{:02x}.{}: capabilities:", self.bus, self.device, self.function);
+        while cap_ptr != 0 {
+            let id = pci_read_config_byte(self.bus, self.device, self.function, cap_ptr);
+            let cap_name = match id {
+                0x01 => "PM",
+                0x05 => "MSI",
+                0x10 => "PCIe",
+                0x11 => "MSI-X",
+                0x12 => "SATA",
+                _ => "?",
+            };
+            // Read the full dword at cap_ptr for extra context
+            let dw0 = pci_read_config_dword(self.bus, self.device, self.function, cap_ptr);
+            let dw1 = pci_read_config_dword(self.bus, self.device, self.function, cap_ptr + 4);
+            crate::serial_println!("  cap 0x{:02x} ({}) @ 0x{:02x}: dw0=0x{:08x} dw1=0x{:08x}",
+                id, cap_name, cap_ptr, dw0, dw1);
+            cap_ptr = pci_read_config_byte(self.bus, self.device, self.function, cap_ptr + 1);
+        }
+    }
+
+    /// Full Linux-style PCI device enable: D0 transition + bus master + memory space + INTx disable.
+    /// This replicates what Linux's pci_enable_device() + pci_set_master() does.
+    pub fn linux_style_enable(&self) {
+        // 1. Transition to D0 power state (like pci_set_power_state(dev, PCI_D0))
+        if let Some(prev_state) = self.set_power_state_d0() {
+            crate::serial_println!("[pci] {:02x}:{:02x}.{}: PM D{} -> D0",
+                self.bus, self.device, self.function, prev_state);
+        } else {
+            crate::serial_println!("[pci] {:02x}:{:02x}.{}: no PM capability",
+                self.bus, self.device, self.function);
+        }
+
+        // 2. Set Cache Line Size (64 bytes = 16 DWORDs, standard for ARM64)
+        self.set_cache_line_size(16);
+
+        // 3. Set Latency Timer (Linux uses 64 for conventional PCI)
+        self.set_latency_timer(64);
+
+        // 4. Enable Memory Space + Bus Master + Disable INTx (all in one write)
+        let command = pci_read_config_word(self.bus, self.device, self.function, 0x04);
+        // Bit 1: Memory Space, Bit 2: Bus Master, Bit 10: INTx Disable
+        let new_command = command | 0x0406;
+        pci_write_config_word(self.bus, self.device, self.function, 0x04, new_command);
+        crate::serial_println!("[pci] {:02x}:{:02x}.{}: cmd 0x{:04x} -> 0x{:04x}",
+            self.bus, self.device, self.function, command, new_command);
+
+        // 5. Clear any error bits in Status register (write-1-to-clear)
+        let status = pci_read_config_word(self.bus, self.device, self.function, 0x06);
+        if status & 0xF900 != 0 {
+            // Clear error bits: SERR (14), Parity (15), Sig Target Abort (11),
+            // Rcvd Target Abort (12), Rcvd Master Abort (13), Sig System Error (14), Parity (15)
+            pci_write_config_word(self.bus, self.device, self.function, 0x06, status);
+            crate::serial_println!("[pci] {:02x}:{:02x}.{}: cleared status errors 0x{:04x}",
+                self.bus, self.device, self.function, status & 0xF900);
+        }
+    }
 }
 
 impl fmt::Display for Device {
@@ -408,10 +523,10 @@ pub(crate) fn pci_read_config_dword(bus: u8, device: u8, function: u8, offset: u
     }
 
     let addr = ecam_base
-        + ((bus as u64) << 20)
+        + (((bus as u64) << 20)
         | ((device as u64) << 15)
         | ((function as u64) << 12)
-        | ((offset & 0xFC) as u64);
+        | ((offset & 0xFC) as u64));
 
     const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
     let virt = (HHDM_BASE + addr) as *const u32;
@@ -445,10 +560,10 @@ pub(crate) fn pci_write_config_dword(bus: u8, device: u8, function: u8, offset: 
     }
 
     let addr = ecam_base
-        + ((bus as u64) << 20)
+        + (((bus as u64) << 20)
         | ((device as u64) << 15)
         | ((function as u64) << 12)
-        | ((offset & 0xFC) as u64);
+        | ((offset & 0xFC) as u64));
 
     const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
     let virt = (HHDM_BASE + addr) as *mut u32;
@@ -480,6 +595,45 @@ pub(crate) fn pci_read_config_byte(bus: u8, device: u8, function: u8, offset: u8
     let dword = pci_read_config_dword(bus, device, function, offset & 0xFC);
     let shift = ((offset & 3) * 8) as u32;
     ((dword >> shift) & 0xFF) as u8
+}
+
+/// Write an 8-bit value to PCI configuration space
+#[allow(dead_code)] // Part of low-level API
+pub(crate) fn pci_write_config_byte(bus: u8, device: u8, function: u8, offset: u8, value: u8) {
+    let dword_offset = offset & 0xFC;
+    let mut dword = pci_read_config_dword(bus, device, function, dword_offset);
+    let shift = ((offset & 3) * 8) as u32;
+    let mask = !(0xFF << shift);
+    dword = (dword & mask) | ((value as u32) << shift);
+    pci_write_config_dword(bus, device, function, dword_offset, dword);
+}
+
+/// Read a BAR address without writing 0xFFFFFFFF for sizing.
+/// Used for devices where BAR sizing disrupts the device's internal state
+/// (e.g., Parallels vxHC). Sets size to 0x1000 (4KB minimum) since we
+/// can't determine the actual size without the destructive write.
+fn read_bar_no_sizing(bus: u8, device: u8, function: u8, bar_index: u8) -> (Bar, bool) {
+    let offset = 0x10 + (bar_index * 4);
+    let bar_low = pci_read_config_dword(bus, device, function, offset);
+
+    if bar_low & 0x01 != 0 {
+        // I/O space BAR
+        let address = (bar_low & 0xFFFF_FFFC) as u64;
+        (Bar { address, size: 0x100, is_io: true, is_64bit: false, prefetchable: false }, false)
+    } else {
+        let bar_type = (bar_low >> 1) & 0x03;
+        let prefetchable = (bar_low & 0x08) != 0;
+        if bar_type == 0x02 {
+            // 64-bit BAR
+            let bar_high = pci_read_config_dword(bus, device, function, offset + 4);
+            let address = ((bar_high as u64) << 32) | ((bar_low & 0xFFFF_FFF0) as u64);
+            (Bar { address, size: 0x1000, is_io: false, is_64bit: true, prefetchable }, true)
+        } else {
+            // 32-bit BAR
+            let address = (bar_low & 0xFFFF_FFF0) as u64;
+            (Bar { address, size: 0x1000, is_io: false, is_64bit: false, prefetchable }, false)
+        }
+    }
 }
 
 /// Decode a BAR from PCI configuration space
@@ -610,14 +764,27 @@ fn probe_device(bus: u8, device: u8, function: u8) -> Option<Device> {
     let interrupt_pin = (int_reg >> 8) as u8;
 
     // Decode BARs
+    // Skip destructive BAR sizing (write 0xFFFFFFFF) for USB controllers
+    // (class=0x0C, subclass=0x03). On Parallels, the BAR disable/re-enable
+    // from sizing corrupts the vxHC's internal USB emulation state.
+    let skip_xhci_sizing = class_code == 0x0C && subclass == 0x03;
     let mut bars = [Bar::empty(); 6];
     let mut bar_index = 0;
     while bar_index < 6 {
-        let (bar, skip_next) = decode_bar(bus, device, function, bar_index);
-        bars[bar_index as usize] = bar;
-        bar_index += 1;
-        if skip_next && bar_index < 6 {
-            bar_index += 1; // Skip the next BAR slot for 64-bit BARs
+        if skip_xhci_sizing {
+            let (bar, skip_next) = read_bar_no_sizing(bus, device, function, bar_index);
+            bars[bar_index as usize] = bar;
+            bar_index += 1;
+            if skip_next && bar_index < 6 {
+                bar_index += 1;
+            }
+        } else {
+            let (bar, skip_next) = decode_bar(bus, device, function, bar_index);
+            bars[bar_index as usize] = bar;
+            bar_index += 1;
+            if skip_next && bar_index < 6 {
+                bar_index += 1; // Skip the next BAR slot for 64-bit BARs
+            }
         }
     }
 

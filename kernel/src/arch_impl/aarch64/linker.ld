@@ -88,6 +88,17 @@ SECTIONS
         __stack_top = .;
     }
 
+    /* DMA buffers - placed in Non-Cacheable region at physical 0x50000000.
+     * The loader maps this 2MB block with MAIR index 2 (NC) so the xHC
+     * controller and CPU see consistent data without cache maintenance.
+     * Zeroed at runtime by kernel init, not by loader (NOLOAD section). */
+    . = KERNEL_VIRT_BASE + 0x50000000;
+    .dma (NOLOAD) : AT(0x50000000) {
+        __dma_start = .;
+        *(.dma .dma.*)
+        __dma_end = .;
+    }
+
     /DISCARD/ : {
         *(.comment)
         *(.note*)

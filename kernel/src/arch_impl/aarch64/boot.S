@@ -35,10 +35,19 @@
 .equ BLOCK_FLAGS_DEVICE, (DESC_BLOCK | DESC_AF | DESC_SH_NONE | DESC_AP_KERNEL | DESC_ATTR_DEVICE | DESC_PXN | DESC_UXN)
 .equ BLOCK_FLAGS_NORMAL, (DESC_BLOCK | DESC_AF | DESC_SH_INNER | DESC_AP_KERNEL | DESC_ATTR_NORMAL)
 
+// Non-Cacheable block flags for DMA buffers (MAIR index 2 = 0x44)
+.equ DESC_ATTR_NC,       (2 << 2)
+.equ BLOCK_FLAGS_NC,     (DESC_BLOCK | DESC_AF | DESC_SH_INNER | DESC_AP_KERNEL | DESC_ATTR_NC)
+
+// DMA NC region: 2MB block at physical 0x5000_0000
+// L2 index = (0x50000000 - 0x40000000) / 0x200000 = 128
+.equ NC_L2_INDEX,        128
+
 // MAIR attributes
 .equ MAIR_ATTR_DEVICE,  0x00
 .equ MAIR_ATTR_NORMAL,  0xFF
-.equ MAIR_EL1_VALUE,    (MAIR_ATTR_DEVICE | (MAIR_ATTR_NORMAL << 8))
+.equ MAIR_ATTR_NC,      0x44
+.equ MAIR_EL1_VALUE,    (MAIR_ATTR_DEVICE | (MAIR_ATTR_NORMAL << 8) | (MAIR_ATTR_NC << 16))
 
 // TCR configuration (4KB granule, 48-bit VA, inner-shareable, WBWA)
 .equ TCR_T0SZ,           16
@@ -262,9 +271,13 @@ setup_mmu:
     bl zero_table
     ldr x0, =ttbr0_l1
     bl zero_table
+    ldr x0, =ttbr0_l2_ram
+    bl zero_table
     ldr x0, =ttbr1_l0
     bl zero_table
     ldr x0, =ttbr1_l1
+    bl zero_table
+    ldr x0, =ttbr1_l2_ram
     bl zero_table
 
     // TTBR0 L0[0] -> L1
@@ -280,11 +293,15 @@ setup_mmu:
     orr x1, x1, x2
     str x1, [x0, #0]
 
-    // TTBR0 L1[1] = normal (0x4000_0000 - 0x7FFF_FFFF)
-    ldr x1, =0x40000000
-    ldr x2, =BLOCK_FLAGS_NORMAL
-    orr x1, x1, x2
+    // TTBR0 L1[1] -> L2 table (0x4000_0000 - 0x7FFF_FFFF)
+    // Uses L2 to carve out a 2MB NC block for DMA at 0x5000_0000
+    ldr x1, =ttbr0_l2_ram
+    orr x1, x1, #DESC_TABLE
     str x1, [x0, #8]
+
+    // Fill TTBR0 L2: 512 x 2MB blocks, index NC_L2_INDEX = NC, rest = Normal
+    ldr x0, =ttbr0_l2_ram
+    bl fill_l2_ram
 
     // TTBR1 L0[0] -> L1
     ldr x0, =ttbr1_l0
@@ -299,13 +316,18 @@ setup_mmu:
     orr x1, x1, x2
     str x1, [x0, #0]
 
-    // TTBR1 L1[1] = normal (high-half direct map)
-    ldr x1, =0x40000000
-    ldr x2, =BLOCK_FLAGS_NORMAL
-    orr x1, x1, x2
+    // TTBR1 L1[1] -> L2 table (high-half direct map 0x4000_0000 - 0x7FFF_FFFF)
+    // Same NC carveout for .dma section at 0xFFFF_0000_5000_0000
+    ldr x1, =ttbr1_l2_ram
+    orr x1, x1, #DESC_TABLE
     str x1, [x0, #8]
 
+    // Fill TTBR1 L2: same layout as TTBR0
+    ldr x0, =ttbr1_l2_ram
+    bl fill_l2_ram
+
     // TTBR1 L1[2] = normal (high-half direct map)
+    ldr x0, =ttbr1_l1
     ldr x1, =0x80000000
     ldr x2, =BLOCK_FLAGS_NORMAL
     orr x1, x1, x2
@@ -353,6 +375,26 @@ zero_table_loop:
     str xzr, [x2], #8
     subs x1, x1, #1
     b.ne zero_table_loop
+    ret
+
+// Fill L2 table at x0 with 512 x 2MB block entries for 0x4000_0000 - 0x7FFF_FFFF.
+// Entry NC_L2_INDEX (index 128 = physical 0x5000_0000) gets BLOCK_FLAGS_NC.
+// All other entries get BLOCK_FLAGS_NORMAL.
+fill_l2_ram:
+    mov x1, #0                // i = 0
+    ldr x3, =0x40000000       // base physical address
+    ldr x4, =BLOCK_FLAGS_NORMAL
+    ldr x5, =BLOCK_FLAGS_NC
+fill_l2_loop:
+    lsl x6, x1, #21           // offset = i * 2MB (0x200000)
+    add x6, x6, x3            // phys = 0x40000000 + offset
+    cmp x1, #NC_L2_INDEX
+    csel x7, x5, x4, eq       // flags = NC if i==128, else Normal
+    orr x6, x6, x7            // entry = phys | flags
+    str x6, [x0, x1, lsl #3]  // L2[i] = entry
+    add x1, x1, #1
+    cmp x1, #512
+    b.lt fill_l2_loop
     ret
 
 .section .text
@@ -844,11 +886,17 @@ ttbr0_l0:
 .global ttbr0_l1
 ttbr0_l1:
     .skip 4096
+.global ttbr0_l2_ram
+ttbr0_l2_ram:
+    .skip 4096
 .global ttbr1_l0
 ttbr1_l0:
     .skip 4096
 .global ttbr1_l1
 ttbr1_l1:
+    .skip 4096
+.global ttbr1_l2_ram
+ttbr1_l2_ram:
     .skip 4096
 
 .balign 64

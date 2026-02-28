@@ -27,8 +27,10 @@ mod attr {
     /// MUST match kernel boot.S MAIR layout:
     ///   Index 0 = Device-nGnRnE (0x00)
     ///   Index 1 = Normal WB-WA  (0xFF)
+    ///   Index 2 = Normal NC     (0x44)
     pub const ATTR_IDX_DEVICE: u64 = 0 << 2; // MAIR index 0: Device-nGnRnE
     pub const ATTR_IDX_NORMAL: u64 = 1 << 2; // MAIR index 1: Normal WB
+    pub const ATTR_IDX_NC: u64 = 2 << 2;     // MAIR index 2: Normal Non-Cacheable
 
     /// Access flag (must be set, or access fault)
     pub const AF: u64 = 1 << 10;
@@ -48,6 +50,9 @@ mod attr {
     /// Normal memory block: cacheable, inner shareable
     pub const NORMAL_BLOCK: u64 = VALID | BLOCK | ATTR_IDX_NORMAL | AF | ISH | AP_RW_EL1;
 
+    /// Normal Non-Cacheable block: for DMA buffers (no cache coherency needed)
+    pub const NC_BLOCK: u64 = VALID | BLOCK | ATTR_IDX_NC | AF | ISH | AP_RW_EL1;
+
     /// Device memory block: non-cacheable, outer shareable, execute-never
     pub const DEVICE_BLOCK: u64 = VALID | BLOCK | ATTR_IDX_DEVICE | AF | OSH | AP_RW_EL1 | UXN | PXN;
 
@@ -59,7 +64,8 @@ mod attr {
 /// MUST match kernel boot.S layout:
 ///   Index 0: Device-nGnRnE (0x00)
 ///   Index 1: Normal WB cacheable (0xFF = Inner WB RA WA, Outer WB RA WA)
-pub const MAIR_VALUE: u64 = 0x00_00_00_00_00_00_FF00;
+///   Index 2: Normal Non-Cacheable (0x44 = Inner NC, Outer NC) — for DMA buffers
+pub const MAIR_VALUE: u64 = 0x00_00_00_00_0044_FF00;
 
 /// TCR (Translation Control Register) value for 4K granule, 48-bit VA.
 /// T0SZ = 16 (48-bit VA for TTBR0)
@@ -86,13 +92,24 @@ pub const TCR_VALUE: u64 = (16 << 0)  // T0SZ
 /// Size of a single page table (4KB, 512 entries of 8 bytes each).
 const PAGE_TABLE_SIZE: usize = 4096;
 
+/// Physical base of the 2MB Non-Cacheable DMA region.
+/// xHCI (and future DMA drivers) allocate buffers from this region
+/// to avoid cache coherency issues on non-coherent ARM64 platforms.
+/// Placed above the kernel heap range (0x42000000-0x50000000) so the
+/// general-purpose allocator never touches this memory.
+pub const NC_DMA_BASE: u64 = 0x5000_0000;
+
+/// Size of the NC DMA region (2MB).
+pub const NC_DMA_SIZE: u64 = 0x20_0000;
+
 /// Number of page tables we pre-allocate.
 /// L0 (TTBR0): 1
 /// L0 (TTBR1): 1
 /// L1 (TTBR0): 1 (covers 512GB)
 /// L1 (TTBR1): 1 (covers 512GB)
-/// L2 (for device regions): 2 (for 0x00000000-0x3FFFFFFF, 0x10000000-0x1FFFFFFF)
-const MAX_PAGE_TABLES: usize = 8;
+/// L2 (for device regions): 2 (for 0x00000000-0x3FFFFFFF)
+/// L2 (for RAM with NC block): 2 (for 0x40000000-0x7FFFFFFF)
+const MAX_PAGE_TABLES: usize = 10;
 
 /// Page table storage. Allocated in the loader's BSS.
 /// Must be 4KB aligned.
@@ -170,10 +187,26 @@ pub fn build_page_tables(storage: &mut PageTableStorage) -> (u64, u64) {
     }
 
     // --- RAM: 0x40000000 - 0xBFFFFFFF (2GB, L1 entries 1-2) ---
-    // Use 1GB block mappings for RAM (much simpler, fewer TLB entries)
-    // L1[1] = 0x40000000 - 0x7FFFFFFF (1GB block, normal memory)
-    write_entry(ttbr0_l1, 1, 0x4000_0000 | attr::NORMAL_BLOCK);
-    write_entry(ttbr1_l1, 1, 0x4000_0000 | attr::NORMAL_BLOCK);
+    //
+    // L1[1] = 0x40000000 - 0x7FFFFFFF: Use L2 table to carve out a 2MB NC block
+    // for DMA buffers at NC_DMA_BASE. All other 2MB blocks are WB-WA.
+    let ttbr0_l2_ram = storage.alloc_table();
+    let ttbr1_l2_ram = storage.alloc_table();
+    write_entry(ttbr0_l1, 1, ttbr0_l2_ram | attr::TABLE_DESC);
+    write_entry(ttbr1_l1, 1, ttbr1_l2_ram | attr::TABLE_DESC);
+
+    // NC block index: (NC_DMA_BASE - 0x40000000) / 0x200000
+    let nc_block_idx = ((NC_DMA_BASE - 0x4000_0000) / 0x20_0000) as usize;
+    for i in 0..512u64 {
+        let phys = 0x4000_0000 + i * 0x20_0000;
+        let block_attr = if i as usize == nc_block_idx {
+            attr::NC_BLOCK
+        } else {
+            attr::NORMAL_BLOCK
+        };
+        write_entry(ttbr0_l2_ram, i as usize, phys | block_attr);
+        write_entry(ttbr1_l2_ram, i as usize, phys | block_attr);
+    }
 
     // L1[2] = 0x80000000 - 0xBFFFFFFF (1GB block, normal memory)
     write_entry(ttbr0_l1, 2, 0x8000_0000 | attr::NORMAL_BLOCK);

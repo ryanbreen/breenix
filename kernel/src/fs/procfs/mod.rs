@@ -42,6 +42,7 @@ use alloc::vec::Vec;
 use spin::Mutex;
 
 mod trace;
+mod xhci;
 
 /// Procfs entry types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +83,10 @@ pub enum ProcEntryType {
     Pids,
     /// /proc/kmsg - kernel log messages
     Kmsg,
+    /// /proc/xhci - xHCI directory
+    XhciDir,
+    /// /proc/xhci/trace - xHCI trace buffer
+    XhciTrace,
     /// /proc/[pid] - per-process directory (dynamic, not registered)
     PidDir(u64),
     /// /proc/[pid]/status - per-process status (dynamic, not registered)
@@ -113,6 +118,8 @@ impl ProcEntryType {
             ProcEntryType::BreenixTesting => "testing",
             ProcEntryType::Pids => "pids",
             ProcEntryType::Kmsg => "kmsg",
+            ProcEntryType::XhciDir => "xhci",
+            ProcEntryType::XhciTrace => "trace",
             ProcEntryType::PidDir(_) => "pid",
             ProcEntryType::PidStatus(_) => "status",
         }
@@ -142,6 +149,8 @@ impl ProcEntryType {
             ProcEntryType::BreenixTesting => "/proc/breenix/testing",
             ProcEntryType::Pids => "/proc/pids",
             ProcEntryType::Kmsg => "/proc/kmsg",
+            ProcEntryType::XhciDir => "/proc/xhci",
+            ProcEntryType::XhciTrace => "/proc/xhci/trace",
             // Dynamic entries don't have static paths
             ProcEntryType::PidDir(_) => "/proc/<pid>",
             ProcEntryType::PidStatus(_) => "/proc/<pid>/status",
@@ -173,6 +182,8 @@ impl ProcEntryType {
             ProcEntryType::BreenixTesting => 201,
             ProcEntryType::Pids => 9,
             ProcEntryType::Kmsg => 10,
+            ProcEntryType::XhciDir => 300,
+            ProcEntryType::XhciTrace => 301,
             ProcEntryType::PidDir(pid) => 10000 + pid,
             ProcEntryType::PidStatus(pid) => 20000 + pid,
         }
@@ -182,7 +193,10 @@ impl ProcEntryType {
     pub fn is_directory(&self) -> bool {
         matches!(
             self,
-            ProcEntryType::TraceDir | ProcEntryType::BreenixDir | ProcEntryType::PidDir(_)
+            ProcEntryType::TraceDir
+                | ProcEntryType::BreenixDir
+                | ProcEntryType::XhciDir
+                | ProcEntryType::PidDir(_)
         )
     }
 }
@@ -244,6 +258,10 @@ pub fn init() {
 
     procfs.entries.push(ProcEntry::new(ProcEntryType::Pids));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Kmsg));
+
+    // Register /proc/xhci directory and entries
+    procfs.entries.push(ProcEntry::new(ProcEntryType::XhciDir));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::XhciTrace));
 
     // Register /proc/trace directory and entries
     procfs.entries.push(ProcEntry::new(ProcEntryType::TraceDir));
@@ -335,6 +353,7 @@ pub fn list_entries() -> Vec<String> {
                     | ProcEntryType::TraceCounters
                     | ProcEntryType::TraceProviders
                     | ProcEntryType::BreenixTesting
+                    | ProcEntryType::XhciTrace
             ))
             .map(|e| String::from(e.entry_type.name()))
             .collect()
@@ -368,6 +387,17 @@ pub fn list_trace_entries() -> Vec<String> {
                 | ProcEntryType::TraceCounters
                 | ProcEntryType::TraceProviders
         ))
+        .map(|e| String::from(e.entry_type.name()))
+        .collect()
+}
+
+/// List entries in the /proc/xhci directory
+pub fn list_xhci_entries() -> Vec<String> {
+    let procfs = PROCFS.lock();
+    procfs
+        .entries
+        .iter()
+        .filter(|e| matches!(e.entry_type, ProcEntryType::XhciTrace))
         .map(|e| String::from(e.entry_type.name()))
         .collect()
 }
@@ -417,6 +447,11 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<String, i32> {
         ProcEntryType::Pids => Ok(generate_pids()),
         ProcEntryType::Kmsg => Ok(generate_kmsg()),
         ProcEntryType::Mounts => Ok(generate_mounts()),
+        ProcEntryType::XhciDir => {
+            let entries = list_xhci_entries();
+            Ok(entries.join("\n") + "\n")
+        }
+        ProcEntryType::XhciTrace => Ok(xhci::generate_xhci_trace()),
         ProcEntryType::BreenixDir => {
             // Directory listing
             Ok(String::from("testing\n"))

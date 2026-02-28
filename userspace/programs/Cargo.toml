@@ -481,6 +481,10 @@ name = "burl"
 path = "src/burl.rs"
 
 [[bin]]
+name = "btrace"
+path = "src/btrace.rs"
+
+[[bin]]
 name = "blogd"
 path = "src/blogd.rs"
 

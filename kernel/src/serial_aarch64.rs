@@ -367,7 +367,7 @@ pub fn raw_serial_str(s: &[u8]) {
 #[macro_export]
 macro_rules! serial_print {
     ($($arg:tt)*) => {
-        $crate::serial_aarch64::_print(format_args!($($arg)*));
+        $crate::serial_aarch64::_print(format_args!($($arg)*))
     };
 }
 

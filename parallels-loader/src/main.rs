@@ -130,12 +130,42 @@ fn main() -> Status {
         }
     }
 
+    // --- Pre-ExitBootServices xHCI driver disconnect ---
+    //
+    // CRITICAL Parallels workaround: UEFI's ExitBootServices cleanup resets the
+    // xHCI controller (XHC controller reset) and then disables the PCI BAR
+    // (phymemrange_disable 0x18011000). Once the BAR is disabled, the Parallels
+    // hypervisor permanently disassociates virtual USB devices from the controller.
+    //
+    // Fix: Disconnect UEFI's xHCI driver BEFORE ExitBootServices. Without a driver
+    // bound to the device, ExitBootServices won't reset the controller or disable
+    // the BAR. The kernel then does its own HCRST on a BAR that was never disabled.
+    //
+    // xHCI device: PCI 00:03.0 (vendor 0x1033, device 0x0194)
+    config.xhci_hcrst_done = disconnect_xhci_driver();
+
     log::info!("--- Exiting Boot Services ---");
 
     // Exit UEFI boot services. After this, NO UEFI calls are possible.
-    // The memory map is required for ExitBootServices.
     unsafe {
         let _ = uefi::boot::exit_boot_services(MemoryType::LOADER_DATA);
+    }
+
+    // Safety: re-enable xHCI PCI BAR after ExitBootServices as a fallback.
+    // If the disconnect worked, the BAR was never disabled and this is a no-op.
+    // If it failed, this ensures the kernel can at least see the device.
+    if config.pci_ecam_base != 0 {
+        unsafe {
+            let ecam_xhci = config.pci_ecam_base + 0x18000;
+            let cmd_addr = (ecam_xhci + 4) as *mut u32;
+            let dword = core::ptr::read_volatile(cmd_addr);
+            let new_cmd = ((dword & 0xFFFF) | 0x0006) & 0xFFFF;
+            core::ptr::write_volatile(cmd_addr, new_cmd);
+
+            // UART breadcrumb 'U' = post-EBS BAR re-enable
+            let uart = config.uart_base_phys as *mut u32;
+            core::ptr::write_volatile(uart, b'U' as u32);
+        }
     }
 
     // Jump to kernel with our page tables and HardwareConfig
@@ -239,4 +269,122 @@ fn halt() -> ! {
     loop {
         unsafe { core::arch::asm!("wfi") };
     }
+}
+
+// ---------------------------------------------------------------------------
+// Minimal EFI_PCI_IO_PROTOCOL binding for disconnect_xhci_driver()
+// ---------------------------------------------------------------------------
+
+/// GetLocation function pointer type.
+type PciIoGetLocationFn = unsafe extern "efiapi" fn(
+    this: *const PciIoProtocol,
+    segment: *mut usize,
+    bus: *mut usize,
+    device: *mut usize,
+    function: *mut usize,
+) -> Status;
+
+/// Minimal EFI_PCI_IO_PROTOCOL — only need GetLocation for identifying the device.
+/// Layout must match UEFI Spec 2.10 Section 14.4 up through GetLocation.
+#[repr(C)]
+#[uefi::proto::unsafe_protocol("4cf5b200-68b8-4ca5-9eec-b23e3f50029a")]
+struct PciIoProtocol {
+    poll_mem: usize,
+    poll_io: usize,
+    mem_read: usize,
+    mem_write: usize,
+    io_read: usize,
+    io_write: usize,
+    pci_read: usize,
+    pci_write: usize,
+    copy_mem: usize,
+    map: usize,
+    unmap: usize,
+    allocate_buffer: usize,
+    free_buffer: usize,
+    flush: usize,
+    get_location: PciIoGetLocationFn,
+}
+
+/// Disconnect UEFI's xHCI driver from the PCI device at 00:03.0.
+///
+/// Returns a sentinel value for diagnostics:
+///   0x01 = success (driver disconnected)
+///   0xA1 = no PCI handles found
+///   0xA2 = xHCI device not found among handles
+///   0xA3 = disconnect_controller failed
+fn disconnect_xhci_driver() -> u32 {
+    use uefi::boot;
+
+    // Find all handles with EFI_PCI_IO_PROTOCOL
+    let handles = match boot::locate_handle_buffer(
+        boot::SearchType::ByProtocol(&<PciIoProtocol as uefi::Identify>::GUID),
+    ) {
+        Ok(h) => h,
+        Err(_) => {
+            log::warn!("xHCI disconnect: no PCI handles found");
+            return 0xA1;
+        }
+    };
+
+    log::info!("xHCI disconnect: found {} PCI device handles", handles.len());
+
+    let image = boot::image_handle();
+
+    for &handle in handles.iter() {
+        // Open protocol just to peek at GetLocation
+        let pci_io = match unsafe {
+            boot::open_protocol::<PciIoProtocol>(
+                boot::OpenProtocolParams {
+                    handle,
+                    agent: image,
+                    controller: None,
+                },
+                boot::OpenProtocolAttributes::GetProtocol,
+            )
+        } {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        // Check if this is 00:03.0 (the xHCI device)
+        let (mut seg, mut bus, mut dev, mut fun) = (0usize, 0, 0, 0);
+        let status = unsafe {
+            (pci_io.get_location)(
+                &*pci_io as *const PciIoProtocol,
+                &mut seg,
+                &mut bus,
+                &mut dev,
+                &mut fun,
+            )
+        };
+
+        if status != Status::SUCCESS {
+            continue;
+        }
+
+        if bus != 0 || dev != 3 || fun != 0 {
+            continue;
+        }
+
+        log::info!("xHCI disconnect: found device at {:04x}:{:02x}:{:02x}.{:x}", seg, bus, dev, fun);
+
+        // Drop the protocol reference before disconnecting
+        drop(pci_io);
+
+        // Disconnect ALL drivers from this controller
+        match boot::disconnect_controller(handle, None, None) {
+            Ok(_) => {
+                log::info!("xHCI disconnect: SUCCESS — UEFI driver detached");
+                return 0x01;
+            }
+            Err(e) => {
+                log::warn!("xHCI disconnect: disconnect_controller failed: {:?}", e);
+                return 0xA3;
+            }
+        }
+    }
+
+    log::warn!("xHCI disconnect: device 00:03.0 not found");
+    0xA2
 }

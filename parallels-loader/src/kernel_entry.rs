@@ -74,7 +74,8 @@ unsafe fn switch_and_jump(ttbr0: u64, ttbr1: u64, entry: u64, hw_config_ptr: u64
         // Must match kernel boot.S layout:
         //   Index 0: Device-nGnRnE (0x00)
         //   Index 1: Normal WB (0xFF)
-        "mov x4, #0xFF00",
+        //   Index 2: Normal NC (0x44) — for DMA buffers
+        "ldr x4, ={mair}",
         "msr mair_el1, x4",
         "isb",
 
@@ -137,6 +138,7 @@ unsafe fn switch_and_jump(ttbr0: u64, ttbr1: u64, entry: u64, hw_config_ptr: u64
         "mov x0, x3",             // x0 = hw_config_ptr
         "br x2",                   // Jump to kernel_main
 
+        mair = const page_tables::MAIR_VALUE,
         tcr = const page_tables::TCR_VALUE,
         in("x0") ttbr0,
         in("x1") ttbr1,
