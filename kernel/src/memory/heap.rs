@@ -12,19 +12,18 @@ pub const HEAP_START: u64 = 0x_4444_4444_0000;
 // ARM64 heap uses the direct-mapped region from boot.S (TTBR1 high-half).
 // The heap MUST be in TTBR1 because TTBR0 gets switched to process page tables.
 //
-// boot.S maps TTBR1 L1[1] = physical 0x4000_0000..0x7FFF_FFFF to virtual 0xFFFF_0000_4000_0000..
-// Frame allocator uses: physical 0x4200_0000 to 0x5000_0000
-// Heap must be placed AFTER the frame allocator to avoid collision!
-pub const HEAP_START: u64 = crate::arch_impl::aarch64::constants::HHDM_BASE + 0x5000_0000;
+// Memory layout (physical):
+//   Frame allocator: 0x4200_0000 - 0x5000_0000
+//   .dma (NC) block: 0x5000_0000 - 0x501F_FFFF  (2 MB, Non-Cacheable for xHCI DMA)
+//   Heap:            0x5020_0000 - 0x51FF_FFFF  (30 MB, Write-Back Cacheable)
+//   Kernel stacks:   0x5200_0000 - 0x53FF_FFFF  (32 MB)
+//
+// The heap MUST start AFTER the 2 MB NC DMA block to avoid overlapping
+// with xHCI DMA buffers placed in the .dma linker section.
+pub const HEAP_START: u64 = crate::arch_impl::aarch64::constants::HHDM_BASE + 0x5020_0000;
 
-/// Heap size: 32 MiB.
-///
-/// This provides sufficient headroom for:
-/// - Boot initialization allocations
-/// - Running 10+ concurrent processes with full fd tables
-/// - ext2 filesystem operations
-/// - Network stack buffers
-pub const HEAP_SIZE: u64 = 32 * 1024 * 1024;
+/// Heap size: 30 MiB (reduced from 32 to make room for 2 MB NC DMA block).
+pub const HEAP_SIZE: u64 = 30 * 1024 * 1024;
 
 /// Global allocator instance using a proper free-list allocator.
 ///

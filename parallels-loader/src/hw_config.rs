@@ -109,6 +109,15 @@ pub struct HardwareConfig {
     // --- Timer ---
     /// Generic timer frequency in Hz (from CNTFRQ_EL0)
     pub timer_freq_hz: u64,
+
+    // --- xHCI ---
+    /// Set to 1 if the loader already performed HCRST before ExitBootServices.
+    /// The kernel should skip HCRST and just reconfigure rings.
+    pub xhci_hcrst_done: u32,
+    pub _pad6: u32,
+    /// xHCI BAR0 physical address (read from PCI ECAM by the loader).
+    /// 0 if not discovered.
+    pub xhci_bar_phys: u64,
 }
 
 pub const HARDWARE_CONFIG_MAGIC: u32 = 0x4252_4E58; // "BRNX"
@@ -152,6 +161,9 @@ impl HardwareConfig {
             },
             rsdp_addr: 0,
             timer_freq_hz: 0,
+            xhci_hcrst_done: 0,
+            _pad6: 0,
+            xhci_bar_phys: 0,
         }
     }
 

@@ -34,7 +34,8 @@ static mut L2_TABLE_RAM: PageTable = PageTable::new();
 
 const MAIR_ATTR_DEVICE: u64 = 0x00;
 const MAIR_ATTR_NORMAL: u64 = 0xFF;
-const MAIR_EL1_VALUE: u64 = MAIR_ATTR_DEVICE | (MAIR_ATTR_NORMAL << 8);
+const MAIR_ATTR_NC: u64 = 0x44;
+const MAIR_EL1_VALUE: u64 = MAIR_ATTR_DEVICE | (MAIR_ATTR_NORMAL << 8) | (MAIR_ATTR_NC << 16);
 
 const TCR_T0SZ: u64 = 16;
 const TCR_T1SZ: u64 = 16 << 16;

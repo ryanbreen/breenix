@@ -280,6 +280,22 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         }
     }
 
+    // Zero the .dma section (Non-Cacheable DMA buffer region).
+    // This memory is NOLOAD in the ELF, so neither the loader nor boot.S zeroes it.
+    // Must happen before any driver init that uses DMA buffers.
+    unsafe {
+        extern "C" {
+            static __dma_start: u8;
+            static __dma_end: u8;
+        }
+        let start = &__dma_start as *const u8 as *mut u8;
+        let end = &__dma_end as *const u8;
+        let len = end as usize - start as usize;
+        if len > 0 && len < 0x20_0000 {
+            core::ptr::write_bytes(start, 0, len);
+        }
+    }
+
     // Install the kernel's exception vector table (VBAR_EL1).
     // On QEMU, boot.S already did this before jumping to kernel_main.
     // On Parallels, the UEFI loader installed minimal "write X and spin" vectors.
@@ -313,6 +329,14 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!("  BUILD_ID: {}", env!("BREENIX_BUILD_ID"));
     serial_println!("========================================");
     serial_println!();
+
+    // Diagnostic: verify this code is reached (no format args = no alloc issues)
+    serial_println!("[boot] DIAG_MARKER_XHCI_A");
+    let hcrst_raw = kernel::platform_config::xhci_hcrst_done_raw();
+    serial_println!("[boot] DIAG_MARKER_XHCI_B");
+    let ecam = kernel::platform_config::pci_ecam_base();
+    serial_println!("[boot] DIAG_MARKER_XHCI_C");
+    serial_println!("[boot] loader xhci_hcrst_raw=0x{:x} ecam=0x{:x}", hcrst_raw, ecam);
 
     // Print CPU info
     let el = current_exception_level();

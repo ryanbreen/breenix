@@ -61,11 +61,18 @@ static PCI_BUS_START: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "aarch64")]
 static PCI_BUS_END: AtomicU64 = AtomicU64::new(255);
 
+// xHCI loader-level HCRST flag. Non-zero if the parallels-loader already did
+// HCRST before ExitBootServices (kernel should skip HCRST).
+#[cfg(target_arch = "aarch64")]
+static XHCI_HCRST_DONE: AtomicU64 = AtomicU64::new(0);
+
 // Memory layout defaults (QEMU virt, 512MB RAM at 0x40000000)
 // Kernel image:   0x4000_0000 - 0x4100_0000 (16 MB)
 // Per-CPU stacks: 0x4100_0000 - 0x4200_0000 (16 MB)
 // Frame alloc:    0x4200_0000 - 0x5000_0000 (224 MB)
-// Heap:           0x5000_0000 - 0x5200_0000 (32 MB)
+// DMA (NC):       0x5000_0000 - 0x501F_FFFF (2 MB, Non-Cacheable for xHCI)
+// Heap:           0x5020_0000 - 0x51FF_FFFF (30 MB)
+// Kernel stacks:  0x5200_0000 - 0x5400_0000 (32 MB)
 
 #[cfg(target_arch = "aarch64")]
 static FRAME_ALLOC_START: AtomicU64 = AtomicU64::new(0x4200_0000);
@@ -280,6 +287,26 @@ pub fn is_qemu() -> bool {
     uart_base_phys() == 0x0900_0000
 }
 
+/// Whether the parallels-loader already performed HCRST before ExitBootServices.
+/// If true, the kernel should skip HCRST in xhci::init to avoid destroying
+/// endpoint state that was created while the xHCI BAR was still active.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn xhci_hcrst_done() -> bool {
+    // The loader now disconnects UEFI's xHCI driver instead of doing HCRST.
+    // The kernel should always do its own HCRST. Return false unconditionally.
+    false
+}
+
+/// Raw value of the xHCI HCRST sentinel (for diagnostics).
+/// Sentinels: 0x00=untouched, 0xEE=reached, 0xCC=no ECAM, 0xDD=VID mismatch,
+///            0xBB=BAR zero, 0x01=HCRST done
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn xhci_hcrst_done_raw() -> u64 {
+    XHCI_HCRST_DONE.load(Ordering::Relaxed)
+}
+
 /// Whether a UEFI GOP framebuffer was discovered by the loader.
 #[cfg(target_arch = "aarch64")]
 #[inline]
@@ -365,6 +392,9 @@ pub struct HardwareConfig {
     pub framebuffer: FramebufferInfo,
     pub rsdp_addr: u64,
     pub timer_freq_hz: u64,
+    pub xhci_hcrst_done: u32,
+    pub _pad6: u32,
+    pub xhci_bar_phys: u64,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -452,8 +482,8 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
         if best_size > 0 {
             // Frame allocator starts after kernel + stacks (32 MB from RAM base)
             let fa_start = best_base + 0x0200_0000; // +32 MB
-            // Frame allocator must end BEFORE the heap region.
-            // The heap is at fixed physical 0x5000_0000 (32 MB), so cap fa_end there.
+            // Frame allocator must end BEFORE the DMA NC region.
+            // The .dma section starts at physical 0x5000_0000, so cap fa_end there.
             let fa_end = (best_base + best_size).min(0x5000_0000);
             if fa_end > fa_start {
                 FRAME_ALLOC_START.store(fa_start, Ordering::Relaxed);
@@ -470,6 +500,11 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
         FB_HEIGHT.store(config.framebuffer.height as u64, Ordering::Relaxed);
         FB_STRIDE.store(config.framebuffer.stride as u64, Ordering::Relaxed);
         FB_IS_BGR.store(if config.framebuffer.pixel_format == 1 { 1 } else { 0 }, Ordering::Relaxed);
+    }
+
+    // Store xHCI loader-level HCRST flag
+    if config.xhci_hcrst_done != 0 {
+        XHCI_HCRST_DONE.store(config.xhci_hcrst_done as u64, Ordering::Relaxed);
     }
 
     true

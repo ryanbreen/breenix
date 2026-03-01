@@ -92,50 +92,18 @@ pub fn init() -> usize {
         let device_count = pci::enumerate();
         serial_println!("[drivers] Found {} PCI devices", device_count);
 
-        // Log all PCI devices for debugging
-        if let Some(devices) = pci::get_devices() {
-            for dev in &devices {
-                serial_println!(
-                    "[drivers] PCI {:02x}:{:02x}.{} [{:04x}:{:04x}] class={:?}/0x{:02x}",
-                    dev.bus, dev.device, dev.function,
-                    dev.vendor_id, dev.device_id,
-                    dev.class, dev.subclass,
-                );
-            }
-        }
-
         // Enumerate VirtIO PCI devices with modern transport
         let virtio_devices = virtio::pci_transport::enumerate_virtio_pci_devices();
-        for dev in &virtio_devices {
-            serial_println!(
-                "[drivers] VirtIO PCI device: {} (type={})",
-                virtio::pci_transport::device_type_name(dev.device_id()),
-                dev.device_id()
-            );
-        }
         serial_println!("[drivers] Found {} VirtIO PCI devices", virtio_devices.len());
 
-        // Initialize VirtIO GPU PCI driver.
-        // Even when a GOP framebuffer is available (Parallels), we try the VirtIO
-        // GPU PCI driver first — it supports arbitrary resolutions via
-        // CREATE_RESOURCE_2D, giving us control beyond the fixed GOP mode.
-        // If GPU PCI init fails, the GOP framebuffer is used as a fallback.
         match virtio::gpu_pci::init() {
-            Ok(()) => {
-                serial_println!("[drivers] VirtIO GPU (PCI) initialized");
-            }
-            Err(e) => {
-                serial_println!("[drivers] VirtIO GPU (PCI) init failed: {}", e);
-            }
+            Ok(()) => serial_println!("[drivers] VirtIO GPU (PCI) initialized"),
+            Err(e) => serial_println!("[drivers] VirtIO GPU (PCI) init failed: {}", e),
         }
 
-        // EHCI USB 2.0 host controller SKIPPED — investigating whether EHCI
-        // init causes a second xHC reset in the Parallels hypervisor, which
-        // would destroy interrupt endpoint configurations and cause CC=12.
-        // Intel 82801FB EHCI: vendor 0x8086, device 0x265c
-        if pci::find_device(0x8086, 0x265c).is_some() {
-            serial_println!("[drivers] EHCI USB 2.0 controller found but SKIPPED (CC=12 investigation)");
-        }
+        // EHCI USB 2.0 controller — initialization is handled inside xhci::init()
+        // as a prerequisite for Parallels USB device routing (companion controller model).
+        // Intel 82801FB EHCI: vendor 0x8086, device 0x265c at PCI 00:02.0
 
         // Initialize XHCI USB host controller (keyboard + mouse)
         // NEC uPD720200: vendor 0x1033, device 0x0194

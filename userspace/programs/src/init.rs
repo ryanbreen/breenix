@@ -107,7 +107,7 @@ fn main() {
     }
     print!("[init] TEST: all 5 iterations completed successfully\n");
 
-    // Main loop: reap zombies and respawn crashed services.
+    // Main loop: reap zombies, respawn crashed services.
     let mut status: i32 = 0;
     loop {
         match waitpid(-1, &mut status as *mut i32, WNOHANG) {
