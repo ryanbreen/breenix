@@ -11,7 +11,6 @@
 //! crashed services with backoff to prevent tight respawn loops.
 
 use libbreenix::process::{fork, exec, waitpid, getpid, yield_now, ForkResult, WNOHANG};
-use libbreenix::time;
 
 const TELNETD_PATH: &[u8] = b"/sbin/telnetd\0";
 const BLOGD_PATH: &[u8] = b"/sbin/blogd\0";
@@ -108,33 +107,14 @@ fn main() {
     }
     print!("[init] TEST: all 5 iterations completed successfully\n");
 
-    // Run btrace diagnostic at boot, then every 10 seconds
-    let mut btrace_pid: i64 = -1;
-    let mut last_btrace_sec: i64 = -10; // force immediate first run
-
-    // Main loop: reap zombies, respawn crashed services, run periodic btrace.
+    // Main loop: reap zombies, respawn crashed services.
     let mut status: i32 = 0;
     loop {
-        // Spawn btrace every 10 seconds (non-blocking: spawn and reap later)
-        let now_sec = time::now_monotonic().map(|ts| ts.tv_sec).unwrap_or(0);
-        if now_sec - last_btrace_sec >= 10 {
-            // Reap previous btrace if still tracked
-            if btrace_pid > 0 {
-                let mut bs: i32 = 0;
-                let _ = waitpid(btrace_pid as i32, &mut bs as *mut i32, WNOHANG);
-            }
-            btrace_pid = spawn(b"/bin/btrace\0", "btrace");
-            last_btrace_sec = now_sec;
-        }
-
         match waitpid(-1, &mut status as *mut i32, WNOHANG) {
             Ok(reaped_pid) => {
                 let reaped = reaped_pid.raw() as i64;
                 if reaped > 0 {
-                    if reaped == btrace_pid {
-                        // btrace exited, clear tracked PID
-                        btrace_pid = -1;
-                    } else if reaped == bwm_pid {
+                    if reaped == bwm_pid {
                         print!("[init] BWM exited (status {})\n", status);
                         bwm_pid = try_respawn(BWM_PATH, "bwm", &mut bwm_failures);
                         if bwm_pid == -1 {

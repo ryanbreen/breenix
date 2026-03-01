@@ -313,18 +313,9 @@ pub fn init() -> Result<(), &'static str> {
         return Ok(());
     }
 
-    crate::serial_println!("[virtio-gpu-pci] Searching for GPU PCI device...");
-
     // Find VirtIO GPU PCI device (device_id 0x1050 = 0x1040 + 16)
     let pci_dev = crate::drivers::pci::find_device(0x1AF4, 0x1050)
         .ok_or("No VirtIO GPU PCI device found")?;
-
-    crate::serial_println!(
-        "[virtio-gpu-pci] Found GPU at PCI {:02x}:{:02x}.{:x}",
-        pci_dev.bus,
-        pci_dev.device,
-        pci_dev.function
-    );
 
     // Probe VirtIO modern transport
     let mut virtio = VirtioPciDevice::probe(pci_dev)
@@ -336,17 +327,11 @@ pub fn init() -> Result<(), &'static str> {
     // state-modifying commands (create_resource, attach_backing, etc.).
     let requested = VIRTIO_F_VERSION_1 | VIRTIO_GPU_F_EDID;
     virtio.init(requested)?;
-    let dev_feats = virtio.device_features();
-    let negotiated = dev_feats & requested;
-    crate::serial_println!(
-        "[virtio-gpu-pci] Features: device={:#x} requested={:#x} negotiated={:#x}",
-        dev_feats, requested, negotiated
-    );
+    let _negotiated = virtio.device_features() & requested;
 
     // Set up control queue (queue 0)
     virtio.select_queue(0);
     let queue_max = virtio.get_queue_num_max();
-    crate::serial_println!("[virtio-gpu-pci] Control queue max size: {}", queue_max);
 
     if queue_max == 0 {
         return Err("Control queue size is 0");
@@ -395,27 +380,8 @@ pub fn init() -> Result<(), &'static str> {
     // If create_resource/attach_backing/set_scanout/flush time out, leaving
     // the flag true would mislead other code into thinking the device is usable.
 
-    // Log physical addresses for diagnostics (DMA correctness)
-    let fb_virt = &raw const PCI_FRAMEBUFFER as u64;
-    let fb_phys = virt_to_phys(fb_virt);
-    let cmd_virt = &raw const PCI_CMD_BUF as u64;
-    let cmd_phys = virt_to_phys(cmd_virt);
-    let queue_virt = &raw const PCI_CTRL_QUEUE as u64;
-    let queue_phys = virt_to_phys(queue_virt);
-    crate::serial_println!(
-        "[virtio-gpu-pci] DMA addrs: fb={:#x}->{:#x} cmd={:#x}->{:#x} queue={:#x}->{:#x}",
-        fb_virt, fb_phys, cmd_virt, cmd_phys, queue_virt, queue_phys
-    );
-
-    // Query display info for diagnostics.
-    match get_display_info() {
-        Ok((w, h)) => {
-            crate::serial_println!("[virtio-gpu-pci] Display reports: {}x{}", w, h);
-        }
-        Err(e) => {
-            crate::serial_println!("[virtio-gpu-pci] get_display_info failed: {}", e);
-        }
-    }
+    // Query display info (ignore result — we override to our desired resolution).
+    let _ = get_display_info();
 
     // Override to our desired resolution.
     // On Parallels, VirtIO GPU set_scanout controls the display MODE (stride,
@@ -423,7 +389,6 @@ pub fn init() -> Result<(), &'static str> {
     // 0x10000000). We use VirtIO GPU purely to configure a higher resolution
     // than the GOP-reported 1024x768.
     let (use_width, use_height) = (DEFAULT_FB_WIDTH, DEFAULT_FB_HEIGHT);
-    crate::serial_println!("[virtio-gpu-pci] Requesting resolution: {}x{}", use_width, use_height);
 
     // Update state with actual dimensions
     unsafe {
@@ -611,17 +576,10 @@ fn get_display_info() -> Result<(u32, u32), &'static str> {
                 return Err("GET_DISPLAY_INFO failed");
             }
 
-            // Log ALL scanouts for diagnostics
             let mut first_enabled = None;
-            for (i, pmode) in resp.pmodes.iter().enumerate() {
-                if pmode.r_width > 0 || pmode.r_height > 0 || pmode.enabled != 0 {
-                    crate::serial_println!(
-                        "[virtio-gpu-pci] Scanout {}: {}x{} enabled={} flags={:#x}",
-                        i, pmode.r_width, pmode.r_height, pmode.enabled, pmode.flags
-                    );
-                    if pmode.enabled != 0 && first_enabled.is_none() {
-                        first_enabled = Some((pmode.r_width, pmode.r_height));
-                    }
+            for (_i, pmode) in resp.pmodes.iter().enumerate() {
+                if pmode.enabled != 0 && first_enabled.is_none() {
+                    first_enabled = Some((pmode.r_width, pmode.r_height));
                 }
             }
 

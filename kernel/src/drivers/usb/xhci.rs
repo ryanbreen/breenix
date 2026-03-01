@@ -1159,19 +1159,21 @@ fn xhci_trace_dump() {
 // M11: EVENT_DELIVERY        — First transfer event (HID data received)
 // =============================================================================
 
-const M_DISCOVERY: u8 = 1;
-const M_RESET: u8 = 2;
-const M_DATA_STRUC: u8 = 3;
-const M_RUNNING: u8 = 4;
-const M_PORT_DET: u8 = 5;
-const M_SLOT_EN: u8 = 6;
-const M_ADDR_DEV: u8 = 7;
-const M_EP_CONFIG: u8 = 8;
-const M_HID_SETUP: u8 = 9;
-const M_INTR_XFER: u8 = 10;
-const M_EVT_DELIV: u8 = 11;
-const M_TOTAL: u8 = 11;
+// Milestone constants — intentionally kept for re-enablement of tracing macros.
+#[allow(dead_code)] const M_DISCOVERY: u8 = 1;
+#[allow(dead_code)] const M_RESET: u8 = 2;
+#[allow(dead_code)] const M_DATA_STRUC: u8 = 3;
+#[allow(dead_code)] const M_RUNNING: u8 = 4;
+#[allow(dead_code)] const M_PORT_DET: u8 = 5;
+#[allow(dead_code)] const M_SLOT_EN: u8 = 6;
+#[allow(dead_code)] const M_ADDR_DEV: u8 = 7;
+#[allow(dead_code)] const M_EP_CONFIG: u8 = 8;
+#[allow(dead_code)] const M_HID_SETUP: u8 = 9;
+#[allow(dead_code)] const M_INTR_XFER: u8 = 10;
+#[allow(dead_code)] const M_EVT_DELIV: u8 = 11;
+#[allow(dead_code)] const M_TOTAL: u8 = 11;
 
+#[allow(dead_code)]
 const MILESTONE_NAMES: [&str; 12] = [
     "UNUSED",
     "CONTROLLER_DISCOVERY",
@@ -1187,94 +1189,20 @@ const MILESTONE_NAMES: [&str; 12] = [
     "EVENT_DELIVERY",
 ];
 
-macro_rules! ms_begin {
-    ($m:expr) => {
-        crate::serial_println!("=== MILESTONE {}/{}: {} ===", $m, M_TOTAL, MILESTONE_NAMES[$m as usize]);
-    };
-}
+macro_rules! ms_begin { ($m:expr) => {}; }
+macro_rules! ms_pass { ($m:expr) => {}; }
+macro_rules! ms_fail { ($m:expr, $reason:expr) => {}; }
+macro_rules! ms_kv { ($m:expr, $fmt:literal $(, $arg:expr)*) => {}; }
 
-macro_rules! ms_pass {
-    ($m:expr) => {
-        crate::serial_println!("[M{}] RESULT: PASS", $m);
-    };
-}
-
-macro_rules! ms_fail {
-    ($m:expr, $reason:expr) => {
-        crate::serial_println!("[M{}] RESULT: FAIL ({})", $m, $reason);
-    };
-}
-
-macro_rules! ms_kv {
-    ($m:expr, $fmt:literal $(, $arg:expr)*) => {
-        crate::serial_println!(concat!("[M{}] ", $fmt), $m $(, $arg)*)
-    };
-}
-
-/// Hex-dump a DMA buffer under a milestone.
+/// Hex-dump a DMA buffer under a milestone (silenced).
 #[allow(dead_code)]
-fn ms_dump(m: u8, label: &str, phys: u64, buf: *const u8, len: usize) {
-    crate::serial_println!("[M{}] {}: phys=0x{:x} len={}", m, label, phys, len);
-    let p = buf as *const u32;
-    let n = len / 4;
-    let mut i = 0;
-    while i < n {
-        unsafe {
-            let remaining = n - i;
-            if remaining >= 4 {
-                crate::serial_println!("[M{}]   +{:03x}: {:08x} {:08x} {:08x} {:08x}",
-                    m, i * 4,
-                    core::ptr::read_volatile(p.add(i)),
-                    core::ptr::read_volatile(p.add(i + 1)),
-                    core::ptr::read_volatile(p.add(i + 2)),
-                    core::ptr::read_volatile(p.add(i + 3)));
-            } else if remaining == 3 {
-                crate::serial_println!("[M{}]   +{:03x}: {:08x} {:08x} {:08x}",
-                    m, i * 4,
-                    core::ptr::read_volatile(p.add(i)),
-                    core::ptr::read_volatile(p.add(i + 1)),
-                    core::ptr::read_volatile(p.add(i + 2)));
-            } else if remaining == 2 {
-                crate::serial_println!("[M{}]   +{:03x}: {:08x} {:08x}",
-                    m, i * 4,
-                    core::ptr::read_volatile(p.add(i)),
-                    core::ptr::read_volatile(p.add(i + 1)));
-            } else if remaining == 1 {
-                crate::serial_println!("[M{}]   +{:03x}: {:08x}",
-                    m, i * 4,
-                    core::ptr::read_volatile(p.add(i)));
-            }
-        }
-        i += 4;
-    }
-}
+fn ms_dump(_m: u8, _label: &str, _phys: u64, _buf: *const u8, _len: usize) {}
 
-/// Dump a TRB under a milestone.
-fn ms_trb(m: u8, label: &str, trb: &Trb) {
-    crate::serial_println!("[M{}] {}: {:08x} {:08x} {:08x} {:08x}",
-        m, label,
-        trb.param as u32,
-        (trb.param >> 32) as u32,
-        trb.status,
-        trb.control);
-}
+/// Dump a TRB under a milestone (silenced).
+fn ms_trb(_m: u8, _label: &str, _trb: &Trb) {}
 
-/// Dump all key xHCI registers under a milestone.
-fn ms_regs(m: u8, op_base: u64, ir0_base: u64) {
-    let usbcmd = read32(op_base + 0x00);
-    let usbsts = read32(op_base + 0x04);
-    let dcbaap = read64(op_base + 0x30);
-    let crcr = read64(op_base + 0x18);
-    let iman = read32(ir0_base + 0x00);
-    let imod = read32(ir0_base + 0x04);
-    let erstsz = read32(ir0_base + 0x08);
-    let erdp = read64(ir0_base + 0x18);
-    let erstba = read64(ir0_base + 0x10);
-    crate::serial_println!("[M{}] USBCMD=0x{:08x} USBSTS=0x{:08x}", m, usbcmd, usbsts);
-    crate::serial_println!("[M{}] DCBAAP=0x{:016x} CRCR=0x{:016x}", m, dcbaap, crcr);
-    crate::serial_println!("[M{}] IMAN=0x{:08x} IMOD=0x{:08x} ERSTSZ=0x{:08x}", m, iman, imod, erstsz);
-    crate::serial_println!("[M{}] ERDP=0x{:016x} ERSTBA=0x{:016x}", m, erdp, erstba);
-}
+/// Dump all key xHCI registers under a milestone (silenced).
+fn ms_regs(_m: u8, _op_base: u64, _ir0_base: u64) {}
 
 // =============================================================================
 // MMIO Register Access
@@ -1387,76 +1315,6 @@ fn delay_ms(ms: u32) {
 ///
 /// The Parallels hypervisor's virtual USB subsystem requires the EHCI controller
 /// to be reset in close proximity to the xHCI reset for the virtual xHC to
-/// properly create internal endpoint state on subsequent ConfigureEndpoint
-/// commands. Without this, the xHC returns CC=1 (success) for ConfigureEndpoint
-/// but never creates the endpoint internally, causing CC=12 on doorbells.
-///
-/// This was discovered by comparing Parallels hypervisor logs between linux-probe
-/// (where Linux resets EHCI as part of normal USB init) and breenix-dev (where
-/// Breenix only resets xHCI). On linux-probe, "ep create" log entries appear
-/// after HCRST; on breenix-dev they don't — unless EHCI is also reset.
-fn reset_ehci(ecam_base: u64) {
-    // EHCI is at PCI 00:02.0. ECAM offset = (bus << 20) | (dev << 15) | (func << 12)
-    let ehci_ecam = ecam_base + (2u64 << 15);
-    let ehci_ecam_virt = HHDM_BASE + ehci_ecam;
-
-    // Read vendor/device ID to verify it's the EHCI controller
-    let id = unsafe { core::ptr::read_volatile(ehci_ecam_virt as *const u32) };
-    if id != 0x265c_8086 {
-        crate::serial_println!("[ehci] PCI 00:02.0 not Intel EHCI (id=0x{:08x}), skipping reset", id);
-        return;
-    }
-
-    // Read BAR0 (offset 0x10 in PCI config space)
-    let bar0 = unsafe { core::ptr::read_volatile((ehci_ecam_virt + 0x10) as *const u32) };
-    if bar0 == 0 || bar0 == 0xFFFFFFFF {
-        crate::serial_println!("[ehci] BAR0 invalid (0x{:08x}), skipping reset", bar0);
-        return;
-    }
-    let bar_phys = (bar0 & 0xFFFFF000) as u64;
-    let bar_virt = HHDM_BASE + bar_phys;
-
-    // EHCI registers: CAPLENGTH at BAR+0x00 gives offset to operational registers
-    let caplength = unsafe { core::ptr::read_volatile(bar_virt as *const u8) };
-    let op_base = bar_virt + caplength as u64;
-
-    // Read current USBCMD
-    let usbcmd = unsafe { core::ptr::read_volatile(op_base as *const u32) };
-    crate::serial_println!("[ehci] BAR=0x{:08x} op_base=+0x{:02x} USBCMD=0x{:08x}", bar_phys, caplength, usbcmd);
-
-    // Halt controller if running (bit 0 = RS)
-    if usbcmd & 1 != 0 {
-        unsafe {
-            core::arch::asm!("dsb st", options(nostack, preserves_flags));
-            core::ptr::write_volatile(op_base as *mut u32, usbcmd & !1);
-            core::arch::asm!("dsb st", options(nostack, preserves_flags));
-        }
-        // Wait for HCHalted (bit 12 of USBSTS at op_base+0x04)
-        for _ in 0..10_000u32 {
-            let sts = unsafe { core::ptr::read_volatile((op_base + 0x04) as *const u32) };
-            if sts & (1 << 12) != 0 { break; }
-            core::hint::spin_loop();
-        }
-    }
-
-    // Set HCRESET (bit 1 of USBCMD)
-    unsafe {
-        core::arch::asm!("dsb st", options(nostack, preserves_flags));
-        core::ptr::write_volatile(op_base as *mut u32, 1 << 1);
-        core::arch::asm!("dsb st", options(nostack, preserves_flags));
-    }
-
-    // Wait for HCRESET to self-clear
-    for _ in 0..100_000u32 {
-        let cmd = unsafe { core::ptr::read_volatile(op_base as *const u32) };
-        if cmd & (1 << 1) == 0 { break; }
-        core::hint::spin_loop();
-    }
-
-    let usbcmd_after = unsafe { core::ptr::read_volatile(op_base as *const u32) };
-    crate::serial_println!("[ehci] reset complete, USBCMD=0x{:08x}", usbcmd_after);
-}
-
 // =============================================================================
 // Command Ring Operations
 // =============================================================================
@@ -1640,7 +1498,6 @@ fn send_noop(state: &XhciState) -> Result<(), &'static str> {
 
     let event = wait_for_command(state)?;
     let cc = event.completion_code();
-    crate::serial_println!("[xhci-cmd] NOOP: CC={}", cc);
     if cc != completion_code::SUCCESS {
         xhci_trace_note(0, "err:noop");
         return Err("XHCI NOOP failed");
@@ -1662,9 +1519,6 @@ fn enable_slot(state: &XhciState) -> Result<u8, &'static str> {
     let event = wait_for_command(state)?;
     let cc = event.completion_code();
     let slot_id = event.slot_id();
-    crate::serial_println!(
-        "[xhci-cmd] EnableSlot: CC={} slot={}", cc, slot_id
-    );
     if cc != completion_code::SUCCESS {
         xhci_trace_note(0, "err:enable_slot");
         return Err("XHCI EnableSlot failed");
@@ -1808,10 +1662,6 @@ fn address_device(state: &XhciState, slot_id: u8, port_id: u8) -> Result<(), &'s
         let event = wait_for_command(state)?;
         let cc = event.completion_code();
         ms_kv!(M_ADDR_DEV, "CC={} slot={}", cc, slot_id);
-        crate::serial_println!(
-            "[xhci-cmd] AddressDevice: CC={} slot={} input_ctx_phys=0x{:016x} dev_ctx_phys=0x{:016x}",
-            cc, slot_id, input_ctx_phys, dev_ctx_phys
-        );
         if cc != completion_code::SUCCESS {
             return Err("XHCI AddressDevice failed");
         }
@@ -2168,7 +2018,6 @@ fn set_isoch_delay(
     };
     // No data stage — just Setup + Status
     control_transfer(state, slot_id, &setup, 0, 0, false)?;
-    crate::serial_println!("[xhci] SET_ISOCH_DELAY(40us) sent to slot {}", slot_id);
     Ok(())
 }
 
@@ -2763,10 +2612,6 @@ fn configure_endpoints_batch(
             let cc = event.completion_code();
             ms_kv!(M_EP_CONFIG, "ConfigureEndpoint slot={} CC={} add_flags=0x{:x}",
                    slot_id, cc, add_flags);
-            crate::serial_println!(
-                "[xhci-cmd] ConfigureEndpoint: CC={} slot={} input_phys=0x{:016x} add_flags=0x{:08x}",
-                cc, slot_id, input_ctx_phys, add_flags
-            );
             if cc != completion_code::SUCCESS {
                 ms_fail!(M_EP_CONFIG, "ConfigureEndpoint command failed");
                 return Err("XHCI ConfigureEndpoint failed");
@@ -3238,13 +3083,6 @@ fn configure_hid(
     //   6. SET_REPORT (LED)         — keyboard only
     // =========================================================================
     ms_kv!(M_HID_SETUP, "hid_interfaces={} slot={}", iface_count, slot_id);
-    for i in 0..iface_count {
-        if let Some(ref info) = ifaces[i] {
-            ms_kv!(M_HID_SETUP, "iface[{}]: num={} is_kbd={} is_nkro={} is_boot={} hid_idx={} dci={} report_len={}",
-                   i, info.interface_number, info.is_keyboard, info.is_nkro,
-                   info.is_boot, info.hid_idx, info.dci, info.hid_report_len);
-        }
-    }
 
     for i in 0..iface_count {
         if let Some(ref info) = ifaces[i] {
@@ -3462,121 +3300,6 @@ fn queue_hid_transfer(
                 DIAG_PORTSC_BEFORE_DB.store(portsc, Ordering::Relaxed);
             }
         }
-    }
-
-    // === DIAGNOSTIC DUMP before first doorbell ring ===
-    // One-shot: only on the very first interrupt TRB doorbell.
-    static FIRST_DB_DUMPED: core::sync::atomic::AtomicBool =
-        core::sync::atomic::AtomicBool::new(false);
-    if !FIRST_DB_DUMPED.swap(true, Ordering::AcqRel) {
-        let bar_phys = state.base - HHDM_BASE;
-        let db_off = state.db_base - state.base;
-        let db_addr = state.db_base + (slot_id as u64) * 4;
-        let db_val = dci as u32;
-        crate::serial_println!("[xhci-firstdb] bar_phys=0x{:08x} db_off=0x{:x} db_addr=0x{:016x} db_val={}",
-            bar_phys, db_off, db_addr, db_val);
-
-        // Read USBCMD and USBSTS at doorbell time
-        let usbcmd = read32(state.op_base);
-        let usbsts = read32(state.op_base + 0x04);
-        crate::serial_println!("[xhci-firstdb] usbcmd=0x{:08x} usbsts=0x{:08x}", usbcmd, usbsts);
-
-        // MFINDEX: Runtime Register Base + 0x00, must be incrementing for periodic EPs
-        let mfindex1 = read32(state.rt_base);
-        // Small delay to verify MFINDEX is advancing
-        for _ in 0..100_000u32 { core::hint::spin_loop(); }
-        let mfindex2 = read32(state.rt_base);
-        for _ in 0..100_000u32 { core::hint::spin_loop(); }
-        let mfindex3 = read32(state.rt_base);
-        crate::serial_println!("[xhci-firstdb] MFINDEX: {} -> {} -> {} (advancing={})",
-            mfindex1 & 0x3FFF, mfindex2 & 0x3FFF, mfindex3 & 0x3FFF,
-            mfindex1 != mfindex2 || mfindex2 != mfindex3);
-        DIAG_MFINDEX.store(mfindex1, Ordering::Relaxed);
-
-        // Dump the actual TRB bytes as written to the ring
-        unsafe {
-            let ring_base = &raw const TRANSFER_RINGS[ring_idx];
-            let _trb_ptr = (*ring_base)[enq_idx]; // This was already enqueued above
-            // Actually read back from the ring (enq_idx was the slot BEFORE enqueue, now it has data)
-            dma_cache_invalidate(
-                &(*ring_base)[enq_idx] as *const Trb as *const u8,
-                core::mem::size_of::<Trb>(),
-            );
-            let trb_readback = core::ptr::read_volatile(&(*ring_base)[enq_idx]);
-            crate::serial_println!("[xhci-firstdb] trb[{}]: param=0x{:016x} status=0x{:08x} control=0x{:08x}",
-                enq_idx, trb_readback.param, trb_readback.status, trb_readback.control);
-
-            // Dump the Link TRB at end of ring
-            let link_idx = TRANSFER_RING_SIZE - 1;
-            dma_cache_invalidate(
-                &(*ring_base)[link_idx] as *const Trb as *const u8,
-                core::mem::size_of::<Trb>(),
-            );
-            let link_trb = core::ptr::read_volatile(&(*ring_base)[link_idx]);
-            crate::serial_println!("[xhci-firstdb] link[{}]: param=0x{:016x} status=0x{:08x} control=0x{:08x}",
-                link_idx, link_trb.param, link_trb.status, link_trb.control);
-
-            // Dump full EP context DW0-DW4 from output context
-            let slot_idx = (slot_id - 1) as usize;
-            let dev_ctx = &raw const DEVICE_CONTEXTS[slot_idx];
-            dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
-            let ep_base = (*dev_ctx).0.as_ptr().add(dci as usize * state.context_size);
-            let ep_dw0 = core::ptr::read_volatile(ep_base as *const u32);
-            let ep_dw1 = core::ptr::read_volatile(ep_base.add(4) as *const u32);
-            let ep_dw2 = core::ptr::read_volatile(ep_base.add(8) as *const u32);
-            let ep_dw3 = core::ptr::read_volatile(ep_base.add(12) as *const u32);
-            let ep_dw4 = core::ptr::read_volatile(ep_base.add(16) as *const u32);
-            crate::serial_println!("[xhci-firstdb] ep_ctx: 0x{:08x} 0x{:08x} 0x{:08x} 0x{:08x} 0x{:08x}",
-                ep_dw0, ep_dw1, ep_dw2, ep_dw3, ep_dw4);
-
-            // Slot context DW0 and DW3
-            let slot_dw0 = core::ptr::read_volatile((*dev_ctx).0.as_ptr() as *const u32);
-            let slot_dw3 = core::ptr::read_volatile((*dev_ctx).0.as_ptr().add(12) as *const u32);
-            crate::serial_println!("[xhci-firstdb] slot_ctx: dw0=0x{:08x} dw3=0x{:08x}", slot_dw0, slot_dw3);
-
-            // Ring physical address and current TRDP
-            let ring_phys = virt_to_phys(&raw const TRANSFER_RINGS[ring_idx] as u64);
-            crate::serial_println!("[xhci-firstdb] ring_phys=0x{:016x} trdp_out=0x{:08x}{:08x}",
-                ring_phys, ep_dw3, ep_dw2);
-
-            // IMAN register (Interrupter 0)
-            let ir0 = state.rt_base + 0x20;
-            let iman = read32(ir0);
-            let imod = read32(ir0 + 0x04);
-            crate::serial_println!("[xhci-firstdb] iman=0x{:08x} imod=0x{:08x}", iman, imod);
-        }
-    }
-
-    // Dump EP context state and Normal TRB BEFORE ringing the doorbell
-    unsafe {
-        let slot_idx = (slot_id - 1) as usize;
-        let dev_ctx = &raw const DEVICE_CONTEXTS[slot_idx];
-        let ctx_size = state.context_size;
-        dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
-
-        // EP context state before doorbell
-        let ep_base = (*dev_ctx).0.as_ptr().add(dci as usize * ctx_size);
-        let pre_dw0 = core::ptr::read_volatile(ep_base as *const u32);
-        let pre_dw1 = core::ptr::read_volatile(ep_base.add(4) as *const u32);
-        let pre_dw2 = core::ptr::read_volatile(ep_base.add(8) as *const u32);
-        let pre_dw3 = core::ptr::read_volatile(ep_base.add(12) as *const u32);
-        let ep_state = pre_dw0 & 0x7;
-        ms_kv!(M_INTR_XFER, "pre_doorbell: slot={} dci={} ep_state={} dw0=0x{:08x} dw1=0x{:08x} deq=0x{:08x}{:08x}",
-               slot_id, dci, ep_state, pre_dw0, pre_dw1, pre_dw3, pre_dw2);
-
-        // Dump the Normal TRB that was written to the transfer ring (4 DWORDs)
-        let ring_base = &raw const TRANSFER_RINGS[ring_idx];
-        dma_cache_invalidate(
-            &(*ring_base)[enq_idx] as *const Trb as *const u8,
-            core::mem::size_of::<Trb>(),
-        );
-        let trb_ptr = &(*ring_base)[enq_idx] as *const Trb as *const u32;
-        let trb_dw0 = core::ptr::read_volatile(trb_ptr);
-        let trb_dw1 = core::ptr::read_volatile(trb_ptr.add(1));
-        let trb_dw2 = core::ptr::read_volatile(trb_ptr.add(2));
-        let trb_dw3 = core::ptr::read_volatile(trb_ptr.add(3));
-        ms_kv!(M_INTR_XFER, "normal_trb[{}]: {:08x} {:08x} {:08x} {:08x}",
-               enq_idx, trb_dw0, trb_dw1, trb_dw2, trb_dw3);
     }
 
     // Ring the doorbell for this endpoint
@@ -3969,14 +3692,6 @@ fn start_hid_polling(state: &XhciState) {
     HID_TRBS_QUEUED.store(true, Ordering::Release);
     let _ = DIAG_FIRST_QUEUE_SOURCE.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed);
 
-    // Count total interrupt EPs
-    let mut total_intr_eps: u32 = 0;
-    if state.kbd_slot != 0 && state.kbd_endpoint != 0 { total_intr_eps += 1; }
-    if state.kbd_slot != 0 && state.kbd_nkro_endpoint != 0 { total_intr_eps += 1; }
-    if state.mouse_slot != 0 && state.mouse_endpoint != 0 { total_intr_eps += 1; }
-    if state.mouse_slot != 0 && state.mouse_nkro_endpoint != 0 { total_intr_eps += 1; }
-    ms_kv!(M_INTR_XFER, "total_intr_eps={}", total_intr_eps);
-
     // Queue interrupt TRBs for all configured HID endpoints.
     // Keyboard boot
     if state.kbd_slot != 0 && state.kbd_endpoint != 0 {
@@ -3999,45 +3714,8 @@ fn start_hid_polling(state: &XhciState) {
         let _ = queue_hid_transfer(state, 3, state.mouse_slot, state.mouse_nkro_endpoint);
     }
 
-    // Dump endpoint context state after doorbell
-    {
-        let ir0 = state.rt_base + 0x20;
-        let ctx_size = state.context_size;
-        // Dump per-EP output context state
-        let dump_ep = |slot: u8, dci: u8| {
-            if slot != 0 && dci != 0 {
-                let slot_idx = (slot - 1) as usize;
-                unsafe {
-                    let dev_ctx = &raw const DEVICE_CONTEXTS[slot_idx];
-                    dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
-                    let ep_base = (*dev_ctx).0.as_ptr().add(dci as usize * ctx_size);
-                    let ep_info = core::ptr::read_volatile(ep_base as *const u32);
-                    let ep_info2 = core::ptr::read_volatile(ep_base.add(4) as *const u32);
-                    let deq_lo = core::ptr::read_volatile(ep_base.add(8) as *const u32);
-                    let deq_hi = core::ptr::read_volatile(ep_base.add(12) as *const u32);
-                    let deq = ((deq_hi as u64) << 32) | (deq_lo as u64);
-                    let ep_state = ep_info & 0x7;
-                    ms_kv!(M_INTR_XFER, "ep_ctx_out: slot={} dci={} ep_info=0x{:08x} ep_info2=0x{:08x} deq=0x{:016x} state={}",
-                           slot, dci, ep_info, ep_info2, deq, ep_state);
-                }
-            }
-        };
-        dump_ep(state.kbd_slot, state.kbd_endpoint);
-        dump_ep(state.kbd_slot, state.kbd_nkro_endpoint);
-        dump_ep(state.mouse_slot, state.mouse_endpoint);
-        dump_ep(state.mouse_slot, state.mouse_nkro_endpoint);
-        ms_regs(M_INTR_XFER, state.op_base, ir0);
-    }
-
-    // Stop MMIO write tracing and dump all captured writes to serial
+    // Stop MMIO write tracing (dump disabled — CC=12 investigation complete)
     MMIO_TRACE_ACTIVE.store(false, Ordering::Release);
-    let count = (MMIO_TRACE_IDX.load(Ordering::Relaxed) as usize).min(MMIO_TRACE_MAX);
-    crate::serial_println!("[mmio-trace] dumping {} MMIO writes (HCRST..doorbell):", count);
-    for i in 0..count {
-        let (offset, value) = unsafe { MMIO_TRACE_BUF[i] };
-        crate::serial_println!("MMIO_TRACE[{}] @{:04x} = {:08x}", i, offset, value);
-    }
-    crate::serial_println!("[mmio-trace] dump complete ({} entries)", count);
 
     ms_pass!(M_INTR_XFER);
 }
@@ -4052,8 +3730,6 @@ fn start_hid_polling(state: &XhciState) {
 /// interrupt IN endpoints, assigns them to xhci_state fields, and redirects
 /// each endpoint's transfer ring to our memory via StopEndpoint + SetTRDequeuePointer.
 fn inherit_uefi_endpoints(state: &mut XhciState) -> Result<(), &'static str> {
-    crate::serial_println!("[xhci] INHERIT_UEFI: discovering endpoints from UEFI contexts");
-
     let context_size = state.context_size;
     let mut discovered_slots: [(u8, u8, u8); 8] = [(0, 0, 0); 8]; // (slot_id, dci_boot, dci_nkro)
     let mut num_discovered = 0usize;
@@ -4083,14 +3759,8 @@ fn inherit_uefi_endpoints(state: &mut XhciState) -> Result<(), &'static str> {
             );
             let slot_state = (slot_dw3 >> 27) & 0x1F;
 
-            crate::serial_println!(
-                "[xhci] INHERIT: slot {} state={} entries={} dcbaa_phys=0x{:x}",
-                slot_id, slot_state, num_entries, dcbaa_entry
-            );
-
             // Slot states: 0=Disabled/Enabled, 1=Default, 2=Addressed, 3=Configured
             if slot_state < 2 {
-                crate::serial_println!("[xhci] INHERIT: slot {} not addressed, skipping", slot_id);
                 continue;
             }
 
@@ -4105,13 +3775,6 @@ fn inherit_uefi_endpoints(state: &mut XhciState) -> Result<(), &'static str> {
                 let ep_type = (ep_dw1 >> 3) & 0x7;
                 // EP Type 7 = Interrupt IN
                 if ep_type == 7 && ep_state != 0 {
-                    let tr_deq_lo = core::ptr::read_volatile(ep_base.add(8) as *const u32);
-                    let tr_deq_hi = core::ptr::read_volatile(ep_base.add(12) as *const u32);
-                    let tr_deq = ((tr_deq_hi as u64) << 32) | (tr_deq_lo as u64);
-                    crate::serial_println!(
-                        "[xhci] INHERIT:   slot {} DCI {} Interrupt IN state={} TR_deq=0x{:x}",
-                        slot_id, dci, ep_state, tr_deq
-                    );
                     if boot_dci == 0 {
                         boot_dci = dci as u8;
                     } else if nkro_dci == 0 {
@@ -4127,11 +3790,6 @@ fn inherit_uefi_endpoints(state: &mut XhciState) -> Result<(), &'static str> {
         }
     }
 
-    crate::serial_println!(
-        "[xhci] INHERIT: discovered {} slots with interrupt IN endpoints",
-        num_discovered
-    );
-
     if num_discovered == 0 {
         return Err("INHERIT_UEFI: no interrupt IN endpoints found");
     }
@@ -4144,20 +3802,12 @@ fn inherit_uefi_endpoints(state: &mut XhciState) -> Result<(), &'static str> {
         state.mouse_slot = slot_id;
         state.mouse_endpoint = boot_dci;
         state.mouse_nkro_endpoint = nkro_dci;
-        crate::serial_println!(
-            "[xhci] INHERIT: mouse = slot {} boot_dci={} nkro_dci={}",
-            slot_id, boot_dci, nkro_dci
-        );
     }
     if num_discovered >= 2 {
         let (slot_id, boot_dci, nkro_dci) = discovered_slots[1];
         state.kbd_slot = slot_id;
         state.kbd_endpoint = boot_dci;
         state.kbd_nkro_endpoint = nkro_dci;
-        crate::serial_println!(
-            "[xhci] INHERIT: keyboard = slot {} boot_dci={} nkro_dci={}",
-            slot_id, boot_dci, nkro_dci
-        );
     }
 
     // For each discovered endpoint, redirect its transfer ring to ours.
@@ -4184,11 +3834,6 @@ fn inherit_uefi_endpoints(state: &mut XhciState) -> Result<(), &'static str> {
             core::ptr::read_volatile(ep_base as *const u32) & 0x7
         };
 
-        crate::serial_println!(
-            "[xhci] INHERIT: redirect slot={} dci={} hid_idx={} ep_state={}",
-            slot_id, dci, hid_idx, ep_state
-        );
-
         // StopEndpoint if Running (state=1) or Halted (state=2)
         // State 0=Disabled, 1=Running, 2=Halted, 3=Stopped
         if ep_state == 1 || ep_state == 2 {
@@ -4203,21 +3848,7 @@ fn inherit_uefi_endpoints(state: &mut XhciState) -> Result<(), &'static str> {
                 };
                 enqueue_command(reset_trb);
                 ring_doorbell(state, 0, 0);
-                match wait_for_command(state) {
-                    Ok(evt) => {
-                        let cc = evt.completion_code();
-                        crate::serial_println!(
-                            "[xhci] INHERIT: ResetEndpoint slot={} dci={} CC={}",
-                            slot_id, dci, cc
-                        );
-                    }
-                    Err(e) => {
-                        crate::serial_println!(
-                            "[xhci] INHERIT: ResetEndpoint timeout slot={} dci={}: {}",
-                            slot_id, dci, e
-                        );
-                    }
-                }
+                let _ = wait_for_command(state);
             } else {
                 // Running → StopEndpoint to get to Stopped
                 let stop_trb = Trb {
@@ -4229,21 +3860,7 @@ fn inherit_uefi_endpoints(state: &mut XhciState) -> Result<(), &'static str> {
                 };
                 enqueue_command(stop_trb);
                 ring_doorbell(state, 0, 0);
-                match wait_for_command(state) {
-                    Ok(evt) => {
-                        let cc = evt.completion_code();
-                        crate::serial_println!(
-                            "[xhci] INHERIT: StopEndpoint slot={} dci={} CC={}",
-                            slot_id, dci, cc
-                        );
-                    }
-                    Err(e) => {
-                        crate::serial_println!(
-                            "[xhci] INHERIT: StopEndpoint timeout slot={} dci={}: {}",
-                            slot_id, dci, e
-                        );
-                    }
-                }
+                let _ = wait_for_command(state);
             }
         }
 
@@ -4275,24 +3892,8 @@ fn inherit_uefi_endpoints(state: &mut XhciState) -> Result<(), &'static str> {
         };
         enqueue_command(set_deq_trb);
         ring_doorbell(state, 0, 0);
-        match wait_for_command(state) {
-            Ok(evt) => {
-                let cc = evt.completion_code();
-                crate::serial_println!(
-                    "[xhci] INHERIT: SetTRDeq slot={} dci={} ring_phys=0x{:x} CC={}",
-                    slot_id, dci, ring_phys, cc
-                );
-            }
-            Err(e) => {
-                crate::serial_println!(
-                    "[xhci] INHERIT: SetTRDeq timeout slot={} dci={}: {}",
-                    slot_id, dci, e
-                );
-            }
-        }
+        let _ = wait_for_command(state);
     }
-
-    crate::serial_println!("[xhci] INHERIT_UEFI: endpoint redirection complete");
     Ok(())
 }
 
@@ -4310,19 +3911,7 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
     // Slot with CSC still set. The Parallels virtual xHC may use CSC state to
     // track whether the driver properly completed the port status change
     // handshake before claiming the device.
-    let early_cleared = clear_all_port_changes(state);
-    crate::serial_println!("[xhci] early PORTSC clearing: {} ports had change bits", early_cleared);
-
-    // Dump PORTSC of all ports
-    for port in 0..state.max_ports as u64 {
-        let portsc_addr = state.op_base + 0x400 + port * 0x10;
-        let portsc = read32(portsc_addr);
-        let ccs = portsc & 1;
-        let ped = (portsc >> 1) & 1;
-        let speed = (portsc >> 10) & 0xF;
-        crate::serial_println!("[xhci] port={} PORTSC=0x{:08x} CCS={} PED={} speed={}",
-            port + 1, portsc, ccs, ped, speed);
-    }
+    let _early_cleared = clear_all_port_changes(state);
 
     let mut slots_used: u8 = 0;
     // MOUSE_ONLY: enumerate only 1 device (mouse on port 0), skip keyboard/composite.
@@ -4407,12 +3996,7 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
             ms_kv!(M_PORT_DET, "port={} PED=1, skipping port reset (matching Linux module)", port_id);
         }
 
-        {
-            let portsc_now = read32(portsc_addr);
-            let speed = (portsc_now >> 10) & 0xF;
-            ms_kv!(M_PORT_DET, "port={} final PORTSC=0x{:08x} speed={}", port_id, portsc_now, speed);
-            ms_pass!(M_PORT_DET);
-        }
+        ms_pass!(M_PORT_DET);
 
         // --- M6: SLOT_ENABLE ---
         ms_begin!(M_SLOT_EN);
@@ -4582,132 +4166,6 @@ fn setup_xhci_msi(pci_dev: &crate::drivers::pci::Device) -> u32 {
     intid
 }
 
-/// Perform a PCI enumeration burst: walk all PCI devices and do full BAR sizing.
-///
-/// This generates phymemrange_enable/disable events in the Parallels hypervisor,
-/// mimicking what Linux's PCI subsystem does during boot. On linux-probe, this burst
-/// (32 cycles across multiple BARs) appears between ExitBootServices and the xHCI
-/// HCRST. On breenix-dev, this burst was missing — the only PCI activity was a single
-/// xHCI BAR re-enable. Without the burst, the hypervisor does not create endpoint
-/// state after ConfigureEndpoint (no "ep create" entries in the hypervisor log).
-///
-/// The burst walks bus_start..=bus_end, probes each device/function, and for each
-/// valid device: disables MemSpace, writes 0xFFFFFFFF to each BAR (standard PCI
-/// BAR sizing), reads back size, restores original BAR, then re-enables MemSpace.
-/// This is exactly what Linux's `pci_read_bases()` + `__pci_read_base()` does.
-fn pci_enumeration_burst(xhci_dev: &crate::drivers::pci::Device) {
-    use crate::drivers::pci::{pci_read_config_dword, pci_read_config_word,
-                               pci_write_config_dword, pci_write_config_word};
-
-    let bus_start = crate::platform_config::pci_bus_start();
-    let bus_end = crate::platform_config::pci_bus_end();
-
-    crate::serial_println!("[pci-burst] starting enumeration burst (bus {}..={})", bus_start, bus_end);
-
-    let mut device_count = 0u32;
-    let mut bar_cycle_count = 0u32;
-
-    for bus in bus_start..=bus_end {
-        for device in 0..32u8 {
-            for function in 0..8u8 {
-                let vendor_device = pci_read_config_dword(bus, device, function, 0x00);
-                if vendor_device == 0xFFFF_FFFF || vendor_device == 0 {
-                    if function == 0 { break; } // No device at this slot
-                    continue;
-                }
-
-                let vendor_id = vendor_device as u16;
-                let device_id = (vendor_device >> 16) as u16;
-
-                // Read header type to check multifunction
-                let header_reg = pci_read_config_dword(bus, device, function, 0x0C);
-                let header_type = ((header_reg >> 16) as u8) & 0x7F;
-                let is_multifunction = (header_reg >> 16) as u8 & 0x80 != 0;
-
-                // Only process standard (type 0) headers for BAR sizing
-                if header_type != 0 {
-                    if function == 0 && !is_multifunction { break; }
-                    continue;
-                }
-
-                device_count += 1;
-
-                // Save and disable MemSpace + IO Space (generates phymemrange_disable)
-                let cmd_orig = pci_read_config_word(bus, device, function, 0x04);
-                let cmd_disabled = cmd_orig & !0x0003u16; // Clear MemSpace (bit 1) + IO (bit 0)
-                pci_write_config_word(bus, device, function, 0x04, cmd_disabled);
-
-                // BAR sizing: write 0xFFFFFFFF to each BAR, read back, restore
-                let max_bars: u8 = 6;
-                let mut bar_index: u8 = 0;
-                while bar_index < max_bars {
-                    let bar_offset = 0x10 + (bar_index * 4);
-                    let bar_orig = pci_read_config_dword(bus, device, function, bar_offset);
-
-                    // Write all-ones for sizing
-                    pci_write_config_dword(bus, device, function, bar_offset, 0xFFFF_FFFF);
-                    let _size_mask = pci_read_config_dword(bus, device, function, bar_offset);
-
-                    // Restore original BAR value
-                    pci_write_config_dword(bus, device, function, bar_offset, bar_orig);
-
-                    bar_cycle_count += 1;
-
-                    // Check if this is a 64-bit BAR (type 2) — skip next slot
-                    if bar_orig & 0x01 == 0 && ((bar_orig >> 1) & 0x03) == 0x02 {
-                        // 64-bit memory BAR: also size the upper 32 bits
-                        if bar_index + 1 < max_bars {
-                            let hi_offset = 0x10 + ((bar_index + 1) * 4);
-                            let hi_orig = pci_read_config_dword(bus, device, function, hi_offset);
-                            pci_write_config_dword(bus, device, function, hi_offset, 0xFFFF_FFFF);
-                            let _hi_size = pci_read_config_dword(bus, device, function, hi_offset);
-                            pci_write_config_dword(bus, device, function, hi_offset, hi_orig);
-                            bar_cycle_count += 1;
-                        }
-                        bar_index += 2; // Skip the next BAR slot
-                    } else {
-                        bar_index += 1;
-                    }
-                }
-
-                // Restore original Command register (generates phymemrange_enable)
-                pci_write_config_word(bus, device, function, 0x04, cmd_orig);
-
-                let is_xhci = bus == xhci_dev.bus && device == xhci_dev.device
-                    && function == xhci_dev.function;
-                if is_xhci {
-                    crate::serial_println!(
-                        "[pci-burst] xHCI {:02x}:{:02x}.{} [{:04x}:{:04x}] cmd=0x{:04x} (sized)",
-                        bus, device, function, vendor_id, device_id, cmd_orig
-                    );
-                }
-
-                // Only scan function 0 unless multifunction
-                if function == 0 && !is_multifunction { break; }
-            }
-        }
-    }
-
-    crate::serial_println!(
-        "[pci-burst] complete: {} devices, {} BAR sizing cycles",
-        device_count, bar_cycle_count
-    );
-
-    // Now explicitly enable MemSpace + BusMaster on the xHCI device
-    // (matching Linux's pci_enable_device → pci_set_master sequence)
-    let xhci_cmd = pci_read_config_word(
-        xhci_dev.bus, xhci_dev.device, xhci_dev.function, 0x04
-    );
-    let xhci_cmd_new = xhci_cmd | 0x0006; // MemSpace + BusMaster
-    pci_write_config_word(
-        xhci_dev.bus, xhci_dev.device, xhci_dev.function, 0x04, xhci_cmd_new
-    );
-    crate::serial_println!(
-        "[pci-burst] xHCI BAR enabled: cmd 0x{:04x} -> 0x{:04x}",
-        xhci_cmd, xhci_cmd_new
-    );
-}
-
 /// Initialize the XHCI controller from a discovered PCI device.
 ///
 /// Performs the full xHCI initialization sequence:
@@ -4724,7 +4182,6 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
 
     // DMA structures are now in .bss (WB-cacheable, zeroed by boot.S).
     // No dc ivac needed — there are no stale NC cache lines to worry about.
-    crate::serial_println!("[xhci] DMA structures in .bss (WB-cacheable), no dc ivac needed");
 
     // Enable MemSpace + BusMaster immediately to keep the xHCI BAR mapped.
     // UEFI firmware disables MemSpace during ExitBootServices cleanup, which
@@ -4734,13 +4191,11 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
         let cmd_before = crate::drivers::pci::pci_read_config_word(
             pci_dev.bus, pci_dev.device, pci_dev.function, 0x04,
         );
-        crate::serial_println!("[xhci-pci] early-enable: cmd=0x{:04x}", cmd_before);
         let cmd_new = cmd_before | 0x0006; // MemSpace + BusMaster
         if cmd_new != cmd_before {
             crate::drivers::pci::pci_write_config_word(
                 pci_dev.bus, pci_dev.device, pci_dev.function, 0x04, cmd_new,
             );
-            crate::serial_println!("[xhci-pci] early-enable: cmd now=0x{:04x}", cmd_new);
         }
     }
 
@@ -4758,22 +4213,11 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     // On linux-probe, ~1.8 seconds pass between EBS and the linux module's
     // HCRST — well past the async handler window.
     const EBS_SETTLE_MS: u32 = 1000;
-    crate::serial_println!("[xhci] waiting {}ms for Parallels EBS handler to settle...", EBS_SETTLE_MS);
     delay_ms(EBS_SETTLE_MS);
-
-    // Dump capabilities for diagnostics
-    pci_dev.dump_capabilities();
-
-    // Dump raw firmware PCI config space BEFORE any writes
-    pci_dev.dump_config_space_256("pci_firmware");
 
     // Step 1: pci_enable_device() equivalent
     // 1a. Transition to D0 power state (pci_set_power_state → pci_raw_set_power_state)
-    if let Some(prev_state) = pci_dev.set_power_state_d0() {
-        crate::serial_println!("[xhci-pci] PM D{} -> D0", prev_state);
-    } else {
-        crate::serial_println!("[xhci-pci] no PM capability");
-    }
+    let _ = pci_dev.set_power_state_d0();
     // 1b. Enable Memory Space only (pci_enable_resources sets bit 1)
     //     Linux does NOT set Bus Master or INTx Disable here.
     pci_dev.enable_memory_space();
@@ -4786,7 +4230,6 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
             crate::drivers::pci::pci_write_config_word(
                 pci_dev.bus, pci_dev.device, pci_dev.function, 0x06, status,
             );
-            crate::serial_println!("[xhci-pci] cleared status errors 0x{:04x}", status & 0xF900);
         }
     }
 
@@ -4800,13 +4243,9 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     let pci_cmd_after = crate::drivers::pci::pci_read_config_word(
         pci_dev.bus, pci_dev.device, pci_dev.function, 0x04,
     );
-    crate::serial_println!("[xhci-pci] cmd after enable: 0x{:04x}", pci_cmd_after);
     if pci_cmd_after & 0x06 != 0x06 {
         crate::serial_println!("[xhci-pci] WARNING: bus master or mem space NOT set!");
     }
-
-    // Dump PCI config space AFTER enable (before xHCI register access)
-    pci_dev.dump_config_space_256("pci_enabled");
 
     // 2. Map BAR0 via HHDM
     //    Read BAR0 directly from PCI config (not cached self.bars) because
@@ -4815,8 +4254,6 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
         pci_dev.bus, pci_dev.device, pci_dev.function, 0x10,
     );
     let bar0_phys = (bar0_raw & 0xFFFFF000) as u64;
-    let bar0_size = 0x1000u64; // 4KB, confirmed by BAR sizing
-    crate::serial_println!("[xhci] BAR0 phys=0x{:x} (raw=0x{:08x})", bar0_phys, bar0_raw);
     let base = HHDM_BASE + bar0_phys;
 
     // Store BAR base for MMIO write tracing (write32 computes offset = addr - base)
@@ -4848,7 +4285,7 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
 
     // --- M1: CONTROLLER_DISCOVERY ---
     ms_begin!(M_DISCOVERY);
-    ms_kv!(M_DISCOVERY, "BAR0_phys=0x{:x} BAR0_len=0x{:x}", bar0_phys, bar0_size);
+    ms_kv!(M_DISCOVERY, "BAR0_phys=0x{:x}", bar0_phys);
     ms_kv!(M_DISCOVERY, "xHCI_version=0x{:04x}", (cap_word >> 16) & 0xFFFF);
     ms_kv!(M_DISCOVERY, "max_slots={} max_ports={} ctx_size={}", max_slots, max_ports, context_size);
     ms_kv!(M_DISCOVERY, "cap_len={} op_off=0x{:x} rt_off=0x{:x} db_off=0x{:x}",
@@ -4871,10 +4308,6 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
                 // xHCI spec 7.1.1: BIOS/OS handoff to claim controller from UEFI.
                 // DW0 bits: [16] HC BIOS Owned Semaphore, [24] HC OS Owned Semaphore
                 let bios_owned = (ecap_dw0 >> 16) & 1;
-                crate::serial_println!(
-                    "[xhci] USBLEGSUP at 0x{:x}: BIOS_OWNED={} OS_OWNED={}",
-                    ecap_addr - base, bios_owned, (ecap_dw0 >> 24) & 1
-                );
                 if bios_owned != 0 {
                     // Set OS Owned Semaphore (bit 24), wait for BIOS to release (bit 16 clears)
                     write32(ecap_addr, ecap_dw0 | (1 << 24));
@@ -4885,11 +4318,6 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
                         }
                         core::hint::spin_loop();
                     }
-                    let final_val = read32(ecap_addr);
-                    crate::serial_println!(
-                        "[xhci] USBLEGSUP handoff: BIOS_OWNED={} OS_OWNED={}",
-                        (final_val >> 16) & 1, (final_val >> 24) & 1
-                    );
                     xhci_trace_note(0, "usblegsup_claimed");
                 } else {
                     // BIOS doesn't own it, just set OS owned
@@ -4938,7 +4366,6 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
         let cmd = crate::drivers::pci::pci_read_config_word(
             pci_dev.bus, pci_dev.device, pci_dev.function, 0x04,
         );
-        crate::serial_println!("[xhci-pci] BM cycle: pre-disable cmd=0x{:04x}", cmd);
 
         // Disable Bus Master (clear bit 2), keep Memory Space (bit 1)
         let cmd_no_bm = cmd & !0x0004;
@@ -4953,26 +4380,9 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
         );
         delay_ms(10);
 
-        let cmd_after = crate::drivers::pci::pci_read_config_word(
-            pci_dev.bus, pci_dev.device, pci_dev.function, 0x04,
-        );
-        crate::serial_println!("[xhci-pci] BM cycle: post-enable cmd=0x{:04x}", cmd_after);
     }
 
     // 4. Stop controller + HCRST
-
-    // Dump pre-HCRST register state for diagnostics
-    {
-        let pre_usbcmd = read32(op_base);
-        let pre_usbsts = read32(op_base + 0x04);
-        let pre_dcbaap = read64(op_base + 0x30);
-        let pre_crcr = read64(op_base + 0x18);
-        let pre_config = read32(op_base + 0x38);
-        crate::serial_println!("[xhci] pre-HCRST state: USBCMD=0x{:08x} USBSTS=0x{:08x} DCBAAP=0x{:016x} CRCR=0x{:016x} CONFIG=0x{:08x}",
-            pre_usbcmd, pre_usbsts, pre_dcbaap, pre_crcr, pre_config);
-        crate::serial_println!("[xhci] pre-HCRST: RS={} HCH={} INTE={} CNR={}",
-            pre_usbcmd & 1, pre_usbsts & 1, (pre_usbcmd >> 2) & 1, (pre_usbsts >> 11) & 1);
-    }
 
     // Enable MMIO write tracing: capture every write32() from halt/HCRST onward
     MMIO_TRACE_IDX.store(0, Ordering::Relaxed);
@@ -4993,42 +4403,10 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
         // After the controller is running, we'll redirect UEFI's interrupt
         // endpoints to our transfer rings instead of re-enumerating.
         xhci_trace_note(0, "inherit_uefi");
-        crate::serial_println!("[xhci] INHERIT_UEFI: skipping HCRST, reading UEFI state");
 
         // Read UEFI's DCBAAP before we overwrite it
         let uefi_dcbaap = read64(op_base + 0x30);
-        let uefi_config = read32(op_base + 0x38);
         unsafe { UEFI_DCBAAP_SAVED = uefi_dcbaap; }
-        crate::serial_println!("[xhci] UEFI DCBAAP=0x{:016x} CONFIG=0x{:08x}", uefi_dcbaap, uefi_config);
-
-        // Map UEFI's DCBAAP through HHDM and dump slot/endpoint state
-        let uefi_dcbaa_virt = HHDM_BASE + uefi_dcbaap;
-        let uefi_max_scan = (uefi_config & 0xFF).min(MAX_SLOTS as u32) as u8;
-
-        for slot_id in 1..=uefi_max_scan {
-            let ctx_ptr_phys = unsafe {
-                dma_cache_invalidate(uefi_dcbaa_virt as *const u8, (uefi_max_scan as usize + 1) * 8);
-                core::ptr::read_volatile((uefi_dcbaa_virt + slot_id as u64 * 8) as *const u64)
-            };
-            if ctx_ptr_phys == 0 { continue; }
-            let ctx_virt = HHDM_BASE + ctx_ptr_phys;
-            dma_cache_invalidate(ctx_virt as *const u8, 4096);
-            let slot_dw0 = unsafe { core::ptr::read_volatile(ctx_virt as *const u32) };
-            let slot_dw3 = unsafe { core::ptr::read_volatile((ctx_virt + 12) as *const u32) };
-            let slot_state = (slot_dw3 >> 27) & 0x1F;
-            let num_entries = (slot_dw0 >> 27) & 0x1F;
-            crate::serial_println!("[xhci] UEFI slot {}: phys=0x{:016x} state={} entries={}",
-                slot_id, ctx_ptr_phys, slot_state, num_entries);
-            for dci in 1..=num_entries {
-                let ep_virt = ctx_virt + dci as u64 * context_size as u64;
-                let ep_dw0 = unsafe { core::ptr::read_volatile(ep_virt as *const u32) };
-                let ep_dw1 = unsafe { core::ptr::read_volatile((ep_virt + 4) as *const u32) };
-                let ep_state = ep_dw0 & 0x7;
-                let ep_type = (ep_dw1 >> 3) & 0x7;
-                if ep_state == 0 { continue; }
-                crate::serial_println!("[xhci]   DCI {}: state={} type={}", dci, ep_state, ep_type);
-            }
-        }
     } else if SKIP_HCRST {
         xhci_trace_note(0, "ctrl_halt_no_reset");
     } else {
@@ -5047,7 +4425,6 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
         //   45.571: "DisableEndpoint while io_cnt is not zero!" (endpoints destroyed)
         // After the cascading 2nd reset: NO ep creates → CC=12.
         // On linux-probe, the linux module does NOT reset the EHCI controller.
-        crate::serial_println!("[ehci] reset SKIPPED (prevents cascading XHC reset)");
     }
 
     // --- M2: CONTROLLER_RESET ---
@@ -5116,10 +4493,6 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
                         virt_to_phys((&raw const DEVICE_CONTEXTS[slot_idx]) as u64);
                     let dcbaa = &raw mut DCBAA;
                     (*dcbaa).0[slot_id as usize] = our_ctx_phys;
-                    crate::serial_println!(
-                        "[xhci] INHERIT: slot {} ctx copied from phys 0x{:x} to our ctx phys 0x{:x}",
-                        slot_id, ctx_ptr_phys, our_ctx_phys
-                    );
                 }
             }
             // Re-clean DCBAA after copying entries
@@ -5132,14 +4505,10 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
         }
     }
     write64(op_base + 0x30, dcbaa_phys);
-    // Readback DCBAAP to verify write
-    let dcbaap_rb = read64(op_base + 0x30);
-    crate::serial_println!(
-        "[xhci-dma] DCBAA: virt=0x{:016x} phys=0x{:016x} DCBAAP_rb=0x{:016x}",
-        (&raw const DCBAA) as u64, dcbaa_phys, dcbaap_rb
-    );
+    // Readback DCBAAP to verify write (volatile read ensures write posted)
+    let _dcbaap_rb = read64(op_base + 0x30);
     ms_kv!(M_DATA_STRUC, "DCBAA: phys=0x{:x} written=0x{:x} readback=0x{:x}",
-           dcbaa_phys, dcbaa_phys, dcbaap_rb);
+           dcbaa_phys, dcbaa_phys, _dcbaap_rb);
 
     // 8. Set Command Ring Control Register (CRCR)
     let cmd_ring_phys = virt_to_phys((&raw const CMD_RING) as u64);
@@ -5154,10 +4523,6 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     // CRCR: physical address | RCS (Ring Cycle State) = 1
     let crcr_val = cmd_ring_phys | 1;
     write64(op_base + 0x18, crcr_val);
-    crate::serial_println!(
-        "[xhci-dma] CMD_RING: phys=0x{:016x} CRCR_written=0x{:016x}",
-        cmd_ring_phys, crcr_val
-    );
     ms_kv!(M_DATA_STRUC, "CMD_RING: phys=0x{:x} CRCR_written=0x{:x} readback=0x{:x}",
            cmd_ring_phys, crcr_val, read64(op_base + 0x18));
 
@@ -5195,10 +4560,6 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     write64(ir0 + 0x18, event_ring_phys);
     // ERSTBA (Event Ring Segment Table Base Address) - must be written AFTER ERSTSZ
     write64(ir0 + 0x10, erst_phys);
-    crate::serial_println!(
-        "[xhci-dma] EVENT_RING: phys=0x{:016x} ERST: phys=0x{:016x}",
-        event_ring_phys, erst_phys
-    );
     ms_kv!(M_DATA_STRUC, "EVT_RING: seg_phys=0x{:x}", event_ring_phys);
     ms_kv!(M_DATA_STRUC, "ERST: phys=0x{:x} seg_addr=0x{:x} seg_size={}",
            erst_phys, event_ring_phys, EVENT_RING_SIZE);
@@ -5206,17 +4567,6 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
            event_ring_phys, read64(ir0 + 0x18));
     ms_kv!(M_DATA_STRUC, "ERSTBA: written=0x{:x} readback=0x{:x}",
            erst_phys, read64(ir0 + 0x10));
-
-    // Dump all DMA structure addresses for validation
-    crate::serial_println!(
-        "[xhci-dma] INPUT_CTX[0]: phys=0x{:016x} DEV_CTX[0]: phys=0x{:016x}",
-        virt_to_phys(unsafe { (&raw const INPUT_CONTEXTS[0]) as u64 }),
-        virt_to_phys(unsafe { (&raw const DEVICE_CONTEXTS[0]) as u64 })
-    );
-    crate::serial_println!(
-        "[xhci-dma] TRANSFER_RINGS[0]: phys=0x{:016x}",
-        virt_to_phys(unsafe { (&raw const TRANSFER_RINGS[0]) as u64 })
-    );
     ms_regs(M_DATA_STRUC, op_base, ir0);
     ms_pass!(M_DATA_STRUC);
 
@@ -5240,12 +4590,7 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     ms_begin!(M_RUNNING);
     {
         let cmd = read32(op_base);
-        let sts = read32(op_base + 0x04);
         let iman_val = read32(ir0);
-        ms_kv!(M_RUNNING, "USBCMD=0x{:08x} RS={} INTE={}", cmd, cmd & 1, (cmd >> 2) & 1);
-        ms_kv!(M_RUNNING, "USBSTS=0x{:08x} HCH={}", sts, sts & 1);
-        ms_kv!(M_RUNNING, "IMAN=0x{:08x} IE={}", iman_val, (iman_val >> 1) & 1);
-        ms_regs(M_RUNNING, op_base, ir0);
         if (cmd & 1) != 0 && (cmd & (1 << 2)) != 0 && (iman_val & 2) != 0 {
             ms_pass!(M_RUNNING);
         } else {
@@ -5263,16 +4608,8 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     // Previously, Breenix had all of these extras and still got CC=12.
     // Stripping them to match the working Linux module exactly.
 
-    // Check MFINDEX immediately after RS=1 (periodic schedule requires MFINDEX to increment)
-    {
-        let mf1 = read32(rt_base) & 0x3FFF;
-        delay_ms(10); // Wait 10ms = ~80 microframes
-        let mf2 = read32(rt_base) & 0x3FFF;
-        delay_ms(10);
-        let mf3 = read32(rt_base) & 0x3FFF;
-        crate::serial_println!("[xhci] MFINDEX after RS=1: {} -> {} -> {} (advancing={})",
-            mf1, mf2, mf3, mf1 != mf2 || mf2 != mf3);
-    }
+    // Brief delay after RS=1 for periodic schedule to start
+    delay_ms(20);
 
     // Verify controller is running
     let usbsts = read32(op_base + 0x04);
@@ -5293,9 +4630,7 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     // Theory: Parallels hypervisor needs MSI configured before it will create
     // internal endpoint state. On Linux, xhci_hcd always configures MSI during
     // init (even if later unbound). On Breenix, UEFI never configured MSI.
-    crate::serial_println!("[xhci] EXPERIMENT: MSI setup BEFORE enumeration");
     let early_irq = setup_xhci_msi(pci_dev);
-    crate::serial_println!("[xhci] early MSI irq={}", early_irq);
 
     // 14. Create state with IRQ already set
     let mut xhci_state = XhciState {
@@ -5403,7 +4738,6 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     // This may allow the Parallels virtual xHC to stabilize internal state.
     // POST_ENUM_DELAY_MS controls this delay (0 = no delay).
     if POST_ENUM_DELAY_MS > 0 {
-        crate::serial_println!("[xhci] post-enum delay: {}ms (matching Linux msleep)", POST_ENUM_DELAY_MS);
         delay_ms(POST_ENUM_DELAY_MS);
     }
 
@@ -5417,104 +4751,21 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     // 16. MSI was already configured BEFORE enumeration (experiment).
     // Store the IRQ from the early setup.
     XHCI_IRQ.store(early_irq, Ordering::Release);
-    crate::serial_println!("[xhci-msi] irq={} (configured BEFORE enumeration)", early_irq);
-
-    // Dump PCI config space AFTER MSI setup (final state)
-    pci_dev.dump_config_space_256("pci_msi");
 
     xhci_trace_note(0, "init_complete");
-    xhci_trace_dump();
+    // Trace data available via GDB (call trace_dump()) or /proc/xhci/trace
 
     // --- M11: EVENT_DELIVERY ---
     ms_begin!(M_EVT_DELIV);
-    {
-        let ir0 = xhci_state_ref.rt_base + 0x20;
-
-        // Dump endpoint states for all configured HID endpoints
-        let dump_ep_state = |slot: u8, dci: u8, label: &str| {
-            if slot != 0 && dci != 0 {
-                let slot_idx = (slot - 1) as usize;
-                unsafe {
-                    let dev_ctx = &raw const DEVICE_CONTEXTS[slot_idx];
-                    dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
-                    let ep_base = (*dev_ctx).0.as_ptr().add(dci as usize * xhci_state_ref.context_size);
-                    let ep_info = core::ptr::read_volatile(ep_base as *const u32);
-                    let deq_lo = core::ptr::read_volatile(ep_base.add(8) as *const u32);
-                    let deq_hi = core::ptr::read_volatile(ep_base.add(12) as *const u32);
-                    let deq = ((deq_hi as u64) << 32) | (deq_lo as u64);
-                    let ep_state = ep_info & 0x7;
-                    let state_name = match ep_state {
-                        0 => "Disabled",
-                        1 => "Running",
-                        2 => "Halted",
-                        3 => "Stopped",
-                        4 => "Error",
-                        _ => "Unknown",
-                    };
-                    ms_kv!(M_EVT_DELIV, "EP_STATE: slot={} dci={} ep_info=0x{:08x} state={}({}) deq=0x{:016x} [{}]",
-                           slot, dci, ep_info, ep_state, state_name, deq, label);
-                }
-            }
-        };
-        dump_ep_state(xhci_state_ref.kbd_slot, xhci_state_ref.kbd_endpoint, "kbd_boot");
-        dump_ep_state(xhci_state_ref.kbd_slot, xhci_state_ref.kbd_nkro_endpoint, "kbd_nkro");
-        dump_ep_state(xhci_state_ref.mouse_slot, xhci_state_ref.mouse_endpoint, "mouse");
-        dump_ep_state(xhci_state_ref.mouse_slot, xhci_state_ref.mouse_nkro_endpoint, "mouse2");
-
-        // Dump all registers
-        ms_regs(M_EVT_DELIV, xhci_state_ref.op_base, ir0);
-
-        // Dump DCBAA entries
-        ms_kv!(M_EVT_DELIV, "DCBAA entries:");
-        for s in 0..4u8 {
-            unsafe {
-                let dcbaa = &raw const DCBAA;
-                let entry = core::ptr::read_volatile(&(*dcbaa).0[s as usize + 1]);
-                if entry != 0 {
-                    ms_kv!(M_EVT_DELIV, "DCBAA[{}]=0x{:016x}", s + 1, entry);
-                }
-            }
-        }
-
-        // Check event ring dequeue for pending events
-        unsafe {
-            let ring = &raw const EVENT_RING;
-            let idx = EVENT_RING_DEQUEUE;
-            let cycle = EVENT_RING_CYCLE;
-            dma_cache_invalidate(
-                &(*ring).0[idx] as *const Trb as *const u8,
-                core::mem::size_of::<Trb>(),
-            );
-            let trb = core::ptr::read_volatile(&(*ring).0[idx]);
-            let trb_cycle = trb.control & 1 != 0;
-            ms_kv!(M_EVT_DELIV, "event_deq type={} cycle={}", trb.trb_type(), trb_cycle as u32);
-            if trb_cycle == cycle && trb.trb_type() != 0 {
-                ms_kv!(M_EVT_DELIV, "pending_event: type={} CC={} param=0x{:016x}",
-                       trb.trb_type(), trb.completion_code(), trb.param);
-            }
-        }
-    }
     // M11 is left open — PASS/FAIL is determined by the first transfer event
     // which arrives asynchronously after init() returns. The poll path will
     // report M11 completion when a Transfer Event is received.
 
-    // Diagnostic dump: pre-doorbell state for first interrupt TRB
-    crate::serial_println!(
-        "[xhci-diag] ep_before_db=0x{:08x} slot_before_db=0x{:08x}",
-        DIAG_EP_STATE_BEFORE_DB.load(Ordering::Relaxed),
-        DIAG_SLOT_STATE_BEFORE_DB.load(Ordering::Relaxed),
-    );
-    crate::serial_println!(
-        "[xhci-diag] trdp_output=0x{:016x} first_queued_phys=0x{:016x}",
-        DIAG_TRDP_FROM_OUTPUT.load(Ordering::Relaxed),
-        DIAG_FIRST_QUEUED_PHYS.load(Ordering::Relaxed),
-    );
-    crate::serial_println!(
-        "[xhci-diag] portsc_before_db=0x{:08x}",
-        DIAG_PORTSC_BEFORE_DB.load(Ordering::Relaxed),
-    );
     // Keep XHCI_TRACE_ACTIVE enabled so btrace (/proc/xhci/trace) shows
     // post-init events (Transfer Events, doorbell rings, etc.)
+
+    // Single summary line for successful init
+    crate::serial_println!("[xhci] Initialized: {} slots, MSI irq={}", slots_en, early_irq);
 
     Ok(())
 }
@@ -5639,9 +4890,18 @@ pub fn handle_interrupt() {
                             LAST_NKRO_REPORT_U64.store(nkro_snap, Ordering::Relaxed);
                             if nkro[0] == 1 {
                                 KBD_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
-                                super::hid::process_keyboard_report(&nkro[1..9]);
+                                // NKRO report (after report ID) is:
+                                //   [modifier, key1, key2, ..., key7] — NO reserved byte
+                                // Boot keyboard format expects:
+                                //   [modifier, reserved=0, key1, ..., key6]
+                                // Reformat by inserting a zero reserved byte.
+                                let boot_fmt: [u8; 8] = [
+                                    nkro[1], 0, // modifier, reserved
+                                    nkro[2], nkro[3], nkro[4], nkro[5], nkro[6], nkro[7],
+                                ];
+                                super::hid::process_keyboard_report(&boot_fmt);
                             }
-                            MSI_NKRO_NEEDS_REQUEUE.store(true, Ordering::Release);
+                            let _ = queue_hid_transfer(state, 2, slot, endpoint);
                         }
                         // Boot keyboard (DCI 3, interface 0)
                         else if slot == state.kbd_slot && endpoint == state.kbd_endpoint {
@@ -5650,17 +4910,15 @@ pub fn handle_interrupt() {
                             dma_cache_invalidate((*report_buf).0.as_ptr(), 8);
                             let report = &(*report_buf).0;
                             super::hid::process_keyboard_report(report);
-                            // DON'T requeue here — let the timer poll requeue.
-                            // Requeuing from IRQ context creates an MSI storm
-                            // (virtual XHCI has no bus latency, so completions
-                            // fire instantly, starving the main thread).
-                            MSI_KBD_NEEDS_REQUEUE.store(true, Ordering::Release);
+                            // Requeue immediately — SPI is disabled at the top
+                            // of handle_interrupt so no MSI storm is possible.
+                            let _ = queue_hid_transfer(state, 0, slot, endpoint);
                         } else if slot == state.mouse_slot && endpoint == state.mouse_endpoint {
                             let report_buf = &raw const MOUSE_REPORT_BUF;
                             dma_cache_invalidate((*report_buf).0.as_ptr(), 8);
                             let report = &(*report_buf).0;
                             super::hid::process_mouse_report(report);
-                            MSI_MOUSE_NEEDS_REQUEUE.store(true, Ordering::Release);
+                            let _ = queue_hid_transfer(state, 1, slot, endpoint);
                         } else if slot == state.mouse_slot
                             && state.mouse_nkro_endpoint != 0
                             && endpoint == state.mouse_nkro_endpoint
@@ -5670,7 +4928,7 @@ pub fn handle_interrupt() {
                             dma_cache_invalidate((*report_buf).0.as_ptr(), 9);
                             let report = &(*report_buf).0;
                             super::hid::process_mouse_report(report);
-                            MSI_MOUSE2_NEEDS_REQUEUE.store(true, Ordering::Release);
+                            let _ = queue_hid_transfer(state, 3, slot, endpoint);
                         } else if slot == state.mouse_slot
                             && endpoint == 1
                             && HID_TRBS_QUEUED.load(Ordering::Relaxed)
@@ -5828,9 +5086,8 @@ fn deferred_reconfigure_only(state: &XhciState) {
         // The virtual xHC does not implement ConfigureEndpoint with DC=1,
         // causing wait_for_command to block forever (no Command Completion event).
 
-        match configure_endpoints_batch(state, slot_id, &pending_eps, ep_count) {
-            Ok(()) => crate::serial_println!("[xhci] deferred mouse slot {} cfg_ep OK (ep_count={})", slot_id, ep_count),
-            Err(e) => crate::serial_println!("[xhci] deferred mouse slot {} cfg_ep FAIL: {} (ep_count={})", slot_id, e, ep_count),
+        if let Err(e) = configure_endpoints_batch(state, slot_id, &pending_eps, ep_count) {
+            crate::serial_println!("[xhci] deferred mouse slot {} cfg_ep FAIL: {} (ep_count={})", slot_id, e, ep_count);
         }
     }
 
@@ -5893,33 +5150,11 @@ fn deferred_reconfigure_only(state: &XhciState) {
 
         // Deconfigure (DC=1) REMOVED: Parallels vxHC hangs on this command.
 
-        match configure_endpoints_batch(state, slot_id, &pending_eps, ep_count) {
-            Ok(()) => crate::serial_println!("[xhci] deferred kbd slot {} cfg_ep OK (ep_count={})", slot_id, ep_count),
-            Err(e) => crate::serial_println!("[xhci] deferred kbd slot {} cfg_ep FAIL: {} (ep_count={})", slot_id, e, ep_count),
+        if let Err(e) = configure_endpoints_batch(state, slot_id, &pending_eps, ep_count) {
+            crate::serial_println!("[xhci] deferred kbd slot {} cfg_ep FAIL: {} (ep_count={})", slot_id, e, ep_count);
         }
     }
 
-    // Dump EP states from output context to verify Running after deferred cfg_ep.
-    unsafe {
-        for &(slot_id, label) in &[(state.mouse_slot, "mouse"), (state.kbd_slot, "kbd")] {
-            if slot_id != 0 {
-                let slot_idx = (slot_id - 1) as usize;
-                let dev_ctx = &raw const DEVICE_CONTEXTS[slot_idx];
-                dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
-                let ctx_size = state.context_size;
-                for dci in [3u8, 5u8] {
-                    let ep_dw0 = core::ptr::read_volatile(
-                        (*dev_ctx).0.as_ptr().add(dci as usize * ctx_size) as *const u32,
-                    );
-                    let ep_state = ep_dw0 & 0x7;
-                    crate::serial_println!(
-                        "[xhci] deferred {} slot {} DCI {} EP_state={} (0=Disabled,1=Running)",
-                        label, slot_id, dci, ep_state
-                    );
-                }
-            }
-        }
-    }
 }
 
 /// Phase 2 of deferred init: queue TRBs and ring doorbells for all HID
@@ -5929,28 +5164,6 @@ fn deferred_reconfigure_only(state: &XhciState) {
 fn deferred_queue_trbs(state: &XhciState) {
     // Drain any events that appeared between ConfigEP and now.
     drain_stale_events(state);
-
-    // Dump EP states right before queuing to verify they're still Running.
-    unsafe {
-        for &(slot_id, label) in &[(state.mouse_slot, "mouse"), (state.kbd_slot, "kbd")] {
-            if slot_id != 0 {
-                let slot_idx = (slot_id - 1) as usize;
-                let dev_ctx = &raw const DEVICE_CONTEXTS[slot_idx];
-                dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
-                let ctx_size = state.context_size;
-                for dci in [3u8, 5u8] {
-                    let ep_dw0 = core::ptr::read_volatile(
-                        (*dev_ctx).0.as_ptr().add(dci as usize * ctx_size) as *const u32,
-                    );
-                    let ep_state = ep_dw0 & 0x7;
-                    crate::serial_println!(
-                        "[xhci] pre-queue {} slot {} DCI {} EP_state={} (0=Disabled,1=Running)",
-                        label, slot_id, dci, ep_state
-                    );
-                }
-            }
-        }
-    }
 
     KBD_TRB_FIRST_QUEUED.store(true, Ordering::Release);
     HID_TRBS_QUEUED.store(true, Ordering::Release);
@@ -5984,10 +5197,10 @@ pub fn poll_hid_events() {
 
     POLL_COUNT.fetch_add(1, Ordering::Relaxed);
 
-    // Rate-limit: poll only every 20th tick (~10 Hz at 200 Hz timer).
-    // Full 200 Hz MMIO reads from timer context can starve the hypervisor.
+    // Rate-limit: poll every 4th tick (~50 Hz at 200 Hz timer).
+    // Balances responsiveness (20ms latency) with hypervisor overhead.
     let poll = POLL_COUNT.load(Ordering::Relaxed);
-    if poll % 20 != 0 {
+    if poll % 4 != 0 {
         return;
     }
 
@@ -6022,7 +5235,6 @@ pub fn poll_hid_events() {
         && poll == DEFERRED_TRB_POLL
         && !HID_POLLING_STARTED.load(Ordering::Acquire)
     {
-        crate::serial_println!("[xhci] deferred TRB queue at poll={}", poll);
         start_hid_polling(state);
         HID_POLLING_STARTED.store(true, Ordering::Release);
     }
@@ -6135,13 +5347,17 @@ pub fn poll_hid_events() {
                             ]);
                             LAST_NKRO_REPORT_U64.store(nkro_snap, Ordering::Relaxed);
 
-                            // NKRO reports have Report ID prefix:
-                            //   [report_id=1, modifiers, reserved, key1..key6] = 9 bytes
-                            // Strip the Report ID byte and pass the standard 8-byte
-                            // boot keyboard report format to process_keyboard_report.
+                            // NKRO report (after report ID) has NO reserved byte:
+                            //   [report_id=1, modifier, key1, key2, ..., key7] = 9 bytes
+                            // Reformat to boot keyboard layout for process_keyboard_report:
+                            //   [modifier, reserved=0, key1, ..., key6]
                             if nkro[0] == 1 {
                                 KBD_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
-                                super::hid::process_keyboard_report(&nkro[1..9]);
+                                let boot_fmt: [u8; 8] = [
+                                    nkro[1], 0, // modifier, reserved
+                                    nkro[2], nkro[3], nkro[4], nkro[5], nkro[6], nkro[7],
+                                ];
+                                super::hid::process_keyboard_report(&boot_fmt);
                             }
 
                             let _ = queue_hid_transfer(state, 2, state.kbd_slot, state.kbd_nkro_endpoint);
@@ -6271,13 +5487,28 @@ pub fn poll_hid_events() {
         }
     }
 
-    // MSI requeue flags: clear without requeuing. The reset state machine
-    // below already requeues after resetting, and poll_hid_events requeues
-    // after successful transfers. Double-requeuing would cause duplicate TRBs.
-    let _ = MSI_KBD_NEEDS_REQUEUE.swap(false, Ordering::AcqRel);
-    let _ = MSI_NKRO_NEEDS_REQUEUE.swap(false, Ordering::AcqRel);
-    let _ = MSI_MOUSE_NEEDS_REQUEUE.swap(false, Ordering::AcqRel);
-    let _ = MSI_MOUSE2_NEEDS_REQUEUE.swap(false, Ordering::AcqRel);
+    // MSI requeue fallback: if the MSI handler failed to requeue (e.g., lock
+    // contention caused the handler to bail early), requeue here as a safety net.
+    if MSI_KBD_NEEDS_REQUEUE.swap(false, Ordering::AcqRel) {
+        if state.kbd_slot != 0 && state.kbd_endpoint != 0 {
+            let _ = queue_hid_transfer(state, 0, state.kbd_slot, state.kbd_endpoint);
+        }
+    }
+    if MSI_NKRO_NEEDS_REQUEUE.swap(false, Ordering::AcqRel) {
+        if state.kbd_slot != 0 && state.kbd_nkro_endpoint != 0 {
+            let _ = queue_hid_transfer(state, 2, state.kbd_slot, state.kbd_nkro_endpoint);
+        }
+    }
+    if MSI_MOUSE_NEEDS_REQUEUE.swap(false, Ordering::AcqRel) {
+        if state.mouse_slot != 0 && state.mouse_endpoint != 0 {
+            let _ = queue_hid_transfer(state, 1, state.mouse_slot, state.mouse_endpoint);
+        }
+    }
+    if MSI_MOUSE2_NEEDS_REQUEUE.swap(false, Ordering::AcqRel) {
+        if state.mouse_slot != 0 && state.mouse_nkro_endpoint != 0 {
+            let _ = queue_hid_transfer(state, 3, state.mouse_slot, state.mouse_nkro_endpoint);
+        }
+    }
 
     let poll = POLL_COUNT.load(Ordering::Relaxed);
 
@@ -6395,58 +5626,6 @@ pub fn poll_hid_events() {
     // response (LAST_GET_REPORT_U64 = 0x00080000010001a1 = GET_REPORT setup bytes),
     // causing phantom mouse clicks (buttons=0xA1) and cursor drift (deltaX=1).
     // Mouse input will be handled via interrupt IN endpoints when that path is working.
-
-    // One-time serial dump of key DIAG fields at poll=1000 (~5s after timer start).
-    // Bypasses btrace/procfs (which truncates large trace buffers) to get first CC=12 details.
-    if poll == 1000 {
-        let fcc = DIAG_FIRST_XFER_CC.load(Ordering::Relaxed);
-        let slep = DIAG_FIRST_XFER_SLEP.load(Ordering::Relaxed);
-        let fptr = DIAG_FIRST_XFER_PTR.load(Ordering::Relaxed);
-        let fstat = DIAG_FIRST_XFER_STATUS.load(Ordering::Relaxed);
-        let fctrl = DIAG_FIRST_XFER_CONTROL.load(Ordering::Relaxed);
-        let fqp = DIAG_FIRST_QUEUED_PHYS.load(Ordering::Relaxed);
-        let es12 = DIAG_EP_STATE_AFTER_CC12.load(Ordering::Relaxed);
-        let esrst = DIAG_EP_STATE_AFTER_RESET.load(Ordering::Relaxed);
-        let rfail = ENDPOINT_RESET_FAIL_COUNT.load(Ordering::Relaxed);
-        let xoerr = XO_ERR_COUNT.load(Ordering::Relaxed);
-        let xolast = XO_LAST_INFO.load(Ordering::Relaxed);
-        let ebc12 = DIAG_EP_STATE_BEFORE_DB.load(Ordering::Relaxed);
-        let evt = EVENT_COUNT.load(Ordering::Relaxed);
-        let rst = ENDPOINT_RESET_COUNT.load(Ordering::Relaxed);
-        let qsrc = DIAG_FIRST_QUEUE_SOURCE.load(Ordering::Relaxed);
-        crate::serial_println!("=== XHCI_DIAG_SERIAL poll=1000 ===");
-        crate::serial_println!("  fcc={} slot={} ep={} ptr=0x{:016x}", fcc, (slep >> 8) & 0xFF, slep & 0xFF, fptr);
-        crate::serial_println!("  fstat=0x{:08x} fctrl=0x{:08x} fqp=0x{:016x}", fstat, fctrl, fqp);
-        crate::serial_println!("  ep_state_cc12=0x{:08x} ep_state_rst=0x{:08x} ep_before_db=0x{:08x}", es12, esrst, ebc12);
-        crate::serial_println!("  rst={} rfail={} xoerr={} xolast=s{}e{}c{}", rst, rfail, xoerr,
-            (xolast >> 16) & 0xFF, (xolast >> 8) & 0xFF, xolast & 0xFF);
-        crate::serial_println!("  evt={} qsrc={} skip_bw={}", evt, qsrc, SKIP_BW_DANCE);
-        // Raw EP context DWORDs at first CC=12
-        let edw0 = DIAG_CC12_EP_DW0.load(Ordering::Relaxed);
-        let edw1 = DIAG_CC12_EP_DW1.load(Ordering::Relaxed);
-        let edw2 = DIAG_CC12_EP_DW2.load(Ordering::Relaxed);
-        let edw3 = DIAG_CC12_EP_DW3.load(Ordering::Relaxed);
-        let edw4 = DIAG_CC12_EP_DW4.load(Ordering::Relaxed);
-        let sdw0 = DIAG_CC12_SLOT_DW0.load(Ordering::Relaxed);
-        let sdw3 = DIAG_CC12_SLOT_DW3.load(Ordering::Relaxed);
-        let dcbaa_val = DIAG_CC12_DCBAA.load(Ordering::Relaxed);
-        crate::serial_println!("  cc12_ep: 0x{:08x} 0x{:08x} 0x{:08x} 0x{:08x} 0x{:08x}",
-            edw0, edw1, edw2, edw3, edw4);
-        // Decode EP DW0: state[2:0], interval[23:16]
-        crate::serial_println!("  cc12_ep_dec: state={} interval={} maxpkt={} cerr={} eptype={}",
-            edw0 & 0x7, (edw0 >> 16) & 0xFF, (edw1 >> 16) & 0xFFFF, (edw1 >> 1) & 0x3, (edw1 >> 3) & 0x7);
-        // EP DW2-3 = TR Dequeue Pointer
-        let trdp = ((edw3 as u64) << 32) | (edw2 as u64);
-        crate::serial_println!("  cc12_trdp=0x{:016x} dcs={}", trdp & !0xF, trdp & 1);
-        // Slot context
-        let ctx_entries = (sdw0 >> 27) & 0x1F;
-        let slot_state = (sdw3 >> 27) & 0x1F;
-        let usb_addr = sdw3 & 0xFF;
-        crate::serial_println!("  cc12_slot: dw0=0x{:08x} dw3=0x{:08x} entries={} state={} addr={}",
-            sdw0, sdw3, ctx_entries, slot_state, usb_addr);
-        crate::serial_println!("  cc12_dcbaa=0x{:016x}", dcbaa_val);
-        crate::serial_println!("=== XHCI_DIAG_SERIAL_END ===");
-    }
 
     // Periodic diagnostic: dump controller + endpoint state every 2000 polls (~10s)
     if poll > 0 && poll % 2000 == 0 {
