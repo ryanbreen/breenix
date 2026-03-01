@@ -423,6 +423,19 @@ impl Device {
         }
     }
 
+    /// Dump full 256-byte PCI config space in milestone format for byte-for-byte comparison.
+    /// Output format: `[M1] label +offset: XXXXXXXX XXXXXXXX XXXXXXXX XXXXXXXX`
+    pub fn dump_config_space_256(&self, label: &str) {
+        for offset in (0u8..=240).step_by(16) {
+            let dw0 = pci_read_config_dword(self.bus, self.device, self.function, offset);
+            let dw1 = pci_read_config_dword(self.bus, self.device, self.function, offset + 4);
+            let dw2 = pci_read_config_dword(self.bus, self.device, self.function, offset + 8);
+            let dw3 = pci_read_config_dword(self.bus, self.device, self.function, offset + 12);
+            crate::serial_println!("[M1] {} +{:03x}: {:08x} {:08x} {:08x} {:08x}",
+                label, offset, dw0, dw1, dw2, dw3);
+        }
+    }
+
     /// Full Linux-style PCI device enable: D0 transition + bus master + memory space + INTx disable.
     /// This replicates what Linux's pci_enable_device() + pci_set_master() does.
     pub fn linux_style_enable(&self) {

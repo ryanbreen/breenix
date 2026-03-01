@@ -130,19 +130,22 @@ fn main() -> Status {
         }
     }
 
-    // --- Pre-ExitBootServices xHCI driver disconnect ---
+    // --- xHCI: DisconnectController DISABLED ---
     //
-    // CRITICAL Parallels workaround: UEFI's ExitBootServices cleanup resets the
-    // xHCI controller (XHC controller reset) and then disables the PCI BAR
-    // (phymemrange_disable 0x18011000). Once the BAR is disabled, the Parallels
-    // hypervisor permanently disassociates virtual USB devices from the controller.
+    // EXPERIMENT: DisconnectController was destroying UEFI's endpoint state
+    // (sending ConfigureEndpoint-Deconfigure commands) before ExitBootServices.
+    // This caused the Parallels hypervisor to show NO "DisableEndpoint while
+    // io_cnt is not zero!" during HCRST, and NO ep creates after HCRST → CC=12.
     //
-    // Fix: Disconnect UEFI's xHCI driver BEFORE ExitBootServices. Without a driver
-    // bound to the device, ExitBootServices won't reset the controller or disable
-    // the BAR. The kernel then does its own HCRST on a BAR that was never disabled.
+    // On linux-probe (where CC=12 does NOT occur), the Linux EFI stub does NOT
+    // call DisconnectController. UEFI's endpoints survive through ExitBootServices
+    // to the linux module's HCRST, where "DisableEndpoint while io_cnt is not zero!"
+    // appears, and subsequent ConfigureEndpoint commands DO produce ep creates.
     //
-    // xHCI device: PCI 00:03.0 (vendor 0x1033, device 0x0194)
-    config.xhci_hcrst_done = disconnect_xhci_driver();
+    // By SKIPPING DisconnectController, we let UEFI's in-flight USB I/O persist
+    // through ExitBootServices, matching linux-probe's behavior.
+    config.xhci_hcrst_done = 0;
+    log::info!("xHCI DisconnectController SKIPPED (matching linux-probe behavior)");
 
     log::info!("--- Exiting Boot Services ---");
 
@@ -151,22 +154,8 @@ fn main() -> Status {
         let _ = uefi::boot::exit_boot_services(MemoryType::LOADER_DATA);
     }
 
-    // Safety: re-enable xHCI PCI BAR after ExitBootServices as a fallback.
-    // If the disconnect worked, the BAR was never disabled and this is a no-op.
-    // If it failed, this ensures the kernel can at least see the device.
-    if config.pci_ecam_base != 0 {
-        unsafe {
-            let ecam_xhci = config.pci_ecam_base + 0x18000;
-            let cmd_addr = (ecam_xhci + 4) as *mut u32;
-            let dword = core::ptr::read_volatile(cmd_addr);
-            let new_cmd = ((dword & 0xFFFF) | 0x0006) & 0xFFFF;
-            core::ptr::write_volatile(cmd_addr, new_cmd);
-
-            // UART breadcrumb 'U' = post-EBS BAR re-enable
-            let uart = config.uart_base_phys as *mut u32;
-            core::ptr::write_volatile(uart, b'U' as u32);
-        }
-    }
+    // Post-EBS BAR re-enable DISABLED — let the kernel find the device in
+    // whatever state EBS leaves it (matches linux-probe where Command=0x0010).
 
     // Jump to kernel with our page tables and HardwareConfig
     let page_tables = unsafe { &mut *(&raw mut PAGE_TABLES) };
@@ -387,4 +376,105 @@ fn disconnect_xhci_driver() -> u32 {
 
     log::warn!("xHCI disconnect: device 00:03.0 not found");
     0xA2
+}
+
+/// Halt and reset the xHCI controller BEFORE ExitBootServices.
+///
+/// The Parallels hypervisor tracks internal USB endpoint state. If we reset
+/// the xHCI after EBS, the endpoint teardown fails ("DisableEndpoint while
+/// io_cnt is not zero") and subsequent ConfigureEndpoint commands don't
+/// create new internal endpoints. Doing halt+HCRST before EBS, while UEFI
+/// services are alive, lets the hypervisor cleanly shut down endpoints.
+fn pre_ebs_xhci_halt_reset(ecam_base: u64) {
+    if ecam_base == 0 {
+        log::warn!("xHCI pre-EBS reset: no ECAM base, skipping");
+        return;
+    }
+
+    // Read BAR0 from PCI config space (ECAM offset for 00:03.0 = 0x18000)
+    let ecam_xhci = ecam_base + 0x18000;
+    let bar0 = unsafe { core::ptr::read_volatile((ecam_xhci + 0x10) as *const u32) };
+    let bar0_phys = (bar0 & 0xFFFFF000) as u64;
+
+    if bar0_phys == 0 {
+        log::warn!("xHCI pre-EBS reset: BAR0 is zero, skipping");
+        return;
+    }
+
+    log::info!("xHCI pre-EBS reset: BAR0=0x{:08x}", bar0_phys);
+
+    // Read cap_length to find operational registers
+    let cap_word = unsafe { core::ptr::read_volatile(bar0_phys as *const u32) };
+    let cap_length = (cap_word & 0xFF) as u64;
+    let op_base = bar0_phys + cap_length;
+
+    log::info!("xHCI pre-EBS reset: cap_length={} op_base=0x{:x}", cap_length, op_base);
+
+    // Read current USBCMD and USBSTS
+    let usbcmd = unsafe { core::ptr::read_volatile(op_base as *const u32) };
+    let usbsts = unsafe { core::ptr::read_volatile((op_base + 4) as *const u32) };
+    log::info!("xHCI pre-EBS: USBCMD=0x{:08x} USBSTS=0x{:08x}", usbcmd, usbsts);
+
+    // Step 1: Halt the controller (clear RS bit 0)
+    if usbcmd & 1 != 0 {
+        unsafe {
+            core::ptr::write_volatile(op_base as *mut u32, usbcmd & !1);
+        }
+        // Wait for HCH (USBSTS bit 0) — up to 16ms per xHCI spec
+        let mut halted = false;
+        for _ in 0..1_000_000 {
+            let sts = unsafe { core::ptr::read_volatile((op_base + 4) as *const u32) };
+            if sts & 1 != 0 {
+                halted = true;
+                break;
+            }
+        }
+        if halted {
+            log::info!("xHCI pre-EBS: controller halted (HCH=1)");
+        } else {
+            log::warn!("xHCI pre-EBS: halt timeout, proceeding with HCRST anyway");
+        }
+    } else {
+        log::info!("xHCI pre-EBS: controller already halted (RS=0)");
+    }
+
+    // Step 2: HCRST (set bit 1 of USBCMD)
+    let usbcmd_now = unsafe { core::ptr::read_volatile(op_base as *const u32) };
+    unsafe {
+        core::ptr::write_volatile(op_base as *mut u32, usbcmd_now | (1 << 1));
+    }
+
+    // Wait for HCRST bit to self-clear (up to 16ms per spec)
+    let mut reset_done = false;
+    for _ in 0..1_000_000 {
+        let cmd = unsafe { core::ptr::read_volatile(op_base as *const u32) };
+        if cmd & (1 << 1) == 0 {
+            reset_done = true;
+            break;
+        }
+    }
+
+    if reset_done {
+        // Wait for CNR (Controller Not Ready, USBSTS bit 11) to clear
+        let mut ready = false;
+        for _ in 0..1_000_000 {
+            let sts = unsafe { core::ptr::read_volatile((op_base + 4) as *const u32) };
+            if sts & (1 << 11) == 0 {
+                ready = true;
+                break;
+            }
+        }
+        if ready {
+            log::info!("xHCI pre-EBS: HCRST complete, controller ready");
+        } else {
+            log::warn!("xHCI pre-EBS: CNR still set after HCRST");
+        }
+    } else {
+        log::warn!("xHCI pre-EBS: HCRST timeout");
+    }
+
+    // Read final state
+    let usbcmd_final = unsafe { core::ptr::read_volatile(op_base as *const u32) };
+    let usbsts_final = unsafe { core::ptr::read_volatile((op_base + 4) as *const u32) };
+    log::info!("xHCI pre-EBS: final USBCMD=0x{:08x} USBSTS=0x{:08x}", usbcmd_final, usbsts_final);
 }

@@ -196,6 +196,8 @@ pub fn build_page_tables(storage: &mut PageTableStorage) -> (u64, u64) {
     write_entry(ttbr1_l1, 1, ttbr1_l2_ram | attr::TABLE_DESC);
 
     // NC block index: (NC_DMA_BASE - 0x40000000) / 0x200000
+    // DMA buffers are mapped Non-Cacheable for hardware DMA coherency.
+    // Tested: switching to Normal Cacheable (WB) does NOT fix CC=12 on Parallels.
     let nc_block_idx = ((NC_DMA_BASE - 0x4000_0000) / 0x20_0000) as usize;
     for i in 0..512u64 {
         let phys = 0x4000_0000 + i * 0x20_0000;
