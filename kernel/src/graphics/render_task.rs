@@ -211,16 +211,20 @@ fn flush_framebuffer() -> bool {
     }
     #[cfg(target_arch = "aarch64")]
     {
-        // Only flush if pixels have changed. The dirty rect is set by:
-        //   - sys_fbdraw (syscall path, after fast pixel copies)
-        //   - particles thread (after rendering)
-        //   - cursor updates (above)
-        //   - render_queue/split_screen text rendering
-        //
+        // First, flush the double buffer (shadow → BAR0 copy) if present.
+        // This must happen while holding SHELL_FRAMEBUFFER so the shadow
+        // buffer isn't modified mid-copy.
+        if let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() {
+            if let Some(mut fb_guard) = fb.try_lock() {
+                if let Some(db) = fb_guard.double_buffer_mut() {
+                    db.flush_if_dirty();
+                }
+            }
+        }
+
+        // Then flush dirty regions to the display (DSB + optional VirtIO hint).
         // No SHELL_FRAMEBUFFER lock needed here — we're not touching the pixel
-        // buffer, just submitting GPU commands via gpu_mmio. This eliminates the
-        // two-lock nesting (SHELL_FRAMEBUFFER + GPU_LOCK) that caused deadlocks
-        // when sys_fbdraw held SHELL_FRAMEBUFFER with IRQs disabled.
+        // buffer, just submitting GPU commands.
         if let Some((x, y, w, h)) = crate::graphics::arm64_fb::take_dirty_rect() {
             if let Err(e) = crate::graphics::arm64_fb::flush_dirty_rect(x, y, w, h) {
                 crate::serial_println!("[render] GPU flush failed: {}", e);

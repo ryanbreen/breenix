@@ -128,7 +128,10 @@ pub fn take_dirty_rect() -> Option<(u32, u32, u32, u32)> {
 /// For VirtIO GPU, this issues transfer_to_host + resource_flush commands.
 pub fn flush_dirty_rect(x: u32, y: u32, w: u32, h: u32) -> Result<(), &'static str> {
     if is_gop_active() {
-        // GOP: writes go directly to display memory. DSB ensures visibility.
+        // GOP: pixels are in BAR0 (display scanout memory). DSB ensures the
+        // CPU's write buffer is drained so stores are visible to the display
+        // controller. Parallels scans BAR0 at its own refresh rate — no VirtIO
+        // RESOURCE_FLUSH needed (it's synchronous and would add 10-50ms).
         unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
         Ok(())
     } else if crate::drivers::virtio::gpu_pci::is_initialized() {
@@ -180,7 +183,7 @@ pub fn is_gop_active() -> bool {
 
 /// Get the GOP framebuffer as a mutable byte slice.
 /// Returns None if GOP is not initialized.
-fn gop_framebuffer() -> Option<&'static mut [u8]> {
+pub fn gop_framebuffer() -> Option<&'static mut [u8]> {
     let ptr = GOP_FB_PTR.load(Ordering::Relaxed);
     let len = GOP_FB_LEN.load(Ordering::Relaxed);
     if ptr == 0 || len == 0 {
@@ -242,7 +245,7 @@ pub fn init_gop_framebuffer() -> Result<(), &'static str> {
     };
 
     // Initialize SHELL_FRAMEBUFFER
-    let shell_fb = ShellFrameBuffer { fb };
+    let shell_fb = ShellFrameBuffer { fb, double_buffer: None };
 
     // Cache immutable dimensions for lock-free access by sys_fbinfo
     let _ = FB_INFO_CACHE.try_init_once(|| FbInfoCache {
@@ -315,7 +318,7 @@ pub fn init_gpu_pci_gop_framebuffer() -> Result<(), &'static str> {
         is_bgr_flag: true, // B8G8R8A8_UNORM
     };
 
-    let shell_fb = ShellFrameBuffer { fb };
+    let shell_fb = ShellFrameBuffer { fb, double_buffer: None };
 
     let _ = FB_INFO_CACHE.try_init_once(|| FbInfoCache {
         width,
@@ -603,6 +606,8 @@ pub fn clear_screen(color: Color) -> Result<(), &'static str> {
 pub struct ShellFrameBuffer {
     /// The underlying framebuffer
     fb: Arm64FrameBuffer,
+    /// Double buffer: shadow buffer in cached RAM, flushed to hardware (GOP BAR0)
+    double_buffer: Option<super::double_buffer::DoubleBufferedFrameBuffer>,
 }
 
 impl ShellFrameBuffer {
@@ -610,6 +615,7 @@ impl ShellFrameBuffer {
     pub fn new() -> Option<Self> {
         Some(Self {
             fb: Arm64FrameBuffer::new()?,
+            double_buffer: None,
         })
     }
 
@@ -644,14 +650,60 @@ impl ShellFrameBuffer {
         self.fb.flush()
     }
 
-    /// Get double buffer (returns None on ARM64)
-    ///
-    /// On ARM64, the VirtIO GPU handles buffering, so we don't need
-    /// a software double buffer. This method exists for API compatibility.
-    #[allow(dead_code)]
+    /// Get mutable access to the double buffer, if available.
     pub fn double_buffer_mut(&mut self) -> Option<&mut super::double_buffer::DoubleBufferedFrameBuffer> {
-        // ARM64 VirtIO GPU handles buffering internally
-        None
+        self.double_buffer.as_mut()
+    }
+
+    /// Upgrade to double-buffered rendering.
+    ///
+    /// Allocates a shadow buffer in cached heap RAM. All pixel writes go to
+    /// the shadow buffer (fast ~1ns/write), and `flush_if_dirty()` copies
+    /// dirty regions to the hardware framebuffer (GOP BAR0). This is critical
+    /// for Parallels performance where BAR0 writes are ~100ns each.
+    ///
+    /// Must be called after heap initialization.
+    pub fn upgrade_to_double_buffer(&mut self) {
+        if self.double_buffer.is_some() {
+            return;
+        }
+
+        // Only useful for GOP mode where writes go to slow device memory
+        if !self.fb.is_gop {
+            return;
+        }
+
+        let hw_ptr = GOP_FB_PTR.load(Ordering::Relaxed);
+        let hw_len = GOP_FB_LEN.load(Ordering::Relaxed) as usize;
+        if hw_ptr == 0 || hw_len == 0 {
+            return;
+        }
+
+        let stride_bytes = self.fb.stride * self.fb.bytes_per_pixel;
+        let db = super::double_buffer::DoubleBufferedFrameBuffer::new(
+            hw_ptr as *mut u8,
+            hw_len,
+            stride_bytes,
+            self.fb.height,
+        );
+
+        // Copy current hardware buffer content to shadow buffer so existing
+        // screen content (split-screen layout, text) is preserved.
+        self.double_buffer = Some(db);
+
+        if let Some(ref mut db) = self.double_buffer {
+            let shadow = db.buffer_mut();
+            let src = hw_ptr as *const u8;
+            let copy_len = shadow.len().min(hw_len);
+            unsafe {
+                core::ptr::copy_nonoverlapping(src, shadow.as_mut_ptr(), copy_len);
+            }
+        }
+
+        crate::serial_println!(
+            "[arm64-fb] Upgraded to double buffering: {}x{} shadow buffer ({} KB)",
+            self.fb.width, self.fb.height, hw_len / 1024
+        );
     }
 }
 
@@ -677,19 +729,83 @@ impl Canvas for ShellFrameBuffer {
     }
 
     fn set_pixel(&mut self, x: i32, y: i32, color: Color) {
-        self.fb.set_pixel(x, y, color);
+        if let Some(ref mut db) = self.double_buffer {
+            // Write to shadow buffer (fast cached RAM)
+            if x < 0 || y < 0 {
+                return;
+            }
+            let x = x as usize;
+            let y = y as usize;
+            if x >= self.fb.width || y >= self.fb.height {
+                return;
+            }
+            let bpp = self.fb.bytes_per_pixel;
+            let pixel_bytes = color.to_pixel_bytes(bpp, self.fb.is_bgr_flag);
+            let offset = (y * self.fb.stride + x) * bpp;
+            let shadow = db.buffer_mut();
+            if offset + bpp <= shadow.len() {
+                shadow[offset..offset + bpp].copy_from_slice(&pixel_bytes[..bpp]);
+                db.mark_region_dirty(y, offset, offset + bpp);
+            }
+        } else {
+            self.fb.set_pixel(x, y, color);
+        }
     }
 
     fn get_pixel(&self, x: i32, y: i32) -> Option<Color> {
-        self.fb.get_pixel(x, y)
+        if let Some(ref db) = self.double_buffer {
+            // Read from shadow buffer (fast cached RAM)
+            if x < 0 || y < 0 {
+                return None;
+            }
+            let x = x as usize;
+            let y = y as usize;
+            if x >= self.fb.width || y >= self.fb.height {
+                return None;
+            }
+            let bpp = self.fb.bytes_per_pixel;
+            let offset = (y * self.fb.stride + x) * bpp;
+            let buffer = db.buffer();
+            if offset + bpp > buffer.len() {
+                return None;
+            }
+            Some(Color::from_pixel_bytes(
+                &buffer[offset..offset + bpp],
+                bpp,
+                self.fb.is_bgr_flag,
+            ))
+        } else {
+            self.fb.get_pixel(x, y)
+        }
     }
 
     fn buffer_mut(&mut self) -> &mut [u8] {
-        self.fb.buffer_mut()
+        if let Some(ref mut db) = self.double_buffer {
+            db.buffer_mut()
+        } else {
+            self.fb.buffer_mut()
+        }
     }
 
     fn buffer(&self) -> &[u8] {
-        self.fb.buffer()
+        if let Some(ref db) = self.double_buffer {
+            db.buffer()
+        } else {
+            self.fb.buffer()
+        }
+    }
+
+    fn mark_dirty_region(&mut self, x: usize, y: usize, width: usize, height: usize) {
+        if let Some(ref mut db) = self.double_buffer {
+            let bpp = self.fb.bytes_per_pixel;
+            let stride_bytes = self.fb.stride * bpp;
+            let x_start = (x * bpp).min(stride_bytes);
+            let x_end = ((x + width) * bpp).min(stride_bytes);
+            let y_end = (y + height).min(self.fb.height);
+            db.mark_region_dirty_rect(y, y_end, x_start, x_end);
+        }
+        // Also mark the atomic dirty rect for VirtIO GPU flush hint
+        mark_dirty(x as u32, y as u32, width as u32, height as u32);
     }
 }
 
@@ -735,6 +851,17 @@ pub fn init_shell_framebuffer() -> Result<(), &'static str> {
 
     let _ = SHELL_FRAMEBUFFER.try_init_once(|| Mutex::new(fb));
     Ok(())
+}
+
+/// Upgrade the shell framebuffer to double-buffered rendering.
+///
+/// Allocates a shadow buffer in cached heap RAM. Must be called after
+/// heap initialization. Safe to call multiple times — only upgrades once.
+pub fn upgrade_to_double_buffer() {
+    if let Some(fb) = SHELL_FRAMEBUFFER.get() {
+        let mut guard = fb.lock();
+        guard.upgrade_to_double_buffer();
+    }
 }
 
 /// Get the framebuffer dimensions

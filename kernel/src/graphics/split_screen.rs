@@ -238,8 +238,9 @@ pub fn write_char_to_terminal(c: char) -> bool {
                     if let Some(db) = fb_guard.double_buffer_mut() {
                         db.flush_if_dirty();
                     }
-                    #[cfg(target_arch = "aarch64")]
-                    super::arm64_fb::mark_full_dirty();
+                    // ARM64: dirty regions are tracked automatically via
+                    // Canvas::mark_dirty_region() in the primitives layer.
+                    // The render thread flushes dirty rects periodically.
 
                     return true;
                 }
@@ -266,8 +267,8 @@ pub fn write_str_to_terminal(s: &str) -> bool {
                     if let Some(db) = fb_guard.double_buffer_mut() {
                         db.flush_if_dirty();
                     }
-                    #[cfg(target_arch = "aarch64")]
-                    super::arm64_fb::mark_full_dirty();
+                    // ARM64: dirty regions are tracked automatically via
+                    // Canvas::mark_dirty_region() in the primitives layer.
 
                     return true;
                 }
@@ -291,8 +292,7 @@ pub fn toggle_terminal_cursor() {
                     if let Some(db) = fb_guard.double_buffer_mut() {
                         db.flush_if_dirty();
                     }
-                    #[cfg(target_arch = "aarch64")]
-                    super::arm64_fb::mark_full_dirty();
+                    // ARM64: dirty regions are tracked automatically.
                 }
             }
         }

@@ -177,13 +177,23 @@ pub fn build_page_tables(storage: &mut PageTableStorage) -> (u64, u64) {
     // TTBR1 L1[0] -> L2 (HHDM + 0x00000000 - 0x3FFFFFFF)
     write_entry(ttbr1_l1, 0, ttbr1_l2_dev | attr::TABLE_DESC);
 
-    // Map all 2MB blocks in 0x00000000-0x3FFFFFFF as device memory
+    // Map all 2MB blocks in 0x00000000-0x3FFFFFFF as device memory,
+    // except for the GOP BAR0 framebuffer region (0x10000000-0x10FFFFFF,
+    // L2 indices 128-135) which uses Normal-NC for write-combining.
+    // Write-combining allows the CPU to coalesce/reorder stores, making
+    // bulk memcpy from shadow buffer to BAR0 significantly faster while
+    // maintaining coherency with the hypervisor's display scanout.
     // This covers: GIC (0x02010000), UART (0x02110000), PCI ECAM (0x02300000),
     // GICR (0x02500000), PCI MMIO (0x10000000-0x1FFFFFFF)
     for i in 0..512u64 {
         let phys = i * 0x20_0000; // 2MB blocks
-        write_entry(ttbr0_l2_dev, i as usize, phys | attr::DEVICE_BLOCK);
-        write_entry(ttbr1_l2_dev, i as usize, phys | attr::DEVICE_BLOCK);
+        let block_attr = if (128..136).contains(&i) {
+            attr::NC_BLOCK // GOP BAR0: write-combining for framebuffer
+        } else {
+            attr::DEVICE_BLOCK
+        };
+        write_entry(ttbr0_l2_dev, i as usize, phys | block_attr);
+        write_entry(ttbr1_l2_dev, i as usize, phys | block_attr);
     }
 
     // --- RAM: 0x40000000 - 0xBFFFFFFF (2GB, L1 entries 1-2) ---

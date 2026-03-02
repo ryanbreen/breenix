@@ -42,6 +42,7 @@ use alloc::vec::Vec;
 use spin::Mutex;
 
 mod trace;
+#[cfg(target_arch = "aarch64")]
 mod xhci;
 
 /// Procfs entry types
@@ -451,7 +452,10 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<String, i32> {
             let entries = list_xhci_entries();
             Ok(entries.join("\n") + "\n")
         }
+        #[cfg(target_arch = "aarch64")]
         ProcEntryType::XhciTrace => Ok(xhci::generate_xhci_trace()),
+        #[cfg(not(target_arch = "aarch64"))]
+        ProcEntryType::XhciTrace => Ok(String::from("")),
         ProcEntryType::BreenixDir => {
             // Directory listing
             Ok(String::from("testing\n"))

@@ -233,10 +233,9 @@ static mut PCI_CMD_BUF: PciCmdBuffer = PciCmdBuffer { data: [0; 512] };
 static mut PCI_RESP_BUF: PciCmdBuffer = PciCmdBuffer { data: [0; 512] };
 
 // Default framebuffer dimensions (Parallels: set_scanout configures display mode)
-// 2560x1600 is the max that fits in the ~16MB GOP BAR0 region on Parallels.
-// On a Retina Mac, Parallels 2x-scales this to ~1280x800 window points.
-const DEFAULT_FB_WIDTH: u32 = 2560;
-const DEFAULT_FB_HEIGHT: u32 = 1600;
+// 1728x1080 matches the QEMU resolution for consistent performance comparison.
+const DEFAULT_FB_WIDTH: u32 = 1728;
+const DEFAULT_FB_HEIGHT: u32 = 1080;
 // Max supported resolution: 2560x1600 @ 32bpp = ~16.4MB
 const FB_MAX_WIDTH: u32 = 2560;
 const FB_MAX_HEIGHT: u32 = 1600;
@@ -380,15 +379,20 @@ pub fn init() -> Result<(), &'static str> {
     // If create_resource/attach_backing/set_scanout/flush time out, leaving
     // the flag true would mislead other code into thinking the device is usable.
 
-    // Query display info (ignore result — we override to our desired resolution).
-    let _ = get_display_info();
+    // Query display info to see what Parallels reports as native resolution.
+    let display_dims = get_display_info();
+    match display_dims {
+        Ok((dw, dh)) => crate::serial_println!("[virtio-gpu-pci] Display reports: {}x{}", dw, dh),
+        Err(e) => crate::serial_println!("[virtio-gpu-pci] GET_DISPLAY_INFO failed: {}", e),
+    }
 
-    // Override to our desired resolution.
-    // On Parallels, VirtIO GPU set_scanout controls the display MODE (stride,
-    // resolution) but actual pixels are read from BAR0 (the GOP address at
-    // 0x10000000). We use VirtIO GPU purely to configure a higher resolution
-    // than the GOP-reported 1024x768.
-    let (use_width, use_height) = (DEFAULT_FB_WIDTH, DEFAULT_FB_HEIGHT);
+    // Use the display-reported resolution if it's reasonable, otherwise
+    // fall back to our default. This respects the actual Parallels display
+    // mode instead of forcing a resolution that may be ignored.
+    let (use_width, use_height) = match display_dims {
+        Ok((w, h)) if w >= 640 && h >= 480 && w <= FB_MAX_WIDTH && h <= FB_MAX_HEIGHT => (w, h),
+        _ => (DEFAULT_FB_WIDTH, DEFAULT_FB_HEIGHT),
+    };
 
     // Update state with actual dimensions
     unsafe {
@@ -770,6 +774,19 @@ pub fn flush_rect(x: u32, y: u32, width: u32, height: u32) -> Result<(), &'stati
     with_device_state(|state| {
         fence(Ordering::SeqCst);
         transfer_to_host(state, x, y, width, height)?;
+        resource_flush_cmd(state, x, y, width, height)
+    })
+}
+
+/// Send only a RESOURCE_FLUSH command without TRANSFER_TO_HOST_2D.
+///
+/// Used in GOP hybrid mode where pixels are already in BAR0 (the display
+/// scanout memory). The RESOURCE_FLUSH tells Parallels which region changed
+/// so it can update the host window, without the overhead of a DMA transfer
+/// from PCI_FRAMEBUFFER (which isn't used in hybrid mode).
+pub fn resource_flush_only(x: u32, y: u32, width: u32, height: u32) -> Result<(), &'static str> {
+    with_device_state(|state| {
+        fence(Ordering::SeqCst);
         resource_flush_cmd(state, x, y, width, height)
     })
 }

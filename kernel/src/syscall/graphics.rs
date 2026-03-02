@@ -545,24 +545,63 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                         (0, mmap_info.height)
                     };
 
-                    // Copy dirty rows from user buffer → GPU framebuffer at correct x_offset.
-                    // ARM64 has no double buffer; writes go directly to VirtIO GPU memory.
                     let fb_stride_bytes = fb_guard.stride() * fb_guard.bytes_per_pixel();
                     let row_bytes = mmap_info.width * mmap_info.bpp;
                     let x_byte_offset = mmap_info.x_offset * mmap_info.bpp;
-                    let gpu_buf = fb_guard.buffer_mut();
 
-                    for y in y_start..y_end {
-                        let user_row_ptr = (mmap_info.user_addr as usize) + y * mmap_info.user_stride;
-                        let gpu_row_offset = y * fb_stride_bytes + x_byte_offset;
+                    // For GOP mode with double buffer, copy user → BAR0 directly
+                    // (single copy) instead of user → shadow → BAR0 (double copy).
+                    // The NC memory mapping makes BAR0 writes fast via write-combining.
+                    // Also update the shadow buffer so terminal reads stay consistent.
+                    if crate::graphics::arm64_fb::is_gop_active() {
+                        if let Some(gop_buf) = crate::graphics::arm64_fb::gop_framebuffer() {
+                            for y in y_start..y_end {
+                                let user_row_ptr = (mmap_info.user_addr as usize) + y * mmap_info.user_stride;
+                                let target_row_offset = y * fb_stride_bytes + x_byte_offset;
 
-                        if gpu_row_offset + row_bytes <= gpu_buf.len() {
-                            unsafe {
-                                core::ptr::copy_nonoverlapping(
-                                    user_row_ptr as *const u8,
-                                    gpu_buf[gpu_row_offset..].as_mut_ptr(),
-                                    row_bytes,
-                                );
+                                if target_row_offset + row_bytes <= gop_buf.len() {
+                                    unsafe {
+                                        core::ptr::copy_nonoverlapping(
+                                            user_row_ptr as *const u8,
+                                            gop_buf[target_row_offset..].as_mut_ptr(),
+                                            row_bytes,
+                                        );
+                                    }
+                                }
+                            }
+                            // Also update shadow buffer to keep it consistent
+                            if let Some(db) = fb_guard.double_buffer_mut() {
+                                let shadow = db.buffer_mut();
+                                for y in y_start..y_end {
+                                    let user_row_ptr = (mmap_info.user_addr as usize) + y * mmap_info.user_stride;
+                                    let target_row_offset = y * fb_stride_bytes + x_byte_offset;
+                                    if target_row_offset + row_bytes <= shadow.len() {
+                                        unsafe {
+                                            core::ptr::copy_nonoverlapping(
+                                                user_row_ptr as *const u8,
+                                                shadow[target_row_offset..].as_mut_ptr(),
+                                                row_bytes,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // Non-GOP path: copy to GPU buffer (VirtIO MMIO/PCI framebuffer)
+                        let target_buf = fb_guard.buffer_mut();
+                        for y in y_start..y_end {
+                            let user_row_ptr = (mmap_info.user_addr as usize) + y * mmap_info.user_stride;
+                            let target_row_offset = y * fb_stride_bytes + x_byte_offset;
+
+                            if target_row_offset + row_bytes <= target_buf.len() {
+                                unsafe {
+                                    core::ptr::copy_nonoverlapping(
+                                        user_row_ptr as *const u8,
+                                        target_buf[target_row_offset..].as_mut_ptr(),
+                                        row_bytes,
+                                    );
+                                }
                             }
                         }
                     }
@@ -574,11 +613,10 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                 // for terminal text while we submit GPU commands.
                 drop(fb_guard);
 
-                // Synchronous GPU flush — submit transfer_to_host + resource_flush
-                // directly in the syscall instead of deferring to the render thread.
-                // This eliminates scheduling latency: bounce's frame is displayed
-                // immediately rather than waiting for the render thread to wake up
-                // (which could take 5ms+ due to timer tick granularity).
+                // Synchronous GPU flush — submit resource_flush (or transfer_to_host +
+                // resource_flush for non-GOP) directly in the syscall. This eliminates
+                // scheduling latency: bounce's frame is displayed immediately rather
+                // than waiting for the render thread (5ms+ due to timer tick).
                 if let Some((fx, fy, fw, fh)) = flush_rect {
                     let _ = crate::graphics::arm64_fb::flush_dirty_rect(fx, fy, fw, fh);
                 }
