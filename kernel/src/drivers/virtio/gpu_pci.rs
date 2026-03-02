@@ -386,13 +386,11 @@ pub fn init() -> Result<(), &'static str> {
         Err(e) => crate::serial_println!("[virtio-gpu-pci] GET_DISPLAY_INFO failed: {}", e),
     }
 
-    // Use the display-reported resolution if it's reasonable, otherwise
-    // fall back to our default. This respects the actual Parallels display
-    // mode instead of forcing a resolution that may be ignored.
-    let (use_width, use_height) = match display_dims {
-        Ok((w, h)) if w >= 640 && h >= 480 && w <= FB_MAX_WIDTH && h <= FB_MAX_HEIGHT => (w, h),
-        _ => (DEFAULT_FB_WIDTH, DEFAULT_FB_HEIGHT),
-    };
+    // Always use our configured resolution. GET_DISPLAY_INFO reports the
+    // Parallels native display (e.g. 2560x1600 on Retina), but we want to
+    // control the rendering resolution for performance. The VirtIO GPU
+    // SET_SCANOUT will tell Parallels to use our chosen resolution.
+    let (use_width, use_height) = (DEFAULT_FB_WIDTH, DEFAULT_FB_HEIGHT);
 
     // Update state with actual dimensions
     unsafe {
