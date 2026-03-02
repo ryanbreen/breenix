@@ -567,6 +567,13 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         false
     };
 
+    // Upgrade framebuffer to double buffering now that heap is available.
+    // This allocates a shadow buffer in cached RAM so pixel writes are fast
+    // (~1ns vs ~100ns for direct GOP BAR0 writes on Parallels).
+    if has_display {
+        kernel::graphics::arm64_fb::upgrade_to_double_buffer();
+    }
+
     // Initialize input devices (capability-based detection)
     if kernel::drivers::usb::xhci::is_initialized() {
         // USB HID keyboard/mouse via XHCI — already set up during drivers::init()

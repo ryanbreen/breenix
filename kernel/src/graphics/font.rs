@@ -155,6 +155,11 @@ impl Glyph {
         self.rasterized.height()
     }
 
+    /// Get the raw raster data (rows of intensity bytes).
+    pub fn raster(&self) -> &[&[u8]] {
+        self.rasterized.raster()
+    }
+
     /// Iterate over the glyph pixels with coordinates and intensity.
     /// Yields (x, y, intensity) for each pixel.
     pub fn pixels(&self) -> impl Iterator<Item = (usize, usize, u8)> + '_ {

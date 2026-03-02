@@ -495,6 +495,17 @@ pub fn draw_char(canvas: &mut impl Canvas, x: i32, y: i32, c: char, style: &Text
 
 /// Draw a glyph at the specified position with the given style.
 fn draw_glyph(canvas: &mut impl Canvas, x: i32, y: i32, glyph: &Glyph, style: &TextStyle) {
+    // Fast path: glyph fully within canvas bounds — write directly to buffer
+    if x >= 0 && y >= 0
+        && (x as usize + glyph.width()) <= canvas.width()
+        && (y as usize + glyph.height()) <= canvas.height()
+    {
+        draw_glyph_direct(canvas, x as usize, y as usize, glyph, style);
+        canvas.mark_dirty_region(x as usize, y as usize, glyph.width(), glyph.height());
+        return;
+    }
+
+    // Slow path: per-pixel with bounds checking for edge cases
     for (gx, gy, intensity) in glyph.pixels() {
         if intensity == 0 {
             continue;
@@ -504,14 +515,11 @@ fn draw_glyph(canvas: &mut impl Canvas, x: i32, y: i32, glyph: &Glyph, style: &T
         let py = y + gy as i32;
 
         let color = if let Some(bg) = style.background {
-            // Explicit background - blend foreground with specified background
             blend_colors(style.foreground, bg, intensity)
         } else {
-            // No explicit background - blend with actual canvas pixel for proper anti-aliasing
             if let Some(existing) = canvas.get_pixel(px, py) {
                 blend_colors(style.foreground, existing, intensity)
             } else {
-                // Out of bounds, skip
                 continue;
             }
         };
@@ -519,9 +527,75 @@ fn draw_glyph(canvas: &mut impl Canvas, x: i32, y: i32, glyph: &Glyph, style: &T
         canvas.set_pixel(px, py, color);
     }
 
-    // Mark the entire glyph bounding box dirty once (not per-pixel)
     if x >= 0 && y >= 0 {
         canvas.mark_dirty_region(x as usize, y as usize, glyph.width(), glyph.height());
+    }
+}
+
+/// Fast-path glyph rendering: writes directly to buffer_mut() without per-pixel
+/// bounds checks or function calls. The caller must ensure the glyph is fully
+/// within canvas bounds.
+fn draw_glyph_direct(canvas: &mut impl Canvas, x: usize, y: usize, glyph: &Glyph, style: &TextStyle) {
+    let bpp = canvas.bytes_per_pixel();
+    let stride = canvas.stride();
+    let is_bgr = canvas.is_bgr();
+    let stride_bytes = stride * bpp;
+    let glyph_w = glyph.width();
+
+    // Pre-compute foreground pixel bytes
+    let fg_bytes = style.foreground.to_pixel_bytes(bpp, is_bgr);
+
+    if let Some(bg) = style.background {
+        // With explicit background: pre-blend common intensity values
+        let bg_bytes = bg.to_pixel_bytes(bpp, is_bgr);
+        let buffer = canvas.buffer_mut();
+
+        for (gy, row) in glyph.raster().iter().enumerate() {
+            let row_offset = (y + gy) * stride_bytes + x * bpp;
+            if row_offset + glyph_w * bpp > buffer.len() {
+                break;
+            }
+
+            for (gx, &intensity) in row.iter().take(glyph_w).enumerate() {
+                let offset = row_offset + gx * bpp;
+                if intensity == 0 {
+                    buffer[offset..offset + bpp].copy_from_slice(&bg_bytes[..bpp]);
+                } else if intensity == 255 {
+                    buffer[offset..offset + bpp].copy_from_slice(&fg_bytes[..bpp]);
+                } else {
+                    let blended = blend_colors(style.foreground, bg, intensity);
+                    let px = blended.to_pixel_bytes(bpp, is_bgr);
+                    buffer[offset..offset + bpp].copy_from_slice(&px[..bpp]);
+                }
+            }
+        }
+    } else {
+        // No explicit background: read existing pixels, blend, write back.
+        // We read the background region first, then blend and write.
+        let buffer = canvas.buffer_mut();
+
+        for (gy, row) in glyph.raster().iter().enumerate() {
+            let row_offset = (y + gy) * stride_bytes + x * bpp;
+            if row_offset + glyph_w * bpp > buffer.len() {
+                break;
+            }
+
+            for (gx, &intensity) in row.iter().take(glyph_w).enumerate() {
+                if intensity == 0 {
+                    continue;
+                }
+                let offset = row_offset + gx * bpp;
+                if intensity == 255 {
+                    buffer[offset..offset + bpp].copy_from_slice(&fg_bytes[..bpp]);
+                } else {
+                    // Read existing pixel, blend
+                    let existing = Color::from_pixel_bytes(&buffer[offset..offset + bpp], bpp, is_bgr);
+                    let blended = blend_colors(style.foreground, existing, intensity);
+                    let px = blended.to_pixel_bytes(bpp, is_bgr);
+                    buffer[offset..offset + bpp].copy_from_slice(&px[..bpp]);
+                }
+            }
+        }
     }
 }
 
