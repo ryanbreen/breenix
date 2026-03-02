@@ -166,6 +166,20 @@ if [ "$PARALLELS" = true ]; then
     EXT2_HDD_DIR="$PARALLELS_DIR/breenix-ext2.hdd"
     EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
 
+    # Stop VM BEFORE building/creating disks — if the VM is still running,
+    # rm -rf on the HDD directory may fail to clean locked .hds files,
+    # causing stale disk images to be deployed.
+    VM_STATUS=$(prlctl status "$PARALLELS_VM" 2>/dev/null | awk '{print $NF}')
+    if [ "$VM_STATUS" = "running" ] || [ "$VM_STATUS" = "paused" ] || [ "$VM_STATUS" = "suspended" ] || [ "$VM_STATUS" = "stopping" ]; then
+        echo "Stopping VM before build..."
+        prlctl stop "$PARALLELS_VM" --kill 2>/dev/null || true
+        # Wait until fully stopped
+        while ! prlctl status "$PARALLELS_VM" 2>/dev/null | grep -q stopped; do
+            sleep 1
+        done
+        echo "VM stopped."
+    fi
+
     if [ "$NO_BUILD" = true ]; then
         echo "Skipping builds (--no-build)"
         if [ ! -d "$HDD_DIR" ]; then
@@ -174,6 +188,13 @@ if [ "$PARALLELS" = true ]; then
             exit 1
         fi
     else
+        # Clean build caches if --clean was specified
+        if [ "$CLEAN" = true ]; then
+            echo "[0/6] Cleaning build caches..."
+            cargo clean -p kernel 2>/dev/null || true
+            cargo clean -p parallels-loader 2>/dev/null || true
+        fi
+
         # Build the UEFI loader
         echo "[1/6] Building UEFI loader..."
         cargo build --release --target aarch64-unknown-uefi -p parallels-loader
@@ -292,13 +313,7 @@ if [ "$PARALLELS" = true ]; then
         prlctl set "$PARALLELS_VM" --cpus 4
     fi
 
-    # Stop VM if running
-    VM_STATUS=$(prlctl status "$PARALLELS_VM" 2>/dev/null | awk '{print $NF}')
-    if [ "$VM_STATUS" = "running" ] || [ "$VM_STATUS" = "paused" ] || [ "$VM_STATUS" = "suspended" ]; then
-        echo "Stopping VM..."
-        prlctl stop "$PARALLELS_VM" --kill 2>/dev/null || true
-        sleep 2
-    fi
+    # VM was already stopped before the build (see above)
 
     # Configure VM: EFI boot, remove all SATA devices (hdds + cdroms), attach our disks
     prlctl set "$PARALLELS_VM" --efi-boot on 2>/dev/null || true
