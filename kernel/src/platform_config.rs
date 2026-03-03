@@ -10,6 +10,10 @@
 #[cfg(target_arch = "aarch64")]
 use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
+/// Next GICv2m SPI index to allocate (offset from GICV2M_SPI_BASE).
+#[cfg(target_arch = "aarch64")]
+static GICV2M_NEXT_SPI: AtomicU64 = AtomicU64::new(0);
+
 // =============================================================================
 // Hardware address atomics with QEMU virt defaults
 // =============================================================================
@@ -68,14 +72,14 @@ static XHCI_HCRST_DONE: AtomicU64 = AtomicU64::new(0);
 
 // Memory layout defaults (QEMU virt, 512MB RAM at 0x40000000)
 // Kernel image:   0x4000_0000 - 0x4100_0000 (16 MB)
-// Per-CPU stacks: 0x4100_0000 - 0x4200_0000 (16 MB)
-// Frame alloc:    0x4200_0000 - 0x5000_0000 (224 MB)
+// BSS (incl FBs): 0x4100_0000 - 0x4300_0000 (32 MB, includes 7.5MB PCI_3D_FRAMEBUFFER)
+// Frame alloc:    0x4300_0000 - 0x5000_0000 (208 MB)
 // DMA (NC):       0x5000_0000 - 0x501F_FFFF (2 MB, Non-Cacheable for xHCI)
 // Heap:           0x5020_0000 - 0x51FF_FFFF (30 MB)
 // Kernel stacks:  0x5200_0000 - 0x5400_0000 (32 MB)
 
 #[cfg(target_arch = "aarch64")]
-static FRAME_ALLOC_START: AtomicU64 = AtomicU64::new(0x4200_0000);
+static FRAME_ALLOC_START: AtomicU64 = AtomicU64::new(0x4300_0000);
 
 #[cfg(target_arch = "aarch64")]
 static FRAME_ALLOC_END: AtomicU64 = AtomicU64::new(0x5000_0000);
@@ -218,6 +222,30 @@ pub fn probe_gicv2m(phys_base: u64) -> bool {
     GICV2M_SPI_BASE.store(spi_base as u64, Ordering::Relaxed);
     GICV2M_SPI_COUNT.store(spi_count as u64, Ordering::Relaxed);
     true
+}
+
+/// Allocate the next available GICv2m MSI SPI.
+///
+/// Returns the SPI number (GIC INTID) for use with `configure_msi()` and
+/// `gic::enable_spi()`. Returns 0 if GICv2m has not been probed or all
+/// SPIs have been allocated.
+///
+/// Thread-safe: uses atomic fetch_add so multiple drivers (xHCI, GPU, etc.)
+/// can allocate SPIs without collision.
+#[cfg(target_arch = "aarch64")]
+pub fn allocate_msi_spi() -> u32 {
+    let base = GICV2M_SPI_BASE.load(Ordering::Relaxed);
+    let count = GICV2M_SPI_COUNT.load(Ordering::Relaxed);
+    if base == 0 || count == 0 {
+        return 0;
+    }
+    let idx = GICV2M_NEXT_SPI.fetch_add(1, Ordering::Relaxed);
+    if idx >= count {
+        // Roll back — no SPI available
+        GICV2M_NEXT_SPI.fetch_sub(1, Ordering::Relaxed);
+        return 0;
+    }
+    (base + idx) as u32
 }
 
 /// PCI ECAM physical base address. 0 if no PCI.
@@ -480,8 +508,10 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
         }
 
         if best_size > 0 {
-            // Frame allocator starts after kernel + stacks (32 MB from RAM base)
-            let fa_start = best_base + 0x0200_0000; // +32 MB
+            // Frame allocator starts after kernel + BSS (48 MB from RAM base).
+            // BSS includes PCI_3D_FRAMEBUFFER (~7.5 MB) and kernel stacks, so
+            // the total image + BSS exceeds 32 MB. 48 MB gives margin for growth.
+            let fa_start = best_base + 0x0300_0000; // +48 MB
             // Frame allocator must end BEFORE the DMA NC region.
             // The .dma section starts at physical 0x5000_0000, so cap fa_end there.
             let fa_end = (best_base + best_size).min(0x5000_0000);

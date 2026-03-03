@@ -202,9 +202,10 @@ pub enum DeliverResult {
 fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
     match default_action(sig) {
         SignalDefaultAction::Terminate => {
-            log::info!(
-                "Process {} terminated by signal {} ({})",
+            crate::serial_println!(
+                "[signal] Process {} ({}) terminated by signal {} ({})",
                 process.id.as_u64(),
+                process.name,
                 sig,
                 signal_name(sig)
             );
@@ -235,9 +236,10 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
             }
         }
         SignalDefaultAction::CoreDump => {
-            log::info!(
-                "Process {} killed (core dumped) by signal {} ({})",
+            crate::serial_println!(
+                "[signal] Process {} ({}) killed (core dump) by signal {} ({})",
                 process.id.as_u64(),
+                process.name,
                 sig,
                 signal_name(sig)
             );

@@ -163,6 +163,10 @@ pub enum FbDrawOp {
     DrawLine = 5,
     /// Flush the framebuffer (for double-buffering)
     Flush = 6,
+    /// Submit a VirGL GPU-rendered frame (balls array + background color)
+    VirglSubmitFrame = 7,
+    /// Batch flush multiple dirty rects with one DSB barrier
+    FlushBatch = 8,
 }
 
 /// Draw command structure passed from userspace.
@@ -549,40 +553,58 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                     let row_bytes = mmap_info.width * mmap_info.bpp;
                     let x_byte_offset = mmap_info.x_offset * mmap_info.bpp;
 
-                    // For GOP mode with double buffer, copy user → BAR0 directly
-                    // (single copy) instead of user → shadow → BAR0 (double copy).
-                    // The NC memory mapping makes BAR0 writes fast via write-combining.
-                    // Also update the shadow buffer so terminal reads stay consistent.
+                    // When a dirty rect is specified, only copy the dirty columns
+                    // instead of the full mmap width. For per-ball flushes this
+                    // reduces the copy from ~3.4KB/row to ~336 bytes/row.
+                    let (user_col_offset, shadow_col_offset, copy_row_bytes) = if has_rect {
+                        let col_start = (cmd.p1.max(0) as usize).min(mmap_info.width);
+                        let col_end = (cmd.p1.max(0) as usize + cmd.p3 as usize).min(mmap_info.width);
+                        (
+                            col_start * mmap_info.bpp,
+                            x_byte_offset + col_start * mmap_info.bpp,
+                            (col_end - col_start) * mmap_info.bpp,
+                        )
+                    } else {
+                        (0, x_byte_offset, row_bytes)
+                    };
+
                     if crate::graphics::arm64_fb::is_gop_active() {
+                        // GOP synchronous path: copy mmap → BAR0 directly with
+                        // partial column copy. Each per-ball flush writes only
+                        // ~27KB to BAR0 instead of the full bounding box (~3.7MB).
+                        // Also update shadow buffer for consistency with terminal text.
+                        //
+                        // VirtIO DMA (PCI_FRAMEBUFFER → TRANSFER_TO_HOST_2D) was
+                        // benchmarked and is slower: 5-7 FPS per-ball, 4-8 FPS
+                        // full-pane, vs 12 FPS with direct BAR0 MMIO.
                         if let Some(gop_buf) = crate::graphics::arm64_fb::gop_framebuffer() {
                             for y in y_start..y_end {
-                                let user_row_ptr = (mmap_info.user_addr as usize) + y * mmap_info.user_stride;
-                                let target_row_offset = y * fb_stride_bytes + x_byte_offset;
-
-                                if target_row_offset + row_bytes <= gop_buf.len() {
+                                let user_row_ptr = (mmap_info.user_addr as usize) + y * mmap_info.user_stride + user_col_offset;
+                                let target_row_offset = y * fb_stride_bytes + shadow_col_offset;
+                                if target_row_offset + copy_row_bytes <= gop_buf.len() {
                                     unsafe {
                                         core::ptr::copy_nonoverlapping(
                                             user_row_ptr as *const u8,
                                             gop_buf[target_row_offset..].as_mut_ptr(),
-                                            row_bytes,
+                                            copy_row_bytes,
                                         );
                                     }
                                 }
                             }
-                            // Also update shadow buffer to keep it consistent
-                            if let Some(db) = fb_guard.double_buffer_mut() {
-                                let shadow = db.buffer_mut();
-                                for y in y_start..y_end {
-                                    let user_row_ptr = (mmap_info.user_addr as usize) + y * mmap_info.user_stride;
-                                    let target_row_offset = y * fb_stride_bytes + x_byte_offset;
-                                    if target_row_offset + row_bytes <= shadow.len() {
-                                        unsafe {
-                                            core::ptr::copy_nonoverlapping(
-                                                user_row_ptr as *const u8,
-                                                shadow[target_row_offset..].as_mut_ptr(),
-                                                row_bytes,
-                                            );
-                                        }
+                        }
+                        // Update shadow buffer so terminal reads stay consistent
+                        if let Some(db) = fb_guard.double_buffer_mut() {
+                            let shadow = db.buffer_mut();
+                            for y in y_start..y_end {
+                                let user_row_ptr = (mmap_info.user_addr as usize) + y * mmap_info.user_stride + user_col_offset;
+                                let target_row_offset = y * fb_stride_bytes + shadow_col_offset;
+                                if target_row_offset + copy_row_bytes <= shadow.len() {
+                                    unsafe {
+                                        core::ptr::copy_nonoverlapping(
+                                            user_row_ptr as *const u8,
+                                            shadow[target_row_offset..].as_mut_ptr(),
+                                            copy_row_bytes,
+                                        );
                                     }
                                 }
                             }
@@ -607,19 +629,156 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                     }
                 }
 
-                // Drop SHELL_FRAMEBUFFER lock BEFORE GPU flush to avoid holding
-                // both SHELL_FRAMEBUFFER + GPU_LOCK simultaneously. The pixel
-                // copy is done; the render thread can now access the framebuffer
-                // for terminal text while we submit GPU commands.
+                // Drop SHELL_FRAMEBUFFER lock before GPU flush
                 drop(fb_guard);
 
-                // Synchronous GPU flush — submit resource_flush (or transfer_to_host +
-                // resource_flush for non-GOP) directly in the syscall. This eliminates
-                // scheduling latency: bounce's frame is displayed immediately rather
-                // than waiting for the render thread (5ms+ due to timer tick).
+                // Synchronous GPU flush — for GOP this is a DSB barrier ensuring
+                // BAR0 writes are visible to the display controller. For VirtIO
+                // this submits transfer_to_host + resource_flush.
                 if let Some((fx, fy, fw, fh)) = flush_rect {
                     let _ = crate::graphics::arm64_fb::flush_dirty_rect(fx, fy, fw, fh);
                 }
+            }
+        }
+        7 => {
+            // VirglSubmitFrame: GPU-rendered frame via VirGL
+            // p1:p2 = pointer to VirglFrameDesc (low:high 32-bit halves)
+            // color = background color (packed 0x00RRGGBB)
+            #[cfg(target_arch = "aarch64")]
+            {
+                // Drop FB lock — we don't need the software framebuffer for GPU rendering
+                drop(fb_guard);
+
+                // Reconstruct 64-bit pointer from two i32 halves.
+                // Cast through u32 first to avoid sign extension.
+                let desc_ptr = (cmd.p1 as u32 as u64) | ((cmd.p2 as u32 as u64) << 32);
+                if desc_ptr == 0 || desc_ptr >= USER_SPACE_MAX {
+                    return SyscallResult::Err(super::ErrorCode::Fault as u64);
+                }
+
+                // Read ball count (first u32 at desc_ptr)
+                let ball_count = unsafe { core::ptr::read(desc_ptr as *const u32) } as usize;
+                if ball_count > 16 {
+                    return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+                }
+
+                // Read ball array starting at desc_ptr + 8 (skip count + padding)
+                let balls_ptr = (desc_ptr + 8) as *const crate::drivers::virtio::gpu_pci::VirglBall;
+                let balls_end = desc_ptr + 8 + (ball_count as u64) * core::mem::size_of::<crate::drivers::virtio::gpu_pci::VirglBall>() as u64;
+                if balls_end > USER_SPACE_MAX {
+                    return SyscallResult::Err(super::ErrorCode::Fault as u64);
+                }
+
+                let balls = unsafe { core::slice::from_raw_parts(balls_ptr, ball_count) };
+
+                let bg_r = ((cmd.color >> 16) & 0xFF) as f32 / 255.0;
+                let bg_g = ((cmd.color >> 8) & 0xFF) as f32 / 255.0;
+                let bg_b = (cmd.color & 0xFF) as f32 / 255.0;
+
+                match crate::drivers::virtio::gpu_pci::virgl_render_frame(balls, bg_r, bg_g, bg_b) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        crate::serial_println!("[virgl-syscall] render_frame FAILED: {}", e);
+                        return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+                    }
+                }
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                drop(fb_guard);
+                return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+            }
+        }
+        8 => {
+            // FlushBatch: batch flush multiple dirty rects with one DSB barrier.
+            // p1:p2 = 64-bit pointer to FlushRect array [(x, y, w, h); ...]
+            // p3 = count of rects (max 16)
+            // Copies each rect from mmap → BAR0, then ONE dsb sy.
+            // Saves 12+ syscall round-trips and DSB barriers per frame.
+            #[cfg(target_arch = "aarch64")]
+            {
+                FB_FLUSH_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+
+                let rects_ptr = (cmd.p1 as u32 as u64) | ((cmd.p2 as u32 as u64) << 32);
+                let count = (cmd.p3 as u32).min(16) as usize;
+
+                // Drop FB lock immediately — batch flush only needs mmap_info + BAR0
+                drop(fb_guard);
+
+                if count == 0 {
+                    return SyscallResult::Ok(0);
+                }
+
+                if rects_ptr == 0 || rects_ptr >= USER_SPACE_MAX {
+                    return SyscallResult::Err(super::ErrorCode::Fault as u64);
+                }
+                let rects_end = rects_ptr.saturating_add((count as u64) * 16);
+                if rects_end > USER_SPACE_MAX {
+                    return SyscallResult::Err(super::ErrorCode::Fault as u64);
+                }
+
+                #[repr(C)]
+                #[derive(Clone, Copy)]
+                struct FlushRect { x: i32, y: i32, w: i32, h: i32 }
+
+                let rects = unsafe {
+                    core::slice::from_raw_parts(rects_ptr as *const FlushRect, count)
+                };
+
+                let fb_mmap_info = fb_mmap_info_pre;
+
+                if let Some(mmap_info) = fb_mmap_info {
+                    if crate::graphics::arm64_fb::is_gop_active() {
+                        // Use lock-free FbInfoCache for stride (no FB lock needed)
+                        let fb_stride_bytes = crate::graphics::arm64_fb::FB_INFO_CACHE.get()
+                            .map(|c| c.stride * c.bytes_per_pixel)
+                            .unwrap_or(0);
+
+                        if fb_stride_bytes > 0 {
+                            if let Some(gop_buf) = crate::graphics::arm64_fb::gop_framebuffer() {
+                                let x_byte_offset = mmap_info.x_offset * mmap_info.bpp;
+
+                                for rect in rects {
+                                    if rect.w <= 0 || rect.h <= 0 { continue; }
+
+                                    let col_start = (rect.x.max(0) as usize).min(mmap_info.width);
+                                    let col_end = (rect.x.max(0) as usize + rect.w as usize).min(mmap_info.width);
+                                    let y_start = (rect.y.max(0) as usize).min(mmap_info.height);
+                                    let y_end = (rect.y.max(0) as usize + rect.h as usize).min(mmap_info.height);
+
+                                    let user_col_byte = col_start * mmap_info.bpp;
+                                    let target_col_byte = x_byte_offset + col_start * mmap_info.bpp;
+                                    let copy_row_bytes = (col_end - col_start) * mmap_info.bpp;
+
+                                    if copy_row_bytes == 0 { continue; }
+
+                                    for y in y_start..y_end {
+                                        let user_row_ptr = (mmap_info.user_addr as usize)
+                                            + y * mmap_info.user_stride + user_col_byte;
+                                        let target_row_offset = y * fb_stride_bytes + target_col_byte;
+                                        if target_row_offset + copy_row_bytes <= gop_buf.len() {
+                                            unsafe {
+                                                core::ptr::copy_nonoverlapping(
+                                                    user_row_ptr as *const u8,
+                                                    gop_buf[target_row_offset..].as_mut_ptr(),
+                                                    copy_row_bytes,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // ONE DSB for all BAR0 writes
+                            unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+                        }
+                    }
+                }
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                drop(fb_guard);
+                return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
             }
         }
         _ => {

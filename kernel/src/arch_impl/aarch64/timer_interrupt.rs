@@ -168,11 +168,6 @@ pub extern "C" fn timer_interrupt_handler() {
     // Increment timer interrupt counter (used for debugging when needed)
     let _count = TIMER_INTERRUPT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
 
-    // Debug breadcrumb: print '.' every 200 ticks (~1 second) to verify timer is alive
-    if cpu_id == 0 && _count % 200 == 0 {
-        raw_serial_char(b'.');
-    }
-
     // CPU 0 only: poll input devices (single-device, not safe from multiple CPUs)
     if cpu_id == 0 {
         poll_keyboard_to_stdin();

@@ -132,6 +132,12 @@ pub fn flush_dirty_rect(x: u32, y: u32, w: u32, h: u32) -> Result<(), &'static s
         // CPU's write buffer is drained so stores are visible to the display
         // controller. Parallels scans BAR0 at its own refresh rate — no VirtIO
         // RESOURCE_FLUSH needed (it's synchronous and would add 10-50ms).
+        //
+        // VirtIO DMA (TRANSFER_TO_HOST_2D + RESOURCE_FLUSH) was benchmarked
+        // and is slower than direct BAR0 writes on Parallels:
+        //   - Per-ball VirtIO DMA: 5-7 FPS (28 VirtIO round-trips/frame)
+        //   - Full-pane VirtIO DMA: 4-8 FPS (2 round-trips but ~7.5MB DMA)
+        //   - Direct BAR0 MMIO:    12 FPS (14 small per-ball copies, ~340KB total)
         unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
         Ok(())
     } else if crate::drivers::virtio::gpu_pci::is_initialized() {
@@ -862,6 +868,19 @@ pub fn upgrade_to_double_buffer() {
         let mut guard = fb.lock();
         guard.upgrade_to_double_buffer();
     }
+}
+
+/// Check if the double buffer (shadow buffer in cached RAM) is initialized.
+///
+/// Used by the syscall flush path to decide whether to use the async path
+/// (copy mmap → shadow, wake render thread) or fall back to direct BAR0 write.
+pub fn has_double_buffer() -> bool {
+    if let Some(fb) = SHELL_FRAMEBUFFER.get() {
+        if let Some(guard) = fb.try_lock() {
+            return guard.double_buffer.is_some();
+        }
+    }
+    false
 }
 
 /// Get the framebuffer dimensions
