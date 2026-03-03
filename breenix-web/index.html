@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Breenix Terminal</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0a0a1a;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            font-family: system-ui, sans-serif;
+            color: #ccc;
+        }
+        h1 {
+            margin-bottom: 12px;
+            font-size: 1.2em;
+            color: #88aaff;
+        }
+        #display {
+            border: 2px solid #334;
+            cursor: text;
+            image-rendering: pixelated;
+        }
+        .status {
+            margin-top: 8px;
+            font-size: 0.85em;
+            color: #667;
+        }
+    </style>
+</head>
+<body>
+    <h1>Breenix OS — WebAssembly Terminal</h1>
+    <canvas id="display"></canvas>
+    <div class="status" id="status">Loading...</div>
+    <script type="module" src="www/index.js"></script>
+</body>
+</html>

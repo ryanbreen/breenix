@@ -33,6 +33,7 @@ test = false
 [workspace]
 members = [
     "kernel",
+    "libs/breenix-core",
     "parallels-loader",
     "xtask"
 ]

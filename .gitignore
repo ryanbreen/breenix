@@ -42,6 +42,8 @@ libs/*
 !libs/libbui/**
 !libs/libcollab/
 !libs/libcollab/**
+!libs/breenix-core/
+!libs/breenix-core/**
 
 # Log files
 *.log

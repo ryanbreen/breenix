@@ -1,0 +1,14 @@
+[package]
+name = "breenix-core"
+version = "0.1.0"
+edition = "2021"
+description = "Portable core library for the Breenix OS — graphics, terminal, TTY, VFS, IPC"
+
+[dependencies]
+noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = [
+    "size_16",
+    "regular",
+    "unicode-basic-latin",
+    "unicode-specials",
+] }
+spin = "0.9"
