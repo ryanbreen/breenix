@@ -4122,7 +4122,7 @@ fn setup_xhci_msi(pci_dev: &crate::drivers::pci::Device) -> u32 {
     // On Parallels ARM64, GICv2m is at 0x02250000 (discovered from MADT).
     const PARALLELS_GICV2M_BASE: u64 = 0x0225_0000;
     let gicv2m_base = crate::platform_config::gicv2m_base_phys();
-    let (base, spi_base, spi_count) = if gicv2m_base != 0 {
+    let (base, _spi_base, spi_count) = if gicv2m_base != 0 {
         // Already probed
         (
             gicv2m_base,
@@ -4146,8 +4146,12 @@ fn setup_xhci_msi(pci_dev: &crate::drivers::pci::Device) -> u32 {
         return 0;
     }
 
-    // Step 3: Allocate first available SPI for XHCI
-    let spi = spi_base;
+    // Step 3: Allocate next available SPI for XHCI
+    let spi = crate::platform_config::allocate_msi_spi();
+    if spi == 0 {
+        xhci_trace_note(0, "err:alloc_spi");
+        return 0;
+    }
     let intid = spi; // GIC INTID = SPI number for GICv2m
 
     // Step 4: Program PCI MSI registers

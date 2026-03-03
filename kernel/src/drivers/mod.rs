@@ -97,7 +97,14 @@ pub fn init() -> usize {
         serial_println!("[drivers] Found {} VirtIO PCI devices", virtio_devices.len());
 
         match virtio::gpu_pci::init() {
-            Ok(()) => serial_println!("[drivers] VirtIO GPU (PCI) initialized"),
+            Ok(()) => {
+                serial_println!("[drivers] VirtIO GPU (PCI) initialized");
+                // Attempt to initialize VirGL 3D acceleration if the device supports it
+                match virtio::gpu_pci::virgl_init() {
+                    Ok(()) => serial_println!("[drivers] VirGL 3D acceleration active"),
+                    Err(e) => serial_println!("[drivers] VirGL init skipped: {}", e),
+                }
+            }
             Err(e) => serial_println!("[drivers] VirtIO GPU (PCI) init failed: {}", e),
         }
 

@@ -184,6 +184,9 @@ pub struct VirtioPciDevice {
     device_features: u64,
     /// VirtIO device type ID
     virtio_device_id: u32,
+    /// Cached queue notify virtual addresses (avoids 2 MMIO reads per notify).
+    /// Populated by `cache_queue_notify_addr()` after queue setup.
+    cached_notify_addrs: [u64; 4],
 }
 
 impl VirtioPciDevice {
@@ -294,6 +297,7 @@ impl VirtioPciDevice {
             device_cfg,
             device_features: 0,
             virtio_device_id,
+            cached_notify_addrs: [0; 4],
         })
     }
 
@@ -478,6 +482,35 @@ impl VirtioPciDevice {
         }
     }
 
+    /// Cache the notify address for a queue so `notify_queue_fast()` avoids
+    /// the two MMIO reads (COMMON_Q_SELECT + COMMON_Q_NOFF) on every notify.
+    ///
+    /// Must be called after `set_queue_ready(true)` for the given queue.
+    pub fn cache_queue_notify_addr(&mut self, queue: u32) {
+        if queue as usize >= self.cached_notify_addrs.len() {
+            return;
+        }
+        self.select_queue(queue);
+        let queue_notify_off = self.common.read_u16(COMMON_Q_NOFF) as u32;
+        let offset = (queue_notify_off * self.notify_off_multiplier) as u64;
+        self.cached_notify_addrs[queue as usize] = self.notify.virt_base + offset;
+    }
+
+    /// Notify device using the cached notify address — single MMIO write.
+    ///
+    /// Falls back to `notify_queue()` if the address hasn't been cached.
+    #[inline(always)]
+    pub fn notify_queue_fast(&self, queue: u32) {
+        let idx = queue as usize;
+        if idx < self.cached_notify_addrs.len() && self.cached_notify_addrs[idx] != 0 {
+            unsafe {
+                core::ptr::write_volatile(self.cached_notify_addrs[idx] as *mut u16, queue as u16);
+            }
+        } else {
+            self.notify_queue(queue);
+        }
+    }
+
     // =========================================================================
     // Interrupt Handling
     // =========================================================================
@@ -524,6 +557,14 @@ impl VirtioPciDevice {
             return 0;
         }
         self.device_cfg.read_u32(offset)
+    }
+
+    /// Write a u32 to device-specific configuration.
+    pub fn write_config_u32(&self, offset: usize, value: u32) {
+        if !self.device_cfg.is_valid() {
+            return;
+        }
+        self.device_cfg.write_u32(offset, value);
     }
 
     /// Read a u64 from device-specific configuration (two u32 reads).

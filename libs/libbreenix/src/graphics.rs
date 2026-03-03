@@ -103,6 +103,29 @@ pub mod draw_op {
     pub const DRAW_LINE: u32 = 5;
     /// Flush the framebuffer (for double-buffering)
     pub const FLUSH: u32 = 6;
+    /// Submit a VirGL GPU-rendered frame
+    pub const VIRGL_SUBMIT_FRAME: u32 = 7;
+    /// Batch flush multiple dirty rects with one DSB barrier
+    pub const FLUSH_BATCH: u32 = 8;
+}
+
+/// Ball descriptor for VirGL GPU rendering.
+/// Must match kernel's VirglBall in drivers/virtio/gpu_pci.rs.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct VirglBall {
+    pub x: f32,
+    pub y: f32,
+    pub radius: f32,
+    pub color: [f32; 4],
+}
+
+/// Frame descriptor passed to the VirglSubmitFrame syscall.
+#[repr(C)]
+pub struct VirglFrameDesc {
+    pub ball_count: u32,
+    pub _pad: u32,
+    pub balls: [VirglBall; 16],
 }
 
 /// Pack RGB color into u32
@@ -234,6 +257,62 @@ pub fn fb_flush_rect(x: i32, y: i32, w: i32, h: i32) -> Result<(), Error> {
         p3: w,
         p4: h,
         color: 0,
+    };
+    fbdraw(&cmd)
+}
+
+/// A dirty rectangle for batch flushing.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FlushRect {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+/// Batch flush multiple dirty rectangles with a single syscall and DSB barrier.
+///
+/// Instead of calling `fb_flush_rect()` N times (N syscalls, N DSB barriers),
+/// this sends all dirty rects at once: 1 syscall, 1 DSB. Each rect is copied
+/// from the mmap buffer to BAR0 in sequence.
+pub fn fb_flush_rects(rects: &[FlushRect]) -> Result<(), Error> {
+    if rects.is_empty() {
+        return Ok(());
+    }
+    let rects_ptr = rects.as_ptr() as u64;
+    let cmd = FbDrawCmd {
+        op: draw_op::FLUSH_BATCH,
+        p1: rects_ptr as i32,
+        p2: (rects_ptr >> 32) as i32,
+        p3: rects.len() as i32,
+        p4: 0,
+        color: 0,
+    };
+    fbdraw(&cmd)
+}
+
+/// Submit a VirGL GPU-rendered frame.
+///
+/// Sends ball positions/colors to the kernel, which renders them via the host
+/// GPU and DMA-copies the result to display memory. Zero guest CPU pixel writes.
+pub fn virgl_submit_frame(balls: &[VirglBall], bg_color: u32) -> Result<(), Error> {
+    let mut desc = VirglFrameDesc {
+        ball_count: balls.len().min(16) as u32,
+        _pad: 0,
+        balls: [VirglBall::default(); 16],
+    };
+    for (i, ball) in balls.iter().take(16).enumerate() {
+        desc.balls[i] = *ball;
+    }
+    let desc_ptr = &desc as *const VirglFrameDesc as u64;
+    let cmd = FbDrawCmd {
+        op: draw_op::VIRGL_SUBMIT_FRAME,
+        p1: desc_ptr as i32,               // low 32 bits
+        p2: (desc_ptr >> 32) as i32,        // high 32 bits
+        p3: 0,
+        p4: 0,
+        color: bg_color,
     };
     fbdraw(&cmd)
 }
