@@ -182,8 +182,9 @@ fn main() {
 
     let height = info.height as i32;
 
-    // VirGL uses full viewport (GPU renders everything), mmap uses left pane only
-    let virgl_width = info.width as i32;
+    // Both VirGL and mmap use left pane width for ball physics.
+    // VirGL composites the terminal into the right half of the 3D resource.
+    let virgl_width = info.left_pane_width() as i32;
     let mmap_width = info.left_pane_width() as i32;
 
     // 12 balls, fast velocities. Sub-stepping catches edge collisions.

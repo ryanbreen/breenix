@@ -629,6 +629,14 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                     }
                 }
 
+                // Notify VirGL compositing that the terminal pane changed.
+                // x_offset > 0 means this is a right-pane (bwm/terminal) flush.
+                if let Some(mmap_info) = fb_mmap_info {
+                    if mmap_info.x_offset > 0 {
+                        crate::graphics::arm64_fb::mark_terminal_dirty();
+                    }
+                }
+
                 // Drop SHELL_FRAMEBUFFER lock before GPU flush
                 drop(fb_guard);
 
@@ -771,6 +779,11 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
 
                             // ONE DSB for all BAR0 writes
                             unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+
+                            // Notify VirGL compositing that the terminal pane changed
+                            if mmap_info.x_offset > 0 {
+                                crate::graphics::arm64_fb::mark_terminal_dirty();
+                            }
                         }
                     }
                 }

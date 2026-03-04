@@ -59,6 +59,8 @@ pub const VIRTIO_GPU_DEVICE_ID_MODERN: u16 = 0x1050;
 
 /// PCI Capability ID for MSI
 pub const PCI_CAP_ID_MSI: u8 = 0x05;
+/// PCI Capability ID for MSI-X
+pub const PCI_CAP_ID_MSIX: u8 = 0x11;
 
 /// Intel vendor ID (for reference - common in QEMU)
 pub const INTEL_VENDOR_ID: u16 = 0x8086;
@@ -343,6 +345,75 @@ impl Device {
         // Enable MSI (bit 0 of Message Control), single message (bits 6:4 = 000)
         let new_ctrl = (msg_ctrl & !0x0070) | 0x0001; // Clear MME, set Enable
         pci_write_config_word(self.bus, self.device, self.function, cap_offset + 2, new_ctrl);
+    }
+
+    /// Find the MSI-X capability in the PCI capability list.
+    ///
+    /// Returns the config space offset of the MSI-X capability, or None if not found.
+    pub fn find_msix_capability(&self) -> Option<u8> {
+        self.find_capability(PCI_CAP_ID_MSIX)
+    }
+
+    /// Read MSI-X table size from the capability.
+    /// Returns the number of MSI-X vectors (Table Size + 1).
+    pub fn msix_table_size(&self, cap_offset: u8) -> u16 {
+        let msg_ctrl = pci_read_config_word(self.bus, self.device, self.function, cap_offset + 2);
+        (msg_ctrl & 0x07FF) + 1 // Bits 10:0 = Table Size (N-1)
+    }
+
+    /// Read MSI-X Table BAR index and offset.
+    /// Returns (bar_index, offset_within_bar).
+    pub fn msix_table_location(&self, cap_offset: u8) -> (u8, u32) {
+        let table_offset_bir = pci_read_config_dword(self.bus, self.device, self.function, cap_offset + 4);
+        let bar_index = (table_offset_bir & 0x07) as u8;
+        let offset = table_offset_bir & !0x07;
+        (bar_index, offset)
+    }
+
+    /// Enable MSI-X (set Enable bit in Message Control, clear Function Mask).
+    pub fn enable_msix(&self, cap_offset: u8) {
+        let msg_ctrl = pci_read_config_word(self.bus, self.device, self.function, cap_offset + 2);
+        // Bit 15: MSI-X Enable, Bit 14: Function Mask (clear to unmask)
+        let new_ctrl = (msg_ctrl | (1 << 15)) & !(1 << 14);
+        pci_write_config_word(self.bus, self.device, self.function, cap_offset + 2, new_ctrl);
+    }
+
+    /// Disable MSI-X (clear Enable bit in Message Control).
+    pub fn disable_msix(&self, cap_offset: u8) {
+        let msg_ctrl = pci_read_config_word(self.bus, self.device, self.function, cap_offset + 2);
+        let new_ctrl = msg_ctrl & !(1 << 15);
+        pci_write_config_word(self.bus, self.device, self.function, cap_offset + 2, new_ctrl);
+    }
+
+    /// Configure a single MSI-X table entry.
+    ///
+    /// `cap_offset`: config space offset of the MSI-X capability
+    /// `vector_index`: which MSI-X vector to program (0-based)
+    /// `address`: MSI target address (e.g. GICv2m doorbell)
+    /// `data`: MSI data value (e.g. SPI number)
+    ///
+    /// The MSI-X table is memory-mapped in the BAR indicated by the capability.
+    /// Each entry is 16 bytes: addr_lo(4) + addr_hi(4) + data(4) + vector_ctrl(4).
+    pub fn configure_msix_entry(&self, cap_offset: u8, vector_index: u16, address: u64, data: u32) {
+        let (bar_index, table_offset) = self.msix_table_location(cap_offset);
+        if bar_index as usize >= 6 || !self.bars[bar_index as usize].is_valid() {
+            return;
+        }
+        let bar_base = self.bars[bar_index as usize].address;
+        const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
+        let virt_base = if bar_base >= HHDM_BASE { bar_base } else { HHDM_BASE + bar_base };
+        let entry_addr = virt_base + table_offset as u64 + (vector_index as u64 * 16);
+
+        unsafe {
+            // Address low (offset 0)
+            core::ptr::write_volatile(entry_addr as *mut u32, address as u32);
+            // Address high (offset 4)
+            core::ptr::write_volatile((entry_addr + 4) as *mut u32, (address >> 32) as u32);
+            // Data (offset 8)
+            core::ptr::write_volatile((entry_addr + 8) as *mut u32, data);
+            // Vector Control (offset 12): 0 = unmasked
+            core::ptr::write_volatile((entry_addr + 12) as *mut u32, 0);
+        }
     }
 
     /// Find any PCI capability by ID. Returns the config space offset, or None.

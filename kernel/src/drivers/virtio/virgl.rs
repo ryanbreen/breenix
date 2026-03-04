@@ -110,6 +110,38 @@ pub mod pipe {
     // Shader types
     pub const SHADER_VERTEX: u32 = 0;
     pub const SHADER_FRAGMENT: u32 = 1;
+
+    // Texture wrapping modes
+    pub const TEX_WRAP_REPEAT: u32 = 0;
+    pub const TEX_WRAP_CLAMP: u32 = 1;
+    pub const TEX_WRAP_CLAMP_TO_EDGE: u32 = 2;
+    pub const TEX_WRAP_CLAMP_TO_BORDER: u32 = 3;
+
+    // Texture filtering modes
+    pub const TEX_FILTER_NEAREST: u32 = 0;
+    pub const TEX_FILTER_LINEAR: u32 = 1;
+
+    // Mipmap filtering modes
+    pub const TEX_MIPFILTER_NEAREST: u32 = 0;
+    pub const TEX_MIPFILTER_LINEAR: u32 = 1;
+    pub const TEX_MIPFILTER_NONE: u32 = 2;
+}
+
+// =============================================================================
+// TGSI Texture Swizzle Constants
+// =============================================================================
+
+#[allow(dead_code)]
+pub mod swizzle {
+    pub const RED: u32 = 0;
+    pub const GREEN: u32 = 1;
+    pub const BLUE: u32 = 2;
+    pub const ALPHA: u32 = 3;
+    pub const ZERO: u32 = 4;
+    pub const ONE: u32 = 5;
+
+    /// Identity swizzle: RGBA → RGBA (packed as r[0:2] | g[3:5] | b[6:8] | a[9:11])
+    pub const IDENTITY: u32 = RED | (GREEN << 3) | (BLUE << 6) | (ALPHA << 9);
 }
 
 // =============================================================================
@@ -201,7 +233,8 @@ impl CommandBuffer {
         self.push(0); // S0: no special features
         self.push(0); // S1: logicop_func = 0
         // S2[0]: colormask=0xF (write RGBA), blend disabled
-        self.push(0xF << 27);
+        // VIRGL_BLEND_STATE_RT_S0_COLORMASK_SHIFT = 28 in virglrenderer
+        self.push(0xF << 28);
         // S2[1..7]: unused render targets
         for _ in 0..7 {
             self.push(0);
@@ -222,9 +255,15 @@ impl CommandBuffer {
     pub fn create_rasterizer_default(&mut self, handle: u32) {
         self.push(Self::cmd0(ccmd::CREATE_OBJECT, obj::RASTERIZER, 9));
         self.push(handle);
-        // S0: depth_clip(1<<1) | fill_front=FILL(0<<10) | fill_back=FILL(0<<12) | half_pixel_center(1<<29)
-        // PIPE_POLYGON_MODE: FILL=0, LINE=1, POINT=2. Fill fields are 0 so omitted.
-        self.push((1 << 1) | (1 << 29));
+        // S0 bit layout per virglrenderer vrend_decode.c:
+        //   bit 0:  flatshade
+        //   bit 1:  depth_clip_near
+        //   bit 2:  depth_clip_far (clip_halfz in older versions)
+        //   bit 3:  rasterizer_discard  (NOT scissor!)
+        //   bit 14: scissor
+        //   bit 29: half_pixel_center
+        // Fill modes: bits 10-11 = fill_front, bits 12-13 = fill_back (FILL=0)
+        self.push((1 << 1) | (1 << 14) | (1 << 29));
         self.push(0x3F800000u32); // point_size = 1.0f
         self.push(0); // sprite_coord_enable
         self.push(0); // S3
@@ -250,8 +289,10 @@ impl CommandBuffer {
         self.push(Self::cmd0(ccmd::CREATE_OBJECT, obj::SHADER, payload_len as u16));
         self.push(handle);
         self.push(shader_type);
-        self.push(1 << 31); // offset = 0, bit 31 = 1 (last chunk — triggers compilation)
-        self.push(text_len as u32); // byte length of TGSI text including null
+        // OFFSET field: shader byte length with bit 31 CLEAR = first/only chunk.
+        // (bit 31 SET means "continuation" of a previously-started shader.)
+        self.push(text_len as u32);
+        self.push(0); // NUM_TOKENS (0 for text-based TGSI)
         self.push(0); // num_so_outputs = 0
 
         // Pack TGSI text bytes into DWORDs (little-endian)
@@ -298,6 +339,19 @@ impl CommandBuffer {
         self.push(f32_bits(width / 2.0));      // translate_x
         self.push(f32_bits(height / 2.0));     // translate_y
         self.push(f32_bits(0.5));              // translate_z
+    }
+
+    /// Set scissor state for one viewport slot.
+    ///
+    /// VirGL protocol packs each pair into one u32:
+    ///   `[start_slot, (min_x | min_y<<16), (max_x | max_y<<16)]`, length=3.
+    /// Restricts rendering to the rectangle [min_x, min_y) .. [max_x, max_y).
+    /// Requires the scissor bit in the rasterizer state to be enabled.
+    pub fn set_scissor_state(&mut self, min_x: u32, min_y: u32, max_x: u32, max_y: u32) {
+        self.push(Self::cmd0(ccmd::SET_SCISSOR_STATE, 0, 3));
+        self.push(0); // start_slot = 0
+        self.push((min_x & 0xFFFF) | ((min_y & 0xFFFF) << 16));
+        self.push((max_x & 0xFFFF) | ((max_y & 0xFFFF) << 16));
     }
 
     /// Clear the framebuffer.
@@ -374,18 +428,111 @@ impl CommandBuffer {
         max_index: u32,
     ) {
         self.push(Self::cmd0(ccmd::DRAW_VBO, 0, 12));
-        self.push(start);
-        self.push(count);
-        self.push(mode);
-        self.push(0); // indexed = false
-        self.push(1); // instance_count
-        self.push(0); // start_instance
-        self.push(0); // index_bias
-        self.push(0); // min_index
-        self.push(max_index);
-        self.push(0); // primitive_restart = disabled
-        self.push(0); // restart_index
-        self.push(0); // count_from_so
+        self.push(start);           // offset 1: START
+        self.push(count);           // offset 2: COUNT
+        self.push(mode);            // offset 3: MODE
+        self.push(0);               // offset 4: INDEXED = false
+        self.push(1);               // offset 5: INSTANCE_COUNT
+        self.push(0);               // offset 6: INDEX_BIAS
+        self.push(0);               // offset 7: START_INSTANCE
+        self.push(0);               // offset 8: PRIMITIVE_RESTART = disabled
+        self.push(0);               // offset 9: RESTART_INDEX
+        self.push(0);               // offset 10: MIN_INDEX
+        self.push(max_index);       // offset 11: MAX_INDEX
+        self.push(0);               // offset 12: COUNT_FROM_SO
+    }
+
+    // =========================================================================
+    // Texture / Sampler Commands
+    // =========================================================================
+
+    /// Create a sampler view (binds a texture resource for shader sampling).
+    ///
+    /// VirGL protocol: CREATE_OBJECT(SAMPLER_VIEW) with 6 payload DWORDs:
+    /// `[handle, res_handle, format, first_level, last_level, swizzle_packed]`
+    ///
+    /// `swizzle_packed` encodes channel mapping: `r | (g<<3) | (b<<6) | (a<<9)`
+    /// using constants from `swizzle::*`. Use `swizzle::IDENTITY` for default.
+    pub fn create_sampler_view(
+        &mut self,
+        handle: u32,
+        res_handle: u32,
+        format: u32,
+        first_level: u32,
+        last_level: u32,
+        swizzle_packed: u32,
+    ) {
+        self.push(Self::cmd0(ccmd::CREATE_OBJECT, obj::SAMPLER_VIEW, 6));
+        self.push(handle);
+        self.push(res_handle);
+        self.push(format);
+        self.push(first_level);
+        self.push(last_level);
+        self.push(swizzle_packed);
+    }
+
+    /// Create a sampler state (texture filtering and wrapping).
+    ///
+    /// VirGL protocol: CREATE_OBJECT(SAMPLER_STATE) with 9 payload DWORDs:
+    /// `[handle, S0, lod_bias, min_lod, max_lod, border_r, border_g, border_b, border_a]`
+    ///
+    /// S0 bit packing: `wrap_s[0:2] | wrap_t[3:5] | wrap_r[6:8] |
+    ///                   min_img[9:10] | min_mip[11:12] | mag_img[13:14]`
+    pub fn create_sampler_state(
+        &mut self,
+        handle: u32,
+        wrap_s: u32,
+        wrap_t: u32,
+        wrap_r: u32,
+        min_img_filter: u32,
+        min_mip_filter: u32,
+        mag_img_filter: u32,
+    ) {
+        let s0 = (wrap_s & 7)
+            | ((wrap_t & 7) << 3)
+            | ((wrap_r & 7) << 6)
+            | ((min_img_filter & 3) << 9)
+            | ((min_mip_filter & 3) << 11)
+            | ((mag_img_filter & 3) << 13);
+
+        self.push(Self::cmd0(ccmd::CREATE_OBJECT, obj::SAMPLER_STATE, 9));
+        self.push(handle);
+        self.push(s0);
+        self.push(0); // lod_bias = 0.0
+        self.push(0); // min_lod = 0.0
+        self.push(0); // max_lod = 0.0
+        self.push(0); // border_color[0] = 0.0
+        self.push(0); // border_color[1] = 0.0
+        self.push(0); // border_color[2] = 0.0
+        self.push(0); // border_color[3] = 0.0
+    }
+
+    /// Bind sampler views to a shader stage.
+    ///
+    /// VirGL protocol: SET_SAMPLER_VIEWS with DWORDs:
+    /// `[shader_type, start_slot, view_handle0, view_handle1, ...]`
+    pub fn set_sampler_views(&mut self, shader_type: u32, start_slot: u32, view_handles: &[u32]) {
+        let len = 2 + view_handles.len();
+        self.push(Self::cmd0(ccmd::SET_SAMPLER_VIEWS, 0, len as u16));
+        self.push(shader_type);
+        self.push(start_slot);
+        for &h in view_handles {
+            self.push(h);
+        }
+    }
+
+    /// Bind sampler states to a shader stage.
+    ///
+    /// VirGL protocol: BIND_SAMPLER_STATES with DWORDs:
+    /// `[shader_type, start_slot, state_handle0, state_handle1, ...]`
+    pub fn bind_sampler_states(&mut self, shader_type: u32, start_slot: u32, state_handles: &[u32]) {
+        let len = 2 + state_handles.len();
+        self.push(Self::cmd0(ccmd::BIND_SAMPLER_STATES, 0, len as u16));
+        self.push(shader_type);
+        self.push(start_slot);
+        for &h in state_handles {
+            self.push(h);
+        }
     }
 }
 
