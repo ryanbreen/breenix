@@ -166,19 +166,15 @@ if [ "$PARALLELS" = true ]; then
     EXT2_HDD_DIR="$PARALLELS_DIR/breenix-ext2.hdd"
     EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
 
-    # Stop VM BEFORE building/creating disks — if the VM is still running,
-    # rm -rf on the HDD directory may fail to clean locked .hds files,
-    # causing stale disk images to be deployed.
-    VM_STATUS=$(prlctl status "$PARALLELS_VM" 2>/dev/null | awk '{print $NF}')
-    if [ "$VM_STATUS" = "running" ] || [ "$VM_STATUS" = "paused" ] || [ "$VM_STATUS" = "suspended" ] || [ "$VM_STATUS" = "stopping" ]; then
-        echo "Stopping VM before build..."
-        prlctl stop "$PARALLELS_VM" --kill 2>/dev/null || true
-        # Wait until fully stopped
-        while ! prlctl status "$PARALLELS_VM" 2>/dev/null | grep -q stopped; do
-            sleep 1
-        done
-        echo "VM stopped."
-    fi
+    # Stop any running breenix VMs before build — if a VM is still running,
+    # rm -rf on the HDD directory may fail to clean locked .hds files.
+    for OLD_VM in $(prlctl list --all 2>/dev/null | grep 'breenix-' | awk '{print $NF}'); do
+        VM_STATUS=$(prlctl status "$OLD_VM" 2>/dev/null | awk '{print $NF}')
+        if [ "$VM_STATUS" = "running" ] || [ "$VM_STATUS" = "paused" ] || [ "$VM_STATUS" = "suspended" ]; then
+            echo "Stopping $OLD_VM before build..."
+            prlctl stop "$OLD_VM" --kill 2>/dev/null || true
+        fi
+    done
 
     if [ "$NO_BUILD" = true ]; then
         echo "Skipping builds (--no-build)"
@@ -231,7 +227,10 @@ if [ "$PARALLELS" = true ]; then
 
         echo ""
         echo "[4/6] Creating ext2 data disk image..."
-        "$BREENIX_ROOT/scripts/create_ext2_disk.sh" --arch aarch64
+        if ! "$BREENIX_ROOT/scripts/create_ext2_disk.sh" --arch aarch64; then
+            echo "  WARNING: ext2 disk creation failed (Docker may not be running)"
+            echo "  Continuing without ext2 disk"
+        fi
 
         echo ""
         echo "[5/6] Creating FAT32 EFI disk image..."
@@ -303,24 +302,42 @@ if [ "$PARALLELS" = true ]; then
     fi
 
     echo ""
-    echo "--- Configuring Parallels VM '$PARALLELS_VM' ---"
+    echo "--- Configuring Parallels VM ---"
 
-    # Create VM if it doesn't exist
-    if ! prlctl list --all 2>/dev/null | grep -q "$PARALLELS_VM"; then
-        echo "Creating VM '$PARALLELS_VM'..."
-        prlctl create "$PARALLELS_VM" --ostype linux --distribution linux --no-hdd
-        prlctl set "$PARALLELS_VM" --memsize 2048
-        prlctl set "$PARALLELS_VM" --cpus 4
-    fi
+    # Use a unique VM name each time to avoid Parallels stale state issues.
+    # Parallels can get stuck in "stopping"/"suspended" states that require
+    # sudo service restarts. Using unique names sidesteps this entirely —
+    # old VMs are cleaned up in the background, never blocking new launches.
+    PARALLELS_VM="breenix-$(date +%s)"
+    echo "VM name: $PARALLELS_VM"
 
-    # VM was already stopped before the build (see above)
+    # Clean up any previous breenix-* VMs (best-effort, don't block on stuck ones)
+    for OLD_VM in $(prlctl list --all 2>/dev/null | grep 'breenix-' | awk '{print $NF}'); do
+        if [ "$OLD_VM" != "$PARALLELS_VM" ]; then
+            echo "  Cleaning up old VM: $OLD_VM"
+            prlctl stop "$OLD_VM" --kill 2>/dev/null || true
+            # Try to delete — if stuck in stopping, just move on
+            prlctl delete "$OLD_VM" 2>/dev/null || true
+        fi
+    done
 
-    # Configure VM: EFI boot, remove all SATA devices (hdds + cdroms), attach our disks
+    echo "Creating fresh VM '$PARALLELS_VM'..."
+    prlctl create "$PARALLELS_VM" --ostype linux --distribution linux --no-hdd
+    prlctl set "$PARALLELS_VM" --memsize 2048
+    prlctl set "$PARALLELS_VM" --cpus 4
+
+    # Configure VM: EFI boot, attach our disks
     prlctl set "$PARALLELS_VM" --efi-boot on 2>/dev/null || true
-    # Remove any existing hard disks and CD-ROM devices to free SATA positions
-    for dev in hdd0 hdd1 hdd2 hdd3 cdrom0 cdrom1; do
+
+    # VirtIO GPU with 3D acceleration (required for VirGL)
+    prlctl set "$PARALLELS_VM" --3d-accelerate highest 2>/dev/null || true
+    prlctl set "$PARALLELS_VM" --videosize 128 2>/dev/null || true
+
+    # Remove any default devices Parallels created (cdrom, hdd, serial) to avoid conflicts
+    for dev in hdd0 hdd1 hdd2 cdrom0 cdrom1 serial0 serial1; do
         prlctl set "$PARALLELS_VM" --device-del "$dev" 2>/dev/null || true
     done
+
     # Attach EFI boot disk as hdd0 (sata:0)
     prlctl set "$PARALLELS_VM" --device-add hdd --image "$HDD_DIR" --type plain --position 0
     # Attach ext2 data disk as hdd1 (sata:1) — kernel probes all AHCI devices for ext2 magic
@@ -337,16 +354,9 @@ if [ "$PARALLELS" = true ]; then
     prlctl set "$PARALLELS_VM" --device-bootorder "hdd0" 2>/dev/null || true
 
     # Configure serial port output to file
-    prlctl set "$PARALLELS_VM" --device-del serial0 2>/dev/null || true
     prlctl set "$PARALLELS_VM" --device-add serial --output "$SERIAL_LOG" 2>/dev/null || true
     # Serial port must be explicitly connected or it stays disconnected
     prlctl set "$PARALLELS_VM" --device-set serial0 --connect 2>/dev/null || true
-
-    # Delete NVRAM to ensure fresh UEFI boot state (avoids stale boot entries)
-    VM_DIR="$HOME/Parallels/${PARALLELS_VM}.pvm"
-    if [ -f "$VM_DIR/NVRAM.dat" ]; then
-        rm -f "$VM_DIR/NVRAM.dat"
-    fi
 
     echo ""
     echo "--- Starting VM ---"
