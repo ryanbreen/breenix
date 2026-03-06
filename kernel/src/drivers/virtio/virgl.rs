@@ -233,8 +233,9 @@ impl CommandBuffer {
         self.push(0); // S0: no special features
         self.push(0); // S1: logicop_func = 0
         // S2[0]: colormask=0xF (write RGBA), blend disabled
-        // VIRGL_BLEND_STATE_RT_S0_COLORMASK_SHIFT = 28 in virglrenderer
-        self.push(0xF << 28);
+        // VIRGL_OBJ_BLEND_S2_RT_COLORMASK(x) = ((x) & 0xf) << 27 in virgl_hw.h
+        // Mesa sends 0x78000000 — NOT 0xF0000000 (that was a 1-bit shift error)
+        self.push(0xF << 27);
         // S2[1..7]: unused render targets
         for _ in 0..7 {
             self.push(0);
@@ -419,6 +420,30 @@ impl CommandBuffer {
         self.push_slice(data);
     }
 
+    /// Inline write a 2D region of pixel data into a texture resource.
+    pub fn resource_inline_write_2d(
+        &mut self,
+        res_handle: u32,
+        x: u32, y: u32, w: u32, h: u32,
+        stride: u32,
+        data: &[u32],
+    ) {
+        let len = 11 + data.len();
+        self.push(Self::cmd0(ccmd::RESOURCE_INLINE_WRITE, 0, len as u16));
+        self.push(res_handle);
+        self.push(0);       // level
+        self.push(0);       // usage
+        self.push(stride);  // stride in bytes
+        self.push(0);       // layer_stride
+        self.push(x);       // x in pixels
+        self.push(y);       // y in pixels
+        self.push(0);       // z
+        self.push(w);       // width in pixels
+        self.push(h);       // height in pixels
+        self.push(1);       // depth
+        self.push_slice(data);
+    }
+
     /// Draw primitives.
     pub fn draw_vbo(
         &mut self,
@@ -533,6 +558,49 @@ impl CommandBuffer {
         for &h in state_handles {
             self.push(h);
         }
+    }
+
+    /// Blit (copy) a rectangle between two resources entirely on the host GPU.
+    ///
+    /// VirGL protocol: VIRGL_CCMD_BLIT with 21 DWORDs:
+    /// S0 (mask/filter/flags), scissor min/max, dst resource/level/format/box, src resource/level/format/box
+    ///
+    /// This is the key operation for the two-resource display pipeline:
+    /// VirGL renders to resource A (3D), then BLIT copies to resource B (2D scanout)
+    /// entirely on the host — no guest DMA needed.
+    pub fn blit(
+        &mut self,
+        src_res: u32, src_fmt: u32, src_x: u32, src_y: u32, src_w: u32, src_h: u32,
+        dst_res: u32, dst_fmt: u32, dst_x: u32, dst_y: u32, dst_w: u32, dst_h: u32,
+    ) {
+        self.push(Self::cmd0(ccmd::BLIT, 0, 21));
+        // S0: mask=0xF (RGBA), filter=0 (NEAREST), no scissor
+        let mask: u32 = 0xF; // PIPE_MASK_RGBA
+        let filter: u32 = 0; // PIPE_TEX_FILTER_NEAREST
+        self.push(mask | (filter << 8));
+        // Scissor min/max (unused, set to 0)
+        self.push(0); // scissor minx/miny
+        self.push(0); // scissor maxx/maxy
+        // Destination
+        self.push(dst_res);  // DST_RES_HANDLE
+        self.push(0);        // DST_LEVEL
+        self.push(dst_fmt);  // DST_FORMAT
+        self.push(dst_x);    // DST_X
+        self.push(dst_y);    // DST_Y
+        self.push(0);        // DST_Z
+        self.push(dst_w);    // DST_W
+        self.push(dst_h);    // DST_H
+        self.push(1);        // DST_D
+        // Source
+        self.push(src_res);  // SRC_RES_HANDLE
+        self.push(0);        // SRC_LEVEL
+        self.push(src_fmt);  // SRC_FORMAT
+        self.push(src_x);    // SRC_X
+        self.push(src_y);    // SRC_Y
+        self.push(0);        // SRC_Z
+        self.push(src_w);    // SRC_W
+        self.push(src_h);    // SRC_H
+        self.push(1);        // SRC_D
     }
 }
 

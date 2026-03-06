@@ -55,10 +55,18 @@ struct drm_virtgpu_execbuffer {
     int32_t  fence_fd;
 };
 
+#define DRM_VIRTGPU_MAP              0x01
 #define DRM_VIRTGPU_EXECBUFFER       0x02
 #define DRM_VIRTGPU_RESOURCE_CREATE  0x04
+#define DRM_VIRTGPU_TRANSFER_FROM_HOST 0x06
 #define DRM_VIRTGPU_TRANSFER_TO_HOST 0x07
 #define DRM_VIRTGPU_WAIT             0x08
+
+struct drm_virtgpu_map {
+    uint32_t handle;
+    uint32_t pad;
+    uint64_t offset;  /* output: mmap offset */
+};
 
 struct drm_virtgpu_3d_transfer_to_host {
     uint32_t bo_handle;
@@ -72,10 +80,17 @@ struct drm_virtgpu_3d_transfer_to_host {
     } box;
 };
 
+/* TRANSFER_FROM_HOST uses the same struct layout */
+typedef struct drm_virtgpu_3d_transfer_to_host drm_virtgpu_3d_transfer_from_host;
+
 struct drm_virtgpu_3d_wait {
     uint32_t handle;
     uint32_t flags;
 };
+
+#define DRM_IOCTL_VIRTGPU_MAP \
+    DRM_IOWR(DRM_COMMAND_BASE + DRM_VIRTGPU_MAP, \
+             struct drm_virtgpu_map)
 
 #define DRM_IOCTL_VIRTGPU_EXECBUFFER \
     DRM_IOWR(DRM_COMMAND_BASE + DRM_VIRTGPU_EXECBUFFER, \
@@ -84,6 +99,10 @@ struct drm_virtgpu_3d_wait {
 #define DRM_IOCTL_VIRTGPU_RESOURCE_CREATE \
     DRM_IOWR(DRM_COMMAND_BASE + DRM_VIRTGPU_RESOURCE_CREATE, \
              struct drm_virtgpu_resource_create)
+
+#define DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST \
+    DRM_IOWR(DRM_COMMAND_BASE + DRM_VIRTGPU_TRANSFER_FROM_HOST, \
+             drm_virtgpu_3d_transfer_from_host)
 
 #define DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST \
     DRM_IOWR(DRM_COMMAND_BASE + DRM_VIRTGPU_TRANSFER_TO_HOST, \
@@ -222,9 +241,9 @@ static void cmd_create_blend_simple(uint32_t handle)
 {
     cmd_push(cmd0(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJ_BLEND, 11));
     cmd_push(handle);
-    cmd_push(0);            /* S0: no special blend */
+    cmd_push(0x00000004);   /* S0: dither enabled (bit 2), matches Mesa */
     cmd_push(0);            /* S1: logicop_func */
-    cmd_push(0xF0000000);   /* S2[0]: colormask=0xF<<28, blend disabled */
+    cmd_push(0x78000000);   /* S2[0]: colormask=0xF<<27 (VIRGL_OBJ_BLEND_S2_RT_COLORMASK), blend disabled */
     cmd_push(0);            /* S2[1] */
     cmd_push(0);            /* S2[2] */
     cmd_push(0);            /* S2[3] */
@@ -246,15 +265,22 @@ static void cmd_create_dsa_disabled(uint32_t handle)
 
 static void cmd_create_rasterizer_default(uint32_t handle)
 {
-    /* S0: depth_clip_near(bit1) | scissor(bit14) | half_pixel_center(bit29) */
-    uint32_t s0 = (1 << 1) | (1 << 14) | (1 << 29);
+    /* Match Mesa exactly: 0x60008082
+     * bit 1:  depth_clip_near
+     * bit 7:  point_quad_rasterization
+     * bit 15: front_ccw
+     * bit 29: half_pixel_center
+     * bit 30: bottom_edge_rule
+     * NO scissor (bit 14) — Mesa doesn't enable it for simple clears
+     */
+    uint32_t s0 = (1 << 1) | (1 << 7) | (1 << 15) | (1 << 29) | (1 << 30);
 
     cmd_push(cmd0(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJ_RASTERIZER, 9));
     cmd_push(handle);
-    cmd_push(s0);                   /* 0x20004002 */
+    cmd_push(s0);                   /* 0x60008082 — matches Mesa */
     cmd_push(f32_bits(1.0f));       /* point_size */
     cmd_push(0);                    /* sprite_coord_enable */
-    cmd_push(0);                    /* S3 */
+    cmd_push(0x0000FFFF);           /* S3: clip_plane_enable = all (matches Mesa) */
     cmd_push(f32_bits(1.0f));       /* line_width */
     cmd_push(0);                    /* offset_units */
     cmd_push(0);                    /* offset_scale */
@@ -628,78 +654,60 @@ int main(void)
         "  0: MOV OUT[0], IN[0]\n"
         "  1: END\n";
 
-    /* === Batch 1: Pipeline state creation === */
-    printf("=== VirGL Batch 1: Pipeline State ===\n");
+    /* === Single batch matching Mesa's exact sequence ===
+     * Mesa sends everything in one big EXECBUFFER:
+     * 1. CREATE_SUB_CTX + SET_SUB_CTX
+     * 2. SET_TWEAKS (Mesa sends these before anything else)
+     * 3. CREATE_SHADER (VS + FS) — created but NOT bound before clear
+     * 4. CREATE_SURFACE + SET_FRAMEBUFFER_STATE + CLEAR
+     * 5. Then: create/bind DSA, bind shaders, blend, rasterizer, etc.
+     * For a clear-only test, we just need steps 1-4.
+     */
+    printf("=== VirGL Single Batch (Mesa-style) ===\n");
     cmd_reset();
 
-    /* create_sub_ctx(1) + set_sub_ctx(1) */
+    /* 1. Sub-context */
     cmd_create_sub_ctx(1);
     cmd_set_sub_ctx(1);
 
-    /* create_shader(handle=1, VERTEX, vs_text) */
-    cmd_create_shader(1, PIPE_SHADER_VERTEX, vs_text);
+    /* 2. SET_TWEAKS — Mesa sends these; might configure VirGL behavior */
+    /* SET_TWEAKS(tweak_id=1, value=1) */
+    cmd_push(cmd0(46, 0, 2)); /* VIRGL_CCMD_SET_TWEAKS=46 */
+    cmd_push(1); /* tweak_id */
+    cmd_push(1); /* value */
+    /* SET_TWEAKS(tweak_id=2, value=width) */
+    cmd_push(cmd0(46, 0, 2));
+    cmd_push(2);
+    cmd_push(width);
 
-    /* create_shader(handle=2, FRAGMENT, fs_text) */
+    /* 3. Create shaders (Mesa creates them before clear, though they're not bound) */
+    cmd_create_shader(1, PIPE_SHADER_VERTEX, vs_text);
     cmd_create_shader(2, PIPE_SHADER_FRAGMENT, fs_text);
 
-    /* create_blend_simple(1) */
-    cmd_create_blend_simple(1);
-
-    /* create_dsa_disabled(1) */
-    cmd_create_dsa_disabled(1);
-
-    /* create_rasterizer_default(1) */
-    cmd_create_rasterizer_default(1);
-
-    /* create_vertex_elements(1, [(0,0,0,R32G32B32A32_FLOAT), (16,0,0,R32G32B32A32_FLOAT)]) */
-    {
-        uint32_t offsets[] = {0, 16};
-        uint32_t divisors[] = {0, 0};
-        uint32_t vb_indices[] = {0, 0};
-        uint32_t formats[] = {PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R32G32B32A32_FLOAT};
-        cmd_create_vertex_elements(1, 2, offsets, divisors, vb_indices, formats);
-    }
-
-    hex_dump_dwords("BATCH_1_PIPELINE_STATE", cmd_buf, cmd_len);
-
-    if (virtgpu_execbuffer(cmd_buf, cmd_len, &bo_handle, 1) < 0)
-        return 1;
-    printf("Batch 1 submitted OK\n\n");
-
-    /* === Batch 2: Bind state + clear === */
-    printf("=== VirGL Batch 2: Bind + Clear ===\n");
-    cmd_reset();
-
-    cmd_set_sub_ctx(1);
-
-    /* Bind pipeline state */
-    cmd_bind_shader(1, PIPE_SHADER_VERTEX);
-    cmd_bind_shader(2, PIPE_SHADER_FRAGMENT);
-    cmd_bind_object(1, VIRGL_OBJ_BLEND);
-    cmd_bind_object(1, VIRGL_OBJ_DSA);
-    cmd_bind_object(1, VIRGL_OBJ_RASTERIZER);
-    cmd_bind_object(1, VIRGL_OBJ_VERTEX_ELEMENTS);
-
-    cmd_set_viewport((float)width, (float)height);
-    cmd_set_scissor_state(0, 0, width, height);
-
-    /* create_surface(handle=1, res=res_handle, B8G8R8X8_UNORM, level=0, layers=0) */
+    /* 4. CREATE_SURFACE + SET_FRAMEBUFFER + CLEAR (this is what Mesa does before any binds) */
     cmd_create_surface(1, res_handle, PIPE_FORMAT_B8G8R8X8_UNORM, 0, 0);
 
-    /* set_framebuffer_state(zsurf=0, cbufs=[1]) */
     {
         uint32_t cbufs[] = {1};
         cmd_set_framebuffer_state(0, 1, cbufs);
     }
 
-    /* clear_color: cornflower blue (0.392, 0.584, 0.929, 1.0) */
-    cmd_clear_color(0.392f, 0.584f, 0.929f, 1.0f);
+    /* CLEAR with bright GREEN — depth=1.0 as double (0x3FF00000:00000000) like Mesa */
+    cmd_push(cmd0(VIRGL_CCMD_CLEAR, 0, 8));
+    cmd_push(PIPE_CLEAR_COLOR0);         /* buffers = 0x04 */
+    cmd_push(f32_bits(0.0f));            /* R */
+    cmd_push(f32_bits(1.0f));            /* G */
+    cmd_push(f32_bits(0.0f));            /* B */
+    cmd_push(f32_bits(1.0f));            /* A */
+    cmd_push(0x00000000);                /* depth f64 low */
+    cmd_push(0x3FF00000);                /* depth f64 high = 1.0 (matches Mesa) */
+    cmd_push(0);                         /* stencil */
 
-    hex_dump_dwords("BATCH_2_BIND_CLEAR", cmd_buf, cmd_len);
+    hex_dump_dwords("SINGLE_BATCH_MESA_STYLE", cmd_buf, cmd_len);
 
     if (virtgpu_execbuffer(cmd_buf, cmd_len, &bo_handle, 1) < 0)
         return 1;
-    printf("Batch 2 submitted OK\n\n");
+    printf("Single batch submitted OK\n\n");
 
     /* === Wait for VirGL rendering to complete === */
     printf("=== VIRTGPU_WAIT (sync rendering) ===\n");
@@ -715,48 +723,150 @@ int main(void)
             printf("VIRTGPU_WAIT: OK — rendering complete\n");
     }
 
-    /* === TRANSFER_TO_HOST_3D (sync resource to host) === */
-    printf("=== TRANSFER_TO_HOST_3D ===\n");
+    /* If stride is 0, compute it (width * 4) */
+    if (stride == 0)
+        stride = width * 4;
+
+    /* === MAP the resource into userspace === */
+    printf("\n=== VIRTGPU_MAP + mmap (get backing store access) ===\n");
+    uint32_t *pixels = NULL;
+    uint32_t map_size = stride * height;
+    {
+        struct drm_virtgpu_map vmap;
+        memset(&vmap, 0, sizeof(vmap));
+        vmap.handle = bo_handle;
+        int mr = drmIoctl(drm_fd, DRM_IOCTL_VIRTGPU_MAP, &vmap);
+        if (mr < 0) {
+            printf("VIRTGPU_MAP failed: %s\n", strerror(errno));
+        } else {
+            printf("VIRTGPU_MAP: offset=0x%lx\n", (unsigned long)vmap.offset);
+            pixels = mmap(NULL, map_size, PROT_READ | PROT_WRITE,
+                          MAP_SHARED, drm_fd, vmap.offset);
+            if (pixels == MAP_FAILED) {
+                printf("mmap failed: %s\n", strerror(errno));
+                pixels = NULL;
+            } else {
+                printf("mmap: OK (%u bytes at %p)\n", map_size, (void *)pixels);
+            }
+        }
+    }
+
+    /* === Check guest backing BEFORE transfer (should be zeros/black) === */
+    if (pixels) {
+        printf("\n=== Guest backing BEFORE TRANSFER_FROM_HOST ===\n");
+        printf("pixel[0,0] = 0x%08X (expect 0x00000000 = black/zeros)\n", pixels[0]);
+        printf("pixel[1,0] = 0x%08X\n", pixels[1]);
+        printf("pixel[center] = 0x%08X\n", pixels[(height/2) * (stride/4) + width/2]);
+    }
+
+    /* === TRANSFER_FROM_HOST_3D: pull VirGL-rendered content from host to guest === */
+    printf("\n=== TRANSFER_FROM_HOST_3D (host→guest) ===\n");
+    printf("VirGL renders on the HOST. Guest backing is zeros.\n");
+    printf("We need TRANSFER_FROM_HOST to pull rendered pixels back.\n");
+    {
+        drm_virtgpu_3d_transfer_from_host xfer;
+        memset(&xfer, 0, sizeof(xfer));
+        xfer.bo_handle = bo_handle;
+        xfer.stride = stride;
+        xfer.box.w = width;
+        xfer.box.h = height;
+        xfer.box.d = 1;
+        int tr = drmIoctl(drm_fd, DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST, &xfer);
+        if (tr < 0)
+            printf("TRANSFER_FROM_HOST: FAILED — %s\n", strerror(errno));
+        else
+            printf("TRANSFER_FROM_HOST: OK\n");
+    }
+
+    /* Wait again after transfer */
+    {
+        struct drm_virtgpu_3d_wait wait;
+        memset(&wait, 0, sizeof(wait));
+        wait.handle = bo_handle;
+        int wr = drmIoctl(drm_fd, DRM_IOCTL_VIRTGPU_WAIT, &wait);
+        printf("WAIT after FROM_HOST: %s\n", wr < 0 ? strerror(errno) : "OK");
+    }
+
+    /* === Check guest backing AFTER transfer (should have green pixels) === */
+    if (pixels) {
+        printf("\n=== Guest backing AFTER TRANSFER_FROM_HOST ===\n");
+        uint32_t p0 = pixels[0];
+        uint32_t pc = pixels[(height/2) * (stride/4) + width/2];
+        printf("pixel[0,0] = 0x%08X\n", p0);
+        printf("pixel[1,0] = 0x%08X\n", pixels[1]);
+        printf("pixel[center] = 0x%08X\n", pc);
+
+        /* Analyze: for GREEN clear in B8G8R8X8_UNORM, expect B=0,G=FF,R=0,X=FF → 0xFF00FF00
+         * or B=0,G=FF,R=0,X=0 → 0x0000FF00 depending on alpha handling */
+        if (p0 == 0x00000000)
+            printf("STILL BLACK — TRANSFER_FROM_HOST did not bring rendered content!\n");
+        else
+            printf("GOT PIXELS! VirGL rendering confirmed working on host.\n");
+
+        /* Print a few more samples for diagnosis */
+        printf("pixel[0,1] = 0x%08X\n", pixels[stride/4]);
+        printf("pixel[last] = 0x%08X\n", pixels[(height-1) * (stride/4) + width - 1]);
+    }
+
+    /* === TRANSFER_TO_HOST_3D: sync guest backing to host for display === */
+    printf("\n=== TRANSFER_TO_HOST_3D (guest→host, for display pipeline) ===\n");
     {
         struct drm_virtgpu_3d_transfer_to_host xfer;
         memset(&xfer, 0, sizeof(xfer));
         xfer.bo_handle = bo_handle;
-        xfer.level = 0;
-        xfer.stride = width * 4;
-        xfer.layer_stride = 0;
-        xfer.box.x = 0;
-        xfer.box.y = 0;
-        xfer.box.z = 0;
+        xfer.stride = stride;
         xfer.box.w = width;
         xfer.box.h = height;
         xfer.box.d = 1;
         int tr = drmIoctl(drm_fd, DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST, &xfer);
         if (tr < 0)
-            printf("TRANSFER_TO_HOST failed: %s (continuing anyway)\n", strerror(errno));
+            printf("TRANSFER_TO_HOST: FAILED — %s\n", strerror(errno));
         else
             printf("TRANSFER_TO_HOST: OK\n");
     }
 
-    /* Wait again after transfer */
+    /* Wait after TO_HOST */
     {
-        struct drm_virtgpu_3d_wait wait2;
-        memset(&wait2, 0, sizeof(wait2));
-        wait2.handle = bo_handle;
-        wait2.flags = 0;
-        int wr2 = drmIoctl(drm_fd, DRM_IOCTL_VIRTGPU_WAIT, &wait2);
-        if (wr2 < 0)
-            printf("VIRTGPU_WAIT(2) failed: %s\n", strerror(errno));
-        else
-            printf("VIRTGPU_WAIT(2): OK — transfer complete\n");
+        struct drm_virtgpu_3d_wait wait;
+        memset(&wait, 0, sizeof(wait));
+        wait.handle = bo_handle;
+        int wr = drmIoctl(drm_fd, DRM_IOCTL_VIRTGPU_WAIT, &wait);
+        printf("WAIT after TO_HOST: %s\n", wr < 0 ? strerror(errno) : "OK");
     }
-    printf("\n");
+
+    /* === Also try CPU-fill as fallback verification === */
+    if (pixels) {
+        printf("\n=== CPU-fill fallback: writing GREEN directly to guest backing ===\n");
+        /* B8G8R8X8_UNORM: byte order is B,G,R,X in memory
+         * For GREEN: B=0x00, G=0xFF, R=0x00, X=0xFF → little-endian u32 = 0xFF00FF00 */
+        uint32_t green_pixel = 0xFF00FF00;
+        printf("Writing 0x%08X to all %u pixels...\n", green_pixel, width * height);
+        for (uint32_t row = 0; row < height; row++) {
+            uint32_t *rowptr = pixels + row * (stride / 4);
+            for (uint32_t col = 0; col < width; col++)
+                rowptr[col] = green_pixel;
+        }
+        printf("CPU fill complete\n");
+
+        /* Transfer CPU-written pixels to host */
+        struct drm_virtgpu_3d_transfer_to_host xfer;
+        memset(&xfer, 0, sizeof(xfer));
+        xfer.bo_handle = bo_handle;
+        xfer.stride = stride;
+        xfer.box.w = width;
+        xfer.box.h = height;
+        xfer.box.d = 1;
+        int tr = drmIoctl(drm_fd, DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST, &xfer);
+        printf("TRANSFER_TO_HOST (after CPU fill): %s\n", tr < 0 ? strerror(errno) : "OK");
+
+        struct drm_virtgpu_3d_wait wait;
+        memset(&wait, 0, sizeof(wait));
+        wait.handle = bo_handle;
+        drmIoctl(drm_fd, DRM_IOCTL_VIRTGPU_WAIT, &wait);
+    }
 
     /* === Step 3: Display via DRM KMS === */
-    printf("=== DRM KMS Display ===\n");
-
-    /* If stride is 0, compute it (width * 4) */
-    if (stride == 0)
-        stride = width * 4;
+    printf("\n=== DRM KMS Display ===\n");
     printf("Using stride=%u for AddFB\n", stride);
 
     uint32_t fb_id = 0;
@@ -774,19 +884,26 @@ int main(void)
         drmModeRmFB(drm_fd, fb_id);
         return 1;
     }
-    printf("SetCrtc: OK — display should show CORNFLOWER BLUE\n\n");
+    printf("SetCrtc: OK — display should show GREEN\n\n");
 
-    if (drm_page_flip_and_wait(fb_id) == 0) {
+    /* DirtyFB to trigger display update */
+    if (drm_mark_dirty(fb_id, width, height) == 0)
+        printf("DirtyFB: OK\n");
+    else
+        printf("DirtyFB: failed (non-fatal)\n");
+
+    /* PageFlip for good measure */
+    if (drm_page_flip_and_wait(fb_id) == 0)
         printf("PageFlip: OK\n");
-    } else {
-        printf("PageFlip: failed, attempting DirtyFB\n");
-        if (drm_mark_dirty(fb_id, width, height) == 0)
-            printf("DirtyFB: OK\n");
-    }
+    else
+        printf("PageFlip: failed (non-fatal)\n");
 
-    /* Hold for 5 seconds so user can see the result */
-    printf("Holding display for 5 seconds...\n");
-    sleep(5);
+    /* Hold for 15 seconds so user can see the result */
+    printf("\nHolding display for 15 seconds...\n");
+    sleep(15);
+
+    if (pixels)
+        munmap(pixels, map_size);
 
     /* Restore original CRTC */
     if (saved_crtc) {
