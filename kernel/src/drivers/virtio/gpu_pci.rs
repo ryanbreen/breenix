@@ -428,6 +428,7 @@ const VERTS_PER_CIRCLE: usize = CIRCLE_SEGMENTS + 2;
 /// Bytes per vertex: position (4×f32) + color/texcoord (4×f32) = 32 bytes
 const BYTES_PER_VERTEX: usize = 32;
 /// Vertex buffer size: enough for MAX_CIRCLES circles
+#[allow(dead_code)]
 const VB_SIZE: usize = MAX_CIRCLES * VERTS_PER_CIRCLE * BYTES_PER_VERTEX;
 
 /// Resource ID for test texture (textured quad proof-of-concept)
@@ -1836,44 +1837,103 @@ fn virgl_resource_create_3d_cmd(
     send_command_expect_ok(state, core::mem::size_of::<VirtioGpuResourceCreate3d>() as u32)
 }
 
-/// Attach backing memory to a 3D resource.
+/// Attach backing memory to a 3D resource using per-page scatter-gather entries.
 ///
 /// Uses heap-allocated PCI_3D_FB_PTR as the backing store.
 /// CRITICAL: Must NOT share backing with the 2D resource (PCI_FRAMEBUFFER).
 /// Linux's Mesa/virgl creates independent GEM buffers for each resource.
-/// Sharing backing may cause the hypervisor to mishandle SET_SCANOUT.
+///
+/// KEY FIX: Linux kernel sends one VirtioGpuMemEntry per 4KB page (768 entries
+/// for a 1024×768×4 framebuffer). Our previous approach sent 1 entry with the
+/// entire 3MB range. The host (Parallels) may require per-page entries to
+/// properly map backing for GL texture operations and TRANSFER_FROM_HOST_3D.
 fn virgl_attach_backing_cmd(state: &mut GpuPciDeviceState, resource_id: u32) -> Result<(), &'static str> {
-    // Use heap-allocated backing for the 3D resource (DMA-safe memory).
     let fb_ptr = unsafe { PCI_3D_FB_PTR };
     assert!(!fb_ptr.is_null(), "3D framebuffer not initialized");
-    let fb_addr = virt_to_phys(fb_ptr as u64);
+    let fb_base_phys = virt_to_phys(fb_ptr as u64);
     let fb_len = unsafe { PCI_3D_FB_LEN };
-    let actual_len = (state.width * state.height * 4).min(fb_len as u32);
-    crate::serial_println!("[virgl] attach_backing: phys=0x{:x}, len={}", fb_addr, actual_len);
+    let actual_len = (state.width as usize * state.height as usize * 4).min(fb_len);
+
+    const PAGE_SIZE: usize = 4096;
+    let nr_pages = (actual_len + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    crate::serial_println!("[virgl] attach_backing: phys=0x{:x}, len={}, nr_pages={}",
+        fb_base_phys, actual_len, nr_pages);
+
+    // Heap-allocate the entries array (nr_pages × 16 bytes, too large for PCI_CMD_BUF)
+    let entries_size = nr_pages * core::mem::size_of::<VirtioGpuMemEntry>();
+    let entries_layout = alloc::alloc::Layout::from_size_align(entries_size, 64)
+        .map_err(|_| "attach_backing: invalid entries layout")?;
+    let entries_ptr = unsafe { alloc::alloc::alloc_zeroed(entries_layout) };
+    if entries_ptr.is_null() {
+        return Err("attach_backing: failed to allocate entries array");
+    }
+
+    // Fill each entry with a sequential 4KB page
+    unsafe {
+        let entries = core::slice::from_raw_parts_mut(
+            entries_ptr as *mut VirtioGpuMemEntry, nr_pages);
+        for i in 0..nr_pages {
+            let page_offset = i * PAGE_SIZE;
+            let page_len = if page_offset + PAGE_SIZE <= actual_len {
+                PAGE_SIZE as u32
+            } else {
+                (actual_len - page_offset) as u32
+            };
+            entries[i] = VirtioGpuMemEntry {
+                addr: fb_base_phys + page_offset as u64,
+                length: page_len,
+                padding: 0,
+            };
+        }
+    }
+
+    // Put the header in PCI_CMD_BUF
+    let hdr_size = core::mem::size_of::<VirtioGpuResourceAttachBacking>();
     unsafe {
         let cmd_ptr = &raw mut PCI_CMD_BUF;
-        let cmd = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut PciAttachBackingCmd);
-        *cmd = PciAttachBackingCmd {
-            cmd: VirtioGpuResourceAttachBacking {
-                hdr: VirtioGpuCtrlHdr {
-                    type_: cmd::RESOURCE_ATTACH_BACKING,
-                    flags: 0,
-                    fence_id: 0,
-                    ctx_id: 0,
-                    padding: 0,
-                },
-                resource_id,
-                nr_entries: 1,
-            },
-            entry: VirtioGpuMemEntry {
-                addr: fb_addr,
-                length: actual_len,
+        let hdr = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut VirtioGpuResourceAttachBacking);
+        *hdr = VirtioGpuResourceAttachBacking {
+            hdr: VirtioGpuCtrlHdr {
+                type_: cmd::RESOURCE_ATTACH_BACKING,
+                flags: 0,
+                fence_id: 0,
+                ctx_id: 0,
                 padding: 0,
             },
+            resource_id,
+            nr_entries: nr_pages as u32,
         };
     }
-    hex_dump_cmd_buf("ATTACH_BACKING", core::mem::size_of::<PciAttachBackingCmd>());
-    send_command_expect_ok(state, core::mem::size_of::<PciAttachBackingCmd>() as u32)
+
+    // Flush command header and entries array from CPU cache
+    dma_cache_clean(&raw const PCI_CMD_BUF as *const u8, hdr_size);
+    dma_cache_clean(entries_ptr, entries_size);
+
+    let hdr_phys = virt_to_phys(&raw const PCI_CMD_BUF as u64);
+    let entries_phys = virt_to_phys(entries_ptr as u64);
+    let resp_phys = virt_to_phys(&raw const PCI_RESP_BUF as u64);
+
+    crate::serial_println!("[virgl] attach_backing: sending 3-desc chain: hdr=0x{:x}({}B), entries=0x{:x}({}B)",
+        hdr_phys, hdr_size, entries_phys, entries_size);
+
+    let (_used_len, resp_type) = send_command_3desc(
+        state,
+        hdr_phys, hdr_size as u32,
+        entries_phys, entries_size as u32,
+        resp_phys, core::mem::size_of::<VirtioGpuCtrlHdr>() as u32,
+    )?;
+
+    // Free entries array (one-time during init)
+    unsafe { alloc::alloc::dealloc(entries_ptr, entries_layout); }
+
+    if resp_type != cmd::RESP_OK_NODATA {
+        crate::serial_println!("[virgl] attach_backing FAILED: resp_type={:#x}", resp_type);
+        return Err("attach_backing: device rejected paged backing");
+    }
+
+    crate::serial_println!("[virgl] attach_backing: OK ({} pages attached)", nr_pages);
+    Ok(())
 }
 
 /// Flush a specific resource to the display (SET_SCANOUT must point at it first).
@@ -2336,8 +2396,11 @@ pub fn virgl_render_frame(
     }
 
     if !VIRGL_SCANOUT_ACTIVE.load(Ordering::Acquire) {
+        crate::serial_println!("[virgl] WARNING: scanout not active at frame #{} — setting now", frame);
+        with_device_state(|state| {
+            set_scanout_resource(state, RESOURCE_3D_ID)
+        }).ok();
         VIRGL_SCANOUT_ACTIVE.store(true, Ordering::Release);
-        crate::serial_println!("[virgl] first VirGL frame #{}", frame);
     }
 
     let (width, height) = match dimensions() {
@@ -2620,105 +2683,53 @@ fn copy_terminal_to_3d_backing(display_w: u32, display_h: u32) {
 }
 
 /// Flush the VirGL render target to the display.
-/// SET_SCANOUT + RESOURCE_FLUSH — matching Linux's display path.
+/// After the initial priming in virgl_init(), only RESOURCE_FLUSH is needed
+/// to display VirGL-rendered content. The host reads from the GPU texture.
 pub fn virgl_flush() -> Result<(), &'static str> {
     if !is_virgl_enabled() {
         return Err("VirGL display not available");
     }
     with_device_state(|state| {
-        // Linux sequence: TRANSFER_TO_HOST_3D → SET_SCANOUT → RESOURCE_FLUSH.
-        // The TRANSFER_TO_HOST_3D acts as a sync signal to the host hypervisor.
-        let (w, h) = (state.width, state.height);
-        transfer_to_host_3d(state, RESOURCE_3D_ID, 0, 0, w, h, w * 4)?;
-        set_scanout_resource(state, RESOURCE_3D_ID)?;
         resource_flush_3d(state, RESOURCE_3D_ID)
     })
 }
 
 // =============================================================================
-// VirGL Initialization (Phase 3: proof-of-pipeline)
+// VirGL Initialization
 // =============================================================================
 
 /// Initialize the VirGL 3D pipeline if VIRGL was negotiated.
 ///
-/// Creates a 3D rendering context, a render target resource matching the
-/// scanout dimensions, submits a clear command, and sets scanout to the
-/// 3D resource. If successful, the screen shows a solid color rendered
-/// entirely by the host GPU — no BAR0 pixel writes.
-#[allow(unreachable_code)] // Diagnostic early-return halts before 3D pipeline steps
+/// Creates a 3D rendering context, render target resource, pipeline state
+/// objects (blend, DSA, rasterizer, shaders, vertex elements), and vertex
+/// buffer. Then "primes" the resource with an initial TRANSFER_TO_HOST_3D
+/// (required by Parallels before RESOURCE_FLUSH will read from the GPU
+/// texture), performs a VirGL clear to cornflower blue, and flushes.
+///
+/// After this, the render loop only needs SUBMIT_3D + RESOURCE_FLUSH per
+/// frame — no per-frame transfers for VirGL-rendered content.
 pub fn virgl_init() -> Result<(), &'static str> {
     use super::virgl::{CommandBuffer, format as vfmt, pipe};
 
-    crate::serial_println!("[virgl_init] VIRGL_ENABLED={} addr={:#x}",
-        VIRGL_ENABLED.load(Ordering::Acquire),
-        &VIRGL_ENABLED as *const _ as usize);
     if !is_virgl_enabled() {
         return Err("VirGL not supported");
     }
 
-    crate::serial_println!("[virtio-gpu-pci] Initializing VirGL 3D pipeline (v19: BAR0 display path)...");
-
-    VIRGL_HEX_DUMP_ENABLED.store(true, Ordering::SeqCst);
-    crate::serial_println!("[PROOF-MARKER] bar0-display-v19 — if you see this, the new binary is running");
+    crate::serial_println!("[virgl] Initializing VirGL 3D pipeline...");
 
     let (width, height) = dimensions().ok_or("GPU not initialized")?;
 
-    // Allocate 3D framebuffer backing on heap (DMA-safe memory).
+    // Step 1: Allocate 3D framebuffer backing on heap (DMA-safe memory).
     // BSS memory overlaps with Parallels boot stack, causing DMA failures.
     init_3d_framebuffer(width, height);
 
-    // =========================================================================
-    // PHASE A: Confirm BAR0 display works during virgl_init()
-    // Resource 1 (2D, BAR0-backed) is already set as scanout from GPU init.
-    // Write MAGENTA directly to BAR0, then RESOURCE_FLUSH on resource 1.
-    // Note: gop_framebuffer() isn't set up yet — use fb_base_phys() + HHDM.
-    // =========================================================================
-    let bar0_base_phys = crate::platform_config::fb_base_phys();
-    if bar0_base_phys == 0 {
-        return Err("BAR0 framebuffer not available");
-    }
-    let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
-    let bar0_virt = (hhdm_base + bar0_base_phys) as *mut u8;
-    let bar0_size = (width as usize) * (height as usize) * 4;
-    crate::serial_println!("[virgl] BAR0: phys=0x{:x}, virt=0x{:x}, size={}", bar0_base_phys, bar0_virt as u64, bar0_size);
-    {
-        let pixel_count = (width * height) as usize;
-        let bar0_pixels = unsafe {
-            core::slice::from_raw_parts_mut(bar0_virt as *mut u32, pixel_count)
-        };
-        let magenta: u32 = 0xFFFF00FF; // B8G8R8X8: magenta
-        for p in bar0_pixels.iter_mut() {
-            *p = magenta;
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            let len = pixel_count * 4;
-            for off in (0..len).step_by(64) {
-                let addr = unsafe { bar0_virt.add(off) } as usize;
-                unsafe { core::arch::asm!("dc cvac, {}", in(reg) addr, options(nostack)); }
-            }
-            unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
-        }
-    }
-    crate::serial_println!("[virgl] A: MAGENTA written to BAR0");
-    with_device_state(|state| {
-        resource_flush_3d(state, RESOURCE_ID) // resource 1 — the BAR0-backed 2D resource
-    })?;
-    crate::serial_println!("[virgl] A: RESOURCE_FLUSH on resource 1 (BAR0) OK");
-    crate::serial_println!("[virgl] *** PHASE A: If MAGENTA → display works via BAR0 during virgl_init ***");
-    crate::serial_println!("[virgl] *** If BLACK → display not working at all at this point ***");
-
-    // =========================================================================
-    // PHASE B: Set up VirGL 3D rendering pipeline (resource 2, context-attached)
-    // =========================================================================
-
-    // B1: Create 3D context
+    // Step 2: Create 3D context
     with_device_state(|state| {
         virgl_ctx_create_cmd(state, VIRGL_CTX_ID, b"breenix")
     })?;
-    crate::serial_println!("[virgl] B1: context created (ctx_id={})", VIRGL_CTX_ID);
+    crate::serial_println!("[virgl] Step 1: context created");
 
-    // B2: Create 3D render target resource
+    // Step 3: Create 3D render target resource
     let bind_flags = pipe::BIND_RENDER_TARGET | pipe::BIND_SAMPLER_VIEW
                    | pipe::BIND_SCANOUT | pipe::BIND_SHARED;
     with_device_state(|state| {
@@ -2727,193 +2738,105 @@ pub fn virgl_init() -> Result<(), &'static str> {
             bind_flags, width, height, 1, 1,
         )
     })?;
-    crate::serial_println!("[virgl] B2: 3D resource created (id={}, bind=0x{:08x})", RESOURCE_3D_ID, bind_flags);
+    crate::serial_println!("[virgl] Step 2: 3D resource created ({}x{}, bind=0x{:08x})",
+        width, height, bind_flags);
 
-    // B3: Attach 3D backing
+    // Step 4: Attach backing memory
     with_device_state(|state| {
         virgl_attach_backing_cmd(state, RESOURCE_3D_ID)
     })?;
+    crate::serial_println!("[virgl] Step 3: backing attached");
 
-    // B4: Attach 3D resource to VirGL context
-    // Resource 1 (2D, BAR0-backed) is NOT attached — used for display only
+    // Step 5: Attach resource to VirGL context
     with_device_state(|state| {
         virgl_ctx_attach_resource_cmd(state, VIRGL_CTX_ID, RESOURCE_3D_ID)
     })?;
-    crate::serial_println!("[virgl] B4: 3D resource attached to context (resource 1 is NOT attached — display only)");
+    crate::serial_println!("[virgl] Step 4: resource attached to context");
 
-    // B5: Pipeline state objects
-    let mut cmdbuf = CommandBuffer::new();
-    cmdbuf.create_sub_ctx(1);
-    cmdbuf.set_sub_ctx(1);
-    let vs_text = b"VERT\nDCL IN[0], POSITION\nDCL IN[1], GENERIC[0]\nDCL OUT[0], POSITION\nDCL OUT[1], GENERIC[0]\n  0: MOV OUT[0], IN[0]\n  1: MOV OUT[1], IN[1]\n  2: END\n";
-    cmdbuf.create_shader(1, pipe::SHADER_VERTEX, vs_text);
-    let fs_text = b"FRAG\nDCL IN[0], GENERIC[0], PERSPECTIVE\nDCL OUT[0], COLOR\n  0: MOV OUT[0], IN[0]\n  1: END\n";
-    cmdbuf.create_shader(2, pipe::SHADER_FRAGMENT, fs_text);
-    cmdbuf.create_blend_simple(1);
-    cmdbuf.create_dsa_disabled(1);
-    cmdbuf.create_rasterizer_default(1);
-    cmdbuf.create_vertex_elements(1, &[
-        (0, 0, 0, vfmt::R32G32B32A32_FLOAT),
-        (16, 0, 0, vfmt::R32G32B32A32_FLOAT),
-    ]);
-    virgl_submit(cmdbuf.as_slice())?;
-    crate::serial_println!("[virgl] B5: pipeline state created");
+    // Step 6: Prime the resource with TRANSFER_TO_HOST_3D + SET_SCANOUT + FLUSH.
+    // Parallels requires an initial TRANSFER_TO_HOST_3D before RESOURCE_FLUSH
+    // will read from the GPU texture. This must happen BEFORE VirGL rendering.
+    {
+        let fb_ptr = unsafe { PCI_3D_FB_PTR };
+        let fb_len = (width * height * 4) as usize;
+        dma_cache_clean(fb_ptr, fb_len);
+        with_device_state(|state| {
+            transfer_to_host_3d(state, RESOURCE_3D_ID, 0, 0, width, height, width * 4)
+        })?;
+        with_device_state(|state| { set_scanout_resource(state, RESOURCE_3D_ID) })?;
+        with_device_state(|state| { resource_flush_3d(state, RESOURCE_3D_ID) })?;
+        crate::serial_println!("[virgl] Step 5: resource primed (TRANSFER_TO_HOST + SET_SCANOUT + FLUSH)");
+    }
 
-    // B6: VirGL clear to cornflower blue
-    cmdbuf.clear();
-    cmdbuf.set_sub_ctx(1);
-    cmdbuf.bind_shader(1, pipe::SHADER_VERTEX);
-    cmdbuf.bind_shader(2, pipe::SHADER_FRAGMENT);
-    cmdbuf.bind_object(1, super::virgl::OBJ_BLEND);
-    cmdbuf.bind_object(1, super::virgl::OBJ_DSA);
-    cmdbuf.bind_object(1, super::virgl::OBJ_RASTERIZER);
-    cmdbuf.bind_object(1, super::virgl::OBJ_VERTEX_ELEMENTS);
-    cmdbuf.set_viewport(width as f32, height as f32);
-    cmdbuf.set_scissor_state(0, 0, width, height);
-    cmdbuf.create_surface(1, RESOURCE_3D_ID, vfmt::B8G8R8X8_UNORM, 0, 0);
-    cmdbuf.set_framebuffer_state(0, &[1]);
-    cmdbuf.clear_color(0.392, 0.584, 0.929, 1.0);
-    let clear_fence = virgl_submit(cmdbuf.as_slice())?;
-    with_device_state(|state| { virgl_fence_sync(state, clear_fence) })?;
-    crate::serial_println!("[virgl] B6: VirGL clear done (fence={})", clear_fence);
+    // Step 7: Minimal VirGL clear to cornflower blue — matches proven B5 flow.
+    // Uses only the minimal commands needed: sub_ctx, tweaks, surface, FBO, clear.
+    // No shaders/blend/DSA/rasterizer needed for CLEAR operations.
+    {
+        let mut cmdbuf = CommandBuffer::new();
+        cmdbuf.create_sub_ctx(1);
+        cmdbuf.set_sub_ctx(1);
+        cmdbuf.set_tweaks(1, 1);
+        cmdbuf.set_tweaks(2, width);
+        cmdbuf.create_surface(1, RESOURCE_3D_ID, vfmt::B8G8R8X8_UNORM, 0, 0);
+        cmdbuf.set_framebuffer_state(0, &[1]);
+        cmdbuf.clear_color(0.392, 0.584, 0.929, 1.0); // Cornflower blue
+        virgl_submit_sync(cmdbuf.as_slice())?;
+        crate::serial_println!("[virgl] Step 6: VirGL clear (cornflower blue) submitted");
+    }
 
-    // B7: Create vertex buffer
+    // Step 8: RESOURCE_FLUSH to display the VirGL-rendered cornflower blue.
+    // After priming, FLUSH reads from the GPU texture.
+    with_device_state(|state| { resource_flush_3d(state, RESOURCE_3D_ID) })?;
+    crate::serial_println!("[virgl] Step 7: RESOURCE_FLUSH — display should show cornflower blue");
+
+    // Step 9: Create full pipeline state objects for the render loop.
+    // Shaders, blend, DSA, rasterizer, vertex elements are needed for drawing
+    // geometry (not just clears). Created after priming is confirmed working.
+    {
+        let mut cmdbuf = CommandBuffer::new();
+        cmdbuf.set_sub_ctx(1);
+
+        // Passthrough vertex shader: position + generic[0] (color/texcoord)
+        let vs_text = b"VERT\nDCL IN[0], POSITION\nDCL IN[1], GENERIC[0]\nDCL OUT[0], POSITION\nDCL OUT[1], GENERIC[0]\n  0: MOV OUT[0], IN[0]\n  1: MOV OUT[1], IN[1]\n  2: END\n";
+        cmdbuf.create_shader(1, pipe::SHADER_VERTEX, vs_text);
+
+        // Passthrough fragment shader: color from vertex
+        let fs_text = b"FRAG\nDCL IN[0], GENERIC[0], PERSPECTIVE\nDCL OUT[0], COLOR\n  0: MOV OUT[0], IN[0]\n  1: END\n";
+        cmdbuf.create_shader(2, pipe::SHADER_FRAGMENT, fs_text);
+
+        cmdbuf.create_blend_simple(1);
+        cmdbuf.create_dsa_disabled(1);
+        cmdbuf.create_rasterizer_default(1);
+        cmdbuf.create_vertex_elements(1, &[
+            (0, 0, 0, vfmt::R32G32B32A32_FLOAT),   // position at offset 0
+            (16, 0, 0, vfmt::R32G32B32A32_FLOAT),  // color/texcoord at offset 16
+        ]);
+
+        virgl_submit_sync(cmdbuf.as_slice())?;
+        crate::serial_println!("[virgl] Step 8: pipeline state created (shaders, blend, DSA, rasterizer, VE)");
+    }
+
+    // Step 10: Create vertex buffer resource for the render loop
     with_device_state(|state| {
         virgl_resource_create_3d_cmd(
-            state, RESOURCE_VB_ID, pipe::BUFFER, vfmt::R8G8B8A8_UNORM,
-            pipe::BIND_VERTEX_BUFFER, VB_SIZE as u32, 1, 1, 1,
+            state,
+            RESOURCE_VB_ID,
+            pipe::BUFFER,
+            vfmt::R8G8B8A8_UNORM,
+            pipe::BIND_VERTEX_BUFFER,
+            VB_SIZE as u32,
+            1, 1, 1,
         )
     })?;
     with_device_state(|state| {
         virgl_ctx_attach_resource_cmd(state, VIRGL_CTX_ID, RESOURCE_VB_ID)
     })?;
-    crate::serial_println!("[virgl] B7: vertex buffer created");
+    crate::serial_println!("[virgl] Step 9: vertex buffer created (id={}, {}B)", RESOURCE_VB_ID, VB_SIZE);
 
-    crate::serial_println!("[virgl] VirGL 3D pipeline initialized");
-    crate::serial_println!("[virgl_init] END: VIRGL_ENABLED={}", VIRGL_ENABLED.load(Ordering::Acquire));
-
-    // =========================================================================
-    // PHASE C: RESOURCE_INLINE_WRITE test
-    // =========================================================================
-    // Write pixels directly to resource 2 via VirGL command stream (no DMA).
-    // Then BLIT to resource 1. Then TRANSFER_TO_HOST_2D to sync resource 1
-    // host texture → BAR0. Then RESOURCE_FLUSH.
-    {
-        crate::serial_println!("[virgl] Phase C: RESOURCE_INLINE_WRITE → BLIT → TRANSFER_TO_HOST_2D");
-
-        // C1: Attach resource 1 to VirGL context
-        with_device_state(|state| {
-            virgl_ctx_attach_resource_cmd(state, VIRGL_CTX_ID, RESOURCE_ID)
-        })?;
-        crate::serial_println!("[virgl] C1: resource 1 attached to VirGL context");
-
-        // C2: Inline-write 1 row of cornflower blue to resource 2 (host-side)
-        // Cornflower blue in B8G8R8X8: B=0xED, G=0x95, R=0x64, X=0xFF = 0xFF6495ED
-        let cornflower: u32 = 0xFF6495ED;
-        let row_pixels = width as usize;
-        let mut row_data = [0u32; 1024]; // max 1024 pixels per row
-        for i in 0..row_pixels.min(1024) {
-            row_data[i] = cornflower;
-        }
-        // Write 8 rows via inline write to resource 2
-        let mut cmdbuf = CommandBuffer::new();
-        cmdbuf.set_sub_ctx(1);
-        for row in 0..8u32 {
-            cmdbuf.resource_inline_write_2d(
-                RESOURCE_3D_ID,
-                0, row, width, 1,  // x, y, w, h
-                width * 4,         // stride
-                &row_data[..row_pixels.min(1024)],
-            );
-        }
-        let iw_fence = virgl_submit(cmdbuf.as_slice())?;
-        with_device_state(|state| { virgl_fence_sync(state, iw_fence) })?;
-        crate::serial_println!("[virgl] C2: RESOURCE_INLINE_WRITE 8 rows to resource 2 (fence={})", iw_fence);
-
-        // C3: BLIT from resource 2 → resource 1 (host-side copy)
-        cmdbuf.clear();
-        cmdbuf.set_sub_ctx(1);
-        cmdbuf.blit(
-            RESOURCE_3D_ID, vfmt::B8G8R8X8_UNORM, 0, 0, width, height,
-            RESOURCE_ID,    vfmt::B8G8R8X8_UNORM, 0, 0, width, height,
-        );
-        let blit_fence = virgl_submit(cmdbuf.as_slice())?;
-        with_device_state(|state| { virgl_fence_sync(state, blit_fence) })?;
-        crate::serial_println!("[virgl] C3: BLIT resource 2 → resource 1 (fence={})", blit_fence);
-
-        // C4: TRANSFER_TO_HOST_2D on resource 1 — sync host texture to guest backing
-        // (This is the REVERSE of what we tried before — maybe it syncs from host→guest for 2D)
-        with_device_state(|state| {
-            unsafe {
-                let cmd_ptr = &raw mut PCI_CMD_BUF;
-                let cmd = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut VirtioGpuTransferToHost2d);
-                *cmd = VirtioGpuTransferToHost2d {
-                    hdr: VirtioGpuCtrlHdr {
-                        type_: cmd::TRANSFER_TO_HOST_2D,
-                        flags: 0,
-                        fence_id: 0,
-                        ctx_id: 0,
-                        padding: 0,
-                    },
-                    r_x: 0,
-                    r_y: 0,
-                    r_width: state.width,
-                    r_height: state.height,
-                    offset: 0,
-                    resource_id: RESOURCE_ID,
-                    padding: 0,
-                };
-            }
-            send_command_expect_ok(state, core::mem::size_of::<VirtioGpuTransferToHost2d>() as u32)
-        })?;
-        crate::serial_println!("[virgl] C4: TRANSFER_TO_HOST_2D on resource 1 OK");
-
-        // C5: RESOURCE_FLUSH on resource 1
-        with_device_state(|state| {
-            resource_flush_3d(state, RESOURCE_ID)
-        })?;
-        crate::serial_println!("[virgl] C5: RESOURCE_FLUSH on resource 1 OK");
-
-        // C6: Check BAR0
-        unsafe {
-            let p0 = core::ptr::read_volatile(bar0_virt as *const u32);
-            let mid = (width as usize / 2) + (height as usize / 2) * (width as usize);
-            let pm = core::ptr::read_volatile((bar0_virt as *const u32).add(mid));
-            crate::serial_println!("[virgl] C6: BAR0 pixel[0]=0x{:08x} pixel[mid]=0x{:08x}", p0, pm);
-        }
-    }
-
-    // Fallback: write GREEN to BAR0 if BLIT/inline write didn't work
-    {
-        unsafe {
-            let p0 = core::ptr::read_volatile(bar0_virt as *const u32);
-            if p0 == 0xFFFF00FF || p0 == 0 {
-                crate::serial_println!("[virgl] Phase C didn't update BAR0 — writing GREEN fallback");
-                let pixel_count = (width * height) as usize;
-                let bar0_pixels = core::slice::from_raw_parts_mut(bar0_virt as *mut u32, pixel_count);
-                let green: u32 = 0x0000FF00;
-                for p in bar0_pixels.iter_mut() {
-                    *p = green;
-                }
-                #[cfg(target_arch = "aarch64")]
-                {
-                    let len = pixel_count * 4;
-                    for off in (0..len).step_by(64) {
-                        let addr = bar0_virt.add(off) as usize;
-                        core::arch::asm!("dc cvac, {}", in(reg) addr, options(nostack));
-                    }
-                    core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-                }
-                with_device_state(|state| {
-                    resource_flush_3d(state, RESOURCE_ID)
-                }).ok();
-                crate::serial_println!("[virgl] GREEN fallback written + flushed");
-            }
-        }
-    }
-
-    // Disable hex dump after init — render loop should not dump
+    VIRGL_SCANOUT_ACTIVE.store(true, Ordering::Release);
     VIRGL_HEX_DUMP_ENABLED.store(false, Ordering::Relaxed);
+
+    crate::serial_println!("[virgl] VirGL 3D pipeline initialized successfully");
 
     Ok(())
 }

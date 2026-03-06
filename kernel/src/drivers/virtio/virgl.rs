@@ -33,6 +33,7 @@ mod ccmd {
     pub const CREATE_SUB_CTX: u8 = 29;
     pub const DESTROY_SUB_CTX: u8 = 30;
     pub const BIND_SHADER: u8 = 31;
+    pub const SET_TWEAKS: u8 = 46;
 }
 
 // =============================================================================
@@ -40,7 +41,7 @@ mod ccmd {
 // =============================================================================
 
 #[allow(dead_code)]
-mod obj {
+pub mod obj {
     pub const NULL: u8 = 0;
     pub const BLEND: u8 = 1;
     pub const RASTERIZER: u8 = 2;
@@ -173,6 +174,11 @@ impl CommandBuffer {
         &self.data[..self.len]
     }
 
+    /// Number of u32 DWORDs in the buffer.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
     /// Size in bytes.
     pub fn byte_len(&self) -> usize {
         self.len * 4
@@ -215,6 +221,15 @@ impl CommandBuffer {
         self.push(sub_ctx_id);
     }
 
+    /// Send a SET_TWEAKS command (Mesa compatibility hint to virglrenderer).
+    /// tweak_id=1: gles_emulate_bgra — enables BGRA texture emulation on GLES hosts
+    /// tweak_id=2: gles_apply_bgra_dest_swizzle — BGRA destination swizzle
+    pub fn set_tweaks(&mut self, tweak_id: u32, value: u32) {
+        self.push(Self::cmd0(ccmd::SET_TWEAKS, 0, 2));
+        self.push(tweak_id);
+        self.push(value);
+    }
+
     /// Create a surface object wrapping a resource.
     pub fn create_surface(&mut self, handle: u32, res_handle: u32, fmt: u32, level: u32, layers: u32) {
         self.push(Self::cmd0(ccmd::CREATE_OBJECT, obj::SURFACE, 5));
@@ -230,7 +245,7 @@ impl CommandBuffer {
         // len=11: handle + S0 + S1 + S2[0..7]
         self.push(Self::cmd0(ccmd::CREATE_OBJECT, obj::BLEND, 11));
         self.push(handle);
-        self.push(0); // S0: no special features
+        self.push(0x00000004); // S0: dither enabled (bit 2) — matches Mesa
         self.push(0); // S1: logicop_func = 0
         // S2[0]: colormask=0xF (write RGBA), blend disabled
         // VIRGL_OBJ_BLEND_S2_RT_COLORMASK(x) = ((x) & 0xf) << 27 in virgl_hw.h
@@ -252,22 +267,21 @@ impl CommandBuffer {
         self.push(0); // alpha_ref = 0.0
     }
 
-    /// Create a basic rasterizer state (fill mode, depth clip, half-pixel center).
+    /// Create a basic rasterizer state matching Mesa exactly (0x60008082).
     pub fn create_rasterizer_default(&mut self, handle: u32) {
         self.push(Self::cmd0(ccmd::CREATE_OBJECT, obj::RASTERIZER, 9));
         self.push(handle);
-        // S0 bit layout per virglrenderer vrend_decode.c:
-        //   bit 0:  flatshade
+        // S0 matching Mesa 0x60008082:
         //   bit 1:  depth_clip_near
-        //   bit 2:  depth_clip_far (clip_halfz in older versions)
-        //   bit 3:  rasterizer_discard  (NOT scissor!)
-        //   bit 14: scissor
+        //   bit 7:  point_quad_rasterization
+        //   bit 15: front_ccw
         //   bit 29: half_pixel_center
-        // Fill modes: bits 10-11 = fill_front, bits 12-13 = fill_back (FILL=0)
-        self.push((1 << 1) | (1 << 14) | (1 << 29));
+        //   bit 30: bottom_edge_rule
+        // NO scissor (bit 14) — Mesa doesn't enable it for simple clears
+        self.push((1 << 1) | (1 << 7) | (1 << 15) | (1 << 29) | (1 << 30));
         self.push(0x3F800000u32); // point_size = 1.0f
         self.push(0); // sprite_coord_enable
-        self.push(0); // S3
+        self.push(0x0000FFFF); // S3: clip_plane_enable = all (matches Mesa)
         self.push(0x3F800000u32); // line_width = 1.0f
         self.push(0); // offset_units
         self.push(0); // offset_scale
@@ -364,9 +378,9 @@ impl CommandBuffer {
         self.push(f32_bits(g));
         self.push(f32_bits(b));
         self.push(f32_bits(a));
-        // depth as f64 split into two u32s (0.0)
-        self.push(0);
-        self.push(0);
+        // depth as f64 = 1.0 (0x3FF0000000000000) matching Mesa exactly
+        self.push(0x00000000); // low 32 bits
+        self.push(0x3FF00000); // high 32 bits = 1.0
         self.push(0); // stencil
     }
 
