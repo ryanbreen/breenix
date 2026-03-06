@@ -581,6 +581,33 @@ fn dma_cache_clean(_ptr: *const u8, _len: usize) {
     // x86_64 has cache-coherent DMA; no explicit flush needed.
 }
 
+/// Invalidate data cache lines covering a DMA buffer.
+///
+/// After the host writes to guest memory via DMA (e.g., TRANSFER_FROM_HOST),
+/// the CPU cache may hold stale data. DC CIVAC cleans and invalidates each
+/// cache line so subsequent CPU reads see the DMA-written values.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn dma_cache_invalidate(ptr: *const u8, len: usize) {
+    const CACHE_LINE: usize = 64;
+    let start = ptr as usize & !(CACHE_LINE - 1);
+    let end = (ptr as usize + len + CACHE_LINE - 1) & !(CACHE_LINE - 1);
+    for addr in (start..end).step_by(CACHE_LINE) {
+        unsafe {
+            core::arch::asm!("dc civac, {}", in(reg) addr, options(nostack));
+        }
+    }
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline]
+fn dma_cache_invalidate(_ptr: *const u8, _len: usize) {
+    // x86_64 has cache-coherent DMA; no explicit invalidation needed.
+}
+
 /// Check if the GPU PCI driver has been initialized.
 pub fn is_initialized() -> bool {
     GPU_PCI_INITIALIZED.load(Ordering::Acquire)
@@ -2768,9 +2795,9 @@ pub fn virgl_init() -> Result<(), &'static str> {
         crate::serial_println!("[virgl] Step 5: resource primed (TRANSFER_TO_HOST + SET_SCANOUT + FLUSH)");
     }
 
-    // Step 7: Minimal VirGL clear to cornflower blue — matches proven B5 flow.
-    // Uses only the minimal commands needed: sub_ctx, tweaks, surface, FBO, clear.
-    // No shaders/blend/DSA/rasterizer needed for CLEAR operations.
+    // Step 7: Single mega-batch — create all pipeline state + initial clear.
+    // Pipeline state creation in a separate batch poisons subsequent clears,
+    // so we include everything in one batch.
     {
         let mut cmdbuf = CommandBuffer::new();
         cmdbuf.create_sub_ctx(1);
@@ -2779,9 +2806,23 @@ pub fn virgl_init() -> Result<(), &'static str> {
         cmdbuf.set_tweaks(2, width);
         cmdbuf.create_surface(1, RESOURCE_3D_ID, vfmt::B8G8R8X8_UNORM, 0, 0);
         cmdbuf.set_framebuffer_state(0, &[1]);
-        cmdbuf.clear_color(0.392, 0.584, 0.929, 1.0); // Cornflower blue
+
+        // Non-shader pipeline state with UNIQUE handles.
+        // Shaders removed — known to break the batch (text-mode TGSI
+        // may not be supported by Parallels' VirGL implementation).
+        cmdbuf.create_blend_simple(2);
+        cmdbuf.create_dsa_disabled(3);
+        cmdbuf.create_rasterizer_default(4);
+        cmdbuf.create_vertex_elements(5, &[
+            (0, 0, 0, vfmt::R32G32B32A32_FLOAT),
+            (16, 0, 0, vfmt::R32G32B32A32_FLOAT),
+        ]);
+
+        // Clear to cornflower blue (AFTER pipeline state, in same batch)
+        cmdbuf.clear_color(0.392, 0.584, 0.929, 1.0);
+
         virgl_submit_sync(cmdbuf.as_slice())?;
-        crate::serial_println!("[virgl] Step 6: VirGL clear (cornflower blue) submitted");
+        crate::serial_println!("[virgl] Step 6: mega-batch submitted (pipeline + clear, {} DWORDs)", cmdbuf.len());
     }
 
     // Step 8: RESOURCE_FLUSH to display the VirGL-rendered cornflower blue.
@@ -2789,54 +2830,84 @@ pub fn virgl_init() -> Result<(), &'static str> {
     with_device_state(|state| { resource_flush_3d(state, RESOURCE_3D_ID) })?;
     crate::serial_println!("[virgl] Step 7: RESOURCE_FLUSH — display should show cornflower blue");
 
-    // Step 9: Create full pipeline state objects for the render loop.
-    // Shaders, blend, DSA, rasterizer, vertex elements are needed for drawing
-    // geometry (not just clears). Created after priming is confirmed working.
-    {
-        let mut cmdbuf = CommandBuffer::new();
-        cmdbuf.set_sub_ctx(1);
-
-        // Passthrough vertex shader: position + generic[0] (color/texcoord)
-        let vs_text = b"VERT\nDCL IN[0], POSITION\nDCL IN[1], GENERIC[0]\nDCL OUT[0], POSITION\nDCL OUT[1], GENERIC[0]\n  0: MOV OUT[0], IN[0]\n  1: MOV OUT[1], IN[1]\n  2: END\n";
-        cmdbuf.create_shader(1, pipe::SHADER_VERTEX, vs_text);
-
-        // Passthrough fragment shader: color from vertex
-        let fs_text = b"FRAG\nDCL IN[0], GENERIC[0], PERSPECTIVE\nDCL OUT[0], COLOR\n  0: MOV OUT[0], IN[0]\n  1: END\n";
-        cmdbuf.create_shader(2, pipe::SHADER_FRAGMENT, fs_text);
-
-        cmdbuf.create_blend_simple(1);
-        cmdbuf.create_dsa_disabled(1);
-        cmdbuf.create_rasterizer_default(1);
-        cmdbuf.create_vertex_elements(1, &[
-            (0, 0, 0, vfmt::R32G32B32A32_FLOAT),   // position at offset 0
-            (16, 0, 0, vfmt::R32G32B32A32_FLOAT),  // color/texcoord at offset 16
-        ]);
-
-        virgl_submit_sync(cmdbuf.as_slice())?;
-        crate::serial_println!("[virgl] Step 8: pipeline state created (shaders, blend, DSA, rasterizer, VE)");
-    }
-
-    // Step 10: Create vertex buffer resource for the render loop
+    // Step 9: Create vertex buffer resource
     with_device_state(|state| {
         virgl_resource_create_3d_cmd(
-            state,
-            RESOURCE_VB_ID,
-            pipe::BUFFER,
-            vfmt::R8G8B8A8_UNORM,
-            pipe::BIND_VERTEX_BUFFER,
-            VB_SIZE as u32,
-            1, 1, 1,
+            state, RESOURCE_VB_ID, pipe::BUFFER, vfmt::R8G8B8A8_UNORM,
+            pipe::BIND_VERTEX_BUFFER, VB_SIZE as u32, 1, 1, 1,
         )
     })?;
     with_device_state(|state| {
         virgl_ctx_attach_resource_cmd(state, VIRGL_CTX_ID, RESOURCE_VB_ID)
     })?;
-    crate::serial_println!("[virgl] Step 9: vertex buffer created (id={}, {}B)", RESOURCE_VB_ID, VB_SIZE);
+    crate::serial_println!("[virgl] Step 8: vertex buffer created (id={}, {}B)", RESOURCE_VB_ID, VB_SIZE);
 
     VIRGL_SCANOUT_ACTIVE.store(true, Ordering::Release);
     VIRGL_HEX_DUMP_ENABLED.store(false, Ordering::Relaxed);
 
     crate::serial_println!("[virgl] VirGL 3D pipeline initialized successfully");
+
+    // Demo: cross-batch clear to GREEN (no object creation, just clear).
+    virgl_render_demo_pattern(width, height)?;
+
+    Ok(())
+}
+
+/// Render a colored rectangle pattern via VirGL scissored clears.
+///
+/// Each clear batch creates a fresh surface + FBO (required for cross-batch
+/// rendering). Scissored clears draw colored rectangles without needing shaders.
+fn virgl_render_demo_pattern(width: u32, height: u32) -> Result<(), &'static str> {
+    crate::serial_println!("[virgl-demo] CPU-composited rectangles ({}x{})...", width, height);
+
+    let fb_ptr = unsafe { PCI_3D_FB_PTR };
+    let stride = width as usize;
+
+    // Helper: fill a rectangle in the backing buffer
+    // B8G8R8X8_UNORM: bytes are [B, G, R, X] → as little-endian u32 = 0xXXRRGGBB
+    let fill_rect = |x: usize, y: usize, w: usize, h: usize, r: u8, g: u8, b: u8| {
+        let pixel: u32 = 0xFF000000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+        for row in y..(y + h).min(height as usize) {
+            for col in x..(x + w).min(width as usize) {
+                let off = (row * stride + col) * 4;
+                unsafe { core::ptr::write_volatile(fb_ptr.add(off) as *mut u32, pixel); }
+            }
+        }
+    };
+
+    // Dark blue background
+    fill_rect(0, 0, width as usize, height as usize, 25, 25, 77);
+    crate::serial_println!("[virgl-demo] Background: dark blue");
+
+    // Red rectangle (left area)
+    fill_rect(50, 50, 300, 500, 255, 51, 51);
+    crate::serial_println!("[virgl-demo] Rect: red (50,50 300x500)");
+
+    // Green rectangle (center)
+    fill_rect(400, 100, 250, 400, 51, 230, 51);
+    crate::serial_println!("[virgl-demo] Rect: green (400,100 250x400)");
+
+    // Yellow rectangle (right)
+    fill_rect(700, 150, 250, 300, 255, 255, 0);
+    crate::serial_println!("[virgl-demo] Rect: yellow (700,150 250x300)");
+
+    // White rectangle (overlapping)
+    fill_rect(200, 200, 200, 200, 255, 255, 255);
+    crate::serial_println!("[virgl-demo] Rect: white (200,200 200x200)");
+
+    // DMA cache clean — flush CPU writes to RAM so host can see them
+    dma_cache_clean(fb_ptr, (width * height * 4) as usize);
+
+    // Upload to host via TRANSFER_TO_HOST_3D
+    with_device_state(|state| {
+        transfer_to_host_3d(state, RESOURCE_3D_ID, 0, 0, width, height, width * 4)
+    })?;
+    crate::serial_println!("[virgl-demo] TRANSFER_TO_HOST_3D done");
+
+    // Display
+    with_device_state(|state| { set_scanout_resource(state, RESOURCE_3D_ID) })?;
+    with_device_state(|state| { resource_flush_3d(state, RESOURCE_3D_ID) })?;
+    crate::serial_println!("[virgl-demo] SET_SCANOUT + FLUSH done — should show colored rectangles");
 
     Ok(())
 }

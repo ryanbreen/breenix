@@ -288,6 +288,20 @@ impl CommandBuffer {
         self.push(0); // offset_clamp
     }
 
+    /// Create a rasterizer state with custom S0 flags.
+    pub fn create_rasterizer(&mut self, handle: u32, s0_flags: u32) {
+        self.push(Self::cmd0(ccmd::CREATE_OBJECT, obj::RASTERIZER, 9));
+        self.push(handle);
+        self.push(s0_flags);
+        self.push(0x3F800000u32); // point_size = 1.0f
+        self.push(0); // sprite_coord_enable
+        self.push(0x0000FFFF); // clip_plane_enable = all
+        self.push(0x3F800000u32); // line_width = 1.0f
+        self.push(0); // offset_units
+        self.push(0); // offset_scale
+        self.push(0); // offset_clamp
+    }
+
     /// Bind an object by type and handle.
     pub fn bind_object(&mut self, handle: u32, obj_type: u8) {
         self.push(Self::cmd0(ccmd::BIND_OBJECT, obj_type, 1));
