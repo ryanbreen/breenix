@@ -18,8 +18,20 @@ use crate::task::scheduler;
 use crate::tracing::providers::irq::trace_timer_tick;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-/// Virtual timer interrupt ID (PPI 27)
-pub const TIMER_IRQ: u32 = 27;
+/// Virtual timer interrupt ID (PPI 27) — used on QEMU/Parallels
+pub const VIRT_TIMER_IRQ: u32 = 27;
+
+/// Physical timer interrupt ID (PPI 30) — used on VMware Fusion
+pub const PHYS_TIMER_IRQ: u32 = 30;
+
+/// Get the active timer IRQ based on platform
+pub fn timer_irq() -> u32 {
+    if crate::platform_config::use_physical_timer() {
+        PHYS_TIMER_IRQ
+    } else {
+        VIRT_TIMER_IRQ
+    }
+}
 
 /// Time quantum in timer ticks (10 ticks = ~50ms at 200Hz)
 const TIME_QUANTUM: u32 = 10;
@@ -111,30 +123,107 @@ pub fn init() {
         ticks_per_interrupt
     );
 
-    // Arm the timer for the first interrupt
-    arm_timer(ticks_per_interrupt);
-
     // Enable the timer interrupt in the GIC
     use crate::arch_impl::aarch64::gic;
     use crate::arch_impl::traits::InterruptController;
-    gic::Gicv2::enable_irq(TIMER_IRQ as u8);
+
+    if crate::platform_config::is_vmware() {
+        // VMware: enable BOTH virtual (PPI 27) and physical (PPI 30) timer PPIs
+        // so we can discover which one actually fires
+        gic::Gicv2::enable_irq(VIRT_TIMER_IRQ as u8);
+        gic::Gicv2::enable_irq(PHYS_TIMER_IRQ as u8);
+
+        // Arm BOTH timers
+        unsafe {
+            // Virtual timer
+            core::arch::asm!(
+                "msr cntv_tval_el0, {}",
+                in(reg) ticks_per_interrupt,
+                options(nomem, nostack)
+            );
+            core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
+            // Physical timer
+            core::arch::asm!(
+                "msr cntp_tval_el0, {}",
+                in(reg) ticks_per_interrupt,
+                options(nomem, nostack)
+            );
+            core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
+        }
+        crate::serial_println!("[timer] VMware: armed BOTH virtual (PPI 27) and physical (PPI 30) timers");
+
+        // Read back timer state to verify writes took effect
+        let (vctl, vtval, pctl, ptval): (u64, u64, u64, u64);
+        unsafe {
+            core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) vctl, options(nomem, nostack));
+            core::arch::asm!("mrs {}, cntv_tval_el0", out(reg) vtval, options(nomem, nostack));
+            core::arch::asm!("mrs {}, cntp_ctl_el0", out(reg) pctl, options(nomem, nostack));
+            core::arch::asm!("mrs {}, cntp_tval_el0", out(reg) ptval, options(nomem, nostack));
+        }
+        crate::serial_println!("[timer] CNTV_CTL={:#x} CNTV_TVAL={} CNTP_CTL={:#x} CNTP_TVAL={}",
+            vctl, vtval as i64, pctl, ptval as i64);
+
+        // Dump GIC state for diagnosis
+        dump_gic_state();
+
+        // Read DAIF to verify IRQs/FIQs are unmaskable
+        let daif: u64;
+        unsafe { core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack)); }
+        crate::serial_println!("[timer] DAIF={:#x} (IRQ={} FIQ={})",
+            daif,
+            if daif & (1 << 7) != 0 { "MASKED" } else { "unmasked" },
+            if daif & (1 << 6) != 0 { "MASKED" } else { "unmasked" });
+
+        // Read Group enable state (ICC_IGRPEN0_EL1 only accessible when DS=1)
+        let grpen1: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, icc_igrpen1_el1", out(reg) grpen1, options(nomem, nostack));
+        }
+        if gic::ds_enabled() {
+            let grpen0: u64;
+            unsafe {
+                core::arch::asm!("mrs {}, icc_igrpen0_el1", out(reg) grpen0, options(nomem, nostack));
+            }
+            crate::serial_println!("[timer] ICC_IGRPEN0={:#x} ICC_IGRPEN1={:#x} USE_GROUP0={} DS=1",
+                grpen0, grpen1, crate::arch_impl::aarch64::gic::use_group0());
+        } else {
+            crate::serial_println!("[timer] ICC_IGRPEN1={:#x} USE_GROUP0={} DS=0 (IGRPEN0 inaccessible)",
+                grpen1, crate::arch_impl::aarch64::gic::use_group0());
+        }
+    } else {
+        // Non-VMware: use the selected timer only
+        arm_timer(ticks_per_interrupt);
+        let irq = timer_irq();
+        gic::Gicv2::enable_irq(irq as u8);
+        crate::serial_println!("[timer] Using {} timer (PPI {})",
+            if irq == PHYS_TIMER_IRQ { "physical" } else { "virtual" }, irq);
+    }
 
     TIMER_INITIALIZED.store(true, Ordering::Release);
     log::info!("ARM64 timer interrupt initialized");
 }
 
-/// Arm the virtual timer to fire after `ticks` counter increments
+/// Arm the timer to fire after `ticks` counter increments.
+/// Uses the physical timer (CNTP) on VMware, virtual timer (CNTV) elsewhere.
 fn arm_timer(ticks: u64) {
-    unsafe {
-        // Set countdown value (CNTV_TVAL_EL0)
-        core::arch::asm!(
-            "msr cntv_tval_el0, {}",
-            in(reg) ticks,
-            options(nomem, nostack)
-        );
-        // Enable timer with interrupts (CNTV_CTL_EL0)
-        // Bit 0 = ENABLE, Bit 1 = IMASK (0 = interrupt enabled)
-        core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
+    if crate::platform_config::use_physical_timer() {
+        unsafe {
+            core::arch::asm!(
+                "msr cntp_tval_el0, {}",
+                in(reg) ticks,
+                options(nomem, nostack)
+            );
+            core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
+        }
+    } else {
+        unsafe {
+            core::arch::asm!(
+                "msr cntv_tval_el0, {}",
+                in(reg) ticks,
+                options(nomem, nostack)
+            );
+            core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
+        }
     }
 }
 
@@ -155,7 +244,18 @@ pub extern "C" fn timer_interrupt_handler() {
     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
 
     // Re-arm the timer for the next interrupt using the dynamically calculated value
-    arm_timer(TICKS_PER_INTERRUPT.load(Ordering::Relaxed));
+    let ticks = TICKS_PER_INTERRUPT.load(Ordering::Relaxed);
+    if crate::platform_config::is_vmware() {
+        // VMware: re-arm both timers until we know which one fires
+        unsafe {
+            core::arch::asm!("msr cntv_tval_el0, {}", in(reg) ticks, options(nomem, nostack));
+            core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
+            core::arch::asm!("msr cntp_tval_el0, {}", in(reg) ticks, options(nomem, nostack));
+            core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
+        }
+    } else {
+        arm_timer(ticks);
+    }
 
     // CPU 0 only: update global wall clock time (single atomic operation)
     if cpu_id == 0 {
@@ -219,6 +319,98 @@ pub extern "C" fn timer_interrupt_handler() {
 
     // Exit IRQ context (decrement HARDIRQ count)
     crate::per_cpu_aarch64::irq_exit();
+}
+
+/// Dump GIC register state for VMware timer debugging.
+/// Probes multiple known GIC addresses to discover working hardware.
+fn dump_gic_state() {
+    let gic_ver = crate::platform_config::gic_version();
+    let gicd_base = crate::platform_config::gicd_base_phys();
+    let gicc_base = crate::platform_config::gicc_base_phys();
+    let gicr_base = crate::platform_config::gicr_base_phys();
+    crate::serial_println!("[timer] GIC version={} GICD={:#x} GICC={:#x} GICR={:#x}",
+        gic_ver, gicd_base, gicc_base, gicr_base);
+
+    const HHDM: u64 = 0xFFFF_0000_0000_0000;
+
+    // Probe multiple known GIC addresses to find which one responds
+    // 0xFFFFFFFF means non-functional (unmapped or no hardware)
+    let probe_addrs: &[(u64, &str)] = &[
+        (gicd_base, "reported GICD"),
+        (gicc_base, "reported GICC"),
+        (gicr_base, "reported GICR"),
+        (0x0800_0000, "QEMU GICv2 GICD"),
+        (0x0801_0000, "QEMU GICv2 GICC"),
+        (0x0201_0000, "Parallels GICD"),
+        (0x0250_0000, "Parallels GICR"),
+        (0x3FFF_0000, "near UART region"),
+    ];
+
+    for &(addr, label) in probe_addrs {
+        if addr == 0 {
+            continue;
+        }
+        unsafe {
+            let ptr = (HHDM + addr) as *const u32;
+            let ctlr = core::ptr::read_volatile(ptr);
+            let pidr2 = core::ptr::read_volatile(ptr.byte_add(0xFE8));
+            let ok = ctlr != 0xFFFF_FFFF;
+            crate::serial_println!("[gic-probe] {:#010x} ({}) CTLR={:#010x} PIDR2={:#010x} {}",
+                addr, label, ctlr, pidr2, if ok { "<<< FOUND" } else { "" });
+        }
+    }
+
+    // Also read GICv3 system registers (these always work)
+    let (pmr, grpen, bpr, sre): (u64, u64, u64, u64);
+    unsafe {
+        core::arch::asm!("mrs {}, icc_pmr_el1", out(reg) pmr, options(nomem, nostack));
+        core::arch::asm!("mrs {}, icc_igrpen1_el1", out(reg) grpen, options(nomem, nostack));
+        core::arch::asm!("mrs {}, icc_bpr1_el1", out(reg) bpr, options(nomem, nostack));
+        core::arch::asm!("mrs {}, icc_sre_el1", out(reg) sre, options(nomem, nostack));
+    }
+    crate::serial_println!("[timer] ICC regs: PMR={:#x} GRPEN1={:#x} BPR1={:#x} SRE={:#x}",
+        pmr, grpen, bpr, sre);
+
+    // Read GICD registers
+    unsafe {
+        let gicd = (HHDM + gicd_base) as *const u32;
+        let gicd_ctlr = core::ptr::read_volatile(gicd.add(0));
+        let gicd_isenabler0 = core::ptr::read_volatile(gicd.byte_add(0x100));
+        crate::serial_println!("[timer] GICD@{:#x}: CTLR={:#x} ISENABLER0={:#x}",
+            gicd_base, gicd_ctlr, gicd_isenabler0);
+    }
+
+    // Read GICR registers (redistributor manages PPIs on GICv3)
+    if gicr_base != 0 {
+        unsafe {
+            // GICR has RD_base (64KB) + SGI_base (64KB) per CPU
+            // SGI_base is at offset 0x10000 from RD_base
+            let gicr_rd = (HHDM + gicr_base) as *const u32;
+            let gicr_waker = core::ptr::read_volatile(gicr_rd.byte_add(0x014));
+            let gicr_sgi = (HHDM + gicr_base + 0x10000) as *const u32;
+            let gicr_isenabler0 = core::ptr::read_volatile(gicr_sgi.byte_add(0x100));
+            let gicr_ispendr0 = core::ptr::read_volatile(gicr_sgi.byte_add(0x200));
+            let gicr_igroupr0 = core::ptr::read_volatile(gicr_sgi.byte_add(0x080));
+            let ppi27_en = (gicr_isenabler0 >> 27) & 1;
+            let ppi30_en = (gicr_isenabler0 >> 30) & 1;
+            let ppi27_pend = (gicr_ispendr0 >> 27) & 1;
+            let ppi30_pend = (gicr_ispendr0 >> 30) & 1;
+            crate::serial_println!(
+                "[timer] GICR@{:#x}: WAKER={:#x} ISENABLER0={:#010x} ISPENDR0={:#010x} IGROUPR0={:#010x}",
+                gicr_base, gicr_waker, gicr_isenabler0, gicr_ispendr0, gicr_igroupr0);
+            crate::serial_println!(
+                "[timer] GICR PPI27: en={} pend={} | PPI30: en={} pend={}",
+                ppi27_en, ppi27_pend, ppi30_en, ppi30_pend);
+
+            // Read priority for PPIs 27 and 30
+            // GICR_IPRIORITYR covers 4 IRQs per 32-bit register
+            let prio_reg6 = core::ptr::read_volatile(gicr_sgi.byte_add(0x400 + 6*4)); // IRQs 24-27
+            let prio_reg7 = core::ptr::read_volatile(gicr_sgi.byte_add(0x400 + 7*4)); // IRQs 28-31
+            let prio27 = (prio_reg6 >> 24) & 0xFF;
+            let prio30 = (prio_reg7 >> 16) & 0xFF;
+            crate::serial_println!("[timer] PPI27 priority={:#x} PPI30 priority={:#x}", prio27, prio30);
+        }
+    }
 }
 
 /// Raw serial output - no locks, single char for debugging (used by print_timer_count)
@@ -537,11 +729,11 @@ pub fn init_secondary() {
     let ticks = TICKS_PER_INTERRUPT.load(Ordering::Relaxed);
     arm_timer(ticks);
 
-    // Enable the virtual timer PPI in the GIC for this CPU.
+    // Enable the timer PPI in the GIC for this CPU.
     // PPIs are per-CPU, but ISENABLER0 (IRQs 0-31) is banked per-CPU,
     // so writing to it from this CPU enables it for this CPU.
     use crate::arch_impl::traits::InterruptController;
-    crate::arch_impl::aarch64::gic::Gicv2::enable_irq(TIMER_IRQ as u8);
+    crate::arch_impl::aarch64::gic::Gicv2::enable_irq(timer_irq() as u8);
 }
 
 /// Check if the timer is initialized

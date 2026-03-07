@@ -10,22 +10,23 @@
 ///   6. Jump to kernel_main(hw_config_ptr) -- same binary as QEMU
 
 use crate::hw_config::HardwareConfig;
-use crate::page_tables::{self, PageTableStorage};
+use crate::page_tables::{self, PageTableConfig, PageTableStorage};
 
 /// Jump to the kernel.
 ///
 /// `kernel_entry` is the physical address of the kernel entry point.
 /// `hw_config` is the HardwareConfig to pass to the kernel.
 /// `page_table_storage` contains the pre-built page tables.
+/// `pt_config` contains platform-specific page table configuration.
 ///
 /// This function never returns.
 pub fn jump_to_kernel(
     kernel_entry: u64,
     hw_config: &HardwareConfig,
     page_table_storage: &mut PageTableStorage,
-    ram_base_offset: u64,
+    pt_config: &PageTableConfig,
 ) -> ! {
-    let (ttbr0, ttbr1) = page_tables::build_page_tables(page_table_storage, ram_base_offset);
+    let (ttbr0, ttbr1) = page_tables::build_page_tables(page_table_storage, pt_config);
     let hw_config_ptr = hw_config as *const HardwareConfig as u64;
 
     log::info!("Page tables built: TTBR0=0x{:016x}, TTBR1=0x{:016x}", ttbr0, ttbr1);
@@ -125,6 +126,7 @@ unsafe fn switch_and_jump(ttbr0: u64, ttbr1: u64, entry: u64, hw_config_ptr: u64
         "orr x4, x4, #1",         // Set M bit (MMU enable)
         "orr x4, x4, #(1 << 2)",  // Set C bit (data cache enable)
         "orr x4, x4, #(1 << 12)", // Set I bit (instruction cache enable)
+        "orr x4, x4, #(1 << 23)", // Set SPAN bit (disable auto-PAN on exception entry)
         "msr sctlr_el1, x4",
         "isb",
 

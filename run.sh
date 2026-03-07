@@ -371,7 +371,7 @@ if [ "$PARALLELS" = true ]; then
 
     echo ""
     echo "--- Starting VM ---"
-    > "$SERIAL_LOG"  # Truncate serial log
+    rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
     prlctl start "$PARALLELS_VM"
 
     echo ""
@@ -545,7 +545,7 @@ if [ "$VMWARE" = true ]; then
         [ -d "$OLD_VM_DIR" ] || continue
         OLD_VMX=$(find "$OLD_VM_DIR" -name "*.vmx" -maxdepth 1 | head -1)
         if [ -n "$OLD_VMX" ]; then
-            "$VMRUN" stop "$OLD_VMX" hard 2>/dev/null || true
+            "$VMRUN" stop "$OLD_VMX" hard >/dev/null 2>&1 || true
         fi
         rm -rf "$OLD_VM_DIR"
         echo "  Cleaned up: $(basename "$OLD_VM_DIR")"
@@ -562,20 +562,85 @@ if [ "$VMWARE" = true ]; then
         EXT2_VMDK_ARG="$VM_BUNDLE/ext2-data.vmdk"
     fi
 
-    # Generate VMX config
-    VMX_FILE=$("$BREENIX_ROOT/scripts/vmware/generate-vmx.sh" \
-        "$VM_BUNDLE" \
-        "$VM_BUNDLE/boot.vmdk" \
-        "$EXT2_VMDK_ARG")
+    # Generate VMX config inline (avoid subshell issues with command substitution)
+    VMX_FILE="$VM_BUNDLE/$VM_NAME.vmx"
+    cat > "$VMX_FILE" <<VMXEOF
+.encoding = "UTF-8"
+config.version = "8"
+virtualHW.version = "22"
 
-    echo "  VMX: $VMX_FILE"
+displayName = "$VM_NAME"
+guestOS = "arm-ubuntu-64"
+firmware = "efi"
+
+numvcpus = "4"
+memsize = "2048"
+cpuid.coresPerSocket = "4"
+
+pciBridge0.present = "TRUE"
+pciBridge4.present = "TRUE"
+pciBridge4.virtualDev = "pcieRootPort"
+pciBridge4.functions = "8"
+pciBridge5.present = "TRUE"
+pciBridge5.virtualDev = "pcieRootPort"
+pciBridge5.functions = "8"
+pciBridge6.present = "TRUE"
+pciBridge6.virtualDev = "pcieRootPort"
+pciBridge6.functions = "8"
+pciBridge7.present = "TRUE"
+pciBridge7.virtualDev = "pcieRootPort"
+pciBridge7.functions = "8"
+
+nvme0.present = "TRUE"
+nvme0:0.present = "TRUE"
+nvme0:0.fileName = "$VM_BUNDLE/boot.vmdk"
+
+sata0.present = "TRUE"
+VMXEOF
+
+    if [ -n "$EXT2_VMDK_ARG" ]; then
+        cat >> "$VMX_FILE" <<VMXEOF
+
+sata0:0.present = "TRUE"
+sata0:0.fileName = "$EXT2_VMDK_ARG"
+VMXEOF
+    fi
+
+    cat >> "$VMX_FILE" <<VMXEOF
+
+serial0.present = "TRUE"
+serial0.fileType = "file"
+serial0.fileName = "$SERIAL_LOG"
+serial0.yieldOnMsrRead = "TRUE"
+
+ethernet0.present = "TRUE"
+ethernet0.connectionType = "nat"
+ethernet0.virtualDev = "e1000e"
+ethernet0.addressType = "generated"
+ethernet0.linkStatePropagation.enable = "TRUE"
+
+usb.present = "TRUE"
+usb_xhci.present = "TRUE"
+
+svga.vramSize = "268435456"
+mks.enable3d = "TRUE"
+
+vmci0.present = "TRUE"
+
+tools.syncTime = "FALSE"
+floppy0.present = "FALSE"
+hpet0.present = "TRUE"
+msg.autoAnswer = "TRUE"
+VMXEOF
+
+    echo "  VMX: $VMX_FILE ($(wc -c < "$VMX_FILE") bytes)"
 
     echo ""
     echo "--- Starting VM ---"
-    > "$SERIAL_LOG"  # Truncate serial log
-    "$VMRUN" start "$VMX_FILE" nogui 2>&1 || {
-        echo "vmrun start failed, trying with GUI..."
-        "$VMRUN" start "$VMX_FILE" gui 2>&1 || true
+    rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
+    "$VMRUN" start "$VMX_FILE" gui 2>&1 || {
+        echo "vmrun start failed with GUI, trying nogui..."
+        "$VMRUN" start "$VMX_FILE" nogui 2>&1 || true
     }
 
     echo ""

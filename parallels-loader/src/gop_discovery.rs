@@ -86,9 +86,16 @@ pub fn discover_gop(config: &mut HardwareConfig) -> Result<(), &'static str> {
         .map_err(|_| "Failed to open GOP protocol")?;
 
     // Enumerate all available modes and find the best one.
-    // "Best" = highest pixel count with a supported pixel format.
+    // "Best" = highest pixel count with width ≤ 1920 and height ≤ 1200,
+    // to avoid oversized windows that don't fit on the screen.
+    // If no mode fits under the cap, use the smallest available mode.
+    const MAX_WIDTH: usize = 1920;
+    const MAX_HEIGHT: usize = 1200;
+
     let mut best_mode: Option<uefi::proto::console::gop::Mode> = None;
     let mut best_pixels: usize = 0;
+    let mut fallback_mode: Option<uefi::proto::console::gop::Mode> = None;
+    let mut fallback_pixels: usize = usize::MAX;
     let mut mode_count: usize = 0;
 
     log::info!("[gop] Enumerating display modes...");
@@ -117,10 +124,23 @@ pub fn discover_gop(config: &mut HardwareConfig) -> Result<(), &'static str> {
             continue;
         }
 
-        if pixels > best_pixels {
-            best_pixels = pixels;
-            best_mode = Some(mode);
+        if w <= MAX_WIDTH && h <= MAX_HEIGHT {
+            // Preferred: fits within screen cap, pick largest
+            if pixels > best_pixels {
+                best_pixels = pixels;
+                best_mode = Some(mode);
+            }
+        } else if best_mode.is_none() && pixels < fallback_pixels {
+            // Fallback: if nothing fits, pick the smallest oversized mode
+            fallback_pixels = pixels;
+            fallback_mode = Some(mode);
         }
+    }
+
+    // Use the capped best mode, or fall back to smallest oversized mode
+    if best_mode.is_none() {
+        best_mode = fallback_mode;
+        best_pixels = if fallback_pixels == usize::MAX { 0 } else { fallback_pixels };
     }
 
     let _ = write!(uart, "[gop-serial] {} modes total, best={} pixels\n", mode_count, best_pixels);

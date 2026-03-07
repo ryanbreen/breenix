@@ -974,9 +974,9 @@ pub extern "C" fn handle_irq() {
     if let Some(irq_id) = gic::acknowledge_irq() {
         // Handle the interrupt based on ID
         match irq_id {
-            // Virtual timer interrupt (PPI 27)
+            // Timer interrupt — virtual (PPI 27) or physical (PPI 30)
             // This is the scheduling timer - calls into scheduler
-            crate::arch_impl::aarch64::timer_interrupt::TIMER_IRQ => {
+            irq if irq == crate::arch_impl::aarch64::timer_interrupt::timer_irq() => {
                 // Call the timer interrupt handler which handles:
                 // - Re-arming the timer
                 // - Updating global time
@@ -999,7 +999,24 @@ pub extern "C" fn handle_irq() {
             }
 
             // PPIs (16-31) - Private peripheral interrupts (excluding timer)
-            16..=31 => {}
+            // On VMware, we enable both virtual (27) and physical (30) timers
+            // to discover which fires. Handle either as a timer interrupt.
+            irq @ 16..=31 => {
+                if irq == crate::arch_impl::aarch64::timer_interrupt::VIRT_TIMER_IRQ
+                    || irq == crate::arch_impl::aarch64::timer_interrupt::PHYS_TIMER_IRQ
+                {
+                    crate::arch_impl::aarch64::timer_interrupt::timer_interrupt_handler();
+                }
+                // Diagnostic: emit raw serial for any unexpected PPI
+                if irq != crate::arch_impl::aarch64::timer_interrupt::timer_irq()
+                    && irq != crate::arch_impl::aarch64::timer_interrupt::VIRT_TIMER_IRQ
+                    && irq != crate::arch_impl::aarch64::timer_interrupt::PHYS_TIMER_IRQ
+                {
+                    crate::serial_aarch64::raw_serial_char(b'P');
+                    crate::serial_aarch64::raw_serial_char(b'0' + (irq / 10) as u8);
+                    crate::serial_aarch64::raw_serial_char(b'0' + (irq % 10) as u8);
+                }
+            }
 
             // SPIs (32-1019) - Shared peripheral interrupts
             // Note: No logging here - interrupt handlers must be < 1000 cycles

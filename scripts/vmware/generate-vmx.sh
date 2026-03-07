@@ -93,6 +93,7 @@ vmci0.present = "TRUE"
 tools.syncTime = "FALSE"
 floppy0.present = "FALSE"
 hpet0.present = "TRUE"
+msg.autoAnswer = "TRUE"
 EOF
 
 echo "$VMX_FILE"

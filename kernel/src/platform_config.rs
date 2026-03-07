@@ -69,6 +69,12 @@ static PCI_BUS_START: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "aarch64")]
 static PCI_BUS_END: AtomicU64 = AtomicU64::new(255);
 
+// RAM base offset: difference between actual physical RAM start and the linker-
+// expected 0x40000000. Zero on QEMU/Parallels, 0x40000000 on VMware Fusion.
+// Used by DMA drivers to convert kernel VAs to correct IPAs for device DMA.
+#[cfg(target_arch = "aarch64")]
+static RAM_BASE_OFFSET: AtomicU64 = AtomicU64::new(0);
+
 // xHCI loader-level HCRST flag. Non-zero if the parallels-loader already did
 // HCRST before ExitBootServices (kernel should skip HCRST).
 #[cfg(target_arch = "aarch64")]
@@ -326,6 +332,37 @@ pub fn is_qemu() -> bool {
     uart_base_phys() == 0x0900_0000
 }
 
+/// Returns true if running on VMware Fusion.
+/// Detected by non-zero RAM base offset (VMware places RAM at 0x80000000).
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn is_vmware() -> bool {
+    ram_base_offset() > 0
+}
+
+/// Returns true if the physical timer (CNTP) should be used instead of the
+/// virtual timer (CNTV). VMware Fusion doesn't deliver virtual timer (PPI 27)
+/// interrupts to EL1 guests; use the physical timer (PPI 30) instead.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn use_physical_timer() -> bool {
+    is_vmware()
+}
+
+/// RAM base offset for DMA address translation.
+///
+/// On QEMU/Parallels (offset=0): kernel VA 0x40xxxxxx maps to IPA 0x40xxxxxx.
+/// On VMware (offset=0x40000000): kernel VA 0x40xxxxxx maps to IPA 0x80xxxxxx.
+///
+/// DMA controllers need IPAs (Intermediate Physical Addresses) to access
+/// guest memory. The kernel's `virt_to_phys` must add this offset when
+/// converting HHDM-mapped kernel addresses to DMA-usable physical addresses.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn ram_base_offset() -> u64 {
+    RAM_BASE_OFFSET.load(Ordering::Relaxed)
+}
+
 /// Whether the parallels-loader already performed HCRST before ExitBootServices.
 /// If true, the kernel should skip HCRST in xhci::init to avoid destroying
 /// endpoint state that was created while the xHCI BAR was still active.
@@ -521,6 +558,17 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
             }
         }
 
+        // Compute RAM base offset for DMA address translation.
+        // The kernel linker script assumes physical RAM starts at 0x40000000.
+        // On VMware Fusion ARM64, RAM starts at 0x80000000, giving offset 0x40000000.
+        // On QEMU/Parallels, RAM starts at 0x40000000, giving offset 0.
+        let expected_ram_base: u64 = 0x4000_0000;
+        let actual_ram_base = best_base & !0x3FFF_FFFF; // Round down to 1GB boundary
+        if actual_ram_base > expected_ram_base {
+            let offset = actual_ram_base - expected_ram_base;
+            RAM_BASE_OFFSET.store(offset, Ordering::Relaxed);
+        }
+
         if best_size > 0 {
             // Frame allocator starts after kernel + BSS (48 MB from RAM base).
             // BSS includes PCI_3D_FRAMEBUFFER (~7.5 MB) and kernel stacks, so
@@ -528,7 +576,9 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
             let fa_start = best_base + 0x0300_0000; // +48 MB
             // Frame allocator must end BEFORE the DMA NC region.
             // The .dma section starts at physical 0x5000_0000, so cap fa_end there.
-            let fa_end = (best_base + best_size).min(0x5000_0000);
+            // On VMware (RAM base 0x80000000), apply the offset to the DMA boundary.
+            let dma_boundary = 0x5000_0000u64 + RAM_BASE_OFFSET.load(Ordering::Relaxed);
+            let fa_end = (best_base + best_size).min(dma_boundary);
             if fa_end > fa_start {
                 FRAME_ALLOC_START.store(fa_start, Ordering::Relaxed);
                 FRAME_ALLOC_END.store(fa_end, Ordering::Relaxed);

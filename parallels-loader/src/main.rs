@@ -14,7 +14,7 @@ use uefi::mem::memory_map::{MemoryMap, MemoryType};
 use uefi::table::cfg::ACPI2_GUID;
 
 use hw_config::HardwareConfig;
-use page_tables::PageTableStorage;
+use page_tables::{PageTableConfig, PageTableStorage};
 
 /// Page table storage - static so it survives ExitBootServices.
 static mut PAGE_TABLES: PageTableStorage = PageTableStorage::new();
@@ -188,6 +188,35 @@ fn main() -> Status {
         }
     }
 
+    // --- Platform-specific page table configuration ---
+    //
+    // On VMware (ram_base_offset > 0), the PCI ECAM at IPA 0x40000000 overlaps
+    // the kernel's expected load range. Remap ECAM to VA 0x20000000 so the
+    // kernel can access PCI config space without conflicting with kernel code.
+    let ecam_ipa = config.pci_ecam_base;
+    let ecam_size = config.pci_ecam_size;
+    let fb_ipa = if config.has_framebuffer != 0 { config.framebuffer.base } else { 0 };
+
+    if ram_base_offset > 0
+        && ecam_ipa >= 0x4000_0000
+        && ecam_ipa < 0x8000_0000
+        && ecam_size > 0
+    {
+        log::info!("ECAM remap: IPA {:#x} -> VA {:#x} (size {:#x})",
+            ecam_ipa, page_tables::ECAM_REMAP_VA, ecam_size);
+        config.pci_ecam_base = page_tables::ECAM_REMAP_VA;
+    }
+
+    let pt_config = PageTableConfig {
+        ram_base_offset,
+        ecam_ipa,
+        ecam_size,
+        fb_ipa,
+        gicd_ipa: config.gicd_base,
+        gicr_ipa: if config.gicr_range_count > 0 { config.gicr_ranges[0].base } else { 0 },
+        gicr_size: if config.gicr_range_count > 0 { config.gicr_ranges[0].length as u64 } else { 0 },
+    };
+
     // --- xHCI: DisconnectController DISABLED ---
     //
     // EXPERIMENT: DisconnectController was destroying UEFI's endpoint state
@@ -267,7 +296,7 @@ fn main() -> Status {
         }
     }
 
-    kernel_entry::jump_to_kernel(loaded_kernel.entry_phys, hw_config, page_tables, ram_base_offset);
+    kernel_entry::jump_to_kernel(loaded_kernel.entry_phys, hw_config, page_tables, &pt_config);
 }
 
 /// Populate HardwareConfig RAM regions from the UEFI memory map.

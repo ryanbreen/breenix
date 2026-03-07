@@ -17,7 +17,7 @@
 
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use crate::arch_impl::traits::InterruptController;
 
 // =============================================================================
@@ -93,6 +93,22 @@ const MAX_VALID_IRQ: u32 = 1019;
 
 /// Whether GIC has been initialized
 static GIC_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+/// Whether all interrupts are Group 0 (VMware: IGROUPR0 is RAZ/WI).
+/// When true, acknowledge via ICC_IAR0_EL1 and EOI via ICC_EOIR0_EL1.
+static USE_GROUP0: AtomicBool = AtomicBool::new(false);
+
+/// Whether GICD_CTLR.DS=1 (Disable Security) was successfully set.
+/// When DS=0, Group 0 ICC system registers (ICC_BPR0_EL1, ICC_IGRPEN0_EL1,
+/// ICC_IAR0_EL1, ICC_EOIR0_EL1) are UNDEFINED from NS EL1 and must NOT
+/// be accessed. The NS CPU interface uses Group 1 registers exclusively;
+/// the hypervisor/firmware maps Group 0 physical delivery to Group 1 NS.
+static DS_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Tracks which group the last acknowledged interrupt came from.
+/// 0 = Group 1 (normal), 1 = Group 0. Per-CPU would be ideal but
+/// a single atomic suffices for the boot CPU (VMware is single-CPU for now).
+static LAST_ACK_GROUP: AtomicU32 = AtomicU32::new(0);
 
 /// Peripheral ID Register 2 (contains GIC architecture version)
 const GICD_PIDR2: usize = 0xFE8;
@@ -405,40 +421,69 @@ impl InterruptController for Gicv2 {
 /// Acknowledge the current interrupt and get its ID.
 ///
 /// Dispatches to GICv2 MMIO or GICv3 system registers.
+/// For GICv3 with USE_GROUP0 (VMware), tries ICC_IAR0_EL1 first.
 /// Returns the interrupt ID, or None if spurious (1023).
 #[inline]
 pub fn acknowledge_irq() -> Option<u32> {
     let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
-    let irq_id = if version >= 3 {
-        // GICv3: Read ICC_IAR1_EL1
-        let iar: u64;
-        unsafe { core::arch::asm!("mrs {}, icc_iar1_el1", out(reg) iar, options(nomem, nostack)); }
-        (iar & 0xFFFFFF) as u32 // 24-bit INTID for GICv3
+    if version >= 3 {
+        if USE_GROUP0.load(Ordering::Relaxed) && DS_ENABLED.load(Ordering::Relaxed) {
+            // DS=1 path: Group 0 ICC registers are accessible.
+            // Try ICC_IAR0_EL1 first (Group 0), fall back to IAR1.
+            let iar0: u64;
+            unsafe { core::arch::asm!("mrs {}, icc_iar0_el1", out(reg) iar0, options(nomem, nostack)); }
+            let id0 = (iar0 & 0xFFFFFF) as u32;
+            if id0 <= MAX_VALID_IRQ {
+                LAST_ACK_GROUP.store(0, Ordering::Relaxed); // Group 0
+                return Some(id0);
+            }
+            // Fall through to try IAR1
+            let iar1: u64;
+            unsafe { core::arch::asm!("mrs {}, icc_iar1_el1", out(reg) iar1, options(nomem, nostack)); }
+            let id1 = (iar1 & 0xFFFFFF) as u32;
+            if id1 <= MAX_VALID_IRQ {
+                LAST_ACK_GROUP.store(1, Ordering::Relaxed); // Group 1
+                return Some(id1);
+            }
+            None
+        } else {
+            // Normal GICv3 path (QEMU/Parallels): all interrupts are Group 1
+            let iar: u64;
+            unsafe { core::arch::asm!("mrs {}, icc_iar1_el1", out(reg) iar, options(nomem, nostack)); }
+            let irq_id = (iar & 0xFFFFFF) as u32;
+            if irq_id > MAX_VALID_IRQ { None } else {
+                LAST_ACK_GROUP.store(1, Ordering::Relaxed);
+                Some(irq_id)
+            }
+        }
     } else {
         // GICv2: Read GICC_IAR
         let iar = gicc_read(GICC_IAR);
-        iar & 0x3FF // 10-bit INTID for GICv2
-    };
-
-    if irq_id > MAX_VALID_IRQ {
-        None
-    } else {
-        Some(irq_id)
+        let irq_id = iar & 0x3FF;
+        if irq_id > MAX_VALID_IRQ { None } else { Some(irq_id) }
     }
 }
 
 /// Signal end of interrupt by ID.
 ///
+/// Uses EOIR0 for Group 0 interrupts (VMware) and EOIR1 for Group 1 (normal).
 /// CRITICAL: `#[inline(never)]` prevents the compiler from hoisting the
 /// GICC/ICC base into a callee-saved register shared with acknowledge_irq.
-/// See original GICv2 comment for the full rationale.
 #[inline(never)]
 pub fn end_of_interrupt(irq_id: u32) {
     let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
     if version >= 3 {
-        // GICv3: Write ICC_EOIR1_EL1
-        unsafe {
-            core::arch::asm!("msr icc_eoir1_el1, {}", in(reg) irq_id as u64, options(nomem, nostack));
+        let group = LAST_ACK_GROUP.load(Ordering::Relaxed);
+        if group == 0 && DS_ENABLED.load(Ordering::Relaxed) {
+            // Group 0 with DS=1: ICC_EOIR0_EL1 is accessible
+            unsafe {
+                core::arch::asm!("msr icc_eoir0_el1, {}", in(reg) irq_id as u64, options(nomem, nostack));
+            }
+        } else {
+            // Group 1 (normal), or Group 0 with DS=0 (use EOIR1 — hypervisor handles mapping)
+            unsafe {
+                core::arch::asm!("msr icc_eoir1_el1, {}", in(reg) irq_id as u64, options(nomem, nostack));
+            }
         }
     } else {
         // GICv2: Write GICC_EOIR
@@ -658,9 +703,11 @@ const GICR_ICFGR0: usize = 0xC00;
 /// GICD register for SPI routing (GICv3)
 const GICD_IROUTER: usize = 0x6100;
 
-/// GICv3 GICD_CTLR bits
-const GICD_CTLR_ARE_NS: u32 = 1 << 4; // Affinity Routing Enable (Non-Secure)
+/// GICv3 GICD_CTLR bits (Non-Secure register view, matching Linux irq-gic-v3.c)
+const GICD_CTLR_ENABLE_GRP0: u32 = 1 << 0; // Enable Group 0 (RAZ/WI from NS when DS=0)
 const GICD_CTLR_ENABLE_GRP1_NS: u32 = 1 << 1; // Enable Group 1 Non-Secure
+const GICD_CTLR_ARE_NS: u32 = 1 << 4; // Affinity Routing Enable, NS (RAO/WI for GICv3)
+const GICD_CTLR_DS: u32 = 1 << 6; // Disable Security (RAZ/WI from NS, but VMware may allow)
 
 /// Get current CPU's linear ID from MPIDR_EL1.
 /// For simple SMP, Aff0 is the CPU number.
@@ -705,8 +752,29 @@ fn init_gicv3_distributor() {
         gicd_write(GICD_IPRIORITYR + (i as usize * 4), priority_val);
     }
 
-    // Enable distributor with ARE_NS and Group 1 NS
-    gicd_write(GICD_CTLR, GICD_CTLR_ARE_NS | GICD_CTLR_ENABLE_GRP1_NS);
+    // Try enabling DS=1 (Disable Security) first — VMware's emulation may allow it
+    // even from NS EL1. If it works, IGROUPR0 becomes writable.
+    gicd_write(GICD_CTLR,
+        GICD_CTLR_DS | GICD_CTLR_ARE_NS | GICD_CTLR_ENABLE_GRP0 | GICD_CTLR_ENABLE_GRP1_NS);
+    unsafe {
+        core::arch::asm!("dsb sy", options(nomem, nostack));
+        core::arch::asm!("isb", options(nomem, nostack));
+    }
+
+    // Read back and log what stuck
+    let ctlr_readback = gicd_read(GICD_CTLR);
+    crate::serial_println!("[gic] GICD_CTLR wrote {:#x}, readback={:#x}",
+        GICD_CTLR_DS | GICD_CTLR_ARE_NS | GICD_CTLR_ENABLE_GRP0 | GICD_CTLR_ENABLE_GRP1_NS,
+        ctlr_readback);
+
+    // Track whether DS=1 took effect. When DS=0, Group 0 ICC system registers
+    // (ICC_BPR0_EL1, ICC_IGRPEN0_EL1, ICC_IAR0_EL1, ICC_EOIR0_EL1) are
+    // UNDEFINED from NS EL1 — accessing them causes a sync exception (EC=0x0).
+    let ds_set = (ctlr_readback & GICD_CTLR_DS) != 0;
+    DS_ENABLED.store(ds_set, Ordering::Release);
+    if !ds_set {
+        crate::serial_println!("[gic] DS=0: Group 0 ICC regs inaccessible from NS EL1, using Group 1 only");
+    }
 }
 
 /// Initialize GICv3 Redistributor (GICR) for a specific CPU.
@@ -732,6 +800,33 @@ fn init_gicv3_redistributor(cpu_id: usize) {
 
     // Set all SGI/PPI to Group 1
     gicr_write(sgi_base, GICR_IGROUPR0, 0xFFFF_FFFF);
+
+    // Barrier to ensure the write completes before readback
+    unsafe {
+        core::arch::asm!("dsb sy", options(nomem, nostack));
+        core::arch::asm!("isb", options(nomem, nostack));
+    }
+
+    // Read back IGROUPR0 to verify the write took effect
+    let igroupr0 = gicr_read(sgi_base, GICR_IGROUPR0);
+
+    if cpu_id == 0 {
+        crate::serial_println!("[gic] GICR_IGROUPR0: wrote 0xFFFFFFFF, readback={:#010x}", igroupr0);
+    }
+
+    if igroupr0 == 0 {
+        // IGROUPR0 is RAZ/WI — security extensions prevent NS writes.
+        // All interrupts are stuck in Group 0 (FIQ delivery).
+        if cpu_id == 0 {
+            USE_GROUP0.store(true, Ordering::Release);
+            crate::serial_println!("[gic] IGROUPR0 RAZ/WI — all interrupts are Group 0 (FIQ)");
+            if DS_ENABLED.load(Ordering::Acquire) {
+                crate::serial_println!("[gic] DS=1: using ICC_IAR0/EOIR0 for Group 0 interrupts");
+            } else {
+                crate::serial_println!("[gic] DS=0: using ICC_IAR1/EOIR1 (hypervisor maps Group 0 to NS Group 1)");
+            }
+        }
+    }
 
     // Disable all SGI/PPI first
     gicr_write(sgi_base, GICR_ICENABLER0, 0xFFFF_FFFF);
@@ -759,13 +854,27 @@ fn init_gicv3_cpu_interface() {
         let pmr: u64 = PRIORITY_MASK as u64;
         core::arch::asm!("msr icc_pmr_el1, {}", in(reg) pmr, options(nomem, nostack));
 
-        // No preemption (ICC_BPR1_EL1)
+        // No preemption for Group 1 (ICC_BPR1_EL1)
         let bpr: u64 = 7;
         core::arch::asm!("msr icc_bpr1_el1, {}", in(reg) bpr, options(nomem, nostack));
 
-        // Enable Group 1 interrupts (ICC_IGRPEN1_EL1)
+        // Group 0 Binary Point Register (ICC_BPR0_EL1):
+        // Only accessible from NS EL1 when DS=1. When DS=0, this register is
+        // UNDEFINED and accessing it causes a sync exception (EC=0x0).
+        if DS_ENABLED.load(Ordering::Acquire) {
+            core::arch::asm!("msr icc_bpr0_el1, {}", in(reg) bpr, options(nomem, nostack));
+        }
+
+        // Enable Group 1 interrupts (ICC_IGRPEN1_EL1) — always accessible from NS EL1
         let grpen: u64 = 1;
         core::arch::asm!("msr icc_igrpen1_el1, {}", in(reg) grpen, options(nomem, nostack));
+
+        // Group 0 Enable (ICC_IGRPEN0_EL1):
+        // Only accessible from NS EL1 when DS=1. When DS=0, this register is
+        // UNDEFINED. The hypervisor manages Group 0 enable on our behalf.
+        if DS_ENABLED.load(Ordering::Acquire) {
+            core::arch::asm!("msr icc_igrpen0_el1, {}", in(reg) grpen, options(nomem, nostack));
+        }
 
         core::arch::asm!("isb", options(nomem, nostack));
     }
@@ -774,4 +883,15 @@ fn init_gicv3_cpu_interface() {
 /// Get the active GIC version (for diagnostic purposes).
 pub fn active_version() -> u8 {
     ACTIVE_GIC_VERSION.load(Ordering::Relaxed)
+}
+
+/// Whether all interrupts are Group 0 (VMware IGROUPR0 RAZ/WI).
+pub fn use_group0() -> bool {
+    USE_GROUP0.load(Ordering::Relaxed)
+}
+
+/// Whether GICD_CTLR.DS=1 was successfully set.
+/// When false, Group 0 ICC system registers are inaccessible from NS EL1.
+pub fn ds_enabled() -> bool {
+    DS_ENABLED.load(Ordering::Relaxed)
 }

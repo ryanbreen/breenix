@@ -27,7 +27,7 @@ unsafe fn arch_enable_interrupts() {
     x86_64::instructions::interrupts::enable();
 
     #[cfg(target_arch = "aarch64")]
-    core::arch::asm!("msr daifclr, #2", options(nomem, nostack));
+    core::arch::asm!("msr daifclr, #3", options(nomem, nostack));
 }
 
 /// Maximum number of softirq restarts before deferring to ksoftirqd

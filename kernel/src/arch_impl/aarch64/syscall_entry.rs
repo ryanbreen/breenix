@@ -391,7 +391,7 @@ fn sys_exit_aarch64(exit_code: i32) -> u64 {
     loop {
         unsafe {
             core::arch::asm!(
-                "msr daifclr, #2",  // Unmask IRQ so timer interrupt can fire
+                "msr daifclr, #3",  // Unmask IRQ+FIQ so timer interrupt can fire
                 "wfi",              // Wait for interrupt — timer will context-switch us away
                 options(nomem, nostack)
             );

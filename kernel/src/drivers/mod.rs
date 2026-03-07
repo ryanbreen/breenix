@@ -12,6 +12,8 @@ pub mod pci;
 #[cfg(target_arch = "aarch64")]
 pub mod usb;
 pub mod virtio;  // Now available on both x86_64 and aarch64
+#[cfg(target_arch = "aarch64")]
+pub mod vmware;
 
 /// Initialize the driver subsystem
 ///
@@ -92,6 +94,22 @@ pub fn init() -> usize {
         let device_count = pci::enumerate();
         serial_println!("[drivers] Found {} PCI devices", device_count);
 
+        // Dump all PCI devices to serial for platform discovery
+        if let Some(devices) = pci::get_devices() {
+            for dev in &devices {
+                serial_println!("[pci] {:02x}:{:02x}.{} [{:04x}:{:04x}] class={:02x}/{:02x}",
+                    dev.bus, dev.device, dev.function,
+                    dev.vendor_id, dev.device_id,
+                    dev.class as u8, dev.subclass);
+                for (i, bar) in dev.bars.iter().enumerate() {
+                    if bar.is_valid() {
+                        serial_println!("[pci]   BAR{}: {:#x} ({})",
+                            i, bar.address, bar.size);
+                    }
+                }
+            }
+        }
+
         // Enumerate VirtIO PCI devices with modern transport
         let virtio_devices = virtio::pci_transport::enumerate_virtio_pci_devices();
         serial_println!("[drivers] Found {} VirtIO PCI devices", virtio_devices.len());
@@ -106,6 +124,22 @@ pub fn init() -> usize {
                 }
             }
             Err(e) => serial_println!("[drivers] VirtIO GPU (PCI) init failed: {}", e),
+        }
+
+        // Initialize VMware SVGA3 GPU if present (VMware Fusion on ARM64)
+        match vmware::svga3::init() {
+            Ok(()) => {
+                serial_println!("[drivers] VMware SVGA3 GPU initialized");
+                if vmware::svga3::has_3d() {
+                    serial_println!("[drivers] SVGA3 3D acceleration available!");
+                }
+                // Draw a test pattern to prove the driver works
+                match vmware::svga3::draw_test_pattern() {
+                    Ok(()) => serial_println!("[drivers] SVGA3 test pattern drawn"),
+                    Err(e) => serial_println!("[drivers] SVGA3 test pattern failed: {}", e),
+                }
+            }
+            Err(e) => serial_println!("[drivers] SVGA3 init skipped: {}", e),
         }
 
         // EHCI USB 2.0 controller — initialization is handled inside xhci::init()

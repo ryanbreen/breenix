@@ -59,7 +59,7 @@ syscall_entry_from_el0:
      * during register save sequence. Timer interrupts at 1000 Hz
      * could corrupt partially-saved state.
      */
-    msr daifset, #0x2       /* Mask IRQ (bit 1) */
+    msr daifset, #0x3       /* Mask IRQ + FIQ (bits 1,0) */
 
     /*
      * Switch to kernel stack if not already on it.
@@ -187,7 +187,7 @@ syscall_entry_from_el0:
      */
 
     /* Disable interrupts for register restoration */
-    msr daifset, #0x2           /* Mask IRQ */
+    msr daifset, #0x3           /* Mask IRQ + FIQ */
 
     /*
      * Set PREEMPT_ACTIVE to protect register restoration sequence.
