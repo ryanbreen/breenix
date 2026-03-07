@@ -1,6 +1,15 @@
 //! Graphics-related system calls.
 //!
 //! Provides syscalls for querying and drawing to the framebuffer.
+//!
+//! ## Window compositing syscalls (op=10-14)
+//!
+//! These syscalls support the GPU-composited window manager:
+//! - op=10: `virgl_composite` — upload pixel buffer as full-screen GPU texture
+//! - op=11: `create_window_buffer` — allocate shared pixel buffer for a window
+//! - op=12: `register_window` — register a window buffer with the compositor
+//! - op=13: `list_windows` — enumerate registered windows
+//! - op=14: `read_window_buffer` — copy a window's pixel data
 
 extern crate alloc;
 
@@ -17,6 +26,156 @@ use super::SyscallResult;
 /// Counter for fb_flush syscalls (diagnostic — read from timer heartbeat)
 #[cfg(target_arch = "aarch64")]
 pub static FB_FLUSH_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+// =============================================================================
+// Window Buffer Registry — kernel-side window management for GPU compositing
+// Only compiled for ARM64 (Parallels VirGL compositor path).
+// =============================================================================
+
+#[cfg(target_arch = "aarch64")]
+use spin::Mutex;
+
+#[cfg(target_arch = "aarch64")]
+/// Maximum number of simultaneous window buffers
+const MAX_WINDOW_BUFFERS: usize = 16;
+
+/// Maximum window title length in bytes
+#[cfg(target_arch = "aarch64")]
+const MAX_TITLE_LEN: usize = 64;
+
+#[cfg(target_arch = "aarch64")]
+/// A registered window buffer backed by physical pages accessible via HHDM.
+#[derive(Clone)]
+struct WindowBuffer {
+    /// Unique buffer ID
+    id: u32,
+    /// Process that owns this buffer
+    owner_pid: u64,
+    /// Width in pixels
+    width: u32,
+    /// Height in pixels
+    height: u32,
+    /// Physical address of the pixel data (accessible via HHDM)
+    phys_addr: u64,
+    /// Size in bytes
+    size: usize,
+    /// Whether this buffer has been registered as a visible window
+    registered: bool,
+    /// Window title (UTF-8, truncated to MAX_TITLE_LEN)
+    title: [u8; MAX_TITLE_LEN],
+    /// Length of the title in bytes
+    title_len: usize,
+    /// Window position (set by compositor)
+    x: i32,
+    y: i32,
+}
+
+#[cfg(target_arch = "aarch64")]
+/// Info about a window, returned to userspace by list_windows.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WindowInfo {
+    pub buffer_id: u32,
+    pub owner_pid: u32,
+    pub width: u32,
+    pub height: u32,
+    pub x: i32,
+    pub y: i32,
+    pub title_len: u32,
+    pub title: [u8; MAX_TITLE_LEN],
+}
+
+#[cfg(target_arch = "aarch64")]
+impl Default for WindowInfo {
+    fn default() -> Self {
+        Self {
+            buffer_id: 0,
+            owner_pid: 0,
+            width: 0,
+            height: 0,
+            x: 0,
+            y: 0,
+            title_len: 0,
+            title: [0u8; MAX_TITLE_LEN],
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+/// Global window buffer registry. Protected by a spinlock.
+static WINDOW_REGISTRY: Mutex<WindowRegistry> = Mutex::new(WindowRegistry::new());
+
+#[cfg(target_arch = "aarch64")]
+struct WindowRegistry {
+    buffers: [Option<WindowBuffer>; MAX_WINDOW_BUFFERS],
+    next_id: u32,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl WindowRegistry {
+    const fn new() -> Self {
+        const NONE: Option<WindowBuffer> = None;
+        Self {
+            buffers: [NONE; MAX_WINDOW_BUFFERS],
+            next_id: 1,
+        }
+    }
+
+    fn allocate(&mut self, owner_pid: u64, width: u32, height: u32, phys_addr: u64, size: usize) -> Option<u32> {
+        let slot = self.buffers.iter().position(|b| b.is_none())?;
+        let id = self.next_id;
+        self.next_id += 1;
+        self.buffers[slot] = Some(WindowBuffer {
+            id,
+            owner_pid,
+            width,
+            height,
+            phys_addr,
+            size,
+            registered: false,
+            title: [0; MAX_TITLE_LEN],
+            title_len: 0,
+            x: 0,
+            y: 0,
+        });
+        Some(id)
+    }
+
+    fn find(&self, buffer_id: u32) -> Option<&WindowBuffer> {
+        self.buffers.iter().find_map(|slot| {
+            slot.as_ref().filter(|b| b.id == buffer_id)
+        })
+    }
+
+    fn find_mut(&mut self, buffer_id: u32) -> Option<&mut WindowBuffer> {
+        self.buffers.iter_mut().find_map(|slot| {
+            slot.as_mut().filter(|b| b.id == buffer_id)
+        })
+    }
+
+    fn registered_windows(&self) -> alloc::vec::Vec<WindowInfo> {
+        let mut result = alloc::vec::Vec::new();
+        for slot in &self.buffers {
+            if let Some(ref buf) = slot {
+                if buf.registered {
+                    let mut info = WindowInfo {
+                        buffer_id: buf.id,
+                        owner_pid: buf.owner_pid as u32,
+                        width: buf.width,
+                        height: buf.height,
+                        x: buf.x,
+                        y: buf.y,
+                        title_len: buf.title_len as u32,
+                        title: [0; MAX_TITLE_LEN],
+                    };
+                    info.title[..buf.title_len].copy_from_slice(&buf.title[..buf.title_len]);
+                    result.push(info);
+                }
+            }
+        }
+        result
+    }
+}
 
 /// Framebuffer info structure returned by sys_fbinfo.
 /// This matches the userspace FbInfo struct in libbreenix.
@@ -277,8 +436,242 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                 }
             }
         }
+        10 => {
+            // VirglComposite: upload pixel buffer as texture, render full-screen quad
+            let buf_ptr = (cmd.p1 as u32 as u64) | ((cmd.p2 as u32 as u64) << 32);
+            let width = cmd.p3 as u32;
+            let height = cmd.p4 as u32;
+            if buf_ptr == 0 || buf_ptr >= USER_SPACE_MAX {
+                return SyscallResult::Err(super::ErrorCode::Fault as u64);
+            }
+            if width == 0 || height == 0 || width > 4096 || height > 4096 {
+                return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+            }
+            let pixel_count = (width as u64) * (height as u64);
+            let buf_end = buf_ptr + pixel_count * 4;
+            if buf_end > USER_SPACE_MAX {
+                return SyscallResult::Err(super::ErrorCode::Fault as u64);
+            }
+            let pixels = unsafe {
+                core::slice::from_raw_parts(buf_ptr as *const u32, pixel_count as usize)
+            };
+            match crate::drivers::virtio::gpu_pci::virgl_composite_frame(pixels, width, height) {
+                Ok(()) => SyscallResult::Ok(0),
+                Err(e) => {
+                    crate::serial_println!("[virgl-syscall] composite_frame FAILED: {}", e);
+                    SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
+                }
+            }
+        }
+        11 => {
+            // CreateWindowBuffer: allocate shared pixel buffer
+            // p1=width, p2=height
+            // Returns: buffer_id in OK value, userspace mmap addr in p1/p2 of output
+            let width = cmd.p1 as u32;
+            let height = cmd.p2 as u32;
+            if width == 0 || height == 0 || width > 4096 || height > 4096 {
+                return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+            }
+            handle_create_window_buffer(width, height)
+        }
+        12 => {
+            // RegisterWindow: register a buffer as a visible window
+            // p1=buffer_id, p2/p3 = title_ptr (lo/hi), p4=title_len
+            let buffer_id = cmd.p1 as u32;
+            let title_ptr = (cmd.p2 as u32 as u64) | ((cmd.p3 as u32 as u64) << 32);
+            let title_len = (cmd.p4 as u32) as usize;
+            if title_len > MAX_TITLE_LEN {
+                return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+            }
+            if title_len > 0 && (title_ptr == 0 || title_ptr >= USER_SPACE_MAX) {
+                return SyscallResult::Err(super::ErrorCode::Fault as u64);
+            }
+            let title = if title_len > 0 {
+                unsafe { core::slice::from_raw_parts(title_ptr as *const u8, title_len) }
+            } else {
+                &[]
+            };
+            let mut reg = WINDOW_REGISTRY.lock();
+            match reg.find_mut(buffer_id) {
+                Some(buf) => {
+                    buf.registered = true;
+                    buf.title_len = title.len().min(MAX_TITLE_LEN);
+                    buf.title[..buf.title_len].copy_from_slice(&title[..buf.title_len]);
+                    SyscallResult::Ok(0)
+                }
+                None => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+            }
+        }
+        13 => {
+            // ListWindows: copy registered window info to userspace
+            // p1/p2 = output buffer ptr (lo/hi), p3 = max entries
+            let out_ptr = (cmd.p1 as u32 as u64) | ((cmd.p2 as u32 as u64) << 32);
+            let max_entries = cmd.p3 as u32;
+            if out_ptr == 0 || out_ptr >= USER_SPACE_MAX {
+                return SyscallResult::Err(super::ErrorCode::Fault as u64);
+            }
+            let entry_size = core::mem::size_of::<WindowInfo>() as u64;
+            let out_end = out_ptr + (max_entries as u64) * entry_size;
+            if out_end > USER_SPACE_MAX {
+                return SyscallResult::Err(super::ErrorCode::Fault as u64);
+            }
+            let reg = WINDOW_REGISTRY.lock();
+            let windows = reg.registered_windows();
+            let count = windows.len().min(max_entries as usize);
+            unsafe {
+                let dst = out_ptr as *mut WindowInfo;
+                for (i, info) in windows.iter().take(count).enumerate() {
+                    core::ptr::write(dst.add(i), *info);
+                }
+            }
+            SyscallResult::Ok(count as u64)
+        }
+        14 => {
+            // ReadWindowBuffer: copy a window's pixels to caller's buffer
+            // p1=buffer_id, p2/p3=dst_ptr (lo/hi), p4=max_bytes
+            let buffer_id = cmd.p1 as u32;
+            let dst_ptr = (cmd.p2 as u32 as u64) | ((cmd.p3 as u32 as u64) << 32);
+            let max_bytes = cmd.p4 as u32;
+            if dst_ptr == 0 || dst_ptr >= USER_SPACE_MAX {
+                return SyscallResult::Err(super::ErrorCode::Fault as u64);
+            }
+            let dst_end = dst_ptr + max_bytes as u64;
+            if dst_end > USER_SPACE_MAX {
+                return SyscallResult::Err(super::ErrorCode::Fault as u64);
+            }
+            let reg = WINDOW_REGISTRY.lock();
+            match reg.find(buffer_id) {
+                Some(buf) => {
+                    let copy_bytes = buf.size.min(max_bytes as usize);
+                    let phys_mem_offset = crate::memory::physical_memory_offset().as_u64();
+                    let src = (phys_mem_offset + buf.phys_addr) as *const u8;
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(src, dst_ptr as *mut u8, copy_bytes);
+                    }
+                    // Return width and height packed as (width << 32 | height)
+                    SyscallResult::Ok(((buf.width as u64) << 32) | buf.height as u64)
+                }
+                None => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+            }
+        }
         _ => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
     }
+}
+
+/// Handle create_window_buffer: allocate physical pages for a window pixel buffer,
+/// map them into the calling process as MAP_SHARED, and register in the window registry.
+///
+/// Returns the buffer_id on success (mmap address is returned separately via
+/// the process's mmap_hint, and the caller should use the window buffer API to
+/// get the mapped pointer).
+#[cfg(target_arch = "aarch64")]
+fn handle_create_window_buffer(width: u32, height: u32) -> SyscallResult {
+    use crate::memory::vma::{MmapFlags, Protection, Vma};
+    use crate::syscall::memory_common::{
+        get_current_thread_id, prot_to_page_flags, flush_tlb, round_down_to_page, PAGE_SIZE,
+    };
+
+    #[cfg(target_arch = "x86_64")]
+    use x86_64::structures::paging::{Page, PhysFrame, Size4KiB};
+    #[cfg(target_arch = "x86_64")]
+    use x86_64::VirtAddr;
+    #[cfg(not(target_arch = "x86_64"))]
+    use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
+
+    let size = (width as usize) * (height as usize) * 4;
+    let num_pages = (size + PAGE_SIZE as usize - 1) / PAGE_SIZE as usize;
+
+    // Get current process
+    let current_thread_id = match get_current_thread_id() {
+        Some(id) => id,
+        None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
+    };
+
+    let mut manager_guard = crate::process::manager();
+    let manager = match *manager_guard {
+        Some(ref mut m) => m,
+        None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
+    };
+
+    let (pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
+        Some(p) => p,
+        None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
+    };
+
+    // Allocate virtual address range from mmap hint
+    let total_size = (num_pages as u64) * PAGE_SIZE;
+    let new_addr = round_down_to_page(process.mmap_hint.saturating_sub(total_size));
+    if new_addr < 0x1000_0000 {
+        return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
+    }
+    process.mmap_hint = new_addr;
+
+    let page_table = match process.page_table.as_mut() {
+        Some(pt) => pt,
+        None => return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64),
+    };
+
+    // Allocate and map physical frames
+    let page_flags = prot_to_page_flags(Protection::from_bits_truncate(3)); // READ | WRITE
+    let mut first_phys: u64 = 0;
+
+    for i in 0..num_pages {
+        let frame = match crate::memory::frame_allocator::allocate_frame() {
+            Some(f) => f,
+            None => return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64),
+        };
+
+        if i == 0 {
+            first_phys = frame.start_address().as_u64();
+        }
+
+        let page_addr = new_addr + (i as u64) * PAGE_SIZE;
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(page_addr));
+
+        if let Err(_) = page_table.map_page(page, frame, page_flags) {
+            return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
+        }
+
+        // Zero the page
+        let phys_mem_offset = crate::memory::physical_memory_offset().as_u64();
+        unsafe {
+            core::ptr::write_bytes(
+                (phys_mem_offset + frame.start_address().as_u64()) as *mut u8,
+                0,
+                PAGE_SIZE as usize,
+            );
+        }
+        flush_tlb(VirtAddr::new(page_addr));
+    }
+
+    // Create VMA with MAP_SHARED flag
+    let vma = Vma::new(
+        VirtAddr::new(new_addr),
+        VirtAddr::new(new_addr + total_size),
+        Protection::from_bits_truncate(3),
+        MmapFlags::from_bits_truncate(0x21), // MAP_SHARED | MAP_ANONYMOUS
+    );
+    process.vmas.push(vma);
+
+    // Register in window buffer table
+    let buffer_id = {
+        let mut reg = WINDOW_REGISTRY.lock();
+        match reg.allocate(pid.as_u64(), width, height, first_phys, size) {
+            Some(id) => id,
+            None => return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64),
+        }
+    };
+
+    crate::serial_println!(
+        "[window] Created buffer id={} for pid={}: {}x{} at virt={:#x} phys={:#x}",
+        buffer_id, pid.as_u64(), width, height, new_addr, first_phys
+    );
+
+    // Return buffer_id in upper 32 bits, mmap address in lower 32 bits
+    // (userspace can reconstruct: buffer_id = result >> 32, addr = result & 0xFFFFFFFF)
+    // Actually, return buffer_id and the address is the mmap_hint before allocation
+    // For simplicity, pack both: high 32 = buffer_id, low 32 = mmap addr page-aligned
+    SyscallResult::Ok(((buffer_id as u64) << 32) | (new_addr & 0xFFFF_FFFF))
 }
 
 /// sys_fbdraw - Draw to the left pane of the framebuffer
@@ -328,11 +721,11 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
         }
     };
 
-    // VirGL GPU rendering ops (7=balls, 9=rects) don't need the software
-    // framebuffer — they go straight to the GPU. Handle them before acquiring
-    // SHELL_FRAMEBUFFER so they work when VirGL owns the display.
+    // VirGL/compositor ops (7=balls, 9=rects, 10-14=compositor) don't need the
+    // software framebuffer — they go straight to the GPU or window registry.
+    // Handle them before acquiring SHELL_FRAMEBUFFER.
     #[cfg(target_arch = "aarch64")]
-    if cmd.op == 7 || cmd.op == 9 {
+    if cmd.op == 7 || cmd.op >= 9 {
         return handle_virgl_op(&cmd);
     }
 

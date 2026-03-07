@@ -438,6 +438,9 @@ const TEST_TEX_DIM: u32 = 64;
 /// Test texture backing size in bytes (64×64×4 = 16KB)
 const TEST_TEX_BYTES: usize = (TEST_TEX_DIM * TEST_TEX_DIM * 4) as usize;
 
+/// Resource ID for the compositor texture (BWM uploads pixel buffers here)
+const RESOURCE_COMPOSITE_TEX_ID: u32 = 5;
+
 // VirtIO standard feature bits
 const VIRTIO_F_VERSION_1: u64 = 1 << 32;
 // VirtIO GPU feature bits (requested but not required)
@@ -532,6 +535,97 @@ struct TestTextureBuffer {
     pixels: [u8; TEST_TEX_BYTES],
 }
 static mut TEST_TEX_BUF: TestTextureBuffer = TestTextureBuffer { pixels: [0; TEST_TEX_BYTES] };
+
+/// Pointer to heap-allocated compositor texture backing (page-aligned, DMA-safe).
+/// Used by `virgl_composite_frame()` to upload pixel buffers as GPU textures.
+static mut COMPOSITE_TEX_PTR: *mut u8 = core::ptr::null_mut();
+/// Size of the compositor texture backing in bytes.
+static mut COMPOSITE_TEX_LEN: usize = 0;
+/// Width of the compositor texture (set during init).
+static COMPOSITE_TEX_W: AtomicU32 = AtomicU32::new(0);
+/// Height of the compositor texture (set during init).
+static COMPOSITE_TEX_H: AtomicU32 = AtomicU32::new(0);
+/// Whether the compositor texture resource has been initialized.
+static COMPOSITE_TEX_READY: AtomicBool = AtomicBool::new(false);
+
+/// Allocate and initialize the compositor texture resource for GPU compositing.
+/// Creates a TEXTURE_2D resource with SAMPLER_VIEW bind, attaches heap-allocated
+/// backing, and primes it with TRANSFER_TO_HOST_3D.
+fn init_composite_texture(width: u32, height: u32) -> Result<(), &'static str> {
+    use super::virgl::{format as vfmt, pipe};
+
+    let size = (width as usize) * (height as usize) * 4;
+    let layout = alloc::alloc::Layout::from_size_align(size, 4096)
+        .expect("invalid composite texture layout");
+    unsafe {
+        let ptr = alloc::alloc::alloc_zeroed(layout);
+        assert!(!ptr.is_null(), "failed to allocate composite texture backing");
+        COMPOSITE_TEX_PTR = ptr;
+        COMPOSITE_TEX_LEN = size;
+    }
+    COMPOSITE_TEX_W.store(width, Ordering::Release);
+    COMPOSITE_TEX_H.store(height, Ordering::Release);
+
+    let phys = virt_to_phys(unsafe { COMPOSITE_TEX_PTR } as u64);
+    crate::serial_println!(
+        "[virgl-composite] Texture backing: heap ptr={:#x}, phys={:#x}, {}x{} ({}B)",
+        unsafe { COMPOSITE_TEX_PTR } as u64, phys, width, height, size
+    );
+
+    // Create texture resource (SAMPLER_VIEW for shader sampling)
+    with_device_state(|state| {
+        virgl_resource_create_3d_cmd(
+            state,
+            RESOURCE_COMPOSITE_TEX_ID,
+            pipe::TEXTURE_2D,
+            vfmt::B8G8R8X8_UNORM,
+            pipe::BIND_SAMPLER_VIEW,
+            width, height, 1, 1,
+        )
+    })?;
+
+    // Attach backing memory
+    with_device_state(|state| {
+        unsafe {
+            let cmd_ptr = &raw mut PCI_CMD_BUF;
+            let attach = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut PciAttachBackingCmd);
+            *attach = PciAttachBackingCmd {
+                cmd: VirtioGpuResourceAttachBacking {
+                    hdr: VirtioGpuCtrlHdr {
+                        type_: cmd::RESOURCE_ATTACH_BACKING,
+                        flags: 0,
+                        fence_id: 0,
+                        ctx_id: 0,
+                        padding: 0,
+                    },
+                    resource_id: RESOURCE_COMPOSITE_TEX_ID,
+                    nr_entries: 1,
+                },
+                entry: VirtioGpuMemEntry {
+                    addr: phys,
+                    length: size as u32,
+                    padding: 0,
+                },
+            };
+        }
+        send_command_expect_ok(state, core::mem::size_of::<PciAttachBackingCmd>() as u32)
+    })?;
+
+    // Attach to VirGL context
+    with_device_state(|state| {
+        virgl_ctx_attach_resource_cmd(state, VIRGL_CTX_ID, RESOURCE_COMPOSITE_TEX_ID)
+    })?;
+
+    // Prime with TRANSFER_TO_HOST_3D (required by Parallels)
+    dma_cache_clean(unsafe { COMPOSITE_TEX_PTR }, size);
+    with_device_state(|state| {
+        transfer_to_host_3d(state, RESOURCE_COMPOSITE_TEX_ID, 0, 0, width, height, width * 4)
+    })?;
+
+    COMPOSITE_TEX_READY.store(true, Ordering::Release);
+    crate::serial_println!("[virgl-composite] Texture resource initialized (id={})", RESOURCE_COMPOSITE_TEX_ID);
+    Ok(())
+}
 
 // =============================================================================
 // GPU PCI Device State
@@ -2816,6 +2910,222 @@ pub fn virgl_render_rects(
     Ok(())
 }
 
+/// Composite a CPU-rendered pixel buffer as a full-screen GPU texture.
+///
+/// Takes a BGRA pixel buffer (u32 per pixel), uploads it to the compositor
+/// texture via TRANSFER_TO_HOST_3D, then renders it as a full-screen textured
+/// quad via VirGL DRAW_VBO. This is the foundation for GPU-composited window
+/// management — BWM renders each window to a pixel buffer, then composites
+/// them all through the GPU.
+///
+/// # Arguments
+/// * `pixels` - BGRA pixel data (width × height u32 values)
+/// * `width` - Width of the pixel buffer in pixels
+/// * `height` - Height of the pixel buffer in pixels
+pub fn virgl_composite_frame(
+    pixels: &[u32],
+    width: u32,
+    height: u32,
+) -> Result<(), &'static str> {
+    use super::virgl::{CommandBuffer, format as vfmt, pipe, swizzle};
+
+    static COMPOSITE_FRAME_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    let frame = COMPOSITE_FRAME_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    let verbose = frame < 3 || frame % 500 == 0;
+
+    if !is_virgl_enabled() {
+        return Err("VirGL not enabled");
+    }
+    if !COMPOSITE_TEX_READY.load(Ordering::Acquire) {
+        return Err("Compositor texture not initialized");
+    }
+
+    let tex_w = COMPOSITE_TEX_W.load(Ordering::Relaxed);
+    let tex_h = COMPOSITE_TEX_H.load(Ordering::Relaxed);
+    let (display_w, display_h) = dimensions().ok_or("GPU not initialized")?;
+
+    // Clamp source dimensions to texture capacity
+    let copy_w = width.min(tex_w);
+    let copy_h = height.min(tex_h);
+    let expected_pixels = (copy_w * copy_h) as usize;
+    if pixels.len() < expected_pixels {
+        return Err("Pixel buffer too small");
+    }
+
+    if verbose {
+        crate::serial_println!(
+            "[virgl-composite] Frame #{}: {}x{} pixels → {}x{} texture",
+            frame, copy_w, copy_h, tex_w, tex_h
+        );
+    }
+
+    // Step 1: Copy pixel data into the compositor texture backing.
+    // The backing is a contiguous BGRA buffer matching the texture dimensions.
+    // If source is smaller than texture, we copy row by row with correct stride.
+    unsafe {
+        let dst = COMPOSITE_TEX_PTR;
+        let dst_stride = tex_w as usize * 4; // bytes per row in texture
+        let src_stride = width as usize * 4;  // bytes per row in source
+
+        if copy_w == tex_w {
+            // Fast path: source width matches texture width, bulk copy
+            let copy_bytes = (copy_w as usize) * (copy_h as usize) * 4;
+            core::ptr::copy_nonoverlapping(
+                pixels.as_ptr() as *const u8,
+                dst,
+                copy_bytes.min(COMPOSITE_TEX_LEN),
+            );
+        } else {
+            // Slow path: different widths, copy row by row
+            for y in 0..copy_h as usize {
+                let src_offset = y * src_stride;
+                let dst_offset = y * dst_stride;
+                let row_bytes = (copy_w as usize) * 4;
+                if dst_offset + row_bytes <= COMPOSITE_TEX_LEN {
+                    core::ptr::copy_nonoverlapping(
+                        (pixels.as_ptr() as *const u8).add(src_offset),
+                        dst.add(dst_offset),
+                        row_bytes,
+                    );
+                }
+            }
+        }
+    }
+
+    // Step 2: Upload texture to host GPU via TRANSFER_TO_HOST_3D.
+    let tex_bytes = (tex_w as usize) * (tex_h as usize) * 4;
+    dma_cache_clean(unsafe { COMPOSITE_TEX_PTR }, tex_bytes);
+    with_device_state(|state| {
+        transfer_to_host_3d(
+            state,
+            RESOURCE_COMPOSITE_TEX_ID,
+            0, 0,
+            copy_w, copy_h,
+            tex_w * 4,
+        )
+    })?;
+
+    // Ensure scanout is on the 3D render target
+    if !VIRGL_SCANOUT_ACTIVE.load(Ordering::Acquire) {
+        with_device_state(|state| {
+            set_scanout_resource(state, RESOURCE_3D_ID)
+        }).ok();
+        VIRGL_SCANOUT_ACTIVE.store(true, Ordering::Release);
+    }
+
+    // Step 3: Build VirGL command batch — full pipeline + textured quad.
+    // CRITICAL: create_sub_ctx required per SUBMIT_3D on Parallels.
+    let mut cmdbuf = CommandBuffer::new();
+    cmdbuf.create_sub_ctx(1);
+    cmdbuf.set_sub_ctx(1);
+    cmdbuf.set_tweaks(1, 1);
+    cmdbuf.set_tweaks(2, display_w);
+
+    // Surface wrapping the render target
+    cmdbuf.create_surface(1, RESOURCE_3D_ID, vfmt::B8G8R8X8_UNORM, 0, 0);
+    cmdbuf.set_framebuffer_state(0, &[1]);
+
+    // Pipeline state objects
+    cmdbuf.create_blend_simple(1);
+    cmdbuf.bind_object(1, super::virgl::OBJ_BLEND);
+    cmdbuf.create_dsa_default(1);
+    cmdbuf.bind_object(1, super::virgl::OBJ_DSA);
+    cmdbuf.create_rasterizer_default(1);
+    cmdbuf.bind_object(1, super::virgl::OBJ_RASTERIZER);
+
+    // Texture vertex shader: passes position + texcoord to fragment shader
+    let tex_vs = b"VERT\nDCL IN[0]\nDCL IN[1]\nDCL OUT[0], POSITION\nDCL OUT[1], GENERIC[0]\n  0: MOV OUT[0], IN[0]\n  1: MOV OUT[1], IN[1]\n  2: END\n";
+    cmdbuf.create_shader(1, pipe::SHADER_VERTEX, 300, tex_vs);
+    cmdbuf.bind_shader(1, pipe::SHADER_VERTEX);
+
+    // Texture fragment shader: samples from SAMP[0]
+    let tex_fs = b"FRAG\nDCL IN[0], GENERIC[0], LINEAR\nDCL OUT[0], COLOR\nDCL SAMP[0]\nDCL SVIEW[0], 2D, FLOAT\n  0: TEX OUT[0], IN[0], SAMP[0], 2D\n  1: END\n";
+    cmdbuf.create_shader(2, pipe::SHADER_FRAGMENT, 300, tex_fs);
+    cmdbuf.bind_shader(2, pipe::SHADER_FRAGMENT);
+
+    // Vertex elements: two attributes (position + texcoord), each R32G32B32A32_FLOAT
+    // Attribute 0: position at byte offset 0
+    // Attribute 1: texcoord at byte offset 16 (4 × f32)
+    cmdbuf.create_vertex_elements(1, &[
+        (0, 0, 0, vfmt::R32G32B32A32_FLOAT),   // position
+        (16, 0, 0, vfmt::R32G32B32A32_FLOAT),  // texcoord
+    ]);
+    cmdbuf.bind_object(1, super::virgl::OBJ_VERTEX_ELEMENTS);
+
+    // Sampler view: bind compositor texture for shader sampling
+    cmdbuf.create_sampler_view(
+        2, // handle
+        RESOURCE_COMPOSITE_TEX_ID,
+        vfmt::B8G8R8X8_UNORM,
+        0, 0,
+        swizzle::IDENTITY,
+    );
+
+    // Sampler state: nearest filtering, clamp-to-edge
+    cmdbuf.create_sampler_state(
+        3, // handle
+        pipe::TEX_WRAP_CLAMP_TO_EDGE,
+        pipe::TEX_WRAP_CLAMP_TO_EDGE,
+        pipe::TEX_WRAP_CLAMP_TO_EDGE,
+        pipe::TEX_FILTER_NEAREST,
+        pipe::TEX_MIPFILTER_NONE,
+        pipe::TEX_FILTER_NEAREST,
+    );
+
+    cmdbuf.set_min_samples(1);
+    cmdbuf.set_viewport(display_w as f32, display_h as f32);
+
+    // Bind sampler view + state to fragment shader
+    cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[2]);
+    cmdbuf.bind_sampler_states(pipe::SHADER_FRAGMENT, 0, &[3]);
+
+    // Clear to black (background behind textured quad)
+    cmdbuf.clear_color(0.0, 0.0, 0.0, 1.0);
+
+    // Full-screen textured quad: 4 vertices × 32 bytes each (position + texcoord)
+    // Compute UV range: if source is smaller than display, scale UVs
+    let u_max = copy_w as f32 / tex_w as f32;
+    let v_max = copy_h as f32 / tex_h as f32;
+
+    let quad_verts: [u32; 32] = [
+        // v0: top-left — clip (-1, 1), texcoord (0, 0)
+        (-1.0f32).to_bits(), (1.0f32).to_bits(), 0f32.to_bits(), 1.0f32.to_bits(),
+        0f32.to_bits(), 0f32.to_bits(), 0f32.to_bits(), 0f32.to_bits(),
+        // v1: bottom-left — clip (-1, -1), texcoord (0, v_max)
+        (-1.0f32).to_bits(), (-1.0f32).to_bits(), 0f32.to_bits(), 1.0f32.to_bits(),
+        0f32.to_bits(), v_max.to_bits(), 0f32.to_bits(), 0f32.to_bits(),
+        // v2: bottom-right — clip (1, -1), texcoord (u_max, v_max)
+        1.0f32.to_bits(), (-1.0f32).to_bits(), 0f32.to_bits(), 1.0f32.to_bits(),
+        u_max.to_bits(), v_max.to_bits(), 0f32.to_bits(), 0f32.to_bits(),
+        // v3: top-right — clip (1, 1), texcoord (u_max, 0)
+        1.0f32.to_bits(), (1.0f32).to_bits(), 0f32.to_bits(), 1.0f32.to_bits(),
+        u_max.to_bits(), 0f32.to_bits(), 0f32.to_bits(), 0f32.to_bits(),
+    ];
+
+    // Upload quad vertices inline
+    cmdbuf.resource_inline_write(RESOURCE_VB_ID, 0, 128, &quad_verts);
+    cmdbuf.set_vertex_buffers(&[(32, 0, RESOURCE_VB_ID)]); // stride=32 (8 floats)
+
+    // Draw as triangle fan (TL, BL, BR, TR)
+    cmdbuf.draw_vbo(0, 4, pipe::PRIM_TRIANGLE_FAN, 3);
+
+    if verbose {
+        crate::serial_println!(
+            "[virgl-composite] Submitting {} DWORDs (frame #{})",
+            cmdbuf.as_slice().len(), frame
+        );
+    }
+    virgl_submit_sync(cmdbuf.as_slice())?;
+
+    // Display: SET_SCANOUT + RESOURCE_FLUSH
+    with_device_state(|state| {
+        set_scanout_resource(state, RESOURCE_3D_ID)?;
+        resource_flush_3d(state, RESOURCE_3D_ID)
+    })?;
+
+    Ok(())
+}
+
 /// Submit a VirGL command buffer for the active 3D context.
 ///
 /// `cmds` is a slice of u32 DWORDs from a VirGL CommandBuffer.
@@ -3042,7 +3352,11 @@ pub fn virgl_init() -> Result<(), &'static str> {
     })?;
     crate::serial_println!("[virgl] Step 7: VB resource created (no backing, INLINE_WRITE only)");
 
-    // Step 8 removed: VB data is uploaded via RESOURCE_INLINE_WRITE in the batch below.
+    // Step 8: Initialize compositor texture for GPU compositing (virgl_composite_frame)
+    init_composite_texture(width, height)?;
+    crate::serial_println!("[virgl] Step 8: Compositor texture initialized");
+
+    // Step 8b removed: VB data is uploaded via RESOURCE_INLINE_WRITE in the batch below.
 
     // Step 9: Full pipeline + CLEAR + DRAW_VBO batch.
     // Expected: dark blue background (CLEAR) + red quad (DRAW_VBO).

@@ -1194,10 +1194,12 @@ impl ProcessManager {
                 .take()
                 .ok_or("Parent process has no page table")?;
 
-            // Set up Copy-on-Write sharing between parent and child
-            let pages_shared = super::fork::setup_cow_pages(
+            // Set up Copy-on-Write sharing between parent and child.
+            // Pass VMAs so MAP_SHARED regions are shared directly (no CoW).
+            let pages_shared = super::fork::setup_cow_pages_with_vmas(
                 parent_page_table.as_mut(),
                 child_page_table.as_mut(),
+                &parent_vmas,
             )?;
 
             // Put parent's page table back
@@ -1322,10 +1324,12 @@ impl ProcessManager {
                 .take()
                 .ok_or("Parent process has no page table")?;
 
-            // Set up Copy-on-Write sharing between parent and child
-            let pages_shared = super::fork::setup_cow_pages(
+            // Set up Copy-on-Write sharing between parent and child.
+            // Pass VMAs so MAP_SHARED regions are shared directly (no CoW).
+            let pages_shared = super::fork::setup_cow_pages_with_vmas(
                 parent_page_table.as_mut(),
                 child_page_table.as_mut(),
+                &parent_vmas,
             )?;
 
             // Put parent's page table back
@@ -1446,10 +1450,12 @@ impl ProcessManager {
                 .take()
                 .ok_or("Parent process has no page table")?;
 
-            // Set up Copy-on-Write sharing between parent and child
-            let pages_shared = super::fork::setup_cow_pages(
+            // Set up Copy-on-Write sharing between parent and child.
+            // Pass VMAs so MAP_SHARED regions are shared directly (no CoW).
+            let pages_shared = super::fork::setup_cow_pages_with_vmas(
                 parent_page_table.as_mut(),
                 child_page_table.as_mut(),
+                &parent_vmas,
             )?;
 
             // Put parent's page table back
@@ -1977,10 +1983,12 @@ impl ProcessManager {
                 child_page_table.level_4_frame().start_address()
             );
 
-            // Set up Copy-on-Write sharing between parent and child
-            let pages_shared = super::fork::setup_cow_pages(
+            // Set up Copy-on-Write sharing between parent and child.
+            // Pass VMAs so MAP_SHARED regions are shared directly (no CoW).
+            let pages_shared = super::fork::setup_cow_pages_with_vmas(
                 parent_page_table.as_mut(),
                 child_page_table.as_mut(),
+                &parent_vmas,
             )?;
 
             // Put parent's page table back

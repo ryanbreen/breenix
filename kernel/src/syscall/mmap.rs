@@ -55,14 +55,17 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u32, flags: u32, fd: i64, offset: 
     // Round length up to page size
     let length = round_up_to_page(length);
 
-    // For now, only support MAP_ANONYMOUS | MAP_PRIVATE
+    // Require MAP_ANONYMOUS (file-backed not yet supported)
     if !flags.contains(MmapFlags::ANONYMOUS) {
         log::warn!("sys_mmap: file-backed mappings not yet supported");
         return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
     }
 
-    if !flags.contains(MmapFlags::PRIVATE) {
-        log::warn!("sys_mmap: only MAP_PRIVATE is supported");
+    // Must specify exactly one of MAP_SHARED or MAP_PRIVATE
+    let is_shared = flags.contains(MmapFlags::SHARED);
+    let is_private = flags.contains(MmapFlags::PRIVATE);
+    if !is_shared && !is_private {
+        log::warn!("sys_mmap: must specify MAP_SHARED or MAP_PRIVATE");
         return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
     }
 

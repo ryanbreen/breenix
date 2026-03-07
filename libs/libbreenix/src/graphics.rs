@@ -5,6 +5,7 @@
 //! Also provides the [`Framebuffer`] RAII wrapper for direct pixel writes
 //! via memory-mapped access.
 
+use crate::errno::Errno;
 use crate::error::Error;
 use crate::syscall::{nr, raw};
 
@@ -109,6 +110,16 @@ pub mod draw_op {
     pub const FLUSH_BATCH: u32 = 8;
     /// Submit VirGL GPU-rendered rectangles
     pub const VIRGL_SUBMIT_RECTS: u32 = 9;
+    /// Composite a pixel buffer as a full-screen GPU texture
+    pub const VIRGL_COMPOSITE: u32 = 10;
+    /// Create a shared window pixel buffer
+    pub const CREATE_WINDOW_BUFFER: u32 = 11;
+    /// Register a window buffer with the compositor
+    pub const REGISTER_WINDOW: u32 = 12;
+    /// List all registered windows
+    pub const LIST_WINDOWS: u32 = 13;
+    /// Read a window's pixel data
+    pub const READ_WINDOW_BUFFER: u32 = 14;
 }
 
 /// Ball descriptor for VirGL GPU rendering.
@@ -365,6 +376,159 @@ pub fn virgl_submit_frame(balls: &[VirglBall], bg_color: u32) -> Result<(), Erro
         color: bg_color,
     };
     fbdraw(&cmd)
+}
+
+/// Composite a CPU-rendered pixel buffer as a full-screen GPU texture.
+///
+/// Uploads the BGRA pixel buffer to the GPU and renders it as a full-screen
+/// textured quad via VirGL. This is the primary compositing path for BWM —
+/// render window contents to a pixel buffer, then display via the GPU.
+///
+/// # Arguments
+/// * `pixels` - BGRA pixel data (one u32 per pixel, width × height elements)
+/// * `width` - Width of the pixel buffer
+/// * `height` - Height of the pixel buffer
+pub fn virgl_composite(pixels: &[u32], width: u32, height: u32) -> Result<(), Error> {
+    let buf_ptr = pixels.as_ptr() as u64;
+    let cmd = FbDrawCmd {
+        op: draw_op::VIRGL_COMPOSITE,
+        p1: buf_ptr as i32,
+        p2: (buf_ptr >> 32) as i32,
+        p3: width as i32,
+        p4: height as i32,
+        color: 0,
+    };
+    fbdraw(&cmd)
+}
+
+// =============================================================================
+// Window Buffer API — for GPU-composited window management
+// =============================================================================
+
+/// A window buffer backed by MAP_SHARED physical pages.
+pub struct WindowBuffer {
+    /// Unique buffer ID (used for registration and IPC)
+    pub id: u32,
+    /// Pointer to the mapped pixel buffer (BGRA u32)
+    pub pixels: *mut u32,
+    /// Width in pixels
+    pub width: u32,
+    /// Height in pixels
+    pub height: u32,
+}
+
+/// Info about a registered window (returned by list_windows).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WindowInfo {
+    pub buffer_id: u32,
+    pub owner_pid: u32,
+    pub width: u32,
+    pub height: u32,
+    pub x: i32,
+    pub y: i32,
+    pub title_len: u32,
+    pub title: [u8; 64],
+}
+
+impl Default for WindowInfo {
+    fn default() -> Self {
+        Self {
+            buffer_id: 0,
+            owner_pid: 0,
+            width: 0,
+            height: 0,
+            x: 0,
+            y: 0,
+            title_len: 0,
+            title: [0; 64],
+        }
+    }
+}
+
+/// Create a window buffer backed by shared physical pages.
+///
+/// Returns a WindowBuffer with a mapped pixel pointer and buffer ID.
+/// The buffer can be registered with the compositor via `register_window()`.
+pub fn create_window(width: u32, height: u32) -> Result<WindowBuffer, Error> {
+    let cmd = FbDrawCmd {
+        op: draw_op::CREATE_WINDOW_BUFFER,
+        p1: width as i32,
+        p2: height as i32,
+        p3: 0,
+        p4: 0,
+        color: 0,
+    };
+    let ret = unsafe { raw::syscall1(nr::FBDRAW, &cmd as *const FbDrawCmd as u64) as i64 };
+    if ret < 0 {
+        return Err(Error::Os(Errno::from_raw(-ret)));
+    }
+    let result = ret as u64;
+    let buffer_id = (result >> 32) as u32;
+    let mmap_addr = (result & 0xFFFF_FFFF) as u64;
+    // On 64-bit, userspace mmap addresses may have upper bits from sign extension
+    // but the kernel returns the low 32 bits; reconstruct full address
+    Ok(WindowBuffer {
+        id: buffer_id,
+        pixels: mmap_addr as *mut u32,
+        width,
+        height,
+    })
+}
+
+/// Register a window buffer with the compositor, making it visible.
+pub fn register_window(buffer_id: u32, title: &[u8]) -> Result<(), Error> {
+    let title_ptr = title.as_ptr() as u64;
+    let cmd = FbDrawCmd {
+        op: draw_op::REGISTER_WINDOW,
+        p1: buffer_id as i32,
+        p2: title_ptr as i32,
+        p3: (title_ptr >> 32) as i32,
+        p4: title.len() as i32,
+        color: 0,
+    };
+    fbdraw(&cmd)
+}
+
+/// List all registered windows. Returns the number of windows found.
+pub fn list_windows(out: &mut [WindowInfo]) -> Result<usize, Error> {
+    let out_ptr = out.as_ptr() as u64;
+    let cmd = FbDrawCmd {
+        op: draw_op::LIST_WINDOWS,
+        p1: out_ptr as i32,
+        p2: (out_ptr >> 32) as i32,
+        p3: out.len() as i32,
+        p4: 0,
+        color: 0,
+    };
+    let ret = unsafe { raw::syscall1(nr::FBDRAW, &cmd as *const FbDrawCmd as u64) as i64 };
+    if ret < 0 {
+        return Err(Error::Os(Errno::from_raw(-ret)));
+    }
+    Ok(ret as usize)
+}
+
+/// Read a window's pixel data into a local buffer.
+///
+/// Returns (width, height) of the window. The pixel data is copied to `dst`.
+pub fn read_window_buffer(buffer_id: u32, dst: &mut [u8]) -> Result<(u32, u32), Error> {
+    let dst_ptr = dst.as_ptr() as u64;
+    let cmd = FbDrawCmd {
+        op: draw_op::READ_WINDOW_BUFFER,
+        p1: buffer_id as i32,
+        p2: dst_ptr as i32,
+        p3: (dst_ptr >> 32) as i32,
+        p4: dst.len() as i32,
+        color: 0,
+    };
+    let ret = unsafe { raw::syscall1(nr::FBDRAW, &cmd as *const FbDrawCmd as u64) as i64 };
+    if ret < 0 {
+        return Err(Error::Os(Errno::from_raw(-ret)));
+    }
+    let result = ret as u64;
+    let width = (result >> 32) as u32;
+    let height = (result & 0xFFFF_FFFF) as u32;
+    Ok((width, height))
 }
 
 /// Get the current mouse cursor position.

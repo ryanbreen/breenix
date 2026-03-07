@@ -867,32 +867,57 @@ fn main() {
         result.unwrap()
     };
 
-    let fb_ptr = {
-        let mut result = None;
-        for attempt in 0..10 {
-            match graphics::fb_mmap() {
-                Ok(ptr) => { result = Some(ptr); break; }
-                Err(_) if attempt < 9 => {
-                    let _ = libbreenix::time::nanosleep(&libbreenix::types::Timespec { tv_sec: 0, tv_nsec: 10_000_000 });
-                }
-                Err(e) => {
-                    print!("[bwm] ERROR: fb_mmap failed after retries: {}\n", e);
-                    process::exit(1);
-                }
-            }
-        }
-        result.unwrap()
-    };
-
-    // After take_over_display, fb_mmap maps the right pane (local coords 0,0 = top-left of right pane)
     let full_width = info.width as usize;
     let height = info.height as usize;
     let bpp = info.bytes_per_pixel as usize;
-    let pane_width = full_width - (full_width / 2 + 4); // right pane after divider
+
+    // GPU compositing mode: render to a heap-allocated pixel buffer, display
+    // via virgl_composite(). Falls back to mmap if VirGL is unavailable.
+    //
+    // In GPU mode, BWM owns the entire display (not just right pane).
+    // In mmap mode, BWM only owns the right pane (after the divider).
+    let gpu_compositing = {
+        let test_pixel: [u32; 1] = [0xFF000000]; // black
+        graphics::virgl_composite(&test_pixel, 1, 1).is_ok()
+    };
+
+    let (mut composite_buf, pane_width, mmap_fb_ptr) = if gpu_compositing {
+        print!("[bwm] GPU compositing mode (VirGL)\n");
+        // Full-screen pixel buffer (BGRA u32)
+        let buf = vec![0u32; full_width * height];
+        (Some(buf), full_width, None)
+    } else {
+        print!("[bwm] Software mmap mode (fallback)\n");
+        let fb_ptr = {
+            let mut result = None;
+            for attempt in 0..10 {
+                match graphics::fb_mmap() {
+                    Ok(ptr) => { result = Some(ptr); break; }
+                    Err(_) if attempt < 9 => {
+                        let _ = libbreenix::time::nanosleep(&libbreenix::types::Timespec { tv_sec: 0, tv_nsec: 10_000_000 });
+                    }
+                    Err(e) => {
+                        print!("[bwm] ERROR: fb_mmap failed after retries: {}\n", e);
+                        process::exit(1);
+                    }
+                }
+            }
+            result.unwrap()
+        };
+        let pw = full_width - (full_width / 2 + 4); // right pane after divider
+        (None, pw, Some(fb_ptr))
+    };
+
+    // Create FrameBuf pointing to either the heap buffer or mmap
+    let fb_raw_ptr = if let Some(ref mut buf) = composite_buf {
+        buf.as_mut_ptr() as *mut u8
+    } else {
+        mmap_fb_ptr.unwrap()
+    };
 
     let mut fb = unsafe {
         FrameBuf::from_raw(
-            fb_ptr,
+            fb_raw_ptr,
             pane_width,
             height,
             pane_width * bpp,
@@ -970,13 +995,17 @@ fn main() {
     let mut input_parser = InputParser::new();
     let mut frame: u32 = 0;
     let mut prev_mouse_buttons: u32 = 0; // For detecting click transitions
-    let pane_x_offset = full_width / 2 + 4; // Right pane starts after divider
+    let pane_x_offset = if gpu_compositing { 0 } else { full_width / 2 + 4 };
 
     // Initial render
     fb.clear(BG_COLOR);
     draw_tab_bar(&mut fb, &tabs, active_tab, pane_width);
     tabs[active_tab].emu.render(&mut fb, term_x_offset, term_y_offset);
-    let _ = graphics::fb_flush();
+    if let Some(ref buf) = composite_buf {
+        let _ = graphics::virgl_composite(buf, pane_width as u32, height as u32);
+    } else {
+        let _ = graphics::fb_flush();
+    }
 
     // Step 5: Main loop
     let mut read_buf = [0u8; 512];
@@ -1267,7 +1296,13 @@ fn main() {
 
         // Only flush when something changed
         if needs_flush {
-            let _ = graphics::fb_flush();
+            if let Some(ref buf) = composite_buf {
+                // GPU compositing: upload pixel buffer as texture
+                let _ = graphics::virgl_composite(buf, pane_width as u32, height as u32);
+            } else {
+                // Mmap fallback: flush to display via kernel
+                let _ = graphics::fb_flush();
+            }
             needs_flush = false;
         }
 
