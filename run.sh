@@ -621,6 +621,12 @@ ethernet0.linkStatePropagation.enable = "TRUE"
 
 usb.present = "TRUE"
 usb_xhci.present = "TRUE"
+usb_xhci:4.present = "TRUE"
+usb_xhci:4.deviceType = "hid"
+usb_xhci:4.port = "4"
+usb_xhci:6.present = "TRUE"
+usb_xhci:6.deviceType = "mouse"
+usb_xhci:6.port = "6"
 
 svga.vramSize = "268435456"
 mks.enable3d = "TRUE"

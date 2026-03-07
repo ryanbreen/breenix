@@ -147,8 +147,15 @@ pub fn init() -> usize {
         // Intel 82801FB EHCI: vendor 0x8086, device 0x265c at PCI 00:02.0
 
         // Initialize XHCI USB host controller (keyboard + mouse)
-        // NEC uPD720200: vendor 0x1033, device 0x0194
-        if let Some(xhci_dev) = pci::find_device(0x1033, 0x0194) {
+        // Find by class code (0x0C/0x03/0x30 = USB XHCI), then fall back to known device IDs.
+        // Parallels NEC uPD720200: 0x1033:0x0194, VMware: 0x15ad:0x077a
+        if let Some(xhci_dev) = pci::find_by_class(pci::DeviceClass::SerialBus, 0x03, 0x30)
+            .or_else(|| pci::find_device(0x1033, 0x0194))
+            .or_else(|| pci::find_device(0x15ad, 0x077a))
+        {
+            serial_println!("[drivers] Found XHCI at {:02x}:{:02x}.{} [{:04x}:{:04x}]",
+                xhci_dev.bus, xhci_dev.device, xhci_dev.function,
+                xhci_dev.vendor_id, xhci_dev.device_id);
             #[cfg(feature = "xhci_linux_harness")]
             let xhci_result = usb::xhci_linux::init(&xhci_dev);
             #[cfg(not(feature = "xhci_linux_harness"))]

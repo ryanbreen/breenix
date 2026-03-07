@@ -583,16 +583,34 @@ static HID_TRBS_QUEUED: AtomicBool = AtomicBool::new(false);
 // Memory Helpers
 // =============================================================================
 
-/// Convert a kernel virtual address to a physical address.
+/// Convert a kernel virtual address to the IPA (Intermediate Physical Address)
+/// that DMA controllers need to access guest memory.
 ///
-/// On QEMU aarch64, kernel statics are accessed via HHDM (>= 0xFFFF_0000_0000_0000),
-/// so phys = virt - HHDM_BASE.
-/// On Parallels, the kernel may be identity-mapped via TTBR0, so statics are
-/// at their physical addresses already.
+/// On QEMU/Parallels (RAM offset=0): VA 0xFFFF_0000_40xx → IPA 0x40xx.
+/// On VMware (RAM offset=0x40000000): VA 0xFFFF_0000_80xx → IPA 0x80xx.
+///
+/// The kernel binary uses PC-relative (ADRP) addressing for statics. On VMware,
+/// the kernel runs at VA 0xFFFF_0000_80XXXXXX (identity-mapped via L1[2]), so
+/// BSS statics have flat addresses in the 0x80XXXXXX range — already valid IPAs.
+/// Addresses in the linker-expected 0x40XXXXXX range (via L1[1] remapping) need
+/// the RAM base offset added to get the actual IPA.
 #[inline]
 fn virt_to_phys(virt: u64) -> u64 {
     if virt >= HHDM_BASE {
-        virt - HHDM_BASE
+        let flat = virt - HHDM_BASE;
+        let rbo = crate::platform_config::ram_base_offset();
+        let actual_ram_base = 0x4000_0000u64 + rbo;
+        if flat >= actual_ram_base {
+            // Already in the actual physical RAM range (identity-mapped on VMware
+            // via L1[2], or direct on QEMU/Parallels where rbo=0).
+            flat
+        } else if flat >= 0x4000_0000 {
+            // In the linker-expected range (L1[1] remapping on VMware).
+            flat + rbo
+        } else {
+            // Device MMIO (< 0x40000000): identity-mapped on all platforms.
+            flat
+        }
     } else {
         // Already a physical address (identity-mapped kernel on Parallels)
         virt
@@ -4208,8 +4226,8 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
 
     // Wait for Parallels' ASYNC OnExitBootServices handler to complete.
     //
-    // CRITICAL FINDING: The hypervisor's OnExitBootServices() handler runs
-    // ASYNCHRONOUSLY ~440ms after the EBS call, and triggers a second XHC
+    // CRITICAL FINDING: The Parallels hypervisor's OnExitBootServices() handler
+    // runs ASYNCHRONOUSLY ~440ms after the EBS call, and triggers a second XHC
     // controller reset at ~685ms. If our HCRST happens BEFORE this async reset,
     // the async reset destroys all endpoints we just created → CC=12.
     //
@@ -4217,10 +4235,11 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     // completed before we do our HCRST. Our HCRST becomes the LAST reset,
     // and endpoint state created after it will persist.
     //
-    // On linux-probe, ~1.8 seconds pass between EBS and the linux module's
-    // HCRST — well past the async handler window.
-    const EBS_SETTLE_MS: u32 = 1000;
-    delay_ms(EBS_SETTLE_MS);
+    // VMware does not exhibit this behavior, so skip the delay there.
+    if !crate::platform_config::is_vmware() {
+        const EBS_SETTLE_MS: u32 = 1000;
+        delay_ms(EBS_SETTLE_MS);
+    }
 
     // Step 1: pci_enable_device() equivalent
     // 1a. Transition to D0 power state (pci_set_power_state → pci_raw_set_power_state)
@@ -4658,12 +4677,54 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
         mouse_nkro_endpoint: 0,
     };
 
+    // Diagnostic: print DMA addresses used for XHCI data structures.
+    // On VMware (ram_base_offset=0x40000000), these must be IPAs in the 0x80XXXXXX range.
+    crate::serial_println!("[xhci] DMA addrs: DCBAA=0x{:x} CMD_RING=0x{:x} EVT_RING=0x{:x} ERST=0x{:x}",
+        dcbaa_phys, cmd_ring_phys, event_ring_phys, erst_phys);
+    crate::serial_println!("[xhci] Regs: USBCMD=0x{:x} USBSTS=0x{:x} CRCR=0x{:x} DCBAAP=0x{:x}",
+        read32(op_base), read32(op_base + 0x04),
+        read64(op_base + 0x18), read64(op_base + 0x30));
+    crate::serial_println!("[xhci] IR0: IMAN=0x{:x} ERDP=0x{:x} ERSTBA=0x{:x}",
+        read32(ir0), read64(ir0 + 0x18), read64(ir0 + 0x10));
+
     // NOOP command: warm up the command ring before real commands.
     // Linux xhci_hcd sends a NEC vendor NOOP as its first command after RS=1.
     // This completes a full command ring cycle (queue TRB → ring doorbell →
     // receive completion event → update ERDP) before Enable Slot.
     if let Err(e) = send_noop(&xhci_state) {
         crate::serial_println!("[xhci] NOOP command failed: {}", e);
+        // Dump post-NOOP state for debugging
+        crate::serial_println!("[xhci] Post-NOOP: USBSTS=0x{:x} CRCR=0x{:x}",
+            read32(op_base + 0x04), read64(op_base + 0x18));
+        crate::serial_println!("[xhci] Post-NOOP IR0: IMAN=0x{:x} ERDP=0x{:x}",
+            read32(ir0), read64(ir0 + 0x18));
+        // Read back first event ring entry to see if controller wrote anything
+        unsafe {
+            let ring = &raw const EVENT_RING;
+            dma_cache_invalidate(
+                &(*ring).0[0] as *const Trb as *const u8,
+                core::mem::size_of::<Trb>(),
+            );
+            let trb = core::ptr::read_volatile(&(*ring).0[0]);
+            crate::serial_println!("[xhci] EVT[0]: param=0x{:x} status=0x{:x} control=0x{:x}",
+                trb.param, trb.status, trb.control);
+        }
+    }
+
+    // Dump all port PORTSC values for diagnostic (VMware may not have devices at boot).
+    {
+        let max_p = xhci_state.max_ports;
+        crate::serial_println!("[xhci] Port scan: {} ports", max_p);
+        for p in 0..max_p.min(16) as u64 {
+            let psc = read32(op_base + 0x400 + p * 0x10);
+            if psc != 0 {
+                let ccs = psc & 1;
+                let ped = (psc >> 1) & 1;
+                let speed = (psc >> 10) & 0xF;
+                crate::serial_println!("[xhci]   port {}: PORTSC=0x{:08x} CCS={} PED={} speed={}",
+                    p + 1, psc, ccs, ped, speed);
+            }
+        }
     }
 
     // 15. Scan ports and configure HID devices.
