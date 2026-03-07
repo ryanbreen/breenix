@@ -70,6 +70,112 @@ const ANSI_COLORS: [Color; 8] = [
     Color::rgb(229, 229, 229), // 7: white
 ];
 
+// ─── Mouse Cursor ───────────────────────────────────────────────────────────
+
+/// Arrow cursor bitmap (1 = white, 2 = black outline, 0 = transparent). 12x18.
+const MOUSE_CURSOR: [[u8; 12]; 18] = [
+    [2,0,0,0,0,0,0,0,0,0,0,0],
+    [2,2,0,0,0,0,0,0,0,0,0,0],
+    [2,1,2,0,0,0,0,0,0,0,0,0],
+    [2,1,1,2,0,0,0,0,0,0,0,0],
+    [2,1,1,1,2,0,0,0,0,0,0,0],
+    [2,1,1,1,1,2,0,0,0,0,0,0],
+    [2,1,1,1,1,1,2,0,0,0,0,0],
+    [2,1,1,1,1,1,1,2,0,0,0,0],
+    [2,1,1,1,1,1,1,1,2,0,0,0],
+    [2,1,1,1,1,1,1,1,1,2,0,0],
+    [2,1,1,1,1,1,1,1,1,1,2,0],
+    [2,1,1,1,1,1,2,2,2,2,2,0],
+    [2,1,1,1,1,2,0,0,0,0,0,0],
+    [2,1,1,2,1,1,2,0,0,0,0,0],
+    [2,1,2,0,2,1,1,2,0,0,0,0],
+    [2,2,0,0,2,1,1,2,0,0,0,0],
+    [2,0,0,0,0,2,1,2,0,0,0,0],
+    [0,0,0,0,0,2,2,0,0,0,0,0],
+];
+
+const CURSOR_W: usize = 12;
+const CURSOR_H: usize = 18;
+
+struct CursorState {
+    saved_bg: [u32; CURSOR_W * CURSOR_H],
+    drawn: bool,
+    last_x: usize,
+    last_y: usize,
+}
+
+impl CursorState {
+    fn new() -> Self {
+        Self { saved_bg: [0; CURSOR_W * CURSOR_H], drawn: false, last_x: 0, last_y: 0 }
+    }
+
+    fn erase(&mut self, fb: &mut FrameBuf) {
+        if !self.drawn { return; }
+        let w = fb.width;
+        let h = fb.height;
+        for row in 0..CURSOR_H {
+            let py = self.last_y + row;
+            if py >= h { break; }
+            for col in 0..CURSOR_W {
+                let px = self.last_x + col;
+                if px >= w { break; }
+                if MOUSE_CURSOR[row][col] != 0 {
+                    let packed = self.saved_bg[row * CURSOR_W + col];
+                    let r = ((packed >> 16) & 0xFF) as u8;
+                    let g = ((packed >> 8) & 0xFF) as u8;
+                    let b = (packed & 0xFF) as u8;
+                    fb.put_pixel(px, py, Color::rgb(r, g, b));
+                }
+            }
+        }
+        self.drawn = false;
+    }
+
+    fn draw(&mut self, fb: &mut FrameBuf, mx: usize, my: usize) {
+        let w = fb.width;
+        let h = fb.height;
+        // Save background
+        for row in 0..CURSOR_H {
+            let py = my + row;
+            if py >= h { break; }
+            for col in 0..CURSOR_W {
+                let px = mx + col;
+                if px >= w { break; }
+                if MOUSE_CURSOR[row][col] != 0 {
+                    let c = fb.get_pixel(px, py);
+                    self.saved_bg[row * CURSOR_W + col] =
+                        ((c.r as u32) << 16) | ((c.g as u32) << 8) | (c.b as u32);
+                }
+            }
+        }
+        // Draw cursor
+        for row in 0..CURSOR_H {
+            let py = my + row;
+            if py >= h { break; }
+            for col in 0..CURSOR_W {
+                let px = mx + col;
+                if px >= w { break; }
+                match MOUSE_CURSOR[row][col] {
+                    1 => fb.put_pixel(px, py, Color::WHITE),
+                    2 => fb.put_pixel(px, py, Color::rgb(0, 0, 0)),
+                    _ => {}
+                }
+            }
+        }
+        self.last_x = mx;
+        self.last_y = my;
+        self.drawn = true;
+    }
+
+    fn update(&mut self, fb: &mut FrameBuf, mx: usize, my: usize) {
+        if self.drawn && self.last_x == mx && self.last_y == my {
+            return; // No movement
+        }
+        self.erase(fb);
+        self.draw(fb, mx, my);
+    }
+}
+
 // ─── Character Cell ──────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy)]
@@ -998,6 +1104,9 @@ fn main() {
     let mut input_parser = InputParser::new();
     let mut frame: u32 = 0;
     let mut prev_mouse_buttons: u32 = 0; // For detecting click transitions
+    let mut mouse_x: usize = 0;
+    let mut mouse_y: usize = 0;
+    let mut cursor_state = CursorState::new();
     let pane_x_offset = if gpu_compositing { 0 } else { full_width / 2 + 4 };
 
     // Initial render
@@ -1229,13 +1338,20 @@ fn main() {
             }
         }
 
-        // Check for mouse clicks on tab bar
+        // Check for mouse clicks on tab bar and track cursor position
         if let Ok((mx, my, buttons)) = graphics::mouse_state() {
+            let new_mx = mx as usize;
+            let new_my = my as usize;
+            if new_mx != mouse_x || new_my != mouse_y {
+                mouse_x = new_mx;
+                mouse_y = new_my;
+                needs_flush = true;
+            }
             // Detect rising edge (button just pressed)
             if buttons & 1 != 0 && prev_mouse_buttons & 1 == 0 {
                 // Convert screen coords to pane-local coords
-                if mx as usize >= pane_x_offset && (my as usize) < TAB_BAR_HEIGHT {
-                    let local_x = mx as usize - pane_x_offset;
+                if new_mx >= pane_x_offset && new_my < TAB_BAR_HEIGHT {
+                    let local_x = new_mx - pane_x_offset;
                     if let Some(clicked_tab) = hit_test_tab_bar(&tabs, local_x, pane_width) {
                         if clicked_tab != active_tab {
                             active_tab = clicked_tab;
@@ -1289,6 +1405,13 @@ fn main() {
             }
         }
 
+        // Erase cursor before content rendering (so we don't save cursor
+        // pixels as background when content redraws under the cursor)
+        let content_dirty = tabs[active_tab].emu.dirty || frame % 200 == 0;
+        if content_dirty {
+            cursor_state.erase(&mut fb);
+        }
+
         // Render active tab (only if dirty)
         if tabs[active_tab].emu.dirty {
             tabs[active_tab].emu.render(&mut fb, term_x_offset, term_y_offset);
@@ -1296,9 +1419,14 @@ fn main() {
         }
 
         // Redraw tab bar periodically (for unread indicators)
-        // Only set needs_flush if tab state actually changed
         if frame % 200 == 0 {
             draw_tab_bar(&mut fb, &tabs, active_tab, pane_width);
+            needs_flush = true;
+        }
+
+        // Draw mouse cursor on top of everything (with save/restore)
+        if mouse_x > 0 || mouse_y > 0 {
+            cursor_state.update(&mut fb, mouse_x, mouse_y);
             needs_flush = true;
         }
 

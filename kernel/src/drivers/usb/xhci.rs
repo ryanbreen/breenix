@@ -2892,6 +2892,11 @@ fn configure_hid(
                 &*(config_buf.as_ptr().add(offset) as *const InterfaceDescriptor)
             };
 
+            crate::serial_println!("[xhci] slot{} iface{}: class={:#04x} sub={:#04x} proto={:#04x} numEP={}",
+                slot_id, iface.b_interface_number,
+                iface.b_interface_class, iface.b_interface_sub_class,
+                iface.b_interface_protocol, iface.b_num_endpoints);
+
             if iface.b_interface_class == class_code::HID {
 
                 // Parse HID descriptor (type 0x21) for wDescriptorLength.
@@ -2993,10 +2998,25 @@ fn configure_hid(
                                     // Non-boot HID interface on same device as boot keyboard
                                     // = NKRO keyboard (Parallels sends keystrokes here)
                                     (2usize, false, true)
+                                } else if found_mouse {
+                                    // Second generic HID interface on same device
+                                    // (VMware mouse has two proto=0 interfaces)
+                                    if !found_mouse2 {
+                                        found_mouse2 = true;
+                                        (3usize, false, false)
+                                    } else {
+                                        break; // Only support two mouse interfaces
+                                    }
                                 } else {
-                                    // Unknown HID interface — treat as mouse/generic
+                                    // First generic HID interface — treat as mouse
+                                    found_mouse = true;
                                     (1usize, false, false)
                                 };
+
+                            crate::serial_println!("[xhci] HID iface: proto={} subclass={} -> {} (hid_idx={})",
+                                iface.b_interface_protocol, iface.b_interface_sub_class,
+                                if is_keyboard { "keyboard" } else if is_nkro { "NKRO" } else { "mouse" },
+                                hid_idx);
 
                             // Calculate DCI (Device Context Index) for this endpoint
                             let ep_num = ep_desc.endpoint_number();
@@ -3704,6 +3724,10 @@ fn start_hid_polling(state: &XhciState) {
     // --- M10: INTERRUPT_TRANSFER ---
     ms_begin!(M_INTR_XFER);
 
+    crate::serial_println!("[xhci] start_hid_polling: kbd=slot{}/dci{} nkro=dci{} mouse=slot{}/dci{} mouse2=dci{}",
+        state.kbd_slot, state.kbd_endpoint, state.kbd_nkro_endpoint,
+        state.mouse_slot, state.mouse_endpoint, state.mouse_nkro_endpoint);
+
     // Drain any stale Transfer Events that may have been generated during
     // port scanning or previous enumeration attempts.
     drain_stale_events(state);
@@ -3956,6 +3980,8 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
         }
 
         let port_id = port as u8 + 1; // 1-based port ID
+        crate::serial_println!("[xhci] port {} connected: PORTSC=0x{:08x} PED={} speed={}",
+            port_id, portsc, (portsc >> 1) & 1, (portsc >> 10) & 0xF);
 
         // --- M5: PORT_DETECTION ---
         ms_begin!(M_PORT_DET);
@@ -3998,6 +4024,7 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
             )
             .is_err()
             {
+                crate::serial_println!("[xhci] port {} reset timeout", port_id);
                 ms_kv!(M_PORT_DET, "port={} reset timeout", port_id);
                 continue;
             }
@@ -4008,6 +4035,8 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
             write32(portsc_addr, (portsc_after & preserve_mask) | (1 << 21));
 
             let portsc_final = read32(portsc_addr);
+            crate::serial_println!("[xhci] port {} post-reset: PORTSC=0x{:08x} PED={} speed={}",
+                port_id, portsc_final, (portsc_final >> 1) & 1, (portsc_final >> 10) & 0xF);
             ms_kv!(M_PORT_DET, "port={} post_reset PORTSC=0x{:08x} PED={}",
                    port_id, portsc_final, (portsc_final >> 1) & 1);
             if portsc_final & (1 << 1) == 0 {
@@ -4023,19 +4052,20 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
         ms_begin!(M_SLOT_EN);
         // Enable Slot for this device
         let slot_id = match enable_slot(state) {
-            Ok(id) => id,
-            Err(_) => {
+            Ok(id) => {
+                crate::serial_println!("[xhci] port {} EnableSlot -> slot {}", port_id, id);
+                id
+            }
+            Err(e) => {
+                crate::serial_println!("[xhci] port {} EnableSlot failed: {}", port_id, e);
                 ms_fail!(M_SLOT_EN, "EnableSlot returned error");
-                ms_kv!(M_SLOT_EN, "port={} slot_id=0", port_id);
                 continue;
             }
         };
         if slot_id == 0 {
-            ms_fail!(M_SLOT_EN, "EnableSlot returned 0 or out of range");
-            ms_kv!(M_SLOT_EN, "port={} slot_id=0", port_id);
+            crate::serial_println!("[xhci] port {} EnableSlot returned 0", port_id);
             continue;
         }
-        ms_kv!(M_SLOT_EN, "port={} slot_id={}", port_id, slot_id);
         ms_pass!(M_SLOT_EN);
 
         slots_used += 1;
@@ -4045,10 +4075,11 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
                port_id, (read32(portsc_addr) >> 10) & 0xF, slot_id);
         ms_begin!(M_ADDR_DEV);
         // Address Device (port numbers are 1-based)
-        if let Err(_) = address_device(state, slot_id, port_id) {
-            ms_fail!(M_ADDR_DEV, "command failed");
+        if let Err(e) = address_device(state, slot_id, port_id) {
+            crate::serial_println!("[xhci] port {} AddressDevice failed: {}", port_id, e);
             continue;
         }
+        crate::serial_println!("[xhci] port {} AddressDevice OK (slot {})", port_id, slot_id);
         ms_pass!(M_ADDR_DEV);
 
         // Linux USB 3.0 enumeration sequence (from ftrace):
@@ -4073,6 +4104,14 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
         let mut desc_buf = [0u8; 18];
         if let Err(_) = get_device_descriptor(state, slot_id, &mut desc_buf) {
             continue;
+        }
+        {
+            let dd = unsafe { &*(desc_buf.as_ptr() as *const DeviceDescriptor) };
+            let vid = dd.id_vendor;
+            let pid = dd.id_product;
+            crate::serial_println!("[xhci] slot{}: vid={:#06x} pid={:#06x} class={:#04x}/{:#04x}/{:#04x}",
+                slot_id, vid, pid,
+                dd.b_device_class, dd.b_device_sub_class, dd.b_device_protocol);
         }
 
         // Step 4: BOS descriptor
