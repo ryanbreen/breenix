@@ -12,19 +12,35 @@ use uefi::proto::console::gop::{GraphicsOutput, PixelFormat};
 // Raw UART output (bypasses UEFI ConOut, goes directly to serial)
 // =============================================================================
 
-/// Writer that sends bytes directly to the PL011 UART data register.
+/// Writer that sends bytes directly to the UART data register.
+/// Supports both PL011 (32-bit write) and 16550 (8-bit write).
 /// Used to log GOP mode info to serial, since UEFI ConOut goes to the
 /// display (which gets reset when the kernel takes over).
-struct UartWriter(u64);
+struct UartWriter {
+    base: u64,
+    uart_type: u8, // 0 = PL011, 1 = 16550
+}
 
 impl UartWriter {
     fn putc(&self, c: u8) {
-        if self.0 == 0 {
+        if self.base == 0 {
             return;
         }
         unsafe {
-            let dr = self.0 as *mut u32;
-            core::ptr::write_volatile(dr, c as u32);
+            if self.uart_type == 1 {
+                // 16550: byte write to THR (offset 0)
+                // Wait for TX ready: LSR bit 5 (THRE)
+                let lsr = (self.base + 5) as *const u8;
+                while core::ptr::read_volatile(lsr) & 0x20 == 0 {
+                    core::hint::spin_loop();
+                }
+                let thr = self.base as *mut u8;
+                core::ptr::write_volatile(thr, c);
+            } else {
+                // PL011: 32-bit write to DR (offset 0)
+                let dr = self.base as *mut u32;
+                core::ptr::write_volatile(dr, c as u32);
+            }
         }
     }
 }
@@ -54,7 +70,12 @@ pub fn discover_gop(config: &mut HardwareConfig) -> Result<(), &'static str> {
     use core::fmt::Write;
 
     // Raw UART writer for serial output (UEFI log goes to display, not serial)
-    let mut uart = UartWriter(config.uart_base_phys);
+    let mut uart = UartWriter { base: config.uart_base_phys, uart_type: config.uart_type };
+
+    // Log UART configuration for diagnostics
+    let _ = writeln!(uart, "[gop-serial] UART: base=0x{:x} type={} ({})",
+        config.uart_base_phys, config.uart_type,
+        if config.uart_type == 1 { "16550" } else { "PL011" });
 
     // Find the GOP handle
     let handle = uefi::boot::get_handle_for_protocol::<GraphicsOutput>()

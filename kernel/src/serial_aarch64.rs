@@ -55,6 +55,29 @@ mod reg {
     pub const ICR: usize = 0x44;
 }
 
+/// 16550 Register offsets (byte-spaced MMIO)
+#[allow(dead_code)]
+mod reg16550 {
+    /// Transmit Holding Register / Receive Buffer Register
+    pub const THR: usize = 0x00;
+    /// Interrupt Enable Register
+    pub const IER: usize = 0x01;
+    /// FIFO Control Register (write) / Interrupt ID (read)
+    pub const FCR: usize = 0x02;
+    /// Line Control Register
+    pub const LCR: usize = 0x03;
+    /// Modem Control Register
+    pub const MCR: usize = 0x04;
+    /// Line Status Register
+    pub const LSR: usize = 0x05;
+    /// LSR bit: Transmit Holding Register Empty
+    pub const LSR_THRE: u8 = 1 << 5;
+    /// LSR bit: Data Ready
+    pub const LSR_DR: u8 = 1 << 0;
+    /// LCR value: 8 data bits, 1 stop bit, no parity
+    pub const LCR_8N1: u8 = 0x03;
+}
+
 /// Flag Register bits
 mod flag {
     /// Receive FIFO empty
@@ -85,6 +108,13 @@ mod cr {
 // Register Access Helpers
 // =============================================================================
 
+/// Check if the UART is 16550 type
+#[inline]
+fn is_16550() -> bool {
+    crate::platform_config::uart_type() == 1
+}
+
+/// Read a PL011 register (32-bit MMIO)
 #[inline]
 fn read_reg(offset: usize) -> u32 {
     unsafe {
@@ -94,11 +124,32 @@ fn read_reg(offset: usize) -> u32 {
     }
 }
 
+/// Write a PL011 register (32-bit MMIO)
 #[inline]
 fn write_reg(offset: usize, value: u32) {
     unsafe {
         let base = crate::memory::physical_memory_offset().as_u64() as usize;
         let addr = (base + pl011_base_phys() + offset) as *mut u32;
+        core::ptr::write_volatile(addr, value);
+    }
+}
+
+/// Read a 16550 register (8-bit MMIO)
+#[inline]
+fn read_reg8(offset: usize) -> u8 {
+    unsafe {
+        let base = crate::memory::physical_memory_offset().as_u64() as usize;
+        let addr = (base + pl011_base_phys() + offset) as *const u8;
+        core::ptr::read_volatile(addr)
+    }
+}
+
+/// Write a 16550 register (8-bit MMIO)
+#[inline]
+fn write_reg8(offset: usize, value: u8) {
+    unsafe {
+        let base = crate::memory::physical_memory_offset().as_u64() as usize;
+        let addr = (base + pl011_base_phys() + offset) as *mut u8;
         core::ptr::write_volatile(addr, value);
     }
 }
@@ -123,11 +174,18 @@ impl SerialPort {
             return;
         }
 
-        // QEMU already has UART working for TX.
-        // Just ensure UARTEN is set for RX to work.
-        // Don't do a full reinit to avoid disrupting QEMU's setup.
-        let cr = read_reg(reg::CR);
-        write_reg(reg::CR, cr | cr::UARTEN | cr::TXE | cr::RXE);
+        if is_16550() {
+            // 16550 UART: initialize with 8N1, enable FIFO
+            write_reg8(reg16550::LCR, reg16550::LCR_8N1); // 8 data bits, 1 stop, no parity
+            write_reg8(reg16550::FCR, 0x07); // Enable FIFO, clear RX/TX
+            write_reg8(reg16550::IER, 0x00); // Disable interrupts initially
+            write_reg8(reg16550::MCR, 0x00); // No modem control
+        } else {
+            // PL011: QEMU already has UART working for TX.
+            // Just ensure UARTEN is set for RX to work.
+            let cr = read_reg(reg::CR);
+            write_reg(reg::CR, cr | cr::UARTEN | cr::TXE | cr::RXE);
+        }
 
         SERIAL_INITIALIZED.store(true, Ordering::Release);
 
@@ -137,27 +195,47 @@ impl SerialPort {
 
     /// Send a single byte
     pub fn send(&mut self, byte: u8) {
-        // Wait until TX FIFO is not full
-        while (read_reg(reg::FR) & flag::TXFF) != 0 {
-            core::hint::spin_loop();
+        if is_16550() {
+            // 16550: wait for THRE (Transmit Holding Register Empty)
+            while read_reg8(reg16550::LSR) & reg16550::LSR_THRE == 0 {
+                core::hint::spin_loop();
+            }
+            write_reg8(reg16550::THR, byte);
+        } else {
+            // PL011: wait until TX FIFO is not full
+            while (read_reg(reg::FR) & flag::TXFF) != 0 {
+                core::hint::spin_loop();
+            }
+            write_reg(reg::DR, byte as u32);
         }
-        write_reg(reg::DR, byte as u32);
     }
 
     /// Try to receive a byte (non-blocking)
     ///
     /// Returns None if the receive FIFO is empty.
     pub fn try_receive(&self) -> Option<u8> {
-        if (read_reg(reg::FR) & flag::RXFE) != 0 {
-            None
+        if is_16550() {
+            if read_reg8(reg16550::LSR) & reg16550::LSR_DR == 0 {
+                None
+            } else {
+                Some(read_reg8(reg16550::THR))
+            }
         } else {
-            Some((read_reg(reg::DR) & 0xFF) as u8)
+            if (read_reg(reg::FR) & flag::RXFE) != 0 {
+                None
+            } else {
+                Some((read_reg(reg::DR) & 0xFF) as u8)
+            }
         }
     }
 
     /// Check if there is data available to read
     pub fn is_data_available(&self) -> bool {
-        (read_reg(reg::FR) & flag::RXFE) == 0
+        if is_16550() {
+            read_reg8(reg16550::LSR) & reg16550::LSR_DR != 0
+        } else {
+            (read_reg(reg::FR) & flag::RXFE) == 0
+        }
     }
 }
 
@@ -185,40 +263,62 @@ pub fn init_serial() {
 ///
 /// Must be called after GIC is initialized to properly route the interrupt.
 pub fn enable_rx_interrupt() {
-    // Enable RX and RX timeout interrupts
-    let old_imsc = read_reg(reg::IMSC);
-    let new_imsc = old_imsc | int::RX | int::RT;
-    write_reg(reg::IMSC, new_imsc);
+    if is_16550() {
+        // 16550: enable RX data available interrupt
+        let ier = read_reg8(reg16550::IER);
+        write_reg8(reg16550::IER, ier | 0x01); // bit 0 = RX data available
+        crate::serial_println!("[uart-16550] IER: {:#x} -> {:#x}", ier, ier | 0x01);
+    } else {
+        // PL011: enable RX and RX timeout interrupts
+        let old_imsc = read_reg(reg::IMSC);
+        let new_imsc = old_imsc | int::RX | int::RT;
+        write_reg(reg::IMSC, new_imsc);
 
-    // Debug: verify the write
-    let verify = read_reg(reg::IMSC);
-    crate::serial_println!("[uart] IMSC: {:#x} -> {:#x} (verify: {:#x})", old_imsc, new_imsc, verify);
+        let verify = read_reg(reg::IMSC);
+        crate::serial_println!("[uart] IMSC: {:#x} -> {:#x} (verify: {:#x})", old_imsc, new_imsc, verify);
 
-    // Also show the flag register and interrupt status
-    let fr = read_reg(reg::FR);
-    let ris = read_reg(reg::RIS);
-    crate::serial_println!("[uart] FR={:#x} (RXFE={}), RIS={:#x}", fr, (fr >> 4) & 1, ris);
+        let fr = read_reg(reg::FR);
+        let ris = read_reg(reg::RIS);
+        crate::serial_println!("[uart] FR={:#x} (RXFE={}), RIS={:#x}", fr, (fr >> 4) & 1, ris);
+    }
 }
 
 /// Disable receive interrupts
 pub fn disable_rx_interrupt() {
-    let imsc = read_reg(reg::IMSC);
-    write_reg(reg::IMSC, imsc & !(int::RX | int::RT));
+    if is_16550() {
+        write_reg8(reg16550::IER, 0x00);
+    } else {
+        let imsc = read_reg(reg::IMSC);
+        write_reg(reg::IMSC, imsc & !(int::RX | int::RT));
+    }
 }
 
 /// Clear receive interrupt
 pub fn clear_rx_interrupt() {
-    write_reg(reg::ICR, int::RX | int::RT);
+    if is_16550() {
+        // 16550: reading IIR/RBR clears the interrupt
+        let _ = read_reg8(reg16550::THR);
+    } else {
+        write_reg(reg::ICR, int::RX | int::RT);
+    }
 }
 
 /// Get any pending received byte and clear the interrupt
 ///
 /// Returns None if no data available.
 pub fn get_received_byte() -> Option<u8> {
-    if (read_reg(reg::FR) & flag::RXFE) != 0 {
-        None
+    if is_16550() {
+        if read_reg8(reg16550::LSR) & reg16550::LSR_DR == 0 {
+            None
+        } else {
+            Some(read_reg8(reg16550::THR))
+        }
     } else {
-        Some((read_reg(reg::DR) & 0xFF) as u8)
+        if (read_reg(reg::FR) & flag::RXFE) != 0 {
+            None
+        } else {
+            Some((read_reg(reg::DR) & 0xFF) as u8)
+        }
     }
 }
 
@@ -344,8 +444,16 @@ pub fn _log_print(args: fmt::Arguments) {
 /// - Syscall entry/exit
 #[inline(always)]
 pub fn raw_serial_char(c: u8) {
-    let addr = crate::platform_config::uart_virt() as *mut u32;
-    unsafe { core::ptr::write_volatile(addr, c as u32); }
+    let addr = crate::platform_config::uart_virt();
+    unsafe {
+        if crate::platform_config::uart_type() == 1 {
+            // 16550: byte write to THR
+            core::ptr::write_volatile(addr as *mut u8, c);
+        } else {
+            // PL011: 32-bit write to DR
+            core::ptr::write_volatile(addr as *mut u32, c as u32);
+        }
+    }
 }
 
 /// Raw serial debug output - write a string without locks or allocations.
@@ -358,9 +466,17 @@ pub fn raw_serial_char(c: u8) {
 /// This helps identify markers in test output without ambiguity.
 #[inline(always)]
 pub fn raw_serial_str(s: &[u8]) {
-    let addr = crate::platform_config::uart_virt() as *mut u32;
-    for &c in s {
-        unsafe { core::ptr::write_volatile(addr, c as u32); }
+    let addr = crate::platform_config::uart_virt();
+    unsafe {
+        if crate::platform_config::uart_type() == 1 {
+            for &c in s {
+                core::ptr::write_volatile(addr as *mut u8, c);
+            }
+        } else {
+            for &c in s {
+                core::ptr::write_volatile(addr as *mut u32, c as u32);
+            }
+        }
     }
 }
 

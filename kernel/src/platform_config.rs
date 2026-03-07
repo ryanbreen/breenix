@@ -21,6 +21,10 @@ static GICV2M_NEXT_SPI: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "aarch64")]
 static UART_BASE_PHYS: AtomicU64 = AtomicU64::new(0x0900_0000);
 
+/// UART type: 0 = PL011 (default), 1 = 16550
+#[cfg(target_arch = "aarch64")]
+static UART_TYPE: AtomicU8 = AtomicU8::new(0);
+
 #[cfg(target_arch = "aarch64")]
 static GIC_VERSION: AtomicU8 = AtomicU8::new(2);
 
@@ -124,6 +128,13 @@ pub fn uart_base_phys() -> u64 {
 pub fn uart_virt() -> u64 {
     const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
     HHDM_BASE + UART_BASE_PHYS.load(Ordering::Relaxed)
+}
+
+/// UART type: 0 = PL011, 1 = 16550
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn uart_type() -> u8 {
+    UART_TYPE.load(Ordering::Relaxed)
 }
 
 /// GIC version (2, 3, or 4).
@@ -397,7 +408,9 @@ pub struct HardwareConfig {
     pub version: u32,
     pub uart_base_phys: u64,
     pub uart_irq: u32,
-    pub _pad0: u32,
+    /// UART type: 0 = PL011, 1 = 16550
+    pub uart_type: u8,
+    pub _pad0: [u8; 3],
     pub gic_version: u8,
     pub _pad1: [u8; 7],
     pub gicd_base: u64,
@@ -465,6 +478,7 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
     if config.uart_base_phys != 0 {
         UART_BASE_PHYS.store(config.uart_base_phys, Ordering::Relaxed);
     }
+    UART_TYPE.store(config.uart_type, Ordering::Relaxed);
     if config.gic_version != 0 {
         GIC_VERSION.store(config.gic_version, Ordering::Relaxed);
     }

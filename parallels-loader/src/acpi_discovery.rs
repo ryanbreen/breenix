@@ -6,7 +6,7 @@ use core::ptr::NonNull;
 
 use acpi::madt::{Madt, MadtEntry};
 use acpi::mcfg::Mcfg;
-use acpi::spcr::Spcr;
+use acpi::spcr::{Spcr, SpcrInterfaceType};
 use acpi::{AcpiHandler, AcpiTables, PhysicalMapping};
 
 use crate::hw_config::{GicrRange, HardwareConfig, MAX_GICR_RANGES, MAX_RAM_REGIONS};
@@ -206,6 +206,19 @@ fn parse_spcr(tables: &AcpiTables<UefiAcpiHandler>, config: &mut HardwareConfig)
 
     let iface_type = spcr_mapping.interface_type();
     log::info!("  SPCR interface type: {:?}", iface_type);
+
+    // Detect UART type from SPCR interface type
+    config.uart_type = match iface_type {
+        SpcrInterfaceType::Full16550
+        | SpcrInterfaceType::Full16450
+        | SpcrInterfaceType::Nvidia16550
+        | SpcrInterfaceType::Generic16550 => 1, // 16550-compatible
+        _ => 0, // PL011 / SBSA / other
+    };
+    log::info!("  UART type: {} ({})",
+        config.uart_type,
+        if config.uart_type == 1 { "16550" } else { "PL011" }
+    );
 
     if let Some(Ok(addr)) = spcr_mapping.base_address() {
         config.uart_base_phys = addr.address;

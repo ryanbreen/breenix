@@ -108,7 +108,6 @@ pub const NC_DMA_SIZE: u64 = 0x20_0000;
 /// L1 (TTBR0): 1 (covers 512GB)
 /// L1 (TTBR1): 1 (covers 512GB)
 /// L2 (for device regions): 2 (for 0x00000000-0x3FFFFFFF)
-/// L2 (for RAM with NC block): 2 (for 0x40000000-0x7FFFFFFF)
 const MAX_PAGE_TABLES: usize = 10;
 
 /// Page table storage. Allocated in the loader's BSS.
@@ -149,10 +148,11 @@ impl PageTableStorage {
 ///   Identity (TTBR0):
 ///     0x00000000-0x3FFFFFFF: Device MMIO (GIC, UART, PCI ECAM, PCI MMIO) - device memory
 ///     0x40000000-0xBFFFFFFF: RAM (2GB) - normal cacheable
+///     0xC0000000-0xFFFFFFFF: RAM/firmware (1GB) - normal cacheable (VMware UEFI loader)
 ///
 ///   HHDM (TTBR1):
 ///     0xFFFF_0000_0000_0000 + phys = virt for all of the above
-pub fn build_page_tables(storage: &mut PageTableStorage) -> (u64, u64) {
+pub fn build_page_tables(storage: &mut PageTableStorage, ram_base_offset: u64) -> (u64, u64) {
     // Allocate L0 tables
     let ttbr0_l0 = storage.alloc_table();
     let ttbr1_l0 = storage.alloc_table();
@@ -196,42 +196,62 @@ pub fn build_page_tables(storage: &mut PageTableStorage) -> (u64, u64) {
         write_entry(ttbr1_l2_dev, i as usize, phys | block_attr);
     }
 
-    // --- RAM: 0x40000000 - 0xBFFFFFFF (2GB, L1 entries 1-2) ---
+    // --- RAM: platform-adaptive mapping (L1 entries 1-3) ---
     //
-    // L1[1] = 0x40000000 - 0x7FFFFFFF: Use L2 table to carve out a 2MB NC block
-    // for DMA buffers at NC_DMA_BASE. All other 2MB blocks are WB-WA.
-    let ttbr0_l2_ram = storage.alloc_table();
-    let ttbr1_l2_ram = storage.alloc_table();
-    write_entry(ttbr0_l1, 1, ttbr0_l2_ram | attr::TABLE_DESC);
-    write_entry(ttbr1_l1, 1, ttbr1_l2_ram | attr::TABLE_DESC);
+    // The kernel linker script assumes RAM starts at 0x40000000 (QEMU/Parallels),
+    // but VMware Fusion places guest RAM at 0x80000000. We use ram_base_offset
+    // to create a VA→IPA mapping so the kernel's expected addresses work:
+    //
+    //   QEMU/Parallels (offset=0): VA 0x40000000 → IPA 0x40000000 (identity)
+    //   VMware (offset=0x40000000): VA 0x40000000 → IPA 0x80000000 (remapped)
+    //
+    // L1[1] = VA 0x40000000-0x7FFFFFFF → IPA (0x40000000 + offset)
+    let ram1_ipa = 0x4000_0000 + ram_base_offset;
+    write_entry(ttbr0_l1, 1, ram1_ipa | attr::NORMAL_BLOCK);
+    write_entry(ttbr1_l1, 1, ram1_ipa | attr::NORMAL_BLOCK);
 
-    // NC block index: (NC_DMA_BASE - 0x40000000) / 0x200000
-    // DMA buffers are mapped Non-Cacheable for hardware DMA coherency.
-    // Tested: switching to Normal Cacheable (WB) does NOT fix CC=12 on Parallels.
-    let nc_block_idx = ((NC_DMA_BASE - 0x4000_0000) / 0x20_0000) as usize;
-    for i in 0..512u64 {
-        let phys = 0x4000_0000 + i * 0x20_0000;
-        let block_attr = if i as usize == nc_block_idx {
-            attr::NC_BLOCK
-        } else {
-            attr::NORMAL_BLOCK
-        };
-        write_entry(ttbr0_l2_ram, i as usize, phys | block_attr);
-        write_entry(ttbr1_l2_ram, i as usize, phys | block_attr);
-    }
-
-    // L1[2] = 0x80000000 - 0xBFFFFFFF (1GB block, normal memory)
+    // L1[2] = VA 0x80000000-0xBFFFFFFF → IPA 0x80000000 (always identity)
+    // On QEMU: second GB of RAM. On VMware: first GB of actual RAM.
     write_entry(ttbr0_l1, 2, 0x8000_0000 | attr::NORMAL_BLOCK);
     write_entry(ttbr1_l1, 2, 0x8000_0000 | attr::NORMAL_BLOCK);
+
+    // L1[3] = VA 0xC0000000-0xFFFFFFFF → IPA 0xC0000000 (always identity)
+    // Required for VMware Fusion: UEFI firmware places the loader at ~0xFBCExxxx.
+    // The MMU re-enable instruction must be able to fetch from this region.
+    write_entry(ttbr0_l1, 3, 0xC000_0000 | attr::NORMAL_BLOCK);
+    write_entry(ttbr1_l1, 3, 0xC000_0000 | attr::NORMAL_BLOCK);
+
+    // Ensure all page table writes are committed to memory
+    flush_page_tables();
 
     (ttbr0_l0, ttbr1_l0)
 }
 
-/// Write a page table entry.
+/// Write a page table entry and clean the cache line to ensure
+/// the table walker sees it (critical for hypervisors like VMware
+/// that may not snoop the data cache during page table walks).
 #[inline]
 fn write_entry(table_phys: u64, index: usize, value: u64) {
     unsafe {
         let entry_ptr = (table_phys as *mut u64).add(index);
         ptr::write_volatile(entry_ptr, value);
+        // Clean data cache by VA to Point of Coherency
+        // This ensures the page table entry is visible to the hardware table walker
+        core::arch::asm!(
+            "dc cvac, {addr}",
+            addr = in(reg) entry_ptr,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
+/// Flush data cache and issue barrier after all page table entries are written.
+fn flush_page_tables() {
+    unsafe {
+        core::arch::asm!(
+            "dsb sy",
+            "isb",
+            options(nostack, preserves_flags),
+        );
     }
 }

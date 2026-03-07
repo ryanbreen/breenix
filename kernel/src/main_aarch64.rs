@@ -237,11 +237,39 @@ use kernel::drivers::virtio::input_mmio;
 #[no_mangle]
 #[cfg_attr(feature = "kthread_test_only", allow(unreachable_code))]
 pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
+    // Early breadcrumb: write '1' to UART at the VMware address (hardcoded for diagnostics).
+    // This proves kernel_main was reached, even if HardwareConfig is inaccessible.
+    unsafe {
+        // Try VMware 16550 UART at 0x3FFF03F8 (identity-mapped in L1[0])
+        core::ptr::write_volatile(0x3FFF_03F8u64 as *mut u8, b'1');
+        // Also try Parallels PL011 UART at 0x02110000
+        core::ptr::write_volatile(0x0211_0000u64 as *mut u32, b'1' as u32);
+    }
+
+    // Now try reading HardwareConfig
+    if hw_config_ptr != 0 {
+        unsafe {
+            // Breadcrumb '2' = about to read HardwareConfig
+            core::ptr::write_volatile(0x3FFF_03F8u64 as *mut u8, b'2');
+            core::ptr::write_volatile(0x0211_0000u64 as *mut u32, b'2' as u32);
+
+            let uart_base = core::ptr::read_volatile((hw_config_ptr + 8) as *const u64);
+            // Write 'K' = kernel_main reached with valid HardwareConfig
+            core::ptr::write_volatile(uart_base as *mut u8, b'K');
+        }
+    }
+
     // If the UEFI loader passed a HardwareConfig, use it to configure platform
     // addresses before any hardware access. On QEMU (boot.S), x0 is 0.
     if hw_config_ptr != 0 {
         let config = unsafe { &*(hw_config_ptr as *const kernel::platform_config::HardwareConfig) };
         kernel::platform_config::init_from_parallels(config);
+
+        // Breadcrumb: 'P' = platform config initialized
+        unsafe {
+            let uart_base = core::ptr::read_volatile((hw_config_ptr + 8) as *const u64);
+            core::ptr::write_volatile(uart_base as *mut u8, b'P');
+        }
 
         // CRITICAL: Switch from identity-mapped physical addresses to HHDM.
         //
@@ -277,6 +305,13 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                 out("x9") _,
                 options(nostack),
             );
+        }
+
+        // Breadcrumb: 'H' = HHDM switch complete (use HHDM address for UART)
+        unsafe {
+            let uart_phys = kernel::platform_config::uart_base_phys();
+            let uart_hhdm = (0xFFFF_0000_0000_0000u64 + uart_phys) as *mut u8;
+            core::ptr::write_volatile(uart_hhdm, b'H');
         }
     }
 
@@ -314,11 +349,20 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         );
     }
 
+    // Breadcrumb: 'E' = exception vectors installed
+    kernel::serial_aarch64::raw_serial_char(b'E');
+
     // Initialize physical memory offset (needed for MMIO access)
     kernel::memory::init_physical_memory_offset_aarch64();
 
+    // Breadcrumb: 'O' = physical memory offset initialized
+    kernel::serial_aarch64::raw_serial_char(b'O');
+
     // Initialize serial output first so we can print
     serial::init_serial();
+
+    // Breadcrumb: 'S' = serial initialized
+    kernel::serial_aarch64::raw_serial_char(b'S');
 
     // Initialize the /proc/kmsg log buffer early so ALL serial output is captured
     kernel::log_buffer::init();

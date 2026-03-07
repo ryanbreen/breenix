@@ -5,6 +5,7 @@
 //! `kernel_main` entry point by scanning the ELF symbol table.
 
 use uefi::boot;
+use uefi::mem::memory_map::MemoryType;
 use uefi::proto::media::file::{File, FileAttribute, FileInfo, FileMode};
 use uefi::proto::media::fs::SimpleFileSystem;
 use uefi::CStr16;
@@ -39,7 +40,7 @@ pub struct LoadedKernel {
 /// Load the kernel ELF from the ESP filesystem.
 ///
 /// This must be called while UEFI boot services are still active.
-pub fn load_kernel() -> Result<LoadedKernel, &'static str> {
+pub fn load_kernel(ram_base_offset: u64) -> Result<LoadedKernel, &'static str> {
     // Open the ESP filesystem
     let sfs_handle = boot::get_handle_for_protocol::<SimpleFileSystem>()
         .map_err(|_| "No SimpleFileSystem protocol")?;
@@ -83,7 +84,7 @@ pub fn load_kernel() -> Result<LoadedKernel, &'static str> {
     }
 
     // Parse and load the ELF
-    let result = parse_and_load_elf(elf_buf);
+    let result = parse_and_load_elf(elf_buf, ram_base_offset);
 
     // Free the file buffer (segments are already copied to physical memory)
     unsafe {
@@ -94,7 +95,7 @@ pub fn load_kernel() -> Result<LoadedKernel, &'static str> {
 }
 
 /// Parse the ELF header, load PT_LOAD segments, and find kernel_main.
-fn parse_and_load_elf(elf: &[u8]) -> Result<LoadedKernel, &'static str> {
+fn parse_and_load_elf(elf: &[u8], ram_base_offset: u64) -> Result<LoadedKernel, &'static str> {
     // Validate ELF magic
     if elf.len() < 64 || elf[0..4] != ELF_MAGIC {
         return Err("Invalid ELF magic");
@@ -146,37 +147,70 @@ fn parse_and_load_elf(elf: &[u8]) -> Result<LoadedKernel, &'static str> {
         let p_paddr = read_u64(elf, ph_offset + 24);
         let p_filesz = read_u64(elf, ph_offset + 32) as usize;
         let p_memsz = read_u64(elf, ph_offset + 40) as usize;
+        let p_flags = read_u32(elf, ph_offset + 4);
+
+        // Relocate physical address for platforms where RAM doesn't start
+        // at the linker script's expected 0x40000000 (e.g., VMware at 0x80000000)
+        let relocated_paddr = p_paddr + ram_base_offset;
+
+        // Determine UEFI memory type based on segment flags:
+        // PF_X (0x1) = executable → LOADER_CODE (ensures hypervisor maps as executable)
+        // Otherwise → LOADER_DATA
+        let mem_type = if p_flags & 0x1 != 0 {
+            MemoryType::LOADER_CODE
+        } else {
+            MemoryType::LOADER_DATA
+        };
 
         log::info!(
-            "  LOAD: vaddr={:#x} paddr={:#x} filesz={:#x} memsz={:#x}",
-            p_vaddr, p_paddr, p_filesz, p_memsz
+            "  LOAD: vaddr={:#x} paddr={:#x} relocated={:#x} filesz={:#x} memsz={:#x}",
+            p_vaddr, p_paddr, relocated_paddr, p_filesz, p_memsz
         );
 
-        // Track the vaddr→paddr mapping for symbol resolution
-        if p_filesz > 0 {
-            vaddr_to_paddr_offset = p_paddr as i64 - p_vaddr as i64;
+        // Allocate pages at the relocated physical address through UEFI.
+        let num_pages = (p_memsz + 0xFFF) / 0x1000;
+        if num_pages > 0 {
+            match boot::allocate_pages(
+                boot::AllocateType::Address(relocated_paddr),
+                mem_type,
+                num_pages,
+            ) {
+                Ok(_) => {
+                    log::info!("    Allocated {} pages at {:#x}", num_pages, relocated_paddr);
+                }
+                Err(e) => {
+                    // Allocation may fail if pages are already allocated by firmware.
+                    // This is OK on Parallels/QEMU — just proceed with direct copy.
+                    log::warn!("    Page alloc at {:#x} failed: {:?} (proceeding anyway)", relocated_paddr, e);
+                }
+            }
         }
 
-        // Copy file data to physical address
+        // Track the vaddr→paddr mapping for symbol resolution (uses relocated address)
+        if p_filesz > 0 {
+            vaddr_to_paddr_offset = relocated_paddr as i64 - p_vaddr as i64;
+        }
+
+        // Copy file data to relocated physical address
         if p_filesz > 0 {
             let src = &elf[p_offset..p_offset + p_filesz];
-            let dst = p_paddr as *mut u8;
+            let dst = relocated_paddr as *mut u8;
             unsafe {
                 core::ptr::copy_nonoverlapping(src.as_ptr(), dst, p_filesz);
             }
         }
 
-        // Zero BSS (memsz > filesz)
+        // Zero BSS (memsz > filesz) at relocated address
         if p_memsz > p_filesz {
-            let bss_start = (p_paddr + p_filesz as u64) as *mut u8;
+            let bss_start = (relocated_paddr + p_filesz as u64) as *mut u8;
             let bss_size = p_memsz - p_filesz;
             unsafe {
                 core::ptr::write_bytes(bss_start, 0, bss_size);
             }
         }
 
-        load_base = load_base.min(p_paddr);
-        load_end = load_end.max(p_paddr + p_memsz as u64);
+        load_base = load_base.min(relocated_paddr);
+        load_end = load_end.max(relocated_paddr + p_memsz as u64);
     }
 
     if load_base == u64::MAX {
@@ -197,9 +231,10 @@ fn parse_and_load_elf(elf: &[u8]) -> Result<LoadedKernel, &'static str> {
         None => {
             // Fallback: use ELF entry point with vaddr→paddr translation.
             // If e_entry is already a low physical address (e.g., boot.S _start),
-            // skip the offset to avoid corrupting it into an unmapped VA.
+            // apply ram_base_offset directly. Otherwise use vaddr→paddr translation
+            // (which already includes the relocation offset).
             let fallback = if e_entry < 0x1_0000_0000 {
-                e_entry // Already a physical address (boot code)
+                e_entry + ram_base_offset
             } else {
                 (e_entry as i64 + vaddr_to_paddr_offset) as u64
             };
