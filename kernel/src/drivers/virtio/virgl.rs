@@ -29,6 +29,8 @@ mod ccmd {
     pub const BLIT: u8 = 16;
     pub const RESOURCE_COPY_REGION: u8 = 17;
     pub const BIND_SAMPLER_STATES: u8 = 18;
+    pub const SET_POLYGON_STIPPLE: u8 = 22;
+    pub const SET_MIN_SAMPLES: u8 = 33;
     pub const SET_SUB_CTX: u8 = 28;
     pub const CREATE_SUB_CTX: u8 = 29;
     pub const DESTROY_SUB_CTX: u8 = 30;
@@ -70,6 +72,7 @@ pub mod format {
     pub const B8G8R8A8_UNORM: u32 = 1;
     pub const B8G8R8X8_UNORM: u32 = 2;
     pub const R8G8B8A8_UNORM: u32 = 67;
+    pub const R8_UNORM: u32 = 64;
     pub const R32_FLOAT: u32 = 28;
     pub const R32G32_FLOAT: u32 = 29;
     pub const R32G32B32_FLOAT: u32 = 30;
@@ -230,6 +233,12 @@ impl CommandBuffer {
         self.push(value);
     }
 
+    /// Set minimum samples (Mesa sends this with value=1 for all draws).
+    pub fn set_min_samples(&mut self, value: u32) {
+        self.push(Self::cmd0(ccmd::SET_MIN_SAMPLES, 0, 1));
+        self.push(value);
+    }
+
     /// Create a surface object wrapping a resource.
     pub fn create_surface(&mut self, handle: u32, res_handle: u32, fmt: u32, level: u32, layers: u32) {
         self.push(Self::cmd0(ccmd::CREATE_OBJECT, obj::SURFACE, 5));
@@ -257,35 +266,30 @@ impl CommandBuffer {
         }
     }
 
-    /// Create a depth-stencil-alpha state (all disabled).
-    pub fn create_dsa_disabled(&mut self, handle: u32) {
+    /// Create a depth-stencil-alpha state matching Mesa exactly.
+    /// Mesa sends DSA with S0=0x00000000, length=5.
+    pub fn create_dsa_default(&mut self, handle: u32) {
         self.push(Self::cmd0(ccmd::CREATE_OBJECT, obj::DSA, 5));
         self.push(handle);
-        self.push(0); // S0: depth/alpha disabled
-        self.push(0); // S1: front stencil disabled
-        self.push(0); // S2: back stencil disabled
-        self.push(0); // alpha_ref = 0.0
+        self.push(0); // S0: all zeros — matches Mesa
+        self.push(0); // S1: front stencil
+        self.push(0); // S2: back stencil
+        self.push(0); // alpha_ref
     }
 
-    /// Create a basic rasterizer state matching Mesa exactly (0x60008082).
+    /// Create a rasterizer state matching Mesa exactly.
+    /// Mesa sends rasterizer with S0=0x60000002 (depth_clip + bottom_edge_rule), length=9.
     pub fn create_rasterizer_default(&mut self, handle: u32) {
         self.push(Self::cmd0(ccmd::CREATE_OBJECT, obj::RASTERIZER, 9));
         self.push(handle);
-        // S0 matching Mesa 0x60008082:
-        //   bit 1:  depth_clip_near
-        //   bit 7:  point_quad_rasterization
-        //   bit 15: front_ccw
-        //   bit 29: half_pixel_center
-        //   bit 30: bottom_edge_rule
-        // NO scissor (bit 14) — Mesa doesn't enable it for simple clears
-        self.push((1 << 1) | (1 << 7) | (1 << 15) | (1 << 29) | (1 << 30));
-        self.push(0x3F800000u32); // point_size = 1.0f
+        self.push(0x60000002); // S0: depth_clip_near(bit1) + bottom_edge_rule(bit30) — matches Mesa
+        self.push(0); // point_size = 0.0
         self.push(0); // sprite_coord_enable
-        self.push(0x0000FFFF); // S3: clip_plane_enable = all (matches Mesa)
-        self.push(0x3F800000u32); // line_width = 1.0f
-        self.push(0); // offset_units
-        self.push(0); // offset_scale
-        self.push(0); // offset_clamp
+        self.push(0); // S3
+        self.push(0); // line_width
+        self.push(0); // S5: offset_units
+        self.push(0); // S6: offset_scale
+        self.push(0); // S7: offset_clamp
     }
 
     /// Create a rasterizer state with custom S0 flags.
@@ -293,13 +297,13 @@ impl CommandBuffer {
         self.push(Self::cmd0(ccmd::CREATE_OBJECT, obj::RASTERIZER, 9));
         self.push(handle);
         self.push(s0_flags);
-        self.push(0x3F800000u32); // point_size = 1.0f
-        self.push(0); // sprite_coord_enable
-        self.push(0x0000FFFF); // clip_plane_enable = all
-        self.push(0x3F800000u32); // line_width = 1.0f
-        self.push(0); // offset_units
-        self.push(0); // offset_scale
-        self.push(0); // offset_clamp
+        self.push(0);
+        self.push(0);
+        self.push(0);
+        self.push(0);
+        self.push(0);
+        self.push(0);
+        self.push(0);
     }
 
     /// Bind an object by type and handle.
@@ -309,7 +313,11 @@ impl CommandBuffer {
     }
 
     /// Create a shader from TGSI text.
-    pub fn create_shader(&mut self, handle: u32, shader_type: u32, tgsi_text: &[u8]) {
+    ///
+    /// `num_tokens` must be nonzero (Mesa uses the actual TGSI token count).
+    /// Parallels' VirGL silently rejects the entire batch if num_tokens=0.
+    /// Use 300 as a safe default if the actual token count is unknown.
+    pub fn create_shader(&mut self, handle: u32, shader_type: u32, num_tokens: u32, tgsi_text: &[u8]) {
         let text_len = tgsi_text.len() + 1; // include null terminator
         let text_dwords = (text_len + 3) / 4;
         // Header DWORDs: handle, type, offset, num_tokens, num_so_outputs = 5
@@ -319,9 +327,8 @@ impl CommandBuffer {
         self.push(handle);
         self.push(shader_type);
         // OFFSET field: shader byte length with bit 31 CLEAR = first/only chunk.
-        // (bit 31 SET means "continuation" of a previously-started shader.)
         self.push(text_len as u32);
-        self.push(0); // NUM_TOKENS (0 for text-based TGSI)
+        self.push(num_tokens);
         self.push(0); // num_so_outputs = 0
 
         // Pack TGSI text bytes into DWORDs (little-endian)
@@ -333,7 +340,6 @@ impl CommandBuffer {
                 if base + b < tgsi_text.len() {
                     dword |= (tgsi_text[base + b] as u32) << (b * 8);
                 }
-                // else: zero (null terminator / padding)
             }
             self.push(dword);
             i += 1;
@@ -381,6 +387,18 @@ impl CommandBuffer {
         self.push(0); // start_slot = 0
         self.push((min_x & 0xFFFF) | ((min_y & 0xFFFF) << 16));
         self.push((max_x & 0xFFFF) | ((max_y & 0xFFFF) << 16));
+    }
+
+    /// Set constant buffer for a shader stage.
+    /// `shader_type`: 0=VERTEX, 1=FRAGMENT
+    /// `index`: constant buffer index (usually 0)
+    /// `data`: f32 values reinterpreted as u32 bits
+    pub fn set_constant_buffer(&mut self, shader_type: u32, index: u32, data: &[u32]) {
+        let len = 2 + data.len();
+        self.push(Self::cmd0(ccmd::SET_CONSTANT_BUFFER, 0, len as u16));
+        self.push(shader_type);
+        self.push(index);
+        self.push_slice(data);
     }
 
     /// Clear the framebuffer.

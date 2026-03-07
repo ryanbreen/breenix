@@ -496,6 +496,36 @@ fn init_3d_framebuffer(width: u32, height: u32) {
 
 
 
+/// Pointer to heap-allocated vertex buffer backing (page-aligned, DMA-safe).
+/// Initialized by `init_vb_backing()` during VirGL init.
+#[allow(dead_code)]
+static mut PCI_VB_PTR: *mut u8 = core::ptr::null_mut();
+/// Actual size of the vertex buffer backing in bytes.
+#[allow(dead_code)]
+static mut PCI_VB_LEN: usize = 0;
+
+/// Allocate vertex buffer backing on the heap with page alignment.
+/// Currently unused: VB data is uploaded via RESOURCE_INLINE_WRITE in the batch.
+/// Kept for future use if TRANSFER_TO_HOST_3D approach is needed.
+#[allow(dead_code)]
+fn init_vb_backing() {
+    // 4KB is plenty for vertex data (128 bytes per quad × many quads)
+    let size = 4096usize;
+    let layout = alloc::alloc::Layout::from_size_align(size, 4096)
+        .expect("invalid VB backing layout");
+    unsafe {
+        let ptr = alloc::alloc::alloc_zeroed(layout);
+        assert!(!ptr.is_null(), "failed to allocate VB backing");
+        PCI_VB_PTR = ptr;
+        PCI_VB_LEN = size;
+    }
+    let phys = virt_to_phys(unsafe { PCI_VB_PTR } as u64);
+    crate::serial_println!(
+        "[virgl] VB backing: heap ptr={:#x}, phys={:#x}, size={}",
+        unsafe { PCI_VB_PTR } as u64, phys, size
+    );
+}
+
 /// Static backing for test texture (64×64 BGRA)
 #[repr(C, align(4096))]
 struct TestTextureBuffer {
@@ -586,6 +616,8 @@ fn dma_cache_clean(_ptr: *const u8, _len: usize) {
 /// After the host writes to guest memory via DMA (e.g., TRANSFER_FROM_HOST),
 /// the CPU cache may hold stale data. DC CIVAC cleans and invalidates each
 /// cache line so subsequent CPU reads see the DMA-written values.
+/// Currently unused but kept for future TRANSFER_FROM_HOST operations.
+#[allow(dead_code)]
 #[cfg(target_arch = "aarch64")]
 #[inline]
 fn dma_cache_invalidate(ptr: *const u8, len: usize) {
@@ -602,6 +634,7 @@ fn dma_cache_invalidate(ptr: *const u8, len: usize) {
     }
 }
 
+#[allow(dead_code)]
 #[cfg(not(target_arch = "aarch64"))]
 #[inline]
 fn dma_cache_invalidate(_ptr: *const u8, _len: usize) {
@@ -1963,6 +1996,49 @@ fn virgl_attach_backing_cmd(state: &mut GpuPciDeviceState, resource_id: u32) -> 
     Ok(())
 }
 
+/// Attach backing memory to a resource using a single memory entry.
+/// Works for small resources (VB, small textures) where a single contiguous
+/// allocation fits in PCI_CMD_BUF alongside the header.
+/// Currently unused: VB uses RESOURCE_INLINE_WRITE instead.
+#[allow(dead_code)]
+fn attach_backing_simple(
+    state: &mut GpuPciDeviceState,
+    resource_id: u32,
+    backing_ptr: *mut u8,
+    backing_len: usize,
+) -> Result<(), &'static str> {
+    assert!(!backing_ptr.is_null(), "backing_ptr is null");
+    let phys = virt_to_phys(backing_ptr as u64);
+    crate::serial_println!("[virgl] attach_backing_simple: res={}, phys=0x{:x}, len={}",
+        resource_id, phys, backing_len);
+
+    unsafe {
+        let cmd_ptr = &raw mut PCI_CMD_BUF;
+        let attach = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut PciAttachBackingCmd);
+        *attach = PciAttachBackingCmd {
+            cmd: VirtioGpuResourceAttachBacking {
+                hdr: VirtioGpuCtrlHdr {
+                    type_: cmd::RESOURCE_ATTACH_BACKING,
+                    flags: 0,
+                    fence_id: 0,
+                    ctx_id: 0,
+                    padding: 0,
+                },
+                resource_id,
+                nr_entries: 1,
+            },
+            entry: VirtioGpuMemEntry {
+                addr: phys,
+                length: backing_len as u32,
+                padding: 0,
+            },
+        };
+    }
+    send_command_expect_ok(state, core::mem::size_of::<PciAttachBackingCmd>() as u32)?;
+    crate::serial_println!("[virgl] attach_backing_simple: OK");
+    Ok(())
+}
+
 /// Flush a specific resource to the display (SET_SCANOUT must point at it first).
 fn resource_flush_3d(state: &mut GpuPciDeviceState, resource_id: u32) -> Result<(), &'static str> {
     unsafe {
@@ -2045,6 +2121,12 @@ fn transfer_to_host_3d(
             let backing_ptr = (*tex).pixels.as_ptr();
             let backing_len = TEST_TEX_BYTES;
             dma_cache_clean(backing_ptr, backing_len);
+        } else if resource_id == RESOURCE_VB_ID {
+            let vb_ptr = PCI_VB_PTR;
+            assert!(!vb_ptr.is_null(), "VB backing not initialized");
+            // For BUFFER resources: x=byte offset, w=byte width, h=1, stride=0
+            let backing_len = w as usize;
+            dma_cache_clean(vb_ptr.add(x as usize), backing_len);
         }
     }
 
@@ -2208,7 +2290,7 @@ fn virgl_submit_3d_cmd(
             resp_type, used_len, resp_flags, resp_fence);
         return Err("SUBMIT_3D command failed");
     }
-    if submit_id <= 5 || submit_id % 500 == 0 {
+    if submit_id <= 20 || submit_id % 500 == 0 {
         crate::serial_println!("[virgl] SUBMIT_3D OK: id={} used_len={} resp_flags={:#x} resp_fence={}",
             submit_id, used_len, resp_flags, resp_fence);
     }
@@ -2795,122 +2877,117 @@ pub fn virgl_init() -> Result<(), &'static str> {
         crate::serial_println!("[virgl] Step 5: resource primed (TRANSFER_TO_HOST + SET_SCANOUT + FLUSH)");
     }
 
-    // Step 7: Single mega-batch — create all pipeline state + initial clear.
-    // Pipeline state creation in a separate batch poisons subsequent clears,
-    // so we include everything in one batch.
-    {
-        let mut cmdbuf = CommandBuffer::new();
-        cmdbuf.create_sub_ctx(1);
-        cmdbuf.set_sub_ctx(1);
-        cmdbuf.set_tweaks(1, 1);
-        cmdbuf.set_tweaks(2, width);
-        cmdbuf.create_surface(1, RESOURCE_3D_ID, vfmt::B8G8R8X8_UNORM, 0, 0);
-        cmdbuf.set_framebuffer_state(0, &[1]);
-
-        // Non-shader pipeline state with UNIQUE handles.
-        // Shaders removed — known to break the batch (text-mode TGSI
-        // may not be supported by Parallels' VirGL implementation).
-        cmdbuf.create_blend_simple(2);
-        cmdbuf.create_dsa_disabled(3);
-        cmdbuf.create_rasterizer_default(4);
-        cmdbuf.create_vertex_elements(5, &[
-            (0, 0, 0, vfmt::R32G32B32A32_FLOAT),
-            (16, 0, 0, vfmt::R32G32B32A32_FLOAT),
-        ]);
-
-        // Clear to cornflower blue (AFTER pipeline state, in same batch)
-        cmdbuf.clear_color(0.392, 0.584, 0.929, 1.0);
-
-        virgl_submit_sync(cmdbuf.as_slice())?;
-        crate::serial_println!("[virgl] Step 6: mega-batch submitted (pipeline + clear, {} DWORDs)", cmdbuf.len());
-    }
-
-    // Step 8: RESOURCE_FLUSH to display the VirGL-rendered cornflower blue.
-    // After priming, FLUSH reads from the GPU texture.
-    with_device_state(|state| { resource_flush_3d(state, RESOURCE_3D_ID) })?;
-    crate::serial_println!("[virgl] Step 7: RESOURCE_FLUSH — display should show cornflower blue");
-
-    // Step 9: Create vertex buffer resource
+    // Step 7: Create VB resource (no backing — data via INLINE_WRITE in batch)
     with_device_state(|state| {
         virgl_resource_create_3d_cmd(
-            state, RESOURCE_VB_ID, pipe::BUFFER, vfmt::R8G8B8A8_UNORM,
-            pipe::BIND_VERTEX_BUFFER, VB_SIZE as u32, 1, 1, 1,
+            state, RESOURCE_VB_ID, pipe::BUFFER, vfmt::R8_UNORM,
+            pipe::BIND_VERTEX_BUFFER, 4096, 1, 1, 1,
         )
     })?;
     with_device_state(|state| {
         virgl_ctx_attach_resource_cmd(state, VIRGL_CTX_ID, RESOURCE_VB_ID)
     })?;
-    crate::serial_println!("[virgl] Step 8: vertex buffer created (id={}, {}B)", RESOURCE_VB_ID, VB_SIZE);
+    crate::serial_println!("[virgl] Step 7: VB resource created (no backing, INLINE_WRITE only)");
+
+    // Step 8 removed: VB data is uploaded via RESOURCE_INLINE_WRITE in the batch below.
+
+    // Step 9: Full pipeline + CLEAR + DRAW_VBO batch.
+    // Expected: dark blue background (CLEAR) + red quad (DRAW_VBO).
+    {
+        let mut cmdbuf = CommandBuffer::new();
+        cmdbuf.create_sub_ctx(1);
+        cmdbuf.set_sub_ctx(1);
+
+        // Surface wrapping the render target
+        cmdbuf.create_surface(1, RESOURCE_3D_ID, vfmt::B8G8R8X8_UNORM, 0, 0);
+        cmdbuf.set_framebuffer_state(0, &[1]);
+
+        // Progressive test: blend + DSA + rasterizer + VS + CLEAR
+        cmdbuf.create_blend_simple(1);
+        cmdbuf.bind_object(1, super::virgl::OBJ_BLEND);
+        cmdbuf.create_dsa_default(1);
+        cmdbuf.bind_object(1, super::virgl::OBJ_DSA);
+        cmdbuf.create_rasterizer_default(1);
+        cmdbuf.bind_object(1, super::virgl::OBJ_RASTERIZER);
+
+        // Shaders — num_tokens=300 REQUIRED (Parallels rejects num_tokens=0)
+        let vs_text = b"VERT\nDCL IN[0]\nDCL OUT[0], POSITION\n  0: MOV OUT[0], IN[0]\n  1: END\n";
+        cmdbuf.create_shader(1, pipe::SHADER_VERTEX, 300, vs_text);
+        cmdbuf.bind_shader(1, pipe::SHADER_VERTEX);
+
+        let fs_text = b"FRAG\nPROPERTY FS_COLOR0_WRITES_ALL_CBUFS 1\nDCL OUT[0], COLOR\nDCL CONST[0]\n  0: MOV OUT[0], CONST[0]\n  1: END\n";
+        cmdbuf.create_shader(2, pipe::SHADER_FRAGMENT, 300, fs_text);
+        cmdbuf.bind_shader(2, pipe::SHADER_FRAGMENT);
+
+        // Vertex elements
+        cmdbuf.create_vertex_elements(1, &[
+            (0, 0, 0, vfmt::R32G32B32A32_FLOAT),
+        ]);
+        cmdbuf.bind_object(1, super::virgl::OBJ_VERTEX_ELEMENTS);
+
+        cmdbuf.set_min_samples(1);
+        cmdbuf.set_viewport(width as f32, height as f32);
+
+        // CLEAR to dark blue
+        cmdbuf.clear_color(0.1, 0.1, 0.3, 1.0);
+
+        // Upload vertex data inline
+        let quad_verts: [u32; 16] = [
+            (-1.0f32).to_bits(), (1.0f32).to_bits(), 0f32.to_bits(), 1.0f32.to_bits(),
+            (-1.0f32).to_bits(), (-1.0f32).to_bits(), 0f32.to_bits(), 1.0f32.to_bits(),
+            1.0f32.to_bits(), (-1.0f32).to_bits(), 0f32.to_bits(), 1.0f32.to_bits(),
+            1.0f32.to_bits(), 1.0f32.to_bits(), 0f32.to_bits(), 1.0f32.to_bits(),
+        ];
+        cmdbuf.resource_inline_write(RESOURCE_VB_ID, 0, 64, &quad_verts);
+
+        // Constant buffer: RED color for fragment shader
+        cmdbuf.set_constant_buffer(pipe::SHADER_FRAGMENT, 0, &[
+            1.0f32.to_bits(), 0.0f32.to_bits(), 0.0f32.to_bits(), 1.0f32.to_bits(),
+        ]);
+
+        // Bind VB and draw
+        cmdbuf.set_vertex_buffers(&[(16, 0, RESOURCE_VB_ID)]);
+        cmdbuf.draw_vbo(0, 4, pipe::PRIM_TRIANGLE_FAN, 3);
+
+        crate::serial_println!("[virgl] Step 9: full pipeline+draw batch ({} DWORDs)", cmdbuf.len());
+        virgl_submit_sync(cmdbuf.as_slice())?;
+    }
+
+    // Step 10: Readback VirGL-rendered pixels + display.
+    // Parallels display path: TRANSFER_FROM_HOST_3D (readback GPU texture to guest)
+    // -> TRANSFER_TO_HOST_3D (upload guest to scanout) -> SET_SCANOUT + FLUSH.
+    with_device_state(|state| {
+        transfer_from_host_3d(state, RESOURCE_3D_ID, 0, 0, width, height)
+    })?;
+
+    // Check first pixel to confirm readback content
+    {
+        let fb_ptr = unsafe { PCI_3D_FB_PTR };
+        let p0 = unsafe { *(fb_ptr as *const u32) };
+        let p_mid = unsafe { *(fb_ptr.add((width * height * 2) as usize) as *const u32) };
+        crate::serial_println!("[virgl] readback: pixel[0,0]=0x{:08x} pixel[mid]=0x{:08x}", p0, p_mid);
+    }
+
+    // SKIP dma_cache_clean: TRANSFER_FROM_HOST_3D already wrote pixels to physical
+    // RAM via DMA and we invalidated cache. The data is in RAM, ready for
+    // TRANSFER_TO_HOST_3D to read. Running dma_cache_clean could push stale
+    // zero lines from neighboring cache lines that weren't invalidated.
+    with_device_state(|state| {
+        transfer_to_host_3d(state, RESOURCE_3D_ID, 0, 0, width, height, width * 4)
+    })?;
+    with_device_state(|state| { set_scanout_resource(state, RESOURCE_3D_ID) })?;
+    with_device_state(|state| { resource_flush_3d(state, RESOURCE_3D_ID) })?;
+    crate::serial_println!("[virgl] Step 10: readback + display complete");
 
     VIRGL_SCANOUT_ACTIVE.store(true, Ordering::Release);
     VIRGL_HEX_DUMP_ENABLED.store(false, Ordering::Relaxed);
 
     crate::serial_println!("[virgl] VirGL 3D pipeline initialized successfully");
 
-    // Demo: cross-batch clear to GREEN (no object creation, just clear).
-    virgl_render_demo_pattern(width, height)?;
-
     Ok(())
 }
 
-/// Render a colored rectangle pattern via VirGL scissored clears.
-///
-/// Each clear batch creates a fresh surface + FBO (required for cross-batch
-/// rendering). Scissored clears draw colored rectangles without needing shaders.
-fn virgl_render_demo_pattern(width: u32, height: u32) -> Result<(), &'static str> {
-    crate::serial_println!("[virgl-demo] CPU-composited rectangles ({}x{})...", width, height);
-
-    let fb_ptr = unsafe { PCI_3D_FB_PTR };
-    let stride = width as usize;
-
-    // Helper: fill a rectangle in the backing buffer
-    // B8G8R8X8_UNORM: bytes are [B, G, R, X] → as little-endian u32 = 0xXXRRGGBB
-    let fill_rect = |x: usize, y: usize, w: usize, h: usize, r: u8, g: u8, b: u8| {
-        let pixel: u32 = 0xFF000000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
-        for row in y..(y + h).min(height as usize) {
-            for col in x..(x + w).min(width as usize) {
-                let off = (row * stride + col) * 4;
-                unsafe { core::ptr::write_volatile(fb_ptr.add(off) as *mut u32, pixel); }
-            }
-        }
-    };
-
-    // Dark blue background
-    fill_rect(0, 0, width as usize, height as usize, 25, 25, 77);
-    crate::serial_println!("[virgl-demo] Background: dark blue");
-
-    // Red rectangle (left area)
-    fill_rect(50, 50, 300, 500, 255, 51, 51);
-    crate::serial_println!("[virgl-demo] Rect: red (50,50 300x500)");
-
-    // Green rectangle (center)
-    fill_rect(400, 100, 250, 400, 51, 230, 51);
-    crate::serial_println!("[virgl-demo] Rect: green (400,100 250x400)");
-
-    // Yellow rectangle (right)
-    fill_rect(700, 150, 250, 300, 255, 255, 0);
-    crate::serial_println!("[virgl-demo] Rect: yellow (700,150 250x300)");
-
-    // White rectangle (overlapping)
-    fill_rect(200, 200, 200, 200, 255, 255, 255);
-    crate::serial_println!("[virgl-demo] Rect: white (200,200 200x200)");
-
-    // DMA cache clean — flush CPU writes to RAM so host can see them
-    dma_cache_clean(fb_ptr, (width * height * 4) as usize);
-
-    // Upload to host via TRANSFER_TO_HOST_3D
-    with_device_state(|state| {
-        transfer_to_host_3d(state, RESOURCE_3D_ID, 0, 0, width, height, width * 4)
-    })?;
-    crate::serial_println!("[virgl-demo] TRANSFER_TO_HOST_3D done");
-
-    // Display
-    with_device_state(|state| { set_scanout_resource(state, RESOURCE_3D_ID) })?;
-    with_device_state(|state| { resource_flush_3d(state, RESOURCE_3D_ID) })?;
-    crate::serial_println!("[virgl-demo] SET_SCANOUT + FLUSH done — should show colored rectangles");
-
-    Ok(())
-}
+// virgl_render_demo_pattern removed — DRAW_VBO is now in the init batch itself
 
 // =============================================================================
 // VirGL Textured Quad Test (Phase 1: prove texture sampling works)
@@ -3016,7 +3093,7 @@ fn virgl_test_textured_quad() -> Result<(), &'static str> {
 
     // Texture fragment shader: samples from SAMP[0] instead of passing vertex color
     let tex_fs = b"FRAG\nDCL IN[0], GENERIC[0], LINEAR\nDCL OUT[0], COLOR\nDCL SAMP[0]\nDCL SVIEW[0], 2D, FLOAT\n  0: TEX OUT[0], IN[0], SAMP[0], 2D\n  1: END\n";
-    cmdbuf.create_shader(3, pipe::SHADER_FRAGMENT, tex_fs);
+    cmdbuf.create_shader(3, pipe::SHADER_FRAGMENT, 20, tex_fs);
 
     // Sampler view: bind texture resource for shader sampling
     cmdbuf.create_sampler_view(
