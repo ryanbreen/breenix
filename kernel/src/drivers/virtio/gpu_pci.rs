@@ -406,6 +406,11 @@ static mut PCI_3D_CMD_BUF: Pci3dCmdBuffer = Pci3dCmdBuffer { data: [0; 16384] };
 // 1728x1080 matches the QEMU resolution for consistent performance comparison.
 const DEFAULT_FB_WIDTH: u32 = 1728;
 const DEFAULT_FB_HEIGHT: u32 = 1080;
+// Minimum resolution floor — ensures the VM window is large enough on Retina Macs.
+// With --high-resolution off, 1 guest pixel = 1 Mac screen point, so 1280x960
+// gives a ~74% screen-width window on a 1728-point-wide display.
+const MIN_FB_WIDTH: u32 = 1280;
+const MIN_FB_HEIGHT: u32 = 960;
 // Max supported resolution: 2560x1600 @ 32bpp = ~16.4MB
 const FB_MAX_WIDTH: u32 = 2560;
 const FB_MAX_HEIGHT: u32 = 1600;
@@ -1085,28 +1090,31 @@ pub fn init() -> Result<(), &'static str> {
         Err(e) => crate::serial_println!("[virtio-gpu-pci] GET_DISPLAY_INFO failed: {}", e),
     }
 
-    // Use the display-reported resolution. Linux always matches its resources
-    // to the display mode — gl_display.c uses drmModeGetConnector to get the
-    // native mode and creates all resources at that resolution. SET_SCANOUT
-    // with dimensions exceeding the display mode is silently ignored by Parallels.
-    // DIAG: Force GOP resolution to test if resolution mismatch causes corruption.
-    // GOP reports 1024x768, GET_DISPLAY_INFO reports 1728x1080. If 2D resource
-    // must match the GOP physical display mode, using 1728x1080 would cause
-    // stride mismatch in the hypervisor's display pipeline.
-    // Use GOP resolution for the 2D resource + BAR0 display path.
-    // VirGL will use its own resolution (from GET_DISPLAY_INFO) for 3D resources.
+    // Pick the largest resolution from: GET_DISPLAY_INFO, GOP, or the minimum.
+    // On Retina Macs with --high-resolution off, Parallels maps 1 guest pixel to
+    // 1 Mac screen point. GET_DISPLAY_INFO may report only 1024x768 in this mode,
+    // but SET_SCANOUT at a larger resolution works fine (Linux does arbitrary mode
+    // changes via drmModeSetCrtc → SET_SCANOUT). We enforce a 1280x960 minimum
+    // so the VM window is reasonably large on modern displays.
     let gop_w = crate::platform_config::fb_width();
     let gop_h = crate::platform_config::fb_height();
-    let (use_width, use_height) = if gop_w > 0 && gop_h > 0 {
-        crate::serial_println!("[virtio-gpu-pci] Using GOP resolution {}x{} (display reported {:?})",
-            gop_w, gop_h, display_dims);
-        (gop_w, gop_h)
-    } else {
-        match display_dims {
-            Ok((dw, dh)) if dw > 0 && dh > 0 && dw <= FB_MAX_WIDTH && dh <= FB_MAX_HEIGHT => (dw, dh),
-            _ => (DEFAULT_FB_WIDTH, DEFAULT_FB_HEIGHT),
-        }
-    };
+    let (disp_w, disp_h) = display_dims.unwrap_or((0, 0));
+    // Pick the widest valid resolution, with 1280x960 as floor
+    let candidates: [(u32, u32); 3] = [
+        (disp_w, disp_h),
+        (gop_w, gop_h),
+        (MIN_FB_WIDTH, MIN_FB_HEIGHT),
+    ];
+    let (use_width, use_height) = candidates
+        .iter()
+        .filter(|&&(w, h)| w >= MIN_FB_WIDTH && h > 0 && w <= FB_MAX_WIDTH && h <= FB_MAX_HEIGHT)
+        .max_by_key(|&&(w, _)| w)
+        .copied()
+        .unwrap_or((MIN_FB_WIDTH, MIN_FB_HEIGHT));
+    crate::serial_println!(
+        "[virtio-gpu-pci] Resolution: {}x{} (display={}x{}, GOP={}x{}, min={}x{})",
+        use_width, use_height, disp_w, disp_h, gop_w, gop_h, MIN_FB_WIDTH, MIN_FB_HEIGHT
+    );
 
     // Update state with actual dimensions
     unsafe {
