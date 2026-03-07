@@ -3239,9 +3239,9 @@ pub fn sys_poll(fds_ptr: u64, nfds: u64, timeout: i32) -> SyscallResult {
         now_ns.saturating_add((timeout as u64) * 1_000_000)
     };
 
-    // Block for a short interval (5ms) at a time so we can re-check fds.
+    // Block for a short interval (1ms) at a time so we can re-check fds.
     // Use block_current_for_timer to properly yield the CPU.
-    let poll_interval_ns: u64 = 5_000_000; // 5ms — one timer tick at 200Hz
+    let poll_interval_ns: u64 = 1_000_000; // 1ms — one timer tick at 1000Hz
 
     loop {
         let (s, n) = crate::time::get_monotonic_time_ns();

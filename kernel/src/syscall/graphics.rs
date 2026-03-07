@@ -27,6 +27,12 @@ use super::SyscallResult;
 #[cfg(target_arch = "aarch64")]
 pub static FB_FLUSH_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
+/// Thread ID of the compositor when it's waiting for a dirty window.
+/// Set by op=16 when nothing is dirty; cleared when the compositor wakes.
+/// op=15 (mark_window_dirty) reads this to wake the compositor immediately.
+#[cfg(target_arch = "aarch64")]
+static COMPOSITOR_WAITING_THREAD: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 /// Restore TTBR0 to the current process's page tables after blocking.
 ///
 /// After a blocking syscall (mark_window_dirty), TTBR0 may point to a different
@@ -663,6 +669,18 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                 }
             }
 
+            // Wake compositor if it's blocked waiting for a dirty window.
+            // This gives immediate frame delivery instead of waiting for a timer tick.
+            #[cfg(target_arch = "aarch64")]
+            {
+                let compositor_tid = COMPOSITOR_WAITING_THREAD.load(core::sync::atomic::Ordering::Acquire);
+                if compositor_tid != 0 {
+                    crate::task::scheduler::with_scheduler(|sched| {
+                        sched.unblock(compositor_tid);
+                    });
+                }
+            }
+
             // Calculate timeout: 50ms from now (fallback if compositor doesn't wake us)
             let (cur_secs, cur_nanos) = crate::time::get_monotonic_time_ns();
             let now_ns = cur_secs as u64 * 1_000_000_000 + cur_nanos as u64;
@@ -764,6 +782,51 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
             } else { false }
         });
         if !any_window_dirty {
+            drop(reg);
+            // Block the compositor until a window becomes dirty or timeout.
+            // mark_window_dirty (op=15) will wake us immediately via unblock().
+            // This eliminates spin-loop CPU waste when no windows need compositing.
+            let compositor_tid = match crate::task::scheduler::current_thread_id() {
+                Some(id) => id,
+                None => return SyscallResult::Ok(0),
+            };
+            COMPOSITOR_WAITING_THREAD.store(compositor_tid, core::sync::atomic::Ordering::Release);
+
+            let (s, n) = crate::time::get_monotonic_time_ns();
+            let now_ns = (s as u64) * 1_000_000_000 + (n as u64);
+            let timeout_ns = now_ns.saturating_add(5_000_000); // 5ms max wait
+
+            crate::task::scheduler::with_scheduler(|sched| {
+                sched.block_current_for_compositor(timeout_ns);
+            });
+
+            #[cfg(target_arch = "aarch64")]
+            crate::per_cpu_aarch64::preempt_enable();
+
+            loop {
+                let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                    sched.wake_expired_timers();
+                    sched.current_thread_mut()
+                        .map(|t| t.state == crate::task::thread::ThreadState::BlockedOnTimer)
+                        .unwrap_or(false)
+                });
+                if !still_blocked.unwrap_or(false) { break; }
+                crate::task::scheduler::yield_current();
+                crate::arch_halt_with_interrupts();
+            }
+
+            crate::task::scheduler::with_scheduler(|sched| {
+                if let Some(thread) = sched.current_thread_mut() {
+                    thread.blocked_in_syscall = false;
+                }
+            });
+
+            #[cfg(target_arch = "aarch64")]
+            crate::per_cpu_aarch64::preempt_disable();
+            #[cfg(target_arch = "aarch64")]
+            ensure_current_address_space();
+
+            COMPOSITOR_WAITING_THREAD.store(0, core::sync::atomic::Ordering::Release);
             return SyscallResult::Ok(0);
         }
         drop(reg);

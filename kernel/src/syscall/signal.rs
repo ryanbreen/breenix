@@ -1379,8 +1379,8 @@ pub fn sys_sigsuspend_with_frame(
     SyscallResult::Err(4) // EINTR - always returns this per POSIX
 }
 
-/// Timer ticks per second (200 Hz from PIT configuration)
-const TICKS_PER_SECOND: u64 = 200;
+/// Timer ticks per second (1000 Hz timer configuration)
+const TICKS_PER_SECOND: u64 = 1000;
 
 /// alarm(seconds) - Schedule a SIGALRM signal to be delivered after the specified time
 ///
