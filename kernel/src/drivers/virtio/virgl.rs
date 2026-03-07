@@ -520,8 +520,11 @@ impl CommandBuffer {
     /// Create a sampler view (binds a texture resource for shader sampling).
     ///
     /// VirGL protocol: CREATE_OBJECT(SAMPLER_VIEW) with 6 payload DWORDs:
-    /// `[handle, res_handle, format, first_level, last_level, swizzle_packed]`
+    /// `[handle, res_handle, fmt_target, val0(layers), val1(levels), swizzle_packed]`
     ///
+    /// `fmt_target`: bits [0:23] = pipe format, bits [24:31] = pipe texture target.
+    /// `val0`: `first_layer | (last_layer << 16)` (for TEXTURE_2D, both 0).
+    /// `val1`: `first_level | (last_level << 8)` (for single-mip, both 0).
     /// `swizzle_packed` encodes channel mapping: `r | (g<<3) | (b<<6) | (a<<9)`
     /// using constants from `swizzle::*`. Use `swizzle::IDENTITY` for default.
     pub fn create_sampler_view(
@@ -529,16 +532,22 @@ impl CommandBuffer {
         handle: u32,
         res_handle: u32,
         format: u32,
+        target: u32,
+        first_layer: u32,
+        last_layer: u32,
         first_level: u32,
         last_level: u32,
         swizzle_packed: u32,
     ) {
+        let fmt_target = (format & 0x00FF_FFFF) | ((target & 0xFF) << 24);
+        let val0 = (first_layer & 0xFFFF) | ((last_layer & 0xFFFF) << 16);
+        let val1 = (first_level & 0xFF) | ((last_level & 0xFF) << 8);
         self.push(Self::cmd0(ccmd::CREATE_OBJECT, obj::SAMPLER_VIEW, 6));
         self.push(handle);
         self.push(res_handle);
-        self.push(format);
-        self.push(first_level);
-        self.push(last_level);
+        self.push(fmt_target);
+        self.push(val0);
+        self.push(val1);
         self.push(swizzle_packed);
     }
 

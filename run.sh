@@ -331,7 +331,10 @@ if [ "$PARALLELS" = true ]; then
 
     # VirtIO GPU with 3D acceleration (required for VirGL)
     prlctl set "$PARALLELS_VM" --3d-accelerate highest 2>/dev/null || true
-    prlctl set "$PARALLELS_VM" --videosize 128 2>/dev/null || true
+    prlctl set "$PARALLELS_VM" --videosize 256 2>/dev/null || true
+    # high-resolution OFF so the VM window maps 1:1 pixels-to-points on Retina Macs.
+    # With high-resolution ON, a 1280x960 guest appears as a tiny 640x480 point window.
+    prlctl set "$PARALLELS_VM" --high-resolution off 2>/dev/null || true
 
     # Remove any default devices Parallels created (cdrom, hdd, serial) to avoid conflicts
     for dev in hdd0 hdd1 hdd2 cdrom0 cdrom1 serial0 serial1; do

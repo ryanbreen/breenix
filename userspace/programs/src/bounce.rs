@@ -11,6 +11,7 @@ use std::process;
 use libbreenix::graphics;
 use libbreenix::graphics::{FlushRect, VirglRect};
 use libbreenix::time;
+use libbreenix::types;
 
 use libgfx::color::Color;
 use libgfx::font;
@@ -123,9 +124,28 @@ impl FpsCounter {
 
 const NUM_RECTS: usize = 6;
 
+/// Window buffer dimensions — a nice floating window size for the compositor.
+const WIN_W: u32 = 400;
+const WIN_H: u32 = 300;
+
 fn main() {
     let boot_id = clock_monotonic_ns();
     println!("Bounce demo starting (for Gus!) [boot_id={:016x}]", boot_id);
+
+    // Try window-buffer mode first: BWM composites us as a floating window
+    match graphics::create_window(WIN_W, WIN_H) {
+        Ok(win) => {
+            let _ = graphics::register_window(win.id, b"Bounce");
+            println!("[bounce] Window mode: id={} {}x{} @ {:p} [boot_id={:016x}]",
+                     win.id, WIN_W, WIN_H, win.pixels, boot_id);
+            let mut rects = make_rects();
+            run_window_loop(&win, &mut rects);
+            return;
+        }
+        Err(e) => {
+            println!("[bounce] create_window failed: {} — falling back to VirGL direct", e);
+        }
+    }
 
     let info = match graphics::fbinfo() {
         Ok(info) => info,
@@ -135,15 +155,7 @@ fn main() {
     let height = info.height as i32;
     let width = info.left_pane_width() as i32;
 
-    let mut rects = [
-        AnimRect::new( 50,  40,  900,  700,  120,  80, Color::rgb(255,  50,  50)),  // Red
-        AnimRect::new(200, 150, -800,  600,   90, 110, Color::rgb( 50, 255,  50)),  // Green
-        AnimRect::new(100, 300,  750, -850,  140,  60, Color::rgb( 50,  50, 255)),  // Blue
-        AnimRect::new(300, 100, -700, -750,   70, 130, Color::rgb(255, 255,  50)),  // Yellow
-        AnimRect::new(150, 400,  850,  500,  100, 100, Color::rgb(255,  50, 255)),  // Magenta
-        AnimRect::new(350, 250, -650,  800,  110,  70, Color::rgb( 50, 255, 255)),  // Cyan
-    ];
-
+    let mut rects = make_rects();
     let bg_packed = graphics::rgb(15, 15, 30);
 
     // Try VirGL GPU rendering first
@@ -157,6 +169,55 @@ fn main() {
     } else {
         println!("VirGL unavailable, falling back to mmap rendering [boot_id={:016x}]", boot_id);
         run_mmap_loop(&mut rects, width, height, &info);
+    }
+}
+
+fn make_rects() -> [AnimRect; NUM_RECTS] {
+    [
+        AnimRect::new( 50,  40,  900,  700,  120,  80, Color::rgb(255,  50,  50)),  // Red
+        AnimRect::new(200, 150, -800,  600,   90, 110, Color::rgb( 50, 255,  50)),  // Green
+        AnimRect::new(100, 300,  750, -850,  140,  60, Color::rgb( 50,  50, 255)),  // Blue
+        AnimRect::new(300, 100, -700, -750,   70, 130, Color::rgb(255, 255,  50)),  // Yellow
+        AnimRect::new(150, 400,  850,  500,  100, 100, Color::rgb(255,  50, 255)),  // Magenta
+        AnimRect::new(350, 250, -650,  800,  110,  70, Color::rgb( 50, 255, 255)),  // Cyan
+    ]
+}
+
+/// Render bouncing rects into a window buffer. BWM composites this as a floating window.
+fn run_window_loop(win: &graphics::WindowBuffer, rects: &mut [AnimRect; NUM_RECTS]) {
+    let width = win.width as i32;
+    let height = win.height as i32;
+    let bpp = 4usize;
+    let stride = width as usize * bpp;
+    let bg = Color::rgb(15, 15, 30);
+
+    let mut fb = unsafe {
+        FrameBuf::from_raw(
+            win.pixels as *mut u8,
+            width as usize,
+            height as usize,
+            stride,
+            bpp,
+            true, // BGRA
+        )
+    };
+
+    let mut fps = FpsCounter::new();
+    const SUBSTEPS: i32 = 8;
+
+    loop {
+        for _ in 0..SUBSTEPS {
+            for rect in rects.iter_mut() { rect.step(SUBSTEPS); }
+            for rect in rects.iter_mut() { rect.bounce_walls(width, height); }
+        }
+
+        fb.clear(bg);
+        for rect in rects.iter() { rect.draw(&mut fb); }
+        fps.tick();
+        fps.draw(&mut fb);
+
+        // Throttle to ~60 FPS — BWM reads our buffer each frame anyway
+        let _ = time::nanosleep(&libbreenix::types::Timespec { tv_sec: 0, tv_nsec: 16_000_000 });
     }
 }
 
