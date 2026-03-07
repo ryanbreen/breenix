@@ -13,7 +13,7 @@ use std::process;
 
 use libbreenix::graphics;
 use libbreenix::io;
-use libbreenix::process::{fork, exec, waitpid, setsid, ForkResult, WNOHANG};
+use libbreenix::process::{fork, exec, waitpid, setsid, yield_now, ForkResult, WNOHANG};
 use libbreenix::pty;
 use libbreenix::types::Fd;
 
@@ -760,84 +760,8 @@ fn draw_text_tight(fb: &mut FrameBuf, text: &[u8], x: usize, y: usize, fg: Color
     }
 }
 
-// ─── Window Compositing Helpers ──────────────────────────────────────────────
-
-/// Window title bar color
-const WIN_TITLE_BG: Color = Color::rgb(60, 80, 120);
-const WIN_TITLE_TEXT: Color = Color::rgb(240, 240, 240);
-const WIN_BORDER: Color = Color::rgb(80, 100, 140);
-
-/// Draw window chrome (title bar + border) for a client window.
-fn draw_window_chrome(fb: &mut FrameBuf, x: usize, y: usize, width: usize, title_h: usize, title: &str) {
-    let fb_w = fb.width;
-    let fb_h = fb.height;
-    // Border (1px around title + content area)
-    let border_w = width + 2;
-    let bx = x.saturating_sub(1);
-    if bx < fb_w && y > 0 {
-        for dx in 0..border_w.min(fb_w - bx) {
-            fb.put_pixel(bx + dx, y.saturating_sub(1), WIN_BORDER);
-        }
-    }
-    // Title bar background
-    for dy in 0..title_h {
-        let py = y + dy;
-        if py >= fb_h { break; }
-        for dx in 0..width {
-            let px = x + dx;
-            if px >= fb_w { break; }
-            fb.put_pixel(px, py, WIN_TITLE_BG);
-        }
-    }
-    // Title text
-    let text_y = y + (title_h.saturating_sub(TAB_GLYPH_H)) / 2;
-    let text_x = x + 6;
-    draw_text_tight(fb, title.as_bytes(), text_x, text_y, WIN_TITLE_TEXT);
-}
-
-/// Blit BGRA pixel data into the framebuffer at (dst_x, dst_y), clipping to bounds.
-fn blit_window_pixels(
-    fb: &mut FrameBuf,
-    pixels: &[u8],
-    dst_x: usize, dst_y: usize,
-    src_w: usize, src_h: usize,
-    fb_w: usize, fb_h: usize,
-) {
-    let src_stride = src_w * 4;
-    for row in 0..src_h {
-        let py = dst_y + row;
-        if py >= fb_h { break; }
-        let src_row = &pixels[row * src_stride..];
-        for col in 0..src_w {
-            let px = dst_x + col;
-            if px >= fb_w { break; }
-            let off = col * 4;
-            if off + 2 >= src_row.len() { break; }
-            // BGRA byte order
-            let b = src_row[off];
-            let g = src_row[off + 1];
-            let r = src_row[off + 2];
-            fb.put_pixel(px, py, Color::rgb(r, g, b));
-        }
-    }
-    // Bottom border
-    let border_y = dst_y + src_h;
-    if border_y < fb_h {
-        let bx = dst_x.saturating_sub(1);
-        for dx in 0..(src_w + 2).min(fb_w.saturating_sub(bx)) {
-            fb.put_pixel(bx + dx, border_y, WIN_BORDER);
-        }
-    }
-    // Left + right borders
-    for row in 0..src_h + 1 {
-        let py = dst_y + row;
-        if py >= fb_h { break; }
-        let lx = dst_x.saturating_sub(1);
-        if lx < fb_w { fb.put_pixel(lx, py, WIN_BORDER); }
-        let rx = dst_x + src_w;
-        if rx < fb_w { fb.put_pixel(rx, py, WIN_BORDER); }
-    }
-}
+// Window compositing helpers removed — the kernel GPU compositor (op=16)
+// now handles window decorations and per-window textured quads directly.
 
 fn draw_tab_bar(fb: &mut FrameBuf, tabs: &[Tab], active: usize, width: usize) {
     // Tab bar background (matches kernel: rgb(40, 50, 70))
@@ -1081,7 +1005,8 @@ fn main() {
     draw_tab_bar(&mut fb, &tabs, active_tab, pane_width);
     tabs[active_tab].emu.render(&mut fb, term_x_offset, term_y_offset);
     if let Some(ref buf) = composite_buf {
-        let _ = graphics::virgl_composite(buf, pane_width as u32, height as u32);
+        // Use multi-window compositor for initial render too
+        let _ = graphics::virgl_composite_windows(buf, pane_width as u32, height as u32, true);
     } else {
         let _ = graphics::fb_flush();
     }
@@ -1136,8 +1061,9 @@ fn main() {
             None
         };
 
-        // Poll with 100ms timeout
-        let _nready = io::poll(&mut poll_fds[..nfds], 100).unwrap_or(0);
+        // Poll with 1ms timeout — short enough to composite frequently
+        // for smooth window animation, but avoids pure spin-loop
+        let _nready = io::poll(&mut poll_fds[..nfds], 1).unwrap_or(0);
 
         // Check stdin
         let stdin_had_data = poll_fds[0].revents & (io::poll_events::POLLIN as i16) != 0;
@@ -1368,56 +1294,27 @@ fn main() {
         }
 
         // Redraw tab bar periodically (for unread indicators)
-        if frame % 10 == 0 {
+        // Only set needs_flush if tab state actually changed
+        if frame % 200 == 0 {
             draw_tab_bar(&mut fb, &tabs, active_tab, pane_width);
             needs_flush = true;
         }
 
-        // Composite registered client windows (GPU mode only)
-        if gpu_compositing && frame % 2 == 0 {
-            let mut win_infos = [graphics::WindowInfo::default(); 8];
-            if let Ok(count) = graphics::list_windows(&mut win_infos) {
-                for i in 0..count {
-                    let win = &win_infos[i];
-                    if win.width == 0 || win.height == 0 { continue; }
-                    // Auto-position: stack windows in upper-right corner
-                    let margin = 20usize;
-                    let wx = pane_width.saturating_sub(win.width as usize + margin + i * 30);
-                    let wy = TAB_BAR_HEIGHT + SEPARATOR_HEIGHT + margin + i * 30;
-
-                    // Draw title bar
-                    let title_h = 20usize;
-                    let title = &win.title[..win.title_len as usize];
-                    let title_str = core::str::from_utf8(title).unwrap_or("Window");
-                    draw_window_chrome(&mut fb, wx, wy, win.width as usize, title_h, title_str);
-
-                    // Read and blit window pixels
-                    let pixel_bytes = (win.width as usize) * (win.height as usize) * 4;
-                    let mut pixel_buf = vec![0u8; pixel_bytes];
-                    if let Ok((w, h)) = graphics::read_window_buffer(win.buffer_id, &mut pixel_buf) {
-                        blit_window_pixels(
-                            &mut fb, &pixel_buf,
-                            wx, wy + title_h,
-                            w as usize, h as usize,
-                            pane_width, height,
-                        );
-                    }
-                    needs_flush = true;
-                }
-            }
-        }
-
-        // Only flush when something changed
-        if needs_flush {
+        // Composite: always call in GPU mode (kernel early-outs if nothing dirty)
+        if needs_flush || gpu_compositing {
             if let Some(ref buf) = composite_buf {
-                // GPU compositing: upload pixel buffer as texture
-                let _ = graphics::virgl_composite(buf, pane_width as u32, height as u32);
+                let _ = graphics::virgl_composite_windows(
+                    buf, pane_width as u32, height as u32, needs_flush,
+                );
             } else {
-                // Mmap fallback: flush to display via kernel
                 let _ = graphics::fb_flush();
             }
             needs_flush = false;
         }
+
+        // Yield to let client windows render (they block on mark_window_dirty
+        // until we composite their frame, so this just gives them a chance to wake)
+        let _ = yield_now();
 
         frame = frame.wrapping_add(1);
     }

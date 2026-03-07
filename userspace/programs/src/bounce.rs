@@ -10,8 +10,8 @@ use std::process;
 
 use libbreenix::graphics;
 use libbreenix::graphics::{FlushRect, VirglRect};
+use libbreenix::process as bprocess;
 use libbreenix::time;
-use libbreenix::types;
 
 use libgfx::color::Color;
 use libgfx::font;
@@ -53,6 +53,12 @@ impl AnimRect {
         self.y += self.vy / substeps;
     }
 
+    /// Delta-time scaled step. dt_scale is ×1024 fixed-point (1024 = 1.0x = 60 FPS).
+    fn step_scaled(&mut self, substeps: i32, dt_scale: i32) {
+        self.x += (self.vx / substeps) * dt_scale / 1024;
+        self.y += (self.vy / substeps) * dt_scale / 1024;
+    }
+
     fn bounce_walls(&mut self, screen_w: i32, screen_h: i32) {
         let px = self.px();
         let py = self.py();
@@ -90,8 +96,6 @@ impl FpsCounter {
             if elapsed > 0 {
                 self.display_fps = (self.frame_count as u64 * 1_000_000_000 / elapsed) as u32;
             }
-            println!("[bounce] FPS: {} ({}ms/frame)", self.display_fps,
-                     elapsed / (self.frame_count as u64 * 1_000_000));
             self.frame_count = 0;
             self.last_time_ns = now;
         }
@@ -203,11 +207,28 @@ fn run_window_loop(win: &graphics::WindowBuffer, rects: &mut [AnimRect; NUM_RECT
     };
 
     let mut fps = FpsCounter::new();
-    const SUBSTEPS: i32 = 8;
+    let mut last_ns = clock_monotonic_ns();
+
+    // Target physics rate: 60 updates/sec. Delta-time scales movement so
+    // animation speed is independent of render FPS.
+    const TARGET_DT_NS: u64 = 16_666_667; // 1/60th second in nanoseconds
 
     loop {
+        let now = clock_monotonic_ns();
+        let elapsed_ns = now.saturating_sub(last_ns);
+        last_ns = now;
+
+        // Scale physics by actual elapsed time relative to target 60 FPS
+        // dt_scale = elapsed / target_dt, in fixed-point ×1024
+        let dt_scale = if elapsed_ns > 0 {
+            ((elapsed_ns * 1024) / TARGET_DT_NS) as i32
+        } else {
+            1024 // 1.0x if no time elapsed
+        }.min(4096); // Cap at 4x to prevent huge jumps
+
+        const SUBSTEPS: i32 = 8;
         for _ in 0..SUBSTEPS {
-            for rect in rects.iter_mut() { rect.step(SUBSTEPS); }
+            for rect in rects.iter_mut() { rect.step_scaled(SUBSTEPS, dt_scale); }
             for rect in rects.iter_mut() { rect.bounce_walls(width, height); }
         }
 
@@ -216,8 +237,9 @@ fn run_window_loop(win: &graphics::WindowBuffer, rects: &mut [AnimRect; NUM_RECT
         fps.tick();
         fps.draw(&mut fb);
 
-        // Throttle to ~60 FPS — BWM reads our buffer each frame anyway
-        let _ = time::nanosleep(&libbreenix::types::Timespec { tv_sec: 0, tv_nsec: 16_000_000 });
+        // Signal frame ready and block until compositor displays it.
+        // This provides back-pressure — we render at exactly the display rate.
+        let _ = graphics::mark_window_dirty(win.id);
     }
 }
 

@@ -27,6 +27,34 @@ use super::SyscallResult;
 #[cfg(target_arch = "aarch64")]
 pub static FB_FLUSH_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
+/// Restore TTBR0 to the current process's page tables after blocking.
+///
+/// After a blocking syscall (mark_window_dirty), TTBR0 may point to a different
+/// process's address space if the context switch hit PM lock contention.
+#[cfg(target_arch = "aarch64")]
+fn ensure_current_address_space() {
+    let thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => return,
+    };
+    let manager_guard = crate::process::manager();
+    if let Some(ref manager) = *manager_guard {
+        if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+            if let Some(ref page_table) = process.page_table {
+                let ttbr0_value = page_table.level_4_frame().start_address().as_u64();
+                unsafe {
+                    core::arch::asm!(
+                        "dsb ishst",
+                        "msr ttbr0_el1, {}",
+                        "isb",
+                        in(reg) ttbr0_value
+                    );
+                }
+            }
+        }
+    }
+}
+
 // =============================================================================
 // Window Buffer Registry — kernel-side window management for GPU compositing
 // Only compiled for ARM64 (Parallels VirGL compositor path).
@@ -68,6 +96,18 @@ struct WindowBuffer {
     /// Window position (set by compositor)
     x: i32,
     y: i32,
+    /// VirGL TEXTURE_2D resource ID (0 = not initialized)
+    virgl_resource_id: u32,
+    /// Whether VirGL texture has been created + backed + primed
+    virgl_initialized: bool,
+    /// Generation counter — bumped by client via mark_window_dirty
+    generation: u64,
+    /// Last generation uploaded via TRANSFER_TO_HOST_3D
+    last_uploaded_gen: u64,
+    /// Physical addresses of all backing pages (for VirGL scatter-gather)
+    page_phys_addrs: alloc::vec::Vec<u64>,
+    /// Thread ID waiting for compositor to consume this frame (frame pacing)
+    waiting_thread_id: Option<u64>,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -121,7 +161,7 @@ impl WindowRegistry {
         }
     }
 
-    fn allocate(&mut self, owner_pid: u64, width: u32, height: u32, phys_addr: u64, size: usize) -> Option<u32> {
+    fn allocate(&mut self, owner_pid: u64, width: u32, height: u32, phys_addr: u64, size: usize, page_phys_addrs: alloc::vec::Vec<u64>) -> Option<u32> {
         let slot = self.buffers.iter().position(|b| b.is_none())?;
         let id = self.next_id;
         self.next_id += 1;
@@ -137,6 +177,12 @@ impl WindowRegistry {
             title_len: 0,
             x: 0,
             y: 0,
+            virgl_resource_id: 0,
+            virgl_initialized: false,
+            generation: 0,
+            last_uploaded_gen: 0,
+            page_phys_addrs,
+            waiting_thread_id: None,
         });
         Some(id)
     }
@@ -498,12 +544,40 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             } else {
                 &[]
             };
-            let mut reg = WINDOW_REGISTRY.lock();
-            match reg.find_mut(buffer_id) {
-                Some(buf) => {
-                    buf.registered = true;
-                    buf.title_len = title.len().min(MAX_TITLE_LEN);
-                    buf.title[..buf.title_len].copy_from_slice(&title[..buf.title_len]);
+            // Extract window info under lock, then drop lock before VirGL init
+            let win_info = {
+                let mut reg = WINDOW_REGISTRY.lock();
+                // Find slot index first (immutable borrow)
+                let slot_idx = reg.buffers.iter().position(|s| {
+                    s.as_ref().map_or(false, |b| b.id == buffer_id)
+                });
+                match (slot_idx, reg.find_mut(buffer_id)) {
+                    (Some(idx), Some(buf)) => {
+                        buf.registered = true;
+                        buf.title_len = title.len().min(MAX_TITLE_LEN);
+                        buf.title[..buf.title_len].copy_from_slice(&title[..buf.title_len]);
+                        Some((idx, buf.width, buf.height, buf.page_phys_addrs.clone(), buf.size))
+                    }
+                    _ => None,
+                }
+            };
+            match win_info {
+                Some((slot_idx, w, h, pages, size)) => {
+                    // Initialize VirGL texture for this window (outside registry lock)
+                    if crate::drivers::virtio::gpu_pci::is_virgl_enabled() {
+                        match crate::drivers::virtio::gpu_pci::init_window_texture(slot_idx, w, h, &pages, size) {
+                            Ok(res_id) => {
+                                let mut reg = WINDOW_REGISTRY.lock();
+                                if let Some(buf) = reg.find_mut(buffer_id) {
+                                    buf.virgl_resource_id = res_id;
+                                    buf.virgl_initialized = true;
+                                }
+                            }
+                            Err(e) => {
+                                crate::serial_println!("[window] VirGL texture init failed for buffer {}: {}", buffer_id, e);
+                            }
+                        }
+                    }
                     SyscallResult::Ok(0)
                 }
                 None => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
@@ -561,11 +635,240 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                 None => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
             }
         }
+        15 => {
+            // MarkWindowDirty: bump generation, then BLOCK until compositor consumes frame.
+            // This provides Wayland-style back-pressure / frame pacing — the client
+            // renders at exactly the compositor's display rate.
+            //
+            // Uses BlockedOnTimer with a 50ms timeout as fallback. The compositor
+            // calls unblock() to wake the client early when it uploads the frame.
+            // p1=buffer_id
+            let buffer_id = cmd.p1 as u32;
+
+            // Get current thread ID for compositor wake-up
+            let thread_id = match crate::task::scheduler::current_thread_id() {
+                Some(id) => id,
+                None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+            };
+
+            // Bump generation and store waiting thread ID
+            {
+                let mut reg = WINDOW_REGISTRY.lock();
+                match reg.find_mut(buffer_id) {
+                    Some(buf) => {
+                        buf.generation += 1;
+                        buf.waiting_thread_id = Some(thread_id);
+                    }
+                    None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+                }
+            }
+
+            // Calculate timeout: 50ms from now (fallback if compositor doesn't wake us)
+            let (cur_secs, cur_nanos) = crate::time::get_monotonic_time_ns();
+            let now_ns = cur_secs as u64 * 1_000_000_000 + cur_nanos as u64;
+            let timeout_ns = now_ns.saturating_add(50_000_000); // 50ms
+
+            // Block the thread using the scheduler's timer infrastructure.
+            // The compositor will call unblock() when it consumes our frame,
+            // or wake_expired_timers() will wake us after 50ms as fallback.
+            crate::task::scheduler::with_scheduler(|sched| {
+                sched.block_current_for_compositor(timeout_ns);
+            });
+
+            // Enable preemption so timer interrupts can context-switch us out
+            #[cfg(target_arch = "aarch64")]
+            crate::per_cpu_aarch64::preempt_enable();
+
+            // WFI loop: sleep until the compositor wakes us or timeout expires.
+            // Each WFI suspends the CPU until the next interrupt (timer at 1000Hz).
+            loop {
+                let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                    sched.wake_expired_timers();
+                    sched.current_thread_mut()
+                        .map(|t| t.state == crate::task::thread::ThreadState::BlockedOnTimer)
+                        .unwrap_or(false)
+                });
+
+                if !still_blocked.unwrap_or(false) {
+                    break;
+                }
+
+                crate::task::scheduler::yield_current();
+                crate::arch_halt_with_interrupts();
+            }
+
+            // Clear blocked_in_syscall and re-disable preemption before returning
+            crate::task::scheduler::with_scheduler(|sched| {
+                if let Some(thread) = sched.current_thread_mut() {
+                    thread.blocked_in_syscall = false;
+                }
+            });
+
+            #[cfg(target_arch = "aarch64")]
+            crate::per_cpu_aarch64::preempt_disable();
+
+            // Restore TTBR0 to this process's page tables after blocking
+            #[cfg(target_arch = "aarch64")]
+            ensure_current_address_space();
+
+            SyscallResult::Ok(0)
+        }
+        16 => {
+            // CompositeWindows: multi-window GPU compositing
+            // p1/p2 = pointer to CompositeWindowsDesc
+            let desc_ptr = (cmd.p1 as u32 as u64) | ((cmd.p2 as u32 as u64) << 32);
+            if desc_ptr == 0 || desc_ptr >= USER_SPACE_MAX {
+                return SyscallResult::Err(super::ErrorCode::Fault as u64);
+            }
+            handle_composite_windows(desc_ptr)
+        }
         _ => {
             crate::serial_println!("[virgl-op] UNKNOWN op={}", cmd.op);
             SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
         }
     }
+}
+
+/// Descriptor for multi-window GPU compositing (passed from userspace).
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+struct CompositeWindowsDesc {
+    bg_pixels_ptr: u64,
+    bg_width: u32,
+    bg_height: u32,
+    bg_dirty: u32,
+    _reserved: u32,
+}
+
+/// Handle multi-window GPU compositing (op=16).
+///
+/// Collects dirty window info from the registry, then delegates to the GPU driver
+/// to upload dirty textures and render all windows in a single SUBMIT_3D batch.
+#[cfg(target_arch = "aarch64")]
+fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
+    let desc: CompositeWindowsDesc = unsafe { core::ptr::read(desc_ptr as *const CompositeWindowsDesc) };
+
+    if desc.bg_width == 0 || desc.bg_height == 0 || desc.bg_width > 4096 || desc.bg_height > 4096 {
+        return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+    }
+
+    let bg_dirty = desc.bg_dirty != 0;
+
+    // Fast path: quick dirty check under lock — no heap allocs if nothing changed
+    if !bg_dirty {
+        let reg = WINDOW_REGISTRY.lock();
+        let any_window_dirty = reg.buffers.iter().any(|slot| {
+            if let Some(ref buf) = slot {
+                buf.registered && buf.width > 0 && buf.height > 0
+                    && buf.generation > buf.last_uploaded_gen
+            } else { false }
+        });
+        if !any_window_dirty {
+            return SyscallResult::Ok(0);
+        }
+        drop(reg);
+    }
+
+    let bg_pixels = if desc.bg_pixels_ptr != 0 && desc.bg_pixels_ptr < USER_SPACE_MAX {
+        let pixel_count = (desc.bg_width as usize) * (desc.bg_height as usize);
+        let end = desc.bg_pixels_ptr + (pixel_count as u64) * 4;
+        if end > USER_SPACE_MAX {
+            return SyscallResult::Err(super::ErrorCode::Fault as u64);
+        }
+        Some(unsafe { core::slice::from_raw_parts(desc.bg_pixels_ptr as *const u32, pixel_count) })
+    } else {
+        None
+    };
+
+    // Collect window info and waiting thread IDs under lock, then release
+    let mut threads_to_wake: [Option<u64>; MAX_WINDOW_BUFFERS] = [None; MAX_WINDOW_BUFFERS];
+    let windows: alloc::vec::Vec<WindowCompositeInfo> = {
+        let mut reg = WINDOW_REGISTRY.lock();
+        let mut result = alloc::vec::Vec::new();
+        // Auto-position constants
+        let margin = 20i32;
+        let tab_offset = (TAB_BAR_HEIGHT + SEPARATOR_HEIGHT) as i32;
+        let mut win_idx = 0usize;
+        for slot in reg.buffers.iter_mut() {
+            if let Some(ref mut buf) = slot {
+                if !buf.registered { continue; }
+                if buf.width == 0 || buf.height == 0 { continue; }
+
+                let dirty = buf.generation > buf.last_uploaded_gen;
+
+                // Auto-position windows
+                let wx = (desc.bg_width as i32).saturating_sub(buf.width as i32 + margin + (win_idx as i32) * 30);
+                let wy = tab_offset + margin + (win_idx as i32) * 30;
+
+                result.push(WindowCompositeInfo {
+                    virgl_resource_id: buf.virgl_resource_id,
+                    virgl_initialized: buf.virgl_initialized,
+                    width: buf.width,
+                    height: buf.height,
+                    x: wx,
+                    y: wy,
+                    dirty,
+                    page_phys_addrs: buf.page_phys_addrs.clone(),
+                    size: buf.size,
+                    title_len: buf.title_len,
+                    title: buf.title,
+                });
+
+                if dirty {
+                    buf.last_uploaded_gen = buf.generation;
+                    // Collect waiting thread ID for wake-up after GPU work
+                    if win_idx < MAX_WINDOW_BUFFERS {
+                        threads_to_wake[win_idx] = buf.waiting_thread_id.take();
+                    }
+                }
+                win_idx += 1;
+            }
+        }
+        result
+    };
+
+    let result = match crate::drivers::virtio::gpu_pci::virgl_composite_windows(
+        bg_pixels, desc.bg_width, desc.bg_height, bg_dirty, &windows,
+    ) {
+        Ok(()) => SyscallResult::Ok(0),
+        Err(e) => {
+            crate::serial_println!("[composite-windows] FAILED: {}", e);
+            SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
+        }
+    };
+
+    // Wake blocked clients after GPU work completes (frame pacing back-pressure).
+    // This must happen OUTSIDE the WINDOW_REGISTRY lock to avoid deadlock with
+    // the scheduler lock.
+    for tid in threads_to_wake.iter().flatten() {
+        crate::task::scheduler::with_scheduler(|sched| {
+            sched.unblock(*tid);
+        });
+    }
+
+    result
+}
+
+/// Layout constants mirrored from BWM for auto-positioning
+#[cfg(target_arch = "aarch64")]
+const TAB_BAR_HEIGHT: usize = 24;
+#[cfg(target_arch = "aarch64")]
+const SEPARATOR_HEIGHT: usize = 2;
+
+/// Info about a window to be composited, extracted from the registry.
+#[cfg(target_arch = "aarch64")]
+pub struct WindowCompositeInfo {
+    pub virgl_resource_id: u32,
+    pub virgl_initialized: bool,
+    pub width: u32,
+    pub height: u32,
+    pub x: i32,
+    pub y: i32,
+    pub dirty: bool,
+    pub page_phys_addrs: alloc::vec::Vec<u64>,
+    pub size: usize,
+    pub title_len: usize,
+    pub title: [u8; MAX_TITLE_LEN],
 }
 
 /// Handle create_window_buffer: allocate physical pages for a window pixel buffer,
@@ -631,9 +934,10 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
         None => return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64),
     };
 
-    // Allocate and map physical frames
+    // Allocate and map physical frames, saving per-page physical addresses
     let page_flags = prot_to_page_flags(Protection::from_bits_truncate(3)); // READ | WRITE
     let mut first_phys: u64 = 0;
+    let mut page_phys_addrs = alloc::vec::Vec::with_capacity(num_pages);
 
     for i in 0..num_pages {
         let frame = match crate::memory::frame_allocator::allocate_frame() {
@@ -641,8 +945,11 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
             None => return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64),
         };
 
+        let frame_phys = frame.start_address().as_u64();
+        page_phys_addrs.push(frame_phys);
+
         if i == 0 {
-            first_phys = frame.start_address().as_u64();
+            first_phys = frame_phys;
         }
 
         let page_addr = new_addr + (i as u64) * PAGE_SIZE;
@@ -656,7 +963,7 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
         let phys_mem_offset = crate::memory::physical_memory_offset().as_u64();
         unsafe {
             core::ptr::write_bytes(
-                (phys_mem_offset + frame.start_address().as_u64()) as *mut u8,
+                (phys_mem_offset + frame_phys) as *mut u8,
                 0,
                 PAGE_SIZE as usize,
             );
@@ -676,7 +983,7 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
     // Register in window buffer table
     let buffer_id = {
         let mut reg = WINDOW_REGISTRY.lock();
-        match reg.allocate(pid.as_u64(), width, height, first_phys, size) {
+        match reg.allocate(pid.as_u64(), width, height, first_phys, size, page_phys_addrs) {
             Some(id) => id,
             None => return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64),
         }

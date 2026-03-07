@@ -69,6 +69,8 @@ prlctl set "$VM_NAME" --efi-boot on >/dev/null 2>&1 || true
 prlctl set "$VM_NAME" --3d-accelerate highest >/dev/null 2>&1 || true
 prlctl set "$VM_NAME" --videosize 256 >/dev/null 2>&1 || true
 prlctl set "$VM_NAME" --high-resolution off >/dev/null 2>&1 || true
+prlctl set "$VM_NAME" --high-resolution-in-guest off >/dev/null 2>&1 || true
+prlctl set "$VM_NAME" --native-scaling-in-guest off >/dev/null 2>&1 || true
 for dev in hdd0 hdd1 hdd2 cdrom0 cdrom1 serial0 serial1; do
     prlctl set "$VM_NAME" --device-del "$dev" >/dev/null 2>&1 || true
 done

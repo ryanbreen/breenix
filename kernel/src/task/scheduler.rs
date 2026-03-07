@@ -1207,6 +1207,23 @@ impl Scheduler {
         }
     }
 
+    /// Block current thread for compositor frame pacing (mark_window_dirty syscall).
+    ///
+    /// Uses BlockedOnTimer with a timeout so the thread wakes either when
+    /// the compositor calls unblock() or when the timeout expires (fallback).
+    /// This provides Wayland-style back-pressure: the client renders at
+    /// exactly the compositor's display rate.
+    pub fn block_current_for_compositor(&mut self, timeout_ns: u64) {
+        if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
+            if let Some(thread) = self.get_thread_mut(current_id) {
+                thread.state = ThreadState::BlockedOnTimer;
+                thread.wake_time_ns = Some(timeout_ns);
+                thread.blocked_in_syscall = true;
+            }
+            self.ready_queue.retain(|&id| id != current_id);
+        }
+    }
+
     /// Check all threads for expired timer-based sleep and wake them.
     /// Called from schedule() on every reschedule, and from the nanosleep
     /// HLT loop to immediately detect timer expiry without waiting for
