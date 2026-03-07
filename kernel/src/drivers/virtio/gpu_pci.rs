@@ -589,31 +589,9 @@ fn init_composite_texture(width: u32, height: u32) -> Result<(), &'static str> {
         )
     })?;
 
-    // Attach backing memory
+    // Attach backing memory (per-page scatter-gather, required by Parallels)
     with_device_state(|state| {
-        unsafe {
-            let cmd_ptr = &raw mut PCI_CMD_BUF;
-            let attach = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut PciAttachBackingCmd);
-            *attach = PciAttachBackingCmd {
-                cmd: VirtioGpuResourceAttachBacking {
-                    hdr: VirtioGpuCtrlHdr {
-                        type_: cmd::RESOURCE_ATTACH_BACKING,
-                        flags: 0,
-                        fence_id: 0,
-                        ctx_id: 0,
-                        padding: 0,
-                    },
-                    resource_id: RESOURCE_COMPOSITE_TEX_ID,
-                    nr_entries: 1,
-                },
-                entry: VirtioGpuMemEntry {
-                    addr: phys,
-                    length: size as u32,
-                    padding: 0,
-                },
-            };
-        }
-        send_command_expect_ok(state, core::mem::size_of::<PciAttachBackingCmd>() as u32)
+        virgl_attach_backing_paged(state, RESOURCE_COMPOSITE_TEX_ID, unsafe { COMPOSITE_TEX_PTR }, size)
     })?;
 
     // Attach to VirGL context
@@ -2001,20 +1979,19 @@ fn virgl_resource_create_3d_cmd(
 
 /// Attach backing memory to a 3D resource using per-page scatter-gather entries.
 ///
-/// Uses heap-allocated PCI_3D_FB_PTR as the backing store.
-/// CRITICAL: Must NOT share backing with the 2D resource (PCI_FRAMEBUFFER).
-/// Linux's Mesa/virgl creates independent GEM buffers for each resource.
-///
 /// KEY FIX: Linux kernel sends one VirtioGpuMemEntry per 4KB page (768 entries
-/// for a 1024×768×4 framebuffer). Our previous approach sent 1 entry with the
-/// entire 3MB range. The host (Parallels) may require per-page entries to
-/// properly map backing for GL texture operations and TRANSFER_FROM_HOST_3D.
-fn virgl_attach_backing_cmd(state: &mut GpuPciDeviceState, resource_id: u32) -> Result<(), &'static str> {
-    let fb_ptr = unsafe { PCI_3D_FB_PTR };
-    assert!(!fb_ptr.is_null(), "3D framebuffer not initialized");
-    let fb_base_phys = virt_to_phys(fb_ptr as u64);
-    let fb_len = unsafe { PCI_3D_FB_LEN };
-    let actual_len = (state.width as usize * state.height as usize * 4).min(fb_len);
+/// for a 1024×768×4 framebuffer). The host (Parallels) requires per-page entries
+/// to properly map backing for GL texture operations and TRANSFER_FROM_HOST_3D.
+/// A single-entry approach causes the host to read zeros → BLACK texture sampling.
+fn virgl_attach_backing_paged(
+    state: &mut GpuPciDeviceState,
+    resource_id: u32,
+    backing_ptr: *const u8,
+    backing_len: usize,
+) -> Result<(), &'static str> {
+    assert!(!backing_ptr.is_null(), "backing pointer is null");
+    let fb_base_phys = virt_to_phys(backing_ptr as u64);
+    let actual_len = backing_len;
 
     const PAGE_SIZE: usize = 4096;
     let nr_pages = (actual_len + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -3054,7 +3031,6 @@ pub fn virgl_composite_frame(
 /// alpha blending, transforms). Currently not working on Parallels — texture
 /// sampling produces black output despite successful SUBMIT_3D. Kept for future
 /// debugging and enablement.
-#[allow(dead_code)]
 pub fn virgl_composite_frame_textured(
     pixels: &[u32],
     width: u32,
@@ -3095,41 +3071,45 @@ pub fn virgl_composite_frame_textured(
     })?;
 
     // Build VirGL batch: full pipeline + textured quad
+    // Object handles are unique per batch to avoid hash collisions in virglrenderer:
+    //   10=surface, 11=blend, 12=DSA, 13=rasterizer, 14=VS, 15=FS,
+    //   16=VE, 17=sampler_view, 18=sampler_state
     let mut cmdbuf = CommandBuffer::new();
     cmdbuf.create_sub_ctx(1);
     cmdbuf.set_sub_ctx(1);
     cmdbuf.set_tweaks(1, 1);
     cmdbuf.set_tweaks(2, display_w);
 
-    cmdbuf.create_surface(1, RESOURCE_3D_ID, vfmt::B8G8R8X8_UNORM, 0, 0);
-    cmdbuf.set_framebuffer_state(0, &[1]);
-    cmdbuf.create_blend_simple(1);
-    cmdbuf.bind_object(1, super::virgl::OBJ_BLEND);
-    cmdbuf.create_dsa_default(1);
-    cmdbuf.bind_object(1, super::virgl::OBJ_DSA);
-    cmdbuf.create_rasterizer_default(1);
-    cmdbuf.bind_object(1, super::virgl::OBJ_RASTERIZER);
+    cmdbuf.create_surface(10, RESOURCE_3D_ID, vfmt::B8G8R8X8_UNORM, 0, 0);
+    cmdbuf.set_framebuffer_state(0, &[10]);
+    cmdbuf.create_blend_simple(11);
+    cmdbuf.bind_object(11, super::virgl::OBJ_BLEND);
+    cmdbuf.create_dsa_default(12);
+    cmdbuf.bind_object(12, super::virgl::OBJ_DSA);
+    cmdbuf.create_rasterizer_default(13);
+    cmdbuf.bind_object(13, super::virgl::OBJ_RASTERIZER);
 
-    // Texture shaders
+    // Texture shaders (num_tokens=300 required by Parallels)
     let tex_vs = b"VERT\nDCL IN[0]\nDCL IN[1]\nDCL OUT[0], POSITION\nDCL OUT[1], GENERIC[0]\n  0: MOV OUT[0], IN[0]\n  1: MOV OUT[1], IN[1]\n  2: END\n";
-    cmdbuf.create_shader(1, pipe::SHADER_VERTEX, 300, tex_vs);
-    cmdbuf.bind_shader(1, pipe::SHADER_VERTEX);
-    let tex_fs = b"FRAG\nDCL IN[0], GENERIC[0], LINEAR\nDCL OUT[0], COLOR\nDCL SAMP[0]\nDCL SVIEW[0], 2D, FLOAT\n  0: TEX OUT[0], IN[0], SAMP[0], 2D\n  1: END\n";
-    cmdbuf.create_shader(2, pipe::SHADER_FRAGMENT, 300, tex_fs);
-    cmdbuf.bind_shader(2, pipe::SHADER_FRAGMENT);
+    cmdbuf.create_shader(14, pipe::SHADER_VERTEX, 300, tex_vs);
+    cmdbuf.bind_shader(14, pipe::SHADER_VERTEX);
+    let tex_fs = b"FRAG\nPROPERTY FS_COLOR0_WRITES_ALL_CBUFS 1\nDCL IN[0], GENERIC[0], LINEAR\nDCL OUT[0], COLOR\nDCL SAMP[0]\nDCL SVIEW[0], 2D, FLOAT\n  0: TEX OUT[0], IN[0], SAMP[0], 2D\n  1: END\n";
+    cmdbuf.create_shader(15, pipe::SHADER_FRAGMENT, 300, tex_fs);
+    cmdbuf.bind_shader(15, pipe::SHADER_FRAGMENT);
 
-    cmdbuf.create_vertex_elements(1, &[
+    cmdbuf.create_vertex_elements(16, &[
         (0, 0, 0, vfmt::R32G32B32A32_FLOAT),
         (16, 0, 0, vfmt::R32G32B32A32_FLOAT),
     ]);
-    cmdbuf.bind_object(1, super::virgl::OBJ_VERTEX_ELEMENTS);
+    cmdbuf.bind_object(16, super::virgl::OBJ_VERTEX_ELEMENTS);
 
-    cmdbuf.create_sampler_view(2, RESOURCE_COMPOSITE_TEX_ID, vfmt::B8G8R8X8_UNORM, 0, 0, swizzle::IDENTITY);
-    cmdbuf.create_sampler_state(3, pipe::TEX_WRAP_CLAMP_TO_EDGE, pipe::TEX_WRAP_CLAMP_TO_EDGE, pipe::TEX_WRAP_CLAMP_TO_EDGE, pipe::TEX_FILTER_NEAREST, pipe::TEX_MIPFILTER_NONE, pipe::TEX_FILTER_NEAREST);
+    // Sampler view: format DWORD must include texture target in bits [24:31]
+    cmdbuf.create_sampler_view(17, RESOURCE_COMPOSITE_TEX_ID, vfmt::B8G8R8X8_UNORM, pipe::TEXTURE_2D, 0, 0, 0, 0, swizzle::IDENTITY);
+    cmdbuf.create_sampler_state(18, pipe::TEX_WRAP_CLAMP_TO_EDGE, pipe::TEX_WRAP_CLAMP_TO_EDGE, pipe::TEX_WRAP_CLAMP_TO_EDGE, pipe::TEX_FILTER_NEAREST, pipe::TEX_MIPFILTER_NONE, pipe::TEX_FILTER_NEAREST);
     cmdbuf.set_min_samples(1);
     cmdbuf.set_viewport(display_w as f32, display_h as f32);
-    cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[2]);
-    cmdbuf.bind_sampler_states(pipe::SHADER_FRAGMENT, 0, &[3]);
+    cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[17]);
+    cmdbuf.bind_sampler_states(pipe::SHADER_FRAGMENT, 0, &[18]);
     cmdbuf.clear_color(0.0, 0.0, 0.0, 1.0);
 
     let u_max = copy_w as f32 / tex_w as f32;
@@ -3329,9 +3309,12 @@ pub fn virgl_init() -> Result<(), &'static str> {
     crate::serial_println!("[virgl] Step 2: 3D resource created ({}x{}, bind=0x{:08x})",
         width, height, bind_flags);
 
-    // Step 4: Attach backing memory
+    // Step 4: Attach backing memory (per-page scatter-gather)
     with_device_state(|state| {
-        virgl_attach_backing_cmd(state, RESOURCE_3D_ID)
+        let fb_ptr = unsafe { PCI_3D_FB_PTR };
+        let fb_len = unsafe { PCI_3D_FB_LEN };
+        let actual_len = (state.width as usize * state.height as usize * 4).min(fb_len);
+        virgl_attach_backing_paged(state, RESOURCE_3D_ID, fb_ptr, actual_len)
     })?;
     crate::serial_println!("[virgl] Step 3: backing attached");
 
@@ -3585,8 +3568,9 @@ fn virgl_test_textured_quad() -> Result<(), &'static str> {
         5,                     // handle
         RESOURCE_TEX_ID,       // resource
         vfmt::B8G8R8A8_UNORM, // format
-        0,                     // first_level
-        0,                     // last_level
+        pipe::TEXTURE_2D,      // target (packed into format bits [24:31])
+        0, 0,                  // first_layer, last_layer
+        0, 0,                  // first_level, last_level
         swizzle::IDENTITY,     // RGBA identity swizzle
     );
 

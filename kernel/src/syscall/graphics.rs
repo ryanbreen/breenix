@@ -455,11 +455,17 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             let pixels = unsafe {
                 core::slice::from_raw_parts(buf_ptr as *const u32, pixel_count as usize)
             };
-            match crate::drivers::virtio::gpu_pci::virgl_composite_frame(pixels, width, height) {
+            // Try GPU-textured compositing first, fall back to direct blit
+            match crate::drivers::virtio::gpu_pci::virgl_composite_frame_textured(pixels, width, height) {
                 Ok(()) => SyscallResult::Ok(0),
-                Err(e) => {
-                    crate::serial_println!("[virgl-syscall] composite_frame FAILED: {}", e);
-                    SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
+                Err(_) => {
+                    match crate::drivers::virtio::gpu_pci::virgl_composite_frame(pixels, width, height) {
+                        Ok(()) => SyscallResult::Ok(0),
+                        Err(e) => {
+                            crate::serial_println!("[virgl-syscall] composite_frame FAILED: {}", e);
+                            SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
+                        }
+                    }
                 }
             }
         }
