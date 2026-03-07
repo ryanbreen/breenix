@@ -465,14 +465,15 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
         }
         11 => {
             // CreateWindowBuffer: allocate shared pixel buffer
-            // p1=width, p2=height
-            // Returns: buffer_id in OK value, userspace mmap addr in p1/p2 of output
+            // p1=width, p2=height, p3/p4 = output pointer (lo/hi) for mmap addr
+            // Returns: buffer_id in OK value, writes 64-bit mmap addr to *out_ptr
             let width = cmd.p1 as u32;
             let height = cmd.p2 as u32;
+            let out_ptr = (cmd.p3 as u32 as u64) | ((cmd.p4 as u32 as u64) << 32);
             if width == 0 || height == 0 || width > 4096 || height > 4096 {
                 return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
             }
-            handle_create_window_buffer(width, height)
+            handle_create_window_buffer(width, height, out_ptr)
         }
         12 => {
             // RegisterWindow: register a buffer as a visible window
@@ -554,7 +555,10 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                 None => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
             }
         }
-        _ => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+        _ => {
+            crate::serial_println!("[virgl-op] UNKNOWN op={}", cmd.op);
+            SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
+        }
     }
 }
 
@@ -565,7 +569,7 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
 /// the process's mmap_hint, and the caller should use the window buffer API to
 /// get the mapped pointer).
 #[cfg(target_arch = "aarch64")]
-fn handle_create_window_buffer(width: u32, height: u32) -> SyscallResult {
+fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> SyscallResult {
     use crate::memory::vma::{MmapFlags, Protection, Vma};
     use crate::syscall::memory_common::{
         get_current_thread_id, prot_to_page_flags, flush_tlb, round_down_to_page, PAGE_SIZE,
@@ -580,22 +584,32 @@ fn handle_create_window_buffer(width: u32, height: u32) -> SyscallResult {
 
     let size = (width as usize) * (height as usize) * 4;
     let num_pages = (size + PAGE_SIZE as usize - 1) / PAGE_SIZE as usize;
+    crate::serial_println!("[window] create_window_buffer: {}x{} ({} bytes, {} pages)", width, height, size, num_pages);
 
     // Get current process
     let current_thread_id = match get_current_thread_id() {
         Some(id) => id,
-        None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
+        None => {
+            crate::serial_println!("[window] ERROR: get_current_thread_id returned None");
+            return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64);
+        }
     };
 
     let mut manager_guard = crate::process::manager();
     let manager = match *manager_guard {
         Some(ref mut m) => m,
-        None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
+        None => {
+            crate::serial_println!("[window] ERROR: process manager not available");
+            return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64);
+        }
     };
 
     let (pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
         Some(p) => p,
-        None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
+        None => {
+            crate::serial_println!("[window] ERROR: thread {:?} not in process table", current_thread_id);
+            return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64);
+        }
     };
 
     // Allocate virtual address range from mmap hint
@@ -667,11 +681,15 @@ fn handle_create_window_buffer(width: u32, height: u32) -> SyscallResult {
         buffer_id, pid.as_u64(), width, height, new_addr, first_phys
     );
 
-    // Return buffer_id in upper 32 bits, mmap address in lower 32 bits
-    // (userspace can reconstruct: buffer_id = result >> 32, addr = result & 0xFFFFFFFF)
-    // Actually, return buffer_id and the address is the mmap_hint before allocation
-    // For simplicity, pack both: high 32 = buffer_id, low 32 = mmap addr page-aligned
-    SyscallResult::Ok(((buffer_id as u64) << 32) | (new_addr & 0xFFFF_FFFF))
+    // Write full 64-bit mmap address to userspace output pointer
+    if out_addr_ptr != 0 && out_addr_ptr < USER_SPACE_MAX {
+        unsafe {
+            core::ptr::write(out_addr_ptr as *mut u64, new_addr);
+        }
+    }
+
+    // Return just the buffer_id
+    SyscallResult::Ok(buffer_id as u64)
 }
 
 /// sys_fbdraw - Draw to the left pane of the framebuffer

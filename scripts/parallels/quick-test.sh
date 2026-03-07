@@ -17,9 +17,22 @@ EXT2_HDD_DIR="$PARALLELS_DIR/breenix-ext2.hdd"
 SERIAL_LOG="/tmp/breenix-parallels-serial.log"
 SCREENSHOT="/tmp/breenix-screenshot.png"
 
-echo "=== Building ==="
+echo "=== Building kernel ==="
 touch kernel/src/drivers/virtio/gpu_pci.rs
 scripts/parallels/build-efi.sh --kernel 2>&1 | grep -E "warning|error|Build Complete|bytes\)" | head -10
+
+echo "=== Building userspace + ext2 ==="
+./userspace/programs/build.sh --arch aarch64 2>&1 | tail -1
+./scripts/create_ext2_disk.sh --arch aarch64 >/dev/null 2>&1
+# Recreate ext2 Parallels HDD from fresh ext2 image
+EXT2_IMG="target/ext2-aarch64.img"
+if [ -f "$EXT2_IMG" ]; then
+    rm -rf "$EXT2_HDD_DIR"
+    prl_disk_tool create --hdd "$EXT2_HDD_DIR" --size 64M >/dev/null 2>&1
+    EXT2_HDS=$(find "$EXT2_HDD_DIR" -name "*.hds" | head -1)
+    cp "$EXT2_IMG" "$EXT2_HDS"
+    echo "ext2 HDD updated"
+fi
 
 LOADER_EFI="target/aarch64-unknown-uefi/release/parallels-loader.efi"
 KERNEL_ELF="target/aarch64-breenix/release/kernel-aarch64"

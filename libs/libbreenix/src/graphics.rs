@@ -451,23 +451,21 @@ impl Default for WindowInfo {
 /// Returns a WindowBuffer with a mapped pixel pointer and buffer ID.
 /// The buffer can be registered with the compositor via `register_window()`.
 pub fn create_window(width: u32, height: u32) -> Result<WindowBuffer, Error> {
+    let mut mmap_addr: u64 = 0;
+    let out_ptr = &mut mmap_addr as *mut u64 as u64;
     let cmd = FbDrawCmd {
         op: draw_op::CREATE_WINDOW_BUFFER,
         p1: width as i32,
         p2: height as i32,
-        p3: 0,
-        p4: 0,
+        p3: out_ptr as i32,
+        p4: (out_ptr >> 32) as i32,
         color: 0,
     };
     let ret = unsafe { raw::syscall1(nr::FBDRAW, &cmd as *const FbDrawCmd as u64) as i64 };
     if ret < 0 {
         return Err(Error::Os(Errno::from_raw(-ret)));
     }
-    let result = ret as u64;
-    let buffer_id = (result >> 32) as u32;
-    let mmap_addr = (result & 0xFFFF_FFFF) as u64;
-    // On 64-bit, userspace mmap addresses may have upper bits from sign extension
-    // but the kernel returns the low 32 bits; reconstruct full address
+    let buffer_id = ret as u32;
     Ok(WindowBuffer {
         id: buffer_id,
         pixels: mmap_addr as *mut u32,
