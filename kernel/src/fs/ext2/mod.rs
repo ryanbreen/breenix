@@ -16,7 +16,6 @@ pub use inode::*;
 pub use file::*;
 
 use crate::block::BlockDevice;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::RwLock;
 
@@ -30,7 +29,7 @@ pub struct Ext2Fs {
     /// Block group descriptors
     pub block_groups: Vec<Ext2BlockGroupDesc>,
     /// The underlying block device
-    pub device: Arc<dyn BlockDevice>,
+    pub device: alloc::boxed::Box<dyn BlockDevice>,
     /// Mount ID for VFS integration
     pub mount_id: usize,
 }
@@ -39,7 +38,7 @@ impl Ext2Fs {
     /// Create a new ext2 filesystem instance from a block device
     ///
     /// Reads and validates the superblock and block group descriptors.
-    pub fn new(device: Arc<dyn BlockDevice>, mount_id: usize) -> Result<Self, &'static str> {
+    pub fn new(device: alloc::boxed::Box<dyn BlockDevice>, mount_id: usize) -> Result<Self, &'static str> {
         // Read the superblock
         let superblock = Ext2Superblock::read_from(device.as_ref())
             .map_err(|_| "Failed to read ext2 superblock")?;
@@ -1375,12 +1374,12 @@ static ROOT_EXT2: RwLock<Option<Ext2Fs>> = RwLock::new(None);
 /// device driver initialization.
 pub fn init_root_fs() -> Result<(), &'static str> {
     // Try VirtIO block devices first (works on both x86_64 and QEMU ARM64)
-    let device: Arc<dyn BlockDevice> = {
+    let device: alloc::boxed::Box<dyn BlockDevice> = {
         use crate::block::virtio::VirtioBlockWrapper;
         if let Some(dev) = VirtioBlockWrapper::new(2).or_else(|| VirtioBlockWrapper::new(0)) {
             #[cfg(target_arch = "aarch64")]
             crate::serial_println!("[ext2] Using VirtIO block device ({} sectors)", dev.num_blocks());
-            Arc::new(dev)
+            alloc::boxed::Box::new(dev)
         } else {
             // Fall back to AHCI block devices (Parallels ARM64).
             // Try each SATA device looking for one with a valid ext2 superblock.
@@ -1412,7 +1411,7 @@ pub fn init_root_fs() -> Result<(), &'static str> {
                 }
                 let ahci_dev = found
                     .ok_or("No block device with ext2 filesystem (tried VirtIO and all AHCI devices)")?;
-                Arc::new(ahci_dev)
+                alloc::boxed::Box::new(ahci_dev)
             }
             #[cfg(not(target_arch = "aarch64"))]
             {
@@ -1494,11 +1493,11 @@ static HOME_EXT2: RwLock<Option<Ext2Fs>> = RwLock::new(None);
 pub fn init_home_fs() -> Result<(), &'static str> {
     // Try x86_64 layout first (device index 3), then ARM64 layout (device index 1).
     use crate::block::virtio::VirtioBlockWrapper;
-    let device: Arc<dyn BlockDevice> = {
+    let device: alloc::boxed::Box<dyn BlockDevice> = {
         let dev = VirtioBlockWrapper::new(3)
             .or_else(|| VirtioBlockWrapper::new(1))
             .ok_or("No home block device available (expected at device index 3 or 1)")?;
-        Arc::new(dev)
+        alloc::boxed::Box::new(dev)
     };
 
     // Register with VFS mount system

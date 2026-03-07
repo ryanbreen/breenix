@@ -53,11 +53,13 @@ pub struct HardwareConfig {
     pub version: u32,
 
     // --- UART ---
-    /// PL011 UART base physical address
+    /// UART base physical address (PL011 or 16550)
     pub uart_base_phys: u64,
     /// UART interrupt (GIC SPI number)
     pub uart_irq: u32,
-    pub _pad0: u32,
+    /// UART type: 0 = PL011, 1 = 16550
+    pub uart_type: u8,
+    pub _pad0: [u8; 3],
 
     // --- GIC ---
     /// GIC version (2, 3, or 4)
@@ -131,7 +133,8 @@ impl HardwareConfig {
             version: HARDWARE_CONFIG_VERSION,
             uart_base_phys: 0,
             uart_irq: 0,
-            _pad0: 0,
+            uart_type: 0,
+            _pad0: [0; 3],
             gic_version: 0,
             _pad1: [0; 7],
             gicd_base: 0,

@@ -14,7 +14,7 @@ use uefi::mem::memory_map::{MemoryMap, MemoryType};
 use uefi::table::cfg::ACPI2_GUID;
 
 use hw_config::HardwareConfig;
-use page_tables::PageTableStorage;
+use page_tables::{PageTableConfig, PageTableStorage};
 
 /// Page table storage - static so it survives ExitBootServices.
 static mut PAGE_TABLES: PageTableStorage = PageTableStorage::new();
@@ -85,9 +85,44 @@ fn main() -> Status {
         }
     }
 
-    // Load kernel ELF from ESP
+    // Populate RAM regions from UEFI memory map FIRST — we need the actual RAM
+    // base address to know where to load the kernel on platforms like VMware
+    // where guest RAM starts at 0x80000000 instead of 0x40000000.
+    populate_ram_regions(config);
+
+    log::info!("RAM regions: {} regions found", config.ram_region_count);
+    for i in 0..config.ram_region_count as usize {
+        if i >= config.ram_regions.len() {
+            break;
+        }
+        let r = &config.ram_regions[i];
+        log::info!("  RAM: {:#x} - {:#x} ({} MB)",
+            r.base, r.base + r.size, r.size / (1024 * 1024));
+    }
+
+    // Compute RAM base offset for kernel relocation.
+    // The kernel linker script assumes physical RAM starts at 0x40000000.
+    // On VMware Fusion, RAM starts at 0x80000000, so offset = 0x40000000.
+    // On QEMU/Parallels, RAM starts at 0x40000000, so offset = 0.
+    let expected_ram_base: u64 = 0x4000_0000;
+    let actual_ram_base = if config.ram_region_count > 0 {
+        config.ram_regions[0].base & !0x3FFF_FFFF // Round down to 1GB boundary
+    } else {
+        expected_ram_base
+    };
+    let ram_base_offset = if actual_ram_base > expected_ram_base {
+        actual_ram_base - expected_ram_base
+    } else {
+        0
+    };
+    if ram_base_offset != 0 {
+        log::info!("RAM relocation: offset={:#x} (actual={:#x}, expected={:#x})",
+            ram_base_offset, actual_ram_base, expected_ram_base);
+    }
+
+    // Load kernel ELF from ESP (with relocation offset applied to load addresses)
     log::info!("--- Loading Kernel ---");
-    let loaded_kernel = match kernel_load::load_kernel() {
+    let loaded_kernel = match kernel_load::load_kernel(ram_base_offset) {
         Ok(k) => {
             log::info!("Kernel loaded: entry_phys={:#x}, range={:#x}-{:#x}",
                 k.entry_phys, k.load_base, k.load_end);
@@ -99,18 +134,41 @@ fn main() -> Status {
         }
     };
 
-    // Populate RAM regions from UEFI memory map.
-    // We need to get the memory map before ExitBootServices.
-    populate_ram_regions(config);
-
-    log::info!("RAM regions: {} regions found", config.ram_region_count);
-    for i in 0..config.ram_region_count as usize {
-        if i >= config.ram_regions.len() {
-            break;
+    // Log RAM regions and entry address to serial for VMware debugging
+    {
+        use core::fmt::Write;
+        struct Su(u64, u8);
+        impl core::fmt::Write for Su {
+            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                for c in s.bytes() {
+                    unsafe {
+                        if c == b'\n' {
+                            if self.1 == 1 {
+                                let lsr = (self.0 + 5) as *const u8;
+                                while core::ptr::read_volatile(lsr) & 0x20 == 0 { core::hint::spin_loop(); }
+                                core::ptr::write_volatile(self.0 as *mut u8, b'\r');
+                            } else { core::ptr::write_volatile(self.0 as *mut u32, b'\r' as u32); }
+                        }
+                        if self.1 == 1 {
+                            let lsr = (self.0 + 5) as *const u8;
+                            while core::ptr::read_volatile(lsr) & 0x20 == 0 { core::hint::spin_loop(); }
+                            core::ptr::write_volatile(self.0 as *mut u8, c);
+                        } else { core::ptr::write_volatile(self.0 as *mut u32, c as u32); }
+                    }
+                }
+                Ok(())
+            }
         }
-        let r = &config.ram_regions[i];
-        log::info!("  RAM: {:#x} - {:#x} ({} MB)",
-            r.base, r.base + r.size, r.size / (1024 * 1024));
+        let mut u = Su(config.uart_base_phys, config.uart_type);
+        let _ = writeln!(u, "[ram] {} regions:", config.ram_region_count);
+        for i in 0..config.ram_region_count as usize {
+            if i >= config.ram_regions.len() { break; }
+            let r = &config.ram_regions[i];
+            let _ = writeln!(u, "[ram]   {:#x} - {:#x} ({} MB)",
+                r.base, r.base + r.size, r.size / (1024 * 1024));
+        }
+        let _ = writeln!(u, "[kern] entry_phys={:#x} load={:#x}-{:#x}",
+            loaded_kernel.entry_phys, loaded_kernel.load_base, loaded_kernel.load_end);
     }
 
     // Discover UEFI GOP framebuffer (optional — kernel works without display)
@@ -129,6 +187,35 @@ fn main() -> Status {
             log::warn!("GOP not available: {} (continuing without display)", e);
         }
     }
+
+    // --- Platform-specific page table configuration ---
+    //
+    // On VMware (ram_base_offset > 0), the PCI ECAM at IPA 0x40000000 overlaps
+    // the kernel's expected load range. Remap ECAM to VA 0x20000000 so the
+    // kernel can access PCI config space without conflicting with kernel code.
+    let ecam_ipa = config.pci_ecam_base;
+    let ecam_size = config.pci_ecam_size;
+    let fb_ipa = if config.has_framebuffer != 0 { config.framebuffer.base } else { 0 };
+
+    if ram_base_offset > 0
+        && ecam_ipa >= 0x4000_0000
+        && ecam_ipa < 0x8000_0000
+        && ecam_size > 0
+    {
+        log::info!("ECAM remap: IPA {:#x} -> VA {:#x} (size {:#x})",
+            ecam_ipa, page_tables::ECAM_REMAP_VA, ecam_size);
+        config.pci_ecam_base = page_tables::ECAM_REMAP_VA;
+    }
+
+    let pt_config = PageTableConfig {
+        ram_base_offset,
+        ecam_ipa,
+        ecam_size,
+        fb_ipa,
+        gicd_ipa: config.gicd_base,
+        gicr_ipa: if config.gicr_range_count > 0 { config.gicr_ranges[0].base } else { 0 },
+        gicr_size: if config.gicr_range_count > 0 { config.gicr_ranges[0].length as u64 } else { 0 },
+    };
 
     // --- xHCI: DisconnectController DISABLED ---
     //
@@ -149,6 +236,17 @@ fn main() -> Status {
 
     log::info!("--- Exiting Boot Services ---");
 
+    // Pre-EBS breadcrumb: 'Z' to serial (proves serial write works before EBS)
+    unsafe {
+        if config.uart_type == 1 {
+            let lsr = (config.uart_base_phys + 5) as *const u8;
+            while core::ptr::read_volatile(lsr) & 0x20 == 0 { core::hint::spin_loop(); }
+            core::ptr::write_volatile(config.uart_base_phys as *mut u8, b'Z');
+        } else {
+            core::ptr::write_volatile(config.uart_base_phys as *mut u32, b'Z' as u32);
+        }
+    }
+
     // Exit UEFI boot services. After this, NO UEFI calls are possible.
     unsafe {
         let _ = uefi::boot::exit_boot_services(MemoryType::LOADER_DATA);
@@ -161,7 +259,44 @@ fn main() -> Status {
     let page_tables = unsafe { &mut *(&raw mut PAGE_TABLES) };
     let hw_config = unsafe { &*(&raw const HW_CONFIG) };
 
-    kernel_entry::jump_to_kernel(loaded_kernel.entry_phys, hw_config, page_tables);
+    // Post-EBS serial diagnostic: single-char breadcrumb 'Z' proves we survived EBS
+    unsafe {
+        if hw_config.uart_type == 1 {
+            let lsr = (hw_config.uart_base_phys + 5) as *const u8;
+            while core::ptr::read_volatile(lsr) & 0x20 == 0 {
+                core::hint::spin_loop();
+            }
+            core::ptr::write_volatile(hw_config.uart_base_phys as *mut u8, b'Z');
+        } else {
+            core::ptr::write_volatile(hw_config.uart_base_phys as *mut u32, b'Z' as u32);
+        }
+    }
+
+    // Log entry address as hex nibbles for diagnostics
+    unsafe {
+        let hex = b"0123456789abcdef";
+        let addr = loaded_kernel.entry_phys;
+        for shift in (0..16).rev() {
+            let nibble = ((addr >> (shift * 4)) & 0xF) as usize;
+            if hw_config.uart_type == 1 {
+                let lsr = (hw_config.uart_base_phys + 5) as *const u8;
+                while core::ptr::read_volatile(lsr) & 0x20 == 0 {
+                    core::hint::spin_loop();
+                }
+                core::ptr::write_volatile(hw_config.uart_base_phys as *mut u8, hex[nibble]);
+            } else {
+                core::ptr::write_volatile(hw_config.uart_base_phys as *mut u32, hex[nibble] as u32);
+            }
+        }
+        // Newline
+        if hw_config.uart_type == 1 {
+            let lsr = (hw_config.uart_base_phys + 5) as *const u8;
+            while core::ptr::read_volatile(lsr) & 0x20 == 0 { core::hint::spin_loop(); }
+            core::ptr::write_volatile(hw_config.uart_base_phys as *mut u8, b'\n');
+        }
+    }
+
+    kernel_entry::jump_to_kernel(loaded_kernel.entry_phys, hw_config, page_tables, &pt_config);
 }
 
 /// Populate HardwareConfig RAM regions from the UEFI memory map.

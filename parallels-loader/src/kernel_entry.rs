@@ -10,21 +10,23 @@
 ///   6. Jump to kernel_main(hw_config_ptr) -- same binary as QEMU
 
 use crate::hw_config::HardwareConfig;
-use crate::page_tables::{self, PageTableStorage};
+use crate::page_tables::{self, PageTableConfig, PageTableStorage};
 
 /// Jump to the kernel.
 ///
 /// `kernel_entry` is the physical address of the kernel entry point.
 /// `hw_config` is the HardwareConfig to pass to the kernel.
 /// `page_table_storage` contains the pre-built page tables.
+/// `pt_config` contains platform-specific page table configuration.
 ///
 /// This function never returns.
 pub fn jump_to_kernel(
     kernel_entry: u64,
     hw_config: &HardwareConfig,
     page_table_storage: &mut PageTableStorage,
+    pt_config: &PageTableConfig,
 ) -> ! {
-    let (ttbr0, ttbr1) = page_tables::build_page_tables(page_table_storage);
+    let (ttbr0, ttbr1) = page_tables::build_page_tables(page_table_storage, pt_config);
     let hw_config_ptr = hw_config as *const HardwareConfig as u64;
 
     log::info!("Page tables built: TTBR0=0x{:016x}, TTBR1=0x{:016x}", ttbr0, ttbr1);
@@ -64,14 +66,24 @@ unsafe fn switch_and_jump(ttbr0: u64, ttbr1: u64, entry: u64, hw_config_ptr: u64
     let vbar_addr = &loader_exception_vectors as *const u8 as u64;
 
     core::arch::asm!(
+        // Save UART base address BEFORE MMU switch — HardwareConfig may be
+        // in UEFI memory that's not covered by our new identity map.
+        "ldr x7, [x3, #8]",       // x7 = uart_base_phys (preserved across switch)
+
+        // Diagnostic breadcrumbs: B=before, D=mmu-disabled, M=mair/tcr,
+        // T=ttbr, I=tlb-inv, V=vbar, L=mmu-re-enabled
+        "mov x6, #0x42",           // 'B' = Before
+        "strb w6, [x7]",
+
         // Disable MMU first to safely switch page tables
         "mrs x4, sctlr_el1",
         "bic x4, x4, #1",         // Clear M bit (MMU disable)
         "msr sctlr_el1, x4",
         "isb",
+        "mov x6, #0x44",           // 'D' = MMU Disabled
+        "strb w6, [x7]",
 
         // Set MAIR_EL1 (Memory Attribute Indirection Register)
-        // Must match kernel boot.S layout:
         //   Index 0: Device-nGnRnE (0x00)
         //   Index 1: Normal WB (0xFF)
         //   Index 2: Normal NC (0x44) — for DMA buffers
@@ -84,37 +96,43 @@ unsafe fn switch_and_jump(ttbr0: u64, ttbr1: u64, entry: u64, hw_config_ptr: u64
         "ldr x4, ={tcr}",
         "msr tcr_el1, x4",
         "isb",
+        "mov x6, #0x4D",           // 'M' = MAIR+TCR set
+        "strb w6, [x7]",
 
         // Set TTBR0_EL1 (identity map)
         "msr ttbr0_el1, x0",
         // Set TTBR1_EL1 (HHDM)
         "msr ttbr1_el1, x1",
         "isb",
+        "mov x6, #0x54",           // 'T' = TTBRs set
+        "strb w6, [x7]",
 
-        // Invalidate all TLB entries
+        // Invalidate all TLB and instruction cache entries
         "tlbi vmalle1",
+        "ic iallu",                // Invalidate all instruction caches
         "dsb sy",
         "isb",
+        "mov x6, #0x49",           // 'I' = TLB+ICache Invalidated
+        "strb w6, [x7]",
 
         // --- Install minimal VBAR_EL1 before re-enabling MMU ---
-        // This replaces the UEFI firmware's vectors (which may be in
-        // now-unmapped memory) with a handler that writes 'X' to UART
-        // and spins, preventing recursive silent crashes.
         "msr vbar_el1, x5",
         "isb",
+        "mov x6, #0x56",           // 'V' = VBAR set
+        "strb w6, [x7]",
 
         // Re-enable MMU with our page tables
         "mrs x4, sctlr_el1",
         "orr x4, x4, #1",         // Set M bit (MMU enable)
         "orr x4, x4, #(1 << 2)",  // Set C bit (data cache enable)
         "orr x4, x4, #(1 << 12)", // Set I bit (instruction cache enable)
+        "orr x4, x4, #(1 << 23)", // Set SPAN bit (disable auto-PAN on exception entry)
         "msr sctlr_el1, x4",
         "isb",
 
         // UART breadcrumb: 'L' = MMU re-enabled, page tables work
-        "movz x4, #0x0211, lsl #16", // x4 = 0x02110000 (Parallels UART)
         "mov x6, #0x4C",             // 'L'
-        "str w6, [x4]",
+        "strb w6, [x7]",
 
         // Enable FP/SIMD (CPACR_EL1.FPEN = 0b11) to prevent traps
         "mrs x4, cpacr_el1",
@@ -129,10 +147,17 @@ unsafe fn switch_and_jump(ttbr0: u64, ttbr1: u64, entry: u64, hw_config_ptr: u64
         "lsl x4, x4, #16",        // x4 = 0x42000000
         "mov sp, x4",
 
+        // Quick check: breadcrumb '!' before 'J'
+        "mov x6, #0x21",             // '!'
+        "strb w6, [x7]",
+
         // UART breadcrumb: 'J' = about to jump to kernel
-        "movz x4, #0x0211, lsl #16", // x4 = 0x02110000
         "mov x6, #0x4A",             // 'J'
-        "str w6, [x4]",
+        "strb w6, [x7]",             // x7 = uart_base_phys
+
+        // Breadcrumbs after J but before jump
+        "mov x6, #0x3E",             // '>'
+        "strb w6, [x7]",
 
         // Jump to kernel entry with HardwareConfig pointer in x0
         "mov x0, x3",             // x0 = hw_config_ptr

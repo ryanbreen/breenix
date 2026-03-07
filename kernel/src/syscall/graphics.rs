@@ -1643,7 +1643,11 @@ pub fn sys_get_mouse_pos(out_ptr: u64) -> SyscallResult {
         return SyscallResult::Err(super::ErrorCode::Fault as u64);
     }
 
-    let (mx, my, buttons) = crate::drivers::virtio::input_mmio::mouse_state();
+    let (mx, my, buttons) = if crate::drivers::virtio::input_mmio::is_tablet_initialized() {
+        crate::drivers::virtio::input_mmio::mouse_state()
+    } else {
+        crate::drivers::usb::hid::mouse_state()
+    };
 
     unsafe {
         let out = out_ptr as *mut [u32; 3];

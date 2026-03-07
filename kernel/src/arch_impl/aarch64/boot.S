@@ -223,7 +223,7 @@ curr_el_spx_irq:
     b irq_handler
 .balign 0x80
 curr_el_spx_fiq:
-    b unhandled_exception
+    b irq_handler
 .balign 0x80
 curr_el_spx_serror:
     b unhandled_exception
@@ -237,7 +237,7 @@ lower_el_aarch64_irq:
     b irq_handler
 .balign 0x80
 lower_el_aarch64_fiq:
-    b unhandled_exception
+    b irq_handler
 .balign 0x80
 lower_el_aarch64_serror:
     b unhandled_exception

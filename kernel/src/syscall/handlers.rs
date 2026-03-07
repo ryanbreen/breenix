@@ -3302,7 +3302,7 @@ pub fn sys_poll(fds_ptr: u64, nfds: u64, timeout: i32) -> SyscallResult {
 
             crate::task::scheduler::yield_current();
             #[cfg(target_arch = "aarch64")]
-            unsafe { core::arch::asm!("msr daifclr, #2", "wfi", options(nomem, nostack)); }
+            unsafe { core::arch::asm!("msr daifclr, #3", "wfi", options(nomem, nostack)); }
             #[cfg(target_arch = "x86_64")]
             x86_64::instructions::hlt();
         }
@@ -3363,7 +3363,7 @@ fn poll_block_until(wake_ns: u64) {
         if !still_blocked.unwrap_or(false) { break; }
         crate::task::scheduler::yield_current();
         #[cfg(target_arch = "aarch64")]
-        unsafe { core::arch::asm!("msr daifclr, #2", "wfi", options(nomem, nostack)); }
+        unsafe { core::arch::asm!("msr daifclr, #3", "wfi", options(nomem, nostack)); }
         #[cfg(target_arch = "x86_64")]
         x86_64::instructions::hlt();
     }

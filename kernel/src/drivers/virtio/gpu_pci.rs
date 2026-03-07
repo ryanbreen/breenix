@@ -697,6 +697,7 @@ fn dma_cache_clean(_ptr: *const u8, _len: usize) {
 #[allow(dead_code)]
 #[cfg(target_arch = "aarch64")]
 #[inline]
+#[allow(dead_code)]
 fn dma_cache_invalidate(ptr: *const u8, len: usize) {
     const CACHE_LINE: usize = 64;
     let start = ptr as usize & !(CACHE_LINE - 1);

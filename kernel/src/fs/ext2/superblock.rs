@@ -70,21 +70,22 @@ impl Ext2Superblock {
         // The superblock is always at byte offset 1024, which may span multiple
         // device blocks depending on the device's native block size
         let device_block_size = device.block_size();
-        
+
         // Calculate which device blocks we need to read
         let start_block = SUPERBLOCK_OFFSET / device_block_size;
         let offset_in_block = SUPERBLOCK_OFFSET % device_block_size;
-        
+
         // We need to read enough blocks to get 1024 bytes of superblock data
         let superblock_size = mem::size_of::<Ext2Superblock>();
         let bytes_needed = offset_in_block + superblock_size;
         let blocks_needed = (bytes_needed + device_block_size - 1) / device_block_size;
-        
+
         // Read the necessary blocks into a buffer
         let mut buffer = [0u8; 4096]; // Large enough for typical cases
         for i in 0..blocks_needed {
+            let blk = (start_block + i) as u64;
             device.read_block(
-                (start_block + i) as u64,
+                blk,
                 &mut buffer[i * device_block_size..(i + 1) * device_block_size],
             )?;
         }

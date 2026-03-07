@@ -64,10 +64,17 @@ pub fn spawn_render_thread() -> Result<u64, &'static str> {
 fn render_thread_main_kthread() {
     // Main rendering loop - runs until kthread_stop() is called
     while !kthread_should_stop() {
-        // When BWM owns the display, the render thread has no work to do.
-        // BWM handles all pixel drawing, cursor, and GPU flushing via
-        // fbdraw syscalls. Sleep until the next interrupt and re-check.
+        // Always update the mouse cursor, even when BWM owns the display.
+        // The cursor is drawn directly into the framebuffer VRAM; SVGA3 VRAM
+        // traces detect the pixel writes and update the display automatically.
+        #[cfg(target_arch = "aarch64")]
+        update_mouse_cursor();
+
+        // When BWM owns the display, the render thread only handles cursor.
+        // BWM handles text drawing, terminal content, and GPU flushing via
+        // fbdraw syscalls. Flush any cursor dirty rect, then sleep.
         if DISPLAY_TAKEN.load(Ordering::Acquire) {
+            flush_framebuffer();
             arch_halt();
             continue;
         }
@@ -82,9 +89,6 @@ fn render_thread_main_kthread() {
             }
             did_work = true;
         }
-
-        #[cfg(target_arch = "aarch64")]
-        update_mouse_cursor();
 
         // Flush dirty regions to the GPU. Returns true if a flush happened.
         if flush_framebuffer() {
@@ -157,22 +161,28 @@ pub fn is_display_taken() -> bool {
     DISPLAY_TAKEN.load(Ordering::Acquire)
 }
 
-/// Update the mouse cursor on the framebuffer if the tablet device is active.
+/// Update the mouse cursor on the framebuffer if a pointing device is active.
 ///
-/// Reads the current mouse position from the input driver atomics and
-/// redraws the cursor sprite if the position has changed. This runs on
+/// Reads the current mouse position from whichever input driver is available:
+/// VirtIO tablet (QEMU/Parallels) or XHCI USB HID mouse (VMware/Parallels).
+/// Redraws the cursor sprite if the position has changed. This runs on
 /// the render thread's stack, not in interrupt context.
 #[cfg(target_arch = "aarch64")]
 fn update_mouse_cursor() {
-    if !crate::drivers::virtio::input_mmio::is_tablet_initialized() {
+    let (mx, my) = if crate::drivers::virtio::input_mmio::is_tablet_initialized() {
+        crate::drivers::virtio::input_mmio::mouse_position()
+    } else if crate::drivers::usb::xhci::is_initialized() {
+        crate::drivers::usb::hid::mouse_position()
+    } else {
+        return;
+    };
+
+    if mx == 0 && my == 0 {
         return;
     }
 
-    let (mx, my) = crate::drivers::virtio::input_mmio::mouse_position();
-
     if let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() {
         if let Some(mut fb_guard) = fb.try_lock() {
-            // Only mark dirty if the cursor actually moved
             if super::cursor::update_cursor(&mut *fb_guard, mx as usize, my as usize) {
                 crate::graphics::arm64_fb::mark_dirty(
                     mx.saturating_sub(16),

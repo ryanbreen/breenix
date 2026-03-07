@@ -272,19 +272,32 @@ pub fn process_mouse_report(report: &[u8]) {
     }
 
     let buttons = report[0] as u32;
-    let dx = report[1] as i8 as i32;
-    let dy = report[2] as i8 as i32;
-
     MOUSE_BUTTONS.store(buttons, Ordering::Relaxed);
 
     let (sw, sh) = screen_dimensions();
 
-    // Update X position with clamping
+    // VMware virtual tablet: 6-byte absolute position reports
+    // Format: [buttons, 0, abs_x_lo, abs_x_hi, abs_y_lo, abs_y_hi]
+    // Absolute coordinates in 0-65535 range, scaled to screen dimensions.
+    if report.len() >= 6 && report[1] == 0 {
+        let abs_x = u16::from_le_bytes([report[2], report[3]]) as u32;
+        let abs_y = u16::from_le_bytes([report[4], report[5]]) as u32;
+        let new_x = (abs_x * sw / 65536).min(sw - 1);
+        let new_y = (abs_y * sh / 65536).min(sh - 1);
+        MOUSE_X.store(new_x, Ordering::Relaxed);
+        MOUSE_Y.store(new_y, Ordering::Relaxed);
+        return;
+    }
+
+    // Boot protocol relative mouse: 3-4 byte reports
+    // Format: [buttons, dx (i8), dy (i8), wheel (i8)]
+    let dx = report[1] as i8 as i32;
+    let dy = report[2] as i8 as i32;
+
     let old_x = MOUSE_X.load(Ordering::Relaxed) as i32;
     let new_x = (old_x + dx).clamp(0, sw as i32 - 1) as u32;
     MOUSE_X.store(new_x, Ordering::Relaxed);
 
-    // Update Y position with clamping
     let old_y = MOUSE_Y.load(Ordering::Relaxed) as i32;
     let new_y = (old_y + dy).clamp(0, sh as i32 - 1) as u32;
     MOUSE_Y.store(new_y, Ordering::Relaxed);

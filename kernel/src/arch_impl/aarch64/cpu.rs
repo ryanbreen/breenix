@@ -31,28 +31,32 @@ const DAIF_ALL_IMM: u32 = 0xF;  // D, A, I, F
 pub struct Aarch64Cpu;
 
 impl CpuOps for Aarch64Cpu {
-    /// Enable IRQ interrupts by clearing the I bit in DAIF
+    /// Enable IRQ and FIQ interrupts by clearing the I and F bits in DAIF.
+    ///
+    /// Both IRQ and FIQ must be unmasked because on VMware Fusion, all GIC
+    /// interrupts are Group 0 (FIQ) due to GICR_IGROUPR0 being RAZ/WI.
     #[inline]
     unsafe fn enable_interrupts() {
-        // daifclr with #2 clears the I bit (enables IRQs)
-        core::arch::asm!("msr daifclr, #2", options(nomem, nostack));
+        // daifclr with #3 clears bits I and F (enables both IRQs and FIQs)
+        core::arch::asm!("msr daifclr, #3", options(nomem, nostack));
     }
 
-    /// Disable IRQ interrupts by setting the I bit in DAIF
+    /// Disable IRQ and FIQ interrupts by setting the I and F bits in DAIF
     #[inline]
     unsafe fn disable_interrupts() {
-        // daifset with #2 sets the I bit (disables IRQs)
-        core::arch::asm!("msr daifset, #2", options(nomem, nostack));
+        // daifset with #3 sets bits I and F (disables both IRQs and FIQs)
+        core::arch::asm!("msr daifset, #3", options(nomem, nostack));
     }
 
-    /// Check if IRQ interrupts are enabled (I bit is clear)
+    /// Check if interrupts are enabled (both I and F bits are clear)
     #[inline]
     fn interrupts_enabled() -> bool {
         let daif: u64;
         unsafe {
             core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack));
         }
-        // IRQs are enabled when the I bit (bit 7) is clear
+        // Interrupts are enabled when the I bit (bit 7) is clear
+        // (FIQ is also unmasked but we check I as the primary indicator)
         (daif & DAIF_IRQ_BIT) == 0
     }
 
@@ -76,10 +80,10 @@ impl CpuOps for Aarch64Cpu {
     #[inline]
     fn halt_with_interrupts() {
         unsafe {
-            // Enable IRQs and immediately wait
+            // Enable IRQs/FIQs and immediately wait
             // Any pending interrupt will be taken before WFI completes
             core::arch::asm!(
-                "msr daifclr, #2",  // Enable IRQs
+                "msr daifclr, #3",  // Enable IRQs and FIQs
                 "wfi",              // Wait for interrupt
                 options(nomem, nostack)
             );
@@ -101,22 +105,18 @@ impl CpuOps for Aarch64Cpu {
             core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack));
         }
 
-        // Disable IRQs
+        // Disable IRQs and FIQs
         unsafe {
-            core::arch::asm!("msr daifset, #2", options(nomem, nostack));
+            core::arch::asm!("msr daifset, #3", options(nomem, nostack));
         }
 
         // Execute the closure
         let result = f();
 
-        // Restore previous DAIF state (only restore IRQ bit to avoid affecting other flags)
-        if (daif & DAIF_IRQ_BIT) == 0 {
-            // IRQs were enabled before, re-enable them
-            unsafe {
-                core::arch::asm!("msr daifclr, #2", options(nomem, nostack));
-            }
+        // Restore previous DAIF state exactly
+        unsafe {
+            core::arch::asm!("msr daif, {}", in(reg) daif, options(nomem, nostack));
         }
-        // If IRQs were disabled, leave them disabled (don't change anything)
 
         result
     }

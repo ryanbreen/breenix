@@ -30,10 +30,15 @@ const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
 
 /// Convert a kernel virtual address to a physical address.
 ///
-/// On QEMU, kernel statics are accessed via HHDM (>= 0xFFFF_0000_0000_0000),
-/// so phys = virt - HHDM_BASE.
-/// On Parallels, the kernel runs identity-mapped via TTBR0, so statics are
-/// at their physical addresses already (e.g., 0x400xxxxx).
+/// On ARM64, the kernel runs in the higher half (HHDM at 0xFFFF_0000_0000_0000).
+/// BSS statics are at VMA = HHDM + physical_address.
+///
+/// On VMware Fusion, the kernel runs from the L1[2] identity-mapped region
+/// (VA 0x80xxxxxx → IPA 0x80xxxxxx), so HHDM addresses have the correct
+/// IPA after subtracting HHDM_BASE — no offset needed.
+///
+/// On Parallels/QEMU, the kernel runs from the L1[1] identity-mapped region
+/// (VA 0x40xxxxxx → IPA 0x40xxxxxx), same formula applies.
 #[inline]
 fn virt_to_phys(virt: u64) -> u64 {
     if virt >= HHDM_BASE {
@@ -54,7 +59,10 @@ fn dma_cache_clean(ptr: *const u8, len: usize) {
     let end = (ptr as usize + len + CACHE_LINE - 1) & !(CACHE_LINE - 1);
     for addr in (start..end).step_by(CACHE_LINE) {
         unsafe {
-            core::arch::asm!("dc cvac, {}", in(reg) addr, options(nostack));
+            // Use clean+invalidate (CIVAC) instead of clean-only (CVAC).
+            // This ensures both that data reaches RAM for the device to read,
+            // AND that subsequent CPU accesses re-fetch from RAM (not stale cache).
+            core::arch::asm!("dc civac, {}", in(reg) addr, options(nostack));
         }
     }
     unsafe {
@@ -502,28 +510,24 @@ impl AhciController {
         // Stop command engine before reconfiguring
         self.stop_cmd(port_num);
 
-        // Set up DMA memory for this port
-        let dma_phys = unsafe {
-            let storage = &raw const DMA_STORAGE;
-            let port_dma_addr = core::ptr::addr_of!((*storage).ports[dma_index]);
-            // Physical address = virtual address - HHDM (identity mapped in our page tables)
-            // For kernel static data, physical addr = virt addr - kernel base
-            // But since we're using a static, we compute it differently.
-            // The DMA storage is at a known kernel static address.
-            // On ARM64, kernel statics are at HHDM + physical, so:
-            virt_to_phys(port_dma_addr as u64)
-        };
-
-        // Zero the DMA memory and flush to physical RAM
+        // Compute DMA physical address from the PORT_DMA reference (not &raw const DMA_STORAGE).
+        // On VMware ARM64, the kernel runs at VA 0x80xxxxxx (shifted from linker VA 0x40xxxxxx).
+        // &raw const DMA_STORAGE can produce inconsistent ADRP-based addresses depending on
+        // the inlining context. The PORT_DMA reference was set up once during init_common
+        // and has the correct runtime address.
         let dma_lock = PORT_DMA.lock();
-        if let Some(dma_mem) = &dma_lock[dma_index] {
+        let dma_phys = if let Some(dma_mem) = &dma_lock[dma_index] {
             let ptr = *dma_mem as *const PortDmaMem as *mut u8;
             let size = core::mem::size_of::<PortDmaMem>();
             unsafe {
                 core::ptr::write_bytes(ptr, 0, size);
             }
             dma_cache_clean(ptr as *const u8, size);
-        }
+            virt_to_phys(ptr as u64)
+        } else {
+            drop(dma_lock);
+            return None;
+        };
         drop(dma_lock);
 
         // Command List Base
@@ -632,11 +636,31 @@ impl AhciController {
     }
 
     /// Issue a command on slot 0 and wait for completion.
+    ///
+    /// If the port is in ERR:Fatal state (e.g., from a previous TFES), the
+    /// command engine is stopped, errors cleared, and the engine restarted
+    /// before issuing the new command.
     fn issue_cmd_slot0(&self, port: usize) -> Result<(), &'static str> {
         let abar = self.abar_virt;
 
-        // Clear any pending interrupts
-        port_write(abar, port, PORT_IS, 0xFFFF_FFFF);
+        // Check if port is in error state and recover if needed.
+        // On some controllers (e.g., VMware), a previous command may leave
+        // TFES set, putting the port into ERR:Fatal where no new commands
+        // will be processed until the port is reset.
+        let is = port_read(abar, port, PORT_IS);
+        let tfd = port_read(abar, port, PORT_TFD);
+        if (is & (1 << 30)) != 0 || (tfd & 1) != 0 {
+            // Port is in error state — recover by restarting command engine
+            self.stop_cmd(port);
+            port_write(abar, port, PORT_SERR, 0xFFFF_FFFF);
+            port_write(abar, port, PORT_IS, 0xFFFF_FFFF);
+            self.start_cmd(port);
+            // Wait for port to become ready after restart
+            self.wait_ready(port)?;
+        } else {
+            // Clear any pending interrupts
+            port_write(abar, port, PORT_IS, 0xFFFF_FFFF);
+        }
 
         // Issue command on slot 0
         port_write(abar, port, PORT_CI, 1);
@@ -655,6 +679,16 @@ impl AhciController {
                 }
                 return Ok(());
             }
+
+            // Also check for TFES during the wait — on error, the HBA may
+            // not clear CI. Detect the error early instead of spinning.
+            let is = port_read(abar, port, PORT_IS);
+            if (is & (1 << 30)) != 0 {
+                let tfd = port_read(abar, port, PORT_TFD);
+                crate::serial_println!("[ahci] Port {} TFE during wait: TFD={:#x}", port, tfd);
+                return Err("AHCI: task file error");
+            }
+
             core::hint::spin_loop();
         }
 
@@ -668,17 +702,9 @@ impl AhciController {
         let mut dma_lock = PORT_DMA.lock();
         let dma = dma_lock[dma_index].as_mut().ok_or("AHCI: no DMA memory")?;
 
-        // Set up command header in slot 0
-        let cmd_table_phys = unsafe {
-            let storage = &raw const DMA_STORAGE;
-            let table_addr = core::ptr::addr_of!((*storage).ports[dma_index].cmd_table);
-            virt_to_phys(table_addr as u64)
-        };
-        let dma_buf_phys = unsafe {
-            let storage = &raw const DMA_STORAGE;
-            let buf_addr = core::ptr::addr_of!((*storage).ports[dma_index].dma_buf);
-            virt_to_phys(buf_addr as u64)
-        };
+        // Compute physical addresses from the dma reference (see read_sector comment).
+        let cmd_table_phys = virt_to_phys(&dma.cmd_table as *const CmdTable as u64);
+        let dma_buf_phys = virt_to_phys(dma.dma_buf.as_ptr() as u64);
 
         // Command header: CFL=5 (5 dwords = 20 bytes for H2D FIS), 1 PRDT entry
         dma.cmd_list[0].dw0 = (1 << 16) | 5; // PRDTL=1, CFL=5
@@ -752,16 +778,13 @@ impl AhciController {
         let mut dma_lock = PORT_DMA.lock();
         let dma = dma_lock[dma_index].as_mut().ok_or("AHCI: no DMA memory")?;
 
-        let cmd_table_phys = unsafe {
-            let storage = &raw const DMA_STORAGE;
-            let table_addr = core::ptr::addr_of!((*storage).ports[dma_index].cmd_table);
-            virt_to_phys(table_addr as u64)
-        };
-        let dma_buf_phys = unsafe {
-            let storage = &raw const DMA_STORAGE;
-            let buf_addr = core::ptr::addr_of!((*storage).ports[dma_index].dma_buf);
-            virt_to_phys(buf_addr as u64)
-        };
+        // Compute physical addresses from the dma reference (not &raw const DMA_STORAGE).
+        // On VMware ARM64, the kernel runs at VA 0x80xxxxxx (shifted from linker VA 0x40xxxxxx).
+        // AArch64 ADRP (PC-relative) addressing can produce inconsistent addresses for
+        // &raw const DMA_STORAGE when read_sector is inlined into different call sites.
+        // The dma reference was created during init with the correct runtime address.
+        let cmd_table_phys = virt_to_phys(&dma.cmd_table as *const CmdTable as u64);
+        let dma_buf_phys = virt_to_phys(dma.dma_buf.as_ptr() as u64);
 
         // Command header: CFL=5, PRDTL=1, not a write
         dma.cmd_list[0].dw0 = (1 << 16) | 5;
@@ -799,6 +822,7 @@ impl AhciController {
             let dma_ptr = &**dma as *const PortDmaMem as *const u8;
             dma_cache_clean(dma_ptr, core::mem::size_of::<PortDmaMem>());
         }
+
         drop(dma_lock);
 
         self.issue_cmd_slot0(port)?;
@@ -822,16 +846,9 @@ impl AhciController {
         let mut dma_lock = PORT_DMA.lock();
         let dma = dma_lock[dma_index].as_mut().ok_or("AHCI: no DMA memory")?;
 
-        let cmd_table_phys = unsafe {
-            let storage = &raw const DMA_STORAGE;
-            let table_addr = core::ptr::addr_of!((*storage).ports[dma_index].cmd_table);
-            virt_to_phys(table_addr as u64)
-        };
-        let dma_buf_phys = unsafe {
-            let storage = &raw const DMA_STORAGE;
-            let buf_addr = core::ptr::addr_of!((*storage).ports[dma_index].dma_buf);
-            virt_to_phys(buf_addr as u64)
-        };
+        // Compute physical addresses from the dma reference (see read_sector comment).
+        let cmd_table_phys = virt_to_phys(&dma.cmd_table as *const CmdTable as u64);
+        let dma_buf_phys = virt_to_phys(dma.dma_buf.as_ptr() as u64);
 
         // Copy data to DMA buffer first
         dma.dma_buf.copy_from_slice(buffer);
@@ -884,11 +901,8 @@ impl AhciController {
         let mut dma_lock = PORT_DMA.lock();
         let dma = dma_lock[dma_index].as_mut().ok_or("AHCI: no DMA memory")?;
 
-        let cmd_table_phys = unsafe {
-            let storage = &raw const DMA_STORAGE;
-            let table_addr = core::ptr::addr_of!((*storage).ports[dma_index].cmd_table);
-            virt_to_phys(table_addr as u64)
-        };
+        // Compute physical addresses from the dma reference (see read_sector comment).
+        let cmd_table_phys = virt_to_phys(&dma.cmd_table as *const CmdTable as u64);
 
         // Command header: CFL=5, PRDTL=0 (no data transfer)
         dma.cmd_list[0].dw0 = 5;
@@ -939,7 +953,11 @@ impl BlockDevice for AhciBlockDevice {
 
         let mut sector_buf = [0u8; SECTOR_SIZE];
         ctrl.read_sector(self.port_num, self.dma_index, block_num, &mut sector_buf)
-            .map_err(|_| BlockError::IoError)?;
+            .map_err(|e| {
+                #[cfg(target_arch = "aarch64")]
+                crate::serial_println!("[ahci] read_block({}) failed: {}", block_num, e);
+                BlockError::IoError
+            })?;
 
         buf[..SECTOR_SIZE].copy_from_slice(&sector_buf);
         Ok(())

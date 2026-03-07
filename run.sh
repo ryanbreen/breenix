@@ -26,6 +26,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$SCRIPT_DIR"
+cd "$BREENIX_ROOT"
 
 # Defaults: ARM64 with graphics
 ARCH="arm64"
@@ -35,6 +36,7 @@ NO_BUILD=false
 BTRT=false
 PARALLELS=false
 PARALLELS_VM="breenix-dev"
+VMWARE=false
 DEBUG=false
 REBUILD_HOME=false
 RESOLUTION=""
@@ -60,6 +62,11 @@ while [[ $# -gt 0 ]]; do
             ;;
         --parallels)
             PARALLELS=true
+            ARCH="arm64"
+            shift
+            ;;
+        --vmware)
+            VMWARE=true
             ARCH="arm64"
             shift
             ;;
@@ -101,6 +108,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --x86, --x86_64, --amd64   Run x86_64 kernel (default: ARM64)"
             echo "  --arm64, --aarch64         Run ARM64 kernel (default)"
             echo "  --parallels                Build and boot on Parallels Desktop VM"
+            echo "  --vmware                   Build and boot on VMware Fusion VM"
             echo "  --vm NAME                  Parallels VM name (default: breenix-dev)"
             echo "  --headless, --serial       Run without display (serial only)"
             echo "  --graphics, --vnc          Run with VNC display (default)"
@@ -363,7 +371,7 @@ if [ "$PARALLELS" = true ]; then
 
     echo ""
     echo "--- Starting VM ---"
-    > "$SERIAL_LOG"  # Truncate serial log
+    rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
     prlctl start "$PARALLELS_VM"
 
     echo ""
@@ -394,6 +402,281 @@ if [ "$PARALLELS" = true ]; then
     fi
 
     # Wait a moment for the VM to start producing output, then tail
+    sleep 1
+    tail -f "$SERIAL_LOG"
+
+    exit 0
+fi
+
+# VMware Fusion mode: build, convert to VMDK, launch
+if [ "$VMWARE" = true ]; then
+    echo ""
+    echo "========================================="
+    echo "Breenix on VMware Fusion"
+    echo "========================================="
+    echo ""
+
+    VMRUN="/Applications/VMware Fusion.app/Contents/Public/vmrun"
+    if [ ! -x "$VMRUN" ]; then
+        echo "ERROR: vmrun not found. Is VMware Fusion installed?"
+        exit 1
+    fi
+
+    VMWARE_DIR="$BREENIX_ROOT/target/vmware"
+    SERIAL_LOG="/tmp/breenix-vmware-serial.log"
+    EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
+    VM_MACHINES="$HOME/Virtual Machines.localized"
+
+    if [ "$NO_BUILD" = true ]; then
+        echo "Skipping builds (--no-build)"
+        if [ ! -f "$VMWARE_DIR/boot.vmdk" ]; then
+            echo "ERROR: No boot VMDK found at $VMWARE_DIR/boot.vmdk"
+            echo "Run without --no-build first to create it."
+            exit 1
+        fi
+    else
+        # Clean build caches if --clean
+        if [ "$CLEAN" = true ]; then
+            echo "[0/6] Cleaning build caches..."
+            cargo clean -p kernel 2>/dev/null || true
+            cargo clean -p parallels-loader 2>/dev/null || true
+        fi
+
+        # Build UEFI loader
+        echo "[1/6] Building UEFI loader..."
+        cargo build --release --target aarch64-unknown-uefi -p parallels-loader
+
+        # Build kernel
+        echo ""
+        echo "[2/6] Building kernel..."
+        cargo build --release --target aarch64-breenix.json \
+            -Z build-std=core,alloc \
+            -Z build-std-features=compiler-builtins-mem \
+            -p kernel --bin kernel-aarch64
+
+        LOADER_EFI="$BREENIX_ROOT/target/aarch64-unknown-uefi/release/parallels-loader.efi"
+        KERNEL_ELF="$BREENIX_ROOT/target/aarch64-breenix/release/kernel-aarch64"
+
+        if [ ! -f "$LOADER_EFI" ]; then
+            echo "ERROR: UEFI loader not found at $LOADER_EFI"
+            exit 1
+        fi
+        if [ ! -f "$KERNEL_ELF" ]; then
+            echo "ERROR: Kernel not found at $KERNEL_ELF"
+            exit 1
+        fi
+
+        # Build userspace
+        echo ""
+        echo "[3/6] Building userspace binaries (aarch64)..."
+        if "$BREENIX_ROOT/userspace/programs/build.sh" --arch aarch64; then
+            echo "  Userspace build successful"
+        else
+            echo "  WARNING: Userspace build failed"
+            echo "  Continuing without userspace binaries"
+        fi
+
+        # Create ext2 data disk
+        echo ""
+        echo "[4/6] Creating ext2 data disk image..."
+        if ! "$BREENIX_ROOT/scripts/create_ext2_disk.sh" --arch aarch64; then
+            echo "  WARNING: ext2 disk creation failed"
+        fi
+
+        # Create FAT32 EFI disk image
+        echo ""
+        echo "[5/6] Creating FAT32 EFI disk image..."
+        mkdir -p "$VMWARE_DIR"
+
+        DMG_PATH="$VMWARE_DIR/efi-temp.dmg"
+        rm -f "$DMG_PATH"
+        hdiutil create -size 64m -fs FAT32 -volname BREENIX -layout GPTSPUD "$DMG_PATH" >/dev/null 2>&1
+
+        VOLUME=$(hdiutil attach "$DMG_PATH" 2>/dev/null | grep -o '/Volumes/[^ ]*' | head -1)
+        if [ -z "$VOLUME" ] || [ ! -d "$VOLUME" ]; then
+            echo "ERROR: Failed to mount FAT32 disk image"
+            rm -f "$DMG_PATH"
+            exit 1
+        fi
+
+        mkdir -p "$VOLUME/EFI/BOOT"
+        mkdir -p "$VOLUME/EFI/BREENIX"
+        cp "$LOADER_EFI" "$VOLUME/EFI/BOOT/BOOTAA64.EFI"
+        cp "$KERNEL_ELF" "$VOLUME/EFI/BREENIX/KERNEL"
+        hdiutil detach "$VOLUME" >/dev/null 2>&1
+
+        echo "  Loader: $(stat -f%z "$LOADER_EFI") bytes"
+        echo "  Kernel: $(stat -f%z "$KERNEL_ELF") bytes"
+
+        # Convert to raw then to VMDK
+        echo ""
+        echo "[6/6] Converting to VMDK..."
+        RAW_IMG="$VMWARE_DIR/efi-raw.img"
+        rm -f "$RAW_IMG" "${RAW_IMG}.cdr"
+        hdiutil convert "$DMG_PATH" -format UDTO -o "$RAW_IMG" >/dev/null 2>&1
+        mv "${RAW_IMG}.cdr" "$RAW_IMG"
+        rm -f "$DMG_PATH"
+
+        # Patch GPT partition type to EFI System Partition
+        python3 "$BREENIX_ROOT/scripts/parallels/patch-gpt-esp.py" "$RAW_IMG"
+
+        # Convert raw to VMDK
+        qemu-img convert -f raw -O vmdk "$RAW_IMG" "$VMWARE_DIR/boot.vmdk"
+        rm -f "$RAW_IMG"
+        echo "  Boot VMDK: $VMWARE_DIR/boot.vmdk"
+
+        # Convert ext2 data disk to VMDK
+        if [ -f "$EXT2_DISK" ]; then
+            qemu-img convert -f raw -O vmdk "$EXT2_DISK" "$VMWARE_DIR/ext2-data.vmdk"
+            echo "  Data VMDK: $VMWARE_DIR/ext2-data.vmdk"
+        fi
+    fi
+
+    echo ""
+    echo "--- Configuring VMware VM ---"
+
+    # Use a unique VM name to avoid stale state
+    VM_NAME="breenix-$(date +%s)"
+    VM_BUNDLE="$VM_MACHINES/$VM_NAME.vmwarevm"
+    echo "VM name: $VM_NAME"
+
+    # Clean up old breenix-* VMs (best-effort)
+    for OLD_VM_DIR in "$VM_MACHINES"/breenix-*.vmwarevm; do
+        [ -d "$OLD_VM_DIR" ] || continue
+        OLD_VMX=$(find "$OLD_VM_DIR" -name "*.vmx" -maxdepth 1 | head -1)
+        if [ -n "$OLD_VMX" ]; then
+            "$VMRUN" stop "$OLD_VMX" hard >/dev/null 2>&1 || true
+        fi
+        rm -rf "$OLD_VM_DIR"
+        echo "  Cleaned up: $(basename "$OLD_VM_DIR")"
+    done
+
+    # Create VM bundle
+    mkdir -p "$VM_BUNDLE"
+
+    # Copy VMDKs into the bundle
+    cp "$VMWARE_DIR/boot.vmdk" "$VM_BUNDLE/boot.vmdk"
+    EXT2_VMDK_ARG=""
+    if [ -f "$VMWARE_DIR/ext2-data.vmdk" ]; then
+        cp "$VMWARE_DIR/ext2-data.vmdk" "$VM_BUNDLE/ext2-data.vmdk"
+        EXT2_VMDK_ARG="$VM_BUNDLE/ext2-data.vmdk"
+    fi
+
+    # Generate VMX config inline (avoid subshell issues with command substitution)
+    VMX_FILE="$VM_BUNDLE/$VM_NAME.vmx"
+    cat > "$VMX_FILE" <<VMXEOF
+.encoding = "UTF-8"
+config.version = "8"
+virtualHW.version = "22"
+
+displayName = "$VM_NAME"
+guestOS = "arm-ubuntu-64"
+firmware = "efi"
+
+numvcpus = "4"
+memsize = "2048"
+cpuid.coresPerSocket = "4"
+
+pciBridge0.present = "TRUE"
+pciBridge4.present = "TRUE"
+pciBridge4.virtualDev = "pcieRootPort"
+pciBridge4.functions = "8"
+pciBridge5.present = "TRUE"
+pciBridge5.virtualDev = "pcieRootPort"
+pciBridge5.functions = "8"
+pciBridge6.present = "TRUE"
+pciBridge6.virtualDev = "pcieRootPort"
+pciBridge6.functions = "8"
+pciBridge7.present = "TRUE"
+pciBridge7.virtualDev = "pcieRootPort"
+pciBridge7.functions = "8"
+
+nvme0.present = "TRUE"
+nvme0:0.present = "TRUE"
+nvme0:0.fileName = "$VM_BUNDLE/boot.vmdk"
+
+sata0.present = "TRUE"
+VMXEOF
+
+    if [ -n "$EXT2_VMDK_ARG" ]; then
+        cat >> "$VMX_FILE" <<VMXEOF
+
+sata0:0.present = "TRUE"
+sata0:0.fileName = "$EXT2_VMDK_ARG"
+VMXEOF
+    fi
+
+    cat >> "$VMX_FILE" <<VMXEOF
+
+serial0.present = "TRUE"
+serial0.fileType = "file"
+serial0.fileName = "$SERIAL_LOG"
+serial0.yieldOnMsrRead = "TRUE"
+
+ethernet0.present = "TRUE"
+ethernet0.connectionType = "nat"
+ethernet0.virtualDev = "e1000e"
+ethernet0.addressType = "generated"
+ethernet0.linkStatePropagation.enable = "TRUE"
+
+usb.present = "TRUE"
+usb_xhci.present = "TRUE"
+usb_xhci:4.present = "TRUE"
+usb_xhci:4.deviceType = "hid"
+usb_xhci:4.port = "4"
+usb_xhci:6.present = "TRUE"
+usb_xhci:6.deviceType = "mouse"
+usb_xhci:6.port = "6"
+
+svga.vramSize = "268435456"
+mks.enable3d = "TRUE"
+
+vmci0.present = "TRUE"
+
+tools.syncTime = "FALSE"
+floppy0.present = "FALSE"
+hpet0.present = "TRUE"
+msg.autoAnswer = "TRUE"
+VMXEOF
+
+    echo "  VMX: $VMX_FILE ($(wc -c < "$VMX_FILE") bytes)"
+
+    echo ""
+    echo "--- Starting VM ---"
+    rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
+    "$VMRUN" start "$VMX_FILE" gui 2>&1 || {
+        echo "vmrun start failed with GUI, trying nogui..."
+        "$VMRUN" start "$VMX_FILE" nogui 2>&1 || true
+    }
+
+    echo ""
+    echo "========================================="
+    echo "Breenix running on VMware Fusion"
+    echo "========================================="
+    echo "VM:     $VM_NAME"
+    echo "Serial: $SERIAL_LOG"
+    echo "VMX:    $VMX_FILE"
+    echo "Stop:   \"$VMRUN\" stop \"$VMX_FILE\" hard"
+    echo ""
+    echo "Tailing serial output (Ctrl+C to detach)..."
+    echo ""
+
+    # Monitor vmware.log for CPU exceptions in background
+    VM_LOG="$VM_BUNDLE/vmware.log"
+    (
+        sleep 2  # Wait for vmware.log to appear
+        if [ -f "$VM_LOG" ]; then
+            tail -f "$VM_LOG" 2>/dev/null | while IFS= read -r line; do
+                case "$line" in
+                    *vcpu*exception*|*PANIC*|*fault*|*FAULT*|*Guest:*)
+                        echo "[vmware-log] $line" ;;
+                esac
+            done
+        fi
+    ) &
+    LOGMON_PID=$!
+    trap "kill $LOGMON_PID 2>/dev/null" EXIT
+
     sleep 1
     tail -f "$SERIAL_LOG"
 

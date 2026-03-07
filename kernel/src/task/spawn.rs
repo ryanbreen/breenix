@@ -148,7 +148,7 @@ fn idle_thread_fn() {
             unsafe {
                 // Clear DAIF.I to enable IRQs, then wait for interrupt
                 core::arch::asm!(
-                    "msr daifclr, #2",  // Clear IRQ mask (enable interrupts)
+                    "msr daifclr, #3",  // Clear IRQ+FIQ mask (enable interrupts)
                     "wfi",               // Wait For Interrupt
                     options(nomem, nostack)
                 );

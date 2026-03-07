@@ -1045,6 +1045,12 @@ pub fn find_device(vendor_id: u16, device_id: u16) -> Option<Device> {
     devices.as_ref()?.iter().find(|d| d.vendor_id == vendor_id && d.device_id == device_id).cloned()
 }
 
+/// Find a device by PCI class code, subclass, and programming interface.
+pub fn find_by_class(class: DeviceClass, subclass: u8, prog_if: u8) -> Option<Device> {
+    let devices = PCI_DEVICES.lock();
+    devices.as_ref()?.iter().find(|d| d.class == class && d.subclass == subclass && d.prog_if == prog_if).cloned()
+}
+
 /// Find all VirtIO block devices
 #[allow(dead_code)] // Part of public API, will be used by VirtIO driver
 pub fn find_virtio_block_devices() -> Vec<Device> {
