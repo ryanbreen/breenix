@@ -516,6 +516,18 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         && kernel::drivers::virtio::gpu_pci::is_virgl_enabled()
     {
         serial_println!("[boot] VirGL active — skipping GOP framebuffer init (2D resource already set up in gpu_pci::init)");
+        // Populate FB_INFO_CACHE so fbinfo syscall works for userspace programs.
+        // VirGL owns the display but userspace still needs dimensions for layout.
+        if let Some((w, h)) = kernel::drivers::virtio::gpu_pci::dimensions() {
+            let _ = arm64_fb::FB_INFO_CACHE.try_init_once(|| arm64_fb::FbInfoCache {
+                width: w as usize,
+                height: h as usize,
+                stride: w as usize,
+                bytes_per_pixel: 4,
+                is_bgr: true, // B8G8R8X8_UNORM
+            });
+            serial_println!("[boot] FB_INFO_CACHE populated for VirGL display ({}x{})", w, h);
+        }
         true
     } else if kernel::drivers::virtio::gpu_pci::is_initialized()
         && kernel::platform_config::has_framebuffer()
@@ -826,15 +838,6 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     }
 
     // Try to load and run userspace init_shell from ext2 or test disk
-    // When VirGL is in Phase 1 testing, skip userspace entirely —
-    // the display should show only the VirGL test pattern (checkerboard).
-    if virgl_display {
-        serial_println!("[boot] VirGL Phase 1: skipping userspace (display shows test pattern only)");
-        serial_println!("[boot] Entering idle loop — checkerboard should be visible on display");
-        loop {
-            unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
-        }
-    }
     if device_count > 0 {
         serial_println!("[boot] Loading userspace init from ext2...");
         match run_userspace_from_ext2("/sbin/init") {

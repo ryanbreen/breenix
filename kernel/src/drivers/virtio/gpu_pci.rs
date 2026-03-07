@@ -2109,13 +2109,19 @@ fn transfer_to_host_3d(
 
     // Flush the backing buffer from CPU cache to physical RAM before DMA read.
     // Without this, the hypervisor reads stale zeros instead of our pixel data.
+    //
+    // EXCEPTION: Skip cache clean for RESOURCE_3D_ID when re-uploading after a
+    // TRANSFER_FROM_HOST_3D readback. The DMA readback wrote pixels directly to
+    // RAM and we invalidated cache — dma_cache_clean would push stale cached
+    // data (from before the readback) back to RAM, overwriting the DMA-written
+    // pixels. The render loop (virgl_render_rects/render_frame) always does
+    // readback → upload, so the 3D backing data is already in RAM.
+    //
+    // For the priming case (virgl_init), the caller does dma_cache_clean
+    // explicitly before calling transfer_to_host_3d.
     unsafe {
         if resource_id == RESOURCE_3D_ID {
-            let fb_ptr = PCI_3D_FB_PTR;
-            assert!(!fb_ptr.is_null(), "3D framebuffer not initialized");
-            let backing_ptr = fb_ptr.add(offset as usize);
-            let backing_len = (h as usize) * (stride as usize);
-            dma_cache_clean(backing_ptr, backing_len);
+            // Skip: data is already in RAM from DMA readback or explicit clean
         } else if resource_id == RESOURCE_TEX_ID {
             let tex = &raw const TEST_TEX_BUF;
             let backing_ptr = (*tex).pixels.as_ptr();
@@ -2481,6 +2487,25 @@ pub struct VirglBall {
     pub color: [f32; 4],
 }
 
+/// Rectangle descriptor passed from userspace for GPU rendering.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct VirglRect {
+    /// X position in pixels (top-left)
+    pub x: f32,
+    /// Y position in pixels (top-left)
+    pub y: f32,
+    /// Width in pixels
+    pub w: f32,
+    /// Height in pixels
+    pub h: f32,
+    /// Color as [R, G, B, A] each 0.0-1.0
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+    pub a: f32,
+}
+
 /// Render a frame with the VirGL GPU pipeline.
 ///
 /// Clears to background color, draws circles for each ball, submits to host
@@ -2525,23 +2550,21 @@ pub fn virgl_render_frame(
     }
 
     cmdbuf.set_sub_ctx(1);
+    cmdbuf.set_tweaks(1, 1);
+    cmdbuf.set_tweaks(2, width);
 
-    // Re-emit ALL pipeline state each frame. Mesa's virgl driver re-emits
-    // dirty state before every draw; Parallels may reset context state between
-    // SUBMIT_3D batches, so we must not assume anything persists.
+    // Re-emit ALL pipeline state each frame, matching the working init batch.
     cmdbuf.bind_shader(1, pipe::SHADER_VERTEX);
     cmdbuf.bind_shader(2, pipe::SHADER_FRAGMENT);
     cmdbuf.bind_object(1, super::virgl::OBJ_BLEND);
     cmdbuf.bind_object(1, super::virgl::OBJ_DSA);
     cmdbuf.bind_object(1, super::virgl::OBJ_RASTERIZER);
     cmdbuf.bind_object(1, super::virgl::OBJ_VERTEX_ELEMENTS);
+    cmdbuf.set_min_samples(1);
     cmdbuf.set_viewport(fw, fh);
     cmdbuf.set_framebuffer_state(0, &[1]); // surface_handle=1, no depth
 
-    // Scissor clear to left half only — the right half is composited from
-    // the terminal shadow buffer via TRANSFER_TO_HOST_3D.
-    let half_w = width / 2;
-    cmdbuf.set_scissor_state(0, 0, half_w, height);
+    // Clear full screen with background color (no scissor — matches init batch)
     cmdbuf.clear_color(bg_r, bg_g, bg_b, 1.0);
 
     // For each ball, generate a triangle fan and draw it
@@ -2649,36 +2672,146 @@ pub fn virgl_render_frame(
         }
     }
 
-    // Display via SET_SCANOUT + RESOURCE_FLUSH on the 3D resource.
-    // VirGL renders entirely on the host GPU — no guest readback needed.
-    //
-    // For the terminal (right pane), we write CPU pixels to the 3D backing
-    // and upload via TRANSFER_TO_HOST_3D, which pushes guest → host texture.
-
-    // Step 1: Composite terminal (right pane) into the 3D backing + upload.
-    let terminal_dirty = crate::graphics::arm64_fb::take_terminal_dirty();
-    if terminal_dirty {
-        if verbose {
-            crate::serial_println!("[virgl] frame #{}: compositing terminal (right pane) → 3D backing", frame);
-        }
-        copy_terminal_to_3d_backing(width, height);
-        // Upload the right half of the 3D backing to the host texture
-        let half_w = width / 2;
-        with_device_state(|state| {
-            transfer_to_host_3d(state, RESOURCE_3D_ID, half_w, 0, width - half_w, height, width * 4)
-        })?;
-    }
-
-    // Step 2: RESOURCE_FLUSH on the 3D resource
-    match with_device_state(|state| {
+    // Linux-style display: SUBMIT_3D → RESOURCE_FLUSH (no transfers).
+    with_device_state(|state| {
         resource_flush_3d(state, RESOURCE_3D_ID)
-    }) {
-        Ok(()) => {}
-        Err(e) => {
-            crate::serial_println!("[virgl] frame #{}: display pipeline FAILED: {}", frame, e);
-            return Err(e);
-        }
+    })?;
+
+    Ok(())
+}
+
+/// Render colored rectangles via VirGL DRAW_VBO + CPU-side compositing.
+///
+/// Submits VirGL commands (CLEAR + DRAW_VBO for each rect) to the GPU,
+/// then composites CPU-side for display until VirGL readback is debugged.
+pub fn virgl_render_rects(
+    rects: &[VirglRect],
+    bg_r: f32,
+    bg_g: f32,
+    bg_b: f32,
+) -> Result<(), &'static str> {
+    use super::virgl::{CommandBuffer, format as vfmt, pipe};
+
+    static RECT_FRAME_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    let frame = RECT_FRAME_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    let verbose = frame < 3 || frame % 500 == 0;
+    if verbose {
+        crate::serial_println!("[virgl] render_rects #{} ({} rects)", frame, rects.len());
     }
+
+    if !is_virgl_enabled() {
+        return Err("VirGL not enabled");
+    }
+
+    if !VIRGL_SCANOUT_ACTIVE.load(Ordering::Acquire) {
+        with_device_state(|state| {
+            set_scanout_resource(state, RESOURCE_3D_ID)
+        }).ok();
+        VIRGL_SCANOUT_ACTIVE.store(true, Ordering::Release);
+    }
+
+    let (width, height) = match dimensions() {
+        Some(d) => d,
+        None => return Err("GPU not initialized"),
+    };
+    let fw = width as f32;
+    let fh = height as f32;
+
+    let mut cmdbuf = CommandBuffer::new();
+
+    // CRITICAL: create_sub_ctx is REQUIRED per SUBMIT_3D batch on Parallels.
+    // set_sub_ctx alone does not re-activate the GL context for rendering.
+    // create_sub_ctx resets all state — surface, shaders, blend, DSA, rasterizer,
+    // vertex elements must ALL be re-created in every batch.
+    cmdbuf.create_sub_ctx(1);
+    cmdbuf.set_sub_ctx(1);
+    cmdbuf.set_tweaks(1, 1);
+    cmdbuf.set_tweaks(2, width);
+
+    // Surface wrapping the render target
+    cmdbuf.create_surface(1, RESOURCE_3D_ID, vfmt::B8G8R8X8_UNORM, 0, 0);
+    cmdbuf.set_framebuffer_state(0, &[1]);
+
+    // Pipeline state objects
+    cmdbuf.create_blend_simple(1);
+    cmdbuf.bind_object(1, super::virgl::OBJ_BLEND);
+    cmdbuf.create_dsa_default(1);
+    cmdbuf.bind_object(1, super::virgl::OBJ_DSA);
+    cmdbuf.create_rasterizer_default(1);
+    cmdbuf.bind_object(1, super::virgl::OBJ_RASTERIZER);
+
+    // Shaders (num_tokens=300 required by Parallels)
+    let vs_text = b"VERT\nDCL IN[0]\nDCL OUT[0], POSITION\n  0: MOV OUT[0], IN[0]\n  1: END\n";
+    cmdbuf.create_shader(1, pipe::SHADER_VERTEX, 300, vs_text);
+    cmdbuf.bind_shader(1, pipe::SHADER_VERTEX);
+    let fs_text = b"FRAG\nPROPERTY FS_COLOR0_WRITES_ALL_CBUFS 1\nDCL OUT[0], COLOR\nDCL CONST[0]\n  0: MOV OUT[0], CONST[0]\n  1: END\n";
+    cmdbuf.create_shader(2, pipe::SHADER_FRAGMENT, 300, fs_text);
+    cmdbuf.bind_shader(2, pipe::SHADER_FRAGMENT);
+
+    // Vertex elements
+    cmdbuf.create_vertex_elements(1, &[
+        (0, 0, 0, vfmt::R32G32B32A32_FLOAT),
+    ]);
+    cmdbuf.bind_object(1, super::virgl::OBJ_VERTEX_ELEMENTS);
+
+    cmdbuf.set_min_samples(1);
+    cmdbuf.set_viewport(fw, fh);
+
+    // Clear full screen with background color (no scissor — matches init batch)
+    cmdbuf.clear_color(bg_r, bg_g, bg_b, 1.0);
+
+    // Draw each rectangle as a quad (triangle fan, 4 verts, 16 bytes/vert)
+    // Limit to ~80 rects to stay within 3072 DW cmdbuf capacity.
+    // Per rect: inline_write(~20 DW) + set_constant_buffer(~8 DW) +
+    //           set_vertex_buffers(~6 DW) + draw_vbo(~13 DW) = ~47 DW
+    // Budget: (3072 - ~100 overhead) / 47 ≈ 63 rects max
+    let rect_count = rects.len().min(60);
+
+    for (i, rect) in rects[..rect_count].iter().enumerate() {
+        // Convert pixel coords to NDC
+        let x0 = rect.x;
+        let y0 = rect.y;
+        let x1 = rect.x + rect.w;
+        let y1 = rect.y + rect.h;
+
+        let x0_ndc = 2.0 * x0 / fw - 1.0;
+        let y0_ndc = 1.0 - 2.0 * y0 / fh; // top
+        let x1_ndc = 2.0 * x1 / fw - 1.0;
+        let y1_ndc = 1.0 - 2.0 * y1 / fh; // bottom
+
+        // 4 vertices: TL, BL, BR, TR (triangle fan)
+        let quad_verts: [u32; 16] = [
+            x0_ndc.to_bits(), y0_ndc.to_bits(), 0f32.to_bits(), 1.0f32.to_bits(), // TL
+            x0_ndc.to_bits(), y1_ndc.to_bits(), 0f32.to_bits(), 1.0f32.to_bits(), // BL
+            x1_ndc.to_bits(), y1_ndc.to_bits(), 0f32.to_bits(), 1.0f32.to_bits(), // BR
+            x1_ndc.to_bits(), y0_ndc.to_bits(), 0f32.to_bits(), 1.0f32.to_bits(), // TR
+        ];
+
+        let vb_offset = (i * 64) as u32; // 4 verts × 16 bytes each
+        cmdbuf.resource_inline_write(RESOURCE_VB_ID, vb_offset, 64, &quad_verts);
+
+        // Set rect color via constant buffer
+        cmdbuf.set_constant_buffer(pipe::SHADER_FRAGMENT, 0, &[
+            rect.r.to_bits(), rect.g.to_bits(), rect.b.to_bits(), rect.a.to_bits(),
+        ]);
+
+        // Bind vertex buffer at this rect's offset and draw
+        cmdbuf.set_vertex_buffers(&[(16, vb_offset, RESOURCE_VB_ID)]);
+        cmdbuf.draw_vbo(0, 4, pipe::PRIM_TRIANGLE_FAN, 3);
+    }
+
+    // Submit VirGL commands
+    if verbose {
+        crate::serial_println!("[virgl] render_rects #{}: submitting {} DWORDs", frame, cmdbuf.as_slice().len());
+    }
+    virgl_submit_sync(cmdbuf.as_slice())?;
+
+    // Linux per-frame display pattern: SUBMIT_3D → SET_SCANOUT → RESOURCE_FLUSH.
+    // Linux ftrace proves SET_SCANOUT is issued every frame, not just once.
+    with_device_state(|state| {
+        set_scanout_resource(state, RESOURCE_3D_ID)?;
+        resource_flush_3d(state, RESOURCE_3D_ID)
+    })?;
 
     Ok(())
 }
@@ -2735,6 +2868,7 @@ fn copy_3d_framebuffer_to_bar0(width: u32, height: u32) {
 ///
 /// Lock ordering: acquires SHELL_FRAMEBUFFER (via with_shadow_buffer) then
 /// releases it before returning. Caller must NOT hold GPU_PCI_LOCK.
+#[allow(dead_code)]
 fn copy_terminal_to_3d_backing(display_w: u32, display_h: u32) {
     let divider_x = display_w / 2;
     let bpp = 4u32; // B8G8R8X8_UNORM
@@ -2792,13 +2926,13 @@ fn copy_terminal_to_3d_backing(display_w: u32, display_h: u32) {
 }
 
 /// Flush the VirGL render target to the display.
-/// After the initial priming in virgl_init(), only RESOURCE_FLUSH is needed
-/// to display VirGL-rendered content. The host reads from the GPU texture.
+/// Matches Linux per-frame pattern: SET_SCANOUT → RESOURCE_FLUSH.
 pub fn virgl_flush() -> Result<(), &'static str> {
     if !is_virgl_enabled() {
         return Err("VirGL display not available");
     }
     with_device_state(|state| {
+        set_scanout_resource(state, RESOURCE_3D_ID)?;
         resource_flush_3d(state, RESOURCE_3D_ID)
     })
 }
@@ -2862,9 +2996,7 @@ pub fn virgl_init() -> Result<(), &'static str> {
     })?;
     crate::serial_println!("[virgl] Step 4: resource attached to context");
 
-    // Step 6: Prime the resource with TRANSFER_TO_HOST_3D + SET_SCANOUT + FLUSH.
-    // Parallels requires an initial TRANSFER_TO_HOST_3D before RESOURCE_FLUSH
-    // will read from the GPU texture. This must happen BEFORE VirGL rendering.
+    // Step 5: Prime — exactly matches cornflower blue commit (e47c96b)
     {
         let fb_ptr = unsafe { PCI_3D_FB_PTR };
         let fb_len = (width * height * 4) as usize;
@@ -2874,10 +3006,31 @@ pub fn virgl_init() -> Result<(), &'static str> {
         })?;
         with_device_state(|state| { set_scanout_resource(state, RESOURCE_3D_ID) })?;
         with_device_state(|state| { resource_flush_3d(state, RESOURCE_3D_ID) })?;
-        crate::serial_println!("[virgl] Step 5: resource primed (TRANSFER_TO_HOST + SET_SCANOUT + FLUSH)");
+        crate::serial_println!("[virgl] Step 5: resource primed");
     }
 
-    // Step 7: Create VB resource (no backing — data via INLINE_WRITE in batch)
+    // Step 6: Minimal VirGL clear to cornflower blue — exactly matches e47c96b
+    {
+        let mut cmdbuf = CommandBuffer::new();
+        cmdbuf.create_sub_ctx(1);
+        cmdbuf.set_sub_ctx(1);
+        cmdbuf.set_tweaks(1, 1);
+        cmdbuf.set_tweaks(2, width);
+        cmdbuf.create_surface(1, RESOURCE_3D_ID, vfmt::B8G8R8X8_UNORM, 0, 0);
+        cmdbuf.set_framebuffer_state(0, &[1]);
+        cmdbuf.clear_color(0.392, 0.584, 0.929, 1.0); // Cornflower blue
+        virgl_submit_sync(cmdbuf.as_slice())?;
+        crate::serial_println!("[virgl] Step 6: VirGL CLEAR (cornflower blue)");
+    }
+
+    // Step 7: SET_SCANOUT + RESOURCE_FLUSH — matching Linux per-frame pattern.
+    with_device_state(|state| {
+        set_scanout_resource(state, RESOURCE_3D_ID)?;
+        resource_flush_3d(state, RESOURCE_3D_ID)
+    })?;
+    crate::serial_println!("[virgl] Step 7: SET_SCANOUT + RESOURCE_FLUSH done");
+
+    // Step 8: Create VB resource (no backing — data via INLINE_WRITE in batch)
     with_device_state(|state| {
         virgl_resource_create_3d_cmd(
             state, RESOURCE_VB_ID, pipe::BUFFER, vfmt::R8_UNORM,
@@ -2953,31 +3106,14 @@ pub fn virgl_init() -> Result<(), &'static str> {
         virgl_submit_sync(cmdbuf.as_slice())?;
     }
 
-    // Step 10: Readback VirGL-rendered pixels + display.
-    // Parallels display path: TRANSFER_FROM_HOST_3D (readback GPU texture to guest)
-    // -> TRANSFER_TO_HOST_3D (upload guest to scanout) -> SET_SCANOUT + FLUSH.
+    // Step 10: Display VirGL-rendered content.
+    // Linux per-frame pattern: SUBMIT_3D → SET_SCANOUT → RESOURCE_FLUSH.
+    // SET_SCANOUT must be re-issued after every SUBMIT_3D, not just once.
     with_device_state(|state| {
-        transfer_from_host_3d(state, RESOURCE_3D_ID, 0, 0, width, height)
+        set_scanout_resource(state, RESOURCE_3D_ID)?;
+        resource_flush_3d(state, RESOURCE_3D_ID)
     })?;
-
-    // Check first pixel to confirm readback content
-    {
-        let fb_ptr = unsafe { PCI_3D_FB_PTR };
-        let p0 = unsafe { *(fb_ptr as *const u32) };
-        let p_mid = unsafe { *(fb_ptr.add((width * height * 2) as usize) as *const u32) };
-        crate::serial_println!("[virgl] readback: pixel[0,0]=0x{:08x} pixel[mid]=0x{:08x}", p0, p_mid);
-    }
-
-    // SKIP dma_cache_clean: TRANSFER_FROM_HOST_3D already wrote pixels to physical
-    // RAM via DMA and we invalidated cache. The data is in RAM, ready for
-    // TRANSFER_TO_HOST_3D to read. Running dma_cache_clean could push stale
-    // zero lines from neighboring cache lines that weren't invalidated.
-    with_device_state(|state| {
-        transfer_to_host_3d(state, RESOURCE_3D_ID, 0, 0, width, height, width * 4)
-    })?;
-    with_device_state(|state| { set_scanout_resource(state, RESOURCE_3D_ID) })?;
-    with_device_state(|state| { resource_flush_3d(state, RESOURCE_3D_ID) })?;
-    crate::serial_println!("[virgl] Step 10: readback + display complete");
+    crate::serial_println!("[virgl] Step 10: SET_SCANOUT + RESOURCE_FLUSH");
 
     VIRGL_SCANOUT_ACTIVE.store(true, Ordering::Release);
     VIRGL_HEX_DUMP_ENABLED.store(false, Ordering::Relaxed);

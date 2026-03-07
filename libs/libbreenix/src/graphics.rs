@@ -107,6 +107,8 @@ pub mod draw_op {
     pub const VIRGL_SUBMIT_FRAME: u32 = 7;
     /// Batch flush multiple dirty rects with one DSB barrier
     pub const FLUSH_BATCH: u32 = 8;
+    /// Submit VirGL GPU-rendered rectangles
+    pub const VIRGL_SUBMIT_RECTS: u32 = 9;
 }
 
 /// Ball descriptor for VirGL GPU rendering.
@@ -288,6 +290,54 @@ pub fn fb_flush_rects(rects: &[FlushRect]) -> Result<(), Error> {
         p3: rects.len() as i32,
         p4: 0,
         color: 0,
+    };
+    fbdraw(&cmd)
+}
+
+/// Rectangle descriptor for VirGL GPU rendering.
+/// Must match kernel's VirglRect in drivers/virtio/gpu_pci.rs.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct VirglRect {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+    pub a: f32,
+}
+
+/// Frame descriptor passed to the VirglSubmitRects syscall.
+#[repr(C)]
+pub struct VirglRectDesc {
+    pub rect_count: u32,
+    pub _pad: u32,
+    pub rects: [VirglRect; 60],
+}
+
+/// Submit GPU-rendered rectangles via VirGL DRAW_VBO.
+///
+/// Each rect is drawn as a colored quad on the GPU. Background is cleared
+/// to bg_color first. Zero guest CPU pixel writes.
+pub fn virgl_submit_rects(rects: &[VirglRect], bg_color: u32) -> Result<(), Error> {
+    let mut desc = VirglRectDesc {
+        rect_count: rects.len().min(60) as u32,
+        _pad: 0,
+        rects: [VirglRect::default(); 60],
+    };
+    for (i, rect) in rects.iter().take(60).enumerate() {
+        desc.rects[i] = *rect;
+    }
+    let desc_ptr = &desc as *const VirglRectDesc as u64;
+    let cmd = FbDrawCmd {
+        op: draw_op::VIRGL_SUBMIT_RECTS,
+        p1: desc_ptr as i32,
+        p2: (desc_ptr >> 32) as i32,
+        p3: 0,
+        p4: 0,
+        color: bg_color,
     };
     fbdraw(&cmd)
 }

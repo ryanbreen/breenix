@@ -218,6 +218,69 @@ fn fb_height() -> usize {
     }
 }
 
+/// Handle VirGL GPU rendering ops (7=balls, 9=rects) without needing SHELL_FRAMEBUFFER.
+/// Called early in sys_fbdraw before acquiring the framebuffer lock.
+#[cfg(target_arch = "aarch64")]
+fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
+    match cmd.op {
+        7 => {
+            // VirglSubmitFrame: GPU-rendered balls
+            let desc_ptr = (cmd.p1 as u32 as u64) | ((cmd.p2 as u32 as u64) << 32);
+            if desc_ptr == 0 || desc_ptr >= USER_SPACE_MAX {
+                return SyscallResult::Err(super::ErrorCode::Fault as u64);
+            }
+            let ball_count = unsafe { core::ptr::read(desc_ptr as *const u32) } as usize;
+            if ball_count > 16 {
+                return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+            }
+            let balls_ptr = (desc_ptr + 8) as *const crate::drivers::virtio::gpu_pci::VirglBall;
+            let balls_end = desc_ptr + 8 + (ball_count as u64) * core::mem::size_of::<crate::drivers::virtio::gpu_pci::VirglBall>() as u64;
+            if balls_end > USER_SPACE_MAX {
+                return SyscallResult::Err(super::ErrorCode::Fault as u64);
+            }
+            let balls = unsafe { core::slice::from_raw_parts(balls_ptr, ball_count) };
+            let bg_r = ((cmd.color >> 16) & 0xFF) as f32 / 255.0;
+            let bg_g = ((cmd.color >> 8) & 0xFF) as f32 / 255.0;
+            let bg_b = (cmd.color & 0xFF) as f32 / 255.0;
+            match crate::drivers::virtio::gpu_pci::virgl_render_frame(balls, bg_r, bg_g, bg_b) {
+                Ok(()) => SyscallResult::Ok(0),
+                Err(e) => {
+                    crate::serial_println!("[virgl-syscall] render_frame FAILED: {}", e);
+                    SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
+                }
+            }
+        }
+        9 => {
+            // VirglSubmitRects: GPU-rendered rectangles
+            let desc_ptr = (cmd.p1 as u32 as u64) | ((cmd.p2 as u32 as u64) << 32);
+            if desc_ptr == 0 || desc_ptr >= USER_SPACE_MAX {
+                return SyscallResult::Err(super::ErrorCode::Fault as u64);
+            }
+            let rect_count = unsafe { core::ptr::read(desc_ptr as *const u32) } as usize;
+            if rect_count > 60 {
+                return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+            }
+            let rects_ptr = (desc_ptr + 8) as *const crate::drivers::virtio::gpu_pci::VirglRect;
+            let rects_end = desc_ptr + 8 + (rect_count as u64) * core::mem::size_of::<crate::drivers::virtio::gpu_pci::VirglRect>() as u64;
+            if rects_end > USER_SPACE_MAX {
+                return SyscallResult::Err(super::ErrorCode::Fault as u64);
+            }
+            let rects = unsafe { core::slice::from_raw_parts(rects_ptr, rect_count) };
+            let bg_r = ((cmd.color >> 16) & 0xFF) as f32 / 255.0;
+            let bg_g = ((cmd.color >> 8) & 0xFF) as f32 / 255.0;
+            let bg_b = (cmd.color & 0xFF) as f32 / 255.0;
+            match crate::drivers::virtio::gpu_pci::virgl_render_rects(rects, bg_r, bg_g, bg_b) {
+                Ok(()) => SyscallResult::Ok(0),
+                Err(e) => {
+                    crate::serial_println!("[virgl-syscall] render_rects FAILED: {}", e);
+                    SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
+                }
+            }
+        }
+        _ => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+    }
+}
+
 /// sys_fbdraw - Draw to the left pane of the framebuffer
 ///
 /// # Arguments
@@ -264,6 +327,14 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
             None
         }
     };
+
+    // VirGL GPU rendering ops (7=balls, 9=rects) don't need the software
+    // framebuffer — they go straight to the GPU. Handle them before acquiring
+    // SHELL_FRAMEBUFFER so they work when VirGL owns the display.
+    #[cfg(target_arch = "aarch64")]
+    if cmd.op == 7 || cmd.op == 9 {
+        return handle_virgl_op(&cmd);
+    }
 
     // Get framebuffer
     let fb = match SHELL_FRAMEBUFFER.get() {
@@ -648,54 +719,11 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                 }
             }
         }
-        7 => {
-            // VirglSubmitFrame: GPU-rendered frame via VirGL
-            // p1:p2 = pointer to VirglFrameDesc (low:high 32-bit halves)
-            // color = background color (packed 0x00RRGGBB)
-            #[cfg(target_arch = "aarch64")]
-            {
-                // Drop FB lock — we don't need the software framebuffer for GPU rendering
-                drop(fb_guard);
-
-                // Reconstruct 64-bit pointer from two i32 halves.
-                // Cast through u32 first to avoid sign extension.
-                let desc_ptr = (cmd.p1 as u32 as u64) | ((cmd.p2 as u32 as u64) << 32);
-                if desc_ptr == 0 || desc_ptr >= USER_SPACE_MAX {
-                    return SyscallResult::Err(super::ErrorCode::Fault as u64);
-                }
-
-                // Read ball count (first u32 at desc_ptr)
-                let ball_count = unsafe { core::ptr::read(desc_ptr as *const u32) } as usize;
-                if ball_count > 16 {
-                    return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
-                }
-
-                // Read ball array starting at desc_ptr + 8 (skip count + padding)
-                let balls_ptr = (desc_ptr + 8) as *const crate::drivers::virtio::gpu_pci::VirglBall;
-                let balls_end = desc_ptr + 8 + (ball_count as u64) * core::mem::size_of::<crate::drivers::virtio::gpu_pci::VirglBall>() as u64;
-                if balls_end > USER_SPACE_MAX {
-                    return SyscallResult::Err(super::ErrorCode::Fault as u64);
-                }
-
-                let balls = unsafe { core::slice::from_raw_parts(balls_ptr, ball_count) };
-
-                let bg_r = ((cmd.color >> 16) & 0xFF) as f32 / 255.0;
-                let bg_g = ((cmd.color >> 8) & 0xFF) as f32 / 255.0;
-                let bg_b = (cmd.color & 0xFF) as f32 / 255.0;
-
-                match crate::drivers::virtio::gpu_pci::virgl_render_frame(balls, bg_r, bg_g, bg_b) {
-                    Ok(()) => {}
-                    Err(e) => {
-                        crate::serial_println!("[virgl-syscall] render_frame FAILED: {}", e);
-                        return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
-                    }
-                }
-            }
-            #[cfg(not(target_arch = "aarch64"))]
-            {
-                drop(fb_guard);
-                return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
-            }
+        7 | 9 => {
+            // VirGL ops — handled early on aarch64 (before FB lock acquisition).
+            // On other architectures, VirGL is not supported.
+            drop(fb_guard);
+            return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
         }
         8 => {
             // FlushBatch: batch flush multiple dirty rects with one DSB barrier.
