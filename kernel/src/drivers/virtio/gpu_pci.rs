@@ -2493,11 +2493,19 @@ fn transfer_from_host_3d(
 /// as separate descriptors. The device reads the header from desc[0] (exactly
 /// sizeof(VirtioGpuCmdSubmit) = 32 bytes) and the VirGL command data from
 /// desc[1]. This matches how the Linux virtio-gpu driver sends SUBMIT_3D.
+/// Result of a VirGL 3D command submission.
+struct SubmitResult {
+    /// The fence ID we requested
+    submit_id: u64,
+    /// The fence ID the device reported as completed in the response
+    resp_fence: u64,
+}
+
 fn virgl_submit_3d_cmd(
     state: &mut GpuPciDeviceState,
     ctx_id: u32,
     cmds: &[u32],
-) -> Result<u64, &'static str> {
+) -> Result<SubmitResult, &'static str> {
     let payload_bytes = cmds.len() * 4;
     let hdr_size = core::mem::size_of::<VirtioGpuCmdSubmit>();
     let total_cmd_len = hdr_size + payload_bytes;
@@ -2553,7 +2561,7 @@ fn virgl_submit_3d_cmd(
         core::mem::size_of::<VirtioGpuCtrlHdr>() as u32,
     )?;
 
-    // Read response flags and fence_id for diagnostics
+    // Read response flags and fence_id
     let (resp_flags, resp_fence) = unsafe {
         let p = &raw const PCI_RESP_BUF;
         let h = &*((*p).data.as_ptr() as *const VirtioGpuCtrlHdr);
@@ -2569,18 +2577,25 @@ fn virgl_submit_3d_cmd(
         crate::serial_println!("[virgl] SUBMIT_3D OK: id={} used_len={} resp_flags={:#x} resp_fence={}",
             submit_id, used_len, resp_flags, resp_fence);
     }
-    Ok(submit_id)
+    Ok(SubmitResult { submit_id, resp_fence })
 }
 
 /// Wait for the host to confirm a GPU fence has completed.
 ///
 /// Sends NOP SUBMIT_3D commands with fences and polls until the response
-/// fence_id >= target_fence_id. This ensures all prior VirGL rendering
-/// commands have finished executing on the host GPU before we display.
+/// fence_id >= target_fence_id. Uses WFI between polls to sleep until the
+/// next interrupt rather than spinning, dramatically reducing CPU waste.
 fn virgl_fence_sync(state: &mut GpuPciDeviceState, target_fence_id: u64) -> Result<(), &'static str> {
     use super::virgl::CommandBuffer;
 
     for round in 0..100u32 {
+        // Sleep until next interrupt before polling (skip on first round).
+        // The GPU completion or timer interrupt (1000Hz) will wake us.
+        if round > 0 {
+            #[cfg(target_arch = "aarch64")]
+            unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+        }
+
         // Build a NOP VirGL command (set_sub_ctx is minimal)
         let mut cmdbuf = CommandBuffer::new();
         cmdbuf.set_sub_ctx(1);
@@ -3569,18 +3584,31 @@ pub fn virgl_composite_windows(
 /// `cmds` is a slice of u32 DWORDs from a VirGL CommandBuffer.
 pub fn virgl_submit(cmds: &[u32]) -> Result<u64, &'static str> {
     with_device_state(|state| {
-        virgl_submit_3d_cmd(state, VIRGL_CTX_ID, cmds)
+        virgl_submit_3d_cmd(state, VIRGL_CTX_ID, cmds).map(|r| r.submit_id)
     })
 }
 
 /// Submit VirGL commands and wait for the fence to complete before returning.
 /// This ensures the host GPU has finished processing the commands.
+///
+/// Optimization: if the SUBMIT_3D response already confirms the fence
+/// (FLAG_FENCE means the device waited for GPU completion), skip the
+/// expensive fence_sync NOP polling entirely.
 pub fn virgl_submit_sync(cmds: &[u32]) -> Result<(), &'static str> {
-    let fence_id = with_device_state(|state| {
+    let result = with_device_state(|state| {
         virgl_submit_3d_cmd(state, VIRGL_CTX_ID, cmds)
     })?;
+
+    // Fast path: the device response already confirmed our fence completed.
+    // With VIRTIO_GPU_FLAG_FENCE, Parallels waits for GPU completion before
+    // responding, so resp_fence == submit_id in almost all cases.
+    if result.resp_fence >= result.submit_id {
+        return Ok(());
+    }
+
+    // Slow path: fence not yet confirmed, poll with WFI between rounds
     with_device_state(|state| {
-        virgl_fence_sync(state, fence_id)
+        virgl_fence_sync(state, result.submit_id)
     })
 }
 

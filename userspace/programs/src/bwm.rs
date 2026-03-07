@@ -1061,9 +1061,11 @@ fn main() {
             None
         };
 
-        // Poll with 1ms timeout — short enough to composite frequently
-        // for smooth window animation, but avoids pure spin-loop
-        let _nready = io::poll(&mut poll_fds[..nfds], 1).unwrap_or(0);
+        // Non-blocking poll: check for input without sleeping.
+        // Frame pacing (mark_window_dirty blocks bounce until we composite)
+        // provides natural back-pressure, so we don't need poll to pace us.
+        // When no windows are dirty, the compositor early-outs and we yield.
+        let _nready = io::poll(&mut poll_fds[..nfds], 0).unwrap_or(0);
 
         // Check stdin
         let stdin_had_data = poll_fds[0].revents & (io::poll_events::POLLIN as i16) != 0;

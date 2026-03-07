@@ -26,10 +26,10 @@ const TIME_QUANTUM: u32 = 10;
 
 /// Default timer ticks per interrupt (fallback for 24MHz clock)
 /// This value is overwritten at init() with the dynamically calculated value
-const DEFAULT_TICKS_PER_INTERRUPT: u64 = 120_000; // For 24MHz clock = ~5ms
+const DEFAULT_TICKS_PER_INTERRUPT: u64 = 24_000; // For 24MHz clock = ~1ms
 
-/// Target timer frequency in Hz (200 Hz = 5ms per interrupt)
-const TARGET_TIMER_HZ: u64 = 200;
+/// Target timer frequency in Hz (1000 Hz = 1ms per interrupt)
+const TARGET_TIMER_HZ: u64 = 1000;
 
 /// Dynamically calculated ticks per interrupt based on actual timer frequency
 /// Set during init() and used by the interrupt handler for consistent timing
