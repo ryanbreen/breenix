@@ -120,6 +120,10 @@ pub mod draw_op {
     pub const LIST_WINDOWS: u32 = 13;
     /// Read a window's pixel data
     pub const READ_WINDOW_BUFFER: u32 = 14;
+    /// Mark a window buffer as dirty (bump generation counter)
+    pub const MARK_WINDOW_DIRTY: u32 = 15;
+    /// Multi-window GPU compositing
+    pub const COMPOSITE_WINDOWS: u32 = 16;
 }
 
 /// Ball descriptor for VirGL GPU rendering.
@@ -527,6 +531,62 @@ pub fn read_window_buffer(buffer_id: u32, dst: &mut [u8]) -> Result<(u32, u32), 
     let width = (result >> 32) as u32;
     let height = (result & 0xFFFF_FFFF) as u32;
     Ok((width, height))
+}
+
+/// Mark a window buffer as dirty (bump generation counter).
+///
+/// Call this after writing pixels to the window buffer to signal the compositor
+/// that the window's texture needs re-uploading.
+pub fn mark_window_dirty(buffer_id: u32) -> Result<(), Error> {
+    let cmd = FbDrawCmd {
+        op: draw_op::MARK_WINDOW_DIRTY,
+        p1: buffer_id as i32,
+        p2: 0,
+        p3: 0,
+        p4: 0,
+        color: 0,
+    };
+    fbdraw(&cmd)
+}
+
+/// Descriptor for multi-window GPU compositing.
+#[repr(C)]
+pub struct CompositeWindowsDesc {
+    pub bg_pixels_ptr: u64,
+    pub bg_width: u32,
+    pub bg_height: u32,
+    pub bg_dirty: u32,
+    pub _reserved: u32,
+}
+
+/// Composite all registered windows via the GPU in a single batch.
+///
+/// The kernel uploads dirty window textures and renders background + all windows
+/// as textured quads in one SUBMIT_3D. Only changed windows are re-uploaded.
+///
+/// # Arguments
+/// * `bg_pixels` - Background pixel buffer (BGRA, one u32 per pixel)
+/// * `bg_w` - Background width
+/// * `bg_h` - Background height
+/// * `bg_dirty` - Whether the background needs re-uploading
+pub fn virgl_composite_windows(bg_pixels: &[u32], bg_w: u32, bg_h: u32, bg_dirty: bool) -> Result<(), Error> {
+    let desc = CompositeWindowsDesc {
+        bg_pixels_ptr: bg_pixels.as_ptr() as u64,
+        bg_width: bg_w,
+        bg_height: bg_h,
+        bg_dirty: if bg_dirty { 1 } else { 0 },
+        _reserved: 0,
+    };
+    let desc_ptr = &desc as *const CompositeWindowsDesc as u64;
+    let cmd = FbDrawCmd {
+        op: draw_op::COMPOSITE_WINDOWS,
+        p1: desc_ptr as i32,
+        p2: (desc_ptr >> 32) as i32,
+        p3: 0,
+        p4: 0,
+        color: 0,
+    };
+    fbdraw(&cmd)
 }
 
 /// Get the current mouse cursor position.
