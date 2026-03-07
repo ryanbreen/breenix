@@ -12,6 +12,7 @@
 use crate::memory::frame_allocator::allocate_frame;
 use crate::memory::frame_metadata::frame_incref;
 use crate::memory::process_memory::{make_cow_flags, ProcessPageTable};
+use crate::memory::vma::{MmapFlags, Vma};
 use crate::process::Process;
 #[cfg(target_arch = "x86_64")]
 use crate::process::ProcessId;
@@ -114,12 +115,25 @@ pub fn copy_user_pages(
     Ok(pages_copied)
 }
 
+/// Check if a virtual address falls within a MAP_SHARED VMA.
+fn is_in_shared_vma(virt_addr: VirtAddr, vmas: &[Vma]) -> bool {
+    let addr = virt_addr.as_u64();
+    vmas.iter().any(|vma| {
+        vma.flags.contains(MmapFlags::SHARED)
+            && addr >= vma.start.as_u64()
+            && addr < vma.end.as_u64()
+    })
+}
+
 /// Set up Copy-on-Write sharing between parent and child
 ///
 /// Instead of copying all pages immediately (expensive), this function:
 /// 1. Marks writable pages as read-only in BOTH parent and child (CoW flag)
 /// 2. Maps the same physical frames in both page tables
 /// 3. Tracks shared frames via reference counting
+///
+/// Pages in MAP_SHARED VMAs are shared directly with full write permissions
+/// preserved (no CoW). Both parent and child write to the same physical pages.
 ///
 /// When either process later writes to a CoW page, a page fault occurs,
 /// the page is copied, and the writing process gets a private copy.
@@ -132,6 +146,20 @@ pub fn copy_user_pages(
 pub fn setup_cow_pages(
     parent_page_table: &mut ProcessPageTable,
     child_page_table: &mut ProcessPageTable,
+) -> Result<usize, &'static str> {
+    // No VMAs provided — treat all pages as MAP_PRIVATE (legacy behavior)
+    setup_cow_pages_with_vmas(parent_page_table, child_page_table, &[])
+}
+
+/// Set up Copy-on-Write sharing, respecting MAP_SHARED VMAs.
+///
+/// Pages in MAP_SHARED VMAs are shared directly (same physical frame,
+/// writable in both processes). All other pages use CoW.
+#[allow(dead_code)]
+pub fn setup_cow_pages_with_vmas(
+    parent_page_table: &mut ProcessPageTable,
+    child_page_table: &mut ProcessPageTable,
+    vmas: &[Vma],
 ) -> Result<usize, &'static str> {
     let mut pages_shared = 0;
     let mut cow_error: Option<&'static str> = None;
@@ -177,6 +205,28 @@ pub fn setup_cow_pages(
 
         let page = Page::<Size4KiB>::containing_address(virt_addr);
         let frame = PhysFrame::containing_address(phys_addr);
+
+        // MAP_SHARED pages: share directly with full write permissions preserved.
+        // Both parent and child write to the SAME physical frame — no CoW.
+        if is_in_shared_vma(virt_addr, vmas) {
+            if let Err(e) = child_page_table.map_page(page, frame, flags) {
+                log::error!(
+                    "setup_cow_pages: failed to share MAP_SHARED page {:#x} in child: {}",
+                    virt_addr.as_u64(),
+                    e
+                );
+                cow_error = Some("Failed to share MAP_SHARED page");
+                continue;
+            }
+            frame_incref(frame);
+            log::trace!(
+                "setup_cow_pages: shared MAP_SHARED page {:#x} -> frame {:#x}",
+                virt_addr.as_u64(),
+                frame.start_address().as_u64()
+            );
+            pages_shared += 1;
+            continue;
+        }
 
         if flags.contains(PageTableFlags::WRITABLE) {
             // Writable page - needs CoW protection

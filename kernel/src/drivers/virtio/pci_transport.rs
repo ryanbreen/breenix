@@ -512,6 +512,45 @@ impl VirtioPciDevice {
     }
 
     // =========================================================================
+    // MSI-X Vector Configuration
+    // =========================================================================
+
+    /// Write the config_msix_vector register (offset 0x10 in common config).
+    ///
+    /// This tells the device which MSI-X vector to use for configuration
+    /// change notifications. Write VIRTIO_MSI_NO_VECTOR (0xFFFF) if not
+    /// using MSI-X for config changes.
+    ///
+    /// Returns the value read back (device confirms or returns NO_VECTOR if
+    /// the vector is not available).
+    pub fn set_config_msix_vector(&self, vector: u16) -> u16 {
+        self.common.write_u16(COMMON_MSIX, vector);
+        self.common.read_u16(COMMON_MSIX)
+    }
+
+    /// Read the current config_msix_vector register.
+    pub fn get_config_msix_vector(&self) -> u16 {
+        self.common.read_u16(COMMON_MSIX)
+    }
+
+    /// Write the queue_msix_vector register (offset 0x1A in common config).
+    ///
+    /// Must be called after select_queue(). Tells the device which MSI-X
+    /// vector to use for this queue's completion notifications. Write
+    /// VIRTIO_MSI_NO_VECTOR (0xFFFF) if not using MSI-X for this queue.
+    ///
+    /// Returns the value read back.
+    pub fn set_queue_msix_vector(&self, vector: u16) -> u16 {
+        self.common.write_u16(COMMON_Q_MSIX, vector);
+        self.common.read_u16(COMMON_Q_MSIX)
+    }
+
+    /// Read the current queue_msix_vector register for the selected queue.
+    pub fn get_queue_msix_vector(&self) -> u16 {
+        self.common.read_u16(COMMON_Q_MSIX)
+    }
+
+    // =========================================================================
     // Interrupt Handling
     // =========================================================================
 

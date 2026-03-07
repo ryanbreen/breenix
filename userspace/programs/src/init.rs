@@ -15,6 +15,7 @@ use libbreenix::process::{fork, exec, waitpid, getpid, yield_now, ForkResult, WN
 const TELNETD_PATH: &[u8] = b"/sbin/telnetd\0";
 const BLOGD_PATH: &[u8] = b"/sbin/blogd\0";
 const BWM_PATH: &[u8] = b"/bin/bwm\0";
+const BOUNCE_PATH: &[u8] = b"/bin/bounce\0";
 /// Maximum number of rapid respawns before giving up on a service.
 const MAX_RESPAWN_FAILURES: u32 = 3;
 
@@ -96,6 +97,11 @@ fn main() {
     let mut bwm_pid = spawn(BWM_PATH, "bwm");
     let mut bwm_failures: u32 = 0;
 
+    // Start bounce demo (GPU-accelerated bouncing rectangles on left pane)
+    print!("[init] Starting /bin/bounce...\n");
+    let mut bounce_pid = spawn(BOUNCE_PATH, "bounce");
+    let mut bounce_failures: u32 = 0;
+
     // Test: simple fork + exit + waitpid under SMP load (process lifecycle regression)
     // Run after BWM is started so there's full SMP contention.
     // Keep at 5 iterations — enough to stress-test without delaying BWM init
@@ -119,6 +125,12 @@ fn main() {
                         bwm_pid = try_respawn(BWM_PATH, "bwm", &mut bwm_failures);
                         if bwm_pid == -1 {
                             print!("[init] BWM failed {} times, giving up\n", MAX_RESPAWN_FAILURES);
+                        }
+                    } else if reaped == bounce_pid {
+                        print!("[init] bounce exited (status {})\n", status);
+                        bounce_pid = try_respawn(BOUNCE_PATH, "bounce", &mut bounce_failures);
+                        if bounce_pid == -1 {
+                            print!("[init] bounce failed {} times, giving up\n", MAX_RESPAWN_FAILURES);
                         }
                     } else if reaped == blogd_pid {
                         print!("[init] blogd exited (status {})\n", status);

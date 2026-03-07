@@ -818,6 +818,49 @@ impl Canvas for ShellFrameBuffer {
 /// Global shell framebuffer instance (compatible with x86_64 logger.rs interface)
 pub static SHELL_FRAMEBUFFER: OnceCell<Mutex<ShellFrameBuffer>> = OnceCell::uninit();
 
+// =============================================================================
+// Terminal dirty tracking for VirGL compositing
+// =============================================================================
+
+/// Whether the terminal (right pane) has been updated since the last VirGL composite.
+/// Initialized to `true` so the first VirGL frame captures the terminal.
+static TERMINAL_DIRTY: AtomicBool = AtomicBool::new(true);
+
+/// Mark the terminal (right pane) as dirty. Called from syscall flush when bwm
+/// writes to the right pane of the display.
+pub fn mark_terminal_dirty() {
+    TERMINAL_DIRTY.store(true, Ordering::Release);
+}
+
+/// Atomically check and clear the terminal dirty flag. Returns `true` if the
+/// terminal was dirty (and thus needs compositing into the VirGL 3D resource).
+pub fn take_terminal_dirty() -> bool {
+    TERMINAL_DIRTY.swap(false, Ordering::Acquire)
+}
+
+/// Read the shadow buffer (double buffer) contents without holding the lock
+/// longer than necessary.
+///
+/// The closure receives `(buffer, stride_bytes, width, height)` where `buffer`
+/// is the shadow buffer pixel data. Returns `None` if the shadow buffer is not
+/// available or the lock is contended.
+pub fn with_shadow_buffer<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&[u8], usize, usize, usize) -> R,
+{
+    let fb = SHELL_FRAMEBUFFER.get()?;
+    let guard = fb.try_lock()?;
+    let stride = guard.stride() * guard.bytes_per_pixel();
+    let width = guard.width();
+    let height = guard.height();
+    if let Some(ref db) = guard.double_buffer {
+        Some(f(db.buffer(), stride, width, height))
+    } else {
+        // No double buffer — read from the underlying framebuffer directly
+        Some(f(guard.buffer(), stride, width, height))
+    }
+}
+
 /// Cached framebuffer dimensions, set once during init and never modified.
 /// This allows sys_fbinfo to read dimensions without acquiring the framebuffer lock,
 /// avoiding contention with BWM's flush operations which hold the lock for ~400μs

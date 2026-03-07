@@ -505,13 +505,36 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     //   2. UEFI GOP framebuffer (fallback if GPU PCI not available)
     //   3. VirtIO GPU MMIO (QEMU virt platform)
     serial_println!("[boot] Initializing graphics...");
+    // Graphics initialization:
+    //   - The 2D resource + SET_SCANOUT was already done in gpu_pci::init()
+    //     (matching Linux: console framebuffer is active before VirGL takes over)
+    //   - When VirGL is active, virgl_init() already switched SET_SCANOUT to the
+    //     3D resource. Do NOT initialize GOP framebuffer (arm64_fb) because its
+    //     flush calls would send RESOURCE_FLUSH on the 2D resource, overriding
+    //     the VirGL scanout.
     let has_display = if kernel::drivers::virtio::gpu_pci::is_initialized()
+        && kernel::drivers::virtio::gpu_pci::is_virgl_enabled()
+    {
+        serial_println!("[boot] VirGL active — skipping GOP framebuffer init (2D resource already set up in gpu_pci::init)");
+        // Populate FB_INFO_CACHE so fbinfo syscall works for userspace programs.
+        // VirGL owns the display but userspace still needs dimensions for layout.
+        if let Some((w, h)) = kernel::drivers::virtio::gpu_pci::dimensions() {
+            let _ = arm64_fb::FB_INFO_CACHE.try_init_once(|| arm64_fb::FbInfoCache {
+                width: w as usize,
+                height: h as usize,
+                stride: w as usize,
+                bytes_per_pixel: 4,
+                is_bgr: true, // B8G8R8X8_UNORM
+            });
+            serial_println!("[boot] FB_INFO_CACHE populated for VirGL display ({}x{})", w, h);
+        }
+        true
+    } else if kernel::drivers::virtio::gpu_pci::is_initialized()
         && kernel::platform_config::has_framebuffer()
     {
-        // Parallels hybrid: VirtIO GPU PCI set_scanout changes the display's
-        // reading stride to the GPU-configured width (1280). Pixels are read
-        // from GOP memory at this new stride. The kernel must write at the
-        // GPU stride (1280), not the UEFI GOP stride (1024).
+        // 2D mode: VirtIO GPU PCI set_scanout changes the display's
+        // reading stride to the GPU-configured width. Pixels are read
+        // from GOP memory at this new stride.
         match arm64_fb::init_gpu_pci_gop_framebuffer() {
             Ok(()) => {
                 serial_println!("[boot] GPU PCI+GOP hybrid display initialized");
@@ -567,10 +590,15 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         false
     };
 
+    // Track whether VirGL owns the display (Phase 1: textured quad test only)
+    let virgl_display = kernel::drivers::virtio::gpu_pci::is_initialized()
+        && kernel::drivers::virtio::gpu_pci::is_virgl_enabled();
+
     // Upgrade framebuffer to double buffering now that heap is available.
     // This allocates a shadow buffer in cached RAM so pixel writes are fast
     // (~1ns vs ~100ns for direct GOP BAR0 writes on Parallels).
-    if has_display {
+    // Skip when VirGL owns the display — we don't want a competing 2D path.
+    if has_display && !virgl_display {
         kernel::graphics::arm64_fb::upgrade_to_double_buffer();
     }
 
@@ -634,11 +662,14 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // - Boot test progress display (test_framework::display) renders to SHELL_FRAMEBUFFER
     // - Boot milestones are tracked via BTRT (test_framework::btrt) on both platforms
     // Spawn render thread if any display is available (GOP or VirtIO)
-    if has_display {
+    // Skip when VirGL owns the display — no 2D rendering needed.
+    if has_display && !virgl_display {
         match kernel::graphics::render_task::spawn_render_thread() {
             Ok(tid) => serial_println!("[boot] Render thread spawned (tid={})", tid),
             Err(e) => serial_println!("[boot] Failed to spawn render thread: {}", e),
         }
+    } else if virgl_display {
+        serial_println!("[boot] Render thread skipped — VirGL owns the display");
     }
 
     // Initialize tracing subsystem (must be after allocator, before timer)
