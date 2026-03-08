@@ -41,20 +41,15 @@ static MOUSE_X: AtomicU32 = AtomicU32::new(0);
 static MOUSE_Y: AtomicU32 = AtomicU32::new(0);
 static MOUSE_BUTTONS: AtomicU32 = AtomicU32::new(0);
 
+/// Sticky button press: latches to 1 on any button-down, cleared only when
+/// userspace reads it via mouse_state(). Prevents BWM from missing short
+/// trackpad taps that press+release within a single poll cycle (~6ms).
+static MOUSE_BUTTONS_STICKY: AtomicU32 = AtomicU32::new(0);
+
 /// Once we see the first absolute tablet report (6+ bytes), latch into tablet mode.
 /// All subsequent reports are parsed as absolute, regardless of byte[1] value.
 static IS_ABSOLUTE_TABLET: AtomicBool = AtomicBool::new(false);
 
-/// Click stabilization: freeze position on button-down, require movement beyond
-/// a dead zone before tracking resumes. Prevents Mac trackpad press-shift.
-/// Stores the position at the moment button was pressed (raw abs coords, not screen).
-static CLICK_FREEZE_X: AtomicU32 = AtomicU32::new(0);
-static CLICK_FREEZE_Y: AtomicU32 = AtomicU32::new(0);
-/// Set true on button-down, cleared once movement exceeds dead zone threshold.
-static CLICK_FROZEN: AtomicBool = AtomicBool::new(false);
-/// Dead zone in raw absolute coordinates (0-32767 range).
-/// ~200 raw units = ~8 pixels at 1280 width. Absorbs trackpad press-shift.
-const CLICK_DEAD_ZONE: u32 = 200;
 
 // =============================================================================
 // USB HID Usage ID → Linux Keycode mapping
@@ -312,6 +307,10 @@ pub fn process_mouse_report(report: &[u8]) {
     let buttons = report[0] as u32;
     let prev_buttons = MOUSE_BUTTONS.load(Ordering::Relaxed);
     MOUSE_BUTTONS.store(buttons, Ordering::Relaxed);
+    // Latch button press into sticky flag — cleared only on userspace read
+    if buttons != 0 {
+        MOUSE_BUTTONS_STICKY.fetch_or(buttons, Ordering::Relaxed);
+    }
 
     // Log button state changes (press/release) to debug click-jump issues.
     // This fires regardless of MOUSE_LOG_COUNT to capture late button events.
@@ -363,36 +362,12 @@ pub fn process_mouse_report(report: &[u8]) {
     }
 
     // Absolute tablet path: use absolute coordinates from bytes 2-5.
-    // Once latched, always use this path for 6+ byte reports regardless of byte[1].
-    if IS_ABSOLUTE_TABLET.load(Ordering::Relaxed) && actual_len >= 6 {
+    // Once latched, always use this path regardless of actual_len — the sentinel
+    // trimming can misfire if coordinate bytes happen to equal 0xDE (the sentinel).
+    // The raw report buffer is always 64 bytes so bytes 0-5 are always valid.
+    if IS_ABSOLUTE_TABLET.load(Ordering::Relaxed) && report.len() >= 6 {
         let abs_x = u16::from_le_bytes([report[2], report[3]]) as u32;
         let abs_y = u16::from_le_bytes([report[4], report[5]]) as u32;
-
-        // Click stabilization: on button-down, freeze position until movement
-        // exceeds a dead zone. This absorbs Mac trackpad press-shift (~10-20px).
-        if buttons != 0 && prev_buttons == 0 {
-            // Button just pressed — freeze at current raw abs position
-            CLICK_FREEZE_X.store(abs_x, Ordering::Relaxed);
-            CLICK_FREEZE_Y.store(abs_y, Ordering::Relaxed);
-            CLICK_FROZEN.store(true, Ordering::Relaxed);
-            return; // Don't update position on the press event itself
-        }
-        if buttons == 0 && prev_buttons != 0 {
-            // Button released — unfreeze
-            CLICK_FROZEN.store(false, Ordering::Relaxed);
-        }
-        if CLICK_FROZEN.load(Ordering::Relaxed) {
-            // Still in dead zone — check if movement exceeds threshold
-            let freeze_x = CLICK_FREEZE_X.load(Ordering::Relaxed);
-            let freeze_y = CLICK_FREEZE_Y.load(Ordering::Relaxed);
-            let dx = (abs_x as i32 - freeze_x as i32).unsigned_abs();
-            let dy = (abs_y as i32 - freeze_y as i32).unsigned_abs();
-            if dx < CLICK_DEAD_ZONE && dy < CLICK_DEAD_ZONE {
-                return; // Still within dead zone, don't move cursor
-            }
-            // Exceeded dead zone — unfreeze and allow movement
-            CLICK_FROZEN.store(false, Ordering::Relaxed);
-        }
 
         let new_x = (abs_x * sw / 32768).min(sw - 1);
         let new_y = (abs_y * sh / 32768).min(sh - 1);
@@ -431,10 +406,14 @@ pub fn mouse_position() -> (u32, u32) {
 }
 
 /// Get current mouse position and button state.
+/// Returns sticky button state (latched on press, cleared on read) OR'd with
+/// current button state. This ensures short taps aren't missed by slow pollers.
 pub fn mouse_state() -> (u32, u32, u32) {
+    let sticky = MOUSE_BUTTONS_STICKY.swap(0, Ordering::Relaxed);
+    let current = MOUSE_BUTTONS.load(Ordering::Relaxed);
     (
         MOUSE_X.load(Ordering::Relaxed),
         MOUSE_Y.load(Ordering::Relaxed),
-        MOUSE_BUTTONS.load(Ordering::Relaxed),
+        sticky | current,
     )
 }

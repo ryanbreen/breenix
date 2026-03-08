@@ -22,8 +22,8 @@ pub const HEAP_START: u64 = 0x_4444_4444_0000;
 // with xHCI DMA buffers placed in the .dma linker section.
 pub const HEAP_START: u64 = crate::arch_impl::aarch64::constants::HHDM_BASE + 0x5020_0000;
 
-/// Heap size: 30 MiB (reduced from 32 to make room for 2 MB NC DMA block).
-pub const HEAP_SIZE: u64 = 30 * 1024 * 1024;
+/// Heap size: 64 MiB — GPU backing needs ~33MB at 2560x1600 (2 x 16.4MB textures).
+pub const HEAP_SIZE: u64 = 64 * 1024 * 1024;
 
 /// Global allocator instance using a proper free-list allocator.
 ///

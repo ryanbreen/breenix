@@ -260,17 +260,20 @@ impl TermEmu {
         }
     }
 
-    fn render(&mut self, fb: &mut FrameBuf, x_off: usize, y_off: usize) {
+    fn render(&mut self, fb: &mut FrameBuf, x_off: usize, y_off: usize,
+              clip_w: usize, clip_h: usize) {
         if !self.dirty { return; }
         self.dirty = false;
+        let max_x = (x_off + clip_w).min(fb.width);
+        let max_y = (y_off + clip_h).min(fb.height);
         let fm = bitmap_font::metrics();
         for row in 0..self.rows {
             let py = y_off + row * CELL_H;
-            if py + CELL_H > fb.height { break; }
+            if py + CELL_H > max_y { break; }
             for col in 0..self.cols {
                 let cell = self.cell(col, row);
                 let px = x_off + col * CELL_W;
-                if px + CELL_W > fb.width { break; }
+                if px + CELL_W > max_x { break; }
                 for dy in 0..CELL_H { for dx in 0..CELL_W { fb.put_pixel(px + dx, py + dy, cell.bg); } }
                 if cell.ch != b' ' {
                     let fg = if cell.bold {
@@ -284,7 +287,7 @@ impl TermEmu {
                 let cx = x_off + self.cursor_x * CELL_W;
                 let cw = fm.char_width.min(CELL_W);
                 for dy in 0..2usize { for dx in 0..cw {
-                    if cx + dx < fb.width && py + CELL_H - 2 + dy < fb.height {
+                    if cx + dx < max_x && py + CELL_H - 2 + dy < max_y {
                         fb.put_pixel(cx + dx, py + CELL_H - 2 + dy, Color::WHITE);
                     }
                 }}
@@ -379,7 +382,8 @@ struct Window {
     y: i32,
     width: usize,
     height: usize,
-    title: &'static str,
+    title: [u8; 32],
+    title_len: usize,
     kind: WindowKind,
 }
 
@@ -395,7 +399,21 @@ enum WindowKind {
     },
 }
 
+/// Extract program name from a null-terminated path like b"/bin/bsh\0" → "bsh"
+fn title_from_program(program: &[u8]) -> ([u8; 32], usize) {
+    let mut buf = [0u8; 32];
+    // Find the last '/' before the null terminator
+    let path_end = program.iter().position(|&b| b == 0).unwrap_or(program.len());
+    let name_start = program[..path_end].iter().rposition(|&b| b == b'/').map(|p| p + 1).unwrap_or(0);
+    let name = &program[name_start..path_end];
+    let len = name.len().min(32);
+    buf[..len].copy_from_slice(&name[..len]);
+    (buf, len)
+}
+
 impl Window {
+    fn title_bytes(&self) -> &[u8] { &self.title[..self.title_len] }
+
     fn content_x(&self) -> i32 { self.x + BORDER_WIDTH as i32 }
     fn content_y(&self) -> i32 { self.y + TITLE_BAR_HEIGHT as i32 + BORDER_WIDTH as i32 }
     fn content_width(&self) -> usize { self.width.saturating_sub(BORDER_WIDTH * 2) }
@@ -462,7 +480,7 @@ fn draw_window_frame(fb: &mut FrameBuf, win: &Window, focused: bool) {
     // Title bar
     fill_rect(fb, win.x + bw as i32, win.y + bw as i32,
               win.width - bw * 2, TITLE_BAR_HEIGHT - bw, title_bg);
-    draw_text_at(fb, win.title.as_bytes(), win.x + 8, win.y + 4 + bw as i32, title_fg);
+    draw_text_at(fb, win.title_bytes(), win.x + 8, win.y + 4 + bw as i32, title_fg);
 
     // Content background
     fill_rect(fb, win.content_x(), win.content_y(),
@@ -577,23 +595,28 @@ fn main() {
     let (shell_master, shell_pid) = spawn_child(b"/bin/bsh\0", "bsh");
     let (bless_master, bless_pid) = spawn_child(b"/bin/bless\0", "bless");
 
-    // Create floating windows at pleasant default positions
-    let shell_w: usize = 750;
-    let shell_h: usize = 550;
-    let bounce_w: usize = 420;
+    // Create floating windows proportional to screen size
+    let shell_w: usize = (screen_w * 55 / 100).max(400);  // ~55% of screen width
+    let shell_h: usize = (screen_h * 60 / 100).max(300);  // ~60% of screen height
+    let bounce_w: usize = 420;                              // fixed size (client window)
     let bounce_h: usize = 380;
-    let logs_w: usize = 520;
-    let logs_h: usize = 280;
+    let right_w: usize = (screen_w * 35 / 100).max(300);   // ~35% for right-side windows
+    let logs_w: usize = right_w;
+    let logs_h: usize = (screen_h * 30 / 100).max(200);
 
     let shell_cols = (shell_w - BORDER_WIDTH * 2 - TERM_PADDING * 2) / CELL_W;
     let shell_rows = (shell_h - TERM_PADDING * 2) / CELL_H;
     let logs_cols = (logs_w - BORDER_WIDTH * 2 - TERM_PADDING * 2) / CELL_W;
     let logs_rows = (logs_h - TERM_PADDING * 2) / CELL_H;
 
+    let (bsh_title, bsh_title_len) = title_from_program(b"/bin/bsh\0");
+    let (bounce_title, bounce_title_len) = title_from_program(b"/bin/bounce\0");
+    let (bless_title, bless_title_len) = title_from_program(b"/bin/bless\0");
+
     let mut windows: Vec<Window> = vec![
         Window {
             x: 30, y: 30, width: shell_w, height: shell_h + TITLE_BAR_HEIGHT,
-            title: "Shell",
+            title: bsh_title, title_len: bsh_title_len,
             kind: WindowKind::Terminal {
                 emu: TermEmu::new(shell_cols, shell_rows),
                 master_fd: Some(shell_master),
@@ -606,7 +629,7 @@ fn main() {
             y: 30,
             width: bounce_w,
             height: bounce_h + TITLE_BAR_HEIGHT,
-            title: "Bounce",
+            title: bounce_title, title_len: bounce_title_len,
             kind: WindowKind::ClientWindow { window_id: 0 },
         },
         Window {
@@ -614,7 +637,7 @@ fn main() {
             y: (bounce_h as i32 + TITLE_BAR_HEIGHT as i32 + 90),
             width: logs_w,
             height: logs_h + TITLE_BAR_HEIGHT,
-            title: "Logs",
+            title: bless_title, title_len: bless_title_len,
             kind: WindowKind::Terminal {
                 emu: TermEmu::new(logs_cols, logs_rows),
                 master_fd: Some(bless_master),
@@ -652,18 +675,8 @@ fn main() {
     let mut dragging: Option<(usize, i32, i32)> = None; // (win_idx, offset_x, offset_y)
     let mut content_dirty = true; // only true when actual content changes
 
-    // Initial draw
-    for i in 0..windows.len() {
-        draw_window_frame(&mut fb, &windows[i], i == focused_win);
-    }
-    // Render terminal content
-    for win in windows.iter_mut() {
-        let cx = win.content_x() + TERM_PADDING as i32;
-        let cy = win.content_y() + TERM_PADDING as i32;
-        if let WindowKind::Terminal { ref mut emu, .. } = win.kind {
-            if cx >= 0 && cy >= 0 { emu.render(&mut fb, cx as usize, cy as usize); }
-        }
-    }
+    // Initial draw — frame + content per window in Z-order
+    redraw_all_windows(&mut fb, &mut windows, focused_win);
     // Upload initial frame
     let _ = graphics::virgl_composite_windows(&composite_buf, screen_w as u32, screen_h as u32, true);
 
@@ -769,7 +782,7 @@ fn main() {
                         windows[win_idx].x = new_x;
                         windows[win_idx].y = new_y;
                         // Redraw all windows (proper z-order)
-                        redraw_all_windows(&mut fb, &windows, focused_win);
+                        redraw_all_windows(&mut fb, &mut windows, focused_win);
                         content_dirty = true;
                     }
                 }
@@ -779,25 +792,14 @@ fn main() {
             let was_pressed = prev_mouse_buttons & 1 != 0;
 
             if pressed && !was_pressed {
-                // Mouse down — check title bars (top-to-bottom z-order: last window is on top)
-                let mut hit = false;
+                // Mouse down — check windows (top-to-bottom z-order: last is on top)
                 for i in (0..windows.len()).rev() {
-                    if windows[i].hit_title(mouse_x, mouse_y) {
+                    let ht = windows[i].hit_title(mouse_x, mouse_y);
+                    let ha = windows[i].hit_any(mouse_x, mouse_y);
+                    if ht {
                         dragging = Some((i, mouse_x - windows[i].x, mouse_y - windows[i].y));
-                        if i != focused_win {
-                            let old = focused_win;
-                            focused_win = i;
-                            // Bring to front: move window to end of z-order
-                            // (We'll skip actual reordering for now since we have 3 fixed windows)
-                            draw_window_frame(&mut fb, &windows[old], false);
-                            render_window_content(&mut windows[old], &mut fb);
-                            draw_window_frame(&mut fb, &windows[focused_win], true);
-                            render_window_content(&mut windows[focused_win], &mut fb);
-                            content_dirty = true;
-                        }
-                        hit = true;
-                        break;
-                    } else if windows[i].hit_any(mouse_x, mouse_y) {
+                    }
+                    if ht || ha {
                         if i != focused_win {
                             let old = focused_win;
                             focused_win = i;
@@ -807,11 +809,9 @@ fn main() {
                             render_window_content(&mut windows[focused_win], &mut fb);
                             content_dirty = true;
                         }
-                        hit = true;
                         break;
                     }
                 }
-                let _ = hit;
             }
 
             if !pressed && was_pressed {
@@ -825,13 +825,15 @@ fn main() {
         discover_client_windows(&mut windows);
         update_client_window_positions(&windows);
 
-        // Render terminal content (only if dirty)
+        // Render terminal content (only if dirty), clipped to window bounds
         for win in windows.iter_mut() {
             let cx = win.content_x() + TERM_PADDING as i32;
             let cy = win.content_y() + TERM_PADDING as i32;
+            let cw = win.content_width().saturating_sub(TERM_PADDING * 2);
+            let ch = win.content_height().saturating_sub(TERM_PADDING * 2);
             if let WindowKind::Terminal { ref mut emu, .. } = win.kind {
                 if emu.dirty && cx >= 0 && cy >= 0 {
-                    emu.render(&mut fb, cx as usize, cy as usize);
+                    emu.render(&mut fb, cx as usize, cy as usize, cw, ch);
                     content_dirty = true;
                 }
             }
@@ -896,9 +898,11 @@ fn write_escape_to_focused(windows: &[Window], focused_win: usize, seq: &[u8]) {
 fn render_window_content(win: &mut Window, fb: &mut FrameBuf) {
     let cx = win.content_x() + TERM_PADDING as i32;
     let cy = win.content_y() + TERM_PADDING as i32;
+    let cw = win.content_width().saturating_sub(TERM_PADDING * 2);
+    let ch = win.content_height().saturating_sub(TERM_PADDING * 2);
     if let WindowKind::Terminal { ref mut emu, .. } = win.kind {
         emu.dirty = true;
-        if cx >= 0 && cy >= 0 { emu.render(fb, cx as usize, cy as usize); }
+        if cx >= 0 && cy >= 0 { emu.render(fb, cx as usize, cy as usize, cw, ch); }
     }
 }
 
@@ -923,10 +927,12 @@ fn repaint_window_area(fb: &mut FrameBuf, win: &Window, screen_w: usize, screen_
     }
 }
 
-/// Redraw all windows in z-order (index 0 = bottom)
-fn redraw_all_windows(fb: &mut FrameBuf, windows: &[Window], focused_win: usize) {
+/// Redraw all windows in z-order (index 0 = bottom).
+/// Draws frame + content for each window so later windows correctly overlap earlier ones.
+fn redraw_all_windows(fb: &mut FrameBuf, windows: &mut [Window], focused_win: usize) {
     for i in 0..windows.len() {
         draw_window_frame(fb, &windows[i], i == focused_win);
+        render_window_content(&mut windows[i], fb);
     }
 }
 

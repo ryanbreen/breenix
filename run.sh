@@ -340,11 +340,11 @@ if [ "$PARALLELS" = true ]; then
     # VirtIO GPU with 3D acceleration (required for VirGL)
     prlctl set "$PARALLELS_VM" --3d-accelerate highest 2>/dev/null || true
     prlctl set "$PARALLELS_VM" --videosize 256 2>/dev/null || true
-    # high-resolution ON for 2x Retina window: 1280x960 guest fills a ~2560x1920 point
-    # window on Retina Macs. Cursor coordinates from Parallels USB tablet are in the
-    # guest resolution space (0-32767 mapped to 1280x960), not the point space.
-    # MUST come AFTER --3d-accelerate and --videosize which can reset this flag.
-    prlctl set "$PARALLELS_VM" --high-resolution on 2>/dev/null || true
+    # high-resolution OFF: 1 guest pixel = 1 Mac screen point. Without Parallels
+    # Tools, the guest can't negotiate DPI, so 'on' maps 1 pixel = 1 physical pixel
+    # making the window tiny on Retina. 'off' maps 1 pixel = 1 point = 2x physical.
+    # At 1920x1200 guest, this gives a 1920x1200 point window (fills most of screen).
+    prlctl set "$PARALLELS_VM" --high-resolution off 2>/dev/null || true
 
     # Remove any default devices Parallels created (cdrom, hdd, serial) to avoid conflicts
     for dev in hdd0 hdd1 hdd2 cdrom0 cdrom1 serial0 serial1; do
