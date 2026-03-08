@@ -250,11 +250,12 @@ fn inject_keycode(keycode: u16, shift: bool, ctrl: bool) {
 
 /// Get current screen dimensions for mouse clamping.
 fn screen_dimensions() -> (u32, u32) {
-    crate::drivers::virtio::gpu_mmio::dimensions()
+    crate::drivers::virtio::gpu_pci::dimensions()
+        .or_else(|| crate::drivers::virtio::gpu_mmio::dimensions())
         .or_else(|| {
             crate::graphics::arm64_fb::FB_INFO_CACHE.get().map(|c| (c.width as u32, c.height as u32))
         })
-        .unwrap_or((1280, 800))
+        .unwrap_or((1280, 960))
 }
 
 /// Process a USB boot protocol mouse report (3-4 bytes).
