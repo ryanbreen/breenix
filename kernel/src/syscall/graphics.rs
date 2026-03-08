@@ -740,6 +740,22 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             }
             handle_composite_windows(desc_ptr)
         }
+        17 => {
+            // SetWindowPosition: set window position for compositor
+            // p1=buffer_id, p2=x (i16 low) | y (i16 high)
+            let buffer_id = cmd.p1 as u32;
+            let x = (cmd.p2 & 0xFFFF) as i16 as i32;
+            let y = ((cmd.p2 >> 16) & 0xFFFF) as i16 as i32;
+            let mut reg = WINDOW_REGISTRY.lock();
+            match reg.find_mut(buffer_id) {
+                Some(buf) => {
+                    buf.x = x;
+                    buf.y = y;
+                    SyscallResult::Ok(0)
+                }
+                None => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+            }
+        }
         _ => {
             crate::serial_println!("[virgl-op] UNKNOWN op={}", cmd.op);
             SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
@@ -859,9 +875,14 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
 
                 let dirty = buf.generation > buf.last_uploaded_gen;
 
-                // Auto-position windows
-                let wx = (desc.bg_width as i32).saturating_sub(buf.width as i32 + margin + (win_idx as i32) * 30);
-                let wy = tab_offset + margin + (win_idx as i32) * 30;
+                // Use stored position if set by BWM, otherwise auto-position
+                let (wx, wy) = if buf.x != 0 || buf.y != 0 {
+                    (buf.x, buf.y)
+                } else {
+                    let auto_x = (desc.bg_width as i32).saturating_sub(buf.width as i32 + margin + (win_idx as i32) * 30);
+                    let auto_y = tab_offset + margin + (win_idx as i32) * 30;
+                    (auto_x, auto_y)
+                };
 
                 result.push(WindowCompositeInfo {
                     virgl_resource_id: buf.virgl_resource_id,

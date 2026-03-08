@@ -1,19 +1,21 @@
-//! Breenix Window Manager (bwm)
+//! Breenix Window Manager (bwm) — Tiling Window Manager
 //!
-//! Userspace window manager that provides tabbed terminal sessions.
-//! Takes over the display from the kernel terminal manager and renders
-//! its own tab bar + terminal content to the framebuffer.
+//! Userspace tiling window manager with GPU-accelerated compositing.
+//! Windows are arranged in a tiled layout with draggable boundaries.
+//! Each window has a title bar showing the process name, which also
+//! serves as a drag handle for repositioning.
 //!
-//! Tabs:
-//!   F1 - Shell (bsh)
-//!   F2 - Logs (kernel log viewer via /proc/kmsg)
-//!   F3 - Btop (system monitor)
+//! Default layout:
+//!   Left (60%): Shell terminal (bsh)
+//!   Right top (40%x50%): Bounce demo
+//!   Right bottom (40%x50%): Log viewer (bless)
 
 use std::process;
 
 use libbreenix::graphics;
 use libbreenix::io;
-use libbreenix::process::{fork, exec, waitpid, setsid, yield_now, ForkResult, WNOHANG};
+use libbreenix::fs;
+use libbreenix::process::{fork, exec, waitpid, setsid, ForkResult, WNOHANG};
 use libbreenix::pty;
 use libbreenix::types::Fd;
 
@@ -23,40 +25,33 @@ use libgfx::framebuf::FrameBuf;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-/// Tab indices
-const TAB_SHELL: usize = 0;
-const TAB_LOGS: usize = 1;
-const TAB_BTOP: usize = 2;
+/// Title bar height in pixels
+const TITLE_BAR_HEIGHT: usize = 22;
 
-/// Tab bar height in pixels (matches kernel terminal_manager TAB_HEIGHT)
-const TAB_BAR_HEIGHT: usize = 24;
+/// Border width between tiles
+const BORDER_WIDTH: usize = 4;
 
-/// Separator height below tab bar (matches kernel terminal_manager)
-const SEPARATOR_HEIGHT: usize = 2;
+/// Hit target for border dragging (larger than visual border)
+const BORDER_HIT_TARGET: usize = 8;
 
-/// Pane padding (matches kernel terminal_manager pane_padding)
-const PANE_PADDING: usize = 4;
-
-/// Noto Sans Mono 16px cell dimensions.
-/// Raster width is 7px but we use 6px cell advance for tighter terminal text.
-/// Characters overlap by 1px at their anti-aliased edges.
-const CELL_W: usize = 6;
+/// Noto Sans Mono 16px cell dimensions for terminal text.
+/// CELL_W must match bitmap_font::metrics().char_width (7 for size_16).
+const CELL_W: usize = 7;
 const CELL_H: usize = 18;
-/// Actual glyph raster width (for clipping / two-pass render).
-const GLYPH_W: usize = 7;
+/// Terminal padding inside tile content area
+const TERM_PADDING: usize = 4;
 
-/// Colors (match kernel terminal_manager exactly)
+// Colors
 const BG_COLOR: Color = Color::rgb(20, 30, 50);
 const FG_COLOR: Color = Color::rgb(255, 255, 255);
-const TAB_BG: Color = Color::rgb(40, 50, 70);
-const TAB_ACTIVE_BG: Color = Color::rgb(60, 80, 120);
-const TAB_INACTIVE_UNREAD_BG: Color = Color::rgb(80, 60, 60);
-const TAB_TEXT: Color = Color::rgb(255, 255, 255);
-const TAB_INACTIVE_TEXT: Color = Color::rgb(180, 180, 180);
-const TAB_SHORTCUT_TEXT: Color = Color::rgb(120, 140, 160);
-const SEPARATOR_COLOR: Color = Color::rgb(60, 80, 100);
+const TITLE_FOCUSED_BG: Color = Color::rgb(50, 70, 110);
+const TITLE_UNFOCUSED_BG: Color = Color::rgb(35, 45, 65);
+const TITLE_TEXT: Color = Color::rgb(220, 220, 220);
+const TITLE_FOCUSED_TEXT: Color = Color::rgb(255, 255, 255);
+const BORDER_COLOR: Color = Color::rgb(40, 55, 80);
+const BORDER_ACTIVE_COLOR: Color = Color::rgb(80, 120, 180);
 const CURSOR_COLOR: Color = Color::rgb(255, 255, 255);
-const UNREAD_DOT: Color = Color::rgb(255, 100, 100);
+const DESKTOP_BG: Color = Color::rgb(25, 35, 55);
 
 // ANSI color palette (standard 8 colors)
 const ANSI_COLORS: [Color; 8] = [
@@ -134,7 +129,6 @@ impl CursorState {
     fn draw(&mut self, fb: &mut FrameBuf, mx: usize, my: usize) {
         let w = fb.width;
         let h = fb.height;
-        // Save background
         for row in 0..CURSOR_H {
             let py = my + row;
             if py >= h { break; }
@@ -148,7 +142,6 @@ impl CursorState {
                 }
             }
         }
-        // Draw cursor
         for row in 0..CURSOR_H {
             let py = my + row;
             if py >= h { break; }
@@ -169,7 +162,7 @@ impl CursorState {
 
     fn update(&mut self, fb: &mut FrameBuf, mx: usize, my: usize) {
         if self.drawn && self.last_x == mx && self.last_y == my {
-            return; // No movement
+            return;
         }
         self.erase(fb);
         self.draw(fb, mx, my);
@@ -202,13 +195,13 @@ impl Cell {
 #[derive(Clone, Copy, PartialEq)]
 enum AnsiState {
     Normal,
-    Escape,     // Got ESC
-    Csi,        // Got ESC [
-    CsiParam,   // Collecting CSI parameters
-    OscString,  // Got ESC ] (operating system command, skip until ST)
+    Escape,
+    Csi,
+    CsiParam,
+    OscString,
 }
 
-// ─── Terminal Emulator (per-tab) ─────────────────────────────────────────────
+// ─── Terminal Emulator ───────────────────────────────────────────────────────
 
 struct TermEmu {
     cols: usize,
@@ -251,16 +244,13 @@ impl TermEmu {
         &mut self.cells[y * self.cols + x]
     }
 
-    /// Scroll the screen up by one line
     fn scroll_up(&mut self) {
         let cols = self.cols;
-        // Move lines up
         for y in 1..self.rows {
             for x in 0..cols {
                 self.cells[(y - 1) * cols + x] = self.cells[y * cols + x];
             }
         }
-        // Clear bottom line
         let last_row = self.rows - 1;
         for x in 0..cols {
             self.cells[last_row * cols + x] = Cell::blank();
@@ -268,7 +258,6 @@ impl TermEmu {
         self.dirty = true;
     }
 
-    /// Put a character at cursor, advance cursor
     fn put_char(&mut self, ch: u8) {
         if self.cursor_x >= self.cols {
             self.cursor_x = 0;
@@ -287,13 +276,12 @@ impl TermEmu {
         self.dirty = true;
     }
 
-    /// Process a single byte through the ANSI state machine
     fn feed(&mut self, byte: u8) {
         match self.ansi_state {
             AnsiState::Normal => match byte {
                 0x1b => self.ansi_state = AnsiState::Escape,
                 b'\n' => {
-                    self.cursor_x = 0; // LF implies CR in terminal emulators
+                    self.cursor_x = 0;
                     self.cursor_y += 1;
                     if self.cursor_y >= self.rows {
                         self.scroll_up();
@@ -312,15 +300,14 @@ impl TermEmu {
                     }
                 }
                 0x08 => {
-                    // Backspace
                     if self.cursor_x > 0 {
                         self.cursor_x -= 1;
                         self.dirty = true;
                     }
                 }
-                0x07 => {} // Bell - ignore
+                0x07 => {}
                 ch if ch >= 0x20 => self.put_char(ch),
-                _ => {} // Ignore other control characters
+                _ => {}
             },
             AnsiState::Escape => match byte {
                 b'[' => {
@@ -332,7 +319,6 @@ impl TermEmu {
                     self.ansi_state = AnsiState::OscString;
                 }
                 b'O' => {
-                    // SS3 - skip next byte (function key)
                     self.ansi_state = AnsiState::Normal;
                 }
                 _ => {
@@ -353,14 +339,12 @@ impl TermEmu {
                         self.ansi_param_idx += 1;
                     }
                 } else {
-                    // Final byte - execute CSI command
                     let nparams = self.ansi_param_idx + 1;
                     self.execute_csi(byte, nparams);
                     self.ansi_state = AnsiState::Normal;
                 }
             }
             AnsiState::OscString => {
-                // Skip until BEL or ST (ESC \)
                 if byte == 0x07 || byte == b'\\' {
                     self.ansi_state = AnsiState::Normal;
                 }
@@ -374,7 +358,6 @@ impl TermEmu {
 
         match cmd {
             b'H' | b'f' => {
-                // CUP: Cursor Position (row;col, 1-based)
                 let row = if p0 > 0 { p0 - 1 } else { 0 };
                 let col = if p1 > 0 { p1 - 1 } else { 0 };
                 self.cursor_y = row.min(self.rows - 1);
@@ -382,34 +365,33 @@ impl TermEmu {
                 self.dirty = true;
             }
             b'A' => {
-                // CUU: Cursor Up
                 let n = if p0 > 0 { p0 } else { 1 };
                 self.cursor_y = self.cursor_y.saturating_sub(n);
                 self.dirty = true;
             }
             b'B' => {
-                // CUD: Cursor Down
                 let n = if p0 > 0 { p0 } else { 1 };
                 self.cursor_y = (self.cursor_y + n).min(self.rows - 1);
                 self.dirty = true;
             }
             b'C' => {
-                // CUF: Cursor Forward
                 let n = if p0 > 0 { p0 } else { 1 };
                 self.cursor_x = (self.cursor_x + n).min(self.cols - 1);
                 self.dirty = true;
             }
             b'D' => {
-                // CUB: Cursor Back
                 let n = if p0 > 0 { p0 } else { 1 };
                 self.cursor_x = self.cursor_x.saturating_sub(n);
                 self.dirty = true;
             }
+            b'G' => {
+                let col = if p0 > 0 { p0 - 1 } else { 0 };
+                self.cursor_x = col.min(self.cols - 1);
+                self.dirty = true;
+            }
             b'J' => {
-                // ED: Erase in Display
                 match p0 {
                     0 => {
-                        // Clear from cursor to end of screen
                         for x in self.cursor_x..self.cols {
                             *self.cell_mut(x, self.cursor_y) = Cell::blank();
                         }
@@ -420,7 +402,6 @@ impl TermEmu {
                         }
                     }
                     1 => {
-                        // Clear from start to cursor
                         for y in 0..self.cursor_y {
                             for x in 0..self.cols {
                                 *self.cell_mut(x, y) = Cell::blank();
@@ -431,32 +412,31 @@ impl TermEmu {
                         }
                     }
                     2 | 3 => {
-                        // Clear entire screen
-                        for i in 0..self.cells.len() {
-                            self.cells[i] = Cell::blank();
+                        for y in 0..self.rows {
+                            for x in 0..self.cols {
+                                *self.cell_mut(x, y) = Cell::blank();
+                            }
                         }
+                        self.cursor_x = 0;
+                        self.cursor_y = 0;
                     }
                     _ => {}
                 }
                 self.dirty = true;
             }
             b'K' => {
-                // EL: Erase in Line
                 match p0 {
                     0 => {
-                        // Clear from cursor to end of line
                         for x in self.cursor_x..self.cols {
                             *self.cell_mut(x, self.cursor_y) = Cell::blank();
                         }
                     }
                     1 => {
-                        // Clear from start to cursor
                         for x in 0..=self.cursor_x.min(self.cols - 1) {
                             *self.cell_mut(x, self.cursor_y) = Cell::blank();
                         }
                     }
                     2 => {
-                        // Clear entire line
                         for x in 0..self.cols {
                             *self.cell_mut(x, self.cursor_y) = Cell::blank();
                         }
@@ -465,358 +445,406 @@ impl TermEmu {
                 }
                 self.dirty = true;
             }
-            b'm' => {
-                // SGR: Select Graphic Rendition
-                for i in 0..nparams {
-                    let code = self.ansi_params[i];
-                    match code {
-                        0 => {
-                            self.fg = FG_COLOR;
-                            self.bg = BG_COLOR;
-                            self.bold = false;
-                        }
-                        1 => self.bold = true,
-                        22 => self.bold = false,
-                        30..=37 => self.fg = ANSI_COLORS[(code - 30) as usize],
-                        39 => self.fg = FG_COLOR,
-                        40..=47 => self.bg = ANSI_COLORS[(code - 40) as usize],
-                        49 => self.bg = BG_COLOR,
-                        90..=97 => {
-                            // Bright foreground colors
-                            let mut c = ANSI_COLORS[(code - 90) as usize];
-                            c.r = c.r.saturating_add(55);
-                            c.g = c.g.saturating_add(55);
-                            c.b = c.b.saturating_add(55);
-                            self.fg = c;
-                        }
-                        _ => {} // Ignore unsupported SGR codes
-                    }
-                }
-                // Handle bare ESC[m (no params = reset)
-                if nparams == 1 && self.ansi_params[0] == 0 {
-                    self.fg = FG_COLOR;
-                    self.bg = BG_COLOR;
-                    self.bold = false;
-                }
-            }
-            b'L' => {
-                // IL: Insert Lines
-                let n = if p0 > 0 { p0 } else { 1 };
-                let cols = self.cols;
-                for _ in 0..n {
-                    if self.cursor_y < self.rows - 1 {
-                        // Shift lines down
-                        for y in (self.cursor_y + 1..self.rows).rev() {
-                            for x in 0..cols {
-                                self.cells[y * cols + x] = self.cells[(y - 1) * cols + x];
-                            }
-                        }
-                    }
-                    // Clear current line
-                    for x in 0..cols {
-                        self.cells[self.cursor_y * cols + x] = Cell::blank();
-                    }
-                }
-                self.dirty = true;
-            }
-            b'M' => {
-                // DL: Delete Lines
-                let n = if p0 > 0 { p0 } else { 1 };
-                let cols = self.cols;
-                for _ in 0..n {
-                    // Shift lines up
-                    for y in self.cursor_y..self.rows - 1 {
-                        for x in 0..cols {
-                            self.cells[y * cols + x] = self.cells[(y + 1) * cols + x];
-                        }
-                    }
-                    // Clear bottom line
-                    let last = self.rows - 1;
-                    for x in 0..cols {
-                        self.cells[last * cols + x] = Cell::blank();
-                    }
-                }
-                self.dirty = true;
-            }
-            b'G' => {
-                // CHA: Cursor Horizontal Absolute
-                let col = if p0 > 0 { p0 - 1 } else { 0 };
-                self.cursor_x = col.min(self.cols - 1);
-                self.dirty = true;
-            }
             b'd' => {
-                // VPA: Vertical Position Absolute
                 let row = if p0 > 0 { p0 - 1 } else { 0 };
                 self.cursor_y = row.min(self.rows - 1);
                 self.dirty = true;
             }
             b'r' => {
-                // DECSTBM: Set Scrolling Region (ignored for now)
+                self.cursor_x = 0;
+                self.cursor_y = 0;
+                self.dirty = true;
             }
-            b'h' | b'l' => {
-                // SM/RM: Set/Reset Mode (ignored - includes cursor visibility etc.)
+            b'm' => {
+                if nparams == 1 && p0 == 0 {
+                    self.fg = FG_COLOR;
+                    self.bg = BG_COLOR;
+                    self.bold = false;
+                } else {
+                    for i in 0..nparams {
+                        let code = self.ansi_params[i];
+                        match code {
+                            0 => { self.fg = FG_COLOR; self.bg = BG_COLOR; self.bold = false; }
+                            1 => { self.bold = true; }
+                            22 => { self.bold = false; }
+                            30..=37 => { self.fg = ANSI_COLORS[(code - 30) as usize]; }
+                            39 => { self.fg = FG_COLOR; }
+                            40..=47 => { self.bg = ANSI_COLORS[(code - 40) as usize]; }
+                            49 => { self.bg = BG_COLOR; }
+                            90..=97 => {
+                                let mut c = ANSI_COLORS[(code - 90) as usize];
+                                c.r = c.r.saturating_add(60);
+                                c.g = c.g.saturating_add(60);
+                                c.b = c.b.saturating_add(60);
+                                self.fg = c;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
             }
-            b'~' => {
-                // Special keys (F1~, F2~, etc.) - handled at input level
-            }
-            _ => {} // Ignore unknown CSI commands
+            b'l' | b'h' => {}
+            _ => {}
         }
     }
 
-    /// Feed a slice of bytes through the emulator
-    fn feed_bytes(&mut self, data: &[u8]) {
-        for &b in data {
-            self.feed(b);
-        }
-    }
-
-    /// Render the terminal emulator content to a framebuffer region.
-    ///
-    /// Two-pass rendering: backgrounds first, then glyphs. This allows
-    /// glyphs (GLYPH_W=7) to overflow beyond their cell (CELL_W=5) without
-    /// being erased by the next cell's background fill.
     fn render(&mut self, fb: &mut FrameBuf, x_off: usize, y_off: usize) {
-        if !self.dirty {
-            return;
-        }
+        if !self.dirty { return; }
         self.dirty = false;
+
+        let fm = bitmap_font::metrics();
 
         for row in 0..self.rows {
             let py = y_off + row * CELL_H;
-
-            // Pass 1: draw all cell backgrounds for this row
+            if py + CELL_H > fb.height { break; }
             for col in 0..self.cols {
                 let cell = self.cell(col, row);
                 let px = x_off + col * CELL_W;
+                if px + CELL_W > fb.width { break; }
+
+                // Fill background
                 for dy in 0..CELL_H {
                     for dx in 0..CELL_W {
                         fb.put_pixel(px + dx, py + dy, cell.bg);
                     }
                 }
-            }
-            // Clear the overflow region after the last cell (GLYPH_W - CELL_W pixels)
-            let overflow_start = x_off + self.cols * CELL_W;
-            for dy in 0..CELL_H {
-                for dx in 0..GLYPH_W {
-                    fb.put_pixel(overflow_start + dx, py + dy, BG_COLOR);
-                }
-            }
-
-            // Pass 2: draw all glyphs for this row (may extend into next cell)
-            for col in 0..self.cols {
-                let cell = self.cell(col, row);
-                if cell.ch > b' ' && cell.ch < 127 {
+                // Draw glyph using bitmap_font (alpha-blends against bg already in fb)
+                if cell.ch != b' ' {
                     let fg = if cell.bold {
                         Color::rgb(
-                            cell.fg.r.saturating_add(55),
-                            cell.fg.g.saturating_add(55),
-                            cell.fg.b.saturating_add(55),
+                            cell.fg.r.saturating_add(40),
+                            cell.fg.g.saturating_add(40),
+                            cell.fg.b.saturating_add(40),
                         )
                     } else {
                         cell.fg
                     };
-                    let px = x_off + col * CELL_W;
-                    bitmap_font::draw_char(fb, cell.ch as char, px, py + 1, fg);
+                    bitmap_font::draw_char(fb, cell.ch as char, px, py, fg);
+                }
+            }
+            // Cursor underline
+            if row == self.cursor_y && self.cursor_x < self.cols {
+                let cx = x_off + self.cursor_x * CELL_W;
+                let cw = fm.char_width.min(CELL_W);
+                for dy in 0..2usize {
+                    for dx in 0..cw {
+                        if cx + dx < fb.width && py + CELL_H - 2 + dy < fb.height {
+                            fb.put_pixel(cx + dx, py + CELL_H - 2 + dy, CURSOR_COLOR);
+                        }
+                    }
                 }
             }
         }
+    }
 
-        // Draw cursor
-        if self.cursor_x < self.cols && self.cursor_y < self.rows {
-            let cx = x_off + self.cursor_x * CELL_W;
-            let cy = y_off + self.cursor_y * CELL_H + CELL_H - 2;
-            for dx in 0..CELL_W {
-                fb.put_pixel(cx + dx, cy, CURSOR_COLOR);
-                fb.put_pixel(cx + dx, cy + 1, CURSOR_COLOR);
+    /// Resize the terminal, preserving content where possible
+    fn resize(&mut self, new_cols: usize, new_rows: usize) {
+        if new_cols == self.cols && new_rows == self.rows { return; }
+        let mut new_cells = vec![Cell::blank(); new_cols * new_rows];
+        let copy_cols = self.cols.min(new_cols);
+        let copy_rows = self.rows.min(new_rows);
+        for y in 0..copy_rows {
+            for x in 0..copy_cols {
+                new_cells[y * new_cols + x] = self.cells[y * self.cols + x];
             }
         }
+        self.cells = new_cells;
+        self.cols = new_cols;
+        self.rows = new_rows;
+        self.cursor_x = self.cursor_x.min(new_cols.saturating_sub(1));
+        self.cursor_y = self.cursor_y.min(new_rows.saturating_sub(1));
+        self.dirty = true;
     }
 }
 
-// ─── Tab State ───────────────────────────────────────────────────────────────
-
-struct Tab {
-    name: &'static str,
-    shortcut: &'static str,
-    emu: TermEmu,
-    master_fd: Option<Fd>,
-    child_pid: i64,
-    has_unread: bool,
-}
-
-// ─── Escape Sequence Parser for Keyboard Input ──────────────────────────────
-
-enum KeyEvent {
-    Char(u8),
-    EscSeq([u8; 8], usize),
-    F1,
-    F2,
-    F3,
-    None,
-}
+// ─── Input Parser ────────────────────────────────────────────────────────────
 
 struct InputParser {
-    buf: [u8; 8],
-    len: usize,
+    state: InputState,
+    esc_buf: [u8; 8],
+    esc_len: usize,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum InputState {
+    Normal,
+    Escape,
+    CsiOrSS3,
+}
+
+enum InputEvent {
+    Char(u8),
+    FunctionKey(u8),
+    ArrowUp,
+    ArrowDown,
+    ArrowRight,
+    ArrowLeft,
 }
 
 impl InputParser {
     fn new() -> Self {
-        Self { buf: [0; 8], len: 0 }
+        Self { state: InputState::Normal, esc_buf: [0; 8], esc_len: 0 }
     }
 
-    fn feed(&mut self, byte: u8) -> KeyEvent {
-        self.buf[self.len] = byte;
-        self.len += 1;
-
-        // Check for escape sequences
-        if self.buf[0] == 0x1b {
-            if self.len == 1 {
-                return KeyEvent::None; // Wait for more bytes
-            }
-            if self.len == 2 {
-                if self.buf[1] == b'[' || self.buf[1] == b'O' {
-                    return KeyEvent::None; // Wait for more
+    fn feed(&mut self, byte: u8) -> Option<InputEvent> {
+        match self.state {
+            InputState::Normal => {
+                if byte == 0x1b {
+                    self.state = InputState::Escape;
+                    self.esc_len = 0;
+                    None
+                } else {
+                    Some(InputEvent::Char(byte))
                 }
-                // ESC + something else: return ESC then the byte
-                self.len = 0;
-                return KeyEvent::Char(byte);
             }
-            // len >= 3: check for complete sequences
-
-            // SS3 F-keys (ESC O P/Q/R)
-            if self.len == 3 && self.buf[1] == b'O' {
-                let result = match self.buf[2] {
-                    b'P' => KeyEvent::F1,
-                    b'Q' => KeyEvent::F2,
-                    b'R' => KeyEvent::F3,
-                    _ => {
-                        self.len = 0;
-                        return KeyEvent::Char(byte);
-                    }
-                };
-                self.len = 0;
-                return result;
+            InputState::Escape => {
+                if byte == b'[' || byte == b'O' {
+                    self.state = InputState::CsiOrSS3;
+                    self.esc_buf[0] = byte;
+                    self.esc_len = 1;
+                    None
+                } else {
+                    self.state = InputState::Normal;
+                    Some(InputEvent::Char(byte))
+                }
             }
+            InputState::CsiOrSS3 => {
+                if self.esc_len < 7 {
+                    self.esc_buf[self.esc_len] = byte;
+                    self.esc_len += 1;
+                }
+                if byte >= 0x40 && byte <= 0x7e {
+                    self.state = InputState::Normal;
+                    self.decode_escape()
+                } else {
+                    None
+                }
+            }
+        }
+    }
 
-            // CSI sequences (ESC [ ...)
-            if self.buf[1] == b'[' {
-                let last = self.buf[self.len - 1];
-                // CSI final byte is in 0x40-0x7E (@..~)
-                if last >= 0x40 && last <= 0x7E {
-                    // Check CSI F-key forms first (ESC [ 1 1 ~ etc.)
-                    if self.len == 5 {
-                        match (self.buf[2], self.buf[3], self.buf[4]) {
-                            (b'1', b'1', b'~') => { self.len = 0; return KeyEvent::F1; }
-                            (b'1', b'2', b'~') => { self.len = 0; return KeyEvent::F2; }
-                            (b'1', b'3', b'~') => { self.len = 0; return KeyEvent::F3; }
+    fn decode_escape(&self) -> Option<InputEvent> {
+        if self.esc_len < 2 { return None; }
+        let final_byte = self.esc_buf[self.esc_len - 1];
+
+        if self.esc_buf[0] == b'[' {
+            match final_byte {
+                b'A' => return Some(InputEvent::ArrowUp),
+                b'B' => return Some(InputEvent::ArrowDown),
+                b'C' => return Some(InputEvent::ArrowRight),
+                b'D' => return Some(InputEvent::ArrowLeft),
+                b'~' if self.esc_len >= 3 => {
+                    let num = self.esc_buf[1] - b'0';
+                    if self.esc_len == 3 {
+                        match num {
+                            1 => return Some(InputEvent::FunctionKey(1)),
+                            _ => {}
+                        }
+                    } else if self.esc_len == 4 {
+                        let num2 = (self.esc_buf[1] - b'0') * 10 + (self.esc_buf[2] - b'0');
+                        match num2 {
+                            11 => return Some(InputEvent::FunctionKey(1)),
+                            12 => return Some(InputEvent::FunctionKey(2)),
+                            13 => return Some(InputEvent::FunctionKey(3)),
+                            14 => return Some(InputEvent::FunctionKey(4)),
+                            15 => return Some(InputEvent::FunctionKey(5)),
                             _ => {}
                         }
                     }
-                    // Complete CSI sequence (arrows, home, end, delete, etc.)
-                    let buf = self.buf;
-                    let len = self.len;
-                    self.len = 0;
-                    return KeyEvent::EscSeq(buf, len);
                 }
-                // Not complete yet
-                if self.len >= 8 {
-                    self.len = 0;
-                    return KeyEvent::Char(byte);
-                }
-                return KeyEvent::None;
+                _ => {}
             }
-
-            // Unknown escape sequence, give up
-            self.len = 0;
-            return KeyEvent::Char(byte);
+        } else if self.esc_buf[0] == b'O' {
+            match final_byte {
+                b'P' => return Some(InputEvent::FunctionKey(1)),
+                b'Q' => return Some(InputEvent::FunctionKey(2)),
+                b'R' => return Some(InputEvent::FunctionKey(3)),
+                b'S' => return Some(InputEvent::FunctionKey(4)),
+                _ => {}
+            }
         }
+        None
+    }
+}
 
-        // Regular character
-        self.len = 0;
-        KeyEvent::Char(byte)
+// ─── Tiling Layout ───────────────────────────────────────────────────────────
+
+/// Each tile occupies a rectangle and contains either a terminal or a client window.
+struct Tile {
+    // Layout position and size (in screen pixels)
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    // Title
+    title: &'static str,
+    // Content
+    kind: TileKind,
+}
+
+enum TileKind {
+    Terminal {
+        emu: TermEmu,
+        master_fd: Option<Fd>,
+        child_pid: i64,
+        program: &'static [u8],
+    },
+    ClientWindow {
+        window_id: u32,
+    },
+}
+
+impl Tile {
+    /// Content area (below title bar)
+    fn content_x(&self) -> usize { self.x }
+    fn content_y(&self) -> usize { self.y + TITLE_BAR_HEIGHT }
+    fn content_width(&self) -> usize { self.width }
+    fn content_height(&self) -> usize { self.height.saturating_sub(TITLE_BAR_HEIGHT) }
+
+    /// Terminal dimensions in cells for this tile's content area
+    fn term_dims(&self) -> (usize, usize) {
+        let pw = self.content_width().saturating_sub(TERM_PADDING * 2);
+        let ph = self.content_height().saturating_sub(TERM_PADDING * 2);
+        (pw / CELL_W, ph / CELL_H)
+    }
+}
+
+/// The tiling layout: a vertical split, with the right side optionally split horizontally.
+struct TileLayout {
+    screen_w: usize,
+    screen_h: usize,
+    /// Vertical split position (x coordinate of the border)
+    vsplit_x: usize,
+    /// Horizontal split position on the right side (y coordinate)
+    hsplit_y: usize,
+}
+
+impl TileLayout {
+    fn new(screen_w: usize, screen_h: usize) -> Self {
+        let vsplit_x = screen_w * 60 / 100; // 60% left
+        let hsplit_y = screen_h / 2;         // 50/50 right
+        Self { screen_w, screen_h, vsplit_x, hsplit_y }
     }
 
-    /// Flush pending escape sequence as individual chars
-    fn flush(&mut self) -> Option<u8> {
-        if self.len > 0 {
-            let byte = self.buf[0];
-            // Shift buffer
-            for i in 0..self.len - 1 {
-                self.buf[i] = self.buf[i + 1];
+    /// Recompute tile positions from split ratios. Returns (left, right_top, right_bottom).
+    fn compute_tile_rects(&self) -> [(usize, usize, usize, usize); 3] {
+        let vx = self.vsplit_x;
+        let hy = self.hsplit_y;
+        let sw = self.screen_w;
+        let sh = self.screen_h;
+        let bw = BORDER_WIDTH;
+
+        // Left tile: full height
+        let left = (0, 0, vx, sh);
+        // Right top: from vsplit to screen right, top to hsplit
+        let rt = (vx + bw, 0, sw - vx - bw, hy);
+        // Right bottom: from vsplit to screen right, hsplit to bottom
+        let rb = (vx + bw, hy + bw, sw - vx - bw, sh - hy - bw);
+
+        [left, rt, rb]
+    }
+
+    /// Apply computed rects to tiles
+    fn apply_to_tiles(&self, tiles: &mut [Tile]) {
+        let rects = self.compute_tile_rects();
+        for (i, tile) in tiles.iter_mut().enumerate() {
+            if i < 3 {
+                tile.x = rects[i].0;
+                tile.y = rects[i].1;
+                tile.width = rects[i].2;
+                tile.height = rects[i].3;
             }
-            self.len -= 1;
-            Some(byte)
-        } else {
-            None
         }
     }
 }
 
-// ─── Helper Functions ────────────────────────────────────────────────────────
+/// What the mouse is currently dragging
+#[derive(Clone, Copy, PartialEq)]
+enum DragState {
+    None,
+    VSplit,              // Dragging the vertical split border
+    HSplit,              // Dragging the horizontal split border
+    TitleBar(usize),     // Dragging tile i's title bar
+}
 
-/// Spawn a child process connected to a PTY
+// ─── Drawing Helpers ─────────────────────────────────────────────────────────
+
+fn draw_text_tight(fb: &mut FrameBuf, text: &[u8], x: usize, y: usize, color: Color) {
+    let fm = bitmap_font::metrics();
+    for (i, &ch) in text.iter().enumerate() {
+        let px = x + i * CELL_W;
+        if px + fm.char_width > fb.width { break; }
+        bitmap_font::draw_char(fb, ch as char, px, y, color);
+    }
+}
+
+fn fill_rect(fb: &mut FrameBuf, x: usize, y: usize, w: usize, h: usize, color: Color) {
+    for dy in 0..h {
+        let py = y + dy;
+        if py >= fb.height { break; }
+        for dx in 0..w {
+            let px = x + dx;
+            if px >= fb.width { break; }
+            fb.put_pixel(px, py, color);
+        }
+    }
+}
+
+fn draw_title_bar(fb: &mut FrameBuf, tile: &Tile, focused: bool) {
+    let bg = if focused { TITLE_FOCUSED_BG } else { TITLE_UNFOCUSED_BG };
+    let fg = if focused { TITLE_FOCUSED_TEXT } else { TITLE_TEXT };
+    fill_rect(fb, tile.x, tile.y, tile.width, TITLE_BAR_HEIGHT, bg);
+    let text_x = tile.x + 8;
+    let text_y = tile.y + 4;
+    draw_text_tight(fb, tile.title.as_bytes(), text_x, text_y, fg);
+}
+
+fn draw_borders(fb: &mut FrameBuf, layout: &TileLayout, drag: DragState) {
+    let vx = layout.vsplit_x;
+    let hy = layout.hsplit_y;
+    let sw = layout.screen_w;
+    let sh = layout.screen_h;
+    let bw = BORDER_WIDTH;
+
+    // Vertical border
+    let vcolor = if drag == DragState::VSplit { BORDER_ACTIVE_COLOR } else { BORDER_COLOR };
+    fill_rect(fb, vx, 0, bw, sh, vcolor);
+
+    // Horizontal border (right side only)
+    let hcolor = if drag == DragState::HSplit { BORDER_ACTIVE_COLOR } else { BORDER_COLOR };
+    fill_rect(fb, vx + bw, hy, sw - vx - bw, bw, hcolor);
+}
+
+// ─── Process Spawning ────────────────────────────────────────────────────────
+
 fn spawn_child(path: &[u8], _name: &str) -> (Fd, i64) {
-    // Create PTY pair
-    let (master_fd, slave_path) = match pty::openpty() {
-        Ok(pair) => pair,
+    let (master_fd, slave_name) = match pty::openpty() {
+        Ok((m, s)) => (m, s),
         Err(_) => return (Fd::from_raw(0), -1),
     };
 
-    let slave_path_slice = pty::slave_path_bytes(&slave_path);
+    // slave_name is [u8; 32] with null-terminated path
+    let len = slave_name.iter().position(|&b| b == 0).unwrap_or(slave_name.len());
+    let slave_path_str = core::str::from_utf8(&slave_name[..len]).unwrap_or("/dev/pts/0");
+    // fs::open requires null-terminated str, append \0
+    let mut slave_path_buf = String::from(slave_path_str);
+    slave_path_buf.push('\0');
 
     match fork() {
         Ok(ForkResult::Child) => {
-            // Child process: set up PTY slave as stdin/stdout/stderr
-            // Diagnostic markers to serial (fd 1 = StdIo before dup2)
-            let _ = io::write(Fd::from_raw(1), b"[child:");
-            let _ = io::write(Fd::from_raw(1), _name.as_bytes());
-            let _ = io::write(Fd::from_raw(1), b":fork]\n");
-
-            let _ = setsid(); // New session
-
-            // Close ALL inherited FDs > 2 (master PTY FDs from parent BWM)
-            // This prevents leaking master FDs to child processes which would
-            // keep PTY refcounts elevated and prevent proper cleanup.
-            for fd_num in 3..20 {
-                let _ = io::close(Fd::from_raw(fd_num));
-            }
-
-            // Build null-terminated path for open
-            let mut open_path = [0u8; 64];
-            let copy_len = slave_path_slice.len().min(63);
-            open_path[..copy_len].copy_from_slice(&slave_path_slice[..copy_len]);
-
-            let path_str = core::str::from_utf8(&open_path[..copy_len]).unwrap_or("/dev/pts/0");
-
-            // Open the slave PTY
-            let slave_fd = match libbreenix::fs::open(path_str, 0x02) {
-                // O_RDWR
+            let _ = io::close(master_fd);
+            let _ = setsid();
+            let slave_fd = match fs::open(&slave_path_buf, fs::O_RDWR) {
                 Ok(fd) => fd,
-                Err(_) => {
-                    let _ = io::write(Fd::from_raw(1), b"[child:");
-                    let _ = io::write(Fd::from_raw(1), _name.as_bytes());
-                    let _ = io::write(Fd::from_raw(1), b":open_fail]\n");
-                    libbreenix::process::exit(126);
-                }
+                Err(_) => libbreenix::process::exit(126),
             };
-
-            // Set the slave PTY as the controlling terminal for this session.
-            // Without this, shells like ash can't set up job control and print
-            // "can't access tty; job control turned off".
             let _ = libbreenix::termios::set_controlling_terminal(slave_fd);
-
-            // Dup to stdin/stdout/stderr
             let _ = io::dup2(slave_fd, Fd::from_raw(0));
             let _ = io::dup2(slave_fd, Fd::from_raw(1));
             let _ = io::dup2(slave_fd, Fd::from_raw(2));
-
-            // Close original if it's not 0, 1, or 2
             if slave_fd.raw() > 2 {
                 let _ = io::close(slave_fd);
             }
-
-            // Exec the program (after dup2, stdout goes to PTY slave)
             let _ = exec(path);
             libbreenix::process::exit(127);
         }
@@ -830,135 +858,55 @@ fn spawn_child(path: &[u8], _name: &str) -> (Fd, i64) {
     }
 }
 
-// ─── Tab Bar Hit Testing ─────────────────────────────────────────────────────
+// ─── Hit Testing ─────────────────────────────────────────────────────────────
 
-/// Hit-test the tab bar to determine which tab was clicked.
-/// `local_x` is in pane-local coordinates (0 = left edge of right pane).
-/// Returns the tab index if a tab was hit, None otherwise.
-fn hit_test_tab_bar(tabs: &[Tab], local_x: usize, _width: usize) -> Option<usize> {
-    let mut tab_x: usize = 4;
-    for (i, tab) in tabs.iter().enumerate() {
-        let title_width = tab.name.as_bytes().len() * TAB_CHAR_W;
-        let shortcut_width = (tab.shortcut.as_bytes().len() + 2) * TAB_CHAR_W;
-        let tab_padding = 12;
-        let tab_width = title_width + shortcut_width + tab_padding * 2;
+fn hit_test_vsplit(layout: &TileLayout, mx: usize, _my: usize) -> bool {
+    let vx = layout.vsplit_x;
+    mx >= vx.saturating_sub(BORDER_HIT_TARGET / 2)
+        && mx < vx + BORDER_WIDTH + BORDER_HIT_TARGET / 2
+}
 
-        if local_x >= tab_x && local_x < tab_x + tab_width {
+fn hit_test_hsplit(layout: &TileLayout, mx: usize, my: usize) -> bool {
+    let vx = layout.vsplit_x + BORDER_WIDTH;
+    let hy = layout.hsplit_y;
+    mx >= vx
+        && my >= hy.saturating_sub(BORDER_HIT_TARGET / 2)
+        && my < hy + BORDER_WIDTH + BORDER_HIT_TARGET / 2
+}
+
+fn hit_test_title_bar(tiles: &[Tile], mx: usize, my: usize) -> Option<usize> {
+    for (i, tile) in tiles.iter().enumerate() {
+        if mx >= tile.x && mx < tile.x + tile.width
+            && my >= tile.y && my < tile.y + TITLE_BAR_HEIGHT
+        {
             return Some(i);
         }
-
-        tab_x += tab_width + 4;
     }
     None
 }
 
-// ─── Tab Bar Rendering ───────────────────────────────────────────────────────
-
-/// Tab label character advance width (same as terminal CELL_W).
-const TAB_CHAR_W: usize = CELL_W;
-/// Noto glyph height for vertical centering in tab bar.
-const TAB_GLYPH_H: usize = 16;
-
-/// Draw text at CELL_W spacing (tighter than the default font raster width).
-fn draw_text_tight(fb: &mut FrameBuf, text: &[u8], x: usize, y: usize, fg: Color) {
-    for (i, &ch) in text.iter().enumerate() {
-        bitmap_font::draw_char(fb, ch as char, x + i * CELL_W, y, fg);
-    }
-}
-
-// Window compositing helpers removed — the kernel GPU compositor (op=16)
-// now handles window decorations and per-window textured quads directly.
-
-fn draw_tab_bar(fb: &mut FrameBuf, tabs: &[Tab], active: usize, width: usize) {
-    // Tab bar background (matches kernel: rgb(40, 50, 70))
-    for y in 0..TAB_BAR_HEIGHT {
-        for x in 0..width {
-            fb.put_pixel(x, y, TAB_BG);
+fn hit_test_tile(tiles: &[Tile], mx: usize, my: usize) -> Option<usize> {
+    for (i, tile) in tiles.iter().enumerate() {
+        if mx >= tile.x && mx < tile.x + tile.width
+            && my >= tile.y && my < tile.y + tile.height
+        {
+            return Some(i);
         }
     }
-
-    // Draw variable-width tabs matching kernel terminal_manager layout
-    let mut tab_x: usize = 4;
-    for (i, tab) in tabs.iter().enumerate() {
-        let title_bytes = tab.name.as_bytes();
-        let shortcut_bytes = tab.shortcut.as_bytes();
-
-        let title_width = title_bytes.len() * TAB_CHAR_W;
-        let shortcut_width = (shortcut_bytes.len() + 2) * TAB_CHAR_W; // +2 for []
-        let tab_padding = 12;
-        let tab_width = title_width + shortcut_width + tab_padding * 2;
-
-        // Tab background color (matches kernel colors exactly)
-        let bg = if i == active {
-            TAB_ACTIVE_BG
-        } else if tabs[i].has_unread {
-            TAB_INACTIVE_UNREAD_BG
-        } else {
-            Color::rgb(30, 40, 55)
-        };
-
-        // Tab background rect
-        for y in 2..TAB_BAR_HEIGHT - 2 {
-            for x in tab_x..tab_x + tab_width {
-                if x < width {
-                    fb.put_pixel(x, y, bg);
-                }
-            }
-        }
-
-        // Title text (anti-aliased noto font, at CELL_W spacing)
-        let title_color = if i == active { TAB_TEXT } else { TAB_INACTIVE_TEXT };
-        let text_x = tab_x + tab_padding / 2;
-        let text_y = (TAB_BAR_HEIGHT - TAB_GLYPH_H) / 2;
-        draw_text_tight(fb, title_bytes, text_x, text_y, title_color);
-
-        // Shortcut text "[F1]"
-        let mut shortcut_label = [0u8; 8];
-        let mut sp = 0;
-        shortcut_label[sp] = b'['; sp += 1;
-        for &b in shortcut_bytes {
-            if sp < 7 { shortcut_label[sp] = b; sp += 1; }
-        }
-        if sp < 8 { shortcut_label[sp] = b']'; sp += 1; }
-        let shortcut_x = text_x + title_width + 4;
-        draw_text_tight(fb, &shortcut_label[..sp], shortcut_x, text_y, TAB_SHORTCUT_TEXT);
-
-        // Unread indicator: 4x4 dot at top-right of tab
-        if tab.has_unread && i != active {
-            let dot_x = tab_x + tab_width - 8;
-            let dot_y = 6;
-            for dy in 0..4_usize {
-                for dx in 0..4_usize {
-                    if dot_x + dx < width {
-                        fb.put_pixel(dot_x + dx, dot_y + dy, UNREAD_DOT);
-                    }
-                }
-            }
-        }
-
-        tab_x += tab_width + 4;
-    }
-
-    // Separator line below tab bar
-    for y in TAB_BAR_HEIGHT..TAB_BAR_HEIGHT + SEPARATOR_HEIGHT {
-        for x in 0..width {
-            fb.put_pixel(x, y, SEPARATOR_COLOR);
-        }
-    }
+    None
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
-    print!("[bwm] Breenix Window Manager starting...\n");
+    print!("[bwm] Breenix Tiling Window Manager starting...\n");
 
-    // Step 1: Take over the display from kernel terminal manager
+    // Step 1: Take over display
     if let Err(e) = graphics::take_over_display() {
         print!("[bwm] WARNING: take_over_display failed: {}\n", e);
     }
 
-    // Step 2: Get framebuffer info and mmap (retry on EBUSY — the kernel
-    // returns EBUSY if the framebuffer lock is contended at startup)
+    // Step 2: Get framebuffer info
     let info = {
         let mut result = None;
         for attempt in 0..10 {
@@ -968,7 +916,7 @@ fn main() {
                     let _ = libbreenix::time::nanosleep(&libbreenix::types::Timespec { tv_sec: 0, tv_nsec: 10_000_000 });
                 }
                 Err(e) => {
-                    print!("[bwm] ERROR: fbinfo failed after retries: {}\n", e);
+                    print!("[bwm] ERROR: fbinfo failed: {}\n", e);
                     process::exit(1);
                 }
             }
@@ -976,369 +924,243 @@ fn main() {
         result.unwrap()
     };
 
-    let full_width = info.width as usize;
-    let height = info.height as usize;
+    let screen_w = info.width as usize;
+    let screen_h = info.height as usize;
     let bpp = info.bytes_per_pixel as usize;
 
-    // GPU compositing mode: render to a heap-allocated pixel buffer, display
-    // via virgl_composite(). Falls back to mmap if VirGL is unavailable.
-    //
-    // In GPU mode, BWM owns the entire display (not just right pane).
-    // In mmap mode, BWM only owns the right pane (after the divider).
+    // GPU compositing mode check
     let gpu_compositing = {
-        let test_pixel: [u32; 1] = [0xFF000000]; // black
+        let test_pixel: [u32; 1] = [0xFF000000];
         graphics::virgl_composite(&test_pixel, 1, 1).is_ok()
     };
 
-    let (mut composite_buf, pane_width, mmap_fb_ptr) = if gpu_compositing {
-        print!("[bwm] GPU compositing mode (VirGL)\n");
-        // Full-screen pixel buffer (BGRA u32)
-        let buf = vec![0u32; full_width * height];
-        (Some(buf), full_width, None)
-    } else {
-        print!("[bwm] Software mmap mode (fallback)\n");
-        let fb_ptr = {
-            let mut result = None;
-            for attempt in 0..10 {
-                match graphics::fb_mmap() {
-                    Ok(ptr) => { result = Some(ptr); break; }
-                    Err(_) if attempt < 9 => {
-                        let _ = libbreenix::time::nanosleep(&libbreenix::types::Timespec { tv_sec: 0, tv_nsec: 10_000_000 });
-                    }
-                    Err(e) => {
-                        print!("[bwm] ERROR: fb_mmap failed after retries: {}\n", e);
-                        process::exit(1);
-                    }
-                }
-            }
-            result.unwrap()
-        };
-        let pw = full_width - (full_width / 2 + 4); // right pane after divider
-        (None, pw, Some(fb_ptr))
-    };
+    if !gpu_compositing {
+        print!("[bwm] ERROR: GPU compositing required for tiling WM\n");
+        process::exit(1);
+    }
 
-    // Create FrameBuf pointing to either the heap buffer or mmap
-    let fb_raw_ptr = if let Some(ref mut buf) = composite_buf {
-        buf.as_mut_ptr() as *mut u8
-    } else {
-        mmap_fb_ptr.unwrap()
-    };
+    print!("[bwm] GPU compositing mode (VirGL)\n");
+    let mut composite_buf = vec![0u32; screen_w * screen_h];
 
     let mut fb = unsafe {
         FrameBuf::from_raw(
-            fb_raw_ptr,
-            pane_width,
-            height,
-            pane_width * bpp,
+            composite_buf.as_mut_ptr() as *mut u8,
+            screen_w,
+            screen_h,
+            screen_w * bpp,
             bpp,
             info.is_bgr(),
         )
     };
 
-    // Calculate terminal dimensions (below tab bar + separator + padding)
-    let term_y_offset = TAB_BAR_HEIGHT + SEPARATOR_HEIGHT + PANE_PADDING;
-    let term_x_offset = PANE_PADDING;
-    let term_pixel_width = pane_width.saturating_sub(PANE_PADDING * 2);
-    let term_pixel_height = height.saturating_sub(term_y_offset + PANE_PADDING);
-    let term_cols = term_pixel_width / CELL_W;
-    let term_rows = term_pixel_height / CELL_H;
+    // Step 3: Create tiling layout
+    let mut layout = TileLayout::new(screen_w, screen_h);
+
+    // Step 4: Spawn children and create tiles
+    let (shell_master, shell_pid) = spawn_child(b"/bin/bsh\0", "bsh");
+    let (bless_master, bless_pid) = spawn_child(b"/bin/bless\0", "bless");
+
+    let rects = layout.compute_tile_rects();
+
+    // Compute initial terminal sizes
+    let shell_cols = (rects[0].2.saturating_sub(TERM_PADDING * 2)) / CELL_W;
+    let shell_rows = (rects[0].3.saturating_sub(TITLE_BAR_HEIGHT + TERM_PADDING * 2)) / CELL_H;
+    let logs_cols = (rects[2].2.saturating_sub(TERM_PADDING * 2)) / CELL_W;
+    let logs_rows = (rects[2].3.saturating_sub(TITLE_BAR_HEIGHT + TERM_PADDING * 2)) / CELL_H;
+
+    let mut tiles: Vec<Tile> = vec![
+        Tile {
+            x: rects[0].0, y: rects[0].1, width: rects[0].2, height: rects[0].3,
+            title: "Shell",
+            kind: TileKind::Terminal {
+                emu: TermEmu::new(shell_cols, shell_rows),
+                master_fd: Some(shell_master),
+                child_pid: shell_pid,
+                program: b"/bin/bsh\0",
+            },
+        },
+        Tile {
+            x: rects[1].0, y: rects[1].1, width: rects[1].2, height: rects[1].3,
+            title: "Bounce",
+            kind: TileKind::ClientWindow { window_id: 0 },
+        },
+        Tile {
+            x: rects[2].0, y: rects[2].1, width: rects[2].2, height: rects[2].3,
+            title: "Logs",
+            kind: TileKind::Terminal {
+                emu: TermEmu::new(logs_cols, logs_rows),
+                master_fd: Some(bless_master),
+                child_pid: bless_pid,
+                program: b"/bin/bless\0",
+            },
+        },
+    ];
+
+    // Set PTY window sizes
+    let ws_shell = libbreenix::termios::Winsize {
+        ws_row: shell_rows as u16, ws_col: shell_cols as u16,
+        ws_xpixel: 0, ws_ypixel: 0,
+    };
+    let _ = libbreenix::termios::set_winsize(shell_master, &ws_shell);
+    let ws_logs = libbreenix::termios::Winsize {
+        ws_row: logs_rows as u16, ws_col: logs_cols as u16,
+        ws_xpixel: 0, ws_ypixel: 0,
+    };
+    let _ = libbreenix::termios::set_winsize(bless_master, &ws_logs);
 
     let font_m = bitmap_font::metrics();
     print!("[bwm] Font metrics: char_width={}, char_height={}, line_height={}\n",
            font_m.char_width, font_m.char_height, font_m.line_height());
-    print!("[bwm] Cell: {}x{} (CELL_W x CELL_H)\n", CELL_W, CELL_H);
-    print!("[bwm] Display: {}x{}, pane: {}x{}, terminal: {}x{} cells\n",
-           full_width, height, pane_width, height, term_cols, term_rows);
+    print!("[bwm] Display: {}x{}, shell: {}x{} cells, logs: {}x{} cells\n",
+           screen_w, screen_h, shell_cols, shell_rows, logs_cols, logs_rows);
 
-    // Step 3: Enter raw mode on stdin
+    // Step 5: Enter raw mode on stdin
     let mut orig_termios = libbreenix::termios::Termios::default();
     let _ = libbreenix::termios::tcgetattr(Fd::from_raw(0), &mut orig_termios);
     let mut raw = orig_termios;
     libbreenix::termios::cfmakeraw(&mut raw);
     let _ = libbreenix::termios::tcsetattr(Fd::from_raw(0), libbreenix::termios::TCSANOW, &raw);
 
-    // Step 4: Create tabs with PTY children
-    let (shell_master, shell_pid) = spawn_child(b"/bin/bsh\0", "bsh");
-    let (bless_master, bless_pid) = spawn_child(b"/bin/bless\0", "bless");
-    let (btop_master, btop_pid) = spawn_child(b"/bin/btop\0", "btop");
-
-    // Set PTY window size so child processes know the terminal dimensions
-    let ws = libbreenix::termios::Winsize {
-        ws_row: term_rows as u16,
-        ws_col: term_cols as u16,
-        ws_xpixel: term_pixel_width as u16,
-        ws_ypixel: term_pixel_height as u16,
-    };
-    let _ = libbreenix::termios::set_winsize(shell_master, &ws);
-    let _ = libbreenix::termios::set_winsize(bless_master, &ws);
-    let _ = libbreenix::termios::set_winsize(btop_master, &ws);
-
-    let mut tabs = [
-        Tab {
-            name: "Shell",
-            shortcut: "F1",
-            emu: TermEmu::new(term_cols, term_rows),
-            master_fd: Some(shell_master),
-            child_pid: shell_pid,
-            has_unread: false,
-        },
-        Tab {
-            name: "Logs",
-            shortcut: "F2",
-            emu: TermEmu::new(term_cols, term_rows),
-            master_fd: Some(bless_master),
-            child_pid: bless_pid,
-            has_unread: false,
-        },
-        Tab {
-            name: "Btop",
-            shortcut: "F3",
-            emu: TermEmu::new(term_cols, term_rows),
-            master_fd: Some(btop_master),
-            child_pid: btop_pid,
-            has_unread: false,
-        },
-    ];
-
-    let mut active_tab: usize = TAB_SHELL;
+    let mut focused_tile: usize = 0;
     let mut input_parser = InputParser::new();
     let mut frame: u32 = 0;
-    let mut prev_mouse_buttons: u32 = 0; // For detecting click transitions
+    let mut prev_mouse_buttons: u32 = 0;
     let mut mouse_x: usize = 0;
     let mut mouse_y: usize = 0;
     let mut cursor_state = CursorState::new();
-    let pane_x_offset = if gpu_compositing { 0 } else { full_width / 2 + 4 };
+    let mut drag_state = DragState::None;
+    let mut needs_full_redraw = true;
 
     // Initial render
-    fb.clear(BG_COLOR);
-    draw_tab_bar(&mut fb, &tabs, active_tab, pane_width);
-    tabs[active_tab].emu.render(&mut fb, term_x_offset, term_y_offset);
-    if let Some(ref buf) = composite_buf {
-        // Use multi-window compositor for initial render too
-        let _ = graphics::virgl_composite_windows(buf, pane_width as u32, height as u32, true);
-    } else {
-        let _ = graphics::fb_flush();
+    fb.clear(DESKTOP_BG);
+    draw_borders(&mut fb, &layout, drag_state);
+    for (i, tile) in tiles.iter().enumerate() {
+        draw_title_bar(&mut fb, tile, i == focused_tile);
+    }
+    // Render terminal tiles
+    for tile in tiles.iter_mut() {
+        let cx = tile.content_x() + TERM_PADDING;
+        let cy = tile.content_y() + TERM_PADDING;
+        if let TileKind::Terminal { ref mut emu, .. } = tile.kind {
+            emu.render(&mut fb, cx, cy);
+        }
     }
 
-    // Step 5: Main loop
+    let _ = graphics::virgl_composite_windows(&composite_buf, screen_w as u32, screen_h as u32, true);
+
+    // Step 6: Main loop
     let mut read_buf = [0u8; 512];
     let mut needs_flush = false;
 
-    // Pre-allocate poll fds (avoid Vec allocation per frame)
+    // Collect FDs for polling
     let mut poll_fds = [
-        io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 },
-        io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 },
-        io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 },
-        io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 },
+        io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 }, // stdin
+        io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 }, // shell
+        io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 }, // logs
     ];
 
     loop {
-        // Reset revents and set up poll fds
-        let mut nfds = 1; // Always poll stdin (index 0)
+        // Setup poll FDs
+        let mut nfds = 1; // stdin
         poll_fds[0].revents = 0;
 
-        // Shell PTY master
-        let shell_poll_idx = if let Some(fd) = tabs[TAB_SHELL].master_fd {
+        let mut shell_poll_idx: Option<usize> = None;
+        let mut logs_poll_idx: Option<usize> = None;
+
+        if let TileKind::Terminal { master_fd: Some(fd), .. } = &tiles[0].kind {
             poll_fds[nfds].fd = fd.raw() as i32;
             poll_fds[nfds].revents = 0;
-            let idx = nfds;
+            shell_poll_idx = Some(nfds);
             nfds += 1;
-            Some(idx)
-        } else {
-            None
-        };
-
-        // Bless PTY master (Logs tab)
-        let bless_poll_idx = if let Some(fd) = tabs[TAB_LOGS].master_fd {
+        }
+        if let TileKind::Terminal { master_fd: Some(fd), .. } = &tiles[2].kind {
             poll_fds[nfds].fd = fd.raw() as i32;
             poll_fds[nfds].revents = 0;
-            let idx = nfds;
+            logs_poll_idx = Some(nfds);
             nfds += 1;
-            Some(idx)
-        } else {
-            None
-        };
+        }
 
-        // Btop PTY master
-        let btop_poll_idx = if let Some(fd) = tabs[TAB_BTOP].master_fd {
-            poll_fds[nfds].fd = fd.raw() as i32;
-            poll_fds[nfds].revents = 0;
-            let idx = nfds;
-            nfds += 1;
-            Some(idx)
-        } else {
-            None
-        };
-
-        // Non-blocking poll: check for input without sleeping.
-        // Frame pacing (mark_window_dirty blocks bounce until we composite)
-        // provides natural back-pressure, so we don't need poll to pace us.
-        // When no windows are dirty, the compositor early-outs and we yield.
         let _nready = io::poll(&mut poll_fds[..nfds], 0).unwrap_or(0);
 
-        // Check stdin
-        let stdin_had_data = poll_fds[0].revents & (io::poll_events::POLLIN as i16) != 0;
-        if stdin_had_data {
-            match io::read(Fd::from_raw(0), &mut read_buf) {
-                Ok(n) if n > 0 => {
-                    let mut char_buf = [0u8; 512];
-                    let mut char_count = 0;
-                    for i in 0..n {
-                        match input_parser.feed(read_buf[i]) {
-                            KeyEvent::Char(ch) => {
-                                char_buf[char_count] = ch;
-                                char_count += 1;
-                            }
-                            KeyEvent::EscSeq(buf, len) => {
-                                // Flush accumulated chars first
-                                if char_count > 0 {
-                                    if let Some(fd) = tabs[active_tab].master_fd {
-                                        let _ = io::write(fd, &char_buf[..char_count]);
-                                    }
-                                    char_count = 0;
-                                }
-                                if let Some(fd) = tabs[active_tab].master_fd {
-                                    let _ = io::write(fd, &buf[..len]);
-                                }
-                            }
-                            KeyEvent::F1 => {
-                                if char_count > 0 {
-                                    if let Some(fd) = tabs[active_tab].master_fd {
-                                        let _ = io::write(fd, &char_buf[..char_count]);
-                                    }
-                                    char_count = 0;
-                                }
-                                if active_tab != TAB_SHELL {
-                                    active_tab = TAB_SHELL;
-                                    tabs[TAB_SHELL].has_unread = false;
-                                    tabs[active_tab].emu.dirty = true;
-                                    draw_tab_bar(&mut fb, &tabs, active_tab, pane_width);
+        // Read stdin (keyboard) → route to focused terminal
+        if poll_fds[0].revents & io::poll_events::POLLIN as i16 != 0 {
+            if let Ok(n) = io::read(Fd::from_raw(0), &mut read_buf) {
+                for i in 0..n {
+                    let byte = read_buf[i];
+                    if let Some(event) = input_parser.feed(byte) {
+                        match event {
+                            InputEvent::FunctionKey(k) if k >= 1 && k <= 3 => {
+                                // F1-F3: switch focus
+                                let new_focus = (k - 1) as usize;
+                                if new_focus < tiles.len() && new_focus != focused_tile {
+                                    let old = focused_tile;
+                                    focused_tile = new_focus;
+                                    draw_title_bar(&mut fb, &tiles[old], false);
+                                    draw_title_bar(&mut fb, &tiles[focused_tile], true);
                                     needs_flush = true;
                                 }
                             }
-                            KeyEvent::F2 => {
-                                if char_count > 0 {
-                                    if let Some(fd) = tabs[active_tab].master_fd {
-                                        let _ = io::write(fd, &char_buf[..char_count]);
-                                    }
-                                    char_count = 0;
-                                }
-                                if active_tab != TAB_LOGS {
-                                    active_tab = TAB_LOGS;
-                                    tabs[TAB_LOGS].has_unread = false;
-                                    tabs[active_tab].emu.dirty = true;
-                                    draw_tab_bar(&mut fb, &tabs, active_tab, pane_width);
-                                    needs_flush = true;
+                            InputEvent::Char(c) => {
+                                if let TileKind::Terminal { master_fd: Some(fd), .. } = &tiles[focused_tile].kind {
+                                    let _ = io::write(*fd, &[c]);
                                 }
                             }
-                            KeyEvent::F3 => {
-                                if char_count > 0 {
-                                    if let Some(fd) = tabs[active_tab].master_fd {
-                                        let _ = io::write(fd, &char_buf[..char_count]);
-                                    }
-                                    char_count = 0;
-                                }
-                                if active_tab != TAB_BTOP {
-                                    active_tab = TAB_BTOP;
-                                    tabs[TAB_BTOP].has_unread = false;
-                                    tabs[active_tab].emu.dirty = true;
-                                    draw_tab_bar(&mut fb, &tabs, active_tab, pane_width);
-                                    needs_flush = true;
+                            InputEvent::ArrowUp => {
+                                if let TileKind::Terminal { master_fd: Some(fd), .. } = &tiles[focused_tile].kind {
+                                    let _ = io::write(*fd, b"\x1b[A");
                                 }
                             }
-                            KeyEvent::None => {}
+                            InputEvent::ArrowDown => {
+                                if let TileKind::Terminal { master_fd: Some(fd), .. } = &tiles[focused_tile].kind {
+                                    let _ = io::write(*fd, b"\x1b[B");
+                                }
+                            }
+                            InputEvent::ArrowRight => {
+                                if let TileKind::Terminal { master_fd: Some(fd), .. } = &tiles[focused_tile].kind {
+                                    let _ = io::write(*fd, b"\x1b[C");
+                                }
+                            }
+                            InputEvent::ArrowLeft => {
+                                if let TileKind::Terminal { master_fd: Some(fd), .. } = &tiles[focused_tile].kind {
+                                    let _ = io::write(*fd, b"\x1b[D");
+                                }
+                            }
+                            _ => {}
                         }
                     }
-                    // Flush remaining accumulated chars
-                    if char_count > 0 {
-                        if let Some(fd) = tabs[active_tab].master_fd {
-                            let _ = io::write(fd, &char_buf[..char_count]);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        // Flush pending escape bytes only when stdin had no data (poll timeout)
-        if !stdin_had_data {
-            while let Some(byte) = input_parser.flush() {
-                if let Some(fd) = tabs[active_tab].master_fd {
-                    let _ = io::write(fd, &[byte]);
                 }
             }
         }
 
-        // Check Shell PTY master
+        // Read shell PTY output
         if let Some(idx) = shell_poll_idx {
-            if poll_fds[idx].revents & (io::poll_events::POLLIN as i16) != 0 {
-                if let Some(fd) = tabs[TAB_SHELL].master_fd {
-                    match io::read(fd, &mut read_buf) {
-                        Ok(n) if n > 0 => {
-                            tabs[TAB_SHELL].emu.feed_bytes(&read_buf[..n]);
-                            if active_tab != TAB_SHELL {
-                                tabs[TAB_SHELL].has_unread = true;
-                            }
+            if poll_fds[idx].revents & io::poll_events::POLLIN as i16 != 0 {
+                if let TileKind::Terminal { master_fd: Some(fd), ref mut emu, .. } = tiles[0].kind {
+                    if let Ok(n) = io::read(fd, &mut read_buf) {
+                        for i in 0..n {
+                            emu.feed(read_buf[i]);
                         }
-                        _ => {}
+                        needs_flush = true;
                     }
-                }
-            }
-            // Handle hangup: child exited, stop polling this fd
-            if poll_fds[idx].revents & (io::poll_events::POLLHUP as i16) != 0 {
-                if let Some(fd) = tabs[TAB_SHELL].master_fd.take() {
-                    let _ = io::close(fd);
                 }
             }
         }
 
-        // Check Bless PTY master (Logs tab)
-        if let Some(idx) = bless_poll_idx {
-            if poll_fds[idx].revents & (io::poll_events::POLLIN as i16) != 0 {
-                if let Some(fd) = tabs[TAB_LOGS].master_fd {
-                    match io::read(fd, &mut read_buf) {
-                        Ok(n) if n > 0 => {
-                            tabs[TAB_LOGS].emu.feed_bytes(&read_buf[..n]);
-                            if active_tab != TAB_LOGS {
-                                tabs[TAB_LOGS].has_unread = true;
-                            }
+        // Read logs PTY output
+        if let Some(idx) = logs_poll_idx {
+            if poll_fds[idx].revents & io::poll_events::POLLIN as i16 != 0 {
+                if let TileKind::Terminal { master_fd: Some(fd), ref mut emu, .. } = tiles[2].kind {
+                    if let Ok(n) = io::read(fd, &mut read_buf) {
+                        for i in 0..n {
+                            emu.feed(read_buf[i]);
                         }
-                        _ => {}
+                        needs_flush = true;
                     }
-                }
-            }
-            // Handle hangup: child exited, stop polling this fd
-            if poll_fds[idx].revents & (io::poll_events::POLLHUP as i16) != 0 {
-                if let Some(fd) = tabs[TAB_LOGS].master_fd.take() {
-                    let _ = io::close(fd);
                 }
             }
         }
 
-        // Check Btop PTY master
-        if let Some(idx) = btop_poll_idx {
-            if poll_fds[idx].revents & (io::poll_events::POLLIN as i16) != 0 {
-                if let Some(fd) = tabs[TAB_BTOP].master_fd {
-                    match io::read(fd, &mut read_buf) {
-                        Ok(n) if n > 0 => {
-                            tabs[TAB_BTOP].emu.feed_bytes(&read_buf[..n]);
-                            if active_tab != TAB_BTOP {
-                                tabs[TAB_BTOP].has_unread = true;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            // Handle hangup: child exited, stop polling this fd
-            if poll_fds[idx].revents & (io::poll_events::POLLHUP as i16) != 0 {
-                if let Some(fd) = tabs[TAB_BTOP].master_fd.take() {
-                    let _ = io::close(fd);
-                }
-            }
-        }
-
-        // Check for mouse clicks on tab bar and track cursor position
+        // Mouse input
         if let Ok((mx, my, buttons)) = graphics::mouse_state() {
             let new_mx = mx as usize;
             let new_my = my as usize;
@@ -1346,106 +1168,260 @@ fn main() {
                 mouse_x = new_mx;
                 mouse_y = new_my;
                 needs_flush = true;
-            }
-            // Detect rising edge (button just pressed)
-            if buttons & 1 != 0 && prev_mouse_buttons & 1 == 0 {
-                // Convert screen coords to pane-local coords
-                if new_mx >= pane_x_offset && new_my < TAB_BAR_HEIGHT {
-                    let local_x = new_mx - pane_x_offset;
-                    if let Some(clicked_tab) = hit_test_tab_bar(&tabs, local_x, pane_width) {
-                        if clicked_tab != active_tab {
-                            active_tab = clicked_tab;
-                            tabs[active_tab].has_unread = false;
-                            tabs[active_tab].emu.dirty = true;
-                            draw_tab_bar(&mut fb, &tabs, active_tab, pane_width);
-                            needs_flush = true;
+
+                // Handle dragging
+                match drag_state {
+                    DragState::VSplit => {
+                        let new_x = mouse_x.clamp(200, screen_w - 200);
+                        if new_x != layout.vsplit_x {
+                            layout.vsplit_x = new_x;
+                            layout.apply_to_tiles(&mut tiles);
+                            resize_terminal_tiles(&mut tiles);
+                            needs_full_redraw = true;
                         }
+                    }
+                    DragState::HSplit => {
+                        let new_y = mouse_y.clamp(100, screen_h - 100);
+                        if new_y != layout.hsplit_y {
+                            layout.hsplit_y = new_y;
+                            layout.apply_to_tiles(&mut tiles);
+                            resize_terminal_tiles(&mut tiles);
+                            needs_full_redraw = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Button press
+            let pressed = buttons & 1 != 0;
+            let was_pressed = prev_mouse_buttons & 1 != 0;
+
+            if pressed && !was_pressed {
+                // Mouse down: start drag or focus
+                if hit_test_vsplit(&layout, mouse_x, mouse_y) {
+                    drag_state = DragState::VSplit;
+                } else if hit_test_hsplit(&layout, mouse_x, mouse_y) {
+                    drag_state = DragState::HSplit;
+                } else if let Some(tile_idx) = hit_test_title_bar(&tiles, mouse_x, mouse_y) {
+                    drag_state = DragState::TitleBar(tile_idx);
+                    if tile_idx != focused_tile {
+                        let old = focused_tile;
+                        focused_tile = tile_idx;
+                        draw_title_bar(&mut fb, &tiles[old], false);
+                        draw_title_bar(&mut fb, &tiles[focused_tile], true);
+                        needs_flush = true;
+                    }
+                } else if let Some(tile_idx) = hit_test_tile(&tiles, mouse_x, mouse_y) {
+                    if tile_idx != focused_tile {
+                        let old = focused_tile;
+                        focused_tile = tile_idx;
+                        draw_title_bar(&mut fb, &tiles[old], false);
+                        draw_title_bar(&mut fb, &tiles[focused_tile], true);
+                        needs_flush = true;
                     }
                 }
             }
+
+            if !pressed && was_pressed {
+                // Mouse up: end drag
+                if let DragState::TitleBar(src) = drag_state {
+                    // Drop on another tile = swap
+                    if let Some(dst) = hit_test_tile(&tiles, mouse_x, mouse_y) {
+                        if dst != src {
+                            // Swap tile contents (titles and kinds)
+                            let src_title = tiles[src].title;
+                            let dst_title = tiles[dst].title;
+                            tiles[src].title = dst_title;
+                            tiles[dst].title = src_title;
+
+                            // Swap kinds using indices
+                            let (left, right) = if src < dst {
+                                tiles.split_at_mut(dst)
+                            } else {
+                                tiles.split_at_mut(src)
+                            };
+                            if src < dst {
+                                core::mem::swap(&mut left[src].kind, &mut right[0].kind);
+                            } else {
+                                core::mem::swap(&mut right[0].kind, &mut left[dst].kind);
+                            }
+
+                            resize_terminal_tiles(&mut tiles);
+                            needs_full_redraw = true;
+                        }
+                    }
+                }
+                if drag_state != DragState::None {
+                    needs_full_redraw = true;
+                }
+                drag_state = DragState::None;
+            }
+
             prev_mouse_buttons = buttons;
         }
 
-        // Reap dead children (non-blocking)
-        let mut status: i32 = 0;
-        loop {
-            match waitpid(-1, &mut status as *mut i32, WNOHANG) {
-                Ok(pid) if pid.raw() > 0 => {
-                    let rpid = pid.raw() as i64;
-                    // Check if a child died and respawn
-                    if rpid == tabs[TAB_SHELL].child_pid {
-                        print!("[bwm] Shell exited, respawning...\n");
-                        // Close old master FD to release the PTY pair
-                        if let Some(old_fd) = tabs[TAB_SHELL].master_fd.take() {
-                            let _ = io::close(old_fd);
-                        }
-                        let (m, p) = spawn_child(b"/bin/bsh\0", "bsh");
-                        tabs[TAB_SHELL].master_fd = Some(m);
-                        tabs[TAB_SHELL].child_pid = p;
-                    } else if rpid == tabs[TAB_LOGS].child_pid {
-                        print!("[bwm] bless exited, respawning...\n");
-                        if let Some(old_fd) = tabs[TAB_LOGS].master_fd.take() {
-                            let _ = io::close(old_fd);
-                        }
-                        let (m, p) = spawn_child(b"/bin/bless\0", "bless");
-                        tabs[TAB_LOGS].master_fd = Some(m);
-                        tabs[TAB_LOGS].child_pid = p;
-                    } else if rpid == tabs[TAB_BTOP].child_pid {
-                        print!("[bwm] btop exited, respawning...\n");
-                        // Close old master FD to release the PTY pair
-                        if let Some(old_fd) = tabs[TAB_BTOP].master_fd.take() {
-                            let _ = io::close(old_fd);
-                        }
-                        let (m, p) = spawn_child(b"/bin/btop\0", "btop");
-                        tabs[TAB_BTOP].master_fd = Some(m);
-                        tabs[TAB_BTOP].child_pid = p;
-                    }
-                }
-                _ => break,
-            }
-        }
+        // Discover client windows (bounce) if not yet found
+        discover_client_windows(&mut tiles);
 
-        // Erase cursor before content rendering (so we don't save cursor
-        // pixels as background when content redraws under the cursor)
-        let content_dirty = tabs[active_tab].emu.dirty || frame % 200 == 0;
+        // Update bounce window position
+        update_client_window_positions(&tiles);
+
+        // Erase cursor before content render
+        let content_dirty = needs_full_redraw
+            || tiles.iter().any(|t| matches!(&t.kind, TileKind::Terminal { emu, .. } if emu.dirty))
+            || frame % 200 == 0;
         if content_dirty {
             cursor_state.erase(&mut fb);
         }
 
-        // Render active tab (only if dirty)
-        if tabs[active_tab].emu.dirty {
-            tabs[active_tab].emu.render(&mut fb, term_x_offset, term_y_offset);
+        // Full redraw if layout changed
+        if needs_full_redraw {
+            fb.clear(DESKTOP_BG);
+            draw_borders(&mut fb, &layout, drag_state);
+            for (i, tile) in tiles.iter().enumerate() {
+                draw_title_bar(&mut fb, tile, i == focused_tile);
+                // Fill content area with BG_COLOR for terminals
+                if matches!(tile.kind, TileKind::Terminal { .. }) {
+                    fill_rect(&mut fb, tile.content_x(), tile.content_y(),
+                              tile.content_width(), tile.content_height(), BG_COLOR);
+                }
+            }
+            // Mark all terminal emus as dirty
+            for tile in tiles.iter_mut() {
+                if let TileKind::Terminal { ref mut emu, .. } = tile.kind {
+                    emu.dirty = true;
+                }
+            }
+            needs_full_redraw = false;
             needs_flush = true;
         }
 
-        // Redraw tab bar periodically (for unread indicators)
+        // Render terminal content
+        for tile in tiles.iter_mut() {
+            let cx = tile.content_x() + TERM_PADDING;
+            let cy = tile.content_y() + TERM_PADDING;
+            if let TileKind::Terminal { ref mut emu, .. } = tile.kind {
+                if emu.dirty {
+                    emu.render(&mut fb, cx, cy);
+                    needs_flush = true;
+                }
+            }
+        }
+
+        // Periodic full redraw (for cursor blink, etc.)
         if frame % 200 == 0 {
-            draw_tab_bar(&mut fb, &tabs, active_tab, pane_width);
+            for (i, tile) in tiles.iter().enumerate() {
+                draw_title_bar(&mut fb, tile, i == focused_tile);
+            }
             needs_flush = true;
         }
 
-        // Draw mouse cursor on top of everything (with save/restore)
+        // Draw mouse cursor
         if mouse_x > 0 || mouse_y > 0 {
             cursor_state.update(&mut fb, mouse_x, mouse_y);
             needs_flush = true;
         }
 
-        // Composite: always call in GPU mode (kernel early-outs if nothing dirty)
-        if needs_flush || gpu_compositing {
-            if let Some(ref buf) = composite_buf {
-                let _ = graphics::virgl_composite_windows(
-                    buf, pane_width as u32, height as u32, needs_flush,
-                );
-            } else {
-                let _ = graphics::fb_flush();
-            }
-            needs_flush = false;
+        // Composite
+        if needs_flush {
+            let _ = graphics::virgl_composite_windows(
+                &composite_buf, screen_w as u32, screen_h as u32, needs_flush,
+            );
+        } else {
+            // Still call compositor to service frame pacing (wake blocked clients)
+            let _ = graphics::virgl_composite_windows(
+                &composite_buf, screen_w as u32, screen_h as u32, false,
+            );
         }
-
-        // Yield to let client windows render (they block on mark_window_dirty
-        // until we composite their frame, so this just gives them a chance to wake)
-        let _ = yield_now();
-
+        needs_flush = false;
         frame = frame.wrapping_add(1);
+
+        // Reap dead children
+        let mut status: i32 = 0;
+        loop {
+            match waitpid(-1, &mut status as *mut i32, WNOHANG) {
+                Ok(pid) if pid.raw() > 0 => {
+                    let rpid = pid.raw() as i64;
+                    for tile in tiles.iter_mut() {
+                        let (cols, rows) = tile.term_dims();
+                        if let TileKind::Terminal { ref mut child_pid, ref mut master_fd, program, .. } = tile.kind {
+                            if rpid == *child_pid {
+                                print!("[bwm] Child exited, respawning...\n");
+                                if let Some(old_fd) = master_fd.take() {
+                                    let _ = io::close(old_fd);
+                                }
+                                let (m, p) = spawn_child(program, "child");
+                                *master_fd = Some(m);
+                                *child_pid = p;
+                                let ws = libbreenix::termios::Winsize {
+                                    ws_row: rows as u16, ws_col: cols as u16,
+                                    ws_xpixel: 0, ws_ypixel: 0,
+                                };
+                                let _ = libbreenix::termios::set_winsize(m, &ws);
+                            }
+                        }
+                    }
+                }
+                _ => break,
+            }
+        }
+    }
+}
+
+/// Resize all terminal emulators to match their tile dimensions
+fn resize_terminal_tiles(tiles: &mut [Tile]) {
+    for tile in tiles.iter_mut() {
+        let (cols, rows) = tile.term_dims();
+        if let TileKind::Terminal { ref mut emu, ref master_fd, .. } = tile.kind {
+            if cols > 0 && rows > 0 && (cols != emu.cols || rows != emu.rows) {
+                emu.resize(cols, rows);
+                if let Some(fd) = master_fd {
+                    let ws = libbreenix::termios::Winsize {
+                        ws_row: rows as u16, ws_col: cols as u16,
+                        ws_xpixel: 0, ws_ypixel: 0,
+                    };
+                    let _ = libbreenix::termios::set_winsize(*fd, &ws);
+                }
+            }
+        }
+    }
+}
+
+/// Discover client windows by querying the kernel's window registry.
+/// Assigns window IDs to ClientWindow tiles that have window_id == 0.
+fn discover_client_windows(tiles: &mut [Tile]) {
+    // Check if any tiles need discovery
+    let needs_discovery = tiles.iter().any(|t| matches!(t.kind, TileKind::ClientWindow { window_id: 0 }));
+    if !needs_discovery { return; }
+
+    let mut win_infos = [graphics::WindowInfo {
+        buffer_id: 0, owner_pid: 0, width: 0, height: 0,
+        x: 0, y: 0, title_len: 0, title: [0; 64],
+    }; 16];
+    if let Ok(count) = graphics::list_windows(&mut win_infos) {
+        for tile in tiles.iter_mut() {
+            if let TileKind::ClientWindow { ref mut window_id } = tile.kind {
+                if *window_id == 0 && count > 0 {
+                    // Take the first available window
+                    *window_id = win_infos[0].buffer_id;
+                }
+            }
+        }
+    }
+}
+
+/// Tell the kernel where to composite client windows (bounce)
+fn update_client_window_positions(tiles: &[Tile]) {
+    for tile in tiles.iter() {
+        if let TileKind::ClientWindow { window_id } = tile.kind {
+            if window_id != 0 {
+                let _ = graphics::set_window_position(
+                    window_id,
+                    tile.content_x() as i32,
+                    tile.content_y() as i32,
+                );
+            }
+        }
     }
 }
