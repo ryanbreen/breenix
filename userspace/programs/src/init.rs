@@ -10,7 +10,7 @@
 //! Main loop reaps terminated children with waitpid(WNOHANG) and respawns
 //! crashed services with backoff to prevent tight respawn loops.
 
-use libbreenix::process::{fork, exec, waitpid, getpid, yield_now, ForkResult, WNOHANG};
+use libbreenix::process::{fork, exec, execv, waitpid, getpid, yield_now, ForkResult, WNOHANG};
 
 const TELNETD_PATH: &[u8] = b"/sbin/telnetd\0";
 const BLOGD_PATH: &[u8] = b"/sbin/blogd\0";
@@ -50,6 +50,51 @@ fn try_respawn(path: &[u8], name: &str, failures: &mut u32) -> i64 {
     *failures += 1;
     print!("[init] Respawning {}... (attempt {})\n", name, *failures);
     spawn(path, name)
+}
+
+/// Test: run /bin/cat /etc/passwd via BusyBox to verify musl libc works on ARM64.
+fn test_busybox_cat() {
+    match fork() {
+        Ok(ForkResult::Child) => {
+            // Child: exec /bin/cat with argv = ["cat", "/etc/passwd"]
+            let arg0 = b"cat\0";
+            let arg1 = b"/etc/passwd\0";
+            let argv: [*const u8; 3] = [
+                arg0.as_ptr(),
+                arg1.as_ptr(),
+                core::ptr::null(),
+            ];
+            match execv(b"/bin/cat\0", argv.as_ptr()) {
+                Ok(_) => unreachable!(),
+                Err(e) => {
+                    print!("[init] BUSYBOX TEST FAILED: exec /bin/cat: {}\n", e);
+                    std::process::exit(126);
+                }
+            }
+        }
+        Ok(ForkResult::Parent(child_pid)) => {
+            let child_raw = child_pid.raw() as i32;
+            let mut status: i32 = 0;
+            match waitpid(child_raw, &mut status as *mut i32, 0) {
+                Ok(reaped) => {
+                    let exit_code = (status >> 8) & 0xFF;
+                    print!("[init] BUSYBOX TEST: cat exited, pid={} status={} exit_code={}\n",
+                        reaped.raw(), status, exit_code);
+                    if exit_code == 0 {
+                        print!("[init] BUSYBOX TEST PASSED\n");
+                    } else {
+                        print!("[init] BUSYBOX TEST FAILED (exit_code={})\n", exit_code);
+                    }
+                }
+                Err(e) => {
+                    print!("[init] BUSYBOX TEST FAILED: waitpid: {}\n", e);
+                }
+            }
+        }
+        Err(e) => {
+            print!("[init] BUSYBOX TEST FAILED: fork: {}\n", e);
+        }
+    }
 }
 
 /// Test: simple fork + exit + waitpid to exercise process lifecycle under SMP load.
@@ -112,6 +157,10 @@ fn main() {
         let _ = yield_now();
     }
     print!("[init] TEST: all 5 iterations completed successfully\n");
+
+    // BusyBox test: fork+exec /bin/cat /etc/passwd to verify musl/BusyBox works
+    print!("[init] BUSYBOX TEST: cat /etc/passwd\n");
+    test_busybox_cat();
 
     // Main loop: reap zombies, respawn crashed services.
     let mut status: i32 = 0;

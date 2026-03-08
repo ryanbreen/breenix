@@ -50,6 +50,26 @@ impl FrameBuf {
         }
     }
 
+    /// Copy a row of raw pixel bytes from `src` into the framebuffer at (x, y).
+    ///
+    /// Copies exactly `byte_count` bytes. Caller must ensure the source data
+    /// matches the framebuffer's pixel format (BGR/RGB, bpp).
+    /// Silently clips if y is out of bounds or x + pixel count exceeds width.
+    #[inline]
+    pub fn copy_row_from(&mut self, x: usize, y: usize, src: &[u8], byte_count: usize) {
+        if y >= self.height || byte_count == 0 { return; }
+        let dst_off = y * self.stride + x * self.bpp;
+        let max_bytes = self.stride * self.height;
+        let copy = byte_count.min(max_bytes.saturating_sub(dst_off));
+        if copy == 0 { return; }
+        let src_len = copy.min(src.len());
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                src.as_ptr(), self.ptr.add(dst_off), src_len,
+            );
+        }
+    }
+
     /// Write a single pixel. Expands the dirty rect.
     #[inline]
     pub fn put_pixel(&mut self, x: usize, y: usize, color: Color) {

@@ -406,13 +406,13 @@ static mut PCI_3D_CMD_BUF: Pci3dCmdBuffer = Pci3dCmdBuffer { data: [0; 16384] };
 // 1728x1080 matches the QEMU resolution for consistent performance comparison.
 const DEFAULT_FB_WIDTH: u32 = 1728;
 const DEFAULT_FB_HEIGHT: u32 = 1080;
-// Minimum resolution floor — ensures the VM window is large enough on Retina Macs.
-// 1920x1200: good balance of size and performance. With Parallels --high-resolution on,
-// this displays at 2x Retina scaling = 3840x2400 physical pixels on screen.
-const MIN_FB_WIDTH: u32 = 1920;
-const MIN_FB_HEIGHT: u32 = 1200;
-const FB_MAX_WIDTH: u32 = 1920;
-const FB_MAX_HEIGHT: u32 = 1200;
+// Minimum resolution floor — with --high-resolution off, each guest pixel = 1 Mac point.
+// 1280x960 gives a reasonably large VM window on Retina displays and keeps the
+// per-frame DMA upload to ~4.9MB for good compositor FPS.
+const MIN_FB_WIDTH: u32 = 1280;
+const MIN_FB_HEIGHT: u32 = 960;
+const FB_MAX_WIDTH: u32 = 2560;
+const FB_MAX_HEIGHT: u32 = 1600;
 const FB_SIZE: usize = (FB_MAX_WIDTH * FB_MAX_HEIGHT * 4) as usize;
 const BYTES_PER_PIXEL: usize = 4;
 const RESOURCE_ID: u32 = 1;
@@ -3504,8 +3504,10 @@ pub fn virgl_composite_windows(
     let prev_cy = CURSOR_PREV_Y.load(Ordering::Relaxed);
     let cursor_moved = cur_x != prev_cx || cur_y != prev_cy;
 
-    // Erase old cursor by restoring saved background pixels
-    if prev_cx >= 0 && prev_cy >= 0 && (cursor_moved || bg_dirty || any_window_dirty) {
+    // Erase old cursor by restoring saved background pixels.
+    // Skip when bg_dirty — the bg copy already refreshed all pixels including the
+    // old cursor area. Writing stale saved_bg would corrupt the fresh background.
+    if prev_cx >= 0 && prev_cy >= 0 && !bg_dirty && (cursor_moved || any_window_dirty) {
         let tex_ptr = unsafe { COMPOSITE_TEX_PTR as *mut u32 };
         let tw = tex_w as usize;
         for row in 0..CURSOR_H as usize {

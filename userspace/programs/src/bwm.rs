@@ -25,7 +25,7 @@ use libgfx::framebuf::FrameBuf;
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 /// Title bar height in pixels
-const TITLE_BAR_HEIGHT: usize = 24;
+const TITLE_BAR_HEIGHT: usize = 32;
 
 /// Window border/shadow width
 const BORDER_WIDTH: usize = 2;
@@ -41,12 +41,12 @@ const TERM_PADDING: usize = 4;
 // Colors
 const BG_COLOR: Color = Color::rgb(20, 25, 40);
 const FG_COLOR: Color = Color::rgb(220, 225, 235);
-const TITLE_FOCUSED_BG: Color = Color::rgb(55, 75, 120);
-const TITLE_UNFOCUSED_BG: Color = Color::rgb(38, 48, 70);
-const TITLE_TEXT: Color = Color::rgb(200, 205, 215);
+const TITLE_FOCUSED_BG: Color = Color::rgb(40, 100, 220);
+const TITLE_UNFOCUSED_BG: Color = Color::rgb(45, 50, 65);
+const TITLE_TEXT: Color = Color::rgb(160, 165, 175);
 const TITLE_FOCUSED_TEXT: Color = Color::rgb(255, 255, 255);
-const WIN_BORDER_COLOR: Color = Color::rgb(60, 75, 110);
-const WIN_BORDER_FOCUSED: Color = Color::rgb(90, 120, 180);
+const WIN_BORDER_COLOR: Color = Color::rgb(50, 55, 70);
+const WIN_BORDER_FOCUSED: Color = Color::rgb(60, 130, 255);
 // ANSI color palette (standard 8 colors)
 const ANSI_COLORS: [Color; 8] = [
     Color::rgb(0, 0, 0),       // 0: black
@@ -393,6 +393,7 @@ enum WindowKind {
         master_fd: Option<Fd>,
         child_pid: i64,
         program: &'static [u8],
+        respawn_at: u64, // monotonic seconds; 0 = no pending respawn
     },
     ClientWindow {
         window_id: u32,
@@ -438,6 +439,7 @@ impl Window {
         mx >= self.x && mx < self.x + self.width as i32
             && my >= self.y && my < self.y + self.total_height() as i32
     }
+
 }
 
 // ─── Drawing Helpers ─────────────────────────────────────────────────────────
@@ -480,7 +482,8 @@ fn draw_window_frame(fb: &mut FrameBuf, win: &Window, focused: bool) {
     // Title bar
     fill_rect(fb, win.x + bw as i32, win.y + bw as i32,
               win.width - bw * 2, TITLE_BAR_HEIGHT - bw, title_bg);
-    draw_text_at(fb, win.title_bytes(), win.x + 8, win.y + 4 + bw as i32, title_fg);
+    let text_y = win.y + bw as i32 + ((TITLE_BAR_HEIGHT - bw - CELL_H) / 2) as i32;
+    draw_text_at(fb, win.title_bytes(), win.x + 8, text_y, title_fg);
 
     // Content background
     fill_rect(fb, win.content_x(), win.content_y(),
@@ -622,6 +625,7 @@ fn main() {
                 master_fd: Some(shell_master),
                 child_pid: shell_pid,
                 program: b"/bin/bsh\0",
+                respawn_at: 0,
             },
         },
         Window {
@@ -643,6 +647,7 @@ fn main() {
                 master_fd: Some(bless_master),
                 child_pid: bless_pid,
                 program: b"/bin/bless\0",
+                respawn_at: 0,
             },
         },
     ];
@@ -669,39 +674,38 @@ fn main() {
     let mut focused_win: usize = 0;
     let mut input_parser = InputParser::new();
     let mut frame: u32 = 0;
-    let mut prev_mouse_buttons: u32 = 0;
     let mut mouse_x: i32 = 0;
     let mut mouse_y: i32 = 0;
+    let mut prev_buttons: u32 = 0;
     let mut dragging: Option<(usize, i32, i32)> = None; // (win_idx, offset_x, offset_y)
     let mut content_dirty = true; // only true when actual content changes
 
-    // Initial draw — frame + content per window in Z-order
+    // Initial draw — background + all windows in Z-order
+    paint_background(&mut fb);
     redraw_all_windows(&mut fb, &mut windows, focused_win);
     // Upload initial frame
     let _ = graphics::virgl_composite_windows(&composite_buf, screen_w as u32, screen_h as u32, true);
 
     // Main loop
     let mut read_buf = [0u8; 512];
-    let mut poll_fds = [
-        io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 }, // stdin
-        io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 }, // shell
-        io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 }, // logs
-    ];
+    // poll_fds[0] = stdin, poll_fds[1..] = terminal master FDs
+    let mut poll_fds = [io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 }; 8];
+    // Maps poll_fds index → windows index for terminal FD routing
+    let mut poll_to_win: [usize; 8] = [0; 8];
 
     loop {
-        // Setup poll FDs
+        // Setup poll FDs dynamically based on current window order
         let mut nfds = 1;
         poll_fds[0].revents = 0;
-        let mut shell_poll_idx: Option<usize> = None;
-        let mut logs_poll_idx: Option<usize> = None;
-
-        if let WindowKind::Terminal { master_fd: Some(fd), .. } = &windows[0].kind {
-            poll_fds[nfds].fd = fd.raw() as i32; poll_fds[nfds].revents = 0;
-            shell_poll_idx = Some(nfds); nfds += 1;
-        }
-        if let WindowKind::Terminal { master_fd: Some(fd), .. } = &windows[2].kind {
-            poll_fds[nfds].fd = fd.raw() as i32; poll_fds[nfds].revents = 0;
-            logs_poll_idx = Some(nfds); nfds += 1;
+        for (wi, win) in windows.iter().enumerate() {
+            if let WindowKind::Terminal { master_fd: Some(fd), .. } = &win.kind {
+                if nfds < poll_fds.len() {
+                    poll_fds[nfds].fd = fd.raw() as i32;
+                    poll_fds[nfds].revents = 0;
+                    poll_to_win[nfds] = wi;
+                    nfds += 1;
+                }
+            }
         }
 
         let _nready = io::poll(&mut poll_fds[..nfds], 1).unwrap_or(0);
@@ -740,10 +744,11 @@ fn main() {
             }
         }
 
-        // Read shell PTY output
-        if let Some(idx) = shell_poll_idx {
-            if poll_fds[idx].revents & io::poll_events::POLLIN as i16 != 0 {
-                if let WindowKind::Terminal { master_fd: Some(fd), ref mut emu, .. } = windows[0].kind {
+        // Read terminal PTY output (dynamic — works regardless of window order)
+        for pi in 1..nfds {
+            if poll_fds[pi].revents & io::poll_events::POLLIN as i16 != 0 {
+                let wi = poll_to_win[pi];
+                if let WindowKind::Terminal { master_fd: Some(fd), ref mut emu, .. } = windows[wi].kind {
                     if let Ok(n) = io::read(fd, &mut read_buf) {
                         for i in 0..n { emu.feed(read_buf[i]); }
                         content_dirty = true;
@@ -752,23 +757,14 @@ fn main() {
             }
         }
 
-        // Read logs PTY output
-        if let Some(idx) = logs_poll_idx {
-            if poll_fds[idx].revents & io::poll_events::POLLIN as i16 != 0 {
-                if let WindowKind::Terminal { master_fd: Some(fd), ref mut emu, .. } = windows[2].kind {
-                    if let Ok(n) = io::read(fd, &mut read_buf) {
-                        for i in 0..n { emu.feed(read_buf[i]); }
-                        content_dirty = true;
-                    }
-                }
-            }
-        }
-
-        // Mouse input
+        // Mouse input — buttons is level-based (non-destructive, multi-process safe).
+        // Kernel debounce creates synthetic press/release cycle (~150ms press, then 0).
+        // BWM does local edge detection (0→1 transition = new click).
         if let Ok((mx, my, buttons)) = graphics::mouse_state() {
             let new_mx = mx as i32;
             let new_my = my as i32;
-            if new_mx != mouse_x || new_my != mouse_y {
+            let mouse_moved = new_mx != mouse_x || new_my != mouse_y;
+            if mouse_moved {
                 mouse_x = new_mx;
                 mouse_y = new_my;
 
@@ -777,55 +773,65 @@ fn main() {
                     let new_x = mouse_x - off_x;
                     let new_y = mouse_y - off_y;
                     if new_x != windows[win_idx].x || new_y != windows[win_idx].y {
-                        // Repaint background where window was
                         repaint_window_area(&mut fb, &windows[win_idx], screen_w, screen_h);
                         windows[win_idx].x = new_x;
                         windows[win_idx].y = new_y;
-                        // Redraw all windows (proper z-order)
                         redraw_all_windows(&mut fb, &mut windows, focused_win);
                         content_dirty = true;
                     }
                 }
             }
 
-            let pressed = buttons & 1 != 0;
-            let was_pressed = prev_mouse_buttons & 1 != 0;
-
-            if pressed && !was_pressed {
-                // Mouse down — check windows (top-to-bottom z-order: last is on top)
-                for i in (0..windows.len()).rev() {
-                    let ht = windows[i].hit_title(mouse_x, mouse_y);
-                    let ha = windows[i].hit_any(mouse_x, mouse_y);
-                    if ht {
-                        dragging = Some((i, mouse_x - windows[i].x, mouse_y - windows[i].y));
-                    }
-                    if ht || ha {
-                        if i != focused_win {
-                            let old = focused_win;
-                            focused_win = i;
-                            draw_window_frame(&mut fb, &windows[old], false);
-                            render_window_content(&mut windows[old], &mut fb);
-                            draw_window_frame(&mut fb, &windows[focused_win], true);
-                            render_window_content(&mut windows[focused_win], &mut fb);
-                            content_dirty = true;
-                        }
-                        break;
-                    }
-                }
-            }
-
-            if !pressed && was_pressed {
+            // Release detection: end drag when button goes 1→0
+            if (buttons & 1) == 0 && (prev_buttons & 1) != 0 {
                 dragging = None;
             }
 
-            prev_mouse_buttons = buttons;
+            // Local edge detection: 0→1 transition = new click
+            let new_click = (buttons & 1) != 0 && (prev_buttons & 1) == 0;
+            prev_buttons = buttons;
+            if new_click {
+                // Find which window was clicked (top-to-bottom z-order)
+                let mut clicked_idx: Option<usize> = None;
+                let mut clicked_title = false;
+                for i in (0..windows.len()).rev() {
+                    let ht = windows[i].hit_title(mouse_x, mouse_y);
+                    let ha = windows[i].hit_any(mouse_x, mouse_y);
+                    if ht || ha {
+                        clicked_idx = Some(i);
+                        clicked_title = ht;
+                        break;
+                    }
+                }
+                if let Some(ci) = clicked_idx {
+                    print!("[bwm] click win {} '{}' title={}\n", ci,
+                           core::str::from_utf8(windows[ci].title_bytes()).unwrap_or("?"),
+                           clicked_title);
+                    // Bring to front: rotate clicked window to end of array
+                    if ci < windows.len() - 1 {
+                        let win = windows.remove(ci);
+                        windows.push(win);
+                    }
+                    let top = windows.len() - 1;
+                    focused_win = top;
+                    if clicked_title {
+                        dragging = Some((top, mouse_x - windows[top].x, mouse_y - windows[top].y));
+                    }
+                    paint_background(&mut fb);
+                    redraw_all_windows(&mut fb, &mut windows, focused_win);
+                    content_dirty = true;
+                } else {
+                    // Clicked on background — log it
+                    print!("[bwm] click background at ({},{})\n", mouse_x, mouse_y);
+                }
+            }
         }
 
         // Discover client windows (bounce)
         discover_client_windows(&mut windows);
         update_client_window_positions(&windows);
 
-        // Render terminal content (only if dirty), clipped to window bounds
+        // Render terminal content (only if dirty)
         for win in windows.iter_mut() {
             let cx = win.content_x() + TERM_PADDING as i32;
             let cy = win.content_y() + TERM_PADDING as i32;
@@ -839,16 +845,15 @@ fn main() {
             }
         }
 
-        // Composite to GPU — cursor is rendered by the kernel compositor,
-        // so cursor movement alone does NOT require a full 4.9MB upload.
+        // Composite to GPU
         if content_dirty {
             let _ = graphics::virgl_composite_windows(
                 &composite_buf, screen_w as u32, screen_h as u32, true,
             );
             content_dirty = false;
         } else {
-            // Nothing changed in window content — still call compositor to
-            // wake blocked clients (frame pacing) and let kernel update cursor.
+            // Nothing changed — still call compositor to wake blocked
+            // clients (frame pacing) and let kernel update cursor.
             let _ = graphics::virgl_composite_windows(
                 &composite_buf, screen_w as u32, screen_h as u32, false,
             );
@@ -856,34 +861,45 @@ fn main() {
 
         frame = frame.wrapping_add(1);
 
-        // Reap dead children
+        // Reap dead children (non-blocking: schedule respawn after 1s cooldown)
         let mut status: i32 = 0;
         loop {
             match waitpid(-1, &mut status as *mut i32, WNOHANG) {
                 Ok(pid) if pid.raw() > 0 => {
                     let rpid = pid.raw() as i64;
+                    let now_sec = libbreenix::time::now_monotonic()
+                        .map(|ts| ts.tv_sec as u64).unwrap_or(0);
                     for win in windows.iter_mut() {
-                        let (cols, rows) = win.term_dims();
-                        if let WindowKind::Terminal { ref mut child_pid, ref mut master_fd, program, .. } = win.kind {
+                        if let WindowKind::Terminal { ref mut child_pid, ref mut master_fd, ref mut respawn_at, .. } = win.kind {
                             if rpid == *child_pid {
-                                print!("[bwm] Child exited, respawning after cooldown...\n");
+                                print!("[bwm] Child exited, scheduling respawn in 1s\n");
                                 if let Some(old_fd) = master_fd.take() { let _ = io::close(old_fd); }
-                                // Cooldown to prevent tight respawn loop if child fails immediately
-                                let _ = libbreenix::time::nanosleep(&libbreenix::types::Timespec {
-                                    tv_sec: 1, tv_nsec: 0,
-                                });
-                                let (m, p) = spawn_child(program, "child");
-                                *master_fd = Some(m);
-                                *child_pid = p;
-                                let ws = libbreenix::termios::Winsize {
-                                    ws_row: rows as u16, ws_col: cols as u16, ws_xpixel: 0, ws_ypixel: 0,
-                                };
-                                let _ = libbreenix::termios::set_winsize(m, &ws);
+                                *child_pid = -1;
+                                *respawn_at = now_sec + 1;
                             }
                         }
                     }
                 }
                 _ => break,
+            }
+        }
+
+        // Process deferred respawns (non-blocking)
+        let now_sec = libbreenix::time::now_monotonic()
+            .map(|ts| ts.tv_sec as u64).unwrap_or(0);
+        for win in windows.iter_mut() {
+            let (cols, rows) = win.term_dims();
+            if let WindowKind::Terminal { ref mut child_pid, ref mut master_fd, program, ref mut respawn_at, .. } = win.kind {
+                if *respawn_at > 0 && now_sec >= *respawn_at {
+                    *respawn_at = 0;
+                    let (m, p) = spawn_child(program, "child");
+                    *master_fd = Some(m);
+                    *child_pid = p;
+                    let ws = libbreenix::termios::Winsize {
+                        ws_row: rows as u16, ws_col: cols as u16, ws_xpixel: 0, ws_ypixel: 0,
+                    };
+                    let _ = libbreenix::termios::set_winsize(m, &ws);
+                }
             }
         }
     }
@@ -937,6 +953,21 @@ fn redraw_all_windows(fb: &mut FrameBuf, windows: &mut [Window], focused_win: us
 }
 
 /// Discover client windows by querying the kernel's window registry.
+/// Tell the kernel where to composite client windows
+fn update_client_window_positions(windows: &[Window]) {
+    for win in windows.iter() {
+        if let WindowKind::ClientWindow { window_id } = win.kind {
+            if window_id != 0 {
+                let _ = graphics::set_window_position(
+                    window_id,
+                    win.content_x(),
+                    win.content_y(),
+                );
+            }
+        }
+    }
+}
+
 fn discover_client_windows(windows: &mut [Window]) {
     let needs_discovery = windows.iter().any(|w| matches!(w.kind, WindowKind::ClientWindow { window_id: 0 }));
     if !needs_discovery { return; }
@@ -956,17 +987,3 @@ fn discover_client_windows(windows: &mut [Window]) {
     }
 }
 
-/// Tell the kernel where to composite client windows
-fn update_client_window_positions(windows: &[Window]) {
-    for win in windows.iter() {
-        if let WindowKind::ClientWindow { window_id } = win.kind {
-            if window_id != 0 {
-                let _ = graphics::set_window_position(
-                    window_id,
-                    win.content_x(),
-                    win.content_y(),
-                );
-            }
-        }
-    }
-}

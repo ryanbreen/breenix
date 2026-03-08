@@ -364,6 +364,21 @@ pub fn load_elf_into_page_table(
     // Page-align the heap start (4KB alignment)
     let heap_start = (max_segment_end + 0xfff) & !0xfff;
 
+    // All segments loaded — invalidate the entire instruction cache.
+    // Data was written through HHDM (TTBR1) but will be fetched through TTBR0
+    // (user VA). ic iallu is required because per-line ic ivau with HHDM
+    // addresses doesn't reliably invalidate user VA cache sets on Apple Silicon
+    // where the VIPT i-cache index extends beyond the page offset.
+    unsafe {
+        core::arch::asm!(
+            "dsb ish",      // Ensure all data cache cleans are visible
+            "ic iallu",     // Invalidate ALL instruction cache to PoU
+            "dsb ish",      // Ensure i-cache invalidation completes
+            "isb",          // Synchronize instruction stream
+            options(nostack, preserves_flags)
+        );
+    }
+
     let load_base = if min_load_addr == u64::MAX { 0 } else { min_load_addr };
     // If no PT_PHDR was found, compute from load_base + phoff
     let phdr_vaddr = phdr_vaddr.unwrap_or(load_base + header.phoff);

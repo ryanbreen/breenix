@@ -41,11 +41,6 @@ static MOUSE_X: AtomicU32 = AtomicU32::new(0);
 static MOUSE_Y: AtomicU32 = AtomicU32::new(0);
 static MOUSE_BUTTONS: AtomicU32 = AtomicU32::new(0);
 
-/// Sticky button press: latches to 1 on any button-down, cleared only when
-/// userspace reads it via mouse_state(). Prevents BWM from missing short
-/// trackpad taps that press+release within a single poll cycle (~6ms).
-static MOUSE_BUTTONS_STICKY: AtomicU32 = AtomicU32::new(0);
-
 /// Once we see the first absolute tablet report (6+ bytes), latch into tablet mode.
 /// All subsequent reports are parsed as absolute, regardless of byte[1] value.
 static IS_ABSOLUTE_TABLET: AtomicBool = AtomicBool::new(false);
@@ -304,39 +299,6 @@ pub fn process_mouse_report(report: &[u8]) {
         );
     }
 
-    let buttons = report[0] as u32;
-    let prev_buttons = MOUSE_BUTTONS.load(Ordering::Relaxed);
-    MOUSE_BUTTONS.store(buttons, Ordering::Relaxed);
-    // Latch button press into sticky flag — cleared only on userspace read
-    if buttons != 0 {
-        MOUSE_BUTTONS_STICKY.fetch_or(buttons, Ordering::Relaxed);
-    }
-
-    // Log button state changes (press/release) to debug click-jump issues.
-    // This fires regardless of MOUSE_LOG_COUNT to capture late button events.
-    static BUTTON_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
-    if buttons != prev_buttons && BUTTON_LOG_COUNT.load(Ordering::Relaxed) < 20 {
-        BUTTON_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-        crate::serial_println!(
-            "[mouse-click] btn {} -> {}: [{:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}] len={} actual={}",
-            prev_buttons, buttons,
-            report.get(0).copied().unwrap_or(0),
-            report.get(1).copied().unwrap_or(0),
-            report.get(2).copied().unwrap_or(0),
-            report.get(3).copied().unwrap_or(0),
-            report.get(4).copied().unwrap_or(0),
-            report.get(5).copied().unwrap_or(0),
-            report.get(6).copied().unwrap_or(0),
-            report.get(7).copied().unwrap_or(0),
-            report.len(),
-            {
-                let mut len = report.len();
-                if len > 8 { while len > 3 && report[len - 1] == 0xDE { len -= 1; } }
-                len
-            },
-        );
-    }
-
     let (sw, sh) = screen_dimensions();
 
     // Determine actual report length: the XHCI driver fills the 64-byte buffer
@@ -361,11 +323,19 @@ pub fn process_mouse_report(report: &[u8]) {
         crate::serial_println!("[mouse] Latched into absolute tablet mode (first 6-byte report with byte[1]=0)");
     }
 
-    // Absolute tablet path: use absolute coordinates from bytes 2-5.
-    // Once latched, always use this path regardless of actual_len — the sentinel
-    // trimming can misfire if coordinate bytes happen to equal 0xDE (the sentinel).
-    // The raw report buffer is always 64 bytes so bytes 0-5 are always valid.
+    // Absolute tablet path: byte[0] is report ID (always 0x01), byte[1] is buttons,
+    // bytes 2-5 are absolute coordinates. We must use byte[1] for buttons here —
+    // byte[0] is the report ID, NOT button state.
     if IS_ABSOLUTE_TABLET.load(Ordering::Relaxed) && report.len() >= 6 {
+        let buttons = report[1] as u32;
+        let prev = MOUSE_BUTTONS.swap(buttons, Ordering::Relaxed);
+        if buttons != prev {
+            static BTN_LOG: AtomicU64 = AtomicU64::new(0);
+            if BTN_LOG.fetch_add(1, Ordering::Relaxed) < 50 {
+                crate::serial_println!("[mouse-click] {} -> {}", prev, buttons);
+            }
+        }
+
         let abs_x = u16::from_le_bytes([report[2], report[3]]) as u32;
         let abs_y = u16::from_le_bytes([report[4], report[5]]) as u32;
 
@@ -373,8 +343,8 @@ pub fn process_mouse_report(report: &[u8]) {
         let new_y = (abs_y * sh / 32768).min(sh - 1);
         if log_n < 10 {
             crate::serial_println!(
-                "[mouse-pos] abs=({},{}) screen={}x{} div=32768 -> ({},{})",
-                abs_x, abs_y, sw, sh, new_x, new_y
+                "[mouse-pos] abs=({},{}) btn={} screen={}x{} -> ({},{})",
+                abs_x, abs_y, buttons, sw, sh, new_x, new_y
             );
         }
         MOUSE_X.store(new_x, Ordering::Relaxed);
@@ -384,6 +354,7 @@ pub fn process_mouse_report(report: &[u8]) {
 
     // Boot protocol relative mouse: 3-4 byte reports
     // Format: [buttons, dx (i8), dy (i8), wheel (i8)]
+    MOUSE_BUTTONS.store(report[0] as u32, Ordering::Relaxed);
     let dx = report[1] as i8 as i32;
     let dy = report[2] as i8 as i32;
 
@@ -405,15 +376,11 @@ pub fn mouse_position() -> (u32, u32) {
     (MOUSE_X.load(Ordering::Relaxed), MOUSE_Y.load(Ordering::Relaxed))
 }
 
-/// Get current mouse position and button state.
-/// Returns sticky button state (latched on press, cleared on read) OR'd with
-/// current button state. This ensures short taps aren't missed by slow pollers.
+/// Get current mouse position and button state (non-destructive).
 pub fn mouse_state() -> (u32, u32, u32) {
-    let sticky = MOUSE_BUTTONS_STICKY.swap(0, Ordering::Relaxed);
-    let current = MOUSE_BUTTONS.load(Ordering::Relaxed);
     (
         MOUSE_X.load(Ordering::Relaxed),
         MOUSE_Y.load(Ordering::Relaxed),
-        sticky | current,
+        MOUSE_BUTTONS.load(Ordering::Relaxed),
     )
 }

@@ -69,6 +69,8 @@ prlctl set "$VM_NAME" --efi-boot on >/dev/null 2>&1 || true
 prlctl set "$VM_NAME" --3d-accelerate highest >/dev/null 2>&1 || true
 prlctl set "$VM_NAME" --videosize 256 >/dev/null 2>&1 || true
 prlctl set "$VM_NAME" --high-resolution off >/dev/null 2>&1 || true
+prlctl set "$VM_NAME" --high-resolution-in-guest off >/dev/null 2>&1 || true
+prlctl set "$VM_NAME" --native-scaling-in-guest on >/dev/null 2>&1 || true
 for dev in hdd0 hdd1 hdd2 cdrom0 cdrom1 serial0 serial1; do
     prlctl set "$VM_NAME" --device-del "$dev" >/dev/null 2>&1 || true
 done
@@ -82,6 +84,27 @@ rm -f ~/Parallels/"${VM_NAME}.pvm"/NVRAM.dat
 
 echo "=== Starting VM ==="
 timeout 10 prlctl start "$VM_NAME" 2>&1 || echo "(prlctl timed out)"
+
+# Resize the Parallels window to match the guest resolution (1280x960).
+# Parallels sizes the initial window based on GOP (1024x768), but our kernel
+# SET_SCANOUTs at 1280x960. Force the window to the correct size.
+sleep 3
+osascript -e "
+tell application \"Parallels Desktop\"
+    tell application \"System Events\"
+        tell process \"Parallels Desktop\"
+            set frontmost to true
+            delay 0.5
+            try
+                set theWindow to (first window whose name contains \"$VM_NAME\")
+                set size of theWindow to {1280, 1010}
+                set position of theWindow to {50, 50}
+            end try
+        end tell
+    end tell
+end tell
+" 2>/dev/null || true
+
 echo "Waiting ${WAIT_SECS}s for boot..."
 sleep "$WAIT_SECS"
 
