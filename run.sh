@@ -342,7 +342,13 @@ if [ "$PARALLELS" = true ]; then
     prlctl set "$PARALLELS_VM" --videosize 256 2>/dev/null || true
     # high-resolution OFF so the VM window maps 1:1 pixels-to-points on Retina Macs.
     # With high-resolution ON, a 1280x960 guest appears as a tiny 640x480 point window.
+    # MUST come AFTER --3d-accelerate and --videosize which can reset this flag.
     prlctl set "$PARALLELS_VM" --high-resolution off 2>/dev/null || true
+    # Verify it actually took effect (Parallels sometimes ignores it silently)
+    if prlctl list --info "$PARALLELS_VM" 2>/dev/null | grep -q "high-resolution=on"; then
+        echo "  WARNING: --high-resolution off didn't stick, retrying..."
+        prlctl set "$PARALLELS_VM" --high-resolution off 2>/dev/null || true
+    fi
 
     # Remove any default devices Parallels created (cdrom, hdd, serial) to avoid conflicts
     for dev in hdd0 hdd1 hdd2 cdrom0 cdrom1 serial0 serial1; do

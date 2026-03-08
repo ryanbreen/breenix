@@ -407,10 +407,10 @@ static mut PCI_3D_CMD_BUF: Pci3dCmdBuffer = Pci3dCmdBuffer { data: [0; 16384] };
 const DEFAULT_FB_WIDTH: u32 = 1728;
 const DEFAULT_FB_HEIGHT: u32 = 1080;
 // Minimum resolution floor — ensures the VM window is large enough on Retina Macs.
-// With --high-resolution off, 1 guest pixel = 1 Mac screen point, so 1280x960
-// gives a ~74% screen-width window on a 1728-point-wide display.
-const MIN_FB_WIDTH: u32 = 1280;
-const MIN_FB_HEIGHT: u32 = 960;
+// With --high-resolution off, 1 guest pixel = 1 Mac screen point, so 1680x1050
+// fills most of the screen on a 1728-point-wide MacBook display.
+const MIN_FB_WIDTH: u32 = 1680;
+const MIN_FB_HEIGHT: u32 = 1050;
 // Max supported resolution: 2560x1600 @ 32bpp = ~16.4MB
 const FB_MAX_WIDTH: u32 = 2560;
 const FB_MAX_HEIGHT: u32 = 1600;
