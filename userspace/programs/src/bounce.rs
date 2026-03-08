@@ -8,7 +8,6 @@
 use std::process;
 
 use libbreenix::graphics;
-use libbreenix::process as bprocess;
 use libbreenix::time;
 
 use libgfx::color::Color;
@@ -178,6 +177,30 @@ impl Sphere {
 
     fn draw(&self, fb: &mut FrameBuf) {
         draw_sphere(fb, self.px(), self.py(), self.radius, self.color);
+    }
+
+    /// Check if a point (in pixel coords) is inside this sphere.
+    fn hit_test(&self, px: i32, py: i32) -> bool {
+        let dx = px - self.px();
+        let dy = py - self.py();
+        dx * dx + dy * dy <= self.radius * self.radius
+    }
+
+    /// Impel: boost velocity by 50% in current direction of travel.
+    /// If nearly stationary, give a random-ish kick based on position.
+    fn impel(&mut self) {
+        let speed_sq = self.vx * self.vx + self.vy * self.vy;
+        if speed_sq > (50 << 10) {
+            // Boost by 50% in current direction
+            self.vx = self.vx * 3 / 2;
+            self.vy = self.vy * 3 / 2;
+        } else {
+            // Nearly stopped — kick based on position hash for variety
+            let kick = 300i64 << 10;
+            let hash = (self.x ^ self.y) >> 10;
+            self.vx = if hash & 1 == 0 { kick } else { -kick };
+            self.vy = if hash & 2 == 0 { kick } else { -kick };
+        }
     }
 }
 
@@ -362,6 +385,20 @@ fn make_spheres(w: i32, h: i32) -> [Sphere; NUM_SPHERES] {
     ]
 }
 
+/// Look up our window's screen position from the compositor.
+/// Returns (win_x, win_y) or (0, 0) if not found.
+fn find_window_position(buffer_id: u32) -> (i32, i32) {
+    let mut infos = [graphics::WindowInfo::default(); 8];
+    if let Ok(count) = graphics::list_windows(&mut infos) {
+        for info in &infos[..count] {
+            if info.buffer_id == buffer_id {
+                return (info.x, info.y);
+            }
+        }
+    }
+    (0, 0)
+}
+
 /// Render bouncing spheres into a window buffer for BWM compositing.
 fn run_window_loop(win: &graphics::WindowBuffer, spheres: &mut [Sphere; NUM_SPHERES]) {
     let width = win.width as i32;
@@ -383,6 +420,9 @@ fn run_window_loop(win: &graphics::WindowBuffer, spheres: &mut [Sphere; NUM_SPHE
 
     let mut fps = FpsCounter::new();
     let mut last_ns = clock_monotonic_ns();
+    let mut prev_buttons: u32 = 0;
+    let mut win_pos = find_window_position(win.id);
+    let mut pos_poll_counter: u32 = 0;
 
     const TARGET_DT_NS: u64 = 16_666_667; // 60 FPS target
 
@@ -396,6 +436,46 @@ fn run_window_loop(win: &graphics::WindowBuffer, spheres: &mut [Sphere; NUM_SPHE
         } else {
             1024
         }.min(4096);
+
+        // Refresh window position periodically (BWM may reposition us)
+        pos_poll_counter += 1;
+        if pos_poll_counter >= 120 {
+            pos_poll_counter = 0;
+            win_pos = find_window_position(win.id);
+        }
+
+        // Poll mouse for click detection
+        if let Ok((mx, my, buttons)) = graphics::mouse_state() {
+            let left_pressed = (buttons & 1) != 0;
+            let left_was_pressed = (prev_buttons & 1) != 0;
+
+            // Detect rising edge of left button
+            if left_pressed && !left_was_pressed {
+                // Translate screen coords to window-local
+                // BWM title bar is ~20px, so content starts below it
+                let local_x = mx as i32 - win_pos.0;
+                let local_y = my as i32 - win_pos.1;
+
+                if local_x >= 0 && local_x < width && local_y >= 0 && local_y < height {
+                    // Check if click hits any sphere
+                    let mut hit = false;
+                    for sphere in spheres.iter_mut() {
+                        if sphere.hit_test(local_x, local_y) {
+                            sphere.impel();
+                            hit = true;
+                            break;
+                        }
+                    }
+                    // Background click — impel all spheres
+                    if !hit {
+                        for sphere in spheres.iter_mut() {
+                            sphere.impel();
+                        }
+                    }
+                }
+            }
+            prev_buttons = buttons;
+        }
 
         physics_step(spheres, width, height, dt_scale);
 
@@ -413,6 +493,7 @@ fn run_mmap_loop(fb: &mut FrameBuf, spheres: &mut [Sphere; NUM_SPHERES], width: 
     let bg = Color::rgb(10, 10, 25);
     let mut fps = FpsCounter::new();
     let mut last_ns = clock_monotonic_ns();
+    let mut prev_buttons: u32 = 0;
 
     const TARGET_DT_NS: u64 = 16_666_667;
 
@@ -426,6 +507,33 @@ fn run_mmap_loop(fb: &mut FrameBuf, spheres: &mut [Sphere; NUM_SPHERES], width: 
         } else {
             1024
         }.min(4096);
+
+        // Poll mouse for click detection (mmap uses left pane at origin)
+        if let Ok((mx, my, buttons)) = graphics::mouse_state() {
+            let left_pressed = (buttons & 1) != 0;
+            let left_was_pressed = (prev_buttons & 1) != 0;
+
+            if left_pressed && !left_was_pressed {
+                let lx = mx as i32;
+                let ly = my as i32;
+                if lx >= 0 && lx < width && ly >= 0 && ly < height {
+                    let mut hit = false;
+                    for sphere in spheres.iter_mut() {
+                        if sphere.hit_test(lx, ly) {
+                            sphere.impel();
+                            hit = true;
+                            break;
+                        }
+                    }
+                    if !hit {
+                        for sphere in spheres.iter_mut() {
+                            sphere.impel();
+                        }
+                    }
+                }
+            }
+            prev_buttons = buttons;
+        }
 
         physics_step(spheres, width, height, dt_scale);
 

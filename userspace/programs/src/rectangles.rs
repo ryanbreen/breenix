@@ -10,7 +10,7 @@ use std::process;
 
 use libbreenix::graphics;
 use libbreenix::graphics::{FlushRect, VirglRect};
-use libbreenix::process as bprocess;
+
 use libbreenix::time;
 
 use libgfx::color::Color;
