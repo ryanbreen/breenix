@@ -41,6 +41,21 @@ static MOUSE_X: AtomicU32 = AtomicU32::new(0);
 static MOUSE_Y: AtomicU32 = AtomicU32::new(0);
 static MOUSE_BUTTONS: AtomicU32 = AtomicU32::new(0);
 
+/// Once we see the first absolute tablet report (6+ bytes), latch into tablet mode.
+/// All subsequent reports are parsed as absolute, regardless of byte[1] value.
+static IS_ABSOLUTE_TABLET: AtomicBool = AtomicBool::new(false);
+
+/// Click stabilization: freeze position on button-down, require movement beyond
+/// a dead zone before tracking resumes. Prevents Mac trackpad press-shift.
+/// Stores the position at the moment button was pressed (raw abs coords, not screen).
+static CLICK_FREEZE_X: AtomicU32 = AtomicU32::new(0);
+static CLICK_FREEZE_Y: AtomicU32 = AtomicU32::new(0);
+/// Set true on button-down, cleared once movement exceeds dead zone threshold.
+static CLICK_FROZEN: AtomicBool = AtomicBool::new(false);
+/// Dead zone in raw absolute coordinates (0-32767 range).
+/// ~200 raw units = ~8 pixels at 1280 width. Absorbs trackpad press-shift.
+const CLICK_DEAD_ZONE: u32 = 200;
+
 // =============================================================================
 // USB HID Usage ID → Linux Keycode mapping
 // =============================================================================
@@ -275,9 +290,9 @@ pub fn process_mouse_report(report: &[u8]) {
         return;
     }
 
-    // Log first few non-zero mouse reports for debugging report format
+    // Log first few non-zero mouse reports for debugging coordinate mapping
     let log_n = MOUSE_LOG_COUNT.load(Ordering::Relaxed);
-    if log_n < 5 && report.iter().take(8).any(|&b| b != 0 && b != 0xDE) {
+    if log_n < 10 && report.iter().take(8).any(|&b| b != 0 && b != 0xDE) {
         MOUSE_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
         crate::serial_println!(
             "[mouse-report] #{}: [{:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}] len={}",
@@ -295,7 +310,33 @@ pub fn process_mouse_report(report: &[u8]) {
     }
 
     let buttons = report[0] as u32;
+    let prev_buttons = MOUSE_BUTTONS.load(Ordering::Relaxed);
     MOUSE_BUTTONS.store(buttons, Ordering::Relaxed);
+
+    // Log button state changes (press/release) to debug click-jump issues.
+    // This fires regardless of MOUSE_LOG_COUNT to capture late button events.
+    static BUTTON_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
+    if buttons != prev_buttons && BUTTON_LOG_COUNT.load(Ordering::Relaxed) < 20 {
+        BUTTON_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+        crate::serial_println!(
+            "[mouse-click] btn {} -> {}: [{:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}] len={} actual={}",
+            prev_buttons, buttons,
+            report.get(0).copied().unwrap_or(0),
+            report.get(1).copied().unwrap_or(0),
+            report.get(2).copied().unwrap_or(0),
+            report.get(3).copied().unwrap_or(0),
+            report.get(4).copied().unwrap_or(0),
+            report.get(5).copied().unwrap_or(0),
+            report.get(6).copied().unwrap_or(0),
+            report.get(7).copied().unwrap_or(0),
+            report.len(),
+            {
+                let mut len = report.len();
+                if len > 8 { while len > 3 && report[len - 1] == 0xDE { len -= 1; } }
+                len
+            },
+        );
+    }
 
     let (sw, sh) = screen_dimensions();
 
@@ -312,16 +353,55 @@ pub fn process_mouse_report(report: &[u8]) {
         report.len()
     };
 
-    // VMware virtual tablet: 6-byte absolute position reports
-    // Format: [buttons, 0, abs_x_lo, abs_x_hi, abs_y_lo, abs_y_hi]
-    // Absolute coordinates in 0-65535 range, scaled to screen dimensions.
-    // Only match if we actually received 6+ bytes (not a 3-4 byte boot report
-    // where sentinel bytes beyond the actual data are misinterpreted as coordinates).
-    if actual_len >= 6 && report[1] == 0 {
+    // Absolute tablet detection: once we see the first 6+ byte absolute report,
+    // latch into tablet mode. This prevents intermittent fallthrough to the relative
+    // path during drag when report[1] may be non-zero (e.g., report ID byte).
+    let is_tablet = IS_ABSOLUTE_TABLET.load(Ordering::Relaxed);
+    if !is_tablet && actual_len >= 6 && report[1] == 0 {
+        IS_ABSOLUTE_TABLET.store(true, Ordering::Relaxed);
+        crate::serial_println!("[mouse] Latched into absolute tablet mode (first 6-byte report with byte[1]=0)");
+    }
+
+    // Absolute tablet path: use absolute coordinates from bytes 2-5.
+    // Once latched, always use this path for 6+ byte reports regardless of byte[1].
+    if IS_ABSOLUTE_TABLET.load(Ordering::Relaxed) && actual_len >= 6 {
         let abs_x = u16::from_le_bytes([report[2], report[3]]) as u32;
         let abs_y = u16::from_le_bytes([report[4], report[5]]) as u32;
-        let new_x = (abs_x * sw / 65536).min(sw - 1);
-        let new_y = (abs_y * sh / 65536).min(sh - 1);
+
+        // Click stabilization: on button-down, freeze position until movement
+        // exceeds a dead zone. This absorbs Mac trackpad press-shift (~10-20px).
+        if buttons != 0 && prev_buttons == 0 {
+            // Button just pressed — freeze at current raw abs position
+            CLICK_FREEZE_X.store(abs_x, Ordering::Relaxed);
+            CLICK_FREEZE_Y.store(abs_y, Ordering::Relaxed);
+            CLICK_FROZEN.store(true, Ordering::Relaxed);
+            return; // Don't update position on the press event itself
+        }
+        if buttons == 0 && prev_buttons != 0 {
+            // Button released — unfreeze
+            CLICK_FROZEN.store(false, Ordering::Relaxed);
+        }
+        if CLICK_FROZEN.load(Ordering::Relaxed) {
+            // Still in dead zone — check if movement exceeds threshold
+            let freeze_x = CLICK_FREEZE_X.load(Ordering::Relaxed);
+            let freeze_y = CLICK_FREEZE_Y.load(Ordering::Relaxed);
+            let dx = (abs_x as i32 - freeze_x as i32).unsigned_abs();
+            let dy = (abs_y as i32 - freeze_y as i32).unsigned_abs();
+            if dx < CLICK_DEAD_ZONE && dy < CLICK_DEAD_ZONE {
+                return; // Still within dead zone, don't move cursor
+            }
+            // Exceeded dead zone — unfreeze and allow movement
+            CLICK_FROZEN.store(false, Ordering::Relaxed);
+        }
+
+        let new_x = (abs_x * sw / 32768).min(sw - 1);
+        let new_y = (abs_y * sh / 32768).min(sh - 1);
+        if log_n < 10 {
+            crate::serial_println!(
+                "[mouse-pos] abs=({},{}) screen={}x{} div=32768 -> ({},{})",
+                abs_x, abs_y, sw, sh, new_x, new_y
+            );
+        }
         MOUSE_X.store(new_x, Ordering::Relaxed);
         MOUSE_Y.store(new_y, Ordering::Relaxed);
         return;

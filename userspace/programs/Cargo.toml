@@ -265,6 +265,10 @@ name = "bounce"
 path = "src/bounce.rs"
 
 [[bin]]
+name = "rectangles"
+path = "src/rectangles.rs"
+
+[[bin]]
 name = "cat_test"
 path = "src/cat_test.rs"
 
