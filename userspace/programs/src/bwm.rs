@@ -1,19 +1,20 @@
-//! Breenix Window Manager (bwm)
+//! Breenix Window Manager (bwm) — Floating Window Manager
 //!
-//! Userspace window manager that provides tabbed terminal sessions.
-//! Takes over the display from the kernel terminal manager and renders
-//! its own tab bar + terminal content to the framebuffer.
+//! Userspace floating window manager with GPU-accelerated compositing.
+//! Windows are independent, draggable rectangles on a decorative background.
+//! Each window has a title bar that serves as a drag handle.
 //!
-//! Tabs:
-//!   F1 - Shell (bsh)
-//!   F2 - Logs (kernel log viewer via /proc/kmsg)
-//!   F3 - Btop (system monitor)
+//! Default windows:
+//!   Shell terminal (bsh) — 750x550
+//!   Bounce demo — 400x350
+//!   Log viewer (bless) — 500x300
 
 use std::process;
 
 use libbreenix::graphics;
 use libbreenix::io;
-use libbreenix::process::{fork, exec, waitpid, setsid, yield_now, ForkResult, WNOHANG};
+use libbreenix::fs;
+use libbreenix::process::{fork, exec, waitpid, setsid, ForkResult, WNOHANG};
 use libbreenix::pty;
 use libbreenix::types::Fd;
 
@@ -23,41 +24,29 @@ use libgfx::framebuf::FrameBuf;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-/// Tab indices
-const TAB_SHELL: usize = 0;
-const TAB_LOGS: usize = 1;
-const TAB_BTOP: usize = 2;
+/// Title bar height in pixels
+const TITLE_BAR_HEIGHT: usize = 32;
 
-/// Tab bar height in pixels (matches kernel terminal_manager TAB_HEIGHT)
-const TAB_BAR_HEIGHT: usize = 24;
+/// Window border/shadow width
+const BORDER_WIDTH: usize = 2;
 
-/// Separator height below tab bar (matches kernel terminal_manager)
-const SEPARATOR_HEIGHT: usize = 2;
-
-/// Pane padding (matches kernel terminal_manager pane_padding)
-const PANE_PADDING: usize = 4;
-
-/// Noto Sans Mono 16px cell dimensions.
-/// Raster width is 7px but we use 6px cell advance for tighter terminal text.
-/// Characters overlap by 1px at their anti-aliased edges.
-const CELL_W: usize = 6;
+/// Noto Sans Mono 16px cell dimensions for terminal text.
+/// CELL_W must match bitmap_font::metrics().char_width (7 for size_16).
+const CELL_W: usize = 7;
 const CELL_H: usize = 18;
-/// Actual glyph raster width (for clipping / two-pass render).
-const GLYPH_W: usize = 7;
 
-/// Colors (match kernel terminal_manager exactly)
-const BG_COLOR: Color = Color::rgb(20, 30, 50);
-const FG_COLOR: Color = Color::rgb(255, 255, 255);
-const TAB_BG: Color = Color::rgb(40, 50, 70);
-const TAB_ACTIVE_BG: Color = Color::rgb(60, 80, 120);
-const TAB_INACTIVE_UNREAD_BG: Color = Color::rgb(80, 60, 60);
-const TAB_TEXT: Color = Color::rgb(255, 255, 255);
-const TAB_INACTIVE_TEXT: Color = Color::rgb(180, 180, 180);
-const TAB_SHORTCUT_TEXT: Color = Color::rgb(120, 140, 160);
-const SEPARATOR_COLOR: Color = Color::rgb(60, 80, 100);
-const CURSOR_COLOR: Color = Color::rgb(255, 255, 255);
-const UNREAD_DOT: Color = Color::rgb(255, 100, 100);
+/// Terminal padding inside window content area
+const TERM_PADDING: usize = 4;
 
+// Colors
+const BG_COLOR: Color = Color::rgb(20, 25, 40);
+const FG_COLOR: Color = Color::rgb(220, 225, 235);
+const TITLE_FOCUSED_BG: Color = Color::rgb(40, 100, 220);
+const TITLE_UNFOCUSED_BG: Color = Color::rgb(45, 50, 65);
+const TITLE_TEXT: Color = Color::rgb(160, 165, 175);
+const TITLE_FOCUSED_TEXT: Color = Color::rgb(255, 255, 255);
+const WIN_BORDER_COLOR: Color = Color::rgb(50, 55, 70);
+const WIN_BORDER_FOCUSED: Color = Color::rgb(60, 130, 255);
 // ANSI color palette (standard 8 colors)
 const ANSI_COLORS: [Color; 8] = [
     Color::rgb(0, 0, 0),       // 0: black
@@ -69,112 +58,6 @@ const ANSI_COLORS: [Color; 8] = [
     Color::rgb(17, 168, 205),  // 6: cyan
     Color::rgb(229, 229, 229), // 7: white
 ];
-
-// ─── Mouse Cursor ───────────────────────────────────────────────────────────
-
-/// Arrow cursor bitmap (1 = white, 2 = black outline, 0 = transparent). 12x18.
-const MOUSE_CURSOR: [[u8; 12]; 18] = [
-    [2,0,0,0,0,0,0,0,0,0,0,0],
-    [2,2,0,0,0,0,0,0,0,0,0,0],
-    [2,1,2,0,0,0,0,0,0,0,0,0],
-    [2,1,1,2,0,0,0,0,0,0,0,0],
-    [2,1,1,1,2,0,0,0,0,0,0,0],
-    [2,1,1,1,1,2,0,0,0,0,0,0],
-    [2,1,1,1,1,1,2,0,0,0,0,0],
-    [2,1,1,1,1,1,1,2,0,0,0,0],
-    [2,1,1,1,1,1,1,1,2,0,0,0],
-    [2,1,1,1,1,1,1,1,1,2,0,0],
-    [2,1,1,1,1,1,1,1,1,1,2,0],
-    [2,1,1,1,1,1,2,2,2,2,2,0],
-    [2,1,1,1,1,2,0,0,0,0,0,0],
-    [2,1,1,2,1,1,2,0,0,0,0,0],
-    [2,1,2,0,2,1,1,2,0,0,0,0],
-    [2,2,0,0,2,1,1,2,0,0,0,0],
-    [2,0,0,0,0,2,1,2,0,0,0,0],
-    [0,0,0,0,0,2,2,0,0,0,0,0],
-];
-
-const CURSOR_W: usize = 12;
-const CURSOR_H: usize = 18;
-
-struct CursorState {
-    saved_bg: [u32; CURSOR_W * CURSOR_H],
-    drawn: bool,
-    last_x: usize,
-    last_y: usize,
-}
-
-impl CursorState {
-    fn new() -> Self {
-        Self { saved_bg: [0; CURSOR_W * CURSOR_H], drawn: false, last_x: 0, last_y: 0 }
-    }
-
-    fn erase(&mut self, fb: &mut FrameBuf) {
-        if !self.drawn { return; }
-        let w = fb.width;
-        let h = fb.height;
-        for row in 0..CURSOR_H {
-            let py = self.last_y + row;
-            if py >= h { break; }
-            for col in 0..CURSOR_W {
-                let px = self.last_x + col;
-                if px >= w { break; }
-                if MOUSE_CURSOR[row][col] != 0 {
-                    let packed = self.saved_bg[row * CURSOR_W + col];
-                    let r = ((packed >> 16) & 0xFF) as u8;
-                    let g = ((packed >> 8) & 0xFF) as u8;
-                    let b = (packed & 0xFF) as u8;
-                    fb.put_pixel(px, py, Color::rgb(r, g, b));
-                }
-            }
-        }
-        self.drawn = false;
-    }
-
-    fn draw(&mut self, fb: &mut FrameBuf, mx: usize, my: usize) {
-        let w = fb.width;
-        let h = fb.height;
-        // Save background
-        for row in 0..CURSOR_H {
-            let py = my + row;
-            if py >= h { break; }
-            for col in 0..CURSOR_W {
-                let px = mx + col;
-                if px >= w { break; }
-                if MOUSE_CURSOR[row][col] != 0 {
-                    let c = fb.get_pixel(px, py);
-                    self.saved_bg[row * CURSOR_W + col] =
-                        ((c.r as u32) << 16) | ((c.g as u32) << 8) | (c.b as u32);
-                }
-            }
-        }
-        // Draw cursor
-        for row in 0..CURSOR_H {
-            let py = my + row;
-            if py >= h { break; }
-            for col in 0..CURSOR_W {
-                let px = mx + col;
-                if px >= w { break; }
-                match MOUSE_CURSOR[row][col] {
-                    1 => fb.put_pixel(px, py, Color::WHITE),
-                    2 => fb.put_pixel(px, py, Color::rgb(0, 0, 0)),
-                    _ => {}
-                }
-            }
-        }
-        self.last_x = mx;
-        self.last_y = my;
-        self.drawn = true;
-    }
-
-    fn update(&mut self, fb: &mut FrameBuf, mx: usize, my: usize) {
-        if self.drawn && self.last_x == mx && self.last_y == my {
-            return; // No movement
-        }
-        self.erase(fb);
-        self.draw(fb, mx, my);
-    }
-}
 
 // ─── Character Cell ──────────────────────────────────────────────────────────
 
@@ -188,12 +71,7 @@ struct Cell {
 
 impl Cell {
     const fn blank() -> Self {
-        Self {
-            ch: b' ',
-            fg: FG_COLOR,
-            bg: BG_COLOR,
-            bold: false,
-        }
+        Self { ch: b' ', fg: FG_COLOR, bg: BG_COLOR, bold: false }
     }
 }
 
@@ -202,13 +80,13 @@ impl Cell {
 #[derive(Clone, Copy, PartialEq)]
 enum AnsiState {
     Normal,
-    Escape,     // Got ESC
-    Csi,        // Got ESC [
-    CsiParam,   // Collecting CSI parameters
-    OscString,  // Got ESC ] (operating system command, skip until ST)
+    Escape,
+    Csi,
+    CsiParam,
+    OscString,
 }
 
-// ─── Terminal Emulator (per-tab) ─────────────────────────────────────────────
+// ─── Terminal Emulator ───────────────────────────────────────────────────────
 
 struct TermEmu {
     cols: usize,
@@ -228,14 +106,10 @@ struct TermEmu {
 impl TermEmu {
     fn new(cols: usize, rows: usize) -> Self {
         Self {
-            cols,
-            rows,
+            cols, rows,
             cells: vec![Cell::blank(); cols * rows],
-            cursor_x: 0,
-            cursor_y: 0,
-            fg: FG_COLOR,
-            bg: BG_COLOR,
-            bold: false,
+            cursor_x: 0, cursor_y: 0,
+            fg: FG_COLOR, bg: BG_COLOR, bold: false,
             ansi_state: AnsiState::Normal,
             ansi_params: [0; 8],
             ansi_param_idx: 0,
@@ -243,127 +117,72 @@ impl TermEmu {
         }
     }
 
-    fn cell(&self, x: usize, y: usize) -> &Cell {
-        &self.cells[y * self.cols + x]
-    }
+    fn cell(&self, x: usize, y: usize) -> &Cell { &self.cells[y * self.cols + x] }
+    fn cell_mut(&mut self, x: usize, y: usize) -> &mut Cell { &mut self.cells[y * self.cols + x] }
 
-    fn cell_mut(&mut self, x: usize, y: usize) -> &mut Cell {
-        &mut self.cells[y * self.cols + x]
-    }
-
-    /// Scroll the screen up by one line
     fn scroll_up(&mut self) {
         let cols = self.cols;
-        // Move lines up
         for y in 1..self.rows {
             for x in 0..cols {
                 self.cells[(y - 1) * cols + x] = self.cells[y * cols + x];
             }
         }
-        // Clear bottom line
         let last_row = self.rows - 1;
-        for x in 0..cols {
-            self.cells[last_row * cols + x] = Cell::blank();
-        }
+        for x in 0..cols { self.cells[last_row * cols + x] = Cell::blank(); }
         self.dirty = true;
     }
 
-    /// Put a character at cursor, advance cursor
     fn put_char(&mut self, ch: u8) {
-        if self.cursor_x >= self.cols {
-            self.cursor_x = 0;
-            self.cursor_y += 1;
-        }
-        if self.cursor_y >= self.rows {
-            self.scroll_up();
-            self.cursor_y = self.rows - 1;
-        }
-        let fg = self.fg;
-        let bg = self.bg;
-        let bold = self.bold;
+        if self.cursor_x >= self.cols { self.cursor_x = 0; self.cursor_y += 1; }
+        if self.cursor_y >= self.rows { self.scroll_up(); self.cursor_y = self.rows - 1; }
+        let fg = self.fg; let bg = self.bg; let bold = self.bold;
         let idx = self.cursor_y * self.cols + self.cursor_x;
         self.cells[idx] = Cell { ch, fg, bg, bold };
         self.cursor_x += 1;
         self.dirty = true;
     }
 
-    /// Process a single byte through the ANSI state machine
     fn feed(&mut self, byte: u8) {
         match self.ansi_state {
             AnsiState::Normal => match byte {
                 0x1b => self.ansi_state = AnsiState::Escape,
                 b'\n' => {
-                    self.cursor_x = 0; // LF implies CR in terminal emulators
-                    self.cursor_y += 1;
-                    if self.cursor_y >= self.rows {
-                        self.scroll_up();
-                        self.cursor_y = self.rows - 1;
-                    }
+                    self.cursor_x = 0; self.cursor_y += 1;
+                    if self.cursor_y >= self.rows { self.scroll_up(); self.cursor_y = self.rows - 1; }
                     self.dirty = true;
                 }
-                b'\r' => {
-                    self.cursor_x = 0;
-                    self.dirty = true;
-                }
+                b'\r' => { self.cursor_x = 0; self.dirty = true; }
                 b'\t' => {
                     let next_tab = (self.cursor_x + 8) & !7;
-                    while self.cursor_x < next_tab && self.cursor_x < self.cols {
-                        self.put_char(b' ');
-                    }
+                    while self.cursor_x < next_tab && self.cursor_x < self.cols { self.put_char(b' '); }
                 }
-                0x08 => {
-                    // Backspace
-                    if self.cursor_x > 0 {
-                        self.cursor_x -= 1;
-                        self.dirty = true;
-                    }
-                }
-                0x07 => {} // Bell - ignore
+                0x08 => { if self.cursor_x > 0 { self.cursor_x -= 1; self.dirty = true; } }
+                0x07 => {}
                 ch if ch >= 0x20 => self.put_char(ch),
-                _ => {} // Ignore other control characters
+                _ => {}
             },
             AnsiState::Escape => match byte {
-                b'[' => {
-                    self.ansi_state = AnsiState::Csi;
-                    self.ansi_params = [0; 8];
-                    self.ansi_param_idx = 0;
-                }
-                b']' => {
-                    self.ansi_state = AnsiState::OscString;
-                }
-                b'O' => {
-                    // SS3 - skip next byte (function key)
-                    self.ansi_state = AnsiState::Normal;
-                }
-                _ => {
-                    self.ansi_state = AnsiState::Normal;
-                }
+                b'[' => { self.ansi_state = AnsiState::Csi; self.ansi_params = [0; 8]; self.ansi_param_idx = 0; }
+                b']' => { self.ansi_state = AnsiState::OscString; }
+                _ => { self.ansi_state = AnsiState::Normal; }
             },
             AnsiState::Csi | AnsiState::CsiParam => {
                 if byte >= b'0' && byte <= b'9' {
                     self.ansi_state = AnsiState::CsiParam;
                     let idx = self.ansi_param_idx;
                     if idx < 8 {
-                        self.ansi_params[idx] = self.ansi_params[idx]
-                            .saturating_mul(10)
-                            .saturating_add((byte - b'0') as u16);
+                        self.ansi_params[idx] = self.ansi_params[idx].saturating_mul(10).saturating_add((byte - b'0') as u16);
                     }
                 } else if byte == b';' {
-                    if self.ansi_param_idx < 7 {
-                        self.ansi_param_idx += 1;
-                    }
+                    if self.ansi_param_idx < 7 { self.ansi_param_idx += 1; }
                 } else {
-                    // Final byte - execute CSI command
                     let nparams = self.ansi_param_idx + 1;
                     self.execute_csi(byte, nparams);
                     self.ansi_state = AnsiState::Normal;
                 }
             }
             AnsiState::OscString => {
-                // Skip until BEL or ST (ESC \)
-                if byte == 0x07 || byte == b'\\' {
-                    self.ansi_state = AnsiState::Normal;
-                }
+                if byte == 0x07 || byte == b'\\' { self.ansi_state = AnsiState::Normal; }
             }
         }
     }
@@ -371,594 +190,370 @@ impl TermEmu {
     fn execute_csi(&mut self, cmd: u8, nparams: usize) {
         let p0 = self.ansi_params[0] as usize;
         let p1 = if nparams > 1 { self.ansi_params[1] as usize } else { 0 };
-
         match cmd {
             b'H' | b'f' => {
-                // CUP: Cursor Position (row;col, 1-based)
                 let row = if p0 > 0 { p0 - 1 } else { 0 };
                 let col = if p1 > 0 { p1 - 1 } else { 0 };
                 self.cursor_y = row.min(self.rows - 1);
                 self.cursor_x = col.min(self.cols - 1);
                 self.dirty = true;
             }
-            b'A' => {
-                // CUU: Cursor Up
-                let n = if p0 > 0 { p0 } else { 1 };
-                self.cursor_y = self.cursor_y.saturating_sub(n);
-                self.dirty = true;
-            }
-            b'B' => {
-                // CUD: Cursor Down
-                let n = if p0 > 0 { p0 } else { 1 };
-                self.cursor_y = (self.cursor_y + n).min(self.rows - 1);
-                self.dirty = true;
-            }
-            b'C' => {
-                // CUF: Cursor Forward
-                let n = if p0 > 0 { p0 } else { 1 };
-                self.cursor_x = (self.cursor_x + n).min(self.cols - 1);
-                self.dirty = true;
-            }
-            b'D' => {
-                // CUB: Cursor Back
-                let n = if p0 > 0 { p0 } else { 1 };
-                self.cursor_x = self.cursor_x.saturating_sub(n);
-                self.dirty = true;
-            }
+            b'A' => { let n = if p0 > 0 { p0 } else { 1 }; self.cursor_y = self.cursor_y.saturating_sub(n); self.dirty = true; }
+            b'B' => { let n = if p0 > 0 { p0 } else { 1 }; self.cursor_y = (self.cursor_y + n).min(self.rows - 1); self.dirty = true; }
+            b'C' => { let n = if p0 > 0 { p0 } else { 1 }; self.cursor_x = (self.cursor_x + n).min(self.cols - 1); self.dirty = true; }
+            b'D' => { let n = if p0 > 0 { p0 } else { 1 }; self.cursor_x = self.cursor_x.saturating_sub(n); self.dirty = true; }
+            b'G' => { let col = if p0 > 0 { p0 - 1 } else { 0 }; self.cursor_x = col.min(self.cols - 1); self.dirty = true; }
             b'J' => {
-                // ED: Erase in Display
                 match p0 {
                     0 => {
-                        // Clear from cursor to end of screen
-                        for x in self.cursor_x..self.cols {
-                            *self.cell_mut(x, self.cursor_y) = Cell::blank();
-                        }
-                        for y in (self.cursor_y + 1)..self.rows {
-                            for x in 0..self.cols {
-                                *self.cell_mut(x, y) = Cell::blank();
-                            }
-                        }
+                        for x in self.cursor_x..self.cols { *self.cell_mut(x, self.cursor_y) = Cell::blank(); }
+                        for y in (self.cursor_y + 1)..self.rows { for x in 0..self.cols { *self.cell_mut(x, y) = Cell::blank(); } }
                     }
                     1 => {
-                        // Clear from start to cursor
-                        for y in 0..self.cursor_y {
-                            for x in 0..self.cols {
-                                *self.cell_mut(x, y) = Cell::blank();
-                            }
-                        }
-                        for x in 0..=self.cursor_x.min(self.cols - 1) {
-                            *self.cell_mut(x, self.cursor_y) = Cell::blank();
-                        }
+                        for y in 0..self.cursor_y { for x in 0..self.cols { *self.cell_mut(x, y) = Cell::blank(); } }
+                        for x in 0..=self.cursor_x.min(self.cols - 1) { *self.cell_mut(x, self.cursor_y) = Cell::blank(); }
                     }
                     2 | 3 => {
-                        // Clear entire screen
-                        for i in 0..self.cells.len() {
-                            self.cells[i] = Cell::blank();
-                        }
+                        for y in 0..self.rows { for x in 0..self.cols { *self.cell_mut(x, y) = Cell::blank(); } }
+                        self.cursor_x = 0; self.cursor_y = 0;
                     }
                     _ => {}
                 }
                 self.dirty = true;
             }
             b'K' => {
-                // EL: Erase in Line
                 match p0 {
-                    0 => {
-                        // Clear from cursor to end of line
-                        for x in self.cursor_x..self.cols {
-                            *self.cell_mut(x, self.cursor_y) = Cell::blank();
-                        }
-                    }
-                    1 => {
-                        // Clear from start to cursor
-                        for x in 0..=self.cursor_x.min(self.cols - 1) {
-                            *self.cell_mut(x, self.cursor_y) = Cell::blank();
-                        }
-                    }
-                    2 => {
-                        // Clear entire line
-                        for x in 0..self.cols {
-                            *self.cell_mut(x, self.cursor_y) = Cell::blank();
-                        }
-                    }
+                    0 => { for x in self.cursor_x..self.cols { *self.cell_mut(x, self.cursor_y) = Cell::blank(); } }
+                    1 => { for x in 0..=self.cursor_x.min(self.cols - 1) { *self.cell_mut(x, self.cursor_y) = Cell::blank(); } }
+                    2 => { for x in 0..self.cols { *self.cell_mut(x, self.cursor_y) = Cell::blank(); } }
                     _ => {}
                 }
                 self.dirty = true;
             }
+            b'd' => { let row = if p0 > 0 { p0 - 1 } else { 0 }; self.cursor_y = row.min(self.rows - 1); self.dirty = true; }
+            b'r' => { self.cursor_x = 0; self.cursor_y = 0; self.dirty = true; }
             b'm' => {
-                // SGR: Select Graphic Rendition
-                for i in 0..nparams {
-                    let code = self.ansi_params[i];
-                    match code {
-                        0 => {
-                            self.fg = FG_COLOR;
-                            self.bg = BG_COLOR;
-                            self.bold = false;
-                        }
-                        1 => self.bold = true,
-                        22 => self.bold = false,
-                        30..=37 => self.fg = ANSI_COLORS[(code - 30) as usize],
-                        39 => self.fg = FG_COLOR,
-                        40..=47 => self.bg = ANSI_COLORS[(code - 40) as usize],
-                        49 => self.bg = BG_COLOR,
-                        90..=97 => {
-                            // Bright foreground colors
-                            let mut c = ANSI_COLORS[(code - 90) as usize];
-                            c.r = c.r.saturating_add(55);
-                            c.g = c.g.saturating_add(55);
-                            c.b = c.b.saturating_add(55);
-                            self.fg = c;
-                        }
-                        _ => {} // Ignore unsupported SGR codes
-                    }
-                }
-                // Handle bare ESC[m (no params = reset)
-                if nparams == 1 && self.ansi_params[0] == 0 {
-                    self.fg = FG_COLOR;
-                    self.bg = BG_COLOR;
-                    self.bold = false;
-                }
-            }
-            b'L' => {
-                // IL: Insert Lines
-                let n = if p0 > 0 { p0 } else { 1 };
-                let cols = self.cols;
-                for _ in 0..n {
-                    if self.cursor_y < self.rows - 1 {
-                        // Shift lines down
-                        for y in (self.cursor_y + 1..self.rows).rev() {
-                            for x in 0..cols {
-                                self.cells[y * cols + x] = self.cells[(y - 1) * cols + x];
+                if nparams == 1 && p0 == 0 { self.fg = FG_COLOR; self.bg = BG_COLOR; self.bold = false; }
+                else {
+                    for i in 0..nparams {
+                        let code = self.ansi_params[i];
+                        match code {
+                            0 => { self.fg = FG_COLOR; self.bg = BG_COLOR; self.bold = false; }
+                            1 => { self.bold = true; }
+                            22 => { self.bold = false; }
+                            30..=37 => { self.fg = ANSI_COLORS[(code - 30) as usize]; }
+                            39 => { self.fg = FG_COLOR; }
+                            40..=47 => { self.bg = ANSI_COLORS[(code - 40) as usize]; }
+                            49 => { self.bg = BG_COLOR; }
+                            90..=97 => {
+                                let mut c = ANSI_COLORS[(code - 90) as usize];
+                                c.r = c.r.saturating_add(60); c.g = c.g.saturating_add(60); c.b = c.b.saturating_add(60);
+                                self.fg = c;
                             }
-                        }
-                    }
-                    // Clear current line
-                    for x in 0..cols {
-                        self.cells[self.cursor_y * cols + x] = Cell::blank();
-                    }
-                }
-                self.dirty = true;
-            }
-            b'M' => {
-                // DL: Delete Lines
-                let n = if p0 > 0 { p0 } else { 1 };
-                let cols = self.cols;
-                for _ in 0..n {
-                    // Shift lines up
-                    for y in self.cursor_y..self.rows - 1 {
-                        for x in 0..cols {
-                            self.cells[y * cols + x] = self.cells[(y + 1) * cols + x];
-                        }
-                    }
-                    // Clear bottom line
-                    let last = self.rows - 1;
-                    for x in 0..cols {
-                        self.cells[last * cols + x] = Cell::blank();
-                    }
-                }
-                self.dirty = true;
-            }
-            b'G' => {
-                // CHA: Cursor Horizontal Absolute
-                let col = if p0 > 0 { p0 - 1 } else { 0 };
-                self.cursor_x = col.min(self.cols - 1);
-                self.dirty = true;
-            }
-            b'd' => {
-                // VPA: Vertical Position Absolute
-                let row = if p0 > 0 { p0 - 1 } else { 0 };
-                self.cursor_y = row.min(self.rows - 1);
-                self.dirty = true;
-            }
-            b'r' => {
-                // DECSTBM: Set Scrolling Region (ignored for now)
-            }
-            b'h' | b'l' => {
-                // SM/RM: Set/Reset Mode (ignored - includes cursor visibility etc.)
-            }
-            b'~' => {
-                // Special keys (F1~, F2~, etc.) - handled at input level
-            }
-            _ => {} // Ignore unknown CSI commands
-        }
-    }
-
-    /// Feed a slice of bytes through the emulator
-    fn feed_bytes(&mut self, data: &[u8]) {
-        for &b in data {
-            self.feed(b);
-        }
-    }
-
-    /// Render the terminal emulator content to a framebuffer region.
-    ///
-    /// Two-pass rendering: backgrounds first, then glyphs. This allows
-    /// glyphs (GLYPH_W=7) to overflow beyond their cell (CELL_W=5) without
-    /// being erased by the next cell's background fill.
-    fn render(&mut self, fb: &mut FrameBuf, x_off: usize, y_off: usize) {
-        if !self.dirty {
-            return;
-        }
-        self.dirty = false;
-
-        for row in 0..self.rows {
-            let py = y_off + row * CELL_H;
-
-            // Pass 1: draw all cell backgrounds for this row
-            for col in 0..self.cols {
-                let cell = self.cell(col, row);
-                let px = x_off + col * CELL_W;
-                for dy in 0..CELL_H {
-                    for dx in 0..CELL_W {
-                        fb.put_pixel(px + dx, py + dy, cell.bg);
-                    }
-                }
-            }
-            // Clear the overflow region after the last cell (GLYPH_W - CELL_W pixels)
-            let overflow_start = x_off + self.cols * CELL_W;
-            for dy in 0..CELL_H {
-                for dx in 0..GLYPH_W {
-                    fb.put_pixel(overflow_start + dx, py + dy, BG_COLOR);
-                }
-            }
-
-            // Pass 2: draw all glyphs for this row (may extend into next cell)
-            for col in 0..self.cols {
-                let cell = self.cell(col, row);
-                if cell.ch > b' ' && cell.ch < 127 {
-                    let fg = if cell.bold {
-                        Color::rgb(
-                            cell.fg.r.saturating_add(55),
-                            cell.fg.g.saturating_add(55),
-                            cell.fg.b.saturating_add(55),
-                        )
-                    } else {
-                        cell.fg
-                    };
-                    let px = x_off + col * CELL_W;
-                    bitmap_font::draw_char(fb, cell.ch as char, px, py + 1, fg);
-                }
-            }
-        }
-
-        // Draw cursor
-        if self.cursor_x < self.cols && self.cursor_y < self.rows {
-            let cx = x_off + self.cursor_x * CELL_W;
-            let cy = y_off + self.cursor_y * CELL_H + CELL_H - 2;
-            for dx in 0..CELL_W {
-                fb.put_pixel(cx + dx, cy, CURSOR_COLOR);
-                fb.put_pixel(cx + dx, cy + 1, CURSOR_COLOR);
-            }
-        }
-    }
-}
-
-// ─── Tab State ───────────────────────────────────────────────────────────────
-
-struct Tab {
-    name: &'static str,
-    shortcut: &'static str,
-    emu: TermEmu,
-    master_fd: Option<Fd>,
-    child_pid: i64,
-    has_unread: bool,
-}
-
-// ─── Escape Sequence Parser for Keyboard Input ──────────────────────────────
-
-enum KeyEvent {
-    Char(u8),
-    EscSeq([u8; 8], usize),
-    F1,
-    F2,
-    F3,
-    None,
-}
-
-struct InputParser {
-    buf: [u8; 8],
-    len: usize,
-}
-
-impl InputParser {
-    fn new() -> Self {
-        Self { buf: [0; 8], len: 0 }
-    }
-
-    fn feed(&mut self, byte: u8) -> KeyEvent {
-        self.buf[self.len] = byte;
-        self.len += 1;
-
-        // Check for escape sequences
-        if self.buf[0] == 0x1b {
-            if self.len == 1 {
-                return KeyEvent::None; // Wait for more bytes
-            }
-            if self.len == 2 {
-                if self.buf[1] == b'[' || self.buf[1] == b'O' {
-                    return KeyEvent::None; // Wait for more
-                }
-                // ESC + something else: return ESC then the byte
-                self.len = 0;
-                return KeyEvent::Char(byte);
-            }
-            // len >= 3: check for complete sequences
-
-            // SS3 F-keys (ESC O P/Q/R)
-            if self.len == 3 && self.buf[1] == b'O' {
-                let result = match self.buf[2] {
-                    b'P' => KeyEvent::F1,
-                    b'Q' => KeyEvent::F2,
-                    b'R' => KeyEvent::F3,
-                    _ => {
-                        self.len = 0;
-                        return KeyEvent::Char(byte);
-                    }
-                };
-                self.len = 0;
-                return result;
-            }
-
-            // CSI sequences (ESC [ ...)
-            if self.buf[1] == b'[' {
-                let last = self.buf[self.len - 1];
-                // CSI final byte is in 0x40-0x7E (@..~)
-                if last >= 0x40 && last <= 0x7E {
-                    // Check CSI F-key forms first (ESC [ 1 1 ~ etc.)
-                    if self.len == 5 {
-                        match (self.buf[2], self.buf[3], self.buf[4]) {
-                            (b'1', b'1', b'~') => { self.len = 0; return KeyEvent::F1; }
-                            (b'1', b'2', b'~') => { self.len = 0; return KeyEvent::F2; }
-                            (b'1', b'3', b'~') => { self.len = 0; return KeyEvent::F3; }
                             _ => {}
                         }
                     }
-                    // Complete CSI sequence (arrows, home, end, delete, etc.)
-                    let buf = self.buf;
-                    let len = self.len;
-                    self.len = 0;
-                    return KeyEvent::EscSeq(buf, len);
                 }
-                // Not complete yet
-                if self.len >= 8 {
-                    self.len = 0;
-                    return KeyEvent::Char(byte);
-                }
-                return KeyEvent::None;
             }
-
-            // Unknown escape sequence, give up
-            self.len = 0;
-            return KeyEvent::Char(byte);
+            b'l' | b'h' => {}
+            _ => {}
         }
-
-        // Regular character
-        self.len = 0;
-        KeyEvent::Char(byte)
     }
 
-    /// Flush pending escape sequence as individual chars
-    fn flush(&mut self) -> Option<u8> {
-        if self.len > 0 {
-            let byte = self.buf[0];
-            // Shift buffer
-            for i in 0..self.len - 1 {
-                self.buf[i] = self.buf[i + 1];
+    fn render(&mut self, fb: &mut FrameBuf, x_off: usize, y_off: usize,
+              clip_w: usize, clip_h: usize) {
+        if !self.dirty { return; }
+        self.dirty = false;
+        let max_x = (x_off + clip_w).min(fb.width);
+        let max_y = (y_off + clip_h).min(fb.height);
+        let fm = bitmap_font::metrics();
+        for row in 0..self.rows {
+            let py = y_off + row * CELL_H;
+            if py + CELL_H > max_y { break; }
+            for col in 0..self.cols {
+                let cell = self.cell(col, row);
+                let px = x_off + col * CELL_W;
+                if px + CELL_W > max_x { break; }
+                for dy in 0..CELL_H { for dx in 0..CELL_W { fb.put_pixel(px + dx, py + dy, cell.bg); } }
+                if cell.ch != b' ' {
+                    let fg = if cell.bold {
+                        Color::rgb(cell.fg.r.saturating_add(40), cell.fg.g.saturating_add(40), cell.fg.b.saturating_add(40))
+                    } else { cell.fg };
+                    bitmap_font::draw_char(fb, cell.ch as char, px, py, fg);
+                }
             }
-            self.len -= 1;
-            Some(byte)
-        } else {
-            None
+            // Cursor underline
+            if row == self.cursor_y && self.cursor_x < self.cols {
+                let cx = x_off + self.cursor_x * CELL_W;
+                let cw = fm.char_width.min(CELL_W);
+                for dy in 0..2usize { for dx in 0..cw {
+                    if cx + dx < max_x && py + CELL_H - 2 + dy < max_y {
+                        fb.put_pixel(cx + dx, py + CELL_H - 2 + dy, Color::WHITE);
+                    }
+                }}
+            }
+        }
+    }
+
+}
+
+// ─── Input Parser ────────────────────────────────────────────────────────────
+
+struct InputParser {
+    state: InputState,
+    esc_buf: [u8; 8],
+    esc_len: usize,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum InputState { Normal, Escape, CsiOrSS3 }
+
+enum InputEvent {
+    Char(u8),
+    FunctionKey(u8),
+    ArrowUp, ArrowDown, ArrowRight, ArrowLeft,
+}
+
+impl InputParser {
+    fn new() -> Self { Self { state: InputState::Normal, esc_buf: [0; 8], esc_len: 0 } }
+
+    fn feed(&mut self, byte: u8) -> Option<InputEvent> {
+        match self.state {
+            InputState::Normal => {
+                if byte == 0x1b { self.state = InputState::Escape; self.esc_len = 0; None }
+                else { Some(InputEvent::Char(byte)) }
+            }
+            InputState::Escape => {
+                if byte == b'[' || byte == b'O' {
+                    self.state = InputState::CsiOrSS3; self.esc_buf[0] = byte; self.esc_len = 1; None
+                } else { self.state = InputState::Normal; Some(InputEvent::Char(byte)) }
+            }
+            InputState::CsiOrSS3 => {
+                if self.esc_len < 7 { self.esc_buf[self.esc_len] = byte; self.esc_len += 1; }
+                if byte >= 0x40 && byte <= 0x7e { self.state = InputState::Normal; self.decode_escape() }
+                else { None }
+            }
+        }
+    }
+
+    fn decode_escape(&self) -> Option<InputEvent> {
+        if self.esc_len < 2 { return None; }
+        let final_byte = self.esc_buf[self.esc_len - 1];
+        if self.esc_buf[0] == b'[' {
+            match final_byte {
+                b'A' => return Some(InputEvent::ArrowUp),
+                b'B' => return Some(InputEvent::ArrowDown),
+                b'C' => return Some(InputEvent::ArrowRight),
+                b'D' => return Some(InputEvent::ArrowLeft),
+                b'~' if self.esc_len >= 3 => {
+                    let num = self.esc_buf[1] - b'0';
+                    if self.esc_len == 3 { if num == 1 { return Some(InputEvent::FunctionKey(1)); } }
+                    else if self.esc_len == 4 {
+                        let num2 = (self.esc_buf[1] - b'0') * 10 + (self.esc_buf[2] - b'0');
+                        match num2 {
+                            11 => return Some(InputEvent::FunctionKey(1)),
+                            12 => return Some(InputEvent::FunctionKey(2)),
+                            13 => return Some(InputEvent::FunctionKey(3)),
+                            14 => return Some(InputEvent::FunctionKey(4)),
+                            15 => return Some(InputEvent::FunctionKey(5)),
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        } else if self.esc_buf[0] == b'O' {
+            match final_byte {
+                b'P' => return Some(InputEvent::FunctionKey(1)),
+                b'Q' => return Some(InputEvent::FunctionKey(2)),
+                b'R' => return Some(InputEvent::FunctionKey(3)),
+                b'S' => return Some(InputEvent::FunctionKey(4)),
+                _ => {}
+            }
+        }
+        None
+    }
+}
+
+// ─── Floating Window ─────────────────────────────────────────────────────────
+
+struct Window {
+    x: i32,
+    y: i32,
+    width: usize,
+    height: usize,
+    title: [u8; 32],
+    title_len: usize,
+    kind: WindowKind,
+}
+
+enum WindowKind {
+    Terminal {
+        emu: TermEmu,
+        master_fd: Option<Fd>,
+        child_pid: i64,
+        program: &'static [u8],
+        respawn_at: u64, // monotonic seconds; 0 = no pending respawn
+    },
+    ClientWindow {
+        window_id: u32,
+    },
+}
+
+/// Extract program name from a null-terminated path like b"/bin/bsh\0" → "bsh"
+fn title_from_program(program: &[u8]) -> ([u8; 32], usize) {
+    let mut buf = [0u8; 32];
+    // Find the last '/' before the null terminator
+    let path_end = program.iter().position(|&b| b == 0).unwrap_or(program.len());
+    let name_start = program[..path_end].iter().rposition(|&b| b == b'/').map(|p| p + 1).unwrap_or(0);
+    let name = &program[name_start..path_end];
+    let len = name.len().min(32);
+    buf[..len].copy_from_slice(&name[..len]);
+    (buf, len)
+}
+
+impl Window {
+    fn title_bytes(&self) -> &[u8] { &self.title[..self.title_len] }
+
+    fn content_x(&self) -> i32 { self.x + BORDER_WIDTH as i32 }
+    fn content_y(&self) -> i32 { self.y + TITLE_BAR_HEIGHT as i32 + BORDER_WIDTH as i32 }
+    fn content_width(&self) -> usize { self.width.saturating_sub(BORDER_WIDTH * 2) }
+    fn content_height(&self) -> usize { self.height.saturating_sub(TITLE_BAR_HEIGHT + BORDER_WIDTH * 2) }
+
+    fn term_dims(&self) -> (usize, usize) {
+        let pw = self.content_width().saturating_sub(TERM_PADDING * 2);
+        let ph = self.content_height().saturating_sub(TERM_PADDING * 2);
+        (pw / CELL_W, ph / CELL_H)
+    }
+
+    fn total_height(&self) -> usize { self.height }
+
+    /// Test if point is in the title bar
+    fn hit_title(&self, mx: i32, my: i32) -> bool {
+        mx >= self.x && mx < self.x + self.width as i32
+            && my >= self.y && my < self.y + TITLE_BAR_HEIGHT as i32
+    }
+
+    /// Test if point is anywhere in the window (title + content)
+    fn hit_any(&self, mx: i32, my: i32) -> bool {
+        mx >= self.x && mx < self.x + self.width as i32
+            && my >= self.y && my < self.y + self.total_height() as i32
+    }
+
+}
+
+// ─── Drawing Helpers ─────────────────────────────────────────────────────────
+
+fn fill_rect(fb: &mut FrameBuf, x: i32, y: i32, w: usize, h: usize, color: Color) {
+    for dy in 0..h as i32 {
+        let py = y + dy;
+        if py < 0 || py >= fb.height as i32 { continue; }
+        for dx in 0..w as i32 {
+            let px = x + dx;
+            if px < 0 || px >= fb.width as i32 { continue; }
+            fb.put_pixel(px as usize, py as usize, color);
         }
     }
 }
 
-// ─── Helper Functions ────────────────────────────────────────────────────────
+fn draw_text_at(fb: &mut FrameBuf, text: &[u8], x: i32, y: i32, color: Color) {
+    if y < 0 || y >= fb.height as i32 { return; }
+    for (i, &ch) in text.iter().enumerate() {
+        let px = x + (i as i32) * CELL_W as i32;
+        if px < 0 || px + CELL_W as i32 > fb.width as i32 { continue; }
+        bitmap_font::draw_char(fb, ch as char, px as usize, y as usize, color);
+    }
+}
 
-/// Spawn a child process connected to a PTY
+/// Draw a floating window frame (border + title bar + content bg)
+fn draw_window_frame(fb: &mut FrameBuf, win: &Window, focused: bool) {
+    let border_color = if focused { WIN_BORDER_FOCUSED } else { WIN_BORDER_COLOR };
+    let title_bg = if focused { TITLE_FOCUSED_BG } else { TITLE_UNFOCUSED_BG };
+    let title_fg = if focused { TITLE_FOCUSED_TEXT } else { TITLE_TEXT };
+    let bw = BORDER_WIDTH;
+
+    // Drop shadow (offset 3px right+down, dark)
+    let shadow = Color::rgb(8, 10, 18);
+    fill_rect(fb, win.x + 3, win.y + 3, win.width, win.total_height(), shadow);
+
+    // Border
+    fill_rect(fb, win.x, win.y, win.width, win.total_height(), border_color);
+
+    // Title bar
+    fill_rect(fb, win.x + bw as i32, win.y + bw as i32,
+              win.width - bw * 2, TITLE_BAR_HEIGHT - bw, title_bg);
+    let text_y = win.y + bw as i32 + ((TITLE_BAR_HEIGHT - bw - CELL_H) / 2) as i32;
+    draw_text_at(fb, win.title_bytes(), win.x + 8, text_y, title_fg);
+
+    // Content background
+    fill_rect(fb, win.content_x(), win.content_y(),
+              win.content_width(), win.content_height(), BG_COLOR);
+}
+
+/// Paint the decorative desktop background — gradient with grid
+fn paint_background(fb: &mut FrameBuf) {
+    let w = fb.width;
+    let h = fb.height;
+    for y in 0..h {
+        for x in 0..w {
+            // Vertical gradient: dark navy top → dark purple bottom
+            let t = (y * 255 / h) as u8;
+            let r = 12u8.saturating_add(t / 12);  // 12..33
+            let g = 16u8.saturating_add(t / 20);  // 16..28
+            let b = 38u8.saturating_add(t / 6);   // 38..80
+            // Subtle grid every 64px
+            let grid = (x % 64 == 0 || y % 64 == 0) as u8;
+            let r2 = r.saturating_add(grid * 6);
+            let g2 = g.saturating_add(grid * 8);
+            let b2 = b.saturating_add(grid * 12);
+            fb.put_pixel(x, y, Color::rgb(r2, g2, b2));
+        }
+    }
+}
+
+// ─── Process Spawning ────────────────────────────────────────────────────────
+
 fn spawn_child(path: &[u8], _name: &str) -> (Fd, i64) {
-    // Create PTY pair
-    let (master_fd, slave_path) = match pty::openpty() {
-        Ok(pair) => pair,
+    let (master_fd, slave_name) = match pty::openpty() {
+        Ok((m, s)) => (m, s),
         Err(_) => return (Fd::from_raw(0), -1),
     };
 
-    let slave_path_slice = pty::slave_path_bytes(&slave_path);
+    let len = slave_name.iter().position(|&b| b == 0).unwrap_or(slave_name.len());
+    let slave_path_str = core::str::from_utf8(&slave_name[..len]).unwrap_or("/dev/pts/0");
+    let mut slave_path_buf = String::from(slave_path_str);
+    slave_path_buf.push('\0');
 
     match fork() {
         Ok(ForkResult::Child) => {
-            // Child process: set up PTY slave as stdin/stdout/stderr
-            // Diagnostic markers to serial (fd 1 = StdIo before dup2)
-            let _ = io::write(Fd::from_raw(1), b"[child:");
-            let _ = io::write(Fd::from_raw(1), _name.as_bytes());
-            let _ = io::write(Fd::from_raw(1), b":fork]\n");
-
-            let _ = setsid(); // New session
-
-            // Close ALL inherited FDs > 2 (master PTY FDs from parent BWM)
-            // This prevents leaking master FDs to child processes which would
-            // keep PTY refcounts elevated and prevent proper cleanup.
-            for fd_num in 3..20 {
-                let _ = io::close(Fd::from_raw(fd_num));
-            }
-
-            // Build null-terminated path for open
-            let mut open_path = [0u8; 64];
-            let copy_len = slave_path_slice.len().min(63);
-            open_path[..copy_len].copy_from_slice(&slave_path_slice[..copy_len]);
-
-            let path_str = core::str::from_utf8(&open_path[..copy_len]).unwrap_or("/dev/pts/0");
-
-            // Open the slave PTY
-            let slave_fd = match libbreenix::fs::open(path_str, 0x02) {
-                // O_RDWR
+            let _ = io::close(master_fd);
+            let _ = setsid();
+            let slave_fd = match fs::open(&slave_path_buf, fs::O_RDWR) {
                 Ok(fd) => fd,
-                Err(_) => {
-                    let _ = io::write(Fd::from_raw(1), b"[child:");
-                    let _ = io::write(Fd::from_raw(1), _name.as_bytes());
-                    let _ = io::write(Fd::from_raw(1), b":open_fail]\n");
-                    libbreenix::process::exit(126);
-                }
+                Err(_) => libbreenix::process::exit(126),
             };
-
-            // Set the slave PTY as the controlling terminal for this session.
-            // Without this, shells like ash can't set up job control and print
-            // "can't access tty; job control turned off".
             let _ = libbreenix::termios::set_controlling_terminal(slave_fd);
-
-            // Dup to stdin/stdout/stderr
             let _ = io::dup2(slave_fd, Fd::from_raw(0));
             let _ = io::dup2(slave_fd, Fd::from_raw(1));
             let _ = io::dup2(slave_fd, Fd::from_raw(2));
-
-            // Close original if it's not 0, 1, or 2
-            if slave_fd.raw() > 2 {
-                let _ = io::close(slave_fd);
-            }
-
-            // Exec the program (after dup2, stdout goes to PTY slave)
+            if slave_fd.raw() > 2 { let _ = io::close(slave_fd); }
             let _ = exec(path);
             libbreenix::process::exit(127);
         }
-        Ok(ForkResult::Parent(child_pid)) => {
-            (master_fd, child_pid.raw() as i64)
-        }
-        Err(_) => {
-            let _ = io::close(master_fd);
-            (Fd::from_raw(0), -1)
-        }
-    }
-}
-
-// ─── Tab Bar Hit Testing ─────────────────────────────────────────────────────
-
-/// Hit-test the tab bar to determine which tab was clicked.
-/// `local_x` is in pane-local coordinates (0 = left edge of right pane).
-/// Returns the tab index if a tab was hit, None otherwise.
-fn hit_test_tab_bar(tabs: &[Tab], local_x: usize, _width: usize) -> Option<usize> {
-    let mut tab_x: usize = 4;
-    for (i, tab) in tabs.iter().enumerate() {
-        let title_width = tab.name.as_bytes().len() * TAB_CHAR_W;
-        let shortcut_width = (tab.shortcut.as_bytes().len() + 2) * TAB_CHAR_W;
-        let tab_padding = 12;
-        let tab_width = title_width + shortcut_width + tab_padding * 2;
-
-        if local_x >= tab_x && local_x < tab_x + tab_width {
-            return Some(i);
-        }
-
-        tab_x += tab_width + 4;
-    }
-    None
-}
-
-// ─── Tab Bar Rendering ───────────────────────────────────────────────────────
-
-/// Tab label character advance width (same as terminal CELL_W).
-const TAB_CHAR_W: usize = CELL_W;
-/// Noto glyph height for vertical centering in tab bar.
-const TAB_GLYPH_H: usize = 16;
-
-/// Draw text at CELL_W spacing (tighter than the default font raster width).
-fn draw_text_tight(fb: &mut FrameBuf, text: &[u8], x: usize, y: usize, fg: Color) {
-    for (i, &ch) in text.iter().enumerate() {
-        bitmap_font::draw_char(fb, ch as char, x + i * CELL_W, y, fg);
-    }
-}
-
-// Window compositing helpers removed — the kernel GPU compositor (op=16)
-// now handles window decorations and per-window textured quads directly.
-
-fn draw_tab_bar(fb: &mut FrameBuf, tabs: &[Tab], active: usize, width: usize) {
-    // Tab bar background (matches kernel: rgb(40, 50, 70))
-    for y in 0..TAB_BAR_HEIGHT {
-        for x in 0..width {
-            fb.put_pixel(x, y, TAB_BG);
-        }
-    }
-
-    // Draw variable-width tabs matching kernel terminal_manager layout
-    let mut tab_x: usize = 4;
-    for (i, tab) in tabs.iter().enumerate() {
-        let title_bytes = tab.name.as_bytes();
-        let shortcut_bytes = tab.shortcut.as_bytes();
-
-        let title_width = title_bytes.len() * TAB_CHAR_W;
-        let shortcut_width = (shortcut_bytes.len() + 2) * TAB_CHAR_W; // +2 for []
-        let tab_padding = 12;
-        let tab_width = title_width + shortcut_width + tab_padding * 2;
-
-        // Tab background color (matches kernel colors exactly)
-        let bg = if i == active {
-            TAB_ACTIVE_BG
-        } else if tabs[i].has_unread {
-            TAB_INACTIVE_UNREAD_BG
-        } else {
-            Color::rgb(30, 40, 55)
-        };
-
-        // Tab background rect
-        for y in 2..TAB_BAR_HEIGHT - 2 {
-            for x in tab_x..tab_x + tab_width {
-                if x < width {
-                    fb.put_pixel(x, y, bg);
-                }
-            }
-        }
-
-        // Title text (anti-aliased noto font, at CELL_W spacing)
-        let title_color = if i == active { TAB_TEXT } else { TAB_INACTIVE_TEXT };
-        let text_x = tab_x + tab_padding / 2;
-        let text_y = (TAB_BAR_HEIGHT - TAB_GLYPH_H) / 2;
-        draw_text_tight(fb, title_bytes, text_x, text_y, title_color);
-
-        // Shortcut text "[F1]"
-        let mut shortcut_label = [0u8; 8];
-        let mut sp = 0;
-        shortcut_label[sp] = b'['; sp += 1;
-        for &b in shortcut_bytes {
-            if sp < 7 { shortcut_label[sp] = b; sp += 1; }
-        }
-        if sp < 8 { shortcut_label[sp] = b']'; sp += 1; }
-        let shortcut_x = text_x + title_width + 4;
-        draw_text_tight(fb, &shortcut_label[..sp], shortcut_x, text_y, TAB_SHORTCUT_TEXT);
-
-        // Unread indicator: 4x4 dot at top-right of tab
-        if tab.has_unread && i != active {
-            let dot_x = tab_x + tab_width - 8;
-            let dot_y = 6;
-            for dy in 0..4_usize {
-                for dx in 0..4_usize {
-                    if dot_x + dx < width {
-                        fb.put_pixel(dot_x + dx, dot_y + dy, UNREAD_DOT);
-                    }
-                }
-            }
-        }
-
-        tab_x += tab_width + 4;
-    }
-
-    // Separator line below tab bar
-    for y in TAB_BAR_HEIGHT..TAB_BAR_HEIGHT + SEPARATOR_HEIGHT {
-        for x in 0..width {
-            fb.put_pixel(x, y, SEPARATOR_COLOR);
-        }
+        Ok(ForkResult::Parent(child_pid)) => (master_fd, child_pid.raw() as i64),
+        Err(_) => { let _ = io::close(master_fd); (Fd::from_raw(0), -1) }
     }
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
-    print!("[bwm] Breenix Window Manager starting...\n");
+    print!("[bwm] Breenix Floating Window Manager starting...\n");
 
-    // Step 1: Take over the display from kernel terminal manager
     if let Err(e) = graphics::take_over_display() {
         print!("[bwm] WARNING: take_over_display failed: {}\n", e);
     }
 
-    // Step 2: Get framebuffer info and mmap (retry on EBUSY — the kernel
-    // returns EBUSY if the framebuffer lock is contended at startup)
     let info = {
         let mut result = None;
         for attempt in 0..10 {
@@ -967,485 +562,428 @@ fn main() {
                 Err(_) if attempt < 9 => {
                     let _ = libbreenix::time::nanosleep(&libbreenix::types::Timespec { tv_sec: 0, tv_nsec: 10_000_000 });
                 }
-                Err(e) => {
-                    print!("[bwm] ERROR: fbinfo failed after retries: {}\n", e);
-                    process::exit(1);
-                }
+                Err(e) => { print!("[bwm] ERROR: fbinfo failed: {}\n", e); process::exit(1); }
             }
         }
         result.unwrap()
     };
 
-    let full_width = info.width as usize;
-    let height = info.height as usize;
+    let screen_w = info.width as usize;
+    let screen_h = info.height as usize;
     let bpp = info.bytes_per_pixel as usize;
 
-    // GPU compositing mode: render to a heap-allocated pixel buffer, display
-    // via virgl_composite(). Falls back to mmap if VirGL is unavailable.
-    //
-    // In GPU mode, BWM owns the entire display (not just right pane).
-    // In mmap mode, BWM only owns the right pane (after the divider).
     let gpu_compositing = {
-        let test_pixel: [u32; 1] = [0xFF000000]; // black
+        let test_pixel: [u32; 1] = [0xFF000000];
         graphics::virgl_composite(&test_pixel, 1, 1).is_ok()
     };
+    if !gpu_compositing {
+        print!("[bwm] ERROR: GPU compositing required\n");
+        process::exit(1);
+    }
 
-    let (mut composite_buf, pane_width, mmap_fb_ptr) = if gpu_compositing {
-        print!("[bwm] GPU compositing mode (VirGL)\n");
-        // Full-screen pixel buffer (BGRA u32)
-        let buf = vec![0u32; full_width * height];
-        (Some(buf), full_width, None)
-    } else {
-        print!("[bwm] Software mmap mode (fallback)\n");
-        let fb_ptr = {
-            let mut result = None;
-            for attempt in 0..10 {
-                match graphics::fb_mmap() {
-                    Ok(ptr) => { result = Some(ptr); break; }
-                    Err(_) if attempt < 9 => {
-                        let _ = libbreenix::time::nanosleep(&libbreenix::types::Timespec { tv_sec: 0, tv_nsec: 10_000_000 });
-                    }
-                    Err(e) => {
-                        print!("[bwm] ERROR: fb_mmap failed after retries: {}\n", e);
-                        process::exit(1);
-                    }
-                }
-            }
-            result.unwrap()
-        };
-        let pw = full_width - (full_width / 2 + 4); // right pane after divider
-        (None, pw, Some(fb_ptr))
-    };
-
-    // Create FrameBuf pointing to either the heap buffer or mmap
-    let fb_raw_ptr = if let Some(ref mut buf) = composite_buf {
-        buf.as_mut_ptr() as *mut u8
-    } else {
-        mmap_fb_ptr.unwrap()
-    };
+    print!("[bwm] GPU compositing mode (VirGL), display: {}x{}\n", screen_w, screen_h);
+    let mut composite_buf = vec![0u32; screen_w * screen_h];
 
     let mut fb = unsafe {
         FrameBuf::from_raw(
-            fb_raw_ptr,
-            pane_width,
-            height,
-            pane_width * bpp,
-            bpp,
-            info.is_bgr(),
+            composite_buf.as_mut_ptr() as *mut u8,
+            screen_w, screen_h, screen_w * bpp, bpp, info.is_bgr(),
         )
     };
 
-    // Calculate terminal dimensions (below tab bar + separator + padding)
-    let term_y_offset = TAB_BAR_HEIGHT + SEPARATOR_HEIGHT + PANE_PADDING;
-    let term_x_offset = PANE_PADDING;
-    let term_pixel_width = pane_width.saturating_sub(PANE_PADDING * 2);
-    let term_pixel_height = height.saturating_sub(term_y_offset + PANE_PADDING);
-    let term_cols = term_pixel_width / CELL_W;
-    let term_rows = term_pixel_height / CELL_H;
+    // Paint decorative background
+    paint_background(&mut fb);
 
-    let font_m = bitmap_font::metrics();
-    print!("[bwm] Font metrics: char_width={}, char_height={}, line_height={}\n",
-           font_m.char_width, font_m.char_height, font_m.line_height());
-    print!("[bwm] Cell: {}x{} (CELL_W x CELL_H)\n", CELL_W, CELL_H);
-    print!("[bwm] Display: {}x{}, pane: {}x{}, terminal: {}x{} cells\n",
-           full_width, height, pane_width, height, term_cols, term_rows);
+    // Spawn children
+    let (shell_master, shell_pid) = spawn_child(b"/bin/bsh\0", "bsh");
+    let (bless_master, bless_pid) = spawn_child(b"/bin/bless\0", "bless");
 
-    // Step 3: Enter raw mode on stdin
+    // Create floating windows proportional to screen size
+    let shell_w: usize = (screen_w * 55 / 100).max(400);  // ~55% of screen width
+    let shell_h: usize = (screen_h * 60 / 100).max(300);  // ~60% of screen height
+    let bounce_w: usize = 420;                              // fixed size (client window)
+    let bounce_h: usize = 380;
+    let right_w: usize = (screen_w * 35 / 100).max(300);   // ~35% for right-side windows
+    let logs_w: usize = right_w;
+    let logs_h: usize = (screen_h * 30 / 100).max(200);
+
+    let shell_cols = (shell_w - BORDER_WIDTH * 2 - TERM_PADDING * 2) / CELL_W;
+    let shell_rows = (shell_h - TERM_PADDING * 2) / CELL_H;
+    let logs_cols = (logs_w - BORDER_WIDTH * 2 - TERM_PADDING * 2) / CELL_W;
+    let logs_rows = (logs_h - TERM_PADDING * 2) / CELL_H;
+
+    let (bsh_title, bsh_title_len) = title_from_program(b"/bin/bsh\0");
+    let (bounce_title, bounce_title_len) = title_from_program(b"/bin/bounce\0");
+    let (bless_title, bless_title_len) = title_from_program(b"/bin/bless\0");
+
+    let mut windows: Vec<Window> = vec![
+        Window {
+            x: 30, y: 30, width: shell_w, height: shell_h + TITLE_BAR_HEIGHT,
+            title: bsh_title, title_len: bsh_title_len,
+            kind: WindowKind::Terminal {
+                emu: TermEmu::new(shell_cols, shell_rows),
+                master_fd: Some(shell_master),
+                child_pid: shell_pid,
+                program: b"/bin/bsh\0",
+                respawn_at: 0,
+            },
+        },
+        Window {
+            x: (screen_w as i32 - bounce_w as i32 - 40),
+            y: 30,
+            width: bounce_w,
+            height: bounce_h + TITLE_BAR_HEIGHT,
+            title: bounce_title, title_len: bounce_title_len,
+            kind: WindowKind::ClientWindow { window_id: 0 },
+        },
+        Window {
+            x: (screen_w as i32 - logs_w as i32 - 40),
+            y: (bounce_h as i32 + TITLE_BAR_HEIGHT as i32 + 90),
+            width: logs_w,
+            height: logs_h + TITLE_BAR_HEIGHT,
+            title: bless_title, title_len: bless_title_len,
+            kind: WindowKind::Terminal {
+                emu: TermEmu::new(logs_cols, logs_rows),
+                master_fd: Some(bless_master),
+                child_pid: bless_pid,
+                program: b"/bin/bless\0",
+                respawn_at: 0,
+            },
+        },
+    ];
+
+    // Set PTY window sizes
+    let ws_shell = libbreenix::termios::Winsize {
+        ws_row: shell_rows as u16, ws_col: shell_cols as u16, ws_xpixel: 0, ws_ypixel: 0,
+    };
+    let _ = libbreenix::termios::set_winsize(shell_master, &ws_shell);
+    let ws_logs = libbreenix::termios::Winsize {
+        ws_row: logs_rows as u16, ws_col: logs_cols as u16, ws_xpixel: 0, ws_ypixel: 0,
+    };
+    let _ = libbreenix::termios::set_winsize(bless_master, &ws_logs);
+
+    print!("[bwm] Shell: {}x{} cells, Logs: {}x{} cells\n", shell_cols, shell_rows, logs_cols, logs_rows);
+
+    // Enter raw mode on stdin
     let mut orig_termios = libbreenix::termios::Termios::default();
     let _ = libbreenix::termios::tcgetattr(Fd::from_raw(0), &mut orig_termios);
     let mut raw = orig_termios;
     libbreenix::termios::cfmakeraw(&mut raw);
     let _ = libbreenix::termios::tcsetattr(Fd::from_raw(0), libbreenix::termios::TCSANOW, &raw);
 
-    // Step 4: Create tabs with PTY children
-    let (shell_master, shell_pid) = spawn_child(b"/bin/bsh\0", "bsh");
-    let (bless_master, bless_pid) = spawn_child(b"/bin/bless\0", "bless");
-    let (btop_master, btop_pid) = spawn_child(b"/bin/btop\0", "btop");
-
-    // Set PTY window size so child processes know the terminal dimensions
-    let ws = libbreenix::termios::Winsize {
-        ws_row: term_rows as u16,
-        ws_col: term_cols as u16,
-        ws_xpixel: term_pixel_width as u16,
-        ws_ypixel: term_pixel_height as u16,
-    };
-    let _ = libbreenix::termios::set_winsize(shell_master, &ws);
-    let _ = libbreenix::termios::set_winsize(bless_master, &ws);
-    let _ = libbreenix::termios::set_winsize(btop_master, &ws);
-
-    let mut tabs = [
-        Tab {
-            name: "Shell",
-            shortcut: "F1",
-            emu: TermEmu::new(term_cols, term_rows),
-            master_fd: Some(shell_master),
-            child_pid: shell_pid,
-            has_unread: false,
-        },
-        Tab {
-            name: "Logs",
-            shortcut: "F2",
-            emu: TermEmu::new(term_cols, term_rows),
-            master_fd: Some(bless_master),
-            child_pid: bless_pid,
-            has_unread: false,
-        },
-        Tab {
-            name: "Btop",
-            shortcut: "F3",
-            emu: TermEmu::new(term_cols, term_rows),
-            master_fd: Some(btop_master),
-            child_pid: btop_pid,
-            has_unread: false,
-        },
-    ];
-
-    let mut active_tab: usize = TAB_SHELL;
+    let mut focused_win: usize = 0;
     let mut input_parser = InputParser::new();
     let mut frame: u32 = 0;
-    let mut prev_mouse_buttons: u32 = 0; // For detecting click transitions
-    let mut mouse_x: usize = 0;
-    let mut mouse_y: usize = 0;
-    let mut cursor_state = CursorState::new();
-    let pane_x_offset = if gpu_compositing { 0 } else { full_width / 2 + 4 };
+    let mut mouse_x: i32 = 0;
+    let mut mouse_y: i32 = 0;
+    let mut prev_buttons: u32 = 0;
+    let mut dragging: Option<(usize, i32, i32)> = None; // (win_idx, offset_x, offset_y)
+    let mut content_dirty = true; // only true when actual content changes
 
-    // Initial render
-    fb.clear(BG_COLOR);
-    draw_tab_bar(&mut fb, &tabs, active_tab, pane_width);
-    tabs[active_tab].emu.render(&mut fb, term_x_offset, term_y_offset);
-    if let Some(ref buf) = composite_buf {
-        // Use multi-window compositor for initial render too
-        let _ = graphics::virgl_composite_windows(buf, pane_width as u32, height as u32, true);
-    } else {
-        let _ = graphics::fb_flush();
-    }
+    // Initial draw — background + all windows in Z-order
+    paint_background(&mut fb);
+    redraw_all_windows(&mut fb, &mut windows, focused_win);
+    // Upload initial frame
+    let _ = graphics::virgl_composite_windows(&composite_buf, screen_w as u32, screen_h as u32, true);
 
-    // Step 5: Main loop
+    // Main loop
     let mut read_buf = [0u8; 512];
-    let mut needs_flush = false;
-
-    // Pre-allocate poll fds (avoid Vec allocation per frame)
-    let mut poll_fds = [
-        io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 },
-        io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 },
-        io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 },
-        io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 },
-    ];
+    // poll_fds[0] = stdin, poll_fds[1..] = terminal master FDs
+    let mut poll_fds = [io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 }; 8];
+    // Maps poll_fds index → windows index for terminal FD routing
+    let mut poll_to_win: [usize; 8] = [0; 8];
 
     loop {
-        // Reset revents and set up poll fds
-        let mut nfds = 1; // Always poll stdin (index 0)
+        // Setup poll FDs dynamically based on current window order
+        let mut nfds = 1;
         poll_fds[0].revents = 0;
-
-        // Shell PTY master
-        let shell_poll_idx = if let Some(fd) = tabs[TAB_SHELL].master_fd {
-            poll_fds[nfds].fd = fd.raw() as i32;
-            poll_fds[nfds].revents = 0;
-            let idx = nfds;
-            nfds += 1;
-            Some(idx)
-        } else {
-            None
-        };
-
-        // Bless PTY master (Logs tab)
-        let bless_poll_idx = if let Some(fd) = tabs[TAB_LOGS].master_fd {
-            poll_fds[nfds].fd = fd.raw() as i32;
-            poll_fds[nfds].revents = 0;
-            let idx = nfds;
-            nfds += 1;
-            Some(idx)
-        } else {
-            None
-        };
-
-        // Btop PTY master
-        let btop_poll_idx = if let Some(fd) = tabs[TAB_BTOP].master_fd {
-            poll_fds[nfds].fd = fd.raw() as i32;
-            poll_fds[nfds].revents = 0;
-            let idx = nfds;
-            nfds += 1;
-            Some(idx)
-        } else {
-            None
-        };
-
-        // Non-blocking poll: check for input without sleeping.
-        // Frame pacing (mark_window_dirty blocks bounce until we composite)
-        // provides natural back-pressure, so we don't need poll to pace us.
-        // When no windows are dirty, the compositor early-outs and we yield.
-        let _nready = io::poll(&mut poll_fds[..nfds], 0).unwrap_or(0);
-
-        // Check stdin
-        let stdin_had_data = poll_fds[0].revents & (io::poll_events::POLLIN as i16) != 0;
-        if stdin_had_data {
-            match io::read(Fd::from_raw(0), &mut read_buf) {
-                Ok(n) if n > 0 => {
-                    let mut char_buf = [0u8; 512];
-                    let mut char_count = 0;
-                    for i in 0..n {
-                        match input_parser.feed(read_buf[i]) {
-                            KeyEvent::Char(ch) => {
-                                char_buf[char_count] = ch;
-                                char_count += 1;
-                            }
-                            KeyEvent::EscSeq(buf, len) => {
-                                // Flush accumulated chars first
-                                if char_count > 0 {
-                                    if let Some(fd) = tabs[active_tab].master_fd {
-                                        let _ = io::write(fd, &char_buf[..char_count]);
-                                    }
-                                    char_count = 0;
-                                }
-                                if let Some(fd) = tabs[active_tab].master_fd {
-                                    let _ = io::write(fd, &buf[..len]);
-                                }
-                            }
-                            KeyEvent::F1 => {
-                                if char_count > 0 {
-                                    if let Some(fd) = tabs[active_tab].master_fd {
-                                        let _ = io::write(fd, &char_buf[..char_count]);
-                                    }
-                                    char_count = 0;
-                                }
-                                if active_tab != TAB_SHELL {
-                                    active_tab = TAB_SHELL;
-                                    tabs[TAB_SHELL].has_unread = false;
-                                    tabs[active_tab].emu.dirty = true;
-                                    draw_tab_bar(&mut fb, &tabs, active_tab, pane_width);
-                                    needs_flush = true;
-                                }
-                            }
-                            KeyEvent::F2 => {
-                                if char_count > 0 {
-                                    if let Some(fd) = tabs[active_tab].master_fd {
-                                        let _ = io::write(fd, &char_buf[..char_count]);
-                                    }
-                                    char_count = 0;
-                                }
-                                if active_tab != TAB_LOGS {
-                                    active_tab = TAB_LOGS;
-                                    tabs[TAB_LOGS].has_unread = false;
-                                    tabs[active_tab].emu.dirty = true;
-                                    draw_tab_bar(&mut fb, &tabs, active_tab, pane_width);
-                                    needs_flush = true;
-                                }
-                            }
-                            KeyEvent::F3 => {
-                                if char_count > 0 {
-                                    if let Some(fd) = tabs[active_tab].master_fd {
-                                        let _ = io::write(fd, &char_buf[..char_count]);
-                                    }
-                                    char_count = 0;
-                                }
-                                if active_tab != TAB_BTOP {
-                                    active_tab = TAB_BTOP;
-                                    tabs[TAB_BTOP].has_unread = false;
-                                    tabs[active_tab].emu.dirty = true;
-                                    draw_tab_bar(&mut fb, &tabs, active_tab, pane_width);
-                                    needs_flush = true;
-                                }
-                            }
-                            KeyEvent::None => {}
-                        }
-                    }
-                    // Flush remaining accumulated chars
-                    if char_count > 0 {
-                        if let Some(fd) = tabs[active_tab].master_fd {
-                            let _ = io::write(fd, &char_buf[..char_count]);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        // Flush pending escape bytes only when stdin had no data (poll timeout)
-        if !stdin_had_data {
-            while let Some(byte) = input_parser.flush() {
-                if let Some(fd) = tabs[active_tab].master_fd {
-                    let _ = io::write(fd, &[byte]);
+        for (wi, win) in windows.iter().enumerate() {
+            if let WindowKind::Terminal { master_fd: Some(fd), .. } = &win.kind {
+                if nfds < poll_fds.len() {
+                    poll_fds[nfds].fd = fd.raw() as i32;
+                    poll_fds[nfds].revents = 0;
+                    poll_to_win[nfds] = wi;
+                    nfds += 1;
                 }
             }
         }
 
-        // Check Shell PTY master
-        if let Some(idx) = shell_poll_idx {
-            if poll_fds[idx].revents & (io::poll_events::POLLIN as i16) != 0 {
-                if let Some(fd) = tabs[TAB_SHELL].master_fd {
-                    match io::read(fd, &mut read_buf) {
-                        Ok(n) if n > 0 => {
-                            tabs[TAB_SHELL].emu.feed_bytes(&read_buf[..n]);
-                            if active_tab != TAB_SHELL {
-                                tabs[TAB_SHELL].has_unread = true;
+        let _nready = io::poll(&mut poll_fds[..nfds], 1).unwrap_or(0);
+
+        // Read stdin (keyboard) → route to focused terminal
+        if poll_fds[0].revents & io::poll_events::POLLIN as i16 != 0 {
+            if let Ok(n) = io::read(Fd::from_raw(0), &mut read_buf) {
+                for i in 0..n {
+                    if let Some(event) = input_parser.feed(read_buf[i]) {
+                        match event {
+                            InputEvent::FunctionKey(k) if k >= 1 && k <= 3 => {
+                                let new_focus = (k - 1) as usize;
+                                if new_focus < windows.len() && new_focus != focused_win {
+                                    let old = focused_win;
+                                    focused_win = new_focus;
+                                    draw_window_frame(&mut fb, &windows[old], false);
+                                    render_window_content(&mut windows[old], &mut fb);
+                                    draw_window_frame(&mut fb, &windows[focused_win], true);
+                                    render_window_content(&mut windows[focused_win], &mut fb);
+                                    content_dirty = true;
+                                }
                             }
+                            InputEvent::Char(c) => {
+                                if let WindowKind::Terminal { master_fd: Some(fd), .. } = &windows[focused_win].kind {
+                                    let _ = io::write(*fd, &[c]);
+                                }
+                            }
+                            InputEvent::ArrowUp => { write_escape_to_focused(&windows, focused_win, b"\x1b[A"); }
+                            InputEvent::ArrowDown => { write_escape_to_focused(&windows, focused_win, b"\x1b[B"); }
+                            InputEvent::ArrowRight => { write_escape_to_focused(&windows, focused_win, b"\x1b[C"); }
+                            InputEvent::ArrowLeft => { write_escape_to_focused(&windows, focused_win, b"\x1b[D"); }
+                            _ => {}
                         }
-                        _ => {}
                     }
-                }
-            }
-            // Handle hangup: child exited, stop polling this fd
-            if poll_fds[idx].revents & (io::poll_events::POLLHUP as i16) != 0 {
-                if let Some(fd) = tabs[TAB_SHELL].master_fd.take() {
-                    let _ = io::close(fd);
                 }
             }
         }
 
-        // Check Bless PTY master (Logs tab)
-        if let Some(idx) = bless_poll_idx {
-            if poll_fds[idx].revents & (io::poll_events::POLLIN as i16) != 0 {
-                if let Some(fd) = tabs[TAB_LOGS].master_fd {
-                    match io::read(fd, &mut read_buf) {
-                        Ok(n) if n > 0 => {
-                            tabs[TAB_LOGS].emu.feed_bytes(&read_buf[..n]);
-                            if active_tab != TAB_LOGS {
-                                tabs[TAB_LOGS].has_unread = true;
-                            }
-                        }
-                        _ => {}
+        // Read terminal PTY output (dynamic — works regardless of window order)
+        for pi in 1..nfds {
+            if poll_fds[pi].revents & io::poll_events::POLLIN as i16 != 0 {
+                let wi = poll_to_win[pi];
+                if let WindowKind::Terminal { master_fd: Some(fd), ref mut emu, .. } = windows[wi].kind {
+                    if let Ok(n) = io::read(fd, &mut read_buf) {
+                        for i in 0..n { emu.feed(read_buf[i]); }
+                        content_dirty = true;
                     }
-                }
-            }
-            // Handle hangup: child exited, stop polling this fd
-            if poll_fds[idx].revents & (io::poll_events::POLLHUP as i16) != 0 {
-                if let Some(fd) = tabs[TAB_LOGS].master_fd.take() {
-                    let _ = io::close(fd);
                 }
             }
         }
 
-        // Check Btop PTY master
-        if let Some(idx) = btop_poll_idx {
-            if poll_fds[idx].revents & (io::poll_events::POLLIN as i16) != 0 {
-                if let Some(fd) = tabs[TAB_BTOP].master_fd {
-                    match io::read(fd, &mut read_buf) {
-                        Ok(n) if n > 0 => {
-                            tabs[TAB_BTOP].emu.feed_bytes(&read_buf[..n]);
-                            if active_tab != TAB_BTOP {
-                                tabs[TAB_BTOP].has_unread = true;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            // Handle hangup: child exited, stop polling this fd
-            if poll_fds[idx].revents & (io::poll_events::POLLHUP as i16) != 0 {
-                if let Some(fd) = tabs[TAB_BTOP].master_fd.take() {
-                    let _ = io::close(fd);
-                }
-            }
-        }
-
-        // Check for mouse clicks on tab bar and track cursor position
+        // Mouse input — buttons is level-based (non-destructive, multi-process safe).
+        // Kernel debounce creates synthetic press/release cycle (~150ms press, then 0).
+        // BWM does local edge detection (0→1 transition = new click).
         if let Ok((mx, my, buttons)) = graphics::mouse_state() {
-            let new_mx = mx as usize;
-            let new_my = my as usize;
-            if new_mx != mouse_x || new_my != mouse_y {
+            let new_mx = mx as i32;
+            let new_my = my as i32;
+            let mouse_moved = new_mx != mouse_x || new_my != mouse_y;
+            if mouse_moved {
                 mouse_x = new_mx;
                 mouse_y = new_my;
-                needs_flush = true;
-            }
-            // Detect rising edge (button just pressed)
-            if buttons & 1 != 0 && prev_mouse_buttons & 1 == 0 {
-                // Convert screen coords to pane-local coords
-                if new_mx >= pane_x_offset && new_my < TAB_BAR_HEIGHT {
-                    let local_x = new_mx - pane_x_offset;
-                    if let Some(clicked_tab) = hit_test_tab_bar(&tabs, local_x, pane_width) {
-                        if clicked_tab != active_tab {
-                            active_tab = clicked_tab;
-                            tabs[active_tab].has_unread = false;
-                            tabs[active_tab].emu.dirty = true;
-                            draw_tab_bar(&mut fb, &tabs, active_tab, pane_width);
-                            needs_flush = true;
-                        }
+
+                // Handle window dragging
+                if let Some((win_idx, off_x, off_y)) = dragging {
+                    let new_x = mouse_x - off_x;
+                    let new_y = mouse_y - off_y;
+                    if new_x != windows[win_idx].x || new_y != windows[win_idx].y {
+                        repaint_window_area(&mut fb, &windows[win_idx], screen_w, screen_h);
+                        windows[win_idx].x = new_x;
+                        windows[win_idx].y = new_y;
+                        redraw_all_windows(&mut fb, &mut windows, focused_win);
+                        content_dirty = true;
                     }
                 }
             }
-            prev_mouse_buttons = buttons;
+
+            // Release detection: end drag when button goes 1→0
+            if (buttons & 1) == 0 && (prev_buttons & 1) != 0 {
+                dragging = None;
+            }
+
+            // Local edge detection: 0→1 transition = new click
+            let new_click = (buttons & 1) != 0 && (prev_buttons & 1) == 0;
+            prev_buttons = buttons;
+            if new_click {
+                // Find which window was clicked (top-to-bottom z-order)
+                let mut clicked_idx: Option<usize> = None;
+                let mut clicked_title = false;
+                for i in (0..windows.len()).rev() {
+                    let ht = windows[i].hit_title(mouse_x, mouse_y);
+                    let ha = windows[i].hit_any(mouse_x, mouse_y);
+                    if ht || ha {
+                        clicked_idx = Some(i);
+                        clicked_title = ht;
+                        break;
+                    }
+                }
+                if let Some(ci) = clicked_idx {
+                    print!("[bwm] click win {} '{}' title={}\n", ci,
+                           core::str::from_utf8(windows[ci].title_bytes()).unwrap_or("?"),
+                           clicked_title);
+                    // Bring to front: rotate clicked window to end of array
+                    if ci < windows.len() - 1 {
+                        let win = windows.remove(ci);
+                        windows.push(win);
+                    }
+                    let top = windows.len() - 1;
+                    focused_win = top;
+                    if clicked_title {
+                        dragging = Some((top, mouse_x - windows[top].x, mouse_y - windows[top].y));
+                    }
+                    paint_background(&mut fb);
+                    redraw_all_windows(&mut fb, &mut windows, focused_win);
+                    content_dirty = true;
+                } else {
+                    // Clicked on background — log it
+                    print!("[bwm] click background at ({},{})\n", mouse_x, mouse_y);
+                }
+            }
         }
 
-        // Reap dead children (non-blocking)
+        // Discover client windows (bounce)
+        discover_client_windows(&mut windows);
+        update_client_window_positions(&windows);
+
+        // Render terminal content (only if dirty)
+        for win in windows.iter_mut() {
+            let cx = win.content_x() + TERM_PADDING as i32;
+            let cy = win.content_y() + TERM_PADDING as i32;
+            let cw = win.content_width().saturating_sub(TERM_PADDING * 2);
+            let ch = win.content_height().saturating_sub(TERM_PADDING * 2);
+            if let WindowKind::Terminal { ref mut emu, .. } = win.kind {
+                if emu.dirty && cx >= 0 && cy >= 0 {
+                    emu.render(&mut fb, cx as usize, cy as usize, cw, ch);
+                    content_dirty = true;
+                }
+            }
+        }
+
+        // Composite to GPU
+        if content_dirty {
+            let _ = graphics::virgl_composite_windows(
+                &composite_buf, screen_w as u32, screen_h as u32, true,
+            );
+            content_dirty = false;
+        } else {
+            // Nothing changed — still call compositor to wake blocked
+            // clients (frame pacing) and let kernel update cursor.
+            let _ = graphics::virgl_composite_windows(
+                &composite_buf, screen_w as u32, screen_h as u32, false,
+            );
+        }
+
+        frame = frame.wrapping_add(1);
+
+        // Reap dead children (non-blocking: schedule respawn after 1s cooldown)
         let mut status: i32 = 0;
         loop {
             match waitpid(-1, &mut status as *mut i32, WNOHANG) {
                 Ok(pid) if pid.raw() > 0 => {
                     let rpid = pid.raw() as i64;
-                    // Check if a child died and respawn
-                    if rpid == tabs[TAB_SHELL].child_pid {
-                        print!("[bwm] Shell exited, respawning...\n");
-                        // Close old master FD to release the PTY pair
-                        if let Some(old_fd) = tabs[TAB_SHELL].master_fd.take() {
-                            let _ = io::close(old_fd);
+                    let now_sec = libbreenix::time::now_monotonic()
+                        .map(|ts| ts.tv_sec as u64).unwrap_or(0);
+                    for win in windows.iter_mut() {
+                        if let WindowKind::Terminal { ref mut child_pid, ref mut master_fd, ref mut respawn_at, .. } = win.kind {
+                            if rpid == *child_pid {
+                                print!("[bwm] Child exited, scheduling respawn in 1s\n");
+                                if let Some(old_fd) = master_fd.take() { let _ = io::close(old_fd); }
+                                *child_pid = -1;
+                                *respawn_at = now_sec + 1;
+                            }
                         }
-                        let (m, p) = spawn_child(b"/bin/bsh\0", "bsh");
-                        tabs[TAB_SHELL].master_fd = Some(m);
-                        tabs[TAB_SHELL].child_pid = p;
-                    } else if rpid == tabs[TAB_LOGS].child_pid {
-                        print!("[bwm] bless exited, respawning...\n");
-                        if let Some(old_fd) = tabs[TAB_LOGS].master_fd.take() {
-                            let _ = io::close(old_fd);
-                        }
-                        let (m, p) = spawn_child(b"/bin/bless\0", "bless");
-                        tabs[TAB_LOGS].master_fd = Some(m);
-                        tabs[TAB_LOGS].child_pid = p;
-                    } else if rpid == tabs[TAB_BTOP].child_pid {
-                        print!("[bwm] btop exited, respawning...\n");
-                        // Close old master FD to release the PTY pair
-                        if let Some(old_fd) = tabs[TAB_BTOP].master_fd.take() {
-                            let _ = io::close(old_fd);
-                        }
-                        let (m, p) = spawn_child(b"/bin/btop\0", "btop");
-                        tabs[TAB_BTOP].master_fd = Some(m);
-                        tabs[TAB_BTOP].child_pid = p;
                     }
                 }
                 _ => break,
             }
         }
 
-        // Erase cursor before content rendering (so we don't save cursor
-        // pixels as background when content redraws under the cursor)
-        let content_dirty = tabs[active_tab].emu.dirty || frame % 200 == 0;
-        if content_dirty {
-            cursor_state.erase(&mut fb);
-        }
-
-        // Render active tab (only if dirty)
-        if tabs[active_tab].emu.dirty {
-            tabs[active_tab].emu.render(&mut fb, term_x_offset, term_y_offset);
-            needs_flush = true;
-        }
-
-        // Redraw tab bar periodically (for unread indicators)
-        if frame % 200 == 0 {
-            draw_tab_bar(&mut fb, &tabs, active_tab, pane_width);
-            needs_flush = true;
-        }
-
-        // Draw mouse cursor on top of everything (with save/restore)
-        if mouse_x > 0 || mouse_y > 0 {
-            cursor_state.update(&mut fb, mouse_x, mouse_y);
-            needs_flush = true;
-        }
-
-        // Composite: always call in GPU mode (kernel early-outs if nothing dirty)
-        if needs_flush || gpu_compositing {
-            if let Some(ref buf) = composite_buf {
-                let _ = graphics::virgl_composite_windows(
-                    buf, pane_width as u32, height as u32, needs_flush,
-                );
-            } else {
-                let _ = graphics::fb_flush();
+        // Process deferred respawns (non-blocking)
+        let now_sec = libbreenix::time::now_monotonic()
+            .map(|ts| ts.tv_sec as u64).unwrap_or(0);
+        for win in windows.iter_mut() {
+            let (cols, rows) = win.term_dims();
+            if let WindowKind::Terminal { ref mut child_pid, ref mut master_fd, program, ref mut respawn_at, .. } = win.kind {
+                if *respawn_at > 0 && now_sec >= *respawn_at {
+                    *respawn_at = 0;
+                    let (m, p) = spawn_child(program, "child");
+                    *master_fd = Some(m);
+                    *child_pid = p;
+                    let ws = libbreenix::termios::Winsize {
+                        ws_row: rows as u16, ws_col: cols as u16, ws_xpixel: 0, ws_ypixel: 0,
+                    };
+                    let _ = libbreenix::termios::set_winsize(m, &ws);
+                }
             }
-            needs_flush = false;
         }
-
-        // Yield to let client windows render (they block on mark_window_dirty
-        // until we composite their frame, so this just gives them a chance to wake)
-        let _ = yield_now();
-
-        frame = frame.wrapping_add(1);
     }
 }
+
+fn write_escape_to_focused(windows: &[Window], focused_win: usize, seq: &[u8]) {
+    if let WindowKind::Terminal { master_fd: Some(fd), .. } = &windows[focused_win].kind {
+        let _ = io::write(*fd, seq);
+    }
+}
+
+fn render_window_content(win: &mut Window, fb: &mut FrameBuf) {
+    let cx = win.content_x() + TERM_PADDING as i32;
+    let cy = win.content_y() + TERM_PADDING as i32;
+    let cw = win.content_width().saturating_sub(TERM_PADDING * 2);
+    let ch = win.content_height().saturating_sub(TERM_PADDING * 2);
+    if let WindowKind::Terminal { ref mut emu, .. } = win.kind {
+        emu.dirty = true;
+        if cx >= 0 && cy >= 0 { emu.render(fb, cx as usize, cy as usize, cw, ch); }
+    }
+}
+
+/// Repaint the background area where a window was (before moving it)
+fn repaint_window_area(fb: &mut FrameBuf, win: &Window, screen_w: usize, screen_h: usize) {
+    let x0 = (win.x - 1).max(0) as usize;
+    let y0 = (win.y - 1).max(0) as usize;
+    let x1 = ((win.x + win.width as i32 + 4) as usize).min(screen_w);
+    let y1 = ((win.y + win.total_height() as i32 + 4) as usize).min(screen_h);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let t = (y * 255 / screen_h) as u8;
+            let r = 12u8.saturating_add(t / 12);
+            let g = 16u8.saturating_add(t / 20);
+            let b = 38u8.saturating_add(t / 6);
+            let grid = (x % 64 == 0 || y % 64 == 0) as u8;
+            let r2 = r.saturating_add(grid * 6);
+            let g2 = g.saturating_add(grid * 8);
+            let b2 = b.saturating_add(grid * 12);
+            fb.put_pixel(x, y, Color::rgb(r2, g2, b2));
+        }
+    }
+}
+
+/// Redraw all windows in z-order (index 0 = bottom).
+/// Draws frame + content for each window so later windows correctly overlap earlier ones.
+fn redraw_all_windows(fb: &mut FrameBuf, windows: &mut [Window], focused_win: usize) {
+    for i in 0..windows.len() {
+        draw_window_frame(fb, &windows[i], i == focused_win);
+        render_window_content(&mut windows[i], fb);
+    }
+}
+
+/// Discover client windows by querying the kernel's window registry.
+/// Tell the kernel where to composite client windows
+fn update_client_window_positions(windows: &[Window]) {
+    for win in windows.iter() {
+        if let WindowKind::ClientWindow { window_id } = win.kind {
+            if window_id != 0 {
+                let _ = graphics::set_window_position(
+                    window_id,
+                    win.content_x(),
+                    win.content_y(),
+                );
+            }
+        }
+    }
+}
+
+fn discover_client_windows(windows: &mut [Window]) {
+    let needs_discovery = windows.iter().any(|w| matches!(w.kind, WindowKind::ClientWindow { window_id: 0 }));
+    if !needs_discovery { return; }
+
+    let mut win_infos = [graphics::WindowInfo {
+        buffer_id: 0, owner_pid: 0, width: 0, height: 0,
+        x: 0, y: 0, title_len: 0, title: [0; 64],
+    }; 16];
+    if let Ok(count) = graphics::list_windows(&mut win_infos) {
+        for win in windows.iter_mut() {
+            if let WindowKind::ClientWindow { ref mut window_id } = win.kind {
+                if *window_id == 0 && count > 0 {
+                    *window_id = win_infos[0].buffer_id;
+                }
+            }
+        }
+    }
+}
+

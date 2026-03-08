@@ -196,6 +196,7 @@ STD_BINARIES=(
     "fbinfo_test"
     "demo"
     "bounce"
+    "rectangles"
     "particles"
     "confetti"
     "tones"

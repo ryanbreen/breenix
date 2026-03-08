@@ -237,21 +237,13 @@ use kernel::drivers::virtio::input_mmio;
 #[no_mangle]
 #[cfg_attr(feature = "kthread_test_only", allow(unreachable_code))]
 pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
-    // Early breadcrumbs: write to UART at known addresses for boot diagnostics.
-    // Only when hw_config_ptr != 0 (UEFI loader on Parallels/VMware, not QEMU).
+    // Early breadcrumbs: write to UART for boot diagnostics.
+    // Read uart_base_phys from HardwareConfig (offset 8) to use the correct UART.
     if hw_config_ptr != 0 {
         unsafe {
-            // Try VMware 16550 UART at 0x3FFF03F8 (identity-mapped in L1[0])
-            core::ptr::write_volatile(0x3FFF_03F8u64 as *mut u8, b'1');
-            // Also try Parallels PL011 UART at 0x02110000
-            core::ptr::write_volatile(0x0211_0000u64 as *mut u32, b'1' as u32);
-
-            // Breadcrumb '2' = about to read HardwareConfig
-            core::ptr::write_volatile(0x3FFF_03F8u64 as *mut u8, b'2');
-            core::ptr::write_volatile(0x0211_0000u64 as *mut u32, b'2' as u32);
-
             let uart_base = core::ptr::read_volatile((hw_config_ptr + 8) as *const u64);
-            // Write 'K' = kernel_main reached with valid HardwareConfig
+            core::ptr::write_volatile(uart_base as *mut u8, b'1');
+            core::ptr::write_volatile(uart_base as *mut u8, b'2');
             core::ptr::write_volatile(uart_base as *mut u8, b'K');
         }
     }

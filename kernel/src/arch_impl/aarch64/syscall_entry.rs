@@ -676,126 +676,90 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
     // Create a CpuContext from the exception frame
     let parent_context = crate::task::thread::CpuContext::from_aarch64_frame(frame, user_sp);
 
+    // Logging safe here — interrupts enabled, no locks held
     log::info!(
         "sys_fork_aarch64: userspace SP = {:#x}, return PC (ELR) = {:#x}",
         user_sp,
         frame.elr
     );
 
-    log::debug!(
-        "sys_fork_aarch64: x19={:#x}, x20={:#x}, x29={:#x}, x30={:#x}",
-        frame.x19, frame.x20, frame.x29, frame.x30
-    );
+    // NOTE: No without_interrupts wrapper! The PM lock handles its own interrupt
+    // disabling. Wrapping the entire fork in without_interrupts caused deadlocks
+    // on single-CPU ARM64: fork acquires the logger lock, heap allocator lock,
+    // FRAME_METADATA lock, and pipe buffer locks while interrupts are disabled.
+    // If ANY other thread was preempted while holding one of those locks, the
+    // single CPU deadlocks permanently (can't schedule lock holder to release it).
+    // This was the root cause of the intermittent 1-in-5 boot hang.
 
-    // Disable interrupts for the entire fork operation to ensure atomicity
-    without_interrupts(|| {
-        // Get current thread ID from scheduler
-        let scheduler_thread_id = crate::task::scheduler::current_thread_id();
-        let current_thread_id = match scheduler_thread_id {
-            Some(id) => id,
-            None => {
-                log::error!("sys_fork_aarch64: No current thread in scheduler");
-                return (-22_i64) as u64; // -EINVAL
-            }
-        };
+    // Get current thread ID (lock-free read — safe without interrupt-disabling)
+    let current_thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) if id != 0 => id,
+        _ => return (-22_i64) as u64, // -EINVAL
+    };
 
-        if current_thread_id == 0 {
-            log::error!("sys_fork_aarch64: Cannot fork from idle thread");
-            return (-22_i64) as u64; // -EINVAL
-        }
-
-        // Find the current process by thread ID
+    // Phase 1: Read parent info under PM lock (NO logging — interrupts disabled)
+    let parent_pid = {
         let manager_guard = crate::process::manager();
         let process_info = if let Some(ref manager) = *manager_guard {
             manager.find_process_by_thread(current_thread_id)
         } else {
-            log::error!("sys_fork_aarch64: Process manager not available");
-            return (-12_i64) as u64; // -ENOMEM
+            None
         };
+        match process_info {
+            Some((pid, _process)) => pid,
+            None => return (-3_i64) as u64, // -ESRCH
+        }
+    }; // PM lock dropped, interrupts restored
 
-        let (parent_pid, parent_process) = match process_info {
-            Some((pid, process)) => (pid, process),
-            None => {
-                log::error!(
-                    "sys_fork_aarch64: Current thread {} not found in any process",
-                    current_thread_id
+    // Create child page table OUTSIDE PM lock (heap allocation safe — interrupts enabled)
+    let child_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
+        Ok(pt) => Box::new(pt),
+        Err(_e) => return (-12_i64) as u64, // -ENOMEM
+    };
+
+    // Phase 2: Fork under PM lock (NO logging inside — interrupts disabled by PM lock)
+    let mut manager_guard = crate::process::manager();
+    let fork_result = if let Some(ref mut manager) = *manager_guard {
+        manager.fork_process_aarch64(parent_pid, parent_context, child_page_table)
+    } else {
+        Err("Process manager not available")
+    };
+
+    match fork_result {
+        Ok(child_pid) => {
+            // Extract child thread info while still under PM lock (no logging!)
+            let child_info = if let Some(ref manager) = *manager_guard {
+                manager.get_process(child_pid).and_then(|p| {
+                    p.main_thread.as_ref().map(|t| (t.id, t.clone()))
+                })
+            } else {
+                None
+            };
+
+            // Drop PM lock BEFORE any logging or scheduler operations
+            drop(manager_guard);
+
+            if let Some((child_thread_id, child_thread_clone)) = child_info {
+                crate::task::scheduler::spawn_front(Box::new(child_thread_clone));
+                crate::tracing::providers::process::trace_spawn_front(
+                    current_thread_id as u16,
+                    child_thread_id as u16,
                 );
-                return (-3_i64) as u64; // -ESRCH
+                // Logging safe here — PM lock released, interrupts enabled
+                log::info!(
+                    "sys_fork_aarch64: Fork OK — parent PID {} -> child PID {}, thread {}",
+                    parent_pid.as_u64(), child_pid.as_u64(), child_thread_id
+                );
+                child_pid.as_u64()
+            } else {
+                (-12_i64) as u64 // -ENOMEM
             }
-        };
-
-        log::info!(
-            "sys_fork_aarch64: Found parent process {} (PID {})",
-            parent_process.name,
-            parent_pid.as_u64()
-        );
-
-        // Drop the lock before creating page table to avoid deadlock
-        drop(manager_guard);
-
-        // Create the child page table BEFORE re-acquiring the lock
-        log::info!("sys_fork_aarch64: Creating page table for child process");
-        let child_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
-            Ok(pt) => Box::new(pt),
-            Err(e) => {
-                log::error!("sys_fork_aarch64: Failed to create child page table: {}", e);
-                return (-12_i64) as u64; // -ENOMEM
-            }
-        };
-        log::info!("sys_fork_aarch64: Child page table created successfully");
-
-        // Now re-acquire the lock and complete the fork
-        let mut manager_guard = crate::process::manager();
-        if let Some(ref mut manager) = *manager_guard {
-            match manager.fork_process_aarch64(parent_pid, parent_context, child_page_table) {
-                Ok(child_pid) => {
-                    // Get the child's thread ID to add to scheduler
-                    if let Some(child_process) = manager.get_process(child_pid) {
-                        if let Some(child_thread) = &child_process.main_thread {
-                            let child_thread_id = child_thread.id;
-                            let child_thread_clone = child_thread.clone();
-
-                            // Drop the lock before spawning to avoid issues
-                            drop(manager_guard);
-
-                            // Add the child thread to the scheduler
-                            log::info!(
-                                "sys_fork_aarch64: Spawning child thread {} to scheduler",
-                                child_thread_id
-                            );
-                            crate::task::scheduler::spawn_front(Box::new(child_thread_clone));
-                            crate::tracing::providers::process::trace_spawn_front(
-                                current_thread_id as u16,
-                                child_thread_id as u16,
-                            );
-                            log::info!("sys_fork_aarch64: Child thread spawned successfully");
-
-                            log::info!(
-                                "sys_fork_aarch64: Fork successful - parent {} gets child PID {}, thread {}",
-                                parent_pid.as_u64(), child_pid.as_u64(), child_thread_id
-                            );
-
-                            // Return the child PID to the parent
-                            child_pid.as_u64()
-                        } else {
-                            log::error!("sys_fork_aarch64: Child process has no main thread");
-                            (-12_i64) as u64 // -ENOMEM
-                        }
-                    } else {
-                        log::error!("sys_fork_aarch64: Failed to find newly created child process");
-                        (-12_i64) as u64 // -ENOMEM
-                    }
-                }
-                Err(e) => {
-                    log::error!("sys_fork_aarch64: Failed to fork process: {}", e);
-                    (-12_i64) as u64 // -ENOMEM
-                }
-            }
-        } else {
-            log::error!("sys_fork_aarch64: Process manager not available");
+        }
+        Err(_e) => {
+            drop(manager_guard);
             (-12_i64) as u64 // -ENOMEM
         }
-    })
+    }
 }
 
 // =============================================================================

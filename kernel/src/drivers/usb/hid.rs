@@ -41,6 +41,11 @@ static MOUSE_X: AtomicU32 = AtomicU32::new(0);
 static MOUSE_Y: AtomicU32 = AtomicU32::new(0);
 static MOUSE_BUTTONS: AtomicU32 = AtomicU32::new(0);
 
+/// Once we see the first absolute tablet report (6+ bytes), latch into tablet mode.
+/// All subsequent reports are parsed as absolute, regardless of byte[1] value.
+static IS_ABSOLUTE_TABLET: AtomicBool = AtomicBool::new(false);
+
+
 // =============================================================================
 // USB HID Usage ID → Linux Keycode mapping
 // =============================================================================
@@ -250,11 +255,12 @@ fn inject_keycode(keycode: u16, shift: bool, ctrl: bool) {
 
 /// Get current screen dimensions for mouse clamping.
 fn screen_dimensions() -> (u32, u32) {
-    crate::drivers::virtio::gpu_mmio::dimensions()
+    crate::drivers::virtio::gpu_pci::dimensions()
+        .or_else(|| crate::drivers::virtio::gpu_mmio::dimensions())
         .or_else(|| {
             crate::graphics::arm64_fb::FB_INFO_CACHE.get().map(|c| (c.width as u32, c.height as u32))
         })
-        .unwrap_or((1280, 800))
+        .unwrap_or((1280, 960))
 }
 
 /// Process a USB boot protocol mouse report (3-4 bytes).
@@ -266,24 +272,81 @@ fn screen_dimensions() -> (u32, u32) {
 /// - Byte 3: Wheel displacement (optional, signed i8)
 ///
 /// Updates the global mouse position atomics with clamping to screen bounds.
+/// Counter for diagnostic logging of first few mouse reports.
+static MOUSE_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
+
 pub fn process_mouse_report(report: &[u8]) {
     if report.len() < 3 {
         return;
     }
 
-    let buttons = report[0] as u32;
-    MOUSE_BUTTONS.store(buttons, Ordering::Relaxed);
+    // Log first few non-zero mouse reports for debugging coordinate mapping
+    let log_n = MOUSE_LOG_COUNT.load(Ordering::Relaxed);
+    if log_n < 10 && report.iter().take(8).any(|&b| b != 0 && b != 0xDE) {
+        MOUSE_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+        crate::serial_println!(
+            "[mouse-report] #{}: [{:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}] len={}",
+            log_n,
+            report.get(0).copied().unwrap_or(0),
+            report.get(1).copied().unwrap_or(0),
+            report.get(2).copied().unwrap_or(0),
+            report.get(3).copied().unwrap_or(0),
+            report.get(4).copied().unwrap_or(0),
+            report.get(5).copied().unwrap_or(0),
+            report.get(6).copied().unwrap_or(0),
+            report.get(7).copied().unwrap_or(0),
+            report.len(),
+        );
+    }
 
     let (sw, sh) = screen_dimensions();
 
-    // VMware virtual tablet: 6-byte absolute position reports
-    // Format: [buttons, 0, abs_x_lo, abs_x_hi, abs_y_lo, abs_y_hi]
-    // Absolute coordinates in 0-65535 range, scaled to screen dimensions.
-    if report.len() >= 6 && report[1] == 0 {
+    // Determine actual report length: the XHCI driver fills the 64-byte buffer
+    // with 0xDE sentinel before DMA. Actual report bytes overwrite the sentinel.
+    // Scan from the end to find where real data starts.
+    let actual_len = if report.len() > 8 {
+        let mut len = report.len();
+        while len > 3 && report[len - 1] == 0xDE {
+            len -= 1;
+        }
+        len
+    } else {
+        report.len()
+    };
+
+    // Absolute tablet detection: once we see the first 6+ byte absolute report,
+    // latch into tablet mode. This prevents intermittent fallthrough to the relative
+    // path during drag when report[1] may be non-zero (e.g., report ID byte).
+    let is_tablet = IS_ABSOLUTE_TABLET.load(Ordering::Relaxed);
+    if !is_tablet && actual_len >= 6 && report[1] == 0 {
+        IS_ABSOLUTE_TABLET.store(true, Ordering::Relaxed);
+        crate::serial_println!("[mouse] Latched into absolute tablet mode (first 6-byte report with byte[1]=0)");
+    }
+
+    // Absolute tablet path: byte[0] is report ID (always 0x01), byte[1] is buttons,
+    // bytes 2-5 are absolute coordinates. We must use byte[1] for buttons here —
+    // byte[0] is the report ID, NOT button state.
+    if IS_ABSOLUTE_TABLET.load(Ordering::Relaxed) && report.len() >= 6 {
+        let buttons = report[1] as u32;
+        let prev = MOUSE_BUTTONS.swap(buttons, Ordering::Relaxed);
+        if buttons != prev {
+            static BTN_LOG: AtomicU64 = AtomicU64::new(0);
+            if BTN_LOG.fetch_add(1, Ordering::Relaxed) < 50 {
+                crate::serial_println!("[mouse-click] {} -> {}", prev, buttons);
+            }
+        }
+
         let abs_x = u16::from_le_bytes([report[2], report[3]]) as u32;
         let abs_y = u16::from_le_bytes([report[4], report[5]]) as u32;
-        let new_x = (abs_x * sw / 65536).min(sw - 1);
-        let new_y = (abs_y * sh / 65536).min(sh - 1);
+
+        let new_x = (abs_x * sw / 32768).min(sw - 1);
+        let new_y = (abs_y * sh / 32768).min(sh - 1);
+        if log_n < 10 {
+            crate::serial_println!(
+                "[mouse-pos] abs=({},{}) btn={} screen={}x{} -> ({},{})",
+                abs_x, abs_y, buttons, sw, sh, new_x, new_y
+            );
+        }
         MOUSE_X.store(new_x, Ordering::Relaxed);
         MOUSE_Y.store(new_y, Ordering::Relaxed);
         return;
@@ -291,6 +354,7 @@ pub fn process_mouse_report(report: &[u8]) {
 
     // Boot protocol relative mouse: 3-4 byte reports
     // Format: [buttons, dx (i8), dy (i8), wheel (i8)]
+    MOUSE_BUTTONS.store(report[0] as u32, Ordering::Relaxed);
     let dx = report[1] as i8 as i32;
     let dy = report[2] as i8 as i32;
 
@@ -301,8 +365,6 @@ pub fn process_mouse_report(report: &[u8]) {
     let old_y = MOUSE_Y.load(Ordering::Relaxed) as i32;
     let new_y = (old_y + dy).clamp(0, sh as i32 - 1) as u32;
     MOUSE_Y.store(new_y, Ordering::Relaxed);
-
-    // Mouse click dispatch could be added here for terminal tab switching
 }
 
 // =============================================================================
@@ -314,7 +376,7 @@ pub fn mouse_position() -> (u32, u32) {
     (MOUSE_X.load(Ordering::Relaxed), MOUSE_Y.load(Ordering::Relaxed))
 }
 
-/// Get current mouse position and button state.
+/// Get current mouse position and button state (non-destructive).
 pub fn mouse_state() -> (u32, u32, u32) {
     (
         MOUSE_X.load(Ordering::Relaxed),

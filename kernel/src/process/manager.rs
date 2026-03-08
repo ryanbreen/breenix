@@ -1420,14 +1420,11 @@ impl ProcessManager {
         // Allocate a new PID for the child
         let child_pid = ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst));
 
-        log::info!(
-            "ARM64 fork: process {} '{}' -> child PID {}",
-            parent_pid.as_u64(),
-            parent_name,
-            child_pid.as_u64()
-        );
+        // NOTE: No logging in this function — it runs under PM lock which disables
+        // interrupts on ARM64. Acquiring the logger lock here can deadlock if another
+        // thread was preempted while holding it. Use tracing events instead.
 
-        // Create child process name
+        // Create child process name (format! allocates — acceptable small allocation)
         let child_name = format!("{}_child_{}", parent_name, child_pid.as_u64());
 
         // Create the child process with the same entry point
@@ -1452,7 +1449,7 @@ impl ProcessManager {
 
             // Set up Copy-on-Write sharing between parent and child.
             // Pass VMAs so MAP_SHARED regions are shared directly (no CoW).
-            let pages_shared = super::fork::setup_cow_pages_with_vmas(
+            super::fork::setup_cow_pages_with_vmas(
                 parent_page_table.as_mut(),
                 child_page_table.as_mut(),
                 &parent_vmas,
@@ -1460,11 +1457,6 @@ impl ProcessManager {
 
             // Put parent's page table back
             parent.page_table = Some(parent_page_table);
-
-            log::info!(
-                "ARM64 fork: Set up {} pages for CoW sharing",
-                pages_shared
-            );
 
             // Child inherits parent's heap bounds
             child_process.heap_start = parent_heap_start;
@@ -1511,19 +1503,10 @@ impl ProcessManager {
     ) -> Result<ProcessId, &'static str> {
         use crate::memory::arch_stub::VirtAddr;
 
-        log::info!(
-            "ARM64 complete_fork: Creating child thread for PID {}",
-            child_pid.as_u64()
-        );
+        // NOTE: No logging in this function — runs under PM lock (interrupts disabled
+        // on ARM64). Logger lock contention = permanent single-CPU deadlock.
 
-        // CoW fork: The child's stack pages are already shared via setup_cow_pages().
-        // We use the parent's stack virtual addresses directly.
         let child_stack_top = parent_thread.stack_top;
-
-        log::debug!(
-            "ARM64 fork: CoW stack - using parent's stack top {:#x}",
-            child_stack_top.as_u64()
-        );
         crate::tracing::providers::process::trace_stack_map(child_pid.as_u64() as u32);
 
         // Allocate a globally unique thread ID for the child's main thread
@@ -1534,16 +1517,10 @@ impl ProcessManager {
 
         // Allocate a kernel stack for the child thread
         let child_kernel_stack_top = if parent_thread.privilege == crate::task::thread::ThreadPrivilege::User {
-            let kernel_stack = crate::memory::kernel_stack::allocate_kernel_stack().map_err(|e| {
-                log::error!("ARM64 fork: Failed to allocate kernel stack: {}", e);
+            let kernel_stack = crate::memory::kernel_stack::allocate_kernel_stack().map_err(|_e| {
                 "Failed to allocate kernel stack for child thread"
             })?;
             let kernel_stack_top = kernel_stack.top();
-
-            log::debug!(
-                "ARM64 fork: Allocated child kernel stack at {:#x}",
-                kernel_stack_top.as_u64()
-            );
 
             // Store the kernel stack (leak for now - TODO: proper cleanup)
             Box::leak(Box::new(kernel_stack));
@@ -1570,13 +1547,6 @@ impl ProcessManager {
         child_thread.kernel_stack_top = Some(child_kernel_stack_top);
         child_thread.owner_pid = Some(child_pid.as_u64());
 
-        // Copy parent's thread context from the exception frame
-        log::debug!("ARM64 fork: Copying parent context to child");
-        log::debug!(
-            "  Parent: SP_EL0={:#x}, ELR_EL1={:#x}, SPSR={:#x}",
-            parent_context.sp_el0, parent_context.elr_el1, parent_context.spsr_el1
-        );
-
         child_thread.context = parent_context.clone();
 
         // CRITICAL: Fork returns 0 to child. The parent_context captured x0 at
@@ -1592,11 +1562,6 @@ impl ProcessManager {
         // No stack copy needed - CoW will handle it on first write.
         child_thread.context.sp_el0 = parent_context.sp_el0;
 
-        log::info!(
-            "ARM64 fork: CoW stack - child_sp={:#x} (same VA as parent)",
-            parent_context.sp_el0
-        );
-
         // Set the kernel stack pointer for exception handling
         child_thread.context.sp = child_kernel_stack_top.as_u64();
 
@@ -1604,14 +1569,6 @@ impl ProcessManager {
         // On ARM64, X0 is the return value register (like RAX on x86_64)
         // The child process must receive 0 from fork(), while the parent gets child_pid
         child_thread.context.x0 = 0;
-
-        log::info!(
-            "ARM64 fork: Created child thread {} with ELR={:#x}, SP_EL0={:#x}, X0={}",
-            child_thread_id,
-            child_thread.context.elr_el1,
-            child_thread.context.sp_el0,
-            child_thread.context.x0
-        );
 
         // Set the child process's main thread (also transitions Creating → Ready)
         child_process.set_main_thread(child_thread);
@@ -1625,17 +1582,9 @@ impl ProcessManager {
         // Copy all other process state (fd_table, signals, verify pgid/sid)
         if let Some(parent) = self.processes.get(&parent_pid) {
             if let Err(e) = super::fork::copy_process_state(parent, &mut child_process) {
-                log::error!(
-                    "ARM64 fork: Failed to copy process state: {}",
-                    e
-                );
                 return Err(e);
             }
         } else {
-            log::error!(
-                "ARM64 fork: Parent {} not found when copying process state!",
-                parent_pid.as_u64()
-            );
             return Err("Parent process not found during state copy");
         }
 
@@ -1646,12 +1595,6 @@ impl ProcessManager {
 
         // Insert the child process into the process table
         self.processes.insert(child_pid, child_process);
-
-        log::info!(
-            "ARM64 fork complete: parent {} -> child {}",
-            parent_pid.as_u64(),
-            child_pid.as_u64()
-        );
 
         // Lock-free trace: fork exit with child PID
         crate::tracing::providers::process::trace_fork_exit(child_pid.as_u64() as u32);

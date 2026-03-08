@@ -164,7 +164,8 @@ pub fn setup_cow_pages_with_vmas(
     let mut pages_shared = 0;
     let mut cow_error: Option<&'static str> = None;
 
-    log::info!("setup_cow_pages: setting up CoW sharing between parent and child");
+    // NOTE: No logging in this function — called from fork under PM lock which
+    // disables interrupts on ARM64. Logger lock contention = permanent deadlock.
 
     // First pass: collect all pages we need to process
     // (We can't modify parent while iterating, so we collect first)
@@ -178,11 +179,6 @@ pub fn setup_cow_pages_with_vmas(
         }
     })?;
 
-    log::info!(
-        "setup_cow_pages: found {} user pages to share",
-        pages_to_share.len()
-    );
-
     // Second pass: set up CoW for each page
     for (virt_addr, phys_addr, flags) in pages_to_share {
         if cow_error.is_some() {
@@ -194,11 +190,6 @@ pub fn setup_cow_pages_with_vmas(
         // which is shared anyway, so CoW isn't needed for them.
         #[cfg(target_arch = "aarch64")]
         if flags.contains(PageTableFlags::HUGE_PAGE) {
-            log::debug!(
-                "setup_cow_pages: skipping 2MB block at {:#x} (boot identity mapping)",
-                virt_addr.as_u64()
-            );
-            // Still count as "shared" for bookkeeping
             pages_shared += 1;
             continue;
         }
@@ -209,21 +200,11 @@ pub fn setup_cow_pages_with_vmas(
         // MAP_SHARED pages: share directly with full write permissions preserved.
         // Both parent and child write to the SAME physical frame — no CoW.
         if is_in_shared_vma(virt_addr, vmas) {
-            if let Err(e) = child_page_table.map_page(page, frame, flags) {
-                log::error!(
-                    "setup_cow_pages: failed to share MAP_SHARED page {:#x} in child: {}",
-                    virt_addr.as_u64(),
-                    e
-                );
+            if let Err(_e) = child_page_table.map_page(page, frame, flags) {
                 cow_error = Some("Failed to share MAP_SHARED page");
                 continue;
             }
             frame_incref(frame);
-            log::trace!(
-                "setup_cow_pages: shared MAP_SHARED page {:#x} -> frame {:#x}",
-                virt_addr.as_u64(),
-                frame.start_address().as_u64()
-            );
             pages_shared += 1;
             continue;
         }
@@ -233,12 +214,7 @@ pub fn setup_cow_pages_with_vmas(
             let cow_flags = make_cow_flags(flags);
 
             // Mark parent page as CoW (read-only + COW flag)
-            if let Err(e) = parent_page_table.update_page_flags(page, cow_flags) {
-                log::error!(
-                    "setup_cow_pages: failed to mark parent page {:#x} as CoW: {}",
-                    virt_addr.as_u64(),
-                    e
-                );
+            if let Err(_e) = parent_page_table.update_page_flags(page, cow_flags) {
                 cow_error = Some("Failed to mark parent page as CoW");
                 continue;
             }
@@ -253,45 +229,23 @@ pub fn setup_cow_pages_with_vmas(
             crate::memory::arch_stub::tlb::flush(virt_addr);
 
             // Map same frame in child with CoW flags
-            if let Err(e) = child_page_table.map_page(page, frame, cow_flags) {
-                log::error!(
-                    "setup_cow_pages: failed to map CoW page {:#x} in child: {}",
-                    virt_addr.as_u64(),
-                    e
-                );
+            if let Err(_e) = child_page_table.map_page(page, frame, cow_flags) {
                 cow_error = Some("Failed to map CoW page in child");
                 continue;
             }
 
             // Increment reference count (frame is now shared)
             frame_incref(frame);
-
-            log::trace!(
-                "setup_cow_pages: CoW page {:#x} -> frame {:#x}",
-                virt_addr.as_u64(),
-                frame.start_address().as_u64()
-            );
         } else {
             // Read-only page (e.g., code) - share directly without CoW flag
             // These pages can never be written, so no fault handling needed
-            if let Err(e) = child_page_table.map_page(page, frame, flags) {
-                log::error!(
-                    "setup_cow_pages: failed to share read-only page {:#x} in child: {}",
-                    virt_addr.as_u64(),
-                    e
-                );
+            if let Err(_e) = child_page_table.map_page(page, frame, flags) {
                 cow_error = Some("Failed to share read-only page");
                 continue;
             }
 
             // Still track reference for cleanup when process exits
             frame_incref(frame);
-
-            log::trace!(
-                "setup_cow_pages: shared RO page {:#x} -> frame {:#x}",
-                virt_addr.as_u64(),
-                frame.start_address().as_u64()
-            );
         }
 
         pages_shared += 1;
@@ -301,10 +255,6 @@ pub fn setup_cow_pages_with_vmas(
         return Err(err);
     }
 
-    log::info!(
-        "setup_cow_pages: set up {} pages for CoW sharing",
-        pages_shared
-    );
     Ok(pages_shared)
 }
 
@@ -530,72 +480,29 @@ pub fn copy_process_state(
     parent_process: &Process,
     child_process: &mut Process,
 ) -> Result<(), &'static str> {
-    log::debug!(
-        "copy_process_state: copying state from parent {} to child {}",
-        parent_process.id.as_u64(),
-        child_process.id.as_u64()
-    );
+    // NOTE: No logging — called from fork under PM lock (interrupts disabled on ARM64).
 
-    // 1. Copy file descriptor table
-    // FdTable::clone() properly handles:
-    // - Cloning all FD entries
-    // - Incrementing pipe reader/writer reference counts
-    // - Arc cloning for shared sockets and files
+    // 1. Copy file descriptor table (clone increments pipe/PTY refcounts)
     child_process.fd_table = parent_process.fd_table.clone();
-    log::debug!(
-        "copy_process_state: cloned fd_table from parent {} to child {}",
-        parent_process.id.as_u64(),
-        child_process.id.as_u64()
-    );
 
     // 2. Copy signal state (handlers and mask, NOT pending signals)
-    // SignalState::fork() creates a new state with:
-    // - pending = 0 (empty, per POSIX)
-    // - blocked = parent.blocked (inherited)
-    // - handlers = parent.handlers.clone() (inherited)
     child_process.signals = parent_process.signals.fork();
-    log::debug!(
-        "copy_process_state: forked signal state from parent {} to child {}",
-        parent_process.id.as_u64(),
-        child_process.id.as_u64()
-    );
 
-    // 3. Verify process group ID was already set correctly
-    // The fork path should have already set child.pgid = parent.pgid
-    // We verify this here rather than overwriting to catch bugs
+    // 3. Verify/correct process group and session IDs
     if child_process.pgid != parent_process.pgid {
-        log::warn!(
-            "copy_process_state: pgid mismatch! child={}, parent={}. Correcting.",
-            child_process.pgid.as_u64(),
-            parent_process.pgid.as_u64()
-        );
         child_process.pgid = parent_process.pgid;
     }
-
-    // 4. Verify session ID was already set correctly
     if child_process.sid != parent_process.sid {
-        log::warn!(
-            "copy_process_state: sid mismatch! child={}, parent={}. Correcting.",
-            child_process.sid.as_u64(),
-            parent_process.sid.as_u64()
-        );
         child_process.sid = parent_process.sid;
     }
 
-    // 5. Copy uid/gid/euid/egid/umask
+    // 4. Copy uid/gid/euid/egid/umask
     child_process.uid = parent_process.uid;
     child_process.gid = parent_process.gid;
     child_process.euid = parent_process.euid;
     child_process.egid = parent_process.egid;
     child_process.umask = parent_process.umask;
 
-    // 6. Current working directory: inherited from parent in fork_internal()
-    //    (before copy_process_state is called)
-
-    log::debug!(
-        "copy_process_state: completed state copy for child {}",
-        child_process.id.as_u64()
-    );
     Ok(())
 }
 

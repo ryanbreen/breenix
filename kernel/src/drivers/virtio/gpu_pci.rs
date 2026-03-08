@@ -406,12 +406,11 @@ static mut PCI_3D_CMD_BUF: Pci3dCmdBuffer = Pci3dCmdBuffer { data: [0; 16384] };
 // 1728x1080 matches the QEMU resolution for consistent performance comparison.
 const DEFAULT_FB_WIDTH: u32 = 1728;
 const DEFAULT_FB_HEIGHT: u32 = 1080;
-// Minimum resolution floor — ensures the VM window is large enough on Retina Macs.
-// With --high-resolution off, 1 guest pixel = 1 Mac screen point, so 1280x960
-// gives a ~74% screen-width window on a 1728-point-wide display.
+// Minimum resolution floor — with --high-resolution off, each guest pixel = 1 Mac point.
+// 1280x960 gives a reasonably large VM window on Retina displays and keeps the
+// per-frame DMA upload to ~4.9MB for good compositor FPS.
 const MIN_FB_WIDTH: u32 = 1280;
 const MIN_FB_HEIGHT: u32 = 960;
-// Max supported resolution: 2560x1600 @ 32bpp = ~16.4MB
 const FB_MAX_WIDTH: u32 = 2560;
 const FB_MAX_HEIGHT: u32 = 1600;
 const FB_SIZE: usize = (FB_MAX_WIDTH * FB_MAX_HEIGHT * 4) as usize;
@@ -3460,20 +3459,131 @@ pub fn virgl_composite_windows(
         }
     }
 
-    // Early out: if nothing changed, skip the entire VirGL pipeline
-    if !bg_dirty && !any_window_dirty {
+    // ── Step 3: Cursor rendering ────────────────────────────────────────────
+    // Draw the mouse cursor directly into COMPOSITE_TEX so it appears in the
+    // composited output without requiring a full 4.9MB upload from userspace.
+    // Track cursor state to erase the old position and detect cursor-only moves.
+    use core::sync::atomic::AtomicI32;
+    static CURSOR_PREV_X: AtomicI32 = AtomicI32::new(-1);
+    static CURSOR_PREV_Y: AtomicI32 = AtomicI32::new(-1);
+
+    // Arrow cursor bitmap: 1=white, 2=black outline, 0=transparent (12x18)
+    const CURSOR_W: u32 = 12;
+    const CURSOR_H: u32 = 18;
+    const CURSOR_BITMAP: [[u8; 12]; 18] = [
+        [2,0,0,0,0,0,0,0,0,0,0,0],
+        [2,2,0,0,0,0,0,0,0,0,0,0],
+        [2,1,2,0,0,0,0,0,0,0,0,0],
+        [2,1,1,2,0,0,0,0,0,0,0,0],
+        [2,1,1,1,2,0,0,0,0,0,0,0],
+        [2,1,1,1,1,2,0,0,0,0,0,0],
+        [2,1,1,1,1,1,2,0,0,0,0,0],
+        [2,1,1,1,1,1,1,2,0,0,0,0],
+        [2,1,1,1,1,1,1,1,2,0,0,0],
+        [2,1,1,1,1,1,1,1,1,2,0,0],
+        [2,1,1,1,1,1,1,1,1,1,2,0],
+        [2,1,1,1,1,1,2,2,2,2,2,0],
+        [2,1,1,1,1,2,0,0,0,0,0,0],
+        [2,1,1,2,1,1,2,0,0,0,0,0],
+        [2,1,2,0,2,1,1,2,0,0,0,0],
+        [2,2,0,0,2,1,1,2,0,0,0,0],
+        [2,0,0,0,0,2,1,2,0,0,0,0],
+        [0,0,0,0,0,2,2,0,0,0,0,0],
+    ];
+    // Saved background pixels under the cursor (BGRA packed u32)
+    static mut CURSOR_SAVED_BG: [u32; 12 * 18] = [0; 12 * 18];
+
+    let (mouse_x, mouse_y) = if crate::drivers::virtio::input_mmio::is_tablet_initialized() {
+        crate::drivers::virtio::input_mmio::mouse_position()
+    } else {
+        crate::drivers::usb::hid::mouse_position()
+    };
+    let cur_x = mouse_x as i32;
+    let cur_y = mouse_y as i32;
+    let prev_cx = CURSOR_PREV_X.load(Ordering::Relaxed);
+    let prev_cy = CURSOR_PREV_Y.load(Ordering::Relaxed);
+    let cursor_moved = cur_x != prev_cx || cur_y != prev_cy;
+
+    // Erase old cursor by restoring saved background pixels.
+    // Skip when bg_dirty — the bg copy already refreshed all pixels including the
+    // old cursor area. Writing stale saved_bg would corrupt the fresh background.
+    if prev_cx >= 0 && prev_cy >= 0 && !bg_dirty && (cursor_moved || any_window_dirty) {
+        let tex_ptr = unsafe { COMPOSITE_TEX_PTR as *mut u32 };
+        let tw = tex_w as usize;
+        for row in 0..CURSOR_H as usize {
+            let py = prev_cy as usize + row;
+            if py >= tex_h as usize { break; }
+            for col in 0..CURSOR_W as usize {
+                let px = prev_cx as usize + col;
+                if px >= tw { break; }
+                if CURSOR_BITMAP[row][col] != 0 {
+                    unsafe {
+                        let saved = CURSOR_SAVED_BG[row * CURSOR_W as usize + col];
+                        *tex_ptr.add(py * tw + px) = saved;
+                    }
+                }
+            }
+        }
+    }
+
+    // After bg/window blits may have changed pixels under the old cursor,
+    // re-read if content was re-blitted over the old cursor area
+    // (bg_dirty or window blit already wrote fresh pixels, so saved_bg is stale — that's fine,
+    //  we just restored stale pixels that got immediately overwritten by the blit above)
+
+    // Save background under new cursor position, then draw cursor
+    let draw_cursor = cur_x >= 0 && cur_y >= 0
+        && (cur_x as u32) < tex_w && (cur_y as u32) < tex_h;
+    if draw_cursor {
+        let tex_ptr = unsafe { COMPOSITE_TEX_PTR as *mut u32 };
+        let tw = tex_w as usize;
+        // Save
+        for row in 0..CURSOR_H as usize {
+            let py = cur_y as usize + row;
+            if py >= tex_h as usize { break; }
+            for col in 0..CURSOR_W as usize {
+                let px = cur_x as usize + col;
+                if px >= tw { break; }
+                if CURSOR_BITMAP[row][col] != 0 {
+                    unsafe {
+                        CURSOR_SAVED_BG[row * CURSOR_W as usize + col] =
+                            *tex_ptr.add(py * tw + px);
+                    }
+                }
+            }
+        }
+        // Draw
+        for row in 0..CURSOR_H as usize {
+            let py = cur_y as usize + row;
+            if py >= tex_h as usize { break; }
+            for col in 0..CURSOR_W as usize {
+                let px = cur_x as usize + col;
+                if px >= tw { break; }
+                match CURSOR_BITMAP[row][col] {
+                    1 => unsafe { *tex_ptr.add(py * tw + px) = 0x00FFFFFF; }, // white (BGRX)
+                    2 => unsafe { *tex_ptr.add(py * tw + px) = 0x00000000; }, // black
+                    _ => {}
+                }
+            }
+        }
+        CURSOR_PREV_X.store(cur_x, Ordering::Relaxed);
+        CURSOR_PREV_Y.store(cur_y, Ordering::Relaxed);
+    }
+
+    // Early out: if nothing changed (no content, no cursor movement), skip VirGL pipeline
+    if !bg_dirty && !any_window_dirty && !cursor_moved {
         return Ok(());
     }
 
-    // Step 3: Upload — full texture if bg changed, partial sub-regions if only windows changed
+    // Step 4: Upload — full texture if bg changed, partial sub-regions otherwise
     if bg_dirty {
         let tex_bytes = (tex_w as usize) * (tex_h as usize) * 4;
         dma_cache_clean(unsafe { COMPOSITE_TEX_PTR }, tex_bytes);
         with_device_state(|state| {
             transfer_to_host_3d(state, RESOURCE_COMPOSITE_TEX_ID, 0, 0, tex_w, tex_h, tex_w * 4)
         })?;
-    } else if any_window_dirty {
-        // Only windows changed — upload just each dirty window's sub-region (~480KB vs 4.9MB)
+    } else if any_window_dirty && !cursor_moved {
+        // Only windows changed — upload just each dirty window's sub-region
         let tex_bytes_total = (tex_w as usize) * (tex_h as usize) * 4;
         for win in windows.iter() {
             if !win.dirty || win.page_phys_addrs.is_empty() { continue; }
@@ -3484,7 +3594,6 @@ pub fn virgl_composite_windows(
             let upload_h = win.height.min(tex_h.saturating_sub(dest_y));
             if upload_w == 0 || upload_h == 0 { continue; }
 
-            // Cache clean the rows of COMPOSITE_TEX spanning this window
             let row_start = (dest_y as usize) * tex_stride + (dest_x as usize) * 4;
             let last_row = (dest_y + upload_h).saturating_sub(1) as usize;
             let row_end = last_row * tex_stride + ((dest_x + upload_w) as usize) * 4;
@@ -3496,6 +3605,43 @@ pub fn virgl_composite_windows(
             with_device_state(|state| {
                 transfer_to_host_3d(state, RESOURCE_COMPOSITE_TEX_ID, dest_x, dest_y, upload_w, upload_h, tex_w * 4)
             })?;
+        }
+    } else {
+        // Cursor moved (possibly with window dirty) — upload cursor bounding boxes
+        // This uploads the old cursor rect + new cursor rect + any dirty windows
+        let tex_bytes_total = (tex_w as usize) * (tex_h as usize) * 4;
+
+        // Helper: upload a small rectangular region
+        let upload_rect = |x: u32, y: u32, w: u32, h: u32| -> Result<(), &'static str> {
+            let uw = w.min(tex_w.saturating_sub(x));
+            let uh = h.min(tex_h.saturating_sub(y));
+            if uw == 0 || uh == 0 { return Ok(()); }
+            let row_start = (y as usize) * tex_stride + (x as usize) * 4;
+            let last_row = (y + uh).saturating_sub(1) as usize;
+            let row_end = last_row * tex_stride + ((x + uw) as usize) * 4;
+            let clean_len = row_end.saturating_sub(row_start).min(tex_bytes_total.saturating_sub(row_start));
+            if clean_len > 0 {
+                dma_cache_clean(unsafe { COMPOSITE_TEX_PTR.add(row_start) }, clean_len);
+            }
+            with_device_state(|state| {
+                transfer_to_host_3d(state, RESOURCE_COMPOSITE_TEX_ID, x, y, uw, uh, tex_w * 4)
+            })
+        };
+
+        // Upload old cursor area (now has restored background)
+        if prev_cx >= 0 && prev_cy >= 0 {
+            upload_rect(prev_cx as u32, prev_cy as u32, CURSOR_W, CURSOR_H)?;
+        }
+        // Upload new cursor area
+        if draw_cursor {
+            upload_rect(cur_x as u32, cur_y as u32, CURSOR_W, CURSOR_H)?;
+        }
+        // Also upload any dirty windows
+        for win in windows.iter() {
+            if !win.dirty || win.page_phys_addrs.is_empty() { continue; }
+            let dest_x = win.x.max(0) as u32;
+            let dest_y = (win.y + title_h as i32).max(0) as u32;
+            upload_rect(dest_x, dest_y, win.width, win.height)?;
         }
     }
 

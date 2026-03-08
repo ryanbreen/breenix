@@ -89,7 +89,8 @@ struct WindowBuffer {
     width: u32,
     /// Height in pixels
     height: u32,
-    /// Physical address of the pixel data (accessible via HHDM)
+    /// Physical address of the first page (kept for compatibility, prefer page_phys_addrs)
+    #[allow(dead_code)]
     phys_addr: u64,
     /// Size in bytes
     size: usize,
@@ -110,6 +111,8 @@ struct WindowBuffer {
     generation: u64,
     /// Last generation uploaded via TRANSFER_TO_HOST_3D
     last_uploaded_gen: u64,
+    /// Last generation read via read_window_buffer (op=14)
+    last_read_gen: u64,
     /// Physical addresses of all backing pages (for VirGL scatter-gather)
     page_phys_addrs: alloc::vec::Vec<u64>,
     /// Thread ID waiting for compositor to consume this frame (frame pacing)
@@ -187,16 +190,11 @@ impl WindowRegistry {
             virgl_initialized: false,
             generation: 0,
             last_uploaded_gen: 0,
+            last_read_gen: 0,
             page_phys_addrs,
             waiting_thread_id: None,
         });
         Some(id)
-    }
-
-    fn find(&self, buffer_id: u32) -> Option<&WindowBuffer> {
-        self.buffers.iter().find_map(|slot| {
-            slot.as_ref().filter(|b| b.id == buffer_id)
-        })
     }
 
     fn find_mut(&mut self, buffer_id: u32) -> Option<&mut WindowBuffer> {
@@ -614,7 +612,8 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             SyscallResult::Ok(count as u64)
         }
         14 => {
-            // ReadWindowBuffer: copy a window's pixels to caller's buffer
+            // ReadWindowBuffer: copy a window's pixels to caller's buffer.
+            // Returns 0 if buffer hasn't changed since last read (skip copy).
             // p1=buffer_id, p2/p3=dst_ptr (lo/hi), p4=max_bytes
             let buffer_id = cmd.p1 as u32;
             let dst_ptr = (cmd.p2 as u32 as u64) | ((cmd.p3 as u32 as u64) << 32);
@@ -626,16 +625,29 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             if dst_end > USER_SPACE_MAX {
                 return SyscallResult::Err(super::ErrorCode::Fault as u64);
             }
-            let reg = WINDOW_REGISTRY.lock();
-            match reg.find(buffer_id) {
+            let mut reg = WINDOW_REGISTRY.lock();
+            match reg.find_mut(buffer_id) {
                 Some(buf) => {
+                    // Skip copy if generation hasn't changed since last read
+                    if buf.generation == buf.last_read_gen {
+                        return SyscallResult::Ok(0); // 0 = no new data
+                    }
+                    buf.last_read_gen = buf.generation;
                     let copy_bytes = buf.size.min(max_bytes as usize);
                     let phys_mem_offset = crate::memory::physical_memory_offset().as_u64();
-                    let src = (phys_mem_offset + buf.phys_addr) as *const u8;
-                    unsafe {
-                        core::ptr::copy_nonoverlapping(src, dst_ptr as *mut u8, copy_bytes);
+                    // Copy page by page since MAP_SHARED pages are not contiguous
+                    let mut offset = 0usize;
+                    for &page_phys in buf.page_phys_addrs.iter() {
+                        if offset >= copy_bytes { break; }
+                        let chunk = (copy_bytes - offset).min(4096);
+                        let src = (phys_mem_offset + page_phys) as *const u8;
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(
+                                src, (dst_ptr as *mut u8).add(offset), chunk,
+                            );
+                        }
+                        offset += chunk;
                     }
-                    // Return width and height packed as (width << 32 | height)
                     SyscallResult::Ok(((buf.width as u64) << 32) | buf.height as u64)
                 }
                 None => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
@@ -740,6 +752,22 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             }
             handle_composite_windows(desc_ptr)
         }
+        17 => {
+            // SetWindowPosition: set window position for compositor
+            // p1=buffer_id, p2=x (i16 low) | y (i16 high)
+            let buffer_id = cmd.p1 as u32;
+            let x = (cmd.p2 & 0xFFFF) as i16 as i32;
+            let y = ((cmd.p2 >> 16) & 0xFFFF) as i16 as i32;
+            let mut reg = WINDOW_REGISTRY.lock();
+            match reg.find_mut(buffer_id) {
+                Some(buf) => {
+                    buf.x = x;
+                    buf.y = y;
+                    SyscallResult::Ok(0)
+                }
+                None => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+            }
+        }
         _ => {
             crate::serial_println!("[virgl-op] UNKNOWN op={}", cmd.op);
             SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
@@ -843,14 +871,11 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
         None
     };
 
-    // Collect window info and waiting thread IDs under lock, then release
+    // Collect window info and waiting thread IDs under lock, then release.
     let mut threads_to_wake: [Option<u64>; MAX_WINDOW_BUFFERS] = [None; MAX_WINDOW_BUFFERS];
     let windows: alloc::vec::Vec<WindowCompositeInfo> = {
         let mut reg = WINDOW_REGISTRY.lock();
         let mut result = alloc::vec::Vec::new();
-        // Auto-position constants
-        let margin = 20i32;
-        let tab_offset = (TAB_BAR_HEIGHT + SEPARATOR_HEIGHT) as i32;
         let mut win_idx = 0usize;
         for slot in reg.buffers.iter_mut() {
             if let Some(ref mut buf) = slot {
@@ -859,17 +884,13 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
 
                 let dirty = buf.generation > buf.last_uploaded_gen;
 
-                // Auto-position windows
-                let wx = (desc.bg_width as i32).saturating_sub(buf.width as i32 + margin + (win_idx as i32) * 30);
-                let wy = tab_offset + margin + (win_idx as i32) * 30;
-
                 result.push(WindowCompositeInfo {
                     virgl_resource_id: buf.virgl_resource_id,
                     virgl_initialized: buf.virgl_initialized,
                     width: buf.width,
                     height: buf.height,
-                    x: wx,
-                    y: wy,
+                    x: buf.x,
+                    y: buf.y,
                     dirty,
                     page_phys_addrs: buf.page_phys_addrs.clone(),
                     size: buf.size,
@@ -879,7 +900,6 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
 
                 if dirty {
                     buf.last_uploaded_gen = buf.generation;
-                    // Collect waiting thread ID for wake-up after GPU work
                     if win_idx < MAX_WINDOW_BUFFERS {
                         threads_to_wake[win_idx] = buf.waiting_thread_id.take();
                     }
@@ -911,12 +931,6 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
 
     result
 }
-
-/// Layout constants mirrored from BWM for auto-positioning
-#[cfg(target_arch = "aarch64")]
-const TAB_BAR_HEIGHT: usize = 24;
-#[cfg(target_arch = "aarch64")]
-const SEPARATOR_HEIGHT: usize = 2;
 
 /// Info about a window to be composited, extracted from the registry.
 #[cfg(target_arch = "aarch64")]
