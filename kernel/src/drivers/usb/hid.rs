@@ -267,9 +267,31 @@ fn screen_dimensions() -> (u32, u32) {
 /// - Byte 3: Wheel displacement (optional, signed i8)
 ///
 /// Updates the global mouse position atomics with clamping to screen bounds.
+/// Counter for diagnostic logging of first few mouse reports.
+static MOUSE_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
+
 pub fn process_mouse_report(report: &[u8]) {
     if report.len() < 3 {
         return;
+    }
+
+    // Log first few non-zero mouse reports for debugging report format
+    let log_n = MOUSE_LOG_COUNT.load(Ordering::Relaxed);
+    if log_n < 5 && report.iter().take(8).any(|&b| b != 0 && b != 0xDE) {
+        MOUSE_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+        crate::serial_println!(
+            "[mouse-report] #{}: [{:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}] len={}",
+            log_n,
+            report.get(0).copied().unwrap_or(0),
+            report.get(1).copied().unwrap_or(0),
+            report.get(2).copied().unwrap_or(0),
+            report.get(3).copied().unwrap_or(0),
+            report.get(4).copied().unwrap_or(0),
+            report.get(5).copied().unwrap_or(0),
+            report.get(6).copied().unwrap_or(0),
+            report.get(7).copied().unwrap_or(0),
+            report.len(),
+        );
     }
 
     let buttons = report[0] as u32;
@@ -277,10 +299,25 @@ pub fn process_mouse_report(report: &[u8]) {
 
     let (sw, sh) = screen_dimensions();
 
+    // Determine actual report length: the XHCI driver fills the 64-byte buffer
+    // with 0xDE sentinel before DMA. Actual report bytes overwrite the sentinel.
+    // Scan from the end to find where real data starts.
+    let actual_len = if report.len() > 8 {
+        let mut len = report.len();
+        while len > 3 && report[len - 1] == 0xDE {
+            len -= 1;
+        }
+        len
+    } else {
+        report.len()
+    };
+
     // VMware virtual tablet: 6-byte absolute position reports
     // Format: [buttons, 0, abs_x_lo, abs_x_hi, abs_y_lo, abs_y_hi]
     // Absolute coordinates in 0-65535 range, scaled to screen dimensions.
-    if report.len() >= 6 && report[1] == 0 {
+    // Only match if we actually received 6+ bytes (not a 3-4 byte boot report
+    // where sentinel bytes beyond the actual data are misinterpreted as coordinates).
+    if actual_len >= 6 && report[1] == 0 {
         let abs_x = u16::from_le_bytes([report[2], report[3]]) as u32;
         let abs_y = u16::from_le_bytes([report[4], report[5]]) as u32;
         let new_x = (abs_x * sw / 65536).min(sw - 1);
@@ -302,8 +339,6 @@ pub fn process_mouse_report(report: &[u8]) {
     let old_y = MOUSE_Y.load(Ordering::Relaxed) as i32;
     let new_y = (old_y + dy).clamp(0, sh as i32 - 1) as u32;
     MOUSE_Y.store(new_y, Ordering::Relaxed);
-
-    // Mouse click dispatch could be added here for terminal tab switching
 }
 
 // =============================================================================

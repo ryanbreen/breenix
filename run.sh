@@ -344,6 +344,8 @@ if [ "$PARALLELS" = true ]; then
     # With high-resolution ON, a 1280x960 guest appears as a tiny 640x480 point window.
     # MUST come AFTER --3d-accelerate and --videosize which can reset this flag.
     prlctl set "$PARALLELS_VM" --high-resolution off 2>/dev/null || true
+    prlctl set "$PARALLELS_VM" --high-resolution-in-guest off 2>/dev/null || true
+    prlctl set "$PARALLELS_VM" --native-scaling-in-guest off 2>/dev/null || true
     # Verify it actually took effect (Parallels sometimes ignores it silently)
     if prlctl list --info "$PARALLELS_VM" 2>/dev/null | grep -q "high-resolution=on"; then
         echo "  WARNING: --high-resolution off didn't stick, retrying..."
