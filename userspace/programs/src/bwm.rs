@@ -151,10 +151,12 @@ struct Window {
     title: [u8; 32],
     title_len: usize,
     window_id: u32,
-    /// Cached client pixels for z-order repair (updated on each read_window_buffer)
-    pixel_cache: Vec<u32>,
-    cache_w: u32,
-    cache_h: u32,
+    /// Direct-mapped pointer to client window's pixel buffer (read-only, MAP_SHARED)
+    mapped_ptr: *const u32,
+    /// Client window buffer width (from map_window_buffer)
+    mapped_w: u32,
+    /// Client window buffer height (from map_window_buffer)
+    mapped_h: u32,
 }
 
 impl Window {
@@ -340,10 +342,19 @@ fn discover_windows(windows: &mut Vec<Window>, screen_w: usize, screen_h: usize)
             core::str::from_utf8(&title[..title_len]).unwrap_or("?"),
             info.buffer_id, info.width, info.height, cascade_x, cascade_y);
 
+        // Map client window buffer into our address space for zero-copy reads
+        let (map_ptr, map_w, map_h) = match graphics::map_window_buffer(info.buffer_id) {
+            Ok(result) => result,
+            Err(_) => {
+                print!("[bwm] WARNING: failed to map window {} buffer\n", info.buffer_id);
+                (core::ptr::null(), 0, 0)
+            }
+        };
+
         windows.push(Window {
             x: cascade_x, y: cascade_y, width: total_w, height: total_h,
             title, title_len, window_id: info.buffer_id,
-            pixel_cache: Vec::new(), cache_w: 0, cache_h: 0,
+            mapped_ptr: map_ptr, mapped_w: map_w, mapped_h: map_h,
         });
         added = true;
     }
@@ -388,44 +399,104 @@ fn blit_pixels_to_fb(fb: &mut FrameBuf, win: &Window, src: &[u32], w: usize, h: 
     }
 }
 
-/// Read client window pixels, update cache, and blit to compositor.
+/// Check if a window has new pixels and blit from mapped memory to compositor.
+/// Skips pixels covered by higher-z windows (occluders) so no z-repair is needed.
 /// Returns true if new data was available.
-fn blit_client_pixels(fb: &mut FrameBuf, win: &mut Window, buf: &mut [u8]) -> bool {
-    let (w, h) = match graphics::read_window_buffer(win.window_id, buf) {
-        Ok((w, h)) if w > 0 && h > 0 => (w, h),
-        _ => return false,
-    };
-    let pixel_count = (w as usize) * (h as usize);
-    let src = unsafe { core::slice::from_raw_parts(buf.as_ptr() as *const u32, pixel_count.min(buf.len() / 4)) };
-
-    // Update pixel cache for z-order repair (reuse allocation)
-    if win.pixel_cache.len() != src.len() {
-        win.pixel_cache.resize(src.len(), 0);
+fn blit_client_pixels(fb: &mut FrameBuf, win: &Window,
+                      occluders: &[(i32, i32, i32, i32)]) -> bool {
+    if win.mapped_ptr.is_null() || win.mapped_w == 0 || win.mapped_h == 0 {
+        return false;
     }
-    win.pixel_cache.copy_from_slice(src);
-    win.cache_w = w;
-    win.cache_h = h;
+    let dirty = graphics::check_window_dirty(win.window_id).unwrap_or(false);
+    if !dirty { return false; }
 
-    blit_pixels_to_fb(fb, win, src, w as usize, h as usize);
+    if occluders.is_empty() {
+        blit_mapped_pixels(fb, win);
+        return true;
+    }
+
+    // Occluded blit: for each row, skip pixels covered by higher windows.
+    let w = win.mapped_w as usize;
+    let h = win.mapped_h as usize;
+    let src = unsafe { core::slice::from_raw_parts(win.mapped_ptr, w * h) };
+
+    let cx = win.content_x();
+    let cy = win.content_y();
+    let cw = win.content_width().min(w);
+    let ch = win.content_height().min(h);
+    let fb_w = fb.width;
+    let fb_h = fb.height;
+    let fb_ptr = fb.raw_ptr() as *mut u32;
+
+    for row in 0..ch {
+        let py = cy + row as i32;
+        if py < 0 || py >= fb_h as i32 { continue; }
+        let row_x_start = cx.max(0) as usize;
+        let row_x_end = ((cx + cw as i32) as usize).min(fb_w);
+        if row_x_start >= row_x_end { continue; }
+
+        // Build visible spans by subtracting occluder columns from the full row
+        let mut spans = [(0usize, 0usize); 8];
+        let mut n_spans = 1;
+        spans[0] = (row_x_start, row_x_end);
+
+        for &(ox0, oy0, ox1, oy1) in occluders {
+            if py < oy0 || py >= oy1 { continue; }
+            let os = ox0.max(0) as usize;
+            let oe = ox1.max(0) as usize;
+            let mut new_spans = [(0usize, 0usize); 8];
+            let mut nc = 0;
+            for k in 0..n_spans {
+                let (sx, ex) = spans[k];
+                if sx >= ex { continue; }
+                if oe <= sx || os >= ex {
+                    if nc < 8 { new_spans[nc] = (sx, ex); nc += 1; }
+                } else {
+                    if sx < os && nc < 8 { new_spans[nc] = (sx, os); nc += 1; }
+                    if ex > oe && nc < 8 { new_spans[nc] = (oe, ex); nc += 1; }
+                }
+            }
+            spans = new_spans;
+            n_spans = nc;
+        }
+
+        let src_row = row * w;
+        let src_col_base = if cx < 0 { (-cx) as usize } else { 0 };
+        for k in 0..n_spans {
+            let (sx, ex) = spans[k];
+            if sx >= ex { continue; }
+            let count = ex - sx;
+            let si = src_row + src_col_base + (sx - row_x_start);
+            if si + count > w * h { continue; }
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    src.as_ptr().add(si),
+                    fb_ptr.add(py as usize * fb_w + sx),
+                    count,
+                );
+            }
+        }
+    }
     true
 }
 
-/// Re-blit a window's cached pixels (for z-order repair).
-fn blit_cached_pixels(fb: &mut FrameBuf, win: &Window) {
-    if win.pixel_cache.is_empty() { return; }
-    blit_pixels_to_fb(fb, win, &win.pixel_cache, win.cache_w as usize, win.cache_h as usize);
+/// Blit a window's pixels from its mapped memory to the compositor buffer.
+fn blit_mapped_pixels(fb: &mut FrameBuf, win: &Window) {
+    if win.mapped_ptr.is_null() { return; }
+    let w = win.mapped_w as usize;
+    let h = win.mapped_h as usize;
+    let pixel_count = w * h;
+    let src = unsafe { core::slice::from_raw_parts(win.mapped_ptr, pixel_count) };
+    blit_pixels_to_fb(fb, win, src, w, h);
 }
 
 /// Redraw all windows in z-order (index 0 = bottom).
-/// Uses pixel cache for windows that haven't changed since last read.
-fn redraw_all_windows(fb: &mut FrameBuf, windows: &mut [Window], focused_win: usize, client_buf: &mut [u8]) {
+/// Reads directly from mapped memory (zero-copy from client window pages).
+fn redraw_all_windows(fb: &mut FrameBuf, windows: &[Window], focused_win: usize) {
     for i in 0..windows.len() {
         draw_window_frame(fb, &windows[i], i == focused_win);
         if windows[i].window_id != 0 {
-            if !blit_client_pixels(fb, &mut windows[i], client_buf) {
-                // No new data from kernel — use cached pixels
-                blit_cached_pixels(fb, &windows[i]);
-            }
+            blit_mapped_pixels(fb, &windows[i]);
         }
     }
 }
@@ -514,7 +585,7 @@ fn main() {
     let mut dragging: Option<(usize, i32, i32)> = None;
     let mut full_redraw = true;
     let mut content_dirty = false;
-    let mut client_pixel_buf = vec![0u8; screen_w * screen_h * 4];
+    // No client_pixel_buf needed — BWM reads directly from MAP_SHARED window pages
 
     // Initial composite
     if direct_mapped {
@@ -527,12 +598,9 @@ fn main() {
     let mut read_buf = [0u8; 512];
     let mut poll_fds = [io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 }];
 
-    // Performance tracing — measure time spent in each phase of the main loop
+    // Performance tracing — measure total iteration time (2 clock_gettime per loop)
     let mut perf_frame: u64 = 0;
-    let mut perf_discover_ns: u64 = 0;
-    let mut perf_poll_ns: u64 = 0;
-    let mut perf_blit_ns: u64 = 0;
-    let mut perf_composite_ns: u64 = 0;
+    let mut perf_total_ns: u64 = 0;
     let mut perf_composites: u64 = 0;
     let mut perf_sleeps: u64 = 0;
 
@@ -551,11 +619,9 @@ fn main() {
             }
             // Restore background from cache (fast memcpy, not gradient computation)
             composite_buf.copy_from_slice(&bg_cache);
-            redraw_all_windows(&mut fb, &mut windows, focused_win, &mut client_pixel_buf);
+            redraw_all_windows(&mut fb, &windows, focused_win);
             full_redraw = true;
         }
-
-        let t1 = mono_ns();
 
         // ── 2. Poll stdin (non-blocking) ──
         poll_fds[0].revents = 0;
@@ -574,7 +640,7 @@ fn main() {
                                     focused_win = new_focus;
                                     send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
                                     composite_buf.copy_from_slice(&bg_cache);
-                                    redraw_all_windows(&mut fb, &mut windows, focused_win, &mut client_pixel_buf);
+                                    redraw_all_windows(&mut fb, &windows, focused_win);
                                     full_redraw = true;
                                 }
                             }
@@ -615,7 +681,7 @@ fn main() {
                         windows[win_idx].x = new_x;
                         windows[win_idx].y = new_y;
                         composite_buf.copy_from_slice(&bg_cache);
-                        redraw_all_windows(&mut fb, &mut windows, focused_win, &mut client_pixel_buf);
+                        redraw_all_windows(&mut fb, &windows, focused_win);
                         full_redraw = true;
                     }
                 } else if !windows.is_empty() && focused_win < windows.len()
@@ -681,19 +747,15 @@ fn main() {
 
                     // Fast background restore + full window redraw
                     composite_buf.copy_from_slice(&bg_cache);
-                    redraw_all_windows(&mut fb, &mut windows, focused_win, &mut client_pixel_buf);
+                    redraw_all_windows(&mut fb, &windows, focused_win);
                     full_redraw = true;
                 }
             }
         }
 
-        let t2 = mono_ns();
-
-        // ── 5. Blit all client window pixels + z-order repair ──
-        // Fast inner loop (no per-pixel clipping). After blitting dirty windows,
-        // repair z-order by re-blitting cached pixels for higher-z overlapping windows.
-        // Track dirty bounding box for partial GPU upload.
-        let mut updated = [false; 16];
+        // ── 5. Blit dirty client window pixels (occluded by higher-z windows) ──
+        // Each dirty window is blitted with higher windows as occluders: pixels
+        // covered by higher windows are skipped, so no z-order repair is needed.
         let mut dirty_x0 = i32::MAX;
         let mut dirty_y0 = i32::MAX;
         let mut dirty_x1 = 0i32;
@@ -701,10 +763,20 @@ fn main() {
 
         for i in 0..windows.len().min(16) {
             if windows[i].window_id != 0 {
-                if blit_client_pixels(&mut fb, &mut windows[i], &mut client_pixel_buf) {
+                // Collect bounds of all higher-z windows as occluders
+                let mut occ = [(0i32, 0i32, 0i32, 0i32); 16];
+                let mut n_occ = 0;
+                let ib = windows[i].bounds();
+                for j in (i + 1)..windows.len().min(16) {
+                    let jb = windows[j].bounds();
+                    if rects_overlap(ib, jb) && n_occ < 16 {
+                        occ[n_occ] = jb;
+                        n_occ += 1;
+                    }
+                }
+                if blit_client_pixels(&mut fb, &windows[i], &occ[..n_occ]) {
                     content_dirty = true;
-                    updated[i] = true;
-                    let (bx0, by0, bx1, by1) = windows[i].bounds();
+                    let (bx0, by0, bx1, by1) = ib;
                     dirty_x0 = dirty_x0.min(bx0);
                     dirty_y0 = dirty_y0.min(by0);
                     dirty_x1 = dirty_x1.max(bx1);
@@ -712,30 +784,6 @@ fn main() {
                 }
             }
         }
-
-        // Z-order repair: if a lower-z window got new pixels, re-blit all higher-z
-        // windows that overlap with it (using their cached pixels).
-        for j in 1..windows.len().min(16) {
-            if windows[j].pixel_cache.is_empty() { continue; }
-            let jb = windows[j].bounds();
-            for i in 0..j {
-                if !updated[i] { continue; }
-                if rects_overlap(windows[i].bounds(), jb) {
-                    draw_window_frame(&mut fb, &windows[j], j == focused_win);
-                    blit_cached_pixels(&mut fb, &windows[j]);
-                    updated[j] = true; // cascade: treat as updated for even higher-z windows
-                    content_dirty = true;
-                    let (bx0, by0, bx1, by1) = windows[j].bounds();
-                    dirty_x0 = dirty_x0.min(bx0);
-                    dirty_y0 = dirty_y0.min(by0);
-                    dirty_x1 = dirty_x1.max(bx1);
-                    dirty_y1 = dirty_y1.max(by1);
-                    break;
-                }
-            }
-        }
-
-        let t3 = mono_ns();
 
         // ── 6. Composite to GPU (only when something changed) ──
         // When direct_mapped, pass empty pixels (kernel skips Phase A copy —
@@ -774,27 +822,17 @@ fn main() {
             perf_sleeps += 1;
         }
 
-        let t4 = mono_ns();
+        let t_end = mono_ns();
 
-        // Accumulate phase timings
-        perf_discover_ns += t1.saturating_sub(t0);
-        perf_poll_ns += t2.saturating_sub(t1);
-        perf_blit_ns += t3.saturating_sub(t2);
-        perf_composite_ns += t4.saturating_sub(t3);
+        perf_total_ns += t_end.saturating_sub(t0);
         perf_frame += 1;
 
-        // Dump perf summary every 500 iterations
         if perf_frame % 500 == 0 {
-            let to_us = |ns: u64| -> u64 { ns / 1000 / 500 };
-            print!("[bwm-perf] iter={} composites={} sleeps={} avg: discover={}us poll={}us blit={}us composite={}us\n",
-                perf_frame, perf_composites, perf_sleeps,
-                to_us(perf_discover_ns), to_us(perf_poll_ns),
-                to_us(perf_blit_ns), to_us(perf_composite_ns),
+            let avg_us = perf_total_ns / 1000 / 500;
+            print!("[bwm-perf] iter={} composites={} sleeps={} avg_total={}us\n",
+                perf_frame, perf_composites, perf_sleeps, avg_us,
             );
-            perf_discover_ns = 0;
-            perf_poll_ns = 0;
-            perf_blit_ns = 0;
-            perf_composite_ns = 0;
+            perf_total_ns = 0;
             perf_composites = 0;
             perf_sleeps = 0;
         }
