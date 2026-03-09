@@ -15,6 +15,9 @@
 //! - op=17: `set_window_position` — set window position
 //! - op=18: `write_window_input` — write input events to a window's queue (BWM)
 //! - op=19: `read_window_input` — read input events from window's queue (client)
+//! - op=20: `map_compositor_texture` — map GPU texture into BWM's address space
+//! - op=21: `map_window_buffer` — map window buffer into BWM's address space (read-only)
+//! - op=22: `check_window_dirty` — lightweight generation check without pixel copy
 
 extern crate alloc;
 
@@ -979,6 +982,32 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                 SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
             }
         }
+        21 => {
+            // MapWindowBuffer: map a window buffer's backing pages into caller's
+            // address space (read-only). Allows BWM to read client window pixels
+            // directly without the kernel copy in read_window_buffer (op=14).
+            // p1=buffer_id, p2/p3=out_ptr (lo/hi) for mapped address (u64)
+            // Returns: packed (width << 32 | height) on success.
+            handle_map_window_buffer(cmd)
+        }
+        22 => {
+            // CheckWindowDirty: lightweight generation check without pixel copy.
+            // p1=buffer_id
+            // Returns: 1 if dirty (generation changed since last check), 0 if clean.
+            let buffer_id = cmd.p1 as u32;
+            let mut reg = WINDOW_REGISTRY.lock();
+            match reg.find_mut(buffer_id) {
+                Some(buf) => {
+                    if buf.generation != buf.last_read_gen {
+                        buf.last_read_gen = buf.generation;
+                        SyscallResult::Ok(1)
+                    } else {
+                        SyscallResult::Ok(0)
+                    }
+                }
+                None => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+            }
+        }
         _ => {
             crate::serial_println!("[virgl-op] UNKNOWN op={}", cmd.op);
             SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
@@ -1316,6 +1345,106 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
 
     // Return just the buffer_id
     SyscallResult::Ok(buffer_id as u64)
+}
+
+/// Handle map_window_buffer: map a window buffer's backing pages into the
+/// calling process's address space (read-only). This allows BWM to read
+/// client window pixels directly without the kernel page-by-page copy in
+/// read_window_buffer (op=14).
+#[cfg(target_arch = "aarch64")]
+fn handle_map_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
+    use crate::memory::vma::{MmapFlags, Protection, Vma};
+    use crate::syscall::memory_common::{
+        get_current_thread_id, prot_to_page_flags, flush_tlb, round_down_to_page, PAGE_SIZE,
+    };
+    use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
+
+    let buffer_id = cmd.p1 as u32;
+    let out_ptr = (cmd.p2 as u32 as u64) | ((cmd.p3 as u32 as u64) << 32);
+    if out_ptr == 0 || out_ptr >= USER_SPACE_MAX {
+        return SyscallResult::Err(super::ErrorCode::Fault as u64);
+    }
+
+    // Get page_phys_addrs from registry (release lock before acquiring process manager)
+    let (page_phys_addrs, win_w, win_h) = {
+        let mut reg = WINDOW_REGISTRY.lock();
+        match reg.find_mut(buffer_id) {
+            Some(buf) => (buf.page_phys_addrs.clone(), buf.width, buf.height),
+            None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+        }
+    };
+
+    let num_pages = page_phys_addrs.len();
+    if num_pages == 0 {
+        return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+    }
+
+    // Get current process
+    let current_thread_id = match get_current_thread_id() {
+        Some(id) => id,
+        None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
+    };
+
+    let mut manager_guard = crate::process::manager();
+    let manager = match *manager_guard {
+        Some(ref mut m) => m,
+        None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
+    };
+
+    let (_pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
+        Some(p) => p,
+        None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
+    };
+
+    // Allocate virtual address range from mmap hint
+    let total_size = (num_pages as u64) * PAGE_SIZE;
+    let new_addr = round_down_to_page(process.mmap_hint.saturating_sub(total_size));
+    if new_addr < 0x1000_0000 {
+        return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
+    }
+    process.mmap_hint = new_addr;
+
+    let page_table = match process.page_table.as_mut() {
+        Some(pt) => pt,
+        None => return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64),
+    };
+
+    // Map each physical page read-only into the calling process
+    let page_flags = prot_to_page_flags(Protection::from_bits_truncate(1)); // READ only
+    for (i, &frame_phys) in page_phys_addrs.iter().enumerate() {
+        let frame = crate::memory::arch_stub::PhysFrame::<Size4KiB>::containing_address(
+            crate::memory::arch_stub::PhysAddr::new(frame_phys),
+        );
+        let page_addr = new_addr + (i as u64) * PAGE_SIZE;
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(page_addr));
+
+        if let Err(_) = page_table.map_page(page, frame, page_flags) {
+            return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
+        }
+        flush_tlb(VirtAddr::new(page_addr));
+    }
+
+    // Create VMA
+    let vma = Vma::new(
+        VirtAddr::new(new_addr),
+        VirtAddr::new(new_addr + total_size),
+        Protection::from_bits_truncate(1), // READ only
+        MmapFlags::from_bits_truncate(0x21), // MAP_SHARED | MAP_ANONYMOUS
+    );
+    process.vmas.push(vma);
+
+    crate::serial_println!(
+        "[compositor] Mapped window {} into BWM: virt={:#x}, {}x{}, {} pages",
+        buffer_id, new_addr, win_w, win_h, num_pages
+    );
+
+    // Write mapped address to userspace
+    unsafe {
+        core::ptr::write(out_ptr as *mut u64, new_addr);
+    }
+
+    // Return packed dimensions
+    SyscallResult::Ok(((win_w as u64) << 32) | win_h as u64)
 }
 
 /// Handle map_compositor_texture: map COMPOSITE_TEX backing pages into the

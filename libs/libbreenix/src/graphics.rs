@@ -132,6 +132,10 @@ pub mod draw_op {
     pub const READ_WINDOW_INPUT: u32 = 19;
     /// Map compositor texture into caller's address space
     pub const MAP_COMPOSITOR_TEXTURE: u32 = 20;
+    /// Map a window buffer into caller's address space (read-only)
+    pub const MAP_WINDOW_BUFFER: u32 = 21;
+    /// Lightweight dirty check without pixel copy
+    pub const CHECK_WINDOW_DIRTY: u32 = 22;
 }
 
 /// Ball descriptor for VirGL GPU rendering.
@@ -735,6 +739,61 @@ pub fn map_compositor_texture() -> Result<(*mut u32, u32, u32), Error> {
     let width = (result >> 32) as u32;
     let height = (result & 0xFFFF_FFFF) as u32;
     Ok((mapped_addr as *mut u32, width, height))
+}
+
+/// Map a window buffer's backing pages into this process's address space (read-only).
+///
+/// Returns a pointer to the mapped memory along with the window dimensions.
+/// BWM can read client window pixels directly from this memory without the
+/// kernel page-by-page copy in read_window_buffer.
+///
+/// # Returns
+/// * Ok((ptr, width, height)) - Mapped pointer + dimensions
+/// * Err(Error) - Error if window buffer not found
+pub fn map_window_buffer(buffer_id: u32) -> Result<(*const u32, u32, u32), Error> {
+    let mut mapped_addr: u64 = 0;
+    let out_ptr = &mut mapped_addr as *mut u64 as u64;
+    let cmd = FbDrawCmd {
+        op: draw_op::MAP_WINDOW_BUFFER,
+        p1: buffer_id as i32,
+        p2: out_ptr as i32,
+        p3: (out_ptr >> 32) as i32,
+        p4: 0,
+        color: 0,
+    };
+    let ret = unsafe { raw::syscall1(nr::FBDRAW, &cmd as *const FbDrawCmd as u64) as i64 };
+    if ret < 0 {
+        return Err(Error::Os(Errno::from_raw(-ret)));
+    }
+    let result = ret as u64;
+    let width = (result >> 32) as u32;
+    let height = (result & 0xFFFF_FFFF) as u32;
+    Ok((mapped_addr as *const u32, width, height))
+}
+
+/// Check if a window buffer has been updated since the last check.
+///
+/// Lightweight generation check — locks the registry briefly, compares
+/// generation counters, returns immediately. No pixel copy.
+///
+/// # Returns
+/// * Ok(true) - Window has new pixels since last check
+/// * Ok(false) - Window hasn't changed
+/// * Err(Error) - Error if window buffer not found
+pub fn check_window_dirty(buffer_id: u32) -> Result<bool, Error> {
+    let cmd = FbDrawCmd {
+        op: draw_op::CHECK_WINDOW_DIRTY,
+        p1: buffer_id as i32,
+        p2: 0,
+        p3: 0,
+        p4: 0,
+        color: 0,
+    };
+    let ret = unsafe { raw::syscall1(nr::FBDRAW, &cmd as *const FbDrawCmd as u64) as i64 };
+    if ret < 0 {
+        return Err(Error::Os(Errno::from_raw(-ret)));
+    }
+    Ok(ret != 0)
 }
 
 /// Get the current mouse cursor position.
