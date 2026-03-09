@@ -259,8 +259,13 @@ STD_BINARIES=(
     # Log viewer
     "bless"
 
+    # Self-check test runner
+    "bcheck"
+
     # Apps
     "guskit"
+    "bterm"
+    "blog"
 )
 
 RELEASE_DIR="$SCRIPT_DIR/target/$TARGET_DIR/release"

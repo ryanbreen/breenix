@@ -126,6 +126,10 @@ pub mod draw_op {
     pub const COMPOSITE_WINDOWS: u32 = 16;
     /// Set window position for compositor
     pub const SET_WINDOW_POSITION: u32 = 17;
+    /// Write input events to a window's ring buffer (BWM → client)
+    pub const WRITE_WINDOW_INPUT: u32 = 18;
+    /// Read input events from a window's ring buffer (client ← BWM)
+    pub const READ_WINDOW_INPUT: u32 = 19;
 }
 
 /// Ball descriptor for VirGL GPU rendering.
@@ -568,33 +572,126 @@ pub fn set_window_position(buffer_id: u32, x: i32, y: i32) -> Result<(), Error> 
     fbdraw(&cmd)
 }
 
+// =============================================================================
+// Window input events (Breengel input pipeline)
+// =============================================================================
+
+/// Input event written by BWM into a window's kernel ring buffer.
+/// Read by client apps via `read_window_input()`.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct WindowInputEvent {
+    /// Event type (see `input_event_type` constants)
+    pub event_type: u16,
+    /// USB HID keycode or ASCII character
+    pub keycode: u16,
+    /// Window-local mouse X coordinate
+    pub mouse_x: i16,
+    /// Window-local mouse Y coordinate
+    pub mouse_y: i16,
+    /// Modifier bitmask (bit 0=shift, bit 1=ctrl, bit 2=alt)
+    pub modifiers: u16,
+    pub _pad: u16,
+}
+
+/// Input event type constants
+pub mod input_event_type {
+    pub const KEY_PRESS: u16 = 1;
+    pub const KEY_RELEASE: u16 = 2;
+    pub const MOUSE_MOVE: u16 = 3;
+    pub const MOUSE_BUTTON: u16 = 4;
+    pub const FOCUS_GAINED: u16 = 5;
+    pub const FOCUS_LOST: u16 = 6;
+    pub const CLOSE_REQUESTED: u16 = 7;
+}
+
+/// Write an input event to a window's kernel ring buffer.
+///
+/// Called by BWM to route keyboard/mouse events to the focused window.
+/// If the client is blocked on `read_window_input`, it will be woken.
+pub fn write_window_input(buffer_id: u32, event: &WindowInputEvent) -> Result<(), Error> {
+    let event_ptr = event as *const WindowInputEvent as u64;
+    let cmd = FbDrawCmd {
+        op: draw_op::WRITE_WINDOW_INPUT,
+        p1: buffer_id as i32,
+        p2: event_ptr as i32,
+        p3: (event_ptr >> 32) as i32,
+        p4: 0,
+        color: 0,
+    };
+    fbdraw(&cmd)
+}
+
+/// Read input events from a window's kernel ring buffer.
+///
+/// Returns the number of events read. If `blocking` is true, blocks until
+/// at least one event is available (with 100ms timeout). If false, returns
+/// immediately with 0 if no events are pending.
+pub fn read_window_input(buffer_id: u32, out: &mut [WindowInputEvent], blocking: bool) -> Result<usize, Error> {
+    let out_ptr = out.as_ptr() as u64;
+    let cmd = FbDrawCmd {
+        op: draw_op::READ_WINDOW_INPUT,
+        p1: buffer_id as i32,
+        p2: out_ptr as i32,
+        p3: (out_ptr >> 32) as i32,
+        p4: out.len() as i32,
+        color: if blocking { 0 } else { 1 }, // bit 0 = non-blocking
+    };
+    let ret = unsafe { raw::syscall1(nr::FBDRAW, &cmd as *const FbDrawCmd as u64) as i64 };
+    if ret < 0 {
+        return Err(Error::Os(Errno::from_raw(-ret)));
+    }
+    Ok(ret as usize)
+}
+
+// =============================================================================
+// Multi-window compositing
+// =============================================================================
+
 /// Descriptor for multi-window GPU compositing.
+///
+/// bg_dirty values:
+///   0 = no background change (cursor-only update, frame pacing)
+///   1 = full background upload (entire buffer changed)
+///   2 = partial background upload (only dirty_rect region changed)
 #[repr(C)]
 pub struct CompositeWindowsDesc {
     pub bg_pixels_ptr: u64,
     pub bg_width: u32,
     pub bg_height: u32,
     pub bg_dirty: u32,
-    pub _reserved: u32,
+    pub num_dirty_rects: u32,
+    pub dirty_x: u32,
+    pub dirty_y: u32,
+    pub dirty_w: u32,
+    pub dirty_h: u32,
 }
 
 /// Composite all registered windows via the GPU in a single batch.
 ///
-/// The kernel uploads dirty window textures and renders background + all windows
-/// as textured quads in one SUBMIT_3D. Only changed windows are re-uploaded.
-///
-/// # Arguments
-/// * `bg_pixels` - Background pixel buffer (BGRA, one u32 per pixel)
-/// * `bg_w` - Background width
-/// * `bg_h` - Background height
-/// * `bg_dirty` - Whether the background needs re-uploading
+/// bg_dirty=0: no background change (cursor/frame-pacing only)
+/// bg_dirty=1: full background upload
+/// bg_dirty=2: partial upload — only the (dirty_x, dirty_y, dirty_w, dirty_h) region
 pub fn virgl_composite_windows(bg_pixels: &[u32], bg_w: u32, bg_h: u32, bg_dirty: bool) -> Result<(), Error> {
+    virgl_composite_windows_rect(bg_pixels, bg_w, bg_h, if bg_dirty { 1 } else { 0 }, 0, 0, bg_w, bg_h)
+}
+
+/// Composite with a partial dirty rect. Only the specified sub-region of the
+/// background buffer is copied and uploaded to the GPU texture.
+pub fn virgl_composite_windows_rect(
+    bg_pixels: &[u32], bg_w: u32, bg_h: u32,
+    dirty_mode: u32, dirty_x: u32, dirty_y: u32, dirty_w: u32, dirty_h: u32,
+) -> Result<(), Error> {
     let desc = CompositeWindowsDesc {
         bg_pixels_ptr: bg_pixels.as_ptr() as u64,
         bg_width: bg_w,
         bg_height: bg_h,
-        bg_dirty: if bg_dirty { 1 } else { 0 },
-        _reserved: 0,
+        bg_dirty: dirty_mode,
+        num_dirty_rects: if dirty_mode == 2 { 1 } else { 0 },
+        dirty_x,
+        dirty_y,
+        dirty_w,
+        dirty_h,
     };
     let desc_ptr = &desc as *const CompositeWindowsDesc as u64;
     let cmd = FbDrawCmd {

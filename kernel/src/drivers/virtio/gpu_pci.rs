@@ -3366,6 +3366,7 @@ pub fn virgl_composite_windows(
     bg_width: u32,
     bg_height: u32,
     bg_dirty: bool,
+    dirty_rect: Option<(u32, u32, u32, u32)>, // (x, y, w, h) for partial upload
     windows: &[crate::syscall::graphics::WindowCompositeInfo],
 ) -> Result<(), &'static str> {
     use super::virgl::{CommandBuffer, format as vfmt, pipe, swizzle};
@@ -3395,67 +3396,50 @@ pub fn virgl_composite_windows(
 
     let any_window_dirty = windows.iter().any(|w| w.dirty && !w.page_phys_addrs.is_empty());
     let tex_stride = (tex_w as usize) * 4;
-    let phys_mem_offset = crate::memory::physical_memory_offset().as_u64();
 
-    // Step 1: Copy background into compositor texture if dirty
+    // Step 1: Copy background into compositor texture.
+    // bg_dirty=true with dirty_rect=None: full copy (original behavior).
+    // bg_dirty=true with dirty_rect=Some(x,y,w,h): partial sub-rect copy.
+    // BWM composites ALL windows (terminals + clients) into its buffer at correct
+    // z-order. The kernel just copies and uploads — no kernel-side window blit needed.
     if bg_dirty {
         if let Some(pixels) = bg_pixels {
-            let copy_w = bg_width.min(tex_w);
-            let copy_h = bg_height.min(tex_h);
-            let expected = (copy_w * copy_h) as usize;
-            if pixels.len() >= expected {
-                unsafe {
-                    let dst = COMPOSITE_TEX_PTR;
-                    let copy_bytes = expected * 4;
-                    core::ptr::copy_nonoverlapping(
-                        pixels.as_ptr() as *const u8, dst, copy_bytes.min(COMPOSITE_TEX_LEN),
-                    );
+            let src_w = bg_width.min(tex_w) as usize;
+            let src_h = bg_height.min(tex_h) as usize;
+            if pixels.len() >= src_w * src_h {
+                match dirty_rect {
+                    Some((dx, dy, dw, dh)) => {
+                        // Partial: copy only the dirty sub-rectangle row by row
+                        let rx = (dx as usize).min(src_w);
+                        let ry = (dy as usize).min(src_h);
+                        let rw = (dw as usize).min(src_w - rx);
+                        let rh = (dh as usize).min(src_h - ry);
+                        let row_bytes = rw * 4;
+                        for row in ry..(ry + rh) {
+                            let off = row * src_w + rx;
+                            let dst_off = row * (tex_w as usize) + rx;
+                            unsafe {
+                                core::ptr::copy_nonoverlapping(
+                                    (pixels.as_ptr() as *const u8).add(off * 4),
+                                    COMPOSITE_TEX_PTR.add(dst_off * 4),
+                                    row_bytes,
+                                );
+                            }
+                        }
+                    }
+                    None => {
+                        // Full copy
+                        let copy_bytes = src_w * src_h * 4;
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(
+                                pixels.as_ptr() as *const u8,
+                                COMPOSITE_TEX_PTR,
+                                copy_bytes.min(COMPOSITE_TEX_LEN),
+                            );
+                        }
+                    }
                 }
             }
-        }
-    }
-
-    // Step 2: Blit each registered window's pixels into COMPOSITE_TEX at its position.
-    // We need to blit whenever: window is dirty, OR bg was just re-uploaded (overwrote window area).
-    let title_h = 20u32;
-    for win in windows.iter() {
-        let needs_blit = (win.dirty && !win.page_phys_addrs.is_empty()) || bg_dirty;
-        if !needs_blit || win.page_phys_addrs.is_empty() { continue; }
-
-        let dest_x = win.x.max(0) as u32;
-        let dest_y = (win.y + title_h as i32).max(0) as u32;
-        let win_stride = (win.width as usize) * 4;
-
-        if frame < 5 {
-            crate::serial_println!("[composite-win] blit win {}x{} → tex ({},{}) dirty={}",
-                win.width, win.height, dest_x, dest_y, win.dirty);
-        }
-
-        // Row-by-row blit from MAP_SHARED pages into COMPOSITE_TEX
-        let mut src_offset = 0usize;
-        for row in 0..win.height {
-            let dy = dest_y + row;
-            if dy >= tex_h { break; }
-            let dst_byte_offset = (dy as usize) * tex_stride + (dest_x as usize) * 4;
-            let copy_w = (win.width as usize).min((tex_w - dest_x) as usize);
-            let copy_bytes = copy_w * 4;
-
-            // Read from MAP_SHARED pages (may span page boundaries)
-            let mut col_offset = 0usize;
-            while col_offset < copy_bytes {
-                let byte_pos = src_offset + col_offset;
-                let page_idx = byte_pos / 4096;
-                let page_off = byte_pos % 4096;
-                let chunk = (copy_bytes - col_offset).min(4096 - page_off);
-
-                if page_idx < win.page_phys_addrs.len() {
-                    let src_ptr = (phys_mem_offset + win.page_phys_addrs[page_idx] + page_off as u64) as *const u8;
-                    let dst_ptr = unsafe { COMPOSITE_TEX_PTR.add(dst_byte_offset + col_offset) };
-                    unsafe { core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, chunk); }
-                }
-                col_offset += chunk;
-            }
-            src_offset += win_stride;
         }
     }
 
@@ -3575,60 +3559,53 @@ pub fn virgl_composite_windows(
         return Ok(());
     }
 
-    // Step 4: Upload — full texture if bg changed, partial sub-regions otherwise
-    if bg_dirty {
-        let tex_bytes = (tex_w as usize) * (tex_h as usize) * 4;
-        dma_cache_clean(unsafe { COMPOSITE_TEX_PTR }, tex_bytes);
+    // Step 4: Upload — full texture, partial rect, or cursor-only sub-regions
+    let tex_bytes_total = (tex_w as usize) * (tex_h as usize) * 4;
+
+    // Helper: cache-clean and upload a rectangular sub-region
+    let upload_rect = |x: u32, y: u32, w: u32, h: u32| -> Result<(), &'static str> {
+        let uw = w.min(tex_w.saturating_sub(x));
+        let uh = h.min(tex_h.saturating_sub(y));
+        if uw == 0 || uh == 0 { return Ok(()); }
+        let row_start = (y as usize) * tex_stride + (x as usize) * 4;
+        let last_row = (y + uh).saturating_sub(1) as usize;
+        let row_end = last_row * tex_stride + ((x + uw) as usize) * 4;
+        let clean_len = row_end.saturating_sub(row_start).min(tex_bytes_total.saturating_sub(row_start));
+        if clean_len > 0 {
+            dma_cache_clean(unsafe { COMPOSITE_TEX_PTR.add(row_start) }, clean_len);
+        }
+        with_device_state(|state| {
+            transfer_to_host_3d(state, RESOURCE_COMPOSITE_TEX_ID, x, y, uw, uh, tex_w * 4)
+        })
+    };
+
+    if bg_dirty && dirty_rect.is_some() {
+        // Partial background upload — only the dirty sub-region
+        let (dx, dy, dw, dh) = dirty_rect.unwrap();
+        let ux = dx.min(tex_w);
+        let uy = dy.min(tex_h);
+        let uw = dw.min(tex_w - ux);
+        let uh = dh.min(tex_h - uy);
+        if uw > 0 && uh > 0 {
+            upload_rect(ux, uy, uw, uh)?;
+        }
+        // Also upload cursor areas if cursor moved
+        if cursor_moved {
+            if prev_cx >= 0 && prev_cy >= 0 {
+                upload_rect(prev_cx as u32, prev_cy as u32, CURSOR_W, CURSOR_H)?;
+            }
+            if draw_cursor {
+                upload_rect(cur_x as u32, cur_y as u32, CURSOR_W, CURSOR_H)?;
+            }
+        }
+    } else if bg_dirty {
+        // Full background upload
+        dma_cache_clean(unsafe { COMPOSITE_TEX_PTR }, tex_bytes_total);
         with_device_state(|state| {
             transfer_to_host_3d(state, RESOURCE_COMPOSITE_TEX_ID, 0, 0, tex_w, tex_h, tex_w * 4)
         })?;
-    } else if any_window_dirty && !cursor_moved {
-        // Only windows changed — upload just each dirty window's sub-region
-        let tex_bytes_total = (tex_w as usize) * (tex_h as usize) * 4;
-        for win in windows.iter() {
-            if !win.dirty || win.page_phys_addrs.is_empty() { continue; }
-
-            let dest_x = win.x.max(0) as u32;
-            let dest_y = (win.y + title_h as i32).max(0) as u32;
-            let upload_w = win.width.min(tex_w.saturating_sub(dest_x));
-            let upload_h = win.height.min(tex_h.saturating_sub(dest_y));
-            if upload_w == 0 || upload_h == 0 { continue; }
-
-            let row_start = (dest_y as usize) * tex_stride + (dest_x as usize) * 4;
-            let last_row = (dest_y + upload_h).saturating_sub(1) as usize;
-            let row_end = last_row * tex_stride + ((dest_x + upload_w) as usize) * 4;
-            let clean_len = row_end.saturating_sub(row_start).min(tex_bytes_total.saturating_sub(row_start));
-            if clean_len > 0 {
-                dma_cache_clean(unsafe { COMPOSITE_TEX_PTR.add(row_start) }, clean_len);
-            }
-
-            with_device_state(|state| {
-                transfer_to_host_3d(state, RESOURCE_COMPOSITE_TEX_ID, dest_x, dest_y, upload_w, upload_h, tex_w * 4)
-            })?;
-        }
     } else {
-        // Cursor moved (possibly with window dirty) — upload cursor bounding boxes
-        // This uploads the old cursor rect + new cursor rect + any dirty windows
-        let tex_bytes_total = (tex_w as usize) * (tex_h as usize) * 4;
-
-        // Helper: upload a small rectangular region
-        let upload_rect = |x: u32, y: u32, w: u32, h: u32| -> Result<(), &'static str> {
-            let uw = w.min(tex_w.saturating_sub(x));
-            let uh = h.min(tex_h.saturating_sub(y));
-            if uw == 0 || uh == 0 { return Ok(()); }
-            let row_start = (y as usize) * tex_stride + (x as usize) * 4;
-            let last_row = (y + uh).saturating_sub(1) as usize;
-            let row_end = last_row * tex_stride + ((x + uw) as usize) * 4;
-            let clean_len = row_end.saturating_sub(row_start).min(tex_bytes_total.saturating_sub(row_start));
-            if clean_len > 0 {
-                dma_cache_clean(unsafe { COMPOSITE_TEX_PTR.add(row_start) }, clean_len);
-            }
-            with_device_state(|state| {
-                transfer_to_host_3d(state, RESOURCE_COMPOSITE_TEX_ID, x, y, uw, uh, tex_w * 4)
-            })
-        };
-
-        // Upload old cursor area (now has restored background)
+        // Cursor moved and/or windows dirty — upload cursor bounding boxes + dirty windows
         if prev_cx >= 0 && prev_cy >= 0 {
             upload_rect(prev_cx as u32, prev_cy as u32, CURSOR_W, CURSOR_H)?;
         }
@@ -3636,13 +3613,9 @@ pub fn virgl_composite_windows(
         if draw_cursor {
             upload_rect(cur_x as u32, cur_y as u32, CURSOR_W, CURSOR_H)?;
         }
-        // Also upload any dirty windows
-        for win in windows.iter() {
-            if !win.dirty || win.page_phys_addrs.is_empty() { continue; }
-            let dest_x = win.x.max(0) as u32;
-            let dest_y = (win.y + title_h as i32).max(0) as u32;
-            upload_rect(dest_x, dest_y, win.width, win.height)?;
-        }
+        // Note: kernel does NOT blit client windows from MAP_SHARED pages.
+        // BWM composites all windows at correct z-order and sends bg_dirty=2
+        // with a dirty rect when client content changes.
     }
 
     // =========================================================================

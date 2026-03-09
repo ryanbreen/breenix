@@ -9,6 +9,7 @@ description = "Userspace programs and utilities for Breenix"
 
 [dependencies]
 libbreenix = { path = "../../libs/libbreenix", features = ["std"] }
+breengel = { path = "../../libs/breengel" }
 libcollab = { path = "../../libs/libcollab" }
 libgfx = { path = "../../libs/libgfx" }
 libbui = { path = "../../libs/libbui" }
@@ -493,8 +494,20 @@ name = "blogd"
 path = "src/blogd.rs"
 
 [[bin]]
+name = "blog"
+path = "src/blog.rs"
+
+[[bin]]
 name = "bless"
 path = "src/bless.rs"
+
+[[bin]]
+name = "bcheck"
+path = "src/bcheck.rs"
+
+[[bin]]
+name = "bterm"
+path = "src/bterm.rs"
 
 [[bin]]
 name = "guskit"
