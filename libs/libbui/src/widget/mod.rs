@@ -4,6 +4,7 @@ pub mod file_picker;
 pub mod label;
 pub mod panel;
 pub mod slider;
+pub mod tab_bar;
 
 use libgfx::color::Color;
 use libgfx::framebuf::FrameBuf;

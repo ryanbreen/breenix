@@ -1,0 +1,15 @@
+[package]
+name = "breengel"
+version = "0.1.0"
+edition = "2021"
+description = "Breengel — Breenix Graphical Environment Library"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+libbreenix = { path = "../libbreenix", features = ["std"] }
+libgfx = { path = "../libgfx" }
+libbui = { path = "../libbui" }
+
+[workspace]

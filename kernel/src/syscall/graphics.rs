@@ -2,7 +2,7 @@
 //!
 //! Provides syscalls for querying and drawing to the framebuffer.
 //!
-//! ## Window compositing syscalls (op=10-14)
+//! ## Window compositing syscalls (op=10-19)
 //!
 //! These syscalls support the GPU-composited window manager:
 //! - op=10: `virgl_composite` — upload pixel buffer as full-screen GPU texture
@@ -10,6 +10,11 @@
 //! - op=12: `register_window` — register a window buffer with the compositor
 //! - op=13: `list_windows` — enumerate registered windows
 //! - op=14: `read_window_buffer` — copy a window's pixel data
+//! - op=15: `mark_window_dirty` — bump generation, block until compositor reads
+//! - op=16: `composite_windows` — GPU composite all windows (BWM only)
+//! - op=17: `set_window_position` — set window position
+//! - op=18: `write_window_input` — write input events to a window's queue (BWM)
+//! - op=19: `read_window_input` — read input events from window's queue (client)
 
 extern crate alloc;
 
@@ -77,6 +82,29 @@ const MAX_WINDOW_BUFFERS: usize = 16;
 #[cfg(target_arch = "aarch64")]
 const MAX_TITLE_LEN: usize = 64;
 
+/// Input event ring buffer size per window (power of 2 for fast masking)
+#[cfg(target_arch = "aarch64")]
+const INPUT_RING_SIZE: usize = 64;
+
+/// Input event pushed by BWM into a window's ring buffer.
+/// 12 bytes per event, matching the userspace `WindowInputEvent` struct.
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct WindowInputEvent {
+    /// Event type: 1=KeyPress, 2=KeyRelease, 3=MouseMove, 4=MouseButton, 5=Focus, 6=Close
+    pub event_type: u16,
+    /// USB HID keycode or ASCII character
+    pub keycode: u16,
+    /// Window-local mouse X coordinate
+    pub mouse_x: i16,
+    /// Window-local mouse Y coordinate
+    pub mouse_y: i16,
+    /// Modifier bitmask (bit 0=shift, bit 1=ctrl, bit 2=alt)
+    pub modifiers: u16,
+    pub _pad: u16,
+}
+
 #[cfg(target_arch = "aarch64")]
 /// A registered window buffer backed by physical pages accessible via HHDM.
 #[derive(Clone)]
@@ -117,6 +145,14 @@ struct WindowBuffer {
     page_phys_addrs: alloc::vec::Vec<u64>,
     /// Thread ID waiting for compositor to consume this frame (frame pacing)
     waiting_thread_id: Option<u64>,
+    /// Input event ring buffer (written by BWM via op=18, read by client via op=19)
+    input_ring: [WindowInputEvent; INPUT_RING_SIZE],
+    /// Write position in input ring (advanced by BWM)
+    input_head: usize,
+    /// Read position in input ring (advanced by client)
+    input_tail: usize,
+    /// Thread ID blocked on read_window_input (client waiting for input)
+    input_waiting_thread: Option<u64>,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -193,6 +229,10 @@ impl WindowRegistry {
             last_read_gen: 0,
             page_phys_addrs,
             waiting_thread_id: None,
+            input_ring: [WindowInputEvent::default(); INPUT_RING_SIZE],
+            input_head: 0,
+            input_tail: 0,
+            input_waiting_thread: None,
         });
         Some(id)
     }
@@ -768,6 +808,163 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                 None => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
             }
         }
+        18 => {
+            // WriteWindowInput: push an input event to a window's ring buffer.
+            // Called by BWM to route keyboard/mouse to the focused window.
+            // p1=buffer_id, p2/p3=pointer to WindowInputEvent
+            let buffer_id = cmd.p1 as u32;
+            let event_ptr = (cmd.p2 as u32 as u64) | ((cmd.p3 as u32 as u64) << 32);
+            if event_ptr == 0 || event_ptr >= USER_SPACE_MAX {
+                return SyscallResult::Err(super::ErrorCode::Fault as u64);
+            }
+            let event: WindowInputEvent = unsafe { core::ptr::read(event_ptr as *const WindowInputEvent) };
+
+            let wake_tid = {
+                let mut reg = WINDOW_REGISTRY.lock();
+                match reg.find_mut(buffer_id) {
+                    Some(buf) => {
+                        let next_head = (buf.input_head + 1) & (INPUT_RING_SIZE - 1);
+                        if next_head == buf.input_tail {
+                            // Ring full — drop oldest event by advancing tail
+                            buf.input_tail = (buf.input_tail + 1) & (INPUT_RING_SIZE - 1);
+                        }
+                        buf.input_ring[buf.input_head] = event;
+                        buf.input_head = next_head;
+                        // Wake client if it's blocked waiting for input
+                        buf.input_waiting_thread.take()
+                    }
+                    None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+                }
+            };
+
+            // Wake blocked client thread outside the registry lock
+            if let Some(tid) = wake_tid {
+                crate::task::scheduler::with_scheduler(|sched| {
+                    sched.unblock(tid);
+                });
+            }
+
+            SyscallResult::Ok(0)
+        }
+        19 => {
+            // ReadWindowInput: read input events from a window's ring buffer.
+            // Called by client apps to receive keyboard/mouse events from BWM.
+            // p1=buffer_id, p2/p3=pointer to output event array, p4=max_count
+            // color field bit 0: if set, non-blocking (return 0 if empty)
+            let buffer_id = cmd.p1 as u32;
+            let out_ptr = (cmd.p2 as u32 as u64) | ((cmd.p3 as u32 as u64) << 32);
+            let max_count = cmd.p4 as usize;
+            let non_blocking = (cmd.color & 1) != 0;
+
+            if out_ptr == 0 || out_ptr >= USER_SPACE_MAX || max_count == 0 {
+                return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+            }
+
+            // Try to read events from the ring
+            let count = {
+                let mut reg = WINDOW_REGISTRY.lock();
+                match reg.find_mut(buffer_id) {
+                    Some(buf) => {
+                        let mut n = 0usize;
+                        while n < max_count && buf.input_tail != buf.input_head {
+                            let event = buf.input_ring[buf.input_tail];
+                            unsafe {
+                                core::ptr::write(
+                                    (out_ptr as *mut WindowInputEvent).add(n),
+                                    event,
+                                );
+                            }
+                            buf.input_tail = (buf.input_tail + 1) & (INPUT_RING_SIZE - 1);
+                            n += 1;
+                        }
+                        n
+                    }
+                    None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+                }
+            };
+
+            if count > 0 || non_blocking {
+                return SyscallResult::Ok(count as u64);
+            }
+
+            // Blocking mode: no events available, block until BWM writes one.
+            let thread_id = match crate::task::scheduler::current_thread_id() {
+                Some(id) => id,
+                None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+            };
+
+            // Register this thread as waiting for input
+            {
+                let mut reg = WINDOW_REGISTRY.lock();
+                if let Some(buf) = reg.find_mut(buffer_id) {
+                    buf.input_waiting_thread = Some(thread_id);
+                }
+            }
+
+            // Block with 100ms timeout (fallback if BWM doesn't send events)
+            let (cur_secs, cur_nanos) = crate::time::get_monotonic_time_ns();
+            let now_ns = cur_secs as u64 * 1_000_000_000 + cur_nanos as u64;
+            let timeout_ns = now_ns.saturating_add(100_000_000); // 100ms
+
+            crate::task::scheduler::with_scheduler(|sched| {
+                sched.block_current_for_compositor(timeout_ns);
+            });
+
+            #[cfg(target_arch = "aarch64")]
+            crate::per_cpu_aarch64::preempt_enable();
+
+            loop {
+                let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                    sched.wake_expired_timers();
+                    sched.current_thread_mut()
+                        .map(|t| t.state == crate::task::thread::ThreadState::BlockedOnTimer)
+                        .unwrap_or(false)
+                });
+                if !still_blocked.unwrap_or(false) {
+                    break;
+                }
+                crate::task::scheduler::yield_current();
+                crate::arch_halt_with_interrupts();
+            }
+
+            crate::task::scheduler::with_scheduler(|sched| {
+                if let Some(thread) = sched.current_thread_mut() {
+                    thread.blocked_in_syscall = false;
+                }
+            });
+
+            #[cfg(target_arch = "aarch64")]
+            crate::per_cpu_aarch64::preempt_disable();
+
+            #[cfg(target_arch = "aarch64")]
+            ensure_current_address_space();
+
+            // Try to read again after waking
+            let count = {
+                let mut reg = WINDOW_REGISTRY.lock();
+                match reg.find_mut(buffer_id) {
+                    Some(buf) => {
+                        buf.input_waiting_thread = None;
+                        let mut n = 0usize;
+                        while n < max_count && buf.input_tail != buf.input_head {
+                            let event = buf.input_ring[buf.input_tail];
+                            unsafe {
+                                core::ptr::write(
+                                    (out_ptr as *mut WindowInputEvent).add(n),
+                                    event,
+                                );
+                            }
+                            buf.input_tail = (buf.input_tail + 1) & (INPUT_RING_SIZE - 1);
+                            n += 1;
+                        }
+                        n
+                    }
+                    None => 0,
+                }
+            };
+
+            SyscallResult::Ok(count as u64)
+        }
         _ => {
             crate::serial_println!("[virgl-op] UNKNOWN op={}", cmd.op);
             SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
@@ -911,7 +1108,7 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
     };
 
     let result = match crate::drivers::virtio::gpu_pci::virgl_composite_windows(
-        bg_pixels, desc.bg_width, desc.bg_height, bg_dirty, &windows,
+        bg_pixels, desc.bg_width, desc.bg_height, bg_dirty, None, &windows,
     ) {
         Ok(()) => SyscallResult::Ok(0),
         Err(e) => {

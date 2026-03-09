@@ -40,6 +40,8 @@ libs/*
 !libs/libimg/**
 !libs/libbui/
 !libs/libbui/**
+!libs/breengel/
+!libs/breengel/**
 !libs/libcollab/
 !libs/libcollab/**
 

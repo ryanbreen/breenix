@@ -7,6 +7,7 @@
 
 use std::process;
 
+use breengel::{Window, Event};
 use libbreenix::graphics;
 use libbreenix::time;
 
@@ -323,17 +324,16 @@ fn main() {
     println!("Bounce spheres demo starting (for Gus!) [boot_id={:016x}]", boot_id);
 
     // Try window-buffer mode first: BWM composites us as a floating window
-    match graphics::create_window(WIN_W, WIN_H) {
-        Ok(win) => {
-            let _ = graphics::register_window(win.id, b"Bounce");
-            println!("[bounce] Window mode: id={} {}x{} @ {:p} [boot_id={:016x}]",
-                     win.id, WIN_W, WIN_H, win.pixels, boot_id);
+    match Window::new(b"Bounce", WIN_W, WIN_H) {
+        Ok(mut win) => {
+            println!("[bounce] Window mode: id={} {}x{} [boot_id={:016x}]",
+                     win.id(), WIN_W, WIN_H, boot_id);
             let mut spheres = make_spheres(WIN_W as i32, WIN_H as i32);
-            run_window_loop(&win, &mut spheres);
+            run_window_loop(&mut win, &mut spheres);
             return;
         }
         Err(e) => {
-            println!("[bounce] create_window failed: {} — falling back to mmap", e);
+            println!("[bounce] Window::new failed: {} — falling back to mmap", e);
         }
     }
 
@@ -385,44 +385,14 @@ fn make_spheres(w: i32, h: i32) -> [Sphere; NUM_SPHERES] {
     ]
 }
 
-/// Look up our window's screen position from the compositor.
-/// Returns (win_x, win_y) or (0, 0) if not found.
-fn find_window_position(buffer_id: u32) -> (i32, i32) {
-    let mut infos = [graphics::WindowInfo::default(); 8];
-    if let Ok(count) = graphics::list_windows(&mut infos) {
-        for info in &infos[..count] {
-            if info.buffer_id == buffer_id {
-                return (info.x, info.y);
-            }
-        }
-    }
-    (0, 0)
-}
-
 /// Render bouncing spheres into a window buffer for BWM compositing.
-fn run_window_loop(win: &graphics::WindowBuffer, spheres: &mut [Sphere; NUM_SPHERES]) {
-    let width = win.width as i32;
-    let height = win.height as i32;
-    let bpp = 4usize;
-    let stride = width as usize * bpp;
+fn run_window_loop(win: &mut Window, spheres: &mut [Sphere; NUM_SPHERES]) {
+    let width = win.width() as i32;
+    let height = win.height() as i32;
     let bg = Color::rgb(10, 10, 25);
-
-    let mut fb = unsafe {
-        FrameBuf::from_raw(
-            win.pixels as *mut u8,
-            width as usize,
-            height as usize,
-            stride,
-            bpp,
-            true, // BGRA
-        )
-    };
 
     let mut fps = FpsCounter::new();
     let mut last_ns = clock_monotonic_ns();
-    let mut prev_buttons: u32 = 0;
-    let mut win_pos = find_window_position(win.id);
-    let mut pos_poll_counter: u32 = 0;
 
     const TARGET_DT_NS: u64 = 16_666_667; // 60 FPS target
 
@@ -437,30 +407,14 @@ fn run_window_loop(win: &graphics::WindowBuffer, spheres: &mut [Sphere; NUM_SPHE
             1024
         }.min(4096);
 
-        // Refresh window position periodically (BWM may reposition us)
-        pos_poll_counter += 1;
-        if pos_poll_counter >= 120 {
-            pos_poll_counter = 0;
-            win_pos = find_window_position(win.id);
-        }
-
-        // Poll mouse for click detection
-        if let Ok((mx, my, buttons)) = graphics::mouse_state() {
-            let left_pressed = (buttons & 1) != 0;
-            let left_was_pressed = (prev_buttons & 1) != 0;
-
-            // Detect rising edge of left button
-            if left_pressed && !left_was_pressed {
-                // Translate screen coords to window-local
-                // BWM title bar is ~20px, so content starts below it
-                let local_x = mx as i32 - win_pos.0;
-                let local_y = my as i32 - win_pos.1;
-
-                if local_x >= 0 && local_x < width && local_y >= 0 && local_y < height {
+        // Poll input events — coordinates are already window-local
+        for event in win.poll_events() {
+            match event {
+                Event::MouseButton { button: 1, pressed: true, x, y } => {
                     // Check if click hits any sphere
                     let mut hit = false;
                     for sphere in spheres.iter_mut() {
-                        if sphere.hit_test(local_x, local_y) {
+                        if sphere.hit_test(x, y) {
                             sphere.impel();
                             hit = true;
                             break;
@@ -473,18 +427,19 @@ fn run_window_loop(win: &graphics::WindowBuffer, spheres: &mut [Sphere; NUM_SPHE
                         }
                     }
                 }
+                _ => {}
             }
-            prev_buttons = buttons;
         }
 
         physics_step(spheres, width, height, dt_scale);
 
+        let fb = win.framebuf();
         fb.clear(bg);
-        for sphere in spheres.iter() { sphere.draw(&mut fb); }
+        for sphere in spheres.iter() { sphere.draw(fb); }
         fps.tick();
-        fps.draw(&mut fb);
+        fps.draw(fb);
 
-        let _ = graphics::mark_window_dirty(win.id);
+        let _ = win.present();
     }
 }
 

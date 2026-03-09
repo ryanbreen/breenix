@@ -1,0 +1,76 @@
+//! High-level input events for Breengel applications.
+
+use libbreenix::graphics::{WindowInputEvent, input_event_type};
+
+/// Modifier key bitmask.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Modifiers {
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+}
+
+impl Modifiers {
+    fn from_raw(bits: u16) -> Self {
+        Self {
+            shift: bits & 1 != 0,
+            ctrl: bits & 2 != 0,
+            alt: bits & 4 != 0,
+        }
+    }
+}
+
+/// High-level input event.
+#[derive(Clone, Debug)]
+pub enum Event {
+    /// A key was pressed. `ascii` is the ASCII value (0 if not printable).
+    /// `keycode` is the raw USB HID keycode.
+    KeyPress { ascii: u8, keycode: u16, modifiers: Modifiers },
+    /// A key was released.
+    KeyRelease { keycode: u16, modifiers: Modifiers },
+    /// Mouse moved to window-local coordinates.
+    MouseMove { x: i32, y: i32 },
+    /// Mouse button pressed or released.
+    MouseButton { button: u8, pressed: bool, x: i32, y: i32 },
+    /// This window gained keyboard focus.
+    FocusGained,
+    /// This window lost keyboard focus.
+    FocusLost,
+    /// The window manager requested this window be closed.
+    CloseRequested,
+}
+
+impl Event {
+    /// Convert a raw kernel input event to a high-level Event.
+    pub fn from_raw(raw: &WindowInputEvent) -> Self {
+        match raw.event_type {
+            input_event_type::KEY_PRESS => Event::KeyPress {
+                ascii: raw.keycode as u8,
+                keycode: raw.keycode,
+                modifiers: Modifiers::from_raw(raw.modifiers),
+            },
+            input_event_type::KEY_RELEASE => Event::KeyRelease {
+                keycode: raw.keycode,
+                modifiers: Modifiers::from_raw(raw.modifiers),
+            },
+            input_event_type::MOUSE_MOVE => Event::MouseMove {
+                x: raw.mouse_x as i32,
+                y: raw.mouse_y as i32,
+            },
+            input_event_type::MOUSE_BUTTON => Event::MouseButton {
+                button: raw.keycode as u8,
+                pressed: raw.mouse_x != 0,
+                x: raw.mouse_y as i32,
+                y: 0,
+            },
+            input_event_type::FOCUS_GAINED => Event::FocusGained,
+            input_event_type::FOCUS_LOST => Event::FocusLost,
+            input_event_type::CLOSE_REQUESTED => Event::CloseRequested,
+            _ => Event::KeyPress {
+                ascii: 0,
+                keycode: raw.keycode,
+                modifiers: Modifiers::default(),
+            },
+        }
+    }
+}
