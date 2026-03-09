@@ -320,11 +320,10 @@ fn spawn_child(path: &[u8]) -> (Fd, i64) {
             let _ = io::close(master_fd);
             let _ = setsid();
             // Open PTY slave using stack-allocated path
-            let mut slave_fd = Fd::from_raw(-1i32 as u64);
-            match fs::open(slave_path_str, fs::O_RDWR) {
-                Ok(fd) => { slave_fd = fd; }
+            let slave_fd = match fs::open(slave_path_str, fs::O_RDWR) {
+                Ok(fd) => fd,
                 Err(_) => { libbreenix::process::exit(126); }
-            }
+            };
             let _ = libbreenix::termios::set_controlling_terminal(slave_fd);
             let _ = io::dup2(slave_fd, Fd::from_raw(0));
             let _ = io::dup2(slave_fd, Fd::from_raw(1));
@@ -506,8 +505,9 @@ fn main() {
                     mouse_x = *x;
                     mouse_y = *y;
                 }
-                Event::MouseButton { button, pressed, x, .. } => {
+                Event::MouseButton { button, pressed, x, y } => {
                     mouse_x = *x;
+                    mouse_y = *y;
                     if *button == 0 || *button == 1 {
                         if *pressed {
                             buttons |= 1;

@@ -59,9 +59,9 @@ impl Event {
             },
             input_event_type::MOUSE_BUTTON => Event::MouseButton {
                 button: raw.keycode as u8,
-                pressed: raw.mouse_x != 0,
-                x: raw.mouse_y as i32,
-                y: 0,
+                pressed: raw._pad != 0,
+                x: raw.mouse_x as i32,
+                y: raw.mouse_y as i32,
             },
             input_event_type::FOCUS_GAINED => Event::FocusGained,
             input_event_type::FOCUS_LOST => Event::FocusLost,

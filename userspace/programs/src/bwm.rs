@@ -277,13 +277,13 @@ fn route_mouse_button_to_focused(
         let event = WindowInputEvent {
             event_type: input_event_type::MOUSE_BUTTON,
             keycode: button,
-            mouse_x: if pressed { 1 } else { 0 },
-            mouse_y: win_local_x,
-            modifiers: 0, _pad: 0,
+            mouse_x: win_local_x,
+            mouse_y: win_local_y,
+            modifiers: 0,
+            _pad: if pressed { 1 } else { 0 },
         };
         let _ = graphics::write_window_input(windows[focused_win].window_id, &event);
     }
-    let _ = win_local_y; // TODO: fix encoding to include y coordinate
 }
 
 fn route_mouse_move_to_focused(
@@ -467,7 +467,25 @@ fn main() {
     }
 
     print!("[bwm] GPU compositing mode (VirGL), display: {}x{}\n", screen_w, screen_h);
-    let mut composite_buf = vec![0u32; screen_w * screen_h];
+
+    // Try to map COMPOSITE_TEX directly into our address space.
+    // If successful, all pixel writes go straight to GPU texture backing (zero-copy).
+    let (mut composite_buf, direct_mapped) = match graphics::map_compositor_texture() {
+        Ok((ptr, tex_w, tex_h)) => {
+            let mapped_w = tex_w as usize;
+            let mapped_h = tex_h as usize;
+            print!("[bwm] Direct compositor mapping: {}x{} at {:p}\n", mapped_w, mapped_h, ptr);
+            let buf = unsafe { core::slice::from_raw_parts_mut(ptr, mapped_w * mapped_h) };
+            (buf, true)
+        }
+        Err(_) => {
+            print!("[bwm] Fallback: heap-allocated compositor buffer\n");
+            // Leak a Vec to get a &'static mut slice — BWM runs for the lifetime of the OS
+            let v = vec![0u32; screen_w * screen_h];
+            let leaked = v.leak();
+            (leaked as &mut [u32], false)
+        }
+    };
 
     let mut fb = unsafe {
         FrameBuf::from_raw(
@@ -478,7 +496,7 @@ fn main() {
 
     // Paint decorative background and cache it for fast restoration
     paint_background(&mut fb);
-    let bg_cache = composite_buf.clone();
+    let bg_cache = composite_buf.to_vec();
 
     // Enter raw mode on stdin
     let mut orig_termios = libbreenix::termios::Termios::default();
@@ -499,12 +517,33 @@ fn main() {
     let mut client_pixel_buf = vec![0u8; screen_w * screen_h * 4];
 
     // Initial composite
-    let _ = graphics::virgl_composite_windows(&composite_buf, screen_w as u32, screen_h as u32, true);
+    if direct_mapped {
+        // Data is already in COMPOSITE_TEX — just tell kernel to upload + display
+        let _ = graphics::virgl_composite_windows_rect(&[], 0, 0, 1, 0, 0, screen_w as u32, screen_h as u32);
+    } else {
+        let _ = graphics::virgl_composite_windows(&composite_buf, screen_w as u32, screen_h as u32, true);
+    }
 
     let mut read_buf = [0u8; 512];
     let mut poll_fds = [io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 }];
 
+    // Performance tracing — measure time spent in each phase of the main loop
+    let mut perf_frame: u64 = 0;
+    let mut perf_discover_ns: u64 = 0;
+    let mut perf_poll_ns: u64 = 0;
+    let mut perf_blit_ns: u64 = 0;
+    let mut perf_composite_ns: u64 = 0;
+    let mut perf_composites: u64 = 0;
+    let mut perf_sleeps: u64 = 0;
+
+    fn mono_ns() -> u64 {
+        let ts = libbreenix::time::now_monotonic().unwrap_or_default();
+        (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
+    }
+
     loop {
+        let t0 = mono_ns();
+
         // ── 1. Discover new/removed client windows ──
         if discover_windows(&mut windows, screen_w, screen_h) {
             if focused_win >= windows.len() {
@@ -516,9 +555,11 @@ fn main() {
             full_redraw = true;
         }
 
-        // ── 2. Poll stdin (1ms timeout) ──
+        let t1 = mono_ns();
+
+        // ── 2. Poll stdin (non-blocking) ──
         poll_fds[0].revents = 0;
-        let _ = io::poll(&mut poll_fds, 1);
+        let _ = io::poll(&mut poll_fds, 0);
 
         // ── 3. Process keyboard input ──
         if poll_fds[0].revents & io::poll_events::POLLIN as i16 != 0 {
@@ -646,6 +687,8 @@ fn main() {
             }
         }
 
+        let t2 = mono_ns();
+
         // ── 5. Blit all client window pixels + z-order repair ──
         // Fast inner loop (no per-pixel clipping). After blitting dirty windows,
         // repair z-order by re-blitting cached pixels for higher-z overlapping windows.
@@ -692,15 +735,25 @@ fn main() {
             }
         }
 
+        let t3 = mono_ns();
+
         // ── 6. Composite to GPU (only when something changed) ──
+        // When direct_mapped, pass empty pixels (kernel skips Phase A copy —
+        // our writes went directly into COMPOSITE_TEX backing memory).
+        let (cbuf, cw, ch): (&[u32], u32, u32) = if direct_mapped {
+            (&[], 0, 0)
+        } else {
+            (&composite_buf, screen_w as u32, screen_h as u32)
+        };
         if full_redraw {
             // Full upload: entire compositor buffer changed (window add/remove/drag)
             let _ = graphics::virgl_composite_windows_rect(
-                &composite_buf, screen_w as u32, screen_h as u32,
+                cbuf, cw, ch,
                 1, 0, 0, screen_w as u32, screen_h as u32,
             );
             full_redraw = false;
             content_dirty = false;
+            perf_composites += 1;
         } else if content_dirty {
             // Partial upload: only the dirty sub-region (union of updated window bounds)
             let sw = screen_w as i32;
@@ -710,13 +763,40 @@ fn main() {
             let dw = (dirty_x1.min(sw) - dirty_x0.max(0)).max(0) as u32;
             let dh = (dirty_y1.min(sh) - dirty_y0.max(0)).max(0) as u32;
             let _ = graphics::virgl_composite_windows_rect(
-                &composite_buf, screen_w as u32, screen_h as u32,
+                cbuf, cw, ch,
                 2, dx, dy, dw, dh,
             );
             content_dirty = false;
+            perf_composites += 1;
         } else {
             // Nothing dirty — brief sleep to avoid burning CPU
             let _ = libbreenix::time::sleep_ms(2);
+            perf_sleeps += 1;
+        }
+
+        let t4 = mono_ns();
+
+        // Accumulate phase timings
+        perf_discover_ns += t1.saturating_sub(t0);
+        perf_poll_ns += t2.saturating_sub(t1);
+        perf_blit_ns += t3.saturating_sub(t2);
+        perf_composite_ns += t4.saturating_sub(t3);
+        perf_frame += 1;
+
+        // Dump perf summary every 500 iterations
+        if perf_frame % 500 == 0 {
+            let to_us = |ns: u64| -> u64 { ns / 1000 / 500 };
+            print!("[bwm-perf] iter={} composites={} sleeps={} avg: discover={}us poll={}us blit={}us composite={}us\n",
+                perf_frame, perf_composites, perf_sleeps,
+                to_us(perf_discover_ns), to_us(perf_poll_ns),
+                to_us(perf_blit_ns), to_us(perf_composite_ns),
+            );
+            perf_discover_ns = 0;
+            perf_poll_ns = 0;
+            perf_blit_ns = 0;
+            perf_composite_ns = 0;
+            perf_composites = 0;
+            perf_sleeps = 0;
         }
     }
 }

@@ -965,6 +965,20 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
 
             SyscallResult::Ok(count as u64)
         }
+        20 => {
+            // MapCompositorTexture: map COMPOSITE_TEX backing pages into caller's
+            // address space for zero-copy compositor writes.
+            // p1/p2 = output pointer (lo/hi) for mapped address (u64)
+            // Returns: packed (width << 32 | height) on success.
+            #[cfg(target_arch = "aarch64")]
+            {
+                handle_map_compositor_texture(cmd)
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
+            }
+        }
         _ => {
             crate::serial_println!("[virgl-op] UNKNOWN op={}", cmd.op);
             SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
@@ -1000,9 +1014,18 @@ struct CompositeWindowsDesc {
 fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
     let desc: CompositeWindowsDesc = unsafe { core::ptr::read(desc_ptr as *const CompositeWindowsDesc) };
 
-    if desc.bg_width == 0 || desc.bg_height == 0 || desc.bg_width > 4096 || desc.bg_height > 4096 {
-        return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
-    }
+    // When bg_pixels_ptr=0 (direct-mapped compositor), use COMPOSITE_TEX dimensions
+    let (bg_width, bg_height) = if desc.bg_pixels_ptr == 0 {
+        match crate::drivers::virtio::gpu_pci::compositor_texture_info() {
+            Some((_phys, _pages, w, h)) => (w, h),
+            None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+        }
+    } else {
+        if desc.bg_width == 0 || desc.bg_height == 0 || desc.bg_width > 4096 || desc.bg_height > 4096 {
+            return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+        }
+        (desc.bg_width, desc.bg_height)
+    };
 
     let bg_dirty = desc.bg_dirty != 0;
     let dirty_rect = if desc.bg_dirty == 2 && desc.num_dirty_rects > 0
@@ -1074,7 +1097,7 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
     }
 
     let bg_pixels = if desc.bg_pixels_ptr != 0 && desc.bg_pixels_ptr < USER_SPACE_MAX {
-        let pixel_count = (desc.bg_width as usize) * (desc.bg_height as usize);
+        let pixel_count = (bg_width as usize) * (bg_height as usize);
         let end = desc.bg_pixels_ptr + (pixel_count as u64) * 4;
         if end > USER_SPACE_MAX {
             return SyscallResult::Err(super::ErrorCode::Fault as u64);
@@ -1124,7 +1147,7 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
     };
 
     let result = match crate::drivers::virtio::gpu_pci::virgl_composite_windows(
-        bg_pixels, desc.bg_width, desc.bg_height, bg_dirty, dirty_rect, &windows,
+        bg_pixels, bg_width, bg_height, bg_dirty, dirty_rect, &windows,
     ) {
         Ok(()) => SyscallResult::Ok(0),
         Err(e) => {
@@ -1293,6 +1316,99 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
 
     // Return just the buffer_id
     SyscallResult::Ok(buffer_id as u64)
+}
+
+/// Handle map_compositor_texture: map COMPOSITE_TEX backing pages into the
+/// calling process's address space (read/write). This allows BWM to write
+/// pixels directly into the GPU texture backing, eliminating the kernel-side
+/// copy in virgl_composite_windows Phase A.
+#[cfg(target_arch = "aarch64")]
+fn handle_map_compositor_texture(cmd: &FbDrawCmd) -> SyscallResult {
+    use crate::memory::vma::{MmapFlags, Protection, Vma};
+    use crate::syscall::memory_common::{
+        get_current_thread_id, prot_to_page_flags, flush_tlb, round_down_to_page, PAGE_SIZE,
+    };
+    use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
+
+    let out_ptr = (cmd.p1 as u32 as u64) | ((cmd.p2 as u32 as u64) << 32);
+    if out_ptr == 0 || out_ptr >= USER_SPACE_MAX {
+        return SyscallResult::Err(super::ErrorCode::Fault as u64);
+    }
+
+    // Get compositor texture info from GPU driver
+    let (phys_base, num_pages, tex_w, tex_h) =
+        match crate::drivers::virtio::gpu_pci::compositor_texture_info() {
+            Some(info) => info,
+            None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+        };
+
+    // Get current process
+    let current_thread_id = match get_current_thread_id() {
+        Some(id) => id,
+        None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
+    };
+
+    let mut manager_guard = crate::process::manager();
+    let manager = match *manager_guard {
+        Some(ref mut m) => m,
+        None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
+    };
+
+    let (_pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
+        Some(p) => p,
+        None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
+    };
+
+    // Allocate virtual address range from mmap hint
+    let total_size = (num_pages as u64) * PAGE_SIZE;
+    let new_addr = round_down_to_page(process.mmap_hint.saturating_sub(total_size));
+    if new_addr < 0x1000_0000 {
+        return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
+    }
+    process.mmap_hint = new_addr;
+
+    let page_table = match process.page_table.as_mut() {
+        Some(pt) => pt,
+        None => return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64),
+    };
+
+    // Map each physical page of COMPOSITE_TEX into the process
+    let page_flags = prot_to_page_flags(Protection::from_bits_truncate(3)); // READ | WRITE
+    for i in 0..num_pages as usize {
+        let frame_phys = phys_base + (i as u64) * PAGE_SIZE;
+        let frame = crate::memory::arch_stub::PhysFrame::<Size4KiB>::containing_address(
+            crate::memory::arch_stub::PhysAddr::new(frame_phys),
+        );
+        let page_addr = new_addr + (i as u64) * PAGE_SIZE;
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(page_addr));
+
+        if let Err(_) = page_table.map_page(page, frame, page_flags) {
+            return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
+        }
+        flush_tlb(VirtAddr::new(page_addr));
+    }
+
+    // Create VMA
+    let vma = Vma::new(
+        VirtAddr::new(new_addr),
+        VirtAddr::new(new_addr + total_size),
+        Protection::from_bits_truncate(3),
+        MmapFlags::from_bits_truncate(0x21), // MAP_SHARED | MAP_ANONYMOUS
+    );
+    process.vmas.push(vma);
+
+    crate::serial_println!(
+        "[compositor] Mapped COMPOSITE_TEX into process: virt={:#x}, {}x{}, {} pages",
+        new_addr, tex_w, tex_h, num_pages
+    );
+
+    // Write mapped address to userspace
+    unsafe {
+        core::ptr::write(out_ptr as *mut u64, new_addr);
+    }
+
+    // Return packed dimensions
+    SyscallResult::Ok(((tex_w as u64) << 32) | tex_h as u64)
 }
 
 /// sys_fbdraw - Draw to the left pane of the framebuffer
