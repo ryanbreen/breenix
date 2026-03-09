@@ -130,6 +130,8 @@ pub mod draw_op {
     pub const WRITE_WINDOW_INPUT: u32 = 18;
     /// Read input events from a window's ring buffer (client ← BWM)
     pub const READ_WINDOW_INPUT: u32 = 19;
+    /// Map compositor texture into caller's address space
+    pub const MAP_COMPOSITOR_TEXTURE: u32 = 20;
 }
 
 /// Ball descriptor for VirGL GPU rendering.
@@ -683,7 +685,7 @@ pub fn virgl_composite_windows_rect(
     dirty_mode: u32, dirty_x: u32, dirty_y: u32, dirty_w: u32, dirty_h: u32,
 ) -> Result<(), Error> {
     let desc = CompositeWindowsDesc {
-        bg_pixels_ptr: bg_pixels.as_ptr() as u64,
+        bg_pixels_ptr: if bg_pixels.is_empty() { 0 } else { bg_pixels.as_ptr() as u64 },
         bg_width: bg_w,
         bg_height: bg_h,
         bg_dirty: dirty_mode,
@@ -703,6 +705,36 @@ pub fn virgl_composite_windows_rect(
         color: 0,
     };
     fbdraw(&cmd)
+}
+
+/// Map the compositor texture backing into this process's address space.
+///
+/// Returns a pointer to the mapped memory along with the texture dimensions.
+/// BWM can write pixels directly into this memory — they are the GPU texture
+/// backing pages. This eliminates the kernel-side copy in the composite syscall.
+///
+/// # Returns
+/// * Ok((ptr, width, height)) - Mapped pointer + dimensions
+/// * Err(Error) - Error if compositor texture is not initialized
+pub fn map_compositor_texture() -> Result<(*mut u32, u32, u32), Error> {
+    let mut mapped_addr: u64 = 0;
+    let out_ptr = &mut mapped_addr as *mut u64 as u64;
+    let cmd = FbDrawCmd {
+        op: draw_op::MAP_COMPOSITOR_TEXTURE,
+        p1: out_ptr as i32,
+        p2: (out_ptr >> 32) as i32,
+        p3: 0,
+        p4: 0,
+        color: 0,
+    };
+    let ret = unsafe { raw::syscall1(nr::FBDRAW, &cmd as *const FbDrawCmd as u64) as i64 };
+    if ret < 0 {
+        return Err(Error::Os(Errno::from_raw(-ret)));
+    }
+    let result = ret as u64;
+    let width = (result >> 32) as u32;
+    let height = (result & 0xFFFF_FFFF) as u32;
+    Ok((mapped_addr as *mut u32, width, height))
 }
 
 /// Get the current mouse cursor position.

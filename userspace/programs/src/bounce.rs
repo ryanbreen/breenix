@@ -192,16 +192,20 @@ impl Sphere {
     fn impel(&mut self) {
         let speed_sq = self.vx * self.vx + self.vy * self.vy;
         if speed_sq > (50 << 10) {
-            // Boost by 50% in current direction
             self.vx = self.vx * 3 / 2;
             self.vy = self.vy * 3 / 2;
         } else {
-            // Nearly stopped — kick based on position hash for variety
             let kick = 300i64 << 10;
             let hash = (self.x ^ self.y) >> 10;
             self.vx = if hash & 1 == 0 { kick } else { -kick };
             self.vy = if hash & 2 == 0 { kick } else { -kick };
         }
+    }
+
+    /// Dampen: reduce velocity by 33%.
+    fn dampen(&mut self) {
+        self.vx = self.vx * 2 / 3;
+        self.vy = self.vy * 2 / 3;
     }
 }
 
@@ -411,7 +415,6 @@ fn run_window_loop(win: &mut Window, spheres: &mut [Sphere; NUM_SPHERES]) {
         for event in win.poll_events() {
             match event {
                 Event::MouseButton { button: 1, pressed: true, x, y } => {
-                    // Check if click hits any sphere
                     let mut hit = false;
                     for sphere in spheres.iter_mut() {
                         if sphere.hit_test(x, y) {
@@ -420,11 +423,21 @@ fn run_window_loop(win: &mut Window, spheres: &mut [Sphere; NUM_SPHERES]) {
                             break;
                         }
                     }
-                    // Background click — impel all spheres
                     if !hit {
                         for sphere in spheres.iter_mut() {
                             sphere.impel();
                         }
+                    }
+                }
+                Event::KeyPress { ascii, .. } => {
+                    match ascii {
+                        b'+' | b'=' => {
+                            for sphere in spheres.iter_mut() { sphere.impel(); }
+                        }
+                        b'-' => {
+                            for sphere in spheres.iter_mut() { sphere.dampen(); }
+                        }
+                        _ => {}
                     }
                 }
                 _ => {}

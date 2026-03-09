@@ -176,9 +176,13 @@ pub fn process_keyboard_report(report: &[u8]) {
     let keys = &report[2..8];
 
     // Update modifier state from the modifier byte
-    // Bit 0: Left Ctrl,  Bit 1: Left Shift,  Bit 4: Right Ctrl, Bit 5: Right Shift
+    // Bit 0: Left Ctrl,  Bit 1: Left Shift,  Bit 2: Left Alt
+    // Bit 3: Left GUI,   Bit 4: Right Ctrl,  Bit 5: Right Shift
+    // Bit 6: Right Alt,  Bit 7: Right GUI
+    // Map GUI (Command on macOS) to ctrl so Command+T/W/C work in terminal
     let shift = (modifiers & 0x02) != 0 || (modifiers & 0x20) != 0;
-    let ctrl = (modifiers & 0x01) != 0 || (modifiers & 0x10) != 0;
+    let ctrl = (modifiers & 0x01) != 0 || (modifiers & 0x10) != 0
+             || (modifiers & 0x08) != 0 || (modifiers & 0x80) != 0;
     SHIFT_PRESSED.store(shift, Ordering::Relaxed);
     CTRL_PRESSED.store(ctrl, Ordering::Relaxed);
 
