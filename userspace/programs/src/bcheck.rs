@@ -4,7 +4,7 @@
 //! GPU-rendered progress bars and per-test pass/fail results in a
 //! compositor window.
 
-use breengel::Window;
+use breengel::{Window, Event};
 use libbreenix::process::{fork, exec, waitpid, ForkResult};
 use libbreenix::time;
 
@@ -122,7 +122,22 @@ const LIST_START_Y: i32 = 64;
 const ROW_H: i32 = 18;
 const FOOTER_H: i32 = 24;
 
-fn render(fb: &mut FrameBuf, tests: &[TestDef]) {
+/// Compute the total content height of the test list (for scroll clamping).
+fn content_height(tests: &[TestDef]) -> i32 {
+    let mut y = 0i32;
+    let mut last_cat = "";
+    for test in tests.iter() {
+        if test.category != last_cat {
+            last_cat = test.category;
+            if y > 0 { y += 4; }
+            y += 12;
+        }
+        y += ROW_H;
+    }
+    y
+}
+
+fn render(fb: &mut FrameBuf, tests: &[TestDef], scroll_offset: i32) {
     let w = fb.width as i32;
     let h = fb.height as i32;
 
@@ -173,15 +188,15 @@ fn render(fb: &mut FrameBuf, tests: &[TestDef]) {
     let pct_tw = font::text_width(pct_text, 1) as i32;
     font::draw_text(fb, pct_text, ((w - pct_tw) / 2) as usize, (BAR_Y + 4) as usize, FG, 1);
 
-    // Test list
-    let mut y = LIST_START_Y;
+    // Visible area for test list
+    let visible_top = LIST_START_Y;
+    let visible_bottom = h - FOOTER_H;
+
+    // Test list (offset by scroll)
+    let mut y = LIST_START_Y - scroll_offset;
     let mut last_cat = "";
 
     for test in tests.iter() {
-        if y + ROW_H > h - FOOTER_H {
-            break; // Don't overflow into footer
-        }
-
         // Category header
         if test.category != last_cat {
             last_cat = test.category;
@@ -193,45 +208,55 @@ fn render(fb: &mut FrameBuf, tests: &[TestDef]) {
                 "sig"  => b"SIGNALS",
                 _      => b"OTHER",
             };
-            if y > LIST_START_Y {
+            if y > LIST_START_Y - scroll_offset {
                 y += 4; // Extra spacing between categories
             }
-            font::draw_text(fb, cat_label, MARGIN as usize, y as usize, COLOR_CAT, 1);
-            shapes::fill_rect(fb, MARGIN + font::text_width(cat_label, 1) as i32 + 4, y + 3,
-                              w - MARGIN * 2 - font::text_width(cat_label, 1) as i32 - 4, 1, ACCENT);
+            // Only draw if visible
+            if y >= visible_top && y + 12 <= visible_bottom {
+                font::draw_text(fb, cat_label, MARGIN as usize, y as usize, COLOR_CAT, 1);
+                shapes::fill_rect(fb, MARGIN + font::text_width(cat_label, 1) as i32 + 4, y + 3,
+                                  w - MARGIN * 2 - font::text_width(cat_label, 1) as i32 - 4, 1, ACCENT);
+            }
             y += 12;
         }
 
-        // Status icon
-        let (icon, icon_color): (&[u8], Color) = match test.status {
-            TestStatus::Pass    => (b"OK", COLOR_PASS),
-            TestStatus::Fail    => (b"!!", COLOR_FAIL),
-            TestStatus::Running => (b">>", COLOR_RUN),
-            TestStatus::Skip    => (b"--", COLOR_SKIP),
-            TestStatus::Pending => (b"..", COLOR_PEND),
-        };
-        font::draw_text(fb, icon, (MARGIN + 2) as usize, y as usize, icon_color, 1);
+        if y + ROW_H > visible_bottom {
+            break; // Past the bottom — stop iterating
+        }
 
-        // Test name
-        font::draw_text(fb, test.name.as_bytes(), (MARGIN + 22) as usize, y as usize, FG, 1);
+        // Only draw row if it's in the visible region
+        if y >= visible_top {
+            // Status icon
+            let (icon, icon_color): (&[u8], Color) = match test.status {
+                TestStatus::Pass    => (b"OK", COLOR_PASS),
+                TestStatus::Fail    => (b"!!", COLOR_FAIL),
+                TestStatus::Running => (b">>", COLOR_RUN),
+                TestStatus::Skip    => (b"--", COLOR_SKIP),
+                TestStatus::Pending => (b"..", COLOR_PEND),
+            };
+            font::draw_text(fb, icon, (MARGIN + 2) as usize, y as usize, icon_color, 1);
 
-        // Status label
-        let (label, label_color): (&[u8], Color) = match test.status {
-            TestStatus::Pass    => (b"PASS", COLOR_PASS),
-            TestStatus::Fail    => (b"FAIL", COLOR_FAIL),
-            TestStatus::Running => (b"RUN ", COLOR_RUN),
-            TestStatus::Skip    => (b"SKIP", COLOR_SKIP),
-            TestStatus::Pending => (b"    ", COLOR_PEND),
-        };
-        let label_x = w - MARGIN - 80;
-        font::draw_text(fb, label, label_x as usize, y as usize, label_color, 1);
+            // Test name
+            font::draw_text(fb, test.name.as_bytes(), (MARGIN + 22) as usize, y as usize, FG, 1);
 
-        // Elapsed time (for completed tests)
-        if test.status == TestStatus::Pass || test.status == TestStatus::Fail {
-            let mut time_buf = [0u8; 8];
-            let time_len = format_ms(&mut time_buf, test.elapsed_ms);
-            let time_x = w - MARGIN - 36;
-            font::draw_text(fb, &time_buf[..time_len], time_x as usize, y as usize, COLOR_TIME, 1);
+            // Status label
+            let (label, label_color): (&[u8], Color) = match test.status {
+                TestStatus::Pass    => (b"PASS", COLOR_PASS),
+                TestStatus::Fail    => (b"FAIL", COLOR_FAIL),
+                TestStatus::Running => (b"RUN ", COLOR_RUN),
+                TestStatus::Skip    => (b"SKIP", COLOR_SKIP),
+                TestStatus::Pending => (b"    ", COLOR_PEND),
+            };
+            let label_x = w - MARGIN - 80;
+            font::draw_text(fb, label, label_x as usize, y as usize, label_color, 1);
+
+            // Elapsed time (for completed tests)
+            if test.status == TestStatus::Pass || test.status == TestStatus::Fail {
+                let mut time_buf = [0u8; 8];
+                let time_len = format_ms(&mut time_buf, test.elapsed_ms);
+                let time_x = w - MARGIN - 36;
+                font::draw_text(fb, &time_buf[..time_len], time_x as usize, y as usize, COLOR_TIME, 1);
+            }
         }
 
         y += ROW_H;
@@ -369,13 +394,13 @@ fn main() {
     println!("[bcheck] Window {} ({}x{})", win.id(), WIN_W, WIN_H);
 
     // Initial render — all pending
-    render(win.framebuf(), &tests);
+    render(win.framebuf(), &tests, 0);
     let _ = win.present();
 
     // Run each test sequentially
     for i in 0..total {
         tests[i].status = TestStatus::Running;
-        render(win.framebuf(), &tests);
+        render(win.framebuf(), &tests, 0);
         let _ = win.present();
 
         run_test(&mut tests[i]);
@@ -389,7 +414,7 @@ fn main() {
         println!("[bcheck] {:2}/{} {} {} {}ms",
                  i + 1, total, tests[i].name, status_str, tests[i].elapsed_ms);
 
-        render(win.framebuf(), &tests);
+        render(win.framebuf(), &tests, 0);
         let _ = win.present();
     }
 
@@ -398,9 +423,26 @@ fn main() {
     let failed = tests.iter().filter(|t| t.status == TestStatus::Fail).count();
     println!("[bcheck] Complete: {}/{} passed, {} failed", passed, total, failed);
 
-    // Keep displaying results
+    // Keep displaying results — support scrolling with arrow keys
+    let visible_h = WIN_H as i32 - LIST_START_Y - FOOTER_H;
+    let total_h = content_height(&tests);
+    let max_scroll = (total_h - visible_h).max(0);
+    let mut scroll_offset: i32 = 0;
+
     loop {
-        render(win.framebuf(), &tests);
+        for event in win.poll_events() {
+            match event {
+                Event::KeyPress { keycode, .. } => {
+                    match keycode {
+                        0x52 => scroll_offset = (scroll_offset - ROW_H).max(0),       // Up
+                        0x51 => scroll_offset = (scroll_offset + ROW_H).min(max_scroll), // Down
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        render(win.framebuf(), &tests, scroll_offset);
         let _ = win.present();
     }
 }

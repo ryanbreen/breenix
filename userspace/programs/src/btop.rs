@@ -351,6 +351,9 @@ fn main() {
     // Previous tick counts for CPU% delta computation
     let mut prev_ticks: Vec<(u64, u64)> = Vec::new(); // (pid, ticks)
     let mut prev_timer_ticks: u64 = 0;
+    let mut prev_gpu_bytes: u64 = 0;
+    let mut prev_gpu_full: u64 = 0;
+    let mut prev_gpu_partial: u64 = 0;
 
     loop {
         // ── Gather Data ──────────────────────────────────────────────────
@@ -380,7 +383,7 @@ fn main() {
         let used_kb = total_kb.saturating_sub(free_kb);
 
         // Kernel counters
-        let mut stat_buf = [0u8; 512];
+        let mut stat_buf = [0u8; 768];
         let stat_n = read_procfs("/proc/stat", &mut stat_buf);
         let stat = &stat_buf[..stat_n];
         let syscalls = parse_value(stat, b"syscalls");
@@ -390,6 +393,9 @@ fn main() {
         let forks = parse_value(stat, b"forks");
         let execs = parse_value(stat, b"execs");
         let cow_faults = parse_value(stat, b"cow_faults");
+        let gpu_bytes = parse_value(stat, b"gpu_bytes");
+        let gpu_full = parse_value(stat, b"gpu_full");
+        let gpu_partial = parse_value(stat, b"gpu_partial");
 
         // Process list
         let pids = get_pids();
@@ -550,6 +556,29 @@ fn main() {
         emit_formatted_num(execs);
         emit_str("    |  CoW: ");
         emit_formatted_num(cow_faults);
+        emit_str("\n");
+
+        // GPU compositor stats (delta per second)
+        let gpu_bytes_delta = gpu_bytes.saturating_sub(prev_gpu_bytes);
+        let gpu_full_delta = gpu_full.saturating_sub(prev_gpu_full);
+        let gpu_partial_delta = gpu_partial.saturating_sub(prev_gpu_partial);
+        prev_gpu_bytes = gpu_bytes;
+        prev_gpu_full = gpu_full;
+        prev_gpu_partial = gpu_partial;
+
+        emit_str("  \x1b[1;35mGPU\x1b[0m Full: ");
+        emit_formatted_num(gpu_full_delta);
+        emit_str("/s  Partial: ");
+        emit_formatted_num(gpu_partial_delta);
+        emit_str("/s  BW: ");
+        // Show bandwidth in KB/s or MB/s
+        if gpu_bytes_delta >= 1_048_576 {
+            emit_formatted_num(gpu_bytes_delta / 1_048_576);
+            emit_str(" MB/s");
+        } else {
+            emit_formatted_num(gpu_bytes_delta / 1024);
+            emit_str(" KB/s");
+        }
         emit_str("\n");
 
         // Sleep 1 second before next refresh

@@ -649,12 +649,23 @@ fn main() {
         // ── 5. Blit all client window pixels + z-order repair ──
         // Fast inner loop (no per-pixel clipping). After blitting dirty windows,
         // repair z-order by re-blitting cached pixels for higher-z overlapping windows.
+        // Track dirty bounding box for partial GPU upload.
         let mut updated = [false; 16];
+        let mut dirty_x0 = i32::MAX;
+        let mut dirty_y0 = i32::MAX;
+        let mut dirty_x1 = 0i32;
+        let mut dirty_y1 = 0i32;
+
         for i in 0..windows.len().min(16) {
             if windows[i].window_id != 0 {
                 if blit_client_pixels(&mut fb, &mut windows[i], &mut client_pixel_buf) {
                     content_dirty = true;
                     updated[i] = true;
+                    let (bx0, by0, bx1, by1) = windows[i].bounds();
+                    dirty_x0 = dirty_x0.min(bx0);
+                    dirty_y0 = dirty_y0.min(by0);
+                    dirty_x1 = dirty_x1.max(bx1);
+                    dirty_y1 = dirty_y1.max(by1);
                 }
             }
         }
@@ -671,21 +682,41 @@ fn main() {
                     blit_cached_pixels(&mut fb, &windows[j]);
                     updated[j] = true; // cascade: treat as updated for even higher-z windows
                     content_dirty = true;
+                    let (bx0, by0, bx1, by1) = windows[j].bounds();
+                    dirty_x0 = dirty_x0.min(bx0);
+                    dirty_y0 = dirty_y0.min(by0);
+                    dirty_x1 = dirty_x1.max(bx1);
+                    dirty_y1 = dirty_y1.max(by1);
                     break;
                 }
             }
         }
 
         // ── 6. Composite to GPU (only when something changed) ──
-        if full_redraw || content_dirty {
-            // Always pass bg_dirty=true: BWM composites ALL window pixels into
-            // composite_buf, so the kernel must always copy it to the GPU texture.
-            // Passing false skips the copy, leaving the display frozen on stale content.
-            let _ = graphics::virgl_composite_windows(
-                &composite_buf, screen_w as u32, screen_h as u32, true,
+        if full_redraw {
+            // Full upload: entire compositor buffer changed (window add/remove/drag)
+            let _ = graphics::virgl_composite_windows_rect(
+                &composite_buf, screen_w as u32, screen_h as u32,
+                1, 0, 0, screen_w as u32, screen_h as u32,
             );
             full_redraw = false;
             content_dirty = false;
+        } else if content_dirty {
+            // Partial upload: only the dirty sub-region (union of updated window bounds)
+            let sw = screen_w as i32;
+            let sh = screen_h as i32;
+            let dx = dirty_x0.max(0) as u32;
+            let dy = dirty_y0.max(0) as u32;
+            let dw = (dirty_x1.min(sw) - dirty_x0.max(0)).max(0) as u32;
+            let dh = (dirty_y1.min(sh) - dirty_y0.max(0)).max(0) as u32;
+            let _ = graphics::virgl_composite_windows_rect(
+                &composite_buf, screen_w as u32, screen_h as u32,
+                2, dx, dy, dw, dh,
+            );
+            content_dirty = false;
+        } else {
+            // Nothing dirty — brief sleep to avoid burning CPU
+            let _ = libbreenix::time::sleep_ms(2);
         }
     }
 }

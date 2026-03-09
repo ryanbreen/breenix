@@ -731,6 +731,7 @@ fn generate_stat() -> String {
     use crate::tracing::providers::counters::{
         SYSCALL_TOTAL, IRQ_TOTAL, CTX_SWITCH_TOTAL, TIMER_TICK_TOTAL,
         FORK_TOTAL, EXEC_TOTAL, COW_FAULT_TOTAL,
+        GPU_BYTES_UPLOADED, GPU_FULL_UPLOADS, GPU_PARTIAL_UPLOADS,
     };
 
     format!(
@@ -740,7 +741,10 @@ fn generate_stat() -> String {
          timer_ticks {}\n\
          forks {}\n\
          execs {}\n\
-         cow_faults {}\n",
+         cow_faults {}\n\
+         gpu_bytes {}\n\
+         gpu_full {}\n\
+         gpu_partial {}\n",
         SYSCALL_TOTAL.aggregate(),
         IRQ_TOTAL.aggregate(),
         CTX_SWITCH_TOTAL.aggregate(),
@@ -748,6 +752,9 @@ fn generate_stat() -> String {
         FORK_TOTAL.aggregate(),
         EXEC_TOTAL.aggregate(),
         COW_FAULT_TOTAL.aggregate(),
+        GPU_BYTES_UPLOADED.aggregate(),
+        GPU_FULL_UPLOADS.aggregate(),
+        GPU_PARTIAL_UPLOADS.aggregate(),
     )
 }
 

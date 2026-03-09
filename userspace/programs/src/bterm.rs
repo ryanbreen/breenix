@@ -366,7 +366,11 @@ fn make_tab_label() -> &'static [u8] {
 }
 
 fn spawn_tab(cols: usize, rows: usize) -> Tab {
-    let (master_fd, child_pid) = spawn_child(b"/bin/bsh\0");
+    spawn_tab_cmd(cols, rows, b"/bin/bsh\0")
+}
+
+fn spawn_tab_cmd(cols: usize, rows: usize, cmd: &[u8]) -> Tab {
+    let (master_fd, child_pid) = spawn_child(cmd);
     // Set master fd to non-blocking so we can poll without blocking the event loop
     let _ = io::fcntl_setfl(master_fd, io::status_flags::O_NONBLOCK);
     Tab {
@@ -374,6 +378,11 @@ fn spawn_tab(cols: usize, rows: usize) -> Tab {
         master_fd,
         child_pid,
     }
+}
+
+fn make_static_label(s: &str) -> &'static [u8] {
+    let boxed: Box<[u8]> = s.as_bytes().to_vec().into_boxed_slice();
+    Box::leak(boxed)
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────
@@ -401,8 +410,13 @@ fn main() {
     );
     let theme = Theme::dark();
 
-    // Spawn initial tab
+    // Spawn initial tabs: shell + btop
     let mut tabs: Vec<Tab> = vec![spawn_tab(cols, rows)];
+
+    // Auto-start btop in a second tab
+    let btop_label = make_static_label("btop");
+    tab_bar.add_tab(btop_label);
+    tabs.push(spawn_tab_cmd(cols, rows, b"/bin/btop\0"));
 
     // Mouse state for InputState edge detection
     let mut prev_buttons: u32 = 0;

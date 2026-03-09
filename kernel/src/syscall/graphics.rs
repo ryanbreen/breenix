@@ -973,6 +973,11 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
 }
 
 /// Descriptor for multi-window GPU compositing (passed from userspace).
+///
+/// bg_dirty modes:
+///   0 = no background change (cursor/frame-pacing only)
+///   1 = full background upload (entire buffer changed)
+///   2 = partial background upload (only dirty_rect region changed)
 #[cfg(target_arch = "aarch64")]
 #[repr(C)]
 struct CompositeWindowsDesc {
@@ -980,7 +985,11 @@ struct CompositeWindowsDesc {
     bg_width: u32,
     bg_height: u32,
     bg_dirty: u32,
-    _reserved: u32,
+    num_dirty_rects: u32,
+    dirty_x: u32,
+    dirty_y: u32,
+    dirty_w: u32,
+    dirty_h: u32,
 }
 
 /// Handle multi-window GPU compositing (op=16).
@@ -996,6 +1005,13 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
     }
 
     let bg_dirty = desc.bg_dirty != 0;
+    let dirty_rect = if desc.bg_dirty == 2 && desc.num_dirty_rects > 0
+        && desc.dirty_w > 0 && desc.dirty_h > 0
+    {
+        Some((desc.dirty_x, desc.dirty_y, desc.dirty_w, desc.dirty_h))
+    } else {
+        None
+    };
 
     // Fast path: quick dirty check under lock — no heap allocs if nothing changed
     if !bg_dirty {
@@ -1108,7 +1124,7 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
     };
 
     let result = match crate::drivers::virtio::gpu_pci::virgl_composite_windows(
-        bg_pixels, desc.bg_width, desc.bg_height, bg_dirty, None, &windows,
+        bg_pixels, desc.bg_width, desc.bg_height, bg_dirty, dirty_rect, &windows,
     ) {
         Ok(()) => SyscallResult::Ok(0),
         Err(e) => {

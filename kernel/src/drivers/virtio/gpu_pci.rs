@@ -3488,22 +3488,50 @@ pub fn virgl_composite_windows(
     let prev_cy = CURSOR_PREV_Y.load(Ordering::Relaxed);
     let cursor_moved = cur_x != prev_cx || cur_y != prev_cy;
 
-    // Erase old cursor by restoring saved background pixels.
-    // Skip when bg_dirty — the bg copy already refreshed all pixels including the
-    // old cursor area. Writing stale saved_bg would corrupt the fresh background.
-    if prev_cx >= 0 && prev_cy >= 0 && !bg_dirty && (cursor_moved || any_window_dirty) {
+    // Erase old cursor by restoring background pixels.
+    //
+    // Three modes:
+    // - Full bg copy (bg_dirty && dirty_rect.is_none()): skip erase — the full copy
+    //   already overwrote the entire texture including old cursor area.
+    // - Partial bg copy (bg_dirty && dirty_rect.is_some()): restore old cursor area
+    //   from BWM's composite_buf (never contains cursor, always correct).
+    // - No bg copy (!bg_dirty): restore from saved_bg (valid, no copy overwrote it).
+    let full_bg_copy = bg_dirty && dirty_rect.is_none();
+    if prev_cx >= 0 && prev_cy >= 0 && !full_bg_copy && (cursor_moved || any_window_dirty) {
         let tex_ptr = unsafe { COMPOSITE_TEX_PTR as *mut u32 };
         let tw = tex_w as usize;
-        for row in 0..CURSOR_H as usize {
-            let py = prev_cy as usize + row;
-            if py >= tex_h as usize { break; }
-            for col in 0..CURSOR_W as usize {
-                let px = prev_cx as usize + col;
-                if px >= tw { break; }
-                if CURSOR_BITMAP[row][col] != 0 {
-                    unsafe {
-                        let saved = CURSOR_SAVED_BG[row * CURSOR_W as usize + col];
-                        *tex_ptr.add(py * tw + px) = saved;
+
+        if bg_dirty {
+            // Partial mode: read correct background from BWM's composite_buf
+            if let Some(pixels) = bg_pixels {
+                let src_w = bg_width.min(tex_w) as usize;
+                for row in 0..CURSOR_H as usize {
+                    let py = prev_cy as usize + row;
+                    if py >= tex_h as usize || py >= (bg_height as usize) { break; }
+                    for col in 0..CURSOR_W as usize {
+                        let px = prev_cx as usize + col;
+                        if px >= tw || px >= src_w { break; }
+                        if CURSOR_BITMAP[row][col] != 0 {
+                            unsafe {
+                                *tex_ptr.add(py * tw + px) = *pixels.as_ptr().add(py * src_w + px);
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // Cursor-only mode: restore from saved_bg
+            for row in 0..CURSOR_H as usize {
+                let py = prev_cy as usize + row;
+                if py >= tex_h as usize { break; }
+                for col in 0..CURSOR_W as usize {
+                    let px = prev_cx as usize + col;
+                    if px >= tw { break; }
+                    if CURSOR_BITMAP[row][col] != 0 {
+                        unsafe {
+                            let saved = CURSOR_SAVED_BG[row * CURSOR_W as usize + col];
+                            *tex_ptr.add(py * tw + px) = saved;
+                        }
                     }
                 }
             }
@@ -3588,9 +3616,11 @@ pub fn virgl_composite_windows(
         let uh = dh.min(tex_h - uy);
         if uw > 0 && uh > 0 {
             upload_rect(ux, uy, uw, uh)?;
+            crate::tracing::providers::counters::GPU_PARTIAL_UPLOADS.increment();
+            crate::tracing::providers::counters::GPU_BYTES_UPLOADED.add((uw as u64) * (uh as u64) * 4);
         }
-        // Also upload cursor areas if cursor moved
-        if cursor_moved {
+        // Upload cursor areas: old position (erased) and new position (drawn)
+        if cursor_moved || any_window_dirty {
             if prev_cx >= 0 && prev_cy >= 0 {
                 upload_rect(prev_cx as u32, prev_cy as u32, CURSOR_W, CURSOR_H)?;
             }
@@ -3604,6 +3634,8 @@ pub fn virgl_composite_windows(
         with_device_state(|state| {
             transfer_to_host_3d(state, RESOURCE_COMPOSITE_TEX_ID, 0, 0, tex_w, tex_h, tex_w * 4)
         })?;
+        crate::tracing::providers::counters::GPU_FULL_UPLOADS.increment();
+        crate::tracing::providers::counters::GPU_BYTES_UPLOADED.add(tex_bytes_total as u64);
     } else {
         // Cursor moved and/or windows dirty — upload cursor bounding boxes + dirty windows
         if prev_cx >= 0 && prev_cy >= 0 {

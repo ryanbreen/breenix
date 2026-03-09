@@ -123,6 +123,27 @@ pub static COW_FAULT_TOTAL: TraceCounter = TraceCounter::new(
     "Total CoW fault operations",
 );
 
+/// GPU compositor: total bytes uploaded to VRAM.
+#[no_mangle]
+pub static GPU_BYTES_UPLOADED: TraceCounter = TraceCounter::new(
+    "GPU_BYTES_UPLOADED",
+    "GPU bytes uploaded to VRAM",
+);
+
+/// GPU compositor: full-screen uploads (4.9MB each).
+#[no_mangle]
+pub static GPU_FULL_UPLOADS: TraceCounter = TraceCounter::new(
+    "GPU_FULL_UPLOADS",
+    "Full-screen GPU uploads",
+);
+
+/// GPU compositor: partial rect uploads.
+#[no_mangle]
+pub static GPU_PARTIAL_UPLOADS: TraceCounter = TraceCounter::new(
+    "GPU_PARTIAL_UPLOADS",
+    "Partial rect GPU uploads",
+);
+
 // =============================================================================
 // Boot Test Counters (BTRT feature)
 // =============================================================================
@@ -182,6 +203,9 @@ pub fn init() {
     register_counter(&FORK_TOTAL);
     register_counter(&EXEC_TOTAL);
     register_counter(&COW_FAULT_TOTAL);
+    register_counter(&GPU_BYTES_UPLOADED);
+    register_counter(&GPU_FULL_UPLOADS);
+    register_counter(&GPU_PARTIAL_UPLOADS);
 
     #[cfg(feature = "btrt")]
     {
