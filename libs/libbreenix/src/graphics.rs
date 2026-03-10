@@ -136,6 +136,8 @@ pub mod draw_op {
     pub const MAP_WINDOW_BUFFER: u32 = 21;
     /// Lightweight dirty check without pixel copy
     pub const CHECK_WINDOW_DIRTY: u32 = 22;
+    /// Block until compositor has work (dirty windows, mouse, registry change)
+    pub const COMPOSITOR_WAIT: u32 = 23;
 }
 
 /// Ball descriptor for VirGL GPU rendering.
@@ -794,6 +796,46 @@ pub fn check_window_dirty(buffer_id: u32) -> Result<bool, Error> {
         return Err(Error::Os(Errno::from_raw(-ret)));
     }
     Ok(ret != 0)
+}
+
+/// Bitmask: at least one window has dirty pixels
+pub const COMPOSITOR_READY_DIRTY: u32 = 1;
+/// Bitmask: mouse position or buttons changed
+pub const COMPOSITOR_READY_MOUSE: u32 = 2;
+/// Bitmask: window registry changed (new/removed windows)
+pub const COMPOSITOR_READY_REGISTRY: u32 = 4;
+
+/// Block until the compositor has work to do.
+///
+/// Returns packed result: bits 0-7 = ready bitmask, bits 8-31 = registry generation.
+///   bit 0: window(s) have dirty pixels
+///   bit 1: mouse position or buttons changed
+///   bit 2: window registry changed (new/removed windows)
+///
+/// If nothing is pending, blocks the calling thread for up to `timeout_ms`
+/// milliseconds. Woken early by: window dirty, mouse movement, registry change.
+///
+/// `last_registry_gen` should be the registry generation returned by the
+/// previous call (bits 8-31 of the result).
+///
+/// Returns (ready_bitmask, registry_generation).
+pub fn compositor_wait(timeout_ms: u32, last_registry_gen: u32) -> Result<(u32, u32), Error> {
+    let cmd = FbDrawCmd {
+        op: draw_op::COMPOSITOR_WAIT,
+        p1: timeout_ms as i32,
+        p2: last_registry_gen as i32,
+        p3: 0,
+        p4: 0,
+        color: 0,
+    };
+    let ret = unsafe { raw::syscall1(nr::FBDRAW, &cmd as *const FbDrawCmd as u64) as i64 };
+    if ret < 0 {
+        return Err(Error::Os(Errno::from_raw(-ret)));
+    }
+    let packed = ret as u32;
+    let ready = packed & 0xFF;
+    let reg_gen = (packed >> 8) & 0x00FF_FFFF;
+    Ok((ready, reg_gen))
 }
 
 /// Get the current mouse cursor position.

@@ -18,6 +18,7 @@
 //! - op=20: `map_compositor_texture` — map GPU texture into BWM's address space
 //! - op=21: `map_window_buffer` — map window buffer into BWM's address space (read-only)
 //! - op=22: `check_window_dirty` — lightweight generation check without pixel copy
+//! - op=23: `compositor_wait` — block until window dirty/mouse/keyboard/registry change
 
 extern crate alloc;
 
@@ -40,6 +41,34 @@ pub static FB_FLUSH_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::A
 /// op=15 (mark_window_dirty) reads this to wake the compositor immediately.
 #[cfg(target_arch = "aarch64")]
 static COMPOSITOR_WAITING_THREAD: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Registry generation counter — bumped when windows are registered/unregistered.
+/// compositor_wait (op=23) compares this against its saved value to detect changes.
+#[cfg(target_arch = "aarch64")]
+static REGISTRY_GENERATION: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Last mouse state seen by compositor_wait, packed as (x << 32 | y << 16 | buttons).
+/// Compared against current mouse state to detect movement without a syscall.
+#[cfg(target_arch = "aarch64")]
+static COMPOSITOR_LAST_MOUSE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Set to 1 by mark_window_dirty (op=15) when it wakes the compositor.
+/// compositor_wait checks this after waking to know if a dirty window caused the wake.
+#[cfg(target_arch = "aarch64")]
+static COMPOSITOR_DIRTY_WAKE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Wake the compositor thread if it's blocked in compositor_wait (op=23).
+/// Called from input interrupt handlers (mouse, keyboard) to provide low-latency
+/// input response without polling.
+#[cfg(target_arch = "aarch64")]
+pub fn wake_compositor_if_waiting() {
+    let tid = COMPOSITOR_WAITING_THREAD.load(core::sync::atomic::Ordering::Acquire);
+    if tid != 0 {
+        crate::task::scheduler::with_scheduler(|sched| {
+            sched.unblock(tid);
+        });
+    }
+}
 
 /// Restore TTBR0 to the current process's page tables after blocking.
 ///
@@ -625,6 +654,17 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                             }
                         }
                     }
+                    // Bump registry generation + wake compositor so it discovers the new window
+                    #[cfg(target_arch = "aarch64")]
+                    {
+                        REGISTRY_GENERATION.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                        let compositor_tid = COMPOSITOR_WAITING_THREAD.load(core::sync::atomic::Ordering::Acquire);
+                        if compositor_tid != 0 {
+                            crate::task::scheduler::with_scheduler(|sched| {
+                                sched.unblock(compositor_tid);
+                            });
+                        }
+                    }
                     SyscallResult::Ok(0)
                 }
                 None => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
@@ -728,6 +768,7 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             // This gives immediate frame delivery instead of waiting for a timer tick.
             #[cfg(target_arch = "aarch64")]
             {
+                COMPOSITOR_DIRTY_WAKE.store(true, core::sync::atomic::Ordering::Relaxed);
                 let compositor_tid = COMPOSITOR_WAITING_THREAD.load(core::sync::atomic::Ordering::Acquire);
                 if compositor_tid != 0 {
                     crate::task::scheduler::with_scheduler(|sched| {
@@ -1008,11 +1049,135 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                 None => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
             }
         }
+        23 => {
+            // CompositorWait: block until something needs compositing.
+            // p1=timeout_ms, p2=last_registry_gen (lo32)
+            // Returns bitmask: bit0=windows_dirty, bit1=mouse_changed, bit2=registry_changed
+            // Replaces BWM's poll+sleep loop with a single blocking syscall.
+            #[cfg(target_arch = "aarch64")]
+            {
+                handle_compositor_wait(cmd)
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
+            }
+        }
         _ => {
             crate::serial_println!("[virgl-op] UNKNOWN op={}", cmd.op);
             SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
         }
     }
+}
+
+/// Handle compositor_wait (op=23): block until the compositor has work to do.
+///
+/// Returns packed value: (registry_generation << 8) | ready_bitmask
+///   bits 0-7: ready bitmask (bit0=dirty, bit1=mouse, bit2=registry)
+///   bits 8-31: current registry generation (for next call's last_registry_gen)
+///
+/// If nothing is ready, blocks the compositor thread with the given timeout.
+/// Woken by: mark_window_dirty (op=15), mouse interrupt handler, registry changes.
+#[cfg(target_arch = "aarch64")]
+fn handle_compositor_wait(cmd: &FbDrawCmd) -> SyscallResult {
+    use core::sync::atomic::Ordering;
+
+    let timeout_ms = cmd.p1 as u32;
+    let last_registry_gen = cmd.p2 as u32 as u64;
+
+    // Pack current mouse state for comparison
+    let (mx, my, mb) = crate::drivers::usb::hid::mouse_state();
+    let mouse_packed = ((mx as u64) << 32) | ((my as u64) << 16) | (mb as u64);
+    let prev_mouse = COMPOSITOR_LAST_MOUSE.load(Ordering::Relaxed);
+
+    // Check non-dirty conditions first (mouse + registry are always non-blocking)
+    let mut ready: u64 = 0;
+
+    // Bit 1: mouse changed?
+    if mouse_packed != prev_mouse {
+        ready |= 2;
+    }
+
+    // Bit 2: registry changed?
+    let cur_reg_gen = REGISTRY_GENERATION.load(Ordering::Relaxed);
+    if cur_reg_gen != last_registry_gen {
+        ready |= 4;
+    }
+
+    // If mouse or registry changed, return immediately (don't check dirty — BWM
+    // will do its own per-window dirty check via check_window_dirty).
+    if ready != 0 {
+        COMPOSITOR_LAST_MOUSE.store(mouse_packed, Ordering::Relaxed);
+        return SyscallResult::Ok(ready | ((cur_reg_gen & 0x00FF_FFFF) << 8));
+    }
+
+    // Nothing urgent — block until woken by mark_window_dirty, mouse, or registry change.
+    // mark_window_dirty (op=15) wakes us immediately via COMPOSITOR_WAITING_THREAD.
+    let compositor_tid = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => return SyscallResult::Ok(0),
+    };
+    COMPOSITOR_WAITING_THREAD.store(compositor_tid, Ordering::Release);
+
+    let (s, n) = crate::time::get_monotonic_time_ns();
+    let now_ns = (s as u64) * 1_000_000_000 + (n as u64);
+    let timeout_ns = now_ns.saturating_add((timeout_ms as u64) * 1_000_000);
+
+    crate::task::scheduler::with_scheduler(|sched| {
+        sched.block_current_for_compositor(timeout_ns);
+    });
+
+    #[cfg(target_arch = "aarch64")]
+    crate::per_cpu_aarch64::preempt_enable();
+
+    loop {
+        let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+            sched.wake_expired_timers();
+            sched.current_thread_mut()
+                .map(|t| t.state == crate::task::thread::ThreadState::BlockedOnTimer)
+                .unwrap_or(false)
+        });
+        if !still_blocked.unwrap_or(false) { break; }
+        crate::task::scheduler::yield_current();
+        crate::arch_halt_with_interrupts();
+    }
+
+    crate::task::scheduler::with_scheduler(|sched| {
+        if let Some(thread) = sched.current_thread_mut() {
+            thread.blocked_in_syscall = false;
+        }
+    });
+
+    #[cfg(target_arch = "aarch64")]
+    crate::per_cpu_aarch64::preempt_disable();
+    #[cfg(target_arch = "aarch64")]
+    ensure_current_address_space();
+
+    COMPOSITOR_WAITING_THREAD.store(0, Ordering::Release);
+
+    // Re-check conditions after waking — return bitmask of what woke us.
+    let mut ready_after: u64 = 0;
+
+    // Bit 0: check if mark_window_dirty woke us
+    if COMPOSITOR_DIRTY_WAKE.swap(false, Ordering::Relaxed) {
+        ready_after |= 1;
+    }
+
+    let (mx2, my2, mb2) = crate::drivers::usb::hid::mouse_state();
+    let mouse_packed2 = ((mx2 as u64) << 32) | ((my2 as u64) << 16) | (mb2 as u64);
+
+    if mouse_packed2 != prev_mouse {
+        ready_after |= 2;
+    }
+
+    let cur_reg_gen2 = REGISTRY_GENERATION.load(Ordering::Relaxed);
+    if cur_reg_gen2 != last_registry_gen {
+        ready_after |= 4;
+    }
+
+    COMPOSITOR_LAST_MOUSE.store(mouse_packed2, Ordering::Relaxed);
+
+    SyscallResult::Ok(ready_after | ((cur_reg_gen2 & 0x00FF_FFFF) << 8))
 }
 
 /// Descriptor for multi-window GPU compositing (passed from userspace).
@@ -1065,7 +1230,8 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
         None
     };
 
-    // Fast path: quick dirty check under lock — no heap allocs if nothing changed
+    // Fast path: quick dirty check under lock — no heap allocs if nothing changed.
+    // compositor_wait (op=23) handles blocking; op=16 just returns immediately.
     if !bg_dirty {
         let reg = WINDOW_REGISTRY.lock();
         let any_window_dirty = reg.buffers.iter().any(|slot| {
@@ -1076,50 +1242,6 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
         });
         if !any_window_dirty {
             drop(reg);
-            // Block the compositor until a window becomes dirty or timeout.
-            // mark_window_dirty (op=15) will wake us immediately via unblock().
-            // This eliminates spin-loop CPU waste when no windows need compositing.
-            let compositor_tid = match crate::task::scheduler::current_thread_id() {
-                Some(id) => id,
-                None => return SyscallResult::Ok(0),
-            };
-            COMPOSITOR_WAITING_THREAD.store(compositor_tid, core::sync::atomic::Ordering::Release);
-
-            let (s, n) = crate::time::get_monotonic_time_ns();
-            let now_ns = (s as u64) * 1_000_000_000 + (n as u64);
-            let timeout_ns = now_ns.saturating_add(5_000_000); // 5ms max wait
-
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.block_current_for_compositor(timeout_ns);
-            });
-
-            #[cfg(target_arch = "aarch64")]
-            crate::per_cpu_aarch64::preempt_enable();
-
-            loop {
-                let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
-                    sched.wake_expired_timers();
-                    sched.current_thread_mut()
-                        .map(|t| t.state == crate::task::thread::ThreadState::BlockedOnTimer)
-                        .unwrap_or(false)
-                });
-                if !still_blocked.unwrap_or(false) { break; }
-                crate::task::scheduler::yield_current();
-                crate::arch_halt_with_interrupts();
-            }
-
-            crate::task::scheduler::with_scheduler(|sched| {
-                if let Some(thread) = sched.current_thread_mut() {
-                    thread.blocked_in_syscall = false;
-                }
-            });
-
-            #[cfg(target_arch = "aarch64")]
-            crate::per_cpu_aarch64::preempt_disable();
-            #[cfg(target_arch = "aarch64")]
-            ensure_current_address_space();
-
-            COMPOSITOR_WAITING_THREAD.store(0, core::sync::atomic::Ordering::Release);
             return SyscallResult::Ok(0);
         }
         drop(reg);

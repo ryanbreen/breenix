@@ -353,6 +353,7 @@ pub fn process_mouse_report(report: &[u8]) {
         }
         MOUSE_X.store(new_x, Ordering::Relaxed);
         MOUSE_Y.store(new_y, Ordering::Relaxed);
+        crate::syscall::graphics::wake_compositor_if_waiting();
         return;
     }
 
@@ -369,6 +370,7 @@ pub fn process_mouse_report(report: &[u8]) {
     let old_y = MOUSE_Y.load(Ordering::Relaxed) as i32;
     let new_y = (old_y + dy).clamp(0, sh as i32 - 1) as u32;
     MOUSE_Y.store(new_y, Ordering::Relaxed);
+    crate::syscall::graphics::wake_compositor_if_waiting();
 }
 
 // =============================================================================
