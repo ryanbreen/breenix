@@ -728,9 +728,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         // Tell boot.S the correct UART address for this platform's serial debug output
         kernel::arch_impl::aarch64::smp::set_uart_phys(kernel::platform_config::uart_base_phys());
 
-        // Flush boot page tables from CPU 0's cache to DRAM so secondary CPUs
-        // (which start with MMU off) can read them correctly.
-        kernel::arch_impl::aarch64::smp::flush_boot_page_tables();
+        // Write CPU 0's actual TTBR0/TTBR1 to .bss.boot so secondary CPUs use
+        // the correct page tables. On Parallels, the UEFI loader builds its own
+        // page tables (not boot.S's ttbr0_l0/ttbr1_l0), so we must pass the
+        // real TTBR values to secondary CPUs explicitly.
+        kernel::arch_impl::aarch64::smp::set_smp_ttbrs();
 
         serial_println!("[smp] Probing secondary CPUs via PSCI...");
         let mut launched = 0u64;

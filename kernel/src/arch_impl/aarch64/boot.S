@@ -53,7 +53,7 @@
 .equ TCR_T0SZ,           16
 .equ TCR_T1SZ,           (16 << 16)
 .equ TCR_TG0_4K,         (0b00 << 14)
-.equ TCR_TG1_4K,         (0b01 << 30)
+.equ TCR_TG1_4K,         (0b10 << 30)
 .equ TCR_SH0_INNER,      (0b11 << 12)
 .equ TCR_SH1_INNER,      (0b11 << 28)
 .equ TCR_ORGN0_WBWA,     (0b01 << 10)
@@ -845,16 +845,25 @@ secondary_el1_init:
     strb w1, [x20]
 12:
 
-    // Load the same MMU config as CPU 0 (MAIR, TCR, TTBRs)
-    ldr x0, =MAIR_EL1_VALUE
+    // Load the same MMU config as CPU 0 (MAIR, TCR, TTBRs).
+    // All values come from SMP_*_PHYS variables, which CPU 0's Rust code
+    // populates from its actual register values. This handles both
+    // QEMU (boot.S page tables/config) and Parallels (loader page tables/config).
+    ldr x0, =SMP_MAIR_PHYS
+    ldr x0, [x0]             // x0 = CPU 0's MAIR value
     msr mair_el1, x0
-    ldr x0, =TCR_VALUE
+    ldr x0, =SMP_TCR_PHYS
+    ldr x0, [x0]             // x0 = CPU 0's TCR value
     msr tcr_el1, x0
     isb
 
-    ldr x0, =ttbr0_l0
+    // Load TTBR0 from SMP_TTBR0_PHYS (set by CPU 0 Rust code)
+    ldr x0, =SMP_TTBR0_PHYS
+    ldr x0, [x0]             // x0 = actual TTBR0 physical address
     msr ttbr0_el1, x0
-    ldr x0, =ttbr1_l0
+    // Load TTBR1 from SMP_TTBR1_PHYS
+    ldr x0, =SMP_TTBR1_PHYS
+    ldr x0, [x0]             // x0 = actual TTBR1 physical address
     msr ttbr1_el1, x0
     dsb ishst
     isb
@@ -862,61 +871,6 @@ secondary_el1_init:
     // Breadcrumb 'D' = page tables loaded, about to enable MMU
     cbz x20, 13f
     mov x1, #'D'
-    strb w1, [x20]
-
-    // Print address of ttbr0_l0 (low 20 bits = 5 hex digits) and L0[0] value
-    // Format: D[addr:L0val]
-    mov x1, #'['
-    strb w1, [x20]
-
-    // Print low 20 bits of ttbr0_l0 address (5 hex digits)
-    ldr x21, =ttbr0_l0       // x21 = phys addr of ttbr0_l0
-    mov x0, x21
-    lsr x0, x0, #16
-    and x0, x0, #0xF
-    bl smp_print_hex_nibble
-    mov x0, x21
-    lsr x0, x0, #12
-    and x0, x0, #0xF
-    bl smp_print_hex_nibble
-    mov x0, x21
-    lsr x0, x0, #8
-    and x0, x0, #0xF
-    bl smp_print_hex_nibble
-    mov x0, x21
-    lsr x0, x0, #4
-    and x0, x0, #0xF
-    bl smp_print_hex_nibble
-    mov x0, x21
-    and x0, x0, #0xF
-    bl smp_print_hex_nibble
-
-    mov x1, #':'
-    strb w1, [x20]
-
-    // Read and print L0[0] value (low 20 bits = 5 hex digits)
-    ldr x22, [x21]           // x22 = L0[0] entry
-    mov x0, x22
-    lsr x0, x0, #16
-    and x0, x0, #0xF
-    bl smp_print_hex_nibble
-    mov x0, x22
-    lsr x0, x0, #12
-    and x0, x0, #0xF
-    bl smp_print_hex_nibble
-    mov x0, x22
-    lsr x0, x0, #8
-    and x0, x0, #0xF
-    bl smp_print_hex_nibble
-    mov x0, x22
-    lsr x0, x0, #4
-    and x0, x0, #0xF
-    bl smp_print_hex_nibble
-    mov x0, x22
-    and x0, x0, #0xF
-    bl smp_print_hex_nibble
-
-    mov x1, #']'
     strb w1, [x20]
 13:
 
@@ -995,18 +949,6 @@ secondary_drop_to_el1:
     msr elr_el2, x0
     eret
 
-// Print a single hex nibble (x0 = 0..15) to UART at x20.
-// Clobbers x1 only. Preserves x0, x19-x22, x30.
-smp_print_hex_nibble:
-    and x1, x0, #0xF
-    cmp x1, #10
-    b.lt 50f
-    add x1, x1, #('a' - 10)
-    b 51f
-50: add x1, x1, #'0'
-51: strb w1, [x20]
-    ret
-
 secondary_hang:
     wfi
     b secondary_hang
@@ -1029,6 +971,22 @@ SECONDARY_CPU_ENTRY_PHYS:
 .global SMP_UART_PHYS_PTR
 SMP_UART_PHYS_PTR:
     .quad SMP_UART_PHYS
+
+// Pointers to SMP_TTBR0_PHYS and SMP_TTBR1_PHYS variables (in .bss.boot).
+// Rust writes CPU 0's actual TTBR0/TTBR1 to these so secondary CPUs use
+// the correct page tables (which may be from the Parallels loader, not boot.S).
+.global SMP_TTBR0_PTR
+SMP_TTBR0_PTR:
+    .quad SMP_TTBR0_PHYS
+.global SMP_TTBR1_PTR
+SMP_TTBR1_PTR:
+    .quad SMP_TTBR1_PHYS
+.global SMP_MAIR_PTR
+SMP_MAIR_PTR:
+    .quad SMP_MAIR_PHYS
+.global SMP_TCR_PTR
+SMP_TCR_PTR:
+    .quad SMP_TCR_PHYS
 
 // -----------------------------------------------------------------------------
 // Boot-time BSS (low): page tables + boot stack
@@ -1066,6 +1024,24 @@ CPU_RELEASE_ADDR:
 .balign 8
 .global SMP_UART_PHYS
 SMP_UART_PHYS:
+    .skip 8
+
+// TTBR0/TTBR1 physical addresses for secondary CPUs.
+// On Parallels, the UEFI loader builds its own page tables (not boot.S's
+// ttbr0_l0/ttbr1_l0). CPU 0's Rust code writes the actual TTBR values here
+// before PSCI CPU_ON. Secondary CPUs read these instead of using ttbr0_l0.
+.balign 8
+.global SMP_TTBR0_PHYS
+SMP_TTBR0_PHYS:
+    .skip 8
+.global SMP_TTBR1_PHYS
+SMP_TTBR1_PHYS:
+    .skip 8
+.global SMP_MAIR_PHYS
+SMP_MAIR_PHYS:
+    .skip 8
+.global SMP_TCR_PHYS
+SMP_TCR_PHYS:
     .skip 8
 
 .balign 16

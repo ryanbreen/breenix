@@ -29,61 +29,67 @@ extern "C" {
     /// Stored in .rodata so Rust can reach it via ADRP, then we dereference to
     /// get the actual address of the variable and write through it.
     static SMP_UART_PHYS_PTR: u64;
+
+    /// Pointers to SMP_TTBR0_PHYS / SMP_TTBR1_PHYS / SMP_MAIR_PHYS / SMP_TCR_PHYS
+    /// variables (in .bss.boot). Secondary CPUs read these to get the correct
+    /// page table addresses and MMU configuration.
+    static SMP_TTBR0_PTR: u64;
+    static SMP_TTBR1_PTR: u64;
+    static SMP_MAIR_PTR: u64;
+    static SMP_TCR_PTR: u64;
 }
 
-/// Flush boot page tables from CPU 0's cache to DRAM for secondary CPUs.
+/// Write CPU 0's actual MMU configuration to .bss.boot variables so
+/// secondary CPUs can replicate the exact same setup.
 ///
-/// Secondary CPUs start with MMU off and read page tables directly from DRAM.
-/// CPU 0 wrote these tables during early boot with MMU off (non-cacheable).
-/// Those non-cacheable writes may not be visible to other vCPUs on all
-/// hypervisors. This function forces the data through the cache path:
-///   1. Read each entry via HHDM (allocates cache line from DRAM)
-///   2. Write it back (makes cache line dirty)
-///   3. DC CVAC → cleans dirty line to Point of Coherency
+/// Stores TTBR0, TTBR1, MAIR_EL1, and TCR_EL1 values.
+/// On QEMU, these come from boot.S's setup_mmu. On Parallels, they come
+/// from the UEFI loader's page_tables module (different TCR, different TTBRs).
+/// Secondary CPUs in boot.S read these to configure MMU identically to CPU 0.
+///
+/// Includes cache clean + DSB so values are visible to secondary CPUs
+/// which start with MMU off (uncached reads from physical memory).
 ///
 /// Must be called before the first `release_cpu()` call.
-pub fn flush_boot_page_tables() {
+pub fn set_smp_ttbrs() {
+    // Helper: write a u64 to a .bss.boot variable via .rodata pointer indirection,
+    // then clean the cache line so uncached readers (secondary CPUs) see it.
+    unsafe fn write_bss_boot_var(ptr_ro: &u64, value: u64) {
+        let var_phys = core::ptr::read_volatile(ptr_ro);
+        let var_virt = (var_phys + 0xFFFF_0000_0000_0000u64) as *mut u64;
+        core::ptr::write_volatile(var_virt, value);
+        core::arch::asm!(
+            "dc cvac, {addr}",
+            addr = in(reg) var_virt,
+            options(nostack),
+        );
+    }
+
     unsafe {
-        // Read TTBR0_EL1 to get the physical address of ttbr0_l0.
         let ttbr0: u64;
+        let ttbr1: u64;
+        let mair: u64;
+        let tcr: u64;
         core::arch::asm!(
             "mrs {}, ttbr0_el1",
+            "mrs {}, ttbr1_el1",
+            "mrs {}, mair_el1",
+            "mrs {}, tcr_el1",
             out(reg) ttbr0,
+            out(reg) ttbr1,
+            out(reg) mair,
+            out(reg) tcr,
             options(nomem, nostack),
         );
-        // Mask off ASID (bits 63:48) to get physical address
-        let pt_phys = ttbr0 & 0x0000_FFFF_FFFF_F000;
 
-        // Convert to HHDM virtual address
-        let base_virt = pt_phys + 0xFFFF_0000_0000_0000u64;
+        write_bss_boot_var(&SMP_TTBR0_PTR, ttbr0);
+        write_bss_boot_var(&SMP_TTBR1_PTR, ttbr1);
+        write_bss_boot_var(&SMP_MAIR_PTR, mair);
+        write_bss_boot_var(&SMP_TCR_PTR, tcr);
 
-        // Read-write-back all 6 page tables through the cache.
-        // Read via HHDM pulls data from DRAM into cache,
-        // write-back dirties the line, DC CVAC pushes it to PoC.
-        let total_entries: usize = 6 * 512; // 6 tables × 512 u64 entries
-        for i in 0..total_entries {
-            let ptr = (base_virt + (i as u64) * 8) as *mut u64;
-            let val = core::ptr::read_volatile(ptr);
-            core::ptr::write_volatile(ptr, val);
-        }
-
-        // Clean all cache lines to Point of Coherency
-        let total_size: u64 = 6 * 4096;
-        let mut offset: u64 = 0;
-        while offset < total_size {
-            let addr = base_virt + offset;
-            core::arch::asm!(
-                "dc cvac, {addr}",
-                addr = in(reg) addr,
-                options(nostack),
-            );
-            offset += 64;
-        }
-
-        // Ensure all cache maintenance completes before PSCI CPU_ON
+        // Single DSB to ensure all cache cleans complete
         core::arch::asm!(
             "dsb ish",
-            "isb",
             options(nostack),
         );
     }
