@@ -120,6 +120,10 @@ pub struct HardwareConfig {
     /// xHCI BAR0 physical address (read from PCI ECAM by the loader).
     /// 0 if not discovered.
     pub xhci_bar_phys: u64,
+
+    /// Wall clock time (Unix timestamp) read from UEFI GetTime() at boot.
+    /// 0 if not available.
+    pub boot_wall_time_utc: u64,
 }
 
 pub const HARDWARE_CONFIG_MAGIC: u32 = 0x4252_4E58; // "BRNX"
@@ -167,6 +171,7 @@ impl HardwareConfig {
             xhci_hcrst_done: 0,
             _pad6: 0,
             xhci_bar_phys: 0,
+            boot_wall_time_utc: 0,
         }
     }
 

@@ -351,12 +351,24 @@ pub fn read_datetime() -> DateTime {
 }
 
 /// Initialize RTC and cache boot time.
-/// PL031 is only present on QEMU virt; skip on other platforms.
+/// On QEMU: reads PL031 RTC directly.
+/// On other platforms (Parallels, VMware): uses UEFI GetTime() from the loader.
 #[cfg(target_arch = "aarch64")]
 pub fn init() {
     if !crate::platform_config::is_qemu() {
-        log::info!("PL031 RTC not available on this platform, skipping");
-        BOOT_WALL_TIME.store(0, Ordering::Relaxed);
+        // Use boot wall time from UEFI GetTime() (provided by the loader)
+        let loader_time = crate::platform_config::boot_wall_time_utc();
+        if loader_time != 0 {
+            BOOT_WALL_TIME.store(loader_time, Ordering::Relaxed);
+            let dt = DateTime::from_unix_timestamp(loader_time);
+            log::info!(
+                "UEFI RTC initialized: {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+                dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second
+            );
+        } else {
+            log::warn!("No RTC available (PL031 absent, UEFI GetTime not provided)");
+            BOOT_WALL_TIME.store(0, Ordering::Relaxed);
+        }
         return;
     }
     match read_rtc_time() {

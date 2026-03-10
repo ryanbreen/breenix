@@ -188,6 +188,21 @@ fn main() -> Status {
         }
     }
 
+    // Read wall clock time from UEFI before ExitBootServices
+    match uefi::runtime::get_time() {
+        Ok(time) => {
+            let ts = efi_time_to_unix(time.year(), time.month(), time.day(),
+                                      time.hour(), time.minute(), time.second());
+            config.boot_wall_time_utc = ts;
+            log::info!("UEFI time: {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC (unix={})",
+                time.year(), time.month(), time.day(),
+                time.hour(), time.minute(), time.second(), ts);
+        }
+        Err(e) => {
+            log::warn!("UEFI GetTime failed: {:?}", e);
+        }
+    }
+
     // --- Platform-specific page table configuration ---
     //
     // On VMware (ram_base_offset > 0), the PCI ECAM at IPA 0x40000000 overlaps
@@ -393,6 +408,28 @@ fn halt() -> ! {
     loop {
         unsafe { core::arch::asm!("wfi") };
     }
+}
+
+/// Convert date/time components to Unix timestamp (seconds since 1970-01-01 UTC).
+fn efi_time_to_unix(year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> u64 {
+    let is_leap = |y: u16| (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+    let days_in_month = |m: u8, y: u16| -> u64 {
+        match m {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            2 => if is_leap(y) { 29 } else { 28 },
+            _ => 0,
+        }
+    };
+    let mut days: u64 = 0;
+    for y in 1970..year {
+        days += if is_leap(y) { 366 } else { 365 };
+    }
+    for m in 1..month {
+        days += days_in_month(m, year);
+    }
+    days += (day as u64).saturating_sub(1);
+    days * 86400 + hour as u64 * 3600 + minute as u64 * 60 + second as u64
 }
 
 // ---------------------------------------------------------------------------
