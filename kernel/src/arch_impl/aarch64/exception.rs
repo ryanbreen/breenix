@@ -29,9 +29,9 @@ use crate::arch_impl::traits::PerCpuOps;
 fn set_idle_stack_for_eret() {
     use crate::arch_impl::aarch64::percpu::Aarch64PerCpu;
 
-    // Boot stack: HHDM_BASE + 0x4100_0000 + (cpu_id + 1) * 0x20_0000
     let cpu_id = Aarch64PerCpu::cpu_id() as u64;
-    let idle_stack = 0xFFFF_0000_0000_0000u64 + 0x4100_0000 + (cpu_id + 1) * 0x20_0000;
+    let stack_base = super::constants::percpu_stack_region_base();
+    let idle_stack = stack_base + (cpu_id + 1) * 0x20_0000;
     unsafe {
         Aarch64PerCpu::set_user_rsp_scratch(idle_stack);
     }
@@ -235,14 +235,14 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
 
                     // Classify which stack region the frame is on
                     let frame_addr = frame as u64;
+                    let boot_stack_base = super::constants::percpu_stack_region_base();
+                    let boot_stack_end = boot_stack_base + 0x0100_0000;
                     const HHDM_BASE_DIAG: u64 = 0xFFFF_0000_0000_0000;
-                    const BOOT_STACK_BASE: u64 = HHDM_BASE_DIAG + 0x4100_0000;
-                    const BOOT_STACK_END: u64 = HHDM_BASE_DIAG + 0x4200_0000;
                     const KSTACK_BASE: u64 = HHDM_BASE_DIAG + 0x5200_0000;
                     const KSTACK_END: u64 = HHDM_BASE_DIAG + 0x5400_0000;
-                    if frame_addr >= BOOT_STACK_BASE && frame_addr < BOOT_STACK_END {
+                    if frame_addr >= boot_stack_base && frame_addr < boot_stack_end {
                         raw_uart_str("\n  STACK=boot_cpu");
-                        let offset_from_base = frame_addr - BOOT_STACK_BASE;
+                        let offset_from_base = frame_addr - boot_stack_base;
                         let boot_cpu = offset_from_base / 0x20_0000;
                         raw_uart_dec(boot_cpu);
                     } else if frame_addr >= KSTACK_BASE && frame_addr < KSTACK_END {
@@ -586,14 +586,14 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
 
                     // Stack classification
                     let frame_addr = frame_ref as *const _ as u64;
+                    let boot_stack_base = super::constants::percpu_stack_region_base();
+                    let boot_stack_end = boot_stack_base + 0x0100_0000;
                     const HHDM_BASE_DIAG: u64 = 0xFFFF_0000_0000_0000;
-                    const BOOT_STACK_BASE: u64 = HHDM_BASE_DIAG + 0x4100_0000;
-                    const BOOT_STACK_END: u64 = HHDM_BASE_DIAG + 0x4200_0000;
                     const KSTACK_BASE: u64 = HHDM_BASE_DIAG + 0x5200_0000;
                     const KSTACK_END: u64 = HHDM_BASE_DIAG + 0x5400_0000;
-                    if frame_addr >= BOOT_STACK_BASE && frame_addr < BOOT_STACK_END {
+                    if frame_addr >= boot_stack_base && frame_addr < boot_stack_end {
                         raw_uart_str("\n  STACK=boot_cpu");
-                        let offset_from_base = frame_addr - BOOT_STACK_BASE;
+                        let offset_from_base = frame_addr - boot_stack_base;
                         let boot_cpu = offset_from_base / 0x20_0000;
                         raw_uart_dec(boot_cpu);
                     } else if frame_addr >= KSTACK_BASE && frame_addr < KSTACK_END {
@@ -610,7 +610,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
 
                     // OUTER FRAME: Read the frame 272 bytes above (if on a valid stack)
                     let outer_frame_addr = frame_addr + 272;
-                    if outer_frame_addr + 272 <= BOOT_STACK_END
+                    if outer_frame_addr + 272 <= boot_stack_end
                         || (outer_frame_addr >= KSTACK_BASE && outer_frame_addr + 272 <= KSTACK_END)
                     {
                         let outer = outer_frame_addr as *const u64;

@@ -37,6 +37,11 @@ extern "C" {
     static SMP_TTBR1_PTR: u64;
     static SMP_MAIR_PTR: u64;
     static SMP_TCR_PTR: u64;
+
+    /// Pointer to SMP_STACK_BASE_PHYS (in .bss.boot). CPU 0 writes the
+    /// physical base address of the per-CPU stack region here before PSCI CPU_ON.
+    /// On QEMU/Parallels: 0x4100_0000; on VMware: 0x8100_0000.
+    static SMP_STACK_BASE_PTR: u64;
 }
 
 /// Write CPU 0's actual MMU configuration to .bss.boot variables so
@@ -116,6 +121,27 @@ pub fn set_uart_phys(addr: u64) {
         core::arch::asm!(
             "dc cvac, {addr}",  // Clean by VA to PoC
             "dsb ish",          // Ensure completion
+            addr = in(reg) ptr,
+            options(nostack),
+        );
+    }
+}
+
+/// Set the physical base address of the per-CPU stack region.
+/// Must be called before `release_cpu()`.
+///
+/// The stack base is `ram_base + 0x0100_0000` (16MB into RAM).
+/// On QEMU/Parallels (ram at 0x40000000): 0x4100_0000.
+/// On VMware (ram at 0x80000000): 0x8100_0000.
+pub fn set_stack_base_phys(addr: u64) {
+    unsafe {
+        let phys = core::ptr::read_volatile(&SMP_STACK_BASE_PTR);
+        let virt = phys + 0xFFFF_0000_0000_0000u64;
+        let ptr = virt as *mut u64;
+        core::ptr::write_volatile(ptr, addr);
+        core::arch::asm!(
+            "dc cvac, {addr}",
+            "dsb ish",
             addr = in(reg) ptr,
             options(nostack),
         );
@@ -233,14 +259,13 @@ pub extern "C" fn secondary_cpu_entry_rust(cpu_id: u64) -> ! {
     crate::per_cpu_aarch64::init_cpu(cpu_id as usize);
 
     // Set kernel stack top for this CPU.
-    // boot.S sets SP to 0x41000000 + (cpu_id+1)*0x200000 (physical),
+    // boot.S sets SP to SMP_STACK_BASE_PHYS + (cpu_id+1)*0x200000 (physical),
     // then adds KERNEL_VIRT_BASE after enabling MMU.
     // This value is critical: when a user thread runs on this CPU and an
     // exception occurs, the kernel needs to switch to this stack.
-    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
-    const STACK_REGION_BASE: u64 = 0x4100_0000;
+    let stack_base = super::constants::percpu_stack_region_base();
     const STACK_SIZE: u64 = 0x20_0000; // 2MB per CPU
-    let kernel_stack_top = HHDM_BASE + STACK_REGION_BASE + (cpu_id + 1) * STACK_SIZE;
+    let kernel_stack_top = stack_base + (cpu_id + 1) * STACK_SIZE;
     crate::per_cpu_aarch64::set_kernel_stack_top(kernel_stack_top);
 
     // Initialize GIC CPU interface (GICC registers are banked per-CPU)
@@ -281,12 +306,10 @@ fn create_and_register_idle_thread(cpu_id: usize) {
     use crate::memory::arch_stub::VirtAddr;
 
     // Boot stack addresses — must match boot.S layout.
-    // HHDM_BASE + STACK_REGION_BASE + (cpu_id + 1) * STACK_SIZE
-    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
-    const STACK_REGION_BASE: u64 = 0x4100_0000;
+    let stack_base = super::constants::percpu_stack_region_base();
     const STACK_SIZE: u64 = 0x20_0000; // 2MB per CPU
-    let boot_stack_top = VirtAddr::new(HHDM_BASE + STACK_REGION_BASE + ((cpu_id as u64) + 1) * STACK_SIZE);
-    let boot_stack_bottom = VirtAddr::new(HHDM_BASE + STACK_REGION_BASE + (cpu_id as u64) * STACK_SIZE);
+    let boot_stack_top = VirtAddr::new(stack_base + ((cpu_id as u64) + 1) * STACK_SIZE);
+    let boot_stack_bottom = VirtAddr::new(stack_base + (cpu_id as u64) * STACK_SIZE);
     let dummy_tls = VirtAddr::zero();
 
     let mut idle_task = Box::new(Thread::new(

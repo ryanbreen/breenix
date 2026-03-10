@@ -46,13 +46,6 @@ static MOUSE_BUTTONS: AtomicU32 = AtomicU32::new(0);
 /// userspace time to detect the press and act on it (e.g., start a drag).
 static MOUSE_BUTTONS_PRESSED: AtomicU32 = AtomicU32::new(0);
 
-/// Number of mouse_state_consume() reads remaining before the press latch clears.
-/// Set to PRESS_SUSTAIN_READS when a press is detected. Decremented on each
-/// consume call. While > 0, the latch stays active.
-static MOUSE_PRESS_SUSTAIN: AtomicU32 = AtomicU32::new(0);
-
-/// Sustain a latched press for this many userspace reads (~16ms each = ~80ms total).
-const PRESS_SUSTAIN_READS: u32 = 5;
 
 /// Once we see the first absolute tablet report (6+ bytes), latch into tablet mode.
 /// All subsequent reports are parsed as absolute, regardless of byte[1] value.
@@ -366,7 +359,6 @@ pub fn process_mouse_report(report: &[u8]) {
             let pressed = buttons & !prev;
             if pressed != 0 {
                 MOUSE_BUTTONS_PRESSED.fetch_or(pressed, Ordering::Relaxed);
-                MOUSE_PRESS_SUSTAIN.store(PRESS_SUSTAIN_READS, Ordering::Relaxed);
             }
             static BTN_LOG: AtomicU64 = AtomicU64::new(0);
             if BTN_LOG.fetch_add(1, Ordering::Relaxed) < 50 {
@@ -398,7 +390,6 @@ pub fn process_mouse_report(report: &[u8]) {
     let pressed = new_buttons & !old_buttons;
     if pressed != 0 {
         MOUSE_BUTTONS_PRESSED.fetch_or(pressed, Ordering::Relaxed);
-        MOUSE_PRESS_SUSTAIN.store(PRESS_SUSTAIN_READS, Ordering::Relaxed);
     }
     let dx = report[1] as i8 as i32;
     let dy = report[2] as i8 as i32;
@@ -422,42 +413,30 @@ pub fn mouse_position() -> (u32, u32) {
     (MOUSE_X.load(Ordering::Relaxed), MOUSE_Y.load(Ordering::Relaxed))
 }
 
-/// Get current mouse position and button state (non-consuming peek).
+/// Get current mouse position and raw button state (non-consuming peek).
 ///
-/// Returns instantaneous state without consuming latched button presses.
-/// Used by compositor_wait for change detection — must not consume the latch
-/// because BWM hasn't read it yet.
+/// Returns instantaneous hardware state (no latch). Used by compositor_wait for
+/// change detection — the latch must NOT be included here, otherwise a sustained
+/// latch (buttons|pressed == prev) prevents compositor_wait from detecting the
+/// physical release, causing a deadlock where the sustain counter never decrements.
 pub fn mouse_state() -> (u32, u32, u32) {
-    let buttons = MOUSE_BUTTONS.load(Ordering::Relaxed);
-    let pressed = MOUSE_BUTTONS_PRESSED.load(Ordering::Relaxed);
     (
         MOUSE_X.load(Ordering::Relaxed),
         MOUSE_Y.load(Ordering::Relaxed),
-        buttons | pressed,
+        MOUSE_BUTTONS.load(Ordering::Relaxed),
     )
 }
 
 /// Get current mouse position and button state, consuming latched presses.
 ///
 /// Button state includes latched presses: if a button was pressed and released
-/// between two calls, the press is still reported. The latch is sustained for
-/// PRESS_SUSTAIN_READS calls (~80ms at 16ms/frame) so drag gestures work even
-/// when the hardware release arrives before userspace processes the press.
+/// between two consume calls, the press is still reported once. The latch is
+/// cleared atomically on read so the next call returns only live hardware state.
 ///
 /// Called from sys_get_mouse_pos (userspace reads).
 pub fn mouse_state_consume() -> (u32, u32, u32) {
     let buttons = MOUSE_BUTTONS.load(Ordering::Relaxed);
-    let pressed = MOUSE_BUTTONS_PRESSED.load(Ordering::Relaxed);
-    // Decrement sustain counter; clear latch only when it reaches 0
-    if pressed != 0 {
-        let remaining = MOUSE_PRESS_SUSTAIN.load(Ordering::Relaxed);
-        if remaining > 0 {
-            MOUSE_PRESS_SUSTAIN.fetch_sub(1, Ordering::Relaxed);
-        } else {
-            // Sustain expired — clear the latch
-            MOUSE_BUTTONS_PRESSED.store(0, Ordering::Relaxed);
-        }
-    }
+    let pressed = MOUSE_BUTTONS_PRESSED.swap(0, Ordering::Relaxed);
     (
         MOUSE_X.load(Ordering::Relaxed),
         MOUSE_Y.load(Ordering::Relaxed),

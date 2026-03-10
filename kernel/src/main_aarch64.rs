@@ -722,11 +722,16 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
 
     // Bring up secondary CPUs via PSCI CPU_ON.
     // Probe-based: try each CPU ID and let PSCI tell us which exist.
-    // Works on QEMU, Parallels, and any ARM64 platform with PSCI.
-    // VMware excluded: RAM starts at 0x80000000, boot.S stacks at 0x41000000 are invalid.
-    if !kernel::platform_config::is_vmware() {
+    // Works on QEMU, Parallels, and VMware — all support PSCI via HVC.
+    {
         // Tell boot.S the correct UART address for this platform's serial debug output
         kernel::arch_impl::aarch64::smp::set_uart_phys(kernel::platform_config::uart_base_phys());
+
+        // Write per-CPU stack base address. Platform-dependent:
+        // QEMU/Parallels (ram at 0x40000000): 0x4100_0000
+        // VMware (ram at 0x80000000): 0x8100_0000
+        let stack_base_phys = 0x4100_0000u64 + kernel::platform_config::ram_base_offset();
+        kernel::arch_impl::aarch64::smp::set_stack_base_phys(stack_base_phys);
 
         // Write CPU 0's actual TTBR0/TTBR1 to .bss.boot so secondary CPUs use
         // the correct page tables. On Parallels, the UEFI loader builds its own
@@ -764,8 +769,6 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             "[smp] {} CPUs online",
             kernel::arch_impl::aarch64::smp::cpus_online()
         );
-    } else {
-        serial_println!("[smp] Skipping SMP on VMware (boot.S stacks need RAM base relocation)");
     }
 
     // Test kthread lifecycle BEFORE creating userspace processes
@@ -1058,12 +1061,12 @@ fn init_scheduler() {
     // On Parallels: UEFI loader sets SP to 0x42000000, then HHDM switch adds HHDM_BASE
     // Use platform detection to pick the right boot stack address.
     const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
-    let (boot_stack_top, boot_stack_bottom) = if kernel::platform_config::is_qemu() {
-        const STACK_REGION_BASE: u64 = 0x4100_0000;
+    let (boot_stack_top, boot_stack_bottom) = if kernel::platform_config::is_qemu() || kernel::platform_config::is_vmware() {
+        let stack_base = kernel::arch_impl::aarch64::constants::percpu_stack_region_base();
         const STACK_SIZE: u64 = 0x20_0000; // 2MB per CPU
         (
-            VirtAddr::new(HHDM_BASE + STACK_REGION_BASE + STACK_SIZE),
-            VirtAddr::new(HHDM_BASE + STACK_REGION_BASE),
+            VirtAddr::new(stack_base + STACK_SIZE),
+            VirtAddr::new(stack_base),
         )
     } else {
         // Parallels: UEFI loader stack at 0x42000000 (phys), now at HHDM

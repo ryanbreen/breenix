@@ -813,15 +813,17 @@ secondary_el1_init:
     isb
 
     // Set up per-CPU boot stack (physical addresses, before MMU)
-    // Stack top = 0x4100_0000 + (cpu_id + 1) * 0x20_0000
+    // Stack top = SMP_STACK_BASE_PHYS + (cpu_id + 1) * 0x20_0000
+    // SMP_STACK_BASE_PHYS is set by CPU 0 Rust code to (ram_base + 0x01000000).
     // This gives each CPU a 2MB stack region:
-    //   CPU 1: 0x4120_0000 (top) .. 0x4100_0000
-    //   CPU 2: 0x4140_0000 (top) .. 0x4120_0000
-    //   CPU 3: 0x4160_0000 (top) .. 0x4140_0000
+    //   CPU 1: base+0x0020_0000 (top) .. base
+    //   CPU 2: base+0x0040_0000 (top) .. base+0x0020_0000
+    //   CPU 3: base+0x0060_0000 (top) .. base+0x0040_0000
     mov x0, x19              // cpu_id
     add x0, x0, #1           // cpu_id + 1
     lsl x0, x0, #21          // * 0x20_0000 (2MB)
-    ldr x1, =0x41000000      // base of per-CPU stack region
+    ldr x1, =SMP_STACK_BASE_PHYS
+    ldr x1, [x1]             // x1 = actual stack base (set by CPU 0)
     add x0, x0, x1
     mov sp, x0
 
@@ -987,6 +989,9 @@ SMP_MAIR_PTR:
 .global SMP_TCR_PTR
 SMP_TCR_PTR:
     .quad SMP_TCR_PHYS
+.global SMP_STACK_BASE_PTR
+SMP_STACK_BASE_PTR:
+    .quad SMP_STACK_BASE_PHYS
 
 // -----------------------------------------------------------------------------
 // Boot-time BSS (low): page tables + boot stack
@@ -1042,6 +1047,9 @@ SMP_MAIR_PHYS:
     .skip 8
 .global SMP_TCR_PHYS
 SMP_TCR_PHYS:
+    .skip 8
+.global SMP_STACK_BASE_PHYS
+SMP_STACK_BASE_PHYS:
     .skip 8
 
 .balign 16
