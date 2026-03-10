@@ -720,29 +720,52 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::AARCH64_TIMER_INIT);
 
-    // Bring up secondary CPUs via PSCI CPU_ON
-    // Skip SMP on non-QEMU: secondary CPU entry (boot.S) uses QEMU-specific page tables
-    if kernel::platform_config::is_qemu() {
-        serial_println!("[smp] Starting secondary CPUs...");
-        let expected_cpus: u64 = 4;
-        for cpu in 1..expected_cpus {
-            kernel::arch_impl::aarch64::smp::release_cpu(cpu as usize);
-        }
-        // Wait for all CPUs to come online (with timeout)
-        let start = timer::rdtsc();
-        let timeout_ticks = timer::frequency_hz() / 10; // 100ms timeout
-        while kernel::arch_impl::aarch64::smp::cpus_online() < expected_cpus {
-            if timer::rdtsc() - start > timeout_ticks {
+    // Bring up secondary CPUs via PSCI CPU_ON.
+    // Probe-based: try each CPU ID and let PSCI tell us which exist.
+    // Works on QEMU, Parallels, and any ARM64 platform with PSCI.
+    // VMware excluded: RAM starts at 0x80000000, boot.S stacks at 0x41000000 are invalid.
+    if !kernel::platform_config::is_vmware() {
+        // Tell boot.S the correct UART address for this platform's serial debug output
+        kernel::arch_impl::aarch64::smp::set_uart_phys(kernel::platform_config::uart_base_phys());
+
+        // Write CPU 0's actual TTBR0/TTBR1 to .bss.boot so secondary CPUs use
+        // the correct page tables. On Parallels, the UEFI loader builds its own
+        // page tables (not boot.S's ttbr0_l0/ttbr1_l0), so we must pass the
+        // real TTBR values to secondary CPUs explicitly.
+        kernel::arch_impl::aarch64::smp::set_smp_ttbrs();
+
+        serial_println!("[smp] Probing secondary CPUs via PSCI...");
+        let mut launched = 0u64;
+        for cpu in 1..kernel::arch_impl::aarch64::smp::MAX_CPUS {
+            let ret = kernel::arch_impl::aarch64::smp::release_cpu(cpu);
+            if ret == 0 {
+                serial_println!("[smp] CPU {}: PSCI CPU_ON success", cpu);
+                launched += 1;
+            } else {
+                // PSCI_E_INVALID_PARAMS (-2) or PSCI_E_NOT_PRESENT (-9) = no more CPUs
                 break;
             }
-            core::hint::spin_loop();
+        }
+        if launched > 0 {
+            // Wait for all launched CPUs to come online (with timeout)
+            let expected = 1 + launched; // boot CPU + launched
+            let start = timer::rdtsc();
+            let timeout_ticks = timer::frequency_hz() / 10; // 100ms timeout
+            while kernel::arch_impl::aarch64::smp::cpus_online() < expected {
+                if timer::rdtsc() - start > timeout_ticks {
+                    serial_println!("[smp] Timeout waiting for CPUs ({}  online, {} expected)",
+                        kernel::arch_impl::aarch64::smp::cpus_online(), expected);
+                    break;
+                }
+                core::hint::spin_loop();
+            }
         }
         serial_println!(
             "[smp] {} CPUs online",
             kernel::arch_impl::aarch64::smp::cpus_online()
         );
     } else {
-        serial_println!("[smp] Skipping secondary CPUs (non-QEMU platform, boot.S SMP not adapted)");
+        serial_println!("[smp] Skipping SMP on VMware (boot.S stacks need RAM base relocation)");
     }
 
     // Test kthread lifecycle BEFORE creating userspace processes

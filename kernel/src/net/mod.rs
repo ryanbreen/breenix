@@ -437,7 +437,37 @@ pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'
     // hosts on the virtual subnet - all services (DNS at 10.0.2.3, etc.) are emulated
     // by SLIRP and routed through the gateway MAC.
     // For real networks, we could try direct ARP for same-subnet destinations.
-    let dst_mac = arp::lookup(&config.gateway).ok_or("ARP lookup failed - gateway not in cache")?;
+    let gateway = config.gateway;
+    let dst_mac = match arp::lookup(&gateway) {
+        Some(mac) => mac,
+        None => {
+            // On-demand ARP resolution: send request and poll for reply.
+            // This handles the case where boot-time ARP resolution failed
+            // (e.g., the hypervisor was slow to respond during init).
+            net_log!("NET: Gateway ARP cache miss, sending on-demand ARP request");
+            if let Err(e) = arp::request(&gateway) {
+                net_warn!("NET: On-demand ARP request failed: {}", e);
+                return Err("ARP request failed");
+            }
+            // Poll for the reply — 50 iterations with ~1ms spin delay each
+            for _ in 0..50 {
+                process_rx();
+                for _ in 0..500_000 {
+                    core::hint::spin_loop();
+                }
+                if let Some(mac) = arp::lookup(&gateway) {
+                    net_log!("NET: On-demand ARP resolved gateway MAC");
+                    return {
+                        let ip_packet = ipv4::Ipv4Packet::build(
+                            config.ip_addr, dst_ip, protocol, payload,
+                        );
+                        send_ethernet(&mac, ethernet::ETHERTYPE_IPV4, &ip_packet)
+                    };
+                }
+            }
+            return Err("ARP lookup failed - gateway did not respond");
+        }
+    };
 
     // Build IP packet
     let ip_packet = ipv4::Ipv4Packet::build(

@@ -265,6 +265,11 @@ pub extern "C" fn timer_interrupt_handler() {
     // Trace timer tick (lock-free counter + optional event recording)
     trace_timer_tick(crate::time::get_ticks());
 
+    // Track idle ticks per CPU (for per-CPU utilization in /proc/stat)
+    if scheduler::is_cpu_idle(cpu_id) {
+        crate::tracing::providers::counters::IDLE_TICK_TOTAL.increment();
+    }
+
     // Increment timer interrupt counter (used for debugging when needed)
     let _count = TIMER_INTERRUPT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
 

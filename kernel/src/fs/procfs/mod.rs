@@ -727,14 +727,30 @@ fn generate_slabinfo() -> String {
 
 /// Generate /proc/stat content (kernel activity counters)
 fn generate_stat() -> String {
-    use alloc::format;
+    use core::fmt::Write;
     use crate::tracing::providers::counters::{
         SYSCALL_TOTAL, IRQ_TOTAL, CTX_SWITCH_TOTAL, TIMER_TICK_TOTAL,
-        FORK_TOTAL, EXEC_TOTAL, COW_FAULT_TOTAL,
+        FORK_TOTAL, EXEC_TOTAL, COW_FAULT_TOTAL, IDLE_TICK_TOTAL,
         GPU_BYTES_UPLOADED, GPU_FULL_UPLOADS, GPU_PARTIAL_UPLOADS,
     };
 
-    format!(
+    let mut out = String::with_capacity(512);
+
+    // Per-CPU lines: "cpuN <timer_ticks> <idle_ticks>"
+    #[cfg(target_arch = "aarch64")]
+    let num_cpus = crate::arch_impl::aarch64::smp::cpus_online() as usize;
+    #[cfg(not(target_arch = "aarch64"))]
+    let num_cpus = 1usize;
+    let num_cpus = if num_cpus == 0 { 1 } else { num_cpus };
+
+    for cpu in 0..num_cpus {
+        let ticks = TIMER_TICK_TOTAL.get_cpu(cpu);
+        let idle = IDLE_TICK_TOTAL.get_cpu(cpu);
+        let _ = write!(out, "cpu{} {} {}\n", cpu, ticks, idle);
+    }
+
+    // Aggregate counters (existing format, backwards compatible)
+    let _ = write!(out,
         "syscalls {}\n\
          interrupts {}\n\
          context_switches {}\n\
@@ -755,7 +771,8 @@ fn generate_stat() -> String {
         GPU_BYTES_UPLOADED.aggregate(),
         GPU_FULL_UPLOADS.aggregate(),
         GPU_PARTIAL_UPLOADS.aggregate(),
-    )
+    );
+    out
 }
 
 /// Generate /proc/cowinfo content (copy-on-write statistics)

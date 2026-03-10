@@ -246,6 +246,7 @@ impl Window {
     }
 }
 
+
 fn rects_overlap(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> bool {
     a.0 < b.2 && a.2 > b.0 && a.1 < b.3 && a.3 > b.1
 }
@@ -780,6 +781,30 @@ fn redraw_all_windows(fb: &mut FrameBuf, windows: &[Window], focused_win: usize,
     draw_appbar(fb, windows, focused_win);
 }
 
+/// Compose a full-redraw into `vram` without flashing.
+///
+/// When a shadow buffer is available (SVGA3 direct-mapped VRAM), composes into
+/// the shadow first, then bulk-copies to VRAM so the display update is atomic.
+/// Otherwise, composes directly into the primary buffer.
+fn compose_full_redraw(
+    vram: &mut [u32],
+    fb: &mut FrameBuf,
+    shadow: &mut Option<(&mut [u32], FrameBuf)>,
+    bg: &[u32],
+    windows: &[Window],
+    focused: usize,
+    clock: &[u8],
+) {
+    if let Some((ref mut sbuf, ref mut sfb)) = shadow {
+        sbuf.copy_from_slice(bg);
+        redraw_all_windows(sfb, windows, focused, clock);
+        vram.copy_from_slice(sbuf);
+    } else {
+        vram.copy_from_slice(bg);
+        redraw_all_windows(fb, windows, focused, clock);
+    }
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -844,6 +869,25 @@ fn main() {
         )
     };
 
+    // Shadow buffer for double-buffered full redraws on direct-mapped VRAM (SVGA3).
+    // VRAM traces auto-display every pixel write, causing a flash when we do
+    // "clear to bg → redraw all windows". The shadow lets us compose off-screen,
+    // then bulk-copy the final result to VRAM in one memcpy.
+    // For VirGL (non-direct-mapped), composite_buf is a heap buffer so no flash.
+    let mut shadow_fb: Option<(&'static mut [u32], FrameBuf)> = if direct_mapped {
+        let v = vec![0u32; screen_w * screen_h];
+        let buf = v.leak();
+        let sfb = unsafe {
+            FrameBuf::from_raw(
+                buf.as_mut_ptr() as *mut u8,
+                screen_w, screen_h, screen_w * bpp, bpp, info.is_bgr(),
+            )
+        };
+        Some((buf, sfb))
+    } else {
+        None
+    };
+
     // Paint decorative background and cache it for fast restoration
     paint_background(&mut fb);
     let bg_cache = composite_buf.to_vec();
@@ -899,8 +943,7 @@ fn main() {
     // Initial window discovery (before entering event loop)
     if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order) {
         focused_win = next_visible_window(&windows, 0);
-        composite_buf.copy_from_slice(&bg_cache);
-        redraw_all_windows(&mut fb, &windows, focused_win, &clock_text);
+        compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text);
         full_redraw = true;
     }
 
@@ -922,8 +965,7 @@ fn main() {
                 // Always focus the topmost visible window so appbar selection
                 // matches the visually foregrounded window.
                 focused_win = next_visible_window(&windows, 0);
-                composite_buf.copy_from_slice(&bg_cache);
-                redraw_all_windows(&mut fb, &windows, focused_win, &clock_text);
+                compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text);
                 full_redraw = true;
             }
         }
@@ -944,8 +986,7 @@ fn main() {
                                     send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
                                     focused_win = new_focus;
                                     send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
-                                    composite_buf.copy_from_slice(&bg_cache);
-                                    redraw_all_windows(&mut fb, &windows, focused_win, &clock_text);
+                                    compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text);
                                     full_redraw = true;
                                 }
                             }
@@ -970,11 +1011,13 @@ fn main() {
         }
 
         // ── 4. Process mouse input (only when mouse changed) ──
+        let mut mouse_moved_this_frame = false;
         if ready & graphics::COMPOSITOR_READY_MOUSE != 0 {
             if let Ok((mx, my, buttons)) = graphics::mouse_state() {
                 let new_mx = mx as i32;
                 let new_my = my as i32;
                 let mouse_moved = new_mx != mouse_x || new_my != mouse_y;
+                mouse_moved_this_frame = mouse_moved;
 
                 if mouse_moved {
                     mouse_x = new_mx;
@@ -987,8 +1030,7 @@ fn main() {
                         if new_x != windows[win_idx].x || new_y != windows[win_idx].y {
                             windows[win_idx].x = new_x;
                             windows[win_idx].y = new_y;
-                            composite_buf.copy_from_slice(&bg_cache);
-                            redraw_all_windows(&mut fb, &windows, focused_win, &clock_text);
+                            compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text);
                             full_redraw = true;
                         }
                     } else if !windows.is_empty() && focused_win < windows.len()
@@ -1050,8 +1092,7 @@ fn main() {
                                     focused_win = top;
                                 }
                             }
-                            composite_buf.copy_from_slice(&bg_cache);
-                            redraw_all_windows(&mut fb, &windows, focused_win, &clock_text);
+                            compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text);
                             full_redraw = true;
                         }
                     }
@@ -1104,8 +1145,7 @@ fn main() {
                                         focused_win = next_visible_window(&windows, focused_win);
                                         send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
                                     }
-                                    composite_buf.copy_from_slice(&bg_cache);
-                                    redraw_all_windows(&mut fb, &windows, focused_win, &clock_text);
+                                    compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text);
                                     full_redraw = true;
                                 } else {
                                     dragging = Some((top, mouse_x - windows[top].x, mouse_y - windows[top].y));
@@ -1118,8 +1158,7 @@ fn main() {
 
                             // Full redraw for z-order change (unless minimize already did it)
                             if !full_redraw {
-                                composite_buf.copy_from_slice(&bg_cache);
-                                redraw_all_windows(&mut fb, &windows, focused_win, &clock_text);
+                                compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text);
                                 full_redraw = true;
                             }
                         }
@@ -1204,6 +1243,12 @@ fn main() {
             );
             content_dirty = false;
             perf_composites += 1;
+        } else if mouse_moved_this_frame {
+            // Mouse-only update: no content changed, but kernel draws cursor
+            let _ = graphics::virgl_composite_windows_rect(
+                cbuf, cw, ch,
+                0, 0, 0, 0, 0,
+            );
         }
         // No sleep — compositor_wait handles blocking
 

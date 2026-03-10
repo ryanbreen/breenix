@@ -1,14 +1,14 @@
 //! ARM64 SMP (Symmetric Multi-Processing) support.
 //!
 //! This module handles bringing up secondary CPUs on ARM64 using PSCI
-//! (Power State Coordination Interface). QEMU's virt machine uses PSCI
-//! with HVC calls to power on secondary CPUs.
+//! (Power State Coordination Interface). All supported hypervisors
+//! (QEMU, Parallels, VMware) implement PSCI via HVC calls.
 //!
 //! Flow:
-//! 1. CPU 0 calls `release_cpu()` which issues PSCI CPU_ON via HVC
-//! 2. PSCI firmware starts the target CPU at `secondary_cpu_entry` (boot.S)
+//! 1. CPU 0 probes CPUs 1..MAX_CPUS via `release_cpu()` (PSCI CPU_ON)
+//! 2. PSCI firmware starts each target CPU at `secondary_cpu_entry` (boot.S)
 //! 3. boot.S sets up stack, MMU, and calls `secondary_cpu_entry_rust()`
-//! 4. Rust entry marks the CPU online and enters WFI loop (Phase 1)
+//! 4. Rust entry initializes per-CPU data, GIC, timer, creates idle thread
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -24,6 +24,102 @@ extern "C" {
     /// in .text.boot (low physical memory) while Rust code is in high-half virtual
     /// memory — the ~1 TiB gap exceeds the ADRP relocation range (+/- 4 GiB).
     static SECONDARY_CPU_ENTRY_PHYS: u64;
+
+    /// Pointer to SMP_UART_PHYS (which lives in .bss.boot, low physical memory).
+    /// Stored in .rodata so Rust can reach it via ADRP, then we dereference to
+    /// get the actual address of the variable and write through it.
+    static SMP_UART_PHYS_PTR: u64;
+
+    /// Pointers to SMP_TTBR0_PHYS / SMP_TTBR1_PHYS / SMP_MAIR_PHYS / SMP_TCR_PHYS
+    /// variables (in .bss.boot). Secondary CPUs read these to get the correct
+    /// page table addresses and MMU configuration.
+    static SMP_TTBR0_PTR: u64;
+    static SMP_TTBR1_PTR: u64;
+    static SMP_MAIR_PTR: u64;
+    static SMP_TCR_PTR: u64;
+}
+
+/// Write CPU 0's actual MMU configuration to .bss.boot variables so
+/// secondary CPUs can replicate the exact same setup.
+///
+/// Stores TTBR0, TTBR1, MAIR_EL1, and TCR_EL1 values.
+/// On QEMU, these come from boot.S's setup_mmu. On Parallels, they come
+/// from the UEFI loader's page_tables module (different TCR, different TTBRs).
+/// Secondary CPUs in boot.S read these to configure MMU identically to CPU 0.
+///
+/// Includes cache clean + DSB so values are visible to secondary CPUs
+/// which start with MMU off (uncached reads from physical memory).
+///
+/// Must be called before the first `release_cpu()` call.
+pub fn set_smp_ttbrs() {
+    // Helper: write a u64 to a .bss.boot variable via .rodata pointer indirection,
+    // then clean the cache line so uncached readers (secondary CPUs) see it.
+    unsafe fn write_bss_boot_var(ptr_ro: &u64, value: u64) {
+        let var_phys = core::ptr::read_volatile(ptr_ro);
+        let var_virt = (var_phys + 0xFFFF_0000_0000_0000u64) as *mut u64;
+        core::ptr::write_volatile(var_virt, value);
+        core::arch::asm!(
+            "dc cvac, {addr}",
+            addr = in(reg) var_virt,
+            options(nostack),
+        );
+    }
+
+    unsafe {
+        let ttbr0: u64;
+        let ttbr1: u64;
+        let mair: u64;
+        let tcr: u64;
+        core::arch::asm!(
+            "mrs {}, ttbr0_el1",
+            "mrs {}, ttbr1_el1",
+            "mrs {}, mair_el1",
+            "mrs {}, tcr_el1",
+            out(reg) ttbr0,
+            out(reg) ttbr1,
+            out(reg) mair,
+            out(reg) tcr,
+            options(nomem, nostack),
+        );
+
+        write_bss_boot_var(&SMP_TTBR0_PTR, ttbr0);
+        write_bss_boot_var(&SMP_TTBR1_PTR, ttbr1);
+        write_bss_boot_var(&SMP_MAIR_PTR, mair);
+        write_bss_boot_var(&SMP_TCR_PTR, tcr);
+
+        // Single DSB to ensure all cache cleans complete
+        core::arch::asm!(
+            "dsb ish",
+            options(nostack),
+        );
+    }
+}
+
+/// Set the UART physical address for secondary CPU boot debug output.
+/// Must be called before `release_cpu()`.
+///
+/// Uses indirection through SMP_UART_PHYS_PTR because SMP_UART_PHYS lives in
+/// .bss.boot (low physical memory) and direct ADRP from high-half Rust code
+/// would overflow the +/-4GiB relocation range.
+///
+/// Includes cache clean + DSB so the value is visible to secondary CPUs
+/// which start with MMU off (uncached reads from physical memory).
+pub fn set_uart_phys(addr: u64) {
+    unsafe {
+        // SMP_UART_PHYS_PTR holds the physical address of SMP_UART_PHYS.
+        // Add HHDM base to get the virtual address, then write through it.
+        let phys = core::ptr::read_volatile(&SMP_UART_PHYS_PTR);
+        let virt = phys + 0xFFFF_0000_0000_0000u64; // KERNEL_VIRT_BASE / HHDM
+        let ptr = virt as *mut u64;
+        core::ptr::write_volatile(ptr, addr);
+        // Clean cache line to Point of Coherency so uncached reads see it
+        core::arch::asm!(
+            "dc cvac, {addr}",  // Clean by VA to PoC
+            "dsb ish",          // Ensure completion
+            addr = in(reg) ptr,
+            options(nostack),
+        );
+    }
 }
 
 /// Number of CPUs currently online (starts at 1 for the boot CPU).
@@ -68,15 +164,19 @@ fn psci_cpu_on(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
 ///
 /// The CPU will start executing at `secondary_cpu_entry` in boot.S,
 /// which sets up the stack and MMU, then calls `secondary_cpu_entry_rust(cpu_id)`.
-pub fn release_cpu(cpu_id: usize) {
+///
+/// Returns the PSCI result: 0 = success, negative = error
+/// (-2 = INVALID_PARAMS, -9 = NOT_PRESENT, etc.)
+pub fn release_cpu(cpu_id: usize) -> i64 {
     if cpu_id == 0 || cpu_id >= MAX_CPUS {
-        return;
+        return -2; // INVALID_PARAMS
     }
 
     // Get the physical address of the secondary entry point in boot.S
     let entry_phys = unsafe { core::ptr::read_volatile(&SECONDARY_CPU_ENTRY_PHYS) };
 
-    // MPIDR for QEMU virt: Aff0 = cpu_id, all other affinity fields = 0
+    // MPIDR: Aff0 = cpu_id, all other affinity fields = 0
+    // This is the standard layout for ARM virt machines (QEMU, Parallels, VMware)
     let target_mpidr = cpu_id as u64;
 
     // Context ID: pass cpu_id so the new CPU knows who it is
@@ -89,6 +189,8 @@ pub fn release_cpu(cpu_id: usize) {
         raw_uart_char(b'E');
         raw_uart_char(b'0' + cpu_id as u8);
     }
+
+    ret
 }
 
 /// Get the number of CPUs currently online.
