@@ -559,7 +559,7 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             }
         }
         10 => {
-            // VirglComposite: upload pixel buffer as texture, render full-screen quad
+            // Composite: upload pixel buffer and display via active GPU backend
             let buf_ptr = (cmd.p1 as u32 as u64) | ((cmd.p2 as u32 as u64) << 32);
             let width = cmd.p3 as u32;
             let height = cmd.p4 as u32;
@@ -577,17 +577,32 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             let pixels = unsafe {
                 core::slice::from_raw_parts(buf_ptr as *const u32, pixel_count as usize)
             };
-            // Try GPU-textured compositing first, fall back to direct blit
-            match crate::drivers::virtio::gpu_pci::virgl_composite_frame_textured(pixels, width, height) {
-                Ok(()) => SyscallResult::Ok(0),
-                Err(_) => {
-                    match crate::drivers::virtio::gpu_pci::virgl_composite_frame(pixels, width, height) {
+            match crate::graphics::compositor_backend() {
+                crate::graphics::CompositorBackend::VirGL => {
+                    match crate::drivers::virtio::gpu_pci::virgl_composite_frame_textured(pixels, width, height) {
+                        Ok(()) => SyscallResult::Ok(0),
+                        Err(_) => {
+                            match crate::drivers::virtio::gpu_pci::virgl_composite_frame(pixels, width, height) {
+                                Ok(()) => SyscallResult::Ok(0),
+                                Err(e) => {
+                                    crate::serial_println!("[composite] VirGL composite_frame FAILED: {}", e);
+                                    SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
+                                }
+                            }
+                        }
+                    }
+                }
+                crate::graphics::CompositorBackend::Svga3Stdu => {
+                    match crate::drivers::vmware::svga3::composite_frame(pixels, width, height) {
                         Ok(()) => SyscallResult::Ok(0),
                         Err(e) => {
-                            crate::serial_println!("[virgl-syscall] composite_frame FAILED: {}", e);
+                            crate::serial_println!("[composite] SVGA3 composite_frame FAILED: {}", e);
                             SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
                         }
                     }
+                }
+                crate::graphics::CompositorBackend::None => {
+                    SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
                 }
             }
         }
@@ -1208,9 +1223,18 @@ struct CompositeWindowsDesc {
 fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
     let desc: CompositeWindowsDesc = unsafe { core::ptr::read(desc_ptr as *const CompositeWindowsDesc) };
 
-    // When bg_pixels_ptr=0 (direct-mapped compositor), use COMPOSITE_TEX dimensions
+    // When bg_pixels_ptr=0 (direct-mapped compositor), get dimensions from active backend
     let (bg_width, bg_height) = if desc.bg_pixels_ptr == 0 {
-        match crate::drivers::virtio::gpu_pci::compositor_texture_info() {
+        let info = match crate::graphics::compositor_backend() {
+            crate::graphics::CompositorBackend::VirGL => {
+                crate::drivers::virtio::gpu_pci::compositor_texture_info()
+            }
+            crate::graphics::CompositorBackend::Svga3Stdu => {
+                crate::drivers::vmware::svga3::compositor_texture_info()
+            }
+            crate::graphics::CompositorBackend::None => None,
+        };
+        match info {
             Some((_phys, _pages, w, h)) => (w, h),
             None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
         }
@@ -1297,12 +1321,42 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
         result
     };
 
-    let result = match crate::drivers::virtio::gpu_pci::virgl_composite_windows(
-        bg_pixels, bg_width, bg_height, bg_dirty, dirty_rect, &windows,
-    ) {
-        Ok(()) => SyscallResult::Ok(0),
-        Err(e) => {
-            crate::serial_println!("[composite-windows] FAILED: {}", e);
+    let result = match crate::graphics::compositor_backend() {
+        crate::graphics::CompositorBackend::VirGL => {
+            match crate::drivers::virtio::gpu_pci::virgl_composite_windows(
+                bg_pixels, bg_width, bg_height, bg_dirty, dirty_rect, &windows,
+            ) {
+                Ok(()) => SyscallResult::Ok(0),
+                Err(e) => {
+                    crate::serial_println!("[composite-windows] VirGL FAILED: {}", e);
+                    SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
+                }
+            }
+        }
+        crate::graphics::CompositorBackend::Svga3Stdu => {
+            // BWM writes directly to VRAM — draw cursor on top, then present.
+            // update_cursor erases old cursor, saves bg, draws new cursor.
+            let cursor_changed = crate::drivers::vmware::svga3::update_cursor();
+
+            let need_present = bg_dirty || windows.iter().any(|w| w.dirty) || cursor_changed;
+            if need_present {
+                let (dx, dy, dw, dh) = if bg_dirty {
+                    dirty_rect.unwrap_or((0, 0, bg_width, bg_height))
+                } else {
+                    (0, 0, bg_width, bg_height)
+                };
+                match crate::drivers::vmware::svga3::present_rect(dx, dy, dw, dh) {
+                    Ok(()) => SyscallResult::Ok(0),
+                    Err(e) => {
+                        crate::serial_println!("[composite-windows] SVGA3 FAILED: {}", e);
+                        SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
+                    }
+                }
+            } else {
+                SyscallResult::Ok(0)
+            }
+        }
+        crate::graphics::CompositorBackend::None => {
             SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
         }
     };
@@ -1586,12 +1640,22 @@ fn handle_map_compositor_texture(cmd: &FbDrawCmd) -> SyscallResult {
         return SyscallResult::Err(super::ErrorCode::Fault as u64);
     }
 
-    // Get compositor texture info from GPU driver
-    let (phys_base, num_pages, tex_w, tex_h) =
-        match crate::drivers::virtio::gpu_pci::compositor_texture_info() {
-            Some(info) => info,
-            None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+    // Get compositor texture info from active GPU backend
+    let (phys_base, num_pages, tex_w, tex_h) = {
+        let info = match crate::graphics::compositor_backend() {
+            crate::graphics::CompositorBackend::VirGL => {
+                crate::drivers::virtio::gpu_pci::compositor_texture_info()
+            }
+            crate::graphics::CompositorBackend::Svga3Stdu => {
+                crate::drivers::vmware::svga3::compositor_texture_info()
+            }
+            crate::graphics::CompositorBackend::None => None,
         };
+        match info {
+            Some(i) => i,
+            None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+        }
+    };
 
     // Get current process
     let current_thread_id = match get_current_thread_id() {
@@ -1649,8 +1713,8 @@ fn handle_map_compositor_texture(cmd: &FbDrawCmd) -> SyscallResult {
     process.vmas.push(vma);
 
     crate::serial_println!(
-        "[compositor] Mapped COMPOSITE_TEX into process: virt={:#x}, {}x{}, {} pages",
-        new_addr, tex_w, tex_h, num_pages
+        "[compositor] Mapped compositor buffer into process: virt={:#x}, {}x{}, {} pages (backend={:?})",
+        new_addr, tex_w, tex_h, num_pages, crate::graphics::compositor_backend()
     );
 
     // Write mapped address to userspace
@@ -2240,7 +2304,7 @@ pub fn sys_get_mouse_pos(out_ptr: u64) -> SyscallResult {
     let (mx, my, buttons) = if crate::drivers::virtio::input_mmio::is_tablet_initialized() {
         crate::drivers::virtio::input_mmio::mouse_state()
     } else {
-        crate::drivers::usb::hid::mouse_state()
+        crate::drivers::usb::hid::mouse_state_consume()
     };
 
     unsafe {

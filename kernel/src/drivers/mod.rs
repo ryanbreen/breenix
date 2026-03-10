@@ -119,7 +119,11 @@ pub fn init() -> usize {
                 serial_println!("[drivers] VirtIO GPU (PCI) initialized");
                 // Attempt to initialize VirGL 3D acceleration if the device supports it
                 match virtio::gpu_pci::virgl_init() {
-                    Ok(()) => serial_println!("[drivers] VirGL 3D acceleration active"),
+                    Ok(()) => {
+                        serial_println!("[drivers] VirGL 3D acceleration active");
+                        crate::graphics::set_compositor_backend(crate::graphics::CompositorBackend::VirGL);
+                        serial_println!("[drivers] Compositor backend: VirGL");
+                    }
                     Err(e) => serial_println!("[drivers] VirGL init skipped: {}", e),
                 }
             }
@@ -136,14 +140,10 @@ pub fn init() -> usize {
         match vmware::svga3::init() {
             Ok(()) => {
                 serial_println!("[drivers] VMware SVGA3 GPU initialized");
-                if vmware::svga3::has_3d() {
-                    serial_println!("[drivers] SVGA3 3D acceleration available!");
-                }
-                // Draw a test pattern to prove the driver works
-                match vmware::svga3::draw_test_pattern() {
-                    Ok(()) => serial_println!("[drivers] SVGA3 test pattern drawn"),
-                    Err(e) => serial_println!("[drivers] SVGA3 test pattern failed: {}", e),
-                }
+                // SVGA3 with VRAM traces provides GPU-level compositing:
+                // BWM writes pixels to VRAM, device monitors and updates display.
+                crate::graphics::set_compositor_backend(crate::graphics::CompositorBackend::Svga3Stdu);
+                serial_println!("[drivers] Compositor backend: SVGA3 (VRAM traces)");
             }
             Err(e) => serial_println!("[drivers] SVGA3 init skipped: {}", e),
         }

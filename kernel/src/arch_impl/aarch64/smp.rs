@@ -1,14 +1,14 @@
 //! ARM64 SMP (Symmetric Multi-Processing) support.
 //!
 //! This module handles bringing up secondary CPUs on ARM64 using PSCI
-//! (Power State Coordination Interface). QEMU's virt machine uses PSCI
-//! with HVC calls to power on secondary CPUs.
+//! (Power State Coordination Interface). All supported hypervisors
+//! (QEMU, Parallels, VMware) implement PSCI via HVC calls.
 //!
 //! Flow:
-//! 1. CPU 0 calls `release_cpu()` which issues PSCI CPU_ON via HVC
-//! 2. PSCI firmware starts the target CPU at `secondary_cpu_entry` (boot.S)
+//! 1. CPU 0 probes CPUs 1..MAX_CPUS via `release_cpu()` (PSCI CPU_ON)
+//! 2. PSCI firmware starts each target CPU at `secondary_cpu_entry` (boot.S)
 //! 3. boot.S sets up stack, MMU, and calls `secondary_cpu_entry_rust()`
-//! 4. Rust entry marks the CPU online and enters WFI loop (Phase 1)
+//! 4. Rust entry initializes per-CPU data, GIC, timer, creates idle thread
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -24,6 +24,96 @@ extern "C" {
     /// in .text.boot (low physical memory) while Rust code is in high-half virtual
     /// memory — the ~1 TiB gap exceeds the ADRP relocation range (+/- 4 GiB).
     static SECONDARY_CPU_ENTRY_PHYS: u64;
+
+    /// Pointer to SMP_UART_PHYS (which lives in .bss.boot, low physical memory).
+    /// Stored in .rodata so Rust can reach it via ADRP, then we dereference to
+    /// get the actual address of the variable and write through it.
+    static SMP_UART_PHYS_PTR: u64;
+}
+
+/// Flush boot page tables from CPU 0's cache to DRAM for secondary CPUs.
+///
+/// Secondary CPUs start with MMU off and read page tables directly from DRAM.
+/// CPU 0 wrote these tables during early boot with MMU off (non-cacheable).
+/// Those non-cacheable writes may not be visible to other vCPUs on all
+/// hypervisors. This function forces the data through the cache path:
+///   1. Read each entry via HHDM (allocates cache line from DRAM)
+///   2. Write it back (makes cache line dirty)
+///   3. DC CVAC → cleans dirty line to Point of Coherency
+///
+/// Must be called before the first `release_cpu()` call.
+pub fn flush_boot_page_tables() {
+    unsafe {
+        // Read TTBR0_EL1 to get the physical address of ttbr0_l0.
+        let ttbr0: u64;
+        core::arch::asm!(
+            "mrs {}, ttbr0_el1",
+            out(reg) ttbr0,
+            options(nomem, nostack),
+        );
+        // Mask off ASID (bits 63:48) to get physical address
+        let pt_phys = ttbr0 & 0x0000_FFFF_FFFF_F000;
+
+        // Convert to HHDM virtual address
+        let base_virt = pt_phys + 0xFFFF_0000_0000_0000u64;
+
+        // Read-write-back all 6 page tables through the cache.
+        // Read via HHDM pulls data from DRAM into cache,
+        // write-back dirties the line, DC CVAC pushes it to PoC.
+        let total_entries: usize = 6 * 512; // 6 tables × 512 u64 entries
+        for i in 0..total_entries {
+            let ptr = (base_virt + (i as u64) * 8) as *mut u64;
+            let val = core::ptr::read_volatile(ptr);
+            core::ptr::write_volatile(ptr, val);
+        }
+
+        // Clean all cache lines to Point of Coherency
+        let total_size: u64 = 6 * 4096;
+        let mut offset: u64 = 0;
+        while offset < total_size {
+            let addr = base_virt + offset;
+            core::arch::asm!(
+                "dc cvac, {addr}",
+                addr = in(reg) addr,
+                options(nostack),
+            );
+            offset += 64;
+        }
+
+        // Ensure all cache maintenance completes before PSCI CPU_ON
+        core::arch::asm!(
+            "dsb ish",
+            "isb",
+            options(nostack),
+        );
+    }
+}
+
+/// Set the UART physical address for secondary CPU boot debug output.
+/// Must be called before `release_cpu()`.
+///
+/// Uses indirection through SMP_UART_PHYS_PTR because SMP_UART_PHYS lives in
+/// .bss.boot (low physical memory) and direct ADRP from high-half Rust code
+/// would overflow the +/-4GiB relocation range.
+///
+/// Includes cache clean + DSB so the value is visible to secondary CPUs
+/// which start with MMU off (uncached reads from physical memory).
+pub fn set_uart_phys(addr: u64) {
+    unsafe {
+        // SMP_UART_PHYS_PTR holds the physical address of SMP_UART_PHYS.
+        // Add HHDM base to get the virtual address, then write through it.
+        let phys = core::ptr::read_volatile(&SMP_UART_PHYS_PTR);
+        let virt = phys + 0xFFFF_0000_0000_0000u64; // KERNEL_VIRT_BASE / HHDM
+        let ptr = virt as *mut u64;
+        core::ptr::write_volatile(ptr, addr);
+        // Clean cache line to Point of Coherency so uncached reads see it
+        core::arch::asm!(
+            "dc cvac, {addr}",  // Clean by VA to PoC
+            "dsb ish",          // Ensure completion
+            addr = in(reg) ptr,
+            options(nostack),
+        );
+    }
 }
 
 /// Number of CPUs currently online (starts at 1 for the boot CPU).
@@ -68,15 +158,19 @@ fn psci_cpu_on(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
 ///
 /// The CPU will start executing at `secondary_cpu_entry` in boot.S,
 /// which sets up the stack and MMU, then calls `secondary_cpu_entry_rust(cpu_id)`.
-pub fn release_cpu(cpu_id: usize) {
+///
+/// Returns the PSCI result: 0 = success, negative = error
+/// (-2 = INVALID_PARAMS, -9 = NOT_PRESENT, etc.)
+pub fn release_cpu(cpu_id: usize) -> i64 {
     if cpu_id == 0 || cpu_id >= MAX_CPUS {
-        return;
+        return -2; // INVALID_PARAMS
     }
 
     // Get the physical address of the secondary entry point in boot.S
     let entry_phys = unsafe { core::ptr::read_volatile(&SECONDARY_CPU_ENTRY_PHYS) };
 
-    // MPIDR for QEMU virt: Aff0 = cpu_id, all other affinity fields = 0
+    // MPIDR: Aff0 = cpu_id, all other affinity fields = 0
+    // This is the standard layout for ARM virt machines (QEMU, Parallels, VMware)
     let target_mpidr = cpu_id as u64;
 
     // Context ID: pass cpu_id so the new CPU knows who it is
@@ -89,6 +183,8 @@ pub fn release_cpu(cpu_id: usize) {
         raw_uart_char(b'E');
         raw_uart_char(b'0' + cpu_id as u8);
     }
+
+    ret
 }
 
 /// Get the number of CPUs currently online.

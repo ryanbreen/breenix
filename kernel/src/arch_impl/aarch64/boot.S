@@ -768,15 +768,45 @@ secondary_cpu_entry:
     mov x19, x0              // PSCI path: cpu_id from x0
 1:
 
+    // Debug breadcrumb: write cpu_id digit + '@' to UART (physical, pre-MMU)
+    // Load UART physical address from SMP_UART_PHYS (set by CPU 0 Rust code)
+    // Guard: skip if address is 0 (BSS default before CPU 0 writes it)
+    ldr x2, =SMP_UART_PHYS
+    ldr x2, [x2]             // x2 = UART phys addr
+    cbz x2, 2f               // skip breadcrumbs if 0 (not yet initialized)
+    add x3, x19, #'0'        // '1' for CPU 1, '2' for CPU 2, etc.
+    strb w3, [x2]
+    mov x3, #'@'
+    strb w3, [x2]
+2:
+
     // Check current exception level
     mrs x0, currentel
     lsr x0, x0, #2
     and x0, x0, #3
+
+    // Debug: write EL level digit (only if UART available)
+    cbz x2, 3f
+    add x3, x0, #'0'         // '1' for EL1, '2' for EL2
+    strb w3, [x2]
+3:
+
     cmp x0, #2
     b.eq secondary_drop_to_el1
     // EL1 (normal PSCI path) - fall through
 
 secondary_el1_init:
+    // Load UART phys addr into callee-saved x20 for breadcrumbs.
+    // x20=0 means UART not set; all breadcrumbs guard against this.
+    ldr x20, =SMP_UART_PHYS
+    ldr x20, [x20]           // x20 = UART phys addr (preserved across init)
+
+    // Breadcrumb 'A' = entered EL1 init
+    cbz x20, 10f
+    mov x1, #'A'
+    strb w1, [x20]
+10:
+
     // Enable FP/SIMD (CPACR_EL1.FPEN = 0b11)
     mov x0, #(3 << 20)
     msr cpacr_el1, x0
@@ -795,6 +825,12 @@ secondary_el1_init:
     add x0, x0, x1
     mov sp, x0
 
+    // Breadcrumb 'B' = stack set up
+    cbz x20, 11f
+    mov x1, #'B'
+    strb w1, [x20]
+11:
+
     // DO NOT zero BSS - CPU 0 handles that
     // DO NOT call setup_mmu - reuse CPU 0's page tables
 
@@ -802,6 +838,12 @@ secondary_el1_init:
     ldr x0, =exception_vectors_boot
     msr vbar_el1, x0
     isb
+
+    // Breadcrumb 'C' = VBAR set
+    cbz x20, 12f
+    mov x1, #'C'
+    strb w1, [x20]
+12:
 
     // Load the same MMU config as CPU 0 (MAIR, TCR, TTBRs)
     ldr x0, =MAIR_EL1_VALUE
@@ -817,6 +859,72 @@ secondary_el1_init:
     dsb ishst
     isb
 
+    // Breadcrumb 'D' = page tables loaded, about to enable MMU
+    cbz x20, 13f
+    mov x1, #'D'
+    strb w1, [x20]
+
+    // Print address of ttbr0_l0 (low 20 bits = 5 hex digits) and L0[0] value
+    // Format: D[addr:L0val]
+    mov x1, #'['
+    strb w1, [x20]
+
+    // Print low 20 bits of ttbr0_l0 address (5 hex digits)
+    ldr x21, =ttbr0_l0       // x21 = phys addr of ttbr0_l0
+    mov x0, x21
+    lsr x0, x0, #16
+    and x0, x0, #0xF
+    bl smp_print_hex_nibble
+    mov x0, x21
+    lsr x0, x0, #12
+    and x0, x0, #0xF
+    bl smp_print_hex_nibble
+    mov x0, x21
+    lsr x0, x0, #8
+    and x0, x0, #0xF
+    bl smp_print_hex_nibble
+    mov x0, x21
+    lsr x0, x0, #4
+    and x0, x0, #0xF
+    bl smp_print_hex_nibble
+    mov x0, x21
+    and x0, x0, #0xF
+    bl smp_print_hex_nibble
+
+    mov x1, #':'
+    strb w1, [x20]
+
+    // Read and print L0[0] value (low 20 bits = 5 hex digits)
+    ldr x22, [x21]           // x22 = L0[0] entry
+    mov x0, x22
+    lsr x0, x0, #16
+    and x0, x0, #0xF
+    bl smp_print_hex_nibble
+    mov x0, x22
+    lsr x0, x0, #12
+    and x0, x0, #0xF
+    bl smp_print_hex_nibble
+    mov x0, x22
+    lsr x0, x0, #8
+    and x0, x0, #0xF
+    bl smp_print_hex_nibble
+    mov x0, x22
+    lsr x0, x0, #4
+    and x0, x0, #0xF
+    bl smp_print_hex_nibble
+    mov x0, x22
+    and x0, x0, #0xF
+    bl smp_print_hex_nibble
+
+    mov x1, #']'
+    strb w1, [x20]
+13:
+
+    // TLB invalidate before enabling MMU (fresh CPU, stale TLBs)
+    tlbi vmalle1
+    dsb ish
+    isb
+
     // Enable MMU
     mrs x0, sctlr_el1
     mov x1, #(1 << 19)      // Clear WXN bit
@@ -825,16 +933,43 @@ secondary_el1_init:
     msr sctlr_el1, x0
     isb
 
+    // After MMU enable, UART is at HHDM address. Recalculate x20.
+    cbz x20, 14f
+    mov x1, xzr
+    movk x1, #0xFFFF, lsl #48
+    add x20, x20, x1         // x20 = UART virt addr
+    // Breadcrumb 'E' = MMU enabled
+    mov x1, #'E'
+    strb w1, [x20]
+    // Breadcrumb 'e' = about to switch stack
+    mov x1, #'e'
+    strb w1, [x20]
+14:
+
     // Switch to high-half stack (SP += KERNEL_VIRT_BASE)
+    // Use mov/movk instead of ldr= to avoid literal pool dependency
     mov x0, sp
-    ldr x1, =KERNEL_VIRT_BASE
+    mov x1, xzr
+    movk x1, #0xFFFF, lsl #48   // x1 = 0xFFFF_0000_0000_0000
     add x0, x0, x1
     mov sp, x0
+
+    // Breadcrumb 'F' = high-half stack
+    cbz x20, 15f
+    mov x1, #'F'
+    strb w1, [x20]
+15:
 
     // Switch to runtime exception vectors (high)
     ldr x0, =exception_vectors
     msr vbar_el1, x0
     isb
+
+    // Breadcrumb 'G' = about to call Rust
+    cbz x20, 16f
+    mov x1, #'G'
+    strb w1, [x20]
+16:
 
     // Call secondary_cpu_entry_rust(cpu_id)
     // x19 still holds cpu_id
@@ -860,6 +995,18 @@ secondary_drop_to_el1:
     msr elr_el2, x0
     eret
 
+// Print a single hex nibble (x0 = 0..15) to UART at x20.
+// Clobbers x1 only. Preserves x0, x19-x22, x30.
+smp_print_hex_nibble:
+    and x1, x0, #0xF
+    cmp x1, #10
+    b.lt 50f
+    add x1, x1, #('a' - 10)
+    b 51f
+50: add x1, x1, #'0'
+51: strb w1, [x20]
+    ret
+
 secondary_hang:
     wfi
     b secondary_hang
@@ -874,6 +1021,14 @@ secondary_hang:
 .global SECONDARY_CPU_ENTRY_PHYS
 SECONDARY_CPU_ENTRY_PHYS:
     .quad secondary_cpu_entry
+
+// Physical address of SMP_UART_PHYS variable (in .bss.boot).
+// Rust reads this pointer to find the variable, since .bss.boot is in low
+// physical memory and direct ADRP relocation from high-half Rust code would
+// overflow the +/-4GiB range.
+.global SMP_UART_PHYS_PTR
+SMP_UART_PHYS_PTR:
+    .quad SMP_UART_PHYS
 
 // -----------------------------------------------------------------------------
 // Boot-time BSS (low): page tables + boot stack
@@ -903,6 +1058,15 @@ ttbr1_l2_ram:
 .global CPU_RELEASE_ADDR
 CPU_RELEASE_ADDR:
     .skip 64   // 8 CPUs * 8 bytes
+
+// UART physical address for secondary CPU debug output.
+// Written by CPU 0 (Rust) before PSCI CPU_ON, read by boot.S.
+// Zero-initialized here (BSS); CPU 0 sets via set_uart_phys() before any
+// secondary CPU is started.
+.balign 8
+.global SMP_UART_PHYS
+SMP_UART_PHYS:
+    .skip 8
 
 .balign 16
 .global __boot_stack_bottom
