@@ -402,20 +402,20 @@ fn main() {
     let (cols, rows) = term_grid(content_w, content_h);
 
     // Create tab bar
-    let first_label = make_tab_label();
+    let btop_label = make_static_label("btop");
     let mut tab_bar = TabBar::new(
         Rect::new(0, 0, WIN_WIDTH as i32, TAB_BAR_HEIGHT),
-        vec![first_label],
+        vec![btop_label],
     );
     let theme = Theme::dark();
 
-    // Spawn initial tabs: shell + btop
-    let mut tabs: Vec<Tab> = vec![spawn_tab(cols, rows)];
+    // Spawn initial tabs: btop (default visible) + shell
+    let mut tabs: Vec<Tab> = vec![spawn_tab_cmd(cols, rows, b"/bin/btop\0")];
 
-    // Auto-start btop in a second tab
-    let btop_label = make_static_label("btop");
-    tab_bar.add_tab(btop_label);
-    tabs.push(spawn_tab_cmd(cols, rows, b"/bin/btop\0"));
+    // Add shell in a second tab
+    let shell_label = make_tab_label();
+    tab_bar.add_tab(shell_label);
+    tabs.push(spawn_tab(cols, rows));
 
     // Mouse state for InputState edge detection
     let mut prev_buttons: u32 = 0;
