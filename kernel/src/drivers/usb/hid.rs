@@ -42,10 +42,9 @@ static MOUSE_Y: AtomicU32 = AtomicU32::new(0);
 static MOUSE_BUTTONS: AtomicU32 = AtomicU32::new(0);
 
 /// Latched button presses: bits set when a press transition (0→1) is detected.
-/// Sustained for PRESS_SUSTAIN_READS reads via mouse_state_consume() to give
-/// userspace time to detect the press and act on it (e.g., start a drag).
+/// Cleared atomically by mouse_state_consume() when BWM reads the mouse state.
+/// This ensures fast press-release cycles (within one compositor frame) are not lost.
 static MOUSE_BUTTONS_PRESSED: AtomicU32 = AtomicU32::new(0);
-
 
 /// Once we see the first absolute tablet report (6+ bytes), latch into tablet mode.
 /// All subsequent reports are parsed as absolute, regardless of byte[1] value.
@@ -425,6 +424,15 @@ pub fn mouse_state() -> (u32, u32, u32) {
         MOUSE_Y.load(Ordering::Relaxed),
         MOUSE_BUTTONS.load(Ordering::Relaxed),
     )
+}
+
+/// Check if there are pending latched button presses (non-consuming peek).
+///
+/// Used by compositor_wait to detect fast press-release cycles that completed
+/// before the compositor had a chance to read the state. When this returns true,
+/// compositor_wait should set COMPOSITOR_READY_MOUSE so BWM processes the click.
+pub fn has_pending_press() -> bool {
+    MOUSE_BUTTONS_PRESSED.load(Ordering::Relaxed) != 0
 }
 
 /// Get current mouse position and button state, consuming latched presses.

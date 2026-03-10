@@ -739,6 +739,10 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         // real TTBR values to secondary CPUs explicitly.
         kernel::arch_impl::aarch64::smp::set_smp_ttbrs();
 
+        // Log CPU 0's MPIDR for topology diagnostics
+        let mpidr: u64;
+        unsafe { core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack)) };
+        serial_println!("[smp] CPU 0 MPIDR={:#x}, stack_base={:#x}", mpidr, stack_base_phys);
         serial_println!("[smp] Probing secondary CPUs via PSCI...");
         let mut launched = 0u64;
         for cpu in 1..kernel::arch_impl::aarch64::smp::MAX_CPUS {

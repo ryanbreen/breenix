@@ -5,7 +5,6 @@
 
 #[cfg(target_arch = "aarch64")]
 pub mod ahci;
-#[cfg(target_arch = "x86_64")]
 pub mod e1000;
 pub mod fw_cfg;
 pub mod pci;
@@ -130,10 +129,17 @@ pub fn init() -> usize {
             Err(e) => serial_println!("[drivers] VirtIO GPU (PCI) init failed: {}", e),
         }
 
-        // Initialize VirtIO network driver (PCI transport)
+        // Initialize VirtIO network driver (PCI transport) — Parallels
         match virtio::net_pci::init() {
             Ok(()) => serial_println!("[drivers] VirtIO network (PCI) initialized"),
-            Err(e) => serial_println!("[drivers] VirtIO network (PCI) init failed: {}", e),
+            Err(e) => {
+                serial_println!("[drivers] VirtIO network (PCI) init failed: {}", e);
+                // No VirtIO net — try Intel e1000/e1000e (VMware Fusion)
+                match e1000::init() {
+                    Ok(()) => serial_println!("[drivers] Intel e1000 network driver initialized"),
+                    Err(e2) => serial_println!("[drivers] e1000 init also failed: {}", e2),
+                }
+            }
         }
 
         // Initialize VMware SVGA3 GPU if present (VMware Fusion on ARM64)

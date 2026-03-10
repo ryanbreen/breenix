@@ -22,7 +22,7 @@ use alloc::vec::Vec;
 use spin::Mutex;
 
 // Use E1000 on x86_64, VirtIO net on ARM64 (MMIO for QEMU, PCI for Parallels)
-#[cfg(target_arch = "x86_64")]
+// On VMware ARM64, e1000 is used (Intel 82574L emulation)
 use crate::drivers::e1000;
 #[cfg(target_arch = "aarch64")]
 use crate::drivers::virtio::net_mmio;
@@ -70,8 +70,10 @@ fn get_mac_address() -> Option<[u8; 6]> {
     { e1000::mac_address() }
     #[cfg(target_arch = "aarch64")]
     {
-        // Try MMIO first (QEMU), then PCI (Parallels)
-        net_mmio::mac_address().or_else(|| net_pci::mac_address())
+        // Try VirtIO MMIO (QEMU), VirtIO PCI (Parallels), then e1000 (VMware)
+        net_mmio::mac_address()
+            .or_else(|| net_pci::mac_address())
+            .or_else(|| e1000::mac_address())
     }
 }
 
@@ -83,6 +85,8 @@ fn driver_transmit(data: &[u8]) -> Result<(), &'static str> {
     {
         if net_pci::is_initialized() {
             net_pci::transmit(data)
+        } else if e1000::is_initialized() {
+            e1000::transmit(data)
         } else {
             net_mmio::transmit(data)
         }
@@ -127,6 +131,15 @@ pub const PARALLELS_CONFIG: NetConfig = NetConfig {
     ip_addr: [10, 211, 55, 100],   // Static guest IP (avoiding DHCP conflicts)
     subnet_mask: [255, 255, 255, 0],
     gateway: [10, 211, 55, 1],     // Parallels shared network gateway
+};
+
+/// Network configuration for VMware Fusion NAT networking
+/// VMware NAT (vmnet8) uses 172.16.45.x with gateway at 172.16.45.2
+#[allow(dead_code)] // Used conditionally when e1000 is active on VMware
+pub const VMWARE_CONFIG: NetConfig = NetConfig {
+    ip_addr: [172, 16, 45, 100],   // Static guest IP (avoiding DHCP conflicts)
+    subnet_mask: [255, 255, 255, 0],
+    gateway: [172, 16, 45, 2],     // VMware NAT gateway
 };
 
 /// Select network config based on compile-time feature or default to SLIRP
@@ -216,14 +229,15 @@ pub fn init() {
 
     crate::serial_println!("[net] Initializing network stack...");
 
-    // Auto-detect platform: PCI net = Parallels, MMIO net = QEMU
+    // Auto-detect platform: PCI net = Parallels, e1000 = VMware, MMIO net = QEMU
     if net_pci::is_initialized() {
         crate::serial_println!("[net] Using VirtIO net PCI driver (Parallels)");
-        // Switch to Parallels network config
-        {
-            let mut config = NET_CONFIG.lock();
-            *config = PARALLELS_CONFIG;
-        }
+        let mut config = NET_CONFIG.lock();
+        *config = PARALLELS_CONFIG;
+    } else if e1000::is_initialized() {
+        crate::serial_println!("[net] Using Intel e1000 driver (VMware)");
+        let mut config = NET_CONFIG.lock();
+        *config = VMWARE_CONFIG;
     }
 
     if let Some(mac) = get_mac_address() {
@@ -349,7 +363,7 @@ pub fn process_rx() {
 /// Process incoming packets (ARM64 - polling or interrupt driven)
 #[cfg(target_arch = "aarch64")]
 pub fn process_rx() {
-    // Try PCI driver first (Parallels), then MMIO (QEMU)
+    // Try PCI driver first (Parallels), then e1000 (VMware), then MMIO (QEMU)
     if net_pci::is_initialized() {
         let mut processed = false;
         while let Some(data) = net_pci::receive() {
@@ -358,6 +372,16 @@ pub fn process_rx() {
         }
         if processed {
             net_pci::recycle_rx_buffers();
+        }
+    } else if e1000::is_initialized() {
+        let mut buffer = [0u8; 2048];
+        while e1000::can_receive() {
+            match e1000::receive(&mut buffer) {
+                Ok(len) => {
+                    process_packet(&buffer[..len]);
+                }
+                Err(_) => break,
+            }
         }
     } else {
         let mut processed = false;

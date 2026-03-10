@@ -15,8 +15,9 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// Maximum number of CPUs supported.
 pub const MAX_CPUS: usize = 8;
 
-/// PSCI function IDs (SMCCC compliant, 64-bit).
+/// PSCI function IDs (SMCCC compliant).
 const PSCI_CPU_ON_64: u64 = 0xC400_0003;
+const PSCI_CPU_ON_32: u64 = 0x8400_0003;
 
 extern "C" {
     /// Physical address of secondary_cpu_entry, stored in .rodata by boot.S.
@@ -186,6 +187,38 @@ fn psci_cpu_on(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
     ret
 }
 
+/// PSCI CPU_ON with 32-bit function ID via HVC.
+fn psci_cpu_on_32(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
+    let ret: i64;
+    unsafe {
+        core::arch::asm!(
+            "hvc #0",
+            inout("x0") PSCI_CPU_ON_32 => ret,
+            in("x1") target_cpu,
+            in("x2") entry_point,
+            in("x3") context_id,
+            options(nomem, nostack),
+        );
+    }
+    ret
+}
+
+/// PSCI CPU_ON with 64-bit function ID via SMC (EL3 firmware conduit).
+fn psci_cpu_on_smc(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
+    let ret: i64;
+    unsafe {
+        core::arch::asm!(
+            "smc #0",
+            inout("x0") PSCI_CPU_ON_64 => ret,
+            in("x1") target_cpu,
+            in("x2") entry_point,
+            in("x3") context_id,
+            options(nomem, nostack),
+        );
+    }
+    ret
+}
+
 /// Release a secondary CPU using PSCI CPU_ON.
 ///
 /// The CPU will start executing at `secondary_cpu_entry` in boot.S,
@@ -208,12 +241,21 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
     // Context ID: pass cpu_id so the new CPU knows who it is
     let context_id = cpu_id as u64;
 
-    let ret = psci_cpu_on(target_mpidr, entry_phys, context_id);
+    // Try 64-bit PSCI CPU_ON via HVC first (standard for ARM64 hypervisors)
+    let mut ret = psci_cpu_on(target_mpidr, entry_phys, context_id);
+
+    // If 64-bit failed, try 32-bit function ID (some hypervisors only support this)
+    if ret != 0 {
+        crate::serial_println!("[smp] CPU {}: HVC64 failed (ret={}), trying HVC32...", cpu_id, ret);
+        ret = psci_cpu_on_32(target_mpidr, entry_phys, context_id);
+    }
+
+    // Note: SMC conduit not attempted — on VMware (EL1 guest, no EL3),
+    // SMC would trap to EL2 and likely fault. HVC is the correct conduit.
 
     if ret != 0 {
-        // PSCI error — emit raw UART error indicator
-        raw_uart_char(b'E');
-        raw_uart_char(b'0' + cpu_id as u8);
+        crate::serial_println!("[smp] PSCI CPU_ON failed for CPU {}: ret={} (MPIDR={:#x} entry={:#x})",
+            cpu_id, ret, target_mpidr, entry_phys);
     }
 
     ret

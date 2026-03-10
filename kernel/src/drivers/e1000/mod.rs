@@ -21,9 +21,13 @@ use crate::memory::PhysAddrWrapper as PhysAddr;
 
 pub use regs::*;
 
-/// Intel 82540EM device ID
+/// Intel 82540EM device ID (QEMU default)
 #[allow(dead_code)] // Used in init() for device detection
 pub const E1000_DEVICE_ID: u16 = 0x100E;
+
+/// Intel 82574L device ID (VMware e1000e)
+#[allow(dead_code)] // Used in init() for device detection
+pub const E1000E_DEVICE_ID: u16 = 0x10D3;
 
 /// Number of receive descriptors (must be multiple of 8)
 const RX_RING_SIZE: usize = 32;
@@ -128,6 +132,8 @@ pub struct E1000 {
     /// PCI device information
     #[allow(dead_code)] // Stored for future use (interrupt routing, power management)
     pci_device: Device,
+    /// PCI device ID (0x100E = 82540EM, 0x10D3 = 82574L)
+    device_id: u16,
     /// Base address of MMIO registers
     mmio_base: usize,
     /// Receive descriptor ring
@@ -157,35 +163,70 @@ impl E1000 {
         unsafe { write_volatile((self.mmio_base + reg as usize) as *mut u32, value) }
     }
 
-    /// Read MAC address from EEPROM
-    fn read_eeprom(&self, addr: u8) -> u16 {
-        // Write the address and start bit
-        self.write_reg(REG_EERD, ((addr as u32) << EERD_ADDR_SHIFT) | EERD_START);
-
-        // Wait for completion
-        loop {
-            let val = self.read_reg(REG_EERD);
-            if val & EERD_DONE != 0 {
-                return ((val >> EERD_DATA_SHIFT) & 0xFFFF) as u16;
+    /// Read MAC address from EEPROM (with timeout)
+    /// Returns None if the EEPROM doesn't respond within the timeout.
+    fn read_eeprom(&self, addr: u8) -> Option<u16> {
+        if self.device_id == E1000E_DEVICE_ID {
+            // 82574L (e1000e): DONE=bit 1, ADDR_SHIFT=2
+            self.write_reg(REG_EERD, ((addr as u32) << 2) | EERD_START);
+            for _ in 0..100_000 {
+                let val = self.read_reg(REG_EERD);
+                if val & (1 << 1) != 0 {
+                    return Some(((val >> EERD_DATA_SHIFT) & 0xFFFF) as u16);
+                }
+                core::hint::spin_loop();
+            }
+        } else {
+            // 82540EM: DONE=bit 4, ADDR_SHIFT=8
+            self.write_reg(REG_EERD, ((addr as u32) << EERD_ADDR_SHIFT) | EERD_START);
+            for _ in 0..100_000 {
+                let val = self.read_reg(REG_EERD);
+                if val & EERD_DONE != 0 {
+                    return Some(((val >> EERD_DATA_SHIFT) & 0xFFFF) as u16);
+                }
+                core::hint::spin_loop();
             }
         }
+        None
     }
 
-    /// Read MAC address from EEPROM or RAL/RAH registers
-    fn read_mac_address(&self) -> [u8; 6] {
-        // Try to read from EEPROM first
-        let word0 = self.read_eeprom(0);
-        let word1 = self.read_eeprom(1);
-        let word2 = self.read_eeprom(2);
-
+    /// Read MAC address from RAL/RAH registers (works on all Intel NICs)
+    fn read_mac_from_ral(&self) -> [u8; 6] {
+        let ral = self.read_reg(REG_RAL);
+        let rah = self.read_reg(REG_RAH);
         [
-            (word0 & 0xFF) as u8,
-            ((word0 >> 8) & 0xFF) as u8,
-            (word1 & 0xFF) as u8,
-            ((word1 >> 8) & 0xFF) as u8,
-            (word2 & 0xFF) as u8,
-            ((word2 >> 8) & 0xFF) as u8,
+            (ral & 0xFF) as u8,
+            ((ral >> 8) & 0xFF) as u8,
+            ((ral >> 16) & 0xFF) as u8,
+            ((ral >> 24) & 0xFF) as u8,
+            (rah & 0xFF) as u8,
+            ((rah >> 8) & 0xFF) as u8,
         ]
+    }
+
+    /// Read MAC address from EEPROM, falling back to RAL/RAH registers
+    fn read_mac_address(&self) -> [u8; 6] {
+        // Try EEPROM first
+        if let (Some(word0), Some(word1), Some(word2)) = (
+            self.read_eeprom(0),
+            self.read_eeprom(1),
+            self.read_eeprom(2),
+        ) {
+            let mac = [
+                (word0 & 0xFF) as u8,
+                ((word0 >> 8) & 0xFF) as u8,
+                (word1 & 0xFF) as u8,
+                ((word1 >> 8) & 0xFF) as u8,
+                (word2 & 0xFF) as u8,
+                ((word2 >> 8) & 0xFF) as u8,
+            ];
+            // Validate MAC (not all zeros or all FFs)
+            if mac != [0; 6] && mac != [0xFF; 6] {
+                return mac;
+            }
+        }
+        // Fallback: read from RAL/RAH registers (pre-loaded by hardware/VMware)
+        self.read_mac_from_ral()
     }
 
     /// Get virtual address to physical address (identity mapped for now)
@@ -244,7 +285,10 @@ impl E1000 {
             RCTL_EN | RCTL_BAM | RCTL_SZ_2048 | RCTL_SECRC | RCTL_BSEX,
         );
 
+        #[cfg(target_arch = "x86_64")]
         log::info!("E1000: RX initialized with {} descriptors", RX_RING_SIZE);
+        #[cfg(target_arch = "aarch64")]
+        crate::serial_println!("[e1000] RX initialized with {} descriptors", RX_RING_SIZE);
     }
 
     /// Initialize transmit functionality
@@ -273,7 +317,10 @@ impl E1000 {
         // IPG transmit time: 10 + 8 + 6 (for IEEE 802.3 standard)
         self.write_reg(REG_TIPG, 10 | (8 << 10) | (6 << 20));
 
+        #[cfg(target_arch = "x86_64")]
         log::info!("E1000: TX initialized with {} descriptors", TX_RING_SIZE);
+        #[cfg(target_arch = "aarch64")]
+        crate::serial_println!("[e1000] TX initialized with {} descriptors", TX_RING_SIZE);
     }
 
     /// Set up the MAC address filter
@@ -378,12 +425,18 @@ impl E1000 {
         }
 
         // Check status after timeout
-        let tdh_after = self.read_reg(REG_TDH);
-        let tdt_after = self.read_reg(REG_TDT);
-        let status = unsafe { read_volatile(&self.tx_ring[idx].status) };
+        let _tdh_after = self.read_reg(REG_TDH);
+        let _tdt_after = self.read_reg(REG_TDT);
+        let _status = unsafe { read_volatile(&self.tx_ring[idx].status) };
+        #[cfg(target_arch = "x86_64")]
         log::warn!(
             "E1000: TX timeout TDH={} TDT={} desc.status={:#x}",
-            tdh_after, tdt_after, status
+            _tdh_after, _tdt_after, _status
+        );
+        #[cfg(target_arch = "aarch64")]
+        crate::serial_println!(
+            "[e1000] TX timeout TDH={} TDT={} desc.status={:#x}",
+            _tdh_after, _tdt_after, _status
         );
 
         Err("TX timeout")
@@ -440,21 +493,19 @@ impl E1000 {
     }
 
     /// Handle interrupt
+    #[cfg(target_arch = "x86_64")]
     pub fn handle_interrupt(&mut self) {
         let icr = self.read_reg(REG_ICR);
 
         if icr & ICR_RXT0 != 0 {
-            // Receive timer expired - packets available
             log::debug!("E1000: RX interrupt");
         }
 
         if icr & ICR_TXDW != 0 {
-            // Transmit descriptor written back
             log::debug!("E1000: TX interrupt");
         }
 
         if icr & ICR_LSC != 0 {
-            // Link status change
             if self.link_up() {
                 log::info!("E1000: Link up at {} Mbps", self.link_speed());
             } else {
@@ -486,31 +537,45 @@ static E1000_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Initialize the E1000 driver
 pub fn init() -> Result<(), &'static str> {
-    // Find the E1000 device on the PCI bus
-    let device = pci::find_device(INTEL_VENDOR_ID, E1000_DEVICE_ID)
+    // Find the E1000 device on the PCI bus (try 82540EM then 82574L)
+    let (device, found_device_id) = pci::find_device(INTEL_VENDOR_ID, E1000_DEVICE_ID)
+        .map(|d| (d, E1000_DEVICE_ID))
+        .or_else(|| pci::find_device(INTEL_VENDOR_ID, E1000E_DEVICE_ID).map(|d| (d, E1000E_DEVICE_ID)))
         .ok_or("E1000 device not found on PCI bus")?;
 
+    #[cfg(target_arch = "x86_64")]
     log::info!(
-        "E1000: Found device at {:02x}:{:02x}.{} IRQ={}",
+        "E1000: Found device {:04x} at {:02x}:{:02x}.{} IRQ={}",
+        found_device_id,
         device.bus,
         device.device,
         device.function,
         device.interrupt_line
     );
+    #[cfg(target_arch = "aarch64")]
+    crate::serial_println!(
+        "[e1000] Found device {:04x} at {:02x}:{:02x}.{}",
+        found_device_id,
+        device.bus,
+        device.device,
+        device.function
+    );
 
     // Get the MMIO BAR
     let mmio_bar = device.get_mmio_bar().ok_or("E1000: No MMIO BAR found")?;
 
-    log::info!(
-        "E1000: MMIO at {:#x} size {:#x}",
-        mmio_bar.address,
-        mmio_bar.size
-    );
+    #[cfg(target_arch = "x86_64")]
+    log::info!("E1000: MMIO at {:#x} size {:#x}", mmio_bar.address, mmio_bar.size);
+    #[cfg(target_arch = "aarch64")]
+    crate::serial_println!("[e1000] MMIO at {:#x} size {:#x}", mmio_bar.address, mmio_bar.size);
 
     // Map the MMIO region
     let mmio_base = crate::memory::map_mmio(mmio_bar.address, mmio_bar.size as usize)?;
 
+    #[cfg(target_arch = "x86_64")]
     log::info!("E1000: Mapped MMIO to {:#x}", mmio_base);
+    #[cfg(target_arch = "aarch64")]
+    crate::serial_println!("[e1000] Mapped MMIO to {:#x}", mmio_base);
 
     // Enable bus mastering and memory space
     device.enable_bus_master();
@@ -535,6 +600,7 @@ pub fn init() -> Result<(), &'static str> {
     // Create driver instance
     let mut driver = E1000 {
         pci_device: device,
+        device_id: found_device_id,
         mmio_base,
         rx_ring,
         rx_buffers,
@@ -550,14 +616,17 @@ pub fn init() -> Result<(), &'static str> {
 
     // Read MAC address
     driver.mac_addr = driver.read_mac_address();
+    #[cfg(target_arch = "x86_64")]
     log::info!(
         "E1000: MAC address {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-        driver.mac_addr[0],
-        driver.mac_addr[1],
-        driver.mac_addr[2],
-        driver.mac_addr[3],
-        driver.mac_addr[4],
-        driver.mac_addr[5]
+        driver.mac_addr[0], driver.mac_addr[1], driver.mac_addr[2],
+        driver.mac_addr[3], driver.mac_addr[4], driver.mac_addr[5]
+    );
+    #[cfg(target_arch = "aarch64")]
+    crate::serial_println!(
+        "[e1000] MAC address {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        driver.mac_addr[0], driver.mac_addr[1], driver.mac_addr[2],
+        driver.mac_addr[3], driver.mac_addr[4], driver.mac_addr[5]
     );
 
     // Set up MAC address filter
@@ -576,20 +645,31 @@ pub fn init() -> Result<(), &'static str> {
     driver.enable_link();
 
     // Check link status
+    #[cfg(target_arch = "x86_64")]
     if driver.link_up() {
         log::info!("E1000: Link up at {} Mbps", driver.link_speed());
     } else {
         log::info!("E1000: Link down (waiting for link...)");
     }
+    #[cfg(target_arch = "aarch64")]
+    if driver.link_up() {
+        crate::serial_println!("[e1000] Link up at {} Mbps", driver.link_speed());
+    } else {
+        crate::serial_println!("[e1000] Link down (waiting for link...)");
+    }
 
-    // Enable interrupts on the device
+    // Enable interrupts on the device (x86 uses IRQ-driven RX, aarch64 uses polling)
+    #[cfg(target_arch = "x86_64")]
     driver.enable_interrupts();
 
     // Store driver instance
     *E1000_DRIVER.lock() = Some(driver);
     E1000_INITIALIZED.store(true, Ordering::Release);
 
+    #[cfg(target_arch = "x86_64")]
     log::info!("E1000 driver initialized");
+    #[cfg(target_arch = "aarch64")]
+    crate::serial_println!("[e1000] Driver initialized");
     Ok(())
 }
 
@@ -646,6 +726,8 @@ pub fn can_receive() -> bool {
 }
 
 /// Handle E1000 interrupt (called from IRQ 11 handler)
+/// aarch64 uses polling mode instead of interrupts
+#[cfg(target_arch = "x86_64")]
 pub fn handle_interrupt() {
     if let Some(driver) = E1000_DRIVER.lock().as_mut() {
         driver.handle_interrupt();
