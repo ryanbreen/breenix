@@ -898,9 +898,7 @@ fn main() {
 
     // Initial window discovery (before entering event loop)
     if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order) {
-        if focused_win >= windows.len() {
-            focused_win = windows.len().saturating_sub(1);
-        }
+        focused_win = next_visible_window(&windows, 0);
         composite_buf.copy_from_slice(&bg_cache);
         redraw_all_windows(&mut fb, &windows, focused_win, &clock_text);
         full_redraw = true;
@@ -920,9 +918,10 @@ fn main() {
         // ── 1. Discover new/removed client windows (only when registry changed) ──
         if ready & graphics::COMPOSITOR_READY_REGISTRY != 0 {
             if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order) {
-                if focused_win >= windows.len() {
-                    focused_win = windows.len().saturating_sub(1);
-                }
+                // New windows are pushed to end of Vec (top of z-order).
+                // Always focus the topmost visible window so appbar selection
+                // matches the visually foregrounded window.
+                focused_win = next_visible_window(&windows, 0);
                 composite_buf.copy_from_slice(&bg_cache);
                 redraw_all_windows(&mut fb, &windows, focused_win, &clock_text);
                 full_redraw = true;
