@@ -298,6 +298,10 @@ name = "dns_test"
 path = "src/dns_test.rs"
 
 [[bin]]
+name = "net_test"
+path = "src/net_test.rs"
+
+[[bin]]
 name = "echo_argv_test"
 path = "src/echo_argv_test.rs"
 
@@ -332,6 +336,10 @@ path = "src/hello_time.rs"
 [[bin]]
 name = "http_test"
 path = "src/http_test.rs"
+
+[[bin]]
+name = "http_fetch_test"
+path = "src/http_fetch_test.rs"
 
 [[bin]]
 name = "init"
@@ -500,6 +508,10 @@ path = "src/blog.rs"
 [[bin]]
 name = "bless"
 path = "src/bless.rs"
+
+[[bin]]
+name = "ntp_client"
+path = "src/ntp_client.rs"
 
 [[bin]]
 name = "bcheck"

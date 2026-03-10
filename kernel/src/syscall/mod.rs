@@ -117,6 +117,7 @@ pub enum SyscallNumber {
     Futex,
     SetTidAddress,
     ClockGetTime,
+    ClockSetTime,
     ExitGroup,
     Ppoll,          // Stub: returns -ENOSYS
     SetRobustList,  // Stub: returns 0
@@ -281,6 +282,7 @@ impl SyscallNumber {
             202 => Some(Self::Futex),
             217 => Some(Self::Getdents64),  // was Breenix 260
             218 => Some(Self::SetTidAddress),
+            227 => Some(Self::ClockSetTime),
             228 => Some(Self::ClockGetTime),
             231 => Some(Self::ExitGroup),
             257 => Some(Self::Openat),        // Linux x86_64 openat (was Breenix Open)
@@ -384,6 +386,7 @@ impl SyscallNumber {
             101 => Some(Self::Nanosleep),
             102 => Some(Self::Getitimer),
             103 => Some(Self::Setitimer),
+            112 => Some(Self::ClockSetTime),
             113 => Some(Self::ClockGetTime),
             // Scheduling
             124 => Some(Self::Yield),

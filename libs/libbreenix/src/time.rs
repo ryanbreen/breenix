@@ -35,6 +35,25 @@ pub fn clock_gettime(clock_id: u32, ts: &mut Timespec) -> Result<(), Error> {
 }
 
 
+/// Set the system clock.
+///
+/// Only CLOCK_REALTIME is supported. Adjusts the kernel's boot wall time
+/// so that subsequent clock_gettime(CLOCK_REALTIME) calls return the new time.
+///
+/// # Arguments
+/// * `clock_id` - Must be CLOCK_REALTIME
+/// * `ts` - The new time to set
+///
+/// # Returns
+/// `Ok(())` on success, `Err(Error)` on error.
+#[inline]
+pub fn clock_settime(clock_id: u32, ts: &Timespec) -> Result<(), Error> {
+    let ret = unsafe {
+        raw::syscall2(nr::CLOCK_SETTIME, clock_id as u64, ts as *const Timespec as u64)
+    };
+    Error::from_syscall(ret as i64).map(|_| ())
+}
+
 /// Get current wall-clock (real) time.
 ///
 /// # Returns

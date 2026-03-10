@@ -43,6 +43,11 @@ pub fn dispatch_syscall(
             let user_timespec_ptr = arg2 as *mut super::time::Timespec;
             super::time::sys_clock_gettime(clock_id, user_timespec_ptr)
         }
+        SyscallNumber::ClockSetTime => {
+            let clock_id = arg1 as u32;
+            let user_timespec_ptr = arg2 as *const super::time::Timespec;
+            super::time::sys_clock_settime(clock_id, user_timespec_ptr)
+        }
         SyscallNumber::Brk => super::memory::sys_brk(arg1),
         SyscallNumber::Mmap => super::mmap::sys_mmap(arg1, arg2, arg3 as u32, arg4 as u32, arg5 as i64, arg6),
         SyscallNumber::Munmap => super::mmap::sys_munmap(arg1, arg2),

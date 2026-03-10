@@ -413,3 +413,12 @@ pub fn init() {
 pub fn get_boot_wall_time() -> u64 {
     BOOT_WALL_TIME.load(Ordering::Relaxed)
 }
+
+/// Adjust the boot wall time to correct for clock drift.
+///
+/// Called by clock_settime(CLOCK_REALTIME). The new boot_wall_time is
+/// calculated as: desired_realtime - monotonic_elapsed, so that
+/// get_real_time_ns() = new_boot_wall_time + monotonic = desired_realtime.
+pub fn set_boot_wall_time(new_boot_time: u64) {
+    BOOT_WALL_TIME.store(new_boot_time, Ordering::Relaxed);
+}
