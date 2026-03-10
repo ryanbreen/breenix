@@ -86,6 +86,9 @@ third-party/
 # EFI System Partition build artifact
 esp/
 
+# Parallels EFI disk image (build artifact from build-efi.sh)
+scripts/parallels/breenix-efi.hds/
+
 # Debug capture files
 serial-capture*.txt
 xhci_ftrace*.txt
