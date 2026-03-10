@@ -45,7 +45,7 @@ impl Event {
     pub fn from_raw(raw: &WindowInputEvent) -> Self {
         match raw.event_type {
             input_event_type::KEY_PRESS => Event::KeyPress {
-                ascii: raw.keycode as u8,
+                ascii: raw.mouse_x as u8,
                 keycode: raw.keycode,
                 modifiers: Modifiers::from_raw(raw.modifiers),
             },

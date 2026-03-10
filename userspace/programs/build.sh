@@ -232,6 +232,8 @@ STD_BINARIES=(
     "tcp_blocking_test"
     "concurrent_recv_stress"
     "dns_test"
+    "net_test"
+    "http_fetch_test"
 
     # Complex/arch-specific tests
     "syscall_diagnostic_test"

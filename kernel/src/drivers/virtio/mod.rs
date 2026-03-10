@@ -38,6 +38,8 @@ pub mod input_mmio;
 #[cfg(target_arch = "aarch64")]
 pub mod sound_mmio;
 #[cfg(target_arch = "aarch64")]
+pub mod net_pci;
+#[cfg(target_arch = "aarch64")]
 pub mod gpu_pci;
 #[cfg(target_arch = "aarch64")]
 pub mod virgl;

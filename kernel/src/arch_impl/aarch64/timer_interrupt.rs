@@ -275,6 +275,11 @@ pub extern "C" fn timer_interrupt_handler() {
         crate::drivers::usb::ehci::poll_keyboard();
         // Poll XHCI USB HID events (needed when PCI interrupt routing isn't available)
         crate::drivers::usb::xhci::poll_hid_events();
+        // Poll VirtIO net PCI for incoming packets (PCI INTx routing not wired up)
+        // Throttle to every 50th tick (~20Hz at 1000Hz timer) to avoid overhead
+        if crate::drivers::virtio::net_pci::is_initialized() && _count % 50 == 0 {
+            crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::NetRx);
+        }
     }
 
     // CPU 0 only: soft lockup detector

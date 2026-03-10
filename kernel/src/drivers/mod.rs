@@ -126,6 +126,12 @@ pub fn init() -> usize {
             Err(e) => serial_println!("[drivers] VirtIO GPU (PCI) init failed: {}", e),
         }
 
+        // Initialize VirtIO network driver (PCI transport)
+        match virtio::net_pci::init() {
+            Ok(()) => serial_println!("[drivers] VirtIO network (PCI) initialized"),
+            Err(e) => serial_println!("[drivers] VirtIO network (PCI) init failed: {}", e),
+        }
+
         // Initialize VMware SVGA3 GPU if present (VMware Fusion on ARM64)
         match vmware::svga3::init() {
             Ok(()) => {

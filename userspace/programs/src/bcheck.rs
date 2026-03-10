@@ -71,6 +71,9 @@ fn make_tests() -> Vec<TestDef> {
         // Signals
         (b"/usr/local/test/bin/signal_handler_test\0", "signal_handler",  "sig"),
         (b"/usr/local/test/bin/signal_return_test\0",  "signal_return",   "sig"),
+        // Network
+        (b"/usr/local/test/bin/net_test\0",            "dns_resolve",     "net"),
+        (b"/usr/local/test/bin/http_fetch_test\0",     "http_fetch",      "net"),
     ];
 
     tests.iter().map(|&(path, name, cat)| TestDef {
@@ -206,6 +209,7 @@ fn render(fb: &mut FrameBuf, tests: &[TestDef], scroll_offset: i32) {
                 "ipc"  => b"IPC",
                 "proc" => b"PROCESS",
                 "sig"  => b"SIGNALS",
+                "net"  => b"NETWORK",
                 _      => b"OTHER",
             };
             if y > LIST_START_Y - scroll_offset {
