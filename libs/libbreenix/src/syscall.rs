@@ -94,6 +94,7 @@ pub mod nr {
     pub const FUTEX: u64 = 202;
     pub const GETDENTS64: u64 = 217;
     pub const SET_TID_ADDRESS: u64 = 218;
+    pub const CLOCK_SETTIME: u64 = 227;
     pub const CLOCK_GETTIME: u64 = 228;
     pub const EXIT_GROUP: u64 = 231;
     pub const OPEN: u64 = 2;           // Linux x86_64 open
@@ -194,6 +195,7 @@ pub mod nr {
     pub const NANOSLEEP: u64 = 101;
     pub const GETITIMER: u64 = 102;
     pub const SETITIMER: u64 = 103;
+    pub const CLOCK_SETTIME: u64 = 112;
     pub const CLOCK_GETTIME: u64 = 113;
 
     // Scheduling

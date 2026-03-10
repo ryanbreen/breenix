@@ -49,6 +49,9 @@ pub const MAX_ANSWERS: usize = 8;
 /// QEMU SLIRP's built-in DNS server
 pub const SLIRP_DNS: [u8; 4] = [10, 0, 2, 3];
 
+/// Parallels Desktop shared networking DNS/gateway
+pub const PARALLELS_DNS: [u8; 4] = [10, 211, 55, 1];
+
 /// Google's public DNS server
 pub const GOOGLE_DNS: [u8; 4] = [8, 8, 8, 8];
 
@@ -597,7 +600,20 @@ pub fn resolve(hostname: &str, dns_server: [u8; 4]) -> Result<DnsResult, DnsErro
     Err(DnsError::NoAddress)
 }
 
-/// Convenience function using QEMU SLIRP's DNS server
-pub fn resolve_slirp(hostname: &str) -> Result<DnsResult, DnsError> {
-    resolve(hostname, SLIRP_DNS)
+/// Resolve a hostname by trying multiple DNS servers automatically.
+///
+/// Tries Parallels (10.211.55.1), SLIRP (10.0.2.3), and Google (8.8.8.8)
+/// in order, returning the first successful result. This makes DNS resolution
+/// work across all supported platforms without caller configuration.
+pub fn resolve_auto(hostname: &str) -> Result<DnsResult, DnsError> {
+    let servers = [PARALLELS_DNS, SLIRP_DNS, GOOGLE_DNS];
+    let mut last_err = DnsError::Timeout;
+    for server in &servers {
+        match resolve(hostname, *server) {
+            Ok(r) if r.addr[0] != 0 && r.addr[0] != 127 => return Ok(r),
+            Ok(_) => continue,
+            Err(e) => { last_err = e; continue; }
+        }
+    }
+    Err(last_err)
 }

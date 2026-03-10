@@ -21,11 +21,13 @@ pub mod udp;
 use alloc::vec::Vec;
 use spin::Mutex;
 
-// Use E1000 on x86_64, VirtIO net on ARM64
+// Use E1000 on x86_64, VirtIO net on ARM64 (MMIO for QEMU, PCI for Parallels)
 #[cfg(target_arch = "x86_64")]
 use crate::drivers::e1000;
 #[cfg(target_arch = "aarch64")]
 use crate::drivers::virtio::net_mmio;
+#[cfg(target_arch = "aarch64")]
+use crate::drivers::virtio::net_pci;
 
 use crate::task::softirqd::{register_softirq_handler, SoftirqType};
 
@@ -67,7 +69,10 @@ fn get_mac_address() -> Option<[u8; 6]> {
     #[cfg(target_arch = "x86_64")]
     { e1000::mac_address() }
     #[cfg(target_arch = "aarch64")]
-    { net_mmio::mac_address() }
+    {
+        // Try MMIO first (QEMU), then PCI (Parallels)
+        net_mmio::mac_address().or_else(|| net_pci::mac_address())
+    }
 }
 
 /// Transmit a raw Ethernet frame
@@ -75,7 +80,13 @@ fn driver_transmit(data: &[u8]) -> Result<(), &'static str> {
     #[cfg(target_arch = "x86_64")]
     { e1000::transmit(data) }
     #[cfg(target_arch = "aarch64")]
-    { net_mmio::transmit(data) }
+    {
+        if net_pci::is_initialized() {
+            net_pci::transmit(data)
+        } else {
+            net_mmio::transmit(data)
+        }
+    }
 }
 
 /// Network interface configuration
@@ -107,6 +118,15 @@ pub const VMNET_CONFIG: NetConfig = NetConfig {
     ip_addr: [192, 168, 105, 100], // Static guest IP (avoiding DHCP conflicts)
     subnet_mask: [255, 255, 255, 0],
     gateway: [192, 168, 105, 1],   // vmnet gateway (socket_vmnet default)
+};
+
+/// Network configuration for Parallels Desktop shared networking (NAT)
+/// Parallels shared network uses 10.211.55.x with gateway at 10.211.55.1
+#[allow(dead_code)] // Used conditionally when PCI net is active
+pub const PARALLELS_CONFIG: NetConfig = NetConfig {
+    ip_addr: [10, 211, 55, 100],   // Static guest IP (avoiding DHCP conflicts)
+    subnet_mask: [255, 255, 255, 0],
+    gateway: [10, 211, 55, 1],     // Parallels shared network gateway
 };
 
 /// Select network config based on compile-time feature or default to SLIRP
@@ -196,7 +216,17 @@ pub fn init() {
 
     crate::serial_println!("[net] Initializing network stack...");
 
-    if let Some(mac) = net_mmio::mac_address() {
+    // Auto-detect platform: PCI net = Parallels, MMIO net = QEMU
+    if net_pci::is_initialized() {
+        crate::serial_println!("[net] Using VirtIO net PCI driver (Parallels)");
+        // Switch to Parallels network config
+        {
+            let mut config = NET_CONFIG.lock();
+            *config = PARALLELS_CONFIG;
+        }
+    }
+
+    if let Some(mac) = get_mac_address() {
         crate::serial_println!(
             "[net] MAC address: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
@@ -208,10 +238,7 @@ pub fn init() {
 
 /// Common initialization logic for both architectures
 fn init_common() {
-    #[cfg(target_arch = "x86_64")]
-    let mac_available = e1000::mac_address().is_some();
-    #[cfg(target_arch = "aarch64")]
-    let mac_available = net_mmio::mac_address().is_some();
+    let mac_available = get_mac_address().is_some();
 
     if !mac_available {
         #[cfg(target_arch = "x86_64")]
@@ -291,7 +318,12 @@ fn init_common() {
     // This must happen AFTER the synchronous ARP/ICMP polling loop so
     // interrupt-driven RX doesn't interfere with the polling.
     #[cfg(target_arch = "aarch64")]
-    net_mmio::enable_net_irq();
+    {
+        if !net_pci::is_initialized() {
+            net_mmio::enable_net_irq();
+        }
+        // PCI net uses polling mode (no GIC IRQ needed — softirq handles packet processing)
+    }
 }
 
 /// Get the current network configuration
@@ -317,15 +349,25 @@ pub fn process_rx() {
 /// Process incoming packets (ARM64 - polling or interrupt driven)
 #[cfg(target_arch = "aarch64")]
 pub fn process_rx() {
-    // VirtIO net driver returns borrowed slice into static RX buffer.
-    // Process each packet, then recycle all buffers back to the device.
-    let mut processed = false;
-    while let Some(data) = net_mmio::receive() {
-        process_packet(data);
-        processed = true;
-    }
-    if processed {
-        net_mmio::recycle_rx_buffers();
+    // Try PCI driver first (Parallels), then MMIO (QEMU)
+    if net_pci::is_initialized() {
+        let mut processed = false;
+        while let Some(data) = net_pci::receive() {
+            process_packet(data);
+            processed = true;
+        }
+        if processed {
+            net_pci::recycle_rx_buffers();
+        }
+    } else {
+        let mut processed = false;
+        while let Some(data) = net_mmio::receive() {
+            process_packet(data);
+            processed = true;
+        }
+        if processed {
+            net_mmio::recycle_rx_buffers();
+        }
     }
 }
 

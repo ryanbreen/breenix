@@ -7,31 +7,13 @@ use spin::Mutex;
 
 use super::ethernet::{self, EthernetFrame, BROADCAST_MAC, ETHERTYPE_ARP};
 
-// Driver abstraction: use E1000 on x86_64, VirtIO net on ARM64
-#[cfg(target_arch = "x86_64")]
-use crate::drivers::e1000;
-#[cfg(target_arch = "aarch64")]
-use crate::drivers::virtio::net_mmio;
-
-// Driver abstraction functions (local to this module)
-#[cfg(target_arch = "x86_64")]
+// Use parent module's driver abstraction
 fn get_mac_address() -> Option<[u8; 6]> {
-    e1000::mac_address()
+    super::get_mac_address()
 }
 
-#[cfg(target_arch = "aarch64")]
-fn get_mac_address() -> Option<[u8; 6]> {
-    net_mmio::mac_address()
-}
-
-#[cfg(target_arch = "x86_64")]
 fn driver_transmit(data: &[u8]) -> Result<(), &'static str> {
-    e1000::transmit(data)
-}
-
-#[cfg(target_arch = "aarch64")]
-fn driver_transmit(data: &[u8]) -> Result<(), &'static str> {
-    net_mmio::transmit(data)
+    super::driver_transmit(data)
 }
 
 /// ARP hardware type for Ethernet

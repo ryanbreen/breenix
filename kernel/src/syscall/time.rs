@@ -84,6 +84,41 @@ pub fn sys_clock_gettime(clock_id: u32, user_ptr: *mut Timespec) -> SyscallResul
     SyscallResult::Ok(0)
 }
 
+/// Syscall #227 (x86_64) / #112 (ARM64) — clock_settime(clock_id, *timespec)
+///
+/// Sets the system clock. Only CLOCK_REALTIME is supported.
+/// Adjusts BOOT_WALL_TIME so that future clock_gettime calls return the new time.
+///
+/// This is NOT a hot path (called once per NTP sync), so logging is acceptable.
+pub fn sys_clock_settime(clock_id: u32, user_ptr: *const Timespec) -> SyscallResult {
+    if clock_id != CLOCK_REALTIME {
+        return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
+    }
+
+    let ts: Timespec = match crate::syscall::userptr::copy_from_user(user_ptr) {
+        Ok(ts) => ts,
+        Err(_) => return SyscallResult::Err(ErrorCode::Fault as u64),
+    };
+
+    if ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1_000_000_000 {
+        return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
+    }
+
+    // new_boot_wall_time = desired_realtime - monotonic_elapsed
+    let (mono_secs, _mono_nanos) = get_monotonic_time_ns();
+    let desired_secs = ts.tv_sec as u64;
+    let new_boot = desired_secs.saturating_sub(mono_secs);
+
+    crate::time::rtc::set_boot_wall_time(new_boot);
+
+    log::info!(
+        "clock_settime: wall clock adjusted to {} (boot_wall_time={})",
+        desired_secs, new_boot
+    );
+
+    SyscallResult::Ok(0)
+}
+
 /// Restore TTBR0 to the current thread's process page tables.
 ///
 /// After a blocking syscall resumes (nanosleep, waitpid, etc.), TTBR0 may

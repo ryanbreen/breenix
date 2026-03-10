@@ -469,6 +469,7 @@ fn dispatch_syscall_enum(
         SyscallNumber::Yield => { crate::task::scheduler::yield_current(); 0 }
         SyscallNumber::GetTime => sys_get_time(),
         SyscallNumber::ClockGetTime => sys_clock_gettime(arg1 as u32, arg2 as *mut Timespec),
+        SyscallNumber::ClockSetTime => result_to_u64(crate::syscall::time::sys_clock_settime(arg1 as u32, arg2 as *const crate::syscall::time::Timespec)),
         SyscallNumber::Nanosleep => result_to_u64(crate::syscall::time::sys_nanosleep(arg1, arg2)),
         SyscallNumber::Clone => result_to_u64(crate::syscall::clone::sys_clone(arg1, arg2, arg3, arg4, arg5)),
         SyscallNumber::Futex => result_to_u64(crate::syscall::futex::sys_futex(arg1, arg2 as u32, arg3 as u32, arg4, arg5, arg6 as u32)),

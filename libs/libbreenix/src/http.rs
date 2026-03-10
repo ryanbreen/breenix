@@ -16,7 +16,7 @@
 //! }
 //! ```
 
-use crate::dns::{resolve, DnsError, SLIRP_DNS};
+use crate::dns::{resolve, DnsError, DnsResult, SLIRP_DNS, PARALLELS_DNS, GOOGLE_DNS};
 use crate::error::Error;
 use crate::socket::{connect_inet, recv, send, socket, AF_INET, SOCK_STREAM, SockAddrIn};
 use crate::syscall::{nr, raw};
@@ -697,6 +697,20 @@ fn close_fd(fd: Fd) {
     }
 }
 
+/// Try multiple DNS servers for platform portability (Parallels, QEMU, external).
+fn resolve_multi(hostname: &str) -> Result<DnsResult, HttpError> {
+    let servers = [PARALLELS_DNS, SLIRP_DNS, GOOGLE_DNS];
+    let mut last_err = DnsError::Timeout;
+    for server in &servers {
+        match resolve(hostname, *server) {
+            Ok(r) if r.addr[0] != 0 && r.addr[0] != 127 => return Ok(r),
+            Ok(_) => continue,
+            Err(e) => { last_err = e; continue; }
+        }
+    }
+    Err(HttpError::DnsError(last_err))
+}
+
 // ============================================================================
 // High-Level API
 // ============================================================================
@@ -725,10 +739,10 @@ pub fn http_request(
             parsed.host, parsed.port, parsed.path, parsed.is_tls);
     }
 
-    // Resolve hostname to IP
+    // Resolve hostname to IP — try multiple DNS servers for platform portability
     #[cfg(feature = "std")]
     if verbose { eprint!("* Resolving {}...\n", parsed.host); }
-    let dns_result = resolve(parsed.host, SLIRP_DNS).map_err(HttpError::DnsError)?;
+    let dns_result = resolve_multi(parsed.host)?;
     let ip = dns_result.addr;
     #[cfg(feature = "std")]
     if verbose {

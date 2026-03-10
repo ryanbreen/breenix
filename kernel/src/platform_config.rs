@@ -80,6 +80,10 @@ static RAM_BASE_OFFSET: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "aarch64")]
 static XHCI_HCRST_DONE: AtomicU64 = AtomicU64::new(0);
 
+/// Boot wall clock time (Unix timestamp) provided by UEFI GetTime().
+#[cfg(target_arch = "aarch64")]
+static BOOT_WALL_TIME_UTC: AtomicU64 = AtomicU64::new(0);
+
 // Memory layout defaults (QEMU virt, 512MB RAM at 0x40000000)
 // Kernel image:   0x4000_0000 - 0x4100_0000 (16 MB)
 // BSS (incl FBs): 0x4100_0000 - 0x4300_0000 (32 MB, includes 7.5MB PCI_3D_FRAMEBUFFER)
@@ -383,6 +387,13 @@ pub fn xhci_hcrst_done_raw() -> u64 {
     XHCI_HCRST_DONE.load(Ordering::Relaxed)
 }
 
+/// Boot wall clock time (Unix timestamp) from UEFI GetTime(). 0 if unavailable.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn boot_wall_time_utc() -> u64 {
+    BOOT_WALL_TIME_UTC.load(Ordering::Relaxed)
+}
+
 /// Whether a UEFI GOP framebuffer was discovered by the loader.
 #[cfg(target_arch = "aarch64")]
 #[inline]
@@ -473,6 +484,7 @@ pub struct HardwareConfig {
     pub xhci_hcrst_done: u32,
     pub _pad6: u32,
     pub xhci_bar_phys: u64,
+    pub boot_wall_time_utc: u64,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -599,6 +611,11 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
     // Store xHCI loader-level HCRST flag
     if config.xhci_hcrst_done != 0 {
         XHCI_HCRST_DONE.store(config.xhci_hcrst_done as u64, Ordering::Relaxed);
+    }
+
+    // Store boot wall clock time from UEFI GetTime()
+    if config.boot_wall_time_utc != 0 {
+        BOOT_WALL_TIME_UTC.store(config.boot_wall_time_utc, Ordering::Relaxed);
     }
 
     true

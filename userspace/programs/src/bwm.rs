@@ -11,6 +11,7 @@ use std::process;
 
 use libbreenix::graphics::{self, WindowInputEvent, input_event_type};
 use libbreenix::io;
+use libbreenix::signal;
 use libbreenix::types::Fd;
 
 use libgfx::bitmap_font;
@@ -29,6 +30,21 @@ const BORDER_WIDTH: usize = 2;
 const CELL_W: usize = 7;
 const CELL_H: usize = 18;
 
+/// Top taskbar height
+const TASKBAR_HEIGHT: usize = 28;
+
+/// Bottom app bar height
+const APPBAR_HEIGHT: usize = 36;
+
+/// Chrome button size (close/minimize)
+const CHROME_BTN_SIZE: usize = 20;
+
+/// Padding between chrome buttons
+const CHROME_BTN_PAD: usize = 4;
+
+/// Space reserved in title bar for chrome buttons
+const CHROME_RESERVED: usize = 52;
+
 // Colors
 const TITLE_FOCUSED_BG: Color = Color::rgb(40, 100, 220);
 const TITLE_UNFOCUSED_BG: Color = Color::rgb(45, 50, 65);
@@ -37,6 +53,22 @@ const TITLE_FOCUSED_TEXT: Color = Color::rgb(255, 255, 255);
 const WIN_BORDER_COLOR: Color = Color::rgb(50, 55, 70);
 const WIN_BORDER_FOCUSED: Color = Color::rgb(60, 130, 255);
 const CONTENT_BG: Color = Color::rgb(20, 25, 40);
+
+// Taskbar/Appbar colors
+const TASKBAR_BG: Color = Color::rgb(20, 22, 30);
+const TASKBAR_TEXT: Color = Color::rgb(180, 185, 195);
+const APPBAR_BG: Color = Color::rgb(25, 28, 38);
+const APPBAR_BORDER: Color = Color::rgb(50, 55, 70);
+const APPBAR_BTN_BG: Color = Color::rgb(40, 45, 60);
+const APPBAR_BTN_FOCUSED: Color = Color::rgb(40, 100, 220);
+const APPBAR_BTN_MINIMIZED: Color = Color::rgb(30, 33, 45);
+const APPBAR_BTN_TEXT: Color = Color::rgb(160, 165, 175);
+
+// Chrome button colors
+const CLOSE_BTN_BG: Color = Color::rgb(200, 50, 50);
+const CLOSE_BTN_TEXT: Color = Color::rgb(255, 255, 255);
+const MINIMIZE_BTN_BG: Color = Color::rgb(80, 85, 100);
+const MINIMIZE_BTN_TEXT: Color = Color::rgb(255, 255, 255);
 
 // ─── Input Parser ────────────────────────────────────────────────────────────
 // Parses stdin bytes (keyboard input) into InputEvents that BWM can either
@@ -151,6 +183,10 @@ struct Window {
     title: [u8; 32],
     title_len: usize,
     window_id: u32,
+    owner_pid: u32,
+    minimized: bool,
+    /// Stable ordering for appbar (assigned at discovery time, never changes)
+    creation_order: u32,
     /// Direct-mapped pointer to client window's pixel buffer (read-only, MAP_SHARED)
     mapped_ptr: *const u32,
     /// Client window buffer width (from map_window_buffer)
@@ -160,8 +196,6 @@ struct Window {
 }
 
 impl Window {
-    fn title_bytes(&self) -> &[u8] { &self.title[..self.title_len] }
-
     fn content_x(&self) -> i32 { self.x + BORDER_WIDTH as i32 }
     fn content_y(&self) -> i32 { self.y + TITLE_BAR_HEIGHT as i32 + BORDER_WIDTH as i32 }
     fn content_width(&self) -> usize { self.width.saturating_sub(BORDER_WIDTH * 2) }
@@ -186,6 +220,29 @@ impl Window {
 
     fn bounds(&self) -> (i32, i32, i32, i32) {
         (self.x, self.y, self.x + self.width as i32, self.y + self.total_height() as i32)
+    }
+
+    fn close_btn_rect(&self) -> (i32, i32, usize, usize) {
+        let bx = self.x + self.width as i32 - BORDER_WIDTH as i32
+            - CHROME_BTN_PAD as i32 - CHROME_BTN_SIZE as i32;
+        let by = self.y + BORDER_WIDTH as i32
+            + ((TITLE_BAR_HEIGHT - BORDER_WIDTH - CHROME_BTN_SIZE) / 2) as i32;
+        (bx, by, CHROME_BTN_SIZE, CHROME_BTN_SIZE)
+    }
+
+    fn minimize_btn_rect(&self) -> (i32, i32, usize, usize) {
+        let (cx, cy, _, _) = self.close_btn_rect();
+        (cx - CHROME_BTN_PAD as i32 - CHROME_BTN_SIZE as i32, cy, CHROME_BTN_SIZE, CHROME_BTN_SIZE)
+    }
+
+    fn hit_close_button(&self, mx: i32, my: i32) -> bool {
+        let (bx, by, bw, bh) = self.close_btn_rect();
+        mx >= bx && mx < bx + bw as i32 && my >= by && my < by + bh as i32
+    }
+
+    fn hit_minimize_button(&self, mx: i32, my: i32) -> bool {
+        let (bx, by, bw, bh) = self.minimize_btn_rect();
+        mx >= bx && mx < bx + bw as i32 && my >= by && my < by + bh as i32
     }
 }
 
@@ -216,7 +273,7 @@ fn draw_text_at(fb: &mut FrameBuf, text: &[u8], x: i32, y: i32, color: Color) {
     }
 }
 
-/// Draw a floating window frame (border + title bar + content bg)
+/// Draw a floating window frame (border + title bar + chrome buttons + content bg)
 fn draw_window_frame(fb: &mut FrameBuf, win: &Window, focused: bool) {
     let border_color = if focused { WIN_BORDER_FOCUSED } else { WIN_BORDER_COLOR };
     let title_bg = if focused { TITLE_FOCUSED_BG } else { TITLE_UNFOCUSED_BG };
@@ -228,8 +285,28 @@ fn draw_window_frame(fb: &mut FrameBuf, win: &Window, focused: bool) {
     fill_rect(fb, win.x, win.y, win.width, win.total_height(), border_color);
     fill_rect(fb, win.x + bw as i32, win.y + bw as i32,
               win.width - bw * 2, TITLE_BAR_HEIGHT - bw, title_bg);
+
+    // Title text (truncated to not overlap chrome buttons)
+    let max_title_w = win.width.saturating_sub(bw * 2 + 8 + CHROME_RESERVED);
+    let max_chars = max_title_w / CELL_W;
+    let text_len = win.title_len.min(max_chars);
     let text_y = win.y + bw as i32 + ((TITLE_BAR_HEIGHT - bw - CELL_H) / 2) as i32;
-    draw_text_at(fb, win.title_bytes(), win.x + 8, text_y, title_fg);
+    draw_text_at(fb, &win.title[..text_len], win.x + 8, text_y, title_fg);
+
+    // Close button (rightmost in title bar)
+    let (cbx, cby, cbw, cbh) = win.close_btn_rect();
+    fill_rect(fb, cbx, cby, cbw, cbh, CLOSE_BTN_BG);
+    let cx = cbx + (cbw as i32 - CELL_W as i32) / 2;
+    let cy = cby + (cbh as i32 - CELL_H as i32) / 2;
+    draw_text_at(fb, b"x", cx, cy, CLOSE_BTN_TEXT);
+
+    // Minimize button (left of close)
+    let (mbx, mby, mbw, mbh) = win.minimize_btn_rect();
+    fill_rect(fb, mbx, mby, mbw, mbh, MINIMIZE_BTN_BG);
+    let mx = mbx + (mbw as i32 - CELL_W as i32) / 2;
+    let my = mby + (mbh as i32 - CELL_H as i32) / 2;
+    draw_text_at(fb, b"-", mx, my, MINIMIZE_BTN_TEXT);
+
     fill_rect(fb, win.content_x(), win.content_y(),
               win.content_width(), win.content_height(), CONTENT_BG);
 }
@@ -251,6 +328,198 @@ fn paint_background(fb: &mut FrameBuf) {
             fb.put_pixel(x, y, Color::rgb(r2, g2, b2));
         }
     }
+}
+
+// ─── Taskbar & App Bar ──────────────────────────────────────────────────────
+
+/// US Eastern Time offset from UTC in seconds.
+/// DST (EDT, UTC-4) runs from 2nd Sunday of March to 1st Sunday of November.
+/// Standard (EST, UTC-5) applies the rest of the year.
+fn eastern_offset_secs(utc_secs: i64) -> i64 {
+    // Compute day-of-year, month, day-of-week from Unix timestamp
+    let days = (utc_secs / 86400) as i64;
+
+    // Compute year/month/day
+    let mut y = 1970i64;
+    let mut rem = days;
+    loop {
+        let ydays = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+        if rem < ydays { break; }
+        rem -= ydays;
+        y += 1;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let mdays: [i64; 12] = [31, if leap {29} else {28}, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 0u8;
+    for i in 0..12 {
+        if rem < mdays[i] { month = i as u8 + 1; break; }
+        rem -= mdays[i];
+    }
+    let day = rem as u8 + 1;
+
+    // 2nd Sunday of March: find first Sunday in March, add 7
+    // 1st Sunday of November: find first Sunday in November
+    // Check month boundaries for DST transitions
+    // DST starts: 2nd Sunday of March at 2:00 AM EST (7:00 AM UTC)
+    // DST ends: 1st Sunday of November at 2:00 AM EDT (6:00 AM UTC)
+    let hour_utc = ((utc_secs % 86400) / 3600) as u8;
+
+    // March: find day-of-week of March 1
+    let jan1_dow = {
+        let mut d = 0i64;
+        for yr in 1970..y {
+            d += if yr % 4 == 0 && (yr % 100 != 0 || yr % 400 == 0) { 366 } else { 365 };
+        }
+        ((d % 7 + 4) % 7) as u8 // 0=Sun
+    };
+    // Day of week of March 1 = (jan1_dow + 31 + feb_days) % 7
+    let feb = if leap { 29 } else { 28 };
+    let mar1_dow = (jan1_dow + 31 + feb) % 7;
+    let dst_start_day = if mar1_dow == 0 { 8u8 } else { (14 - mar1_dow + 1) as u8 }; // 2nd Sunday
+    // Day of week of Nov 1
+    let days_to_nov1: u16 = [31u16, feb as u16, 31, 30, 31, 30, 31, 31, 30, 31].iter().sum();
+    let nov1_dow = (jan1_dow as u16 + days_to_nov1) % 7;
+    let dst_end_day = if nov1_dow == 0 { 1u8 } else { 7 - nov1_dow as u8 + 1 };
+
+    let is_dst = match month {
+        1..=2 => false,
+        4..=10 => true,
+        3 => day > dst_start_day || (day == dst_start_day && hour_utc >= 7),
+        11 => day < dst_end_day || (day == dst_end_day && hour_utc < 6),
+        12 => false,
+        _ => false,
+    };
+
+    if is_dst { -4 * 3600 } else { -5 * 3600 }
+}
+
+fn format_clock(utc_secs: i64, buf: &mut [u8; 11]) {
+    let offset = eastern_offset_secs(utc_secs);
+    let local = utc_secs + offset;
+    // Handle day wrap
+    let t = ((local % 86400) + 86400) % 86400;
+    let s = (t % 60) as u8;
+    let m = ((t / 60) % 60) as u8;
+    let h = ((t / 3600) % 24) as u8;
+    buf[0] = b'0' + h / 10;
+    buf[1] = b'0' + h % 10;
+    buf[2] = b':';
+    buf[3] = b'0' + m / 10;
+    buf[4] = b'0' + m % 10;
+    buf[5] = b':';
+    buf[6] = b'0' + s / 10;
+    buf[7] = b'0' + s % 10;
+    buf[8] = b' ';
+    buf[9] = b'E';
+    buf[10] = b'T';
+}
+
+fn draw_taskbar(fb: &mut FrameBuf, clock_text: &[u8]) {
+    let w = fb.width;
+    fill_rect(fb, 0, 0, w, TASKBAR_HEIGHT, TASKBAR_BG);
+    // "Breenix" label on the left
+    let label_y = ((TASKBAR_HEIGHT - CELL_H) / 2 + 1) as i32;
+    draw_text_at(fb, b"Breenix", 8, label_y, TASKBAR_TEXT);
+    // Clock on the right
+    if !clock_text.is_empty() {
+        let clock_x = w as i32 - (clock_text.len() as i32 * CELL_W as i32) - 8;
+        draw_text_at(fb, clock_text, clock_x, label_y, TASKBAR_TEXT);
+    }
+}
+
+fn appbar_button_width(title_len: usize) -> usize {
+    let text_w = title_len * CELL_W + 16;
+    text_w.max(60).min(180)
+}
+
+/// Build indices sorted by creation_order (stable appbar layout).
+fn sorted_by_creation(windows: &[Window]) -> ([usize; 16], usize) {
+    let n = windows.len().min(16);
+    let mut idx = [0usize; 16];
+    for i in 0..n { idx[i] = i; }
+    // Insertion sort (at most 16 elements)
+    for i in 1..n {
+        let mut j = i;
+        while j > 0 && windows[idx[j]].creation_order < windows[idx[j - 1]].creation_order {
+            idx.swap(j, j - 1);
+            j -= 1;
+        }
+    }
+    (idx, n)
+}
+
+fn draw_appbar(fb: &mut FrameBuf, windows: &[Window], focused_win: usize) {
+    let screen_h = fb.height;
+    let screen_w = fb.width;
+    let bar_y = (screen_h - APPBAR_HEIGHT) as i32;
+
+    // Background
+    fill_rect(fb, 0, bar_y, screen_w, APPBAR_HEIGHT, APPBAR_BG);
+    // 1px top border
+    fill_rect(fb, 0, bar_y, screen_w, 1, APPBAR_BORDER);
+
+    // Window buttons in stable creation order
+    let (sorted, n) = sorted_by_creation(windows);
+    let mut btn_x: i32 = 4;
+    let btn_h: usize = APPBAR_HEIGHT - 8;
+    let btn_y = bar_y + 4;
+
+    for k in 0..n {
+        let i = sorted[k];
+        let win = &windows[i];
+        let btn_w = appbar_button_width(win.title_len);
+
+        let bg = if i == focused_win && !win.minimized {
+            APPBAR_BTN_FOCUSED
+        } else if win.minimized {
+            APPBAR_BTN_MINIMIZED
+        } else {
+            APPBAR_BTN_BG
+        };
+
+        fill_rect(fb, btn_x, btn_y, btn_w, btn_h, bg);
+
+        // Title text (truncated to fit button)
+        let max_chars = (btn_w.saturating_sub(12)) / CELL_W;
+        let text_len = win.title_len.min(max_chars);
+        let text_y = btn_y + ((btn_h - CELL_H) / 2 + 1) as i32;
+        draw_text_at(fb, &win.title[..text_len], btn_x + 6, text_y, APPBAR_BTN_TEXT);
+
+        btn_x += btn_w as i32 + 2;
+        if btn_x >= screen_w as i32 - 4 { break; }
+    }
+}
+
+fn appbar_hit_test(windows: &[Window], screen_w: usize, screen_h: usize, mx: i32, my: i32) -> Option<usize> {
+    let bar_y = (screen_h - APPBAR_HEIGHT) as i32;
+    if my < bar_y || my >= screen_h as i32 { return None; }
+
+    let (sorted, n) = sorted_by_creation(windows);
+    let mut btn_x: i32 = 4;
+    let btn_h = (APPBAR_HEIGHT - 8) as i32;
+    let btn_y = bar_y + 4;
+
+    for k in 0..n {
+        let i = sorted[k];
+        let btn_w = appbar_button_width(windows[i].title_len) as i32;
+        if mx >= btn_x && mx < btn_x + btn_w
+            && my >= btn_y && my < btn_y + btn_h
+        {
+            return Some(i); // Returns the actual Vec index, not the sorted position
+        }
+        btn_x += btn_w + 2;
+        if btn_x >= screen_w as i32 - 4 { break; }
+    }
+    None
+}
+
+fn next_visible_window(windows: &[Window], current: usize) -> usize {
+    for i in (0..windows.len()).rev() {
+        if !windows[i].minimized {
+            return i;
+        }
+    }
+    current
 }
 
 // ─── Input Routing ──────────────────────────────────────────────────────────
@@ -305,7 +574,7 @@ fn route_mouse_move_to_focused(
 
 // ─── Window Discovery ───────────────────────────────────────────────────────
 
-fn discover_windows(windows: &mut Vec<Window>, screen_w: usize, screen_h: usize) -> bool {
+fn discover_windows(windows: &mut Vec<Window>, screen_w: usize, screen_h: usize, next_order: &mut u32) -> bool {
     let mut win_infos = [graphics::WindowInfo {
         buffer_id: 0, owner_pid: 0, width: 0, height: 0,
         x: 0, y: 0, title_len: 0, title: [0; 64],
@@ -328,8 +597,10 @@ fn discover_windows(windows: &mut Vec<Window>, screen_w: usize, screen_h: usize)
         if windows.iter().any(|w| w.window_id == info.buffer_id) { continue; }
 
         let n = windows.len();
+        let usable_h = screen_h.saturating_sub(TASKBAR_HEIGHT + APPBAR_HEIGHT);
         let cascade_x = 30 + (n as i32 * 50) % ((screen_w as i32 - 500).max(100));
-        let cascade_y = 30 + (n as i32 * 50) % ((screen_h as i32 - 500).max(100));
+        let cascade_y = TASKBAR_HEIGHT as i32 + 10
+            + (n as i32 * 50) % ((usable_h as i32 - 500).max(100));
 
         let total_w = info.width as usize + BORDER_WIDTH * 2;
         let total_h = info.height as usize + TITLE_BAR_HEIGHT + BORDER_WIDTH * 2;
@@ -351,9 +622,14 @@ fn discover_windows(windows: &mut Vec<Window>, screen_w: usize, screen_h: usize)
             }
         };
 
+        let order = *next_order;
+        *next_order += 1;
         windows.push(Window {
             x: cascade_x, y: cascade_y, width: total_w, height: total_h,
             title, title_len, window_id: info.buffer_id,
+            owner_pid: info.owner_pid,
+            minimized: false,
+            creation_order: order,
             mapped_ptr: map_ptr, mapped_w: map_w, mapped_h: map_h,
         });
         added = true;
@@ -490,15 +766,18 @@ fn blit_mapped_pixels(fb: &mut FrameBuf, win: &Window) {
     blit_pixels_to_fb(fb, win, src, w, h);
 }
 
-/// Redraw all windows in z-order (index 0 = bottom).
+/// Redraw all windows in z-order (index 0 = bottom), plus taskbar and app bar.
 /// Reads directly from mapped memory (zero-copy from client window pages).
-fn redraw_all_windows(fb: &mut FrameBuf, windows: &[Window], focused_win: usize) {
+fn redraw_all_windows(fb: &mut FrameBuf, windows: &[Window], focused_win: usize, clock_text: &[u8]) {
+    draw_taskbar(fb, clock_text);
     for i in 0..windows.len() {
+        if windows[i].minimized { continue; }
         draw_window_frame(fb, &windows[i], i == focused_win);
         if windows[i].window_id != 0 {
             blit_mapped_pixels(fb, &windows[i]);
         }
     }
+    draw_appbar(fb, windows, focused_win);
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
@@ -585,7 +864,12 @@ fn main() {
     let mut dragging: Option<(usize, i32, i32)> = None;
     let mut full_redraw = true;
     let mut content_dirty = false;
-    // No client_pixel_buf needed — BWM reads directly from MAP_SHARED window pages
+
+    // Clock state
+    let mut last_clock_sec: i64 = -1;
+    let mut clock_text = [0u8; 11];
+    format_clock(0, &mut clock_text);
+    let mut next_creation_order: u32 = 0;
 
     // Initial composite
     if direct_mapped {
@@ -613,12 +897,12 @@ fn main() {
     let mut registry_gen: u32 = 0;
 
     // Initial window discovery (before entering event loop)
-    if discover_windows(&mut windows, screen_w, screen_h) {
+    if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order) {
         if focused_win >= windows.len() {
             focused_win = windows.len().saturating_sub(1);
         }
         composite_buf.copy_from_slice(&bg_cache);
-        redraw_all_windows(&mut fb, &windows, focused_win);
+        redraw_all_windows(&mut fb, &windows, focused_win, &clock_text);
         full_redraw = true;
     }
 
@@ -635,12 +919,12 @@ fn main() {
 
         // ── 1. Discover new/removed client windows (only when registry changed) ──
         if ready & graphics::COMPOSITOR_READY_REGISTRY != 0 {
-            if discover_windows(&mut windows, screen_w, screen_h) {
+            if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order) {
                 if focused_win >= windows.len() {
                     focused_win = windows.len().saturating_sub(1);
                 }
                 composite_buf.copy_from_slice(&bg_cache);
-                redraw_all_windows(&mut fb, &windows, focused_win);
+                redraw_all_windows(&mut fb, &windows, focused_win, &clock_text);
                 full_redraw = true;
             }
         }
@@ -662,7 +946,7 @@ fn main() {
                                     focused_win = new_focus;
                                     send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
                                     composite_buf.copy_from_slice(&bg_cache);
-                                    redraw_all_windows(&mut fb, &windows, focused_win);
+                                    redraw_all_windows(&mut fb, &windows, focused_win, &clock_text);
                                     full_redraw = true;
                                 }
                             }
@@ -699,15 +983,17 @@ fn main() {
 
                     if let Some((win_idx, off_x, off_y)) = dragging {
                         let new_x = mouse_x - off_x;
-                        let new_y = mouse_y - off_y;
+                        // Clamp drag to stay below taskbar
+                        let new_y = (mouse_y - off_y).max(TASKBAR_HEIGHT as i32);
                         if new_x != windows[win_idx].x || new_y != windows[win_idx].y {
                             windows[win_idx].x = new_x;
                             windows[win_idx].y = new_y;
                             composite_buf.copy_from_slice(&bg_cache);
-                            redraw_all_windows(&mut fb, &windows, focused_win);
+                            redraw_all_windows(&mut fb, &windows, focused_win, &clock_text);
                             full_redraw = true;
                         }
                     } else if !windows.is_empty() && focused_win < windows.len()
+                        && !windows[focused_win].minimized
                         && windows[focused_win].hit_content(mouse_x, mouse_y)
                     {
                         let local_x = (mouse_x - windows[focused_win].content_x()) as i16;
@@ -721,6 +1007,7 @@ fn main() {
                     if dragging.is_some() {
                         dragging = None;
                     } else if !windows.is_empty() && focused_win < windows.len()
+                        && !windows[focused_win].minimized
                         && windows[focused_win].hit_content(mouse_x, mouse_y)
                     {
                         let local_x = (mouse_x - windows[focused_win].content_x()) as i16;
@@ -733,45 +1020,110 @@ fn main() {
                 let new_click = (buttons & 1) != 0 && (prev_buttons & 1) == 0;
                 prev_buttons = buttons;
 
-                if new_click && !windows.is_empty() {
-                    let mut clicked_idx: Option<usize> = None;
-                    let mut clicked_title = false;
-                    for i in (0..windows.len()).rev() {
-                        let ht = windows[i].hit_title(mouse_x, mouse_y);
-                        let ha = windows[i].hit_any(mouse_x, mouse_y);
-                        if ht || ha {
-                            clicked_idx = Some(i);
-                            clicked_title = ht;
-                            break;
+                if new_click {
+                    // Check taskbar area — ignore clicks
+                    if mouse_y < TASKBAR_HEIGHT as i32 {
+                        // Taskbar click — no action
+                    }
+                    // Check appbar area
+                    else if mouse_y >= (screen_h - APPBAR_HEIGHT) as i32 {
+                        if let Some(idx) = appbar_hit_test(&windows, screen_w, screen_h, mouse_x, mouse_y) {
+                            if idx == focused_win && !windows[idx].minimized {
+                                // Click focused window button → minimize
+                                windows[idx].minimized = true;
+                                send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
+                                focused_win = next_visible_window(&windows, focused_win);
+                                send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
+                            } else {
+                                // Click unfocused/minimized → restore and focus
+                                windows[idx].minimized = false;
+                                // Bring to top of z-order
+                                if idx < windows.len() - 1 {
+                                    let win = windows.remove(idx);
+                                    windows.push(win);
+                                }
+                                let top = windows.len() - 1;
+                                if top != focused_win {
+                                    send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
+                                    focused_win = top;
+                                    send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
+                                } else {
+                                    focused_win = top;
+                                }
+                            }
+                            composite_buf.copy_from_slice(&bg_cache);
+                            redraw_all_windows(&mut fb, &windows, focused_win, &clock_text);
+                            full_redraw = true;
                         }
                     }
-                    if let Some(ci) = clicked_idx {
-                        if ci < windows.len() - 1 {
-                            let win = windows.remove(ci);
-                            windows.push(win);
+                    // Check windows (existing logic with chrome button additions)
+                    else if !windows.is_empty() {
+                        let mut clicked_idx: Option<usize> = None;
+                        let mut clicked_title = false;
+                        for i in (0..windows.len()).rev() {
+                            if windows[i].minimized { continue; }
+                            let ht = windows[i].hit_title(mouse_x, mouse_y);
+                            let ha = windows[i].hit_any(mouse_x, mouse_y);
+                            if ht || ha {
+                                clicked_idx = Some(i);
+                                clicked_title = ht;
+                                break;
+                            }
                         }
-                        let top = windows.len() - 1;
+                        if let Some(ci) = clicked_idx {
+                            if ci < windows.len() - 1 {
+                                let win = windows.remove(ci);
+                                windows.push(win);
+                            }
+                            let top = windows.len() - 1;
 
-                        if top != focused_win {
-                            send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
-                            focused_win = top;
-                            send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
-                        } else {
-                            focused_win = top;
+                            if top != focused_win {
+                                send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
+                                focused_win = top;
+                                send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
+                            } else {
+                                focused_win = top;
+                            }
+
+                            if clicked_title {
+                                // Check chrome buttons before starting drag
+                                if windows[top].hit_close_button(mouse_x, mouse_y) {
+                                    // Send CLOSE_REQUESTED to client
+                                    let close_event = WindowInputEvent {
+                                        event_type: input_event_type::CLOSE_REQUESTED,
+                                        keycode: 0, mouse_x: 0, mouse_y: 0, modifiers: 0, _pad: 0,
+                                    };
+                                    let _ = graphics::write_window_input(windows[top].window_id, &close_event);
+                                    // Send SIGTERM to owner process
+                                    if windows[top].owner_pid > 0 {
+                                        let _ = signal::kill(windows[top].owner_pid as i32, signal::SIGTERM);
+                                    }
+                                } else if windows[top].hit_minimize_button(mouse_x, mouse_y) {
+                                    windows[top].minimized = true;
+                                    if focused_win == top {
+                                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
+                                        focused_win = next_visible_window(&windows, focused_win);
+                                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
+                                    }
+                                    composite_buf.copy_from_slice(&bg_cache);
+                                    redraw_all_windows(&mut fb, &windows, focused_win, &clock_text);
+                                    full_redraw = true;
+                                } else {
+                                    dragging = Some((top, mouse_x - windows[top].x, mouse_y - windows[top].y));
+                                }
+                            } else if windows[top].hit_content(mouse_x, mouse_y) {
+                                let local_x = (mouse_x - windows[top].content_x()) as i16;
+                                let local_y = (mouse_y - windows[top].content_y()) as i16;
+                                route_mouse_button_to_focused(&windows, focused_win, 1, true, local_x, local_y);
+                            }
+
+                            // Full redraw for z-order change (unless minimize already did it)
+                            if !full_redraw {
+                                composite_buf.copy_from_slice(&bg_cache);
+                                redraw_all_windows(&mut fb, &windows, focused_win, &clock_text);
+                                full_redraw = true;
+                            }
                         }
-
-                        if clicked_title {
-                            dragging = Some((top, mouse_x - windows[top].x, mouse_y - windows[top].y));
-                        } else if windows[top].hit_content(mouse_x, mouse_y) {
-                            let local_x = (mouse_x - windows[top].content_x()) as i16;
-                            let local_y = (mouse_y - windows[top].content_y()) as i16;
-                            route_mouse_button_to_focused(&windows, focused_win, 1, true, local_x, local_y);
-                        }
-
-                        // Fast background restore + full window redraw
-                        composite_buf.copy_from_slice(&bg_cache);
-                        redraw_all_windows(&mut fb, &windows, focused_win);
-                        full_redraw = true;
                     }
                 }
             }
@@ -786,15 +1138,17 @@ fn main() {
 
         if ready & graphics::COMPOSITOR_READY_DIRTY != 0 {
         for i in 0..windows.len().min(16) {
-            if windows[i].window_id != 0 {
+            if windows[i].window_id != 0 && !windows[i].minimized {
                 let mut occ = [(0i32, 0i32, 0i32, 0i32); 16];
                 let mut n_occ = 0;
                 let ib = windows[i].bounds();
                 for j in (i + 1)..windows.len().min(16) {
-                    let jb = windows[j].bounds();
-                    if rects_overlap(ib, jb) && n_occ < 16 {
-                        occ[n_occ] = jb;
-                        n_occ += 1;
+                    if !windows[j].minimized {
+                        let jb = windows[j].bounds();
+                        if rects_overlap(ib, jb) && n_occ < 16 {
+                            occ[n_occ] = jb;
+                            n_occ += 1;
+                        }
                     }
                 }
                 if blit_client_pixels(&mut fb, &windows[i], &occ[..n_occ]) {
@@ -808,6 +1162,21 @@ fn main() {
             }
         }
         } // end if DIRTY
+
+        // ── 5b. Update clock (once per second) ──
+        if let Ok(ts) = libbreenix::time::now_realtime() {
+            if ts.tv_sec != last_clock_sec {
+                last_clock_sec = ts.tv_sec;
+                format_clock(ts.tv_sec, &mut clock_text);
+                draw_taskbar(&mut fb, &clock_text);
+                // Expand dirty rect to cover taskbar
+                dirty_x0 = 0;
+                dirty_y0 = 0;
+                dirty_x1 = dirty_x1.max(screen_w as i32);
+                dirty_y1 = dirty_y1.max(TASKBAR_HEIGHT as i32);
+                content_dirty = true;
+            }
+        }
 
         // ── 6. Composite to GPU (only when something changed) ──
         let (cbuf, cw, ch): (&[u32], u32, u32) = if direct_mapped {
