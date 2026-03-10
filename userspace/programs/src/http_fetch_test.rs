@@ -34,7 +34,13 @@ fn main() {
                     libbreenix::process::WNOHANG,
                 ) {
                     Ok(pid) if pid.raw() > 0 => {
-                        // Child exited — check its exit code
+                        // Child exited — check wait status per POSIX
+                        let signaled = (status & 0x7F) != 0;
+                        if signaled {
+                            let sig = status & 0x7F;
+                            println!("[http_fetch_test] Child killed by signal {}", sig);
+                            process::exit(1);
+                        }
                         let exit_code = (status >> 8) & 0xFF;
                         if exit_code == 0 {
                             process::exit(0);
@@ -67,7 +73,8 @@ fn main() {
 }
 
 fn do_http_fetch() -> ! {
-    let mut buf = [0u8; MAX_RESPONSE_SIZE];
+    // Heap-allocate: MAX_RESPONSE_SIZE (64KB) would overflow the 64KB user stack
+    let mut buf = vec![0u8; MAX_RESPONSE_SIZE];
     match http::http_get_with_buf("http://www.duke.edu/", &mut buf) {
         Ok((response, _total_len)) => {
             if response.status_code >= 200 && response.status_code < 400 {
