@@ -123,6 +123,18 @@ pub static COW_FAULT_TOTAL: TraceCounter = TraceCounter::new(
     "Total CoW fault operations",
 );
 
+/// Total idle timer ticks across all CPUs.
+///
+/// Incremented in the timer interrupt handler when the CPU is running
+/// its idle thread. Per-CPU utilization = 1 - (idle_ticks / timer_ticks).
+///
+/// GDB: `print IDLE_TICK_TOTAL`
+#[no_mangle]
+pub static IDLE_TICK_TOTAL: TraceCounter = TraceCounter::new(
+    "IDLE_TICK_TOTAL",
+    "Total idle timer ticks",
+);
+
 /// GPU compositor: total bytes uploaded to VRAM.
 #[no_mangle]
 pub static GPU_BYTES_UPLOADED: TraceCounter = TraceCounter::new(
@@ -203,6 +215,7 @@ pub fn init() {
     register_counter(&FORK_TOTAL);
     register_counter(&EXEC_TOTAL);
     register_counter(&COW_FAULT_TOTAL);
+    register_counter(&IDLE_TICK_TOTAL);
     register_counter(&GPU_BYTES_UPLOADED);
     register_counter(&GPU_FULL_UPLOADS);
     register_counter(&GPU_PARTIAL_UPLOADS);

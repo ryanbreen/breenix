@@ -182,6 +182,13 @@ fn emit_formatted_num(n: u64) {
     emit(&buf[..len]);
 }
 
+/// Per-CPU tick data parsed from /proc/stat
+#[derive(Clone, Copy, Default)]
+struct CpuTicks {
+    total: u64,
+    idle: u64,
+}
+
 /// Process info structure
 #[derive(Clone)]
 struct ProcInfo {
@@ -306,6 +313,80 @@ fn get_pids() -> Vec<u64> {
     pids
 }
 
+/// Parse per-CPU tick lines from /proc/stat content.
+/// Lines look like: "cpu0 12345 6789\n" where first number is total ticks, second is idle.
+fn parse_cpu_ticks(content: &[u8]) -> Vec<CpuTicks> {
+    let mut cpus = Vec::new();
+    let mut i = 0;
+    while i + 3 < content.len() {
+        // Look for lines starting with "cpu"
+        if content[i] == b'c' && content[i + 1] == b'p' && content[i + 2] == b'u' {
+            let mut j = i + 3;
+            // Skip CPU number digit(s)
+            while j < content.len() && content[j] >= b'0' && content[j] <= b'9' {
+                j += 1;
+            }
+            // Skip whitespace
+            while j < content.len() && (content[j] == b' ' || content[j] == b'\t') {
+                j += 1;
+            }
+            // Parse total ticks
+            let mut total: u64 = 0;
+            while j < content.len() && content[j] >= b'0' && content[j] <= b'9' {
+                total = total.saturating_mul(10).saturating_add((content[j] - b'0') as u64);
+                j += 1;
+            }
+            // Skip whitespace
+            while j < content.len() && (content[j] == b' ' || content[j] == b'\t') {
+                j += 1;
+            }
+            // Parse idle ticks
+            let mut idle: u64 = 0;
+            while j < content.len() && content[j] >= b'0' && content[j] <= b'9' {
+                idle = idle.saturating_mul(10).saturating_add((content[j] - b'0') as u64);
+                j += 1;
+            }
+            cpus.push(CpuTicks { total, idle });
+        }
+        // Skip to next line
+        while i < content.len() && content[i] != b'\n' {
+            i += 1;
+        }
+        if i < content.len() {
+            i += 1;
+        }
+    }
+    cpus
+}
+
+/// Draw a CPU utilization bar for a single CPU
+fn draw_cpu_bar(cpu_id: usize, pct: u64) {
+    let bar_width = 25;
+    let filled = ((pct as usize) * bar_width) / 100;
+
+    emit_str("\x1b[1m  CPU");
+    emit_num(cpu_id as u64);
+    emit_str(" \x1b[0m[");
+    for i in 0..bar_width {
+        if i < filled {
+            if pct > 80 {
+                emit_str("\x1b[31m|"); // Red for high usage
+            } else if pct > 50 {
+                emit_str("\x1b[33m|"); // Yellow for medium
+            } else {
+                emit_str("\x1b[36m|"); // Cyan for low
+            }
+        } else {
+            emit_str("\x1b[90m.");
+        }
+    }
+    emit_str("\x1b[0m] ");
+    if pct < 10 { emit_str(" "); }
+    if pct < 100 { emit_str(" "); }
+    emit_num(pct);
+    emit_str("%\n");
+}
+
 /// Draw a memory usage bar
 fn draw_memory_bar(used_kb: u64, total_kb: u64) {
     let bar_width = 30;
@@ -354,6 +435,7 @@ fn main() {
     let mut prev_gpu_bytes: u64 = 0;
     let mut prev_gpu_full: u64 = 0;
     let mut prev_gpu_partial: u64 = 0;
+    let mut prev_cpu_ticks: Vec<CpuTicks> = Vec::new();
 
     loop {
         // ── Gather Data ──────────────────────────────────────────────────
@@ -383,7 +465,7 @@ fn main() {
         let used_kb = total_kb.saturating_sub(free_kb);
 
         // Kernel counters
-        let mut stat_buf = [0u8; 768];
+        let mut stat_buf = [0u8; 1024];
         let stat_n = read_procfs("/proc/stat", &mut stat_buf);
         let stat = &stat_buf[..stat_n];
         let syscalls = parse_value(stat, b"syscalls");
@@ -396,6 +478,22 @@ fn main() {
         let gpu_bytes = parse_value(stat, b"gpu_bytes");
         let gpu_full = parse_value(stat, b"gpu_full");
         let gpu_partial = parse_value(stat, b"gpu_partial");
+
+        // Per-CPU ticks
+        let cpu_ticks = parse_cpu_ticks(stat);
+        let mut cpu_pct_list: Vec<u64> = Vec::new();
+        for (i, ct) in cpu_ticks.iter().enumerate() {
+            let prev = prev_cpu_ticks.get(i).copied().unwrap_or_default();
+            let dt = ct.total.saturating_sub(prev.total);
+            let di = ct.idle.saturating_sub(prev.idle);
+            let pct = if dt > 0 {
+                ((dt.saturating_sub(di)) * 100) / dt
+            } else {
+                0
+            };
+            cpu_pct_list.push(pct);
+        }
+        prev_cpu_ticks = cpu_ticks;
 
         // Process list
         let pids = get_pids();
@@ -449,6 +547,11 @@ fn main() {
         if secs < 10 { emit_str("0"); }
         emit_num(secs);
         emit_str("\n\n");
+
+        // Per-CPU utilization bars
+        for (i, &pct) in cpu_pct_list.iter().enumerate() {
+            draw_cpu_bar(i, pct);
+        }
 
         // Memory bar
         draw_memory_bar(used_kb, total_kb);
