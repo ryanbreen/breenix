@@ -541,7 +541,7 @@ fn main() {
 
     // Try to map COMPOSITE_TEX directly into our address space.
     // If successful, all pixel writes go straight to GPU texture backing (zero-copy).
-    let (mut composite_buf, direct_mapped) = match graphics::map_compositor_texture() {
+    let (composite_buf, direct_mapped) = match graphics::map_compositor_texture() {
         Ok((ptr, tex_w, tex_h)) => {
             let mapped_w = tex_w as usize;
             let mapped_h = tex_h as usize;
@@ -598,32 +598,54 @@ fn main() {
     let mut read_buf = [0u8; 512];
     let mut poll_fds = [io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 }];
 
-    // Performance tracing — measure total iteration time (2 clock_gettime per loop)
+    // Performance tracing
     let mut perf_frame: u64 = 0;
     let mut perf_total_ns: u64 = 0;
     let mut perf_composites: u64 = 0;
-    let mut perf_sleeps: u64 = 0;
+    let mut perf_waits: u64 = 0;
 
     fn mono_ns() -> u64 {
         let ts = libbreenix::time::now_monotonic().unwrap_or_default();
         (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
     }
 
+    // Registry generation tracking for compositor_wait
+    let mut registry_gen: u32 = 0;
+
+    // Initial window discovery (before entering event loop)
+    if discover_windows(&mut windows, screen_w, screen_h) {
+        if focused_win >= windows.len() {
+            focused_win = windows.len().saturating_sub(1);
+        }
+        composite_buf.copy_from_slice(&bg_cache);
+        redraw_all_windows(&mut fb, &windows, focused_win);
+        full_redraw = true;
+    }
+
     loop {
+        // ── 0. Block until something needs compositing ──
+        // compositor_wait blocks in the kernel until: window dirty, mouse moved,
+        // registry changed, or timeout. Replaces the old poll+sleep_ms(2) pattern.
+        // 16ms timeout ensures keyboard input via stdin is checked at least ~60Hz.
+        let (ready, new_reg_gen) = graphics::compositor_wait(16, registry_gen).unwrap_or((0, registry_gen));
+        registry_gen = new_reg_gen;
+        perf_waits += 1;
+
         let t0 = mono_ns();
 
-        // ── 1. Discover new/removed client windows ──
-        if discover_windows(&mut windows, screen_w, screen_h) {
-            if focused_win >= windows.len() {
-                focused_win = windows.len().saturating_sub(1);
+        // ── 1. Discover new/removed client windows (only when registry changed) ──
+        if ready & graphics::COMPOSITOR_READY_REGISTRY != 0 {
+            if discover_windows(&mut windows, screen_w, screen_h) {
+                if focused_win >= windows.len() {
+                    focused_win = windows.len().saturating_sub(1);
+                }
+                composite_buf.copy_from_slice(&bg_cache);
+                redraw_all_windows(&mut fb, &windows, focused_win);
+                full_redraw = true;
             }
-            // Restore background from cache (fast memcpy, not gradient computation)
-            composite_buf.copy_from_slice(&bg_cache);
-            redraw_all_windows(&mut fb, &windows, focused_win);
-            full_redraw = true;
         }
 
-        // ── 2. Poll stdin (non-blocking) ──
+        // ── 2. Poll stdin (non-blocking) — keyboard arrives via stdin, not kernel events ──
         poll_fds[0].revents = 0;
         let _ = io::poll(&mut poll_fds, 0);
 
@@ -664,106 +686,107 @@ fn main() {
             }
         }
 
-        // ── 4. Process mouse input ──
-        if let Ok((mx, my, buttons)) = graphics::mouse_state() {
-            let new_mx = mx as i32;
-            let new_my = my as i32;
-            let mouse_moved = new_mx != mouse_x || new_my != mouse_y;
+        // ── 4. Process mouse input (only when mouse changed) ──
+        if ready & graphics::COMPOSITOR_READY_MOUSE != 0 {
+            if let Ok((mx, my, buttons)) = graphics::mouse_state() {
+                let new_mx = mx as i32;
+                let new_my = my as i32;
+                let mouse_moved = new_mx != mouse_x || new_my != mouse_y;
 
-            if mouse_moved {
-                mouse_x = new_mx;
-                mouse_y = new_my;
+                if mouse_moved {
+                    mouse_x = new_mx;
+                    mouse_y = new_my;
 
-                if let Some((win_idx, off_x, off_y)) = dragging {
-                    let new_x = mouse_x - off_x;
-                    let new_y = mouse_y - off_y;
-                    if new_x != windows[win_idx].x || new_y != windows[win_idx].y {
-                        windows[win_idx].x = new_x;
-                        windows[win_idx].y = new_y;
+                    if let Some((win_idx, off_x, off_y)) = dragging {
+                        let new_x = mouse_x - off_x;
+                        let new_y = mouse_y - off_y;
+                        if new_x != windows[win_idx].x || new_y != windows[win_idx].y {
+                            windows[win_idx].x = new_x;
+                            windows[win_idx].y = new_y;
+                            composite_buf.copy_from_slice(&bg_cache);
+                            redraw_all_windows(&mut fb, &windows, focused_win);
+                            full_redraw = true;
+                        }
+                    } else if !windows.is_empty() && focused_win < windows.len()
+                        && windows[focused_win].hit_content(mouse_x, mouse_y)
+                    {
+                        let local_x = (mouse_x - windows[focused_win].content_x()) as i16;
+                        let local_y = (mouse_y - windows[focused_win].content_y()) as i16;
+                        route_mouse_move_to_focused(&windows, focused_win, local_x, local_y);
+                    }
+                }
+
+                // Release: end drag or route release event
+                if (buttons & 1) == 0 && (prev_buttons & 1) != 0 {
+                    if dragging.is_some() {
+                        dragging = None;
+                    } else if !windows.is_empty() && focused_win < windows.len()
+                        && windows[focused_win].hit_content(mouse_x, mouse_y)
+                    {
+                        let local_x = (mouse_x - windows[focused_win].content_x()) as i16;
+                        let local_y = (mouse_y - windows[focused_win].content_y()) as i16;
+                        route_mouse_button_to_focused(&windows, focused_win, 1, false, local_x, local_y);
+                    }
+                }
+
+                // Click: focus change + drag or route click to client
+                let new_click = (buttons & 1) != 0 && (prev_buttons & 1) == 0;
+                prev_buttons = buttons;
+
+                if new_click && !windows.is_empty() {
+                    let mut clicked_idx: Option<usize> = None;
+                    let mut clicked_title = false;
+                    for i in (0..windows.len()).rev() {
+                        let ht = windows[i].hit_title(mouse_x, mouse_y);
+                        let ha = windows[i].hit_any(mouse_x, mouse_y);
+                        if ht || ha {
+                            clicked_idx = Some(i);
+                            clicked_title = ht;
+                            break;
+                        }
+                    }
+                    if let Some(ci) = clicked_idx {
+                        if ci < windows.len() - 1 {
+                            let win = windows.remove(ci);
+                            windows.push(win);
+                        }
+                        let top = windows.len() - 1;
+
+                        if top != focused_win {
+                            send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
+                            focused_win = top;
+                            send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
+                        } else {
+                            focused_win = top;
+                        }
+
+                        if clicked_title {
+                            dragging = Some((top, mouse_x - windows[top].x, mouse_y - windows[top].y));
+                        } else if windows[top].hit_content(mouse_x, mouse_y) {
+                            let local_x = (mouse_x - windows[top].content_x()) as i16;
+                            let local_y = (mouse_y - windows[top].content_y()) as i16;
+                            route_mouse_button_to_focused(&windows, focused_win, 1, true, local_x, local_y);
+                        }
+
+                        // Fast background restore + full window redraw
                         composite_buf.copy_from_slice(&bg_cache);
                         redraw_all_windows(&mut fb, &windows, focused_win);
                         full_redraw = true;
                     }
-                } else if !windows.is_empty() && focused_win < windows.len()
-                    && windows[focused_win].hit_content(mouse_x, mouse_y)
-                {
-                    let local_x = (mouse_x - windows[focused_win].content_x()) as i16;
-                    let local_y = (mouse_y - windows[focused_win].content_y()) as i16;
-                    route_mouse_move_to_focused(&windows, focused_win, local_x, local_y);
-                }
-            }
-
-            // Release: end drag or route release event
-            if (buttons & 1) == 0 && (prev_buttons & 1) != 0 {
-                if dragging.is_some() {
-                    dragging = None;
-                } else if !windows.is_empty() && focused_win < windows.len()
-                    && windows[focused_win].hit_content(mouse_x, mouse_y)
-                {
-                    let local_x = (mouse_x - windows[focused_win].content_x()) as i16;
-                    let local_y = (mouse_y - windows[focused_win].content_y()) as i16;
-                    route_mouse_button_to_focused(&windows, focused_win, 1, false, local_x, local_y);
-                }
-            }
-
-            // Click: focus change + drag or route click to client
-            let new_click = (buttons & 1) != 0 && (prev_buttons & 1) == 0;
-            prev_buttons = buttons;
-
-            if new_click && !windows.is_empty() {
-                let mut clicked_idx: Option<usize> = None;
-                let mut clicked_title = false;
-                for i in (0..windows.len()).rev() {
-                    let ht = windows[i].hit_title(mouse_x, mouse_y);
-                    let ha = windows[i].hit_any(mouse_x, mouse_y);
-                    if ht || ha {
-                        clicked_idx = Some(i);
-                        clicked_title = ht;
-                        break;
-                    }
-                }
-                if let Some(ci) = clicked_idx {
-                    if ci < windows.len() - 1 {
-                        let win = windows.remove(ci);
-                        windows.push(win);
-                    }
-                    let top = windows.len() - 1;
-
-                    if top != focused_win {
-                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
-                        focused_win = top;
-                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
-                    } else {
-                        focused_win = top;
-                    }
-
-                    if clicked_title {
-                        dragging = Some((top, mouse_x - windows[top].x, mouse_y - windows[top].y));
-                    } else if windows[top].hit_content(mouse_x, mouse_y) {
-                        let local_x = (mouse_x - windows[top].content_x()) as i16;
-                        let local_y = (mouse_y - windows[top].content_y()) as i16;
-                        route_mouse_button_to_focused(&windows, focused_win, 1, true, local_x, local_y);
-                    }
-
-                    // Fast background restore + full window redraw
-                    composite_buf.copy_from_slice(&bg_cache);
-                    redraw_all_windows(&mut fb, &windows, focused_win);
-                    full_redraw = true;
                 }
             }
         }
 
         // ── 5. Blit dirty client window pixels (occluded by higher-z windows) ──
-        // Each dirty window is blitted with higher windows as occluders: pixels
-        // covered by higher windows are skipped, so no z-order repair is needed.
+        // Skip entirely if compositor_wait didn't report dirty content
         let mut dirty_x0 = i32::MAX;
         let mut dirty_y0 = i32::MAX;
         let mut dirty_x1 = 0i32;
         let mut dirty_y1 = 0i32;
 
+        if ready & graphics::COMPOSITOR_READY_DIRTY != 0 {
         for i in 0..windows.len().min(16) {
             if windows[i].window_id != 0 {
-                // Collect bounds of all higher-z windows as occluders
                 let mut occ = [(0i32, 0i32, 0i32, 0i32); 16];
                 let mut n_occ = 0;
                 let ib = windows[i].bounds();
@@ -784,17 +807,15 @@ fn main() {
                 }
             }
         }
+        } // end if DIRTY
 
         // ── 6. Composite to GPU (only when something changed) ──
-        // When direct_mapped, pass empty pixels (kernel skips Phase A copy —
-        // our writes went directly into COMPOSITE_TEX backing memory).
         let (cbuf, cw, ch): (&[u32], u32, u32) = if direct_mapped {
             (&[], 0, 0)
         } else {
             (&composite_buf, screen_w as u32, screen_h as u32)
         };
         if full_redraw {
-            // Full upload: entire compositor buffer changed (window add/remove/drag)
             let _ = graphics::virgl_composite_windows_rect(
                 cbuf, cw, ch,
                 1, 0, 0, screen_w as u32, screen_h as u32,
@@ -803,7 +824,6 @@ fn main() {
             content_dirty = false;
             perf_composites += 1;
         } else if content_dirty {
-            // Partial upload: only the dirty sub-region (union of updated window bounds)
             let sw = screen_w as i32;
             let sh = screen_h as i32;
             let dx = dirty_x0.max(0) as u32;
@@ -816,11 +836,8 @@ fn main() {
             );
             content_dirty = false;
             perf_composites += 1;
-        } else {
-            // Nothing dirty — brief sleep to avoid burning CPU
-            let _ = libbreenix::time::sleep_ms(2);
-            perf_sleeps += 1;
         }
+        // No sleep — compositor_wait handles blocking
 
         let t_end = mono_ns();
 
@@ -829,12 +846,12 @@ fn main() {
 
         if perf_frame % 500 == 0 {
             let avg_us = perf_total_ns / 1000 / 500;
-            print!("[bwm-perf] iter={} composites={} sleeps={} avg_total={}us\n",
-                perf_frame, perf_composites, perf_sleeps, avg_us,
+            print!("[bwm-perf] iter={} composites={} waits={} avg_work={}us\n",
+                perf_frame, perf_composites, perf_waits, avg_us,
             );
             perf_total_ns = 0;
             perf_composites = 0;
-            perf_sleeps = 0;
+            perf_waits = 0;
         }
     }
 }
