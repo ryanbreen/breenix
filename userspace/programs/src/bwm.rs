@@ -185,6 +185,8 @@ struct Window {
     window_id: u32,
     owner_pid: u32,
     minimized: bool,
+    /// Stable ordering for appbar (assigned at discovery time, never changes)
+    creation_order: u32,
     /// Direct-mapped pointer to client window's pixel buffer (read-only, MAP_SHARED)
     mapped_ptr: *const u32,
     /// Client window buffer width (from map_window_buffer)
@@ -430,6 +432,22 @@ fn appbar_button_width(title_len: usize) -> usize {
     text_w.max(60).min(180)
 }
 
+/// Build indices sorted by creation_order (stable appbar layout).
+fn sorted_by_creation(windows: &[Window]) -> ([usize; 16], usize) {
+    let n = windows.len().min(16);
+    let mut idx = [0usize; 16];
+    for i in 0..n { idx[i] = i; }
+    // Insertion sort (at most 16 elements)
+    for i in 1..n {
+        let mut j = i;
+        while j > 0 && windows[idx[j]].creation_order < windows[idx[j - 1]].creation_order {
+            idx.swap(j, j - 1);
+            j -= 1;
+        }
+    }
+    (idx, n)
+}
+
 fn draw_appbar(fb: &mut FrameBuf, windows: &[Window], focused_win: usize) {
     let screen_h = fb.height;
     let screen_w = fb.width;
@@ -440,12 +458,15 @@ fn draw_appbar(fb: &mut FrameBuf, windows: &[Window], focused_win: usize) {
     // 1px top border
     fill_rect(fb, 0, bar_y, screen_w, 1, APPBAR_BORDER);
 
-    // Window buttons
+    // Window buttons in stable creation order
+    let (sorted, n) = sorted_by_creation(windows);
     let mut btn_x: i32 = 4;
     let btn_h: usize = APPBAR_HEIGHT - 8;
     let btn_y = bar_y + 4;
 
-    for (i, win) in windows.iter().enumerate() {
+    for k in 0..n {
+        let i = sorted[k];
+        let win = &windows[i];
         let btn_w = appbar_button_width(win.title_len);
 
         let bg = if i == focused_win && !win.minimized {
@@ -473,16 +494,18 @@ fn appbar_hit_test(windows: &[Window], screen_w: usize, screen_h: usize, mx: i32
     let bar_y = (screen_h - APPBAR_HEIGHT) as i32;
     if my < bar_y || my >= screen_h as i32 { return None; }
 
+    let (sorted, n) = sorted_by_creation(windows);
     let mut btn_x: i32 = 4;
     let btn_h = (APPBAR_HEIGHT - 8) as i32;
     let btn_y = bar_y + 4;
 
-    for (i, win) in windows.iter().enumerate() {
-        let btn_w = appbar_button_width(win.title_len) as i32;
+    for k in 0..n {
+        let i = sorted[k];
+        let btn_w = appbar_button_width(windows[i].title_len) as i32;
         if mx >= btn_x && mx < btn_x + btn_w
             && my >= btn_y && my < btn_y + btn_h
         {
-            return Some(i);
+            return Some(i); // Returns the actual Vec index, not the sorted position
         }
         btn_x += btn_w + 2;
         if btn_x >= screen_w as i32 - 4 { break; }
@@ -551,7 +574,7 @@ fn route_mouse_move_to_focused(
 
 // ─── Window Discovery ───────────────────────────────────────────────────────
 
-fn discover_windows(windows: &mut Vec<Window>, screen_w: usize, screen_h: usize) -> bool {
+fn discover_windows(windows: &mut Vec<Window>, screen_w: usize, screen_h: usize, next_order: &mut u32) -> bool {
     let mut win_infos = [graphics::WindowInfo {
         buffer_id: 0, owner_pid: 0, width: 0, height: 0,
         x: 0, y: 0, title_len: 0, title: [0; 64],
@@ -599,11 +622,14 @@ fn discover_windows(windows: &mut Vec<Window>, screen_w: usize, screen_h: usize)
             }
         };
 
+        let order = *next_order;
+        *next_order += 1;
         windows.push(Window {
             x: cascade_x, y: cascade_y, width: total_w, height: total_h,
             title, title_len, window_id: info.buffer_id,
             owner_pid: info.owner_pid,
             minimized: false,
+            creation_order: order,
             mapped_ptr: map_ptr, mapped_w: map_w, mapped_h: map_h,
         });
         added = true;
@@ -843,6 +869,7 @@ fn main() {
     let mut last_clock_sec: i64 = -1;
     let mut clock_text = [0u8; 11];
     format_clock(0, &mut clock_text);
+    let mut next_creation_order: u32 = 0;
 
     // Initial composite
     if direct_mapped {
@@ -870,7 +897,7 @@ fn main() {
     let mut registry_gen: u32 = 0;
 
     // Initial window discovery (before entering event loop)
-    if discover_windows(&mut windows, screen_w, screen_h) {
+    if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order) {
         if focused_win >= windows.len() {
             focused_win = windows.len().saturating_sub(1);
         }
@@ -892,7 +919,7 @@ fn main() {
 
         // ── 1. Discover new/removed client windows (only when registry changed) ──
         if ready & graphics::COMPOSITOR_READY_REGISTRY != 0 {
-            if discover_windows(&mut windows, screen_w, screen_h) {
+            if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order) {
                 if focused_win >= windows.len() {
                     focused_win = windows.len().saturating_sub(1);
                 }
