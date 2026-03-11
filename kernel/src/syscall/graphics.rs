@@ -1108,8 +1108,8 @@ fn handle_compositor_wait(cmd: &FbDrawCmd) -> SyscallResult {
     // Check non-dirty conditions first (mouse + registry are always non-blocking)
     let mut ready: u64 = 0;
 
-    // Bit 1: mouse changed?
-    if mouse_packed != prev_mouse {
+    // Bit 1: mouse changed (position, buttons, or pending latched press)?
+    if mouse_packed != prev_mouse || crate::drivers::usb::hid::has_pending_press() {
         ready |= 2;
     }
 
@@ -1181,7 +1181,7 @@ fn handle_compositor_wait(cmd: &FbDrawCmd) -> SyscallResult {
     let (mx2, my2, mb2) = crate::drivers::usb::hid::mouse_state();
     let mouse_packed2 = ((mx2 as u64) << 32) | ((my2 as u64) << 16) | (mb2 as u64);
 
-    if mouse_packed2 != prev_mouse {
+    if mouse_packed2 != prev_mouse || crate::drivers::usb::hid::has_pending_press() {
         ready_after |= 2;
     }
 
@@ -1266,6 +1266,14 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
         });
         if !any_window_dirty {
             drop(reg);
+            // SVGA3 STDU: cursor is drawn in VRAM by software. Update it even when
+            // no windows are dirty, so mouse movement remains responsive.
+            if matches!(crate::graphics::compositor_backend(),
+                        crate::graphics::CompositorBackend::Svga3Stdu) {
+                if crate::drivers::vmware::svga3::update_cursor() {
+                    let _ = crate::drivers::vmware::svga3::present_rect(0, 0, bg_width, bg_height);
+                }
+            }
             return SyscallResult::Ok(0);
         }
         drop(reg);

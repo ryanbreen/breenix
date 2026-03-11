@@ -52,6 +52,9 @@ pub const SLIRP_DNS: [u8; 4] = [10, 0, 2, 3];
 /// Parallels Desktop shared networking DNS/gateway
 pub const PARALLELS_DNS: [u8; 4] = [10, 211, 55, 1];
 
+/// VMware Fusion NAT DNS (vmnet8 gateway)
+pub const VMWARE_DNS: [u8; 4] = [172, 16, 45, 2];
+
 /// Google's public DNS server
 pub const GOOGLE_DNS: [u8; 4] = [8, 8, 8, 8];
 
@@ -606,7 +609,7 @@ pub fn resolve(hostname: &str, dns_server: [u8; 4]) -> Result<DnsResult, DnsErro
 /// in order, returning the first successful result. This makes DNS resolution
 /// work across all supported platforms without caller configuration.
 pub fn resolve_auto(hostname: &str) -> Result<DnsResult, DnsError> {
-    let servers = [PARALLELS_DNS, SLIRP_DNS, GOOGLE_DNS];
+    let servers = [PARALLELS_DNS, VMWARE_DNS, SLIRP_DNS, GOOGLE_DNS];
     let mut last_err = DnsError::Timeout;
     for server in &servers {
         match resolve(hostname, *server) {

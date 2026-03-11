@@ -41,18 +41,19 @@ static MOUSE_X: AtomicU32 = AtomicU32::new(0);
 static MOUSE_Y: AtomicU32 = AtomicU32::new(0);
 static MOUSE_BUTTONS: AtomicU32 = AtomicU32::new(0);
 
+/// Per-endpoint button state for multi-endpoint devices (e.g., VMware dual HID).
+/// When multiple USB HID endpoints report button state independently, one endpoint
+/// reporting buttons=0 must not cancel the other's press. We track each endpoint's
+/// buttons separately and OR them: MOUSE_BUTTONS = EP0_BUTTONS | EP1_BUTTONS.
+static EP_BUTTONS: [AtomicU32; 4] = [
+    AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0),
+];
+
 /// Latched button presses: bits set when a press transition (0→1) is detected.
-/// Sustained for PRESS_SUSTAIN_READS reads via mouse_state_consume() to give
-/// userspace time to detect the press and act on it (e.g., start a drag).
+/// Cleared atomically by mouse_state_consume() when BWM reads the mouse state.
+/// This ensures fast press-release cycles (within one compositor frame) are not lost.
 static MOUSE_BUTTONS_PRESSED: AtomicU32 = AtomicU32::new(0);
-
-/// Number of mouse_state_consume() reads remaining before the press latch clears.
-/// Set to PRESS_SUSTAIN_READS when a press is detected. Decremented on each
-/// consume call. While > 0, the latch stays active.
-static MOUSE_PRESS_SUSTAIN: AtomicU32 = AtomicU32::new(0);
-
-/// Sustain a latched press for this many userspace reads (~16ms each = ~80ms total).
-const PRESS_SUSTAIN_READS: u32 = 5;
 
 /// Once we see the first absolute tablet report (6+ bytes), latch into tablet mode.
 /// All subsequent reports are parsed as absolute, regardless of byte[1] value.
@@ -297,7 +298,12 @@ fn screen_dimensions() -> (u32, u32) {
 /// Counter for diagnostic logging of first few mouse reports.
 static MOUSE_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
 
-pub fn process_mouse_report(report: &[u8]) {
+/// Process a mouse HID report from a specific endpoint.
+///
+/// `ep_idx` identifies the USB endpoint (0-3) so that multi-endpoint devices
+/// (like VMware's dual HID mouse) don't race on button state. Each endpoint's
+/// buttons are tracked independently; the global MOUSE_BUTTONS is the OR of all.
+pub fn process_mouse_report(report: &[u8], ep_idx: u8) {
     if report.len() < 3 {
         return;
     }
@@ -360,17 +366,22 @@ pub fn process_mouse_report(report: &[u8]) {
         } else {
             report[1] as u32
         };
-        let prev = MOUSE_BUTTONS.swap(buttons, Ordering::Relaxed);
-        if buttons != prev {
-            // Latch press transitions so fast clicks aren't missed by polling
-            let pressed = buttons & !prev;
+        // Store this endpoint's buttons, then merge all endpoints
+        let ei = (ep_idx as usize) & 3;
+        EP_BUTTONS[ei].store(buttons, Ordering::Relaxed);
+        let merged = EP_BUTTONS[0].load(Ordering::Relaxed)
+            | EP_BUTTONS[1].load(Ordering::Relaxed)
+            | EP_BUTTONS[2].load(Ordering::Relaxed)
+            | EP_BUTTONS[3].load(Ordering::Relaxed);
+        let prev = MOUSE_BUTTONS.swap(merged, Ordering::Relaxed);
+        if merged != prev {
+            let pressed = merged & !prev;
             if pressed != 0 {
                 MOUSE_BUTTONS_PRESSED.fetch_or(pressed, Ordering::Relaxed);
-                MOUSE_PRESS_SUSTAIN.store(PRESS_SUSTAIN_READS, Ordering::Relaxed);
             }
             static BTN_LOG: AtomicU64 = AtomicU64::new(0);
             if BTN_LOG.fetch_add(1, Ordering::Relaxed) < 50 {
-                crate::serial_println!("[mouse-click] {} -> {}", prev, buttons);
+                crate::serial_println!("[mouse-click] {} -> {} (ep{})", prev, merged, ep_idx);
             }
         }
 
@@ -394,11 +405,16 @@ pub fn process_mouse_report(report: &[u8]) {
     // Boot protocol relative mouse: 3-4 byte reports
     // Format: [buttons, dx (i8), dy (i8), wheel (i8)]
     let new_buttons = report[0] as u32;
-    let old_buttons = MOUSE_BUTTONS.swap(new_buttons, Ordering::Relaxed);
-    let pressed = new_buttons & !old_buttons;
+    let ei = (ep_idx as usize) & 3;
+    EP_BUTTONS[ei].store(new_buttons, Ordering::Relaxed);
+    let merged = EP_BUTTONS[0].load(Ordering::Relaxed)
+        | EP_BUTTONS[1].load(Ordering::Relaxed)
+        | EP_BUTTONS[2].load(Ordering::Relaxed)
+        | EP_BUTTONS[3].load(Ordering::Relaxed);
+    let old_buttons = MOUSE_BUTTONS.swap(merged, Ordering::Relaxed);
+    let pressed = merged & !old_buttons;
     if pressed != 0 {
         MOUSE_BUTTONS_PRESSED.fetch_or(pressed, Ordering::Relaxed);
-        MOUSE_PRESS_SUSTAIN.store(PRESS_SUSTAIN_READS, Ordering::Relaxed);
     }
     let dx = report[1] as i8 as i32;
     let dy = report[2] as i8 as i32;
@@ -422,42 +438,39 @@ pub fn mouse_position() -> (u32, u32) {
     (MOUSE_X.load(Ordering::Relaxed), MOUSE_Y.load(Ordering::Relaxed))
 }
 
-/// Get current mouse position and button state (non-consuming peek).
+/// Get current mouse position and raw button state (non-consuming peek).
 ///
-/// Returns instantaneous state without consuming latched button presses.
-/// Used by compositor_wait for change detection — must not consume the latch
-/// because BWM hasn't read it yet.
+/// Returns instantaneous hardware state (no latch). Used by compositor_wait for
+/// change detection — the latch must NOT be included here, otherwise a sustained
+/// latch (buttons|pressed == prev) prevents compositor_wait from detecting the
+/// physical release, causing a deadlock where the sustain counter never decrements.
 pub fn mouse_state() -> (u32, u32, u32) {
-    let buttons = MOUSE_BUTTONS.load(Ordering::Relaxed);
-    let pressed = MOUSE_BUTTONS_PRESSED.load(Ordering::Relaxed);
     (
         MOUSE_X.load(Ordering::Relaxed),
         MOUSE_Y.load(Ordering::Relaxed),
-        buttons | pressed,
+        MOUSE_BUTTONS.load(Ordering::Relaxed),
     )
+}
+
+/// Check if there are pending latched button presses (non-consuming peek).
+///
+/// Used by compositor_wait to detect fast press-release cycles that completed
+/// before the compositor had a chance to read the state. When this returns true,
+/// compositor_wait should set COMPOSITOR_READY_MOUSE so BWM processes the click.
+pub fn has_pending_press() -> bool {
+    MOUSE_BUTTONS_PRESSED.load(Ordering::Relaxed) != 0
 }
 
 /// Get current mouse position and button state, consuming latched presses.
 ///
 /// Button state includes latched presses: if a button was pressed and released
-/// between two calls, the press is still reported. The latch is sustained for
-/// PRESS_SUSTAIN_READS calls (~80ms at 16ms/frame) so drag gestures work even
-/// when the hardware release arrives before userspace processes the press.
+/// between two consume calls, the press is still reported once. The latch is
+/// cleared atomically on read so the next call returns only live hardware state.
 ///
 /// Called from sys_get_mouse_pos (userspace reads).
 pub fn mouse_state_consume() -> (u32, u32, u32) {
     let buttons = MOUSE_BUTTONS.load(Ordering::Relaxed);
-    let pressed = MOUSE_BUTTONS_PRESSED.load(Ordering::Relaxed);
-    // Decrement sustain counter; clear latch only when it reaches 0
-    if pressed != 0 {
-        let remaining = MOUSE_PRESS_SUSTAIN.load(Ordering::Relaxed);
-        if remaining > 0 {
-            MOUSE_PRESS_SUSTAIN.fetch_sub(1, Ordering::Relaxed);
-        } else {
-            // Sustain expired — clear the latch
-            MOUSE_BUTTONS_PRESSED.store(0, Ordering::Relaxed);
-        }
-    }
+    let pressed = MOUSE_BUTTONS_PRESSED.swap(0, Ordering::Relaxed);
     (
         MOUSE_X.load(Ordering::Relaxed),
         MOUSE_Y.load(Ordering::Relaxed),

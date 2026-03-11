@@ -15,8 +15,9 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// Maximum number of CPUs supported.
 pub const MAX_CPUS: usize = 8;
 
-/// PSCI function IDs (SMCCC compliant, 64-bit).
+/// PSCI function IDs (SMCCC compliant).
 const PSCI_CPU_ON_64: u64 = 0xC400_0003;
+const PSCI_CPU_ON_32: u64 = 0x8400_0003;
 
 extern "C" {
     /// Physical address of secondary_cpu_entry, stored in .rodata by boot.S.
@@ -37,6 +38,11 @@ extern "C" {
     static SMP_TTBR1_PTR: u64;
     static SMP_MAIR_PTR: u64;
     static SMP_TCR_PTR: u64;
+
+    /// Pointer to SMP_STACK_BASE_PHYS (in .bss.boot). CPU 0 writes the
+    /// physical base address of the per-CPU stack region here before PSCI CPU_ON.
+    /// On QEMU/Parallels: 0x4100_0000; on VMware: 0x8100_0000.
+    static SMP_STACK_BASE_PTR: u64;
 }
 
 /// Write CPU 0's actual MMU configuration to .bss.boot variables so
@@ -122,6 +128,27 @@ pub fn set_uart_phys(addr: u64) {
     }
 }
 
+/// Set the physical base address of the per-CPU stack region.
+/// Must be called before `release_cpu()`.
+///
+/// The stack base is `ram_base + 0x0100_0000` (16MB into RAM).
+/// On QEMU/Parallels (ram at 0x40000000): 0x4100_0000.
+/// On VMware (ram at 0x80000000): 0x8100_0000.
+pub fn set_stack_base_phys(addr: u64) {
+    unsafe {
+        let phys = core::ptr::read_volatile(&SMP_STACK_BASE_PTR);
+        let virt = phys + 0xFFFF_0000_0000_0000u64;
+        let ptr = virt as *mut u64;
+        core::ptr::write_volatile(ptr, addr);
+        core::arch::asm!(
+            "dc cvac, {addr}",
+            "dsb ish",
+            addr = in(reg) ptr,
+            options(nostack),
+        );
+    }
+}
+
 /// Number of CPUs currently online (starts at 1 for the boot CPU).
 static CPUS_ONLINE: AtomicU64 = AtomicU64::new(1);
 
@@ -160,6 +187,38 @@ fn psci_cpu_on(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
     ret
 }
 
+/// PSCI CPU_ON with 32-bit function ID via HVC.
+fn psci_cpu_on_32(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
+    let ret: i64;
+    unsafe {
+        core::arch::asm!(
+            "hvc #0",
+            inout("x0") PSCI_CPU_ON_32 => ret,
+            in("x1") target_cpu,
+            in("x2") entry_point,
+            in("x3") context_id,
+            options(nomem, nostack),
+        );
+    }
+    ret
+}
+
+/// PSCI CPU_ON with 64-bit function ID via SMC (EL3 firmware conduit).
+fn psci_cpu_on_smc(target_cpu: u64, entry_point: u64, context_id: u64) -> i64 {
+    let ret: i64;
+    unsafe {
+        core::arch::asm!(
+            "smc #0",
+            inout("x0") PSCI_CPU_ON_64 => ret,
+            in("x1") target_cpu,
+            in("x2") entry_point,
+            in("x3") context_id,
+            options(nomem, nostack),
+        );
+    }
+    ret
+}
+
 /// Release a secondary CPU using PSCI CPU_ON.
 ///
 /// The CPU will start executing at `secondary_cpu_entry` in boot.S,
@@ -182,12 +241,21 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
     // Context ID: pass cpu_id so the new CPU knows who it is
     let context_id = cpu_id as u64;
 
-    let ret = psci_cpu_on(target_mpidr, entry_phys, context_id);
+    // Try 64-bit PSCI CPU_ON via HVC first (standard for ARM64 hypervisors)
+    let mut ret = psci_cpu_on(target_mpidr, entry_phys, context_id);
+
+    // If 64-bit failed, try 32-bit function ID (some hypervisors only support this)
+    if ret != 0 {
+        crate::serial_println!("[smp] CPU {}: HVC64 failed (ret={}), trying HVC32...", cpu_id, ret);
+        ret = psci_cpu_on_32(target_mpidr, entry_phys, context_id);
+    }
+
+    // Note: SMC conduit not attempted — on VMware (EL1 guest, no EL3),
+    // SMC would trap to EL2 and likely fault. HVC is the correct conduit.
 
     if ret != 0 {
-        // PSCI error — emit raw UART error indicator
-        raw_uart_char(b'E');
-        raw_uart_char(b'0' + cpu_id as u8);
+        crate::serial_println!("[smp] PSCI CPU_ON failed for CPU {}: ret={} (MPIDR={:#x} entry={:#x})",
+            cpu_id, ret, target_mpidr, entry_phys);
     }
 
     ret
@@ -233,14 +301,13 @@ pub extern "C" fn secondary_cpu_entry_rust(cpu_id: u64) -> ! {
     crate::per_cpu_aarch64::init_cpu(cpu_id as usize);
 
     // Set kernel stack top for this CPU.
-    // boot.S sets SP to 0x41000000 + (cpu_id+1)*0x200000 (physical),
+    // boot.S sets SP to SMP_STACK_BASE_PHYS + (cpu_id+1)*0x200000 (physical),
     // then adds KERNEL_VIRT_BASE after enabling MMU.
     // This value is critical: when a user thread runs on this CPU and an
     // exception occurs, the kernel needs to switch to this stack.
-    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
-    const STACK_REGION_BASE: u64 = 0x4100_0000;
+    let stack_base = super::constants::percpu_stack_region_base();
     const STACK_SIZE: u64 = 0x20_0000; // 2MB per CPU
-    let kernel_stack_top = HHDM_BASE + STACK_REGION_BASE + (cpu_id + 1) * STACK_SIZE;
+    let kernel_stack_top = stack_base + (cpu_id + 1) * STACK_SIZE;
     crate::per_cpu_aarch64::set_kernel_stack_top(kernel_stack_top);
 
     // Initialize GIC CPU interface (GICC registers are banked per-CPU)
@@ -281,12 +348,10 @@ fn create_and_register_idle_thread(cpu_id: usize) {
     use crate::memory::arch_stub::VirtAddr;
 
     // Boot stack addresses — must match boot.S layout.
-    // HHDM_BASE + STACK_REGION_BASE + (cpu_id + 1) * STACK_SIZE
-    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
-    const STACK_REGION_BASE: u64 = 0x4100_0000;
+    let stack_base = super::constants::percpu_stack_region_base();
     const STACK_SIZE: u64 = 0x20_0000; // 2MB per CPU
-    let boot_stack_top = VirtAddr::new(HHDM_BASE + STACK_REGION_BASE + ((cpu_id as u64) + 1) * STACK_SIZE);
-    let boot_stack_bottom = VirtAddr::new(HHDM_BASE + STACK_REGION_BASE + (cpu_id as u64) * STACK_SIZE);
+    let boot_stack_top = VirtAddr::new(stack_base + ((cpu_id as u64) + 1) * STACK_SIZE);
+    let boot_stack_bottom = VirtAddr::new(stack_base + (cpu_id as u64) * STACK_SIZE);
     let dummy_tls = VirtAddr::zero();
 
     let mut idle_task = Box::new(Thread::new(

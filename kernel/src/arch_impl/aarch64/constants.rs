@@ -205,20 +205,25 @@ pub const STACK_GUARD_SIZE: usize = PAGE_SIZE;
 
 /// Base address for per-CPU kernel stacks region (ARM64).
 /// Uses a region within the HHDM (higher-half direct map) that is mapped
-/// by the boot page tables. Placed at physical 0x4100_0000 (16MB into RAM
-/// after kernel) to stay within typical 512MB QEMU RAM configs.
+/// by the boot page tables. Placed at ram_base + 0x0100_0000 (16MB into RAM
+/// after kernel) to stay within typical 512MB RAM configs.
 ///
-/// QEMU virt RAM layout: physical 0x4000_0000 (1GB mark) for N MB
-/// With 512MB RAM: physical 0x4000_0000 to 0x6000_0000
+/// RAM layout (relative to ram_base):
+/// - +0x0000_0000 - +0x0100_0000: Kernel image (~16MB)
+/// - +0x0100_0000 - +0x0200_0000: Per-CPU stacks (16MB for 8 CPUs)
+/// - +0x0200_0000 - end:          Heap and dynamic allocations
 ///
-/// Stack layout in RAM:
-/// - 0x4000_0000 - 0x4100_0000: Kernel image (~16MB)
-/// - 0x4100_0000 - 0x4200_0000: Per-CPU stacks (16MB for 8 CPUs)
-/// - 0x4200_0000 - 0x6000_0000: Heap and dynamic allocations
-///
-/// Virtual: 0xFFFF_0000_4100_0000
-/// Physical: 0x4100_0000
-pub const PERCPU_STACK_REGION_BASE: u64 = HHDM_BASE + 0x4100_0000;
+/// Platform-dependent physical base:
+/// - QEMU/Parallels (ram at 0x4000_0000): physical 0x4100_0000
+/// - VMware (ram at 0x8000_0000): physical 0x8100_0000
+#[inline]
+pub fn percpu_stack_region_base() -> u64 {
+    HHDM_BASE + 0x4100_0000 + crate::platform_config::ram_base_offset()
+}
+
+/// Legacy constant for compile-time contexts (diagnostics). Uses the default
+/// QEMU/Parallels base. Runtime code should use percpu_stack_region_base().
+pub const PERCPU_STACK_REGION_BASE_DEFAULT: u64 = HHDM_BASE + 0x4100_0000;
 
 /// Maximum number of CPUs supported on ARM64.
 /// Limited to 8 to keep stack region within 512MB RAM constraint.

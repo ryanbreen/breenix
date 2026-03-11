@@ -130,7 +130,7 @@ pub const KERNEL_HIGHER_HALF_BASE: u64 = aarch64_const::KERNEL_HIGHER_HALF_BASE;
 #[cfg(target_arch = "x86_64")]
 pub const PERCPU_STACK_REGION_BASE: u64 = 0xffffc90000000000;
 #[cfg(target_arch = "aarch64")]
-pub const PERCPU_STACK_REGION_BASE: u64 = aarch64_const::PERCPU_STACK_REGION_BASE;
+pub const PERCPU_STACK_REGION_BASE: u64 = aarch64_const::PERCPU_STACK_REGION_BASE_DEFAULT;
 
 /// Size of each per-CPU kernel stack (32 KiB)
 /// This is sufficient for kernel operations including interrupt handling
