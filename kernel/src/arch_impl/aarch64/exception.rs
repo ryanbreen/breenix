@@ -1051,6 +1051,12 @@ pub extern "C" fn handle_irq() {
                         crate::drivers::virtio::gpu_pci::handle_interrupt();
                     }
                 }
+                // VirtIO network PCI interrupt dispatch (GICv2m MSI)
+                if let Some(net_pci_irq) = crate::drivers::virtio::net_pci::get_irq() {
+                    if irq_id == net_pci_irq {
+                        crate::drivers::virtio::net_pci::handle_interrupt();
+                    }
+                }
             }
 
             // Should not happen - GIC filters invalid IDs (1020+)

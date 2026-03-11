@@ -948,10 +948,40 @@ impl ProcessManager {
                 self.current_pid = None;
             }
 
-            // TODO: Clean up process resources
-            // - Unmap memory pages
-            // - Close file descriptors
-            // - Reparent children to init
+            // Free heavy resources immediately rather than waiting for waitpid reap.
+            // CoW refcounts were already decremented by terminate() -> cleanup_cow_frames(),
+            // so it's safe to drop the page table now.
+            process.page_table.take();
+            process.stack.take();
+            process.pending_old_page_tables.clear();
+
+            // Clean up window buffers so the compositor stops reading freed pages
+            #[cfg(target_arch = "aarch64")]
+            crate::syscall::graphics::cleanup_windows_for_pid(pid.as_u64());
+        }
+
+        // Reparent children to init (PID 1)
+        let init_pid = ProcessId::new(1);
+        if pid != init_pid {
+            let children: Vec<ProcessId> = self
+                .processes
+                .get(&pid)
+                .map(|p| p.children.clone())
+                .unwrap_or_default();
+
+            if !children.is_empty() {
+                for &child_pid in &children {
+                    if let Some(child) = self.processes.get_mut(&child_pid) {
+                        child.parent = Some(init_pid);
+                    }
+                }
+                if let Some(init) = self.processes.get_mut(&init_pid) {
+                    init.children.extend(children.iter());
+                }
+                if let Some(exiting) = self.processes.get_mut(&pid) {
+                    exiting.children.clear();
+                }
+            }
         }
 
         // Send SIGCHLD to the parent process (if any)

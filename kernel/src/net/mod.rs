@@ -31,6 +31,41 @@ use crate::drivers::virtio::net_pci;
 
 use crate::task::softirqd::{register_softirq_handler, SoftirqType};
 
+/// Disable IRQs and return saved DAIF state. Prevents timer interrupt →
+/// softirq → process_rx from deadlocking on shared locks (ARP_CACHE,
+/// NET_CONFIG) that the interrupted thread may hold.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub(crate) fn irq_save() -> u64 {
+    let daif: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack));
+        core::arch::asm!("msr daifset, #2", options(nomem, nostack));
+    }
+    daif
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub(crate) fn irq_restore(saved: u64) {
+    unsafe {
+        core::arch::asm!("msr daif, {}", in(reg) saved, options(nomem, nostack));
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub(crate) fn irq_save() -> u64 { 0 }
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub(crate) fn irq_restore(_: u64) {}
+
+/// Re-entrancy guard for process_rx() on aarch64. Prevents the softirq handler
+/// from re-entering process_rx() while the ARP polling loop is already inside it.
+#[cfg(target_arch = "aarch64")]
+static RX_PROCESSING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 // Logging macros that work on both architectures
 #[cfg(target_arch = "x86_64")]
 macro_rules! net_log {
@@ -189,10 +224,19 @@ pub fn drain_loopback_queue() {
     }
 }
 
-/// Softirq handler for network RX processing
-/// Called from softirq context when NetRx softirq is raised by network interrupt handler
+/// Softirq handler for network RX processing.
+/// Called from softirq context when NetRx softirq is raised by the timer (every 10ms).
+///
+/// The MSI handler does NOT raise softirq (to avoid lock contention in
+/// exception context). Instead, the timer raises NetRx every 10ms. This handler
+/// processes packets and then re-enables the MSI-X SPI so new interrupts can fire.
 fn net_rx_softirq_handler(_softirq: SoftirqType) {
     process_rx();
+
+    #[cfg(target_arch = "aarch64")]
+    if net_pci::is_initialized() {
+        net_pci::re_enable_irq();
+    }
 }
 
 /// Re-register the network softirq handler.
@@ -232,12 +276,18 @@ pub fn init() {
     // Auto-detect platform: PCI net = Parallels, e1000 = VMware, MMIO net = QEMU
     if net_pci::is_initialized() {
         crate::serial_println!("[net] Using VirtIO net PCI driver (Parallels)");
+        let saved = irq_save();
         let mut config = NET_CONFIG.lock();
         *config = PARALLELS_CONFIG;
+        drop(config);
+        irq_restore(saved);
     } else if e1000::is_initialized() {
         crate::serial_println!("[net] Using Intel e1000 driver (VMware)");
+        let saved = irq_save();
         let mut config = NET_CONFIG.lock();
         *config = VMWARE_CONFIG;
+        drop(config);
+        irq_restore(saved);
     }
 
     if let Some(mac) = get_mac_address() {
@@ -262,13 +312,15 @@ fn init_common() {
         return;
     }
 
+    let saved = irq_save();
     let config = NET_CONFIG.lock();
-    net_log!("NET: IP address: {}.{}.{}.{}",
-        config.ip_addr[0], config.ip_addr[1], config.ip_addr[2], config.ip_addr[3]
-    );
-    net_log!("NET: Gateway: {}.{}.{}.{}",
-        config.gateway[0], config.gateway[1], config.gateway[2], config.gateway[3]
-    );
+    let ip = config.ip_addr;
+    let gw = config.gateway;
+    drop(config);
+    irq_restore(saved);
+
+    net_log!("NET: IP address: {}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
+    net_log!("NET: Gateway: {}.{}.{}.{}", gw[0], gw[1], gw[2], gw[3]);
 
     // Initialize ARP cache
     arp::init();
@@ -276,8 +328,7 @@ fn init_common() {
     net_log!("Network stack initialized");
 
     // Send ARP request for gateway to test network connectivity
-    let gateway = config.gateway;
-    drop(config); // Release lock before calling arp::request
+    let gateway = gw;
     net_log!("NET: Sending ARP request for gateway {}.{}.{}.{}",
         gateway[0], gateway[1], gateway[2], gateway[3]);
     if let Err(e) = arp::request(&gateway) {
@@ -288,11 +339,16 @@ fn init_common() {
 
     // Wait for ARP reply (poll RX a few times to get the gateway MAC)
     // The reply comes via interrupt, so we just need to give it time to arrive
-    for _ in 0..100 {
+    for _i in 0..100 {
         process_rx();
-        // Delay to let packets arrive and interrupts fire
+        // Delay to let packets arrive and timer-based polling process them
         for _ in 0..1_000_000 {
             core::hint::spin_loop();
+        }
+        // Diagnostic: dump RX queue state on first few iterations
+        #[cfg(target_arch = "aarch64")]
+        if _i < 5 || _i % 20 == 0 {
+            net_pci::dump_rx_state();
         }
         // Check if we got the ARP reply yet
         if let Some(gateway_mac) = arp::lookup(&gateway) {
@@ -333,16 +389,24 @@ fn init_common() {
     // interrupt-driven RX doesn't interfere with the polling.
     #[cfg(target_arch = "aarch64")]
     {
-        if !net_pci::is_initialized() {
+        if net_pci::is_initialized() {
+            // Enable MSI-X SPI at GIC now that the used ring is drained.
+            // During init, timer-based polling handled RX. Now switch to
+            // interrupt-driven NAPI-style processing.
+            net_pci::enable_msi_spi();
+        } else {
             net_mmio::enable_net_irq();
         }
-        // PCI net uses polling mode (no GIC IRQ needed — softirq handles packet processing)
     }
 }
 
-/// Get the current network configuration
+/// Get the current network configuration.
+/// IRQ-safe: disables interrupts to prevent deadlock with softirq handler.
 pub fn config() -> NetConfig {
-    *NET_CONFIG.lock()
+    let saved = irq_save();
+    let c = *NET_CONFIG.lock();
+    irq_restore(saved);
+    c
 }
 
 /// Process incoming packets (called from interrupt handler or polling loop)
@@ -361,8 +425,19 @@ pub fn process_rx() {
 }
 
 /// Process incoming packets (ARM64 - polling or interrupt driven)
+///
+/// Protected by RX_PROCESSING atomic to prevent re-entrancy. When MSI-X is
+/// active, the softirq handler can preempt the ARP polling loop and try to
+/// call process_rx() re-entrantly — the guard skips the nested call.
 #[cfg(target_arch = "aarch64")]
 pub fn process_rx() {
+    // Re-entrancy guard: if we're already inside process_rx (e.g., ARP polling
+    // loop interrupted by MSI-X → softirq → process_rx), skip this call.
+    use core::sync::atomic::Ordering;
+    if RX_PROCESSING.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        return;
+    }
+
     // Try PCI driver first (Parallels), then e1000 (VMware), then MMIO (QEMU)
     if net_pci::is_initialized() {
         let mut processed = false;
@@ -393,6 +468,12 @@ pub fn process_rx() {
             net_mmio::recycle_rx_buffers();
         }
     }
+
+    // Do NOT re-enable SPI here — the softirq handler does it after process_rx
+    // returns, regardless of whether we processed packets or bailed on re-entrancy.
+    // This avoids re-enabling from multiple code paths.
+
+    RX_PROCESSING.store(false, Ordering::Release);
 }
 
 /// Process a received Ethernet frame

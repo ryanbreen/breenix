@@ -218,14 +218,19 @@ pub fn handle_arp(eth_frame: &EthernetFrame, arp: &ArpPacket) {
     }
 }
 
-/// Update the ARP cache with a new entry
+/// Update the ARP cache with a new entry.
+/// IRQ-safe: disables interrupts to prevent deadlock with softirq handler
+/// which also calls update_cache via process_rx → handle_arp.
 fn update_cache(ip: &[u8; 4], mac: &[u8; 6]) {
+    let saved = super::irq_save();
     let mut cache = ARP_CACHE.lock();
 
     // First, check if entry already exists
     for entry in cache.iter_mut() {
         if entry.valid && entry.ip == *ip {
             entry.mac = *mac;
+            drop(cache);
+            super::irq_restore(saved);
             return;
         }
     }
@@ -236,6 +241,8 @@ fn update_cache(ip: &[u8; 4], mac: &[u8; 6]) {
             entry.ip = *ip;
             entry.mac = *mac;
             entry.valid = true;
+            drop(cache);
+            super::irq_restore(saved);
             return;
         }
     }
@@ -244,18 +251,27 @@ fn update_cache(ip: &[u8; 4], mac: &[u8; 6]) {
     cache[0].ip = *ip;
     cache[0].mac = *mac;
     cache[0].valid = true;
+    drop(cache);
+    super::irq_restore(saved);
 }
 
-/// Look up a MAC address in the ARP cache
+/// Look up a MAC address in the ARP cache.
+/// IRQ-safe: disables interrupts to prevent deadlock with softirq handler.
 pub fn lookup(ip: &[u8; 4]) -> Option<[u8; 6]> {
+    let saved = super::irq_save();
     let cache = ARP_CACHE.lock();
 
     for entry in cache.iter() {
         if entry.valid && entry.ip == *ip {
-            return Some(entry.mac);
+            let mac = entry.mac;
+            drop(cache);
+            super::irq_restore(saved);
+            return Some(mac);
         }
     }
 
+    drop(cache);
+    super::irq_restore(saved);
     None
 }
 

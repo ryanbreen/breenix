@@ -188,10 +188,14 @@ struct Window {
     /// Stable ordering for appbar (assigned at discovery time, never changes)
     creation_order: u32,
     /// Direct-mapped pointer to client window's pixel buffer (read-only, MAP_SHARED)
+    /// Stored for future per-window direct blit (currently compositor uses bulk composite).
+    #[allow(dead_code)]
     mapped_ptr: *const u32,
     /// Client window buffer width (from map_window_buffer)
+    #[allow(dead_code)]
     mapped_w: u32,
     /// Client window buffer height (from map_window_buffer)
+    #[allow(dead_code)]
     mapped_h: u32,
 }
 
@@ -245,11 +249,6 @@ impl Window {
         let (bx, by, bw, bh) = self.minimize_btn_rect();
         mx >= bx && mx < bx + bw as i32 && my >= by && my < by + bh as i32
     }
-}
-
-
-fn rects_overlap(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> bool {
-    a.0 < b.2 && a.2 > b.0 && a.1 < b.3 && a.3 > b.1
 }
 
 // ─── Drawing Helpers ─────────────────────────────────────────────────────────
@@ -624,6 +623,11 @@ fn discover_windows(windows: &mut Vec<Window>, screen_w: usize, screen_h: usize,
             }
         };
 
+        // Tell kernel where the client content goes on screen (for GPU compositing)
+        let content_x = cascade_x + BORDER_WIDTH as i32;
+        let content_y = cascade_y + TITLE_BAR_HEIGHT as i32 + BORDER_WIDTH as i32;
+        let _ = graphics::set_window_position(info.buffer_id, content_x, content_y);
+
         let order = *next_order;
         *next_order += 1;
         windows.push(Window {
@@ -640,144 +644,15 @@ fn discover_windows(windows: &mut Vec<Window>, screen_w: usize, screen_h: usize,
     removed || added
 }
 
-// ─── Client Pixel Blitting ──────────────────────────────────────────────────
-
-/// Core pixel blit — direct u32 writes to compositor buffer for speed.
-/// Bypasses FrameBuf::put_pixel which does per-pixel bounds checking + color conversion.
-fn blit_pixels_to_fb(fb: &mut FrameBuf, win: &Window, src: &[u32], w: usize, h: usize) {
-    let cx = win.content_x();
-    let cy = win.content_y();
-    let cw = win.content_width();
-    let ch = win.content_height();
-    let pw = w.min(cw);
-    let ph = h.min(ch);
-    let fb_w = fb.width;
-    let fb_h = fb.height;
-    // Get raw u32 pointer to compositor buffer
-    let fb_ptr = fb.raw_ptr() as *mut u32;
-    for row in 0..ph {
-        let py = (cy + row as i32) as usize;
-        if py >= fb_h { continue; }
-        let dst_row_start = py * fb_w;
-        let src_row_start = row * w;
-        let x_start = cx.max(0) as usize;
-        let x_end = ((cx + pw as i32) as usize).min(fb_w);
-        let src_offset = if cx < 0 { (-cx) as usize } else { 0 };
-        if x_start >= x_end { continue; }
-        let count = x_end - x_start;
-        let si = src_row_start + src_offset;
-        if si + count > src.len() { continue; }
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                src.as_ptr().add(si),
-                fb_ptr.add(dst_row_start + x_start),
-                count,
-            );
-        }
-    }
-}
-
-/// Check if a window has new pixels and blit from mapped memory to compositor.
-/// Skips pixels covered by higher-z windows (occluders) so no z-repair is needed.
-/// Returns true if new data was available.
-fn blit_client_pixels(fb: &mut FrameBuf, win: &Window,
-                      occluders: &[(i32, i32, i32, i32)]) -> bool {
-    if win.mapped_ptr.is_null() || win.mapped_w == 0 || win.mapped_h == 0 {
-        return false;
-    }
-    let dirty = graphics::check_window_dirty(win.window_id).unwrap_or(false);
-    if !dirty { return false; }
-
-    if occluders.is_empty() {
-        blit_mapped_pixels(fb, win);
-        return true;
-    }
-
-    // Occluded blit: for each row, skip pixels covered by higher windows.
-    let w = win.mapped_w as usize;
-    let h = win.mapped_h as usize;
-    let src = unsafe { core::slice::from_raw_parts(win.mapped_ptr, w * h) };
-
-    let cx = win.content_x();
-    let cy = win.content_y();
-    let cw = win.content_width().min(w);
-    let ch = win.content_height().min(h);
-    let fb_w = fb.width;
-    let fb_h = fb.height;
-    let fb_ptr = fb.raw_ptr() as *mut u32;
-
-    for row in 0..ch {
-        let py = cy + row as i32;
-        if py < 0 || py >= fb_h as i32 { continue; }
-        let row_x_start = cx.max(0) as usize;
-        let row_x_end = ((cx + cw as i32) as usize).min(fb_w);
-        if row_x_start >= row_x_end { continue; }
-
-        // Build visible spans by subtracting occluder columns from the full row
-        let mut spans = [(0usize, 0usize); 8];
-        let mut n_spans = 1;
-        spans[0] = (row_x_start, row_x_end);
-
-        for &(ox0, oy0, ox1, oy1) in occluders {
-            if py < oy0 || py >= oy1 { continue; }
-            let os = ox0.max(0) as usize;
-            let oe = ox1.max(0) as usize;
-            let mut new_spans = [(0usize, 0usize); 8];
-            let mut nc = 0;
-            for k in 0..n_spans {
-                let (sx, ex) = spans[k];
-                if sx >= ex { continue; }
-                if oe <= sx || os >= ex {
-                    if nc < 8 { new_spans[nc] = (sx, ex); nc += 1; }
-                } else {
-                    if sx < os && nc < 8 { new_spans[nc] = (sx, os); nc += 1; }
-                    if ex > oe && nc < 8 { new_spans[nc] = (oe, ex); nc += 1; }
-                }
-            }
-            spans = new_spans;
-            n_spans = nc;
-        }
-
-        let src_row = row * w;
-        let src_col_base = if cx < 0 { (-cx) as usize } else { 0 };
-        for k in 0..n_spans {
-            let (sx, ex) = spans[k];
-            if sx >= ex { continue; }
-            let count = ex - sx;
-            let si = src_row + src_col_base + (sx - row_x_start);
-            if si + count > w * h { continue; }
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    src.as_ptr().add(si),
-                    fb_ptr.add(py as usize * fb_w + sx),
-                    count,
-                );
-            }
-        }
-    }
-    true
-}
-
-/// Blit a window's pixels from its mapped memory to the compositor buffer.
-fn blit_mapped_pixels(fb: &mut FrameBuf, win: &Window) {
-    if win.mapped_ptr.is_null() { return; }
-    let w = win.mapped_w as usize;
-    let h = win.mapped_h as usize;
-    let pixel_count = w * h;
-    let src = unsafe { core::slice::from_raw_parts(win.mapped_ptr, pixel_count) };
-    blit_pixels_to_fb(fb, win, src, w, h);
-}
-
 /// Redraw all windows in z-order (index 0 = bottom), plus taskbar and app bar.
-/// Reads directly from mapped memory (zero-copy from client window pages).
+/// Window frames and decorations go into the compositor buffer; GPU compositing
+/// handles client content via per-window textured quads.
 fn redraw_all_windows(fb: &mut FrameBuf, windows: &[Window], focused_win: usize, clock_text: &[u8]) {
     draw_taskbar(fb, clock_text);
     for i in 0..windows.len() {
         if windows[i].minimized { continue; }
         draw_window_frame(fb, &windows[i], i == focused_win);
-        if windows[i].window_id != 0 {
-            blit_mapped_pixels(fb, &windows[i]);
-        }
+        // GPU compositing handles client content — don't blit here
     }
     draw_appbar(fb, windows, focused_win);
 }
@@ -835,6 +710,7 @@ fn compose_partial_redraw(
             sbuf[start..end].copy_from_slice(&bg[start..end]);
         }
         // 2. Redraw UI elements that intersect dirty region
+        // GPU compositing handles client content — only draw frames/decorations
         if dy0 < TASKBAR_HEIGHT {
             draw_taskbar(sfb, clock);
         }
@@ -845,9 +721,6 @@ fn compose_partial_redraw(
                 && (wy1 as usize) > dy0 && (wy0 as usize) < dy1
             {
                 draw_window_frame(sfb, &windows[i], i == focused);
-                if windows[i].window_id != 0 {
-                    blit_mapped_pixels(sfb, &windows[i]);
-                }
             }
         }
         if dy1 > screen_h - APPBAR_HEIGHT {
@@ -861,6 +734,7 @@ fn compose_partial_redraw(
         }
     } else {
         // Non-shadow path: restore bg region, redraw affected windows
+        // GPU compositing handles client content — only draw frames/decorations
         for row in dy0..dy1 {
             let start = row * screen_w + dx0;
             let end = row * screen_w + dx1;
@@ -876,9 +750,6 @@ fn compose_partial_redraw(
                 && (wy1 as usize) > dy0 && (wy0 as usize) < dy1
             {
                 draw_window_frame(fb, &windows[i], i == focused);
-                if windows[i].window_id != 0 {
-                    blit_mapped_pixels(fb, &windows[i]);
-                }
             }
         }
         if dy1 > screen_h - APPBAR_HEIGHT {
@@ -1008,17 +879,6 @@ fn main() {
     let mut read_buf = [0u8; 512];
     let mut poll_fds = [io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 }];
 
-    // Performance tracing
-    let mut perf_frame: u64 = 0;
-    let mut perf_total_ns: u64 = 0;
-    let mut perf_composites: u64 = 0;
-    let mut perf_waits: u64 = 0;
-
-    fn mono_ns() -> u64 {
-        let ts = libbreenix::time::now_monotonic().unwrap_or_default();
-        (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
-    }
-
     // Registry generation tracking for compositor_wait
     let mut registry_gen: u32 = 0;
 
@@ -1036,9 +896,6 @@ fn main() {
         // 16ms timeout ensures keyboard input via stdin is checked at least ~60Hz.
         let (ready, new_reg_gen) = graphics::compositor_wait(16, registry_gen).unwrap_or((0, registry_gen));
         registry_gen = new_reg_gen;
-        perf_waits += 1;
-
-        let t0 = mono_ns();
 
         // ── 1. Discover new/removed client windows (only when registry changed) ──
         if ready & graphics::COMPOSITOR_READY_REGISTRY != 0 {
@@ -1121,6 +978,12 @@ fn main() {
                             let (ox0, oy0, ox1, oy1) = windows[win_idx].bounds();
                             windows[win_idx].x = new_x;
                             windows[win_idx].y = new_y;
+                            // Update kernel window position for GPU compositing
+                            if windows[win_idx].window_id != 0 {
+                                let cx = windows[win_idx].content_x();
+                                let cy = windows[win_idx].content_y();
+                                let _ = graphics::set_window_position(windows[win_idx].window_id, cx, cy);
+                            }
                             // Dirty region = union of old and new bounds
                             let (nx0, ny0, nx1, ny1) = windows[win_idx].bounds();
                             let dr_x0 = ox0.min(nx0).max(0) as usize;
@@ -1271,33 +1134,21 @@ fn main() {
             }
         }
 
-        // ── 5. Blit dirty client window pixels (occluded by higher-z windows) ──
+        // ── 5. GPU compositing handles window content — just check which are dirty ──
         // Skip entirely if compositor_wait didn't report dirty content
         if ready & graphics::COMPOSITOR_READY_DIRTY != 0 {
-        for i in 0..windows.len().min(16) {
-            if windows[i].window_id != 0 && !windows[i].minimized {
-                let mut occ = [(0i32, 0i32, 0i32, 0i32); 16];
-                let mut n_occ = 0;
-                let ib = windows[i].bounds();
-                for j in (i + 1)..windows.len().min(16) {
-                    if !windows[j].minimized {
-                        let jb = windows[j].bounds();
-                        if rects_overlap(ib, jb) && n_occ < 16 {
-                            occ[n_occ] = jb;
-                            n_occ += 1;
-                        }
+            for i in 0..windows.len().min(16) {
+                if windows[i].window_id != 0 && !windows[i].minimized {
+                    if graphics::check_window_dirty(windows[i].window_id).unwrap_or(false) {
+                        content_dirty = true;
+                        let (bx0, by0, bx1, by1) = windows[i].bounds();
+                        dirty_x0 = dirty_x0.min(bx0);
+                        dirty_y0 = dirty_y0.min(by0);
+                        dirty_x1 = dirty_x1.max(bx1);
+                        dirty_y1 = dirty_y1.max(by1);
                     }
                 }
-                if blit_client_pixels(&mut fb, &windows[i], &occ[..n_occ]) {
-                    content_dirty = true;
-                    let (bx0, by0, bx1, by1) = ib;
-                    dirty_x0 = dirty_x0.min(bx0);
-                    dirty_y0 = dirty_y0.min(by0);
-                    dirty_x1 = dirty_x1.max(bx1);
-                    dirty_y1 = dirty_y1.max(by1);
-                }
             }
-        }
         } // end if DIRTY
 
         // ── 5b. Update clock (once per second) ──
@@ -1328,7 +1179,6 @@ fn main() {
             );
             full_redraw = false;
             content_dirty = false;
-            perf_composites += 1;
         } else if content_dirty {
             let sw = screen_w as i32;
             let sh = screen_h as i32;
@@ -1341,7 +1191,6 @@ fn main() {
                 2, dx, dy, dw, dh,
             );
             content_dirty = false;
-            perf_composites += 1;
         } else if mouse_moved_this_frame {
             // Mouse-only update: no content changed, but kernel draws cursor
             let _ = graphics::virgl_composite_windows_rect(
@@ -1351,19 +1200,5 @@ fn main() {
         }
         // No sleep — compositor_wait handles blocking
 
-        let t_end = mono_ns();
-
-        perf_total_ns += t_end.saturating_sub(t0);
-        perf_frame += 1;
-
-        if perf_frame % 500 == 0 {
-            let avg_us = perf_total_ns / 1000 / 500;
-            print!("[bwm-perf] iter={} composites={} waits={} avg_work={}us\n",
-                perf_frame, perf_composites, perf_waits, avg_us,
-            );
-            perf_total_ns = 0;
-            perf_composites = 0;
-            perf_waits = 0;
-        }
     }
 }
