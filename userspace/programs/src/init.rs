@@ -17,7 +17,7 @@
 //! Main loop blocks on waitpid() until a child exits, then respawns
 //! crashed services with backoff to prevent tight respawn loops.
 
-use libbreenix::process::{fork, exec, execv, waitpid, getpid, ForkResult};
+use libbreenix::process::{fork, exec, execv, waitpid, getpid, yield_now, ForkResult};
 
 const TELNETD_PATH: &[u8] = b"/sbin/telnetd\0";
 const BLOGD_PATH: &[u8] = b"/sbin/blogd\0";

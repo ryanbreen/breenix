@@ -280,13 +280,13 @@ pub extern "C" fn timer_interrupt_handler() {
         crate::drivers::usb::ehci::poll_keyboard();
         // Poll XHCI USB HID events (needed when PCI interrupt routing isn't available)
         crate::drivers::usb::xhci::poll_hid_events();
-        // Poll network RX only for devices that still lack interrupt delivery.
-        // VirtIO net PCI stops polling once MSI is configured; e1000 continues
-        // to use the timer-driven fallback until it has a wired IRQ path.
-        let net_pci_needs_poll = crate::drivers::virtio::net_pci::is_initialized()
-            && crate::drivers::virtio::net_pci::get_irq().is_none();
-        let e1000_needs_poll = crate::drivers::e1000::is_initialized();
-        if (net_pci_needs_poll || e1000_needs_poll) && _count % 10 == 0 {
+        // Poll network RX as a safety net alongside MSI-X interrupts.
+        // MSI-X provides sub-ms latency; this 100Hz fallback ensures packets
+        // are still processed if MSI-X delivery fails for any reason.
+        if (crate::drivers::virtio::net_pci::is_initialized()
+            || crate::drivers::e1000::is_initialized())
+            && _count % 10 == 0
+        {
             crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::NetRx);
         }
     }

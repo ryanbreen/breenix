@@ -909,6 +909,34 @@ int main(void)
     };
 
     /* =====================================================================
+     * Step 2b: Prime all TEXTURE_2D resources with TRANSFER_TO_HOST
+     *
+     * CRITICAL: Parallels requires an initial TRANSFER_TO_HOST_3D to
+     * establish the host-side buffer before any VirGL rendering will
+     * produce visible results. Without this "priming" step, SUBMIT_3D
+     * rendering targets a non-existent host buffer and produces black.
+     * ===================================================================== */
+    printf("=== Priming resources with TRANSFER_TO_HOST ===\n");
+    {
+        uint32_t disp_stride = rc_disp.stride;
+        if (disp_stride == 0) disp_stride = width * 4;
+        int r1 = virtgpu_transfer_to_host(rc_disp.bo_handle, disp_stride, width, height);
+        printf("  Prime display (res %u, bo %u): %s\n", rc_disp.res_handle, rc_disp.bo_handle,
+               r1 < 0 ? "FAILED" : "OK");
+
+        uint32_t tex_stride = rc_texA.stride;
+        if (tex_stride == 0) tex_stride = TEX_W * 4;
+        int r2 = virtgpu_transfer_to_host(rc_texA.bo_handle, tex_stride, TEX_W, TEX_H);
+        printf("  Prime texA   (res %u, bo %u): %s\n", rc_texA.res_handle, rc_texA.bo_handle,
+               r2 < 0 ? "FAILED" : "OK");
+
+        int r3 = virtgpu_transfer_to_host(rc_texB.bo_handle, tex_stride, TEX_W, TEX_H);
+        printf("  Prime texB   (res %u, bo %u): %s\n", rc_texB.res_handle, rc_texB.bo_handle,
+               r3 < 0 ? "FAILED" : "OK");
+    }
+    printf("\n");
+
+    /* =====================================================================
      * Step 3: Render to Texture A (RED)
      *
      * Each SUBMIT_3D batch must start with create_sub_ctx(1) + set_sub_ctx(1).
@@ -1164,14 +1192,14 @@ int main(void)
 
     printf("=== Displaying composited result ===\n");
 
-    /* TRANSFER_TO_HOST to sync for display */
+    /* TRANSFER_FROM_HOST to pull GPU-rendered content into guest backing for DRM display */
     uint32_t disp_stride = rc_disp.stride;
     if (disp_stride == 0) disp_stride = width * 4;
 
-    if (virtgpu_transfer_to_host(rc_disp.bo_handle, disp_stride, width, height) < 0)
-        printf("TRANSFER_TO_HOST (display): failed\n");
+    if (virtgpu_transfer_from_host(rc_disp.bo_handle, disp_stride, width, height) < 0)
+        printf("TRANSFER_FROM_HOST (display readback): failed\n");
     else
-        printf("TRANSFER_TO_HOST (display): OK\n");
+        printf("TRANSFER_FROM_HOST (display readback): OK\n");
     virtgpu_wait(rc_disp.bo_handle);
 
     uint32_t fb_id = 0;

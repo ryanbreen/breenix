@@ -67,6 +67,12 @@ struct VirtqDesc {
 
 const DESC_F_WRITE: u16 = 2;
 
+/// When set in avail.flags, tells the device NOT to send interrupts (MSIs)
+/// when it adds entries to the used ring. Used for NAPI-style interrupt
+/// coalescing: handler sets this to suppress MSI storm, softirq clears it
+/// after draining the used ring.
+const VRING_AVAIL_F_NO_INTERRUPT: u16 = 1;
+
 /// Legacy VirtIO queue size — must match what the device reports.
 /// Parallels reports 256; the driver can't change it on legacy transport.
 const VIRTQ_SIZE: usize = 256;
@@ -219,35 +225,13 @@ pub fn get_irq() -> Option<u32> {
     if irq != 0 { Some(irq) } else { None }
 }
 
-/// Set up PCI MSI delivery for the VirtIO network device through GICv2m.
-fn setup_net_pci_msi(pci_dev: &crate::drivers::pci::Device) {
-    use crate::arch_impl::aarch64::gic;
+/// VirtIO legacy MSI-X register offsets (present when MSI-X is enabled at PCI level).
+/// These replace the device config at BAR0+0x14; device config shifts to 0x18.
+const MSIX_CONFIG_VECTOR: usize = 0x14;
+const MSIX_QUEUE_VECTOR: usize = 0x16;
 
-    // Dump PCI capabilities for diagnostics
-    pci_dev.dump_capabilities();
-
-    let cap_offset = match pci_dev.find_msi_capability() {
-        Some(offset) => {
-            crate::serial_println!("[virtio-net-pci] Found MSI capability at offset {:#x}", offset);
-            offset
-        }
-        None => {
-            // Try MSI-X as fallback (some legacy VirtIO devices have MSI-X but not MSI)
-            match pci_dev.find_msix_capability() {
-                Some(msix_off) => {
-                    crate::serial_println!(
-                        "[virtio-net-pci] No MSI cap, but found MSI-X at offset {:#x} (not yet supported)",
-                        msix_off
-                    );
-                }
-                None => {
-                    crate::serial_println!("[virtio-net-pci] No MSI or MSI-X capability — using polling fallback");
-                }
-            }
-            return;
-        }
-    };
-
+/// Resolve a GICv2m doorbell address. Returns the MSI_SETSPI_NS physical address.
+fn resolve_gicv2m_doorbell() -> Option<u64> {
     const PARALLELS_GICV2M_BASE: u64 = 0x0225_0000;
     let gicv2m_base = crate::platform_config::gicv2m_base_phys();
     let base = if gicv2m_base != 0 {
@@ -255,27 +239,121 @@ fn setup_net_pci_msi(pci_dev: &crate::drivers::pci::Device) {
     } else if crate::platform_config::probe_gicv2m(PARALLELS_GICV2M_BASE) {
         PARALLELS_GICV2M_BASE
     } else {
-        crate::serial_println!("[virtio-net-pci] GICv2m not available — using polling fallback");
-        return;
+        return None;
+    };
+    Some(base + 0x40)
+}
+
+/// Set up PCI MSI or MSI-X delivery for the VirtIO network device through GICv2m.
+fn setup_net_pci_msi(pci_dev: &crate::drivers::pci::Device) {
+    use crate::arch_impl::aarch64::gic;
+
+    pci_dev.dump_capabilities();
+
+    // Try plain MSI first (some VirtIO devices have this)
+    if let Some(cap_offset) = pci_dev.find_msi_capability() {
+        crate::serial_println!("[virtio-net-pci] Found MSI capability at offset {:#x}", cap_offset);
+        if let Some(doorbell) = resolve_gicv2m_doorbell() {
+            let spi = crate::platform_config::allocate_msi_spi();
+            if spi != 0 {
+                pci_dev.configure_msi(cap_offset, doorbell as u32, spi as u16);
+                pci_dev.disable_intx();
+                gic::configure_spi_edge_triggered(spi);
+                NET_PCI_IRQ.store(spi, Ordering::Relaxed);
+                gic::enable_spi(spi);
+                crate::serial_println!("[virtio-net-pci] MSI enabled: SPI {} doorbell={:#x}", spi, doorbell);
+                return;
+            }
+        }
+        crate::serial_println!("[virtio-net-pci] MSI setup failed — trying MSI-X");
+    }
+
+    // Try MSI-X (Parallels VirtIO net PCI 1af4:1000 has MSI-X with 3 vectors)
+    let msix_cap = match pci_dev.find_msix_capability() {
+        Some(cap) => cap,
+        None => {
+            crate::serial_println!("[virtio-net-pci] No MSI or MSI-X capability — polling fallback");
+            return;
+        }
+    };
+
+    let table_size = pci_dev.msix_table_size(msix_cap);
+    crate::serial_println!("[virtio-net-pci] MSI-X cap at {:#x}: {} vectors", msix_cap, table_size);
+
+    let doorbell = match resolve_gicv2m_doorbell() {
+        Some(d) => d,
+        None => {
+            crate::serial_println!("[virtio-net-pci] GICv2m not available — polling fallback");
+            return;
+        }
     };
 
     let spi = crate::platform_config::allocate_msi_spi();
     if spi == 0 {
-        crate::serial_println!("[virtio-net-pci] Failed to allocate MSI SPI — using polling fallback");
+        crate::serial_println!("[virtio-net-pci] Failed to allocate MSI SPI — polling fallback");
         return;
     }
 
-    let doorbell_addr = (base + 0x40) as u32;
-    pci_dev.configure_msi(cap_offset, doorbell_addr, spi as u16);
-    pci_dev.disable_intx();
+    // Program all MSI-X table entries with the same SPI (single-vector mode).
+    for v in 0..table_size {
+        pci_dev.configure_msix_entry(msix_cap, v, doorbell, spi);
+    }
+
     gic::configure_spi_edge_triggered(spi);
-    NET_PCI_IRQ.store(spi, Ordering::Relaxed);
-    gic::enable_spi(spi);
+    // Store IRQ but do NOT enable the SPI yet. The SPI is enabled by
+    // enable_msi_spi() after init_common() completes its synchronous
+    // ARP/ICMP polling. This avoids the GICv2m level-triggered SPI storm
+    // during init (the device fires MSIs for ARP replies, and the level
+    // stays asserted through EOI).
+    NET_PCI_IRQ.store(spi, Ordering::Release);
+
+    // Enable MSI-X at PCI level and disable legacy INTx
+    pci_dev.enable_msix(msix_cap);
+    pci_dev.disable_intx();
+
+    // Assign VirtIO-level MSI-X vectors.
+    let bar0_virt = unsafe {
+        let ptr = &raw const NET_PCI_STATE;
+        match (*ptr).as_ref() {
+            Some(s) => s.bar0_virt,
+            None => {
+                crate::serial_println!("[virtio-net-pci] MSI-X: device state not available");
+                return;
+            }
+        }
+    };
+
+    // Config change → no interrupt (0xFFFF). Avoids spurious config-change
+    // MSIs that could cause an interrupt storm unrelated to packet RX.
+    reg_write_u16(bar0_virt, MSIX_CONFIG_VECTOR, 0xFFFF);
+    let cfg_rb = reg_read_u16(bar0_virt, MSIX_CONFIG_VECTOR);
+
+    // RX queue (0) → vector 0
+    reg_write_u16(bar0_virt, REG_QUEUE_SELECT, 0);
+    reg_write_u16(bar0_virt, MSIX_QUEUE_VECTOR, 0);
+    let rx_rb = reg_read_u16(bar0_virt, MSIX_QUEUE_VECTOR);
+
+    // TX queue (1) → no interrupt
+    reg_write_u16(bar0_virt, REG_QUEUE_SELECT, 1);
+    reg_write_u16(bar0_virt, MSIX_QUEUE_VECTOR, 0xFFFF);
 
     crate::serial_println!(
-        "[virtio-net-pci] MSI enabled: GICv2m doorbell={:#x} SPI {}",
-        base + 0x40,
-        spi
+        "[virtio-net-pci] MSI-X vector assignments: cfg={:#x} rx={:#x}",
+        cfg_rb, rx_rb
+    );
+
+    // Only RX vector must succeed; config vector is intentionally 0xFFFF
+    if rx_rb == 0xFFFF {
+        crate::serial_println!("[virtio-net-pci] MSI-X: device rejected RX vector — polling fallback");
+        pci_dev.disable_msix(msix_cap);
+        pci_dev.enable_intx();
+        NET_PCI_IRQ.store(0, Ordering::Relaxed);
+        return;
+    }
+
+    crate::serial_println!(
+        "[virtio-net-pci] MSI-X enabled: SPI {} doorbell={:#x} vectors={}",
+        spi, doorbell, table_size
     );
 }
 
@@ -622,19 +700,110 @@ pub fn msi_interrupt_count() -> u32 {
     NET_PCI_MSI_COUNT.load(Ordering::Relaxed)
 }
 
-/// Interrupt handler for VirtIO network PCI device.
+/// Interrupt handler for VirtIO network PCI device (MSI-X).
+///
+/// Uses NAPI-style two-level suppression to prevent GICv2m SPI storms:
+/// 1. Device-level: sets VRING_AVAIL_F_NO_INTERRUPT so the device stops
+///    writing MSIs to GICv2m entirely.
+/// 2. GIC-level: disables the SPI as a safety net.
+///
+/// Does NOT process packets or raise softirq (locks in the packet
+/// processing path could deadlock with the interrupted thread).
+/// Timer-based NetRx softirq handles packet processing and calls
+/// re_enable_irq() to re-arm both levels.
 pub fn handle_interrupt() {
-    let irq = NET_PCI_IRQ.load(Ordering::Relaxed);
-    if irq != 0 {
-        NET_PCI_MSI_COUNT.fetch_add(1, Ordering::Relaxed);
-        crate::arch_impl::aarch64::gic::disable_spi(irq);
-        crate::arch_impl::aarch64::gic::clear_spi_pending(irq);
-    }
+    use crate::arch_impl::aarch64::gic;
 
-    if !DEVICE_INITIALIZED.load(Ordering::Acquire) {
+    NET_PCI_MSI_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    let irq = NET_PCI_IRQ.load(Ordering::Relaxed);
+    if irq == 0 {
         return;
     }
 
+    // Suppress at the device level FIRST — prevents new MSI writes to GICv2m.
+    unsafe {
+        let q = &raw mut PCI_RX_QUEUE;
+        write_volatile(&mut (*q).avail.flags, VRING_AVAIL_F_NO_INTERRUPT);
+        fence(Ordering::SeqCst);
+    }
+
+    // Mask SPI at the GIC — belt-and-suspenders with device-level suppression.
+    gic::disable_spi(irq);
+    gic::clear_spi_pending(irq);
+
+    // Read ISR to clear the VirtIO device's internal interrupt condition.
+    let state = &raw const NET_PCI_STATE;
+    unsafe {
+        if let Some(ref s) = *state {
+            let _isr = reg_read_u8(s.bar0_virt, REG_ISR_STATUS);
+        }
+    }
+
+    // Both levels stay suppressed — re_enable_irq() called from timer softirq.
+}
+
+/// Re-enable the network device's MSI-X interrupt after softirq processing.
+///
+/// Called by the NetRx softirq handler after draining the used ring.
+/// Follows the Linux virtqueue_enable_cb() pattern:
+/// 1. Read ISR to clear any pending device interrupt condition
+/// 2. Re-enable device-level interrupts (clear NO_INTERRUPT flag)
+/// 3. Memory barrier + check for new used ring entries
+/// 4. If more work: re-suppress and let next softirq handle it
+/// 5. If clean: clear GIC pending + enable SPI
+pub fn re_enable_irq() {
+    use crate::arch_impl::aarch64::gic;
+
+    let irq = NET_PCI_IRQ.load(Ordering::Relaxed);
+    if irq == 0 {
+        return;
+    }
+
+    // Read ISR to clear any pending device interrupt condition before re-enabling.
+    let state_ptr = &raw const NET_PCI_STATE;
+    unsafe {
+        if let Some(ref s) = *state_ptr {
+            let _isr = reg_read_u8(s.bar0_virt, REG_ISR_STATUS);
+        }
+    }
+
+    // Re-enable device-level interrupts (Linux: virtqueue_enable_cb)
+    unsafe {
+        let q = &raw mut PCI_RX_QUEUE;
+        write_volatile(&mut (*q).avail.flags, 0);
+        fence(Ordering::SeqCst);
+    }
+
+    // Check if more work arrived while we were processing (race window).
+    // If so, re-suppress and let the next timer softirq cycle handle it.
+    let has_more = unsafe {
+        let q = &raw const PCI_RX_QUEUE;
+        let used_idx = read_volatile(&(*q).used.idx);
+        if let Some(ref s) = *state_ptr {
+            used_idx != s.rx_last_used_idx
+        } else {
+            false
+        }
+    };
+
+    if has_more {
+        // More work arrived — re-suppress device interrupts, don't enable SPI.
+        unsafe {
+            let q = &raw mut PCI_RX_QUEUE;
+            write_volatile(&mut (*q).avail.flags, VRING_AVAIL_F_NO_INTERRUPT);
+            fence(Ordering::SeqCst);
+        }
+        return;
+    }
+
+    // Used ring is drained — safe to re-enable the GIC SPI.
+    gic::clear_spi_pending(irq);
+    gic::enable_spi(irq);
+}
+
+/// Diagnostic: dump RX queue state for debugging MSI-X issues.
+pub fn dump_rx_state() {
     let state = unsafe {
         let ptr = &raw const NET_PCI_STATE;
         match (*ptr).as_ref() {
@@ -643,14 +812,43 @@ pub fn handle_interrupt() {
         }
     };
 
-    // Reading ISR status auto-acknowledges on legacy PCI
-    let _isr = reg_read_u8(state.bar0_virt, REG_ISR_STATUS);
+    let isr = reg_read_u8(state.bar0_virt, REG_ISR_STATUS);
+    let (used_idx, avail_idx) = unsafe {
+        let q = &raw const PCI_RX_QUEUE;
+        (read_volatile(&(*q).used.idx), read_volatile(&(*q).avail.idx))
+    };
+    let msi_count = NET_PCI_MSI_COUNT.load(Ordering::Relaxed);
+    crate::serial_println!(
+        "[virtio-net-pci] RX diag: used_idx={} last_used={} avail_idx={} isr={:#x} msi_count={}",
+        used_idx, state.rx_last_used_idx, avail_idx, isr, msi_count
+    );
+}
 
-    crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::NetRx);
+/// Enable the MSI-X SPI at the GIC after init polling is complete.
+///
+/// During init, the ARP/ICMP polling loop processes RX via timer-based softirq.
+/// The SPI must NOT be enabled during init because the GICv2m level-triggered
+/// storm would prevent the main thread from making progress. After init drains
+/// all used ring entries, it's safe to enable the SPI for interrupt-driven RX.
+pub fn enable_msi_spi() {
+    use crate::arch_impl::aarch64::gic;
 
-    if irq != 0 {
-        crate::arch_impl::aarch64::gic::enable_spi(irq);
+    let irq = NET_PCI_IRQ.load(Ordering::Relaxed);
+    if irq == 0 {
+        return;
     }
+
+    // Read ISR to clear any pending device interrupt from init polling
+    let state_ptr = &raw const NET_PCI_STATE;
+    unsafe {
+        if let Some(ref s) = *state_ptr {
+            let _isr = reg_read_u8(s.bar0_virt, REG_ISR_STATUS);
+        }
+    }
+
+    gic::clear_spi_pending(irq);
+    gic::enable_spi(irq);
+    crate::serial_println!("[virtio-net-pci] MSI-X SPI {} enabled (post-init)", irq);
 }
 
 /// Whether the PCI net device is initialized

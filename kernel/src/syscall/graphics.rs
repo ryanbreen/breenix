@@ -1319,6 +1319,7 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
     };
 
     // Collect window info and waiting thread IDs under lock, then release.
+    // Also lazy-initialize VirGL textures for windows that don't have them yet.
     let mut threads_to_wake: [Option<u64>; MAX_WINDOW_BUFFERS] = [None; MAX_WINDOW_BUFFERS];
     let windows: alloc::vec::Vec<WindowCompositeInfo> = {
         let mut reg = WINDOW_REGISTRY.lock();
@@ -1328,6 +1329,28 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
             if let Some(ref mut buf) = slot {
                 if !buf.registered { continue; }
                 if buf.width == 0 || buf.height == 0 { continue; }
+
+                // Lazy VirGL texture init: create per-window GPU texture on first composite
+                if !buf.virgl_initialized && !buf.page_phys_addrs.is_empty()
+                    && matches!(crate::graphics::compositor_backend(),
+                                crate::graphics::CompositorBackend::VirGL)
+                {
+                    let slot_idx = (buf.id as usize).saturating_sub(1) % 16;
+                    match crate::drivers::virtio::gpu_pci::init_window_texture(
+                        slot_idx, buf.width, buf.height, &buf.page_phys_addrs, buf.size
+                    ) {
+                        Ok(res_id) => {
+                            buf.virgl_resource_id = res_id;
+                            buf.virgl_initialized = true;
+                            crate::serial_println!("[composite] Window {} got VirGL texture (res={})",
+                                buf.id, res_id);
+                        }
+                        Err(e) => {
+                            crate::serial_println!("[composite] Window {} texture init failed: {}",
+                                buf.id, e);
+                        }
+                    }
+                }
 
                 let dirty = buf.generation > buf.last_uploaded_gen;
 
