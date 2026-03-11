@@ -16,11 +16,15 @@
 //! }
 //! ```
 
-use crate::dns::{resolve, DnsError, DnsResult, SLIRP_DNS, PARALLELS_DNS, GOOGLE_DNS};
+use crate::dns::{resolve_auto, DnsError, DnsResult};
 use crate::error::Error;
 use crate::socket::{connect_inet, recv, send, socket, AF_INET, SOCK_STREAM, SockAddrIn};
 use crate::syscall::{nr, raw};
+#[cfg(feature = "std")]
+use crate::time::now_monotonic;
 use crate::types::Fd;
+#[cfg(feature = "std")]
+use crate::types::Timespec;
 
 // ============================================================================
 // Constants
@@ -697,18 +701,20 @@ fn close_fd(fd: Fd) {
     }
 }
 
-/// Try multiple DNS servers for platform portability (Parallels, QEMU, external).
+/// Compute elapsed milliseconds since a start time.
+#[cfg(feature = "std")]
+fn http_elapsed_ms(start: &Timespec) -> u64 {
+    let now = now_monotonic().unwrap_or(Timespec { tv_sec: 0, tv_nsec: 0 });
+    let start_ms = start.tv_sec as u64 * 1000 + start.tv_nsec as u64 / 1_000_000;
+    let now_ms = now.tv_sec as u64 * 1000 + now.tv_nsec as u64 / 1_000_000;
+    now_ms.saturating_sub(start_ms)
+}
+
+/// Try multiple DNS servers, starting with Google (reachable from all platforms).
 fn resolve_multi(hostname: &str) -> Result<DnsResult, HttpError> {
-    let servers = [PARALLELS_DNS, SLIRP_DNS, GOOGLE_DNS];
-    let mut last_err = DnsError::Timeout;
-    for server in &servers {
-        match resolve(hostname, *server) {
-            Ok(r) if r.addr[0] != 0 && r.addr[0] != 127 => return Ok(r),
-            Ok(_) => continue,
-            Err(e) => { last_err = e; continue; }
-        }
-    }
-    Err(HttpError::DnsError(last_err))
+    // Google DNS first — always reachable via NAT/bridge from any hypervisor.
+    // Fall back to hypervisor-specific servers only if Google fails.
+    resolve_auto(hostname).map_err(HttpError::DnsError)
 }
 
 // ============================================================================
@@ -739,35 +745,38 @@ pub fn http_request(
             parsed.host, parsed.port, parsed.path, parsed.is_tls);
     }
 
-    // Resolve hostname to IP — try multiple DNS servers for platform portability
+    // Resolve hostname to IP
+    #[cfg(feature = "std")]
+    let request_start = now_monotonic().unwrap_or(Timespec { tv_sec: 0, tv_nsec: 0 });
     #[cfg(feature = "std")]
     if verbose { eprint!("* Resolving {}...\n", parsed.host); }
     let dns_result = resolve_multi(parsed.host)?;
     let ip = dns_result.addr;
     #[cfg(feature = "std")]
-    if verbose {
-        eprint!("* Resolved to {}.{}.{}.{}\n", ip[0], ip[1], ip[2], ip[3]);
+    {
+        let dns_ms = http_elapsed_ms(&request_start);
+        eprint!("[http] DNS resolved {}.{}.{}.{} ({}ms)\n", ip[0], ip[1], ip[2], ip[3], dns_ms);
     }
 
     // Create TCP socket
     #[cfg(feature = "std")]
     if verbose { eprint!("* Creating TCP socket...\n"); }
     let fd = socket(AF_INET, SOCK_STREAM, 0).map_err(|_| HttpError::SocketError)?;
-    #[cfg(feature = "std")]
-    if verbose { eprint!("* Socket created (fd={})\n", fd.raw()); }
 
     // Connect to server
+    #[cfg(feature = "std")]
+    let connect_start = now_monotonic().unwrap_or(Timespec { tv_sec: 0, tv_nsec: 0 });
     #[cfg(feature = "std")]
     if verbose { eprint!("* Connecting to port {}...\n", parsed.port); }
     let server_addr = SockAddrIn::new(ip, parsed.port);
     if let Err(_e) = connect_inet(fd, &server_addr) {
         #[cfg(feature = "std")]
-        if verbose { eprint!("* Connect failed\n"); }
+        eprint!("[http] TCP connect FAILED ({}ms)\n", http_elapsed_ms(&connect_start));
         close_fd(fd);
         return Err(HttpError::ConnectError);
     }
     #[cfg(feature = "std")]
-    if verbose { eprint!("* Connected\n"); }
+    eprint!("[http] TCP connected ({}ms)\n", http_elapsed_ms(&connect_start));
 
     // Establish connection (plain or TLS)
     let mut conn = if parsed.is_tls {
@@ -831,6 +840,8 @@ pub fn http_request(
     }
 
     // Receive response
+    #[cfg(feature = "std")]
+    let recv_start = now_monotonic().unwrap_or(Timespec { tv_sec: 0, tv_nsec: 0 });
     #[cfg(feature = "std")]
     if verbose { eprint!("* Waiting for response...\n"); }
     let mut total_received = 0usize;
@@ -906,7 +917,12 @@ pub fn http_request(
     }
 
     #[cfg(feature = "std")]
-    if verbose { eprint!("* Total received: {} bytes\n", total_received); }
+    {
+        let recv_ms = http_elapsed_ms(&recv_start);
+        let total_ms = http_elapsed_ms(&request_start);
+        eprint!("[http] response received: {} bytes (recv {}ms, total {}ms)\n",
+            total_received, recv_ms, total_ms);
+    }
 
     // Decode chunked transfer encoding if detected
     let decoded_body_len = if chunked {

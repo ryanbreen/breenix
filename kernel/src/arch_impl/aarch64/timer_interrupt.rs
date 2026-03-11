@@ -282,10 +282,10 @@ pub extern "C" fn timer_interrupt_handler() {
         crate::drivers::usb::xhci::poll_hid_events();
         // Poll network RX for incoming packets (PCI INTx routing not wired up)
         // Covers both VirtIO net PCI (Parallels) and e1000 (VMware)
-        // Throttle to every 50th tick (~20Hz at 1000Hz timer) to avoid overhead
+        // Poll every 10th tick (~100Hz at 1000Hz timer) for responsive networking
         if (crate::drivers::virtio::net_pci::is_initialized()
             || crate::drivers::e1000::is_initialized())
-            && _count % 50 == 0
+            && _count % 10 == 0
         {
             crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::NetRx);
         }
