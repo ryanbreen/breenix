@@ -70,6 +70,19 @@ pub fn wake_compositor_if_waiting() {
     }
 }
 
+/// Clean up all window buffers owned by a terminated process.
+/// Removes entries from the registry and wakes the compositor so it
+/// discovers the removal and repaints.
+#[cfg(target_arch = "aarch64")]
+pub fn cleanup_windows_for_pid(pid: u64) {
+    let mut reg = WINDOW_REGISTRY.lock();
+    if reg.remove_for_pid(pid) {
+        REGISTRY_GENERATION.fetch_add(1, core::sync::atomic::Ordering::Release);
+        drop(reg);
+        wake_compositor_if_waiting();
+    }
+}
+
 /// Restore TTBR0 to the current process's page tables after blocking.
 ///
 /// After a blocking syscall (mark_window_dirty), TTBR0 may point to a different
@@ -273,6 +286,21 @@ impl WindowRegistry {
         self.buffers.iter_mut().find_map(|slot| {
             slot.as_mut().filter(|b| b.id == buffer_id)
         })
+    }
+
+    /// Remove all window buffers owned by a given process.
+    /// Returns true if any buffers were removed.
+    fn remove_for_pid(&mut self, pid: u64) -> bool {
+        let mut removed = false;
+        for slot in &mut self.buffers {
+            if let Some(ref buf) = slot {
+                if buf.owner_pid == pid {
+                    *slot = None;
+                    removed = true;
+                }
+            }
+        }
+        removed
     }
 
     fn registered_windows(&self) -> alloc::vec::Vec<WindowInfo> {

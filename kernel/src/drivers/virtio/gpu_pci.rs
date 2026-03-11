@@ -3756,10 +3756,8 @@ pub fn virgl_composite_windows(
             let avg_display = to_us(PERF_DISPLAY_TICKS.swap(0, Ordering::Relaxed));
             let avg_total = to_us(PERF_TOTAL_TICKS.swap(0, Ordering::Relaxed));
 
-            crate::serial_println!(
-                "[gpu-perf] frame={} avg/frame: compose={}us display={}us TOTAL={}us",
-                frame, avg_compose, avg_display, avg_total
-            );
+            // GPU perf counters available via GDB: PERF_COMPOSE_TICKS, PERF_DISPLAY_TICKS, PERF_TOTAL_TICKS
+            let _ = (avg_compose, avg_display, avg_total);
         }
     }
 

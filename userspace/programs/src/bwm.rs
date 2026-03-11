@@ -1357,10 +1357,6 @@ fn main() {
         perf_frame += 1;
 
         if perf_frame % 500 == 0 {
-            let avg_us = perf_total_ns / 1000 / 500;
-            print!("[bwm-perf] iter={} composites={} waits={} avg_work={}us\n",
-                perf_frame, perf_composites, perf_waits, avg_us,
-            );
             perf_total_ns = 0;
             perf_composites = 0;
             perf_waits = 0;

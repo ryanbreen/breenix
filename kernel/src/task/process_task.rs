@@ -77,6 +77,7 @@ impl ProcessScheduler {
                 if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
                     let parent_pid = process.parent;
                     let process_name = process.name.clone();
+                    let children = core::mem::take(&mut process.children);
 
                     // Mark terminated and extract FDs without closing them
                     process.terminate_minimal(exit_code);
@@ -84,6 +85,11 @@ impl ProcessScheduler {
                     // CoW cleanup is fast (no logging, no locks besides frame allocator)
                     process.cleanup_cow_frames();
                     process.drain_old_page_tables();
+
+                    // Free heavy resources immediately (CoW refcounts already decremented)
+                    process.page_table.take();
+                    process.stack.take();
+                    process.pending_old_page_tables.clear();
 
                     #[cfg(feature = "btrt")]
                     crate::test_framework::btrt::on_process_exit(pid.as_u64(), exit_code);
@@ -101,6 +107,20 @@ impl ProcessScheduler {
                         None
                     };
 
+                    // Reparent children to init (PID 1)
+                    if !children.is_empty() {
+                        use crate::process::ProcessId;
+                        let init_pid = ProcessId::new(1);
+                        for &child_pid in &children {
+                            if let Some(child) = manager.get_process_mut(child_pid) {
+                                child.parent = Some(init_pid);
+                            }
+                        }
+                        if let Some(init) = manager.get_process_mut(init_pid) {
+                            init.children.extend(children.iter());
+                        }
+                    }
+
                     Some((pid, process_name, fd_entries, parent_tid))
                 } else {
                     None
@@ -114,6 +134,10 @@ impl ProcessScheduler {
         if let Some((pid, process_name, fd_entries, parent_tid)) = phase1_result {
             // Close FDs outside PM lock (pipe close_write wakes readers, etc.)
             close_extracted_fds(fd_entries);
+
+            // Clean up window buffers so the compositor stops reading freed pages
+            #[cfg(target_arch = "aarch64")]
+            crate::syscall::graphics::cleanup_windows_for_pid(pid.as_u64());
 
             // Wake parent thread if blocked on waitpid or pause()
             if let Some(parent_tid) = parent_tid {
