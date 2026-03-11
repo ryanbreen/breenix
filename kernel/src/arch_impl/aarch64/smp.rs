@@ -231,8 +231,12 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
         return -2; // INVALID_PARAMS
     }
 
-    // Get the physical address of the secondary entry point in boot.S
-    let entry_phys = unsafe { core::ptr::read_volatile(&SECONDARY_CPU_ENTRY_PHYS) };
+    // Get the physical address of the secondary entry point in boot.S.
+    // SECONDARY_CPU_ENTRY_PHYS holds the linker address (base 0x40080000).
+    // On VMware, RAM starts at 0x80000000, so the actual physical address
+    // is offset by ram_base_offset (0x40000000).
+    let entry_phys = unsafe { core::ptr::read_volatile(&SECONDARY_CPU_ENTRY_PHYS) }
+        + crate::platform_config::ram_base_offset();
 
     // MPIDR: Aff0 = cpu_id, all other affinity fields = 0
     // This is the standard layout for ARM virt machines (QEMU, Parallels, VMware)

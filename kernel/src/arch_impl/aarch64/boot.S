@@ -101,6 +101,7 @@ drop_to_el1:
     mov x0, #0
     orr x0, x0, #(1 << 29)  // LSMAOE
     orr x0, x0, #(1 << 28)  // nTLSMD
+    orr x0, x0, #(1 << 23)  // SPAN (don't auto-set PAN on exception entry)
     orr x0, x0, #(1 << 11)  // EOS (exception return on stack)
     msr sctlr_el1, x0
 
@@ -122,6 +123,12 @@ el1_init:
     // This is required because Rust code may use FP/SIMD instructions
     mov x0, #(3 << 20)      // FPEN = 0b11 (no trapping of FP/SIMD)
     msr cpacr_el1, x0
+    isb
+
+    // Clear PAN — architecturally UNKNOWN if we entered EL1 directly
+    // (the EL2 path sets PAN=0 via SPSR_EL2, but be safe)
+    // Encoding: MSR PAN, #0 = 0xD500409F
+    .inst 0xd500409f
     isb
 
     // Set up boot stack pointer (low)
@@ -768,10 +775,20 @@ secondary_cpu_entry:
     mov x19, x0              // PSCI path: cpu_id from x0
 1:
 
+    // Compute relocation delta: on VMware, the kernel is loaded at a different
+    // physical address than the linker expects (RAM at 0x80000000 vs link at
+    // 0x40080000). All `ldr Xn, =symbol` loads get the linker address from the
+    // literal pool; we must add the delta to dereference them correctly.
+    // x21 = (actual PC of this label) - (linker address of this label)
+    adr x21, secondary_cpu_entry
+    ldr x22, =secondary_cpu_entry
+    sub x21, x21, x22          // x21 = relocation delta (0 on QEMU, 0x40000000 on VMware)
+
     // Debug breadcrumb: write cpu_id digit + '@' to UART (physical, pre-MMU)
     // Load UART physical address from SMP_UART_PHYS (set by CPU 0 Rust code)
     // Guard: skip if address is 0 (BSS default before CPU 0 writes it)
     ldr x2, =SMP_UART_PHYS
+    add x2, x2, x21            // relocate: linker addr -> physical addr
     ldr x2, [x2]             // x2 = UART phys addr
     cbz x2, 2f               // skip breadcrumbs if 0 (not yet initialized)
     add x3, x19, #'0'        // '1' for CPU 1, '2' for CPU 2, etc.
@@ -799,6 +816,7 @@ secondary_el1_init:
     // Load UART phys addr into callee-saved x20 for breadcrumbs.
     // x20=0 means UART not set; all breadcrumbs guard against this.
     ldr x20, =SMP_UART_PHYS
+    add x20, x20, x21        // relocate
     ldr x20, [x20]           // x20 = UART phys addr (preserved across init)
 
     // Breadcrumb 'A' = entered EL1 init
@@ -812,6 +830,24 @@ secondary_el1_init:
     msr cpacr_el1, x0
     isb
 
+    // Initialize SCTLR_EL1 for PSCI direct-EL1 path.
+    // Secondary CPUs inherit whatever the hypervisor set, which may differ
+    // from primary. Must match primary CPU's configuration.
+    mov x0, #0
+    orr x0, x0, #(1 << 29)  // LSMAOE
+    orr x0, x0, #(1 << 28)  // nTLSMD
+    orr x0, x0, #(1 << 23)  // SPAN (don't auto-set PAN on exception entry)
+    orr x0, x0, #(1 << 11)  // EOS
+    msr sctlr_el1, x0
+    isb
+
+    // Clear PAN (Privileged Access Never).
+    // PSTATE.PAN is architecturally UNKNOWN on reset — VMware sets it to 1,
+    // which causes permission faults when kernel code accesses user-mapped pages.
+    // Encoding: MSR PAN, #0 = 0xD500409F (op1=000, CRm=0000, op2=100)
+    .inst 0xd500409f
+    isb
+
     // Set up per-CPU boot stack (physical addresses, before MMU)
     // Stack top = SMP_STACK_BASE_PHYS + (cpu_id + 1) * 0x20_0000
     // SMP_STACK_BASE_PHYS is set by CPU 0 Rust code to (ram_base + 0x01000000).
@@ -823,6 +859,7 @@ secondary_el1_init:
     add x0, x0, #1           // cpu_id + 1
     lsl x0, x0, #21          // * 0x20_0000 (2MB)
     ldr x1, =SMP_STACK_BASE_PHYS
+    add x1, x1, x21          // relocate
     ldr x1, [x1]             // x1 = actual stack base (set by CPU 0)
     add x0, x0, x1
     mov sp, x0
@@ -838,6 +875,7 @@ secondary_el1_init:
 
     // Set VBAR_EL1 to boot exception vectors (low) for now
     ldr x0, =exception_vectors_boot
+    add x0, x0, x21          // relocate
     msr vbar_el1, x0
     isb
 
@@ -852,19 +890,23 @@ secondary_el1_init:
     // populates from its actual register values. This handles both
     // QEMU (boot.S page tables/config) and Parallels (loader page tables/config).
     ldr x0, =SMP_MAIR_PHYS
+    add x0, x0, x21          // relocate
     ldr x0, [x0]             // x0 = CPU 0's MAIR value
     msr mair_el1, x0
     ldr x0, =SMP_TCR_PHYS
+    add x0, x0, x21          // relocate
     ldr x0, [x0]             // x0 = CPU 0's TCR value
     msr tcr_el1, x0
     isb
 
     // Load TTBR0 from SMP_TTBR0_PHYS (set by CPU 0 Rust code)
     ldr x0, =SMP_TTBR0_PHYS
+    add x0, x0, x21          // relocate
     ldr x0, [x0]             // x0 = actual TTBR0 physical address
     msr ttbr0_el1, x0
     // Load TTBR1 from SMP_TTBR1_PHYS
     ldr x0, =SMP_TTBR1_PHYS
+    add x0, x0, x21          // relocate
     ldr x0, [x0]             // x0 = actual TTBR1 physical address
     msr ttbr1_el1, x0
     dsb ishst
@@ -941,6 +983,7 @@ secondary_drop_to_el1:
     mov x0, #0
     orr x0, x0, #(1 << 29)  // LSMAOE
     orr x0, x0, #(1 << 28)  // nTLSMD
+    orr x0, x0, #(1 << 23)  // SPAN (don't auto-set PAN on exception entry)
     orr x0, x0, #(1 << 11)  // EOS
     msr sctlr_el1, x0
 

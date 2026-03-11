@@ -539,17 +539,17 @@ pub fn resolve(hostname: &str, dns_server: [u8; 4]) -> Result<DnsResult, DnsErro
         return Err(DnsError::SendError);
     }
 
-    // Receive response with 5-second timeout
+    // Receive response with 500ms timeout
     let mut resp_buf = [0u8; DNS_BUF_SIZE];
     let mut received = false;
     let mut resp_len = 0;
 
     // Network packets arrive via interrupt -> softirq -> process_rx().
     // We poll recvfrom() with yield_now() between attempts.
-    // DNS resolution via QEMU SLIRP forwards to host DNS, which can take time.
-    const TIMEOUT_SECS: u64 = 5;
+    // Hypervisor DNS resolvers respond in <50ms; public DNS in <200ms.
+    const TIMEOUT_MS: u64 = 500;
     let start = now_monotonic().unwrap_or(Timespec { tv_sec: 0, tv_nsec: 0 });
-    let deadline_secs = start.tv_sec as u64 + TIMEOUT_SECS;
+    let start_ms = start.tv_sec as u64 * 1000 + start.tv_nsec as u64 / 1_000_000;
 
     loop {
         match recvfrom(fd, &mut resp_buf, None) {
@@ -559,9 +559,10 @@ pub fn resolve(hostname: &str, dns_server: [u8; 4]) -> Result<DnsResult, DnsErro
                 break;
             }
             _ => {
-                // Check timeout
+                // Check timeout using millisecond precision
                 let now = now_monotonic().unwrap_or(Timespec { tv_sec: 0, tv_nsec: 0 });
-                if now.tv_sec as u64 >= deadline_secs {
+                let now_ms = now.tv_sec as u64 * 1000 + now.tv_nsec as u64 / 1_000_000;
+                if now_ms >= start_ms + TIMEOUT_MS {
                     break; // Timeout
                 }
                 // Yield to scheduler - allows timer interrupt to fire and process softirqs
@@ -605,18 +606,61 @@ pub fn resolve(hostname: &str, dns_server: [u8; 4]) -> Result<DnsResult, DnsErro
 
 /// Resolve a hostname by trying multiple DNS servers automatically.
 ///
-/// Tries Parallels (10.211.55.1), SLIRP (10.0.2.3), and Google (8.8.8.8)
-/// in order, returning the first successful result. This makes DNS resolution
-/// work across all supported platforms without caller configuration.
+/// Tries Google (8.8.8.8) first since it's reachable from all platforms
+/// (QEMU SLIRP, Parallels, VMware all NAT/bridge to host networking).
+/// Falls back to hypervisor-specific DNS servers if Google fails.
 pub fn resolve_auto(hostname: &str) -> Result<DnsResult, DnsError> {
-    let servers = [PARALLELS_DNS, VMWARE_DNS, SLIRP_DNS, GOOGLE_DNS];
+    let servers: [([u8; 4], &str); 4] = [
+        (GOOGLE_DNS, "8.8.8.8"),
+        (PARALLELS_DNS, "10.211.55.1"),
+        (VMWARE_DNS, "172.16.45.2"),
+        (SLIRP_DNS, "10.0.2.3"),
+    ];
+    #[cfg(feature = "std")]
+    let total_start = now_monotonic().unwrap_or(Timespec { tv_sec: 0, tv_nsec: 0 });
+
     let mut last_err = DnsError::Timeout;
-    for server in &servers {
+    for (server, _name) in &servers {
+        #[cfg(feature = "std")]
+        let attempt_start = now_monotonic().unwrap_or(Timespec { tv_sec: 0, tv_nsec: 0 });
+
         match resolve(hostname, *server) {
-            Ok(r) if r.addr[0] != 0 && r.addr[0] != 127 => return Ok(r),
-            Ok(_) => continue,
-            Err(e) => { last_err = e; continue; }
+            Ok(r) if r.addr[0] != 0 && r.addr[0] != 127 => {
+                #[cfg(feature = "std")]
+                {
+                    let elapsed = elapsed_ms(&attempt_start);
+                    let total = elapsed_ms(&total_start);
+                    eprintln!("[dns] resolved '{}' via {} -> {}.{}.{}.{} ({}ms, total {}ms)",
+                        hostname, _name, r.addr[0], r.addr[1], r.addr[2], r.addr[3],
+                        elapsed, total);
+                }
+                return Ok(r);
+            }
+            Ok(_) => {
+                #[cfg(feature = "std")]
+                eprintln!("[dns] '{}' via {}: unusable address ({}ms)",
+                    hostname, _name, elapsed_ms(&attempt_start));
+                continue;
+            }
+            Err(e) => {
+                #[cfg(feature = "std")]
+                eprintln!("[dns] '{}' via {}: {:?} ({}ms)",
+                    hostname, _name, e, elapsed_ms(&attempt_start));
+                last_err = e;
+                continue;
+            }
         }
     }
+    #[cfg(feature = "std")]
+    eprintln!("[dns] '{}' FAILED all servers (total {}ms)", hostname, elapsed_ms(&total_start));
     Err(last_err)
+}
+
+/// Compute elapsed milliseconds since a start time.
+#[cfg(feature = "std")]
+fn elapsed_ms(start: &Timespec) -> u64 {
+    let now = now_monotonic().unwrap_or(Timespec { tv_sec: 0, tv_nsec: 0 });
+    let start_ms = start.tv_sec as u64 * 1000 + start.tv_nsec as u64 / 1_000_000;
+    let now_ms = now.tv_sec as u64 * 1000 + now.tv_nsec as u64 / 1_000_000;
+    now_ms.saturating_sub(start_ms)
 }

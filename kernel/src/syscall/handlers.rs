@@ -3026,17 +3026,17 @@ pub fn sys_fcntl(fd: u64, cmd: u64, arg: u64) -> SyscallResult {
         }
     };
 
-    let manager_guard = match crate::process::try_manager() {
+    let mut manager_guard = match crate::process::try_manager() {
         Some(guard) => guard,
         None => {
             log::error!("sys_fcntl: Failed to get process manager");
-            return SyscallResult::Err(9); // EBADF
+            return SyscallResult::Err(11); // EAGAIN
         }
     };
 
-    let _process = match manager_guard
-        .as_ref()
-        .and_then(|m| m.find_process_by_thread(thread_id))
+    let process = match manager_guard
+        .as_mut()
+        .and_then(|m| m.find_process_by_thread_mut(thread_id))
         .map(|(_, p)| p)
     {
         Some(p) => p,
@@ -3044,21 +3044,6 @@ pub fn sys_fcntl(fd: u64, cmd: u64, arg: u64) -> SyscallResult {
             log::error!("sys_fcntl: Failed to find process for thread {}", thread_id);
             return SyscallResult::Err(9); // EBADF
         }
-    };
-
-    // Need to reborrow mutably for fd_table operations
-    drop(manager_guard);
-    let mut manager_guard = match crate::process::try_manager() {
-        Some(guard) => guard,
-        None => return SyscallResult::Err(9),
-    };
-    let process = match manager_guard
-        .as_mut()
-        .and_then(|m| m.find_process_by_thread_mut(thread_id))
-        .map(|(_, p)| p)
-    {
-        Some(p) => p,
-        None => return SyscallResult::Err(9),
     };
 
     match cmd {
