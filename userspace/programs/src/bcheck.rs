@@ -432,22 +432,29 @@ fn main() {
     let total_h = content_height(&tests);
     let max_scroll = (total_h - visible_h).max(0);
     let mut scroll_offset: i32 = 0;
+    let sleep_ts = libbreenix::types::Timespec { tv_sec: 0, tv_nsec: 50_000_000 }; // 50ms
 
     loop {
+        let mut need_redraw = false;
         for event in win.poll_events() {
             match event {
                 Event::KeyPress { keycode, .. } => {
                     match keycode {
-                        0x52 => scroll_offset = (scroll_offset - ROW_H).max(0),       // Up
-                        0x51 => scroll_offset = (scroll_offset + ROW_H).min(max_scroll), // Down
+                        0x52 => { scroll_offset = (scroll_offset - ROW_H).max(0); need_redraw = true; }
+                        0x51 => { scroll_offset = (scroll_offset + ROW_H).min(max_scroll); need_redraw = true; }
                         _ => {}
                     }
                 }
+                Event::CloseRequested => std::process::exit(0),
                 _ => {}
             }
         }
-        render(win.framebuf(), &tests, scroll_offset);
-        let _ = win.present();
+        if need_redraw {
+            render(win.framebuf(), &tests, scroll_offset);
+            let _ = win.present();
+        } else {
+            let _ = time::nanosleep(&sleep_ts);
+        }
     }
 }
 

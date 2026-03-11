@@ -14,10 +14,10 @@
 //! BWM is a pure compositor: it no longer spawns terminals internally. Instead,
 //! bterm and blog are standalone Breengel GUI apps that register windows with BWM.
 //!
-//! Main loop reaps terminated children with waitpid(WNOHANG) and respawns
+//! Main loop blocks on waitpid() until a child exits, then respawns
 //! crashed services with backoff to prevent tight respawn loops.
 
-use libbreenix::process::{fork, exec, execv, waitpid, getpid, yield_now, ForkResult, WNOHANG};
+use libbreenix::process::{fork, exec, execv, waitpid, getpid, ForkResult};
 
 const TELNETD_PATH: &[u8] = b"/sbin/telnetd\0";
 const BLOGD_PATH: &[u8] = b"/sbin/blogd\0";
@@ -188,57 +188,61 @@ fn main() {
     print!("[init] BUSYBOX TEST: cat /etc/passwd\n");
     test_busybox_cat();
 
-    // Main loop: reap zombies, respawn crashed services.
+    // Main loop: block on waitpid until a child exits, then respawn if needed.
     let mut status: i32 = 0;
     loop {
-        match waitpid(-1, &mut status as *mut i32, WNOHANG) {
-            Ok(reaped_pid) => {
-                let reaped = reaped_pid.raw() as i64;
-                if reaped > 0 {
-                    if reaped == bwm_pid {
-                        print!("[init] BWM exited (status {})\n", status);
-                        bwm_pid = try_respawn(BWM_PATH, "bwm", &mut bwm_failures);
-                        if bwm_pid == -1 {
-                            print!("[init] BWM failed {} times, giving up\n", MAX_RESPAWN_FAILURES);
-                        }
-                    } else if reaped == bterm_pid {
-                        print!("[init] bterm exited (status {})\n", status);
-                        bterm_pid = try_respawn(BTERM_PATH, "bterm", &mut bterm_failures);
-                        if bterm_pid == -1 {
-                            print!("[init] bterm failed {} times, giving up\n", MAX_RESPAWN_FAILURES);
-                        }
-                    } else if reaped == blog_pid {
-                        print!("[init] blog exited (status {})\n", status);
-                        blog_pid = try_respawn(BLOG_PATH, "blog", &mut blog_failures);
-                        if blog_pid == -1 {
-                            print!("[init] blog failed {} times, giving up\n", MAX_RESPAWN_FAILURES);
-                        }
-                    } else if reaped == bounce_pid {
-                        print!("[init] bounce exited (status {})\n", status);
-                        bounce_pid = try_respawn(BOUNCE_PATH, "bounce", &mut bounce_failures);
-                        if bounce_pid == -1 {
-                            print!("[init] bounce failed {} times, giving up\n", MAX_RESPAWN_FAILURES);
-                        }
-                    } else if reaped == bcheck_pid {
-                        print!("[init] bcheck exited (status {})\n", status);
-                        // Don't respawn — bcheck runs once then displays results
-                        bcheck_pid = -1;
-                    } else if reaped == blogd_pid {
-                        print!("[init] blogd exited (status {})\n", status);
-                        blogd_pid = try_respawn(BLOGD_PATH, "blogd", &mut blogd_failures);
-                        if blogd_pid == -1 {
-                            print!("[init] blogd failed {} times, giving up\n", MAX_RESPAWN_FAILURES);
-                        }
-                    } else if reaped == telnetd_pid {
-                        telnetd_pid = try_respawn(TELNETD_PATH, "telnetd", &mut telnetd_failures);
-                        if telnetd_pid == -1 && telnetd_failures >= MAX_RESPAWN_FAILURES {
-                            print!("[init] telnetd unavailable, continuing without it\n");
-                        }
-                    }
-                }
+        let reaped = match waitpid(-1, &mut status as *mut i32, 0) {
+            Ok(pid) => pid.raw() as i64,
+            Err(_) => {
+                // ECHILD — no children at all. Sleep to avoid spinning.
+                let ts = libbreenix::types::Timespec { tv_sec: 1, tv_nsec: 0 };
+                let _ = libbreenix::time::nanosleep(&ts);
+                continue;
             }
-            Err(_) => {}
+        };
+
+        if reaped <= 0 {
+            continue;
         }
-        let _ = yield_now();
+
+        if reaped == bwm_pid {
+            print!("[init] BWM exited (status {})\n", status);
+            bwm_pid = try_respawn(BWM_PATH, "bwm", &mut bwm_failures);
+            if bwm_pid == -1 {
+                print!("[init] BWM failed {} times, giving up\n", MAX_RESPAWN_FAILURES);
+            }
+        } else if reaped == bterm_pid {
+            print!("[init] bterm exited (status {})\n", status);
+            bterm_pid = try_respawn(BTERM_PATH, "bterm", &mut bterm_failures);
+            if bterm_pid == -1 {
+                print!("[init] bterm failed {} times, giving up\n", MAX_RESPAWN_FAILURES);
+            }
+        } else if reaped == blog_pid {
+            print!("[init] blog exited (status {})\n", status);
+            blog_pid = try_respawn(BLOG_PATH, "blog", &mut blog_failures);
+            if blog_pid == -1 {
+                print!("[init] blog failed {} times, giving up\n", MAX_RESPAWN_FAILURES);
+            }
+        } else if reaped == bounce_pid {
+            print!("[init] bounce exited (status {})\n", status);
+            bounce_pid = try_respawn(BOUNCE_PATH, "bounce", &mut bounce_failures);
+            if bounce_pid == -1 {
+                print!("[init] bounce failed {} times, giving up\n", MAX_RESPAWN_FAILURES);
+            }
+        } else if reaped == bcheck_pid {
+            print!("[init] bcheck exited (status {})\n", status);
+            bcheck_pid = -1;
+        } else if reaped == blogd_pid {
+            print!("[init] blogd exited (status {})\n", status);
+            blogd_pid = try_respawn(BLOGD_PATH, "blogd", &mut blogd_failures);
+            if blogd_pid == -1 {
+                print!("[init] blogd failed {} times, giving up\n", MAX_RESPAWN_FAILURES);
+            }
+        } else if reaped == telnetd_pid {
+            telnetd_pid = try_respawn(TELNETD_PATH, "telnetd", &mut telnetd_failures);
+            if telnetd_pid == -1 && telnetd_failures >= MAX_RESPAWN_FAILURES {
+                print!("[init] telnetd unavailable, continuing without it\n");
+            }
+        }
     }
 }
