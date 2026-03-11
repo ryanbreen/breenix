@@ -755,6 +755,7 @@ fn generate_stat() -> String {
          interrupts {}\n\
          context_switches {}\n\
          timer_ticks {}\n\
+         global_ticks {}\n\
          forks {}\n\
          execs {}\n\
          cow_faults {}\n\
@@ -765,6 +766,7 @@ fn generate_stat() -> String {
         IRQ_TOTAL.aggregate(),
         CTX_SWITCH_TOTAL.aggregate(),
         TIMER_TICK_TOTAL.aggregate(),
+        crate::time::get_ticks(),
         FORK_TOTAL.aggregate(),
         EXEC_TOTAL.aggregate(),
         COW_FAULT_TOTAL.aggregate(),
