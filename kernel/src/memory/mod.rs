@@ -320,21 +320,38 @@ impl PhysAddrWrapper {
     /// are NOT in this region even though they may be numerically greater than phys_offset.
     pub fn from_kernel_virt(virt: usize) -> u64 {
         let phys_offset = physical_memory_offset();
-        let heap_start = crate::memory::heap::HEAP_START;
-        let heap_end = heap_start + crate::memory::heap::HEAP_SIZE;
 
-        // Check if this is a heap address - these are mapped, not direct
-        let is_heap = (virt as u64) >= heap_start && (virt as u64) < heap_end;
+        // Check if this is a heap address - these are mapped, not direct on x86_64.
+        // On aarch64, the heap IS directly mapped via HHDM (boot.S maps all RAM),
+        // so we can always use the fast subtraction path.
+        #[cfg(target_arch = "x86_64")]
+        let is_heap = {
+            let heap_start = crate::memory::heap::HEAP_START;
+            let heap_end = heap_start + crate::memory::heap::HEAP_SIZE;
+            (virt as u64) >= heap_start && (virt as u64) < heap_end
+        };
+        #[cfg(target_arch = "aarch64")]
+        let is_heap = false;
 
         // The direct physical memory map starts at phys_offset.
         // We can detect if an address is truly in the direct map by checking:
         // 1. It's >= phys_offset
         // 2. Subtracting phys_offset gives a reasonable physical address (< 4GB typically)
-        // 3. It's NOT in a known non-direct-mapped region (heap, MMIO, stack, etc.)
+        // 3. It's NOT in a known non-direct-mapped region (heap on x86_64, MMIO, stack, etc.)
         if !is_heap && (virt as u64) >= phys_offset.as_u64() {
-            let candidate_phys = (virt as u64) - phys_offset.as_u64();
-            // Physical RAM is typically < 4GB in our QEMU setup (512MB max)
-            // If the result is reasonable, it's likely a direct map address
+            #[allow(unused_mut)]
+            let mut candidate_phys = (virt as u64) - phys_offset.as_u64();
+            // On aarch64 with VMware, RAM starts at 0x80000000 (not 0x40000000).
+            // The HHDM L1[1] maps VA HHDM+0x40000000 → PA 0x80000000, so addresses
+            // in the RAM region need the ram_base_offset added.
+            #[cfg(target_arch = "aarch64")]
+            {
+                let offset = crate::platform_config::ram_base_offset();
+                if offset > 0 && candidate_phys >= 0x4000_0000 {
+                    candidate_phys += offset;
+                }
+            }
+            // Physical RAM is typically < 4GB in our setup
             if candidate_phys < 0x1_0000_0000 {
                 return candidate_phys;
             }

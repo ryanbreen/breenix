@@ -3535,7 +3535,7 @@ fn wait_for_command_completion(state: &XhciState) -> Result<u32, &'static str> {
                             let report = &(&(*buf).0)[..8];
                             if report.iter().any(|&b| b != 0) {
                                 GET_REPORT_NONZERO.fetch_add(1, Ordering::Relaxed);
-                                super::hid::process_mouse_report(report);
+                                super::hid::process_mouse_report(report, 0);
                             }
                         }
                     } else if cc != completion_code::SUCCESS && cc != completion_code::SHORT_PACKET {
@@ -5024,7 +5024,7 @@ pub fn handle_interrupt() {
                             let report_buf = &raw const MOUSE_REPORT_BUF;
                             dma_cache_invalidate((*report_buf).0.as_ptr(), 8);
                             let report = &(*report_buf).0;
-                            super::hid::process_mouse_report(report);
+                            super::hid::process_mouse_report(report, 0);
                             let _ = queue_hid_transfer(state, 1, slot, endpoint);
                         } else if slot == state.mouse_slot
                             && state.mouse_nkro_endpoint != 0
@@ -5034,7 +5034,7 @@ pub fn handle_interrupt() {
                             let report_buf = &raw const MOUSE2_REPORT_BUF;
                             dma_cache_invalidate((*report_buf).0.as_ptr(), 9);
                             let report = &(*report_buf).0;
-                            super::hid::process_mouse_report(report);
+                            super::hid::process_mouse_report(report, 1);
                             let _ = queue_hid_transfer(state, 3, slot, endpoint);
                         } else if slot == state.mouse_slot
                             && endpoint == 1
@@ -5056,7 +5056,7 @@ pub fn handle_interrupt() {
                             LAST_GET_REPORT_U64.store(snap, Ordering::Relaxed);
                             if report.iter().any(|&b| b != 0) {
                                 GET_REPORT_NONZERO.fetch_add(1, Ordering::Relaxed);
-                                super::hid::process_mouse_report(report);
+                                super::hid::process_mouse_report(report, 0);
                             }
                         }
                     } else {
@@ -5423,7 +5423,7 @@ pub fn poll_hid_events() {
                             let report = &(&(*buf).0)[..8];
                             if report.iter().any(|&b| b != 0) {
                                 GET_REPORT_NONZERO.fetch_add(1, Ordering::Relaxed);
-                                super::hid::process_mouse_report(report);
+                                super::hid::process_mouse_report(report, 0);
                             }
                         }
                         // Event consumed — advance dequeue and continue event loop
@@ -5438,7 +5438,7 @@ pub fn poll_hid_events() {
                             let report = &(&(*buf).0)[..8];
                             if report.iter().any(|&b| b != 0) {
                                 GET_REPORT_NONZERO.fetch_add(1, Ordering::Relaxed);
-                                super::hid::process_mouse_report(report);
+                                super::hid::process_mouse_report(report, 0);
                             }
                         }
                     } else if cc == completion_code::SUCCESS || cc == completion_code::SHORT_PACKET {
@@ -5496,7 +5496,7 @@ pub fn poll_hid_events() {
                             let report_buf = &raw const MOUSE_REPORT_BUF;
                             dma_cache_invalidate((*report_buf).0.as_ptr(), 8);
                             let report = &(*report_buf).0;
-                            super::hid::process_mouse_report(report);
+                            super::hid::process_mouse_report(report, 0);
                             let _ = queue_hid_transfer(state, 1, state.mouse_slot, state.mouse_endpoint);
                         }
                         // Mouse2 interrupt endpoint event (DCI 5)
@@ -5507,7 +5507,7 @@ pub fn poll_hid_events() {
                             let report_buf = &raw const MOUSE2_REPORT_BUF;
                             dma_cache_invalidate((*report_buf).0.as_ptr(), 9);
                             let report = &(*report_buf).0;
-                            super::hid::process_mouse_report(report);
+                            super::hid::process_mouse_report(report, 1);
                             let _ = queue_hid_transfer(state, 3, state.mouse_slot, state.mouse_nkro_endpoint);
                         } else {
                             XFER_OTHER_COUNT.fetch_add(1, Ordering::Relaxed);

@@ -280,9 +280,10 @@ impl E1000 {
 
         // Configure receive control register
         // Enable receiver, accept broadcast, 2KB buffers, strip CRC
+        // Note: BSEX is NOT set — it changes buffer size semantics
         self.write_reg(
             REG_RCTL,
-            RCTL_EN | RCTL_BAM | RCTL_SZ_2048 | RCTL_SECRC | RCTL_BSEX,
+            RCTL_EN | RCTL_BAM | RCTL_SZ_2048 | RCTL_SECRC,
         );
 
         #[cfg(target_arch = "x86_64")]
@@ -570,7 +571,12 @@ pub fn init() -> Result<(), &'static str> {
     crate::serial_println!("[e1000] MMIO at {:#x} size {:#x}", mmio_bar.address, mmio_bar.size);
 
     // Map the MMIO region
+    // x86_64: use map_mmio (allocates VA from MMIO pool, creates page table entries)
+    // aarch64: use HHDM direct mapping (boot page tables already cover all physical addresses)
+    #[cfg(target_arch = "x86_64")]
     let mmio_base = crate::memory::map_mmio(mmio_bar.address, mmio_bar.size as usize)?;
+    #[cfg(target_arch = "aarch64")]
+    let mmio_base = (crate::memory::physical_memory_offset().as_u64() + mmio_bar.address) as usize;
 
     #[cfg(target_arch = "x86_64")]
     log::info!("E1000: Mapped MMIO to {:#x}", mmio_base);

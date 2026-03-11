@@ -219,7 +219,8 @@ impl Window {
     }
 
     fn bounds(&self) -> (i32, i32, i32, i32) {
-        (self.x, self.y, self.x + self.width as i32, self.y + self.total_height() as i32)
+        // +3 accounts for the drop shadow drawn at (x+3, y+3) in draw_window_frame
+        (self.x, self.y, self.x + self.width as i32 + 3, self.y + self.total_height() as i32 + 3)
     }
 
     fn close_btn_rect(&self) -> (i32, i32, usize, usize) {
@@ -805,6 +806,87 @@ fn compose_full_redraw(
     }
 }
 
+/// Partial redraw: only update a dirty sub-region of the screen.
+///
+/// Used during drag to avoid full-screen VRAM copies. On SVGA3 (VMware),
+/// VRAM is uncacheable so writing 9.2MB per frame kills drag performance.
+/// Partial redraw limits VRAM writes to just the union of old+new window bounds.
+fn compose_partial_redraw(
+    vram: &mut [u32],
+    fb: &mut FrameBuf,
+    shadow: &mut Option<(&mut [u32], FrameBuf)>,
+    bg: &[u32],
+    windows: &[Window],
+    focused: usize,
+    clock: &[u8],
+    dx0: usize, dy0: usize, dx1: usize, dy1: usize,
+) {
+    let screen_w = fb.width;
+    let screen_h = fb.height;
+    let dx1 = dx1.min(screen_w);
+    let dy1 = dy1.min(screen_h);
+    if dx0 >= dx1 || dy0 >= dy1 { return; }
+
+    if let Some((ref mut sbuf, ref mut sfb)) = shadow {
+        // 1. Restore background in dirty region only
+        for row in dy0..dy1 {
+            let start = row * screen_w + dx0;
+            let end = row * screen_w + dx1;
+            sbuf[start..end].copy_from_slice(&bg[start..end]);
+        }
+        // 2. Redraw UI elements that intersect dirty region
+        if dy0 < TASKBAR_HEIGHT {
+            draw_taskbar(sfb, clock);
+        }
+        for i in 0..windows.len() {
+            if windows[i].minimized { continue; }
+            let (wx0, wy0, wx1, wy1) = windows[i].bounds();
+            if (wx1 as usize) > dx0 && (wx0 as usize) < dx1
+                && (wy1 as usize) > dy0 && (wy0 as usize) < dy1
+            {
+                draw_window_frame(sfb, &windows[i], i == focused);
+                if windows[i].window_id != 0 {
+                    blit_mapped_pixels(sfb, &windows[i]);
+                }
+            }
+        }
+        if dy1 > screen_h - APPBAR_HEIGHT {
+            draw_appbar(sfb, windows, focused);
+        }
+        // 3. Copy only dirty region from shadow to VRAM
+        for row in dy0..dy1 {
+            let start = row * screen_w + dx0;
+            let end = row * screen_w + dx1;
+            vram[start..end].copy_from_slice(&sbuf[start..end]);
+        }
+    } else {
+        // Non-shadow path: restore bg region, redraw affected windows
+        for row in dy0..dy1 {
+            let start = row * screen_w + dx0;
+            let end = row * screen_w + dx1;
+            vram[start..end].copy_from_slice(&bg[start..end]);
+        }
+        if dy0 < TASKBAR_HEIGHT {
+            draw_taskbar(fb, clock);
+        }
+        for i in 0..windows.len() {
+            if windows[i].minimized { continue; }
+            let (wx0, wy0, wx1, wy1) = windows[i].bounds();
+            if (wx1 as usize) > dx0 && (wx0 as usize) < dx1
+                && (wy1 as usize) > dy0 && (wy0 as usize) < dy1
+            {
+                draw_window_frame(fb, &windows[i], i == focused);
+                if windows[i].window_id != 0 {
+                    blit_mapped_pixels(fb, &windows[i]);
+                }
+            }
+        }
+        if dy1 > screen_h - APPBAR_HEIGHT {
+            draw_appbar(fb, windows, focused);
+        }
+    }
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -1010,6 +1092,13 @@ fn main() {
             }
         }
 
+        // Dirty rect tracking — initialized before mouse processing so drag
+        // can expand the dirty region. Used by section 5 (client blit) and 6 (composite).
+        let mut dirty_x0 = i32::MAX;
+        let mut dirty_y0 = i32::MAX;
+        let mut dirty_x1 = 0i32;
+        let mut dirty_y1 = 0i32;
+
         // ── 4. Process mouse input (only when mouse changed) ──
         let mut mouse_moved_this_frame = false;
         if ready & graphics::COMPOSITOR_READY_MOUSE != 0 {
@@ -1028,10 +1117,23 @@ fn main() {
                         // Clamp drag to stay below taskbar
                         let new_y = (mouse_y - off_y).max(TASKBAR_HEIGHT as i32);
                         if new_x != windows[win_idx].x || new_y != windows[win_idx].y {
+                            // Capture old bounds before moving
+                            let (ox0, oy0, ox1, oy1) = windows[win_idx].bounds();
                             windows[win_idx].x = new_x;
                             windows[win_idx].y = new_y;
-                            compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text);
-                            full_redraw = true;
+                            // Dirty region = union of old and new bounds
+                            let (nx0, ny0, nx1, ny1) = windows[win_idx].bounds();
+                            let dr_x0 = ox0.min(nx0).max(0) as usize;
+                            let dr_y0 = oy0.min(ny0).max(0) as usize;
+                            let dr_x1 = ox1.max(nx1) as usize;
+                            let dr_y1 = oy1.max(ny1) as usize;
+                            compose_partial_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, dr_x0, dr_y0, dr_x1, dr_y1);
+                            // Use partial dirty rect instead of full_redraw
+                            dirty_x0 = dirty_x0.min(dr_x0 as i32);
+                            dirty_y0 = dirty_y0.min(dr_y0 as i32);
+                            dirty_x1 = dirty_x1.max(dr_x1 as i32);
+                            dirty_y1 = dirty_y1.max(dr_y1 as i32);
+                            content_dirty = true;
                         }
                     } else if !windows.is_empty() && focused_win < windows.len()
                         && !windows[focused_win].minimized
@@ -1043,7 +1145,9 @@ fn main() {
                     }
                 }
 
-                // Release: end drag or route release event
+                // Release: end drag or route release event.
+                // Per-endpoint button tracking in the kernel prevents dual USB HID
+                // endpoints from racing (one endpoint can't cancel the other's press).
                 if (buttons & 1) == 0 && (prev_buttons & 1) != 0 {
                     if dragging.is_some() {
                         dragging = None;
@@ -1169,11 +1273,6 @@ fn main() {
 
         // ── 5. Blit dirty client window pixels (occluded by higher-z windows) ──
         // Skip entirely if compositor_wait didn't report dirty content
-        let mut dirty_x0 = i32::MAX;
-        let mut dirty_y0 = i32::MAX;
-        let mut dirty_x1 = 0i32;
-        let mut dirty_y1 = 0i32;
-
         if ready & graphics::COMPOSITOR_READY_DIRTY != 0 {
         for i in 0..windows.len().min(16) {
             if windows[i].window_id != 0 && !windows[i].minimized {

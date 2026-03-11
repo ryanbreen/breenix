@@ -41,6 +41,15 @@ static MOUSE_X: AtomicU32 = AtomicU32::new(0);
 static MOUSE_Y: AtomicU32 = AtomicU32::new(0);
 static MOUSE_BUTTONS: AtomicU32 = AtomicU32::new(0);
 
+/// Per-endpoint button state for multi-endpoint devices (e.g., VMware dual HID).
+/// When multiple USB HID endpoints report button state independently, one endpoint
+/// reporting buttons=0 must not cancel the other's press. We track each endpoint's
+/// buttons separately and OR them: MOUSE_BUTTONS = EP0_BUTTONS | EP1_BUTTONS.
+static EP_BUTTONS: [AtomicU32; 4] = [
+    AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0),
+];
+
 /// Latched button presses: bits set when a press transition (0→1) is detected.
 /// Cleared atomically by mouse_state_consume() when BWM reads the mouse state.
 /// This ensures fast press-release cycles (within one compositor frame) are not lost.
@@ -289,7 +298,12 @@ fn screen_dimensions() -> (u32, u32) {
 /// Counter for diagnostic logging of first few mouse reports.
 static MOUSE_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
 
-pub fn process_mouse_report(report: &[u8]) {
+/// Process a mouse HID report from a specific endpoint.
+///
+/// `ep_idx` identifies the USB endpoint (0-3) so that multi-endpoint devices
+/// (like VMware's dual HID mouse) don't race on button state. Each endpoint's
+/// buttons are tracked independently; the global MOUSE_BUTTONS is the OR of all.
+pub fn process_mouse_report(report: &[u8], ep_idx: u8) {
     if report.len() < 3 {
         return;
     }
@@ -352,16 +366,22 @@ pub fn process_mouse_report(report: &[u8]) {
         } else {
             report[1] as u32
         };
-        let prev = MOUSE_BUTTONS.swap(buttons, Ordering::Relaxed);
-        if buttons != prev {
-            // Latch press transitions so fast clicks aren't missed by polling
-            let pressed = buttons & !prev;
+        // Store this endpoint's buttons, then merge all endpoints
+        let ei = (ep_idx as usize) & 3;
+        EP_BUTTONS[ei].store(buttons, Ordering::Relaxed);
+        let merged = EP_BUTTONS[0].load(Ordering::Relaxed)
+            | EP_BUTTONS[1].load(Ordering::Relaxed)
+            | EP_BUTTONS[2].load(Ordering::Relaxed)
+            | EP_BUTTONS[3].load(Ordering::Relaxed);
+        let prev = MOUSE_BUTTONS.swap(merged, Ordering::Relaxed);
+        if merged != prev {
+            let pressed = merged & !prev;
             if pressed != 0 {
                 MOUSE_BUTTONS_PRESSED.fetch_or(pressed, Ordering::Relaxed);
             }
             static BTN_LOG: AtomicU64 = AtomicU64::new(0);
             if BTN_LOG.fetch_add(1, Ordering::Relaxed) < 50 {
-                crate::serial_println!("[mouse-click] {} -> {}", prev, buttons);
+                crate::serial_println!("[mouse-click] {} -> {} (ep{})", prev, merged, ep_idx);
             }
         }
 
@@ -385,8 +405,14 @@ pub fn process_mouse_report(report: &[u8]) {
     // Boot protocol relative mouse: 3-4 byte reports
     // Format: [buttons, dx (i8), dy (i8), wheel (i8)]
     let new_buttons = report[0] as u32;
-    let old_buttons = MOUSE_BUTTONS.swap(new_buttons, Ordering::Relaxed);
-    let pressed = new_buttons & !old_buttons;
+    let ei = (ep_idx as usize) & 3;
+    EP_BUTTONS[ei].store(new_buttons, Ordering::Relaxed);
+    let merged = EP_BUTTONS[0].load(Ordering::Relaxed)
+        | EP_BUTTONS[1].load(Ordering::Relaxed)
+        | EP_BUTTONS[2].load(Ordering::Relaxed)
+        | EP_BUTTONS[3].load(Ordering::Relaxed);
+    let old_buttons = MOUSE_BUTTONS.swap(merged, Ordering::Relaxed);
+    let pressed = merged & !old_buttons;
     if pressed != 0 {
         MOUSE_BUTTONS_PRESSED.fetch_or(pressed, Ordering::Relaxed);
     }

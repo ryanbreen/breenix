@@ -1266,6 +1266,14 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
         });
         if !any_window_dirty {
             drop(reg);
+            // SVGA3 STDU: cursor is drawn in VRAM by software. Update it even when
+            // no windows are dirty, so mouse movement remains responsive.
+            if matches!(crate::graphics::compositor_backend(),
+                        crate::graphics::CompositorBackend::Svga3Stdu) {
+                if crate::drivers::vmware::svga3::update_cursor() {
+                    let _ = crate::drivers::vmware::svga3::present_rect(0, 0, bg_width, bg_height);
+                }
+            }
             return SyscallResult::Ok(0);
         }
         drop(reg);
