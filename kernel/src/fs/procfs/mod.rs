@@ -774,6 +774,11 @@ fn generate_stat() -> String {
         GPU_FULL_UPLOADS.aggregate(),
         GPU_PARTIAL_UPLOADS.aggregate(),
     );
+    #[cfg(target_arch = "aarch64")]
+    {
+        let _ = write!(out, "net_msi_irqs {}\n",
+            crate::drivers::virtio::net_pci::msi_interrupt_count());
+    }
     out
 }
 

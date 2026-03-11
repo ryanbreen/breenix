@@ -17,7 +17,7 @@
 
 use crate::drivers::pci;
 use core::ptr::{read_volatile, write_volatile};
-use core::sync::atomic::{fence, AtomicBool, Ordering};
+use core::sync::atomic::{fence, AtomicBool, AtomicU32, Ordering};
 
 // Legacy VirtIO PCI register offsets (from BAR0)
 const REG_DEVICE_FEATURES: usize = 0x00;
@@ -174,6 +174,8 @@ struct NetPciState {
 
 static mut NET_PCI_STATE: Option<NetPciState> = None;
 static DEVICE_INITIALIZED: AtomicBool = AtomicBool::new(false);
+static NET_PCI_IRQ: AtomicU32 = AtomicU32::new(0);
+static NET_PCI_MSI_COUNT: AtomicU32 = AtomicU32::new(0);
 
 // Legacy register access helpers
 #[inline(always)]
@@ -209,6 +211,72 @@ fn reg_write_u32(bar0: u64, offset: usize, val: u32) {
 #[inline(always)]
 fn virt_to_phys(addr: u64) -> u64 {
     addr - crate::memory::physical_memory_offset().as_u64()
+}
+
+/// Get the GIC INTID for the VirtIO PCI net interrupt, if MSI is enabled.
+pub fn get_irq() -> Option<u32> {
+    let irq = NET_PCI_IRQ.load(Ordering::Relaxed);
+    if irq != 0 { Some(irq) } else { None }
+}
+
+/// Set up PCI MSI delivery for the VirtIO network device through GICv2m.
+fn setup_net_pci_msi(pci_dev: &crate::drivers::pci::Device) {
+    use crate::arch_impl::aarch64::gic;
+
+    // Dump PCI capabilities for diagnostics
+    pci_dev.dump_capabilities();
+
+    let cap_offset = match pci_dev.find_msi_capability() {
+        Some(offset) => {
+            crate::serial_println!("[virtio-net-pci] Found MSI capability at offset {:#x}", offset);
+            offset
+        }
+        None => {
+            // Try MSI-X as fallback (some legacy VirtIO devices have MSI-X but not MSI)
+            match pci_dev.find_msix_capability() {
+                Some(msix_off) => {
+                    crate::serial_println!(
+                        "[virtio-net-pci] No MSI cap, but found MSI-X at offset {:#x} (not yet supported)",
+                        msix_off
+                    );
+                }
+                None => {
+                    crate::serial_println!("[virtio-net-pci] No MSI or MSI-X capability — using polling fallback");
+                }
+            }
+            return;
+        }
+    };
+
+    const PARALLELS_GICV2M_BASE: u64 = 0x0225_0000;
+    let gicv2m_base = crate::platform_config::gicv2m_base_phys();
+    let base = if gicv2m_base != 0 {
+        gicv2m_base
+    } else if crate::platform_config::probe_gicv2m(PARALLELS_GICV2M_BASE) {
+        PARALLELS_GICV2M_BASE
+    } else {
+        crate::serial_println!("[virtio-net-pci] GICv2m not available — using polling fallback");
+        return;
+    };
+
+    let spi = crate::platform_config::allocate_msi_spi();
+    if spi == 0 {
+        crate::serial_println!("[virtio-net-pci] Failed to allocate MSI SPI — using polling fallback");
+        return;
+    }
+
+    let doorbell_addr = (base + 0x40) as u32;
+    pci_dev.configure_msi(cap_offset, doorbell_addr, spi as u16);
+    pci_dev.disable_intx();
+    gic::configure_spi_edge_triggered(spi);
+    NET_PCI_IRQ.store(spi, Ordering::Relaxed);
+    gic::enable_spi(spi);
+
+    crate::serial_println!(
+        "[virtio-net-pci] MSI enabled: GICv2m doorbell={:#x} SPI {}",
+        base + 0x40,
+        spi
+    );
 }
 
 /// Initialize the VirtIO network device via PCI legacy transport.
@@ -311,6 +379,7 @@ pub fn init() -> Result<(), &'static str> {
     post_rx_buffers()?;
 
     DEVICE_INITIALIZED.store(true, Ordering::Release);
+    setup_net_pci_msi(pci_dev);
     crate::serial_println!("[virtio-net-pci] Network device initialized successfully");
     Ok(())
 }
@@ -548,8 +617,20 @@ pub fn mac_address() -> Option<[u8; 6]> {
     }
 }
 
+/// Get the MSI interrupt count (for diagnostics).
+pub fn msi_interrupt_count() -> u32 {
+    NET_PCI_MSI_COUNT.load(Ordering::Relaxed)
+}
+
 /// Interrupt handler for VirtIO network PCI device.
 pub fn handle_interrupt() {
+    let irq = NET_PCI_IRQ.load(Ordering::Relaxed);
+    if irq != 0 {
+        NET_PCI_MSI_COUNT.fetch_add(1, Ordering::Relaxed);
+        crate::arch_impl::aarch64::gic::disable_spi(irq);
+        crate::arch_impl::aarch64::gic::clear_spi_pending(irq);
+    }
+
     if !DEVICE_INITIALIZED.load(Ordering::Acquire) {
         return;
     }
@@ -566,6 +647,10 @@ pub fn handle_interrupt() {
     let _isr = reg_read_u8(state.bar0_virt, REG_ISR_STATUS);
 
     crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::NetRx);
+
+    if irq != 0 {
+        crate::arch_impl::aarch64::gic::enable_spi(irq);
+    }
 }
 
 /// Whether the PCI net device is initialized
