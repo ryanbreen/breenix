@@ -617,47 +617,6 @@ fn init_composite_texture(width: u32, height: u32) -> Result<(), &'static str> {
 
     // ── Pre-allocate per-window texture pool ──
     // Parallels requires resources to be created BEFORE the first SUBMIT_3D.
-    // Resources created after SUBMIT_3D has been called don't get their
-    // TRANSFER_TO_HOST_3D data. Pre-allocate all slots now with display-sized
-    // backing so they're ready when windows appear.
-    let pool_w = width;
-    let pool_h = height;
-    let pool_size = (pool_w as usize) * (pool_h as usize) * 4;
-    let mut pool_count = 0usize;
-    for slot in 0..MAX_WIN_TEX_SLOTS {
-        let res_id = RESOURCE_WIN_TEX_BASE + slot as u32;
-        let layout = alloc::alloc::Layout::from_size_align(pool_size, 4096)
-            .map_err(|_| "win texture pool: layout error")?;
-        let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-        if ptr.is_null() {
-            crate::serial_println!("[virgl-pool] slot {} alloc failed, pool stopped at {}", slot, slot);
-            break;
-        }
-
-        with_device_state(|state| {
-            virgl_resource_create_3d_cmd(
-                state, res_id, pipe::TEXTURE_2D, vfmt::B8G8R8X8_UNORM,
-                pipe::BIND_SAMPLER_VIEW | pipe::BIND_SCANOUT,
-                pool_w, pool_h, 1, 1,
-            )
-        })?;
-        with_device_state(|state| {
-            virgl_attach_backing_paged(state, res_id, ptr, pool_size)
-        })?;
-        with_device_state(|state| {
-            virgl_ctx_attach_resource_cmd(state, VIRGL_CTX_ID, res_id)
-        })?;
-        dma_cache_clean(ptr, pool_size);
-        with_device_state(|state| {
-            transfer_to_host_3d(state, res_id, 0, 0, pool_w, pool_h, pool_w * 4)
-        })?;
-
-        unsafe { WIN_TEX_BACKING[slot] = (ptr, pool_size); }
-        pool_count += 1;
-    }
-    crate::serial_println!("[virgl-pool] Pre-allocated {}/{} window texture slots ({}x{}, {}KB each)",
-        pool_count, MAX_WIN_TEX_SLOTS, pool_w, pool_h, pool_size / 1024);
-
     Ok(())
 }
 
@@ -2269,96 +2228,6 @@ fn virgl_attach_backing_from_pages(
     Ok(())
 }
 
-/// Base resource ID for per-window VirGL textures. Window slot N → resource (10 + N).
-const RESOURCE_WIN_TEX_BASE: u32 = 10;
-const MAX_WIN_TEX_SLOTS: usize = 8;
-
-/// Per-window contiguous backing buffers for VirGL textures.
-/// Parallels requires contiguous physical backing for TRANSFER_TO_HOST_3D to work.
-/// We allocate a contiguous heap buffer per window and copy MAP_SHARED pixels into it
-/// before uploading.
-static mut WIN_TEX_BACKING: [(*mut u8, usize); MAX_WIN_TEX_SLOTS] =
-    [(core::ptr::null_mut(), 0); MAX_WIN_TEX_SLOTS];
-
-/// Initialize a VirGL TEXTURE_2D resource for a window buffer.
-///
-/// Creates the 3D resource, attaches CONTIGUOUS heap-allocated backing,
-/// attaches to the VirGL context, and primes with TRANSFER_TO_HOST_3D.
-/// Returns the resource ID on success.
-pub fn init_window_texture(
-    slot_index: usize,
-    width: u32,
-    height: u32,
-    _page_phys_addrs: &[u64],
-    _total_len: usize,
-) -> Result<u32, &'static str> {
-
-    if slot_index >= MAX_WIN_TEX_SLOTS {
-        return Err("init_window_texture: slot_index out of range");
-    }
-
-    let resource_id = RESOURCE_WIN_TEX_BASE + slot_index as u32;
-
-    // Pool was pre-allocated at init time (before first SUBMIT_3D).
-    // Just verify the slot exists and return the resource ID.
-    let (existing_ptr, existing_len) = unsafe { WIN_TEX_BACKING[slot_index] };
-    if existing_ptr.is_null() || existing_len == 0 {
-        return Err("init_window_texture: slot not pre-allocated");
-    }
-
-    crate::serial_println!(
-        "[virgl-win] init_window_texture: slot={} using pre-allocated res={} ({}x{}, backing={:#x})",
-        slot_index, resource_id, width, height, existing_ptr as u64
-    );
-    Ok(resource_id)
-}
-
-/// Blit window content from MAP_SHARED pages directly into COMPOSITE_TEX at (x, y).
-/// This composites window pixels into the single compositor texture, giving correct
-/// z-order when called bottom-to-top. The cursor is drawn AFTER this, so it appears on top.
-fn blit_window_to_compositor(
-    win_x: u32, win_y: u32,
-    win_w: u32, win_h: u32,
-    page_phys_addrs: &[u64],
-    tex_w: u32, tex_h: u32,
-) {
-    let phys_offset = crate::memory::physical_memory_offset().as_u64();
-    let row_bytes = (win_w as usize) * 4;
-    let tex_stride = (tex_w as usize) * 4;
-    let tex_ptr = unsafe { COMPOSITE_TEX_PTR };
-
-    for row in 0..win_h as usize {
-        let dst_y = (win_y as usize) + row;
-        if dst_y >= tex_h as usize { break; }
-        let dst_x = win_x as usize;
-        let copy_w = (win_w as usize).min((tex_w as usize).saturating_sub(dst_x));
-        if copy_w == 0 { continue; }
-        let copy_bytes = copy_w * 4;
-
-        let src_offset = row * row_bytes;
-        let dst_offset = dst_y * tex_stride + dst_x * 4;
-
-        // Copy from scattered pages, handling page boundaries
-        let mut copied = 0usize;
-        while copied < copy_bytes {
-            let linear_pos = src_offset + copied;
-            let page_idx = linear_pos / 4096;
-            let page_off = linear_pos % 4096;
-            if page_idx >= page_phys_addrs.len() { break; }
-            let chunk = (4096 - page_off).min(copy_bytes - copied);
-            let src_ptr = (phys_offset + page_phys_addrs[page_idx] + page_off as u64) as *const u8;
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    src_ptr,
-                    tex_ptr.add(dst_offset + copied),
-                    chunk,
-                );
-            }
-            copied += chunk;
-        }
-    }
-}
-
 /// Flush a specific resource to the display (SET_SCANOUT must point at it first).
 fn resource_flush_3d(state: &mut GpuPciDeviceState, resource_id: u32) -> Result<(), &'static str> {
     unsafe {
@@ -3584,23 +3453,8 @@ pub fn virgl_composite_windows(
         }
     }
 
-    // Step 2: Blit window content from MAP_SHARED pages into COMPOSITE_TEX.
-    // Windows are composited in z-order (bottom first in the array, top last)
-    // so higher-z windows correctly overwrite lower-z windows where they overlap.
-    // This must happen BEFORE cursor drawing so the cursor appears on top.
-    if bg_dirty || any_window_dirty {
-        for win in windows.iter() {
-            if win.page_phys_addrs.is_empty() || win.width == 0 || win.height == 0 {
-                continue;
-            }
-            blit_window_to_compositor(
-                win.x as u32, win.y as u32,
-                win.width, win.height,
-                &win.page_phys_addrs,
-                tex_w, tex_h,
-            );
-        }
-    }
+    // Step 2: Window content is blitted by BWM in z-order (with occluded optimization).
+    // BWM writes directly into COMPOSITE_TEX via MAP_SHARED. No kernel-level blit needed.
 
     // ── Step 3: Cursor rendering ────────────────────────────────────────────
     // Draw the mouse cursor directly into COMPOSITE_TEX so it appears in the
@@ -3808,16 +3662,13 @@ pub fn virgl_composite_windows(
         if draw_cursor {
             upload_rect(cur_x as u32, cur_y as u32, CURSOR_W, CURSOR_H)?;
         }
-        // Note: kernel does NOT blit client windows from MAP_SHARED pages.
-        // BWM composites all windows at correct z-order and sends bg_dirty=2
-        // with a dirty rect when client content changes.
     }
 
     // =========================================================================
     // Phase B+C: Single fullscreen SUBMIT_3D quad + display
     // =========================================================================
-    // Window content was already blitted into COMPOSITE_TEX in z-order (step 2),
-    // so a single textured quad correctly displays everything including cursor.
+    // BWM blits window content into COMPOSITE_TEX via MAP_SHARED (with occluded
+    // optimization). Kernel adds cursor and uploads. Single textured quad displays all.
 
     // Perf: timestamp before display phase
     #[cfg(target_arch = "aarch64")]
