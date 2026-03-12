@@ -1311,6 +1311,28 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
 
                 let dirty = buf.generation > buf.last_uploaded_gen;
 
+                // Lazy-init per-window GPU texture on first composite
+                if !buf.virgl_initialized && !buf.page_phys_addrs.is_empty()
+                    && matches!(crate::graphics::compositor_backend(),
+                                crate::graphics::CompositorBackend::VirGL)
+                {
+                    let slot_idx = (buf.id as usize).saturating_sub(1) % 8;
+                    match crate::drivers::virtio::gpu_pci::create_window_texture(
+                        slot_idx, buf.width, buf.height,
+                    ) {
+                        Ok(res_id) => {
+                            buf.virgl_resource_id = res_id;
+                            buf.virgl_initialized = true;
+                        }
+                        Err(e) => {
+                            crate::serial_println!(
+                                "[composite] GPU texture init failed for buf {}: {}",
+                                buf.id, e
+                            );
+                        }
+                    }
+                }
+
                 result.push(WindowCompositeInfo {
                     virgl_resource_id: buf.virgl_resource_id,
                     virgl_initialized: buf.virgl_initialized,

@@ -266,6 +266,30 @@ impl CommandBuffer {
         }
     }
 
+    /// Create a blend state with SRC_ALPHA / INV_SRC_ALPHA alpha blending.
+    ///
+    /// Used for rendering quads with per-pixel transparency (e.g., cursor texture
+    /// where alpha=0 means transparent and alpha=0xFF means opaque).
+    pub fn create_blend_alpha(&mut self, handle: u32) {
+        // S2[0] encoding (per virgl_hw.h):
+        //   bit 0: blend_enable = 1
+        //   bits 1-3: rgb_func = PIPE_BLEND_ADD (0)
+        //   bits 4-8: rgb_src_factor = PIPE_BLENDFACTOR_SRC_ALPHA (0x03)
+        //   bits 9-13: rgb_dst_factor = PIPE_BLENDFACTOR_INV_SRC_ALPHA (0x13)
+        //   bits 14-16: alpha_func = PIPE_BLEND_ADD (0)
+        //   bits 17-21: alpha_src_factor = PIPE_BLENDFACTOR_ONE (0x01)
+        //   bits 22-26: alpha_dst_factor = PIPE_BLENDFACTOR_ZERO (0x11)
+        //   bits 27-30: colormask = 0xF (write RGBA)
+        self.push(Self::cmd0(ccmd::CREATE_OBJECT, obj::BLEND, 11));
+        self.push(handle);
+        self.push(0x00000004); // S0: dither enabled
+        self.push(0);          // S1: logicop_func = 0
+        self.push(0x7C42_2631); // S2[0]: alpha blend enabled
+        for _ in 0..7 {
+            self.push(0);
+        }
+    }
+
     /// Create a depth-stencil-alpha state matching Mesa exactly.
     /// Mesa sends DSA with S0=0x00000000, length=5.
     pub fn create_dsa_default(&mut self, handle: u32) {
