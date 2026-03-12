@@ -432,10 +432,18 @@ fn run_window_loop(win: &mut Window, spheres: &mut [Sphere; NUM_SPHERES]) {
                 Event::KeyPress { ascii, .. } => {
                     match ascii {
                         b'+' | b'=' => {
-                            for sphere in spheres.iter_mut() { sphere.impel(); }
+                            // Scale all velocities up by ~15%
+                            for sphere in spheres.iter_mut() {
+                                sphere.vx = sphere.vx * 23 / 20;
+                                sphere.vy = sphere.vy * 23 / 20;
+                            }
                         }
                         b'-' => {
-                            for sphere in spheres.iter_mut() { sphere.dampen(); }
+                            // Scale all velocities down by ~15%
+                            for sphere in spheres.iter_mut() {
+                                sphere.vx = sphere.vx * 20 / 23;
+                                sphere.vy = sphere.vy * 20 / 23;
+                            }
                         }
                         _ => {}
                     }
