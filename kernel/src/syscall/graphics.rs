@@ -663,54 +663,33 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             } else {
                 &[]
             };
-            // Extract window info under lock, then drop lock before VirGL init
-            let win_info = {
+            let registered = {
                 let mut reg = WINDOW_REGISTRY.lock();
-                // Find slot index first (immutable borrow)
-                let slot_idx = reg.buffers.iter().position(|s| {
-                    s.as_ref().map_or(false, |b| b.id == buffer_id)
-                });
-                match (slot_idx, reg.find_mut(buffer_id)) {
-                    (Some(idx), Some(buf)) => {
+                match reg.find_mut(buffer_id) {
+                    Some(buf) => {
                         buf.registered = true;
                         buf.title_len = title.len().min(MAX_TITLE_LEN);
                         buf.title[..buf.title_len].copy_from_slice(&title[..buf.title_len]);
-                        Some((idx, buf.width, buf.height, buf.page_phys_addrs.clone(), buf.size))
+                        true
                     }
-                    _ => None,
+                    None => false,
                 }
             };
-            match win_info {
-                Some((slot_idx, w, h, pages, size)) => {
-                    // Initialize VirGL texture for this window (outside registry lock)
-                    if crate::drivers::virtio::gpu_pci::is_virgl_enabled() {
-                        match crate::drivers::virtio::gpu_pci::init_window_texture(slot_idx, w, h, &pages, size) {
-                            Ok(res_id) => {
-                                let mut reg = WINDOW_REGISTRY.lock();
-                                if let Some(buf) = reg.find_mut(buffer_id) {
-                                    buf.virgl_resource_id = res_id;
-                                    buf.virgl_initialized = true;
-                                }
-                            }
-                            Err(e) => {
-                                crate::serial_println!("[window] VirGL texture init failed for buffer {}: {}", buffer_id, e);
-                            }
-                        }
+            if registered {
+                // Bump registry generation + wake compositor so it discovers the new window
+                #[cfg(target_arch = "aarch64")]
+                {
+                    REGISTRY_GENERATION.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    let compositor_tid = COMPOSITOR_WAITING_THREAD.load(core::sync::atomic::Ordering::Acquire);
+                    if compositor_tid != 0 {
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            sched.unblock(compositor_tid);
+                        });
                     }
-                    // Bump registry generation + wake compositor so it discovers the new window
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        REGISTRY_GENERATION.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                        let compositor_tid = COMPOSITOR_WAITING_THREAD.load(core::sync::atomic::Ordering::Acquire);
-                        if compositor_tid != 0 {
-                            crate::task::scheduler::with_scheduler(|sched| {
-                                sched.unblock(compositor_tid);
-                            });
-                        }
-                    }
-                    SyscallResult::Ok(0)
                 }
-                None => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+                SyscallResult::Ok(0)
+            } else {
+                SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
             }
         }
         13 => {
@@ -1330,29 +1309,29 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
                 if !buf.registered { continue; }
                 if buf.width == 0 || buf.height == 0 { continue; }
 
-                // Lazy VirGL texture init: create per-window GPU texture on first composite
+                let dirty = buf.generation > buf.last_uploaded_gen;
+
+                // Lazy-init per-window GPU texture on first composite
                 if !buf.virgl_initialized && !buf.page_phys_addrs.is_empty()
                     && matches!(crate::graphics::compositor_backend(),
                                 crate::graphics::CompositorBackend::VirGL)
                 {
-                    let slot_idx = (buf.id as usize).saturating_sub(1) % 16;
-                    match crate::drivers::virtio::gpu_pci::init_window_texture(
-                        slot_idx, buf.width, buf.height, &buf.page_phys_addrs, buf.size
+                    let slot_idx = (buf.id as usize).saturating_sub(1) % 8;
+                    match crate::drivers::virtio::gpu_pci::create_window_texture(
+                        slot_idx, buf.width, buf.height,
                     ) {
                         Ok(res_id) => {
                             buf.virgl_resource_id = res_id;
                             buf.virgl_initialized = true;
-                            crate::serial_println!("[composite] Window {} got VirGL texture (res={})",
-                                buf.id, res_id);
                         }
                         Err(e) => {
-                            crate::serial_println!("[composite] Window {} texture init failed: {}",
-                                buf.id, e);
+                            crate::serial_println!(
+                                "[composite] GPU texture init failed for buf {}: {}",
+                                buf.id, e
+                            );
                         }
                     }
                 }
-
-                let dirty = buf.generation > buf.last_uploaded_gen;
 
                 result.push(WindowCompositeInfo {
                     virgl_resource_id: buf.virgl_resource_id,

@@ -187,16 +187,6 @@ struct Window {
     minimized: bool,
     /// Stable ordering for appbar (assigned at discovery time, never changes)
     creation_order: u32,
-    /// Direct-mapped pointer to client window's pixel buffer (read-only, MAP_SHARED)
-    /// Stored for future per-window direct blit (currently compositor uses bulk composite).
-    #[allow(dead_code)]
-    mapped_ptr: *const u32,
-    /// Client window buffer width (from map_window_buffer)
-    #[allow(dead_code)]
-    mapped_w: u32,
-    /// Client window buffer height (from map_window_buffer)
-    #[allow(dead_code)]
-    mapped_h: u32,
 }
 
 impl Window {
@@ -614,15 +604,6 @@ fn discover_windows(windows: &mut Vec<Window>, screen_w: usize, screen_h: usize,
             core::str::from_utf8(&title[..title_len]).unwrap_or("?"),
             info.buffer_id, info.width, info.height, cascade_x, cascade_y);
 
-        // Map client window buffer into our address space for zero-copy reads
-        let (map_ptr, map_w, map_h) = match graphics::map_window_buffer(info.buffer_id) {
-            Ok(result) => result,
-            Err(_) => {
-                print!("[bwm] WARNING: failed to map window {} buffer\n", info.buffer_id);
-                (core::ptr::null(), 0, 0)
-            }
-        };
-
         // Tell kernel where the client content goes on screen (for GPU compositing)
         let content_x = cascade_x + BORDER_WIDTH as i32;
         let content_y = cascade_y + TITLE_BAR_HEIGHT as i32 + BORDER_WIDTH as i32;
@@ -636,7 +617,6 @@ fn discover_windows(windows: &mut Vec<Window>, screen_w: usize, screen_h: usize,
             owner_pid: info.owner_pid,
             minimized: false,
             creation_order: order,
-            mapped_ptr: map_ptr, mapped_w: map_w, mapped_h: map_h,
         });
         added = true;
     }
@@ -652,7 +632,7 @@ fn redraw_all_windows(fb: &mut FrameBuf, windows: &[Window], focused_win: usize,
     for i in 0..windows.len() {
         if windows[i].minimized { continue; }
         draw_window_frame(fb, &windows[i], i == focused_win);
-        // GPU compositing handles client content — don't blit here
+        // Window content rendered by GPU from per-window textures — no CPU blit needed
     }
     draw_appbar(fb, windows, focused_win);
 }
@@ -709,8 +689,7 @@ fn compose_partial_redraw(
             let end = row * screen_w + dx1;
             sbuf[start..end].copy_from_slice(&bg[start..end]);
         }
-        // 2. Redraw UI elements that intersect dirty region
-        // GPU compositing handles client content — only draw frames/decorations
+        // 2. Redraw UI elements (frames only — content rendered by GPU)
         if dy0 < TASKBAR_HEIGHT {
             draw_taskbar(sfb, clock);
         }
@@ -733,8 +712,7 @@ fn compose_partial_redraw(
             vram[start..end].copy_from_slice(&sbuf[start..end]);
         }
     } else {
-        // Non-shadow path: restore bg region, redraw affected windows
-        // GPU compositing handles client content — only draw frames/decorations
+        // Non-shadow path: restore bg region, redraw affected windows (frames only)
         for row in dy0..dy1 {
             let start = row * screen_w + dx0;
             let end = row * screen_w + dx1;
@@ -861,6 +839,7 @@ fn main() {
     let mut dragging: Option<(usize, i32, i32)> = None;
     let mut full_redraw = true;
     let mut content_dirty = false;
+    let mut windows_dirty = false;
 
     // Clock state
     let mut last_clock_sec: i64 = -1;
@@ -1134,22 +1113,15 @@ fn main() {
             }
         }
 
-        // ── 5. GPU compositing handles window content — just check which are dirty ──
-        // Skip entirely if compositor_wait didn't report dirty content
+        // ── 5. Window content handled by GPU ──
+        // Per-window textures are uploaded by the kernel directly from MAP_SHARED
+        // pages and composited via VirGL SUBMIT_3D with z-order interleaved
+        // frame strips. No CPU blit needed. Mark windows_dirty so the composite
+        // syscall triggers per-window GPU upload + render WITHOUT re-uploading
+        // the full COMPOSITE_TEX (which contains only frames/decorations).
         if ready & graphics::COMPOSITOR_READY_DIRTY != 0 {
-            for i in 0..windows.len().min(16) {
-                if windows[i].window_id != 0 && !windows[i].minimized {
-                    if graphics::check_window_dirty(windows[i].window_id).unwrap_or(false) {
-                        content_dirty = true;
-                        let (bx0, by0, bx1, by1) = windows[i].bounds();
-                        dirty_x0 = dirty_x0.min(bx0);
-                        dirty_y0 = dirty_y0.min(by0);
-                        dirty_x1 = dirty_x1.max(bx1);
-                        dirty_y1 = dirty_y1.max(by1);
-                    }
-                }
-            }
-        } // end if DIRTY
+            windows_dirty = true;
+        }
 
         // ── 5b. Update clock (once per second) ──
         if let Ok(ts) = libbreenix::time::now_realtime() {
@@ -1179,6 +1151,7 @@ fn main() {
             );
             full_redraw = false;
             content_dirty = false;
+            windows_dirty = false;
         } else if content_dirty {
             let sw = screen_w as i32;
             let sh = screen_h as i32;
@@ -1191,12 +1164,16 @@ fn main() {
                 2, dx, dy, dw, dh,
             );
             content_dirty = false;
-        } else if mouse_moved_this_frame {
-            // Mouse-only update: no content changed, but kernel draws cursor
+            windows_dirty = false;
+        } else if windows_dirty || mouse_moved_this_frame {
+            // Window content and/or mouse-only update: no COMPOSITE_TEX change,
+            // but kernel uploads per-window textures and draws cursor via SUBMIT_3D.
+            // dirty_mode=0 tells kernel bg_dirty=false → skip COMPOSITE_TEX upload.
             let _ = graphics::virgl_composite_windows_rect(
                 cbuf, cw, ch,
                 0, 0, 0, 0, 0,
             );
+            windows_dirty = false;
         }
         // No sleep — compositor_wait handles blocking
 
