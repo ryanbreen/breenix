@@ -57,6 +57,18 @@ static COMPOSITOR_LAST_MOUSE: core::sync::atomic::AtomicU64 = core::sync::atomic
 #[cfg(target_arch = "aarch64")]
 static COMPOSITOR_DIRTY_WAKE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
+/// Timestamp (ns) of the last compositor_wait return.
+/// Used to enforce a minimum inter-frame interval so the compositor doesn't
+/// saturate the CPU when GPU wake is fast (e.g., MSI-X interrupt-driven).
+#[cfg(target_arch = "aarch64")]
+static COMPOSITOR_LAST_WAKE_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Minimum nanoseconds between compositor_wait returns.
+/// 5ms = 200 FPS cap — smooth enough for all use cases while preventing
+/// the compositor from running flat-out when events arrive continuously.
+#[cfg(target_arch = "aarch64")]
+const MIN_FRAME_INTERVAL_NS: u64 = 5_000_000;
+
 /// Wake the compositor thread if it's blocked in compositor_wait (op=23).
 /// Called from input interrupt handlers (mouse, keyboard) to provide low-latency
 /// input response without polling.
@@ -176,6 +188,8 @@ struct WindowBuffer {
     /// Window position (set by compositor)
     x: i32,
     y: i32,
+    /// Z-order (0 = bottom, higher = closer to viewer). Set by compositor.
+    z_order: u32,
     /// VirGL TEXTURE_2D resource ID (0 = not initialized)
     virgl_resource_id: u32,
     /// Whether VirGL texture has been created + backed + primed
@@ -267,6 +281,7 @@ impl WindowRegistry {
             title_len: 0,
             x: 0,
             y: 0,
+            z_order: 0,
             virgl_resource_id: 0,
             virgl_initialized: false,
             generation: 0,
@@ -856,19 +871,68 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             if desc_ptr == 0 || desc_ptr >= USER_SPACE_MAX {
                 return SyscallResult::Err(super::ErrorCode::Fault as u64);
             }
+
+            // ksyscall-perf: measure composite time and report CPU% every 500 frames
+            #[cfg(target_arch = "aarch64")]
+            {
+                let t0: u64;
+                unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) t0, options(nomem, nostack)); }
+
+                let result = handle_composite_windows(desc_ptr);
+
+                use core::sync::atomic::{AtomicU64, AtomicU32};
+                static PERF_FRAME: AtomicU32 = AtomicU32::new(0);
+                static PERF_GPU_TICKS: AtomicU64 = AtomicU64::new(0);
+                static PERF_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+                let t1: u64;
+                unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) t1, options(nomem, nostack)); }
+
+                let frame = PERF_FRAME.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                PERF_GPU_TICKS.fetch_add(t1.saturating_sub(t0), core::sync::atomic::Ordering::Relaxed);
+
+                if frame == 0 {
+                    PERF_EPOCH.store(t0, core::sync::atomic::Ordering::Relaxed);
+                }
+
+                if frame > 0 && (frame + 1) % 500 == 0 {
+                    let freq: u64;
+                    unsafe { core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq, options(nomem, nostack)); }
+                    let gpu_ticks = PERF_GPU_TICKS.swap(0, core::sync::atomic::Ordering::Relaxed);
+                    let sleep_ticks = crate::drivers::virtio::gpu_pci::take_gpu_sleep_ticks();
+                    let cpu_ticks = gpu_ticks.saturating_sub(sleep_ticks);
+                    let epoch = PERF_EPOCH.swap(t1, core::sync::atomic::Ordering::Relaxed);
+                    let wall_ticks = t1.saturating_sub(epoch);
+
+                    let wall_us = gpu_ticks * 1_000_000 / freq / 500;
+                    let sleep_us = sleep_ticks * 1_000_000 / freq / 500;
+                    let cpu_us = cpu_ticks * 1_000_000 / freq / 500;
+                    let busy_pct = if wall_ticks > 0 { cpu_ticks * 100 / wall_ticks } else { 0 };
+
+                    crate::serial_println!(
+                        "[ksyscall-perf] 500f: wall={}us sleep={}us cpu={}us busy={}%",
+                        wall_us, sleep_us, cpu_us, busy_pct,
+                    );
+                }
+
+                result
+            }
+            #[cfg(not(target_arch = "aarch64"))]
             handle_composite_windows(desc_ptr)
         }
         17 => {
-            // SetWindowPosition: set window position for compositor
-            // p1=buffer_id, p2=x (i16 low) | y (i16 high)
+            // SetWindowPosition: set window position + z-order for compositor
+            // p1=buffer_id, p2=x (i16 low) | y (i16 high), p3=z_order
             let buffer_id = cmd.p1 as u32;
             let x = (cmd.p2 & 0xFFFF) as i16 as i32;
             let y = ((cmd.p2 >> 16) & 0xFFFF) as i16 as i32;
+            let z_order = cmd.p3 as u32;
             let mut reg = WINDOW_REGISTRY.lock();
             match reg.find_mut(buffer_id) {
                 Some(buf) => {
                     buf.x = x;
                     buf.y = y;
+                    buf.z_order = z_order;
                     SyscallResult::Ok(0)
                 }
                 None => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
@@ -1107,6 +1171,54 @@ fn handle_compositor_wait(cmd: &FbDrawCmd) -> SyscallResult {
     let timeout_ms = cmd.p1 as u32;
     let last_registry_gen = cmd.p2 as u32 as u64;
 
+    // Frame pacing: enforce minimum inter-frame interval.
+    // Without this, MSI-X interrupt-driven GPU wake causes the compositor to
+    // run flat-out (~200+ FPS), saturating the CPU. By sleeping until the
+    // minimum interval has elapsed, we cap effective FPS while keeping
+    // latency low for input events (mouse/keyboard still wake immediately).
+    //
+    // IMPORTANT: This uses a plain timer block, NOT block_current_for_compositor.
+    // We must NOT set COMPOSITOR_WAITING_THREAD here because mark_window_dirty
+    // would wake us early and consume the dirty signal, causing the main
+    // blocking section to re-block and wait for the full 16ms timeout.
+    let (s, n) = crate::time::get_monotonic_time_ns();
+    let now_ns = (s as u64) * 1_000_000_000 + (n as u64);
+    let last_wake = COMPOSITOR_LAST_WAKE_NS.load(Ordering::Relaxed);
+    if last_wake != 0 {
+        let earliest_return = last_wake + MIN_FRAME_INTERVAL_NS;
+        if now_ns < earliest_return {
+            crate::task::scheduler::with_scheduler(|sched| {
+                sched.block_current_for_timer(earliest_return);
+            });
+
+            #[cfg(target_arch = "aarch64")]
+            crate::per_cpu_aarch64::preempt_enable();
+
+            loop {
+                let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                    sched.wake_expired_timers();
+                    sched.current_thread_mut()
+                        .map(|t| t.state == crate::task::thread::ThreadState::BlockedOnTimer)
+                        .unwrap_or(false)
+                });
+                if !still_blocked.unwrap_or(false) { break; }
+                crate::task::scheduler::yield_current();
+                crate::arch_halt_with_interrupts();
+            }
+
+            crate::task::scheduler::with_scheduler(|sched| {
+                if let Some(thread) = sched.current_thread_mut() {
+                    thread.blocked_in_syscall = false;
+                }
+            });
+
+            #[cfg(target_arch = "aarch64")]
+            crate::per_cpu_aarch64::preempt_disable();
+            #[cfg(target_arch = "aarch64")]
+            ensure_current_address_space();
+        }
+    }
+
     // Pack current mouse state for comparison
     let (mx, my, mb) = crate::drivers::usb::hid::mouse_state();
     let mouse_packed = ((mx as u64) << 32) | ((my as u64) << 16) | (mb as u64);
@@ -1126,10 +1238,16 @@ fn handle_compositor_wait(cmd: &FbDrawCmd) -> SyscallResult {
         ready |= 4;
     }
 
-    // If mouse or registry changed, return immediately (don't check dirty — BWM
-    // will do its own per-window dirty check via check_window_dirty).
+    // Bit 0: dirty window signal pending (may have arrived during frame pacing sleep)
+    if COMPOSITOR_DIRTY_WAKE.swap(false, Ordering::Relaxed) {
+        ready |= 1;
+    }
+
+    // If anything is ready, return immediately.
     if ready != 0 {
         COMPOSITOR_LAST_MOUSE.store(mouse_packed, Ordering::Relaxed);
+        let (ws, wn) = crate::time::get_monotonic_time_ns();
+        COMPOSITOR_LAST_WAKE_NS.store((ws as u64) * 1_000_000_000 + (wn as u64), Ordering::Relaxed);
         return SyscallResult::Ok(ready | ((cur_reg_gen & 0x00FF_FFFF) << 8));
     }
 
@@ -1198,6 +1316,9 @@ fn handle_compositor_wait(cmd: &FbDrawCmd) -> SyscallResult {
     }
 
     COMPOSITOR_LAST_MOUSE.store(mouse_packed2, Ordering::Relaxed);
+
+    let (ws2, wn2) = crate::time::get_monotonic_time_ns();
+    COMPOSITOR_LAST_WAKE_NS.store((ws2 as u64) * 1_000_000_000 + (wn2 as u64), Ordering::Relaxed);
 
     SyscallResult::Ok(ready_after | ((cur_reg_gen2 & 0x00FF_FFFF) << 8))
 }
@@ -1340,6 +1461,7 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
                     height: buf.height,
                     x: buf.x,
                     y: buf.y,
+                    z_order: buf.z_order,
                     dirty,
                     page_phys_addrs: buf.page_phys_addrs.clone(),
                     size: buf.size,
@@ -1356,6 +1478,8 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
                 win_idx += 1;
             }
         }
+        // Sort by z_order so GPU draws back-to-front (lower z = drawn first).
+        result.sort_unstable_by_key(|w| w.z_order);
         result
     };
 
@@ -1420,6 +1544,7 @@ pub struct WindowCompositeInfo {
     pub height: u32,
     pub x: i32,
     pub y: i32,
+    pub z_order: u32,
     pub dirty: bool,
     pub page_phys_addrs: alloc::vec::Vec<u64>,
     pub size: usize,

@@ -52,7 +52,6 @@ const TITLE_TEXT: Color = Color::rgb(160, 165, 175);
 const TITLE_FOCUSED_TEXT: Color = Color::rgb(255, 255, 255);
 const WIN_BORDER_COLOR: Color = Color::rgb(50, 55, 70);
 const WIN_BORDER_FOCUSED: Color = Color::rgb(60, 130, 255);
-const CONTENT_BG: Color = Color::rgb(20, 25, 40);
 
 // Taskbar/Appbar colors
 const TASKBAR_BG: Color = Color::rgb(20, 22, 30);
@@ -244,15 +243,7 @@ impl Window {
 // ─── Drawing Helpers ─────────────────────────────────────────────────────────
 
 fn fill_rect(fb: &mut FrameBuf, x: i32, y: i32, w: usize, h: usize, color: Color) {
-    for dy in 0..h as i32 {
-        let py = y + dy;
-        if py < 0 || py >= fb.height as i32 { continue; }
-        for dx in 0..w as i32 {
-            let px = x + dx;
-            if px < 0 || px >= fb.width as i32 { continue; }
-            fb.put_pixel(px as usize, py as usize, color);
-        }
-    }
+    libgfx::shapes::fill_rect(fb, x, y, w as i32, h as i32, color);
 }
 
 fn draw_text_at(fb: &mut FrameBuf, text: &[u8], x: i32, y: i32, color: Color) {
@@ -298,8 +289,7 @@ fn draw_window_frame(fb: &mut FrameBuf, win: &Window, focused: bool) {
     let my = mby + (mbh as i32 - CELL_H as i32) / 2;
     draw_text_at(fb, b"-", mx, my, MINIMIZE_BTN_TEXT);
 
-    fill_rect(fb, win.content_x(), win.content_y(),
-              win.content_width(), win.content_height(), CONTENT_BG);
+    // Content area NOT filled here — GPU composites per-window textures over it.
 }
 
 /// Paint the decorative desktop background — gradient with grid
@@ -604,10 +594,13 @@ fn discover_windows(windows: &mut Vec<Window>, screen_w: usize, screen_h: usize,
             core::str::from_utf8(&title[..title_len]).unwrap_or("?"),
             info.buffer_id, info.width, info.height, cascade_x, cascade_y);
 
-        // Tell kernel where the client content goes on screen (for GPU compositing)
+        // Tell kernel where the client content goes on screen (for GPU compositing).
+        // z_order = index in windows vec (0 = bottom). New windows are pushed to
+        // the end, so they get the highest z_order.
         let content_x = cascade_x + BORDER_WIDTH as i32;
         let content_y = cascade_y + TITLE_BAR_HEIGHT as i32 + BORDER_WIDTH as i32;
-        let _ = graphics::set_window_position(info.buffer_id, content_x, content_y);
+        let z_order = windows.len() as u32; // will be at this index after push
+        let _ = graphics::set_window_position(info.buffer_id, content_x, content_y, z_order);
 
         let order = *next_order;
         *next_order += 1;
@@ -622,6 +615,17 @@ fn discover_windows(windows: &mut Vec<Window>, screen_w: usize, screen_h: usize,
     }
 
     removed || added
+}
+
+/// Update kernel z-order for all windows. Called after any z-order change
+/// (raise-to-front, new window, etc.) so the GPU compositor draws quads
+/// in correct back-to-front order.
+fn update_kernel_z_order(windows: &[Window]) {
+    for (i, win) in windows.iter().enumerate() {
+        if win.window_id != 0 {
+            let _ = graphics::set_window_position(win.window_id, win.content_x(), win.content_y(), i as u32);
+        }
+    }
 }
 
 /// Redraw all windows in z-order (index 0 = bottom), plus taskbar and app bar.
@@ -845,6 +849,7 @@ fn main() {
     let mut last_clock_sec: i64 = -1;
     let mut clock_text = [0u8; 11];
     format_clock(0, &mut clock_text);
+    let mut frame_counter: u32 = 0;
     let mut next_creation_order: u32 = 0;
 
     // Initial composite
@@ -882,6 +887,7 @@ fn main() {
                 // New windows are pushed to end of Vec (top of z-order).
                 // Always focus the topmost visible window so appbar selection
                 // matches the visually foregrounded window.
+                update_kernel_z_order(&windows);
                 focused_win = next_visible_window(&windows, 0);
                 compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text);
                 full_redraw = true;
@@ -961,7 +967,7 @@ fn main() {
                             if windows[win_idx].window_id != 0 {
                                 let cx = windows[win_idx].content_x();
                                 let cy = windows[win_idx].content_y();
-                                let _ = graphics::set_window_position(windows[win_idx].window_id, cx, cy);
+                                let _ = graphics::set_window_position(windows[win_idx].window_id, cx, cy, win_idx as u32);
                             }
                             // Dirty region = union of old and new bounds
                             let (nx0, ny0, nx1, ny1) = windows[win_idx].bounds();
@@ -1028,6 +1034,7 @@ fn main() {
                                 if idx < windows.len() - 1 {
                                     let win = windows.remove(idx);
                                     windows.push(win);
+                                    update_kernel_z_order(&windows);
                                 }
                                 let top = windows.len() - 1;
                                 if top != focused_win {
@@ -1057,13 +1064,16 @@ fn main() {
                             }
                         }
                         if let Some(ci) = clicked_idx {
-                            if ci < windows.len() - 1 {
+                            let z_changed = ci < windows.len() - 1;
+                            if z_changed {
                                 let win = windows.remove(ci);
                                 windows.push(win);
+                                update_kernel_z_order(&windows);
                             }
                             let top = windows.len() - 1;
+                            let focus_changed = top != focused_win;
 
-                            if top != focused_win {
+                            if focus_changed {
                                 send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
                                 focused_win = top;
                                 send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
@@ -1102,8 +1112,9 @@ fn main() {
                                 route_mouse_button_to_focused(&windows, focused_win, 1, true, local_x, local_y);
                             }
 
-                            // Full redraw for z-order change (unless minimize already did it)
-                            if !full_redraw {
+                            // Full redraw for z-order or focus change (unless minimize
+                            // already did it, or nothing visual changed)
+                            if !full_redraw && (z_changed || focus_changed) {
                                 compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text);
                                 full_redraw = true;
                             }
@@ -1124,17 +1135,20 @@ fn main() {
         }
 
         // ── 5b. Update clock (once per second) ──
-        if let Ok(ts) = libbreenix::time::now_realtime() {
-            if ts.tv_sec != last_clock_sec {
-                last_clock_sec = ts.tv_sec;
-                format_clock(ts.tv_sec, &mut clock_text);
-                draw_taskbar(&mut fb, &clock_text);
-                // Expand dirty rect to cover taskbar
-                dirty_x0 = 0;
-                dirty_y0 = 0;
-                dirty_x1 = dirty_x1.max(screen_w as i32);
-                dirty_y1 = dirty_y1.max(TASKBAR_HEIGHT as i32);
-                content_dirty = true;
+        // Only check realtime every 30 frames (~5-6 checks/sec at 200 FPS)
+        frame_counter = frame_counter.wrapping_add(1);
+        if frame_counter % 30 == 0 {
+            if let Ok(ts) = libbreenix::time::now_realtime() {
+                if ts.tv_sec != last_clock_sec {
+                    last_clock_sec = ts.tv_sec;
+                    format_clock(ts.tv_sec, &mut clock_text);
+                    draw_taskbar(&mut fb, &clock_text);
+                    dirty_x0 = 0;
+                    dirty_y0 = 0;
+                    dirty_x1 = dirty_x1.max(screen_w as i32);
+                    dirty_y1 = dirty_y1.max(TASKBAR_HEIGHT as i32);
+                    content_dirty = true;
+                }
             }
         }
 
@@ -1176,6 +1190,5 @@ fn main() {
             windows_dirty = false;
         }
         // No sleep — compositor_wait handles blocking
-
     }
 }

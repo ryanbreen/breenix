@@ -122,6 +122,10 @@ pub fn init() -> usize {
                         serial_println!("[drivers] VirGL 3D acceleration active");
                         crate::graphics::set_compositor_backend(crate::graphics::CompositorBackend::VirGL);
                         serial_println!("[drivers] Compositor backend: VirGL");
+                        // Enable yielding during GPU command waits now that init is complete.
+                        // During runtime, GPU poll loops yield to the scheduler instead of
+                        // spinning, letting other tasks run during ~3.4ms GPU processing.
+                        virtio::gpu_pci::enable_gpu_yield();
                     }
                     Err(e) => serial_println!("[drivers] VirGL init skipped: {}", e),
                 }
