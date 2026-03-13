@@ -604,10 +604,13 @@ fn discover_windows(windows: &mut Vec<Window>, screen_w: usize, screen_h: usize,
             core::str::from_utf8(&title[..title_len]).unwrap_or("?"),
             info.buffer_id, info.width, info.height, cascade_x, cascade_y);
 
-        // Tell kernel where the client content goes on screen (for GPU compositing)
+        // Tell kernel where the client content goes on screen (for GPU compositing).
+        // z_order = index in windows vec (0 = bottom). New windows are pushed to
+        // the end, so they get the highest z_order.
         let content_x = cascade_x + BORDER_WIDTH as i32;
         let content_y = cascade_y + TITLE_BAR_HEIGHT as i32 + BORDER_WIDTH as i32;
-        let _ = graphics::set_window_position(info.buffer_id, content_x, content_y);
+        let z_order = windows.len() as u32; // will be at this index after push
+        let _ = graphics::set_window_position(info.buffer_id, content_x, content_y, z_order);
 
         let order = *next_order;
         *next_order += 1;
@@ -622,6 +625,17 @@ fn discover_windows(windows: &mut Vec<Window>, screen_w: usize, screen_h: usize,
     }
 
     removed || added
+}
+
+/// Update kernel z-order for all windows. Called after any z-order change
+/// (raise-to-front, new window, etc.) so the GPU compositor draws quads
+/// in correct back-to-front order.
+fn update_kernel_z_order(windows: &[Window]) {
+    for (i, win) in windows.iter().enumerate() {
+        if win.window_id != 0 {
+            let _ = graphics::set_window_position(win.window_id, win.content_x(), win.content_y(), i as u32);
+        }
+    }
 }
 
 /// Redraw all windows in z-order (index 0 = bottom), plus taskbar and app bar.
@@ -882,6 +896,7 @@ fn main() {
                 // New windows are pushed to end of Vec (top of z-order).
                 // Always focus the topmost visible window so appbar selection
                 // matches the visually foregrounded window.
+                update_kernel_z_order(&windows);
                 focused_win = next_visible_window(&windows, 0);
                 compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text);
                 full_redraw = true;
@@ -961,7 +976,7 @@ fn main() {
                             if windows[win_idx].window_id != 0 {
                                 let cx = windows[win_idx].content_x();
                                 let cy = windows[win_idx].content_y();
-                                let _ = graphics::set_window_position(windows[win_idx].window_id, cx, cy);
+                                let _ = graphics::set_window_position(windows[win_idx].window_id, cx, cy, win_idx as u32);
                             }
                             // Dirty region = union of old and new bounds
                             let (nx0, ny0, nx1, ny1) = windows[win_idx].bounds();
@@ -1028,6 +1043,7 @@ fn main() {
                                 if idx < windows.len() - 1 {
                                     let win = windows.remove(idx);
                                     windows.push(win);
+                                    update_kernel_z_order(&windows);
                                 }
                                 let top = windows.len() - 1;
                                 if top != focused_win {
@@ -1060,6 +1076,7 @@ fn main() {
                             if ci < windows.len() - 1 {
                                 let win = windows.remove(ci);
                                 windows.push(win);
+                                update_kernel_z_order(&windows);
                             }
                             let top = windows.len() - 1;
 

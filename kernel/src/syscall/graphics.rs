@@ -188,6 +188,8 @@ struct WindowBuffer {
     /// Window position (set by compositor)
     x: i32,
     y: i32,
+    /// Z-order (0 = bottom, higher = closer to viewer). Set by compositor.
+    z_order: u32,
     /// VirGL TEXTURE_2D resource ID (0 = not initialized)
     virgl_resource_id: u32,
     /// Whether VirGL texture has been created + backed + primed
@@ -279,6 +281,7 @@ impl WindowRegistry {
             title_len: 0,
             x: 0,
             y: 0,
+            z_order: 0,
             virgl_resource_id: 0,
             virgl_initialized: false,
             generation: 0,
@@ -918,16 +921,18 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             handle_composite_windows(desc_ptr)
         }
         17 => {
-            // SetWindowPosition: set window position for compositor
-            // p1=buffer_id, p2=x (i16 low) | y (i16 high)
+            // SetWindowPosition: set window position + z-order for compositor
+            // p1=buffer_id, p2=x (i16 low) | y (i16 high), p3=z_order
             let buffer_id = cmd.p1 as u32;
             let x = (cmd.p2 & 0xFFFF) as i16 as i32;
             let y = ((cmd.p2 >> 16) & 0xFFFF) as i16 as i32;
+            let z_order = cmd.p3 as u32;
             let mut reg = WINDOW_REGISTRY.lock();
             match reg.find_mut(buffer_id) {
                 Some(buf) => {
                     buf.x = x;
                     buf.y = y;
+                    buf.z_order = z_order;
                     SyscallResult::Ok(0)
                 }
                 None => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
@@ -1456,6 +1461,7 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
                     height: buf.height,
                     x: buf.x,
                     y: buf.y,
+                    z_order: buf.z_order,
                     dirty,
                     page_phys_addrs: buf.page_phys_addrs.clone(),
                     size: buf.size,
@@ -1472,6 +1478,8 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
                 win_idx += 1;
             }
         }
+        // Sort by z_order so GPU draws back-to-front (lower z = drawn first).
+        result.sort_unstable_by_key(|w| w.z_order);
         result
     };
 
@@ -1536,6 +1544,7 @@ pub struct WindowCompositeInfo {
     pub height: u32,
     pub x: i32,
     pub y: i32,
+    pub z_order: u32,
     pub dirty: bool,
     pub page_phys_addrs: alloc::vec::Vec<u64>,
     pub size: usize,

@@ -567,13 +567,13 @@ pub fn mark_window_dirty(buffer_id: u32) -> Result<(), Error> {
 ///
 /// Tells the kernel where to place this window during compositing.
 /// If position is never set, windows are auto-positioned.
-pub fn set_window_position(buffer_id: u32, x: i32, y: i32) -> Result<(), Error> {
+pub fn set_window_position(buffer_id: u32, x: i32, y: i32, z_order: u32) -> Result<(), Error> {
     let packed_xy = ((x as u16 as u32) | ((y as u16 as u32) << 16)) as i32;
     let cmd = FbDrawCmd {
         op: draw_op::SET_WINDOW_POSITION,
         p1: buffer_id as i32,
         p2: packed_xy,
-        p3: 0,
+        p3: z_order as i32,
         p4: 0,
         color: 0,
     };
