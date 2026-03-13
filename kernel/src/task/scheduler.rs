@@ -514,23 +514,28 @@ impl Scheduler {
                 // Check the state and determine what to do
                 let (is_terminated, is_blocked) =
                     if let Some(current) = self.get_thread_mut(current_id) {
-                        // Charge elapsed CPU ticks to the outgoing thread
-                        let now = crate::time::get_ticks();
-                        current.cpu_ticks_total += now.wrapping_sub(current.run_start_ticks);
-                        // Reset run_start_ticks so that if no context switch happens
-                        // (function returns None), the next call won't double-count.
-                        current.run_start_ticks = now;
-
                         let was_terminated = current.state == ThreadState::Terminated;
                         // Check for any blocked state
                         let was_blocked = current.state == ThreadState::Blocked
                             || current.state == ThreadState::BlockedOnSignal
                             || current.state == ThreadState::BlockedOnChildExit
                             || current.state == ThreadState::BlockedOnTimer;
-                        // Only set to Ready if not terminated AND not blocked
-                        if !was_terminated && !was_blocked {
+
+                        // Charge elapsed CPU ticks to the outgoing thread, but ONLY
+                        // if it was actually running. Blocked threads already had
+                        // their ticks charged at block time — charging again here
+                        // would count blocked/sleeping time as CPU usage.
+                        if !was_blocked && !was_terminated {
+                            let now = crate::time::get_ticks();
+                            current.cpu_ticks_total += now.wrapping_sub(current.run_start_ticks);
+                            current.run_start_ticks = now;
                             current.set_ready();
+                        } else {
+                            // Reset run_start_ticks so the next dispatch doesn't
+                            // charge stale time from the blocked period.
+                            current.run_start_ticks = crate::time::get_ticks();
                         }
+
                         (was_terminated, was_blocked)
                     } else {
                         (true, false)
@@ -712,21 +717,22 @@ impl Scheduler {
             if current_id != self.cpu_state[Self::current_cpu_id()].idle_thread {
                 let (is_terminated, is_blocked) =
                     if let Some(current) = self.get_thread_mut(current_id) {
-                        // Charge elapsed CPU ticks to the outgoing thread
-                        let now = crate::time::get_ticks();
-                        current.cpu_ticks_total += now.wrapping_sub(current.run_start_ticks);
-                        // Reset run_start_ticks so that if no context switch happens
-                        // (function returns None), the next call won't double-count.
-                        current.run_start_ticks = now;
-
                         let was_terminated = current.state == ThreadState::Terminated;
                         let was_blocked = current.state == ThreadState::Blocked
                             || current.state == ThreadState::BlockedOnSignal
                             || current.state == ThreadState::BlockedOnChildExit
                             || current.state == ThreadState::BlockedOnTimer;
-                        if !was_terminated && !was_blocked {
+
+                        // Only charge CPU ticks if thread was actually running
+                        if !was_blocked && !was_terminated {
+                            let now = crate::time::get_ticks();
+                            current.cpu_ticks_total += now.wrapping_sub(current.run_start_ticks);
+                            current.run_start_ticks = now;
                             current.set_ready();
+                        } else {
+                            current.run_start_ticks = crate::time::get_ticks();
                         }
+
                         (was_terminated, was_blocked)
                     } else {
                         (true, false)
@@ -887,6 +893,11 @@ impl Scheduler {
     #[allow(dead_code)]
     pub fn block_current(&mut self) {
         if let Some(current) = self.current_thread_mut() {
+            // Charge elapsed CPU ticks before blocking
+            let now = crate::time::get_ticks();
+            current.cpu_ticks_total += now.wrapping_sub(current.run_start_ticks);
+            current.run_start_ticks = now;
+
             current.set_blocked();
         }
     }
@@ -1010,6 +1021,11 @@ impl Scheduler {
     ) {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
+                // Charge elapsed CPU ticks before blocking
+                let now = crate::time::get_ticks();
+                thread.cpu_ticks_total += now.wrapping_sub(thread.run_start_ticks);
+                thread.run_start_ticks = now;
+
                 // CRITICAL: Save userspace context FIRST, THEN set state.
                 // This ensures that when unblock_for_signal() is called,
                 // the context is already saved and ready for signal delivery.
@@ -1133,6 +1149,11 @@ impl Scheduler {
     pub fn block_current_for_child_exit(&mut self) {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
+                // Charge elapsed CPU ticks before blocking
+                let now = crate::time::get_ticks();
+                thread.cpu_ticks_total += now.wrapping_sub(thread.run_start_ticks);
+                thread.run_start_ticks = now;
+
                 thread.state = ThreadState::BlockedOnChildExit;
                 // CRITICAL: Mark that this thread is blocked inside a syscall.
                 // When the thread is resumed, we must NOT restore userspace context
@@ -1199,6 +1220,11 @@ impl Scheduler {
     pub fn block_current_for_timer(&mut self, wake_time_ns: u64) {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
+                // Charge elapsed CPU ticks before blocking
+                let now = crate::time::get_ticks();
+                thread.cpu_ticks_total += now.wrapping_sub(thread.run_start_ticks);
+                thread.run_start_ticks = now;
+
                 thread.state = ThreadState::BlockedOnTimer;
                 thread.wake_time_ns = Some(wake_time_ns);
                 thread.blocked_in_syscall = true;
@@ -1216,6 +1242,13 @@ impl Scheduler {
     pub fn block_current_for_compositor(&mut self, timeout_ns: u64) {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
+                // Charge elapsed CPU ticks NOW, before blocking. Otherwise the
+                // next schedule() call charges all time since last dispatch —
+                // including blocked/sleeping time — as CPU usage.
+                let now = crate::time::get_ticks();
+                thread.cpu_ticks_total += now.wrapping_sub(thread.run_start_ticks);
+                thread.run_start_ticks = now;
+
                 thread.state = ThreadState::BlockedOnTimer;
                 thread.wake_time_ns = Some(timeout_ns);
                 thread.blocked_in_syscall = true;

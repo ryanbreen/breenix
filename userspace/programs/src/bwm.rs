@@ -52,7 +52,6 @@ const TITLE_TEXT: Color = Color::rgb(160, 165, 175);
 const TITLE_FOCUSED_TEXT: Color = Color::rgb(255, 255, 255);
 const WIN_BORDER_COLOR: Color = Color::rgb(50, 55, 70);
 const WIN_BORDER_FOCUSED: Color = Color::rgb(60, 130, 255);
-const CONTENT_BG: Color = Color::rgb(20, 25, 40);
 
 // Taskbar/Appbar colors
 const TASKBAR_BG: Color = Color::rgb(20, 22, 30);
@@ -244,15 +243,7 @@ impl Window {
 // ─── Drawing Helpers ─────────────────────────────────────────────────────────
 
 fn fill_rect(fb: &mut FrameBuf, x: i32, y: i32, w: usize, h: usize, color: Color) {
-    for dy in 0..h as i32 {
-        let py = y + dy;
-        if py < 0 || py >= fb.height as i32 { continue; }
-        for dx in 0..w as i32 {
-            let px = x + dx;
-            if px < 0 || px >= fb.width as i32 { continue; }
-            fb.put_pixel(px as usize, py as usize, color);
-        }
-    }
+    libgfx::shapes::fill_rect(fb, x, y, w as i32, h as i32, color);
 }
 
 fn draw_text_at(fb: &mut FrameBuf, text: &[u8], x: i32, y: i32, color: Color) {
@@ -298,8 +289,7 @@ fn draw_window_frame(fb: &mut FrameBuf, win: &Window, focused: bool) {
     let my = mby + (mbh as i32 - CELL_H as i32) / 2;
     draw_text_at(fb, b"-", mx, my, MINIMIZE_BTN_TEXT);
 
-    fill_rect(fb, win.content_x(), win.content_y(),
-              win.content_width(), win.content_height(), CONTENT_BG);
+    // Content area NOT filled here — GPU composites per-window textures over it.
 }
 
 /// Paint the decorative desktop background — gradient with grid
@@ -859,6 +849,7 @@ fn main() {
     let mut last_clock_sec: i64 = -1;
     let mut clock_text = [0u8; 11];
     format_clock(0, &mut clock_text);
+    let mut frame_counter: u32 = 0;
     let mut next_creation_order: u32 = 0;
 
     // Initial composite
@@ -1073,14 +1064,16 @@ fn main() {
                             }
                         }
                         if let Some(ci) = clicked_idx {
-                            if ci < windows.len() - 1 {
+                            let z_changed = ci < windows.len() - 1;
+                            if z_changed {
                                 let win = windows.remove(ci);
                                 windows.push(win);
                                 update_kernel_z_order(&windows);
                             }
                             let top = windows.len() - 1;
+                            let focus_changed = top != focused_win;
 
-                            if top != focused_win {
+                            if focus_changed {
                                 send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
                                 focused_win = top;
                                 send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
@@ -1119,8 +1112,9 @@ fn main() {
                                 route_mouse_button_to_focused(&windows, focused_win, 1, true, local_x, local_y);
                             }
 
-                            // Full redraw for z-order change (unless minimize already did it)
-                            if !full_redraw {
+                            // Full redraw for z-order or focus change (unless minimize
+                            // already did it, or nothing visual changed)
+                            if !full_redraw && (z_changed || focus_changed) {
                                 compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text);
                                 full_redraw = true;
                             }
@@ -1141,17 +1135,20 @@ fn main() {
         }
 
         // ── 5b. Update clock (once per second) ──
-        if let Ok(ts) = libbreenix::time::now_realtime() {
-            if ts.tv_sec != last_clock_sec {
-                last_clock_sec = ts.tv_sec;
-                format_clock(ts.tv_sec, &mut clock_text);
-                draw_taskbar(&mut fb, &clock_text);
-                // Expand dirty rect to cover taskbar
-                dirty_x0 = 0;
-                dirty_y0 = 0;
-                dirty_x1 = dirty_x1.max(screen_w as i32);
-                dirty_y1 = dirty_y1.max(TASKBAR_HEIGHT as i32);
-                content_dirty = true;
+        // Only check realtime every 30 frames (~5-6 checks/sec at 200 FPS)
+        frame_counter = frame_counter.wrapping_add(1);
+        if frame_counter % 30 == 0 {
+            if let Ok(ts) = libbreenix::time::now_realtime() {
+                if ts.tv_sec != last_clock_sec {
+                    last_clock_sec = ts.tv_sec;
+                    format_clock(ts.tv_sec, &mut clock_text);
+                    draw_taskbar(&mut fb, &clock_text);
+                    dirty_x0 = 0;
+                    dirty_y0 = 0;
+                    dirty_x1 = dirty_x1.max(screen_w as i32);
+                    dirty_y1 = dirty_y1.max(TASKBAR_HEIGHT as i32);
+                    content_dirty = true;
+                }
             }
         }
 
@@ -1193,6 +1190,5 @@ fn main() {
             windows_dirty = false;
         }
         // No sleep — compositor_wait handles blocking
-
     }
 }
