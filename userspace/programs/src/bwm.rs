@@ -14,7 +14,9 @@ use libbreenix::io;
 use libbreenix::signal;
 use libbreenix::types::Fd;
 
+use libfont::CachedFont;
 use libgfx::bitmap_font;
+use libgfx::ttf_font;
 use libgfx::color::Color;
 use libgfx::framebuf::FrameBuf;
 
@@ -29,6 +31,10 @@ const BORDER_WIDTH: usize = 2;
 /// Noto Sans Mono 16px cell dimensions for title bar text.
 const CELL_W: usize = 7;
 const CELL_H: usize = 18;
+
+/// TrueType font pixel size for UI text.
+const TTF_FONT_SIZE: f32 = 14.0;
+
 
 /// Top taskbar height
 const TASKBAR_HEIGHT: usize = 28;
@@ -246,12 +252,19 @@ fn fill_rect(fb: &mut FrameBuf, x: i32, y: i32, w: usize, h: usize, color: Color
     libgfx::shapes::fill_rect(fb, x, y, w as i32, h as i32, color);
 }
 
-fn draw_text_at(fb: &mut FrameBuf, text: &[u8], x: i32, y: i32, color: Color) {
+fn draw_text_at(fb: &mut FrameBuf, text: &[u8], x: i32, y: i32, color: Color,
+                ttf: Option<&mut CachedFont>) {
     if y < 0 || y >= fb.height as i32 { return; }
-    for (i, &ch) in text.iter().enumerate() {
-        let px = x + (i as i32) * CELL_W as i32;
-        if px < 0 || px + CELL_W as i32 > fb.width as i32 { continue; }
-        bitmap_font::draw_char(fb, ch as char, px as usize, y as usize, color);
+    if let Some(font) = ttf {
+        // Use TrueType rendering
+        let s = unsafe { core::str::from_utf8_unchecked(text) };
+        ttf_font::draw_text(fb, font, s, x, y, TTF_FONT_SIZE, color);
+    } else {
+        for (i, &ch) in text.iter().enumerate() {
+            let px = x + (i as i32) * CELL_W as i32;
+            if px < 0 || px + CELL_W as i32 > fb.width as i32 { continue; }
+            bitmap_font::draw_char(fb, ch as char, px as usize, y as usize, color);
+        }
     }
 }
 
@@ -273,21 +286,21 @@ fn draw_window_frame(fb: &mut FrameBuf, win: &Window, focused: bool) {
     let max_chars = max_title_w / CELL_W;
     let text_len = win.title_len.min(max_chars);
     let text_y = win.y + bw as i32 + ((TITLE_BAR_HEIGHT - bw - CELL_H) / 2) as i32;
-    draw_text_at(fb, &win.title[..text_len], win.x + 8, text_y, title_fg);
+    draw_text_at(fb, &win.title[..text_len], win.x + 8, text_y, title_fg, None);
 
     // Close button (rightmost in title bar)
     let (cbx, cby, cbw, cbh) = win.close_btn_rect();
     fill_rect(fb, cbx, cby, cbw, cbh, CLOSE_BTN_BG);
     let cx = cbx + (cbw as i32 - CELL_W as i32) / 2;
     let cy = cby + (cbh as i32 - CELL_H as i32) / 2;
-    draw_text_at(fb, b"x", cx, cy, CLOSE_BTN_TEXT);
+    draw_text_at(fb, b"x", cx, cy, CLOSE_BTN_TEXT, None);
 
     // Minimize button (left of close)
     let (mbx, mby, mbw, mbh) = win.minimize_btn_rect();
     fill_rect(fb, mbx, mby, mbw, mbh, MINIMIZE_BTN_BG);
     let mx = mbx + (mbw as i32 - CELL_W as i32) / 2;
     let my = mby + (mbh as i32 - CELL_H as i32) / 2;
-    draw_text_at(fb, b"-", mx, my, MINIMIZE_BTN_TEXT);
+    draw_text_at(fb, b"-", mx, my, MINIMIZE_BTN_TEXT, None);
 
     // Content area NOT filled here — GPU composites per-window textures over it.
 }
@@ -400,11 +413,11 @@ fn draw_taskbar(fb: &mut FrameBuf, clock_text: &[u8]) {
     fill_rect(fb, 0, 0, w, TASKBAR_HEIGHT, TASKBAR_BG);
     // "Breenix" label on the left
     let label_y = ((TASKBAR_HEIGHT - CELL_H) / 2 + 1) as i32;
-    draw_text_at(fb, b"Breenix", 8, label_y, TASKBAR_TEXT);
+    draw_text_at(fb, b"Breenix", 8, label_y, TASKBAR_TEXT, None);
     // Clock on the right
     if !clock_text.is_empty() {
         let clock_x = w as i32 - (clock_text.len() as i32 * CELL_W as i32) - 8;
-        draw_text_at(fb, clock_text, clock_x, label_y, TASKBAR_TEXT);
+        draw_text_at(fb, clock_text, clock_x, label_y, TASKBAR_TEXT, None);
     }
 }
 
@@ -464,7 +477,7 @@ fn draw_appbar(fb: &mut FrameBuf, windows: &[Window], focused_win: usize) {
         let max_chars = (btn_w.saturating_sub(12)) / CELL_W;
         let text_len = win.title_len.min(max_chars);
         let text_y = btn_y + ((btn_h - CELL_H) / 2 + 1) as i32;
-        draw_text_at(fb, &win.title[..text_len], btn_x + 6, text_y, APPBAR_BTN_TEXT);
+        draw_text_at(fb, &win.title[..text_len], btn_x + 6, text_y, APPBAR_BTN_TEXT, None);
 
         btn_x += btn_w as i32 + 2;
         if btn_x >= screen_w as i32 - 4 { break; }
@@ -740,6 +753,37 @@ fn compose_partial_redraw(
     }
 }
 
+// ─── Perf Helpers ─────────────────────────────────────────────────────────────
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn perf_ticks() -> u64 {
+    let v: u64;
+    unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) v, options(nomem, nostack)); }
+    v
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn perf_freq() -> u64 {
+    // CNTFRQ_EL0 is trapped from EL0 on Parallels. Use known frequency for
+    // ARM64 Apple Silicon virtual timer: 24 MHz.
+    24_000_000
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline(always)]
+fn perf_ticks() -> u64 { 0 }
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline(always)]
+fn perf_freq() -> u64 { 1 }
+
+#[inline]
+fn ticks_to_us(ticks: u64, freq: u64) -> u64 {
+    (ticks as u128 * 1_000_000 / freq as u128) as u64
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -866,6 +910,19 @@ fn main() {
     // Registry generation tracking for compositor_wait
     let mut registry_gen: u32 = 0;
 
+    // ── Perf instrumentation ──
+    let perf_freq = perf_freq();
+    let mut perf_wait_us: u64 = 0;
+    let mut perf_input_us: u64 = 0;
+    let mut perf_compose_us: u64 = 0;
+    let mut perf_syscall_us: u64 = 0;
+    let mut perf_frames: u64 = 0;
+    let mut perf_composites: u64 = 0;
+    let mut perf_full_redraws: u64 = 0;
+    let mut perf_dirty_only: u64 = 0;
+    let mut perf_mouse_only: u64 = 0;
+    let mut perf_interval_start = perf_ticks();
+
     // Initial window discovery (before entering event loop)
     if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order) {
         focused_win = next_visible_window(&windows, 0);
@@ -878,8 +935,11 @@ fn main() {
         // compositor_wait blocks in the kernel until: window dirty, mouse moved,
         // registry changed, or timeout. Replaces the old poll+sleep_ms(2) pattern.
         // 16ms timeout ensures keyboard input via stdin is checked at least ~60Hz.
+        let t0 = perf_ticks();
         let (ready, new_reg_gen) = graphics::compositor_wait(16, registry_gen).unwrap_or((0, registry_gen));
         registry_gen = new_reg_gen;
+        let t1 = perf_ticks();
+        perf_wait_us += ticks_to_us(t1 - t0, perf_freq);
 
         // ── 1. Discover new/removed client windows (only when registry changed) ──
         if ready & graphics::COMPOSITOR_READY_REGISTRY != 0 {
@@ -1124,6 +1184,9 @@ fn main() {
             }
         }
 
+        let t2 = perf_ticks();
+        perf_input_us += ticks_to_us(t2 - t1, perf_freq);
+
         // ── 5. Window content handled by GPU ──
         // Per-window textures are uploaded by the kernel directly from MAP_SHARED
         // pages and composited via VirGL SUBMIT_3D with z-order interleaved
@@ -1152,6 +1215,9 @@ fn main() {
             }
         }
 
+        let t3 = perf_ticks();
+        perf_compose_us += ticks_to_us(t3 - t2, perf_freq);
+
         // ── 6. Composite to GPU (only when something changed) ──
         let (cbuf, cw, ch): (&[u32], u32, u32) = if direct_mapped {
             (&[], 0, 0)
@@ -1166,6 +1232,8 @@ fn main() {
             full_redraw = false;
             content_dirty = false;
             windows_dirty = false;
+            perf_full_redraws += 1;
+            perf_composites += 1;
         } else if content_dirty {
             let sw = screen_w as i32;
             let sh = screen_h as i32;
@@ -1179,6 +1247,7 @@ fn main() {
             );
             content_dirty = false;
             windows_dirty = false;
+            perf_composites += 1;
         } else if windows_dirty || mouse_moved_this_frame {
             // Window content and/or mouse-only update: no COMPOSITE_TEX change,
             // but kernel uploads per-window textures and draws cursor via SUBMIT_3D.
@@ -1187,7 +1256,39 @@ fn main() {
                 cbuf, cw, ch,
                 0, 0, 0, 0, 0,
             );
+            perf_composites += 1;
+            if windows_dirty {
+                perf_dirty_only += 1;
+            } else {
+                perf_mouse_only += 1;
+            }
             windows_dirty = false;
+        }
+
+        let t4 = perf_ticks();
+        perf_syscall_us += ticks_to_us(t4 - t3, perf_freq);
+        perf_frames += 1;
+
+        // ── Periodic perf report (every 5 seconds) ──
+        let t_now = perf_ticks();
+        if t_now - perf_interval_start >= perf_freq * 5 {
+            let elapsed_us = ticks_to_us(t_now - perf_interval_start, perf_freq);
+            let other_us = elapsed_us.saturating_sub(perf_wait_us + perf_input_us + perf_compose_us + perf_syscall_us);
+            let fps = if elapsed_us > 0 { perf_composites * 1_000_000 / elapsed_us } else { 0 };
+            print!("[bwm-perf] {}ms: wait={}ms input={}ms compose={}ms syscall={}ms other={}ms | frames={} composites={} ({}fps) full={} dirty={} mouse={}\n",
+                elapsed_us / 1000, perf_wait_us / 1000, perf_input_us / 1000,
+                perf_compose_us / 1000, perf_syscall_us / 1000, other_us / 1000,
+                perf_frames, perf_composites, fps, perf_full_redraws, perf_dirty_only, perf_mouse_only);
+            perf_wait_us = 0;
+            perf_input_us = 0;
+            perf_compose_us = 0;
+            perf_syscall_us = 0;
+            perf_frames = 0;
+            perf_composites = 0;
+            perf_full_redraws = 0;
+            perf_dirty_only = 0;
+            perf_mouse_only = 0;
+            perf_interval_start = t_now;
         }
         // No sleep — compositor_wait handles blocking
     }

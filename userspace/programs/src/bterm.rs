@@ -18,11 +18,19 @@ use libbreenix::pty;
 use libbreenix::types::Fd;
 use libbreenix::time;
 
+use libfont::{Font, CachedFont};
 use libgfx::bitmap_font;
+use libgfx::ttf_font;
 
 use libbui::{InputState, WidgetEvent};
 
 // ─── Constants ───────────────────────────────────────────────────────────────
+
+/// Default TrueType font pixel size.
+const TTF_FONT_SIZE: f32 = 16.0;
+
+/// Path to the TrueType monospace font on the ext2 filesystem.
+const FONT_PATH: &str = "/usr/share/fonts/DejaVuSansMono.ttf";
 
 /// Noto Sans Mono 16px cell dimensions for terminal text.
 /// CELL_W must match bitmap_font::metrics().char_width (7 for size_16).
@@ -255,7 +263,7 @@ impl TermEmu {
     }
 
     fn render(&mut self, fb: &mut FrameBuf, x_off: usize, y_off: usize,
-              clip_w: usize, clip_h: usize) {
+              clip_w: usize, clip_h: usize, mut ttf: Option<&mut CachedFont>) {
         if !self.dirty { return; }
         self.dirty = false;
         let max_x = (x_off + clip_w).min(fb.width);
@@ -272,14 +280,17 @@ impl TermEmu {
                     let fg = if cell.bold {
                         Color::rgb(cell.fg.r.saturating_add(40), cell.fg.g.saturating_add(40), cell.fg.b.saturating_add(40))
                     } else { cell.fg };
-                    bitmap_font::draw_char(fb, cell.ch as char, px, py, fg);
+                    if let Some(ref mut font) = ttf {
+                        ttf_font::draw_char(fb, *font, cell.ch as char, px as i32, py as i32, TTF_FONT_SIZE, fg);
+                    } else {
+                        bitmap_font::draw_char(fb, cell.ch as char, px, py, fg);
+                    }
                 }
             }
             // Cursor underline
             if row == self.cursor_y && self.cursor_x < self.cols {
                 let cx = x_off + self.cursor_x * CELL_W;
-                let fm = bitmap_font::metrics();
-                let cw = fm.char_width.min(CELL_W);
+                let cw = CELL_W;
                 for dy in 0..2usize { for dx in 0..cw {
                     if cx + dx < max_x && py + CELL_H - 2 + dy < max_y {
                         fb.put_pixel(cx + dx, py + CELL_H - 2 + dy, Color::WHITE);
@@ -387,6 +398,11 @@ fn make_static_label(s: &str) -> &'static [u8] {
 // ─── Main ───────────────────────────────────────────────────────────────────
 
 fn main() {
+    // Load TrueType font from ext2 filesystem
+    let font_data = std::fs::read(FONT_PATH).ok();
+    let font_parsed = font_data.as_ref().and_then(|data| Font::parse(data).ok());
+    let mut ttf_font: Option<CachedFont> = font_parsed.map(|f| CachedFont::new(f, 256));
+
     // Create window
     let mut win = match Window::new(b"Terminal", WIN_WIDTH, WIN_HEIGHT) {
         Ok(w) => w,
@@ -565,6 +581,7 @@ fn main() {
                     TAB_BAR_HEIGHT as usize,
                     content_w as usize,
                     content_h as usize,
+                    ttf_font.as_mut(),
                 );
             }
 

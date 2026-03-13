@@ -85,6 +85,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
     docker run --rm --privileged \
         -v "$TARGET_DIR:/work" \
         -v "$USERSPACE_DIR:/binaries:ro" \
+        -v "$PROJECT_ROOT/fonts:/fonts:ro" \
         -e "OUTPUT_FILENAME=$OUTPUT_FILENAME" \
         alpine:latest \
         sh -c '
@@ -241,6 +242,17 @@ Line 13
 Line 14
 Line 15
 EOF
+
+            # Install TrueType fonts
+            mkdir -p /mnt/ext2/usr/share/fonts
+            font_count=0
+            for font_file in /fonts/*.ttf; do
+                if [ -f "$font_file" ]; then
+                    cp "$font_file" /mnt/ext2/usr/share/fonts/
+                    font_count=$((font_count + 1))
+                fi
+            done
+            echo "  Installed $font_count fonts in /usr/share/fonts"
 
             # Show what was created
             echo ""
@@ -429,6 +441,17 @@ Line 13
 Line 14
 Line 15
 EOF
+
+    # Install TrueType fonts
+    mkdir -p "$MOUNT_DIR/usr/share/fonts"
+    font_count=0
+    for font_file in "$PROJECT_ROOT/fonts"/*.ttf; do
+        if [ -f "$font_file" ]; then
+            cp "$font_file" "$MOUNT_DIR/usr/share/fonts/"
+            font_count=$((font_count + 1))
+        fi
+    done
+    echo "  Installed $font_count fonts in /usr/share/fonts"
 
     # Show what was created
     echo ""

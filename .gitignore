@@ -44,6 +44,8 @@ libs/*
 !libs/breengel/**
 !libs/libcollab/
 !libs/libcollab/**
+!libs/libfont/
+!libs/libfont/**
 
 # Log files
 *.log

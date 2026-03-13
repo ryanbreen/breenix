@@ -1,0 +1,12 @@
+[package]
+name = "libfont"
+version = "0.1.0"
+edition = "2021"
+description = "TrueType font parser and anti-aliased rasterizer for Breenix"
+
+[workspace]
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
