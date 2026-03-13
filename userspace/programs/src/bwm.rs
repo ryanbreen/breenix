@@ -753,37 +753,6 @@ fn compose_partial_redraw(
     }
 }
 
-// ─── Perf Helpers ─────────────────────────────────────────────────────────────
-
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-fn perf_ticks() -> u64 {
-    let v: u64;
-    unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) v, options(nomem, nostack)); }
-    v
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-fn perf_freq() -> u64 {
-    // CNTFRQ_EL0 is trapped from EL0 on Parallels. Use known frequency for
-    // ARM64 Apple Silicon virtual timer: 24 MHz.
-    24_000_000
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-#[inline(always)]
-fn perf_ticks() -> u64 { 0 }
-
-#[cfg(not(target_arch = "aarch64"))]
-#[inline(always)]
-fn perf_freq() -> u64 { 1 }
-
-#[inline]
-fn ticks_to_us(ticks: u64, freq: u64) -> u64 {
-    (ticks as u128 * 1_000_000 / freq as u128) as u64
-}
-
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -910,19 +879,6 @@ fn main() {
     // Registry generation tracking for compositor_wait
     let mut registry_gen: u32 = 0;
 
-    // ── Perf instrumentation ──
-    let perf_freq = perf_freq();
-    let mut perf_wait_us: u64 = 0;
-    let mut perf_input_us: u64 = 0;
-    let mut perf_compose_us: u64 = 0;
-    let mut perf_syscall_us: u64 = 0;
-    let mut perf_frames: u64 = 0;
-    let mut perf_composites: u64 = 0;
-    let mut perf_full_redraws: u64 = 0;
-    let mut perf_dirty_only: u64 = 0;
-    let mut perf_mouse_only: u64 = 0;
-    let mut perf_interval_start = perf_ticks();
-
     // Initial window discovery (before entering event loop)
     if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order) {
         focused_win = next_visible_window(&windows, 0);
@@ -935,11 +891,8 @@ fn main() {
         // compositor_wait blocks in the kernel until: window dirty, mouse moved,
         // registry changed, or timeout. Replaces the old poll+sleep_ms(2) pattern.
         // 16ms timeout ensures keyboard input via stdin is checked at least ~60Hz.
-        let t0 = perf_ticks();
         let (ready, new_reg_gen) = graphics::compositor_wait(16, registry_gen).unwrap_or((0, registry_gen));
         registry_gen = new_reg_gen;
-        let t1 = perf_ticks();
-        perf_wait_us += ticks_to_us(t1 - t0, perf_freq);
 
         // ── 1. Discover new/removed client windows (only when registry changed) ──
         if ready & graphics::COMPOSITOR_READY_REGISTRY != 0 {
@@ -1184,9 +1137,6 @@ fn main() {
             }
         }
 
-        let t2 = perf_ticks();
-        perf_input_us += ticks_to_us(t2 - t1, perf_freq);
-
         // ── 5. Window content handled by GPU ──
         // Per-window textures are uploaded by the kernel directly from MAP_SHARED
         // pages and composited via VirGL SUBMIT_3D with z-order interleaved
@@ -1215,9 +1165,6 @@ fn main() {
             }
         }
 
-        let t3 = perf_ticks();
-        perf_compose_us += ticks_to_us(t3 - t2, perf_freq);
-
         // ── 6. Composite to GPU (only when something changed) ──
         let (cbuf, cw, ch): (&[u32], u32, u32) = if direct_mapped {
             (&[], 0, 0)
@@ -1232,8 +1179,6 @@ fn main() {
             full_redraw = false;
             content_dirty = false;
             windows_dirty = false;
-            perf_full_redraws += 1;
-            perf_composites += 1;
         } else if content_dirty {
             let sw = screen_w as i32;
             let sh = screen_h as i32;
@@ -1247,7 +1192,6 @@ fn main() {
             );
             content_dirty = false;
             windows_dirty = false;
-            perf_composites += 1;
         } else if windows_dirty || mouse_moved_this_frame {
             // Window content and/or mouse-only update: no COMPOSITE_TEX change,
             // but kernel uploads per-window textures and draws cursor via SUBMIT_3D.
@@ -1256,39 +1200,7 @@ fn main() {
                 cbuf, cw, ch,
                 0, 0, 0, 0, 0,
             );
-            perf_composites += 1;
-            if windows_dirty {
-                perf_dirty_only += 1;
-            } else {
-                perf_mouse_only += 1;
-            }
             windows_dirty = false;
-        }
-
-        let t4 = perf_ticks();
-        perf_syscall_us += ticks_to_us(t4 - t3, perf_freq);
-        perf_frames += 1;
-
-        // ── Periodic perf report (every 5 seconds) ──
-        let t_now = perf_ticks();
-        if t_now - perf_interval_start >= perf_freq * 5 {
-            let elapsed_us = ticks_to_us(t_now - perf_interval_start, perf_freq);
-            let other_us = elapsed_us.saturating_sub(perf_wait_us + perf_input_us + perf_compose_us + perf_syscall_us);
-            let fps = if elapsed_us > 0 { perf_composites * 1_000_000 / elapsed_us } else { 0 };
-            print!("[bwm-perf] {}ms: wait={}ms input={}ms compose={}ms syscall={}ms other={}ms | frames={} composites={} ({}fps) full={} dirty={} mouse={}\n",
-                elapsed_us / 1000, perf_wait_us / 1000, perf_input_us / 1000,
-                perf_compose_us / 1000, perf_syscall_us / 1000, other_us / 1000,
-                perf_frames, perf_composites, fps, perf_full_redraws, perf_dirty_only, perf_mouse_only);
-            perf_wait_us = 0;
-            perf_input_us = 0;
-            perf_compose_us = 0;
-            perf_syscall_us = 0;
-            perf_frames = 0;
-            perf_composites = 0;
-            perf_full_redraws = 0;
-            perf_dirty_only = 0;
-            perf_mouse_only = 0;
-            perf_interval_start = t_now;
         }
         // No sleep — compositor_wait handles blocking
     }
