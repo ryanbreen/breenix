@@ -1788,40 +1788,42 @@ fn send_command_3desc(
     unsafe {
         let q = &raw mut PCI_CTRL_QUEUE;
 
-        // Desc 0: command header (readable, chained to 1)
-        (*q).desc[0] = VirtqDesc {
+        // Use desc[4..6] for 3-desc chains, separate from desc[0..1] used by
+        // 2-desc commands. This prevents descriptor corruption when a timed-out
+        // 3-desc command completes late and overwrites desc[0..1] that a
+        // concurrent 2-desc command is using.
+        (*q).desc[4] = VirtqDesc {
             addr: hdr_phys,
             len: hdr_len,
             flags: DESC_F_NEXT,
-            next: 1,
+            next: 5,
         };
-
-        // Desc 1: command payload (readable, chained to 2)
-        (*q).desc[1] = VirtqDesc {
+        (*q).desc[5] = VirtqDesc {
             addr: payload_phys,
             len: payload_len,
             flags: DESC_F_NEXT,
-            next: 2,
+            next: 6,
         };
-
-        // Desc 2: response (writable)
-        (*q).desc[2] = VirtqDesc {
+        (*q).desc[6] = VirtqDesc {
             addr: resp_phys,
             len: resp_len,
             flags: DESC_F_WRITE,
             next: 0,
         };
 
-        // Flush all descriptor entries + avail ring from CPU cache
+        // Add to available ring with head=4 (pointing to our desc[4..6] chain).
+        // CRITICAL: write avail.ring BEFORE the cache flush so the device sees
+        // the correct head index. Flushing first then writing leaves the head
+        // value only in CPU cache, causing the device to read stale head=0.
+        let idx = (*q).avail.idx;
+        (*q).avail.ring[(idx % 16) as usize] = 4;
+
+        // Flush descriptors + avail ring from CPU cache to RAM
         #[cfg(target_arch = "aarch64")]
         {
             let q_addr = q as *const u8;
             dma_cache_clean(q_addr, 512);
         }
-
-        // Add to available ring (head = desc 0)
-        let idx = (*q).avail.idx;
-        (*q).avail.ring[(idx % 16) as usize] = 0;
 
         fence(Ordering::SeqCst);
         (*q).avail.idx = idx.wrapping_add(1);
@@ -3169,6 +3171,9 @@ fn virgl_submit_3d_cmd(
 fn virgl_fence_sync(state: &mut GpuPciDeviceState, target_fence_id: u64) -> Result<(), &'static str> {
     use super::virgl::CommandBuffer;
 
+    // Heap-allocate once outside the loop to avoid 12KB stack allocation per iteration
+    let mut cmdbuf = alloc::boxed::Box::new(CommandBuffer::new());
+
     for round in 0..100u32 {
         // Sleep until next interrupt before polling (skip on first round).
         // The GPU completion or timer interrupt (1000Hz) will wake us.
@@ -3178,7 +3183,7 @@ fn virgl_fence_sync(state: &mut GpuPciDeviceState, target_fence_id: u64) -> Resu
         }
 
         // Build a NOP VirGL command (set_sub_ctx is minimal)
-        let mut cmdbuf = CommandBuffer::new();
+        cmdbuf.clear();
         cmdbuf.set_sub_ctx(1);
 
         let payload = cmdbuf.as_slice();
@@ -3959,7 +3964,7 @@ fn virgl_composite_single_quad(
     static FRAME_COUNT: AtomicU32 = AtomicU32::new(0);
     let frame = FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
     if frame == 0 {
-        crate::serial_println!("[BUILD-CANARY] gpu_pci.rs version=8 gpu-cursor-quad");
+        crate::serial_println!("[BUILD-CANARY] gpu_pci.rs version=9 chromeless+heap-cmdbuf");
     }
 
     let tex_w = COMPOSITE_TEX_W.load(Ordering::Relaxed);
@@ -3968,7 +3973,8 @@ fn virgl_composite_single_quad(
     let dw = display_w as f32;
     let dh = display_h as f32;
 
-    let mut cmdbuf = CommandBuffer::new();
+    // Heap-allocate CommandBuffer (12KB) to avoid overflowing the 16KB kernel stack.
+    let mut cmdbuf = alloc::boxed::Box::new(CommandBuffer::new());
     cmdbuf.create_sub_ctx(1);
     cmdbuf.set_sub_ctx(1);
     cmdbuf.set_tweaks(1, 1);
@@ -4053,7 +4059,7 @@ fn virgl_composite_single_quad(
     // Contains background, window frames/decorations, taskbar, appbar.
     cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[17]);
     let bg_verts = make_quad(0.0, 0.0, dw, dh, 0.0, 0.0, u_max, v_max);
-    emit_quad(&mut cmdbuf, &bg_verts, &mut vb_offset, &mut draw_idx);
+    emit_quad(&mut *cmdbuf, &bg_verts, &mut vb_offset, &mut draw_idx);
 
     // ── Per-window interleaved draws (back to front for correct z-order) ──
     // For each window:
@@ -4092,9 +4098,19 @@ fn virgl_composite_single_quad(
         let sv_handle = 40 + i as u32;
         cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[sv_handle]);
         let content_verts = make_quad(cx, cy, cx + cw, cy + ch, 0.0, 0.0, wu, wv);
-        emit_quad(&mut cmdbuf, &content_verts, &mut vb_offset, &mut draw_idx);
+        emit_quad(&mut *cmdbuf, &content_verts, &mut vb_offset, &mut draw_idx);
 
         // 2. Frame strips from COMPOSITE_TEX (drawn ON TOP of content for z-order)
+        // Chromeless windows have no frame/chrome — skip all frame strips.
+        if win.chromeless {
+            if frame < 3 {
+                crate::serial_println!(
+                    "[GPU-WIN] frame={} win[{}] res={} content=({},{})-({}x{}) CHROMELESS (no frame strips)",
+                    frame, i, win.virgl_resource_id, win.x, win.y, win.width, win.height
+                );
+            }
+            continue;
+        }
         cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[17]);
 
         // Title bar: full width of frame, from frame top to content top
@@ -4105,7 +4121,7 @@ fn virgl_composite_single_quad(
             let tv1 = cy.min(dh) / th;
             let title_verts = make_quad(fx0.max(0.0), fy0.max(0.0), fx1.min(dw), cy.min(dh),
                                         tu0, tv0, tu1, tv1);
-            emit_quad(&mut cmdbuf, &title_verts, &mut vb_offset, &mut draw_idx);
+            emit_quad(&mut *cmdbuf, &title_verts, &mut vb_offset, &mut draw_idx);
         }
         // Left border: from content top to frame bottom
         if fx0 < cx {
@@ -4115,7 +4131,7 @@ fn virgl_composite_single_quad(
             let lv1 = fy1.min(dh) / th;
             let left_verts = make_quad(fx0.max(0.0), cy.max(0.0), cx, fy1.min(dh),
                                        lu0, lv0, lu1, lv1);
-            emit_quad(&mut cmdbuf, &left_verts, &mut vb_offset, &mut draw_idx);
+            emit_quad(&mut *cmdbuf, &left_verts, &mut vb_offset, &mut draw_idx);
         }
         // Right border: from content top to frame bottom
         if fx1 > cx + cw {
@@ -4125,7 +4141,7 @@ fn virgl_composite_single_quad(
             let rv1 = fy1.min(dh) / th;
             let right_verts = make_quad(cx + cw, cy.max(0.0), fx1.min(dw), fy1.min(dh),
                                         ru0, rv0, ru1, rv1);
-            emit_quad(&mut cmdbuf, &right_verts, &mut vb_offset, &mut draw_idx);
+            emit_quad(&mut *cmdbuf, &right_verts, &mut vb_offset, &mut draw_idx);
         }
         // Bottom border: between left and right borders
         if fy1 > cy + ch {
@@ -4135,7 +4151,7 @@ fn virgl_composite_single_quad(
             let bv1 = fy1.min(dh) / th;
             let bot_verts = make_quad(cx, cy + ch, cx + cw, fy1.min(dh),
                                       bu0, bv0, bu1, bv1);
-            emit_quad(&mut cmdbuf, &bot_verts, &mut vb_offset, &mut draw_idx);
+            emit_quad(&mut *cmdbuf, &bot_verts, &mut vb_offset, &mut draw_idx);
         }
 
         if frame < 3 {
@@ -4180,7 +4196,7 @@ fn virgl_composite_single_quad(
                 (mx + sw).min(dw), (my + sh).min(dh),
                 0.0, v0, 1.0, v1,
             );
-            emit_quad(&mut cmdbuf, &cursor_verts, &mut vb_offset, &mut draw_idx);
+            emit_quad(&mut *cmdbuf, &cursor_verts, &mut vb_offset, &mut draw_idx);
         }
     }
 
