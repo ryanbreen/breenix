@@ -21,6 +21,7 @@
 //! - op=23: `compositor_wait` — block until window dirty/mouse/keyboard/registry change
 //! - op=24: `resize_window_buffer` — resize a window's backing pages (client-side)
 //! - op=25: `set_cursor_shape` — set the active cursor shape (arrow, resize arrows)
+//! - op=26: `poll_launcher_trigger` — check for Super key double-tap launcher trigger
 
 extern crate alloc;
 
@@ -1186,6 +1187,12 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             {
                 SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
             }
+        }
+        26 => {
+            // PollLauncherTrigger: check for Super key double-tap.
+            // Returns 1 if triggered since last poll, 0 otherwise.
+            let triggered = crate::drivers::usb::hid::consume_super_double_tap();
+            SyscallResult::Ok(if triggered { 1 } else { 0 })
         }
         _ => {
             crate::serial_println!("[virgl-op] UNKNOWN op={}", cmd.op);

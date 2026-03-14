@@ -35,6 +35,13 @@ static SHIFT_PRESSED: AtomicBool = AtomicBool::new(false);
 static CTRL_PRESSED: AtomicBool = AtomicBool::new(false);
 static CAPS_LOCK_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// Super/GUI key state tracking for double-tap launcher trigger
+static SUPER_PRESSED: AtomicBool = AtomicBool::new(false);
+static SUPER_LAST_RELEASE_NS: AtomicU64 = AtomicU64::new(0);
+static SUPER_DOUBLE_TAP: AtomicBool = AtomicBool::new(false);
+/// Set to true when any non-modifier key is pressed while Super is held
+static SUPER_COMBO_USED: AtomicBool = AtomicBool::new(false);
+
 /// Mouse position in screen coordinates (shared with VirtIO input atomics).
 /// These are the authoritative mouse position for the entire system.
 static MOUSE_X: AtomicU32 = AtomicU32::new(0);
@@ -204,6 +211,41 @@ pub fn process_keyboard_report(report: &[u8]) {
              || (modifiers & 0x08) != 0 || (modifiers & 0x80) != 0;
     SHIFT_PRESSED.store(shift, Ordering::Relaxed);
     CTRL_PRESSED.store(ctrl, Ordering::Relaxed);
+
+    // Detect Super/GUI key state changes (bits 3 = LGui, 7 = RGui)
+    let super_now = (modifiers & 0x08) != 0 || (modifiers & 0x80) != 0;
+    let super_was = SUPER_PRESSED.load(Ordering::Relaxed);
+    SUPER_PRESSED.store(super_now, Ordering::Relaxed);
+
+    if super_now && !super_was {
+        // Super key just pressed
+        SUPER_COMBO_USED.store(false, Ordering::Relaxed);
+    } else if !super_now && super_was {
+        // Super key just released
+        if !SUPER_COMBO_USED.load(Ordering::Relaxed) {
+            // Clean tap (no other keys were pressed during this Super press)
+            let (s, n) = crate::time::get_monotonic_time_ns();
+            let now_ns = s * 1_000_000_000 + n;
+            let last_release = SUPER_LAST_RELEASE_NS.load(Ordering::Relaxed);
+            SUPER_LAST_RELEASE_NS.store(now_ns, Ordering::Relaxed);
+
+            // Double-tap: two clean releases within 400ms (400_000_000 ns)
+            if last_release > 0 && now_ns.saturating_sub(last_release) < 400_000_000 {
+                SUPER_DOUBLE_TAP.store(true, Ordering::Relaxed);
+                SUPER_LAST_RELEASE_NS.store(0, Ordering::Relaxed); // Reset to prevent triple-tap
+            }
+        }
+    }
+
+    // If Super is held and any non-modifier keycode is pressed, mark as combo
+    if super_now {
+        for &key in &report[2..8] {
+            if key != 0 {
+                SUPER_COMBO_USED.store(true, Ordering::Relaxed);
+                break;
+            }
+        }
+    }
 
     let prev = unsafe { &*(&raw const PREV_KBD_REPORT) };
 
@@ -432,6 +474,12 @@ pub fn process_mouse_report(report: &[u8], ep_idx: u8) {
 // =============================================================================
 // Public Accessors
 // =============================================================================
+
+/// Check and consume the Super key double-tap flag.
+/// Returns true if a double-tap was detected since last call.
+pub fn consume_super_double_tap() -> bool {
+    SUPER_DOUBLE_TAP.swap(false, Ordering::Relaxed)
+}
 
 /// Get current mouse position in screen coordinates.
 pub fn mouse_position() -> (u32, u32) {
