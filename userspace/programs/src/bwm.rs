@@ -14,7 +14,8 @@ use libbreenix::io;
 use libbreenix::signal;
 use libbreenix::types::Fd;
 
-use libfont::CachedFont;
+use breengel::FontConfig;
+use libfont::{Font, CachedFont};
 use libgfx::bitmap_font;
 use libgfx::ttf_font;
 use libgfx::color::Color;
@@ -380,7 +381,8 @@ fn draw_text_at(fb: &mut FrameBuf, text: &[u8], x: i32, y: i32, color: Color,
 }
 
 /// Draw a floating window frame (border + title bar + chrome buttons + content bg)
-fn draw_window_frame(fb: &mut FrameBuf, win: &Window, focused: bool) {
+fn draw_window_frame(fb: &mut FrameBuf, win: &Window, focused: bool,
+                     ui_font: &mut Option<CachedFont>) {
     let border_color = if focused { WIN_BORDER_FOCUSED } else { WIN_BORDER_COLOR };
     let title_bg = if focused { TITLE_FOCUSED_BG } else { TITLE_UNFOCUSED_BG };
     let title_fg = if focused { TITLE_FOCUSED_TEXT } else { TITLE_TEXT };
@@ -389,32 +391,32 @@ fn draw_window_frame(fb: &mut FrameBuf, win: &Window, focused: bool) {
     let shadow = Color::rgb(8, 10, 18);
     fill_rect(fb, win.x + 3, win.y + 3, win.width, win.total_height(), shadow);
     fill_rect(fb, win.x, win.y, win.width, win.total_height(), border_color);
+    let content_bg = Color::rgb(12, 14, 20);
+    fill_rect(fb, win.content_x(), win.content_y(),
+              win.content_width(), win.content_height(), content_bg);
     fill_rect(fb, win.x + bw as i32, win.y + bw as i32,
               win.width - bw * 2, TITLE_BAR_HEIGHT - bw, title_bg);
 
-    // Title text (truncated to not overlap chrome buttons)
     let max_title_w = win.width.saturating_sub(bw * 2 + 8 + CHROME_RESERVED);
     let max_chars = max_title_w / CELL_W;
     let text_len = win.title_len.min(max_chars);
     let text_y = win.y + bw as i32 + ((TITLE_BAR_HEIGHT - bw - CELL_H) / 2) as i32;
-    draw_text_at(fb, &win.title[..text_len], win.x + 8, text_y, title_fg, None);
+    draw_text_at(fb, &win.title[..text_len], win.x + 8, text_y, title_fg,
+                 ui_font.as_mut());
 
-    // Close button (rightmost in title bar)
     let (cbx, cby, cbw, cbh) = win.close_btn_rect();
     fill_rect(fb, cbx, cby, cbw, cbh, CLOSE_BTN_BG);
     let cx = cbx + (cbw as i32 - CELL_W as i32) / 2;
     let cy = cby + (cbh as i32 - CELL_H as i32) / 2;
-    draw_text_at(fb, b"x", cx, cy, CLOSE_BTN_TEXT, None);
+    draw_text_at(fb, b"x", cx, cy, CLOSE_BTN_TEXT, ui_font.as_mut());
 
-    // Minimize button (left of close)
     let (mbx, mby, mbw, mbh) = win.minimize_btn_rect();
     fill_rect(fb, mbx, mby, mbw, mbh, MINIMIZE_BTN_BG);
     let mx = mbx + (mbw as i32 - CELL_W as i32) / 2;
     let my = mby + (mbh as i32 - CELL_H as i32) / 2;
-    draw_text_at(fb, b"-", mx, my, MINIMIZE_BTN_TEXT, None);
-
-    // Content area NOT filled here — GPU composites per-window textures over it.
+    draw_text_at(fb, b"-", mx, my, MINIMIZE_BTN_TEXT, ui_font.as_mut());
 }
+
 
 /// Paint the decorative desktop background — gradient with grid
 fn paint_background(fb: &mut FrameBuf) {
@@ -519,16 +521,14 @@ fn format_clock(utc_secs: i64, buf: &mut [u8; 11]) {
     buf[10] = b'T';
 }
 
-fn draw_taskbar(fb: &mut FrameBuf, clock_text: &[u8]) {
+fn draw_taskbar(fb: &mut FrameBuf, clock_text: &[u8], ui_font: &mut Option<CachedFont>) {
     let w = fb.width;
     fill_rect(fb, 0, 0, w, TASKBAR_HEIGHT, TASKBAR_BG);
-    // "Breenix" label on the left
     let label_y = ((TASKBAR_HEIGHT - CELL_H) / 2 + 1) as i32;
-    draw_text_at(fb, b"Breenix", 8, label_y, TASKBAR_TEXT, None);
-    // Clock on the right
+    draw_text_at(fb, b"Breenix", 8, label_y, TASKBAR_TEXT, ui_font.as_mut());
     if !clock_text.is_empty() {
         let clock_x = w as i32 - (clock_text.len() as i32 * CELL_W as i32) - 8;
-        draw_text_at(fb, clock_text, clock_x, label_y, TASKBAR_TEXT, None);
+        draw_text_at(fb, clock_text, clock_x, label_y, TASKBAR_TEXT, ui_font.as_mut());
     }
 }
 
@@ -553,17 +553,15 @@ fn sorted_by_creation(windows: &[Window]) -> ([usize; 16], usize) {
     (idx, n)
 }
 
-fn draw_appbar(fb: &mut FrameBuf, windows: &[Window], focused_win: usize) {
+fn draw_appbar(fb: &mut FrameBuf, windows: &[Window], focused_win: usize,
+               ui_font: &mut Option<CachedFont>) {
     let screen_h = fb.height;
     let screen_w = fb.width;
     let bar_y = (screen_h - APPBAR_HEIGHT) as i32;
 
-    // Background
     fill_rect(fb, 0, bar_y, screen_w, APPBAR_HEIGHT, APPBAR_BG);
-    // 1px top border
     fill_rect(fb, 0, bar_y, screen_w, 1, APPBAR_BORDER);
 
-    // Window buttons in stable creation order
     let (sorted, n) = sorted_by_creation(windows);
     let mut btn_x: i32 = 4;
     let btn_h: usize = APPBAR_HEIGHT - 8;
@@ -584,11 +582,11 @@ fn draw_appbar(fb: &mut FrameBuf, windows: &[Window], focused_win: usize) {
 
         fill_rect(fb, btn_x, btn_y, btn_w, btn_h, bg);
 
-        // Title text (truncated to fit button)
         let max_chars = (btn_w.saturating_sub(12)) / CELL_W;
         let text_len = win.title_len.min(max_chars);
         let text_y = btn_y + ((btn_h - CELL_H) / 2 + 1) as i32;
-        draw_text_at(fb, &win.title[..text_len], btn_x + 6, text_y, APPBAR_BTN_TEXT, None);
+        draw_text_at(fb, &win.title[..text_len], btn_x + 6, text_y, APPBAR_BTN_TEXT,
+                     ui_font.as_mut());
 
         btn_x += btn_w as i32 + 2;
         if btn_x >= screen_w as i32 - 4 { break; }
@@ -741,6 +739,21 @@ fn discover_windows(
         let z_order = windows.len() as u32;
         let _ = graphics::set_window_position(info.buffer_id, content_x, content_y, z_order);
 
+        // If saved defaults give different content dimensions, notify client
+        let default_cw = win_w.saturating_sub(BORDER_WIDTH * 2);
+        let default_ch = win_h.saturating_sub(TITLE_BAR_HEIGHT + BORDER_WIDTH * 2);
+        if default_cw != info.width as usize || default_ch != info.height as usize {
+            let resize_event = WindowInputEvent {
+                event_type: input_event_type::WINDOW_RESIZED,
+                keycode: default_cw as u16,
+                mouse_x: default_ch as i16,
+                mouse_y: 0,
+                modifiers: 0,
+                _pad: 0,
+            };
+            let _ = graphics::write_window_input(info.buffer_id, &resize_event);
+        }
+
         let order = *next_order;
         *next_order += 1;
         windows.push(Window {
@@ -770,14 +783,14 @@ fn update_kernel_z_order(windows: &[Window]) {
 /// Redraw all windows in z-order (index 0 = bottom), plus taskbar and app bar.
 /// Window frames and decorations go into the compositor buffer; GPU compositing
 /// handles client content via per-window textured quads.
-fn redraw_all_windows(fb: &mut FrameBuf, windows: &[Window], focused_win: usize, clock_text: &[u8]) {
-    draw_taskbar(fb, clock_text);
+fn redraw_all_windows(fb: &mut FrameBuf, windows: &[Window], focused_win: usize,
+                      clock_text: &[u8], ui_font: &mut Option<CachedFont>) {
+    draw_taskbar(fb, clock_text, ui_font);
     for i in 0..windows.len() {
         if windows[i].minimized { continue; }
-        draw_window_frame(fb, &windows[i], i == focused_win);
-        // Window content rendered by GPU from per-window textures — no CPU blit needed
+        draw_window_frame(fb, &windows[i], i == focused_win, ui_font);
     }
-    draw_appbar(fb, windows, focused_win);
+    draw_appbar(fb, windows, focused_win, ui_font);
 }
 
 /// Compose a full-redraw into `vram` without flashing.
@@ -793,14 +806,15 @@ fn compose_full_redraw(
     windows: &[Window],
     focused: usize,
     clock: &[u8],
+    ui_font: &mut Option<CachedFont>,
 ) {
     if let Some((ref mut sbuf, ref mut sfb)) = shadow {
         sbuf.copy_from_slice(bg);
-        redraw_all_windows(sfb, windows, focused, clock);
+        redraw_all_windows(sfb, windows, focused, clock, ui_font);
         vram.copy_from_slice(sbuf);
     } else {
         vram.copy_from_slice(bg);
-        redraw_all_windows(fb, windows, focused, clock);
+        redraw_all_windows(fb, windows, focused, clock, ui_font);
     }
 }
 
@@ -818,6 +832,7 @@ fn compose_partial_redraw(
     focused: usize,
     clock: &[u8],
     dx0: usize, dy0: usize, dx1: usize, dy1: usize,
+    ui_font: &mut Option<CachedFont>,
 ) {
     let screen_w = fb.width;
     let screen_h = fb.height;
@@ -826,15 +841,13 @@ fn compose_partial_redraw(
     if dx0 >= dx1 || dy0 >= dy1 { return; }
 
     if let Some((ref mut sbuf, ref mut sfb)) = shadow {
-        // 1. Restore background in dirty region only
         for row in dy0..dy1 {
             let start = row * screen_w + dx0;
             let end = row * screen_w + dx1;
             sbuf[start..end].copy_from_slice(&bg[start..end]);
         }
-        // 2. Redraw UI elements (frames only — content rendered by GPU)
         if dy0 < TASKBAR_HEIGHT {
-            draw_taskbar(sfb, clock);
+            draw_taskbar(sfb, clock, ui_font);
         }
         for i in 0..windows.len() {
             if windows[i].minimized { continue; }
@@ -842,27 +855,25 @@ fn compose_partial_redraw(
             if (wx1 as usize) > dx0 && (wx0 as usize) < dx1
                 && (wy1 as usize) > dy0 && (wy0 as usize) < dy1
             {
-                draw_window_frame(sfb, &windows[i], i == focused);
+                draw_window_frame(sfb, &windows[i], i == focused, ui_font);
             }
         }
         if dy1 > screen_h - APPBAR_HEIGHT {
-            draw_appbar(sfb, windows, focused);
+            draw_appbar(sfb, windows, focused, ui_font);
         }
-        // 3. Copy only dirty region from shadow to VRAM
         for row in dy0..dy1 {
             let start = row * screen_w + dx0;
             let end = row * screen_w + dx1;
             vram[start..end].copy_from_slice(&sbuf[start..end]);
         }
     } else {
-        // Non-shadow path: restore bg region, redraw affected windows (frames only)
         for row in dy0..dy1 {
             let start = row * screen_w + dx0;
             let end = row * screen_w + dx1;
             vram[start..end].copy_from_slice(&bg[start..end]);
         }
         if dy0 < TASKBAR_HEIGHT {
-            draw_taskbar(fb, clock);
+            draw_taskbar(fb, clock, ui_font);
         }
         for i in 0..windows.len() {
             if windows[i].minimized { continue; }
@@ -870,11 +881,11 @@ fn compose_partial_redraw(
             if (wx1 as usize) > dx0 && (wx0 as usize) < dx1
                 && (wy1 as usize) > dy0 && (wy0 as usize) < dy1
             {
-                draw_window_frame(fb, &windows[i], i == focused);
+                draw_window_frame(fb, &windows[i], i == focused, ui_font);
             }
         }
         if dy1 > screen_h - APPBAR_HEIGHT {
-            draw_appbar(fb, windows, focused);
+            draw_appbar(fb, windows, focused, ui_font);
         }
     }
 }
@@ -962,6 +973,17 @@ fn main() {
         None
     };
 
+    // Load display font for window chrome, taskbar, and appbar
+    let config = FontConfig::load();
+    let mut ui_font: Option<CachedFont> = std::fs::read(&config.display_path).ok()
+        .and_then(|data| Font::parse(&data).ok())
+        .map(|f| CachedFont::new(f, 256));
+    if ui_font.is_some() {
+        print!("[bwm] display font loaded: {}\n", config.display_path);
+    } else {
+        print!("[bwm] no display font, using bitmap fallback\n");
+    }
+
     // Paint decorative background and cache it for fast restoration
     paint_background(&mut fb);
     let bg_cache = composite_buf.to_vec();
@@ -1013,7 +1035,7 @@ fn main() {
     // Initial window discovery (before entering event loop)
     if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order, &mut win_defaults) {
         focused_win = next_visible_window(&windows, 0);
-        compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text);
+        compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
         full_redraw = true;
     }
 
@@ -1033,7 +1055,7 @@ fn main() {
                 // matches the visually foregrounded window.
                 update_kernel_z_order(&windows);
                 focused_win = next_visible_window(&windows, 0);
-                compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text);
+                compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
                 full_redraw = true;
             }
         }
@@ -1054,7 +1076,7 @@ fn main() {
                                     send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
                                     focused_win = new_focus;
                                     send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
-                                    compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text);
+                                    compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
                                     full_redraw = true;
                                 }
                             }
@@ -1119,7 +1141,7 @@ fn main() {
                             let dr_y0 = oy0.min(ny0).max(0) as usize;
                             let dr_x1 = ox1.max(nx1) as usize;
                             let dr_y1 = oy1.max(ny1) as usize;
-                            compose_partial_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, dr_x0, dr_y0, dr_x1, dr_y1);
+                            compose_partial_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, dr_x0, dr_y0, dr_x1, dr_y1, &mut ui_font);
                             // Use partial dirty rect instead of full_redraw
                             dirty_x0 = dirty_x0.min(dr_x0 as i32);
                             dirty_y0 = dirty_y0.min(dr_y0 as i32);
@@ -1164,17 +1186,35 @@ fn main() {
 
                         let (ox0, oy0, ox1, oy1) = windows[win_idx].bounds();
 
+                        // Update frame dimensions live (content stays at old size until release)
                         windows[win_idx].x = new_x;
                         windows[win_idx].y = new_y;
                         windows[win_idx].width = new_w as usize;
                         windows[win_idx].height = new_h as usize;
 
-                        // Update kernel position
+                        // Update kernel window position
                         if windows[win_idx].window_id != 0 {
                             let cx = windows[win_idx].content_x();
                             let cy = windows[win_idx].content_y();
                             let _ = graphics::set_window_position(
                                 windows[win_idx].window_id, cx, cy, win_idx as u32,
+                            );
+                        }
+
+                        // Send live resize event to client
+                        let new_cw = windows[win_idx].content_width();
+                        let new_ch = windows[win_idx].content_height();
+                        if windows[win_idx].window_id != 0 {
+                            let resize_event = WindowInputEvent {
+                                event_type: input_event_type::WINDOW_RESIZED,
+                                keycode: new_cw as u16,
+                                mouse_x: new_ch as i16,
+                                mouse_y: 0,
+                                modifiers: 0,
+                                _pad: 0,
+                            };
+                            let _ = graphics::write_window_input(
+                                windows[win_idx].window_id, &resize_event,
                             );
                         }
 
@@ -1185,7 +1225,7 @@ fn main() {
                         let dr_x1 = ox1.max(nx1) as usize;
                         let dr_y1 = oy1.max(ny1) as usize;
                         compose_partial_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache,
-                            &windows, focused_win, &clock_text, dr_x0, dr_y0, dr_x1, dr_y1);
+                            &windows, focused_win, &clock_text, dr_x0, dr_y0, dr_x1, dr_y1, &mut ui_font);
                         dirty_x0 = dirty_x0.min(dr_x0 as i32);
                         dirty_y0 = dirty_y0.min(dr_y0 as i32);
                         dirty_x1 = dirty_x1.max(dr_x1 as i32);
@@ -1199,6 +1239,27 @@ fn main() {
                         let local_y = (mouse_y - windows[focused_win].content_y()) as i16;
                         route_mouse_move_to_focused(&windows, focused_win, local_x, local_y);
                     }
+
+                    // Update cursor shape based on resize edge hover
+                    if dragging.is_none() && resizing.is_none() {
+                        let mut hover_shape = graphics::cursor_shape::ARROW;
+                        for i in (0..windows.len()).rev() {
+                            if windows[i].minimized { continue; }
+                            if let Some(edge) = windows[i].hit_resize_edge(mouse_x, mouse_y) {
+                                hover_shape = match edge {
+                                    ResizeEdge::Top | ResizeEdge::Bottom => graphics::cursor_shape::RESIZE_NS,
+                                    ResizeEdge::Left | ResizeEdge::Right => graphics::cursor_shape::RESIZE_EW,
+                                    ResizeEdge::TopLeft | ResizeEdge::BottomRight => graphics::cursor_shape::RESIZE_NWSE,
+                                    ResizeEdge::TopRight | ResizeEdge::BottomLeft => graphics::cursor_shape::RESIZE_NESW,
+                                };
+                                break;
+                            }
+                            if windows[i].hit_any(mouse_x, mouse_y) {
+                                break; // Inside window but not on edge
+                            }
+                        }
+                        let _ = graphics::set_cursor_shape(hover_shape);
+                    }
                 }
 
                 // Release: end drag or route release event.
@@ -1206,25 +1267,30 @@ fn main() {
                 // endpoints from racing (one endpoint can't cancel the other's press).
                 if (buttons & 1) == 0 && (prev_buttons & 1) != 0 {
                     if let Some((win_idx, _, _, _, _, _, orig_w, orig_h)) = resizing.take() {
-                        // Resize ended — send WINDOW_RESIZED event to client
+                        // Reset cursor shape back to arrow
+                        let _ = graphics::set_cursor_shape(graphics::cursor_shape::ARROW);
+                        // Resize ended — notify client of new content dimensions
                         let new_cw = windows[win_idx].content_width();
                         let new_ch = windows[win_idx].content_height();
                         let old_cw = orig_w.saturating_sub(BORDER_WIDTH * 2);
                         let old_ch = orig_h.saturating_sub(TITLE_BAR_HEIGHT + BORDER_WIDTH * 2);
-                        if new_cw != old_cw || new_ch != old_ch {
-                            if windows[win_idx].window_id != 0 {
-                                let resize_event = WindowInputEvent {
-                                    event_type: input_event_type::WINDOW_RESIZED,
-                                    keycode: new_cw as u16,
-                                    mouse_x: new_ch as i16,
-                                    mouse_y: 0,
-                                    modifiers: 0,
-                                    _pad: 0,
-                                };
-                                let _ = graphics::write_window_input(
-                                    windows[win_idx].window_id, &resize_event,
-                                );
-                            }
+                        print!("[bwm] resize end: id={} old={}x{} new={}x{} frame={}x{}\n",
+                            windows[win_idx].window_id, old_cw, old_ch, new_cw, new_ch,
+                            windows[win_idx].width, windows[win_idx].height);
+                        if (new_cw != old_cw || new_ch != old_ch)
+                            && windows[win_idx].window_id != 0
+                        {
+                            let resize_event = WindowInputEvent {
+                                event_type: input_event_type::WINDOW_RESIZED,
+                                keycode: new_cw as u16,
+                                mouse_x: new_ch as i16,
+                                mouse_y: 0,
+                                modifiers: 0,
+                                _pad: 0,
+                            };
+                            let _ = graphics::write_window_input(
+                                windows[win_idx].window_id, &resize_event,
+                            );
                         }
                         save_window_defaults(&windows[win_idx], &mut win_defaults);
                     } else if dragging.is_some() {
@@ -1277,7 +1343,7 @@ fn main() {
                                     focused_win = top;
                                 }
                             }
-                            compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text);
+                            compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
                             full_redraw = true;
                         }
                     }
@@ -1321,7 +1387,14 @@ fn main() {
                             }
 
                             if let Some(edge) = clicked_resize {
-                                // Start resize
+                                // Start resize — set cursor shape for the edge
+                                let shape = match edge {
+                                    ResizeEdge::Top | ResizeEdge::Bottom => graphics::cursor_shape::RESIZE_NS,
+                                    ResizeEdge::Left | ResizeEdge::Right => graphics::cursor_shape::RESIZE_EW,
+                                    ResizeEdge::TopLeft | ResizeEdge::BottomRight => graphics::cursor_shape::RESIZE_NWSE,
+                                    ResizeEdge::TopRight | ResizeEdge::BottomLeft => graphics::cursor_shape::RESIZE_NESW,
+                                };
+                                let _ = graphics::set_cursor_shape(shape);
                                 resizing = Some((
                                     top, edge,
                                     mouse_x, mouse_y,
@@ -1346,7 +1419,7 @@ fn main() {
                                         focused_win = next_visible_window(&windows, focused_win);
                                         send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
                                     }
-                                    compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text);
+                                    compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
                                     full_redraw = true;
                                 } else {
                                     dragging = Some((top, mouse_x - windows[top].x, mouse_y - windows[top].y));
@@ -1359,7 +1432,7 @@ fn main() {
 
                             // Full redraw for z-order or focus change
                             if !full_redraw && (z_changed || focus_changed) {
-                                compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text);
+                                compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
                                 full_redraw = true;
                             }
                         }
@@ -1386,7 +1459,7 @@ fn main() {
                 if ts.tv_sec != last_clock_sec {
                     last_clock_sec = ts.tv_sec;
                     format_clock(ts.tv_sec, &mut clock_text);
-                    draw_taskbar(&mut fb, &clock_text);
+                    draw_taskbar(&mut fb, &clock_text, &mut ui_font);
                     dirty_x0 = 0;
                     dirty_y0 = 0;
                     dirty_x1 = dirty_x1.max(screen_w as i32);

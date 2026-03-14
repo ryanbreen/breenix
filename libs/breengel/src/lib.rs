@@ -48,9 +48,11 @@
 
 mod window;
 mod event;
+pub mod font;
 
 pub use window::Window;
 pub use event::{Event, Modifiers};
+pub use font::{FontWatcher, FontConfig};
 pub use libbreenix::graphics::{WindowInputEvent, input_event_type};
 pub use libgfx::framebuf::FrameBuf;
 pub use libgfx::color::Color;

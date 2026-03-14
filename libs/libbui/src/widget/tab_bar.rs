@@ -47,6 +47,11 @@ impl TabBar {
         }
     }
 
+    /// Update the tab bar's bounding rectangle (e.g. after a window resize).
+    pub fn set_rect(&mut self, rect: Rect) {
+        self.rect = rect;
+    }
+
     /// Number of tabs.
     pub fn count(&self) -> usize {
         self.labels.len()

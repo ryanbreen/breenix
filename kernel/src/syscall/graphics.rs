@@ -20,6 +20,8 @@
 //! - op=22: `check_window_dirty` — lightweight generation check without pixel copy
 //! - op=23: `compositor_wait` — block until window dirty/mouse/keyboard/registry change
 //! - op=24: `resize_window_buffer` — resize a window's backing pages (client-side)
+//! - op=25: `set_cursor_shape` — set the active cursor shape (arrow, resize arrows)
+//! - op=26: `poll_launcher_trigger` — check for Super key double-tap launcher trigger
 
 extern crate alloc;
 
@@ -1171,6 +1173,26 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             {
                 SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
             }
+        }
+        25 => {
+            // SetCursorShape: change the active cursor shape.
+            // p1=shape (0=arrow, 1=NS, 2=EW, 3=NWSE, 4=NESW)
+            #[cfg(target_arch = "aarch64")]
+            {
+                let shape = cmd.p1 as u32;
+                crate::drivers::virtio::gpu_pci::set_cursor_shape(shape);
+                SyscallResult::Ok(0)
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
+            }
+        }
+        26 => {
+            // PollLauncherTrigger: check for Super key double-tap.
+            // Returns 1 if triggered since last poll, 0 otherwise.
+            let triggered = crate::drivers::usb::hid::consume_super_double_tap();
+            SyscallResult::Ok(if triggered { 1 } else { 0 })
         }
         _ => {
             crate::serial_println!("[virgl-op] UNKNOWN op={}", cmd.op);

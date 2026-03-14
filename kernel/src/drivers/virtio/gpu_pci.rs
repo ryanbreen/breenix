@@ -444,11 +444,14 @@ const TEST_TEX_BYTES: usize = (TEST_TEX_DIM * TEST_TEX_DIM * 4) as usize;
 
 /// Resource ID for the compositor texture (BWM uploads pixel buffers here)
 const RESOURCE_COMPOSITE_TEX_ID: u32 = 5;
-/// Resource ID for the GPU cursor texture (12x18 arrow, uploaded once at init)
+/// Resource ID for the GPU cursor texture (16x80 atlas, uploaded once at init)
 const RESOURCE_CURSOR_TEX_ID: u32 = 6;
-/// Cursor bitmap dimensions
-const CURSOR_TEX_W: u32 = 12;
-const CURSOR_TEX_H: u32 = 18;
+/// Individual cursor shape dimensions
+const CURSOR_SHAPE_W: u32 = 16;
+const CURSOR_SHAPE_H: u32 = 16;
+const NUM_CURSOR_SHAPES: u32 = 5;
+const CURSOR_TEX_W: u32 = CURSOR_SHAPE_W;
+const CURSOR_TEX_H: u32 = CURSOR_SHAPE_H * NUM_CURSOR_SHAPES; // 80
 
 // VirtIO standard feature bits
 const VIRTIO_F_VERSION_1: u64 = 1 << 32;
@@ -565,6 +568,18 @@ static COMPOSITE_TEX_READY: AtomicBool = AtomicBool::new(false);
 /// Whether the cursor GPU texture has been initialized.
 static CURSOR_TEX_READY: AtomicBool = AtomicBool::new(false);
 
+/// Current cursor shape index (0=arrow, 1=NS, 2=EW, 3=NWSE, 4=NESW).
+static CURSOR_SHAPE: AtomicU32 = AtomicU32::new(0);
+
+/// Per-shape hotspot offsets (pixels from top-left of shape bitmap).
+const CURSOR_HOTSPOT: [(i32, i32); 5] = [
+    (0, 0),   // Arrow: top-left
+    (7, 7),   // NS resize: center
+    (7, 7),   // EW resize: center
+    (7, 7),   // NWSE resize: center
+    (7, 7),   // NESW resize: center
+];
+
 // =============================================================================
 // Per-Window GPU Textures
 // =============================================================================
@@ -598,9 +613,36 @@ pub fn create_window_texture(
 
     let res_id = RESOURCE_WIN_TEX_BASE + slot as u32;
 
-    // Already initialized — return existing
+    // Already initialized — reuse if the requested size fits within the existing texture.
+    // UV scaling in the compositor handles sub-regions correctly. Only recreate when
+    // the window grows beyond the pre-allocated texture dimensions.
     if unsafe { WIN_TEX_INITIALIZED[slot] } {
-        return Ok(res_id);
+        let (old_w, old_h) = unsafe { WIN_TEX_DIMS[slot] };
+        if width <= old_w && height <= old_h {
+            return Ok(res_id);
+        }
+        // Window grew beyond existing texture — destroy and recreate at new size
+        crate::serial_println!(
+            "[virgl-win-tex] Resize: slot={} {}x{} -> {}x{}",
+            slot, old_w, old_h, width, height
+        );
+        with_device_state(|state| {
+            virgl_detach_backing_cmd(state, res_id)
+        }).ok();
+        with_device_state(|state| {
+            virgl_resource_unref_cmd(state, res_id)
+        }).ok();
+        let (old_ptr, old_size) = unsafe { WIN_TEX_BACKING[slot] };
+        if !old_ptr.is_null() && old_size > 0 {
+            let old_layout = alloc::alloc::Layout::from_size_align(old_size, 4096)
+                .unwrap();
+            unsafe { alloc::alloc::dealloc(old_ptr, old_layout); }
+        }
+        unsafe {
+            WIN_TEX_INITIALIZED[slot] = false;
+            WIN_TEX_BACKING[slot] = (core::ptr::null_mut(), 0);
+            WIN_TEX_DIMS[slot] = (0, 0);
+        }
     }
 
     let tex_size = (width as usize) * (height as usize) * 4;
@@ -750,8 +792,8 @@ fn init_composite_texture(width: u32, height: u32) -> Result<(), &'static str> {
     // Pre-allocate per-window texture pool at init time.
     // TRANSFER_TO_HOST_3D only works for resources created before first SUBMIT_3D.
     for slot in 0..MAX_WIN_TEX_SLOTS {
-        let max_w: u32 = 1024;
-        let max_h: u32 = 768;
+        let max_w: u32 = MIN_FB_WIDTH;
+        let max_h: u32 = MIN_FB_HEIGHT;
         let tex_size = (max_w as usize) * (max_h as usize) * 4;
         let res_id = RESOURCE_WIN_TEX_BASE + slot as u32;
 
@@ -800,6 +842,14 @@ fn init_composite_texture(width: u32, height: u32) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Set the active cursor shape. Called from the set_cursor_shape syscall.
+/// 0=arrow, 1=NS resize, 2=EW resize, 3=NWSE resize, 4=NESW resize.
+pub fn set_cursor_shape(shape: u32) {
+    if shape < NUM_CURSOR_SHAPES {
+        CURSOR_SHAPE.store(shape, Ordering::Release);
+    }
+}
+
 /// Initialize a small GPU texture containing the cursor arrow bitmap.
 ///
 /// The cursor is rendered as a GPU quad in `virgl_composite_single_quad()`,
@@ -808,58 +858,142 @@ fn init_composite_texture(width: u32, height: u32) -> Result<(), &'static str> {
 fn init_cursor_texture() -> Result<(), &'static str> {
     use super::virgl::{format as vfmt, pipe};
 
-    // Arrow cursor bitmap: 1=white, 2=black outline, 0=transparent (12x18)
-    const CURSOR_BITMAP: [[u8; 12]; 18] = [
-        [2,0,0,0,0,0,0,0,0,0,0,0],
-        [2,2,0,0,0,0,0,0,0,0,0,0],
-        [2,1,2,0,0,0,0,0,0,0,0,0],
-        [2,1,1,2,0,0,0,0,0,0,0,0],
-        [2,1,1,1,2,0,0,0,0,0,0,0],
-        [2,1,1,1,1,2,0,0,0,0,0,0],
-        [2,1,1,1,1,1,2,0,0,0,0,0],
-        [2,1,1,1,1,1,1,2,0,0,0,0],
-        [2,1,1,1,1,1,1,1,2,0,0,0],
-        [2,1,1,1,1,1,1,1,1,2,0,0],
-        [2,1,1,1,1,1,1,1,1,1,2,0],
-        [2,1,1,1,1,1,2,2,2,2,2,0],
-        [2,1,1,1,1,2,0,0,0,0,0,0],
-        [2,1,1,2,1,1,2,0,0,0,0,0],
-        [2,1,2,0,2,1,1,2,0,0,0,0],
-        [2,2,0,0,2,1,1,2,0,0,0,0],
-        [2,0,0,0,0,2,1,2,0,0,0,0],
-        [0,0,0,0,0,2,2,0,0,0,0,0],
+    // 5 cursor shapes, each 16x16. 0=transparent, 1=white, 2=black outline.
+    // Shape 0: Arrow pointer
+    // Shape 1: NS resize (vertical double arrow)
+    // Shape 2: EW resize (horizontal double arrow)
+    // Shape 3: NWSE resize (diagonal ↘↗)
+    // Shape 4: NESW resize (diagonal ↙↗)
+    const SHAPES: [[[u8; 16]; 16]; 5] = [
+        // Shape 0: Arrow
+        [
+            [2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            [2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            [2,1,2,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            [2,1,1,2,0,0,0,0,0,0,0,0,0,0,0,0],
+            [2,1,1,1,2,0,0,0,0,0,0,0,0,0,0,0],
+            [2,1,1,1,1,2,0,0,0,0,0,0,0,0,0,0],
+            [2,1,1,1,1,1,2,0,0,0,0,0,0,0,0,0],
+            [2,1,1,1,1,1,1,2,0,0,0,0,0,0,0,0],
+            [2,1,1,1,1,1,1,1,2,0,0,0,0,0,0,0],
+            [2,1,1,1,1,1,1,1,1,2,0,0,0,0,0,0],
+            [2,1,1,1,1,2,2,2,2,2,0,0,0,0,0,0],
+            [2,1,1,2,1,1,2,0,0,0,0,0,0,0,0,0],
+            [2,1,2,0,2,1,1,2,0,0,0,0,0,0,0,0],
+            [2,2,0,0,2,1,1,2,0,0,0,0,0,0,0,0],
+            [0,0,0,0,0,2,1,2,0,0,0,0,0,0,0,0],
+            [0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0],
+        ],
+        // Shape 1: NS resize (vertical double arrow ↕)
+        [
+            [0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,2,1,2,0,0,0,0,0,0,0],
+            [0,0,0,0,0,2,1,1,1,2,0,0,0,0,0,0],
+            [0,0,0,0,2,1,1,1,1,1,2,0,0,0,0,0],
+            [0,0,0,0,0,2,2,1,2,2,0,0,0,0,0,0],
+            [0,0,0,0,0,0,2,1,2,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,2,1,2,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,2,1,2,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,2,1,2,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,2,1,2,0,0,0,0,0,0,0],
+            [0,0,0,0,0,2,2,1,2,2,0,0,0,0,0,0],
+            [0,0,0,0,2,1,1,1,1,1,2,0,0,0,0,0],
+            [0,0,0,0,0,2,1,1,1,2,0,0,0,0,0,0],
+            [0,0,0,0,0,0,2,1,2,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+        ],
+        // Shape 2: EW resize (horizontal double arrow ↔)
+        [
+            [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            [0,0,0,2,0,0,0,0,0,0,0,0,2,0,0,0],
+            [0,0,2,1,2,0,0,0,0,0,0,2,1,2,0,0],
+            [0,2,1,1,1,2,2,2,2,2,2,1,1,1,2,0],
+            [2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2],
+            [0,2,1,1,1,1,1,1,1,1,1,1,1,1,2,0],
+            [0,0,2,1,1,2,2,2,2,2,2,1,1,2,0,0],
+            [0,0,2,1,2,0,0,0,0,0,0,2,1,2,0,0],
+            [0,0,0,2,0,0,0,0,0,0,0,0,2,0,0,0],
+            [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+        ],
+        // Shape 3: NWSE resize (diagonal ↘↗)
+        [
+            [2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0],
+            [2,1,1,1,1,2,0,0,0,0,0,0,0,0,0,0],
+            [2,1,1,1,2,0,0,0,0,0,0,0,0,0,0,0],
+            [2,1,1,1,1,2,0,0,0,0,0,0,0,0,0,0],
+            [2,1,2,1,1,1,2,0,0,0,0,0,0,0,0,0],
+            [2,2,0,0,2,1,1,2,0,0,0,0,0,0,0,0],
+            [0,0,0,0,0,2,1,1,2,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,2,1,1,2,0,0,0,0,0,0],
+            [0,0,0,0,0,0,0,2,1,1,2,0,0,0,0,0],
+            [0,0,0,0,0,0,0,0,2,1,1,2,0,0,0,0],
+            [0,0,0,0,0,0,0,0,0,2,1,1,2,2,0,0],
+            [0,0,0,0,0,0,0,0,0,0,2,1,1,1,2,0],
+            [0,0,0,0,0,0,0,0,0,0,0,2,1,1,1,2],
+            [0,0,0,0,0,0,0,0,0,0,2,1,1,1,2,0],
+            [0,0,0,0,0,0,0,0,0,0,2,1,1,1,1,2],
+            [0,0,0,0,0,0,0,0,0,0,2,2,2,2,2,2],
+        ],
+        // Shape 4: NESW resize (diagonal ↙↗)
+        [
+            [0,0,0,0,0,0,0,0,0,0,2,2,2,2,2,2],
+            [0,0,0,0,0,0,0,0,0,0,2,1,1,1,1,2],
+            [0,0,0,0,0,0,0,0,0,0,0,2,1,1,1,2],
+            [0,0,0,0,0,0,0,0,0,0,2,1,1,1,2,0],
+            [0,0,0,0,0,0,0,0,0,2,1,1,1,2,0,0],
+            [0,0,0,0,0,0,0,0,2,1,1,2,2,0,0,0],
+            [0,0,0,0,0,0,0,2,1,1,2,0,0,0,0,0],
+            [0,0,0,0,0,0,2,1,1,2,0,0,0,0,0,0],
+            [0,0,0,0,0,2,1,1,2,0,0,0,0,0,0,0],
+            [0,0,0,0,2,1,1,2,0,0,0,0,0,0,0,0],
+            [0,0,0,2,1,1,2,0,0,0,0,0,0,0,0,0],
+            [0,0,2,1,1,2,0,0,0,0,0,0,0,0,0,0],
+            [0,2,1,1,1,2,0,0,0,0,0,0,0,0,0,0],
+            [2,1,1,1,2,0,0,0,0,0,0,0,0,0,0,0],
+            [2,1,1,1,1,2,0,0,0,0,0,0,0,0,0,0],
+            [2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0],
+        ],
     ];
 
     let w = CURSOR_TEX_W;
     let h = CURSOR_TEX_H;
     let size = (w as usize) * (h as usize) * 4;
 
-    // Allocate page-aligned backing (single 4KB page is sufficient for 12*18*4=864 bytes)
-    let layout = alloc::alloc::Layout::from_size_align(4096, 4096)
+    // Allocate page-aligned backing (16*80*4=5120 bytes, needs 2 pages)
+    let alloc_size = 8192usize;
+    let layout = alloc::alloc::Layout::from_size_align(alloc_size, 4096)
         .map_err(|_| "invalid cursor texture layout")?;
     let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
     if ptr.is_null() {
         return Err("failed to allocate cursor texture backing");
     }
 
-    // Rasterize cursor bitmap into BGRA pixels.
-    // Transparent pixels (0) are fully transparent black (alpha=0).
-    // White fill (1) and black outline (2) are fully opaque (alpha=0xFF).
+    // Rasterize all cursor shapes into BGRA pixels.
     unsafe {
         let pixels = ptr as *mut u32;
-        for row in 0..h as usize {
-            for col in 0..w as usize {
-                let idx = row * w as usize + col;
-                *pixels.add(idx) = match CURSOR_BITMAP[row][col] {
-                    1 => 0xFF_FF_FF_FF, // white (B8G8R8A8: BGRA = FF,FF,FF,FF)
-                    2 => 0xFF_00_00_00, // black with alpha=FF
-                    _ => 0x00_00_00_00, // transparent (alpha=0)
-                };
+        for shape in 0..NUM_CURSOR_SHAPES as usize {
+            for row in 0..CURSOR_SHAPE_H as usize {
+                for col in 0..CURSOR_SHAPE_W as usize {
+                    let tex_row = shape * CURSOR_SHAPE_H as usize + row;
+                    let idx = tex_row * w as usize + col;
+                    *pixels.add(idx) = match SHAPES[shape][row][col] {
+                        1 => 0xFF_FF_FF_FF, // white
+                        2 => 0xFF_00_00_00, // black with alpha=FF
+                        _ => 0x00_00_00_00, // transparent
+                    };
+                }
             }
         }
     }
 
-    // Create texture resource (SAMPLER_VIEW only, never used as render target)
+    // Create texture resource
     with_device_state(|state| {
         virgl_resource_create_3d_cmd(
             state,
@@ -873,7 +1007,7 @@ fn init_cursor_texture() -> Result<(), &'static str> {
 
     // Attach backing memory
     with_device_state(|state| {
-        virgl_attach_backing_paged(state, RESOURCE_CURSOR_TEX_ID, ptr, 4096)
+        virgl_attach_backing_paged(state, RESOURCE_CURSOR_TEX_ID, ptr, alloc_size)
     })?;
 
     // Attach to VirGL context
@@ -888,8 +1022,8 @@ fn init_cursor_texture() -> Result<(), &'static str> {
     })?;
 
     CURSOR_TEX_READY.store(true, Ordering::Release);
-    crate::serial_println!("[virgl-cursor] Cursor texture initialized (id={}, {}x{})",
-        RESOURCE_CURSOR_TEX_ID, w, h);
+    crate::serial_println!("[virgl-cursor] Cursor texture initialized (id={}, {}x{}, {} shapes)",
+        RESOURCE_CURSOR_TEX_ID, w, h, NUM_CURSOR_SHAPES);
 
     Ok(())
 }
@@ -2423,6 +2557,38 @@ fn virgl_ctx_create_cmd(state: &mut GpuPciDeviceState, ctx_id: u32, name: &[u8])
 }
 
 /// Attach a resource to a VirGL context.
+fn virgl_resource_unref_cmd(state: &mut GpuPciDeviceState, resource_id: u32) -> Result<(), &'static str> {
+    unsafe {
+        let cmd_ptr = &raw mut PCI_CMD_BUF;
+        let cmd = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut VirtioGpuCtxResource);
+        *cmd = VirtioGpuCtxResource {
+            hdr: VirtioGpuCtrlHdr {
+                type_: cmd::RESOURCE_UNREF,
+                flags: 0, fence_id: 0, ctx_id: 0, padding: 0,
+            },
+            resource_id,
+            padding: 0,
+        };
+    }
+    send_command_expect_ok(state, core::mem::size_of::<VirtioGpuCtxResource>() as u32)
+}
+
+fn virgl_detach_backing_cmd(state: &mut GpuPciDeviceState, resource_id: u32) -> Result<(), &'static str> {
+    unsafe {
+        let cmd_ptr = &raw mut PCI_CMD_BUF;
+        let cmd = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut VirtioGpuCtxResource);
+        *cmd = VirtioGpuCtxResource {
+            hdr: VirtioGpuCtrlHdr {
+                type_: cmd::RESOURCE_DETACH_BACKING,
+                flags: 0, fence_id: 0, ctx_id: 0, padding: 0,
+            },
+            resource_id,
+            padding: 0,
+        };
+    }
+    send_command_expect_ok(state, core::mem::size_of::<VirtioGpuCtxResource>() as u32)
+}
+
 fn virgl_ctx_attach_resource_cmd(state: &mut GpuPciDeviceState, ctx_id: u32, resource_id: u32) -> Result<(), &'static str> {
     unsafe {
         let cmd_ptr = &raw mut PCI_CMD_BUF;
@@ -3901,9 +4067,9 @@ fn virgl_composite_single_quad(
         let cw = win.width as f32;
         let ch = win.height as f32;
 
-        // Frame bounds (content is inset by BORDER_WIDTH left/right/bottom and TITLE_BAR_HEIGHT top)
+        // Frame bounds (content is inset by BORDER_WIDTH on all sides plus TITLE_BAR_HEIGHT top)
         let fx0 = cx - BORDER_WIDTH as f32;
-        let fy0 = cy - TITLE_BAR_HEIGHT as f32;
+        let fy0 = cy - TITLE_BAR_HEIGHT as f32 - BORDER_WIDTH as f32;
         let fx1 = cx + cw + BORDER_WIDTH as f32;
         let fy1 = cy + ch + BORDER_WIDTH as f32;
 
@@ -3976,34 +4142,38 @@ fn virgl_composite_single_quad(
     }
 
     // ── Draw cursor as GPU quad (rendered LAST, on top of everything) ──
-    // The cursor lives in a dedicated GPU texture (RESOURCE_CURSOR_TEX_ID, 12x18,
-    // B8G8R8A8_UNORM with alpha for transparency). Alpha blending ensures transparent
-    // pixels don't overwrite the content underneath.
+    // The cursor lives in a dedicated GPU texture atlas (RESOURCE_CURSOR_TEX_ID,
+    // 16x80, 5 shapes stacked vertically). UV coordinates select the active shape.
     if CURSOR_TEX_READY.load(Ordering::Acquire) {
         let (mouse_x, mouse_y) = if crate::drivers::virtio::input_mmio::is_tablet_initialized() {
             crate::drivers::virtio::input_mmio::mouse_position()
         } else {
             crate::drivers::usb::hid::mouse_position()
         };
-        let mx = mouse_x as f32;
-        let my = mouse_y as f32;
-        let cw = CURSOR_TEX_W as f32;
-        let ch = CURSOR_TEX_H as f32;
 
-        // Only draw if cursor is within display bounds
-        if mx < dw && my < dh {
-            // Switch to alpha-blending blend state for cursor transparency
+        let shape = CURSOR_SHAPE.load(Ordering::Acquire).min(NUM_CURSOR_SHAPES - 1);
+        let (hx, hy) = CURSOR_HOTSPOT[shape as usize];
+        let mx = mouse_x as f32 - hx as f32;
+        let my = mouse_y as f32 - hy as f32;
+        let sw = CURSOR_SHAPE_W as f32;
+        let sh = CURSOR_SHAPE_H as f32;
+
+        if (mx + sw) > 0.0 && mx < dw && (my + sh) > 0.0 && my < dh {
             cmdbuf.create_blend_alpha(19);
             cmdbuf.bind_object(19, super::virgl::OBJ_BLEND);
 
-            // Create sampler view for cursor texture (B8G8R8A8_UNORM with alpha)
             cmdbuf.create_sampler_view(20, RESOURCE_CURSOR_TEX_ID, vfmt::B8G8R8A8_UNORM,
                 pipe::TEXTURE_2D, 0, 0, 0, 0, swizzle::IDENTITY);
             cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[20]);
 
-            // Cursor quad: position at (mx, my), size = cursor bitmap dimensions
-            let cursor_verts = make_quad(mx, my, (mx + cw).min(dw), (my + ch).min(dh),
-                                         0.0, 0.0, 1.0, 1.0);
+            // UV coordinates: select the current shape from the atlas
+            let v0 = (shape as f32 * sh) / CURSOR_TEX_H as f32;
+            let v1 = ((shape as f32 + 1.0) * sh) / CURSOR_TEX_H as f32;
+            let cursor_verts = make_quad(
+                mx.max(0.0), my.max(0.0),
+                (mx + sw).min(dw), (my + sh).min(dh),
+                0.0, v0, 1.0, v1,
+            );
             emit_quad(&mut cmdbuf, &cursor_verts, &mut vb_offset, &mut draw_idx);
         }
     }

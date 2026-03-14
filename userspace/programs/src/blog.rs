@@ -27,14 +27,12 @@ use libbreenix::io;
 use libbreenix::time;
 use libbreenix::types::Fd;
 
-use libfont::{Font, CachedFont};
+use libfont::CachedFont;
 use libgfx::bitmap_font;
 use libgfx::ttf_font;
 use libgfx::color::Color;
 use libgfx::shapes;
 
-#[path = "system_fonts.rs"]
-mod system_fonts;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -218,7 +216,7 @@ impl LogTab {
 // ---------------------------------------------------------------------------
 
 struct FontState {
-    ttf: Option<CachedFont<'static>>,
+    ttf: Option<CachedFont>,
     size: f32,
     char_w: usize,
     line_h: usize,
@@ -374,32 +372,26 @@ fn write_usize(buf: &mut [u8], mut n: usize) -> usize {
 fn main() {
     println!("[blog] Breenix Log Viewer starting");
 
-    // Load system font configuration
-    let config = system_fonts::FontConfig::load();
-    let font_size = if config.mono_size >= 6.0 { config.mono_size } else { 14.0 };
-    println!("[blog] config: mono_size={} font_size={} path='{}'", config.mono_size, font_size, config.mono_path);
+    // Load system font configuration via FontWatcher (handles hot-reload)
+    let mut font_watcher = breengel::FontWatcher::new();
+    let font_size = if font_watcher.mono_size() >= 6.0 { font_watcher.mono_size() } else { 14.0 };
+    println!("[blog] config: mono_size={} font_size={} path='{}'", font_watcher.mono_size(), font_size, font_watcher.mono_path());
 
-    // Load TrueType font — leak the data to get 'static lifetime for CachedFont
-    let font_data: Option<&'static [u8]> = config.load_mono().map(|(data, _)| {
-        let boxed: Box<[u8]> = data.into_boxed_slice();
-        &*Box::leak(boxed)
-    });
-    let ttf_font: Option<CachedFont<'static>> = font_data
-        .and_then(|data| Font::parse(data).ok())
-        .map(|f| CachedFont::new(f, 256));
+    // Load TrueType font (Font owns its data, no lifetime gymnastics needed)
+    let ttf_font: Option<CachedFont> = font_watcher.load_font().map(|(f, _)| f);
 
     // Compute font metrics
     let mut fonts = if let Some(font) = ttf_font {
         let metrics = font.metrics(font_size);
         let glyph_m = font.glyph_index('M');
         let advance = font.advance_width(glyph_m, font_size);
-        let char_w = (advance + 0.5) as usize;
-        let line_h = (metrics.ascender + 0.99) as usize + ((-metrics.descender) + 0.99) as usize;
+        let char_w = (advance + 0.5) as i32;
+        let line_h = (metrics.ascender + 0.99) as i32 + ((-metrics.descender) + 0.99) as i32;
         FontState {
             ttf: Some(font),
             size: font_size,
-            char_w: char_w.max(1),
-            line_h: line_h.max(1),
+            char_w: char_w.max(1) as usize,
+            line_h: line_h.max(1) as usize,
         }
     } else {
         let fm = bitmap_font::metrics();
@@ -469,10 +461,9 @@ fn main() {
                  i, tab.path, tab.is_open(), tab.line_count(), tab.content.len());
     }
 
-    let line_h = fonts.line_h;
     let content_h = WIN_H as i32 - TAB_BAR_H - STATUS_BAR_H;
-    let visible_lines = if content_h > 0 && line_h > 0 {
-        content_h as usize / line_h
+    let mut visible_lines = if content_h > 0 && fonts.line_h > 0 {
+        content_h as usize / fonts.line_h
     } else {
         1
     };
@@ -600,6 +591,16 @@ fn main() {
                     );
                     tab_bar.update(&input);
                 }
+                Event::Resized { width: w, height: h } => {
+                    let new_content_h = h as i32 - TAB_BAR_H - STATUS_BAR_H;
+                    visible_lines = if new_content_h > 0 && fonts.line_h > 0 {
+                        new_content_h as usize / fonts.line_h
+                    } else {
+                        1
+                    };
+                    tab_bar.set_rect(Rect::new(0, 0, w as i32, TAB_BAR_H));
+                    needs_redraw = true;
+                }
                 Event::CloseRequested => {
                     for tab in &tabs {
                         if let Some(fd) = tab.fd {
@@ -624,6 +625,41 @@ fn main() {
                     }
                 }
             }
+        }
+
+        // Font config hot-reload via FontWatcher
+        if let Some((new_font, new_size)) = font_watcher.poll() {
+            println!("[blog] font config changed: {} size={} (bits=0x{:08x})",
+                     font_watcher.mono_path(), new_size, new_size.to_bits());
+            let metrics = new_font.metrics(new_size);
+            let glyph_m = new_font.glyph_index('M');
+            let advance = new_font.advance_width(glyph_m, new_size);
+            // Use i32 intermediate to avoid potential f32-to-usize codegen issues
+            let advance_rounded = (advance + 0.5) as i32;
+            let new_char_w = advance_rounded.max(1) as usize;
+            let asc_ceil = (metrics.ascender + 0.99) as i32;
+            let desc_ceil = ((-metrics.descender) + 0.99) as i32;
+            let new_line_h = (asc_ceil + desc_ceil).max(1) as usize;
+            println!("[blog] metrics: asc={} desc={} adv={} adv_bits=0x{:08x} cw={} lh={}",
+                     metrics.ascender, metrics.descender, advance, advance.to_bits(),
+                     new_char_w, new_line_h);
+            fonts.char_w = new_char_w;
+            fonts.line_h = new_line_h;
+            fonts.size = new_size;
+            fonts.ttf = Some(new_font);
+            // Update visible_lines for scroll calculations
+            visible_lines = if content_h > 0 && fonts.line_h > 0 {
+                content_h as usize / fonts.line_h
+            } else {
+                1
+            };
+            // Re-scroll follow-mode tabs for new line height
+            for tab in tabs.iter_mut() {
+                if tab.follow {
+                    tab.scroll_to_bottom(visible_lines);
+                }
+            }
+            needs_redraw = true;
         }
 
         if needs_redraw {

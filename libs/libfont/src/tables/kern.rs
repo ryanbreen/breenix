@@ -1,15 +1,16 @@
 //! `kern` table: kerning pairs (optional).
 
+use alloc::boxed::Box;
 use crate::reader::{read_u16_at, read_i16_at};
 
-pub struct KernTable<'a> {
-    data: &'a [u8],
+pub struct KernTable {
+    data: Box<[u8]>,
     num_pairs: u16,
     pairs_offset: usize,
 }
 
-impl<'a> KernTable<'a> {
-    pub fn parse(data: &'a [u8]) -> Option<Self> {
+impl KernTable {
+    pub fn parse(data: &[u8]) -> Option<Self> {
         if data.len() < 4 {
             return None;
         }
@@ -41,7 +42,7 @@ impl<'a> KernTable<'a> {
         let pairs_offset = subtable_offset + 14; // after nPairs, searchRange, entrySelector, rangeShift
 
         Some(Self {
-            data,
+            data: Box::from(data),
             num_pairs,
             pairs_offset,
         })
@@ -59,8 +60,8 @@ impl<'a> KernTable<'a> {
             if offset + 6 > self.data.len() {
                 return 0;
             }
-            let left_g = read_u16_at(self.data, offset);
-            let right_g = read_u16_at(self.data, offset + 2);
+            let left_g = read_u16_at(&self.data, offset);
+            let right_g = read_u16_at(&self.data, offset + 2);
             let pair_key = ((left_g as u32) << 16) | (right_g as u32);
 
             if key < pair_key {
@@ -68,7 +69,7 @@ impl<'a> KernTable<'a> {
             } else if key > pair_key {
                 lo = mid + 1;
             } else {
-                return read_i16_at(self.data, offset + 4);
+                return read_i16_at(&self.data, offset + 4);
             }
         }
         0
