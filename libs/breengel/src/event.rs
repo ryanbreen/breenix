@@ -38,8 +38,8 @@ pub enum Event {
     FocusLost,
     /// The window manager requested this window be closed.
     CloseRequested,
-    /// The window was resized by the window manager. Client should call
-    /// `Window::apply_resize()` with the new dimensions.
+    /// The window was resized by the window manager. The buffer has already
+    /// been reallocated — update application layout state as needed.
     Resized { width: u32, height: u32 },
 }
 

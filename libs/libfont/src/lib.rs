@@ -15,7 +15,9 @@ pub mod rasterizer;
 pub mod cache;
 mod float;
 
+use alloc::boxed::Box;
 use alloc::string::String;
+use core::ops::Range;
 use crate::tables::TableDirectory;
 use crate::tables::head::HeadTable;
 use crate::tables::hhea::HheaTable;
@@ -41,22 +43,23 @@ pub struct ScaledMetrics {
     pub line_height: f32,
 }
 
-/// Parsed TrueType font. Borrows the .ttf byte slice.
-pub struct Font<'a> {
+/// Parsed TrueType font. Owns its data — no lifetime parameter.
+pub struct Font {
+    data: Box<[u8]>,
     head: HeadTable,
     hhea: HheaTable,
-    cmap: CmapTable<'a>,
-    hmtx_data: &'a [u8],
-    loca_data: &'a [u8],
-    glyf_data: &'a [u8],
-    kern: Option<KernTable<'a>>,
+    cmap: CmapTable,
+    hmtx_range: Range<usize>,
+    loca_range: Range<usize>,
+    glyf_range: Range<usize>,
+    kern: Option<KernTable>,
     num_h_metrics: u16,
     index_to_loc_format: i16,
 }
 
-impl<'a> Font<'a> {
-    /// Parse a TrueType font from raw .ttf data.
-    pub fn parse(data: &'a [u8]) -> Result<Self, String> {
+impl Font {
+    /// Parse a TrueType font from raw .ttf data. Takes ownership via copy.
+    pub fn parse(data: &[u8]) -> Result<Self, String> {
         let dir = TableDirectory::parse(data)?;
 
         let head_data = dir.table_data(data, b"head")
@@ -75,29 +78,34 @@ impl<'a> Font<'a> {
             .ok_or_else(|| String::from("missing cmap table"))?;
         let cmap = CmapTable::parse(cmap_data)?;
 
-        let hmtx_data = dir.table_data(data, b"hmtx")
+        let hmtx_range = dir.table_range(data.len(), b"hmtx")
             .ok_or_else(|| String::from("missing hmtx table"))?;
 
-        let loca_data = dir.table_data(data, b"loca")
+        let loca_range = dir.table_range(data.len(), b"loca")
             .ok_or_else(|| String::from("missing loca table"))?;
 
-        let glyf_data = dir.table_data(data, b"glyf")
+        let glyf_range = dir.table_range(data.len(), b"glyf")
             .ok_or_else(|| String::from("missing glyf table"))?;
 
         let kern = dir.table_data(data, b"kern").and_then(KernTable::parse);
 
         Ok(Self {
+            data: Box::from(data),
             head,
             hhea,
             cmap,
-            hmtx_data,
-            loca_data,
-            glyf_data,
+            hmtx_range,
+            loca_range,
+            glyf_range,
             kern,
             num_h_metrics: hhea.num_h_metrics,
             index_to_loc_format: head.index_to_loc_format,
         })
     }
+
+    fn hmtx_data(&self) -> &[u8] { &self.data[self.hmtx_range.clone()] }
+    fn loca_data(&self) -> &[u8] { &self.data[self.loca_range.clone()] }
+    fn glyf_data(&self) -> &[u8] { &self.data[self.glyf_range.clone()] }
 
     /// Get scaled metrics for a given pixel size.
     pub fn metrics(&self, pixel_size: f32) -> ScaledMetrics {
@@ -120,7 +128,7 @@ impl<'a> Font<'a> {
 
     /// Get the advance width of a glyph in pixels.
     pub fn advance_width(&self, glyph_index: u16, pixel_size: f32) -> f32 {
-        let hmtx = HmtxTable::new(self.hmtx_data, self.num_h_metrics);
+        let hmtx = HmtxTable::new(self.hmtx_data(), self.num_h_metrics);
         let scale = pixel_size / self.head.units_per_em as f32;
         hmtx.advance_width(glyph_index) as f32 * scale
     }
@@ -143,8 +151,8 @@ impl<'a> Font<'a> {
         pixel_size: f32,
     ) -> Result<GlyphBitmap, String> {
         let scale = pixel_size / self.head.units_per_em as f32;
-        let loca = LocaTable::new(self.loca_data, self.index_to_loc_format);
-        let hmtx = HmtxTable::new(self.hmtx_data, self.num_h_metrics);
+        let loca = LocaTable::new(self.loca_data(), self.index_to_loc_format);
+        let hmtx = HmtxTable::new(self.hmtx_data(), self.num_h_metrics);
 
         // Get glyph offset — None means empty glyph (e.g., space)
         let glyph_offset = match loca.glyph_offset(glyph_index) {
@@ -206,17 +214,17 @@ impl<'a> Font<'a> {
         &self,
         offset: u32,
     ) -> Result<glyf::SimpleGlyph, String> {
+        let glyf_data = self.glyf_data();
         // First try simple parse
-        if let Some(glyph) = glyf::parse_glyph(self.glyf_data, offset)? {
+        if let Some(glyph) = glyf::parse_glyph(glyf_data, offset)? {
             if !glyph.contours.is_empty() {
                 return Ok(glyph);
             }
             // Might be compound — try compound resolution
-            let glyf_data = self.glyf_data;
+            let loca_data = self.loca_data();
             let index_to_loc_format = self.index_to_loc_format;
-            let loca_data = self.loca_data;
 
-            let result = glyf::resolve_compound(self.glyf_data, offset, &|comp_idx| {
+            let result = glyf::resolve_compound(glyf_data, offset, &|comp_idx| {
                 let comp_loca = LocaTable::new(loca_data, index_to_loc_format);
                 let comp_off = comp_loca.glyph_offset(comp_idx)?;
                 glyf::parse_glyph(glyf_data, comp_off).ok().flatten()
@@ -267,11 +275,11 @@ pub struct RasterDebugInfo {
     pub nonzero_coverage: usize,
 }
 
-impl<'a> Font<'a> {
+impl Font {
     /// Full rasterization diagnostic — returns all intermediate values.
     pub fn debug_rasterize(&self, glyph_index: u16, pixel_size: f32) -> Result<RasterDebugInfo, String> {
         let scale = pixel_size / self.head.units_per_em as f32;
-        let loca = LocaTable::new(self.loca_data, self.index_to_loc_format);
+        let loca = LocaTable::new(self.loca_data(), self.index_to_loc_format);
 
         let glyph_offset = loca.glyph_offset(glyph_index)
             .ok_or_else(|| String::from("no glyph offset"))?;
@@ -335,14 +343,15 @@ impl<'a> Font<'a> {
 
     /// Get raw glyph diagnostic info without rasterizing.
     pub fn debug_glyph(&self, glyph_index: u16) -> GlyphDebugInfo {
-        let loca = LocaTable::new(self.loca_data, self.index_to_loc_format);
+        let loca = LocaTable::new(self.loca_data(), self.index_to_loc_format);
         let loca_offset = loca.glyph_offset(glyph_index);
 
+        let glyf_data = self.glyf_data();
         let (num_contours, x_min, y_min, x_max, y_max, total_points) = match loca_offset {
             Some(off) => {
                 let off = off as usize;
-                if off + 10 <= self.glyf_data.len() {
-                    let mut r = reader::Reader::at(self.glyf_data, off);
+                if off + 10 <= glyf_data.len() {
+                    let mut r = reader::Reader::at(glyf_data, off);
                     let nc = r.read_i16().unwrap_or(0);
                     let xn = r.read_i16().unwrap_or(0);
                     let yn = r.read_i16().unwrap_or(0);
@@ -375,13 +384,13 @@ impl<'a> Font<'a> {
 }
 
 /// Font wrapper with built-in glyph bitmap cache.
-pub struct CachedFont<'a> {
-    font: Font<'a>,
+pub struct CachedFont {
+    font: Font,
     cache: GlyphCache,
 }
 
-impl<'a> CachedFont<'a> {
-    pub fn new(font: Font<'a>, max_cache_entries: usize) -> Self {
+impl CachedFont {
+    pub fn new(font: Font, max_cache_entries: usize) -> Self {
         Self {
             font,
             cache: GlyphCache::new(max_cache_entries),
@@ -417,7 +426,7 @@ impl<'a> CachedFont<'a> {
             .ok_or_else(|| alloc::string::String::from("cache lookup failed after insert"))
     }
 
-    pub fn font(&self) -> &Font<'a> {
+    pub fn font(&self) -> &Font {
         &self.font
     }
 
@@ -496,5 +505,57 @@ mod tests {
         let bmp2 = cached.rasterize_glyph(glyph_idx, 16.0).unwrap();
         assert_eq!(bmp2.width, w1);
         assert_eq!(bmp2.height, h1);
+    }
+
+    // JetBrainsMono tests — exercise the second font to catch reload issues
+    static JBM_DATA: &[u8] = include_bytes!("../../../fonts/JetBrainsMono-Regular.ttf");
+
+    #[test]
+    fn jetbrains_parse_and_metrics() {
+        let font = Font::parse(JBM_DATA).unwrap();
+        let m = font.metrics(14.0);
+        assert!(m.ascender > 0.0, "JBM ascender should be > 0, got {}", m.ascender);
+        assert!(m.descender < 0.0, "JBM descender should be negative, got {}", m.descender);
+        assert!(m.line_height > 0.0, "JBM line_height should be > 0, got {}", m.line_height);
+
+        // Compute char_w and line_h the same way blog.rs does
+        let glyph_m = font.glyph_index('M');
+        assert!(glyph_m > 0, "JBM glyph index for 'M' should be nonzero");
+        let advance = font.advance_width(glyph_m, 14.0);
+        let char_w = (advance + 0.5) as usize;
+        let line_h = (m.ascender + 0.99) as usize + ((-m.descender) + 0.99) as usize;
+
+        assert!(char_w >= 4 && char_w <= 20,
+            "JBM char_w at 14px should be 4-20, got {} (advance={})", char_w, advance);
+        assert!(line_h >= 10 && line_h <= 30,
+            "JBM line_h at 14px should be 10-30, got {} (asc={} desc={})",
+            line_h, m.ascender, m.descender);
+    }
+
+    #[test]
+    fn jetbrains_cmap_ascii_range() {
+        // Verify JBM maps all printable ASCII to nonzero glyph indices
+        let font = Font::parse(JBM_DATA).unwrap();
+        for c in 32u8..=126 {
+            let ch = c as char;
+            let gi = font.glyph_index(ch);
+            assert!(gi > 0, "JBM glyph index for '{}' (0x{:02x}) is 0", ch, c);
+        }
+    }
+
+    #[test]
+    fn jetbrains_rasterize_chars() {
+        let font = Font::parse(JBM_DATA).unwrap();
+        let mut cached = CachedFont::new(font, 128);
+        // Rasterize several characters and verify they have coverage
+        for ch in ['A', 'M', 'g', '0', '/'].iter() {
+            let gi = cached.glyph_index(*ch);
+            assert!(gi > 0, "JBM glyph index for '{}' should be nonzero", ch);
+            let bmp = cached.rasterize_glyph(gi, 14.0)
+                .unwrap_or_else(|e| panic!("JBM rasterize '{}' failed: {}", ch, e));
+            let nz = bmp.coverage.iter().filter(|&&v| v > 0).count();
+            assert!(nz > 0, "JBM '{}' should have nonzero coverage, got 0 ({}x{})",
+                ch, bmp.width, bmp.height);
+        }
     }
 }

@@ -62,4 +62,15 @@ impl TableDirectory {
             None
         }
     }
+
+    pub fn table_range(&self, data_len: usize, tag: &[u8; 4]) -> Option<core::ops::Range<usize>> {
+        let rec = self.find_table(tag)?;
+        let start = rec.offset as usize;
+        let end = start + rec.length as usize;
+        if end <= data_len {
+            Some(start..end)
+        } else {
+            None
+        }
+    }
 }

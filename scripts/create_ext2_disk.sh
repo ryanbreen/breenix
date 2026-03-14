@@ -262,11 +262,14 @@ EOF
 #
 # Available fonts:
 #   /usr/share/fonts/DejaVuSansMono.ttf
+#   /usr/share/fonts/DejaVuSans.ttf
 #   /usr/share/fonts/Inconsolata-Regular.ttf
 #   /usr/share/fonts/JetBrainsMono-Regular.ttf
 #
 mono.font=/usr/share/fonts/DejaVuSansMono.ttf
 mono.size=10
+display.font=/usr/share/fonts/DejaVuSans.ttf
+display.size=14
 FONTSCONF
             echo "  Created /etc/fonts.conf"
 
@@ -504,11 +507,14 @@ EOF
 #
 # Available fonts:
 #   /usr/share/fonts/DejaVuSansMono.ttf
+#   /usr/share/fonts/DejaVuSans.ttf
 #   /usr/share/fonts/Inconsolata-Regular.ttf
 #   /usr/share/fonts/JetBrainsMono-Regular.ttf
 #
 mono.font=/usr/share/fonts/DejaVuSansMono.ttf
 mono.size=10
+display.font=/usr/share/fonts/DejaVuSans.ttf
+display.size=14
 FONTSCONF
     echo "  Created /etc/fonts.conf"
 

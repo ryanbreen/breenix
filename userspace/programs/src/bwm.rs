@@ -389,6 +389,11 @@ fn draw_window_frame(fb: &mut FrameBuf, win: &Window, focused: bool) {
     let shadow = Color::rgb(8, 10, 18);
     fill_rect(fb, win.x + 3, win.y + 3, win.width, win.total_height(), shadow);
     fill_rect(fb, win.x, win.y, win.width, win.total_height(), border_color);
+    // Fill content area with dark background so border color doesn't bleed
+    // through the gap between frame and client content during/after resize
+    let content_bg = Color::rgb(12, 14, 20);
+    fill_rect(fb, win.content_x(), win.content_y(),
+              win.content_width(), win.content_height(), content_bg);
     fill_rect(fb, win.x + bw as i32, win.y + bw as i32,
               win.width - bw * 2, TITLE_BAR_HEIGHT - bw, title_bg);
 
@@ -415,6 +420,7 @@ fn draw_window_frame(fb: &mut FrameBuf, win: &Window, focused: bool) {
 
     // Content area NOT filled here — GPU composites per-window textures over it.
 }
+
 
 /// Paint the decorative desktop background — gradient with grid
 fn paint_background(fb: &mut FrameBuf) {
@@ -740,6 +746,21 @@ fn discover_windows(
         let content_y = win_y + TITLE_BAR_HEIGHT as i32 + BORDER_WIDTH as i32;
         let z_order = windows.len() as u32;
         let _ = graphics::set_window_position(info.buffer_id, content_x, content_y, z_order);
+
+        // If saved defaults give different content dimensions, notify client
+        let default_cw = win_w.saturating_sub(BORDER_WIDTH * 2);
+        let default_ch = win_h.saturating_sub(TITLE_BAR_HEIGHT + BORDER_WIDTH * 2);
+        if default_cw != info.width as usize || default_ch != info.height as usize {
+            let resize_event = WindowInputEvent {
+                event_type: input_event_type::WINDOW_RESIZED,
+                keycode: default_cw as u16,
+                mouse_x: default_ch as i16,
+                mouse_y: 0,
+                modifiers: 0,
+                _pad: 0,
+            };
+            let _ = graphics::write_window_input(info.buffer_id, &resize_event);
+        }
 
         let order = *next_order;
         *next_order += 1;
@@ -1164,17 +1185,35 @@ fn main() {
 
                         let (ox0, oy0, ox1, oy1) = windows[win_idx].bounds();
 
+                        // Update frame dimensions live (content stays at old size until release)
                         windows[win_idx].x = new_x;
                         windows[win_idx].y = new_y;
                         windows[win_idx].width = new_w as usize;
                         windows[win_idx].height = new_h as usize;
 
-                        // Update kernel position
+                        // Update kernel window position
                         if windows[win_idx].window_id != 0 {
                             let cx = windows[win_idx].content_x();
                             let cy = windows[win_idx].content_y();
                             let _ = graphics::set_window_position(
                                 windows[win_idx].window_id, cx, cy, win_idx as u32,
+                            );
+                        }
+
+                        // Send live resize event to client
+                        let new_cw = windows[win_idx].content_width();
+                        let new_ch = windows[win_idx].content_height();
+                        if windows[win_idx].window_id != 0 {
+                            let resize_event = WindowInputEvent {
+                                event_type: input_event_type::WINDOW_RESIZED,
+                                keycode: new_cw as u16,
+                                mouse_x: new_ch as i16,
+                                mouse_y: 0,
+                                modifiers: 0,
+                                _pad: 0,
+                            };
+                            let _ = graphics::write_window_input(
+                                windows[win_idx].window_id, &resize_event,
                             );
                         }
 
@@ -1199,6 +1238,27 @@ fn main() {
                         let local_y = (mouse_y - windows[focused_win].content_y()) as i16;
                         route_mouse_move_to_focused(&windows, focused_win, local_x, local_y);
                     }
+
+                    // Update cursor shape based on resize edge hover
+                    if dragging.is_none() && resizing.is_none() {
+                        let mut hover_shape = graphics::cursor_shape::ARROW;
+                        for i in (0..windows.len()).rev() {
+                            if windows[i].minimized { continue; }
+                            if let Some(edge) = windows[i].hit_resize_edge(mouse_x, mouse_y) {
+                                hover_shape = match edge {
+                                    ResizeEdge::Top | ResizeEdge::Bottom => graphics::cursor_shape::RESIZE_NS,
+                                    ResizeEdge::Left | ResizeEdge::Right => graphics::cursor_shape::RESIZE_EW,
+                                    ResizeEdge::TopLeft | ResizeEdge::BottomRight => graphics::cursor_shape::RESIZE_NWSE,
+                                    ResizeEdge::TopRight | ResizeEdge::BottomLeft => graphics::cursor_shape::RESIZE_NESW,
+                                };
+                                break;
+                            }
+                            if windows[i].hit_any(mouse_x, mouse_y) {
+                                break; // Inside window but not on edge
+                            }
+                        }
+                        let _ = graphics::set_cursor_shape(hover_shape);
+                    }
                 }
 
                 // Release: end drag or route release event.
@@ -1206,25 +1266,30 @@ fn main() {
                 // endpoints from racing (one endpoint can't cancel the other's press).
                 if (buttons & 1) == 0 && (prev_buttons & 1) != 0 {
                     if let Some((win_idx, _, _, _, _, _, orig_w, orig_h)) = resizing.take() {
-                        // Resize ended — send WINDOW_RESIZED event to client
+                        // Reset cursor shape back to arrow
+                        let _ = graphics::set_cursor_shape(graphics::cursor_shape::ARROW);
+                        // Resize ended — notify client of new content dimensions
                         let new_cw = windows[win_idx].content_width();
                         let new_ch = windows[win_idx].content_height();
                         let old_cw = orig_w.saturating_sub(BORDER_WIDTH * 2);
                         let old_ch = orig_h.saturating_sub(TITLE_BAR_HEIGHT + BORDER_WIDTH * 2);
-                        if new_cw != old_cw || new_ch != old_ch {
-                            if windows[win_idx].window_id != 0 {
-                                let resize_event = WindowInputEvent {
-                                    event_type: input_event_type::WINDOW_RESIZED,
-                                    keycode: new_cw as u16,
-                                    mouse_x: new_ch as i16,
-                                    mouse_y: 0,
-                                    modifiers: 0,
-                                    _pad: 0,
-                                };
-                                let _ = graphics::write_window_input(
-                                    windows[win_idx].window_id, &resize_event,
-                                );
-                            }
+                        print!("[bwm] resize end: id={} old={}x{} new={}x{} frame={}x{}\n",
+                            windows[win_idx].window_id, old_cw, old_ch, new_cw, new_ch,
+                            windows[win_idx].width, windows[win_idx].height);
+                        if (new_cw != old_cw || new_ch != old_ch)
+                            && windows[win_idx].window_id != 0
+                        {
+                            let resize_event = WindowInputEvent {
+                                event_type: input_event_type::WINDOW_RESIZED,
+                                keycode: new_cw as u16,
+                                mouse_x: new_ch as i16,
+                                mouse_y: 0,
+                                modifiers: 0,
+                                _pad: 0,
+                            };
+                            let _ = graphics::write_window_input(
+                                windows[win_idx].window_id, &resize_event,
+                            );
                         }
                         save_window_defaults(&windows[win_idx], &mut win_defaults);
                     } else if dragging.is_some() {
@@ -1321,7 +1386,14 @@ fn main() {
                             }
 
                             if let Some(edge) = clicked_resize {
-                                // Start resize
+                                // Start resize — set cursor shape for the edge
+                                let shape = match edge {
+                                    ResizeEdge::Top | ResizeEdge::Bottom => graphics::cursor_shape::RESIZE_NS,
+                                    ResizeEdge::Left | ResizeEdge::Right => graphics::cursor_shape::RESIZE_EW,
+                                    ResizeEdge::TopLeft | ResizeEdge::BottomRight => graphics::cursor_shape::RESIZE_NWSE,
+                                    ResizeEdge::TopRight | ResizeEdge::BottomLeft => graphics::cursor_shape::RESIZE_NESW,
+                                };
+                                let _ = graphics::set_cursor_shape(shape);
                                 resizing = Some((
                                     top, edge,
                                     mouse_x, mouse_y,

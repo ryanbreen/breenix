@@ -386,8 +386,8 @@ fn make_spheres(w: i32, h: i32) -> [Sphere; NUM_SPHERES] {
 
 /// Render bouncing spheres into a window buffer for BWM compositing.
 fn run_window_loop(win: &mut Window, spheres: &mut [Sphere; NUM_SPHERES]) {
-    let width = win.width() as i32;
-    let height = win.height() as i32;
+    let mut width = win.width() as i32;
+    let mut height = win.height() as i32;
     let bg = Color::rgb(10, 10, 25);
 
     let mut fps = FpsCounter::new();
@@ -442,6 +442,10 @@ fn run_window_loop(win: &mut Window, spheres: &mut [Sphere; NUM_SPHERES]) {
                         }
                         _ => {}
                     }
+                }
+                Event::Resized { width: w, height: h } => {
+                    width = w as i32;
+                    height = h as i32;
                 }
                 _ => {}
             }
