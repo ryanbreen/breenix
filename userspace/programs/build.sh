@@ -268,6 +268,7 @@ STD_BINARIES=(
     "guskit"
     "bterm"
     "blog"
+    "bfontpicker"
 )
 
 RELEASE_DIR="$SCRIPT_DIR/target/$TARGET_DIR/release"

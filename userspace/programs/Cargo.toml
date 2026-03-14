@@ -11,6 +11,7 @@ description = "Userspace programs and utilities for Breenix"
 libbreenix = { path = "../../libs/libbreenix", features = ["std"] }
 breengel = { path = "../../libs/breengel" }
 libcollab = { path = "../../libs/libcollab" }
+libfont = { path = "../../libs/libfont" }
 libgfx = { path = "../../libs/libgfx" }
 libbui = { path = "../../libs/libbui" }
 libimg = { path = "../../libs/libimg" }
@@ -520,6 +521,10 @@ path = "src/bcheck.rs"
 [[bin]]
 name = "bterm"
 path = "src/bterm.rs"
+
+[[bin]]
+name = "bfontpicker"
+path = "src/bfontpicker.rs"
 
 [[bin]]
 name = "guskit"

@@ -62,7 +62,7 @@ run_single_test() {
     # Always include GPU, keyboard, and network so kernel VirtIO enumeration finds them
     # Use writable disk copy (no readonly=on) to allow filesystem writes
     timeout 30 qemu-system-aarch64 \
-        -M virt -cpu cortex-a72 -m 512 -smp 4 \
+        -M virt -cpu max -m 512 -smp 4 \
         -kernel "$KERNEL" \
         -display none -no-reboot \
         -device virtio-gpu-device \
@@ -79,12 +79,13 @@ run_single_test() {
     # Accept any of:
     #   "breenix>" or "bsh " - shell prompt on serial (legacy/direct mode)
     #   "[bwm] Display:" - BWM window manager initialized (shell runs inside PTY)
+    #   "[bcheck] Complete:" - bcheck self-test suite finished (headless/no-VirGL mode)
     # DO NOT accept "Interactive Shell" - that's the KERNEL FALLBACK when userspace FAILS
     local BOOT_COMPLETE=false
     local CRASH_TYPE=""
     for i in $(seq 1 10); do
         if [ -f "$OUTPUT_DIR/serial.txt" ]; then
-            if grep -qE "(breenix>|bsh |\[bwm\] Display:)" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            if grep -qE "(breenix>|bsh |\[bwm\] Display:|\[bcheck\] Complete:)" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
                 BOOT_COMPLETE=true
                 break
             fi

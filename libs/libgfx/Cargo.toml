@@ -11,3 +11,4 @@ crate-type = ["rlib"]
 
 [dependencies]
 noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "regular", "unicode-basic-latin", "unicode-specials"] }
+libfont = { path = "../libfont" }

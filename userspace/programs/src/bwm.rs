@@ -14,7 +14,9 @@ use libbreenix::io;
 use libbreenix::signal;
 use libbreenix::types::Fd;
 
+use libfont::CachedFont;
 use libgfx::bitmap_font;
+use libgfx::ttf_font;
 use libgfx::color::Color;
 use libgfx::framebuf::FrameBuf;
 
@@ -29,6 +31,10 @@ const BORDER_WIDTH: usize = 2;
 /// Noto Sans Mono 16px cell dimensions for title bar text.
 const CELL_W: usize = 7;
 const CELL_H: usize = 18;
+
+/// TrueType font pixel size for UI text.
+const TTF_FONT_SIZE: f32 = 14.0;
+
 
 /// Top taskbar height
 const TASKBAR_HEIGHT: usize = 28;
@@ -246,12 +252,19 @@ fn fill_rect(fb: &mut FrameBuf, x: i32, y: i32, w: usize, h: usize, color: Color
     libgfx::shapes::fill_rect(fb, x, y, w as i32, h as i32, color);
 }
 
-fn draw_text_at(fb: &mut FrameBuf, text: &[u8], x: i32, y: i32, color: Color) {
+fn draw_text_at(fb: &mut FrameBuf, text: &[u8], x: i32, y: i32, color: Color,
+                ttf: Option<&mut CachedFont>) {
     if y < 0 || y >= fb.height as i32 { return; }
-    for (i, &ch) in text.iter().enumerate() {
-        let px = x + (i as i32) * CELL_W as i32;
-        if px < 0 || px + CELL_W as i32 > fb.width as i32 { continue; }
-        bitmap_font::draw_char(fb, ch as char, px as usize, y as usize, color);
+    if let Some(font) = ttf {
+        // Use TrueType rendering
+        let s = unsafe { core::str::from_utf8_unchecked(text) };
+        ttf_font::draw_text(fb, font, s, x, y, TTF_FONT_SIZE, color);
+    } else {
+        for (i, &ch) in text.iter().enumerate() {
+            let px = x + (i as i32) * CELL_W as i32;
+            if px < 0 || px + CELL_W as i32 > fb.width as i32 { continue; }
+            bitmap_font::draw_char(fb, ch as char, px as usize, y as usize, color);
+        }
     }
 }
 
@@ -273,21 +286,21 @@ fn draw_window_frame(fb: &mut FrameBuf, win: &Window, focused: bool) {
     let max_chars = max_title_w / CELL_W;
     let text_len = win.title_len.min(max_chars);
     let text_y = win.y + bw as i32 + ((TITLE_BAR_HEIGHT - bw - CELL_H) / 2) as i32;
-    draw_text_at(fb, &win.title[..text_len], win.x + 8, text_y, title_fg);
+    draw_text_at(fb, &win.title[..text_len], win.x + 8, text_y, title_fg, None);
 
     // Close button (rightmost in title bar)
     let (cbx, cby, cbw, cbh) = win.close_btn_rect();
     fill_rect(fb, cbx, cby, cbw, cbh, CLOSE_BTN_BG);
     let cx = cbx + (cbw as i32 - CELL_W as i32) / 2;
     let cy = cby + (cbh as i32 - CELL_H as i32) / 2;
-    draw_text_at(fb, b"x", cx, cy, CLOSE_BTN_TEXT);
+    draw_text_at(fb, b"x", cx, cy, CLOSE_BTN_TEXT, None);
 
     // Minimize button (left of close)
     let (mbx, mby, mbw, mbh) = win.minimize_btn_rect();
     fill_rect(fb, mbx, mby, mbw, mbh, MINIMIZE_BTN_BG);
     let mx = mbx + (mbw as i32 - CELL_W as i32) / 2;
     let my = mby + (mbh as i32 - CELL_H as i32) / 2;
-    draw_text_at(fb, b"-", mx, my, MINIMIZE_BTN_TEXT);
+    draw_text_at(fb, b"-", mx, my, MINIMIZE_BTN_TEXT, None);
 
     // Content area NOT filled here — GPU composites per-window textures over it.
 }
@@ -400,11 +413,11 @@ fn draw_taskbar(fb: &mut FrameBuf, clock_text: &[u8]) {
     fill_rect(fb, 0, 0, w, TASKBAR_HEIGHT, TASKBAR_BG);
     // "Breenix" label on the left
     let label_y = ((TASKBAR_HEIGHT - CELL_H) / 2 + 1) as i32;
-    draw_text_at(fb, b"Breenix", 8, label_y, TASKBAR_TEXT);
+    draw_text_at(fb, b"Breenix", 8, label_y, TASKBAR_TEXT, None);
     // Clock on the right
     if !clock_text.is_empty() {
         let clock_x = w as i32 - (clock_text.len() as i32 * CELL_W as i32) - 8;
-        draw_text_at(fb, clock_text, clock_x, label_y, TASKBAR_TEXT);
+        draw_text_at(fb, clock_text, clock_x, label_y, TASKBAR_TEXT, None);
     }
 }
 
@@ -464,7 +477,7 @@ fn draw_appbar(fb: &mut FrameBuf, windows: &[Window], focused_win: usize) {
         let max_chars = (btn_w.saturating_sub(12)) / CELL_W;
         let text_len = win.title_len.min(max_chars);
         let text_y = btn_y + ((btn_h - CELL_H) / 2 + 1) as i32;
-        draw_text_at(fb, &win.title[..text_len], btn_x + 6, text_y, APPBAR_BTN_TEXT);
+        draw_text_at(fb, &win.title[..text_len], btn_x + 6, text_y, APPBAR_BTN_TEXT, None);
 
         btn_x += btn_w as i32 + 2;
         if btn_x >= screen_w as i32 - 4 { break; }

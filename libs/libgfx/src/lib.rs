@@ -11,3 +11,4 @@ pub mod font;
 pub mod framebuf;
 pub mod math;
 pub mod shapes;
+pub mod ttf_font;

@@ -85,6 +85,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
     docker run --rm --privileged \
         -v "$TARGET_DIR:/work" \
         -v "$USERSPACE_DIR:/binaries:ro" \
+        -v "$PROJECT_ROOT/fonts:/fonts:ro" \
         -e "OUTPUT_FILENAME=$OUTPUT_FILENAME" \
         alpine:latest \
         sh -c '
@@ -241,6 +242,33 @@ Line 13
 Line 14
 Line 15
 EOF
+
+            # Install TrueType fonts
+            mkdir -p /mnt/ext2/usr/share/fonts
+            font_count=0
+            for font_file in /fonts/*.ttf; do
+                if [ -f "$font_file" ]; then
+                    cp "$font_file" /mnt/ext2/usr/share/fonts/
+                    font_count=$((font_count + 1))
+                fi
+            done
+            echo "  Installed $font_count fonts in /usr/share/fonts"
+
+            # Create default system font configuration
+            cat > /mnt/ext2/etc/fonts.conf << FONTSCONF
+# Breenix System Font Configuration
+# Apps read this file for default font settings.
+# Use bfontpicker to change fonts interactively.
+#
+# Available fonts:
+#   /usr/share/fonts/DejaVuSansMono.ttf
+#   /usr/share/fonts/Inconsolata-Regular.ttf
+#   /usr/share/fonts/JetBrainsMono-Regular.ttf
+#
+mono.font=/usr/share/fonts/DejaVuSansMono.ttf
+mono.size=10
+FONTSCONF
+            echo "  Created /etc/fonts.conf"
 
             # Show what was created
             echo ""
@@ -429,6 +457,33 @@ Line 13
 Line 14
 Line 15
 EOF
+
+    # Install TrueType fonts
+    mkdir -p "$MOUNT_DIR/usr/share/fonts"
+    font_count=0
+    for font_file in "$PROJECT_ROOT/fonts"/*.ttf; do
+        if [ -f "$font_file" ]; then
+            cp "$font_file" "$MOUNT_DIR/usr/share/fonts/"
+            font_count=$((font_count + 1))
+        fi
+    done
+    echo "  Installed $font_count fonts in /usr/share/fonts"
+
+    # Create default system font configuration
+    cat > "$MOUNT_DIR/etc/fonts.conf" << FONTSCONF
+# Breenix System Font Configuration
+# Apps read this file for default font settings.
+# Use bfontpicker to change fonts interactively.
+#
+# Available fonts:
+#   /usr/share/fonts/DejaVuSansMono.ttf
+#   /usr/share/fonts/Inconsolata-Regular.ttf
+#   /usr/share/fonts/JetBrainsMono-Regular.ttf
+#
+mono.font=/usr/share/fonts/DejaVuSansMono.ttf
+mono.size=10
+FONTSCONF
+    echo "  Created /etc/fonts.conf"
 
     # Show what was created
     echo ""
