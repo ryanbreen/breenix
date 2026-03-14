@@ -13,6 +13,8 @@
 #   ./run.sh --resolution 1920x1080  # Custom resolution
 #   ./run.sh --parallels       # Build and boot on Parallels Desktop
 #   ./run.sh --parallels --no-build  # Deploy existing build to Parallels
+#   ./run.sh --parallels --test      # Build, boot, wait, screenshot, exit
+#   ./run.sh --parallels --test 60   # Same with custom wait (default: 35s)
 #   ./run.sh --btrt            # ARM64 BTRT structured boot test
 #   ./run.sh --btrt --x86      # x86_64 BTRT structured boot test
 #
@@ -36,6 +38,8 @@ NO_BUILD=false
 BTRT=false
 PARALLELS=false
 PARALLELS_VM="breenix-dev"
+PARALLELS_TEST=false
+PARALLELS_TEST_WAIT=35
 VMWARE=false
 DEBUG=false
 REBUILD_HOME=false
@@ -68,6 +72,15 @@ while [[ $# -gt 0 ]]; do
         --vmware)
             VMWARE=true
             ARCH="arm64"
+            shift
+            ;;
+        --test)
+            PARALLELS_TEST=true
+            # Optional: next arg is wait seconds if it's a number
+            if [[ "${2:-}" =~ ^[0-9]+$ ]]; then
+                PARALLELS_TEST_WAIT="$2"
+                shift
+            fi
             shift
             ;;
         --vm)
@@ -108,6 +121,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --x86, --x86_64, --amd64   Run x86_64 kernel (default: ARM64)"
             echo "  --arm64, --aarch64         Run ARM64 kernel (default)"
             echo "  --parallels                Build and boot on Parallels Desktop VM"
+            echo "  --parallels --test [N]     Build, boot, wait N sec (default 35), screenshot, exit"
             echo "  --vmware                   Build and boot on VMware Fusion VM"
             echo "  --vm NAME                  Parallels VM name (default: breenix-dev)"
             echo "  --headless, --serial       Run without display (serial only)"
@@ -384,28 +398,52 @@ if [ "$PARALLELS" = true ]; then
     echo "Serial: $SERIAL_LOG"
     echo "Stop:   prlctl stop $PARALLELS_VM --kill"
     echo ""
-    echo "Tailing serial output (Ctrl+C to detach)..."
-    echo ""
 
-    # Monitor Parallels VM log for VCPU exceptions in background
-    VM_DIR="$HOME/Parallels/${PARALLELS_VM}.pvm"
-    VM_LOG="$VM_DIR/parallels.log"
-    if [ -f "$VM_LOG" ]; then
-        (
-            tail -f "$VM_LOG" 2>/dev/null | while IFS= read -r line; do
-                case "$line" in
-                    *VCPU*|*Exception*|*Synchronous*|*fault*|*FAULT*|*recursive*)
-                        echo "[parallels-log] $line" ;;
-                esac
-            done
-        ) &
-        LOGMON_PID=$!
-        trap "kill $LOGMON_PID 2>/dev/null" EXIT
+    if [ "$PARALLELS_TEST" = true ]; then
+        # Test mode: wait, screenshot, exit
+        SCREENSHOT="/tmp/breenix-screenshot.png"
+        echo "Test mode: waiting ${PARALLELS_TEST_WAIT}s for boot..."
+        sleep "$PARALLELS_TEST_WAIT"
+
+        echo ""
+        echo "=== Screenshot ==="
+        SCREENSHOT_SCRIPT="$BREENIX_ROOT/scripts/parallels/screenshot-vm.sh"
+        if [ -x "$SCREENSHOT_SCRIPT" ]; then
+            "$SCREENSHOT_SCRIPT" "$PARALLELS_VM" "$SCREENSHOT"
+        else
+            prlctl capture "$PARALLELS_VM" --file "$SCREENSHOT" 2>/dev/null \
+                && echo "Screenshot: $SCREENSHOT" \
+                || echo "Screenshot failed (VM may not be displaying yet)"
+        fi
+
+        echo ""
+        echo "Serial log: $SERIAL_LOG"
+        echo "Screenshot: $SCREENSHOT"
+    else
+        # Interactive mode: tail serial forever
+        echo "Tailing serial output (Ctrl+C to detach)..."
+        echo ""
+
+        # Monitor Parallels VM log for VCPU exceptions in background
+        VM_DIR="$HOME/Parallels/${PARALLELS_VM}.pvm"
+        VM_LOG="$VM_DIR/parallels.log"
+        if [ -f "$VM_LOG" ]; then
+            (
+                tail -f "$VM_LOG" 2>/dev/null | while IFS= read -r line; do
+                    case "$line" in
+                        *VCPU*|*Exception*|*Synchronous*|*fault*|*FAULT*|*recursive*)
+                            echo "[parallels-log] $line" ;;
+                    esac
+                done
+            ) &
+            LOGMON_PID=$!
+            trap "kill $LOGMON_PID 2>/dev/null" EXIT
+        fi
+
+        # Wait a moment for the VM to start producing output, then tail
+        sleep 1
+        tail -f "$SERIAL_LOG"
     fi
-
-    # Wait a moment for the VM to start producing output, then tail
-    sleep 1
-    tail -f "$SERIAL_LOG"
 
     exit 0
 fi
