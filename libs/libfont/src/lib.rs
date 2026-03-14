@@ -28,11 +28,12 @@ use crate::tables::loca::LocaTable;
 use crate::tables::kern::KernTable;
 use crate::tables::glyf;
 use crate::outline::flatten_glyph;
-use crate::rasterizer::{rasterize, GlyphBitmap};
+use crate::rasterizer::{rasterize, rasterize_subpixel, GlyphBitmap, SubpixelBitmap};
 use crate::cache::GlyphCache;
 use crate::float::{floor, ceil};
 
 pub use crate::rasterizer::GlyphBitmap as Bitmap;
+pub use crate::rasterizer::SubpixelBitmap;
 
 /// Scaled font metrics in pixel coordinates.
 #[derive(Debug, Clone, Copy)]
@@ -208,6 +209,63 @@ impl Font {
         let segments = flatten_glyph(&simple_glyph, scale, x_off, y_off);
 
         Ok(rasterize(&segments, bmp_width, bmp_height, bmp_x_offset, bmp_y_offset))
+    }
+
+    /// Rasterize a glyph with LCD subpixel rendering (3x horizontal resolution).
+    pub fn rasterize_glyph_subpixel(
+        &self,
+        glyph_index: u16,
+        pixel_size: f32,
+    ) -> Result<SubpixelBitmap, String> {
+        let scale = pixel_size / self.head.units_per_em as f32;
+        let loca = LocaTable::new(self.loca_data(), self.index_to_loc_format);
+        let hmtx = HmtxTable::new(self.hmtx_data(), self.num_h_metrics);
+
+        let glyph_offset = match loca.glyph_offset(glyph_index) {
+            Some(off) => off,
+            None => {
+                let advance = hmtx.advance_width(glyph_index) as f32 * scale;
+                return Ok(SubpixelBitmap {
+                    width: ceil(advance) as usize,
+                    height: 0,
+                    x_offset: 0,
+                    y_offset: 0,
+                    coverage: alloc::vec::Vec::new(),
+                });
+            }
+        };
+
+        let simple_glyph = self.resolve_glyph(glyph_offset)?;
+
+        let ascender = self.hhea.ascender as f32 * scale;
+        let baseline = (ascender + 0.5) as i32;
+
+        let x_min = simple_glyph.x_min as f32 * scale;
+        let y_min = simple_glyph.y_min as f32 * scale;
+        let x_max = simple_glyph.x_max as f32 * scale;
+        let y_max = simple_glyph.y_max as f32 * scale;
+
+        let bmp_x_offset = floor(x_min) as i32;
+        let bmp_y_offset = baseline - ceil(y_max) as i32;
+
+        let bmp_width = ceil(x_max - x_min) as usize + 2;
+        let bmp_height = ceil(y_max - y_min) as usize + 2;
+
+        if bmp_width == 0 || bmp_height == 0 {
+            return Ok(SubpixelBitmap {
+                width: 0,
+                height: 0,
+                x_offset: 0,
+                y_offset: 0,
+                coverage: alloc::vec::Vec::new(),
+            });
+        }
+
+        let x_off = -floor(x_min);
+        let y_off = ceil(y_max);
+        let segments = flatten_glyph(&simple_glyph, scale, x_off, y_off);
+
+        Ok(rasterize_subpixel(&segments, bmp_width, bmp_height, bmp_x_offset, bmp_y_offset))
     }
 
     fn resolve_glyph(

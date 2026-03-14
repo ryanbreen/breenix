@@ -11,6 +11,7 @@ use std::process;
 
 use libbreenix::graphics::{self, WindowInputEvent, input_event_type};
 use libbreenix::io;
+use libbreenix::process::{fork, execv, ForkResult};
 use libbreenix::signal;
 use libbreenix::types::Fd;
 
@@ -368,9 +369,9 @@ fn draw_text_at(fb: &mut FrameBuf, text: &[u8], x: i32, y: i32, color: Color,
                 ttf: Option<&mut CachedFont>) {
     if y < 0 || y >= fb.height as i32 { return; }
     if let Some(font) = ttf {
-        // Use TrueType rendering
+        // Use LCD subpixel rendering for crisp window chrome text
         let s = unsafe { core::str::from_utf8_unchecked(text) };
-        ttf_font::draw_text(fb, font, s, x, y, TTF_FONT_SIZE, color);
+        ttf_font::draw_text_subpixel(fb, font, s, x, y, TTF_FONT_SIZE, color);
     } else {
         for (i, &ch) in text.iter().enumerate() {
             let px = x + (i as i32) * CELL_W as i32;
@@ -890,6 +891,435 @@ fn compose_partial_redraw(
     }
 }
 
+// ─── Quick Launch Overlay ────────────────────────────────────────────────────
+
+struct AppEntry {
+    name: &'static str,
+    binary: &'static [u8],
+    is_gui: bool,
+    description: &'static str,
+}
+
+const APPS: &[AppEntry] = &[
+    AppEntry { name: "Terminal", binary: b"/bin/bterm\0", is_gui: true, description: "Terminal emulator" },
+    AppEntry { name: "System Check", binary: b"/bin/bcheck\0", is_gui: true, description: "System health" },
+    AppEntry { name: "Log Viewer", binary: b"/bin/bless\0", is_gui: true, description: "View system logs" },
+    AppEntry { name: "Bounce", binary: b"/bin/bounce\0", is_gui: true, description: "Physics demo" },
+    AppEntry { name: "Blog", binary: b"/bin/blog\0", is_gui: true, description: "Blog viewer" },
+    AppEntry { name: "Font Picker", binary: b"/bin/bfontpicker\0", is_gui: true, description: "Configure fonts" },
+    AppEntry { name: "Shell", binary: b"bsh\0", is_gui: false, description: "Breenix shell" },
+    AppEntry { name: "URL Fetch", binary: b"burl\0", is_gui: false, description: "Fetch URLs" },
+    AppEntry { name: "cat", binary: b"cat\0", is_gui: false, description: "Display file contents" },
+    AppEntry { name: "ls", binary: b"ls\0", is_gui: false, description: "List directory" },
+    AppEntry { name: "echo", binary: b"echo\0", is_gui: false, description: "Print text" },
+    AppEntry { name: "ps", binary: b"ps\0", is_gui: false, description: "List processes" },
+];
+
+struct LauncherState {
+    active: bool,
+    query: [u8; 64],
+    query_len: usize,
+    selected: usize,
+    frame_count: u32,
+    cursor_blink: u32,
+    pending_inject: Option<(u32, [u8; 64], usize)>,
+}
+
+impl LauncherState {
+    fn new() -> Self {
+        Self {
+            active: false,
+            query: [0; 64],
+            query_len: 0,
+            selected: 0,
+            frame_count: 0,
+            cursor_blink: 0,
+            pending_inject: None,
+        }
+    }
+}
+
+fn to_lower(b: u8) -> u8 {
+    if b >= b'A' && b <= b'Z' { b + 32 } else { b }
+}
+
+fn matches_query(text: &str, query: &[u8], query_len: usize) -> bool {
+    if query_len == 0 { return true; }
+    let text = text.as_bytes();
+    if query_len > text.len() { return false; }
+    for start in 0..=(text.len() - query_len) {
+        let mut ok = true;
+        for i in 0..query_len {
+            if to_lower(text[start + i]) != to_lower(query[i]) {
+                ok = false;
+                break;
+            }
+        }
+        if ok { return true; }
+    }
+    false
+}
+
+fn get_filtered_apps(query: &[u8], query_len: usize) -> ([usize; 16], usize) {
+    let mut indices = [0usize; 16];
+    let mut count = 0;
+    for (i, app) in APPS.iter().enumerate() {
+        if count >= 16 { break; }
+        if matches_query(app.name, query, query_len) || matches_query(app.description, query, query_len) {
+            indices[count] = i;
+            count += 1;
+        }
+    }
+    (indices, count)
+}
+
+/// Sine approximation for no_std (Taylor series, Horner's method)
+fn sin_approx(x: f32) -> f32 {
+    let pi: f32 = 3.14159265;
+    let two_pi: f32 = 6.28318530;
+    // Normalize to [-pi, pi]
+    let mut x = x - (floor_f32((x + pi) / two_pi)) * two_pi;
+    if x > pi { x -= two_pi; }
+    if x < -pi { x += two_pi; }
+    let x2 = x * x;
+    x * (1.0 - x2 / 6.0 * (1.0 - x2 / 20.0 * (1.0 - x2 / 42.0)))
+}
+
+fn floor_f32(x: f32) -> f32 {
+    let i = x as i32;
+    if (x < 0.0) && ((i as f32) != x) { (i - 1) as f32 } else { i as f32 }
+}
+
+fn abs_f32(x: f32) -> f32 {
+    if x < 0.0 { -x } else { x }
+}
+
+fn fmod_f32(a: f32, b: f32) -> f32 {
+    a - floor_f32(a / b) * b
+}
+
+/// HSL to BGRA pixel conversion (returns u32 in compositor BGRA format)
+fn hsl_to_bgra(h: f32, s: f32, l: f32) -> u32 {
+    let c = (1.0 - abs_f32(2.0 * l - 1.0)) * s;
+    let mut h6 = h * 6.0;
+    while h6 < 0.0 { h6 += 6.0; }
+    while h6 >= 6.0 { h6 -= 6.0; }
+    let x = c * (1.0 - abs_f32(fmod_f32(h6, 2.0) - 1.0));
+    let m = l - c / 2.0;
+    let (r, g, b) = if h6 < 1.0 { (c, x, 0.0) }
+                     else if h6 < 2.0 { (x, c, 0.0) }
+                     else if h6 < 3.0 { (0.0, c, x) }
+                     else if h6 < 4.0 { (0.0, x, c) }
+                     else if h6 < 5.0 { (x, 0.0, c) }
+                     else { (c, 0.0, x) };
+    let rb = (((b + m).min(1.0).max(0.0)) * 255.0) as u32;
+    let rg = (((g + m).min(1.0).max(0.0)) * 255.0) as u32;
+    let rr = (((r + m).min(1.0).max(0.0)) * 255.0) as u32;
+    rb | (rg << 8) | (rr << 16) | (0xFF << 24)
+}
+
+fn plot_pixel_u32(buf: &mut [u32], bw: usize, bh: usize, x: i32, y: i32, color: u32) {
+    if x >= 0 && y >= 0 && (x as usize) < bw && (y as usize) < bh {
+        buf[y as usize * bw + x as usize] = color;
+    }
+}
+
+fn plot_pixel_blend_u32(buf: &mut [u32], bw: usize, bh: usize, x: i32, y: i32, color: u32, alpha: u32) {
+    if x < 0 || y < 0 || (x as usize) >= bw || (y as usize) >= bh { return; }
+    let idx = y as usize * bw + x as usize;
+    let dst = buf[idx];
+    let inv_alpha = 256 - alpha;
+    let b = ((color & 0xFF) * alpha + (dst & 0xFF) * inv_alpha) / 256;
+    let g = (((color >> 8) & 0xFF) * alpha + ((dst >> 8) & 0xFF) * inv_alpha) / 256;
+    let r = (((color >> 16) & 0xFF) * alpha + ((dst >> 16) & 0xFF) * inv_alpha) / 256;
+    buf[idx] = b | (g << 8) | (r << 16) | (0xFF000000);
+}
+
+fn dim_screen(buf: &mut [u32], width: usize, height: usize) {
+    for pixel in buf[..width * height].iter_mut() {
+        let b = (*pixel & 0xFF) * 90 / 256;
+        let g = ((*pixel >> 8) & 0xFF) * 90 / 256;
+        let r = ((*pixel >> 16) & 0xFF) * 90 / 256;
+        *pixel = b | (g << 8) | (r << 16) | 0xFF000000;
+    }
+}
+
+fn darken_rect(buf: &mut [u32], buf_w: usize, buf_h: usize,
+               x: i32, y: i32, w: i32, h: i32, amount: u32) {
+    let factor = 256u32.saturating_sub(amount);
+    for row in y.max(0)..(y + h).min(buf_h as i32) {
+        for col in x.max(0)..(x + w).min(buf_w as i32) {
+            let idx = row as usize * buf_w + col as usize;
+            let p = buf[idx];
+            let b = (p & 0xFF) * factor / 256;
+            let g = ((p >> 8) & 0xFF) * factor / 256;
+            let r = ((p >> 16) & 0xFF) * factor / 256;
+            buf[idx] = b | (g << 8) | (r << 16) | 0xFF000000;
+        }
+    }
+}
+
+fn draw_drop_shadow(buf: &mut [u32], buf_w: usize, buf_h: usize,
+                    x: i32, y: i32, w: i32, h: i32) {
+    for layer in 0i32..10 {
+        let expand = layer * 2;
+        let offset_x = 3 + layer;
+        let offset_y = 4 + layer;
+        let darkness = 40u32.saturating_sub(layer as u32 * 4);
+        let sx = x + offset_x - expand;
+        let sy = y + offset_y - expand;
+        let sw = w + expand * 2;
+        let sh = h + expand * 2;
+        darken_rect(buf, buf_w, buf_h, sx, sy, sw, sh, darkness);
+    }
+}
+
+fn draw_rounded_rect_u32(buf: &mut [u32], buf_w: usize, buf_h: usize,
+                         x: i32, y: i32, w: i32, h: i32, color: u32, radius: i32) {
+    for row in 0..h {
+        for col in 0..w {
+            let px = x + col;
+            let py = y + row;
+            if px < 0 || py < 0 || px >= buf_w as i32 || py >= buf_h as i32 { continue; }
+
+            let in_corner = (col < radius && row < radius) ||
+                           (col >= w - radius && row < radius) ||
+                           (col < radius && row >= h - radius) ||
+                           (col >= w - radius && row >= h - radius);
+
+            if in_corner {
+                let cx = if col < radius { radius } else { w - radius };
+                let cy = if row < radius { radius } else { h - radius };
+                let dx = col - cx;
+                let dy = row - cy;
+                if dx * dx + dy * dy > radius * radius { continue; }
+            }
+
+            buf[py as usize * buf_w + px as usize] = color;
+        }
+    }
+}
+
+/// Get position and outward normal for a point on the rectangle perimeter.
+fn perimeter_point(x: i32, y: i32, w: i32, h: i32, dist: i32) -> (i32, i32, f32, f32) {
+    let perim = 2 * (w + h);
+    let dist = ((dist % perim) + perim) % perim;
+    if dist < w {
+        (x + dist, y, 0.0, -1.0)
+    } else if dist < w + h {
+        (x + w, y + (dist - w), 1.0, 0.0)
+    } else if dist < 2 * w + h {
+        (x + w - (dist - w - h), y + h, 0.0, 1.0)
+    } else {
+        (x, y + h - (dist - 2 * w - h), -1.0, 0.0)
+    }
+}
+
+fn draw_sinuous_border(buf: &mut [u32], buf_w: usize, buf_h: usize,
+                       lx: i32, ly: i32, lw: i32, lh: i32, frame: u32) {
+    let perimeter = 2 * (lw + lh);
+    if perimeter == 0 { return; }
+
+    let amplitude: f32 = 3.5;
+    let wave_count: f32 = 8.0;
+    let phase: f32 = frame as f32 * 0.08;
+    let color_speed: f32 = frame as f32 * 0.004;
+    let thickness: i32 = 2;
+    let glow_extra: i32 = 2;
+
+    let freq = wave_count * 6.28318530 / perimeter as f32;
+
+    for i in 0..perimeter {
+        let d = i as f32;
+        let (bx, by, nx, ny) = perimeter_point(lx, ly, lw, lh, i);
+
+        let displacement = amplitude * sin_approx(d * freq + phase);
+        let px = bx as f32 + nx * displacement;
+        let py = by as f32 + ny * displacement;
+
+        let hue = fmod_f32(d / perimeter as f32 + color_speed, 1.0);
+        let color = hsl_to_bgra(hue, 0.75, 0.55);
+        let glow_color = hsl_to_bgra(hue, 0.65, 0.35);
+
+        for dx in -thickness..=thickness {
+            for dy in -thickness..=thickness {
+                if dx * dx + dy * dy <= thickness * thickness {
+                    plot_pixel_u32(buf, buf_w, buf_h, px as i32 + dx, py as i32 + dy, color);
+                }
+            }
+        }
+
+        let total = thickness + glow_extra;
+        for dx in -total..=total {
+            for dy in -total..=total {
+                let dist_sq = dx * dx + dy * dy;
+                if dist_sq > thickness * thickness && dist_sq <= total * total {
+                    plot_pixel_blend_u32(buf, buf_w, buf_h, px as i32 + dx, py as i32 + dy, glow_color, 80);
+                }
+            }
+        }
+    }
+}
+
+/// Draw a small filled circle (badge dot).
+fn draw_circle_u32(buf: &mut [u32], buf_w: usize, buf_h: usize,
+                   cx: i32, cy: i32, radius: i32, color: u32) {
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            if dx * dx + dy * dy <= radius * radius {
+                plot_pixel_u32(buf, buf_w, buf_h, cx + dx, cy + dy, color);
+            }
+        }
+    }
+}
+
+/// Draw text into the u32 compositor buffer using the FrameBuf-based draw_text_at.
+/// We write into the FrameBuf (which aliases the u32 buffer) to reuse existing text rendering.
+fn draw_launcher_text(fb: &mut FrameBuf, text: &[u8], x: i32, y: i32,
+                      color: Color, ui_font: &mut Option<CachedFont>) {
+    draw_text_at(fb, text, x, y, color, ui_font.as_mut());
+}
+
+/// Render the entire launcher overlay into the compositor buffer.
+fn render_launcher(buf: &mut [u32], buf_w: usize, buf_h: usize,
+                   fb: &mut FrameBuf, launcher: &LauncherState,
+                   ui_font: &mut Option<CachedFont>) {
+    // Dim the screen
+    dim_screen(buf, buf_w, buf_h);
+
+    // Layout
+    let launcher_w: i32 = 500;
+    let (filtered, filtered_count) = get_filtered_apps(&launcher.query, launcher.query_len);
+    let item_h: i32 = 32;
+    let search_h: i32 = 44;
+    let padding: i32 = 16;
+    let max_visible = filtered_count.min(10) as i32;
+    let launcher_h: i32 = padding + search_h + 8 + (max_visible * item_h) + padding;
+    let launcher_x: i32 = (buf_w as i32 - launcher_w) / 2;
+    let launcher_y: i32 = buf_h as i32 / 5;
+
+    // Drop shadow
+    draw_drop_shadow(buf, buf_w, buf_h, launcher_x, launcher_y, launcher_w, launcher_h);
+
+    // Launcher body
+    const LAUNCHER_BG: u32 = 0xFF2E2233;
+    const CORNER_RADIUS: i32 = 12;
+    draw_rounded_rect_u32(buf, buf_w, buf_h,
+        launcher_x, launcher_y, launcher_w, launcher_h, LAUNCHER_BG, CORNER_RADIUS);
+
+    // Sinuous animated border
+    draw_sinuous_border(buf, buf_w, buf_h,
+        launcher_x, launcher_y, launcher_w, launcher_h, launcher.frame_count);
+
+    // Search field
+    const SEARCH_BG: u32 = 0xFF3E3340;
+    const SEARCH_BORDER_COLOR: u32 = 0xFF5E5360;
+    let search_x = launcher_x + padding;
+    let search_y = launcher_y + padding;
+    let search_w = launcher_w - padding * 2;
+    // Search field border (1px)
+    draw_rounded_rect_u32(buf, buf_w, buf_h,
+        search_x - 1, search_y - 1, search_w + 2, search_h + 2, SEARCH_BORDER_COLOR, 8);
+    // Search field background
+    draw_rounded_rect_u32(buf, buf_w, buf_h,
+        search_x, search_y, search_w, search_h, SEARCH_BG, 7);
+
+    // Search icon hint text
+    let text_y = search_y + (search_h - CELL_H as i32) / 2;
+    if launcher.query_len == 0 {
+        draw_launcher_text(fb, b"Search applications...", search_x + 12, text_y,
+            Color::rgb(100, 95, 110), ui_font);
+    } else {
+        draw_launcher_text(fb, &launcher.query[..launcher.query_len], search_x + 12, text_y,
+            Color::rgb(230, 230, 230), ui_font);
+    }
+
+    // Blinking cursor
+    if (launcher.cursor_blink / 25) % 2 == 0 {
+        let cursor_x = search_x + 12 + (launcher.query_len as i32 * CELL_W as i32);
+        for dy in 0..CELL_H as i32 {
+            plot_pixel_u32(buf, buf_w, buf_h, cursor_x, text_y + dy, 0xFFE0E0E0);
+            plot_pixel_u32(buf, buf_w, buf_h, cursor_x + 1, text_y + dy, 0xFFE0E0E0);
+        }
+    }
+
+    // App list
+    const SELECTED_BG: u32 = 0xFF8E4E5E;
+    const TEXT_COLOR: Color = Color::rgb(224, 224, 224);
+    const TEXT_DIM: Color = Color::rgb(128, 128, 128);
+    const GUI_BADGE: u32 = 0xFF60B060;
+    const CLI_BADGE: u32 = 0xFF6080C0;
+
+    let list_y = search_y + search_h + 8;
+    for idx in 0..filtered_count.min(10) {
+        let app = &APPS[filtered[idx]];
+        let row_y = list_y + idx as i32 * item_h;
+
+        // Selected row highlight
+        if idx == launcher.selected {
+            draw_rounded_rect_u32(buf, buf_w, buf_h,
+                launcher_x + 8, row_y, launcher_w - 16, item_h - 2, SELECTED_BG, 6);
+        }
+
+        // App type badge (small colored dot)
+        let badge_color = if app.is_gui { GUI_BADGE } else { CLI_BADGE };
+        draw_circle_u32(buf, buf_w, buf_h,
+            launcher_x + 22, row_y + item_h / 2, 4, badge_color);
+
+        // App name text
+        draw_launcher_text(fb, app.name.as_bytes(), launcher_x + 36, row_y + 3,
+            TEXT_COLOR, ui_font);
+
+        // Description text (dimmer)
+        draw_launcher_text(fb, app.description.as_bytes(), launcher_x + 36, row_y + 16,
+            TEXT_DIM, ui_font);
+    }
+
+    // Footer hint text
+    let footer_y = list_y + max_visible * item_h + 4;
+    let hint_color = Color::rgb(80, 78, 90);
+    draw_launcher_text(fb, b"Enter to launch | Esc to close", launcher_x + padding, footer_y,
+        hint_color, ui_font);
+}
+
+fn launch_app(app: &AppEntry, launcher: &mut LauncherState) {
+    if app.is_gui {
+        match fork() {
+            Ok(ForkResult::Child) => {
+                let arg0 = app.binary;
+                let argv: [*const u8; 2] = [arg0.as_ptr(), core::ptr::null()];
+                let _ = execv(app.binary, argv.as_ptr());
+                libbreenix::process::exit(1);
+            }
+            Ok(ForkResult::Parent(_)) => {}
+            Err(_) => {}
+        }
+    } else {
+        // CLI app: launch bterm, then inject the command name as keystrokes
+        match fork() {
+            Ok(ForkResult::Child) => {
+                let path = b"/bin/bterm\0";
+                let argv: [*const u8; 2] = [path.as_ptr(), core::ptr::null()];
+                let _ = execv(path, argv.as_ptr());
+                libbreenix::process::exit(1);
+            }
+            Ok(ForkResult::Parent(pid)) => {
+                // Set up pending injection: the binary name without null terminator
+                let mut text = [0u8; 64];
+                // Strip the null terminator for injection
+                let name_bytes = app.binary;
+                let len = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
+                let copy_len = len.min(64);
+                text[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
+                // Do NOT add newline — user wants the command pre-filled but not executed
+                launcher.pending_inject = Some((pid.raw() as u32, text, copy_len));
+            }
+            Err(_) => {}
+        }
+    }
+    launcher.active = false;
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -1017,6 +1447,7 @@ fn main() {
     format_clock(0, &mut clock_text);
     let mut frame_counter: u32 = 0;
     let mut next_creation_order: u32 = 0;
+    let mut launcher = LauncherState::new();
 
     // Initial composite
     if direct_mapped {
@@ -1047,6 +1478,20 @@ fn main() {
         let (ready, new_reg_gen) = graphics::compositor_wait(16, registry_gen).unwrap_or((0, registry_gen));
         registry_gen = new_reg_gen;
 
+        // ── 0b. Poll launcher trigger (Super key double-tap) ──
+        if graphics::poll_launcher_trigger() {
+            launcher.active = !launcher.active;
+            if launcher.active {
+                launcher.query_len = 0;
+                launcher.selected = 0;
+                launcher.frame_count = 0;
+                launcher.cursor_blink = 0;
+            }
+            // Force full redraw to show/hide overlay
+            compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+            full_redraw = true;
+        }
+
         // ── 1. Discover new/removed client windows (only when registry changed) ──
         if ready & graphics::COMPOSITOR_READY_REGISTRY != 0 {
             if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order, &mut win_defaults) {
@@ -1057,6 +1502,33 @@ fn main() {
                 focused_win = next_visible_window(&windows, 0);
                 compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
                 full_redraw = true;
+            }
+
+            // Check for pending keystroke injection
+            if let Some((target_pid, ref text, text_len)) = launcher.pending_inject {
+                let mut found = false;
+                for win in windows.iter() {
+                    if win.owner_pid == target_pid && win.window_id != 0 {
+                        // Inject keystrokes one by one
+                        for ki in 0..text_len {
+                            let ch = text[ki];
+                            let event = WindowInputEvent {
+                                event_type: input_event_type::KEY_PRESS,
+                                keycode: ch as u16,
+                                mouse_x: ch as i16,
+                                mouse_y: 0,
+                                modifiers: 0,
+                                _pad: 0,
+                            };
+                            let _ = graphics::write_window_input(win.window_id, &event);
+                        }
+                        found = true;
+                        break;
+                    }
+                }
+                if found {
+                    launcher.pending_inject = None;
+                }
             }
         }
 
@@ -1069,6 +1541,57 @@ fn main() {
             if let Ok(n) = io::read(Fd::from_raw(0), &mut read_buf) {
                 for i in 0..n {
                     if let Some(event) = input_parser.feed(read_buf[i]) {
+                        // When launcher is active, intercept ALL keyboard input
+                        if launcher.active {
+                            match event {
+                                InputEvent::Key { ascii, keycode, .. } => {
+                                    // Escape -> close launcher
+                                    if ascii == 0x1b || keycode == 0x1b {
+                                        launcher.active = false;
+                                        compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+                                        full_redraw = true;
+                                    }
+                                    // Enter -> launch selected app
+                                    else if ascii == 13 {
+                                        let (filtered, filtered_count) = get_filtered_apps(&launcher.query, launcher.query_len);
+                                        if filtered_count > 0 && launcher.selected < filtered_count {
+                                            let app_idx = filtered[launcher.selected];
+                                            launch_app(&APPS[app_idx], &mut launcher);
+                                            compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+                                            full_redraw = true;
+                                        }
+                                    }
+                                    // Backspace -> remove last query character
+                                    else if ascii == 8 || ascii == 0x7f {
+                                        if launcher.query_len > 0 {
+                                            launcher.query_len -= 1;
+                                            launcher.selected = 0;
+                                        }
+                                    }
+                                    // Up arrow (keycode 0x52)
+                                    else if keycode == 0x52 {
+                                        launcher.selected = launcher.selected.saturating_sub(1);
+                                    }
+                                    // Down arrow (keycode 0x51)
+                                    else if keycode == 0x51 {
+                                        let (_, filtered_count) = get_filtered_apps(&launcher.query, launcher.query_len);
+                                        if filtered_count > 0 {
+                                            launcher.selected = (launcher.selected + 1).min(filtered_count.min(10) - 1);
+                                        }
+                                    }
+                                    // Printable ASCII -> append to query
+                                    else if ascii >= 0x20 && ascii < 0x7f && launcher.query_len < 63 {
+                                        launcher.query[launcher.query_len] = ascii;
+                                        launcher.query_len += 1;
+                                        launcher.selected = 0;
+                                    }
+                                }
+                                _ => {}
+                            }
+                            continue;
+                        }
+
+                        // Normal (non-launcher) keyboard handling
                         match event {
                             InputEvent::FunctionKey(k) if (k as usize) <= windows.len() => {
                                 let new_focus = (k - 1) as usize;
@@ -1467,6 +1990,19 @@ fn main() {
                     content_dirty = true;
                 }
             }
+        }
+
+        // ── 5c. Render launcher overlay (when active) ──
+        if launcher.active {
+            launcher.frame_count = launcher.frame_count.wrapping_add(1);
+            launcher.cursor_blink = launcher.cursor_blink.wrapping_add(1);
+            // Redraw the base scene so the launcher overlays fresh content each frame
+            if !full_redraw {
+                compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+            }
+            // Render the launcher overlay on top
+            render_launcher(composite_buf, screen_w, screen_h, &mut fb, &launcher, &mut ui_font);
+            full_redraw = true;
         }
 
         // ── 6. Composite to GPU (only when something changed) ──

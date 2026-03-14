@@ -21,6 +21,17 @@ pub struct GlyphBitmap {
     pub coverage: Vec<u8>,
 }
 
+/// Subpixel (LCD) rasterized glyph — 3 coverage values per pixel (R, G, B).
+#[derive(Debug, Clone)]
+pub struct SubpixelBitmap {
+    pub width: usize,
+    pub height: usize,
+    pub x_offset: i32,
+    pub y_offset: i32,
+    /// Coverage data: 3 bytes per pixel (R, G, B), row-major, width*3 per row.
+    pub coverage: Vec<u8>,
+}
+
 /// Number of sub-scanlines per pixel row for vertical anti-aliasing.
 /// 8 is sufficient when combined with fractional horizontal coverage.
 const SUB_SCANLINES: usize = 8;
@@ -189,4 +200,110 @@ fn intersect_scanline(seg: &LineSegment, y: f32) -> Option<Crossing> {
     let dir = if y1 > y0 { 1 } else { -1 };
 
     Some(Crossing { x, dir })
+}
+
+/// Rasterize with LCD subpixel rendering (horizontal RGB striping).
+///
+/// Rasterizes at 3x horizontal resolution, then maps each triplet of sub-pixel
+/// columns to R, G, B coverage values for a single output pixel. This gives
+/// ~3x effective horizontal resolution for text on LCD displays.
+pub fn rasterize_subpixel(
+    segments: &[LineSegment],
+    width: usize,
+    height: usize,
+    x_offset: i32,
+    y_offset: i32,
+) -> SubpixelBitmap {
+    if width == 0 || height == 0 || segments.is_empty() {
+        return SubpixelBitmap {
+            width,
+            height,
+            x_offset,
+            y_offset,
+            coverage: vec![0; width * height * 3],
+        };
+    }
+
+    // Rasterize at 3x horizontal resolution
+    let wide = width * 3;
+    let mut coverage_rgb = vec![0u8; width * height * 3];
+    let mut crossings: Vec<Crossing> = Vec::with_capacity(32);
+    let mut pixel_cov = vec![0.0f32; wide];
+    let wide_f = wide as f32;
+
+    // Scale segments to 3x horizontal
+    let scaled: Vec<LineSegment> = segments.iter().map(|s| LineSegment {
+        x0: s.x0 * 3.0,
+        y0: s.y0,
+        x1: s.x1 * 3.0,
+        y1: s.y1,
+    }).collect();
+
+    for row in 0..height {
+        for v in pixel_cov.iter_mut() { *v = 0.0; }
+
+        for sub in 0..SUB_SCANLINES {
+            let y = row as f32 + (sub as f32 + 0.5) * INV_SUB;
+
+            crossings.clear();
+            for seg in &scaled {
+                if let Some(crossing) = intersect_scanline(seg, y) {
+                    crossings.push(crossing);
+                }
+            }
+
+            if crossings.is_empty() {
+                continue;
+            }
+
+            crossings.sort_unstable_by(|a, b| {
+                a.x.partial_cmp(&b.x).unwrap_or(core::cmp::Ordering::Equal)
+            });
+
+            let mut winding: i32 = 0;
+            let mut fill_start: f32 = 0.0;
+
+            for c in &crossings {
+                let prev_winding = winding;
+                winding += c.dir;
+
+                if prev_winding == 0 && winding != 0 {
+                    fill_start = c.x;
+                } else if prev_winding != 0 && winding == 0 {
+                    let span_left = fill_start.max(0.0);
+                    let span_right = c.x.min(wide_f);
+                    if span_right > span_left {
+                        add_span_coverage(&mut pixel_cov, span_left, span_right, wide);
+                    }
+                }
+            }
+
+            if winding != 0 {
+                let span_left = fill_start.max(0.0);
+                let span_right = wide_f;
+                if span_right > span_left {
+                    add_span_coverage(&mut pixel_cov, span_left, span_right, wide);
+                }
+            }
+        }
+
+        // Map 3x sub-pixel columns to RGB triplets per output pixel
+        let row_offset = row * width * 3;
+        for px in 0..width {
+            let r_cov = pixel_cov[px * 3] * INV_SUB * 255.0;
+            let g_cov = pixel_cov[px * 3 + 1] * INV_SUB * 255.0;
+            let b_cov = pixel_cov[px * 3 + 2] * INV_SUB * 255.0;
+            coverage_rgb[row_offset + px * 3] = r_cov.min(255.0).max(0.0) as u8;
+            coverage_rgb[row_offset + px * 3 + 1] = g_cov.min(255.0).max(0.0) as u8;
+            coverage_rgb[row_offset + px * 3 + 2] = b_cov.min(255.0).max(0.0) as u8;
+        }
+    }
+
+    SubpixelBitmap {
+        width,
+        height,
+        x_offset,
+        y_offset,
+        coverage: coverage_rgb,
+    }
 }
