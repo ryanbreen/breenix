@@ -4067,9 +4067,9 @@ fn virgl_composite_single_quad(
         let cw = win.width as f32;
         let ch = win.height as f32;
 
-        // Frame bounds (content is inset by BORDER_WIDTH left/right/bottom and TITLE_BAR_HEIGHT top)
+        // Frame bounds (content is inset by BORDER_WIDTH on all sides plus TITLE_BAR_HEIGHT top)
         let fx0 = cx - BORDER_WIDTH as f32;
-        let fy0 = cy - TITLE_BAR_HEIGHT as f32;
+        let fy0 = cy - TITLE_BAR_HEIGHT as f32 - BORDER_WIDTH as f32;
         let fx1 = cx + cw + BORDER_WIDTH as f32;
         let fy1 = cy + ch + BORDER_WIDTH as f32;
 
