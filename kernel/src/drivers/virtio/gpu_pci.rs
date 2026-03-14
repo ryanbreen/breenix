@@ -1750,7 +1750,7 @@ fn send_command(
         };
         if used_idx != state.last_used_idx {
             state.last_used_idx = used_idx;
-            break;
+            return Ok(());
         }
         timeout -= 1;
         if timeout == 0 {
@@ -1758,14 +1758,13 @@ fn send_command(
         }
         core::hint::spin_loop();
     }
-
-    Ok(())
 }
 
 /// Send a command using a 3-descriptor chain (Linux format):
 ///   Desc 0: command header (device reads)
 ///   Desc 1: command payload (device reads)
 ///   Desc 2: response (device writes)
+///
 /// Returns Ok((used_len, resp_type)) on completion, Err on timeout.
 fn send_command_3desc(
     state: &mut GpuPciDeviceState,
@@ -1773,9 +1772,10 @@ fn send_command_3desc(
     hdr_len: u32,
     payload_phys: u64,
     payload_len: u32,
-    resp_phys: u64,
-    resp_len: u32,
 ) -> Result<(u32, u32), &'static str> {
+    let resp_phys = virt_to_phys(&raw const PCI_RESP_BUF as u64);
+    let resp_len = core::mem::size_of::<VirtioGpuCtrlHdr>() as u32;
+
     // Poison response buffer to verify device actually writes a response.
     // If we read 0xDEADBEEF back after the command, the device didn't respond.
     unsafe {
@@ -1840,9 +1840,10 @@ fn send_command_3desc(
     let has_msi = GPU_IRQ.load(Ordering::Relaxed) != 0;
 
     // When MSI-X is active: zero-spin, pure interrupt-driven wake.
-    // Enable device interrupts, register our thread, notify device, block immediately.
-    // The GPU interrupt handler fires on completion and wakes us — no CPU cycles
-    // wasted spinning. This matches Linux's virtio-gpu driver (wait_event_timeout).
+    // CRITICAL: Enable interrupts and register the waiting thread BEFORE notifying
+    // the device. The previous send_command (2-desc) leaves avail.flags=1 (NO_INTERRUPT).
+    // If we notify first, the device sees NO_INTERRUPT, processes the command without
+    // firing MSI-X, and we block forever (until the 10ms safety timeout).
     //
     // When MSI-X is not available: spin briefly then block with timer fallback.
     if !has_msi {
@@ -1855,6 +1856,23 @@ fn send_command_3desc(
         }
     }
 
+    #[cfg(target_arch = "aarch64")]
+    if has_msi && can_yield {
+        // Register thread for interrupt-driven wake BEFORE notify
+        if let Some(tid) = crate::task::scheduler::current_thread_id() {
+            GPU_WAITING_THREAD.store(tid, Ordering::Release);
+        }
+
+        // Enable device interrupts BEFORE notify — so the device sees avail.flags=0
+        // when it processes the command and fires MSI-X on completion.
+        unsafe {
+            let q = &raw mut PCI_CTRL_QUEUE;
+            (*q).avail.flags = 0; // Enable notifications
+            dma_cache_clean(&(*q).avail.flags as *const u16 as *const u8, 64);
+        }
+        fence(Ordering::SeqCst);
+    }
+
     // Notify device
     state.device.notify_queue_fast(0);
 
@@ -1863,20 +1881,9 @@ fn send_command_3desc(
     #[cfg(target_arch = "aarch64")]
     if has_msi && can_yield {
         // MSI-X path: block immediately, zero spin.
+        // Thread registration and interrupt enable already done BEFORE notify above.
         let sleep_start: u64;
         unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) sleep_start, options(nomem, nostack)); }
-
-        // Register thread for interrupt-driven wake
-        if let Some(tid) = crate::task::scheduler::current_thread_id() {
-            GPU_WAITING_THREAD.store(tid, Ordering::Release);
-        }
-
-        // Enable device interrupts — GPU will fire MSI-X on completion
-        unsafe {
-            let q = &raw mut PCI_CTRL_QUEUE;
-            (*q).avail.flags = 0; // Enable notifications
-            dma_cache_clean(&(*q).avail.flags as *const u16 as *const u8, 64);
-        }
 
         // Check if already complete before blocking (race: device may have
         // finished between notify and here)
@@ -1924,27 +1931,37 @@ fn send_command_3desc(
         GPU_SLEEP_TICKS.fetch_add(slept, Ordering::Relaxed);
         GPU_SLEEP_TICKS_PHASES.fetch_add(slept, Ordering::Relaxed);
 
-        // Read used ring — GPU must be done by now
-        unsafe {
-            let q = &raw const PCI_CTRL_QUEUE;
-            let used_addr = &(*q).used as *const _ as usize;
-            core::arch::asm!("dc civac, {}", in(reg) used_addr, options(nostack));
-            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        // Read used ring — GPU should be done by now.
+        // Spin-poll with cache invalidation to catch completion.
+        let mut spin_retries = 0u32;
+        let max_spin = 500_000u32;
+        loop {
+            unsafe {
+                let q = &raw const PCI_CTRL_QUEUE;
+                let used_addr = &(*q).used as *const _ as usize;
+                core::arch::asm!("dc civac, {}", in(reg) used_addr, options(nostack));
+                core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+            }
+            fence(Ordering::Acquire);
+            let cur_used_idx = unsafe {
+                let q = &raw const PCI_CTRL_QUEUE;
+                read_volatile(&(*q).used.idx)
+            };
+            if cur_used_idx != state.last_used_idx {
+                used_len = unsafe {
+                    let q = &raw const PCI_CTRL_QUEUE;
+                    let elem_idx = (state.last_used_idx % 16) as usize;
+                    read_volatile(&(*q).used.ring[elem_idx].len)
+                };
+                state.last_used_idx = cur_used_idx;
+                break;
+            }
+            spin_retries += 1;
+            if spin_retries >= max_spin {
+                return Err("GPU PCI 3-desc command timeout (MSI-X wake but no completion)");
+            }
+            core::hint::spin_loop();
         }
-        fence(Ordering::Acquire);
-        let used_idx = unsafe {
-            let q = &raw const PCI_CTRL_QUEUE;
-            read_volatile(&(*q).used.idx)
-        };
-        if used_idx == state.last_used_idx {
-            return Err("GPU PCI 3-desc command timeout (MSI-X wake but no completion)");
-        }
-        used_len = unsafe {
-            let q = &raw const PCI_CTRL_QUEUE;
-            let elem_idx = (state.last_used_idx % 16) as usize;
-            read_volatile(&(*q).used.ring[elem_idx].len)
-        };
-        state.last_used_idx = used_idx;
     } else {
         // Polling fallback: spin then block with timer wake.
         let mut timeout = 10_000_000u32;
@@ -2016,7 +2033,6 @@ fn send_command_3desc(
     // Invalidate response cache
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        // Invalidate response cache line using virtual address (not physical).
         let r = &raw const PCI_RESP_BUF as usize;
         core::arch::asm!("dc civac, {}", in(reg) r, options(nostack));
         core::arch::asm!("dsb sy", options(nostack, preserves_flags));
@@ -2724,7 +2740,6 @@ fn virgl_attach_backing_paged(
 
     let hdr_phys = virt_to_phys(&raw const PCI_CMD_BUF as u64);
     let entries_phys = virt_to_phys(entries_ptr as u64);
-    let resp_phys = virt_to_phys(&raw const PCI_RESP_BUF as u64);
 
     crate::serial_println!("[virgl] attach_backing: sending 3-desc chain: hdr=0x{:x}({}B), entries=0x{:x}({}B)",
         hdr_phys, hdr_size, entries_phys, entries_size);
@@ -2733,7 +2748,6 @@ fn virgl_attach_backing_paged(
         state,
         hdr_phys, hdr_size as u32,
         entries_phys, entries_size as u32,
-        resp_phys, core::mem::size_of::<VirtioGpuCtrlHdr>() as u32,
     )?;
 
     // Free entries array (one-time during init)
@@ -2861,13 +2875,11 @@ fn virgl_attach_backing_from_pages(
 
     let hdr_phys = virt_to_phys(&raw const PCI_CMD_BUF as u64);
     let entries_phys = virt_to_phys(entries_ptr as u64);
-    let resp_phys = virt_to_phys(&raw const PCI_RESP_BUF as u64);
 
     let (_used_len, resp_type) = send_command_3desc(
         state,
         hdr_phys, hdr_size as u32,
         entries_phys, entries_size as u32,
-        resp_phys, core::mem::size_of::<VirtioGpuCtrlHdr>() as u32,
     )?;
 
     unsafe { alloc::alloc::dealloc(entries_ptr, entries_layout); }
@@ -3120,7 +3132,6 @@ fn virgl_submit_3d_cmd(
 
     let hdr_phys = virt_to_phys(&raw const PCI_3D_CMD_BUF as u64);
     let payload_phys = hdr_phys + hdr_size as u64;
-    let resp_phys = virt_to_phys(&raw const PCI_RESP_BUF as u64);
 
     // 3-descriptor chain: header (readable) + payload (readable) + response (writable)
     let (used_len, resp_type) = send_command_3desc(
@@ -3129,8 +3140,6 @@ fn virgl_submit_3d_cmd(
         hdr_size as u32,
         payload_phys,
         payload_bytes as u32,
-        resp_phys,
-        core::mem::size_of::<VirtioGpuCtrlHdr>() as u32,
     )?;
 
     // Read response flags and fence_id
@@ -3206,7 +3215,6 @@ fn virgl_fence_sync(state: &mut GpuPciDeviceState, target_fence_id: u64) -> Resu
 
         let hdr_phys = virt_to_phys(&raw const PCI_3D_CMD_BUF as u64);
         let payload_phys = hdr_phys + hdr_size as u64;
-        let resp_phys = virt_to_phys(&raw const PCI_RESP_BUF as u64);
 
         let (_used_len, resp_type) = send_command_3desc(
             state,
@@ -3214,8 +3222,6 @@ fn virgl_fence_sync(state: &mut GpuPciDeviceState, target_fence_id: u64) -> Resu
             hdr_size as u32,
             payload_phys,
             payload_bytes as u32,
-            resp_phys,
-            core::mem::size_of::<VirtioGpuCtrlHdr>() as u32,
         )?;
 
         if resp_type != cmd::RESP_OK_NODATA {
