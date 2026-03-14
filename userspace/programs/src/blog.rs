@@ -2,7 +2,7 @@
 //!
 //! A GUI log viewer built on the Breengel windowing library. Displays log
 //! files in a tabbed interface with auto-scroll (follow mode) and keyboard
-//! navigation.
+//! navigation. Uses TrueType fonts from system font configuration.
 //!
 //! Default tabs:
 //!   Tab 0: "Kernel"  — tails /var/log/kernel.log
@@ -27,9 +27,14 @@ use libbreenix::io;
 use libbreenix::time;
 use libbreenix::types::Fd;
 
+use libfont::{Font, CachedFont};
 use libgfx::bitmap_font;
+use libgfx::ttf_font;
 use libgfx::color::Color;
 use libgfx::shapes;
+
+#[path = "system_fonts.rs"]
+mod system_fonts;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -86,7 +91,6 @@ impl LogTab {
         }
     }
 
-    /// Open the file and load initial content.
     fn open(&mut self) {
         match fs::open(self.path, fs::O_RDONLY) {
             Ok(fd) => {
@@ -99,7 +103,6 @@ impl LogTab {
         }
     }
 
-    /// Read all available content from the file descriptor.
     fn load_all(&mut self, fd: Fd) {
         let mut buf = [0u8; READ_CHUNK];
         loop {
@@ -122,10 +125,8 @@ impl LogTab {
         self.rebuild_lines();
     }
 
-    /// Check for new content appended to the file.
     fn poll_new_content(&mut self) {
         if self.fd.is_none() {
-            // Try opening file if it didn't exist before
             match fs::open(self.path, fs::O_RDONLY) {
                 Ok(fd) => {
                     self.fd = Some(fd);
@@ -136,7 +137,6 @@ impl LogTab {
             }
         }
 
-        // Check file size via fstat
         let fd = self.fd.unwrap();
         let current_size = match fs::fstat(fd) {
             Ok(stat) => stat.st_size as usize,
@@ -144,7 +144,6 @@ impl LogTab {
         };
 
         if current_size > self.last_size {
-            // Seek to where we left off and read new content
             let _ = fs::lseek(fd, self.last_size as i64, fs::SEEK_SET);
             let mut buf = [0u8; READ_CHUNK];
             loop {
@@ -166,14 +165,12 @@ impl LogTab {
             self.last_size = current_size;
             self.rebuild_lines();
         } else if current_size < self.last_size {
-            // File was truncated/rotated; reload from scratch
             let _ = fs::lseek(fd, 0, fs::SEEK_SET);
             self.content.clear();
             self.load_all(fd);
         }
     }
 
-    /// Build the line index from content bytes.
     fn rebuild_lines(&mut self) {
         self.lines.clear();
         if self.content.is_empty() {
@@ -186,13 +183,11 @@ impl LogTab {
                 start = i + 1;
             }
         }
-        // Handle trailing content without newline
         if start < self.content.len() {
             self.lines.push((start, self.content.len()));
         }
     }
 
-    /// Get bytes for a given line index.
     fn line_bytes(&self, line: usize) -> &[u8] {
         if line >= self.lines.len() {
             return b"";
@@ -201,12 +196,10 @@ impl LogTab {
         &self.content[start..end]
     }
 
-    /// Total number of lines.
     fn line_count(&self) -> usize {
         self.lines.len()
     }
 
-    /// Scroll to bottom.
     fn scroll_to_bottom(&mut self, visible_lines: usize) {
         if self.line_count() > visible_lines {
             self.scroll_offset = self.line_count() - visible_lines;
@@ -215,9 +208,30 @@ impl LogTab {
         }
     }
 
-    /// Returns true if the file was found.
     fn is_open(&self) -> bool {
         self.fd.is_some()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Font state
+// ---------------------------------------------------------------------------
+
+struct FontState {
+    ttf: Option<CachedFont<'static>>,
+    size: f32,
+    char_w: usize,
+    line_h: usize,
+}
+
+impl FontState {
+    fn draw_text(&mut self, fb: &mut breengel::FrameBuf, text: &[u8], x: usize, y: usize, color: Color) {
+        if let Some(ref mut font) = self.ttf {
+            let s = core::str::from_utf8(text).unwrap_or("?");
+            ttf_font::draw_text(fb, font, s, x as i32, y as i32, self.size, color);
+        } else {
+            bitmap_font::draw_text(fb, text, x, y, color);
+        }
     }
 }
 
@@ -230,23 +244,18 @@ fn render(
     tabs: &[LogTab],
     tab_bar: &TabBar,
     theme: &Theme,
+    fonts: &mut FontState,
 ) {
     let fb = win.framebuf();
     let w = fb.width as i32;
     let h = fb.height as i32;
 
-    // Clear entire framebuffer
     fb.clear(BG);
-
-    // Draw tab bar
     tab_bar.draw(fb, theme);
 
-    // Get font metrics
-    let fm = bitmap_font::metrics();
-    let line_h = fm.line_height();
-    let char_w = fm.char_width;
+    let line_h = fonts.line_h;
+    let char_w = fonts.char_w;
 
-    // Content area: below tab bar, above status bar
     let content_y = TAB_BAR_H;
     let content_h = h - TAB_BAR_H - STATUS_BAR_H;
     let visible_lines = if content_h > 0 {
@@ -262,18 +271,16 @@ fn render(
     let tab = &tabs[selected];
 
     if !tab.is_open() {
-        // Show "File not found" message
         let msg = b"File not found";
         let msg_x = (w as usize - msg.len() * char_w) / 2;
         let msg_y = content_y as usize + content_h as usize / 2;
-        bitmap_font::draw_text(fb, msg, msg_x, msg_y, NOT_FOUND_COLOR);
+        fonts.draw_text(fb, msg, msg_x, msg_y, NOT_FOUND_COLOR);
     } else if tab.line_count() == 0 {
         let msg = b"(empty)";
         let msg_x = (w as usize - msg.len() * char_w) / 2;
         let msg_y = content_y as usize + content_h as usize / 2;
-        bitmap_font::draw_text(fb, msg, msg_x, msg_y, TEXT_LINE_NUM);
+        fonts.draw_text(fb, msg, msg_x, msg_y, TEXT_LINE_NUM);
     } else {
-        // Render visible lines
         for i in 0..visible_lines {
             let line_idx = tab.scroll_offset + i;
             if line_idx >= tab.line_count() {
@@ -284,14 +291,14 @@ fn render(
             // Line number
             let mut num_buf = [b' '; 5];
             format_line_number(&mut num_buf, line_idx + 1);
-            bitmap_font::draw_text(fb, &num_buf, 2, y, TEXT_LINE_NUM);
+            fonts.draw_text(fb, &num_buf, 2, y, TEXT_LINE_NUM);
 
             // Line content, truncated to fit
             let line = tab.line_bytes(line_idx);
             let max_chars = ((w as usize).saturating_sub(gutter_w)) / char_w;
             let display_len = line.len().min(max_chars);
             if display_len > 0 {
-                bitmap_font::draw_text(fb, &line[..display_len], gutter_w, y, TEXT_NORMAL);
+                fonts.draw_text(fb, &line[..display_len], gutter_w, y, TEXT_NORMAL);
             }
         }
     }
@@ -300,11 +307,9 @@ fn render(
     let status_y = h - STATUS_BAR_H;
     shapes::fill_rect(fb, 0, status_y, w, STATUS_BAR_H, STATUS_BG);
 
-    // Left: filename
     let path_bytes = tab.path.as_bytes();
-    bitmap_font::draw_text(fb, path_bytes, 4, status_y as usize + 2, STATUS_FG);
+    fonts.draw_text(fb, path_bytes, 4, status_y as usize + 2, STATUS_FG);
 
-    // Middle: line info
     let mut info_buf = [0u8; 40];
     let info_len = format_line_info(
         &mut info_buf,
@@ -312,17 +317,15 @@ fn render(
         tab.line_count(),
     );
     let info_x = (w as usize / 2).saturating_sub(info_len * char_w / 2);
-    bitmap_font::draw_text(fb, &info_buf[..info_len], info_x, status_y as usize + 2, STATUS_FG);
+    fonts.draw_text(fb, &info_buf[..info_len], info_x, status_y as usize + 2, STATUS_FG);
 
-    // Right: follow indicator
     if tab.follow {
         let label = b"[FOLLOW]";
         let label_x = w as usize - label.len() * char_w - 4;
-        bitmap_font::draw_text(fb, label, label_x, status_y as usize + 2, FOLLOW_COLOR);
+        fonts.draw_text(fb, label, label_x, status_y as usize + 2, FOLLOW_COLOR);
     }
 }
 
-/// Format a line number right-aligned into a 5-byte buffer.
 fn format_line_number(buf: &mut [u8; 5], n: usize) {
     let mut val = n;
     let mut i = 4;
@@ -336,7 +339,6 @@ fn format_line_number(buf: &mut [u8; 5], n: usize) {
     }
 }
 
-/// Format "L:offset/total" into buffer, return length.
 fn format_line_info(buf: &mut [u8], offset: usize, total: usize) -> usize {
     let mut pos = 0;
     buf[pos] = b'L'; pos += 1;
@@ -347,7 +349,6 @@ fn format_line_info(buf: &mut [u8], offset: usize, total: usize) -> usize {
     pos
 }
 
-/// Write a usize as ASCII digits, return bytes written.
 fn write_usize(buf: &mut [u8], mut n: usize) -> usize {
     if n == 0 {
         buf[0] = b'0';
@@ -373,6 +374,70 @@ fn write_usize(buf: &mut [u8], mut n: usize) -> usize {
 fn main() {
     println!("[blog] Breenix Log Viewer starting");
 
+    // Load system font configuration
+    let config = system_fonts::FontConfig::load();
+    let font_size = if config.mono_size >= 6.0 { config.mono_size } else { 14.0 };
+    println!("[blog] config: mono_size={} font_size={} path='{}'", config.mono_size, font_size, config.mono_path);
+
+    // Load TrueType font — leak the data to get 'static lifetime for CachedFont
+    let font_data: Option<&'static [u8]> = config.load_mono().map(|(data, _)| {
+        let boxed: Box<[u8]> = data.into_boxed_slice();
+        &*Box::leak(boxed)
+    });
+    let ttf_font: Option<CachedFont<'static>> = font_data
+        .and_then(|data| Font::parse(data).ok())
+        .map(|f| CachedFont::new(f, 256));
+
+    // Compute font metrics
+    let mut fonts = if let Some(font) = ttf_font {
+        let metrics = font.metrics(font_size);
+        let glyph_m = font.glyph_index('M');
+        let advance = font.advance_width(glyph_m, font_size);
+        let char_w = (advance + 0.5) as usize;
+        let line_h = (metrics.ascender + 0.99) as usize + ((-metrics.descender) + 0.99) as usize;
+        FontState {
+            ttf: Some(font),
+            size: font_size,
+            char_w: char_w.max(1),
+            line_h: line_h.max(1),
+        }
+    } else {
+        let fm = bitmap_font::metrics();
+        FontState {
+            ttf: None,
+            size: font_size,
+            char_w: fm.char_width,
+            line_h: fm.line_height(),
+        }
+    };
+
+    // Diagnostic: test TTF rasterization
+    if let Some(ref mut f) = fonts.ttf {
+        let gi = f.glyph_index('A');
+        println!("[blog] font loaded, char_w={} line_h={}", fonts.char_w, fonts.line_h);
+        match f.font().debug_rasterize(gi, fonts.size) {
+            Ok(d) => {
+                println!("[blog] dbg: px={} upm={} scale={}", d.pixel_size, d.units_per_em, d.scale);
+                println!("[blog] dbg: glyph_bbox=({},{},{},{})", d.glyph_x_min, d.glyph_y_min, d.glyph_x_max, d.glyph_y_max);
+                println!("[blog] dbg: scaled=({},{},{},{})", d.x_min_scaled, d.y_min_scaled, d.x_max_scaled, d.y_max_scaled);
+                println!("[blog] dbg: bmp={}x{} off=({},{}) baseline={}", d.bmp_width, d.bmp_height, d.bmp_x_offset, d.bmp_y_offset, d.baseline);
+                println!("[blog] dbg: contours={} pts={} segs={} nz={}", d.num_contours, d.num_points, d.num_segments, d.nonzero_coverage);
+            }
+            Err(e) => println!("[blog] debug_rasterize FAILED: {}", e),
+        }
+        // Test actual rasterize
+        f.clear_cache();
+        match f.rasterize_glyph(gi, fonts.size) {
+            Ok(bmp) => {
+                let nz = bmp.coverage.iter().filter(|&&v| v > 0).count();
+                println!("[blog] raster: {}x{} off=({},{}) nz={}", bmp.width, bmp.height, bmp.x_offset, bmp.y_offset, nz);
+            }
+            Err(e) => println!("[blog] raster FAIL: {}", e),
+        }
+    } else {
+        println!("[blog] TTF font NOT loaded, using bitmap fallback");
+    }
+
     // Create window
     let mut win = match Window::new(b"Log Viewer", WIN_W, WIN_H) {
         Ok(w) => w,
@@ -383,28 +448,28 @@ fn main() {
     };
     println!("[blog] Window {} ({}x{})", win.id(), WIN_W, WIN_H);
 
-    // Set up theme (use bitmap font for anti-aliased text)
     let mut theme = Theme::dark();
     theme.use_bitmap_font = true;
 
-    // Create tab bar
     let tab_rect = Rect::new(0, 0, WIN_W as i32, TAB_BAR_H);
     let mut tab_bar = TabBar::new(tab_rect, vec![b"Kernel", b"Serial"]);
 
-    // Create log tabs
     let mut tabs = vec![
         LogTab::new("/var/log/kernel.log"),
         LogTab::new("/var/log/serial.log"),
     ];
 
-    // Open files
     for tab in tabs.iter_mut() {
         tab.open();
     }
 
-    // Get font metrics for visible line calculations
-    let fm = bitmap_font::metrics();
-    let line_h = fm.line_height();
+    // Diagnostic: show log file status
+    for (i, tab) in tabs.iter().enumerate() {
+        println!("[blog] tab[{}] '{}': open={} lines={} bytes={}",
+                 i, tab.path, tab.is_open(), tab.line_count(), tab.content.len());
+    }
+
+    let line_h = fonts.line_h;
     let content_h = WIN_H as i32 - TAB_BAR_H - STATUS_BAR_H;
     let visible_lines = if content_h > 0 && line_h > 0 {
         content_h as usize / line_h
@@ -412,25 +477,21 @@ fn main() {
         1
     };
 
-    // Start in follow mode: scroll to bottom
     for tab in tabs.iter_mut() {
         if tab.follow {
             tab.scroll_to_bottom(visible_lines);
         }
     }
 
-    // Mouse state for tab bar interaction
     let mut mouse_x: i32 = 0;
     let mut mouse_y: i32 = 0;
     let mut mouse_buttons: u32 = 0;
     let mut poll_counter: u32 = 0;
 
-    // Initial render
-    render(&mut win, &tabs, &tab_bar, &theme);
+    render(&mut win, &tabs, &tab_bar, &theme, &mut fonts);
     let _ = win.present();
 
     loop {
-        // Poll Breengel events
         let events = win.poll_events();
         let mut needs_redraw = !events.is_empty();
 
@@ -469,10 +530,8 @@ fn main() {
                             tabs[sel].follow = true;
                         }
                         _ => {
-                            // Handle ASCII keys
                             match ascii {
                                 b'q' | b'Q' => {
-                                    // Close file descriptors
                                     for tab in &tabs {
                                         if let Some(fd) = tab.fd {
                                             let _ = io::close(fd);
@@ -514,7 +573,6 @@ fn main() {
                                     }
                                 }
                                 b'\t' => {
-                                    // Tab key: switch to next tab
                                     let next = (tab_bar.selected() + 1) % tabs.len();
                                     tab_bar.set_selected(next);
                                 }
@@ -554,7 +612,6 @@ fn main() {
             }
         }
 
-        // Periodic file content polling (every ~50ms * 10 = 500ms)
         poll_counter += 1;
         if poll_counter % 10 == 0 {
             for tab in tabs.iter_mut() {
@@ -569,13 +626,11 @@ fn main() {
             }
         }
 
-        // Render and present if anything changed
         if needs_redraw {
-            render(&mut win, &tabs, &tab_bar, &theme);
+            render(&mut win, &tabs, &tab_bar, &theme, &mut fonts);
             let _ = win.present();
         }
 
-        // Sleep 50ms between polls
         let _ = time::sleep_ms(50);
     }
 }

@@ -5,8 +5,10 @@
 //! and rendered into the Breengel window's framebuffer.
 //!
 //! Keyboard shortcuts:
-//!   Ctrl+T  — open a new tab
-//!   Ctrl+W  — close the active tab (exits if last tab)
+//!   Ctrl+T       — open a new tab
+//!   Ctrl+W       — close the active tab (exits if last tab)
+//!   Ctrl+Plus/=  — increase font size
+//!   Ctrl+Minus   — decrease font size
 
 use std::process;
 
@@ -24,18 +26,19 @@ use libgfx::ttf_font;
 
 use libbui::{InputState, WidgetEvent};
 
+#[path = "system_fonts.rs"]
+mod system_fonts;
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-/// Default TrueType font pixel size.
-const TTF_FONT_SIZE: f32 = 16.0;
+/// Min/max font size for Ctrl+/- resizing.
+const MIN_FONT_SIZE: f32 = 8.0;
+const MAX_FONT_SIZE: f32 = 32.0;
+const FONT_SIZE_STEP: f32 = 1.0;
 
-/// Path to the TrueType monospace font on the ext2 filesystem.
-const FONT_PATH: &str = "/usr/share/fonts/DejaVuSansMono.ttf";
-
-/// Noto Sans Mono 16px cell dimensions for terminal text.
-/// CELL_W must match bitmap_font::metrics().char_width (7 for size_16).
-const CELL_W: usize = 7;
-const CELL_H: usize = 18;
+/// Bitmap font cell dimensions (fallback when TTF is unavailable).
+const BITMAP_CELL_W: usize = 7;
+const BITMAP_CELL_H: usize = 18;
 
 /// Tab bar height in pixels.
 const TAB_BAR_HEIGHT: i32 = 24;
@@ -121,6 +124,26 @@ impl TermEmu {
 
     fn cell(&self, x: usize, y: usize) -> &Cell { &self.cells[y * self.cols + x] }
     fn cell_mut(&mut self, x: usize, y: usize) -> &mut Cell { &mut self.cells[y * self.cols + x] }
+
+    fn resize(&mut self, new_cols: usize, new_rows: usize) {
+        if new_cols == self.cols && new_rows == self.rows {
+            return;
+        }
+        let mut new_cells = vec![Cell::blank(); new_cols * new_rows];
+        let copy_cols = self.cols.min(new_cols);
+        let copy_rows = self.rows.min(new_rows);
+        for y in 0..copy_rows {
+            for x in 0..copy_cols {
+                new_cells[y * new_cols + x] = self.cells[y * self.cols + x];
+            }
+        }
+        self.cols = new_cols;
+        self.rows = new_rows;
+        self.cells = new_cells;
+        self.cursor_x = self.cursor_x.min(new_cols.saturating_sub(1));
+        self.cursor_y = self.cursor_y.min(new_rows.saturating_sub(1));
+        self.dirty = true;
+    }
 
     fn scroll_up(&mut self) {
         let cols = self.cols;
@@ -263,25 +286,26 @@ impl TermEmu {
     }
 
     fn render(&mut self, fb: &mut FrameBuf, x_off: usize, y_off: usize,
-              clip_w: usize, clip_h: usize, mut ttf: Option<&mut CachedFont>) {
+              clip_w: usize, clip_h: usize, cell_w: usize, cell_h: usize,
+              font_size: f32, mut ttf: Option<&mut CachedFont>) {
         if !self.dirty { return; }
         self.dirty = false;
         let max_x = (x_off + clip_w).min(fb.width);
         let max_y = (y_off + clip_h).min(fb.height);
         for row in 0..self.rows {
-            let py = y_off + row * CELL_H;
-            if py + CELL_H > max_y { break; }
+            let py = y_off + row * cell_h;
+            if py + cell_h > max_y { break; }
             for col in 0..self.cols {
                 let cell = self.cell(col, row);
-                let px = x_off + col * CELL_W;
-                if px + CELL_W > max_x { break; }
-                for dy in 0..CELL_H { for dx in 0..CELL_W { fb.put_pixel(px + dx, py + dy, cell.bg); } }
+                let px = x_off + col * cell_w;
+                if px + cell_w > max_x { break; }
+                for dy in 0..cell_h { for dx in 0..cell_w { fb.put_pixel(px + dx, py + dy, cell.bg); } }
                 if cell.ch != b' ' {
                     let fg = if cell.bold {
                         Color::rgb(cell.fg.r.saturating_add(40), cell.fg.g.saturating_add(40), cell.fg.b.saturating_add(40))
                     } else { cell.fg };
                     if let Some(ref mut font) = ttf {
-                        ttf_font::draw_char(fb, *font, cell.ch as char, px as i32, py as i32, TTF_FONT_SIZE, fg);
+                        ttf_font::draw_char(fb, *font, cell.ch as char, px as i32, py as i32, font_size, fg);
                     } else {
                         bitmap_font::draw_char(fb, cell.ch as char, px, py, fg);
                     }
@@ -289,11 +313,11 @@ impl TermEmu {
             }
             // Cursor underline
             if row == self.cursor_y && self.cursor_x < self.cols {
-                let cx = x_off + self.cursor_x * CELL_W;
-                let cw = CELL_W;
+                let cx = x_off + self.cursor_x * cell_w;
+                let cw = cell_w;
                 for dy in 0..2usize { for dx in 0..cw {
-                    if cx + dx < max_x && py + CELL_H - 2 + dy < max_y {
-                        fb.put_pixel(cx + dx, py + CELL_H - 2 + dy, Color::WHITE);
+                    if cx + dx < max_x && py + cell_h - 2 + dy < max_y {
+                        fb.put_pixel(cx + dx, py + cell_h - 2 + dy, Color::WHITE);
                     }
                 }}
             }
@@ -350,27 +374,17 @@ fn spawn_child(path: &[u8]) -> (Fd, i64) {
 
 // ─── Tab helpers ────────────────────────────────────────────────────────────
 
-/// Compute terminal grid dimensions from the content area.
-fn term_grid(content_w: u32, content_h: u32) -> (usize, usize) {
-    let cols = content_w as usize / CELL_W;
-    let rows = content_h as usize / CELL_H;
-    (cols, rows)
-}
-
-/// Generate a label for a new tab (e.g. b"shell 1", b"shell 2", ...).
+/// Generate a label for a new tab.
 /// We use a static counter to keep labels unique.
 static mut TAB_COUNTER: usize = 0;
 
 /// Tab label storage — we need 'static lifetimes for TabBar labels.
-/// We keep a pool of leaked &'static [u8] slices.
 fn make_tab_label() -> &'static [u8] {
     let n = unsafe {
         TAB_COUNTER += 1;
         TAB_COUNTER
     };
-    // Format a label like "shell 1"
     let s = format!("shell {}", n);
-    // Leak to get a 'static lifetime — tabs are long-lived, this is fine.
     let boxed: Box<[u8]> = s.into_bytes().into_boxed_slice();
     Box::leak(boxed)
 }
@@ -381,7 +395,6 @@ fn spawn_tab(cols: usize, rows: usize) -> Tab {
 
 fn spawn_tab_cmd(cols: usize, rows: usize, cmd: &[u8]) -> Tab {
     let (master_fd, child_pid) = spawn_child(cmd);
-    // Set master fd to non-blocking so we can poll without blocking the event loop
     let _ = io::fcntl_setfl(master_fd, io::status_flags::O_NONBLOCK);
     Tab {
         emu: TermEmu::new(cols, rows),
@@ -395,13 +408,80 @@ fn make_static_label(s: &str) -> &'static [u8] {
     Box::leak(boxed)
 }
 
+/// Compute cell dimensions from TTF font metrics.
+fn ttf_cell_dims(font: &mut CachedFont, size: f32) -> (usize, usize) {
+    let metrics = font.metrics(size);
+    let glyph_m = font.glyph_index('M');
+    let advance = font.advance_width(glyph_m, size);
+    // Guard against NaN/Inf: if advance or ascender is unreasonable, fall back to bitmap dims
+    if advance <= 0.0 || advance > 200.0 || metrics.ascender <= 0.0 || metrics.ascender > 200.0 {
+        return (BITMAP_CELL_W, BITMAP_CELL_H);
+    }
+    let w = (advance + 0.5) as usize;
+    let h = (metrics.ascender + 0.99) as usize + ((-metrics.descender) + 0.99) as usize;
+    (w.max(1), h.max(1))
+}
+
 // ─── Main ───────────────────────────────────────────────────────────────────
 
 fn main() {
-    // Load TrueType font from ext2 filesystem
-    let font_data = std::fs::read(FONT_PATH).ok();
+    // Load system font configuration
+    let config = system_fonts::FontConfig::load();
+    let mut font_size = if config.mono_size >= 6.0 { config.mono_size } else { 14.0 };
+    print!("[bterm] config: mono_size={} font_size={}\n", config.mono_size, font_size);
+
+    // Load TrueType font from system config
+    let font_data = config.load_mono().map(|(data, _)| data);
     let font_parsed = font_data.as_ref().and_then(|data| Font::parse(data).ok());
     let mut ttf_font: Option<CachedFont> = font_parsed.map(|f| CachedFont::new(f, 256));
+
+    // Compute cell dimensions from font metrics (or fall back to bitmap constants)
+    let (mut cell_w, mut cell_h) = if let Some(ref mut font) = ttf_font {
+        ttf_cell_dims(font, font_size)
+    } else {
+        (BITMAP_CELL_W, BITMAP_CELL_H)
+    };
+
+    // Diagnostic: detailed rasterization debug to find where computation goes wrong
+    if let Some(ref mut font) = ttf_font {
+        let gi = font.glyph_index('A');
+        print!("[bterm] font_size={} cell={}x{}\n", font_size, cell_w, cell_h);
+        // Call debug_rasterize which returns ALL intermediate values
+        match font.font().debug_rasterize(gi, font_size) {
+            Ok(d) => {
+                print!("[bterm] dbg: px={} upm={} scale={}\n",
+                       d.pixel_size, d.units_per_em, d.scale);
+                print!("[bterm] dbg: glyph_bbox=({},{},{},{})\n",
+                       d.glyph_x_min, d.glyph_y_min, d.glyph_x_max, d.glyph_y_max);
+                print!("[bterm] dbg: scaled=({},{},{},{})\n",
+                       d.x_min_scaled, d.y_min_scaled, d.x_max_scaled, d.y_max_scaled);
+                print!("[bterm] dbg: bmp={}x{} off=({},{}) baseline={}\n",
+                       d.bmp_width, d.bmp_height, d.bmp_x_offset, d.bmp_y_offset, d.baseline);
+                print!("[bterm] dbg: contours={} pts={} segs={} nz={}\n",
+                       d.num_contours, d.num_points, d.num_segments, d.nonzero_coverage);
+            }
+            Err(e) => print!("[bterm] debug_rasterize FAILED: {}\n", e),
+        }
+        // Also test rasterize directly — call twice to check first-call vs second-call
+        font.clear_cache();
+        match font.rasterize_glyph(gi, font_size) {
+            Ok(bmp) => {
+                let nz = bmp.coverage.iter().filter(|&&v| v > 0).count();
+                print!("[bterm] raster#1: {}x{} off=({},{}) nz={}\n",
+                       bmp.width, bmp.height, bmp.x_offset, bmp.y_offset, nz);
+            }
+            Err(e) => print!("[bterm] raster#1 FAIL: {}\n", e),
+        }
+        font.clear_cache();
+        match font.rasterize_glyph(gi, font_size) {
+            Ok(bmp) => {
+                let nz = bmp.coverage.iter().filter(|&&v| v > 0).count();
+                print!("[bterm] raster#2: {}x{} off=({},{}) nz={}\n",
+                       bmp.width, bmp.height, bmp.x_offset, bmp.y_offset, nz);
+            }
+            Err(e) => print!("[bterm] raster#2 FAIL: {}\n", e),
+        }
+    }
 
     // Create window
     let mut win = match Window::new(b"Terminal", WIN_WIDTH, WIN_HEIGHT) {
@@ -415,7 +495,8 @@ fn main() {
     // Calculate content area (below tab bar)
     let content_w = WIN_WIDTH;
     let content_h = WIN_HEIGHT - TAB_BAR_HEIGHT as u32;
-    let (cols, rows) = term_grid(content_w, content_h);
+    let mut cols = (content_w as usize / cell_w).max(1);
+    let mut rows = (content_h as usize / cell_h).max(1);
 
     // Create tab bar
     let btop_label = make_static_label("btop");
@@ -448,6 +529,7 @@ fn main() {
         let mut mouse_x: i32 = 0;
         let mut mouse_y: i32 = 0;
         let mut buttons: u32 = prev_buttons;
+        let mut font_changed = false;
 
         for event in &events {
             match event {
@@ -455,6 +537,13 @@ fn main() {
                     process::exit(0);
                 }
                 Event::KeyPress { ascii, keycode, modifiers } => {
+                    // Debug: log key events for +/- and ctrl
+                    if *ascii == b'+' || *ascii == b'=' || *ascii == b'-'
+                       || *keycode == 0x2D || *keycode == 0x2E
+                    {
+                        print!("[bterm] key: ascii={} keycode=0x{:02X} ctrl={}\n",
+                               *ascii, *keycode, modifiers.ctrl);
+                    }
                     if modifiers.ctrl {
                         // Ctrl+T: new tab
                         if *ascii == b't' - b'a' + 1 || *ascii == b'T' - b'A' + 1
@@ -464,7 +553,6 @@ fn main() {
                             let idx = tab_bar.add_tab(label);
                             tabs.push(spawn_tab(cols, rows));
                             tab_bar.set_selected(idx);
-                            // Force full redraw
                             if let Some(tab) = tabs.get_mut(idx) {
                                 tab.emu.dirty = true;
                             }
@@ -476,14 +564,11 @@ fn main() {
                         {
                             let sel = tab_bar.selected();
                             if tabs.len() <= 1 {
-                                // Last tab — exit
                                 process::exit(0);
                             }
-                            // Close PTY and remove tab
                             let _ = io::close(tabs[sel].master_fd);
                             tabs.remove(sel);
                             tab_bar.remove_tab(sel);
-                            // Force redraw on newly selected tab
                             let new_sel = tab_bar.selected();
                             if let Some(tab) = tabs.get_mut(new_sel) {
                                 tab.emu.dirty = true;
@@ -498,6 +583,30 @@ fn main() {
                             }
                             continue;
                         }
+                        // Ctrl+= or Ctrl++: increase font size
+                        if *ascii == b'+' || *ascii == b'=' || *keycode == 0x2E {
+                            if ttf_font.is_some() {
+                                let new_size = (font_size + FONT_SIZE_STEP).min(MAX_FONT_SIZE);
+                                if new_size != font_size {
+                                    print!("[bterm] font size: {} -> {}\n", font_size, new_size);
+                                    font_size = new_size;
+                                    font_changed = true;
+                                }
+                            }
+                            continue;
+                        }
+                        // Ctrl+-: decrease font size
+                        if *ascii == b'-' || *keycode == 0x2D {
+                            if ttf_font.is_some() {
+                                let new_size = (font_size - FONT_SIZE_STEP).max(MIN_FONT_SIZE);
+                                if new_size != font_size {
+                                    print!("[bterm] font size: {} -> {}\n", font_size, new_size);
+                                    font_size = new_size;
+                                    font_changed = true;
+                                }
+                            }
+                            continue;
+                        }
                     }
 
                     // Arrow keys (USB HID keycodes)
@@ -509,7 +618,6 @@ fn main() {
                             81 => { let _ = io::write(tab.master_fd, b"\x1b[B"); } // Down
                             82 => { let _ = io::write(tab.master_fd, b"\x1b[A"); } // Up
                             _ => {
-                                // Regular key
                                 if *ascii > 0 {
                                     let _ = io::write(tab.master_fd, &[*ascii]);
                                 }
@@ -536,10 +644,33 @@ fn main() {
             }
         }
 
+        // Handle font size change: recompute grid, resize all tabs
+        if font_changed {
+            if let Some(ref mut font) = ttf_font {
+                font.clear_cache();
+                let (new_cw, new_ch) = ttf_cell_dims(font, font_size);
+                cell_w = new_cw;
+                cell_h = new_ch;
+                let new_cols = (content_w as usize / cell_w).max(1);
+                let new_rows = (content_h as usize / cell_h).max(1);
+                if new_cols != cols || new_rows != rows {
+                    cols = new_cols;
+                    rows = new_rows;
+                    for tab in tabs.iter_mut() {
+                        tab.emu.resize(cols, rows);
+                    }
+                } else {
+                    // Same grid size but different font — force redraw
+                    for tab in tabs.iter_mut() {
+                        tab.emu.dirty = true;
+                    }
+                }
+            }
+        }
+
         // Pass mouse state to TabBar for tab switching
         let input = InputState::from_raw(mouse_x, mouse_y, buttons, prev_buttons);
         if let WidgetEvent::ValueChanged(_) = tab_bar.update(&input) {
-            // Tab changed — force redraw of newly selected tab
             let sel = tab_bar.selected();
             if let Some(tab) = tabs.get_mut(sel) {
                 tab.emu.dirty = true;
@@ -565,7 +696,7 @@ fn main() {
         // ── 3. Render ───────────────────────────────────────────────
         let sel = tab_bar.selected();
         let any_dirty = tabs.get(sel).map_or(false, |t| t.emu.dirty);
-        let need_redraw = any_dirty || !events.is_empty();
+        let need_redraw = any_dirty || !events.is_empty() || font_changed;
 
         if need_redraw {
             let fb = win.framebuf();
@@ -581,6 +712,9 @@ fn main() {
                     TAB_BAR_HEIGHT as usize,
                     content_w as usize,
                     content_h as usize,
+                    cell_w,
+                    cell_h,
+                    font_size,
                     ttf_font.as_mut(),
                 );
             }

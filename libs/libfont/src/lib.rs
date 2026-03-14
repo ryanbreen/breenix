@@ -165,6 +165,9 @@ impl<'a> Font<'a> {
         let simple_glyph = self.resolve_glyph(glyph_offset)?;
 
         let ascender = self.hhea.ascender as f32 * scale;
+        // Fixed baseline position in cell — same for ALL glyphs at this size.
+        // Using round ensures the baseline doesn't shift per-glyph.
+        let baseline = (ascender + 0.5) as i32;
 
         // Calculate bitmap bounds from glyph bounds
         let x_min = simple_glyph.x_min as f32 * scale;
@@ -173,7 +176,10 @@ impl<'a> Font<'a> {
         let y_max = simple_glyph.y_max as f32 * scale;
 
         let bmp_x_offset = floor(x_min) as i32;
-        let bmp_y_offset = floor(ascender - y_max) as i32;
+        // Position bitmap so its internal baseline (at row ceil(y_max))
+        // aligns with the fixed cell baseline. This guarantees all glyphs
+        // share the same baseline regardless of their individual y_max.
+        let bmp_y_offset = baseline - ceil(y_max) as i32;
 
         let bmp_width = ceil(x_max - x_min) as usize + 2; // +2 for safety margin
         let bmp_height = ceil(y_max - y_min) as usize + 2;
@@ -225,6 +231,149 @@ impl<'a> Font<'a> {
     }
 }
 
+/// Diagnostic info for a glyph (for debugging rasterization issues).
+pub struct GlyphDebugInfo {
+    pub loca_offset: Option<u32>,
+    pub num_contours: i16,
+    pub x_min: i16,
+    pub y_min: i16,
+    pub x_max: i16,
+    pub y_max: i16,
+    pub total_points: usize,
+    pub units_per_em: u16,
+}
+
+/// Detailed rasterization diagnostics — shows all intermediate values.
+pub struct RasterDebugInfo {
+    pub pixel_size: f32,
+    pub units_per_em: u16,
+    pub scale: f32,
+    pub glyph_x_min: i16,
+    pub glyph_y_min: i16,
+    pub glyph_x_max: i16,
+    pub glyph_y_max: i16,
+    pub x_min_scaled: f32,
+    pub y_min_scaled: f32,
+    pub x_max_scaled: f32,
+    pub y_max_scaled: f32,
+    pub bmp_width: usize,
+    pub bmp_height: usize,
+    pub bmp_x_offset: i32,
+    pub bmp_y_offset: i32,
+    pub baseline: i32,
+    pub num_contours: usize,
+    pub num_points: usize,
+    pub num_segments: usize,
+    pub nonzero_coverage: usize,
+}
+
+impl<'a> Font<'a> {
+    /// Full rasterization diagnostic — returns all intermediate values.
+    pub fn debug_rasterize(&self, glyph_index: u16, pixel_size: f32) -> Result<RasterDebugInfo, String> {
+        let scale = pixel_size / self.head.units_per_em as f32;
+        let loca = LocaTable::new(self.loca_data, self.index_to_loc_format);
+
+        let glyph_offset = loca.glyph_offset(glyph_index)
+            .ok_or_else(|| String::from("no glyph offset"))?;
+
+        let simple_glyph = self.resolve_glyph(glyph_offset)?;
+
+        let ascender = self.hhea.ascender as f32 * scale;
+        let baseline = (ascender + 0.5) as i32;
+
+        let x_min_s = simple_glyph.x_min as f32 * scale;
+        let y_min_s = simple_glyph.y_min as f32 * scale;
+        let x_max_s = simple_glyph.x_max as f32 * scale;
+        let y_max_s = simple_glyph.y_max as f32 * scale;
+
+        let bmp_x_offset = floor(x_min_s) as i32;
+        let bmp_y_offset = baseline - ceil(y_max_s) as i32;
+        let bmp_width = ceil(x_max_s - x_min_s) as usize + 2;
+        let bmp_height = ceil(y_max_s - y_min_s) as usize + 2;
+
+        let x_off = -floor(x_min_s);
+        let y_off = ceil(y_max_s);
+        let segments = flatten_glyph(&simple_glyph, scale, x_off, y_off);
+
+        let num_contours = simple_glyph.contours.len();
+        let num_points: usize = simple_glyph.contours.iter().map(|c| c.len()).sum();
+
+        let bitmap = if bmp_width > 0 && bmp_height > 0 && !segments.is_empty() {
+            rasterize(&segments, bmp_width, bmp_height, bmp_x_offset, bmp_y_offset)
+        } else {
+            rasterizer::GlyphBitmap {
+                width: bmp_width, height: bmp_height,
+                x_offset: bmp_x_offset, y_offset: bmp_y_offset,
+                coverage: alloc::vec![0; bmp_width * bmp_height],
+            }
+        };
+        let nonzero_coverage = bitmap.coverage.iter().filter(|&&v| v > 0).count();
+
+        Ok(RasterDebugInfo {
+            pixel_size,
+            units_per_em: self.head.units_per_em,
+            scale,
+            glyph_x_min: simple_glyph.x_min,
+            glyph_y_min: simple_glyph.y_min,
+            glyph_x_max: simple_glyph.x_max,
+            glyph_y_max: simple_glyph.y_max,
+            x_min_scaled: x_min_s,
+            y_min_scaled: y_min_s,
+            x_max_scaled: x_max_s,
+            y_max_scaled: y_max_s,
+            bmp_width,
+            bmp_height,
+            bmp_x_offset,
+            bmp_y_offset,
+            baseline,
+            num_contours,
+            num_points,
+            num_segments: segments.len(),
+            nonzero_coverage,
+        })
+    }
+
+    /// Get raw glyph diagnostic info without rasterizing.
+    pub fn debug_glyph(&self, glyph_index: u16) -> GlyphDebugInfo {
+        let loca = LocaTable::new(self.loca_data, self.index_to_loc_format);
+        let loca_offset = loca.glyph_offset(glyph_index);
+
+        let (num_contours, x_min, y_min, x_max, y_max, total_points) = match loca_offset {
+            Some(off) => {
+                let off = off as usize;
+                if off + 10 <= self.glyf_data.len() {
+                    let mut r = reader::Reader::at(self.glyf_data, off);
+                    let nc = r.read_i16().unwrap_or(0);
+                    let xn = r.read_i16().unwrap_or(0);
+                    let yn = r.read_i16().unwrap_or(0);
+                    let xx = r.read_i16().unwrap_or(0);
+                    let yx = r.read_i16().unwrap_or(0);
+                    // Try to count points by parsing
+                    let pts = match self.resolve_glyph(off as u32) {
+                        Ok(g) => g.contours.iter().map(|c| c.len()).sum(),
+                        Err(_) => 0,
+                    };
+                    (nc, xn, yn, xx, yx, pts)
+                } else {
+                    (0, 0, 0, 0, 0, 0)
+                }
+            }
+            None => (0, 0, 0, 0, 0, 0),
+        };
+
+        GlyphDebugInfo {
+            loca_offset,
+            num_contours,
+            x_min,
+            y_min,
+            x_max,
+            y_max,
+            total_points,
+            units_per_em: self.head.units_per_em,
+        }
+    }
+}
+
 /// Font wrapper with built-in glyph bitmap cache.
 pub struct CachedFont<'a> {
     font: Font<'a>,
@@ -260,13 +409,12 @@ impl<'a> CachedFont<'a> {
         glyph_index: u16,
         pixel_size: f32,
     ) -> Result<&GlyphBitmap, String> {
-        if self.cache.get(glyph_index, pixel_size).is_some() {
-            return Ok(self.cache.get(glyph_index, pixel_size).unwrap());
+        if self.cache.get(glyph_index, pixel_size).is_none() {
+            let bitmap = self.font.rasterize_glyph(glyph_index, pixel_size)?;
+            self.cache.insert(glyph_index, pixel_size, bitmap);
         }
-
-        let bitmap = self.font.rasterize_glyph(glyph_index, pixel_size)?;
-        self.cache.insert(glyph_index, pixel_size, bitmap);
-        Ok(self.cache.get(glyph_index, pixel_size).unwrap())
+        self.cache.get(glyph_index, pixel_size)
+            .ok_or_else(|| alloc::string::String::from("cache lookup failed after insert"))
     }
 
     pub fn font(&self) -> &Font<'a> {

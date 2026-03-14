@@ -523,6 +523,10 @@ name = "bterm"
 path = "src/bterm.rs"
 
 [[bin]]
+name = "bfontpicker"
+path = "src/bfontpicker.rs"
+
+[[bin]]
 name = "guskit"
 path = "src/guskit.rs"
 

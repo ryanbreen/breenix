@@ -1,11 +1,15 @@
 //! Scanline coverage rasterizer: outlines -> GlyphBitmap.
 //!
-//! For each pixel row, subdivides into N sub-scanlines. Counts winding-rule
-//! coverage per sub-scanline. Coverage = filled_sub_scanlines / N * 255.
+//! Uses non-zero winding rule with fractional horizontal coverage.
+//! For each pixel row, N sub-scanlines sample the vertical axis. On each
+//! sub-scanline, filled spans from the winding rule contribute fractional
+//! horizontal coverage (how much of the pixel's width is inside the glyph).
+//! This gives smooth anti-aliased edges comparable to FreeType/stb_truetype.
 
 use alloc::vec;
 use alloc::vec::Vec;
 use crate::outline::LineSegment;
+use crate::float::ceil;
 
 /// Rasterized glyph output — per-pixel coverage values ready for alpha blending.
 #[derive(Debug, Clone)]
@@ -17,14 +21,21 @@ pub struct GlyphBitmap {
     pub coverage: Vec<u8>,
 }
 
-/// Number of sub-scanlines per pixel row for anti-aliasing.
-const SUB_SCANLINES: usize = 5;
+/// Number of sub-scanlines per pixel row for vertical anti-aliasing.
+/// 8 is sufficient when combined with fractional horizontal coverage.
+const SUB_SCANLINES: usize = 8;
+
+/// Inverse of SUB_SCANLINES as f32, precomputed.
+const INV_SUB: f32 = 1.0 / SUB_SCANLINES as f32;
+
+/// An x-crossing with its winding direction.
+struct Crossing {
+    x: f32,
+    /// +1 for downward edge (y0 < y1), -1 for upward edge (y0 > y1)
+    dir: i32,
+}
 
 /// Rasterize a set of line segments (flattened outline) into a coverage bitmap.
-///
-/// The segments should already be in pixel coordinates.
-/// `width` and `height` are the bitmap dimensions.
-/// `x_offset` and `y_offset` are the bearing offsets.
 pub fn rasterize(
     segments: &[LineSegment],
     width: usize,
@@ -43,59 +54,72 @@ pub fn rasterize(
     }
 
     let mut coverage = vec![0u8; width * height];
-    let mut x_crossings = Vec::with_capacity(16);
+    let mut crossings: Vec<Crossing> = Vec::with_capacity(32);
+    let mut pixel_cov = vec![0.0f32; width];
+    let width_f = width as f32;
 
     for row in 0..height {
-        // Accumulate sub-scanline coverage per pixel column
-        let mut sub_coverage = vec![0u16; width];
+        // Reset per-row coverage accumulator
+        for v in pixel_cov.iter_mut() { *v = 0.0; }
 
         for sub in 0..SUB_SCANLINES {
-            let y = row as f32 + (sub as f32 + 0.5) / SUB_SCANLINES as f32;
+            let y = row as f32 + (sub as f32 + 0.5) * INV_SUB;
 
-            // Find all x-crossings at this y
-            x_crossings.clear();
+            // Find all x-crossings with winding direction at this y
+            crossings.clear();
             for seg in segments {
-                if let Some(x) = intersect_scanline(seg, y) {
-                    x_crossings.push(x);
+                if let Some(crossing) = intersect_scanline(seg, y) {
+                    crossings.push(crossing);
                 }
             }
 
-            if x_crossings.is_empty() {
+            if crossings.is_empty() {
                 continue;
             }
 
-            x_crossings.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+            crossings.sort_unstable_by(|a, b| {
+                a.x.partial_cmp(&b.x).unwrap_or(core::cmp::Ordering::Equal)
+            });
 
-            // Non-zero winding fill: toggle fill at each crossing
-            let mut inside = false;
-            let mut crossing_idx = 0;
-            for px in 0..width {
-                let px_left = px as f32;
-                let px_right = (px + 1) as f32;
+            // Walk crossings, tracking winding number to find filled spans.
+            // Each span contributes fractional horizontal coverage to pixels.
+            let mut winding: i32 = 0;
+            let mut fill_start: f32 = 0.0;
 
-                // Process crossings that fall within or before this pixel
-                while crossing_idx < x_crossings.len() && x_crossings[crossing_idx] < px_right {
-                    if x_crossings[crossing_idx] >= px_left {
-                        // Crossing inside this pixel — partial coverage
-                        // Use simple toggle for now
-                        inside = !inside;
-                    } else if x_crossings[crossing_idx] < px_left {
-                        inside = !inside;
+            for c in &crossings {
+                let prev_winding = winding;
+                winding += c.dir;
+
+                if prev_winding == 0 && winding != 0 {
+                    // Entering filled region
+                    fill_start = c.x;
+                } else if prev_winding != 0 && winding == 0 {
+                    // Leaving filled region — add coverage for span [fill_start, c.x]
+                    let span_left = fill_start.max(0.0);
+                    let span_right = c.x.min(width_f);
+                    if span_right > span_left {
+                        add_span_coverage(&mut pixel_cov, span_left, span_right, width);
                     }
-                    crossing_idx += 1;
                 }
+            }
 
-                if inside {
-                    sub_coverage[px] += 1;
+            // Handle unclosed fill (winding != 0 at end of scanline)
+            if winding != 0 {
+                let span_left = fill_start.max(0.0);
+                let span_right = width_f;
+                if span_right > span_left {
+                    add_span_coverage(&mut pixel_cov, span_left, span_right, width);
                 }
             }
         }
 
-        // Convert sub-scanline counts to 0-255 coverage
+        // Convert accumulated coverage to 0-255
         let row_offset = row * width;
         for px in 0..width {
-            let c = sub_coverage[px] as u32 * 255 / SUB_SCANLINES as u32;
-            coverage[row_offset + px] = c.min(255) as u8;
+            // pixel_cov[px] is the sum of fractional widths across all sub-scanlines.
+            // Divide by SUB_SCANLINES to normalize to [0.0, 1.0], then scale to [0, 255].
+            let c = pixel_cov[px] * INV_SUB * 255.0;
+            coverage[row_offset + px] = if c >= 255.0 { 255 } else if c <= 0.0 { 0 } else { c as u8 };
         }
     }
 
@@ -108,8 +132,42 @@ pub fn rasterize(
     }
 }
 
-/// Find x-intersection of a line segment with a horizontal scanline at y.
-fn intersect_scanline(seg: &LineSegment, y: f32) -> Option<f32> {
+/// Add fractional horizontal coverage for a filled span [left, right] to the pixel buffer.
+/// For pixels fully inside the span, adds 1.0. For edge pixels, adds the fraction covered.
+#[inline]
+fn add_span_coverage(pixel_cov: &mut [f32], left: f32, right: f32, width: usize) {
+    let px_start = left as usize;
+    let px_end = ((ceil(right) as usize).min(width)).max(px_start);
+
+    if px_start == px_end {
+        return;
+    }
+
+    if px_start + 1 == px_end {
+        // Span fits within a single pixel
+        pixel_cov[px_start] += right - left;
+        return;
+    }
+
+    // Left edge pixel: partial coverage
+    let left_frac = (px_start + 1) as f32 - left;
+    pixel_cov[px_start] += left_frac;
+
+    // Fully covered interior pixels
+    for px in (px_start + 1)..(px_end - 1) {
+        pixel_cov[px] += 1.0;
+    }
+
+    // Right edge pixel: partial coverage
+    let right_frac = right - (px_end - 1) as f32;
+    if px_end - 1 < width {
+        pixel_cov[px_end - 1] += right_frac;
+    }
+}
+
+/// Find x-intersection of a line segment with a horizontal scanline at y,
+/// along with the winding direction of the edge.
+fn intersect_scanline(seg: &LineSegment, y: f32) -> Option<Crossing> {
     let y0 = seg.y0;
     let y1 = seg.y1;
 
@@ -118,13 +176,17 @@ fn intersect_scanline(seg: &LineSegment, y: f32) -> Option<f32> {
         return None;
     }
 
-    // Avoid division by zero for horizontal segments
     let dy = y1 - y0;
-    if (if dy < 0.0 { -dy } else { dy }) < 1e-10 {
+    let abs_dy = if dy < 0.0 { -dy } else { dy };
+    if abs_dy < 1e-10 {
         return None;
     }
 
     let t = (y - y0) / dy;
     let x = seg.x0 + t * (seg.x1 - seg.x0);
-    Some(x)
+
+    // Direction: +1 if edge goes downward (y increases), -1 if upward
+    let dir = if y1 > y0 { 1 } else { -1 };
+
+    Some(Crossing { x, dir })
 }

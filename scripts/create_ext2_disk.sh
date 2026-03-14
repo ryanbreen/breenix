@@ -254,6 +254,22 @@ EOF
             done
             echo "  Installed $font_count fonts in /usr/share/fonts"
 
+            # Create default system font configuration
+            cat > /mnt/ext2/etc/fonts.conf << FONTSCONF
+# Breenix System Font Configuration
+# Apps read this file for default font settings.
+# Use bfontpicker to change fonts interactively.
+#
+# Available fonts:
+#   /usr/share/fonts/DejaVuSansMono.ttf
+#   /usr/share/fonts/Inconsolata-Regular.ttf
+#   /usr/share/fonts/JetBrainsMono-Regular.ttf
+#
+mono.font=/usr/share/fonts/DejaVuSansMono.ttf
+mono.size=10
+FONTSCONF
+            echo "  Created /etc/fonts.conf"
+
             # Show what was created
             echo ""
             echo "ext2 filesystem contents:"
@@ -452,6 +468,22 @@ EOF
         fi
     done
     echo "  Installed $font_count fonts in /usr/share/fonts"
+
+    # Create default system font configuration
+    cat > "$MOUNT_DIR/etc/fonts.conf" << FONTSCONF
+# Breenix System Font Configuration
+# Apps read this file for default font settings.
+# Use bfontpicker to change fonts interactively.
+#
+# Available fonts:
+#   /usr/share/fonts/DejaVuSansMono.ttf
+#   /usr/share/fonts/Inconsolata-Regular.ttf
+#   /usr/share/fonts/JetBrainsMono-Regular.ttf
+#
+mono.font=/usr/share/fonts/DejaVuSansMono.ttf
+mono.size=10
+FONTSCONF
+    echo "  Created /etc/fonts.conf"
 
     # Show what was created
     echo ""
