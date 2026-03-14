@@ -1692,7 +1692,12 @@ fn send_command(
 
         // Add to available ring
         let idx = (*q).avail.idx;
-        (*q).avail.ring[(idx % 16) as usize] = 0;
+        core::ptr::write_volatile(&mut (*q).avail.ring[(idx % 16) as usize], 0);
+
+        // Drain store buffer before cache flush — ensures the avail.ring write
+        // is in cache (not still in the store buffer) when dc civac runs.
+        #[cfg(target_arch = "aarch64")]
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
 
         // Flush desc + avail ring from CPU cache to physical RAM so device sees them.
         // ARM64 WB-cacheable BSS may not be visible to hypervisor DMA without this.
@@ -1788,37 +1793,37 @@ fn send_command_3desc(
     unsafe {
         let q = &raw mut PCI_CTRL_QUEUE;
 
-        // Use desc[4..6] for 3-desc chains, separate from desc[0..1] used by
-        // 2-desc commands. This prevents descriptor corruption when a timed-out
-        // 3-desc command completes late and overwrites desc[0..1] that a
-        // concurrent 2-desc command is using.
-        (*q).desc[4] = VirtqDesc {
+        // Use desc[0..2] with head=0 for 3-desc commands.
+        // Parallels VirtIO GPU intermittently ignores non-zero head indices
+        // in the avail ring, always reading desc[0] regardless.
+        (*q).desc[0] = VirtqDesc {
             addr: hdr_phys,
             len: hdr_len,
             flags: DESC_F_NEXT,
-            next: 5,
+            next: 1,
         };
-        (*q).desc[5] = VirtqDesc {
+        (*q).desc[1] = VirtqDesc {
             addr: payload_phys,
             len: payload_len,
             flags: DESC_F_NEXT,
-            next: 6,
+            next: 2,
         };
-        (*q).desc[6] = VirtqDesc {
+        (*q).desc[2] = VirtqDesc {
             addr: resp_phys,
             len: resp_len,
             flags: DESC_F_WRITE,
             next: 0,
         };
 
-        // Add to available ring with head=4 (pointing to our desc[4..6] chain).
-        // CRITICAL: write avail.ring BEFORE the cache flush so the device sees
-        // the correct head index. Flushing first then writing leaves the head
-        // value only in CPU cache, causing the device to read stale head=0.
+        // Add to available ring with head=0
         let idx = (*q).avail.idx;
-        (*q).avail.ring[(idx % 16) as usize] = 4;
+        core::ptr::write_volatile(&mut (*q).avail.ring[(idx % 16) as usize], 0);
 
-        // Flush descriptors + avail ring from CPU cache to RAM
+        // DSB SY to drain store buffer before cache maintenance
+        #[cfg(target_arch = "aarch64")]
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+
+        // Flush desc + avail ring from CPU cache to RAM
         #[cfg(target_arch = "aarch64")]
         {
             let q_addr = q as *const u8;
@@ -1826,7 +1831,11 @@ fn send_command_3desc(
         }
 
         fence(Ordering::SeqCst);
-        (*q).avail.idx = idx.wrapping_add(1);
+        core::ptr::write_volatile(&mut (*q).avail.idx, idx.wrapping_add(1));
+
+        // DSB before avail.idx flush
+        #[cfg(target_arch = "aarch64")]
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
 
         // Flush the updated avail.idx
         #[cfg(target_arch = "aarch64")]
@@ -1953,6 +1962,10 @@ fn send_command_3desc(
                 used_len = unsafe {
                     let q = &raw const PCI_CTRL_QUEUE;
                     let elem_idx = (state.last_used_idx % 16) as usize;
+                    // Invalidate the specific cache line containing this entry
+                    let entry_addr = &(*q).used.ring[elem_idx] as *const _ as usize;
+                    core::arch::asm!("dc civac, {}", in(reg) entry_addr, options(nostack));
+                    core::arch::asm!("dsb sy", options(nostack, preserves_flags));
                     read_volatile(&(*q).used.ring[elem_idx].len)
                 };
                 state.last_used_idx = cur_used_idx;
@@ -1986,6 +1999,15 @@ fn send_command_3desc(
                 used_len = unsafe {
                     let q = &raw const PCI_CTRL_QUEUE;
                     let elem_idx = (state.last_used_idx % 16) as usize;
+                    // Invalidate the specific cache line containing this entry.
+                    // Entries at index >= 8 are in a different cache line from
+                    // used.idx, so the earlier invalidation doesn't cover them.
+                    #[cfg(target_arch = "aarch64")]
+                    {
+                        let entry_addr = &(*q).used.ring[elem_idx] as *const _ as usize;
+                        core::arch::asm!("dc civac, {}", in(reg) entry_addr, options(nostack));
+                        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+                    }
                     read_volatile(&(*q).used.ring[elem_idx].len)
                 };
                 state.last_used_idx = used_idx;
