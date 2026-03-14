@@ -199,9 +199,9 @@ fn blit_subpixel(
             let uy = py as usize;
             let bg = fb.get_pixel(ux, uy);
             // Per-channel alpha blending
-            let r = blend_channel(fg.r(), bg.r(), r_cov);
-            let g = blend_channel(fg.g(), bg.g(), g_cov);
-            let b = blend_channel(fg.b(), bg.b(), b_cov);
+            let r = blend_channel(fg.r, bg.r, r_cov);
+            let g = blend_channel(fg.g, bg.g, g_cov);
+            let b = blend_channel(fg.b, bg.b, b_cov);
             fb.put_pixel(ux, uy, Color::rgb(r, g, b));
         }
     }

@@ -28,7 +28,7 @@ use crate::tables::loca::LocaTable;
 use crate::tables::kern::KernTable;
 use crate::tables::glyf;
 use crate::outline::flatten_glyph;
-use crate::rasterizer::{rasterize, rasterize_subpixel, GlyphBitmap, SubpixelBitmap};
+use crate::rasterizer::{rasterize, rasterize_subpixel, GlyphBitmap};
 use crate::cache::GlyphCache;
 use crate::float::{floor, ceil};
 
