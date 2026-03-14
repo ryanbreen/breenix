@@ -270,6 +270,33 @@ mono.size=10
 FONTSCONF
             echo "  Created /etc/fonts.conf"
 
+            # Create /etc/init.js - bsh boot script executed by init
+            cat > /mnt/ext2/etc/init.js << 'INITJS'
+// Breenix boot script - executed by bsh on startup
+// spawn() starts a process in the background and returns its PID.
+// sleep() between spawns lets each child complete exec before the next fork.
+
+// System services
+spawn("/sbin/telnetd");
+sleep(50);
+spawn("/sbin/blogd");
+sleep(50);
+
+// Window compositor (must start before GUI apps)
+spawn("/bin/bwm");
+sleep(100);
+
+// GUI applications
+spawn("/bin/bterm");
+sleep(50);
+spawn("/bin/blog");
+sleep(50);
+spawn("/bin/bounce");
+sleep(50);
+spawn("/bin/bcheck");
+INITJS
+            echo "  Created /etc/init.js"
+
             # Show what was created
             echo ""
             echo "ext2 filesystem contents:"
@@ -484,6 +511,33 @@ mono.font=/usr/share/fonts/DejaVuSansMono.ttf
 mono.size=10
 FONTSCONF
     echo "  Created /etc/fonts.conf"
+
+    # Create /etc/init.js - bsh boot script executed by init
+    cat > "$MOUNT_DIR/etc/init.js" << 'INITJS'
+// Breenix boot script - executed by bsh on startup
+// spawn() starts a process in the background and returns its PID.
+// sleep() between spawns lets each child complete exec before the next fork.
+
+// System services
+spawn("/sbin/telnetd");
+sleep(50);
+spawn("/sbin/blogd");
+sleep(50);
+
+// Window compositor (must start before GUI apps)
+spawn("/bin/bwm");
+sleep(100);
+
+// GUI applications
+spawn("/bin/bterm");
+sleep(50);
+spawn("/bin/blog");
+sleep(50);
+spawn("/bin/bounce");
+sleep(50);
+spawn("/bin/bcheck");
+INITJS
+    echo "  Created /etc/init.js"
 
     # Show what was created
     echo ""

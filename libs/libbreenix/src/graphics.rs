@@ -138,6 +138,8 @@ pub mod draw_op {
     pub const CHECK_WINDOW_DIRTY: u32 = 22;
     /// Block until compositor has work (dirty windows, mouse, registry change)
     pub const COMPOSITOR_WAIT: u32 = 23;
+    /// Resize a window buffer (reallocate backing pages at new dimensions)
+    pub const RESIZE_WINDOW_BUFFER: u32 = 24;
 }
 
 /// Ball descriptor for VirGL GPU rendering.
@@ -492,6 +494,34 @@ pub fn create_window(width: u32, height: u32) -> Result<WindowBuffer, Error> {
     })
 }
 
+/// Resize an existing window buffer to new dimensions.
+///
+/// The kernel allocates new backing pages, copies the intersection of old
+/// content, frees old pages, and returns a new mmap pointer. Only the buffer
+/// owner (creating process) can resize.
+pub fn resize_window(buffer_id: u32, new_width: u32, new_height: u32) -> Result<WindowBuffer, Error> {
+    let mut mmap_addr: u64 = 0;
+    let out_ptr = &mut mmap_addr as *mut u64 as u64;
+    let cmd = FbDrawCmd {
+        op: draw_op::RESIZE_WINDOW_BUFFER,
+        p1: buffer_id as i32,
+        p2: new_width as i32,
+        p3: new_height as i32,
+        p4: out_ptr as i32,
+        color: (out_ptr >> 32) as u32,
+    };
+    let ret = unsafe { raw::syscall1(nr::FBDRAW, &cmd as *const FbDrawCmd as u64) as i64 };
+    if ret < 0 {
+        return Err(Error::Os(Errno::from_raw(-ret)));
+    }
+    Ok(WindowBuffer {
+        id: buffer_id,
+        pixels: mmap_addr as *mut u32,
+        width: new_width,
+        height: new_height,
+    })
+}
+
 /// Register a window buffer with the compositor, making it visible.
 pub fn register_window(buffer_id: u32, title: &[u8]) -> Result<(), Error> {
     let title_ptr = title.as_ptr() as u64;
@@ -611,6 +641,7 @@ pub mod input_event_type {
     pub const FOCUS_GAINED: u16 = 5;
     pub const FOCUS_LOST: u16 = 6;
     pub const CLOSE_REQUESTED: u16 = 7;
+    pub const WINDOW_RESIZED: u16 = 8;
 }
 
 /// Write an input event to a window's kernel ring buffer.

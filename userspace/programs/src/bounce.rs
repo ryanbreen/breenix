@@ -202,11 +202,6 @@ impl Sphere {
         }
     }
 
-    /// Dampen: reduce velocity by 33%.
-    fn dampen(&mut self) {
-        self.vx = self.vx * 2 / 3;
-        self.vy = self.vy * 2 / 3;
-    }
 }
 
 /// Elastic collision between two spheres. Modifies velocities in-place.
