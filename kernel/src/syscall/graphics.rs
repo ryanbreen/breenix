@@ -19,6 +19,7 @@
 //! - op=21: `map_window_buffer` — map window buffer into BWM's address space (read-only)
 //! - op=22: `check_window_dirty` — lightweight generation check without pixel copy
 //! - op=23: `compositor_wait` — block until window dirty/mouse/keyboard/registry change
+//! - op=24: `resize_window_buffer` — resize a window's backing pages (client-side)
 
 extern crate alloc;
 
@@ -179,6 +180,8 @@ struct WindowBuffer {
     phys_addr: u64,
     /// Size in bytes
     size: usize,
+    /// Virtual address mapped into owner's address space (for resize unmapping)
+    mapped_vaddr: u64,
     /// Whether this buffer has been registered as a visible window
     registered: bool,
     /// Window title (UTF-8, truncated to MAX_TITLE_LEN)
@@ -265,7 +268,7 @@ impl WindowRegistry {
         }
     }
 
-    fn allocate(&mut self, owner_pid: u64, width: u32, height: u32, phys_addr: u64, size: usize, page_phys_addrs: alloc::vec::Vec<u64>) -> Option<u32> {
+    fn allocate(&mut self, owner_pid: u64, width: u32, height: u32, phys_addr: u64, size: usize, page_phys_addrs: alloc::vec::Vec<u64>, mapped_vaddr: u64) -> Option<u32> {
         let slot = self.buffers.iter().position(|b| b.is_none())?;
         let id = self.next_id;
         self.next_id += 1;
@@ -276,6 +279,7 @@ impl WindowRegistry {
             height,
             phys_addr,
             size,
+            mapped_vaddr,
             registered: false,
             title: [0; MAX_TITLE_LEN],
             title_len: 0,
@@ -295,6 +299,12 @@ impl WindowRegistry {
             input_waiting_thread: None,
         });
         Some(id)
+    }
+
+    fn find(&self, buffer_id: u32) -> Option<&WindowBuffer> {
+        self.buffers.iter().find_map(|slot| {
+            slot.as_ref().filter(|b| b.id == buffer_id)
+        })
     }
 
     fn find_mut(&mut self, buffer_id: u32) -> Option<&mut WindowBuffer> {
@@ -1149,6 +1159,19 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                 SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
             }
         }
+        24 => {
+            // ResizeWindowBuffer: resize a window's backing pages.
+            // Called by the OWNING client process (not BWM).
+            // p1=buffer_id, p2=new_width, p3=new_height, p4/color=out_ptr (lo32/hi32)
+            #[cfg(target_arch = "aarch64")]
+            {
+                handle_resize_window_buffer(cmd)
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
+            }
+        }
         _ => {
             crate::serial_println!("[virgl-op] UNKNOWN op={}", cmd.op);
             SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
@@ -1664,7 +1687,7 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
     // Register in window buffer table
     let buffer_id = {
         let mut reg = WINDOW_REGISTRY.lock();
-        match reg.allocate(pid.as_u64(), width, height, first_phys, size, page_phys_addrs) {
+        match reg.allocate(pid.as_u64(), width, height, first_phys, size, page_phys_addrs, new_addr) {
             Some(id) => id,
             None => return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64),
         }
@@ -1684,6 +1707,229 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
 
     // Return just the buffer_id
     SyscallResult::Ok(buffer_id as u64)
+}
+
+/// Handle resize_window_buffer (op=24): resize a window's backing pages.
+///
+/// Only callable by the buffer's owner process. Allocates new pages at the
+/// new dimensions, copies the intersection of old content via HHDM, unmaps
+/// old pages, maps new pages, and updates the registry.
+#[cfg(target_arch = "aarch64")]
+fn handle_resize_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
+    use crate::memory::vma::{MmapFlags, Protection, Vma};
+    use crate::syscall::memory_common::{
+        get_current_thread_id, prot_to_page_flags, flush_tlb, round_down_to_page, PAGE_SIZE,
+    };
+    use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
+
+    let buffer_id = cmd.p1 as u32;
+    let new_width = cmd.p2 as u32;
+    let new_height = cmd.p3 as u32;
+    let out_ptr = (cmd.p4 as u32 as u64) | ((cmd.color as u64) << 32);
+
+    if new_width == 0 || new_height == 0 || new_width > 4096 || new_height > 4096 {
+        return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+    }
+    if out_ptr != 0 && out_ptr >= USER_SPACE_MAX {
+        return SyscallResult::Err(super::ErrorCode::Fault as u64);
+    }
+
+    // Get old buffer info from registry (release lock before process manager)
+    let (old_phys_addrs, old_w, old_h, old_vaddr, owner_pid) = {
+        let reg = WINDOW_REGISTRY.lock();
+        match reg.find(buffer_id) {
+            Some(buf) => (
+                buf.page_phys_addrs.clone(),
+                buf.width,
+                buf.height,
+                buf.mapped_vaddr,
+                buf.owner_pid,
+            ),
+            None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+        }
+    };
+
+    // Verify caller owns this buffer
+    let current_thread_id = match get_current_thread_id() {
+        Some(id) => id,
+        None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
+    };
+
+    let mut manager_guard = crate::process::manager();
+    let manager = match *manager_guard {
+        Some(ref mut m) => m,
+        None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
+    };
+
+    let (pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
+        Some(p) => p,
+        None => return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64),
+    };
+
+    if pid.as_u64() != owner_pid {
+        crate::serial_println!("[window] resize: pid {} doesn't own buffer {} (owner={})",
+            pid.as_u64(), buffer_id, owner_pid);
+        return SyscallResult::Err(super::ErrorCode::PermissionDenied as u64);
+    }
+
+    let new_size = (new_width as usize) * (new_height as usize) * 4;
+    let new_num_pages = (new_size + PAGE_SIZE as usize - 1) / PAGE_SIZE as usize;
+
+    crate::serial_println!("[window] resize buffer id={}: {}x{} -> {}x{} ({} pages)",
+        buffer_id, old_w, old_h, new_width, new_height, new_num_pages);
+
+    // Allocate new physical pages
+    let mut new_phys_addrs = alloc::vec::Vec::with_capacity(new_num_pages);
+    for _ in 0..new_num_pages {
+        match crate::memory::frame_allocator::allocate_frame() {
+            Some(f) => new_phys_addrs.push(f.start_address().as_u64()),
+            None => return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64),
+        }
+    }
+
+    // Zero all new pages first
+    let phys_mem_offset = crate::memory::physical_memory_offset().as_u64();
+    for &phys in &new_phys_addrs {
+        unsafe {
+            core::ptr::write_bytes(
+                (phys_mem_offset + phys) as *mut u8,
+                0,
+                PAGE_SIZE as usize,
+            );
+        }
+    }
+
+    // Copy intersection of old content to new pages via HHDM
+    let copy_rows = (old_h as usize).min(new_height as usize);
+    let copy_bytes_per_row = (old_w as usize).min(new_width as usize) * 4;
+
+    for row in 0..copy_rows {
+        let old_row_start = row * (old_w as usize) * 4;
+        let new_row_start = row * (new_width as usize) * 4;
+        let mut copied = 0usize;
+        while copied < copy_bytes_per_row {
+            let old_off = old_row_start + copied;
+            let new_off = new_row_start + copied;
+
+            let old_page = old_off / PAGE_SIZE as usize;
+            let old_page_off = old_off % PAGE_SIZE as usize;
+            let new_page = new_off / PAGE_SIZE as usize;
+            let new_page_off = new_off % PAGE_SIZE as usize;
+
+            if old_page >= old_phys_addrs.len() || new_page >= new_phys_addrs.len() {
+                break;
+            }
+
+            let chunk = (copy_bytes_per_row - copied)
+                .min(PAGE_SIZE as usize - old_page_off)
+                .min(PAGE_SIZE as usize - new_page_off);
+
+            let src = (phys_mem_offset + old_phys_addrs[old_page] + old_page_off as u64) as *const u8;
+            let dst = (phys_mem_offset + new_phys_addrs[new_page] + new_page_off as u64) as *mut u8;
+            unsafe { core::ptr::copy_nonoverlapping(src, dst, chunk); }
+            copied += chunk;
+        }
+    }
+
+    // Unmap old pages from owner's address space
+    let page_table = match process.page_table.as_mut() {
+        Some(pt) => pt,
+        None => return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64),
+    };
+
+    let old_num_pages = old_phys_addrs.len();
+    for i in 0..old_num_pages {
+        let page_addr = old_vaddr + (i as u64) * PAGE_SIZE;
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(page_addr));
+        let _ = page_table.unmap_page(page);
+        flush_tlb(VirtAddr::new(page_addr));
+    }
+
+    // Remove old VMA
+    process.vmas.retain(|vma| {
+        vma.start.as_u64() != old_vaddr
+    });
+
+    // Map new pages at a new virtual address
+    let total_size = (new_num_pages as u64) * PAGE_SIZE;
+    let new_addr = round_down_to_page(process.mmap_hint.saturating_sub(total_size));
+    if new_addr < 0x1000_0000 {
+        return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
+    }
+    process.mmap_hint = new_addr;
+
+    let page_flags = prot_to_page_flags(Protection::from_bits_truncate(3));
+    let mut first_phys: u64 = 0;
+
+    for i in 0..new_num_pages {
+        let frame_phys = new_phys_addrs[i];
+        if i == 0 { first_phys = frame_phys; }
+
+        let page_addr = new_addr + (i as u64) * PAGE_SIZE;
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(page_addr));
+        use crate::memory::arch_stub::PhysAddr;
+        let frame = crate::memory::arch_stub::PhysFrame::<Size4KiB>::containing_address(
+            PhysAddr::new(frame_phys)
+        );
+
+        if let Err(_) = page_table.map_page(page, frame, page_flags) {
+            return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
+        }
+        flush_tlb(VirtAddr::new(page_addr));
+    }
+
+    // Create new VMA
+    let vma = Vma::new(
+        VirtAddr::new(new_addr),
+        VirtAddr::new(new_addr + total_size),
+        Protection::from_bits_truncate(3),
+        MmapFlags::from_bits_truncate(0x21),
+    );
+    process.vmas.push(vma);
+
+    // Deallocate old physical frames
+    for &old_phys in &old_phys_addrs {
+        use crate::memory::arch_stub::PhysAddr;
+        crate::memory::frame_allocator::deallocate_frame(
+            crate::memory::arch_stub::PhysFrame::<Size4KiB>::containing_address(
+                PhysAddr::new(old_phys)
+            )
+        );
+    }
+
+    // Update registry
+    {
+        let mut reg = WINDOW_REGISTRY.lock();
+        if let Some(buf) = reg.find_mut(buffer_id) {
+            buf.width = new_width;
+            buf.height = new_height;
+            buf.size = new_size;
+            buf.phys_addr = first_phys;
+            buf.page_phys_addrs = new_phys_addrs;
+            buf.mapped_vaddr = new_addr;
+            buf.virgl_initialized = false;
+            buf.virgl_resource_id = 0;
+            buf.generation += 1;
+        }
+    }
+
+    // Bump registry generation and wake compositor
+    REGISTRY_GENERATION.fetch_add(1, core::sync::atomic::Ordering::Release);
+    wake_compositor_if_waiting();
+
+    crate::serial_println!(
+        "[window] Resized buffer id={}: {}x{} at virt={:#x}",
+        buffer_id, new_width, new_height, new_addr
+    );
+
+    // Write new mmap address to userspace
+    if out_ptr != 0 && out_ptr < USER_SPACE_MAX {
+        unsafe {
+            core::ptr::write(out_ptr as *mut u64, new_addr);
+        }
+    }
+
+    SyscallResult::Ok(0)
 }
 
 /// Handle map_window_buffer: map a window buffer's backing pages into the

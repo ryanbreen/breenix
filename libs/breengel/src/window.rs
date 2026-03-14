@@ -102,4 +102,30 @@ impl Window {
     pub fn height(&self) -> u32 {
         self.height
     }
+
+    /// Resize the window buffer to new dimensions.
+    ///
+    /// Called after receiving `Event::Resized`. The kernel allocates new pages,
+    /// copies the intersection of old content, and returns a new mmap pointer.
+    /// The internal FrameBuf is recreated at the new dimensions.
+    pub fn apply_resize(&mut self, new_width: u32, new_height: u32) -> Result<(), Error> {
+        let win = graphics::resize_window(self.buffer_id, new_width, new_height)?;
+
+        let bpp = 4usize;
+        let stride = new_width as usize * bpp;
+        self.fb = unsafe {
+            FrameBuf::from_raw(
+                win.pixels as *mut u8,
+                new_width as usize,
+                new_height as usize,
+                stride,
+                bpp,
+                true,
+            )
+        };
+        self.width = new_width;
+        self.height = new_height;
+
+        Ok(())
+    }
 }

@@ -38,6 +38,9 @@ pub enum Event {
     FocusLost,
     /// The window manager requested this window be closed.
     CloseRequested,
+    /// The window was resized by the window manager. Client should call
+    /// `Window::apply_resize()` with the new dimensions.
+    Resized { width: u32, height: u32 },
 }
 
 impl Event {
@@ -66,6 +69,10 @@ impl Event {
             input_event_type::FOCUS_GAINED => Event::FocusGained,
             input_event_type::FOCUS_LOST => Event::FocusLost,
             input_event_type::CLOSE_REQUESTED => Event::CloseRequested,
+            input_event_type::WINDOW_RESIZED => Event::Resized {
+                width: raw.keycode as u32,
+                height: raw.mouse_x as u16 as u32,
+            },
             _ => Event::KeyPress {
                 ascii: 0,
                 keycode: raw.keycode,

@@ -1187,6 +1187,79 @@ fn command_executor_fn(
     }
 }
 
+/// sleep(ms) - sleep for the given number of milliseconds.
+fn native_sleep(
+    args: &[JsValue],
+    _strings: &mut StringPool,
+    _heap: &mut ObjectHeap,
+) -> JsResult<JsValue> {
+    let ms = if !args.is_empty() {
+        args[0].as_f64() as u64
+    } else {
+        0
+    };
+    let ts = libbreenix::types::Timespec {
+        tv_sec: (ms / 1000) as i64,
+        tv_nsec: ((ms % 1000) * 1_000_000) as i64,
+    };
+    let _ = libbreenix::time::nanosleep(&ts);
+    Ok(JsValue::undefined())
+}
+
+/// spawn(cmd) -> pid
+///
+/// Forks a child process and executes the command in the background.
+/// Does NOT wait for the child to finish. Returns the child PID.
+/// Used by init scripts to start services without blocking.
+fn native_spawn(
+    args: &[JsValue],
+    strings: &mut StringPool,
+    _heap: &mut ObjectHeap,
+) -> JsResult<JsValue> {
+    if args.is_empty() {
+        return Err(JsError::type_error("spawn: expected at least one argument"));
+    }
+
+    let cmd_str = if args[0].is_string() {
+        strings.get(args[0].as_string_id())
+    } else {
+        return Err(JsError::type_error("spawn: command must be a string"));
+    };
+
+    // Copy path to a stack buffer before fork.
+    // After fork, heap pages may not be accessible due to CoW issues,
+    // but stack pages are reliably available.
+    let cmd_bytes = cmd_str.as_bytes();
+    if cmd_bytes.len() >= 255 {
+        return Err(JsError::type_error("spawn: path too long"));
+    }
+    let mut path_buf = [0u8; 256];
+    path_buf[..cmd_bytes.len()].copy_from_slice(cmd_bytes);
+    path_buf[cmd_bytes.len()] = 0;
+    let path_len = cmd_bytes.len() + 1;
+
+    let fork_result = match libbreenix::process::fork() {
+        Ok(r) => r,
+        Err(_) => return Err(JsError::runtime("spawn: fork() failed")),
+    };
+
+    match fork_result {
+        libbreenix::process::ForkResult::Child => {
+            match libbreenix::process::exec(&path_buf[..path_len]) {
+                Ok(_) => unreachable!(),
+                Err(_) => {
+                    libbreenix::process::exit(127);
+                }
+            }
+        }
+        libbreenix::process::ForkResult::Parent(child_pid) => {
+            // Yield to give child time to exec before we fork again
+            let _ = libbreenix::process::yield_now();
+            Ok(JsValue::number(child_pid.raw() as f64))
+        }
+    }
+}
+
 /// run(cmd, arg1, arg2, ...) -> exitCode
 ///
 /// Forks a child process, executes the command with direct terminal I/O
@@ -1327,6 +1400,8 @@ fn create_shell_context() -> Context {
     // Register native shell functions
     ctx.register_native("exec", native_exec);
     ctx.register_native("run", native_run);
+    ctx.register_native("spawn", native_spawn);
+    ctx.register_native("sleep", native_sleep);
     ctx.register_native("cd", native_cd);
     ctx.register_native("pwd", native_pwd);
     ctx.register_native("which", native_which);
@@ -2082,6 +2157,15 @@ fn run_repl() {
 
     // Load startup scripts
     load_rc_file(&mut ctx, "/etc/bshrc");
+
+    // If we're the init shell (PID 2, child of init), run the boot script and exit.
+    // Spawned services get reparented to init (PID 1) for zombie reaping.
+    if let Ok(pid) = libbreenix::process::getpid() {
+        if pid.raw() == 2 {
+            load_rc_file(&mut ctx, "/etc/init.js");
+            return;
+        }
+    }
 
     let _ = io::stdout().write_all(b"breenish v0.5.0 -- ECMAScript shell for Breenix\n");
     let _ = io::stdout().flush();

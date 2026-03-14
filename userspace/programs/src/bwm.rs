@@ -51,6 +51,18 @@ const CHROME_BTN_PAD: usize = 4;
 /// Space reserved in title bar for chrome buttons
 const CHROME_RESERVED: usize = 52;
 
+/// Resize grab zone width in pixels (edges and corners)
+const RESIZE_GRAB: usize = 8;
+
+/// Minimum total window width (including decorations)
+const MIN_WIN_WIDTH: usize = 120;
+
+/// Minimum total window height (including decorations)
+const MIN_WIN_HEIGHT: usize = 80 + TITLE_BAR_HEIGHT + BORDER_WIDTH * 2;
+
+/// Maximum remembered window positions/sizes
+const MAX_DEFAULTS: usize = 16;
+
 // Colors
 const TITLE_FOCUSED_BG: Color = Color::rgb(40, 100, 220);
 const TITLE_UNFOCUSED_BG: Color = Color::rgb(45, 50, 65);
@@ -178,6 +190,73 @@ impl InputParser {
     }
 }
 
+// ─── Resize Edge ────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, PartialEq)]
+enum ResizeEdge {
+    Top,
+    Bottom,
+    Left,
+    Right,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+// ─── Window Defaults (Position/Size Memory) ─────────────────────────────────
+
+struct WindowDefaults {
+    title: [u8; 32],
+    title_len: usize,
+    x: i32,
+    y: i32,
+    width: usize,
+    height: usize,
+    valid: bool,
+}
+
+fn save_window_defaults(win: &Window, defaults: &mut [WindowDefaults; MAX_DEFAULTS]) {
+    let mut slot = None;
+    for i in 0..MAX_DEFAULTS {
+        if defaults[i].valid
+            && defaults[i].title_len == win.title_len
+            && defaults[i].title[..win.title_len] == win.title[..win.title_len]
+        {
+            slot = Some(i);
+            break;
+        }
+    }
+    if slot.is_none() {
+        for i in 0..MAX_DEFAULTS {
+            if !defaults[i].valid {
+                slot = Some(i);
+                break;
+            }
+        }
+    }
+    if let Some(i) = slot {
+        defaults[i].title = win.title;
+        defaults[i].title_len = win.title_len;
+        defaults[i].x = win.x;
+        defaults[i].y = win.y;
+        defaults[i].width = win.width;
+        defaults[i].height = win.height;
+        defaults[i].valid = true;
+    }
+}
+
+fn find_window_defaults(
+    title: &[u8], title_len: usize, defaults: &[WindowDefaults; MAX_DEFAULTS],
+) -> Option<(i32, i32, usize, usize)> {
+    for d in defaults.iter() {
+        if d.valid && d.title_len == title_len && d.title[..d.title_len] == title[..title_len] {
+            return Some((d.x, d.y, d.width, d.height));
+        }
+    }
+    None
+}
+
 // ─── Window ─────────────────────────────────────────────────────────────────
 
 struct Window {
@@ -243,6 +322,38 @@ impl Window {
     fn hit_minimize_button(&self, mx: i32, my: i32) -> bool {
         let (bx, by, bw, bh) = self.minimize_btn_rect();
         mx >= bx && mx < bx + bw as i32 && my >= by && my < by + bh as i32
+    }
+
+    fn hit_resize_edge(&self, mx: i32, my: i32) -> Option<ResizeEdge> {
+        if self.minimized { return None; }
+
+        let x0 = self.x;
+        let y0 = self.y;
+        let x1 = self.x + self.width as i32;
+        let y1 = self.y + self.total_height() as i32;
+        let g = RESIZE_GRAB as i32;
+
+        // Must be within or near the window bounds
+        if mx < x0 - g || mx >= x1 + g || my < y0 - g || my >= y1 + g {
+            return None;
+        }
+
+        let on_left = mx < x0 + g;
+        let on_right = mx >= x1 - g;
+        let on_top = my < y0 + g;
+        let on_bottom = my >= y1 - g;
+
+        match (on_left, on_right, on_top, on_bottom) {
+            (true, _, true, _) => Some(ResizeEdge::TopLeft),
+            (_, true, true, _) => Some(ResizeEdge::TopRight),
+            (true, _, _, true) => Some(ResizeEdge::BottomLeft),
+            (_, true, _, true) => Some(ResizeEdge::BottomRight),
+            (true, _, _, _) => Some(ResizeEdge::Left),
+            (_, true, _, _) => Some(ResizeEdge::Right),
+            (_, _, true, _) => Some(ResizeEdge::Top),
+            (_, _, _, true) => Some(ResizeEdge::Bottom),
+            _ => None,
+        }
     }
 }
 
@@ -568,7 +679,10 @@ fn route_mouse_move_to_focused(
 
 // ─── Window Discovery ───────────────────────────────────────────────────────
 
-fn discover_windows(windows: &mut Vec<Window>, screen_w: usize, screen_h: usize, next_order: &mut u32) -> bool {
+fn discover_windows(
+    windows: &mut Vec<Window>, screen_w: usize, screen_h: usize,
+    next_order: &mut u32, win_defaults: &mut [WindowDefaults; MAX_DEFAULTS],
+) -> bool {
     let mut win_infos = [graphics::WindowInfo {
         buffer_id: 0, owner_pid: 0, width: 0, height: 0,
         x: 0, y: 0, title_len: 0, title: [0; 64],
@@ -577,6 +691,13 @@ fn discover_windows(windows: &mut Vec<Window>, screen_w: usize, screen_h: usize,
         Ok(c) => c as usize,
         Err(_) => return false,
     };
+
+    // Save defaults for windows about to be removed
+    for w in windows.iter() {
+        if !win_infos[..count].iter().any(|info| info.buffer_id == w.window_id) {
+            save_window_defaults(w, win_defaults);
+        }
+    }
 
     let before = windows.len();
     windows.retain(|w| {
@@ -603,22 +724,27 @@ fn discover_windows(windows: &mut Vec<Window>, screen_w: usize, screen_h: usize,
         let title_len = (info.title_len as usize).min(32);
         title[..title_len].copy_from_slice(&info.title[..title_len]);
 
+        // Use saved defaults if available, otherwise cascade
+        let (win_x, win_y, win_w, win_h) = match find_window_defaults(
+            &title[..title_len], title_len, win_defaults,
+        ) {
+            Some((dx, dy, dw, dh)) => (dx, dy, dw, dh),
+            None => (cascade_x, cascade_y, total_w, total_h),
+        };
+
         print!("[bwm] Discovered window '{}' (id={}, {}x{}) at ({},{})\n",
             core::str::from_utf8(&title[..title_len]).unwrap_or("?"),
-            info.buffer_id, info.width, info.height, cascade_x, cascade_y);
+            info.buffer_id, info.width, info.height, win_x, win_y);
 
-        // Tell kernel where the client content goes on screen (for GPU compositing).
-        // z_order = index in windows vec (0 = bottom). New windows are pushed to
-        // the end, so they get the highest z_order.
-        let content_x = cascade_x + BORDER_WIDTH as i32;
-        let content_y = cascade_y + TITLE_BAR_HEIGHT as i32 + BORDER_WIDTH as i32;
-        let z_order = windows.len() as u32; // will be at this index after push
+        let content_x = win_x + BORDER_WIDTH as i32;
+        let content_y = win_y + TITLE_BAR_HEIGHT as i32 + BORDER_WIDTH as i32;
+        let z_order = windows.len() as u32;
         let _ = graphics::set_window_position(info.buffer_id, content_x, content_y, z_order);
 
         let order = *next_order;
         *next_order += 1;
         windows.push(Window {
-            x: cascade_x, y: cascade_y, width: total_w, height: total_h,
+            x: win_x, y: win_y, width: win_w, height: win_h,
             title, title_len, window_id: info.buffer_id,
             owner_pid: info.owner_pid,
             minimized: false,
@@ -854,9 +980,14 @@ fn main() {
     let mut mouse_y: i32 = 0;
     let mut prev_buttons: u32 = 0;
     let mut dragging: Option<(usize, i32, i32)> = None;
+    // Active resize: (win_idx, edge, anchor_x, anchor_y, orig_x, orig_y, orig_w, orig_h)
+    let mut resizing: Option<(usize, ResizeEdge, i32, i32, i32, i32, usize, usize)> = None;
     let mut full_redraw = true;
     let mut content_dirty = false;
     let mut windows_dirty = false;
+    let mut win_defaults: [WindowDefaults; MAX_DEFAULTS] = core::array::from_fn(|_| WindowDefaults {
+        title: [0; 32], title_len: 0, x: 0, y: 0, width: 0, height: 0, valid: false,
+    });
 
     // Clock state
     let mut last_clock_sec: i64 = -1;
@@ -880,7 +1011,7 @@ fn main() {
     let mut registry_gen: u32 = 0;
 
     // Initial window discovery (before entering event loop)
-    if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order) {
+    if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order, &mut win_defaults) {
         focused_win = next_visible_window(&windows, 0);
         compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text);
         full_redraw = true;
@@ -896,7 +1027,7 @@ fn main() {
 
         // ── 1. Discover new/removed client windows (only when registry changed) ──
         if ready & graphics::COMPOSITOR_READY_REGISTRY != 0 {
-            if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order) {
+            if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order, &mut win_defaults) {
                 // New windows are pushed to end of Vec (top of z-order).
                 // Always focus the topmost visible window so appbar selection
                 // matches the visually foregrounded window.
@@ -996,6 +1127,70 @@ fn main() {
                             dirty_y1 = dirty_y1.max(dr_y1 as i32);
                             content_dirty = true;
                         }
+                    } else if let Some((win_idx, edge, anchor_x, anchor_y, orig_x, orig_y, orig_w, orig_h)) = resizing {
+                        let dx = mouse_x - anchor_x;
+                        let dy = mouse_y - anchor_y;
+
+                        let (mut new_x, mut new_y, mut new_w, mut new_h) =
+                            (orig_x, orig_y, orig_w as i32, orig_h as i32);
+
+                        match edge {
+                            ResizeEdge::Right => { new_w += dx; }
+                            ResizeEdge::Bottom => { new_h += dy; }
+                            ResizeEdge::Left => { new_x += dx; new_w -= dx; }
+                            ResizeEdge::Top => { new_y += dy; new_h -= dy; }
+                            ResizeEdge::TopLeft => { new_x += dx; new_w -= dx; new_y += dy; new_h -= dy; }
+                            ResizeEdge::TopRight => { new_w += dx; new_y += dy; new_h -= dy; }
+                            ResizeEdge::BottomLeft => { new_x += dx; new_w -= dx; new_h += dy; }
+                            ResizeEdge::BottomRight => { new_w += dx; new_h += dy; }
+                        }
+
+                        // Enforce minimums
+                        if (new_w as usize) < MIN_WIN_WIDTH {
+                            if edge == ResizeEdge::Left || edge == ResizeEdge::TopLeft || edge == ResizeEdge::BottomLeft {
+                                new_x = orig_x + orig_w as i32 - MIN_WIN_WIDTH as i32;
+                            }
+                            new_w = MIN_WIN_WIDTH as i32;
+                        }
+                        if (new_h as usize) < MIN_WIN_HEIGHT {
+                            if edge == ResizeEdge::Top || edge == ResizeEdge::TopLeft || edge == ResizeEdge::TopRight {
+                                new_y = orig_y + orig_h as i32 - MIN_WIN_HEIGHT as i32;
+                            }
+                            new_h = MIN_WIN_HEIGHT as i32;
+                        }
+
+                        // Clamp top to taskbar
+                        new_y = new_y.max(TASKBAR_HEIGHT as i32);
+
+                        let (ox0, oy0, ox1, oy1) = windows[win_idx].bounds();
+
+                        windows[win_idx].x = new_x;
+                        windows[win_idx].y = new_y;
+                        windows[win_idx].width = new_w as usize;
+                        windows[win_idx].height = new_h as usize;
+
+                        // Update kernel position
+                        if windows[win_idx].window_id != 0 {
+                            let cx = windows[win_idx].content_x();
+                            let cy = windows[win_idx].content_y();
+                            let _ = graphics::set_window_position(
+                                windows[win_idx].window_id, cx, cy, win_idx as u32,
+                            );
+                        }
+
+                        // Dirty region = union of old and new bounds
+                        let (nx0, ny0, nx1, ny1) = windows[win_idx].bounds();
+                        let dr_x0 = ox0.min(nx0).max(0) as usize;
+                        let dr_y0 = oy0.min(ny0).max(0) as usize;
+                        let dr_x1 = ox1.max(nx1) as usize;
+                        let dr_y1 = oy1.max(ny1) as usize;
+                        compose_partial_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache,
+                            &windows, focused_win, &clock_text, dr_x0, dr_y0, dr_x1, dr_y1);
+                        dirty_x0 = dirty_x0.min(dr_x0 as i32);
+                        dirty_y0 = dirty_y0.min(dr_y0 as i32);
+                        dirty_x1 = dirty_x1.max(dr_x1 as i32);
+                        dirty_y1 = dirty_y1.max(dr_y1 as i32);
+                        content_dirty = true;
                     } else if !windows.is_empty() && focused_win < windows.len()
                         && !windows[focused_win].minimized
                         && windows[focused_win].hit_content(mouse_x, mouse_y)
@@ -1010,8 +1205,32 @@ fn main() {
                 // Per-endpoint button tracking in the kernel prevents dual USB HID
                 // endpoints from racing (one endpoint can't cancel the other's press).
                 if (buttons & 1) == 0 && (prev_buttons & 1) != 0 {
-                    if dragging.is_some() {
+                    if let Some((win_idx, _, _, _, _, _, orig_w, orig_h)) = resizing.take() {
+                        // Resize ended — send WINDOW_RESIZED event to client
+                        let new_cw = windows[win_idx].content_width();
+                        let new_ch = windows[win_idx].content_height();
+                        let old_cw = orig_w.saturating_sub(BORDER_WIDTH * 2);
+                        let old_ch = orig_h.saturating_sub(TITLE_BAR_HEIGHT + BORDER_WIDTH * 2);
+                        if new_cw != old_cw || new_ch != old_ch {
+                            if windows[win_idx].window_id != 0 {
+                                let resize_event = WindowInputEvent {
+                                    event_type: input_event_type::WINDOW_RESIZED,
+                                    keycode: new_cw as u16,
+                                    mouse_x: new_ch as i16,
+                                    mouse_y: 0,
+                                    modifiers: 0,
+                                    _pad: 0,
+                                };
+                                let _ = graphics::write_window_input(
+                                    windows[win_idx].window_id, &resize_event,
+                                );
+                            }
+                        }
+                        save_window_defaults(&windows[win_idx], &mut win_defaults);
+                    } else if dragging.is_some() {
+                        let drag_idx = dragging.unwrap().0;
                         dragging = None;
+                        save_window_defaults(&windows[drag_idx], &mut win_defaults);
                     } else if !windows.is_empty() && focused_win < windows.len()
                         && !windows[focused_win].minimized
                         && windows[focused_win].hit_content(mouse_x, mouse_y)
@@ -1066,8 +1285,15 @@ fn main() {
                     else if !windows.is_empty() {
                         let mut clicked_idx: Option<usize> = None;
                         let mut clicked_title = false;
+                        let mut clicked_resize: Option<ResizeEdge> = None;
                         for i in (0..windows.len()).rev() {
                             if windows[i].minimized { continue; }
+                            // Check resize edges first (they extend slightly outside)
+                            if let Some(edge) = windows[i].hit_resize_edge(mouse_x, mouse_y) {
+                                clicked_idx = Some(i);
+                                clicked_resize = Some(edge);
+                                break;
+                            }
                             let ht = windows[i].hit_title(mouse_x, mouse_y);
                             let ha = windows[i].hit_any(mouse_x, mouse_y);
                             if ht || ha {
@@ -1094,16 +1320,22 @@ fn main() {
                                 focused_win = top;
                             }
 
-                            if clicked_title {
+                            if let Some(edge) = clicked_resize {
+                                // Start resize
+                                resizing = Some((
+                                    top, edge,
+                                    mouse_x, mouse_y,
+                                    windows[top].x, windows[top].y,
+                                    windows[top].width, windows[top].height,
+                                ));
+                            } else if clicked_title {
                                 // Check chrome buttons before starting drag
                                 if windows[top].hit_close_button(mouse_x, mouse_y) {
-                                    // Send CLOSE_REQUESTED to client
                                     let close_event = WindowInputEvent {
                                         event_type: input_event_type::CLOSE_REQUESTED,
                                         keycode: 0, mouse_x: 0, mouse_y: 0, modifiers: 0, _pad: 0,
                                     };
                                     let _ = graphics::write_window_input(windows[top].window_id, &close_event);
-                                    // Send SIGTERM to owner process
                                     if windows[top].owner_pid > 0 {
                                         let _ = signal::kill(windows[top].owner_pid as i32, signal::SIGTERM);
                                     }
@@ -1125,8 +1357,7 @@ fn main() {
                                 route_mouse_button_to_focused(&windows, focused_win, 1, true, local_x, local_y);
                             }
 
-                            // Full redraw for z-order or focus change (unless minimize
-                            // already did it, or nothing visual changed)
+                            // Full redraw for z-order or focus change
                             if !full_redraw && (z_changed || focus_changed) {
                                 compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text);
                                 full_redraw = true;

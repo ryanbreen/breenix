@@ -1497,6 +1497,7 @@ fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aarch64Excepti
 
     // Track if signal termination happened (for parent notification after borrow ends)
     let mut signal_termination_info: Option<crate::signal::delivery::ParentNotification> = None;
+    let mut terminated_child_pid: Option<u64> = None;
 
     if let Some(ref mut manager) = *manager_guard {
         // Find the process for this thread
@@ -1553,12 +1554,14 @@ fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aarch64Excepti
                 match signal_result {
                     crate::signal::delivery::SignalDeliveryResult::Terminated(notification) => {
                         crate::task::scheduler::set_need_resched();
+                        terminated_child_pid = Some(notification.child_pid.as_u64());
                         signal_termination_info = Some(notification);
                         setup_idle_return_arm64(frame);
                         crate::task::scheduler::switch_to_idle();
                     }
                     crate::signal::delivery::SignalDeliveryResult::Delivered => {
                         if process.is_terminated() {
+                            terminated_child_pid = Some(process.id.as_u64());
                             crate::task::scheduler::set_need_resched();
                             setup_idle_return_arm64(frame);
                             crate::task::scheduler::switch_to_idle();
@@ -1575,6 +1578,11 @@ fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aarch64Excepti
         // Notify parent if signal terminated a child
         if let Some(notification) = signal_termination_info {
             crate::signal::delivery::notify_parent_of_termination_deferred(&notification);
+        }
+
+        // Clean up window buffers so compositor stops reading freed pages
+        if let Some(pid) = terminated_child_pid {
+            crate::syscall::graphics::cleanup_windows_for_pid(pid);
         }
     }
 }
