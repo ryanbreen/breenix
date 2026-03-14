@@ -386,6 +386,34 @@ fn native_exec(
         Err(_) => return Err(JsError::runtime("exec: pipe() failed")),
     };
 
+    // Pre-fork: copy exec path and argv to stack buffers.
+    // After fork, heap pages may not be accessible due to a kernel CoW bug.
+    let path_bytes_len = exec_path.len();
+    if path_bytes_len >= 255 {
+        return Err(JsError::runtime("exec: path too long"));
+    }
+    let mut path_buf = [0u8; 256];
+    path_buf[..path_bytes_len].copy_from_slice(exec_path.as_bytes());
+    path_buf[path_bytes_len] = 0;
+
+    const ARGV_BUF_SIZE: usize = 4096;
+    const MAX_ARGS: usize = 64;
+    let mut argv_data = [0u8; ARGV_BUF_SIZE];
+    let mut argv_offsets = [0usize; MAX_ARGS];
+    let mut argv_pos = 0usize;
+    let argc = cmd_args.len().min(MAX_ARGS - 1);
+    for i in 0..argc {
+        let arg_bytes = cmd_args[i].as_bytes();
+        if argv_pos + arg_bytes.len() + 1 > ARGV_BUF_SIZE {
+            break;
+        }
+        argv_offsets[i] = argv_pos;
+        argv_data[argv_pos..argv_pos + arg_bytes.len()].copy_from_slice(arg_bytes);
+        argv_pos += arg_bytes.len();
+        argv_data[argv_pos] = 0;
+        argv_pos += 1;
+    }
+
     // Fork
     let fork_result = match libbreenix::process::fork() {
         Ok(r) => r,
@@ -413,25 +441,17 @@ fn native_exec(
             let _ = libbreenix::io::close(stdout_w);
             let _ = libbreenix::io::close(stderr_w);
 
-            // Build null-terminated argv
-            let mut c_args: Vec<Vec<u8>> = Vec::new();
-            for a in &cmd_args {
-                let mut v: Vec<u8> = a.as_bytes().to_vec();
-                v.push(0);
-                c_args.push(v);
+            // Build argv pointer array from stack-buffered data (no heap access)
+            let mut argv_ptrs = [core::ptr::null::<u8>(); MAX_ARGS];
+            for i in 0..argc {
+                argv_ptrs[i] = argv_data[argv_offsets[i]..].as_ptr();
             }
-            let argv_ptrs: Vec<*const u8> = c_args.iter().map(|a| a.as_ptr()).collect();
+            argv_ptrs[argc] = core::ptr::null();
 
-            // Build null-terminated path
-            let mut path_bytes: Vec<u8> = exec_path.as_bytes().to_vec();
-            path_bytes.push(0);
-
-            // execv
-            let mut argv_with_null: Vec<*const u8> = argv_ptrs;
-            argv_with_null.push(core::ptr::null());
-            let _ = libbreenix::process::execv(&path_bytes, argv_with_null.as_ptr());
-
-            // If exec failed, exit with 127
+            let _ = libbreenix::process::execv(
+                &path_buf[..path_bytes_len + 1],
+                argv_ptrs.as_ptr(),
+            );
             libbreenix::process::exit(127);
         }
         libbreenix::process::ForkResult::Parent(child_pid) => {
@@ -1115,6 +1135,36 @@ fn command_executor_fn(
     let resolved = resolve_command(cmd);
     let exec_path = resolved.as_deref().unwrap_or(cmd);
 
+    // Pre-fork: copy exec path and argv to stack buffers.
+    // After fork, heap pages may not be accessible due to a kernel CoW bug.
+    let path_bytes_len = exec_path.len();
+    if path_bytes_len >= 255 {
+        return Err(JsError::runtime("command exec: path too long"));
+    }
+    let mut path_buf = [0u8; 256];
+    path_buf[..path_bytes_len].copy_from_slice(exec_path.as_bytes());
+    path_buf[path_bytes_len] = 0;
+
+    // Pack all argv strings into a single stack buffer (4KB) with null terminators.
+    // argv_offsets[i] = byte offset in argv_data where arg i starts.
+    const ARGV_BUF_SIZE: usize = 4096;
+    const MAX_ARGS: usize = 64;
+    let mut argv_data = [0u8; ARGV_BUF_SIZE];
+    let mut argv_offsets = [0usize; MAX_ARGS];
+    let mut argv_pos = 0usize;
+    let argc = cmd_args.len().min(MAX_ARGS - 1);
+    for i in 0..argc {
+        let arg_bytes = cmd_args[i].as_bytes();
+        if argv_pos + arg_bytes.len() + 1 > ARGV_BUF_SIZE {
+            break;
+        }
+        argv_offsets[i] = argv_pos;
+        argv_data[argv_pos..argv_pos + arg_bytes.len()].copy_from_slice(arg_bytes);
+        argv_pos += arg_bytes.len();
+        argv_data[argv_pos] = 0; // null terminator
+        argv_pos += 1;
+    }
+
     // Fork
     let fork_result = match libbreenix::process::fork() {
         Ok(r) => r,
@@ -1134,20 +1184,17 @@ fn command_executor_fn(
             let _ = libbreenix::signal::sigaction(libbreenix::signal::SIGINT, Some(&dfl), None);
             let _ = libbreenix::signal::sigaction(libbreenix::signal::SIGQUIT, Some(&dfl), None);
 
-            // Child: inherits stdin/stdout/stderr directly (no pipe capture)
-            let mut c_args: Vec<Vec<u8>> = Vec::new();
-            for a in &cmd_args {
-                let mut v: Vec<u8> = a.as_bytes().to_vec();
-                v.push(0);
-                c_args.push(v);
+            // Build argv pointer array from stack-buffered data (no heap access)
+            let mut argv_ptrs = [core::ptr::null::<u8>(); MAX_ARGS];
+            for i in 0..argc {
+                argv_ptrs[i] = argv_data[argv_offsets[i]..].as_ptr();
             }
-            let mut argv_ptrs: Vec<*const u8> = c_args.iter().map(|a| a.as_ptr()).collect();
-            argv_ptrs.push(core::ptr::null());
+            argv_ptrs[argc] = core::ptr::null();
 
-            let mut path_bytes: Vec<u8> = exec_path.as_bytes().to_vec();
-            path_bytes.push(0);
-
-            let _ = libbreenix::process::execv(&path_bytes, argv_ptrs.as_ptr());
+            let _ = libbreenix::process::execv(
+                &path_buf[..path_bytes_len + 1],
+                argv_ptrs.as_ptr(),
+            );
             libbreenix::process::exit(127);
         }
         libbreenix::process::ForkResult::Parent(child_pid) => {
