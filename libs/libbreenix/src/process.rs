@@ -111,6 +111,42 @@ pub fn execv(path: &[u8], argv: *const *const u8) -> Result<core::convert::Infal
     Err(Error::from_syscall(ret as i64).unwrap_err())
 }
 
+/// Spawn a new process from an ELF binary path (no fork).
+///
+/// Creates a child process directly without fork+exec, avoiding
+/// MAP_SHARED page table duplication issues. The child inherits the
+/// parent's process group, session, and cwd.
+///
+/// # Arguments
+/// * `path` - Null-terminated path to the ELF binary (e.g., b"/bin/blauncher\0")
+///
+/// # Returns
+/// `Ok(child_pid)` on success, `Err(Error)` on failure.
+#[inline]
+pub fn spawn(path: &[u8]) -> Result<Pid, Error> {
+    debug_assert!(path.last() == Some(&0), "spawn path must be null-terminated");
+    let ret = unsafe {
+        raw::syscall2(nr::SPAWN, path.as_ptr() as u64, 0)
+    };
+    Error::from_syscall(ret as i64).map(Pid::from_raw)
+}
+
+/// Spawn a new process with arguments (no fork).
+///
+/// Like `spawn` but allows passing command-line arguments.
+///
+/// # Arguments
+/// * `path` - Null-terminated path to the ELF binary
+/// * `argv` - Null-terminated array of string pointers
+#[inline]
+pub fn spawnv(path: &[u8], argv: *const *const u8) -> Result<Pid, Error> {
+    debug_assert!(path.last() == Some(&0), "spawnv path must be null-terminated");
+    let ret = unsafe {
+        raw::syscall2(nr::SPAWN, path.as_ptr() as u64, argv as u64)
+    };
+    Error::from_syscall(ret as i64).map(Pid::from_raw)
+}
+
 /// Get the current process ID.
 #[inline]
 pub fn getpid() -> Result<Pid, Error> {

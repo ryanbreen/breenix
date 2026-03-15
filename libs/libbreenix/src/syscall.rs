@@ -139,6 +139,8 @@ pub mod nr {
     pub const EPOLL_CTL: u64 = 233;
     pub const EPOLL_PWAIT: u64 = 281;
     pub const EPOLL_CREATE1: u64 = 291;
+    // Process spawning (Breenix-specific)
+    pub const SPAWN: u64 = 440;
     // Testing syscalls (Breenix-specific)
     pub const COW_STATS: u64 = 500;
     pub const SIMULATE_OOM: u64 = 501;
@@ -281,6 +283,8 @@ pub mod nr {
     pub const EPOLL_CREATE1: u64 = 20;
     pub const EPOLL_CTL: u64 = 21;
     pub const EPOLL_PWAIT: u64 = 22;
+    // Process spawning (Breenix-specific)
+    pub const SPAWN: u64 = 440;
     // Testing syscalls (Breenix-specific)
     pub const COW_STATS: u64 = 500;
     pub const SIMULATE_OOM: u64 = 501;

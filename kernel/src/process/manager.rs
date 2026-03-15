@@ -633,6 +633,52 @@ impl ProcessManager {
         Ok(pid)
     }
 
+    /// Spawn a new process from an ELF binary, inheriting parent attributes.
+    ///
+    /// Unlike fork+exec, this creates a fresh process without copying the
+    /// parent's page table. This avoids issues with MAP_SHARED GPU pages
+    /// being incorrectly refcounted during fork's CoW setup.
+    ///
+    /// The child inherits the parent's process group, session, and cwd.
+    #[cfg(target_arch = "aarch64")]
+    pub fn spawn_process(
+        &mut self,
+        parent_pid: ProcessId,
+        name: String,
+        elf_data: &[u8],
+        argv: &[&[u8]],
+    ) -> Result<ProcessId, &'static str> {
+        // Capture parent attributes before creating child
+        let (parent_pgid, parent_sid, parent_cwd) = {
+            let parent = self.processes.get(&parent_pid)
+                .ok_or("Parent process not found")?;
+            (parent.pgid, parent.sid, parent.cwd.clone())
+        };
+
+        // Create the child process (allocates PID, page table, loads ELF, etc.)
+        let child_pid = self.create_process_with_argv(name, elf_data, argv)?;
+
+        // Set up parent-child relationship and inherit attributes
+        if let Some(child) = self.processes.get_mut(&child_pid) {
+            child.parent = Some(parent_pid);
+            child.pgid = parent_pgid;
+            child.sid = parent_sid;
+            child.cwd = parent_cwd;
+        }
+
+        // Add child to parent's children list
+        if let Some(parent) = self.processes.get_mut(&parent_pid) {
+            parent.children.push(child_pid);
+        }
+
+        crate::serial_println!(
+            "[spawn] Created child PID {} for parent PID {}",
+            child_pid.as_u64(), parent_pid.as_u64()
+        );
+
+        Ok(child_pid)
+    }
+
     /// Create the main thread for a process
     /// Note: Uses x86_64-specific TLS and thread creation
     #[cfg(target_arch = "x86_64")]
