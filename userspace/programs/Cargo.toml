@@ -527,8 +527,20 @@ name = "bfontpicker"
 path = "src/bfontpicker.rs"
 
 [[bin]]
+name = "blauncher"
+path = "src/blauncher.rs"
+
+[[bin]]
 name = "guskit"
 path = "src/guskit.rs"
+
+[[bin]]
+name = "bsshd"
+path = "src/bsshd.rs"
+
+[[bin]]
+name = "bssh"
+path = "src/bssh.rs"
 
 [profile.release]
 panic = "abort"

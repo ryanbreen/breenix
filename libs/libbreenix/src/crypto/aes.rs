@@ -337,6 +337,61 @@ impl Aes256 {
     }
 }
 
+/// AES-128 in CTR mode (NIST SP 800-38A).
+///
+/// Encrypts and decrypts data by XORing with an AES-encrypted counter block.
+/// The counter is a full 128-bit big-endian integer that increments by 1
+/// for each block, matching the SSH (RFC 4344) counter mode specification.
+pub struct Aes128Ctr {
+    cipher: Aes128,
+    counter: [u8; 16],
+}
+
+impl Aes128Ctr {
+    /// Create a new AES-128-CTR instance.
+    ///
+    /// # Arguments
+    /// * `key` - 128-bit encryption key
+    /// * `iv` - 128-bit initial counter value
+    pub fn new(key: &[u8; 16], iv: &[u8; 16]) -> Self {
+        Self {
+            cipher: Aes128::new(key),
+            counter: *iv,
+        }
+    }
+
+    /// Increment the 128-bit counter by 1 (big-endian).
+    fn increment_counter(&mut self) {
+        for i in (0..16).rev() {
+            self.counter[i] = self.counter[i].wrapping_add(1);
+            if self.counter[i] != 0 {
+                break;
+            }
+        }
+    }
+
+    /// Encrypt or decrypt data in place.
+    ///
+    /// CTR mode is its own inverse: encrypt and decrypt are the same operation.
+    /// XORs the data with the AES-encrypted counter keystream.
+    pub fn process(&mut self, data: &mut [u8]) {
+        let mut offset = 0;
+        while offset < data.len() {
+            let mut keystream = self.counter;
+            self.cipher.encrypt_block(&mut keystream);
+
+            let remaining = data.len() - offset;
+            let chunk = if remaining < 16 { remaining } else { 16 };
+            for i in 0..chunk {
+                data[offset + i] ^= keystream[i];
+            }
+
+            self.increment_counter();
+            offset += chunk;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

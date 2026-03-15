@@ -59,6 +59,8 @@ pub mod synth;
 pub mod syscall;
 pub mod termios;
 #[cfg(feature = "std")]
+pub mod ssh;
+#[cfg(feature = "std")]
 pub mod tls;
 pub mod time;
 pub mod types;

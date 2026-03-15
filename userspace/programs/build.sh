@@ -269,6 +269,9 @@ STD_BINARIES=(
     "bterm"
     "blog"
     "bfontpicker"
+    "blauncher"
+    "bsshd"
+    "bssh"
 )
 
 RELEASE_DIR="$SCRIPT_DIR/target/$TARGET_DIR/release"
