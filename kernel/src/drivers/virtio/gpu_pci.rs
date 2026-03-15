@@ -4154,19 +4154,6 @@ fn virgl_composite_single_quad(
     let th = tex_h as f32;
     let has_chromeless = windows.iter().any(|w| w.chromeless && w.virgl_initialized);
 
-    // One-time diagnostic when 5+ windows first appear
-    static DIAG_DONE: AtomicBool = AtomicBool::new(false);
-    if windows.len() >= 5 && !DIAG_DONE.swap(true, Ordering::Relaxed) {
-        for (i, w) in windows.iter().enumerate() {
-            crate::serial_println!(
-                "[DIAG] win[{}] res={} pos=({},{}) size={}x{} chromeless={} virgl={}",
-                i, w.virgl_resource_id, w.x, w.y, w.width, w.height,
-                w.chromeless, w.virgl_initialized
-            );
-        }
-        crate::serial_println!("[DIAG] has_chromeless={}", has_chromeless);
-    }
-
     // Pass 1: Non-chromeless windows (content + frame strips)
     for (i, win) in windows.iter().enumerate() {
         if !win.virgl_initialized || win.virgl_resource_id == 0 { continue; }

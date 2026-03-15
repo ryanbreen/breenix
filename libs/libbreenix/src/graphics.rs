@@ -142,8 +142,8 @@ pub mod draw_op {
     pub const RESIZE_WINDOW_BUFFER: u32 = 24;
     /// Set the active cursor shape (0=arrow, 1=NS, 2=EW, 3=NWSE, 4=NESW)
     pub const SET_CURSOR_SHAPE: u32 = 25;
-    /// Poll for launcher trigger (Super key double-tap)
-    pub const POLL_LAUNCHER_TRIGGER: u32 = 26;
+    /// Poll modifier key state (returns bitmask: bit0=Shift, bit1=Ctrl, bit2=Alt, bit3=Super)
+    pub const POLL_MODIFIER_STATE: u32 = 26;
 }
 
 /// Ball descriptor for VirGL GPU rendering.
@@ -666,14 +666,16 @@ pub fn set_cursor_shape(shape: u32) -> Result<(), Error> {
     fbdraw(&cmd)
 }
 
-/// Poll for launcher trigger (Super key double-tap).
+/// Poll current modifier key state from the kernel HID driver.
 ///
-/// Returns true if a double-tap was detected since last poll.
-/// The flag is consumed on read — subsequent calls return false
-/// until the next double-tap occurs.
-pub fn poll_launcher_trigger() -> bool {
+/// Returns a bitmask:
+///   bit 0: Shift
+///   bit 1: Ctrl
+///   bit 2: Alt
+///   bit 3: Super (Command on macOS / Ctrl on Parallels)
+pub fn poll_modifier_state() -> u32 {
     let cmd = FbDrawCmd {
-        op: draw_op::POLL_LAUNCHER_TRIGGER,
+        op: draw_op::POLL_MODIFIER_STATE,
         p1: 0,
         p2: 0,
         p3: 0,
@@ -681,7 +683,7 @@ pub fn poll_launcher_trigger() -> bool {
         color: 0,
     };
     let ret = unsafe { raw::syscall1(nr::FBDRAW, &cmd as *const FbDrawCmd as u64) as i64 };
-    ret == 1
+    ret as u32
 }
 
 /// Input event type constants
