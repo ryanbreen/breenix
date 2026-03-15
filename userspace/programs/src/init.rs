@@ -9,6 +9,30 @@ fn main() {
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
     print!("[init] Breenix init starting (PID {})\n", pid);
 
+    // Fork bsshd — SSH server daemon (background)
+    match fork() {
+        Ok(ForkResult::Child) => {
+            let arg0 = b"bsshd\0";
+            let argv: [*const u8; 2] = [
+                arg0.as_ptr(),
+                core::ptr::null(),
+            ];
+            match execv(b"/bin/bsshd\0", argv.as_ptr()) {
+                Ok(_) => unreachable!(),
+                Err(_) => {
+                    // bsshd not installed — silently exit
+                    std::process::exit(0);
+                }
+            }
+        }
+        Ok(ForkResult::Parent(child_pid)) => {
+            print!("[init] bsshd started (PID {})\n", child_pid.raw());
+        }
+        Err(_) => {
+            print!("[init] Warning: failed to start bsshd\n");
+        }
+    }
+
     // Fork bsh — it will detect it's the init shell and load /etc/init.js
     match fork() {
         Ok(ForkResult::Child) => {

@@ -430,7 +430,7 @@ fn main() {
     // Keep displaying results — support scrolling with arrow keys
     let visible_h = WIN_H as i32 - LIST_START_Y - FOOTER_H;
     let total_h = content_height(&tests);
-    let max_scroll = (total_h - visible_h).max(0);
+    let mut max_scroll = (total_h - visible_h).max(0);
     let mut scroll_offset: i32 = 0;
     let sleep_ts = libbreenix::types::Timespec { tv_sec: 0, tv_nsec: 50_000_000 }; // 50ms
 
@@ -444,6 +444,13 @@ fn main() {
                         0x51 => { scroll_offset = (scroll_offset + ROW_H).min(max_scroll); need_redraw = true; }
                         _ => {}
                     }
+                }
+                Event::Resized { width: _, height: h } => {
+                    let new_visible_h = h as i32 - LIST_START_Y - FOOTER_H;
+                    let new_max = (total_h - new_visible_h).max(0);
+                    max_scroll = new_max;
+                    scroll_offset = scroll_offset.min(max_scroll);
+                    need_redraw = true;
                 }
                 Event::CloseRequested => std::process::exit(0),
                 _ => {}

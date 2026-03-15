@@ -590,6 +590,8 @@ fn dispatch_syscall_enum(
         // Positional I/O
         SyscallNumber::Pread64 => result_to_u64(crate::syscall::handlers::sys_pread64(arg1 as i32, arg2, arg3, arg4 as i64)),
         SyscallNumber::Pwrite64 => result_to_u64(crate::syscall::handlers::sys_pwrite64(arg1 as i32, arg2, arg3, arg4 as i64)),
+        // Process spawning (no fork — avoids MAP_SHARED page corruption)
+        SyscallNumber::Spawn => sys_spawn_aarch64(arg1, arg2),
     }
 }
 
@@ -1246,6 +1248,145 @@ fn sys_simulate_oom_aarch64(enable: u64) -> u64 {
         let _ = enable; // suppress unused warning
         log::warn!("sys_simulate_oom_aarch64: testing feature not compiled in");
         (-38_i64) as u64 // -ENOSYS - function not implemented
+    }
+}
+
+/// sys_spawn — create a new process directly from an ELF path (no fork).
+///
+/// This avoids fork+exec entirely, preventing MAP_SHARED page corruption that
+/// occurs when fork duplicates a process with GPU compositor texture mappings.
+///
+/// arg1 = path_ptr (null-terminated C string to ELF binary path)
+/// arg2 = argv_ptr (null-terminated array of string pointers, or NULL)
+///
+/// Returns: child PID on success, negative errno on failure.
+fn sys_spawn_aarch64(path_ptr: u64, argv_ptr: u64) -> u64 {
+    use crate::syscall::userptr::{copy_cstr_from_user, copy_from_user};
+
+    if path_ptr == 0 {
+        return (-14_i64) as u64; // -EFAULT
+    }
+
+    // Read path from userspace
+    let program_path = match copy_cstr_from_user(path_ptr) {
+        Ok(name) => name,
+        Err(errno) => return (-(errno as i64)) as u64,
+    };
+
+    crate::serial_println!("[spawn] path='{}'", program_path);
+
+    // Parse argv from userspace
+    let mut argv_vec: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec::Vec::new();
+    if argv_ptr != 0 {
+        const MAX_ARGS: usize = 64;
+        for i in 0..MAX_ARGS {
+            let arg_ptr_addr = argv_ptr + (i * core::mem::size_of::<u64>()) as u64;
+            let arg_ptr: u64 = match copy_from_user(arg_ptr_addr as *const u64) {
+                Ok(ptr) => ptr,
+                Err(_) => break,
+            };
+            if arg_ptr == 0 { break; }
+            let arg_string = match copy_cstr_from_user(arg_ptr) {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+            let mut arg = arg_string.into_bytes();
+            arg.push(0);
+            argv_vec.push(arg);
+        }
+    }
+    if argv_vec.is_empty() {
+        let mut arg0 = program_path.as_bytes().to_vec();
+        arg0.push(0);
+        argv_vec.push(arg0);
+    }
+
+    // Load ELF from filesystem (with interrupts enabled for I/O)
+    let elf_vec = if program_path.contains('/') {
+        match load_elf_from_ext2(&program_path) {
+            Ok(data) => data,
+            Err(errno) => return (-(errno as i64)) as u64,
+        }
+    } else {
+        let bin_path = alloc::format!("/bin/{}", program_path);
+        match load_elf_from_ext2(&bin_path) {
+            Ok(data) => data,
+            Err(errno) => {
+                crate::serial_println!("[spawn] Failed to load /bin/{}: {}", program_path, errno);
+                return (-(errno as i64)) as u64;
+            }
+        }
+    };
+    let elf_data = elf_vec.as_slice();
+
+    // Get caller's PID
+    let current_thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => return (-3_i64) as u64, // -ESRCH
+    };
+
+    let parent_pid = {
+        let manager_guard = crate::process::manager();
+        if let Some(ref manager) = *manager_guard {
+            if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {
+                pid
+            } else {
+                return (-3_i64) as u64; // -ESRCH
+            }
+        } else {
+            return (-12_i64) as u64; // -ENOMEM
+        }
+    };
+
+    // Extract a short name from the path
+    let short_name = program_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(&program_path)
+        .trim_end_matches(".elf");
+    let process_name = alloc::string::String::from(short_name);
+
+    // Create argv slices
+    let argv_slices: alloc::vec::Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
+
+    // Create the process under PM lock (same pattern as create_user_process —
+    // no arch_without_interrupts needed, the PM lock provides synchronization).
+    let child_pid = {
+        let mut manager_guard = crate::process::manager();
+        if let Some(ref mut manager) = *manager_guard {
+            manager.spawn_process(parent_pid, process_name, elf_data, &argv_slices)
+        } else {
+            Err("Process manager not available")
+        }
+    };
+
+    match child_pid {
+        Ok(pid) => {
+            // Add the child's main thread to the scheduler so it actually runs.
+            // create_process_with_argv stores the thread on the Process but does
+            // NOT enqueue it — we must do that here, mirroring create_user_process.
+            let scheduled = {
+                let manager_guard = crate::process::manager();
+                if let Some(ref manager) = *manager_guard {
+                    if let Some(process) = manager.get_process(pid) {
+                        if let Some(ref main_thread) = process.main_thread {
+                            crate::task::scheduler::spawn(Box::new(main_thread.clone()));
+                            true
+                        } else { false }
+                    } else { false }
+                } else { false }
+            };
+            if scheduled {
+                crate::serial_println!("[spawn] Success: child PID {} scheduled", pid.as_u64());
+            } else {
+                crate::serial_println!("[spawn] Warning: child PID {} created but not scheduled", pid.as_u64());
+            }
+            pid.as_u64()
+        }
+        Err(e) => {
+            crate::serial_println!("[spawn] Failed: {}", e);
+            (-12_i64) as u64 // -ENOMEM
+        }
     }
 }
 

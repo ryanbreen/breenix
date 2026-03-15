@@ -194,6 +194,8 @@ pub enum SyscallNumber {
     // Positional I/O
     Pread64,
     Pwrite64,
+    // Process spawning (Breenix-specific) — avoids fork+exec overhead
+    Spawn,
 }
 
 #[allow(dead_code)]
@@ -331,6 +333,8 @@ impl SyscallNumber {
             421 => Some(Self::AudioWrite),
             431 => Some(Self::TakeOverDisplay),
             432 => Some(Self::GiveBackDisplay),
+            // Process spawning (Breenix-specific)
+            440 => Some(Self::Spawn),
             500 => Some(Self::CowStats),
             501 => Some(Self::SimulateOom),
             _ => None,
@@ -464,6 +468,8 @@ impl SyscallNumber {
             421 => Some(Self::AudioWrite),
             431 => Some(Self::TakeOverDisplay),
             432 => Some(Self::GiveBackDisplay),
+            // Process spawning (Breenix-specific)
+            440 => Some(Self::Spawn),
             500 => Some(Self::CowStats),
             501 => Some(Self::SimulateOom),
             _ => None,

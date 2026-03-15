@@ -20,14 +20,11 @@ use libbreenix::pty;
 use libbreenix::types::Fd;
 use libbreenix::time;
 
-use libfont::{Font, CachedFont};
+use libfont::CachedFont;
 use libgfx::bitmap_font;
 use libgfx::ttf_font;
 
 use libbui::{InputState, WidgetEvent};
-
-#[path = "system_fonts.rs"]
-mod system_fonts;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -417,23 +414,23 @@ fn ttf_cell_dims(font: &mut CachedFont, size: f32) -> (usize, usize) {
     if advance <= 0.0 || advance > 200.0 || metrics.ascender <= 0.0 || metrics.ascender > 200.0 {
         return (BITMAP_CELL_W, BITMAP_CELL_H);
     }
-    let w = (advance + 0.5) as usize;
-    let h = (metrics.ascender + 0.99) as usize + ((-metrics.descender) + 0.99) as usize;
-    (w.max(1), h.max(1))
+    // Use i32 intermediate to avoid potential f32-to-usize codegen issues
+    let w = (advance + 0.5) as i32;
+    let h = (metrics.ascender + 0.99) as i32 + ((-metrics.descender) + 0.99) as i32;
+    (w.max(1) as usize, h.max(1) as usize)
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────
 
 fn main() {
-    // Load system font configuration
-    let config = system_fonts::FontConfig::load();
-    let mut font_size = if config.mono_size >= 6.0 { config.mono_size } else { 14.0 };
-    print!("[bterm] config: mono_size={} font_size={}\n", config.mono_size, font_size);
+    // Load system font configuration via FontWatcher (handles hot-reload)
+    let mut font_watcher = breengel::FontWatcher::new();
+    font_watcher.set_poll_interval(100); // ~1s at 10ms sleep
+    let mut font_size = if font_watcher.mono_size() >= 6.0 { font_watcher.mono_size() } else { 14.0 };
+    print!("[bterm] config: mono_size={} font_size={}\n", font_watcher.mono_size(), font_size);
 
-    // Load TrueType font from system config
-    let font_data = config.load_mono().map(|(data, _)| data);
-    let font_parsed = font_data.as_ref().and_then(|data| Font::parse(data).ok());
-    let mut ttf_font: Option<CachedFont> = font_parsed.map(|f| CachedFont::new(f, 256));
+    // Load TrueType font (Font owns its data, no lifetime gymnastics needed)
+    let mut ttf_font: Option<CachedFont> = font_watcher.load_font().map(|(f, _)| f);
 
     // Compute cell dimensions from font metrics (or fall back to bitmap constants)
     let (mut cell_w, mut cell_h) = if let Some(ref mut font) = ttf_font {
@@ -493,8 +490,8 @@ fn main() {
     };
 
     // Calculate content area (below tab bar)
-    let content_w = WIN_WIDTH;
-    let content_h = WIN_HEIGHT - TAB_BAR_HEIGHT as u32;
+    let mut content_w = WIN_WIDTH;
+    let mut content_h = WIN_HEIGHT - TAB_BAR_HEIGHT as u32;
     let mut cols = (content_w as usize / cell_w).max(1);
     let mut rows = (content_h as usize / cell_h).max(1);
 
@@ -640,8 +637,35 @@ fn main() {
                         }
                     }
                 }
+                Event::Resized { width, height } => {
+                    content_w = *width;
+                    content_h = height.saturating_sub(TAB_BAR_HEIGHT as u32);
+                    let new_cols = (content_w as usize / cell_w).max(1);
+                    let new_rows = (content_h as usize / cell_h).max(1);
+                    if new_cols != cols || new_rows != rows {
+                        cols = new_cols;
+                        rows = new_rows;
+                        for tab in tabs.iter_mut() {
+                            tab.emu.resize(cols, rows);
+                        }
+                    }
+                    tab_bar.set_rect(Rect::new(0, 0, *width as i32, TAB_BAR_HEIGHT));
+                    for tab in tabs.iter_mut() {
+                        tab.emu.dirty = true;
+                    }
+                }
                 _ => {}
             }
+        }
+
+        // Font config hot-reload via FontWatcher
+        if let Some((new_font, new_size)) = font_watcher.poll() {
+            let m = new_font.metrics(new_size);
+            print!("[bterm] font changed: {} size={} (bits=0x{:08x}) asc={} desc={}\n",
+                   font_watcher.mono_path(), new_size, new_size.to_bits(), m.ascender, m.descender);
+            ttf_font = Some(new_font);
+            font_size = new_size;
+            font_changed = true;
         }
 
         // Handle font size change: recompute grid, resize all tabs

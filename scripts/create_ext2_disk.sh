@@ -22,7 +22,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TARGET_DIR="$PROJECT_ROOT/target"
-SIZE_MB=64
+SIZE_MB=256
 
 ARCH="x86_64"
 while [[ $# -gt 0 ]]; do
@@ -262,11 +262,14 @@ EOF
 #
 # Available fonts:
 #   /usr/share/fonts/DejaVuSansMono.ttf
+#   /usr/share/fonts/DejaVuSans.ttf
 #   /usr/share/fonts/Inconsolata-Regular.ttf
 #   /usr/share/fonts/JetBrainsMono-Regular.ttf
 #
 mono.font=/usr/share/fonts/DejaVuSansMono.ttf
 mono.size=10
+display.font=/usr/share/fonts/DejaVuSans.ttf
+display.size=14
 FONTSCONF
             echo "  Created /etc/fonts.conf"
 
@@ -504,11 +507,14 @@ EOF
 #
 # Available fonts:
 #   /usr/share/fonts/DejaVuSansMono.ttf
+#   /usr/share/fonts/DejaVuSans.ttf
 #   /usr/share/fonts/Inconsolata-Regular.ttf
 #   /usr/share/fonts/JetBrainsMono-Regular.ttf
 #
 mono.font=/usr/share/fonts/DejaVuSansMono.ttf
 mono.size=10
+display.font=/usr/share/fonts/DejaVuSans.ttf
+display.size=14
 FONTSCONF
     echo "  Created /etc/fonts.conf"
 

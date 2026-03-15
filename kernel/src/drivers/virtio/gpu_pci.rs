@@ -444,11 +444,16 @@ const TEST_TEX_BYTES: usize = (TEST_TEX_DIM * TEST_TEX_DIM * 4) as usize;
 
 /// Resource ID for the compositor texture (BWM uploads pixel buffers here)
 const RESOURCE_COMPOSITE_TEX_ID: u32 = 5;
-/// Resource ID for the GPU cursor texture (12x18 arrow, uploaded once at init)
+/// Resource ID for the GPU cursor texture (16x80 atlas, uploaded once at init)
 const RESOURCE_CURSOR_TEX_ID: u32 = 6;
-/// Cursor bitmap dimensions
-const CURSOR_TEX_W: u32 = 12;
-const CURSOR_TEX_H: u32 = 18;
+/// Resource ID for the fullscreen dimmer overlay texture (4x4, B8G8R8A8, translucent black)
+const RESOURCE_DIMMER_TEX_ID: u32 = 7;
+/// Individual cursor shape dimensions
+const CURSOR_SHAPE_W: u32 = 16;
+const CURSOR_SHAPE_H: u32 = 16;
+const NUM_CURSOR_SHAPES: u32 = 5;
+const CURSOR_TEX_W: u32 = CURSOR_SHAPE_W;
+const CURSOR_TEX_H: u32 = CURSOR_SHAPE_H * NUM_CURSOR_SHAPES; // 80
 
 // VirtIO standard feature bits
 const VIRTIO_F_VERSION_1: u64 = 1 << 32;
@@ -564,6 +569,20 @@ static COMPOSITE_TEX_READY: AtomicBool = AtomicBool::new(false);
 
 /// Whether the cursor GPU texture has been initialized.
 static CURSOR_TEX_READY: AtomicBool = AtomicBool::new(false);
+/// Whether the dimmer overlay texture has been initialized.
+static DIMMER_TEX_READY: AtomicBool = AtomicBool::new(false);
+
+/// Current cursor shape index (0=arrow, 1=NS, 2=EW, 3=NWSE, 4=NESW).
+static CURSOR_SHAPE: AtomicU32 = AtomicU32::new(0);
+
+/// Per-shape hotspot offsets (pixels from top-left of shape bitmap).
+const CURSOR_HOTSPOT: [(i32, i32); 5] = [
+    (0, 0),   // Arrow: top-left
+    (7, 7),   // NS resize: center
+    (7, 7),   // EW resize: center
+    (7, 7),   // NWSE resize: center
+    (7, 7),   // NESW resize: center
+];
 
 // =============================================================================
 // Per-Window GPU Textures
@@ -598,9 +617,36 @@ pub fn create_window_texture(
 
     let res_id = RESOURCE_WIN_TEX_BASE + slot as u32;
 
-    // Already initialized — return existing
+    // Already initialized — reuse if the requested size fits within the existing texture.
+    // UV scaling in the compositor handles sub-regions correctly. Only recreate when
+    // the window grows beyond the pre-allocated texture dimensions.
     if unsafe { WIN_TEX_INITIALIZED[slot] } {
-        return Ok(res_id);
+        let (old_w, old_h) = unsafe { WIN_TEX_DIMS[slot] };
+        if width <= old_w && height <= old_h {
+            return Ok(res_id);
+        }
+        // Window grew beyond existing texture — destroy and recreate at new size
+        crate::serial_println!(
+            "[virgl-win-tex] Resize: slot={} {}x{} -> {}x{}",
+            slot, old_w, old_h, width, height
+        );
+        with_device_state(|state| {
+            virgl_detach_backing_cmd(state, res_id)
+        }).ok();
+        with_device_state(|state| {
+            virgl_resource_unref_cmd(state, res_id)
+        }).ok();
+        let (old_ptr, old_size) = unsafe { WIN_TEX_BACKING[slot] };
+        if !old_ptr.is_null() && old_size > 0 {
+            let old_layout = alloc::alloc::Layout::from_size_align(old_size, 4096)
+                .unwrap();
+            unsafe { alloc::alloc::dealloc(old_ptr, old_layout); }
+        }
+        unsafe {
+            WIN_TEX_INITIALIZED[slot] = false;
+            WIN_TEX_BACKING[slot] = (core::ptr::null_mut(), 0);
+            WIN_TEX_DIMS[slot] = (0, 0);
+        }
     }
 
     let tex_size = (width as usize) * (height as usize) * 4;
@@ -750,8 +796,8 @@ fn init_composite_texture(width: u32, height: u32) -> Result<(), &'static str> {
     // Pre-allocate per-window texture pool at init time.
     // TRANSFER_TO_HOST_3D only works for resources created before first SUBMIT_3D.
     for slot in 0..MAX_WIN_TEX_SLOTS {
-        let max_w: u32 = 1024;
-        let max_h: u32 = 768;
+        let max_w: u32 = MIN_FB_WIDTH;
+        let max_h: u32 = MIN_FB_HEIGHT;
         let tex_size = (max_w as usize) * (max_h as usize) * 4;
         let res_id = RESOURCE_WIN_TEX_BASE + slot as u32;
 
@@ -772,7 +818,7 @@ fn init_composite_texture(width: u32, height: u32) -> Result<(), &'static str> {
         }
 
         with_device_state(|state| {
-            virgl_resource_create_3d_cmd(state, res_id, pipe::TEXTURE_2D, vfmt::B8G8R8X8_UNORM,
+            virgl_resource_create_3d_cmd(state, res_id, pipe::TEXTURE_2D, vfmt::B8G8R8A8_UNORM,
                 pipe::BIND_SAMPLER_VIEW | pipe::BIND_SCANOUT, max_w, max_h, 1, 1)
         })?;
         with_device_state(|state| {
@@ -797,7 +843,18 @@ fn init_composite_texture(width: u32, height: u32) -> Result<(), &'static str> {
     // Initialize cursor GPU texture (12x18 arrow bitmap, uploaded once)
     init_cursor_texture()?;
 
+    // Initialize dimmer overlay texture (4x4 translucent black, for launcher dimming)
+    init_dimmer_texture()?;
+
     Ok(())
+}
+
+/// Set the active cursor shape. Called from the set_cursor_shape syscall.
+/// 0=arrow, 1=NS resize, 2=EW resize, 3=NWSE resize, 4=NESW resize.
+pub fn set_cursor_shape(shape: u32) {
+    if shape < NUM_CURSOR_SHAPES {
+        CURSOR_SHAPE.store(shape, Ordering::Release);
+    }
 }
 
 /// Initialize a small GPU texture containing the cursor arrow bitmap.
@@ -808,58 +865,142 @@ fn init_composite_texture(width: u32, height: u32) -> Result<(), &'static str> {
 fn init_cursor_texture() -> Result<(), &'static str> {
     use super::virgl::{format as vfmt, pipe};
 
-    // Arrow cursor bitmap: 1=white, 2=black outline, 0=transparent (12x18)
-    const CURSOR_BITMAP: [[u8; 12]; 18] = [
-        [2,0,0,0,0,0,0,0,0,0,0,0],
-        [2,2,0,0,0,0,0,0,0,0,0,0],
-        [2,1,2,0,0,0,0,0,0,0,0,0],
-        [2,1,1,2,0,0,0,0,0,0,0,0],
-        [2,1,1,1,2,0,0,0,0,0,0,0],
-        [2,1,1,1,1,2,0,0,0,0,0,0],
-        [2,1,1,1,1,1,2,0,0,0,0,0],
-        [2,1,1,1,1,1,1,2,0,0,0,0],
-        [2,1,1,1,1,1,1,1,2,0,0,0],
-        [2,1,1,1,1,1,1,1,1,2,0,0],
-        [2,1,1,1,1,1,1,1,1,1,2,0],
-        [2,1,1,1,1,1,2,2,2,2,2,0],
-        [2,1,1,1,1,2,0,0,0,0,0,0],
-        [2,1,1,2,1,1,2,0,0,0,0,0],
-        [2,1,2,0,2,1,1,2,0,0,0,0],
-        [2,2,0,0,2,1,1,2,0,0,0,0],
-        [2,0,0,0,0,2,1,2,0,0,0,0],
-        [0,0,0,0,0,2,2,0,0,0,0,0],
+    // 5 cursor shapes, each 16x16. 0=transparent, 1=white, 2=black outline.
+    // Shape 0: Arrow pointer
+    // Shape 1: NS resize (vertical double arrow)
+    // Shape 2: EW resize (horizontal double arrow)
+    // Shape 3: NWSE resize (diagonal ↘↗)
+    // Shape 4: NESW resize (diagonal ↙↗)
+    const SHAPES: [[[u8; 16]; 16]; 5] = [
+        // Shape 0: Arrow
+        [
+            [2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            [2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            [2,1,2,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            [2,1,1,2,0,0,0,0,0,0,0,0,0,0,0,0],
+            [2,1,1,1,2,0,0,0,0,0,0,0,0,0,0,0],
+            [2,1,1,1,1,2,0,0,0,0,0,0,0,0,0,0],
+            [2,1,1,1,1,1,2,0,0,0,0,0,0,0,0,0],
+            [2,1,1,1,1,1,1,2,0,0,0,0,0,0,0,0],
+            [2,1,1,1,1,1,1,1,2,0,0,0,0,0,0,0],
+            [2,1,1,1,1,1,1,1,1,2,0,0,0,0,0,0],
+            [2,1,1,1,1,2,2,2,2,2,0,0,0,0,0,0],
+            [2,1,1,2,1,1,2,0,0,0,0,0,0,0,0,0],
+            [2,1,2,0,2,1,1,2,0,0,0,0,0,0,0,0],
+            [2,2,0,0,2,1,1,2,0,0,0,0,0,0,0,0],
+            [0,0,0,0,0,2,1,2,0,0,0,0,0,0,0,0],
+            [0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0],
+        ],
+        // Shape 1: NS resize (vertical double arrow ↕)
+        [
+            [0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,2,1,2,0,0,0,0,0,0,0],
+            [0,0,0,0,0,2,1,1,1,2,0,0,0,0,0,0],
+            [0,0,0,0,2,1,1,1,1,1,2,0,0,0,0,0],
+            [0,0,0,0,0,2,2,1,2,2,0,0,0,0,0,0],
+            [0,0,0,0,0,0,2,1,2,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,2,1,2,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,2,1,2,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,2,1,2,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,2,1,2,0,0,0,0,0,0,0],
+            [0,0,0,0,0,2,2,1,2,2,0,0,0,0,0,0],
+            [0,0,0,0,2,1,1,1,1,1,2,0,0,0,0,0],
+            [0,0,0,0,0,2,1,1,1,2,0,0,0,0,0,0],
+            [0,0,0,0,0,0,2,1,2,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+        ],
+        // Shape 2: EW resize (horizontal double arrow ↔)
+        [
+            [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            [0,0,0,2,0,0,0,0,0,0,0,0,2,0,0,0],
+            [0,0,2,1,2,0,0,0,0,0,0,2,1,2,0,0],
+            [0,2,1,1,1,2,2,2,2,2,2,1,1,1,2,0],
+            [2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2],
+            [0,2,1,1,1,1,1,1,1,1,1,1,1,1,2,0],
+            [0,0,2,1,1,2,2,2,2,2,2,1,1,2,0,0],
+            [0,0,2,1,2,0,0,0,0,0,0,2,1,2,0,0],
+            [0,0,0,2,0,0,0,0,0,0,0,0,2,0,0,0],
+            [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+        ],
+        // Shape 3: NWSE resize (diagonal ↘↗)
+        [
+            [2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0],
+            [2,1,1,1,1,2,0,0,0,0,0,0,0,0,0,0],
+            [2,1,1,1,2,0,0,0,0,0,0,0,0,0,0,0],
+            [2,1,1,1,1,2,0,0,0,0,0,0,0,0,0,0],
+            [2,1,2,1,1,1,2,0,0,0,0,0,0,0,0,0],
+            [2,2,0,0,2,1,1,2,0,0,0,0,0,0,0,0],
+            [0,0,0,0,0,2,1,1,2,0,0,0,0,0,0,0],
+            [0,0,0,0,0,0,2,1,1,2,0,0,0,0,0,0],
+            [0,0,0,0,0,0,0,2,1,1,2,0,0,0,0,0],
+            [0,0,0,0,0,0,0,0,2,1,1,2,0,0,0,0],
+            [0,0,0,0,0,0,0,0,0,2,1,1,2,2,0,0],
+            [0,0,0,0,0,0,0,0,0,0,2,1,1,1,2,0],
+            [0,0,0,0,0,0,0,0,0,0,0,2,1,1,1,2],
+            [0,0,0,0,0,0,0,0,0,0,2,1,1,1,2,0],
+            [0,0,0,0,0,0,0,0,0,0,2,1,1,1,1,2],
+            [0,0,0,0,0,0,0,0,0,0,2,2,2,2,2,2],
+        ],
+        // Shape 4: NESW resize (diagonal ↙↗)
+        [
+            [0,0,0,0,0,0,0,0,0,0,2,2,2,2,2,2],
+            [0,0,0,0,0,0,0,0,0,0,2,1,1,1,1,2],
+            [0,0,0,0,0,0,0,0,0,0,0,2,1,1,1,2],
+            [0,0,0,0,0,0,0,0,0,0,2,1,1,1,2,0],
+            [0,0,0,0,0,0,0,0,0,2,1,1,1,2,0,0],
+            [0,0,0,0,0,0,0,0,2,1,1,2,2,0,0,0],
+            [0,0,0,0,0,0,0,2,1,1,2,0,0,0,0,0],
+            [0,0,0,0,0,0,2,1,1,2,0,0,0,0,0,0],
+            [0,0,0,0,0,2,1,1,2,0,0,0,0,0,0,0],
+            [0,0,0,0,2,1,1,2,0,0,0,0,0,0,0,0],
+            [0,0,0,2,1,1,2,0,0,0,0,0,0,0,0,0],
+            [0,0,2,1,1,2,0,0,0,0,0,0,0,0,0,0],
+            [0,2,1,1,1,2,0,0,0,0,0,0,0,0,0,0],
+            [2,1,1,1,2,0,0,0,0,0,0,0,0,0,0,0],
+            [2,1,1,1,1,2,0,0,0,0,0,0,0,0,0,0],
+            [2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0],
+        ],
     ];
 
     let w = CURSOR_TEX_W;
     let h = CURSOR_TEX_H;
     let size = (w as usize) * (h as usize) * 4;
 
-    // Allocate page-aligned backing (single 4KB page is sufficient for 12*18*4=864 bytes)
-    let layout = alloc::alloc::Layout::from_size_align(4096, 4096)
+    // Allocate page-aligned backing (16*80*4=5120 bytes, needs 2 pages)
+    let alloc_size = 8192usize;
+    let layout = alloc::alloc::Layout::from_size_align(alloc_size, 4096)
         .map_err(|_| "invalid cursor texture layout")?;
     let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
     if ptr.is_null() {
         return Err("failed to allocate cursor texture backing");
     }
 
-    // Rasterize cursor bitmap into BGRA pixels.
-    // Transparent pixels (0) are fully transparent black (alpha=0).
-    // White fill (1) and black outline (2) are fully opaque (alpha=0xFF).
+    // Rasterize all cursor shapes into BGRA pixels.
     unsafe {
         let pixels = ptr as *mut u32;
-        for row in 0..h as usize {
-            for col in 0..w as usize {
-                let idx = row * w as usize + col;
-                *pixels.add(idx) = match CURSOR_BITMAP[row][col] {
-                    1 => 0xFF_FF_FF_FF, // white (B8G8R8A8: BGRA = FF,FF,FF,FF)
-                    2 => 0xFF_00_00_00, // black with alpha=FF
-                    _ => 0x00_00_00_00, // transparent (alpha=0)
-                };
+        for shape in 0..NUM_CURSOR_SHAPES as usize {
+            for row in 0..CURSOR_SHAPE_H as usize {
+                for col in 0..CURSOR_SHAPE_W as usize {
+                    let tex_row = shape * CURSOR_SHAPE_H as usize + row;
+                    let idx = tex_row * w as usize + col;
+                    *pixels.add(idx) = match SHAPES[shape][row][col] {
+                        1 => 0xFF_FF_FF_FF, // white
+                        2 => 0xFF_00_00_00, // black with alpha=FF
+                        _ => 0x00_00_00_00, // transparent
+                    };
+                }
             }
         }
     }
 
-    // Create texture resource (SAMPLER_VIEW only, never used as render target)
+    // Create texture resource
     with_device_state(|state| {
         virgl_resource_create_3d_cmd(
             state,
@@ -873,7 +1014,7 @@ fn init_cursor_texture() -> Result<(), &'static str> {
 
     // Attach backing memory
     with_device_state(|state| {
-        virgl_attach_backing_paged(state, RESOURCE_CURSOR_TEX_ID, ptr, 4096)
+        virgl_attach_backing_paged(state, RESOURCE_CURSOR_TEX_ID, ptr, alloc_size)
     })?;
 
     // Attach to VirGL context
@@ -888,8 +1029,64 @@ fn init_cursor_texture() -> Result<(), &'static str> {
     })?;
 
     CURSOR_TEX_READY.store(true, Ordering::Release);
-    crate::serial_println!("[virgl-cursor] Cursor texture initialized (id={}, {}x{})",
-        RESOURCE_CURSOR_TEX_ID, w, h);
+    crate::serial_println!("[virgl-cursor] Cursor texture initialized (id={}, {}x{}, {} shapes)",
+        RESOURCE_CURSOR_TEX_ID, w, h, NUM_CURSOR_SHAPES);
+
+    Ok(())
+}
+
+/// Initialize the dimmer overlay texture.
+///
+/// A tiny 4x4 B8G8R8A8_UNORM texture filled with translucent black (50% alpha).
+/// Drawn as a fullscreen quad with alpha blend to dim the desktop when the
+/// launcher overlay is active.
+fn init_dimmer_texture() -> Result<(), &'static str> {
+    use super::virgl::{format as vfmt, pipe};
+
+    let w: u32 = 4;
+    let h: u32 = 4;
+    let size = (w as usize) * (h as usize) * 4; // 64 bytes
+    let alloc_size = 4096; // minimum page
+
+    let layout = alloc::alloc::Layout::from_size_align(alloc_size, 4096)
+        .map_err(|_| "invalid dimmer texture layout")?;
+    let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+    if ptr.is_null() {
+        return Err("failed to allocate dimmer texture backing");
+    }
+
+    // Fill with translucent black: B8G8R8A8 = 0xB0000000 (A=0xB0 ~69%, R=G=B=0)
+    unsafe {
+        let px = ptr as *mut u32;
+        for i in 0..(w * h) as usize {
+            *px.add(i) = 0xB0000000;
+        }
+    }
+
+    with_device_state(|state| {
+        virgl_resource_create_3d_cmd(
+            state, RESOURCE_DIMMER_TEX_ID, pipe::TEXTURE_2D,
+            vfmt::B8G8R8A8_UNORM, pipe::BIND_SAMPLER_VIEW,
+            w, h, 1, 1,
+        )
+    })?;
+
+    with_device_state(|state| {
+        virgl_attach_backing_paged(state, RESOURCE_DIMMER_TEX_ID, ptr, alloc_size)
+    })?;
+
+    with_device_state(|state| {
+        virgl_ctx_attach_resource_cmd(state, VIRGL_CTX_ID, RESOURCE_DIMMER_TEX_ID)
+    })?;
+
+    dma_cache_clean(ptr, size);
+    with_device_state(|state| {
+        transfer_to_host_3d(state, RESOURCE_DIMMER_TEX_ID, 0, 0, w, h, w * 4)
+    })?;
+
+    DIMMER_TEX_READY.store(true, Ordering::Release);
+    crate::serial_println!("[virgl-dimmer] Dimmer texture initialized (id={}, {}x{})",
+        RESOURCE_DIMMER_TEX_ID, w, h);
 
     Ok(())
 }
@@ -1558,7 +1755,12 @@ fn send_command(
 
         // Add to available ring
         let idx = (*q).avail.idx;
-        (*q).avail.ring[(idx % 16) as usize] = 0;
+        core::ptr::write_volatile(&mut (*q).avail.ring[(idx % 16) as usize], 0);
+
+        // Drain store buffer before cache flush — ensures the avail.ring write
+        // is in cache (not still in the store buffer) when dc civac runs.
+        #[cfg(target_arch = "aarch64")]
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
 
         // Flush desc + avail ring from CPU cache to physical RAM so device sees them.
         // ARM64 WB-cacheable BSS may not be visible to hypervisor DMA without this.
@@ -1616,7 +1818,7 @@ fn send_command(
         };
         if used_idx != state.last_used_idx {
             state.last_used_idx = used_idx;
-            break;
+            return Ok(());
         }
         timeout -= 1;
         if timeout == 0 {
@@ -1624,14 +1826,13 @@ fn send_command(
         }
         core::hint::spin_loop();
     }
-
-    Ok(())
 }
 
 /// Send a command using a 3-descriptor chain (Linux format):
 ///   Desc 0: command header (device reads)
 ///   Desc 1: command payload (device reads)
 ///   Desc 2: response (device writes)
+///
 /// Returns Ok((used_len, resp_type)) on completion, Err on timeout.
 fn send_command_3desc(
     state: &mut GpuPciDeviceState,
@@ -1639,9 +1840,10 @@ fn send_command_3desc(
     hdr_len: u32,
     payload_phys: u64,
     payload_len: u32,
-    resp_phys: u64,
-    resp_len: u32,
 ) -> Result<(u32, u32), &'static str> {
+    let resp_phys = virt_to_phys(&raw const PCI_RESP_BUF as u64);
+    let resp_len = core::mem::size_of::<VirtioGpuCtrlHdr>() as u32;
+
     // Poison response buffer to verify device actually writes a response.
     // If we read 0xDEADBEEF back after the command, the device didn't respond.
     unsafe {
@@ -1654,23 +1856,21 @@ fn send_command_3desc(
     unsafe {
         let q = &raw mut PCI_CTRL_QUEUE;
 
-        // Desc 0: command header (readable, chained to 1)
+        // Use desc[0..2] with head=0 for 3-desc commands.
+        // Parallels VirtIO GPU intermittently ignores non-zero head indices
+        // in the avail ring, always reading desc[0] regardless.
         (*q).desc[0] = VirtqDesc {
             addr: hdr_phys,
             len: hdr_len,
             flags: DESC_F_NEXT,
             next: 1,
         };
-
-        // Desc 1: command payload (readable, chained to 2)
         (*q).desc[1] = VirtqDesc {
             addr: payload_phys,
             len: payload_len,
             flags: DESC_F_NEXT,
             next: 2,
         };
-
-        // Desc 2: response (writable)
         (*q).desc[2] = VirtqDesc {
             addr: resp_phys,
             len: resp_len,
@@ -1678,19 +1878,27 @@ fn send_command_3desc(
             next: 0,
         };
 
-        // Flush all descriptor entries + avail ring from CPU cache
+        // Add to available ring with head=0
+        let idx = (*q).avail.idx;
+        core::ptr::write_volatile(&mut (*q).avail.ring[(idx % 16) as usize], 0);
+
+        // DSB SY to drain store buffer before cache maintenance
+        #[cfg(target_arch = "aarch64")]
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+
+        // Flush desc + avail ring from CPU cache to RAM
         #[cfg(target_arch = "aarch64")]
         {
             let q_addr = q as *const u8;
             dma_cache_clean(q_addr, 512);
         }
 
-        // Add to available ring (head = desc 0)
-        let idx = (*q).avail.idx;
-        (*q).avail.ring[(idx % 16) as usize] = 0;
-
         fence(Ordering::SeqCst);
-        (*q).avail.idx = idx.wrapping_add(1);
+        core::ptr::write_volatile(&mut (*q).avail.idx, idx.wrapping_add(1));
+
+        // DSB before avail.idx flush
+        #[cfg(target_arch = "aarch64")]
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
 
         // Flush the updated avail.idx
         #[cfg(target_arch = "aarch64")]
@@ -1706,9 +1914,10 @@ fn send_command_3desc(
     let has_msi = GPU_IRQ.load(Ordering::Relaxed) != 0;
 
     // When MSI-X is active: zero-spin, pure interrupt-driven wake.
-    // Enable device interrupts, register our thread, notify device, block immediately.
-    // The GPU interrupt handler fires on completion and wakes us — no CPU cycles
-    // wasted spinning. This matches Linux's virtio-gpu driver (wait_event_timeout).
+    // CRITICAL: Enable interrupts and register the waiting thread BEFORE notifying
+    // the device. The previous send_command (2-desc) leaves avail.flags=1 (NO_INTERRUPT).
+    // If we notify first, the device sees NO_INTERRUPT, processes the command without
+    // firing MSI-X, and we block forever (until the 10ms safety timeout).
     //
     // When MSI-X is not available: spin briefly then block with timer fallback.
     if !has_msi {
@@ -1721,6 +1930,23 @@ fn send_command_3desc(
         }
     }
 
+    #[cfg(target_arch = "aarch64")]
+    if has_msi && can_yield {
+        // Register thread for interrupt-driven wake BEFORE notify
+        if let Some(tid) = crate::task::scheduler::current_thread_id() {
+            GPU_WAITING_THREAD.store(tid, Ordering::Release);
+        }
+
+        // Enable device interrupts BEFORE notify — so the device sees avail.flags=0
+        // when it processes the command and fires MSI-X on completion.
+        unsafe {
+            let q = &raw mut PCI_CTRL_QUEUE;
+            (*q).avail.flags = 0; // Enable notifications
+            dma_cache_clean(&(*q).avail.flags as *const u16 as *const u8, 64);
+        }
+        fence(Ordering::SeqCst);
+    }
+
     // Notify device
     state.device.notify_queue_fast(0);
 
@@ -1729,20 +1955,9 @@ fn send_command_3desc(
     #[cfg(target_arch = "aarch64")]
     if has_msi && can_yield {
         // MSI-X path: block immediately, zero spin.
+        // Thread registration and interrupt enable already done BEFORE notify above.
         let sleep_start: u64;
         unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) sleep_start, options(nomem, nostack)); }
-
-        // Register thread for interrupt-driven wake
-        if let Some(tid) = crate::task::scheduler::current_thread_id() {
-            GPU_WAITING_THREAD.store(tid, Ordering::Release);
-        }
-
-        // Enable device interrupts — GPU will fire MSI-X on completion
-        unsafe {
-            let q = &raw mut PCI_CTRL_QUEUE;
-            (*q).avail.flags = 0; // Enable notifications
-            dma_cache_clean(&(*q).avail.flags as *const u16 as *const u8, 64);
-        }
 
         // Check if already complete before blocking (race: device may have
         // finished between notify and here)
@@ -1790,27 +2005,41 @@ fn send_command_3desc(
         GPU_SLEEP_TICKS.fetch_add(slept, Ordering::Relaxed);
         GPU_SLEEP_TICKS_PHASES.fetch_add(slept, Ordering::Relaxed);
 
-        // Read used ring — GPU must be done by now
-        unsafe {
-            let q = &raw const PCI_CTRL_QUEUE;
-            let used_addr = &(*q).used as *const _ as usize;
-            core::arch::asm!("dc civac, {}", in(reg) used_addr, options(nostack));
-            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        // Read used ring — GPU should be done by now.
+        // Spin-poll with cache invalidation to catch completion.
+        let mut spin_retries = 0u32;
+        let max_spin = 500_000u32;
+        loop {
+            unsafe {
+                let q = &raw const PCI_CTRL_QUEUE;
+                let used_addr = &(*q).used as *const _ as usize;
+                core::arch::asm!("dc civac, {}", in(reg) used_addr, options(nostack));
+                core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+            }
+            fence(Ordering::Acquire);
+            let cur_used_idx = unsafe {
+                let q = &raw const PCI_CTRL_QUEUE;
+                read_volatile(&(*q).used.idx)
+            };
+            if cur_used_idx != state.last_used_idx {
+                used_len = unsafe {
+                    let q = &raw const PCI_CTRL_QUEUE;
+                    let elem_idx = (state.last_used_idx % 16) as usize;
+                    // Invalidate the specific cache line containing this entry
+                    let entry_addr = &(*q).used.ring[elem_idx] as *const _ as usize;
+                    core::arch::asm!("dc civac, {}", in(reg) entry_addr, options(nostack));
+                    core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+                    read_volatile(&(*q).used.ring[elem_idx].len)
+                };
+                state.last_used_idx = cur_used_idx;
+                break;
+            }
+            spin_retries += 1;
+            if spin_retries >= max_spin {
+                return Err("GPU PCI 3-desc command timeout (MSI-X wake but no completion)");
+            }
+            core::hint::spin_loop();
         }
-        fence(Ordering::Acquire);
-        let used_idx = unsafe {
-            let q = &raw const PCI_CTRL_QUEUE;
-            read_volatile(&(*q).used.idx)
-        };
-        if used_idx == state.last_used_idx {
-            return Err("GPU PCI 3-desc command timeout (MSI-X wake but no completion)");
-        }
-        used_len = unsafe {
-            let q = &raw const PCI_CTRL_QUEUE;
-            let elem_idx = (state.last_used_idx % 16) as usize;
-            read_volatile(&(*q).used.ring[elem_idx].len)
-        };
-        state.last_used_idx = used_idx;
     } else {
         // Polling fallback: spin then block with timer wake.
         let mut timeout = 10_000_000u32;
@@ -1833,6 +2062,15 @@ fn send_command_3desc(
                 used_len = unsafe {
                     let q = &raw const PCI_CTRL_QUEUE;
                     let elem_idx = (state.last_used_idx % 16) as usize;
+                    // Invalidate the specific cache line containing this entry.
+                    // Entries at index >= 8 are in a different cache line from
+                    // used.idx, so the earlier invalidation doesn't cover them.
+                    #[cfg(target_arch = "aarch64")]
+                    {
+                        let entry_addr = &(*q).used.ring[elem_idx] as *const _ as usize;
+                        core::arch::asm!("dc civac, {}", in(reg) entry_addr, options(nostack));
+                        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+                    }
                     read_volatile(&(*q).used.ring[elem_idx].len)
                 };
                 state.last_used_idx = used_idx;
@@ -1882,7 +2120,6 @@ fn send_command_3desc(
     // Invalidate response cache
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        // Invalidate response cache line using virtual address (not physical).
         let r = &raw const PCI_RESP_BUF as usize;
         core::arch::asm!("dc civac, {}", in(reg) r, options(nostack));
         core::arch::asm!("dsb sy", options(nostack, preserves_flags));
@@ -2423,6 +2660,38 @@ fn virgl_ctx_create_cmd(state: &mut GpuPciDeviceState, ctx_id: u32, name: &[u8])
 }
 
 /// Attach a resource to a VirGL context.
+fn virgl_resource_unref_cmd(state: &mut GpuPciDeviceState, resource_id: u32) -> Result<(), &'static str> {
+    unsafe {
+        let cmd_ptr = &raw mut PCI_CMD_BUF;
+        let cmd = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut VirtioGpuCtxResource);
+        *cmd = VirtioGpuCtxResource {
+            hdr: VirtioGpuCtrlHdr {
+                type_: cmd::RESOURCE_UNREF,
+                flags: 0, fence_id: 0, ctx_id: 0, padding: 0,
+            },
+            resource_id,
+            padding: 0,
+        };
+    }
+    send_command_expect_ok(state, core::mem::size_of::<VirtioGpuCtxResource>() as u32)
+}
+
+fn virgl_detach_backing_cmd(state: &mut GpuPciDeviceState, resource_id: u32) -> Result<(), &'static str> {
+    unsafe {
+        let cmd_ptr = &raw mut PCI_CMD_BUF;
+        let cmd = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut VirtioGpuCtxResource);
+        *cmd = VirtioGpuCtxResource {
+            hdr: VirtioGpuCtrlHdr {
+                type_: cmd::RESOURCE_DETACH_BACKING,
+                flags: 0, fence_id: 0, ctx_id: 0, padding: 0,
+            },
+            resource_id,
+            padding: 0,
+        };
+    }
+    send_command_expect_ok(state, core::mem::size_of::<VirtioGpuCtxResource>() as u32)
+}
+
 fn virgl_ctx_attach_resource_cmd(state: &mut GpuPciDeviceState, ctx_id: u32, resource_id: u32) -> Result<(), &'static str> {
     unsafe {
         let cmd_ptr = &raw mut PCI_CMD_BUF;
@@ -2558,7 +2827,6 @@ fn virgl_attach_backing_paged(
 
     let hdr_phys = virt_to_phys(&raw const PCI_CMD_BUF as u64);
     let entries_phys = virt_to_phys(entries_ptr as u64);
-    let resp_phys = virt_to_phys(&raw const PCI_RESP_BUF as u64);
 
     crate::serial_println!("[virgl] attach_backing: sending 3-desc chain: hdr=0x{:x}({}B), entries=0x{:x}({}B)",
         hdr_phys, hdr_size, entries_phys, entries_size);
@@ -2567,7 +2835,6 @@ fn virgl_attach_backing_paged(
         state,
         hdr_phys, hdr_size as u32,
         entries_phys, entries_size as u32,
-        resp_phys, core::mem::size_of::<VirtioGpuCtrlHdr>() as u32,
     )?;
 
     // Free entries array (one-time during init)
@@ -2695,13 +2962,11 @@ fn virgl_attach_backing_from_pages(
 
     let hdr_phys = virt_to_phys(&raw const PCI_CMD_BUF as u64);
     let entries_phys = virt_to_phys(entries_ptr as u64);
-    let resp_phys = virt_to_phys(&raw const PCI_RESP_BUF as u64);
 
     let (_used_len, resp_type) = send_command_3desc(
         state,
         hdr_phys, hdr_size as u32,
         entries_phys, entries_size as u32,
-        resp_phys, core::mem::size_of::<VirtioGpuCtrlHdr>() as u32,
     )?;
 
     unsafe { alloc::alloc::dealloc(entries_ptr, entries_layout); }
@@ -2954,7 +3219,6 @@ fn virgl_submit_3d_cmd(
 
     let hdr_phys = virt_to_phys(&raw const PCI_3D_CMD_BUF as u64);
     let payload_phys = hdr_phys + hdr_size as u64;
-    let resp_phys = virt_to_phys(&raw const PCI_RESP_BUF as u64);
 
     // 3-descriptor chain: header (readable) + payload (readable) + response (writable)
     let (used_len, resp_type) = send_command_3desc(
@@ -2963,8 +3227,6 @@ fn virgl_submit_3d_cmd(
         hdr_size as u32,
         payload_phys,
         payload_bytes as u32,
-        resp_phys,
-        core::mem::size_of::<VirtioGpuCtrlHdr>() as u32,
     )?;
 
     // Read response flags and fence_id
@@ -2994,6 +3256,9 @@ fn virgl_submit_3d_cmd(
 fn virgl_fence_sync(state: &mut GpuPciDeviceState, target_fence_id: u64) -> Result<(), &'static str> {
     use super::virgl::CommandBuffer;
 
+    // Heap-allocate once outside the loop to avoid 12KB stack allocation per iteration
+    let mut cmdbuf = alloc::boxed::Box::new(CommandBuffer::new());
+
     for round in 0..100u32 {
         // Sleep until next interrupt before polling (skip on first round).
         // The GPU completion or timer interrupt (1000Hz) will wake us.
@@ -3003,7 +3268,7 @@ fn virgl_fence_sync(state: &mut GpuPciDeviceState, target_fence_id: u64) -> Resu
         }
 
         // Build a NOP VirGL command (set_sub_ctx is minimal)
-        let mut cmdbuf = CommandBuffer::new();
+        cmdbuf.clear();
         cmdbuf.set_sub_ctx(1);
 
         let payload = cmdbuf.as_slice();
@@ -3040,7 +3305,6 @@ fn virgl_fence_sync(state: &mut GpuPciDeviceState, target_fence_id: u64) -> Resu
 
         let hdr_phys = virt_to_phys(&raw const PCI_3D_CMD_BUF as u64);
         let payload_phys = hdr_phys + hdr_size as u64;
-        let resp_phys = virt_to_phys(&raw const PCI_RESP_BUF as u64);
 
         let (_used_len, resp_type) = send_command_3desc(
             state,
@@ -3048,8 +3312,6 @@ fn virgl_fence_sync(state: &mut GpuPciDeviceState, target_fence_id: u64) -> Resu
             hdr_size as u32,
             payload_phys,
             payload_bytes as u32,
-            resp_phys,
-            core::mem::size_of::<VirtioGpuCtrlHdr>() as u32,
         )?;
 
         if resp_type != cmd::RESP_OK_NODATA {
@@ -3787,7 +4049,7 @@ fn virgl_composite_single_quad(
     static FRAME_COUNT: AtomicU32 = AtomicU32::new(0);
     let frame = FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
     if frame == 0 {
-        crate::serial_println!("[BUILD-CANARY] gpu_pci.rs version=8 gpu-cursor-quad");
+        crate::serial_println!("[BUILD-CANARY] gpu_pci.rs version=10 dimmer-fix");
     }
 
     let tex_w = COMPOSITE_TEX_W.load(Ordering::Relaxed);
@@ -3796,7 +4058,8 @@ fn virgl_composite_single_quad(
     let dw = display_w as f32;
     let dh = display_h as f32;
 
-    let mut cmdbuf = CommandBuffer::new();
+    // Heap-allocate CommandBuffer (12KB) to avoid overflowing the 16KB kernel stack.
+    let mut cmdbuf = alloc::boxed::Box::new(CommandBuffer::new());
     cmdbuf.create_sub_ctx(1);
     cmdbuf.set_sub_ctx(1);
     cmdbuf.set_tweaks(1, 1);
@@ -3806,6 +4069,7 @@ fn virgl_composite_single_quad(
     cmdbuf.set_framebuffer_state(0, &[10]);
     cmdbuf.create_blend_simple(11);
     cmdbuf.bind_object(11, super::virgl::OBJ_BLEND);
+    cmdbuf.create_blend_alpha(19); // alpha blend for chromeless windows + cursor
     cmdbuf.create_dsa_default(12);
     cmdbuf.bind_object(12, super::virgl::OBJ_DSA);
     cmdbuf.create_rasterizer_default(13);
@@ -3835,7 +4099,7 @@ fn virgl_composite_single_quad(
     // Handle 17: COMPOSITE_TEX (background + frames + decorations)
     cmdbuf.create_sampler_view(17, RESOURCE_COMPOSITE_TEX_ID, vfmt::B8G8R8X8_UNORM,
         pipe::TEXTURE_2D, 0, 0, 0, 0, swizzle::IDENTITY);
-    // Handles 40+i: per-window textures
+    // Handles 40+i: per-window textures (B8G8R8X8 — no alpha)
     for (i, win) in windows.iter().enumerate() {
         if !win.virgl_initialized || win.virgl_resource_id == 0 { continue; }
         let sv_handle = 40 + i as u32;
@@ -3881,33 +4145,44 @@ fn virgl_composite_single_quad(
     // Contains background, window frames/decorations, taskbar, appbar.
     cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[17]);
     let bg_verts = make_quad(0.0, 0.0, dw, dh, 0.0, 0.0, u_max, v_max);
-    emit_quad(&mut cmdbuf, &bg_verts, &mut vb_offset, &mut draw_idx);
+    emit_quad(&mut *cmdbuf, &bg_verts, &mut vb_offset, &mut draw_idx);
 
     // ── Per-window interleaved draws (back to front for correct z-order) ──
-    // For each window:
-    //   1. Content quad from per-window texture (covers content area)
-    //   2. Title bar strip from COMPOSITE_TEX (covers title bar area on top of content)
-    //   3. Left/right/bottom border strips from COMPOSITE_TEX
-    // Front windows draw last, naturally covering back windows.
+    // Draw order: non-chromeless windows → dimmer overlay → chromeless windows.
+    // The dimmer dims the desktop (background + regular windows) under overlays.
     let tw = tex_w as f32;
     let th = tex_h as f32;
+    let has_chromeless = windows.iter().any(|w| w.chromeless && w.virgl_initialized);
 
+    // One-time diagnostic when 5+ windows first appear
+    static DIAG_DONE: AtomicBool = AtomicBool::new(false);
+    if windows.len() >= 5 && !DIAG_DONE.swap(true, Ordering::Relaxed) {
+        for (i, w) in windows.iter().enumerate() {
+            crate::serial_println!(
+                "[DIAG] win[{}] res={} pos=({},{}) size={}x{} chromeless={} virgl={}",
+                i, w.virgl_resource_id, w.x, w.y, w.width, w.height,
+                w.chromeless, w.virgl_initialized
+            );
+        }
+        crate::serial_println!("[DIAG] has_chromeless={}", has_chromeless);
+    }
+
+    // Pass 1: Non-chromeless windows (content + frame strips)
     for (i, win) in windows.iter().enumerate() {
         if !win.virgl_initialized || win.virgl_resource_id == 0 { continue; }
+        if win.chromeless { continue; } // drawn in pass 2
 
-        // Window content position (set by BWM via set_window_position)
         let cx = win.x as f32;
         let cy = win.y as f32;
         let cw = win.width as f32;
         let ch = win.height as f32;
 
-        // Frame bounds (content is inset by BORDER_WIDTH left/right/bottom and TITLE_BAR_HEIGHT top)
         let fx0 = cx - BORDER_WIDTH as f32;
-        let fy0 = cy - TITLE_BAR_HEIGHT as f32;
+        let fy0 = cy - TITLE_BAR_HEIGHT as f32 - BORDER_WIDTH as f32;
         let fx1 = cx + cw + BORDER_WIDTH as f32;
         let fy1 = cy + ch + BORDER_WIDTH as f32;
 
-        // 1. Content quad from per-window texture
+        // Content quad from per-window texture
         let slot = (win.virgl_resource_id as usize).saturating_sub(RESOURCE_WIN_TEX_BASE as usize);
         let (tex_alloc_w, tex_alloc_h) = if slot < MAX_WIN_TEX_SLOTS {
             unsafe { WIN_TEX_DIMS[slot] }
@@ -3920,9 +4195,9 @@ fn virgl_composite_single_quad(
         let sv_handle = 40 + i as u32;
         cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[sv_handle]);
         let content_verts = make_quad(cx, cy, cx + cw, cy + ch, 0.0, 0.0, wu, wv);
-        emit_quad(&mut cmdbuf, &content_verts, &mut vb_offset, &mut draw_idx);
+        emit_quad(&mut *cmdbuf, &content_verts, &mut vb_offset, &mut draw_idx);
 
-        // 2. Frame strips from COMPOSITE_TEX (drawn ON TOP of content for z-order)
+        // Frame strips from COMPOSITE_TEX
         cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[17]);
 
         // Title bar: full width of frame, from frame top to content top
@@ -3933,7 +4208,7 @@ fn virgl_composite_single_quad(
             let tv1 = cy.min(dh) / th;
             let title_verts = make_quad(fx0.max(0.0), fy0.max(0.0), fx1.min(dw), cy.min(dh),
                                         tu0, tv0, tu1, tv1);
-            emit_quad(&mut cmdbuf, &title_verts, &mut vb_offset, &mut draw_idx);
+            emit_quad(&mut *cmdbuf, &title_verts, &mut vb_offset, &mut draw_idx);
         }
         // Left border: from content top to frame bottom
         if fx0 < cx {
@@ -3943,7 +4218,7 @@ fn virgl_composite_single_quad(
             let lv1 = fy1.min(dh) / th;
             let left_verts = make_quad(fx0.max(0.0), cy.max(0.0), cx, fy1.min(dh),
                                        lu0, lv0, lu1, lv1);
-            emit_quad(&mut cmdbuf, &left_verts, &mut vb_offset, &mut draw_idx);
+            emit_quad(&mut *cmdbuf, &left_verts, &mut vb_offset, &mut draw_idx);
         }
         // Right border: from content top to frame bottom
         if fx1 > cx + cw {
@@ -3953,7 +4228,7 @@ fn virgl_composite_single_quad(
             let rv1 = fy1.min(dh) / th;
             let right_verts = make_quad(cx + cw, cy.max(0.0), fx1.min(dw), fy1.min(dh),
                                         ru0, rv0, ru1, rv1);
-            emit_quad(&mut cmdbuf, &right_verts, &mut vb_offset, &mut draw_idx);
+            emit_quad(&mut *cmdbuf, &right_verts, &mut vb_offset, &mut draw_idx);
         }
         // Bottom border: between left and right borders
         if fy1 > cy + ch {
@@ -3963,7 +4238,7 @@ fn virgl_composite_single_quad(
             let bv1 = fy1.min(dh) / th;
             let bot_verts = make_quad(cx, cy + ch, cx + cw, fy1.min(dh),
                                       bu0, bv0, bu1, bv1);
-            emit_quad(&mut cmdbuf, &bot_verts, &mut vb_offset, &mut draw_idx);
+            emit_quad(&mut *cmdbuf, &bot_verts, &mut vb_offset, &mut draw_idx);
         }
 
         if frame < 3 {
@@ -3975,37 +4250,95 @@ fn virgl_composite_single_quad(
         }
     }
 
+    // ── Dimmer overlay: fullscreen translucent black quad ──
+    // Drawn AFTER all non-chromeless windows to dim the entire desktop,
+    // but BEFORE chromeless windows (launcher overlay) which draw on top.
+    if has_chromeless && DIMMER_TEX_READY.load(Ordering::Acquire) {
+        cmdbuf.bind_object(19, super::virgl::OBJ_BLEND); // alpha blend
+        cmdbuf.create_sampler_view(21, RESOURCE_DIMMER_TEX_ID, vfmt::B8G8R8A8_UNORM,
+            pipe::TEXTURE_2D, 0, 0, 0, 0, swizzle::IDENTITY);
+        cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[21]);
+        let dimmer_verts = make_quad(0.0, 0.0, dw, dh, 0.0, 0.0, 1.0, 1.0);
+        emit_quad(&mut *cmdbuf, &dimmer_verts, &mut vb_offset, &mut draw_idx);
+        cmdbuf.bind_object(11, super::virgl::OBJ_BLEND); // restore opaque
+        if frame < 3 {
+            crate::serial_println!("[GPU-DIMMER] frame={} dimmer quad drawn", frame);
+        }
+    }
+
+    // Pass 2: Chromeless windows (drawn opaque on top of dimmer)
+    for (i, win) in windows.iter().enumerate() {
+        if !win.virgl_initialized || win.virgl_resource_id == 0 { continue; }
+        if !win.chromeless { continue; } // already drawn in pass 1
+
+        let cx = win.x as f32;
+        let cy = win.y as f32;
+        let cw = win.width as f32;
+        let ch = win.height as f32;
+
+        let slot = (win.virgl_resource_id as usize).saturating_sub(RESOURCE_WIN_TEX_BASE as usize);
+        let (tex_alloc_w, tex_alloc_h) = if slot < MAX_WIN_TEX_SLOTS {
+            unsafe { WIN_TEX_DIMS[slot] }
+        } else {
+            (win.width, win.height)
+        };
+        let wu = win.width as f32 / tex_alloc_w as f32;
+        let wv = win.height as f32 / tex_alloc_h as f32;
+
+        let sv_handle = 40 + i as u32;
+        cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[sv_handle]);
+        let content_verts = make_quad(cx, cy, cx + cw, cy + ch, 0.0, 0.0, wu, wv);
+        emit_quad(&mut *cmdbuf, &content_verts, &mut vb_offset, &mut draw_idx);
+
+        if frame < 3 {
+            crate::serial_println!(
+                "[GPU-WIN] frame={} win[{}] res={} content=({},{})-({}x{}) CHROMELESS (pass 2)",
+                frame, i, win.virgl_resource_id, win.x, win.y, win.width, win.height
+            );
+        }
+    }
+
     // ── Draw cursor as GPU quad (rendered LAST, on top of everything) ──
-    // The cursor lives in a dedicated GPU texture (RESOURCE_CURSOR_TEX_ID, 12x18,
-    // B8G8R8A8_UNORM with alpha for transparency). Alpha blending ensures transparent
-    // pixels don't overwrite the content underneath.
+    // The cursor lives in a dedicated GPU texture atlas (RESOURCE_CURSOR_TEX_ID,
+    // 16x80, 5 shapes stacked vertically). UV coordinates select the active shape.
     if CURSOR_TEX_READY.load(Ordering::Acquire) {
         let (mouse_x, mouse_y) = if crate::drivers::virtio::input_mmio::is_tablet_initialized() {
             crate::drivers::virtio::input_mmio::mouse_position()
         } else {
             crate::drivers::usb::hid::mouse_position()
         };
-        let mx = mouse_x as f32;
-        let my = mouse_y as f32;
-        let cw = CURSOR_TEX_W as f32;
-        let ch = CURSOR_TEX_H as f32;
 
-        // Only draw if cursor is within display bounds
-        if mx < dw && my < dh {
-            // Switch to alpha-blending blend state for cursor transparency
-            cmdbuf.create_blend_alpha(19);
-            cmdbuf.bind_object(19, super::virgl::OBJ_BLEND);
+        let shape = CURSOR_SHAPE.load(Ordering::Acquire).min(NUM_CURSOR_SHAPES - 1);
+        let (hx, hy) = CURSOR_HOTSPOT[shape as usize];
+        let mx = mouse_x as f32 - hx as f32;
+        let my = mouse_y as f32 - hy as f32;
+        let sw = CURSOR_SHAPE_W as f32;
+        let sh = CURSOR_SHAPE_H as f32;
 
-            // Create sampler view for cursor texture (B8G8R8A8_UNORM with alpha)
+        if (mx + sw) > 0.0 && mx < dw && (my + sh) > 0.0 && my < dh {
+            cmdbuf.bind_object(19, super::virgl::OBJ_BLEND); // alpha blend (created in setup)
+
             cmdbuf.create_sampler_view(20, RESOURCE_CURSOR_TEX_ID, vfmt::B8G8R8A8_UNORM,
                 pipe::TEXTURE_2D, 0, 0, 0, 0, swizzle::IDENTITY);
             cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[20]);
 
-            // Cursor quad: position at (mx, my), size = cursor bitmap dimensions
-            let cursor_verts = make_quad(mx, my, (mx + cw).min(dw), (my + ch).min(dh),
-                                         0.0, 0.0, 1.0, 1.0);
-            emit_quad(&mut cmdbuf, &cursor_verts, &mut vb_offset, &mut draw_idx);
+            // UV coordinates: select the current shape from the atlas
+            let v0 = (shape as f32 * sh) / CURSOR_TEX_H as f32;
+            let v1 = ((shape as f32 + 1.0) * sh) / CURSOR_TEX_H as f32;
+            let cursor_verts = make_quad(
+                mx.max(0.0), my.max(0.0),
+                (mx + sw).min(dw), (my + sh).min(dh),
+                0.0, v0, 1.0, v1,
+            );
+            emit_quad(&mut *cmdbuf, &cursor_verts, &mut vb_offset, &mut draw_idx);
         }
+    }
+
+    if frame < 3 {
+        crate::serial_println!(
+            "[composite-submit] frame={} windows={} dwords={} vb_offset={} draw_idx={}",
+            frame, windows.len(), cmdbuf.as_slice().len(), vb_offset, draw_idx
+        );
     }
 
     virgl_submit_sync(cmdbuf.as_slice())?;
@@ -4115,8 +4448,8 @@ pub fn virgl_composite_windows(
         }
     }
 
-    // Step 2: Window content is blitted by BWM in z-order (with occluded optimization).
-    // BWM writes directly into COMPOSITE_TEX via MAP_SHARED. No kernel-level blit needed.
+    // Chromeless windows like the launcher use normal per-window GPU textures
+    // and render as GPU quads without frame-strip compositing.
 
     // ── Step 3: Cursor position tracking ────────────────────────────────────
     // Read mouse position and detect movement for early-out optimization.

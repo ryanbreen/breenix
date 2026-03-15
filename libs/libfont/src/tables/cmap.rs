@@ -2,17 +2,18 @@
 //!
 //! Supports format 4 (BMP) and format 12 (full Unicode).
 
+use alloc::boxed::Box;
 use alloc::string::String;
 use crate::reader::{Reader, read_u16_at, read_u32_at};
 
-pub struct CmapTable<'a> {
-    data: &'a [u8],
+pub struct CmapTable {
+    data: Box<[u8]>,
     format: u16,
     subtable_offset: usize,
 }
 
-impl<'a> CmapTable<'a> {
-    pub fn parse(data: &'a [u8]) -> Result<Self, String> {
+impl CmapTable {
+    pub fn parse(data: &[u8]) -> Result<Self, String> {
         let mut r = Reader::new(data);
         r.skip(2)?; // version
         let num_tables = r.read_u16()?;
@@ -55,7 +56,7 @@ impl<'a> CmapTable<'a> {
         }
 
         Ok(Self {
-            data,
+            data: Box::from(data),
             format,
             subtable_offset,
         })
@@ -78,7 +79,7 @@ impl<'a> CmapTable<'a> {
         if base + 6 > self.data.len() {
             return 0;
         }
-        let seg_count_x2 = read_u16_at(self.data, base + 6) as usize;
+        let seg_count_x2 = read_u16_at(&self.data, base + 6) as usize;
         let seg_count = seg_count_x2 / 2;
 
         // Arrays start after the 14-byte format 4 header
@@ -89,17 +90,17 @@ impl<'a> CmapTable<'a> {
         let id_range_offset_base = id_delta_offset + seg_count_x2;
 
         for i in 0..seg_count {
-            let end_code = read_u16_at(self.data, end_codes_offset + i * 2);
+            let end_code = read_u16_at(&self.data, end_codes_offset + i * 2);
             if cp > end_code {
                 continue;
             }
-            let start_code = read_u16_at(self.data, start_codes_offset + i * 2);
+            let start_code = read_u16_at(&self.data, start_codes_offset + i * 2);
             if cp < start_code {
                 return 0;
             }
-            let id_delta = read_u16_at(self.data, id_delta_offset + i * 2);
+            let id_delta = read_u16_at(&self.data, id_delta_offset + i * 2);
             let id_range_offset_pos = id_range_offset_base + i * 2;
-            let id_range_offset = read_u16_at(self.data, id_range_offset_pos);
+            let id_range_offset = read_u16_at(&self.data, id_range_offset_pos);
 
             if id_range_offset == 0 {
                 return cp.wrapping_add(id_delta);
@@ -111,7 +112,7 @@ impl<'a> CmapTable<'a> {
             if glyph_offset + 2 > self.data.len() {
                 return 0;
             }
-            let glyph_id = read_u16_at(self.data, glyph_offset);
+            let glyph_id = read_u16_at(&self.data, glyph_offset);
             if glyph_id == 0 {
                 return 0;
             }
@@ -126,7 +127,7 @@ impl<'a> CmapTable<'a> {
             return 0;
         }
         // format 12: u16 format, u16 reserved, u32 length, u32 language, u32 numGroups
-        let num_groups = read_u32_at(self.data, base + 12) as usize;
+        let num_groups = read_u32_at(&self.data, base + 12) as usize;
         let groups_offset = base + 16;
 
         // Binary search over groups
@@ -138,9 +139,9 @@ impl<'a> CmapTable<'a> {
             if entry + 12 > self.data.len() {
                 return 0;
             }
-            let start_char = read_u32_at(self.data, entry);
-            let end_char = read_u32_at(self.data, entry + 4);
-            let start_glyph = read_u32_at(self.data, entry + 8);
+            let start_char = read_u32_at(&self.data, entry);
+            let end_char = read_u32_at(&self.data, entry + 4);
+            let start_glyph = read_u32_at(&self.data, entry + 8);
 
             if codepoint < start_char {
                 hi = mid;

@@ -20,6 +20,8 @@
 //! - op=22: `check_window_dirty` — lightweight generation check without pixel copy
 //! - op=23: `compositor_wait` — block until window dirty/mouse/keyboard/registry change
 //! - op=24: `resize_window_buffer` — resize a window's backing pages (client-side)
+//! - op=25: `set_cursor_shape` — set the active cursor shape (arrow, resize arrows)
+//! - op=26: `poll_launcher_trigger` — check for Super key double-tap launcher trigger
 
 extern crate alloc;
 
@@ -1172,6 +1174,26 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                 SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
             }
         }
+        25 => {
+            // SetCursorShape: change the active cursor shape.
+            // p1=shape (0=arrow, 1=NS, 2=EW, 3=NWSE, 4=NESW)
+            #[cfg(target_arch = "aarch64")]
+            {
+                let shape = cmd.p1 as u32;
+                crate::drivers::virtio::gpu_pci::set_cursor_shape(shape);
+                SyscallResult::Ok(0)
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
+            }
+        }
+        26 => {
+            // PollLauncherTrigger: check for Super key double-tap.
+            // Returns 1 if triggered since last poll, 0 otherwise.
+            let triggered = crate::drivers::usb::hid::consume_super_double_tap();
+            SyscallResult::Ok(if triggered { 1 } else { 0 })
+        }
         _ => {
             crate::serial_println!("[virgl-op] UNKNOWN op={}", cmd.op);
             SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
@@ -1407,6 +1429,10 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
 
     // Fast path: quick dirty check under lock — no heap allocs if nothing changed.
     // compositor_wait (op=23) handles blocking; op=16 just returns immediately.
+    //
+    // VirGL: cursor is a GPU quad rendered inside virgl_composite_windows(), which
+    // has its own early-out that correctly considers cursor movement. We must NOT
+    // early-return here for VirGL, or mouse-only frames never redraw the cursor.
     if !bg_dirty {
         let reg = WINDOW_REGISTRY.lock();
         let any_window_dirty = reg.buffers.iter().any(|slot| {
@@ -1417,17 +1443,25 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
         });
         if !any_window_dirty {
             drop(reg);
-            // SVGA3 STDU: cursor is drawn in VRAM by software. Update it even when
-            // no windows are dirty, so mouse movement remains responsive.
-            if matches!(crate::graphics::compositor_backend(),
-                        crate::graphics::CompositorBackend::Svga3Stdu) {
-                if crate::drivers::vmware::svga3::update_cursor() {
-                    let _ = crate::drivers::vmware::svga3::present_rect(0, 0, bg_width, bg_height);
+            match crate::graphics::compositor_backend() {
+                // SVGA3 STDU: cursor is drawn in VRAM by software. Update it even when
+                // no windows are dirty, so mouse movement remains responsive.
+                crate::graphics::CompositorBackend::Svga3Stdu => {
+                    if crate::drivers::vmware::svga3::update_cursor() {
+                        let _ = crate::drivers::vmware::svga3::present_rect(0, 0, bg_width, bg_height);
+                    }
+                    return SyscallResult::Ok(0);
+                }
+                // VirGL: fall through — virgl_composite_windows() handles cursor-only
+                // frames via its own cursor_moved check + lightweight SUBMIT_3D.
+                crate::graphics::CompositorBackend::VirGL => {}
+                crate::graphics::CompositorBackend::None => {
+                    return SyscallResult::Ok(0);
                 }
             }
-            return SyscallResult::Ok(0);
+        } else {
+            drop(reg);
         }
-        drop(reg);
     }
 
     let bg_pixels = if desc.bg_pixels_ptr != 0 && desc.bg_pixels_ptr < USER_SPACE_MAX {
@@ -1455,7 +1489,12 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
 
                 let dirty = buf.generation > buf.last_uploaded_gen;
 
-                // Lazy-init per-window GPU texture on first composite
+                let chromeless = buf.title_len > 0 && buf.title[0] == 1;
+
+                // Lazy-init per-window GPU texture on first composite.
+                // All windows (including chromeless) get GPU textures from
+                // the pre-allocated pool — chromeless windows render as
+                // normal GPU quads with a dimmer drawn behind them.
                 if !buf.virgl_initialized && !buf.page_phys_addrs.is_empty()
                     && matches!(crate::graphics::compositor_backend(),
                                 crate::graphics::CompositorBackend::VirGL)
@@ -1490,6 +1529,7 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
                     size: buf.size,
                     title_len: buf.title_len,
                     title: buf.title,
+                    chromeless,
                 });
 
                 if dirty {
@@ -1573,6 +1613,7 @@ pub struct WindowCompositeInfo {
     pub size: usize,
     pub title_len: usize,
     pub title: [u8; MAX_TITLE_LEN],
+    pub chromeless: bool,
 }
 
 /// Handle create_window_buffer: allocate physical pages for a window pixel buffer,

@@ -140,6 +140,10 @@ pub mod draw_op {
     pub const COMPOSITOR_WAIT: u32 = 23;
     /// Resize a window buffer (reallocate backing pages at new dimensions)
     pub const RESIZE_WINDOW_BUFFER: u32 = 24;
+    /// Set the active cursor shape (0=arrow, 1=NS, 2=EW, 3=NWSE, 4=NESW)
+    pub const SET_CURSOR_SHAPE: u32 = 25;
+    /// Poll for launcher trigger (Super key double-tap)
+    pub const POLL_LAUNCHER_TRIGGER: u32 = 26;
 }
 
 /// Ball descriptor for VirGL GPU rendering.
@@ -630,6 +634,54 @@ pub struct WindowInputEvent {
     /// Modifier bitmask (bit 0=shift, bit 1=ctrl, bit 2=alt)
     pub modifiers: u16,
     pub _pad: u16,
+}
+
+/// Cursor shape constants for `set_cursor_shape`.
+pub mod cursor_shape {
+    /// Default arrow cursor
+    pub const ARROW: u32 = 0;
+    /// North-south (vertical) resize cursor
+    pub const RESIZE_NS: u32 = 1;
+    /// East-west (horizontal) resize cursor
+    pub const RESIZE_EW: u32 = 2;
+    /// Northwest-southeast (diagonal) resize cursor
+    pub const RESIZE_NWSE: u32 = 3;
+    /// Northeast-southwest (diagonal) resize cursor
+    pub const RESIZE_NESW: u32 = 4;
+}
+
+/// Set the active cursor shape.
+///
+/// Changes the cursor displayed by the GPU compositor.
+/// Shape constants are defined in [`cursor_shape`].
+pub fn set_cursor_shape(shape: u32) -> Result<(), Error> {
+    let cmd = FbDrawCmd {
+        op: draw_op::SET_CURSOR_SHAPE,
+        p1: shape as i32,
+        p2: 0,
+        p3: 0,
+        p4: 0,
+        color: 0,
+    };
+    fbdraw(&cmd)
+}
+
+/// Poll for launcher trigger (Super key double-tap).
+///
+/// Returns true if a double-tap was detected since last poll.
+/// The flag is consumed on read — subsequent calls return false
+/// until the next double-tap occurs.
+pub fn poll_launcher_trigger() -> bool {
+    let cmd = FbDrawCmd {
+        op: draw_op::POLL_LAUNCHER_TRIGGER,
+        p1: 0,
+        p2: 0,
+        p3: 0,
+        p4: 0,
+        color: 0,
+    };
+    let ret = unsafe { raw::syscall1(nr::FBDRAW, &cmd as *const FbDrawCmd as u64) as i64 };
+    ret == 1
 }
 
 /// Input event type constants

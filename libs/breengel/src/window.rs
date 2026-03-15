@@ -66,12 +66,15 @@ impl Window {
 
     /// Poll for pending input events (non-blocking).
     ///
-    /// Returns a vector of high-level events. Returns an empty vec if
-    /// no events are pending.
-    pub fn poll_events(&self) -> Vec<Event> {
+    /// Resize events are handled automatically: the window buffer is
+    /// reallocated to the new dimensions before the `Event::Resized` is
+    /// returned. Applications only need to update their own layout state
+    /// (e.g. recalculate visible lines) — they do NOT need to call
+    /// `apply_resize()`.
+    pub fn poll_events(&mut self) -> Vec<Event> {
         let mut raw = [WindowInputEvent::default(); 16];
         match graphics::read_window_input(self.buffer_id, &mut raw, false) {
-            Ok(n) => raw[..n].iter().map(Event::from_raw).collect(),
+            Ok(n) => self.process_raw_events(&raw[..n]),
             Err(_) => Vec::new(),
         }
     }
@@ -80,12 +83,26 @@ impl Window {
     ///
     /// Blocks until the compositor delivers an event or a 100ms timeout
     /// expires (in which case the returned vec may be empty).
-    pub fn wait_event(&self) -> Vec<Event> {
+    /// Resize events are handled automatically (see [`poll_events`]).
+    pub fn wait_event(&mut self) -> Vec<Event> {
         let mut raw = [WindowInputEvent::default(); 16];
         match graphics::read_window_input(self.buffer_id, &mut raw, true) {
-            Ok(n) => raw[..n].iter().map(Event::from_raw).collect(),
+            Ok(n) => self.process_raw_events(&raw[..n]),
             Err(_) => Vec::new(),
         }
+    }
+
+    /// Convert raw events, auto-handling resize internally.
+    fn process_raw_events(&mut self, raw: &[WindowInputEvent]) -> Vec<Event> {
+        let mut events = Vec::with_capacity(raw.len());
+        for r in raw {
+            let event = Event::from_raw(r);
+            if let Event::Resized { width, height } = &event {
+                let _ = self.apply_resize(*width, *height);
+            }
+            events.push(event);
+        }
+        events
     }
 
     /// The kernel-assigned buffer ID for this window.

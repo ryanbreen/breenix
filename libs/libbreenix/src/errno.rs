@@ -94,6 +94,10 @@ pub enum Errno {
     ECONNREFUSED = 111,
     /// Operation now in progress
     EINPROGRESS = 115,
+    /// Bad message
+    EBADMSG = 74,
+    /// Message too long
+    EMSGSIZE = 90,
 }
 
 impl Errno {
@@ -155,6 +159,8 @@ impl Errno {
             110 => Errno::ETIMEDOUT,
             111 => Errno::ECONNREFUSED,
             115 => Errno::EINPROGRESS,
+            74 => Errno::EBADMSG,
+            90 => Errno::EMSGSIZE,
             _ => Errno::EINVAL, // Unknown error
         }
     }

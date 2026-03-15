@@ -2205,10 +2205,11 @@ fn run_repl() {
     // Load startup scripts
     load_rc_file(&mut ctx, "/etc/bshrc");
 
-    // If we're the init shell (PID 2, child of init), run the boot script and exit.
+    // If we're the init shell (PID 3, child of init), run the boot script and exit.
+    // PID 3 because init=1 forks bsshd=2 first, then bsh=3.
     // Spawned services get reparented to init (PID 1) for zombie reaping.
     if let Ok(pid) = libbreenix::process::getpid() {
-        if pid.raw() == 2 {
+        if pid.raw() == 3 {
             load_rc_file(&mut ctx, "/etc/init.js");
             return;
         }

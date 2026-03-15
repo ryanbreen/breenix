@@ -176,6 +176,70 @@ pub fn rsa_verify_sha256(key: &RsaPublicKey, signature: &[u8], message: &[u8]) -
     rsa_verify_pkcs1_sha256(key, signature, &hash)
 }
 
+/// An RSA private key for signing operations.
+pub struct RsaPrivateKey {
+    /// Modulus n
+    pub n: BigNum,
+    /// Private exponent d
+    pub d: BigNum,
+    /// Public exponent e (for verification)
+    pub e: BigNum,
+}
+
+/// Create an RSA PKCS#1 v1.5 signature with SHA-256.
+///
+/// Computes the signature as `padded_hash^d mod n` where the padding follows
+/// PKCS#1 v1.5 (RFC 8017, Section 8.2.1).
+///
+/// # Arguments
+/// * `key` - The RSA private key
+/// * `message_hash` - The SHA-256 hash to sign (32 bytes)
+///
+/// # Returns
+/// The signature as a big-endian byte vector, zero-padded to modulus length.
+pub fn rsa_sign_pkcs1_sha256(key: &RsaPrivateKey, message_hash: &[u8; 32]) -> Vec<u8> {
+    let mod_len = (key.n.bit_len() + 7) / 8;
+
+    // Build PKCS#1 v1.5 padded message:
+    // 0x00 || 0x01 || [0xFF padding] || 0x00 || DigestInfo || hash
+    let suffix_len = SHA256_DIGEST_INFO_PREFIX.len() + 32; // 19 + 32 = 51
+    let padding_len = mod_len - 3 - suffix_len;
+
+    let mut em = vec![0u8; mod_len];
+    em[0] = 0x00;
+    em[1] = 0x01;
+    for i in 2..2 + padding_len {
+        em[i] = 0xFF;
+    }
+    em[2 + padding_len] = 0x00;
+    em[2 + padding_len + 1..2 + padding_len + 1 + SHA256_DIGEST_INFO_PREFIX.len()]
+        .copy_from_slice(&SHA256_DIGEST_INFO_PREFIX);
+    em[2 + padding_len + 1 + SHA256_DIGEST_INFO_PREFIX.len()..].copy_from_slice(message_hash);
+
+    // Compute signature = em^d mod n
+    let em_bn = BigNum::from_be_bytes(&em);
+    let sig_bn = em_bn.mod_exp(&key.d, &key.n);
+
+    // Convert to fixed-size big-endian bytes, zero-padded to modulus length
+    let sig_bytes = sig_bn.to_be_bytes();
+    let mut result = vec![0u8; mod_len];
+    if sig_bytes.len() <= mod_len {
+        let offset = mod_len - sig_bytes.len();
+        result[offset..].copy_from_slice(&sig_bytes);
+    } else {
+        result.copy_from_slice(&sig_bytes[sig_bytes.len() - mod_len..]);
+    }
+    result
+}
+
+/// Sign a message with RSA PKCS#1 v1.5 and SHA-256.
+///
+/// Convenience wrapper that hashes the message first.
+pub fn rsa_sign_sha256(key: &RsaPrivateKey, message: &[u8]) -> Vec<u8> {
+    let hash = sha256(message);
+    rsa_sign_pkcs1_sha256(key, &hash)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
