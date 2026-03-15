@@ -212,18 +212,22 @@ pub fn process_keyboard_report(report: &[u8]) {
     SHIFT_PRESSED.store(shift, Ordering::Relaxed);
     CTRL_PRESSED.store(ctrl, Ordering::Relaxed);
 
-    // Detect Super/GUI key state changes (bits 3 = LGui, 7 = RGui)
-    let super_now = (modifiers & 0x08) != 0 || (modifiers & 0x80) != 0;
-    let super_was = SUPER_PRESSED.load(Ordering::Relaxed);
-    SUPER_PRESSED.store(super_now, Ordering::Relaxed);
+    // Detect Ctrl key state changes for double-tap launcher trigger.
+    // Uses Ctrl (bits 0 = LCtrl, 4 = RCtrl) because Parallels remaps
+    // Mac Command key to Ctrl at the USB HID level.
+    // Note: GUI bits (3/7) are also OR'd in, so native Super works too.
+    let ctrl_now = (modifiers & 0x01) != 0 || (modifiers & 0x10) != 0
+                || (modifiers & 0x08) != 0 || (modifiers & 0x80) != 0;
+    let ctrl_was = SUPER_PRESSED.load(Ordering::Relaxed);
+    SUPER_PRESSED.store(ctrl_now, Ordering::Relaxed);
 
-    if super_now && !super_was {
-        // Super key just pressed
+    if ctrl_now && !ctrl_was {
+        // Ctrl/Command key just pressed — start tracking for clean tap
         SUPER_COMBO_USED.store(false, Ordering::Relaxed);
-    } else if !super_now && super_was {
-        // Super key just released
+    } else if !ctrl_now && ctrl_was {
+        // Ctrl/Command key just released
         if !SUPER_COMBO_USED.load(Ordering::Relaxed) {
-            // Clean tap (no other keys were pressed during this Super press)
+            // Clean tap (no other keys were pressed during this Ctrl press)
             let (s, n) = crate::time::get_monotonic_time_ns();
             let now_ns = s * 1_000_000_000 + n;
             let last_release = SUPER_LAST_RELEASE_NS.load(Ordering::Relaxed);
@@ -231,14 +235,15 @@ pub fn process_keyboard_report(report: &[u8]) {
 
             // Double-tap: two clean releases within 400ms (400_000_000 ns)
             if last_release > 0 && now_ns.saturating_sub(last_release) < 400_000_000 {
+                // Ctrl/Cmd double-tap detected
                 SUPER_DOUBLE_TAP.store(true, Ordering::Relaxed);
                 SUPER_LAST_RELEASE_NS.store(0, Ordering::Relaxed); // Reset to prevent triple-tap
             }
         }
     }
 
-    // If Super is held and any non-modifier keycode is pressed, mark as combo
-    if super_now {
+    // If Ctrl/Command is held and any non-modifier keycode is pressed, mark as combo
+    if ctrl_now {
         for &key in &report[2..8] {
             if key != 0 {
                 SUPER_COMBO_USED.store(true, Ordering::Relaxed);

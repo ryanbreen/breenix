@@ -446,6 +446,8 @@ const TEST_TEX_BYTES: usize = (TEST_TEX_DIM * TEST_TEX_DIM * 4) as usize;
 const RESOURCE_COMPOSITE_TEX_ID: u32 = 5;
 /// Resource ID for the GPU cursor texture (16x80 atlas, uploaded once at init)
 const RESOURCE_CURSOR_TEX_ID: u32 = 6;
+/// Resource ID for the fullscreen dimmer overlay texture (4x4, B8G8R8A8, translucent black)
+const RESOURCE_DIMMER_TEX_ID: u32 = 7;
 /// Individual cursor shape dimensions
 const CURSOR_SHAPE_W: u32 = 16;
 const CURSOR_SHAPE_H: u32 = 16;
@@ -567,6 +569,8 @@ static COMPOSITE_TEX_READY: AtomicBool = AtomicBool::new(false);
 
 /// Whether the cursor GPU texture has been initialized.
 static CURSOR_TEX_READY: AtomicBool = AtomicBool::new(false);
+/// Whether the dimmer overlay texture has been initialized.
+static DIMMER_TEX_READY: AtomicBool = AtomicBool::new(false);
 
 /// Current cursor shape index (0=arrow, 1=NS, 2=EW, 3=NWSE, 4=NESW).
 static CURSOR_SHAPE: AtomicU32 = AtomicU32::new(0);
@@ -814,7 +818,7 @@ fn init_composite_texture(width: u32, height: u32) -> Result<(), &'static str> {
         }
 
         with_device_state(|state| {
-            virgl_resource_create_3d_cmd(state, res_id, pipe::TEXTURE_2D, vfmt::B8G8R8X8_UNORM,
+            virgl_resource_create_3d_cmd(state, res_id, pipe::TEXTURE_2D, vfmt::B8G8R8A8_UNORM,
                 pipe::BIND_SAMPLER_VIEW | pipe::BIND_SCANOUT, max_w, max_h, 1, 1)
         })?;
         with_device_state(|state| {
@@ -838,6 +842,9 @@ fn init_composite_texture(width: u32, height: u32) -> Result<(), &'static str> {
 
     // Initialize cursor GPU texture (12x18 arrow bitmap, uploaded once)
     init_cursor_texture()?;
+
+    // Initialize dimmer overlay texture (4x4 translucent black, for launcher dimming)
+    init_dimmer_texture()?;
 
     Ok(())
 }
@@ -1024,6 +1031,62 @@ fn init_cursor_texture() -> Result<(), &'static str> {
     CURSOR_TEX_READY.store(true, Ordering::Release);
     crate::serial_println!("[virgl-cursor] Cursor texture initialized (id={}, {}x{}, {} shapes)",
         RESOURCE_CURSOR_TEX_ID, w, h, NUM_CURSOR_SHAPES);
+
+    Ok(())
+}
+
+/// Initialize the dimmer overlay texture.
+///
+/// A tiny 4x4 B8G8R8A8_UNORM texture filled with translucent black (50% alpha).
+/// Drawn as a fullscreen quad with alpha blend to dim the desktop when the
+/// launcher overlay is active.
+fn init_dimmer_texture() -> Result<(), &'static str> {
+    use super::virgl::{format as vfmt, pipe};
+
+    let w: u32 = 4;
+    let h: u32 = 4;
+    let size = (w as usize) * (h as usize) * 4; // 64 bytes
+    let alloc_size = 4096; // minimum page
+
+    let layout = alloc::alloc::Layout::from_size_align(alloc_size, 4096)
+        .map_err(|_| "invalid dimmer texture layout")?;
+    let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+    if ptr.is_null() {
+        return Err("failed to allocate dimmer texture backing");
+    }
+
+    // Fill with translucent black: B8G8R8A8 = 0xB0000000 (A=0xB0 ~69%, R=G=B=0)
+    unsafe {
+        let px = ptr as *mut u32;
+        for i in 0..(w * h) as usize {
+            *px.add(i) = 0xB0000000;
+        }
+    }
+
+    with_device_state(|state| {
+        virgl_resource_create_3d_cmd(
+            state, RESOURCE_DIMMER_TEX_ID, pipe::TEXTURE_2D,
+            vfmt::B8G8R8A8_UNORM, pipe::BIND_SAMPLER_VIEW,
+            w, h, 1, 1,
+        )
+    })?;
+
+    with_device_state(|state| {
+        virgl_attach_backing_paged(state, RESOURCE_DIMMER_TEX_ID, ptr, alloc_size)
+    })?;
+
+    with_device_state(|state| {
+        virgl_ctx_attach_resource_cmd(state, VIRGL_CTX_ID, RESOURCE_DIMMER_TEX_ID)
+    })?;
+
+    dma_cache_clean(ptr, size);
+    with_device_state(|state| {
+        transfer_to_host_3d(state, RESOURCE_DIMMER_TEX_ID, 0, 0, w, h, w * 4)
+    })?;
+
+    DIMMER_TEX_READY.store(true, Ordering::Release);
+    crate::serial_println!("[virgl-dimmer] Dimmer texture initialized (id={}, {}x{})",
+        RESOURCE_DIMMER_TEX_ID, w, h);
 
     Ok(())
 }
@@ -3986,7 +4049,7 @@ fn virgl_composite_single_quad(
     static FRAME_COUNT: AtomicU32 = AtomicU32::new(0);
     let frame = FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
     if frame == 0 {
-        crate::serial_println!("[BUILD-CANARY] gpu_pci.rs version=9 chromeless+heap-cmdbuf");
+        crate::serial_println!("[BUILD-CANARY] gpu_pci.rs version=10 dimmer-fix");
     }
 
     let tex_w = COMPOSITE_TEX_W.load(Ordering::Relaxed);
@@ -4006,6 +4069,7 @@ fn virgl_composite_single_quad(
     cmdbuf.set_framebuffer_state(0, &[10]);
     cmdbuf.create_blend_simple(11);
     cmdbuf.bind_object(11, super::virgl::OBJ_BLEND);
+    cmdbuf.create_blend_alpha(19); // alpha blend for chromeless windows + cursor
     cmdbuf.create_dsa_default(12);
     cmdbuf.bind_object(12, super::virgl::OBJ_DSA);
     cmdbuf.create_rasterizer_default(13);
@@ -4035,7 +4099,7 @@ fn virgl_composite_single_quad(
     // Handle 17: COMPOSITE_TEX (background + frames + decorations)
     cmdbuf.create_sampler_view(17, RESOURCE_COMPOSITE_TEX_ID, vfmt::B8G8R8X8_UNORM,
         pipe::TEXTURE_2D, 0, 0, 0, 0, swizzle::IDENTITY);
-    // Handles 40+i: per-window textures
+    // Handles 40+i: per-window textures (B8G8R8X8 — no alpha)
     for (i, win) in windows.iter().enumerate() {
         if !win.virgl_initialized || win.virgl_resource_id == 0 { continue; }
         let sv_handle = 40 + i as u32;
@@ -4084,30 +4148,41 @@ fn virgl_composite_single_quad(
     emit_quad(&mut *cmdbuf, &bg_verts, &mut vb_offset, &mut draw_idx);
 
     // ── Per-window interleaved draws (back to front for correct z-order) ──
-    // For each window:
-    //   1. Content quad from per-window texture (covers content area)
-    //   2. Title bar strip from COMPOSITE_TEX (covers title bar area on top of content)
-    //   3. Left/right/bottom border strips from COMPOSITE_TEX
-    // Front windows draw last, naturally covering back windows.
+    // Draw order: non-chromeless windows → dimmer overlay → chromeless windows.
+    // The dimmer dims the desktop (background + regular windows) under overlays.
     let tw = tex_w as f32;
     let th = tex_h as f32;
+    let has_chromeless = windows.iter().any(|w| w.chromeless && w.virgl_initialized);
 
+    // One-time diagnostic when 5+ windows first appear
+    static DIAG_DONE: AtomicBool = AtomicBool::new(false);
+    if windows.len() >= 5 && !DIAG_DONE.swap(true, Ordering::Relaxed) {
+        for (i, w) in windows.iter().enumerate() {
+            crate::serial_println!(
+                "[DIAG] win[{}] res={} pos=({},{}) size={}x{} chromeless={} virgl={}",
+                i, w.virgl_resource_id, w.x, w.y, w.width, w.height,
+                w.chromeless, w.virgl_initialized
+            );
+        }
+        crate::serial_println!("[DIAG] has_chromeless={}", has_chromeless);
+    }
+
+    // Pass 1: Non-chromeless windows (content + frame strips)
     for (i, win) in windows.iter().enumerate() {
         if !win.virgl_initialized || win.virgl_resource_id == 0 { continue; }
+        if win.chromeless { continue; } // drawn in pass 2
 
-        // Window content position (set by BWM via set_window_position)
         let cx = win.x as f32;
         let cy = win.y as f32;
         let cw = win.width as f32;
         let ch = win.height as f32;
 
-        // Frame bounds (content is inset by BORDER_WIDTH on all sides plus TITLE_BAR_HEIGHT top)
         let fx0 = cx - BORDER_WIDTH as f32;
         let fy0 = cy - TITLE_BAR_HEIGHT as f32 - BORDER_WIDTH as f32;
         let fx1 = cx + cw + BORDER_WIDTH as f32;
         let fy1 = cy + ch + BORDER_WIDTH as f32;
 
-        // 1. Content quad from per-window texture
+        // Content quad from per-window texture
         let slot = (win.virgl_resource_id as usize).saturating_sub(RESOURCE_WIN_TEX_BASE as usize);
         let (tex_alloc_w, tex_alloc_h) = if slot < MAX_WIN_TEX_SLOTS {
             unsafe { WIN_TEX_DIMS[slot] }
@@ -4122,17 +4197,7 @@ fn virgl_composite_single_quad(
         let content_verts = make_quad(cx, cy, cx + cw, cy + ch, 0.0, 0.0, wu, wv);
         emit_quad(&mut *cmdbuf, &content_verts, &mut vb_offset, &mut draw_idx);
 
-        // 2. Frame strips from COMPOSITE_TEX (drawn ON TOP of content for z-order)
-        // Chromeless windows have no frame/chrome — skip all frame strips.
-        if win.chromeless {
-            if frame < 3 {
-                crate::serial_println!(
-                    "[GPU-WIN] frame={} win[{}] res={} content=({},{})-({}x{}) CHROMELESS (no frame strips)",
-                    frame, i, win.virgl_resource_id, win.x, win.y, win.width, win.height
-                );
-            }
-            continue;
-        }
+        // Frame strips from COMPOSITE_TEX
         cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[17]);
 
         // Title bar: full width of frame, from frame top to content top
@@ -4185,6 +4250,54 @@ fn virgl_composite_single_quad(
         }
     }
 
+    // ── Dimmer overlay: fullscreen translucent black quad ──
+    // Drawn AFTER all non-chromeless windows to dim the entire desktop,
+    // but BEFORE chromeless windows (launcher overlay) which draw on top.
+    if has_chromeless && DIMMER_TEX_READY.load(Ordering::Acquire) {
+        cmdbuf.bind_object(19, super::virgl::OBJ_BLEND); // alpha blend
+        cmdbuf.create_sampler_view(21, RESOURCE_DIMMER_TEX_ID, vfmt::B8G8R8A8_UNORM,
+            pipe::TEXTURE_2D, 0, 0, 0, 0, swizzle::IDENTITY);
+        cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[21]);
+        let dimmer_verts = make_quad(0.0, 0.0, dw, dh, 0.0, 0.0, 1.0, 1.0);
+        emit_quad(&mut *cmdbuf, &dimmer_verts, &mut vb_offset, &mut draw_idx);
+        cmdbuf.bind_object(11, super::virgl::OBJ_BLEND); // restore opaque
+        if frame < 3 {
+            crate::serial_println!("[GPU-DIMMER] frame={} dimmer quad drawn", frame);
+        }
+    }
+
+    // Pass 2: Chromeless windows (drawn opaque on top of dimmer)
+    for (i, win) in windows.iter().enumerate() {
+        if !win.virgl_initialized || win.virgl_resource_id == 0 { continue; }
+        if !win.chromeless { continue; } // already drawn in pass 1
+
+        let cx = win.x as f32;
+        let cy = win.y as f32;
+        let cw = win.width as f32;
+        let ch = win.height as f32;
+
+        let slot = (win.virgl_resource_id as usize).saturating_sub(RESOURCE_WIN_TEX_BASE as usize);
+        let (tex_alloc_w, tex_alloc_h) = if slot < MAX_WIN_TEX_SLOTS {
+            unsafe { WIN_TEX_DIMS[slot] }
+        } else {
+            (win.width, win.height)
+        };
+        let wu = win.width as f32 / tex_alloc_w as f32;
+        let wv = win.height as f32 / tex_alloc_h as f32;
+
+        let sv_handle = 40 + i as u32;
+        cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[sv_handle]);
+        let content_verts = make_quad(cx, cy, cx + cw, cy + ch, 0.0, 0.0, wu, wv);
+        emit_quad(&mut *cmdbuf, &content_verts, &mut vb_offset, &mut draw_idx);
+
+        if frame < 3 {
+            crate::serial_println!(
+                "[GPU-WIN] frame={} win[{}] res={} content=({},{})-({}x{}) CHROMELESS (pass 2)",
+                frame, i, win.virgl_resource_id, win.x, win.y, win.width, win.height
+            );
+        }
+    }
+
     // ── Draw cursor as GPU quad (rendered LAST, on top of everything) ──
     // The cursor lives in a dedicated GPU texture atlas (RESOURCE_CURSOR_TEX_ID,
     // 16x80, 5 shapes stacked vertically). UV coordinates select the active shape.
@@ -4203,8 +4316,7 @@ fn virgl_composite_single_quad(
         let sh = CURSOR_SHAPE_H as f32;
 
         if (mx + sw) > 0.0 && mx < dw && (my + sh) > 0.0 && my < dh {
-            cmdbuf.create_blend_alpha(19);
-            cmdbuf.bind_object(19, super::virgl::OBJ_BLEND);
+            cmdbuf.bind_object(19, super::virgl::OBJ_BLEND); // alpha blend (created in setup)
 
             cmdbuf.create_sampler_view(20, RESOURCE_CURSOR_TEX_ID, vfmt::B8G8R8A8_UNORM,
                 pipe::TEXTURE_2D, 0, 0, 0, 0, swizzle::IDENTITY);
@@ -4220,6 +4332,13 @@ fn virgl_composite_single_quad(
             );
             emit_quad(&mut *cmdbuf, &cursor_verts, &mut vb_offset, &mut draw_idx);
         }
+    }
+
+    if frame < 3 {
+        crate::serial_println!(
+            "[composite-submit] frame={} windows={} dwords={} vb_offset={} draw_idx={}",
+            frame, windows.len(), cmdbuf.as_slice().len(), vb_offset, draw_idx
+        );
     }
 
     virgl_submit_sync(cmdbuf.as_slice())?;
@@ -4329,8 +4448,8 @@ pub fn virgl_composite_windows(
         }
     }
 
-    // Step 2: Window content is blitted by BWM in z-order (with occluded optimization).
-    // BWM writes directly into COMPOSITE_TEX via MAP_SHARED. No kernel-level blit needed.
+    // Chromeless windows like the launcher use normal per-window GPU textures
+    // and render as GPU quads without frame-strip compositing.
 
     // ── Step 3: Cursor position tracking ────────────────────────────────────
     // Read mouse position and detect movement for early-out optimization.
