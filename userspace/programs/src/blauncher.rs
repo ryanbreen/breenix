@@ -283,9 +283,9 @@ fn draw_sinuous_border(
     lx: i32, ly: i32, lw: i32, lh: i32, frame: u32,
 ) {
     let pi: f32 = 3.14159265;
-    let bw = BORDER_WIDTH; // 3.0
-    let outer_r = CORNER_RADIUS; // 12.0
-    let inner_r = INNER_RADIUS; // 9.0
+    let bw = BORDER_WIDTH;
+    let outer_r = CORNER_RADIUS;
+    let inner_r = INNER_RADIUS;
 
     let cx = lx as f32 + lw as f32 * 0.5;
     let cy = ly as f32 + lh as f32 * 0.5;
@@ -753,8 +753,10 @@ fn main() {
                     }
                 }
                 Event::FocusLost => {
-                    // Temporarily disabled for testing — focus management
-                    // may send spurious FocusLost during initial discovery
+                    // Grace period prevents spurious dismiss during startup
+                    if clock_ms().saturating_sub(start_ms) > 500 {
+                        process::exit(0);
+                    }
                 }
                 Event::CloseRequested => {
                     process::exit(0);

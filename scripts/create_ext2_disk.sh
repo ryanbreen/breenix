@@ -273,6 +273,22 @@ display.size=14
 FONTSCONF
             echo "  Created /etc/fonts.conf"
 
+            # Create /etc/hotkeys.conf - BWM hotkey configuration
+            cat > /mnt/ext2/etc/hotkeys.conf << 'HOTKEYS'
+# Breenix hotkey configuration
+# Format: modifier+key = action
+# Modifiers: Super (Cmd), Alt, Ctrl, Shift
+# Actions: exec <path>, close, focus_next, focus_prev
+# Double-tap: Super+Super = exec /bin/blauncher
+
+Super+Super  = exec /bin/blauncher
+Super+Return = exec /bin/bterm
+Alt+q        = close
+Alt+Tab      = focus_next
+Alt+Shift+Tab = focus_prev
+HOTKEYS
+            echo "  Created /etc/hotkeys.conf"
+
             # Create /etc/init.js - bsh boot script executed by init
             cat > /mnt/ext2/etc/init.js << 'INITJS'
 // Breenix boot script - executed by bsh on startup
@@ -517,6 +533,22 @@ display.font=/usr/share/fonts/DejaVuSans.ttf
 display.size=14
 FONTSCONF
     echo "  Created /etc/fonts.conf"
+
+    # Create /etc/hotkeys.conf - BWM hotkey configuration
+    cat > "$MOUNT_DIR/etc/hotkeys.conf" << 'HOTKEYS'
+# Breenix hotkey configuration
+# Format: modifier+key = action
+# Modifiers: Super (Cmd), Alt, Ctrl, Shift
+# Actions: exec <path>, close, focus_next, focus_prev
+# Double-tap: Super+Super = exec /bin/blauncher
+
+Super+Super  = exec /bin/blauncher
+Super+Return = exec /bin/bterm
+Alt+q        = close
+Alt+Tab      = focus_next
+Alt+Shift+Tab = focus_prev
+HOTKEYS
+    echo "  Created /etc/hotkeys.conf"
 
     # Create /etc/init.js - bsh boot script executed by init
     cat > "$MOUNT_DIR/etc/init.js" << 'INITJS'

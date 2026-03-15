@@ -89,10 +89,54 @@ fn main() {
 
 /// Handle a single SSH connection.
 fn handle_connection(fd: Fd) {
-    let mut session = ServerSession::new(fd);
+    // Quick sanity check: can we write to the TCP socket at all?
+    println!("bsshd: testing TCP write on fd {}", fd.raw());
+    match socket::send(fd, b"SSH-2.0-bsshd_1.0\r\n") {
+        Ok(n) => println!("bsshd: TCP write OK ({} bytes)", n),
+        Err(e) => {
+            eprintln!("bsshd: TCP write FAILED: {:?}", e);
+            return;
+        }
+    }
 
-    // Perform SSH handshake (version exchange, KEX, auth)
-    let username = match session.handshake() {
+    // Read client version string manually to diagnose
+    println!("bsshd: waiting for client version string...");
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        match socket::recv(fd, &mut byte) {
+            Ok(0) => {
+                eprintln!("bsshd: client closed connection (0 bytes read)");
+                return;
+            }
+            Ok(_) => {
+                line.push(byte[0]);
+                if line.len() >= 2
+                    && line[line.len() - 2] == b'\r'
+                    && line[line.len() - 1] == b'\n'
+                {
+                    line.pop();
+                    line.pop();
+                    break;
+                }
+                if line.len() > 255 {
+                    eprintln!("bsshd: client version string too long");
+                    return;
+                }
+            }
+            Err(e) => {
+                eprintln!("bsshd: TCP read FAILED: {:?}", e);
+                return;
+            }
+        }
+    }
+    let client_version = String::from_utf8_lossy(&line).into_owned();
+    println!("bsshd: client version: '{}'", client_version);
+
+    // Now proceed with real SSH handshake (version already exchanged)
+    let mut session = ServerSession::new_after_version(fd, &client_version);
+
+    let username = match session.handshake_after_version() {
         Ok(user) => {
             println!("bsshd: authenticated user '{}'", user);
             user

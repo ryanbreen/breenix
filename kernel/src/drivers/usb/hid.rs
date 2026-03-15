@@ -35,12 +35,10 @@ static SHIFT_PRESSED: AtomicBool = AtomicBool::new(false);
 static CTRL_PRESSED: AtomicBool = AtomicBool::new(false);
 static CAPS_LOCK_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// Super/GUI key state tracking for double-tap launcher trigger
+/// Super/GUI key state tracking (exposed to userspace via poll_modifier_state)
 static SUPER_PRESSED: AtomicBool = AtomicBool::new(false);
-static SUPER_LAST_RELEASE_NS: AtomicU64 = AtomicU64::new(0);
-static SUPER_DOUBLE_TAP: AtomicBool = AtomicBool::new(false);
-/// Set to true when any non-modifier key is pressed while Super is held
-static SUPER_COMBO_USED: AtomicBool = AtomicBool::new(false);
+/// Alt key state tracking
+static ALT_PRESSED: AtomicBool = AtomicBool::new(false);
 
 /// Mouse position in screen coordinates (shared with VirtIO input atomics).
 /// These are the authoritative mouse position for the entire system.
@@ -212,45 +210,16 @@ pub fn process_keyboard_report(report: &[u8]) {
     SHIFT_PRESSED.store(shift, Ordering::Relaxed);
     CTRL_PRESSED.store(ctrl, Ordering::Relaxed);
 
-    // Detect Ctrl key state changes for double-tap launcher trigger.
-    // Uses Ctrl (bits 0 = LCtrl, 4 = RCtrl) because Parallels remaps
-    // Mac Command key to Ctrl at the USB HID level.
-    // Note: GUI bits (3/7) are also OR'd in, so native Super works too.
-    let ctrl_now = (modifiers & 0x01) != 0 || (modifiers & 0x10) != 0
-                || (modifiers & 0x08) != 0 || (modifiers & 0x80) != 0;
-    let ctrl_was = SUPER_PRESSED.load(Ordering::Relaxed);
-    SUPER_PRESSED.store(ctrl_now, Ordering::Relaxed);
+    // Track Super/GUI key state for userspace hotkey detection.
+    // Parallels remaps Mac Command to Ctrl at USB HID level, so we treat
+    // Ctrl (bits 0/4) and GUI (bits 3/7) as Super for hotkey purposes.
+    let super_now = (modifiers & 0x01) != 0 || (modifiers & 0x10) != 0
+                 || (modifiers & 0x08) != 0 || (modifiers & 0x80) != 0;
+    SUPER_PRESSED.store(super_now, Ordering::Relaxed);
 
-    if ctrl_now && !ctrl_was {
-        // Ctrl/Command key just pressed — start tracking for clean tap
-        SUPER_COMBO_USED.store(false, Ordering::Relaxed);
-    } else if !ctrl_now && ctrl_was {
-        // Ctrl/Command key just released
-        if !SUPER_COMBO_USED.load(Ordering::Relaxed) {
-            // Clean tap (no other keys were pressed during this Ctrl press)
-            let (s, n) = crate::time::get_monotonic_time_ns();
-            let now_ns = s * 1_000_000_000 + n;
-            let last_release = SUPER_LAST_RELEASE_NS.load(Ordering::Relaxed);
-            SUPER_LAST_RELEASE_NS.store(now_ns, Ordering::Relaxed);
-
-            // Double-tap: two clean releases within 400ms (400_000_000 ns)
-            if last_release > 0 && now_ns.saturating_sub(last_release) < 400_000_000 {
-                // Ctrl/Cmd double-tap detected
-                SUPER_DOUBLE_TAP.store(true, Ordering::Relaxed);
-                SUPER_LAST_RELEASE_NS.store(0, Ordering::Relaxed); // Reset to prevent triple-tap
-            }
-        }
-    }
-
-    // If Ctrl/Command is held and any non-modifier keycode is pressed, mark as combo
-    if ctrl_now {
-        for &key in &report[2..8] {
-            if key != 0 {
-                SUPER_COMBO_USED.store(true, Ordering::Relaxed);
-                break;
-            }
-        }
-    }
+    // Track Alt key state (bits 2/6)
+    let alt = (modifiers & 0x04) != 0 || (modifiers & 0x40) != 0;
+    ALT_PRESSED.store(alt, Ordering::Relaxed);
 
     let prev = unsafe { &*(&raw const PREV_KBD_REPORT) };
 
@@ -480,10 +449,22 @@ pub fn process_mouse_report(report: &[u8], ep_idx: u8) {
 // Public Accessors
 // =============================================================================
 
-/// Check and consume the Super key double-tap flag.
-/// Returns true if a double-tap was detected since last call.
-pub fn consume_super_double_tap() -> bool {
-    SUPER_DOUBLE_TAP.swap(false, Ordering::Relaxed)
+/// Returns current modifier key state as a bitmask:
+///   bit 0: Shift
+///   bit 1: (reserved for Ctrl — currently not reported separately)
+///   bit 2: Alt
+///   bit 3: Super (Ctrl/GUI on Parallels, GUI on native)
+///
+/// On Parallels, Mac Command is remapped to Ctrl at the HID level, making
+/// Ctrl and Super indistinguishable. We report only Super (bit 3) to avoid
+/// the hotkey matcher seeing two simultaneous modifier transitions from
+/// one physical keypress.
+pub fn poll_modifier_state() -> u32 {
+    let mut state = 0u32;
+    if SHIFT_PRESSED.load(Ordering::Relaxed) { state |= 1; }
+    if ALT_PRESSED.load(Ordering::Relaxed)   { state |= 4; }
+    if SUPER_PRESSED.load(Ordering::Relaxed)  { state |= 8; }
+    state
 }
 
 /// Get current mouse position in screen coordinates.

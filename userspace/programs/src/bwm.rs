@@ -9,6 +9,7 @@
 
 use std::process;
 
+use libbreenix::fs;
 use libbreenix::graphics::{self, WindowInputEvent, input_event_type};
 use libbreenix::io;
 use libbreenix::signal;
@@ -189,6 +190,298 @@ impl InputParser {
         }
         None
     }
+}
+
+// ─── Hotkey System ──────────────────────────────────────────────────────────
+// Configurable hotkey matching with multi-tap support. Hotkeys are loaded from
+// /etc/hotkeys.conf at startup. BWM polls modifier state from the kernel each
+// frame and detects key combos + multi-tap sequences (e.g. Super+Super).
+
+/// Modifier bitmask constants (matches kernel HID poll_modifier_state)
+mod modifier {
+    pub const SHIFT: u8 = 1;
+    pub const CTRL: u8  = 2;
+    pub const ALT: u8   = 4;
+    pub const SUPER: u8 = 8;
+}
+
+/// What action a hotkey triggers
+#[derive(Clone)]
+enum HotkeyAction {
+    /// Spawn a program by path
+    Exec(Vec<u8>),
+    /// Close the focused window
+    Close,
+    /// Cycle focus to the next window
+    FocusNext,
+    /// Cycle focus to the previous window
+    FocusPrev,
+}
+
+/// A single hotkey binding
+#[derive(Clone)]
+struct Hotkey {
+    /// Required modifier bitmask (e.g. SUPER | ALT)
+    modifiers: u8,
+    /// ASCII key (0 for modifier-only combos like Super+Super)
+    key: u8,
+    /// Number of taps required (1 = normal press, 2 = double-tap)
+    taps: u8,
+    /// What to do when triggered
+    action: HotkeyAction,
+}
+
+/// Hotkey matcher state machine
+struct HotkeyManager {
+    bindings: Vec<Hotkey>,
+    /// Previous modifier state (for edge detection)
+    prev_modifiers: u8,
+    /// For multi-tap detection: which modifier was last cleanly released
+    tap_modifier: u8,
+    /// Timestamp (monotonic ns) of last clean modifier release
+    tap_release_ns: u64,
+    /// Number of clean taps counted so far
+    tap_count: u8,
+    /// Whether any non-modifier key was pressed during current modifier hold
+    combo_used: bool,
+    /// Cooldown frames remaining (prevents rapid re-trigger)
+    cooldown: u32,
+}
+
+impl HotkeyManager {
+    fn new() -> Self {
+        Self {
+            bindings: Vec::new(),
+            prev_modifiers: 0,
+            tap_modifier: 0,
+            tap_release_ns: 0,
+            tap_count: 0,
+            combo_used: false,
+            cooldown: 0,
+        }
+    }
+
+    /// Load hotkey config from a file. Format:
+    ///   modifier+modifier+key = action
+    ///   Super+Super = exec blauncher
+    ///   Alt+F4 = close
+    ///   Super+Return = exec bterm
+    fn load_config(&mut self, path: &str) {
+        let fd = match fs::open(path, fs::O_RDONLY) {
+            Ok(fd) => fd,
+            Err(_) => {
+                print!("[bwm] hotkeys: no config at {}, using defaults\n", path);
+                self.load_defaults();
+                return;
+            }
+        };
+        let mut buf = vec![0u8; 4096];
+        let n = match io::read(fd, &mut buf) {
+            Ok(n) => n,
+            Err(_) => {
+                let _ = io::close(fd);
+                print!("[bwm] hotkeys: failed to read config, using defaults\n");
+                self.load_defaults();
+                return;
+            }
+        };
+        let _ = io::close(fd);
+        buf.truncate(n);
+
+        let mut found_any = false;
+        for line in buf.split(|&b| b == b'\n') {
+            let line = trim(line);
+            if line.is_empty() || line[0] == b'#' { continue; }
+            if let Some(hotkey) = Self::parse_line(line) {
+                self.bindings.push(hotkey);
+                found_any = true;
+            }
+        }
+
+        if !found_any {
+            print!("[bwm] hotkeys: config empty, using defaults\n");
+            self.load_defaults();
+        }
+    }
+
+    fn load_defaults(&mut self) {
+        self.bindings.clear();
+        self.bindings.push(Hotkey {
+            modifiers: modifier::SUPER, key: 0, taps: 2,
+            action: HotkeyAction::Exec(b"/bin/blauncher".to_vec()),
+        });
+        self.bindings.push(Hotkey {
+            modifiers: modifier::SUPER, key: b'\r', taps: 1,
+            action: HotkeyAction::Exec(b"/bin/bterm".to_vec()),
+        });
+        self.bindings.push(Hotkey {
+            modifiers: modifier::ALT, key: b'q', taps: 1,
+            action: HotkeyAction::Close,
+        });
+        self.bindings.push(Hotkey {
+            modifiers: modifier::ALT, key: b'\t', taps: 1,
+            action: HotkeyAction::FocusNext,
+        });
+        self.bindings.push(Hotkey {
+            modifiers: modifier::ALT | modifier::SHIFT, key: b'\t', taps: 1,
+            action: HotkeyAction::FocusPrev,
+        });
+    }
+
+    fn parse_line(line: &[u8]) -> Option<Hotkey> {
+        // Split on '='
+        let eq_pos = line.iter().position(|&b| b == b'=')?;
+        let lhs = trim(&line[..eq_pos]);
+        let rhs = trim(&line[eq_pos + 1..]);
+        if lhs.is_empty() || rhs.is_empty() { return None; }
+
+        // Parse left side: modifier+modifier+key
+        let mut modifiers = 0u8;
+        let mut key = 0u8;
+        let mut taps = 1u8;
+
+        // Count how many times each modifier appears (for multi-tap)
+        let mut super_count = 0u8;
+
+        let parts: Vec<&[u8]> = lhs.split(|&b| b == b'+').collect();
+        for part in &parts {
+            let part = trim(part);
+            if part.is_empty() { continue; }
+            match &part.to_ascii_lowercase()[..] {
+                b"super" | b"cmd" | b"command" | b"win" => {
+                    modifiers |= modifier::SUPER;
+                    super_count += 1;
+                }
+                b"alt" => { modifiers |= modifier::ALT; }
+                b"ctrl" | b"control" => { modifiers |= modifier::CTRL; }
+                b"shift" => { modifiers |= modifier::SHIFT; }
+                b"return" | b"enter" => { key = b'\r'; }
+                b"tab" => { key = b'\t'; }
+                b"space" => { key = b' '; }
+                b"backspace" => { key = 0x08; }
+                b"escape" | b"esc" => { key = 0x1b; }
+                k if k.len() == 1 => { key = k[0].to_ascii_lowercase(); }
+                _ => {} // Unknown token, skip
+            }
+        }
+
+        // Super+Super means double-tap Super (no key, modifier appears twice)
+        if super_count >= 2 && key == 0 {
+            taps = 2;
+        }
+
+        // Parse right side: action
+        let action = if rhs.starts_with(b"exec ") || rhs.starts_with(b"exec\t") {
+            let path = trim(&rhs[5..]);
+            if path.is_empty() { return None; }
+            HotkeyAction::Exec(path.to_vec())
+        } else {
+            match &rhs.to_ascii_lowercase()[..] {
+                b"close" => HotkeyAction::Close,
+                b"focus_next" => HotkeyAction::FocusNext,
+                b"focus_prev" => HotkeyAction::FocusPrev,
+                _ => return None,
+            }
+        };
+
+        Some(Hotkey { modifiers, key, taps, action })
+    }
+
+    /// Called every frame with the current modifier bitmask and whether a
+    /// non-modifier key was pressed this frame. Returns an action if a
+    /// hotkey matched.
+    fn update(&mut self, current_mods: u8, key_pressed: Option<u8>) -> Option<HotkeyAction> {
+        if self.cooldown > 0 {
+            self.cooldown -= 1;
+        }
+
+        // Track if any non-modifier key was pressed while modifiers are held
+        if key_pressed.is_some() && current_mods != 0 {
+            self.combo_used = true;
+        }
+
+        let prev = self.prev_modifiers;
+        self.prev_modifiers = current_mods;
+
+        // Check modifier+key bindings first (single-tap, key != 0)
+        if let Some(ascii) = key_pressed {
+            if self.cooldown == 0 {
+                for binding in &self.bindings {
+                    if binding.key != 0 && binding.taps == 1
+                        && binding.key == ascii.to_ascii_lowercase()
+                        && (current_mods & binding.modifiers) == binding.modifiers
+                    {
+                        self.cooldown = 30;
+                        return Some(binding.action.clone());
+                    }
+                }
+            }
+        }
+
+        // Detect modifier-only transitions for multi-tap detection
+        // Check each modifier bit for press/release edges
+        for &mod_bit in &[modifier::SUPER, modifier::ALT, modifier::CTRL, modifier::SHIFT] {
+            let was = (prev & mod_bit) != 0;
+            let now = (current_mods & mod_bit) != 0;
+
+            if now && !was {
+                // Modifier just pressed
+                if mod_bit == self.tap_modifier {
+                    // Same modifier as we're tracking — continue counting
+                } else {
+                    // Different modifier — reset
+                    self.tap_modifier = mod_bit;
+                    self.tap_count = 0;
+                }
+                self.combo_used = false;
+            } else if !now && was {
+                // Modifier just released
+                if mod_bit == self.tap_modifier && !self.combo_used {
+                    // Clean release (no other keys pressed during hold)
+                    let now_ns = match libbreenix::time::now_monotonic() {
+                        Ok(ts) => ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64,
+                        Err(_) => 0,
+                    };
+
+                    if self.tap_count > 0 && now_ns.saturating_sub(self.tap_release_ns) < 400_000_000 {
+                        self.tap_count += 1;
+                    } else {
+                        self.tap_count = 1;
+                    }
+                    self.tap_release_ns = now_ns;
+
+                    // Check for multi-tap bindings
+                    if self.cooldown == 0 {
+                        for binding in &self.bindings {
+                            if binding.key == 0
+                                && binding.modifiers == mod_bit
+                                && binding.taps == self.tap_count
+                            {
+                                self.cooldown = 30;
+                                self.tap_count = 0;
+                                self.tap_release_ns = 0;
+                                return Some(binding.action.clone());
+                            }
+                        }
+                    }
+                } else {
+                    // Dirty release (combo was used) — reset
+                    if mod_bit == self.tap_modifier {
+                        self.tap_count = 0;
+                        self.tap_release_ns = 0;
+                    }
+                }
+            }
+        }
+
+        None
+    }
+}
+
+fn trim(s: &[u8]) -> &[u8] {
+    let start = s.iter().position(|&b| b != b' ' && b != b'\t' && b != b'\r').unwrap_or(s.len());
+    let end = s.iter().rposition(|&b| b != b' ' && b != b'\t' && b != b'\r').map(|i| i + 1).unwrap_or(start);
+    &s[start..end]
 }
 
 // ─── Resize Edge ────────────────────────────────────────────────────────────
@@ -943,6 +1236,49 @@ fn compose_partial_redraw(
 
 
 
+// ─── Hotkey Action Execution ─────────────────────────────────────────────────
+
+fn execute_hotkey_action(action: &HotkeyAction, windows: &mut Vec<Window>, focused_win: usize) {
+    match action {
+        HotkeyAction::Exec(path) => {
+            // For blauncher, toggle: if already open, close it; otherwise spawn
+            if path == b"/bin/blauncher" {
+                let launcher_idx = windows.iter().position(|w|
+                    w.chromeless && w.title_len > 1 && w.title[0] == 1
+                );
+                if let Some(idx) = launcher_idx {
+                    let event = WindowInputEvent {
+                        event_type: input_event_type::CLOSE_REQUESTED,
+                        keycode: 0, mouse_x: 0, mouse_y: 0, modifiers: 0, _pad: 0,
+                    };
+                    let _ = graphics::write_window_input(windows[idx].window_id, &event);
+                    return;
+                }
+            }
+            // Spawn the program — build null-terminated path on stack
+            let mut spawn_buf = [0u8; 256];
+            let len = path.len().min(254);
+            spawn_buf[..len].copy_from_slice(&path[..len]);
+            spawn_buf[len] = 0;
+            let _ = libbreenix::process::spawn(&spawn_buf[..len + 1]);
+        }
+        HotkeyAction::Close => {
+            if !windows.is_empty() && focused_win < windows.len() {
+                let event = WindowInputEvent {
+                    event_type: input_event_type::CLOSE_REQUESTED,
+                    keycode: 0, mouse_x: 0, mouse_y: 0, modifiers: 0, _pad: 0,
+                };
+                let _ = graphics::write_window_input(windows[focused_win].window_id, &event);
+            }
+        }
+        HotkeyAction::FocusNext | HotkeyAction::FocusPrev => {
+            // Focus cycling is handled in the main loop since it needs
+            // mutable access to focused_win and redraw state.
+            // The main loop checks for these after calling update().
+        }
+    }
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -1082,7 +1418,9 @@ fn main() {
     format_clock(0, &mut clock_text);
     let mut frame_counter: u32 = 0;
     let mut next_creation_order: u32 = 0;
-    let mut launcher_cooldown: u32 = 0;
+    // Hotkey system: load config from /etc/hotkeys.conf
+    let mut hotkey_mgr = HotkeyManager::new();
+    hotkey_mgr.load_config("/etc/hotkeys.conf");
 
     // Initial composite
     if direct_mapped {
@@ -1113,29 +1451,31 @@ fn main() {
         let (ready, new_reg_gen) = graphics::compositor_wait(16, registry_gen).unwrap_or((0, registry_gen));
         registry_gen = new_reg_gen;
 
-        // ── 0b. Auto-launch blauncher for testing (remove after verification) ──
-        if frame_counter == 300 {
-            let _ = libbreenix::process::spawn(b"/bin/blauncher\0");
-        }
-
-        // ── 0c. Poll launcher trigger (Ctrl key double-tap) ──
-        if graphics::poll_launcher_trigger() && launcher_cooldown == 0 {
-            // Check if launcher is already open
-            let launcher_idx = windows.iter().position(|w|
-                w.chromeless && w.title_len > 1 && w.title[0] == 1
-            );
-            if let Some(idx) = launcher_idx {
-                // Toggle off: send close request to existing launcher
-                let event = WindowInputEvent {
-                    event_type: input_event_type::CLOSE_REQUESTED,
-                    keycode: 0, mouse_x: 0, mouse_y: 0, modifiers: 0, _pad: 0,
-                };
-                let _ = graphics::write_window_input(windows[idx].window_id, &event);
-            } else {
-                // Launch blauncher via spawn (avoids fork+exec MAP_SHARED page corruption)
-                let _ = libbreenix::process::spawn(b"/bin/blauncher\0");
+        // ── 0b. Poll modifier state and check hotkeys ──
+        let current_mods = graphics::poll_modifier_state() as u8;
+        if let Some(action) = hotkey_mgr.update(current_mods, None) {
+            match &action {
+                HotkeyAction::FocusNext => {
+                    if !windows.is_empty() {
+                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
+                        focused_win = next_visible_window(&windows, (focused_win + 1) % windows.len());
+                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
+                        compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+                        full_redraw = true;
+                    }
+                }
+                HotkeyAction::FocusPrev => {
+                    if !windows.is_empty() {
+                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
+                        focused_win = if focused_win == 0 { windows.len() - 1 } else { focused_win - 1 };
+                        focused_win = next_visible_window(&windows, focused_win);
+                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
+                        compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+                        full_redraw = true;
+                    }
+                }
+                _ => execute_hotkey_action(&action, &mut windows, focused_win),
             }
-            launcher_cooldown = 30; // ~500ms at 60fps
         }
 
         // ── 1. Discover new/removed client windows (only when registry changed) ──
@@ -1566,10 +1906,7 @@ fn main() {
             }
         }
 
-        // ── 5c. Launcher cooldown (prevents double-launch) ──
-        if launcher_cooldown > 0 {
-            launcher_cooldown -= 1;
-        }
+        // (hotkey cooldown is managed inside HotkeyManager::update)
 
         // ── 6. Composite to GPU (only when something changed) ──
         let (cbuf, cw, ch): (&[u32], u32, u32) = if direct_mapped {

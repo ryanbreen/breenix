@@ -42,6 +42,21 @@ impl ServerSession {
         }
     }
 
+    /// Create a server session with the version exchange already done.
+    ///
+    /// Used when bsshd handles the version exchange manually (e.g. for
+    /// diagnostics) before creating the session.
+    pub fn new_after_version(fd: Fd, client_version: &str) -> Self {
+        Self {
+            io: PacketIo::new(fd),
+            host_key: HostKey::load(),
+            kex: KexState::new(),
+            client_version: client_version.to_string(),
+            channel: None,
+            username: String::new(),
+        }
+    }
+
     /// Perform the full SSH handshake: version exchange, key exchange,
     /// authentication, and channel setup.
     ///
@@ -53,6 +68,17 @@ impl ServerSession {
             .map_err(|_| SshError::Io)?;
         self.client_version = self.io.read_line().map_err(|_| SshError::Io)?;
 
+        if !self.client_version.starts_with("SSH-2.0-") {
+            return Err(SshError::Protocol("unsupported SSH version"));
+        }
+
+        self.handshake_after_version()
+    }
+
+    /// Continue the SSH handshake after the version exchange is complete.
+    ///
+    /// Expects `self.client_version` to be set already.
+    pub fn handshake_after_version(&mut self) -> Result<String, SshError> {
         if !self.client_version.starts_with("SSH-2.0-") {
             return Err(SshError::Protocol("unsupported SSH version"));
         }
