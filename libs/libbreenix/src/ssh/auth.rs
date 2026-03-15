@@ -1,15 +1,19 @@
 //! SSH authentication layer (RFC 4252)
 //!
-//! Implements password authentication for the SSH user authentication protocol.
+//! Implements public key and password authentication for the SSH user
+//! authentication protocol. Public key auth is tried first; password
+//! auth is the fallback.
 
+use super::keys;
 use super::packet::PacketIo;
 use super::{SshBuf, SshError};
 use super::{SSH_MSG_SERVICE_ACCEPT, SSH_MSG_SERVICE_REQUEST};
 use super::{SSH_MSG_USERAUTH_FAILURE, SSH_MSG_USERAUTH_REQUEST, SSH_MSG_USERAUTH_SUCCESS};
 
+/// SSH_MSG_USERAUTH_PK_OK (RFC 4252 §7)
+const SSH_MSG_USERAUTH_PK_OK: u8 = 60;
+
 /// Handle the "ssh-userauth" service request (server side).
-///
-/// Waits for the client to request the ssh-userauth service, then accepts it.
 pub fn server_accept_service(io: &mut PacketIo) -> Result<(), SshError> {
     let msg = io.recv_packet().map_err(|_| SshError::Io)?;
     if msg.is_empty() || msg[0] != SSH_MSG_SERVICE_REQUEST {
@@ -24,7 +28,6 @@ pub fn server_accept_service(io: &mut PacketIo) -> Result<(), SshError> {
         return Err(SshError::Protocol("unknown service requested"));
     }
 
-    // Send SERVICE_ACCEPT
     let mut reply = Vec::with_capacity(20);
     reply.push(SSH_MSG_SERVICE_ACCEPT);
     SshBuf::put_string(&mut reply, b"ssh-userauth");
@@ -33,14 +36,17 @@ pub fn server_accept_service(io: &mut PacketIo) -> Result<(), SshError> {
     Ok(())
 }
 
-/// Handle password authentication (server side).
+/// Handle authentication (server side).
 ///
-/// Reads the client's USERAUTH_REQUEST and validates the password.
-/// Returns the username on success.
+/// Supports two methods in priority order:
+/// 1. **publickey** — verifies the client's RSA signature against authorized keys
+/// 2. **password** — accepts password "breenix" (development fallback)
 ///
-/// # Authentication Policy
-/// Accepts any username with password "breenix" (development default).
-pub fn server_authenticate(io: &mut PacketIo) -> Result<String, SshError> {
+/// The `session_id` is required for public key signature verification.
+pub fn server_authenticate(
+    io: &mut PacketIo,
+    session_id: &[u8],
+) -> Result<String, SshError> {
     loop {
         let msg = io.recv_packet().map_err(|_| SshError::Io)?;
         if msg.is_empty() {
@@ -65,30 +71,96 @@ pub fn server_authenticate(io: &mut PacketIo) -> Result<String, SshError> {
 
         let username_str = String::from_utf8_lossy(username).into_owned();
 
-        if method == b"password" {
-            // Read password: boolean change_password, string password
+        if method == b"publickey" {
+            let has_signature = SshBuf::get_bool(&msg, &mut pos)
+                .ok_or(SshError::Protocol("bad publickey has_signature"))?;
+            let algo = SshBuf::get_string(&msg, &mut pos)
+                .ok_or(SshError::Protocol("bad publickey algorithm"))?;
+            let key_blob = SshBuf::get_string(&msg, &mut pos)
+                .ok_or(SshError::Protocol("bad publickey blob"))?;
+
+            // Check if this key is in our authorized_keys
+            if !keys::is_authorized_key(key_blob) {
+                send_auth_failure(io, false)?;
+                continue;
+            }
+
+            if !has_signature {
+                // Query phase: client asks "would you accept this key?"
+                // Respond with PK_OK
+                let mut pk_ok = Vec::with_capacity(4 + algo.len() + 4 + key_blob.len() + 1);
+                pk_ok.push(SSH_MSG_USERAUTH_PK_OK);
+                SshBuf::put_string(&mut pk_ok, algo);
+                SshBuf::put_string(&mut pk_ok, key_blob);
+                io.send_packet(&pk_ok).map_err(|_| SshError::Io)?;
+                continue;
+            }
+
+            // Signing phase: verify the client's signature
+            let signature = SshBuf::get_string(&msg, &mut pos)
+                .ok_or(SshError::Protocol("bad publickey signature"))?;
+
+            // Build the data that was signed (RFC 4252 §7):
+            //   string    session_id
+            //   byte      SSH_MSG_USERAUTH_REQUEST (50)
+            //   string    user name
+            //   string    "ssh-connection"
+            //   string    "publickey"
+            //   boolean   TRUE
+            //   string    algorithm name
+            //   string    public key blob
+            let mut signed_data = Vec::with_capacity(256);
+            SshBuf::put_string(&mut signed_data, session_id);
+            signed_data.push(SSH_MSG_USERAUTH_REQUEST);
+            SshBuf::put_string(&mut signed_data, username);
+            SshBuf::put_string(&mut signed_data, b"ssh-connection");
+            SshBuf::put_string(&mut signed_data, b"publickey");
+            SshBuf::put_bool(&mut signed_data, true);
+            SshBuf::put_string(&mut signed_data, algo);
+            SshBuf::put_string(&mut signed_data, key_blob);
+
+            if keys::verify_rsa_signature(key_blob, signature, &signed_data) {
+                io.send_packet(&[SSH_MSG_USERAUTH_SUCCESS])
+                    .map_err(|_| SshError::Io)?;
+                return Ok(username_str);
+            }
+
+            // Signature verification failed
+            send_auth_failure(io, false)?;
+        } else if method == b"password" {
             let _change = SshBuf::get_bool(&msg, &mut pos);
             let password = SshBuf::get_string(&msg, &mut pos)
                 .ok_or(SshError::Protocol("bad password field"))?;
 
             if password == b"breenix" {
-                // Send USERAUTH_SUCCESS
                 io.send_packet(&[SSH_MSG_USERAUTH_SUCCESS])
                     .map_err(|_| SshError::Io)?;
                 return Ok(username_str);
             }
+
+            send_auth_failure(io, false)?;
         } else if method == b"none" {
             // "none" method is used to query supported methods
+            send_auth_failure(io, false)?;
+        } else {
+            send_auth_failure(io, false)?;
         }
-
-        // Send USERAUTH_FAILURE with supported methods
-        let mut failure = Vec::with_capacity(32);
-        failure.push(SSH_MSG_USERAUTH_FAILURE);
-        SshBuf::put_string(&mut failure, b"password");
-        SshBuf::put_bool(&mut failure, false); // partial success
-        io.send_packet(&failure).map_err(|_| SshError::Io)?;
     }
 }
+
+/// Send USERAUTH_FAILURE with the list of supported methods.
+fn send_auth_failure(io: &mut PacketIo, partial_success: bool) -> Result<(), SshError> {
+    let mut failure = Vec::with_capacity(32);
+    failure.push(SSH_MSG_USERAUTH_FAILURE);
+    SshBuf::put_string(&mut failure, b"publickey,password");
+    SshBuf::put_bool(&mut failure, partial_success);
+    io.send_packet(&failure).map_err(|_| SshError::Io)?;
+    Ok(())
+}
+
+// ==========================================================================
+// Client-side authentication
+// ==========================================================================
 
 /// Request the ssh-userauth service (client side).
 pub fn client_request_service(io: &mut PacketIo) -> Result<(), SshError> {
@@ -116,7 +188,7 @@ pub fn client_auth_password(
     SshBuf::put_string(&mut req, username.as_bytes());
     SshBuf::put_string(&mut req, b"ssh-connection");
     SshBuf::put_string(&mut req, b"password");
-    SshBuf::put_bool(&mut req, false); // not changing password
+    SshBuf::put_bool(&mut req, false);
     SshBuf::put_string(&mut req, password.as_bytes());
     io.send_packet(&req).map_err(|_| SshError::Io)?;
 

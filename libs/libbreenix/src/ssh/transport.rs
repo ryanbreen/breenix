@@ -101,7 +101,7 @@ impl ServerSession {
 
         // 3. Authentication
         auth::server_accept_service(&mut self.io)?;
-        self.username = auth::server_authenticate(&mut self.io)?;
+        self.username = auth::server_authenticate(&mut self.io, session_id)?;
 
         Ok(self.username.clone())
     }

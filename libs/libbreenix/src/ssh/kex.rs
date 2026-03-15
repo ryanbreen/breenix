@@ -191,7 +191,7 @@ pub fn client_kex_ecdh(
         .to_vec();
     let q_s = SshBuf::get_string(&reply, &mut pos)
         .ok_or(SshError::Protocol("bad server DH key in KEX_ECDH_REPLY"))?;
-    let _signature = SshBuf::get_string(&reply, &mut pos)
+    let signature = SshBuf::get_string(&reply, &mut pos)
         .ok_or(SshError::Protocol("bad signature in KEX_ECDH_REPLY"))?;
 
     if q_s.len() != 32 {
@@ -223,8 +223,10 @@ pub fn client_kex_ecdh(
         kex.session_id = Some(h.clone());
     }
 
-    // TODO: Verify server's signature over H using host key
-    // For now, trust on first use (TOFU)
+    // Verify the server's signature over the exchange hash
+    if !super::keys::verify_rsa_signature(&host_key_blob, signature, &h) {
+        return Err(SshError::Protocol("host key signature verification failed"));
+    }
 
     Ok((h, shared_secret.to_vec(), host_key_blob))
 }

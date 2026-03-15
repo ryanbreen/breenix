@@ -1,17 +1,21 @@
-//! SSH host key management
+//! SSH host key management and authorized key verification
 //!
-//! Provides the server's RSA host key for SSH key exchange. The key is
-//! pre-generated and embedded as constants. In a production deployment,
-//! host keys would be generated at install time and stored on disk.
+//! Provides:
+//! - The server's RSA host key for SSH key exchange
+//! - Authorized public keys for public key authentication
+//! - RSA signature verification for client key proofs
+//! - Host key fingerprint for client-side known_hosts verification
 
 use crate::crypto::bignum::BigNum;
-use crate::crypto::rsa::{rsa_sign_pkcs1_sha256, RsaPrivateKey};
+use crate::crypto::rsa::{rsa_sign_pkcs1_sha256, rsa_verify_pkcs1_sha256, RsaPrivateKey, RsaPublicKey};
 use crate::crypto::sha256::sha256;
 
 use super::SshBuf;
 
-// Pre-generated RSA-2048 host key (development use only).
-// In production, generate with: openssl genrsa 2048
+// ==========================================================================
+// Server host key (RSA-2048, pre-generated)
+// ==========================================================================
+
 #[rustfmt::skip]
 const HOST_KEY_N: [u8; 256] = [
     0xb4, 0x55, 0x7d, 0xfc, 0xf6, 0x6d, 0x54, 0x59, 0x99, 0x66, 0x86, 0x84,
@@ -66,6 +70,48 @@ const HOST_KEY_D: [u8; 255] = [
 
 const HOST_KEY_E: u32 = 65537;
 
+// ==========================================================================
+// Authorized public key: wrb@M3 MBP (RSA-3072)
+//
+// This is the SSH public key blob from ~/.ssh/id_rsa.pub, baked in so that
+// the owner can SSH in without a password. The blob is in SSH wire format:
+//   string "ssh-rsa" || mpint e || mpint n
+// ==========================================================================
+
+#[rustfmt::skip]
+const AUTHORIZED_KEY_BLOB: [u8; 407] = [
+    0x00, 0x00, 0x00, 0x07, 0x73, 0x73, 0x68, 0x2d, 0x72, 0x73, 0x61, 0x00, 0x00, 0x00, 0x03, 0x01,
+    0x00, 0x01, 0x00, 0x00, 0x01, 0x81, 0x00, 0xb4, 0x72, 0xd7, 0x69, 0x50, 0x5e, 0x7b, 0xdf, 0x56,
+    0xfd, 0x86, 0xb7, 0x4c, 0xc0, 0x0e, 0x3e, 0x54, 0xa9, 0x7c, 0xaa, 0x3d, 0x33, 0xa3, 0xb5, 0x4f,
+    0xcd, 0xef, 0xff, 0x2a, 0x2e, 0x8b, 0x84, 0x5f, 0x05, 0x21, 0x50, 0x94, 0x38, 0xa2, 0x4a, 0xb2,
+    0x11, 0x07, 0x21, 0x8c, 0x31, 0x86, 0xe5, 0xeb, 0x99, 0x3f, 0x8d, 0xaa, 0x00, 0x7d, 0xd4, 0x22,
+    0x02, 0x26, 0x7c, 0x60, 0x4d, 0x81, 0x21, 0x46, 0xa0, 0x49, 0xc2, 0x9d, 0xaa, 0xf8, 0x8a, 0x74,
+    0x51, 0xec, 0x08, 0x19, 0x82, 0xd1, 0x63, 0x7a, 0x51, 0xfe, 0x88, 0xaa, 0xa2, 0x22, 0xe4, 0x03,
+    0x25, 0x5f, 0xf6, 0xb8, 0x8b, 0x26, 0x38, 0x49, 0x40, 0xd6, 0x66, 0x38, 0x84, 0xba, 0xd3, 0xef,
+    0x97, 0x49, 0x98, 0x44, 0x73, 0x5f, 0xc9, 0xd0, 0xaa, 0x09, 0x00, 0xce, 0x00, 0xcb, 0x37, 0x1f,
+    0x1d, 0x18, 0xc3, 0x2a, 0x84, 0x98, 0xd7, 0xa3, 0x2e, 0x5b, 0xd1, 0x7d, 0x1f, 0xef, 0x41, 0xba,
+    0xec, 0x0e, 0x39, 0x80, 0x84, 0x2a, 0x5a, 0xaf, 0x00, 0xa4, 0x78, 0x82, 0x32, 0xc1, 0x31, 0xe0,
+    0x89, 0x05, 0x7e, 0x2f, 0x67, 0x3b, 0x1c, 0x88, 0xf9, 0xc4, 0x15, 0x22, 0x04, 0x9e, 0x14, 0x8d,
+    0xde, 0xba, 0x41, 0x59, 0x8d, 0xb3, 0xab, 0x76, 0x87, 0xd7, 0x4d, 0x59, 0xfb, 0x1b, 0x94, 0x1e,
+    0xbe, 0xc4, 0x6e, 0x7d, 0xc6, 0xe1, 0x71, 0xa1, 0x7a, 0xa7, 0xf7, 0x63, 0x57, 0x81, 0xe3, 0xe9,
+    0x2a, 0x8a, 0x24, 0xe6, 0xd4, 0x09, 0x67, 0xe3, 0xda, 0x6a, 0xdc, 0xd1, 0x4c, 0x3d, 0x90, 0x52,
+    0xd3, 0x11, 0x13, 0x9d, 0x54, 0xa5, 0x49, 0xa1, 0x31, 0x2e, 0x6a, 0xdb, 0xfe, 0x77, 0x32, 0xb8,
+    0xdc, 0x15, 0xeb, 0xa0, 0xe8, 0x4f, 0x3b, 0x64, 0x2d, 0xd8, 0x5d, 0xa8, 0x2d, 0xbf, 0x11, 0x7b,
+    0xa2, 0x81, 0x84, 0xc0, 0xec, 0xd7, 0xb0, 0x0c, 0xc5, 0xc6, 0x71, 0xd3, 0x4b, 0xb8, 0xd6, 0xca,
+    0x02, 0x8b, 0x52, 0x89, 0x03, 0x8c, 0xfc, 0xfb, 0x27, 0x28, 0xa9, 0xa4, 0xc9, 0x59, 0xa2, 0x61,
+    0x16, 0x99, 0xf6, 0x54, 0x91, 0xdc, 0x95, 0x16, 0xab, 0x08, 0x51, 0x2e, 0x51, 0x5c, 0x63, 0x26,
+    0x33, 0xa9, 0x88, 0x79, 0xc2, 0x95, 0x6b, 0xd1, 0x2c, 0xe2, 0xe7, 0xbe, 0x16, 0xe1, 0xa3, 0x76,
+    0x71, 0x64, 0x8d, 0x83, 0xea, 0x06, 0x3b, 0x23, 0x93, 0x42, 0xc1, 0x85, 0xb0, 0x6b, 0xca, 0xa3,
+    0x89, 0x34, 0x6e, 0x67, 0x9e, 0x5e, 0xe3, 0x18, 0x9e, 0x64, 0xd7, 0xec, 0xbd, 0x09, 0x26, 0xba,
+    0x7a, 0x86, 0x7f, 0xfc, 0xcd, 0x0c, 0x71, 0x84, 0xa0, 0x73, 0x59, 0x4c, 0x85, 0x5e, 0x36, 0x4f,
+    0xa0, 0x6e, 0x8f, 0xa5, 0x15, 0x67, 0xd6, 0x66, 0xdf, 0xec, 0xdc, 0xd0, 0x13, 0xb0, 0x68, 0xec,
+    0xe1, 0xe1, 0x36, 0x31, 0xad, 0x00, 0xad,
+];
+
+// ==========================================================================
+// Host key operations
+// ==========================================================================
+
 /// The server's RSA host key.
 pub struct HostKey {
     key: RsaPrivateKey,
@@ -86,10 +132,10 @@ impl HostKey {
 
     /// Encode the public key in SSH wire format.
     ///
-    /// Format: string "rsa-sha2-256" || mpint e || mpint n
+    /// Format: string "ssh-rsa" || mpint e || mpint n
     ///
-    /// Note: The key blob uses the "ssh-rsa" key type identifier even when
-    /// the signature algorithm is rsa-sha2-256 (RFC 8332 §3).
+    /// Note: The key blob always uses the "ssh-rsa" key type identifier
+    /// even when the signature algorithm is rsa-sha2-256 (RFC 8332 §3).
     pub fn public_key_blob(&self) -> Vec<u8> {
         let e_bytes = HOST_KEY_E.to_be_bytes();
         let mut blob = Vec::with_capacity(4 + 7 + 4 + 4 + 4 + 256);
@@ -99,7 +145,7 @@ impl HostKey {
         blob
     }
 
-    /// Sign a hash with the host key using rsa-sha2-256.
+    /// Sign data with the host key using rsa-sha2-256.
     ///
     /// Returns the signature in SSH wire format:
     /// string "rsa-sha2-256" || string signature_blob
@@ -112,4 +158,94 @@ impl HostKey {
         SshBuf::put_string(&mut sig, &sig_bytes);
         sig
     }
+
+    /// Get the SHA-256 fingerprint of the host key (for known_hosts).
+    pub fn fingerprint(&self) -> [u8; 32] {
+        sha256(&self.public_key_blob())
+    }
+}
+
+// ==========================================================================
+// Authorized key operations
+// ==========================================================================
+
+/// Check if a public key blob matches any authorized key.
+///
+/// Compares the raw SSH key blob byte-for-byte against the embedded
+/// authorized keys list.
+pub fn is_authorized_key(key_blob: &[u8]) -> bool {
+    // Constant-time comparison to prevent timing side-channels
+    if key_blob.len() != AUTHORIZED_KEY_BLOB.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for i in 0..key_blob.len() {
+        diff |= key_blob[i] ^ AUTHORIZED_KEY_BLOB[i];
+    }
+    diff == 0
+}
+
+/// Parse an SSH RSA public key blob and extract the public key components.
+///
+/// Parses: string "ssh-rsa" || mpint e || mpint n
+/// Returns (e, n) as BigNum values suitable for RSA signature verification.
+pub fn parse_rsa_pubkey_blob(blob: &[u8]) -> Option<RsaPublicKey> {
+    let mut pos = 0;
+    let key_type = SshBuf::get_string(blob, &mut pos)?;
+
+    if key_type != b"ssh-rsa" {
+        return None;
+    }
+
+    let e_bytes = SshBuf::get_string(blob, &mut pos)?;
+    let n_bytes = SshBuf::get_string(blob, &mut pos)?;
+
+    Some(RsaPublicKey {
+        e: BigNum::from_be_bytes(e_bytes),
+        n: BigNum::from_be_bytes(n_bytes),
+    })
+}
+
+/// Verify an RSA signature over data using a parsed SSH public key blob.
+///
+/// The signature is in SSH wire format: string algorithm || string sig_blob
+/// The data is hashed with SHA-256 before PKCS#1 v1.5 verification.
+pub fn verify_rsa_signature(
+    pubkey_blob: &[u8],
+    signature_blob: &[u8],
+    data: &[u8],
+) -> bool {
+    // Parse the public key
+    let pubkey = match parse_rsa_pubkey_blob(pubkey_blob) {
+        Some(k) => k,
+        None => return false,
+    };
+
+    // Parse the signature: string algorithm || string raw_signature
+    let mut pos = 0;
+    let algo = match SshBuf::get_string(signature_blob, &mut pos) {
+        Some(a) => a,
+        None => return false,
+    };
+    let raw_sig = match SshBuf::get_string(signature_blob, &mut pos) {
+        Some(s) => s,
+        None => return false,
+    };
+
+    // Verify based on algorithm
+    if algo == b"rsa-sha2-256" || algo == b"ssh-rsa" {
+        let hash = sha256(data);
+        rsa_verify_pkcs1_sha256(&pubkey, raw_sig, &hash)
+    } else {
+        false
+    }
+}
+
+/// Compute the SHA-256 fingerprint of the bsshd host key.
+///
+/// Used by the bssh client for known_hosts verification. Returns the
+/// expected SHA-256 hash of the server's host key blob.
+pub fn expected_host_fingerprint() -> [u8; 32] {
+    let host_key = HostKey::load();
+    host_key.fingerprint()
 }
