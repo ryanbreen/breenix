@@ -6,6 +6,8 @@ pub mod aes;
 pub mod bignum;
 pub mod gcm;
 pub mod hmac;
+pub mod keccak;
+pub mod mlkem;
 pub mod rand;
 pub mod rsa;
 pub mod sha256;
