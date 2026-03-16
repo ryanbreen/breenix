@@ -9,4 +9,5 @@ pub mod hmac;
 pub mod rand;
 pub mod rsa;
 pub mod sha256;
+pub mod sha512;
 pub mod x25519;

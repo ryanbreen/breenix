@@ -7,8 +7,9 @@
 //! - Host key fingerprint for client-side known_hosts verification
 
 use crate::crypto::bignum::BigNum;
-use crate::crypto::rsa::{rsa_sign_pkcs1_sha256, rsa_verify_pkcs1_sha256, RsaPrivateKey, RsaPublicKey};
+use crate::crypto::rsa::{rsa_sign_pkcs1_sha256, rsa_verify_pkcs1_sha256, rsa_verify_pkcs1_sha512, RsaPrivateKey, RsaPublicKey};
 use crate::crypto::sha256::sha256;
+use crate::crypto::sha512::sha512;
 
 use super::SshBuf;
 
@@ -243,6 +244,9 @@ pub fn verify_rsa_signature(
     if algo == b"rsa-sha2-256" || algo == b"ssh-rsa" {
         let hash = sha256(data);
         rsa_verify_pkcs1_sha256(&pubkey, raw_sig, &hash)
+    } else if algo == b"rsa-sha2-512" {
+        let hash = sha512(data);
+        rsa_verify_pkcs1_sha512(&pubkey, raw_sig, &hash)
     } else {
         false
     }
