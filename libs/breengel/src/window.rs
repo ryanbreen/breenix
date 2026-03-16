@@ -1,12 +1,15 @@
 //! Window management for Breengel applications.
 //!
 //! Wraps the kernel window buffer syscalls into a high-level API.
+//! Includes automatic font management via an internal FontWatcher.
 
+use libfont::CachedFont;
 use libbreenix::error::Error;
 use libbreenix::graphics::{self, WindowInputEvent};
 use libgfx::framebuf::FrameBuf;
 
 use crate::event::Event;
+use crate::font::FontWatcher;
 
 /// A GUI window backed by a kernel-managed shared pixel buffer.
 ///
@@ -15,17 +18,24 @@ use crate::event::Event;
 ///
 /// Draw into the window via [`framebuf`](Window::framebuf), then call
 /// [`present`](Window::present) to signal the compositor.
+///
+/// Font management is automatic: the window polls `/etc/fonts.conf` during
+/// [`poll_events`](Window::poll_events) and emits [`Event::FontChanged`] when
+/// the system fonts change. Use [`take_mono_font`](Window::take_mono_font)
+/// to get the loaded font for rendering.
 pub struct Window {
     buffer_id: u32,
     fb: FrameBuf,
     width: u32,
     height: u32,
+    font_watcher: FontWatcher,
 }
 
 impl Window {
     /// Create a new window and register it with the compositor.
     ///
     /// The window is immediately visible at a compositor-chosen position.
+    /// System fonts are loaded automatically from `/etc/fonts.conf`.
     pub fn new(title: &[u8], width: u32, height: u32) -> Result<Self, Error> {
         let win = graphics::create_window(width, height)?;
         graphics::register_window(win.id, title)?;
@@ -48,6 +58,7 @@ impl Window {
             fb,
             width,
             height,
+            font_watcher: FontWatcher::new(),
         })
     }
 
@@ -66,30 +77,43 @@ impl Window {
 
     /// Poll for pending input events (non-blocking).
     ///
+    /// Also polls the system font config — if it changed, an
+    /// `Event::FontChanged` is appended to the returned events.
+    ///
     /// Resize events are handled automatically: the window buffer is
     /// reallocated to the new dimensions before the `Event::Resized` is
-    /// returned. Applications only need to update their own layout state
-    /// (e.g. recalculate visible lines) — they do NOT need to call
-    /// `apply_resize()`.
+    /// returned.
     pub fn poll_events(&mut self) -> Vec<Event> {
         let mut raw = [WindowInputEvent::default(); 16];
-        match graphics::read_window_input(self.buffer_id, &mut raw, false) {
+        let mut events = match graphics::read_window_input(self.buffer_id, &mut raw, false) {
             Ok(n) => self.process_raw_events(&raw[..n]),
             Err(_) => Vec::new(),
+        };
+
+        if self.font_watcher.poll() {
+            events.push(Event::FontChanged);
         }
+
+        events
     }
 
     /// Wait for at least one input event (blocking).
     ///
     /// Blocks until the compositor delivers an event or a 100ms timeout
     /// expires (in which case the returned vec may be empty).
-    /// Resize events are handled automatically (see [`poll_events`]).
+    /// Also polls font config on each call.
     pub fn wait_event(&mut self) -> Vec<Event> {
         let mut raw = [WindowInputEvent::default(); 16];
-        match graphics::read_window_input(self.buffer_id, &mut raw, true) {
+        let mut events = match graphics::read_window_input(self.buffer_id, &mut raw, true) {
             Ok(n) => self.process_raw_events(&raw[..n]),
             Err(_) => Vec::new(),
+        };
+
+        if self.font_watcher.poll() {
+            events.push(Event::FontChanged);
         }
+
+        events
     }
 
     /// Convert raw events, auto-handling resize internally.
@@ -104,6 +128,62 @@ impl Window {
         }
         events
     }
+
+    // ── Font accessors ──────────────────────────────────────────────────
+
+    /// Take the monospace font out of the window for rendering.
+    ///
+    /// Returns the loaded `CachedFont`, leaving `None` internally. The font
+    /// is yours to use with `ttf_font::draw_char()` etc. When the font config
+    /// changes (`Event::FontChanged`), the window loads the new font internally —
+    /// call this again to get the updated font.
+    pub fn take_mono_font(&mut self) -> Option<CachedFont> {
+        self.font_watcher.take_mono_font()
+    }
+
+    /// Return a previously taken mono font. Call before taking a new one
+    /// on `FontChanged`, or the old font is simply dropped.
+    pub fn put_mono_font(&mut self, font: Option<CachedFont>) {
+        self.font_watcher.put_mono_font(font);
+    }
+
+    /// Take the display font out of the window for rendering.
+    pub fn take_display_font(&mut self) -> Option<CachedFont> {
+        self.font_watcher.take_display_font()
+    }
+
+    /// Return a previously taken display font.
+    pub fn put_display_font(&mut self, font: Option<CachedFont>) {
+        self.font_watcher.put_display_font(font);
+    }
+
+    /// The current monospace font size in pixels.
+    pub fn mono_size(&self) -> f32 {
+        self.font_watcher.mono_size()
+    }
+
+    /// The current monospace font file path.
+    pub fn mono_path(&self) -> &str {
+        self.font_watcher.mono_path()
+    }
+
+    /// The current display font size in pixels.
+    pub fn display_size(&self) -> f32 {
+        self.font_watcher.display_size()
+    }
+
+    /// The current display font file path.
+    pub fn display_path(&self) -> &str {
+        self.font_watcher.display_path()
+    }
+
+    /// Set how many `poll_events()` calls between font config file checks.
+    /// Default is 20 (at 50ms sleep = ~1 second).
+    pub fn set_font_poll_interval(&mut self, interval: u32) {
+        self.font_watcher.set_poll_interval(interval);
+    }
+
+    // ── Window metadata ─────────────────────────────────────────────────
 
     /// The kernel-assigned buffer ID for this window.
     pub fn id(&self) -> u32 {

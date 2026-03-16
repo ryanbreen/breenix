@@ -12,7 +12,7 @@
 
 use std::process;
 
-use breengel::{Window, Event, TabBar, Rect, Theme, Color, FrameBuf};
+use breengel::{Window, Event, CachedFont, TabBar, Rect, Theme, Color, FrameBuf};
 use libbreenix::io;
 use libbreenix::fs;
 use libbreenix::process::{fork, exec, setsid, ForkResult};
@@ -20,7 +20,6 @@ use libbreenix::pty;
 use libbreenix::types::Fd;
 use libbreenix::time;
 
-use libfont::CachedFont;
 use libgfx::bitmap_font;
 use libgfx::ttf_font;
 
@@ -423,70 +422,30 @@ fn ttf_cell_dims(font: &mut CachedFont, size: f32) -> (usize, usize) {
 // ─── Main ───────────────────────────────────────────────────────────────────
 
 fn main() {
-    // Load system font configuration via FontWatcher (handles hot-reload)
-    let mut font_watcher = breengel::FontWatcher::new();
-    font_watcher.set_poll_interval(100); // ~1s at 10ms sleep
-    let mut font_size = if font_watcher.mono_size() >= 6.0 { font_watcher.mono_size() } else { 14.0 };
-    print!("[bterm] config: mono_size={} font_size={}\n", font_watcher.mono_size(), font_size);
-
-    // Load TrueType font (Font owns its data, no lifetime gymnastics needed)
-    let mut ttf_font: Option<CachedFont> = font_watcher.load_font();
-
-    // Compute cell dimensions from font metrics (or fall back to bitmap constants)
-    let (mut cell_w, mut cell_h) = if let Some(ref mut font) = ttf_font {
-        ttf_cell_dims(font, font_size)
-    } else {
-        (BITMAP_CELL_W, BITMAP_CELL_H)
-    };
-
-    // Diagnostic: detailed rasterization debug to find where computation goes wrong
-    if let Some(ref mut font) = ttf_font {
-        let gi = font.glyph_index('A');
-        print!("[bterm] font_size={} cell={}x{}\n", font_size, cell_w, cell_h);
-        // Call debug_rasterize which returns ALL intermediate values
-        match font.font().debug_rasterize(gi, font_size) {
-            Ok(d) => {
-                print!("[bterm] dbg: px={} upm={} scale={}\n",
-                       d.pixel_size, d.units_per_em, d.scale);
-                print!("[bterm] dbg: glyph_bbox=({},{},{},{})\n",
-                       d.glyph_x_min, d.glyph_y_min, d.glyph_x_max, d.glyph_y_max);
-                print!("[bterm] dbg: scaled=({},{},{},{})\n",
-                       d.x_min_scaled, d.y_min_scaled, d.x_max_scaled, d.y_max_scaled);
-                print!("[bterm] dbg: bmp={}x{} off=({},{}) baseline={}\n",
-                       d.bmp_width, d.bmp_height, d.bmp_x_offset, d.bmp_y_offset, d.baseline);
-                print!("[bterm] dbg: contours={} pts={} segs={} nz={}\n",
-                       d.num_contours, d.num_points, d.num_segments, d.nonzero_coverage);
-            }
-            Err(e) => print!("[bterm] debug_rasterize FAILED: {}\n", e),
-        }
-        // Also test rasterize directly — call twice to check first-call vs second-call
-        font.clear_cache();
-        match font.rasterize_glyph(gi, font_size) {
-            Ok(bmp) => {
-                let nz = bmp.coverage.iter().filter(|&&v| v > 0).count();
-                print!("[bterm] raster#1: {}x{} off=({},{}) nz={}\n",
-                       bmp.width, bmp.height, bmp.x_offset, bmp.y_offset, nz);
-            }
-            Err(e) => print!("[bterm] raster#1 FAIL: {}\n", e),
-        }
-        font.clear_cache();
-        match font.rasterize_glyph(gi, font_size) {
-            Ok(bmp) => {
-                let nz = bmp.coverage.iter().filter(|&&v| v > 0).count();
-                print!("[bterm] raster#2: {}x{} off=({},{}) nz={}\n",
-                       bmp.width, bmp.height, bmp.x_offset, bmp.y_offset, nz);
-            }
-            Err(e) => print!("[bterm] raster#2 FAIL: {}\n", e),
-        }
-    }
-
-    // Create window
+    // Create window (loads system font automatically from /etc/fonts.conf)
     let mut win = match Window::new(b"Terminal", WIN_WIDTH, WIN_HEIGHT) {
         Ok(w) => w,
         Err(e) => {
             print!("[bterm] ERROR: failed to create window: {}\n", e);
             process::exit(1);
         }
+    };
+    win.set_font_poll_interval(100); // ~1s at 10ms sleep
+
+    let mut font_size = if win.mono_size() >= 6.0 { win.mono_size() } else { 14.0 };
+    print!("[bterm] config: mono_size={} font_size={}\n", win.mono_size(), font_size);
+
+    // Take TrueType font for local use (needed alongside &mut FrameBuf)
+    let mut ttf_font: Option<CachedFont> = win.take_mono_font();
+
+    // Compute cell dimensions from font metrics (or fall back to bitmap constants)
+    let (mut cell_w, mut cell_h) = if let Some(ref mut font) = ttf_font {
+        print!("[bterm] font_size={} ", font_size);
+        let dims = ttf_cell_dims(font, font_size);
+        print!("cell={}x{}\n", dims.0, dims.1);
+        dims
+    } else {
+        (BITMAP_CELL_W, BITMAP_CELL_H)
     };
 
     // Calculate content area (below tab bar)
@@ -637,6 +596,14 @@ fn main() {
                         }
                     }
                 }
+                Event::FontChanged => {
+                    // Window loaded the new font internally — swap it in
+                    win.put_mono_font(ttf_font.take());
+                    ttf_font = win.take_mono_font();
+                    font_size = win.mono_size();
+                    print!("[bterm] font changed: {} size={}\n", win.mono_path(), font_size);
+                    font_changed = true;
+                }
                 Event::Resized { width, height } => {
                     content_w = *width;
                     content_h = height.saturating_sub(TAB_BAR_HEIGHT as u32);
@@ -656,19 +623,6 @@ fn main() {
                 }
                 _ => {}
             }
-        }
-
-        // Font config hot-reload via FontWatcher
-        // Note: size is read separately via mono_size() to avoid f32-in-tuple
-        // ABI corruption on aarch64 with opt-level="z".
-        if let Some(new_font) = font_watcher.poll() {
-            let new_size = font_watcher.mono_size();
-            let m = new_font.metrics(new_size);
-            print!("[bterm] font changed: {} size={} (bits=0x{:08x}) asc={} desc={}\n",
-                   font_watcher.mono_path(), new_size, new_size.to_bits(), m.ascender, m.descender);
-            ttf_font = Some(new_font);
-            font_size = new_size;
-            font_changed = true;
         }
 
         // Handle font size change: recompute grid, resize all tabs
