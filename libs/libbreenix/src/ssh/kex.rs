@@ -4,6 +4,7 @@
 //! with SHA-256 as the hash function. Derives session keys for AES-128-CTR
 //! encryption and HMAC-SHA256 integrity.
 
+use crate::crypto::mlkem;
 use crate::crypto::rand::Csprng;
 use crate::crypto::sha256::sha256;
 use crate::crypto::x25519::{x25519, x25519_basepoint};
@@ -16,6 +17,10 @@ use super::*;
 
 /// Algorithms offered by BSSH.
 // ext-info-s tells clients we'll send SSH_MSG_EXT_INFO after NEWKEYS (RFC 8308)
+// TODO: mlkem768x25519-sha256 implementation complete but exchange hash computation
+// doesn't match OpenSSH yet (incorrect signature). Disabled until fixed.
+// Full ML-KEM 768 + Keccak/SHAKE primitives are in crypto/ and server_kex_hybrid()
+// in this file is ready — just needs the hash encoding debugged.
 pub const KEX_ALGORITHMS: &str = "curve25519-sha256,ext-info-s";
 pub const HOST_KEY_ALGORITHMS: &str = "rsa-sha2-256,ssh-rsa";
 pub const CIPHERS: &str = "aes128-ctr";
@@ -155,6 +160,72 @@ pub fn server_kex_ecdh(
     Ok((h, shared_secret.to_vec()))
 }
 
+/// Server-side hybrid post-quantum key exchange (mlkem768x25519-sha256).
+pub fn server_kex_hybrid(
+    io: &mut PacketIo,
+    host_key: &HostKey,
+    kex: &mut KexState,
+    client_version: &str,
+    server_version: &str,
+    client_init: &[u8],
+) -> Result<(Vec<u8>, Vec<u8>), SshError> {
+    let mut pos = 1;
+    let c_init = SshBuf::get_string(client_init, &mut pos)
+        .ok_or(SshError::Protocol("bad KEX_HYBRID_INIT"))?;
+    if c_init.len() != 1216 {
+        return Err(SshError::Protocol("invalid hybrid C_INIT length"));
+    }
+
+    let mut rng = Csprng::new();
+
+    // X25519
+    let mut x25519_secret = [0u8; 32];
+    rng.fill(&mut x25519_secret);
+    let x25519_public = x25519_basepoint(&x25519_secret);
+    let mut client_x25519 = [0u8; 32];
+    client_x25519.copy_from_slice(&c_init[1184..]);
+    let k_cl = x25519(&x25519_secret, &client_x25519);
+    if k_cl.iter().all(|&b| b == 0) { return Err(SshError::KeyExchange); }
+
+    // ML-KEM 768 encapsulation
+    let mut pk_bytes = [0u8; 1184];
+    pk_bytes.copy_from_slice(&c_init[..1184]);
+    let mlkem_pk = mlkem::MlKemPublicKey { bytes: pk_bytes };
+    let mut encap_rand = [0u8; 32];
+    rng.fill(&mut encap_rand);
+    let (ct, k_pq) = mlkem::encapsulate(&mlkem_pk, &encap_rand);
+
+    // K = SHA-256(K_PQ || K_CL)
+    let mut k_input = [0u8; 64];
+    k_input[..32].copy_from_slice(&k_pq);
+    k_input[32..].copy_from_slice(&k_cl);
+    let shared_secret = sha256(&k_input);
+
+    // S_REPLY = ML-KEM ct (1088) || X25519 pk (32)
+    let mut s_reply = Vec::with_capacity(1120);
+    s_reply.extend_from_slice(&ct.bytes);
+    s_reply.extend_from_slice(&x25519_public);
+
+    let host_key_blob = host_key.public_key_blob();
+    let h = compute_exchange_hash_hybrid(
+        client_version, server_version,
+        &kex.peer_kexinit, &kex.my_kexinit,
+        &host_key_blob, c_init, &s_reply, &shared_secret,
+    );
+    if kex.session_id.is_none() { kex.session_id = Some(h.clone()); }
+
+    let signature = host_key.sign(&h);
+    let mut reply = Vec::with_capacity(2048);
+    reply.push(SSH_MSG_KEX_ECDH_REPLY);
+    SshBuf::put_string(&mut reply, &host_key_blob);
+    SshBuf::put_string(&mut reply, &s_reply);
+    SshBuf::put_string(&mut reply, &signature);
+    io.send_packet(&reply).map_err(|_| SshError::Io)?;
+    io.send_packet(&[SSH_MSG_NEWKEYS]).map_err(|_| SshError::Io)?;
+
+    Ok((h, shared_secret.to_vec()))
+}
+
 /// Perform client-side key exchange.
 ///
 /// Sends KEX_ECDH_INIT with the client's ephemeral public key and
@@ -237,7 +308,7 @@ pub fn client_kex_ecdh(
 /// H = SHA-256(V_C || V_S || I_C || I_S || K_S || Q_C || Q_S || K)
 ///
 /// All values are encoded as SSH strings (uint32 length prefix) except K
-/// which is encoded as an SSH mpint.
+/// which is encoded as an SSH mpint for classical KEX.
 fn compute_exchange_hash(
     v_c: &str,
     v_s: &str,
@@ -248,7 +319,35 @@ fn compute_exchange_hash(
     q_s: &[u8],
     k: &[u8],
 ) -> Vec<u8> {
-    let mut data = Vec::with_capacity(1024);
+    compute_exchange_hash_inner(v_c, v_s, i_c, i_s, k_s, q_c, q_s, k, false)
+}
+
+/// Exchange hash for hybrid KEX — K is encoded as string, not mpint.
+fn compute_exchange_hash_hybrid(
+    v_c: &str,
+    v_s: &str,
+    i_c: &[u8],
+    i_s: &[u8],
+    k_s: &[u8],
+    c_init: &[u8],
+    s_reply: &[u8],
+    k: &[u8],
+) -> Vec<u8> {
+    compute_exchange_hash_inner(v_c, v_s, i_c, i_s, k_s, c_init, s_reply, k, true)
+}
+
+fn compute_exchange_hash_inner(
+    v_c: &str,
+    v_s: &str,
+    i_c: &[u8],
+    i_s: &[u8],
+    k_s: &[u8],
+    q_c: &[u8],
+    q_s: &[u8],
+    k: &[u8],
+    k_as_string: bool,
+) -> Vec<u8> {
+    let mut data = Vec::with_capacity(2048);
 
     SshBuf::put_string(&mut data, v_c.as_bytes());
     SshBuf::put_string(&mut data, v_s.as_bytes());
@@ -257,7 +356,13 @@ fn compute_exchange_hash(
     SshBuf::put_string(&mut data, k_s);
     SshBuf::put_string(&mut data, q_c);
     SshBuf::put_string(&mut data, q_s);
-    SshBuf::put_mpint(&mut data, k);
+    if k_as_string {
+        // Hybrid KEX: K is the 32-byte SHA-256 output, encoded as SSH string
+        SshBuf::put_string(&mut data, k);
+    } else {
+        // Classical KEX: K is the raw DH output, encoded as SSH mpint
+        SshBuf::put_mpint(&mut data, k);
+    }
 
     sha256(&data).to_vec()
 }
@@ -276,9 +381,31 @@ pub fn derive_keys(
     exchange_hash: &[u8],
     session_id: &[u8],
 ) -> (SshCipher, SshCipher) {
+    derive_keys_inner(shared_secret, exchange_hash, session_id, false)
+}
+
+/// Derive session keys for hybrid KEX (K encoded as string, not mpint).
+pub fn derive_keys_hybrid(
+    shared_secret: &[u8],
+    exchange_hash: &[u8],
+    session_id: &[u8],
+) -> (SshCipher, SshCipher) {
+    derive_keys_inner(shared_secret, exchange_hash, session_id, true)
+}
+
+fn derive_keys_inner(
+    shared_secret: &[u8],
+    exchange_hash: &[u8],
+    session_id: &[u8],
+    k_as_string: bool,
+) -> (SshCipher, SshCipher) {
     let derive = |letter: u8, len: usize| -> Vec<u8> {
         let mut data = Vec::with_capacity(256);
-        SshBuf::put_mpint(&mut data, shared_secret);
+        if k_as_string {
+            SshBuf::put_string(&mut data, shared_secret);
+        } else {
+            SshBuf::put_mpint(&mut data, shared_secret);
+        }
         data.extend_from_slice(exchange_hash);
         data.push(letter);
         data.extend_from_slice(session_id);
@@ -291,7 +418,11 @@ pub fn derive_keys(
             let mut result = k1.to_vec();
             while result.len() < len {
                 let mut ext_data = Vec::new();
-                SshBuf::put_mpint(&mut ext_data, shared_secret);
+                if k_as_string {
+                    SshBuf::put_string(&mut ext_data, shared_secret);
+                } else {
+                    SshBuf::put_mpint(&mut ext_data, shared_secret);
+                }
                 ext_data.extend_from_slice(exchange_hash);
                 ext_data.extend_from_slice(&result);
                 let kn = sha256(&ext_data);

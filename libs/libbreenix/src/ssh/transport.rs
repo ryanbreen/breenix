@@ -112,18 +112,27 @@ impl ServerSession {
         }
         self.kex.peer_kexinit = peer_kexinit;
 
-        // Receive KEX_ECDH_INIT
-        let ecdh_init = self.io.recv_packet().map_err(|_| SshError::Io)?;
+        // Receive KEX init (type 30)
+        let kex_init = self.io.recv_packet().map_err(|_| SshError::Io)?;
 
-        // Perform server-side DH and send KEX_ECDH_REPLY + NEWKEYS
-        let (exchange_hash, shared_secret) = kex::server_kex_ecdh(
-            &mut self.io,
-            &self.host_key,
-            &mut self.kex,
-            &self.client_version,
-            BSSH_VERSION,
-            &ecdh_init,
-        )?;
+        // Dispatch: hybrid C_INIT is 1216 bytes, X25519 Q_C is 32 bytes
+        let c_init_len = if kex_init.len() > 5 {
+            u32::from_be_bytes([kex_init[1], kex_init[2], kex_init[3], kex_init[4]]) as usize
+        } else { 0 };
+
+        let (exchange_hash, shared_secret) = if c_init_len == 1216 {
+            println!("bsshd: KEX mlkem768x25519-sha256 (post-quantum)");
+            kex::server_kex_hybrid(
+                &mut self.io, &self.host_key, &mut self.kex,
+                &self.client_version, BSSH_VERSION, &kex_init,
+            )?
+        } else {
+            println!("bsshd: KEX curve25519-sha256");
+            kex::server_kex_ecdh(
+                &mut self.io, &self.host_key, &mut self.kex,
+                &self.client_version, BSSH_VERSION, &kex_init,
+            )?
+        };
 
         // Receive client's NEWKEYS
         let newkeys = self.io.recv_packet().map_err(|_| SshError::Io)?;
@@ -133,8 +142,12 @@ impl ServerSession {
 
         // Derive and install session keys
         let session_id = self.kex.session_id.as_ref().unwrap();
-        let (cipher_c2s, cipher_s2c) =
-            kex::derive_keys(&shared_secret, &exchange_hash, session_id);
+        let is_hybrid = c_init_len == 1216;
+        let (cipher_c2s, cipher_s2c) = if is_hybrid {
+            kex::derive_keys_hybrid(&shared_secret, &exchange_hash, session_id)
+        } else {
+            kex::derive_keys(&shared_secret, &exchange_hash, session_id)
+        };
 
         self.io.set_cipher_recv(cipher_c2s); // client→server = our recv
         self.io.set_cipher_send(cipher_s2c); // server→client = our send
