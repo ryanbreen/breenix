@@ -148,7 +148,7 @@ impl ServerSession {
             ext_info.push(7); // SSH_MSG_EXT_INFO
             SshBuf::put_u32(&mut ext_info, 1); // nr-extensions = 1
             SshBuf::put_string(&mut ext_info, b"server-sig-algs");
-            SshBuf::put_string(&mut ext_info, b"rsa-sha2-256,rsa-sha2-512,ssh-rsa");
+            SshBuf::put_string(&mut ext_info, b"rsa-sha2-256,ssh-rsa");
             self.io.send_packet(&ext_info).map_err(|_| SshError::Io)?;
         }
 
