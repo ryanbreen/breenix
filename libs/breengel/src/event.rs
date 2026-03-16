@@ -41,6 +41,10 @@ pub enum Event {
     /// The window was resized by the window manager. The buffer has already
     /// been reallocated — update application layout state as needed.
     Resized { width: u32, height: u32 },
+    /// The system font configuration changed. The new font is already loaded
+    /// internally — call `win.take_mono_font()` to get it. Recalculate text
+    /// metrics, grid dimensions, etc. as needed.
+    FontChanged,
 }
 
 impl Event {

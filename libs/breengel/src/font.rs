@@ -3,23 +3,9 @@
 //! Reads `/etc/fonts.conf` for OS-level font defaults and detects changes
 //! so apps can hot-swap fonts when the user changes them (e.g. via bfontpicker).
 //!
-//! # Usage
-//!
-//! ```rust,no_run
-//! use breengel::FontWatcher;
-//!
-//! let mut watcher = FontWatcher::new();
-//! let mut font = watcher.load_font().unwrap();
-//! let mut size = watcher.mono_size();
-//!
-//! loop {
-//!     if let Some(new_font) = watcher.poll() {
-//!         font = new_font;
-//!         size = watcher.mono_size();
-//!     }
-//!     // ... render with font ...
-//! }
-//! ```
+//! Font management is handled automatically by [`Window`](crate::Window).
+//! Apps receive [`Event::FontChanged`](crate::Event::FontChanged) when the
+//! system font config changes, and access fonts via `win.take_mono_font()`.
 
 use libfont::{Font, CachedFont};
 
@@ -28,14 +14,6 @@ const DEFAULT_MONO_FONT: &str = "/usr/share/fonts/DejaVuSansMono.ttf";
 const DEFAULT_MONO_SIZE: f32 = 10.0;
 const DEFAULT_DISPLAY_FONT: &str = "/usr/share/fonts/DejaVuSans.ttf";
 const DEFAULT_DISPLAY_SIZE: f32 = 14.0;
-
-/// Polls the system font config for changes and provides loaded fonts.
-pub struct FontWatcher {
-    mono_path: String,
-    mono_size: f32,
-    poll_counter: u32,
-    poll_interval: u32,
-}
 
 /// Parsed system font configuration.
 pub struct FontConfig {
@@ -87,7 +65,6 @@ impl FontConfig {
             }
         }
 
-        // Final safety: ensure sizes are valid (catches NaN, 0.0, negative, sub-minimum)
         if !(config.mono_size >= 6.0) { config.mono_size = DEFAULT_MONO_SIZE; }
         if !(config.display_size >= 6.0) { config.display_size = DEFAULT_DISPLAY_SIZE; }
 
@@ -105,69 +82,112 @@ impl FontConfig {
     }
 }
 
+/// Internal font watcher — polls `/etc/fonts.conf` for changes and
+/// owns the loaded `CachedFont` instances. Used by `Window` internally.
+pub(crate) struct FontWatcher {
+    mono_path: String,
+    mono_size: f32,
+    display_path: String,
+    display_size: f32,
+    mono_font: Option<CachedFont>,
+    display_font: Option<CachedFont>,
+    poll_counter: u32,
+    poll_interval: u32,
+}
+
+fn load_cached_font(path: &str) -> Option<CachedFont> {
+    let data = std::fs::read(path).ok()?;
+    let font = Font::parse(&data).ok()?;
+    Some(CachedFont::new(font, 256))
+}
+
 impl FontWatcher {
-    /// Create a new watcher. Reads the current config immediately.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let config = FontConfig::load();
+        let mono_font = load_cached_font(&config.mono_path);
+        let display_font = load_cached_font(&config.display_path);
         Self {
             mono_path: config.mono_path,
             mono_size: config.mono_size,
+            display_path: config.display_path,
+            display_size: config.display_size,
+            mono_font,
+            display_font,
             poll_counter: 0,
             poll_interval: 20,
         }
     }
 
-    /// Set how many calls to `poll()` between config file checks.
-    /// Default is 20 (at 50ms sleep = ~1 second).
-    pub fn set_poll_interval(&mut self, interval: u32) {
+    pub(crate) fn set_poll_interval(&mut self, interval: u32) {
         self.poll_interval = interval.max(1);
     }
 
-    /// The current configured font path.
-    pub fn mono_path(&self) -> &str {
+    pub(crate) fn mono_path(&self) -> &str {
         &self.mono_path
     }
 
-    /// The current configured font size.
-    pub fn mono_size(&self) -> f32 {
+    pub(crate) fn mono_size(&self) -> f32 {
         self.mono_size
     }
 
-    /// Load the current font from config. Call once at startup.
-    /// Returns `CachedFont` or `None` if the font file is missing.
-    /// Use `mono_size()` to get the pixel size (returned separately to avoid
-    /// f32-in-tuple ABI corruption on aarch64 with opt-level="z").
-    pub fn load_font(&self) -> Option<CachedFont> {
-        let data = std::fs::read(&self.mono_path).ok()?;
-        let font = Font::parse(&data).ok()?;
-        Some(CachedFont::new(font, 256))
+    pub(crate) fn display_path(&self) -> &str {
+        &self.display_path
     }
 
-    /// Check if the font config has changed. Call once per frame.
-    ///
-    /// Returns `Some(new_font)` if the font changed, `None` otherwise.
-    /// Use `mono_size()` to get the current pixel size (returned separately
-    /// to avoid f32-in-tuple ABI corruption on aarch64 with opt-level="z").
-    /// Internally rate-limited by `poll_interval` so re-reading the config file
-    /// doesn't happen every frame.
-    pub fn poll(&mut self) -> Option<CachedFont> {
+    pub(crate) fn display_size(&self) -> f32 {
+        self.display_size
+    }
+
+    /// Take the mono font out of the watcher, leaving None.
+    pub(crate) fn take_mono_font(&mut self) -> Option<CachedFont> {
+        self.mono_font.take()
+    }
+
+    /// Return a mono font to the watcher.
+    pub(crate) fn put_mono_font(&mut self, font: Option<CachedFont>) {
+        self.mono_font = font;
+    }
+
+    /// Take the display font out of the watcher, leaving None.
+    pub(crate) fn take_display_font(&mut self) -> Option<CachedFont> {
+        self.display_font.take()
+    }
+
+    /// Return a display font to the watcher.
+    pub(crate) fn put_display_font(&mut self, font: Option<CachedFont>) {
+        self.display_font = font;
+    }
+
+    /// Poll the config file for changes. Returns true if fonts changed.
+    /// Internally rate-limited by `poll_interval`.
+    pub(crate) fn poll(&mut self) -> bool {
         self.poll_counter += 1;
         if self.poll_counter < self.poll_interval {
-            return None;
+            return false;
         }
         self.poll_counter = 0;
 
         let config = FontConfig::load();
-        if config.mono_path == self.mono_path && config.mono_size == self.mono_size {
-            return None;
+        let mono_changed = config.mono_path != self.mono_path
+            || config.mono_size != self.mono_size;
+        let display_changed = config.display_path != self.display_path
+            || config.display_size != self.display_size;
+
+        if !mono_changed && !display_changed {
+            return false;
         }
 
-        self.mono_path = config.mono_path;
-        self.mono_size = config.mono_size;
-
-        let data = std::fs::read(&self.mono_path).ok()?;
-        let font = Font::parse(&data).ok()?;
-        Some(CachedFont::new(font, 256))
+        if mono_changed {
+            self.mono_path = config.mono_path;
+            self.mono_size = config.mono_size;
+            self.mono_font = load_cached_font(&self.mono_path);
+        }
+        if display_changed {
+            self.display_path = config.display_path;
+            self.display_size = config.display_size;
+            self.display_font = load_cached_font(&self.display_path);
+        }
+        true
     }
 }
 
