@@ -1734,6 +1734,23 @@ fn send_command(
     resp_phys: u64,
     resp_len: u32,
 ) -> Result<(), &'static str> {
+    // Drain stale completions from previous timed-out commands.
+    // Only advance forward (diff > 0 && < 32768 in wrapping u16 space)
+    // to avoid undoing a speculative advance from a prior timeout recovery.
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        let q = &raw const PCI_CTRL_QUEUE;
+        let used_addr = &(*q).used as *const _ as usize;
+        core::arch::asm!("dc civac, {}", in(reg) used_addr, options(nostack));
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        fence(Ordering::Acquire);
+        let cur = read_volatile(&(*q).used.idx);
+        let diff = cur.wrapping_sub(state.last_used_idx);
+        if diff > 0 && diff < 32768 {
+            state.last_used_idx = cur;
+        }
+    }
+
     unsafe {
         let q = &raw mut PCI_CTRL_QUEUE;
 
@@ -1841,6 +1858,21 @@ fn send_command_3desc(
     payload_phys: u64,
     payload_len: u32,
 ) -> Result<(u32, u32), &'static str> {
+    // Drain stale completions (same forward-only logic as send_command).
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        let q = &raw const PCI_CTRL_QUEUE;
+        let used_addr = &(*q).used as *const _ as usize;
+        core::arch::asm!("dc civac, {}", in(reg) used_addr, options(nostack));
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        fence(Ordering::Acquire);
+        let cur = read_volatile(&(*q).used.idx);
+        let diff = cur.wrapping_sub(state.last_used_idx);
+        if diff > 0 && diff < 32768 {
+            state.last_used_idx = cur;
+        }
+    }
+
     let resp_phys = virt_to_phys(&raw const PCI_RESP_BUF as u64);
     let resp_len = core::mem::size_of::<VirtioGpuCtrlHdr>() as u32;
 
@@ -1954,26 +1986,34 @@ fn send_command_3desc(
 
     #[cfg(target_arch = "aarch64")]
     if has_msi && can_yield {
-        // MSI-X path: block immediately, zero spin.
-        // Thread registration and interrupt enable already done BEFORE notify above.
+        // MSI-X path: retry blocking up to 20 times (200ms total).
+        // Tolerates VM scheduling jitter where Parallels preempts the VirGL
+        // GPU thread. Previous single 10ms+spin approach caused cascading
+        // DEADBEEF failures on ~25% of sustained sessions.
         let sleep_start: u64;
         unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) sleep_start, options(nomem, nostack)); }
 
-        // Check if already complete before blocking (race: device may have
-        // finished between notify and here)
-        let already_done = unsafe {
-            let q = &raw const PCI_CTRL_QUEUE;
-            let used_addr = &(*q).used as *const _ as usize;
-            core::arch::asm!("dc civac, {}", in(reg) used_addr, options(nostack));
-            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-            fence(Ordering::Acquire);
-            read_volatile(&(*q).used.idx) != state.last_used_idx
-        };
+        let mut completed = false;
+        for _attempt in 0..20 {
+            // Check if complete (race: device may finish between notify/re-block)
+            let done = unsafe {
+                let q = &raw const PCI_CTRL_QUEUE;
+                let used_addr = &(*q).used as *const _ as usize;
+                core::arch::asm!("dc civac, {}", in(reg) used_addr, options(nostack));
+                core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+                fence(Ordering::Acquire);
+                read_volatile(&(*q).used.idx) != state.last_used_idx
+            };
+            if done { completed = true; break; }
 
-        if !already_done {
+            // Re-register for MSI-X wake before each block
+            if let Some(tid) = crate::task::scheduler::current_thread_id() {
+                GPU_WAITING_THREAD.store(tid, Ordering::Release);
+            }
+
             let (s, n) = crate::time::get_monotonic_time_ns();
             let now_ns = (s as u64) * 1_000_000_000 + (n as u64);
-            let wake_ns = now_ns + 10_000_000; // 10ms safety timeout
+            let wake_ns = now_ns + 10_000_000; // 10ms per attempt
 
             crate::task::scheduler::with_scheduler(|sched| {
                 sched.block_current_for_compositor(wake_ns);
@@ -2005,40 +2045,34 @@ fn send_command_3desc(
         GPU_SLEEP_TICKS.fetch_add(slept, Ordering::Relaxed);
         GPU_SLEEP_TICKS_PHASES.fetch_add(slept, Ordering::Relaxed);
 
-        // Read used ring — GPU should be done by now.
-        // Spin-poll with cache invalidation to catch completion.
-        let mut spin_retries = 0u32;
-        let max_spin = 500_000u32;
-        loop {
-            unsafe {
+        if !completed {
+            // Final check after all retries
+            completed = unsafe {
                 let q = &raw const PCI_CTRL_QUEUE;
                 let used_addr = &(*q).used as *const _ as usize;
                 core::arch::asm!("dc civac, {}", in(reg) used_addr, options(nostack));
                 core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-            }
-            fence(Ordering::Acquire);
-            let cur_used_idx = unsafe {
-                let q = &raw const PCI_CTRL_QUEUE;
-                read_volatile(&(*q).used.idx)
+                fence(Ordering::Acquire);
+                read_volatile(&(*q).used.idx) != state.last_used_idx
             };
-            if cur_used_idx != state.last_used_idx {
-                used_len = unsafe {
-                    let q = &raw const PCI_CTRL_QUEUE;
-                    let elem_idx = (state.last_used_idx % 16) as usize;
-                    // Invalidate the specific cache line containing this entry
-                    let entry_addr = &(*q).used.ring[elem_idx] as *const _ as usize;
-                    core::arch::asm!("dc civac, {}", in(reg) entry_addr, options(nostack));
-                    core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-                    read_volatile(&(*q).used.ring[elem_idx].len)
-                };
-                state.last_used_idx = cur_used_idx;
-                break;
-            }
-            spin_retries += 1;
-            if spin_retries >= max_spin {
-                return Err("GPU PCI 3-desc command timeout (MSI-X wake but no completion)");
-            }
-            core::hint::spin_loop();
+        }
+
+        if completed {
+            used_len = unsafe {
+                let q = &raw const PCI_CTRL_QUEUE;
+                let elem_idx = (state.last_used_idx % 16) as usize;
+                let entry_addr = &(*q).used.ring[elem_idx] as *const _ as usize;
+                core::arch::asm!("dc civac, {}", in(reg) entry_addr, options(nostack));
+                core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+                read_volatile(&(*q).used.ring[elem_idx].len)
+            };
+            state.last_used_idx = state.last_used_idx.wrapping_add(1);
+        } else {
+            // Timeout after 200ms. Speculatively advance last_used_idx so the
+            // next command's drain doesn't pick up this command's late completion
+            // and cascade-fail with DEADBEEF responses.
+            state.last_used_idx = state.last_used_idx.wrapping_add(1);
+            return Err("GPU PCI 3-desc command timeout (200ms)");
         }
     } else {
         // Polling fallback: spin then block with timer wake.
@@ -2078,6 +2112,8 @@ fn send_command_3desc(
             }
             timeout -= 1;
             if timeout == 0 {
+                // Speculatively advance so the next command doesn't cascade-fail
+                state.last_used_idx = state.last_used_idx.wrapping_add(1);
                 return Err("GPU PCI 3-desc command timeout");
             }
             spin_count += 1;

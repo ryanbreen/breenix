@@ -328,6 +328,9 @@ struct Tab {
     master_fd: Fd,
     #[allow(dead_code)] // used for future kill/waitpid on tab close
     child_pid: i64,
+    /// True once the child process has written at least one byte.
+    /// Used to suppress presenting a blank window before content is ready.
+    has_output: bool,
 }
 
 // ─── Process Spawning ───────────────────────────────────────────────────────
@@ -396,6 +399,7 @@ fn spawn_tab_cmd(cols: usize, rows: usize, cmd: &[u8]) -> Tab {
         emu: TermEmu::new(cols, rows),
         master_fd,
         child_pid,
+        has_output: false,
     }
 }
 
@@ -665,6 +669,7 @@ fn main() {
                 match io::read(tab.master_fd, &mut pty_buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        tab.has_output = true;
                         for i in 0..n {
                             tab.emu.feed(pty_buf[i]);
                         }
@@ -679,7 +684,12 @@ fn main() {
         let any_dirty = tabs.get(sel).map_or(false, |t| t.emu.dirty);
         let need_redraw = any_dirty || !events.is_empty() || font_changed;
 
-        if need_redraw {
+        // Don't present until the active tab has received PTY data.
+        // Otherwise the compositor gets a blank background rectangle
+        // before the child process has produced any output.
+        let has_content = tabs.get(sel).map_or(false, |t| t.has_output);
+
+        if need_redraw && has_content {
             let fb = win.framebuf();
 
             // Draw tab bar
