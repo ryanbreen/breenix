@@ -313,9 +313,18 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 WriteOperation::Fifo { pipe_buffer: pipe_buffer.clone(), is_nonblocking: (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0 }
             }
             FdKind::FifoRead(_, _) => WriteOperation::Ebadf,
-            FdKind::TcpSocket(_) => WriteOperation::Enotconn,  // Unconnected TCP socket
-            FdKind::TcpListener(_) => WriteOperation::Enotconn, // Listener can't write
-            FdKind::TcpConnection(conn_id) => WriteOperation::TcpConnection { conn_id: *conn_id },
+            FdKind::TcpSocket(port) => {
+                crate::serial_println!("[DIAG] WRITE fd={}: FdKind=TcpSocket(port={}) ENOTCONN", fd, port);
+                WriteOperation::Enotconn
+            }
+            FdKind::TcpListener(port) => {
+                crate::serial_println!("[DIAG] WRITE fd={}: FdKind=TcpListener(port={}) ENOTCONN", fd, port);
+                WriteOperation::Enotconn
+            }
+            FdKind::TcpConnection(conn_id) => {
+                crate::serial_println!("[DIAG] WRITE fd={}: FdKind=TcpConnection -> tcp_send", fd);
+                WriteOperation::TcpConnection { conn_id: *conn_id }
+            }
             FdKind::UdpSocket(_) => WriteOperation::Eopnotsupp, // UDP must use sendto
             FdKind::UnixStream(socket) => WriteOperation::UnixStream { socket: socket.clone() },
             FdKind::UnixSocket(_) => WriteOperation::Enotconn,  // Unconnected Unix socket

@@ -408,9 +408,34 @@ impl PtyPair {
     }
 
     /// Write data from slave (goes to master's read buffer)
+    ///
+    /// Performs output processing (OPOST) if enabled in termios:
+    /// - ONLCR: translates \n to \r\n for proper terminal display
     pub fn slave_write(&self, data: &[u8]) -> Result<usize, i32> {
+        let termios = self.termios.lock();
+        let do_onlcr = termios.is_opost() && termios.is_onlcr();
+        drop(termios);
+
         let mut buffer = self.slave_to_master.lock();
-        let n = buffer.write(data);
+        let n = if do_onlcr {
+            // Output processing: translate \n → \r\n
+            let mut written = 0;
+            for &byte in data {
+                if byte == b'\n' {
+                    if buffer.write(&[b'\r', b'\n']) < 2 {
+                        break;
+                    }
+                } else {
+                    if buffer.write(&[byte]) < 1 {
+                        break;
+                    }
+                }
+                written += 1;
+            }
+            written
+        } else {
+            buffer.write(data)
+        };
         drop(buffer);
         if n == 0 {
             return Err(EAGAIN);

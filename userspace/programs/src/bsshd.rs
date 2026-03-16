@@ -68,15 +68,12 @@ fn main() {
         // Fork a child to handle the connection
         match process::fork() {
             Ok(process::ForkResult::Child) => {
-                // Child process handles this connection
                 let _ = io::close(listen_fd);
                 handle_connection(client_fd);
                 process::exit(0);
             }
             Ok(process::ForkResult::Parent(_child_pid)) => {
-                // Parent continues listening
                 let _ = io::close(client_fd);
-                // Reap any finished children (non-blocking)
                 let _ = process::waitpid(-1, core::ptr::null_mut(), 1); // WNOHANG
             }
             Err(e) => {
@@ -89,54 +86,9 @@ fn main() {
 
 /// Handle a single SSH connection.
 fn handle_connection(fd: Fd) {
-    // Quick sanity check: can we write to the TCP socket at all?
-    println!("bsshd: testing TCP write on fd {}", fd.raw());
-    match socket::send(fd, b"SSH-2.0-bsshd_1.0\r\n") {
-        Ok(n) => println!("bsshd: TCP write OK ({} bytes)", n),
-        Err(e) => {
-            eprintln!("bsshd: TCP write FAILED: {:?}", e);
-            return;
-        }
-    }
+    let mut session = ServerSession::new(fd);
 
-    // Read client version string manually to diagnose
-    println!("bsshd: waiting for client version string...");
-    let mut line = Vec::new();
-    let mut byte = [0u8; 1];
-    loop {
-        match socket::recv(fd, &mut byte) {
-            Ok(0) => {
-                eprintln!("bsshd: client closed connection (0 bytes read)");
-                return;
-            }
-            Ok(_) => {
-                line.push(byte[0]);
-                if line.len() >= 2
-                    && line[line.len() - 2] == b'\r'
-                    && line[line.len() - 1] == b'\n'
-                {
-                    line.pop();
-                    line.pop();
-                    break;
-                }
-                if line.len() > 255 {
-                    eprintln!("bsshd: client version string too long");
-                    return;
-                }
-            }
-            Err(e) => {
-                eprintln!("bsshd: TCP read FAILED: {:?}", e);
-                return;
-            }
-        }
-    }
-    let client_version = String::from_utf8_lossy(&line).into_owned();
-    println!("bsshd: client version: '{}'", client_version);
-
-    // Now proceed with real SSH handshake (version already exchanged)
-    let mut session = ServerSession::new_after_version(fd, &client_version);
-
-    let username = match session.handshake_after_version() {
+    let username = match session.handshake() {
         Ok(user) => {
             println!("bsshd: authenticated user '{}'", user);
             user
@@ -197,6 +149,14 @@ fn handle_connection(fd: Fd) {
                     Ok(fd) => fd,
                     Err(_) => process::exit(1),
                 };
+
+                // Set PTY to translate \n → \r\n (ONLCR) for SSH terminals
+                let mut tio: libbreenix::termios::Termios = unsafe { core::mem::zeroed() };
+                let _ = libbreenix::termios::tcgetattr(slave_fd, &mut tio);
+                tio.c_oflag |= libbreenix::termios::oflag::OPOST
+                    | libbreenix::termios::oflag::ONLCR;
+                tio.c_iflag |= libbreenix::termios::iflag::ICRNL;
+                let _ = libbreenix::termios::tcsetattr(slave_fd, 0, &tio);
 
                 // Redirect stdin/stdout/stderr to the slave PTY
                 let _ = io::dup2(slave_fd, Fd::from_raw(0)); // stdin

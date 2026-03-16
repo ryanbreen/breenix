@@ -9,6 +9,70 @@ use spin::Mutex;
 
 use super::ipv4::{internet_checksum, Ipv4Packet, PROTOCOL_TCP};
 
+// ============================================================================
+// Deferred TX queue: packets queued during RX processing for later sending.
+// Parallels' VirtIO silently drops TX packets submitted while the RX ring
+// is being consumed. We queue them and drain after process_rx() completes.
+// ============================================================================
+
+struct DeferredTx {
+    dst_ip: [u8; 4],
+    dst_mac: Option<[u8; 6]>,
+    tcp_segment: Vec<u8>,
+}
+
+static DEFERRED_TX_QUEUE: Mutex<Vec<DeferredTx>> = Mutex::new(Vec::new());
+
+fn queue_deferred_tx_with_mac(dst_ip: [u8; 4], dst_mac: Option<[u8; 6]>, tcp_segment: Vec<u8>) {
+    // Log the TCP SYN-ACK header for debugging (first 20 bytes = TCP header)
+    if tcp_segment.len() >= 20 {
+        let src_port = u16::from_be_bytes([tcp_segment[0], tcp_segment[1]]);
+        let dst_port = u16::from_be_bytes([tcp_segment[2], tcp_segment[3]]);
+        let seq = u32::from_be_bytes([tcp_segment[4], tcp_segment[5], tcp_segment[6], tcp_segment[7]]);
+        let ack = u32::from_be_bytes([tcp_segment[8], tcp_segment[9], tcp_segment[10], tcp_segment[11]]);
+        let flags = tcp_segment[13];
+        let cksum = u16::from_be_bytes([tcp_segment[16], tcp_segment[17]]);
+        crate::serial_println!("[TCP] SYN-ACK: {}:{} -> {}.{}.{}.{}:{} seq={} ack={} flags=0x{:02x} cksum=0x{:04x} len={}",
+            src_port, dst_port, dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3],
+            dst_port, seq, ack, flags, cksum, tcp_segment.len());
+    }
+    DEFERRED_TX_QUEUE.lock().push(DeferredTx { dst_ip, dst_mac, tcp_segment });
+}
+
+/// Get the current deferred TX queue length (for diagnostics).
+pub fn deferred_tx_queue_len() -> usize {
+    DEFERRED_TX_QUEUE.lock().len()
+}
+
+/// Drain the deferred TX queue, sending all queued packets.
+/// Called after process_rx() completes.
+pub fn drain_deferred_tx() {
+    let packets: Vec<DeferredTx> = {
+        let mut queue = DEFERRED_TX_QUEUE.lock();
+        core::mem::take(&mut *queue)
+    };
+
+    for pkt in packets {
+        let result = if let Some(mac) = pkt.dst_mac {
+            // Send directly to the known MAC (bypasses ARP, which can't work
+            // during process_rx since the re-entrancy guard is held).
+            let ip_packet = super::ipv4::Ipv4Packet::build(
+                super::config().ip_addr,
+                pkt.dst_ip,
+                PROTOCOL_TCP,
+                &pkt.tcp_segment,
+            );
+            super::send_ethernet(&mac, super::ethernet::ETHERTYPE_IPV4, &ip_packet)
+        } else {
+            super::send_ipv4(pkt.dst_ip, PROTOCOL_TCP, &pkt.tcp_segment)
+        };
+        match result {
+            Ok(()) => crate::serial_println!("[TCP] deferred SYN+ACK sent OK"),
+            Err(e) => crate::serial_println!("[TCP] deferred SYN+ACK FAILED: {}", e),
+        }
+    }
+}
+
 /// TCP header minimum size (without options)
 pub const TCP_HEADER_MIN_SIZE: usize = 20;
 
@@ -421,16 +485,20 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
         }
     };
 
-    log::trace!(
-        "TCP: RX {} bytes {}.{}.{}.{}:{} -> port {} seq={} ack={} flags={:?}",
-        payload.len(),
-        ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3],
-        header.src_port,
-        header.dst_port,
-        header.seq_num,
-        header.ack_num,
-        header.flags
-    );
+    // Log ALL TCP packets to port 2222 for SSH debugging
+    if header.dst_port == 2222 || header.src_port == 2222 {
+        crate::serial_println!(
+            "[TCP-RX] {}.{}.{}.{}:{} -> port {} flags={}{}{}{}{}  seq={} ack={} len={}",
+            ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3],
+            header.src_port, header.dst_port,
+            if header.flags.syn { "S" } else { "" },
+            if header.flags.ack { "A" } else { "" },
+            if header.flags.fin { "F" } else { "" },
+            if header.flags.rst { "R" } else { "" },
+            if header.flags.psh { "P" } else { "" },
+            header.seq_num, header.ack_num, payload.len()
+        );
+    }
 
     let config = super::config();
     let conn_id = ConnectionId {
@@ -781,20 +849,21 @@ fn handle_syn_for_listener(
         recv_next: header.seq_num.wrapping_add(1), // +1 for SYN
     });
 
-    log::debug!("TCP: SYN received on port {}, sending SYN+ACK", header.dst_port);
+    crate::serial_println!("[TCP] SYN on port {}, queueing SYN+ACK to {}.{}.{}.{}:{}",
+        header.dst_port, src_ip[0], src_ip[1], src_ip[2], src_ip[3], header.src_port);
 
-    // Send SYN+ACK
-    send_tcp_packet(
-        config,
-        src_ip,
-        listener.local_port,
-        header.src_port,
-        send_isn,
-        header.seq_num.wrapping_add(1),
-        TcpFlags::syn_ack(),
-        65535,
-        &[],
+    // Queue the SYN+ACK for deferred sending AFTER RX processing completes.
+    // Sending TX packets during RX processing on Parallels' VirtIO causes the
+    // TX packet to be silently dropped (the device doesn't process the TX ring
+    // while the RX ring is being consumed).
+    let syn_ack = build_tcp_packet_with_checksum(
+        config.ip_addr, src_ip,
+        listener.local_port, header.src_port,
+        send_isn, header.seq_num.wrapping_add(1),
+        TcpFlags::syn_ack(), 65535, &[],
     );
+    let src_mac = super::current_packet_src_mac();
+    queue_deferred_tx_with_mac(src_ip, Some(src_mac), syn_ack);
 
     // Wake threads blocked in accept() - connection is now pending
     wake_accept_waiters(listener);
@@ -968,8 +1037,12 @@ pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
         conn.send_unack = conn.send_next;
         log::info!("TCP: Connection established (server, ACK already received)");
     } else {
-        // Still waiting for ACK
+        // Still waiting for ACK — set send_next past our SYN so the ACK
+        // check in handle_tcp_for_connection (SynReceived branch) matches:
+        //   header.ack_num == conn.send_next  ←  ISN+1 == ISN+1  ✓
+        // Without this, send_next stays at ISN and the ACK is silently dropped.
         conn.state = TcpState::SynReceived;
+        conn.send_next = pending.send_initial.wrapping_add(1);
     }
     conn.recv_initial = pending.recv_initial;
     // Use the recv_next from pending, which accounts for any early data
@@ -996,6 +1069,60 @@ pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
 pub fn tcp_send(conn_id: &ConnectionId, data: &[u8]) -> Result<usize, &'static str> {
     let config = super::config();
 
+    // Wait for the connection to reach Established state.
+    // After accept(), the connection may still be in SynReceived if the
+    // client's final ACK hasn't arrived yet. We spin briefly to let the
+    // network stack process it rather than failing with ENOTCONN.
+    // Wait for the connection to reach Established state.
+    // After accept(), the connection may still be in SynReceived if the
+    // client's final ACK hasn't been processed yet. We yield the CPU to let
+    // the timer-driven network softirq process the ACK packet.
+    {
+        let mut waited = false;
+        for attempt in 0..2000 {
+            let state = {
+                let connections = TCP_CONNECTIONS.lock();
+                match connections.get(conn_id) {
+                    Some(c) => c.state,
+                    None => {
+                        crate::serial_println!("[tcp_send] Connection NOT FOUND in table! local={}:{} remote={}:{}",
+                            conn_id.local_ip[3], conn_id.local_port,
+                            conn_id.remote_ip[3], conn_id.remote_port);
+                        return Err("Connection not found");
+                    }
+                }
+                // Lock released here — critical for letting the softirq handler
+                // acquire TCP_CONNECTIONS to update the connection state.
+            };
+
+            if matches!(state, TcpState::Established | TcpState::CloseWait) {
+                if waited {
+                    crate::serial_println!("[tcp_send] ready after {} yields (state={:?})", attempt, state);
+                }
+                break;
+            }
+
+            if matches!(state, TcpState::Closed | TcpState::TimeWait) {
+                crate::serial_println!("[tcp_send] connection gone (state={:?})", state);
+                return Err("Connection closed");
+            }
+
+            if !matches!(state, TcpState::SynReceived | TcpState::SynSent) {
+                crate::serial_println!("[tcp_send] unexpected state {:?}", state);
+                return Err("Connection not established");
+            }
+
+            if !waited {
+                crate::serial_println!("[tcp_send] state={:?}, yielding for ACK (100 attempts)", state);
+                waited = true;
+            }
+
+            // Yield the CPU so the timer interrupt can fire and the softirq
+            // handler can process the incoming ACK packet.
+            crate::task::scheduler::yield_current();
+        }
+    }
+
     let mut connections = TCP_CONNECTIONS.lock();
     let conn = match connections.get_mut(conn_id) {
         Some(c) => c,
@@ -1012,8 +1139,8 @@ pub fn tcp_send(conn_id: &ConnectionId, data: &[u8]) -> Result<usize, &'static s
         return Err("Connection shutdown for writing");
     }
 
-    if conn.state != TcpState::Established {
-        log::warn!("tcp_send: Connection not established (state={:?}, local={}:{}, remote={}:{})",
+    if !matches!(conn.state, TcpState::Established | TcpState::CloseWait) {
+        crate::serial_println!("[tcp_send] FAIL: state={:?} after wait (local={}:{}, remote={}:{})",
             conn.state, conn.id.local_ip[3], conn.id.local_port,
             conn.id.remote_ip[3], conn.id.remote_port);
         return Err("Connection not established");

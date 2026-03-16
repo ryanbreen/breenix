@@ -63,10 +63,24 @@ impl ServerSession {
     /// Returns the authenticated username on success.
     pub fn handshake(&mut self) -> Result<String, SshError> {
         // 1. Version exchange
-        self.io
-            .write_line(BSSH_VERSION)
-            .map_err(|_| SshError::Io)?;
-        self.client_version = self.io.read_line().map_err(|_| SshError::Io)?;
+        // Read client version FIRST — this blocks until the TCP 3-way handshake
+        // completes (the client's ACK + version string arrive together). Sending
+        // our version first would fail because the connection may still be in
+        // SynReceived state after accept().
+        self.client_version = match self.io.read_line() {
+            Ok(v) => v,
+            Err(e) => {
+                // Use println since this is userspace
+                println!("bsshd: read_line FAILED: {:?}", e);
+                return Err(SshError::Io);
+            }
+        };
+        println!("bsshd: client version: '{}'", self.client_version);
+        if let Err(e) = self.io.write_line(BSSH_VERSION) {
+            println!("bsshd: write_line FAILED: {:?}", e);
+            return Err(SshError::Io);
+        }
+        println!("bsshd: server version sent");
 
         if !self.client_version.starts_with("SSH-2.0-") {
             return Err(SshError::Protocol("unsupported SSH version"));
@@ -124,6 +138,19 @@ impl ServerSession {
 
         self.io.set_cipher_recv(cipher_c2s); // client→server = our recv
         self.io.set_cipher_send(cipher_s2c); // server→client = our send
+
+        // Send EXT_INFO (RFC 8308) to advertise supported pubkey algorithms.
+        // Without this, modern OpenSSH (which disables ssh-rsa SHA-1 by default)
+        // won't offer RSA keys for publickey auth — it needs to know we support
+        // rsa-sha2-256 for signature verification.
+        {
+            let mut ext_info = Vec::with_capacity(64);
+            ext_info.push(7); // SSH_MSG_EXT_INFO
+            SshBuf::put_u32(&mut ext_info, 1); // nr-extensions = 1
+            SshBuf::put_string(&mut ext_info, b"server-sig-algs");
+            SshBuf::put_string(&mut ext_info, b"rsa-sha2-256,rsa-sha2-512,ssh-rsa");
+            self.io.send_packet(&ext_info).map_err(|_| SshError::Io)?;
+        }
 
         // 3. Authentication
         auth::server_accept_service(&mut self.io)?;

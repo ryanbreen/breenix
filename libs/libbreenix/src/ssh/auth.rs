@@ -79,11 +79,17 @@ pub fn server_authenticate(
             let key_blob = SshBuf::get_string(&msg, &mut pos)
                 .ok_or(SshError::Protocol("bad publickey blob"))?;
 
+            println!("bsshd: pubkey auth: algo={} blob_len={} has_sig={}",
+                String::from_utf8_lossy(algo), key_blob.len(), has_signature);
+
             // Check if this key is in our authorized_keys
             if !keys::is_authorized_key(key_blob) {
+                println!("bsshd: key NOT in authorized_keys (expected {} bytes)",
+                    keys::authorized_key_blob_len());
                 send_auth_failure(io, false)?;
                 continue;
             }
+            println!("bsshd: key MATCHES authorized_keys!");
 
             if !has_signature {
                 // Query phase: client asks "would you accept this key?"
