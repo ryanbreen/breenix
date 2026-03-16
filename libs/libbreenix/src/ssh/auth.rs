@@ -14,9 +14,22 @@ use super::{SSH_MSG_USERAUTH_FAILURE, SSH_MSG_USERAUTH_REQUEST, SSH_MSG_USERAUTH
 const SSH_MSG_USERAUTH_PK_OK: u8 = 60;
 
 /// Handle the "ssh-userauth" service request (server side).
+///
+/// Skips any SSH_MSG_EXT_INFO (7), SSH_MSG_IGNORE (2), or SSH_MSG_DEBUG (4)
+/// messages that the client may send after NEWKEYS before the SERVICE_REQUEST.
 pub fn server_accept_service(io: &mut PacketIo) -> Result<(), SshError> {
-    let msg = io.recv_packet().map_err(|_| SshError::Io)?;
-    if msg.is_empty() || msg[0] != SSH_MSG_SERVICE_REQUEST {
+    let msg = loop {
+        let pkt = io.recv_packet().map_err(|_| SshError::Io)?;
+        if pkt.is_empty() {
+            return Err(SshError::Protocol("empty packet waiting for SERVICE_REQUEST"));
+        }
+        // Skip informational messages that arrive before SERVICE_REQUEST
+        match pkt[0] {
+            2 | 4 | 7 => continue, // IGNORE, DEBUG, EXT_INFO
+            _ => break pkt,
+        }
+    };
+    if msg[0] != SSH_MSG_SERVICE_REQUEST {
         return Err(SshError::Protocol("expected SERVICE_REQUEST"));
     }
 
@@ -79,11 +92,17 @@ pub fn server_authenticate(
             let key_blob = SshBuf::get_string(&msg, &mut pos)
                 .ok_or(SshError::Protocol("bad publickey blob"))?;
 
+            println!("bsshd: pubkey auth: algo={} blob_len={} has_sig={}",
+                String::from_utf8_lossy(algo), key_blob.len(), has_signature);
+
             // Check if this key is in our authorized_keys
             if !keys::is_authorized_key(key_blob) {
+                println!("bsshd: key NOT in authorized_keys (expected {} bytes)",
+                    keys::authorized_key_blob_len());
                 send_auth_failure(io, false)?;
                 continue;
             }
+            println!("bsshd: key MATCHES authorized_keys!");
 
             if !has_signature {
                 // Query phase: client asks "would you accept this key?"

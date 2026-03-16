@@ -66,7 +66,7 @@ struct FontEntry {
     path: String,
     name: String,
     is_mono: bool,
-    data: Option<Vec<u8>>,
+    cached: Option<CachedFont>,
 }
 
 enum ListItem {
@@ -76,15 +76,15 @@ enum ListItem {
 
 // ─── Font classification ────────────────────────────────────────────────────
 
-fn is_monospace(font: &Font) -> bool {
-    let gi_m = font.glyph_index('M');
-    let gi_i = font.glyph_index('i');
-    if gi_m == 0 || gi_i == 0 {
-        return false;
-    }
-    let adv_m = font.advance_width(gi_m, 16.0);
-    let adv_i = font.advance_width(gi_i, 16.0);
-    (adv_m - adv_i).abs() < 0.01
+/// Classify a font as monospace based on its filename.
+/// This avoids loading+parsing every font file at startup (which causes
+/// ~12MB of heap churn and can trigger kernel heap corruption under load).
+fn name_is_mono(name: &str) -> bool {
+    let lower: Vec<u8> = name.bytes().map(|b| if b >= b'A' && b <= b'Z' { b + 32 } else { b }).collect();
+    let s = core::str::from_utf8(&lower).unwrap_or("");
+    s.contains("mono") || s.contains("code") || s.contains("hack")
+        || s.contains("inconsolata") || s.contains("consolas")
+        || s.contains("courier") || s.contains("fixed")
 }
 
 /// Scan /usr/share/fonts/ for all .ttf files, tagged as mono or display.
@@ -115,24 +115,19 @@ fn scan_fonts() -> Vec<FontEntry> {
                     let name_str = core::str::from_utf8(name_bytes).unwrap_or("?");
                     let path = format!("{}/{}", FONT_DIR, name_str);
 
-                    let is_mono = std::fs::read(&path).ok()
-                        .and_then(|data| Font::parse(&data).ok())
-                        .map(|f| is_monospace(&f))
-                        .unwrap_or(false);
-
                     let display_name = name_str
                         .trim_end_matches(".ttf")
                         .trim_end_matches(".TTF")
                         .replace('-', " ")
                         .replace('_', " ");
 
-                    println!("[bfontpicker] font: {} mono={}", display_name, is_mono);
+                    let is_mono = name_is_mono(&display_name);
 
                     entries.push(FontEntry {
                         path,
                         name: display_name,
                         is_mono,
-                        data: None,
+                        cached: None,
                     });
                 }
             }
@@ -254,17 +249,24 @@ fn apply_font(
     selected: usize,
     current_mono: &mut String,
     current_display: &mut String,
+    mono_size: &mut f32,
+    display_size: &mut f32,
 ) -> Option<String> {
     if let ListItem::Font(idx) = list[selected] {
         let entry = &fonts[idx];
         let mut cfg = FontConfig::load();
+        // Enforce minimums on sizes
+        cfg.mono_size = cfg.mono_size.max(MIN_FONT_SIZE);
+        cfg.display_size = cfg.display_size.max(MIN_FONT_SIZE);
         let msg = if entry.is_mono {
             cfg.mono_path = entry.path.clone();
             *current_mono = entry.path.clone();
+            *mono_size = cfg.mono_size;
             format!("Mono: {} ({})", entry.name, format_size_display(cfg.mono_size))
         } else {
             cfg.display_path = entry.path.clone();
             *current_display = entry.path.clone();
+            *display_size = cfg.display_size;
             format!("Display: {} ({})", entry.name, format_size_display(cfg.display_size))
         };
         write_full_config(&cfg);
@@ -280,25 +282,36 @@ fn adjust_size(
     list: &[ListItem],
     selected: usize,
     delta: f32,
+    mono_size: &mut f32,
+    display_size: &mut f32,
 ) -> Option<String> {
     let is_mono = selected_is_mono(fonts, list, selected);
     let mut cfg = FontConfig::load();
+    // Enforce minimums on both sizes before adjusting
+    cfg.mono_size = cfg.mono_size.max(MIN_FONT_SIZE);
+    cfg.display_size = cfg.display_size.max(MIN_FONT_SIZE);
     let (new_size, label) = if is_mono {
         let s = (cfg.mono_size + delta).max(MIN_FONT_SIZE).min(MAX_FONT_SIZE);
         cfg.mono_size = s;
+        *mono_size = s;
         (s, "Mono size")
     } else {
         let s = (cfg.display_size + delta).max(MIN_FONT_SIZE).min(MAX_FONT_SIZE);
         cfg.display_size = s;
+        *display_size = s;
         (s, "Display size")
     };
     write_full_config(&cfg);
     Some(format!("{}: {}", label, format_size_display(new_size)))
 }
 
-fn ensure_font_data(entry: &mut FontEntry) {
-    if entry.data.is_none() {
-        entry.data = std::fs::read(&entry.path).ok();
+fn ensure_cached_font(entry: &mut FontEntry) {
+    if entry.cached.is_none() {
+        if let Ok(data) = std::fs::read(&entry.path) {
+            if let Ok(parsed) = Font::parse(&data) {
+                entry.cached = Some(CachedFont::new(parsed, 128));
+            }
+        }
     }
 }
 
@@ -313,9 +326,10 @@ fn render(
     current_display: &str,
     scroll: usize,
     status_msg: &str,
-    mono_size: f32,
-    display_size: f32,
+    sizes: &[f32; 2],  // [mono_size, display_size] — passed by ref to avoid f32 ABI issues
 ) {
+    let mono_size = sizes[0];
+    let display_size = sizes[1];
     fb.clear(BG);
 
     bitmap_font::draw_text(fb, b"System Font Picker", 10, 8, HEADER_FG);
@@ -396,29 +410,27 @@ fn render(
     };
 
     if let Some(font_idx) = selected_font_idx {
-        // Preview at the actual configured size for this category
+        // Preview at the actual configured size for this category (enforce minimum)
         let preview_size = if fonts[font_idx].is_mono { mono_size } else { display_size };
+        let preview_size = preview_size.max(MIN_FONT_SIZE);
         let label = format!("Preview: {} @ {}", fonts[font_idx].name, format_size_display(preview_size));
         bitmap_font::draw_text(
             fb, label.as_bytes(), 10, (preview_y + 6) as usize, PREVIEW_LABEL,
         );
 
-        ensure_font_data(&mut fonts[font_idx]);
-        if let Some(ref data) = fonts[font_idx].data {
-            if let Ok(parsed) = Font::parse(data) {
-                let mut cached = CachedFont::new(parsed, 128);
-                let metrics = cached.metrics(preview_size);
-                let line_h = (metrics.ascender + 0.99) as i32
-                    + ((-metrics.descender) + 0.99) as i32;
-                ttf_font::draw_text(
-                    fb, &mut cached, PREVIEW_SAMPLE,
-                    10, preview_y + 24, preview_size, PREVIEW_TEXT,
-                );
-                ttf_font::draw_text(
-                    fb, &mut cached, PREVIEW_SAMPLE_2,
-                    10, preview_y + 24 + line_h + 4, preview_size, PREVIEW_TEXT,
-                );
-            }
+        ensure_cached_font(&mut fonts[font_idx]);
+        if let Some(ref mut cached) = fonts[font_idx].cached {
+            let metrics = cached.metrics(preview_size);
+            let line_h = (metrics.ascender + 0.99) as i32
+                + ((-metrics.descender) + 0.99) as i32;
+            ttf_font::draw_text(
+                fb, cached, PREVIEW_SAMPLE,
+                10, preview_y + 24, preview_size, PREVIEW_TEXT,
+            );
+            ttf_font::draw_text(
+                fb, cached, PREVIEW_SAMPLE_2,
+                10, preview_y + 24 + line_h + 4, preview_size, PREVIEW_TEXT,
+            );
         }
     }
 
@@ -453,10 +465,12 @@ fn main() {
 
     let list = build_list(&fonts);
     let config = FontConfig::load();
+    println!("[bfontpicker] config: mono_path='{}' mono_size={} display_path='{}' display_size={}",
+             config.mono_path, config.mono_size, config.display_path, config.display_size);
     let mut current_mono = config.mono_path;
     let mut current_display = config.display_path;
-    let mut mono_size = config.mono_size;
-    let mut display_size = config.display_size;
+    let mut mono_size = config.mono_size.max(MIN_FONT_SIZE);
+    let mut display_size = config.display_size.max(MIN_FONT_SIZE);
 
     // Start with current mono font selected
     let mut selected = first_font_item(&list);
@@ -494,7 +508,7 @@ fn main() {
         render(
             fb, &mut fonts, &list, selected,
             &current_mono, &current_display, scroll, &status_msg,
-            mono_size, display_size,
+            &[mono_size, display_size],
         );
     }
     let _ = win.present();
@@ -523,6 +537,7 @@ fn main() {
                             if let Some(msg) = apply_font(
                                 &fonts, &list, selected,
                                 &mut current_mono, &mut current_display,
+                                &mut mono_size, &mut display_size,
                             ) {
                                 status_msg = msg;
                                 status_timer = 40;
@@ -536,6 +551,7 @@ fn main() {
                                 if let Some(msg) = apply_font(
                                     &fonts, &list, selected,
                                     &mut current_mono, &mut current_display,
+                                    &mut mono_size, &mut display_size,
                                 ) {
                                     status_msg = msg;
                                     status_timer = 40;
@@ -543,21 +559,16 @@ fn main() {
                             } else if ascii == b'+' || ascii == b'=' {
                                 if let Some(msg) = adjust_size(
                                     &fonts, &list, selected, SIZE_STEP,
+                                    &mut mono_size, &mut display_size,
                                 ) {
-                                    // Re-read sizes from config
-                                    let cfg = FontConfig::load();
-                                    mono_size = cfg.mono_size;
-                                    display_size = cfg.display_size;
                                     status_msg = msg;
                                     status_timer = 40;
                                 }
                             } else if ascii == b'-' {
                                 if let Some(msg) = adjust_size(
                                     &fonts, &list, selected, -SIZE_STEP,
+                                    &mut mono_size, &mut display_size,
                                 ) {
-                                    let cfg = FontConfig::load();
-                                    mono_size = cfg.mono_size;
-                                    display_size = cfg.display_size;
                                     status_msg = msg;
                                     status_timer = 40;
                                 }
@@ -586,6 +597,7 @@ fn main() {
                                     if let Some(msg) = apply_font(
                                         &fonts, &list, selected,
                                         &mut current_mono, &mut current_display,
+                                        &mut mono_size, &mut display_size,
                                     ) {
                                         status_msg = msg;
                                         status_timer = 40;
@@ -621,7 +633,7 @@ fn main() {
             render(
                 fb, &mut fonts, &list, selected,
                 &current_mono, &current_display, scroll, &status_msg,
-                mono_size, display_size,
+                &[mono_size, display_size],
             );
             let _ = win.present();
         }

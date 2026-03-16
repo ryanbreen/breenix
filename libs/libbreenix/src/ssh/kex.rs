@@ -15,7 +15,8 @@ use super::SshBuf;
 use super::*;
 
 /// Algorithms offered by BSSH.
-pub const KEX_ALGORITHMS: &str = "curve25519-sha256";
+// ext-info-s tells clients we'll send SSH_MSG_EXT_INFO after NEWKEYS (RFC 8308)
+pub const KEX_ALGORITHMS: &str = "curve25519-sha256,ext-info-s";
 pub const HOST_KEY_ALGORITHMS: &str = "rsa-sha2-256,ssh-rsa";
 pub const CIPHERS: &str = "aes128-ctr";
 pub const MACS: &str = "hmac-sha2-256";

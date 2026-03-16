@@ -28,6 +28,14 @@ const SHA256_DIGEST_INFO_PREFIX: [u8; 19] = [
     0x05, 0x00, 0x04, 0x20,
 ];
 
+/// ASN.1 DER-encoded DigestInfo prefix for SHA-512.
+///
+/// SEQUENCE { SEQUENCE { OID 2.16.840.1.101.3.4.2.3 (sha-512), NULL }, OCTET STRING (64 bytes) }
+const SHA512_DIGEST_INFO_PREFIX: [u8; 19] = [
+    0x30, 0x51, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03,
+    0x05, 0x00, 0x04, 0x40,
+];
+
 /// An RSA public key consisting of modulus and public exponent.
 pub struct RsaPublicKey {
     /// Modulus n
@@ -174,6 +182,64 @@ pub fn rsa_verify_pkcs1_sha256(
 pub fn rsa_verify_sha256(key: &RsaPublicKey, signature: &[u8], message: &[u8]) -> bool {
     let hash = sha256(message);
     rsa_verify_pkcs1_sha256(key, signature, &hash)
+}
+
+/// Verify an RSA PKCS#1 v1.5 signature with SHA-512.
+///
+/// Same as `rsa_verify_pkcs1_sha256` but uses the SHA-512 DigestInfo prefix
+/// and expects a 64-byte hash.
+pub fn rsa_verify_pkcs1_sha512(
+    key: &RsaPublicKey,
+    signature: &[u8],
+    message_hash: &[u8; 64],
+) -> bool {
+    let sig = BigNum::from_be_bytes(signature);
+    let m = sig.mod_exp(&key.e, &key.n);
+    let mod_len = (key.n.bit_len() + 7) / 8;
+    let m_bytes = m.to_be_bytes();
+
+    let mut em = vec![0u8; mod_len];
+    if m_bytes.len() > mod_len {
+        return false;
+    }
+    let pad_offset = mod_len - m_bytes.len();
+    em[pad_offset..].copy_from_slice(&m_bytes);
+
+    let suffix_len = SHA512_DIGEST_INFO_PREFIX.len() + 64; // 19 + 64 = 83
+    if mod_len < 2 + 8 + 1 + suffix_len {
+        return false;
+    }
+    if em[0] != 0x00 || em[1] != 0x01 {
+        return false;
+    }
+
+    let separator_pos = mod_len - suffix_len - 1;
+    let padding_len = separator_pos - 2;
+    if padding_len < 8 {
+        return false;
+    }
+
+    for i in 2..separator_pos {
+        if em[i] != 0xFF {
+            return false;
+        }
+    }
+    if em[separator_pos] != 0x00 {
+        return false;
+    }
+
+    let digest_info_start = separator_pos + 1;
+    let digest_info_end = digest_info_start + SHA512_DIGEST_INFO_PREFIX.len();
+    if !ct_eq(
+        &em[digest_info_start..digest_info_end],
+        &SHA512_DIGEST_INFO_PREFIX,
+    ) {
+        return false;
+    }
+
+    let hash_start = digest_info_end;
+    let hash_end = hash_start + 64;
+    ct_eq(&em[hash_start..hash_end], message_hash)
 }
 
 /// An RSA private key for signing operations.

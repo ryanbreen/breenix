@@ -469,6 +469,16 @@ pub fn process_rx() {
         }
     }
 
+    // Drain deferred TX queue — packets queued during RX processing (e.g., TCP
+    // SYN-ACK responses) can now be sent safely since RX processing is complete.
+    {
+        let queue_len = tcp::deferred_tx_queue_len();
+        if queue_len > 0 {
+            crate::serial_println!("[NET] draining {} deferred TX packets", queue_len);
+        }
+        tcp::drain_deferred_tx();
+    }
+
     // Do NOT re-enable SPI here — the softirq handler does it after process_rx
     // returns, regardless of whether we processed packets or bailed on re-entrancy.
     // This avoids re-enabling from multiple code paths.
@@ -476,9 +486,20 @@ pub fn process_rx() {
     RX_PROCESSING.store(false, Ordering::Release);
 }
 
+/// Source MAC of the packet currently being processed (for response routing).
+/// Set during process_packet, used by TCP to route SYN-ACK to the correct MAC.
+static CURRENT_PACKET_SRC_MAC: Mutex<[u8; 6]> = Mutex::new([0; 6]);
+
+/// Get the source MAC of the current incoming packet.
+pub fn current_packet_src_mac() -> [u8; 6] {
+    *CURRENT_PACKET_SRC_MAC.lock()
+}
+
 /// Process a received Ethernet frame
 fn process_packet(data: &[u8]) {
     if let Some(frame) = ethernet::EthernetFrame::parse(data) {
+        // Save source MAC so TCP can use it for SYN-ACK routing
+        *CURRENT_PACKET_SRC_MAC.lock() = frame.src_mac;
         match frame.ethertype {
             ethernet::ETHERTYPE_ARP => {
                 if let Some(arp_packet) = arp::ArpPacket::parse(frame.payload) {
@@ -537,20 +558,20 @@ pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'
         return Ok(());
     }
 
-    // Look up destination MAC in ARP cache
-    // For QEMU SLIRP mode, always send through gateway since SLIRP doesn't have real
-    // hosts on the virtual subnet - all services (DNS at 10.0.2.3, etc.) are emulated
-    // by SLIRP and routed through the gateway MAC.
-    // For real networks, we could try direct ARP for same-subnet destinations.
-    let gateway = config.gateway;
-    let dst_mac = match arp::lookup(&gateway) {
+    // Determine the next-hop MAC address.
+    // If the destination is on the same /24 subnet, ARP for it directly.
+    // Otherwise, route through the gateway (standard IP routing).
+    let same_subnet = dst_ip[0] == config.ip_addr[0]
+        && dst_ip[1] == config.ip_addr[1]
+        && dst_ip[2] == config.ip_addr[2];
+    let next_hop = if same_subnet { dst_ip } else { config.gateway };
+    let dst_mac = match arp::lookup(&next_hop) {
         Some(mac) => mac,
         None => {
             // On-demand ARP resolution: send request and poll for reply.
-            // This handles the case where boot-time ARP resolution failed
-            // (e.g., the hypervisor was slow to respond during init).
-            net_log!("NET: Gateway ARP cache miss, sending on-demand ARP request");
-            if let Err(e) = arp::request(&gateway) {
+            net_log!("NET: ARP cache miss for {}.{}.{}.{}, sending on-demand ARP request",
+                next_hop[0], next_hop[1], next_hop[2], next_hop[3]);
+            if let Err(e) = arp::request(&next_hop) {
                 net_warn!("NET: On-demand ARP request failed: {}", e);
                 return Err("ARP request failed");
             }
@@ -560,7 +581,7 @@ pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'
                 for _ in 0..500_000 {
                     core::hint::spin_loop();
                 }
-                if let Some(mac) = arp::lookup(&gateway) {
+                if let Some(mac) = arp::lookup(&next_hop) {
                     net_log!("NET: On-demand ARP resolved gateway MAC");
                     return {
                         let ip_packet = ipv4::Ipv4Packet::build(

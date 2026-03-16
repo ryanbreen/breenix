@@ -9,12 +9,13 @@
 //! use breengel::FontWatcher;
 //!
 //! let mut watcher = FontWatcher::new();
-//! let (mut font, mut size) = watcher.load_font().unwrap();
+//! let mut font = watcher.load_font().unwrap();
+//! let mut size = watcher.mono_size();
 //!
 //! loop {
-//!     if let Some((new_font, new_size)) = watcher.poll() {
+//!     if let Some(new_font) = watcher.poll() {
 //!         font = new_font;
-//!         size = new_size;
+//!         size = watcher.mono_size();
 //!     }
 //!     // ... render with font ...
 //! }
@@ -86,6 +87,10 @@ impl FontConfig {
             }
         }
 
+        // Final safety: ensure sizes are valid (catches NaN, 0.0, negative, sub-minimum)
+        if !(config.mono_size >= 6.0) { config.mono_size = DEFAULT_MONO_SIZE; }
+        if !(config.display_size >= 6.0) { config.display_size = DEFAULT_DISPLAY_SIZE; }
+
         config
     }
 
@@ -129,19 +134,23 @@ impl FontWatcher {
     }
 
     /// Load the current font from config. Call once at startup.
-    /// Returns `(CachedFont, pixel_size)` or `None` if the font file is missing.
-    pub fn load_font(&self) -> Option<(CachedFont, f32)> {
+    /// Returns `CachedFont` or `None` if the font file is missing.
+    /// Use `mono_size()` to get the pixel size (returned separately to avoid
+    /// f32-in-tuple ABI corruption on aarch64 with opt-level="z").
+    pub fn load_font(&self) -> Option<CachedFont> {
         let data = std::fs::read(&self.mono_path).ok()?;
         let font = Font::parse(&data).ok()?;
-        Some((CachedFont::new(font, 256), self.mono_size))
+        Some(CachedFont::new(font, 256))
     }
 
     /// Check if the font config has changed. Call once per frame.
     ///
-    /// Returns `Some((new_font, new_size))` if the font changed, `None` otherwise.
+    /// Returns `Some(new_font)` if the font changed, `None` otherwise.
+    /// Use `mono_size()` to get the current pixel size (returned separately
+    /// to avoid f32-in-tuple ABI corruption on aarch64 with opt-level="z").
     /// Internally rate-limited by `poll_interval` so re-reading the config file
     /// doesn't happen every frame.
-    pub fn poll(&mut self) -> Option<(CachedFont, f32)> {
+    pub fn poll(&mut self) -> Option<CachedFont> {
         self.poll_counter += 1;
         if self.poll_counter < self.poll_interval {
             return None;
@@ -153,27 +162,12 @@ impl FontWatcher {
             return None;
         }
 
-        // Diagnostic: log what we read from the config
-        if let Ok(raw) = std::fs::read_to_string(CONFIG_PATH) {
-            // Print raw config bytes to diagnose parsing issues
-            for line in raw.lines() {
-                let line = line.trim();
-                if !line.is_empty() && !line.starts_with('#') {
-                    println!("[font-watcher] config line: '{}' (len={})", line, line.len());
-                }
-            }
-        }
-        println!("[font-watcher] parsed: path='{}' size={} (bits=0x{:08x})",
-                 config.mono_path, config.mono_size, config.mono_size.to_bits());
-
         self.mono_path = config.mono_path;
         self.mono_size = config.mono_size;
 
         let data = std::fs::read(&self.mono_path).ok()?;
-        println!("[font-watcher] font file read: {} bytes", data.len());
         let font = Font::parse(&data).ok()?;
-        println!("[font-watcher] font parsed OK");
-        Some((CachedFont::new(font, 256), self.mono_size))
+        Some(CachedFont::new(font, 256))
     }
 }
 

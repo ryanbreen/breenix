@@ -378,7 +378,7 @@ fn main() {
     println!("[blog] config: mono_size={} font_size={} path='{}'", font_watcher.mono_size(), font_size, font_watcher.mono_path());
 
     // Load TrueType font (Font owns its data, no lifetime gymnastics needed)
-    let ttf_font: Option<CachedFont> = font_watcher.load_font().map(|(f, _)| f);
+    let ttf_font: Option<CachedFont> = font_watcher.load_font();
 
     // Compute font metrics
     let mut fonts = if let Some(font) = ttf_font {
@@ -628,7 +628,8 @@ fn main() {
         }
 
         // Font config hot-reload via FontWatcher
-        if let Some((new_font, new_size)) = font_watcher.poll() {
+        if let Some(new_font) = font_watcher.poll() {
+            let new_size = font_watcher.mono_size();
             println!("[blog] font config changed: {} size={} (bits=0x{:08x})",
                      font_watcher.mono_path(), new_size, new_size.to_bits());
             let metrics = new_font.metrics(new_size);

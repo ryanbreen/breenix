@@ -430,7 +430,7 @@ fn main() {
     print!("[bterm] config: mono_size={} font_size={}\n", font_watcher.mono_size(), font_size);
 
     // Load TrueType font (Font owns its data, no lifetime gymnastics needed)
-    let mut ttf_font: Option<CachedFont> = font_watcher.load_font().map(|(f, _)| f);
+    let mut ttf_font: Option<CachedFont> = font_watcher.load_font();
 
     // Compute cell dimensions from font metrics (or fall back to bitmap constants)
     let (mut cell_w, mut cell_h) = if let Some(ref mut font) = ttf_font {
@@ -659,7 +659,10 @@ fn main() {
         }
 
         // Font config hot-reload via FontWatcher
-        if let Some((new_font, new_size)) = font_watcher.poll() {
+        // Note: size is read separately via mono_size() to avoid f32-in-tuple
+        // ABI corruption on aarch64 with opt-level="z".
+        if let Some(new_font) = font_watcher.poll() {
+            let new_size = font_watcher.mono_size();
             let m = new_font.metrics(new_size);
             print!("[bterm] font changed: {} size={} (bits=0x{:08x}) asc={} desc={}\n",
                    font_watcher.mono_path(), new_size, new_size.to_bits(), m.ascender, m.descender);
