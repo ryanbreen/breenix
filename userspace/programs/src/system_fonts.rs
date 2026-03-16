@@ -55,6 +55,9 @@ impl FontConfig {
             }
         }
 
+        // Safety: ensure size is valid (catches NaN, 0.0, sub-minimum)
+        if !(config.mono_size >= 6.0) { config.mono_size = DEFAULT_MONO_SIZE; }
+
         config
     }
 
