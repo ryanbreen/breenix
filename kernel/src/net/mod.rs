@@ -471,13 +471,7 @@ pub fn process_rx() {
 
     // Drain deferred TX queue — packets queued during RX processing (e.g., TCP
     // SYN-ACK responses) can now be sent safely since RX processing is complete.
-    {
-        let queue_len = tcp::deferred_tx_queue_len();
-        if queue_len > 0 {
-            crate::serial_println!("[NET] draining {} deferred TX packets", queue_len);
-        }
-        tcp::drain_deferred_tx();
-    }
+    tcp::drain_deferred_tx();
 
     // Do NOT re-enable SPI here — the softirq handler does it after process_rx
     // returns, regardless of whether we processed packets or bailed on re-entrancy.

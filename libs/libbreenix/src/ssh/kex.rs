@@ -17,11 +17,7 @@ use super::*;
 
 /// Algorithms offered by BSSH.
 // ext-info-s tells clients we'll send SSH_MSG_EXT_INFO after NEWKEYS (RFC 8308)
-// TODO: mlkem768x25519-sha256 implementation complete but exchange hash computation
-// doesn't match OpenSSH yet (incorrect signature). Disabled until fixed.
-// Full ML-KEM 768 + Keccak/SHAKE primitives are in crypto/ and server_kex_hybrid()
-// in this file is ready — just needs the hash encoding debugged.
-pub const KEX_ALGORITHMS: &str = "curve25519-sha256,ext-info-s";
+pub const KEX_ALGORITHMS: &str = "mlkem768x25519-sha256,curve25519-sha256,ext-info-s";
 pub const HOST_KEY_ALGORITHMS: &str = "rsa-sha2-256,ssh-rsa";
 pub const CIPHERS: &str = "aes128-ctr";
 pub const MACS: &str = "hmac-sha2-256";
@@ -207,6 +203,17 @@ pub fn server_kex_hybrid(
     s_reply.extend_from_slice(&x25519_public);
 
     let host_key_blob = host_key.public_key_blob();
+
+    // Debug: dump field sizes for exchange hash comparison
+    println!("bsshd: [hybrid-hash] V_C={} V_S={} I_C={} I_S={} K_S={} C_INIT={} S_REPLY={} K={}",
+        client_version.len(), server_version.len(),
+        kex.peer_kexinit.len(), kex.my_kexinit.len(),
+        host_key_blob.len(), c_init.len(), s_reply.len(), shared_secret.len());
+    // Dump first/last bytes of shared secret for comparison
+    println!("bsshd: [hybrid-hash] K={:02x}{:02x}{:02x}{:02x}...{:02x}{:02x}{:02x}{:02x}",
+        shared_secret[0], shared_secret[1], shared_secret[2], shared_secret[3],
+        shared_secret[28], shared_secret[29], shared_secret[30], shared_secret[31]);
+
     let h = compute_exchange_hash_hybrid(
         client_version, server_version,
         &kex.peer_kexinit, &kex.my_kexinit,
@@ -357,11 +364,27 @@ fn compute_exchange_hash_inner(
     SshBuf::put_string(&mut data, q_c);
     SshBuf::put_string(&mut data, q_s);
     if k_as_string {
-        // Hybrid KEX: K is the 32-byte SHA-256 output, encoded as SSH string
         SshBuf::put_string(&mut data, k);
     } else {
-        // Classical KEX: K is the raw DH output, encoded as SSH mpint
         SshBuf::put_mpint(&mut data, k);
+    }
+
+    if k_as_string {
+        // Dump offsets and first bytes of each field for debugging
+        let mut off = 0usize;
+        let vc_len = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        println!("bsshd: [H] total={} V_C@0={} V_S@{}={} I_C@{}={} I_S@{}={}",
+            data.len(), vc_len,
+            4+vc_len, u32::from_be_bytes([data[4+vc_len], data[5+vc_len], data[6+vc_len], data[7+vc_len]]),
+            { off = 4+vc_len; off += 4 + u32::from_be_bytes([data[off], data[off+1], data[off+2], data[off+3]]) as usize; off },
+            u32::from_be_bytes([data[off], data[off+1], data[off+2], data[off+3]]),
+            { off += 4 + u32::from_be_bytes([data[off], data[off+1], data[off+2], data[off+3]]) as usize; off },
+            u32::from_be_bytes([data[off], data[off+1], data[off+2], data[off+3]]));
+        // Dump last 40 bytes (K encoding)
+        let kstart = data.len() - 36; // string K = 4 + 32 = 36
+        println!("bsshd: [H] K@{}: {:02x}{:02x}{:02x}{:02x} {:02x}{:02x}{:02x}{:02x}...",
+            kstart, data[kstart], data[kstart+1], data[kstart+2], data[kstart+3],
+            data[kstart+4], data[kstart+5], data[kstart+6], data[kstart+7]);
     }
 
     sha256(&data).to_vec()
