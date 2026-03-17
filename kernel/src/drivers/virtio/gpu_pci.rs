@@ -808,15 +808,6 @@ fn init_composite_texture(width: u32, height: u32) -> Result<(), &'static str> {
             return Err("failed to allocate pre-alloc texture backing");
         }
 
-        // Fill slot 0 with red for testing
-        if slot == 0 {
-            unsafe {
-                let px = ptr as *mut u32;
-                let count = (max_w as usize) * (max_h as usize);
-                for i in 0..count { *px.add(i) = 0x000000FF; } // B8G8R8X8: red
-            }
-        }
-
         with_device_state(|state| {
             virgl_resource_create_3d_cmd(state, res_id, pipe::TEXTURE_2D, vfmt::B8G8R8A8_UNORM,
                 pipe::BIND_SAMPLER_VIEW | pipe::BIND_SCANOUT, max_w, max_h, 1, 1)
@@ -4859,7 +4850,7 @@ pub fn virgl_init() -> Result<(), &'static str> {
         cmdbuf.set_tweaks(2, width);
         cmdbuf.create_surface(1, RESOURCE_3D_ID, vfmt::B8G8R8X8_UNORM, 0, 0);
         cmdbuf.set_framebuffer_state(0, &[1]);
-        cmdbuf.clear_color(0.392, 0.584, 0.929, 1.0); // Cornflower blue
+        cmdbuf.clear_color(0.047, 0.063, 0.149, 1.0); // Near-black matching desktop bg
         virgl_submit_sync(cmdbuf.as_slice())?;
         crate::serial_println!("[virgl] Step 6: VirGL CLEAR (cornflower blue)");
     }
@@ -4926,8 +4917,8 @@ pub fn virgl_init() -> Result<(), &'static str> {
         cmdbuf.set_min_samples(1);
         cmdbuf.set_viewport(width as f32, height as f32);
 
-        // CLEAR to dark blue
-        cmdbuf.clear_color(0.1, 0.1, 0.3, 1.0);
+        // CLEAR to near-black matching desktop background
+        cmdbuf.clear_color(0.047, 0.063, 0.149, 1.0);
 
         // Upload vertex data inline
         let quad_verts: [u32; 16] = [
