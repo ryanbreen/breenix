@@ -4,7 +4,7 @@
 //! GPU-rendered progress bars and per-test pass/fail results in a
 //! compositor window.
 
-use breengel::{Window, Event};
+use breengel::{CachedFont, Window, Event};
 use libbreenix::process::{fork, exec, waitpid, ForkResult};
 use libbreenix::time;
 
@@ -12,6 +12,7 @@ use libgfx::color::Color;
 use libgfx::font;
 use libgfx::framebuf::FrameBuf;
 use libgfx::shapes;
+use libgfx::ttf_font;
 
 // ---------------------------------------------------------------------------
 // Test definitions
@@ -140,7 +141,34 @@ fn content_height(tests: &[TestDef]) -> i32 {
     y
 }
 
-fn render(fb: &mut FrameBuf, tests: &[TestDef], scroll_offset: i32) {
+/// Draw text using TTF font if available, falling back to bitmap.
+fn draw_text_scaled(
+    fb: &mut FrameBuf,
+    ttf: Option<&mut CachedFont>,
+    text: &str,
+    x: i32,
+    y: i32,
+    size: f32,
+    color: Color,
+    bitmap_scale: usize,
+) {
+    if let Some(f) = ttf {
+        ttf_font::draw_text(fb, f, text, x, y, size, color);
+    } else {
+        font::draw_text(fb, text.as_bytes(), x as usize, y as usize, color, bitmap_scale);
+    }
+}
+
+/// Measure text width using TTF font if available, falling back to bitmap.
+fn measure_text(ttf: Option<&mut CachedFont>, text: &str, size: f32, bitmap_scale: usize) -> i32 {
+    if let Some(f) = ttf {
+        ttf_font::text_width(f, text, size)
+    } else {
+        font::text_width(text.as_bytes(), bitmap_scale) as i32
+    }
+}
+
+fn render(fb: &mut FrameBuf, tests: &[TestDef], scroll_offset: i32, ttf: &mut Option<CachedFont>, font_size: f32) {
     let w = fb.width as i32;
     let h = fb.height as i32;
 
@@ -148,9 +176,10 @@ fn render(fb: &mut FrameBuf, tests: &[TestDef], scroll_offset: i32) {
     fb.clear(BG);
 
     // Title
-    let title = b"BREENIX SELF-CHECK";
-    let title_w = font::text_width(title, 2) as i32;
-    font::draw_text(fb, title, ((w - title_w) / 2) as usize, TITLE_Y as usize, TITLE_COLOR, 2);
+    let title = "BREENIX SELF-CHECK";
+    let title_size = font_size * 2.0;
+    let title_w = measure_text(ttf.as_mut(), title, title_size, 2);
+    draw_text_scaled(fb, ttf.as_mut(), title, (w - title_w) / 2, TITLE_Y, title_size, TITLE_COLOR, 2);
 
     // Header line
     shapes::fill_rect(fb, MARGIN, BAR_Y - 4, w - MARGIN * 2, 1, COLOR_HEADER_LINE);
@@ -187,9 +216,9 @@ fn render(fb: &mut FrameBuf, tests: &[TestDef], scroll_offset: i32) {
     let pct = if total > 0 { completed * 100 / total } else { 0 };
     let mut pct_buf = [0u8; 16];
     let pct_len = format_progress(&mut pct_buf, completed, total, pct);
-    let pct_text = &pct_buf[..pct_len];
-    let pct_tw = font::text_width(pct_text, 1) as i32;
-    font::draw_text(fb, pct_text, ((w - pct_tw) / 2) as usize, (BAR_Y + 4) as usize, FG, 1);
+    let pct_str = core::str::from_utf8(&pct_buf[..pct_len]).unwrap_or("");
+    let pct_tw = measure_text(ttf.as_mut(), pct_str, font_size, 1);
+    draw_text_scaled(fb, ttf.as_mut(), pct_str, (w - pct_tw) / 2, BAR_Y + 4, font_size, FG, 1);
 
     // Visible area for test list
     let visible_top = LIST_START_Y;
@@ -204,22 +233,23 @@ fn render(fb: &mut FrameBuf, tests: &[TestDef], scroll_offset: i32) {
         if test.category != last_cat {
             last_cat = test.category;
             let cat_label = match test.category {
-                "core" => b"CORE" as &[u8],
-                "fs"   => b"FILESYSTEM",
-                "ipc"  => b"IPC",
-                "proc" => b"PROCESS",
-                "sig"  => b"SIGNALS",
-                "net"  => b"NETWORK",
-                _      => b"OTHER",
+                "core" => "CORE",
+                "fs"   => "FILESYSTEM",
+                "ipc"  => "IPC",
+                "proc" => "PROCESS",
+                "sig"  => "SIGNALS",
+                "net"  => "NETWORK",
+                _      => "OTHER",
             };
             if y > LIST_START_Y - scroll_offset {
                 y += 4; // Extra spacing between categories
             }
             // Only draw if visible
             if y >= visible_top && y + 12 <= visible_bottom {
-                font::draw_text(fb, cat_label, MARGIN as usize, y as usize, COLOR_CAT, 1);
-                shapes::fill_rect(fb, MARGIN + font::text_width(cat_label, 1) as i32 + 4, y + 3,
-                                  w - MARGIN * 2 - font::text_width(cat_label, 1) as i32 - 4, 1, ACCENT);
+                let cat_tw = measure_text(ttf.as_mut(), cat_label, font_size, 1);
+                draw_text_scaled(fb, ttf.as_mut(), cat_label, MARGIN, y, font_size, COLOR_CAT, 1);
+                shapes::fill_rect(fb, MARGIN + cat_tw + 4, y + 3,
+                                  w - MARGIN * 2 - cat_tw - 4, 1, ACCENT);
             }
             y += 12;
         }
@@ -231,35 +261,36 @@ fn render(fb: &mut FrameBuf, tests: &[TestDef], scroll_offset: i32) {
         // Only draw row if it's in the visible region
         if y >= visible_top {
             // Status icon
-            let (icon, icon_color): (&[u8], Color) = match test.status {
-                TestStatus::Pass    => (b"OK", COLOR_PASS),
-                TestStatus::Fail    => (b"!!", COLOR_FAIL),
-                TestStatus::Running => (b">>", COLOR_RUN),
-                TestStatus::Skip    => (b"--", COLOR_SKIP),
-                TestStatus::Pending => (b"..", COLOR_PEND),
+            let (icon, icon_color): (&str, Color) = match test.status {
+                TestStatus::Pass    => ("OK", COLOR_PASS),
+                TestStatus::Fail    => ("!!", COLOR_FAIL),
+                TestStatus::Running => (">>", COLOR_RUN),
+                TestStatus::Skip    => ("--", COLOR_SKIP),
+                TestStatus::Pending => ("..", COLOR_PEND),
             };
-            font::draw_text(fb, icon, (MARGIN + 2) as usize, y as usize, icon_color, 1);
+            draw_text_scaled(fb, ttf.as_mut(), icon, MARGIN + 2, y, font_size, icon_color, 1);
 
             // Test name
-            font::draw_text(fb, test.name.as_bytes(), (MARGIN + 22) as usize, y as usize, FG, 1);
+            draw_text_scaled(fb, ttf.as_mut(), test.name, MARGIN + 22, y, font_size, FG, 1);
 
             // Status label
-            let (label, label_color): (&[u8], Color) = match test.status {
-                TestStatus::Pass    => (b"PASS", COLOR_PASS),
-                TestStatus::Fail    => (b"FAIL", COLOR_FAIL),
-                TestStatus::Running => (b"RUN ", COLOR_RUN),
-                TestStatus::Skip    => (b"SKIP", COLOR_SKIP),
-                TestStatus::Pending => (b"    ", COLOR_PEND),
+            let (label, label_color): (&str, Color) = match test.status {
+                TestStatus::Pass    => ("PASS", COLOR_PASS),
+                TestStatus::Fail    => ("FAIL", COLOR_FAIL),
+                TestStatus::Running => ("RUN ", COLOR_RUN),
+                TestStatus::Skip    => ("SKIP", COLOR_SKIP),
+                TestStatus::Pending => ("    ", COLOR_PEND),
             };
             let label_x = w - MARGIN - 80;
-            font::draw_text(fb, label, label_x as usize, y as usize, label_color, 1);
+            draw_text_scaled(fb, ttf.as_mut(), label, label_x, y, font_size, label_color, 1);
 
             // Elapsed time (for completed tests)
             if test.status == TestStatus::Pass || test.status == TestStatus::Fail {
                 let mut time_buf = [0u8; 8];
                 let time_len = format_ms(&mut time_buf, test.elapsed_ms);
+                let time_str = core::str::from_utf8(&time_buf[..time_len]).unwrap_or("");
                 let time_x = w - MARGIN - 36;
-                font::draw_text(fb, &time_buf[..time_len], time_x as usize, y as usize, COLOR_TIME, 1);
+                draw_text_scaled(fb, ttf.as_mut(), time_str, time_x, y, font_size, COLOR_TIME, 1);
             }
         }
 
@@ -272,7 +303,8 @@ fn render(fb: &mut FrameBuf, tests: &[TestDef], scroll_offset: i32) {
 
     let mut footer_buf = [0u8; 48];
     let footer_len = format_footer(&mut footer_buf, passed, failed, total - completed);
-    font::draw_text(fb, &footer_buf[..footer_len], MARGIN as usize, footer_y as usize, FG, 1);
+    let footer_str = core::str::from_utf8(&footer_buf[..footer_len]).unwrap_or("");
+    draw_text_scaled(fb, ttf.as_mut(), footer_str, MARGIN, footer_y, font_size, FG, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -397,14 +429,23 @@ fn main() {
     };
     println!("[bcheck] Window {} ({}x{})", win.id(), WIN_W, WIN_H);
 
+    // Load TTF mono font (falls back to bitmap if unavailable)
+    let mut ttf_font: Option<CachedFont> = win.take_mono_font();
+    let font_size = if win.mono_size() >= 6.0 { win.mono_size() } else { 10.0 };
+    if ttf_font.is_some() {
+        println!("[bcheck] TTF font loaded, size={}", font_size);
+    } else {
+        println!("[bcheck] TTF font not available, using bitmap fallback");
+    }
+
     // Initial render — all pending
-    render(win.framebuf(), &tests, 0);
+    render(win.framebuf(), &tests, 0, &mut ttf_font, font_size);
     let _ = win.present();
 
     // Run each test sequentially
     for i in 0..total {
         tests[i].status = TestStatus::Running;
-        render(win.framebuf(), &tests, 0);
+        render(win.framebuf(), &tests, 0, &mut ttf_font, font_size);
         let _ = win.present();
 
         run_test(&mut tests[i]);
@@ -418,7 +459,7 @@ fn main() {
         println!("[bcheck] {:2}/{} {} {} {}ms",
                  i + 1, total, tests[i].name, status_str, tests[i].elapsed_ms);
 
-        render(win.framebuf(), &tests, 0);
+        render(win.framebuf(), &tests, 0, &mut ttf_font, font_size);
         let _ = win.present();
     }
 
@@ -457,7 +498,7 @@ fn main() {
             }
         }
         if need_redraw {
-            render(win.framebuf(), &tests, scroll_offset);
+            render(win.framebuf(), &tests, scroll_offset, &mut ttf_font, font_size);
             let _ = win.present();
         } else {
             let _ = time::nanosleep(&sleep_ts);
