@@ -500,7 +500,7 @@ mod tests {
     #[test]
     fn test_sha3_256_longer_message() {
         // SHA3-256 of "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
-        let expected = "41c0dba2a9d6240049155dcc05e02b0135c7a25f6b74bdee10c2e41102837754";
+        let expected = "41c0dba2a9d6240849100376a8235e2c82e1b9998a999e21db32dd97496d3376";
         let digest = sha3_256(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq");
         assert_eq!(bytes_to_hex(&digest), expected);
     }
@@ -509,10 +509,10 @@ mod tests {
     fn test_shake256_abc() {
         // SHAKE256("abc", 512 bits)
         let expected_hex = hex_to_bytes(
-            "483366601573f85fa56a0e304a159fe53d\
-             1bfa79efc08a2cb87a0deeb5dfbb6b0d7f\
-             4d3e6fca94acca4d83c94b04de9a8e9a58\
-             b4b7859bb0f33e4bd5f34b2751",
+            "483366601360a8771c6863080cc4114d8d\
+             b44530f8f1e1ee4f94ea37e78b5739d5a1\
+             5bef186a5386c75744c0527e1faa9f8726\
+             e462a12a4feb06bd8801e751e4",
         );
         let mut output = [0u8; 64];
         shake256(b"abc", &mut output);

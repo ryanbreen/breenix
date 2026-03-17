@@ -401,11 +401,14 @@ fn decompress_poly(poly: &Poly, d: u32) -> Poly {
 /// Sample a polynomial from a uniform distribution using SHAKE-128 (XOF).
 ///
 /// This implements the rejection sampling from FIPS 203 (SampleNTT).
-/// Absorbs seed || i || j and rejection-samples coefficients in [0, q).
-fn sample_ntt(seed: &[u8; 32], i: u8, j: u8) -> Poly {
+/// Absorbs `seed || byte1 || byte2` and rejection-samples coefficients in [0, q).
+///
+/// FIPS 203 specifies `A_hat[i][j] = SampleNTT(XOF(rho, j, i))`, so callers
+/// must pass `(j, i)` for matrix generation and `(i, j)` for the transpose.
+fn sample_ntt(seed: &[u8; 32], byte1: u8, byte2: u8) -> Poly {
     let mut xof = Shake128::new();
     xof.absorb(seed);
-    xof.absorb(&[i, j]);
+    xof.absorb(&[byte1, byte2]);
 
     let mut poly = Poly::zero();
     let mut idx = 0;
@@ -540,12 +543,13 @@ fn k_pke_keygen(d: &[u8; 32]) -> (Vec<u8>, Vec<u8>) {
     let rho: [u8; 32] = g_output[..32].try_into().unwrap();
     let sigma: [u8; 32] = g_output[32..64].try_into().unwrap();
 
-    // Generate matrix A_hat (in NTT domain) from rho
+    // Generate matrix A_hat (in NTT domain) from rho.
+    // FIPS 203 Algorithm 12 step 8: A_hat[i][j] = SampleNTT(XOF(rho, j, i))
     let mut a_hat: [[Poly; 3]; 3] =
         core::array::from_fn(|_| core::array::from_fn(|_| Poly::zero()));
     for i in 0..K {
         for j in 0..K {
-            a_hat[i][j] = sample_ntt(&rho, i as u8, j as u8);
+            a_hat[i][j] = sample_ntt(&rho, j as u8, i as u8);
         }
     }
 
@@ -617,12 +621,13 @@ fn k_pke_encrypt(ek: &[u8], msg: &[u8; 32], randomness: &[u8; 32]) -> Vec<u8> {
     }
     let rho: [u8; 32] = ek[K * 384..K * 384 + 32].try_into().unwrap();
 
-    // Regenerate matrix A_hat^T (transposed for encryption)
+    // Regenerate matrix A_hat^T (transposed for encryption).
+    // A^T[i][j] = A[j][i] = SampleNTT(XOF(rho, i, j)) per FIPS 203.
     let mut a_hat_t: [[Poly; 3]; 3] =
         core::array::from_fn(|_| core::array::from_fn(|_| Poly::zero()));
     for i in 0..K {
         for j in 0..K {
-            a_hat_t[i][j] = sample_ntt(&rho, j as u8, i as u8);
+            a_hat_t[i][j] = sample_ntt(&rho, i as u8, j as u8);
         }
     }
 
@@ -1185,6 +1190,150 @@ mod tests {
                 i
             );
         }
+    }
+
+    /// Helper: convert bytes to hex string for test diagnostics.
+    fn bytes_to_hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+
+    #[test]
+    fn test_kat_keygen_vector1() {
+        // Known Answer Test vector 1: d=0x00..0x1f, z=0x20..0x3f
+        // Reference values from kyber-py (ML_KEM_768._keygen_internal), which
+        // implements FIPS 203 with XOF domain separation: A[i][j] = XOF(rho, j, i).
+        let mut rng = [0u8; 64];
+        for i in 0..64 {
+            rng[i] = i as u8;
+        }
+        let (pk, sk) = keygen(&rng);
+
+        // Verify ek[0:32] (first encoded polynomial of t_hat)
+        assert_eq!(
+            bytes_to_hex(&pk.bytes[..32]),
+            "298aa10d423c8dda069d02bc59e6cdf03a096b8b3da4cab9b80ca4a14907672c",
+            "KAT v1: ek first 32 bytes mismatch"
+        );
+
+        // Verify rho (ek[1152:1184])
+        assert_eq!(
+            bytes_to_hex(&pk.bytes[1152..1184]),
+            "5e43481c3eeb397eb192505229b67a201ea893c3e2cb32da8bc342fa4dea0578",
+            "KAT v1: rho mismatch"
+        );
+
+        // Verify H(ek) in secret key
+        assert_eq!(
+            bytes_to_hex(&sk.bytes[2336..2368]),
+            "a24e16d8f8f9383a95b77050f4d9fd2f5733eec1d63ef3c23ebf9918173669a7",
+            "KAT v1: H(ek) mismatch"
+        );
+
+        // Verify z preserved in secret key
+        assert_eq!(
+            bytes_to_hex(&sk.bytes[2368..2400]),
+            "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+            "KAT v1: z mismatch"
+        );
+    }
+
+    #[test]
+    fn test_kat_keygen_vector2() {
+        // Known Answer Test vector 2: d=[0xAB]*32, z=[0xCD]*32
+        let mut rng = [0u8; 64];
+        rng[..32].fill(0xAB);
+        rng[32..].fill(0xCD);
+        let (pk, _sk) = keygen(&rng);
+
+        assert_eq!(
+            bytes_to_hex(&pk.bytes[..32]),
+            "5d2b0496024ef6f31b37fa809cbb94b3b857182160e7c7c825ba01df574ca045",
+            "KAT v2: ek first 32 bytes mismatch"
+        );
+
+        assert_eq!(
+            bytes_to_hex(&pk.bytes[1152..1184]),
+            "c959093c32fa101d8e49d2a196fee8bdcaaa2910da5510bbbd3e5d76033eb591",
+            "KAT v2: rho mismatch"
+        );
+    }
+
+    #[test]
+    fn test_kat_encapsulate_vector1() {
+        // Known Answer Test: deterministic encapsulate
+        // keygen with d=0x00..0x1f, z=0x20..0x3f; encapsulate with m=[0x42; 32]
+        let mut rng = [0u8; 64];
+        for i in 0..64 {
+            rng[i] = i as u8;
+        }
+        let (pk, sk) = keygen(&rng);
+
+        let m = [0x42u8; 32];
+        let (ct, shared_secret) = encapsulate(&pk, &m);
+
+        // Verify shared secret
+        assert_eq!(
+            bytes_to_hex(&shared_secret),
+            "b83e7f23b33f909715c7a50b0d4b1f6684d53e1f4b9056f803b29f058ccb5566",
+            "KAT v1: shared secret mismatch"
+        );
+
+        // Verify ciphertext (first 32 bytes)
+        assert_eq!(
+            bytes_to_hex(&ct.bytes[..32]),
+            "28aba0d0d59bdbb12a8d5925c51d51dac3245003a15015476bd2dbfd07661b19",
+            "KAT v1: ct first 32 bytes mismatch"
+        );
+
+        // Verify ciphertext (last 32 bytes)
+        assert_eq!(
+            bytes_to_hex(&ct.bytes[1056..1088]),
+            "a95f930a8bb2a7bc6ec628efcd1ecf04ad654a3149425f0d63a61bb9d0dad97a",
+            "KAT v1: ct last 32 bytes mismatch"
+        );
+
+        // Verify decapsulation produces same shared secret
+        let shared_secret_dec = decapsulate(&sk, &ct);
+        assert_eq!(
+            shared_secret, shared_secret_dec,
+            "KAT v1: decapsulate shared secret mismatch"
+        );
+    }
+
+    #[test]
+    fn test_kat_encapsulate_vector2() {
+        // Known Answer Test vector 2: d=[0xAB]*32, z=[0xCD]*32, m=[0x99]*32
+        let mut rng = [0u8; 64];
+        rng[..32].fill(0xAB);
+        rng[32..].fill(0xCD);
+        let (pk, sk) = keygen(&rng);
+
+        let m = [0x99u8; 32];
+        let (ct, shared_secret) = encapsulate(&pk, &m);
+
+        assert_eq!(
+            bytes_to_hex(&shared_secret),
+            "fc67491184afc542e4451487a26d6b655fe601f8c1e6fcffa587cf1d8cdd153b",
+            "KAT v2: shared secret mismatch"
+        );
+
+        assert_eq!(
+            bytes_to_hex(&ct.bytes[..32]),
+            "092ffce5c3ee4b3fc3bb4ce9a97a8e7fcb66ff1279c95ae1ebfa747cee6b6f48",
+            "KAT v2: ct first 32 bytes mismatch"
+        );
+
+        assert_eq!(
+            bytes_to_hex(&ct.bytes[1056..1088]),
+            "9bee2fda1e6ce69b4c3e3d1e4a53cb10e250299b6e1cb623f69e3d29be912297",
+            "KAT v2: ct last 32 bytes mismatch"
+        );
+
+        let shared_secret_dec = decapsulate(&sk, &ct);
+        assert_eq!(
+            shared_secret, shared_secret_dec,
+            "KAT v2: decapsulate shared secret mismatch"
+        );
     }
 
     #[test]
