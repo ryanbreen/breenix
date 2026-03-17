@@ -14,13 +14,14 @@
 
 use std::process;
 
-use breengel::{Window, Event};
+use breengel::{CachedFont, Window, Event};
 use libbreenix::process::{fork, execv, ForkResult};
 use libbreenix::time;
 
 use libgfx::bitmap_font;
 use libgfx::color::Color;
 use libgfx::framebuf::FrameBuf;
+use libgfx::ttf_font;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -432,6 +433,8 @@ fn compute_layout(win_w: usize, _win_h: usize, filtered_count: usize) -> PanelLa
 fn render_pixels(
     raw: &mut [u32], w: usize, h: usize,
     state: &LauncherState,
+    ttf: &mut Option<CachedFont>,
+    font_size: f32,
 ) {
     let (filtered, filtered_count) = get_filtered_apps(&state.query, state.query_len);
     let layout = compute_layout(w, h, filtered_count);
@@ -459,13 +462,15 @@ fn render_pixels(
         layout.search_x, layout.search_y,
         layout.search_w, SEARCH_H, search_bg, 7);
 
-    // Blinking cursor in search field
-    let m = bitmap_font::metrics();
-    let text_y = layout.search_y + (SEARCH_H - m.char_height as i32) / 2;
+    // Blinking cursor in search field — compute text height and query width
+    let char_h = font_line_height(ttf.as_ref(), font_size);
+    let query_str = core::str::from_utf8(&state.query[..state.query_len]).unwrap_or("");
+    let query_w = measure_text_ttf(ttf.as_mut(), query_str, font_size);
+    let text_y = layout.search_y + (SEARCH_H - char_h) / 2;
     if (state.cursor_blink / 25) % 2 == 0 {
-        let cursor_x = layout.search_x + 12 + (state.query_len as i32 * m.char_width as i32);
+        let cursor_x = layout.search_x + 12 + query_w;
         let cursor_bgra = color_to_bgra(CURSOR_COLOR);
-        for dy in 0..m.char_height as i32 {
+        for dy in 0..char_h {
             plot_pixel_u32(raw, w, h, cursor_x, text_y + dy, cursor_bgra);
             plot_pixel_u32(raw, w, h, cursor_x + 1, text_y + dy, cursor_bgra);
         }
@@ -499,26 +504,33 @@ fn render_pixels(
     }
 }
 
-fn render_text(fb: &mut FrameBuf, w: usize, h: usize, state: &LauncherState) {
+fn render_text(
+    fb: &mut FrameBuf, w: usize, h: usize, state: &LauncherState,
+    ttf: &mut Option<CachedFont>, font_size: f32,
+) {
     let (filtered, filtered_count) = get_filtered_apps(&state.query, state.query_len);
     let layout = compute_layout(w, h, filtered_count);
-    let m = bitmap_font::metrics();
-    let text_y = layout.search_y + (SEARCH_H - m.char_height as i32) / 2;
+    let char_h = font_line_height(ttf.as_ref(), font_size);
+    let text_y = layout.search_y + (SEARCH_H - char_h) / 2;
 
     // Search text or placeholder
     if state.query_len == 0 {
-        bitmap_font::draw_text(
-            fb, b"Search applications...",
-            (layout.search_x + 12) as usize, text_y as usize,
-            PLACEHOLDER_COLOR,
+        draw_text_ttf(
+            fb, ttf.as_mut(), "Search applications...",
+            layout.search_x + 12, text_y,
+            font_size, PLACEHOLDER_COLOR,
         );
     } else {
-        bitmap_font::draw_text(
-            fb, &state.query[..state.query_len],
-            (layout.search_x + 12) as usize, text_y as usize,
-            TEXT_COLOR,
+        let query_str = core::str::from_utf8(&state.query[..state.query_len]).unwrap_or("");
+        draw_text_ttf(
+            fb, ttf.as_mut(), query_str,
+            layout.search_x + 12, text_y,
+            font_size, TEXT_COLOR,
         );
     }
+
+    // Smaller size for description text
+    let desc_size = (font_size * 0.85).max(10.0);
 
     // App list text
     for idx in 0..layout.visible_count {
@@ -526,26 +538,26 @@ fn render_text(fb: &mut FrameBuf, w: usize, h: usize, state: &LauncherState) {
         let row_y = layout.list_y + idx as i32 * ITEM_H;
 
         // App name
-        bitmap_font::draw_text(
-            fb, app.name.as_bytes(),
-            (layout.x + 36) as usize, (row_y + 4) as usize,
-            TEXT_COLOR,
+        draw_text_ttf(
+            fb, ttf.as_mut(), app.name,
+            layout.x + 36, row_y + 4,
+            font_size, TEXT_COLOR,
         );
 
-        // Description
-        bitmap_font::draw_text(
-            fb, app.description.as_bytes(),
-            (layout.x + 36) as usize, (row_y + 20) as usize,
-            DIM_COLOR,
+        // Description (slightly smaller)
+        draw_text_ttf(
+            fb, ttf.as_mut(), app.description,
+            layout.x + 36, row_y + 20,
+            desc_size, DIM_COLOR,
         );
     }
 
     // Footer hint
     let footer_y = layout.list_y + layout.visible_count as i32 * ITEM_H + 4;
-    bitmap_font::draw_text(
-        fb, b"Enter to launch | Esc to close",
-        (layout.x + PADDING) as usize, footer_y as usize,
-        HINT_COLOR,
+    draw_text_ttf(
+        fb, ttf.as_mut(), "Enter to launch | Esc to close",
+        layout.x + PADDING, footer_y,
+        desc_size, HINT_COLOR,
     );
 }
 
@@ -558,6 +570,47 @@ fn render_background(buf: &mut [u32], w: usize, h: usize, _frame: u32) {
     let bg = color_to_bgra(PANEL_BG); // #2a2d35
     for px in buf[..w * h].iter_mut() {
         *px = bg;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TTF text helpers (bitmap fallback)
+// ---------------------------------------------------------------------------
+
+/// Draw text using TTF font if available, falling back to bitmap.
+fn draw_text_ttf(
+    fb: &mut FrameBuf,
+    ttf: Option<&mut CachedFont>,
+    text: &str,
+    x: i32,
+    y: i32,
+    size: f32,
+    color: Color,
+) {
+    if let Some(f) = ttf {
+        ttf_font::draw_text(fb, f, text, x, y, size, color);
+    } else {
+        bitmap_font::draw_text(fb, text.as_bytes(), x as usize, y as usize, color);
+    }
+}
+
+/// Measure text width using TTF font if available, falling back to bitmap.
+fn measure_text_ttf(ttf: Option<&mut CachedFont>, text: &str, size: f32) -> i32 {
+    if let Some(f) = ttf {
+        ttf_font::text_width(f, text, size)
+    } else {
+        let m = bitmap_font::metrics();
+        (text.len() * m.char_width) as i32
+    }
+}
+
+/// Get the line height for the current font configuration.
+fn font_line_height(ttf: Option<&CachedFont>, size: f32) -> i32 {
+    if let Some(f) = ttf {
+        let m = f.metrics(size);
+        m.line_height as i32
+    } else {
+        bitmap_font::metrics().char_height as i32
     }
 }
 
@@ -640,6 +693,15 @@ fn main() {
             process::exit(1);
         }
     };
+
+    // Load display font (TTF) with bitmap fallback
+    let mut ttf_font: Option<CachedFont> = win.take_display_font();
+    let font_size = if win.display_size() >= 6.0 { win.display_size() } else { 14.0 };
+    if ttf_font.is_some() {
+        println!("[blauncher] TTF display font loaded, size={}", font_size);
+    } else {
+        println!("[blauncher] TTF font not available, using bitmap fallback");
+    }
 
     let w = panel_w as usize;
     let h = panel_max_h as usize;
@@ -775,12 +837,12 @@ fn main() {
             let fb = win.framebuf();
             let ptr = fb.raw_ptr() as *mut u32;
             let raw = unsafe { core::slice::from_raw_parts_mut(ptr, w * h) };
-            render_pixels(raw, w, h, &state);
+            render_pixels(raw, w, h, &state, &mut ttf_font, font_size);
         }
-        // Phase 2: FrameBuf-based text rendering
+        // Phase 2: FrameBuf-based text rendering (TTF with bitmap fallback)
         {
             let fb = win.framebuf();
-            render_text(fb, w, h, &state);
+            render_text(fb, w, h, &state, &mut ttf_font, font_size);
         }
         let _ = win.present();
 

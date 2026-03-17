@@ -7,13 +7,14 @@
 
 use std::process;
 
-use breengel::{Window, Event};
+use breengel::{CachedFont, Window, Event};
 use libbreenix::graphics;
 use libbreenix::time;
 
 use libgfx::color::Color;
 use libgfx::font;
 use libgfx::framebuf::FrameBuf;
+use libgfx::ttf_font;
 use libgfx::math::isqrt_i64;
 
 // ---------------------------------------------------------------------------
@@ -269,11 +270,19 @@ struct FpsCounter {
     last_time_ns: u64,
     frame_count: u32,
     display_fps: u32,
+    ttf_font: Option<CachedFont>,
+    font_size: f32,
 }
 
 impl FpsCounter {
     fn new() -> Self {
-        Self { last_time_ns: clock_monotonic_ns(), frame_count: 0, display_fps: 0 }
+        Self { last_time_ns: clock_monotonic_ns(), frame_count: 0, display_fps: 0, ttf_font: None, font_size: 20.0 }
+    }
+
+    fn with_ttf(mut self, font: Option<CachedFont>, size: f32) -> Self {
+        self.ttf_font = font;
+        self.font_size = size.max(10.0);
+        self
     }
 
     fn tick(&mut self) {
@@ -289,12 +298,13 @@ impl FpsCounter {
         }
     }
 
-    fn draw(&self, fb: &mut FrameBuf) {
+    fn draw(&mut self, fb: &mut FrameBuf) {
         let y = fb.height.saturating_sub(20);
         let mut buf = [b' '; 12];
         buf[0] = b'F'; buf[1] = b'P'; buf[2] = b'S'; buf[3] = b':'; buf[4] = b' ';
 
         let mut fps = self.display_fps;
+        let mut len = 6; // default: "FPS: 0"
         if fps == 0 {
             buf[5] = b'0';
         } else {
@@ -305,8 +315,14 @@ impl FpsCounter {
                 if pos == 0 { break; }
                 pos -= 1;
             }
+            len = 9; // digits occupy positions 5..=8
         }
-        font::draw_text(fb, &buf, 8, y, Color::GRAY, 2);
+        if let Some(ref mut f) = self.ttf_font {
+            let text = core::str::from_utf8(&buf[..len]).unwrap_or("FPS: ?");
+            ttf_font::draw_text(fb, f, text, 8, y as i32, self.font_size * 2.0, Color::GRAY);
+        } else {
+            font::draw_text(fb, &buf[..len], 8, y, Color::GRAY, 2);
+        }
     }
 }
 
@@ -390,7 +406,9 @@ fn run_window_loop(win: &mut Window, spheres: &mut [Sphere; NUM_SPHERES]) {
     let mut height = win.height() as i32;
     let bg = Color::rgb(10, 10, 25);
 
-    let mut fps = FpsCounter::new();
+    let ttf_font_opt = win.take_mono_font();
+    let font_size = win.mono_size().max(10.0);
+    let mut fps = FpsCounter::new().with_ttf(ttf_font_opt, font_size);
     let mut last_ns = clock_monotonic_ns();
 
     const TARGET_DT_NS: u64 = 16_666_667; // 60 FPS target
