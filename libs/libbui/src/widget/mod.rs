@@ -2,6 +2,7 @@ pub mod button;
 pub mod checkbox;
 pub mod file_picker;
 pub mod label;
+pub mod menu_bar;
 pub mod panel;
 pub mod slider;
 pub mod tab_bar;

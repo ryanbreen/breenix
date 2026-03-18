@@ -11,6 +11,7 @@ extern crate alloc;
 pub mod input;
 pub mod layout;
 pub mod rect;
+pub mod shortcut;
 pub mod text;
 pub mod theme;
 pub mod widget;
