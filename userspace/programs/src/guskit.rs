@@ -22,6 +22,8 @@ use libbreenix::socket::SockAddrIn;
 use libbreenix::time;
 
 use libbui::widget::file_picker::{FileEntry, FilePicker, FilePickerResult};
+use libbui::widget::menu_bar::{Menu, MenuAction, MenuBar, MenuEvent, MenuItem, MENU_BAR_HEIGHT};
+use libbui::shortcut::Shortcut;
 use libbui::Rect as BuiRect;
 use libbui::Theme;
 
@@ -58,16 +60,27 @@ fn draw_text_auto(
 }
 
 // ---------------------------------------------------------------------------
+// Menu action constants
+// ---------------------------------------------------------------------------
+
+const ACT_NEW: MenuAction = 1;
+const ACT_OPEN: MenuAction = 2;
+const ACT_SAVE: MenuAction = 3;
+const ACT_QUIT: MenuAction = 5;
+const ACT_UNDO: MenuAction = 10;
+const ACT_REDO: MenuAction = 11;
+
+// ---------------------------------------------------------------------------
 // Layout constants
 // ---------------------------------------------------------------------------
 
-const TOOLBAR_Y: usize = 0;
-const SIZE_BAR_Y: usize = 18;
-const HUE_BAR_Y: usize = 36;
+const TOOLBAR_Y: usize = 22;  // MENU_BAR_HEIGHT as usize
+const SIZE_BAR_Y: usize = 40;
+const HUE_BAR_Y: usize = 58;
 const HUE_BAR_H: usize = 18;
-const SV_SQUARE_Y: usize = 54;
+const SV_SQUARE_Y: usize = 76;
 const SV_SQUARE_SIZE: usize = 100;
-const CANVAS_Y: usize = 154;
+const CANVAS_Y: usize = 176;
 
 const BUTTON_W: usize = 36;
 const BUTTON_H: usize = 16;
@@ -493,7 +506,7 @@ fn draw_toolbar(fb: &mut FrameBuf, current_tool: Tool, _width: usize) {
     }
 }
 
-fn draw_size_bar(fb: &mut FrameBuf, current_size: BrushSize, width: usize, collab_status: &[u8], ttf: Option<&mut CachedFont>, font_size: f32) {
+fn draw_size_bar(fb: &mut FrameBuf, current_size: BrushSize, _width: usize, collab_status: &[u8], ttf: Option<&mut CachedFont>, font_size: f32) {
     // Size buttons
     let mut x = BUTTON_PAD;
     for size in SIZES {
@@ -502,20 +515,11 @@ fn draw_size_bar(fb: &mut FrameBuf, current_size: BrushSize, width: usize, colla
         x += sw + BUTTON_PAD;
     }
 
-    // Collaboration status text (between size buttons and action buttons)
+    // Collaboration status text
     if !collab_status.is_empty() {
         let status_x = x + 8;
         let status_str = core::str::from_utf8(collab_status).unwrap_or("");
         draw_text_auto(fb, ttf, status_str, status_x as i32, (SIZE_BAR_Y + 5) as i32, font_size, Color::rgb(140, 200, 140), 1);
-    }
-
-    // Action buttons on the right
-    let actions: [&[u8]; 4] = [b"Open", b"Save", b"Clr", b"Quit"];
-    let action_w = 32;
-    let mut ax = width - (actions.len() * (action_w + BUTTON_PAD)) - BUTTON_PAD;
-    for label in actions {
-        draw_button(fb, ax, SIZE_BAR_Y + 1, action_w, label, false);
-        ax += action_w + BUTTON_PAD;
     }
 }
 
@@ -681,30 +685,6 @@ fn hit_size(mx: usize, my: usize) -> Option<BrushSize> {
             return Some(size);
         }
         x += sw + BUTTON_PAD;
-    }
-    None
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Action {
-    Open,
-    Save,
-    Clear,
-    Quit,
-}
-
-fn hit_action(mx: usize, my: usize, width: usize) -> Option<Action> {
-    if my < SIZE_BAR_Y + 1 || my >= SIZE_BAR_Y + 1 + BUTTON_H {
-        return None;
-    }
-    let actions = [Action::Open, Action::Save, Action::Clear, Action::Quit];
-    let action_w = 32;
-    let mut ax = width - (actions.len() * (action_w + BUTTON_PAD)) - BUTTON_PAD;
-    for action in actions {
-        if mx >= ax && mx < ax + action_w {
-            return Some(action);
-        }
-        ax += action_w + BUTTON_PAD;
     }
     None
 }
@@ -1299,63 +1279,6 @@ impl GuskitState {
                     self.color.b,
                 );
             }
-        } else if let Some(action) = hit_action(umx, umy, self.width) {
-            self.mouse_down = false;
-            match action {
-                Action::Open => {
-                    let entries = list_directory(&self.file_picker_dir);
-                    let pw = 300.min(self.width as i32 - 20);
-                    let ph = 350.min(self.height as i32 - 20);
-                    let px = (self.width as i32 - pw) / 2;
-                    let py = (self.height as i32 - ph) / 2;
-                    let picker_rect = BuiRect::new(px, py, pw, ph);
-                    self.file_picker = Some(FilePicker::new(
-                        picker_rect,
-                        self.file_picker_dir.clone(),
-                        entries,
-                        &self.picker_theme,
-                    ));
-                }
-                Action::Save => {
-                    let (path_buf, path_len) = format_save_path(self.save_counter);
-                    let path =
-                        core::str::from_utf8(&path_buf[..path_len]).unwrap_or("/home/guskit.bmp");
-                    let bmp_data =
-                        bmp::encode_bmp_24(self.canvas_w as u32, self.canvas_h as u32, &self.canvas);
-                    match File::create(path) {
-                        Ok(file) => {
-                            let written = write_all(&file, &bmp_data);
-                            if written == bmp_data.len() {
-                                println!("Saved {}", path);
-                            } else {
-                                println!(
-                                    "Save error: wrote {}/{} bytes",
-                                    written,
-                                    bmp_data.len()
-                                );
-                            }
-                        }
-                        Err(_) => {
-                            println!("Save error: could not create {}", path);
-                        }
-                    }
-                    self.save_counter += 1;
-                }
-                Action::Clear => {
-                    for b in self.canvas.iter_mut() {
-                        *b = 255;
-                    }
-                    if let Some(ref mut sess) = self.session {
-                        sess.send_op(&DrawOp::Clear);
-                    }
-                }
-                Action::Quit => {
-                    if let Some(ref mut sess) = self.session {
-                        sess.disconnect();
-                    }
-                    process::exit(0);
-                }
-            }
         } else if let Some(h) = hit_hue_bar(umx, umy, self.width) {
             self.hue = h;
             self.color = hsv_to_rgb(self.hue, self.saturation, self.value);
@@ -1884,6 +1807,88 @@ impl GuskitState {
 }
 
 // ---------------------------------------------------------------------------
+// Menu bar helpers
+// ---------------------------------------------------------------------------
+
+fn build_guskit_menus(width: i32) -> MenuBar {
+    let rect = BuiRect::new(0, 0, width, MENU_BAR_HEIGHT);
+    let menus = vec![
+        Menu {
+            label: b"File",
+            items: vec![
+                MenuItem::new(b"New",  ACT_NEW,  Shortcut::ctrl(b'N')),
+                MenuItem::new(b"Open", ACT_OPEN, Shortcut::ctrl(b'O')),
+                MenuItem::new(b"Save", ACT_SAVE, Shortcut::ctrl(b'S')),
+                MenuItem::separator(),
+                MenuItem::new(b"Quit", ACT_QUIT, Shortcut::ctrl(b'Q')),
+            ],
+        },
+        Menu {
+            label: b"Edit",
+            items: vec![
+                MenuItem::disabled(b"Undo", ACT_UNDO, Shortcut::ctrl(b'Z')),
+                MenuItem::disabled(b"Redo", ACT_REDO, Shortcut::ctrl_shift(b'Z')),
+            ],
+        },
+    ];
+    MenuBar::new(rect, menus)
+}
+
+fn handle_menu_action(state: &mut GuskitState, action: MenuAction) {
+    match action {
+        ACT_NEW => {
+            for b in state.canvas.iter_mut() {
+                *b = 255;
+            }
+            if let Some(ref mut sess) = state.session {
+                sess.send_op(&DrawOp::Clear);
+            }
+        }
+        ACT_OPEN => {
+            let entries = list_directory(&state.file_picker_dir);
+            let pw = 300.min(state.width as i32 - 20);
+            let ph = 350.min(state.height as i32 - 20);
+            let px = (state.width as i32 - pw) / 2;
+            let py = (state.height as i32 - ph) / 2;
+            let picker_rect = BuiRect::new(px, py, pw, ph);
+            state.file_picker = Some(FilePicker::new(
+                picker_rect,
+                state.file_picker_dir.clone(),
+                entries,
+                &state.picker_theme,
+            ));
+        }
+        ACT_SAVE => {
+            let (path_buf, path_len) = format_save_path(state.save_counter);
+            let path = core::str::from_utf8(&path_buf[..path_len]).unwrap_or("/home/guskit.bmp");
+            let bmp_data =
+                bmp::encode_bmp_24(state.canvas_w as u32, state.canvas_h as u32, &state.canvas);
+            match File::create(path) {
+                Ok(file) => {
+                    let written = write_all(&file, &bmp_data);
+                    if written == bmp_data.len() {
+                        println!("Saved {}", path);
+                    } else {
+                        println!("Save error: wrote {}/{} bytes", written, bmp_data.len());
+                    }
+                }
+                Err(_) => {
+                    println!("Save error: could not create {}", path);
+                }
+            }
+            state.save_counter += 1;
+        }
+        ACT_QUIT => {
+            if let Some(ref mut sess) = state.session {
+                sess.disconnect();
+            }
+            process::exit(0);
+        }
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Main — thin orchestrator
 // ---------------------------------------------------------------------------
 
@@ -1902,6 +1907,11 @@ fn main() {
     let init_height = win.height() as usize;
 
     let mut state = GuskitState::new(init_width, init_height, collab_mode);
+
+    // Menu bar setup
+    let mut menu_bar = build_guskit_menus(init_width as i32);
+    let menu_theme = Theme::dark();
+    menu_bar.layout(&menu_theme);
 
     // Load TTF mono font (falls back to bitmap if unavailable)
     let mut mono_font: Option<CachedFont> = win.take_mono_font();
@@ -1927,25 +1937,23 @@ fn main() {
                         state.my = y.max(0).min(state.height as i32 - 1);
                     }
                 }
-                Event::KeyPress { ascii, .. } => {
-                    match ascii {
-                        b'p' | b'P' => state.tool = Tool::Pencil,
-                        b'b' | b'B' => state.tool = Tool::Brush,
-                        b'l' | b'L' => state.tool = Tool::Line,
-                        b'r' | b'R' => state.tool = Tool::Rect,
-                        b'c' | b'C' => state.tool = Tool::Circle,
-                        b'f' | b'F' => state.tool = Tool::Fill,
-                        b'e' | b'E' => state.tool = Tool::Eraser,
-                        b'1' => state.brush_size = BrushSize::Small,
-                        b'2' => state.brush_size = BrushSize::Medium,
-                        b'3' => state.brush_size = BrushSize::Large,
-                        b'q' | b'Q' => {
-                            if let Some(ref mut sess) = state.session {
-                                sess.disconnect();
-                            }
-                            process::exit(0);
+                Event::KeyPress { ascii, modifiers, .. } => {
+                    if let Some(action) = menu_bar.match_shortcut(ascii, modifiers.ctrl, modifiers.shift, modifiers.alt) {
+                        handle_menu_action(&mut state, action);
+                    } else {
+                        match ascii {
+                            b'p' | b'P' => state.tool = Tool::Pencil,
+                            b'b' | b'B' => state.tool = Tool::Brush,
+                            b'l' | b'L' => state.tool = Tool::Line,
+                            b'r' | b'R' => state.tool = Tool::Rect,
+                            b'c' | b'C' => state.tool = Tool::Circle,
+                            b'f' | b'F' => state.tool = Tool::Fill,
+                            b'e' | b'E' => state.tool = Tool::Eraser,
+                            b'1' => state.brush_size = BrushSize::Small,
+                            b'2' => state.brush_size = BrushSize::Medium,
+                            b'3' => state.brush_size = BrushSize::Large,
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
                 Event::FontChanged => {
@@ -1958,18 +1966,33 @@ fn main() {
                     }
                     process::exit(0);
                 }
+                Event::FocusLost => {
+                    menu_bar.close();
+                }
                 Event::Resized { width: w, height: h } => {
                     state.handle_resize(w as usize, h as usize);
+                    menu_bar.set_rect(BuiRect::new(0, 0, w as i32, MENU_BAR_HEIGHT));
+                    menu_bar.layout(&menu_theme);
                 }
                 _ => {}
             }
         }
 
-        // 3. Process input (file picker modal + press/drag/release state machine)
-        state.process_input();
+        // 3. Menu bar mouse handling, then guarded process_input
+        let buttons: u32 = if state.left_down { 1 } else { 0 };
+        let prev_buttons: u32 = if state.was_down { 1 } else { 0 };
+        let menu_input = libbui::InputState::from_raw(state.mx, state.my, buttons, prev_buttons);
+        if let MenuEvent::Activated(action) = menu_bar.update(&menu_input, &menu_theme) {
+            handle_menu_action(&mut state, action);
+        }
+
+        if !menu_bar.is_open() {
+            state.process_input();
+        }
 
         // 4. Render into window framebuffer
         state.render(win.framebuf(), &mut mono_font, font_size);
+        menu_bar.draw(win.framebuf(), &menu_theme);
 
         // 5. Present (replaces fb_flush)
         let _ = win.present();
