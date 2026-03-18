@@ -46,6 +46,8 @@ libs/*
 !libs/libcollab/**
 !libs/libfont/
 !libs/libfont/**
+!libs/libicon/
+!libs/libicon/**
 
 # Log files
 *.log
