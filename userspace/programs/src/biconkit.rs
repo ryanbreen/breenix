@@ -165,7 +165,6 @@ fn main() {
     let mut mouse_x: i32 = 0;
     let mut mouse_y: i32 = 0;
     let mut mouse_down = false;
-    let mut prev_mouse_down = false;
 
     let mut last_ms: u64 = 0;
 
@@ -178,7 +177,7 @@ fn main() {
         };
         last_ms = now_ms;
 
-        prev_mouse_down = mouse_down;
+        let prev_mouse_down = mouse_down;
 
         // ---------------------------------------------------------------
         // Event processing

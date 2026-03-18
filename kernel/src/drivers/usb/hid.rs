@@ -384,6 +384,18 @@ pub fn process_mouse_report(report: &[u8], ep_idx: u8) {
         let new_y = (abs_y * sh / 32768).min(sh - 1);
         MOUSE_X.store(new_x, Ordering::Relaxed);
         MOUSE_Y.store(new_y, Ordering::Relaxed);
+
+        // Wheel byte follows the 6-byte tablet report.
+        // Parallels: byte[6] is wheel (i8), with report_id prefix → 7+ bytes total.
+        // VMware: byte[6] is wheel (i8), no report_id → 7+ bytes total.
+        let wheel_offset = 6;
+        if actual_len > wheel_offset {
+            let wheel = report[wheel_offset] as i8 as i32;
+            if wheel != 0 {
+                MOUSE_WHEEL.fetch_add(wheel, Ordering::Relaxed);
+            }
+        }
+
         crate::syscall::graphics::wake_compositor_if_waiting();
         return;
     }
@@ -468,6 +480,13 @@ pub fn mouse_state() -> (u32, u32, u32) {
         MOUSE_Y.load(Ordering::Relaxed),
         MOUSE_BUTTONS.load(Ordering::Relaxed),
     )
+}
+
+/// Check if there is pending scroll wheel data (non-consuming peek).
+///
+/// Used by compositor_wait to detect scroll-only input (no cursor movement).
+pub fn has_pending_scroll() -> bool {
+    MOUSE_WHEEL.load(Ordering::Relaxed) != 0
 }
 
 /// Check if there are pending latched button presses (non-consuming peek).
