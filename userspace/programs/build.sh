@@ -265,6 +265,7 @@ STD_BINARIES=(
     "bcheck"
 
     # Apps
+    "biconkit"
     "guskit"
     "bterm"
     "blog"
