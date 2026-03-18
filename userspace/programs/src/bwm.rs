@@ -948,7 +948,7 @@ fn send_focus_event(windows: &[Window], win_idx: usize, event_type: u16) {
     if win_idx < windows.len() && windows[win_idx].window_id != 0 {
         let event = WindowInputEvent {
             event_type,
-            keycode: 0, mouse_x: 0, mouse_y: 0, modifiers: 0, _pad: 0,
+            keycode: 0, mouse_x: 0, mouse_y: 0, modifiers: 0, scroll_y: 0,
         };
         let _ = graphics::write_window_input(windows[win_idx].window_id, &event);
     }
@@ -965,7 +965,7 @@ fn route_mouse_button_to_focused(
             mouse_x: win_local_x,
             mouse_y: win_local_y,
             modifiers: 0,
-            _pad: if pressed { 1 } else { 0 },
+            scroll_y: if pressed { 1 } else { 0 },
         };
         let _ = graphics::write_window_input(windows[focused_win].window_id, &event);
     }
@@ -980,7 +980,24 @@ fn route_mouse_move_to_focused(
             event_type: input_event_type::MOUSE_MOVE,
             keycode: 0,
             mouse_x: win_local_x, mouse_y: win_local_y,
-            modifiers: 0, _pad: 0,
+            modifiers: 0, scroll_y: 0,
+        };
+        let _ = graphics::write_window_input(windows[focused_win].window_id, &event);
+    }
+}
+
+fn route_mouse_scroll_to_focused(
+    windows: &[Window], focused_win: usize,
+    win_local_x: i16, win_local_y: i16, scroll_delta: i16,
+) {
+    if focused_win < windows.len() && windows[focused_win].window_id != 0 {
+        let event = WindowInputEvent {
+            event_type: input_event_type::MOUSE_SCROLL,
+            keycode: 0,
+            mouse_x: win_local_x,
+            mouse_y: win_local_y,
+            modifiers: 0,
+            scroll_y: scroll_delta,
         };
         let _ = graphics::write_window_input(windows[focused_win].window_id, &event);
     }
@@ -1088,7 +1105,7 @@ fn discover_windows(
                     mouse_x: default_ch as i16,
                     mouse_y: 0,
                     modifiers: 0,
-                    _pad: 0,
+                    scroll_y: 0,
                 };
                 let _ = graphics::write_window_input(info.buffer_id, &resize_event);
             }
@@ -1249,7 +1266,7 @@ fn execute_hotkey_action(action: &HotkeyAction, windows: &mut Vec<Window>, focus
                 if let Some(idx) = launcher_idx {
                     let event = WindowInputEvent {
                         event_type: input_event_type::CLOSE_REQUESTED,
-                        keycode: 0, mouse_x: 0, mouse_y: 0, modifiers: 0, _pad: 0,
+                        keycode: 0, mouse_x: 0, mouse_y: 0, modifiers: 0, scroll_y: 0,
                     };
                     let _ = graphics::write_window_input(windows[idx].window_id, &event);
                     return;
@@ -1266,7 +1283,7 @@ fn execute_hotkey_action(action: &HotkeyAction, windows: &mut Vec<Window>, focus
             if !windows.is_empty() && focused_win < windows.len() {
                 let event = WindowInputEvent {
                     event_type: input_event_type::CLOSE_REQUESTED,
-                    keycode: 0, mouse_x: 0, mouse_y: 0, modifiers: 0, _pad: 0,
+                    keycode: 0, mouse_x: 0, mouse_y: 0, modifiers: 0, scroll_y: 0,
                 };
                 let _ = graphics::write_window_input(windows[focused_win].window_id, &event);
             }
@@ -1525,7 +1542,7 @@ fn main() {
                                         mouse_x: ascii as i16,
                                         mouse_y: 0,
                                         modifiers,
-                                        _pad: 0,
+                                        scroll_y: 0,
                                     };
                                     route_keyboard_to_focused(&windows, focused_win, &win_event);
                                 }
@@ -1547,7 +1564,7 @@ fn main() {
         // ── 4. Process mouse input (only when mouse changed) ──
         let mut mouse_moved_this_frame = false;
         if ready & graphics::COMPOSITOR_READY_MOUSE != 0 {
-            if let Ok((mx, my, buttons)) = graphics::mouse_state() {
+            if let Ok((mx, my, buttons, scroll_delta)) = graphics::mouse_state_with_scroll() {
                 let new_mx = mx as i32;
                 let new_my = my as i32;
                 let mouse_moved = new_mx != mouse_x || new_my != mouse_y;
@@ -1648,7 +1665,7 @@ fn main() {
                                 mouse_x: new_ch as i16,
                                 mouse_y: 0,
                                 modifiers: 0,
-                                _pad: 0,
+                                scroll_y: 0,
                             };
                             let _ = graphics::write_window_input(
                                 windows[win_idx].window_id, &resize_event,
@@ -1723,7 +1740,7 @@ fn main() {
                                 mouse_x: new_ch as i16,
                                 mouse_y: 0,
                                 modifiers: 0,
-                                _pad: 0,
+                                scroll_y: 0,
                             };
                             let _ = graphics::write_window_input(
                                 windows[win_idx].window_id, &resize_event,
@@ -1742,6 +1759,18 @@ fn main() {
                         let local_y = (mouse_y - windows[focused_win].content_y()) as i16;
                         route_mouse_button_to_focused(&windows, focused_win, 1, false, local_x, local_y);
                     }
+                }
+
+                // Scroll wheel: forward to focused window content area
+                if scroll_delta != 0 && !windows.is_empty() && focused_win < windows.len()
+                    && !windows[focused_win].minimized
+                    && windows[focused_win].window_id != 0
+                {
+                    let local_x = (mouse_x - windows[focused_win].content_x()) as i16;
+                    let local_y = (mouse_y - windows[focused_win].content_y()) as i16;
+                    route_mouse_scroll_to_focused(
+                        &windows, focused_win, local_x, local_y, scroll_delta as i16,
+                    );
                 }
 
                 // Click: focus change + drag or route click to client
@@ -1843,7 +1872,7 @@ fn main() {
                                 if windows[top].hit_close_button(mouse_x, mouse_y) {
                                     let close_event = WindowInputEvent {
                                         event_type: input_event_type::CLOSE_REQUESTED,
-                                        keycode: 0, mouse_x: 0, mouse_y: 0, modifiers: 0, _pad: 0,
+                                        keycode: 0, mouse_x: 0, mouse_y: 0, modifiers: 0, scroll_y: 0,
                                     };
                                     let _ = graphics::write_window_input(windows[top].window_id, &close_event);
                                     if windows[top].owner_pid > 0 {
