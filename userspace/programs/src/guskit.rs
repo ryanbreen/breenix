@@ -15,8 +15,8 @@
 
 use std::process;
 
+use breengel::{CachedFont, Event, Window};
 use libbreenix::fs::{self, File};
-use libbreenix::graphics;
 use libbreenix::io::{self, PollFd};
 use libbreenix::socket::SockAddrIn;
 use libbreenix::time;
@@ -31,8 +31,31 @@ use libgfx::color::Color;
 use libgfx::font;
 use libgfx::framebuf::FrameBuf;
 use libgfx::shapes;
+use libgfx::ttf_font;
 
 use libimg::bmp;
+
+// ---------------------------------------------------------------------------
+// TTF font helper
+// ---------------------------------------------------------------------------
+
+/// Draw text using TTF font if available, falling back to bitmap.
+fn draw_text_auto(
+    fb: &mut FrameBuf,
+    ttf: Option<&mut CachedFont>,
+    text: &str,
+    x: i32,
+    y: i32,
+    size: f32,
+    color: Color,
+    bitmap_scale: usize,
+) {
+    if let Some(f) = ttf {
+        ttf_font::draw_text(fb, f, text, x, y, size, color);
+    } else {
+        font::draw_text(fb, text.as_bytes(), x as usize, y as usize, color, bitmap_scale);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Layout constants
@@ -470,7 +493,7 @@ fn draw_toolbar(fb: &mut FrameBuf, current_tool: Tool, _width: usize) {
     }
 }
 
-fn draw_size_bar(fb: &mut FrameBuf, current_size: BrushSize, width: usize, collab_status: &[u8]) {
+fn draw_size_bar(fb: &mut FrameBuf, current_size: BrushSize, width: usize, collab_status: &[u8], ttf: Option<&mut CachedFont>, font_size: f32) {
     // Size buttons
     let mut x = BUTTON_PAD;
     for size in SIZES {
@@ -482,7 +505,8 @@ fn draw_size_bar(fb: &mut FrameBuf, current_size: BrushSize, width: usize, colla
     // Collaboration status text (between size buttons and action buttons)
     if !collab_status.is_empty() {
         let status_x = x + 8;
-        font::draw_text(fb, collab_status, status_x, SIZE_BAR_Y + 5, Color::rgb(140, 200, 140), 1);
+        let status_str = core::str::from_utf8(collab_status).unwrap_or("");
+        draw_text_auto(fb, ttf, status_str, status_x as i32, (SIZE_BAR_Y + 5) as i32, font_size, Color::rgb(140, 200, 140), 1);
     }
 
     // Action buttons on the right
@@ -555,11 +579,11 @@ fn draw_sv_square(fb: &mut FrameBuf, hue: u16, sat: u8, val: u8) {
     fb.mark_dirty(0, SV_SQUARE_Y as i32, SV_SQUARE_SIZE as i32, SV_SQUARE_SIZE as i32);
 }
 
-fn draw_recent_colors(fb: &mut FrameBuf, recent: &[Color; 8]) {
+fn draw_recent_colors(fb: &mut FrameBuf, recent: &[Color; 8], ttf: Option<&mut CachedFont>, font_size: f32) {
     let base_x = SV_SQUARE_SIZE + 8;
     let base_y = SV_SQUARE_Y + 2;
 
-    font::draw_text(fb, b"Recent:", base_x, base_y, Color::GRAY, 1);
+    draw_text_auto(fb, ttf, "Recent:", base_x as i32, base_y as i32, font_size, Color::GRAY, 1);
 
     for (i, c) in recent.iter().enumerate() {
         let x = base_x + i * (RECENT_COLOR_SIZE + 2);
@@ -1015,570 +1039,759 @@ fn dim_background(fb: &mut FrameBuf, width: usize, height: usize) {
 }
 
 // ---------------------------------------------------------------------------
-// Main
+// GuskitState — all mutable application state
 // ---------------------------------------------------------------------------
 
-fn main() {
-    println!("Gus Kit starting!");
+struct GuskitState {
+    // Drawing state
+    tool: Tool,
+    hue: u16,
+    saturation: u8,
+    value: u8,
+    color: Color,
+    brush_size: BrushSize,
+    mouse_down: bool,
+    drag_start: (i32, i32),
+    prev_mouse: (i32, i32),
+    recent_colors: [Color; 8],
+    save_counter: u32,
 
-    let collab_mode = parse_collab_args();
+    // Canvas
+    canvas: Vec<u8>,
+    canvas_w: usize,
+    canvas_h: usize,
 
-    let info = match graphics::fbinfo() {
-        Ok(info) => info,
-        Err(_) => {
-            println!("Error: Could not get framebuffer info");
-            process::exit(1);
-        }
-    };
+    // Input tracking
+    mx: i32,
+    my: i32,
+    left_down: bool,
+    was_down: bool,
 
-    let width = info.left_pane_width() as usize;
-    let height = info.height as usize;
-    let bpp = info.bytes_per_pixel as usize;
+    // Collaboration
+    session: Option<CollabSession>,
+    remote_cursors: Vec<RemoteCursor>,
+    cursor_send_counter: u32,
+    collab_poll_fds: [PollFd; 20],
 
-    let fb_ptr = match graphics::fb_mmap() {
-        Ok(ptr) => ptr,
-        Err(e) => {
-            println!("Error: Could not mmap framebuffer ({})", e);
-            process::exit(1);
-        }
-    };
+    // File picker
+    file_picker: Option<FilePicker>,
+    file_picker_dir: Vec<u8>,
+    picker_theme: Theme,
 
-    let mut fb = unsafe {
-        FrameBuf::from_raw(
-            fb_ptr,
+    // Window dimensions
+    width: usize,
+    height: usize,
+}
+
+impl GuskitState {
+    fn new(width: usize, height: usize, collab_mode: CollabMode) -> Self {
+        let canvas_w = width;
+        let canvas_h = height.saturating_sub(CANVAS_Y);
+        let canvas = vec![255u8; canvas_w * canvas_h * 3]; // white background
+
+        let hue: u16 = 0;
+        let saturation: u8 = 255;
+        let value: u8 = 255;
+        let color = hsv_to_rgb(hue, saturation, value);
+
+        let session: Option<CollabSession> = match &collab_mode {
+            CollabMode::None => None,
+            CollabMode::Host { port } => {
+                match CollabSession::host(*port, b"Host", canvas_w as u16, canvas_h as u16) {
+                    Ok(s) => {
+                        println!("Hosting collab session on port {}", port);
+                        Some(s)
+                    }
+                    Err(e) => {
+                        println!("Failed to host: {}", e);
+                        None
+                    }
+                }
+            }
+            CollabMode::Join { addr, port } => {
+                let sock_addr = SockAddrIn::new(*addr, *port);
+                match CollabSession::join(&sock_addr, b"Guest") {
+                    Ok(s) => {
+                        println!(
+                            "Joined collab session at {}.{}.{}.{}:{}",
+                            addr[0], addr[1], addr[2], addr[3], port
+                        );
+                        Some(s)
+                    }
+                    Err(e) => {
+                        println!("Failed to join: {}", e);
+                        None
+                    }
+                }
+            }
+        };
+
+        GuskitState {
+            tool: Tool::Pencil,
+            hue,
+            saturation,
+            value,
+            color,
+            brush_size: BrushSize::Medium,
+            mouse_down: false,
+            drag_start: (0, 0),
+            prev_mouse: (0, 0),
+            recent_colors: [
+                Color::BLACK,
+                Color::RED,
+                Color::GREEN,
+                Color::BLUE,
+                Color::YELLOW,
+                Color::MAGENTA,
+                Color::CYAN,
+                Color::WHITE,
+            ],
+            save_counter: 0,
+            canvas,
+            canvas_w,
+            canvas_h,
+            mx: 0,
+            my: 0,
+            left_down: false,
+            was_down: false,
+            session,
+            remote_cursors: Vec::new(),
+            cursor_send_counter: 0,
+            collab_poll_fds: [PollFd::default(); 20],
+            file_picker: None,
+            file_picker_dir: Vec::from(b"/home" as &[u8]),
+            picker_theme: Theme::dark(),
             width,
             height,
-            width * bpp,
-            bpp,
-            info.is_bgr(),
-        )
-    };
-
-    // Canvas dimensions
-    let canvas_w = width;
-    let canvas_h = height.saturating_sub(CANVAS_Y);
-    let mut canvas = vec![255u8; canvas_w * canvas_h * 3]; // white background
-
-    // Initialize collaboration session
-    let mut session: Option<CollabSession> = match &collab_mode {
-        CollabMode::None => None,
-        CollabMode::Host { port } => {
-            match CollabSession::host(*port, b"Host", canvas_w as u16, canvas_h as u16) {
-                Ok(s) => {
-                    println!("Hosting collab session on port {}", port);
-                    Some(s)
-                }
-                Err(e) => {
-                    println!("Failed to host: {}", e);
-                    None
-                }
-            }
         }
-        CollabMode::Join { addr, port } => {
-            let sock_addr = SockAddrIn::new(*addr, *port);
-            match CollabSession::join(&sock_addr, b"Guest") {
-                Ok(s) => {
-                    println!("Joined collab session at {}.{}.{}.{}:{}", addr[0], addr[1], addr[2], addr[3], port);
-                    Some(s)
-                }
-                Err(e) => {
-                    println!("Failed to join: {}", e);
-                    None
-                }
-            }
-        }
-    };
+    }
 
-    // State
-    let mut tool = Tool::Pencil;
-    let mut hue: u16 = 0;
-    let mut saturation: u8 = 255;
-    let mut value: u8 = 255;
-    let mut color = hsv_to_rgb(hue, saturation, value);
-    let mut brush_size = BrushSize::Medium;
-    let mut mouse_down = false;
-    let mut drag_start: (i32, i32) = (0, 0);
-    let mut prev_mouse: (i32, i32) = (0, 0);
-    let mut recent_colors = [
-        Color::BLACK,
-        Color::RED,
-        Color::GREEN,
-        Color::BLUE,
-        Color::YELLOW,
-        Color::MAGENTA,
-        Color::CYAN,
-        Color::WHITE,
-    ];
-    let mut save_counter: u32 = 0;
-    let mut prev_buttons: u32 = 0;
-    let mut file_picker: Option<FilePicker> = None;
-    let mut file_picker_dir: Vec<u8> = Vec::from(b"/home" as &[u8]);
-    let picker_theme = Theme::dark();
-
-    // Remote cursor state
-    let mut remote_cursors: Vec<RemoteCursor> = Vec::new();
-    // Cursor update throttle (send at ~10Hz = every 6 frames at 60fps)
-    let mut cursor_send_counter: u32 = 0;
-
-    let bg = Color::rgb(40, 40, 40);
-
-    // Poll FD buffer for collaboration sockets
-    let mut collab_poll_fds = [PollFd::default(); 20];
-
-    loop {
-        // -- Poll for collaboration I/O with 16ms timeout --
-        let collab_n = if let Some(ref sess) = session {
-            sess.poll_fds(&mut collab_poll_fds)
+    /// Poll collaboration sockets non-blocking (timeout=0). Used in the
+    /// Breengel event loop where frame pacing is handled by sleep_ms at the
+    /// end of the loop, not inside the collab poll.
+    fn poll_collab_io_nonblocking(&mut self) {
+        let collab_n = if let Some(ref sess) = self.session {
+            sess.poll_fds(&mut self.collab_poll_fds)
         } else {
             0
         };
 
         if collab_n > 0 {
-            let _ = io::poll(&mut collab_poll_fds[..collab_n], 16);
-            if let Some(ref mut sess) = session {
-                sess.process_io(&collab_poll_fds[..collab_n]);
+            let _ = io::poll(&mut self.collab_poll_fds[..collab_n], 0);
+            if let Some(ref mut sess) = self.session {
+                sess.process_io(&self.collab_poll_fds[..collab_n]);
             }
-        } else {
-            let _ = time::sleep_ms(16);
         }
+    }
 
-        // -- Process collaboration events --
-        if let Some(ref mut sess) = session {
-            while let Some(event) = sess.next_event() {
-                match event {
-                    CollabEvent::PeerJoined { peer_id, name, name_len } => {
-                        println!("Peer {} joined", peer_id);
-                        remote_cursors.push(RemoteCursor {
-                            peer_id,
-                            x: 0,
-                            y: 0,
-                            visible: false,
-                            name,
-                            name_len,
-                        });
-                        // Host: send canvas sync to new joiner
+    /// Drain the CollabSession event queue and apply all pending remote events.
+    fn process_collab_events(&mut self) {
+        loop {
+            let event = if let Some(ref mut sess) = self.session {
+                sess.next_event()
+            } else {
+                break;
+            };
+
+            match event {
+                None => break,
+                Some(CollabEvent::PeerJoined { peer_id, name, name_len }) => {
+                    println!("Peer {} joined", peer_id);
+                    self.remote_cursors.push(RemoteCursor {
+                        peer_id,
+                        x: 0,
+                        y: 0,
+                        visible: false,
+                        name,
+                        name_len,
+                    });
+                    // Host: send canvas sync to new joiner
+                    if let Some(ref mut sess) = self.session {
                         if sess.is_host() {
                             sess.send_canvas_sync(
                                 peer_id,
-                                &canvas,
-                                canvas_w as u16,
-                                canvas_h as u16,
+                                &self.canvas,
+                                self.canvas_w as u16,
+                                self.canvas_h as u16,
                             );
                         }
                     }
-                    CollabEvent::PeerLeft { peer_id } => {
-                        println!("Peer {} left", peer_id);
-                        remote_cursors.retain(|c| c.peer_id != peer_id);
+                }
+                Some(CollabEvent::PeerLeft { peer_id }) => {
+                    println!("Peer {} left", peer_id);
+                    self.remote_cursors.retain(|c| c.peer_id != peer_id);
+                }
+                Some(CollabEvent::DrawOp(op)) => {
+                    apply_draw_op(&mut self.canvas, self.canvas_w, self.canvas_h, &op);
+                }
+                Some(CollabEvent::CursorMoved { peer_id, x, y, visible }) => {
+                    if let Some(rc) = self.remote_cursors.iter_mut().find(|c| c.peer_id == peer_id) {
+                        rc.x = x;
+                        rc.y = y;
+                        rc.visible = visible;
+                    } else {
+                        // Peer cursor we haven't seen yet
+                        self.remote_cursors.push(RemoteCursor {
+                            peer_id,
+                            x,
+                            y,
+                            visible,
+                            name: [0; 32],
+                            name_len: 0,
+                        });
                     }
-                    CollabEvent::DrawOp(op) => {
-                        apply_draw_op(&mut canvas, canvas_w, canvas_h, &op);
+                }
+                Some(CollabEvent::ToolChanged { .. }) => {
+                    // Could update remote cursor appearance
+                }
+                Some(CollabEvent::SyncChunk { offset, data }) => {
+                    // Write chunk data into canvas buffer
+                    let start = offset as usize;
+                    let end = (start + data.len()).min(self.canvas.len());
+                    let copy_len = end.saturating_sub(start);
+                    if copy_len > 0 {
+                        self.canvas[start..start + copy_len].copy_from_slice(&data[..copy_len]);
                     }
-                    CollabEvent::CursorMoved { peer_id, x, y, visible } => {
-                        if let Some(rc) = remote_cursors.iter_mut().find(|c| c.peer_id == peer_id) {
-                            rc.x = x;
-                            rc.y = y;
-                            rc.visible = visible;
-                        } else {
-                            // Peer cursor we haven't seen yet
-                            remote_cursors.push(RemoteCursor {
-                                peer_id,
-                                x,
-                                y,
-                                visible,
-                                name: [0; 32],
-                                name_len: 0,
-                            });
-                        }
-                    }
-                    CollabEvent::ToolChanged { .. } => {
-                        // Could update remote cursor appearance
-                    }
-                    CollabEvent::SyncChunk { offset, data } => {
-                        // Write chunk data into canvas buffer
-                        let start = offset as usize;
-                        let end = (start + data.len()).min(canvas.len());
-                        let copy_len = end.saturating_sub(start);
-                        if copy_len > 0 {
-                            canvas[start..start + copy_len].copy_from_slice(&data[..copy_len]);
-                        }
-                    }
-                    CollabEvent::SyncComplete => {
-                        println!("Canvas sync complete");
-                    }
-                    CollabEvent::SessionEnded => {
-                        println!("Collab session ended");
-                        session = None;
-                        remote_cursors.clear();
-                        break;
-                    }
+                }
+                Some(CollabEvent::SyncComplete) => {
+                    println!("Canvas sync complete");
+                }
+                Some(CollabEvent::SessionEnded) => {
+                    println!("Collab session ended");
+                    self.session = None;
+                    self.remote_cursors.clear();
+                    break;
                 }
             }
         }
+    }
 
-        // Poll mouse
-        let (raw_mx, raw_my, buttons) = match graphics::mouse_state() {
-            Ok((x, y, b)) => (x, y, b),
-            Err(_) => (0, 0, 0),
-        };
+    /// Handle a mouse press event (called when left button transitions from up to down).
+    /// Sets mouse_down and handles toolbar/UI hit-testing and canvas tool activation.
+    fn handle_mouse_press(&mut self) {
+        self.mouse_down = true;
+        let umx = self.mx as usize;
+        let umy = self.my as usize;
 
-        // Clamp mouse to left pane
-        let mx = (raw_mx as usize).min(width.saturating_sub(1)) as i32;
-        let my = (raw_my as usize).min(height.saturating_sub(1)) as i32;
-        let left_down = (buttons & 1) != 0;
-        let was_down = (prev_buttons & 1) != 0;
+        // Hit test UI elements first
+        if let Some(t) = hit_tool(umx, umy) {
+            self.tool = t;
+            self.mouse_down = false;
+            // Notify peers of tool change
+            if let Some(ref mut sess) = self.session {
+                sess.send_tool_change(
+                    self.tool.to_wire_id(),
+                    self.brush_size.radius() as u8,
+                    self.color.r,
+                    self.color.g,
+                    self.color.b,
+                );
+            }
+        } else if let Some(s) = hit_size(umx, umy) {
+            self.brush_size = s;
+            self.mouse_down = false;
+            if let Some(ref mut sess) = self.session {
+                sess.send_tool_change(
+                    self.tool.to_wire_id(),
+                    self.brush_size.radius() as u8,
+                    self.color.r,
+                    self.color.g,
+                    self.color.b,
+                );
+            }
+        } else if let Some(action) = hit_action(umx, umy, self.width) {
+            self.mouse_down = false;
+            match action {
+                Action::Open => {
+                    let entries = list_directory(&self.file_picker_dir);
+                    let pw = 300.min(self.width as i32 - 20);
+                    let ph = 350.min(self.height as i32 - 20);
+                    let px = (self.width as i32 - pw) / 2;
+                    let py = (self.height as i32 - ph) / 2;
+                    let picker_rect = BuiRect::new(px, py, pw, ph);
+                    self.file_picker = Some(FilePicker::new(
+                        picker_rect,
+                        self.file_picker_dir.clone(),
+                        entries,
+                        &self.picker_theme,
+                    ));
+                }
+                Action::Save => {
+                    let (path_buf, path_len) = format_save_path(self.save_counter);
+                    let path =
+                        core::str::from_utf8(&path_buf[..path_len]).unwrap_or("/home/guskit.bmp");
+                    let bmp_data =
+                        bmp::encode_bmp_24(self.canvas_w as u32, self.canvas_h as u32, &self.canvas);
+                    match File::create(path) {
+                        Ok(file) => {
+                            let written = write_all(&file, &bmp_data);
+                            if written == bmp_data.len() {
+                                println!("Saved {}", path);
+                            } else {
+                                println!(
+                                    "Save error: wrote {}/{} bytes",
+                                    written,
+                                    bmp_data.len()
+                                );
+                            }
+                        }
+                        Err(_) => {
+                            println!("Save error: could not create {}", path);
+                        }
+                    }
+                    self.save_counter += 1;
+                }
+                Action::Clear => {
+                    for b in self.canvas.iter_mut() {
+                        *b = 255;
+                    }
+                    if let Some(ref mut sess) = self.session {
+                        sess.send_op(&DrawOp::Clear);
+                    }
+                }
+                Action::Quit => {
+                    if let Some(ref mut sess) = self.session {
+                        sess.disconnect();
+                    }
+                    process::exit(0);
+                }
+            }
+        } else if let Some(h) = hit_hue_bar(umx, umy, self.width) {
+            self.hue = h;
+            self.color = hsv_to_rgb(self.hue, self.saturation, self.value);
+            self.mouse_down = false;
+        } else if let Some((s, v)) = hit_sv_square(umx, umy) {
+            self.saturation = s;
+            self.value = v;
+            self.color = hsv_to_rgb(self.hue, self.saturation, self.value);
+            self.mouse_down = false;
+        } else if let Some(i) = hit_recent(umx, umy) {
+            self.color = self.recent_colors[i];
+            // Reverse-derive HSV (approximate) not needed, just use color directly
+            self.mouse_down = false;
+        } else if let Some((cx, cy)) = hit_canvas(umx, umy, self.canvas_w, self.canvas_h) {
+            // Start drawing on canvas
+            self.drag_start = (cx, cy);
+            self.prev_mouse = (cx, cy);
 
+            match self.tool {
+                Tool::Pencil => {
+                    canvas_put_pixel(&mut self.canvas, self.canvas_w, self.canvas_h, cx, cy, self.color);
+                    if let Some(ref mut sess) = self.session {
+                        sess.send_op(&DrawOp::Pencil {
+                            x0: cx as i16,
+                            y0: cy as i16,
+                            x1: cx as i16,
+                            y1: cy as i16,
+                            r: self.color.r,
+                            g: self.color.g,
+                            b: self.color.b,
+                        });
+                    }
+                }
+                Tool::Brush => {
+                    canvas_fill_circle(
+                        &mut self.canvas,
+                        self.canvas_w,
+                        self.canvas_h,
+                        cx,
+                        cy,
+                        self.brush_size.radius(),
+                        self.color,
+                    );
+                    if let Some(ref mut sess) = self.session {
+                        sess.send_op(&DrawOp::Brush {
+                            x0: cx as i16,
+                            y0: cy as i16,
+                            x1: cx as i16,
+                            y1: cy as i16,
+                            radius: self.brush_size.radius() as u8,
+                            r: self.color.r,
+                            g: self.color.g,
+                            b: self.color.b,
+                        });
+                    }
+                }
+                Tool::Eraser => {
+                    canvas_fill_circle(
+                        &mut self.canvas,
+                        self.canvas_w,
+                        self.canvas_h,
+                        cx,
+                        cy,
+                        self.brush_size.radius(),
+                        Color::WHITE,
+                    );
+                    if let Some(ref mut sess) = self.session {
+                        sess.send_op(&DrawOp::Eraser {
+                            x0: cx as i16,
+                            y0: cy as i16,
+                            x1: cx as i16,
+                            y1: cy as i16,
+                            radius: self.brush_size.radius() as u8,
+                        });
+                    }
+                }
+                Tool::Fill => {
+                    canvas_flood_fill(&mut self.canvas, self.canvas_w, self.canvas_h, cx, cy, self.color);
+                    self.mouse_down = false;
+                    if let Some(ref mut sess) = self.session {
+                        sess.send_op(&DrawOp::Fill {
+                            x: cx as i16,
+                            y: cy as i16,
+                            r: self.color.r,
+                            g: self.color.g,
+                            b: self.color.b,
+                        });
+                    }
+                }
+                Tool::Line | Tool::Rect | Tool::Circle => {
+                    // Shape tools: just record start, preview during drag
+                }
+            }
+        }
+    }
+
+    /// Handle continuous drawing while the mouse button is held (drag).
+    fn handle_mouse_drag(&mut self) {
+        if let Some((cx, cy)) = hit_canvas(self.mx as usize, self.my as usize, self.canvas_w, self.canvas_h) {
+            match self.tool {
+                Tool::Pencil => {
+                    canvas_draw_line(
+                        &mut self.canvas,
+                        self.canvas_w,
+                        self.canvas_h,
+                        self.prev_mouse.0,
+                        self.prev_mouse.1,
+                        cx,
+                        cy,
+                        self.color,
+                    );
+                    if let Some(ref mut sess) = self.session {
+                        sess.send_op(&DrawOp::Pencil {
+                            x0: self.prev_mouse.0 as i16,
+                            y0: self.prev_mouse.1 as i16,
+                            x1: cx as i16,
+                            y1: cy as i16,
+                            r: self.color.r,
+                            g: self.color.g,
+                            b: self.color.b,
+                        });
+                    }
+                }
+                Tool::Brush => {
+                    canvas_brush_line(
+                        &mut self.canvas,
+                        self.canvas_w,
+                        self.canvas_h,
+                        self.prev_mouse.0,
+                        self.prev_mouse.1,
+                        cx,
+                        cy,
+                        self.brush_size.radius(),
+                        self.color,
+                    );
+                    if let Some(ref mut sess) = self.session {
+                        sess.send_op(&DrawOp::Brush {
+                            x0: self.prev_mouse.0 as i16,
+                            y0: self.prev_mouse.1 as i16,
+                            x1: cx as i16,
+                            y1: cy as i16,
+                            radius: self.brush_size.radius() as u8,
+                            r: self.color.r,
+                            g: self.color.g,
+                            b: self.color.b,
+                        });
+                    }
+                }
+                Tool::Eraser => {
+                    canvas_brush_line(
+                        &mut self.canvas,
+                        self.canvas_w,
+                        self.canvas_h,
+                        self.prev_mouse.0,
+                        self.prev_mouse.1,
+                        cx,
+                        cy,
+                        self.brush_size.radius(),
+                        Color::WHITE,
+                    );
+                    if let Some(ref mut sess) = self.session {
+                        sess.send_op(&DrawOp::Eraser {
+                            x0: self.prev_mouse.0 as i16,
+                            y0: self.prev_mouse.1 as i16,
+                            x1: cx as i16,
+                            y1: cy as i16,
+                            radius: self.brush_size.radius() as u8,
+                        });
+                    }
+                }
+                _ => {}
+            }
+            self.prev_mouse = (cx, cy);
+        }
+    }
+
+    /// Handle mouse release: commit shape tools and add to recent colors.
+    fn handle_mouse_release(&mut self) {
+        self.mouse_down = false;
+        if let Some((cx, cy)) =
+            hit_canvas(self.mx as usize, self.my as usize, self.canvas_w, self.canvas_h)
+        {
+            match self.tool {
+                Tool::Line => {
+                    canvas_draw_line(
+                        &mut self.canvas,
+                        self.canvas_w,
+                        self.canvas_h,
+                        self.drag_start.0,
+                        self.drag_start.1,
+                        cx,
+                        cy,
+                        self.color,
+                    );
+                    add_recent(&mut self.recent_colors, self.color);
+                    if let Some(ref mut sess) = self.session {
+                        sess.send_op(&DrawOp::Line {
+                            x0: self.drag_start.0 as i16,
+                            y0: self.drag_start.1 as i16,
+                            x1: cx as i16,
+                            y1: cy as i16,
+                            r: self.color.r,
+                            g: self.color.g,
+                            b: self.color.b,
+                        });
+                    }
+                }
+                Tool::Rect => {
+                    let rx = self.drag_start.0.min(cx);
+                    let ry = self.drag_start.1.min(cy);
+                    let rw = (self.drag_start.0 - cx).abs();
+                    let rh = (self.drag_start.1 - cy).abs();
+                    canvas_fill_rect(&mut self.canvas, self.canvas_w, self.canvas_h, rx, ry, rw, rh, self.color);
+                    add_recent(&mut self.recent_colors, self.color);
+                    if let Some(ref mut sess) = self.session {
+                        sess.send_op(&DrawOp::Rect {
+                            x: rx as i16,
+                            y: ry as i16,
+                            w: rw as i16,
+                            h: rh as i16,
+                            r: self.color.r,
+                            g: self.color.g,
+                            b: self.color.b,
+                        });
+                    }
+                }
+                Tool::Circle => {
+                    let dx = (cx - self.drag_start.0) as i64;
+                    let dy = (cy - self.drag_start.1) as i64;
+                    let radius = isqrt((dx * dx + dy * dy) as u64) as i32;
+                    canvas_fill_circle(
+                        &mut self.canvas,
+                        self.canvas_w,
+                        self.canvas_h,
+                        self.drag_start.0,
+                        self.drag_start.1,
+                        radius,
+                        self.color,
+                    );
+                    add_recent(&mut self.recent_colors, self.color);
+                    if let Some(ref mut sess) = self.session {
+                        sess.send_op(&DrawOp::Circle {
+                            cx: self.drag_start.0 as i16,
+                            cy: self.drag_start.1 as i16,
+                            radius: radius as i16,
+                            r: self.color.r,
+                            g: self.color.g,
+                            b: self.color.b,
+                        });
+                    }
+                }
+                Tool::Pencil | Tool::Brush | Tool::Eraser => {
+                    add_recent(&mut self.recent_colors, self.color);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Process all mouse input for this frame. Handles file picker modal intercept,
+    /// then press/drag/release state machine for normal drawing.
+    /// `left_down` and `was_down` must already be updated from Breengel events
+    /// before calling this method.
+    fn process_input(&mut self) {
         // Send cursor update to peers (throttled to ~10Hz)
-        cursor_send_counter += 1;
-        if cursor_send_counter >= 6 {
-            cursor_send_counter = 0;
-            if let Some(ref mut sess) = session {
-                let canvas_y = my - CANVAS_Y as i32;
-                let on_canvas = mx >= 0 && mx < canvas_w as i32 && canvas_y >= 0 && canvas_y < canvas_h as i32;
-                sess.send_cursor(mx as i16, canvas_y as i16, on_canvas);
+        self.cursor_send_counter += 1;
+        if self.cursor_send_counter >= 6 {
+            self.cursor_send_counter = 0;
+            if let Some(ref mut sess) = self.session {
+                let canvas_y = self.my - CANVAS_Y as i32;
+                let on_canvas = self.mx >= 0
+                    && self.mx < self.canvas_w as i32
+                    && canvas_y >= 0
+                    && canvas_y < self.canvas_h as i32;
+                sess.send_cursor(self.mx as i16, canvas_y as i16, on_canvas);
             }
         }
 
-        // Build input state for file picker
-        let input = libbui::InputState::from_raw(mx, my, buttons, prev_buttons);
+        // Build input state for file picker — synthesize button words from tracked state
+        let buttons: u32 = if self.left_down { 1 } else { 0 };
+        let prev_buttons: u32 = if self.was_down { 1 } else { 0 };
+        let input = libbui::InputState::from_raw(self.mx, self.my, buttons, prev_buttons);
 
-        // File picker modal handling
-        if let Some(ref mut picker) = file_picker {
+        // File picker modal handling — two-phase to avoid overlapping borrows:
+        // Phase 1: update picker, extract result + any needed data while picker borrow is live.
+        // Phase 2: act on the result after the picker borrow has ended.
+        enum PickerAction {
+            None,
+            OpenFile(Vec<u8>),   // full path bytes to load
+            Navigate(Vec<u8>),   // dir entry name to navigate into
+            Close,
+        }
+        let picker_action = if let Some(ref mut picker) = self.file_picker {
             match picker.update(&input) {
                 FilePickerResult::Selected(_idx) => {
-                    if let Some(entry) = picker.selected_entry() {
-                        let full_path = join_path(&file_picker_dir, &entry.name);
-                        let path_str = core::str::from_utf8(&full_path).unwrap_or("");
-                        if let Ok(file) = File::open(path_str, fs::O_RDONLY) {
-                            let mut file_data = Vec::new();
-                            let mut chunk = [0u8; 4096];
-                            loop {
-                                match file.read(&mut chunk) {
-                                    Ok(0) => break,
-                                    Ok(n) => file_data.extend_from_slice(&chunk[..n]),
-                                    Err(_) => break,
-                                }
-                            }
-                            if let Some((bw, bh, rgb)) = bmp::decode_bmp_24(&file_data) {
-                                let copy_w = (bw as usize).min(canvas_w);
-                                let copy_h = (bh as usize).min(canvas_h);
-                                for b in canvas.iter_mut() {
-                                    *b = 255;
-                                }
-                                for y in 0..copy_h {
-                                    for x in 0..copy_w {
-                                        let si = (y * bw as usize + x) * 3;
-                                        let di = (y * canvas_w + x) * 3;
-                                        canvas[di] = rgb[si];
-                                        canvas[di + 1] = rgb[si + 1];
-                                        canvas[di + 2] = rgb[si + 2];
-                                    }
-                                }
-                                println!("Opened {}", path_str);
-                            }
-                        }
+                    let name_opt = picker.selected_entry().map(|e| e.name.clone());
+                    match name_opt {
+                        Some(name) => PickerAction::OpenFile(join_path(&self.file_picker_dir, &name)),
+                        None => PickerAction::Close,
                     }
-                    file_picker = None;
                 }
                 FilePickerResult::NavigateDir(_idx) => {
-                    let entry_name = picker.selected_entry().map(|e| e.name.clone());
-                    if let Some(name) = entry_name {
-                        if name == b".." {
-                            if let Some(pos) = file_picker_dir.iter().rposition(|&b| b == b'/') {
-                                if pos == 0 {
-                                    file_picker_dir = Vec::from(b"/" as &[u8]);
-                                } else {
-                                    file_picker_dir.truncate(pos);
-                                }
-                            }
-                        } else {
-                            file_picker_dir = join_path(&file_picker_dir, &name);
-                        }
-                        let entries = list_directory(&file_picker_dir);
-                        picker.navigate(file_picker_dir.clone(), entries);
+                    let name_opt = picker.selected_entry().map(|e| e.name.clone());
+                    match name_opt {
+                        Some(name) => PickerAction::Navigate(name),
+                        None => PickerAction::None,
                     }
                 }
-                FilePickerResult::Cancelled => {
-                    file_picker = None;
-                }
-                FilePickerResult::Active => {}
+                FilePickerResult::Cancelled => PickerAction::Close,
+                FilePickerResult::Active => PickerAction::None,
             }
         } else {
-        // Normal input handling (not in file picker mode)
+            PickerAction::None
+        };
 
-        // Mouse press
-        if left_down && !was_down {
-            mouse_down = true;
-            let umx = mx as usize;
-            let umy = my as usize;
-
-            // Hit test UI elements first
-            if let Some(t) = hit_tool(umx, umy) {
-                tool = t;
-                mouse_down = false;
-                // Notify peers of tool change
-                if let Some(ref mut sess) = session {
-                    sess.send_tool_change(tool.to_wire_id(), brush_size.radius() as u8, color.r, color.g, color.b);
-                }
-            } else if let Some(s) = hit_size(umx, umy) {
-                brush_size = s;
-                mouse_down = false;
-                if let Some(ref mut sess) = session {
-                    sess.send_tool_change(tool.to_wire_id(), brush_size.radius() as u8, color.r, color.g, color.b);
-                }
-            } else if let Some(action) = hit_action(umx, umy, width) {
-                mouse_down = false;
-                match action {
-                    Action::Open => {
-                        let entries = list_directory(&file_picker_dir);
-                        let pw = 300.min(width as i32 - 20);
-                        let ph = 350.min(height as i32 - 20);
-                        let px = (width as i32 - pw) / 2;
-                        let py = (height as i32 - ph) / 2;
-                        let picker_rect = BuiRect::new(px, py, pw, ph);
-                        file_picker = Some(FilePicker::new(
-                            picker_rect,
-                            file_picker_dir.clone(),
-                            entries,
-                            &picker_theme,
-                        ));
-                    }
-                    Action::Save => {
-                        let (path_buf, path_len) = format_save_path(save_counter);
-                        let path = core::str::from_utf8(&path_buf[..path_len]).unwrap_or("/home/guskit.bmp");
-                        let bmp_data = bmp::encode_bmp_24(canvas_w as u32, canvas_h as u32, &canvas);
-                        match File::create(path) {
-                            Ok(file) => {
-                                let written = write_all(&file, &bmp_data);
-                                if written == bmp_data.len() {
-                                    println!("Saved {}", path);
-                                } else {
-                                    println!("Save error: wrote {}/{} bytes", written, bmp_data.len());
-                                }
-                            }
-                            Err(_) => {
-                                println!("Save error: could not create {}", path);
-                            }
+        // Phase 2: act on result now that the picker borrow is released.
+        match picker_action {
+            PickerAction::OpenFile(full_path) => {
+                let path_str = core::str::from_utf8(&full_path).unwrap_or("");
+                if let Ok(file) = File::open(path_str, fs::O_RDONLY) {
+                    let mut file_data = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    loop {
+                        match file.read(&mut chunk) {
+                            Ok(0) => break,
+                            Ok(n) => file_data.extend_from_slice(&chunk[..n]),
+                            Err(_) => break,
                         }
-                        save_counter += 1;
                     }
-                    Action::Clear => {
-                        for b in canvas.iter_mut() {
+                    if let Some((bw, bh, rgb)) = bmp::decode_bmp_24(&file_data) {
+                        let copy_w = (bw as usize).min(self.canvas_w);
+                        let copy_h = (bh as usize).min(self.canvas_h);
+                        for b in self.canvas.iter_mut() {
                             *b = 255;
                         }
-                        if let Some(ref mut sess) = session {
-                            sess.send_op(&DrawOp::Clear);
+                        for y in 0..copy_h {
+                            for x in 0..copy_w {
+                                let si = (y * bw as usize + x) * 3;
+                                let di = (y * self.canvas_w + x) * 3;
+                                self.canvas[di] = rgb[si];
+                                self.canvas[di + 1] = rgb[si + 1];
+                                self.canvas[di + 2] = rgb[si + 2];
+                            }
                         }
-                    }
-                    Action::Quit => {
-                        if let Some(ref mut sess) = session {
-                            sess.disconnect();
-                        }
-                        process::exit(0);
+                        println!("Opened {}", path_str);
                     }
                 }
-            } else if let Some(h) = hit_hue_bar(umx, umy, width) {
-                hue = h;
-                color = hsv_to_rgb(hue, saturation, value);
-                mouse_down = false;
-            } else if let Some((s, v)) = hit_sv_square(umx, umy) {
-                saturation = s;
-                value = v;
-                color = hsv_to_rgb(hue, saturation, value);
-                mouse_down = false;
-            } else if let Some(i) = hit_recent(umx, umy) {
-                color = recent_colors[i];
-                // Reverse-derive HSV (approximate) not needed, just use color directly
-                mouse_down = false;
-            } else if let Some((cx, cy)) = hit_canvas(umx, umy, canvas_w, canvas_h) {
-                // Start drawing on canvas
-                drag_start = (cx, cy);
-                prev_mouse = (cx, cy);
+                self.file_picker = None;
+            }
+            PickerAction::Navigate(name) => {
+                if name == b".." {
+                    if let Some(pos) = self.file_picker_dir.iter().rposition(|&b| b == b'/') {
+                        if pos == 0 {
+                            self.file_picker_dir = Vec::from(b"/" as &[u8]);
+                        } else {
+                            self.file_picker_dir.truncate(pos);
+                        }
+                    }
+                } else {
+                    self.file_picker_dir = join_path(&self.file_picker_dir, &name);
+                }
+                let entries = list_directory(&self.file_picker_dir);
+                if let Some(ref mut picker) = self.file_picker {
+                    picker.navigate(self.file_picker_dir.clone(), entries);
+                }
+            }
+            PickerAction::Close => {
+                self.file_picker = None;
+            }
+            PickerAction::None if self.file_picker.is_some() => {
+                // Picker is active but no action needed — do not fall through to normal input
+            }
+            PickerAction::None => {
+                // Normal input handling (not in file picker mode)
 
-                match tool {
-                    Tool::Pencil => {
-                        canvas_put_pixel(&mut canvas, canvas_w, canvas_h, cx, cy, color);
-                        if let Some(ref mut sess) = session {
-                            sess.send_op(&DrawOp::Pencil {
-                                x0: cx as i16, y0: cy as i16,
-                                x1: cx as i16, y1: cy as i16,
-                                r: color.r, g: color.g, b: color.b,
-                            });
-                        }
-                    }
-                    Tool::Brush => {
-                        canvas_fill_circle(&mut canvas, canvas_w, canvas_h, cx, cy, brush_size.radius(), color);
-                        if let Some(ref mut sess) = session {
-                            sess.send_op(&DrawOp::Brush {
-                                x0: cx as i16, y0: cy as i16,
-                                x1: cx as i16, y1: cy as i16,
-                                radius: brush_size.radius() as u8,
-                                r: color.r, g: color.g, b: color.b,
-                            });
-                        }
-                    }
-                    Tool::Eraser => {
-                        canvas_fill_circle(&mut canvas, canvas_w, canvas_h, cx, cy, brush_size.radius(), Color::WHITE);
-                        if let Some(ref mut sess) = session {
-                            sess.send_op(&DrawOp::Eraser {
-                                x0: cx as i16, y0: cy as i16,
-                                x1: cx as i16, y1: cy as i16,
-                                radius: brush_size.radius() as u8,
-                            });
-                        }
-                    }
-                    Tool::Fill => {
-                        canvas_flood_fill(&mut canvas, canvas_w, canvas_h, cx, cy, color);
-                        mouse_down = false;
-                        if let Some(ref mut sess) = session {
-                            sess.send_op(&DrawOp::Fill {
-                                x: cx as i16, y: cy as i16,
-                                r: color.r, g: color.g, b: color.b,
-                            });
-                        }
-                    }
-                    Tool::Line | Tool::Rect | Tool::Circle => {
-                        // Shape tools: just record start, preview during drag
-                    }
+                // Mouse press
+                if self.left_down && !self.was_down {
+                    self.handle_mouse_press();
+                }
+
+                // Mouse held (dragging)
+                if self.left_down && self.was_down && self.mouse_down {
+                    self.handle_mouse_drag();
+                }
+
+                // Mouse release
+                if !self.left_down && self.was_down && self.mouse_down {
+                    self.handle_mouse_release();
                 }
             }
         }
+    }
 
-        // Mouse held (dragging)
-        if left_down && was_down && mouse_down {
-            if let Some((cx, cy)) = hit_canvas(mx as usize, my as usize, canvas_w, canvas_h) {
-                match tool {
-                    Tool::Pencil => {
-                        canvas_draw_line(&mut canvas, canvas_w, canvas_h, prev_mouse.0, prev_mouse.1, cx, cy, color);
-                        if let Some(ref mut sess) = session {
-                            sess.send_op(&DrawOp::Pencil {
-                                x0: prev_mouse.0 as i16, y0: prev_mouse.1 as i16,
-                                x1: cx as i16, y1: cy as i16,
-                                r: color.r, g: color.g, b: color.b,
-                            });
-                        }
-                    }
-                    Tool::Brush => {
-                        canvas_brush_line(&mut canvas, canvas_w, canvas_h, prev_mouse.0, prev_mouse.1, cx, cy, brush_size.radius(), color);
-                        if let Some(ref mut sess) = session {
-                            sess.send_op(&DrawOp::Brush {
-                                x0: prev_mouse.0 as i16, y0: prev_mouse.1 as i16,
-                                x1: cx as i16, y1: cy as i16,
-                                radius: brush_size.radius() as u8,
-                                r: color.r, g: color.g, b: color.b,
-                            });
-                        }
-                    }
-                    Tool::Eraser => {
-                        canvas_brush_line(&mut canvas, canvas_w, canvas_h, prev_mouse.0, prev_mouse.1, cx, cy, brush_size.radius(), Color::WHITE);
-                        if let Some(ref mut sess) = session {
-                            sess.send_op(&DrawOp::Eraser {
-                                x0: prev_mouse.0 as i16, y0: prev_mouse.1 as i16,
-                                x1: cx as i16, y1: cy as i16,
-                                radius: brush_size.radius() as u8,
-                            });
-                        }
-                    }
-                    _ => {}
-                }
-                prev_mouse = (cx, cy);
-            }
-        }
-
-        // Mouse release
-        if !left_down && was_down && mouse_down {
-            mouse_down = false;
-            if let Some((cx, cy)) = hit_canvas(mx as usize, my as usize, canvas_w, canvas_h) {
-                match tool {
-                    Tool::Line => {
-                        canvas_draw_line(&mut canvas, canvas_w, canvas_h, drag_start.0, drag_start.1, cx, cy, color);
-                        add_recent(&mut recent_colors, color);
-                        if let Some(ref mut sess) = session {
-                            sess.send_op(&DrawOp::Line {
-                                x0: drag_start.0 as i16, y0: drag_start.1 as i16,
-                                x1: cx as i16, y1: cy as i16,
-                                r: color.r, g: color.g, b: color.b,
-                            });
-                        }
-                    }
-                    Tool::Rect => {
-                        let rx = drag_start.0.min(cx);
-                        let ry = drag_start.1.min(cy);
-                        let rw = (drag_start.0 - cx).abs();
-                        let rh = (drag_start.1 - cy).abs();
-                        canvas_fill_rect(&mut canvas, canvas_w, canvas_h, rx, ry, rw, rh, color);
-                        add_recent(&mut recent_colors, color);
-                        if let Some(ref mut sess) = session {
-                            sess.send_op(&DrawOp::Rect {
-                                x: rx as i16, y: ry as i16,
-                                w: rw as i16, h: rh as i16,
-                                r: color.r, g: color.g, b: color.b,
-                            });
-                        }
-                    }
-                    Tool::Circle => {
-                        let dx = (cx - drag_start.0) as i64;
-                        let dy = (cy - drag_start.1) as i64;
-                        let radius = isqrt((dx * dx + dy * dy) as u64) as i32;
-                        canvas_fill_circle(&mut canvas, canvas_w, canvas_h, drag_start.0, drag_start.1, radius, color);
-                        add_recent(&mut recent_colors, color);
-                        if let Some(ref mut sess) = session {
-                            sess.send_op(&DrawOp::Circle {
-                                cx: drag_start.0 as i16, cy: drag_start.1 as i16,
-                                radius: radius as i16,
-                                r: color.r, g: color.g, b: color.b,
-                            });
-                        }
-                    }
-                    Tool::Pencil | Tool::Brush | Tool::Eraser => {
-                        add_recent(&mut recent_colors, color);
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        } // end else (normal input handling)
-
-        prev_buttons = buttons;
-
-        // -- Render --
+    /// Full render pass: background, canvas, shape preview, remote cursors,
+    /// toolbar, bars, file picker overlay, local cursor.
+    fn render(&self, fb: &mut FrameBuf, ttf: &mut Option<CachedFont>, font_size: f32) {
+        let bg = Color::rgb(40, 40, 40);
 
         // Background for UI area
-        shapes::fill_rect(&mut fb, 0, 0, width as i32, CANVAS_Y as i32, bg);
+        shapes::fill_rect(fb, 0, 0, self.width as i32, CANVAS_Y as i32, bg);
 
         // Blit canvas
-        blit_canvas(&mut fb, &canvas, canvas_w, canvas_h);
+        blit_canvas(fb, &self.canvas, self.canvas_w, self.canvas_h);
 
         // Shape preview (rubber-band on framebuf only)
-        if mouse_down && tool.is_shape() {
-            if let Some((cx, cy)) = hit_canvas(mx as usize, my as usize, canvas_w, canvas_h) {
-                let preview_color = color;
-                match tool {
+        if self.mouse_down && self.tool.is_shape() {
+            if let Some((cx, cy)) =
+                hit_canvas(self.mx as usize, self.my as usize, self.canvas_w, self.canvas_h)
+            {
+                let preview_color = self.color;
+                match self.tool {
                     Tool::Line => {
                         shapes::draw_line(
-                            &mut fb,
-                            drag_start.0,
-                            drag_start.1 + CANVAS_Y as i32,
+                            fb,
+                            self.drag_start.0,
+                            self.drag_start.1 + CANVAS_Y as i32,
                             cx,
                             cy + CANVAS_Y as i32,
                             preview_color,
                         );
                     }
                     Tool::Rect => {
-                        let rx = drag_start.0.min(cx);
-                        let ry = drag_start.1.min(cy) + CANVAS_Y as i32;
-                        let rw = (drag_start.0 - cx).abs();
-                        let rh = (drag_start.1 - cy).abs();
-                        shapes::draw_rect(&mut fb, rx, ry, rw, rh, preview_color);
+                        let rx = self.drag_start.0.min(cx);
+                        let ry = self.drag_start.1.min(cy) + CANVAS_Y as i32;
+                        let rw = (self.drag_start.0 - cx).abs();
+                        let rh = (self.drag_start.1 - cy).abs();
+                        shapes::draw_rect(fb, rx, ry, rw, rh, preview_color);
                     }
                     Tool::Circle => {
-                        let dx = (cx - drag_start.0) as i64;
-                        let dy = (cy - drag_start.1) as i64;
+                        let dx = (cx - self.drag_start.0) as i64;
+                        let dy = (cy - self.drag_start.1) as i64;
                         let radius = isqrt((dx * dx + dy * dy) as u64) as i32;
                         shapes::draw_circle(
-                            &mut fb,
-                            drag_start.0,
-                            drag_start.1 + CANVAS_Y as i32,
+                            fb,
+                            self.drag_start.0,
+                            self.drag_start.1 + CANVAS_Y as i32,
                             radius,
                             preview_color,
                         );
@@ -1589,43 +1802,179 @@ fn main() {
         }
 
         // Draw remote cursors (ephemeral, on framebuf only)
-        for cursor in &remote_cursors {
-            draw_remote_cursor(&mut fb, cursor, width, height);
+        for cursor in &self.remote_cursors {
+            draw_remote_cursor(fb, cursor, self.width, self.height);
         }
 
         // Draw UI
-        draw_toolbar(&mut fb, tool, width);
+        draw_toolbar(fb, self.tool, self.width);
 
         // Build collab status string
         let mut status_buf = [0u8; 64];
-        let status_len = if let Some(ref sess) = session {
+        let status_len = if let Some(ref sess) = self.session {
             format_collab_status(sess, &mut status_buf)
         } else {
             0
         };
-        draw_size_bar(&mut fb, brush_size, width, &status_buf[..status_len]);
+        draw_size_bar(fb, self.brush_size, self.width, &status_buf[..status_len], ttf.as_mut(), font_size);
 
-        draw_hue_bar(&mut fb, width, hue);
-        draw_current_color_swatch(&mut fb, width, color);
-        draw_sv_square(&mut fb, hue, saturation, value);
-        draw_recent_colors(&mut fb, &recent_colors);
+        draw_hue_bar(fb, self.width, self.hue);
+        draw_current_color_swatch(fb, self.width, self.color);
+        draw_sv_square(fb, self.hue, self.saturation, self.value);
+        draw_recent_colors(fb, &self.recent_colors, ttf.as_mut(), font_size);
 
         // File picker overlay
-        if let Some(ref picker) = file_picker {
-            dim_background(&mut fb, width, height);
-            picker.draw(&mut fb, &picker_theme);
+        if let Some(ref picker) = self.file_picker {
+            dim_background(fb, self.width, self.height);
+            picker.draw(fb, &self.picker_theme);
         }
 
         // Cursor
-        if mx >= 0 && mx < width as i32 && my >= 0 && my < height as i32 {
-            draw_cursor(&mut fb, mx, my, width as i32, height as i32);
+        if self.mx >= 0
+            && self.mx < self.width as i32
+            && self.my >= 0
+            && self.my < self.height as i32
+        {
+            draw_cursor(fb, self.mx, self.my, self.width as i32, self.height as i32);
+        }
+    }
+
+    /// Handle a window resize event. Updates `self.width`/`self.height` and,
+    /// when no collaboration session is active, reallocates the canvas to fit
+    /// the new window dimensions while preserving the existing drawing content.
+    fn handle_resize(&mut self, new_w: usize, new_h: usize) {
+        self.width = new_w;
+        self.height = new_h;
+
+        // During an active collaboration session the canvas is shared with
+        // remote peers — do not resize it unilaterally.
+        if self.session.is_some() {
+            return;
         }
 
-        // Flush
-        if let Some(dirty) = fb.take_dirty() {
-            let _ = graphics::fb_flush_rect(dirty.x, dirty.y, dirty.w, dirty.h);
-        } else {
-            let _ = graphics::fb_flush();
+        let new_canvas_w = new_w;
+        let new_canvas_h = new_h.saturating_sub(CANVAS_Y);
+
+        if new_canvas_w == 0 || new_canvas_h == 0 {
+            return; // window too small to hold a canvas
         }
+
+        if new_canvas_w != self.canvas_w || new_canvas_h != self.canvas_h {
+            // Allocate replacement canvas filled with white.
+            let mut new_canvas = vec![255u8; new_canvas_w * new_canvas_h * 3];
+
+            // Copy the intersection of the old canvas into the new one.
+            let copy_w = self.canvas_w.min(new_canvas_w);
+            let copy_h = self.canvas_h.min(new_canvas_h);
+            for y in 0..copy_h {
+                let src = y * self.canvas_w * 3;
+                let dst = y * new_canvas_w * 3;
+                new_canvas[dst..dst + copy_w * 3]
+                    .copy_from_slice(&self.canvas[src..src + copy_w * 3]);
+            }
+
+            self.canvas = new_canvas;
+            self.canvas_w = new_canvas_w;
+            self.canvas_h = new_canvas_h;
+        }
+
+        // A file picker opened at the old dimensions may now be out of bounds.
+        self.file_picker = None;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Main — thin orchestrator
+// ---------------------------------------------------------------------------
+
+fn main() {
+    println!("Gus Kit starting!");
+
+    let collab_mode = parse_collab_args();
+
+    let mut win = Window::new(b"Gus Kit", 800, 600)
+        .unwrap_or_else(|e| {
+            println!("Failed to create window: {}", e);
+            process::exit(1);
+        });
+
+    let init_width = win.width() as usize;
+    let init_height = win.height() as usize;
+
+    let mut state = GuskitState::new(init_width, init_height, collab_mode);
+
+    // Load TTF mono font (falls back to bitmap if unavailable)
+    let mut mono_font: Option<CachedFont> = win.take_mono_font();
+    let font_size = win.mono_size().max(10.0);
+
+    loop {
+        // 1. Non-blocking collab I/O poll (frame pacing is at end of loop)
+        state.poll_collab_io_nonblocking();
+        state.process_collab_events();
+
+        // 2. Breengel events replace legacy graphics::mouse_state()
+        state.was_down = state.left_down;
+        for event in win.poll_events() {
+            match event {
+                Event::MouseMove { x, y } => {
+                    state.mx = x.max(0).min(state.width as i32 - 1);
+                    state.my = y.max(0).min(state.height as i32 - 1);
+                }
+                Event::MouseButton { button, pressed, x, y } => {
+                    if button == 1 {
+                        state.left_down = pressed;
+                        state.mx = x.max(0).min(state.width as i32 - 1);
+                        state.my = y.max(0).min(state.height as i32 - 1);
+                    }
+                }
+                Event::KeyPress { ascii, .. } => {
+                    match ascii {
+                        b'p' | b'P' => state.tool = Tool::Pencil,
+                        b'b' | b'B' => state.tool = Tool::Brush,
+                        b'l' | b'L' => state.tool = Tool::Line,
+                        b'r' | b'R' => state.tool = Tool::Rect,
+                        b'c' | b'C' => state.tool = Tool::Circle,
+                        b'f' | b'F' => state.tool = Tool::Fill,
+                        b'e' | b'E' => state.tool = Tool::Eraser,
+                        b'1' => state.brush_size = BrushSize::Small,
+                        b'2' => state.brush_size = BrushSize::Medium,
+                        b'3' => state.brush_size = BrushSize::Large,
+                        b'q' | b'Q' => {
+                            if let Some(ref mut sess) = state.session {
+                                sess.disconnect();
+                            }
+                            process::exit(0);
+                        }
+                        _ => {}
+                    }
+                }
+                Event::FontChanged => {
+                    win.put_mono_font(mono_font.take());
+                    mono_font = win.take_mono_font();
+                }
+                Event::CloseRequested => {
+                    if let Some(ref mut sess) = state.session {
+                        sess.disconnect();
+                    }
+                    process::exit(0);
+                }
+                Event::Resized { width: w, height: h } => {
+                    state.handle_resize(w as usize, h as usize);
+                }
+                _ => {}
+            }
+        }
+
+        // 3. Process input (file picker modal + press/drag/release state machine)
+        state.process_input();
+
+        // 4. Render into window framebuffer
+        state.render(win.framebuf(), &mut mono_font, font_size);
+
+        // 5. Present (replaces fb_flush)
+        let _ = win.present();
+
+        // 6. Frame pacing ~60 FPS
+        let _ = time::sleep_ms(16);
     }
 }

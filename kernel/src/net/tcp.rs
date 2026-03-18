@@ -598,9 +598,11 @@ fn handle_tcp_for_connection(
                     conn.state = TcpState::Established;
                     conn.send_unack = header.ack_num;
                     log::info!("TCP: Connection established (server)");
+                    wake_connection_waiters(conn);
                 }
             } else if header.flags.rst {
                 conn.state = TcpState::Closed;
+                wake_connection_waiters(conn);
             }
         }
         TcpState::Established => {
@@ -1057,50 +1059,45 @@ pub fn tcp_send(conn_id: &ConnectionId, data: &[u8]) -> Result<usize, &'static s
 
     // Wait for the connection to reach Established state.
     // After accept(), the connection may still be in SynReceived if the
-    // client's final ACK hasn't arrived yet. We spin briefly to let the
-    // network stack process it rather than failing with ENOTCONN.
-    // Wait for the connection to reach Established state.
-    // After accept(), the connection may still be in SynReceived if the
-    // client's final ACK hasn't been processed yet. We yield the CPU to let
-    // the timer-driven network softirq process the ACK packet.
+    // client's final ACK hasn't been processed yet. Block until the softirq
+    // handler transitions the state and wakes us via wake_connection_waiters.
     {
-        let mut waited = false;
-        for attempt in 0..2000 {
+        let thread_id = crate::task::scheduler::current_thread_id()
+            .ok_or("no current thread")?;
+        tcp_register_recv_waiter(conn_id, thread_id);
+
+        for _ in 0..20 {
             let state = {
                 let connections = TCP_CONNECTIONS.lock();
                 match connections.get(conn_id) {
                     Some(c) => c.state,
                     None => {
-                        crate::serial_println!("[tcp_send] Connection NOT FOUND in table! local={}:{} remote={}:{}",
-                            conn_id.local_ip[3], conn_id.local_port,
-                            conn_id.remote_ip[3], conn_id.remote_port);
+                        tcp_unregister_recv_waiter(conn_id, thread_id);
                         return Err("Connection not found");
                     }
                 }
-                // Lock released here — critical for letting the softirq handler
-                // acquire TCP_CONNECTIONS to update the connection state.
             };
 
             if matches!(state, TcpState::Established | TcpState::CloseWait) {
-                if waited {
-                }
                 break;
             }
-
             if matches!(state, TcpState::Closed | TcpState::TimeWait) {
+                tcp_unregister_recv_waiter(conn_id, thread_id);
                 return Err("Connection closed");
             }
-
             if !matches!(state, TcpState::SynReceived | TcpState::SynSent) {
+                tcp_unregister_recv_waiter(conn_id, thread_id);
                 return Err("Connection not established");
             }
 
-            waited = true;
-
-            // Yield the CPU so the timer interrupt can fire and the softirq
-            // handler can process the incoming ACK packet.
+            // Block until the softirq handler wakes us on state change.
+            crate::task::scheduler::with_scheduler(|sched| {
+                sched.block_current();
+            });
             crate::task::scheduler::yield_current();
         }
+
+        tcp_unregister_recv_waiter(conn_id, thread_id);
     }
 
     let mut connections = TCP_CONNECTIONS.lock();

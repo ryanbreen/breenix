@@ -72,6 +72,7 @@ const APPS: &[AppEntry] = &[
     AppEntry { name: "System Check", description: "System health",        binary: b"/bin/bcheck\0",      is_gui: true },
     AppEntry { name: "Log Viewer",   description: "View system logs",     binary: b"/bin/bless\0",       is_gui: true },
     AppEntry { name: "Bounce",       description: "Physics demo",         binary: b"/bin/bounce\0",      is_gui: true },
+    AppEntry { name: "Gus Kit",      description: "Drawing app",          binary: b"/bin/guskit\0",      is_gui: true },
     AppEntry { name: "Breenix Log",  description: "System log viewer",    binary: b"/bin/blog\0",        is_gui: true },
     AppEntry { name: "Font Picker",  description: "Configure fonts",      binary: b"/bin/bfontpicker\0", is_gui: true },
     AppEntry { name: "Shell",        description: "Breenix shell",        binary: b"bsh\0",              is_gui: false },
