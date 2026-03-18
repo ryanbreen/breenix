@@ -335,7 +335,10 @@ struct Tab {
 fn spawn_child(path: &[u8]) -> (Fd, i64) {
     let (master_fd, slave_name) = match pty::openpty() {
         Ok((m, s)) => (m, s),
-        Err(_) => return (Fd::from_raw(0), -1),
+        Err(_) => {
+            print!("[bterm] openpty failed\n");
+            return (Fd::from_raw(u64::MAX), -1);
+        }
     };
 
     // Build slave path on the STACK (not heap) to avoid CoW corruption after fork.
@@ -350,7 +353,6 @@ fn spawn_child(path: &[u8]) -> (Fd, i64) {
         Ok(ForkResult::Child) => {
             let _ = io::close(master_fd);
             let _ = setsid();
-            // Open PTY slave using stack-allocated path
             let slave_fd = match fs::open(slave_path_str, fs::O_RDWR) {
                 Ok(fd) => fd,
                 Err(_) => { libbreenix::process::exit(126); }
@@ -363,8 +365,15 @@ fn spawn_child(path: &[u8]) -> (Fd, i64) {
             let _ = exec(path);
             libbreenix::process::exit(127);
         }
-        Ok(ForkResult::Parent(child_pid)) => (master_fd, child_pid.raw() as i64),
-        Err(_) => { let _ = io::close(master_fd); (Fd::from_raw(0), -1) }
+        Ok(ForkResult::Parent(child_pid)) => {
+            print!("[bterm] spawned child pid={}\n", child_pid.raw());
+            (master_fd, child_pid.raw() as i64)
+        }
+        Err(_) => {
+            print!("[bterm] fork failed\n");
+            let _ = io::close(master_fd);
+            (Fd::from_raw(u64::MAX), -1)
+        }
     }
 }
 
