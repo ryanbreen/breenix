@@ -14,6 +14,9 @@ use libgfx::framebuf::FrameBuf;
 use libgfx::shapes;
 use libgfx::ttf_font;
 
+use libbui::Rect;
+use libbui::widget::scroll_bar::ScrollBar;
+
 // ---------------------------------------------------------------------------
 // Test definitions
 // ---------------------------------------------------------------------------
@@ -468,12 +471,16 @@ fn main() {
     let failed = tests.iter().filter(|t| t.status == TestStatus::Fail).count();
     println!("[bcheck] Complete: {}/{} passed, {} failed", passed, total, failed);
 
-    // Keep displaying results — support scrolling with arrow keys
+    // Keep displaying results — support scrolling with arrow keys and scroll wheel
     let visible_h = WIN_H as i32 - LIST_START_Y - FOOTER_H;
     let total_h = content_height(&tests);
-    let mut max_scroll = (total_h - visible_h).max(0);
-    let mut scroll_offset: i32 = 0;
     let sleep_ts = libbreenix::types::Timespec { tv_sec: 0, tv_nsec: 50_000_000 }; // 50ms
+
+    // Scrollbar positioned along the right edge of the content area
+    let bar_w = ScrollBar::DEFAULT_WIDTH;
+    let bar_rect = Rect::new(WIN_W as i32 - bar_w, LIST_START_Y, bar_w, visible_h);
+    let mut scroll_bar = ScrollBar::new(bar_rect, total_h, visible_h);
+    let theme = libbui::Theme::dark();
 
     loop {
         let mut need_redraw = false;
@@ -481,16 +488,22 @@ fn main() {
             match event {
                 Event::KeyPress { keycode, .. } => {
                     match keycode {
-                        0x52 => { scroll_offset = (scroll_offset - ROW_H).max(0); need_redraw = true; }
-                        0x51 => { scroll_offset = (scroll_offset + ROW_H).min(max_scroll); need_redraw = true; }
+                        0x52 => { scroll_bar.scroll(1); need_redraw = true; }
+                        0x51 => { scroll_bar.scroll(-1); need_redraw = true; }
                         _ => {}
                     }
                 }
-                Event::Resized { width: _, height: h } => {
+                Event::Scroll { delta_y } => {
+                    scroll_bar.scroll(delta_y);
+                    need_redraw = true;
+                }
+                Event::Resized { width: w, height: h } => {
                     let new_visible_h = h as i32 - LIST_START_Y - FOOTER_H;
-                    let new_max = (total_h - new_visible_h).max(0);
-                    max_scroll = new_max;
-                    scroll_offset = scroll_offset.min(max_scroll);
+                    let new_bar_rect = Rect::new(
+                        w as i32 - bar_w, LIST_START_Y, bar_w, new_visible_h,
+                    );
+                    scroll_bar.set_rect(new_bar_rect);
+                    scroll_bar.set_dimensions(total_h, new_visible_h);
                     need_redraw = true;
                 }
                 Event::CloseRequested => std::process::exit(0),
@@ -498,7 +511,9 @@ fn main() {
             }
         }
         if need_redraw {
-            render(win.framebuf(), &tests, scroll_offset, &mut ttf_font, font_size);
+            render(win.framebuf(), &tests, scroll_bar.offset(), &mut ttf_font, font_size);
+            // Draw the scrollbar on top of the content
+            scroll_bar.draw(win.framebuf(), &theme);
             let _ = win.present();
         } else {
             let _ = time::nanosleep(&sleep_ts);
