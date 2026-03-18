@@ -4,6 +4,7 @@ pub mod file_picker;
 pub mod label;
 pub mod menu_bar;
 pub mod panel;
+pub mod scroll_bar;
 pub mod slider;
 pub mod tab_bar;
 

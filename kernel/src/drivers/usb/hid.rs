@@ -9,7 +9,7 @@
 //! - Keyboard: 8 bytes (1 modifier + 1 reserved + 6 keycodes)
 //! - Mouse: 3-4 bytes (1 buttons + 1 dx + 1 dy + optional wheel)
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 // =============================================================================
 // Diagnostic counters (read by heartbeat in timer_interrupt.rs)
@@ -45,6 +45,11 @@ static ALT_PRESSED: AtomicBool = AtomicBool::new(false);
 static MOUSE_X: AtomicU32 = AtomicU32::new(0);
 static MOUSE_Y: AtomicU32 = AtomicU32::new(0);
 static MOUSE_BUTTONS: AtomicU32 = AtomicU32::new(0);
+
+/// Accumulated scroll wheel delta since last read.
+/// Positive = scroll up, negative = scroll down.
+/// Consumed (reset to 0) when read by the window input event syscall.
+static MOUSE_WHEEL: AtomicI32 = AtomicI32::new(0);
 
 /// Per-endpoint button state for multi-endpoint devices (e.g., VMware dual HID).
 /// When multiple USB HID endpoints report button state independently, one endpoint
@@ -302,19 +307,15 @@ fn screen_dimensions() -> (u32, u32) {
         .unwrap_or((1280, 960))
 }
 
-/// Process a USB boot protocol mouse report (3-4 bytes).
+/// Process a mouse HID report from a specific endpoint.
 ///
-/// Report format:
+/// Report format (boot protocol relative mouse):
 /// - Byte 0: Button flags (bit 0=left, bit 1=right, bit 2=middle)
 /// - Byte 1: X displacement (signed i8)
 /// - Byte 2: Y displacement (signed i8)
 /// - Byte 3: Wheel displacement (optional, signed i8)
 ///
 /// Updates the global mouse position atomics with clamping to screen bounds.
-/// Counter for diagnostic logging of first few mouse reports.
-static MOUSE_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
-
-/// Process a mouse HID report from a specific endpoint.
 ///
 /// `ep_idx` identifies the USB endpoint (0-3) so that multi-endpoint devices
 /// (like VMware's dual HID mouse) don't race on button state. Each endpoint's
@@ -322,25 +323,6 @@ static MOUSE_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
 pub fn process_mouse_report(report: &[u8], ep_idx: u8) {
     if report.len() < 3 {
         return;
-    }
-
-    // Log first few non-zero mouse reports for debugging coordinate mapping
-    let log_n = MOUSE_LOG_COUNT.load(Ordering::Relaxed);
-    if log_n < 10 && report.iter().take(8).any(|&b| b != 0 && b != 0xDE) {
-        MOUSE_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-        crate::serial_println!(
-            "[mouse-report] #{}: [{:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}] len={}",
-            log_n,
-            report.get(0).copied().unwrap_or(0),
-            report.get(1).copied().unwrap_or(0),
-            report.get(2).copied().unwrap_or(0),
-            report.get(3).copied().unwrap_or(0),
-            report.get(4).copied().unwrap_or(0),
-            report.get(5).copied().unwrap_or(0),
-            report.get(6).copied().unwrap_or(0),
-            report.get(7).copied().unwrap_or(0),
-            report.len(),
-        );
     }
 
     let (sw, sh) = screen_dimensions();
@@ -364,7 +346,6 @@ pub fn process_mouse_report(report: &[u8], ep_idx: u8) {
     let is_tablet = IS_ABSOLUTE_TABLET.load(Ordering::Relaxed);
     if !is_tablet && actual_len >= 6 && report[1] == 0 {
         IS_ABSOLUTE_TABLET.store(true, Ordering::Relaxed);
-        crate::serial_println!("[mouse] Latched into absolute tablet mode (first 6-byte report with byte[1]=0)");
     }
 
     // Absolute tablet path: coordinates are always at bytes 2-5.
@@ -375,7 +356,6 @@ pub fn process_mouse_report(report: &[u8], ep_idx: u8) {
     if IS_ABSOLUTE_TABLET.load(Ordering::Relaxed) && report.len() >= 6 {
         if !TABLET_NO_REPORT_ID.load(Ordering::Relaxed) && report[0] == 0x00 {
             TABLET_NO_REPORT_ID.store(true, Ordering::Relaxed);
-            crate::serial_println!("[mouse] Detected tablet format: no report ID prefix (buttons in byte[0])");
         }
         let buttons = if TABLET_NO_REPORT_ID.load(Ordering::Relaxed) {
             report[0] as u32
@@ -395,10 +375,6 @@ pub fn process_mouse_report(report: &[u8], ep_idx: u8) {
             if pressed != 0 {
                 MOUSE_BUTTONS_PRESSED.fetch_or(pressed, Ordering::Relaxed);
             }
-            static BTN_LOG: AtomicU64 = AtomicU64::new(0);
-            if BTN_LOG.fetch_add(1, Ordering::Relaxed) < 50 {
-                crate::serial_println!("[mouse-click] {} -> {} (ep{})", prev, merged, ep_idx);
-            }
         }
 
         let abs_x = u16::from_le_bytes([report[2], report[3]]) as u32;
@@ -406,14 +382,20 @@ pub fn process_mouse_report(report: &[u8], ep_idx: u8) {
 
         let new_x = (abs_x * sw / 32768).min(sw - 1);
         let new_y = (abs_y * sh / 32768).min(sh - 1);
-        if log_n < 10 {
-            crate::serial_println!(
-                "[mouse-pos] abs=({},{}) btn={} screen={}x{} -> ({},{})",
-                abs_x, abs_y, buttons, sw, sh, new_x, new_y
-            );
-        }
         MOUSE_X.store(new_x, Ordering::Relaxed);
         MOUSE_Y.store(new_y, Ordering::Relaxed);
+
+        // Wheel byte follows the 6-byte tablet report.
+        // Parallels: byte[6] is wheel (i8), with report_id prefix → 7+ bytes total.
+        // VMware: byte[6] is wheel (i8), no report_id → 7+ bytes total.
+        let wheel_offset = 6;
+        if actual_len > wheel_offset {
+            let wheel = report[wheel_offset] as i8 as i32;
+            if wheel != 0 {
+                MOUSE_WHEEL.fetch_add(wheel, Ordering::Relaxed);
+            }
+        }
+
         crate::syscall::graphics::wake_compositor_if_waiting();
         return;
     }
@@ -434,6 +416,11 @@ pub fn process_mouse_report(report: &[u8], ep_idx: u8) {
     }
     let dx = report[1] as i8 as i32;
     let dy = report[2] as i8 as i32;
+    let wheel = if report.len() >= 4 {
+        report[3] as i8 as i32
+    } else {
+        0
+    };
 
     let old_x = MOUSE_X.load(Ordering::Relaxed) as i32;
     let new_x = (old_x + dx).clamp(0, sw as i32 - 1) as u32;
@@ -442,6 +429,10 @@ pub fn process_mouse_report(report: &[u8], ep_idx: u8) {
     let old_y = MOUSE_Y.load(Ordering::Relaxed) as i32;
     let new_y = (old_y + dy).clamp(0, sh as i32 - 1) as u32;
     MOUSE_Y.store(new_y, Ordering::Relaxed);
+
+    if wheel != 0 {
+        MOUSE_WHEEL.fetch_add(wheel, Ordering::Relaxed);
+    }
     crate::syscall::graphics::wake_compositor_if_waiting();
 }
 
@@ -472,6 +463,11 @@ pub fn mouse_position() -> (u32, u32) {
     (MOUSE_X.load(Ordering::Relaxed), MOUSE_Y.load(Ordering::Relaxed))
 }
 
+/// Consume accumulated scroll wheel delta (resets to 0 after read).
+pub fn mouse_wheel_consume() -> i32 {
+    MOUSE_WHEEL.swap(0, Ordering::Relaxed)
+}
+
 /// Get current mouse position and raw button state (non-consuming peek).
 ///
 /// Returns instantaneous hardware state (no latch). Used by compositor_wait for
@@ -484,6 +480,13 @@ pub fn mouse_state() -> (u32, u32, u32) {
         MOUSE_Y.load(Ordering::Relaxed),
         MOUSE_BUTTONS.load(Ordering::Relaxed),
     )
+}
+
+/// Check if there is pending scroll wheel data (non-consuming peek).
+///
+/// Used by compositor_wait to detect scroll-only input (no cursor movement).
+pub fn has_pending_scroll() -> bool {
+    MOUSE_WHEEL.load(Ordering::Relaxed) != 0
 }
 
 /// Check if there are pending latched button presses (non-consuming peek).

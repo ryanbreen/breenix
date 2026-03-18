@@ -633,7 +633,10 @@ pub struct WindowInputEvent {
     pub mouse_y: i16,
     /// Modifier bitmask (bit 0=shift, bit 1=ctrl, bit 2=alt)
     pub modifiers: u16,
-    pub _pad: u16,
+    /// Scroll wheel delta. Positive = scroll up, negative = scroll down.
+    /// Set on MOUSE_MOVE and MOUSE_BUTTON events when the wheel moved this frame.
+    /// Also the sole payload for MOUSE_SCROLL events.
+    pub scroll_y: i16,
 }
 
 /// Cursor shape constants for `set_cursor_shape`.
@@ -696,6 +699,8 @@ pub mod input_event_type {
     pub const FOCUS_LOST: u16 = 6;
     pub const CLOSE_REQUESTED: u16 = 7;
     pub const WINDOW_RESIZED: u16 = 8;
+    /// Scroll wheel event. `scroll_y` > 0 = scroll up, < 0 = scroll down.
+    pub const MOUSE_SCROLL: u16 = 9;
 }
 
 /// Write an input event to a window's kernel ring buffer.
@@ -945,6 +950,21 @@ pub fn mouse_state() -> Result<(u32, u32, u32), Error> {
     let ret = unsafe { raw::syscall1(nr::GET_MOUSE_POS, &mut state as *mut [u32; 3] as u64) as i64 };
     Error::from_syscall(ret)?;
     Ok((state[0], state[1], state[2]))
+}
+
+/// Get the current mouse cursor position, button state, and scroll wheel delta.
+///
+/// The scroll delta is an accumulated signed value: positive = scroll up,
+/// negative = scroll down. The kernel resets the accumulator on each read.
+///
+/// # Returns
+/// * Ok((x, y, buttons, scroll_y)) - Mouse position, buttons, and wheel delta
+/// * Err(Error) - Error (ENODEV if no pointer device)
+pub fn mouse_state_with_scroll() -> Result<(u32, u32, u32, i32), Error> {
+    let mut state: [u32; 4] = [0, 0, 0, 0];
+    let ret = unsafe { raw::syscall1(nr::GET_MOUSE_POS, &mut state as *mut [u32; 4] as u64) as i64 };
+    Error::from_syscall(ret)?;
+    Ok((state[0], state[1], state[2], state[3] as i32))
 }
 
 // ============================================================================

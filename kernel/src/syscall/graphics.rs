@@ -162,7 +162,8 @@ pub struct WindowInputEvent {
     pub mouse_y: i16,
     /// Modifier bitmask (bit 0=shift, bit 1=ctrl, bit 2=alt)
     pub modifiers: u16,
-    pub _pad: u16,
+    /// Scroll wheel delta (positive = scroll up, negative = scroll down)
+    pub scroll_y: i16,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -965,7 +966,21 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             if event_ptr == 0 || event_ptr >= USER_SPACE_MAX {
                 return SyscallResult::Err(super::ErrorCode::Fault as u64);
             }
-            let event: WindowInputEvent = unsafe { core::ptr::read(event_ptr as *const WindowInputEvent) };
+            let mut event: WindowInputEvent = unsafe { core::ptr::read(event_ptr as *const WindowInputEvent) };
+
+            // Inject accumulated scroll wheel delta into mouse events.
+            // MOUSE_MOVE=3, MOUSE_BUTTON=4, MOUSE_SCROLL=9
+            if event.event_type == 3 || event.event_type == 4 || event.event_type == 9 {
+                let wheel = crate::drivers::usb::hid::mouse_wheel_consume();
+                if wheel != 0 {
+                    event.scroll_y = event.scroll_y.saturating_add(wheel.clamp(-32768, 32767) as i16);
+                    // If this was a plain MOUSE_MOVE (3) with wheel data, upgrade to MOUSE_SCROLL (9)
+                    // so clients that filter on event type receive it correctly.
+                    if event.event_type == 3 && event.scroll_y != 0 {
+                        event.event_type = 9;
+                    }
+                }
+            }
 
             let wake_tid = {
                 let mut reg = WINDOW_REGISTRY.lock();
@@ -1278,8 +1293,11 @@ fn handle_compositor_wait(cmd: &FbDrawCmd) -> SyscallResult {
     // Check non-dirty conditions first (mouse + registry are always non-blocking)
     let mut ready: u64 = 0;
 
-    // Bit 1: mouse changed (position, buttons, or pending latched press)?
-    if mouse_packed != prev_mouse || crate::drivers::usb::hid::has_pending_press() {
+    // Bit 1: mouse changed (position, buttons, pending latched press, or scroll wheel)?
+    if mouse_packed != prev_mouse
+        || crate::drivers::usb::hid::has_pending_press()
+        || crate::drivers::usb::hid::has_pending_scroll()
+    {
         ready |= 2;
     }
 
@@ -2737,11 +2755,12 @@ pub fn sys_fbdraw(_cmd_ptr: u64) -> SyscallResult {
     SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
 }
 
-/// sys_get_mouse_pos - Get current mouse cursor position and button state
+/// sys_get_mouse_pos - Get current mouse cursor position, button state, and scroll delta
 ///
 /// # Arguments
-/// * `out_ptr` - Pointer to a [u32; 3] array in userspace: [x, y, buttons]
+/// * `out_ptr` - Pointer to a [u32; 4] array in userspace: [x, y, buttons, scroll_delta]
 ///   buttons: bit 0 = left button pressed
+///   scroll_delta: accumulated scroll wheel ticks since last call (positive = up)
 ///
 /// # Returns
 /// * 0 on success
@@ -2752,7 +2771,7 @@ pub fn sys_get_mouse_pos(out_ptr: u64) -> SyscallResult {
         return SyscallResult::Err(super::ErrorCode::Fault as u64);
     }
 
-    let end_ptr = out_ptr.saturating_add(12); // 3 * u32
+    let end_ptr = out_ptr.saturating_add(16); // 4 * u32
     if end_ptr > USER_SPACE_MAX {
         return SyscallResult::Err(super::ErrorCode::Fault as u64);
     }
@@ -2763,9 +2782,11 @@ pub fn sys_get_mouse_pos(out_ptr: u64) -> SyscallResult {
         crate::drivers::usb::hid::mouse_state_consume()
     };
 
+    let scroll = crate::drivers::usb::hid::mouse_wheel_consume() as u32;
+
     unsafe {
-        let out = out_ptr as *mut [u32; 3];
-        core::ptr::write(out, [mx, my, buttons]);
+        let out = out_ptr as *mut [u32; 4];
+        core::ptr::write(out, [mx, my, buttons, scroll]);
     }
 
     SyscallResult::Ok(0)

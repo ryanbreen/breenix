@@ -371,15 +371,17 @@ fn compute_exchange_hash_inner(
 
     if k_as_string {
         // Dump offsets and first bytes of each field for debugging
-        let mut off = 0usize;
         let vc_len = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        let mut off = 4 + vc_len;
+        let vs_len = u32::from_be_bytes([data[off], data[off+1], data[off+2], data[off+3]]);
+        off += 4 + vs_len as usize;
+        let ic_off = off;
+        let ic_len = u32::from_be_bytes([data[off], data[off+1], data[off+2], data[off+3]]);
+        off += 4 + ic_len as usize;
+        let is_off = off;
+        let is_len = u32::from_be_bytes([data[off], data[off+1], data[off+2], data[off+3]]);
         println!("bsshd: [H] total={} V_C@0={} V_S@{}={} I_C@{}={} I_S@{}={}",
-            data.len(), vc_len,
-            4+vc_len, u32::from_be_bytes([data[4+vc_len], data[5+vc_len], data[6+vc_len], data[7+vc_len]]),
-            { off = 4+vc_len; off += 4 + u32::from_be_bytes([data[off], data[off+1], data[off+2], data[off+3]]) as usize; off },
-            u32::from_be_bytes([data[off], data[off+1], data[off+2], data[off+3]]),
-            { off += 4 + u32::from_be_bytes([data[off], data[off+1], data[off+2], data[off+3]]) as usize; off },
-            u32::from_be_bytes([data[off], data[off+1], data[off+2], data[off+3]]));
+            data.len(), vc_len, 4+vc_len, vs_len, ic_off, ic_len, is_off, is_len);
         // Dump last 40 bytes (K encoding)
         let kstart = data.len() - 36; // string K = 4 + 32 = 36
         println!("bsshd: [H] K@{}: {:02x}{:02x}{:02x}{:02x} {:02x}{:02x}{:02x}{:02x}...",

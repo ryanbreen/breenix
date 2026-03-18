@@ -32,6 +32,11 @@ pub enum Event {
     MouseMove { x: i32, y: i32 },
     /// Mouse button pressed or released.
     MouseButton { button: u8, pressed: bool, x: i32, y: i32 },
+    /// Mouse scroll wheel event.
+    ///
+    /// `delta_y` > 0 means scroll up (content moves down / offset decreases).
+    /// `delta_y` < 0 means scroll down (content moves up / offset increases).
+    Scroll { delta_y: i32 },
     /// This window gained keyboard focus.
     FocusGained,
     /// This window lost keyboard focus.
@@ -49,6 +54,9 @@ pub enum Event {
 
 impl Event {
     /// Convert a raw kernel input event to a high-level Event.
+    ///
+    /// Unknown event types fall back to a `KeyPress` with ascii=0 and
+    /// the raw keycode, so they are not silently dropped.
     pub fn from_raw(raw: &WindowInputEvent) -> Self {
         match raw.event_type {
             input_event_type::KEY_PRESS => Event::KeyPress {
@@ -66,9 +74,12 @@ impl Event {
             },
             input_event_type::MOUSE_BUTTON => Event::MouseButton {
                 button: raw.keycode as u8,
-                pressed: raw._pad != 0,
+                pressed: raw.scroll_y != 0,
                 x: raw.mouse_x as i32,
                 y: raw.mouse_y as i32,
+            },
+            input_event_type::MOUSE_SCROLL => Event::Scroll {
+                delta_y: raw.scroll_y as i32,
             },
             input_event_type::FOCUS_GAINED => Event::FocusGained,
             input_event_type::FOCUS_LOST => Event::FocusLost,
