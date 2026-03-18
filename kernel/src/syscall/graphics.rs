@@ -322,8 +322,14 @@ impl WindowRegistry {
         for slot in &mut self.buffers {
             if let Some(ref buf) = slot {
                 if buf.owner_pid == pid {
+                    // Capture id before clearing, then clear GPU texture slot
+                    // so the next window that reuses this slot index does not
+                    // inherit stale pixel data.
+                    let buf_id = buf.id;
                     *slot = None;
                     removed = true;
+                    let slot_idx = (buf_id as usize).saturating_sub(1) % 8;
+                    crate::drivers::virtio::gpu_pci::clear_window_texture_slot(slot_idx);
                 }
             }
         }
