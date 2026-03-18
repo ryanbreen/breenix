@@ -290,7 +290,7 @@ impl WindowRegistry {
             z_order: 0,
             virgl_resource_id: 0,
             virgl_initialized: false,
-            generation: 0,
+            generation: 1,
             last_uploaded_gen: 0,
             last_read_gen: 0,
             page_phys_addrs,
