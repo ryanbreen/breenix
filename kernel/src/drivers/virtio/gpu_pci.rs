@@ -623,6 +623,12 @@ pub fn create_window_texture(
     if unsafe { WIN_TEX_INITIALIZED[slot] } {
         let (old_w, old_h) = unsafe { WIN_TEX_DIMS[slot] };
         if width <= old_w && height <= old_h {
+            // Zero backing buffer to prevent stale pixel bleed from a previous
+            // window that occupied this slot.
+            let (ptr, sz) = unsafe { WIN_TEX_BACKING[slot] };
+            if !ptr.is_null() && sz > 0 {
+                unsafe { core::ptr::write_bytes(ptr, 0, sz); }
+            }
             return Ok(res_id);
         }
         // Window grew beyond existing texture — destroy and recreate at new size
@@ -693,6 +699,22 @@ pub fn create_window_texture(
         slot, res_id, width, height, tex_size
     );
     Ok(res_id)
+}
+
+/// Clear a GPU texture slot when the owning window is destroyed.
+/// This prevents stale texture data from bleeding into new windows
+/// that reuse the same slot index.
+pub fn clear_window_texture_slot(slot: usize) {
+    if slot >= MAX_WIN_TEX_SLOTS { return; }
+    unsafe {
+        WIN_TEX_INITIALIZED[slot] = false;
+        WIN_TEX_DIMS[slot] = (0, 0);
+        // Zero the backing buffer so no stale pixels survive.
+        let (ptr, sz) = WIN_TEX_BACKING[slot];
+        if !ptr.is_null() && sz > 0 {
+            core::ptr::write_bytes(ptr, 0, sz);
+        }
+    }
 }
 
 /// Upload dirty window pixels to GPU texture via TRANSFER_TO_HOST_3D.
