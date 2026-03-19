@@ -45,7 +45,12 @@ impl HomeIcon {
 
         let vx = self.rng.range(-4.0, 4.0);
         let vy = self.rng.range(-18.0, -10.0);
-        let sz = self.rng.range(1.5, 3.5);
+        // Slightly larger smoke during click (chimney is working overtime).
+        let sz = if self.door_open {
+            self.rng.range(2.5, 5.0)
+        } else {
+            self.rng.range(1.5, 3.5)
+        };
         self.particles.emit(Particle {
             x: chimney_x,
             y: chimney_y,
@@ -60,30 +65,6 @@ impl HomeIcon {
         });
     }
 
-    fn emit_door_burst(&mut self, cx: f32, cy: f32, size: f32) {
-        // Door center: cx, cy + 0.22*size
-        let dx = cx;
-        let dy = cy + size * 0.22;
-        for _ in 0..12 {
-            let angle = self.rng.range(0.0, 6.283185);
-            let speed = self.rng.range(20.0, 55.0);
-            let vx = sin_approx(angle) * speed;
-            // Use cos via 90-degree phase shift
-            let vy = sin_approx(angle + 1.5707963) * speed - 10.0;
-            self.particles.emit(Particle {
-                x: dx,
-                y: dy,
-                vx,
-                vy,
-                life: 1.0,
-                max_life: self.rng.range(0.4, 0.7),
-                size: self.rng.range(2.0, 4.0),
-                color: Color::rgb(255, 200, 80),
-                gravity: 30.0,
-                friction: 1.2,
-            });
-        }
-    }
 }
 
 impl Icon for HomeIcon {
@@ -91,17 +72,10 @@ impl Icon for HomeIcon {
         let state_changed = self.base.update(dt_ms, &mouse);
         let dt = dt_ms as f32 / 1000.0;
 
-        // On entering Clicked, open the door and burst particles.
+        // On entering Clicked, open the door.
         if state_changed && self.base.state == IconState::Clicked {
             self.door_open = true;
             self.door_progress = 0.0;
-            let cx = 0.0_f32;
-            let cy = 0.0_f32;
-            // We don't know size here, so emit with unit coordinates
-            // and scale in emit_door_burst — use a nominal size of 1.0
-            // (coords are icon-relative; actual cx/cy added in draw via offset).
-            // Store burst flag; actual emission happens during draw prep.
-            self.emit_door_burst(cx, cy, 1.0);
         }
 
         // Advance door animation.
@@ -121,9 +95,11 @@ impl Icon for HomeIcon {
         );
         if emit_smoke {
             self.smoke_accum += dt_ms;
-            // Emit ~3 particles/second = 1 every ~333ms
-            while self.smoke_accum >= 333 {
-                self.smoke_accum -= 333;
+            // During Clicked: emit every ~150ms (faster, more visible smoke).
+            // Otherwise: emit every ~333ms (~3 particles/second).
+            let smoke_interval = if self.base.state == IconState::Clicked { 150 } else { 333 };
+            while self.smoke_accum >= smoke_interval {
+                self.smoke_accum -= smoke_interval;
                 // Emit relative to icon center (0,0); scaled by size in draw.
                 self.emit_smoke(0.0, 0.0, 1.0);
             }
@@ -182,6 +158,18 @@ impl Icon for HomeIcon {
         let chimney_x = cx + s / 8;
         let chimney_y = apex_y - chimney_h / 2;
 
+        // --- Warm ambient glow behind the house during click ---
+        if self.door_open && self.door_progress > 0.1 {
+            let glow_t = (self.door_progress - 0.1) / 0.9;
+            let glow_w = body_w + (glow_t * s as f32 * 0.3) as i32;
+            let glow_h = body_h + (glow_t * s as f32 * 0.2) as i32;
+            let glow_x = cx - glow_w / 2;
+            let glow_y = body_y + body_h / 2 - glow_h / 2;
+            let intensity = (glow_t * 40.0) as u8;
+            shapes::fill_rect(fb, glow_x, glow_y, glow_w, glow_h,
+                Color::rgb(intensity, intensity / 2, 0));
+        }
+
         // --- Draw house body ---
         shapes::fill_rect(fb, body_x, body_y, body_w, body_h, Color::rgb(120, 160, 200));
 
@@ -210,12 +198,36 @@ impl Icon for HomeIcon {
         };
         shapes::fill_rect(fb, door_x, door_y, door_w, door_h, door_color);
 
-        // Warm glow around door when open (slightly wider/taller highlight).
+        // Warm glow around door when open — double outline for soft glow effect.
         if self.door_open && self.door_progress > 0.3 {
-            let glow_a = ((self.door_progress - 0.3) / 0.7 * 80.0) as u8;
-            let glow = Color::rgb(glow_a, glow_a / 2, 0);
-            shapes::draw_rect(fb, door_x - 1, door_y - 1, door_w + 2, door_h + 2, glow);
+            let t = (self.door_progress - 0.3) / 0.7;
+            let a1 = (t * 80.0) as u8;
+            let a2 = (t * 40.0) as u8;
+            shapes::draw_rect(fb, door_x - 1, door_y - 1, door_w + 2, door_h + 2,
+                Color::rgb(a1, a1 / 2, 0));
+            shapes::draw_rect(fb, door_x - 2, door_y - 2, door_w + 4, door_h + 4,
+                Color::rgb(a2, a2 / 2, 0));
         }
+
+        // --- Draw window (left of door) ---
+        let win_size = s * 12 / 100;
+        let win_x = cx - body_w / 4 - win_size / 2;
+        let win_y = body_y + body_h / 4;
+        let win_color = if self.door_open {
+            let t = self.door_progress;
+            Color::rgb(
+                (80.0 + 175.0 * t) as u8,
+                (90.0 + 140.0 * t) as u8,
+                (110.0 - 60.0 * t.min(1.0)) as u8,
+            )
+        } else {
+            Color::rgb(80, 90, 110)
+        };
+        shapes::fill_rect(fb, win_x, win_y, win_size, win_size, win_color);
+        // Window cross dividers.
+        let cross_color = Color::rgb(100, 130, 160);
+        shapes::fill_rect(fb, win_x + win_size / 2, win_y, 1, win_size, cross_color);
+        shapes::fill_rect(fb, win_x, win_y + win_size / 2, win_size, 1, cross_color);
 
         // --- Draw smoke particles (offset by icon center) ---
         // Particles were emitted with unit-normalised coords; scale by actual size.
