@@ -323,9 +323,6 @@ impl WindowRegistry {
         for slot in &mut self.buffers {
             if let Some(ref buf) = slot {
                 if buf.owner_pid == pid {
-                    // Capture id before clearing, then clear GPU texture slot
-                    // so the next window that reuses this slot index does not
-                    // inherit stale pixel data.
                     let buf_id = buf.id;
                     *slot = None;
                     removed = true;

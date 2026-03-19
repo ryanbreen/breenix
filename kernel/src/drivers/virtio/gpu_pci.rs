@@ -623,12 +623,6 @@ pub fn create_window_texture(
     if unsafe { WIN_TEX_INITIALIZED[slot] } {
         let (old_w, old_h) = unsafe { WIN_TEX_DIMS[slot] };
         if width <= old_w && height <= old_h {
-            // Zero backing buffer to prevent stale pixel bleed from a previous
-            // window that occupied this slot.
-            let (ptr, sz) = unsafe { WIN_TEX_BACKING[slot] };
-            if !ptr.is_null() && sz > 0 {
-                unsafe { core::ptr::write_bytes(ptr, 0, sz); }
-            }
             return Ok(res_id);
         }
         // Window grew beyond existing texture — destroy and recreate at new size
@@ -704,16 +698,17 @@ pub fn create_window_texture(
 /// Clear a GPU texture slot when the owning window is destroyed.
 /// This prevents stale texture data from bleeding into new windows
 /// that reuse the same slot index.
+///
+/// NOTE: Does NOT zero the backing buffer here. This function is called from
+/// remove_for_pid() which runs in the process cleanup path (including from
+/// context_switch.rs). Zeroing a large buffer (e.g. 750×550×4 = 1.6MB) in
+/// that path corrupts other threads' contexts due to timing/memory issues.
+/// The backing buffer is zeroed lazily in create_window_texture's reuse path.
 pub fn clear_window_texture_slot(slot: usize) {
     if slot >= MAX_WIN_TEX_SLOTS { return; }
     unsafe {
         WIN_TEX_INITIALIZED[slot] = false;
         WIN_TEX_DIMS[slot] = (0, 0);
-        // Zero the backing buffer so no stale pixels survive.
-        let (ptr, sz) = WIN_TEX_BACKING[slot];
-        if !ptr.is_null() && sz > 0 {
-            core::ptr::write_bytes(ptr, 0, sz);
-        }
     }
 }
 
