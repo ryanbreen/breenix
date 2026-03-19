@@ -25,7 +25,7 @@ pub struct SaveIcon {
     insert_y: Spring,
     /// Slot glow intensity 0..1, fades after click.
     slot_glow: f32,
-    /// Accumulated time in the Clicked state, ms.
+    /// Accumulated time in the Clicked state, us.
     click_time: u32,
     /// True once the eject target (0.0) has been set this cycle.
     ejecting: bool,
@@ -83,9 +83,9 @@ impl SaveIcon {
 }
 
 impl Icon for SaveIcon {
-    fn update(&mut self, dt_ms: u32, mouse: IconMouse) {
-        let state_changed = self.base.update(dt_ms, &mouse);
-        let dt = dt_ms as f32 / 1000.0;
+    fn update(&mut self, dt_us: u32, mouse: IconMouse) {
+        let state_changed = self.base.update(dt_us, &mouse);
+        let dt = dt_us as f32 / 1_000_000.0;
 
         // On entering Clicked: start insertion, light up the slot.
         if state_changed && self.base.state == IconState::Clicked {
@@ -99,16 +99,16 @@ impl Icon for SaveIcon {
         // Manage the click lifecycle: emit sparkles once disk is ~inserted,
         // then eject after 300 ms total.
         if self.base.state == IconState::Clicked {
-            self.click_time += dt_ms;
+            self.click_time += dt_us;
 
             // Emit sparkles once the disk is clearly into the slot (~100 ms in).
-            if self.click_time >= 100 && !self.sparkles_emitted {
+            if self.click_time >= 100_000 && !self.sparkles_emitted {
                 self.sparkles_emitted = true;
                 self.emit_slot_sparkles();
             }
 
             // Start ejecting after 300 ms.
-            if self.click_time >= 300 && !self.ejecting {
+            if self.click_time >= 300_000 && !self.ejecting {
                 self.ejecting = true;
                 self.insert_y.set_target(0.0);
             }
@@ -129,14 +129,14 @@ impl Icon for SaveIcon {
         // lift_y target: hover lifts the disk -3 px with a gentle ±2 px bob.
         let target_lift = match self.base.state {
             IconState::HoverIn | IconState::Hovering => {
-                let bob = sin_approx(self.base.state_time as f32 / 1000.0 * 3.5) * 2.0;
+                let bob = sin_approx(self.base.state_time as f32 / 1_000_000.0 * 3.5) * 2.0;
                 -3.0 + bob
             }
             // Pressed: nudge toward slot.
             IconState::Pressed => 2.0,
             // Idle: subtle breathing ~1 px.
             IconState::Idle => {
-                sin_approx(self.base.idle_time as f32 / 1000.0 * 1.8) * 1.0
+                sin_approx(self.base.idle_time as f32 / 1_000_000.0 * 1.8) * 1.0
             }
             _ => 0.0,
         };

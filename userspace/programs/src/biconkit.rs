@@ -56,9 +56,9 @@ const ICONS_PER_ROW: usize = 3;
 // Monotonic clock helper
 // ---------------------------------------------------------------------------
 
-fn clock_ms() -> u64 {
+fn clock_us() -> u64 {
     time::now_monotonic()
-        .map(|ts| ts.tv_sec as u64 * 1_000 + ts.tv_nsec as u64 / 1_000_000)
+        .map(|ts| ts.tv_sec as u64 * 1_000_000 + ts.tv_nsec as u64 / 1_000)
         .unwrap_or(0)
 }
 
@@ -166,16 +166,16 @@ fn main() {
     let mut mouse_y: i32 = 0;
     let mut mouse_down = false;
 
-    let mut last_ms: u64 = 0;
+    let mut last_us: u64 = 0;
 
     loop {
-        let now_ms = clock_ms();
-        let dt_ms: u32 = if last_ms == 0 {
-            16
+        let now_us = clock_us();
+        let dt_us: u32 = if last_us == 0 {
+            16_000
         } else {
-            (now_ms.saturating_sub(last_ms)).min(50) as u32
+            (now_us.saturating_sub(last_us)).min(50_000) as u32
         };
-        last_ms = now_ms;
+        last_us = now_us;
 
         let prev_mouse_down = mouse_down;
 
@@ -239,7 +239,7 @@ fn main() {
                 preview_icons[i].reset();
             }
 
-            icon.update(dt_ms, im);
+            icon.update(dt_us, im);
         }
 
         // ---------------------------------------------------------------
@@ -260,7 +260,7 @@ fn main() {
                 mouse_down, just_clicked, just_released,
                 preview_cx, preview_cy, preview_hover_radius,
             );
-            preview_icons[selected_idx].update(dt_ms, im);
+            preview_icons[selected_idx].update(dt_us, im);
         }
 
         // ---------------------------------------------------------------
@@ -334,6 +334,7 @@ fn main() {
         font::draw_text(fb, hint, hint_x as usize, hint_y as usize, HINT_COLOR, 1);
 
         let _ = win.present();
-        let _ = time::sleep_ms(16);
+        // No sleep — run as fast as the compositor will allow
+
     }
 }
