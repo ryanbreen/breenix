@@ -969,8 +969,8 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             let mut event: WindowInputEvent = unsafe { core::ptr::read(event_ptr as *const WindowInputEvent) };
 
             // Inject accumulated scroll wheel delta into mouse events.
-            // MOUSE_MOVE=3, MOUSE_BUTTON=4, MOUSE_SCROLL=9
-            if event.event_type == 3 || event.event_type == 4 || event.event_type == 9 {
+            // MOUSE_MOVE=3, MOUSE_SCROLL=9 (exclude MOUSE_BUTTON=4: scroll_y carries press state)
+            if event.event_type == 3 || event.event_type == 9 {
                 let wheel = crate::drivers::usb::hid::mouse_wheel_consume();
                 if wheel != 0 {
                     event.scroll_y = event.scroll_y.saturating_add(wheel.clamp(-32768, 32767) as i16);
