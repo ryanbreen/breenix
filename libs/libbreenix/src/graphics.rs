@@ -934,8 +934,8 @@ pub fn compositor_wait(timeout_ms: u32, last_registry_gen: u32) -> Result<(u32, 
 /// * Ok((x, y)) - Mouse position in screen coordinates
 /// * Err(Error) - Error (ENODEV if no pointer device)
 pub fn mouse_pos() -> Result<(u32, u32), Error> {
-    let mut state: [u32; 3] = [0, 0, 0];
-    let ret = unsafe { raw::syscall1(nr::GET_MOUSE_POS, &mut state as *mut [u32; 3] as u64) as i64 };
+    let mut state: [u32; 4] = [0, 0, 0, 0];
+    let ret = unsafe { raw::syscall1(nr::GET_MOUSE_POS, &mut state as *mut [u32; 4] as u64) as i64 };
     Error::from_syscall(ret)?;
     Ok((state[0], state[1]))
 }
@@ -946,8 +946,8 @@ pub fn mouse_pos() -> Result<(u32, u32), Error> {
 /// * Ok((x, y, buttons)) - Mouse position and button state (bit 0 = left button)
 /// * Err(Error) - Error (ENODEV if no pointer device)
 pub fn mouse_state() -> Result<(u32, u32, u32), Error> {
-    let mut state: [u32; 3] = [0, 0, 0];
-    let ret = unsafe { raw::syscall1(nr::GET_MOUSE_POS, &mut state as *mut [u32; 3] as u64) as i64 };
+    let mut state: [u32; 4] = [0, 0, 0, 0];
+    let ret = unsafe { raw::syscall1(nr::GET_MOUSE_POS, &mut state as *mut [u32; 4] as u64) as i64 };
     Error::from_syscall(ret)?;
     Ok((state[0], state[1], state[2]))
 }
