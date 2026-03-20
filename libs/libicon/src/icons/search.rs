@@ -14,9 +14,9 @@ pub struct SearchIcon {
     scale: Spring,
     /// Angle (radians) of the orbiting shimmer highlight.
     shimmer_angle: f32,
-    /// Sonar ring state: up to 3 rings, each with (birth_time_ms, is_alive).
+    /// Sonar ring state: up to 3 rings, each with (birth_time_us, is_alive).
     sonar_rings: [(u32, bool); 3],
-    /// Time elapsed since Clicked state started (ms).
+    /// Time elapsed since Clicked state started (us).
     click_time: u32,
 }
 
@@ -34,16 +34,16 @@ impl SearchIcon {
     fn emit_sonar_burst(&mut self) {
         // Spawn 3 rings with staggered birth times tracked in sonar_rings.
         self.sonar_rings[0] = (0, true);
-        self.sonar_rings[1] = (120, true);
-        self.sonar_rings[2] = (240, true);
+        self.sonar_rings[1] = (120_000, true);
+        self.sonar_rings[2] = (240_000, true);
         self.click_time = 0;
     }
 }
 
 impl Icon for SearchIcon {
-    fn update(&mut self, dt_ms: u32, mouse: IconMouse) {
-        let state_changed = self.base.update(dt_ms, &mouse);
-        let dt = dt_ms as f32 / 1000.0;
+    fn update(&mut self, dt_us: u32, mouse: IconMouse) {
+        let state_changed = self.base.update(dt_us, &mouse);
+        let dt = dt_us as f32 / 1_000_000.0;
 
         // Trigger sonar on click.
         if state_changed && self.base.state == IconState::Clicked {
@@ -52,7 +52,7 @@ impl Icon for SearchIcon {
 
         // Advance click timer.
         if self.base.state == IconState::Clicked {
-            self.click_time += dt_ms;
+            self.click_time += dt_us;
         }
 
         // Advance shimmer angle when hovering.
@@ -78,7 +78,7 @@ impl Icon for SearchIcon {
     fn draw(&self, fb: &mut FrameBuf, cx: i32, cy: i32, size: i32) {
         let sc = self.scale.value;
         // Idle pulse: lens slightly breathes.
-        let breathe = 1.0 + sin_approx(self.base.idle_time as f32 / 1000.0 * 1.8) * 0.015;
+        let breathe = 1.0 + sin_approx(self.base.idle_time as f32 / 1_000_000.0 * 1.8) * 0.015;
         let s = (size as f32 * sc * breathe) as i32;
         if s < 4 {
             return;
@@ -137,10 +137,10 @@ impl Icon for SearchIcon {
                     continue;
                 }
                 let ring_age_ms = elapsed - birth_ms;
-                if ring_age_ms > 450 {
+                if ring_age_ms > 450_000 {
                     continue;
                 }
-                let t = ring_age_ms as f32 / 450.0;
+                let t = ring_age_ms as f32 / 450_000.0;
                 // Expand from radius to radius + 60px.
                 let ring_r = radius + (t * 60.0) as i32;
                 // Fade from bright cyan to transparent.

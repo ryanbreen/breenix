@@ -55,8 +55,8 @@ pub enum IconState {
 
 /// Trait that every animated icon implements.
 pub trait Icon {
-    /// Advance animation by `dt_ms` milliseconds with the given mouse input.
-    fn update(&mut self, dt_ms: u32, mouse: IconMouse);
+    /// Advance animation by `dt_us` microseconds with the given mouse input.
+    fn update(&mut self, dt_us: u32, mouse: IconMouse);
 
     /// Draw the icon centered at (cx, cy) with the given base size (width = height).
     fn draw(&self, fb: &mut FrameBuf, cx: i32, cy: i32, size: i32);
@@ -81,9 +81,9 @@ pub trait Icon {
 /// implement their visual responses to each state.
 pub struct IconBase {
     pub state: IconState,
-    /// Time spent in the current state, in milliseconds.
+    /// Time spent in the current state, in microseconds.
     pub state_time: u32,
-    /// Accumulated idle time for breathing / idle animations.
+    /// Accumulated idle time for breathing / idle animations, in microseconds.
     pub idle_time: u32,
     /// Normalized transition progress 0.0..=1.0 for the current state.
     pub progress: f32,
@@ -102,9 +102,9 @@ impl IconBase {
     /// Drive the state machine forward.
     ///
     /// Returns `true` if the state changed this frame.
-    pub fn update(&mut self, dt_ms: u32, mouse: &IconMouse) -> bool {
-        self.state_time += dt_ms;
-        self.idle_time += dt_ms;
+    pub fn update(&mut self, dt_us: u32, mouse: &IconMouse) -> bool {
+        self.state_time += dt_us;
+        self.idle_time += dt_us;
 
         let old_state = self.state;
 
@@ -117,12 +117,12 @@ impl IconBase {
 
             IconState::HoverIn => {
                 // HoverIn lasts ~250 ms, then becomes Hovering.
-                self.progress = (self.state_time as f32 / 250.0).min(1.0);
+                self.progress = (self.state_time as f32 / 250_000.0).min(1.0);
                 if mouse.just_clicked {
                     self.transition(IconState::Pressed);
                 } else if !mouse.hovering {
                     self.transition(IconState::HoverOut);
-                } else if self.state_time >= 250 {
+                } else if self.state_time >= 250_000 {
                     self.transition(IconState::Hovering);
                 }
             }
@@ -137,17 +137,17 @@ impl IconBase {
 
             IconState::HoverOut => {
                 // HoverOut lasts ~200 ms, then becomes Idle.
-                self.progress = (self.state_time as f32 / 200.0).min(1.0);
+                self.progress = (self.state_time as f32 / 200_000.0).min(1.0);
                 if mouse.hovering {
                     self.transition(IconState::HoverIn);
-                } else if self.state_time >= 200 {
+                } else if self.state_time >= 200_000 {
                     self.transition(IconState::Idle);
                 }
             }
 
             IconState::Pressed => {
                 // Held until release; compress animates over ~50 ms.
-                self.progress = (self.state_time as f32 / 50.0).min(1.0);
+                self.progress = (self.state_time as f32 / 50_000.0).min(1.0);
                 if mouse.just_released {
                     self.transition(IconState::Clicked);
                 } else if !mouse.hovering && !mouse.pressed {
@@ -157,8 +157,8 @@ impl IconBase {
 
             IconState::Clicked => {
                 // Payoff animation lasts ~500 ms.
-                self.progress = (self.state_time as f32 / 500.0).min(1.0);
-                if self.state_time >= 500 {
+                self.progress = (self.state_time as f32 / 500_000.0).min(1.0);
+                if self.state_time >= 500_000 {
                     if mouse.hovering {
                         self.transition(IconState::Hovering);
                     } else {

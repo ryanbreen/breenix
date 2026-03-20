@@ -30,7 +30,7 @@ impl HomeIcon {
         Self {
             base: IconBase::new(),
             scale: Spring::new(1.0, 300.0, 20.0),
-            particles: ParticlePool::new(30),
+            particles: ParticlePool::new(8),
             rng: Rng::new(0x48_4F4D_45), // "HOME"
             smoke_accum: 0,
             door_open: false,
@@ -38,39 +38,37 @@ impl HomeIcon {
         }
     }
 
-    fn emit_smoke(&mut self, cx: f32, cy: f32, size: f32) {
-        // Chimney top is roughly at cx + 0.15*size, cy - 0.52*size
-        let chimney_x = cx + size * 0.15;
-        let chimney_y = cy - size * 0.52;
+    fn emit_smoke(&mut self, _cx: f32, _cy: f32, _size: f32) {
+        // Spawn just above the chimney top so the wisp is clearly emerging.
+        // Chimney center x = 0.175, top y = -0.60 in normalized coords.
+        // Start a bit above (-0.64) so the wisp is visible from the start.
+        let chimney_x = 0.175;
+        let spawn_y = -0.64;
 
-        let vx = self.rng.range(-4.0, 4.0);
-        let vy = self.rng.range(-18.0, -10.0);
-        // Slightly larger smoke during click (chimney is working overtime).
-        let sz = if self.door_open {
-            self.rng.range(2.5, 5.0)
-        } else {
-            self.rng.range(1.5, 3.5)
-        };
+        // Gentle upward drift with slight x wobble.
+        // At size=40, vy=-0.15 → ~6 px/s upward. Visible but not a rocket.
+        let vx = self.rng.range(-0.03, 0.03);
+        let vy = self.rng.range(-0.18, -0.10);
         self.particles.emit(Particle {
-            x: chimney_x,
-            y: chimney_y,
+            x: chimney_x + self.rng.range(-0.01, 0.01),
+            y: spawn_y,
             vx,
             vy,
             life: 1.0,
-            max_life: self.rng.range(0.8, 1.4),
-            size: sz,
-            color: Color::rgb(180, 180, 190),
+            max_life: self.rng.range(1.0, 1.8),
+            size: self.rng.range(2.0, 3.5),
+            color: Color::rgb(180, 180, 195),
             gravity: 0.0,
-            friction: 0.6,
+            friction: 0.4,
         });
     }
 
 }
 
 impl Icon for HomeIcon {
-    fn update(&mut self, dt_ms: u32, mouse: IconMouse) {
-        let state_changed = self.base.update(dt_ms, &mouse);
-        let dt = dt_ms as f32 / 1000.0;
+    fn update(&mut self, dt_us: u32, mouse: IconMouse) {
+        let state_changed = self.base.update(dt_us, &mouse);
+        let dt = dt_us as f32 / 1_000_000.0;
 
         // On entering Clicked, open the door.
         if state_changed && self.base.state == IconState::Clicked {
@@ -94,10 +92,9 @@ impl Icon for HomeIcon {
             IconState::HoverIn | IconState::Hovering | IconState::Clicked
         );
         if emit_smoke {
-            self.smoke_accum += dt_ms;
-            // During Clicked: emit every ~150ms (faster, more visible smoke).
-            // Otherwise: emit every ~333ms (~3 particles/second).
-            let smoke_interval = if self.base.state == IconState::Clicked { 150 } else { 333 };
+            self.smoke_accum += dt_us;
+            // ~2 wisps per second. Gentle, not a cannon.
+            let smoke_interval: u32 = 500_000;
             while self.smoke_accum >= smoke_interval {
                 self.smoke_accum -= smoke_interval;
                 // Emit relative to icon center (0,0); scaled by size in draw.
@@ -122,7 +119,7 @@ impl Icon for HomeIcon {
     fn draw(&self, fb: &mut FrameBuf, cx: i32, cy: i32, size: i32) {
         let sc = self.scale.value;
         // Idle breathing: gentle ±1% pulse.
-        let breathe = 1.0 + sin_approx(self.base.idle_time as f32 / 1000.0 * 1.2) * 0.01;
+        let breathe = 1.0 + sin_approx(self.base.idle_time as f32 / 1_000_000.0 * 1.2) * 0.01;
         let effective_scale = sc * breathe;
         let s = (size as f32 * effective_scale) as i32;
         // Avoid degenerate sizes.

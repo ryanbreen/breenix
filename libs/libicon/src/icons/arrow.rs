@@ -30,7 +30,7 @@ impl ArrowIcon {
             forward,
             stretch_x: Spring::new(0.0, 350.0, 18.0),
             scale: Spring::new(1.0, 300.0, 20.0),
-            particles: ParticlePool::new(24),
+            particles: ParticlePool::new(10),
             rng: Rng::new(if forward { 0xF0_1234 } else { 0xBA_CEDC }),
         }
     }
@@ -42,31 +42,32 @@ impl ArrowIcon {
     fn emit_speed_lines(&mut self, count: usize) {
         let dir = self.dir();
         for _ in 0..count {
-            let vy = self.rng.range(-6.0, 6.0);
-            let speed = self.rng.range(50.0, 120.0);
-            // Start slightly behind the arrow tip (unit-normalised coords).
-            let start_x = -dir * self.rng.range(0.1, 0.4);
-            let start_y = self.rng.range(-0.15, 0.15);
+            // Velocities in normalized units — will be scaled by `size` in draw.
+            // At size=40, vx=0.15 → 6 px/s. Gentle trailing effect, not a laser.
+            let vx = dir * self.rng.range(0.08, 0.18);
+            let vy = self.rng.range(-0.02, 0.02);
+            let start_x = -dir * self.rng.range(0.05, 0.25);
+            let start_y = self.rng.range(-0.08, 0.08);
             self.particles.emit(Particle {
                 x: start_x,
                 y: start_y,
-                vx: dir * speed,
+                vx,
                 vy,
                 life: 1.0,
-                max_life: self.rng.range(0.2, 0.45),
-                size: self.rng.range(1.5, 3.0),
+                max_life: self.rng.range(0.25, 0.45),
+                size: self.rng.range(1.5, 2.5),
                 color: Color::rgb(100, 180, 255),
                 gravity: 0.0,
-                friction: 2.0,
+                friction: 1.5,
             });
         }
     }
 }
 
 impl Icon for ArrowIcon {
-    fn update(&mut self, dt_ms: u32, mouse: IconMouse) {
-        let state_changed = self.base.update(dt_ms, &mouse);
-        let dt = dt_ms as f32 / 1000.0;
+    fn update(&mut self, dt_us: u32, mouse: IconMouse) {
+        let state_changed = self.base.update(dt_us, &mouse);
+        let dt = dt_us as f32 / 1_000_000.0;
         let dir = self.dir();
 
         // On click: snap the stretch spring to create a "launch" feel.
@@ -85,7 +86,7 @@ impl Icon for ArrowIcon {
             IconState::HoverIn => (1.05, dir * 0.08),
             IconState::Hovering => {
                 // Oscillate slightly in idle hover.
-                let osc = sin_approx(self.base.state_time as f32 / 500.0 * 3.14159265) * 0.03;
+                let osc = sin_approx(self.base.state_time as f32 / 500_000.0 * 3.14159265) * 0.03;
                 (1.05, dir * (0.08 + osc))
             }
             IconState::Clicked => (1.12, dir * 0.18),
@@ -117,7 +118,7 @@ impl Icon for ArrowIcon {
 
         // For motion blur on click: draw 3 fading ghost copies behind the arrow.
         if self.base.state == IconState::Clicked || self.base.state == IconState::HoverOut {
-            let progress = self.base.state_time as f32 / 500.0;
+            let progress = self.base.state_time as f32 / 500_000.0;
             if progress < 0.6 {
                 for i in 1..=3_i32 {
                     let trail_alpha = (1.0 - progress) * (1.0 - i as f32 / 4.0);
