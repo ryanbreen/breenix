@@ -928,6 +928,8 @@ secondary_el1_init:
     mov x1, #(1 << 19)      // Clear WXN bit
     bic x0, x0, x1
     orr x0, x0, #1          // Set M bit (MMU enable)
+    orr x0, x0, #(1 << 2)   // Set C bit (data cache enable)
+    orr x0, x0, #(1 << 12)  // Set I bit (instruction cache enable)
     msr sctlr_el1, x0
     isb
 

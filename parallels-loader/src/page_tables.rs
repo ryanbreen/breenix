@@ -324,6 +324,53 @@ pub fn build_page_tables(storage: &mut PageTableStorage, config: &PageTableConfi
     write_entry(ttbr0_l1, 3, 0xC000_0000 | attr::NORMAL_BLOCK);
     write_entry(ttbr1_l1, 3, 0xC000_0000 | attr::NORMAL_BLOCK);
 
+    // --- High-RAM identity map for loader code and page table storage ---
+    //
+    // With >4GB RAM (e.g. 8GB on Parallels), UEFI may load the loader PE image
+    // above 4GB — e.g. at 0x23c100000 (L1 index 8).  When we re-enable the MMU
+    // the very next instruction fetch comes from that physical address, which is
+    // only valid if L1[8] is mapped.  Similarly, the PageTableStorage lives in
+    // the loader's BSS and TTBR0/TTBR1 point to it physically; having it
+    // identity-mapped avoids any table-walker fault.
+    //
+    // We use `adr` to read the current PC.  While UEFI's own MMU is active the
+    // value is a virtual address, but under UEFI's identity map VA == PA, so the
+    // result is the physical address of this code.
+    let loader_phys: u64;
+    unsafe {
+        core::arch::asm!(
+            "adr {}, .",
+            out(reg) loader_phys,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    let storage_phys = storage as *const _ as u64;
+
+    // Compute 1GB-block L1 indices (bits [39:30] of the physical address).
+    let loader_l1_idx = (loader_phys >> 30) as usize;
+    let storage_l1_idx = (storage_phys >> 30) as usize;
+
+    // Add identity-map 1GB block entries for any index > 3 that isn't already
+    // covered.  We only write into slots that are currently empty (== 0) so we
+    // never overwrite an intentional mapping set up above.
+    for &idx in &[loader_l1_idx, storage_l1_idx] {
+        if idx > 3 && idx < 512 {
+            let phys = (idx as u64) << 30;
+            // TTBR0 (identity map)
+            let ttbr0_l1_ptr = ttbr0_l1 as *const u64;
+            let existing = unsafe { core::ptr::read_volatile(ttbr0_l1_ptr.add(idx)) };
+            if existing == 0 {
+                write_entry(ttbr0_l1, idx, phys | attr::NORMAL_BLOCK);
+            }
+            // TTBR1 (HHDM) — keeps the HHDM contiguous into high RAM
+            let ttbr1_l1_ptr = ttbr1_l1 as *const u64;
+            let existing1 = unsafe { core::ptr::read_volatile(ttbr1_l1_ptr.add(idx)) };
+            if existing1 == 0 {
+                write_entry(ttbr1_l1, idx, phys | attr::NORMAL_BLOCK);
+            }
+        }
+    }
+
     // Ensure all page table writes are committed to memory
     flush_page_tables();
 

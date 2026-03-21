@@ -658,6 +658,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Initialize per-CPU data (required before scheduler and interrupts)
     serial_println!("[boot] Initializing per-CPU data...");
     kernel::per_cpu_aarch64::init();
+    // Store the boot TTBR0 as the kernel page table for this CPU.
+    // Without this, exception handlers fall back to a wrong hardcoded address.
+    let boot_ttbr0: u64;
+    unsafe { core::arch::asm!("mrs {}, ttbr0_el1", out(reg) boot_ttbr0, options(nomem, nostack)); }
+    kernel::per_cpu_aarch64::set_kernel_cr3(boot_ttbr0);
     serial_println!("[boot] Per-CPU data initialized");
 
     // Initialize process manager
@@ -751,8 +756,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                 serial_println!("[smp] CPU {}: PSCI CPU_ON success", cpu);
                 launched += 1;
             } else {
-                // PSCI_E_INVALID_PARAMS (-2) or PSCI_E_NOT_PRESENT (-9) = no more CPUs
-                break;
+                // PSCI_E_INVALID_PARAMS (-2) or PSCI_E_NOT_PRESENT (-9) = no more CPUs at this index.
+                // Use continue (not break) to probe all indices — sparse topologies (e.g. M5 Max
+                // with efficiency + performance clusters) may have gaps in MPIDR Aff0 numbering.
+                serial_println!("[smp] CPU {}: PSCI CPU_ON failed (ret={}), continuing probe", cpu, ret);
+                continue;
             }
         }
         if launched > 0 {

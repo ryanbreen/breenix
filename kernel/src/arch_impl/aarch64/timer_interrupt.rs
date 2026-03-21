@@ -364,13 +364,20 @@ fn dump_gic_state() {
         if addr == 0 {
             continue;
         }
-        unsafe {
-            let ptr = (HHDM + addr) as *const u32;
-            let ctlr = core::ptr::read_volatile(ptr);
-            let pidr2 = core::ptr::read_volatile(ptr.byte_add(0xFE8));
-            let ok = ctlr != 0xFFFF_FFFF;
-            crate::serial_println!("[gic-probe] {:#010x} ({}) CTLR={:#010x} PIDR2={:#010x} {}",
-                addr, label, ctlr, pidr2, if ok { "<<< FOUND" } else { "" });
+        // Use the fault-tolerant probe so a non-responding address (DFSC=0x10)
+        // doesn't crash the kernel.  This is especially important on M5 Max
+        // where the loader may report a GICR base that causes an External Abort.
+        let ctlr = crate::arch_impl::aarch64::gic::probe_mmio_u32(addr as usize);
+        let pidr2 = crate::arch_impl::aarch64::gic::probe_mmio_u32(addr as usize + 0xFE8);
+        match (ctlr, pidr2) {
+            (None, _) | (_, None) => {
+                crate::serial_println!("[gic-probe] {:#010x} ({}) FAULT (External Abort)", addr, label);
+            }
+            (Some(c), Some(p)) => {
+                let ok = c != 0xFFFF_FFFF;
+                crate::serial_println!("[gic-probe] {:#010x} ({}) CTLR={:#010x} PIDR2={:#010x} {}",
+                    addr, label, c, p, if ok { "<<< FOUND" } else { "" });
+            }
         }
     }
 
@@ -394,8 +401,11 @@ fn dump_gic_state() {
             gicd_base, gicd_ctlr, gicd_isenabler0);
     }
 
-    // Read GICR registers (redistributor manages PPIs on GICv3)
-    if gicr_base != 0 {
+    // Read GICR registers (redistributor manages PPIs on GICv3).
+    // Only read if the GICR base has been validated by the GIC probe mechanism.
+    // On M5 Max under Parallels the loader may report a wrong GICR base and
+    // reading it causes a Synchronous External Abort (DFSC=0x10).
+    if gicr_base != 0 && crate::arch_impl::aarch64::gic::GICR_VALID.load(core::sync::atomic::Ordering::Acquire) {
         unsafe {
             // GICR has RD_base (64KB) + SGI_base (64KB) per CPU
             // SGI_base is at offset 0x10000 from RD_base
@@ -424,6 +434,8 @@ fn dump_gic_state() {
             let prio30 = (prio_reg7 >> 16) & 0xFF;
             crate::serial_println!("[timer] PPI27 priority={:#x} PPI30 priority={:#x}", prio27, prio30);
         }
+    } else if gicr_base != 0 {
+        crate::serial_println!("[timer] GICR@{:#x}: skipped (not validated — probe failed or not yet run)", gicr_base);
     }
 }
 
@@ -551,7 +563,7 @@ fn dump_lockup_state(stall_ticks: u64) {
 
         // Per-CPU current/previous threads
         raw_serial_str(b"\n  Per-CPU state:\n");
-        for cpu in 0..4usize {
+        for cpu in 0..crate::arch_impl::aarch64::smp::MAX_CPUS.min(info.per_cpu_current.len()) {
             raw_serial_str(b"    CPU ");
             raw_serial_char(b'0' + cpu as u8);
             raw_serial_str(b": current=");

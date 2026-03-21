@@ -304,6 +304,11 @@ pub extern "C" fn secondary_cpu_entry_rust(cpu_id: u64) -> ! {
     // Initialize per-CPU data (sets TPIDR_EL1 for this CPU)
     crate::per_cpu_aarch64::init_cpu(cpu_id as usize);
 
+    // Store the boot TTBR0 as the kernel page table for this CPU.
+    let boot_ttbr0: u64;
+    unsafe { core::arch::asm!("mrs {}, ttbr0_el1", out(reg) boot_ttbr0, options(nomem, nostack)); }
+    crate::per_cpu_aarch64::set_kernel_cr3(boot_ttbr0);
+
     // Set kernel stack top for this CPU.
     // boot.S sets SP to SMP_STACK_BASE_PHYS + (cpu_id+1)*0x200000 (physical),
     // then adds KERNEL_VIRT_BASE after enabling MMU.

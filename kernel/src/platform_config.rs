@@ -185,6 +185,14 @@ pub fn gicr_size() -> u64 {
     GICR_SIZE.load(Ordering::Relaxed)
 }
 
+/// Override the GICR base physical address (used by GICR probe when the
+/// loader-reported address is wrong and a fallback address is found).
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn set_gicr_base_phys(base: u64) {
+    GICR_BASE_PHYS.store(base, Ordering::Relaxed);
+}
+
 /// GICv2m MSI frame physical base address. 0 if not probed/available.
 #[cfg(target_arch = "aarch64")]
 #[inline]
@@ -557,40 +565,36 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
     // Reserve: kernel (16 MB) + per-CPU stacks (16 MB) at the start,
     // and heap (32 MB) at the end.
     if config.ram_region_count > 0 {
-        let mut best_base = 0u64;
-        let mut best_size = 0u64;
-        for i in 0..config.ram_region_count as usize {
-            if i >= config.ram_regions.len() {
-                break;
-            }
-            let region = &config.ram_regions[i];
-            if region.size > best_size {
-                best_base = region.base;
-                best_size = region.size;
-            }
-        }
+        // Use the FIRST RAM region for ram_base_offset — this is the region
+        // containing the kernel (loaded by the UEFI loader at its base).
+        // On 8GB+ machines, UEFI splits RAM across a PCI hole: ~2GB at
+        // 0x40000000 and ~6GB above 4GB. The largest region is above 4GB,
+        // but the kernel lives in the first region. The loader uses
+        // ram_regions[0].base for its offset, so we must match.
+        let first_base = config.ram_regions[0].base;
+        let first_size = config.ram_regions[0].size;
 
         // Compute RAM base offset for DMA address translation.
         // The kernel linker script assumes physical RAM starts at 0x40000000.
         // On VMware Fusion ARM64, RAM starts at 0x80000000, giving offset 0x40000000.
         // On QEMU/Parallels, RAM starts at 0x40000000, giving offset 0.
         let expected_ram_base: u64 = 0x4000_0000;
-        let actual_ram_base = best_base & !0x3FFF_FFFF; // Round down to 1GB boundary
+        let actual_ram_base = first_base & !0x3FFF_FFFF; // Round down to 1GB boundary
         if actual_ram_base > expected_ram_base {
             let offset = actual_ram_base - expected_ram_base;
             RAM_BASE_OFFSET.store(offset, Ordering::Relaxed);
         }
 
-        if best_size > 0 {
+        if first_size > 0 {
             // Frame allocator starts after kernel + BSS (48 MB from RAM base).
             // BSS includes PCI_3D_FRAMEBUFFER (~7.5 MB) and kernel stacks, so
             // the total image + BSS exceeds 32 MB. 48 MB gives margin for growth.
-            let fa_start = best_base + 0x0300_0000; // +48 MB
+            let fa_start = first_base + 0x0300_0000; // +48 MB
             // Frame allocator must end BEFORE the DMA NC region.
             // The .dma section starts at physical 0x5000_0000, so cap fa_end there.
             // On VMware (RAM base 0x80000000), apply the offset to the DMA boundary.
             let dma_boundary = 0x5000_0000u64 + RAM_BASE_OFFSET.load(Ordering::Relaxed);
-            let fa_end = (best_base + best_size).min(dma_boundary);
+            let fa_end = (first_base + first_size).min(dma_boundary);
             if fa_end > fa_start {
                 FRAME_ALLOC_START.store(fa_start, Ordering::Relaxed);
                 FRAME_ALLOC_END.store(fa_end, Ordering::Relaxed);

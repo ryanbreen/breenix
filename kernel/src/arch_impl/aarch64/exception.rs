@@ -141,6 +141,27 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
         }
 
         exception_class::DATA_ABORT_LOWER | exception_class::DATA_ABORT_SAME => {
+            // Fast path: if an MMIO probe is in progress, record the fault and
+            // advance ELR past the faulting instruction.  This allows
+            // probe_mmio_u32() in gic.rs to detect non-responding hardware
+            // without crashing the kernel.
+            //
+            // DFSC=0x10 is "Synchronous External Abort" (non-responding device).
+            // We also catch DFSC=0x00 (Address size fault, level 0) and similar
+            // translation faults that may fire when the MMIO VA is not mapped,
+            // though on ARM64 with a fixed 1:1 HHDM the MMIO VA should be mapped.
+            {
+                use crate::arch_impl::aarch64::gic::{MMIO_PROBE_ACTIVE, MMIO_PROBE_FAULTED};
+                if MMIO_PROBE_ACTIVE.load(core::sync::atomic::Ordering::SeqCst) {
+                    MMIO_PROBE_ACTIVE.store(false, core::sync::atomic::Ordering::SeqCst);
+                    MMIO_PROBE_FAULTED.store(true, core::sync::atomic::Ordering::SeqCst);
+                    // Advance ELR past the faulting load instruction (always 4 bytes on ARM64).
+                    let frame_ref = unsafe { &mut *frame };
+                    frame_ref.elr += 4;
+                    return;
+                }
+            }
+
             // Try to handle as CoW fault first
             if handle_cow_fault_arm64(far, iss) {
                 // CoW fault handled successfully, return to userspace

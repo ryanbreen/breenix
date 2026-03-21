@@ -345,20 +345,17 @@ if [ "$PARALLELS" = true ]; then
 
     echo "Creating fresh VM '$PARALLELS_VM'..."
     prlctl create "$PARALLELS_VM" --ostype linux --distribution linux --no-hdd
-    prlctl set "$PARALLELS_VM" --memsize 2048
-    prlctl set "$PARALLELS_VM" --cpus 4
+    prlctl set "$PARALLELS_VM" --memsize 8192
+    prlctl set "$PARALLELS_VM" --cpus 8
 
     # Configure VM: EFI boot, attach our disks
     prlctl set "$PARALLELS_VM" --efi-boot on 2>/dev/null || true
 
     # VirtIO GPU with 3D acceleration (required for VirGL)
     prlctl set "$PARALLELS_VM" --3d-accelerate highest 2>/dev/null || true
-    prlctl set "$PARALLELS_VM" --videosize 256 2>/dev/null || true
-    # high-resolution OFF: 1 guest pixel = 1 Mac screen point. Without Parallels
-    # Tools, the guest can't negotiate DPI, so 'on' maps 1 pixel = 1 physical pixel
-    # making the window tiny on Retina. 'off' maps 1 pixel = 1 point = 2x physical.
-    # At 1920x1200 guest, this gives a 1920x1200 point window (fills most of screen).
-    prlctl set "$PARALLELS_VM" --high-resolution off 2>/dev/null || true
+    prlctl set "$PARALLELS_VM" --videosize 2048 2>/dev/null || true
+    prlctl set "$PARALLELS_VM" --high-resolution on 2>/dev/null || true
+    prlctl set "$PARALLELS_VM" --vertical-sync on 2>/dev/null || true
 
     # Remove any default devices Parallels created (cdrom, hdd, serial) to avoid conflicts
     for dev in hdd0 hdd1 hdd2 cdrom0 cdrom1 serial0 serial1; do

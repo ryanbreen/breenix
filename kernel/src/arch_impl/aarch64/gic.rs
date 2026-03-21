@@ -21,6 +21,148 @@ use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use crate::arch_impl::traits::InterruptController;
 
 // =============================================================================
+// Fault-tolerant MMIO probe support
+// =============================================================================
+//
+// When probing unknown MMIO addresses (e.g. verifying the GICR base from the
+// UEFI loader), a read from an unmapped or non-responding address causes a
+// Synchronous External Abort (DFSC=0x10).  The DATA_ABORT handler in
+// exception.rs checks MMIO_PROBE_ACTIVE and, when set, records the fault and
+// advances ELR past the faulting instruction instead of crashing.
+//
+// Usage:
+//   MMIO_PROBE_ACTIVE.store(true, SeqCst)
+//   let val = unsafe { read_volatile(addr) }   // may fault
+//   MMIO_PROBE_ACTIVE.store(false, SeqCst)
+//   if MMIO_PROBE_FAULTED.load(SeqCst) { /* address is bad */ }
+
+/// Set to true before a speculative MMIO read.  The DATA_ABORT handler
+/// checks this flag and, when set, sets MMIO_PROBE_FAULTED and advances ELR
+/// past the faulting instruction rather than crashing.
+pub static MMIO_PROBE_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Set to true by the DATA_ABORT handler when a fault occurs while
+/// MMIO_PROBE_ACTIVE is true.  Reset to false before each probe attempt.
+pub static MMIO_PROBE_FAULTED: AtomicBool = AtomicBool::new(false);
+
+/// Whether the GICR base address has been validated as accessible.
+/// Set to true after a successful probe of the GICR base.
+/// All GICR MMIO accesses are skipped when false.
+pub static GICR_VALID: AtomicBool = AtomicBool::new(false);
+
+/// Whether the GICR base has already been probed (even if it failed).
+static GICR_PROBED: AtomicBool = AtomicBool::new(false);
+
+/// Attempt a 32-bit MMIO read using the fault-tolerant probe mechanism.
+///
+/// Returns `Some(value)` if the read succeeds, `None` if it triggers a
+/// Synchronous External Abort (DFSC=0x10 / non-responding device).
+///
+/// SAFETY: The DATA_ABORT handler must be installed and must check
+/// MMIO_PROBE_ACTIVE before this is called.  Only safe to call from
+/// early-boot single-threaded context (CPU 0, no SMP yet).
+pub fn probe_mmio_u32(phys_addr: usize) -> Option<u32> {
+    let virt_addr = (GIC_HHDM + phys_addr) as *const u32;
+
+    // Clear the fault flag before the attempt.
+    MMIO_PROBE_FAULTED.store(false, Ordering::SeqCst);
+    // Arm the probe — DATA_ABORT handler checks this.
+    MMIO_PROBE_ACTIVE.store(true, Ordering::SeqCst);
+    core::sync::atomic::fence(Ordering::SeqCst);
+
+    let val = unsafe { core::ptr::read_volatile(virt_addr) };
+
+    core::sync::atomic::fence(Ordering::SeqCst);
+    // Disarm — we either got the value or the handler already set FAULTED.
+    MMIO_PROBE_ACTIVE.store(false, Ordering::SeqCst);
+    core::sync::atomic::fence(Ordering::SeqCst);
+
+    if MMIO_PROBE_FAULTED.load(Ordering::SeqCst) {
+        None
+    } else {
+        Some(val)
+    }
+}
+
+/// Probe and validate the GICR base address.
+///
+/// Reads GICR_WAKER (offset 0x14) from the reported base.  If that faults,
+/// tries a list of well-known fallback addresses.  If a responsive address is
+/// found, updates platform_config and sets GICR_VALID.
+///
+/// Returns true if a valid GICR was found (either at the reported base or a
+/// fallback), false if no valid GICR could be located.
+fn probe_and_validate_gicr() -> bool {
+    if GICR_PROBED.load(Ordering::Acquire) {
+        return GICR_VALID.load(Ordering::Acquire);
+    }
+    GICR_PROBED.store(true, Ordering::Release);
+
+    let reported_base = crate::platform_config::gicr_base_phys() as usize;
+
+    // Candidate addresses to try in order:
+    //   1. Whatever the UEFI loader reported (may be wrong on M5 Max)
+    //   2. Known Parallels GICR on M3 Max
+    //   3. Common alternative addresses seen on real Apple Silicon under Parallels
+    let candidates: &[usize] = &[
+        reported_base,
+        0x0250_0000, // Parallels M3 Max
+        0x0260_0000, // potential M5 Max offset
+        0x0200_0000, // the base that causes the crash (wrong, but keep to log)
+        0x080A_0000, // another common GICR location
+    ];
+
+    for &base in candidates {
+        if base == 0 {
+            continue;
+        }
+        // Read GICR_WAKER at offset 0x14.  A valid GICR responds with bits
+        // [31:3] reserved-RAZ and bit[1] (ProcessorSleep) set on reset.
+        // An absent device causes DFSC=0x10 (External Abort).
+        let waker = probe_mmio_u32(base + GICR_WAKER);
+        match waker {
+            None => {
+                crate::serial_println!(
+                    "[gic] GICR probe {:#010x}: FAULT (Synchronous External Abort)",
+                    base
+                );
+            }
+            Some(0xFFFF_FFFF) => {
+                crate::serial_println!(
+                    "[gic] GICR probe {:#010x}: 0xFFFFFFFF (no device)",
+                    base
+                );
+            }
+            Some(val) => {
+                // Plausible GICR_WAKER value: bit[1]=ProcessorSleep is
+                // typically set (1) at reset; bit[2]=ChildrenAsleep follows.
+                // We accept any non-0xFFFFFFFF non-fault read as a valid GICR.
+                crate::serial_println!(
+                    "[gic] GICR probe {:#010x}: WAKER={:#010x} <<< VALID",
+                    base, val
+                );
+                // If this differs from what the loader reported, update it.
+                if base != reported_base {
+                    crate::serial_println!(
+                        "[gic] GICR base mismatch: loader={:#010x}, using={:#010x}",
+                        reported_base, base
+                    );
+                    crate::platform_config::set_gicr_base_phys(base as u64);
+                }
+                GICR_VALID.store(true, Ordering::Release);
+                return true;
+            }
+        }
+    }
+
+    crate::serial_println!(
+        "[gic] WARNING: No valid GICR found at any known address. \
+         GICR init will be skipped. Timer PPIs may not work."
+    );
+    false
+}
+
+// =============================================================================
 // GIC Distributor (GICD) Register Offsets
 // =============================================================================
 
@@ -165,8 +307,15 @@ fn gicc_write(offset: usize, value: u32) {
 
 /// Read a 32-bit GICR register (GICv3 only).
 /// `cpu_offset` is the redistributor offset for this CPU (cpu * 0x20000).
+///
+/// Returns 0 if the GICR base has not yet been validated (GICR_VALID == false).
+/// This prevents Synchronous External Aborts when the GICR probe has not run
+/// yet (e.g., if a timer interrupt fires before init_gicv3_redistributor).
 #[inline]
 fn gicr_read(cpu_offset: usize, offset: usize) -> u32 {
+    if !GICR_VALID.load(Ordering::Relaxed) {
+        return 0;
+    }
     unsafe {
         let base = crate::platform_config::gicr_base_phys() as usize;
         let addr = (GIC_HHDM + base + cpu_offset + offset) as *const u32;
@@ -175,8 +324,15 @@ fn gicr_read(cpu_offset: usize, offset: usize) -> u32 {
 }
 
 /// Write a 32-bit GICR register (GICv3 only).
+///
+/// Silently drops the write if the GICR base has not yet been validated
+/// (GICR_VALID == false). This prevents Synchronous External Aborts when
+/// the GICR probe has not run yet.
 #[inline]
 fn gicr_write(cpu_offset: usize, offset: usize, value: u32) {
+    if !GICR_VALID.load(Ordering::Relaxed) {
+        return;
+    }
     unsafe {
         let base = crate::platform_config::gicr_base_phys() as usize;
         let addr = (GIC_HHDM + base + cpu_offset + offset) as *mut u32;
@@ -286,6 +442,18 @@ pub fn init_cpu_interface_secondary() {
         3 | 4 => {
             // Get CPU ID from MPIDR_EL1 for redistributor offset
             let cpu_id = get_cpu_id_from_mpidr();
+
+            // Validate against GICR region before any MMIO access.
+            let gicr_size = crate::platform_config::gicr_size() as usize;
+            let max_redists = if gicr_size > 0 { gicr_size / GICR_FRAME_SIZE } else { 0 };
+            if max_redists > 0 && cpu_id >= max_redists {
+                crate::serial_println!(
+                    "[gic] CPU {} (MPIDR Aff0) exceeds GICR region ({} redistributors), skipping GIC init",
+                    cpu_id, max_redists
+                );
+                return;
+            }
+
             init_gicv3_redistributor(cpu_id);
             init_gicv3_cpu_interface();
         }
@@ -325,6 +493,13 @@ impl InterruptController for Gicv2 {
                 Self::init_cpu_interface();
             }
             3 | 4 => {
+                // Probe the GICR base address BEFORE any GICR MMIO access and
+                // before enabling interrupts.  This ensures GICR_VALID is set
+                // (or left false) prior to any interrupt handler running that
+                // might indirectly call gicr_read/gicr_write.  The probe is
+                // idempotent (guarded by GICR_PROBED), so calling it again
+                // inside init_gicv3_redistributor(0) is a no-op.
+                probe_and_validate_gicr();
                 init_gicv3_distributor();
                 init_gicv3_redistributor(0); // CPU 0
                 init_gicv3_cpu_interface();
@@ -346,7 +521,15 @@ impl InterruptController for Gicv2 {
             // SGI/PPI: on GICv3, use GICR; on GICv2, use GICD
             if version >= 3 {
                 // Enable in GICR_ISENABLER0 for current CPU
+                if !GICR_VALID.load(Ordering::Relaxed) {
+                    return; // No valid GICR — skip
+                }
                 let cpu_id = get_cpu_id_from_mpidr();
+                let gicr_size = crate::platform_config::gicr_size() as usize;
+                let max_redists = if gicr_size > 0 { gicr_size / GICR_FRAME_SIZE } else { 0 };
+                if max_redists > 0 && cpu_id >= max_redists {
+                    return; // No redistributor for this CPU
+                }
                 let cpu_offset = cpu_id * GICR_FRAME_SIZE;
                 let sgi_offset = GICR_SGI_OFFSET; // SGI_base frame within redistributor
                 gicr_write(cpu_offset + sgi_offset, GICR_ISENABLER0, 1 << irq_num);
@@ -389,7 +572,15 @@ impl InterruptController for Gicv2 {
         if irq_num < 32 {
             let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
             if version >= 3 {
+                if !GICR_VALID.load(Ordering::Relaxed) {
+                    return; // No valid GICR — skip
+                }
                 let cpu_id = get_cpu_id_from_mpidr();
+                let gicr_size = crate::platform_config::gicr_size() as usize;
+                let max_redists = if gicr_size > 0 { gicr_size / GICR_FRAME_SIZE } else { 0 };
+                if max_redists > 0 && cpu_id >= max_redists {
+                    return; // No redistributor for this CPU
+                }
                 let cpu_offset = cpu_id * GICR_FRAME_SIZE;
                 gicr_write(cpu_offset + GICR_SGI_OFFSET, GICR_ICENABLER0, 1 << irq_num);
             } else {
@@ -779,6 +970,41 @@ fn init_gicv3_distributor() {
 
 /// Initialize GICv3 Redistributor (GICR) for a specific CPU.
 fn init_gicv3_redistributor(cpu_id: usize) {
+    // On the first call (CPU 0), probe the GICR base address before touching
+    // any GICR MMIO.  On M5 Max under Parallels the loader may report the
+    // wrong base (0x02000000 instead of the real hardware address), causing a
+    // Synchronous External Abort (DFSC=0x10) on the very first GICR read.
+    if cpu_id == 0 {
+        probe_and_validate_gicr();
+    }
+
+    // If the probe failed (or no valid GICR was found) skip all GICR MMIO.
+    // GICv3 can deliver timer interrupts via ICC system registers alone on
+    // some platforms; skipping GICR init degrades behaviour but won't crash.
+    if !GICR_VALID.load(Ordering::Acquire) {
+        crate::serial_println!(
+            "[gic] CPU {} skipping GICR init (no valid GICR address found)",
+            cpu_id
+        );
+        return;
+    }
+
+    // Validate cpu_id against the GICR region size before accessing MMIO.
+    // On M5 Max, PSCI may succeed for more CPUs than the GICR region covers,
+    // causing a Synchronous External Abort (DFSC=0x10) on out-of-range access.
+    let gicr_size = crate::platform_config::gicr_size() as usize;
+    let max_redists = if gicr_size > 0 { gicr_size / GICR_FRAME_SIZE } else { 0 };
+
+    // If gicr_size is unknown (QEMU with no explicit size), allow any cpu_id
+    // since QEMU allocates enough redistributors for all CPUs in MAX_CPUS.
+    if max_redists > 0 && cpu_id >= max_redists {
+        crate::serial_println!(
+            "[gic] CPU {} GICR out of range (region size={:#x} covers {} redistributors), skipping",
+            cpu_id, gicr_size, max_redists
+        );
+        return;
+    }
+
     let cpu_offset = cpu_id * GICR_FRAME_SIZE;
 
     // Wake up the redistributor
