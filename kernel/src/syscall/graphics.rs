@@ -888,52 +888,6 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                 return SyscallResult::Err(super::ErrorCode::Fault as u64);
             }
 
-            // ksyscall-perf: measure composite time and report CPU% every 500 frames
-            #[cfg(target_arch = "aarch64")]
-            {
-                let t0: u64;
-                unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) t0, options(nomem, nostack)); }
-
-                let result = handle_composite_windows(desc_ptr);
-
-                use core::sync::atomic::{AtomicU64, AtomicU32};
-                static PERF_FRAME: AtomicU32 = AtomicU32::new(0);
-                static PERF_GPU_TICKS: AtomicU64 = AtomicU64::new(0);
-                static PERF_EPOCH: AtomicU64 = AtomicU64::new(0);
-
-                let t1: u64;
-                unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) t1, options(nomem, nostack)); }
-
-                let frame = PERF_FRAME.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                PERF_GPU_TICKS.fetch_add(t1.saturating_sub(t0), core::sync::atomic::Ordering::Relaxed);
-
-                if frame == 0 {
-                    PERF_EPOCH.store(t0, core::sync::atomic::Ordering::Relaxed);
-                }
-
-                if frame > 0 && (frame + 1) % 500 == 0 {
-                    let freq: u64;
-                    unsafe { core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq, options(nomem, nostack)); }
-                    let gpu_ticks = PERF_GPU_TICKS.swap(0, core::sync::atomic::Ordering::Relaxed);
-                    let sleep_ticks = crate::drivers::virtio::gpu_pci::take_gpu_sleep_ticks();
-                    let cpu_ticks = gpu_ticks.saturating_sub(sleep_ticks);
-                    let epoch = PERF_EPOCH.swap(t1, core::sync::atomic::Ordering::Relaxed);
-                    let wall_ticks = t1.saturating_sub(epoch);
-
-                    let wall_us = gpu_ticks * 1_000_000 / freq / 500;
-                    let sleep_us = sleep_ticks * 1_000_000 / freq / 500;
-                    let cpu_us = cpu_ticks * 1_000_000 / freq / 500;
-                    let busy_pct = if wall_ticks > 0 { cpu_ticks * 100 / wall_ticks } else { 0 };
-
-                    crate::serial_println!(
-                        "[ksyscall-perf] 500f: wall={}us sleep={}us cpu={}us busy={}%",
-                        wall_us, sleep_us, cpu_us, busy_pct,
-                    );
-                }
-
-                result
-            }
-            #[cfg(not(target_arch = "aarch64"))]
             handle_composite_windows(desc_ptr)
         }
         17 => {

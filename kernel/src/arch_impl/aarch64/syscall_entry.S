@@ -247,15 +247,8 @@ syscall_entry_from_el0:
     /* DIAGNOSTIC: Check for corrupted ELR before ERET (was missing in SVC path) */
     cmp x10, #0x1000
     b.hs .Lsvc_elr_ok
-    /* ELR < 0x1000 — write diagnostic to UART */
-    mov x0, #0x09000000
-    movk x0, #0xFFFF, lsl #48
-    mov x1, #'!'
-    strb w1, [x0]
-    mov x1, #'S'             /* 'S' = SVC ERET with bad ELR */
-    strb w1, [x0]
-    mov x1, #'\n'
-    strb w1, [x0]
+    /* ELR < 0x1000 — corrupted. Skip UART diagnostic (QEMU UART at
+       0x09000000 doesn't exist on Parallels). Redirect to idle. */
     /* Redirect to idle_loop_arm64 */
     adrp x10, idle_loop_arm64
     add x10, x10, :lo12:idle_loop_arm64

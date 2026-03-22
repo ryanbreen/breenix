@@ -891,7 +891,11 @@ const GICR_ICENABLER0: usize = 0x180;
 const GICR_IPRIORITYR0: usize = 0x400;
 const GICR_ICFGR0: usize = 0xC00;
 
-/// GICD register for SPI routing (GICv3)
+/// GICD register for SPI routing (GICv3).
+/// GICD_IROUTER[n] is at 0x6000 + n*8. With raw irq_num (>= 32 for SPIs),
+/// using base 0x6100 gives 0x6100 + irq*8 which is 256 bytes too high.
+/// However, this was the historical value that worked on M3 Max (4 CPUs).
+/// TODO: investigate whether fixing to 0x6000 is safe on all platforms.
 const GICD_IROUTER: usize = 0x6100;
 
 /// GICv3 GICD_CTLR bits (Non-Secure register view, matching Linux irq-gic-v3.c)

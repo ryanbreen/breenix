@@ -308,9 +308,30 @@ pub fn build_page_tables(storage: &mut PageTableStorage, config: &PageTableConfi
             }
         }
     } else {
-        // QEMU/Parallels: simple 1GB block, identity mapped
-        write_entry(ttbr0_l1, 1, 0x4000_0000 | attr::NORMAL_BLOCK);
-        write_entry(ttbr1_l1, 1, 0x4000_0000 | attr::NORMAL_BLOCK);
+        // QEMU/Parallels: use L2 table to carve out the NC DMA region at 0x50000000.
+        // A plain 1GB block would mark the entire range cacheable, preventing the
+        // .dma section (at physical 0x50000000, L2 index 128) from being NC.
+        let ttbr0_l2_ram = storage.alloc_table();
+        let ttbr1_l2_ram = storage.alloc_table();
+
+        write_entry(ttbr0_l1, 1, ttbr0_l2_ram | attr::TABLE_DESC);
+        write_entry(ttbr1_l1, 1, ttbr1_l2_ram | attr::TABLE_DESC);
+
+        // Fill 512 × 2MB entries covering 0x40000000–0x7FFFFFFF.
+        // Entry 128 = physical 0x50000000 (NC_DMA_BASE): Non-Cacheable for .dma section.
+        // All other entries: Normal WB-WA cacheable.
+        // Index = (NC_DMA_BASE - 0x4000_0000) / 0x20_0000 = 0x1000_0000 / 0x20_0000 = 128
+        const NC_L2_IDX: u64 = (NC_DMA_BASE - 0x4000_0000) / NC_DMA_SIZE;
+        for i in 0..512u64 {
+            let phys = 0x4000_0000 + i * 0x20_0000;
+            let block_attr = if i == NC_L2_IDX {
+                attr::NC_BLOCK
+            } else {
+                attr::NORMAL_BLOCK
+            };
+            write_entry(ttbr0_l2_ram, i as usize, phys | block_attr);
+            write_entry(ttbr1_l2_ram, i as usize, phys | block_attr);
+        }
     }
 
     // L1[2] = VA 0x80000000-0xBFFFFFFF → IPA 0x80000000 (always identity)

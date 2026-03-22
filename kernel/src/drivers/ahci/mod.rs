@@ -59,9 +59,9 @@ fn dma_cache_clean(ptr: *const u8, len: usize) {
     let end = (ptr as usize + len + CACHE_LINE - 1) & !(CACHE_LINE - 1);
     for addr in (start..end).step_by(CACHE_LINE) {
         unsafe {
-            // Use clean+invalidate (CIVAC) instead of clean-only (CVAC).
-            // This ensures both that data reaches RAM for the device to read,
-            // AND that subsequent CPU accesses re-fetch from RAM (not stale cache).
+            // Clean+Invalidate by VA to Point of Coherency — flush CPU cache
+            // to RAM so the device sees the latest data, and invalidate so
+            // subsequent reads re-fetch from RAM.
             core::arch::asm!("dc civac, {}", in(reg) addr, options(nostack));
         }
     }
@@ -81,6 +81,10 @@ fn dma_cache_invalidate(ptr: *const u8, len: usize) {
     let end = (ptr as usize + len + CACHE_LINE - 1) & !(CACHE_LINE - 1);
     for addr in (start..end).step_by(CACHE_LINE) {
         unsafe {
+            // Clean+Invalidate by VA to Point of Coherency.
+            // On NC memory this is a no-op; the dsb sy after the loop provides
+            // the actual ordering guarantee. On cacheable memory (fallback),
+            // civac ensures stale cache lines are discarded.
             core::arch::asm!("dc civac, {}", in(reg) addr, options(nostack));
         }
     }
@@ -179,6 +183,32 @@ const PORT_CMD_CR: u32 = 1 << 15;  // Command List Running
 /// PORT_TFD bits
 const PORT_TFD_BSY: u32 = 1 << 7;  // Busy
 const PORT_TFD_DRQ: u32 = 1 << 3;  // Data Request
+
+/// PORT_IS interrupt status bits (from Linux libahci.h)
+const PORT_IRQ_D2H_REG_FIS: u32 = 1 << 0;    // D2H Register FIS received (command complete)
+const PORT_IRQ_PIO_FIS: u32 = 1 << 1;         // PIO Setup FIS received
+const PORT_IRQ_DMA_FIS: u32 = 1 << 2;         // DMA Setup FIS received
+const PORT_IRQ_SDB_FIS: u32 = 1 << 3;         // Set Device Bits FIS received
+const PORT_IRQ_UNK_FIS: u32 = 1 << 4;         // Unknown FIS received
+const PORT_IRQ_SG_DONE: u32 = 1 << 5;         // Descriptor processed
+const PORT_IRQ_CONNECT: u32 = 1 << 6;         // Port connect change
+const PORT_IRQ_DMPS: u32 = 1 << 7;            // Device mechanical presence
+const PORT_IRQ_PHYRDY: u32 = 1 << 22;         // PhyRdy changed
+const PORT_IRQ_BAD_PMP: u32 = 1 << 23;        // Bad PMP status
+const PORT_IRQ_OVERFLOW: u32 = 1 << 24;       // Overflow status
+const PORT_IRQ_IF_NONFATAL: u32 = 1 << 26;    // Interface non-fatal error
+const PORT_IRQ_IF_ERR: u32 = 1 << 27;         // Interface fatal error
+const PORT_IRQ_HBUS_DATA_ERR: u32 = 1 << 28;  // Host bus data error
+const PORT_IRQ_HBUS_ERR: u32 = 1 << 29;       // Host bus fatal error
+const PORT_IRQ_TF_ERR: u32 = 1 << 30;         // Task file error (TFES)
+const PORT_IRQ_FREEZE: u32 = PORT_IRQ_HBUS_ERR | PORT_IRQ_IF_ERR | PORT_IRQ_CONNECT
+    | PORT_IRQ_PHYRDY | PORT_IRQ_UNK_FIS | PORT_IRQ_BAD_PMP;
+const PORT_IRQ_ERROR: u32 = PORT_IRQ_FREEZE | PORT_IRQ_TF_ERR
+    | PORT_IRQ_HBUS_DATA_ERR | PORT_IRQ_IF_NONFATAL | PORT_IRQ_OVERFLOW;
+
+/// Completion mask: any of these PORT_IS bits signals a command finished.
+/// D2H Register FIS = normal completion; PIO FIS = PIO command completion.
+const PORT_IRQ_COMPLETE: u32 = PORT_IRQ_D2H_REG_FIS | PORT_IRQ_PIO_FIS | PORT_IRQ_SDB_FIS;
 
 /// SATA Status (SSTS) - device detection
 const SSTS_DET_MASK: u32 = 0x0F;
@@ -329,6 +359,7 @@ struct PortDmaStorage {
     ports: [PortDmaMem; MAX_AHCI_PORTS],
 }
 
+#[link_section = ".dma"]
 static mut DMA_STORAGE: PortDmaStorage = unsafe { core::mem::zeroed() };
 
 // =============================================================================
@@ -378,6 +409,25 @@ fn hba_read(abar: u64, offset: usize) -> u32 {
 
 #[inline]
 fn hba_write(abar: u64, offset: usize, value: u32) {
+    unsafe { core::ptr::write_volatile((abar + offset as u64) as *mut u32, value) }
+}
+
+/// MMIO read with post-load barrier (ARM64 readl semantics).
+/// Use at completion checkpoints, not in hot polling loops.
+#[inline]
+#[cfg(target_arch = "aarch64")]
+fn hba_read_barrier(abar: u64, offset: usize) -> u32 {
+    let val = unsafe { core::ptr::read_volatile((abar + offset as u64) as *const u32) };
+    unsafe { core::arch::asm!("dsb ld", options(nostack, preserves_flags)); }
+    val
+}
+
+/// MMIO write with pre-store barrier (ARM64 writel semantics).
+/// Use when Normal memory stores must be visible before the MMIO write.
+#[inline]
+#[cfg(target_arch = "aarch64")]
+fn hba_write_barrier(abar: u64, offset: usize, value: u32) {
+    unsafe { core::arch::asm!("dsb st", options(nostack, preserves_flags)); }
     unsafe { core::ptr::write_volatile((abar + offset as u64) as *mut u32, value) }
 }
 
@@ -637,61 +687,109 @@ impl AhciController {
 
     /// Issue a command on slot 0 and wait for completion.
     ///
-    /// If the port is in ERR:Fatal state (e.g., from a previous TFES), the
-    /// command engine is stopped, errors cleared, and the engine restarted
-    /// before issuing the new command.
+    /// Follows Linux's ahci_qc_issue + ahci_port_intr sequence exactly:
+    ///
+    /// Pre-issue:
+    ///   1. Read PORT_IS, write it back (clear stale interrupt status).
+    ///   2. Write HBA_IS bit for this port (clear global status).
+    ///   3. Verify PORT_CMD ST bit is set (command engine running).
+    ///   4. Write PORT_CI = 1 (issue command on slot 0).
+    ///
+    /// Completion polling (Linux uses interrupts; we poll PORT_IS):
+    ///   5. Poll PORT_IS for any completion FIS bit (D2H, PIO, SDB).
+    ///   6. On error bits in PORT_IS: read TFD, return error.
+    ///   7. On completion: confirm PORT_CI slot 0 cleared, read PORT_TFD for errors.
+    ///   8. Clear PORT_IS (write-1-to-clear), then clear HBA_IS.
+    ///      Order matters: PORT_IS must be cleared before HBA_IS, otherwise
+    ///      the HBA immediately re-asserts HBA_IS.
+    ///
+    /// If the port is in ERR:Fatal state (TFES or TFD ERR bit set), the command
+    /// engine is stopped, errors cleared, and the engine restarted first.
     fn issue_cmd_slot0(&self, port: usize) -> Result<(), &'static str> {
         let abar = self.abar_virt;
 
-        // Check if port is in error state and recover if needed.
-        // On some controllers (e.g., VMware), a previous command may leave
-        // TFES set, putting the port into ERR:Fatal where no new commands
-        // will be processed until the port is reset.
-        let is = port_read(abar, port, PORT_IS);
-        let tfd = port_read(abar, port, PORT_TFD);
-        if (is & (1 << 30)) != 0 || (tfd & 1) != 0 {
-            // Port is in error state — recover by restarting command engine
-            self.stop_cmd(port);
-            port_write(abar, port, PORT_SERR, 0xFFFF_FFFF);
-            port_write(abar, port, PORT_IS, 0xFFFF_FFFF);
-            self.start_cmd(port);
-            // Wait for port to become ready after restart
-            self.wait_ready(port)?;
-        } else {
-            // Clear any pending interrupts
-            port_write(abar, port, PORT_IS, 0xFFFF_FFFF);
+        // --- Error recovery ---
+        // On some controllers a previous command may leave TFES set, putting
+        // the port into ERR:Fatal where no new commands will be processed.
+        {
+            let is = port_read(abar, port, PORT_IS);
+            let tfd = port_read(abar, port, PORT_TFD);
+            if (is & PORT_IRQ_TF_ERR) != 0 || (tfd & 1) != 0 {
+                self.stop_cmd(port);
+                port_write(abar, port, PORT_SERR, 0xFFFF_FFFF);
+                port_write(abar, port, PORT_IS, 0xFFFF_FFFF);
+                hba_write(abar, HBA_IS, 1u32 << (port as u32));
+                self.start_cmd(port);
+                self.wait_ready(port)?;
+            }
         }
 
-        // Issue command on slot 0
+        // --- Step 1-2: Clear stale interrupt status before issuing ---
+        // Linux's ahci_qc_issue does not do this explicitly, but the ISR
+        // (ahci_single_level_irq_intr) always clears PORT_IS and HBA_IS as
+        // part of interrupt processing. Doing it here before issue ensures
+        // we start with a clean slate and don't confuse a stale completion
+        // bit from a previous command with the current one.
+        // Clear stale PORT_IS before issuing
+        let stale_is = port_read(abar, port, PORT_IS);
+        if stale_is != 0 {
+            port_write(abar, port, PORT_IS, stale_is);
+        }
+
+        // --- Step 3: Verify command engine is running ---
+        let cmd = port_read(abar, port, PORT_CMD);
+        if (cmd & PORT_CMD_ST) == 0 {
+            return Err("AHCI: command engine not running");
+        }
+
+        // --- Step 4: Issue command on slot 0 ---
         port_write(abar, port, PORT_CI, 1);
 
-        // Wait for completion (CI bit 0 clears)
-        for _ in 0..10_000_000 {
+        // --- Steps 5-8: Poll PORT_IS for completion ---
+        // Linux waits for an interrupt on PORT_IS; we spin-poll the same register.
+        // On completion the device sends a D2H Register FIS, which sets PORT_IS[0].
+        // We also accept PIO Setup FIS (bit 1) and Set Device Bits FIS (bit 3).
+        for _timeout_i in 0..10_000_000 {
             let ci = port_read(abar, port, PORT_CI);
             if (ci & 1) == 0 {
-                // Check for errors
+                // Command completed — clean up interrupt status (Linux-style)
                 let is = port_read(abar, port, PORT_IS);
-                if (is & (1 << 30)) != 0 {
-                    // Task File Error
-                    let tfd = port_read(abar, port, PORT_TFD);
-                    crate::serial_println!("[ahci] Port {} TFE: TFD={:#x}", port, tfd);
+                let tfd = port_read(abar, port, PORT_TFD);
+                // Clear PORT_IS first, then HBA_IS (AHCI spec ordering)
+                port_write(abar, port, PORT_IS, is);
+                hba_write(abar, HBA_IS, 1u32 << (port as u32));
+                // Check for errors
+                if (is & PORT_IRQ_ERROR) != 0 || (tfd & 1) != 0 {
                     return Err("AHCI: task file error");
                 }
                 return Ok(());
             }
 
-            // Also check for TFES during the wait — on error, the HBA may
-            // not clear CI. Detect the error early instead of spinning.
+            // Check PORT_IS for errors during wait
             let is = port_read(abar, port, PORT_IS);
-            if (is & (1 << 30)) != 0 {
+            if (is & PORT_IRQ_ERROR) != 0 {
                 let tfd = port_read(abar, port, PORT_TFD);
-                crate::serial_println!("[ahci] Port {} TFE during wait: TFD={:#x}", port, tfd);
+                // Clear PORT_IS then HBA_IS before returning error.
+                port_write(abar, port, PORT_IS, is);
+                hba_write(abar, HBA_IS, 1u32 << (port as u32));
+                crate::serial_println!(
+                    "[ahci] Port {} error: IS={:#x} TFD={:#x}",
+                    port, is, tfd
+                );
                 return Err("AHCI: task file error");
             }
 
             core::hint::spin_loop();
         }
 
+        // Timeout — dump state for diagnosis.
+        let ci = port_read(abar, port, PORT_CI);
+        let is = port_read(abar, port, PORT_IS);
+        let tfd = port_read(abar, port, PORT_TFD);
+        crate::serial_println!(
+            "[ahci] Port {} timeout: CI={:#x} IS={:#x} TFD={:#x}",
+            port, ci, is, tfd
+        );
         Err("AHCI: command timeout")
     }
 
@@ -739,6 +837,9 @@ impl AhciController {
 
         // Issue the command
         self.issue_cmd_slot0(port)?;
+
+        // DSB SY: order PORT_CI completion against DMA buffer cache maintenance
+        unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
 
         // Invalidate cache for DMA buffer before reading device-written data
         let dma_lock = PORT_DMA.lock();
@@ -826,6 +927,12 @@ impl AhciController {
         drop(dma_lock);
 
         self.issue_cmd_slot0(port)?;
+
+        // DSB SY: ensure the PORT_CI volatile read (device memory) that confirmed
+        // DMA completion is ordered before any cache maintenance or normal memory
+        // loads from the DMA buffer. Without this, ARM64 can speculatively load
+        // stale data from dma_buf before the cache invalidation fires.
+        unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
 
         // Invalidate cache before reading device-written DMA buffer
         let dma_lock = PORT_DMA.lock();

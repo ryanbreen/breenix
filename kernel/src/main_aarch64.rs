@@ -27,42 +27,54 @@ use core::panic::PanicInfo;
 #[macro_use]
 extern crate kernel;
 
+/// Read the init ELF binary from ext2 while still single-CPU.
+///
+/// This must be called BEFORE SMP bring-up because AHCI DMA reads fail when
+/// secondary CPUs are online (PCI interconnect interference from their GIC
+/// timer interrupt activity). Returns the raw ELF bytes on success.
 #[cfg(target_arch = "aarch64")]
 #[cfg_attr(any(feature = "kthread_test_only", feature = "kthread_stress_test", feature = "workqueue_test_only"), allow(dead_code))]
-fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'static str> {
-    use alloc::string::String;
-    use core::arch::asm;
-    use kernel::arch_impl::aarch64::context::return_to_userspace;
-
+fn read_init_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> {
     let fs_guard = kernel::fs::ext2::root_fs_read();
     let fs = fs_guard.as_ref().ok_or("ext2 root filesystem not mounted")?;
 
-    let inode_num = fs.resolve_path(path).map_err(|_| "init_shell not found")?;
+    let inode_num = fs.resolve_path(path).map_err(|_| "init not found")?;
 
     let inode = fs.read_inode(inode_num).map_err(|_| "failed to read inode")?;
 
     if inode.is_dir() {
-        return Err("init_shell is a directory");
+        unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts(); }
+        return Err("init is a directory");
     }
 
-    // Disable interrupts during large file read to prevent timer overhead
-    unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts(); }
+    let elf_data = fs.read_file_content(&inode).map_err(|_| "failed to read init")?;
 
-    let elf_data = fs.read_file_content(&inode).map_err(|_| "failed to read init_shell")?;
-
-    // CRITICAL: Release ext2 lock BEFORE creating process and jumping to userspace.
-    // return_to_userspace() never returns, so fs_guard would never be dropped.
-    // If we hold the lock, fork/exec in userspace will deadlock trying to acquire it.
     drop(fs_guard);
 
-    // CRITICAL: Keep interrupts DISABLED through entire process setup.
+    Ok(elf_data)
+}
+
+/// Create a userspace process from a pre-loaded ELF and jump to it.
+///
+/// Takes ELF bytes that were read earlier (e.g., before SMP bring-up) and
+/// completes the process-creation and userspace-entry sequence.
+#[cfg(target_arch = "aarch64")]
+#[cfg_attr(any(feature = "kthread_test_only", feature = "kthread_stress_test", feature = "workqueue_test_only"), allow(dead_code))]
+fn launch_init_from_elf(elf_data: alloc::vec::Vec<u8>, path: &str) -> Result<core::convert::Infallible, &'static str> {
+    use alloc::string::String;
+    use core::arch::asm;
+    use kernel::arch_impl::aarch64::context::return_to_userspace;
+
+    // Disable interrupts for the entire process setup.
     // A pending timer interrupt would fire immediately on enable_interrupts(),
     // context-switch the boot thread away before it registers with the scheduler,
     // and it would never be scheduled back. Interrupts are re-enabled just before
-    // return_to_userspace() below.
+    // return_to_userspace() below via the SPSR loaded by ERET.
+    unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts(); }
 
     if elf_data.len() < 4 || &elf_data[0..4] != b"\x7fELF" {
-        return Err("init_shell is not a valid ELF file");
+        unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts(); }
+        return Err("init is not a valid ELF file");
     }
 
     let proc_name = path.rsplit('/').next().unwrap_or(path);
@@ -123,19 +135,26 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
     // Register the userspace thread with the scheduler as the current running thread.
     kernel::task::scheduler::spawn_as_current(alloc::boxed::Box::new(main_thread_clone));
 
-    // CRITICAL: Reset the idle thread's (thread 0) saved context to point to idle_loop_arm64.
-    // Without this, timer interrupts during boot may have saved thread 0's ELR pointing to
-    // somewhere in kernel_main. When we later switch back to thread 0, it would resume
-    // kernel_main and potentially create multiple init_shell processes.
-    // By resetting elr_el1 to idle_loop_arm64, we ensure thread 0 always goes to the idle loop.
-    kernel::task::scheduler::with_thread_mut(0, |idle_thread| {
-        // Get the address of the idle loop function
+    // CRITICAL: Reset ALL idle threads' saved contexts to point to idle_loop_arm64.
+    // Timer interrupts during boot may have saved idle threads' ELR pointing to
+    // kernel_main or other boot code. Without this, when a CPU dispatches its idle
+    // thread, it ERETSs to the stale ELR (which could be 0x0 or a boot address).
+    // With 8 CPUs, threads 0 and 3-9 are idle threads for CPUs 0-7.
+    {
         let idle_loop_addr = kernel::arch_impl::aarch64::context_switch::idle_loop_arm64 as *const () as u64;
-        idle_thread.context.elr_el1 = idle_loop_addr;
-        // Also set SPSR for EL1h with interrupts enabled
-        idle_thread.context.spsr_el1 = 0x5; // EL1h, DAIF clear
-        serial_println!("[boot] Reset idle thread context to idle_loop_arm64 at {:#x}", idle_loop_addr);
-    });
+        // Thread 0 = CPU 0 idle, threads 3,4,5,6,7,8,9 = CPU 1-7 idle
+        // (threads 1,2 are kthreads created during boot)
+        let idle_tids: &[u64] = &[0, 3, 4, 5, 6, 7, 8, 9];
+        for &tid in idle_tids {
+            kernel::task::scheduler::with_thread_mut(tid, |idle_thread| {
+                idle_thread.context.elr_el1 = idle_loop_addr;
+                idle_thread.context.spsr_el1 = 0x5; // EL1h, DAIF clear
+                // Clear x30 (link register) to prevent stale return addresses
+                idle_thread.context.x30 = 0;
+            });
+        }
+        serial_println!("[boot] Reset {} idle thread contexts to idle_loop_arm64 at {:#x}", idle_tids.len(), idle_loop_addr);
+    }
 
     // Set per-CPU pointers to the thread in the scheduler
     kernel::task::scheduler::with_thread_mut(main_thread_id, |thread| {
@@ -379,7 +398,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
 
     // Zero the boot identity map L0 entry to prevent new TLB entries from
     // being created for the user VA range while we're still in kernel init.
-    // This is a defense-in-depth measure; the TLBI in run_userspace_from_ext2
+    // This is a defense-in-depth measure; the TLBI in launch_init_from_elf
     // will do a full invalidation before switching to the process page table.
     //
     // We can't use `extern "C" { static mut ttbr0_l0: u64; }` because the
@@ -650,7 +669,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         }
     }
 
-    // TLB eviction for TTBR0 identity map is handled in run_userspace_from_ext2()
+    // TLB eviction for TTBR0 identity map is handled in launch_init_from_elf()
     // right before the TTBR0 switch. We cannot modify TTBR0 page tables earlier
     // because Parallels monitors TTBR0/page table changes and hangs if they occur
     // while timer interrupts and kthreads are active.
@@ -724,6 +743,26 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!("[boot] Timer interrupt initialized");
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::AARCH64_TIMER_INIT);
+
+    // Pre-load init binary from ext2 BEFORE bringing up secondary CPUs.
+    // AHCI DMA reads fail with 8 CPUs online due to PCI interconnect interference
+    // from secondary CPUs' timer interrupt GIC activity. Reading the ELF now, while
+    // still single-CPU, avoids this race entirely.
+    let init_elf: Option<alloc::vec::Vec<u8>> = if device_count > 0 {
+        serial_println!("[boot] Pre-loading /sbin/init from ext2 (single-CPU)...");
+        match read_init_from_ext2("/sbin/init") {
+            Ok(data) => {
+                serial_println!("[boot] Init binary pre-loaded: {} bytes", data.len());
+                Some(data)
+            }
+            Err(e) => {
+                serial_println!("[boot] Failed to pre-load init: {} (will retry after SMP)", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // Bring up secondary CPUs via PSCI CPU_ON.
     // Probe-based: try each CPU ID and let PSCI tell us which exist.
@@ -871,7 +910,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!();
 
     // Spawn particle animation thread (if graphics is available and not running boot tests)
-    // This MUST be done BEFORE userspace loading because run_userspace_from_ext2 never returns
+    // This MUST be done BEFORE userspace loading because launch_init_from_elf never returns
     // DISABLED: Investigating EC=0x0 crash during fill_rect memcpy
     #[cfg(not(feature = "boot_tests"))]
     #[cfg(feature = "particle_animation")]  // Disabled by default - crashes with EC=0x0
@@ -887,7 +926,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     }
 
     // In testing mode, load test binaries from ext2 and let the scheduler
-    // dispatch them. Do NOT call run_userspace_from_ext2() - its manual
+    // dispatch them. Do NOT call launch_init_from_elf() - its manual
     // spawn_as_current() + return_to_userspace() bypasses the scheduler and
     // conflicts with the 60+ test processes already in the ready queue.
     #[cfg(feature = "testing")]
@@ -908,23 +947,60 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         }
     }
 
-    // Try to load and run userspace init_shell from ext2 or test disk
+    // Launch userspace init from the pre-loaded ELF (read before SMP bring-up).
+    // If the pre-load succeeded, use the cached bytes; otherwise fall back to
+    // reading from ext2 now (may fail on Parallels with 8 CPUs) or test disk.
     if device_count > 0 {
-        serial_println!("[boot] Loading userspace init from ext2...");
-        match run_userspace_from_ext2("/sbin/init") {
-            Err(e) => {
-                serial_println!("[boot] Failed to load init from ext2: {}", e);
-                serial_println!("[boot] Loading userspace init_shell from test disk...");
-                match kernel::boot::test_disk::run_userspace_from_disk("init_shell") {
-                    Err(e) => {
-                        serial_println!("[boot] Failed to load init_shell: {}", e);
-                        serial_println!("[boot] Falling back to kernel shell...");
+        if let Some(elf_data) = init_elf {
+            serial_println!("[boot] Launching init from pre-loaded ELF...");
+            match launch_init_from_elf(elf_data, "/sbin/init") {
+                Err(e) => {
+                    serial_println!("[boot] Failed to launch pre-loaded init: {}", e);
+                    serial_println!("[boot] Loading userspace init_shell from test disk...");
+                    match kernel::boot::test_disk::run_userspace_from_disk("init_shell") {
+                        Err(e) => {
+                            serial_println!("[boot] Failed to load init_shell: {}", e);
+                            serial_println!("[boot] Falling back to kernel shell...");
+                        }
+                        Ok(never) => match never {},
                     }
-                    // run_userspace_from_disk returns Result<Infallible, _>, so Ok is unreachable
-                    Ok(never) => match never {},
+                }
+                Ok(never) => match never {},
+            }
+        } else {
+            // Pre-load was not attempted or failed — try ext2 now as a last resort
+            // (single-CPU machines or QEMU where SMP interference isn't a concern).
+            serial_println!("[boot] No pre-loaded init — attempting ext2 read post-SMP...");
+            match read_init_from_ext2("/sbin/init") {
+                Ok(elf_data) => {
+                    serial_println!("[boot] Late ext2 read succeeded, launching init...");
+                    match launch_init_from_elf(elf_data, "/sbin/init") {
+                        Err(e) => {
+                            serial_println!("[boot] Failed to launch init: {}", e);
+                            serial_println!("[boot] Loading userspace init_shell from test disk...");
+                            match kernel::boot::test_disk::run_userspace_from_disk("init_shell") {
+                                Err(e) => {
+                                    serial_println!("[boot] Failed to load init_shell: {}", e);
+                                    serial_println!("[boot] Falling back to kernel shell...");
+                                }
+                                Ok(never) => match never {},
+                            }
+                        }
+                        Ok(never) => match never {},
+                    }
+                }
+                Err(e) => {
+                    serial_println!("[boot] Failed to load init from ext2: {}", e);
+                    serial_println!("[boot] Loading userspace init_shell from test disk...");
+                    match kernel::boot::test_disk::run_userspace_from_disk("init_shell") {
+                        Err(e) => {
+                            serial_println!("[boot] Failed to load init_shell: {}", e);
+                            serial_println!("[boot] Falling back to kernel shell...");
+                        }
+                        Ok(never) => match never {},
+                    }
                 }
             }
-            Ok(never) => match never {},
         }
     }
 

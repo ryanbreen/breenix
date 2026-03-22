@@ -1842,7 +1842,19 @@ pub fn switch_to_idle_best_effort() {
             let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
             record_cpu_state_change(cpu_id, 3, old_val, idle_id);
             sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+            // Clear previous_thread to prevent starvation: if a crash occurred during
+            // context switch, previous_thread stays set permanently blocking that thread
+            // from being requeued on any CPU.
+            sched.cpu_state[cpu_id].previous_thread = None;
         }
+    } else {
+        // Lock miss — another CPU (or this CPU re-entrantly) holds SCHEDULER.
+        // Emit a lock-free diagnostic so we can detect this in serial logs.
+        use crate::arch_impl::aarch64::context_switch::{raw_uart_str, raw_uart_dec};
+        let cpu_id = Scheduler::current_cpu_id();
+        raw_uart_str("[IDLE_LOCK_MISS] cpu=");
+        raw_uart_dec(cpu_id as u64);
+        raw_uart_str("\n");
     }
     // If try_lock fails, the scheduler state will be stale. This function
     // is only safe for exception handlers where the lock might be held by

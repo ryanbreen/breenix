@@ -382,6 +382,11 @@ fn create_and_register_idle_thread(cpu_id: usize) {
     idle_task.state = ThreadState::Running;
     idle_task.has_started = true;
 
+    // Initialize context to idle_loop_arm64 at creation time to prevent
+    // INSTRUCTION_ABORT at ELR=0x0 if dispatched before first timer save.
+    idle_task.context.elr_el1 = super::context_switch::idle_loop_arm64 as *const () as u64;
+    idle_task.context.spsr_el1 = 0x5; // EL1h, interrupts enabled
+
     // Set per-CPU current thread pointer
     let idle_task_ptr = &*idle_task as *const _ as *mut crate::task::thread::Thread;
     crate::per_cpu_aarch64::set_current_thread(idle_task_ptr);

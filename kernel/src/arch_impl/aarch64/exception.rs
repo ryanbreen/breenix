@@ -801,10 +801,20 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             // onto this CPU, each hitting the same unhandled exception)
             unsafe { core::arch::asm!("msr daifset, #0xf", options(nomem, nostack)); }
             let frame_ref = unsafe { &mut *frame };
-            crate::serial_println!("[exception] Unhandled sync exception");
-            crate::serial_println!("  EC: {:#x}, ISS: {:#x}", ec, iss);
-            crate::serial_println!("  ELR: {:#x}, FAR: {:#x}", frame_ref.elr, far);
-            crate::serial_println!("  SPSR: {:#x}", frame_ref.spsr);
+            // Use lock-free raw UART — serial_println! acquires a spinlock that may be
+            // held by another CPU, causing deadlock when this exception fires during a
+            // context switch that already holds the scheduler lock.
+            {
+                use crate::arch_impl::aarch64::context_switch::{raw_uart_str, raw_uart_hex, raw_uart_dec};
+                let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
+                raw_uart_str("[UNHANDLED_EC] cpu=");
+                raw_uart_dec(cpu_id as u64);
+                raw_uart_str(" EC=");
+                raw_uart_hex(ec as u64);
+                raw_uart_str(" ELR=");
+                raw_uart_hex(frame_ref.elr);
+                raw_uart_str("\n");
+            }
             // Redirect to idle instead of hanging — allows system to recover.
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
