@@ -468,46 +468,8 @@ sync_exception_handler:
     // DIAGNOSTIC: Check for corrupted ELR before ERET (sync handler path)
     cmp x1, #0x1000
     b.hs 10f
-    // ELR < 0x1000 — write diagnostic breadcrumbs to PL011 UART
-    stp x2, x3, [sp, #16]    // Temporarily save x2, x3
-    mov x2, #0x09000000
-    movk x2, #0xFFFF, lsl #48
-    mov x3, #'!'
-    strb w3, [x2]
-    mov x3, #'S'              // 'S' = Sync handler bad ELR
-    strb w3, [x2]
-    // Print the corrupted ELR (x1) as hex
-    mov x3, #60
-11: lsr x4, x1, x3
-    and x4, x4, #0xF
-    cmp x4, #10
-    b.lt 12f
-    add x4, x4, #('a' - 10)
-    b 13f
-12: add x4, x4, #'0'
-13: strb w4, [x2]
-    subs x3, x3, #4
-    b.ge 11b
-    // Print SP
-    mov x3, #'S'
-    strb w3, [x2]
-    mov x3, #'P'
-    strb w3, [x2]
-    mov x4, sp
-    mov x3, #60
-14: lsr x5, x4, x3
-    and x5, x5, #0xF
-    cmp x5, #10
-    b.lt 15f
-    add x5, x5, #('a' - 10)
-    b 16f
-15: add x5, x5, #'0'
-16: strb w5, [x2]
-    subs x3, x3, #4
-    b.ge 14b
-    mov x3, #'\n'
-    strb w3, [x2]
-    ldp x2, x3, [sp, #16]    // Restore x2, x3
+    // ELR < 0x1000 — corrupted. Skip UART diagnostic (QEMU UART at
+    // 0x09000000 doesn't exist on Parallels). Redirect to idle.
     // Redirect to idle_loop_arm64 instead of crashing
     adrp x1, idle_loop_arm64
     add x1, x1, :lo12:idle_loop_arm64
@@ -625,48 +587,14 @@ irq_handler:
     ldr x16, [sp, #248]      // x16 = frame.elr
 
     // DIAGNOSTIC: Check for corrupted ELR before ERET.
+    // If ELR < 0x1000, the saved context is corrupted (null return address).
+    // Fix it by redirecting to idle_loop_arm64 instead of crashing.
     cmp x16, #0x1000
     b.hs 1f
-    // ELR < 0x1000 — write diagnostic breadcrumbs to PL011 UART
-    stp x0, x1, [sp, #0]     // Temporarily save x0, x1 (will restore below)
-    mov x0, #0x09000000      // UART physical base (QEMU virt)
-    movk x0, #0xFFFF, lsl #48 // HHDM: 0xFFFF000009000000
-    mov x1, #'!'
-    strb w1, [x0]             // '!' = IRQ ERET with bad ELR
-    mov x1, #'E'
-    strb w1, [x0]
-    // Print the corrupted ELR value (x16) as hex
-    mov x1, x16              // x1 = ELR value to print
-    mov x3, #60              // shift = 60 (start with highest nibble)
-2:  lsr x4, x1, x3           // x4 = (ELR >> shift) & 0xF
-    and x4, x4, #0xF
-    cmp x4, #10
-    b.lt 3f
-    add x4, x4, #('a' - 10)
-    b 4f
-3:  add x4, x4, #'0'
-4:  strb w4, [x0]
-    subs x3, x3, #4
-    b.ge 2b
-    // Print SP
-    mov x1, #'S'
-    strb w1, [x0]
-    mov x1, sp
-    mov x3, #60
-5:  lsr x4, x1, x3
-    and x4, x4, #0xF
-    cmp x4, #10
-    b.lt 6f
-    add x4, x4, #('a' - 10)
-    b 7f
-6:  add x4, x4, #'0'
-7:  strb w4, [x0]
-    subs x3, x3, #4
-    b.ge 5b
-    mov x1, #'\n'
-    strb w1, [x0]
-    ldp x0, x1, [sp, #0]     // Restore x0, x1
-    // Redirect to idle_loop_arm64 instead of crashing
+    // ELR < 0x1000 — corrupted context. Redirect to idle_loop_arm64.
+    // No UART diagnostic here — the QEMU UART at 0x09000000 doesn't exist
+    // on Parallels (UART is at 0x02110000), so writing to it causes a
+    // Synchronous External Abort that kills the CPU.
     adrp x16, idle_loop_arm64
     add x16, x16, :lo12:idle_loop_arm64
     // Write safe values to frame

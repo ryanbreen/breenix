@@ -59,9 +59,9 @@ fn dma_cache_clean(ptr: *const u8, len: usize) {
     let end = (ptr as usize + len + CACHE_LINE - 1) & !(CACHE_LINE - 1);
     for addr in (start..end).step_by(CACHE_LINE) {
         unsafe {
-            // Use clean+invalidate (CIVAC) instead of clean-only (CVAC).
-            // This ensures both that data reaches RAM for the device to read,
-            // AND that subsequent CPU accesses re-fetch from RAM (not stale cache).
+            // Clean+Invalidate by VA to Point of Coherency — flush CPU cache
+            // to RAM so the device sees the latest data, and invalidate so
+            // subsequent reads re-fetch from RAM.
             core::arch::asm!("dc civac, {}", in(reg) addr, options(nostack));
         }
     }
@@ -81,6 +81,10 @@ fn dma_cache_invalidate(ptr: *const u8, len: usize) {
     let end = (ptr as usize + len + CACHE_LINE - 1) & !(CACHE_LINE - 1);
     for addr in (start..end).step_by(CACHE_LINE) {
         unsafe {
+            // Clean+Invalidate by VA to Point of Coherency.
+            // On NC memory this is a no-op; the dsb sy after the loop provides
+            // the actual ordering guarantee. On cacheable memory (fallback),
+            // civac ensures stale cache lines are discarded.
             core::arch::asm!("dc civac, {}", in(reg) addr, options(nostack));
         }
     }
@@ -329,6 +333,7 @@ struct PortDmaStorage {
     ports: [PortDmaMem; MAX_AHCI_PORTS],
 }
 
+#[link_section = ".dma"]
 static mut DMA_STORAGE: PortDmaStorage = unsafe { core::mem::zeroed() };
 
 // =============================================================================
@@ -378,6 +383,25 @@ fn hba_read(abar: u64, offset: usize) -> u32 {
 
 #[inline]
 fn hba_write(abar: u64, offset: usize, value: u32) {
+    unsafe { core::ptr::write_volatile((abar + offset as u64) as *mut u32, value) }
+}
+
+/// MMIO read with post-load barrier (ARM64 readl semantics).
+/// Use at completion checkpoints, not in hot polling loops.
+#[inline]
+#[cfg(target_arch = "aarch64")]
+fn hba_read_barrier(abar: u64, offset: usize) -> u32 {
+    let val = unsafe { core::ptr::read_volatile((abar + offset as u64) as *const u32) };
+    unsafe { core::arch::asm!("dsb ld", options(nostack, preserves_flags)); }
+    val
+}
+
+/// MMIO write with pre-store barrier (ARM64 writel semantics).
+/// Use when Normal memory stores must be visible before the MMIO write.
+#[inline]
+#[cfg(target_arch = "aarch64")]
+fn hba_write_barrier(abar: u64, offset: usize, value: u32) {
+    unsafe { core::arch::asm!("dsb st", options(nostack, preserves_flags)); }
     unsafe { core::ptr::write_volatile((abar + offset as u64) as *mut u32, value) }
 }
 
@@ -662,6 +686,7 @@ impl AhciController {
             port_write(abar, port, PORT_IS, 0xFFFF_FFFF);
         }
 
+        // Issue command on slot 0.
         // Issue command on slot 0
         port_write(abar, port, PORT_CI, 1);
 
@@ -669,12 +694,17 @@ impl AhciController {
         for _ in 0..10_000_000 {
             let ci = port_read(abar, port, PORT_CI);
             if (ci & 1) == 0 {
-                // Check for errors
+                // Completion fence: read PORT_TFD to force round-trip to device
+                let tfd = port_read(abar, port, PORT_TFD);
+                unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+                // Check for errors in TFD
+                if (tfd & 1) != 0 {
+                    crate::serial_println!("[ahci] Port {} TFE: TFD={:#x}", port, tfd);
+                    return Err("AHCI: task file error");
+                }
                 let is = port_read(abar, port, PORT_IS);
                 if (is & (1 << 30)) != 0 {
-                    // Task File Error
-                    let tfd = port_read(abar, port, PORT_TFD);
-                    crate::serial_println!("[ahci] Port {} TFE: TFD={:#x}", port, tfd);
+                    crate::serial_println!("[ahci] Port {} TFE(IS): TFD={:#x}", port, tfd);
                     return Err("AHCI: task file error");
                 }
                 return Ok(());
@@ -740,6 +770,9 @@ impl AhciController {
         // Issue the command
         self.issue_cmd_slot0(port)?;
 
+        // DSB SY: order PORT_CI completion against DMA buffer cache maintenance
+        unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+
         // Invalidate cache for DMA buffer before reading device-written data
         let dma_lock = PORT_DMA.lock();
         let dma = dma_lock[dma_index].as_ref().ok_or("AHCI: no DMA memory")?;
@@ -773,6 +806,22 @@ impl AhciController {
 
     /// Read a single sector from a port.
     fn read_sector(&self, port: usize, dma_index: usize, lba: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), &'static str> {
+        // Mask IRQ during sector DMA. Timer interrupt XHCI polling generates
+        // concurrent PCI MMIO that interferes with AHCI DMA completion.
+        #[cfg(target_arch = "aarch64")]
+        let saved_daif: u64 = unsafe {
+            let d: u64;
+            core::arch::asm!("mrs {}, daif", out(reg) d, options(nomem, nostack));
+            core::arch::asm!("msr daifset, #2", options(nomem, nostack));
+            d
+        };
+        let result = self.read_sector_body(port, dma_index, lba, buffer);
+        #[cfg(target_arch = "aarch64")]
+        unsafe { core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack)); }
+        result
+    }
+
+    fn read_sector_body(&self, port: usize, dma_index: usize, lba: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), &'static str> {
         self.wait_ready(port)?;
 
         let mut dma_lock = PORT_DMA.lock();
@@ -826,6 +875,12 @@ impl AhciController {
         drop(dma_lock);
 
         self.issue_cmd_slot0(port)?;
+
+        // DSB SY: ensure the PORT_CI volatile read (device memory) that confirmed
+        // DMA completion is ordered before any cache maintenance or normal memory
+        // loads from the DMA buffer. Without this, ARM64 can speculatively load
+        // stale data from dma_buf before the cache invalidation fires.
+        unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
 
         // Invalidate cache before reading device-written DMA buffer
         let dma_lock = PORT_DMA.lock();

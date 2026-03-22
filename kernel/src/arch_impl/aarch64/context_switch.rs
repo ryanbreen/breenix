@@ -65,7 +65,7 @@ static DEFERRED_REQUEUE: [AtomicU64; 8] = [
 // =============================================================================
 
 const DISPATCH_RING_SIZE: usize = 8;
-const MAX_CPUS_TRACE: usize = 4;
+const MAX_CPUS_TRACE: usize = 8;
 
 /// One dispatch event — what was written to the exception frame.
 #[repr(C)]
@@ -1144,8 +1144,10 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             }
             // else: idle thread with EL0 frame + from_el0=false → corrupted, skip
         } else {
-            if let Some(old_thread) = sched.get_thread_mut(old_id) {
-                save_kernel_context_inline(old_thread, frame);
+            if !is_old_idle {
+                if let Some(old_thread) = sched.get_thread_mut(old_id) {
+                    save_kernel_context_inline(old_thread, frame);
+                }
             }
         }
     }
@@ -1169,6 +1171,17 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     if cpu_id < DEFERRED_REQUEUE.len() {
         let previous = DEFERRED_REQUEUE[cpu_id].swap(old_id, Ordering::AcqRel);
         if previous != 0 {
+            // A previously deferred requeue is being evicted before it was processed.
+            // This means two rapid context switches happened on the same CPU without an
+            // intervening check_need_resched_and_switch_arm64 call to drain the slot.
+            // Requeue the evicted thread now (under the scheduler lock) and log the event.
+            raw_uart_str("[DEFER_EVICT] cpu=");
+            raw_uart_dec(cpu_id as u64);
+            raw_uart_str(" evicted=");
+            raw_uart_dec(previous);
+            raw_uart_str(" new=");
+            raw_uart_dec(old_id);
+            raw_uart_str("\n");
             sched.requeue_thread_after_save(previous);
         }
     }

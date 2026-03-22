@@ -399,7 +399,6 @@ pub fn set_kernel_cr3(ttbr0: u64) {
         log::warn!("set_kernel_cr3 called before per-CPU init");
         return;
     }
-    log::info!("Setting kernel_ttbr0 in per-CPU data to {:#x}", ttbr0);
     unsafe {
         hal_percpu::Aarch64PerCpu::set_kernel_cr3(ttbr0);
     }

@@ -276,13 +276,8 @@ pub extern "C" fn timer_interrupt_handler() {
     // CPU 0 only: poll input devices (single-device, not safe from multiple CPUs)
     if cpu_id == 0 {
         poll_keyboard_to_stdin();
-        // Poll EHCI USB 2.0 keyboard events
         crate::drivers::usb::ehci::poll_keyboard();
-        // Poll XHCI USB HID events (needed when PCI interrupt routing isn't available)
         crate::drivers::usb::xhci::poll_hid_events();
-        // Poll network RX as a safety net alongside MSI-X interrupts.
-        // MSI-X provides sub-ms latency; this 100Hz fallback ensures packets
-        // are still processed if MSI-X delivery fails for any reason.
         if (crate::drivers::virtio::net_pci::is_initialized()
             || crate::drivers::e1000::is_initialized())
             && _count % 10 == 0

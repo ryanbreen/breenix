@@ -270,13 +270,14 @@ struct FpsCounter {
     last_time_ns: u64,
     frame_count: u32,
     display_fps: u32,
+    speed_pct: i32,
     ttf_font: Option<CachedFont>,
     font_size: f32,
 }
 
 impl FpsCounter {
     fn new() -> Self {
-        Self { last_time_ns: clock_monotonic_ns(), frame_count: 0, display_fps: 0, ttf_font: None, font_size: 20.0 }
+        Self { last_time_ns: clock_monotonic_ns(), frame_count: 0, display_fps: 0, speed_pct: 100, ttf_font: None, font_size: 20.0 }
     }
 
     fn with_ttf(mut self, font: Option<CachedFont>, size: f32) -> Self {
@@ -323,12 +324,47 @@ impl FpsCounter {
         } else {
             font::draw_text(fb, &buf[..len], 8, y, Color::GRAY, 2);
         }
+
+        // Speed percentage in bottom-right
+        let mut sbuf = [0u8; 16];
+        let slen = format_speed(&mut sbuf, self.speed_pct);
+        if let Some(ref mut f) = self.ttf_font {
+            let text = core::str::from_utf8(&sbuf[..slen]).unwrap_or("?%");
+            let tw = ttf_font::text_width(f, text, self.font_size * 2.0);
+            let sx = (fb.width as i32 - tw - 8).max(0);
+            ttf_font::draw_text(fb, f, text, sx, y as i32, self.font_size * 2.0, Color::GRAY);
+        } else {
+            let tw = font::text_width(&sbuf[..slen], 2);
+            let sx = fb.width.saturating_sub(tw + 8);
+            font::draw_text(fb, &sbuf[..slen], sx, y, Color::GRAY, 2);
+        }
     }
 }
 
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
+
+fn format_speed(buf: &mut [u8], pct: i32) -> usize {
+    let mut i = 0;
+    let mut n = if pct < 0 { 0u32 } else { pct as u32 };
+    if n == 0 {
+        buf[i] = b'0'; i += 1;
+    } else {
+        let mut tmp = [0u8; 6];
+        let mut tlen = 0;
+        while n > 0 {
+            tmp[tlen] = b'0' + (n % 10) as u8;
+            n /= 10;
+            tlen += 1;
+        }
+        for j in (0..tlen).rev() {
+            buf[i] = tmp[j]; i += 1;
+        }
+    }
+    buf[i] = b'%'; i += 1;
+    i
+}
 
 /// Window buffer dimensions.
 const WIN_W: u32 = 400;
@@ -445,20 +481,39 @@ fn run_window_loop(win: &mut Window, spheres: &mut [Sphere; NUM_SPHERES]) {
                 Event::KeyPress { ascii, .. } => {
                     match ascii {
                         b'+' | b'=' => {
-                            // Scale all velocities up by ~15%
                             for sphere in spheres.iter_mut() {
                                 sphere.vx = sphere.vx * 23 / 20;
                                 sphere.vy = sphere.vy * 23 / 20;
                             }
+                            fps.speed_pct = (fps.speed_pct * 23 / 20).min(9999);
                         }
                         b'-' => {
-                            // Scale all velocities down by ~15%
                             for sphere in spheres.iter_mut() {
                                 sphere.vx = sphere.vx * 20 / 23;
                                 sphere.vy = sphere.vy * 20 / 23;
                             }
+                            fps.speed_pct = (fps.speed_pct * 20 / 23).max(1);
                         }
                         _ => {}
+                    }
+                }
+                Event::Scroll { delta_y } => {
+                    // Scroll up = faster, scroll down = slower
+                    // Each tick scales by ~15%
+                    for _ in 0..delta_y.abs() {
+                        if delta_y > 0 {
+                            for sphere in spheres.iter_mut() {
+                                sphere.vx = sphere.vx * 23 / 20;
+                                sphere.vy = sphere.vy * 23 / 20;
+                            }
+                            fps.speed_pct = (fps.speed_pct * 23 / 20).min(9999);
+                        } else {
+                            for sphere in spheres.iter_mut() {
+                                sphere.vx = sphere.vx * 20 / 23;
+                                sphere.vy = sphere.vy * 20 / 23;
+                            }
+                            fps.speed_pct = (fps.speed_pct * 20 / 23).max(1);
+                        }
                     }
                 }
                 Event::Resized { width: w, height: h } => {
