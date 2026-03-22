@@ -333,7 +333,6 @@ struct PortDmaStorage {
     ports: [PortDmaMem; MAX_AHCI_PORTS],
 }
 
-#[link_section = ".dma"]
 static mut DMA_STORAGE: PortDmaStorage = unsafe { core::mem::zeroed() };
 
 // =============================================================================
@@ -682,29 +681,25 @@ impl AhciController {
             // Wait for port to become ready after restart
             self.wait_ready(port)?;
         } else {
-            // Clear any pending interrupts
+            // Clear pending interrupts before issuing new command.
+            // Without this, accumulated D2H FIS bits from previous commands
+            // cause the controller to refuse new PORT_CI writes.
             port_write(abar, port, PORT_IS, 0xFFFF_FFFF);
         }
 
-        // Issue command on slot 0.
         // Issue command on slot 0
         port_write(abar, port, PORT_CI, 1);
 
         // Wait for completion (CI bit 0 clears)
-        for _ in 0..10_000_000 {
+        for _i in 0..10_000_000u32 {
             let ci = port_read(abar, port, PORT_CI);
             if (ci & 1) == 0 {
-                // Completion fence: read PORT_TFD to force round-trip to device
-                let tfd = port_read(abar, port, PORT_TFD);
-                unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
-                // Check for errors in TFD
-                if (tfd & 1) != 0 {
-                    crate::serial_println!("[ahci] Port {} TFE: TFD={:#x}", port, tfd);
-                    return Err("AHCI: task file error");
-                }
+                // Check for errors
                 let is = port_read(abar, port, PORT_IS);
                 if (is & (1 << 30)) != 0 {
-                    crate::serial_println!("[ahci] Port {} TFE(IS): TFD={:#x}", port, tfd);
+                    // Task File Error
+                    let tfd = port_read(abar, port, PORT_TFD);
+                    crate::serial_println!("[ahci] Port {} TFE: TFD={:#x}", port, tfd);
                     return Err("AHCI: task file error");
                 }
                 return Ok(());
@@ -806,22 +801,6 @@ impl AhciController {
 
     /// Read a single sector from a port.
     fn read_sector(&self, port: usize, dma_index: usize, lba: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), &'static str> {
-        // Mask IRQ during sector DMA. Timer interrupt XHCI polling generates
-        // concurrent PCI MMIO that interferes with AHCI DMA completion.
-        #[cfg(target_arch = "aarch64")]
-        let saved_daif: u64 = unsafe {
-            let d: u64;
-            core::arch::asm!("mrs {}, daif", out(reg) d, options(nomem, nostack));
-            core::arch::asm!("msr daifset, #2", options(nomem, nostack));
-            d
-        };
-        let result = self.read_sector_body(port, dma_index, lba, buffer);
-        #[cfg(target_arch = "aarch64")]
-        unsafe { core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack)); }
-        result
-    }
-
-    fn read_sector_body(&self, port: usize, dma_index: usize, lba: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), &'static str> {
         self.wait_ready(port)?;
 
         let mut dma_lock = PORT_DMA.lock();
