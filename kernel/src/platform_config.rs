@@ -89,7 +89,8 @@ static BOOT_WALL_TIME_UTC: AtomicU64 = AtomicU64::new(0);
 // SMP stacks:     0x4300_0000 - 0x4400_0000 (16 MB, 8 CPUs × 2 MB each)
 // Frame alloc:    0x4400_0000 - 0x5000_0000 (192 MB)
 // DMA (NC):       0x5000_0000 - 0x501F_FFFF (2 MB, Non-Cacheable for xHCI)
-// Heap:           0x5020_0000 - 0x51FF_FFFF (30 MB)
+// Heap:           0x5020_0000 - 0x541F_FFFF (64 MB)
+// Kernel stacks:  0x5420_0000 - 0x561F_FFFF (32 MB)
 
 #[cfg(target_arch = "aarch64")]
 static FRAME_ALLOC_START: AtomicU64 = AtomicU64::new(0x4400_0000);

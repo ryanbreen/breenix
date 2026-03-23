@@ -13,10 +13,10 @@ pub const HEAP_START: u64 = 0x_4444_4444_0000;
 // The heap MUST be in TTBR1 because TTBR0 gets switched to process page tables.
 //
 // Memory layout (physical):
-//   Frame allocator: 0x4200_0000 - 0x5000_0000
+//   Frame allocator: 0x4400_0000 - 0x5000_0000  (192 MB)
 //   .dma (NC) block: 0x5000_0000 - 0x501F_FFFF  (2 MB, Non-Cacheable for xHCI DMA)
-//   Heap:            0x5020_0000 - 0x51FF_FFFF  (30 MB, Write-Back Cacheable)
-//   Kernel stacks:   0x5200_0000 - 0x53FF_FFFF  (32 MB)
+//   Heap:            0x5020_0000 - 0x541F_FFFF  (64 MB, Write-Back Cacheable)
+//   Kernel stacks:   0x5420_0000 - 0x561F_FFFF  (32 MB)
 //
 // The heap MUST start AFTER the 2 MB NC DMA block to avoid overlapping
 // with xHCI DMA buffers placed in the .dma linker section.
