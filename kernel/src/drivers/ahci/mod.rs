@@ -1413,19 +1413,14 @@ fn probe_platform_irq(ctrl: &AhciController) {
 
     crate::serial_println!("[ahci] Platform IRQ probe: discovered SPI {}", found_spi);
 
-    // SPI 34 confirmed on both Linux and Breenix. Linux uses GICv3 ICC
-    // system registers for acknowledge/EOI and gets 20K+ interrupts per boot.
-    // Breenix uses GICv2 GICC MMIO in compat mode. When SPI 34 is enabled,
-    // the first command completes via interrupt but subsequent commands hang
-    // on wfi — the GIC doesn't re-deliver after GICC_EOIR. This suggests
-    // the GICC compat mode doesn't properly deactivate level-triggered SPIs
-    // that were routed via IROUTER (ARE mode).
-    //
-    // TODO: Fix GIC init to use ACTIVE_GIC_VERSION=3 when ARE is detected,
-    // so ALL interrupt handling (not just enable_spi) uses ICC system registers.
-    // This is a GIC-wide change that needs careful testing across all platforms.
+    // SPI 34 confirmed on Linux probe VM: level-triggered, GICv3 ICC, 20K+
+    // fires per boot. GIC version detection now correctly identifies GICv3
+    // and uses ICC system registers. However, enabling SPI 34 hangs the
+    // boot — the interrupt fires once but doesn't re-trigger after EOI.
+    // The GIC state after first EOI needs investigation via GDB.
+    // Using wfi-polling fallback (wakes on timer tick at ~1kHz).
     crate::serial_println!(
-        "[ahci] Platform IRQ probe: SPI {} confirmed (Linux: 20K+ fires, level-triggered)",
+        "[ahci] Platform IRQ probe: SPI {} confirmed (Linux: level-triggered, 20K+ fires)",
         found_spi
     );
 }

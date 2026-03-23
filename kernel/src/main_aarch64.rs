@@ -257,7 +257,7 @@ use kernel::arch_impl::aarch64::timer_interrupt;
 #[cfg(target_arch = "aarch64")]
 use kernel::arch_impl::aarch64::cpu::Aarch64Cpu;
 #[cfg(target_arch = "aarch64")]
-use kernel::arch_impl::aarch64::gic::Gicv2;
+use kernel::arch_impl::aarch64::gic::{self, Gicv2};
 #[cfg(target_arch = "aarch64")]
 use kernel::arch_impl::traits::{CpuOps, InterruptController};
 #[cfg(target_arch = "aarch64")]
@@ -469,9 +469,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!("[boot] Current timestamp: {}", ts);
 
     // Initialize GIC
-    serial_println!("[boot] Initializing GICv2...");
+    serial_println!("[boot] Initializing GIC...");
     Gicv2::init();
-    serial_println!("[boot] GIC initialized");
+    serial_println!("[boot] GIC initialized (version {})", gic::active_version());
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::AARCH64_GIC_INIT);
 

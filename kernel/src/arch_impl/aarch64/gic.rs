@@ -480,7 +480,10 @@ impl InterruptController for Gicv2 {
             return;
         }
 
-        // Detect GIC version from GICD_PIDR2 or platform_config.
+        // Detect GIC version. Hardware detection (PIDR2) is authoritative.
+        // Platform config can override (non-zero value), but defaults to 0
+        // (auto-detect). Previously defaulted to 2, which masked GICv3 hardware
+        // on Parallels and caused level-triggered SPI deactivation failures.
         let platform_version = crate::platform_config::gic_version();
         let hw_version = Self::detect_version();
         let version = if platform_version != 0 { platform_version } else { hw_version };

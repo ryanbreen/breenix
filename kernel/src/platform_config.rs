@@ -26,7 +26,7 @@ static UART_BASE_PHYS: AtomicU64 = AtomicU64::new(0x0900_0000);
 static UART_TYPE: AtomicU8 = AtomicU8::new(0);
 
 #[cfg(target_arch = "aarch64")]
-static GIC_VERSION: AtomicU8 = AtomicU8::new(2);
+static GIC_VERSION: AtomicU8 = AtomicU8::new(0);
 
 #[cfg(target_arch = "aarch64")]
 static GICD_BASE_PHYS: AtomicU64 = AtomicU64::new(0x0800_0000);
