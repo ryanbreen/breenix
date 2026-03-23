@@ -64,6 +64,11 @@ static CURRENT_QUANTUM: [AtomicU32; crate::arch_impl::aarch64::constants::MAX_CP
 static TIMER_INITIALIZED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
+/// Check if the timer interrupt has been initialized (for AHCI wfi/wfe decision).
+pub fn timer_is_running() -> bool {
+    TIMER_INITIALIZED.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 /// Total timer interrupt count (for frequency verification)
 static TIMER_INTERRUPT_COUNT: AtomicU64 = AtomicU64::new(0);
 

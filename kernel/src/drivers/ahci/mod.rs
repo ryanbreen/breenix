@@ -831,37 +831,39 @@ impl AhciController {
 
         loop {
             // --- Check for completion ---
-            if has_irq {
-                // Interrupt-driven: the ISR sets AHCI_PORT_COMPLETE and clears
-                // PORT_IS / HBA_IS. We just check the atomic flag.
-                if AHCI_PORT_COMPLETE[port].load(Ordering::Acquire) {
-                    let tfd = port_read(abar, port, PORT_TFD);
-                    if (tfd & 1) != 0 {
-                        return Err("AHCI: task file error");
-                    }
-                    return Ok(());
-                }
-            } else {
-                // No interrupt: check PORT_CI directly (single MMIO read).
-                let ci = port_read(abar, port, PORT_CI);
-                if (ci & 1) == 0 {
-                    let is = port_read(abar, port, PORT_IS);
-                    let tfd = port_read(abar, port, PORT_TFD);
-                    port_write(abar, port, PORT_IS, is);
-                    hba_write(abar, HBA_IS, 1u32 << (port as u32));
-                    if (is & PORT_IRQ_ERROR) != 0 || (tfd & 1) != 0 {
-                        return Err("AHCI: task file error");
-                    }
-                    return Ok(());
-                }
-
-                // Check error bits for early bail.
-                let is = port_read(abar, port, PORT_IS);
-                if (is & PORT_IRQ_ERROR) != 0 {
-                    port_write(abar, port, PORT_IS, is);
-                    hba_write(abar, HBA_IS, 1u32 << (port as u32));
+            //
+            // Check both the ISR-set flag AND PORT_CI directly. The ISR
+            // sets AHCI_PORT_COMPLETE when it fires, but we also poll
+            // PORT_CI as a fallback in case the interrupt doesn't fire
+            // (e.g., timing race, GIC issue). This makes the interrupt
+            // path a performance optimization, not a correctness requirement.
+            if has_irq && AHCI_PORT_COMPLETE[port].load(Ordering::Acquire) {
+                let tfd = port_read(abar, port, PORT_TFD);
+                if (tfd & 1) != 0 {
                     return Err("AHCI: task file error");
                 }
+                return Ok(());
+            }
+
+            // Always check PORT_CI regardless of interrupt mode.
+            let ci = port_read(abar, port, PORT_CI);
+            if (ci & 1) == 0 {
+                let is = port_read(abar, port, PORT_IS);
+                let tfd = port_read(abar, port, PORT_TFD);
+                port_write(abar, port, PORT_IS, is);
+                hba_write(abar, HBA_IS, 1u32 << (port as u32));
+                if (is & PORT_IRQ_ERROR) != 0 || (tfd & 1) != 0 {
+                    return Err("AHCI: task file error");
+                }
+                return Ok(());
+            }
+
+            // Check error bits for early bail.
+            let is = port_read(abar, port, PORT_IS);
+            if (is & PORT_IRQ_ERROR) != 0 {
+                port_write(abar, port, PORT_IS, is);
+                hba_write(abar, HBA_IS, 1u32 << (port as u32));
+                return Err("AHCI: task file error");
             }
 
             // --- Check wall-clock timeout ---
@@ -887,13 +889,20 @@ impl AhciController {
             // During early boot (no timer, no AHCI IRQ yet), `wfi` would
             // block forever. Fall back to `wfe` (Wait For Event) which wakes
             // on any event flag — less power-efficient but always returns.
+            // Sleep until next interrupt or event.
+            //
+            // Use wfi (Wait For Interrupt) when we have a guaranteed wake
+            // source: either the AHCI completion interrupt OR the timer tick.
+            // During early boot (before timer_interrupt::init), neither may
+            // exist, so fall back to wfe (Wait For Event) which always returns.
             #[cfg(target_arch = "aarch64")]
-            if has_irq {
-                // Interrupt-driven: wfi sleeps until AHCI ISR or timer tick.
-                unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
-            } else {
-                // Early boot polling: wfe yields briefly, wakes on any event.
-                unsafe { core::arch::asm!("wfe", options(nomem, nostack)); }
+            {
+                let timer_running = crate::arch_impl::aarch64::timer_interrupt::timer_is_running();
+                if timer_running {
+                    unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+                } else {
+                    unsafe { core::arch::asm!("wfe", options(nomem, nostack)); }
+                }
             }
             #[cfg(not(target_arch = "aarch64"))]
             core::hint::spin_loop();
@@ -1413,14 +1422,21 @@ fn probe_platform_irq(ctrl: &AhciController) {
 
     crate::serial_println!("[ahci] Platform IRQ probe: discovered SPI {}", found_spi);
 
-    // SPI 34 confirmed on Linux probe VM: level-triggered, GICv3 ICC, 20K+
-    // fires per boot. GIC version detection now correctly identifies GICv3
-    // and uses ICC system registers. However, enabling SPI 34 hangs the
-    // boot — the interrupt fires once but doesn't re-trigger after EOI.
-    // The GIC state after first EOI needs investigation via GDB.
-    // Using wfi-polling fallback (wakes on timer tick at ~1kHz).
+    // SPI 34 confirmed on Linux probe VM: level-triggered, GICv3, 20K+
+    // fires per boot. Enabling the SPI hangs the boot — the wfi/wfe loop
+    // doesn't complete for ext2 reads after AHCI init. The ISR fires during
+    // init but not for subsequent reads. Requires GDB debugging session.
+    //
+    // What's been validated:
+    // - GIC version correctly detected as v3 (PIDR2)
+    // - ICC_CTLR_EL1.EOImode = 0 (combined drop+deactivate)
+    // - DSB SY between MMIO clears and EOI
+    // - ISB after ICC_EOIR1_EL1
+    // - ISACTIVER shows not-active after EOI (deactivation works)
+    //
+    // The system uses wfi-polling with PORT_CI fallback (timer tick at 1kHz).
     crate::serial_println!(
-        "[ahci] Platform IRQ probe: SPI {} confirmed (Linux: level-triggered, 20K+ fires)",
+        "[ahci] Platform IRQ probe: SPI {} confirmed (Linux: 20K+ fires, level-triggered)",
         found_spi
     );
 }
@@ -1482,6 +1498,15 @@ pub fn handle_interrupt() {
     if hba_is != 0 {
         hba_write(abar, HBA_IS, hba_is);
     }
+
+    // DSB SY: ensure PORT_IS and HBA_IS MMIO writes have propagated to the
+    // device BEFORE the caller writes ICC_EOIR1_EL1 (EOI). Without this
+    // barrier, the GIC may sample the still-asserted interrupt line at EOI
+    // time, transition Active→Pending instead of Active→Inactive, and
+    // consume the next real interrupt as a phantom. Linux's writel() includes
+    // an implicit DSB on ARM64; we must do it explicitly.
+    #[cfg(target_arch = "aarch64")]
+    unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
 
     // For edge-triggered MSI: clear the SPI pending bit to re-arm.
     // For level-triggered wired: the line de-asserted when we cleared

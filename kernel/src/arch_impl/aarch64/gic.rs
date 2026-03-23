@@ -676,20 +676,30 @@ pub fn end_of_interrupt(irq_id: u32) {
     if version >= 3 {
         let group = LAST_ACK_GROUP.load(Ordering::Relaxed);
         if group == 0 && DS_ENABLED.load(Ordering::Relaxed) {
-            // Group 0 with DS=1: ICC_EOIR0_EL1 is accessible
             unsafe {
                 core::arch::asm!("msr icc_eoir0_el1, {}", in(reg) irq_id as u64, options(nomem, nostack));
+                // ISB ensures EOI takes effect before ERET (matches Linux gic_write_eoir)
+                core::arch::asm!("isb", options(nostack, preserves_flags));
             }
         } else {
-            // Group 1 (normal), or Group 0 with DS=0 (use EOIR1 — hypervisor handles mapping)
             unsafe {
                 core::arch::asm!("msr icc_eoir1_el1, {}", in(reg) irq_id as u64, options(nomem, nostack));
+                // ISB ensures EOI takes effect before ERET (matches Linux gic_write_eoir)
+                core::arch::asm!("isb", options(nostack, preserves_flags));
             }
         }
     } else {
         // GICv2: Write GICC_EOIR
         gicc_write(GICC_EOIR, irq_id);
     }
+}
+
+/// Check if an IRQ is in Active state (GICD_ISACTIVER)
+pub fn is_active(irq: u32) -> bool {
+    let reg_index = irq / 32;
+    let bit = irq % 32;
+    let val = gicd_read(0x300 + (reg_index as usize * 4)); // GICD_ISACTIVER
+    (val & (1 << bit)) != 0
 }
 
 /// Check if an IRQ is pending
@@ -1103,6 +1113,19 @@ fn init_gicv3_cpu_interface() {
         let sre: u64 = 0x7; // SRE | DFB | DIB
         core::arch::asm!("msr icc_sre_el1, {}", in(reg) sre, options(nomem, nostack));
         core::arch::asm!("isb", options(nomem, nostack));
+
+        // Explicitly set ICC_CTLR_EL1 with EOImode=0 (combined priority drop +
+        // deactivation). Linux does this in gic_cpu_sys_reg_init(). Without it,
+        // if the hypervisor sets EOImode=1, writing ICC_EOIR1_EL1 only drops
+        // priority — the interrupt stays Active and can never re-trigger.
+        let icc_ctlr: u64;
+        core::arch::asm!("mrs {}, icc_ctlr_el1", out(reg) icc_ctlr, options(nomem, nostack));
+        // Clear EOImode (bit 1) to ensure combined drop+deactivate
+        let new_ctlr = icc_ctlr & !(1u64 << 1);
+        core::arch::asm!("msr icc_ctlr_el1, {}", in(reg) new_ctlr, options(nomem, nostack));
+        core::arch::asm!("isb", options(nostack, preserves_flags));
+        crate::serial_println!("[gic] ICC_CTLR_EL1: {:#x} -> {:#x} (EOImode={})",
+            icc_ctlr, new_ctlr, (icc_ctlr >> 1) & 1);
 
         // Set priority mask to accept all (ICC_PMR_EL1)
         let pmr: u64 = PRIORITY_MASK as u64;
