@@ -174,6 +174,11 @@ static AHCI_PORT_COMPLETE: [AtomicBool; MAX_AHCI_PORTS] = [
     const { AtomicBool::new(false) }; MAX_AHCI_PORTS
 ];
 
+/// Count ISR invocations (for diagnostic/timeout reporting).
+static AHCI_ISR_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Count commands issued via issue_cmd_slot0 (for diagnostic/timeout reporting).
+static AHCI_CMD_COUNT: AtomicU32 = AtomicU32::new(0);
+
 // =============================================================================
 // HBA Generic Host Control Registers (offset from ABAR)
 // =============================================================================
@@ -819,6 +824,8 @@ impl AhciController {
             AHCI_PORT_COMPLETE[port].store(false, Ordering::Release);
         }
 
+        let cmd_num = AHCI_CMD_COUNT.fetch_add(1, Ordering::Relaxed);
+
         port_write(abar, port, PORT_CI, 1);
 
         // --- Wait for completion with wall-clock timeout ---
@@ -872,9 +879,45 @@ impl AhciController {
                 let ci = port_read(abar, port, PORT_CI);
                 let is = port_read(abar, port, PORT_IS);
                 let tfd = port_read(abar, port, PORT_TFD);
+                let hba_is_timeout = hba_read(abar, HBA_IS);
+                let ghc = hba_read(abar, HBA_GHC);
+                let port_ie = port_read(abar, port, PORT_IE);
+                let port_cmd = port_read(abar, port, PORT_CMD);
+                let serr = port_read(abar, port, PORT_SERR);
+                let isr_count = AHCI_ISR_COUNT.load(Ordering::Relaxed);
+                // Read GIC state for the AHCI SPI
+                #[cfg(target_arch = "aarch64")]
+                let (ahci_spi, gic_pending, gic_active, pend_snap) = {
+                    use crate::arch_impl::aarch64::gic;
+                    let spi = AHCI_IRQ.load(Ordering::Relaxed);
+                    let p = if spi != 0 { gic::is_pending(spi) } else { false };
+                    let a = if spi != 0 { gic::is_active(spi) } else { false };
+                    let snap = gic::snapshot_pending_spis();
+                    (spi, p, a, snap)
+                };
+                #[cfg(not(target_arch = "aarch64"))]
+                let (ahci_spi, gic_pending, gic_active, pend_snap) = (0u32, false, false, [0u32; 3]);
+                // Read DAIF to check if IRQs are masked
+                let daif: u64;
+                #[cfg(target_arch = "aarch64")]
+                unsafe { core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack)); }
+                #[cfg(not(target_arch = "aarch64"))]
+                { daif = 0; }
                 crate::serial_println!(
-                    "[ahci] Port {} timeout ({}s): CI={:#x} IS={:#x} TFD={:#x} irq={}",
-                    port, AHCI_TIMEOUT_SECS, ci, is, tfd, has_irq
+                    "[ahci] Port {} TIMEOUT ({}s): CI={:#x} IS={:#x} TFD={:#x} HBA_IS={:#x}",
+                    port, AHCI_TIMEOUT_SECS, ci, is, tfd, hba_is_timeout
+                );
+                crate::serial_println!(
+                    "[ahci]   GHC={:#x} PORT_IE={:#x} CMD={:#x} SERR={:#x}",
+                    ghc, port_ie, port_cmd, serr
+                );
+                crate::serial_println!(
+                    "[ahci]   GIC: SPI{} pend={} act={} DAIF={:#x} pend_snap=[{:#x},{:#x},{:#x}]",
+                    ahci_spi, gic_pending, gic_active, daif, pend_snap[0], pend_snap[1], pend_snap[2]
+                );
+                crate::serial_println!(
+                    "[ahci]   isr_count={} cmd#={} complete_flag={}",
+                    isr_count, cmd_num, AHCI_PORT_COMPLETE[port].load(Ordering::Relaxed)
                 );
                 return Err("AHCI: command timeout");
             }
@@ -1422,23 +1465,11 @@ fn probe_platform_irq(ctrl: &AhciController) {
 
     crate::serial_println!("[ahci] Platform IRQ probe: discovered SPI {}", found_spi);
 
-    // SPI 34 confirmed on Linux probe VM: level-triggered, GICv3, 20K+
-    // fires per boot. Enabling the SPI hangs the boot — the wfi/wfe loop
-    // doesn't complete for ext2 reads after AHCI init. The ISR fires during
-    // init but not for subsequent reads. Requires GDB debugging session.
-    //
-    // What's been validated:
-    // - GIC version correctly detected as v3 (PIDR2)
-    // - ICC_CTLR_EL1.EOImode = 0 (combined drop+deactivate)
-    // - DSB SY between MMIO clears and EOI
-    // - ISB after ICC_EOIR1_EL1
-    // - ISACTIVER shows not-active after EOI (deactivation works)
-    //
-    // The system uses wfi-polling with PORT_CI fallback (timer tick at 1kHz).
-    crate::serial_println!(
-        "[ahci] Platform IRQ probe: SPI {} confirmed (Linux: 20K+ fires, level-triggered)",
-        found_spi
-    );
+    gic::clear_spi_pending(found_spi);
+    AHCI_IRQ_EDGE.store(false, Ordering::Release);
+    AHCI_IRQ.store(found_spi, Ordering::Release);
+    gic::enable_spi(found_spi);
+    crate::serial_println!("[ahci] Platform IRQ enabled: SPI {} (wired, level-triggered)", found_spi);
 }
 
 /// AHCI MSI interrupt handler — called from the IRQ dispatch in `exception.rs`.
@@ -1461,6 +1492,8 @@ pub fn handle_interrupt() {
     if abar == 0 {
         return;
     }
+
+    let _count = AHCI_ISR_COUNT.fetch_add(1, Ordering::Relaxed);
 
     // Read the global interrupt status.
     let hba_is = hba_read(abar, HBA_IS);
