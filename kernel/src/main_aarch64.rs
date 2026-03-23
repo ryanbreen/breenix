@@ -132,6 +132,14 @@ fn launch_init_from_elf(elf_data: alloc::vec::Vec<u8>, path: &str) -> Result<cor
         }
     };
 
+    // Re-enable preemption now that the boot sequence is complete.
+    // It was disabled in kernel_main after per-CPU init to prevent the scheduler
+    // from context-switching the boot CPU away from its boot stack (which would
+    // leave the boot CPU stuck in idle_loop_arm64 and never return here).
+    // From this point on, the init thread is being set as CPU 0's current thread,
+    // and the scheduler can run normally.
+    kernel::per_cpu_aarch64::preempt_enable();
+
     // Register the userspace thread with the scheduler as the current running thread.
     kernel::task::scheduler::spawn_as_current(alloc::boxed::Box::new(main_thread_clone));
 
@@ -139,21 +147,37 @@ fn launch_init_from_elf(elf_data: alloc::vec::Vec<u8>, path: &str) -> Result<cor
     // Timer interrupts during boot may have saved idle threads' ELR pointing to
     // kernel_main or other boot code. Without this, when a CPU dispatches its idle
     // thread, it ERETSs to the stale ELR (which could be 0x0 or a boot address).
-    // With 8 CPUs, threads 0 and 3-9 are idle threads for CPUs 0-7.
+    //
+    // We ask the scheduler which threads are idle threads (one per CPU) and reset
+    // only those. This is robust to any number of kthreads or render threads created
+    // before secondary CPUs come online, because the thread IDs are not predictable
+    // by arithmetic alone.
+    //
+    // We must NOT reset the init main thread's context. Corrupting init's spsr_el1
+    // to EL1h (0x5) causes dispatch_thread_locked to terminate it immediately via
+    // the safety guard (spsr & 0xF != 0 → not EL0t → not a valid userspace thread).
     {
         let idle_loop_addr = kernel::arch_impl::aarch64::context_switch::idle_loop_arm64 as *const () as u64;
-        // Thread 0 = CPU 0 idle, threads 3,4,5,6,7,8,9 = CPU 1-7 idle
-        // (threads 1,2 are kthreads created during boot)
-        let idle_tids: &[u64] = &[0, 3, 4, 5, 6, 7, 8, 9];
-        for &tid in idle_tids {
+        // Collect idle thread IDs from the scheduler's per-CPU state.
+        // cpu_state[cpu].idle_thread is set by init_scheduler and register_cpu_idle_thread.
+        let mut idle_tids = [0u64; kernel::arch_impl::aarch64::constants::MAX_CPUS];
+        let cpus_online = kernel::arch_impl::aarch64::smp::cpus_online() as usize;
+        let idle_count = kernel::task::scheduler::collect_idle_thread_ids(
+            &mut idle_tids[..cpus_online]
+        );
+        // Reset each idle thread's saved context.
+        for i in 0..idle_count {
+            let tid = idle_tids[i];
             kernel::task::scheduler::with_thread_mut(tid, |idle_thread| {
                 idle_thread.context.elr_el1 = idle_loop_addr;
                 idle_thread.context.spsr_el1 = 0x5; // EL1h, DAIF clear
-                // Clear x30 (link register) to prevent stale return addresses
                 idle_thread.context.x30 = 0;
             });
         }
-        serial_println!("[boot] Reset {} idle thread contexts to idle_loop_arm64 at {:#x}", idle_tids.len(), idle_loop_addr);
+        serial_println!(
+            "[boot] Reset {} idle thread contexts (CPUs online: {})",
+            idle_count, cpus_online
+        );
     }
 
     // Set per-CPU pointers to the thread in the scheduler
@@ -683,6 +707,15 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     unsafe { core::arch::asm!("mrs {}, ttbr0_el1", out(reg) boot_ttbr0, options(nomem, nostack)); }
     kernel::per_cpu_aarch64::set_kernel_cr3(boot_ttbr0);
     serial_println!("[boot] Per-CPU data initialized");
+
+    // Disable preemption for the boot sequence on CPU 0.
+    // The timer interrupt fires while kernel_main is running and the scheduler
+    // may try to context-switch the boot CPU to ksoftirqd. When ksoftirqd parks,
+    // setup_idle_return_locked redirects CPU 0 to idle_loop_arm64, abandoning
+    // the boot sequence. Preventing preemption here keeps the boot CPU on its
+    // boot stack until init is ready to run.
+    // Re-enabled in launch_init_from_elf before spawn_as_current.
+    kernel::per_cpu_aarch64::preempt_disable();
 
     // Initialize process manager
     serial_println!("[boot] Initializing process manager...");

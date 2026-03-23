@@ -1647,6 +1647,26 @@ where
     })
 }
 
+/// Collect the idle thread ID for each online CPU into a fixed-size buffer.
+///
+/// Returns the number of idle thread IDs written into `out` (one per online CPU).
+/// The caller must pass a buffer large enough for `cpus_online` entries.
+/// Safe to call from kernel context; disables interrupts internally.
+pub fn collect_idle_thread_ids(out: &mut [u64]) -> usize {
+    without_interrupts(|| {
+        let scheduler_lock = SCHEDULER.lock();
+        if let Some(sched) = scheduler_lock.as_ref() {
+            let count = out.len().min(MAX_CPUS);
+            for i in 0..count {
+                out[i] = sched.cpu_state[i].idle_thread;
+            }
+            count
+        } else {
+            0
+        }
+    })
+}
+
 /// Get mutable access to a specific thread (for timer interrupt handler)
 /// This function disables interrupts to prevent deadlock with timer interrupt
 pub fn with_thread_mut<F, R>(thread_id: u64, f: F) -> Option<R>
