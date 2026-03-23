@@ -704,6 +704,20 @@ pub fn clear_pending(irq: u32) {
     gicd_write(GICD_ICPENDR + (reg_index as usize * 4), 1 << bit);
 }
 
+/// Snapshot GICD_ISPENDR for SPIs 32-127 (registers 1-3).
+///
+/// Returns [ISPENDR1, ISPENDR2, ISPENDR3] covering SPIs 32-127.
+/// Used by the AHCI driver to probe for platform wired interrupts:
+/// for level-triggered SPIs, ISPENDR reflects the actual signal level
+/// regardless of whether the SPI is enabled (GICv3 spec §8.9.16).
+pub fn snapshot_pending_spis() -> [u32; 3] {
+    [
+        gicd_read(GICD_ISPENDR + 4),   // SPIs 32-63
+        gicd_read(GICD_ISPENDR + 8),   // SPIs 64-95
+        gicd_read(GICD_ISPENDR + 12),  // SPIs 96-127
+    ]
+}
+
 /// Send a Software Generated Interrupt (SGI) to a target CPU.
 ///
 /// SGIs are interrupts 0-15 and are used for IPIs.
