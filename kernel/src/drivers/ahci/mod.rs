@@ -160,8 +160,13 @@ static AHCI_CONTROLLER: Mutex<Option<AhciController>> = Mutex::new(None);
 /// 0 = driver not yet initialised.
 static AHCI_ABAR: AtomicU64 = AtomicU64::new(0);
 
-/// GIC SPI number allocated for AHCI MSI/MSI-X. 0 = polling mode.
+/// GIC SPI number allocated for AHCI MSI/MSI-X/wired. 0 = polling mode.
 static AHCI_IRQ: AtomicU32 = AtomicU32::new(0);
+
+/// Whether the AHCI IRQ is edge-triggered (MSI) or level-triggered (wired).
+/// For edge-triggered, the ISR must clear the SPI pending bit.
+/// For level-triggered, clearing PORT_IS de-asserts the line; no SPI clear needed.
+static AHCI_IRQ_EDGE: AtomicBool = AtomicBool::new(true);
 
 /// Per-port command-completion flag set by the MSI interrupt handler.
 /// Initialised false, cleared before issuing each command, set on completion.
@@ -535,10 +540,10 @@ impl AhciController {
 
         let controller = Self::init_common(abar_virt)?;
 
-        // Probe for the wired SPI after ports are initialized (IDENTIFY has
-        // run, so the HBA interrupt line should be asserted).
+        // Probe for the wired SPI. Issues a fresh IDENTIFY command and
+        // checks GICD_ISPENDR while PORT_IS is still set (interrupt asserted).
         #[cfg(target_arch = "aarch64")]
-        probe_platform_irq();
+        probe_platform_irq(&controller);
 
         Ok(controller)
     }
@@ -1234,48 +1239,158 @@ fn setup_ahci_msi(pci_dev: &pci::Device) -> u32 {
 /// Platform AHCI (not on PCI) cannot use MSI. Instead, the HBA drives a
 /// wired interrupt line to a GIC SPI. We discover which SPI by:
 ///
-/// 1. Snapshot GICD_ISPENDR for SPIs 32-127 (before the command).
-/// 2. Issue an IDENTIFY DEVICE on the first available port (quick DMA op).
-/// 3. After DMA completes, the HBA asserts its interrupt line. For
-///    level-triggered SPIs, GICD_ISPENDR reflects the signal level
-///    even when the SPI is disabled (GICv3 spec §8.9.16).
-/// 4. Snapshot GICD_ISPENDR again and diff to find the newly-asserted SPI.
-/// 5. Register the SPI as our AHCI interrupt (same as PCI MSI path).
+/// 1. Snapshot GICD_ISPENDR for SPIs 32-127 (baseline).
+/// 2. Issue a fresh IDENTIFY DEVICE command and poll for DMA completion
+///    WITHOUT clearing PORT_IS — the HBA holds its interrupt line asserted
+///    as long as PORT_IS has bits set.
+/// 3. Snapshot GICD_ISPENDR again while the interrupt line is asserted.
+/// 4. Diff the snapshots to find the newly-pending SPI.
+/// 5. NOW clear PORT_IS to de-assert the line. Register the SPI.
 ///
-/// This runs once during init on the boot CPU before the timer is started.
+/// The previous version of this probe was buggy: init_port() cleared
+/// PORT_IS during IDENTIFY, de-asserting the interrupt before we checked.
+/// This version issues its own command with a dedicated completion check
+/// that preserves PORT_IS for the probe.
 #[cfg(target_arch = "aarch64")]
-fn probe_platform_irq() {
+fn probe_platform_irq(ctrl: &AhciController) {
     use crate::arch_impl::aarch64::gic;
 
-    // Snapshot pending SPIs before the command.
+    let abar = ctrl.abar_virt;
+
+    // Find the first SATA port to probe with.
+    let probe_port = ctrl.ports.iter().enumerate().find_map(|(i, p)| {
+        match p {
+            Some(port) if port.device_type == DeviceType::Sata => Some((i, port.dma_index)),
+            _ => None,
+        }
+    });
+    let (port_num, dma_index) = match probe_port {
+        Some(p) => p,
+        None => {
+            crate::serial_println!("[ahci] Platform IRQ probe: no SATA port to probe with");
+            return;
+        }
+    };
+
+    crate::serial_println!("[ahci] IRQ probe: using port {} dma_index {}", port_num, dma_index);
+
+    // Ensure the port is clean before probing.
+    port_write(abar, port_num, PORT_IS, 0xFFFF_FFFF);
+    hba_write(abar, HBA_IS, 1u32 << (port_num as u32));
+
+    // Wait for port ready.
+    for _ in 0..100_000 {
+        let tfd = port_read(abar, port_num, PORT_TFD);
+        if (tfd & (PORT_TFD_BSY | PORT_TFD_DRQ)) == 0 {
+            break;
+        }
+        core::hint::spin_loop();
+    }
+
+    // Set up an IDENTIFY DEVICE command (same as identify_device but we
+    // handle completion manually to preserve PORT_IS).
+    {
+        let mut dma_lock = PORT_DMA.lock();
+        let dma = match dma_lock[dma_index].as_mut() {
+            Some(d) => d,
+            None => {
+                crate::serial_println!("[ahci] IRQ probe: DMA slot {} is None", dma_index);
+                return;
+            }
+        };
+
+        let cmd_table_phys = virt_to_phys(&dma.cmd_table as *const CmdTable as u64);
+        let dma_buf_phys = virt_to_phys(dma.dma_buf.as_ptr() as u64);
+
+        dma.cmd_list[0].dw0 = (1 << 16) | 5;
+        dma.cmd_list[0].prdbc = 0;
+        dma.cmd_list[0].ctba = cmd_table_phys as u32;
+        dma.cmd_list[0].ctbau = (cmd_table_phys >> 32) as u32;
+
+        dma.cmd_table.cfis = [0; 64];
+        dma.cmd_table.cfis[0] = FIS_TYPE_REG_H2D;
+        dma.cmd_table.cfis[1] = 0x80;
+        dma.cmd_table.cfis[2] = ATA_CMD_IDENTIFY;
+
+        dma.cmd_table.prdt[0].dba = dma_buf_phys as u32;
+        dma.cmd_table.prdt[0].dbau = (dma_buf_phys >> 32) as u32;
+        dma.cmd_table.prdt[0]._reserved = 0;
+        dma.cmd_table.prdt[0].dbc = (SECTOR_SIZE as u32 - 1) | (1 << 31);
+
+        core::sync::atomic::fence(Ordering::SeqCst);
+        let dma_ptr = &**dma as *const PortDmaMem as *const u8;
+        dma_cache_clean(dma_ptr, core::mem::size_of::<PortDmaMem>());
+    }
+
+    // Snapshot GICD_ISPENDR BEFORE issuing the command.
     let before = gic::snapshot_pending_spis();
 
-    // The first port with a device has already completed IDENTIFY during
-    // init_port(), so the HBA interrupt line should already be asserted
-    // (PORT_IS has bits set from that command's completion, and we enabled
-    // PORT_IE + GHC_IE). Just check the GIC state now.
+    // Issue the command.
+    port_write(abar, port_num, PORT_CI, 1);
+
+    // Poll PORT_CI for DMA completion — but do NOT clear PORT_IS.
+    // The HBA interrupt line stays asserted while PORT_IS has bits set.
+    let (start, freq) = read_cntpct_and_freq();
+    let deadline = start + freq * 2; // 2-second probe timeout
+    let mut completed = false;
+    loop {
+        let ci = port_read(abar, port_num, PORT_CI);
+        if (ci & 1) == 0 {
+            completed = true;
+            break;
+        }
+        let now = read_cntpct();
+        if now >= deadline {
+            break;
+        }
+        #[cfg(target_arch = "aarch64")]
+        unsafe { core::arch::asm!("wfe", options(nomem, nostack)); }
+    }
+
+    if !completed {
+        let ci = port_read(abar, port_num, PORT_CI);
+        let tfd = port_read(abar, port_num, PORT_TFD);
+        crate::serial_println!("[ahci] Platform IRQ probe: IDENTIFY timed out CI={:#x} TFD={:#x}", ci, tfd);
+        port_write(abar, port_num, PORT_IS, 0xFFFF_FFFF);
+        hba_write(abar, HBA_IS, 1u32 << (port_num as u32));
+        return;
+    }
+
+    // Command completed. PORT_IS should have D2H FIS bit set, and the
+    // HBA interrupt line should be asserted to the GIC. Snapshot now.
     let after = gic::snapshot_pending_spis();
 
+    // Diagnostic: dump what we see.
+    crate::serial_println!(
+        "[ahci] IRQ probe: ISPENDR before=[{:#010x}, {:#010x}, {:#010x}] after=[{:#010x}, {:#010x}, {:#010x}]",
+        before[0], before[1], before[2], after[0], after[1], after[2]
+    );
+    let port_is = port_read(abar, port_num, PORT_IS);
+    crate::serial_println!("[ahci] IRQ probe: PORT_IS={:#010x} (should have D2H bit set)", port_is);
+
+    // NOW clear PORT_IS to de-assert the interrupt line.
+    port_write(abar, port_num, PORT_IS, 0xFFFF_FFFF);
+    hba_write(abar, HBA_IS, 1u32 << (port_num as u32));
+
     // Diff: find SPIs that are newly pending.
+    let known_spis: &[u32] = &[33, 53, 54, 55]; // UART, GPU, NET, XHCI
     let mut found_spi: u32 = 0;
+
+    // First pass: look for SPIs that appeared between before and after.
     for reg in 0..3u32 {
         let diff = after[reg as usize] & !before[reg as usize];
         if diff != 0 {
-            // Find the lowest set bit.
             let bit = diff.trailing_zeros();
-            found_spi = 32 + reg * 32 + bit; // SPI number
+            found_spi = 32 + reg * 32 + bit;
             break;
         }
     }
 
-    // If before == after, the HBA interrupt may already have been
-    // pending in the "before" snapshot. Check for any pending SPI
-    // that isn't one of our known devices (UART=33, GPU=53, NET=54, XHCI=55).
+    // Second pass: if no diff (was already pending in both), look for any
+    // unknown pending SPI in the "after" snapshot.
     if found_spi == 0 {
-        let known_spis: &[u32] = &[33, 53, 54, 55];
         for reg in 0..3u32 {
             let mut pending = after[reg as usize];
-            // Mask out known SPIs.
             for &known in known_spis {
                 let k_reg = (known - 32) / 32;
                 let k_bit = (known - 32) % 32;
@@ -1292,23 +1407,27 @@ fn probe_platform_irq() {
     }
 
     if found_spi == 0 {
-        crate::serial_println!("[ahci] Platform IRQ probe: no SPI found, using wfi-polling fallback");
+        crate::serial_println!("[ahci] Platform IRQ probe: no SPI found — using timer-tick polling");
         return;
     }
 
     crate::serial_println!("[ahci] Platform IRQ probe: discovered SPI {}", found_spi);
 
-    // Configure and enable the SPI as a level-triggered interrupt.
-    // Level-triggered is correct for wired AHCI: the HBA holds the line
-    // asserted until the driver clears PORT_IS.
-    gic::enable_spi(found_spi);
-
-    // Clear any pending state from the probe.
-    gic::clear_spi_pending(found_spi);
-
-    // Store in AHCI_IRQ so the exception dispatch routes it to handle_interrupt().
-    AHCI_IRQ.store(found_spi, Ordering::Release);
-    crate::serial_println!("[ahci] Platform IRQ enabled: SPI {} (wired, level-triggered)", found_spi);
+    // SPI 34 confirmed on both Linux and Breenix. Linux uses GICv3 ICC
+    // system registers for acknowledge/EOI and gets 20K+ interrupts per boot.
+    // Breenix uses GICv2 GICC MMIO in compat mode. When SPI 34 is enabled,
+    // the first command completes via interrupt but subsequent commands hang
+    // on wfi — the GIC doesn't re-deliver after GICC_EOIR. This suggests
+    // the GICC compat mode doesn't properly deactivate level-triggered SPIs
+    // that were routed via IROUTER (ARE mode).
+    //
+    // TODO: Fix GIC init to use ACTIVE_GIC_VERSION=3 when ARE is detected,
+    // so ALL interrupt handling (not just enable_spi) uses ICC system registers.
+    // This is a GIC-wide change that needs careful testing across all platforms.
+    crate::serial_println!(
+        "[ahci] Platform IRQ probe: SPI {} confirmed (Linux: 20K+ fires, level-triggered)",
+        found_spi
+    );
 }
 
 /// AHCI MSI interrupt handler — called from the IRQ dispatch in `exception.rs`.
@@ -1332,35 +1451,49 @@ pub fn handle_interrupt() {
         return;
     }
 
-    // Read the global interrupt status to find which port(s) fired.
+    // Read the global interrupt status.
     let hba_is = hba_read(abar, HBA_IS);
-    if hba_is == 0 {
+
+    // For wired level-triggered interrupts, also check PORT_IS directly.
+    // Parallels' platform AHCI may not always set HBA_IS for every completion
+    // when using wired interrupts (vs MSI where each message sets HBA_IS).
+    let check_all = !AHCI_IRQ_EDGE.load(Ordering::Relaxed);
+
+    if hba_is == 0 && !check_all {
         return;
     }
 
     for port in 0..MAX_AHCI_PORTS {
-        if (hba_is & (1 << port)) == 0 {
+        // For MSI: only check ports with HBA_IS bits set.
+        // For wired: check all ports (the HBA_IS may not be set).
+        if !check_all && (hba_is & (1 << port)) == 0 {
             continue;
         }
         let is = port_read(abar, port, PORT_IS);
+        if is == 0 {
+            continue;
+        }
         // Write-1-to-clear PORT_IS (AHCI spec §10.7.2.1).
         port_write(abar, port, PORT_IS, is);
 
         if (is & (PORT_IRQ_COMPLETE | PORT_IRQ_ERROR)) != 0 {
             AHCI_PORT_COMPLETE[port].store(true, Ordering::Release);
-            // Wake any CPU spinning in `wfe` inside `issue_cmd_slot0`.
             #[cfg(target_arch = "aarch64")]
             unsafe { core::arch::asm!("sev", options(nomem, nostack)); }
         }
     }
 
-    // Clear global interrupt status AFTER clearing PORT_IS registers
-    // (AHCI spec §10.7.2.1: writing HBA_IS while PORT_IS is still set
-    // immediately re-asserts the interrupt).
-    hba_write(abar, HBA_IS, hba_is);
+    // Clear global interrupt status AFTER clearing PORT_IS.
+    if hba_is != 0 {
+        hba_write(abar, HBA_IS, hba_is);
+    }
 
-    // Re-arm the SPI for the next interrupt.
-    gic::clear_spi_pending(irq);
+    // For edge-triggered MSI: clear the SPI pending bit to re-arm.
+    // For level-triggered wired: the line de-asserted when we cleared
+    // PORT_IS above; the GIC handles this via EOI in exception.rs.
+    if AHCI_IRQ_EDGE.load(Ordering::Relaxed) {
+        gic::clear_spi_pending(irq);
+    }
 }
 
 /// Return the GIC SPI number for the AHCI interrupt (for IRQ dispatch).

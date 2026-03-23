@@ -541,15 +541,22 @@ impl InterruptController for Gicv2 {
             let reg_index = irq_num / IRQS_PER_ENABLE_REG;
             let bit = irq_num % IRQS_PER_ENABLE_REG;
 
-            if version >= 3 {
-                // GICv3: Route SPI to current CPU via GICD_IROUTER
+            // When ARE (Affinity Routing Enable) is set in GICD_CTLR,
+            // ITARGETSR is RAZ/WI — must use IROUTER even if the platform
+            // reports GICv2. Parallels exposes GICv3 hardware with GICR
+            // but the loader reports version 2.
+            let ctlr = gicd_read(GICD_CTLR);
+            let are_enabled = (ctlr & GICD_CTLR_ARE_NS) != 0;
+
+            if version >= 3 || are_enabled {
+                // GICv3 / ARE mode: Route SPI via GICD_IROUTER
                 let mpidr: u64;
                 unsafe { core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack)); }
                 let affinity = mpidr & 0xFF_00FF_FFFF; // Aff3.Aff2.Aff1.Aff0
                 gicd_write(GICD_IROUTER + (irq_num as usize * 8), affinity as u32);
                 gicd_write(GICD_IROUTER + (irq_num as usize * 8) + 4, (affinity >> 32) as u32);
             } else {
-                // GICv2: Route SPI to CPU 0 via ITARGETSR
+                // GICv2 (no ARE): Route SPI to CPU 0 via ITARGETSR
                 let target_reg = irq_num / 4;
                 let target_byte = irq_num % 4;
                 let current = gicd_read(GICD_ITARGETSR + (target_reg as usize * 4));
@@ -906,11 +913,11 @@ const GICR_IPRIORITYR0: usize = 0x400;
 const GICR_ICFGR0: usize = 0xC00;
 
 /// GICD register for SPI routing (GICv3).
-/// GICD_IROUTER[n] is at 0x6000 + n*8. With raw irq_num (>= 32 for SPIs),
-/// using base 0x6100 gives 0x6100 + irq*8 which is 256 bytes too high.
-/// However, this was the historical value that worked on M3 Max (4 CPUs).
-/// TODO: investigate whether fixing to 0x6000 is safe on all platforms.
-const GICD_IROUTER: usize = 0x6100;
+/// GICD_IROUTER[n] is at 0x6000 + n*8 per the GICv3 spec.
+/// Previously this was 0x6100 (256 bytes too high), which wrote to the
+/// wrong SPI's IROUTER. It "worked" because the reset default routes
+/// all SPIs to CPU 0, so the wrong write was harmless. Fixed to match spec.
+const GICD_IROUTER: usize = 0x6000;
 
 /// GICv3 GICD_CTLR bits (Non-Secure register view, matching Linux irq-gic-v3.c)
 const GICD_CTLR_ENABLE_GRP0: u32 = 1 << 0; // Enable Group 0 (RAZ/WI from NS when DS=0)
