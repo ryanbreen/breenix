@@ -1088,6 +1088,13 @@ pub extern "C" fn handle_irq() {
                         crate::drivers::virtio::net_pci::handle_interrupt();
                     }
                 }
+                // AHCI storage interrupt dispatch (GICv2m MSI/MSI-X)
+                #[cfg(target_arch = "aarch64")]
+                if let Some(ahci_irq) = crate::drivers::ahci::get_irq() {
+                    if irq_id == ahci_irq {
+                        crate::drivers::ahci::handle_interrupt();
+                    }
+                }
             }
 
             // Should not happen - GIC filters invalid IDs (1020+)

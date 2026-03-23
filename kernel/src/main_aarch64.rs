@@ -736,20 +736,15 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     kernel::tracing::providers::enable_all();
     serial_println!("[boot] Tracing subsystem initialized and enabled");
 
-    // Initialize timer interrupt for preemptive scheduling
-    // This MUST come after per-CPU data and scheduler are initialized
-    serial_println!("[boot] Initializing timer interrupt...");
-    timer_interrupt::init();
-    serial_println!("[boot] Timer interrupt initialized");
-    #[cfg(feature = "btrt")]
-    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::AARCH64_TIMER_INIT);
-
-    // Pre-load init binary from ext2 BEFORE bringing up secondary CPUs.
-    // AHCI DMA reads fail with 8 CPUs online due to PCI interconnect interference
-    // from secondary CPUs' timer interrupt GIC activity. Reading the ELF now, while
-    // still single-CPU, avoids this race entirely.
+    // Pre-load init binary from ext2 BEFORE timer is initialized.
+    // AHCI polling uses `wfe` to yield between PORT_CI checks. With the timer
+    // active, `wfe` wakes every 1ms on timer ticks instead of AHCI completion,
+    // and on 8GB RAM something about the timer GIC activity prevents PORT_CI
+    // from clearing. Reading the ELF now, while the timer is still off and
+    // single-CPU, avoids both issues entirely.
+    // (ext2 root filesystem was mounted above at init_root_fs().)
     let init_elf: Option<alloc::vec::Vec<u8>> = if device_count > 0 {
-        serial_println!("[boot] Pre-loading /sbin/init from ext2 (single-CPU)...");
+        serial_println!("[boot] Pre-loading /sbin/init from ext2 (before timer)...");
         match read_init_from_ext2("/sbin/init") {
             Ok(data) => {
                 serial_println!("[boot] Init binary pre-loaded: {} bytes", data.len());
@@ -764,6 +759,14 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         None
     };
 
+    // Initialize timer interrupt for preemptive scheduling
+    // This MUST come after per-CPU data and scheduler are initialized
+    serial_println!("[boot] Initializing timer interrupt...");
+    timer_interrupt::init();
+    serial_println!("[boot] Timer interrupt initialized");
+    #[cfg(feature = "btrt")]
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::AARCH64_TIMER_INIT);
+
     // Bring up secondary CPUs via PSCI CPU_ON.
     // Probe-based: try each CPU ID and let PSCI tell us which exist.
     // Works on QEMU, Parallels, and VMware — all support PSCI via HVC.
@@ -771,10 +774,12 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         // Tell boot.S the correct UART address for this platform's serial debug output
         kernel::arch_impl::aarch64::smp::set_uart_phys(kernel::platform_config::uart_base_phys());
 
-        // Write per-CPU stack base address. Platform-dependent:
-        // QEMU/Parallels (ram at 0x40000000): 0x4100_0000
-        // VMware (ram at 0x80000000): 0x8100_0000
-        let stack_base_phys = 0x4100_0000u64 + kernel::platform_config::ram_base_offset();
+        // Write per-CPU stack base address. Placed AFTER kernel image + full BSS
+        // (which includes large statics like PCI_3D_FRAMEBUFFER extending to ~0x43000000).
+        // Platform-dependent:
+        // QEMU/Parallels (ram at 0x40000000): 0x4300_0000
+        // VMware (ram at 0x80000000): 0x8300_0000
+        let stack_base_phys = 0x4300_0000u64 + kernel::platform_config::ram_base_offset();
         kernel::arch_impl::aarch64::smp::set_stack_base_phys(stack_base_phys);
 
         // Write CPU 0's actual TTBR0/TTBR1 to .bss.boot so secondary CPUs use
@@ -787,19 +792,38 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         let mpidr: u64;
         unsafe { core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack)) };
         serial_println!("[smp] CPU 0 MPIDR={:#x}, stack_base={:#x}", mpidr, stack_base_phys);
+
+        // Derive the maximum number of CPUs to probe from the GICv3 redistributor
+        // region size. Each redistributor occupies 0x20000 bytes (two 64KB frames).
+        // This prevents us from issuing a PSCI CPU_ON HVC for a CPU index that the
+        // hypervisor cannot service — that call blocks forever since HVC is a
+        // synchronous trap with no software timeout.
+        //
+        // On QEMU, gicr_size() returns 0 (no explicit size reported), so we fall
+        // back to MAX_CPUS and let PSCI error codes guide the probe.
+        // On Parallels with N vCPUs, gicr_size() = N * 0x20000, giving us the
+        // exact upper bound.
+        const GICR_FRAME_SIZE: u64 = 0x2_0000; // 128KB per CPU (GICv3 spec)
+        let gicr_size = kernel::platform_config::gicr_size();
+        let max_cpus_to_probe = if gicr_size > 0 {
+            let n = (gicr_size / GICR_FRAME_SIZE) as usize;
+            let capped = n.min(kernel::arch_impl::aarch64::smp::MAX_CPUS);
+            serial_println!("[smp] GICR covers {} redistributors, probing CPUs 1..{}", n, capped);
+            capped
+        } else {
+            kernel::arch_impl::aarch64::smp::MAX_CPUS
+        };
+
         serial_println!("[smp] Probing secondary CPUs via PSCI...");
         let mut launched = 0u64;
-        for cpu in 1..kernel::arch_impl::aarch64::smp::MAX_CPUS {
+        for cpu in 1..max_cpus_to_probe {
             let ret = kernel::arch_impl::aarch64::smp::release_cpu(cpu);
             if ret == 0 {
                 serial_println!("[smp] CPU {}: PSCI CPU_ON success", cpu);
                 launched += 1;
             } else {
-                // PSCI_E_INVALID_PARAMS (-2) or PSCI_E_NOT_PRESENT (-9) = no more CPUs at this index.
-                // Use continue (not break) to probe all indices — sparse topologies (e.g. M5 Max
-                // with efficiency + performance clusters) may have gaps in MPIDR Aff0 numbering.
-                serial_println!("[smp] CPU {}: PSCI CPU_ON failed (ret={}), continuing probe", cpu, ret);
-                continue;
+                serial_println!("[smp] CPU {}: PSCI CPU_ON failed (ret={}), stopping probe", cpu, ret);
+                break;
             }
         }
         if launched > 0 {

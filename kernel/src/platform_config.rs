@@ -85,15 +85,14 @@ static XHCI_HCRST_DONE: AtomicU64 = AtomicU64::new(0);
 static BOOT_WALL_TIME_UTC: AtomicU64 = AtomicU64::new(0);
 
 // Memory layout defaults (QEMU virt, 512MB RAM at 0x40000000)
-// Kernel image:   0x4000_0000 - 0x4100_0000 (16 MB)
-// BSS (incl FBs): 0x4100_0000 - 0x4300_0000 (32 MB, includes 7.5MB PCI_3D_FRAMEBUFFER)
-// Frame alloc:    0x4300_0000 - 0x5000_0000 (208 MB)
+// Kernel image:   0x4000_0000 - 0x4300_0000 (48 MB, image + BSS incl. PCI_3D_FRAMEBUFFER)
+// SMP stacks:     0x4300_0000 - 0x4400_0000 (16 MB, 8 CPUs × 2 MB each)
+// Frame alloc:    0x4400_0000 - 0x5000_0000 (192 MB)
 // DMA (NC):       0x5000_0000 - 0x501F_FFFF (2 MB, Non-Cacheable for xHCI)
 // Heap:           0x5020_0000 - 0x51FF_FFFF (30 MB)
-// Kernel stacks:  0x5200_0000 - 0x5400_0000 (32 MB)
 
 #[cfg(target_arch = "aarch64")]
-static FRAME_ALLOC_START: AtomicU64 = AtomicU64::new(0x4300_0000);
+static FRAME_ALLOC_START: AtomicU64 = AtomicU64::new(0x4400_0000);
 
 #[cfg(target_arch = "aarch64")]
 static FRAME_ALLOC_END: AtomicU64 = AtomicU64::new(0x5000_0000);
@@ -586,10 +585,11 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
         }
 
         if first_size > 0 {
-            // Frame allocator starts after kernel + BSS (48 MB from RAM base).
-            // BSS includes PCI_3D_FRAMEBUFFER (~7.5 MB) and kernel stacks, so
-            // the total image + BSS exceeds 32 MB. 48 MB gives margin for growth.
-            let fa_start = first_base + 0x0300_0000; // +48 MB
+            // Frame allocator starts after kernel image + BSS + SMP stacks (64 MB from RAM base).
+            // BSS (0x0300_0000) includes PCI_3D_FRAMEBUFFER (~7.5 MB) and other large statics.
+            // SMP stacks occupy 0x0300_0000 - 0x0400_0000 (8 CPUs × 2 MB = 16 MB).
+            // 0x0400_0000 (64 MB) keeps the frame allocator safely clear of all static regions.
+            let fa_start = first_base + 0x0400_0000; // +64 MB
             // Frame allocator must end BEFORE the DMA NC region.
             // The .dma section starts at physical 0x5000_0000, so cap fa_end there.
             // On VMware (RAM base 0x80000000), apply the offset to the DMA boundary.

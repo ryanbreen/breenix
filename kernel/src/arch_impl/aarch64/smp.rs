@@ -41,7 +41,7 @@ extern "C" {
 
     /// Pointer to SMP_STACK_BASE_PHYS (in .bss.boot). CPU 0 writes the
     /// physical base address of the per-CPU stack region here before PSCI CPU_ON.
-    /// On QEMU/Parallels: 0x4100_0000; on VMware: 0x8100_0000.
+    /// On QEMU/Parallels: 0x4300_0000; on VMware: 0x8300_0000.
     static SMP_STACK_BASE_PTR: u64;
 }
 
@@ -131,9 +131,9 @@ pub fn set_uart_phys(addr: u64) {
 /// Set the physical base address of the per-CPU stack region.
 /// Must be called before `release_cpu()`.
 ///
-/// The stack base is `ram_base + 0x0100_0000` (16MB into RAM).
-/// On QEMU/Parallels (ram at 0x40000000): 0x4100_0000.
-/// On VMware (ram at 0x80000000): 0x8100_0000.
+/// The stack base is `ram_base + 0x0300_0000` (48MB into RAM, after kernel image + BSS).
+/// On QEMU/Parallels (ram at 0x40000000): 0x4300_0000.
+/// On VMware (ram at 0x80000000): 0x8300_0000.
 pub fn set_stack_base_phys(addr: u64) {
     unsafe {
         let phys = core::ptr::read_volatile(&SMP_STACK_BASE_PTR);

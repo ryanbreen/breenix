@@ -19,7 +19,7 @@
 
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::Mutex;
 
 use crate::block::{BlockDevice, BlockError};
@@ -120,6 +120,19 @@ static AHCI_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Global AHCI controller state.
 static AHCI_CONTROLLER: Mutex<Option<AhciController>> = Mutex::new(None);
+
+/// Virtual base address of the AHCI ABAR (for use in interrupt handler).
+/// 0 = driver not yet initialised.
+static AHCI_ABAR: AtomicU64 = AtomicU64::new(0);
+
+/// GIC SPI number allocated for AHCI MSI/MSI-X. 0 = polling mode.
+static AHCI_IRQ: AtomicU32 = AtomicU32::new(0);
+
+/// Per-port command-completion flag set by the MSI interrupt handler.
+/// Initialised false, cleared before issuing each command, set on completion.
+static AHCI_PORT_COMPLETE: [AtomicBool; MAX_AHCI_PORTS] = [
+    const { AtomicBool::new(false) }; MAX_AHCI_PORTS
+];
 
 // =============================================================================
 // HBA Generic Host Control Registers (offset from ABAR)
@@ -465,7 +478,13 @@ impl AhciController {
         pci_dev.enable_bus_master();
         pci_dev.enable_memory_space();
 
-        Self::init_common(abar_virt)
+        let controller = Self::init_common(abar_virt)?;
+
+        // Set up MSI/MSI-X interrupt after the controller is running.
+        #[cfg(target_arch = "aarch64")]
+        setup_ahci_msi(pci_dev);
+
+        Ok(controller)
     }
 
     /// Create and initialize an AHCI controller from a known MMIO base address.
@@ -485,9 +504,14 @@ impl AhciController {
     /// Enables AHCI mode, reads capabilities, discovers ports, and
     /// issues IDENTIFY DEVICE to each connected SATA drive.
     fn init_common(abar_virt: u64) -> Result<Self, &'static str> {
-        // Enable AHCI mode
+        // Store ABAR for the interrupt handler (must happen before any port init
+        // that might issue commands).
+        AHCI_ABAR.store(abar_virt, Ordering::Release);
+
+        // Enable AHCI mode and global interrupt enable.
+        // GHC_IE (bit 1) allows the HBA to generate MSI/INTx completions.
         let ghc = hba_read(abar_virt, HBA_GHC);
-        hba_write(abar_virt, HBA_GHC, ghc | GHC_AE);
+        hba_write(abar_virt, HBA_GHC, ghc | GHC_AE | GHC_IE);
 
         // Read capabilities
         let cap = hba_read(abar_virt, HBA_CAP);
@@ -593,6 +617,13 @@ impl AhciController {
         // Clear interrupt status and error
         port_write(abar, port_num, PORT_IS, 0xFFFF_FFFF);
         port_write(abar, port_num, PORT_SERR, 0xFFFF_FFFF);
+
+        // Enable port interrupt sources.
+        // Linux uses AHCI_DEF_PORT_IRQ which covers D2H, PIO FIS, DMA FIS,
+        // SDB FIS, and all error bits.  We enable the same set so the HBA
+        // will fire an MSI when any of these events occur.
+        let port_ie = PORT_IRQ_COMPLETE | PORT_IRQ_ERROR;
+        port_write(abar, port_num, PORT_IE, port_ie);
 
         // Start command engine
         self.start_cmd(port_num);
@@ -743,54 +774,106 @@ impl AhciController {
         }
 
         // --- Step 4: Issue command on slot 0 ---
-        port_write(abar, port, PORT_CI, 1);
-
-        // --- Steps 5-8: Poll PORT_IS for completion ---
-        // Linux waits for an interrupt on PORT_IS; we spin-poll the same register.
-        // On completion the device sends a D2H Register FIS, which sets PORT_IS[0].
-        // We also accept PIO Setup FIS (bit 1) and Set Device Bits FIS (bit 3).
-        for _timeout_i in 0..10_000_000 {
-            let ci = port_read(abar, port, PORT_CI);
-            if (ci & 1) == 0 {
-                // Command completed — clean up interrupt status (Linux-style)
-                let is = port_read(abar, port, PORT_IS);
-                let tfd = port_read(abar, port, PORT_TFD);
-                // Clear PORT_IS first, then HBA_IS (AHCI spec ordering)
-                port_write(abar, port, PORT_IS, is);
-                hba_write(abar, HBA_IS, 1u32 << (port as u32));
-                // Check for errors
-                if (is & PORT_IRQ_ERROR) != 0 || (tfd & 1) != 0 {
-                    return Err("AHCI: task file error");
-                }
-                return Ok(());
-            }
-
-            // Check PORT_IS for errors during wait
-            let is = port_read(abar, port, PORT_IS);
-            if (is & PORT_IRQ_ERROR) != 0 {
-                let tfd = port_read(abar, port, PORT_TFD);
-                // Clear PORT_IS then HBA_IS before returning error.
-                port_write(abar, port, PORT_IS, is);
-                hba_write(abar, HBA_IS, 1u32 << (port as u32));
-                crate::serial_println!(
-                    "[ahci] Port {} error: IS={:#x} TFD={:#x}",
-                    port, is, tfd
-                );
-                return Err("AHCI: task file error");
-            }
-
-            core::hint::spin_loop();
+        //
+        // If MSI is active, clear the per-port flag before asserting PORT_CI so
+        // we don't confuse a stale flag from a previous command.
+        if AHCI_IRQ.load(Ordering::Relaxed) != 0 && port < MAX_AHCI_PORTS {
+            AHCI_PORT_COMPLETE[port].store(false, Ordering::SeqCst);
         }
 
-        // Timeout — dump state for diagnosis.
-        let ci = port_read(abar, port, PORT_CI);
-        let is = port_read(abar, port, PORT_IS);
-        let tfd = port_read(abar, port, PORT_TFD);
-        crate::serial_println!(
-            "[ahci] Port {} timeout: CI={:#x} IS={:#x} TFD={:#x}",
-            port, ci, is, tfd
-        );
-        Err("AHCI: command timeout")
+        port_write(abar, port, PORT_CI, 1);
+
+        // --- Steps 5-8: Wait for completion ---
+        //
+        // When MSI/MSI-X is active the interrupt handler sets AHCI_PORT_COMPLETE
+        // and we wait on that flag, using `wfe` to avoid hammering MMIO.
+        //
+        // When running in polling mode (no MSI) we fall back to spinning on
+        // PORT_CI with `wfe` to reduce MMIO pressure on Parallels M5 Max, which
+        // hangs the hypervisor after ~10 back-to-back MMIO reads.
+
+        let has_msi = AHCI_IRQ.load(Ordering::Relaxed) != 0 && port < MAX_AHCI_PORTS;
+
+        if has_msi {
+            // Interrupt-driven path: spin on the completion flag set by
+            // ahci_interrupt_handler(), sleeping with `wfe` between checks.
+            for _ in 0..10_000_000u32 {
+                if AHCI_PORT_COMPLETE[port].load(Ordering::Acquire) {
+                    break;
+                }
+                #[cfg(target_arch = "aarch64")]
+                unsafe { core::arch::asm!("wfe", options(nomem, nostack)); }
+                #[cfg(not(target_arch = "aarch64"))]
+                core::hint::spin_loop();
+            }
+
+            // Read result registers once — the interrupt handler already cleared
+            // PORT_IS and HBA_IS.
+            let tfd = port_read(abar, port, PORT_TFD);
+            if !AHCI_PORT_COMPLETE[port].load(Ordering::Acquire) {
+                // Timeout — dump state for diagnosis.
+                let ci = port_read(abar, port, PORT_CI);
+                let is = port_read(abar, port, PORT_IS);
+                crate::serial_println!(
+                    "[ahci] Port {} MSI timeout: CI={:#x} IS={:#x} TFD={:#x}",
+                    port, ci, is, tfd
+                );
+                return Err("AHCI: command timeout");
+            }
+            if (tfd & 1) != 0 {
+                return Err("AHCI: task file error");
+            }
+            Ok(())
+        } else {
+            // Polling fallback: check PORT_CI with wfe between iterations.
+            // Use a modest iteration count; sleep between reads to avoid MMIO
+            // flood that causes Parallels M5 Max to hang the hypervisor.
+            for _timeout_i in 0..1_000_000u32 {
+                // Read PORT_CI once per iteration (single MMIO read).
+                let ci = port_read(abar, port, PORT_CI);
+                if (ci & 1) == 0 {
+                    // Command completed — clean up interrupt status (Linux-style).
+                    let is = port_read(abar, port, PORT_IS);
+                    let tfd = port_read(abar, port, PORT_TFD);
+                    port_write(abar, port, PORT_IS, is);
+                    hba_write(abar, HBA_IS, 1u32 << (port as u32));
+                    if (is & PORT_IRQ_ERROR) != 0 || (tfd & 1) != 0 {
+                        return Err("AHCI: task file error");
+                    }
+                    return Ok(());
+                }
+
+                // Also check PORT_IS for error bits so we can bail early without
+                // waiting the full timeout.
+                let is = port_read(abar, port, PORT_IS);
+                if (is & PORT_IRQ_ERROR) != 0 {
+                    let tfd = port_read(abar, port, PORT_TFD);
+                    port_write(abar, port, PORT_IS, is);
+                    hba_write(abar, HBA_IS, 1u32 << (port as u32));
+                    crate::serial_println!(
+                        "[ahci] Port {} error: IS={:#x} TFD={:#x}",
+                        port, is, tfd
+                    );
+                    return Err("AHCI: task file error");
+                }
+
+                // Sleep between MMIO reads to avoid hammering the hypervisor.
+                #[cfg(target_arch = "aarch64")]
+                unsafe { core::arch::asm!("wfe", options(nomem, nostack)); }
+                #[cfg(not(target_arch = "aarch64"))]
+                core::hint::spin_loop();
+            }
+
+            // Timeout — dump state for diagnosis.
+            let ci = port_read(abar, port, PORT_CI);
+            let is = port_read(abar, port, PORT_IS);
+            let tfd = port_read(abar, port, PORT_TFD);
+            crate::serial_println!(
+                "[ahci] Port {} timeout: CI={:#x} IS={:#x} TFD={:#x}",
+                port, ci, is, tfd
+            );
+            Err("AHCI: command timeout")
+        }
     }
 
     /// Issue IDENTIFY DEVICE and return sector count.
@@ -1033,6 +1116,157 @@ impl AhciController {
 
         self.issue_cmd_slot0(port)
     }
+}
+
+// =============================================================================
+// MSI Interrupt Support
+// =============================================================================
+
+/// Set up PCI MSI-X or MSI for the AHCI controller through GICv2m.
+///
+/// Follows the same pattern as `setup_gpu_msi` in `gpu_pci.rs`.  Tries
+/// MSI-X first (capability 0x11), falls back to plain MSI (capability 0x05).
+///
+/// The allocated SPI is stored in `AHCI_IRQ` and the GIC is configured, but
+/// the SPI is **enabled** here immediately (unlike the GPU driver, which
+/// defers that to `enable_gpu_yield`).  AHCI commands are serialised by the
+/// `AHCI_CONTROLLER` mutex, so there is no risk of an interrupt storm during
+/// subsequent port initialisation.
+///
+/// Returns the allocated SPI, or 0 if no MSI support is available.
+#[cfg(target_arch = "aarch64")]
+fn setup_ahci_msi(pci_dev: &pci::Device) -> u32 {
+    use crate::arch_impl::aarch64::gic;
+
+    // Dump PCI capabilities for diagnostic visibility.
+    pci_dev.dump_capabilities();
+
+    // Step 1: Probe GICv2m (needed for both MSI-X and MSI).
+    const PARALLELS_GICV2M_BASE: u64 = 0x0225_0000;
+    let gicv2m_base = crate::platform_config::gicv2m_base_phys();
+    let base = if gicv2m_base != 0 {
+        gicv2m_base
+    } else if crate::platform_config::probe_gicv2m(PARALLELS_GICV2M_BASE) {
+        PARALLELS_GICV2M_BASE
+    } else {
+        crate::serial_println!("[ahci] GICv2m not available, using polling");
+        return 0;
+    };
+
+    // Step 2: Allocate an SPI from the GICv2m pool.
+    let spi = crate::platform_config::allocate_msi_spi();
+    if spi == 0 {
+        crate::serial_println!("[ahci] No SPIs available, using polling");
+        return 0;
+    }
+
+    // The MSI message address is the GICv2m doorbell (base + 0x40).
+    let msi_address: u64 = base + 0x40;
+
+    // Step 3: Try MSI-X first.
+    if let Some(msix_cap) = pci_dev.find_msix_capability() {
+        let table_size = pci_dev.msix_table_size(msix_cap);
+        crate::serial_println!(
+            "[ahci] MSI-X cap at {:#x}: {} vectors",
+            msix_cap, table_size
+        );
+
+        // Program all MSI-X table entries with the same SPI (single-vector).
+        for v in 0..table_size {
+            pci_dev.configure_msix_entry(msix_cap, v, msi_address, spi);
+        }
+
+        gic::configure_spi_edge_triggered(spi);
+        pci_dev.enable_msix(msix_cap);
+        pci_dev.disable_intx();
+
+        // Enable the SPI immediately — AHCI commands are serialised by the
+        // controller mutex so there is no interrupt storm risk.
+        gic::clear_spi_pending(spi);
+        gic::enable_spi(spi);
+
+        AHCI_IRQ.store(spi, Ordering::Release);
+        crate::serial_println!(
+            "[ahci] MSI-X enabled: SPI {} doorbell={:#x} vectors={}",
+            spi, msi_address, table_size
+        );
+        return spi;
+    }
+
+    // Step 4: Fall back to plain MSI.
+    if let Some(msi_cap) = pci_dev.find_msi_capability() {
+        pci_dev.configure_msi(msi_cap, msi_address as u32, spi as u16);
+        pci_dev.disable_intx();
+        gic::configure_spi_edge_triggered(spi);
+        gic::clear_spi_pending(spi);
+        gic::enable_spi(spi);
+
+        AHCI_IRQ.store(spi, Ordering::Release);
+        crate::serial_println!("[ahci] MSI configured: SPI={}", spi);
+        return spi;
+    }
+
+    crate::serial_println!("[ahci] No MSI-X or MSI capability found, using polling");
+    0
+}
+
+/// AHCI MSI interrupt handler — called from the IRQ dispatch in `exception.rs`.
+///
+/// Reads HBA_IS to identify which port(s) fired, reads and clears PORT_IS,
+/// then sets the per-port `AHCI_PORT_COMPLETE` flag so `issue_cmd_slot0` can
+/// wake up.  Clears HBA_IS last (AHCI spec requires PORT_IS cleared first).
+///
+/// This function must be lock-free and allocation-free (called from IRQ context).
+#[cfg(target_arch = "aarch64")]
+pub fn handle_interrupt() {
+    use crate::arch_impl::aarch64::gic;
+
+    let irq = AHCI_IRQ.load(Ordering::Relaxed);
+    if irq == 0 {
+        return;
+    }
+
+    let abar = AHCI_ABAR.load(Ordering::Relaxed);
+    if abar == 0 {
+        return;
+    }
+
+    // Read the global interrupt status to find which port(s) fired.
+    let hba_is = hba_read(abar, HBA_IS);
+    if hba_is == 0 {
+        return;
+    }
+
+    for port in 0..MAX_AHCI_PORTS {
+        if (hba_is & (1 << port)) == 0 {
+            continue;
+        }
+        let is = port_read(abar, port, PORT_IS);
+        // Write-1-to-clear PORT_IS (AHCI spec §10.7.2.1).
+        port_write(abar, port, PORT_IS, is);
+
+        if (is & (PORT_IRQ_COMPLETE | PORT_IRQ_ERROR)) != 0 {
+            AHCI_PORT_COMPLETE[port].store(true, Ordering::Release);
+            // Wake any CPU spinning in `wfe` inside `issue_cmd_slot0`.
+            #[cfg(target_arch = "aarch64")]
+            unsafe { core::arch::asm!("sev", options(nomem, nostack)); }
+        }
+    }
+
+    // Clear global interrupt status AFTER clearing PORT_IS registers
+    // (AHCI spec §10.7.2.1: writing HBA_IS while PORT_IS is still set
+    // immediately re-asserts the interrupt).
+    hba_write(abar, HBA_IS, hba_is);
+
+    // Re-arm the SPI for the next interrupt.
+    gic::clear_spi_pending(irq);
+}
+
+/// Return the GIC SPI number for the AHCI interrupt (for IRQ dispatch).
+/// Returns `None` when the driver is using polling mode.
+pub fn get_irq() -> Option<u32> {
+    let irq = AHCI_IRQ.load(Ordering::Relaxed);
+    if irq != 0 { Some(irq) } else { None }
 }
 
 // =============================================================================

@@ -345,7 +345,7 @@ if [ "$PARALLELS" = true ]; then
 
     echo "Creating fresh VM '$PARALLELS_VM'..."
     prlctl create "$PARALLELS_VM" --ostype linux --distribution linux --no-hdd
-    prlctl set "$PARALLELS_VM" --memsize 2048
+    prlctl set "$PARALLELS_VM" --memsize 8192
     prlctl set "$PARALLELS_VM" --cpus 4
 
     # Configure VM: EFI boot, attach our disks

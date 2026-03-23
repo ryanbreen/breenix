@@ -205,25 +205,29 @@ pub const STACK_GUARD_SIZE: usize = PAGE_SIZE;
 
 /// Base address for per-CPU kernel stacks region (ARM64).
 /// Uses a region within the HHDM (higher-half direct map) that is mapped
-/// by the boot page tables. Placed at ram_base + 0x0100_0000 (16MB into RAM
-/// after kernel) to stay within typical 512MB RAM configs.
+/// by the boot page tables. Placed at ram_base + 0x0300_0000 (48MB into RAM,
+/// after the kernel image + full BSS including large framebuffer statics).
 ///
 /// RAM layout (relative to ram_base):
-/// - +0x0000_0000 - +0x0100_0000: Kernel image (~16MB)
-/// - +0x0100_0000 - +0x0200_0000: Per-CPU stacks (16MB for 8 CPUs)
-/// - +0x0200_0000 - end:          Heap and dynamic allocations
+/// - +0x0000_0000 - +0x0300_0000: Kernel image + BSS (~48MB, incl. 7.5MB PCI_3D_FRAMEBUFFER)
+/// - +0x0300_0000 - +0x0400_0000: Per-CPU stacks (16MB for 8 CPUs × 2MB each)
+/// - +0x0400_0000 - end:          Heap and dynamic allocations
+///
+/// IMPORTANT: Must be kept in sync with:
+///   - FRAME_ALLOC_START in platform_config.rs (starts at ram_base + 0x0400_0000)
+///   - stack_base_phys in main_aarch64.rs (set_stack_base_phys call)
 ///
 /// Platform-dependent physical base:
-/// - QEMU/Parallels (ram at 0x4000_0000): physical 0x4100_0000
-/// - VMware (ram at 0x8000_0000): physical 0x8100_0000
+/// - QEMU/Parallels (ram at 0x4000_0000): physical 0x4300_0000
+/// - VMware (ram at 0x8000_0000): physical 0x8300_0000
 #[inline]
 pub fn percpu_stack_region_base() -> u64 {
-    HHDM_BASE + 0x4100_0000 + crate::platform_config::ram_base_offset()
+    HHDM_BASE + 0x4300_0000 + crate::platform_config::ram_base_offset()
 }
 
 /// Legacy constant for compile-time contexts (diagnostics). Uses the default
 /// QEMU/Parallels base. Runtime code should use percpu_stack_region_base().
-pub const PERCPU_STACK_REGION_BASE_DEFAULT: u64 = HHDM_BASE + 0x4100_0000;
+pub const PERCPU_STACK_REGION_BASE_DEFAULT: u64 = HHDM_BASE + 0x4300_0000;
 
 /// Maximum number of CPUs supported on ARM64.
 /// Limited to 8 to keep stack region within 512MB RAM constraint.

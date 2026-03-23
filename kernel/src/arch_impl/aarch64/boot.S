@@ -778,7 +778,8 @@ secondary_el1_init:
 
     // Set up per-CPU boot stack (physical addresses, before MMU)
     // Stack top = SMP_STACK_BASE_PHYS + (cpu_id + 1) * 0x20_0000
-    // SMP_STACK_BASE_PHYS is set by CPU 0 Rust code to (ram_base + 0x01000000).
+    // SMP_STACK_BASE_PHYS is set by CPU 0 Rust code to (ram_base + 0x03000000),
+    // placed after the full kernel image + BSS to avoid clobbering kernel data.
     // This gives each CPU a 2MB stack region:
     //   CPU 1: base+0x0020_0000 (top) .. base
     //   CPU 2: base+0x0040_0000 (top) .. base+0x0020_0000
