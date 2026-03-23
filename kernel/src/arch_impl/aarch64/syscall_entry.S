@@ -175,6 +175,15 @@ syscall_entry_from_el0:
 .Lskip_preempt_clear:
 
     /*
+     * Re-enable interrupts now that the exception frame is fully saved
+     * and per-CPU state is consistent. The Rust syscall handler runs
+     * with IRQs enabled, matching Linux's design where syscalls use
+     * preempt_count (not DAIF) for preemption control. This allows
+     * device ISRs (e.g., AHCI SPI 34) to fire during disk I/O syscalls.
+     */
+    msr daifclr, #0x3       /* Unmask IRQ + FIQ */
+
+    /*
      * Call the Rust syscall handler.
      * Argument: x0 = pointer to exception frame
      */

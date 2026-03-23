@@ -839,13 +839,14 @@ impl AhciController {
         loop {
             // --- Check for completion ---
             //
-            // Primary path: ISR sets AHCI_PORT_COMPLETE via SPI 34 interrupt.
-            // Verified: 7036 ISR fires for 7038 commands with interrupt-only
-            // mode (no PORT_CI fallback). The interrupt IS the real mechanism.
+            // Primary: interrupt flag from ISR (SPI 34). With DAIF unmasked
+            // in syscall_entry.S, this handles 99.99%+ of completions.
             //
-            // Safety net: PORT_CI polling for rare cases where IRQs are masked
-            // (DAIF.I=1) at the time of completion. Without this, ~0.03% of
-            // commands time out because the ISR can't fire.
+            // Safety net: PORT_CI check catches rare cases where the GIC
+            // doesn't deliver a pending SPI despite DAIF.I=0 (observed as
+            // ~2 out of 19,779 commands on Parallels — likely vCPU scheduling
+            // latency in the hypervisor). Linux avoids this because its
+            // wait_for_completion uses proper sleep/wake, not wfi.
             if has_irq && AHCI_PORT_COMPLETE[port].load(Ordering::Acquire) {
                 let tfd = port_read(abar, port, PORT_TFD);
                 if (tfd & 1) != 0 {
@@ -854,7 +855,6 @@ impl AhciController {
                 return Ok(());
             }
 
-            // PORT_CI fallback: catches completions when IRQs are masked.
             let ci = port_read(abar, port, PORT_CI);
             if (ci & 1) == 0 {
                 let is = port_read(abar, port, PORT_IS);
@@ -867,7 +867,6 @@ impl AhciController {
                 return Ok(());
             }
 
-            // Check error bits for early bail.
             let is = port_read(abar, port, PORT_IS);
             if (is & PORT_IRQ_ERROR) != 0 {
                 port_write(abar, port, PORT_IS, is);
