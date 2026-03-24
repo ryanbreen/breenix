@@ -40,6 +40,8 @@ pub enum ThreadState {
     BlockedOnChildExit,
     /// Thread is blocked waiting for a timer to expire (nanosleep syscall)
     BlockedOnTimer,
+    /// Thread is blocked waiting for device I/O completion (AHCI, etc.)
+    BlockedOnIO,
     /// Thread has terminated
     Terminated,
 }

@@ -7,6 +7,7 @@ use core::{
 };
 
 // Core task/thread modules - shared across architectures
+pub mod completion;
 pub mod executor;
 pub mod thread;
 

@@ -185,6 +185,7 @@ pub fn try_dump_state() -> Option<SchedulerDumpInfo> {
                 | ThreadState::BlockedOnSignal
                 | ThreadState::BlockedOnChildExit
                 | ThreadState::BlockedOnTimer
+                | ThreadState::BlockedOnIO
         )
     }).count() as u64;
 
@@ -205,6 +206,7 @@ pub fn try_dump_state() -> Option<SchedulerDumpInfo> {
                 ThreadState::BlockedOnSignal => 3,
                 ThreadState::BlockedOnChildExit => 4,
                 ThreadState::BlockedOnTimer => 5,
+                ThreadState::BlockedOnIO => 7,
                 ThreadState::Terminated => 6,
             },
             blocked_in_syscall: t.blocked_in_syscall,
@@ -519,7 +521,8 @@ impl Scheduler {
                         let was_blocked = current.state == ThreadState::Blocked
                             || current.state == ThreadState::BlockedOnSignal
                             || current.state == ThreadState::BlockedOnChildExit
-                            || current.state == ThreadState::BlockedOnTimer;
+                            || current.state == ThreadState::BlockedOnTimer
+                            || current.state == ThreadState::BlockedOnIO;
 
                         // Charge elapsed CPU ticks to the outgoing thread, but ONLY
                         // if it was actually running. Blocked threads already had
@@ -721,7 +724,8 @@ impl Scheduler {
                         let was_blocked = current.state == ThreadState::Blocked
                             || current.state == ThreadState::BlockedOnSignal
                             || current.state == ThreadState::BlockedOnChildExit
-                            || current.state == ThreadState::BlockedOnTimer;
+                            || current.state == ThreadState::BlockedOnTimer
+                            || current.state == ThreadState::BlockedOnIO;
 
                         // Only charge CPU ticks if thread was actually running
                         if !was_blocked && !was_terminated {
@@ -908,9 +912,19 @@ impl Scheduler {
         UNBLOCK_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
 
         if let Some(thread) = self.get_thread_mut(thread_id) {
-            if thread.state == ThreadState::Blocked || thread.state == ThreadState::BlockedOnSignal || thread.state == ThreadState::BlockedOnTimer {
+            let was_blocked_on_io = thread.state == ThreadState::BlockedOnIO;
+            if thread.state == ThreadState::Blocked
+                || thread.state == ThreadState::BlockedOnSignal
+                || thread.state == ThreadState::BlockedOnTimer
+                || thread.state == ThreadState::BlockedOnIO
+            {
                 thread.set_ready();
-                thread.blocked_in_syscall = false;
+                // For BlockedOnIO, do NOT clear blocked_in_syscall here —
+                // the wait_timeout caller manages it after detecting the wakeup.
+                // For other states it is safe (and necessary) to clear.
+                if !was_blocked_on_io {
+                    thread.blocked_in_syscall = false;
+                }
 
                 // SMP safety: Don't add to ready_queue if thread is currently
                 // running on any CPU. If a thread is blocked in a syscall's WFI
@@ -1081,6 +1095,12 @@ impl Scheduler {
                 thread.state,
                 thread.blocked_in_syscall
             );
+            // Also wake threads blocked on I/O — they check signals in their
+            // wait loop and will return EINTR when they resume.
+            if thread.state == ThreadState::BlockedOnIO {
+                self.unblock_for_io(thread_id);
+                return;
+            }
             if thread.state == ThreadState::BlockedOnSignal {
                 thread.set_ready();
                 // NOTE: Do NOT clear blocked_in_syscall here!
@@ -1230,6 +1250,73 @@ impl Scheduler {
                 thread.blocked_in_syscall = true;
             }
             self.ready_queue.retain(|&id| id != current_id);
+        }
+    }
+
+    /// Block the current thread for device I/O.
+    ///
+    /// Sets state to BlockedOnIO and blocked_in_syscall. The thread will be
+    /// woken by unblock_for_io() when the device ISR signals completion.
+    ///
+    /// CRITICAL: Must be called under the scheduler lock (via with_scheduler).
+    /// The done-check and this call must happen in the same with_scheduler()
+    /// invocation to prevent the ISR from racing between the check and the block.
+    pub fn block_current_for_io(&mut self) {
+        if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
+            if let Some(thread) = self.get_thread_mut(current_id) {
+                // Charge elapsed CPU ticks before blocking
+                let now = crate::time::get_ticks();
+                thread.cpu_ticks_total += now.wrapping_sub(thread.run_start_ticks);
+                thread.run_start_ticks = now;
+
+                thread.state = ThreadState::BlockedOnIO;
+                // Mark blocked_in_syscall so the context switch path resumes
+                // inside the syscall (wait_timeout loop) rather than restoring
+                // stale userspace context.
+                thread.blocked_in_syscall = true;
+            }
+            // Remove from ready queue (shouldn't be there, but guard against races)
+            self.ready_queue.retain(|&id| id != current_id);
+        }
+    }
+
+    /// Unblock a thread that was blocked for device I/O.
+    ///
+    /// Sets state to Ready and adds to ready queue. Does NOT clear
+    /// blocked_in_syscall — the wait_timeout caller clears it after resuming
+    /// to prevent context save corruption (clearing it early would allow the
+    /// context switch path to restore stale userspace context).
+    ///
+    /// Safe to call from ISR context via with_scheduler() because
+    /// with_scheduler() disables interrupts before acquiring the lock, and
+    /// the ISR runs with interrupts already masked by hardware.
+    pub fn unblock_for_io(&mut self, tid: u64) {
+        if let Some(thread) = self.get_thread_mut(tid) {
+            if thread.state == ThreadState::BlockedOnIO {
+                thread.set_ready();
+                // Do NOT clear blocked_in_syscall here — the wait_timeout
+                // caller manages it after detecting the wakeup.
+
+                let is_current_on_any_cpu = (0..MAX_CPUS).any(|cpu| {
+                    self.cpu_state[cpu].current_thread == Some(tid)
+                });
+
+                #[cfg(target_arch = "aarch64")]
+                let is_in_deferred = self.is_in_deferred_requeue(tid);
+                #[cfg(not(target_arch = "aarch64"))]
+                let is_in_deferred = false;
+
+                if !is_current_on_any_cpu
+                    && !is_in_deferred
+                    && tid != self.cpu_state[Self::current_cpu_id()].idle_thread
+                    && !self.ready_queue.contains(&tid)
+                {
+                    self.ready_queue.push_back(tid);
+                    #[cfg(target_arch = "aarch64")]
+                    self.send_resched_ipi();
+                }
+                set_need_resched();
+            }
         }
     }
 
