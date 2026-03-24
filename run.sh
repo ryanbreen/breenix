@@ -347,6 +347,10 @@ if [ "$PARALLELS" = true ]; then
     prlctl create "$PARALLELS_VM" --ostype linux --distribution linux --no-hdd
     prlctl set "$PARALLELS_VM" --memsize 8192
     prlctl set "$PARALLELS_VM" --cpus 8
+    # Disable auto-suspend: default is "suspend" which halts the VM when Parallels
+    # detects no display activity. Breenix runs headless/serial; we want it to
+    # stay running until explicitly stopped.
+    prlctl set "$PARALLELS_VM" --autostop shutdown 2>/dev/null || true
 
     # Configure VM: EFI boot, attach our disks
     prlctl set "$PARALLELS_VM" --efi-boot on 2>/dev/null || true

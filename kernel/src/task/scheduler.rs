@@ -764,6 +764,61 @@ impl Scheduler {
                 }
                 break n;
             } else {
+                // Ready queue empty — emit diagnostic (rate-limited) for threads
+                // that are truly stuck: Ready state, not current on any CPU, not in
+                // any deferred-requeue slot.  Threads that are current on another CPU
+                // are momentarily in Ready state (set by schedule_deferred_requeue on
+                // that CPU) but will be requeued by that CPU's deferred mechanism —
+                // they are NOT stuck.
+                #[cfg(target_arch = "aarch64")]
+                {
+                    use core::sync::atomic::{AtomicU32, Ordering as AO};
+                    static STUCK_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
+                    let first_stuck = self.threads.iter().find(|t| {
+                        if t.state != super::thread::ThreadState::Ready { return false; }
+                        let tid = t.id();
+                        // Exclude any CPU's idle thread
+                        if (0..MAX_CPUS).any(|c| self.cpu_state[c].idle_thread == tid) { return false; }
+                        // Exclude threads currently running on any CPU
+                        if (0..MAX_CPUS).any(|c| self.cpu_state[c].current_thread == Some(tid)) { return false; }
+                        // Exclude threads pending deferred requeue on any CPU
+                        if self.is_in_deferred_requeue(tid) { return false; }
+                        true
+                    }).map(|t| t.id());
+                    if let Some(stuck_tid) = first_stuck {
+                        let count = STUCK_LOG_COUNT.fetch_add(1, AO::Relaxed);
+                        // Log first 5, then every 1000th
+                        if count < 5 || count % 1000 == 0 {
+                            crate::serial_aarch64::raw_serial_str(b"[SCHED] queue_empty stuck_tid=");
+                            {
+                                let mut n = stuck_tid;
+                                let mut buf = [0u8; 20];
+                                let mut i = 20usize;
+                                if n == 0 {
+                                    buf[i-1] = b'0';
+                                    i -= 1;
+                                } else {
+                                    while n > 0 { i -= 1; buf[i] = b'0' + (n % 10) as u8; n /= 10; }
+                                }
+                                crate::serial_aarch64::raw_serial_str(&buf[i..]);
+                            }
+                            crate::serial_aarch64::raw_serial_str(b" count=");
+                            {
+                                let mut n = count as u64;
+                                let mut buf = [0u8; 20];
+                                let mut i = 20usize;
+                                if n == 0 {
+                                    buf[i-1] = b'0';
+                                    i -= 1;
+                                } else {
+                                    while n > 0 { i -= 1; buf[i] = b'0' + (n % 10) as u8; n /= 10; }
+                                }
+                                crate::serial_aarch64::raw_serial_str(&buf[i..]);
+                            }
+                            crate::serial_aarch64::raw_serial_str(b"\n");
+                        }
+                    }
+                }
                 break self.cpu_state[current_cpu].idle_thread;
             }
         };
@@ -1589,7 +1644,12 @@ pub fn spawn(thread: Box<Thread>) {
             #[cfg(target_arch = "x86_64")]
             crate::per_cpu::set_need_resched(true);
             #[cfg(target_arch = "aarch64")]
-            crate::per_cpu_aarch64::set_need_resched(true);
+            {
+                crate::per_cpu_aarch64::set_need_resched(true);
+                // Wake idle CPUs so they can pick up the new thread immediately
+                // rather than waiting up to 1ms for their next timer tick.
+                scheduler.send_resched_ipi();
+            }
         } else {
             panic!("Scheduler not initialized");
         }
@@ -1607,7 +1667,14 @@ pub fn spawn_front(thread: Box<Thread>) {
             #[cfg(target_arch = "x86_64")]
             crate::per_cpu::set_need_resched(true);
             #[cfg(target_arch = "aarch64")]
-            crate::per_cpu_aarch64::set_need_resched(true);
+            {
+                crate::per_cpu_aarch64::set_need_resched(true);
+                // Wake idle CPUs so the fork child is picked up immediately
+                // rather than waiting up to 1ms for their next timer tick.
+                // Without this, all 7 idle CPUs sleep through the spawn and only
+                // the spawning CPU's next timer tick dispatches the child.
+                scheduler.send_resched_ipi();
+            }
         } else {
             panic!("Scheduler not initialized");
         }
@@ -1954,14 +2021,6 @@ pub fn switch_to_idle_best_effort() {
             // from being requeued on any CPU.
             sched.cpu_state[cpu_id].previous_thread = None;
         }
-    } else {
-        // Lock miss — another CPU (or this CPU re-entrantly) holds SCHEDULER.
-        // Emit a lock-free diagnostic so we can detect this in serial logs.
-        use crate::arch_impl::aarch64::context_switch::{raw_uart_str, raw_uart_dec};
-        let cpu_id = Scheduler::current_cpu_id();
-        raw_uart_str("[IDLE_LOCK_MISS] cpu=");
-        raw_uart_dec(cpu_id as u64);
-        raw_uart_str("\n");
     }
     // If try_lock fails, the scheduler state will be stale. This function
     // is only safe for exception handlers where the lock might be held by

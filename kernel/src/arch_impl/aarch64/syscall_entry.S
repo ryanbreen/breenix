@@ -180,6 +180,14 @@ syscall_entry_from_el0:
      * with IRQs enabled, matching Linux's design where syscalls use
      * preempt_count (not DAIF) for preemption control. This allows
      * device ISRs (e.g., AHCI SPI 34) to fire during disk I/O syscalls.
+     *
+     * Safety: the deferred-requeue mechanism handles timer interrupts
+     * that fire during the syscall (from_el0=false). When preempt_count>0
+     * (lock held), check_need_resched_and_switch_arm64 processes any
+     * pending deferred requeue but skips the full context switch, leaving
+     * new threads in the ready queue for the next scheduling point.
+     * PREEMPT_ACTIVE is set AFTER check_need_resched_and_switch_arm64
+     * returns (not before), so the deferred requeue is never skipped.
      */
     msr daifclr, #0x3       /* Unmask IRQ + FIQ */
 
@@ -195,20 +203,8 @@ syscall_entry_from_el0:
      * The return value is already set in frame->x0 by the handler.
      */
 
-    /* Disable interrupts for register restoration */
+    /* Disable interrupts for scheduling decision and register restoration */
     msr daifset, #0x3           /* Mask IRQ + FIQ */
-
-    /*
-     * Set PREEMPT_ACTIVE to protect register restoration sequence.
-     * This prevents timer interrupts from attempting context switch
-     * while we have mixed kernel/user state.
-     */
-    mrs x9, tpidr_el1
-    cbz x9, .Lskip_preempt_set
-    ldr w10, [x9, #32]
-    orr w10, w10, #0x10000000   /* Set bit 28 */
-    str w10, [x9, #32]
-.Lskip_preempt_set:
 
     /*
      * Pre-set user_rsp_scratch = sp + 272 (the return SP if no context switch).
@@ -229,10 +225,30 @@ syscall_entry_from_el0:
      * CRITICAL: Set from_el0=true (x1=1) explicitly. Without this, x1 contains
      * whatever value rust_syscall_handler_aarch64 left (undefined by ABI), causing
      * the context switch code to incorrectly treat this as a kernel-mode return.
+     *
+     * NOTE: PREEMPT_ACTIVE is NOT set before this call. The Rust function
+     * must run with full scheduling capability — including deferred requeue
+     * processing — to prevent threads from being permanently lost. Setting
+     * PREEMPT_ACTIVE before this call caused the function to return early
+     * at the PREEMPT_ACTIVE check, skipping deferred requeue processing.
+     * This left threads orphaned in the DEFERRED_REQUEUE slot, causing a
+     * system hang where forked child processes were never dispatched.
      */
     mov x0, sp
     mov x1, #1
     bl check_need_resched_and_switch_arm64
+
+    /*
+     * Set PREEMPT_ACTIVE to protect register restoration sequence.
+     * This prevents timer interrupts from attempting context switch
+     * while we have mixed kernel/user state during register restore + ERET.
+     */
+    mrs x9, tpidr_el1
+    cbz x9, .Lskip_preempt_set
+    ldr w10, [x9, #32]
+    orr w10, w10, #0x10000000   /* Set bit 28 */
+    str w10, [x9, #32]
+.Lskip_preempt_set:
 
     /*
      * Restore registers from exception frame.

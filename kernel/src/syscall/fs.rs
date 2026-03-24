@@ -465,7 +465,7 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
     } else {
         // === READ PATH: No filesystem modification needed, use shared read lock ===
         let result = if is_home {
-            let fs_guard = ext2::home_fs_read();
+            let fs_guard = ext2::home_fs_read_syscall();
             match fs_guard.as_ref() {
                 Some(fs) => sys_open_read_path(fs, fs_path),
                 None => {
@@ -474,7 +474,7 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
                 }
             }
         } else {
-            let fs_guard = ext2::root_fs_read();
+            let fs_guard = ext2::root_fs_read_syscall();
             match fs_guard.as_ref() {
                 Some(fs) => sys_open_read_path(fs, fs_path),
                 None => {
@@ -620,6 +620,79 @@ pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
             return SyscallResult::Err(3); // ESRCH
         }
     };
+
+    // SEEK_END requires a disk read to get the file size.  We MUST NOT hold the
+    // process manager lock (manager_guard) or the file lock during that I/O,
+    // because the dispatch path calls set_next_ttbr0_for_thread() which tries
+    // to acquire the PM lock.  If we are holding it while blocked on I/O, every
+    // attempt to re-dispatch us returns PmLockBusy and we spin forever.
+    //
+    // Strategy: extract the inode/mount info under the lock, drop all locks,
+    // do the disk read unlocked, then re-acquire to update the position.
+    if whence == SEEK_END {
+        // Phase 1: extract file metadata under PM lock
+        let (inode_num, mount_id, current_position) = {
+            let mut manager_guard = crate::process::manager();
+            let process = match &mut *manager_guard {
+                Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
+                    Some((_, p)) => p,
+                    None => return SyscallResult::Err(3), // ESRCH
+                },
+                None => return SyscallResult::Err(3), // ESRCH
+            };
+            let fd_entry = match process.fd_table.get(fd) {
+                Some(entry) => entry,
+                None => return SyscallResult::Err(9), // EBADF
+            };
+            match &fd_entry.kind {
+                FdKind::RegularFile(file) => {
+                    let f = file.lock();
+                    (f.inode_num, f.mount_id, f.position)
+                }
+                FdKind::Directory(_) => return SyscallResult::Err(21), // EISDIR
+                _ => return SyscallResult::Err(29), // ESPIPE
+            }
+            // PM lock and file lock both dropped here
+        };
+
+        // Phase 2: disk read WITHOUT any lock held
+        let file_size = match get_ext2_file_size_for_mount(inode_num, mount_id) {
+            Some(size) => size as i64,
+            None => {
+                log::error!("sys_lseek: cannot get file size for inode {}", inode_num);
+                return SyscallResult::Err(5); // EIO
+            }
+        };
+        let new_position = file_size + offset;
+        if new_position < 0 {
+            return SyscallResult::Err(22); // EINVAL
+        }
+        let new_pos = new_position as u64;
+        let _ = current_position; // not needed, position updated below
+
+        // Phase 3: update position under PM lock
+        let mut manager_guard = crate::process::manager();
+        let process = match &mut *manager_guard {
+            Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
+                Some((_, p)) => p,
+                None => return SyscallResult::Err(3), // ESRCH
+            },
+            None => return SyscallResult::Err(3), // ESRCH
+        };
+        let fd_entry = match process.fd_table.get(fd) {
+            Some(entry) => entry,
+            None => return SyscallResult::Err(9), // EBADF
+        };
+        match &fd_entry.kind {
+            FdKind::RegularFile(file) => {
+                file.lock().position = new_pos;
+                return SyscallResult::Ok(new_pos);
+            }
+            _ => return SyscallResult::Err(29), // ESPIPE
+        }
+    }
+
+    // SEEK_SET and SEEK_CUR: no disk I/O needed, handle under lock.
     let mut manager_guard = crate::process::manager();
     let process = match &mut *manager_guard {
         Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
@@ -646,21 +719,6 @@ pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
             let new_pos = match whence {
                 SEEK_SET => offset as u64,
                 SEEK_CUR => (file.position as i64 + offset) as u64,
-                SEEK_END => {
-                    // Get file size from ext2 inode
-                    let file_size = match get_ext2_file_size_for_mount(file.inode_num, file.mount_id) {
-                        Some(size) => size as i64,
-                        None => {
-                            log::error!("sys_lseek: cannot get file size for inode {}", file.inode_num);
-                            return SyscallResult::Err(5); // EIO - filesystem not available
-                        }
-                    };
-                    let new_position = file_size + offset;
-                    if new_position < 0 {
-                        return SyscallResult::Err(22); // EINVAL - negative position
-                    }
-                    new_position as u64
-                }
                 _ => return SyscallResult::Err(22), // EINVAL
             };
             file.position = new_pos;
@@ -700,66 +758,135 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             return SyscallResult::Err(3); // ESRCH
         }
     };
-    let manager_guard = crate::process::manager();
-    let process = match &*manager_guard {
-        Some(manager) => match manager.find_process_by_thread(thread_id) {
-            Some((_, p)) => p,
+
+    // Describe what kind of fstat this is, extracting only the data we need
+    // under the PM lock.  We must NOT hold the PM lock while doing ext2 disk
+    // I/O: on ARM64 the PM lock disables ALL IRQs, and AHCI completions arrive
+    // as interrupts — holding the lock during disk I/O deadlocks the system.
+    enum FstatKind {
+        StdIo(i32),
+        Pipe,
+        UdpSocket,
+        RegularFile { inode_num: u64, mount_id: usize },
+        Directory { inode_num: u64, mount_id: usize },
+        Device { inode: u64, rdev: u64 },
+        DevfsDirectory,
+        DevptsDirectory,
+        TcpSocket,
+        PtyDevice { pty_num: u32 },
+        UnixSocket,
+        Fifo,
+        ProcfsFile { size: i64 },
+        ProcfsDirectory,
+        Epoll,
+    }
+
+    let kind = {
+        let manager_guard = crate::process::manager();
+        let process = match &*manager_guard {
+            Some(manager) => match manager.find_process_by_thread(thread_id) {
+                Some((_, p)) => p,
+                None => {
+                    log::error!("sys_fstat: Process not found for thread {}", thread_id);
+                    return SyscallResult::Err(3); // ESRCH
+                }
+            },
             None => {
-                log::error!("sys_fstat: Process not found for thread {}", thread_id);
+                log::error!("sys_fstat: Process manager not initialized");
                 return SyscallResult::Err(3); // ESRCH
             }
-        },
-        None => {
-            log::error!("sys_fstat: Process manager not initialized");
-            return SyscallResult::Err(3); // ESRCH
+        };
+
+        let fd_entry = match process.fd_table.get(fd) {
+            Some(entry) => entry,
+            None => return SyscallResult::Err(EBADF as u64),
+        };
+
+        match &fd_entry.kind {
+            FdKind::StdIo(io_fd) => FstatKind::StdIo(*io_fd),
+            FdKind::PipeRead(_) | FdKind::PipeWrite(_) => FstatKind::Pipe,
+            FdKind::UdpSocket(_) => FstatKind::UdpSocket,
+            FdKind::RegularFile(file) => {
+                let file_guard = file.lock();
+                FstatKind::RegularFile {
+                    inode_num: file_guard.inode_num,
+                    mount_id: file_guard.mount_id,
+                }
+            }
+            FdKind::Directory(dir) => {
+                let dir_guard = dir.lock();
+                FstatKind::Directory {
+                    inode_num: dir_guard.inode_num,
+                    mount_id: dir_guard.mount_id,
+                }
+            }
+            FdKind::Device(device_type) => {
+                use crate::fs::devfs;
+                let device_node = devfs::lookup_by_inode(device_type.inode());
+                FstatKind::Device {
+                    inode: device_type.inode(),
+                    rdev: device_node.map(|d| d.rdev()).unwrap_or(0),
+                }
+            }
+            FdKind::DevfsDirectory { .. } => FstatKind::DevfsDirectory,
+            FdKind::DevptsDirectory { .. } => FstatKind::DevptsDirectory,
+            FdKind::TcpSocket(_) | FdKind::TcpListener(_) | FdKind::TcpConnection(_) => {
+                FstatKind::TcpSocket
+            }
+            FdKind::PtyMaster(pty_num) | FdKind::PtySlave(pty_num) => {
+                FstatKind::PtyDevice { pty_num: *pty_num }
+            }
+            FdKind::UnixStream(_) | FdKind::UnixSocket(_) | FdKind::UnixListener(_) => {
+                FstatKind::UnixSocket
+            }
+            FdKind::FifoRead(_, _) | FdKind::FifoWrite(_, _) => FstatKind::Fifo,
+            FdKind::ProcfsFile { ref content, .. } => FstatKind::ProcfsFile {
+                size: content.len() as i64,
+            },
+            FdKind::ProcfsDirectory { .. } => FstatKind::ProcfsDirectory,
+            FdKind::Epoll(_) => FstatKind::Epoll,
         }
+        // manager_guard drops here — PM lock released, IRQs restored
     };
 
-    let fd_entry = match process.fd_table.get(fd) {
-        Some(entry) => entry,
-        None => return SyscallResult::Err(EBADF as u64),
-    };
-
+    // Now build the stat structure.  For ext2 files/directories, disk I/O
+    // happens here with the PM lock fully released and IRQs enabled.
     let mut stat = Stat::zeroed();
     stat.st_blksize = 4096; // Standard block size
 
-    match &fd_entry.kind {
-        FdKind::StdIo(io_fd) => {
+    match kind {
+        FstatKind::StdIo(io_fd) => {
             // stdin/stdout/stderr are character devices (TTY)
             stat.st_dev = 0;
-            stat.st_ino = (*io_fd + 1) as u64; // Use fd+1 as pseudo-inode
+            stat.st_ino = (io_fd + 1) as u64; // Use fd+1 as pseudo-inode
             stat.st_mode = S_IFCHR | 0o666; // Character device with rw-rw-rw-
             stat.st_nlink = 1;
-            stat.st_rdev = make_dev(5, *io_fd as u64); // Major 5 (TTY), minor = fd
+            stat.st_rdev = make_dev(5, io_fd as u64); // Major 5 (TTY), minor = fd number
         }
-        FdKind::PipeRead(_) | FdKind::PipeWrite(_) => {
-            // Pipes are FIFOs
+        FstatKind::Pipe => {
             static PIPE_INODE_COUNTER: core::sync::atomic::AtomicU64 =
                 core::sync::atomic::AtomicU64::new(1000);
             stat.st_dev = 0;
             stat.st_ino = PIPE_INODE_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             stat.st_mode = S_IFIFO | 0o600; // FIFO with rw-------
             stat.st_nlink = 1;
-            stat.st_size = 0; // Pipes don't have a seekable size
+            stat.st_size = 0;
         }
-        FdKind::UdpSocket(_) => {
-            // Sockets
+        FstatKind::UdpSocket => {
             static SOCKET_INODE_COUNTER: core::sync::atomic::AtomicU64 =
                 core::sync::atomic::AtomicU64::new(2000);
             stat.st_dev = 0;
             stat.st_ino = SOCKET_INODE_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            stat.st_mode = S_IFSOCK | 0o755; // Socket with rwxr-xr-x
+            stat.st_mode = S_IFSOCK | 0o755;
             stat.st_nlink = 1;
         }
-        FdKind::RegularFile(file) => {
-            let file_guard = file.lock();
-            stat.st_dev = file_guard.mount_id as u64;
-            stat.st_ino = file_guard.inode_num;
-            stat.st_mode = S_IFREG | 0o644; // Regular file with rw-r--r-- (default)
+        FstatKind::RegularFile { inode_num, mount_id } => {
+            // Disk I/O happens here — PM lock is NOT held.
+            stat.st_dev = mount_id as u64;
+            stat.st_ino = inode_num;
+            stat.st_mode = S_IFREG | 0o644;
             stat.st_nlink = 1;
-
-            // Try to load inode metadata from ext2 filesystem
-            if let Some(inode_stat) = load_ext2_inode_stat_for_mount(file_guard.inode_num, file_guard.mount_id) {
+            if let Some(inode_stat) = load_ext2_inode_stat_for_mount(inode_num, mount_id) {
                 stat.st_mode = inode_stat.mode;
                 stat.st_uid = inode_stat.uid;
                 stat.st_gid = inode_stat.gid;
@@ -771,15 +898,13 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                 stat.st_blocks = inode_stat.blocks;
             }
         }
-        FdKind::Directory(dir) => {
-            let dir_guard = dir.lock();
-            stat.st_dev = dir_guard.mount_id as u64;
-            stat.st_ino = dir_guard.inode_num;
-            stat.st_mode = S_IFDIR | 0o755; // Directory with rwxr-xr-x (default)
-            stat.st_nlink = 2; // . and ..
-
-            // Try to load inode metadata from ext2 filesystem
-            if let Some(inode_stat) = load_ext2_inode_stat_for_mount(dir_guard.inode_num, dir_guard.mount_id) {
+        FstatKind::Directory { inode_num, mount_id } => {
+            // Disk I/O happens here — PM lock is NOT held.
+            stat.st_dev = mount_id as u64;
+            stat.st_ino = inode_num;
+            stat.st_mode = S_IFDIR | 0o755;
+            stat.st_nlink = 2;
+            if let Some(inode_stat) = load_ext2_inode_stat_for_mount(inode_num, mount_id) {
                 stat.st_mode = inode_stat.mode;
                 stat.st_uid = inode_stat.uid;
                 stat.st_gid = inode_stat.gid;
@@ -791,89 +916,76 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                 stat.st_blocks = inode_stat.blocks;
             }
         }
-        FdKind::Device(device_type) => {
-            // Device files from devfs
-            use crate::fs::devfs;
-
-            // Look up device node for major/minor numbers
-            let device_node = devfs::lookup_by_inode(device_type.inode());
-            stat.st_dev = 0; // devfs has no backing device
-            stat.st_ino = device_type.inode();
-            stat.st_mode = S_IFCHR | 0o666; // Character device with rw-rw-rw-
+        FstatKind::Device { inode, rdev } => {
+            stat.st_dev = 0;
+            stat.st_ino = inode;
+            stat.st_mode = S_IFCHR | 0o666;
             stat.st_nlink = 1;
-            stat.st_rdev = device_node.map(|d| d.rdev()).unwrap_or(0);
+            stat.st_rdev = rdev;
         }
-        FdKind::DevfsDirectory { .. } => {
-            // /dev directory itself
-            stat.st_dev = 0; // devfs has no backing device
-            stat.st_ino = 0; // Virtual inode for /dev
-            stat.st_mode = S_IFDIR | 0o755; // Directory with rwxr-xr-x
-            stat.st_nlink = 2; // . and ..
+        FstatKind::DevfsDirectory => {
+            stat.st_dev = 0;
+            stat.st_ino = 0;
+            stat.st_mode = S_IFDIR | 0o755;
+            stat.st_nlink = 2;
         }
-        FdKind::DevptsDirectory { .. } => {
-            // /dev/pts directory
-            stat.st_dev = 0; // devpts has no backing device
-            stat.st_ino = 1; // Virtual inode for /dev/pts
-            stat.st_mode = S_IFDIR | 0o755; // Directory with rwxr-xr-x
-            stat.st_nlink = 2; // . and ..
+        FstatKind::DevptsDirectory => {
+            stat.st_dev = 0;
+            stat.st_ino = 1;
+            stat.st_mode = S_IFDIR | 0o755;
+            stat.st_nlink = 2;
         }
-        FdKind::TcpSocket(_) | FdKind::TcpListener(_) | FdKind::TcpConnection(_) => {
-            // TCP sockets
+        FstatKind::TcpSocket => {
             static TCP_SOCKET_INODE_COUNTER: core::sync::atomic::AtomicU64 =
                 core::sync::atomic::AtomicU64::new(3000);
             stat.st_dev = 0;
-            stat.st_ino = TCP_SOCKET_INODE_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            stat.st_mode = S_IFSOCK | 0o755; // Socket with rwxr-xr-x
+            stat.st_ino =
+                TCP_SOCKET_INODE_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            stat.st_mode = S_IFSOCK | 0o755;
             stat.st_nlink = 1;
         }
-        FdKind::PtyMaster(pty_num) | FdKind::PtySlave(pty_num) => {
-            // PTY devices are character devices
+        FstatKind::PtyDevice { pty_num } => {
             static PTY_INODE_COUNTER: core::sync::atomic::AtomicU64 =
                 core::sync::atomic::AtomicU64::new(4000);
             stat.st_dev = 0;
             stat.st_ino = PTY_INODE_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            stat.st_mode = S_IFCHR | 0o620; // Character device with rw--w----
+            stat.st_mode = S_IFCHR | 0o620;
             stat.st_nlink = 1;
-            // Major 136 for PTY, minor is pty_num
-            stat.st_rdev = make_dev(136, *pty_num as u64);
+            stat.st_rdev = make_dev(136, pty_num as u64);
         }
-        FdKind::UnixStream(_) | FdKind::UnixSocket(_) | FdKind::UnixListener(_) => {
-            // Unix domain sockets
+        FstatKind::UnixSocket => {
             static UNIX_SOCKET_INODE_COUNTER: core::sync::atomic::AtomicU64 =
                 core::sync::atomic::AtomicU64::new(5000);
             stat.st_dev = 0;
-            stat.st_ino = UNIX_SOCKET_INODE_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            stat.st_mode = S_IFSOCK | 0o755; // Socket with rwxr-xr-x
+            stat.st_ino = UNIX_SOCKET_INODE_COUNTER
+                .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            stat.st_mode = S_IFSOCK | 0o755;
             stat.st_nlink = 1;
         }
-        FdKind::FifoRead(_, _) | FdKind::FifoWrite(_, _) => {
-            // Named FIFOs
+        FstatKind::Fifo => {
             static FIFO_INODE_COUNTER: core::sync::atomic::AtomicU64 =
                 core::sync::atomic::AtomicU64::new(6000);
             stat.st_dev = 0;
             stat.st_ino = FIFO_INODE_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            stat.st_mode = S_IFIFO | 0o644; // FIFO with rw-r--r--
+            stat.st_mode = S_IFIFO | 0o644;
             stat.st_nlink = 1;
-            stat.st_size = 0; // FIFOs don't have a seekable size
-        }
-        FdKind::ProcfsFile { ref content, .. } => {
-            // Procfs virtual files
-            stat.st_dev = 0;
-            stat.st_ino = 0;
-            stat.st_mode = S_IFREG | 0o444; // Regular file, read-only
-            stat.st_nlink = 1;
-            stat.st_size = content.len() as i64;
-        }
-        FdKind::ProcfsDirectory { .. } => {
-            // Procfs directory
-            stat.st_dev = 0;
-            stat.st_ino = 0;
-            stat.st_mode = S_IFDIR | 0o555; // Directory with r-xr-xr-x
-            stat.st_nlink = 2; // . and ..
             stat.st_size = 0;
         }
-        FdKind::Epoll(_) => {
-            // epoll fds report as anonymous inodes
+        FstatKind::ProcfsFile { size } => {
+            stat.st_dev = 0;
+            stat.st_ino = 0;
+            stat.st_mode = S_IFREG | 0o444;
+            stat.st_nlink = 1;
+            stat.st_size = size;
+        }
+        FstatKind::ProcfsDirectory => {
+            stat.st_dev = 0;
+            stat.st_ino = 0;
+            stat.st_mode = S_IFDIR | 0o555;
+            stat.st_nlink = 2;
+            stat.st_size = 0;
+        }
+        FstatKind::Epoll => {
             stat.st_dev = 0;
             stat.st_ino = 0;
             stat.st_mode = S_IFREG | 0o600;
@@ -942,13 +1054,13 @@ fn load_ext2_inode_stat_for_mount(inode_num: u64, mount_id: usize) -> Option<Ino
     // Dispatch to home or root filesystem based on mount_id
     let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
     if is_home {
-        let fs_guard = ext2::home_fs_read();
+        let fs_guard = ext2::home_fs_read_syscall();
         let fs = fs_guard.as_ref()?;
         let inode = fs.read_inode(inode_num as u32).ok()?;
         return load_inode_stat_from_inode(&inode);
     }
 
-    let fs_guard = ext2::root_fs_read();
+    let fs_guard = ext2::root_fs_read_syscall();
     let fs = fs_guard.as_ref()?;
     let inode = fs.read_inode(inode_num as u32).ok()?;
     load_inode_stat_from_inode(&inode)
@@ -960,13 +1072,13 @@ fn get_ext2_file_size_for_mount(inode_num: u64, mount_id: usize) -> Option<u64> 
 
     let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
     if is_home {
-        let fs_guard = ext2::home_fs_read();
+        let fs_guard = ext2::home_fs_read_syscall();
         let fs = fs_guard.as_ref()?;
         let inode = fs.read_inode(inode_num as u32).ok()?;
         return Some(inode.size());
     }
 
-    let fs_guard = ext2::root_fs_read();
+    let fs_guard = ext2::root_fs_read_syscall();
     let fs = fs_guard.as_ref()?;
     let inode = fs.read_inode(inode_num as u32).ok()?;
     Some(inode.size())
@@ -1092,7 +1204,7 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
     // Read directory data from ext2, dispatching to correct filesystem
     let is_home_dir = ext2::home_mount_id().map_or(false, |id| id == dir_mount_id);
     let (inode, dir_data) = if is_home_dir {
-        let fs_guard = ext2::home_fs_read();
+        let fs_guard = ext2::home_fs_read_syscall();
         let fs = match fs_guard.as_ref() {
             Some(fs) => fs,
             None => {
@@ -1116,7 +1228,7 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
         };
         (inode, dir_data)
     } else {
-        let fs_guard = ext2::root_fs_read();
+        let fs_guard = ext2::root_fs_read_syscall();
         let fs = match fs_guard.as_ref() {
             Some(fs) => fs,
             None => {
@@ -1841,7 +1953,7 @@ pub fn sys_readlink(pathname: u64, buf: u64, bufsize: u64) -> SyscallResult {
 
     // Resolve path and read symlink from the correct filesystem
     let target = if is_home {
-        let fs_guard = ext2::home_fs_read();
+        let fs_guard = ext2::home_fs_read_syscall();
         let fs = match fs_guard.as_ref() {
             Some(fs) => fs,
             None => {
@@ -1865,7 +1977,7 @@ pub fn sys_readlink(pathname: u64, buf: u64, bufsize: u64) -> SyscallResult {
             }
         }
     } else {
-        let fs_guard = ext2::root_fs_read();
+        let fs_guard = ext2::root_fs_read_syscall();
         let fs = match fs_guard.as_ref() {
             Some(fs) => fs,
             None => {
@@ -1968,7 +2080,7 @@ pub fn sys_access(pathname: u64, mode: u32) -> SyscallResult {
 
     // Resolve path and read inode from the correct filesystem
     let (inode_num, inode) = if is_home {
-        let fs_guard = ext2::home_fs_read();
+        let fs_guard = ext2::home_fs_read_syscall();
         let fs = match fs_guard.as_ref() {
             Some(fs) => fs,
             None => {
@@ -1993,7 +2105,7 @@ pub fn sys_access(pathname: u64, mode: u32) -> SyscallResult {
         };
         (ino, inode)
     } else {
-        let fs_guard = ext2::root_fs_read();
+        let fs_guard = ext2::root_fs_read_syscall();
         let fs = match fs_guard.as_ref() {
             Some(fs) => fs,
             None => {
@@ -3037,7 +3149,7 @@ pub fn sys_chdir(pathname: u64) -> SyscallResult {
 
     // Resolve path and verify it's a directory
     let is_dir = if is_home {
-        let fs_guard = ext2::home_fs_read();
+        let fs_guard = ext2::home_fs_read_syscall();
         let fs = match fs_guard.as_ref() {
             Some(fs) => fs,
             None => {
@@ -3059,7 +3171,7 @@ pub fn sys_chdir(pathname: u64) -> SyscallResult {
         };
         matches!(inode.file_type(), Ext2FileType::Directory)
     } else {
-        let fs_guard = ext2::root_fs_read();
+        let fs_guard = ext2::root_fs_read_syscall();
         let fs = match fs_guard.as_ref() {
             Some(fs) => fs,
             None => {
@@ -3440,7 +3552,7 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, _flags: u32) -> S
 
     // Look up inode by path
     let (inode_num, mount_id) = if is_home {
-        let fs_guard = ext2::home_fs_read();
+        let fs_guard = ext2::home_fs_read_syscall();
         let fs = match fs_guard.as_ref() {
             Some(f) => f,
             None => return SyscallResult::Err(ENOENT as u64),
@@ -3451,7 +3563,7 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, _flags: u32) -> S
             Err(_) => return SyscallResult::Err(ENOENT as u64),
         }
     } else {
-        let fs_guard = ext2::root_fs_read();
+        let fs_guard = ext2::root_fs_read_syscall();
         let fs = match fs_guard.as_ref() {
             Some(f) => f,
             None => return SyscallResult::Err(ENOENT as u64),
@@ -3715,7 +3827,7 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
 
     // Resolve path first (read lock), then update timestamps (write lock)
     let (inode_num, mount_id) = if is_home {
-        let fs_guard = ext2::home_fs_read();
+        let fs_guard = ext2::home_fs_read_syscall();
         let fs = match fs_guard.as_ref() {
             Some(f) => f,
             None => return SyscallResult::Err(super::errno::ENOENT as u64),
@@ -3730,7 +3842,7 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
             Err(_) => return SyscallResult::Err(super::errno::ENOENT as u64),
         }
     } else {
-        let fs_guard = ext2::root_fs_read();
+        let fs_guard = ext2::root_fs_read_syscall();
         let fs = match fs_guard.as_ref() {
             Some(f) => f,
             None => return SyscallResult::Err(super::errno::ENOENT as u64),

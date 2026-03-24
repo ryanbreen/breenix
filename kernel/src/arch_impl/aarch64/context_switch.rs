@@ -1011,18 +1011,39 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         return;
     }
 
-    if !from_el0 && (preempt_count & 0xFF) > 0 {
-        // Kernel code holding locks — not safe to preempt
-        return;
-    }
-
-    // Read deferred requeue atomically (lock-free)
+    // Read deferred requeue atomically (lock-free).
+    // CRITICAL: This must happen BEFORE the preempt_count early return below.
+    // When IRQs are enabled during syscalls (daifclr #3 in syscall_entry.S),
+    // timer interrupts fire from EL1 with preempt_count > 0. The old early
+    // return skipped deferred requeue processing, causing threads to be
+    // permanently lost in the DEFERRED_REQUEUE slot. By processing deferred
+    // requeues here, threads are returned to the ready queue even when we
+    // can't do a full context switch.
     let cpu_id = Aarch64PerCpu::cpu_id() as usize;
     let deferred_tid = if cpu_id < DEFERRED_REQUEUE.len() {
         DEFERRED_REQUEUE[cpu_id].swap(0, Ordering::Acquire)
     } else {
         0
     };
+
+    // Process deferred requeue BEFORE checking preempt_count.
+    // This is safe even when preempt_count > 0 because we only add the
+    // thread to the ready queue — we don't context switch.
+    if deferred_tid != 0 {
+        // Need the scheduler lock to process the requeue.
+        let mut guard = crate::task::scheduler::lock_for_context_switch();
+        if let Some(sched) = guard.as_mut() {
+            sched.cpu_state[cpu_id].previous_thread = None;
+            sched.requeue_thread_after_save(deferred_tid);
+        }
+        drop(guard);
+    }
+
+    if !from_el0 && (preempt_count & 0xFF) > 0 {
+        // Kernel code holding locks — not safe to preempt.
+        // Deferred requeue was already processed above.
+        return;
+    }
 
     // Check if reschedule is needed (atomic, clears the flag)
     let need_resched = crate::task::scheduler::check_and_clear_need_resched();
@@ -1048,10 +1069,9 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     };
 
     // 1. Process deferred requeue from PREVIOUS context switch.
-    //    Safe because we're now on the current thread's kernel stack
-    //    (ERET from the previous switch has completed).
-    //    Clear previous_thread FIRST so wakeup paths know the old thread's
-    //    kernel stack is free and the thread can be safely dispatched.
+    //    May have already been processed above (for the preempt_count > 0 path).
+    //    Clear previous_thread unconditionally. If deferred_tid was already
+    //    processed, requeue_thread_after_save is a no-op (thread already in queue).
     sched.cpu_state[cpu_id].previous_thread = None;
     if deferred_tid != 0 {
         sched.requeue_thread_after_save(deferred_tid);

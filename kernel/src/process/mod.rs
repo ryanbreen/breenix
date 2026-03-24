@@ -78,10 +78,56 @@ pub fn init() {
 /// On ARM64, this disables interrupts before acquiring the lock to prevent
 /// single-CPU deadlocks where a timer interrupt tries to re-acquire the lock
 /// from the context switch path.
+///
+/// When called from syscall context (`preempt_count > 0`) and the lock is
+/// contended, this uses `try_lock()` + WFI + retry.  On each miss we restore
+/// DAIF (re-enable IRQs) and issue WFI so the timer interrupt can decrement
+/// the holder's quantum and set `need_resched`.  We do NOT touch
+/// `preempt_count`: dropping it to 0 inside the retry loop interfered with
+/// the EL1 preemption guard in `check_need_resched_and_switch_arm64` and
+/// caused a system-wide freeze where no process could make progress.
 pub fn manager() -> ProcessManagerGuard {
     #[cfg(target_arch = "aarch64")]
     {
-        // Save current interrupt state and disable interrupts
+        // In syscall context (preempt_count > 0) use try_lock + WFI retry
+        // to avoid spinning with IRQs disabled (priority inversion).
+        let in_syscall = crate::per_cpu_aarch64::preempt_count() > 0;
+        if in_syscall {
+            loop {
+                // Disable interrupts before attempting try_lock so that if we
+                // succeed, the lock is held with interrupts already off (the
+                // invariant required to prevent single-CPU re-entrant deadlock
+                // from the timer/context-switch path).
+                let saved_daif: u64;
+                unsafe {
+                    core::arch::asm!("mrs {}, daif", out(reg) saved_daif, options(nomem, nostack));
+                    core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
+                }
+                if let Some(guard) = PROCESS_MANAGER.try_lock() {
+                    return ProcessManagerGuard {
+                        _guard: core::mem::ManuallyDrop::new(guard),
+                        saved_daif,
+                    };
+                }
+                // Lock is held by another CPU.  Re-enable interrupts so the
+                // timer can fire and decrement the holder's quantum (sets
+                // need_resched), then WFI, then re-disable.  We do NOT touch
+                // preempt_count here — manipulating it inside this retry loop
+                // caused a system-wide freeze because dropping preempt_count to
+                // 0 interfered with the context-switch guard in
+                // check_need_resched_and_switch_arm64.
+                unsafe {
+                    core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
+                    core::arch::asm!("wfi", options(nomem, nostack));
+                    core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
+                }
+            }
+        }
+
+        // Non-syscall context (interrupt handler, early boot): disable interrupts
+        // first then block-spin.  These callers hold preempt_count == 0 so the
+        // timer interrupt CAN fire and context-switch around us; a brief spin is
+        // acceptable.
         let saved_daif: u64;
         unsafe {
             core::arch::asm!("mrs {}, daif", out(reg) saved_daif, options(nomem, nostack));

@@ -982,18 +982,24 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             SyscallResult::Err(95) // EOPNOTSUPP
         }
         FdKind::RegularFile(file_ref) => {
-            // Read from ext2 regular file
+            // Read from ext2 regular file.
             //
-            // Get file info under the lock, then drop lock before filesystem operations
+            // CRITICAL: clone the Arc and extract values while PM lock held, then
+            // drop PM lock BEFORE doing disk I/O.  On ARM64 the PM lock disables ALL
+            // IRQs, and AHCI completions arrive as interrupts — holding the lock
+            // during disk I/O deadlocks the system.
+            let file_ref_owned = file_ref.clone();
             let (inode_num, position, file_mount_id) = {
                 let file = file_ref.lock();
                 (file.inode_num, file.position, file.mount_id)
             };
+            // Release PM lock now — disk I/O below needs IRQs enabled.
+            drop(manager_guard);
 
             // Dispatch to correct filesystem based on mount_id
             let is_home = crate::fs::ext2::home_mount_id().map_or(false, |id| id == file_mount_id);
             let data = if is_home {
-                let fs_guard = crate::fs::ext2::home_fs_read();
+                let fs_guard = crate::fs::ext2::home_fs_read_syscall();
                 let fs = match fs_guard.as_ref() {
                     Some(fs) => fs,
                     None => {
@@ -1016,7 +1022,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     }
                 }
             } else {
-                let fs_guard = crate::fs::ext2::root_fs_read();
+                let fs_guard = crate::fs::ext2::root_fs_read_syscall();
                 let fs = match fs_guard.as_ref() {
                     Some(fs) => fs,
                     None => {
@@ -1049,9 +1055,9 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 }
             }
 
-            // Update file position
+            // Update file position (use the owned Arc we cloned before dropping PM lock)
             {
-                let mut file = file_ref.lock();
+                let mut file = file_ref_owned.lock();
                 file.position += bytes_read as u64;
             }
 
@@ -2011,11 +2017,11 @@ fn load_elf_from_ext2(path: &str) -> Result<Vec<u8>, i32> {
     let fs_path = if is_home { ext2::strip_home_prefix(path) } else { path };
 
     if is_home {
-        let fs_guard = ext2::home_fs_read();
+        let fs_guard = ext2::home_fs_read_syscall();
         let fs = fs_guard.as_ref().ok_or(EIO)?;
         load_elf_from_ext2_fs(fs, fs_path)
     } else {
-        let fs_guard = ext2::root_fs_read();
+        let fs_guard = ext2::root_fs_read_syscall();
         let fs = fs_guard.as_ref().ok_or(EIO)?;
         load_elf_from_ext2_fs(fs, fs_path)
     }
@@ -4047,13 +4053,13 @@ pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRes
 
     let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
     if is_home {
-        let fs_guard = ext2::home_fs_read();
+        let fs_guard = ext2::home_fs_read_syscall();
         match fs_guard.as_ref() {
             Some(fs) => read_fn(fs),
             None => SyscallResult::Err(super::errno::EIO as u64),
         }
     } else {
-        let fs_guard = ext2::root_fs_read();
+        let fs_guard = ext2::root_fs_read_syscall();
         match fs_guard.as_ref() {
             Some(fs) => read_fn(fs),
             None => SyscallResult::Err(super::errno::EIO as u64),

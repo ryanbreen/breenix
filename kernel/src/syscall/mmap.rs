@@ -84,150 +84,151 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u32, flags: u32, fd: i64, offset: 
         }
     };
 
-    let mut manager_guard = crate::process::manager();
-    let manager = match *manager_guard {
-        Some(ref mut m) => m,
-        None => {
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+    // Phase 1: Acquire lock to read process metadata and get a raw pointer to the
+    // page table.  We release the lock BEFORE the page-mapping loop so that we do
+    // not hold PROCESS_MANAGER (IRQs disabled) across hundreds of frame allocations
+    // and TLB flushes — that caused system-wide priority inversion on SMP: other
+    // CPUs spinning in manager() never made progress because the holder had IRQs
+    // off the entire time.
+    //
+    // Safety: the raw pointer is valid for the lifetime of this syscall because
+    // (a) the process cannot be freed while one of its threads is executing a syscall,
+    // (b) no other CPU modifies this process's page table concurrently (user
+    //     processes are single-threaded in the current scheduler model), and
+    // (c) we re-acquire the lock in Phase 3 before touching process.vmas.
+    let (start_addr, end_addr, page_flags, page_table_ptr) = {
+        let mut manager_guard = crate::process::manager();
+        let manager = match *manager_guard {
+            Some(ref mut m) => m,
+            None => {
+                return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+            }
+        };
+
+        let (_pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
+            Some(p) => p,
+            None => {
+                log::error!("sys_mmap: No process found for thread_id={}", current_thread_id);
+                return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+            }
+        };
+
+        // Determine the start address
+        let start_addr = if flags.contains(MmapFlags::FIXED) {
+            // MAP_FIXED: use addr directly
+            if !is_page_aligned(addr) {
+                log::warn!("sys_mmap: MAP_FIXED requires page-aligned address");
+                return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
+            }
+            addr
+        } else {
+            let hint = process.mmap_hint;
+            let new_addr = round_down_to_page(hint.saturating_sub(length));
+            if new_addr < 0x1000_0000 {
+                log::error!("sys_mmap: out of mmap space");
+                return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+            }
+            process.mmap_hint = new_addr;
+            new_addr
+        };
+
+        // Check for overflow when calculating end address
+        let end_addr = match start_addr.checked_add(length) {
+            Some(a) => a,
+            None => {
+                log::warn!("sys_mmap: start_addr + length would overflow");
+                return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
+            }
+        };
+
+        log::info!("sys_mmap: allocating region {:#x}..{:#x}", start_addr, end_addr);
+
+        // Check for overlaps with existing VMAs
+        for vma in &process.vmas {
+            let vma_start = vma.start.as_u64();
+            let vma_end = vma.end.as_u64();
+            if start_addr < vma_end && end_addr > vma_start {
+                log::warn!("sys_mmap: region overlaps with existing VMA at {:#x}..{:#x}", vma_start, vma_end);
+                return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+            }
         }
+
+        let page_table = match process.page_table.as_mut() {
+            Some(pt) => pt,
+            None => {
+                log::error!("sys_mmap: No page table for process!");
+                return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+            }
+        };
+
+        let page_flags = prot_to_page_flags(prot);
+        // SAFETY: page_table lives inside a Box<ProcessPageTable> inside the process,
+        // which remains valid for the duration of this syscall (see comment above).
+        let page_table_ptr: *mut _ = &mut **page_table;
+        (start_addr, end_addr, page_flags, page_table_ptr)
+        // manager_guard drops here, releasing PROCESS_MANAGER before the loop
     };
 
-    let (_pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
-        Some(p) => p,
-        None => {
-            log::error!("sys_mmap: No process found for thread_id={}", current_thread_id);
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-        }
-    };
-
-    // Determine the start address
-    let start_addr = if flags.contains(MmapFlags::FIXED) {
-        // MAP_FIXED: use addr directly
-        if !is_page_aligned(addr) {
-            log::warn!("sys_mmap: MAP_FIXED requires page-aligned address");
-            return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
-        }
-        addr
-    } else {
-        // Find a free region using the mmap hint (grows downward)
-        // For simplicity, just use the current hint and decrement it
-        let hint = process.mmap_hint;
-        let new_addr = hint.saturating_sub(length);
-
-        // Make sure it's page-aligned
-        let new_addr = round_down_to_page(new_addr);
-
-        // Validate it doesn't go below a reasonable minimum
-        if new_addr < 0x1000_0000 {
-            log::error!("sys_mmap: out of mmap space");
-            return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
-        }
-
-        // Update hint for next allocation
-        process.mmap_hint = new_addr;
-        new_addr
-    };
-
-    // Check for overflow when calculating end address (Issue 3)
-    let end_addr = match start_addr.checked_add(length) {
-        Some(addr) => addr,
-        None => {
-            log::warn!("sys_mmap: start_addr + length would overflow (start={:#x}, length={:#x})", start_addr, length);
-            return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
-        }
-    };
-
-    log::info!("sys_mmap: allocating region {:#x}..{:#x}", start_addr, end_addr);
-
-    // Check for overlaps with existing VMAs
-    for vma in &process.vmas {
-        let vma_start = vma.start.as_u64();
-        let vma_end = vma.end.as_u64();
-
-        // Check if regions overlap
-        if start_addr < vma_end && end_addr > vma_start {
-            log::warn!("sys_mmap: region overlaps with existing VMA at {:#x}..{:#x}", vma_start, vma_end);
-            return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
-        }
-    }
-
-    // Get the process page table
-    let page_table = match process.page_table.as_mut() {
-        Some(pt) => pt,
-        None => {
-            log::error!("sys_mmap: No page table for process!");
-            return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
-        }
-    };
-
-    // Map pages
-    let page_flags = prot_to_page_flags(prot);
+    // Phase 2: Map pages WITHOUT holding PROCESS_MANAGER.
     let start_page = Page::<Size4KiB>::containing_address(VirtAddr::new(start_addr));
     let end_page = Page::<Size4KiB>::containing_address(VirtAddr::new(end_addr - 1));
-
-    // Get physical memory offset for zeroing pages (Issue 1)
     let physical_memory_offset = crate::memory::physical_memory_offset();
-
-    // Track successfully mapped pages for cleanup on failure (Issue 2)
     let mut mapped_pages: alloc::vec::Vec<(Page<Size4KiB>, PhysFrame<Size4KiB>)> = alloc::vec::Vec::new();
-
     let mut current_page = start_page;
 
     loop {
-        // Allocate a physical frame
         let frame = match crate::memory::frame_allocator::allocate_frame() {
             Some(f) => f,
             None => {
                 log::error!("sys_mmap: OOM allocating frame for page {:#x}", current_page.start_address().as_u64());
-                // Issue 2: Clean up already-mapped pages
+                // SAFETY: same page_table_ptr lifetime argument as above.
+                let page_table = unsafe { &mut *page_table_ptr };
                 cleanup_mapped_pages(page_table, &mapped_pages);
                 return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
             }
         };
 
-        // Map the page
+        // SAFETY: see comment above — page_table is valid for this syscall's lifetime.
+        let page_table = unsafe { &mut *page_table_ptr };
         if let Err(e) = page_table.map_page(current_page, frame, page_flags) {
             log::error!("sys_mmap: map_page failed for {:#x}: {}", current_page.start_address().as_u64(), e);
-            // Free the frame we just allocated but failed to map
             crate::memory::frame_allocator::deallocate_frame(frame);
-            // Issue 2: Clean up already-mapped pages
             cleanup_mapped_pages(page_table, &mapped_pages);
             return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
         }
 
-        // Issue 1: Zero the page contents (POSIX requires MAP_ANONYMOUS pages to be zeroed)
-        // Convert physical frame address to kernel-accessible virtual address via HHDM
         let phys_addr = frame.start_address().as_u64();
         let virt_ptr = (physical_memory_offset.as_u64() + phys_addr) as *mut u8;
         unsafe {
             core::ptr::write_bytes(virt_ptr, 0, PAGE_SIZE as usize);
         }
 
-        // Flush TLB for this page
         flush_tlb(current_page.start_address());
-
-        // Track this mapping for potential cleanup
         mapped_pages.push((current_page, frame));
 
-        // Stop after mapping the end page
         if current_page >= end_page {
             break;
         }
         current_page += 1;
     }
 
-    let pages_mapped = mapped_pages.len();
+    log::info!("sys_mmap: Successfully mapped {} pages", mapped_pages.len());
 
-    log::info!("sys_mmap: Successfully mapped {} pages", pages_mapped);
-
-    // Create VMA and add to process
-    let vma = Vma::new(
-        VirtAddr::new(start_addr),
-        VirtAddr::new(end_addr),
-        prot,
-        flags,
-    );
-    process.vmas.push(vma);
+    // Phase 3: Re-acquire lock to register the VMA in the process.
+    {
+        let mut manager_guard = crate::process::manager();
+        if let Some(ref mut manager) = *manager_guard {
+            if let Some((_pid, process)) = manager.find_process_by_thread_mut(current_thread_id) {
+                let vma = Vma::new(
+                    VirtAddr::new(start_addr),
+                    VirtAddr::new(end_addr),
+                    prot,
+                    flags,
+                );
+                process.vmas.push(vma);
+            }
+        }
+    }
 
     SyscallResult::Ok(start_addr)
 }
