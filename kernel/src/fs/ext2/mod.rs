@@ -15,8 +15,6 @@ pub use dir::*;
 pub use inode::*;
 pub use file::*;
 
-#[cfg(target_arch = "aarch64")]
-use crate::arch_impl::traits::CpuOps;
 use crate::block::BlockDevice;
 use alloc::vec::Vec;
 use spin::RwLock;
@@ -1456,34 +1454,6 @@ pub fn root_fs_read() -> spin::RwLockReadGuard<'static, Option<Ext2Fs>> {
     ROOT_EXT2.read()
 }
 
-/// Read-lock the root ext2 filesystem from syscall context (preempt_count > 0).
-///
-/// When in syscall context, spinning on a regular read lock can cause a deadlock:
-/// if a writer (e.g., blogd creating /var/log/kern.log) holds the write lock while
-/// sleeping in wait_timeout() (for AHCI I/O), and all CPUs are spinning in read()
-/// with preempt_count > 0, the timer interrupt cannot context-switch the writer,
-/// so the writer never runs and the write lock is held forever (priority inversion).
-///
-/// Fix: use try_read() + preempt_enable() + WFI + preempt_disable() so the timer
-/// can schedule the writer.  Mirrors the AHCI try_lock() pattern.
-pub fn root_fs_read_syscall() -> spin::RwLockReadGuard<'static, Option<Ext2Fs>> {
-    #[cfg(target_arch = "aarch64")]
-    {
-        let in_syscall = crate::per_cpu_aarch64::preempt_count() > 0;
-        if in_syscall {
-            loop {
-                if let Some(guard) = ROOT_EXT2.try_read() {
-                    return guard;
-                }
-                // Lock busy — yield so the writer can run.
-                crate::per_cpu_aarch64::preempt_enable();
-                crate::arch_impl::aarch64::cpu::Aarch64Cpu::halt_with_interrupts();
-                crate::per_cpu_aarch64::preempt_disable();
-            }
-        }
-    }
-    ROOT_EXT2.read()
-}
 
 /// Access the root ext2 filesystem for write operations
 ///
@@ -1558,24 +1528,6 @@ pub fn home_fs_read() -> spin::RwLockReadGuard<'static, Option<Ext2Fs>> {
     HOME_EXT2.read()
 }
 
-/// Read-lock the home ext2 filesystem from syscall context. See root_fs_read_syscall.
-pub fn home_fs_read_syscall() -> spin::RwLockReadGuard<'static, Option<Ext2Fs>> {
-    #[cfg(target_arch = "aarch64")]
-    {
-        let in_syscall = crate::per_cpu_aarch64::preempt_count() > 0;
-        if in_syscall {
-            loop {
-                if let Some(guard) = HOME_EXT2.try_read() {
-                    return guard;
-                }
-                crate::per_cpu_aarch64::preempt_enable();
-                crate::arch_impl::aarch64::cpu::Aarch64Cpu::halt_with_interrupts();
-                crate::per_cpu_aarch64::preempt_disable();
-            }
-        }
-    }
-    HOME_EXT2.read()
-}
 
 /// Access the home ext2 filesystem for write operations
 ///

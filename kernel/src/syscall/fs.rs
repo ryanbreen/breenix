@@ -465,7 +465,7 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
     } else {
         // === READ PATH: No filesystem modification needed, use shared read lock ===
         let result = if is_home {
-            let fs_guard = ext2::home_fs_read_syscall();
+            let fs_guard = ext2::home_fs_read();
             match fs_guard.as_ref() {
                 Some(fs) => sys_open_read_path(fs, fs_path),
                 None => {
@@ -474,7 +474,7 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
                 }
             }
         } else {
-            let fs_guard = ext2::root_fs_read_syscall();
+            let fs_guard = ext2::root_fs_read();
             match fs_guard.as_ref() {
                 Some(fs) => sys_open_read_path(fs, fs_path),
                 None => {
@@ -1054,13 +1054,13 @@ fn load_ext2_inode_stat_for_mount(inode_num: u64, mount_id: usize) -> Option<Ino
     // Dispatch to home or root filesystem based on mount_id
     let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
     if is_home {
-        let fs_guard = ext2::home_fs_read_syscall();
+        let fs_guard = ext2::home_fs_read();
         let fs = fs_guard.as_ref()?;
         let inode = fs.read_inode(inode_num as u32).ok()?;
         return load_inode_stat_from_inode(&inode);
     }
 
-    let fs_guard = ext2::root_fs_read_syscall();
+    let fs_guard = ext2::root_fs_read();
     let fs = fs_guard.as_ref()?;
     let inode = fs.read_inode(inode_num as u32).ok()?;
     load_inode_stat_from_inode(&inode)
@@ -1072,13 +1072,13 @@ fn get_ext2_file_size_for_mount(inode_num: u64, mount_id: usize) -> Option<u64> 
 
     let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
     if is_home {
-        let fs_guard = ext2::home_fs_read_syscall();
+        let fs_guard = ext2::home_fs_read();
         let fs = fs_guard.as_ref()?;
         let inode = fs.read_inode(inode_num as u32).ok()?;
         return Some(inode.size());
     }
 
-    let fs_guard = ext2::root_fs_read_syscall();
+    let fs_guard = ext2::root_fs_read();
     let fs = fs_guard.as_ref()?;
     let inode = fs.read_inode(inode_num as u32).ok()?;
     Some(inode.size())
@@ -1204,7 +1204,7 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
     // Read directory data from ext2, dispatching to correct filesystem
     let is_home_dir = ext2::home_mount_id().map_or(false, |id| id == dir_mount_id);
     let (inode, dir_data) = if is_home_dir {
-        let fs_guard = ext2::home_fs_read_syscall();
+        let fs_guard = ext2::home_fs_read();
         let fs = match fs_guard.as_ref() {
             Some(fs) => fs,
             None => {
@@ -1228,7 +1228,7 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
         };
         (inode, dir_data)
     } else {
-        let fs_guard = ext2::root_fs_read_syscall();
+        let fs_guard = ext2::root_fs_read();
         let fs = match fs_guard.as_ref() {
             Some(fs) => fs,
             None => {
@@ -1953,7 +1953,7 @@ pub fn sys_readlink(pathname: u64, buf: u64, bufsize: u64) -> SyscallResult {
 
     // Resolve path and read symlink from the correct filesystem
     let target = if is_home {
-        let fs_guard = ext2::home_fs_read_syscall();
+        let fs_guard = ext2::home_fs_read();
         let fs = match fs_guard.as_ref() {
             Some(fs) => fs,
             None => {
@@ -1977,7 +1977,7 @@ pub fn sys_readlink(pathname: u64, buf: u64, bufsize: u64) -> SyscallResult {
             }
         }
     } else {
-        let fs_guard = ext2::root_fs_read_syscall();
+        let fs_guard = ext2::root_fs_read();
         let fs = match fs_guard.as_ref() {
             Some(fs) => fs,
             None => {
@@ -2080,7 +2080,7 @@ pub fn sys_access(pathname: u64, mode: u32) -> SyscallResult {
 
     // Resolve path and read inode from the correct filesystem
     let (inode_num, inode) = if is_home {
-        let fs_guard = ext2::home_fs_read_syscall();
+        let fs_guard = ext2::home_fs_read();
         let fs = match fs_guard.as_ref() {
             Some(fs) => fs,
             None => {
@@ -2105,7 +2105,7 @@ pub fn sys_access(pathname: u64, mode: u32) -> SyscallResult {
         };
         (ino, inode)
     } else {
-        let fs_guard = ext2::root_fs_read_syscall();
+        let fs_guard = ext2::root_fs_read();
         let fs = match fs_guard.as_ref() {
             Some(fs) => fs,
             None => {
@@ -3149,7 +3149,7 @@ pub fn sys_chdir(pathname: u64) -> SyscallResult {
 
     // Resolve path and verify it's a directory
     let is_dir = if is_home {
-        let fs_guard = ext2::home_fs_read_syscall();
+        let fs_guard = ext2::home_fs_read();
         let fs = match fs_guard.as_ref() {
             Some(fs) => fs,
             None => {
@@ -3171,7 +3171,7 @@ pub fn sys_chdir(pathname: u64) -> SyscallResult {
         };
         matches!(inode.file_type(), Ext2FileType::Directory)
     } else {
-        let fs_guard = ext2::root_fs_read_syscall();
+        let fs_guard = ext2::root_fs_read();
         let fs = match fs_guard.as_ref() {
             Some(fs) => fs,
             None => {
@@ -3552,7 +3552,7 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, _flags: u32) -> S
 
     // Look up inode by path
     let (inode_num, mount_id) = if is_home {
-        let fs_guard = ext2::home_fs_read_syscall();
+        let fs_guard = ext2::home_fs_read();
         let fs = match fs_guard.as_ref() {
             Some(f) => f,
             None => return SyscallResult::Err(ENOENT as u64),
@@ -3563,7 +3563,7 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, _flags: u32) -> S
             Err(_) => return SyscallResult::Err(ENOENT as u64),
         }
     } else {
-        let fs_guard = ext2::root_fs_read_syscall();
+        let fs_guard = ext2::root_fs_read();
         let fs = match fs_guard.as_ref() {
             Some(f) => f,
             None => return SyscallResult::Err(ENOENT as u64),
@@ -3827,7 +3827,7 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
 
     // Resolve path first (read lock), then update timestamps (write lock)
     let (inode_num, mount_id) = if is_home {
-        let fs_guard = ext2::home_fs_read_syscall();
+        let fs_guard = ext2::home_fs_read();
         let fs = match fs_guard.as_ref() {
             Some(f) => f,
             None => return SyscallResult::Err(super::errno::ENOENT as u64),
@@ -3842,7 +3842,7 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
             Err(_) => return SyscallResult::Err(super::errno::ENOENT as u64),
         }
     } else {
-        let fs_guard = ext2::root_fs_read_syscall();
+        let fs_guard = ext2::root_fs_read();
         let fs = match fs_guard.as_ref() {
             Some(f) => f,
             None => return SyscallResult::Err(super::errno::ENOENT as u64),

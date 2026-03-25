@@ -1068,13 +1068,13 @@ fn load_elf_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, i32> {
     let fs_path = if is_home { ext2::strip_home_prefix(path) } else { path };
 
     if is_home {
-        let fs_guard = ext2::home_fs_read_syscall();
+        let fs_guard = ext2::home_fs_read();
         super::trace::trace_exec(b'2');
         let fs = fs_guard.as_ref().ok_or(EIO)?;
         super::trace::trace_exec(b'3');
         load_elf_from_ext2_inner(fs, fs_path)
     } else {
-        let fs_guard = ext2::root_fs_read_syscall();
+        let fs_guard = ext2::root_fs_read();
         super::trace::trace_exec(b'2');
         let fs = fs_guard.as_ref().ok_or(EIO)?;
         super::trace::trace_exec(b'3');

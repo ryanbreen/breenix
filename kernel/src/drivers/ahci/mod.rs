@@ -22,7 +22,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::Mutex;
 
-use crate::arch_impl::traits::CpuOps;
+
 use crate::task::completion::Completion;
 
 use crate::block::{BlockDevice, BlockError};
@@ -1717,51 +1717,11 @@ impl BlockDevice for AhciBlockDevice {
             return Err(BlockError::IoError);
         }
 
-        // CRITICAL: On ARM64, syscall handlers run with preempt_count > 0, which
-        // prevents timer-based preemption. If AHCI_CONTROLLER is a spin::Mutex,
-        // spinning on it (preempt_count > 0) deadlocks the system when the lock holder
-        // has called preempt_enable() to sleep in wait_timeout() — no CPU can schedule
-        // the sleeping holder because all CPUs are spinning non-preemptibly.
-        //
-        // Fix: when in syscall context (preempt_count > 0), use try_lock() + yield
-        // instead of blocking spin. This lets the timer context-switch us and the
-        // holder, allowing the holder to finish its I/O and release the lock.
-        let in_syscall = {
-            #[cfg(target_arch = "aarch64")]
-            { crate::per_cpu_aarch64::preempt_count() > 0 }
-            #[cfg(not(target_arch = "aarch64"))]
-            { crate::per_cpu::preempt_count() > 0 }
-        };
-
-        if in_syscall {
-            loop {
-                if let Some(ctrl_guard) = AHCI_CONTROLLER.try_lock() {
-                    let ctrl = ctrl_guard.as_ref().ok_or(BlockError::DeviceNotReady)?;
-                    let mut sector_buf = [0u8; SECTOR_SIZE];
-                    ctrl.read_sector(self.port_num, self.dma_index, block_num, &mut sector_buf)
-                        .map_err(|e| {
-                            #[cfg(target_arch = "aarch64")]
-                            crate::serial_println!("[ahci] read_block({}) failed: {}", block_num, e);
-                            BlockError::IoError
-                        })?;
-                    buf[..SECTOR_SIZE].copy_from_slice(&sector_buf);
-                    return Ok(());
-                }
-                // Lock busy — temporarily enable preemption so the timer can
-                // schedule the lock holder, then yield our quantum.
-                #[cfg(target_arch = "aarch64")]
-                {
-                    crate::per_cpu_aarch64::preempt_enable();
-                    // WFI with IRQs enabled: sleep until the next timer tick (≤1 ms).
-                    // The timer interrupt fires, the scheduler picks the lock holder
-                    // (or another thread), and we'll retry on the next quantum.
-                    crate::arch_impl::aarch64::cpu::Aarch64Cpu::halt_with_interrupts();
-                    crate::per_cpu_aarch64::preempt_disable();
-                }
-                #[cfg(not(target_arch = "aarch64"))]
-                core::hint::spin_loop();
-            }
-        } else {
+        // The AHCI lock serializes command setup + issue. wait_for_completion
+        // inside read_sector blocks the thread via the scheduler (not spinning),
+        // so other threads CAN acquire this lock after the blocked thread is
+        // switched out. No try_lock needed.
+        {
             let ctrl = AHCI_CONTROLLER.lock();
             let ctrl = ctrl.as_ref().ok_or(BlockError::DeviceNotReady)?;
             let mut sector_buf = [0u8; SECTOR_SIZE];
@@ -1784,39 +1744,13 @@ impl BlockDevice for AhciBlockDevice {
             return Err(BlockError::IoError);
         }
 
-        // Same preemption-safe lock acquisition as read_block — see comment above.
-        let in_syscall = {
-            #[cfg(target_arch = "aarch64")]
-            { crate::per_cpu_aarch64::preempt_count() > 0 }
-            #[cfg(not(target_arch = "aarch64"))]
-            { crate::per_cpu::preempt_count() > 0 }
-        };
-
         let mut sector_buf = [0u8; SECTOR_SIZE];
         sector_buf.copy_from_slice(&buf[..SECTOR_SIZE]);
 
-        if in_syscall {
-            loop {
-                if let Some(ctrl_guard) = AHCI_CONTROLLER.try_lock() {
-                    let ctrl = ctrl_guard.as_ref().ok_or(BlockError::DeviceNotReady)?;
-                    return ctrl.write_sector(self.port_num, self.dma_index, block_num, &sector_buf)
-                        .map_err(|_| BlockError::IoError);
-                }
-                #[cfg(target_arch = "aarch64")]
-                {
-                    crate::per_cpu_aarch64::preempt_enable();
-                    crate::arch_impl::aarch64::cpu::Aarch64Cpu::halt_with_interrupts();
-                    crate::per_cpu_aarch64::preempt_disable();
-                }
-                #[cfg(not(target_arch = "aarch64"))]
-                core::hint::spin_loop();
-            }
-        } else {
-            let ctrl = AHCI_CONTROLLER.lock();
-            let ctrl = ctrl.as_ref().ok_or(BlockError::DeviceNotReady)?;
-            ctrl.write_sector(self.port_num, self.dma_index, block_num, &sector_buf)
-                .map_err(|_| BlockError::IoError)
-        }
+        let ctrl = AHCI_CONTROLLER.lock();
+        let ctrl = ctrl.as_ref().ok_or(BlockError::DeviceNotReady)?;
+        ctrl.write_sector(self.port_num, self.dma_index, block_num, &sector_buf)
+            .map_err(|_| BlockError::IoError)
     }
 
     fn block_size(&self) -> usize {
@@ -1828,36 +1762,10 @@ impl BlockDevice for AhciBlockDevice {
     }
 
     fn flush(&self) -> Result<(), BlockError> {
-        // Same preemption-safe lock acquisition as read_block — see comment above.
-        let in_syscall = {
-            #[cfg(target_arch = "aarch64")]
-            { crate::per_cpu_aarch64::preempt_count() > 0 }
-            #[cfg(not(target_arch = "aarch64"))]
-            { crate::per_cpu::preempt_count() > 0 }
-        };
-
-        if in_syscall {
-            loop {
-                if let Some(ctrl_guard) = AHCI_CONTROLLER.try_lock() {
-                    let ctrl = ctrl_guard.as_ref().ok_or(BlockError::DeviceNotReady)?;
-                    return ctrl.flush_port(self.port_num, self.dma_index)
-                        .map_err(|_| BlockError::IoError);
-                }
-                #[cfg(target_arch = "aarch64")]
-                {
-                    crate::per_cpu_aarch64::preempt_enable();
-                    crate::arch_impl::aarch64::cpu::Aarch64Cpu::halt_with_interrupts();
-                    crate::per_cpu_aarch64::preempt_disable();
-                }
-                #[cfg(not(target_arch = "aarch64"))]
-                core::hint::spin_loop();
-            }
-        } else {
-            let ctrl = AHCI_CONTROLLER.lock();
-            let ctrl = ctrl.as_ref().ok_or(BlockError::DeviceNotReady)?;
-            ctrl.flush_port(self.port_num, self.dma_index)
-                .map_err(|_| BlockError::IoError)
-        }
+        let ctrl = AHCI_CONTROLLER.lock();
+        let ctrl = ctrl.as_ref().ok_or(BlockError::DeviceNotReady)?;
+        ctrl.flush_port(self.port_num, self.dma_index)
+            .map_err(|_| BlockError::IoError)
     }
 }
 

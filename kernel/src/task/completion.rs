@@ -171,9 +171,12 @@ impl Completion {
                         return Ok(true);
                     }
 
-                    // Thread is now BlockedOnIO. Yield + WFI so the scheduler
-                    // can context-switch us out until complete() wakes us.
-                    crate::task::scheduler::yield_current();
+                    // Thread is now BlockedOnIO. WFI halts the CPU until the
+                    // AHCI completion interrupt (or timer tick) fires. When the
+                    // ISR calls complete() -> unblock_for_io(), the thread's
+                    // state changes to Ready. On IRQ return, since we're still
+                    // current, execution resumes here immediately — no context
+                    // switch needed, no yield_current() latency.
                     #[cfg(target_arch = "aarch64")]
                     Cpu::halt_with_interrupts();
 
