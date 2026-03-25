@@ -468,46 +468,8 @@ sync_exception_handler:
     // DIAGNOSTIC: Check for corrupted ELR before ERET (sync handler path)
     cmp x1, #0x1000
     b.hs 10f
-    // ELR < 0x1000 — write diagnostic breadcrumbs to PL011 UART
-    stp x2, x3, [sp, #16]    // Temporarily save x2, x3
-    mov x2, #0x09000000
-    movk x2, #0xFFFF, lsl #48
-    mov x3, #'!'
-    strb w3, [x2]
-    mov x3, #'S'              // 'S' = Sync handler bad ELR
-    strb w3, [x2]
-    // Print the corrupted ELR (x1) as hex
-    mov x3, #60
-11: lsr x4, x1, x3
-    and x4, x4, #0xF
-    cmp x4, #10
-    b.lt 12f
-    add x4, x4, #('a' - 10)
-    b 13f
-12: add x4, x4, #'0'
-13: strb w4, [x2]
-    subs x3, x3, #4
-    b.ge 11b
-    // Print SP
-    mov x3, #'S'
-    strb w3, [x2]
-    mov x3, #'P'
-    strb w3, [x2]
-    mov x4, sp
-    mov x3, #60
-14: lsr x5, x4, x3
-    and x5, x5, #0xF
-    cmp x5, #10
-    b.lt 15f
-    add x5, x5, #('a' - 10)
-    b 16f
-15: add x5, x5, #'0'
-16: strb w5, [x2]
-    subs x3, x3, #4
-    b.ge 14b
-    mov x3, #'\n'
-    strb w3, [x2]
-    ldp x2, x3, [sp, #16]    // Restore x2, x3
+    // ELR < 0x1000 — corrupted. Skip UART diagnostic (QEMU UART at
+    // 0x09000000 doesn't exist on Parallels). Redirect to idle.
     // Redirect to idle_loop_arm64 instead of crashing
     adrp x1, idle_loop_arm64
     add x1, x1, :lo12:idle_loop_arm64
@@ -611,7 +573,15 @@ irq_handler:
     // Pre-set user_rsp_scratch to current SP + 272 (the return SP if no switch)
     // If a context switch happens, Rust code will overwrite this with new thread's SP
     // PERCPU_USER_RSP_SCRATCH_OFFSET = 40
+    //
+    // GUARD: If per-CPU data is not yet initialized (tpidr_el1 == 0), skip the
+    // context switch path entirely. Early boot interrupts (e.g., AHCI SPI 34
+    // during ext2 init) fire before per_cpu_aarch64::init() sets tpidr_el1.
+    // All per-CPU reads/writes below would fault at address 0+offset.
     mrs x2, tpidr_el1
+    cbz x2, 50f
+
+    // --- Normal path: per-CPU data is available ---
     add x3, sp, #272
     str x3, [x2, #40]
 
@@ -625,51 +595,13 @@ irq_handler:
     ldr x16, [sp, #248]      // x16 = frame.elr
 
     // DIAGNOSTIC: Check for corrupted ELR before ERET.
+    // If ELR < 0x1000, the saved context is corrupted (null return address).
+    // Fix it by redirecting to idle_loop_arm64 instead of crashing.
     cmp x16, #0x1000
     b.hs 1f
-    // ELR < 0x1000 — write diagnostic breadcrumbs to PL011 UART
-    stp x0, x1, [sp, #0]     // Temporarily save x0, x1 (will restore below)
-    mov x0, #0x09000000      // UART physical base (QEMU virt)
-    movk x0, #0xFFFF, lsl #48 // HHDM: 0xFFFF000009000000
-    mov x1, #'!'
-    strb w1, [x0]             // '!' = IRQ ERET with bad ELR
-    mov x1, #'E'
-    strb w1, [x0]
-    // Print the corrupted ELR value (x16) as hex
-    mov x1, x16              // x1 = ELR value to print
-    mov x3, #60              // shift = 60 (start with highest nibble)
-2:  lsr x4, x1, x3           // x4 = (ELR >> shift) & 0xF
-    and x4, x4, #0xF
-    cmp x4, #10
-    b.lt 3f
-    add x4, x4, #('a' - 10)
-    b 4f
-3:  add x4, x4, #'0'
-4:  strb w4, [x0]
-    subs x3, x3, #4
-    b.ge 2b
-    // Print SP
-    mov x1, #'S'
-    strb w1, [x0]
-    mov x1, sp
-    mov x3, #60
-5:  lsr x4, x1, x3
-    and x4, x4, #0xF
-    cmp x4, #10
-    b.lt 6f
-    add x4, x4, #('a' - 10)
-    b 7f
-6:  add x4, x4, #'0'
-7:  strb w4, [x0]
-    subs x3, x3, #4
-    b.ge 5b
-    mov x1, #'\n'
-    strb w1, [x0]
-    ldp x0, x1, [sp, #0]     // Restore x0, x1
-    // Redirect to idle_loop_arm64 instead of crashing
+    // ELR < 0x1000 — corrupted context. Redirect to idle_loop_arm64.
     adrp x16, idle_loop_arm64
     add x16, x16, :lo12:idle_loop_arm64
-    // Write safe values to frame
     str x16, [sp, #248]      // frame.elr = idle_loop_arm64
     mov x1, #0x5              // EL1h, interrupts enabled
     str x1, [sp, #256]       // frame.spsr = 0x5
@@ -680,8 +612,6 @@ irq_handler:
     msr spsr_el1, x16
 
     // Restore all general-purpose registers from the exception frame
-    // x0 is particularly critical - it contains the fork() return value!
-    // NOTE: x16 is restored LATER via per-CPU scratch (see below)
     ldp x0, x1, [sp, #0]
     ldp x2, x3, [sp, #16]
     ldp x4, x5, [sp, #32]
@@ -710,15 +640,7 @@ irq_handler:
 
     // Set SP based on ERET destination:
     // - EL0 return (SPSR.M[3:0] == 0): use kernel_stack_top (offset 16).
-    //   This is the definitive source for where the next exception frame
-    //   should be pushed. kernel_stack_top is always kept in sync by
-    //   the context switch dispatch path, unlike user_rsp_scratch which
-    //   can become stale if a thread was initially launched via
-    //   return_to_userspace() or if context.sp was saved from a wrong stack.
     // - EL1 return (SPSR.M[3:0] != 0): use user_rsp_scratch (offset 40).
-    //   For kernel threads, this is the kernel SP where execution resumes.
-    // CRITICAL: Use x16 (scratch, saved in eret_scratch) for SPSR check.
-    // Do NOT use x17 — it holds the restored frame value needed after ERET.
     mrs x16, spsr_el1        // x16 = SPSR (x16 is scratch)
     and x16, x16, #0xF       // x16 = M[3:0]
     cbnz x16, 60f            // If M != 0 (EL1), use user_rsp_scratch
@@ -735,6 +657,34 @@ irq_handler:
     mrs x16, tpidr_el1
     ldr x16, [x16, #96]      // x16 = saved frame.x16
 
+    eret
+
+50:
+    // --- Early boot fast path: per-CPU data NOT initialized (tpidr_el1 == 0) ---
+    // Skip context switch, scheduler, and per-CPU scratch entirely.
+    // Simply restore all registers from the exception frame and ERET.
+    ldr x16, [sp, #248]      // x16 = frame.elr
+    msr elr_el1, x16
+    ldr x16, [sp, #256]      // x16 = frame.spsr
+    msr spsr_el1, x16
+
+    ldp x0, x1, [sp, #0]
+    ldp x2, x3, [sp, #16]
+    ldp x4, x5, [sp, #32]
+    ldp x6, x7, [sp, #48]
+    ldp x8, x9, [sp, #64]
+    ldp x10, x11, [sp, #80]
+    ldp x12, x13, [sp, #96]
+    ldp x14, x15, [sp, #112]
+    ldp x16, x17, [sp, #128]
+    ldp x18, x19, [sp, #144]
+    ldp x20, x21, [sp, #160]
+    ldp x22, x23, [sp, #176]
+    ldp x24, x25, [sp, #192]
+    ldp x26, x27, [sp, #208]
+    ldp x28, x29, [sp, #224]
+    ldr x30, [sp, #240]
+    add sp, sp, #272          // Restore SP (undo the sub at entry)
     eret
 
 unhandled_exception:
@@ -850,7 +800,8 @@ secondary_el1_init:
 
     // Set up per-CPU boot stack (physical addresses, before MMU)
     // Stack top = SMP_STACK_BASE_PHYS + (cpu_id + 1) * 0x20_0000
-    // SMP_STACK_BASE_PHYS is set by CPU 0 Rust code to (ram_base + 0x01000000).
+    // SMP_STACK_BASE_PHYS is set by CPU 0 Rust code to (ram_base + 0x03000000),
+    // placed after the full kernel image + BSS to avoid clobbering kernel data.
     // This gives each CPU a 2MB stack region:
     //   CPU 1: base+0x0020_0000 (top) .. base
     //   CPU 2: base+0x0040_0000 (top) .. base+0x0020_0000
@@ -928,6 +879,8 @@ secondary_el1_init:
     mov x1, #(1 << 19)      // Clear WXN bit
     bic x0, x0, x1
     orr x0, x0, #1          // Set M bit (MMU enable)
+    orr x0, x0, #(1 << 2)   // Set C bit (data cache enable)
+    orr x0, x0, #(1 << 12)  // Set I bit (instruction cache enable)
     msr sctlr_el1, x0
     isb
 

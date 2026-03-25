@@ -100,6 +100,7 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
 
     let syscall_num = frame.syscall_number();
     trace_entry(syscall_num);
+
     let arg1 = frame.arg1();
     let arg2 = frame.arg2();
     let arg3 = frame.arg3();
@@ -686,13 +687,6 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
     // Create a CpuContext from the exception frame
     let parent_context = crate::task::thread::CpuContext::from_aarch64_frame(frame, user_sp);
 
-    // Logging safe here — interrupts enabled, no locks held
-    log::info!(
-        "sys_fork_aarch64: userspace SP = {:#x}, return PC (ELR) = {:#x}",
-        user_sp,
-        frame.elr
-    );
-
     // NOTE: No without_interrupts wrapper! The PM lock handles its own interrupt
     // disabling. Wrapping the entire fork in without_interrupts caused deadlocks
     // on single-CPU ARM64: fork acquires the logger lock, heap allocator lock,
@@ -754,11 +748,6 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
                 crate::tracing::providers::process::trace_spawn_front(
                     current_thread_id as u16,
                     child_thread_id as u16,
-                );
-                // Logging safe here — PM lock released, interrupts enabled
-                log::info!(
-                    "sys_fork_aarch64: Fork OK — parent PID {} -> child PID {}, thread {}",
-                    parent_pid.as_u64(), child_pid.as_u64(), child_thread_id
                 );
                 child_pid.as_u64()
             } else {

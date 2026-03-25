@@ -982,13 +982,19 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             SyscallResult::Err(95) // EOPNOTSUPP
         }
         FdKind::RegularFile(file_ref) => {
-            // Read from ext2 regular file
+            // Read from ext2 regular file.
             //
-            // Get file info under the lock, then drop lock before filesystem operations
+            // CRITICAL: clone the Arc and extract values while PM lock held, then
+            // drop PM lock BEFORE doing disk I/O.  On ARM64 the PM lock disables ALL
+            // IRQs, and AHCI completions arrive as interrupts — holding the lock
+            // during disk I/O deadlocks the system.
+            let file_ref_owned = file_ref.clone();
             let (inode_num, position, file_mount_id) = {
                 let file = file_ref.lock();
                 (file.inode_num, file.position, file.mount_id)
             };
+            // Release PM lock now — disk I/O below needs IRQs enabled.
+            drop(manager_guard);
 
             // Dispatch to correct filesystem based on mount_id
             let is_home = crate::fs::ext2::home_mount_id().map_or(false, |id| id == file_mount_id);
@@ -1049,9 +1055,9 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 }
             }
 
-            // Update file position
+            // Update file position (use the owned Arc we cloned before dropping PM lock)
             {
-                let mut file = file_ref.lock();
+                let mut file = file_ref_owned.lock();
                 file.position += bytes_read as u64;
             }
 

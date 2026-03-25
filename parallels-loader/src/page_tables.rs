@@ -308,9 +308,30 @@ pub fn build_page_tables(storage: &mut PageTableStorage, config: &PageTableConfi
             }
         }
     } else {
-        // QEMU/Parallels: simple 1GB block, identity mapped
-        write_entry(ttbr0_l1, 1, 0x4000_0000 | attr::NORMAL_BLOCK);
-        write_entry(ttbr1_l1, 1, 0x4000_0000 | attr::NORMAL_BLOCK);
+        // QEMU/Parallels: use L2 table to carve out the NC DMA region at 0x50000000.
+        // A plain 1GB block would mark the entire range cacheable, preventing the
+        // .dma section (at physical 0x50000000, L2 index 128) from being NC.
+        let ttbr0_l2_ram = storage.alloc_table();
+        let ttbr1_l2_ram = storage.alloc_table();
+
+        write_entry(ttbr0_l1, 1, ttbr0_l2_ram | attr::TABLE_DESC);
+        write_entry(ttbr1_l1, 1, ttbr1_l2_ram | attr::TABLE_DESC);
+
+        // Fill 512 × 2MB entries covering 0x40000000–0x7FFFFFFF.
+        // Entry 128 = physical 0x50000000 (NC_DMA_BASE): Non-Cacheable for .dma section.
+        // All other entries: Normal WB-WA cacheable.
+        // Index = (NC_DMA_BASE - 0x4000_0000) / 0x20_0000 = 0x1000_0000 / 0x20_0000 = 128
+        const NC_L2_IDX: u64 = (NC_DMA_BASE - 0x4000_0000) / NC_DMA_SIZE;
+        for i in 0..512u64 {
+            let phys = 0x4000_0000 + i * 0x20_0000;
+            let block_attr = if i == NC_L2_IDX {
+                attr::NC_BLOCK
+            } else {
+                attr::NORMAL_BLOCK
+            };
+            write_entry(ttbr0_l2_ram, i as usize, phys | block_attr);
+            write_entry(ttbr1_l2_ram, i as usize, phys | block_attr);
+        }
     }
 
     // L1[2] = VA 0x80000000-0xBFFFFFFF → IPA 0x80000000 (always identity)
@@ -323,6 +344,53 @@ pub fn build_page_tables(storage: &mut PageTableStorage, config: &PageTableConfi
     // The MMU re-enable instruction must be able to fetch from this region.
     write_entry(ttbr0_l1, 3, 0xC000_0000 | attr::NORMAL_BLOCK);
     write_entry(ttbr1_l1, 3, 0xC000_0000 | attr::NORMAL_BLOCK);
+
+    // --- High-RAM identity map for loader code and page table storage ---
+    //
+    // With >4GB RAM (e.g. 8GB on Parallels), UEFI may load the loader PE image
+    // above 4GB — e.g. at 0x23c100000 (L1 index 8).  When we re-enable the MMU
+    // the very next instruction fetch comes from that physical address, which is
+    // only valid if L1[8] is mapped.  Similarly, the PageTableStorage lives in
+    // the loader's BSS and TTBR0/TTBR1 point to it physically; having it
+    // identity-mapped avoids any table-walker fault.
+    //
+    // We use `adr` to read the current PC.  While UEFI's own MMU is active the
+    // value is a virtual address, but under UEFI's identity map VA == PA, so the
+    // result is the physical address of this code.
+    let loader_phys: u64;
+    unsafe {
+        core::arch::asm!(
+            "adr {}, .",
+            out(reg) loader_phys,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    let storage_phys = storage as *const _ as u64;
+
+    // Compute 1GB-block L1 indices (bits [39:30] of the physical address).
+    let loader_l1_idx = (loader_phys >> 30) as usize;
+    let storage_l1_idx = (storage_phys >> 30) as usize;
+
+    // Add identity-map 1GB block entries for any index > 3 that isn't already
+    // covered.  We only write into slots that are currently empty (== 0) so we
+    // never overwrite an intentional mapping set up above.
+    for &idx in &[loader_l1_idx, storage_l1_idx] {
+        if idx > 3 && idx < 512 {
+            let phys = (idx as u64) << 30;
+            // TTBR0 (identity map)
+            let ttbr0_l1_ptr = ttbr0_l1 as *const u64;
+            let existing = unsafe { core::ptr::read_volatile(ttbr0_l1_ptr.add(idx)) };
+            if existing == 0 {
+                write_entry(ttbr0_l1, idx, phys | attr::NORMAL_BLOCK);
+            }
+            // TTBR1 (HHDM) — keeps the HHDM contiguous into high RAM
+            let ttbr1_l1_ptr = ttbr1_l1 as *const u64;
+            let existing1 = unsafe { core::ptr::read_volatile(ttbr1_l1_ptr.add(idx)) };
+            if existing1 == 0 {
+                write_entry(ttbr1_l1, idx, phys | attr::NORMAL_BLOCK);
+            }
+        }
+    }
 
     // Ensure all page table writes are committed to memory
     flush_page_tables();

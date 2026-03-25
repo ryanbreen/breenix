@@ -1187,11 +1187,6 @@ pub fn enable_gpu_yield() {
     }
 }
 
-/// Take (read and reset) accumulated sleep ticks from GPU command waits.
-pub fn take_gpu_sleep_ticks() -> u64 {
-    GPU_SLEEP_TICKS.swap(0, Ordering::Relaxed)
-}
-
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -3285,7 +3280,7 @@ fn virgl_submit_3d_cmd(
             resp_type, used_len, resp_flags, resp_fence);
         return Err("SUBMIT_3D command failed");
     }
-    if submit_id <= 20 || submit_id % 500 == 0 {
+    if submit_id <= 5 {
         crate::serial_println!("[virgl] SUBMIT_3D OK: id={} used_len={} resp_flags={:#x} resp_fence={}",
             submit_id, used_len, resp_flags, resp_fence);
     }
@@ -4627,22 +4622,11 @@ pub fn virgl_composite_windows(
         PERF_TOTAL_TICKS.fetch_add(total, Ordering::Relaxed);
 
         if wf > 0 && wf % 500 == 0 {
-            let freq: u64;
-            unsafe { core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq, options(nomem, nostack)); }
-            let to_us = |ticks: u64| -> u64 { ticks * 1_000_000 / freq / 500 };
-
-            let bg_us = to_us(PERF_BG_UPLOAD_TICKS.swap(0, Ordering::Relaxed));
-            let win_us = to_us(PERF_WIN_UPLOAD_TICKS.swap(0, Ordering::Relaxed));
-            let submit_wall_us = to_us(PERF_SUBMIT_TICKS.swap(0, Ordering::Relaxed));
-            let sleep_us = to_us(GPU_SLEEP_TICKS_PHASES.swap(0, Ordering::Relaxed));
-            let submit_cpu_us = submit_wall_us.saturating_sub(sleep_us);
-            let total_us = to_us(PERF_TOTAL_TICKS.swap(0, Ordering::Relaxed));
-            let cpu_us = total_us.saturating_sub(sleep_us);
-
-            crate::serial_println!(
-                "[gpu-phases] 500f: bg={}us win={}us submit_wall={}us submit_cpu={}us total_cpu={}us sleep={}us",
-                bg_us, win_us, submit_wall_us, submit_cpu_us, cpu_us, sleep_us,
-            );
+            PERF_BG_UPLOAD_TICKS.store(0, Ordering::Relaxed);
+            PERF_WIN_UPLOAD_TICKS.store(0, Ordering::Relaxed);
+            PERF_SUBMIT_TICKS.store(0, Ordering::Relaxed);
+            GPU_SLEEP_TICKS_PHASES.store(0, Ordering::Relaxed);
+            PERF_TOTAL_TICKS.store(0, Ordering::Relaxed);
         }
     }
 

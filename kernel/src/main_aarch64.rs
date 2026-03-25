@@ -27,42 +27,54 @@ use core::panic::PanicInfo;
 #[macro_use]
 extern crate kernel;
 
+/// Read the init ELF binary from ext2 while still single-CPU.
+///
+/// This must be called BEFORE SMP bring-up because AHCI DMA reads fail when
+/// secondary CPUs are online (PCI interconnect interference from their GIC
+/// timer interrupt activity). Returns the raw ELF bytes on success.
 #[cfg(target_arch = "aarch64")]
 #[cfg_attr(any(feature = "kthread_test_only", feature = "kthread_stress_test", feature = "workqueue_test_only"), allow(dead_code))]
-fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'static str> {
-    use alloc::string::String;
-    use core::arch::asm;
-    use kernel::arch_impl::aarch64::context::return_to_userspace;
-
+fn read_init_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> {
     let fs_guard = kernel::fs::ext2::root_fs_read();
     let fs = fs_guard.as_ref().ok_or("ext2 root filesystem not mounted")?;
 
-    let inode_num = fs.resolve_path(path).map_err(|_| "init_shell not found")?;
+    let inode_num = fs.resolve_path(path).map_err(|_| "init not found")?;
 
     let inode = fs.read_inode(inode_num).map_err(|_| "failed to read inode")?;
 
     if inode.is_dir() {
-        return Err("init_shell is a directory");
+        unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts(); }
+        return Err("init is a directory");
     }
 
-    // Disable interrupts during large file read to prevent timer overhead
-    unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts(); }
+    let elf_data = fs.read_file_content(&inode).map_err(|_| "failed to read init")?;
 
-    let elf_data = fs.read_file_content(&inode).map_err(|_| "failed to read init_shell")?;
-
-    // CRITICAL: Release ext2 lock BEFORE creating process and jumping to userspace.
-    // return_to_userspace() never returns, so fs_guard would never be dropped.
-    // If we hold the lock, fork/exec in userspace will deadlock trying to acquire it.
     drop(fs_guard);
 
-    // CRITICAL: Keep interrupts DISABLED through entire process setup.
+    Ok(elf_data)
+}
+
+/// Create a userspace process from a pre-loaded ELF and jump to it.
+///
+/// Takes ELF bytes that were read earlier (e.g., before SMP bring-up) and
+/// completes the process-creation and userspace-entry sequence.
+#[cfg(target_arch = "aarch64")]
+#[cfg_attr(any(feature = "kthread_test_only", feature = "kthread_stress_test", feature = "workqueue_test_only"), allow(dead_code))]
+fn launch_init_from_elf(elf_data: alloc::vec::Vec<u8>, path: &str) -> Result<core::convert::Infallible, &'static str> {
+    use alloc::string::String;
+    use core::arch::asm;
+    use kernel::arch_impl::aarch64::context::return_to_userspace;
+
+    // Disable interrupts for the entire process setup.
     // A pending timer interrupt would fire immediately on enable_interrupts(),
     // context-switch the boot thread away before it registers with the scheduler,
     // and it would never be scheduled back. Interrupts are re-enabled just before
-    // return_to_userspace() below.
+    // return_to_userspace() below via the SPSR loaded by ERET.
+    unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts(); }
 
     if elf_data.len() < 4 || &elf_data[0..4] != b"\x7fELF" {
-        return Err("init_shell is not a valid ELF file");
+        unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts(); }
+        return Err("init is not a valid ELF file");
     }
 
     let proc_name = path.rsplit('/').next().unwrap_or(path);
@@ -120,22 +132,53 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
         }
     };
 
+    // Re-enable preemption now that the boot sequence is complete.
+    // It was disabled in kernel_main after per-CPU init to prevent the scheduler
+    // from context-switching the boot CPU away from its boot stack (which would
+    // leave the boot CPU stuck in idle_loop_arm64 and never return here).
+    // From this point on, the init thread is being set as CPU 0's current thread,
+    // and the scheduler can run normally.
+    kernel::per_cpu_aarch64::preempt_enable();
+
     // Register the userspace thread with the scheduler as the current running thread.
     kernel::task::scheduler::spawn_as_current(alloc::boxed::Box::new(main_thread_clone));
 
-    // CRITICAL: Reset the idle thread's (thread 0) saved context to point to idle_loop_arm64.
-    // Without this, timer interrupts during boot may have saved thread 0's ELR pointing to
-    // somewhere in kernel_main. When we later switch back to thread 0, it would resume
-    // kernel_main and potentially create multiple init_shell processes.
-    // By resetting elr_el1 to idle_loop_arm64, we ensure thread 0 always goes to the idle loop.
-    kernel::task::scheduler::with_thread_mut(0, |idle_thread| {
-        // Get the address of the idle loop function
+    // CRITICAL: Reset ALL idle threads' saved contexts to point to idle_loop_arm64.
+    // Timer interrupts during boot may have saved idle threads' ELR pointing to
+    // kernel_main or other boot code. Without this, when a CPU dispatches its idle
+    // thread, it ERETSs to the stale ELR (which could be 0x0 or a boot address).
+    //
+    // We ask the scheduler which threads are idle threads (one per CPU) and reset
+    // only those. This is robust to any number of kthreads or render threads created
+    // before secondary CPUs come online, because the thread IDs are not predictable
+    // by arithmetic alone.
+    //
+    // We must NOT reset the init main thread's context. Corrupting init's spsr_el1
+    // to EL1h (0x5) causes dispatch_thread_locked to terminate it immediately via
+    // the safety guard (spsr & 0xF != 0 → not EL0t → not a valid userspace thread).
+    {
         let idle_loop_addr = kernel::arch_impl::aarch64::context_switch::idle_loop_arm64 as *const () as u64;
-        idle_thread.context.elr_el1 = idle_loop_addr;
-        // Also set SPSR for EL1h with interrupts enabled
-        idle_thread.context.spsr_el1 = 0x5; // EL1h, DAIF clear
-        serial_println!("[boot] Reset idle thread context to idle_loop_arm64 at {:#x}", idle_loop_addr);
-    });
+        // Collect idle thread IDs from the scheduler's per-CPU state.
+        // cpu_state[cpu].idle_thread is set by init_scheduler and register_cpu_idle_thread.
+        let mut idle_tids = [0u64; kernel::arch_impl::aarch64::constants::MAX_CPUS];
+        let cpus_online = kernel::arch_impl::aarch64::smp::cpus_online() as usize;
+        let idle_count = kernel::task::scheduler::collect_idle_thread_ids(
+            &mut idle_tids[..cpus_online]
+        );
+        // Reset each idle thread's saved context.
+        for i in 0..idle_count {
+            let tid = idle_tids[i];
+            kernel::task::scheduler::with_thread_mut(tid, |idle_thread| {
+                idle_thread.context.elr_el1 = idle_loop_addr;
+                idle_thread.context.spsr_el1 = 0x5; // EL1h, DAIF clear
+                idle_thread.context.x30 = 0;
+            });
+        }
+        serial_println!(
+            "[boot] Reset {} idle thread contexts (CPUs online: {})",
+            idle_count, cpus_online
+        );
+    }
 
     // Set per-CPU pointers to the thread in the scheduler
     kernel::task::scheduler::with_thread_mut(main_thread_id, |thread| {
@@ -214,7 +257,7 @@ use kernel::arch_impl::aarch64::timer_interrupt;
 #[cfg(target_arch = "aarch64")]
 use kernel::arch_impl::aarch64::cpu::Aarch64Cpu;
 #[cfg(target_arch = "aarch64")]
-use kernel::arch_impl::aarch64::gic::Gicv2;
+use kernel::arch_impl::aarch64::gic::{self, Gicv2};
 #[cfg(target_arch = "aarch64")]
 use kernel::arch_impl::traits::{CpuOps, InterruptController};
 #[cfg(target_arch = "aarch64")]
@@ -379,7 +422,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
 
     // Zero the boot identity map L0 entry to prevent new TLB entries from
     // being created for the user VA range while we're still in kernel init.
-    // This is a defense-in-depth measure; the TLBI in run_userspace_from_ext2
+    // This is a defense-in-depth measure; the TLBI in launch_init_from_elf
     // will do a full invalidation before switching to the process page table.
     //
     // We can't use `extern "C" { static mut ttbr0_l0: u64; }` because the
@@ -426,9 +469,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!("[boot] Current timestamp: {}", ts);
 
     // Initialize GIC
-    serial_println!("[boot] Initializing GICv2...");
+    serial_println!("[boot] Initializing GIC...");
     Gicv2::init();
-    serial_println!("[boot] GIC initialized");
+    serial_println!("[boot] GIC initialized (version {})", gic::active_version());
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::AARCH64_GIC_INIT);
 
@@ -650,7 +693,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         }
     }
 
-    // TLB eviction for TTBR0 identity map is handled in run_userspace_from_ext2()
+    // TLB eviction for TTBR0 identity map is handled in launch_init_from_elf()
     // right before the TTBR0 switch. We cannot modify TTBR0 page tables earlier
     // because Parallels monitors TTBR0/page table changes and hangs if they occur
     // while timer interrupts and kthreads are active.
@@ -658,7 +701,21 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Initialize per-CPU data (required before scheduler and interrupts)
     serial_println!("[boot] Initializing per-CPU data...");
     kernel::per_cpu_aarch64::init();
+    // Store the boot TTBR0 as the kernel page table for this CPU.
+    // Without this, exception handlers fall back to a wrong hardcoded address.
+    let boot_ttbr0: u64;
+    unsafe { core::arch::asm!("mrs {}, ttbr0_el1", out(reg) boot_ttbr0, options(nomem, nostack)); }
+    kernel::per_cpu_aarch64::set_kernel_cr3(boot_ttbr0);
     serial_println!("[boot] Per-CPU data initialized");
+
+    // Disable preemption for the boot sequence on CPU 0.
+    // The timer interrupt fires while kernel_main is running and the scheduler
+    // may try to context-switch the boot CPU to ksoftirqd. When ksoftirqd parks,
+    // setup_idle_return_locked redirects CPU 0 to idle_loop_arm64, abandoning
+    // the boot sequence. Preventing preemption here keeps the boot CPU on its
+    // boot stack until init is ready to run.
+    // Re-enabled in launch_init_from_elf before spawn_as_current.
+    kernel::per_cpu_aarch64::preempt_disable();
 
     // Initialize process manager
     serial_println!("[boot] Initializing process manager...");
@@ -712,6 +769,29 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     kernel::tracing::providers::enable_all();
     serial_println!("[boot] Tracing subsystem initialized and enabled");
 
+    // Pre-load init binary from ext2 BEFORE timer is initialized.
+    // AHCI polling uses `wfe` to yield between PORT_CI checks. With the timer
+    // active, `wfe` wakes every 1ms on timer ticks instead of AHCI completion,
+    // and on 8GB RAM something about the timer GIC activity prevents PORT_CI
+    // from clearing. Reading the ELF now, while the timer is still off and
+    // single-CPU, avoids both issues entirely.
+    // (ext2 root filesystem was mounted above at init_root_fs().)
+    let init_elf: Option<alloc::vec::Vec<u8>> = if device_count > 0 {
+        serial_println!("[boot] Pre-loading /sbin/init from ext2 (before timer)...");
+        match read_init_from_ext2("/sbin/init") {
+            Ok(data) => {
+                serial_println!("[boot] Init binary pre-loaded: {} bytes", data.len());
+                Some(data)
+            }
+            Err(e) => {
+                serial_println!("[boot] Failed to pre-load init: {} (will retry after SMP)", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Initialize timer interrupt for preemptive scheduling
     // This MUST come after per-CPU data and scheduler are initialized
     serial_println!("[boot] Initializing timer interrupt...");
@@ -727,10 +807,12 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         // Tell boot.S the correct UART address for this platform's serial debug output
         kernel::arch_impl::aarch64::smp::set_uart_phys(kernel::platform_config::uart_base_phys());
 
-        // Write per-CPU stack base address. Platform-dependent:
-        // QEMU/Parallels (ram at 0x40000000): 0x4100_0000
-        // VMware (ram at 0x80000000): 0x8100_0000
-        let stack_base_phys = 0x4100_0000u64 + kernel::platform_config::ram_base_offset();
+        // Write per-CPU stack base address. Placed AFTER kernel image + full BSS
+        // (which includes large statics like PCI_3D_FRAMEBUFFER extending to ~0x43000000).
+        // Platform-dependent:
+        // QEMU/Parallels (ram at 0x40000000): 0x4300_0000
+        // VMware (ram at 0x80000000): 0x8300_0000
+        let stack_base_phys = 0x4300_0000u64 + kernel::platform_config::ram_base_offset();
         kernel::arch_impl::aarch64::smp::set_stack_base_phys(stack_base_phys);
 
         // Write CPU 0's actual TTBR0/TTBR1 to .bss.boot so secondary CPUs use
@@ -743,15 +825,37 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         let mpidr: u64;
         unsafe { core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack)) };
         serial_println!("[smp] CPU 0 MPIDR={:#x}, stack_base={:#x}", mpidr, stack_base_phys);
+
+        // Derive the maximum number of CPUs to probe from the GICv3 redistributor
+        // region size. Each redistributor occupies 0x20000 bytes (two 64KB frames).
+        // This prevents us from issuing a PSCI CPU_ON HVC for a CPU index that the
+        // hypervisor cannot service — that call blocks forever since HVC is a
+        // synchronous trap with no software timeout.
+        //
+        // On QEMU, gicr_size() returns 0 (no explicit size reported), so we fall
+        // back to MAX_CPUS and let PSCI error codes guide the probe.
+        // On Parallels with N vCPUs, gicr_size() = N * 0x20000, giving us the
+        // exact upper bound.
+        const GICR_FRAME_SIZE: u64 = 0x2_0000; // 128KB per CPU (GICv3 spec)
+        let gicr_size = kernel::platform_config::gicr_size();
+        let max_cpus_to_probe = if gicr_size > 0 {
+            let n = (gicr_size / GICR_FRAME_SIZE) as usize;
+            let capped = n.min(kernel::arch_impl::aarch64::smp::MAX_CPUS);
+            serial_println!("[smp] GICR covers {} redistributors, probing CPUs 1..{}", n, capped);
+            capped
+        } else {
+            kernel::arch_impl::aarch64::smp::MAX_CPUS
+        };
+
         serial_println!("[smp] Probing secondary CPUs via PSCI...");
         let mut launched = 0u64;
-        for cpu in 1..kernel::arch_impl::aarch64::smp::MAX_CPUS {
+        for cpu in 1..max_cpus_to_probe {
             let ret = kernel::arch_impl::aarch64::smp::release_cpu(cpu);
             if ret == 0 {
                 serial_println!("[smp] CPU {}: PSCI CPU_ON success", cpu);
                 launched += 1;
             } else {
-                // PSCI_E_INVALID_PARAMS (-2) or PSCI_E_NOT_PRESENT (-9) = no more CPUs
+                serial_println!("[smp] CPU {}: PSCI CPU_ON failed (ret={}), stopping probe", cpu, ret);
                 break;
             }
         }
@@ -863,7 +967,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!();
 
     // Spawn particle animation thread (if graphics is available and not running boot tests)
-    // This MUST be done BEFORE userspace loading because run_userspace_from_ext2 never returns
+    // This MUST be done BEFORE userspace loading because launch_init_from_elf never returns
     // DISABLED: Investigating EC=0x0 crash during fill_rect memcpy
     #[cfg(not(feature = "boot_tests"))]
     #[cfg(feature = "particle_animation")]  // Disabled by default - crashes with EC=0x0
@@ -879,7 +983,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     }
 
     // In testing mode, load test binaries from ext2 and let the scheduler
-    // dispatch them. Do NOT call run_userspace_from_ext2() - its manual
+    // dispatch them. Do NOT call launch_init_from_elf() - its manual
     // spawn_as_current() + return_to_userspace() bypasses the scheduler and
     // conflicts with the 60+ test processes already in the ready queue.
     #[cfg(feature = "testing")]
@@ -900,23 +1004,60 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         }
     }
 
-    // Try to load and run userspace init_shell from ext2 or test disk
+    // Launch userspace init from the pre-loaded ELF (read before SMP bring-up).
+    // If the pre-load succeeded, use the cached bytes; otherwise fall back to
+    // reading from ext2 now (may fail on Parallels with 8 CPUs) or test disk.
     if device_count > 0 {
-        serial_println!("[boot] Loading userspace init from ext2...");
-        match run_userspace_from_ext2("/sbin/init") {
-            Err(e) => {
-                serial_println!("[boot] Failed to load init from ext2: {}", e);
-                serial_println!("[boot] Loading userspace init_shell from test disk...");
-                match kernel::boot::test_disk::run_userspace_from_disk("init_shell") {
-                    Err(e) => {
-                        serial_println!("[boot] Failed to load init_shell: {}", e);
-                        serial_println!("[boot] Falling back to kernel shell...");
+        if let Some(elf_data) = init_elf {
+            serial_println!("[boot] Launching init from pre-loaded ELF...");
+            match launch_init_from_elf(elf_data, "/sbin/init") {
+                Err(e) => {
+                    serial_println!("[boot] Failed to launch pre-loaded init: {}", e);
+                    serial_println!("[boot] Loading userspace init_shell from test disk...");
+                    match kernel::boot::test_disk::run_userspace_from_disk("init_shell") {
+                        Err(e) => {
+                            serial_println!("[boot] Failed to load init_shell: {}", e);
+                            serial_println!("[boot] Falling back to kernel shell...");
+                        }
+                        Ok(never) => match never {},
                     }
-                    // run_userspace_from_disk returns Result<Infallible, _>, so Ok is unreachable
-                    Ok(never) => match never {},
+                }
+                Ok(never) => match never {},
+            }
+        } else {
+            // Pre-load was not attempted or failed — try ext2 now as a last resort
+            // (single-CPU machines or QEMU where SMP interference isn't a concern).
+            serial_println!("[boot] No pre-loaded init — attempting ext2 read post-SMP...");
+            match read_init_from_ext2("/sbin/init") {
+                Ok(elf_data) => {
+                    serial_println!("[boot] Late ext2 read succeeded, launching init...");
+                    match launch_init_from_elf(elf_data, "/sbin/init") {
+                        Err(e) => {
+                            serial_println!("[boot] Failed to launch init: {}", e);
+                            serial_println!("[boot] Loading userspace init_shell from test disk...");
+                            match kernel::boot::test_disk::run_userspace_from_disk("init_shell") {
+                                Err(e) => {
+                                    serial_println!("[boot] Failed to load init_shell: {}", e);
+                                    serial_println!("[boot] Falling back to kernel shell...");
+                                }
+                                Ok(never) => match never {},
+                            }
+                        }
+                        Ok(never) => match never {},
+                    }
+                }
+                Err(e) => {
+                    serial_println!("[boot] Failed to load init from ext2: {}", e);
+                    serial_println!("[boot] Loading userspace init_shell from test disk...");
+                    match kernel::boot::test_disk::run_userspace_from_disk("init_shell") {
+                        Err(e) => {
+                            serial_println!("[boot] Failed to load init_shell: {}", e);
+                            serial_println!("[boot] Falling back to kernel shell...");
+                        }
+                        Ok(never) => match never {},
+                    }
                 }
             }
-            Ok(never) => match never {},
         }
     }
 

@@ -888,52 +888,6 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                 return SyscallResult::Err(super::ErrorCode::Fault as u64);
             }
 
-            // ksyscall-perf: measure composite time and report CPU% every 500 frames
-            #[cfg(target_arch = "aarch64")]
-            {
-                let t0: u64;
-                unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) t0, options(nomem, nostack)); }
-
-                let result = handle_composite_windows(desc_ptr);
-
-                use core::sync::atomic::{AtomicU64, AtomicU32};
-                static PERF_FRAME: AtomicU32 = AtomicU32::new(0);
-                static PERF_GPU_TICKS: AtomicU64 = AtomicU64::new(0);
-                static PERF_EPOCH: AtomicU64 = AtomicU64::new(0);
-
-                let t1: u64;
-                unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) t1, options(nomem, nostack)); }
-
-                let frame = PERF_FRAME.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                PERF_GPU_TICKS.fetch_add(t1.saturating_sub(t0), core::sync::atomic::Ordering::Relaxed);
-
-                if frame == 0 {
-                    PERF_EPOCH.store(t0, core::sync::atomic::Ordering::Relaxed);
-                }
-
-                if frame > 0 && (frame + 1) % 500 == 0 {
-                    let freq: u64;
-                    unsafe { core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq, options(nomem, nostack)); }
-                    let gpu_ticks = PERF_GPU_TICKS.swap(0, core::sync::atomic::Ordering::Relaxed);
-                    let sleep_ticks = crate::drivers::virtio::gpu_pci::take_gpu_sleep_ticks();
-                    let cpu_ticks = gpu_ticks.saturating_sub(sleep_ticks);
-                    let epoch = PERF_EPOCH.swap(t1, core::sync::atomic::Ordering::Relaxed);
-                    let wall_ticks = t1.saturating_sub(epoch);
-
-                    let wall_us = gpu_ticks * 1_000_000 / freq / 500;
-                    let sleep_us = sleep_ticks * 1_000_000 / freq / 500;
-                    let cpu_us = cpu_ticks * 1_000_000 / freq / 500;
-                    let busy_pct = if wall_ticks > 0 { cpu_ticks * 100 / wall_ticks } else { 0 };
-
-                    crate::serial_println!(
-                        "[ksyscall-perf] 500f: wall={}us sleep={}us cpu={}us busy={}%",
-                        wall_us, sleep_us, cpu_us, busy_pct,
-                    );
-                }
-
-                result
-            }
-            #[cfg(not(target_arch = "aarch64"))]
             handle_composite_windows(desc_ptr)
         }
         17 => {
@@ -1670,37 +1624,46 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
         }
     };
 
-    let mut manager_guard = crate::process::manager();
-    let manager = match *manager_guard {
-        Some(ref mut m) => m,
-        None => {
-            crate::serial_println!("[window] ERROR: process manager not available");
-            return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64);
+    // Phase 1: Acquire lock, extract metadata + raw page table pointer, release lock.
+    // See sys_mmap for rationale: holding PROCESS_MANAGER across the page-mapping
+    // loop (IRQs disabled) causes priority inversion on SMP.
+    let (pid_u64, new_addr, total_size, page_table_ptr) = {
+        let mut manager_guard = crate::process::manager();
+        let manager = match *manager_guard {
+            Some(ref mut m) => m,
+            None => {
+                crate::serial_println!("[window] ERROR: process manager not available");
+                return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64);
+            }
+        };
+
+        let (pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
+            Some(p) => p,
+            None => {
+                crate::serial_println!("[window] ERROR: thread {:?} not in process table", current_thread_id);
+                return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64);
+            }
+        };
+
+        let total_size = (num_pages as u64) * PAGE_SIZE;
+        let new_addr = round_down_to_page(process.mmap_hint.saturating_sub(total_size));
+        if new_addr < 0x1000_0000 {
+            return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
         }
+        process.mmap_hint = new_addr;
+
+        let page_table = match process.page_table.as_mut() {
+            Some(pt) => pt,
+            None => return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64),
+        };
+
+        // SAFETY: process lives as long as this syscall; no other CPU touches its page table.
+        let page_table_ptr: *mut _ = &mut **page_table;
+        (pid.as_u64(), new_addr, total_size, page_table_ptr)
+        // manager_guard drops here, releasing PROCESS_MANAGER before the loop
     };
 
-    let (pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
-        Some(p) => p,
-        None => {
-            crate::serial_println!("[window] ERROR: thread {:?} not in process table", current_thread_id);
-            return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64);
-        }
-    };
-
-    // Allocate virtual address range from mmap hint
-    let total_size = (num_pages as u64) * PAGE_SIZE;
-    let new_addr = round_down_to_page(process.mmap_hint.saturating_sub(total_size));
-    if new_addr < 0x1000_0000 {
-        return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
-    }
-    process.mmap_hint = new_addr;
-
-    let page_table = match process.page_table.as_mut() {
-        Some(pt) => pt,
-        None => return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64),
-    };
-
-    // Allocate and map physical frames, saving per-page physical addresses
+    // Phase 2: Map pages WITHOUT holding PROCESS_MANAGER.
     let page_flags = prot_to_page_flags(Protection::from_bits_truncate(3)); // READ | WRITE
     let mut first_phys: u64 = 0;
     let mut page_phys_addrs = alloc::vec::Vec::with_capacity(num_pages);
@@ -1721,11 +1684,12 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
         let page_addr = new_addr + (i as u64) * PAGE_SIZE;
         let page = Page::<Size4KiB>::containing_address(VirtAddr::new(page_addr));
 
-        if let Err(_) = page_table.map_page(page, frame, page_flags) {
+        // SAFETY: page_table_ptr is valid for the lifetime of this syscall.
+        let page_table = unsafe { &mut *page_table_ptr };
+        if page_table.map_page(page, frame, page_flags).is_err() {
             return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
         }
 
-        // Zero the page
         let phys_mem_offset = crate::memory::physical_memory_offset().as_u64();
         unsafe {
             core::ptr::write_bytes(
@@ -1737,19 +1701,26 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
         flush_tlb(VirtAddr::new(page_addr));
     }
 
-    // Create VMA with MAP_SHARED flag
-    let vma = Vma::new(
-        VirtAddr::new(new_addr),
-        VirtAddr::new(new_addr + total_size),
-        Protection::from_bits_truncate(3),
-        MmapFlags::from_bits_truncate(0x21), // MAP_SHARED | MAP_ANONYMOUS
-    );
-    process.vmas.push(vma);
+    // Phase 3: Re-acquire lock to register VMA and get process pid for logging.
+    {
+        let mut manager_guard = crate::process::manager();
+        if let Some(ref mut manager) = *manager_guard {
+            if let Some((_pid, process)) = manager.find_process_by_thread_mut(current_thread_id) {
+                let vma = Vma::new(
+                    VirtAddr::new(new_addr),
+                    VirtAddr::new(new_addr + total_size),
+                    Protection::from_bits_truncate(3),
+                    MmapFlags::from_bits_truncate(0x21), // MAP_SHARED | MAP_ANONYMOUS
+                );
+                process.vmas.push(vma);
+            }
+        }
+    }
 
     // Register in window buffer table
     let buffer_id = {
         let mut reg = WINDOW_REGISTRY.lock();
-        match reg.allocate(pid.as_u64(), width, height, first_phys, size, page_phys_addrs, new_addr) {
+        match reg.allocate(pid_u64, width, height, first_phys, size, page_phys_addrs, new_addr) {
             Some(id) => id,
             None => return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64),
         }
@@ -1757,7 +1728,7 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
 
     crate::serial_println!(
         "[window] Created buffer id={} for pid={}: {}x{} at virt={:#x} phys={:#x}",
-        buffer_id, pid.as_u64(), width, height, new_addr, first_phys
+        buffer_id, pid_u64, width, height, new_addr, first_phys
     );
 
     // Write full 64-bit mmap address to userspace output pointer

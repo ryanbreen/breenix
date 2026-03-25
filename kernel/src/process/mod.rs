@@ -81,7 +81,6 @@ pub fn init() {
 pub fn manager() -> ProcessManagerGuard {
     #[cfg(target_arch = "aarch64")]
     {
-        // Save current interrupt state and disable interrupts
         let saved_daif: u64;
         unsafe {
             core::arch::asm!("mrs {}, daif", out(reg) saved_daif, options(nomem, nostack));

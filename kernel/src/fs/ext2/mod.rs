@@ -1454,6 +1454,7 @@ pub fn root_fs_read() -> spin::RwLockReadGuard<'static, Option<Ext2Fs>> {
     ROOT_EXT2.read()
 }
 
+
 /// Access the root ext2 filesystem for write operations
 ///
 /// Exclusive access — blocks all readers and other writers.
@@ -1526,6 +1527,7 @@ pub fn init_home_fs() -> Result<(), &'static str> {
 pub fn home_fs_read() -> spin::RwLockReadGuard<'static, Option<Ext2Fs>> {
     HOME_EXT2.read()
 }
+
 
 /// Access the home ext2 filesystem for write operations
 ///

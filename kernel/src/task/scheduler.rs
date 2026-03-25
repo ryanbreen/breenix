@@ -185,6 +185,7 @@ pub fn try_dump_state() -> Option<SchedulerDumpInfo> {
                 | ThreadState::BlockedOnSignal
                 | ThreadState::BlockedOnChildExit
                 | ThreadState::BlockedOnTimer
+                | ThreadState::BlockedOnIO
         )
     }).count() as u64;
 
@@ -205,6 +206,7 @@ pub fn try_dump_state() -> Option<SchedulerDumpInfo> {
                 ThreadState::BlockedOnSignal => 3,
                 ThreadState::BlockedOnChildExit => 4,
                 ThreadState::BlockedOnTimer => 5,
+                ThreadState::BlockedOnIO => 7,
                 ThreadState::Terminated => 6,
             },
             blocked_in_syscall: t.blocked_in_syscall,
@@ -519,7 +521,8 @@ impl Scheduler {
                         let was_blocked = current.state == ThreadState::Blocked
                             || current.state == ThreadState::BlockedOnSignal
                             || current.state == ThreadState::BlockedOnChildExit
-                            || current.state == ThreadState::BlockedOnTimer;
+                            || current.state == ThreadState::BlockedOnTimer
+                            || current.state == ThreadState::BlockedOnIO;
 
                         // Charge elapsed CPU ticks to the outgoing thread, but ONLY
                         // if it was actually running. Blocked threads already had
@@ -721,7 +724,8 @@ impl Scheduler {
                         let was_blocked = current.state == ThreadState::Blocked
                             || current.state == ThreadState::BlockedOnSignal
                             || current.state == ThreadState::BlockedOnChildExit
-                            || current.state == ThreadState::BlockedOnTimer;
+                            || current.state == ThreadState::BlockedOnTimer
+                            || current.state == ThreadState::BlockedOnIO;
 
                         // Only charge CPU ticks if thread was actually running
                         if !was_blocked && !was_terminated {
@@ -760,6 +764,61 @@ impl Scheduler {
                 }
                 break n;
             } else {
+                // Ready queue empty — emit diagnostic (rate-limited) for threads
+                // that are truly stuck: Ready state, not current on any CPU, not in
+                // any deferred-requeue slot.  Threads that are current on another CPU
+                // are momentarily in Ready state (set by schedule_deferred_requeue on
+                // that CPU) but will be requeued by that CPU's deferred mechanism —
+                // they are NOT stuck.
+                #[cfg(target_arch = "aarch64")]
+                {
+                    use core::sync::atomic::{AtomicU32, Ordering as AO};
+                    static STUCK_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
+                    let first_stuck = self.threads.iter().find(|t| {
+                        if t.state != super::thread::ThreadState::Ready { return false; }
+                        let tid = t.id();
+                        // Exclude any CPU's idle thread
+                        if (0..MAX_CPUS).any(|c| self.cpu_state[c].idle_thread == tid) { return false; }
+                        // Exclude threads currently running on any CPU
+                        if (0..MAX_CPUS).any(|c| self.cpu_state[c].current_thread == Some(tid)) { return false; }
+                        // Exclude threads pending deferred requeue on any CPU
+                        if self.is_in_deferred_requeue(tid) { return false; }
+                        true
+                    }).map(|t| t.id());
+                    if let Some(stuck_tid) = first_stuck {
+                        let count = STUCK_LOG_COUNT.fetch_add(1, AO::Relaxed);
+                        // Log first 5, then every 1000th
+                        if count < 5 || count % 1000 == 0 {
+                            crate::serial_aarch64::raw_serial_str(b"[SCHED] queue_empty stuck_tid=");
+                            {
+                                let mut n = stuck_tid;
+                                let mut buf = [0u8; 20];
+                                let mut i = 20usize;
+                                if n == 0 {
+                                    buf[i-1] = b'0';
+                                    i -= 1;
+                                } else {
+                                    while n > 0 { i -= 1; buf[i] = b'0' + (n % 10) as u8; n /= 10; }
+                                }
+                                crate::serial_aarch64::raw_serial_str(&buf[i..]);
+                            }
+                            crate::serial_aarch64::raw_serial_str(b" count=");
+                            {
+                                let mut n = count as u64;
+                                let mut buf = [0u8; 20];
+                                let mut i = 20usize;
+                                if n == 0 {
+                                    buf[i-1] = b'0';
+                                    i -= 1;
+                                } else {
+                                    while n > 0 { i -= 1; buf[i] = b'0' + (n % 10) as u8; n /= 10; }
+                                }
+                                crate::serial_aarch64::raw_serial_str(&buf[i..]);
+                            }
+                            crate::serial_aarch64::raw_serial_str(b"\n");
+                        }
+                    }
+                }
                 break self.cpu_state[current_cpu].idle_thread;
             }
         };
@@ -908,9 +967,19 @@ impl Scheduler {
         UNBLOCK_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
 
         if let Some(thread) = self.get_thread_mut(thread_id) {
-            if thread.state == ThreadState::Blocked || thread.state == ThreadState::BlockedOnSignal || thread.state == ThreadState::BlockedOnTimer {
+            let was_blocked_on_io = thread.state == ThreadState::BlockedOnIO;
+            if thread.state == ThreadState::Blocked
+                || thread.state == ThreadState::BlockedOnSignal
+                || thread.state == ThreadState::BlockedOnTimer
+                || thread.state == ThreadState::BlockedOnIO
+            {
                 thread.set_ready();
-                thread.blocked_in_syscall = false;
+                // For BlockedOnIO, do NOT clear blocked_in_syscall here —
+                // the wait_timeout caller manages it after detecting the wakeup.
+                // For other states it is safe (and necessary) to clear.
+                if !was_blocked_on_io {
+                    thread.blocked_in_syscall = false;
+                }
 
                 // SMP safety: Don't add to ready_queue if thread is currently
                 // running on any CPU. If a thread is blocked in a syscall's WFI
@@ -1081,6 +1150,12 @@ impl Scheduler {
                 thread.state,
                 thread.blocked_in_syscall
             );
+            // Also wake threads blocked on I/O — they check signals in their
+            // wait loop and will return EINTR when they resume.
+            if thread.state == ThreadState::BlockedOnIO {
+                self.unblock_for_io(thread_id);
+                return;
+            }
             if thread.state == ThreadState::BlockedOnSignal {
                 thread.set_ready();
                 // NOTE: Do NOT clear blocked_in_syscall here!
@@ -1230,6 +1305,73 @@ impl Scheduler {
                 thread.blocked_in_syscall = true;
             }
             self.ready_queue.retain(|&id| id != current_id);
+        }
+    }
+
+    /// Block the current thread for device I/O.
+    ///
+    /// Sets state to BlockedOnIO and blocked_in_syscall. The thread will be
+    /// woken by unblock_for_io() when the device ISR signals completion.
+    ///
+    /// CRITICAL: Must be called under the scheduler lock (via with_scheduler).
+    /// The done-check and this call must happen in the same with_scheduler()
+    /// invocation to prevent the ISR from racing between the check and the block.
+    pub fn block_current_for_io(&mut self) {
+        if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
+            if let Some(thread) = self.get_thread_mut(current_id) {
+                // Charge elapsed CPU ticks before blocking
+                let now = crate::time::get_ticks();
+                thread.cpu_ticks_total += now.wrapping_sub(thread.run_start_ticks);
+                thread.run_start_ticks = now;
+
+                thread.state = ThreadState::BlockedOnIO;
+                // Mark blocked_in_syscall so the context switch path resumes
+                // inside the syscall (wait_timeout loop) rather than restoring
+                // stale userspace context.
+                thread.blocked_in_syscall = true;
+            }
+            // Remove from ready queue (shouldn't be there, but guard against races)
+            self.ready_queue.retain(|&id| id != current_id);
+        }
+    }
+
+    /// Unblock a thread that was blocked for device I/O.
+    ///
+    /// Sets state to Ready and adds to ready queue. Does NOT clear
+    /// blocked_in_syscall — the wait_timeout caller clears it after resuming
+    /// to prevent context save corruption (clearing it early would allow the
+    /// context switch path to restore stale userspace context).
+    ///
+    /// Safe to call from ISR context via with_scheduler() because
+    /// with_scheduler() disables interrupts before acquiring the lock, and
+    /// the ISR runs with interrupts already masked by hardware.
+    pub fn unblock_for_io(&mut self, tid: u64) {
+        if let Some(thread) = self.get_thread_mut(tid) {
+            if thread.state == ThreadState::BlockedOnIO {
+                thread.set_ready();
+                // Do NOT clear blocked_in_syscall here — the wait_timeout
+                // caller manages it after detecting the wakeup.
+
+                let is_current_on_any_cpu = (0..MAX_CPUS).any(|cpu| {
+                    self.cpu_state[cpu].current_thread == Some(tid)
+                });
+
+                #[cfg(target_arch = "aarch64")]
+                let is_in_deferred = self.is_in_deferred_requeue(tid);
+                #[cfg(not(target_arch = "aarch64"))]
+                let is_in_deferred = false;
+
+                if !is_current_on_any_cpu
+                    && !is_in_deferred
+                    && tid != self.cpu_state[Self::current_cpu_id()].idle_thread
+                    && !self.ready_queue.contains(&tid)
+                {
+                    self.ready_queue.push_back(tid);
+                    #[cfg(target_arch = "aarch64")]
+                    self.send_resched_ipi();
+                }
+                set_need_resched();
+            }
         }
     }
 
@@ -1502,7 +1644,12 @@ pub fn spawn(thread: Box<Thread>) {
             #[cfg(target_arch = "x86_64")]
             crate::per_cpu::set_need_resched(true);
             #[cfg(target_arch = "aarch64")]
-            crate::per_cpu_aarch64::set_need_resched(true);
+            {
+                crate::per_cpu_aarch64::set_need_resched(true);
+                // Wake idle CPUs so they can pick up the new thread immediately
+                // rather than waiting up to 1ms for their next timer tick.
+                scheduler.send_resched_ipi();
+            }
         } else {
             panic!("Scheduler not initialized");
         }
@@ -1520,7 +1667,14 @@ pub fn spawn_front(thread: Box<Thread>) {
             #[cfg(target_arch = "x86_64")]
             crate::per_cpu::set_need_resched(true);
             #[cfg(target_arch = "aarch64")]
-            crate::per_cpu_aarch64::set_need_resched(true);
+            {
+                crate::per_cpu_aarch64::set_need_resched(true);
+                // Wake idle CPUs so the fork child is picked up immediately
+                // rather than waiting up to 1ms for their next timer tick.
+                // Without this, all 7 idle CPUs sleep through the spawn and only
+                // the spawning CPU's next timer tick dispatches the child.
+                scheduler.send_resched_ipi();
+            }
         } else {
             panic!("Scheduler not initialized");
         }
@@ -1644,6 +1798,26 @@ where
     without_interrupts(|| {
         let mut scheduler_lock = SCHEDULER.lock();
         scheduler_lock.as_mut().map(f)
+    })
+}
+
+/// Collect the idle thread ID for each online CPU into a fixed-size buffer.
+///
+/// Returns the number of idle thread IDs written into `out` (one per online CPU).
+/// The caller must pass a buffer large enough for `cpus_online` entries.
+/// Safe to call from kernel context; disables interrupts internally.
+pub fn collect_idle_thread_ids(out: &mut [u64]) -> usize {
+    without_interrupts(|| {
+        let scheduler_lock = SCHEDULER.lock();
+        if let Some(sched) = scheduler_lock.as_ref() {
+            let count = out.len().min(MAX_CPUS);
+            for i in 0..count {
+                out[i] = sched.cpu_state[i].idle_thread;
+            }
+            count
+        } else {
+            0
+        }
     })
 }
 
@@ -1842,6 +2016,10 @@ pub fn switch_to_idle_best_effort() {
             let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
             record_cpu_state_change(cpu_id, 3, old_val, idle_id);
             sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+            // Clear previous_thread to prevent starvation: if a crash occurred during
+            // context switch, previous_thread stays set permanently blocking that thread
+            // from being requeued on any CPU.
+            sched.cpu_state[cpu_id].previous_thread = None;
         }
     }
     // If try_lock fails, the scheduler state will be stale. This function

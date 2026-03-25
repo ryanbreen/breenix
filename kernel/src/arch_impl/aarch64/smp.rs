@@ -41,7 +41,7 @@ extern "C" {
 
     /// Pointer to SMP_STACK_BASE_PHYS (in .bss.boot). CPU 0 writes the
     /// physical base address of the per-CPU stack region here before PSCI CPU_ON.
-    /// On QEMU/Parallels: 0x4100_0000; on VMware: 0x8100_0000.
+    /// On QEMU/Parallels: 0x4300_0000; on VMware: 0x8300_0000.
     static SMP_STACK_BASE_PTR: u64;
 }
 
@@ -131,9 +131,9 @@ pub fn set_uart_phys(addr: u64) {
 /// Set the physical base address of the per-CPU stack region.
 /// Must be called before `release_cpu()`.
 ///
-/// The stack base is `ram_base + 0x0100_0000` (16MB into RAM).
-/// On QEMU/Parallels (ram at 0x40000000): 0x4100_0000.
-/// On VMware (ram at 0x80000000): 0x8100_0000.
+/// The stack base is `ram_base + 0x0300_0000` (48MB into RAM, after kernel image + BSS).
+/// On QEMU/Parallels (ram at 0x40000000): 0x4300_0000.
+/// On VMware (ram at 0x80000000): 0x8300_0000.
 pub fn set_stack_base_phys(addr: u64) {
     unsafe {
         let phys = core::ptr::read_volatile(&SMP_STACK_BASE_PTR);
@@ -304,6 +304,11 @@ pub extern "C" fn secondary_cpu_entry_rust(cpu_id: u64) -> ! {
     // Initialize per-CPU data (sets TPIDR_EL1 for this CPU)
     crate::per_cpu_aarch64::init_cpu(cpu_id as usize);
 
+    // Store the boot TTBR0 as the kernel page table for this CPU.
+    let boot_ttbr0: u64;
+    unsafe { core::arch::asm!("mrs {}, ttbr0_el1", out(reg) boot_ttbr0, options(nomem, nostack)); }
+    crate::per_cpu_aarch64::set_kernel_cr3(boot_ttbr0);
+
     // Set kernel stack top for this CPU.
     // boot.S sets SP to SMP_STACK_BASE_PHYS + (cpu_id+1)*0x200000 (physical),
     // then adds KERNEL_VIRT_BASE after enabling MMU.
@@ -376,6 +381,11 @@ fn create_and_register_idle_thread(cpu_id: usize) {
     // Mark as running and already started (this CPU is already executing)
     idle_task.state = ThreadState::Running;
     idle_task.has_started = true;
+
+    // Initialize context to idle_loop_arm64 at creation time to prevent
+    // INSTRUCTION_ABORT at ELR=0x0 if dispatched before first timer save.
+    idle_task.context.elr_el1 = super::context_switch::idle_loop_arm64 as *const () as u64;
+    idle_task.context.spsr_el1 = 0x5; // EL1h, interrupts enabled
 
     // Set per-CPU current thread pointer
     let idle_task_ptr = &*idle_task as *const _ as *mut crate::task::thread::Thread;
