@@ -397,22 +397,29 @@ struct ReceivedFis {
 /// All memory must be physically contiguous and accessible via DMA.
 /// We use static allocations with known physical addresses.
 ///
-/// The 64KB DMA buffer supports multi-sector reads of up to 128 sectors
-/// via read_sectors().  Single-sector callers (read_sector) use the same
-/// buffer with count=1 and copy only the first 512 bytes out.
+/// The 64KB DMA buffer per slot supports multi-sector reads of up to 128
+/// sectors via read_sectors().  Single-sector callers (read_sector) use
+/// slot 0 with count=1 and copy only the first 512 bytes out.
+///
+/// `AHCI_MAX_CONCURRENT` slots are allocated; only slot 0 is used today
+/// but the structure is ready for multi-slot NCQ later.
 #[repr(C, align(4096))]
 struct PortDmaMem {
     /// Command list (32 headers × 32 bytes = 1024 bytes)
     cmd_list: [CmdHeader; MAX_CMD_SLOTS],
     /// Received FIS area
     received_fis: ReceivedFis,
-    /// Command table for slot 0 (we only use slot 0 for simplicity)
-    cmd_table: CmdTable,
-    /// DMA buffer for sector I/O (up to 128 sectors = 64KB)
-    dma_buf: [u8; 65536],
+    /// Command tables, one per slot (slot 0 is the only active slot)
+    cmd_tables: [CmdTable; AHCI_MAX_CONCURRENT],
+    /// DMA buffers for sector I/O, one per slot (up to 128 sectors = 64KB each)
+    dma_bufs: [[u8; 65536]; AHCI_MAX_CONCURRENT],
 }
 
-/// Static DMA memory for up to 2 ports.
+/// Number of concurrent command slots per port. Slot 0 is the only active
+/// slot for now; the array layout is ready for multi-slot NCQ later.
+const AHCI_MAX_CONCURRENT: usize = 4;
+
+/// Static DMA memory for up to 4 ports.
 /// These are page-aligned for DMA safety.
 const MAX_AHCI_PORTS: usize = 4;
 static PORT_DMA: Mutex<[Option<&'static mut PortDmaMem>; MAX_AHCI_PORTS]> =
@@ -1066,8 +1073,8 @@ impl AhciController {
         let dma = dma_lock[dma_index].as_mut().ok_or("AHCI: no DMA memory")?;
 
         // Compute physical addresses from the dma reference (see read_sector comment).
-        let cmd_table_phys = virt_to_phys(&dma.cmd_table as *const CmdTable as u64);
-        let dma_buf_phys = virt_to_phys(dma.dma_buf.as_ptr() as u64);
+        let cmd_table_phys = virt_to_phys(&dma.cmd_tables[0] as *const CmdTable as u64);
+        let dma_buf_phys = virt_to_phys(dma.dma_bufs[0].as_ptr() as u64);
 
         // Command header: CFL=5 (5 dwords = 20 bytes for H2D FIS), 1 PRDT entry
         dma.cmd_list[0].dw0 = (1 << 16) | 5; // PRDTL=1, CFL=5
@@ -1076,20 +1083,20 @@ impl AhciController {
         dma.cmd_list[0].ctbau = (cmd_table_phys >> 32) as u32;
 
         // Zero the command table
-        dma.cmd_table.cfis = [0; 64];
-        dma.cmd_table.acmd = [0; 16];
+        dma.cmd_tables[0].cfis = [0; 64];
+        dma.cmd_tables[0].acmd = [0; 16];
 
         // Set up H2D FIS for IDENTIFY DEVICE
-        dma.cmd_table.cfis[0] = FIS_TYPE_REG_H2D;
-        dma.cmd_table.cfis[1] = 0x80; // C bit = 1 (command)
-        dma.cmd_table.cfis[2] = ATA_CMD_IDENTIFY;
-        dma.cmd_table.cfis[7] = 0; // Device = 0
+        dma.cmd_tables[0].cfis[0] = FIS_TYPE_REG_H2D;
+        dma.cmd_tables[0].cfis[1] = 0x80; // C bit = 1 (command)
+        dma.cmd_tables[0].cfis[2] = ATA_CMD_IDENTIFY;
+        dma.cmd_tables[0].cfis[7] = 0; // Device = 0
 
         // PRDT: point to DMA buffer, 512 bytes
-        dma.cmd_table.prdt[0].dba = dma_buf_phys as u32;
-        dma.cmd_table.prdt[0].dbau = (dma_buf_phys >> 32) as u32;
-        dma.cmd_table.prdt[0]._reserved = 0;
-        dma.cmd_table.prdt[0].dbc = (SECTOR_SIZE as u32 - 1) | (1 << 31); // byte count - 1, IOC
+        dma.cmd_tables[0].prdt[0].dba = dma_buf_phys as u32;
+        dma.cmd_tables[0].prdt[0].dbau = (dma_buf_phys >> 32) as u32;
+        dma.cmd_tables[0].prdt[0]._reserved = 0;
+        dma.cmd_tables[0].prdt[0].dbc = (SECTOR_SIZE as u32 - 1) | (1 << 31); // byte count - 1, IOC
 
         // Ensure CPU writes are visible to the DMA device
         core::sync::atomic::fence(Ordering::SeqCst);
@@ -1110,12 +1117,12 @@ impl AhciController {
         let dma_lock = PORT_DMA.lock();
         let dma = dma_lock[dma_index].as_ref().ok_or("AHCI: no DMA memory")?;
         {
-            let buf_ptr = dma.dma_buf.as_ptr();
+            let buf_ptr = dma.dma_bufs[0].as_ptr();
             dma_cache_invalidate(buf_ptr, SECTOR_SIZE);
         }
 
         // Words 100-103 contain the 48-bit LBA sector count (u64)
-        let buf = &dma.dma_buf;
+        let buf = &dma.dma_bufs[0];
         let sectors = (buf[200] as u64)
             | ((buf[201] as u64) << 8)
             | ((buf[202] as u64) << 16)
@@ -1172,8 +1179,8 @@ impl AhciController {
         // AArch64 ADRP (PC-relative) addressing can produce inconsistent addresses for
         // &raw const DMA_STORAGE when read_sectors is inlined into different call sites.
         // The dma reference was created during init with the correct runtime address.
-        let cmd_table_phys = virt_to_phys(&dma.cmd_table as *const CmdTable as u64);
-        let dma_buf_phys = virt_to_phys(dma.dma_buf.as_ptr() as u64);
+        let cmd_table_phys = virt_to_phys(&dma.cmd_tables[0] as *const CmdTable as u64);
+        let dma_buf_phys = virt_to_phys(dma.dma_bufs[0].as_ptr() as u64);
 
         // Command header: CFL=5, PRDTL=1, not a write
         dma.cmd_list[0].dw0 = (1 << 16) | 5;
@@ -1182,29 +1189,29 @@ impl AhciController {
         dma.cmd_list[0].ctbau = (cmd_table_phys >> 32) as u32;
 
         // Zero CFIS
-        dma.cmd_table.cfis = [0; 64];
+        dma.cmd_tables[0].cfis = [0; 64];
 
         // H2D FIS: READ DMA EXT
-        dma.cmd_table.cfis[0] = FIS_TYPE_REG_H2D;
-        dma.cmd_table.cfis[1] = 0x80; // C bit
-        dma.cmd_table.cfis[2] = ATA_CMD_READ_DMA_EXT;
-        dma.cmd_table.cfis[3] = 0; // Features
-        dma.cmd_table.cfis[4] = lba as u8;          // LBA 7:0
-        dma.cmd_table.cfis[5] = (lba >> 8) as u8;   // LBA 15:8
-        dma.cmd_table.cfis[6] = (lba >> 16) as u8;  // LBA 23:16
-        dma.cmd_table.cfis[7] = 0x40; // Device: LBA mode
-        dma.cmd_table.cfis[8] = (lba >> 24) as u8;  // LBA 31:24
-        dma.cmd_table.cfis[9] = (lba >> 32) as u8;  // LBA 39:32
-        dma.cmd_table.cfis[10] = (lba >> 40) as u8; // LBA 47:40
-        dma.cmd_table.cfis[12] = count as u8;        // Count low
-        dma.cmd_table.cfis[13] = (count >> 8) as u8; // Count high
+        dma.cmd_tables[0].cfis[0] = FIS_TYPE_REG_H2D;
+        dma.cmd_tables[0].cfis[1] = 0x80; // C bit
+        dma.cmd_tables[0].cfis[2] = ATA_CMD_READ_DMA_EXT;
+        dma.cmd_tables[0].cfis[3] = 0; // Features
+        dma.cmd_tables[0].cfis[4] = lba as u8;          // LBA 7:0
+        dma.cmd_tables[0].cfis[5] = (lba >> 8) as u8;   // LBA 15:8
+        dma.cmd_tables[0].cfis[6] = (lba >> 16) as u8;  // LBA 23:16
+        dma.cmd_tables[0].cfis[7] = 0x40; // Device: LBA mode
+        dma.cmd_tables[0].cfis[8] = (lba >> 24) as u8;  // LBA 31:24
+        dma.cmd_tables[0].cfis[9] = (lba >> 32) as u8;  // LBA 39:32
+        dma.cmd_tables[0].cfis[10] = (lba >> 40) as u8; // LBA 47:40
+        dma.cmd_tables[0].cfis[12] = count as u8;        // Count low
+        dma.cmd_tables[0].cfis[13] = (count >> 8) as u8; // Count high
 
         // Single PRDT entry covering the full multi-sector transfer.
         // AHCI spec: byte count field = (bytes - 1), bit 31 = IOC.
-        dma.cmd_table.prdt[0].dba = dma_buf_phys as u32;
-        dma.cmd_table.prdt[0].dbau = (dma_buf_phys >> 32) as u32;
-        dma.cmd_table.prdt[0]._reserved = 0;
-        dma.cmd_table.prdt[0].dbc = (byte_count as u32 - 1) | (1 << 31);
+        dma.cmd_tables[0].prdt[0].dba = dma_buf_phys as u32;
+        dma.cmd_tables[0].prdt[0].dbau = (dma_buf_phys >> 32) as u32;
+        dma.cmd_tables[0].prdt[0]._reserved = 0;
+        dma.cmd_tables[0].prdt[0].dbc = (byte_count as u32 - 1) | (1 << 31);
 
         // Ensure CPU writes are visible to the DMA device
         core::sync::atomic::fence(Ordering::SeqCst);
@@ -1227,10 +1234,10 @@ impl AhciController {
         let dma_lock = PORT_DMA.lock();
         let dma = dma_lock[dma_index].as_ref().ok_or("AHCI: no DMA memory")?;
         {
-            let buf_ptr = dma.dma_buf.as_ptr();
+            let buf_ptr = dma.dma_bufs[0].as_ptr();
             dma_cache_invalidate(buf_ptr, byte_count);
         }
-        buffer[..byte_count].copy_from_slice(&dma.dma_buf[..byte_count]);
+        buffer[..byte_count].copy_from_slice(&dma.dma_bufs[0][..byte_count]);
 
         Ok(())
     }
@@ -1250,11 +1257,11 @@ impl AhciController {
         let dma = dma_lock[dma_index].as_mut().ok_or("AHCI: no DMA memory")?;
 
         // Compute physical addresses from the dma reference (see read_sector comment).
-        let cmd_table_phys = virt_to_phys(&dma.cmd_table as *const CmdTable as u64);
-        let dma_buf_phys = virt_to_phys(dma.dma_buf.as_ptr() as u64);
+        let cmd_table_phys = virt_to_phys(&dma.cmd_tables[0] as *const CmdTable as u64);
+        let dma_buf_phys = virt_to_phys(dma.dma_bufs[0].as_ptr() as u64);
 
-        // Copy data to first sector of DMA buffer
-        dma.dma_buf[..SECTOR_SIZE].copy_from_slice(buffer);
+        // Copy data to first sector of DMA buffer (slot 0)
+        dma.dma_bufs[0][..SECTOR_SIZE].copy_from_slice(buffer);
 
         // Command header: CFL=5, PRDTL=1, Write bit set (bit 6)
         dma.cmd_list[0].dw0 = (1 << 16) | (1 << 6) | 5;
@@ -1263,28 +1270,28 @@ impl AhciController {
         dma.cmd_list[0].ctbau = (cmd_table_phys >> 32) as u32;
 
         // Zero CFIS
-        dma.cmd_table.cfis = [0; 64];
+        dma.cmd_tables[0].cfis = [0; 64];
 
         // H2D FIS: WRITE DMA EXT
-        dma.cmd_table.cfis[0] = FIS_TYPE_REG_H2D;
-        dma.cmd_table.cfis[1] = 0x80;
-        dma.cmd_table.cfis[2] = ATA_CMD_WRITE_DMA_EXT;
-        dma.cmd_table.cfis[3] = 0;
-        dma.cmd_table.cfis[4] = lba as u8;
-        dma.cmd_table.cfis[5] = (lba >> 8) as u8;
-        dma.cmd_table.cfis[6] = (lba >> 16) as u8;
-        dma.cmd_table.cfis[7] = 0x40;
-        dma.cmd_table.cfis[8] = (lba >> 24) as u8;
-        dma.cmd_table.cfis[9] = (lba >> 32) as u8;
-        dma.cmd_table.cfis[10] = (lba >> 40) as u8;
-        dma.cmd_table.cfis[12] = 1;
-        dma.cmd_table.cfis[13] = 0;
+        dma.cmd_tables[0].cfis[0] = FIS_TYPE_REG_H2D;
+        dma.cmd_tables[0].cfis[1] = 0x80;
+        dma.cmd_tables[0].cfis[2] = ATA_CMD_WRITE_DMA_EXT;
+        dma.cmd_tables[0].cfis[3] = 0;
+        dma.cmd_tables[0].cfis[4] = lba as u8;
+        dma.cmd_tables[0].cfis[5] = (lba >> 8) as u8;
+        dma.cmd_tables[0].cfis[6] = (lba >> 16) as u8;
+        dma.cmd_tables[0].cfis[7] = 0x40;
+        dma.cmd_tables[0].cfis[8] = (lba >> 24) as u8;
+        dma.cmd_tables[0].cfis[9] = (lba >> 32) as u8;
+        dma.cmd_tables[0].cfis[10] = (lba >> 40) as u8;
+        dma.cmd_tables[0].cfis[12] = 1;
+        dma.cmd_tables[0].cfis[13] = 0;
 
         // PRDT
-        dma.cmd_table.prdt[0].dba = dma_buf_phys as u32;
-        dma.cmd_table.prdt[0].dbau = (dma_buf_phys >> 32) as u32;
-        dma.cmd_table.prdt[0]._reserved = 0;
-        dma.cmd_table.prdt[0].dbc = (SECTOR_SIZE as u32 - 1) | (1 << 31);
+        dma.cmd_tables[0].prdt[0].dba = dma_buf_phys as u32;
+        dma.cmd_tables[0].prdt[0].dbau = (dma_buf_phys >> 32) as u32;
+        dma.cmd_tables[0].prdt[0]._reserved = 0;
+        dma.cmd_tables[0].prdt[0].dbc = (SECTOR_SIZE as u32 - 1) | (1 << 31);
 
         // Ensure CPU writes (command + data) are visible to the DMA device
         core::sync::atomic::fence(Ordering::SeqCst);
@@ -1305,7 +1312,7 @@ impl AhciController {
         let dma = dma_lock[dma_index].as_mut().ok_or("AHCI: no DMA memory")?;
 
         // Compute physical addresses from the dma reference (see read_sector comment).
-        let cmd_table_phys = virt_to_phys(&dma.cmd_table as *const CmdTable as u64);
+        let cmd_table_phys = virt_to_phys(&dma.cmd_tables[0] as *const CmdTable as u64);
 
         // Command header: CFL=5, PRDTL=0 (no data transfer)
         dma.cmd_list[0].dw0 = 5;
@@ -1313,11 +1320,11 @@ impl AhciController {
         dma.cmd_list[0].ctba = cmd_table_phys as u32;
         dma.cmd_list[0].ctbau = (cmd_table_phys >> 32) as u32;
 
-        dma.cmd_table.cfis = [0; 64];
-        dma.cmd_table.cfis[0] = FIS_TYPE_REG_H2D;
-        dma.cmd_table.cfis[1] = 0x80;
-        dma.cmd_table.cfis[2] = ATA_CMD_FLUSH_EXT;
-        dma.cmd_table.cfis[7] = 0x40;
+        dma.cmd_tables[0].cfis = [0; 64];
+        dma.cmd_tables[0].cfis[0] = FIS_TYPE_REG_H2D;
+        dma.cmd_tables[0].cfis[1] = 0x80;
+        dma.cmd_tables[0].cfis[2] = ATA_CMD_FLUSH_EXT;
+        dma.cmd_tables[0].cfis[7] = 0x40;
 
         // Ensure CPU writes are visible to the DMA device
         core::sync::atomic::fence(Ordering::SeqCst);
@@ -1488,23 +1495,23 @@ fn probe_platform_irq(ctrl: &AhciController) {
             }
         };
 
-        let cmd_table_phys = virt_to_phys(&dma.cmd_table as *const CmdTable as u64);
-        let dma_buf_phys = virt_to_phys(dma.dma_buf.as_ptr() as u64);
+        let cmd_table_phys = virt_to_phys(&dma.cmd_tables[0] as *const CmdTable as u64);
+        let dma_buf_phys = virt_to_phys(dma.dma_bufs[0].as_ptr() as u64);
 
         dma.cmd_list[0].dw0 = (1 << 16) | 5;
         dma.cmd_list[0].prdbc = 0;
         dma.cmd_list[0].ctba = cmd_table_phys as u32;
         dma.cmd_list[0].ctbau = (cmd_table_phys >> 32) as u32;
 
-        dma.cmd_table.cfis = [0; 64];
-        dma.cmd_table.cfis[0] = FIS_TYPE_REG_H2D;
-        dma.cmd_table.cfis[1] = 0x80;
-        dma.cmd_table.cfis[2] = ATA_CMD_IDENTIFY;
+        dma.cmd_tables[0].cfis = [0; 64];
+        dma.cmd_tables[0].cfis[0] = FIS_TYPE_REG_H2D;
+        dma.cmd_tables[0].cfis[1] = 0x80;
+        dma.cmd_tables[0].cfis[2] = ATA_CMD_IDENTIFY;
 
-        dma.cmd_table.prdt[0].dba = dma_buf_phys as u32;
-        dma.cmd_table.prdt[0].dbau = (dma_buf_phys >> 32) as u32;
-        dma.cmd_table.prdt[0]._reserved = 0;
-        dma.cmd_table.prdt[0].dbc = (SECTOR_SIZE as u32 - 1) | (1 << 31);
+        dma.cmd_tables[0].prdt[0].dba = dma_buf_phys as u32;
+        dma.cmd_tables[0].prdt[0].dbau = (dma_buf_phys >> 32) as u32;
+        dma.cmd_tables[0].prdt[0]._reserved = 0;
+        dma.cmd_tables[0].prdt[0].dbc = (SECTOR_SIZE as u32 - 1) | (1 << 31);
 
         core::sync::atomic::fence(Ordering::SeqCst);
         let dma_ptr = &**dma as *const PortDmaMem as *const u8;
