@@ -171,10 +171,11 @@ static AHCI_IRQ: AtomicU32 = AtomicU32::new(0);
 /// For level-triggered, clearing PORT_IS de-asserts the line; no SPI clear needed.
 static AHCI_IRQ_EDGE: AtomicBool = AtomicBool::new(true);
 
-/// Per-port completion primitives. Replaces the old AtomicBool flags.
-/// The ISR calls complete(); issue_cmd_slot0 calls wait_timeout().
-static AHCI_COMPLETIONS: [Completion; MAX_AHCI_PORTS] = [
-    const { Completion::new() }; MAX_AHCI_PORTS
+/// Per-port, per-slot completion primitives.
+/// Outer index = port number, inner index = slot number.
+/// The ISR calls complete() on the appropriate slot; issue_cmd_slot0 waits on slot 0.
+static AHCI_COMPLETIONS: [[Completion; AHCI_MAX_CONCURRENT]; MAX_AHCI_PORTS] = [
+    const { [const { Completion::new() }; AHCI_MAX_CONCURRENT] }; MAX_AHCI_PORTS
 ];
 
 /// Count ISR invocations (for diagnostic/timeout reporting).
@@ -842,7 +843,7 @@ impl AhciController {
         // Reset the per-port Completion before issuing so complete() from a
         // previous (already-cleared) ISR call cannot satisfy this new wait.
         if has_irq {
-            AHCI_COMPLETIONS[port].reset();
+            AHCI_COMPLETIONS[port][0].reset();
         }
 
         let cmd_num = AHCI_CMD_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -874,7 +875,7 @@ impl AhciController {
         // takes the WFI sleep path — but WFI blocks forever without a timer.
         //
         // With timer_running as the gate: the pre-load goes to the interrupt-driven
-        // polling path (yield-spin on AHCI_COMPLETIONS[port].done), which works
+        // polling path (yield-spin on AHCI_COMPLETIONS[port][0].done), which works
         // correctly on Parallels with wired SPI 34.
         //
         // After the timer is running, all paths (boot thread post-timer, syscalls)
@@ -902,7 +903,7 @@ impl AhciController {
             //   - 5-second timeout via CNTPCT_EL0 inside wait_timeout().
             // ============================================================
             const TIMEOUT_NS: u64 = 5_000_000_000; // 5 s — Linux default
-            match AHCI_COMPLETIONS[port].wait_timeout(TIMEOUT_NS) {
+            match AHCI_COMPLETIONS[port][0].wait_timeout(TIMEOUT_NS) {
                 Ok(true) => {
                     let tfd = port_read(abar, port, PORT_TFD);
                     if (tfd & 1) != 0 {
@@ -940,7 +941,7 @@ impl AhciController {
             let (start, freq) = read_cntpct_and_freq();
             let deadline = start + freq * AHCI_TIMEOUT_SECS;
             loop {
-                if AHCI_COMPLETIONS[port].done.load(Ordering::Acquire) {
+                if AHCI_COMPLETIONS[port][0].done.load(Ordering::Acquire) {
                     let tfd = port_read(abar, port, PORT_TFD);
                     if (tfd & 1) != 0 {
                         return Err("AHCI: task file error");
@@ -1060,7 +1061,7 @@ impl AhciController {
         crate::serial_println!(
             "[ahci]   isr_count={} cmd#={} completion_done={} PMR={:#x} RPR={:#x}",
             isr_count, cmd_num,
-            if port < MAX_AHCI_PORTS { AHCI_COMPLETIONS[port].done.load(Ordering::Relaxed) } else { false },
+            if port < MAX_AHCI_PORTS { AHCI_COMPLETIONS[port][0].done.load(Ordering::Relaxed) } else { false },
             pmr, rpr
         );
     }
@@ -1670,7 +1671,9 @@ pub fn handle_interrupt() {
             // instruction is no longer needed because the scheduler IPI
             // (send_resched_ipi) wakes the target CPU.
             if port < MAX_AHCI_PORTS {
-                AHCI_COMPLETIONS[port].complete();
+                // slot 0 is the only active slot; Step 5 will expand this to
+                // compute completed slots from PORT_CI diff.
+                AHCI_COMPLETIONS[port][0].complete();
             }
         }
     }
