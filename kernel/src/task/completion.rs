@@ -152,42 +152,15 @@ impl Completion {
                 crate::per_cpu::preempt_enable();
 
                 loop {
-                    // Atomic check-and-block under scheduler lock.
-                    let already_done = crate::task::scheduler::with_scheduler(|sched| {
-                        if self.done.load(Ordering::Acquire) {
-                            true // completion already fired — skip blocking
-                        } else {
-                            sched.block_current_for_io();
-                            false
-                        }
-                    });
-
-                    if already_done == Some(true) {
-                        self.waiter.store(0, Ordering::Release);
-                        #[cfg(target_arch = "aarch64")]
-                        crate::per_cpu_aarch64::preempt_disable();
-                        #[cfg(target_arch = "x86_64")]
-                        crate::per_cpu::preempt_disable();
-                        return Ok(true);
-                    }
-
-                    // Thread is now BlockedOnIO. WFI halts the CPU until the
-                    // AHCI completion interrupt (or timer tick) fires. When the
-                    // ISR calls complete() -> unblock_for_io(), the thread's
-                    // state changes to Ready. On IRQ return, since we're still
-                    // current, execution resumes here immediately — no context
-                    // switch needed, no yield_current() latency.
-                    #[cfg(target_arch = "aarch64")]
-                    Cpu::halt_with_interrupts();
-
-                    // After resuming, clear blocked_in_syscall.
-                    crate::task::scheduler::with_scheduler(|sched| {
-                        if let Some(t) = sched.current_thread_mut() {
-                            t.blocked_in_syscall = false;
-                        }
-                    });
-
-                    // Normal wakeup path.
+                    // --------------------------------------------------------
+                    // FAST PATH: check done BEFORE any scheduler interaction.
+                    //
+                    // When the AHCI ISR fires on the same CPU as the waiter,
+                    // it runs during WFI, sets done=true, and WFI returns.
+                    // We arrive here with done=true — return immediately with
+                    // zero scheduler lock acquisitions.  This eliminates the
+                    // ~1 ms scheduler round-trip for same-CPU completions.
+                    // --------------------------------------------------------
                     if self.done.load(Ordering::Acquire) {
                         self.waiter.store(0, Ordering::Release);
                         #[cfg(target_arch = "aarch64")]
@@ -196,6 +169,39 @@ impl Completion {
                         crate::per_cpu::preempt_disable();
                         return Ok(true);
                     }
+
+                    // Not done yet — block under the scheduler lock.
+                    //
+                    // Race safety: if complete() fires between the load above
+                    // and block_current_for_io(), the closure re-checks done
+                    // under the scheduler lock and skips the block, so we
+                    // never sleep on an already-completed completion.
+                    crate::task::scheduler::with_scheduler(|sched| {
+                        if !self.done.load(Ordering::Acquire) {
+                            sched.block_current_for_io();
+                        }
+                    });
+
+                    // Thread is now BlockedOnIO (or done was set just above).
+                    // WFI halts the CPU until the AHCI completion interrupt
+                    // (or timer tick) fires.  When the ISR calls complete() ->
+                    // unblock_for_io(), the thread's state becomes Ready and
+                    // WFI returns.  On same-CPU IRQ return we resume here
+                    // immediately — no yield_current() latency.
+                    #[cfg(target_arch = "aarch64")]
+                    Cpu::halt_with_interrupts();
+
+                    // After resuming from WFI, clear blocked_in_syscall so the
+                    // scheduler no longer treats us as pending I/O.
+                    crate::task::scheduler::with_scheduler(|sched| {
+                        if let Some(t) = sched.current_thread_mut() {
+                            t.blocked_in_syscall = false;
+                        }
+                    });
+
+                    // Loop back to the fast-path done check at the top.
+                    // If the AHCI ISR fired during WFI, done=true and we
+                    // return immediately on the next iteration.
 
                     // EINTR: signal delivered while blocked.
                     if crate::syscall::check_signals_for_eintr().is_some() {
