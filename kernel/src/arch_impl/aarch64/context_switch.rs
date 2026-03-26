@@ -1519,7 +1519,11 @@ extern "C" fn inline_schedule_trampoline() -> ! {
 }
 
 pub fn schedule_from_kernel() {
-    let saved_daif = read_daif();
+    let mut saved_daif = read_daif();
+    // DIAGNOSTIC: check if caller has IRQs masked (would strand AHCI completions)
+    if (saved_daif & (1 << 7)) != 0 {
+        crate::serial_aarch64::raw_serial_char(b'!');
+    }
     unsafe {
         crate::arch_impl::aarch64::cpu::disable_interrupts();
     }
@@ -1570,6 +1574,15 @@ pub fn schedule_from_kernel() {
             core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
         }
         return;
+    }
+
+    let old_is_idle = sched.is_idle_thread_inner(old_id);
+    if old_is_idle {
+        // The CPU0 idle thread may resume through the parked
+        // schedule_from_kernel() frame instead of jumping straight to
+        // idle_loop_arm64. If we preserve DAIF.I=1 here, that resumed "idle"
+        // path can run with IRQs masked and strand pending AHCI completions.
+        saved_daif &= !(1 << 7);
     }
 
     trace_ctx_switch(old_id, new_id);
