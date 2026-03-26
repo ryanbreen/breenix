@@ -520,6 +520,144 @@ fn port_write(abar: u64, port: usize, offset: usize, value: u32) {
 }
 
 // =============================================================================
+// Command Token + Wait
+// =============================================================================
+
+/// Token returned by `setup_cmd_slot0` that encodes the wait mode.
+/// Pass to `wait_cmd_slot0` after releasing any locks.
+struct CmdToken {
+    port: usize,
+    cmd_num: u32,
+    has_irq: bool,
+    scheduler_running: bool,
+}
+
+/// Wait for a slot-0 command to complete, with NO locks held.
+///
+/// This is the second half of the split command issue protocol:
+///   1. Lock → `setup_cmd_slot0()` → unlock    (issues PORT_CI)
+///   2. `wait_cmd_slot0()` with no lock held     (sleeps / polls)
+///   3. [Optional] Lock → finish (cache invalidate, copy result)
+///
+/// Three wait modes selected by the token:
+///
+/// SCHEDULER SLEEP (normal, timer running):
+///   Calls `Completion::wait_timeout()` which puts the thread into
+///   `BlockedOnIO` state.  The scheduler runs other threads while we wait.
+///   The ISR calls `complete()` → `unblock_for_io()` to wake us.
+///   This is the path that eliminates SCHED_RESCUE and lockup reports.
+///
+/// INTERRUPT-DRIVEN POLLING (IRQ registered, scheduler/timer not yet ready):
+///   Spin-polls the Completion done flag (set by ISR) using `yield`.
+///   Safe because no lock is held.
+///
+/// PORT_CI POLLING (early boot, before IRQ registered):
+///   Polls PORT_CI directly until the command clears.
+fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
+    let abar = AHCI_ABAR.load(Ordering::Relaxed);
+    let port = token.port;
+    let cmd_num = token.cmd_num;
+
+    if token.scheduler_running {
+        // ============================================================
+        // SCHEDULER SLEEP PATH (normal operation, timer running)
+        //
+        // No lock is held here.  Completion::wait_timeout() atomically
+        // checks done and calls block_current_for_io() under the scheduler
+        // lock, preventing a race with complete() from the ISR.
+        // ============================================================
+        const TIMEOUT_NS: u64 = 5_000_000_000; // 5 s — Linux default
+        match AHCI_COMPLETIONS[port][0].wait_timeout(TIMEOUT_NS) {
+            Ok(true) => {
+                let tfd = port_read(abar, port, PORT_TFD);
+                if (tfd & 1) != 0 {
+                    return Err("AHCI: task file error");
+                }
+                return Ok(());
+            }
+            Ok(false) => {
+                dump_timeout_state_free(port, cmd_num);
+                return Err("AHCI: command timeout");
+            }
+            Err(_eintr) => {
+                // Signal arrived while waiting; PORT_CI may still be set.
+                // The next call will hit the error-recovery path if the HBA
+                // is still busy.
+                return Err("AHCI: interrupted");
+            }
+        }
+    } else if token.has_irq {
+        // ============================================================
+        // INTERRUPT-DRIVEN POLLING PATH
+        //
+        // IRQ registered but scheduler/timer not yet ready (early boot).
+        // Spin-poll with yield — safe because no lock is held.
+        // ============================================================
+        let (start, freq) = read_cntpct_and_freq();
+        let deadline = start + freq * AHCI_TIMEOUT_SECS;
+        loop {
+            if AHCI_COMPLETIONS[port][0].done.load(Ordering::Acquire) {
+                let tfd = port_read(abar, port, PORT_TFD);
+                if (tfd & 1) != 0 {
+                    return Err("AHCI: task file error");
+                }
+                return Ok(());
+            }
+
+            let now = read_cntpct();
+            if now >= deadline {
+                dump_timeout_state_free(port, cmd_num);
+                return Err("AHCI: command timeout");
+            }
+
+            #[cfg(target_arch = "aarch64")]
+            unsafe { core::arch::asm!("yield", options(nomem, nostack)); }
+            #[cfg(not(target_arch = "aarch64"))]
+            core::hint::spin_loop();
+        }
+    } else {
+        // ============================================================
+        // POLLING PATH (early boot, before IRQ registered)
+        //
+        // No ISR available — poll PORT_CI directly.
+        // ============================================================
+        let (start, freq) = read_cntpct_and_freq();
+        let deadline = start + freq * AHCI_TIMEOUT_SECS;
+        loop {
+            let ci = port_read(abar, port, PORT_CI);
+            if (ci & 1) == 0 {
+                let is = port_read(abar, port, PORT_IS);
+                let tfd = port_read(abar, port, PORT_TFD);
+                port_write(abar, port, PORT_IS, is);
+                hba_write(abar, HBA_IS, 1u32 << (port as u32));
+                if (is & PORT_IRQ_ERROR) != 0 || (tfd & 1) != 0 {
+                    return Err("AHCI: task file error");
+                }
+                return Ok(());
+            }
+
+            let is = port_read(abar, port, PORT_IS);
+            if (is & PORT_IRQ_ERROR) != 0 {
+                port_write(abar, port, PORT_IS, is);
+                hba_write(abar, HBA_IS, 1u32 << (port as u32));
+                return Err("AHCI: task file error");
+            }
+
+            let now = read_cntpct();
+            if now >= deadline {
+                dump_timeout_state_free(port, cmd_num);
+                return Err("AHCI: command timeout");
+            }
+
+            #[cfg(target_arch = "aarch64")]
+            unsafe { core::arch::asm!("wfe", options(nomem, nostack)); }
+            #[cfg(not(target_arch = "aarch64"))]
+            core::hint::spin_loop();
+        }
+    }
+}
+
+// =============================================================================
 // Controller Implementation
 // =============================================================================
 
@@ -785,29 +923,15 @@ impl AhciController {
         Err("AHCI: port busy timeout")
     }
 
-    /// Issue a command on slot 0 and wait for completion.
+    /// Prepare slot 0 and write PORT_CI = 1; return a token for the caller
+    /// to pass to `wait_cmd_slot0` after releasing any locks.
     ///
-    /// Uses interrupt-driven completion matching Linux's ahci_qc_issue +
-    /// wait_for_completion pattern:
+    /// Does NOT wait.  The caller must call `wait_cmd_slot0(port, token)`
+    /// with NO LOCKS HELD to block until the command completes or times out.
     ///
-    /// 1. Clear stale PORT_IS / HBA_IS.
-    /// 2. Verify PORT_CMD.ST (command engine running).
-    /// 3. Write PORT_CI = 1, DSB SY + ISB to commit the MMIO write.
-    /// 4. Loop checking ONLY the ISR-set AHCI_PORT_COMPLETE flag.
-    ///    No PORT_CI polling — the interrupt is the sole completion signal.
-    /// 5. On completion: check PORT_TFD for errors.
-    ///
-    /// The DSB SY + ISB after PORT_CI ensures the MMIO write is fully
-    /// committed to the device before we enter the wait loop. Without this,
-    /// ARM64 weak memory ordering can delay the write, causing the device
-    /// to not see the command issue until after we've started waiting.
-    ///
-    /// When no IRQ is registered (!has_irq, early boot only), falls back
-    /// to PORT_CI polling since there is no ISR to set the completion flag.
-    ///
-    /// Timeout is wall-clock based via CNTPCT_EL0 (5 seconds, matching
-    /// Linux's ata_internal_cmd_timeout for non-NCQ commands).
-    fn issue_cmd_slot0(&self, port: usize) -> Result<(), &'static str> {
+    /// # Preconditions
+    /// DMA structures must be fully set up and cache-cleaned before calling.
+    fn setup_cmd_slot0(&self, port: usize) -> Result<CmdToken, &'static str> {
         let abar = self.abar_virt;
 
         // --- Error recovery: clear ERR:Fatal state ---
@@ -837,17 +961,15 @@ impl AhciController {
             return Err("AHCI: command engine not running");
         }
 
-        // --- Reset completion and issue command ---
+        // --- Reset completion BEFORE writing PORT_CI ---
         let has_irq = AHCI_IRQ.load(Ordering::Relaxed) != 0 && port < MAX_AHCI_PORTS;
-
-        // Reset the per-port Completion before issuing so complete() from a
-        // previous (already-cleared) ISR call cannot satisfy this new wait.
         if has_irq {
             AHCI_COMPLETIONS[port][0].reset();
         }
 
         let cmd_num = AHCI_CMD_COUNT.fetch_add(1, Ordering::Relaxed);
 
+        // Write PORT_CI to issue the command.
         port_write(abar, port, PORT_CI, 1);
 
         // DSB SY + ISB: ensure the PORT_CI MMIO write is fully committed to
@@ -862,156 +984,54 @@ impl AhciController {
             core::arch::asm!("isb", options(nostack, preserves_flags));
         }
 
-        // Detect whether we can safely use wait_timeout() (which may WFI).
+        // Determine wait mode.
         //
-        // Two conditions must hold:
-        // 1. Scheduler is running (current_thread_id returns Some after init_with_current).
-        // 2. Timer is running (timer_is_running() = true after timer_interrupt::init()).
+        // Two conditions must hold for the scheduler-sleep path:
+        // 1. Scheduler is running (current_thread_id returns Some).
+        // 2. Timer is running (timer_is_running() = true after timer init).
         //
         // The timer check is critical: during the boot sequence on ARM64,
         // main_aarch64 calls preempt_disable() BEFORE timer_interrupt::init().
         // The pre-load of /sbin/init from ext2 happens in this window.
-        // wait_timeout() detects in_syscall=true (preempt_count > 0) and
-        // takes the WFI sleep path — but WFI blocks forever without a timer.
-        //
-        // With timer_running as the gate: the pre-load goes to the interrupt-driven
-        // polling path (yield-spin on AHCI_COMPLETIONS[port][0].done), which works
-        // correctly on Parallels with wired SPI 34.
-        //
-        // After the timer is running, all paths (boot thread post-timer, syscalls)
-        // use wait_timeout() which correctly sleeps using block_current_for_io +
-        // WFI, with the 1 kHz timer providing ≤1ms wakeup latency.
         let timer_running = {
             #[cfg(target_arch = "aarch64")]
             { crate::arch_impl::aarch64::timer_interrupt::timer_is_running() }
             #[cfg(not(target_arch = "aarch64"))]
-            { true } // x86_64: timer always treated as running for this check
+            { true }
         };
         let scheduler_running = has_irq
             && crate::task::scheduler::current_thread_id().is_some()
             && timer_running;
 
-        if scheduler_running {
-            // ============================================================
-            // SCHEDULER SLEEP PATH (normal operation, timer running)
-            //
-            // The Completion primitive puts the calling thread to sleep and
-            // wakes it when the ISR calls complete().  This matches Linux's
-            // wait_for_completion_timeout() design:
-            //   - Zero CPU spin — thread sleeps while other work runs.
-            //   - EINTR on signal delivery.
-            //   - 5-second timeout via CNTPCT_EL0 inside wait_timeout().
-            // ============================================================
-            const TIMEOUT_NS: u64 = 5_000_000_000; // 5 s — Linux default
-            match AHCI_COMPLETIONS[port][0].wait_timeout(TIMEOUT_NS) {
-                Ok(true) => {
-                    let tfd = port_read(abar, port, PORT_TFD);
-                    if (tfd & 1) != 0 {
-                        return Err("AHCI: task file error");
-                    }
-                    return Ok(());
-                }
-                Ok(false) => {
-                    self.dump_timeout_state(port, cmd_num);
-                    return Err("AHCI: command timeout");
-                }
-                Err(_eintr) => {
-                    // Signal arrived while waiting; PORT_CI may still be set.
-                    // We do not attempt to abort the in-flight DMA — the
-                    // next call will hit the error-recovery path at the top
-                    // of this function if the HBA is still busy.
-                    return Err("AHCI: interrupted");
-                }
-            }
-        } else if has_irq {
-            // ============================================================
-            // INTERRUPT-DRIVEN POLLING PATH
-            //
-            // Two cases reach here:
-            // 1. IRQ registered but scheduler not yet running (early init after
-            //    IRQ probe but before init_with_current).
-            // 2. Scheduler running but preempt_count > 0 (boot sequence:
-            //    preempt_disable() called before timer init, e.g., pre-loading
-            //    /sbin/init from ext2 before the timer interrupt is started).
-            //    In this case WFI is unsafe — poll with yield instead.
-            //
-            // In both cases: spin-poll the Completion done flag (set by the
-            // ISR) using yield to allow the hypervisor to schedule other vCPUs.
-            // ============================================================
-            let (start, freq) = read_cntpct_and_freq();
-            let deadline = start + freq * AHCI_TIMEOUT_SECS;
-            loop {
-                if AHCI_COMPLETIONS[port][0].done.load(Ordering::Acquire) {
-                    let tfd = port_read(abar, port, PORT_TFD);
-                    if (tfd & 1) != 0 {
-                        return Err("AHCI: task file error");
-                    }
-                    return Ok(());
-                }
+        Ok(CmdToken { port, cmd_num, has_irq, scheduler_running })
+    }
 
-                let now = read_cntpct();
-                if now >= deadline {
-                    self.dump_timeout_state(port, cmd_num);
-                    return Err("AHCI: command timeout");
-                }
-
-                // yield hint — allows hypervisor to schedule other vCPUs.
-                #[cfg(target_arch = "aarch64")]
-                unsafe { core::arch::asm!("yield", options(nomem, nostack)); }
-                #[cfg(not(target_arch = "aarch64"))]
-                core::hint::spin_loop();
-            }
-        } else {
-            // ============================================================
-            // POLLING PATH (early boot only, before IRQ registered)
-            //
-            // No ISR is available, so poll PORT_CI directly.
-            // This path is used only during init_port/identify_device
-            // before the platform IRQ probe has run.
-            // ============================================================
-            let (start, freq) = read_cntpct_and_freq();
-            let deadline = start + freq * AHCI_TIMEOUT_SECS;
-            loop {
-                let ci = port_read(abar, port, PORT_CI);
-                if (ci & 1) == 0 {
-                    let is = port_read(abar, port, PORT_IS);
-                    let tfd = port_read(abar, port, PORT_TFD);
-                    port_write(abar, port, PORT_IS, is);
-                    hba_write(abar, HBA_IS, 1u32 << (port as u32));
-                    if (is & PORT_IRQ_ERROR) != 0 || (tfd & 1) != 0 {
-                        return Err("AHCI: task file error");
-                    }
-                    return Ok(());
-                }
-
-                let is = port_read(abar, port, PORT_IS);
-                if (is & PORT_IRQ_ERROR) != 0 {
-                    port_write(abar, port, PORT_IS, is);
-                    hba_write(abar, HBA_IS, 1u32 << (port as u32));
-                    return Err("AHCI: task file error");
-                }
-
-                let now = read_cntpct();
-                if now >= deadline {
-                    self.dump_timeout_state(port, cmd_num);
-                    return Err("AHCI: command timeout");
-                }
-
-                // Early boot: use wfe which always returns (no guaranteed
-                // interrupt source yet).
-                #[cfg(target_arch = "aarch64")]
-                unsafe { core::arch::asm!("wfe", options(nomem, nostack)); }
-                #[cfg(not(target_arch = "aarch64"))]
-                core::hint::spin_loop();
-            }
-        }
+    /// Issue a command on slot 0 and wait for completion (combined path).
+    ///
+    /// Used by early-boot callers (identify_device, probe_platform_irq) where
+    /// no lock must be released before waiting.  Hot I/O callers (read_block,
+    /// write_block, flush) use setup_cmd_slot0 + wait_cmd_slot0 instead so
+    /// the AHCI lock is NOT held during the wait.
+    fn issue_cmd_slot0(&self, port: usize) -> Result<(), &'static str> {
+        let token = self.setup_cmd_slot0(port)?;
+        wait_cmd_slot0(token)
     }
 
     /// Dump full diagnostic state on command timeout.
     ///
     /// Extracted from issue_cmd_slot0 to keep the hot path clean.
     fn dump_timeout_state(&self, port: usize, cmd_num: u32) {
-        let abar = self.abar_virt;
+        // Delegate to the free function — abar is identical to self.abar_virt.
+        dump_timeout_state_free(port, cmd_num);
+    }
+}
+
+/// Dump full diagnostic state on command timeout.
+///
+/// Free function variant used by `wait_cmd_slot0` (which has no `self`).
+/// Reads ABAR from the `AHCI_ABAR` static set during controller init.
+fn dump_timeout_state_free(port: usize, cmd_num: u32) {
+        let abar = AHCI_ABAR.load(Ordering::Relaxed);
         let ci = port_read(abar, port, PORT_CI);
         let is = port_read(abar, port, PORT_IS);
         let tfd = port_read(abar, port, PORT_TFD);
@@ -1064,8 +1084,9 @@ impl AhciController {
             if port < MAX_AHCI_PORTS { AHCI_COMPLETIONS[port][0].done.load(Ordering::Relaxed) } else { false },
             pmr, rpr
         );
-    }
+}
 
+impl AhciController {
     /// Issue IDENTIFY DEVICE and return sector count.
     fn identify_device(&self, port: usize, dma_index: usize) -> Result<u64, &'static str> {
         self.wait_ready(port)?;
@@ -1145,198 +1166,200 @@ impl AhciController {
         }
     }
 
-    /// Read one or more contiguous sectors from a port into `buffer`.
+    /// Set up a multi-sector read DMA command and issue PORT_CI.
     ///
-    /// `count` must be in the range 1..=128.  The buffer must be at least
-    /// `count * SECTOR_SIZE` bytes long.  The DMA buffer is 64KB, so the
-    /// maximum is 128 sectors.
+    /// Returns a `CmdToken` for the caller to pass to `wait_cmd_slot0()`
+    /// WITH NO LOCKS HELD.  Also returns the byte count so the caller can
+    /// call `finish_read_sectors()` after the wait.
     ///
-    /// Uses a single READ DMA EXT command with one PRDT entry covering the
-    /// entire transfer.  This is identical to Linux's `ahci_fill_sg` with a
-    /// single scatter-gather entry.
-    fn read_sectors(
+    /// # Preconditions
+    /// Called while holding the `AHCI_CONTROLLER` lock.  The DMA lock is
+    /// acquired and released internally (not held across PORT_CI).
+    fn setup_read_sectors(
         &self,
         port: usize,
         dma_index: usize,
         lba: u64,
         count: u16,
-        buffer: &mut [u8],
-    ) -> Result<(), &'static str> {
+    ) -> Result<(CmdToken, usize), &'static str> {
         if count == 0 || count > 128 {
             return Err("AHCI: invalid sector count");
         }
         let byte_count = count as usize * SECTOR_SIZE;
-        if buffer.len() < byte_count {
-            return Err("AHCI: buffer too small");
-        }
 
         self.wait_ready(port)?;
 
-        let mut dma_lock = PORT_DMA.lock();
-        let dma = dma_lock[dma_index].as_mut().ok_or("AHCI: no DMA memory")?;
-
-        // Compute physical addresses from the dma reference (not &raw const DMA_STORAGE).
-        // On VMware ARM64, the kernel runs at VA 0x80xxxxxx (shifted from linker VA 0x40xxxxxx).
-        // AArch64 ADRP (PC-relative) addressing can produce inconsistent addresses for
-        // &raw const DMA_STORAGE when read_sectors is inlined into different call sites.
-        // The dma reference was created during init with the correct runtime address.
-        let cmd_table_phys = virt_to_phys(&dma.cmd_tables[0] as *const CmdTable as u64);
-        let dma_buf_phys = virt_to_phys(dma.dma_bufs[0].as_ptr() as u64);
-
-        // Command header: CFL=5, PRDTL=1, not a write
-        dma.cmd_list[0].dw0 = (1 << 16) | 5;
-        dma.cmd_list[0].prdbc = 0;
-        dma.cmd_list[0].ctba = cmd_table_phys as u32;
-        dma.cmd_list[0].ctbau = (cmd_table_phys >> 32) as u32;
-
-        // Zero CFIS
-        dma.cmd_tables[0].cfis = [0; 64];
-
-        // H2D FIS: READ DMA EXT
-        dma.cmd_tables[0].cfis[0] = FIS_TYPE_REG_H2D;
-        dma.cmd_tables[0].cfis[1] = 0x80; // C bit
-        dma.cmd_tables[0].cfis[2] = ATA_CMD_READ_DMA_EXT;
-        dma.cmd_tables[0].cfis[3] = 0; // Features
-        dma.cmd_tables[0].cfis[4] = lba as u8;          // LBA 7:0
-        dma.cmd_tables[0].cfis[5] = (lba >> 8) as u8;   // LBA 15:8
-        dma.cmd_tables[0].cfis[6] = (lba >> 16) as u8;  // LBA 23:16
-        dma.cmd_tables[0].cfis[7] = 0x40; // Device: LBA mode
-        dma.cmd_tables[0].cfis[8] = (lba >> 24) as u8;  // LBA 31:24
-        dma.cmd_tables[0].cfis[9] = (lba >> 32) as u8;  // LBA 39:32
-        dma.cmd_tables[0].cfis[10] = (lba >> 40) as u8; // LBA 47:40
-        dma.cmd_tables[0].cfis[12] = count as u8;        // Count low
-        dma.cmd_tables[0].cfis[13] = (count >> 8) as u8; // Count high
-
-        // Single PRDT entry covering the full multi-sector transfer.
-        // AHCI spec: byte count field = (bytes - 1), bit 31 = IOC.
-        dma.cmd_tables[0].prdt[0].dba = dma_buf_phys as u32;
-        dma.cmd_tables[0].prdt[0].dbau = (dma_buf_phys >> 32) as u32;
-        dma.cmd_tables[0].prdt[0]._reserved = 0;
-        dma.cmd_tables[0].prdt[0].dbc = (byte_count as u32 - 1) | (1 << 31);
-
-        // Ensure CPU writes are visible to the DMA device
-        core::sync::atomic::fence(Ordering::SeqCst);
         {
+            let mut dma_lock = PORT_DMA.lock();
+            let dma = dma_lock[dma_index].as_mut().ok_or("AHCI: no DMA memory")?;
+
+            // Compute physical addresses from the dma reference.
+            let cmd_table_phys = virt_to_phys(&dma.cmd_tables[0] as *const CmdTable as u64);
+            let dma_buf_phys = virt_to_phys(dma.dma_bufs[0].as_ptr() as u64);
+
+            // Command header: CFL=5, PRDTL=1, not a write
+            dma.cmd_list[0].dw0 = (1 << 16) | 5;
+            dma.cmd_list[0].prdbc = 0;
+            dma.cmd_list[0].ctba = cmd_table_phys as u32;
+            dma.cmd_list[0].ctbau = (cmd_table_phys >> 32) as u32;
+
+            // Zero CFIS
+            dma.cmd_tables[0].cfis = [0; 64];
+
+            // H2D FIS: READ DMA EXT
+            dma.cmd_tables[0].cfis[0] = FIS_TYPE_REG_H2D;
+            dma.cmd_tables[0].cfis[1] = 0x80; // C bit
+            dma.cmd_tables[0].cfis[2] = ATA_CMD_READ_DMA_EXT;
+            dma.cmd_tables[0].cfis[3] = 0; // Features
+            dma.cmd_tables[0].cfis[4] = lba as u8;
+            dma.cmd_tables[0].cfis[5] = (lba >> 8) as u8;
+            dma.cmd_tables[0].cfis[6] = (lba >> 16) as u8;
+            dma.cmd_tables[0].cfis[7] = 0x40; // Device: LBA mode
+            dma.cmd_tables[0].cfis[8] = (lba >> 24) as u8;
+            dma.cmd_tables[0].cfis[9] = (lba >> 32) as u8;
+            dma.cmd_tables[0].cfis[10] = (lba >> 40) as u8;
+            dma.cmd_tables[0].cfis[12] = count as u8;
+            dma.cmd_tables[0].cfis[13] = (count >> 8) as u8;
+
+            // Single PRDT entry.
+            dma.cmd_tables[0].prdt[0].dba = dma_buf_phys as u32;
+            dma.cmd_tables[0].prdt[0].dbau = (dma_buf_phys >> 32) as u32;
+            dma.cmd_tables[0].prdt[0]._reserved = 0;
+            dma.cmd_tables[0].prdt[0].dbc = (byte_count as u32 - 1) | (1 << 31);
+
+            // Flush CPU caches so the device sees the DMA descriptors.
+            core::sync::atomic::fence(Ordering::SeqCst);
             let dma_ptr = &**dma as *const PortDmaMem as *const u8;
             dma_cache_clean(dma_ptr, core::mem::size_of::<PortDmaMem>());
-        }
+        } // DMA lock released
 
-        drop(dma_lock);
-
-        self.issue_cmd_slot0(port)?;
-
-        // DSB SY: ensure the completion signal (device memory) is ordered
-        // before any cache maintenance or normal memory loads from dma_buf.
-        // Without this, ARM64 can speculatively load stale data from dma_buf
-        // before the cache invalidation fires.
-        unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
-
-        // Invalidate cache before reading device-written DMA buffer
-        let dma_lock = PORT_DMA.lock();
-        let dma = dma_lock[dma_index].as_ref().ok_or("AHCI: no DMA memory")?;
-        {
-            let buf_ptr = dma.dma_bufs[0].as_ptr();
-            dma_cache_invalidate(buf_ptr, byte_count);
-        }
-        buffer[..byte_count].copy_from_slice(&dma.dma_bufs[0][..byte_count]);
-
-        Ok(())
+        let token = self.setup_cmd_slot0(port)?;
+        Ok((token, byte_count))
     }
 
-    /// Read a single sector from a port.
+    /// Set up a single-sector write DMA command and issue PORT_CI.
     ///
-    /// Delegates to read_sectors() with count=1.
-    fn read_sector(&self, port: usize, dma_index: usize, lba: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), &'static str> {
-        self.read_sectors(port, dma_index, lba, 1, buffer.as_mut_slice())
-    }
-
-    /// Write a single sector to a port.
-    fn write_sector(&self, port: usize, dma_index: usize, lba: u64, buffer: &[u8; SECTOR_SIZE]) -> Result<(), &'static str> {
+    /// Returns a `CmdToken`; caller waits with `wait_cmd_slot0()` after
+    /// releasing the `AHCI_CONTROLLER` lock.
+    fn setup_write_sector(
+        &self,
+        port: usize,
+        dma_index: usize,
+        lba: u64,
+        buffer: &[u8; SECTOR_SIZE],
+    ) -> Result<CmdToken, &'static str> {
         self.wait_ready(port)?;
 
-        let mut dma_lock = PORT_DMA.lock();
-        let dma = dma_lock[dma_index].as_mut().ok_or("AHCI: no DMA memory")?;
-
-        // Compute physical addresses from the dma reference (see read_sector comment).
-        let cmd_table_phys = virt_to_phys(&dma.cmd_tables[0] as *const CmdTable as u64);
-        let dma_buf_phys = virt_to_phys(dma.dma_bufs[0].as_ptr() as u64);
-
-        // Copy data to first sector of DMA buffer (slot 0)
-        dma.dma_bufs[0][..SECTOR_SIZE].copy_from_slice(buffer);
-
-        // Command header: CFL=5, PRDTL=1, Write bit set (bit 6)
-        dma.cmd_list[0].dw0 = (1 << 16) | (1 << 6) | 5;
-        dma.cmd_list[0].prdbc = 0;
-        dma.cmd_list[0].ctba = cmd_table_phys as u32;
-        dma.cmd_list[0].ctbau = (cmd_table_phys >> 32) as u32;
-
-        // Zero CFIS
-        dma.cmd_tables[0].cfis = [0; 64];
-
-        // H2D FIS: WRITE DMA EXT
-        dma.cmd_tables[0].cfis[0] = FIS_TYPE_REG_H2D;
-        dma.cmd_tables[0].cfis[1] = 0x80;
-        dma.cmd_tables[0].cfis[2] = ATA_CMD_WRITE_DMA_EXT;
-        dma.cmd_tables[0].cfis[3] = 0;
-        dma.cmd_tables[0].cfis[4] = lba as u8;
-        dma.cmd_tables[0].cfis[5] = (lba >> 8) as u8;
-        dma.cmd_tables[0].cfis[6] = (lba >> 16) as u8;
-        dma.cmd_tables[0].cfis[7] = 0x40;
-        dma.cmd_tables[0].cfis[8] = (lba >> 24) as u8;
-        dma.cmd_tables[0].cfis[9] = (lba >> 32) as u8;
-        dma.cmd_tables[0].cfis[10] = (lba >> 40) as u8;
-        dma.cmd_tables[0].cfis[12] = 1;
-        dma.cmd_tables[0].cfis[13] = 0;
-
-        // PRDT
-        dma.cmd_tables[0].prdt[0].dba = dma_buf_phys as u32;
-        dma.cmd_tables[0].prdt[0].dbau = (dma_buf_phys >> 32) as u32;
-        dma.cmd_tables[0].prdt[0]._reserved = 0;
-        dma.cmd_tables[0].prdt[0].dbc = (SECTOR_SIZE as u32 - 1) | (1 << 31);
-
-        // Ensure CPU writes (command + data) are visible to the DMA device
-        core::sync::atomic::fence(Ordering::SeqCst);
         {
+            let mut dma_lock = PORT_DMA.lock();
+            let dma = dma_lock[dma_index].as_mut().ok_or("AHCI: no DMA memory")?;
+
+            let cmd_table_phys = virt_to_phys(&dma.cmd_tables[0] as *const CmdTable as u64);
+            let dma_buf_phys = virt_to_phys(dma.dma_bufs[0].as_ptr() as u64);
+
+            // Copy data to DMA buffer slot 0.
+            dma.dma_bufs[0][..SECTOR_SIZE].copy_from_slice(buffer);
+
+            // Command header: CFL=5, PRDTL=1, Write bit set (bit 6)
+            dma.cmd_list[0].dw0 = (1 << 16) | (1 << 6) | 5;
+            dma.cmd_list[0].prdbc = 0;
+            dma.cmd_list[0].ctba = cmd_table_phys as u32;
+            dma.cmd_list[0].ctbau = (cmd_table_phys >> 32) as u32;
+
+            dma.cmd_tables[0].cfis = [0; 64];
+            dma.cmd_tables[0].cfis[0] = FIS_TYPE_REG_H2D;
+            dma.cmd_tables[0].cfis[1] = 0x80;
+            dma.cmd_tables[0].cfis[2] = ATA_CMD_WRITE_DMA_EXT;
+            dma.cmd_tables[0].cfis[3] = 0;
+            dma.cmd_tables[0].cfis[4] = lba as u8;
+            dma.cmd_tables[0].cfis[5] = (lba >> 8) as u8;
+            dma.cmd_tables[0].cfis[6] = (lba >> 16) as u8;
+            dma.cmd_tables[0].cfis[7] = 0x40;
+            dma.cmd_tables[0].cfis[8] = (lba >> 24) as u8;
+            dma.cmd_tables[0].cfis[9] = (lba >> 32) as u8;
+            dma.cmd_tables[0].cfis[10] = (lba >> 40) as u8;
+            dma.cmd_tables[0].cfis[12] = 1;
+            dma.cmd_tables[0].cfis[13] = 0;
+
+            dma.cmd_tables[0].prdt[0].dba = dma_buf_phys as u32;
+            dma.cmd_tables[0].prdt[0].dbau = (dma_buf_phys >> 32) as u32;
+            dma.cmd_tables[0].prdt[0]._reserved = 0;
+            dma.cmd_tables[0].prdt[0].dbc = (SECTOR_SIZE as u32 - 1) | (1 << 31);
+
+            core::sync::atomic::fence(Ordering::SeqCst);
             let dma_ptr = &**dma as *const PortDmaMem as *const u8;
             dma_cache_clean(dma_ptr, core::mem::size_of::<PortDmaMem>());
-        }
-        drop(dma_lock);
+        } // DMA lock released
 
-        self.issue_cmd_slot0(port)
+        self.setup_cmd_slot0(port)
     }
 
-    /// Flush cache for a port.
-    fn flush_port(&self, port: usize, dma_index: usize) -> Result<(), &'static str> {
+    /// Set up a FLUSH CACHE EXT command and issue PORT_CI.
+    ///
+    /// Returns a `CmdToken`; caller waits with `wait_cmd_slot0()` after
+    /// releasing the `AHCI_CONTROLLER` lock.
+    fn setup_flush_port(
+        &self,
+        port: usize,
+        dma_index: usize,
+    ) -> Result<CmdToken, &'static str> {
         self.wait_ready(port)?;
 
-        let mut dma_lock = PORT_DMA.lock();
-        let dma = dma_lock[dma_index].as_mut().ok_or("AHCI: no DMA memory")?;
-
-        // Compute physical addresses from the dma reference (see read_sector comment).
-        let cmd_table_phys = virt_to_phys(&dma.cmd_tables[0] as *const CmdTable as u64);
-
-        // Command header: CFL=5, PRDTL=0 (no data transfer)
-        dma.cmd_list[0].dw0 = 5;
-        dma.cmd_list[0].prdbc = 0;
-        dma.cmd_list[0].ctba = cmd_table_phys as u32;
-        dma.cmd_list[0].ctbau = (cmd_table_phys >> 32) as u32;
-
-        dma.cmd_tables[0].cfis = [0; 64];
-        dma.cmd_tables[0].cfis[0] = FIS_TYPE_REG_H2D;
-        dma.cmd_tables[0].cfis[1] = 0x80;
-        dma.cmd_tables[0].cfis[2] = ATA_CMD_FLUSH_EXT;
-        dma.cmd_tables[0].cfis[7] = 0x40;
-
-        // Ensure CPU writes are visible to the DMA device
-        core::sync::atomic::fence(Ordering::SeqCst);
         {
+            let mut dma_lock = PORT_DMA.lock();
+            let dma = dma_lock[dma_index].as_mut().ok_or("AHCI: no DMA memory")?;
+
+            let cmd_table_phys = virt_to_phys(&dma.cmd_tables[0] as *const CmdTable as u64);
+
+            // Command header: CFL=5, PRDTL=0 (no data transfer)
+            dma.cmd_list[0].dw0 = 5;
+            dma.cmd_list[0].prdbc = 0;
+            dma.cmd_list[0].ctba = cmd_table_phys as u32;
+            dma.cmd_list[0].ctbau = (cmd_table_phys >> 32) as u32;
+
+            dma.cmd_tables[0].cfis = [0; 64];
+            dma.cmd_tables[0].cfis[0] = FIS_TYPE_REG_H2D;
+            dma.cmd_tables[0].cfis[1] = 0x80;
+            dma.cmd_tables[0].cfis[2] = ATA_CMD_FLUSH_EXT;
+            dma.cmd_tables[0].cfis[7] = 0x40;
+
+            core::sync::atomic::fence(Ordering::SeqCst);
             let dma_ptr = &**dma as *const PortDmaMem as *const u8;
             dma_cache_clean(dma_ptr, core::mem::size_of::<PortDmaMem>());
-        }
-        drop(dma_lock);
+        } // DMA lock released
 
-        self.issue_cmd_slot0(port)
+        self.setup_cmd_slot0(port)
     }
+}
+
+/// Copy read data from the DMA buffer to the caller's buffer, with cache
+/// maintenance.  Called AFTER `wait_cmd_slot0()` succeeds.
+///
+/// # Safety
+/// Caller must ensure no DMA is in flight for this port/dma_index when called.
+fn finish_read_sectors(
+    dma_index: usize,
+    byte_count: usize,
+    buffer: &mut [u8],
+) -> Result<(), &'static str> {
+    if buffer.len() < byte_count {
+        return Err("AHCI: buffer too small in finish");
+    }
+
+    // DSB SY: order the completion signal (device memory) before the cache
+    // maintenance below.  Without this, ARM64 may speculatively load stale
+    // data from dma_bufs[0] before the civac instruction clears the cache line.
+    #[cfg(target_arch = "aarch64")]
+    unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+
+    let dma_lock = PORT_DMA.lock();
+    let dma = dma_lock[dma_index].as_ref().ok_or("AHCI: no DMA memory in finish")?;
+    {
+        let buf_ptr = dma.dma_bufs[0].as_ptr();
+        dma_cache_invalidate(buf_ptr, byte_count);
+    }
+    buffer[..byte_count].copy_from_slice(&dma.dma_bufs[0][..byte_count]);
+    Ok(())
 }
 
 // =============================================================================
@@ -1727,23 +1750,34 @@ impl BlockDevice for AhciBlockDevice {
             return Err(BlockError::IoError);
         }
 
-        // The AHCI lock serializes command setup + issue. wait_for_completion
-        // inside read_sector blocks the thread via the scheduler (not spinning),
-        // so other threads CAN acquire this lock after the blocked thread is
-        // switched out. No try_lock needed.
-        {
+        // ── PHASE 1: setup (lock held briefly) ──────────────────────────────
+        // Set up DMA descriptors, write PORT_CI, get a token.  The AHCI lock
+        // is released before we enter the wait so other threads can issue their
+        // own I/O while this one is sleeping.
+        let (token, byte_count) = {
             let ctrl = AHCI_CONTROLLER.lock();
             let ctrl = ctrl.as_ref().ok_or(BlockError::DeviceNotReady)?;
-            let mut sector_buf = [0u8; SECTOR_SIZE];
-            ctrl.read_sector(self.port_num, self.dma_index, block_num, &mut sector_buf)
+            ctrl.setup_read_sectors(self.port_num, self.dma_index, block_num, 1)
                 .map_err(|e| {
                     #[cfg(target_arch = "aarch64")]
-                    crate::serial_println!("[ahci] read_block({}) failed: {}", block_num, e);
+                    crate::serial_println!("[ahci] read_block({}) setup failed: {}", block_num, e);
                     BlockError::IoError
-                })?;
-            buf[..SECTOR_SIZE].copy_from_slice(&sector_buf);
-            Ok(())
-        }
+                })?
+        }; // AHCI_CONTROLLER lock released
+
+        // ── PHASE 2: wait (NO lock held) ────────────────────────────────────
+        // The scheduler can context-switch this thread out here.  The AHCI ISR
+        // calls complete() → unblock_for_io() to wake us when the command is done.
+        wait_cmd_slot0(token).map_err(|e| {
+            #[cfg(target_arch = "aarch64")]
+            crate::serial_println!("[ahci] read_block({}) wait failed: {}", block_num, e);
+            BlockError::IoError
+        })?; // AHCI_CONTROLLER lock released again
+
+        // ── PHASE 3: finish (no AHCI lock needed — DMA lock inside) ─────────
+        // Cache invalidate + copy result to caller's buffer.
+        finish_read_sectors(self.dma_index, byte_count, buf)
+            .map_err(|_| BlockError::IoError)
     }
 
     fn write_block(&self, block_num: u64, buf: &[u8]) -> Result<(), BlockError> {
@@ -1757,10 +1791,16 @@ impl BlockDevice for AhciBlockDevice {
         let mut sector_buf = [0u8; SECTOR_SIZE];
         sector_buf.copy_from_slice(&buf[..SECTOR_SIZE]);
 
-        let ctrl = AHCI_CONTROLLER.lock();
-        let ctrl = ctrl.as_ref().ok_or(BlockError::DeviceNotReady)?;
-        ctrl.write_sector(self.port_num, self.dma_index, block_num, &sector_buf)
-            .map_err(|_| BlockError::IoError)
+        // ── PHASE 1: setup ───────────────────────────────────────────────────
+        let token = {
+            let ctrl = AHCI_CONTROLLER.lock();
+            let ctrl = ctrl.as_ref().ok_or(BlockError::DeviceNotReady)?;
+            ctrl.setup_write_sector(self.port_num, self.dma_index, block_num, &sector_buf)
+                .map_err(|_| BlockError::IoError)?
+        }; // AHCI_CONTROLLER lock released
+
+        // ── PHASE 2: wait (NO lock held) ────────────────────────────────────
+        wait_cmd_slot0(token).map_err(|_| BlockError::IoError)
     }
 
     fn block_size(&self) -> usize {
@@ -1772,10 +1812,16 @@ impl BlockDevice for AhciBlockDevice {
     }
 
     fn flush(&self) -> Result<(), BlockError> {
-        let ctrl = AHCI_CONTROLLER.lock();
-        let ctrl = ctrl.as_ref().ok_or(BlockError::DeviceNotReady)?;
-        ctrl.flush_port(self.port_num, self.dma_index)
-            .map_err(|_| BlockError::IoError)
+        // ── PHASE 1: setup ───────────────────────────────────────────────────
+        let token = {
+            let ctrl = AHCI_CONTROLLER.lock();
+            let ctrl = ctrl.as_ref().ok_or(BlockError::DeviceNotReady)?;
+            ctrl.setup_flush_port(self.port_num, self.dma_index)
+                .map_err(|_| BlockError::IoError)?
+        }; // AHCI_CONTROLLER lock released
+
+        // ── PHASE 2: wait (NO lock held) ────────────────────────────────────
+        wait_cmd_slot0(token).map_err(|_| BlockError::IoError)
     }
 }
 
