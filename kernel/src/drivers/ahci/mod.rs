@@ -183,6 +183,13 @@ static AHCI_ISR_COUNT: AtomicU32 = AtomicU32::new(0);
 /// Count commands issued via issue_cmd_slot0 (for diagnostic/timeout reporting).
 static AHCI_CMD_COUNT: AtomicU32 = AtomicU32::new(0);
 
+/// Per-port bitmask of in-flight command slots, indexed by port number.
+/// Bit N = slot N is currently in flight (PORT_CI bit N was set by us).
+/// Written by setup_cmd_slot0 (sets bit), cleared by handle_interrupt.
+/// AtomicU32 for lock-free access from the ISR.
+static PORT_ACTIVE_MASK: [AtomicU32; MAX_AHCI_PORTS] =
+    [const { AtomicU32::new(0) }; MAX_AHCI_PORTS];
+
 // =============================================================================
 // HBA Generic Host Control Registers (offset from ABAR)
 // =============================================================================
@@ -969,6 +976,12 @@ impl AhciController {
 
         let cmd_num = AHCI_CMD_COUNT.fetch_add(1, Ordering::Relaxed);
 
+        // Mark slot 0 as in-flight BEFORE writing PORT_CI.
+        // The ISR reads this mask to determine which slots completed.
+        if has_irq && port < MAX_AHCI_PORTS {
+            PORT_ACTIVE_MASK[port].fetch_or(1, Ordering::Release);
+        }
+
         // Write PORT_CI to issue the command.
         port_write(abar, port, PORT_CI, 1);
 
@@ -1689,14 +1702,27 @@ pub fn handle_interrupt() {
         port_write(abar, port, PORT_IS, is);
 
         if (is & (PORT_IRQ_COMPLETE | PORT_IRQ_ERROR)) != 0 {
-            // complete() sets done=true and calls unblock_for_io() via
-            // with_scheduler(), waking the sleeping thread.  The SEV
-            // instruction is no longer needed because the scheduler IPI
-            // (send_resched_ipi) wakes the target CPU.
+            // Compute which slots completed: bits that were in-flight
+            // (PORT_ACTIVE_MASK) but are no longer set in PORT_CI.
+            //
+            // For a single-slot driver (only slot 0 used) this always
+            // evaluates to `active & !ci_after = 1 & !0 = 1`, completing
+            // exactly slot 0 — identical to the previous hardcoded behaviour.
+            // When multi-slot NCQ is added, PORT_ACTIVE_MASK will have
+            // multiple bits set and the loop will complete each finished slot.
             if port < MAX_AHCI_PORTS {
-                // slot 0 is the only active slot; Step 5 will expand this to
-                // compute completed slots from PORT_CI diff.
-                AHCI_COMPLETIONS[port][0].complete();
+                let ci_after = port_read(abar, port, PORT_CI);
+                let active = PORT_ACTIVE_MASK[port].load(Ordering::Acquire);
+                let completed = active & !ci_after;
+
+                // Clear completed bits from the active mask (atomic, ISR-safe).
+                PORT_ACTIVE_MASK[port].fetch_and(!completed, Ordering::Release);
+
+                for slot in 0..AHCI_MAX_CONCURRENT {
+                    if (completed & (1u32 << slot)) != 0 {
+                        AHCI_COMPLETIONS[port][slot].complete();
+                    }
+                }
             }
         }
     }
