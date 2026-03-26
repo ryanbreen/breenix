@@ -190,6 +190,18 @@ static AHCI_CMD_COUNT: AtomicU32 = AtomicU32::new(0);
 static PORT_ACTIVE_MASK: [AtomicU32; MAX_AHCI_PORTS] =
     [const { AtomicU32::new(0) }; MAX_AHCI_PORTS];
 
+/// Per-port I/O serialisation lock.
+///
+/// Ensures only one command is issued per port at a time across all callers.
+/// Held from the start of `setup_*` through the end of `wait_cmd_slot0`, so
+/// concurrent threads targeting the same port queue behind this lock rather
+/// than corrupting each other's command slots.
+///
+/// Unlike `AHCI_CONTROLLER` (which guards the controller struct) this lock
+/// is granular to a single port, allowing future multi-port parallelism.
+static PORT_IO_LOCK: [Mutex<()>; MAX_AHCI_PORTS] =
+    [const { Mutex::new(()) }; MAX_AHCI_PORTS];
+
 // =============================================================================
 // HBA Generic Host Control Registers (offset from ABAR)
 // =============================================================================
@@ -1776,10 +1788,14 @@ impl BlockDevice for AhciBlockDevice {
             return Err(BlockError::IoError);
         }
 
-        // ── PHASE 1: setup (lock held briefly) ──────────────────────────────
-        // Set up DMA descriptors, write PORT_CI, get a token.  The AHCI lock
-        // is released before we enter the wait so other threads can issue their
-        // own I/O while this one is sleeping.
+        // ── PORT I/O LOCK: serialise concurrent callers on this port ───────────
+        // Held across PHASES 1 and 2 to prevent two threads from simultaneously
+        // issuing commands on the same port's slot 0.  The wait path is a
+        // spin-yield loop (no scheduler lock acquired), so holding this Mutex
+        // during the wait does not cause deadlock.
+        let port_guard = PORT_IO_LOCK[self.port_num].lock();
+
+        // ── PHASE 1: setup (AHCI controller lock held briefly) ───────────────
         let (token, byte_count) = {
             let ctrl = AHCI_CONTROLLER.lock();
             let ctrl = ctrl.as_ref().ok_or(BlockError::DeviceNotReady)?;
@@ -1791,17 +1807,18 @@ impl BlockDevice for AhciBlockDevice {
                 })?
         }; // AHCI_CONTROLLER lock released
 
-        // ── PHASE 2: wait (NO lock held) ────────────────────────────────────
-        // The scheduler can context-switch this thread out here.  The AHCI ISR
-        // calls complete() → unblock_for_io() to wake us when the command is done.
+        // ── PHASE 2: wait (only PORT_IO_LOCK held) ───────────────────────────
+        // Spins with yield; ISR fires and sets done=true.  PORT_IO_LOCK prevents
+        // a concurrent thread from issuing a new command while we wait.
         wait_cmd_slot0(token).map_err(|e| {
             #[cfg(target_arch = "aarch64")]
             crate::serial_println!("[ahci] read_block({}) wait failed: {}", block_num, e);
             BlockError::IoError
-        })?; // AHCI_CONTROLLER lock released again
+        })?;
 
-        // ── PHASE 3: finish (no AHCI lock needed — DMA lock inside) ─────────
-        // Cache invalidate + copy result to caller's buffer.
+        drop(port_guard); // release port lock before the copy (copy doesn't need it)
+
+        // ── PHASE 3: finish (no locks held — DMA lock inside) ────────────────
         finish_read_sectors(self.dma_index, byte_count, buf)
             .map_err(|_| BlockError::IoError)
     }
@@ -1817,6 +1834,9 @@ impl BlockDevice for AhciBlockDevice {
         let mut sector_buf = [0u8; SECTOR_SIZE];
         sector_buf.copy_from_slice(&buf[..SECTOR_SIZE]);
 
+        // ── PORT I/O LOCK ─────────────────────────────────────────────────────
+        let _port_guard = PORT_IO_LOCK[self.port_num].lock();
+
         // ── PHASE 1: setup ───────────────────────────────────────────────────
         let token = {
             let ctrl = AHCI_CONTROLLER.lock();
@@ -1825,8 +1845,9 @@ impl BlockDevice for AhciBlockDevice {
                 .map_err(|_| BlockError::IoError)?
         }; // AHCI_CONTROLLER lock released
 
-        // ── PHASE 2: wait (NO lock held) ────────────────────────────────────
+        // ── PHASE 2: wait (only PORT_IO_LOCK held) ───────────────────────────
         wait_cmd_slot0(token).map_err(|_| BlockError::IoError)
+        // _port_guard dropped here
     }
 
     fn block_size(&self) -> usize {
@@ -1838,6 +1859,9 @@ impl BlockDevice for AhciBlockDevice {
     }
 
     fn flush(&self) -> Result<(), BlockError> {
+        // ── PORT I/O LOCK ─────────────────────────────────────────────────────
+        let _port_guard = PORT_IO_LOCK[self.port_num].lock();
+
         // ── PHASE 1: setup ───────────────────────────────────────────────────
         let token = {
             let ctrl = AHCI_CONTROLLER.lock();
@@ -1846,8 +1870,9 @@ impl BlockDevice for AhciBlockDevice {
                 .map_err(|_| BlockError::IoError)?
         }; // AHCI_CONTROLLER lock released
 
-        // ── PHASE 2: wait (NO lock held) ────────────────────────────────────
+        // ── PHASE 2: wait (only PORT_IO_LOCK held) ───────────────────────────
         wait_cmd_slot0(token).map_err(|_| BlockError::IoError)
+        // _port_guard dropped here
     }
 }
 
