@@ -199,6 +199,13 @@ impl Completion {
                         .unwrap_or(false); // None = scheduler gone (shouldn't happen)
 
                     if already_done || self.done.load(Ordering::Acquire) {
+                        if !already_done {
+                            crate::task::scheduler::with_scheduler(|sched| {
+                                if let Some(t) = sched.current_thread_mut() {
+                                    t.blocked_in_syscall = false;
+                                }
+                            });
+                        }
                         self.waiter.store(0, Ordering::Release);
                         // Restore preempt_count to the value expected by the
                         // syscall exit path (preempt_disable was called on entry).
