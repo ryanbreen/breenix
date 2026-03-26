@@ -45,7 +45,7 @@
 //! MY_COMP.complete();
 //! ```
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering, fence};
+use core::sync::atomic::{fence, AtomicBool, AtomicU64, Ordering};
 
 #[cfg(target_arch = "aarch64")]
 use crate::arch_impl::traits::CpuOps;
@@ -53,8 +53,24 @@ use crate::arch_impl::traits::CpuOps;
 type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
 
 /// POSIX EINTR errno value.
-#[allow(dead_code)]
 const EINTR: i32 = 4;
+
+#[inline]
+fn clear_blocked_in_syscall_current() {
+    crate::task::scheduler::with_scheduler(|sched| {
+        if let Some(thread) = sched.current_thread_mut() {
+            thread.blocked_in_syscall = false;
+        }
+    });
+}
+
+#[inline]
+fn restore_syscall_preempt_state() {
+    #[cfg(target_arch = "aarch64")]
+    crate::per_cpu_aarch64::preempt_disable();
+    #[cfg(not(target_arch = "aarch64"))]
+    crate::per_cpu::preempt_disable();
+}
 
 /// Completion primitive — pairs one waiter thread with one ISR.
 pub struct Completion {
@@ -99,6 +115,19 @@ impl Completion {
     pub fn wait_timeout(&self, timeout_ns: u64) -> Result<bool, i32> {
         // Fast path: already done (e.g., very fast device, or spurious call).
         if self.done.load(Ordering::Acquire) {
+            let in_syscall = {
+                #[cfg(target_arch = "aarch64")]
+                {
+                    crate::per_cpu_aarch64::preempt_count() > 0
+                }
+                #[cfg(not(target_arch = "aarch64"))]
+                {
+                    crate::per_cpu::preempt_count() > 0
+                }
+            };
+            if in_syscall {
+                clear_blocked_in_syscall_current();
+            }
             return Ok(true);
         }
 
@@ -145,9 +174,13 @@ impl Completion {
             // (there is no timer to rescue a stuck WFI before timer init).
             let in_syscall = {
                 #[cfg(target_arch = "aarch64")]
-                { crate::per_cpu_aarch64::preempt_count() > 0 }
+                {
+                    crate::per_cpu_aarch64::preempt_count() > 0
+                }
                 #[cfg(not(target_arch = "aarch64"))]
-                { crate::per_cpu::preempt_count() > 0 }
+                {
+                    crate::per_cpu::preempt_count() > 0
+                }
             };
 
             if in_syscall {
@@ -173,7 +206,14 @@ impl Completion {
                 // Fast check after waiter store — ISR may have fired already.
                 if self.done.load(Ordering::Acquire) {
                     self.waiter.store(0, Ordering::Release);
+                    clear_blocked_in_syscall_current();
                     return Ok(true);
+                }
+
+                if crate::syscall::check_signals_for_eintr().is_some() {
+                    self.waiter.store(0, Ordering::Release);
+                    clear_blocked_in_syscall_current();
+                    return Err(EINTR);
                 }
 
                 // Enable preemption so the scheduler can switch us out.
@@ -184,35 +224,32 @@ impl Completion {
                 crate::per_cpu::preempt_enable();
 
                 loop {
+                    if crate::syscall::check_signals_for_eintr().is_some() {
+                        self.waiter.store(0, Ordering::Release);
+                        clear_blocked_in_syscall_current();
+                        restore_syscall_preempt_state();
+                        return Err(EINTR);
+                    }
+
                     // Atomic check-and-block: under the scheduler lock, either
                     // the ISR already set done=true (don't block) or we call
                     // block_current_for_io() (sets state=BlockedOnIO).
-                    let already_done =
-                        crate::task::scheduler::with_scheduler(|sched| {
-                            if self.done.load(Ordering::Acquire) {
-                                true
-                            } else {
-                                sched.block_current_for_io();
-                                false
-                            }
-                        })
-                        .unwrap_or(false); // None = scheduler gone (shouldn't happen)
+                    let already_done = crate::task::scheduler::with_scheduler(|sched| {
+                        if self.done.load(Ordering::Acquire) {
+                            true
+                        } else {
+                            sched.block_current_for_io();
+                            false
+                        }
+                    })
+                    .unwrap_or(false); // None = scheduler gone (shouldn't happen)
 
                     if already_done || self.done.load(Ordering::Acquire) {
-                        if !already_done {
-                            crate::task::scheduler::with_scheduler(|sched| {
-                                if let Some(t) = sched.current_thread_mut() {
-                                    t.blocked_in_syscall = false;
-                                }
-                            });
-                        }
                         self.waiter.store(0, Ordering::Release);
+                        clear_blocked_in_syscall_current();
                         // Restore preempt_count to the value expected by the
                         // syscall exit path (preempt_disable was called on entry).
-                        #[cfg(target_arch = "aarch64")]
-                        crate::per_cpu_aarch64::preempt_disable();
-                        #[cfg(not(target_arch = "aarch64"))]
-                        crate::per_cpu::preempt_disable();
+                        restore_syscall_preempt_state();
                         return Ok(true);
                     }
 
@@ -221,20 +258,19 @@ impl Completion {
                     Cpu::halt_with_interrupts();
 
                     // Clear BlockedOnIO state after wake (could be timer or ISR).
-                    crate::task::scheduler::with_scheduler(|sched| {
-                        if let Some(t) = sched.current_thread_mut() {
-                            t.blocked_in_syscall = false;
-                        }
-                    });
+                    clear_blocked_in_syscall_current();
 
                     // Check done after wake.
                     if self.done.load(Ordering::Acquire) {
                         self.waiter.store(0, Ordering::Release);
-                        #[cfg(target_arch = "aarch64")]
-                        crate::per_cpu_aarch64::preempt_disable();
-                        #[cfg(not(target_arch = "aarch64"))]
-                        crate::per_cpu::preempt_disable();
+                        restore_syscall_preempt_state();
                         return Ok(true);
+                    }
+
+                    if crate::syscall::check_signals_for_eintr().is_some() {
+                        self.waiter.store(0, Ordering::Release);
+                        restore_syscall_preempt_state();
+                        return Err(EINTR);
                     }
 
                     // Wall-clock timeout.
@@ -246,12 +282,14 @@ impl Completion {
                         }
                         if now >= deadline_cntpct {
                             self.waiter.store(0, Ordering::Release);
-                            crate::per_cpu_aarch64::preempt_disable();
+                            restore_syscall_preempt_state();
                             return Ok(false);
                         }
                     }
                     #[cfg(not(target_arch = "aarch64"))]
-                    { let _ = deadline_cntpct; }
+                    {
+                        let _ = deadline_cntpct;
+                    }
                 }
             } else {
                 // ============================================================
@@ -284,7 +322,9 @@ impl Completion {
                         // without halting the CPU.  We do NOT use WFE/WFI here
                         // because Parallels does not reliably wake a halted vCPU
                         // when a wired SPI becomes pending without a timer.
-                        unsafe { core::arch::asm!("yield", options(nomem, nostack)); }
+                        unsafe {
+                            core::arch::asm!("yield", options(nomem, nostack));
+                        }
                     }
                     #[cfg(not(target_arch = "aarch64"))]
                     {
@@ -319,7 +359,9 @@ impl Completion {
                     }
                     // `yield` not `wfe` — Parallels does not reliably wake
                     // WFE when a wired SPI becomes pending without a timer.
-                    unsafe { core::arch::asm!("yield", options(nomem, nostack)); }
+                    unsafe {
+                        core::arch::asm!("yield", options(nomem, nostack));
+                    }
                 }
             }
             #[cfg(not(target_arch = "aarch64"))]
@@ -357,7 +399,9 @@ impl Completion {
         // the interrupt fires before WFE is executed (race-free wakeup).
         // This is harmless on x86_64 (compiled away).
         #[cfg(target_arch = "aarch64")]
-        unsafe { core::arch::asm!("sev", options(nomem, nostack)); }
+        unsafe {
+            core::arch::asm!("sev", options(nomem, nostack));
+        }
 
         let tid = self.waiter.load(Ordering::Acquire);
         if tid != 0 {
