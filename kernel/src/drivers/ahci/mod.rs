@@ -1855,27 +1855,19 @@ pub fn handle_interrupt() {
         port_write(abar, port, PORT_IS, is);
 
         if (is & (PORT_IRQ_COMPLETE | PORT_IRQ_ERROR)) != 0 {
-            // Compute which slots completed: bits that were in-flight
-            // (PORT_ACTIVE_MASK) but are no longer set in PORT_CI.
-            //
-            // For a single-slot driver (only slot 0 used) this always
-            // evaluates to `active & !ci_after = 1 & !0 = 1`, completing
-            // exactly slot 0 — identical to the previous hardcoded behaviour.
-            // When multi-slot NCQ is added, PORT_ACTIVE_MASK will have
-            // multiple bits set and the loop will complete each finished slot.
             if port < MAX_AHCI_PORTS {
-                let ci_after = port_read(abar, port, PORT_CI);
-                let active = PORT_ACTIVE_MASK[port].load(Ordering::Acquire);
-                let completed = detect_completed_slots(active, ci_after, is);
+                // Always signal slot 0 completion when the HBA reports a
+                // completion or error FIS. complete() is idempotent (sets
+                // done=true + calls unblock_for_io if a waiter exists).
+                // This avoids the PORT_CI timing race where the HBA raises
+                // the interrupt before clearing PORT_CI, and avoids the
+                // PORT_ACTIVE_MASK race where a previous ISR already cleared
+                // the active bit. With single-slot I/O, slot 0 is always
+                // the command that completed.
+                AHCI_COMPLETIONS[port][0].complete();
 
-                // Clear completed bits from the active mask (atomic, ISR-safe).
-                PORT_ACTIVE_MASK[port].fetch_and(!completed, Ordering::Release);
-
-                for slot in 0..AHCI_MAX_CONCURRENT {
-                    if (completed & (1u32 << slot)) != 0 {
-                        AHCI_COMPLETIONS[port][slot].complete();
-                    }
-                }
+                // Clear active mask for bookkeeping.
+                PORT_ACTIVE_MASK[port].store(0, Ordering::Release);
             }
         }
     }
