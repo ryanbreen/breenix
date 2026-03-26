@@ -13,9 +13,9 @@ use std::{
 use anyhow::{bail, Context, Result};
 use structopt::StructOpt;
 
+mod boot_stages;
 mod btrt_catalog;
 mod btrt_parser;
-mod boot_stages;
 mod qemu_config;
 mod qmp;
 mod test_disk;
@@ -168,7 +168,10 @@ fn build_std_test_binaries() -> Result<()> {
     // Verify the binary exists
     let binary_path = tests_std_dir.join("target/x86_64-breenix/release/hello_std_real");
     if binary_path.exists() {
-        println!("\n  hello_std_real binary ready at: {}", binary_path.display());
+        println!(
+            "\n  hello_std_real binary ready at: {}",
+            binary_path.display()
+        );
     } else {
         bail!(
             "Build succeeded but binary not found at: {}",
@@ -283,7 +286,7 @@ fn dns_test() -> Result<()> {
             "-p",
             "breenix",
             "--features",
-            "dns_test_only",  // Uses minimal boot path
+            "dns_test_only", // Uses minimal boot path
             "--bin",
             "qemu-uefi",
             "--",
@@ -309,7 +312,10 @@ fn dns_test() -> Result<()> {
     while !std::path::Path::new(serial_output_file).exists() {
         if start.elapsed() > file_creation_timeout {
             cleanup_qemu_child(&mut child);
-            bail!("Serial output file not created after {} seconds", file_creation_timeout.as_secs());
+            bail!(
+                "Serial output file not created after {} seconds",
+                file_creation_timeout.as_secs()
+            );
         }
         thread::sleep(Duration::from_millis(100));
     }
@@ -329,7 +335,12 @@ fn dns_test() -> Result<()> {
         if test_start.elapsed() > timeout {
             cleanup_qemu_child(&mut child);
             println!("\n=========================================");
-            println!("Result: {}/{} stages passed (TIMEOUT after {}s)", stages_passed, total_stages, timeout.as_secs());
+            println!(
+                "Result: {}/{} stages passed (TIMEOUT after {}s)",
+                stages_passed,
+                total_stages,
+                timeout.as_secs()
+            );
             if stages_passed < total_stages {
                 // Find first unpassed stage
                 for (i, passed) in checked_stages.iter().enumerate() {
@@ -354,7 +365,9 @@ fn dns_test() -> Result<()> {
                 let user_content = fs::read_to_string(user_output_file).unwrap_or_default();
                 for (i, stage) in stages.iter().enumerate() {
                     if !checked_stages[i] {
-                        if kernel_content.contains(stage.marker) || user_content.contains(stage.marker) {
+                        if kernel_content.contains(stage.marker)
+                            || user_content.contains(stage.marker)
+                        {
                             checked_stages[i] = true;
                             stages_passed += 1;
                             println!("[{}/{}] {}... PASS", i + 1, total_stages, stage.name);
@@ -363,10 +376,20 @@ fn dns_test() -> Result<()> {
                 }
                 println!("\n=========================================");
                 if stages_passed == total_stages {
-                    println!("Result: ALL {}/{} stages passed (total: {:.2}s)", stages_passed, total_stages, test_start.elapsed().as_secs_f64());
+                    println!(
+                        "Result: ALL {}/{} stages passed (total: {:.2}s)",
+                        stages_passed,
+                        total_stages,
+                        test_start.elapsed().as_secs_f64()
+                    );
                     return Ok(());
                 } else {
-                    println!("Result: {}/{} stages passed (QEMU exit code: {:?})", stages_passed, total_stages, status.code());
+                    println!(
+                        "Result: {}/{} stages passed (QEMU exit code: {:?})",
+                        stages_passed,
+                        total_stages,
+                        status.code()
+                    );
                     for (i, passed) in checked_stages.iter().enumerate() {
                         if !passed {
                             println!("\nFirst failed stage: [{}] {}", i + 1, stages[i].name);
@@ -399,7 +422,8 @@ fn dns_test() -> Result<()> {
             // Check all stages against both output sources
             for (i, stage) in stages.iter().enumerate() {
                 if !checked_stages[i] {
-                    if kernel_content.contains(stage.marker) || user_content.contains(stage.marker) {
+                    if kernel_content.contains(stage.marker) || user_content.contains(stage.marker)
+                    {
                         checked_stages[i] = true;
                         stages_passed += 1;
                         println!("[{}/{}] {}... PASS", i + 1, total_stages, stage.name);
@@ -411,7 +435,12 @@ fn dns_test() -> Result<()> {
             if stages_passed == total_stages {
                 cleanup_qemu_child(&mut child);
                 println!("\n=========================================");
-                println!("Result: ALL {}/{} stages passed (total: {:.2}s)", stages_passed, total_stages, test_start.elapsed().as_secs_f64());
+                println!(
+                    "Result: ALL {}/{} stages passed (total: {:.2}s)",
+                    stages_passed,
+                    total_stages,
+                    test_start.elapsed().as_secs_f64()
+                );
                 return Ok(());
             }
         }
@@ -447,7 +476,9 @@ fn prepare_boot_test_artifacts(arch: &qemu_config::Arch) -> Result<()> {
                         .args(&["--arch", "aarch64"])
                         .current_dir(userspace_dir)
                         .status()
-                        .map_err(|e| anyhow::anyhow!("Failed to run build.sh --arch aarch64: {}", e))?;
+                        .map_err(|e| {
+                            anyhow::anyhow!("Failed to run build.sh --arch aarch64: {}", e)
+                        })?;
                     if !status.success() {
                         bail!("Failed to build userspace test binaries for aarch64");
                     }
@@ -477,9 +508,15 @@ fn prepare_boot_test_artifacts(arch: &qemu_config::Arch) -> Result<()> {
 
                     if use_sudo {
                         let _ = Command::new("sudo")
-                            .args(&["chown", "-R", &format!("{}:{}",
-                                std::env::var("UID").unwrap_or_else(|_| "1000".to_string()),
-                                std::env::var("GID").unwrap_or_else(|_| "1000".to_string()))])
+                            .args(&[
+                                "chown",
+                                "-R",
+                                &format!(
+                                    "{}:{}",
+                                    std::env::var("UID").unwrap_or_else(|_| "1000".to_string()),
+                                    std::env::var("GID").unwrap_or_else(|_| "1000".to_string())
+                                ),
+                            ])
                             .args(&["target/", "testdata/"])
                             .status();
                     }
@@ -510,7 +547,11 @@ fn run_boot_stages(arch: &qemu_config::Arch) -> Result<()> {
     let stages = boot_stages::get_boot_stages(arch);
     let total_stages = stages.len();
 
-    println!("{} Boot Stage Validator - {} stages to check", arch.label(), total_stages);
+    println!(
+        "{} Boot Stage Validator - {} stages to check",
+        arch.label(),
+        total_stages
+    );
     println!("=========================================\n");
 
     // Prepare architecture-specific artifacts (userspace binaries, test disks)
@@ -558,7 +599,10 @@ fn validate_boot_stages(
     while !serial_files.iter().any(|f| f.exists()) {
         if start.elapsed() > file_creation_timeout {
             cleanup_qemu_child(child);
-            bail!("Serial output file not created after {} seconds", file_creation_timeout.as_secs());
+            bail!(
+                "Serial output file not created after {} seconds",
+                file_creation_timeout.as_secs()
+            );
         }
         thread::sleep(Duration::from_millis(100));
     }
@@ -642,7 +686,13 @@ fn validate_boot_stages(
                         for _ in 0..(50 - stage.name.len().min(50)) {
                             print!(" ");
                         }
-                        println!("\r[{}/{}] {}... PASS ({})", i + 1, total_stages, stage.name, time_str);
+                        println!(
+                            "\r[{}/{}] {}... PASS ({})",
+                            i + 1,
+                            total_stages,
+                            stage.name,
+                            time_str
+                        );
 
                         // Print next stage we're waiting for
                         if i + 1 < total_stages {
@@ -688,9 +738,13 @@ fn validate_boot_stages(
             // QEMU still running - log the stall and reset timer to avoid repeated messages
             for (i, stage) in stages.iter().enumerate() {
                 if !checked_stages[i] {
-                    println!("\r[{}/{}] {}... (waiting, {}s elapsed)",
-                        i + 1, total_stages, stage.name,
-                        test_start.elapsed().as_secs());
+                    println!(
+                        "\r[{}/{}] {}... (waiting, {}s elapsed)",
+                        i + 1,
+                        total_stages,
+                        stage.name,
+                        test_start.elapsed().as_secs()
+                    );
                     use std::io::Write;
                     let _ = std::io::stdout().flush();
                     break;
@@ -730,7 +784,12 @@ fn validate_boot_stages(
                 if found {
                     checked_stages[i] = true;
                     stages_passed += 1;
-                    println!("[{}/{}] {}... PASS (found in final scan)", i + 1, total_stages, stage.name);
+                    println!(
+                        "[{}/{}] {}... PASS (found in final scan)",
+                        i + 1,
+                        total_stages,
+                        stage.name
+                    );
                 }
             }
         }
@@ -740,7 +799,8 @@ fn validate_boot_stages(
     println!("=========================================");
 
     // Calculate total time
-    let total_time: Duration = stage_timings.iter()
+    let total_time: Duration = stage_timings
+        .iter()
         .filter_map(|t| t.as_ref())
         .map(|t| t.duration)
         .sum();
@@ -752,7 +812,10 @@ fn validate_boot_stages(
     };
 
     if stages_passed == total_stages {
-        println!("Result: ALL {}/{} stages passed (total: {})", stages_passed, total_stages, total_str);
+        println!(
+            "Result: ALL {}/{} stages passed (total: {})",
+            stages_passed, total_stages, total_str
+        );
         Ok(())
     } else {
         // Find first failed stage
@@ -760,7 +823,12 @@ fn validate_boot_stages(
             if !checked_stages[i] {
                 println!("Result: {}/{} stages passed", stages_passed, total_stages);
                 println!();
-                println!("First failed stage: [{}/{}] {}", i + 1, total_stages, stage.name);
+                println!(
+                    "First failed stage: [{}/{}] {}",
+                    i + 1,
+                    total_stages,
+                    stage.name
+                );
                 println!("  Meaning: {}", stage.failure_meaning);
                 println!("  Check:   {}", stage.check_hint);
                 break;
@@ -770,7 +838,6 @@ fn validate_boot_stages(
         bail!("{} boot stage validation incomplete", arch_label);
     }
 }
-
 
 /// Builds the kernel, boots it in QEMU, and asserts that the
 /// hard-coded userspace program prints its greeting.
@@ -831,13 +898,16 @@ fn ring3_smoke() -> Result<()> {
     let file_creation_timeout = if std::env::var("CI").is_ok() {
         Duration::from_secs(300) // 5 minutes for CI
     } else {
-        Duration::from_secs(30)  // 30 seconds locally
+        Duration::from_secs(30) // 30 seconds locally
     };
 
     while !std::path::Path::new(serial_output_file).exists() {
         if start.elapsed() > file_creation_timeout {
             let _ = child.kill();
-            bail!("Serial output file not created after {} seconds", file_creation_timeout.as_secs());
+            bail!(
+                "Serial output file not created after {} seconds",
+                file_creation_timeout.as_secs()
+            );
         }
         thread::sleep(Duration::from_millis(500));
     }
@@ -846,9 +916,9 @@ fn ring3_smoke() -> Result<()> {
     let mut found = false;
     let test_start = Instant::now();
     let timeout = if std::env::var("CI").is_ok() {
-        Duration::from_secs(60)  // 60 seconds for CI (kernel logs are verbose)
+        Duration::from_secs(60) // 60 seconds for CI (kernel logs are verbose)
     } else {
-        Duration::from_secs(30)  // 30 seconds locally
+        Duration::from_secs(30) // 30 seconds locally
     };
 
     while test_start.elapsed() < timeout {
@@ -856,8 +926,10 @@ fn ring3_smoke() -> Result<()> {
             let mut contents = String::new();
             if file.read_to_string(&mut contents).is_ok() {
                 // Look for the RING3_SMOKE success marker or the completion marker
-                if contents.contains("[ OK ] RING3_SMOKE: userspace executed + syscall path verified") ||
-                   contents.contains("KERNEL_POST_TESTS_COMPLETE") {
+                if contents
+                    .contains("[ OK ] RING3_SMOKE: userspace executed + syscall path verified")
+                    || contents.contains("KERNEL_POST_TESTS_COMPLETE")
+                {
                     found = true;
                     break;
                 }
@@ -949,13 +1021,16 @@ fn ring3_enosys() -> Result<()> {
     let file_creation_timeout = if std::env::var("CI").is_ok() {
         Duration::from_secs(300) // 5 minutes for CI
     } else {
-        Duration::from_secs(30)  // 30 seconds locally
+        Duration::from_secs(30) // 30 seconds locally
     };
 
     while !std::path::Path::new(serial_output_file).exists() {
         if start.elapsed() > file_creation_timeout {
             let _ = child.kill();
-            bail!("Serial output file not created after {} seconds", file_creation_timeout.as_secs());
+            bail!(
+                "Serial output file not created after {} seconds",
+                file_creation_timeout.as_secs()
+            );
         }
         thread::sleep(Duration::from_millis(500));
     }
@@ -966,9 +1041,9 @@ fn ring3_enosys() -> Result<()> {
     let mut _found_invalid_syscall = false;
     let test_start = Instant::now();
     let timeout = if std::env::var("CI").is_ok() {
-        Duration::from_secs(60)  // 60 seconds for CI
+        Duration::from_secs(60) // 60 seconds for CI
     } else {
-        Duration::from_secs(30)  // 30 seconds locally
+        Duration::from_secs(30) // 30 seconds locally
     };
 
     while test_start.elapsed() < timeout {
@@ -989,15 +1064,17 @@ fn ring3_enosys() -> Result<()> {
                     break;
                 }
 
-                if contents.contains("USERSPACE OUTPUT: ENOSYS FAIL") ||
-                   contents.contains("ENOSYS FAIL") {
+                if contents.contains("USERSPACE OUTPUT: ENOSYS FAIL")
+                    || contents.contains("ENOSYS FAIL")
+                {
                     found_enosys_fail = true;
                     break;
                 }
 
                 // Also check for kernel warning about invalid syscall
-                if contents.contains("Invalid syscall number: 999") ||
-                   contents.contains("unknown syscall: 999") {
+                if contents.contains("Invalid syscall number: 999")
+                    || contents.contains("unknown syscall: 999")
+                {
                     _found_invalid_syscall = true;
                 }
             }
@@ -1015,10 +1092,11 @@ fn ring3_enosys() -> Result<()> {
             println!("\n=== Kernel Output ===");
             // Show lines containing ENOSYS or syscall-related messages
             for line in contents.lines() {
-                if line.contains("ENOSYS") ||
-                   line.contains("syscall") ||
-                   line.contains("SYSCALL") ||
-                   line.contains("Invalid") {
+                if line.contains("ENOSYS")
+                    || line.contains("syscall")
+                    || line.contains("SYSCALL")
+                    || line.contains("Invalid")
+                {
                     println!("{}", line);
                 }
             }
@@ -1031,12 +1109,14 @@ fn ring3_enosys() -> Result<()> {
         println!("\n  ENOSYS test passed - syscall 999 correctly returned -38");
         Ok(())
     } else {
-        bail!("\n  ENOSYS test failed: userspace did not report 'ENOSYS OK'.\n\
+        bail!(
+            "\n  ENOSYS test failed: userspace did not report 'ENOSYS OK'.\n\
                This test requires:\n\
                1. Userspace process created successfully\n\
                2. Userspace executes syscall(999) from Ring 3\n\
                3. Userspace validates return value == -38\n\
-               4. Userspace prints 'ENOSYS OK'");
+               4. Userspace prints 'ENOSYS OK'"
+        );
     }
 }
 
@@ -1220,7 +1300,10 @@ fn interactive_test() -> Result<()> {
     while !std::path::Path::new(user_output_file).exists() {
         if start.elapsed() > file_timeout {
             cleanup(&mut child);
-            bail!("Output file not created after {} seconds", file_timeout.as_secs());
+            bail!(
+                "Output file not created after {} seconds",
+                file_timeout.as_secs()
+            );
         }
         thread::sleep(Duration::from_millis(100));
     }
@@ -1324,7 +1407,11 @@ fn interactive_test() -> Result<()> {
     println!("[Test 1] Sending 'help' command...");
     send_string(&mut monitor, "help\n")?;
 
-    if wait_for_output(user_output_file, "Built-in commands:", Duration::from_secs(5)) {
+    if wait_for_output(
+        user_output_file,
+        "Built-in commands:",
+        Duration::from_secs(5),
+    ) {
         println!("  ✓ PASS: 'help' command produced expected output");
         tests_passed += 1;
     } else {
@@ -1338,7 +1425,9 @@ fn interactive_test() -> Result<()> {
     // Test 2: Run "help" again to verify shell continues working
     println!();
     println!("[Test 2] Sending 'help' command again (testing subsequent commands)...");
-    let output_len_before = fs::read_to_string(user_output_file).unwrap_or_default().len();
+    let output_len_before = fs::read_to_string(user_output_file)
+        .unwrap_or_default()
+        .len();
     send_string(&mut monitor, "help\n")?;
 
     thread::sleep(Duration::from_secs(2));
@@ -1382,14 +1471,19 @@ fn interactive_test() -> Result<()> {
         println!("  ✗ FAIL: cat didn't receive argv (argc < 2)");
         // Print debug info if available
         if let Some(debug_start) = cat_output.rfind("cat DEBUG:") {
-            let debug_section: String = cat_output[debug_start..].lines().take(5).collect::<Vec<_>>().join("\n");
+            let debug_section: String = cat_output[debug_start..]
+                .lines()
+                .take(5)
+                .collect::<Vec<_>>()
+                .join("\n");
             println!("  Debug output: {}", debug_section);
         }
         tests_failed += 1;
     } else if cat_output.contains("cat DEBUG:") {
         // Debug output exists but file not found or other error
         println!("  ? cat debug output present, checking...");
-        let debug_lines: Vec<&str> = cat_output.lines()
+        let debug_lines: Vec<&str> = cat_output
+            .lines()
             .filter(|l| l.contains("cat DEBUG:") || l.contains("cat:"))
             .collect();
         for line in debug_lines.iter().take(10) {
@@ -1399,7 +1493,14 @@ fn interactive_test() -> Result<()> {
     } else {
         println!("  ? INCONCLUSIVE: Could not verify cat output");
         println!("  Last 5 lines of output:");
-        for line in cat_output.lines().rev().take(5).collect::<Vec<_>>().into_iter().rev() {
+        for line in cat_output
+            .lines()
+            .rev()
+            .take(5)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+        {
             println!("    {}", line);
         }
     }
@@ -1444,7 +1545,9 @@ fn interactive_test() -> Result<()> {
     // Check if shell returned to prompt (should see another breenix> after the ^C)
     let spinner_output = fs::read_to_string(user_output_file).unwrap_or_default();
     let ctrl_c_count = spinner_output.matches("^C").count();
-    if ctrl_c_count >= 2 && spinner_output.ends_with("breenix> ") || spinner_output.contains("breenix> \n") {
+    if ctrl_c_count >= 2 && spinner_output.ends_with("breenix> ")
+        || spinner_output.contains("breenix> \n")
+    {
         println!("  ✓ PASS: Spinner interrupted and shell returned to prompt");
         tests_passed += 1;
     } else {
@@ -1466,7 +1569,14 @@ fn interactive_test() -> Result<()> {
     println!();
     println!("=== User Output (last 50 lines) ===");
     if let Ok(contents) = fs::read_to_string(user_output_file) {
-        for line in contents.lines().rev().take(50).collect::<Vec<_>>().into_iter().rev() {
+        for line in contents
+            .lines()
+            .rev()
+            .take(50)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+        {
             println!("{}", line);
         }
     }
@@ -1507,7 +1617,10 @@ fn kthread_test(arch: &str) -> Result<()> {
     thread::sleep(Duration::from_millis(500));
 
     // Build
-    println!("Building {} kernel with kthread_test_only feature...", arch_label);
+    println!(
+        "Building {} kernel with kthread_test_only feature...",
+        arch_label
+    );
     config.build()?;
     println!("  Build successful\n");
 
@@ -1531,7 +1644,11 @@ fn kthread_test(arch: &str) -> Result<()> {
 
     match result.outcome {
         test_monitor::MonitorOutcome::Success => {
-            println!("\n=== Kthread Test Results ({}) [{:.1}s] ===\n", arch_label, result.duration.as_secs_f64());
+            println!(
+                "\n=== Kthread Test Results ({}) [{:.1}s] ===\n",
+                arch_label,
+                result.duration.as_secs_f64()
+            );
             for line in result.serial_output.lines() {
                 if line.contains("KTHREAD") {
                     println!("{}", line);
@@ -1551,19 +1668,46 @@ fn kthread_test(arch: &str) -> Result<()> {
         }
         test_monitor::MonitorOutcome::QemuExited(status) => {
             let status_str = status.map_or("unknown".to_string(), |c| c.to_string());
-            println!("\n=== KTHREAD TEST FAILED (QEMU exited with {}) ===\n", status_str);
-            for line in result.serial_output.lines().rev().take(30).collect::<Vec<_>>().into_iter().rev() {
+            println!(
+                "\n=== KTHREAD TEST FAILED (QEMU exited with {}) ===\n",
+                status_str
+            );
+            for line in result
+                .serial_output
+                .lines()
+                .rev()
+                .take(30)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+            {
                 println!("{}", line);
             }
-            bail!("QEMU exited with {} before kthread tests completed ({})", status_str, arch_label);
+            bail!(
+                "QEMU exited with {} before kthread tests completed ({})",
+                status_str,
+                arch_label
+            );
         }
         test_monitor::MonitorOutcome::Timeout => {
             println!("\n=== KTHREAD TEST FAILED (timeout) ({}) ===\n", arch_label);
             println!("Last output:");
-            for line in result.serial_output.lines().rev().take(30).collect::<Vec<_>>().into_iter().rev() {
+            for line in result
+                .serial_output
+                .lines()
+                .rev()
+                .take(30)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+            {
                 println!("{}", line);
             }
-            bail!("Kthread test timed out after {} seconds ({})", result.duration.as_secs(), arch_label);
+            bail!(
+                "Kthread test timed out after {} seconds ({})",
+                result.duration.as_secs(),
+                arch_label
+            );
         }
     }
 }
@@ -1604,7 +1748,7 @@ fn kthread_stress_ci() -> Result<()> {
             "qemu-uefi",
             "--",
             "-serial",
-            &format!("file:{}", user_output_file),  // COM1: user output
+            &format!("file:{}", user_output_file), // COM1: user output
             "-serial",
             &format!("file:{}", serial_output_file), // COM2: kernel logs (test markers)
             "-display",
@@ -1623,7 +1767,10 @@ fn kthread_stress_ci() -> Result<()> {
     while !std::path::Path::new(serial_output_file).exists() {
         if start.elapsed() > file_creation_timeout {
             let _ = child.kill();
-            bail!("Serial output file not created after {} seconds", file_creation_timeout.as_secs());
+            bail!(
+                "Serial output file not created after {} seconds",
+                file_creation_timeout.as_secs()
+            );
         }
         thread::sleep(Duration::from_millis(100));
     }
@@ -1645,7 +1792,10 @@ fn kthread_stress_ci() -> Result<()> {
             if contents.contains("panicked at") || contents.contains("PANIC:") {
                 println!("\n=== STRESS TEST FAILED (panic detected) ===\n");
                 for line in contents.lines() {
-                    if line.contains("KTHREAD_STRESS") || line.contains("panic") || line.contains("PANIC") {
+                    if line.contains("KTHREAD_STRESS")
+                        || line.contains("panic")
+                        || line.contains("PANIC")
+                    {
                         println!("{}", line);
                     }
                 }
@@ -1670,10 +1820,20 @@ fn kthread_stress_ci() -> Result<()> {
     } else {
         println!("\n=== STRESS TEST FAILED (timeout) ===\n");
         println!("Last output:");
-        for line in test_output.lines().rev().take(30).collect::<Vec<_>>().into_iter().rev() {
+        for line in test_output
+            .lines()
+            .rev()
+            .take(30)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+        {
             println!("{}", line);
         }
-        bail!("Kthread stress test timed out after {} seconds", timeout.as_secs());
+        bail!(
+            "Kthread stress test timed out after {} seconds",
+            timeout.as_secs()
+        );
     }
 }
 
@@ -1683,7 +1843,10 @@ fn kthread_stress_docker() -> Result<()> {
 
     // Step 0: Clean old build artifacts to ensure we use the fresh stress test build
     println!("Cleaning old build artifacts...");
-    for entry in glob::glob("target/release/build/breenix-*").unwrap().filter_map(|p| p.ok()) {
+    for entry in glob::glob("target/release/build/breenix-*")
+        .unwrap()
+        .filter_map(|p| p.ok())
+    {
         let _ = fs::remove_dir_all(&entry);
     }
 
@@ -1775,32 +1938,49 @@ fn kthread_stress_docker() -> Result<()> {
     docker_args.extend([
         "breenix-qemu".to_string(),
         "qemu-system-x86_64".to_string(),
-        "-pflash".to_string(), "/output/OVMF_CODE.fd".to_string(),
-        "-pflash".to_string(), "/output/OVMF_VARS.fd".to_string(),
-        "-drive".to_string(), "if=none,id=hd,format=raw,readonly=on,file=/breenix/breenix-uefi.img".to_string(),
-        "-device".to_string(), "virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off".to_string(),
-        "-machine".to_string(), "pc,accel=tcg".to_string(),
-        "-cpu".to_string(), "qemu64".to_string(),
-        "-smp".to_string(), "1".to_string(),
-        "-m".to_string(), "512".to_string(),
-        "-display".to_string(), "none".to_string(),
+        "-pflash".to_string(),
+        "/output/OVMF_CODE.fd".to_string(),
+        "-pflash".to_string(),
+        "/output/OVMF_VARS.fd".to_string(),
+        "-drive".to_string(),
+        "if=none,id=hd,format=raw,readonly=on,file=/breenix/breenix-uefi.img".to_string(),
+        "-device".to_string(),
+        "virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off".to_string(),
+        "-machine".to_string(),
+        "pc,accel=tcg".to_string(),
+        "-cpu".to_string(),
+        "qemu64".to_string(),
+        "-smp".to_string(),
+        "1".to_string(),
+        "-m".to_string(),
+        "512".to_string(),
+        "-display".to_string(),
+        "none".to_string(),
         "-no-reboot".to_string(),
         "-no-shutdown".to_string(),
-        "-device".to_string(), "isa-debug-exit,iobase=0xf4,iosize=0x04".to_string(),
-        "-serial".to_string(), "file:/output/serial_user.txt".to_string(),
-        "-serial".to_string(), "file:/output/serial_kernel.txt".to_string(),
+        "-device".to_string(),
+        "isa-debug-exit,iobase=0xf4,iosize=0x04".to_string(),
+        "-serial".to_string(),
+        "file:/output/serial_user.txt".to_string(),
+        "-serial".to_string(),
+        "file:/output/serial_kernel.txt".to_string(),
     ]);
 
     if test_binaries.is_some() {
         docker_args.extend([
-            "-drive".to_string(), "if=none,id=testdisk,format=raw,readonly=on,file=/breenix/test_binaries.img".to_string(),
-            "-device".to_string(), "virtio-blk-pci,drive=testdisk,disable-modern=on,disable-legacy=off".to_string(),
+            "-drive".to_string(),
+            "if=none,id=testdisk,format=raw,readonly=on,file=/breenix/test_binaries.img"
+                .to_string(),
+            "-device".to_string(),
+            "virtio-blk-pci,drive=testdisk,disable-modern=on,disable-legacy=off".to_string(),
         ]);
     }
     if ext2_img.is_some() {
         docker_args.extend([
-            "-drive".to_string(), "if=none,id=ext2disk,format=raw,readonly=on,file=/breenix/ext2.img".to_string(),
-            "-device".to_string(), "virtio-blk-pci,drive=ext2disk,disable-modern=on,disable-legacy=off".to_string(),
+            "-drive".to_string(),
+            "if=none,id=ext2disk,format=raw,readonly=on,file=/breenix/ext2.img".to_string(),
+            "-device".to_string(),
+            "virtio-blk-pci,drive=ext2disk,disable-modern=on,disable-legacy=off".to_string(),
         ]);
     }
 
@@ -1830,7 +2010,10 @@ fn kthread_stress_docker() -> Result<()> {
             if contents.contains("panicked at") || contents.contains("PANIC:") {
                 println!("\n=== STRESS TEST FAILED (panic detected) ===\n");
                 for line in contents.lines() {
-                    if line.contains("KTHREAD_STRESS") || line.contains("panic") || line.contains("PANIC") {
+                    if line.contains("KTHREAD_STRESS")
+                        || line.contains("panic")
+                        || line.contains("PANIC")
+                    {
                         println!("{}", line);
                     }
                 }
@@ -1846,7 +2029,10 @@ fn kthread_stress_docker() -> Result<()> {
 
     let _ = docker_child.kill();
     let _ = Command::new("sh")
-        .args(&["-c", "docker kill $(docker ps -q --filter ancestor=breenix-qemu) 2>/dev/null || true"])
+        .args(&[
+            "-c",
+            "docker kill $(docker ps -q --filter ancestor=breenix-qemu) 2>/dev/null || true",
+        ])
         .status();
 
     if success {
@@ -1861,10 +2047,20 @@ fn kthread_stress_docker() -> Result<()> {
     } else {
         println!("\n=== STRESS TEST FAILED (timeout) ===\n");
         println!("Last output:");
-        for line in test_output.lines().rev().take(30).collect::<Vec<_>>().into_iter().rev() {
+        for line in test_output
+            .lines()
+            .rev()
+            .take(30)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+        {
             println!("{}", line);
         }
-        bail!("Kthread stress test timed out after {} seconds", timeout.as_secs());
+        bail!(
+            "Kthread stress test timed out after {} seconds",
+            timeout.as_secs()
+        );
     }
 }
 
@@ -1958,9 +2154,15 @@ fn boot_test_btrt(arch: &str) -> Result<()> {
                 }
                 if use_sudo {
                     let _ = Command::new("sudo")
-                        .args(["chown", "-R", &format!("{}:{}",
-                            std::env::var("UID").unwrap_or_else(|_| "1000".to_string()),
-                            std::env::var("GID").unwrap_or_else(|_| "1000".to_string()))])
+                        .args([
+                            "chown",
+                            "-R",
+                            &format!(
+                                "{}:{}",
+                                std::env::var("UID").unwrap_or_else(|_| "1000".to_string()),
+                                std::env::var("GID").unwrap_or_else(|_| "1000".to_string())
+                            ),
+                        ])
                         .args(["target/", "testdata/"])
                         .status();
                 }
@@ -1995,7 +2197,10 @@ fn boot_test_btrt(arch: &str) -> Result<()> {
     while !serial_output_file.exists() {
         if start.elapsed() > file_timeout {
             cleanup_qemu_child(&mut child);
-            bail!("Serial output file not created after {} seconds", file_timeout.as_secs());
+            bail!(
+                "Serial output file not created after {} seconds",
+                file_timeout.as_secs()
+            );
         }
         thread::sleep(Duration::from_millis(100));
     }
@@ -2023,7 +2228,8 @@ fn boot_test_btrt(arch: &str) -> Result<()> {
                         // Parse: [btrt] Boot Test Result Table at phys 0xADDR (SIZE bytes)
                         if let Some(addr_str) = line.split("phys ").nth(1) {
                             if let Some(addr_hex) = addr_str.split_whitespace().next() {
-                                let cleaned = addr_hex.trim_start_matches("0x").trim_start_matches("0X");
+                                let cleaned =
+                                    addr_hex.trim_start_matches("0x").trim_start_matches("0X");
                                 if let Ok(addr) = u64::from_str_radix(cleaned, 16) {
                                     btrt_phys_addr = Some(addr);
                                     if btrt_addr_found_time.is_none() {
@@ -2053,8 +2259,10 @@ fn boot_test_btrt(arch: &str) -> Result<()> {
             // which tests passed/failed/are still running.
             if let Some(found_time) = btrt_addr_found_time {
                 if found_time.elapsed() > addr_grace_period {
-                    eprintln!("WARNING: BTRT address found {}s ago but BTRT_READY not received",
-                              found_time.elapsed().as_secs());
+                    eprintln!(
+                        "WARNING: BTRT address found {}s ago but BTRT_READY not received",
+                        found_time.elapsed().as_secs()
+                    );
                     eprintln!("         Proceeding with BTRT extraction (some test processes may be stuck)");
                     btrt_ready = true;
                     break;

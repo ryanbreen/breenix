@@ -248,7 +248,10 @@ pub fn init() {
         }
     }
 
-    log::info!("Tracing subsystem initialized ({} per-CPU buffers)", MAX_CPUS);
+    log::info!(
+        "Tracing subsystem initialized ({} per-CPU buffers)",
+        MAX_CPUS
+    );
 }
 
 // =============================================================================
@@ -352,10 +355,7 @@ pub fn record_event(event_type: u16, flags: u8, payload: u32) {
 
         // Update the convenience symbol for CPU 0
         if cpu_id == 0 {
-            TRACE_CPU0_WRITE_IDX.store(
-                TRACE_BUFFERS[0].write_index() as u64,
-                Ordering::Relaxed,
-            );
+            TRACE_CPU0_WRITE_IDX.store(TRACE_BUFFERS[0].write_index() as u64, Ordering::Relaxed);
         }
     }
 }

@@ -13,8 +13,8 @@
 
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use crate::arch_impl::traits::TimerOps;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Cached counter frequency (read once at init, never changes)
 static COUNTER_FREQ: AtomicU64 = AtomicU64::new(0);

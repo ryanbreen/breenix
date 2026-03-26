@@ -5,11 +5,11 @@
 //! the tests won't work correctly.
 
 use crate::task::kthread::{
-    kthread_exit, kthread_join,
-    kthread_park, kthread_run, kthread_should_stop, kthread_stop, kthread_unpark, KthreadError,
+    kthread_exit, kthread_join, kthread_park, kthread_run, kthread_should_stop, kthread_stop,
+    kthread_unpark, KthreadError,
 };
-use crate::{arch_disable_interrupts, arch_enable_interrupts, arch_halt};
 use crate::task::scheduler;
+use crate::{arch_disable_interrupts, arch_enable_interrupts, arch_halt};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -46,7 +46,10 @@ pub fn test_kthread_lifecycle() {
 
             // Verify kthread_should_stop() is actually true
             let stopped = kthread_should_stop();
-            assert!(stopped, "kthread_should_stop() must be true after loop exit");
+            assert!(
+                stopped,
+                "kthread_should_stop() must be true after loop exit"
+            );
             log::info!("KTHREAD_VERIFY: kthread_should_stop() = {}", stopped);
             log::info!("KTHREAD_STOP: kthread received stop signal");
             KTHREAD_DONE.store(true, Ordering::Release);

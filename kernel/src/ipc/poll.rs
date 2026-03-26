@@ -204,8 +204,9 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                     }
                 }
                 // Check for connection closed
-                if conn.state == crate::net::tcp::TcpState::Closed ||
-                   conn.state == crate::net::tcp::TcpState::CloseWait {
+                if conn.state == crate::net::tcp::TcpState::Closed
+                    || conn.state == crate::net::tcp::TcpState::CloseWait
+                {
                     revents |= events::POLLHUP;
                 }
             } else {

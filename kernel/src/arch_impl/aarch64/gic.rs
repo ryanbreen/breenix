@@ -17,8 +17,8 @@
 
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use crate::arch_impl::traits::InterruptController;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 // =============================================================================
 // Fault-tolerant MMIO probe support
@@ -128,10 +128,7 @@ fn probe_and_validate_gicr() -> bool {
                 );
             }
             Some(0xFFFF_FFFF) => {
-                crate::serial_println!(
-                    "[gic] GICR probe {:#010x}: 0xFFFFFFFF (no device)",
-                    base
-                );
+                crate::serial_println!("[gic] GICR probe {:#010x}: 0xFFFFFFFF (no device)", base);
             }
             Some(val) => {
                 // Plausible GICR_WAKER value: bit[1]=ProcessorSleep is
@@ -139,13 +136,15 @@ fn probe_and_validate_gicr() -> bool {
                 // We accept any non-0xFFFFFFFF non-fault read as a valid GICR.
                 crate::serial_println!(
                     "[gic] GICR probe {:#010x}: WAKER={:#010x} <<< VALID",
-                    base, val
+                    base,
+                    val
                 );
                 // If this differs from what the loader reported, update it.
                 if base != reported_base {
                     crate::serial_println!(
                         "[gic] GICR base mismatch: loader={:#010x}, using={:#010x}",
-                        reported_base, base
+                        reported_base,
+                        base
                     );
                     crate::platform_config::set_gicr_base_phys(base as u64);
                 }
@@ -424,7 +423,7 @@ impl Gicv2 {
         // Bit 3: FIQEn - When set, Group 0 interrupts are signaled as FIQ (we want IRQ for both)
         // Since we configured all interrupts as Group 1 in init_distributor(),
         // we need bit 1 set. Also set AckCtl to allow acknowledging any pending interrupt.
-        gicc_write(GICC_CTLR, 0x7);  // EnableGrp0 | EnableGrp1 | AckCtl
+        gicc_write(GICC_CTLR, 0x7); // EnableGrp0 | EnableGrp1 | AckCtl
     }
 }
 
@@ -445,7 +444,11 @@ pub fn init_cpu_interface_secondary() {
 
             // Validate against GICR region before any MMIO access.
             let gicr_size = crate::platform_config::gicr_size() as usize;
-            let max_redists = if gicr_size > 0 { gicr_size / GICR_FRAME_SIZE } else { 0 };
+            let max_redists = if gicr_size > 0 {
+                gicr_size / GICR_FRAME_SIZE
+            } else {
+                0
+            };
             if max_redists > 0 && cpu_id >= max_redists {
                 crate::serial_println!(
                     "[gic] CPU {} (MPIDR Aff0) exceeds GICR region ({} redistributors), skipping GIC init",
@@ -486,7 +489,11 @@ impl InterruptController for Gicv2 {
         // on Parallels and caused level-triggered SPI deactivation failures.
         let platform_version = crate::platform_config::gic_version();
         let hw_version = Self::detect_version();
-        let version = if platform_version != 0 { platform_version } else { hw_version };
+        let version = if platform_version != 0 {
+            platform_version
+        } else {
+            hw_version
+        };
 
         ACTIVE_GIC_VERSION.store(version, Ordering::Release);
 
@@ -529,7 +536,11 @@ impl InterruptController for Gicv2 {
                 }
                 let cpu_id = get_cpu_id_from_mpidr();
                 let gicr_size = crate::platform_config::gicr_size() as usize;
-                let max_redists = if gicr_size > 0 { gicr_size / GICR_FRAME_SIZE } else { 0 };
+                let max_redists = if gicr_size > 0 {
+                    gicr_size / GICR_FRAME_SIZE
+                } else {
+                    0
+                };
                 if max_redists > 0 && cpu_id >= max_redists {
                     return; // No redistributor for this CPU
                 }
@@ -554,10 +565,15 @@ impl InterruptController for Gicv2 {
             if version >= 3 || are_enabled {
                 // GICv3 / ARE mode: Route SPI via GICD_IROUTER
                 let mpidr: u64;
-                unsafe { core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack)); }
+                unsafe {
+                    core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
+                }
                 let affinity = mpidr & 0xFF_00FF_FFFF; // Aff3.Aff2.Aff1.Aff0
                 gicd_write(GICD_IROUTER + (irq_num as usize * 8), affinity as u32);
-                gicd_write(GICD_IROUTER + (irq_num as usize * 8) + 4, (affinity >> 32) as u32);
+                gicd_write(
+                    GICD_IROUTER + (irq_num as usize * 8) + 4,
+                    (affinity >> 32) as u32,
+                );
             } else {
                 // GICv2 (no ARE): Route SPI to CPU 0 via ITARGETSR
                 let target_reg = irq_num / 4;
@@ -587,7 +603,11 @@ impl InterruptController for Gicv2 {
                 }
                 let cpu_id = get_cpu_id_from_mpidr();
                 let gicr_size = crate::platform_config::gicr_size() as usize;
-                let max_redists = if gicr_size > 0 { gicr_size / GICR_FRAME_SIZE } else { 0 };
+                let max_redists = if gicr_size > 0 {
+                    gicr_size / GICR_FRAME_SIZE
+                } else {
+                    0
+                };
                 if max_redists > 0 && cpu_id >= max_redists {
                     return; // No redistributor for this CPU
                 }
@@ -632,7 +652,9 @@ pub fn acknowledge_irq() -> Option<u32> {
             // DS=1 path: Group 0 ICC registers are accessible.
             // Try ICC_IAR0_EL1 first (Group 0), fall back to IAR1.
             let iar0: u64;
-            unsafe { core::arch::asm!("mrs {}, icc_iar0_el1", out(reg) iar0, options(nomem, nostack)); }
+            unsafe {
+                core::arch::asm!("mrs {}, icc_iar0_el1", out(reg) iar0, options(nomem, nostack));
+            }
             let id0 = (iar0 & 0xFFFFFF) as u32;
             if id0 <= MAX_VALID_IRQ {
                 LAST_ACK_GROUP.store(0, Ordering::Relaxed); // Group 0
@@ -640,7 +662,9 @@ pub fn acknowledge_irq() -> Option<u32> {
             }
             // Fall through to try IAR1
             let iar1: u64;
-            unsafe { core::arch::asm!("mrs {}, icc_iar1_el1", out(reg) iar1, options(nomem, nostack)); }
+            unsafe {
+                core::arch::asm!("mrs {}, icc_iar1_el1", out(reg) iar1, options(nomem, nostack));
+            }
             let id1 = (iar1 & 0xFFFFFF) as u32;
             if id1 <= MAX_VALID_IRQ {
                 LAST_ACK_GROUP.store(1, Ordering::Relaxed); // Group 1
@@ -650,9 +674,13 @@ pub fn acknowledge_irq() -> Option<u32> {
         } else {
             // Normal GICv3 path (QEMU/Parallels): all interrupts are Group 1
             let iar: u64;
-            unsafe { core::arch::asm!("mrs {}, icc_iar1_el1", out(reg) iar, options(nomem, nostack)); }
+            unsafe {
+                core::arch::asm!("mrs {}, icc_iar1_el1", out(reg) iar, options(nomem, nostack));
+            }
             let irq_id = (iar & 0xFFFFFF) as u32;
-            if irq_id > MAX_VALID_IRQ { None } else {
+            if irq_id > MAX_VALID_IRQ {
+                None
+            } else {
                 LAST_ACK_GROUP.store(1, Ordering::Relaxed);
                 Some(irq_id)
             }
@@ -661,7 +689,11 @@ pub fn acknowledge_irq() -> Option<u32> {
         // GICv2: Read GICC_IAR
         let iar = gicc_read(GICC_IAR);
         let irq_id = iar & 0x3FF;
-        if irq_id > MAX_VALID_IRQ { None } else { Some(irq_id) }
+        if irq_id > MAX_VALID_IRQ {
+            None
+        } else {
+            Some(irq_id)
+        }
     }
 }
 
@@ -732,9 +764,9 @@ pub fn clear_pending(irq: u32) {
 /// regardless of whether the SPI is enabled (GICv3 spec §8.9.16).
 pub fn snapshot_pending_spis() -> [u32; 3] {
     [
-        gicd_read(GICD_ISPENDR + 4),   // SPIs 32-63
-        gicd_read(GICD_ISPENDR + 8),   // SPIs 64-95
-        gicd_read(GICD_ISPENDR + 12),  // SPIs 96-127
+        gicd_read(GICD_ISPENDR + 4),  // SPIs 32-63
+        gicd_read(GICD_ISPENDR + 8),  // SPIs 64-95
+        gicd_read(GICD_ISPENDR + 12), // SPIs 96-127
     ]
 }
 
@@ -809,10 +841,15 @@ pub fn enable_spi(irq: u32) {
     if version >= 3 {
         // GICv3: Route SPI to current CPU via GICD_IROUTER
         let mpidr: u64;
-        unsafe { core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack)); }
+        unsafe {
+            core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
+        }
         let affinity = mpidr & 0xFF_00FF_FFFF; // Aff3.Aff2.Aff1.Aff0
         gicd_write(GICD_IROUTER + (irq as usize * 8), affinity as u32);
-        gicd_write(GICD_IROUTER + (irq as usize * 8) + 4, (affinity >> 32) as u32);
+        gicd_write(
+            GICD_IROUTER + (irq as usize * 8) + 4,
+            (affinity >> 32) as u32,
+        );
     } else {
         // GICv2: Route SPI to CPU 0 via ITARGETSR
         let target_reg = irq / 4;
@@ -890,12 +927,19 @@ pub fn dump_irq_state(irq: u32) {
     let gicd_ctlr = gicd_read(GICD_CTLR);
 
     crate::serial_println!("[gic] IRQ {} state (GICv{}):", irq, version);
-    crate::serial_println!("  enabled={}, group1={}, pending={}", enabled, group1, pending);
+    crate::serial_println!(
+        "  enabled={}, group1={}, pending={}",
+        enabled,
+        group1,
+        pending
+    );
     crate::serial_println!("  priority={:#x}, GICD_CTLR={:#x}", priority, gicd_ctlr);
 
     if version >= 3 {
         let pmr: u64;
-        unsafe { core::arch::asm!("mrs {}, icc_pmr_el1", out(reg) pmr, options(nomem, nostack)); }
+        unsafe {
+            core::arch::asm!("mrs {}, icc_pmr_el1", out(reg) pmr, options(nomem, nostack));
+        }
         crate::serial_println!("  ICC_PMR={:#x}", pmr);
     } else {
         let gicc_ctlr = gicc_read(GICC_CTLR);
@@ -942,7 +986,9 @@ const GICD_CTLR_DS: u32 = 1 << 6; // Disable Security (RAZ/WI from NS, but VMwar
 /// For simple SMP, Aff0 is the CPU number.
 fn get_cpu_id_from_mpidr() -> usize {
     let mpidr: u64;
-    unsafe { core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
+    }
     (mpidr & 0xFF) as usize
 }
 
@@ -983,8 +1029,10 @@ fn init_gicv3_distributor() {
 
     // Try enabling DS=1 (Disable Security) first — VMware's emulation may allow it
     // even from NS EL1. If it works, IGROUPR0 becomes writable.
-    gicd_write(GICD_CTLR,
-        GICD_CTLR_DS | GICD_CTLR_ARE_NS | GICD_CTLR_ENABLE_GRP0 | GICD_CTLR_ENABLE_GRP1_NS);
+    gicd_write(
+        GICD_CTLR,
+        GICD_CTLR_DS | GICD_CTLR_ARE_NS | GICD_CTLR_ENABLE_GRP0 | GICD_CTLR_ENABLE_GRP1_NS,
+    );
     unsafe {
         core::arch::asm!("dsb sy", options(nomem, nostack));
         core::arch::asm!("isb", options(nomem, nostack));
@@ -992,9 +1040,11 @@ fn init_gicv3_distributor() {
 
     // Read back and log what stuck
     let ctlr_readback = gicd_read(GICD_CTLR);
-    crate::serial_println!("[gic] GICD_CTLR wrote {:#x}, readback={:#x}",
+    crate::serial_println!(
+        "[gic] GICD_CTLR wrote {:#x}, readback={:#x}",
         GICD_CTLR_DS | GICD_CTLR_ARE_NS | GICD_CTLR_ENABLE_GRP0 | GICD_CTLR_ENABLE_GRP1_NS,
-        ctlr_readback);
+        ctlr_readback
+    );
 
     // Track whether DS=1 took effect. When DS=0, Group 0 ICC system registers
     // (ICC_BPR0_EL1, ICC_IGRPEN0_EL1, ICC_IAR0_EL1, ICC_EOIR0_EL1) are
@@ -1002,7 +1052,9 @@ fn init_gicv3_distributor() {
     let ds_set = (ctlr_readback & GICD_CTLR_DS) != 0;
     DS_ENABLED.store(ds_set, Ordering::Release);
     if !ds_set {
-        crate::serial_println!("[gic] DS=0: Group 0 ICC regs inaccessible from NS EL1, using Group 1 only");
+        crate::serial_println!(
+            "[gic] DS=0: Group 0 ICC regs inaccessible from NS EL1, using Group 1 only"
+        );
     }
 }
 
@@ -1031,14 +1083,20 @@ fn init_gicv3_redistributor(cpu_id: usize) {
     // On M5 Max, PSCI may succeed for more CPUs than the GICR region covers,
     // causing a Synchronous External Abort (DFSC=0x10) on out-of-range access.
     let gicr_size = crate::platform_config::gicr_size() as usize;
-    let max_redists = if gicr_size > 0 { gicr_size / GICR_FRAME_SIZE } else { 0 };
+    let max_redists = if gicr_size > 0 {
+        gicr_size / GICR_FRAME_SIZE
+    } else {
+        0
+    };
 
     // If gicr_size is unknown (QEMU with no explicit size), allow any cpu_id
     // since QEMU allocates enough redistributors for all CPUs in MAX_CPUS.
     if max_redists > 0 && cpu_id >= max_redists {
         crate::serial_println!(
             "[gic] CPU {} GICR out of range (region size={:#x} covers {} redistributors), skipping",
-            cpu_id, gicr_size, max_redists
+            cpu_id,
+            gicr_size,
+            max_redists
         );
         return;
     }
@@ -1075,7 +1133,10 @@ fn init_gicv3_redistributor(cpu_id: usize) {
     let igroupr0 = gicr_read(sgi_base, GICR_IGROUPR0);
 
     if cpu_id == 0 {
-        crate::serial_println!("[gic] GICR_IGROUPR0: wrote 0xFFFFFFFF, readback={:#010x}", igroupr0);
+        crate::serial_println!(
+            "[gic] GICR_IGROUPR0: wrote 0xFFFFFFFF, readback={:#010x}",
+            igroupr0
+        );
     }
 
     if igroupr0 == 0 {
@@ -1087,7 +1148,9 @@ fn init_gicv3_redistributor(cpu_id: usize) {
             if DS_ENABLED.load(Ordering::Acquire) {
                 crate::serial_println!("[gic] DS=1: using ICC_IAR0/EOIR0 for Group 0 interrupts");
             } else {
-                crate::serial_println!("[gic] DS=0: using ICC_IAR1/EOIR1 (hypervisor maps Group 0 to NS Group 1)");
+                crate::serial_println!(
+                    "[gic] DS=0: using ICC_IAR1/EOIR1 (hypervisor maps Group 0 to NS Group 1)"
+                );
             }
         }
     }
@@ -1124,8 +1187,12 @@ fn init_gicv3_cpu_interface() {
         let new_ctlr = icc_ctlr & !(1u64 << 1);
         core::arch::asm!("msr icc_ctlr_el1, {}", in(reg) new_ctlr, options(nomem, nostack));
         core::arch::asm!("isb", options(nostack, preserves_flags));
-        crate::serial_println!("[gic] ICC_CTLR_EL1: {:#x} -> {:#x} (EOImode={})",
-            icc_ctlr, new_ctlr, (icc_ctlr >> 1) & 1);
+        crate::serial_println!(
+            "[gic] ICC_CTLR_EL1: {:#x} -> {:#x} (EOImode={})",
+            icc_ctlr,
+            new_ctlr,
+            (icc_ctlr >> 1) & 1
+        );
 
         // Set priority mask to accept all (ICC_PMR_EL1)
         let pmr: u64 = PRIORITY_MASK as u64;

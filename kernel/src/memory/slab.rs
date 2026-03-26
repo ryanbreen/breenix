@@ -83,11 +83,13 @@ impl SlabCache {
         let bitmap_words = (capacity + 63) / 64;
 
         // Allocate backing storage from the global heap
-        let layout = Layout::from_size_align(total_bytes, 8)
-            .expect("slab: invalid layout");
+        let layout = Layout::from_size_align(total_bytes, 8).expect("slab: invalid layout");
         let storage = unsafe { alloc::alloc::alloc_zeroed(layout) };
         if storage.is_null() {
-            panic!("slab: failed to allocate {} bytes for cache '{}'", total_bytes, self.name);
+            panic!(
+                "slab: failed to allocate {} bytes for cache '{}'",
+                total_bytes, self.name
+            );
         }
 
         let mut inner = self.inner.lock();
@@ -138,7 +140,9 @@ impl SlabCache {
                         let offset = global_idx * obj_size;
                         let ptr = unsafe { storage.add(offset) };
                         // Zero the slot (defense in depth)
-                        unsafe { ptr::write_bytes(ptr, 0, obj_size); }
+                        unsafe {
+                            ptr::write_bytes(ptr, 0, obj_size);
+                        }
                         return Some(ptr);
                     }
                 }
@@ -344,12 +348,6 @@ pub fn init() {
     use crate::ipc::fd::MAX_FDS;
     use core::mem::size_of;
 
-    FD_TABLE_SLAB.init(
-        size_of::<[Option<FileDescriptor>; MAX_FDS]>(),
-        64,
-    );
-    SIGNAL_HANDLERS_SLAB.init(
-        size_of::<[SignalAction; 64]>(),
-        64,
-    );
+    FD_TABLE_SLAB.init(size_of::<[Option<FileDescriptor>; MAX_FDS]>(), 64);
+    SIGNAL_HANDLERS_SLAB.init(size_of::<[SignalAction; 64]>(), 64);
 }

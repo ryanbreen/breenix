@@ -195,7 +195,10 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                         }
                     });
                     crate::per_cpu::preempt_disable();
-                    log::debug!("sys_waitpid: Thread {} interrupted by signal (EINTR)", thread_id);
+                    log::debug!(
+                        "sys_waitpid: Thread {} interrupted by signal (EINTR)",
+                        thread_id
+                    );
                     return SyscallResult::Err(e as u64);
                 }
 
@@ -226,7 +229,8 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                     let mut result = None;
                     for &child_pid in &children_copy {
                         if let Some(child) = manager.get_process(child_pid) {
-                            if let crate::process::ProcessState::Terminated(exit_code) = child.state {
+                            if let crate::process::ProcessState::Terminated(exit_code) = child.state
+                            {
                                 result = Some((child_pid, exit_code));
                                 break;
                             }
@@ -263,7 +267,8 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                 if let Some(ref manager) = *mg {
                     for &child_pid in &children_copy {
                         if let Some(child) = manager.get_process(child_pid) {
-                            if let crate::process::ProcessState::Terminated(exit_code) = child.state {
+                            if let crate::process::ProcessState::Terminated(exit_code) = child.state
+                            {
                                 drop(mg);
                                 // Child exited during the race window — self-unblock and return
                                 crate::task::scheduler::with_scheduler(|sched| {
@@ -292,7 +297,10 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                         }
                     });
                     crate::per_cpu::preempt_disable();
-                    log::debug!("sys_waitpid: Thread {} interrupted by signal (EINTR)", thread_id);
+                    log::debug!(
+                        "sys_waitpid: Thread {} interrupted by signal (EINTR)",
+                        thread_id
+                    );
                     return SyscallResult::Err(e as u64);
                 }
 
@@ -303,7 +311,8 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                 if let Some(ref manager) = *manager_guard {
                     for &child_pid in &children_copy {
                         if let Some(child) = manager.get_process(child_pid) {
-                            if let crate::process::ProcessState::Terminated(exit_code) = child.state {
+                            if let crate::process::ProcessState::Terminated(exit_code) = child.state
+                            {
                                 drop(manager_guard);
                                 crate::per_cpu::preempt_disable();
                                 return complete_wait(child_pid, exit_code, status_ptr);
@@ -323,7 +332,11 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
 }
 
 /// Helper function to complete a wait operation
-fn complete_wait(child_pid: crate::process::ProcessId, exit_code: i32, status_ptr: u64) -> SyscallResult {
+fn complete_wait(
+    child_pid: crate::process::ProcessId,
+    exit_code: i32,
+    status_ptr: u64,
+) -> SyscallResult {
     let wstatus: i32 = if exit_code < 0 {
         let signal_number = (-exit_code) as i32;
         let core_dump = (signal_number & 0x80) != 0;
@@ -371,7 +384,10 @@ fn complete_wait(child_pid: crate::process::ProcessId, exit_code: i32, status_pt
                 );
             }
             manager.remove_process(child_pid);
-            log::debug!("complete_wait: Reaped process {} from process table", child_pid.as_u64());
+            log::debug!(
+                "complete_wait: Reaped process {} from process table",
+                child_pid.as_u64()
+            );
         }
     }
 

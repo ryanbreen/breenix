@@ -40,14 +40,20 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
         if let Some(ref mut manager) = *manager_guard {
             crate::serial_println!("create_user_process: Calling manager.create_process");
             let result = manager.create_process(name.clone(), elf_data);
-            crate::serial_println!("create_user_process: manager.create_process returned: {:?}", result.is_ok());
+            crate::serial_println!(
+                "create_user_process: manager.create_process returned: {:?}",
+                result.is_ok()
+            );
             result
         } else {
             crate::serial_println!("create_user_process: Process manager not available!");
             Err("Process manager not available")
         }
     }?;
-    crate::serial_println!("create_user_process: Process created with PID {}", pid.as_u64());
+    crate::serial_println!(
+        "create_user_process: Process created with PID {}",
+        pid.as_u64()
+    );
 
     // The key difference: Add the thread directly to scheduler as a user thread
     // without going through the spawn mechanism
@@ -55,7 +61,9 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
     // to wrap this part
     crate::serial_println!("create_user_process: About to add thread to scheduler");
     {
-        crate::serial_println!("create_user_process: Acquiring process manager for thread scheduling");
+        crate::serial_println!(
+            "create_user_process: Acquiring process manager for thread scheduling"
+        );
         let manager_guard = crate::process::manager();
         crate::serial_println!("create_user_process: Got process manager lock for scheduling");
         if let Some(ref manager) = *manager_guard {
@@ -68,7 +76,10 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
                             main_thread.id,
                             main_thread.name
                         );
-                        crate::serial_println!("create_user_process: Calling scheduler::spawn for thread {}", main_thread.id);
+                        crate::serial_println!(
+                            "create_user_process: Calling scheduler::spawn for thread {}",
+                            main_thread.id
+                        );
                         // Add directly to scheduler - no spawn thread needed!
                         // Note: spawn() internally uses without_interrupts
                         crate::task::scheduler::spawn(Box::new(main_thread.clone()));
@@ -116,7 +127,10 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
         "create_user_process: Successfully created user process {} without spawn mechanism",
         pid.as_u64()
     );
-    crate::serial_println!("create_user_process: COMPLETE - returning PID {}", pid.as_u64());
+    crate::serial_println!(
+        "create_user_process: COMPLETE - returning PID {}",
+        pid.as_u64()
+    );
 
     Ok(pid)
 }
@@ -147,19 +161,27 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
         if let Some(ref mut manager) = *manager_guard {
             crate::serial_println!("create_user_process: Calling manager.create_process_with_argv");
             let result = manager.create_process_with_argv(name.clone(), elf_data, argv_slices);
-            crate::serial_println!("create_user_process: manager.create_process_with_argv returned: {:?}", result.is_ok());
+            crate::serial_println!(
+                "create_user_process: manager.create_process_with_argv returned: {:?}",
+                result.is_ok()
+            );
             result
         } else {
             crate::serial_println!("create_user_process: Process manager not available!");
             Err("Process manager not available")
         }
     }?;
-    crate::serial_println!("create_user_process: Process created with PID {}", pid.as_u64());
+    crate::serial_println!(
+        "create_user_process: Process created with PID {}",
+        pid.as_u64()
+    );
 
     // Add the thread directly to scheduler as a user thread
     crate::serial_println!("create_user_process: About to add thread to scheduler");
     {
-        crate::serial_println!("create_user_process: Acquiring process manager for thread scheduling");
+        crate::serial_println!(
+            "create_user_process: Acquiring process manager for thread scheduling"
+        );
         let manager_guard = crate::process::manager();
         crate::serial_println!("create_user_process: Got process manager lock for scheduling");
         if let Some(ref manager) = *manager_guard {
@@ -172,7 +194,10 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
                             main_thread.id,
                             main_thread.name
                         );
-                        crate::serial_println!("create_user_process: Calling scheduler::spawn for thread {}", main_thread.id);
+                        crate::serial_println!(
+                            "create_user_process: Calling scheduler::spawn for thread {}",
+                            main_thread.id
+                        );
                         // Add directly to scheduler - no spawn thread needed!
                         crate::task::scheduler::spawn(Box::new(main_thread.clone()));
                         crate::serial_println!("create_user_process: scheduler::spawn completed");
@@ -213,7 +238,10 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
         "create_user_process: Successfully created user process {} (ARM64)",
         pid.as_u64()
     );
-    crate::serial_println!("create_user_process: COMPLETE - returning PID {}", pid.as_u64());
+    crate::serial_println!(
+        "create_user_process: COMPLETE - returning PID {}",
+        pid.as_u64()
+    );
 
     Ok(pid)
 }

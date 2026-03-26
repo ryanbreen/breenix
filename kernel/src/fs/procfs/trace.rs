@@ -15,11 +15,11 @@ use alloc::format;
 use alloc::string::String;
 use core::sync::atomic::Ordering;
 
-use crate::tracing::{
-    TraceEventType, MAX_CPUS, TRACE_BUFFER_SIZE, TRACE_BUFFERS, TRACE_ENABLED, event_type_name,
-};
 use crate::tracing::counter::{list_counters, TRACE_COUNTER_COUNT};
 use crate::tracing::provider::{TRACE_PROVIDERS, TRACE_PROVIDER_COUNT};
+use crate::tracing::{
+    event_type_name, TraceEventType, MAX_CPUS, TRACE_BUFFERS, TRACE_BUFFER_SIZE, TRACE_ENABLED,
+};
 
 /// Generate content for /proc/trace/enable
 ///
@@ -46,7 +46,10 @@ pub fn generate_events() -> String {
         (TraceEventType::CTX_SWITCH_ENTRY, "context switch entry"),
         (TraceEventType::CTX_SWITCH_EXIT, "context switch exit"),
         (TraceEventType::CTX_SWITCH_TO_USER, "switch to user mode"),
-        (TraceEventType::CTX_SWITCH_TO_KERNEL, "switch to kernel mode"),
+        (
+            TraceEventType::CTX_SWITCH_TO_KERNEL,
+            "switch to kernel mode",
+        ),
         (TraceEventType::CTX_SWITCH_TO_IDLE, "switch to idle"),
         // Interrupt events (0x01xx)
         (TraceEventType::IRQ_ENTRY, "interrupt entry"),
@@ -76,7 +79,10 @@ pub fn generate_events() -> String {
 
     for (event_type, description) in event_types {
         let name = event_type_name(*event_type);
-        output.push_str(&format!("0x{:04x} {} - {}\n", event_type, name, description));
+        output.push_str(&format!(
+            "0x{:04x} {} - {}\n",
+            event_type, name, description
+        ));
     }
 
     output

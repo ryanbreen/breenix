@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 /// Tracks kernel checkpoints in serial output with O(1) reading via file offset
 pub struct CheckpointTracker {
     file_path: String,
-    file_offset: u64,           // Track position for O(1) reading
-    current_index: usize,        // Current checkpoint in sequence
-    checkpoint_time: Instant,    // When last checkpoint reached
+    file_offset: u64,                  // Track position for O(1) reading
+    current_index: usize,              // Current checkpoint in sequence
+    checkpoint_time: Instant,          // When last checkpoint reached
     sequence: Vec<(String, Duration)>, // Expected checkpoints with timeouts
 }
 
@@ -100,7 +100,9 @@ impl CheckpointTracker {
         let (name, timeout) = &self.sequence[self.current_index];
         format!(
             "Waiting for checkpoint '{}' (timeout: {:?}, elapsed: {:?})",
-            name, timeout, self.checkpoint_time.elapsed()
+            name,
+            timeout,
+            self.checkpoint_time.elapsed()
         )
     }
 
@@ -165,9 +167,7 @@ mod tests {
         fs::File::create(test_file).unwrap();
 
         // Create a checkpoint with 100ms timeout
-        let checkpoints = vec![
-            ("FAST".to_string(), Duration::from_millis(100)),
-        ];
+        let checkpoints = vec![("FAST".to_string(), Duration::from_millis(100))];
 
         let mut tracker = CheckpointTracker::new(test_file, checkpoints);
 

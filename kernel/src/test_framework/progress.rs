@@ -6,8 +6,8 @@
 //!
 //! Tracks per-stage completion counts for color-coded progress display.
 
-use core::sync::atomic::{AtomicU32, Ordering};
 use super::registry::{SubsystemId, TestStage};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Progress counters for a single subsystem
 ///

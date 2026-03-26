@@ -22,16 +22,16 @@ use super::thread::ThreadPrivilege;
 use crate::memory::arch_stub::ThreadPrivilege as StackThreadPrivilege;
 
 // Architecture-specific imports for VirtAddr
-#[cfg(target_arch = "x86_64")]
-use x86_64::VirtAddr;
 #[cfg(target_arch = "aarch64")]
 use crate::memory::arch_stub::VirtAddr;
+#[cfg(target_arch = "x86_64")]
+use x86_64::VirtAddr;
 
 // Architecture-specific ELF loaders
-#[cfg(target_arch = "x86_64")]
-use crate::elf;
 #[cfg(target_arch = "aarch64")]
 use crate::arch_impl::aarch64::elf as arm64_elf;
+#[cfg(target_arch = "x86_64")]
+use crate::elf;
 
 /// Default stack size for threads (64 KB)
 #[allow(dead_code)]
@@ -65,7 +65,10 @@ pub fn spawn_thread_with_privilege(
     #[cfg(target_arch = "x86_64")]
     let stack = crate::memory::stack::allocate_stack_with_privilege(DEFAULT_STACK_SIZE, privilege)?;
     #[cfg(target_arch = "aarch64")]
-    let stack = crate::memory::stack::allocate_stack_with_privilege(DEFAULT_STACK_SIZE, to_stack_privilege(privilege))?;
+    let stack = crate::memory::stack::allocate_stack_with_privilege(
+        DEFAULT_STACK_SIZE,
+        to_stack_privilege(privilege),
+    )?;
 
     // Allocate TLS for the thread (x86_64 only for now)
     #[cfg(target_arch = "x86_64")]
@@ -148,8 +151,8 @@ fn idle_thread_fn() {
             unsafe {
                 // Clear DAIF.I to enable IRQs, then wait for interrupt
                 core::arch::asm!(
-                    "msr daifclr, #3",  // Clear IRQ+FIQ mask (enable interrupts)
-                    "wfi",               // Wait For Interrupt
+                    "msr daifclr, #3", // Clear IRQ+FIQ mask (enable interrupts)
+                    "wfi",             // Wait For Interrupt
                     options(nomem, nostack)
                 );
             }
@@ -279,8 +282,11 @@ pub fn spawn_userspace_from_elf(name: &str, elf_data: &[u8]) -> Result<u64, &'st
     // SAFETY: We're loading a trusted ELF binary for testing
     let loaded_elf = unsafe { arm64_elf::load_elf_kernel_space(elf_data)? };
 
-    log::debug!("ELF loaded: entry={:#x}, segments_end={:#x}",
-        loaded_elf.entry_point, loaded_elf.segments_end);
+    log::debug!(
+        "ELF loaded: entry={:#x}, segments_end={:#x}",
+        loaded_elf.entry_point,
+        loaded_elf.segments_end
+    );
 
     // ARM64: TLS not yet implemented, use placeholder
     let tls_block = VirtAddr::new(0);

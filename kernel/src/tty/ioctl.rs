@@ -152,7 +152,11 @@ pub fn handle_tcsets(tty: &Arc<TtyDevice>, arg: u64) -> Result<(), i32> {
     // Apply the termios settings
     tty.set_termios(&termios);
 
-    log::debug!("TTY{}: TCSETS applied - lflag={:#x}", tty.num, termios.c_lflag);
+    log::debug!(
+        "TTY{}: TCSETS applied - lflag={:#x}",
+        tty.num,
+        termios.c_lflag
+    );
 
     Ok(())
 }
@@ -295,7 +299,12 @@ pub fn handle_pty_tiocswinsz(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
     *pair.winsize.lock() = winsize;
 
     // TODO: Generate SIGWINCH to foreground process group when signals are implemented
-    log::debug!("PTY{}: Window size set to {}x{}", pair.pty_num, winsize.ws_row, winsize.ws_col);
+    log::debug!(
+        "PTY{}: Window size set to {}x{}",
+        pair.pty_num,
+        winsize.ws_row,
+        winsize.ws_col
+    );
 
     Ok(())
 }
@@ -334,9 +343,11 @@ pub fn handle_tiocsptlck(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
     };
 
     if lock != 0 {
-        pair.locked.store(true, core::sync::atomic::Ordering::SeqCst);
+        pair.locked
+            .store(true, core::sync::atomic::Ordering::SeqCst);
     } else {
-        pair.locked.store(false, core::sync::atomic::Ordering::SeqCst);
+        pair.locked
+            .store(false, core::sync::atomic::Ordering::SeqCst);
     }
 
     log::debug!("PTY{}: Lock state set to {}", pair.pty_num, lock != 0);
@@ -390,7 +401,12 @@ pub fn handle_tiocsctty(pair: &Arc<PtyPair>, arg: u64, pid: u32) -> Result<(), i
     // setup because tcgetpgrp() returns 0.
     *pair.foreground_pgid.lock() = Some(pid);
 
-    log::debug!("PTY{}: Set controlling process to {}, foreground pgid to {}", pair.pty_num, pid, pid);
+    log::debug!(
+        "PTY{}: Set controlling process to {}, foreground pgid to {}",
+        pair.pty_num,
+        pid,
+        pid
+    );
 
     Ok(())
 }
@@ -410,7 +426,11 @@ pub fn handle_tiocnotty(pair: &Arc<PtyPair>, pid: u32) -> Result<(), i32> {
     }
 
     *controlling = None;
-    log::debug!("PTY{}: Released controlling terminal (was pid {})", pair.pty_num, pid);
+    log::debug!(
+        "PTY{}: Released controlling terminal (was pid {})",
+        pair.pty_num,
+        pid
+    );
 
     Ok(())
 }
@@ -486,7 +506,11 @@ pub fn handle_pty_tcsets(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
     *pair.termios.lock() = termios;
     // Also update the line discipline so input processing matches the new settings
     pair.ldisc.lock().set_termios(termios);
-    log::debug!("PTY{}: TCSETS applied - lflag={:#x}", pair.pty_num, termios.c_lflag);
+    log::debug!(
+        "PTY{}: TCSETS applied - lflag={:#x}",
+        pair.pty_num,
+        termios.c_lflag
+    );
 
     Ok(())
 }
@@ -627,7 +651,9 @@ mod tests {
 
     #[test]
     fn test_ioctl_request_codes_are_unique() {
-        let codes = [TCGETS, TCSETS, TCSETSW, TCSETSF, TIOCGPGRP, TIOCSPGRP, TIOCGWINSZ];
+        let codes = [
+            TCGETS, TCSETS, TCSETSW, TCSETSF, TIOCGPGRP, TIOCSPGRP, TIOCGWINSZ,
+        ];
 
         // Check all codes are unique
         for (i, &code1) in codes.iter().enumerate() {
@@ -644,9 +670,9 @@ mod tests {
     #[test]
     fn test_error_codes_match_posix() {
         // POSIX error codes must be consistent
-        assert_eq!(EINVAL, 22);  // Invalid argument
-        assert_eq!(ENOTTY, 25);  // Not a typewriter
-        assert_eq!(EFAULT, 14);  // Bad address
+        assert_eq!(EINVAL, 22); // Invalid argument
+        assert_eq!(ENOTTY, 25); // Not a typewriter
+        assert_eq!(EFAULT, 14); // Bad address
     }
 
     // =============================================================================
@@ -830,7 +856,7 @@ mod tests {
         handle_tcgets(&tty, &mut termios_buf as *mut Termios as u64).unwrap();
 
         // A new TTY should have default termios with canonical mode, echo, and signals
-        use super::super::termios::{ICANON, ECHO, ISIG};
+        use super::super::termios::{ECHO, ICANON, ISIG};
         assert_ne!(termios_buf.c_lflag & ICANON, 0, "ICANON should be set");
         assert_ne!(termios_buf.c_lflag & ECHO, 0, "ECHO should be set");
         assert_ne!(termios_buf.c_lflag & ISIG, 0, "ISIG should be set");
@@ -1191,7 +1217,12 @@ mod tests {
         // Test values in the gap between TCSETSF (0x5404) and TIOCGPGRP (0x540F)
         for code in (TCSETSF + 1)..TIOCGPGRP {
             let result = tty_ioctl(&tty, code, 0);
-            assert_eq!(result, Err(ENOTTY), "Request code {:#x} should return ENOTTY", code);
+            assert_eq!(
+                result,
+                Err(ENOTTY),
+                "Request code {:#x} should return ENOTTY",
+                code
+            );
         }
     }
 
@@ -1202,7 +1233,12 @@ mod tests {
         // Test values in the gap between TIOCSPGRP (0x5410) and TIOCGWINSZ (0x5413)
         for code in (TIOCSPGRP + 1)..TIOCGWINSZ {
             let result = tty_ioctl(&tty, code, 0);
-            assert_eq!(result, Err(ENOTTY), "Request code {:#x} should return ENOTTY", code);
+            assert_eq!(
+                result,
+                Err(ENOTTY),
+                "Request code {:#x} should return ENOTTY",
+                code
+            );
         }
     }
 

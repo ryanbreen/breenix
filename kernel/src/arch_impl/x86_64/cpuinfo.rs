@@ -198,63 +198,159 @@ impl CpuInfo {
 
         // EDX feature flags (leaf 1)
         let edx = self.features_edx;
-        if edx & (1 << 0) != 0 { flags.push("fpu"); }
-        if edx & (1 << 1) != 0 { flags.push("vme"); }
-        if edx & (1 << 2) != 0 { flags.push("de"); }
-        if edx & (1 << 3) != 0 { flags.push("pse"); }
-        if edx & (1 << 4) != 0 { flags.push("tsc"); }
-        if edx & (1 << 5) != 0 { flags.push("msr"); }
-        if edx & (1 << 6) != 0 { flags.push("pae"); }
-        if edx & (1 << 7) != 0 { flags.push("mce"); }
-        if edx & (1 << 8) != 0 { flags.push("cx8"); }
-        if edx & (1 << 9) != 0 { flags.push("apic"); }
-        if edx & (1 << 11) != 0 { flags.push("sep"); }
-        if edx & (1 << 12) != 0 { flags.push("mtrr"); }
-        if edx & (1 << 13) != 0 { flags.push("pge"); }
-        if edx & (1 << 14) != 0 { flags.push("mca"); }
-        if edx & (1 << 15) != 0 { flags.push("cmov"); }
-        if edx & (1 << 16) != 0 { flags.push("pat"); }
-        if edx & (1 << 17) != 0 { flags.push("pse36"); }
-        if edx & (1 << 19) != 0 { flags.push("clflush"); }
-        if edx & (1 << 23) != 0 { flags.push("mmx"); }
-        if edx & (1 << 24) != 0 { flags.push("fxsr"); }
-        if edx & (1 << 25) != 0 { flags.push("sse"); }
-        if edx & (1 << 26) != 0 { flags.push("sse2"); }
-        if edx & (1 << 28) != 0 { flags.push("ht"); }
+        if edx & (1 << 0) != 0 {
+            flags.push("fpu");
+        }
+        if edx & (1 << 1) != 0 {
+            flags.push("vme");
+        }
+        if edx & (1 << 2) != 0 {
+            flags.push("de");
+        }
+        if edx & (1 << 3) != 0 {
+            flags.push("pse");
+        }
+        if edx & (1 << 4) != 0 {
+            flags.push("tsc");
+        }
+        if edx & (1 << 5) != 0 {
+            flags.push("msr");
+        }
+        if edx & (1 << 6) != 0 {
+            flags.push("pae");
+        }
+        if edx & (1 << 7) != 0 {
+            flags.push("mce");
+        }
+        if edx & (1 << 8) != 0 {
+            flags.push("cx8");
+        }
+        if edx & (1 << 9) != 0 {
+            flags.push("apic");
+        }
+        if edx & (1 << 11) != 0 {
+            flags.push("sep");
+        }
+        if edx & (1 << 12) != 0 {
+            flags.push("mtrr");
+        }
+        if edx & (1 << 13) != 0 {
+            flags.push("pge");
+        }
+        if edx & (1 << 14) != 0 {
+            flags.push("mca");
+        }
+        if edx & (1 << 15) != 0 {
+            flags.push("cmov");
+        }
+        if edx & (1 << 16) != 0 {
+            flags.push("pat");
+        }
+        if edx & (1 << 17) != 0 {
+            flags.push("pse36");
+        }
+        if edx & (1 << 19) != 0 {
+            flags.push("clflush");
+        }
+        if edx & (1 << 23) != 0 {
+            flags.push("mmx");
+        }
+        if edx & (1 << 24) != 0 {
+            flags.push("fxsr");
+        }
+        if edx & (1 << 25) != 0 {
+            flags.push("sse");
+        }
+        if edx & (1 << 26) != 0 {
+            flags.push("sse2");
+        }
+        if edx & (1 << 28) != 0 {
+            flags.push("ht");
+        }
 
         // ECX feature flags (leaf 1)
         let ecx = self.features_ecx;
-        if ecx & (1 << 0) != 0 { flags.push("sse3"); }
-        if ecx & (1 << 1) != 0 { flags.push("pclmulqdq"); }
-        if ecx & (1 << 3) != 0 { flags.push("monitor"); }
-        if ecx & (1 << 9) != 0 { flags.push("ssse3"); }
-        if ecx & (1 << 12) != 0 { flags.push("fma"); }
-        if ecx & (1 << 13) != 0 { flags.push("cx16"); }
-        if ecx & (1 << 19) != 0 { flags.push("sse4_1"); }
-        if ecx & (1 << 20) != 0 { flags.push("sse4_2"); }
-        if ecx & (1 << 21) != 0 { flags.push("x2apic"); }
-        if ecx & (1 << 22) != 0 { flags.push("movbe"); }
-        if ecx & (1 << 23) != 0 { flags.push("popcnt"); }
-        if ecx & (1 << 25) != 0 { flags.push("aes"); }
-        if ecx & (1 << 26) != 0 { flags.push("xsave"); }
-        if ecx & (1 << 28) != 0 { flags.push("avx"); }
-        if ecx & (1 << 29) != 0 { flags.push("f16c"); }
-        if ecx & (1 << 30) != 0 { flags.push("rdrand"); }
-        if ecx & (1u32 << 31) != 0 { flags.push("hypervisor"); }
+        if ecx & (1 << 0) != 0 {
+            flags.push("sse3");
+        }
+        if ecx & (1 << 1) != 0 {
+            flags.push("pclmulqdq");
+        }
+        if ecx & (1 << 3) != 0 {
+            flags.push("monitor");
+        }
+        if ecx & (1 << 9) != 0 {
+            flags.push("ssse3");
+        }
+        if ecx & (1 << 12) != 0 {
+            flags.push("fma");
+        }
+        if ecx & (1 << 13) != 0 {
+            flags.push("cx16");
+        }
+        if ecx & (1 << 19) != 0 {
+            flags.push("sse4_1");
+        }
+        if ecx & (1 << 20) != 0 {
+            flags.push("sse4_2");
+        }
+        if ecx & (1 << 21) != 0 {
+            flags.push("x2apic");
+        }
+        if ecx & (1 << 22) != 0 {
+            flags.push("movbe");
+        }
+        if ecx & (1 << 23) != 0 {
+            flags.push("popcnt");
+        }
+        if ecx & (1 << 25) != 0 {
+            flags.push("aes");
+        }
+        if ecx & (1 << 26) != 0 {
+            flags.push("xsave");
+        }
+        if ecx & (1 << 28) != 0 {
+            flags.push("avx");
+        }
+        if ecx & (1 << 29) != 0 {
+            flags.push("f16c");
+        }
+        if ecx & (1 << 30) != 0 {
+            flags.push("rdrand");
+        }
+        if ecx & (1u32 << 31) != 0 {
+            flags.push("hypervisor");
+        }
 
         // Extended EDX features (leaf 0x80000001)
         let ext_edx = self.ext_features_edx;
-        if ext_edx & (1 << 11) != 0 { flags.push("syscall"); }
-        if ext_edx & (1 << 20) != 0 { flags.push("nx"); }
-        if ext_edx & (1 << 26) != 0 { flags.push("pdpe1gb"); }
-        if ext_edx & (1 << 27) != 0 { flags.push("rdtscp"); }
-        if ext_edx & (1 << 29) != 0 { flags.push("lm"); }
+        if ext_edx & (1 << 11) != 0 {
+            flags.push("syscall");
+        }
+        if ext_edx & (1 << 20) != 0 {
+            flags.push("nx");
+        }
+        if ext_edx & (1 << 26) != 0 {
+            flags.push("pdpe1gb");
+        }
+        if ext_edx & (1 << 27) != 0 {
+            flags.push("rdtscp");
+        }
+        if ext_edx & (1 << 29) != 0 {
+            flags.push("lm");
+        }
 
         // Extended ECX features (leaf 0x80000001)
         let ext_ecx = self.ext_features_ecx;
-        if ext_ecx & (1 << 0) != 0 { flags.push("lahf_lm"); }
-        if ext_ecx & (1 << 5) != 0 { flags.push("abm"); }
-        if ext_ecx & (1 << 6) != 0 { flags.push("sse4a"); }
+        if ext_ecx & (1 << 0) != 0 {
+            flags.push("lahf_lm");
+        }
+        if ext_ecx & (1 << 5) != 0 {
+            flags.push("abm");
+        }
+        if ext_ecx & (1 << 6) != 0 {
+            flags.push("sse4a");
+        }
 
         let mut result = String::new();
         for (i, flag) in flags.iter().enumerate() {

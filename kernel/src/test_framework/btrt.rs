@@ -381,7 +381,9 @@ pub fn register_pid(pid: u64, test_id: u16) {
     }
 
     BTRT_PID_REGISTRY[idx].pid.store(pid, Ordering::Release);
-    BTRT_PID_REGISTRY[idx].test_id.store(test_id, Ordering::Release);
+    BTRT_PID_REGISTRY[idx]
+        .test_id
+        .store(test_id, Ordering::Release);
 }
 
 /// Called when a userspace process exits. Looks up PID in the registry
@@ -420,7 +422,6 @@ pub fn on_process_exit(pid: u64, exit_code: i32) {
 
     // PID not in registry -- forked child or non-test process, ignore.
 }
-
 
 // =============================================================================
 // Helpers

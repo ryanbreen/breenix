@@ -281,10 +281,7 @@ impl E1000 {
         // Configure receive control register
         // Enable receiver, accept broadcast, 2KB buffers, strip CRC
         // Note: BSEX is NOT set — it changes buffer size semantics
-        self.write_reg(
-            REG_RCTL,
-            RCTL_EN | RCTL_BAM | RCTL_SZ_2048 | RCTL_SECRC,
-        );
+        self.write_reg(REG_RCTL, RCTL_EN | RCTL_BAM | RCTL_SZ_2048 | RCTL_SECRC);
 
         #[cfg(target_arch = "x86_64")]
         log::info!("E1000: RX initialized with {} descriptors", RX_RING_SIZE);
@@ -432,12 +429,16 @@ impl E1000 {
         #[cfg(target_arch = "x86_64")]
         log::warn!(
             "E1000: TX timeout TDH={} TDT={} desc.status={:#x}",
-            _tdh_after, _tdt_after, _status
+            _tdh_after,
+            _tdt_after,
+            _status
         );
         #[cfg(target_arch = "aarch64")]
         crate::serial_println!(
             "[e1000] TX timeout TDH={} TDT={} desc.status={:#x}",
-            _tdh_after, _tdt_after, _status
+            _tdh_after,
+            _tdt_after,
+            _status
         );
 
         Err("TX timeout")
@@ -541,7 +542,9 @@ pub fn init() -> Result<(), &'static str> {
     // Find the E1000 device on the PCI bus (try 82540EM then 82574L)
     let (device, found_device_id) = pci::find_device(INTEL_VENDOR_ID, E1000_DEVICE_ID)
         .map(|d| (d, E1000_DEVICE_ID))
-        .or_else(|| pci::find_device(INTEL_VENDOR_ID, E1000E_DEVICE_ID).map(|d| (d, E1000E_DEVICE_ID)))
+        .or_else(|| {
+            pci::find_device(INTEL_VENDOR_ID, E1000E_DEVICE_ID).map(|d| (d, E1000E_DEVICE_ID))
+        })
         .ok_or("E1000 device not found on PCI bus")?;
 
     #[cfg(target_arch = "x86_64")]
@@ -566,9 +569,17 @@ pub fn init() -> Result<(), &'static str> {
     let mmio_bar = device.get_mmio_bar().ok_or("E1000: No MMIO BAR found")?;
 
     #[cfg(target_arch = "x86_64")]
-    log::info!("E1000: MMIO at {:#x} size {:#x}", mmio_bar.address, mmio_bar.size);
+    log::info!(
+        "E1000: MMIO at {:#x} size {:#x}",
+        mmio_bar.address,
+        mmio_bar.size
+    );
     #[cfg(target_arch = "aarch64")]
-    crate::serial_println!("[e1000] MMIO at {:#x} size {:#x}", mmio_bar.address, mmio_bar.size);
+    crate::serial_println!(
+        "[e1000] MMIO at {:#x} size {:#x}",
+        mmio_bar.address,
+        mmio_bar.size
+    );
 
     // Map the MMIO region
     // x86_64: use map_mmio (allocates VA from MMIO pool, creates page table entries)
@@ -625,14 +636,22 @@ pub fn init() -> Result<(), &'static str> {
     #[cfg(target_arch = "x86_64")]
     log::info!(
         "E1000: MAC address {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-        driver.mac_addr[0], driver.mac_addr[1], driver.mac_addr[2],
-        driver.mac_addr[3], driver.mac_addr[4], driver.mac_addr[5]
+        driver.mac_addr[0],
+        driver.mac_addr[1],
+        driver.mac_addr[2],
+        driver.mac_addr[3],
+        driver.mac_addr[4],
+        driver.mac_addr[5]
     );
     #[cfg(target_arch = "aarch64")]
     crate::serial_println!(
         "[e1000] MAC address {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-        driver.mac_addr[0], driver.mac_addr[1], driver.mac_addr[2],
-        driver.mac_addr[3], driver.mac_addr[4], driver.mac_addr[5]
+        driver.mac_addr[0],
+        driver.mac_addr[1],
+        driver.mac_addr[2],
+        driver.mac_addr[3],
+        driver.mac_addr[4],
+        driver.mac_addr[5]
     );
 
     // Set up MAC address filter

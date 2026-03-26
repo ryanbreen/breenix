@@ -7,8 +7,8 @@
 //! - sigreturn() - Return from signal handler
 //! - sigaltstack(ss, old_ss) - Set/get alternate signal stack
 
-use super::SyscallResult;
 use super::userptr::{copy_from_user, copy_to_user};
+use super::SyscallResult;
 use crate::process::{manager, ProcessId};
 use crate::signal::constants::*;
 use crate::signal::types::{SignalAction, StackT};
@@ -160,7 +160,7 @@ fn send_signal_to_process(target_pid: ProcessId, sig: u32) -> SyscallResult {
                     target_pid.as_u64()
                 );
                 process.terminate(-9); // Exit code for SIGKILL
-                // Wake up process if blocked so scheduler removes it
+                                       // Wake up process if blocked so scheduler removes it
                 if matches!(process.state, crate::process::ProcessState::Blocked) {
                     process.set_ready();
                 }
@@ -170,10 +170,7 @@ fn send_signal_to_process(target_pid: ProcessId, sig: u32) -> SyscallResult {
             }
 
             if sig == SIGSTOP {
-                log::info!(
-                    "SIGSTOP sent to process {} - stopping",
-                    target_pid.as_u64()
-                );
+                log::info!("SIGSTOP sent to process {} - stopping", target_pid.as_u64());
                 process.set_blocked();
                 return SyscallResult::Ok(0);
             }
@@ -507,7 +504,10 @@ pub fn sys_sigaction(sig: i32, new_act: u64, old_act: u64, sigsetsize: u64) -> S
     let (_, process) = match manager.find_process_by_thread_mut(current_thread_id) {
         Some(p) => p,
         None => {
-            log::error!("sys_sigaction: process not found for thread {}", current_thread_id);
+            log::error!(
+                "sys_sigaction: process not found for thread {}",
+                current_thread_id
+            );
             return SyscallResult::Err(3); // ESRCH
         }
     };
@@ -602,7 +602,10 @@ pub fn sys_sigprocmask(how: i32, new_set: u64, old_set: u64, sigsetsize: u64) ->
     let (_, process) = match manager.find_process_by_thread_mut(current_thread_id) {
         Some(p) => p,
         None => {
-            log::error!("sys_sigprocmask: process not found for thread {}", current_thread_id);
+            log::error!(
+                "sys_sigprocmask: process not found for thread {}",
+                current_thread_id
+            );
             return SyscallResult::Err(3); // ESRCH
         }
     };
@@ -736,7 +739,8 @@ pub fn sys_pause() -> SyscallResult {
             } else {
                 false
             }
-        }).unwrap_or(false);
+        })
+        .unwrap_or(false);
 
         if !still_blocked {
             break;
@@ -766,7 +770,10 @@ pub fn sys_pause() -> SyscallResult {
 #[cfg(target_arch = "x86_64")]
 pub fn sys_pause_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResult {
     let thread_id = crate::task::scheduler::current_thread_id().unwrap_or(0);
-    log::info!("sys_pause_with_frame: Thread {} blocking until signal arrives", thread_id);
+    log::info!(
+        "sys_pause_with_frame: Thread {} blocking until signal arrives",
+        thread_id
+    );
 
     // CRITICAL: Save the userspace context BEFORE blocking.
     // When a signal arrives, the context switch code will use this saved context
@@ -808,7 +815,10 @@ pub fn sys_pause_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResu
         sched.block_current_for_signal_with_context(Some(userspace_context));
     });
 
-    log::info!("sys_pause_with_frame: Thread {} marked BlockedOnSignal, entering HLT loop", thread_id);
+    log::info!(
+        "sys_pause_with_frame: Thread {} marked BlockedOnSignal, entering HLT loop",
+        thread_id
+    );
 
     // CRITICAL: Re-enable preemption before entering blocking loop!
     // The syscall handler called preempt_disable() at entry, but we need to allow
@@ -824,7 +834,11 @@ pub fn sys_pause_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResu
 
         loop_count += 1;
         if loop_count % 100 == 0 {
-            log::info!("sys_pause_with_frame: Thread {} HLT loop iteration {}", thread_id, loop_count);
+            log::info!(
+                "sys_pause_with_frame: Thread {} HLT loop iteration {}",
+                thread_id,
+                loop_count
+            );
         }
 
         // Check if we were unblocked (thread state changed from BlockedOnSignal)
@@ -834,10 +848,15 @@ pub fn sys_pause_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResu
             } else {
                 false
             }
-        }).unwrap_or(false);
+        })
+        .unwrap_or(false);
 
         if !still_blocked {
-            log::info!("sys_pause_with_frame: Thread {} unblocked after {} HLT iterations", thread_id, loop_count);
+            log::info!(
+                "sys_pause_with_frame: Thread {} unblocked after {} HLT iterations",
+                thread_id,
+                loop_count
+            );
             break;
         }
     }
@@ -847,14 +866,20 @@ pub fn sys_pause_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResu
         if let Some(thread) = sched.current_thread_mut() {
             thread.blocked_in_syscall = false;
             thread.saved_userspace_context = None;
-            log::info!("sys_pause_with_frame: Thread {} cleared blocked_in_syscall flag", thread_id);
+            log::info!(
+                "sys_pause_with_frame: Thread {} cleared blocked_in_syscall flag",
+                thread_id
+            );
         }
     });
 
     // Re-disable preemption before returning to balance syscall exit's preempt_enable()
     crate::per_cpu::preempt_disable();
 
-    log::info!("sys_pause_with_frame: Thread {} returning -EINTR", thread_id);
+    log::info!(
+        "sys_pause_with_frame: Thread {} returning -EINTR",
+        thread_id
+    );
     SyscallResult::Err(4) // EINTR
 }
 
@@ -897,7 +922,10 @@ pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> Sys
     let signal_frame = match copy_from_user(signal_frame_ptr) {
         Ok(frame) => frame,
         Err(errno) => {
-            log::error!("sys_sigreturn: invalid signal frame pointer at {:#x}", frame.rsp);
+            log::error!(
+                "sys_sigreturn: invalid signal frame pointer at {:#x}",
+                frame.rsp
+            );
             return SyscallResult::Err(errno);
         }
     };
@@ -993,7 +1021,10 @@ pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> Sys
                 } else {
                     // Normal case - restore from signal frame
                     process.signals.set_blocked(signal_frame.saved_blocked);
-                    log::debug!("sigreturn: restored signal mask to {:#x}", signal_frame.saved_blocked);
+                    log::debug!(
+                        "sigreturn: restored signal mask to {:#x}",
+                        signal_frame.saved_blocked
+                    );
                 }
 
                 // Clear the on_stack flag - we're leaving the signal handler
@@ -1490,7 +1521,11 @@ pub fn sys_getitimer(which: i32, curr_value: u64) -> SyscallResult {
     if which == ITIMER_VIRTUAL || which == ITIMER_PROF {
         log::debug!(
             "sys_getitimer: ITIMER_{} not yet implemented, returning empty timer",
-            if which == ITIMER_VIRTUAL { "VIRTUAL" } else { "PROF" }
+            if which == ITIMER_VIRTUAL {
+                "VIRTUAL"
+            } else {
+                "PROF"
+            }
         );
         // Return empty timer instead of error for better compatibility
         if curr_value != 0 {
@@ -1524,7 +1559,10 @@ pub fn sys_getitimer(which: i32, curr_value: u64) -> SyscallResult {
     let (_, process) = match manager_ref.find_process_by_thread(current_thread_id) {
         Some(p) => p,
         None => {
-            log::error!("sys_getitimer: process not found for thread {}", current_thread_id);
+            log::error!(
+                "sys_getitimer: process not found for thread {}",
+                current_thread_id
+            );
             return SyscallResult::Err(3); // ESRCH
         }
     };
@@ -1572,7 +1610,11 @@ pub fn sys_setitimer(which: i32, new_value: u64, old_value: u64) -> SyscallResul
     if which == ITIMER_VIRTUAL || which == ITIMER_PROF {
         log::warn!(
             "sys_setitimer: ITIMER_{} not implemented",
-            if which == ITIMER_VIRTUAL { "VIRTUAL" } else { "PROF" }
+            if which == ITIMER_VIRTUAL {
+                "VIRTUAL"
+            } else {
+                "PROF"
+            }
         );
         return SyscallResult::Err(38); // ENOSYS
     }
@@ -1598,7 +1640,10 @@ pub fn sys_setitimer(which: i32, new_value: u64, old_value: u64) -> SyscallResul
     let (pid, process) = match manager_ref.find_process_by_thread_mut(current_thread_id) {
         Some(p) => p,
         None => {
-            log::error!("sys_setitimer: process not found for thread {}", current_thread_id);
+            log::error!(
+                "sys_setitimer: process not found for thread {}",
+                current_thread_id
+            );
             return SyscallResult::Err(3); // ESRCH
         }
     };
@@ -1618,11 +1663,17 @@ pub fn sys_setitimer(which: i32, new_value: u64, old_value: u64) -> SyscallResul
     if let Some(ref val) = new_itimerval {
         // tv_usec must be < 1,000,000
         if val.it_value.tv_usec >= 1_000_000 || val.it_value.tv_usec < 0 {
-            log::warn!("sys_setitimer: invalid it_value.tv_usec: {}", val.it_value.tv_usec);
+            log::warn!(
+                "sys_setitimer: invalid it_value.tv_usec: {}",
+                val.it_value.tv_usec
+            );
             return SyscallResult::Err(22); // EINVAL
         }
         if val.it_interval.tv_usec >= 1_000_000 || val.it_interval.tv_usec < 0 {
-            log::warn!("sys_setitimer: invalid it_interval.tv_usec: {}", val.it_interval.tv_usec);
+            log::warn!(
+                "sys_setitimer: invalid it_interval.tv_usec: {}",
+                val.it_interval.tv_usec
+            );
             return SyscallResult::Err(22); // EINVAL
         }
         // tv_sec must be non-negative
@@ -1640,7 +1691,10 @@ pub fn sys_setitimer(which: i32, new_value: u64, old_value: u64) -> SyscallResul
         process.itimers.real.set_value(&new_val);
 
         if new_val.it_value.is_zero() {
-            log::debug!("sys_setitimer: disabled ITIMER_REAL for process {}", pid.as_u64());
+            log::debug!(
+                "sys_setitimer: disabled ITIMER_REAL for process {}",
+                pid.as_u64()
+            );
         } else {
             log::debug!(
                 "sys_setitimer: set ITIMER_REAL for process {}: value={}.{:06}s, interval={}.{:06}s",
@@ -1687,7 +1741,10 @@ pub fn sys_pause_with_frame_aarch64(
     use crate::arch_impl::traits::CpuOps;
 
     let thread_id = crate::task::scheduler::current_thread_id().unwrap_or(0);
-    log::info!("sys_pause_with_frame_aarch64: Thread {} blocking until signal arrives", thread_id);
+    log::info!(
+        "sys_pause_with_frame_aarch64: Thread {} blocking until signal arrives",
+        thread_id
+    );
 
     // Read SP_EL0 for the userspace context
     let user_sp = crate::arch_impl::aarch64::context::read_sp_el0();
@@ -1751,7 +1808,8 @@ pub fn sys_pause_with_frame_aarch64(
                 } else {
                     false
                 }
-            }).unwrap_or(false);
+            })
+            .unwrap_or(false);
 
             if !still_blocked {
                 break;
@@ -1823,7 +1881,10 @@ pub fn sys_sigreturn_with_frame_aarch64(
     let signal_frame = match copy_from_user(signal_frame_ptr) {
         Ok(f) => f,
         Err(errno) => {
-            log::error!("sys_sigreturn_aarch64: invalid signal frame pointer at {:#x}", sp);
+            log::error!(
+                "sys_sigreturn_aarch64: invalid signal frame pointer at {:#x}",
+                sp
+            );
             return SyscallResult::Err(errno);
         }
     };
@@ -1929,7 +1990,10 @@ pub fn sys_sigreturn_with_frame_aarch64(
                     );
                 } else {
                     process.signals.set_blocked(signal_frame.saved_blocked);
-                    log::debug!("sigreturn_aarch64: restored signal mask to {:#x}", signal_frame.saved_blocked);
+                    log::debug!(
+                        "sigreturn_aarch64: restored signal mask to {:#x}",
+                        signal_frame.saved_blocked
+                    );
                 }
 
                 // Clear the on_stack flag
@@ -1975,7 +2039,10 @@ pub fn sys_sigsuspend_with_frame_aarch64(
         match copy_from_user(ptr) {
             Ok(mask) => mask,
             Err(errno) => {
-                log::warn!("sys_sigsuspend_aarch64: invalid mask pointer {:#x}", mask_ptr);
+                log::warn!(
+                    "sys_sigsuspend_aarch64: invalid mask pointer {:#x}",
+                    mask_ptr
+                );
                 return SyscallResult::Err(errno);
             }
         }
@@ -2030,7 +2097,10 @@ pub fn sys_sigsuspend_with_frame_aarch64(
                         );
                     }
                 } else {
-                    log::error!("sys_sigsuspend_aarch64: process not found for thread {}", thread_id);
+                    log::error!(
+                        "sys_sigsuspend_aarch64: process not found for thread {}",
+                        thread_id
+                    );
                     return SyscallResult::Err(3); // ESRCH
                 }
             } else {

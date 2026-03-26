@@ -2,12 +2,12 @@ mod shared_qemu;
 use shared_qemu::get_kernel_output;
 
 /// Test that ENOSYS syscall functionality works correctly
-/// 
+///
 /// This test validates that:
 /// 1. Unknown syscalls return ENOSYS error code (-38)
 /// 2. The kernel logs warnings for unknown syscalls
 /// 3. The userspace test program correctly detects ENOSYS
-/// 
+///
 /// NOTE: This test is marked ignore until Ring-3 execution is fixed.
 /// Run with --ignored to test ENOSYS infrastructure.
 #[test]
@@ -17,31 +17,40 @@ fn test_enosys_syscall() {
 
     // Get shared QEMU output
     let output = get_kernel_output();
-    
+
     // Check for ENOSYS test markers with more specific patterns
-    let found_enosys_test = output.contains("Testing undefined syscall returns ENOSYS") || 
-                           output.contains("SYSCALL TEST: Undefined syscall returns ENOSYS") ||
-                           output.contains("Created syscall_enosys process");
-    
+    let found_enosys_test = output.contains("Testing undefined syscall returns ENOSYS")
+        || output.contains("SYSCALL TEST: Undefined syscall returns ENOSYS")
+        || output.contains("Created syscall_enosys process");
+
     // Check for test result with specific userspace output marker
-    let found_enosys_ok = output.contains("USERSPACE OUTPUT: ENOSYS OK") || 
-                         output.contains("ENOSYS OK");
-    
-    let found_enosys_fail = output.contains("USERSPACE OUTPUT: ENOSYS FAIL") || 
-                           output.contains("ENOSYS FAIL");
-    
+    let found_enosys_ok =
+        output.contains("USERSPACE OUTPUT: ENOSYS OK") || output.contains("ENOSYS OK");
+
+    let found_enosys_fail =
+        output.contains("USERSPACE OUTPUT: ENOSYS FAIL") || output.contains("ENOSYS FAIL");
+
     // Check for kernel warning about invalid syscall
-    let found_invalid_syscall = output.contains("Invalid syscall number: 999") || 
-                               output.contains("unknown syscall: 999");
-    
+    let found_invalid_syscall =
+        output.contains("Invalid syscall number: 999") || output.contains("unknown syscall: 999");
+
     // Check for critical fault markers that would indicate test failure
-    assert!(!output.contains("DOUBLE FAULT"), "Kernel double faulted during ENOSYS test");
-    assert!(!output.contains("GP FAULT"), "Kernel GP faulted during ENOSYS test");
-    assert!(!output.contains("PANIC"), "Kernel panicked during ENOSYS test");
-    
+    assert!(
+        !output.contains("DOUBLE FAULT"),
+        "Kernel double faulted during ENOSYS test"
+    );
+    assert!(
+        !output.contains("GP FAULT"),
+        "Kernel GP faulted during ENOSYS test"
+    );
+    assert!(
+        !output.contains("PANIC"),
+        "Kernel panicked during ENOSYS test"
+    );
+
     // Check for POST completion (required for valid test)
     let post_complete = output.contains("🎯 KERNEL_POST_TESTS_COMPLETE 🎯");
-    
+
     // For strict validation, we need BOTH userspace output AND kernel log
     // But since Ring-3 isn't fully working yet, we'll accept partial evidence
     if found_enosys_test && found_invalid_syscall {
@@ -76,9 +85,9 @@ fn test_enosys_syscall() {
         println!("❌ ENOSYS test created but kernel didn't log invalid syscall");
         println!("   This suggests syscall handling is broken");
     }
-    
+
     // STRICT MODE: For true validation, we need BOTH markers
     // Uncomment this once Ring-3 is fixed:
-    // assert!(found_enosys_ok && found_invalid_syscall, 
+    // assert!(found_enosys_ok && found_invalid_syscall,
     //         "ENOSYS test requires both userspace OK and kernel invalid syscall log");
 }

@@ -46,10 +46,8 @@ use crate::tracing::counter::{register_counter, TraceCounter};
 ///
 /// GDB: `print SYSCALL_TOTAL`
 #[no_mangle]
-pub static SYSCALL_TOTAL: TraceCounter = TraceCounter::new(
-    "SYSCALL_TOTAL",
-    "Total syscall invocations",
-);
+pub static SYSCALL_TOTAL: TraceCounter =
+    TraceCounter::new("SYSCALL_TOTAL", "Total syscall invocations");
 
 /// Total interrupt invocations across all CPUs.
 ///
@@ -58,10 +56,7 @@ pub static SYSCALL_TOTAL: TraceCounter = TraceCounter::new(
 ///
 /// GDB: `print IRQ_TOTAL`
 #[no_mangle]
-pub static IRQ_TOTAL: TraceCounter = TraceCounter::new(
-    "IRQ_TOTAL",
-    "Total interrupt invocations",
-);
+pub static IRQ_TOTAL: TraceCounter = TraceCounter::new("IRQ_TOTAL", "Total interrupt invocations");
 
 /// Total context switches across all CPUs.
 ///
@@ -70,10 +65,8 @@ pub static IRQ_TOTAL: TraceCounter = TraceCounter::new(
 ///
 /// GDB: `print CTX_SWITCH_TOTAL`
 #[no_mangle]
-pub static CTX_SWITCH_TOTAL: TraceCounter = TraceCounter::new(
-    "CTX_SWITCH_TOTAL",
-    "Total context switches",
-);
+pub static CTX_SWITCH_TOTAL: TraceCounter =
+    TraceCounter::new("CTX_SWITCH_TOTAL", "Total context switches");
 
 /// Total timer tick interrupts across all CPUs.
 ///
@@ -82,10 +75,8 @@ pub static CTX_SWITCH_TOTAL: TraceCounter = TraceCounter::new(
 ///
 /// GDB: `print TIMER_TICK_TOTAL`
 #[no_mangle]
-pub static TIMER_TICK_TOTAL: TraceCounter = TraceCounter::new(
-    "TIMER_TICK_TOTAL",
-    "Total timer tick interrupts",
-);
+pub static TIMER_TICK_TOTAL: TraceCounter =
+    TraceCounter::new("TIMER_TICK_TOTAL", "Total timer tick interrupts");
 
 /// Total fork operations across all CPUs.
 ///
@@ -94,10 +85,7 @@ pub static TIMER_TICK_TOTAL: TraceCounter = TraceCounter::new(
 ///
 /// GDB: `print FORK_TOTAL`
 #[no_mangle]
-pub static FORK_TOTAL: TraceCounter = TraceCounter::new(
-    "FORK_TOTAL",
-    "Total fork operations",
-);
+pub static FORK_TOTAL: TraceCounter = TraceCounter::new("FORK_TOTAL", "Total fork operations");
 
 /// Total exec operations across all CPUs.
 ///
@@ -106,10 +94,7 @@ pub static FORK_TOTAL: TraceCounter = TraceCounter::new(
 ///
 /// GDB: `print EXEC_TOTAL`
 #[no_mangle]
-pub static EXEC_TOTAL: TraceCounter = TraceCounter::new(
-    "EXEC_TOTAL",
-    "Total exec operations",
-);
+pub static EXEC_TOTAL: TraceCounter = TraceCounter::new("EXEC_TOTAL", "Total exec operations");
 
 /// Total CoW fault operations across all CPUs.
 ///
@@ -118,10 +103,8 @@ pub static EXEC_TOTAL: TraceCounter = TraceCounter::new(
 ///
 /// GDB: `print COW_FAULT_TOTAL`
 #[no_mangle]
-pub static COW_FAULT_TOTAL: TraceCounter = TraceCounter::new(
-    "COW_FAULT_TOTAL",
-    "Total CoW fault operations",
-);
+pub static COW_FAULT_TOTAL: TraceCounter =
+    TraceCounter::new("COW_FAULT_TOTAL", "Total CoW fault operations");
 
 /// Total idle timer ticks across all CPUs.
 ///
@@ -130,31 +113,23 @@ pub static COW_FAULT_TOTAL: TraceCounter = TraceCounter::new(
 ///
 /// GDB: `print IDLE_TICK_TOTAL`
 #[no_mangle]
-pub static IDLE_TICK_TOTAL: TraceCounter = TraceCounter::new(
-    "IDLE_TICK_TOTAL",
-    "Total idle timer ticks",
-);
+pub static IDLE_TICK_TOTAL: TraceCounter =
+    TraceCounter::new("IDLE_TICK_TOTAL", "Total idle timer ticks");
 
 /// GPU compositor: total bytes uploaded to VRAM.
 #[no_mangle]
-pub static GPU_BYTES_UPLOADED: TraceCounter = TraceCounter::new(
-    "GPU_BYTES_UPLOADED",
-    "GPU bytes uploaded to VRAM",
-);
+pub static GPU_BYTES_UPLOADED: TraceCounter =
+    TraceCounter::new("GPU_BYTES_UPLOADED", "GPU bytes uploaded to VRAM");
 
 /// GPU compositor: full-screen uploads (4.9MB each).
 #[no_mangle]
-pub static GPU_FULL_UPLOADS: TraceCounter = TraceCounter::new(
-    "GPU_FULL_UPLOADS",
-    "Full-screen GPU uploads",
-);
+pub static GPU_FULL_UPLOADS: TraceCounter =
+    TraceCounter::new("GPU_FULL_UPLOADS", "Full-screen GPU uploads");
 
 /// GPU compositor: partial rect uploads.
 #[no_mangle]
-pub static GPU_PARTIAL_UPLOADS: TraceCounter = TraceCounter::new(
-    "GPU_PARTIAL_UPLOADS",
-    "Partial rect GPU uploads",
-);
+pub static GPU_PARTIAL_UPLOADS: TraceCounter =
+    TraceCounter::new("GPU_PARTIAL_UPLOADS", "Partial rect GPU uploads");
 
 // =============================================================================
 // Boot Test Counters (BTRT feature)
@@ -165,40 +140,32 @@ pub static GPU_PARTIAL_UPLOADS: TraceCounter = TraceCounter::new(
 /// GDB: `print BOOT_TEST_TOTAL`
 #[cfg(feature = "btrt")]
 #[no_mangle]
-pub static BOOT_TEST_TOTAL: TraceCounter = TraceCounter::new(
-    "BOOT_TEST_TOTAL",
-    "Total boot tests recorded",
-);
+pub static BOOT_TEST_TOTAL: TraceCounter =
+    TraceCounter::new("BOOT_TEST_TOTAL", "Total boot tests recorded");
 
 /// Total boot tests passed.
 ///
 /// GDB: `print BOOT_TEST_PASS_TOTAL`
 #[cfg(feature = "btrt")]
 #[no_mangle]
-pub static BOOT_TEST_PASS_TOTAL: TraceCounter = TraceCounter::new(
-    "BOOT_TEST_PASS_TOTAL",
-    "Total boot tests passed",
-);
+pub static BOOT_TEST_PASS_TOTAL: TraceCounter =
+    TraceCounter::new("BOOT_TEST_PASS_TOTAL", "Total boot tests passed");
 
 /// Total boot tests failed.
 ///
 /// GDB: `print BOOT_TEST_FAIL_TOTAL`
 #[cfg(feature = "btrt")]
 #[no_mangle]
-pub static BOOT_TEST_FAIL_TOTAL: TraceCounter = TraceCounter::new(
-    "BOOT_TEST_FAIL_TOTAL",
-    "Total boot tests failed",
-);
+pub static BOOT_TEST_FAIL_TOTAL: TraceCounter =
+    TraceCounter::new("BOOT_TEST_FAIL_TOTAL", "Total boot tests failed");
 
 /// Total boot tests skipped.
 ///
 /// GDB: `print BOOT_TEST_SKIP_TOTAL`
 #[cfg(feature = "btrt")]
 #[no_mangle]
-pub static BOOT_TEST_SKIP_TOTAL: TraceCounter = TraceCounter::new(
-    "BOOT_TEST_SKIP_TOTAL",
-    "Total boot tests skipped",
-);
+pub static BOOT_TEST_SKIP_TOTAL: TraceCounter =
+    TraceCounter::new("BOOT_TEST_SKIP_TOTAL", "Total boot tests skipped");
 
 // =============================================================================
 // Initialization

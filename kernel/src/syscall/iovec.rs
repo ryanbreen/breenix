@@ -3,10 +3,10 @@
 //! These syscalls read/write data from/to multiple buffers in a single call.
 //! Required by musl libc for stdio operations.
 
-use super::handlers;
-use super::SyscallResult;
 use super::errno;
+use super::handlers;
 use super::userptr::copy_from_user;
+use super::SyscallResult;
 
 /// Maximum number of iovec entries per call (matches Linux UIO_MAXIOV)
 const UIO_MAXIOV: u64 = 1024;

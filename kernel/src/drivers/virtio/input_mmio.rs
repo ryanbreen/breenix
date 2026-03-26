@@ -14,13 +14,15 @@
 
 #![cfg(target_arch = "aarch64")]
 
-use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering, fence};
-use super::mmio::{VirtioMmioDevice, device_id, VIRTIO_MMIO_BASE, VIRTIO_MMIO_SIZE, VIRTIO_MMIO_COUNT};
+use super::mmio::{
+    device_id, VirtioMmioDevice, VIRTIO_MMIO_BASE, VIRTIO_MMIO_COUNT, VIRTIO_MMIO_SIZE,
+};
+use core::sync::atomic::{fence, AtomicBool, AtomicU16, AtomicU32, Ordering};
 
 /// VirtIO descriptor flags
-const DESC_F_WRITE: u16 = 2;  // Device writes (vs reads)
+const DESC_F_WRITE: u16 = 2; // Device writes (vs reads)
 #[allow(dead_code)]
-const DESC_F_NEXT: u16 = 1;   // Descriptor continues via next field
+const DESC_F_NEXT: u16 = 1; // Descriptor continues via next field
 
 // =============================================================================
 // VirtIO Input Event Structure
@@ -50,10 +52,10 @@ impl VirtioInputEvent {
 
 /// Event types (Linux evdev)
 pub mod event_type {
-    pub const EV_SYN: u16 = 0x00;  // Synchronization
-    pub const EV_KEY: u16 = 0x01;  // Key press/release
-    pub const EV_REL: u16 = 0x02;  // Relative movement (mouse)
-    pub const EV_ABS: u16 = 0x03;  // Absolute position
+    pub const EV_SYN: u16 = 0x00; // Synchronization
+    pub const EV_KEY: u16 = 0x01; // Key press/release
+    pub const EV_REL: u16 = 0x02; // Relative movement (mouse)
+    pub const EV_ABS: u16 = 0x03; // Absolute position
 }
 
 /// Absolute axis codes
@@ -93,11 +95,11 @@ const EVENT_SIZE: usize = core::mem::size_of::<VirtioInputEvent>();
 #[repr(C, align(4096))]
 struct KbdQueueMemory {
     /// Descriptor table (16 bytes each)
-    descriptors: [[u8; 16]; NUM_KBD_BUFFERS],   // 1024 bytes
+    descriptors: [[u8; 16]; NUM_KBD_BUFFERS], // 1024 bytes
     /// Available ring
     avail_flags: u16,
     avail_idx: u16,
-    avail_ring: [u16; NUM_KBD_BUFFERS],          // 128 bytes
+    avail_ring: [u16; NUM_KBD_BUFFERS], // 128 bytes
     avail_used_event: u16,
     /// Padding to align used ring to 4096 for legacy VirtIO
     /// Total so far: 1024 + 4 + 128 + 2 = 1158 bytes
@@ -144,10 +146,10 @@ static KBD_LAST_USED_IDX: AtomicU16 = AtomicU16::new(0);
 
 #[repr(C, align(4096))]
 struct TabletQueueMemory {
-    descriptors: [[u8; 16]; NUM_TABLET_BUFFERS],  // 256 bytes
+    descriptors: [[u8; 16]; NUM_TABLET_BUFFERS], // 256 bytes
     avail_flags: u16,
     avail_idx: u16,
-    avail_ring: [u16; NUM_TABLET_BUFFERS],         // 32 bytes
+    avail_ring: [u16; NUM_TABLET_BUFFERS], // 32 bytes
     avail_used_event: u16,
     /// Total so far: 256 + 4 + 32 + 2 = 294 bytes
     _pad_to_page: [u8; 4096 - 294],
@@ -228,7 +230,14 @@ fn virt_to_phys(addr: u64) -> u64 {
 /// # Safety
 /// Caller must ensure `desc_table` points to valid, writable descriptor memory
 /// and `idx` is within the table bounds.
-unsafe fn write_descriptor_at(desc_table: *mut [u8; 16], idx: usize, addr: u64, len: u32, flags: u16, next: u16) {
+unsafe fn write_descriptor_at(
+    desc_table: *mut [u8; 16],
+    idx: usize,
+    addr: u64,
+    len: u32,
+    flags: u16,
+    next: u16,
+) {
     let desc = &mut *desc_table.add(idx);
     desc[0..8].copy_from_slice(&addr.to_le_bytes());
     desc[8..12].copy_from_slice(&len.to_le_bytes());
@@ -287,7 +296,10 @@ pub fn init() -> Result<(), &'static str> {
         return Ok(());
     }
 
-    crate::serial_println!("[virtio-input] Searching for input devices (ID={})...", device_id::INPUT);
+    crate::serial_println!(
+        "[virtio-input] Searching for input devices (ID={})...",
+        device_id::INPUT
+    );
 
     for i in 0..VIRTIO_MMIO_COUNT {
         let base = VIRTIO_MMIO_BASE + (i as u64) * VIRTIO_MMIO_SIZE;
@@ -299,11 +311,19 @@ pub fn init() -> Result<(), &'static str> {
             if id == device_id::INPUT {
                 if is_pointing_device(&device) {
                     if !TABLET_INITIALIZED.load(Ordering::Relaxed) {
-                        crate::serial_println!("[virtio-input] Found tablet at {:#x} (slot {}, supports EV_ABS)", base, i);
+                        crate::serial_println!(
+                            "[virtio-input] Found tablet at {:#x} (slot {}, supports EV_ABS)",
+                            base,
+                            i
+                        );
                         init_tablet_device(&mut device, i)?;
                     }
                 } else if !KBD_INITIALIZED.load(Ordering::Relaxed) {
-                    crate::serial_println!("[virtio-input] Found keyboard at {:#x} (slot {}, no EV_ABS)", base, i);
+                    crate::serial_println!(
+                        "[virtio-input] Found keyboard at {:#x} (slot {}, no EV_ABS)",
+                        base,
+                        i
+                    );
                     init_keyboard_device(&mut device, i)?;
                 }
             }
@@ -319,7 +339,10 @@ pub fn init() -> Result<(), &'static str> {
 
 /// Initialize the keyboard device.
 fn init_keyboard_device(device: &mut VirtioMmioDevice, slot: usize) -> Result<(), &'static str> {
-    crate::serial_println!("[virtio-input] Keyboard device version: {}", device.version());
+    crate::serial_println!(
+        "[virtio-input] Keyboard device version: {}",
+        device.version()
+    );
 
     init_input_device_queue(
         device,
@@ -345,7 +368,10 @@ fn init_keyboard_device(device: &mut VirtioMmioDevice, slot: usize) -> Result<()
     gic::Gicv2::enable_irq(irq as u8);
 
     KBD_INITIALIZED.store(true, Ordering::Release);
-    crate::serial_println!("[virtio-input] Keyboard initialized ({} buffers)", NUM_KBD_BUFFERS);
+    crate::serial_println!(
+        "[virtio-input] Keyboard initialized ({} buffers)",
+        NUM_KBD_BUFFERS
+    );
     Ok(())
 }
 
@@ -377,7 +403,10 @@ fn init_tablet_device(device: &mut VirtioMmioDevice, slot: usize) -> Result<(), 
     gic::Gicv2::enable_irq(irq as u8);
 
     TABLET_INITIALIZED.store(true, Ordering::Release);
-    crate::serial_println!("[virtio-input] Tablet initialized ({} buffers)", NUM_TABLET_BUFFERS);
+    crate::serial_println!(
+        "[virtio-input] Tablet initialized ({} buffers)",
+        NUM_TABLET_BUFFERS
+    );
     Ok(())
 }
 
@@ -434,7 +463,14 @@ fn init_input_device_queue(
     unsafe {
         for i in 0..actual_size {
             let event_addr = event_base_phys + (i * EVENT_SIZE) as u64;
-            write_descriptor_at(desc_table, i, event_addr, EVENT_SIZE as u32, DESC_F_WRITE, 0);
+            write_descriptor_at(
+                desc_table,
+                i,
+                event_addr,
+                EVENT_SIZE as u32,
+                DESC_F_WRITE,
+                0,
+            );
         }
     }
 
@@ -477,7 +513,11 @@ pub fn poll_events() -> impl Iterator<Item = VirtioInputEvent> {
     let mut count = 0;
 
     if !KBD_INITIALIZED.load(Ordering::Acquire) {
-        return EventIterator { events, count, index: 0 };
+        return EventIterator {
+            events,
+            count,
+            index: 0,
+        };
     }
 
     unsafe {
@@ -496,7 +536,12 @@ pub fn poll_events() -> impl Iterator<Item = VirtioInputEvent> {
             while idx != current_used && count < NUM_KBD_BUFFERS {
                 let ring_idx = (idx as usize) % NUM_KBD_BUFFERS;
                 let used_entry = &(*queue_mem).used_ring[ring_idx];
-                let desc_idx = u32::from_le_bytes([used_entry[0], used_entry[1], used_entry[2], used_entry[3]]) as usize;
+                let desc_idx = u32::from_le_bytes([
+                    used_entry[0],
+                    used_entry[1],
+                    used_entry[2],
+                    used_entry[3],
+                ]) as usize;
 
                 if desc_idx < NUM_KBD_BUFFERS {
                     events[count] = (*event_buffers).events[desc_idx];
@@ -522,7 +567,11 @@ pub fn poll_events() -> impl Iterator<Item = VirtioInputEvent> {
         }
     }
 
-    EventIterator { events, count, index: 0 }
+    EventIterator {
+        events,
+        count,
+        index: 0,
+    }
 }
 
 struct EventIterator {
@@ -652,7 +701,11 @@ pub fn handle_interrupt() {
                     ctrl_char_from_keycode(keycode)
                 } else {
                     // For letter keys, caps lock XOR shift determines case
-                    let effective_shift = if is_letter(keycode) { shift ^ caps } else { shift };
+                    let effective_shift = if is_letter(keycode) {
+                        shift ^ caps
+                    } else {
+                        shift
+                    };
                     keycode_to_char(keycode, effective_shift)
                 };
 
@@ -677,7 +730,11 @@ fn poll_tablet_events() -> TabletEventIterator {
     let mut count = 0;
 
     if !TABLET_INITIALIZED.load(Ordering::Acquire) {
-        return TabletEventIterator { events, count, index: 0 };
+        return TabletEventIterator {
+            events,
+            count,
+            index: 0,
+        };
     }
 
     unsafe {
@@ -696,7 +753,12 @@ fn poll_tablet_events() -> TabletEventIterator {
             while idx != current_used && count < NUM_TABLET_BUFFERS {
                 let ring_idx = (idx as usize) % NUM_TABLET_BUFFERS;
                 let used_entry = &(*queue_mem).used_ring[ring_idx];
-                let desc_idx = u32::from_le_bytes([used_entry[0], used_entry[1], used_entry[2], used_entry[3]]) as usize;
+                let desc_idx = u32::from_le_bytes([
+                    used_entry[0],
+                    used_entry[1],
+                    used_entry[2],
+                    used_entry[3],
+                ]) as usize;
 
                 if desc_idx < NUM_TABLET_BUFFERS {
                     events[count] = (*event_buffers).events[desc_idx];
@@ -722,7 +784,11 @@ fn poll_tablet_events() -> TabletEventIterator {
         }
     }
 
-    TabletEventIterator { events, count, index: 0 }
+    TabletEventIterator {
+        events,
+        count,
+        index: 0,
+    }
 }
 
 struct TabletEventIterator {
@@ -762,7 +828,10 @@ pub fn get_tablet_irq() -> Option<u32> {
 
 /// Get current mouse position in screen coordinates.
 pub fn mouse_position() -> (u32, u32) {
-    (MOUSE_X.load(Ordering::Relaxed), MOUSE_Y.load(Ordering::Relaxed))
+    (
+        MOUSE_X.load(Ordering::Relaxed),
+        MOUSE_Y.load(Ordering::Relaxed),
+    )
 }
 
 /// Get current mouse position and button state.
@@ -797,21 +866,19 @@ pub fn handle_tablet_interrupt() {
 
     for event in poll_tablet_events() {
         match event.event_type {
-            event_type::EV_ABS => {
-                match event.code {
-                    abs_code::ABS_X => {
-                        let (sw, _) = screen_dimensions();
-                        let x = (event.value as u64 * sw as u64 / (TABLET_ABS_MAX as u64 + 1)) as u32;
-                        MOUSE_X.store(x.min(sw - 1), Ordering::Relaxed);
-                    }
-                    abs_code::ABS_Y => {
-                        let (_, sh) = screen_dimensions();
-                        let y = (event.value as u64 * sh as u64 / (TABLET_ABS_MAX as u64 + 1)) as u32;
-                        MOUSE_Y.store(y.min(sh - 1), Ordering::Relaxed);
-                    }
-                    _ => {}
+            event_type::EV_ABS => match event.code {
+                abs_code::ABS_X => {
+                    let (sw, _) = screen_dimensions();
+                    let x = (event.value as u64 * sw as u64 / (TABLET_ABS_MAX as u64 + 1)) as u32;
+                    MOUSE_X.store(x.min(sw - 1), Ordering::Relaxed);
                 }
-            }
+                abs_code::ABS_Y => {
+                    let (_, sh) = screen_dimensions();
+                    let y = (event.value as u64 * sh as u64 / (TABLET_ABS_MAX as u64 + 1)) as u32;
+                    MOUSE_Y.store(y.min(sh - 1), Ordering::Relaxed);
+                }
+                _ => {}
+            },
             event_type::EV_KEY => {
                 if event.code == btn_code::BTN_LEFT {
                     let pressed = event.value != 0;
@@ -839,62 +906,344 @@ pub fn keycode_to_char(code: u16, shift: bool) -> Option<char> {
     // Linux keycode mapping (subset for common keys)
     let c = match code {
         // Row 1: number row
-        2 => if shift { '!' } else { '1' },
-        3 => if shift { '@' } else { '2' },
-        4 => if shift { '#' } else { '3' },
-        5 => if shift { '$' } else { '4' },
-        6 => if shift { '%' } else { '5' },
-        7 => if shift { '^' } else { '6' },
-        8 => if shift { '&' } else { '7' },
-        9 => if shift { '*' } else { '8' },
-        10 => if shift { '(' } else { '9' },
-        11 => if shift { ')' } else { '0' },
-        12 => if shift { '_' } else { '-' },
-        13 => if shift { '+' } else { '=' },
+        2 => {
+            if shift {
+                '!'
+            } else {
+                '1'
+            }
+        }
+        3 => {
+            if shift {
+                '@'
+            } else {
+                '2'
+            }
+        }
+        4 => {
+            if shift {
+                '#'
+            } else {
+                '3'
+            }
+        }
+        5 => {
+            if shift {
+                '$'
+            } else {
+                '4'
+            }
+        }
+        6 => {
+            if shift {
+                '%'
+            } else {
+                '5'
+            }
+        }
+        7 => {
+            if shift {
+                '^'
+            } else {
+                '6'
+            }
+        }
+        8 => {
+            if shift {
+                '&'
+            } else {
+                '7'
+            }
+        }
+        9 => {
+            if shift {
+                '*'
+            } else {
+                '8'
+            }
+        }
+        10 => {
+            if shift {
+                '('
+            } else {
+                '9'
+            }
+        }
+        11 => {
+            if shift {
+                ')'
+            } else {
+                '0'
+            }
+        }
+        12 => {
+            if shift {
+                '_'
+            } else {
+                '-'
+            }
+        }
+        13 => {
+            if shift {
+                '+'
+            } else {
+                '='
+            }
+        }
         14 => '\x08', // Backspace
 
         // Row 2: QWERTY
-        15 => '\t',   // Tab
-        16 => if shift { 'Q' } else { 'q' },
-        17 => if shift { 'W' } else { 'w' },
-        18 => if shift { 'E' } else { 'e' },
-        19 => if shift { 'R' } else { 'r' },
-        20 => if shift { 'T' } else { 't' },
-        21 => if shift { 'Y' } else { 'y' },
-        22 => if shift { 'U' } else { 'u' },
-        23 => if shift { 'I' } else { 'i' },
-        24 => if shift { 'O' } else { 'o' },
-        25 => if shift { 'P' } else { 'p' },
-        26 => if shift { '{' } else { '[' },
-        27 => if shift { '}' } else { ']' },
-        28 => '\n',   // Enter
+        15 => '\t', // Tab
+        16 => {
+            if shift {
+                'Q'
+            } else {
+                'q'
+            }
+        }
+        17 => {
+            if shift {
+                'W'
+            } else {
+                'w'
+            }
+        }
+        18 => {
+            if shift {
+                'E'
+            } else {
+                'e'
+            }
+        }
+        19 => {
+            if shift {
+                'R'
+            } else {
+                'r'
+            }
+        }
+        20 => {
+            if shift {
+                'T'
+            } else {
+                't'
+            }
+        }
+        21 => {
+            if shift {
+                'Y'
+            } else {
+                'y'
+            }
+        }
+        22 => {
+            if shift {
+                'U'
+            } else {
+                'u'
+            }
+        }
+        23 => {
+            if shift {
+                'I'
+            } else {
+                'i'
+            }
+        }
+        24 => {
+            if shift {
+                'O'
+            } else {
+                'o'
+            }
+        }
+        25 => {
+            if shift {
+                'P'
+            } else {
+                'p'
+            }
+        }
+        26 => {
+            if shift {
+                '{'
+            } else {
+                '['
+            }
+        }
+        27 => {
+            if shift {
+                '}'
+            } else {
+                ']'
+            }
+        }
+        28 => '\n', // Enter
 
         // Row 3: ASDF
-        30 => if shift { 'A' } else { 'a' },
-        31 => if shift { 'S' } else { 's' },
-        32 => if shift { 'D' } else { 'd' },
-        33 => if shift { 'F' } else { 'f' },
-        34 => if shift { 'G' } else { 'g' },
-        35 => if shift { 'H' } else { 'h' },
-        36 => if shift { 'J' } else { 'j' },
-        37 => if shift { 'K' } else { 'k' },
-        38 => if shift { 'L' } else { 'l' },
-        39 => if shift { ':' } else { ';' },
-        40 => if shift { '"' } else { '\'' },
-        41 => if shift { '~' } else { '`' },
-        43 => if shift { '|' } else { '\\' },
+        30 => {
+            if shift {
+                'A'
+            } else {
+                'a'
+            }
+        }
+        31 => {
+            if shift {
+                'S'
+            } else {
+                's'
+            }
+        }
+        32 => {
+            if shift {
+                'D'
+            } else {
+                'd'
+            }
+        }
+        33 => {
+            if shift {
+                'F'
+            } else {
+                'f'
+            }
+        }
+        34 => {
+            if shift {
+                'G'
+            } else {
+                'g'
+            }
+        }
+        35 => {
+            if shift {
+                'H'
+            } else {
+                'h'
+            }
+        }
+        36 => {
+            if shift {
+                'J'
+            } else {
+                'j'
+            }
+        }
+        37 => {
+            if shift {
+                'K'
+            } else {
+                'k'
+            }
+        }
+        38 => {
+            if shift {
+                'L'
+            } else {
+                'l'
+            }
+        }
+        39 => {
+            if shift {
+                ':'
+            } else {
+                ';'
+            }
+        }
+        40 => {
+            if shift {
+                '"'
+            } else {
+                '\''
+            }
+        }
+        41 => {
+            if shift {
+                '~'
+            } else {
+                '`'
+            }
+        }
+        43 => {
+            if shift {
+                '|'
+            } else {
+                '\\'
+            }
+        }
 
         // Row 4: ZXCV
-        44 => if shift { 'Z' } else { 'z' },
-        45 => if shift { 'X' } else { 'x' },
-        46 => if shift { 'C' } else { 'c' },
-        47 => if shift { 'V' } else { 'v' },
-        48 => if shift { 'B' } else { 'b' },
-        49 => if shift { 'N' } else { 'n' },
-        50 => if shift { 'M' } else { 'm' },
-        51 => if shift { '<' } else { ',' },
-        52 => if shift { '>' } else { '.' },
-        53 => if shift { '?' } else { '/' },
+        44 => {
+            if shift {
+                'Z'
+            } else {
+                'z'
+            }
+        }
+        45 => {
+            if shift {
+                'X'
+            } else {
+                'x'
+            }
+        }
+        46 => {
+            if shift {
+                'C'
+            } else {
+                'c'
+            }
+        }
+        47 => {
+            if shift {
+                'V'
+            } else {
+                'v'
+            }
+        }
+        48 => {
+            if shift {
+                'B'
+            } else {
+                'b'
+            }
+        }
+        49 => {
+            if shift {
+                'N'
+            } else {
+                'n'
+            }
+        }
+        50 => {
+            if shift {
+                'M'
+            } else {
+                'm'
+            }
+        }
+        51 => {
+            if shift {
+                '<'
+            } else {
+                ','
+            }
+        }
+        52 => {
+            if shift {
+                '>'
+            } else {
+                '.'
+            }
+        }
+        53 => {
+            if shift {
+                '?'
+            } else {
+                '/'
+            }
+        }
 
         // Space
         57 => ' ',
@@ -921,10 +1270,10 @@ pub fn keycode_to_escape_seq(code: u16) -> Option<&'static [u8]> {
         67 => Some(b"\x1b[20~"), // F9
         68 => Some(b"\x1b[21~"), // F10
         // Arrow keys
-        103 => Some(b"\x1b[A"),  // Up
-        108 => Some(b"\x1b[B"),  // Down
-        106 => Some(b"\x1b[C"),  // Right
-        105 => Some(b"\x1b[D"),  // Left
+        103 => Some(b"\x1b[A"), // Up
+        108 => Some(b"\x1b[B"), // Down
+        106 => Some(b"\x1b[C"), // Right
+        105 => Some(b"\x1b[D"), // Left
         // Navigation
         102 => Some(b"\x1b[H"),  // Home
         107 => Some(b"\x1b[F"),  // End
@@ -935,13 +1284,14 @@ pub fn keycode_to_escape_seq(code: u16) -> Option<&'static [u8]> {
 
 /// Check if a keycode is a modifier key
 pub fn is_modifier(code: u16) -> bool {
-    matches!(code,
+    matches!(
+        code,
         29 |    // Left Ctrl
         42 |    // Left Shift
         54 |    // Right Shift
         56 |    // Left Alt
         97 |    // Right Ctrl
-        100     // Right Alt
+        100 // Right Alt
     )
 }
 
@@ -971,22 +1321,46 @@ pub fn is_ctrl(code: u16) -> bool {
 pub fn ctrl_char_from_keycode(code: u16) -> Option<char> {
     let base_char = match code {
         // QWERTY row
-        16 => 'q', 17 => 'w', 18 => 'e', 19 => 'r', 20 => 't',
-        21 => 'y', 22 => 'u', 23 => 'i', 24 => 'o', 25 => 'p',
+        16 => 'q',
+        17 => 'w',
+        18 => 'e',
+        19 => 'r',
+        20 => 't',
+        21 => 'y',
+        22 => 'u',
+        23 => 'i',
+        24 => 'o',
+        25 => 'p',
         // ASDF row
-        30 => 'a', 31 => 's', 32 => 'd', 33 => 'f', 34 => 'g',
-        35 => 'h', 36 => 'j', 37 => 'k', 38 => 'l',
+        30 => 'a',
+        31 => 's',
+        32 => 'd',
+        33 => 'f',
+        34 => 'g',
+        35 => 'h',
+        36 => 'j',
+        37 => 'k',
+        38 => 'l',
         // ZXCV row
-        44 => 'z', 45 => 'x', 46 => 'c', 47 => 'v', 48 => 'b',
-        49 => 'n', 50 => 'm',
+        44 => 'z',
+        45 => 'x',
+        46 => 'c',
+        47 => 'v',
+        48 => 'b',
+        49 => 'n',
+        50 => 'm',
         // Special
-        26 => '[', 27 => ']', 43 => '\\',
+        26 => '[',
+        27 => ']',
+        43 => '\\',
         _ => return None,
     };
 
     let ctrl_code = match base_char {
-        'a'..='z' => (base_char as u8) - 0x60,  // 'c' (0x63) -> 0x03
-        '[' => 0x1B, '\\' => 0x1C, ']' => 0x1D,
+        'a'..='z' => (base_char as u8) - 0x60, // 'c' (0x63) -> 0x03
+        '[' => 0x1B,
+        '\\' => 0x1C,
+        ']' => 0x1D,
         _ => return None,
     };
     Some(ctrl_code as char)

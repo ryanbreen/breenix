@@ -55,10 +55,18 @@ pub fn test_user_segments() {
     let user_code = crate::gdt::user_code_selector();
     let user_data = crate::gdt::user_data_selector();
 
-    log::info!("User code selector: {:#x} (index: {}, RPL: {:?})",
-        user_code.0, user_code.index(), user_code.rpl());
-    log::info!("User data selector: {:#x} (index: {}, RPL: {:?})",
-        user_data.0, user_data.index(), user_data.rpl());
+    log::info!(
+        "User code selector: {:#x} (index: {}, RPL: {:?})",
+        user_code.0,
+        user_code.index(),
+        user_code.rpl()
+    );
+    log::info!(
+        "User data selector: {:#x} (index: {}, RPL: {:?})",
+        user_data.0,
+        user_data.index(),
+        user_data.rpl()
+    );
 
     // Verify user segments have Ring 3 privilege
     assert_eq!(
@@ -74,8 +82,16 @@ pub fn test_user_segments() {
 
     // Verify selector indices are correct (based on GDT layout in gdt.rs)
     // User data should be at index 5, user code at index 6
-    assert_eq!(user_data.index(), 5, "User data segment should be at index 5");
-    assert_eq!(user_code.index(), 6, "User code segment should be at index 6");
+    assert_eq!(
+        user_data.index(),
+        5,
+        "User data segment should be at index 5"
+    );
+    assert_eq!(
+        user_code.index(),
+        6,
+        "User code segment should be at index 6"
+    );
 
     // Verify the expected selector values
     // User data: index 5, RPL 3 = 0x2B
@@ -126,7 +142,9 @@ pub fn test_tss_descriptor() {
         );
 
         // Verify TSS base address is valid (not null, reasonable range)
-        let base_low = ((tss_low >> 16) & 0xFFFF) | (((tss_low >> 32) & 0xFF) << 16) | (((tss_low >> 56) & 0xFF) << 24);
+        let base_low = ((tss_low >> 16) & 0xFFFF)
+            | (((tss_low >> 32) & 0xFF) << 16)
+            | (((tss_low >> 56) & 0xFF) << 24);
         let base_high = tss_high & 0xFFFFFFFF;
         let tss_base = base_low | (base_high << 32);
 
@@ -188,8 +206,13 @@ pub fn test_user_segment_descriptors() {
         let s_bit = (user_data_desc >> 44) & 1; // 1 for code/data segment
         let type_field = (user_data_desc >> 40) & 0xF;
 
-        log::info!("  User data - Present: {}, DPL: {}, S: {}, Type: {:#x}",
-            present, dpl, s_bit, type_field);
+        log::info!(
+            "  User data - Present: {}, DPL: {}, S: {}, Type: {:#x}",
+            present,
+            dpl,
+            s_bit,
+            type_field
+        );
 
         assert_eq!(present, 1, "User data segment should be present");
         assert_eq!(dpl, 3, "User data segment should have DPL 3 (Ring 3)");
@@ -200,11 +223,7 @@ pub fn test_user_segment_descriptors() {
             0,
             "User data segment type should indicate data (not code)"
         );
-        assert_ne!(
-            type_field & 0x2,
-            0,
-            "User data segment should be writable"
-        );
+        assert_ne!(type_field & 0x2, 0, "User data segment should be writable");
 
         // User code segment at index 6
         let user_code_desc = *gdt_base.offset(6);
@@ -218,8 +237,15 @@ pub fn test_user_segment_descriptors() {
         let l_bit = (user_code_desc >> 53) & 1; // 64-bit code segment
         let d_bit = (user_code_desc >> 54) & 1; // Should be 0 for 64-bit
 
-        log::info!("  User code - Present: {}, DPL: {}, S: {}, Type: {:#x}, L: {}, D: {}",
-            present, dpl, s_bit, type_field, l_bit, d_bit);
+        log::info!(
+            "  User code - Present: {}, DPL: {}, S: {}, Type: {:#x}, L: {}, D: {}",
+            present,
+            dpl,
+            s_bit,
+            type_field,
+            l_bit,
+            d_bit
+        );
 
         assert_eq!(present, 1, "User code segment should be present");
         assert_eq!(dpl, 3, "User code segment should have DPL 3 (Ring 3)");
@@ -231,7 +257,10 @@ pub fn test_user_segment_descriptors() {
             "User code segment type should indicate code"
         );
         assert_eq!(l_bit, 1, "User code segment should be 64-bit (L bit set)");
-        assert_eq!(d_bit, 0, "User code segment D bit should be 0 for 64-bit mode");
+        assert_eq!(
+            d_bit, 0,
+            "User code segment D bit should be 0 for 64-bit mode"
+        );
     }
 
     log::info!("✅ User segment descriptor validation passed!");

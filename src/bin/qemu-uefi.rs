@@ -1,6 +1,5 @@
 use std::{
-    env,
-    fs,
+    env, fs,
     path::PathBuf,
     process::{self, Command},
 };
@@ -13,7 +12,10 @@ fn main() {
         let p = PathBuf::from(path);
         let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
         if name.contains("secboot") || name.contains(".ms") {
-            eprintln!("[qemu-uefi] Refusing Secure Boot firmware in CI: {}", p.display());
+            eprintln!(
+                "[qemu-uefi] Refusing Secure Boot firmware in CI: {}",
+                p.display()
+            );
             process::exit(2);
         }
         p
@@ -38,14 +40,28 @@ fn main() {
     // Sanity log OVMF selection and sizes when env overrides are used
     if env::var("BREENIX_OVMF_CODE_PATH").is_ok() || env::var("BREENIX_OVMF_VARS_PATH").is_ok() {
         let code_path = ovmf_code.canonicalize().unwrap_or(ovmf_code.clone());
-        let vars_path = ovmf_vars_src.canonicalize().unwrap_or(ovmf_vars_src.clone());
+        let vars_path = ovmf_vars_src
+            .canonicalize()
+            .unwrap_or(ovmf_vars_src.clone());
         let (mut csize, mut vsize) = (0u64, 0u64);
-        if let Ok(m) = fs::metadata(&code_path) { csize = m.len(); }
-        if let Ok(m) = fs::metadata(&vars_path) { vsize = m.len(); }
-        let family = if csize >= 4_000_000 && vsize >= 4_000_000 { "4M" } else { "2M-ish" };
+        if let Ok(m) = fs::metadata(&code_path) {
+            csize = m.len();
+        }
+        if let Ok(m) = fs::metadata(&vars_path) {
+            vsize = m.len();
+        }
+        let family = if csize >= 4_000_000 && vsize >= 4_000_000 {
+            "4M"
+        } else {
+            "2M-ish"
+        };
         eprintln!(
             "[qemu-uefi] OVMF selected: CODE={} ({} bytes), VARS={} ({} bytes) [{} family]",
-            code_path.display(), csize, vars_path.display(), vsize, family
+            code_path.display(),
+            csize,
+            vars_path.display(),
+            vsize,
+            family
         );
     }
     let mut qemu = Command::new("qemu-system-x86_64");
@@ -54,7 +70,11 @@ fn main() {
     if !uefi_img.exists() {
         eprintln!("[qemu-uefi] UEFI image missing: {}", uefi_img.display());
     } else {
-        eprintln!("[qemu-uefi] Using UEFI image: {} ({} bytes)", uefi_img.display(), fs::metadata(&uefi_img).map(|m| m.len()).unwrap_or(0));
+        eprintln!(
+            "[qemu-uefi] Using UEFI image: {} ({} bytes)",
+            uefi_img.display(),
+            fs::metadata(&uefi_img).map(|m| m.len()).unwrap_or(0)
+        );
     }
     // Optional: print UEFI image path and exit (for CI ESP precheck)
     if env::var("BREENIX_PRINT_UEFI_IMAGE").ok().as_deref() == Some("1") {
@@ -73,7 +93,10 @@ fn main() {
             // Minimal, known-good IDE attach; no explicit AHCI controller
             qemu.args([
                 "-drive",
-                &format!("if=ide,format=raw,media=disk,file={},index=0", uefi_img.display()),
+                &format!(
+                    "if=ide,format=raw,media=disk,file={},index=0",
+                    uefi_img.display()
+                ),
             ]);
             eprintln!("[qemu-uefi] Storage: IDE (index=0)");
         }
@@ -82,8 +105,12 @@ fn main() {
             // Our VirtIO driver only supports the legacy I/O port interface
             qemu.args([
                 "-drive",
-                &format!("if=none,id=hd,format=raw,media=disk,file={}", uefi_img.display()),
-                "-device", "virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off",
+                &format!(
+                    "if=none,id=hd,format=raw,media=disk,file={}",
+                    uefi_img.display()
+                ),
+                "-device",
+                "virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off",
             ]);
             eprintln!("[qemu-uefi] Storage: virtio-blk (legacy mode)");
         }
@@ -97,7 +124,9 @@ fn main() {
         let mut project_root = exe_path.parent().expect("No parent directory");
         // Walk up to find Cargo.toml (project root)
         while !project_root.join("Cargo.toml").exists() {
-            project_root = project_root.parent().expect("Reached filesystem root without finding project");
+            project_root = project_root
+                .parent()
+                .expect("Reached filesystem root without finding project");
         }
         let test_disk_path = project_root.join("target/test_binaries.img");
 
@@ -117,7 +146,10 @@ fn main() {
                 eprintln!("╔══════════════════════════════════════════════════════════════╗");
                 eprintln!("║  ❌ ERROR: TEST DISK BUILD FAILED                            ║");
                 eprintln!("╠══════════════════════════════════════════════════════════════╣");
-                eprintln!("║  Exit code: {:?}                                              ", status.code());
+                eprintln!(
+                    "║  Exit code: {:?}                                              ",
+                    status.code()
+                );
                 eprintln!("║                                                              ║");
                 eprintln!("║  Test disk is MANDATORY. There is NO fallback.              ║");
                 eprintln!("║                                                              ║");
@@ -135,7 +167,10 @@ fn main() {
                 eprintln!("╔══════════════════════════════════════════════════════════════╗");
                 eprintln!("║  ❌ ERROR: TEST DISK BUILD COMMAND FAILED                    ║");
                 eprintln!("╠══════════════════════════════════════════════════════════════╣");
-                eprintln!("║  Error: {}                                                   ", e);
+                eprintln!(
+                    "║  Error: {}                                                   ",
+                    e
+                );
                 eprintln!("║                                                              ║");
                 eprintln!("║  Test disk is MANDATORY. There is NO fallback.              ║");
                 eprintln!("║                                                              ║");
@@ -156,7 +191,10 @@ fn main() {
             eprintln!("╔══════════════════════════════════════════════════════════════╗");
             eprintln!("║  ❌ ERROR: TEST DISK NOT FOUND AFTER BUILD                   ║");
             eprintln!("╠══════════════════════════════════════════════════════════════╣");
-            eprintln!("║  Path: {}                                                   ", test_disk_path.display());
+            eprintln!(
+                "║  Path: {}                                                   ",
+                test_disk_path.display()
+            );
             eprintln!("║                                                              ║");
             eprintln!("║  Build reported success but disk image doesn't exist.       ║");
             eprintln!("║  This indicates a build system issue.                       ║");
@@ -170,10 +208,18 @@ fn main() {
         let disk_size = fs::metadata(&test_disk_path).map(|m| m.len()).unwrap_or(0);
         qemu.args([
             "-drive",
-            &format!("if=none,id=testdisk,format=raw,file={}", test_disk_path.display()),
-            "-device", "virtio-blk-pci,drive=testdisk,disable-modern=on,disable-legacy=off",
+            &format!(
+                "if=none,id=testdisk,format=raw,file={}",
+                test_disk_path.display()
+            ),
+            "-device",
+            "virtio-blk-pci,drive=testdisk,disable-modern=on,disable-legacy=off",
         ]);
-        eprintln!("[qemu-uefi] Test disk: {} ({} bytes) [virtio-blk device index 1]", test_disk_path.display(), disk_size);
+        eprintln!(
+            "[qemu-uefi] Test disk: {} ({} bytes) [virtio-blk device index 1]",
+            test_disk_path.display(),
+            disk_size
+        );
 
         // Attach ext2 filesystem disk (third VirtIO device, index 2)
         // Copy pristine image from testdata/ to target/ so tests can write without modifying the source
@@ -182,26 +228,41 @@ fn main() {
         if ext2_source_path.exists() {
             // Always copy fresh from source to ensure clean state
             if let Err(e) = fs::copy(&ext2_source_path, &ext2_disk_path) {
-                eprintln!("[qemu-uefi] Warning: failed to copy ext2.img to target/: {}", e);
+                eprintln!(
+                    "[qemu-uefi] Warning: failed to copy ext2.img to target/: {}",
+                    e
+                );
             }
             let ext2_size = fs::metadata(&ext2_disk_path).map(|m| m.len()).unwrap_or(0);
             qemu.args([
                 "-drive",
-                &format!("if=none,id=ext2disk,format=raw,file={}", ext2_disk_path.display()),
-                "-device", "virtio-blk-pci,drive=ext2disk,disable-modern=on,disable-legacy=off",
+                &format!(
+                    "if=none,id=ext2disk,format=raw,file={}",
+                    ext2_disk_path.display()
+                ),
+                "-device",
+                "virtio-blk-pci,drive=ext2disk,disable-modern=on,disable-legacy=off",
             ]);
-            eprintln!("[qemu-uefi] Ext2 disk: {} -> {} ({} bytes) [virtio-blk device index 2]",
-                ext2_source_path.display(), ext2_disk_path.display(), ext2_size);
+            eprintln!(
+                "[qemu-uefi] Ext2 disk: {} -> {} ({} bytes) [virtio-blk device index 2]",
+                ext2_source_path.display(),
+                ext2_disk_path.display(),
+                ext2_size
+            );
         } else {
             eprintln!("[qemu-uefi] Ext2 disk: not found (build with: cargo run -p xtask -- create-ext2-disk)");
         }
     }
     // Improve CI capture and stability
     qemu.args([
-        "-machine", "pc,accel=tcg",
-        "-cpu", "qemu64",
-        "-smp", "1",
-        "-m", "512",
+        "-machine",
+        "pc,accel=tcg",
+        "-cpu",
+        "qemu64",
+        "-smp",
+        "1",
+        "-m",
+        "512",
     ]);
 
     // Graphics configuration: always use virtio-vga for consistent resolution
@@ -227,18 +288,20 @@ fn main() {
     let is_interactive = env::var("BREENIX_INTERACTIVE").ok().as_deref() == Some("1");
     if is_interactive {
         // Interactive mode: show graphical window
-        eprintln!("[qemu-uefi] Graphics: virtio-vga {}x{} (interactive mode)", fb_width, fb_height);
+        eprintln!(
+            "[qemu-uefi] Graphics: virtio-vga {}x{} (interactive mode)",
+            fb_width, fb_height
+        );
     } else {
         // Headless mode: no display window, serial to stdio
         qemu.args(["-display", "none"]);
-        eprintln!("[qemu-uefi] Graphics: virtio-vga {}x{} (headless)", fb_width, fb_height);
+        eprintln!(
+            "[qemu-uefi] Graphics: virtio-vga {}x{} (headless)",
+            fb_width, fb_height
+        );
     }
 
-    qemu.args([
-        "-boot", "strict=on",
-        "-no-reboot",
-        "-no-shutdown",
-    ]);
+    qemu.args(["-boot", "strict=on", "-no-reboot", "-no-shutdown"]);
     // QEMU monitor access for debugging (default: disabled)
     let monitor_mode = env::var("BREENIX_QEMU_MONITOR").unwrap_or_else(|_| "none".to_string());
     match monitor_mode.as_str() {
@@ -248,23 +311,25 @@ fn main() {
         }
         "tcp" => {
             qemu.args(["-monitor", "tcp:127.0.0.1:4444,server,nowait"]);
-            eprintln!("[qemu-uefi] Monitor on tcp:127.0.0.1:4444 (connect via: telnet localhost 4444)");
+            eprintln!(
+                "[qemu-uefi] Monitor on tcp:127.0.0.1:4444 (connect via: telnet localhost 4444)"
+            );
         }
         _ => {
             qemu.args(["-monitor", "none"]);
         }
     }
     // Deterministic guest-driven exit for CI via isa-debug-exit on port 0xF4
-    qemu.args([
-        "-device",
-        "isa-debug-exit,iobase=0xf4,iosize=0x04",
-    ]);
+    qemu.args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"]);
     // Optional debug log and firmware debug console capture
     if let Ok(log_path) = env::var("BREENIX_QEMU_LOG_PATH") {
-        let debug_flags = env::var("BREENIX_QEMU_DEBUG_FLAGS")
-            .unwrap_or_else(|_| "guest_errors".to_string());
+        let debug_flags =
+            env::var("BREENIX_QEMU_DEBUG_FLAGS").unwrap_or_else(|_| "guest_errors".to_string());
         qemu.args(["-d", &debug_flags, "-D", &log_path]);
-        eprintln!("[qemu-uefi] Debug log: {} (flags: {})", log_path, debug_flags);
+        eprintln!(
+            "[qemu-uefi] Debug log: {} (flags: {})",
+            log_path, debug_flags
+        );
     }
     // If a file path is provided, route firmware debug console (0x402) to file.
     if let Ok(path) = env::var("BREENIX_QEMU_DEBUGCON_FILE") {
@@ -273,7 +338,12 @@ fn main() {
         eprintln!("[qemu-uefi] Debug console (0x402) -> file: {}", path);
     } else if env::var("BREENIX_QEMU_DEBUGCON").ok().as_deref() == Some("1") {
         // Fallback: map debug console to stdio if explicitly requested
-        qemu.args(["-chardev", "stdio,id=ovmf", "-device", "isa-debugcon,iobase=0x402,chardev=ovmf"]);
+        qemu.args([
+            "-chardev",
+            "stdio,id=ovmf",
+            "-device",
+            "isa-debugcon,iobase=0x402,chardev=ovmf",
+        ]);
         eprintln!("[qemu-uefi] Debug console (0x402) -> stdio enabled");
     }
     // Hint firmware to route stdout to serial (fw_cfg toggle; ignored if unsupported)
@@ -296,8 +366,10 @@ fn main() {
             // The guest gets DHCP from the host (192.168.64.x range typically)
             // Host can see traffic with: sudo tcpdump -i bridge100 -nn
             qemu.args([
-                "-netdev", "vmnet-shared,id=net0",
-                "-device", "e1000,netdev=net0,mac=52:54:00:12:34:56",
+                "-netdev",
+                "vmnet-shared,id=net0",
+                "-device",
+                "e1000,netdev=net0,mac=52:54:00:12:34:56",
             ]);
             eprintln!("[qemu-uefi] Network: vmnet-shared (host bridge interface)");
             eprintln!("[qemu-uefi]   To observe traffic: sudo tcpdump -i bridge100 -nn icmp");
@@ -310,12 +382,18 @@ fn main() {
             // File descriptor 3 is passed by socket_vmnet_client wrapper
             // Build kernel with --features vmnet for 192.168.64.x static IP config
             qemu.args([
-                "-netdev", "socket,id=net0,fd=3",
-                "-device", "e1000,netdev=net0,mac=52:54:00:12:34:56",
+                "-netdev",
+                "socket,id=net0,fd=3",
+                "-device",
+                "e1000,netdev=net0,mac=52:54:00:12:34:56",
             ]);
             eprintln!("[qemu-uefi] Network: socket_vmnet (host bridge via daemon)");
-            eprintln!("[qemu-uefi]   To observe traffic: sudo tcpdump -i bridge102 -nn 'arp or icmp'");
-            eprintln!("[qemu-uefi]   Guest IP: 192.168.105.100 (static, build with --features vmnet)");
+            eprintln!(
+                "[qemu-uefi]   To observe traffic: sudo tcpdump -i bridge102 -nn 'arp or icmp'"
+            );
+            eprintln!(
+                "[qemu-uefi]   Guest IP: 192.168.105.100 (static, build with --features vmnet)"
+            );
         }
         "none" => {
             eprintln!("[qemu-uefi] Network: disabled");
@@ -325,8 +403,10 @@ fn main() {
             // Traffic is internal to QEMU, not visible on host interfaces
             // Port forwarding: host:2323 -> guest:2323 (telnet)
             qemu.args([
-                "-netdev", "user,id=net0,hostfwd=tcp::2323-:2323",
-                "-device", "e1000,netdev=net0,mac=52:54:00:12:34:56",
+                "-netdev",
+                "user,id=net0,hostfwd=tcp::2323-:2323",
+                "-device",
+                "e1000,netdev=net0,mac=52:54:00:12:34:56",
             ]);
             eprintln!("[qemu-uefi] Network: SLIRP user-mode (10.0.2.x internal)");
             eprintln!("[qemu-uefi]   Port forward: localhost:2323 -> guest:2323 (telnet)");
@@ -338,7 +418,8 @@ fn main() {
     if net_mode != "none" {
         if let Ok(pcap_path) = env::var("BREENIX_PCAP_FILE") {
             qemu.args([
-                "-object", &format!("filter-dump,id=dump0,netdev=net0,file={}", pcap_path),
+                "-object",
+                &format!("filter-dump,id=dump0,netdev=net0,file={}", pcap_path),
             ]);
             eprintln!("[qemu-uefi] Packet capture: {}", pcap_path);
         }
@@ -368,7 +449,8 @@ fn main() {
     let exit_status = if use_socket_vmnet {
         // socket_vmnet_client passes a vmnet file descriptor as fd=3 to the wrapped command
         // Usage: socket_vmnet_client <socket_path> <command> [args...]
-        let socket_vmnet_client = PathBuf::from("/opt/homebrew/opt/socket_vmnet/bin/socket_vmnet_client");
+        let socket_vmnet_client =
+            PathBuf::from("/opt/homebrew/opt/socket_vmnet/bin/socket_vmnet_client");
         let socket_path = PathBuf::from("/opt/homebrew/var/run/socket_vmnet");
 
         if !socket_vmnet_client.exists() {

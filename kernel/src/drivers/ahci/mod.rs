@@ -111,6 +111,15 @@ pub const SECTOR_SIZE: usize = 512;
 /// Command timeout in seconds (matches Linux ata_internal_cmd_timeout).
 const AHCI_TIMEOUT_SECS: u64 = 5;
 
+#[cfg(target_arch = "aarch64")]
+const AHCI_GICD_ISENABLER: usize = 0x100;
+#[cfg(target_arch = "aarch64")]
+const AHCI_GICD_ISPENDR: usize = 0x200;
+#[cfg(target_arch = "aarch64")]
+const AHCI_GICD_IPRIORITYR: usize = 0x400;
+#[cfg(target_arch = "aarch64")]
+const AHCI_GICD_IROUTER: usize = 0x6000;
+
 /// Read the ARM64 generic timer counter (CNTPCT_EL0).
 /// This is a free-running counter available at all times, independent of
 /// whether the timer interrupt is configured.
@@ -186,6 +195,13 @@ static AHCI_COMPLETIONS: [[Completion; AHCI_MAX_CONCURRENT]; MAX_AHCI_PORTS] =
 static AHCI_ISR_COUNT: AtomicU32 = AtomicU32::new(0);
 /// Count commands issued via issue_cmd_slot0 (for diagnostic/timeout reporting).
 static AHCI_CMD_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Wait-context diagnostic armed by wait_cmd_slot0 for post-schedule dumps.
+static AHCI_WAIT_DIAG_ACTIVE: AtomicBool = AtomicBool::new(false);
+static AHCI_WAIT_DIAG_TID: AtomicU64 = AtomicU64::new(0);
+static AHCI_WAIT_DIAG_PORT: AtomicU32 = AtomicU32::new(u32::MAX);
+static AHCI_WAIT_DIAG_CMD_NUM: AtomicU32 = AtomicU32::new(0);
+static AHCI_WAIT_DIAG_ARMED_CPU: AtomicU32 = AtomicU32::new(u32::MAX);
+static AHCI_WAIT_DIAG_RESUME_COUNT: AtomicU32 = AtomicU32::new(0);
 
 /// Per-port bitmask of in-flight command slots, indexed by port number.
 /// Bit N = slot N is currently in flight (PORT_CI bit N was set by us).
@@ -591,6 +607,31 @@ fn port_write(abar: u64, port: usize, offset: usize, value: u32) {
     hba_write(port_base(abar, port), offset, value)
 }
 
+/// Acknowledge a port interrupt with the ordering AHCI expects.
+///
+/// `PORT_IS` must be cleared before the matching `HBA_IS` bit. On ARM64 we
+/// also need those MMIO writes to drain before returning, otherwise a
+/// level-triggered line can remain effectively asserted into the next command
+/// issue or EOI window and collapse a later completion interrupt.
+#[inline]
+fn ack_port_interrupt(abar: u64, port: usize, port_is: u32) {
+    if port_is != 0 {
+        port_write(abar, port, PORT_IS, port_is);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+
+    hba_write(abar, HBA_IS, 1u32 << (port as u32));
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+}
+
 // =============================================================================
 // Command Token + Wait
 // =============================================================================
@@ -639,7 +680,12 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
         // lock, preventing a race with complete() from the ISR.
         // ============================================================
         const TIMEOUT_NS: u64 = 5_000_000_000; // 5 s — Linux default
-        match AHCI_COMPLETIONS[port][0].wait_timeout(TIMEOUT_NS) {
+        let diag_armed = arm_wait_cmd_slot0_diag(port, cmd_num);
+        let wait_result = AHCI_COMPLETIONS[port][0].wait_timeout(TIMEOUT_NS);
+        if diag_armed {
+            disarm_wait_cmd_slot0_diag();
+        }
+        match wait_result {
             Ok(true) => {
                 let tfd = port_read(abar, port, PORT_TFD);
                 if (tfd & 1) != 0 {
@@ -702,8 +748,7 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
             if (ci & 1) == 0 {
                 let is = port_read(abar, port, PORT_IS);
                 let tfd = port_read(abar, port, PORT_TFD);
-                port_write(abar, port, PORT_IS, is);
-                hba_write(abar, HBA_IS, 1u32 << (port as u32));
+                ack_port_interrupt(abar, port, is);
                 if (is & PORT_IRQ_ERROR) != 0 || (tfd & 1) != 0 {
                     return Err("AHCI: task file error");
                 }
@@ -712,8 +757,7 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
 
             let is = port_read(abar, port, PORT_IS);
             if (is & PORT_IRQ_ERROR) != 0 {
-                port_write(abar, port, PORT_IS, is);
-                hba_write(abar, HBA_IS, 1u32 << (port as u32));
+                ack_port_interrupt(abar, port, is);
                 return Err("AHCI: task file error");
             }
 
@@ -1024,8 +1068,7 @@ impl AhciController {
             if (is & PORT_IRQ_TF_ERR) != 0 || (tfd & 1) != 0 {
                 self.stop_cmd(port);
                 port_write(abar, port, PORT_SERR, 0xFFFF_FFFF);
-                port_write(abar, port, PORT_IS, 0xFFFF_FFFF);
-                hba_write(abar, HBA_IS, 1u32 << (port as u32));
+                ack_port_interrupt(abar, port, 0xFFFF_FFFF);
                 self.start_cmd(port);
                 self.wait_ready(port)?;
             }
@@ -1033,10 +1076,7 @@ impl AhciController {
 
         // --- Clear stale interrupt status ---
         let stale_is = port_read(abar, port, PORT_IS);
-        if stale_is != 0 {
-            port_write(abar, port, PORT_IS, stale_is);
-        }
-        hba_write(abar, HBA_IS, 1u32 << (port as u32));
+        ack_port_interrupt(abar, port, stale_is);
 
         // --- Verify command engine ---
         let cmd = port_read(abar, port, PORT_CMD);
@@ -1213,6 +1253,174 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
         rpr
     );
 }
+
+#[inline]
+fn arm_wait_cmd_slot0_diag(port: usize, cmd_num: u32) -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        if cmd_num < 1183 {
+            return false;
+        }
+
+        let tid = crate::task::scheduler::current_thread_id().unwrap_or(0);
+        let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as u32;
+
+        AHCI_WAIT_DIAG_TID.store(tid, Ordering::Relaxed);
+        AHCI_WAIT_DIAG_PORT.store(port as u32, Ordering::Relaxed);
+        AHCI_WAIT_DIAG_CMD_NUM.store(cmd_num, Ordering::Relaxed);
+        AHCI_WAIT_DIAG_ARMED_CPU.store(cpu, Ordering::Relaxed);
+        AHCI_WAIT_DIAG_RESUME_COUNT.store(0, Ordering::Relaxed);
+        AHCI_WAIT_DIAG_ACTIVE.store(true, Ordering::Release);
+        true
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let _ = (port, cmd_num);
+        false
+    }
+}
+
+#[inline]
+fn disarm_wait_cmd_slot0_diag() {
+    AHCI_WAIT_DIAG_ACTIVE.store(false, Ordering::Release);
+    AHCI_WAIT_DIAG_TID.store(0, Ordering::Relaxed);
+    AHCI_WAIT_DIAG_PORT.store(u32::MAX, Ordering::Relaxed);
+    AHCI_WAIT_DIAG_CMD_NUM.store(0, Ordering::Relaxed);
+    AHCI_WAIT_DIAG_ARMED_CPU.store(u32::MAX, Ordering::Relaxed);
+    AHCI_WAIT_DIAG_RESUME_COUNT.store(0, Ordering::Relaxed);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn ahci_gicd_read_u32(offset: usize) -> u32 {
+    unsafe {
+        let base = crate::platform_config::gicd_base_phys() as usize;
+        let addr = (HHDM_BASE as usize + base + offset) as *const u32;
+        core::ptr::read_volatile(addr)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn ahci_gicd_read_u64(offset: usize) -> u64 {
+    let lo = ahci_gicd_read_u32(offset) as u64;
+    let hi = ahci_gicd_read_u32(offset + 4) as u64;
+    lo | (hi << 32)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn ahci_gic_irq_enabled(spi: u32) -> bool {
+    if spi < 32 {
+        return false;
+    }
+    let reg_index = (spi / 32) as usize;
+    let bit = spi % 32;
+    (ahci_gicd_read_u32(AHCI_GICD_ISENABLER + reg_index * 4) & (1 << bit)) != 0
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn ahci_gic_irq_pending(spi: u32) -> bool {
+    if spi < 32 {
+        return false;
+    }
+    let reg_index = (spi / 32) as usize;
+    let bit = spi % 32;
+    (ahci_gicd_read_u32(AHCI_GICD_ISPENDR + reg_index * 4) & (1 << bit)) != 0
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn ahci_gic_irq_priority(spi: u32) -> u8 {
+    if spi == 0 {
+        return 0;
+    }
+    let reg_index = (spi / 4) as usize;
+    let byte_index = spi % 4;
+    let reg = ahci_gicd_read_u32(AHCI_GICD_IPRIORITYR + reg_index * 4);
+    ((reg >> (byte_index * 8)) & 0xff) as u8
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn ahci_gic_irq_router(spi: u32) -> u64 {
+    if spi < 32 {
+        return 0;
+    }
+    ahci_gicd_read_u64(AHCI_GICD_IROUTER + (spi as usize * 8))
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn maybe_dump_wait_cmd_slot0_post_schedule(daif_before_enable: u64) {
+    if !AHCI_WAIT_DIAG_ACTIVE.load(Ordering::Acquire) {
+        return;
+    }
+
+    let expected_tid = AHCI_WAIT_DIAG_TID.load(Ordering::Relaxed);
+    let current_tid = crate::task::scheduler::current_thread_id().unwrap_or(0);
+    if expected_tid != 0 && current_tid != expected_tid {
+        return;
+    }
+
+    let cmd_num = AHCI_WAIT_DIAG_CMD_NUM.load(Ordering::Relaxed);
+    if cmd_num < 1183 {
+        return;
+    }
+
+    let port = AHCI_WAIT_DIAG_PORT.load(Ordering::Relaxed) as usize;
+    let resume_count = AHCI_WAIT_DIAG_RESUME_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    let current_cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as u32;
+    let armed_cpu = AHCI_WAIT_DIAG_ARMED_CPU.load(Ordering::Relaxed);
+    let spi = AHCI_IRQ.load(Ordering::Relaxed);
+    let enabled = ahci_gic_irq_enabled(spi);
+    let pending = ahci_gic_irq_pending(spi);
+    let route = ahci_gic_irq_router(spi);
+    let route_any_cpu = (route & (1 << 31)) != 0;
+    let route_aff0 = (route & 0xff) as u8;
+    let irq_priority = ahci_gic_irq_priority(spi);
+
+    let daif_after_enable: u64;
+    let pmr: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, daif", out(reg) daif_after_enable, options(nomem, nostack));
+        core::arch::asm!("mrs {}, icc_pmr_el1", out(reg) pmr, options(nomem, nostack));
+    }
+
+    let daif_i_before = (daif_before_enable & (1 << 7)) != 0;
+    let daif_i_after = (daif_after_enable & (1 << 7)) != 0;
+    let pmr_blocks = spi != 0 && (irq_priority as u64) >= (pmr & 0xff);
+
+    crate::serial_aarch64::raw_serial_char(b'W');
+    crate::serial_println!(
+        "[ahci] wait_cmd_slot0 post-schedule#{} port={} cmd#{} tid={} cpu={} armed_cpu={} DAIF(before)={:#x} I_before={} DAIF(after)={:#x} I_after={}",
+        resume_count,
+        port,
+        cmd_num,
+        current_tid,
+        current_cpu,
+        armed_cpu,
+        daif_before_enable,
+        daif_i_before,
+        daif_after_enable,
+        daif_i_after
+    );
+    crate::serial_println!(
+        "[ahci]   SPI{} enabled={} pending={} PMR={:#x} irq_prio={:#x} pmr_blocks={} IROUTER={:#x} route_any_cpu={} route_aff0={}",
+        spi,
+        enabled,
+        pending,
+        pmr,
+        irq_priority,
+        pmr_blocks,
+        route,
+        route_any_cpu,
+        route_aff0
+    );
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+pub(crate) fn maybe_dump_wait_cmd_slot0_post_schedule(_daif_before_enable: u64) {}
 
 impl AhciController {
     /// Issue IDENTIFY DEVICE and return sector count.
@@ -1630,8 +1838,7 @@ fn probe_platform_irq(ctrl: &AhciController) {
     );
 
     // Ensure the port is clean before probing.
-    port_write(abar, port_num, PORT_IS, 0xFFFF_FFFF);
-    hba_write(abar, HBA_IS, 1u32 << (port_num as u32));
+    ack_port_interrupt(abar, port_num, 0xFFFF_FFFF);
 
     // Wait for port ready.
     for _ in 0..100_000 {
@@ -1712,8 +1919,7 @@ fn probe_platform_irq(ctrl: &AhciController) {
             ci,
             tfd
         );
-        port_write(abar, port_num, PORT_IS, 0xFFFF_FFFF);
-        hba_write(abar, HBA_IS, 1u32 << (port_num as u32));
+        ack_port_interrupt(abar, port_num, 0xFFFF_FFFF);
         return;
     }
 
@@ -1733,8 +1939,7 @@ fn probe_platform_irq(ctrl: &AhciController) {
     );
 
     // NOW clear PORT_IS to de-assert the interrupt line.
-    port_write(abar, port_num, PORT_IS, 0xFFFF_FFFF);
-    hba_write(abar, HBA_IS, 1u32 << (port_num as u32));
+    ack_port_interrupt(abar, port_num, 0xFFFF_FFFF);
 
     // Diff: find SPIs that are newly pending.
     let known_spis: &[u32] = &[33, 53, 54, 55]; // UART, GPU, NET, XHCI
@@ -1851,8 +2056,7 @@ pub fn handle_interrupt() {
         if is == 0 {
             continue;
         }
-        // Write-1-to-clear PORT_IS (AHCI spec §10.7.2.1).
-        port_write(abar, port, PORT_IS, is);
+        ack_port_interrupt(abar, port, is);
 
         if (is & (PORT_IRQ_COMPLETE | PORT_IRQ_ERROR)) != 0 {
             if port < MAX_AHCI_PORTS {
@@ -1870,22 +2074,6 @@ pub fn handle_interrupt() {
                 PORT_ACTIVE_MASK[port].store(0, Ordering::Release);
             }
         }
-    }
-
-    // Clear global interrupt status AFTER clearing PORT_IS.
-    if hba_is != 0 {
-        hba_write(abar, HBA_IS, hba_is);
-    }
-
-    // DSB SY: ensure PORT_IS and HBA_IS MMIO writes have propagated to the
-    // device BEFORE the caller writes ICC_EOIR1_EL1 (EOI). Without this
-    // barrier, the GIC may sample the still-asserted interrupt line at EOI
-    // time, transition Active→Pending instead of Active→Inactive, and
-    // consume the next real interrupt as a phantom. Linux's writel() includes
-    // an implicit DSB on ARM64; we must do it explicitly.
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
     }
 
     // For edge-triggered MSI: clear the SPI pending bit to re-arm.

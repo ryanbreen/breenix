@@ -24,7 +24,11 @@ struct DeferredTx {
 static DEFERRED_TX_QUEUE: Mutex<Vec<DeferredTx>> = Mutex::new(Vec::new());
 
 fn queue_deferred_tx_with_mac(dst_ip: [u8; 4], dst_mac: Option<[u8; 6]>, tcp_segment: Vec<u8>) {
-    DEFERRED_TX_QUEUE.lock().push(DeferredTx { dst_ip, dst_mac, tcp_segment });
+    DEFERRED_TX_QUEUE.lock().push(DeferredTx {
+        dst_ip,
+        dst_mac,
+        tcp_segment,
+    });
 }
 
 pub fn deferred_tx_queue_len() -> usize {
@@ -90,43 +94,97 @@ impl TcpFlags {
     /// Convert flags to byte
     pub fn to_byte(&self) -> u8 {
         let mut byte = 0u8;
-        if self.fin { byte |= 0x01; }
-        if self.syn { byte |= 0x02; }
-        if self.rst { byte |= 0x04; }
-        if self.psh { byte |= 0x08; }
-        if self.ack { byte |= 0x10; }
-        if self.urg { byte |= 0x20; }
+        if self.fin {
+            byte |= 0x01;
+        }
+        if self.syn {
+            byte |= 0x02;
+        }
+        if self.rst {
+            byte |= 0x04;
+        }
+        if self.psh {
+            byte |= 0x08;
+        }
+        if self.ack {
+            byte |= 0x10;
+        }
+        if self.urg {
+            byte |= 0x20;
+        }
         byte
     }
 
     /// Create SYN flag set
     pub fn syn() -> Self {
-        TcpFlags { fin: false, syn: true, rst: false, psh: false, ack: false, urg: false }
+        TcpFlags {
+            fin: false,
+            syn: true,
+            rst: false,
+            psh: false,
+            ack: false,
+            urg: false,
+        }
     }
 
     /// Create SYN+ACK flag set
     pub fn syn_ack() -> Self {
-        TcpFlags { fin: false, syn: true, rst: false, psh: false, ack: true, urg: false }
+        TcpFlags {
+            fin: false,
+            syn: true,
+            rst: false,
+            psh: false,
+            ack: true,
+            urg: false,
+        }
     }
 
     /// Create ACK flag set
     pub fn ack() -> Self {
-        TcpFlags { fin: false, syn: false, rst: false, psh: false, ack: true, urg: false }
+        TcpFlags {
+            fin: false,
+            syn: false,
+            rst: false,
+            psh: false,
+            ack: true,
+            urg: false,
+        }
     }
 
     /// Create ACK+PSH flag set (for data)
     pub fn ack_psh() -> Self {
-        TcpFlags { fin: false, syn: false, rst: false, psh: true, ack: true, urg: false }
+        TcpFlags {
+            fin: false,
+            syn: false,
+            rst: false,
+            psh: true,
+            ack: true,
+            urg: false,
+        }
     }
 
     /// Create FIN+ACK flag set
     pub fn fin_ack() -> Self {
-        TcpFlags { fin: true, syn: false, rst: false, psh: false, ack: true, urg: false }
+        TcpFlags {
+            fin: true,
+            syn: false,
+            rst: false,
+            psh: false,
+            ack: true,
+            urg: false,
+        }
     }
 
     /// Create RST flag set
     pub fn rst() -> Self {
-        TcpFlags { fin: false, syn: false, rst: true, psh: false, ack: false, urg: false }
+        TcpFlags {
+            fin: false,
+            syn: false,
+            rst: true,
+            psh: false,
+            ack: false,
+            urg: false,
+        }
     }
 }
 
@@ -273,7 +331,15 @@ pub fn build_tcp_packet_with_checksum(
     window_size: u16,
     payload: &[u8],
 ) -> Vec<u8> {
-    let mut packet = build_tcp_packet(src_port, dst_port, seq_num, ack_num, flags, window_size, payload);
+    let mut packet = build_tcp_packet(
+        src_port,
+        dst_port,
+        seq_num,
+        ack_num,
+        flags,
+        window_size,
+        payload,
+    );
 
     // Calculate checksum
     let checksum = tcp_checksum(src_ip, dst_ip, &packet);
@@ -321,7 +387,8 @@ pub struct TcpConnection {
     /// Our sequence number (next byte to send)
     pub send_next: u32,
     /// Initial send sequence number (RFC 793 - needed for retransmission and RST validation)
-    #[allow(dead_code)] // Part of RFC 793 state machine, needed for future retransmission logic
+    #[allow(dead_code)]
+    // Part of RFC 793 state machine, needed for future retransmission logic
     pub send_initial: u32,
     /// Send unacknowledged (oldest unacked seq)
     pub send_unack: u32,
@@ -446,7 +513,8 @@ pub struct ListenSocket {
 }
 
 /// Global TCP connection table
-pub static TCP_CONNECTIONS: Mutex<BTreeMap<ConnectionId, TcpConnection>> = Mutex::new(BTreeMap::new());
+pub static TCP_CONNECTIONS: Mutex<BTreeMap<ConnectionId, TcpConnection>> =
+    Mutex::new(BTreeMap::new());
 
 /// Global listening socket table (by local port)
 pub static TCP_LISTENERS: Mutex<BTreeMap<u16, ListenSocket>> = Mutex::new(BTreeMap::new());
@@ -467,7 +535,13 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
     let (header, payload) = match TcpHeader::parse(data) {
         Some(h) => h,
         None => {
-            log::warn!("TCP: Failed to parse header from {}.{}.{}.{}", ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3]);
+            log::warn!(
+                "TCP: Failed to parse header from {}.{}.{}.{}",
+                ip.src_ip[0],
+                ip.src_ip[1],
+                ip.src_ip[2],
+                ip.src_ip[3]
+            );
             return;
         }
     };
@@ -478,8 +552,12 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
     {
         crate::serial_println!(
             "[TCP] {}.{}.{}.{}:{} -> port {} flags={}{}{}{}{}",
-            ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3],
-            header.src_port, header.dst_port,
+            ip.src_ip[0],
+            ip.src_ip[1],
+            ip.src_ip[2],
+            ip.src_ip[3],
+            header.src_port,
+            header.dst_port,
             if header.flags.syn { "S" } else { "" },
             if header.flags.ack { "A" } else { "" },
             if header.flags.fin { "F" } else { "" },
@@ -520,13 +598,19 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
                         // Verify ACK number matches our SYN+ACK (send_initial + 1)
                         if header.ack_num == pending.send_initial.wrapping_add(1) {
                             pending.ack_received = true;
-                            log::debug!("TCP: ACK received, handshake complete for pending connection");
+                            log::debug!(
+                                "TCP: ACK received, handshake complete for pending connection"
+                            );
                         }
                         // Buffer any data that arrived with this packet
                         if !payload.is_empty() && header.seq_num == pending.recv_next {
                             pending.early_data.extend_from_slice(payload);
-                            pending.recv_next = pending.recv_next.wrapping_add(payload.len() as u32);
-                            log::debug!("TCP: Buffered {} bytes of early data for pending connection", payload.len());
+                            pending.recv_next =
+                                pending.recv_next.wrapping_add(payload.len() as u32);
+                            log::debug!(
+                                "TCP: Buffered {} bytes of early data for pending connection",
+                                payload.len()
+                            );
                         }
                         break;
                     }
@@ -644,32 +728,35 @@ fn handle_tcp_for_connection(
             if header.flags.fin {
                 let fin_seq = header.seq_num.wrapping_add(payload.len() as u32);
                 if fin_seq != conn.recv_next {
-                    log::debug!("TCP: Ignoring out-of-order FIN (fin_seq={}, recv_next={})",
-                        fin_seq, conn.recv_next);
+                    log::debug!(
+                        "TCP: Ignoring out-of-order FIN (fin_seq={}, recv_next={})",
+                        fin_seq,
+                        conn.recv_next
+                    );
                 } else {
-                conn.recv_next = conn.recv_next.wrapping_add(1); // FIN consumes sequence
-                conn.state = TcpState::CloseWait;
+                    conn.recv_next = conn.recv_next.wrapping_add(1); // FIN consumes sequence
+                    conn.state = TcpState::CloseWait;
 
-                log::warn!("TCP: Received FIN in Established, moving to CLOSE_WAIT (local={}:{}, remote={}:{}, rx_buf={})",
+                    log::warn!("TCP: Received FIN in Established, moving to CLOSE_WAIT (local={}:{}, remote={}:{}, rx_buf={})",
                     conn.id.local_ip[3], conn.id.local_port,
                     conn.id.remote_ip[3], conn.id.remote_port,
                     conn.rx_buffer.len());
 
-                // Send ACK for FIN
-                send_tcp_packet(
-                    config,
-                    conn.id.remote_ip,
-                    conn.id.local_port,
-                    conn.id.remote_port,
-                    conn.send_next,
-                    conn.recv_next,
-                    TcpFlags::ack(),
-                    conn.recv_window,
-                    &[],
-                );
+                    // Send ACK for FIN
+                    send_tcp_packet(
+                        config,
+                        conn.id.remote_ip,
+                        conn.id.local_port,
+                        conn.id.remote_port,
+                        conn.send_next,
+                        conn.recv_next,
+                        TcpFlags::ack(),
+                        conn.recv_window,
+                        &[],
+                    );
 
-                // Wake threads blocked in recv() so they see EOF
-                wake_connection_waiters(conn);
+                    // Wake threads blocked in recv() so they see EOF
+                    wake_connection_waiters(conn);
                 }
             }
 
@@ -686,8 +773,12 @@ fn handle_tcp_for_connection(
                     // Wake threads blocked in recv() so they see the error
                     wake_connection_waiters(conn);
                 } else {
-                    log::debug!("TCP: Ignoring out-of-window RST (seq={}, recv_next={}, window={})",
-                        header.seq_num, conn.recv_next, conn.recv_window);
+                    log::debug!(
+                        "TCP: Ignoring out-of-window RST (seq={}, recv_next={}, window={})",
+                        header.seq_num,
+                        conn.recv_next,
+                        conn.recv_window
+                    );
                 }
             }
         }
@@ -820,7 +911,10 @@ fn handle_syn_for_listener(
     config: &super::NetConfig,
 ) {
     if listener.pending.len() >= listener.backlog {
-        log::warn!("TCP: Backlog full, sending RST for port {}", header.dst_port);
+        log::warn!(
+            "TCP: Backlog full, sending RST for port {}",
+            header.dst_port
+        );
         // Send RST to tell client the connection was refused
         send_rst(config, src_ip, header);
         return;
@@ -839,16 +933,20 @@ fn handle_syn_for_listener(
         recv_next: header.seq_num.wrapping_add(1), // +1 for SYN
     });
 
-
     // Queue the SYN+ACK for deferred sending AFTER RX processing completes.
     // Sending TX packets during RX processing on Parallels' VirtIO causes the
     // TX packet to be silently dropped (the device doesn't process the TX ring
     // while the RX ring is being consumed).
     let syn_ack = build_tcp_packet_with_checksum(
-        config.ip_addr, src_ip,
-        listener.local_port, header.src_port,
-        send_isn, header.seq_num.wrapping_add(1),
-        TcpFlags::syn_ack(), 65535, &[],
+        config.ip_addr,
+        src_ip,
+        listener.local_port,
+        header.src_port,
+        send_isn,
+        header.seq_num.wrapping_add(1),
+        TcpFlags::syn_ack(),
+        65535,
+        &[],
     );
     let src_mac = super::current_packet_src_mac();
     queue_deferred_tx_with_mac(src_ip, Some(src_mac), syn_ack);
@@ -958,8 +1056,14 @@ pub fn tcp_connect(
         &[],
     );
 
-    log::info!("TCP: Connecting to {}.{}.{}.{}:{}",
-        remote_ip[0], remote_ip[1], remote_ip[2], remote_ip[3], remote_port);
+    log::info!(
+        "TCP: Connecting to {}.{}.{}.{}:{}",
+        remote_ip[0],
+        remote_ip[1],
+        remote_ip[2],
+        remote_ip[3],
+        remote_port
+    );
 
     Ok(conn_id)
 }
@@ -977,17 +1081,24 @@ pub fn tcp_listen(
         return Err("Port already in use");
     }
 
-    listeners.insert(local_port, ListenSocket {
-        local_ip: config.ip_addr,
+    listeners.insert(
         local_port,
-        backlog,
-        pending: VecDeque::new(),
-        owner_pid,
-        waiting_threads: Mutex::new(Vec::new()),
-        ref_count: core::sync::atomic::AtomicUsize::new(1),
-    });
+        ListenSocket {
+            local_ip: config.ip_addr,
+            local_port,
+            backlog,
+            pending: VecDeque::new(),
+            owner_pid,
+            waiting_threads: Mutex::new(Vec::new()),
+            ref_count: core::sync::atomic::AtomicUsize::new(1),
+        },
+    );
 
-    log::info!("TCP: Listening on port {} (backlog={})", local_port, backlog);
+    log::info!(
+        "TCP: Listening on port {} (backlog={})",
+        local_port,
+        backlog
+    );
 
     Ok(())
 }
@@ -1040,15 +1151,23 @@ pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
         for byte in pending.early_data.iter() {
             conn.rx_buffer.push_back(*byte);
         }
-        log::debug!("TCP: Copied {} bytes of early data to connection rx_buffer", pending.early_data.len());
+        log::debug!(
+            "TCP: Copied {} bytes of early data to connection rx_buffer",
+            pending.early_data.len()
+        );
     }
 
     let mut connections = TCP_CONNECTIONS.lock();
     connections.insert(conn_id, conn);
 
-    log::debug!("TCP: Accepted connection from {}.{}.{}.{}:{}",
-        pending.remote_ip[0], pending.remote_ip[1], pending.remote_ip[2], pending.remote_ip[3],
-        pending.remote_port);
+    log::debug!(
+        "TCP: Accepted connection from {}.{}.{}.{}:{}",
+        pending.remote_ip[0],
+        pending.remote_ip[1],
+        pending.remote_ip[2],
+        pending.remote_ip[3],
+        pending.remote_port
+    );
 
     Some(conn_id)
 }
@@ -1062,8 +1181,7 @@ pub fn tcp_send(conn_id: &ConnectionId, data: &[u8]) -> Result<usize, &'static s
     // client's final ACK hasn't been processed yet. Block until the softirq
     // handler transitions the state and wakes us via wake_connection_waiters.
     {
-        let thread_id = crate::task::scheduler::current_thread_id()
-            .ok_or("no current thread")?;
+        let thread_id = crate::task::scheduler::current_thread_id().ok_or("no current thread")?;
         tcp_register_recv_waiter(conn_id, thread_id);
 
         for _ in 0..20 {
@@ -1104,22 +1222,34 @@ pub fn tcp_send(conn_id: &ConnectionId, data: &[u8]) -> Result<usize, &'static s
     let conn = match connections.get_mut(conn_id) {
         Some(c) => c,
         None => {
-            log::warn!("tcp_send: Connection not found (local={}:{}, remote={}:{})",
-                conn_id.local_ip[3], conn_id.local_port,
-                conn_id.remote_ip[3], conn_id.remote_port);
+            log::warn!(
+                "tcp_send: Connection not found (local={}:{}, remote={}:{})",
+                conn_id.local_ip[3],
+                conn_id.local_port,
+                conn_id.remote_ip[3],
+                conn_id.remote_port
+            );
             return Err("Connection not found");
         }
     };
 
     if conn.send_shutdown {
-        log::warn!("tcp_send: Connection shutdown for writing (state={:?})", conn.state);
+        log::warn!(
+            "tcp_send: Connection shutdown for writing (state={:?})",
+            conn.state
+        );
         return Err("Connection shutdown for writing");
     }
 
     if !matches!(conn.state, TcpState::Established | TcpState::CloseWait) {
-        crate::serial_println!("[tcp_send] FAIL: state={:?} after wait (local={}:{}, remote={}:{})",
-            conn.state, conn.id.local_ip[3], conn.id.local_port,
-            conn.id.remote_ip[3], conn.id.remote_port);
+        crate::serial_println!(
+            "[tcp_send] FAIL: state={:?} after wait (local={}:{}, remote={}:{})",
+            conn.state,
+            conn.id.local_ip[3],
+            conn.id.local_port,
+            conn.id.remote_ip[3],
+            conn.id.remote_port
+        );
         return Err("Connection not established");
     }
 
@@ -1155,7 +1285,10 @@ pub fn tcp_recv(conn_id: &ConnectionId, buf: &mut [u8]) -> Result<usize, &'stati
 
     if conn.rx_buffer.is_empty() {
         // Return EOF if connection is closing/closed
-        if matches!(conn.state, TcpState::CloseWait | TcpState::Closed | TcpState::TimeWait) {
+        if matches!(
+            conn.state,
+            TcpState::CloseWait | TcpState::Closed | TcpState::TimeWait
+        ) {
             return Ok(0); // EOF
         }
         return Err("No data available");
@@ -1199,8 +1332,10 @@ pub fn tcp_is_established(conn_id: &ConnectionId) -> bool {
         if !is_connected {
             log::debug!(
                 "TCP_IS_ESTABLISHED: conn_id={{local={}:{}, remote={}:{}}} found but state={:?}",
-                conn_id.local_ip[3], conn_id.local_port,
-                conn_id.remote_ip[3], conn_id.remote_port,
+                conn_id.local_ip[3],
+                conn_id.local_port,
+                conn_id.remote_ip[3],
+                conn_id.remote_port,
                 conn.state
             );
         }
@@ -1217,8 +1352,10 @@ pub fn tcp_is_established(conn_id: &ConnectionId) -> bool {
         for (k, v) in connections.iter() {
             log::warn!(
                 "  existing: local={}:{}, remote={}:{}, state={:?}",
-                k.local_ip[3], k.local_port,
-                k.remote_ip[3], k.remote_port,
+                k.local_ip[3],
+                k.local_port,
+                k.remote_ip[3],
+                k.remote_port,
                 v.state
             );
         }
@@ -1273,7 +1410,8 @@ pub fn tcp_shutdown(conn_id: &ConnectionId, shut_rd: bool, shut_wr: bool) {
 pub fn tcp_add_ref(conn_id: &ConnectionId) {
     let connections = TCP_CONNECTIONS.lock();
     if let Some(conn) = connections.get(conn_id) {
-        conn.refcount.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+        conn.refcount
+            .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -1285,7 +1423,9 @@ pub fn tcp_close(conn_id: &ConnectionId) -> Result<(), &'static str> {
     let conn = connections.get_mut(conn_id).ok_or("Connection not found")?;
 
     // Decrement reference count
-    let old_count = conn.refcount.fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+    let old_count = conn
+        .refcount
+        .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
 
     // Only actually close when last reference is dropped
     if old_count > 1 {
@@ -1342,7 +1482,8 @@ pub fn tcp_close(conn_id: &ConnectionId) -> Result<(), &'static str> {
 /// Check if there's a pending connection to accept
 pub fn tcp_has_pending(local_port: u16) -> bool {
     let listeners = TCP_LISTENERS.lock();
-    listeners.get(&local_port)
+    listeners
+        .get(&local_port)
         .map(|l| !l.pending.is_empty())
         .unwrap_or(false)
 }
@@ -1365,7 +1506,11 @@ pub fn tcp_register_accept_waiter(local_port: u16, thread_id: u64) {
         let mut waiting = listener.waiting_threads.lock();
         if !waiting.contains(&thread_id) {
             waiting.push(thread_id);
-            log::trace!("TCP: Thread {} registered as accept waiter on port {}", thread_id, local_port);
+            log::trace!(
+                "TCP: Thread {} registered as accept waiter on port {}",
+                thread_id,
+                local_port
+            );
         }
     }
 }
@@ -1403,7 +1548,8 @@ pub fn tcp_unregister_recv_waiter(conn_id: &ConnectionId, thread_id: u64) {
 /// Check if a connection has data available for recv
 pub fn tcp_has_data(conn_id: &ConnectionId) -> bool {
     let connections = TCP_CONNECTIONS.lock();
-    connections.get(conn_id)
+    connections
+        .get(conn_id)
         .map(|c| !c.rx_buffer.is_empty())
         .unwrap_or(false)
 }
@@ -1448,8 +1594,15 @@ fn wake_connection_waiters(conn: &TcpConnection) {
 pub fn tcp_listener_ref_inc(port: u16) {
     let listeners = TCP_LISTENERS.lock();
     if let Some(listener) = listeners.get(&port) {
-        let old = listener.ref_count.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-        log::debug!("TCP: Listener port {} ref_count {} -> {}", port, old, old + 1);
+        let old = listener
+            .ref_count
+            .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+        log::debug!(
+            "TCP: Listener port {} ref_count {} -> {}",
+            port,
+            old,
+            old + 1
+        );
     }
 }
 
@@ -1458,12 +1611,22 @@ pub fn tcp_listener_ref_inc(port: u16) {
 pub fn tcp_listener_ref_dec(port: u16) -> bool {
     let mut listeners = TCP_LISTENERS.lock();
     if let Some(listener) = listeners.get(&port) {
-        let old = listener.ref_count.fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
-        log::debug!("TCP: Listener port {} ref_count {} -> {}", port, old, old - 1);
+        let old = listener
+            .ref_count
+            .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+        log::debug!(
+            "TCP: Listener port {} ref_count {} -> {}",
+            port,
+            old,
+            old - 1
+        );
         if old == 1 {
             // Reference count reached 0, remove the listener
             listeners.remove(&port);
-            log::info!("TCP: Removed listener on port {} (ref_count reached 0)", port);
+            log::info!(
+                "TCP: Removed listener on port {} (ref_count reached 0)",
+                port
+            );
             return true;
         }
     }

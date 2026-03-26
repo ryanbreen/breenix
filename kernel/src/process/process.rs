@@ -1,17 +1,17 @@
 //! Process structure and lifecycle
 
+use crate::ipc::FdTable;
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::VirtAddr;
 use crate::memory::process_memory::ProcessPageTable;
 use crate::memory::stack::GuardedStack;
 use crate::signal::SignalState;
-use crate::ipc::FdTable;
 use crate::task::thread::Thread;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 #[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
-#[cfg(not(target_arch = "x86_64"))]
-use crate::memory::arch_stub::VirtAddr;
 
 /// Info about a framebuffer mmap'd into a process's address space.
 /// The user buffer is a compact pane buffer (no cross-pane padding).
@@ -350,13 +350,23 @@ impl Process {
         for fd in 0..crate::ipc::MAX_FDS {
             if let Ok(fd_entry) = self.fd_table.close(fd as i32) {
                 match fd_entry.kind {
-                    FdKind::PipeRead(buffer) => { buffer.lock().close_read(); }
-                    FdKind::PipeWrite(buffer) => { buffer.lock().close_write(); }
-                    FdKind::TcpListener(port) => { crate::net::tcp::tcp_listener_ref_dec(port); }
-                    FdKind::TcpConnection(conn_id) => { let _ = crate::net::tcp::tcp_close(&conn_id); }
+                    FdKind::PipeRead(buffer) => {
+                        buffer.lock().close_read();
+                    }
+                    FdKind::PipeWrite(buffer) => {
+                        buffer.lock().close_write();
+                    }
+                    FdKind::TcpListener(port) => {
+                        crate::net::tcp::tcp_listener_ref_dec(port);
+                    }
+                    FdKind::TcpConnection(conn_id) => {
+                        let _ = crate::net::tcp::tcp_close(&conn_id);
+                    }
                     FdKind::PtyMaster(pty_num) => {
                         if let Some(pair) = crate::tty::pty::get(pty_num) {
-                            let old_count = pair.master_refcount.fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+                            let old_count = pair
+                                .master_refcount
+                                .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
                             if old_count == 1 {
                                 crate::tty::pty::release(pty_num);
                             }
@@ -367,7 +377,9 @@ impl Process {
                             pair.slave_close();
                         }
                     }
-                    FdKind::UnixStream(socket) => { socket.lock().close(); }
+                    FdKind::UnixStream(socket) => {
+                        socket.lock().close();
+                    }
                     FdKind::FifoRead(path, buffer) => {
                         crate::ipc::fifo::close_fifo_read(&path);
                         buffer.lock().close_read();
@@ -393,13 +405,23 @@ impl Process {
         for fd in 0..crate::ipc::MAX_FDS {
             if let Ok(fd_entry) = self.fd_table.close(fd as i32) {
                 match fd_entry.kind {
-                    FdKind::PipeRead(buffer) => { buffer.lock().close_read(); }
-                    FdKind::PipeWrite(buffer) => { buffer.lock().close_write(); }
-                    FdKind::TcpListener(port) => { crate::net::tcp::tcp_listener_ref_dec(port); }
-                    FdKind::TcpConnection(conn_id) => { let _ = crate::net::tcp::tcp_close(&conn_id); }
+                    FdKind::PipeRead(buffer) => {
+                        buffer.lock().close_read();
+                    }
+                    FdKind::PipeWrite(buffer) => {
+                        buffer.lock().close_write();
+                    }
+                    FdKind::TcpListener(port) => {
+                        crate::net::tcp::tcp_listener_ref_dec(port);
+                    }
+                    FdKind::TcpConnection(conn_id) => {
+                        let _ = crate::net::tcp::tcp_close(&conn_id);
+                    }
                     FdKind::PtyMaster(pty_num) => {
                         if let Some(pair) = crate::tty::pty::get(pty_num) {
-                            let old_count = pair.master_refcount.fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+                            let old_count = pair
+                                .master_refcount
+                                .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
                             if old_count == 1 {
                                 crate::tty::pty::release(pty_num);
                             }
@@ -410,7 +432,9 @@ impl Process {
                             pair.slave_close();
                         }
                     }
-                    FdKind::UnixStream(socket) => { socket.lock().close(); }
+                    FdKind::UnixStream(socket) => {
+                        socket.lock().close();
+                    }
                     FdKind::FifoRead(path, buffer) => {
                         crate::ipc::fifo::close_fifo_read(&path);
                         buffer.lock().close_read();
@@ -471,9 +495,9 @@ impl Process {
     /// CRITICAL: No logging — may run under PM lock.
     #[cfg(not(target_arch = "x86_64"))]
     pub(crate) fn cleanup_cow_frames(&mut self) {
+        use crate::memory::arch_stub::{PageTableFlags, PhysFrame};
         use crate::memory::frame_allocator::deallocate_frame;
         use crate::memory::frame_metadata::frame_decref;
-        use crate::memory::arch_stub::{PageTableFlags, PhysFrame};
 
         // Get the page table for this process
         let page_table = match self.page_table.as_ref() {

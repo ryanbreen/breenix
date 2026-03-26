@@ -76,7 +76,9 @@ pub fn write_byte(byte: u8) {
     let irq_enabled = crate::arch_interrupts_enabled();
 
     // Disable interrupts while holding the lock
-    unsafe { crate::arch_disable_interrupts(); }
+    unsafe {
+        crate::arch_disable_interrupts();
+    }
 
     SERIAL1.lock().send(byte);
     crate::log_buffer::capture_byte(byte);
@@ -84,7 +86,9 @@ pub fn write_byte(byte: u8) {
     // Only re-enable if they were enabled before
     // This prevents race condition in syscall handler where interrupts must stay disabled
     if irq_enabled {
-        unsafe { crate::arch_enable_interrupts(); }
+        unsafe {
+            crate::arch_enable_interrupts();
+        }
     }
 }
 
@@ -98,7 +102,9 @@ pub fn _print(args: fmt::Arguments) {
     let irq_enabled = crate::arch_interrupts_enabled();
 
     // Disable interrupts while holding the lock
-    unsafe { crate::arch_disable_interrupts(); }
+    unsafe {
+        crate::arch_disable_interrupts();
+    }
 
     SERIAL1
         .lock()
@@ -108,7 +114,9 @@ pub fn _print(args: fmt::Arguments) {
     // Only re-enable if they were enabled before
     // This prevents race condition in syscall handler where interrupts must stay disabled
     if irq_enabled {
-        unsafe { crate::arch_enable_interrupts(); }
+        unsafe {
+            crate::arch_enable_interrupts();
+        }
     }
 }
 
@@ -121,7 +129,9 @@ pub fn try_print(args: fmt::Arguments) -> Result<(), ()> {
     let irq_enabled = crate::arch_interrupts_enabled();
 
     // Disable interrupts while holding the lock
-    unsafe { crate::arch_disable_interrupts(); }
+    unsafe {
+        crate::arch_disable_interrupts();
+    }
 
     let result = match SERIAL1.try_lock() {
         Some(mut serial) => {
@@ -134,7 +144,9 @@ pub fn try_print(args: fmt::Arguments) -> Result<(), ()> {
     // Only re-enable if they were enabled before
     // This prevents race condition in syscall handler where interrupts must stay disabled
     if irq_enabled {
-        unsafe { crate::arch_enable_interrupts(); }
+        unsafe {
+            crate::arch_enable_interrupts();
+        }
     }
 
     result
@@ -218,7 +230,9 @@ pub fn _log_print(args: fmt::Arguments) {
     let irq_enabled = crate::arch_interrupts_enabled();
 
     // Disable interrupts while holding the lock
-    unsafe { crate::arch_disable_interrupts(); }
+    unsafe {
+        crate::arch_disable_interrupts();
+    }
 
     SERIAL2
         .lock()
@@ -227,7 +241,9 @@ pub fn _log_print(args: fmt::Arguments) {
 
     // Only re-enable if they were enabled before
     if irq_enabled {
-        unsafe { crate::arch_enable_interrupts(); }
+        unsafe {
+            crate::arch_enable_interrupts();
+        }
     }
 }
 

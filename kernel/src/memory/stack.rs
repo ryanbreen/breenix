@@ -1,20 +1,18 @@
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::ThreadPrivilege;
+#[cfg(not(target_arch = "x86_64"))]
+#[allow(unused_imports)] // Stubs - only OffsetPageTable and VirtAddr used on ARM64
+use crate::memory::arch_stub::{Mapper, OffsetPageTable, Page, PageTableFlags, Size4KiB, VirtAddr};
 use crate::memory::layout::{
     PERCPU_STACK_REGION_BASE, PERCPU_STACK_REGION_SIZE, USER_STACK_REGION_END,
     USER_STACK_REGION_START,
 };
 #[cfg(target_arch = "x86_64")]
 use crate::task::thread::ThreadPrivilege;
-#[cfg(not(target_arch = "x86_64"))]
-use crate::memory::arch_stub::ThreadPrivilege;
 #[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTableFlags, Size4KiB};
 #[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
-#[cfg(not(target_arch = "x86_64"))]
-#[allow(unused_imports)] // Stubs - only OffsetPageTable and VirtAddr used on ARM64
-use crate::memory::arch_stub::{
-    Mapper, OffsetPageTable, Page, PageTableFlags, Size4KiB, VirtAddr,
-};
 
 /// Base address for kernel stack allocation area
 /// Must be in kernel space (high canonical addresses)
@@ -163,7 +161,8 @@ impl GuardedStack {
                 ThreadPrivilege::Kernel => {
                     // Use the extracted bounds check function to verify allocation is valid
                     // This check happens BEFORE modifying NEXT_KERNEL_STACK_ADDR
-                    let proposed_end = check_kernel_stack_bounds(NEXT_KERNEL_STACK_ADDR, size as u64)?;
+                    let proposed_end =
+                        check_kernel_stack_bounds(NEXT_KERNEL_STACK_ADDR, size as u64)?;
 
                     // Bounds check passed - now safe to update state
                     let addr = VirtAddr::new(NEXT_KERNEL_STACK_ADDR);
@@ -473,8 +472,8 @@ mod tests {
 
     // Standard stack sizes for testing
     const PAGE_SIZE: u64 = 4096;
-    const STACK_64K: u64 = 64 * 1024;  // 64 KiB stack
-    const STACK_WITH_GUARD: u64 = STACK_64K + PAGE_SIZE;  // Stack + guard page
+    const STACK_64K: u64 = 64 * 1024; // 64 KiB stack
+    const STACK_WITH_GUARD: u64 = STACK_64K + PAGE_SIZE; // Stack + guard page
 
     // ========================================================================
     // User Stack Bounds Check Tests
@@ -500,11 +499,17 @@ mod tests {
         // because >= check means we can't allocate AT 0x8000_0000_0000
         let remaining_space = TEST_USER_STACK_REGION_END - TEST_USER_STACK_REGION_START;
         let current = TEST_USER_STACK_REGION_START;
-        let size = remaining_space;  // Would put proposed_end exactly at boundary
+        let size = remaining_space; // Would put proposed_end exactly at boundary
 
         let result = check_user_stack_bounds(current, size);
-        assert!(result.is_err(), "Allocation exactly at boundary should fail");
-        assert_eq!(result.unwrap_err(), "Out of virtual address space for user stacks");
+        assert!(
+            result.is_err(),
+            "Allocation exactly at boundary should fail"
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "Out of virtual address space for user stacks"
+        );
     }
 
     #[test]
@@ -512,10 +517,13 @@ mod tests {
         // Allocation that ends one byte BEFORE the boundary should succeed
         let remaining_space = TEST_USER_STACK_REGION_END - TEST_USER_STACK_REGION_START;
         let current = TEST_USER_STACK_REGION_START;
-        let size = remaining_space - 1;  // One byte less than boundary
+        let size = remaining_space - 1; // One byte less than boundary
 
         let result = check_user_stack_bounds(current, size);
-        assert!(result.is_ok(), "Allocation one byte before boundary should succeed");
+        assert!(
+            result.is_ok(),
+            "Allocation one byte before boundary should succeed"
+        );
 
         let proposed_end = result.unwrap();
         assert_eq!(proposed_end, TEST_USER_STACK_REGION_END - 1);
@@ -525,8 +533,8 @@ mod tests {
     fn test_user_stack_bounds_overflow_protection() {
         // Test that integer overflow is caught
         // Start near the end and try to allocate a huge size
-        let current = TEST_USER_STACK_REGION_END - PAGE_SIZE;  // Near the end
-        let size = u64::MAX;  // Huge size that would overflow
+        let current = TEST_USER_STACK_REGION_END - PAGE_SIZE; // Near the end
+        let size = u64::MAX; // Huge size that would overflow
 
         let result = check_user_stack_bounds(current, size);
         assert!(result.is_err(), "Overflow should be caught");
@@ -537,7 +545,7 @@ mod tests {
         // Allocation that would extend past the boundary should fail
         let remaining_space = TEST_USER_STACK_REGION_END - TEST_USER_STACK_REGION_START;
         let current = TEST_USER_STACK_REGION_START;
-        let size = remaining_space + PAGE_SIZE;  // Past the boundary
+        let size = remaining_space + PAGE_SIZE; // Past the boundary
 
         let result = check_user_stack_bounds(current, size);
         assert!(result.is_err(), "Allocation past boundary should fail");
@@ -554,7 +562,7 @@ mod tests {
         // AFTER the bounds check passes, ensuring state consistency on error.
 
         let current = TEST_USER_STACK_REGION_START;
-        let size = u64::MAX;  // Would overflow
+        let size = u64::MAX; // Would overflow
 
         // Call the function multiple times with invalid input
         let result1 = check_user_stack_bounds(current, size);
@@ -588,11 +596,16 @@ mod tests {
         }
 
         // Verify we made some allocations before exhaustion
-        assert!(allocation_count > 0, "Should have made at least one allocation");
+        assert!(
+            allocation_count > 0,
+            "Should have made at least one allocation"
+        );
 
         // Verify we stopped before or at the boundary
-        assert!(current <= TEST_USER_STACK_REGION_END,
-                "Current pointer should not exceed boundary");
+        assert!(
+            current <= TEST_USER_STACK_REGION_END,
+            "Current pointer should not exceed boundary"
+        );
     }
 
     // ========================================================================
@@ -662,7 +675,7 @@ mod tests {
 
         // Any allocation that would reach this address must fail
         let current = TEST_USER_STACK_REGION_END - PAGE_SIZE;
-        let size = PAGE_SIZE;  // Would end exactly at boundary
+        let size = PAGE_SIZE; // Would end exactly at boundary
 
         let result = check_user_stack_bounds(current, size);
         assert!(result.is_err(), "Allocation reaching boundary must fail");

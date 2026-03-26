@@ -215,7 +215,9 @@ pub extern "C" fn check_need_resched_and_switch(
                 if !EMITTED_RING3_MARKER {
                     EMITTED_RING3_MARKER = true;
                     raw_serial_str("RING3_ENTER: CS=0x33\n");
-                    raw_serial_str("[ OK ] RING3_SMOKE: userspace executed + syscall path verified\n");
+                    raw_serial_str(
+                        "[ OK ] RING3_SMOKE: userspace executed + syscall path verified\n",
+                    );
                 }
             }
         }
@@ -229,16 +231,21 @@ pub extern "C" fn check_need_resched_and_switch(
         // preempt_active is false (otherwise we would have returned early).
 
         // Check if current thread is blocked in syscall (pause/waitpid)
-        let blocked_in_syscall = scheduler::with_thread_mut(old_thread_id, |thread| {
-            thread.blocked_in_syscall
-        }).unwrap_or(false);
+        let blocked_in_syscall =
+            scheduler::with_thread_mut(old_thread_id, |thread| thread.blocked_in_syscall)
+                .unwrap_or(false);
 
         if from_userspace {
             // Use the already-held guard to save context (prevents TOCTOU race)
             if let Some(ref mut guard) = process_manager_guard {
                 // Debug marker: saving userspace context (raw serial, no locks)
                 raw_serial_str("<S>");
-                if !save_current_thread_context_with_guard(old_thread_id, saved_regs, interrupt_frame, guard) {
+                if !save_current_thread_context_with_guard(
+                    old_thread_id,
+                    saved_regs,
+                    interrupt_frame,
+                    guard,
+                ) {
                     log::error!(
                         "Context switch aborted: failed to save thread {} context. \
                          Would cause return to stale RIP!",
@@ -261,10 +268,18 @@ pub extern "C" fn check_need_resched_and_switch(
                 save_kernel_context_with_guard(old_thread_id, saved_regs, interrupt_frame, guard);
                 true
             } else if let Some(mut guard) = crate::process::try_manager() {
-                save_kernel_context_with_guard(old_thread_id, saved_regs, interrupt_frame, &mut guard);
+                save_kernel_context_with_guard(
+                    old_thread_id,
+                    saved_regs,
+                    interrupt_frame,
+                    &mut guard,
+                );
                 true
             } else {
-                log::error!("Failed to acquire lock to save kernel context for thread {}", old_thread_id);
+                log::error!(
+                    "Failed to acquire lock to save kernel context for thread {}",
+                    old_thread_id
+                );
                 false
             };
 
@@ -282,7 +297,12 @@ pub extern "C" fn check_need_resched_and_switch(
 
         // Switch to the new thread
         // Pass the process_manager_guard so we don't try to re-acquire the lock
-        switch_to_thread(new_thread_id, saved_regs, interrupt_frame, process_manager_guard.take());
+        switch_to_thread(
+            new_thread_id,
+            saved_regs,
+            interrupt_frame,
+            process_manager_guard.take(),
+        );
 
         // NOTE: Don't log here - this is on the hot path and can affect timing
 
@@ -451,7 +471,9 @@ fn switch_to_thread(
     thread_id: u64,
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
-    process_manager_guard: Option<spin::MutexGuard<'static, Option<crate::process::ProcessManager>>>,
+    process_manager_guard: Option<
+        spin::MutexGuard<'static, Option<crate::process::ProcessManager>>,
+    >,
 ) {
     // Debug marker: entering switch_to_thread (raw serial, no locks)
     raw_serial_str("[SW]");
@@ -465,7 +487,11 @@ fn switch_to_thread(
         // This is critical for interrupt/exception handling
         if let Some(kernel_stack_top) = thread.kernel_stack_top {
             crate::per_cpu::update_tss_rsp0(kernel_stack_top.as_u64());
-            log::trace!("sched: switch to thread {} rsp0={:#x}", thread_id, kernel_stack_top);
+            log::trace!(
+                "sched: switch to thread {} rsp0={:#x}",
+                thread_id,
+                kernel_stack_top
+            );
         }
     });
 
@@ -491,9 +517,8 @@ fn switch_to_thread(
     // Check if thread was blocked inside a syscall (pause/waitpid)
     // If so, we must NOT restore userspace context - the thread needs to
     // continue executing the syscall code and return through the normal path.
-    let blocked_in_syscall = scheduler::with_thread_mut(thread_id, |thread| {
-        thread.blocked_in_syscall
-    }).unwrap_or(false);
+    let blocked_in_syscall =
+        scheduler::with_thread_mut(thread_id, |thread| thread.blocked_in_syscall).unwrap_or(false);
 
     if is_idle {
         // Check if idle thread has a saved context to restore
@@ -513,7 +538,8 @@ fn switch_to_thread(
                 let idle_loop_addr = idle_loop as *const () as u64;
                 // Has saved context if RIP is non-zero AND not pointing to idle_loop
                 thread.context.rip != 0 && thread.context.rip != idle_loop_addr
-            }).unwrap_or(false)
+            })
+            .unwrap_or(false)
         };
 
         if has_saved_context {
@@ -548,9 +574,9 @@ fn switch_to_thread(
         //
         // By reading from the scheduler's Thread (which is updated atomically with
         // the BlockedOnSignal state), we ensure consistency.
-        let saved_context_from_scheduler = scheduler::with_thread_mut(thread_id, |thread| {
-            thread.saved_userspace_context.clone()
-        }).flatten();
+        let saved_context_from_scheduler =
+            scheduler::with_thread_mut(thread_id, |thread| thread.saved_userspace_context.clone())
+                .flatten();
 
         // Get the process page table and thread context
         let guard_option = process_manager_guard.or_else(|| crate::process::try_manager());
@@ -561,11 +587,14 @@ fn switch_to_thread(
                     crate::signal::delivery::check_and_fire_alarm(process);
                     crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
 
-                    let has_pending_signals = crate::signal::delivery::has_deliverable_signals(process);
+                    let has_pending_signals =
+                        crate::signal::delivery::has_deliverable_signals(process);
                     // Use context from scheduler's Thread (single source of truth)
                     // Fall back to process.main_thread for backwards compatibility
                     let has_saved_context = saved_context_from_scheduler.is_some()
-                        || process.main_thread.as_ref()
+                        || process
+                            .main_thread
+                            .as_ref()
                             .map(|t| t.saved_userspace_context.is_some())
                             .unwrap_or(false);
 
@@ -578,9 +607,13 @@ fn switch_to_thread(
 
                         // CRITICAL FIX: Use context from scheduler's Thread (single source of truth)
                         // Fall back to process.main_thread for backwards compatibility
-                        let saved_ctx_option = saved_context_from_scheduler.as_ref()
-                            .or_else(|| process.main_thread.as_ref()
-                                .and_then(|t| t.saved_userspace_context.as_ref()));
+                        let saved_ctx_option =
+                            saved_context_from_scheduler.as_ref().or_else(|| {
+                                process
+                                    .main_thread
+                                    .as_ref()
+                                    .and_then(|t| t.saved_userspace_context.as_ref())
+                            });
 
                         if let Some(saved_ctx) = saved_ctx_option {
                             // Restore userspace registers from saved context
@@ -606,8 +639,7 @@ fn switch_to_thread(
                                 interrupt_frame.as_mut().update(|frame| {
                                     frame.instruction_pointer =
                                         x86_64::VirtAddr::new(saved_ctx.rip);
-                                    frame.stack_pointer =
-                                        x86_64::VirtAddr::new(saved_ctx.rsp);
+                                    frame.stack_pointer = x86_64::VirtAddr::new(saved_ctx.rsp);
                                     frame.cpu_flags =
                                         x86_64::registers::rflags::RFlags::from_bits_truncate(
                                             saved_ctx.rflags,
@@ -724,8 +756,7 @@ fn switch_to_thread(
                                 interrupt_frame.as_mut().update(|frame| {
                                     frame.instruction_pointer =
                                         x86_64::VirtAddr::new(thread.context.rip);
-                                    frame.stack_pointer =
-                                        x86_64::VirtAddr::new(thread.context.rsp);
+                                    frame.stack_pointer = x86_64::VirtAddr::new(thread.context.rsp);
                                     frame.cpu_flags =
                                         x86_64::registers::rflags::RFlags::from_bits_truncate(
                                             thread.context.rflags,
@@ -811,7 +842,12 @@ fn switch_to_thread(
         // Debug marker: userspace restore path (raw serial, no locks)
         raw_serial_str("<U>");
         // Pass the process_manager_guard to avoid double-lock
-        restore_userspace_thread_context(thread_id, saved_regs, interrupt_frame, process_manager_guard);
+        restore_userspace_thread_context(
+            thread_id,
+            saved_regs,
+            interrupt_frame,
+            process_manager_guard,
+        );
     }
 }
 
@@ -822,8 +858,12 @@ fn setup_idle_return(interrupt_frame: &mut InterruptStackFrame) {
     // context switches and may point to a different thread's stack!
     let idle_stack = scheduler::with_scheduler(|sched| {
         let idle_id = sched.idle_thread();
-        sched.get_thread(idle_id).and_then(|t| t.kernel_stack_top.map(|v| v.as_u64()))
-    }).flatten().unwrap_or_else(|| {
+        sched
+            .get_thread(idle_id)
+            .and_then(|t| t.kernel_stack_top.map(|v| v.as_u64()))
+    })
+    .flatten()
+    .unwrap_or_else(|| {
         log::error!("Failed to get idle thread's kernel stack!");
         crate::per_cpu::kernel_stack_top() // Fallback, but this is wrong
     });
@@ -836,7 +876,8 @@ fn setup_idle_return(interrupt_frame: &mut InterruptStackFrame) {
             // CRITICAL: Set both INTERRUPT_FLAG (bit 9) AND reserved bit 1 (always required)
             // 0x202 = INTERRUPT_FLAG (0x200) | reserved bit 1 (0x002)
             // Without bit 1, IRETQ behavior is undefined per Intel spec.
-            let flags_ptr = &mut frame.cpu_flags as *mut x86_64::registers::rflags::RFlags as *mut u64;
+            let flags_ptr =
+                &mut frame.cpu_flags as *mut x86_64::registers::rflags::RFlags as *mut u64;
             *flags_ptr = 0x202;
 
             frame.stack_pointer = x86_64::VirtAddr::new(idle_stack);
@@ -864,21 +905,18 @@ fn setup_kernel_thread_return(
 ) {
     // Get thread info - restore ALL saved registers, not just a few
     let thread_info = scheduler::with_thread_mut(thread_id, |thread| {
-        (
-            thread.name.clone(),
-            thread.context.clone(),
-        )
+        (thread.name.clone(), thread.context.clone())
     });
 
     if let Some((_name, context)) = thread_info {
-
         unsafe {
             interrupt_frame.as_mut().update(|frame| {
                 frame.instruction_pointer = x86_64::VirtAddr::new(context.rip);
                 frame.stack_pointer = x86_64::VirtAddr::new(context.rsp);
                 frame.code_segment = crate::gdt::kernel_code_selector();
                 frame.stack_segment = crate::gdt::kernel_data_selector();
-                frame.cpu_flags = x86_64::registers::rflags::RFlags::from_bits_truncate(context.rflags);
+                frame.cpu_flags =
+                    x86_64::registers::rflags::RFlags::from_bits_truncate(context.rflags);
             });
 
             // Restore ALL general purpose registers from saved context
@@ -912,7 +950,10 @@ fn setup_kernel_thread_return(
         // actual CPU store completion.
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
     } else {
-        log::error!("KTHREAD_SWITCH: Failed to get thread info for thread {}", thread_id);
+        log::error!(
+            "KTHREAD_SWITCH: Failed to get thread info for thread {}",
+            thread_id
+        );
     }
 }
 
@@ -921,14 +962,15 @@ fn restore_userspace_thread_context(
     thread_id: u64,
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
-    process_manager_guard: Option<spin::MutexGuard<'static, Option<crate::process::ProcessManager>>>,
+    process_manager_guard: Option<
+        spin::MutexGuard<'static, Option<crate::process::ProcessManager>>,
+    >,
 ) {
     log::trace!("restore_userspace_thread_context: thread {}", thread_id);
 
     // Check if this thread has ever run before
-    let has_started = scheduler::with_thread_mut(thread_id, |thread| {
-        thread.has_started
-    }).unwrap_or(false);
+    let has_started =
+        scheduler::with_thread_mut(thread_id, |thread| thread.has_started).unwrap_or(false);
 
     if !has_started {
         // CRITICAL: This is a brand new thread that has never run
@@ -941,7 +983,12 @@ fn restore_userspace_thread_context(
         });
 
         // For first run, we need to set up the interrupt frame to jump to userspace
-        setup_first_userspace_entry(thread_id, interrupt_frame, saved_regs, process_manager_guard);
+        setup_first_userspace_entry(
+            thread_id,
+            interrupt_frame,
+            saved_regs,
+            process_manager_guard,
+        );
         return;
     }
 
@@ -1009,7 +1056,10 @@ fn restore_userspace_thread_context(
                                 crate::gdt::set_kernel_stack(kernel_stack_top);
                                 log::trace!("Set kernel stack: {:#x}", kernel_stack_top.as_u64());
                             } else {
-                                log::error!("ERROR: Userspace thread {} has no kernel stack!", thread_id);
+                                log::error!(
+                                    "ERROR: Userspace thread {} has no kernel stack!",
+                                    thread_id
+                                );
                             }
 
                             // SIGNAL DELIVERY: Check for pending signals before returning to userspace
@@ -1047,14 +1097,17 @@ fn restore_userspace_thread_context(
                                 }
 
                                 // Deliver pending signals
-                                let signal_result = crate::signal::delivery::deliver_pending_signals(
-                                    process,
-                                    interrupt_frame,
-                                    saved_regs,
-                                );
+                                let signal_result =
+                                    crate::signal::delivery::deliver_pending_signals(
+                                        process,
+                                        interrupt_frame,
+                                        saved_regs,
+                                    );
 
                                 match signal_result {
-                                    crate::signal::delivery::SignalDeliveryResult::Terminated(notification) => {
+                                    crate::signal::delivery::SignalDeliveryResult::Terminated(
+                                        notification,
+                                    ) => {
                                         // Signal terminated the process
                                         crate::task::scheduler::set_need_resched();
                                         // Save notification for later (after manager lock is released)
@@ -1101,7 +1154,9 @@ fn setup_first_userspace_entry(
     thread_id: u64,
     interrupt_frame: &mut InterruptStackFrame,
     saved_regs: &mut SavedRegisters,
-    process_manager_guard: Option<spin::MutexGuard<'static, Option<crate::process::ProcessManager>>>,
+    process_manager_guard: Option<
+        spin::MutexGuard<'static, Option<crate::process::ProcessManager>>,
+    >,
 ) {
     log::info!("setup_first_userspace_entry: thread {}", thread_id);
 
@@ -1127,8 +1182,9 @@ fn setup_first_userspace_entry(
                 frame.stack_segment = crate::gdt::user_data_selector();
 
                 // Set CPU flags: IF=1 (interrupts enabled), bit 1=1 (reserved)
-                let flags_ptr = &mut frame.cpu_flags as *mut x86_64::registers::rflags::RFlags as *mut u64;
-                *flags_ptr = 0x202;  // Bit 1=1 (required), IF=1 (bit 9)
+                let flags_ptr =
+                    &mut frame.cpu_flags as *mut x86_64::registers::rflags::RFlags as *mut u64;
+                *flags_ptr = 0x202; // Bit 1=1 (required), IF=1 (bit 9)
 
                 log::info!(
                     "RING3_ENTRY: RIP={:#x}, RSP={:#x}, CS={:#x}, SS={:#x}",
@@ -1167,18 +1223,20 @@ fn setup_first_userspace_entry(
     // Use the passed-in guard if available, otherwise try to acquire one.
     let guard_option = process_manager_guard.or_else(|| crate::process::try_manager());
     if let Some(mut manager_guard) = guard_option {
-        if let Some((pid, process)) = manager_guard.as_mut().and_then(|m| m.find_process_by_thread_mut(thread_id)) {
+        if let Some((pid, process)) = manager_guard
+            .as_mut()
+            .and_then(|m| m.find_process_by_thread_mut(thread_id))
+        {
             log::trace!("Thread {} belongs to process {}", thread_id, pid.as_u64());
 
             // Get kernel stack info BEFORE switching CR3
-            let kernel_stack_top = process.main_thread.as_ref()
-                .and_then(|thread| {
-                    if thread.id == thread_id {
-                        thread.kernel_stack_top
-                    } else {
-                        None
-                    }
-                });
+            let kernel_stack_top = process.main_thread.as_ref().and_then(|thread| {
+                if thread.id == thread_id {
+                    thread.kernel_stack_top
+                } else {
+                    None
+                }
+            });
 
             // CRITICAL: Defer CR3 switch to entry.asm before IRETQ
             // We do NOT switch CR3 here for the same reasons as restore_userspace_thread_context():
@@ -1204,14 +1262,21 @@ fn setup_first_userspace_entry(
             // Set kernel stack for TSS RSP0
             if let Some(stack_top) = kernel_stack_top {
                 crate::gdt::set_kernel_stack(stack_top);
-                log::trace!("Set TSS RSP0 to {:#x} for thread {}", stack_top.as_u64(), thread_id);
+                log::trace!(
+                    "Set TSS RSP0 to {:#x} for thread {}",
+                    stack_top.as_u64(),
+                    thread_id
+                );
             } else {
                 log::error!("No kernel stack found for thread {}", thread_id);
             }
         }
     }
 
-    log::info!("First userspace entry setup complete for thread {}", thread_id);
+    log::info!(
+        "First userspace entry setup complete for thread {}",
+        thread_id
+    );
 }
 
 /// Check and deliver pending signals for the current thread

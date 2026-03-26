@@ -331,8 +331,13 @@ fn submit_commands_ctx(cmds: &[u8], ctx: u32) -> Result<(), &'static str> {
                     break;
                 }
                 let err_off = core::ptr::read_volatile(&(*header).error_offset);
-                serial_println!("[svga3] CB error: ctx={:#x} status={} err_off={} len={}",
-                    ctx, status, err_off, cmds.len());
+                serial_println!(
+                    "[svga3] CB error: ctx={:#x} status={} err_off={} len={}",
+                    ctx,
+                    status,
+                    err_off,
+                    cmds.len()
+                );
                 alloc::alloc::dealloc(buf_ptr, layout);
                 return Err("Command buffer error");
             }
@@ -393,7 +398,9 @@ struct CmdEncoder {
 
 impl CmdEncoder {
     fn new() -> Self {
-        Self { buf: Vec::with_capacity(1024) }
+        Self {
+            buf: Vec::with_capacity(1024),
+        }
     }
 
     fn push_u32(&mut self, val: u32) {
@@ -415,7 +422,14 @@ impl CmdEncoder {
     }
 
     /// SET_OTABLE_BASE64: register an Object Table with the device.
-    fn set_otable_base64(&mut self, table_type: u32, ppn64: u64, size_bytes: u32, valid_size: u32, pt_depth: u32) {
+    fn set_otable_base64(
+        &mut self,
+        table_type: u32,
+        ppn64: u64,
+        size_bytes: u32,
+        valid_size: u32,
+        pt_depth: u32,
+    ) {
         // Body: type(4) + baseAddress(8) + sizeInBytes(4) + validSizeInBytes(4) + ptDepth(4) = 24
         self.cmd_header(SVGA_3D_CMD_SET_OTABLE_BASE64, 24);
         self.push_u32(table_type);
@@ -437,10 +451,17 @@ impl CmdEncoder {
 
     /// DEFINE_GB_SURFACE_V2: create a guest-backed surface.
     fn define_gb_surface_v2(
-        &mut self, sid: u32, surface_flags: u32, format: u32,
-        num_mip_levels: u32, multisample_count: u32,
-        width: u32, height: u32, depth: u32,
-        array_size: u32, _pad: u32,
+        &mut self,
+        sid: u32,
+        surface_flags: u32,
+        format: u32,
+        num_mip_levels: u32,
+        multisample_count: u32,
+        width: u32,
+        height: u32,
+        depth: u32,
+        array_size: u32,
+        _pad: u32,
     ) {
         // Body: sid(4) + surfaceFlags(4) + format(4) + numMipLevels(4) +
         //       multisampleCount(4) + autogenFilter(4) + size(12) +
@@ -475,7 +496,7 @@ impl CmdEncoder {
         self.push_u32(sid);
         self.push_u32(0); // face
         self.push_u32(0); // mipmap
-        // SVGA3dBox: x(4) + y(4) + z(4) + w(4) + h(4) + d(4)
+                          // SVGA3dBox: x(4) + y(4) + z(4) + w(4) + h(4) + d(4)
         self.push_u32(x);
         self.push_u32(y);
         self.push_u32(0); // z
@@ -534,8 +555,12 @@ pub fn init() -> Result<(), &'static str> {
     let dev = crate::drivers::pci::find_device(VMWARE_VENDOR_ID, SVGA3_DEVICE_ID)
         .ok_or("SVGA3 device not found")?;
 
-    serial_println!("[svga3] Found VMware SVGA3 at {:02x}:{:02x}.{}",
-        dev.bus, dev.device, dev.function);
+    serial_println!(
+        "[svga3] Found VMware SVGA3 at {:02x}:{:02x}.{}",
+        dev.bus,
+        dev.device,
+        dev.function
+    );
 
     let bar0 = &dev.bars[0];
     if !bar0.is_valid() || bar0.is_io {
@@ -550,8 +575,16 @@ pub fn init() -> Result<(), &'static str> {
     let vram_phys = bar2.address;
     let vram_size = bar2.size;
 
-    serial_println!("[svga3] BAR0 (regs): phys={:#x} size={:#x}", rmmio_phys, bar0.size);
-    serial_println!("[svga3] BAR2 (VRAM): phys={:#x} size={:#x}", vram_phys, vram_size);
+    serial_println!(
+        "[svga3] BAR0 (regs): phys={:#x} size={:#x}",
+        rmmio_phys,
+        bar0.size
+    );
+    serial_println!(
+        "[svga3] BAR2 (VRAM): phys={:#x} size={:#x}",
+        vram_phys,
+        vram_size
+    );
 
     let rmmio_virt = HHDM_BASE + rmmio_phys;
     let vram_virt = HHDM_BASE + vram_phys;
@@ -570,17 +603,41 @@ pub fn init() -> Result<(), &'static str> {
     }
 
     let caps = unsafe { reg_read(SVGA_REG_CAPABILITIES) };
-    unsafe { CAPABILITIES = caps; }
+    unsafe {
+        CAPABILITIES = caps;
+    }
 
     serial_println!("[svga3] Capabilities: {:#010x}", caps);
-    serial_println!("[svga3]   3D={} CmdBuf={} CmdBuf2={} GB={} DX={} IRQ={} Cursor={}",
+    serial_println!(
+        "[svga3]   3D={} CmdBuf={} CmdBuf2={} GB={} DX={} IRQ={} Cursor={}",
         if caps & SVGA_CAP_3D != 0 { "Y" } else { "n" },
-        if caps & SVGA_CAP_COMMAND_BUFFERS != 0 { "Y" } else { "n" },
-        if caps & SVGA_CAP_CMD_BUFFERS_2 != 0 { "Y" } else { "n" },
-        if caps & SVGA_CAP_GBOBJECTS != 0 { "Y" } else { "n" },
+        if caps & SVGA_CAP_COMMAND_BUFFERS != 0 {
+            "Y"
+        } else {
+            "n"
+        },
+        if caps & SVGA_CAP_CMD_BUFFERS_2 != 0 {
+            "Y"
+        } else {
+            "n"
+        },
+        if caps & SVGA_CAP_GBOBJECTS != 0 {
+            "Y"
+        } else {
+            "n"
+        },
         if caps & SVGA_CAP_DX != 0 { "Y" } else { "n" },
-        if caps & SVGA_CAP_IRQMASK != 0 { "Y" } else { "n" },
-        if caps & SVGA_CAP_CURSOR != 0 { "Y" } else { "n" });
+        if caps & SVGA_CAP_IRQMASK != 0 {
+            "Y"
+        } else {
+            "n"
+        },
+        if caps & SVGA_CAP_CURSOR != 0 {
+            "Y"
+        } else {
+            "n"
+        }
+    );
 
     if caps & SVGA_CAP_COMMAND_BUFFERS == 0 {
         return Err("SVGA3 device does not support command buffers");
@@ -602,10 +659,19 @@ pub fn init() -> Result<(), &'static str> {
         BYTES_PER_LINE = bpl;
     }
 
-    serial_println!("[svga3] Display: {}x{} @ {}bpp, stride={} bytes",
-        width, height, bpp, bpl);
-    serial_println!("[svga3] FB offset={:#x} size={:#x} mem_size={:#x}",
-        fb_offset, fb_size, mem_size);
+    serial_println!(
+        "[svga3] Display: {}x{} @ {}bpp, stride={} bytes",
+        width,
+        height,
+        bpp,
+        bpl
+    );
+    serial_println!(
+        "[svga3] FB offset={:#x} size={:#x} mem_size={:#x}",
+        fb_offset,
+        fb_size,
+        mem_size
+    );
 
     unsafe {
         reg_write(SVGA_REG_ENABLE, 1);
@@ -614,7 +680,14 @@ pub fn init() -> Result<(), &'static str> {
     }
 
     let traces_val = unsafe { reg_read(SVGA_REG_TRACES) };
-    serial_println!("[svga3] VRAM traces: {}", if traces_val != 0 { "enabled" } else { "disabled" });
+    serial_println!(
+        "[svga3] VRAM traces: {}",
+        if traces_val != 0 {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
 
     INITIALIZED.store(true, Ordering::Release);
     serial_println!("[svga3] SVGA3 driver initialized successfully");
@@ -643,13 +716,17 @@ pub fn is_stdu_ready() -> bool {
 
 /// Get current display dimensions.
 pub fn dimensions() -> Option<(u32, u32)> {
-    if !is_initialized() { return None; }
+    if !is_initialized() {
+        return None;
+    }
     unsafe { Some((DISPLAY_WIDTH, DISPLAY_HEIGHT)) }
 }
 
 /// Synchronize — wait for all pending SVGA commands to complete.
 pub fn sync() {
-    if !is_initialized() { return; }
+    if !is_initialized() {
+        return;
+    }
     unsafe {
         reg_write(SVGA_REG_SYNC, 1);
         while reg_read(SVGA_REG_BUSY) != 0 {
@@ -664,8 +741,7 @@ pub fn sync() {
 /// Returns (virtual_address, physical_address, size_in_bytes).
 fn alloc_dma_pages(num_pages: usize) -> Result<(u64, u64, usize), &'static str> {
     let size = num_pages * PAGE_SIZE;
-    let layout = Layout::from_size_align(size, PAGE_SIZE)
-        .map_err(|_| "Invalid DMA layout")?;
+    let layout = Layout::from_size_align(size, PAGE_SIZE).map_err(|_| "Invalid DMA layout")?;
     let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
     if ptr.is_null() {
         return Err("Failed to allocate DMA pages");
@@ -715,14 +791,36 @@ pub fn init_stdu() -> Result<(), &'static str> {
 
     let width = unsafe { DISPLAY_WIDTH };
     let height = unsafe { DISPLAY_HEIGHT };
-    serial_println!("[svga3-stdu] Initializing STDU pipeline for {}x{}", width, height);
+    serial_println!(
+        "[svga3-stdu] Initializing STDU pipeline for {}x{}",
+        width,
+        height
+    );
 
     // Phase 1: Set up OTables (MOB, Surface, ScreenTarget)
     let mut enc = CmdEncoder::new();
 
-    setup_otable(&mut enc, SVGA_OTABLE_MOB, OTABLE_MOB_ENTRY_SIZE, OTABLE_MOB_MAX, OTABLE_MOB_BASE_ID)?;
-    setup_otable(&mut enc, SVGA_OTABLE_SURFACE, OTABLE_SURFACE_ENTRY_SIZE, OTABLE_SURFACE_MAX, OTABLE_MOB_BASE_ID + 1)?;
-    setup_otable(&mut enc, SVGA_OTABLE_SCREENTARGET, OTABLE_SCREENTARGET_ENTRY_SIZE, OTABLE_SCREENTARGET_MAX, OTABLE_MOB_BASE_ID + 2)?;
+    setup_otable(
+        &mut enc,
+        SVGA_OTABLE_MOB,
+        OTABLE_MOB_ENTRY_SIZE,
+        OTABLE_MOB_MAX,
+        OTABLE_MOB_BASE_ID,
+    )?;
+    setup_otable(
+        &mut enc,
+        SVGA_OTABLE_SURFACE,
+        OTABLE_SURFACE_ENTRY_SIZE,
+        OTABLE_SURFACE_MAX,
+        OTABLE_MOB_BASE_ID + 1,
+    )?;
+    setup_otable(
+        &mut enc,
+        SVGA_OTABLE_SCREENTARGET,
+        OTABLE_SCREENTARGET_ENTRY_SIZE,
+        OTABLE_SCREENTARGET_MAX,
+        OTABLE_MOB_BASE_ID + 2,
+    )?;
 
     submit_device_commands(&enc.finish())?;
     serial_println!("[svga3-stdu] OTables initialized (MOB, Surface, ScreenTarget)");
@@ -744,15 +842,24 @@ pub fn init_stdu() -> Result<(), &'static str> {
     COMPOSITOR_BUF_VIRT.store(buf_virt, Ordering::Release);
     COMPOSITOR_BUF_SIZE.store(buf_size as u64, Ordering::Release);
 
-    serial_println!("[svga3-stdu] Compositor buffer: virt={:#x} phys={:#x} size={:#x} ({} pages)",
-        buf_virt, buf_phys, buf_size, buf_pages);
+    serial_println!(
+        "[svga3-stdu] Compositor buffer: virt={:#x} phys={:#x} size={:#x} ({} pages)",
+        buf_virt,
+        buf_phys,
+        buf_size,
+        buf_pages
+    );
 
     // Define MOB for compositor buffer (contiguous range)
     let mut enc = CmdEncoder::new();
     let ppn = buf_phys >> 12;
     enc.define_gb_mob64(COMPOSITOR_MOB_ID, SVGA3D_MOBFMT_RANGE, ppn, buf_size as u32);
     submit_device_commands(&enc.finish())?;
-    serial_println!("[svga3-stdu] Compositor MOB defined (id={}, ppn={:#x})", COMPOSITOR_MOB_ID, ppn);
+    serial_println!(
+        "[svga3-stdu] Compositor MOB defined (id={}, ppn={:#x})",
+        COMPOSITOR_MOB_ID,
+        ppn
+    );
 
     // Phase 3: Create GB Surface and bind to MOB
     let mut enc = CmdEncoder::new();
@@ -760,21 +867,32 @@ pub fn init_stdu() -> Result<(), &'static str> {
         COMPOSITOR_SURFACE_ID,
         SVGA3D_SURFACE_SCREENTARGET,
         SVGA3D_B8G8R8X8_UNORM,
-        1,    // numMipLevels
-        0,    // multisampleCount
-        width, height, 1, // size
-        0, 0, // arraySize, pad
+        1, // numMipLevels
+        0, // multisampleCount
+        width,
+        height,
+        1, // size
+        0,
+        0, // arraySize, pad
     );
     enc.bind_gb_surface(COMPOSITOR_SURFACE_ID, COMPOSITOR_MOB_ID);
     submit_device_commands(&enc.finish())?;
-    serial_println!("[svga3-stdu] Surface {} created and bound to MOB {}", COMPOSITOR_SURFACE_ID, COMPOSITOR_MOB_ID);
+    serial_println!(
+        "[svga3-stdu] Surface {} created and bound to MOB {}",
+        COMPOSITOR_SURFACE_ID,
+        COMPOSITOR_MOB_ID
+    );
 
     // Phase 4: Define Screen Target and bind surface
     let mut enc = CmdEncoder::new();
     enc.define_gb_screentarget(COMPOSITOR_STID, width, height, SVGA_STFLAG_PRIMARY);
     enc.bind_gb_screentarget(COMPOSITOR_STID, COMPOSITOR_SURFACE_ID);
     submit_device_commands(&enc.finish())?;
-    serial_println!("[svga3-stdu] Screen target {} defined and bound to surface {}", COMPOSITOR_STID, COMPOSITOR_SURFACE_ID);
+    serial_println!(
+        "[svga3-stdu] Screen target {} defined and bound to surface {}",
+        COMPOSITOR_STID,
+        COMPOSITOR_SURFACE_ID
+    );
 
     // Phase 5: Initial present (display whatever is in the buffer — should be zeros/black)
     let mut enc = CmdEncoder::new();
@@ -818,7 +936,9 @@ pub fn composite_frame(pixels: &[u32], width: u32, height: u32) -> Result<(), &'
         }
     }
 
-    unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
     Ok(())
 }
 
@@ -826,8 +946,13 @@ pub fn composite_frame(pixels: &[u32], width: u32, height: u32) -> Result<(), &'
 ///
 /// Only copies and updates the specified region, reducing bandwidth.
 pub fn composite_frame_rect(
-    pixels: &[u32], src_w: u32, _src_h: u32,
-    dx: u32, dy: u32, dw: u32, dh: u32,
+    pixels: &[u32],
+    src_w: u32,
+    _src_h: u32,
+    dx: u32,
+    dy: u32,
+    dw: u32,
+    dh: u32,
 ) -> Result<(), &'static str> {
     if !is_initialized() {
         return Err("SVGA3 not initialized");
@@ -860,7 +985,9 @@ pub fn composite_frame_rect(
         }
     }
 
-    unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
     Ok(())
 }
 
@@ -912,7 +1039,9 @@ pub fn present_rect(_x: u32, _y: u32, _w: u32, _h: u32) -> Result<(), &'static s
     }
     // VRAM traces handle display updates automatically.
     // DSB ensures all CPU writes to VRAM are visible.
-    unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
     Ok(())
 }
 
@@ -927,24 +1056,24 @@ const CURSOR_H: usize = 18;
 
 // Arrow cursor bitmap: 1=white, 2=black outline, 0=transparent (12x18)
 const CURSOR_BITMAP: [[u8; 12]; 18] = [
-    [2,0,0,0,0,0,0,0,0,0,0,0],
-    [2,2,0,0,0,0,0,0,0,0,0,0],
-    [2,1,2,0,0,0,0,0,0,0,0,0],
-    [2,1,1,2,0,0,0,0,0,0,0,0],
-    [2,1,1,1,2,0,0,0,0,0,0,0],
-    [2,1,1,1,1,2,0,0,0,0,0,0],
-    [2,1,1,1,1,1,2,0,0,0,0,0],
-    [2,1,1,1,1,1,1,2,0,0,0,0],
-    [2,1,1,1,1,1,1,1,2,0,0,0],
-    [2,1,1,1,1,1,1,1,1,2,0,0],
-    [2,1,1,1,1,1,1,1,1,1,2,0],
-    [2,1,1,1,1,1,2,2,2,2,2,0],
-    [2,1,1,1,1,2,0,0,0,0,0,0],
-    [2,1,1,2,1,1,2,0,0,0,0,0],
-    [2,1,2,0,2,1,1,2,0,0,0,0],
-    [2,2,0,0,2,1,1,2,0,0,0,0],
-    [2,0,0,0,0,2,1,2,0,0,0,0],
-    [0,0,0,0,0,2,2,0,0,0,0,0],
+    [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [2, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [2, 1, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0],
+    [2, 1, 1, 1, 2, 0, 0, 0, 0, 0, 0, 0],
+    [2, 1, 1, 1, 1, 2, 0, 0, 0, 0, 0, 0],
+    [2, 1, 1, 1, 1, 1, 2, 0, 0, 0, 0, 0],
+    [2, 1, 1, 1, 1, 1, 1, 2, 0, 0, 0, 0],
+    [2, 1, 1, 1, 1, 1, 1, 1, 2, 0, 0, 0],
+    [2, 1, 1, 1, 1, 1, 1, 1, 1, 2, 0, 0],
+    [2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 0],
+    [2, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 0],
+    [2, 1, 1, 1, 1, 2, 0, 0, 0, 0, 0, 0],
+    [2, 1, 1, 2, 1, 1, 2, 0, 0, 0, 0, 0],
+    [2, 1, 2, 0, 2, 1, 1, 2, 0, 0, 0, 0],
+    [2, 2, 0, 0, 2, 1, 1, 2, 0, 0, 0, 0],
+    [2, 0, 0, 0, 0, 2, 1, 2, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 0],
 ];
 
 /// Saved background pixels under the cursor.
@@ -954,7 +1083,9 @@ static mut CURSOR_SAVED_BG: [u32; CURSOR_W * CURSOR_H] = [0; CURSOR_W * CURSOR_H
 /// saved background), saves background under the new position, and draws the cursor.
 /// Returns true if any VRAM pixels were modified.
 pub fn update_cursor() -> bool {
-    if !is_initialized() { return false; }
+    if !is_initialized() {
+        return false;
+    }
 
     let (mx, my, _) = crate::drivers::usb::hid::mouse_state();
     let cur_x = mx as i32;
@@ -970,16 +1101,22 @@ pub fn update_cursor() -> bool {
     let vram = unsafe { VRAM_BASE } as *mut u32;
     let tw = unsafe { DISPLAY_WIDTH } as usize;
     let th = unsafe { DISPLAY_HEIGHT } as usize;
-    if tw == 0 || th == 0 { return false; }
+    if tw == 0 || th == 0 {
+        return false;
+    }
 
     // Erase old cursor (restore saved background)
     if prev_cx >= 0 && prev_cy >= 0 {
         for row in 0..CURSOR_H {
             let py = prev_cy as usize + row;
-            if py >= th { break; }
+            if py >= th {
+                break;
+            }
             for col in 0..CURSOR_W {
                 let px = prev_cx as usize + col;
-                if px >= tw { break; }
+                if px >= tw {
+                    break;
+                }
                 if CURSOR_BITMAP[row][col] != 0 {
                     unsafe {
                         let saved = CURSOR_SAVED_BG[row * CURSOR_W + col];
@@ -991,20 +1128,22 @@ pub fn update_cursor() -> bool {
     }
 
     // Save background under new cursor position, then draw
-    let draw = cur_x >= 0 && cur_y >= 0
-        && (cur_x as u32) < tw as u32 && (cur_y as u32) < th as u32;
+    let draw = cur_x >= 0 && cur_y >= 0 && (cur_x as u32) < tw as u32 && (cur_y as u32) < th as u32;
     if draw {
         // Save
         for row in 0..CURSOR_H {
             let py = cur_y as usize + row;
-            if py >= th { break; }
+            if py >= th {
+                break;
+            }
             for col in 0..CURSOR_W {
                 let px = cur_x as usize + col;
-                if px >= tw { break; }
+                if px >= tw {
+                    break;
+                }
                 if CURSOR_BITMAP[row][col] != 0 {
                     unsafe {
-                        CURSOR_SAVED_BG[row * CURSOR_W + col] =
-                            *vram.add(py * tw + px);
+                        CURSOR_SAVED_BG[row * CURSOR_W + col] = *vram.add(py * tw + px);
                     }
                 }
             }
@@ -1012,13 +1151,21 @@ pub fn update_cursor() -> bool {
         // Draw
         for row in 0..CURSOR_H {
             let py = cur_y as usize + row;
-            if py >= th { break; }
+            if py >= th {
+                break;
+            }
             for col in 0..CURSOR_W {
                 let px = cur_x as usize + col;
-                if px >= tw { break; }
+                if px >= tw {
+                    break;
+                }
                 match CURSOR_BITMAP[row][col] {
-                    1 => unsafe { *vram.add(py * tw + px) = 0x00FFFFFF; }, // white
-                    2 => unsafe { *vram.add(py * tw + px) = 0x00000000; }, // black
+                    1 => unsafe {
+                        *vram.add(py * tw + px) = 0x00FFFFFF;
+                    }, // white
+                    2 => unsafe {
+                        *vram.add(py * tw + px) = 0x00000000;
+                    }, // black
                     _ => {}
                 }
             }
@@ -1029,7 +1176,9 @@ pub fn update_cursor() -> bool {
     CURSOR_PREV_Y.store(cur_y, Ordering::Relaxed);
 
     // Flush CPU writes to VRAM
-    unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
 
     true
 }
@@ -1059,7 +1208,9 @@ fn fill_rect_vram(x: u32, y: u32, w: u32, h: u32, r: u8, g: u8, b: u8) {
         }
     }
 
-    unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
 }
 
 /// Draw a test pattern to prove the SVGA3 driver works.
@@ -1078,12 +1229,12 @@ pub fn draw_test_pattern() -> Result<(), &'static str> {
     fill_rect_vram(0, 0, w, h, 20, 30, 50);
 
     let rects: [(u32, u32, u32, u32, u8, u8, u8); 6] = [
-        (50,  50,  200, 150, 220, 40,  40),
-        (300, 80,  200, 150, 40,  200, 40),
-        (550, 110, 200, 150, 40,  80,  220),
+        (50, 50, 200, 150, 220, 40, 40),
+        (300, 80, 200, 150, 40, 200, 40),
+        (550, 110, 200, 150, 40, 80, 220),
         (100, 300, 250, 120, 220, 220, 40),
-        (400, 350, 200, 130, 200, 50,  200),
-        (700, 280, 180, 160, 40,  200, 200),
+        (400, 350, 200, 130, 200, 50, 200),
+        (700, 280, 180, 160, 40, 200, 200),
     ];
 
     for &(x, y, rw, rh, r, g, b) in &rects {

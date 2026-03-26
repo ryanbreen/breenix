@@ -49,7 +49,10 @@ pub fn validate_user_ptr_read<T>(ptr: *const T) -> Result<(), u64> {
     }
 
     // Check for overflow and that end address is still in userspace
-    if addr.checked_add(size).map_or(true, |end| end > USER_SPACE_END) {
+    if addr
+        .checked_add(size)
+        .map_or(true, |end| end > USER_SPACE_END)
+    {
         return Err(14); // EFAULT
     }
 
@@ -97,9 +100,7 @@ pub fn copy_from_user<T: Copy>(ptr: *const T) -> Result<T, u64> {
     // However, we can't guarantee the memory is mapped. A page fault
     // will occur if userspace passed an unmapped address, which the
     // kernel should handle gracefully.
-    let value = unsafe {
-        core::ptr::read_volatile(ptr)
-    };
+    let value = unsafe { core::ptr::read_volatile(ptr) };
 
     Ok(value)
 }
@@ -172,7 +173,10 @@ pub fn validate_user_buffer(ptr: *const u8, len: usize) -> Result<(), u64> {
     }
 
     // Check for overflow and that end address is still in userspace
-    if addr.checked_add(len as u64).map_or(true, |end| end > USER_SPACE_END) {
+    if addr
+        .checked_add(len as u64)
+        .map_or(true, |end| end > USER_SPACE_END)
+    {
         return Err(14); // EFAULT
     }
 

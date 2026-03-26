@@ -21,8 +21,12 @@ pub fn verify_kernel_ist_frame_separation(pml4: &PageTable) -> Result<(), alloc:
         return Err(alloc::format!("PML4[403] (IST stacks) is not present"));
     }
 
-    let frame_402 = entry_402.frame().map_err(|_| "PML4[402] has invalid frame")?;
-    let frame_403 = entry_403.frame().map_err(|_| "PML4[403] has invalid frame")?;
+    let frame_402 = entry_402
+        .frame()
+        .map_err(|_| "PML4[402] has invalid frame")?;
+    let frame_403 = entry_403
+        .frame()
+        .map_err(|_| "PML4[403] has invalid frame")?;
 
     if frame_402 == frame_403 {
         return Err(alloc::format!(
@@ -48,9 +52,7 @@ pub fn verify_kernel_code_mapping(pml4: &PageTable) -> Result<(), alloc::string:
 
     let flags = entry_2.flags();
     if !flags.contains(PageTableFlags::PRESENT) {
-        return Err(alloc::format!(
-            "PML4[2] does not have PRESENT flag set"
-        ));
+        return Err(alloc::format!("PML4[2] does not have PRESENT flag set"));
     }
 
     Ok(())
@@ -77,7 +79,9 @@ pub fn verify_kernel_mapping_inheritance(
                 if master_frame != process_frame {
                     mismatches.push(alloc::format!(
                         "PML4[{}] frame mismatch: master={:?}, process={:?}",
-                        i, master_frame, process_frame
+                        i,
+                        master_frame,
+                        process_frame
                     ));
                 }
             }
@@ -142,7 +146,8 @@ pub fn verify_entry_flags(
         let missing = required_flags - (actual_flags & required_flags);
         return Err(alloc::format!(
             "PML4[{}] missing required flags: {:?}",
-            index, missing
+            index,
+            missing
         ));
     }
 
@@ -150,7 +155,10 @@ pub fn verify_entry_flags(
 }
 
 /// Contract: Verify that a PML4 entry points to a valid physical frame
-pub fn verify_valid_frame(pml4: &PageTable, index: usize) -> Result<PhysAddr, alloc::string::String> {
+pub fn verify_valid_frame(
+    pml4: &PageTable,
+    index: usize,
+) -> Result<PhysAddr, alloc::string::String> {
     if index >= 512 {
         return Err(alloc::format!("Invalid PML4 index: {}", index));
     }
@@ -175,7 +183,8 @@ pub fn verify_valid_frame(pml4: &PageTable, index: usize) -> Result<PhysAddr, al
     if !addr.is_aligned(4096u64) {
         return Err(alloc::format!(
             "PML4[{}] frame address {:#x} is not page-aligned",
-            index, addr.as_u64()
+            index,
+            addr.as_u64()
         ));
     }
 

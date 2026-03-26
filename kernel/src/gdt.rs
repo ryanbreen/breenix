@@ -43,7 +43,7 @@ pub fn init() {
         // It will be set to a proper kernel stack from the upper half
         // when the memory system is initialized
         tss.privilege_stack_table[0] = VirtAddr::new(0);
-        
+
         // Note: RSP0 will be updated by update_tss_rsp0() after kernel stack allocation
 
         // CRITICAL FIX: Disable I/O permission bitmap to prevent GP faults during CR3 switches
@@ -51,8 +51,11 @@ pub fn init() {
         // This prevents GP faults when executing OUT instructions after CR3 switch to user page table
         // where the TSS I/O bitmap might not be mapped
         tss.iomap_base = core::mem::size_of::<TaskStateSegment>() as u16;
-        
-        log::info!("TSS I/O permission bitmap disabled (iomap_base={})", tss.iomap_base);
+
+        log::info!(
+            "TSS I/O permission bitmap disabled (iomap_base={})",
+            tss.iomap_base
+        );
 
         tss
     });
@@ -60,10 +63,14 @@ pub fn init() {
     // Store a pointer to the TSS for later updates
     let tss_ref = TSS.get().unwrap();
     TSS_PTR.store(tss_ref as *const _ as *mut _, Ordering::Release);
-    
+
     // Log TSS address for debugging CR3 switch issues
     let tss_addr = tss_ref as *const _ as u64;
-    log::info!("TSS located at {:#x} (PML4 index {})", tss_addr, (tss_addr >> 39) & 0x1FF);
+    log::info!(
+        "TSS located at {:#x} (PML4 index {})",
+        tss_addr,
+        (tss_addr >> 39) & 0x1FF
+    );
 
     GDT.init_once(|| {
         let mut gdt = GlobalDescriptorTable::new();
@@ -92,11 +99,15 @@ pub fn init() {
     let (gdt, selectors) = GDT.get().unwrap();
 
     gdt.load();
-    
+
     // Log GDT address for debugging CR3 switch issues
     use x86_64::instructions::tables::sgdt;
     let gdtr = sgdt();
-    log::info!("GDT loaded at {:#x} (PML4 index {})", gdtr.base.as_u64(), (gdtr.base.as_u64() >> 39) & 0x1FF);
+    log::info!(
+        "GDT loaded at {:#x} (PML4 index {})",
+        gdtr.base.as_u64(),
+        (gdtr.base.as_u64() >> 39) & 0x1FF
+    );
     unsafe {
         CS::set_reg(selectors.code_selector);
         DS::set_reg(selectors.data_selector);
@@ -115,27 +126,37 @@ pub fn init() {
     log::debug!("  TSS: {:#x}", selectors.tss_selector.0);
     log::debug!("  User data: {:#x}", selectors.user_data_selector.0);
     log::debug!("  User code: {:#x}", selectors.user_code_selector.0);
-    
+
     // Dump raw GDT descriptors for debugging
     unsafe {
         let gdtr = x86_64::instructions::tables::sgdt();
-        log::debug!("GDT base: {:#x}, limit: {:#x}", gdtr.base.as_u64(), gdtr.limit);
-        
+        log::debug!(
+            "GDT base: {:#x}, limit: {:#x}",
+            gdtr.base.as_u64(),
+            gdtr.limit
+        );
+
         // Dump user segment descriptors
         let gdt_base = gdtr.base.as_ptr::<u64>();
-        let user_data_desc = *gdt_base.offset(5);  // Index 5
-        let user_code_desc = *gdt_base.offset(6);  // Index 6
-        
+        let user_data_desc = *gdt_base.offset(5); // Index 5
+        let user_code_desc = *gdt_base.offset(6); // Index 6
+
         log::debug!("Raw user data descriptor (0x2b): {:#018x}", user_data_desc);
         log::debug!("Raw user code descriptor (0x33): {:#018x}", user_code_desc);
-        
+
         // Decode user data descriptor
         let present = (user_data_desc >> 47) & 1;
         let dpl = (user_data_desc >> 45) & 3;
         let s_bit = (user_data_desc >> 44) & 1;
         let type_field = (user_data_desc >> 40) & 0xF;
-        log::debug!("  User data: P={} DPL={} S={} Type={:#x}", present, dpl, s_bit, type_field);
-        
+        log::debug!(
+            "  User data: P={} DPL={} S={} Type={:#x}",
+            present,
+            dpl,
+            s_bit,
+            type_field
+        );
+
         // Decode user code descriptor
         let present = (user_code_desc >> 47) & 1;
         let dpl = (user_code_desc >> 45) & 3;
@@ -143,8 +164,15 @@ pub fn init() {
         let type_field = (user_code_desc >> 40) & 0xF;
         let l_bit = (user_code_desc >> 53) & 1;
         let d_bit = (user_code_desc >> 54) & 1;
-        log::debug!("  User code: P={} DPL={} S={} Type={:#x} L={} D={}", 
-            present, dpl, s_bit, type_field, l_bit, d_bit);
+        log::debug!(
+            "  User code: P={} DPL={} S={} Type={:#x} L={} D={}",
+            present,
+            dpl,
+            s_bit,
+            type_field,
+            l_bit,
+            d_bit
+        );
     }
 
     // Log TSS setup
@@ -203,7 +231,7 @@ pub fn update_ist_stacks() {
         // Get both IST stack addresses
         let emergency_stack = crate::memory::per_cpu_stack::current_cpu_emergency_stack();
         let page_fault_stack = crate::memory::per_cpu_stack::current_cpu_page_fault_stack();
-        
+
         unsafe {
             // Set up double fault IST
             (*tss_ptr).interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = emergency_stack;
@@ -212,7 +240,7 @@ pub fn update_ist_stacks() {
                 DOUBLE_FAULT_IST_INDEX,
                 emergency_stack.as_u64()
             );
-            
+
             // Set up page fault IST
             (*tss_ptr).interrupt_stack_table[PAGE_FAULT_IST_INDEX as usize] = page_fault_stack;
             log::info!(

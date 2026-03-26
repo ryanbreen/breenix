@@ -131,12 +131,14 @@ pub fn init() {
 
     // Register standard devices
     // Major 1 = memory devices (null, zero, etc.)
-    devfs.devices.push(DeviceNode::new(DeviceType::Null, 1, 3));    // /dev/null
-    devfs.devices.push(DeviceNode::new(DeviceType::Zero, 1, 5));    // /dev/zero
+    devfs.devices.push(DeviceNode::new(DeviceType::Null, 1, 3)); // /dev/null
+    devfs.devices.push(DeviceNode::new(DeviceType::Zero, 1, 5)); // /dev/zero
 
     // Major 5 = TTY devices
-    devfs.devices.push(DeviceNode::new(DeviceType::Console, 5, 1)); // /dev/console
-    devfs.devices.push(DeviceNode::new(DeviceType::Tty, 5, 0));     // /dev/tty
+    devfs
+        .devices
+        .push(DeviceNode::new(DeviceType::Console, 5, 1)); // /dev/console
+    devfs.devices.push(DeviceNode::new(DeviceType::Tty, 5, 0)); // /dev/tty
 
     devfs.initialized = true;
     log::info!("devfs: initialized with {} devices", devfs.devices.len());
@@ -170,7 +172,11 @@ pub fn lookup_by_inode(inode: u64) -> Option<DeviceNode> {
 /// List all device names (for /dev directory listing)
 pub fn list_devices() -> Vec<String> {
     let devfs = DEVFS.lock();
-    devfs.devices.iter().map(|d| String::from(d.device_type.name())).collect()
+    devfs
+        .devices
+        .iter()
+        .map(|d| String::from(d.device_type.name()))
+        .collect()
 }
 
 /// Check if devfs is initialized

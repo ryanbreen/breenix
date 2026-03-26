@@ -26,10 +26,10 @@ pub mod handler;
 // Syscall implementations
 // - dispatcher is x86_64-only (ARM64 dispatch is in arch_impl/aarch64/syscall_entry.rs)
 // - handlers is shared across architectures (arch-specific parts are cfg-gated internally)
+pub mod audio;
+pub mod clone;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod dispatcher;
-pub mod iovec;
-pub mod clone;
 pub mod epoll;
 pub mod fifo;
 pub mod fs;
@@ -37,9 +37,9 @@ pub mod futex;
 pub mod graphics;
 pub mod handlers;
 pub mod ioctl;
+pub mod iovec;
 pub mod pipe;
 pub mod pty;
-pub mod audio;
 pub mod random;
 pub mod session;
 pub mod signal;
@@ -60,7 +60,7 @@ pub enum SyscallNumber {
     Write,
     Read,
     Yield,
-    GetTime,        // Legacy: ARM64 only (x86_64 uses ClockGetTime)
+    GetTime, // Legacy: ARM64 only (x86_64 uses ClockGetTime)
     Fork,
     Close,
     Poll,
@@ -72,12 +72,12 @@ pub enum SyscallNumber {
     Sigprocmask,
     Sigreturn,
     Ioctl,
-    Readv,          // Vectored read (musl stdio)
-    Writev,         // Vectored write (musl stdio)
+    Readv,  // Vectored read (musl stdio)
+    Writev, // Vectored write (musl stdio)
     Pipe,
     Select,
-    Mremap,         // Stub: returns -ENOMEM
-    Madvise,        // Stub: returns 0 (advisory)
+    Mremap,  // Stub: returns -ENOMEM
+    Madvise, // Stub: returns 0 (advisory)
     Dup,
     Dup2,
     Pause,
@@ -112,15 +112,15 @@ pub enum SyscallNumber {
     Sigpending,
     Sigsuspend,
     Sigaltstack,
-    ArchPrctl,      // x86_64 TLS setup (FS/GS base)
+    ArchPrctl, // x86_64 TLS setup (FS/GS base)
     GetTid,
     Futex,
     SetTidAddress,
     ClockGetTime,
     ClockSetTime,
     ExitGroup,
-    Ppoll,          // Stub: returns -ENOSYS
-    SetRobustList,  // Stub: returns 0
+    Ppoll,         // Stub: returns -ENOSYS
+    SetRobustList, // Stub: returns 0
     Pipe2,
     GetRandom,
     // Filesystem syscalls
@@ -139,19 +139,19 @@ pub enum SyscallNumber {
     Lseek,
     Fstat,
     Getdents64,
-    Newfstatat,     // Path-based file stat (AT_FDCWD support)
+    Newfstatat, // Path-based file stat (AT_FDCWD support)
     // *at variants (Linux ARM64 has these instead of legacy syscalls)
-    Openat,         // openat(dirfd, path, flags, mode) - replacement for open
-    Dup3,           // dup3(oldfd, newfd, flags) - replacement for dup2
-    Faccessat,      // faccessat(dirfd, path, mode, flags)
-    Mkdirat,        // mkdirat(dirfd, path, mode)
-    Mknodat,        // mknodat(dirfd, path, mode, dev)
-    Unlinkat,       // unlinkat(dirfd, path, flags) - replaces unlink + rmdir
-    Symlinkat,      // symlinkat(target, dirfd, linkpath)
-    Linkat,         // linkat(olddirfd, oldpath, newdirfd, newpath, flags)
-    Renameat,       // renameat(olddirfd, oldpath, newdirfd, newpath)
-    Readlinkat,     // readlinkat(dirfd, path, buf, bufsiz)
-    Pselect6,       // pselect6(nfds, readfds, writefds, exceptfds, timeout, sigmask)
+    Openat,     // openat(dirfd, path, flags, mode) - replacement for open
+    Dup3,       // dup3(oldfd, newfd, flags) - replacement for dup2
+    Faccessat,  // faccessat(dirfd, path, mode, flags)
+    Mkdirat,    // mkdirat(dirfd, path, mode)
+    Mknodat,    // mknodat(dirfd, path, mode, dev)
+    Unlinkat,   // unlinkat(dirfd, path, flags) - replaces unlink + rmdir
+    Symlinkat,  // symlinkat(target, dirfd, linkpath)
+    Linkat,     // linkat(olddirfd, oldpath, newdirfd, newpath, flags)
+    Renameat,   // renameat(olddirfd, oldpath, newdirfd, newpath)
+    Readlinkat, // readlinkat(dirfd, path, buf, bufsiz)
+    Pselect6,   // pselect6(nfds, readfds, writefds, exceptfds, timeout, sigmask)
     // PTY syscalls (Breenix-specific numbers)
     PosixOpenpt,
     Grantpt,
@@ -208,13 +208,13 @@ impl SyscallNumber {
     pub fn from_u64(value: u64) -> Option<Self> {
         match value {
             // Linux x86_64 ABI numbers
-            0 => Some(Self::Read),          // was Breenix Exit=0
+            0 => Some(Self::Read), // was Breenix Exit=0
             1 => Some(Self::Write),
-            2 => Some(Self::Open),          // Linux x86_64 open
-            3 => Some(Self::Close),         // was Breenix Yield=3
-            5 => Some(Self::Fstat),         // was Breenix Fork=5
+            2 => Some(Self::Open),  // Linux x86_64 open
+            3 => Some(Self::Close), // was Breenix Yield=3
+            5 => Some(Self::Fstat), // was Breenix Fork=5
             7 => Some(Self::Poll),
-            8 => Some(Self::Lseek),         // was Breenix 258
+            8 => Some(Self::Lseek), // was Breenix 258
             9 => Some(Self::Mmap),
             10 => Some(Self::Mprotect),
             11 => Some(Self::Munmap),
@@ -223,14 +223,14 @@ impl SyscallNumber {
             14 => Some(Self::Sigprocmask),
             15 => Some(Self::Sigreturn),
             16 => Some(Self::Ioctl),
-            19 => Some(Self::Readv),        // NEW
-            20 => Some(Self::Writev),       // NEW
+            19 => Some(Self::Readv),  // NEW
+            20 => Some(Self::Writev), // NEW
             21 => Some(Self::Access),
             22 => Some(Self::Pipe),
             23 => Some(Self::Select),
-            24 => Some(Self::Yield),        // was Breenix 3
-            25 => Some(Self::Mremap),       // NEW stub
-            28 => Some(Self::Madvise),      // NEW stub
+            24 => Some(Self::Yield),   // was Breenix 3
+            25 => Some(Self::Mremap),  // NEW stub
+            28 => Some(Self::Madvise), // NEW stub
             32 => Some(Self::Dup),
             33 => Some(Self::Dup2),
             34 => Some(Self::Pause),
@@ -253,9 +253,9 @@ impl SyscallNumber {
             54 => Some(Self::Setsockopt),
             55 => Some(Self::Getsockopt),
             56 => Some(Self::Clone),
-            57 => Some(Self::Fork),         // was Breenix 5
+            57 => Some(Self::Fork), // was Breenix 5
             59 => Some(Self::Exec),
-            60 => Some(Self::Exit),         // was Breenix 0
+            60 => Some(Self::Exit), // was Breenix 0
             61 => Some(Self::Wait4),
             62 => Some(Self::Kill),
             63 => Some(Self::Uname),
@@ -279,18 +279,18 @@ impl SyscallNumber {
             130 => Some(Self::Sigsuspend),
             131 => Some(Self::Sigaltstack),
             133 => Some(Self::Mknod),
-            158 => Some(Self::ArchPrctl),   // NEW
+            158 => Some(Self::ArchPrctl), // NEW
             186 => Some(Self::GetTid),
             202 => Some(Self::Futex),
-            217 => Some(Self::Getdents64),  // was Breenix 260
+            217 => Some(Self::Getdents64), // was Breenix 260
             218 => Some(Self::SetTidAddress),
             227 => Some(Self::ClockSetTime),
             228 => Some(Self::ClockGetTime),
             231 => Some(Self::ExitGroup),
-            257 => Some(Self::Openat),        // Linux x86_64 openat (was Breenix Open)
+            257 => Some(Self::Openat), // Linux x86_64 openat (was Breenix Open)
             258 => Some(Self::Mkdirat),
             259 => Some(Self::Mknodat),
-            262 => Some(Self::Newfstatat),  // NEW
+            262 => Some(Self::Newfstatat), // NEW
             263 => Some(Self::Unlinkat),
             264 => Some(Self::Renameat),
             265 => Some(Self::Linkat),
@@ -298,7 +298,7 @@ impl SyscallNumber {
             267 => Some(Self::Readlinkat),
             269 => Some(Self::Faccessat),
             270 => Some(Self::Pselect6),
-            271 => Some(Self::Ppoll),       // NEW stub
+            271 => Some(Self::Ppoll),         // NEW stub
             273 => Some(Self::SetRobustList), // NEW stub
             292 => Some(Self::Dup3),
             293 => Some(Self::Pipe2),

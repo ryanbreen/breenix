@@ -170,83 +170,141 @@ impl CpuInfo {
 
         // ID_AA64ISAR0_EL1 fields
         let aes = (self.isar0 >> 4) & 0xF;
-        if aes >= 1 { features.push("aes"); }
-        if aes >= 2 { features.push("pmull"); }
+        if aes >= 1 {
+            features.push("aes");
+        }
+        if aes >= 2 {
+            features.push("pmull");
+        }
 
         let sha1 = (self.isar0 >> 8) & 0xF;
-        if sha1 >= 1 { features.push("sha1"); }
+        if sha1 >= 1 {
+            features.push("sha1");
+        }
 
         let sha2 = (self.isar0 >> 12) & 0xF;
-        if sha2 >= 1 { features.push("sha2"); }
-        if sha2 >= 2 { features.push("sha512"); }
+        if sha2 >= 1 {
+            features.push("sha2");
+        }
+        if sha2 >= 2 {
+            features.push("sha512");
+        }
 
         let crc32 = (self.isar0 >> 16) & 0xF;
-        if crc32 >= 1 { features.push("crc32"); }
+        if crc32 >= 1 {
+            features.push("crc32");
+        }
 
         let atomic = (self.isar0 >> 20) & 0xF;
-        if atomic >= 2 { features.push("atomics"); }
+        if atomic >= 2 {
+            features.push("atomics");
+        }
 
         let rdm = (self.isar0 >> 28) & 0xF;
-        if rdm >= 1 { features.push("asimdrdm"); }
+        if rdm >= 1 {
+            features.push("asimdrdm");
+        }
 
         let sha3 = (self.isar0 >> 32) & 0xF;
-        if sha3 >= 1 { features.push("sha3"); }
+        if sha3 >= 1 {
+            features.push("sha3");
+        }
 
         let sm3 = (self.isar0 >> 36) & 0xF;
-        if sm3 >= 1 { features.push("sm3"); }
+        if sm3 >= 1 {
+            features.push("sm3");
+        }
 
         let sm4 = (self.isar0 >> 40) & 0xF;
-        if sm4 >= 1 { features.push("sm4"); }
+        if sm4 >= 1 {
+            features.push("sm4");
+        }
 
         let dp = (self.isar0 >> 44) & 0xF;
-        if dp >= 1 { features.push("asimddp"); }
+        if dp >= 1 {
+            features.push("asimddp");
+        }
 
         let fhm = (self.isar0 >> 48) & 0xF;
-        if fhm >= 1 { features.push("asimdfhm"); }
+        if fhm >= 1 {
+            features.push("asimdfhm");
+        }
 
         let ts = (self.isar0 >> 52) & 0xF;
-        if ts >= 1 { features.push("flagm"); }
-        if ts >= 2 { features.push("flagm2"); }
+        if ts >= 1 {
+            features.push("flagm");
+        }
+        if ts >= 2 {
+            features.push("flagm2");
+        }
 
         let rndr = (self.isar0 >> 60) & 0xF;
-        if rndr >= 1 { features.push("rng"); }
+        if rndr >= 1 {
+            features.push("rng");
+        }
 
         // ID_AA64ISAR1_EL1 fields
         let dpb = self.isar1 & 0xF;
-        if dpb >= 1 { features.push("dcpop"); }
-        if dpb >= 2 { features.push("dcpodp"); }
+        if dpb >= 1 {
+            features.push("dcpop");
+        }
+        if dpb >= 2 {
+            features.push("dcpodp");
+        }
 
         let jscvt = (self.isar1 >> 12) & 0xF;
-        if jscvt >= 1 { features.push("jscvt"); }
+        if jscvt >= 1 {
+            features.push("jscvt");
+        }
 
         let fcma = (self.isar1 >> 16) & 0xF;
-        if fcma >= 1 { features.push("fcma"); }
+        if fcma >= 1 {
+            features.push("fcma");
+        }
 
         let lrcpc = (self.isar1 >> 20) & 0xF;
-        if lrcpc >= 1 { features.push("lrcpc"); }
-        if lrcpc >= 2 { features.push("ilrcpc"); }
+        if lrcpc >= 1 {
+            features.push("lrcpc");
+        }
+        if lrcpc >= 2 {
+            features.push("ilrcpc");
+        }
 
         let frintts = (self.isar1 >> 32) & 0xF;
-        if frintts >= 1 { features.push("frint"); }
+        if frintts >= 1 {
+            features.push("frint");
+        }
 
         let sb = (self.isar1 >> 36) & 0xF;
-        if sb >= 1 { features.push("sb"); }
+        if sb >= 1 {
+            features.push("sb");
+        }
 
         let specres = (self.isar1 >> 40) & 0xF;
-        if specres >= 1 { features.push("specres"); }
+        if specres >= 1 {
+            features.push("specres");
+        }
 
         let bf16 = (self.isar1 >> 44) & 0xF;
-        if bf16 >= 1 { features.push("bf16"); }
+        if bf16 >= 1 {
+            features.push("bf16");
+        }
 
         let i8mm = (self.isar1 >> 52) & 0xF;
-        if i8mm >= 1 { features.push("i8mm"); }
+        if i8mm >= 1 {
+            features.push("i8mm");
+        }
 
         // PFR0: SVE, EL levels, etc.
         let sve = (self.pfr0 >> 32) & 0xF;
-        if sve >= 1 { features.push("sve"); }
+        if sve >= 1 {
+            features.push("sve");
+        }
 
         let dit = (self.pfr0 >> 48) & 0xF;
-        if dit >= 1 { features.push("dit"); }
+        if dit >= 1 {
+            features.push("dit");
+        }
 
         // MMFR0: physical address size
         let parange = self.mmfr0 & 0xF;

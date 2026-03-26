@@ -10,7 +10,7 @@ pub mod fw_cfg;
 pub mod pci;
 #[cfg(target_arch = "aarch64")]
 pub mod usb;
-pub mod virtio;  // Now available on both x86_64 and aarch64
+pub mod virtio; // Now available on both x86_64 and aarch64
 #[cfg(target_arch = "aarch64")]
 pub mod vmware;
 
@@ -89,21 +89,29 @@ pub fn init() -> usize {
 
     if ecam_base != 0 {
         // PCI-based platform (Parallels): enumerate PCI bus
-        serial_println!("[drivers] PCI ECAM at {:#x}, enumerating PCI bus...", ecam_base);
+        serial_println!(
+            "[drivers] PCI ECAM at {:#x}, enumerating PCI bus...",
+            ecam_base
+        );
         let device_count = pci::enumerate();
         serial_println!("[drivers] Found {} PCI devices", device_count);
 
         // Dump all PCI devices to serial for platform discovery
         if let Some(devices) = pci::get_devices() {
             for dev in &devices {
-                serial_println!("[pci] {:02x}:{:02x}.{} [{:04x}:{:04x}] class={:02x}/{:02x}",
-                    dev.bus, dev.device, dev.function,
-                    dev.vendor_id, dev.device_id,
-                    dev.class as u8, dev.subclass);
+                serial_println!(
+                    "[pci] {:02x}:{:02x}.{} [{:04x}:{:04x}] class={:02x}/{:02x}",
+                    dev.bus,
+                    dev.device,
+                    dev.function,
+                    dev.vendor_id,
+                    dev.device_id,
+                    dev.class as u8,
+                    dev.subclass
+                );
                 for (i, bar) in dev.bars.iter().enumerate() {
                     if bar.is_valid() {
-                        serial_println!("[pci]   BAR{}: {:#x} ({})",
-                            i, bar.address, bar.size);
+                        serial_println!("[pci]   BAR{}: {:#x} ({})", i, bar.address, bar.size);
                     }
                 }
             }
@@ -111,7 +119,10 @@ pub fn init() -> usize {
 
         // Enumerate VirtIO PCI devices with modern transport
         let virtio_devices = virtio::pci_transport::enumerate_virtio_pci_devices();
-        serial_println!("[drivers] Found {} VirtIO PCI devices", virtio_devices.len());
+        serial_println!(
+            "[drivers] Found {} VirtIO PCI devices",
+            virtio_devices.len()
+        );
 
         match virtio::gpu_pci::init() {
             Ok(()) => {
@@ -120,7 +131,9 @@ pub fn init() -> usize {
                 match virtio::gpu_pci::virgl_init() {
                     Ok(()) => {
                         serial_println!("[drivers] VirGL 3D acceleration active");
-                        crate::graphics::set_compositor_backend(crate::graphics::CompositorBackend::VirGL);
+                        crate::graphics::set_compositor_backend(
+                            crate::graphics::CompositorBackend::VirGL,
+                        );
                         serial_println!("[drivers] Compositor backend: VirGL");
                         // Enable yielding during GPU command waits now that init is complete.
                         // During runtime, GPU poll loops yield to the scheduler instead of
@@ -152,7 +165,9 @@ pub fn init() -> usize {
                 serial_println!("[drivers] VMware SVGA3 GPU initialized");
                 // SVGA3 with VRAM traces provides GPU-level compositing:
                 // BWM writes pixels to VRAM, device monitors and updates display.
-                crate::graphics::set_compositor_backend(crate::graphics::CompositorBackend::Svga3Stdu);
+                crate::graphics::set_compositor_backend(
+                    crate::graphics::CompositorBackend::Svga3Stdu,
+                );
                 serial_println!("[drivers] Compositor backend: SVGA3 (VRAM traces)");
             }
             Err(e) => serial_println!("[drivers] SVGA3 init skipped: {}", e),
@@ -169,9 +184,14 @@ pub fn init() -> usize {
             .or_else(|| pci::find_device(0x1033, 0x0194))
             .or_else(|| pci::find_device(0x15ad, 0x077a))
         {
-            serial_println!("[drivers] Found XHCI at {:02x}:{:02x}.{} [{:04x}:{:04x}]",
-                xhci_dev.bus, xhci_dev.device, xhci_dev.function,
-                xhci_dev.vendor_id, xhci_dev.device_id);
+            serial_println!(
+                "[drivers] Found XHCI at {:02x}:{:02x}.{} [{:04x}:{:04x}]",
+                xhci_dev.bus,
+                xhci_dev.device,
+                xhci_dev.function,
+                xhci_dev.vendor_id,
+                xhci_dev.device_id
+            );
             #[cfg(feature = "xhci_linux_harness")]
             let xhci_result = usb::xhci_linux::init(&xhci_dev);
             #[cfg(not(feature = "xhci_linux_harness"))]
@@ -201,7 +221,10 @@ pub fn init() -> usize {
                 const PARALLELS_AHCI_BASE: u64 = 0x0214_0000;
                 match ahci::init_platform(PARALLELS_AHCI_BASE) {
                     Ok(count) => {
-                        serial_println!("[drivers] AHCI initialized (platform MMIO): {} SATA device(s)", count);
+                        serial_println!(
+                            "[drivers] AHCI initialized (platform MMIO): {} SATA device(s)",
+                            count
+                        );
                     }
                     Err(e) => {
                         serial_println!("[drivers] AHCI init skipped: {}", e);

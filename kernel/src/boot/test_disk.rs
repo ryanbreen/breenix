@@ -44,7 +44,9 @@ pub struct BinaryEntry {
 impl BinaryEntry {
     /// Get the name as a string (trimmed of null bytes and spaces)
     pub fn name_str(&self) -> &str {
-        let end = self.name.iter()
+        let end = self
+            .name
+            .iter()
             .position(|&b| b == 0 || b == b' ')
             .unwrap_or(self.name.len());
         core::str::from_utf8(&self.name[..end]).unwrap_or("")
@@ -69,9 +71,8 @@ impl TestDisk {
         read_sector(0, 0, &mut sector0)?;
 
         // Parse header
-        let header: TestDiskHeader = unsafe {
-            core::ptr::read_unaligned(sector0.as_ptr() as *const TestDiskHeader)
-        };
+        let header: TestDiskHeader =
+            unsafe { core::ptr::read_unaligned(sector0.as_ptr() as *const TestDiskHeader) };
 
         // Validate magic
         if &header.magic != BXTEST_MAGIC {
@@ -177,10 +178,12 @@ impl TestDisk {
 /// On success, this function never returns (jumps to userspace).
 /// On failure, returns an error string.
 #[cfg(target_arch = "aarch64")]
-pub fn run_userspace_from_disk(binary_name: &str) -> Result<core::convert::Infallible, &'static str> {
+pub fn run_userspace_from_disk(
+    binary_name: &str,
+) -> Result<core::convert::Infallible, &'static str> {
+    use crate::arch_impl::aarch64::context::return_to_userspace;
     use alloc::boxed::Box;
     use alloc::string::String;
-    use crate::arch_impl::aarch64::context::return_to_userspace;
 
     crate::serial_println!();
     crate::serial_println!("========================================");
@@ -191,7 +194,8 @@ pub fn run_userspace_from_disk(binary_name: &str) -> Result<core::convert::Infal
     let disk = TestDisk::read()?;
 
     // Find the requested binary
-    let entry = disk.find_binary(binary_name)
+    let entry = disk
+        .find_binary(binary_name)
         .ok_or("Binary not found on disk")?;
 
     // Read the binary data
@@ -226,7 +230,9 @@ pub fn run_userspace_from_disk(binary_name: &str) -> Result<core::convert::Infal
         if let Some(ref manager) = *manager_guard {
             if let Some(process) = manager.get_process(pid) {
                 let entry = process.entry_point.as_u64();
-                let thread = process.main_thread.as_ref()
+                let thread = process
+                    .main_thread
+                    .as_ref()
                     .ok_or("Process has no main thread")?;
                 let tid = thread.id;
                 // Get the SP from the thread's context (points to argc on the stack)
@@ -242,7 +248,9 @@ pub fn run_userspace_from_disk(binary_name: &str) -> Result<core::convert::Infal
 
     crate::serial_println!(
         "[boot] Process ready: entry={:#x}, thread={}, sp={:#x}",
-        entry_point, thread_id, user_sp
+        entry_point,
+        thread_id,
+        user_sp
     );
 
     // Register the thread with the scheduler so fork() can find it
@@ -270,8 +278,10 @@ pub fn run_userspace_from_disk(binary_name: &str) -> Result<core::convert::Infal
                     unsafe {
                         crate::memory::process_memory::switch_to_process_page_table(page_table);
                     }
-                    crate::serial_println!("[boot] Page table switched to TTBR0={:#x}",
-                        page_table.level_4_frame().start_address().as_u64());
+                    crate::serial_println!(
+                        "[boot] Page table switched to TTBR0={:#x}",
+                        page_table.level_4_frame().start_address().as_u64()
+                    );
                 } else {
                     crate::serial_println!("[boot] WARNING: Process has no page table!");
                 }
@@ -316,6 +326,8 @@ pub fn run_userspace_from_disk(binary_name: &str) -> Result<core::convert::Infal
 
 /// Stub for x86_64 - the real implementation uses different infrastructure
 #[cfg(target_arch = "x86_64")]
-pub fn run_userspace_from_disk(_binary_name: &str) -> Result<core::convert::Infallible, &'static str> {
+pub fn run_userspace_from_disk(
+    _binary_name: &str,
+) -> Result<core::convert::Infallible, &'static str> {
     Err("Use x86_64-specific boot infrastructure")
 }

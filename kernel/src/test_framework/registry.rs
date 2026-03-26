@@ -396,12 +396,13 @@ fn test_heap_many_small() -> TestResult {
 fn test_cow_flags_aarch64() -> TestResult {
     #[cfg(target_arch = "aarch64")]
     {
-        use crate::memory::arch_stub::{PageTableEntry, PageTableFlags, PhysAddr, PhysFrame, Size4KiB};
+        use crate::memory::arch_stub::{
+            PageTableEntry, PageTableFlags, PhysAddr, PhysFrame, Size4KiB,
+        };
         use crate::memory::process_memory::{is_cow_page, make_cow_flags, make_private_flags};
 
-        let base_flags = PageTableFlags::PRESENT
-            | PageTableFlags::WRITABLE
-            | PageTableFlags::USER_ACCESSIBLE;
+        let base_flags =
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
 
         let cow_flags = make_cow_flags(base_flags);
         if !is_cow_page(cow_flags) {
@@ -657,7 +658,7 @@ fn test_user_stack_base() -> TestResult {
 ///
 /// User stacks should be at least 64KB and at most 8MB.
 fn test_user_stack_size() -> TestResult {
-    const MIN_STACK: usize = 64 * 1024;      // 64KB minimum
+    const MIN_STACK: usize = 64 * 1024; // 64KB minimum
     const MAX_STACK: usize = 8 * 1024 * 1024; // 8MB maximum
 
     #[cfg(target_arch = "x86_64")]
@@ -714,7 +715,9 @@ fn test_user_stack_top() -> TestResult {
 
     #[cfg(target_arch = "aarch64")]
     {
-        use crate::arch_impl::aarch64::constants::{USER_STACK_REGION_END, USER_STACK_REGION_START};
+        use crate::arch_impl::aarch64::constants::{
+            USER_STACK_REGION_END, USER_STACK_REGION_START,
+        };
 
         if USER_STACK_REGION_END <= USER_STACK_REGION_START {
             return TestResult::Fail("user stack region end <= start (ARM64)");
@@ -783,7 +786,9 @@ fn test_user_stack_alignment() -> TestResult {
 
     #[cfg(target_arch = "aarch64")]
     {
-        use crate::arch_impl::aarch64::constants::{USER_STACK_REGION_END, USER_STACK_REGION_START};
+        use crate::arch_impl::aarch64::constants::{
+            USER_STACK_REGION_END, USER_STACK_REGION_START,
+        };
 
         if USER_STACK_REGION_START & (PAGE_SIZE - 1) != 0 {
             return TestResult::Fail("user stack start not page-aligned (ARM64)");
@@ -828,7 +833,7 @@ fn test_kernel_stack_base() -> TestResult {
 ///
 /// Kernel stacks should be at least 8KB and at most 1MB.
 fn test_kernel_stack_size() -> TestResult {
-    const MIN_KERNEL_STACK: usize = 8 * 1024;    // 8KB minimum
+    const MIN_KERNEL_STACK: usize = 8 * 1024; // 8KB minimum
     const MAX_KERNEL_STACK: usize = 1024 * 1024; // 1MB maximum
 
     #[cfg(target_arch = "x86_64")]
@@ -901,7 +906,9 @@ fn test_kernel_stack_top() -> TestResult {
 fn test_kernel_stack_guard() -> TestResult {
     #[cfg(target_arch = "x86_64")]
     {
-        use crate::memory::layout::{percpu_stack_base, percpu_stack_guard, PERCPU_STACK_GUARD_SIZE};
+        use crate::memory::layout::{
+            percpu_stack_base, percpu_stack_guard, PERCPU_STACK_GUARD_SIZE,
+        };
 
         // Test CPU 0 guard page calculation
         let base = percpu_stack_base(0).as_u64();
@@ -1462,9 +1469,9 @@ fn test_devfs_mounted() -> TestResult {
 
     // Check /dev mount point exists
     let mounts = mount::list_mounts();
-    let has_dev = mounts.iter().any(|(_, path, fs_type)| {
-        path == "/dev" && *fs_type == "devfs"
-    });
+    let has_dev = mounts
+        .iter()
+        .any(|(_, path, fs_type)| path == "/dev" && *fs_type == "devfs");
 
     if !has_dev {
         return TestResult::Fail("/dev not mounted as devfs");
@@ -1646,7 +1653,10 @@ fn test_network_stack_init() -> TestResult {
 
     log::info!(
         "network stack initialized: IP={}.{}.{}.{}",
-        config.ip_addr[0], config.ip_addr[1], config.ip_addr[2], config.ip_addr[3]
+        config.ip_addr[0],
+        config.ip_addr[1],
+        config.ip_addr[2],
+        config.ip_addr[3]
     );
 
     TestResult::Pass
@@ -1678,7 +1688,10 @@ fn test_virtio_net_probe() -> TestResult {
         let mut found = false;
         for device in enumerate_devices() {
             if device.device_id() == device_id::NETWORK {
-                log::info!("VirtIO network device found at version {}", device.version());
+                log::info!(
+                    "VirtIO network device found at version {}",
+                    device.version()
+                );
                 found = true;
                 break;
             }
@@ -1818,8 +1831,8 @@ fn test_loopback() -> TestResult {
     // Build a minimal UDP packet
     let payload = b"breenix loopback test";
     let udp_packet = build_udp_packet(
-        12345,  // source port
-        54321,  // dest port
+        12345, // source port
+        54321, // dest port
         payload,
     );
 
@@ -1840,7 +1853,10 @@ fn test_loopback() -> TestResult {
         }
         Err(e) => {
             // This can fail if network not initialized - that's OK for this test
-            log::info!("loopback send returned error (expected without network): {}", e);
+            log::info!(
+                "loopback send returned error (expected without network): {}",
+                e
+            );
             TestResult::Pass
         }
     }
@@ -1854,8 +1870,8 @@ fn test_loopback() -> TestResult {
 ///
 /// It will FAIL if ARM64 NetRx softirq registration is removed or becomes a no-op.
 fn test_arm64_net_softirq_registration() -> TestResult {
+    use crate::task::softirqd::{raise_softirq, register_softirq_handler, SoftirqType};
     use core::sync::atomic::{AtomicU32, Ordering};
-    use crate::task::softirqd::{register_softirq_handler, raise_softirq, SoftirqType};
 
     const SENTINEL: u32 = 0x5A5A_5A5A;
     static HANDLER_STATE: AtomicU32 = AtomicU32::new(0);
@@ -2372,9 +2388,12 @@ fn test_workqueue_operational() -> TestResult {
     WORK_RAN.store(false, Ordering::SeqCst);
 
     // Schedule work using the workqueue API
-    let _work = workqueue::schedule_work_fn(|| {
-        WORK_RAN.store(true, Ordering::SeqCst);
-    }, "wq_test");
+    let _work = workqueue::schedule_work_fn(
+        || {
+            WORK_RAN.store(true, Ordering::SeqCst);
+        },
+        "wq_test",
+    );
 
     // Give the workqueue time to process (busy wait)
     for _ in 0..1_000_000 {
@@ -2633,21 +2652,21 @@ fn test_signal_delivery_infrastructure() -> TestResult {
 /// code path is unique to ARM64.
 #[cfg(target_arch = "aarch64")]
 fn test_arm64_signal_frame_conversion() -> TestResult {
-    use crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame;
     use crate::arch_impl::aarch64::context_switch::create_saved_regs_from_frame;
+    use crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame;
 
     // Create a test exception frame with known, unique values for each register
     // Using prime numbers and patterns to detect any register swapping bugs
     let frame = Aarch64ExceptionFrame {
-        x0: 0x1000_0000_0000_0001,   // Argument 1 / return value
-        x1: 0x1000_0000_0000_0002,   // Argument 2
-        x2: 0x1000_0000_0000_0003,   // Argument 3
-        x3: 0x1000_0000_0000_0005,   // Argument 4 (prime)
-        x4: 0x1000_0000_0000_0007,   // Argument 5 (prime)
-        x5: 0x1000_0000_0000_000B,   // Argument 6 (prime, 11)
-        x6: 0x1000_0000_0000_000D,   // (prime, 13)
-        x7: 0x1000_0000_0000_0011,   // (prime, 17)
-        x8: 0x0000_0000_0000_0066,   // Syscall number (102 = getuid in Linux)
+        x0: 0x1000_0000_0000_0001, // Argument 1 / return value
+        x1: 0x1000_0000_0000_0002, // Argument 2
+        x2: 0x1000_0000_0000_0003, // Argument 3
+        x3: 0x1000_0000_0000_0005, // Argument 4 (prime)
+        x4: 0x1000_0000_0000_0007, // Argument 5 (prime)
+        x5: 0x1000_0000_0000_000B, // Argument 6 (prime, 11)
+        x6: 0x1000_0000_0000_000D, // (prime, 13)
+        x7: 0x1000_0000_0000_0011, // (prime, 17)
+        x8: 0x0000_0000_0000_0066, // Syscall number (102 = getuid in Linux)
         x9: 0x2000_0000_0000_0009,
         x10: 0x2000_0000_0000_000A,
         x11: 0x2000_0000_0000_000B,
@@ -2655,10 +2674,10 @@ fn test_arm64_signal_frame_conversion() -> TestResult {
         x13: 0x2000_0000_0000_000D,
         x14: 0x2000_0000_0000_000E,
         x15: 0x2000_0000_0000_000F,
-        x16: 0x3000_0000_0000_0010,  // IP0
-        x17: 0x3000_0000_0000_0011,  // IP1
-        x18: 0x3000_0000_0000_0012,  // Platform register
-        x19: 0x4000_0000_0000_0013,  // Callee-saved start
+        x16: 0x3000_0000_0000_0010, // IP0
+        x17: 0x3000_0000_0000_0011, // IP1
+        x18: 0x3000_0000_0000_0012, // Platform register
+        x19: 0x4000_0000_0000_0013, // Callee-saved start
         x20: 0x4000_0000_0000_0014,
         x21: 0x4000_0000_0000_0015,
         x22: 0x4000_0000_0000_0016,
@@ -2667,11 +2686,11 @@ fn test_arm64_signal_frame_conversion() -> TestResult {
         x25: 0x4000_0000_0000_0019,
         x26: 0x4000_0000_0000_001A,
         x27: 0x4000_0000_0000_001B,
-        x28: 0x4000_0000_0000_001C,  // Callee-saved end
-        x29: 0x5000_0000_DEAD_BEEF,  // Frame pointer (distinctive pattern)
-        x30: 0x5000_0000_CAFE_BABE,  // Link register (distinctive pattern)
-        elr: 0x0000_FFFF_8000_1234,  // Exception link register (return address)
-        spsr: 0x6000_0000,           // Saved program status (EL0t mode with flags)
+        x28: 0x4000_0000_0000_001C, // Callee-saved end
+        x29: 0x5000_0000_DEAD_BEEF, // Frame pointer (distinctive pattern)
+        x30: 0x5000_0000_CAFE_BABE, // Link register (distinctive pattern)
+        elr: 0x0000_FFFF_8000_1234, // Exception link register (return address)
+        spsr: 0x6000_0000,          // Saved program status (EL0t mode with flags)
     };
 
     // User stack pointer - NOT in the exception frame on ARM64
@@ -2950,11 +2969,12 @@ fn test_arm64_pty_ioctl_path() -> TestResult {
 
         pty::init();
 
-        let current_thread = match scheduler::with_scheduler(|sched| sched.current_thread().cloned()) {
-            Some(Some(thread)) => thread,
-            Some(None) => return TestResult::Fail("no current thread in scheduler"),
-            None => return TestResult::Fail("scheduler not initialized"),
-        };
+        let current_thread =
+            match scheduler::with_scheduler(|sched| sched.current_thread().cloned()) {
+                Some(Some(thread)) => thread,
+                Some(None) => return TestResult::Fail("no current thread in scheduler"),
+                None => return TestResult::Fail("scheduler not initialized"),
+            };
 
         let (pid, fd, pty_num, original_main_thread) = {
             let mut manager_guard = crate::process::manager();
@@ -3320,7 +3340,7 @@ fn test_filesystem_syscalls_aarch64() -> TestResult {
 /// 4. Verifies the ioctl code paths execute without ENOTTY/ENOSYS
 #[cfg(target_arch = "aarch64")]
 fn test_pty_support_aarch64() -> TestResult {
-    use crate::tty::ioctl::{TIOCGPTN, TIOCGPTLCK, TIOCSPTLCK};
+    use crate::tty::ioctl::{TIOCGPTLCK, TIOCGPTN, TIOCSPTLCK};
     use crate::tty::pty;
 
     // Step 1: Create a PTY pair
@@ -3329,7 +3349,10 @@ fn test_pty_support_aarch64() -> TestResult {
         Err(e) => {
             // Can't create PTY - might not have process context
             // ENOMEM or ENOSPC are acceptable in boot test context
-            log::info!("PTY allocate failed with error {} - acceptable in boot test", e);
+            log::info!(
+                "PTY allocate failed with error {} - acceptable in boot test",
+                e
+            );
             return TestResult::Pass;
         }
     };
@@ -3367,12 +3390,8 @@ fn test_pty_support_aarch64() -> TestResult {
 
     // Step 3: Test TIOCGPTLCK - get lock status
     let mut lock_status: u32 = 0xFFFF_FFFF;
-    let result = crate::tty::ioctl::pty_ioctl(
-        &pair,
-        TIOCGPTLCK,
-        &mut lock_status as *mut u32 as u64,
-        0,
-    );
+    let result =
+        crate::tty::ioctl::pty_ioctl(&pair, TIOCGPTLCK, &mut lock_status as *mut u32 as u64, 0);
 
     match result {
         Ok(_) => {
@@ -3389,12 +3408,7 @@ fn test_pty_support_aarch64() -> TestResult {
 
     // Step 4: Test TIOCSPTLCK - unlock the slave
     let unlock: u32 = 0; // 0 = unlock
-    let result = crate::tty::ioctl::pty_ioctl(
-        &pair,
-        TIOCSPTLCK,
-        &unlock as *const u32 as u64,
-        0,
-    );
+    let result = crate::tty::ioctl::pty_ioctl(&pair, TIOCSPTLCK, &unlock as *const u32 as u64, 0);
 
     match result {
         Ok(_) => {}
@@ -3465,7 +3479,10 @@ fn test_telnetd_dependencies_aarch64() -> TestResult {
         Err(e) => {
             // PTY allocation may fail in boot context (no tty subsystem fully init)
             // Just verify the FdKind variants exist
-            log::info!("PTY allocate returned error {} - verifying FdKind variants", e);
+            log::info!(
+                "PTY allocate returned error {} - verifying FdKind variants",
+                e
+            );
         }
     }
 
@@ -3616,7 +3633,9 @@ fn test_timer_quantum_reset_aarch64() -> TestResult {
 
     // Verify counter incremented
     if after != 1 {
-        return TestResult::Fail("reset_quantum did not increment counter - ARM64 reset is a no-op");
+        return TestResult::Fail(
+            "reset_quantum did not increment counter - ARM64 reset is a no-op",
+        );
     }
 
     TestResult::Pass
@@ -3733,7 +3752,10 @@ fn test_future_basics() -> TestResult {
     let mut cx = Context::from_waker(&waker);
 
     // Create a future that requires 3 polls to complete
-    let mut future = CounterFuture { count: 0, target: 3 };
+    let mut future = CounterFuture {
+        count: 0,
+        target: 3,
+    };
 
     // Poll until ready
     for i in 0..5 {
@@ -3937,7 +3959,9 @@ fn test_tty_foreground_pgrp() -> TestResult {
         // The process will eventually exit or be cleaned up by normal kernel
         // operations.
 
-        log::info!("[TTY_PGRP_TEST] Integration test passed - create_user_process sets foreground pgrp");
+        log::info!(
+            "[TTY_PGRP_TEST] Integration test passed - create_user_process sets foreground pgrp"
+        );
         TestResult::Pass
     }
 }
@@ -4158,7 +4182,7 @@ fn test_pipe_broken() -> TestResult {
 ///
 /// Creates a new FdTable and verifies stdin/stdout/stderr are pre-allocated.
 fn test_fd_table_creation() -> TestResult {
-    use crate::ipc::fd::{FdTable, FdKind, STDIN, STDOUT, STDERR};
+    use crate::ipc::fd::{FdKind, FdTable, STDERR, STDIN, STDOUT};
 
     let table = FdTable::new();
 
@@ -4196,7 +4220,7 @@ fn test_fd_table_creation() -> TestResult {
 ///
 /// Allocates a new fd in the table and verifies close works correctly.
 fn test_fd_alloc_close() -> TestResult {
-    use crate::ipc::fd::{FdTable, FdKind};
+    use crate::ipc::fd::{FdKind, FdTable};
 
     let mut table = FdTable::new();
 

@@ -11,10 +11,10 @@ use super::terminal::TerminalPane;
 use spin::Mutex;
 
 // Architecture-specific framebuffer imports
-#[cfg(target_arch = "x86_64")]
-use crate::logger::SHELL_FRAMEBUFFER;
 #[cfg(target_arch = "aarch64")]
 use super::arm64_fb::SHELL_FRAMEBUFFER;
+#[cfg(target_arch = "x86_64")]
+use crate::logger::SHELL_FRAMEBUFFER;
 
 /// Global split-screen state.
 ///
@@ -231,7 +231,9 @@ pub fn write_char_to_terminal(c: char) -> bool {
                     // Hide cursor, write char, show cursor
                     state.terminal.draw_cursor(&mut *fb_guard, false);
                     state.terminal.write_char(&mut *fb_guard, c);
-                    state.terminal.draw_cursor(&mut *fb_guard, state.cursor_visible);
+                    state
+                        .terminal
+                        .draw_cursor(&mut *fb_guard, state.cursor_visible);
 
                     // Flush framebuffer
                     #[cfg(target_arch = "x86_64")]
@@ -260,7 +262,9 @@ pub fn write_str_to_terminal(s: &str) -> bool {
                 if let Some(mut fb_guard) = fb.try_lock() {
                     state.terminal.draw_cursor(&mut *fb_guard, false);
                     state.terminal.write_str(&mut *fb_guard, s);
-                    state.terminal.draw_cursor(&mut *fb_guard, state.cursor_visible);
+                    state
+                        .terminal
+                        .draw_cursor(&mut *fb_guard, state.cursor_visible);
 
                     // Flush framebuffer
                     #[cfg(target_arch = "x86_64")]
@@ -285,7 +289,9 @@ pub fn toggle_terminal_cursor() {
             if let Some(fb) = SHELL_FRAMEBUFFER.get() {
                 if let Some(mut fb_guard) = fb.try_lock() {
                     state.cursor_visible = !state.cursor_visible;
-                    state.terminal.draw_cursor(&mut *fb_guard, state.cursor_visible);
+                    state
+                        .terminal
+                        .draw_cursor(&mut *fb_guard, state.cursor_visible);
 
                     // Flush framebuffer
                     #[cfg(target_arch = "x86_64")]

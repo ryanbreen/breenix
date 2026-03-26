@@ -195,9 +195,9 @@ pub unsafe fn load_elf_kernel_space(data: &[u8]) -> Result<LoadedElf, &'static s
     #[cfg(target_arch = "aarch64")]
     unsafe {
         core::arch::asm!(
-            "ic iallu",     // Invalidate ALL instruction cache to PoU
-            "dsb ish",      // Ensure completion
-            "isb",          // Synchronize instruction stream
+            "ic iallu", // Invalidate ALL instruction cache to PoU
+            "dsb ish",  // Ensure completion
+            "isb",      // Synchronize instruction stream
             options(nostack, preserves_flags)
         );
     }
@@ -205,7 +205,11 @@ pub unsafe fn load_elf_kernel_space(data: &[u8]) -> Result<LoadedElf, &'static s
     // Page-align the heap start
     let heap_start = (max_segment_end + 0xfff) & !0xfff;
 
-    let load_base = if min_load_addr == u64::MAX { 0 } else { min_load_addr };
+    let load_base = if min_load_addr == u64::MAX {
+        0
+    } else {
+        min_load_addr
+    };
     // If no PT_PHDR was found, compute from load_base + phoff
     let phdr_vaddr = phdr_vaddr.unwrap_or(load_base + header.phoff);
 
@@ -292,9 +296,7 @@ pub fn prepare_user_program(elf: &LoadedElf, stack_top: u64) -> UserProgram {
 // =============================================================================
 
 #[cfg(not(target_arch = "x86_64"))]
-use crate::memory::arch_stub::{
-    Page, PageTableFlags, PhysAddr, PhysFrame, Size4KiB, VirtAddr,
-};
+use crate::memory::arch_stub::{Page, PageTableFlags, PhysAddr, PhysFrame, Size4KiB, VirtAddr};
 
 /// Load ELF into a specific page table (for process isolation)
 ///
@@ -371,15 +373,19 @@ pub fn load_elf_into_page_table(
     // where the VIPT i-cache index extends beyond the page offset.
     unsafe {
         core::arch::asm!(
-            "dsb ish",      // Ensure all data cache cleans are visible
-            "ic iallu",     // Invalidate ALL instruction cache to PoU
-            "dsb ish",      // Ensure i-cache invalidation completes
-            "isb",          // Synchronize instruction stream
+            "dsb ish",  // Ensure all data cache cleans are visible
+            "ic iallu", // Invalidate ALL instruction cache to PoU
+            "dsb ish",  // Ensure i-cache invalidation completes
+            "isb",      // Synchronize instruction stream
             options(nostack, preserves_flags)
         );
     }
 
-    let load_base = if min_load_addr == u64::MAX { 0 } else { min_load_addr };
+    let load_base = if min_load_addr == u64::MAX {
+        0
+    } else {
+        min_load_addr
+    };
     // If no PT_PHDR was found, compute from load_base + phoff
     let phdr_vaddr = phdr_vaddr.unwrap_or(load_base + header.phoff);
 
@@ -468,12 +474,15 @@ fn load_segment_into_page_table(
         // Check if page is already mapped (handles overlapping segments like RELRO)
         // translate_page takes VirtAddr and returns Option<PhysAddr>
         #[cfg(target_arch = "x86_64")]
-        let existing_phys_opt = page_table.translate_page(x86_64::VirtAddr::new(page_vaddr.as_u64()));
+        let existing_phys_opt =
+            page_table.translate_page(x86_64::VirtAddr::new(page_vaddr.as_u64()));
         #[cfg(not(target_arch = "x86_64"))]
-        let existing_phys_opt = page_table.translate_page(crate::memory::arch_stub::VirtAddr::new(page_vaddr.as_u64()));
+        let existing_phys_opt =
+            page_table.translate_page(crate::memory::arch_stub::VirtAddr::new(page_vaddr.as_u64()));
 
         let (frame, already_mapped) = if let Some(existing_phys) = existing_phys_opt {
-            let existing_frame = PhysFrame::containing_address(PhysAddr::new(existing_phys.as_u64()));
+            let existing_frame =
+                PhysFrame::containing_address(PhysAddr::new(existing_phys.as_u64()));
             log::trace!(
                 "[elf-arm64] Page {:#x} already mapped to frame {:#x}, reusing",
                 page_vaddr.as_u64(),
@@ -537,10 +546,8 @@ fn load_segment_into_page_table(
         // would write past the end of the physical frame, corrupting adjacent memory.
         let bytes_available_in_page = (4096 - page_offset) as u64;
         let copy_start_in_file = page_file_offset;
-        let copy_end_in_file = core::cmp::min(
-            page_file_offset + bytes_available_in_page,
-            file_size as u64,
-        );
+        let copy_end_in_file =
+            core::cmp::min(page_file_offset + bytes_available_in_page, file_size as u64);
 
         if copy_start_in_file < file_size as u64 && copy_end_in_file > copy_start_in_file {
             let file_data_start = (file_start as u64 + copy_start_in_file) as usize;

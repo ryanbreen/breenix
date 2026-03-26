@@ -163,8 +163,14 @@ pub fn try_dump_state() -> Option<ProcessDumpInfo> {
         let state_str = match p.state {
             ProcessState::Creating => "creating",
             ProcessState::Ready => "ready",
-            ProcessState::Running => { running_count += 1; "running" }
-            ProcessState::Blocked => { blocked_count += 1; "blocked" }
+            ProcessState::Running => {
+                running_count += 1;
+                "running"
+            }
+            ProcessState::Blocked => {
+                blocked_count += 1;
+                "blocked"
+            }
             ProcessState::Terminated(_) => "terminated",
         };
         entries.push(ProcessDumpEntry {
@@ -185,7 +191,10 @@ pub fn try_dump_state() -> Option<ProcessDumpInfo> {
 /// Create a new user process using the new architecture
 /// Note: Uses architecture-specific ELF loader and process creation
 #[allow(dead_code)]
-pub fn create_user_process(name: alloc::string::String, elf_data: &[u8]) -> Result<ProcessId, &'static str> {
+pub fn create_user_process(
+    name: alloc::string::String,
+    elf_data: &[u8],
+) -> Result<ProcessId, &'static str> {
     creation::create_user_process(name, elf_data)
 }
 

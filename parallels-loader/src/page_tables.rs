@@ -6,7 +6,6 @@
 ///
 /// Uses 1GB block mappings (L1) where possible, 2MB blocks (L2) for
 /// device regions and for VMware's split kernel/device address space.
-
 use core::ptr;
 
 /// HHDM base address matching the kernel's expectation.
@@ -30,7 +29,7 @@ mod attr {
     ///   Index 2 = Normal NC     (0x44)
     pub const ATTR_IDX_DEVICE: u64 = 0 << 2; // MAIR index 0: Device-nGnRnE
     pub const ATTR_IDX_NORMAL: u64 = 1 << 2; // MAIR index 1: Normal WB
-    pub const ATTR_IDX_NC: u64 = 2 << 2;     // MAIR index 2: Normal Non-Cacheable
+    pub const ATTR_IDX_NC: u64 = 2 << 2; // MAIR index 2: Normal Non-Cacheable
 
     /// Access flag (must be set, or access fault)
     pub const AF: u64 = 1 << 10;
@@ -54,7 +53,8 @@ mod attr {
     pub const NC_BLOCK: u64 = VALID | BLOCK | ATTR_IDX_NC | AF | ISH | AP_RW_EL1;
 
     /// Device memory block: non-cacheable, outer shareable, execute-never
-    pub const DEVICE_BLOCK: u64 = VALID | BLOCK | ATTR_IDX_DEVICE | AF | OSH | AP_RW_EL1 | UXN | PXN;
+    pub const DEVICE_BLOCK: u64 =
+        VALID | BLOCK | ATTR_IDX_DEVICE | AF | OSH | AP_RW_EL1 | UXN | PXN;
 
     /// Table descriptor (points to next level)
     pub const TABLE_DESC: u64 = VALID | TABLE;
@@ -419,10 +419,6 @@ fn write_entry(table_phys: u64, index: usize, value: u64) {
 /// Flush data cache and issue barrier after all page table entries are written.
 fn flush_page_tables() {
     unsafe {
-        core::arch::asm!(
-            "dsb sy",
-            "isb",
-            options(nostack, preserves_flags),
-        );
+        core::arch::asm!("dsb sy", "isb", options(nostack, preserves_flags),);
     }
 }

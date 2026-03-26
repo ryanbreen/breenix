@@ -3,9 +3,9 @@
 //! Verifies invariants related to kernel stack mapping and TSS RSP0.
 
 #[cfg(target_arch = "x86_64")]
-use x86_64::VirtAddr;
-#[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::{PageTable, PageTableFlags};
+#[cfg(target_arch = "x86_64")]
+use x86_64::VirtAddr;
 
 /// Contract: Kernel stack at given address must be mapped with correct flags
 #[allow(dead_code)]
@@ -29,20 +29,26 @@ pub fn verify_stack_mapping(
     if pml4[pml4_idx].is_unused() {
         return Err(alloc::format!(
             "Stack address {:#x}: PML4[{}] is not present",
-            vaddr.as_u64(), pml4_idx
+            vaddr.as_u64(),
+            pml4_idx
         ));
     }
 
-    let pdpt_frame = pml4[pml4_idx].frame().map_err(|_|
-        alloc::format!("Stack address {:#x}: PML4[{}] has invalid frame", vaddr.as_u64(), pml4_idx)
-    )?;
+    let pdpt_frame = pml4[pml4_idx].frame().map_err(|_| {
+        alloc::format!(
+            "Stack address {:#x}: PML4[{}] has invalid frame",
+            vaddr.as_u64(),
+            pml4_idx
+        )
+    })?;
     let pdpt_virt = phys_offset + pdpt_frame.start_address().as_u64();
     let pdpt = unsafe { &*(pdpt_virt.as_ptr() as *const PageTable) };
 
     if pdpt[pdpt_idx].is_unused() {
         return Err(alloc::format!(
             "Stack address {:#x}: PDPT[{}] is not present",
-            vaddr.as_u64(), pdpt_idx
+            vaddr.as_u64(),
+            pdpt_idx
         ));
     }
 
@@ -52,16 +58,21 @@ pub fn verify_stack_mapping(
         return Ok(());
     }
 
-    let pd_frame = pdpt[pdpt_idx].frame().map_err(|_|
-        alloc::format!("Stack address {:#x}: PDPT[{}] has invalid frame", vaddr.as_u64(), pdpt_idx)
-    )?;
+    let pd_frame = pdpt[pdpt_idx].frame().map_err(|_| {
+        alloc::format!(
+            "Stack address {:#x}: PDPT[{}] has invalid frame",
+            vaddr.as_u64(),
+            pdpt_idx
+        )
+    })?;
     let pd_virt = phys_offset + pd_frame.start_address().as_u64();
     let pd = unsafe { &*(pd_virt.as_ptr() as *const PageTable) };
 
     if pd[pd_idx].is_unused() {
         return Err(alloc::format!(
             "Stack address {:#x}: PD[{}] is not present",
-            vaddr.as_u64(), pd_idx
+            vaddr.as_u64(),
+            pd_idx
         ));
     }
 
@@ -71,16 +82,21 @@ pub fn verify_stack_mapping(
         return Ok(());
     }
 
-    let pt_frame = pd[pd_idx].frame().map_err(|_|
-        alloc::format!("Stack address {:#x}: PD[{}] has invalid frame", vaddr.as_u64(), pd_idx)
-    )?;
+    let pt_frame = pd[pd_idx].frame().map_err(|_| {
+        alloc::format!(
+            "Stack address {:#x}: PD[{}] has invalid frame",
+            vaddr.as_u64(),
+            pd_idx
+        )
+    })?;
     let pt_virt = phys_offset + pt_frame.start_address().as_u64();
     let pt = unsafe { &*(pt_virt.as_ptr() as *const PageTable) };
 
     if pt[pt_idx].is_unused() {
         return Err(alloc::format!(
             "Stack address {:#x}: PT[{}] is not present (page not mapped)",
-            vaddr.as_u64(), pt_idx
+            vaddr.as_u64(),
+            pt_idx
         ));
     }
 
@@ -200,7 +216,8 @@ pub fn verify_tss_rsp0_valid() -> Result<(), alloc::string::String> {
     if pml4_idx != 402 {
         return Err(alloc::format!(
             "TSS RSP0 ({:#x}) is in PML4[{}], expected PML4[402] (kernel stack region)",
-            rsp0, pml4_idx
+            rsp0,
+            pml4_idx
         ));
     }
 
@@ -223,7 +240,10 @@ pub fn verify_stack_region(
         if let Err(e) = verify_stack_mapping(VirtAddr::new(addr), phys_offset) {
             return Err(alloc::format!(
                 "Stack region {:#x}-{:#x} validation failed at {:#x}: {}",
-                stack_bottom.as_u64(), stack_top.as_u64(), addr, e
+                stack_bottom.as_u64(),
+                stack_top.as_u64(),
+                addr,
+                e
             ));
         }
         addr += page_size;

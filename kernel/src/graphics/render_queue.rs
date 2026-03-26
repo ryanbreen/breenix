@@ -54,7 +54,10 @@ static PRODUCER_LOCK: AtomicBool = AtomicBool::new(false);
 /// Called during kernel initialization.
 pub fn init() {
     QUEUE_READY.store(true, Ordering::SeqCst);
-    crate::serial_println!("[render_queue] Initialized ({}KB buffer)", QUEUE_SIZE / 1024);
+    crate::serial_println!(
+        "[render_queue] Initialized ({}KB buffer)",
+        QUEUE_SIZE / 1024
+    );
 }
 
 /// Check if the render queue is ready.

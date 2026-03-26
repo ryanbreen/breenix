@@ -1,3 +1,5 @@
+#[cfg(not(target_arch = "x86_64"))]
+pub mod arch_stub;
 pub mod cow_stats;
 pub mod frame_allocator;
 pub mod frame_metadata;
@@ -8,13 +10,15 @@ pub mod layout;
 pub mod paging;
 pub mod per_cpu_stack;
 pub mod process_memory;
+pub mod slab;
 pub mod stack;
 pub mod tlb;
-pub mod slab;
 pub mod vma;
-#[cfg(not(target_arch = "x86_64"))]
-pub mod arch_stub;
 
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::{
+    Mapper, Page, PageTableFlags, PhysAddr, PhysFrame, Size4KiB, VirtAddr,
+};
 use bootloader_api::info::MemoryRegions;
 use conquer_once::spin::OnceCell;
 use spin::Mutex;
@@ -22,8 +26,6 @@ use spin::Mutex;
 use x86_64::structures::paging::{Mapper, Page, PageTableFlags, PhysFrame, Size4KiB};
 #[cfg(target_arch = "x86_64")]
 use x86_64::{PhysAddr, VirtAddr};
-#[cfg(not(target_arch = "x86_64"))]
-use crate::memory::arch_stub::{Mapper, Page, PageTableFlags, PhysFrame, Size4KiB, PhysAddr, VirtAddr};
 
 /// Global physical memory offset for use throughout the kernel
 static PHYSICAL_MEMORY_OFFSET: OnceCell<VirtAddr> = OnceCell::uninit();
@@ -35,7 +37,10 @@ pub fn init_physical_memory_offset_aarch64() {
     // ARM64 uses a higher-half direct map (HHDM)
     let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
     PHYSICAL_MEMORY_OFFSET.init_once(|| VirtAddr::new(hhdm_base));
-    log::info!("ARM64 physical memory offset initialized (HHDM at {:#x})", hhdm_base);
+    log::info!(
+        "ARM64 physical memory offset initialized (HHDM at {:#x})",
+        hhdm_base
+    );
 }
 
 /// Initialize the ARM64 kernel heap (mapped virtual pages + global allocator)
@@ -59,7 +64,7 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
 
     // Store the physical memory offset globally
     PHYSICAL_MEMORY_OFFSET.init_once(|| physical_memory_offset);
-    
+
     // === STEP 1: Log canonical kernel layout ===
     log::info!("STEP 1: Establishing canonical kernel layout...");
     layout::log_layout();
@@ -78,7 +83,7 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
     // Initialize global kernel page table system
     log::info!("Initializing global kernel page tables...");
     kernel_page_table::init(physical_memory_offset);
-    
+
     // PHASE 2: Build master kernel PML4 with upper-half mappings
     kernel_page_table::build_master_kernel_pml4();
 
@@ -90,7 +95,10 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
         use x86_64::registers::control::Cr3;
         let (current_frame, _) = Cr3::read();
         let master_cr3 = current_frame.start_address().as_u64();
-        log::info!("CRITICAL: Updating kernel_cr3 to master PML4: {:#x}", master_cr3);
+        log::info!(
+            "CRITICAL: Updating kernel_cr3 to master PML4: {:#x}",
+            master_cr3
+        );
         crate::per_cpu::set_kernel_cr3(master_cr3);
     }
     #[cfg(target_arch = "aarch64")]
@@ -359,14 +367,14 @@ impl PhysAddrWrapper {
 
         // For heap and other mapped regions, use the page table entry directly
         // We can't use translate_addr because it adds the offset back when reading PTEs
-        #[cfg(target_arch = "x86_64")]
-        use x86_64::registers::control::Cr3;
         #[cfg(not(target_arch = "x86_64"))]
         use crate::memory::arch_stub::Cr3;
-        #[cfg(target_arch = "x86_64")]
-        use x86_64::structures::paging::PageTable;
         #[cfg(not(target_arch = "x86_64"))]
         use crate::memory::arch_stub::PageTable;
+        #[cfg(target_arch = "x86_64")]
+        use x86_64::registers::control::Cr3;
+        #[cfg(target_arch = "x86_64")]
+        use x86_64::structures::paging::PageTable;
 
         let virt_addr = VirtAddr::new(virt as u64);
 
@@ -387,7 +395,11 @@ impl PhysAddrWrapper {
 
         let p4_entry = &pml4[p4_idx as usize];
         if !p4_entry.flags().contains(PageTableFlags::PRESENT) {
-            log::error!("PhysAddrWrapper: PML4[{}] not present for virt {:#x}", p4_idx, virt);
+            log::error!(
+                "PhysAddrWrapper: PML4[{}] not present for virt {:#x}",
+                p4_idx,
+                virt
+            );
             return virt as u64;
         }
 
@@ -398,7 +410,11 @@ impl PhysAddrWrapper {
 
         let p3_entry = &pdpt[p3_idx as usize];
         if !p3_entry.flags().contains(PageTableFlags::PRESENT) {
-            log::error!("PhysAddrWrapper: PDPT[{}] not present for virt {:#x}", p3_idx, virt);
+            log::error!(
+                "PhysAddrWrapper: PDPT[{}] not present for virt {:#x}",
+                p3_idx,
+                virt
+            );
             return virt as u64;
         }
 
@@ -415,7 +431,11 @@ impl PhysAddrWrapper {
 
         let p2_entry = &pd[p2_idx as usize];
         if !p2_entry.flags().contains(PageTableFlags::PRESENT) {
-            log::error!("PhysAddrWrapper: PD[{}] not present for virt {:#x}", p2_idx, virt);
+            log::error!(
+                "PhysAddrWrapper: PD[{}] not present for virt {:#x}",
+                p2_idx,
+                virt
+            );
             return virt as u64;
         }
 
@@ -432,7 +452,11 @@ impl PhysAddrWrapper {
 
         let p1_entry = &pt[p1_idx as usize];
         if !p1_entry.flags().contains(PageTableFlags::PRESENT) {
-            log::error!("PhysAddrWrapper: PT[{}] not present for virt {:#x}", p1_idx, virt);
+            log::error!(
+                "PhysAddrWrapper: PT[{}] not present for virt {:#x}",
+                p1_idx,
+                virt
+            );
             return virt as u64;
         }
 

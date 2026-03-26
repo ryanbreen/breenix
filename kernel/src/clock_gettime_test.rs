@@ -39,7 +39,10 @@ pub fn test_clock_gettime() {
 
     // ── Test A: TSC Calibration ───────────────────────────────────
     log::info!("Test A: TSC Calibration Status");
-    assert!(tsc::is_calibrated(), "TSC must be calibrated before clock_gettime test");
+    assert!(
+        tsc::is_calibrated(),
+        "TSC must be calibrated before clock_gettime test"
+    );
 
     let freq_hz = tsc::frequency_hz();
     let freq_ghz = freq_hz as f64 / 1_000_000_000.0;
@@ -91,7 +94,9 @@ pub fn test_clock_gettime() {
         assert!(
             now_ns >= prev_ns,
             "time went backwards on call {}! prev={} ns, now={} ns",
-            i, prev_ns, now_ns
+            i,
+            prev_ns,
+            now_ns
         );
 
         if now_ns > prev_ns {
@@ -164,7 +169,11 @@ pub fn test_clock_gettime() {
         "nanoseconds out of valid range: {}",
         real.tv_nsec
     );
-    assert!(dt.year >= 2024, "RTC returned implausible year: {}", dt.year);
+    assert!(
+        dt.year >= 2024,
+        "RTC returned implausible year: {}",
+        dt.year
+    );
     log::info!("✓ CLOCK_REALTIME has valid timestamp and sub-second precision");
 
     // ── Test G: Invalid Clock ID ──────────────────────────────────

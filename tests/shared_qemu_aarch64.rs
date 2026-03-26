@@ -200,9 +200,7 @@ pub fn run_arm64_qemu(kernel_path: &str, timeout_secs: u64) -> Result<String, St
 
             // If we've been waiting 5+ seconds after boot completion, proceed anyway
             if post_complete && start.elapsed() > Duration::from_secs(15) {
-                println!(
-                    "Warning: Userspace execution not detected after boot (waited 15s total)"
-                );
+                println!("Warning: Userspace execution not detected after boot (waited 15s total)");
                 break;
             }
         }

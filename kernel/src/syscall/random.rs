@@ -12,9 +12,7 @@ use super::{ErrorCode, SyscallResult};
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
 fn read_tsc() -> u64 {
-    unsafe {
-        core::arch::x86_64::_rdtsc()
-    }
+    unsafe { core::arch::x86_64::_rdtsc() }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -35,7 +33,9 @@ struct Xorshift64Star {
 impl Xorshift64Star {
     fn new(seed: u64) -> Self {
         // Ensure non-zero state
-        Self { state: if seed == 0 { 0xdeadbeefcafe1234 } else { seed } }
+        Self {
+            state: if seed == 0 { 0xdeadbeefcafe1234 } else { seed },
+        }
     }
 
     fn next_u64(&mut self) -> u64 {

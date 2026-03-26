@@ -40,7 +40,10 @@ impl AcpiHandler for UefiAcpiHandler {
 ///
 /// `rsdp_addr` is the physical address of the RSDP, obtained from
 /// UEFI's `EFI_ACPI_TABLE_GUID` configuration table.
-pub fn discover_hardware(rsdp_addr: usize, config: &mut HardwareConfig) -> Result<(), &'static str> {
+pub fn discover_hardware(
+    rsdp_addr: usize,
+    config: &mut HardwareConfig,
+) -> Result<(), &'static str> {
     config.rsdp_addr = rsdp_addr as u64;
 
     let handler = UefiAcpiHandler;
@@ -215,9 +218,14 @@ fn parse_spcr(tables: &AcpiTables<UefiAcpiHandler>, config: &mut HardwareConfig)
         | SpcrInterfaceType::Generic16550 => 1, // 16550-compatible
         _ => 0, // PL011 / SBSA / other
     };
-    log::info!("  UART type: {} ({})",
+    log::info!(
+        "  UART type: {} ({})",
         config.uart_type,
-        if config.uart_type == 1 { "16550" } else { "PL011" }
+        if config.uart_type == 1 {
+            "16550"
+        } else {
+            "PL011"
+        }
     );
 
     if let Some(Ok(addr)) = spcr_mapping.base_address() {

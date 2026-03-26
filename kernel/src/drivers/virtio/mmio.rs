@@ -70,13 +70,13 @@ mod regs {
     pub const DRIVER_FEATURES: usize = 0x020;
     pub const DRIVER_FEATURES_SEL: usize = 0x024;
     // Legacy (v1) registers
-    pub const GUEST_PAGE_SIZE: usize = 0x028;  // v1 only
+    pub const GUEST_PAGE_SIZE: usize = 0x028; // v1 only
     pub const QUEUE_SEL: usize = 0x030;
     pub const QUEUE_NUM_MAX: usize = 0x034;
     pub const QUEUE_NUM: usize = 0x038;
-    pub const QUEUE_ALIGN: usize = 0x03c;      // v1 only
-    pub const QUEUE_PFN: usize = 0x040;        // v1 only - Page Frame Number
-    pub const QUEUE_READY: usize = 0x044;      // v2 only
+    pub const QUEUE_ALIGN: usize = 0x03c; // v1 only
+    pub const QUEUE_PFN: usize = 0x040; // v1 only - Page Frame Number
+    pub const QUEUE_READY: usize = 0x044; // v2 only
     pub const QUEUE_NOTIFY: usize = 0x050;
     pub const INTERRUPT_STATUS: usize = 0x060;
     pub const INTERRUPT_ACK: usize = 0x064;
@@ -96,7 +96,7 @@ mod regs {
 /// Each device has a 0x200 byte region
 pub const VIRTIO_MMIO_BASE: u64 = 0x0a00_0000;
 pub const VIRTIO_MMIO_SIZE: u64 = 0x200;
-pub const VIRTIO_MMIO_COUNT: usize = 32;  // QEMU virt has up to 32 virtio-mmio devices
+pub const VIRTIO_MMIO_COUNT: usize = 32; // QEMU virt has up to 32 virtio-mmio devices
 
 /// VirtIO MMIO device abstraction
 pub struct VirtioMmioDevice {

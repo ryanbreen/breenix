@@ -79,10 +79,8 @@ impl Font {
 
     /// Get metrics for this font configuration.
     pub fn metrics(&self) -> FontMetrics {
-        let char_width = get_raster_width(
-            self.weight.to_font_weight(),
-            self.size.to_raster_height(),
-        );
+        let char_width =
+            get_raster_width(self.weight.to_font_weight(), self.size.to_raster_height());
         FontMetrics {
             char_width,
             char_height: self.size.height(),
@@ -93,8 +91,12 @@ impl Font {
 
     /// Get the glyph for a character, or None if not available.
     pub fn glyph(&self, c: char) -> Option<Glyph> {
-        get_raster(c, self.weight.to_font_weight(), self.size.to_raster_height())
-            .map(|rc| Glyph::from_rasterized(rc))
+        get_raster(
+            c,
+            self.weight.to_font_weight(),
+            self.size.to_raster_height(),
+        )
+        .map(|rc| Glyph::from_rasterized(rc))
     }
 
     /// Get the replacement glyph ('?') for unknown characters.
@@ -164,12 +166,16 @@ impl Glyph {
     /// Yields (x, y, intensity) for each pixel.
     pub fn pixels(&self) -> impl Iterator<Item = (usize, usize, u8)> + '_ {
         let width = self.width();
-        self.rasterized.raster().iter().enumerate().flat_map(move |(y, row)| {
-            row.iter()
-                .take(width)
-                .enumerate()
-                .map(move |(x, &intensity)| (x, y, intensity))
-        })
+        self.rasterized
+            .raster()
+            .iter()
+            .enumerate()
+            .flat_map(move |(y, row)| {
+                row.iter()
+                    .take(width)
+                    .enumerate()
+                    .map(move |(x, &intensity)| (x, y, intensity))
+            })
     }
 }
 

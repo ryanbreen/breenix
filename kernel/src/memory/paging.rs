@@ -1,7 +1,11 @@
-#[cfg(target_arch = "x86_64")]
-use crate::task::thread::ThreadPrivilege;
 #[cfg(not(target_arch = "x86_64"))]
 use crate::memory::arch_stub::ThreadPrivilege;
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::{
+    Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB, VirtAddr,
+};
+#[cfg(target_arch = "x86_64")]
+use crate::task::thread::ThreadPrivilege;
 use conquer_once::spin::OnceCell;
 use spin::Mutex;
 #[cfg(target_arch = "x86_64")]
@@ -10,17 +14,13 @@ use x86_64::structures::paging::{
 };
 #[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
-#[cfg(not(target_arch = "x86_64"))]
-use crate::memory::arch_stub::{
-    Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB, VirtAddr,
-};
 
 // Import HAL page table operations for CR3/TLB operations
-use crate::arch_impl::PageTableOps;
-#[cfg(target_arch = "x86_64")]
-use crate::arch_impl::current::paging::X86PageTableOps;
 #[cfg(not(target_arch = "x86_64"))]
 use crate::arch_impl::current::paging::Aarch64PageTableOps as X86PageTableOps;
+#[cfg(target_arch = "x86_64")]
+use crate::arch_impl::current::paging::X86PageTableOps;
+use crate::arch_impl::PageTableOps;
 
 /// The global page table mapper
 static PAGE_TABLE_MAPPER: OnceCell<Mutex<OffsetPageTable<'static>>> = OnceCell::uninit();

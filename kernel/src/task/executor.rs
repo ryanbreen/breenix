@@ -78,7 +78,9 @@ impl Executor {
         if self.task_queue.is_empty() {
             // WFI (Wait For Interrupt) - ARM64 equivalent of x86 HLT
             // This puts the CPU in low-power mode until an interrupt occurs
-            unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+            unsafe {
+                core::arch::asm!("wfi", options(nomem, nostack));
+            }
         }
     }
 

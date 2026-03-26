@@ -113,7 +113,8 @@ pub fn find_mount(path: &str) -> Option<usize> {
 #[allow(dead_code)] // Part of VFS mount API
 pub fn get_mount_info(mount_id: usize) -> Option<(String, &'static str)> {
     let table = MOUNT_TABLE.lock();
-    table.iter()
+    table
+        .iter()
         .find(|m| m.mount_id == mount_id)
         .map(|m| (m.mount_path.clone(), m.fs_type))
 }
@@ -125,7 +126,8 @@ pub fn get_mount_info(mount_id: usize) -> Option<(String, &'static str)> {
 #[allow(dead_code)] // Part of VFS mount API
 pub fn list_mounts() -> Vec<(usize, String, &'static str)> {
     let table = MOUNT_TABLE.lock();
-    table.iter()
+    table
+        .iter()
         .map(|m| (m.mount_id, m.mount_path.clone(), m.fs_type))
         .collect()
 }

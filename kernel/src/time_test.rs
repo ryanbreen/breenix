@@ -41,7 +41,9 @@ pub fn test_timer_resolution() {
     } else {
         log::error!(
             "✗ Timer conversion INCORRECT: {} ticks should yield {} ms, got {} ms",
-            ticks, expected_ms, ms
+            ticks,
+            expected_ms,
+            ms
         );
         panic!("Timer resolution validation failed");
     }

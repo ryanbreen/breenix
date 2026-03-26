@@ -155,7 +155,9 @@ pub fn init() {
             );
             core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
         }
-        crate::serial_println!("[timer] VMware: armed BOTH virtual (PPI 27) and physical (PPI 30) timers");
+        crate::serial_println!(
+            "[timer] VMware: armed BOTH virtual (PPI 27) and physical (PPI 30) timers"
+        );
 
         // Read back timer state to verify writes took effect
         let (vctl, vtval, pctl, ptval): (u64, u64, u64, u64);
@@ -165,19 +167,36 @@ pub fn init() {
             core::arch::asm!("mrs {}, cntp_ctl_el0", out(reg) pctl, options(nomem, nostack));
             core::arch::asm!("mrs {}, cntp_tval_el0", out(reg) ptval, options(nomem, nostack));
         }
-        crate::serial_println!("[timer] CNTV_CTL={:#x} CNTV_TVAL={} CNTP_CTL={:#x} CNTP_TVAL={}",
-            vctl, vtval as i64, pctl, ptval as i64);
+        crate::serial_println!(
+            "[timer] CNTV_CTL={:#x} CNTV_TVAL={} CNTP_CTL={:#x} CNTP_TVAL={}",
+            vctl,
+            vtval as i64,
+            pctl,
+            ptval as i64
+        );
 
         // Dump GIC state for diagnosis
         dump_gic_state();
 
         // Read DAIF to verify IRQs/FIQs are unmaskable
         let daif: u64;
-        unsafe { core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack)); }
-        crate::serial_println!("[timer] DAIF={:#x} (IRQ={} FIQ={})",
+        unsafe {
+            core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack));
+        }
+        crate::serial_println!(
+            "[timer] DAIF={:#x} (IRQ={} FIQ={})",
             daif,
-            if daif & (1 << 7) != 0 { "MASKED" } else { "unmasked" },
-            if daif & (1 << 6) != 0 { "MASKED" } else { "unmasked" });
+            if daif & (1 << 7) != 0 {
+                "MASKED"
+            } else {
+                "unmasked"
+            },
+            if daif & (1 << 6) != 0 {
+                "MASKED"
+            } else {
+                "unmasked"
+            }
+        );
 
         // Read Group enable state (ICC_IGRPEN0_EL1 only accessible when DS=1)
         let grpen1: u64;
@@ -189,19 +208,33 @@ pub fn init() {
             unsafe {
                 core::arch::asm!("mrs {}, icc_igrpen0_el1", out(reg) grpen0, options(nomem, nostack));
             }
-            crate::serial_println!("[timer] ICC_IGRPEN0={:#x} ICC_IGRPEN1={:#x} USE_GROUP0={} DS=1",
-                grpen0, grpen1, crate::arch_impl::aarch64::gic::use_group0());
+            crate::serial_println!(
+                "[timer] ICC_IGRPEN0={:#x} ICC_IGRPEN1={:#x} USE_GROUP0={} DS=1",
+                grpen0,
+                grpen1,
+                crate::arch_impl::aarch64::gic::use_group0()
+            );
         } else {
-            crate::serial_println!("[timer] ICC_IGRPEN1={:#x} USE_GROUP0={} DS=0 (IGRPEN0 inaccessible)",
-                grpen1, crate::arch_impl::aarch64::gic::use_group0());
+            crate::serial_println!(
+                "[timer] ICC_IGRPEN1={:#x} USE_GROUP0={} DS=0 (IGRPEN0 inaccessible)",
+                grpen1,
+                crate::arch_impl::aarch64::gic::use_group0()
+            );
         }
     } else {
         // Non-VMware: use the selected timer only
         arm_timer(ticks_per_interrupt);
         let irq = timer_irq();
         gic::Gicv2::enable_irq(irq as u8);
-        crate::serial_println!("[timer] Using {} timer (PPI {})",
-            if irq == PHYS_TIMER_IRQ { "physical" } else { "virtual" }, irq);
+        crate::serial_println!(
+            "[timer] Using {} timer (PPI {})",
+            if irq == PHYS_TIMER_IRQ {
+                "physical"
+            } else {
+                "virtual"
+            },
+            irq
+        );
     }
 
     TIMER_INITIALIZED.store(true, Ordering::Release);
@@ -360,8 +393,13 @@ fn dump_gic_state() {
     let gicd_base = crate::platform_config::gicd_base_phys();
     let gicc_base = crate::platform_config::gicc_base_phys();
     let gicr_base = crate::platform_config::gicr_base_phys();
-    crate::serial_println!("[timer] GIC version={} GICD={:#x} GICC={:#x} GICR={:#x}",
-        gic_ver, gicd_base, gicc_base, gicr_base);
+    crate::serial_println!(
+        "[timer] GIC version={} GICD={:#x} GICC={:#x} GICR={:#x}",
+        gic_ver,
+        gicd_base,
+        gicc_base,
+        gicr_base
+    );
 
     const HHDM: u64 = 0xFFFF_0000_0000_0000;
 
@@ -389,12 +427,22 @@ fn dump_gic_state() {
         let pidr2 = crate::arch_impl::aarch64::gic::probe_mmio_u32(addr as usize + 0xFE8);
         match (ctlr, pidr2) {
             (None, _) | (_, None) => {
-                crate::serial_println!("[gic-probe] {:#010x} ({}) FAULT (External Abort)", addr, label);
+                crate::serial_println!(
+                    "[gic-probe] {:#010x} ({}) FAULT (External Abort)",
+                    addr,
+                    label
+                );
             }
             (Some(c), Some(p)) => {
                 let ok = c != 0xFFFF_FFFF;
-                crate::serial_println!("[gic-probe] {:#010x} ({}) CTLR={:#010x} PIDR2={:#010x} {}",
-                    addr, label, c, p, if ok { "<<< FOUND" } else { "" });
+                crate::serial_println!(
+                    "[gic-probe] {:#010x} ({}) CTLR={:#010x} PIDR2={:#010x} {}",
+                    addr,
+                    label,
+                    c,
+                    p,
+                    if ok { "<<< FOUND" } else { "" }
+                );
             }
         }
     }
@@ -407,23 +455,34 @@ fn dump_gic_state() {
         core::arch::asm!("mrs {}, icc_bpr1_el1", out(reg) bpr, options(nomem, nostack));
         core::arch::asm!("mrs {}, icc_sre_el1", out(reg) sre, options(nomem, nostack));
     }
-    crate::serial_println!("[timer] ICC regs: PMR={:#x} GRPEN1={:#x} BPR1={:#x} SRE={:#x}",
-        pmr, grpen, bpr, sre);
+    crate::serial_println!(
+        "[timer] ICC regs: PMR={:#x} GRPEN1={:#x} BPR1={:#x} SRE={:#x}",
+        pmr,
+        grpen,
+        bpr,
+        sre
+    );
 
     // Read GICD registers
     unsafe {
         let gicd = (HHDM + gicd_base) as *const u32;
         let gicd_ctlr = core::ptr::read_volatile(gicd.add(0));
         let gicd_isenabler0 = core::ptr::read_volatile(gicd.byte_add(0x100));
-        crate::serial_println!("[timer] GICD@{:#x}: CTLR={:#x} ISENABLER0={:#x}",
-            gicd_base, gicd_ctlr, gicd_isenabler0);
+        crate::serial_println!(
+            "[timer] GICD@{:#x}: CTLR={:#x} ISENABLER0={:#x}",
+            gicd_base,
+            gicd_ctlr,
+            gicd_isenabler0
+        );
     }
 
     // Read GICR registers (redistributor manages PPIs on GICv3).
     // Only read if the GICR base has been validated by the GIC probe mechanism.
     // On M5 Max under Parallels the loader may report a wrong GICR base and
     // reading it causes a Synchronous External Abort (DFSC=0x10).
-    if gicr_base != 0 && crate::arch_impl::aarch64::gic::GICR_VALID.load(core::sync::atomic::Ordering::Acquire) {
+    if gicr_base != 0
+        && crate::arch_impl::aarch64::gic::GICR_VALID.load(core::sync::atomic::Ordering::Acquire)
+    {
         unsafe {
             // GICR has RD_base (64KB) + SGI_base (64KB) per CPU
             // SGI_base is at offset 0x10000 from RD_base
@@ -442,18 +501,29 @@ fn dump_gic_state() {
                 gicr_base, gicr_waker, gicr_isenabler0, gicr_ispendr0, gicr_igroupr0);
             crate::serial_println!(
                 "[timer] GICR PPI27: en={} pend={} | PPI30: en={} pend={}",
-                ppi27_en, ppi27_pend, ppi30_en, ppi30_pend);
+                ppi27_en,
+                ppi27_pend,
+                ppi30_en,
+                ppi30_pend
+            );
 
             // Read priority for PPIs 27 and 30
             // GICR_IPRIORITYR covers 4 IRQs per 32-bit register
-            let prio_reg6 = core::ptr::read_volatile(gicr_sgi.byte_add(0x400 + 6*4)); // IRQs 24-27
-            let prio_reg7 = core::ptr::read_volatile(gicr_sgi.byte_add(0x400 + 7*4)); // IRQs 28-31
+            let prio_reg6 = core::ptr::read_volatile(gicr_sgi.byte_add(0x400 + 6 * 4)); // IRQs 24-27
+            let prio_reg7 = core::ptr::read_volatile(gicr_sgi.byte_add(0x400 + 7 * 4)); // IRQs 28-31
             let prio27 = (prio_reg6 >> 24) & 0xFF;
             let prio30 = (prio_reg7 >> 16) & 0xFF;
-            crate::serial_println!("[timer] PPI27 priority={:#x} PPI30 priority={:#x}", prio27, prio30);
+            crate::serial_println!(
+                "[timer] PPI27 priority={:#x} PPI30 priority={:#x}",
+                prio27,
+                prio30
+            );
         }
     } else if gicr_base != 0 {
-        crate::serial_println!("[timer] GICR@{:#x}: skipped (not validated — probe failed or not yet run)", gicr_base);
+        crate::serial_println!(
+            "[timer] GICR@{:#x}: skipped (not validated — probe failed or not yet run)",
+            gicr_base
+        );
     }
 }
 
@@ -493,7 +563,6 @@ fn print_timer_count_decimal(count: u64) {
         }
     }
 }
-
 
 /// Print a u64 as 16-char zero-padded hexadecimal using raw serial output.
 #[allow(dead_code)] // Debug utility for soft lockup dumps
@@ -594,7 +663,9 @@ fn dump_lockup_state(stall_ticks: u64) {
         // Ready queue contents
         raw_serial_str(b"  Ready queue: [");
         for (i, &tid) in info.ready_queue_ids.iter().enumerate() {
-            if i > 0 { raw_serial_str(b", "); }
+            if i > 0 {
+                raw_serial_str(b", ");
+            }
             print_timer_count_decimal(tid);
         }
         raw_serial_str(b"]\n");
@@ -616,9 +687,15 @@ fn dump_lockup_state(stall_ticks: u64) {
                 _ => b'?',
             };
             raw_serial_char(state_ch);
-            if t.blocked_in_syscall { raw_serial_str(b" bis"); }
-            if t.has_wake_time { raw_serial_str(b" wt"); }
-            if t.privilege == 1 { raw_serial_str(b" user"); }
+            if t.blocked_in_syscall {
+                raw_serial_str(b" bis");
+            }
+            if t.has_wake_time {
+                raw_serial_str(b" wt");
+            }
+            if t.privilege == 1 {
+                raw_serial_str(b" user");
+            }
             raw_serial_str(b"\n");
         }
     } else {

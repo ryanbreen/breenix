@@ -9,20 +9,16 @@
 //! 6. Shutdown with new workqueue
 //! 7. Error path re-queue
 
-use alloc::sync::Arc;
-use crate::{arch_disable_interrupts, arch_enable_interrupts, arch_halt};
 use crate::task::workqueue::{
     flush_system_workqueue, schedule_work, schedule_work_fn, Work, Workqueue, WorkqueueFlags,
 };
+use crate::{arch_disable_interrupts, arch_enable_interrupts, arch_halt};
+use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 pub fn test_workqueue() {
     static EXEC_COUNT: AtomicU32 = AtomicU32::new(0);
-    static EXEC_ORDER: [AtomicU32; 3] = [
-        AtomicU32::new(0),
-        AtomicU32::new(0),
-        AtomicU32::new(0),
-    ];
+    static EXEC_ORDER: [AtomicU32; 3] = [AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)];
 
     // Reset counters
     EXEC_COUNT.store(0, Ordering::SeqCst);
@@ -33,7 +29,9 @@ pub fn test_workqueue() {
     log::info!("=== WORKQUEUE TEST: Starting workqueue test ===");
 
     // Enable interrupts so worker thread can run
-    unsafe { arch_enable_interrupts(); }
+    unsafe {
+        arch_enable_interrupts();
+    }
 
     // Test 1: Basic execution
     log::info!("WORKQUEUE_TEST: Testing basic execution...");
@@ -113,7 +111,10 @@ pub fn test_workqueue() {
     flush_system_workqueue();
 
     let flush_done = FLUSH_WORK_DONE.load(Ordering::SeqCst);
-    assert_eq!(flush_done, 1, "flush should have waited for work to complete");
+    assert_eq!(
+        flush_done, 1,
+        "flush should have waited for work to complete"
+    );
     log::info!("WORKQUEUE_TEST: flush completed");
 
     // Test 4: Re-queue rejection test
@@ -228,7 +229,9 @@ pub fn test_workqueue() {
     error_work.wait();
     log::info!("WORKQUEUE_TEST: error path test passed");
 
-    unsafe { arch_disable_interrupts(); }
+    unsafe {
+        arch_disable_interrupts();
+    }
     log::info!("WORKQUEUE_TEST: all tests passed");
     log::info!("=== WORKQUEUE TEST: Completed ===");
 }

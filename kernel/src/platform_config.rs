@@ -240,7 +240,9 @@ pub fn probe_gicv2m(phys_base: u64) -> bool {
     // Log raw value for debugging
     crate::serial_println!(
         "[gicv2m] MSI_TYPER raw={:#010x} -> base_spi={}, num_spi={}",
-        msi_typer, spi_base, spi_count,
+        msi_typer,
+        spi_base,
+        spi_count,
     );
 
     if spi_count == 0 || spi_base == 0 || msi_typer == 0xFFFF_FFFF {
@@ -591,9 +593,9 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
             // SMP stacks occupy 0x0300_0000 - 0x0400_0000 (8 CPUs × 2 MB = 16 MB).
             // 0x0400_0000 (64 MB) keeps the frame allocator safely clear of all static regions.
             let fa_start = first_base + 0x0400_0000; // +64 MB
-            // Frame allocator must end BEFORE the DMA NC region.
-            // The .dma section starts at physical 0x5000_0000, so cap fa_end there.
-            // On VMware (RAM base 0x80000000), apply the offset to the DMA boundary.
+                                                     // Frame allocator must end BEFORE the DMA NC region.
+                                                     // The .dma section starts at physical 0x5000_0000, so cap fa_end there.
+                                                     // On VMware (RAM base 0x80000000), apply the offset to the DMA boundary.
             let dma_boundary = 0x5000_0000u64 + RAM_BASE_OFFSET.load(Ordering::Relaxed);
             let fa_end = (first_base + first_size).min(dma_boundary);
             if fa_end > fa_start {
@@ -610,7 +612,14 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
         FB_WIDTH.store(config.framebuffer.width as u64, Ordering::Relaxed);
         FB_HEIGHT.store(config.framebuffer.height as u64, Ordering::Relaxed);
         FB_STRIDE.store(config.framebuffer.stride as u64, Ordering::Relaxed);
-        FB_IS_BGR.store(if config.framebuffer.pixel_format == 1 { 1 } else { 0 }, Ordering::Relaxed);
+        FB_IS_BGR.store(
+            if config.framebuffer.pixel_format == 1 {
+                1
+            } else {
+                0
+            },
+            Ordering::Relaxed,
+        );
     }
 
     // Store xHCI loader-level HCRST flag

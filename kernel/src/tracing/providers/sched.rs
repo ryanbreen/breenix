@@ -106,8 +106,7 @@ pub const SCHED_RESCHED: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_SCHED_RESCHE
 
 /// Event type for scheduler queue state snapshot.
 /// Payload: packed(ready_queue_len, chosen_tid).
-pub const SCHED_QUEUE_STATE: u16 =
-    ((PROVIDER_ID as u16) << 8) | (PROBE_SCHED_QUEUE_STATE as u16);
+pub const SCHED_QUEUE_STATE: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_SCHED_QUEUE_STATE as u16);
 
 // =============================================================================
 // Initialization

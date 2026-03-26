@@ -225,8 +225,8 @@ pub struct CpuContext {
     pub x26: u64,
     pub x27: u64,
     pub x28: u64,
-    pub x29: u64,  // Frame pointer (FP)
-    pub x30: u64,  // Link register (LR) - return address for context switch
+    pub x29: u64, // Frame pointer (FP)
+    pub x30: u64, // Link register (LR) - return address for context switch
 
     /// Stack pointer
     pub sp: u64,
@@ -247,8 +247,12 @@ impl CpuContext {
     /// Create a new CPU context for a thread entry point
     pub fn new(entry_point: VirtAddr, stack_pointer: VirtAddr, privilege: ThreadPrivilege) -> Self {
         match privilege {
-            ThreadPrivilege::Kernel => Self::new_kernel_thread(entry_point.as_u64(), stack_pointer.as_u64()),
-            ThreadPrivilege::User => Self::new_user_thread(entry_point.as_u64(), stack_pointer.as_u64(), 0),
+            ThreadPrivilege::Kernel => {
+                Self::new_kernel_thread(entry_point.as_u64(), stack_pointer.as_u64())
+            }
+            ThreadPrivilege::User => {
+                Self::new_user_thread(entry_point.as_u64(), stack_pointer.as_u64(), 0)
+            }
         }
     }
 
@@ -257,21 +261,42 @@ impl CpuContext {
     /// The thread will start executing at `entry_point` with the given stack.
     pub fn new_kernel_thread(entry_point: u64, stack_top: u64) -> Self {
         Self {
-            x0: 0,  // Result register (not used for initial context)
-            x1: 0, x2: 0, x3: 0, x4: 0,
-            x5: 0, x6: 0, x7: 0, x8: 0,
-            x9: 0, x10: 0, x11: 0, x12: 0,
-            x13: 0, x14: 0, x15: 0, x16: 0,
-            x17: 0, x18: 0,
-            x19: 0, x20: 0, x21: 0, x22: 0,
-            x23: 0, x24: 0, x25: 0, x26: 0,
-            x27: 0, x28: 0, x29: 0,
-            x30: entry_point,  // LR = entry point (ret will jump here)
+            x0: 0, // Result register (not used for initial context)
+            x1: 0,
+            x2: 0,
+            x3: 0,
+            x4: 0,
+            x5: 0,
+            x6: 0,
+            x7: 0,
+            x8: 0,
+            x9: 0,
+            x10: 0,
+            x11: 0,
+            x12: 0,
+            x13: 0,
+            x14: 0,
+            x15: 0,
+            x16: 0,
+            x17: 0,
+            x18: 0,
+            x19: 0,
+            x20: 0,
+            x21: 0,
+            x22: 0,
+            x23: 0,
+            x24: 0,
+            x25: 0,
+            x26: 0,
+            x27: 0,
+            x28: 0,
+            x29: 0,
+            x30: entry_point, // LR = entry point (ret will jump here)
             sp: stack_top,
             sp_el0: 0,
             elr_el1: 0,
-            // SPSR with EL1h mode, interrupts masked initially
-            spsr_el1: 0x3c5, // EL1h, DAIF masked
+            // SPSR with EL1h mode and IRQs enabled
+            spsr_el1: 0x5, // EL1h, DAIF clear
             tpidr_el0: 0,
         }
     }
@@ -280,27 +305,45 @@ impl CpuContext {
     ///
     /// The thread will start executing at `entry_point` in EL0 with the given
     /// user stack. Kernel stack is used for exception handling.
-    pub fn new_user_thread(
-        entry_point: u64,
-        user_stack_top: u64,
-        kernel_stack_top: u64,
-    ) -> Self {
+    pub fn new_user_thread(entry_point: u64, user_stack_top: u64, kernel_stack_top: u64) -> Self {
         Self {
-            x0: 0,  // Result register (starts at 0 for new threads)
-            x1: 0, x2: 0, x3: 0, x4: 0,
-            x5: 0, x6: 0, x7: 0, x8: 0,
-            x9: 0, x10: 0, x11: 0, x12: 0,
-            x13: 0, x14: 0, x15: 0, x16: 0,
-            x17: 0, x18: 0,
-            x19: 0, x20: 0, x21: 0, x22: 0,
-            x23: 0, x24: 0, x25: 0, x26: 0,
-            x27: 0, x28: 0, x29: 0, x30: 0,
-            sp: kernel_stack_top,      // Kernel SP for exceptions
-            sp_el0: user_stack_top,    // User stack pointer
-            elr_el1: entry_point,      // Where to jump in userspace
+            x0: 0, // Result register (starts at 0 for new threads)
+            x1: 0,
+            x2: 0,
+            x3: 0,
+            x4: 0,
+            x5: 0,
+            x6: 0,
+            x7: 0,
+            x8: 0,
+            x9: 0,
+            x10: 0,
+            x11: 0,
+            x12: 0,
+            x13: 0,
+            x14: 0,
+            x15: 0,
+            x16: 0,
+            x17: 0,
+            x18: 0,
+            x19: 0,
+            x20: 0,
+            x21: 0,
+            x22: 0,
+            x23: 0,
+            x24: 0,
+            x25: 0,
+            x26: 0,
+            x27: 0,
+            x28: 0,
+            x29: 0,
+            x30: 0,
+            sp: kernel_stack_top,   // Kernel SP for exceptions
+            sp_el0: user_stack_top, // User stack pointer
+            elr_el1: entry_point,   // Where to jump in userspace
             // SPSR for EL0: mode=0 (EL0t), DAIF clear (interrupts enabled)
-            spsr_el1: 0x0,             // EL0t with interrupts enabled
-            tpidr_el0: 0,              // TLS pointer, set by musl during __init_tls
+            spsr_el1: 0x0, // EL0t with interrupts enabled
+            tpidr_el0: 0,  // TLS pointer, set by musl during __init_tls
         }
     }
 
@@ -308,7 +351,10 @@ impl CpuContext {
     ///
     /// This captures the userspace context from the exception frame saved by the syscall entry.
     /// The exception frame contains all registers as they were at the time of the SVC instruction.
-    pub fn from_aarch64_frame(frame: &crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame, user_sp: u64) -> Self {
+    pub fn from_aarch64_frame(
+        frame: &crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame,
+        user_sp: u64,
+    ) -> Self {
         // Read TPIDR_EL0 (user TLS pointer) so forked children inherit it
         let tpidr: u64;
         unsafe {
@@ -345,13 +391,13 @@ impl CpuContext {
             x26: frame.x26,
             x27: frame.x27,
             x28: frame.x28,
-            x29: frame.x29,  // Frame pointer
-            x30: frame.x30,  // Link register
-            sp: 0,           // Kernel SP will be set when scheduling
-            sp_el0: user_sp, // User stack pointer (passed separately since it's in SP_EL0)
-            elr_el1: frame.elr, // Return address (where to resume after syscall)
+            x29: frame.x29,       // Frame pointer
+            x30: frame.x30,       // Link register
+            sp: 0,                // Kernel SP will be set when scheduling
+            sp_el0: user_sp,      // User stack pointer (passed separately since it's in SP_EL0)
+            elr_el1: frame.elr,   // Return address (where to resume after syscall)
             spsr_el1: frame.spsr, // Saved program status
-            tpidr_el0: tpidr, // User TLS pointer (inherited by forked child)
+            tpidr_el0: tpidr,     // User TLS pointer (inherited by forked child)
         }
     }
 }
@@ -425,7 +471,6 @@ pub struct Thread {
     /// Owner process PID (for mapping thread CPU time to process in btop).
     /// None for idle threads and kernel-internal threads not associated with a process.
     pub owner_pid: Option<u64>,
-
 }
 
 impl Clone for Thread {
@@ -506,7 +551,7 @@ impl Thread {
             time_slice: 20,    // Longer time slice
             entry_point: None, // Kernel threads use direct entry
             privilege: ThreadPrivilege::Kernel,
-            has_started: false, // New thread hasn't run yet
+            has_started: false,        // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
             saved_userspace_context: None,
             wake_time_ns: None,
@@ -607,7 +652,7 @@ impl Thread {
             time_slice: 10, // Default time slice
             entry_point: Some(entry_point),
             privilege,
-            has_started: false, // New thread hasn't run yet
+            has_started: false,        // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
             saved_userspace_context: None,
             wake_time_ns: None,
@@ -634,11 +679,7 @@ impl Thread {
         let id = NEXT_THREAD_ID.fetch_add(1, Ordering::SeqCst);
 
         // Set up initial context - entry point goes directly in X30 (LR)
-        let context = CpuContext::new(
-            VirtAddr::new(entry_point as u64),
-            stack_top,
-            privilege,
-        );
+        let context = CpuContext::new(VirtAddr::new(entry_point as u64), stack_top, privilege);
 
         Self {
             id,
@@ -703,14 +744,14 @@ impl Thread {
             context,
             stack_top,
             stack_bottom,
-            kernel_stack_top: None, // Will be set separately
+            kernel_stack_top: None,        // Will be set separately
             kernel_stack_allocation: None, // Will be set separately for userspace threads
             tls_block: actual_tls_block,
             priority: 128,     // Default medium priority
             time_slice: 10,    // Default time slice
             entry_point: None, // Userspace threads don't have kernel entry points
             privilege: ThreadPrivilege::User,
-            has_started: false, // New thread hasn't run yet
+            has_started: false,        // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
             saved_userspace_context: None,
             wake_time_ns: None,
@@ -837,7 +878,7 @@ impl Thread {
             time_slice: 10, // Default time slice
             entry_point: Some(entry_point),
             privilege,
-            has_started: false, // New thread hasn't run yet
+            has_started: false,        // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
             saved_userspace_context: None,
             wake_time_ns: None,
@@ -860,11 +901,7 @@ impl Thread {
         privilege: ThreadPrivilege,
     ) -> Self {
         // Set up initial context - entry point goes directly in X30 (LR)
-        let context = CpuContext::new(
-            VirtAddr::new(entry_point as u64),
-            stack_top,
-            privilege,
-        );
+        let context = CpuContext::new(VirtAddr::new(entry_point as u64), stack_top, privilege);
 
         Self {
             id,
@@ -898,8 +935,7 @@ impl Thread {
 #[cfg(target_arch = "x86_64")]
 extern "C" fn thread_entry_trampoline() -> ! {
     // Get current thread from per-CPU data
-    let entry_point = crate::per_cpu::current_thread()
-        .and_then(|t| t.entry_point.take());
+    let entry_point = crate::per_cpu::current_thread().and_then(|t| t.entry_point.take());
 
     if let Some(entry_fn) = entry_point {
         log::debug!("Thread starting execution via trampoline");

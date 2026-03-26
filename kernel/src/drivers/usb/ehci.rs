@@ -24,7 +24,7 @@
 // single-threaded access through INITIALIZED flag and CPU0-only polling.
 #![allow(static_mut_refs)]
 
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 use super::descriptors::{
     class_code, descriptor_type, hid_protocol, hid_request, hid_subclass, request,
@@ -57,37 +57,37 @@ mod op_reg {
 
 /// USBCMD bit definitions
 mod usbcmd_bits {
-    pub const RS: u32 = 1 << 0;        // Run/Stop
-    pub const HCRESET: u32 = 1 << 1;   // Host Controller Reset
-    pub const PSE: u32 = 1 << 4;       // Periodic Schedule Enable
-    pub const ASE: u32 = 1 << 5;       // Async Schedule Enable
+    pub const RS: u32 = 1 << 0; // Run/Stop
+    pub const HCRESET: u32 = 1 << 1; // Host Controller Reset
+    pub const PSE: u32 = 1 << 4; // Periodic Schedule Enable
+    pub const ASE: u32 = 1 << 5; // Async Schedule Enable
     pub const ITC_1MS: u32 = 0x08 << 16; // Interrupt Threshold = 1ms
 }
 
 /// USBSTS bit definitions
 #[allow(dead_code)]
 mod usbsts_bits {
-    pub const USBINT: u32 = 1 << 0;    // USB Interrupt (transfer complete)
-    pub const USBERRINT: u32 = 1 << 1;  // USB Error Interrupt
-    pub const PCD: u32 = 1 << 2;       // Port Change Detect
-    pub const FLR: u32 = 1 << 3;       // Frame List Rollover
-    pub const HSE: u32 = 1 << 4;       // Host System Error
-    pub const IAA: u32 = 1 << 5;       // Interrupt on Async Advance
+    pub const USBINT: u32 = 1 << 0; // USB Interrupt (transfer complete)
+    pub const USBERRINT: u32 = 1 << 1; // USB Error Interrupt
+    pub const PCD: u32 = 1 << 2; // Port Change Detect
+    pub const FLR: u32 = 1 << 3; // Frame List Rollover
+    pub const HSE: u32 = 1 << 4; // Host System Error
+    pub const IAA: u32 = 1 << 5; // Interrupt on Async Advance
     pub const HCHALTED: u32 = 1 << 12; // HC Halted
 }
 
 /// PORTSC bit definitions
 #[allow(dead_code)]
 mod portsc_bits {
-    pub const CCS: u32 = 1 << 0;       // Current Connect Status
-    pub const CSC: u32 = 1 << 1;       // Connect Status Change
-    pub const PE: u32 = 1 << 2;        // Port Enabled
-    pub const PEC: u32 = 1 << 3;       // Port Enable Change
-    pub const PR: u32 = 1 << 8;        // Port Reset
-    pub const LS_MASK: u32 = 3 << 10;  // Line Status
+    pub const CCS: u32 = 1 << 0; // Current Connect Status
+    pub const CSC: u32 = 1 << 1; // Connect Status Change
+    pub const PE: u32 = 1 << 2; // Port Enabled
+    pub const PEC: u32 = 1 << 3; // Port Enable Change
+    pub const PR: u32 = 1 << 8; // Port Reset
+    pub const LS_MASK: u32 = 3 << 10; // Line Status
     pub const LS_K_STATE: u32 = 1 << 10; // K-state (low-speed)
-    pub const PP: u32 = 1 << 12;       // Port Power
-    pub const PO: u32 = 1 << 13;       // Port Owner (1 = companion)
+    pub const PP: u32 = 1 << 12; // Port Power
+    pub const PO: u32 = 1 << 13; // Port Owner (1 = companion)
 }
 
 /// QH/qTD PID codes
@@ -99,7 +99,6 @@ mod pid {
 
 /// Size of the periodic frame list (1024 entries = 1024ms = ~1 second cycle).
 const FRAME_LIST_SIZE: usize = 1024;
-
 
 // =============================================================================
 // Data Structures - QH and qTD
@@ -153,7 +152,7 @@ struct Qtd {
 }
 
 const QH_TYPE: u32 = 0b01 << 1; // Type field = QH
-const T_BIT: u32 = 1;           // Terminate bit
+const T_BIT: u32 = 1; // Terminate bit
 
 // =============================================================================
 // Static DMA Buffers
@@ -283,9 +282,13 @@ fn dma_cache_clean(ptr: *const u8, len: usize) {
     let start = ptr as usize & !(CL - 1);
     let end = (ptr as usize + len + CL - 1) & !(CL - 1);
     for addr in (start..end).step_by(CL) {
-        unsafe { core::arch::asm!("dc cvac, {}", in(reg) addr, options(nostack)); }
+        unsafe {
+            core::arch::asm!("dc cvac, {}", in(reg) addr, options(nostack));
+        }
     }
-    unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
 }
 
 #[inline]
@@ -294,9 +297,13 @@ fn dma_cache_invalidate(ptr: *const u8, len: usize) {
     let start = ptr as usize & !(CL - 1);
     let end = (ptr as usize + len + CL - 1) & !(CL - 1);
     for addr in (start..end).step_by(CL) {
-        unsafe { core::arch::asm!("dc civac, {}", in(reg) addr, options(nostack)); }
+        unsafe {
+            core::arch::asm!("dc civac, {}", in(reg) addr, options(nostack));
+        }
     }
-    unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
 }
 
 #[inline]
@@ -340,8 +347,11 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     serial_println!("[ehci] Initializing EHCI USB 2.0 controller...");
     serial_println!(
         "[ehci] PCI {:02x}:{:02x}.{} [{:04x}:{:04x}]",
-        pci_dev.bus, pci_dev.device, pci_dev.function,
-        pci_dev.vendor_id, pci_dev.device_id,
+        pci_dev.bus,
+        pci_dev.device,
+        pci_dev.function,
+        pci_dev.vendor_id,
+        pci_dev.device_id,
     );
 
     // 1. Enable PCI
@@ -350,7 +360,11 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
 
     // 2. Map BAR0
     let bar = pci_dev.get_mmio_bar().ok_or("EHCI: no MMIO BAR")?;
-    serial_println!("[ehci] BAR0: phys={:#010x} size={:#x}", bar.address, bar.size);
+    serial_println!(
+        "[ehci] BAR0: phys={:#010x} size={:#x}",
+        bar.address,
+        bar.size
+    );
     let bar_base = HHDM_BASE + bar.address;
 
     // 3. Read capability registers
@@ -429,19 +443,22 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
         ASYNC_HEAD_QH.characteristics = (1 << 15)   // H = Head of Reclamation List
             | (2 << 12)                               // EPS = High-Speed
             | (64 << 16)                              // MaxPacketLen = 64
-            | (1 << 14);                              // DTC = 1
-        ASYNC_HEAD_QH.capabilities = 1 << 30;         // Mult = 1
+            | (1 << 14); // DTC = 1
+        ASYNC_HEAD_QH.capabilities = 1 << 30; // Mult = 1
         ASYNC_HEAD_QH.next_qtd = T_BIT;
         ASYNC_HEAD_QH.alt_qtd = T_BIT;
         ASYNC_HEAD_QH.token = 0; // Not active
-        dma_cache_clean(&raw const ASYNC_HEAD_QH as *const u8, core::mem::size_of::<Qh>());
+        dma_cache_clean(
+            &raw const ASYNC_HEAD_QH as *const u8,
+            core::mem::size_of::<Qh>(),
+        );
     }
 
     write32(op_base + op_reg::ASYNCLISTADDR, head_qh_phys as u32);
 
     // 7. Clear all status bits, configure interrupts
     write32(op_base + op_reg::USBSTS, 0x3F); // Write-clear all status bits
-    // We'll use polling, so disable all interrupts
+                                             // We'll use polling, so disable all interrupts
     write32(op_base + op_reg::USBINTR, 0);
 
     // 8. Start controller: enable both schedules, run
@@ -488,7 +505,9 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
 
     serial_println!(
         "[ehci] Init complete: kbd_addr={} kbd_ep={} polling={}",
-        state.kbd_addr, state.kbd_ep, state.kbd_polling,
+        state.kbd_addr,
+        state.kbd_ep,
+        state.kbd_polling,
     );
 
     unsafe {
@@ -501,8 +520,8 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
 
 /// BIOS handoff: claim ownership from BIOS via USBLEGSUP extended capability.
 fn bios_handoff(pci_dev: &crate::drivers::pci::Device, eecp: u8) {
-    use crate::serial_println;
     use crate::drivers::pci::{pci_read_config_dword, pci_write_config_dword};
+    use crate::serial_println;
 
     let mut offset = eecp;
     while offset != 0 {
@@ -520,7 +539,8 @@ fn bios_handoff(pci_dev: &crate::drivers::pci::Device, eecp: u8) {
 
             // Wait for BIOS to release (bit 16 = BIOS Owned should clear)
             for _ in 0..100 {
-                let cur = pci_read_config_dword(pci_dev.bus, pci_dev.device, pci_dev.function, offset);
+                let cur =
+                    pci_read_config_dword(pci_dev.bus, pci_dev.device, pci_dev.function, offset);
                 if cur & (1 << 16) == 0 {
                     serial_println!("[ehci] BIOS handoff complete");
                     break;
@@ -601,7 +621,10 @@ fn scan_ports(state: &mut EhciState) {
         );
 
         if portsc & portsc_bits::PE == 0 {
-            serial_println!("[ehci] Port {}: not enabled after reset (full-speed?)", port);
+            serial_println!(
+                "[ehci] Port {}: not enabled after reset (full-speed?)",
+                port
+            );
             continue;
         }
 
@@ -691,9 +714,8 @@ fn enumerate_device(state: &mut EhciState, _port: u8) -> Result<bool, &'static s
         return Err("short device descriptor");
     }
 
-    let dev_desc: DeviceDescriptor = unsafe {
-        core::ptr::read_unaligned(DATA_BUF.0.as_ptr() as *const DeviceDescriptor)
-    };
+    let dev_desc: DeviceDescriptor =
+        unsafe { core::ptr::read_unaligned(DATA_BUF.0.as_ptr() as *const DeviceDescriptor) };
 
     serial_println!(
         "[ehci] Device: USB{}.{} class={:#04x} sub={:#04x} proto={:#04x} vendor={:#06x} product={:#06x}",
@@ -720,15 +742,16 @@ fn enumerate_device(state: &mut EhciState, _port: u8) -> Result<bool, &'static s
         return Err("short config descriptor");
     }
 
-    let config_desc: ConfigDescriptor = unsafe {
-        core::ptr::read_unaligned(DATA_BUF.0.as_ptr() as *const ConfigDescriptor)
-    };
+    let config_desc: ConfigDescriptor =
+        unsafe { core::ptr::read_unaligned(DATA_BUF.0.as_ptr() as *const ConfigDescriptor) };
     let total_len = { config_desc.w_total_length } as usize;
     let config_value = config_desc.b_configuration_value;
 
     serial_println!(
         "[ehci] Config: totalLen={} numInterfaces={} configValue={}",
-        total_len, config_desc.b_num_interfaces, config_value,
+        total_len,
+        config_desc.b_num_interfaces,
+        config_value,
     );
 
     // GET_DESCRIPTOR (full configuration)
@@ -741,7 +764,15 @@ fn enumerate_device(state: &mut EhciState, _port: u8) -> Result<bool, &'static s
         w_length: fetch_len as u16,
     };
 
-    let n = control_transfer(state, addr, 0, max_pkt0, &setup, Some(fetch_len as u32), true)?;
+    let n = control_transfer(
+        state,
+        addr,
+        0,
+        max_pkt0,
+        &setup,
+        Some(fetch_len as u32),
+        true,
+    )?;
 
     // Parse configuration for HID keyboard interface
     let config_data = unsafe { &DATA_BUF.0[..n as usize] };
@@ -763,7 +794,9 @@ fn enumerate_device(state: &mut EhciState, _port: u8) -> Result<bool, &'static s
 
         if d_type == descriptor_type::INTERFACE && d_len >= 9 {
             let iface: InterfaceDescriptor = unsafe {
-                core::ptr::read_unaligned(config_data.as_ptr().add(offset) as *const InterfaceDescriptor)
+                core::ptr::read_unaligned(
+                    config_data.as_ptr().add(offset) as *const InterfaceDescriptor
+                )
             };
             serial_println!(
                 "[ehci] Interface {}: class={:#04x} sub={:#04x} proto={:#04x} eps={}",
@@ -778,7 +811,10 @@ fn enumerate_device(state: &mut EhciState, _port: u8) -> Result<bool, &'static s
                 && iface.b_interface_sub_class == hid_subclass::BOOT
                 && iface.b_interface_protocol == hid_protocol::KEYBOARD
             {
-                serial_println!("[ehci] Found HID boot keyboard on interface {}", iface.b_interface_number);
+                serial_println!(
+                    "[ehci] Found HID boot keyboard on interface {}",
+                    iface.b_interface_number
+                );
                 found_keyboard = true;
                 kbd_iface = iface.b_interface_number;
             }
@@ -786,7 +822,9 @@ fn enumerate_device(state: &mut EhciState, _port: u8) -> Result<bool, &'static s
 
         if d_type == descriptor_type::ENDPOINT && d_len >= 7 && found_keyboard && kbd_ep_addr == 0 {
             let ep: EndpointDescriptor = unsafe {
-                core::ptr::read_unaligned(config_data.as_ptr().add(offset) as *const EndpointDescriptor)
+                core::ptr::read_unaligned(
+                    config_data.as_ptr().add(offset) as *const EndpointDescriptor
+                )
             };
 
             if ep.is_interrupt() && ep.is_in() {
@@ -795,7 +833,9 @@ fn enumerate_device(state: &mut EhciState, _port: u8) -> Result<bool, &'static s
                 kbd_interval = ep.b_interval;
                 serial_println!(
                     "[ehci] Keyboard endpoint: addr={:#04x} maxPkt={} interval={}ms",
-                    kbd_ep_addr, kbd_max_pkt, kbd_interval,
+                    kbd_ep_addr,
+                    kbd_max_pkt,
+                    kbd_interval,
                 );
             }
         }
@@ -848,7 +888,10 @@ fn enumerate_device(state: &mut EhciState, _port: u8) -> Result<bool, &'static s
 
     serial_println!(
         "[ehci] Keyboard configured: addr={} ep={} maxPkt={} interval={}ms",
-        addr, state.kbd_ep, kbd_max_pkt, kbd_interval,
+        addr,
+        state.kbd_ep,
+        kbd_max_pkt,
+        kbd_interval,
     );
 
     Ok(true)
@@ -872,10 +915,7 @@ fn control_transfer(
 ) -> Result<u32, &'static str> {
     // Build the 8-byte setup packet in DMA buffer
     unsafe {
-        let setup_bytes = core::slice::from_raw_parts(
-            setup as *const SetupPacket as *const u8,
-            8,
-        );
+        let setup_bytes = core::slice::from_raw_parts(setup as *const SetupPacket as *const u8, 8);
         SETUP_BUF.0.copy_from_slice(setup_bytes);
         dma_cache_clean(SETUP_BUF.0.as_ptr(), 8);
     }
@@ -897,24 +937,22 @@ fn control_transfer(
     unsafe {
         // Build SETUP qTD
         CONTROL_QTDS[0] = zero_qtd();
-        CONTROL_QTDS[0].token =
-            (1 << 7)           // Active
+        CONTROL_QTDS[0].token = (1 << 7)           // Active
             | (pid::SETUP << 8) // PID = SETUP
             | (3 << 10)        // CERR = 3
             | (8 << 16)        // Total Bytes = 8
-            | (0 << 31);       // dt = 0 (SETUP always data0)
+            | (0 << 31); // dt = 0 (SETUP always data0)
         CONTROL_QTDS[0].buffer[0] = setup_phys as u32;
 
         // Build DATA qTD (if needed)
         if has_data {
             let data_pid = if data_in { pid::IN } else { pid::OUT };
             CONTROL_QTDS[1] = zero_qtd();
-            CONTROL_QTDS[1].token =
-                (1 << 7)              // Active
+            CONTROL_QTDS[1].token = (1 << 7)              // Active
                 | (data_pid << 8)     // PID
                 | (3 << 10)           // CERR = 3
                 | (xfer_len << 16)    // Total Bytes
-                | (1 << 31);          // dt = 1 (DATA starts at data1)
+                | (1 << 31); // dt = 1 (DATA starts at data1)
             CONTROL_QTDS[1].buffer[0] = data_phys as u32;
             // Additional buffer pointers for multi-page transfers
             if xfer_len > 4096 {
@@ -924,15 +962,18 @@ fn control_transfer(
 
         // Build STATUS qTD
         let status_idx = if has_data { 2 } else { 1 };
-        let status_pid = if has_data && data_in { pid::OUT } else { pid::IN };
+        let status_pid = if has_data && data_in {
+            pid::OUT
+        } else {
+            pid::IN
+        };
         CONTROL_QTDS[status_idx] = zero_qtd();
-        CONTROL_QTDS[status_idx].token =
-            (1 << 7)              // Active
+        CONTROL_QTDS[status_idx].token = (1 << 7)              // Active
             | (status_pid << 8)   // PID = opposite of data direction
             | (3 << 10)           // CERR = 3
             | (0 << 16)           // Total Bytes = 0 (ZLP)
             | (1 << 15)           // IOC = 1
-            | (1 << 31);          // dt = 1
+            | (1 << 31); // dt = 1
 
         // Chain: SETUP -> [DATA ->] STATUS
         let qtd0_phys = virt_to_phys(&raw const CONTROL_QTDS[0] as u64);
@@ -954,15 +995,17 @@ fn control_transfer(
         }
 
         // Flush qTDs to memory
-        dma_cache_clean(CONTROL_QTDS.as_ptr() as *const u8, 3 * core::mem::size_of::<Qtd>());
+        dma_cache_clean(
+            CONTROL_QTDS.as_ptr() as *const u8,
+            3 * core::mem::size_of::<Qtd>(),
+        );
 
         // Set up Control QH
         CONTROL_QH = zero_qh();
         let head_phys = virt_to_phys(&raw const ASYNC_HEAD_QH as u64);
         CONTROL_QH.qhlp = (head_phys as u32 & !0x1F) | QH_TYPE; // Link back to head
 
-        CONTROL_QH.characteristics =
-            (dev_addr as u32)          // Device Address
+        CONTROL_QH.characteristics = (dev_addr as u32)          // Device Address
             | ((endpoint as u32) << 8) // Endpoint
             | (2 << 12)               // EPS = High-Speed
             | (1 << 14)               // DTC = 1 (data toggle from qTD)
@@ -975,12 +1018,18 @@ fn control_transfer(
         CONTROL_QH.alt_qtd = T_BIT;
         CONTROL_QH.token = 0; // Clear overlay token
 
-        dma_cache_clean(&raw const CONTROL_QH as *const u8, core::mem::size_of::<Qh>());
+        dma_cache_clean(
+            &raw const CONTROL_QH as *const u8,
+            core::mem::size_of::<Qh>(),
+        );
 
         // Insert Control QH into async schedule: HEAD -> CONTROL -> HEAD
         let control_phys = virt_to_phys(&raw const CONTROL_QH as u64);
         ASYNC_HEAD_QH.qhlp = (control_phys as u32 & !0x1F) | QH_TYPE;
-        dma_cache_clean(&raw const ASYNC_HEAD_QH as *const u8, core::mem::size_of::<Qh>());
+        dma_cache_clean(
+            &raw const ASYNC_HEAD_QH as *const u8,
+            core::mem::size_of::<Qh>(),
+        );
     }
 
     // Wait for completion (poll status qTD)
@@ -1009,12 +1058,23 @@ fn control_transfer(
                 unsafe {
                     let head_phys = virt_to_phys(&raw const ASYNC_HEAD_QH as u64);
                     ASYNC_HEAD_QH.qhlp = (head_phys as u32 & !0x1F) | QH_TYPE;
-                    dma_cache_clean(&raw const ASYNC_HEAD_QH as *const u8, core::mem::size_of::<Qh>());
+                    dma_cache_clean(
+                        &raw const ASYNC_HEAD_QH as *const u8,
+                        core::mem::size_of::<Qh>(),
+                    );
                 }
-                if token & (1 << 6) != 0 { return Err("EHCI: qTD halted"); }
-                if token & (1 << 5) != 0 { return Err("EHCI: data buffer error"); }
-                if token & (1 << 4) != 0 { return Err("EHCI: babble detected"); }
-                if token & (1 << 3) != 0 { return Err("EHCI: transaction error"); }
+                if token & (1 << 6) != 0 {
+                    return Err("EHCI: qTD halted");
+                }
+                if token & (1 << 5) != 0 {
+                    return Err("EHCI: data buffer error");
+                }
+                if token & (1 << 4) != 0 {
+                    return Err("EHCI: babble detected");
+                }
+                if token & (1 << 3) != 0 {
+                    return Err("EHCI: transaction error");
+                }
                 return Err("EHCI: unknown qTD error");
             }
             break;
@@ -1026,7 +1086,10 @@ fn control_transfer(
     unsafe {
         let head_phys = virt_to_phys(&raw const ASYNC_HEAD_QH as u64);
         ASYNC_HEAD_QH.qhlp = (head_phys as u32 & !0x1F) | QH_TYPE;
-        dma_cache_clean(&raw const ASYNC_HEAD_QH as *const u8, core::mem::size_of::<Qh>());
+        dma_cache_clean(
+            &raw const ASYNC_HEAD_QH as *const u8,
+            core::mem::size_of::<Qh>(),
+        );
     }
 
     if !completed {
@@ -1074,17 +1137,15 @@ fn setup_keyboard_polling(state: &mut EhciState) {
         INTERRUPT_QH = zero_qh();
         INTERRUPT_QH.qhlp = T_BIT; // Terminate (not circular in periodic schedule)
 
-        INTERRUPT_QH.characteristics =
-            (state.kbd_addr as u32)       // Device Address
+        INTERRUPT_QH.characteristics = (state.kbd_addr as u32)       // Device Address
             | ((state.kbd_ep as u32) << 8) // Endpoint Number
             | (2 << 12)                    // EPS = High-Speed
             | (0 << 14)                    // DTC = 0 (HC manages data toggle!)
             | ((state.kbd_max_pkt as u32) << 16); // Max Packet Length
-            // RL = 0 (must be 0 for periodic QHs)
+                                                  // RL = 0 (must be 0 for periodic QHs)
 
-        INTERRUPT_QH.capabilities =
-            (1 << 30)    // Mult = 1
-            | 0x01;      // S-Mask = 0x01 (poll in microframe 0)
+        INTERRUPT_QH.capabilities = (1 << 30)    // Mult = 1
+            | 0x01; // S-Mask = 0x01 (poll in microframe 0)
 
         // Set up interrupt qTD
         INTERRUPT_QTD = zero_qtd();
@@ -1093,18 +1154,20 @@ fn setup_keyboard_polling(state: &mut EhciState) {
         REPORT_BUF.0.fill(0);
         dma_cache_clean(REPORT_BUF.0.as_ptr(), 8);
 
-        INTERRUPT_QTD.token =
-            (1 << 7)               // Active
+        INTERRUPT_QTD.token = (1 << 7)               // Active
             | (pid::IN << 8)       // PID = IN
             | (3 << 10)            // CERR = 3
             | (8 << 16)            // Total Bytes = 8 (keyboard boot report)
-            | (1 << 15);           // IOC = 1
+            | (1 << 15); // IOC = 1
 
         INTERRUPT_QTD.buffer[0] = report_phys as u32;
         INTERRUPT_QTD.next = T_BIT;
         INTERRUPT_QTD.alt_next = T_BIT;
 
-        dma_cache_clean(&raw const INTERRUPT_QTD as *const u8, core::mem::size_of::<Qtd>());
+        dma_cache_clean(
+            &raw const INTERRUPT_QTD as *const u8,
+            core::mem::size_of::<Qtd>(),
+        );
 
         // Point QH overlay to our qTD
         let qtd_phys = virt_to_phys(&raw const INTERRUPT_QTD as u64);
@@ -1112,7 +1175,10 @@ fn setup_keyboard_polling(state: &mut EhciState) {
         INTERRUPT_QH.alt_qtd = T_BIT;
         INTERRUPT_QH.token = 0; // Not active yet (overlay inactive)
 
-        dma_cache_clean(&raw const INTERRUPT_QH as *const u8, core::mem::size_of::<Qh>());
+        dma_cache_clean(
+            &raw const INTERRUPT_QH as *const u8,
+            core::mem::size_of::<Qh>(),
+        );
 
         // Link QH into periodic frame list at every `interval` entries
         let qh_phys = virt_to_phys(&raw const INTERRUPT_QH as u64);
@@ -1128,7 +1194,8 @@ fn setup_keyboard_polling(state: &mut EhciState) {
 
     serial_println!(
         "[ehci] Keyboard polling: QH linked every {}ms, endpoint IN{}",
-        interval, state.kbd_ep,
+        interval,
+        state.kbd_ep,
     );
 }
 
@@ -1206,15 +1273,17 @@ pub fn poll_keyboard() {
 
         INTERRUPT_QTD.next = T_BIT;
         INTERRUPT_QTD.alt_next = T_BIT;
-        INTERRUPT_QTD.token =
-            (1 << 7)               // Active
+        INTERRUPT_QTD.token = (1 << 7)               // Active
             | (pid::IN << 8)       // PID = IN
             | (3 << 10)            // CERR = 3
             | (8 << 16)            // Total Bytes = 8
-            | (1 << 15);           // IOC = 1
+            | (1 << 15); // IOC = 1
         INTERRUPT_QTD.buffer[0] = report_phys as u32;
 
-        dma_cache_clean(&raw const INTERRUPT_QTD as *const u8, core::mem::size_of::<Qtd>());
+        dma_cache_clean(
+            &raw const INTERRUPT_QTD as *const u8,
+            core::mem::size_of::<Qtd>(),
+        );
 
         // Re-link qTD into QH overlay
         let qtd_phys = virt_to_phys(&raw const INTERRUPT_QTD as u64);
@@ -1222,7 +1291,10 @@ pub fn poll_keyboard() {
         INTERRUPT_QH.alt_qtd = T_BIT;
         INTERRUPT_QH.token = 0; // Clear overlay (inactive, HC will pick up next_qtd)
 
-        dma_cache_clean(&raw const INTERRUPT_QH as *const u8, core::mem::size_of::<Qh>());
+        dma_cache_clean(
+            &raw const INTERRUPT_QH as *const u8,
+            core::mem::size_of::<Qh>(),
+        );
     }
 }
 

@@ -5,7 +5,7 @@
 use super::errno::ENOTTY;
 use super::userptr::validate_user_buffer;
 use super::SyscallResult;
-use crate::ipc::fd::{flags, FileDescriptor, FdKind};
+use crate::ipc::fd::{flags, FdKind, FileDescriptor};
 use crate::process::manager;
 use crate::tty::pty;
 
@@ -52,7 +52,10 @@ pub fn sys_posix_openpt(flags: u64) -> SyscallResult {
         Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
             Some((_pid, p)) => p,
             None => {
-                log::error!("sys_posix_openpt: Process not found for thread {}", thread_id);
+                log::error!(
+                    "sys_posix_openpt: Process not found for thread {}",
+                    thread_id
+                );
                 return SyscallResult::Err(3); // ESRCH
             }
         },
@@ -334,12 +337,7 @@ pub fn sys_ptsname(fd: u64, buf: u64, buflen: u64) -> SyscallResult {
                         core::ptr::write_volatile(buf_ptr.add(path_bytes.len()), 0);
                     }
 
-                    log::debug!(
-                        "sys_ptsname: fd {} -> '{}' (pty {})",
-                        fd_i32,
-                        path,
-                        pty_num
-                    );
+                    log::debug!("sys_ptsname: fd {} -> '{}' (pty {})", fd_i32, path, pty_num);
                     SyscallResult::Ok(0)
                 }
                 None => {

@@ -207,7 +207,8 @@ pub const MAX_PROVIDERS: usize = 16;
 ///
 /// GDB: `print TRACE_PROVIDERS`
 #[no_mangle]
-pub static mut TRACE_PROVIDERS: [Option<&'static TraceProvider>; MAX_PROVIDERS] = [None; MAX_PROVIDERS];
+pub static mut TRACE_PROVIDERS: [Option<&'static TraceProvider>; MAX_PROVIDERS] =
+    [None; MAX_PROVIDERS];
 
 /// Number of registered providers.
 #[no_mangle]

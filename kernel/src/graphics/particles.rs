@@ -31,7 +31,9 @@ pub fn animation_thread_entry() {
     // Raw serial output - no locks, safe in any context
     fn raw_char(c: u8) {
         let addr = crate::platform_config::uart_virt() as *mut u32;
-        unsafe { core::ptr::write_volatile(addr, c as u32); }
+        unsafe {
+            core::ptr::write_volatile(addr, c as u32);
+        }
     }
 
     raw_char(b'<'); // Thread entry point reached
@@ -175,10 +177,10 @@ pub struct ParticleConfig {
 impl Default for ParticleConfig {
     fn default() -> Self {
         Self {
-            gravity: 25,            // Gentle gravity
-            damping: 253,           // Slight air resistance
-            restitution: 230,       // ~90% energy retained on bounce
-            min_velocity: 5,        // Stop jittering at low velocity
+            gravity: 25,      // Gentle gravity
+            damping: 253,     // Slight air resistance
+            restitution: 230, // ~90% energy retained on bounce
+            min_velocity: 5,  // Stop jittering at low velocity
         }
     }
 }
@@ -334,7 +336,8 @@ impl ParticleSystem {
                     if dvn > 0 {
                         // Calculate impulse with restitution
                         let total_mass = p1.mass + p2.mass;
-                        let impulse = (dvn * self.config.restitution * 2) / (FP_SCALE * total_mass / p1.mass);
+                        let impulse =
+                            (dvn * self.config.restitution * 2) / (FP_SCALE * total_mass / p1.mass);
 
                         // Apply impulse
                         let impulse1 = (impulse * p2.mass) / total_mass;
@@ -425,14 +428,14 @@ impl ParticleSystem {
 
         // Color palette - vibrant colors
         let colors = [
-            Color::rgb(255, 100, 100),  // Coral red
-            Color::rgb(100, 255, 150),  // Mint green
-            Color::rgb(100, 150, 255),  // Sky blue
-            Color::rgb(255, 200, 100),  // Golden yellow
-            Color::rgb(255, 100, 255),  // Magenta
-            Color::rgb(100, 255, 255),  // Cyan
-            Color::rgb(255, 150, 100),  // Orange
-            Color::rgb(200, 100, 255),  // Purple
+            Color::rgb(255, 100, 100), // Coral red
+            Color::rgb(100, 255, 150), // Mint green
+            Color::rgb(100, 150, 255), // Sky blue
+            Color::rgb(255, 200, 100), // Golden yellow
+            Color::rgb(255, 100, 255), // Magenta
+            Color::rgb(100, 255, 255), // Cyan
+            Color::rgb(255, 150, 100), // Orange
+            Color::rgb(200, 100, 255), // Purple
         ];
 
         // Spawn particles in a circular pattern with outward velocity
@@ -456,18 +459,19 @@ impl ParticleSystem {
             let vy = (sin_val * speed) / FP_SCALE - 200; // Bias upward
 
             let color = colors[(i as usize) % colors.len()];
-            let particle = Particle::new(px, py, particle_radius, color)
-                .with_velocity(vx, vy);
+            let particle = Particle::new(px, py, particle_radius, color).with_velocity(vx, vy);
             self.add(particle);
         }
 
         // Add a few extra large particles
-        self.add(Particle::new(cx - 60, cy - 80, 20, Color::rgb(255, 220, 100))
-            .with_velocity(150, -400));
-        self.add(Particle::new(cx + 60, cy - 80, 18, Color::rgb(100, 200, 255))
-            .with_velocity(-150, -350));
-        self.add(Particle::new(cx, cy + 50, 25, Color::rgb(255, 150, 200))
-            .with_velocity(0, -500));
+        self.add(
+            Particle::new(cx - 60, cy - 80, 20, Color::rgb(255, 220, 100)).with_velocity(150, -400),
+        );
+        self.add(
+            Particle::new(cx + 60, cy - 80, 18, Color::rgb(100, 200, 255))
+                .with_velocity(-150, -350),
+        );
+        self.add(Particle::new(cx, cy + 50, 25, Color::rgb(255, 150, 200)).with_velocity(0, -500));
     }
 }
 
@@ -491,10 +495,10 @@ fn sin_cos_table(angle: usize) -> (i32, i32) {
     // Pre-computed sin values for 0-63 (first quadrant)
     // Scaled by 256 (FP_SCALE)
     const SIN_TABLE: [i32; 64] = [
-        0, 6, 13, 19, 25, 31, 37, 44, 50, 56, 62, 68, 74, 80, 86, 92,
-        97, 103, 109, 114, 120, 125, 131, 136, 141, 147, 152, 157, 162, 166, 171, 176,
-        180, 185, 189, 193, 197, 201, 205, 209, 212, 216, 219, 222, 225, 228, 231, 233,
-        236, 238, 240, 242, 244, 246, 247, 249, 250, 251, 252, 253, 254, 254, 255, 255,
+        0, 6, 13, 19, 25, 31, 37, 44, 50, 56, 62, 68, 74, 80, 86, 92, 97, 103, 109, 114, 120, 125,
+        131, 136, 141, 147, 152, 157, 162, 166, 171, 176, 180, 185, 189, 193, 197, 201, 205, 209,
+        212, 216, 219, 222, 225, 228, 231, 233, 236, 238, 240, 242, 244, 246, 247, 249, 250, 251,
+        252, 253, 254, 254, 255, 255,
     ];
 
     let angle = angle & 0xFF; // Wrap to 0-255

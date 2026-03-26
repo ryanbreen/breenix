@@ -219,10 +219,7 @@ fn test_kernel_stack_bounds_at_boundary_fails() {
     let size = remaining_space;
 
     let result = check_kernel_stack_bounds(current, size);
-    assert!(
-        result.is_err(),
-        "Kernel allocation at boundary should fail"
-    );
+    assert!(result.is_err(), "Kernel allocation at boundary should fail");
 }
 
 #[test]

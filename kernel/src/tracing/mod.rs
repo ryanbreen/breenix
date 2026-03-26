@@ -86,8 +86,8 @@
 #![allow(unused_imports)]
 
 mod buffer;
-pub mod counter;
 mod core;
+pub mod counter;
 pub mod macros;
 pub mod output;
 pub mod provider;
@@ -97,8 +97,8 @@ mod timestamp;
 // Re-export public API from core
 pub use self::buffer::{TraceCpuBuffer, TRACE_BUFFER_SIZE};
 pub use self::core::{
-    TraceEvent, TraceEventType, MAX_CPUS, TRACE_BUFFERS, TRACE_ENABLED, disable, enable, init,
-    is_enabled, record_event, record_event_2,
+    disable, enable, init, is_enabled, record_event, record_event_2, TraceEvent, TraceEventType,
+    MAX_CPUS, TRACE_BUFFERS, TRACE_ENABLED,
 };
 pub use self::timestamp::trace_timestamp;
 

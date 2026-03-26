@@ -11,10 +11,7 @@ use super::thread::Thread;
 
 // Architecture-generic HAL wrappers for interrupt control and halt.
 // These delegate to the correct CpuOps implementation for each architecture.
-use crate::{
-    arch_without_interrupts as without_interrupts,
-    arch_halt, arch_enable_interrupts,
-};
+use crate::{arch_enable_interrupts, arch_halt, arch_without_interrupts as without_interrupts};
 
 /// Kernel thread control block
 pub struct Kthread {
@@ -62,8 +59,8 @@ pub fn kthread_run<F>(func: F, name: &str) -> Result<KthreadHandle, KthreadError
 where
     F: FnOnce() + Send + 'static,
 {
-    let mut thread =
-        Thread::new_kernel(name.to_string(), kthread_entry, 0).map_err(|_| KthreadError::SpawnFailed)?;
+    let mut thread = Thread::new_kernel(name.to_string(), kthread_entry, 0)
+        .map_err(|_| KthreadError::SpawnFailed)?;
 
     let tid = thread.id;
     let kthread = Arc::new(Kthread {
@@ -249,7 +246,9 @@ pub fn kthread_exit(code: i32) -> ! {
     handle.inner.exited.store(true, Ordering::SeqCst);
 
     loop {
-        unsafe { arch_enable_interrupts(); }
+        unsafe {
+            arch_enable_interrupts();
+        }
         arch_halt();
     }
 }

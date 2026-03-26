@@ -14,34 +14,34 @@ pub mod serial;
 pub mod serial_aarch64;
 #[cfg(target_arch = "aarch64")]
 pub use serial_aarch64 as serial;
-pub mod drivers;
-pub mod memory;
 pub mod arch_impl;
+pub mod drivers;
 #[cfg(target_arch = "x86_64")]
 pub mod gdt;
 #[cfg(target_arch = "x86_64")]
 pub mod interrupts;
+pub mod memory;
 #[cfg(target_arch = "x86_64")]
 pub mod per_cpu;
 #[cfg(target_arch = "aarch64")]
 pub mod per_cpu_aarch64;
 #[cfg(target_arch = "aarch64")]
 pub use per_cpu_aarch64 as per_cpu;
-pub mod process;
-pub mod task;
-pub mod signal;
-#[cfg(target_arch = "x86_64")]
-pub mod tls;
 #[cfg(target_arch = "x86_64")]
 pub mod elf;
+pub mod process;
+pub mod signal;
+pub mod task;
+#[cfg(target_arch = "x86_64")]
+pub mod tls;
 #[cfg(target_arch = "aarch64")]
 pub use arch_impl::aarch64::elf;
 pub mod ipc;
 #[cfg(target_arch = "x86_64")]
+pub mod irq_log;
+#[cfg(target_arch = "x86_64")]
 pub mod keyboard;
 pub mod tty;
-#[cfg(target_arch = "x86_64")]
-pub mod irq_log;
 #[cfg(target_arch = "x86_64")]
 pub mod userspace_test;
 // Syscall module - enabled for both architectures
@@ -49,20 +49,20 @@ pub mod userspace_test;
 pub mod syscall;
 // Socket module - enabled for both architectures
 // Unix domain sockets are fully arch-independent
+pub mod net;
 pub mod socket;
 #[cfg(target_arch = "x86_64")]
 pub mod test_exec;
 pub mod time;
-pub mod net;
 // Block and filesystem modules - enabled for both architectures
 // ARM64 uses VirtIO MMIO block driver, x86_64 uses VirtIO PCI
 pub mod block;
+#[cfg(target_arch = "x86_64")]
+pub mod framebuffer;
 pub mod fs;
 pub mod logger;
 #[cfg(target_arch = "aarch64")]
 pub mod platform_config;
-#[cfg(target_arch = "x86_64")]
-pub mod framebuffer;
 // Graphics module: available on x86_64 with "interactive" feature, or always on ARM64
 #[cfg(any(feature = "interactive", target_arch = "aarch64"))]
 pub mod graphics;
@@ -230,7 +230,9 @@ pub fn hlt_loop() -> ! {
 pub fn hlt_loop() -> ! {
     loop {
         // WFI (Wait For Interrupt) is ARM64 equivalent of HLT
-        unsafe { core::arch::asm!("wfi"); }
+        unsafe {
+            core::arch::asm!("wfi");
+        }
     }
 }
 
@@ -255,9 +257,13 @@ where
     F: FnOnce() -> R,
 {
     #[cfg(target_arch = "x86_64")]
-    { arch_impl::x86_64::cpu::X86Cpu::without_interrupts(f) }
+    {
+        arch_impl::x86_64::cpu::X86Cpu::without_interrupts(f)
+    }
     #[cfg(target_arch = "aarch64")]
-    { arch_impl::aarch64::cpu::Aarch64Cpu::without_interrupts(f) }
+    {
+        arch_impl::aarch64::cpu::Aarch64Cpu::without_interrupts(f)
+    }
 }
 
 /// Enable interrupts.
@@ -267,9 +273,13 @@ where
 #[inline(always)]
 pub unsafe fn arch_enable_interrupts() {
     #[cfg(target_arch = "x86_64")]
-    { arch_impl::x86_64::cpu::X86Cpu::enable_interrupts() }
+    {
+        arch_impl::x86_64::cpu::X86Cpu::enable_interrupts()
+    }
     #[cfg(target_arch = "aarch64")]
-    { arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts() }
+    {
+        arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts()
+    }
 }
 
 /// Disable interrupts.
@@ -279,54 +289,78 @@ pub unsafe fn arch_enable_interrupts() {
 #[inline(always)]
 pub unsafe fn arch_disable_interrupts() {
     #[cfg(target_arch = "x86_64")]
-    { arch_impl::x86_64::cpu::X86Cpu::disable_interrupts() }
+    {
+        arch_impl::x86_64::cpu::X86Cpu::disable_interrupts()
+    }
     #[cfg(target_arch = "aarch64")]
-    { arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts() }
+    {
+        arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts()
+    }
 }
 
 /// Check if interrupts are currently enabled.
 #[inline(always)]
 pub fn arch_interrupts_enabled() -> bool {
     #[cfg(target_arch = "x86_64")]
-    { arch_impl::x86_64::cpu::X86Cpu::interrupts_enabled() }
+    {
+        arch_impl::x86_64::cpu::X86Cpu::interrupts_enabled()
+    }
     #[cfg(target_arch = "aarch64")]
-    { arch_impl::aarch64::cpu::Aarch64Cpu::interrupts_enabled() }
+    {
+        arch_impl::aarch64::cpu::Aarch64Cpu::interrupts_enabled()
+    }
 }
 
 /// Halt the CPU until the next interrupt.
 #[inline(always)]
 pub fn arch_halt() {
     #[cfg(target_arch = "x86_64")]
-    { arch_impl::x86_64::cpu::X86Cpu::halt() }
+    {
+        arch_impl::x86_64::cpu::X86Cpu::halt()
+    }
     #[cfg(target_arch = "aarch64")]
-    { arch_impl::aarch64::cpu::Aarch64Cpu::halt() }
+    {
+        arch_impl::aarch64::cpu::Aarch64Cpu::halt()
+    }
 }
 
 /// Enable interrupts and halt (atomic on x86_64).
 #[inline(always)]
 pub fn arch_halt_with_interrupts() {
     #[cfg(target_arch = "x86_64")]
-    { arch_impl::x86_64::cpu::X86Cpu::halt_with_interrupts() }
+    {
+        arch_impl::x86_64::cpu::X86Cpu::halt_with_interrupts()
+    }
     #[cfg(target_arch = "aarch64")]
-    { arch_impl::aarch64::cpu::Aarch64Cpu::halt_with_interrupts() }
+    {
+        arch_impl::aarch64::cpu::Aarch64Cpu::halt_with_interrupts()
+    }
 }
 
 /// Read the CPU timestamp counter (raw ticks).
 #[inline(always)]
 pub fn arch_read_timestamp() -> u64 {
     #[cfg(target_arch = "x86_64")]
-    { arch_impl::x86_64::timer::X86Timer::read_timestamp() }
+    {
+        arch_impl::x86_64::timer::X86Timer::read_timestamp()
+    }
     #[cfg(target_arch = "aarch64")]
-    { arch_impl::aarch64::timer::Aarch64Timer::read_timestamp() }
+    {
+        arch_impl::aarch64::timer::Aarch64Timer::read_timestamp()
+    }
 }
 
 /// Convert raw timer ticks to nanoseconds.
 #[inline(always)]
 pub fn arch_ticks_to_nanos(ticks: u64) -> u64 {
     #[cfg(target_arch = "x86_64")]
-    { arch_impl::x86_64::timer::X86Timer::ticks_to_nanos(ticks) }
+    {
+        arch_impl::x86_64::timer::X86Timer::ticks_to_nanos(ticks)
+    }
     #[cfg(target_arch = "aarch64")]
-    { arch_impl::aarch64::timer::Aarch64Timer::ticks_to_nanos(ticks) }
+    {
+        arch_impl::aarch64::timer::Aarch64Timer::ticks_to_nanos(ticks)
+    }
 }
 
 #[test_case]

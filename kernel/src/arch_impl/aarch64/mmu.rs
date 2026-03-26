@@ -66,8 +66,8 @@ const DESC_ATTR_NORMAL: u64 = 1 << DESC_ATTR_INDX_SHIFT;
 // 0b01 = EL1 RW, EL0 RW (NOTE: implicit PXN - EL1 cannot execute!)
 // 0b10 = EL1 RO, EL0 no access
 // 0b11 = EL1 RO, EL0 RO
-const DESC_AP_KERNEL_ONLY: u64 = 0b00 << 6;  // EL1 RW, EL0 no access
-const DESC_AP_USER_RW: u64 = 0b01 << 6;      // EL1 RW, EL0 RW (implicit PXN!)
+const DESC_AP_KERNEL_ONLY: u64 = 0b00 << 6; // EL1 RW, EL0 no access
+const DESC_AP_USER_RW: u64 = 0b01 << 6; // EL1 RW, EL0 RW (implicit PXN!)
 
 // PXN (Privileged Execute Never) - bit 53
 // UXN (User Execute Never) - bit 54
@@ -79,7 +79,7 @@ const BLOCK_1GB_MASK: u64 = 0x0000_FFFF_C000_0000;
 const BLOCK_2MB_MASK: u64 = 0x0000_FFFF_FFE0_0000;
 
 // Memory layout constants
-const KERNEL_REGION_END: u64 = 0x4100_0000;  // First 16MB for kernel
+const KERNEL_REGION_END: u64 = 0x4100_0000; // First 16MB for kernel
 const RAM_BASE: u64 = 0x4000_0000;
 
 #[inline(always)]
@@ -160,10 +160,14 @@ pub fn init() {
         // - First 8 entries (16MB): Kernel region with AP=0 (EL1 exec)
         // - Remaining entries: User region with AP=1 (EL0 exec, implicit PXN for EL1)
         let kernel_entries = (KERNEL_REGION_END - RAM_BASE) / (2 * 1024 * 1024);
-        crate::serial_println!("[mmu] Kernel region: {} x 2MB blocks ({}MB)", kernel_entries, kernel_entries * 2);
+        crate::serial_println!(
+            "[mmu] Kernel region: {} x 2MB blocks ({}MB)",
+            kernel_entries,
+            kernel_entries * 2
+        );
 
         for i in 0..512u64 {
-            let addr = RAM_BASE + i * 2 * 1024 * 1024;  // 2MB per entry
+            let addr = RAM_BASE + i * 2 * 1024 * 1024; // 2MB per entry
             if i < kernel_entries {
                 // Kernel region: AP=0, EL1 can execute
                 L2_TABLE_RAM.entries[i as usize] = l2_block_desc_kernel(addr, DESC_ATTR_NORMAL);
@@ -175,7 +179,11 @@ pub fn init() {
 
         // Print some sample L2 entries
         crate::serial_println!("[mmu] L2[0] (kernel) = {:#x}", L2_TABLE_RAM.entries[0]);
-        crate::serial_println!("[mmu] L2[{}] (first user) = {:#x}", kernel_entries, L2_TABLE_RAM.entries[kernel_entries as usize]);
+        crate::serial_println!(
+            "[mmu] L2[{}] (first user) = {:#x}",
+            kernel_entries,
+            L2_TABLE_RAM.entries[kernel_entries as usize]
+        );
     }
 
     crate::serial_println!("[mmu] Page tables configured");
@@ -201,9 +209,9 @@ pub fn init() {
     unsafe {
         // Invalidate all caches before MMU enable
         core::arch::asm!(
-            "ic iallu",           // Invalidate all instruction caches
-            "dsb ish",            // Data sync barrier
-            "isb",                // Instruction sync barrier
+            "ic iallu", // Invalidate all instruction caches
+            "dsb ish",  // Data sync barrier
+            "isb",      // Instruction sync barrier
             options(nostack)
         );
 

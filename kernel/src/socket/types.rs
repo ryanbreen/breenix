@@ -65,8 +65,8 @@ impl SockAddrIn {
             port: u16::from_ne_bytes([bytes[2], bytes[3]]),
             addr: [bytes[4], bytes[5], bytes[6], bytes[7]],
             zero: [
-                bytes[8], bytes[9], bytes[10], bytes[11],
-                bytes[12], bytes[13], bytes[14], bytes[15],
+                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
+                bytes[15],
             ],
         })
     }
@@ -196,7 +196,11 @@ impl Default for SockAddrUn {
 impl core::fmt::Debug for SockAddrUn {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if self.is_abstract() {
-            write!(f, "SockAddrUn(abstract: {:?})", &self.path[1..self.path_len()])
+            write!(
+                f,
+                "SockAddrUn(abstract: {:?})",
+                &self.path[1..self.path_len()]
+            )
         } else {
             write!(f, "SockAddrUn(path: {:?})", &self.path[..self.path_len()])
         }

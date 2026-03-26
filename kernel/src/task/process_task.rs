@@ -21,13 +21,23 @@ fn close_extracted_fds(entries: alloc::vec::Vec<(usize, FileDescriptor)>) {
 
     for (_fd, fd_entry) in entries {
         match fd_entry.kind {
-            FdKind::PipeRead(buffer) => { buffer.lock().close_read(); }
-            FdKind::PipeWrite(buffer) => { buffer.lock().close_write(); }
-            FdKind::TcpListener(port) => { crate::net::tcp::tcp_listener_ref_dec(port); }
-            FdKind::TcpConnection(conn_id) => { let _ = crate::net::tcp::tcp_close(&conn_id); }
+            FdKind::PipeRead(buffer) => {
+                buffer.lock().close_read();
+            }
+            FdKind::PipeWrite(buffer) => {
+                buffer.lock().close_write();
+            }
+            FdKind::TcpListener(port) => {
+                crate::net::tcp::tcp_listener_ref_dec(port);
+            }
+            FdKind::TcpConnection(conn_id) => {
+                let _ = crate::net::tcp::tcp_close(&conn_id);
+            }
             FdKind::PtyMaster(pty_num) => {
                 if let Some(pair) = crate::tty::pty::get(pty_num) {
-                    let old_count = pair.master_refcount.fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+                    let old_count = pair
+                        .master_refcount
+                        .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
                     if old_count == 1 {
                         crate::tty::pty::release(pty_num);
                     }
@@ -38,7 +48,9 @@ fn close_extracted_fds(entries: alloc::vec::Vec<(usize, FileDescriptor)>) {
                     pair.slave_close();
                 }
             }
-            FdKind::UnixStream(socket) => { socket.lock().close(); }
+            FdKind::UnixStream(socket) => {
+                socket.lock().close();
+            }
             FdKind::FifoRead(path, buffer) => {
                 crate::ipc::fifo::close_fifo_read(&path);
                 buffer.lock().close_read();

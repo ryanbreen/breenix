@@ -17,7 +17,9 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use spin::Mutex;
 
-use super::kthread::{kthread_run, kthread_should_stop, kthread_park, kthread_unpark, KthreadHandle};
+use super::kthread::{
+    kthread_park, kthread_run, kthread_should_stop, kthread_unpark, KthreadHandle,
+};
 use crate::per_cpu;
 
 /// Architecture-specific enable interrupts
@@ -197,9 +199,7 @@ pub fn do_softirq() -> bool {
             // Call the handler if registered
             let handler_ptr = SOFTIRQ_HANDLERS[nr as usize].load(Ordering::Acquire);
             if !handler_ptr.is_null() {
-                let handler: SoftirqHandler = unsafe {
-                    core::mem::transmute(handler_ptr)
-                };
+                let handler: SoftirqHandler = unsafe { core::mem::transmute(handler_ptr) };
                 if let Some(softirq_type) = SoftirqType::from_nr(nr) {
                     handler(softirq_type);
                 }
@@ -244,7 +244,9 @@ fn ksoftirqd_fn() {
     log::info!("KSOFTIRQD_SPAWN: ksoftirqd/0 started");
 
     // Enable interrupts so timer can preempt us and switch to other threads
-    unsafe { arch_enable_interrupts(); }
+    unsafe {
+        arch_enable_interrupts();
+    }
 
     while !kthread_should_stop() {
         // Check for pending softirqs
@@ -266,9 +268,7 @@ fn ksoftirqd_fn() {
 
                 let handler_ptr = SOFTIRQ_HANDLERS[nr as usize].load(Ordering::Acquire);
                 if !handler_ptr.is_null() {
-                    let handler: SoftirqHandler = unsafe {
-                        core::mem::transmute(handler_ptr)
-                    };
+                    let handler: SoftirqHandler = unsafe { core::mem::transmute(handler_ptr) };
                     if let Some(softirq_type) = SoftirqType::from_nr(nr) {
                         handler(softirq_type);
                     }

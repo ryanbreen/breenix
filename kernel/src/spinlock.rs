@@ -3,11 +3,11 @@
 //! This matches Linux kernel spinlock semantics where acquiring
 //! a spinlock disables preemption via preempt_count.
 
-use core::sync::atomic::{AtomicBool, Ordering};
 use core::hint::spin_loop;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// A simple spinlock that integrates with preempt_count
-/// 
+///
 /// When a spinlock is acquired, it increments preempt_count to disable
 /// preemption. When released, it decrements preempt_count and may trigger
 /// scheduling if needed.
@@ -24,25 +24,24 @@ impl SpinLock {
     }
 
     /// Acquire the spinlock
-    /// 
+    ///
     /// This disables preemption by incrementing preempt_count,
     /// then spins until the lock is acquired.
     pub fn lock(&self) -> SpinLockGuard<'_> {
         // Disable preemption FIRST before trying to acquire the lock
         // This prevents being preempted while holding the lock
         crate::per_cpu::preempt_disable();
-        
+
         // Now spin until we acquire the lock
-        while self.locked.compare_exchange_weak(
-            false,
-            true,
-            Ordering::Acquire,
-            Ordering::Relaxed
-        ).is_err() {
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
             // Hint to the CPU that we're spinning
             spin_loop();
         }
-        
+
         SpinLockGuard { lock: self }
     }
 
@@ -53,14 +52,13 @@ impl SpinLock {
     pub fn try_lock(&self) -> Option<SpinLockGuard<'_>> {
         // Disable preemption first
         crate::per_cpu::preempt_disable();
-        
+
         // Try to acquire the lock
-        if self.locked.compare_exchange(
-            false,
-            true,
-            Ordering::Acquire,
-            Ordering::Relaxed
-        ).is_ok() {
+        if self
+            .locked
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
             Some(SpinLockGuard { lock: self })
         } else {
             // Failed to acquire, re-enable preemption
@@ -78,7 +76,7 @@ impl SpinLock {
 }
 
 /// RAII guard for spinlock
-/// 
+///
 /// When dropped, releases the lock and re-enables preemption
 pub struct SpinLockGuard<'a> {
     lock: &'a SpinLock,
@@ -117,7 +115,9 @@ impl SpinLockIrq {
     pub fn lock(&self) -> SpinLockIrqGuard<'_> {
         // Save interrupt state and disable interrupts
         let was_enabled = crate::arch_interrupts_enabled();
-        unsafe { crate::arch_disable_interrupts(); }
+        unsafe {
+            crate::arch_disable_interrupts();
+        }
 
         // Now acquire the regular spinlock (which disables preemption)
         let _guard = self.lock.lock();
@@ -143,7 +143,9 @@ impl<'a> Drop for SpinLockIrqGuard<'a> {
 
         // Restore interrupt state
         if self.irq_was_enabled {
-            unsafe { crate::arch_enable_interrupts(); }
+            unsafe {
+                crate::arch_enable_interrupts();
+            }
         }
     }
 }
@@ -154,27 +156,34 @@ unsafe impl Send for SpinLockIrq {}
 
 /// Test that spinlock acquisition disables preemption
 pub fn test_spinlock_preemption() {
-        log::info!("Testing spinlock preemption integration...");
-        
-        let lock = SpinLock::new();
-        let initial_count = crate::per_cpu::preempt_count();
-        log::info!("Initial preempt_count: {:#x}", initial_count);
-        
-        // Acquire the lock
-        let guard = lock.lock();
-        let with_lock_count = crate::per_cpu::preempt_count();
-        log::info!("With spinlock held: {:#x}", with_lock_count);
-        
-        // Preempt count should be incremented
-        assert_eq!(with_lock_count, initial_count + 1, "Spinlock should disable preemption");
-        
-        // Release the lock
-        drop(guard);
-        let after_release = crate::per_cpu::preempt_count();
-        log::info!("After spinlock release: {:#x}", after_release);
-        
-        // Preempt count should be back to initial
-        assert_eq!(after_release, initial_count, "Spinlock release should re-enable preemption");
-        
-        log::info!("✅ Spinlock preemption integration test passed");
+    log::info!("Testing spinlock preemption integration...");
+
+    let lock = SpinLock::new();
+    let initial_count = crate::per_cpu::preempt_count();
+    log::info!("Initial preempt_count: {:#x}", initial_count);
+
+    // Acquire the lock
+    let guard = lock.lock();
+    let with_lock_count = crate::per_cpu::preempt_count();
+    log::info!("With spinlock held: {:#x}", with_lock_count);
+
+    // Preempt count should be incremented
+    assert_eq!(
+        with_lock_count,
+        initial_count + 1,
+        "Spinlock should disable preemption"
+    );
+
+    // Release the lock
+    drop(guard);
+    let after_release = crate::per_cpu::preempt_count();
+    log::info!("After spinlock release: {:#x}", after_release);
+
+    // Preempt count should be back to initial
+    assert_eq!(
+        after_release, initial_count,
+        "Spinlock release should re-enable preemption"
+    );
+
+    log::info!("✅ Spinlock preemption integration test passed");
 }

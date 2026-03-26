@@ -7,10 +7,10 @@
 //! parent's page table via inherited_cr3. This minimizes changes to the
 //! existing single-threaded process architecture while supporting std::thread.
 
-use alloc::boxed::Box;
 use super::SyscallResult;
 use crate::process::process::Process;
-use crate::task::thread::{Thread, ThreadPrivilege, CpuContext};
+use crate::task::thread::{CpuContext, Thread, ThreadPrivilege};
+use alloc::boxed::Box;
 
 /// Clone flags (Linux-compatible)
 const CLONE_VM: u64 = 0x00000100;
@@ -136,7 +136,11 @@ pub fn sys_clone(
 
     #[cfg(target_arch = "x86_64")]
     if let Err(e) = crate::tls::register_thread_tls(child_thread_id, tls_block) {
-        log::warn!("clone: failed to register TLS for thread {}: {}", child_thread_id, e);
+        log::warn!(
+            "clone: failed to register TLS for thread {}: {}",
+            child_thread_id,
+            e
+        );
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -147,9 +151,13 @@ pub fn sys_clone(
     // Calculate stack bottom (assume 2MB stack, doesn't need to be exact)
     let stack_bottom_addr = {
         #[cfg(target_arch = "x86_64")]
-        { x86_64::VirtAddr::new(child_stack.saturating_sub(2 * 1024 * 1024)) }
+        {
+            x86_64::VirtAddr::new(child_stack.saturating_sub(2 * 1024 * 1024))
+        }
         #[cfg(not(target_arch = "x86_64"))]
-        { crate::memory::arch_stub::VirtAddr::new(child_stack.saturating_sub(2 * 1024 * 1024)) }
+        {
+            crate::memory::arch_stub::VirtAddr::new(child_stack.saturating_sub(2 * 1024 * 1024))
+        }
     };
 
     let mut child_thread = Thread {
@@ -166,7 +174,7 @@ pub fn sys_clone(
         time_slice: 10,
         entry_point: None,
         privilege: ThreadPrivilege::User,
-        has_started: false,  // Will be set up via first_userspace_entry
+        has_started: false, // Will be set up via first_userspace_entry
         blocked_in_syscall: false,
         saved_userspace_context: None,
         wake_time_ns: None,
@@ -186,7 +194,11 @@ pub fn sys_clone(
     #[cfg(not(target_arch = "x86_64"))]
     let entry_point = crate::memory::arch_stub::VirtAddr::new(fn_ptr);
 
-    let mut child_process = Process::new(child_pid, alloc::format!("thread-{}", child_pid.as_u64()), entry_point);
+    let mut child_process = Process::new(
+        child_pid,
+        alloc::format!("thread-{}", child_pid.as_u64()),
+        entry_point,
+    );
     child_process.parent = Some(parent_pid);
     child_process.state = crate::process::process::ProcessState::Ready;
     child_process.inherited_cr3 = Some(parent_cr3);

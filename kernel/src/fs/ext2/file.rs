@@ -106,14 +106,16 @@ pub fn get_block_num<B: BlockDevice + ?Sized>(
     let ptrs_per_block = (block_size / 4) as u32; // 4 bytes per u32 block pointer
 
     // Read block pointers safely from packed struct
-    let i_block = unsafe {
-        core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block))
-    };
+    let i_block = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block)) };
 
     // Direct blocks (0-11)
     if logical_block < DIRECT_BLOCKS {
         let block_num = i_block[logical_block as usize];
-        return Ok(if block_num == 0 { None } else { Some(block_num) });
+        return Ok(if block_num == 0 {
+            None
+        } else {
+            Some(block_num)
+        });
     }
 
     let direct_count = DIRECT_BLOCKS;
@@ -130,7 +132,11 @@ pub fn get_block_num<B: BlockDevice + ?Sized>(
         let index_in_indirect = logical_block - direct_count;
         let indirect_blocks = read_indirect_block(device, single_indirect_ptr, block_size)?;
         let block_num = indirect_blocks[index_in_indirect as usize];
-        return Ok(if block_num == 0 { None } else { Some(block_num) });
+        return Ok(if block_num == 0 {
+            None
+        } else {
+            Some(block_num)
+        });
     }
 
     // Double indirect block (13)
@@ -154,7 +160,11 @@ pub fn get_block_num<B: BlockDevice + ?Sized>(
         // Read second-level indirect block (contains pointers to data blocks)
         let second_level_blocks = read_indirect_block(device, second_level_ptr, block_size)?;
         let block_num = second_level_blocks[second_level_index as usize];
-        return Ok(if block_num == 0 { None } else { Some(block_num) });
+        return Ok(if block_num == 0 {
+            None
+        } else {
+            Some(block_num)
+        });
     }
 
     // Triple indirect block (14)
@@ -163,7 +173,8 @@ pub fn get_block_num<B: BlockDevice + ?Sized>(
         return Ok(None); // Sparse hole
     }
 
-    let index_in_triple = logical_block - direct_count - single_indirect_count - double_indirect_count;
+    let index_in_triple =
+        logical_block - direct_count - single_indirect_count - double_indirect_count;
     let first_level_index = index_in_triple / (ptrs_per_block * ptrs_per_block);
     let second_level_index = (index_in_triple / ptrs_per_block) % ptrs_per_block;
     let third_level_index = index_in_triple % ptrs_per_block;
@@ -185,7 +196,11 @@ pub fn get_block_num<B: BlockDevice + ?Sized>(
     // Read third-level indirect block (contains pointers to data blocks)
     let third_level_blocks = read_indirect_block(device, third_level_ptr, block_size)?;
     let block_num = third_level_blocks[third_level_index as usize];
-    Ok(if block_num == 0 { None } else { Some(block_num) })
+    Ok(if block_num == 0 {
+        None
+    } else {
+        Some(block_num)
+    })
 }
 
 /// Read the entire contents of a file
@@ -370,8 +385,9 @@ pub fn set_block_num<B: BlockDevice + ?Sized>(
 
         if single_indirect_ptr == 0 {
             // Allocate a new indirect block
-            single_indirect_ptr = super::block_group::allocate_block(device, superblock, block_groups)
-                .map_err(|_| BlockError::IoError)?;
+            single_indirect_ptr =
+                super::block_group::allocate_block(device, superblock, block_groups)
+                    .map_err(|_| BlockError::IoError)?;
 
             // Update the inode's indirect block pointer
             unsafe {
@@ -401,8 +417,9 @@ pub fn set_block_num<B: BlockDevice + ?Sized>(
 
         if double_indirect_ptr == 0 {
             // Allocate a new double indirect block
-            double_indirect_ptr = super::block_group::allocate_block(device, superblock, block_groups)
-                .map_err(|_| BlockError::IoError)?;
+            double_indirect_ptr =
+                super::block_group::allocate_block(device, superblock, block_groups)
+                    .map_err(|_| BlockError::IoError)?;
 
             // Update the inode's double indirect block pointer
             unsafe {
@@ -440,9 +457,8 @@ pub fn set_block_num<B: BlockDevice + ?Sized>(
 
     // Triple indirect block (14)
     // Get or allocate triple indirect block
-    let mut triple_indirect_ptr = unsafe {
-        core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block[TRIPLE_INDIRECT]))
-    };
+    let mut triple_indirect_ptr =
+        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block[TRIPLE_INDIRECT])) };
 
     if triple_indirect_ptr == 0 {
         // Allocate a new triple indirect block
@@ -456,7 +472,8 @@ pub fn set_block_num<B: BlockDevice + ?Sized>(
         }
     }
 
-    let index_in_triple = logical_block - direct_count - single_indirect_count - double_indirect_count;
+    let index_in_triple =
+        logical_block - direct_count - single_indirect_count - double_indirect_count;
     let first_level_index = (index_in_triple / (ptrs_per_block * ptrs_per_block)) as usize;
     let second_level_index = ((index_in_triple / ptrs_per_block) % ptrs_per_block) as usize;
     let third_level_index = (index_in_triple % ptrs_per_block) as usize;
@@ -558,15 +575,23 @@ pub fn write_file_range<B: BlockDevice + ?Sized>(
             Ok(Some(block_num)) => block_num,
             Ok(None) => {
                 // Sparse hole or no block allocated - allocate a new block
-                let new_block = match super::block_group::allocate_block(device, superblock, block_groups) {
-                    Ok(b) => b,
-                    Err(_) => {
-                        return Err(BlockError::IoError);
-                    }
-                };
+                let new_block =
+                    match super::block_group::allocate_block(device, superblock, block_groups) {
+                        Ok(b) => b,
+                        Err(_) => {
+                            return Err(BlockError::IoError);
+                        }
+                    };
 
                 // Set the block pointer in the inode
-                if let Err(e) = set_block_num(device, inode, superblock, block_groups, logical_block, new_block) {
+                if let Err(e) = set_block_num(
+                    device,
+                    inode,
+                    superblock,
+                    block_groups,
+                    logical_block,
+                    new_block,
+                ) {
                     return Err(e);
                 }
 
@@ -601,7 +626,12 @@ pub fn write_file_range<B: BlockDevice + ?Sized>(
 
         // Read-modify-write if we're not writing a full block
         if start_in_block != 0 || end_in_block != block_size {
-            if let Err(e) = read_ext2_block(device, physical_block, block_size, &mut block_buf[..block_size]) {
+            if let Err(e) = read_ext2_block(
+                device,
+                physical_block,
+                block_size,
+                &mut block_buf[..block_size],
+            ) {
                 return Err(e);
             }
         }
@@ -612,7 +642,9 @@ pub fn write_file_range<B: BlockDevice + ?Sized>(
         data_pos += bytes_to_write;
 
         // Write the block back
-        if let Err(e) = write_ext2_block(device, physical_block, block_size, &block_buf[..block_size]) {
+        if let Err(e) =
+            write_ext2_block(device, physical_block, block_size, &block_buf[..block_size])
+        {
             return Err(e);
         }
     }

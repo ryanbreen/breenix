@@ -4,11 +4,11 @@
 //! in a process's address space. VMAs represent contiguous mapped regions with specific
 //! permissions and flags.
 
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::VirtAddr;
 use alloc::vec::Vec;
 #[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
-#[cfg(not(target_arch = "x86_64"))]
-use crate::memory::arch_stub::VirtAddr;
 
 /// Start of mmap allocation region (below stack)
 #[allow(dead_code)]
@@ -181,7 +181,9 @@ impl VmaList {
             // Check if there's enough space between this VMA's start and our search end
             if vma.start.as_u64() >= aligned_size {
                 let potential_start = vma.start.as_u64() - aligned_size;
-                if potential_start >= MMAP_REGION_START && potential_start + aligned_size <= search_end {
+                if potential_start >= MMAP_REGION_START
+                    && potential_start + aligned_size <= search_end
+                {
                     return Some(VirtAddr::new(potential_start));
                 }
             }
@@ -282,7 +284,8 @@ impl VmaList {
 
         // Re-insert the split parts
         for vma in to_insert {
-            self.insert(vma).expect("Re-inserting split VMA should never fail");
+            self.insert(vma)
+                .expect("Re-inserting split VMA should never fail");
         }
 
         if removed.is_empty() {

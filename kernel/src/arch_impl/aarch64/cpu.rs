@@ -20,13 +20,13 @@
 use crate::arch_impl::traits::CpuOps;
 
 /// DAIF bit positions
-const DAIF_IRQ_BIT: u64 = 1 << 7;  // I bit
-const DAIF_FIQ_BIT: u64 = 1 << 6;  // F bit
+const DAIF_IRQ_BIT: u64 = 1 << 7; // I bit
+const DAIF_FIQ_BIT: u64 = 1 << 6; // F bit
 
 /// Immediate values for daifset/daifclr (bits 3:0 map to DAIF bits 9:6)
 /// Bit 1 = I (IRQ), Bit 0 = F (FIQ)
-const DAIF_IRQ_IMM: u32 = 0x2;  // Just IRQ
-const DAIF_ALL_IMM: u32 = 0xF;  // D, A, I, F
+const DAIF_IRQ_IMM: u32 = 0x2; // Just IRQ
+const DAIF_ALL_IMM: u32 = 0xF; // D, A, I, F
 
 pub struct Aarch64Cpu;
 
@@ -83,8 +83,8 @@ impl CpuOps for Aarch64Cpu {
             // Enable IRQs/FIQs and immediately wait
             // Any pending interrupt will be taken before WFI completes
             core::arch::asm!(
-                "msr daifclr, #3",  // Enable IRQs and FIQs
-                "wfi",              // Wait for interrupt
+                "msr daifclr, #3", // Enable IRQs and FIQs
+                "wfi",             // Wait for interrupt
                 options(nomem, nostack)
             );
         }

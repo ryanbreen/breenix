@@ -26,11 +26,11 @@ pub mod kthread;
 #[cfg(feature = "testing")]
 pub mod kthread_tests;
 #[cfg(feature = "testing")]
-pub mod workqueue_tests;
-#[cfg(feature = "testing")]
 pub mod softirq_tests;
-pub mod workqueue;
 pub mod softirqd;
+pub mod workqueue;
+#[cfg(feature = "testing")]
+pub mod workqueue_tests;
 
 // Process-related modules
 // Note: process_context is available for both architectures as SavedRegisters

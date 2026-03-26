@@ -1,3 +1,5 @@
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::{FrameAllocator, PhysAddr, PhysFrame, Size4KiB};
 use alloc::vec::Vec;
 use bootloader_api::info::{MemoryRegionKind, MemoryRegions};
 #[cfg(feature = "testing")]
@@ -8,8 +10,6 @@ use spin::Mutex;
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB};
 #[cfg(target_arch = "x86_64")]
 use x86_64::PhysAddr;
-#[cfg(not(target_arch = "x86_64"))]
-use crate::memory::arch_stub::{FrameAllocator, PhysFrame, Size4KiB, PhysAddr};
 
 /// Maximum number of usable memory regions we support
 /// Increased from 32 to 128 to handle UEFI's fragmented memory map
@@ -188,7 +188,9 @@ pub fn init(memory_regions: &'static MemoryRegions) {
             if region.end <= LOW_MEMORY_FLOOR {
                 log::debug!(
                     "Skipping low memory region {:#x}..{:#x} (below floor {:#x})",
-                    region.start, region.end, LOW_MEMORY_FLOOR
+                    region.start,
+                    region.end,
+                    LOW_MEMORY_FLOOR
                 );
                 ignored_regions += 1;
                 ignored_memory += region.end - region.start;
@@ -200,7 +202,8 @@ pub fn init(memory_regions: &'static MemoryRegions) {
                 let adjusted_start = if region.start < LOW_MEMORY_FLOOR {
                     log::info!(
                         "Adjusting region start from {:#x} to {:#x} (low memory floor)",
-                        region.start, LOW_MEMORY_FLOOR
+                        region.start,
+                        LOW_MEMORY_FLOOR
                     );
                     LOW_MEMORY_FLOOR
                 } else {

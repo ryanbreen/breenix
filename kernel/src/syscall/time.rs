@@ -113,7 +113,8 @@ pub fn sys_clock_settime(clock_id: u32, user_ptr: *const Timespec) -> SyscallRes
 
     log::info!(
         "clock_settime: wall clock adjusted to {} (boot_wall_time={})",
-        desired_secs, new_boot
+        desired_secs,
+        new_boot
     );
 
     SyscallResult::Ok(0)
@@ -229,7 +230,8 @@ pub fn sys_nanosleep(req_ptr: u64, _rem_ptr: u64) -> SyscallResult {
         // decision on another CPU to call wake_expired_timers().
         let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
             sched.wake_expired_timers();
-            sched.current_thread_mut()
+            sched
+                .current_thread_mut()
                 .map(|t| t.state == crate::task::thread::ThreadState::BlockedOnTimer)
                 .unwrap_or(false)
         });

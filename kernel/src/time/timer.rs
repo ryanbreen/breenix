@@ -45,7 +45,11 @@ pub fn init() {
         ch0.write((divisor >> 8) as u8);
     }
 
-    log::info!("Timer initialized at {} Hz ({}ms per tick)", PIT_HZ, 1000 / PIT_HZ);
+    log::info!(
+        "Timer initialized at {} Hz ({}ms per tick)",
+        PIT_HZ,
+        1000 / PIT_HZ
+    );
 
     // Initialize RTC for wall clock time
     super::rtc::init();
@@ -71,7 +75,6 @@ pub fn timer_interrupt() {
             // Toggle cursor - uses try_lock so won't block
             crate::logger::toggle_cursor_blink();
         }
-
     }
 }
 
@@ -140,7 +143,12 @@ pub fn validate_pit_counting() -> (bool, u16, u16, &'static str) {
         // The counter should be counting down, so count2 should be less than count1
         // (unless it wrapped, which is unlikely in such a short time)
         if count1 == 0 && count2 == 0 {
-            return (false, count1, count2, "Counter reads as zero (not initialized?)");
+            return (
+                false,
+                count1,
+                count2,
+                "Counter reads as zero (not initialized?)",
+            );
         }
 
         if count1 == count2 {

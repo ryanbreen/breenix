@@ -3,17 +3,17 @@
 //! The Second Extended Filesystem (ext2) is a classic Linux filesystem.
 //! This module provides structures and functions for parsing ext2 filesystems.
 
-pub mod superblock;
 pub mod block_group;
 pub mod dir;
-pub mod inode;
 pub mod file;
+pub mod inode;
+pub mod superblock;
 
-pub use superblock::*;
 pub use block_group::*;
 pub use dir::*;
-pub use inode::*;
 pub use file::*;
+pub use inode::*;
+pub use superblock::*;
 
 use crate::block::BlockDevice;
 use alloc::vec::Vec;
@@ -38,7 +38,10 @@ impl Ext2Fs {
     /// Create a new ext2 filesystem instance from a block device
     ///
     /// Reads and validates the superblock and block group descriptors.
-    pub fn new(device: alloc::boxed::Box<dyn BlockDevice>, mount_id: usize) -> Result<Self, &'static str> {
+    pub fn new(
+        device: alloc::boxed::Box<dyn BlockDevice>,
+        mount_id: usize,
+    ) -> Result<Self, &'static str> {
         // Read the superblock
         let superblock = Ext2Superblock::read_from(device.as_ref())
             .map_err(|_| "Failed to read ext2 superblock")?;
@@ -84,7 +87,11 @@ impl Ext2Fs {
     /// Look up a path component in a directory
     ///
     /// Returns the inode number of the matching entry, or None if not found.
-    pub fn lookup_in_dir(&self, dir_inode: &Ext2Inode, name: &str) -> Result<Option<u32>, &'static str> {
+    pub fn lookup_in_dir(
+        &self,
+        dir_inode: &Ext2Inode,
+        name: &str,
+    ) -> Result<Option<u32>, &'static str> {
         let dir_data = self.read_directory(dir_inode)?;
         Ok(find_entry(&dir_data, name).map(|entry| entry.inode))
     }
@@ -106,7 +113,12 @@ impl Ext2Fs {
     }
 
     /// Internal path resolution with symlink following and depth limiting
-    fn resolve_path_impl(&self, path: &str, follow_final: bool, depth: u32) -> Result<u32, &'static str> {
+    fn resolve_path_impl(
+        &self,
+        path: &str,
+        follow_final: bool,
+        depth: u32,
+    ) -> Result<u32, &'static str> {
         const MAX_SYMLINK_DEPTH: u32 = 8;
         if depth > MAX_SYMLINK_DEPTH {
             return Err("Too many levels of symbolic links");
@@ -151,7 +163,9 @@ impl Ext2Fs {
                         } else {
                             let mut r = alloc::string::String::from("/");
                             for (j, c) in components[i + 1..].iter().enumerate() {
-                                if j > 0 { r.push('/'); }
+                                if j > 0 {
+                                    r.push('/');
+                                }
                                 r.push_str(c);
                             }
                             r
@@ -168,7 +182,9 @@ impl Ext2Fs {
                             // Relative symlink - resolve relative to parent directory
                             let mut parent = alloc::string::String::from("/");
                             for (j, c) in components[..i].iter().enumerate() {
-                                if j > 0 { parent.push('/'); }
+                                if j > 0 {
+                                    parent.push('/');
+                                }
                                 parent.push_str(c);
                             }
                             let mut full_path = parent;
@@ -203,8 +219,14 @@ impl Ext2Fs {
         offset: u64,
         length: usize,
     ) -> Result<Vec<u8>, &'static str> {
-        read_file_range(self.device.as_ref(), inode, &self.superblock, offset, length)
-            .map_err(|_| "Failed to read file range")
+        read_file_range(
+            self.device.as_ref(),
+            inode,
+            &self.superblock,
+            offset,
+            length,
+        )
+        .map_err(|_| "Failed to read file range")
     }
 
     /// Write data to a file at the specified offset
@@ -236,12 +258,24 @@ impl Ext2Fs {
         }
 
         // Write the data
-        if let Err(_) = write_file_range(self.device.as_ref(), &mut inode, &self.superblock, &mut self.block_groups, offset, data) {
+        if let Err(_) = write_file_range(
+            self.device.as_ref(),
+            &mut inode,
+            &self.superblock,
+            &mut self.block_groups,
+            offset,
+            data,
+        ) {
             return Err("Failed to write file data");
         }
 
         // Write the modified inode back to disk
-        if let Err(_) = inode.write_to(self.device.as_ref(), inode_num, &self.superblock, &self.block_groups) {
+        if let Err(_) = inode.write_to(
+            self.device.as_ref(),
+            inode_num,
+            &self.superblock,
+            &self.block_groups,
+        ) {
             return Err("Failed to write inode");
         }
 
@@ -254,7 +288,13 @@ impl Ext2Fs {
     /// * `inode_num` - The inode number to write
     /// * `inode` - The modified inode data
     pub fn write_inode(&mut self, inode_num: u32, inode: &Ext2Inode) -> Result<(), &'static str> {
-        inode.write_to(self.device.as_ref(), inode_num, &self.superblock, &self.block_groups)
+        inode
+            .write_to(
+                self.device.as_ref(),
+                inode_num,
+                &self.superblock,
+                &self.block_groups,
+            )
             .map_err(|_| "Failed to write inode")
     }
 
@@ -268,7 +308,12 @@ impl Ext2Fs {
     /// # Returns
     /// * `Ok(inode_num)` - The inode number of the newly created file
     /// * `Err(msg)` - Error message if creation failed
-    pub fn create_file(&mut self, parent_inode_num: u32, name: &str, mode: u16) -> Result<u32, &'static str> {
+    pub fn create_file(
+        &mut self,
+        parent_inode_num: u32,
+        name: &str,
+        mode: u16,
+    ) -> Result<u32, &'static str> {
         // Validate name
         if name.is_empty() || name.len() > 255 {
             return Err("Invalid filename length");
@@ -302,12 +347,14 @@ impl Ext2Fs {
         let new_inode = Ext2Inode::new_regular_file(mode);
 
         // Write the new inode to disk
-        new_inode.write_to(
-            self.device.as_ref(),
-            new_inode_num,
-            &self.superblock,
-            &self.block_groups,
-        ).map_err(|_| "Failed to write new inode")?;
+        new_inode
+            .write_to(
+                self.device.as_ref(),
+                new_inode_num,
+                &self.superblock,
+                &self.block_groups,
+            )
+            .map_err(|_| "Failed to write new inode")?;
 
         // Add directory entry
         add_directory_entry(&mut dir_data, new_inode_num, name, EXT2_FT_REG_FILE)?;
@@ -320,24 +367,24 @@ impl Ext2Fs {
         self.write_directory_data(parent_inode_num, &dir_data)?;
 
         // Write the updated parent directory inode
-        parent_inode_mut.write_to(
-            self.device.as_ref(),
-            parent_inode_num,
-            &self.superblock,
-            &self.block_groups,
-        ).map_err(|_| "Failed to write parent inode")?;
+        parent_inode_mut
+            .write_to(
+                self.device.as_ref(),
+                parent_inode_num,
+                &self.superblock,
+                &self.block_groups,
+            )
+            .map_err(|_| "Failed to write parent inode")?;
 
         // Update superblock with new free inode count
         self.superblock.decrement_free_inodes();
-        self.superblock.write_to(self.device.as_ref())
+        self.superblock
+            .write_to(self.device.as_ref())
             .map_err(|_| "Failed to write superblock")?;
 
         // Write updated block group descriptors
-        Ext2BlockGroupDesc::write_table(
-            self.device.as_ref(),
-            &self.superblock,
-            &self.block_groups,
-        ).map_err(|_| "Failed to write block group descriptors")?;
+        Ext2BlockGroupDesc::write_table(self.device.as_ref(), &self.superblock, &self.block_groups)
+            .map_err(|_| "Failed to write block group descriptors")?;
 
         log::debug!("ext2: created file '{}' with inode {}", name, new_inode_num);
         Ok(new_inode_num)
@@ -375,7 +422,9 @@ impl Ext2Fs {
                     i_block[i],
                     &self.superblock,
                     &mut self.block_groups,
-                ).is_ok() {
+                )
+                .is_ok()
+                {
                     blocks_freed += 1;
                 }
             }
@@ -396,21 +445,28 @@ impl Ext2Fs {
         inode.update_timestamps(false, true, true);
 
         // Write the modified inode back
-        inode.write_to(
-            self.device.as_ref(),
-            inode_num,
-            &self.superblock,
-            &self.block_groups,
-        ).map_err(|_| "Failed to write truncated inode")?;
+        inode
+            .write_to(
+                self.device.as_ref(),
+                inode_num,
+                &self.superblock,
+                &self.block_groups,
+            )
+            .map_err(|_| "Failed to write truncated inode")?;
 
         // Update superblock free block count so freed blocks can be reused
         if blocks_freed > 0 {
             self.superblock.increment_free_blocks(blocks_freed);
-            self.superblock.write_to(self.device.as_ref())
+            self.superblock
+                .write_to(self.device.as_ref())
                 .map_err(|_| "Failed to write superblock after truncate")?;
         }
 
-        log::debug!("ext2: truncated inode {} to zero length, freed {} blocks", inode_num, blocks_freed);
+        log::debug!(
+            "ext2: truncated inode {} to zero length, freed {} blocks",
+            inode_num,
+            blocks_freed
+        );
         Ok(())
     }
 
@@ -465,18 +521,16 @@ impl Ext2Fs {
         }
 
         // Get the link count to determine if we'll be freeing the inode
-        let link_count = unsafe {
-            core::ptr::read_unaligned(core::ptr::addr_of!(target_inode.i_links_count))
-        };
+        let link_count =
+            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(target_inode.i_links_count)) };
 
         // Calculate how many blocks this file uses (if we're about to free it)
         // i_blocks is in 512-byte sectors, so divide by (block_size / 512)
         let blocks_to_free = if link_count == 1 {
             let block_size = self.superblock.block_size();
             let sectors_per_block = (block_size / 512) as u32;
-            let i_blocks = unsafe {
-                core::ptr::read_unaligned(core::ptr::addr_of!(target_inode.i_blocks))
-            };
+            let i_blocks =
+                unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(target_inode.i_blocks)) };
             i_blocks / sectors_per_block
         } else {
             0
@@ -493,12 +547,14 @@ impl Ext2Fs {
         self.write_directory_data(parent_inode_num, &dir_data)?;
 
         // Write the updated parent directory inode
-        parent_inode_mut.write_to(
-            self.device.as_ref(),
-            parent_inode_num,
-            &self.superblock,
-            &self.block_groups,
-        ).map_err(|_| "Failed to write parent inode")?;
+        parent_inode_mut
+            .write_to(
+                self.device.as_ref(),
+                parent_inode_num,
+                &self.superblock,
+                &self.block_groups,
+            )
+            .map_err(|_| "Failed to write parent inode")?;
 
         // Decrement the inode link count (may free the inode and blocks if it reaches 0)
         let new_links = decrement_inode_links(
@@ -519,7 +575,8 @@ impl Ext2Fs {
             }
 
             // Write the updated superblock
-            self.superblock.write_to(self.device.as_ref())
+            self.superblock
+                .write_to(self.device.as_ref())
                 .map_err(|_| "Failed to write superblock")?;
 
             // Write updated block group descriptors
@@ -527,7 +584,8 @@ impl Ext2Fs {
                 self.device.as_ref(),
                 &self.superblock,
                 &self.block_groups,
-            ).map_err(|_| "Failed to write block group descriptors")?;
+            )
+            .map_err(|_| "Failed to write block group descriptors")?;
         }
 
         log::debug!("ext2: unlinked {} (inode {})", path, target_inode_num);
@@ -575,7 +633,11 @@ impl Ext2Fs {
         if old_filename.is_empty() || new_filename.is_empty() {
             return Err("Invalid filename");
         }
-        if old_filename == "." || old_filename == ".." || new_filename == "." || new_filename == ".." {
+        if old_filename == "."
+            || old_filename == ".."
+            || new_filename == "."
+            || new_filename == ".."
+        {
             return Err("Cannot rename . or ..");
         }
 
@@ -589,7 +651,11 @@ impl Ext2Fs {
         let source_inode_num = self.resolve_path(oldpath)?;
         let source_inode = self.read_inode(source_inode_num)?;
         let source_is_dir = source_inode.is_dir();
-        let source_file_type = if source_is_dir { EXT2_FT_DIR } else { EXT2_FT_REG_FILE };
+        let source_file_type = if source_is_dir {
+            EXT2_FT_DIR
+        } else {
+            EXT2_FT_REG_FILE
+        };
 
         // Resolve parent directories
         let old_parent_num = self.resolve_path(old_parent_path)?;
@@ -645,7 +711,12 @@ impl Ext2Fs {
         // Add entry to new parent
         if old_parent_num == new_parent_num {
             // Same directory - work with the modified buffer
-            add_directory_entry(&mut old_parent_data, source_inode_num, new_filename, source_file_type)?;
+            add_directory_entry(
+                &mut old_parent_data,
+                source_inode_num,
+                new_filename,
+                source_file_type,
+            )?;
 
             // Update parent directory timestamps
             let mut parent_inode_mut = old_parent_inode;
@@ -655,15 +726,22 @@ impl Ext2Fs {
             self.write_directory_data(old_parent_num, &old_parent_data)?;
 
             // Write the updated parent directory inode
-            parent_inode_mut.write_to(
-                self.device.as_ref(),
-                old_parent_num,
-                &self.superblock,
-                &self.block_groups,
-            ).map_err(|_| "Failed to write parent inode")?;
+            parent_inode_mut
+                .write_to(
+                    self.device.as_ref(),
+                    old_parent_num,
+                    &self.superblock,
+                    &self.block_groups,
+                )
+                .map_err(|_| "Failed to write parent inode")?;
         } else {
             // Different directories
-            add_directory_entry(&mut new_parent_data, source_inode_num, new_filename, source_file_type)?;
+            add_directory_entry(
+                &mut new_parent_data,
+                source_inode_num,
+                new_filename,
+                source_file_type,
+            )?;
 
             // Update timestamps for both parent directories
             let mut old_parent_mut = old_parent_inode;
@@ -676,19 +754,23 @@ impl Ext2Fs {
             self.write_directory_data(new_parent_num, &new_parent_data)?;
 
             // Write the updated parent directory inodes
-            old_parent_mut.write_to(
-                self.device.as_ref(),
-                old_parent_num,
-                &self.superblock,
-                &self.block_groups,
-            ).map_err(|_| "Failed to write old parent inode")?;
+            old_parent_mut
+                .write_to(
+                    self.device.as_ref(),
+                    old_parent_num,
+                    &self.superblock,
+                    &self.block_groups,
+                )
+                .map_err(|_| "Failed to write old parent inode")?;
 
-            new_parent_mut.write_to(
-                self.device.as_ref(),
-                new_parent_num,
-                &self.superblock,
-                &self.block_groups,
-            ).map_err(|_| "Failed to write new parent inode")?;
+            new_parent_mut
+                .write_to(
+                    self.device.as_ref(),
+                    new_parent_num,
+                    &self.superblock,
+                    &self.block_groups,
+                )
+                .map_err(|_| "Failed to write new parent inode")?;
 
             // If moving a directory, update its ".." entry to point to new parent
             if source_is_dir {
@@ -797,23 +879,31 @@ impl Ext2Fs {
         let dotdot_offset = 12usize;
         let dotdot_rec_len = (block_size - 12) as u16;
         dir_data[dotdot_offset..dotdot_offset + 4].copy_from_slice(&parent_inode_num.to_le_bytes()); // inode
-        dir_data[dotdot_offset + 4..dotdot_offset + 6].copy_from_slice(&dotdot_rec_len.to_le_bytes()); // rec_len
+        dir_data[dotdot_offset + 4..dotdot_offset + 6]
+            .copy_from_slice(&dotdot_rec_len.to_le_bytes()); // rec_len
         dir_data[dotdot_offset + 6] = 2; // name_len
         dir_data[dotdot_offset + 7] = EXT2_FT_DIR; // file_type
         dir_data[dotdot_offset + 8] = b'.'; // name[0]
         dir_data[dotdot_offset + 9] = b'.'; // name[1]
 
         // Write the directory data block
-        file::write_ext2_block(self.device.as_ref(), new_block, block_size, &dir_data[..block_size])
-            .map_err(|_| "Failed to write directory data block")?;
+        file::write_ext2_block(
+            self.device.as_ref(),
+            new_block,
+            block_size,
+            &dir_data[..block_size],
+        )
+        .map_err(|_| "Failed to write directory data block")?;
 
         // Write the new inode to disk
-        new_inode.write_to(
-            self.device.as_ref(),
-            new_inode_num,
-            &self.superblock,
-            &self.block_groups,
-        ).map_err(|_| "Failed to write new directory inode")?;
+        new_inode
+            .write_to(
+                self.device.as_ref(),
+                new_inode_num,
+                &self.superblock,
+                &self.block_groups,
+            )
+            .map_err(|_| "Failed to write new directory inode")?;
 
         // Add directory entry to parent directory
         add_directory_entry(&mut parent_dir_data, new_inode_num, dirname, EXT2_FT_DIR)?;
@@ -832,17 +922,20 @@ impl Ext2Fs {
         self.write_directory_data(parent_inode_num, &parent_dir_data)?;
 
         // Write the updated parent directory inode
-        parent_inode_mut.write_to(
-            self.device.as_ref(),
-            parent_inode_num,
-            &self.superblock,
-            &self.block_groups,
-        ).map_err(|_| "Failed to write parent inode")?;
+        parent_inode_mut
+            .write_to(
+                self.device.as_ref(),
+                parent_inode_num,
+                &self.superblock,
+                &self.block_groups,
+            )
+            .map_err(|_| "Failed to write parent inode")?;
 
         // Update superblock with new free inode and block counts
         self.superblock.decrement_free_inodes();
         self.superblock.decrement_free_blocks();
-        self.superblock.write_to(self.device.as_ref())
+        self.superblock
+            .write_to(self.device.as_ref())
             .map_err(|_| "Failed to write superblock")?;
 
         // Update block group used directories count
@@ -850,9 +943,8 @@ impl Ext2Fs {
         let bg_index = ((new_inode_num - 1) / inodes_per_group) as usize;
         if bg_index < self.block_groups.len() {
             let bg = &mut self.block_groups[bg_index];
-            let used_dirs = unsafe {
-                core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_used_dirs_count))
-            };
+            let used_dirs =
+                unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_used_dirs_count)) };
             unsafe {
                 core::ptr::write_unaligned(
                     core::ptr::addr_of_mut!(bg.bg_used_dirs_count),
@@ -862,13 +954,14 @@ impl Ext2Fs {
         }
 
         // Write updated block group descriptors
-        Ext2BlockGroupDesc::write_table(
-            self.device.as_ref(),
-            &self.superblock,
-            &self.block_groups,
-        ).map_err(|_| "Failed to write block group descriptors")?;
+        Ext2BlockGroupDesc::write_table(self.device.as_ref(), &self.superblock, &self.block_groups)
+            .map_err(|_| "Failed to write block group descriptors")?;
 
-        log::debug!("ext2: created directory '{}' with inode {}", path, new_inode_num);
+        log::debug!(
+            "ext2: created directory '{}' with inode {}",
+            path,
+            new_inode_num
+        );
         Ok(new_inode_num)
     }
 
@@ -956,17 +1049,18 @@ impl Ext2Fs {
         self.write_directory_data(parent_inode_num, &parent_dir_data)?;
 
         // Write the updated parent directory inode
-        parent_inode_mut.write_to(
-            self.device.as_ref(),
-            parent_inode_num,
-            &self.superblock,
-            &self.block_groups,
-        ).map_err(|_| "Failed to write parent inode")?;
+        parent_inode_mut
+            .write_to(
+                self.device.as_ref(),
+                parent_inode_num,
+                &self.superblock,
+                &self.block_groups,
+            )
+            .map_err(|_| "Failed to write parent inode")?;
 
         // Free the directory's data blocks
-        let i_block = unsafe {
-            core::ptr::read_unaligned(core::ptr::addr_of!(target_inode.i_block))
-        };
+        let i_block =
+            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(target_inode.i_block)) };
         for block_num in i_block.iter().take(12) {
             if *block_num != 0 {
                 free_block(
@@ -988,17 +1082,19 @@ impl Ext2Fs {
 
         // Update superblock with new free inode/block counts
         self.superblock.increment_free_inodes();
-        self.superblock.write_to(self.device.as_ref())
+        self.superblock
+            .write_to(self.device.as_ref())
             .map_err(|_| "Failed to write superblock")?;
 
         // Write updated block group descriptors
-        Ext2BlockGroupDesc::write_table(
-            self.device.as_ref(),
-            &self.superblock,
-            &self.block_groups,
-        ).map_err(|_| "Failed to write block group descriptors")?;
+        Ext2BlockGroupDesc::write_table(self.device.as_ref(), &self.superblock, &self.block_groups)
+            .map_err(|_| "Failed to write block group descriptors")?;
 
-        log::debug!("ext2: removed directory '{}' (inode {})", path, target_inode_num);
+        log::debug!(
+            "ext2: removed directory '{}' (inode {})",
+            path,
+            target_inode_num
+        );
         Ok(())
     }
 
@@ -1069,7 +1165,12 @@ impl Ext2Fs {
         let mut dir_data = self.read_directory(&new_parent_inode)?;
 
         // Add a new directory entry pointing to the source inode
-        add_directory_entry(&mut dir_data, source_inode_num, new_filename, EXT2_FT_REG_FILE)?;
+        add_directory_entry(
+            &mut dir_data,
+            source_inode_num,
+            new_filename,
+            EXT2_FT_REG_FILE,
+        )?;
 
         // Update parent directory timestamps
         let mut parent_inode_mut = new_parent_inode;
@@ -1079,12 +1180,14 @@ impl Ext2Fs {
         self.write_directory_data(new_parent_inode_num, &dir_data)?;
 
         // Write the updated parent directory inode
-        parent_inode_mut.write_to(
-            self.device.as_ref(),
-            new_parent_inode_num,
-            &self.superblock,
-            &self.block_groups,
-        ).map_err(|_| "Failed to write parent inode")?;
+        parent_inode_mut
+            .write_to(
+                self.device.as_ref(),
+                new_parent_inode_num,
+                &self.superblock,
+                &self.block_groups,
+            )
+            .map_err(|_| "Failed to write parent inode")?;
 
         // Increment the source inode's link count
         increment_inode_links(
@@ -1096,7 +1199,9 @@ impl Ext2Fs {
 
         log::debug!(
             "ext2: created hard link {} -> {} (inode {})",
-            newpath, oldpath, source_inode_num
+            newpath,
+            oldpath,
+            source_inode_num
         );
         Ok(())
     }
@@ -1179,8 +1284,13 @@ impl Ext2Fs {
             let target_bytes = target.as_bytes();
             block_buf[..target_bytes.len()].copy_from_slice(target_bytes);
 
-            write_ext2_block(self.device.as_ref(), block_num, block_size, &block_buf[..block_size])
-                .map_err(|_| "Failed to write symlink target block")?;
+            write_ext2_block(
+                self.device.as_ref(),
+                block_num,
+                block_size,
+                &block_buf[..block_size],
+            )
+            .map_err(|_| "Failed to write symlink target block")?;
 
             // Update inode to point to this block
             new_inode.i_block[0] = block_num;
@@ -1189,12 +1299,14 @@ impl Ext2Fs {
         }
 
         // Write the new inode to disk
-        new_inode.write_to(
-            self.device.as_ref(),
-            new_inode_num,
-            &self.superblock,
-            &self.block_groups,
-        ).map_err(|_| "Failed to write symlink inode")?;
+        new_inode
+            .write_to(
+                self.device.as_ref(),
+                new_inode_num,
+                &self.superblock,
+                &self.block_groups,
+            )
+            .map_err(|_| "Failed to write symlink inode")?;
 
         // Add directory entry with EXT2_FT_SYMLINK type
         let mut dir_data = self.read_directory(&parent_inode)?;
@@ -1208,24 +1320,24 @@ impl Ext2Fs {
         self.write_directory_data(parent_inode_num, &dir_data)?;
 
         // Write the updated parent directory inode
-        parent_inode_mut.write_to(
-            self.device.as_ref(),
-            parent_inode_num,
-            &self.superblock,
-            &self.block_groups,
-        ).map_err(|_| "Failed to write parent inode")?;
+        parent_inode_mut
+            .write_to(
+                self.device.as_ref(),
+                parent_inode_num,
+                &self.superblock,
+                &self.block_groups,
+            )
+            .map_err(|_| "Failed to write parent inode")?;
 
         // Update superblock with new free inode count
         self.superblock.decrement_free_inodes();
-        self.superblock.write_to(self.device.as_ref())
+        self.superblock
+            .write_to(self.device.as_ref())
             .map_err(|_| "Failed to write superblock")?;
 
         // Write updated block group descriptors
-        Ext2BlockGroupDesc::write_table(
-            self.device.as_ref(),
-            &self.superblock,
-            &self.block_groups,
-        ).map_err(|_| "Failed to write block group descriptors")?;
+        Ext2BlockGroupDesc::write_table(self.device.as_ref(), &self.superblock, &self.block_groups)
+            .map_err(|_| "Failed to write block group descriptors")?;
 
         log::debug!("ext2: created symlink '{}' -> '{}'", linkpath, target);
         Ok(())
@@ -1251,9 +1363,8 @@ impl Ext2Fs {
         }
 
         // Get the target length from i_size
-        let target_len = unsafe {
-            core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_size))
-        } as usize;
+        let target_len =
+            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_size)) } as usize;
 
         if target_len == 0 {
             return Err("Empty symlink target");
@@ -1261,33 +1372,22 @@ impl Ext2Fs {
 
         // Check if this is a fast symlink (target stored in i_block)
         // Fast symlinks have i_blocks == 0 (no data blocks allocated)
-        let i_blocks = unsafe {
-            core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_blocks))
-        };
+        let i_blocks = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_blocks)) };
 
         if i_blocks == 0 && target_len <= 60 {
             // Fast symlink: target is stored in the i_block array
-            let i_block = unsafe {
-                core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block))
-            };
+            let i_block = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block)) };
 
             // Convert the i_block array to bytes
-            let block_bytes = unsafe {
-                core::slice::from_raw_parts(
-                    i_block.as_ptr() as *const u8,
-                    60,
-                )
-            };
+            let block_bytes =
+                unsafe { core::slice::from_raw_parts(i_block.as_ptr() as *const u8, 60) };
 
             // Extract the target string
             let target_bytes = &block_bytes[..target_len];
-            String::from_utf8(target_bytes.to_vec())
-                .map_err(|_| "Invalid UTF-8 in symlink target")
+            String::from_utf8(target_bytes.to_vec()).map_err(|_| "Invalid UTF-8 in symlink target")
         } else {
             // Regular symlink: target is stored in a data block
-            let i_block = unsafe {
-                core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block))
-            };
+            let i_block = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block)) };
 
             let block_num = i_block[0];
             if block_num == 0 {
@@ -1298,13 +1398,17 @@ impl Ext2Fs {
             // Use stack-based buffer to avoid heap allocation (bump allocator doesn't reclaim)
             let block_size = self.superblock.block_size();
             let mut block_buf = [0u8; 4096]; // Max block size
-            read_ext2_block(self.device.as_ref(), block_num, block_size, &mut block_buf[..block_size])
-                .map_err(|_| "Failed to read symlink data block")?;
+            read_ext2_block(
+                self.device.as_ref(),
+                block_num,
+                block_size,
+                &mut block_buf[..block_size],
+            )
+            .map_err(|_| "Failed to read symlink data block")?;
 
             // Extract the target string
             let target_bytes = &block_buf[..target_len];
-            String::from_utf8(target_bytes.to_vec())
-                .map_err(|_| "Invalid UTF-8 in symlink target")
+            String::from_utf8(target_bytes.to_vec()).map_err(|_| "Invalid UTF-8 in symlink target")
         }
     }
 
@@ -1317,9 +1421,7 @@ impl Ext2Fs {
         }
 
         // Get the direct block pointers
-        let i_block = unsafe {
-            core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block))
-        };
+        let i_block = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block)) };
 
         let block_size = self.superblock.block_size();
         let mut offset = 0usize;
@@ -1344,8 +1446,13 @@ impl Ext2Fs {
             block_buf[..bytes_to_write].copy_from_slice(&data[offset..offset + bytes_to_write]);
 
             // Write the block using ext2-to-device block conversion
-            file::write_ext2_block(self.device.as_ref(), block_num, block_size, &block_buf[..block_size])
-                .map_err(|_| "Failed to write directory block")?;
+            file::write_ext2_block(
+                self.device.as_ref(),
+                block_num,
+                block_size,
+                &block_buf[..block_size],
+            )
+            .map_err(|_| "Failed to write directory block")?;
 
             offset += bytes_to_write;
         }
@@ -1378,7 +1485,10 @@ pub fn init_root_fs() -> Result<(), &'static str> {
         use crate::block::virtio::VirtioBlockWrapper;
         if let Some(dev) = VirtioBlockWrapper::new(2).or_else(|| VirtioBlockWrapper::new(0)) {
             #[cfg(target_arch = "aarch64")]
-            crate::serial_println!("[ext2] Using VirtIO block device ({} sectors)", dev.num_blocks());
+            crate::serial_println!(
+                "[ext2] Using VirtIO block device ({} sectors)",
+                dev.num_blocks()
+            );
             alloc::boxed::Box::new(dev)
         } else {
             // Fall back to AHCI block devices (Parallels ARM64).
@@ -1391,26 +1501,38 @@ pub fn init_root_fs() -> Result<(), &'static str> {
                 let mut found: Option<crate::drivers::ahci::AhciBlockDevice> = None;
                 for i in 0..count {
                     if let Some(dev) = crate::drivers::ahci::get_block_device_by_index(i) {
-                        crate::serial_println!("[ext2] AHCI device {}: {} sectors ({} MB)",
-                            i, dev.num_blocks(), dev.num_blocks() * 512 / (1024 * 1024));
+                        crate::serial_println!(
+                            "[ext2] AHCI device {}: {} sectors ({} MB)",
+                            i,
+                            dev.num_blocks(),
+                            dev.num_blocks() * 512 / (1024 * 1024)
+                        );
                         // Try reading ext2 superblock (at byte offset 1024, sector 2)
                         let mut buf = [0u8; 512];
                         if dev.read_block(2, &mut buf).is_ok() {
                             let magic = (buf[56] as u16) | ((buf[57] as u16) << 8);
                             if magic == 0xEF53 {
-                                crate::serial_println!("[ext2] Found ext2 superblock on AHCI device {}", i);
+                                crate::serial_println!(
+                                    "[ext2] Found ext2 superblock on AHCI device {}",
+                                    i
+                                );
                                 found = Some(dev);
                                 break;
                             } else {
-                                crate::serial_println!("[ext2] AHCI device {}: not ext2 (magic={:#06x})", i, magic);
+                                crate::serial_println!(
+                                    "[ext2] AHCI device {}: not ext2 (magic={:#06x})",
+                                    i,
+                                    magic
+                                );
                             }
                         } else {
                             crate::serial_println!("[ext2] AHCI device {}: read failed", i);
                         }
                     }
                 }
-                let ahci_dev = found
-                    .ok_or("No block device with ext2 filesystem (tried VirtIO and all AHCI devices)")?;
+                let ahci_dev = found.ok_or(
+                    "No block device with ext2 filesystem (tried VirtIO and all AHCI devices)",
+                )?;
                 alloc::boxed::Box::new(ahci_dev)
             }
             #[cfg(not(target_arch = "aarch64"))]
@@ -1427,12 +1549,10 @@ pub fn init_root_fs() -> Result<(), &'static str> {
     let fs = Ext2Fs::new(device, mount_id)?;
 
     // Read packed struct fields safely before logging
-    let blocks_count = unsafe {
-        core::ptr::read_unaligned(core::ptr::addr_of!(fs.superblock.s_blocks_count))
-    };
-    let inodes_count = unsafe {
-        core::ptr::read_unaligned(core::ptr::addr_of!(fs.superblock.s_inodes_count))
-    };
+    let blocks_count =
+        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(fs.superblock.s_blocks_count)) };
+    let inodes_count =
+        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(fs.superblock.s_inodes_count)) };
     log::info!(
         "ext2: Mounted root filesystem - {} blocks, {} inodes, block size {}",
         blocks_count,
@@ -1453,7 +1573,6 @@ pub fn init_root_fs() -> Result<(), &'static str> {
 pub fn root_fs_read() -> spin::RwLockReadGuard<'static, Option<Ext2Fs>> {
     ROOT_EXT2.read()
 }
-
 
 /// Access the root ext2 filesystem for write operations
 ///
@@ -1508,9 +1627,8 @@ pub fn init_home_fs() -> Result<(), &'static str> {
     let fs = Ext2Fs::new(device, mount_id)?;
 
     // Read packed struct fields safely before logging
-    let blocks_count = unsafe {
-        core::ptr::read_unaligned(core::ptr::addr_of!(fs.superblock.s_blocks_count))
-    };
+    let blocks_count =
+        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(fs.superblock.s_blocks_count)) };
     log::info!(
         "ext2: Mounted home filesystem at /home - {} blocks, block size {}",
         blocks_count,
@@ -1527,7 +1645,6 @@ pub fn init_home_fs() -> Result<(), &'static str> {
 pub fn home_fs_read() -> spin::RwLockReadGuard<'static, Option<Ext2Fs>> {
     HOME_EXT2.read()
 }
-
 
 /// Access the home ext2 filesystem for write operations
 ///

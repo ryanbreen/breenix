@@ -1,10 +1,10 @@
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::{OffsetPageTable, VirtAddr};
 use linked_list_allocator::LockedHeap;
 #[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTableFlags, Size4KiB};
 #[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
-#[cfg(not(target_arch = "x86_64"))]
-use crate::memory::arch_stub::{OffsetPageTable, VirtAddr};
 
 #[cfg(target_arch = "x86_64")]
 pub const HEAP_START: u64 = 0x_4444_4444_0000;
@@ -56,7 +56,10 @@ pub fn init(mapper: &OffsetPageTable<'static>) -> Result<(), &'static str> {
 
             let frame_phys = frame.start_address().as_u64();
             if frame_phys > 0xFFFF_FFFF {
-                log::error!("HEAP: Allocated frame {:#x} > 4GB - DMA will fail!", frame_phys);
+                log::error!(
+                    "HEAP: Allocated frame {:#x} > 4GB - DMA will fail!",
+                    frame_phys
+                );
             }
 
             let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
@@ -77,15 +80,14 @@ pub fn init(mapper: &OffsetPageTable<'static>) -> Result<(), &'static str> {
     {
         // ARM64: Direct map from boot.S covers heap region, no page mapping needed
         let _ = (mapper, heap_end); // suppress unused warnings
-        log::info!(
-            "ARM64 heap using direct-mapped region at {:#x}",
-            HEAP_START
-        );
+        log::info!("ARM64 heap using direct-mapped region at {:#x}", HEAP_START);
     }
 
     // Initialize the allocator
     unsafe {
-        ALLOCATOR.lock().init(HEAP_START as *mut u8, HEAP_SIZE as usize);
+        ALLOCATOR
+            .lock()
+            .init(HEAP_START as *mut u8, HEAP_SIZE as usize);
     }
 
     log::info!(

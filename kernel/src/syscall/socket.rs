@@ -3,16 +3,16 @@
 //! Implements socket, bind, sendto, recvfrom syscalls for UDP and TCP.
 
 use super::errno::{
-    EAFNOSUPPORT, EAGAIN, EBADF, EFAULT, EINVAL, ENOTSOCK, EADDRINUSE, EISCONN, EOPNOTSUPP,
-    ECONNREFUSED, ENOENT, ENETUNREACH,
+    EADDRINUSE, EAFNOSUPPORT, EAGAIN, EBADF, ECONNREFUSED, EFAULT, EINVAL, EISCONN, ENETUNREACH,
+    ENOENT, ENOTSOCK, EOPNOTSUPP,
 };
 use super::errno::{EINPROGRESS, ENOTCONN, ETIMEDOUT};
 use super::{ErrorCode, SyscallResult};
-use crate::socket::types::{AF_INET, AF_UNIX, SOCK_DGRAM, SOCK_STREAM, SockAddrIn, SockAddrUn};
+use crate::arch_impl::traits::CpuOps;
+use crate::ipc::fd::FdKind;
+use crate::socket::types::{SockAddrIn, SockAddrUn, AF_INET, AF_UNIX, SOCK_DGRAM, SOCK_STREAM};
 use crate::socket::udp::UdpSocket;
 use crate::socket::unix::UnixSocket;
-use crate::ipc::fd::FdKind;
-use crate::arch_impl::traits::CpuOps;
 
 // Architecture-specific CPU type for interrupt control
 #[cfg(target_arch = "x86_64")]
@@ -48,7 +48,11 @@ const SOCK_CLOEXEC: u64 = 0x80000;
 ///
 /// Returns: file descriptor on success, negative errno on error
 pub fn sys_socket(domain: u64, sock_type: u64, _protocol: u64) -> SyscallResult {
-    log::debug!("sys_socket: called with domain={}, type={}", domain, sock_type);
+    log::debug!(
+        "sys_socket: called with domain={}, type={}",
+        domain,
+        sock_type
+    );
 
     // Get current thread and process
     let current_thread_id = match crate::per_cpu::current_thread() {
@@ -71,7 +75,10 @@ pub fn sys_socket(domain: u64, sock_type: u64, _protocol: u64) -> SyscallResult 
     let (_pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
         Some(p) => p,
         None => {
-            log::error!("sys_socket: No process found for thread_id={}", current_thread_id);
+            log::error!(
+                "sys_socket: No process found for thread_id={}",
+                current_thread_id
+            );
             return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
         }
     };
@@ -114,7 +121,10 @@ pub fn sys_socket(domain: u64, sock_type: u64, _protocol: u64) -> SyscallResult 
                     (FdKind::UnixSocket(socket), "Unix")
                 }
                 _ => {
-                    log::debug!("sys_socket: unsupported type {} for AF_UNIX (only SOCK_STREAM supported)", base_type);
+                    log::debug!(
+                        "sys_socket: unsupported type {} for AF_UNIX (only SOCK_STREAM supported)",
+                        base_type
+                    );
                     return SyscallResult::Err(EINVAL as u64);
                 }
             }
@@ -128,7 +138,11 @@ pub fn sys_socket(domain: u64, sock_type: u64, _protocol: u64) -> SyscallResult 
     // Set flags for the file descriptor
     use crate::ipc::fd::{flags, status_flags, FileDescriptor};
     let fd_flags = if cloexec { flags::FD_CLOEXEC } else { 0 };
-    let fd_status_flags = if nonblocking { status_flags::O_NONBLOCK } else { 0 };
+    let fd_status_flags = if nonblocking {
+        status_flags::O_NONBLOCK
+    } else {
+        0
+    };
 
     let fd_entry = FileDescriptor::with_flags(fd_kind, fd_flags, fd_status_flags);
 
@@ -191,7 +205,10 @@ pub fn sys_bind(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
     let (pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
         Some(p) => p,
         None => {
-            log::error!("sys_bind: No process found for thread_id={}", current_thread_id);
+            log::error!(
+                "sys_bind: No process found for thread_id={}",
+                current_thread_id
+            );
             return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
         }
     };
@@ -227,7 +244,11 @@ pub fn sys_bind(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
                     let mut socket = socket_ref.lock();
                     match socket.bind(pid, addr.addr, addr.port_host()) {
                         Ok(actual_port) => {
-                            log::info!("UDP: Socket bound to port {} (requested: {})", actual_port, addr.port_host());
+                            log::info!(
+                                "UDP: Socket bound to port {} (requested: {})",
+                                actual_port,
+                                addr.port_host()
+                            );
                             log::debug!("UDP bind: returning to userspace");
                             SyscallResult::Ok(0)
                         }
@@ -282,7 +303,9 @@ pub fn sys_bind(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
 
             // For now, only support abstract sockets (path starts with '\0')
             if !addr.is_abstract() {
-                log::debug!("sys_bind: Only abstract Unix sockets supported (path must start with \\0)");
+                log::debug!(
+                    "sys_bind: Only abstract Unix sockets supported (path must start with \\0)"
+                );
                 return SyscallResult::Err(EINVAL as u64);
             }
 
@@ -360,9 +383,8 @@ pub fn sys_sendto(
     };
 
     // Read data from userspace (copy to owned buffer so we can release lock)
-    let data: alloc::vec::Vec<u8> = unsafe {
-        core::slice::from_raw_parts(buf_ptr as *const u8, len as usize).to_vec()
-    };
+    let data: alloc::vec::Vec<u8> =
+        unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize).to_vec() };
 
     // Extract source port while holding process manager lock, then release it
     // This prevents deadlock when loopback delivery needs the same lock
@@ -386,7 +408,10 @@ pub fn sys_sendto(
         let (_pid, process) = match manager.find_process_by_thread(current_thread_id) {
             Some(p) => p,
             None => {
-                log::error!("sys_sendto: No process found for thread_id={}", current_thread_id);
+                log::error!(
+                    "sys_sendto: No process found for thread_id={}",
+                    current_thread_id
+                );
                 return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
             }
         };
@@ -512,7 +537,12 @@ pub fn sys_recvfrom(
     src_addr_ptr: u64,
     addrlen_ptr: u64,
 ) -> SyscallResult {
-    log::debug!("sys_recvfrom: fd={}, buf_ptr=0x{:x}, len={}", fd, buf_ptr, len);
+    log::debug!(
+        "sys_recvfrom: fd={}, buf_ptr=0x{:x}, len={}",
+        fd,
+        buf_ptr,
+        len
+    );
 
     // Drain loopback queue for packets sent to ourselves (127.x.x.x, own IP).
     // Hardware-received packets arrive via interrupt → softirq → process_rx().
@@ -584,9 +614,7 @@ pub fn sys_recvfrom(
         // CRITICAL: Must disable interrupts to prevent deadlock with softirq.
         // If we hold rx_queue lock and NIC interrupt fires, softirq will try to
         // acquire the same lock in enqueue_packet() -> deadlock!
-        let packet_opt = Cpu::without_interrupts(|| {
-            socket_ref.lock().recv_from()
-        });
+        let packet_opt = Cpu::without_interrupts(|| socket_ref.lock().recv_from());
         if let Some(packet) = packet_opt {
             // Data was available - unregister from waiters
             Cpu::without_interrupts(|| {
@@ -607,15 +635,20 @@ pub fn sys_recvfrom(
                 unsafe {
                     let addrlen = *(addrlen_ptr as *const u32);
                     let copy_addr_len = core::cmp::min(addrlen as usize, addr_bytes.len());
-                    let addr_buf = core::slice::from_raw_parts_mut(src_addr_ptr as *mut u8, copy_addr_len);
+                    let addr_buf =
+                        core::slice::from_raw_parts_mut(src_addr_ptr as *mut u8, copy_addr_len);
                     addr_buf.copy_from_slice(&addr_bytes[..copy_addr_len]);
                     *(addrlen_ptr as *mut u32) = addr_bytes.len() as u32;
                 }
             }
 
-            log::debug!("UDP: Received {} bytes from {}.{}.{}.{}:{}",
+            log::debug!(
+                "UDP: Received {} bytes from {}.{}.{}.{}:{}",
                 copy_len,
-                packet.src_addr[0], packet.src_addr[1], packet.src_addr[2], packet.src_addr[3],
+                packet.src_addr[0],
+                packet.src_addr[1],
+                packet.src_addr[2],
+                packet.src_addr[3],
                 packet.src_port
             );
 
@@ -632,7 +665,11 @@ pub fn sys_recvfrom(
 
         // === BLOCKING PATH ===
         // Following the same pattern as stdin blocking in sys_read
-        log::debug!("UDP recvfrom: fd={} entering blocking path, thread={}", fd, thread_id);
+        log::debug!(
+            "UDP recvfrom: fd={} entering blocking path, thread={}",
+            fd,
+            thread_id
+        );
 
         // Block the current thread AND set blocked_in_syscall flag.
         // CRITICAL: Setting blocked_in_syscall is essential because:
@@ -658,11 +695,12 @@ pub fn sys_recvfrom(
         // to wake us but unblock() would have done nothing (we weren't blocked yet).
         // Now that we're blocked, check if data arrived and unblock ourselves.
         // NOTE: Must disable interrupts - has_data() acquires rx_queue lock, same as enqueue_packet()
-        let data_arrived = Cpu::without_interrupts(|| {
-            socket_ref.lock().has_data()
-        });
+        let data_arrived = Cpu::without_interrupts(|| socket_ref.lock().has_data());
         if data_arrived {
-            log::info!("UDP: Thread {} caught race - data arrived during block setup", thread_id);
+            log::info!(
+                "UDP: Thread {} caught race - data arrived during block setup",
+                thread_id
+            );
             // Data arrived during the race window - unblock and retry
             crate::task::scheduler::with_scheduler(|sched| {
                 if let Some(thread) = sched.current_thread_mut() {
@@ -711,7 +749,8 @@ pub fn sys_recvfrom(
                 } else {
                     false
                 }
-            }).unwrap_or(false);
+            })
+            .unwrap_or(false);
 
             if !still_blocked {
                 // CRITICAL: Disable preemption BEFORE breaking from HLT loop!
@@ -781,7 +820,10 @@ pub fn sys_listen(fd: u64, backlog: u64) -> SyscallResult {
     let (pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
         Some(p) => p,
         None => {
-            log::error!("sys_listen: No process found for thread_id={}", current_thread_id);
+            log::error!(
+                "sys_listen: No process found for thread_id={}",
+                current_thread_id
+            );
             return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
         }
     };
@@ -835,14 +877,13 @@ pub fn sys_listen(fd: u64, backlog: u64) -> SyscallResult {
 
             // Create listener and register in global registry
             // Note: nonblocking mode is tracked via fd status_flags, not on the listener
-            let listener = crate::socket::unix::UnixListener::new(
-                path.clone(),
-                backlog as usize,
-            );
+            let listener = crate::socket::unix::UnixListener::new(path.clone(), backlog as usize);
             let listener_arc = alloc::sync::Arc::new(spin::Mutex::new(listener));
 
             // Register in global registry
-            if let Err(e) = crate::socket::UNIX_SOCKET_REGISTRY.bind(path.clone(), listener_arc.clone()) {
+            if let Err(e) =
+                crate::socket::UNIX_SOCKET_REGISTRY.bind(path.clone(), listener_arc.clone())
+            {
                 log::debug!("sys_listen: Failed to register Unix listener: {}", e);
                 return SyscallResult::Err(e as u64);
             }
@@ -940,14 +981,19 @@ pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
         ListenerType::Tcp(port) => {
             sys_accept_tcp(fd, port, is_nonblocking, thread_id, addr_ptr, addrlen_ptr)
         }
-        ListenerType::Unix(listener) => {
-            sys_accept_unix(fd, listener, is_nonblocking, thread_id)
-        }
+        ListenerType::Unix(listener) => sys_accept_unix(fd, listener, is_nonblocking, thread_id),
     }
 }
 
 /// Accept on TCP listener
-fn sys_accept_tcp(fd: u64, port: u16, is_nonblocking: bool, thread_id: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
+fn sys_accept_tcp(
+    fd: u64,
+    port: u16,
+    is_nonblocking: bool,
+    thread_id: u64,
+    addr_ptr: u64,
+    addrlen_ptr: u64,
+) -> SyscallResult {
     // Blocking accept loop
     loop {
         // Register as waiter FIRST to avoid race condition
@@ -968,7 +1014,8 @@ fn sys_accept_tcp(fd: u64, port: u16, is_nonblocking: bool, thread_id: u64, addr
                 unsafe {
                     let addrlen = *(addrlen_ptr as *const u32);
                     let copy_addr_len = core::cmp::min(addrlen as usize, addr_bytes.len());
-                    let addr_buf = core::slice::from_raw_parts_mut(addr_ptr as *mut u8, copy_addr_len);
+                    let addr_buf =
+                        core::slice::from_raw_parts_mut(addr_ptr as *mut u8, copy_addr_len);
                     addr_buf.copy_from_slice(&addr_bytes[..copy_addr_len]);
                     *(addrlen_ptr as *mut u32) = addr_bytes.len() as u32;
                 }
@@ -1008,7 +1055,11 @@ fn sys_accept_tcp(fd: u64, port: u16, is_nonblocking: bool, thread_id: u64, addr
         }
 
         // Blocking mode - block the thread
-        log::debug!("TCP accept: fd={} entering blocking path, thread={}", fd, thread_id);
+        log::debug!(
+            "TCP accept: fd={} entering blocking path, thread={}",
+            fd,
+            thread_id
+        );
 
         // Block the current thread
         crate::task::scheduler::with_scheduler(|sched| {
@@ -1020,7 +1071,10 @@ fn sys_accept_tcp(fd: u64, port: u16, is_nonblocking: bool, thread_id: u64, addr
 
         // Double-check for pending connection after setting Blocked state
         if crate::net::tcp::tcp_has_pending(port) {
-            log::info!("TCP: Thread {} caught race - connection arrived during block setup", thread_id);
+            log::info!(
+                "TCP: Thread {} caught race - connection arrived during block setup",
+                thread_id
+            );
             crate::task::scheduler::with_scheduler(|sched| {
                 if let Some(thread) = sched.current_thread_mut() {
                     thread.blocked_in_syscall = false;
@@ -1034,7 +1088,11 @@ fn sys_accept_tcp(fd: u64, port: u16, is_nonblocking: bool, thread_id: u64, addr
         // Re-enable preemption before HLT loop
         crate::per_cpu::preempt_enable();
 
-        log::info!("TCP_BLOCK: Thread {} entering blocked state for accept on port {}", thread_id, port);
+        log::info!(
+            "TCP_BLOCK: Thread {} entering blocked state for accept on port {}",
+            thread_id,
+            port
+        );
 
         // HLT loop - wait for SYN to arrive
         loop {
@@ -1049,7 +1107,10 @@ fn sys_accept_tcp(fd: u64, port: u16, is_nonblocking: bool, thread_id: u64, addr
                     }
                 });
                 crate::per_cpu::preempt_disable();
-                log::debug!("TCP accept: Thread {} interrupted by signal (EINTR)", thread_id);
+                log::debug!(
+                    "TCP accept: Thread {} interrupted by signal (EINTR)",
+                    thread_id
+                );
                 return SyscallResult::Err(e as u64);
             }
 
@@ -1066,7 +1127,8 @@ fn sys_accept_tcp(fd: u64, port: u16, is_nonblocking: bool, thread_id: u64, addr
                 } else {
                     false
                 }
-            }).unwrap_or(false);
+            })
+            .unwrap_or(false);
 
             if !still_blocked {
                 crate::per_cpu::preempt_disable();
@@ -1162,7 +1224,11 @@ fn sys_accept_unix(
         }
 
         // Blocking mode - block the thread
-        log::debug!("Unix accept: fd={} entering blocking path, thread={}", fd, thread_id);
+        log::debug!(
+            "Unix accept: fd={} entering blocking path, thread={}",
+            fd,
+            thread_id
+        );
 
         // Block the current thread
         crate::task::scheduler::with_scheduler(|sched| {
@@ -1178,7 +1244,10 @@ fn sys_accept_unix(
             l.has_pending()
         };
         if has_pending {
-            log::info!("Unix: Thread {} caught race - connection arrived during block setup", thread_id);
+            log::info!(
+                "Unix: Thread {} caught race - connection arrived during block setup",
+                thread_id
+            );
             crate::task::scheduler::with_scheduler(|sched| {
                 if let Some(thread) = sched.current_thread_mut() {
                     thread.blocked_in_syscall = false;
@@ -1195,7 +1264,10 @@ fn sys_accept_unix(
         // Re-enable preemption before HLT loop
         crate::per_cpu::preempt_enable();
 
-        log::info!("Unix_BLOCK: Thread {} entering blocked state for accept", thread_id);
+        log::info!(
+            "Unix_BLOCK: Thread {} entering blocked state for accept",
+            thread_id
+        );
 
         // HLT loop - wait for connection to arrive
         loop {
@@ -1213,7 +1285,10 @@ fn sys_accept_unix(
                     }
                 });
                 crate::per_cpu::preempt_disable();
-                log::debug!("Unix accept: Thread {} interrupted by signal (EINTR)", thread_id);
+                log::debug!(
+                    "Unix accept: Thread {} interrupted by signal (EINTR)",
+                    thread_id
+                );
                 return SyscallResult::Err(e as u64);
             }
 
@@ -1224,11 +1299,15 @@ fn sys_accept_unix(
                 } else {
                     false
                 }
-            }).unwrap_or(false);
+            })
+            .unwrap_or(false);
 
             if !still_blocked {
                 crate::per_cpu::preempt_disable();
-                log::info!("Unix_BLOCK: Thread {} woken from accept blocking", thread_id);
+                log::info!(
+                    "Unix_BLOCK: Thread {} woken from accept blocking",
+                    thread_id
+                );
                 break;
             }
 
@@ -1363,24 +1442,25 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
                 };
 
                 // Initiate connection
-                let conn_id = match crate::net::tcp::tcp_connect(
-                    port,
-                    addr.addr,
-                    addr.port_host(),
-                    pid,
-                ) {
-                    Ok(id) => id,
-                    Err(_) => return SyscallResult::Err(ECONNREFUSED as u64),
-                };
+                let conn_id =
+                    match crate::net::tcp::tcp_connect(port, addr.addr, addr.port_host(), pid) {
+                        Ok(id) => id,
+                        Err(_) => return SyscallResult::Err(ECONNREFUSED as u64),
+                    };
 
                 // Update fd to TcpConnection
                 if let Some(entry) = process.fd_table.get_mut(fd as i32) {
                     entry.kind = FdKind::TcpConnection(conn_id);
                 }
 
-                log::info!("TCP: Connect initiated to {}.{}.{}.{}:{}",
-                    addr.addr[0], addr.addr[1], addr.addr[2], addr.addr[3],
-                    addr.port_host());
+                log::info!(
+                    "TCP: Connect initiated to {}.{}.{}.{}:{}",
+                    addr.addr[0],
+                    addr.addr[1],
+                    addr.addr[2],
+                    addr.addr[3],
+                    addr.port_host()
+                );
 
                 (conn_id, nonblocking)
             }
@@ -1396,15 +1476,20 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
     // For non-blocking sockets, return EINPROGRESS immediately
     // The connection is in progress but not yet established
     if is_nonblocking {
-        log::debug!("TCP connect: fd={} is non-blocking, returning EINPROGRESS", fd);
+        log::debug!(
+            "TCP connect: fd={} is non-blocking, returning EINPROGRESS",
+            fd
+        );
         return SyscallResult::Err(EINPROGRESS as u64);
     }
 
     // Log the conn_id we'll be checking
     log::info!(
         "TCP connect: blocking for conn_id={{local={}:{}, remote={}:{}}}",
-        conn_id.local_ip[3], conn_id.local_port,
-        conn_id.remote_ip[3], conn_id.remote_port
+        conn_id.local_ip[3],
+        conn_id.local_port,
+        conn_id.remote_ip[3],
+        conn_id.remote_port
     );
 
     // Timeout for connect: ~10 seconds (timer fires at 200Hz, so 2000 iterations ≈ 10s)
@@ -1418,7 +1503,10 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
         connect_iterations += 1;
         if connect_iterations > MAX_CONNECT_ITERATIONS {
             crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
-            log::warn!("TCP connect: timed out after {} iterations", connect_iterations);
+            log::warn!(
+                "TCP connect: timed out after {} iterations",
+                connect_iterations
+            );
             return SyscallResult::Err(ETIMEDOUT as u64);
         }
         // Register as waiter FIRST to avoid race condition
@@ -1432,7 +1520,10 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
             crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
             // Drain loopback one more time to deliver the ACK to the server
             crate::net::drain_loopback_queue();
-            log::info!("TCP connect: thread={} - Connection established, returning success", thread_id);
+            log::info!(
+                "TCP connect: thread={} - Connection established, returning success",
+                thread_id
+            );
             return SyscallResult::Ok(0);
         }
 
@@ -1454,18 +1545,26 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
             }
         });
 
-        log::info!("TCP connect: thread={} blocked, checking for race", thread_id);
+        log::info!(
+            "TCP connect: thread={} blocked, checking for race",
+            thread_id
+        );
 
         // Double-check for state change after setting Blocked state
         let is_established = crate::net::tcp::tcp_is_established(&conn_id);
         let is_failed = crate::net::tcp::tcp_is_failed(&conn_id);
         log::info!(
             "TCP connect: thread={} double-check: established={}, failed={}",
-            thread_id, is_established, is_failed
+            thread_id,
+            is_established,
+            is_failed
         );
 
         if is_established || is_failed {
-            log::info!("TCP: Thread {} caught race - state changed during block setup", thread_id);
+            log::info!(
+                "TCP: Thread {} caught race - state changed during block setup",
+                thread_id
+            );
             crate::task::scheduler::with_scheduler(|sched| {
                 if let Some(thread) = sched.current_thread_mut() {
                     thread.blocked_in_syscall = false;
@@ -1479,7 +1578,10 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
         // Re-enable preemption before HLT loop
         crate::per_cpu::preempt_enable();
 
-        log::info!("TCP_BLOCK: Thread {} entering blocked state for connect", thread_id);
+        log::info!(
+            "TCP_BLOCK: Thread {} entering blocked state for connect",
+            thread_id
+        );
 
         // HLT loop - wait for SYN+ACK to arrive
         loop {
@@ -1494,7 +1596,10 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
                     }
                 });
                 crate::per_cpu::preempt_disable();
-                log::debug!("TCP connect: Thread {} interrupted by signal (EINTR)", thread_id);
+                log::debug!(
+                    "TCP connect: Thread {} interrupted by signal (EINTR)",
+                    thread_id
+                );
                 return SyscallResult::Err(e as u64);
             }
 
@@ -1511,11 +1616,15 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
                 } else {
                     false
                 }
-            }).unwrap_or(false);
+            })
+            .unwrap_or(false);
 
             if !still_blocked {
                 crate::per_cpu::preempt_disable();
-                log::info!("TCP_BLOCK: Thread {} woken from connect blocking", thread_id);
+                log::info!(
+                    "TCP_BLOCK: Thread {} woken from connect blocking",
+                    thread_id
+                );
                 break;
             }
 
@@ -1540,7 +1649,10 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
         // Drain loopback again before retrying
         crate::net::drain_loopback_queue();
 
-        log::info!("TCP connect: thread={} looping back to check connection", thread_id);
+        log::info!(
+            "TCP connect: thread={} looping back to check connection",
+            thread_id
+        );
     }
 }
 
@@ -1683,7 +1795,10 @@ pub fn sys_shutdown(fd: u64, how: u64) -> SyscallResult {
     let (_pid, process) = match manager.find_process_by_thread(current_thread_id) {
         Some(p) => p,
         None => {
-            log::error!("sys_shutdown: No process found for thread_id={}", current_thread_id);
+            log::error!(
+                "sys_shutdown: No process found for thread_id={}",
+                current_thread_id
+            );
             return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
         }
     };
@@ -1724,13 +1839,16 @@ pub fn sys_shutdown(fd: u64, how: u64) -> SyscallResult {
 ///
 /// Returns: 0 on success, negative errno on error
 pub fn sys_socketpair(domain: u64, sock_type: u64, protocol: u64, sv_ptr: u64) -> SyscallResult {
+    use crate::ipc::fd::{flags, status_flags, FileDescriptor};
     use crate::socket::types::{AF_UNIX, SOCK_CLOEXEC, SOCK_NONBLOCK};
     use crate::socket::unix::UnixStreamSocket;
-    use crate::ipc::fd::{FileDescriptor, flags, status_flags};
 
     log::debug!(
         "sys_socketpair: domain={}, type={:#x}, protocol={}, sv_ptr={:#x}",
-        domain, sock_type, protocol, sv_ptr
+        domain,
+        sock_type,
+        protocol,
+        sv_ptr
     );
 
     // Validate domain - must be AF_UNIX
@@ -1782,7 +1900,10 @@ pub fn sys_socketpair(domain: u64, sock_type: u64, protocol: u64, sv_ptr: u64) -
     let (_pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
         Some(p) => p,
         None => {
-            log::error!("sys_socketpair: No process found for thread_id={}", current_thread_id);
+            log::error!(
+                "sys_socketpair: No process found for thread_id={}",
+                current_thread_id
+            );
             return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
         }
     };
@@ -1792,18 +1913,16 @@ pub fn sys_socketpair(domain: u64, sock_type: u64, protocol: u64, sv_ptr: u64) -
 
     // Create file descriptor entries with appropriate flags
     let fd_flags = if cloexec { flags::FD_CLOEXEC } else { 0 };
-    let fd_status_flags = if nonblocking { status_flags::O_NONBLOCK } else { 0 };
+    let fd_status_flags = if nonblocking {
+        status_flags::O_NONBLOCK
+    } else {
+        0
+    };
 
-    let fd_entry_a = FileDescriptor::with_flags(
-        FdKind::UnixStream(socket_a),
-        fd_flags,
-        fd_status_flags,
-    );
-    let fd_entry_b = FileDescriptor::with_flags(
-        FdKind::UnixStream(socket_b),
-        fd_flags,
-        fd_status_flags,
-    );
+    let fd_entry_a =
+        FileDescriptor::with_flags(FdKind::UnixStream(socket_a), fd_flags, fd_status_flags);
+    let fd_entry_b =
+        FileDescriptor::with_flags(FdKind::UnixStream(socket_b), fd_flags, fd_status_flags);
 
     // Allocate file descriptors
     let fd_a = match process.fd_table.alloc_with_entry(fd_entry_a) {
@@ -1839,7 +1958,10 @@ pub fn sys_socketpair(domain: u64, sock_type: u64, protocol: u64, sv_ptr: u64) -
 
     log::info!(
         "sys_socketpair: Created Unix socket pair sv=[{}, {}] nonblocking={} cloexec={}",
-        fd_a, fd_b, nonblocking, cloexec
+        fd_a,
+        fd_b,
+        nonblocking,
+        cloexec
     );
 
     SyscallResult::Ok(0)
@@ -1992,7 +2114,7 @@ mod tests {
         // Verify socket type constants match POSIX/Linux values
         assert_eq!(AF_INET, 2);
         assert_eq!(SOCK_STREAM, 1); // TCP
-        assert_eq!(SOCK_DGRAM, 2);  // UDP
+        assert_eq!(SOCK_DGRAM, 2); // UDP
     }
 
     /// Test that blocking recvfrom implementation handles race condition check
@@ -2001,7 +2123,7 @@ mod tests {
     /// This test verifies the UdpSocket::has_data() method works correctly.
     #[test]
     fn test_udp_socket_has_data_for_race_check() {
-        use crate::socket::udp::{UdpSocket, UdpPacket};
+        use crate::socket::udp::{UdpPacket, UdpSocket};
 
         let socket = UdpSocket::new();
 

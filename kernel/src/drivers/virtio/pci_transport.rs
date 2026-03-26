@@ -116,7 +116,10 @@ struct CapRegion {
 }
 
 impl CapRegion {
-    const NONE: Self = CapRegion { virt_base: 0, length: 0 };
+    const NONE: Self = CapRegion {
+        virt_base: 0,
+        length: 0,
+    };
 
     fn is_valid(&self) -> bool {
         self.virt_base != 0 && self.length > 0
@@ -218,24 +221,23 @@ impl VirtioPciDevice {
         let mut device_cfg = CapRegion::NONE;
 
         // PCI Status register bit 4 = Capabilities List exists
-        let status = pci::pci_read_config_word(
-            pci_dev.bus, pci_dev.device, pci_dev.function, 0x06,
-        );
+        let status = pci::pci_read_config_word(pci_dev.bus, pci_dev.device, pci_dev.function, 0x06);
         if (status & (1 << 4)) == 0 {
             return None; // No capabilities
         }
 
         // Capabilities pointer is at offset 0x34
-        let mut cap_ptr = pci::pci_read_config_byte(
-            pci_dev.bus, pci_dev.device, pci_dev.function, 0x34,
-        );
+        let mut cap_ptr =
+            pci::pci_read_config_byte(pci_dev.bus, pci_dev.device, pci_dev.function, 0x34);
 
         while cap_ptr != 0 {
-            let cap_id = pci::pci_read_config_byte(
-                pci_dev.bus, pci_dev.device, pci_dev.function, cap_ptr,
-            );
+            let cap_id =
+                pci::pci_read_config_byte(pci_dev.bus, pci_dev.device, pci_dev.function, cap_ptr);
             let cap_next = pci::pci_read_config_byte(
-                pci_dev.bus, pci_dev.device, pci_dev.function, cap_ptr + 1,
+                pci_dev.bus,
+                pci_dev.device,
+                pci_dev.function,
+                cap_ptr + 1,
             );
 
             if cap_id == PCI_CAP_ID_VNDR {
@@ -248,10 +250,16 @@ impl VirtioPciDevice {
                 // +8: offset (offset within the BAR)
                 // +12: length (length of the region)
                 let cfg_type = pci::pci_read_config_byte(
-                    pci_dev.bus, pci_dev.device, pci_dev.function, cap_ptr + 3,
+                    pci_dev.bus,
+                    pci_dev.device,
+                    pci_dev.function,
+                    cap_ptr + 3,
                 );
                 let bar_index = pci::pci_read_config_byte(
-                    pci_dev.bus, pci_dev.device, pci_dev.function, cap_ptr + 4,
+                    pci_dev.bus,
+                    pci_dev.device,
+                    pci_dev.function,
+                    cap_ptr + 4,
                 ) as usize;
 
                 // Read offset and length as dwords
@@ -461,7 +469,8 @@ impl VirtioPciDevice {
 
     /// Enable or disable the currently selected queue.
     pub fn set_queue_ready(&self, ready: bool) {
-        self.common.write_u16(COMMON_Q_ENABLE, if ready { 1 } else { 0 });
+        self.common
+            .write_u16(COMMON_Q_ENABLE, if ready { 1 } else { 0 });
     }
 
     /// Notify the device that there are new buffers in a queue.
@@ -630,9 +639,12 @@ fn pci_read_cap_dword(dev: &PciDevice, offset: u8) -> u32 {
     // to be properly aligned.
     let dword_offset = offset & 0xFC;
     let dword = pci::pci_read_config_byte(dev.bus, dev.device, dev.function, dword_offset) as u32
-        | (pci::pci_read_config_byte(dev.bus, dev.device, dev.function, dword_offset + 1) as u32) << 8
-        | (pci::pci_read_config_byte(dev.bus, dev.device, dev.function, dword_offset + 2) as u32) << 16
-        | (pci::pci_read_config_byte(dev.bus, dev.device, dev.function, dword_offset + 3) as u32) << 24;
+        | (pci::pci_read_config_byte(dev.bus, dev.device, dev.function, dword_offset + 1) as u32)
+            << 8
+        | (pci::pci_read_config_byte(dev.bus, dev.device, dev.function, dword_offset + 2) as u32)
+            << 16
+        | (pci::pci_read_config_byte(dev.bus, dev.device, dev.function, dword_offset + 3) as u32)
+            << 24;
     dword
 }
 

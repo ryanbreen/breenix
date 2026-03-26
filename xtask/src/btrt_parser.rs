@@ -109,7 +109,10 @@ pub fn parse_file<P: AsRef<Path>>(path: P) -> Result<BtrtResults> {
 pub fn parse_blob(data: &[u8]) -> Result<BtrtResults> {
     // Header is 48 bytes
     if data.len() < 48 {
-        bail!("BTRT data too small: {} bytes (need at least 48)", data.len());
+        bail!(
+            "BTRT data too small: {} bytes (need at least 48)",
+            data.len()
+        );
     }
 
     let magic = u64::from_le_bytes(data[0..8].try_into().unwrap());
@@ -134,10 +137,7 @@ pub fn parse_blob(data: &[u8]) -> Result<BtrtResults> {
     // Parse entries (16 bytes each, starting at offset 48)
     let entry_offset = 48;
     let entry_size = 16;
-    let max_entries = std::cmp::min(
-        MAX_TESTS,
-        (data.len() - entry_offset) / entry_size,
-    );
+    let max_entries = std::cmp::min(MAX_TESTS, (data.len() - entry_offset) / entry_size);
 
     let mut entries = Vec::new();
     for i in 0..max_entries {
@@ -211,7 +211,10 @@ pub fn print_summary(results: &BtrtResults) {
     println!();
 
     if results.header.tests_failed > 0 {
-        println!("RESULT: FAIL ({} tests failed)", results.header.tests_failed);
+        println!(
+            "RESULT: FAIL ({} tests failed)",
+            results.header.tests_failed
+        );
     } else if results.header.tests_completed == 0 {
         println!("RESULT: NO TESTS COMPLETED");
     } else {
@@ -339,7 +342,10 @@ pub fn print_detailed(results: &BtrtResults) {
 
     println!();
     if results.header.tests_failed > 0 {
-        println!("RESULT: FAIL ({} tests failed)", results.header.tests_failed);
+        println!(
+            "RESULT: FAIL ({} tests failed)",
+            results.header.tests_failed
+        );
     } else if results.header.tests_completed == 0 {
         println!("RESULT: NO TESTS COMPLETED");
     } else {
@@ -356,7 +362,10 @@ pub fn print_json(results: &BtrtResults) {
     println!("{{");
     println!("  \"header\": {{");
     println!("    \"total_tests\": {},", results.header.total_tests);
-    println!("    \"tests_completed\": {},", results.header.tests_completed);
+    println!(
+        "    \"tests_completed\": {},",
+        results.header.tests_completed
+    );
     println!("    \"tests_passed\": {},", results.header.tests_passed);
     println!("    \"tests_failed\": {},", results.header.tests_failed);
     println!("    \"boot_start_ns\": {},", results.header.boot_start_ns);
@@ -366,13 +375,20 @@ pub fn print_json(results: &BtrtResults) {
 
     for (i, entry) in results.entries.iter().enumerate() {
         let name = btrt_catalog::test_name(entry.test_id);
-        let trailing = if i + 1 < results.entries.len() { "," } else { "" };
+        let trailing = if i + 1 < results.entries.len() {
+            ","
+        } else {
+            ""
+        };
         println!("    {{");
         println!("      \"test_id\": {},", entry.test_id);
         println!("      \"name\": \"{}\",", name);
         println!("      \"category\": \"{}\",", category_label(entry.test_id));
         println!("      \"status\": \"{}\",", entry.status.label());
-        println!("      \"error_code\": \"{}\",", error_code_name(entry.error_code));
+        println!(
+            "      \"error_code\": \"{}\",",
+            error_code_name(entry.error_code)
+        );
         println!("      \"error_detail\": {},", entry.error_detail);
         println!("      \"duration_us\": {}", entry.duration_us);
         println!("    }}{}", trailing);

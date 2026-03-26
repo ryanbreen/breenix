@@ -9,32 +9,16 @@
 
 #![allow(dead_code)]
 
-use core::sync::atomic::{compiler_fence, AtomicU32, Ordering};
-use crate::arch_impl::traits::PerCpuOps;
 use crate::arch_impl::aarch64::constants::{
-    PERCPU_CPU_ID_OFFSET,
-    PERCPU_CURRENT_THREAD_OFFSET,
-    PERCPU_KERNEL_STACK_TOP_OFFSET,
-    PERCPU_IDLE_THREAD_OFFSET,
-    PERCPU_PREEMPT_COUNT_OFFSET,
-    PERCPU_NEED_RESCHED_OFFSET,
-    PERCPU_USER_RSP_SCRATCH_OFFSET,
-    PERCPU_TSS_OFFSET,
-    PERCPU_SOFTIRQ_PENDING_OFFSET,
-    PERCPU_NEXT_CR3_OFFSET,
-    PERCPU_KERNEL_CR3_OFFSET,
-    PERCPU_SAVED_PROCESS_CR3_OFFSET,
-    PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET,
-    PERCPU_DISPATCH_ELR_OFFSET,
-    PERCPU_DISPATCH_SPSR_OFFSET,
-    HARDIRQ_MASK,
-    SOFTIRQ_MASK,
-    NMI_MASK,
-    HARDIRQ_SHIFT,
-    SOFTIRQ_SHIFT,
-    NMI_SHIFT,
-    PREEMPT_ACTIVE,
+    HARDIRQ_MASK, HARDIRQ_SHIFT, NMI_MASK, NMI_SHIFT, PERCPU_CPU_ID_OFFSET,
+    PERCPU_CURRENT_THREAD_OFFSET, PERCPU_DISPATCH_ELR_OFFSET, PERCPU_DISPATCH_SPSR_OFFSET,
+    PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET, PERCPU_IDLE_THREAD_OFFSET, PERCPU_KERNEL_CR3_OFFSET,
+    PERCPU_KERNEL_STACK_TOP_OFFSET, PERCPU_NEED_RESCHED_OFFSET, PERCPU_NEXT_CR3_OFFSET,
+    PERCPU_PREEMPT_COUNT_OFFSET, PERCPU_SAVED_PROCESS_CR3_OFFSET, PERCPU_SOFTIRQ_PENDING_OFFSET,
+    PERCPU_TSS_OFFSET, PERCPU_USER_RSP_SCRATCH_OFFSET, PREEMPT_ACTIVE, SOFTIRQ_MASK, SOFTIRQ_SHIFT,
 };
+use crate::arch_impl::traits::PerCpuOps;
+use core::sync::atomic::{compiler_fence, AtomicU32, Ordering};
 
 pub struct Aarch64PerCpu;
 
@@ -62,9 +46,7 @@ fn percpu_read_u64(offset: usize) -> u64 {
         // Per-CPU not yet initialized
         return 0;
     }
-    unsafe {
-        core::ptr::read_volatile((base as *const u8).add(offset) as *const u64)
-    }
+    unsafe { core::ptr::read_volatile((base as *const u8).add(offset) as *const u64) }
 }
 
 /// Write a u64 to per-CPU data at the given offset
@@ -84,9 +66,7 @@ fn percpu_read_u32(offset: usize) -> u32 {
     if base == 0 {
         return 0;
     }
-    unsafe {
-        core::ptr::read_volatile((base as *const u8).add(offset) as *const u32)
-    }
+    unsafe { core::ptr::read_volatile((base as *const u8).add(offset) as *const u32) }
 }
 
 /// Get atomic reference to a u32 field in per-CPU data
@@ -96,9 +76,7 @@ fn percpu_atomic_u32(offset: usize) -> Option<&'static AtomicU32> {
     if base == 0 {
         return None;
     }
-    unsafe {
-        Some(&*((base as *const u8).add(offset) as *const AtomicU32))
-    }
+    unsafe { Some(&*((base as *const u8).add(offset) as *const AtomicU32)) }
 }
 
 impl PerCpuOps for Aarch64PerCpu {
@@ -204,9 +182,7 @@ fn percpu_read_u8(offset: usize) -> u8 {
     if base == 0 {
         return 0;
     }
-    unsafe {
-        core::ptr::read_volatile((base as *const u8).add(offset))
-    }
+    unsafe { core::ptr::read_volatile((base as *const u8).add(offset)) }
 }
 
 /// Write a u8 to per-CPU data at the given offset
@@ -421,7 +397,10 @@ impl Aarch64PerCpu {
     /// Set exception cleanup context flag.
     #[inline(always)]
     pub unsafe fn set_exception_cleanup_context(value: bool) {
-        percpu_write_u8(PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET, if value { 1 } else { 0 });
+        percpu_write_u8(
+            PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET,
+            if value { 1 } else { 0 },
+        );
     }
 
     /// Enter softirq context.
@@ -493,10 +472,16 @@ pub unsafe fn init_percpu(base: u64, cpu_id: u64) {
     write_tpidr_el1(base);
 
     // Initialize the CPU ID field
-    core::ptr::write_volatile((base as *mut u8).add(PERCPU_CPU_ID_OFFSET) as *mut u64, cpu_id);
+    core::ptr::write_volatile(
+        (base as *mut u8).add(PERCPU_CPU_ID_OFFSET) as *mut u64,
+        cpu_id,
+    );
 
     // Initialize preempt_count to 0
-    core::ptr::write_volatile((base as *mut u8).add(PERCPU_PREEMPT_COUNT_OFFSET) as *mut u32, 0);
+    core::ptr::write_volatile(
+        (base as *mut u8).add(PERCPU_PREEMPT_COUNT_OFFSET) as *mut u32,
+        0,
+    );
 }
 
 /// Get the raw per-CPU base pointer

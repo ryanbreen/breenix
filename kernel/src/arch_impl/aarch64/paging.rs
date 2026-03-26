@@ -35,10 +35,10 @@ const DESC_AF: u64 = 1 << 10;
 const DESC_SH_INNER: u64 = 0b11 << 8;
 
 // AP[2:1] bits at position 6-7
-const DESC_AP_RW_EL1: u64 = 0b00 << 6;    // RW at EL1, no access EL0
-const DESC_AP_RW_ALL: u64 = 0b01 << 6;    // RW at EL1/EL0
-const DESC_AP_RO_EL1: u64 = 0b10 << 6;    // RO at EL1, no access EL0
-const DESC_AP_RO_ALL: u64 = 0b11 << 6;    // RO at EL1/EL0
+const DESC_AP_RW_EL1: u64 = 0b00 << 6; // RW at EL1, no access EL0
+const DESC_AP_RW_ALL: u64 = 0b01 << 6; // RW at EL1/EL0
+const DESC_AP_RO_EL1: u64 = 0b10 << 6; // RO at EL1, no access EL0
+const DESC_AP_RO_ALL: u64 = 0b11 << 6; // RO at EL1/EL0
 
 // Execute permissions
 const DESC_PXN: u64 = 1 << 53;
@@ -74,8 +74,8 @@ impl Aarch64PageFlags {
 
         if self.0 & FLAG_PRESENT != 0 {
             desc |= DESC_VALID;
-            desc |= DESC_AF;           // Access Flag always set
-            desc |= DESC_SH_INNER;     // Inner Shareable
+            desc |= DESC_AF; // Access Flag always set
+            desc |= DESC_SH_INNER; // Inner Shareable
         }
 
         // Page descriptors at L3 have bit 1 set (table bit)
@@ -105,7 +105,7 @@ impl Aarch64PageFlags {
         if self.0 & FLAG_NO_EXECUTE != 0 {
             desc |= DESC_PXN | DESC_UXN;
         } else if !user {
-            desc |= DESC_UXN;  // Kernel-only: no user execute
+            desc |= DESC_UXN; // Kernel-only: no user execute
         }
 
         // COW marker

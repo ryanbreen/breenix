@@ -33,21 +33,36 @@ extern crate kernel;
 /// secondary CPUs are online (PCI interconnect interference from their GIC
 /// timer interrupt activity). Returns the raw ELF bytes on success.
 #[cfg(target_arch = "aarch64")]
-#[cfg_attr(any(feature = "kthread_test_only", feature = "kthread_stress_test", feature = "workqueue_test_only"), allow(dead_code))]
+#[cfg_attr(
+    any(
+        feature = "kthread_test_only",
+        feature = "kthread_stress_test",
+        feature = "workqueue_test_only"
+    ),
+    allow(dead_code)
+)]
 fn read_init_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> {
     let fs_guard = kernel::fs::ext2::root_fs_read();
-    let fs = fs_guard.as_ref().ok_or("ext2 root filesystem not mounted")?;
+    let fs = fs_guard
+        .as_ref()
+        .ok_or("ext2 root filesystem not mounted")?;
 
     let inode_num = fs.resolve_path(path).map_err(|_| "init not found")?;
 
-    let inode = fs.read_inode(inode_num).map_err(|_| "failed to read inode")?;
+    let inode = fs
+        .read_inode(inode_num)
+        .map_err(|_| "failed to read inode")?;
 
     if inode.is_dir() {
-        unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts(); }
+        unsafe {
+            kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts();
+        }
         return Err("init is a directory");
     }
 
-    let elf_data = fs.read_file_content(&inode).map_err(|_| "failed to read init")?;
+    let elf_data = fs
+        .read_file_content(&inode)
+        .map_err(|_| "failed to read init")?;
 
     drop(fs_guard);
 
@@ -59,8 +74,18 @@ fn read_init_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> 
 /// Takes ELF bytes that were read earlier (e.g., before SMP bring-up) and
 /// completes the process-creation and userspace-entry sequence.
 #[cfg(target_arch = "aarch64")]
-#[cfg_attr(any(feature = "kthread_test_only", feature = "kthread_stress_test", feature = "workqueue_test_only"), allow(dead_code))]
-fn launch_init_from_elf(elf_data: alloc::vec::Vec<u8>, path: &str) -> Result<core::convert::Infallible, &'static str> {
+#[cfg_attr(
+    any(
+        feature = "kthread_test_only",
+        feature = "kthread_stress_test",
+        feature = "workqueue_test_only"
+    ),
+    allow(dead_code)
+)]
+fn launch_init_from_elf(
+    elf_data: alloc::vec::Vec<u8>,
+    path: &str,
+) -> Result<core::convert::Infallible, &'static str> {
     use alloc::string::String;
     use core::arch::asm;
     use kernel::arch_impl::aarch64::context::return_to_userspace;
@@ -70,10 +95,14 @@ fn launch_init_from_elf(elf_data: alloc::vec::Vec<u8>, path: &str) -> Result<cor
     // context-switch the boot thread away before it registers with the scheduler,
     // and it would never be scheduled back. Interrupts are re-enabled just before
     // return_to_userspace() below via the SPSR loaded by ERET.
-    unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts(); }
+    unsafe {
+        kernel::arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts();
+    }
 
     if elf_data.len() < 4 || &elf_data[0..4] != b"\x7fELF" {
-        unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts(); }
+        unsafe {
+            kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts();
+        }
         return Err("init is not a valid ELF file");
     }
 
@@ -97,7 +126,7 @@ fn launch_init_from_elf(elf_data: alloc::vec::Vec<u8>, path: &str) -> Result<cor
     #[cfg(feature = "boot_tests")]
     {
         let failures = kernel::test_framework::advance_to_stage(
-            kernel::test_framework::TestStage::ProcessContext
+            kernel::test_framework::TestStage::ProcessContext,
         );
         if failures > 0 {
             kernel::serial_println!("[boot_tests] {} ProcessContext test(s) failed", failures);
@@ -157,14 +186,14 @@ fn launch_init_from_elf(elf_data: alloc::vec::Vec<u8>, path: &str) -> Result<cor
     // to EL1h (0x5) causes dispatch_thread_locked to terminate it immediately via
     // the safety guard (spsr & 0xF != 0 → not EL0t → not a valid userspace thread).
     {
-        let idle_loop_addr = kernel::arch_impl::aarch64::context_switch::idle_loop_arm64 as *const () as u64;
+        let idle_loop_addr =
+            kernel::arch_impl::aarch64::context_switch::idle_loop_arm64 as *const () as u64;
         // Collect idle thread IDs from the scheduler's per-CPU state.
         // cpu_state[cpu].idle_thread is set by init_scheduler and register_cpu_idle_thread.
         let mut idle_tids = [0u64; kernel::arch_impl::aarch64::constants::MAX_CPUS];
         let cpus_online = kernel::arch_impl::aarch64::smp::cpus_online() as usize;
-        let idle_count = kernel::task::scheduler::collect_idle_thread_ids(
-            &mut idle_tids[..cpus_online]
-        );
+        let idle_count =
+            kernel::task::scheduler::collect_idle_thread_ids(&mut idle_tids[..cpus_online]);
         // Reset each idle thread's saved context.
         for i in 0..idle_count {
             let tid = idle_tids[i];
@@ -176,7 +205,8 @@ fn launch_init_from_elf(elf_data: alloc::vec::Vec<u8>, path: &str) -> Result<cor
         }
         serial_println!(
             "[boot] Reset {} idle thread contexts (CPUs online: {})",
-            idle_count, cpus_online
+            idle_count,
+            cpus_online
         );
     }
 
@@ -212,7 +242,9 @@ fn launch_init_from_elf(elf_data: alloc::vec::Vec<u8>, path: &str) -> Result<cor
     // Interrupts are already disabled at this point (since step 'd').
     for i in 0..4096u64 {
         let addr = (0xFFFF_0000_4000_0000u64 + i * 4096) as *const u8;
-        unsafe { core::ptr::read_volatile(addr); }
+        unsafe {
+            core::ptr::read_volatile(addr);
+        }
     }
 
     // Switch to process page table with ASID=1 tagging. The TLB pressure
@@ -244,22 +276,23 @@ fn launch_init_from_elf(elf_data: alloc::vec::Vec<u8>, path: &str) -> Result<cor
     // If we enabled interrupts HERE (before ERET), the pending timer would
     // fire in EL1 context, the scheduler would context-switch the boot thread
     // away (thinking it's the init process), and it would never reach ERET.
-    unsafe { return_to_userspace(entry_point, user_sp); }
+    unsafe {
+        return_to_userspace(entry_point, user_sp);
+    }
 }
 
-
-#[cfg(target_arch = "aarch64")]
-use kernel::serial;
-#[cfg(target_arch = "aarch64")]
-use kernel::arch_impl::aarch64::timer;
-#[cfg(target_arch = "aarch64")]
-use kernel::arch_impl::aarch64::timer_interrupt;
 #[cfg(target_arch = "aarch64")]
 use kernel::arch_impl::aarch64::cpu::Aarch64Cpu;
 #[cfg(target_arch = "aarch64")]
 use kernel::arch_impl::aarch64::gic::{self, Gicv2};
 #[cfg(target_arch = "aarch64")]
+use kernel::arch_impl::aarch64::timer;
+#[cfg(target_arch = "aarch64")]
+use kernel::arch_impl::aarch64::timer_interrupt;
+#[cfg(target_arch = "aarch64")]
 use kernel::arch_impl::traits::{CpuOps, InterruptController};
+#[cfg(target_arch = "aarch64")]
+use kernel::drivers::virtio::input_mmio;
 #[cfg(target_arch = "aarch64")]
 use kernel::graphics::arm64_fb;
 #[cfg(target_arch = "aarch64")]
@@ -267,7 +300,7 @@ use kernel::graphics::particles;
 #[cfg(target_arch = "aarch64")]
 use kernel::graphics::primitives::{draw_vline, fill_rect, Color, Rect};
 #[cfg(target_arch = "aarch64")]
-use kernel::drivers::virtio::input_mmio;
+use kernel::serial;
 
 /// Kernel entry point called from assembly boot code.
 #[cfg(target_arch = "aarch64")]
@@ -412,7 +445,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!("[boot] DIAG_MARKER_XHCI_B");
     let ecam = kernel::platform_config::pci_ecam_base();
     serial_println!("[boot] DIAG_MARKER_XHCI_C");
-    serial_println!("[boot] loader xhci_hcrst_raw=0x{:x} ecam=0x{:x}", hcrst_raw, ecam);
+    serial_println!(
+        "[boot] loader xhci_hcrst_raw=0x{:x} ecam=0x{:x}",
+        hcrst_raw,
+        ecam
+    );
 
     // Print CPU info
     let el = current_exception_level();
@@ -435,7 +472,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Frame allocator range from platform_config (QEMU defaults or HardwareConfig)
     let fa_start = kernel::platform_config::frame_alloc_start();
     let fa_end = kernel::platform_config::frame_alloc_end();
-    serial_println!("[boot] Initializing memory management ({:#x}-{:#x})...", fa_start, fa_end);
+    serial_println!(
+        "[boot] Initializing memory management ({:#x}-{:#x})...",
+        fa_start,
+        fa_end
+    );
     kernel::memory::frame_allocator::init_aarch64(fa_start, fa_end);
     kernel::memory::init_aarch64_heap();
     kernel::memory::kernel_stack::init();
@@ -458,7 +499,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!("[boot] Initializing Generic Timer...");
     timer::calibrate();
     let freq = timer::frequency_hz();
-    serial_println!("[boot] Timer frequency: {} Hz ({} MHz)", freq, freq / 1_000_000);
+    serial_println!(
+        "[boot] Timer frequency: {} Hz ({} MHz)",
+        freq,
+        freq / 1_000_000
+    );
 
     // Initialize RTC for wall-clock time (PL031 on QEMU virt)
     serial_println!("[boot] Initializing PL031 RTC...");
@@ -492,7 +537,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
 
     // Enable interrupts
     serial_println!("[boot] Enabling interrupts...");
-    unsafe { Aarch64Cpu::enable_interrupts(); }
+    unsafe {
+        Aarch64Cpu::enable_interrupts();
+    }
     let irq_enabled = Aarch64Cpu::interrupts_enabled();
     serial_println!("[boot] Interrupts enabled: {}", irq_enabled);
 
@@ -552,13 +599,15 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
 
     // Detect CPU features (must be before procfs so /proc/cpuinfo has real data)
     kernel::arch_impl::aarch64::cpuinfo::init();
-    serial_println!("[boot] CPU detected: {} {}",
+    serial_println!(
+        "[boot] CPU detected: {} {}",
         kernel::arch_impl::aarch64::cpuinfo::get()
             .map(|c| c.implementer_name())
             .unwrap_or("Unknown"),
         kernel::arch_impl::aarch64::cpuinfo::get()
             .map(|c| c.part_name())
-            .unwrap_or("Unknown"));
+            .unwrap_or("Unknown")
+    );
 
     // Initialize procfs (/proc virtual filesystem)
     kernel::fs::procfs::init();
@@ -602,7 +651,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                 bytes_per_pixel: 4,
                 is_bgr: true, // B8G8R8X8_UNORM
             });
-            serial_println!("[boot] FB_INFO_CACHE populated for VirGL display ({}x{})", w, h);
+            serial_println!(
+                "[boot] FB_INFO_CACHE populated for VirGL display ({}x{})",
+                w,
+                h
+            );
         }
         true
     } else if kernel::drivers::virtio::gpu_pci::is_initialized()
@@ -704,7 +757,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Store the boot TTBR0 as the kernel page table for this CPU.
     // Without this, exception handlers fall back to a wrong hardcoded address.
     let boot_ttbr0: u64;
-    unsafe { core::arch::asm!("mrs {}, ttbr0_el1", out(reg) boot_ttbr0, options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("mrs {}, ttbr0_el1", out(reg) boot_ttbr0, options(nomem, nostack));
+    }
     kernel::per_cpu_aarch64::set_kernel_cr3(boot_ttbr0);
     serial_println!("[boot] Per-CPU data initialized");
 
@@ -784,7 +839,10 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                 Some(data)
             }
             Err(e) => {
-                serial_println!("[boot] Failed to pre-load init: {} (will retry after SMP)", e);
+                serial_println!(
+                    "[boot] Failed to pre-load init: {} (will retry after SMP)",
+                    e
+                );
                 None
             }
         }
@@ -824,7 +882,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         // Log CPU 0's MPIDR for topology diagnostics
         let mpidr: u64;
         unsafe { core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack)) };
-        serial_println!("[smp] CPU 0 MPIDR={:#x}, stack_base={:#x}", mpidr, stack_base_phys);
+        serial_println!(
+            "[smp] CPU 0 MPIDR={:#x}, stack_base={:#x}",
+            mpidr,
+            stack_base_phys
+        );
 
         // Derive the maximum number of CPUs to probe from the GICv3 redistributor
         // region size. Each redistributor occupies 0x20000 bytes (two 64KB frames).
@@ -841,7 +903,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         let max_cpus_to_probe = if gicr_size > 0 {
             let n = (gicr_size / GICR_FRAME_SIZE) as usize;
             let capped = n.min(kernel::arch_impl::aarch64::smp::MAX_CPUS);
-            serial_println!("[smp] GICR covers {} redistributors, probing CPUs 1..{}", n, capped);
+            serial_println!(
+                "[smp] GICR covers {} redistributors, probing CPUs 1..{}",
+                n,
+                capped
+            );
             capped
         } else {
             kernel::arch_impl::aarch64::smp::MAX_CPUS
@@ -855,7 +921,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                 serial_println!("[smp] CPU {}: PSCI CPU_ON success", cpu);
                 launched += 1;
             } else {
-                serial_println!("[smp] CPU {}: PSCI CPU_ON failed (ret={}), stopping probe", cpu, ret);
+                serial_println!(
+                    "[smp] CPU {}: PSCI CPU_ON failed (ret={}), stopping probe",
+                    cpu,
+                    ret
+                );
                 break;
             }
         }
@@ -866,8 +936,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             let timeout_ticks = timer::frequency_hz() / 10; // 100ms timeout
             while kernel::arch_impl::aarch64::smp::cpus_online() < expected {
                 if timer::rdtsc() - start > timeout_ticks {
-                    serial_println!("[smp] Timeout waiting for CPUs ({}  online, {} expected)",
-                        kernel::arch_impl::aarch64::smp::cpus_online(), expected);
+                    serial_println!(
+                        "[smp] Timeout waiting for CPUs ({}  online, {} expected)",
+                        kernel::arch_impl::aarch64::smp::cpus_online(),
+                        expected
+                    );
                     break;
                 }
                 core::hint::spin_loop();
@@ -909,7 +982,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         serial_println!("KTHREAD_TEST_ONLY_COMPLETE");
         kernel::exit_qemu(kernel::QemuExitCode::Success);
         loop {
-            unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+            unsafe {
+                core::arch::asm!("wfi", options(nomem, nostack));
+            }
         }
     }
 
@@ -920,7 +995,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         serial_println!("WORKQUEUE_TEST_ONLY_COMPLETE");
         kernel::exit_qemu(kernel::QemuExitCode::Success);
         loop {
-            unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+            unsafe {
+                core::arch::asm!("wfi", options(nomem, nostack));
+            }
         }
     }
 
@@ -932,7 +1009,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         serial_println!("KTHREAD_STRESS_TEST_COMPLETE");
         kernel::exit_qemu(kernel::QemuExitCode::Success);
         loop {
-            unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+            unsafe {
+                core::arch::asm!("wfi", options(nomem, nostack));
+            }
         }
     }
 
@@ -970,12 +1049,15 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // This MUST be done BEFORE userspace loading because launch_init_from_elf never returns
     // DISABLED: Investigating EC=0x0 crash during fill_rect memcpy
     #[cfg(not(feature = "boot_tests"))]
-    #[cfg(feature = "particle_animation")]  // Disabled by default - crashes with EC=0x0
+    #[cfg(feature = "particle_animation")] // Disabled by default - crashes with EC=0x0
     {
-        let has_graphics = kernel::graphics::arm64_fb::SHELL_FRAMEBUFFER.get().is_some();
+        let has_graphics = kernel::graphics::arm64_fb::SHELL_FRAMEBUFFER
+            .get()
+            .is_some();
         if has_graphics {
             serial_println!("[graphics] Starting particle animation...");
-            match kernel::task::spawn::spawn_thread("particles", particles::animation_thread_entry) {
+            match kernel::task::spawn::spawn_thread("particles", particles::animation_thread_entry)
+            {
                 Ok(tid) => serial_println!("[graphics] Particle animation started (tid={})", tid),
                 Err(e) => serial_println!("[graphics] Failed to start animation: {}", e),
             }
@@ -998,9 +1080,13 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         // The prompt signals to the test harness that boot is complete.
         serial_print!("breenix> ");
         // Enable interrupts - scheduler dispatches test processes via timer.
-        unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts(); }
+        unsafe {
+            kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts();
+        }
         loop {
-            unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+            unsafe {
+                core::arch::asm!("wfi", options(nomem, nostack));
+            }
         }
     }
 
@@ -1034,7 +1120,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                     match launch_init_from_elf(elf_data, "/sbin/init") {
                         Err(e) => {
                             serial_println!("[boot] Failed to launch init: {}", e);
-                            serial_println!("[boot] Loading userspace init_shell from test disk...");
+                            serial_println!(
+                                "[boot] Loading userspace init_shell from test disk..."
+                            );
                             match kernel::boot::test_disk::run_userspace_from_disk("init_shell") {
                                 Err(e) => {
                                     serial_println!("[boot] Failed to load init_shell: {}", e);
@@ -1079,7 +1167,14 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
 /// via create_user_process(). The scheduler will run them alongside init_shell.
 #[cfg(target_arch = "aarch64")]
 #[cfg(feature = "testing")]
-#[cfg_attr(any(feature = "kthread_test_only", feature = "kthread_stress_test", feature = "workqueue_test_only"), allow(dead_code))]
+#[cfg_attr(
+    any(
+        feature = "kthread_test_only",
+        feature = "kthread_stress_test",
+        feature = "workqueue_test_only"
+    ),
+    allow(dead_code)
+)]
 fn load_test_binaries_from_ext2() {
     use alloc::format;
     use alloc::string::String;
@@ -1091,7 +1186,9 @@ fn load_test_binaries_from_ext2() {
     // thread competes with 30+ threads for CPU time and loading takes >90 seconds.
     // With interrupts disabled, VirtIO block I/O still works (polling mode) and
     // all binaries load in under a second.
-    unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts(); }
+    unsafe {
+        kernel::arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts();
+    }
 
     // Use the canonical shared test binary list (see boot::test_list)
     let test_binaries = kernel::boot::test_list::TEST_BINARIES;
@@ -1173,7 +1270,11 @@ fn load_test_binaries_from_ext2() {
                 serial_println!("[test] Failed to create process {}: {}", name, e);
                 #[cfg(feature = "btrt")]
                 if let Some(test_id) = kernel::test_framework::catalog::utest_name_to_id(name) {
-                    kernel::test_framework::btrt::fail(test_id, kernel::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+                    kernel::test_framework::btrt::fail(
+                        test_id,
+                        kernel::test_framework::btrt::BtrtErrorCode::NoExec,
+                        0,
+                    );
                 }
                 failed += 1;
             }
@@ -1186,9 +1287,13 @@ fn load_test_binaries_from_ext2() {
     // the boot thread to run test processes, and subsequent serial_println!
     // calls in the caller never execute.
 
-    serial_println!("[test] Loaded {}/{} test binaries ({} failed, {} not found)",
-        loaded, test_binaries.len(), failed,
-        test_binaries.len() - loaded - failed);
+    serial_println!(
+        "[test] Loaded {}/{} test binaries ({} failed, {} not found)",
+        loaded,
+        test_binaries.len(),
+        failed,
+        test_binaries.len() - loaded - failed
+    );
 }
 
 /// Initialize the scheduler with an idle thread (ARM64)
@@ -1196,38 +1301,39 @@ fn load_test_binaries_from_ext2() {
 fn init_scheduler() {
     use alloc::boxed::Box;
     use alloc::string::String;
-    use kernel::task::thread::{Thread, ThreadState, ThreadPrivilege};
-    use kernel::task::scheduler;
-    use kernel::per_cpu_aarch64;
     use kernel::memory::arch_stub::VirtAddr;
+    use kernel::per_cpu_aarch64;
+    use kernel::task::scheduler;
+    use kernel::task::thread::{Thread, ThreadPrivilege, ThreadState};
 
     // CPU 0 boot stack top address.
     // On QEMU: boot.S sets SP to HHDM_BASE + STACK_REGION_BASE + STACK_SIZE
     // On Parallels: UEFI loader sets SP to 0x42000000, then HHDM switch adds HHDM_BASE
     // Use platform detection to pick the right boot stack address.
     const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
-    let (boot_stack_top, boot_stack_bottom) = if kernel::platform_config::is_qemu() || kernel::platform_config::is_vmware() {
-        let stack_base = kernel::arch_impl::aarch64::constants::percpu_stack_region_base();
-        const STACK_SIZE: u64 = 0x20_0000; // 2MB per CPU
-        (
-            VirtAddr::new(stack_base + STACK_SIZE),
-            VirtAddr::new(stack_base),
-        )
-    } else {
-        // Parallels: UEFI loader stack at 0x42000000 (phys), now at HHDM
-        // The stack grows down from 0x42000000, assume 2MB range
-        const PARALLELS_STACK_TOP_PHYS: u64 = 0x4200_0000;
-        const PARALLELS_STACK_SIZE: u64 = 0x20_0000; // 2MB
-        (
-            VirtAddr::new(HHDM_BASE + PARALLELS_STACK_TOP_PHYS),
-            VirtAddr::new(HHDM_BASE + PARALLELS_STACK_TOP_PHYS - PARALLELS_STACK_SIZE),
-        )
-    };
+    let (boot_stack_top, boot_stack_bottom) =
+        if kernel::platform_config::is_qemu() || kernel::platform_config::is_vmware() {
+            let stack_base = kernel::arch_impl::aarch64::constants::percpu_stack_region_base();
+            const STACK_SIZE: u64 = 0x20_0000; // 2MB per CPU
+            (
+                VirtAddr::new(stack_base + STACK_SIZE),
+                VirtAddr::new(stack_base),
+            )
+        } else {
+            // Parallels: UEFI loader stack at 0x42000000 (phys), now at HHDM
+            // The stack grows down from 0x42000000, assume 2MB range
+            const PARALLELS_STACK_TOP_PHYS: u64 = 0x4200_0000;
+            const PARALLELS_STACK_SIZE: u64 = 0x20_0000; // 2MB
+            (
+                VirtAddr::new(HHDM_BASE + PARALLELS_STACK_TOP_PHYS),
+                VirtAddr::new(HHDM_BASE + PARALLELS_STACK_TOP_PHYS - PARALLELS_STACK_SIZE),
+            )
+        };
     let dummy_tls = VirtAddr::zero();
 
     // Create the idle task (thread ID 0)
     let mut idle_task = Box::new(Thread::new(
-        String::from("swapper/0"),  // Linux convention: swapper/0 is the idle task
+        String::from("swapper/0"), // Linux convention: swapper/0 is the idle task
         idle_thread_fn,
         boot_stack_top,
         boot_stack_bottom,
@@ -1245,7 +1351,7 @@ fn init_scheduler() {
     // Mark as running with ID 0, and has_started=true since boot code is already executing
     idle_task.state = ThreadState::Running;
     idle_task.id = 0;
-    idle_task.has_started = true;  // CRITICAL: Boot thread is already running, not waiting for first entry
+    idle_task.has_started = true; // CRITICAL: Boot thread is already running, not waiting for first entry
 
     // Set up per-CPU current thread pointer and kernel stack
     let idle_task_ptr = &*idle_task as *const _ as *mut Thread;
@@ -1329,7 +1435,11 @@ fn test_syscalls() {
         );
     }
     if clock_ret == 0 {
-        serial_println!("[test] clock_gettime() returned: {}.{:09} seconds", timespec[0], timespec[1]);
+        serial_println!(
+            "[test] clock_gettime() returned: {}.{:09} seconds",
+            timespec[0],
+            timespec[1]
+        );
     } else {
         serial_println!("[test] clock_gettime() failed with: {}", clock_ret);
     }
@@ -1345,7 +1455,10 @@ fn test_syscalls() {
             out("x8") _,
         );
     }
-    serial_println!("[test] unknown syscall returned: {} (expected -38 ENOSYS)", enosys);
+    serial_println!(
+        "[test] unknown syscall returned: {} (expected -38 ENOSYS)",
+        enosys
+    );
 
     serial_println!("[test] Syscall tests complete!");
 }
@@ -1379,7 +1492,7 @@ fn test_userspace() {
     // addressing. Instead, we'll embed the message address directly.
 
     #[repr(align(4))]
-    #[allow(dead_code)]  // Fields are used via write_volatile
+    #[allow(dead_code)] // Fields are used via write_volatile
     struct UserProgram {
         code: [u32; 16],
         message: [u8; 32],
@@ -1397,34 +1510,18 @@ fn test_userspace() {
         code: [
             // Load message address 0x41000040 into x1
             // movz x1, #0x0040    (x1 = 0x40)
-            0xd2800801,
-            // movk x1, #0x4100, lsl #16    (x1 = 0x41000040)
-            0xf2a82001,
-
-            // mov x8, #1 (write syscall)
-            0xd2800028,
-            // mov x0, #1 (fd = stdout)
-            0xd2800020,
-            // mov x2, #24 (message length)
-            0xd2800302,
-            // svc #0
+            0xd2800801, // movk x1, #0x4100, lsl #16    (x1 = 0x41000040)
+            0xf2a82001, // mov x8, #1 (write syscall)
+            0xd2800028, // mov x0, #1 (fd = stdout)
+            0xd2800020, // mov x2, #24 (message length)
+            0xd2800302, // svc #0
+            0xd4000001, // mov x8, #0 (exit syscall)
+            0xd2800008, // mov x0, #42 (exit code)
+            0xd2800540, // svc #0
             0xd4000001,
-
-            // mov x8, #0 (exit syscall)
-            0xd2800008,
-            // mov x0, #42 (exit code)
-            0xd2800540,
-            // svc #0
-            0xd4000001,
-
             // Just in case exit doesn't work, spin forever
             // b . (branch to self)
-            0x14000000,
-            0x14000000,
-            0x14000000,
-            0x14000000,
-            0x14000000,
-            0x14000000,
+            0x14000000, 0x14000000, 0x14000000, 0x14000000, 0x14000000, 0x14000000,
             0x14000000, // 16th element
         ],
         message: *b"[user] Hello from EL0!\n\0\0\0\0\0\0\0\0\0",
@@ -1513,7 +1610,13 @@ fn init_graphics() -> Result<(), &'static str> {
         // Draw vertical divider
         let divider_color = Color::rgb(60, 80, 100);
         for i in 0..divider_width {
-            draw_vline(&mut *fb_guard, (divider_x + i) as i32, 0, height as i32 - 1, divider_color);
+            draw_vline(
+                &mut *fb_guard,
+                (divider_x + i) as i32,
+                0,
+                height as i32 - 1,
+                divider_color,
+            );
         }
 
         // Flush to display
@@ -1576,7 +1679,13 @@ fn init_gop_display() -> Result<(), &'static str> {
         // Draw vertical divider
         let divider_color = Color::rgb(60, 80, 100);
         for i in 0..divider_width {
-            draw_vline(&mut *fb_guard, (divider_x + i) as i32, 0, height as i32 - 1, divider_color);
+            draw_vline(
+                &mut *fb_guard,
+                (divider_x + i) as i32,
+                0,
+                height as i32 - 1,
+                divider_color,
+            );
         }
 
         // Flush to display
@@ -1615,10 +1724,11 @@ fn panic(info: &PanicInfo) -> ! {
     serial_println!();
 
     loop {
-        unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+        unsafe {
+            core::arch::asm!("wfi", options(nomem, nostack));
+        }
     }
 }
-
 
 // =============================================================================
 // Non-aarch64 stub section

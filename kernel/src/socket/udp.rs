@@ -85,7 +85,10 @@ impl UdpSocket {
         log::debug!(
             "UDP: Socket {:?} bound to {}.{}.{}.{}:{} (requested: {})",
             self.handle,
-            addr[0], addr[1], addr[2], addr[3],
+            addr[0],
+            addr[1],
+            addr[2],
+            addr[3],
             actual_port,
             port
         );
@@ -203,10 +206,10 @@ impl Drop for UdpSocket {
 /// tests via telnetd and DNS in Docker provide full path coverage.
 pub mod tests {
     use super::*;
-    use alloc::boxed::Box;
-    use alloc::string::String;
     use crate::task::scheduler;
     use crate::task::thread::{Thread, ThreadPrivilege, ThreadState};
+    use alloc::boxed::Box;
+    use alloc::string::String;
     use x86_64::VirtAddr;
 
     fn dummy_entry() {}
@@ -371,9 +374,9 @@ pub mod tests {
         socket.register_waiter(blocked_thread_id);
 
         let state_blocked = scheduler::with_scheduler(|sched| {
-            sched.get_thread(blocked_thread_id).map(|thread| {
-                thread.state == ThreadState::Blocked && thread.blocked_in_syscall
-            })
+            sched
+                .get_thread(blocked_thread_id)
+                .map(|thread| thread.state == ThreadState::Blocked && thread.blocked_in_syscall)
         });
         assert_eq!(state_blocked, Some(Some(true)));
 
@@ -387,7 +390,9 @@ pub mod tests {
         assert_eq!(socket.waiting_threads.lock().is_empty(), true);
 
         let state_ready = scheduler::with_scheduler(|sched| {
-            sched.get_thread(blocked_thread_id).map(|thread| thread.state == ThreadState::Ready)
+            sched
+                .get_thread(blocked_thread_id)
+                .map(|thread| thread.state == ThreadState::Ready)
         });
         assert_eq!(state_ready, Some(Some(true)));
 
@@ -641,7 +646,10 @@ pub mod tests {
 
         // Thread B tries to receive - no packet available (spurious wakeup)
         let spurious = socket.recv_from();
-        assert!(spurious.is_none(), "Thread B should find no packet (spurious wakeup)");
+        assert!(
+            spurious.is_none(),
+            "Thread B should find no packet (spurious wakeup)"
+        );
 
         // Socket should have no data and no waiters at this point
         assert!(!socket.has_data());

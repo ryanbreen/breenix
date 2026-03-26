@@ -119,8 +119,21 @@ impl SavedRegisters {
     #[allow(dead_code)]
     pub const fn new() -> Self {
         Self {
-            r15: 0, r14: 0, r13: 0, r12: 0, r11: 0, r10: 0, r9: 0, r8: 0,
-            rdi: 0, rsi: 0, rbp: 0, rbx: 0, rdx: 0, rcx: 0, rax: 0,
+            r15: 0,
+            r14: 0,
+            r13: 0,
+            r12: 0,
+            r11: 0,
+            r10: 0,
+            r9: 0,
+            r8: 0,
+            rdi: 0,
+            rsi: 0,
+            rbp: 0,
+            rbx: 0,
+            rdx: 0,
+            rcx: 0,
+            rax: 0,
         }
     }
 
@@ -155,47 +168,65 @@ impl SavedRegisters {
     /// Get syscall argument 1 (RDI on x86_64)
     #[inline]
     #[allow(dead_code)]
-    pub fn arg1(&self) -> u64 { self.rdi }
+    pub fn arg1(&self) -> u64 {
+        self.rdi
+    }
 
     /// Get syscall argument 2 (RSI on x86_64)
     #[inline]
     #[allow(dead_code)]
-    pub fn arg2(&self) -> u64 { self.rsi }
+    pub fn arg2(&self) -> u64 {
+        self.rsi
+    }
 
     /// Get syscall argument 3 (RDX on x86_64)
     #[inline]
     #[allow(dead_code)]
-    pub fn arg3(&self) -> u64 { self.rdx }
+    pub fn arg3(&self) -> u64 {
+        self.rdx
+    }
 
     /// Get syscall argument 4 (R10 on x86_64)
     #[inline]
     #[allow(dead_code)]
-    pub fn arg4(&self) -> u64 { self.r10 }
+    pub fn arg4(&self) -> u64 {
+        self.r10
+    }
 
     /// Get syscall argument 5 (R8 on x86_64)
     #[inline]
     #[allow(dead_code)]
-    pub fn arg5(&self) -> u64 { self.r8 }
+    pub fn arg5(&self) -> u64 {
+        self.r8
+    }
 
     /// Get syscall argument 6 (R9 on x86_64)
     #[inline]
     #[allow(dead_code)]
-    pub fn arg6(&self) -> u64 { self.r9 }
+    pub fn arg6(&self) -> u64 {
+        self.r9
+    }
 
     /// Set syscall argument 1 (RDI on x86_64)
     #[inline]
     #[allow(dead_code)]
-    pub fn set_arg1(&mut self, val: u64) { self.rdi = val; }
+    pub fn set_arg1(&mut self, val: u64) {
+        self.rdi = val;
+    }
 
     /// Set syscall argument 2 (RSI on x86_64)
     #[inline]
     #[allow(dead_code)]
-    pub fn set_arg2(&mut self, val: u64) { self.rsi = val; }
+    pub fn set_arg2(&mut self, val: u64) {
+        self.rsi = val;
+    }
 
     /// Set syscall argument 3 (RDX on x86_64)
     #[inline]
     #[allow(dead_code)]
-    pub fn set_arg3(&mut self, val: u64) { self.rdx = val; }
+    pub fn set_arg3(&mut self, val: u64) {
+        self.rdx = val;
+    }
 }
 
 // Note: switch_with_privilege function removed as part of spawn mechanism cleanup
@@ -333,37 +364,37 @@ pub fn restore_userspace_context(
 #[repr(C)]
 pub struct SavedRegisters {
     // General-purpose registers X0-X30 (31 registers)
-    pub x0: u64,   // Argument 1 / return value
-    pub x1: u64,   // Argument 2
-    pub x2: u64,   // Argument 3
-    pub x3: u64,   // Argument 4
-    pub x4: u64,   // Argument 5
-    pub x5: u64,   // Argument 6
-    pub x6: u64,   // Caller-saved
-    pub x7: u64,   // Caller-saved
-    pub x8: u64,   // Syscall number (Linux ABI)
-    pub x9: u64,   // Temporary
-    pub x10: u64,  // Temporary
-    pub x11: u64,  // Temporary
-    pub x12: u64,  // Temporary
-    pub x13: u64,  // Temporary
-    pub x14: u64,  // Temporary
-    pub x15: u64,  // Temporary
-    pub x16: u64,  // IP0 (intra-procedure-call scratch)
-    pub x17: u64,  // IP1 (intra-procedure-call scratch)
-    pub x18: u64,  // Platform register (reserved)
-    pub x19: u64,  // Callee-saved
-    pub x20: u64,  // Callee-saved
-    pub x21: u64,  // Callee-saved
-    pub x22: u64,  // Callee-saved
-    pub x23: u64,  // Callee-saved
-    pub x24: u64,  // Callee-saved
-    pub x25: u64,  // Callee-saved
-    pub x26: u64,  // Callee-saved
-    pub x27: u64,  // Callee-saved
-    pub x28: u64,  // Callee-saved
-    pub x29: u64,  // Frame pointer (FP)
-    pub x30: u64,  // Link register (LR)
+    pub x0: u64,  // Argument 1 / return value
+    pub x1: u64,  // Argument 2
+    pub x2: u64,  // Argument 3
+    pub x3: u64,  // Argument 4
+    pub x4: u64,  // Argument 5
+    pub x5: u64,  // Argument 6
+    pub x6: u64,  // Caller-saved
+    pub x7: u64,  // Caller-saved
+    pub x8: u64,  // Syscall number (Linux ABI)
+    pub x9: u64,  // Temporary
+    pub x10: u64, // Temporary
+    pub x11: u64, // Temporary
+    pub x12: u64, // Temporary
+    pub x13: u64, // Temporary
+    pub x14: u64, // Temporary
+    pub x15: u64, // Temporary
+    pub x16: u64, // IP0 (intra-procedure-call scratch)
+    pub x17: u64, // IP1 (intra-procedure-call scratch)
+    pub x18: u64, // Platform register (reserved)
+    pub x19: u64, // Callee-saved
+    pub x20: u64, // Callee-saved
+    pub x21: u64, // Callee-saved
+    pub x22: u64, // Callee-saved
+    pub x23: u64, // Callee-saved
+    pub x24: u64, // Callee-saved
+    pub x25: u64, // Callee-saved
+    pub x26: u64, // Callee-saved
+    pub x27: u64, // Callee-saved
+    pub x28: u64, // Callee-saved
+    pub x29: u64, // Frame pointer (FP)
+    pub x30: u64, // Link register (LR)
 
     /// Stack pointer (SP_EL0 for userspace)
     pub sp: u64,
@@ -384,11 +415,40 @@ impl SavedRegisters {
     #[allow(dead_code)]
     pub const fn new() -> Self {
         Self {
-            x0: 0, x1: 0, x2: 0, x3: 0, x4: 0, x5: 0, x6: 0, x7: 0,
-            x8: 0, x9: 0, x10: 0, x11: 0, x12: 0, x13: 0, x14: 0, x15: 0,
-            x16: 0, x17: 0, x18: 0, x19: 0, x20: 0, x21: 0, x22: 0, x23: 0,
-            x24: 0, x25: 0, x26: 0, x27: 0, x28: 0, x29: 0, x30: 0,
-            sp: 0, elr: 0, spsr: 0,
+            x0: 0,
+            x1: 0,
+            x2: 0,
+            x3: 0,
+            x4: 0,
+            x5: 0,
+            x6: 0,
+            x7: 0,
+            x8: 0,
+            x9: 0,
+            x10: 0,
+            x11: 0,
+            x12: 0,
+            x13: 0,
+            x14: 0,
+            x15: 0,
+            x16: 0,
+            x17: 0,
+            x18: 0,
+            x19: 0,
+            x20: 0,
+            x21: 0,
+            x22: 0,
+            x23: 0,
+            x24: 0,
+            x25: 0,
+            x26: 0,
+            x27: 0,
+            x28: 0,
+            x29: 0,
+            x30: 0,
+            sp: 0,
+            elr: 0,
+            spsr: 0,
         }
     }
 
@@ -397,7 +457,9 @@ impl SavedRegisters {
     /// This captures all register state from an exception frame for later restoration.
     /// Used for signal delivery and context switching.
     #[allow(dead_code)]
-    pub fn from_exception_frame(frame: &crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame) -> Self {
+    pub fn from_exception_frame(
+        frame: &crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame,
+    ) -> Self {
         Self {
             x0: frame.x0,
             x1: frame.x1,
@@ -455,7 +517,10 @@ impl SavedRegisters {
     /// This writes the saved register state back to an exception frame,
     /// which will be restored when returning from the exception via ERET.
     #[allow(dead_code)]
-    pub fn apply_to_frame(&self, frame: &mut crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame) {
+    pub fn apply_to_frame(
+        &self,
+        frame: &mut crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame,
+    ) {
         frame.x0 = self.x0;
         frame.x1 = self.x1;
         frame.x2 = self.x2;
@@ -527,48 +592,66 @@ impl SavedRegisters {
     /// Get syscall argument 1 (X0 on ARM64)
     #[inline]
     #[allow(dead_code)]
-    pub fn arg1(&self) -> u64 { self.x0 }
+    pub fn arg1(&self) -> u64 {
+        self.x0
+    }
 
     /// Get syscall argument 2 (X1 on ARM64)
     #[inline]
     #[allow(dead_code)]
-    pub fn arg2(&self) -> u64 { self.x1 }
+    pub fn arg2(&self) -> u64 {
+        self.x1
+    }
 
     /// Get syscall argument 3 (X2 on ARM64)
     #[inline]
     #[allow(dead_code)]
-    pub fn arg3(&self) -> u64 { self.x2 }
+    pub fn arg3(&self) -> u64 {
+        self.x2
+    }
 
     /// Get syscall argument 4 (X3 on ARM64)
     #[inline]
     #[allow(dead_code)]
-    pub fn arg4(&self) -> u64 { self.x3 }
+    pub fn arg4(&self) -> u64 {
+        self.x3
+    }
 
     /// Get syscall argument 5 (X4 on ARM64)
     #[inline]
     #[allow(dead_code)]
-    pub fn arg5(&self) -> u64 { self.x4 }
+    pub fn arg5(&self) -> u64 {
+        self.x4
+    }
 
     /// Get syscall argument 6 (X5 on ARM64)
     #[inline]
     #[allow(dead_code)]
-    pub fn arg6(&self) -> u64 { self.x5 }
+    pub fn arg6(&self) -> u64 {
+        self.x5
+    }
 
     /// Set syscall argument 1 (X0 on ARM64)
     /// Note: This also sets the return value since X0 is used for both
     #[inline]
     #[allow(dead_code)]
-    pub fn set_arg1(&mut self, val: u64) { self.x0 = val; }
+    pub fn set_arg1(&mut self, val: u64) {
+        self.x0 = val;
+    }
 
     /// Set syscall argument 2 (X1 on ARM64)
     #[inline]
     #[allow(dead_code)]
-    pub fn set_arg2(&mut self, val: u64) { self.x1 = val; }
+    pub fn set_arg2(&mut self, val: u64) {
+        self.x1 = val;
+    }
 
     /// Set syscall argument 3 (X2 on ARM64)
     #[inline]
     #[allow(dead_code)]
-    pub fn set_arg3(&mut self, val: u64) { self.x2 = val; }
+    pub fn set_arg3(&mut self, val: u64) {
+        self.x2 = val;
+    }
 
     // =========================================================================
     // Program counter / stack pointer accessors
@@ -665,11 +748,11 @@ impl SavedRegisters {
         0x0
     }
 
-    /// Create SPSR for returning to EL1h (kernel) with interrupts masked
+    /// Create SPSR for returning to EL1h (kernel) with IRQs enabled
     #[inline]
     #[allow(dead_code)]
     pub fn spsr_el1_default() -> u64 {
-        // EL1h (mode 5) with DAIF masked
-        0x3c5
+        // EL1h (mode 5) with DAIF clear (interrupts enabled)
+        0x5
     }
 }

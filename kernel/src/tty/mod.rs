@@ -6,18 +6,18 @@
 //! - Terminal attributes (termios)
 //! - Echo and line editing
 
-pub mod termios;
-pub mod line_discipline;
 pub mod driver;
 pub mod ioctl;
+pub mod line_discipline;
 pub mod pty;
+pub mod termios;
 
 // Re-export for external use
 // Allow unused - these are public API re-exports for Phase 4+ syscalls and ioctls
 #[allow(unused_imports)]
-pub use termios::Termios;
-#[allow(unused_imports)]
 pub use line_discipline::LineDiscipline;
+#[allow(unused_imports)]
+pub use termios::Termios;
 
 // Re-export driver functions for external use
 // Allow unused - these are public API re-exports for keyboard interrupt integration

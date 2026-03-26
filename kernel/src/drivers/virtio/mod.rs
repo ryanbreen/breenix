@@ -24,23 +24,23 @@ pub mod block;
 pub mod queue;
 
 #[cfg(target_arch = "aarch64")]
-pub mod mmio;
-#[cfg(target_arch = "aarch64")]
-pub mod pci_transport;
-#[cfg(target_arch = "aarch64")]
 pub mod block_mmio;
-#[cfg(target_arch = "aarch64")]
-pub mod net_mmio;
 #[cfg(target_arch = "aarch64")]
 pub mod gpu_mmio;
 #[cfg(target_arch = "aarch64")]
+pub mod gpu_pci;
+#[cfg(target_arch = "aarch64")]
 pub mod input_mmio;
 #[cfg(target_arch = "aarch64")]
-pub mod sound_mmio;
+pub mod mmio;
+#[cfg(target_arch = "aarch64")]
+pub mod net_mmio;
 #[cfg(target_arch = "aarch64")]
 pub mod net_pci;
 #[cfg(target_arch = "aarch64")]
-pub mod gpu_pci;
+pub mod pci_transport;
+#[cfg(target_arch = "aarch64")]
+pub mod sound_mmio;
 #[cfg(target_arch = "aarch64")]
 pub mod virgl;
 
@@ -209,7 +209,6 @@ impl VirtioDevice {
         (high << 32) | low
     }
 
-
     /// Initialize the device
     ///
     /// Performs the VirtIO initialization sequence:
@@ -251,7 +250,11 @@ impl VirtioDevice {
 
             reset_attempts += 1;
             if reset_attempts >= 100 {
-                log::warn!("VirtIO: Device status still {:#x} after {} reset attempts", status, reset_attempts);
+                log::warn!(
+                    "VirtIO: Device status still {:#x} after {} reset attempts",
+                    status,
+                    reset_attempts
+                );
                 break;
             }
         }
@@ -269,7 +272,9 @@ impl VirtioDevice {
         self.driver_features = self.device_features & requested_features;
         log::debug!(
             "VirtIO: Device features={:#x}, requested={:#x}, negotiated={:#x}",
-            self.device_features, requested_features, self.driver_features
+            self.device_features,
+            requested_features,
+            self.driver_features
         );
         self.write_driver_features(self.driver_features);
 

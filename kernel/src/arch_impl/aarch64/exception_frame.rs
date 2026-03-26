@@ -7,8 +7,8 @@
 
 #![allow(dead_code)] // HAL type - part of complete API
 
-use crate::arch_impl::traits::{InterruptFrame, SyscallFrame};
 use super::privilege::Aarch64PrivilegeLevel;
+use crate::arch_impl::traits::{InterruptFrame, SyscallFrame};
 
 /// Exception frame matching the layout in boot.S sync_exception_handler.
 ///
@@ -31,7 +31,7 @@ pub struct Aarch64ExceptionFrame {
     pub x5: u64,
     pub x6: u64,
     pub x7: u64,
-    pub x8: u64,   // Syscall number (ARM64 ABI)
+    pub x8: u64, // Syscall number (ARM64 ABI)
     pub x9: u64,
     pub x10: u64,
     pub x11: u64,

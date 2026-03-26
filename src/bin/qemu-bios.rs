@@ -10,10 +10,13 @@ fn main() {
 
     // Optional debug log support
     if let Ok(log_path) = env::var("BREENIX_QEMU_LOG_PATH") {
-        let debug_flags = env::var("BREENIX_QEMU_DEBUG_FLAGS")
-            .unwrap_or_else(|_| "guest_errors".to_string());
+        let debug_flags =
+            env::var("BREENIX_QEMU_DEBUG_FLAGS").unwrap_or_else(|_| "guest_errors".to_string());
         qemu.args(["-d", &debug_flags, "-D", &log_path]);
-        eprintln!("[qemu-bios] Debug log: {} (flags: {})", log_path, debug_flags);
+        eprintln!(
+            "[qemu-bios] Debug log: {} (flags: {})",
+            log_path, debug_flags
+        );
     }
 
     // Forward any additional command-line arguments to QEMU

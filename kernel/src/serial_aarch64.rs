@@ -275,11 +275,21 @@ pub fn enable_rx_interrupt() {
         write_reg(reg::IMSC, new_imsc);
 
         let verify = read_reg(reg::IMSC);
-        crate::serial_println!("[uart] IMSC: {:#x} -> {:#x} (verify: {:#x})", old_imsc, new_imsc, verify);
+        crate::serial_println!(
+            "[uart] IMSC: {:#x} -> {:#x} (verify: {:#x})",
+            old_imsc,
+            new_imsc,
+            verify
+        );
 
         let fr = read_reg(reg::FR);
         let ris = read_reg(reg::RIS);
-        crate::serial_println!("[uart] FR={:#x} (RXFE={}), RIS={:#x}", fr, (fr >> 4) & 1, ris);
+        crate::serial_println!(
+            "[uart] FR={:#x} (RXFE={}), RIS={:#x}",
+            fr,
+            (fr >> 4) & 1,
+            ris
+        );
     }
 }
 

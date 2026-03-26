@@ -4,8 +4,8 @@
 //! inode and block bitmaps, inode table, and data blocks.
 
 use crate::block::{BlockDevice, BlockError};
-use crate::fs::ext2::Ext2Superblock;
 use crate::fs::ext2::file::{read_ext2_block, write_ext2_block};
+use crate::fs::ext2::Ext2Superblock;
 use alloc::vec::Vec;
 use core::mem;
 
@@ -16,12 +16,12 @@ use core::mem;
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 pub struct Ext2BlockGroupDesc {
-    pub bg_block_bitmap: u32,        // Block bitmap block
-    pub bg_inode_bitmap: u32,        // Inode bitmap block
-    pub bg_inode_table: u32,         // Inode table start block
-    pub bg_free_blocks_count: u16,   // Free blocks in group
-    pub bg_free_inodes_count: u16,   // Free inodes in group
-    pub bg_used_dirs_count: u16,     // Directories in group
+    pub bg_block_bitmap: u32,      // Block bitmap block
+    pub bg_inode_bitmap: u32,      // Inode bitmap block
+    pub bg_inode_table: u32,       // Inode table start block
+    pub bg_free_blocks_count: u16, // Free blocks in group
+    pub bg_free_inodes_count: u16, // Free inodes in group
+    pub bg_used_dirs_count: u16,   // Directories in group
     pub bg_pad: u16,
     _reserved: [u8; 12],
 }
@@ -47,7 +47,7 @@ impl Ext2BlockGroupDesc {
         let block_size = superblock.block_size();
         let bg_count = superblock.block_group_count() as usize;
         let descriptor_size = mem::size_of::<Ext2BlockGroupDesc>();
-        
+
         // Calculate which ext2 block contains the BGDT
         // The BGDT starts right after the superblock
         let bgdt_block = if block_size == 1024 {
@@ -57,24 +57,24 @@ impl Ext2BlockGroupDesc {
             // For larger blocks, superblock is in block 0, BGDT in block 1
             1
         };
-        
+
         // Calculate how many ext2 blocks we need to read for all descriptors
         let bytes_needed = bg_count * descriptor_size;
         let ext2_blocks_needed = (bytes_needed + block_size - 1) / block_size;
-        
+
         // Read the necessary ext2 blocks
         // We need to convert ext2 blocks to device blocks
         let device_block_size = device.block_size();
         let mut buffer = Vec::new();
         buffer.resize(ext2_blocks_needed * block_size, 0u8);
-        
+
         for i in 0..ext2_blocks_needed {
             let ext2_block_num = bgdt_block + i;
-            
+
             // Convert ext2 block to device block(s)
             let device_blocks_per_ext2_block = block_size / device_block_size;
             let start_device_block = ext2_block_num * device_blocks_per_ext2_block;
-            
+
             for j in 0..device_blocks_per_ext2_block {
                 device.read_block(
                     (start_device_block + j) as u64,
@@ -83,23 +83,22 @@ impl Ext2BlockGroupDesc {
                 )?;
             }
         }
-        
+
         // Parse descriptors from buffer
         let mut descriptors = Vec::new();
         for i in 0..bg_count {
             let offset = i * descriptor_size;
-            
+
             // SAFETY: Reading from aligned buffer into packed struct
             let desc: Ext2BlockGroupDesc = unsafe {
                 core::ptr::read_unaligned(
-                    buffer[offset..offset + descriptor_size].as_ptr() 
-                        as *const Ext2BlockGroupDesc
+                    buffer[offset..offset + descriptor_size].as_ptr() as *const Ext2BlockGroupDesc
                 )
             };
-            
+
             descriptors.push(desc);
         }
-        
+
         Ok(descriptors)
     }
 
@@ -124,11 +123,7 @@ impl Ext2BlockGroupDesc {
         let descriptor_size = mem::size_of::<Ext2BlockGroupDesc>();
 
         // Calculate which ext2 block contains the BGDT
-        let bgdt_block = if block_size == 1024 {
-            2
-        } else {
-            1
-        };
+        let bgdt_block = if block_size == 1024 { 2 } else { 1 };
 
         // Calculate how many ext2 blocks we need
         let bytes_needed = descriptors.len() * descriptor_size;
@@ -196,9 +191,8 @@ pub fn allocate_block<B: BlockDevice + ?Sized>(
     // Search each block group for a free block
     for (bg_index, bg) in block_groups.iter_mut().enumerate() {
         // Read free blocks count safely from packed struct
-        let free_blocks = unsafe {
-            core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_free_blocks_count))
-        };
+        let free_blocks =
+            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_free_blocks_count)) };
 
         if free_blocks == 0 {
             continue; // No free blocks in this group
@@ -206,12 +200,16 @@ pub fn allocate_block<B: BlockDevice + ?Sized>(
 
         // Read the block bitmap block
         // Use stack-based buffer to avoid heap allocation (bump allocator doesn't reclaim)
-        let bitmap_block = unsafe {
-            core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_block_bitmap))
-        };
+        let bitmap_block =
+            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_block_bitmap)) };
         let mut bitmap_buf = [0u8; 4096]; // Max block size
-        read_ext2_block(device, bitmap_block, block_size, &mut bitmap_buf[..block_size])
-            .map_err(|_| "Failed to read block bitmap")?;
+        read_ext2_block(
+            device,
+            bitmap_block,
+            block_size,
+            &mut bitmap_buf[..block_size],
+        )
+        .map_err(|_| "Failed to read block bitmap")?;
 
         // Search for a free block in this group
         // s_first_data_block is the first data block in the filesystem (usually 1 for 1KB blocks)
@@ -234,7 +232,9 @@ pub fn allocate_block<B: BlockDevice + ?Sized>(
                 bitmap_buf[byte_index] |= 1 << bit_index;
 
                 // Write the updated bitmap back to disk
-                if let Err(_) = write_ext2_block(device, bitmap_block, block_size, &bitmap_buf[..block_size]) {
+                if let Err(_) =
+                    write_ext2_block(device, bitmap_block, block_size, &bitmap_buf[..block_size])
+                {
                     return Err("Failed to write block bitmap");
                 }
 
@@ -249,7 +249,9 @@ pub fn allocate_block<B: BlockDevice + ?Sized>(
 
                 // Zero out the newly allocated block
                 let zero_buf = [0u8; 4096]; // Max block size
-                if let Err(_) = write_ext2_block(device, global_block, block_size, &zero_buf[..block_size]) {
+                if let Err(_) =
+                    write_ext2_block(device, global_block, block_size, &zero_buf[..block_size])
+                {
                     return Err("Failed to zero allocated block");
                 }
 
@@ -304,12 +306,16 @@ pub fn free_block<B: BlockDevice + ?Sized>(
 
     // Read the block bitmap block
     // Use stack-based buffer to avoid heap allocation (bump allocator doesn't reclaim)
-    let bitmap_block = unsafe {
-        core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_block_bitmap))
-    };
+    let bitmap_block =
+        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_block_bitmap)) };
     let mut bitmap_buf = [0u8; 4096]; // Max block size
-    read_ext2_block(device, bitmap_block, block_size, &mut bitmap_buf[..block_size])
-        .map_err(|_| "Failed to read block bitmap")?;
+    read_ext2_block(
+        device,
+        bitmap_block,
+        block_size,
+        &mut bitmap_buf[..block_size],
+    )
+    .map_err(|_| "Failed to read block bitmap")?;
 
     // Clear the bit for this block
     let byte_index = (local_block / 8) as usize;
@@ -324,9 +330,8 @@ pub fn free_block<B: BlockDevice + ?Sized>(
         .map_err(|_| "Failed to write block bitmap")?;
 
     // Update the free block count
-    let free_blocks = unsafe {
-        core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_free_blocks_count))
-    };
+    let free_blocks =
+        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_free_blocks_count)) };
     unsafe {
         core::ptr::write_unaligned(
             core::ptr::addr_of_mut!(bg.bg_free_blocks_count),
@@ -491,10 +496,7 @@ mod tests {
         };
         // Write to packed struct safely
         unsafe {
-            core::ptr::write_unaligned(
-                core::ptr::addr_of_mut!(bg.bg_block_bitmap),
-                bitmap_block,
-            );
+            core::ptr::write_unaligned(core::ptr::addr_of_mut!(bg.bg_block_bitmap), bitmap_block);
             core::ptr::write_unaligned(
                 core::ptr::addr_of_mut!(bg.bg_free_blocks_count),
                 free_blocks,
@@ -515,7 +517,10 @@ mod tests {
         // This test verifies the fix in commit d190da5
 
         let superblock = create_1kb_superblock();
-        assert_eq!(superblock.s_first_data_block, 1, "1KB blocks should have s_first_data_block = 1");
+        assert_eq!(
+            superblock.s_first_data_block, 1,
+            "1KB blocks should have s_first_data_block = 1"
+        );
 
         // Create a mock device with:
         // - 1KB device blocks
@@ -546,7 +551,10 @@ mod tests {
         // This is the simpler case
 
         let superblock = create_4kb_superblock();
-        assert_eq!(superblock.s_first_data_block, 0, "4KB blocks should have s_first_data_block = 0");
+        assert_eq!(
+            superblock.s_first_data_block, 0,
+            "4KB blocks should have s_first_data_block = 0"
+        );
 
         // Create a mock device with 4KB blocks
         let device = MockBlockDevice::new(128 * 1024, 4096); // 128KB total
@@ -648,14 +656,16 @@ mod tests {
         // Bit 295 is in byte 36, bit 7
         let bitmap_byte = device.get_byte(3072 + 36);
         assert_eq!(
-            bitmap_byte & 0x80, 0,
+            bitmap_byte & 0x80,
+            0,
             "Bitmap bit 295 (byte 36, bit 7) should be clear after freeing block 296. \
              Block 296 - s_first_data_block(1) = 295"
         );
 
         // Verify other bits are still set
         assert_eq!(
-            bitmap_byte & 0x7F, 0x7F,
+            bitmap_byte & 0x7F,
+            0x7F,
             "Other bits in byte 36 should remain set"
         );
     }
@@ -681,11 +691,13 @@ mod tests {
         // Check that bitmap bit 5 is now clear
         let bitmap_byte = device.get_byte(4096);
         assert_eq!(
-            bitmap_byte & (1 << 5), 0,
+            bitmap_byte & (1 << 5),
+            0,
             "Bitmap bit 5 should be clear after freeing block 5 (s_first_data_block=0)"
         );
         assert_eq!(
-            bitmap_byte & !(1 << 5), 0xFF & !(1 << 5),
+            bitmap_byte & !(1 << 5),
+            0xFF & !(1 << 5),
             "Other bits should remain set"
         );
     }
@@ -700,7 +712,10 @@ mod tests {
 
         // Try to free block 0 (which is below s_first_data_block = 1)
         let result = free_block(&device, 0, &superblock, &mut block_groups);
-        assert!(result.is_err(), "Freeing block 0 should fail when s_first_data_block = 1");
+        assert!(
+            result.is_err(),
+            "Freeing block 0 should fail when s_first_data_block = 1"
+        );
     }
 
     // =============================================================
@@ -721,8 +736,7 @@ mod tests {
             .expect("First allocation should succeed");
 
         // Free it
-        free_block(&device, block1, &superblock, &mut block_groups)
-            .expect("Free should succeed");
+        free_block(&device, block1, &superblock, &mut block_groups).expect("Free should succeed");
 
         // Allocate again - should get the same block back
         let block2 = allocate_block(&device, &superblock, &mut block_groups)
@@ -754,13 +768,13 @@ mod tests {
             core::ptr::read_unaligned(core::ptr::addr_of!(block_groups[0].bg_free_blocks_count))
         };
         assert_eq!(
-            after_alloc, initial_free - 1,
+            after_alloc,
+            initial_free - 1,
             "Free count should decrease by 1 after allocation"
         );
 
         // Free the block
-        free_block(&device, block, &superblock, &mut block_groups)
-            .expect("Free should succeed");
+        free_block(&device, block, &superblock, &mut block_groups).expect("Free should succeed");
 
         let after_free = unsafe {
             core::ptr::read_unaligned(core::ptr::addr_of!(block_groups[0].bg_free_blocks_count))
@@ -806,7 +820,10 @@ mod tests {
         let after_alloc = unsafe {
             core::ptr::read_unaligned(core::ptr::addr_of!(block_groups[0].bg_free_blocks_count))
         };
-        assert_eq!(after_alloc, 97, "Should have 97 free blocks after allocating 3");
+        assert_eq!(
+            after_alloc, 97,
+            "Should have 97 free blocks after allocating 3"
+        );
 
         // Now simulate truncate_file: free all 3 blocks
         // This is what truncate_file MUST do - if it only sets i_blocks=0,
@@ -840,9 +857,12 @@ mod tests {
         // The freed blocks should be reused (order may vary based on bitmap scan)
         let realloc_set: [u32; 3] = [realloc1, realloc2, realloc3];
         assert!(
-            realloc_set.contains(&block1) && realloc_set.contains(&block2) && realloc_set.contains(&block3),
+            realloc_set.contains(&block1)
+                && realloc_set.contains(&block2)
+                && realloc_set.contains(&block3),
             "Freed blocks should be reallocated. Got {:?}, expected {:?}",
-            realloc_set, [block1, block2, block3]
+            realloc_set,
+            [block1, block2, block3]
         );
     }
 }

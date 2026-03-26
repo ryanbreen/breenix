@@ -37,13 +37,25 @@ extern crate alloc;
 /// - offset: File offset (0 for anonymous)
 ///
 /// Returns: Start address of mapping on success, or negative errno
-pub fn sys_mmap(addr: u64, length: u64, prot: u32, flags: u32, fd: i64, offset: u64) -> SyscallResult {
+pub fn sys_mmap(
+    addr: u64,
+    length: u64,
+    prot: u32,
+    flags: u32,
+    fd: i64,
+    offset: u64,
+) -> SyscallResult {
     let prot = Protection::from_bits_truncate(prot);
     let flags = MmapFlags::from_bits_truncate(flags);
 
     log::info!(
         "sys_mmap: addr={:#x} length={:#x} prot={:?} flags={:?} fd={} offset={:#x}",
-        addr, length, prot, flags, fd, offset
+        addr,
+        length,
+        prot,
+        flags,
+        fd,
+        offset
     );
 
     // Validate length
@@ -108,7 +120,10 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u32, flags: u32, fd: i64, offset: 
         let (_pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
             Some(p) => p,
             None => {
-                log::error!("sys_mmap: No process found for thread_id={}", current_thread_id);
+                log::error!(
+                    "sys_mmap: No process found for thread_id={}",
+                    current_thread_id
+                );
                 return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
             }
         };
@@ -141,14 +156,22 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u32, flags: u32, fd: i64, offset: 
             }
         };
 
-        log::info!("sys_mmap: allocating region {:#x}..{:#x}", start_addr, end_addr);
+        log::info!(
+            "sys_mmap: allocating region {:#x}..{:#x}",
+            start_addr,
+            end_addr
+        );
 
         // Check for overlaps with existing VMAs
         for vma in &process.vmas {
             let vma_start = vma.start.as_u64();
             let vma_end = vma.end.as_u64();
             if start_addr < vma_end && end_addr > vma_start {
-                log::warn!("sys_mmap: region overlaps with existing VMA at {:#x}..{:#x}", vma_start, vma_end);
+                log::warn!(
+                    "sys_mmap: region overlaps with existing VMA at {:#x}..{:#x}",
+                    vma_start,
+                    vma_end
+                );
                 return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
             }
         }
@@ -173,14 +196,18 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u32, flags: u32, fd: i64, offset: 
     let start_page = Page::<Size4KiB>::containing_address(VirtAddr::new(start_addr));
     let end_page = Page::<Size4KiB>::containing_address(VirtAddr::new(end_addr - 1));
     let physical_memory_offset = crate::memory::physical_memory_offset();
-    let mut mapped_pages: alloc::vec::Vec<(Page<Size4KiB>, PhysFrame<Size4KiB>)> = alloc::vec::Vec::new();
+    let mut mapped_pages: alloc::vec::Vec<(Page<Size4KiB>, PhysFrame<Size4KiB>)> =
+        alloc::vec::Vec::new();
     let mut current_page = start_page;
 
     loop {
         let frame = match crate::memory::frame_allocator::allocate_frame() {
             Some(f) => f,
             None => {
-                log::error!("sys_mmap: OOM allocating frame for page {:#x}", current_page.start_address().as_u64());
+                log::error!(
+                    "sys_mmap: OOM allocating frame for page {:#x}",
+                    current_page.start_address().as_u64()
+                );
                 // SAFETY: same page_table_ptr lifetime argument as above.
                 let page_table = unsafe { &mut *page_table_ptr };
                 cleanup_mapped_pages(page_table, &mapped_pages);
@@ -191,7 +218,11 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u32, flags: u32, fd: i64, offset: 
         // SAFETY: see comment above — page_table is valid for this syscall's lifetime.
         let page_table = unsafe { &mut *page_table_ptr };
         if let Err(e) = page_table.map_page(current_page, frame, page_flags) {
-            log::error!("sys_mmap: map_page failed for {:#x}: {}", current_page.start_address().as_u64(), e);
+            log::error!(
+                "sys_mmap: map_page failed for {:#x}: {}",
+                current_page.start_address().as_u64(),
+                e
+            );
             crate::memory::frame_allocator::deallocate_frame(frame);
             cleanup_mapped_pages(page_table, &mapped_pages);
             return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
@@ -246,7 +277,9 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
 
     log::info!(
         "sys_mprotect: addr={:#x} length={:#x} prot={:?}",
-        addr, length, new_prot
+        addr,
+        length,
+        new_prot
     );
 
     // Validate addr is page-aligned
@@ -291,21 +324,29 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
     let (_pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
         Some(p) => p,
         None => {
-            log::error!("sys_mprotect: No process found for thread_id={}", current_thread_id);
+            log::error!(
+                "sys_mprotect: No process found for thread_id={}",
+                current_thread_id
+            );
             return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
         }
     };
 
     // Find the VMA that contains this address range
     // For simplicity, require exact match on start address
-    let vma_index = process.vmas.iter().position(|vma| {
-        vma.start.as_u64() == addr && vma.end.as_u64() >= end_addr
-    });
+    let vma_index = process
+        .vmas
+        .iter()
+        .position(|vma| vma.start.as_u64() == addr && vma.end.as_u64() >= end_addr);
 
     let vma_index = match vma_index {
         Some(idx) => idx,
         None => {
-            log::warn!("sys_mprotect: no VMA found containing {:#x}..{:#x}", addr, end_addr);
+            log::warn!(
+                "sys_mprotect: no VMA found containing {:#x}..{:#x}",
+                addr,
+                end_addr
+            );
             return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
         }
     };
@@ -333,7 +374,11 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
                 pages_updated += 1;
             }
             Err(e) => {
-                log::warn!("sys_mprotect: update_page_flags failed for {:#x}: {}", page.start_address().as_u64(), e);
+                log::warn!(
+                    "sys_mprotect: update_page_flags failed for {:#x}: {}",
+                    page.start_address().as_u64(),
+                    e
+                );
                 // Continue trying to update other pages
             }
         }
@@ -393,16 +438,20 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
     let (_pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
         Some(p) => p,
         None => {
-            log::error!("sys_munmap: No process found for thread_id={}", current_thread_id);
+            log::error!(
+                "sys_munmap: No process found for thread_id={}",
+                current_thread_id
+            );
             return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
         }
     };
 
     // Find overlapping VMAs
     // For simplicity, require exact match (don't support partial unmapping yet)
-    let vma_index = process.vmas.iter().position(|vma| {
-        vma.start.as_u64() == addr && vma.end.as_u64() == end_addr
-    });
+    let vma_index = process
+        .vmas
+        .iter()
+        .position(|vma| vma.start.as_u64() == addr && vma.end.as_u64() == end_addr);
 
     let vma_index = match vma_index {
         Some(idx) => idx,
@@ -436,7 +485,11 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
                 pages_unmapped += 1;
             }
             Err(e) => {
-                log::warn!("sys_munmap: unmap_page failed for {:#x}: {}", page.start_address().as_u64(), e);
+                log::warn!(
+                    "sys_munmap: unmap_page failed for {:#x}: {}",
+                    page.start_address().as_u64(),
+                    e
+                );
                 // Continue trying to unmap other pages
             }
         }

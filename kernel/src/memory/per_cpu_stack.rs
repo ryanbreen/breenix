@@ -3,13 +3,13 @@
 //! Range: 0xffffc980_xxxx_xxxx (one per CPU)
 //! These stacks are used for NMI and double-fault handling
 
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::{PageTableFlags, VirtAddr};
 use crate::memory::frame_allocator::allocate_frame;
 #[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::PageTableFlags;
 #[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
-#[cfg(not(target_arch = "x86_64"))]
-use crate::memory::arch_stub::{PageTableFlags, VirtAddr};
 
 /// Base address for per-CPU emergency stacks
 const PER_CPU_STACK_BASE: u64 = 0xffffc980_0000_0000;

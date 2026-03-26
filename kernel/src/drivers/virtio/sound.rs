@@ -24,12 +24,12 @@ mod resp {
 
 /// VirtIO Sound PCM formats (from virtio_snd.h)
 mod pcm_format {
-    pub const S16: u8 = 5;  // VIRTIO_SND_PCM_FMT_S16
+    pub const S16: u8 = 5; // VIRTIO_SND_PCM_FMT_S16
 }
 
 /// VirtIO Sound PCM rates (from virtio_snd.h)
 mod pcm_rate {
-    pub const RATE_44100: u8 = 6;  // VIRTIO_SND_PCM_RATE_44100
+    pub const RATE_44100: u8 = 6; // VIRTIO_SND_PCM_RATE_44100
 }
 
 /// Control header for sound commands
@@ -105,7 +105,10 @@ impl VirtioSoundDevice {
         let io_bar = pci_dev.get_io_bar().ok_or("No I/O BAR found")?;
         let io_base = io_bar.address as u16;
 
-        log::info!("VirtIO sound: Initializing device at I/O base {:#x}", io_base);
+        log::info!(
+            "VirtIO sound: Initializing device at I/O base {:#x}",
+            io_base
+        );
 
         pci_dev.enable_bus_master();
         pci_dev.enable_io_space();
@@ -164,20 +167,25 @@ impl VirtioSoundDevice {
     fn alloc_dma(size: usize) -> Result<(u64, u64), &'static str> {
         // For buffers > 4KB, allocate multiple contiguous frames
         let pages = (size + 4095) / 4096;
-        let first_frame = frame_allocator::allocate_frame().ok_or("Failed to allocate DMA buffer")?;
+        let first_frame =
+            frame_allocator::allocate_frame().ok_or("Failed to allocate DMA buffer")?;
         let phys = first_frame.start_address().as_u64();
         let phys_offset = crate::memory::physical_memory_offset();
         let virt = phys + phys_offset.as_u64();
 
         // Zero first page
-        unsafe { core::ptr::write_bytes(virt as *mut u8, 0, 4096); }
+        unsafe {
+            core::ptr::write_bytes(virt as *mut u8, 0, 4096);
+        }
 
         // Allocate additional pages if needed (they may not be contiguous, but for
         // our simple use case we use only the first page worth of data at a time)
         for _ in 1..pages {
             let frame = frame_allocator::allocate_frame().ok_or("Failed to allocate DMA page")?;
             let p = frame.start_address().as_u64() + phys_offset.as_u64();
-            unsafe { core::ptr::write_bytes(p as *mut u8, 0, 4096); }
+            unsafe {
+                core::ptr::write_bytes(p as *mut u8, 0, 4096);
+            }
         }
 
         Ok((phys, virt))
@@ -188,11 +196,13 @@ impl VirtioSoundDevice {
         let (resp_phys, _) = self.dma.resp;
 
         let buffers = [
-            (cmd_phys, cmd_len, false),   // Device reads command
-            (resp_phys, resp_len, true),   // Device writes response
+            (cmd_phys, cmd_len, false),  // Device reads command
+            (resp_phys, resp_len, true), // Device writes response
         ];
 
-        self.ctrl_queue.add_chain(&buffers).ok_or("Control queue full")?;
+        self.ctrl_queue
+            .add_chain(&buffers)
+            .ok_or("Control queue full")?;
         fence(Ordering::SeqCst);
         self.device.notify_queue(0);
 
@@ -245,7 +255,10 @@ impl VirtioSoundDevice {
             (*params).rate = pcm_rate::RATE_44100;
             (*params)._padding = 0;
         }
-        self.send_ctrl(core::mem::size_of::<VirtioSndPcmSetParams>() as u32, hdr_size)?;
+        self.send_ctrl(
+            core::mem::size_of::<VirtioSndPcmSetParams>() as u32,
+            hdr_size,
+        )?;
         self.check_response()?;
 
         // 2. PREPARE
@@ -298,14 +311,26 @@ impl VirtioSoundDevice {
 
         // Clear status
         unsafe {
-            core::ptr::write_bytes(status_virt as *mut u8, 0, core::mem::size_of::<VirtioSndPcmStatus>());
+            core::ptr::write_bytes(
+                status_virt as *mut u8,
+                0,
+                core::mem::size_of::<VirtioSndPcmStatus>(),
+            );
         }
 
         // Build 3-descriptor chain on TX queue
         let buffers = [
-            (xfer_phys, core::mem::size_of::<VirtioSndPcmXfer>() as u32, false),
+            (
+                xfer_phys,
+                core::mem::size_of::<VirtioSndPcmXfer>() as u32,
+                false,
+            ),
             (pcm_phys, len as u32, false),
-            (status_phys, core::mem::size_of::<VirtioSndPcmStatus>() as u32, true),
+            (
+                status_phys,
+                core::mem::size_of::<VirtioSndPcmStatus>() as u32,
+                true,
+            ),
         ];
 
         self.tx_queue.add_chain(&buffers).ok_or("TX queue full")?;
