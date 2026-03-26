@@ -47,10 +47,10 @@
 
 use core::sync::atomic::{fence, AtomicBool, AtomicU64, Ordering};
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(not(target_arch = "aarch64"))]
 use crate::arch_impl::traits::CpuOps;
-#[cfg(target_arch = "aarch64")]
-type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
+#[cfg(not(target_arch = "aarch64"))]
+type Cpu = crate::arch_impl::x86_64::cpu::X86Cpu;
 
 /// POSIX EINTR errno value.
 const EINTR: i32 = 4;
@@ -164,6 +164,18 @@ impl Completion {
                     u64::MAX
                 }
             };
+            let deadline_ns = {
+                #[cfg(target_arch = "aarch64")]
+                {
+                    let (secs, nanos) = crate::time::get_monotonic_time_ns();
+                    let now_ns = secs as u64 * 1_000_000_000 + nanos as u64;
+                    now_ns.saturating_add(timeout_ns)
+                }
+                #[cfg(not(target_arch = "aarch64"))]
+                {
+                    u64::MAX
+                }
+            };
 
             // Detect whether we are in syscall context (preempt_count > 0).
             //
@@ -193,7 +205,8 @@ impl Completion {
                 // 1. preempt_enable() — allows the scheduler to switch us out.
                 // 2. Atomic check-and-block under the scheduler lock: if done
                 //    already, skip the block; otherwise set BlockedOnIO.
-                // 3. WFI — halt until AHCI ISR or timer fires.
+                // 3. Inline schedule() — switch fully off CPU until either the
+                //    ISR unblocks us or the timed BlockedOnIO wait expires.
                 // 4. Clear blocked state, check done, check timeout.
                 //
                 // Race safety: the scheduler lock serialises our done-check and
@@ -238,7 +251,7 @@ impl Completion {
                         if self.done.load(Ordering::Acquire) {
                             true
                         } else {
-                            sched.block_current_for_io();
+                            sched.block_current_for_io_with_timeout(Some(deadline_ns));
                             false
                         }
                     })
@@ -253,8 +266,9 @@ impl Completion {
                         return Ok(true);
                     }
 
-                    // Halt until AHCI ISR or timer fires.
                     #[cfg(target_arch = "aarch64")]
+                    crate::task::scheduler::schedule();
+                    #[cfg(not(target_arch = "aarch64"))]
                     Cpu::halt_with_interrupts();
 
                     // Clear BlockedOnIO state after wake (could be timer or ISR).
@@ -276,11 +290,9 @@ impl Completion {
                     // Wall-clock timeout.
                     #[cfg(target_arch = "aarch64")]
                     {
-                        let now: u64;
-                        unsafe {
-                            core::arch::asm!("mrs {}, cntpct_el0", out(reg) now, options(nomem, nostack));
-                        }
-                        if now >= deadline_cntpct {
+                        let (secs, nanos) = crate::time::get_monotonic_time_ns();
+                        let now_ns = secs as u64 * 1_000_000_000 + nanos as u64;
+                        if now_ns >= deadline_ns {
                             self.waiter.store(0, Ordering::Release);
                             restore_syscall_preempt_state();
                             return Ok(false);

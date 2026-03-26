@@ -18,7 +18,8 @@
 //! - Uses TPIDR_EL1 for per-CPU data (like GS segment on x86)
 //! - Memory barriers (DSB, ISB) required after page table switches
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::mem::MaybeUninit;
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use super::exception_frame::Aarch64ExceptionFrame;
 use super::percpu::Aarch64PerCpu;
@@ -26,6 +27,110 @@ use crate::arch_impl::traits::PerCpuOps;
 use crate::task::scheduler::Scheduler;
 use crate::task::thread::{CpuContext, Thread, ThreadPrivilege, ThreadState};
 use crate::tracing::providers::sched::trace_ctx_switch;
+
+core::arch::global_asm!(r#"
+.section .text
+.global aarch64_inline_schedule_switch
+.type aarch64_inline_schedule_switch, @function
+aarch64_inline_schedule_switch:
+    // aarch64_inline_schedule_switch(old_ctx, scheduler_stack_top, trampoline)
+    //   x0 = *mut CpuContext for the outgoing thread
+    //   x1 = per-CPU scheduler stack top
+    //   x2 = trampoline function entry
+    //
+    // Save the callee-saved kernel context at the exact point of the call,
+    // then move to a neutral per-CPU stack before entering Rust again.
+    stp x19, x20, [x0, #152]
+    stp x21, x22, [x0, #168]
+    stp x23, x24, [x0, #184]
+    stp x25, x26, [x0, #200]
+    stp x27, x28, [x0, #216]
+    stp x29, x30, [x0, #232]
+    mov x3, sp
+    str x3, [x0, #248]
+
+    mov sp, x1
+    br x2
+
+.global aarch64_enter_exception_frame
+.type aarch64_enter_exception_frame, @function
+aarch64_enter_exception_frame:
+    // aarch64_enter_exception_frame(frame) -> !
+    //   x0 = *const Aarch64ExceptionFrame
+    //
+    // Reuse the same restore/ERET rules as the IRQ return path by treating
+    // the prepared frame as if it had been produced by an exception entry.
+    mov sp, x0
+
+    ldr x1, [sp, #248]
+    cmp x1, #0x1000
+    b.hs 1f
+    adrp x1, idle_loop_arm64
+    add x1, x1, :lo12:idle_loop_arm64
+    str x1, [sp, #248]
+    mov x2, #0x5
+    str x2, [sp, #256]
+1:
+    msr elr_el1, x1
+    ldr x1, [sp, #256]
+    msr spsr_el1, x1
+
+    ldp x0, x1, [sp, #0]
+    ldp x2, x3, [sp, #16]
+    ldp x4, x5, [sp, #32]
+    ldp x6, x7, [sp, #48]
+    ldp x8, x9, [sp, #64]
+    ldp x10, x11, [sp, #80]
+    ldp x12, x13, [sp, #96]
+    ldp x14, x15, [sp, #112]
+    ldr x17, [sp, #136]
+    ldp x18, x19, [sp, #144]
+    ldp x20, x21, [sp, #160]
+    ldp x22, x23, [sp, #176]
+    ldp x24, x25, [sp, #192]
+    ldp x26, x27, [sp, #208]
+    ldp x28, x29, [sp, #224]
+    ldr x30, [sp, #240]
+
+    mrs x16, tpidr_el1
+    ldr x17, [sp, #128]
+    str x17, [x16, #96]
+    ldr x17, [sp, #136]
+
+    mrs x16, spsr_el1
+    and x16, x16, #0xF
+    cbnz x16, 2f
+    mrs x16, tpidr_el1
+    ldr x16, [x16, #16]
+    b 3f
+2:
+    mrs x16, tpidr_el1
+    ldr x16, [x16, #40]
+3:
+    mov sp, x16
+
+    mrs x16, tpidr_el1
+    ldr x16, [x16, #96]
+    eret
+"#);
+
+extern "C" {
+    fn aarch64_inline_schedule_switch(
+        old_context: *mut CpuContext,
+        scheduler_stack_top: u64,
+        trampoline: extern "C" fn() -> !,
+    );
+
+    fn aarch64_enter_exception_frame(frame: *const Aarch64ExceptionFrame) -> !;
+}
+
+const _: () = assert!(core::mem::offset_of!(CpuContext, x19) == 152);
+const _: () = assert!(core::mem::offset_of!(CpuContext, x30) == 240);
+const _: () = assert!(core::mem::offset_of!(CpuContext, sp) == 248);
+const _: () = assert!(core::mem::offset_of!(Aarch64ExceptionFrame, x16) == 128);
+const _: () = assert!(core::mem::offset_of!(Aarch64ExceptionFrame, x30) == 240);
+const _: () = assert!(core::mem::offset_of!(Aarch64ExceptionFrame, elr) == 248);
+const _: () = assert!(core::mem::offset_of!(Aarch64ExceptionFrame, spsr) == 256);
 
 /// Diagnostic counter: number of times a thread dispatch hit ProcessGone
 /// (TTBR0 lookup couldn't find the thread's process).
@@ -54,6 +159,64 @@ pub static TTBR_PM_LOCK_BUSY_COUNT: AtomicU64 = AtomicU64::new(0);
 static DEFERRED_REQUEUE: [AtomicU64; 8] = [
     AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
     AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+];
+
+struct InlineScheduleState {
+    scheduler_ptr: AtomicUsize,
+    old_thread_id: AtomicU64,
+    new_thread_id: AtomicU64,
+    should_requeue_old: AtomicBool,
+}
+
+static INLINE_SCHEDULE_STATE: [InlineScheduleState; crate::arch_impl::aarch64::constants::MAX_CPUS] = [
+    InlineScheduleState {
+        scheduler_ptr: AtomicUsize::new(0),
+        old_thread_id: AtomicU64::new(0),
+        new_thread_id: AtomicU64::new(0),
+        should_requeue_old: AtomicBool::new(false),
+    },
+    InlineScheduleState {
+        scheduler_ptr: AtomicUsize::new(0),
+        old_thread_id: AtomicU64::new(0),
+        new_thread_id: AtomicU64::new(0),
+        should_requeue_old: AtomicBool::new(false),
+    },
+    InlineScheduleState {
+        scheduler_ptr: AtomicUsize::new(0),
+        old_thread_id: AtomicU64::new(0),
+        new_thread_id: AtomicU64::new(0),
+        should_requeue_old: AtomicBool::new(false),
+    },
+    InlineScheduleState {
+        scheduler_ptr: AtomicUsize::new(0),
+        old_thread_id: AtomicU64::new(0),
+        new_thread_id: AtomicU64::new(0),
+        should_requeue_old: AtomicBool::new(false),
+    },
+    InlineScheduleState {
+        scheduler_ptr: AtomicUsize::new(0),
+        old_thread_id: AtomicU64::new(0),
+        new_thread_id: AtomicU64::new(0),
+        should_requeue_old: AtomicBool::new(false),
+    },
+    InlineScheduleState {
+        scheduler_ptr: AtomicUsize::new(0),
+        old_thread_id: AtomicU64::new(0),
+        new_thread_id: AtomicU64::new(0),
+        should_requeue_old: AtomicBool::new(false),
+    },
+    InlineScheduleState {
+        scheduler_ptr: AtomicUsize::new(0),
+        old_thread_id: AtomicU64::new(0),
+        new_thread_id: AtomicU64::new(0),
+        should_requeue_old: AtomicBool::new(false),
+    },
+    InlineScheduleState {
+        scheduler_ptr: AtomicUsize::new(0),
+        old_thread_id: AtomicU64::new(0),
+        new_thread_id: AtomicU64::new(0),
+        should_requeue_old: AtomicBool::new(false),
+    },
 ];
 
 // =============================================================================
@@ -230,6 +393,39 @@ fn ensure_user_rsp_scratch_for_el0() {
             Aarch64PerCpu::set_user_rsp_scratch(kst);
         }
     }
+}
+
+#[inline(always)]
+fn read_daif() -> u64 {
+    let daif: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack));
+    }
+    daif
+}
+
+#[inline(always)]
+fn read_sp_el0() -> u64 {
+    let sp_el0: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, sp_el0", out(reg) sp_el0, options(nomem, nostack));
+    }
+    sp_el0
+}
+
+#[inline(always)]
+fn read_tpidr_el0() -> u64 {
+    let tpidr: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, tpidr_el0", out(reg) tpidr, options(nomem, nostack));
+    }
+    tpidr
+}
+
+#[inline(always)]
+fn scheduler_stack_top(cpu_id: usize) -> u64 {
+    const STACK_SIZE: u64 = 0x20_0000;
+    super::constants::percpu_stack_region_base() + ((cpu_id as u64) + 1) * STACK_SIZE
 }
 
 // =============================================================================
@@ -1252,6 +1448,183 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         Aarch64PerCpu::clear_preempt_active();
     }
     crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
+}
+
+extern "C" fn inline_schedule_trampoline() -> ! {
+    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    let state = &INLINE_SCHEDULE_STATE[cpu_id];
+    let sched_ptr = state.scheduler_ptr.swap(0, Ordering::Relaxed) as *mut Scheduler;
+    let old_id = state.old_thread_id.load(Ordering::Relaxed);
+    let new_id = state.new_thread_id.load(Ordering::Relaxed);
+    let should_requeue_old = state.should_requeue_old.swap(false, Ordering::Relaxed);
+
+    if sched_ptr.is_null() {
+        idle_loop_arm64();
+    }
+
+    let sched = unsafe { &mut *sched_ptr };
+
+    if let Some(old_thread) = sched.get_thread_mut(old_id) {
+        // Resume after the inline-switch helper call when this thread is
+        // eventually scheduled again.
+        old_thread.context.elr_el1 = old_thread.context.x30;
+    }
+
+    sched.commit_cpu_state_after_save(new_id);
+    sched.cpu_state[cpu_id].previous_thread = None;
+    if should_requeue_old {
+        sched.requeue_thread_after_save(old_id);
+    }
+
+    let mut frame = unsafe { MaybeUninit::<Aarch64ExceptionFrame>::zeroed().assume_init() };
+
+    dispatch_thread_locked(sched, new_id, &mut frame, cpu_id);
+
+    let idle_addr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
+    let dispatch_path = if frame.elr == idle_addr {
+        b'I'
+    } else if (frame.spsr & 0xF) == 0 {
+        b'U'
+    } else {
+        b'K'
+    };
+    let dispatch_sp = unsafe {
+        let base: u64;
+        core::arch::asm!("mrs {}, tpidr_el1", out(reg) base, options(nomem, nostack));
+        core::ptr::read_volatile((base + 40) as *const u64)
+    };
+    record_dispatch(
+        cpu_id,
+        old_id,
+        new_id,
+        frame.elr,
+        frame.spsr,
+        frame.x30,
+        dispatch_sp,
+        dispatch_path,
+        false,
+    );
+
+    unsafe {
+        Aarch64PerCpu::set_dispatch_elr(frame.elr);
+        Aarch64PerCpu::set_dispatch_spsr(frame.spsr);
+        crate::task::scheduler::force_unlock_scheduler();
+    }
+
+    crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
+
+    unsafe {
+        aarch64_enter_exception_frame(&frame as *const Aarch64ExceptionFrame);
+    }
+}
+
+pub fn schedule_from_kernel() {
+    let saved_daif = read_daif();
+    unsafe {
+        crate::arch_impl::aarch64::cpu::disable_interrupts();
+    }
+
+    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    let mut guard = crate::task::scheduler::lock_for_context_switch();
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => {
+            unsafe {
+                core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
+            }
+            return;
+        }
+    };
+
+    let deferred_tid = if cpu_id < DEFERRED_REQUEUE.len() {
+        DEFERRED_REQUEUE[cpu_id].swap(0, Ordering::Acquire)
+    } else {
+        0
+    };
+    sched.cpu_state[cpu_id].previous_thread = None;
+    if deferred_tid != 0 {
+        sched.requeue_thread_after_save(deferred_tid);
+    }
+
+    let real_thread_ptr = Aarch64PerCpu::current_thread_ptr();
+    if !real_thread_ptr.is_null() {
+        let real_tid = unsafe { &*(real_thread_ptr as *const Thread) }.id();
+        sched.fix_stale_idle_cpu_state(real_tid);
+    }
+
+    let schedule_result = sched.schedule_deferred_requeue();
+    let Some((old_id, new_id, should_requeue_old)) = schedule_result else {
+        drop(guard);
+        unsafe {
+            core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
+        }
+        return;
+    };
+
+    if old_id == new_id {
+        if should_requeue_old {
+            sched.requeue_thread_after_save(old_id);
+        }
+        drop(guard);
+        unsafe {
+            core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
+        }
+        return;
+    }
+
+    trace_ctx_switch(old_id, new_id);
+    crate::tracing::providers::sched::trace_sched_queue_state(
+        sched.ready_queue_length() as u16,
+        new_id as u16,
+    );
+    crate::task::scheduler::increment_context_switch_count();
+
+    let old_context_ptr = match sched.get_thread_mut(old_id) {
+        Some(old_thread) => {
+            old_thread.context.sp_el0 = read_sp_el0();
+            old_thread.context.tpidr_el0 = read_tpidr_el0();
+            // Preserve the caller's pre-switch interrupt mask. Reading DAIF
+            // after disable_interrupts() would save IRQ-masked state into the
+            // parked thread, and restoring that later can strand the idle
+            // thread with interrupts disabled so AHCI completions never run.
+            old_thread.context.spsr_el1 = (saved_daif & 0x3C0) | 0x5;
+            &mut old_thread.context as *mut CpuContext
+        }
+        None => {
+            drop(guard);
+            unsafe {
+                core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
+            }
+            return;
+        }
+    };
+
+    INLINE_SCHEDULE_STATE[cpu_id]
+        .scheduler_ptr
+        .store(sched as *mut Scheduler as usize, Ordering::Relaxed);
+    INLINE_SCHEDULE_STATE[cpu_id]
+        .old_thread_id
+        .store(old_id, Ordering::Relaxed);
+    INLINE_SCHEDULE_STATE[cpu_id]
+        .new_thread_id
+        .store(new_id, Ordering::Relaxed);
+    INLINE_SCHEDULE_STATE[cpu_id]
+        .should_requeue_old
+        .store(should_requeue_old, Ordering::Relaxed);
+
+    let _ = spin::MutexGuard::leak(guard);
+
+    unsafe {
+        aarch64_inline_schedule_switch(
+            old_context_ptr,
+            scheduler_stack_top(cpu_id),
+            inline_schedule_trampoline,
+        );
+    }
+
+    unsafe {
+        core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
+    }
 }
 
 // =============================================================================

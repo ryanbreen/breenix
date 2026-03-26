@@ -53,10 +53,9 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
 // Architecture-generic HAL wrappers for interrupt control.
-use crate::{
-    arch_interrupts_enabled as are_enabled,
-    arch_without_interrupts as without_interrupts,
-};
+#[cfg(not(target_arch = "aarch64"))]
+use crate::arch_interrupts_enabled as are_enabled;
+use crate::arch_without_interrupts as without_interrupts;
 
 /// Global scheduler instance
 static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
@@ -129,6 +128,16 @@ pub fn increment_context_switch_count() {
 #[cfg(target_arch = "aarch64")]
 pub fn lock_for_context_switch() -> spin::MutexGuard<'static, Option<Scheduler>> {
     SCHEDULER.lock()
+}
+
+/// Force-unlock the scheduler mutex after an inline AArch64 context switch.
+///
+/// The inline scheduler path intentionally leaks the lock guard before hopping
+/// to a per-CPU scheduler stack, then releases the lock from that neutral
+/// stack after the outgoing thread is fully off CPU.
+#[cfg(target_arch = "aarch64")]
+pub unsafe fn force_unlock_scheduler() {
+    SCHEDULER.force_unlock();
 }
 
 /// Check if a specific CPU is running its idle thread (lock-free).
@@ -1317,6 +1326,15 @@ impl Scheduler {
     /// The done-check and this call must happen in the same with_scheduler()
     /// invocation to prevent the ISR from racing between the check and the block.
     pub fn block_current_for_io(&mut self) {
+        self.block_current_for_io_with_timeout(None);
+    }
+
+    /// Block the current thread for device I/O, optionally with a timeout.
+    ///
+    /// A timed BlockedOnIO wait is used by completions: the ISR wakes it via
+    /// unblock_for_io(), while the timer path wakes it by observing
+    /// wake_time_ns without clearing blocked_in_syscall prematurely.
+    pub fn block_current_for_io_with_timeout(&mut self, wake_time_ns: Option<u64>) {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
                 // Charge elapsed CPU ticks before blocking
@@ -1325,6 +1343,7 @@ impl Scheduler {
                 thread.run_start_ticks = now;
 
                 thread.state = ThreadState::BlockedOnIO;
+                thread.wake_time_ns = wake_time_ns;
                 // Mark blocked_in_syscall so the context switch path resumes
                 // inside the syscall (wait_timeout loop) rather than restoring
                 // stale userspace context.
@@ -1349,6 +1368,7 @@ impl Scheduler {
         if let Some(thread) = self.get_thread_mut(tid) {
             if thread.state == ThreadState::BlockedOnIO {
                 thread.set_ready();
+                thread.wake_time_ns = None;
                 // Do NOT clear blocked_in_syscall here — the wait_timeout
                 // caller manages it after detecting the wakeup.
 
@@ -1409,11 +1429,14 @@ impl Scheduler {
 
         let mut to_wake = alloc::vec::Vec::new();
         for thread in self.threads.iter() {
-            if thread.state == ThreadState::BlockedOnTimer {
-                if let Some(wake_time) = thread.wake_time_ns {
-                    if now_ns >= wake_time {
-                        to_wake.push(thread.id());
-                    }
+            let timed_wait = matches!(thread.state, ThreadState::BlockedOnTimer)
+                || (thread.state == ThreadState::BlockedOnIO && thread.wake_time_ns.is_some());
+            if !timed_wait {
+                continue;
+            }
+            if let Some(wake_time) = thread.wake_time_ns {
+                if now_ns >= wake_time {
+                    to_wake.push(thread.id());
                 }
             }
         }
@@ -1444,8 +1467,12 @@ impl Scheduler {
                 // but don't clear blocked_in_syscall — the running thread
                 // manages this flag itself when it detects the state change.
                 if let Some(thread) = self.get_thread_mut(id) {
+                    let was_blocked_on_io = thread.state == ThreadState::BlockedOnIO;
                     thread.state = ThreadState::Ready;
                     thread.wake_time_ns = None;
+                    if !was_blocked_on_io {
+                        thread.blocked_in_syscall = false;
+                    }
                 }
                 continue;
             }
@@ -1462,16 +1489,16 @@ impl Scheduler {
             let already_queued = self.ready_queue.contains(&id);
 
             if let Some(thread) = self.get_thread_mut(id) {
+                let was_blocked_on_io = thread.state == ThreadState::BlockedOnIO;
                 thread.state = ThreadState::Ready;
                 thread.wake_time_ns = None;
 
-                // CRITICAL: Clear blocked_in_syscall so the context switch
-                // dispatches the thread through the correct path (userspace vs
-                // kernel) on its next run. Without this, the thread runs to
-                // completion of the syscall, returns to EL0, gets preempted
-                // with a userspace ELR — but blocked_in_syscall=true routes it
-                // through the kernel restore path which rejects the userspace ELR.
-                thread.blocked_in_syscall = false;
+                // Timer-driven I/O wakeups resume back into wait_timeout() so
+                // blocked_in_syscall must stay set until the waiter consumes
+                // the wake reason. Ordinary BlockedOnTimer sleeps clear it here.
+                if !was_blocked_on_io {
+                    thread.blocked_in_syscall = false;
+                }
 
                 if !in_deferred_requeue && !is_idle && !already_queued {
                     self.ready_queue.push_back(id);
@@ -1780,7 +1807,14 @@ pub fn spawn_as_current(thread: Box<Thread>) {
     });
 }
 
+/// Perform scheduling inline from Rust kernel context (AArch64).
+#[cfg(target_arch = "aarch64")]
+pub fn schedule() {
+    crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
+}
+
 /// Perform scheduling and return threads to switch between
+#[cfg(not(target_arch = "aarch64"))]
 pub fn schedule() -> Option<(u64, u64)> {
     // Check if interrupts are already disabled (i.e., we're in interrupt context)
     let interrupts_were_enabled = are_enabled();

@@ -1796,6 +1796,23 @@ fn probe_platform_irq(ctrl: &AhciController) {
 /// wake up.  Clears HBA_IS last (AHCI spec requires PORT_IS cleared first).
 ///
 /// This function must be lock-free and allocation-free (called from IRQ context).
+#[inline]
+fn detect_completed_slots(active: u32, ci_after: u32, port_is: u32) -> u32 {
+    let mut completed = active & !ci_after;
+
+    if completed == 0
+        && active.count_ones() == 1
+        && (port_is & (PORT_IRQ_COMPLETE | PORT_IRQ_ERROR)) != 0
+    {
+        // Some HBAs raise the completion/error interrupt before PORT_CI is
+        // observed cleared. With exactly one active slot, the interrupt itself
+        // still identifies the finished command unambiguously.
+        completed = active;
+    }
+
+    completed
+}
+
 #[cfg(target_arch = "aarch64")]
 pub fn handle_interrupt() {
     use crate::arch_impl::aarch64::gic;
@@ -1849,7 +1866,7 @@ pub fn handle_interrupt() {
             if port < MAX_AHCI_PORTS {
                 let ci_after = port_read(abar, port, PORT_CI);
                 let active = PORT_ACTIVE_MASK[port].load(Ordering::Acquire);
-                let completed = active & !ci_after;
+                let completed = detect_completed_slots(active, ci_after, is);
 
                 // Clear completed bits from the active mask (atomic, ISR-safe).
                 PORT_ACTIVE_MASK[port].fetch_and(!completed, Ordering::Release);
@@ -1884,6 +1901,29 @@ pub fn handle_interrupt() {
     // PORT_IS above; the GIC handles this via EOI in exception.rs.
     if AHCI_IRQ_EDGE.load(Ordering::Relaxed) {
         gic::clear_spi_pending(irq);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{detect_completed_slots, PORT_IRQ_COMPLETE, PORT_IRQ_D2H_REG_FIS};
+
+    #[test]
+    fn detects_completed_slots_from_ci_drop() {
+        let completed = detect_completed_slots(0b0110, 0b0010, PORT_IRQ_COMPLETE);
+        assert_eq!(completed, 0b0100);
+    }
+
+    #[test]
+    fn falls_back_to_single_active_slot_when_ci_still_set() {
+        let completed = detect_completed_slots(0b0001, 0b0001, PORT_IRQ_D2H_REG_FIS);
+        assert_eq!(completed, 0b0001);
+    }
+
+    #[test]
+    fn does_not_guess_when_multiple_slots_are_still_active() {
+        let completed = detect_completed_slots(0b0011, 0b0011, PORT_IRQ_COMPLETE);
+        assert_eq!(completed, 0);
     }
 }
 
