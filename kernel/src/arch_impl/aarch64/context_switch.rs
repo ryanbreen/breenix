@@ -1078,6 +1078,17 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     }
 
     // 2. Check if current thread is blocked or terminated
+    //
+    // NOTE: BlockedOnIO is intentionally included here. A thread that called
+    // block_current_for_io() and then had a timer fire before it could execute
+    // WFI is still "current" on this CPU but needs to be switched out so another
+    // CPU's AHCI ISR can unblock it. Without this, need_resched=false would
+    // prevent the switch and the thread would resume in its WFI loop — correct
+    // behaviour — but if another thread is waiting in the ready queue the
+    // BlockedOnIO thread would monopolise the CPU until need_resched is set by
+    // the ISR-triggered unblock_for_io(). Including BlockedOnIO here ensures
+    // the scheduler switches away from a blocked thread even when need_resched
+    // is not yet set, matching the behaviour of all other Blocked* states.
     let current_blocked_or_terminated = if let Some(current) = sched.current_thread_mut() {
         matches!(
             current.state,
@@ -1085,6 +1096,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
                 | ThreadState::BlockedOnSignal
                 | ThreadState::BlockedOnChildExit
                 | ThreadState::BlockedOnTimer
+                | ThreadState::BlockedOnIO
                 | ThreadState::Terminated
         )
     } else {

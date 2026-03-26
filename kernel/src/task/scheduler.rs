@@ -1574,6 +1574,86 @@ impl Scheduler {
         crate::per_cpu_aarch64::set_need_resched(true);
     }
 
+    /// Rescue threads that are Ready but stuck outside the ready queue.
+    ///
+    /// Safety net for the block/unblock race described in completion.rs: a thread
+    /// may end up with state=Ready but not in the ready queue, not current on any
+    /// CPU, and not in a DEFERRED_REQUEUE slot.  This can happen when:
+    ///
+    ///   1. `block_current_for_io()` sets state=BlockedOnIO and the thread is
+    ///      still "current" (is_current_on_any_cpu=true).
+    ///   2. A timer fires and the scheduler switches the thread out — without
+    ///      requeueing it (correctly, since it is Blocked).
+    ///   3. The AHCI ISR calls `unblock_for_io()`. At this moment the thread is
+    ///      no longer "current" and not in DEFERRED_REQUEUE (the deferred slot was
+    ///      already drained by a subsequent context switch). `unblock_for_io` sets
+    ///      state=Ready and adds the thread to the ready queue — correct.
+    ///
+    ///   BUT: a second, subtler race exists around `previous_thread`.  Between
+    ///   `commit_cpu_state_after_save` (which clears is_current) and
+    ///   `DEFERRED_REQUEUE[cpu].swap(old_id, …)` (which publishes the deferred
+    ///   slot), there is a window in which the thread is neither "current" nor
+    ///   in DEFERRED_REQUEUE.  If `unblock_for_io` fires in that window it
+    ///   adds the thread to the ready queue.  Then the deferred-requeue
+    ///   processing at the NEXT context switch calls `requeue_thread_after_save`
+    ///   which skips the add (thread already in queue) — correct.
+    ///
+    ///   The actual slow-leak scenario we protect against is any path — now or
+    ///   in future — that leaves state=Ready without a corresponding ready-queue
+    ///   entry.  Running this rescue every ~1 second bounds the maximum stall.
+    ///
+    /// Called from the timer interrupt handler on CPU 0 every 1000 ticks (~1 s).
+    /// Runs under a try_lock to avoid blocking the timer handler; if the lock is
+    /// contended the rescue simply runs on the next second.
+    #[cfg(target_arch = "aarch64")]
+    pub fn rescue_stuck_ready_threads(&mut self) -> u32 {
+        use crate::arch_impl::aarch64::context_switch::{raw_uart_str, raw_uart_dec};
+
+        let mut rescued: u32 = 0;
+
+        // Collect IDs of stuck threads first (immutable pass) to avoid borrow
+        // conflicts with the subsequent mutable requeue_thread_after_save calls.
+        let stuck_tids: alloc::vec::Vec<u64> = self.threads.iter().filter_map(|t| {
+            if t.state != ThreadState::Ready { return None; }
+            let tid = t.id();
+            // Exclude idle threads — they are never in the ready queue.
+            if (0..MAX_CPUS).any(|c| self.cpu_state[c].idle_thread == tid) { return None; }
+            // Exclude threads already in the ready queue — they are not stuck.
+            if self.ready_queue.contains(&tid) { return None; }
+            // Exclude threads currently running on any CPU — they are being
+            // handled by that CPU's scheduling path.
+            if (0..MAX_CPUS).any(|c| self.cpu_state[c].current_thread == Some(tid)) { return None; }
+            // Exclude threads pending deferred requeue on any CPU — the deferred
+            // mechanism will pick them up at the start of the next context switch.
+            if self.is_in_deferred_requeue(tid) { return None; }
+            // This thread is genuinely stuck — Ready but reachable by nobody.
+            Some(tid)
+        }).collect();
+
+        for tid in stuck_tids {
+            // Re-validate under mutable borrow (state could have changed since
+            // the immutable scan above, though both run under the scheduler lock).
+            if let Some(thread) = self.get_thread(tid) {
+                if thread.state != ThreadState::Ready { continue; }
+            } else {
+                continue;
+            }
+
+            // Diagnostic: emit once per rescued thread (lock-free UART).
+            raw_uart_str("[SCHED_RESCUE] stuck tid=");
+            raw_uart_dec(tid);
+            raw_uart_str(" bis=");
+            raw_uart_dec(if self.get_thread(tid).map(|t| t.blocked_in_syscall).unwrap_or(false) { 1 } else { 0 });
+            raw_uart_str("\n");
+
+            self.ready_queue.push_back(tid);
+            self.send_resched_ipi();
+            rescued += 1;
+        }
+
+        rescued
+    }
+
     /// Fix stale cpu_state where it says idle but a real thread is running.
     ///
     /// Called from within the consolidated context switch lock hold, before
@@ -1799,6 +1879,22 @@ where
         let mut scheduler_lock = SCHEDULER.lock();
         scheduler_lock.as_mut().map(f)
     })
+}
+
+/// Attempt a non-blocking rescue of stuck ready threads.
+///
+/// Called from the timer interrupt handler (CPU 0) every ~1000 ticks (~1 s).
+/// Uses `try_lock` so it never blocks the timer handler — if the scheduler lock
+/// is contended we simply skip this cycle and try again next second.
+///
+/// See `Scheduler::rescue_stuck_ready_threads` for the full rationale.
+#[cfg(target_arch = "aarch64")]
+pub fn rescue_stuck_ready_threads_try() {
+    if let Some(mut guard) = SCHEDULER.try_lock() {
+        if let Some(sched) = guard.as_mut() {
+            sched.rescue_stuck_ready_threads();
+        }
+    }
 }
 
 /// Collect the idle thread ID for each online CPU into a fixed-size buffer.

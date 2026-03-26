@@ -296,6 +296,24 @@ pub extern "C" fn timer_interrupt_handler() {
         check_soft_lockup(_count);
     }
 
+    // CPU 0 only: ready-queue safety net.
+    //
+    // Every 1000 ticks (~1 second) scan for threads that are in state=Ready
+    // but are not in the ready queue, not current on any CPU, and not in a
+    // deferred-requeue slot.  Any such thread is "stuck" — it will never run
+    // without intervention.  We rescue it by adding it back to the ready queue
+    // and sending a reschedule IPI to idle CPUs.
+    //
+    // This is a SAFETY NET, not a fix for the root cause.  When it fires it
+    // prints "[SCHED_RESCUE] stuck tid=N" to the serial port so the exact
+    // thread ID and its blocked_in_syscall flag are visible for diagnosis.
+    //
+    // Uses try_lock to avoid blocking the timer handler; if the scheduler
+    // lock is contended we simply skip this tick and retry next second.
+    if cpu_id == 0 && _count % 1000 == 0 {
+        crate::task::scheduler::rescue_stuck_ready_threads_try();
+    }
+
     // CPU 0 only: record heartbeat as trace event (lock-free, ~5 instructions)
     // All xHCI diagnostic atomics remain for GDB inspection; no serial output.
     if cpu_id == 0 {
