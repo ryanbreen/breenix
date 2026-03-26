@@ -13,6 +13,20 @@
 //! disables interrupts before locking, and the ISR runs with interrupts
 //! already masked by hardware, there is no deadlock risk.
 //!
+//! # Caller contract
+//!
+//! `wait_timeout()` MUST be called with NO locks held (no AHCI lock,
+//! no DMA lock, no scheduler lock).  It calls `preempt_enable()` when
+//! in syscall context so the scheduler can safely context-switch the thread
+//! while it waits.  Re-enabling preemption with a lock held would allow
+//! another thread to acquire the same lock and then have the timer switch
+//! us out, causing priority inversion or deadlock.
+//!
+//! Steps 1-3 of the AHCI split command protocol guarantee this:
+//!   PHASE 1 (setup)  → held briefly, released before calling wait_timeout
+//!   PHASE 2 (wait)   → no lock held; wait_timeout called here
+//!   PHASE 3 (finish) → re-acquired briefly for cache invalidate + copy
+//!
 //! # Usage
 //!
 //! ```rust
@@ -127,9 +141,8 @@ impl Completion {
             // Syscall handlers call preempt_disable() on entry, so
             // preempt_count ≥ 1 when called from userspace-initiated I/O.
             // The boot thread runs with preempt_count = 0 — it must NOT
-            // underflow the counter and must NOT use the WFI scheduler-sleep
-            // path (there is no timer to rescue a stuck WFI before the timer
-            // is initialised).
+            // underflow the counter and must NOT use the WFI/sleep path
+            // (there is no timer to rescue a stuck WFI before timer init).
             let in_syscall = {
                 #[cfg(target_arch = "aarch64")]
                 { crate::per_cpu_aarch64::preempt_count() > 0 }
@@ -139,40 +152,81 @@ impl Completion {
 
             if in_syscall {
                 // ============================================================
-                // PHASE 1: FAST WFI — no preempt_enable, no scheduler.
+                // SYSCALL SLEEP PATH — true block_current_for_io
                 //
-                // The caller holds the AHCI lock. We CANNOT enable preemption
-                // here — a timer tick would preempt us while holding the lock,
-                // deadlocking other I/O threads. Instead, WFI with preemption
-                // disabled. The AHCI ISR fires on the same CPU (SPI 34),
-                // sets done=true, WFI returns, we check and return. The lock
-                // is held throughout — correct for single-slot AHCI.
+                // PRECONDITION: no locks are held (the AHCI split protocol in
+                // ahci/mod.rs releases all locks before calling wait_timeout).
+                //
+                // 1. preempt_enable() — allows the scheduler to switch us out.
+                // 2. Atomic check-and-block under the scheduler lock: if done
+                //    already, skip the block; otherwise set BlockedOnIO.
+                // 3. WFI — halt until AHCI ISR or timer fires.
+                // 4. Clear blocked state, check done, check timeout.
+                //
+                // Race safety: the scheduler lock serialises our done-check and
+                // block_current_for_io() against complete()/unblock_for_io().
+                // If the ISR fires between our done-check and block_current_for_io,
+                // with_scheduler sees the ISR cleared the state already and the
+                // next iteration detects done=true.
                 // ============================================================
-                #[cfg(target_arch = "aarch64")]
-                Cpu::halt_with_interrupts();
 
+                // Fast check after waiter store — ISR may have fired already.
                 if self.done.load(Ordering::Acquire) {
                     self.waiter.store(0, Ordering::Release);
                     return Ok(true);
                 }
 
-                // ============================================================
-                // PHASE 2: SLOW PATH — timer tick woke WFI, not AHCI ISR.
-                //
-                // The caller holds the AHCI lock. We cannot use the scheduler
-                // (preempt_enable + block_current_for_io) because preemption
-                // with the lock held deadlocks other I/O threads.
-                //
-                // Instead: keep looping WFI. Each WFI wakes on either:
-                // - AHCI ISR (done=true, return)
-                // - Timer tick (done=false, loop back to WFI)
-                //
-                // This is NOT idle — the CPU halts between interrupts.
-                // For single-slot AHCI with one global lock, this is correct.
-                // ============================================================
+                // Enable preemption so the scheduler can switch us out.
+                // SAFETY: caller guarantees no locks are held at this point.
+                #[cfg(target_arch = "aarch64")]
+                crate::per_cpu_aarch64::preempt_enable();
+                #[cfg(not(target_arch = "aarch64"))]
+                crate::per_cpu::preempt_enable();
+
                 loop {
+                    // Atomic check-and-block: under the scheduler lock, either
+                    // the ISR already set done=true (don't block) or we call
+                    // block_current_for_io() (sets state=BlockedOnIO).
+                    let already_done =
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            if self.done.load(Ordering::Acquire) {
+                                true
+                            } else {
+                                sched.block_current_for_io();
+                                false
+                            }
+                        })
+                        .unwrap_or(false); // None = scheduler gone (shouldn't happen)
+
+                    if already_done || self.done.load(Ordering::Acquire) {
+                        self.waiter.store(0, Ordering::Release);
+                        // Restore preempt_count to the value expected by the
+                        // syscall exit path (preempt_disable was called on entry).
+                        #[cfg(target_arch = "aarch64")]
+                        crate::per_cpu_aarch64::preempt_disable();
+                        #[cfg(not(target_arch = "aarch64"))]
+                        crate::per_cpu::preempt_disable();
+                        return Ok(true);
+                    }
+
+                    // Halt until AHCI ISR or timer fires.
+                    #[cfg(target_arch = "aarch64")]
+                    Cpu::halt_with_interrupts();
+
+                    // Clear BlockedOnIO state after wake (could be timer or ISR).
+                    crate::task::scheduler::with_scheduler(|sched| {
+                        if let Some(t) = sched.current_thread_mut() {
+                            t.blocked_in_syscall = false;
+                        }
+                    });
+
+                    // Check done after wake.
                     if self.done.load(Ordering::Acquire) {
                         self.waiter.store(0, Ordering::Release);
+                        #[cfg(target_arch = "aarch64")]
+                        crate::per_cpu_aarch64::preempt_disable();
+                        #[cfg(not(target_arch = "aarch64"))]
+                        crate::per_cpu::preempt_disable();
                         return Ok(true);
                     }
 
@@ -185,15 +239,12 @@ impl Completion {
                         }
                         if now >= deadline_cntpct {
                             self.waiter.store(0, Ordering::Release);
+                            crate::per_cpu_aarch64::preempt_disable();
                             return Ok(false);
                         }
                     }
                     #[cfg(not(target_arch = "aarch64"))]
                     { let _ = deadline_cntpct; }
-
-                    // Halt until next interrupt (AHCI or timer).
-                    #[cfg(target_arch = "aarch64")]
-                    Cpu::halt_with_interrupts();
                 }
             } else {
                 // ============================================================
@@ -203,7 +254,7 @@ impl Completion {
                 // (preempt_count = 0), meaning this is the raw boot thread
                 // between scheduler init and timer init.  WFI is unsafe here
                 // because the timer has not been started yet and may never
-                // fire to rescue a stuck WFI.  Instead, spin with WFE:
+                // fire to rescue a stuck WFI.  Instead, spin with yield:
                 // complete() emits SEV which wakes WFE race-free.
                 // ============================================================
                 loop {
@@ -225,10 +276,7 @@ impl Completion {
                         // `yield` hints the hypervisor to schedule other vCPUs
                         // without halting the CPU.  We do NOT use WFE/WFI here
                         // because Parallels does not reliably wake a halted vCPU
-                        // when a wired SPI becomes pending (confirmed empirically:
-                        // wfi in the interrupt-driven AHCI loop on Parallels
-                        // results in the vCPU staying parked until the next timer
-                        // tick, but there is no timer yet at this boot stage).
+                        // when a wired SPI becomes pending without a timer.
                         unsafe { core::arch::asm!("yield", options(nomem, nostack)); }
                     }
                     #[cfg(not(target_arch = "aarch64"))]
