@@ -93,6 +93,8 @@ aarch64_enter_exception_frame:
 1:
     msr elr_el1, x1
     ldr x1, [sp, #256]
+    // Never propagate a stale saved DAIF.I bit through ERET.
+    bic x1, x1, #0x80
     msr spsr_el1, x1
 
     ldp x0, x1, [sp, #0]
