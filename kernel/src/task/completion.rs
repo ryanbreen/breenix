@@ -268,35 +268,22 @@ impl Completion {
                         return Ok(true);
                     }
 
-                    // Use inline schedule() to yield the CPU, UNLESS we're
-                    // on CPU 0 (where SPI 34 routes). Inline schedule on CPU 0
-                    // can dispatch a thread whose saved context re-masks IRQs,
-                    // killing the timer and AHCI interrupts permanently. WFI on
-                    // CPU 0 is safe because the AHCI ISR fires directly.
-                    // Use WFI (halt with interrupts) instead of inline schedule().
-                    // schedule_from_kernel() dispatches a thread whose saved context
-                    // may resume inside a without_interrupts block, permanently
-                    // masking that CPU's timer and AHCI interrupts. WFI is safe
-                    // because it atomically enables IRQs and halts — the AHCI ISR
-                    // or timer tick wakes us. The thread stays current on its CPU
-                    // but other CPUs run other threads via normal preemption.
+                    // WFI: atomically enable IRQs + halt until the next interrupt.
+                    // The AHCI ISR (SPI 34) or timer tick wakes us directly.
+                    // We use WFI instead of schedule_from_kernel() because:
+                    // 1. The AHCI IRQ may be routed to this specific CPU
+                    // 2. schedule_from_kernel() switches this CPU to another
+                    //    thread, which may run with IRQs disabled long enough
+                    //    to miss the AHCI completion window
+                    // 3. WFI keeps this thread current on the CPU with IRQs
+                    //    enabled — the ISR fires immediately on completion
                     //
-                    // TODO: fix schedule_from_kernel() to handle the without_interrupts
-                    // resume case, then switch back to inline schedule() for true
-                    // Linux-equivalent behavior.
+                    // The ret-based dispatch in schedule_from_kernel() is still
+                    // used by timer preemption to avoid the CPU 0 IRQ death bug.
                     #[cfg(target_arch = "aarch64")]
                     crate::arch_halt_with_interrupts();
                     #[cfg(not(target_arch = "aarch64"))]
                     Cpu::halt_with_interrupts();
-
-                    #[cfg(target_arch = "aarch64")]
-                    unsafe {
-                        // schedule_from_kernel() returns via ERET; give any
-                        // queued IRQ a chance to preempt this waiter before it
-                        // can immediately block again on another I/O path.
-                        core::arch::asm!("msr daifclr, #3", options(nostack, preserves_flags));
-                        core::arch::asm!("isb", options(nostack, preserves_flags));
-                    }
 
                     // Clear BlockedOnIO state after wake (could be timer or ISR).
                     clear_blocked_in_syscall_current();

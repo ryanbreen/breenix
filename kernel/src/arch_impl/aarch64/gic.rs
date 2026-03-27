@@ -563,16 +563,11 @@ impl InterruptController for Gicv2 {
             let are_enabled = (ctlr & GICD_CTLR_ARE_NS) != 0;
 
             if version >= 3 || are_enabled {
-                // GICv3 / ARE mode: Route SPI via GICD_IROUTER
-                let mpidr: u64;
-                unsafe {
-                    core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
-                }
-                let affinity = mpidr & 0xFF_00FF_FFFF; // Aff3.Aff2.Aff1.Aff0
-                gicd_write(GICD_IROUTER + (irq_num as usize * 8), affinity as u32);
+                // GICv3 / ARE mode: Route SPI using 1-of-N model (any PE)
+                gicd_write(GICD_IROUTER + (irq_num as usize * 8), 0x0);
                 gicd_write(
                     GICD_IROUTER + (irq_num as usize * 8) + 4,
-                    (affinity >> 32) as u32,
+                    0x80000000u32, // IRM = 1
                 );
             } else {
                 // GICv2 (no ARE): Route SPI to CPU 0 via ITARGETSR
@@ -839,16 +834,16 @@ pub fn enable_spi(irq: u32) {
     let bit = irq % 32;
 
     if version >= 3 {
-        // GICv3: Route SPI to current CPU via GICD_IROUTER
-        let mpidr: u64;
-        unsafe {
-            core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
-        }
-        let affinity = mpidr & 0xFF_00FF_FFFF; // Aff3.Aff2.Aff1.Aff0
-        gicd_write(GICD_IROUTER + (irq as usize * 8), affinity as u32);
+        // GICv3: Route SPI using 1-of-N model (any PE can handle it).
+        // Bit 31 of IROUTER = Interrupt_Routing_Mode = 1 means the GIC
+        // distributor can route this SPI to any connected PE. This matches
+        // Linux's default for most SPIs and prevents IRQ starvation when
+        // one CPU has interrupts temporarily disabled (e.g., during
+        // schedule_from_kernel's context switch critical section).
+        gicd_write(GICD_IROUTER + (irq as usize * 8), 0x0);
         gicd_write(
             GICD_IROUTER + (irq as usize * 8) + 4,
-            (affinity >> 32) as u32,
+            0x80000000u32, // IRM = 1 (1-of-N routing)
         );
     } else {
         // GICv2: Route SPI to CPU 0 via ITARGETSR

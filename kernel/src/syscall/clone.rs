@@ -176,6 +176,7 @@ pub fn sys_clone(
         privilege: ThreadPrivilege::User,
         has_started: false, // Will be set up via first_userspace_entry
         blocked_in_syscall: false,
+        saved_by_inline_schedule: false,
         saved_userspace_context: None,
         wake_time_ns: None,
         run_start_ticks: 0,
