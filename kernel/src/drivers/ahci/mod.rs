@@ -198,14 +198,6 @@ static AHCI_CMD_COUNT: AtomicU32 = AtomicU32::new(0);
 /// Per-port token for the command currently issued in slot 0. 0 = none.
 static PORT_ACTIVE_CMD_NUM: [AtomicU32; MAX_AHCI_PORTS] =
     [const { AtomicU32::new(0) }; MAX_AHCI_PORTS];
-/// Wait-context diagnostic armed by wait_cmd_slot0 for post-schedule dumps.
-static AHCI_WAIT_DIAG_ACTIVE: AtomicBool = AtomicBool::new(false);
-static AHCI_WAIT_DIAG_TID: AtomicU64 = AtomicU64::new(0);
-static AHCI_WAIT_DIAG_PORT: AtomicU32 = AtomicU32::new(u32::MAX);
-static AHCI_WAIT_DIAG_CMD_NUM: AtomicU32 = AtomicU32::new(0);
-static AHCI_WAIT_DIAG_ARMED_CPU: AtomicU32 = AtomicU32::new(u32::MAX);
-static AHCI_WAIT_DIAG_RESUME_COUNT: AtomicU32 = AtomicU32::new(0);
-
 /// Per-port bitmask of in-flight command slots, indexed by port number.
 /// Bit N = slot N is currently in flight (PORT_CI bit N was set by us).
 /// Written by setup_cmd_slot0 (sets bit), cleared by handle_interrupt.
@@ -698,11 +690,7 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
         // lock, preventing a race with complete() from the ISR.
         // ============================================================
         const TIMEOUT_NS: u64 = 5_000_000_000; // 5 s — Linux default
-        let diag_armed = arm_wait_cmd_slot0_diag(port, cmd_num);
         let wait_result = AHCI_COMPLETIONS[port][0].wait_timeout(cmd_num, TIMEOUT_NS);
-        if diag_armed {
-            disarm_wait_cmd_slot0_diag();
-        }
         match wait_result {
             Ok(true) => {
                 let tfd = port_read(abar, port, PORT_TFD);
@@ -1199,10 +1187,6 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
     let serr = port_read(abar, port, PORT_SERR);
     let isr_count = AHCI_ISR_COUNT.load(Ordering::Relaxed);
     #[cfg(target_arch = "aarch64")]
-    let timer_ticks_cpu0 = crate::arch_impl::aarch64::timer_interrupt::cpu0_tick_count();
-    #[cfg(not(target_arch = "aarch64"))]
-    let timer_ticks_cpu0 = 0u64;
-    #[cfg(target_arch = "aarch64")]
     let (ahci_spi, gic_pending, gic_active, pend_snap) = {
         use crate::arch_impl::aarch64::gic;
         let spi = AHCI_IRQ.load(Ordering::Relaxed);
@@ -1265,9 +1249,8 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
         rpr = 0;
     }
     crate::serial_println!(
-        "[ahci]   isr_count={} cpu0_timer_ticks={} cmd#={} completion_done={} PMR={:#x} RPR={:#x}",
+        "[ahci]   isr_count={} cmd#={} completion_done={} PMR={:#x} RPR={:#x}",
         isr_count,
-        timer_ticks_cpu0,
         cmd_num,
         if port < MAX_AHCI_PORTS {
             AHCI_COMPLETIONS[port][0].done.load(Ordering::Relaxed)
@@ -1277,42 +1260,6 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
         pmr,
         rpr
     );
-}
-
-#[inline]
-fn arm_wait_cmd_slot0_diag(port: usize, cmd_num: u32) -> bool {
-    #[cfg(target_arch = "aarch64")]
-    {
-        if cmd_num < 1183 {
-            return false;
-        }
-
-        let tid = crate::task::scheduler::current_thread_id().unwrap_or(0);
-        let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as u32;
-
-        AHCI_WAIT_DIAG_TID.store(tid, Ordering::Relaxed);
-        AHCI_WAIT_DIAG_PORT.store(port as u32, Ordering::Relaxed);
-        AHCI_WAIT_DIAG_CMD_NUM.store(cmd_num, Ordering::Relaxed);
-        AHCI_WAIT_DIAG_ARMED_CPU.store(cpu, Ordering::Relaxed);
-        AHCI_WAIT_DIAG_RESUME_COUNT.store(0, Ordering::Relaxed);
-        AHCI_WAIT_DIAG_ACTIVE.store(true, Ordering::Release);
-        true
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        let _ = (port, cmd_num);
-        false
-    }
-}
-
-#[inline]
-fn disarm_wait_cmd_slot0_diag() {
-    AHCI_WAIT_DIAG_ACTIVE.store(false, Ordering::Release);
-    AHCI_WAIT_DIAG_TID.store(0, Ordering::Relaxed);
-    AHCI_WAIT_DIAG_PORT.store(u32::MAX, Ordering::Relaxed);
-    AHCI_WAIT_DIAG_CMD_NUM.store(0, Ordering::Relaxed);
-    AHCI_WAIT_DIAG_ARMED_CPU.store(u32::MAX, Ordering::Relaxed);
-    AHCI_WAIT_DIAG_RESUME_COUNT.store(0, Ordering::Relaxed);
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -1375,77 +1322,6 @@ fn ahci_gic_irq_router(spi: u32) -> u64 {
     }
     ahci_gicd_read_u64(AHCI_GICD_IROUTER + (spi as usize * 8))
 }
-
-#[cfg(target_arch = "aarch64")]
-pub(crate) fn maybe_dump_wait_cmd_slot0_post_schedule(daif_before_enable: u64) {
-    if !AHCI_WAIT_DIAG_ACTIVE.load(Ordering::Acquire) {
-        return;
-    }
-
-    let expected_tid = AHCI_WAIT_DIAG_TID.load(Ordering::Relaxed);
-    let current_tid = crate::task::scheduler::current_thread_id().unwrap_or(0);
-    if expected_tid != 0 && current_tid != expected_tid {
-        return;
-    }
-
-    let cmd_num = AHCI_WAIT_DIAG_CMD_NUM.load(Ordering::Relaxed);
-    if cmd_num < 1183 {
-        return;
-    }
-
-    let port = AHCI_WAIT_DIAG_PORT.load(Ordering::Relaxed) as usize;
-    let resume_count = AHCI_WAIT_DIAG_RESUME_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    let current_cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as u32;
-    let armed_cpu = AHCI_WAIT_DIAG_ARMED_CPU.load(Ordering::Relaxed);
-    let spi = AHCI_IRQ.load(Ordering::Relaxed);
-    let enabled = ahci_gic_irq_enabled(spi);
-    let pending = ahci_gic_irq_pending(spi);
-    let route = ahci_gic_irq_router(spi);
-    let route_any_cpu = (route & (1 << 31)) != 0;
-    let route_aff0 = (route & 0xff) as u8;
-    let irq_priority = ahci_gic_irq_priority(spi);
-
-    let daif_after_enable: u64;
-    let pmr: u64;
-    unsafe {
-        core::arch::asm!("mrs {}, daif", out(reg) daif_after_enable, options(nomem, nostack));
-        core::arch::asm!("mrs {}, icc_pmr_el1", out(reg) pmr, options(nomem, nostack));
-    }
-
-    let daif_i_before = (daif_before_enable & (1 << 7)) != 0;
-    let daif_i_after = (daif_after_enable & (1 << 7)) != 0;
-    let pmr_blocks = spi != 0 && (irq_priority as u64) >= (pmr & 0xff);
-
-    crate::serial_aarch64::raw_serial_char(b'W');
-    crate::serial_println!(
-        "[ahci] wait_cmd_slot0 post-schedule#{} port={} cmd#{} tid={} cpu={} armed_cpu={} DAIF(before)={:#x} I_before={} DAIF(after)={:#x} I_after={}",
-        resume_count,
-        port,
-        cmd_num,
-        current_tid,
-        current_cpu,
-        armed_cpu,
-        daif_before_enable,
-        daif_i_before,
-        daif_after_enable,
-        daif_i_after
-    );
-    crate::serial_println!(
-        "[ahci]   SPI{} enabled={} pending={} PMR={:#x} irq_prio={:#x} pmr_blocks={} IROUTER={:#x} route_any_cpu={} route_aff0={}",
-        spi,
-        enabled,
-        pending,
-        pmr,
-        irq_priority,
-        pmr_blocks,
-        route,
-        route_any_cpu,
-        route_aff0
-    );
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-pub(crate) fn maybe_dump_wait_cmd_slot0_post_schedule(_daif_before_enable: u64) {}
 
 impl AhciController {
     /// Issue IDENTIFY DEVICE and return sector count.

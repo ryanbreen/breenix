@@ -268,19 +268,27 @@ impl Completion {
                         return Ok(true);
                     }
 
+                    // Use inline schedule() to yield the CPU, UNLESS we're
+                    // on CPU 0 (where SPI 34 routes). Inline schedule on CPU 0
+                    // can dispatch a thread whose saved context re-masks IRQs,
+                    // killing the timer and AHCI interrupts permanently. WFI on
+                    // CPU 0 is safe because the AHCI ISR fires directly.
+                    // Use WFI (halt with interrupts) instead of inline schedule().
+                    // schedule_from_kernel() dispatches a thread whose saved context
+                    // may resume inside a without_interrupts block, permanently
+                    // masking that CPU's timer and AHCI interrupts. WFI is safe
+                    // because it atomically enables IRQs and halts — the AHCI ISR
+                    // or timer tick wakes us. The thread stays current on its CPU
+                    // but other CPUs run other threads via normal preemption.
+                    //
+                    // TODO: fix schedule_from_kernel() to handle the without_interrupts
+                    // resume case, then switch back to inline schedule() for true
+                    // Linux-equivalent behavior.
                     #[cfg(target_arch = "aarch64")]
-                    crate::task::scheduler::schedule();
+                    crate::arch_halt_with_interrupts();
                     #[cfg(not(target_arch = "aarch64"))]
                     Cpu::halt_with_interrupts();
 
-                    #[cfg(target_arch = "aarch64")]
-                    let daif_after_schedule: u64 = {
-                        let daif: u64;
-                        unsafe {
-                            core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack));
-                        }
-                        daif
-                    };
                     #[cfg(target_arch = "aarch64")]
                     unsafe {
                         // schedule_from_kernel() returns via ERET; give any
@@ -289,10 +297,6 @@ impl Completion {
                         core::arch::asm!("msr daifclr, #3", options(nostack, preserves_flags));
                         core::arch::asm!("isb", options(nostack, preserves_flags));
                     }
-                    #[cfg(target_arch = "aarch64")]
-                    crate::drivers::ahci::maybe_dump_wait_cmd_slot0_post_schedule(
-                        daif_after_schedule,
-                    );
 
                     // Clear BlockedOnIO state after wake (could be timer or ISR).
                     clear_blocked_in_syscall_current();

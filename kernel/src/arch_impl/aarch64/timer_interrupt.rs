@@ -14,7 +14,6 @@
 //! 4. Handler updates time, checks quantum, sets need_resched
 //! 5. On exception return, check need_resched and perform context switch if needed
 
-use crate::arch_impl::traits::PerCpuOps;
 use crate::task::scheduler;
 use crate::tracing::providers::irq::trace_timer_tick;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -72,9 +71,6 @@ pub fn timer_is_running() -> bool {
 
 /// Total timer interrupt count (for frequency verification)
 static TIMER_INTERRUPT_COUNT: AtomicU64 = AtomicU64::new(0);
-
-/// CPU 0 timer interrupt count, used to prove CPU 0 continues taking timer IRQs.
-static TIMER_TICKS_CPU0: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(feature = "boot_tests")]
 static RESET_QUANTUM_CALL_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -301,10 +297,6 @@ pub extern "C" fn timer_interrupt_handler() {
 
     // CPU 0 only: update global wall clock time (single atomic operation)
     if cpu_id == 0 {
-        let cpu0_tick = TIMER_TICKS_CPU0.fetch_add(1, Ordering::Relaxed) + 1;
-        if cpu0_tick <= 10 {
-            emit_cpu0_timer_breadcrumb(cpu0_tick);
-        }
         crate::time::timer_interrupt();
     }
 
@@ -539,45 +531,6 @@ fn dump_gic_state() {
 #[inline(always)]
 fn raw_serial_char(c: u8) {
     crate::serial_aarch64::raw_serial_char(c);
-}
-
-#[inline(always)]
-fn raw_serial_hex_digit(val: u8) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    raw_serial_char(HEX[(val & 0xF) as usize]);
-}
-
-/// Print a u64 as compact hexadecimal using raw serial output.
-#[inline(always)]
-fn raw_serial_hex_compact(val: u64) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut started = false;
-    for i in (0..16).rev() {
-        let nibble = ((val >> (i * 4)) & 0xF) as usize;
-        if nibble != 0 || started || i == 0 {
-            raw_serial_char(HEX[nibble]);
-            started = true;
-        }
-    }
-}
-
-#[inline(always)]
-fn breadcrumb_current_thread_id() -> u64 {
-    let thread_ptr = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::current_thread_ptr();
-    if thread_ptr.is_null() {
-        0
-    } else {
-        unsafe { (*(thread_ptr as *const crate::task::thread::Thread)).id() }
-    }
-}
-
-#[inline(always)]
-fn emit_cpu0_timer_breadcrumb(tick: u64) {
-    raw_serial_char(b'T');
-    raw_serial_hex_digit((tick & 0xF) as u8);
-    raw_serial_char(b':');
-    raw_serial_hex_compact(breadcrumb_current_thread_id());
-    raw_serial_char(b'\n');
 }
 
 /// Raw serial output - write a string without locks for debugging
@@ -875,6 +828,27 @@ pub fn reset_quantum() {
     CURRENT_QUANTUM[idx].store(TIME_QUANTUM, Ordering::Relaxed);
 }
 
+/// Re-arm the current CPU's timer using the configured scheduling interval.
+///
+/// Context switches can return to kernel code that briefly masks IRQs before
+/// finishing its critical section. Re-programming the per-CPU timer before the
+/// resumed thread runs ensures the next tick is pending on this CPU even if the
+/// thread immediately re-enters a short interrupt-masked region.
+pub fn rearm_timer() {
+    let ticks = TICKS_PER_INTERRUPT.load(Ordering::Relaxed);
+
+    if crate::platform_config::is_vmware() {
+        unsafe {
+            core::arch::asm!("msr cntv_tval_el0, {}", in(reg) ticks, options(nomem, nostack));
+            core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
+            core::arch::asm!("msr cntp_tval_el0, {}", in(reg) ticks, options(nomem, nostack));
+            core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
+        }
+    } else {
+        arm_timer(ticks);
+    }
+}
+
 /// Get reset_quantum() call count for tests.
 #[cfg(feature = "boot_tests")]
 pub fn reset_quantum_call_count() -> u64 {
@@ -907,11 +881,6 @@ pub fn init_secondary() {
 /// Check if the timer is initialized
 pub fn is_initialized() -> bool {
     TIMER_INITIALIZED.load(Ordering::Acquire)
-}
-
-/// Get the number of timer interrupts handled by CPU 0.
-pub fn cpu0_tick_count() -> u64 {
-    TIMER_TICKS_CPU0.load(Ordering::Relaxed)
 }
 
 /// Get the current CPU's quantum value (for debugging)
