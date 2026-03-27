@@ -72,6 +72,9 @@ pub fn timer_is_running() -> bool {
 /// Total timer interrupt count (for frequency verification)
 static TIMER_INTERRUPT_COUNT: AtomicU64 = AtomicU64::new(0);
 
+/// CPU 0 timer interrupt count, used to prove CPU 0 continues taking timer IRQs.
+static TIMER_TICKS_CPU0: AtomicU64 = AtomicU64::new(0);
+
 #[cfg(feature = "boot_tests")]
 static RESET_QUANTUM_CALL_COUNT: AtomicU64 = AtomicU64::new(0);
 
@@ -297,6 +300,7 @@ pub extern "C" fn timer_interrupt_handler() {
 
     // CPU 0 only: update global wall clock time (single atomic operation)
     if cpu_id == 0 {
+        TIMER_TICKS_CPU0.fetch_add(1, Ordering::Relaxed);
         crate::time::timer_interrupt();
     }
 
@@ -860,6 +864,11 @@ pub fn init_secondary() {
 /// Check if the timer is initialized
 pub fn is_initialized() -> bool {
     TIMER_INITIALIZED.load(Ordering::Acquire)
+}
+
+/// Get the number of timer interrupts handled by CPU 0.
+pub fn cpu0_tick_count() -> u64 {
+    TIMER_TICKS_CPU0.load(Ordering::Relaxed)
 }
 
 /// Get the current CPU's quantum value (for debugging)
