@@ -1199,6 +1199,10 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
     let serr = port_read(abar, port, PORT_SERR);
     let isr_count = AHCI_ISR_COUNT.load(Ordering::Relaxed);
     #[cfg(target_arch = "aarch64")]
+    let timer_ticks_cpu0 = crate::arch_impl::aarch64::timer_interrupt::cpu0_tick_count();
+    #[cfg(not(target_arch = "aarch64"))]
+    let timer_ticks_cpu0 = 0u64;
+    #[cfg(target_arch = "aarch64")]
     let (ahci_spi, gic_pending, gic_active, pend_snap) = {
         use crate::arch_impl::aarch64::gic;
         let spi = AHCI_IRQ.load(Ordering::Relaxed);
@@ -1261,8 +1265,9 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
         rpr = 0;
     }
     crate::serial_println!(
-        "[ahci]   isr_count={} cmd#={} completion_done={} PMR={:#x} RPR={:#x}",
+        "[ahci]   isr_count={} cpu0_timer_ticks={} cmd#={} completion_done={} PMR={:#x} RPR={:#x}",
         isr_count,
+        timer_ticks_cpu0,
         cmd_num,
         if port < MAX_AHCI_PORTS {
             AHCI_COMPLETIONS[port][0].done.load(Ordering::Relaxed)
