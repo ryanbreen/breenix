@@ -60,6 +60,10 @@ aarch64_inline_schedule_switch:
     //
     // Save the callee-saved kernel context at the exact point of the call,
     // then move to a neutral per-CPU stack before entering Rust again.
+    //
+    // IMPORTANT: This helper never restores the incoming thread directly.
+    // It pivots to the scheduler trampoline, which builds an exception frame
+    // and re-enters the selected thread via aarch64_enter_exception_frame/ERET.
     stp x19, x20, [x0, #152]
     stp x21, x22, [x0, #168]
     stp x23, x24, [x0, #184]
@@ -1705,6 +1709,10 @@ pub fn schedule_from_kernel() {
     }
 
     unsafe {
+        // Execution reaches here only when this thread is later redispatched.
+        // The trampoline snapshots old_thread.context.x30 into elr_el1, and the
+        // resume happens through aarch64_enter_exception_frame/ERET back to this
+        // call site rather than via a raw `ret` from aarch64_inline_schedule_switch.
         core::arch::asm!("msr daif, {}", in(reg) return_daif, options(nomem, nostack));
         core::arch::asm!("msr daifclr, #3", options(nomem, nostack));
     }
