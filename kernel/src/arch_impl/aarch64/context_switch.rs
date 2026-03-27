@@ -33,6 +33,16 @@ const SPSR_EL1H: u64 = 0x5;
 const SPSR_DAIF_IRQ_BIT: u64 = 1 << 7;
 
 #[inline]
+fn dispatch_spsr(spsr: u64) -> u64 {
+    spsr & !SPSR_DAIF_IRQ_BIT
+}
+
+#[inline]
+fn schedule_return_daif(daif: u64) -> u64 {
+    daif & !SPSR_DAIF_IRQ_BIT
+}
+
+#[inline]
 fn kernel_dispatch_spsr(spsr: u64) -> u64 {
     ((spsr & !SPSR_MODE_MASK) | SPSR_EL1H) & !SPSR_DAIF_IRQ_BIT
 }
@@ -726,7 +736,7 @@ fn restore_kernel_context_inline(
         // (KERNEL_PHYS_BASE..KERNEL_PHYS_LIMIT), so we must accept both.
         frame.elr = thread.context.elr_el1;
         thread.context.spsr_el1 = kernel_dispatch_spsr(thread.context.spsr_el1);
-        frame.spsr = thread.context.spsr_el1; // Restore saved processor state
+        frame.spsr = dispatch_spsr(thread.context.spsr_el1); // Restore saved processor state
     } else {
         // elr_el1 == 0 or not a valid kernel address — redirect to idle
         raw_uart_str("WARN: bad elr=");
@@ -803,7 +813,7 @@ fn restore_userspace_context_inline(thread: &mut Thread, frame: &mut Aarch64Exce
 
     // Restore program counter and status
     frame.elr = thread.context.elr_el1;
-    frame.spsr = thread.context.spsr_el1;
+    frame.spsr = dispatch_spsr(thread.context.spsr_el1);
 
     // Restore SP_EL0 (user stack pointer)
     unsafe {
@@ -1589,7 +1599,8 @@ extern "C" fn inline_schedule_trampoline() -> ! {
 }
 
 pub fn schedule_from_kernel() {
-    let mut saved_daif = read_daif();
+    let saved_daif = read_daif();
+    let return_daif = schedule_return_daif(saved_daif);
     unsafe {
         crate::arch_impl::aarch64::cpu::disable_interrupts();
     }
@@ -1600,7 +1611,7 @@ pub fn schedule_from_kernel() {
         Some(s) => s,
         None => {
             unsafe {
-                core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
+                core::arch::asm!("msr daif, {}", in(reg) return_daif, options(nomem, nostack));
             }
             return;
         }
@@ -1626,7 +1637,7 @@ pub fn schedule_from_kernel() {
     let Some((old_id, new_id, should_requeue_old)) = schedule_result else {
         drop(guard);
         unsafe {
-            core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
+            core::arch::asm!("msr daif, {}", in(reg) return_daif, options(nomem, nostack));
         }
         return;
     };
@@ -1637,18 +1648,9 @@ pub fn schedule_from_kernel() {
         }
         drop(guard);
         unsafe {
-            core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
+            core::arch::asm!("msr daif, {}", in(reg) return_daif, options(nomem, nostack));
         }
         return;
-    }
-
-    let old_is_idle = sched.is_idle_thread_inner(old_id);
-    if old_is_idle {
-        // The CPU0 idle thread may resume through the parked
-        // schedule_from_kernel() frame instead of jumping straight to
-        // idle_loop_arm64. If we preserve DAIF.I=1 here, that resumed "idle"
-        // path can run with IRQs masked and strand pending AHCI completions.
-        saved_daif &= !SPSR_DAIF_IRQ_BIT;
     }
 
     trace_ctx_switch(old_id, new_id);
@@ -1671,7 +1673,7 @@ pub fn schedule_from_kernel() {
         None => {
             drop(guard);
             unsafe {
-                core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
+                core::arch::asm!("msr daif, {}", in(reg) return_daif, options(nomem, nostack));
             }
             return;
         }
@@ -1701,7 +1703,8 @@ pub fn schedule_from_kernel() {
     }
 
     unsafe {
-        core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
+        core::arch::asm!("msr daif, {}", in(reg) return_daif, options(nomem, nostack));
+        core::arch::asm!("msr daifclr, #3", options(nomem, nostack));
     }
 }
 
