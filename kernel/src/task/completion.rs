@@ -268,20 +268,14 @@ impl Completion {
                         return Ok(true);
                     }
 
-                    // WFI: atomically enable IRQs + halt until the next interrupt.
-                    // The AHCI ISR (SPI 34) or timer tick wakes us directly.
-                    // We use WFI instead of schedule_from_kernel() because:
-                    // 1. The AHCI IRQ may be routed to this specific CPU
-                    // 2. schedule_from_kernel() switches this CPU to another
-                    //    thread, which may run with IRQs disabled long enough
-                    //    to miss the AHCI completion window
-                    // 3. WFI keeps this thread current on the CPU with IRQs
-                    //    enabled — the ISR fires immediately on completion
-                    //
-                    // The ret-based dispatch in schedule_from_kernel() is still
-                    // used by timer preemption to avoid the CPU 0 IRQ death bug.
+                    // Yield CPU via schedule (Linux-equivalent wait_for_completion).
+                    // schedule_from_kernel() blocks this thread (BlockedOnIO) and
+                    // switches to another. The AHCI ISR calls complete() →
+                    // unblock_for_io() to wake us. After re-dispatch, ensure IRQs
+                    // are enabled and give the CPU a window to take any pending
+                    // interrupt before re-entering the scheduler.
                     #[cfg(target_arch = "aarch64")]
-                    crate::arch_halt_with_interrupts();
+                    crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
                     #[cfg(not(target_arch = "aarch64"))]
                     Cpu::halt_with_interrupts();
 

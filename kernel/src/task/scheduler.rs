@@ -1441,16 +1441,22 @@ impl Scheduler {
                 // Do NOT clear blocked_in_syscall here — the wait_timeout
                 // caller manages it after detecting the wakeup.
 
-                let is_current_on_any_cpu =
-                    (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].current_thread == Some(tid));
-
+                // Skip is_current_on_any_cpu check for BlockedOnIO.
+                // A thread that explicitly called block_current_for_io() is
+                // in the process of being switched out by schedule_from_kernel().
+                // cpu_state[].current_thread may still point to this thread
+                // (not yet updated by commit_cpu_state_after_save in the
+                // trampoline). The old is_current check caused the thread to
+                // be set Ready but never added to the ready queue — stranding
+                // it until the rescue timer fired (~1s), well past the 5s AHCI
+                // timeout. The deferred-requeue check is still safe because
+                // previous_thread is set AFTER commit_cpu_state_after_save.
                 #[cfg(target_arch = "aarch64")]
                 let is_in_deferred = self.is_in_deferred_requeue(tid);
                 #[cfg(not(target_arch = "aarch64"))]
                 let is_in_deferred = false;
 
-                if !is_current_on_any_cpu
-                    && !is_in_deferred
+                if !is_in_deferred
                     && tid != self.cpu_state[Self::current_cpu_id()].idle_thread
                     && !self.ready_queue.contains(&tid)
                 {

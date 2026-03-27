@@ -1961,20 +1961,18 @@ pub fn handle_interrupt() {
 
         if (is & (PORT_IRQ_COMPLETE | PORT_IRQ_ERROR)) != 0 {
             if port < MAX_AHCI_PORTS {
-                // Always signal slot 0 completion when the HBA reports a
-                // completion or error FIS. complete() is idempotent (stores
-                // the current command token + calls unblock_for_io if a waiter
-                // exists).
-                // This avoids the PORT_CI timing race where the HBA raises
-                // the interrupt before clearing PORT_CI, and avoids the
-                // PORT_ACTIVE_MASK race where a previous ISR already cleared
-                // the active bit. With single-slot I/O, slot 0 is always
-                // the command that completed.
-                let cmd_num = PORT_ACTIVE_CMD_NUM[port].load(Ordering::Acquire);
-                AHCI_COMPLETIONS[port][0].complete(cmd_num);
-
-                // Clear active mask for bookkeeping.
-                PORT_ACTIVE_CMD_NUM[port].store(0, Ordering::Release);
+                // Atomically load-and-clear the active command number.
+                // If cmd_num > 0, this is the first ISR invocation for this
+                // command — signal completion. If cmd_num == 0, a previous
+                // ISR already completed this command (level-triggered
+                // re-delivery or spurious). Calling complete(0) would
+                // overwrite done with 0, destroying the real token and
+                // causing the waiter to time out.
+                let cmd_num =
+                    PORT_ACTIVE_CMD_NUM[port].swap(0, Ordering::AcqRel);
+                if cmd_num != 0 {
+                    AHCI_COMPLETIONS[port][0].complete(cmd_num);
+                }
                 PORT_ACTIVE_MASK[port].store(0, Ordering::Release);
             }
         }
