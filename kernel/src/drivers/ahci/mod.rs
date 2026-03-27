@@ -195,6 +195,9 @@ static AHCI_COMPLETIONS: [[Completion; AHCI_MAX_CONCURRENT]; MAX_AHCI_PORTS] =
 static AHCI_ISR_COUNT: AtomicU32 = AtomicU32::new(0);
 /// Count commands issued via issue_cmd_slot0 (for diagnostic/timeout reporting).
 static AHCI_CMD_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Per-port token for the command currently issued in slot 0. 0 = none.
+static PORT_ACTIVE_CMD_NUM: [AtomicU32; MAX_AHCI_PORTS] =
+    [const { AtomicU32::new(0) }; MAX_AHCI_PORTS];
 /// Wait-context diagnostic armed by wait_cmd_slot0 for post-schedule dumps.
 static AHCI_WAIT_DIAG_ACTIVE: AtomicBool = AtomicBool::new(false);
 static AHCI_WAIT_DIAG_TID: AtomicU64 = AtomicU64::new(0);
@@ -218,6 +221,21 @@ static PORT_ACTIVE_MASK: [AtomicU32; MAX_AHCI_PORTS] =
 /// Unlike `AHCI_CONTROLLER` (which guards the controller struct) this lock is
 /// granular to a single port, allowing future multi-port parallelism.
 static PORT_IO_LOCK: [Mutex<()>; MAX_AHCI_PORTS] = [const { Mutex::new(()) }; MAX_AHCI_PORTS];
+
+#[inline]
+fn next_cmd_num() -> u32 {
+    loop {
+        let current = AHCI_CMD_COUNT.load(Ordering::Relaxed);
+        let next = current.wrapping_add(1);
+        let token = if next == 0 { 1 } else { next };
+        if AHCI_CMD_COUNT
+            .compare_exchange_weak(current, token, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            return token;
+        }
+    }
+}
 
 /// Sleep-safe per-port ownership for slot-0 I/O.
 ///
@@ -681,7 +699,7 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
         // ============================================================
         const TIMEOUT_NS: u64 = 5_000_000_000; // 5 s — Linux default
         let diag_armed = arm_wait_cmd_slot0_diag(port, cmd_num);
-        let wait_result = AHCI_COMPLETIONS[port][0].wait_timeout(TIMEOUT_NS);
+        let wait_result = AHCI_COMPLETIONS[port][0].wait_timeout(cmd_num, TIMEOUT_NS);
         if diag_armed {
             disarm_wait_cmd_slot0_diag();
         }
@@ -714,7 +732,7 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
         let (start, freq) = read_cntpct_and_freq();
         let deadline = start + freq * AHCI_TIMEOUT_SECS;
         loop {
-            if AHCI_COMPLETIONS[port][0].done.load(Ordering::Acquire) {
+            if AHCI_COMPLETIONS[port][0].done.load(Ordering::Acquire) == cmd_num {
                 let tfd = port_read(abar, port, PORT_TFD);
                 if (tfd & 1) != 0 {
                     return Err("AHCI: task file error");
@@ -1088,13 +1106,15 @@ impl AhciController {
         let has_irq = AHCI_IRQ.load(Ordering::Relaxed) != 0 && port < MAX_AHCI_PORTS;
         if has_irq {
             AHCI_COMPLETIONS[port][0].reset();
+            PORT_ACTIVE_CMD_NUM[port].store(0, Ordering::Release);
         }
 
-        let cmd_num = AHCI_CMD_COUNT.fetch_add(1, Ordering::Relaxed);
+        let cmd_num = next_cmd_num();
 
         // Mark slot 0 as in-flight BEFORE writing PORT_CI.
         // The ISR reads this mask to determine which slots completed.
         if has_irq && port < MAX_AHCI_PORTS {
+            PORT_ACTIVE_CMD_NUM[port].store(cmd_num, Ordering::Release);
             PORT_ACTIVE_MASK[port].fetch_or(1, Ordering::Release);
         }
 
@@ -1247,7 +1267,7 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
         if port < MAX_AHCI_PORTS {
             AHCI_COMPLETIONS[port][0].done.load(Ordering::Relaxed)
         } else {
-            false
+            0
         },
         pmr,
         rpr
@@ -2061,16 +2081,19 @@ pub fn handle_interrupt() {
         if (is & (PORT_IRQ_COMPLETE | PORT_IRQ_ERROR)) != 0 {
             if port < MAX_AHCI_PORTS {
                 // Always signal slot 0 completion when the HBA reports a
-                // completion or error FIS. complete() is idempotent (sets
-                // done=true + calls unblock_for_io if a waiter exists).
+                // completion or error FIS. complete() is idempotent (stores
+                // the current command token + calls unblock_for_io if a waiter
+                // exists).
                 // This avoids the PORT_CI timing race where the HBA raises
                 // the interrupt before clearing PORT_CI, and avoids the
                 // PORT_ACTIVE_MASK race where a previous ISR already cleared
                 // the active bit. With single-slot I/O, slot 0 is always
                 // the command that completed.
-                AHCI_COMPLETIONS[port][0].complete();
+                let cmd_num = PORT_ACTIVE_CMD_NUM[port].load(Ordering::Acquire);
+                AHCI_COMPLETIONS[port][0].complete(cmd_num);
 
                 // Clear active mask for bookkeeping.
+                PORT_ACTIVE_CMD_NUM[port].store(0, Ordering::Release);
                 PORT_ACTIVE_MASK[port].store(0, Ordering::Release);
             }
         }

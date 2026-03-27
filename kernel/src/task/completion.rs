@@ -2,13 +2,13 @@
 //!
 //! `Completion` is the kernel equivalent of Linux's `struct completion`.
 //! A single thread calls `wait_timeout()`, which sleeps until an ISR
-//! (or any other context) calls `complete()`.
+//! (or any other context) calls `complete(token)`.
 //!
 //! # Race prevention
 //!
 //! The done-check and `block_current_for_io()` execute under a single
 //! `with_scheduler()` call, matching Linux's `raw_spin_lock_irq` around
-//! `__prepare_to_swait`.  The ISR calls `complete()` which itself acquires
+//! `__prepare_to_swait`.  The ISR calls `complete(token)` which itself acquires
 //! the scheduler lock via `with_scheduler()`.  Because `with_scheduler()`
 //! disables interrupts before locking, and the ISR runs with interrupts
 //! already masked by hardware, there is no deadlock risk.
@@ -33,19 +33,20 @@
 //! static MY_COMP: Completion = Completion::new();
 //!
 //! // Issuing side (kernel thread):
+//! const TOKEN: u32 = 1;
 //! MY_COMP.reset();
 //! issue_hardware_command();
-//! match MY_COMP.wait_timeout(5_000_000_000) {
+//! match MY_COMP.wait_timeout(TOKEN, 5_000_000_000) {
 //!     Ok(true)  => { /* completed */ }
 //!     Ok(false) => { /* timed out */ }
 //!     Err(_)    => { /* EINTR — signal arrived */ }
 //! }
 //!
 //! // ISR side (interrupt handler):
-//! MY_COMP.complete();
+//! MY_COMP.complete(TOKEN);
 //! ```
 
-use core::sync::atomic::{fence, AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{fence, AtomicU32, AtomicU64, Ordering};
 
 #[cfg(not(target_arch = "aarch64"))]
 use crate::arch_impl::traits::CpuOps;
@@ -74,10 +75,10 @@ fn restore_syscall_preempt_state() {
 
 /// Completion primitive — pairs one waiter thread with one ISR.
 pub struct Completion {
-    /// Set to `true` by `complete()`, read by `wait_timeout()`.
+    /// 0 = not done, otherwise the completion token published by `complete()`.
     /// Exposed `pub(crate)` so AHCI's intermediate polling path (IRQ registered
     /// but scheduler not yet running) can poll it directly without sleeping.
-    pub(crate) done: AtomicBool,
+    pub(crate) done: AtomicU32,
     /// TID of the sleeping waiter thread. 0 means no waiter.
     waiter: AtomicU64,
 }
@@ -86,7 +87,7 @@ impl Completion {
     /// Create a new, not-yet-completed `Completion`.
     pub const fn new() -> Self {
         Self {
-            done: AtomicBool::new(false),
+            done: AtomicU32::new(0),
             waiter: AtomicU64::new(0),
         }
     }
@@ -96,14 +97,14 @@ impl Completion {
     /// Must be called before `wait_timeout()` when reusing a `Completion`
     /// across multiple commands (e.g., the per-port static).
     pub fn reset(&self) {
-        self.done.store(false, Ordering::Release);
+        self.done.store(0, Ordering::Release);
         self.waiter.store(0, Ordering::Release);
     }
 
     /// Wait for completion with a wall-clock timeout.
     ///
     /// Sleeps the current thread until:
-    /// - `complete()` is called  → returns `Ok(true)`
+    /// - `complete(expected_token)` is called  → returns `Ok(true)`
     /// - `timeout_ns` elapses   → returns `Ok(false)`
     /// - A signal arrives        → returns `Err(EINTR)`
     ///
@@ -112,9 +113,9 @@ impl Completion {
     ///
     /// Falls back to spin-polling when the scheduler is not yet running
     /// (detected by `with_scheduler` returning None).
-    pub fn wait_timeout(&self, timeout_ns: u64) -> Result<bool, i32> {
+    pub fn wait_timeout(&self, expected_token: u32, timeout_ns: u64) -> Result<bool, i32> {
         // Fast path: already done (e.g., very fast device, or spurious call).
-        if self.done.load(Ordering::Acquire) {
+        if self.done.load(Ordering::Acquire) == expected_token {
             let in_syscall = {
                 #[cfg(target_arch = "aarch64")]
                 {
@@ -210,14 +211,14 @@ impl Completion {
                 // 4. Clear blocked state, check done, check timeout.
                 //
                 // Race safety: the scheduler lock serialises our done-check and
-                // block_current_for_io() against complete()/unblock_for_io().
+                // block_current_for_io() against complete(token)/unblock_for_io().
                 // If the ISR fires between our done-check and block_current_for_io,
                 // with_scheduler sees the ISR cleared the state already and the
-                // next iteration detects done=true.
+                // next iteration detects done=expected_token.
                 // ============================================================
 
                 // Fast check after waiter store — ISR may have fired already.
-                if self.done.load(Ordering::Acquire) {
+                if self.done.load(Ordering::Acquire) == expected_token {
                     self.waiter.store(0, Ordering::Release);
                     clear_blocked_in_syscall_current();
                     return Ok(true);
@@ -245,10 +246,11 @@ impl Completion {
                     }
 
                     // Atomic check-and-block: under the scheduler lock, either
-                    // the ISR already set done=true (don't block) or we call
+                    // the ISR already set done=expected_token (don't block)
+                    // or we call
                     // block_current_for_io() (sets state=BlockedOnIO).
                     let already_done = crate::task::scheduler::with_scheduler(|sched| {
-                        if self.done.load(Ordering::Acquire) {
+                        if self.done.load(Ordering::Acquire) == expected_token {
                             true
                         } else {
                             sched.block_current_for_io_with_timeout(Some(deadline_ns));
@@ -257,7 +259,7 @@ impl Completion {
                     })
                     .unwrap_or(false); // None = scheduler gone (shouldn't happen)
 
-                    if already_done || self.done.load(Ordering::Acquire) {
+                    if already_done || self.done.load(Ordering::Acquire) == expected_token {
                         self.waiter.store(0, Ordering::Release);
                         clear_blocked_in_syscall_current();
                         // Restore preempt_count to the value expected by the
@@ -296,7 +298,7 @@ impl Completion {
                     clear_blocked_in_syscall_current();
 
                     // Check done after wake.
-                    if self.done.load(Ordering::Acquire) {
+                    if self.done.load(Ordering::Acquire) == expected_token {
                         self.waiter.store(0, Ordering::Release);
                         restore_syscall_preempt_state();
                         return Ok(true);
@@ -336,7 +338,7 @@ impl Completion {
                 // complete() emits SEV which wakes WFE race-free.
                 // ============================================================
                 loop {
-                    if self.done.load(Ordering::Acquire) {
+                    if self.done.load(Ordering::Acquire) == expected_token {
                         self.waiter.store(0, Ordering::Release);
                         return Ok(true);
                     }
@@ -380,7 +382,7 @@ impl Completion {
                 let ticks = (timeout_ns as u128 * freq as u128 / 1_000_000_000) as u64;
                 let deadline = cnt.wrapping_add(ticks);
                 loop {
-                    if self.done.load(Ordering::Acquire) {
+                    if self.done.load(Ordering::Acquire) == expected_token {
                         return Ok(true);
                     }
                     let now: u64;
@@ -402,28 +404,28 @@ impl Completion {
                 // x86_64 early boot: plain spin (AHCI not primary driver here).
                 let limit = timeout_ns / 1000; // rough cycle budget
                 for _ in 0..limit {
-                    if self.done.load(Ordering::Acquire) {
+                    if self.done.load(Ordering::Acquire) == expected_token {
                         return Ok(true);
                     }
                     core::hint::spin_loop();
                 }
-                Ok(self.done.load(Ordering::Acquire))
+                Ok(self.done.load(Ordering::Acquire) == expected_token)
             }
         }
     }
 
     /// Signal completion from ISR or any other context.
     ///
-    /// Sets `done = true`, then wakes the waiter thread (if any) by calling
+    /// Sets `done = token`, then wakes the waiter thread (if any) by calling
     /// `unblock_for_io()` under the scheduler lock.  This is safe from ISR
     /// context because `with_scheduler()` disables interrupts before locking,
     /// and the ISR already runs with IRQs masked.
     ///
     /// Idempotent: calling `complete()` multiple times is safe (the second
-    /// call sees done=true and a waiter of 0, which is a no-op).
-    pub fn complete(&self) {
+    /// call stores the same token again and a waiter of 0, which is a no-op).
+    pub fn complete(&self, token: u32) {
         // Store done before we try to wake the waiter.
-        self.done.store(true, Ordering::Release);
+        self.done.store(token, Ordering::Release);
         // Fence: ensure done is visible on all CPUs before we read waiter.
         fence(Ordering::SeqCst);
 
