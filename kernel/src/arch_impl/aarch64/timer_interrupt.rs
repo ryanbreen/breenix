@@ -16,6 +16,7 @@
 
 use crate::task::scheduler;
 use crate::tracing::providers::irq::trace_timer_tick;
+use crate::arch_impl::traits::PerCpuOps;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// Virtual timer interrupt ID (PPI 27) — used on QEMU/Parallels
@@ -300,7 +301,10 @@ pub extern "C" fn timer_interrupt_handler() {
 
     // CPU 0 only: update global wall clock time (single atomic operation)
     if cpu_id == 0 {
-        TIMER_TICKS_CPU0.fetch_add(1, Ordering::Relaxed);
+        let cpu0_tick = TIMER_TICKS_CPU0.fetch_add(1, Ordering::Relaxed) + 1;
+        if cpu0_tick <= 10 {
+            emit_cpu0_timer_breadcrumb(cpu0_tick);
+        }
         crate::time::timer_interrupt();
     }
 
@@ -535,6 +539,45 @@ fn dump_gic_state() {
 #[inline(always)]
 fn raw_serial_char(c: u8) {
     crate::serial_aarch64::raw_serial_char(c);
+}
+
+#[inline(always)]
+fn raw_serial_hex_digit(val: u8) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    raw_serial_char(HEX[(val & 0xF) as usize]);
+}
+
+/// Print a u64 as compact hexadecimal using raw serial output.
+#[inline(always)]
+fn raw_serial_hex_compact(val: u64) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut started = false;
+    for i in (0..16).rev() {
+        let nibble = ((val >> (i * 4)) & 0xF) as usize;
+        if nibble != 0 || started || i == 0 {
+            raw_serial_char(HEX[nibble]);
+            started = true;
+        }
+    }
+}
+
+#[inline(always)]
+fn breadcrumb_current_thread_id() -> u64 {
+    let thread_ptr = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::current_thread_ptr();
+    if thread_ptr.is_null() {
+        0
+    } else {
+        unsafe { (*(thread_ptr as *const crate::task::thread::Thread)).id() }
+    }
+}
+
+#[inline(always)]
+fn emit_cpu0_timer_breadcrumb(tick: u64) {
+    raw_serial_char(b'T');
+    raw_serial_hex_digit((tick & 0xF) as u8);
+    raw_serial_char(b':');
+    raw_serial_hex_compact(breadcrumb_current_thread_id());
+    raw_serial_char(b'\n');
 }
 
 /// Raw serial output - write a string without locks for debugging

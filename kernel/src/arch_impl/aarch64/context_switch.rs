@@ -47,6 +47,33 @@ fn kernel_dispatch_spsr(spsr: u64) -> u64 {
     ((spsr & !SPSR_MODE_MASK) | SPSR_EL1H) & !SPSR_DAIF_IRQ_BIT
 }
 
+#[inline(always)]
+fn raw_serial_char(c: u8) {
+    crate::serial_aarch64::raw_serial_char(c);
+}
+
+#[inline(always)]
+fn raw_serial_hex_compact(val: u64) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut started = false;
+    for i in (0..16).rev() {
+        let nibble = ((val >> (i * 4)) & 0xF) as usize;
+        if nibble != 0 || started || i == 0 {
+            raw_serial_char(HEX[nibble]);
+            started = true;
+        }
+    }
+}
+
+#[inline(always)]
+fn emit_schedule_breadcrumb(old_id: u64, new_id: u64) {
+    raw_serial_char(b'S');
+    raw_serial_hex_compact(old_id);
+    raw_serial_char(b'>');
+    raw_serial_hex_compact(new_id);
+    raw_serial_char(b'\n');
+}
+
 core::arch::global_asm!(
     r#"
 .section .text
@@ -1647,6 +1674,10 @@ pub fn schedule_from_kernel() {
         }
         return;
     };
+
+    if cpu_id == 0 {
+        emit_schedule_breadcrumb(old_id, new_id);
+    }
 
     if old_id == new_id {
         if should_requeue_old {
