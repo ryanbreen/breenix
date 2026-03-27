@@ -10,11 +10,11 @@
 #![allow(dead_code)]
 
 use crate::arch_impl::aarch64::constants;
-use crate::arch_impl::aarch64::gic;
 use crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame;
+use crate::arch_impl::aarch64::gic;
 use crate::arch_impl::aarch64::syscall_entry::rust_syscall_handler_aarch64;
-use crate::arch_impl::traits::SyscallFrame;
 use crate::arch_impl::traits::PerCpuOps;
+use crate::arch_impl::traits::SyscallFrame;
 
 /// Set the per-CPU idle/boot stack in `user_rsp_scratch` so the assembly ERET
 /// path restores SP to a safe stack when redirecting to idle_loop_arm64.
@@ -92,7 +92,7 @@ pub enum SyscallResult {
 /// Exception Syndrome Register (ESR_EL1) exception class values
 mod exception_class {
     pub const UNKNOWN: u32 = 0b000000;
-    pub const SVC_AARCH64: u32 = 0b010101;  // SVC instruction (syscall)
+    pub const SVC_AARCH64: u32 = 0b010101; // SVC instruction (syscall)
     pub const INSTRUCTION_ABORT_LOWER: u32 = 0b100000;
     pub const INSTRUCTION_ABORT_SAME: u32 = 0b100001;
     pub const DATA_ABORT_LOWER: u32 = 0b100100;
@@ -106,7 +106,7 @@ mod exception_class {
     pub const SOFTWARE_STEP_SAME: u32 = 0b110011;
     pub const WATCHPOINT_LOWER: u32 = 0b110100;
     pub const WATCHPOINT_SAME: u32 = 0b110101;
-    pub const BRK_AARCH64: u32 = 0b111100;  // BRK instruction
+    pub const BRK_AARCH64: u32 = 0b111100; // BRK instruction
 }
 
 /// Handle synchronous exceptions (syscalls, page faults, etc.)
@@ -117,8 +117,8 @@ mod exception_class {
 /// - x2 = FAR_EL1 (Fault Address Register)
 #[no_mangle]
 pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: u64, far: u64) {
-    let ec = ((esr >> 26) & 0x3F) as u32;  // Exception Class
-    let iss = (esr & 0x1FFFFFF) as u32;    // Instruction Specific Syndrome
+    let ec = ((esr >> 26) & 0x3F) as u32; // Exception Class
+    let iss = (esr & 0x1FFFFFF) as u32; // Instruction Specific Syndrome
 
     match ec {
         exception_class::SVC_AARCH64 => {
@@ -185,7 +185,9 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             // Lock-free diagnostic — serial_println! acquires SERIAL lock which
             // can deadlock on SMP if another CPU holds SCHEDULER.
             {
-                use crate::arch_impl::aarch64::context_switch::{raw_uart_str, raw_uart_hex, raw_uart_char, raw_uart_dec};
+                use crate::arch_impl::aarch64::context_switch::{
+                    raw_uart_char, raw_uart_dec, raw_uart_hex, raw_uart_str,
+                };
                 raw_uart_str("\n[DATA_ABORT] FAR=");
                 raw_uart_hex(far);
                 raw_uart_str(" ELR=");
@@ -227,7 +229,8 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
 
                     // Per-CPU state diagnostic: shows whether kernel_stack_top and
                     // user_rsp_scratch are correct for the current thread.
-                    let percpu_kst = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::kernel_stack_top();
+                    let percpu_kst =
+                        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::kernel_stack_top();
                     raw_uart_str("\n  percpu_kst=");
                     raw_uart_hex(percpu_kst);
                     let user_rsp: u64;
@@ -279,7 +282,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 // Page table walk diagnostic: dump L0-L3 entries for the fault VA
                 // to understand why the mapping is missing or has wrong permissions.
                 {
-                    use crate::arch_impl::aarch64::context_switch::{raw_uart_str, raw_uart_hex};
+                    use crate::arch_impl::aarch64::context_switch::{raw_uart_hex, raw_uart_str};
                     let pt_base = ttbr0 & 0x0000_FFFF_FFFF_F000;
                     let hhdm: u64 = 0xFFFF_0000_0000_0000;
                     raw_uart_str("\n[PT_WALK] VA=");
@@ -312,7 +315,8 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                             let l2_base = l1_entry & 0x0000_FFFF_FFFF_F000;
                             let l2_idx = ((far >> 21) & 0x1FF) as usize;
                             let l2_table = (hhdm + l2_base) as *const u64;
-                            let l2_entry = unsafe { core::ptr::read_volatile(l2_table.add(l2_idx)) };
+                            let l2_entry =
+                                unsafe { core::ptr::read_volatile(l2_table.add(l2_idx)) };
                             raw_uart_str(" L2[");
                             raw_uart_hex(l2_idx as u64);
                             raw_uart_str("]=");
@@ -323,7 +327,8 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                                 let l3_base = l2_entry & 0x0000_FFFF_FFFF_F000;
                                 let l3_idx = ((far >> 12) & 0x1FF) as usize;
                                 let l3_table = (hhdm + l3_base) as *const u64;
-                                let l3_entry = unsafe { core::ptr::read_volatile(l3_table.add(l3_idx)) };
+                                let l3_entry =
+                                    unsafe { core::ptr::read_volatile(l3_table.add(l3_idx)) };
                                 raw_uart_str(" L3[");
                                 raw_uart_hex(l3_idx as u64);
                                 raw_uart_str("]=");
@@ -357,7 +362,10 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                             already_terminated = true;
                             return;
                         }
-                        crate::tracing::providers::process::trace_process_exit(pid.as_u64() as u16, (-11i16) as u16);
+                        crate::tracing::providers::process::trace_process_exit(
+                            pid.as_u64() as u16,
+                            (-11i16) as u16,
+                        );
                         pm.exit_process(pid, -11); // SIGSEGV exit code
                         terminated = true;
                     } else {
@@ -402,7 +410,8 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     if let Some((pid, process)) = pm.find_process_by_cr3_mut(page_table_phys) {
                         if !process.is_terminated() {
                             crate::tracing::providers::process::trace_process_exit(
-                                pid.as_u64() as u16, (-11i16) as u16,
+                                pid.as_u64() as u16,
+                                (-11i16) as u16,
                             );
                             pm.exit_process(pid, -11); // SIGSEGV
                         }
@@ -418,8 +427,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort() —
             // if switch_to_idle panics or hits a nested exception, the frame
             // must already have safe ELR/SPSR for the assembly ERET path.
-            frame_ref.elr =
-                crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
+            frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
             frame_ref.spsr = 0x5; // EL1h, interrupts enabled
 
             set_idle_stack_for_eret();
@@ -440,7 +448,9 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             // Use raw UART for ALL output — serial_println! acquires a spin lock
             // that may already be held by this or another CPU, causing deadlock.
             {
-                use crate::arch_impl::aarch64::context_switch::{raw_uart_char, raw_uart_str, raw_uart_hex, raw_uart_dec};
+                use crate::arch_impl::aarch64::context_switch::{
+                    raw_uart_char, raw_uart_dec, raw_uart_hex, raw_uart_str,
+                };
                 raw_uart_str("\n[INSTRUCTION_ABORT] FAR=");
                 raw_uart_hex(far);
                 raw_uart_str(" ELR=");
@@ -571,7 +581,8 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     raw_uart_hex(frame_ref as *const _ as u64);
 
                     // Per-CPU state
-                    let percpu_kst = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::kernel_stack_top();
+                    let percpu_kst =
+                        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::kernel_stack_top();
                     raw_uart_str("\n  percpu_kst=");
                     raw_uart_hex(percpu_kst);
                     let user_rsp: u64;
@@ -588,8 +599,10 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     raw_uart_hex(user_rsp);
 
                     // Last dispatched ELR/SPSR from per-CPU data
-                    let dispatch_elr = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::dispatch_elr();
-                    let dispatch_spsr = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::dispatch_spsr();
+                    let dispatch_elr =
+                        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::dispatch_elr();
+                    let dispatch_spsr =
+                        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::dispatch_spsr();
                     raw_uart_str("\n  last_dispatch_elr=");
                     raw_uart_hex(dispatch_elr);
                     raw_uart_str(" last_dispatch_spsr=");
@@ -675,7 +688,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 });
                 // Lock-free diagnostic AFTER releasing process manager lock
                 if terminated {
-                    use crate::arch_impl::aarch64::context_switch::{raw_uart_str, raw_uart_dec};
+                    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
                     raw_uart_str("[INSTRUCTION_ABORT] Terminating PID ");
                     raw_uart_dec(killed_pid);
                     raw_uart_str(" (SIGSEGV)\n");
@@ -686,8 +699,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     switch_ttbr0_to_kernel();
                     crate::task::scheduler::set_need_resched();
                     // CRITICAL: Set frame values BEFORE switch_to_idle()
-                    frame_ref.elr =
-                        crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
+                    frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
                     frame_ref.spsr = 0x5; // EL1h, DAIF clear (interrupts enabled)
 
                     set_idle_stack_for_eret();
@@ -704,8 +716,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 use crate::arch_impl::aarch64::context_switch::raw_uart_str;
                 raw_uart_str("[INSTRUCTION_ABORT] redirecting to idle\n");
             }
-            frame_ref.elr =
-                crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
+            frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
             frame_ref.spsr = 0x5; // EL1h, DAIF clear (interrupts enabled)
 
             set_idle_stack_for_eret();
@@ -726,7 +737,9 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             let frame_ref = unsafe { &mut *frame };
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
             {
-                use crate::arch_impl::aarch64::context_switch::{raw_uart_str, raw_uart_hex, raw_uart_char};
+                use crate::arch_impl::aarch64::context_switch::{
+                    raw_uart_char, raw_uart_hex, raw_uart_str,
+                };
                 raw_uart_str("\n[SP_ALIGN] ELR=");
                 raw_uart_hex(frame_ref.elr);
                 raw_uart_str(" FAR=");
@@ -737,7 +750,9 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             }
             if from_el0 {
                 let ttbr0: u64;
-                unsafe { core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack)); }
+                unsafe {
+                    core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
+                }
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
                 crate::process::with_process_manager(|pm| {
                     if let Some((pid, process)) = pm.find_process_by_cr3_mut(page_table_phys) {
@@ -764,7 +779,9 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             let frame_ref = unsafe { &mut *frame };
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
             {
-                use crate::arch_impl::aarch64::context_switch::{raw_uart_str, raw_uart_hex, raw_uart_char};
+                use crate::arch_impl::aarch64::context_switch::{
+                    raw_uart_char, raw_uart_hex, raw_uart_str,
+                };
                 raw_uart_str("\n[PC_ALIGN] ELR=");
                 raw_uart_hex(frame_ref.elr);
                 raw_uart_str(" FAR=");
@@ -775,7 +792,9 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             }
             if from_el0 {
                 let ttbr0: u64;
-                unsafe { core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack)); }
+                unsafe {
+                    core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
+                }
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
                 crate::process::with_process_manager(|pm| {
                     if let Some((pid, process)) = pm.find_process_by_cr3_mut(page_table_phys) {
@@ -799,13 +818,17 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             // Mask all interrupts to prevent cascading exceptions on SMP
             // (timer IRQs cause context switches that schedule more threads
             // onto this CPU, each hitting the same unhandled exception)
-            unsafe { core::arch::asm!("msr daifset, #0xf", options(nomem, nostack)); }
+            unsafe {
+                core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
+            }
             let frame_ref = unsafe { &mut *frame };
             // Use lock-free raw UART — serial_println! acquires a spinlock that may be
             // held by another CPU, causing deadlock when this exception fires during a
             // context switch that already holds the scheduler lock.
             {
-                use crate::arch_impl::aarch64::context_switch::{raw_uart_str, raw_uart_hex, raw_uart_dec};
+                use crate::arch_impl::aarch64::context_switch::{
+                    raw_uart_dec, raw_uart_hex, raw_uart_str,
+                };
                 let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
                 raw_uart_str("[UNHANDLED_EC] cpu=");
                 raw_uart_dec(cpu_id as u64);
@@ -832,10 +855,10 @@ mod syscall_nums {
     pub const EXIT: u64 = 0;
     pub const WRITE: u64 = 1;
     pub const READ: u64 = 2;
-    pub const YIELD: u64 = 3;        // Breenix: sched_yield
-    pub const GET_TIME: u64 = 4;     // Breenix: get_time (deprecated)
-    pub const CLOSE: u64 = 6;        // Breenix: close
-    pub const BRK: u64 = 12;         // Linux: brk
+    pub const YIELD: u64 = 3; // Breenix: sched_yield
+    pub const GET_TIME: u64 = 4; // Breenix: get_time (deprecated)
+    pub const CLOSE: u64 = 6; // Breenix: close
+    pub const BRK: u64 = 12; // Linux: brk
 
     // Process syscalls
     pub const GETPID: u64 = 39;
@@ -866,13 +889,13 @@ fn handle_syscall(frame: &mut Aarch64ExceptionFrame) {
 
             // For now, just halt - real implementation would terminate the process
             loop {
-                unsafe { core::arch::asm!("wfi"); }
+                unsafe {
+                    core::arch::asm!("wfi");
+                }
             }
         }
 
-        syscall_nums::WRITE => {
-            sys_write(arg1, arg2, arg3)
-        }
+        syscall_nums::WRITE => sys_write(arg1, arg2, arg3),
 
         syscall_nums::READ => {
             // For now, read is not implemented
@@ -911,9 +934,7 @@ fn handle_syscall(frame: &mut Aarch64ExceptionFrame) {
             SyscallResult::Ok(1)
         }
 
-        syscall_nums::CLOCK_GETTIME => {
-            sys_clock_gettime(arg1 as u32, arg2 as *mut Timespec)
-        }
+        syscall_nums::CLOCK_GETTIME => sys_clock_gettime(arg1 as u32, arg2 as *mut Timespec),
 
         _ => {
             crate::serial_println!("[syscall] ENOSYS for syscall {}", syscall_num);
@@ -969,10 +990,12 @@ fn sys_clock_gettime(clock_id: u32, user_timespec_ptr: *mut Timespec) -> Syscall
 
     // Get time from the arch-agnostic time module
     let (tv_sec, tv_nsec) = match clock_id {
-        0 => { // CLOCK_REALTIME
+        0 => {
+            // CLOCK_REALTIME
             crate::time::get_real_time_ns()
         }
-        1 => { // CLOCK_MONOTONIC
+        1 => {
+            // CLOCK_MONOTONIC
             let (secs, nanos) = crate::time::get_monotonic_time_ns();
             (secs as i64, nanos as i64)
         }
@@ -1191,7 +1214,7 @@ fn exception_class_name(ec: u32) -> &'static str {
 /// Returns true if the fault was handled (page was copied or made writable)
 /// Returns false if this wasn't a CoW fault or couldn't be handled
 fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
-    use crate::memory::arch_stub::{VirtAddr, Page, Size4KiB};
+    use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
     use crate::memory::cow_stats;
     use crate::memory::frame_allocator::allocate_frame;
     use crate::memory::frame_metadata::{frame_decref, frame_is_shared, frame_register};
@@ -1287,7 +1310,10 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
             );
         }
         cow_stats::SOLE_OWNER_OPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        crate::tracing::providers::process::trace_cow_copy(_pid.as_u64() as u16, (far >> 12) as u16);
+        crate::tracing::providers::process::trace_cow_copy(
+            _pid.as_u64() as u16,
+            (far >> 12) as u16,
+        );
         return true;
     }
 

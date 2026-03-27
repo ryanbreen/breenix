@@ -264,7 +264,8 @@ impl TerminalPane {
                 if byte.is_ascii_digit() {
                     // Accumulate parameter digit
                     if self.ansi_param_idx < 16 {
-                        self.ansi_params[self.ansi_param_idx] = self.ansi_params[self.ansi_param_idx]
+                        self.ansi_params[self.ansi_param_idx] = self.ansi_params
+                            [self.ansi_param_idx]
                             .saturating_mul(10)
                             .saturating_add(byte - b'0');
                     }
@@ -333,9 +334,20 @@ impl TerminalPane {
             b'H' | b'f' => {
                 // Cursor Position
                 // Parameters are 1-based, default to 1
-                let row = if param1 == 0 { 0 } else { param1.saturating_sub(1) };
-                let col = if param2 == 0 { 0 } else { param2.saturating_sub(1) };
-                self.set_cursor(col.min(self.cols.saturating_sub(1)), row.min(self.rows.saturating_sub(1)));
+                let row = if param1 == 0 {
+                    0
+                } else {
+                    param1.saturating_sub(1)
+                };
+                let col = if param2 == 0 {
+                    0
+                } else {
+                    param2.saturating_sub(1)
+                };
+                self.set_cursor(
+                    col.min(self.cols.saturating_sub(1)),
+                    row.min(self.rows.saturating_sub(1)),
+                );
             }
             b'A' => {
                 // Cursor Up
@@ -532,7 +544,11 @@ impl TerminalPane {
         let cursor_height = 2;
         let cursor_y = py + self.metrics.line_height() as i32 - cursor_height;
 
-        let color = if visible { self.fg_color } else { self.bg_color };
+        let color = if visible {
+            self.fg_color
+        } else {
+            self.bg_color
+        };
 
         fill_rect(
             canvas,

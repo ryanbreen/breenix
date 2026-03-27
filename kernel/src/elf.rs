@@ -234,7 +234,7 @@ fn load_segment(
     let mem_size = ph.p_memsz as usize;
 
     // Our userspace binaries use absolute addressing starting at USERSPACE_BASE
-    // Don't add base_offset for absolute addresses in the userspace range  
+    // Don't add base_offset for absolute addresses in the userspace range
     let vaddr = if ph.p_vaddr >= crate::memory::layout::USERSPACE_BASE {
         // Absolute userspace address - use directly
         VirtAddr::new(ph.p_vaddr)
@@ -470,9 +470,13 @@ fn load_segment_into_page_table(
     // Determine final permissions
     let segment_writable = ph.p_flags & 2 != 0;
     let segment_executable = ph.p_flags & 1 != 0;
-    
-    log::trace!("Segment flags analysis: p_flags={:#x}, writable={}, executable={}",
-        ph.p_flags, segment_writable, segment_executable);
+
+    log::trace!(
+        "Segment flags analysis: p_flags={:#x}, writable={}, executable={}",
+        ph.p_flags,
+        segment_writable,
+        segment_executable
+    );
 
     // Set up final page flags
     let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
@@ -487,25 +491,27 @@ fn load_segment_into_page_table(
     for page in Page::range_inclusive(start_page, end_page) {
         // Check if page is already mapped (from a previous overlapping segment)
         // This handles cases like RELRO segments that overlap with data segments
-        let (frame, already_mapped) = if let Some(existing_phys_addr) = page_table.translate_page(page.start_address()) {
-            use x86_64::structures::paging::PhysFrame;
-            let existing_frame = PhysFrame::containing_address(existing_phys_addr);
-            (existing_frame, true)
-        } else {
-            // Page not mapped yet, allocate a new frame
-            let new_frame = crate::memory::frame_allocator::allocate_frame().ok_or("Out of memory")?;
+        let (frame, already_mapped) =
+            if let Some(existing_phys_addr) = page_table.translate_page(page.start_address()) {
+                use x86_64::structures::paging::PhysFrame;
+                let existing_frame = PhysFrame::containing_address(existing_phys_addr);
+                (existing_frame, true)
+            } else {
+                // Page not mapped yet, allocate a new frame
+                let new_frame =
+                    crate::memory::frame_allocator::allocate_frame().ok_or("Out of memory")?;
 
-            // Map page in the process page table (from kernel space)
-            match page_table.map_page(page, new_frame, flags) {
-                Ok(()) => {}
-                Err(e) => {
-                    log::error!("Failed to map page at {:?}: {}", page.start_address(), e);
-                    return Err("Failed to map page in process page table");
+                // Map page in the process page table (from kernel space)
+                match page_table.map_page(page, new_frame, flags) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        log::error!("Failed to map page at {:?}: {}", page.start_address(), e);
+                        return Err("Failed to map page in process page table");
+                    }
                 }
-            }
 
-            (new_frame, false)
-        };
+                (new_frame, false)
+            };
 
         // Get physical address for direct memory access (Linux-style)
         let physical_memory_offset = crate::memory::physical_memory_offset();
@@ -544,10 +550,8 @@ fn load_segment_into_page_table(
         // would write past the end of the physical frame, corrupting adjacent memory.
         let bytes_available_in_page = (4096 - page_offset) as u64;
         let copy_start_in_file = page_file_offset;
-        let copy_end_in_file = core::cmp::min(
-            page_file_offset + bytes_available_in_page,
-            file_size as u64,
-        );
+        let copy_end_in_file =
+            core::cmp::min(page_file_offset + bytes_available_in_page, file_size as u64);
 
         if copy_start_in_file < file_size as u64 && copy_end_in_file > copy_start_in_file {
             let file_data_start = (file_start as u64 + copy_start_in_file) as usize;

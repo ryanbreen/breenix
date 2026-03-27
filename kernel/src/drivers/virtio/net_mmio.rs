@@ -3,9 +3,11 @@
 //! Implements a network device driver using VirtIO MMIO transport.
 //! Uses static buffers with identity mapping for simplicity.
 
-use super::mmio::{VirtioMmioDevice, device_id, VIRTIO_MMIO_BASE, VIRTIO_MMIO_SIZE, VIRTIO_MMIO_COUNT};
+use super::mmio::{
+    device_id, VirtioMmioDevice, VIRTIO_MMIO_BASE, VIRTIO_MMIO_COUNT, VIRTIO_MMIO_SIZE,
+};
 use core::ptr::read_volatile;
-use core::sync::atomic::{AtomicBool, fence, Ordering};
+use core::sync::atomic::{fence, AtomicBool, Ordering};
 
 /// VirtIO network header flags
 #[allow(dead_code)]
@@ -26,11 +28,11 @@ mod gso_type {
 /// VirtIO network features
 mod features {
     #[allow(dead_code)]
-    pub const MAC: u64 = 1 << 5;           // Device has given MAC address
+    pub const MAC: u64 = 1 << 5; // Device has given MAC address
     #[allow(dead_code)]
-    pub const STATUS: u64 = 1 << 16;       // Link status available
+    pub const STATUS: u64 = 1 << 16; // Link status available
     #[allow(dead_code)]
-    pub const MRG_RXBUF: u64 = 1 << 15;    // Merge receive buffers
+    pub const MRG_RXBUF: u64 = 1 << 15; // Merge receive buffers
 }
 
 /// Maximum packet size (MTU + headers)
@@ -123,39 +125,100 @@ struct TxBuffer {
 
 // Static buffers for the network driver
 static mut RX_QUEUE: RxQueueMemory = RxQueueMemory {
-    desc: [VirtqDesc { addr: 0, len: 0, flags: 0, next: 0 }; 16],
-    avail: VirtqAvail { flags: 0, idx: 0, ring: [0; 16] },
+    desc: [VirtqDesc {
+        addr: 0,
+        len: 0,
+        flags: 0,
+        next: 0,
+    }; 16],
+    avail: VirtqAvail {
+        flags: 0,
+        idx: 0,
+        ring: [0; 16],
+    },
     _padding: [0; 4096 - 256 - 36],
-    used: VirtqUsed { flags: 0, idx: 0, ring: [VirtqUsedElem { id: 0, len: 0 }; 16] },
+    used: VirtqUsed {
+        flags: 0,
+        idx: 0,
+        ring: [VirtqUsedElem { id: 0, len: 0 }; 16],
+    },
 };
 
 static mut TX_QUEUE: TxQueueMemory = TxQueueMemory {
-    desc: [VirtqDesc { addr: 0, len: 0, flags: 0, next: 0 }; 16],
-    avail: VirtqAvail { flags: 0, idx: 0, ring: [0; 16] },
+    desc: [VirtqDesc {
+        addr: 0,
+        len: 0,
+        flags: 0,
+        next: 0,
+    }; 16],
+    avail: VirtqAvail {
+        flags: 0,
+        idx: 0,
+        ring: [0; 16],
+    },
     _padding: [0; 4096 - 256 - 36],
-    used: VirtqUsed { flags: 0, idx: 0, ring: [VirtqUsedElem { id: 0, len: 0 }; 16] },
+    used: VirtqUsed {
+        flags: 0,
+        idx: 0,
+        ring: [VirtqUsedElem { id: 0, len: 0 }; 16],
+    },
 };
 
 // RX/TX buffers - need to initialize each element separately due to size
 static mut RX_BUFFER_0: RxBuffer = RxBuffer {
-    hdr: VirtioNetHdr { flags: 0, gso_type: 0, hdr_len: 0, gso_size: 0, csum_start: 0, csum_offset: 0 },
+    hdr: VirtioNetHdr {
+        flags: 0,
+        gso_type: 0,
+        hdr_len: 0,
+        gso_size: 0,
+        csum_start: 0,
+        csum_offset: 0,
+    },
     data: [0; MAX_PACKET_SIZE],
 };
 static mut RX_BUFFER_1: RxBuffer = RxBuffer {
-    hdr: VirtioNetHdr { flags: 0, gso_type: 0, hdr_len: 0, gso_size: 0, csum_start: 0, csum_offset: 0 },
+    hdr: VirtioNetHdr {
+        flags: 0,
+        gso_type: 0,
+        hdr_len: 0,
+        gso_size: 0,
+        csum_start: 0,
+        csum_offset: 0,
+    },
     data: [0; MAX_PACKET_SIZE],
 };
 static mut RX_BUFFER_2: RxBuffer = RxBuffer {
-    hdr: VirtioNetHdr { flags: 0, gso_type: 0, hdr_len: 0, gso_size: 0, csum_start: 0, csum_offset: 0 },
+    hdr: VirtioNetHdr {
+        flags: 0,
+        gso_type: 0,
+        hdr_len: 0,
+        gso_size: 0,
+        csum_start: 0,
+        csum_offset: 0,
+    },
     data: [0; MAX_PACKET_SIZE],
 };
 static mut RX_BUFFER_3: RxBuffer = RxBuffer {
-    hdr: VirtioNetHdr { flags: 0, gso_type: 0, hdr_len: 0, gso_size: 0, csum_start: 0, csum_offset: 0 },
+    hdr: VirtioNetHdr {
+        flags: 0,
+        gso_type: 0,
+        hdr_len: 0,
+        gso_size: 0,
+        csum_start: 0,
+        csum_offset: 0,
+    },
     data: [0; MAX_PACKET_SIZE],
 };
 
 static mut TX_BUFFER: TxBuffer = TxBuffer {
-    hdr: VirtioNetHdr { flags: 0, gso_type: 0, hdr_len: 0, gso_size: 0, csum_start: 0, csum_offset: 0 },
+    hdr: VirtioNetHdr {
+        flags: 0,
+        gso_type: 0,
+        hdr_len: 0,
+        gso_size: 0,
+        csum_start: 0,
+        csum_offset: 0,
+    },
     data: [0; MAX_PACKET_SIZE],
 };
 
@@ -196,7 +259,11 @@ pub fn init() -> Result<(), &'static str> {
         let base = VIRTIO_MMIO_BASE + (i as u64) * VIRTIO_MMIO_SIZE;
         if let Some(mut device) = VirtioMmioDevice::probe(base) {
             if device.device_id() == device_id::NETWORK {
-                crate::serial_println!("[virtio-net] Found network device at {:#x} (slot {})", base, i);
+                crate::serial_println!(
+                    "[virtio-net] Found network device at {:#x} (slot {})",
+                    base,
+                    i
+                );
                 init_device(&mut device, base)?;
 
                 // Track the slot and virtual base for IRQ handling
@@ -209,7 +276,10 @@ pub fn init() -> Result<(), &'static str> {
                 // Note: IRQ will be enabled later by enable_net_irq() after
                 // the network stack is fully initialized.
                 let irq = VIRTIO_IRQ_BASE + i as u32;
-                crate::serial_println!("[virtio-net] Network device IRQ {} (will enable after net init)", irq);
+                crate::serial_println!(
+                    "[virtio-net] Network device IRQ {} (will enable after net init)",
+                    irq
+                );
 
                 DEVICE_INITIALIZED.store(true, Ordering::Release);
 
@@ -246,7 +316,12 @@ fn init_device(device: &mut VirtioMmioDevice, base: u64) -> Result<(), &'static 
     ];
     crate::serial_println!(
         "[virtio-net] MAC address: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+        mac[0],
+        mac[1],
+        mac[2],
+        mac[3],
+        mac[4],
+        mac[5]
     );
 
     // Set up RX queue (queue 0)
@@ -277,7 +352,7 @@ fn init_device(device: &mut VirtioMmioDevice, base: u64) -> Result<(), &'static 
 }
 
 fn setup_rx_queue(device: &mut VirtioMmioDevice, version: u32) -> Result<(), &'static str> {
-    device.select_queue(0);  // RX queue
+    device.select_queue(0); // RX queue
     let queue_num_max = device.get_queue_num_max();
     crate::serial_println!("[virtio-net] RX queue max size: {}", queue_num_max);
 
@@ -317,7 +392,7 @@ fn setup_rx_queue(device: &mut VirtioMmioDevice, version: u32) -> Result<(), &'s
 }
 
 fn setup_tx_queue(device: &mut VirtioMmioDevice, version: u32) -> Result<(), &'static str> {
-    device.select_queue(1);  // TX queue
+    device.select_queue(1); // TX queue
     let queue_num_max = device.get_queue_num_max();
     crate::serial_println!("[virtio-net] TX queue max size: {}", queue_num_max);
 
@@ -420,7 +495,7 @@ fn post_rx_buffers() -> Result<(), &'static str> {
             (*queue_ptr).desc[i] = VirtqDesc {
                 addr: buf_phys,
                 len: buf_len,
-                flags: DESC_F_WRITE,  // Device writes to this
+                flags: DESC_F_WRITE, // Device writes to this
                 next: 0,
             };
 
@@ -477,7 +552,7 @@ pub fn transmit(data: &[u8]) -> Result<(), &'static str> {
         (*queue_ptr).desc[0] = VirtqDesc {
             addr: tx_phys,
             len: total_len as u32,
-            flags: 0,  // Device reads this
+            flags: 0, // Device reads this
             next: 0,
         };
 
@@ -543,7 +618,7 @@ pub fn receive() -> Option<&'static [u8]> {
     };
 
     if used_idx == state.rx_last_used_idx {
-        return None;  // No new packets
+        return None; // No new packets
     }
 
     // Get the used element
@@ -674,7 +749,12 @@ pub fn test_device() -> Result<(), &'static str> {
     let mac = mac_address().ok_or("Network device not initialized")?;
     crate::serial_println!(
         "[virtio-net] Device test - MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+        mac[0],
+        mac[1],
+        mac[2],
+        mac[3],
+        mac[4],
+        mac[5]
     );
     crate::serial_println!("[virtio-net] Test passed!");
     Ok(())

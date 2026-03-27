@@ -3,7 +3,9 @@
 //! Implements a basic audio playback driver using VirtIO MMIO transport.
 //! Provides PCM audio output at 44100 Hz, S16_LE, stereo.
 
-use super::mmio::{VirtioMmioDevice, device_id, VIRTIO_MMIO_BASE, VIRTIO_MMIO_SIZE, VIRTIO_MMIO_COUNT};
+use super::mmio::{
+    device_id, VirtioMmioDevice, VIRTIO_MMIO_BASE, VIRTIO_MMIO_COUNT, VIRTIO_MMIO_SIZE,
+};
 use core::ptr::read_volatile;
 use core::sync::atomic::{fence, Ordering};
 use spin::Mutex;
@@ -25,12 +27,12 @@ mod resp {
 
 /// VirtIO Sound PCM formats (from virtio_snd.h)
 mod pcm_format {
-    pub const S16: u8 = 5;  // VIRTIO_SND_PCM_FMT_S16
+    pub const S16: u8 = 5; // VIRTIO_SND_PCM_FMT_S16
 }
 
 /// VirtIO Sound PCM rates (from virtio_snd.h)
 mod pcm_rate {
-    pub const RATE_44100: u8 = 6;  // VIRTIO_SND_PCM_RATE_44100
+    pub const RATE_44100: u8 = 6; // VIRTIO_SND_PCM_RATE_44100
 }
 
 /// Control header for sound commands
@@ -125,18 +127,44 @@ struct QueueMemory {
 
 // Control queue (queue 0)
 static mut CTRL_QUEUE: QueueMemory = QueueMemory {
-    desc: [VirtqDesc { addr: 0, len: 0, flags: 0, next: 0 }; 16],
-    avail: VirtqAvail { flags: 0, idx: 0, ring: [0; 16] },
+    desc: [VirtqDesc {
+        addr: 0,
+        len: 0,
+        flags: 0,
+        next: 0,
+    }; 16],
+    avail: VirtqAvail {
+        flags: 0,
+        idx: 0,
+        ring: [0; 16],
+    },
     _padding: [0; 4096 - 256 - 36],
-    used: VirtqUsed { flags: 0, idx: 0, ring: [VirtqUsedElem { id: 0, len: 0 }; 16] },
+    used: VirtqUsed {
+        flags: 0,
+        idx: 0,
+        ring: [VirtqUsedElem { id: 0, len: 0 }; 16],
+    },
 };
 
 // TX queue (queue 2)
 static mut TX_QUEUE: QueueMemory = QueueMemory {
-    desc: [VirtqDesc { addr: 0, len: 0, flags: 0, next: 0 }; 16],
-    avail: VirtqAvail { flags: 0, idx: 0, ring: [0; 16] },
+    desc: [VirtqDesc {
+        addr: 0,
+        len: 0,
+        flags: 0,
+        next: 0,
+    }; 16],
+    avail: VirtqAvail {
+        flags: 0,
+        idx: 0,
+        ring: [0; 16],
+    },
     _padding: [0; 4096 - 256 - 36],
-    used: VirtqUsed { flags: 0, idx: 0, ring: [VirtqUsedElem { id: 0, len: 0 }; 16] },
+    used: VirtqUsed {
+        flags: 0,
+        idx: 0,
+        ring: [VirtqUsedElem { id: 0, len: 0 }; 16],
+    },
 };
 
 // Command/response buffers
@@ -150,7 +178,10 @@ static mut RESP_BUF: CmdBuffer = CmdBuffer { data: [0; 256] };
 
 // TX path buffers
 static mut TX_XFER: VirtioSndPcmXfer = VirtioSndPcmXfer { stream_id: 0 };
-static mut TX_STATUS: VirtioSndPcmStatus = VirtioSndPcmStatus { status: 0, latency_bytes: 0 };
+static mut TX_STATUS: VirtioSndPcmStatus = VirtioSndPcmStatus {
+    status: 0,
+    latency_bytes: 0,
+};
 
 // PCM data buffer (16KB)
 const PCM_BUF_SIZE: usize = 16384;
@@ -158,7 +189,9 @@ const PCM_BUF_SIZE: usize = 16384;
 struct PcmBuffer {
     data: [u8; PCM_BUF_SIZE],
 }
-static mut PCM_BUF: PcmBuffer = PcmBuffer { data: [0; PCM_BUF_SIZE] };
+static mut PCM_BUF: PcmBuffer = PcmBuffer {
+    data: [0; PCM_BUF_SIZE],
+};
 
 /// Sound device state
 static mut SOUND_DEVICE: Option<SoundDeviceState> = None;
@@ -232,7 +265,12 @@ fn init_device(device: &mut VirtioMmioDevice, base: u64) -> Result<(), &'static 
     Ok(())
 }
 
-fn setup_queue(device: &mut VirtioMmioDevice, queue_idx: u32, version: u32, queue: *mut QueueMemory) -> Result<(), &'static str> {
+fn setup_queue(
+    device: &mut VirtioMmioDevice,
+    queue_idx: u32,
+    version: u32,
+    queue: *mut QueueMemory,
+) -> Result<(), &'static str> {
     device.select_queue(queue_idx);
     let queue_num_max = device.get_queue_num_max();
 
@@ -357,7 +395,9 @@ pub fn setup_stream() -> Result<(), &'static str> {
             let cmd_ptr = &raw mut CMD_BUF;
             let params = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut VirtioSndPcmSetParams);
             *params = VirtioSndPcmSetParams {
-                hdr: VirtioSndHdr { code: cmd::SET_PARAMS },
+                hdr: VirtioSndHdr {
+                    code: cmd::SET_PARAMS,
+                },
                 stream_id: 0,
                 buffer_bytes: 32768,
                 period_bytes: 16384,
@@ -369,7 +409,9 @@ pub fn setup_stream() -> Result<(), &'static str> {
             };
         }
         send_ctrl_command(
-            device, state, cmd_phys,
+            device,
+            state,
+            cmd_phys,
             core::mem::size_of::<VirtioSndPcmSetParams>() as u32,
             resp_phys,
             core::mem::size_of::<VirtioSndHdr>() as u32,
@@ -386,7 +428,9 @@ pub fn setup_stream() -> Result<(), &'static str> {
             };
         }
         send_ctrl_command(
-            device, state, cmd_phys,
+            device,
+            state,
+            cmd_phys,
             core::mem::size_of::<VirtioSndPcmCtrl>() as u32,
             resp_phys,
             core::mem::size_of::<VirtioSndHdr>() as u32,
@@ -403,7 +447,9 @@ pub fn setup_stream() -> Result<(), &'static str> {
             };
         }
         send_ctrl_command(
-            device, state, cmd_phys,
+            device,
+            state,
+            cmd_phys,
             core::mem::size_of::<VirtioSndPcmCtrl>() as u32,
             resp_phys,
             core::mem::size_of::<VirtioSndHdr>() as u32,
@@ -421,7 +467,11 @@ fn check_response(cmd_name: &str) -> Result<(), &'static str> {
         let resp_ptr = &raw const RESP_BUF;
         let hdr = &*((*resp_ptr).data.as_ptr() as *const VirtioSndHdr);
         if hdr.code != resp::OK {
-            crate::serial_println!("[virtio-sound] {} failed with code {:#x}", cmd_name, hdr.code);
+            crate::serial_println!(
+                "[virtio-sound] {} failed with code {:#x}",
+                cmd_name,
+                hdr.code
+            );
             return Err("Sound command failed");
         }
     }

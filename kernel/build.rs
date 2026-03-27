@@ -9,7 +9,11 @@ fn main() {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
-    let build_id = format!("{:010x}{:04x}", ts.as_secs(), (ts.subsec_nanos() >> 16) & 0xFFFF);
+    let build_id = format!(
+        "{:010x}{:04x}",
+        ts.as_secs(),
+        (ts.subsec_nanos() >> 16) & 0xFFFF
+    );
     println!("cargo:rustc-env=BREENIX_BUILD_ID={}", build_id);
     // Rerun whenever xhci.rs changes (we always `touch` it before building,
     // so the build ID is always fresh for each deploy cycle).
@@ -27,9 +31,11 @@ fn main() {
         // Assemble syscall entry code
         let status = Command::new("nasm")
             .args(&[
-                "-f", "elf64",
-                "-o", &format!("{}/syscall_entry.o", out_dir),
-                kernel_dir.join("src/syscall/entry.asm").to_str().unwrap()
+                "-f",
+                "elf64",
+                "-o",
+                &format!("{}/syscall_entry.o", out_dir),
+                kernel_dir.join("src/syscall/entry.asm").to_str().unwrap(),
             ])
             .status()
             .expect("Failed to run nasm");
@@ -41,9 +47,14 @@ fn main() {
         // Assemble timer interrupt entry code
         let status = Command::new("nasm")
             .args(&[
-                "-f", "elf64",
-                "-o", &format!("{}/timer_entry.o", out_dir),
-                kernel_dir.join("src/interrupts/timer_entry.asm").to_str().unwrap()
+                "-f",
+                "elf64",
+                "-o",
+                &format!("{}/timer_entry.o", out_dir),
+                kernel_dir
+                    .join("src/interrupts/timer_entry.asm")
+                    .to_str()
+                    .unwrap(),
             ])
             .status()
             .expect("Failed to run nasm");
@@ -55,9 +66,14 @@ fn main() {
         // Assemble breakpoint exception entry code
         let status = Command::new("nasm")
             .args(&[
-                "-f", "elf64",
-                "-o", &format!("{}/breakpoint_entry.o", out_dir),
-                kernel_dir.join("src/interrupts/breakpoint_entry.asm").to_str().unwrap()
+                "-f",
+                "elf64",
+                "-o",
+                &format!("{}/breakpoint_entry.o", out_dir),
+                kernel_dir
+                    .join("src/interrupts/breakpoint_entry.asm")
+                    .to_str()
+                    .unwrap(),
             ])
             .status()
             .expect("Failed to run nasm");
@@ -117,14 +133,13 @@ fn main() {
         println!("cargo:rerun-if-changed=src/drivers/usb/linux_xhci/linux_xhci.h");
     }
 
-
     // Rerun if the assembly files change
     println!("cargo:rerun-if-changed=src/syscall/entry.asm");
     println!("cargo:rerun-if-changed=src/interrupts/timer_entry.asm");
     println!("cargo:rerun-if-changed=src/interrupts/breakpoint_entry.asm");
     println!("cargo:rerun-if-changed=linker.ld");
     println!("cargo:rerun-if-changed=src/arch_impl/aarch64/linker.ld");
-    
+
     // Build userspace test programs with libbreenix
     // Use absolute path derived from CARGO_MANIFEST_DIR (kernel/)
     // NOTE: Skipped for aarch64 targets - ARM64 userspace binaries are built
@@ -153,27 +168,63 @@ fn main() {
             println!("cargo:rerun-if-changed={}/hello_world.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/hello_time.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/fork_test.rs", userspace_tests);
-            println!("cargo:rerun-if-changed={}/clock_gettime_test.rs", userspace_tests);
-            println!("cargo:rerun-if-changed={}/udp_socket_test.rs", userspace_tests);
-            println!("cargo:rerun-if-changed={}/unix_socket_test.rs", userspace_tests);
-            println!("cargo:rerun-if-changed={}/unix_named_socket_test.rs", userspace_tests);
+            println!(
+                "cargo:rerun-if-changed={}/clock_gettime_test.rs",
+                userspace_tests
+            );
+            println!(
+                "cargo:rerun-if-changed={}/udp_socket_test.rs",
+                userspace_tests
+            );
+            println!(
+                "cargo:rerun-if-changed={}/unix_socket_test.rs",
+                userspace_tests
+            );
+            println!(
+                "cargo:rerun-if-changed={}/unix_named_socket_test.rs",
+                userspace_tests
+            );
             println!("cargo:rerun-if-changed={}/tty_test.rs", userspace_tests);
-            println!("cargo:rerun-if-changed={}/job_control_test.rs", userspace_tests);
+            println!(
+                "cargo:rerun-if-changed={}/job_control_test.rs",
+                userspace_tests
+            );
             println!("cargo:rerun-if-changed={}/session_test.rs", userspace_tests);
-            println!("cargo:rerun-if-changed={}/job_table_test.rs", userspace_tests);
+            println!(
+                "cargo:rerun-if-changed={}/job_table_test.rs",
+                userspace_tests
+            );
             println!("cargo:rerun-if-changed={}/http_test.rs", userspace_tests);
-            println!("cargo:rerun-if-changed={}/pipeline_test.rs", userspace_tests);
-            println!("cargo:rerun-if-changed={}/sigchld_job_test.rs", userspace_tests);
+            println!(
+                "cargo:rerun-if-changed={}/pipeline_test.rs",
+                userspace_tests
+            );
+            println!(
+                "cargo:rerun-if-changed={}/sigchld_job_test.rs",
+                userspace_tests
+            );
             println!("cargo:rerun-if-changed={}/cwd_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/demo.rs", userspace_tests);
-            println!("cargo:rerun-if-changed={}/lib.rs", libbreenix_dir.to_str().unwrap());
+            println!(
+                "cargo:rerun-if-changed={}/lib.rs",
+                libbreenix_dir.to_str().unwrap()
+            );
 
             // Also watch std build files
             let std_tests_dir = repo_root.join("userspace/programs");
-            println!("cargo:rerun-if-changed={}", std_tests_dir.join("build.sh").display());
-            println!("cargo:rerun-if-changed={}", std_tests_dir.join("Cargo.toml").display());
+            println!(
+                "cargo:rerun-if-changed={}",
+                std_tests_dir.join("build.sh").display()
+            );
+            println!(
+                "cargo:rerun-if-changed={}",
+                std_tests_dir.join("Cargo.toml").display()
+            );
             let libbreenix_libc_dir = repo_root.join("libs/libbreenix-libc/src");
-            println!("cargo:rerun-if-changed={}", libbreenix_libc_dir.join("lib.rs").display());
+            println!(
+                "cargo:rerun-if-changed={}",
+                libbreenix_libc_dir.join("lib.rs").display()
+            );
         }
     } else if !userspace_test_dir.exists() {
         panic!(

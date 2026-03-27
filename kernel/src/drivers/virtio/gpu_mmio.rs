@@ -3,7 +3,9 @@
 //! Implements a basic GPU/display driver using VirtIO MMIO transport.
 //! Provides framebuffer functionality for simple 2D graphics.
 
-use super::mmio::{VirtioMmioDevice, device_id, VIRTIO_MMIO_BASE, VIRTIO_MMIO_SIZE, VIRTIO_MMIO_COUNT};
+use super::mmio::{
+    device_id, VirtioMmioDevice, VIRTIO_MMIO_BASE, VIRTIO_MMIO_COUNT, VIRTIO_MMIO_SIZE,
+};
 use core::ptr::read_volatile;
 use core::sync::atomic::{fence, Ordering};
 use spin::Mutex;
@@ -73,7 +75,7 @@ struct VirtioGpuDisplayOne {
 #[derive(Clone, Copy)]
 struct VirtioGpuRespDisplayInfo {
     hdr: VirtioGpuCtrlHdr,
-    pmodes: [VirtioGpuDisplayOne; 16],  // VIRTIO_GPU_MAX_SCANOUTS = 16
+    pmodes: [VirtioGpuDisplayOne; 16], // VIRTIO_GPU_MAX_SCANOUTS = 16
 }
 
 /// Resource create 2D command
@@ -199,10 +201,23 @@ struct CtrlQueueMemory {
 
 // Static buffers
 static mut CTRL_QUEUE: CtrlQueueMemory = CtrlQueueMemory {
-    desc: [VirtqDesc { addr: 0, len: 0, flags: 0, next: 0 }; 16],
-    avail: VirtqAvail { flags: 0, idx: 0, ring: [0; 16] },
+    desc: [VirtqDesc {
+        addr: 0,
+        len: 0,
+        flags: 0,
+        next: 0,
+    }; 16],
+    avail: VirtqAvail {
+        flags: 0,
+        idx: 0,
+        ring: [0; 16],
+    },
     _padding: [0; 4096 - 256 - 36],
-    used: VirtqUsed { flags: 0, idx: 0, ring: [VirtqUsedElem { id: 0, len: 0 }; 16] },
+    used: VirtqUsed {
+        flags: 0,
+        idx: 0,
+        ring: [VirtqUsedElem { id: 0, len: 0 }; 16],
+    },
 };
 
 // Command/response buffers
@@ -232,7 +247,7 @@ static mut REQUESTED_HEIGHT: u32 = 0;
 pub fn load_resolution_from_fw_cfg() {
     if let Some(res) = crate::drivers::fw_cfg::read_string("opt/breenix/resolution") {
         if let Some(idx) = res.find('x') {
-            if let (Ok(w), Ok(h)) = (res[..idx].parse::<u32>(), res[idx+1..].parse::<u32>()) {
+            if let (Ok(w), Ok(h)) = (res[..idx].parse::<u32>(), res[idx + 1..].parse::<u32>()) {
                 if w > 0 && h > 0 && w <= FB_MAX_WIDTH && h <= FB_MAX_HEIGHT {
                     unsafe {
                         REQUESTED_WIDTH = w;
@@ -263,7 +278,9 @@ struct Framebuffer {
     pixels: [u8; FB_SIZE],
 }
 
-static mut FRAMEBUFFER: Framebuffer = Framebuffer { pixels: [0; FB_SIZE] };
+static mut FRAMEBUFFER: Framebuffer = Framebuffer {
+    pixels: [0; FB_SIZE],
+};
 
 /// GPU device state
 static mut GPU_DEVICE: Option<GpuDeviceState> = None;
@@ -628,7 +645,11 @@ fn attach_backing() -> Result<(), &'static str> {
                 },
             };
         }
-        send_command_expect_ok(device, state, core::mem::size_of::<AttachBackingCmd>() as u32)
+        send_command_expect_ok(
+            device,
+            state,
+            core::mem::size_of::<AttachBackingCmd>() as u32,
+        )
     })
 }
 

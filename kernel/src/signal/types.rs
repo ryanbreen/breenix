@@ -290,7 +290,7 @@ impl SignalState {
             pending: 0, // Child starts with no pending signals
             blocked: self.blocked,
             handlers: self.handlers.clone(),
-            alt_stack: self.alt_stack, // Alt stack is inherited per POSIX
+            alt_stack: self.alt_stack,   // Alt stack is inherited per POSIX
             sigsuspend_saved_mask: None, // Child doesn't inherit sigsuspend state
         }
     }
@@ -330,8 +330,8 @@ pub struct SignalFrame {
     pub magic: u64,
 
     // Arguments for signal handler (in registers, but saved here too)
-    pub signal: u64,     // Signal number (also in RDI)
-    pub siginfo_ptr: u64, // Pointer to siginfo_t (also in RSI) - future
+    pub signal: u64,       // Signal number (also in RDI)
+    pub siginfo_ptr: u64,  // Pointer to siginfo_t (also in RSI) - future
     pub ucontext_ptr: u64, // Pointer to ucontext_t (also in RDX) - future
 
     // Saved CPU state to restore after handler
@@ -388,13 +388,13 @@ pub struct SignalFrame {
     pub magic: u64,
 
     // Arguments for signal handler
-    pub signal: u64,     // Signal number (also in x0)
-    pub siginfo_ptr: u64, // Pointer to siginfo_t (also in x1) - future
+    pub signal: u64,       // Signal number (also in x0)
+    pub siginfo_ptr: u64,  // Pointer to siginfo_t (also in x1) - future
     pub ucontext_ptr: u64, // Pointer to ucontext_t (also in x2) - future
 
     // Saved CPU state to restore after handler
-    pub saved_pc: u64,    // Program counter (ELR_EL1)
-    pub saved_sp: u64,    // Stack pointer
+    pub saved_pc: u64,     // Program counter (ELR_EL1)
+    pub saved_sp: u64,     // Stack pointer
     pub saved_pstate: u64, // Processor state (SPSR_EL1)
 
     // Saved general-purpose registers (x0-x30)
@@ -596,7 +596,9 @@ pub struct IntervalTimers {
     /// ITIMER_REAL - counts real (wall clock) time, fires SIGALRM
     pub real: IntervalTimer,
     /// ITIMER_VIRTUAL - counts user CPU time, fires SIGVTALRM
-    #[allow(dead_code)] pub virtual_timer: IntervalTimer,
+    #[allow(dead_code)]
+    pub virtual_timer: IntervalTimer,
     /// ITIMER_PROF - counts user + system CPU time, fires SIGPROF
-    #[allow(dead_code)] pub prof: IntervalTimer,
+    #[allow(dead_code)]
+    pub prof: IntervalTimer,
 }

@@ -39,7 +39,6 @@ pub struct VirtqDesc {
     pub next: u16,
 }
 
-
 /// Available ring structure
 #[repr(C)]
 pub struct VirtqAvail {
@@ -155,7 +154,8 @@ impl Virtqueue {
                 if frame_phys != prev + 4096 {
                     log::error!(
                         "VirtIO queue: Non-contiguous frames allocated! prev={:#x}, curr={:#x}",
-                        prev, frame_phys
+                        prev,
+                        frame_phys
                     );
                     // Continue anyway - early boot allocations are usually contiguous
                     // but log the warning for debugging
@@ -170,7 +170,8 @@ impl Virtqueue {
 
         log::debug!(
             "VirtIO queue: Allocated {} pages starting at phys={:#x}",
-            num_pages, phys_addr
+            num_pages,
+            phys_addr
         );
 
         // Get virtual addresses using physical memory offset
@@ -216,11 +217,14 @@ impl Virtqueue {
 
         log::debug!(
             "VirtIO queue: Layout - desc_offset=0, avail_offset={}, used_offset={}",
-            avail_offset, used_offset
+            avail_offset,
+            used_offset
         );
         log::debug!(
             "VirtIO queue: Pointers - desc={:p}, avail={:p}, used={:p}",
-            desc, avail, used
+            desc,
+            avail,
+            used
         );
 
         Ok(Virtqueue {
@@ -297,18 +301,17 @@ impl Virtqueue {
     /// # Returns
     /// The descriptor index (for tracking), or None if queue is full
     #[allow(dead_code)] // Part of public virtqueue API
-    pub fn add_buf(
-        &mut self,
-        phys_addr: u64,
-        len: u32,
-        device_writable: bool,
-    ) -> Option<u16> {
+    pub fn add_buf(&mut self, phys_addr: u64, len: u32, device_writable: bool) -> Option<u16> {
         let idx = self.alloc_desc()?;
 
         // Set up descriptor using volatile writes for device-shared memory
         unsafe {
             let desc = self.desc.add(idx as usize);
-            let flags = if device_writable { desc_flags::WRITE } else { 0 };
+            let flags = if device_writable {
+                desc_flags::WRITE
+            } else {
+                0
+            };
             core::ptr::write_volatile(&mut (*desc).addr, phys_addr);
             core::ptr::write_volatile(&mut (*desc).len, len);
             core::ptr::write_volatile(&mut (*desc).flags, flags);
@@ -339,10 +342,7 @@ impl Virtqueue {
     ///
     /// # Returns
     /// The head descriptor index, or None if not enough descriptors
-    pub fn add_chain(
-        &mut self,
-        buffers: &[(u64, u32, bool)],
-    ) -> Option<u16> {
+    pub fn add_chain(&mut self, buffers: &[(u64, u32, bool)]) -> Option<u16> {
         if buffers.is_empty() || buffers.len() > self.num_free as usize {
             return None;
         }
@@ -364,15 +364,25 @@ impl Virtqueue {
                     // Use volatile writes for device-shared memory
                     core::ptr::write_volatile(&mut (*prev_desc).next, idx);
                     let old_flags = core::ptr::read_volatile(&(*prev_desc).flags);
-                    core::ptr::write_volatile(&mut (*prev_desc).flags, old_flags | desc_flags::NEXT);
+                    core::ptr::write_volatile(
+                        &mut (*prev_desc).flags,
+                        old_flags | desc_flags::NEXT,
+                    );
                 }
             }
 
             // Set up this descriptor using volatile writes
             unsafe {
                 let desc = self.desc.add(idx as usize);
-                let flags = if device_writable { desc_flags::WRITE } else { 0 }
-                    | if i < buffers.len() - 1 { desc_flags::NEXT } else { 0 };
+                let flags = if device_writable {
+                    desc_flags::WRITE
+                } else {
+                    0
+                } | if i < buffers.len() - 1 {
+                    desc_flags::NEXT
+                } else {
+                    0
+                };
 
                 // Write all descriptor fields using volatile
                 core::ptr::write_volatile(&mut (*desc).addr, phys_addr);
@@ -472,7 +482,11 @@ impl Virtqueue {
                 let next = core::ptr::read_volatile(&(*desc).next);
                 log::debug!(
                     "  desc[{}]: addr={:#x} len={} flags={:#x} next={}",
-                    head, addr, len, flags, next
+                    head,
+                    addr,
+                    len,
+                    flags,
+                    next
                 );
                 if flags & desc_flags::NEXT == 0 || i > 10 {
                     break;
@@ -488,14 +502,19 @@ impl Virtqueue {
             let ring0 = core::ptr::read_volatile(&(*self.avail).ring[0]);
             log::debug!(
                 "  avail: flags={:#x} idx={} ring[0]={} queue_phys={:#x}",
-                flags, idx, ring0, self.phys_addr
+                flags,
+                idx,
+                ring0,
+                self.phys_addr
             );
             // Also show used ring state
             let used_flags = core::ptr::read_volatile(&(*self.used).flags);
             let used_idx = core::ptr::read_volatile(&(*self.used).idx);
             log::debug!(
                 "  used: flags={:#x} idx={} last_used_idx={}",
-                used_flags, used_idx, self.last_used_idx
+                used_flags,
+                used_idx,
+                self.last_used_idx
             );
         }
     }

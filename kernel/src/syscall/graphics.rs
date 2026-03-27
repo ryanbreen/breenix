@@ -26,14 +26,16 @@
 extern crate alloc;
 
 // Architecture-specific framebuffer imports
-#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
-use crate::logger::SHELL_FRAMEBUFFER;
 #[cfg(target_arch = "aarch64")]
 use crate::graphics::arm64_fb::SHELL_FRAMEBUFFER;
+#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
+use crate::logger::SHELL_FRAMEBUFFER;
 
-#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-use crate::graphics::primitives::{Canvas, Color, Rect, fill_rect, draw_rect, fill_circle, draw_circle, draw_line};
 use super::SyscallResult;
+#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+use crate::graphics::primitives::{
+    draw_circle, draw_line, draw_rect, fill_circle, fill_rect, Canvas, Color, Rect,
+};
 
 /// Counter for fb_flush syscalls (diagnostic — read from timer heartbeat)
 #[cfg(target_arch = "aarch64")]
@@ -43,7 +45,8 @@ pub static FB_FLUSH_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::A
 /// Set by op=16 when nothing is dirty; cleared when the compositor wakes.
 /// op=15 (mark_window_dirty) reads this to wake the compositor immediately.
 #[cfg(target_arch = "aarch64")]
-static COMPOSITOR_WAITING_THREAD: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static COMPOSITOR_WAITING_THREAD: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
 
 /// Registry generation counter — bumped when windows are registered/unregistered.
 /// compositor_wait (op=23) compares this against its saved value to detect changes.
@@ -58,13 +61,15 @@ static COMPOSITOR_LAST_MOUSE: core::sync::atomic::AtomicU64 = core::sync::atomic
 /// Set to 1 by mark_window_dirty (op=15) when it wakes the compositor.
 /// compositor_wait checks this after waking to know if a dirty window caused the wake.
 #[cfg(target_arch = "aarch64")]
-static COMPOSITOR_DIRTY_WAKE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static COMPOSITOR_DIRTY_WAKE: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 
 /// Timestamp (ns) of the last compositor_wait return.
 /// Used to enforce a minimum inter-frame interval so the compositor doesn't
 /// saturate the CPU when GPU wake is fast (e.g., MSI-X interrupt-driven).
 #[cfg(target_arch = "aarch64")]
-static COMPOSITOR_LAST_WAKE_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static COMPOSITOR_LAST_WAKE_NS: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
 
 /// Minimum nanoseconds between compositor_wait returns.
 /// 5ms = 200 FPS cap — smooth enough for all use cases while preventing
@@ -271,7 +276,16 @@ impl WindowRegistry {
         }
     }
 
-    fn allocate(&mut self, owner_pid: u64, width: u32, height: u32, phys_addr: u64, size: usize, page_phys_addrs: alloc::vec::Vec<u64>, mapped_vaddr: u64) -> Option<u32> {
+    fn allocate(
+        &mut self,
+        owner_pid: u64,
+        width: u32,
+        height: u32,
+        phys_addr: u64,
+        size: usize,
+        page_phys_addrs: alloc::vec::Vec<u64>,
+        mapped_vaddr: u64,
+    ) -> Option<u32> {
         let slot = self.buffers.iter().position(|b| b.is_none())?;
         let id = self.next_id;
         self.next_id += 1;
@@ -305,15 +319,15 @@ impl WindowRegistry {
     }
 
     fn find(&self, buffer_id: u32) -> Option<&WindowBuffer> {
-        self.buffers.iter().find_map(|slot| {
-            slot.as_ref().filter(|b| b.id == buffer_id)
-        })
+        self.buffers
+            .iter()
+            .find_map(|slot| slot.as_ref().filter(|b| b.id == buffer_id))
     }
 
     fn find_mut(&mut self, buffer_id: u32) -> Option<&mut WindowBuffer> {
-        self.buffers.iter_mut().find_map(|slot| {
-            slot.as_mut().filter(|b| b.id == buffer_id)
-        })
+        self.buffers
+            .iter_mut()
+            .find_map(|slot| slot.as_mut().filter(|b| b.id == buffer_id))
     }
 
     /// Remove all window buffers owned by a given process.
@@ -574,7 +588,10 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                 return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
             }
             let balls_ptr = (desc_ptr + 8) as *const crate::drivers::virtio::gpu_pci::VirglBall;
-            let balls_end = desc_ptr + 8 + (ball_count as u64) * core::mem::size_of::<crate::drivers::virtio::gpu_pci::VirglBall>() as u64;
+            let balls_end = desc_ptr
+                + 8
+                + (ball_count as u64)
+                    * core::mem::size_of::<crate::drivers::virtio::gpu_pci::VirglBall>() as u64;
             if balls_end > USER_SPACE_MAX {
                 return SyscallResult::Err(super::ErrorCode::Fault as u64);
             }
@@ -601,7 +618,10 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                 return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
             }
             let rects_ptr = (desc_ptr + 8) as *const crate::drivers::virtio::gpu_pci::VirglRect;
-            let rects_end = desc_ptr + 8 + (rect_count as u64) * core::mem::size_of::<crate::drivers::virtio::gpu_pci::VirglRect>() as u64;
+            let rects_end = desc_ptr
+                + 8
+                + (rect_count as u64)
+                    * core::mem::size_of::<crate::drivers::virtio::gpu_pci::VirglRect>() as u64;
             if rects_end > USER_SPACE_MAX {
                 return SyscallResult::Err(super::ErrorCode::Fault as u64);
             }
@@ -633,18 +653,24 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             if buf_end > USER_SPACE_MAX {
                 return SyscallResult::Err(super::ErrorCode::Fault as u64);
             }
-            let pixels = unsafe {
-                core::slice::from_raw_parts(buf_ptr as *const u32, pixel_count as usize)
-            };
+            let pixels =
+                unsafe { core::slice::from_raw_parts(buf_ptr as *const u32, pixel_count as usize) };
             match crate::graphics::compositor_backend() {
                 crate::graphics::CompositorBackend::VirGL => {
-                    match crate::drivers::virtio::gpu_pci::virgl_composite_frame_textured(pixels, width, height) {
+                    match crate::drivers::virtio::gpu_pci::virgl_composite_frame_textured(
+                        pixels, width, height,
+                    ) {
                         Ok(()) => SyscallResult::Ok(0),
                         Err(_) => {
-                            match crate::drivers::virtio::gpu_pci::virgl_composite_frame(pixels, width, height) {
+                            match crate::drivers::virtio::gpu_pci::virgl_composite_frame(
+                                pixels, width, height,
+                            ) {
                                 Ok(()) => SyscallResult::Ok(0),
                                 Err(e) => {
-                                    crate::serial_println!("[composite] VirGL composite_frame FAILED: {}", e);
+                                    crate::serial_println!(
+                                        "[composite] VirGL composite_frame FAILED: {}",
+                                        e
+                                    );
                                     SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
                                 }
                             }
@@ -655,7 +681,10 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                     match crate::drivers::vmware::svga3::composite_frame(pixels, width, height) {
                         Ok(()) => SyscallResult::Ok(0),
                         Err(e) => {
-                            crate::serial_println!("[composite] SVGA3 composite_frame FAILED: {}", e);
+                            crate::serial_println!(
+                                "[composite] SVGA3 composite_frame FAILED: {}",
+                                e
+                            );
                             SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
                         }
                     }
@@ -711,7 +740,8 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                 #[cfg(target_arch = "aarch64")]
                 {
                     REGISTRY_GENERATION.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                    let compositor_tid = COMPOSITOR_WAITING_THREAD.load(core::sync::atomic::Ordering::Acquire);
+                    let compositor_tid =
+                        COMPOSITOR_WAITING_THREAD.load(core::sync::atomic::Ordering::Acquire);
                     if compositor_tid != 0 {
                         crate::task::scheduler::with_scheduler(|sched| {
                             sched.unblock(compositor_tid);
@@ -774,12 +804,16 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                     // Copy page by page since MAP_SHARED pages are not contiguous
                     let mut offset = 0usize;
                     for &page_phys in buf.page_phys_addrs.iter() {
-                        if offset >= copy_bytes { break; }
+                        if offset >= copy_bytes {
+                            break;
+                        }
                         let chunk = (copy_bytes - offset).min(4096);
                         let src = (phys_mem_offset + page_phys) as *const u8;
                         unsafe {
                             core::ptr::copy_nonoverlapping(
-                                src, (dst_ptr as *mut u8).add(offset), chunk,
+                                src,
+                                (dst_ptr as *mut u8).add(offset),
+                                chunk,
                             );
                         }
                         offset += chunk;
@@ -822,7 +856,8 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             #[cfg(target_arch = "aarch64")]
             {
                 COMPOSITOR_DIRTY_WAKE.store(true, core::sync::atomic::Ordering::Relaxed);
-                let compositor_tid = COMPOSITOR_WAITING_THREAD.load(core::sync::atomic::Ordering::Acquire);
+                let compositor_tid =
+                    COMPOSITOR_WAITING_THREAD.load(core::sync::atomic::Ordering::Acquire);
                 if compositor_tid != 0 {
                     crate::task::scheduler::with_scheduler(|sched| {
                         sched.unblock(compositor_tid);
@@ -851,7 +886,8 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             loop {
                 let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                     sched.wake_expired_timers();
-                    sched.current_thread_mut()
+                    sched
+                        .current_thread_mut()
                         .map(|t| t.state == crate::task::thread::ThreadState::BlockedOnTimer)
                         .unwrap_or(false)
                 });
@@ -917,14 +953,17 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             if event_ptr == 0 || event_ptr >= USER_SPACE_MAX {
                 return SyscallResult::Err(super::ErrorCode::Fault as u64);
             }
-            let mut event: WindowInputEvent = unsafe { core::ptr::read(event_ptr as *const WindowInputEvent) };
+            let mut event: WindowInputEvent =
+                unsafe { core::ptr::read(event_ptr as *const WindowInputEvent) };
 
             // Inject accumulated scroll wheel delta into mouse events.
             // MOUSE_MOVE=3, MOUSE_SCROLL=9 (exclude MOUSE_BUTTON=4: scroll_y carries press state)
             if event.event_type == 3 || event.event_type == 9 {
                 let wheel = crate::drivers::usb::hid::mouse_wheel_consume();
                 if wheel != 0 {
-                    event.scroll_y = event.scroll_y.saturating_add(wheel.clamp(-32768, 32767) as i16);
+                    event.scroll_y = event
+                        .scroll_y
+                        .saturating_add(wheel.clamp(-32768, 32767) as i16);
                     // If this was a plain MOUSE_MOVE (3) with wheel data, upgrade to MOUSE_SCROLL (9)
                     // so clients that filter on event type receive it correctly.
                     if event.event_type == 3 && event.scroll_y != 0 {
@@ -983,10 +1022,7 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                         while n < max_count && buf.input_tail != buf.input_head {
                             let event = buf.input_ring[buf.input_tail];
                             unsafe {
-                                core::ptr::write(
-                                    (out_ptr as *mut WindowInputEvent).add(n),
-                                    event,
-                                );
+                                core::ptr::write((out_ptr as *mut WindowInputEvent).add(n), event);
                             }
                             buf.input_tail = (buf.input_tail + 1) & (INPUT_RING_SIZE - 1);
                             n += 1;
@@ -1030,7 +1066,8 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             loop {
                 let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                     sched.wake_expired_timers();
-                    sched.current_thread_mut()
+                    sched
+                        .current_thread_mut()
                         .map(|t| t.state == crate::task::thread::ThreadState::BlockedOnTimer)
                         .unwrap_or(false)
                 });
@@ -1063,10 +1100,7 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                         while n < max_count && buf.input_tail != buf.input_head {
                             let event = buf.input_ring[buf.input_tail];
                             unsafe {
-                                core::ptr::write(
-                                    (out_ptr as *mut WindowInputEvent).add(n),
-                                    event,
-                                );
+                                core::ptr::write((out_ptr as *mut WindowInputEvent).add(n), event);
                             }
                             buf.input_tail = (buf.input_tail + 1) & (INPUT_RING_SIZE - 1);
                             n += 1;
@@ -1214,11 +1248,14 @@ fn handle_compositor_wait(cmd: &FbDrawCmd) -> SyscallResult {
             loop {
                 let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                     sched.wake_expired_timers();
-                    sched.current_thread_mut()
+                    sched
+                        .current_thread_mut()
                         .map(|t| t.state == crate::task::thread::ThreadState::BlockedOnTimer)
                         .unwrap_or(false)
                 });
-                if !still_blocked.unwrap_or(false) { break; }
+                if !still_blocked.unwrap_or(false) {
+                    break;
+                }
                 crate::task::scheduler::yield_current();
                 crate::arch_halt_with_interrupts();
             }
@@ -1293,11 +1330,14 @@ fn handle_compositor_wait(cmd: &FbDrawCmd) -> SyscallResult {
     loop {
         let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
             sched.wake_expired_timers();
-            sched.current_thread_mut()
+            sched
+                .current_thread_mut()
                 .map(|t| t.state == crate::task::thread::ThreadState::BlockedOnTimer)
                 .unwrap_or(false)
         });
-        if !still_blocked.unwrap_or(false) { break; }
+        if !still_blocked.unwrap_or(false) {
+            break;
+        }
         crate::task::scheduler::yield_current();
         crate::arch_halt_with_interrupts();
     }
@@ -1338,7 +1378,10 @@ fn handle_compositor_wait(cmd: &FbDrawCmd) -> SyscallResult {
     COMPOSITOR_LAST_MOUSE.store(mouse_packed2, Ordering::Relaxed);
 
     let (ws2, wn2) = crate::time::get_monotonic_time_ns();
-    COMPOSITOR_LAST_WAKE_NS.store((ws2 as u64) * 1_000_000_000 + (wn2 as u64), Ordering::Relaxed);
+    COMPOSITOR_LAST_WAKE_NS.store(
+        (ws2 as u64) * 1_000_000_000 + (wn2 as u64),
+        Ordering::Relaxed,
+    );
 
     SyscallResult::Ok(ready_after | ((cur_reg_gen2 & 0x00FF_FFFF) << 8))
 }
@@ -1369,7 +1412,8 @@ struct CompositeWindowsDesc {
 /// to upload dirty textures and render all windows in a single SUBMIT_3D batch.
 #[cfg(target_arch = "aarch64")]
 fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
-    let desc: CompositeWindowsDesc = unsafe { core::ptr::read(desc_ptr as *const CompositeWindowsDesc) };
+    let desc: CompositeWindowsDesc =
+        unsafe { core::ptr::read(desc_ptr as *const CompositeWindowsDesc) };
 
     // When bg_pixels_ptr=0 (direct-mapped compositor), get dimensions from active backend
     let (bg_width, bg_height) = if desc.bg_pixels_ptr == 0 {
@@ -1387,20 +1431,23 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
             None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
         }
     } else {
-        if desc.bg_width == 0 || desc.bg_height == 0 || desc.bg_width > 4096 || desc.bg_height > 4096 {
+        if desc.bg_width == 0
+            || desc.bg_height == 0
+            || desc.bg_width > 4096
+            || desc.bg_height > 4096
+        {
             return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
         }
         (desc.bg_width, desc.bg_height)
     };
 
     let bg_dirty = desc.bg_dirty != 0;
-    let dirty_rect = if desc.bg_dirty == 2 && desc.num_dirty_rects > 0
-        && desc.dirty_w > 0 && desc.dirty_h > 0
-    {
-        Some((desc.dirty_x, desc.dirty_y, desc.dirty_w, desc.dirty_h))
-    } else {
-        None
-    };
+    let dirty_rect =
+        if desc.bg_dirty == 2 && desc.num_dirty_rects > 0 && desc.dirty_w > 0 && desc.dirty_h > 0 {
+            Some((desc.dirty_x, desc.dirty_y, desc.dirty_w, desc.dirty_h))
+        } else {
+            None
+        };
 
     // Fast path: quick dirty check under lock — no heap allocs if nothing changed.
     // compositor_wait (op=23) handles blocking; op=16 just returns immediately.
@@ -1412,9 +1459,13 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
         let reg = WINDOW_REGISTRY.lock();
         let any_window_dirty = reg.buffers.iter().any(|slot| {
             if let Some(ref buf) = slot {
-                buf.registered && buf.width > 0 && buf.height > 0
+                buf.registered
+                    && buf.width > 0
+                    && buf.height > 0
                     && buf.generation > buf.last_uploaded_gen
-            } else { false }
+            } else {
+                false
+            }
         });
         if !any_window_dirty {
             drop(reg);
@@ -1423,7 +1474,8 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
                 // no windows are dirty, so mouse movement remains responsive.
                 crate::graphics::CompositorBackend::Svga3Stdu => {
                     if crate::drivers::vmware::svga3::update_cursor() {
-                        let _ = crate::drivers::vmware::svga3::present_rect(0, 0, bg_width, bg_height);
+                        let _ =
+                            crate::drivers::vmware::svga3::present_rect(0, 0, bg_width, bg_height);
                     }
                     return SyscallResult::Ok(0);
                 }
@@ -1459,8 +1511,12 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
         let mut win_idx = 0usize;
         for slot in reg.buffers.iter_mut() {
             if let Some(ref mut buf) = slot {
-                if !buf.registered { continue; }
-                if buf.width == 0 || buf.height == 0 { continue; }
+                if !buf.registered {
+                    continue;
+                }
+                if buf.width == 0 || buf.height == 0 {
+                    continue;
+                }
 
                 let dirty = buf.generation > buf.last_uploaded_gen;
 
@@ -1470,9 +1526,12 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
                 // All windows (including chromeless) get GPU textures from
                 // the pre-allocated pool — chromeless windows render as
                 // normal GPU quads with a dimmer drawn behind them.
-                if !buf.virgl_initialized && !buf.page_phys_addrs.is_empty()
-                    && matches!(crate::graphics::compositor_backend(),
-                                crate::graphics::CompositorBackend::VirGL)
+                if !buf.virgl_initialized
+                    && !buf.page_phys_addrs.is_empty()
+                    && matches!(
+                        crate::graphics::compositor_backend(),
+                        crate::graphics::CompositorBackend::VirGL
+                    )
                 {
                     let slot_idx = (buf.id as usize).saturating_sub(1) % 8;
                     match crate::drivers::virtio::gpu_pci::create_window_texture(
@@ -1485,7 +1544,8 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
                         Err(e) => {
                             crate::serial_println!(
                                 "[composite] GPU texture init failed for buf {}: {}",
-                                buf.id, e
+                                buf.id,
+                                e
                             );
                         }
                     }
@@ -1601,19 +1661,25 @@ pub struct WindowCompositeInfo {
 fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> SyscallResult {
     use crate::memory::vma::{MmapFlags, Protection, Vma};
     use crate::syscall::memory_common::{
-        get_current_thread_id, prot_to_page_flags, flush_tlb, round_down_to_page, PAGE_SIZE,
+        flush_tlb, get_current_thread_id, prot_to_page_flags, round_down_to_page, PAGE_SIZE,
     };
 
+    #[cfg(not(target_arch = "x86_64"))]
+    use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
     #[cfg(target_arch = "x86_64")]
     use x86_64::structures::paging::{Page, PhysFrame, Size4KiB};
     #[cfg(target_arch = "x86_64")]
     use x86_64::VirtAddr;
-    #[cfg(not(target_arch = "x86_64"))]
-    use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
 
     let size = (width as usize) * (height as usize) * 4;
     let num_pages = (size + PAGE_SIZE as usize - 1) / PAGE_SIZE as usize;
-    crate::serial_println!("[window] create_window_buffer: {}x{} ({} bytes, {} pages)", width, height, size, num_pages);
+    crate::serial_println!(
+        "[window] create_window_buffer: {}x{} ({} bytes, {} pages)",
+        width,
+        height,
+        size,
+        num_pages
+    );
 
     // Get current process
     let current_thread_id = match get_current_thread_id() {
@@ -1640,7 +1706,10 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
         let (pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
             Some(p) => p,
             None => {
-                crate::serial_println!("[window] ERROR: thread {:?} not in process table", current_thread_id);
+                crate::serial_println!(
+                    "[window] ERROR: thread {:?} not in process table",
+                    current_thread_id
+                );
                 return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64);
             }
         };
@@ -1720,7 +1789,15 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
     // Register in window buffer table
     let buffer_id = {
         let mut reg = WINDOW_REGISTRY.lock();
-        match reg.allocate(pid_u64, width, height, first_phys, size, page_phys_addrs, new_addr) {
+        match reg.allocate(
+            pid_u64,
+            width,
+            height,
+            first_phys,
+            size,
+            page_phys_addrs,
+            new_addr,
+        ) {
             Some(id) => id,
             None => return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64),
         }
@@ -1728,7 +1805,12 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
 
     crate::serial_println!(
         "[window] Created buffer id={} for pid={}: {}x{} at virt={:#x} phys={:#x}",
-        buffer_id, pid_u64, width, height, new_addr, first_phys
+        buffer_id,
+        pid_u64,
+        width,
+        height,
+        new_addr,
+        first_phys
     );
 
     // Write full 64-bit mmap address to userspace output pointer
@@ -1749,11 +1831,11 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
 /// old pages, maps new pages, and updates the registry.
 #[cfg(target_arch = "aarch64")]
 fn handle_resize_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
+    use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
     use crate::memory::vma::{MmapFlags, Protection, Vma};
     use crate::syscall::memory_common::{
-        get_current_thread_id, prot_to_page_flags, flush_tlb, round_down_to_page, PAGE_SIZE,
+        flush_tlb, get_current_thread_id, prot_to_page_flags, round_down_to_page, PAGE_SIZE,
     };
-    use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
 
     let buffer_id = cmd.p1 as u32;
     let new_width = cmd.p2 as u32;
@@ -1800,16 +1882,27 @@ fn handle_resize_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
     };
 
     if pid.as_u64() != owner_pid {
-        crate::serial_println!("[window] resize: pid {} doesn't own buffer {} (owner={})",
-            pid.as_u64(), buffer_id, owner_pid);
+        crate::serial_println!(
+            "[window] resize: pid {} doesn't own buffer {} (owner={})",
+            pid.as_u64(),
+            buffer_id,
+            owner_pid
+        );
         return SyscallResult::Err(super::ErrorCode::PermissionDenied as u64);
     }
 
     let new_size = (new_width as usize) * (new_height as usize) * 4;
     let new_num_pages = (new_size + PAGE_SIZE as usize - 1) / PAGE_SIZE as usize;
 
-    crate::serial_println!("[window] resize buffer id={}: {}x{} -> {}x{} ({} pages)",
-        buffer_id, old_w, old_h, new_width, new_height, new_num_pages);
+    crate::serial_println!(
+        "[window] resize buffer id={}: {}x{} -> {}x{} ({} pages)",
+        buffer_id,
+        old_w,
+        old_h,
+        new_width,
+        new_height,
+        new_num_pages
+    );
 
     // Allocate new physical pages
     let mut new_phys_addrs = alloc::vec::Vec::with_capacity(new_num_pages);
@@ -1824,11 +1917,7 @@ fn handle_resize_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
     let phys_mem_offset = crate::memory::physical_memory_offset().as_u64();
     for &phys in &new_phys_addrs {
         unsafe {
-            core::ptr::write_bytes(
-                (phys_mem_offset + phys) as *mut u8,
-                0,
-                PAGE_SIZE as usize,
-            );
+            core::ptr::write_bytes((phys_mem_offset + phys) as *mut u8, 0, PAGE_SIZE as usize);
         }
     }
 
@@ -1857,9 +1946,12 @@ fn handle_resize_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
                 .min(PAGE_SIZE as usize - old_page_off)
                 .min(PAGE_SIZE as usize - new_page_off);
 
-            let src = (phys_mem_offset + old_phys_addrs[old_page] + old_page_off as u64) as *const u8;
+            let src =
+                (phys_mem_offset + old_phys_addrs[old_page] + old_page_off as u64) as *const u8;
             let dst = (phys_mem_offset + new_phys_addrs[new_page] + new_page_off as u64) as *mut u8;
-            unsafe { core::ptr::copy_nonoverlapping(src, dst, chunk); }
+            unsafe {
+                core::ptr::copy_nonoverlapping(src, dst, chunk);
+            }
             copied += chunk;
         }
     }
@@ -1879,9 +1971,7 @@ fn handle_resize_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
     }
 
     // Remove old VMA
-    process.vmas.retain(|vma| {
-        vma.start.as_u64() != old_vaddr
-    });
+    process.vmas.retain(|vma| vma.start.as_u64() != old_vaddr);
 
     // Map new pages at a new virtual address
     let total_size = (new_num_pages as u64) * PAGE_SIZE;
@@ -1896,13 +1986,15 @@ fn handle_resize_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
 
     for i in 0..new_num_pages {
         let frame_phys = new_phys_addrs[i];
-        if i == 0 { first_phys = frame_phys; }
+        if i == 0 {
+            first_phys = frame_phys;
+        }
 
         let page_addr = new_addr + (i as u64) * PAGE_SIZE;
         let page = Page::<Size4KiB>::containing_address(VirtAddr::new(page_addr));
         use crate::memory::arch_stub::PhysAddr;
         let frame = crate::memory::arch_stub::PhysFrame::<Size4KiB>::containing_address(
-            PhysAddr::new(frame_phys)
+            PhysAddr::new(frame_phys),
         );
 
         if let Err(_) = page_table.map_page(page, frame, page_flags) {
@@ -1923,11 +2015,11 @@ fn handle_resize_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
     // Deallocate old physical frames
     for &old_phys in &old_phys_addrs {
         use crate::memory::arch_stub::PhysAddr;
-        crate::memory::frame_allocator::deallocate_frame(
-            crate::memory::arch_stub::PhysFrame::<Size4KiB>::containing_address(
-                PhysAddr::new(old_phys)
-            )
-        );
+        crate::memory::frame_allocator::deallocate_frame(crate::memory::arch_stub::PhysFrame::<
+            Size4KiB,
+        >::containing_address(
+            PhysAddr::new(old_phys)
+        ));
     }
 
     // Update registry
@@ -1952,7 +2044,10 @@ fn handle_resize_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
 
     crate::serial_println!(
         "[window] Resized buffer id={}: {}x{} at virt={:#x}",
-        buffer_id, new_width, new_height, new_addr
+        buffer_id,
+        new_width,
+        new_height,
+        new_addr
     );
 
     // Write new mmap address to userspace
@@ -1971,11 +2066,11 @@ fn handle_resize_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
 /// read_window_buffer (op=14).
 #[cfg(target_arch = "aarch64")]
 fn handle_map_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
+    use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
     use crate::memory::vma::{MmapFlags, Protection, Vma};
     use crate::syscall::memory_common::{
-        get_current_thread_id, prot_to_page_flags, flush_tlb, round_down_to_page, PAGE_SIZE,
+        flush_tlb, get_current_thread_id, prot_to_page_flags, round_down_to_page, PAGE_SIZE,
     };
-    use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
 
     let buffer_id = cmd.p1 as u32;
     let out_ptr = (cmd.p2 as u32 as u64) | ((cmd.p3 as u32 as u64) << 32);
@@ -2046,14 +2141,18 @@ fn handle_map_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
     let vma = Vma::new(
         VirtAddr::new(new_addr),
         VirtAddr::new(new_addr + total_size),
-        Protection::from_bits_truncate(1), // READ only
+        Protection::from_bits_truncate(1),   // READ only
         MmapFlags::from_bits_truncate(0x21), // MAP_SHARED | MAP_ANONYMOUS
     );
     process.vmas.push(vma);
 
     crate::serial_println!(
         "[compositor] Mapped window {} into BWM: virt={:#x}, {}x{}, {} pages",
-        buffer_id, new_addr, win_w, win_h, num_pages
+        buffer_id,
+        new_addr,
+        win_w,
+        win_h,
+        num_pages
     );
 
     // Write mapped address to userspace
@@ -2071,11 +2170,11 @@ fn handle_map_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
 /// copy in virgl_composite_windows Phase A.
 #[cfg(target_arch = "aarch64")]
 fn handle_map_compositor_texture(cmd: &FbDrawCmd) -> SyscallResult {
+    use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
     use crate::memory::vma::{MmapFlags, Protection, Vma};
     use crate::syscall::memory_common::{
-        get_current_thread_id, prot_to_page_flags, flush_tlb, round_down_to_page, PAGE_SIZE,
+        flush_tlb, get_current_thread_id, prot_to_page_flags, round_down_to_page, PAGE_SIZE,
     };
-    use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
 
     let out_ptr = (cmd.p1 as u32 as u64) | ((cmd.p2 as u32 as u64) << 32);
     if out_ptr == 0 || out_ptr >= USER_SPACE_MAX {
@@ -2291,7 +2390,12 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                 let clipped_w = w.min((pane_width as i32 - x) as u32);
                 fill_rect(
                     &mut *fb_guard,
-                    Rect { x, y, width: clipped_w, height: h },
+                    Rect {
+                        x,
+                        y,
+                        width: clipped_w,
+                        height: h,
+                    },
                     color,
                 );
                 #[cfg(target_arch = "aarch64")]
@@ -2308,7 +2412,12 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
             if (x as usize) < pane_width {
                 draw_rect(
                     &mut *fb_guard,
-                    Rect { x, y, width: w, height: h },
+                    Rect {
+                        x,
+                        y,
+                        width: w,
+                        height: h,
+                    },
                     color,
                 );
                 #[cfg(target_arch = "aarch64")]
@@ -2366,7 +2475,8 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                     let max_x = x1.max(x2).max(0) as u32;
                     let max_y = y1.max(y2).max(0) as u32;
                     crate::graphics::arm64_fb::mark_dirty(
-                        min_x, min_y,
+                        min_x,
+                        min_y,
                         max_x.saturating_sub(min_x) + 1,
                         max_y.saturating_sub(min_y) + 1,
                     );
@@ -2425,7 +2535,8 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                     if let Some(db) = fb_guard.double_buffer_mut() {
                         let shadow = db.buffer_mut();
                         for y in y_start..y_end {
-                            let user_row_ptr = (mmap_info.user_addr as usize) + y * mmap_info.user_stride;
+                            let user_row_ptr =
+                                (mmap_info.user_addr as usize) + y * mmap_info.user_stride;
                             let shadow_row_offset = y * fb_stride_bytes + x_byte_offset;
 
                             if shadow_row_offset + row_bytes <= shadow.len() {
@@ -2441,8 +2552,10 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
 
                         // Mark dirty region and flush incrementally (in framebuffer coords)
                         let (dx_start, dx_end) = if has_rect {
-                            let xs = mmap_info.x_offset + (cmd.p1.max(0) as usize).min(mmap_info.width);
-                            let xe = mmap_info.x_offset + (cmd.p1.max(0) as usize + cmd.p3 as usize).min(mmap_info.width);
+                            let xs =
+                                mmap_info.x_offset + (cmd.p1.max(0) as usize).min(mmap_info.width);
+                            let xe = mmap_info.x_offset
+                                + (cmd.p1.max(0) as usize + cmd.p3 as usize).min(mmap_info.width);
                             (xs, xe)
                         } else {
                             (mmap_info.x_offset, mmap_info.x_offset + mmap_info.width)
@@ -2464,7 +2577,8 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                 let fb_mmap_info = fb_mmap_info_pre;
 
                 // Compute the flush rect BEFORE copying pixels (need mmap_info).
-                let flush_rect: Option<(u32, u32, u32, u32)> = if let Some(mmap_info) = fb_mmap_info {
+                let flush_rect: Option<(u32, u32, u32, u32)> = if let Some(mmap_info) = fb_mmap_info
+                {
                     if has_rect {
                         Some((
                             (mmap_info.x_offset as u32) + cmd.p1.max(0) as u32,
@@ -2491,10 +2605,13 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                     // Full flush — get display dimensions.
                     // Check FB_INFO_CACHE first (works for GOP and all backends),
                     // then fall back to gpu_mmio::dimensions() for QEMU.
-                    crate::graphics::arm64_fb::FB_INFO_CACHE.get()
+                    crate::graphics::arm64_fb::FB_INFO_CACHE
+                        .get()
                         .map(|c| (0u32, 0u32, c.width as u32, c.height as u32))
-                        .or_else(|| crate::drivers::virtio::gpu_mmio::dimensions()
-                            .map(|(w, h)| (0u32, 0u32, w, h)))
+                        .or_else(|| {
+                            crate::drivers::virtio::gpu_mmio::dimensions()
+                                .map(|(w, h)| (0u32, 0u32, w, h))
+                        })
                 };
 
                 if let Some(mmap_info) = fb_mmap_info {
@@ -2516,7 +2633,8 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                     // reduces the copy from ~3.4KB/row to ~336 bytes/row.
                     let (user_col_offset, shadow_col_offset, copy_row_bytes) = if has_rect {
                         let col_start = (cmd.p1.max(0) as usize).min(mmap_info.width);
-                        let col_end = (cmd.p1.max(0) as usize + cmd.p3 as usize).min(mmap_info.width);
+                        let col_end =
+                            (cmd.p1.max(0) as usize + cmd.p3 as usize).min(mmap_info.width);
                         (
                             col_start * mmap_info.bpp,
                             x_byte_offset + col_start * mmap_info.bpp,
@@ -2537,7 +2655,9 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                         // full-pane, vs 12 FPS with direct BAR0 MMIO.
                         if let Some(gop_buf) = crate::graphics::arm64_fb::gop_framebuffer() {
                             for y in y_start..y_end {
-                                let user_row_ptr = (mmap_info.user_addr as usize) + y * mmap_info.user_stride + user_col_offset;
+                                let user_row_ptr = (mmap_info.user_addr as usize)
+                                    + y * mmap_info.user_stride
+                                    + user_col_offset;
                                 let target_row_offset = y * fb_stride_bytes + shadow_col_offset;
                                 if target_row_offset + copy_row_bytes <= gop_buf.len() {
                                     unsafe {
@@ -2554,7 +2674,9 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                         if let Some(db) = fb_guard.double_buffer_mut() {
                             let shadow = db.buffer_mut();
                             for y in y_start..y_end {
-                                let user_row_ptr = (mmap_info.user_addr as usize) + y * mmap_info.user_stride + user_col_offset;
+                                let user_row_ptr = (mmap_info.user_addr as usize)
+                                    + y * mmap_info.user_stride
+                                    + user_col_offset;
                                 let target_row_offset = y * fb_stride_bytes + shadow_col_offset;
                                 if target_row_offset + copy_row_bytes <= shadow.len() {
                                     unsafe {
@@ -2571,7 +2693,8 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                         // Non-GOP path: copy to GPU buffer (VirtIO MMIO/PCI framebuffer)
                         let target_buf = fb_guard.buffer_mut();
                         for y in y_start..y_end {
-                            let user_row_ptr = (mmap_info.user_addr as usize) + y * mmap_info.user_stride;
+                            let user_row_ptr =
+                                (mmap_info.user_addr as usize) + y * mmap_info.user_stride;
                             let target_row_offset = y * fb_stride_bytes + x_byte_offset;
 
                             if target_row_offset + row_bytes <= target_buf.len() {
@@ -2642,18 +2765,23 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
 
                 #[repr(C)]
                 #[derive(Clone, Copy)]
-                struct FlushRect { x: i32, y: i32, w: i32, h: i32 }
+                struct FlushRect {
+                    x: i32,
+                    y: i32,
+                    w: i32,
+                    h: i32,
+                }
 
-                let rects = unsafe {
-                    core::slice::from_raw_parts(rects_ptr as *const FlushRect, count)
-                };
+                let rects =
+                    unsafe { core::slice::from_raw_parts(rects_ptr as *const FlushRect, count) };
 
                 let fb_mmap_info = fb_mmap_info_pre;
 
                 if let Some(mmap_info) = fb_mmap_info {
                     if crate::graphics::arm64_fb::is_gop_active() {
                         // Use lock-free FbInfoCache for stride (no FB lock needed)
-                        let fb_stride_bytes = crate::graphics::arm64_fb::FB_INFO_CACHE.get()
+                        let fb_stride_bytes = crate::graphics::arm64_fb::FB_INFO_CACHE
+                            .get()
                             .map(|c| c.stride * c.bytes_per_pixel)
                             .unwrap_or(0);
 
@@ -2662,23 +2790,31 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                                 let x_byte_offset = mmap_info.x_offset * mmap_info.bpp;
 
                                 for rect in rects {
-                                    if rect.w <= 0 || rect.h <= 0 { continue; }
+                                    if rect.w <= 0 || rect.h <= 0 {
+                                        continue;
+                                    }
 
                                     let col_start = (rect.x.max(0) as usize).min(mmap_info.width);
-                                    let col_end = (rect.x.max(0) as usize + rect.w as usize).min(mmap_info.width);
+                                    let col_end = (rect.x.max(0) as usize + rect.w as usize)
+                                        .min(mmap_info.width);
                                     let y_start = (rect.y.max(0) as usize).min(mmap_info.height);
-                                    let y_end = (rect.y.max(0) as usize + rect.h as usize).min(mmap_info.height);
+                                    let y_end = (rect.y.max(0) as usize + rect.h as usize)
+                                        .min(mmap_info.height);
 
                                     let user_col_byte = col_start * mmap_info.bpp;
                                     let target_col_byte = x_byte_offset + col_start * mmap_info.bpp;
                                     let copy_row_bytes = (col_end - col_start) * mmap_info.bpp;
 
-                                    if copy_row_bytes == 0 { continue; }
+                                    if copy_row_bytes == 0 {
+                                        continue;
+                                    }
 
                                     for y in y_start..y_end {
                                         let user_row_ptr = (mmap_info.user_addr as usize)
-                                            + y * mmap_info.user_stride + user_col_byte;
-                                        let target_row_offset = y * fb_stride_bytes + target_col_byte;
+                                            + y * mmap_info.user_stride
+                                            + user_col_byte;
+                                        let target_row_offset =
+                                            y * fb_stride_bytes + target_col_byte;
                                         if target_row_offset + copy_row_bytes <= gop_buf.len() {
                                             unsafe {
                                                 core::ptr::copy_nonoverlapping(
@@ -2693,7 +2829,9 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                             }
 
                             // ONE DSB for all BAR0 writes
-                            unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+                            unsafe {
+                                core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+                            }
 
                             // Notify VirGL compositing that the terminal pane changed
                             if mmap_info.x_offset > 0 {
@@ -2779,6 +2917,8 @@ pub fn sys_get_mouse_pos(_out_ptr: u64) -> SyscallResult {
 /// * -ENODEV if no framebuffer is available
 #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
 pub fn sys_fbmmap() -> SyscallResult {
+    #[cfg(not(target_arch = "x86_64"))]
+    use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
     use crate::memory::vma::{MmapFlags, Protection, Vma};
     use crate::syscall::memory_common::{
         cleanup_mapped_pages, flush_tlb, get_current_thread_id, prot_to_page_flags,
@@ -2788,8 +2928,6 @@ pub fn sys_fbmmap() -> SyscallResult {
     use x86_64::structures::paging::{Page, Size4KiB};
     #[cfg(target_arch = "x86_64")]
     use x86_64::VirtAddr;
-    #[cfg(not(target_arch = "x86_64"))]
-    use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
 
     // Get current process thread ID first (needed for per-process display ownership check)
     let current_thread_id = match get_current_thread_id() {
@@ -2858,9 +2996,19 @@ pub fn sys_fbmmap() -> SyscallResult {
             let divider_width = 4;
             let right_x = fb_guard.width() / 2 + divider_width;
             let right_width = fb_guard.width().saturating_sub(right_x);
-            (right_width, right_x, fb_guard.height(), fb_guard.bytes_per_pixel())
+            (
+                right_width,
+                right_x,
+                fb_guard.height(),
+                fb_guard.bytes_per_pixel(),
+            )
         } else {
-            (fb_guard.width() / 2, 0, fb_guard.height(), fb_guard.bytes_per_pixel())
+            (
+                fb_guard.width() / 2,
+                0,
+                fb_guard.height(),
+                fb_guard.bytes_per_pixel(),
+            )
         }
     };
 
@@ -3009,7 +3157,10 @@ pub fn sys_fbmmap() -> SyscallResult {
 
     log::info!(
         "sys_fbmmap: mapped {}x{} fb buffer at {:#x} ({} pages)",
-        pane_width, height, start_addr, mapped_pages.len()
+        pane_width,
+        height,
+        start_addr,
+        mapped_pages.len()
     );
 
     SyscallResult::Ok(start_addr)

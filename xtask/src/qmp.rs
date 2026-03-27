@@ -21,8 +21,8 @@ pub struct QmpClient {
 impl QmpClient {
     /// Connect to a QMP socket and negotiate capabilities.
     pub fn connect<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let stream = UnixStream::connect(path.as_ref())
-            .context("Failed to connect to QMP socket")?;
+        let stream =
+            UnixStream::connect(path.as_ref()).context("Failed to connect to QMP socket")?;
         stream
             .set_read_timeout(Some(Duration::from_secs(10)))
             .context("Failed to set read timeout")?;

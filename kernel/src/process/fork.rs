@@ -67,7 +67,10 @@ pub fn copy_user_pages(
         let child_frame = match allocate_frame() {
             Some(frame) => frame,
             None => {
-                log::error!("copy_user_pages: out of memory allocating frame for {:#x}", virt_addr.as_u64());
+                log::error!(
+                    "copy_user_pages: out of memory allocating frame for {:#x}",
+                    virt_addr.as_u64()
+                );
                 copy_error = Some("Out of memory during fork");
                 return;
             }
@@ -111,7 +114,10 @@ pub fn copy_user_pages(
         return Err(err);
     }
 
-    log::info!("copy_user_pages: copied {} pages from parent to child", pages_copied);
+    log::info!(
+        "copy_user_pages: copied {} pages from parent to child",
+        pages_copied
+    );
     Ok(pages_copied)
 }
 
@@ -304,10 +310,7 @@ pub fn copy_process_memory(
 /// in its stack as the parent's RSP is in the parent's stack.
 /// Note: Uses architecture-specific register names
 #[cfg(target_arch = "x86_64")]
-fn copy_stack_state(
-    parent_thread: &Thread,
-    child_thread: &mut Thread,
-) -> Result<(), &'static str> {
+fn copy_stack_state(parent_thread: &Thread, child_thread: &mut Thread) -> Result<(), &'static str> {
     let parent_stack_top = parent_thread.stack_top.as_u64();
     let child_stack_top = child_thread.stack_top.as_u64();
     let parent_rsp = parent_thread.context.rsp;

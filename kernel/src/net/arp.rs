@@ -53,8 +53,13 @@ impl Default for ArpCacheEntry {
 }
 
 /// ARP cache
-static ARP_CACHE: Mutex<[ArpCacheEntry; ARP_CACHE_SIZE]> =
-    Mutex::new([ArpCacheEntry { ip: [0; 4], mac: [0; 6], valid: false }; ARP_CACHE_SIZE]);
+static ARP_CACHE: Mutex<[ArpCacheEntry; ARP_CACHE_SIZE]> = Mutex::new(
+    [ArpCacheEntry {
+        ip: [0; 4],
+        mac: [0; 6],
+        valid: false,
+    }; ARP_CACHE_SIZE],
+);
 
 /// Initialize ARP subsystem
 pub fn init() {
@@ -178,7 +183,10 @@ pub fn handle_arp(eth_frame: &EthernetFrame, arp: &ArpPacket) {
             #[cfg(target_arch = "x86_64")]
             log::debug!(
                 "ARP: Request from {}.{}.{}.{} for our IP",
-                arp.sender_ip[0], arp.sender_ip[1], arp.sender_ip[2], arp.sender_ip[3]
+                arp.sender_ip[0],
+                arp.sender_ip[1],
+                arp.sender_ip[2],
+                arp.sender_ip[3]
             );
 
             let reply = ArpPacket::build(
@@ -189,12 +197,8 @@ pub fn handle_arp(eth_frame: &EthernetFrame, arp: &ArpPacket) {
                 &arp.sender_ip,
             );
 
-            let frame = ethernet::EthernetFrame::build(
-                &our_mac,
-                &eth_frame.src_mac,
-                ETHERTYPE_ARP,
-                &reply,
-            );
+            let frame =
+                ethernet::EthernetFrame::build(&our_mac, &eth_frame.src_mac, ETHERTYPE_ARP, &reply);
 
             if let Err(_e) = driver_transmit(&frame) {
                 #[cfg(target_arch = "x86_64")]
@@ -208,9 +212,16 @@ pub fn handle_arp(eth_frame: &EthernetFrame, arp: &ArpPacket) {
             #[cfg(target_arch = "x86_64")]
             log::debug!(
                 "ARP: Reply from {}.{}.{}.{} -> {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                arp.sender_ip[0], arp.sender_ip[1], arp.sender_ip[2], arp.sender_ip[3],
-                arp.sender_mac[0], arp.sender_mac[1], arp.sender_mac[2],
-                arp.sender_mac[3], arp.sender_mac[4], arp.sender_mac[5]
+                arp.sender_ip[0],
+                arp.sender_ip[1],
+                arp.sender_ip[2],
+                arp.sender_ip[3],
+                arp.sender_mac[0],
+                arp.sender_mac[1],
+                arp.sender_mac[2],
+                arp.sender_mac[3],
+                arp.sender_mac[4],
+                arp.sender_mac[5]
             );
             // Already updated cache above
         }
@@ -288,19 +299,18 @@ pub fn request(target_ip: &[u8; 4]) -> Result<(), &'static str> {
         target_ip,
     );
 
-    let frame = ethernet::EthernetFrame::build(
-        &our_mac,
-        &BROADCAST_MAC,
-        ETHERTYPE_ARP,
-        &arp_packet,
-    );
+    let frame =
+        ethernet::EthernetFrame::build(&our_mac, &BROADCAST_MAC, ETHERTYPE_ARP, &arp_packet);
 
     driver_transmit(&frame)?;
 
     #[cfg(target_arch = "x86_64")]
     log::debug!(
         "ARP: Sent request for {}.{}.{}.{}",
-        target_ip[0], target_ip[1], target_ip[2], target_ip[3]
+        target_ip[0],
+        target_ip[1],
+        target_ip[2],
+        target_ip[3]
     );
 
     Ok(())

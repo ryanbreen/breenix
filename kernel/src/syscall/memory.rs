@@ -57,7 +57,10 @@ pub fn sys_brk(addr: u64) -> SyscallResult {
     let (pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
         Some(p) => p,
         None => {
-            log::error!("sys_brk: No process found for thread_id={}", current_thread_id);
+            log::error!(
+                "sys_brk: No process found for thread_id={}",
+                current_thread_id
+            );
             return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
         }
     };
@@ -67,7 +70,11 @@ pub fn sys_brk(addr: u64) -> SyscallResult {
 
     log::info!(
         "sys_brk: thread={} pid={:?} addr={:#x} heap_start={:#x} heap_end={:#x}",
-        current_thread_id, pid, addr, heap_start, current_break
+        current_thread_id,
+        pid,
+        addr,
+        heap_start,
+        current_break
     );
 
     // If addr is 0, just return current program break
@@ -98,7 +105,8 @@ pub fn sys_brk(addr: u64) -> SyscallResult {
     if new_break > current_break {
         log::info!(
             "sys_brk: EXPANDING from {:#x} to {:#x}",
-            current_break, new_break
+            current_break,
+            new_break
         );
 
         // Get the process page table
@@ -132,7 +140,10 @@ pub fn sys_brk(addr: u64) -> SyscallResult {
             let frame = match crate::memory::frame_allocator::allocate_frame() {
                 Some(f) => f,
                 None => {
-                    log::error!("sys_brk: OOM allocating frame for page {:#x}", current_page.start_address().as_u64());
+                    log::error!(
+                        "sys_brk: OOM allocating frame for page {:#x}",
+                        current_page.start_address().as_u64()
+                    );
                     return SyscallResult::Ok(current_break); // Return old break on OOM
                 }
             };
@@ -143,7 +154,11 @@ pub fn sys_brk(addr: u64) -> SyscallResult {
                 | PageTableFlags::USER_ACCESSIBLE;
 
             if let Err(e) = page_table.map_page(current_page, frame, flags) {
-                log::error!("sys_brk: map_page failed for {:#x}: {}", current_page.start_address().as_u64(), e);
+                log::error!(
+                    "sys_brk: map_page failed for {:#x}: {}",
+                    current_page.start_address().as_u64(),
+                    e
+                );
                 return SyscallResult::Ok(current_break); // Return old break on error
             }
 
@@ -170,7 +185,8 @@ pub fn sys_brk(addr: u64) -> SyscallResult {
     else if new_break < current_break {
         log::info!(
             "sys_brk: CONTRACTING from {:#x} to {:#x}",
-            current_break, new_break
+            current_break,
+            new_break
         );
 
         // Get the process page table
@@ -207,7 +223,11 @@ pub fn sys_brk(addr: u64) -> SyscallResult {
                     pages_unmapped += 1;
                 }
                 Err(e) => {
-                    log::warn!("sys_brk: unmap_page failed for {:#x}: {}", page.start_address().as_u64(), e);
+                    log::warn!(
+                        "sys_brk: unmap_page failed for {:#x}: {}",
+                        page.start_address().as_u64(),
+                        e
+                    );
                     // Continue trying to unmap other pages
                 }
             }

@@ -219,7 +219,8 @@ pub fn sys_epoll_ctl(epfd: i32, op: i32, fd: i32, event_ptr: u64) -> SyscallResu
         if event_ptr == 0 {
             return SyscallResult::Err(errno::EFAULT as u64);
         }
-        let event: EpollEvent = match super::userptr::copy_from_user(event_ptr as *const EpollEvent) {
+        let event: EpollEvent = match super::userptr::copy_from_user(event_ptr as *const EpollEvent)
+        {
             Ok(e) => e,
             Err(e) => return SyscallResult::Err(e),
         };

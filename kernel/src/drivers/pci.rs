@@ -258,23 +258,38 @@ impl Device {
     pub fn disable_intx(&self) {
         let command = pci_read_config_word(self.bus, self.device, self.function, 0x04);
         // Bit 10: Interrupt Disable
-        pci_write_config_word(self.bus, self.device, self.function, 0x04, command | (1 << 10));
+        pci_write_config_word(
+            self.bus,
+            self.device,
+            self.function,
+            0x04,
+            command | (1 << 10),
+        );
     }
 
     /// Enable legacy INTx interrupts (clear DisINTx bit in PCI Command register).
     pub fn enable_intx(&self) {
         let command = pci_read_config_word(self.bus, self.device, self.function, 0x04);
-        pci_write_config_word(self.bus, self.device, self.function, 0x04, command & !(1 << 10));
+        pci_write_config_word(
+            self.bus,
+            self.device,
+            self.function,
+            0x04,
+            command & !(1 << 10),
+        );
     }
 
     /// Disable PCI MSI. Clears the MSI Enable bit in the MSI Message Control register.
     /// Returns true if MSI was found and disabled, false if no MSI capability exists.
     pub fn disable_msi(&self) -> bool {
         if let Some(cap_offset) = self.find_msi_capability() {
-            let msg_ctrl = pci_read_config_word(self.bus, self.device, self.function, cap_offset + 2);
+            let msg_ctrl =
+                pci_read_config_word(self.bus, self.device, self.function, cap_offset + 2);
             // Clear bit 0 (MSI Enable)
             pci_write_config_word(
-                self.bus, self.device, self.function,
+                self.bus,
+                self.device,
+                self.function,
                 cap_offset + 2,
                 msg_ctrl & !0x0001,
             );
@@ -319,7 +334,13 @@ impl Device {
         let has_mask = (msg_ctrl & (1 << 8)) != 0;
 
         // Write Message Address (always at cap+4)
-        pci_write_config_dword(self.bus, self.device, self.function, cap_offset + 4, address);
+        pci_write_config_dword(
+            self.bus,
+            self.device,
+            self.function,
+            cap_offset + 4,
+            address,
+        );
 
         // Write Message Data
         let data_offset = if is_64bit {
@@ -344,7 +365,13 @@ impl Device {
 
         // Enable MSI (bit 0 of Message Control), single message (bits 6:4 = 000)
         let new_ctrl = (msg_ctrl & !0x0070) | 0x0001; // Clear MME, set Enable
-        pci_write_config_word(self.bus, self.device, self.function, cap_offset + 2, new_ctrl);
+        pci_write_config_word(
+            self.bus,
+            self.device,
+            self.function,
+            cap_offset + 2,
+            new_ctrl,
+        );
     }
 
     /// Find the MSI-X capability in the PCI capability list.
@@ -364,7 +391,8 @@ impl Device {
     /// Read MSI-X Table BAR index and offset.
     /// Returns (bar_index, offset_within_bar).
     pub fn msix_table_location(&self, cap_offset: u8) -> (u8, u32) {
-        let table_offset_bir = pci_read_config_dword(self.bus, self.device, self.function, cap_offset + 4);
+        let table_offset_bir =
+            pci_read_config_dword(self.bus, self.device, self.function, cap_offset + 4);
         let bar_index = (table_offset_bir & 0x07) as u8;
         let offset = table_offset_bir & !0x07;
         (bar_index, offset)
@@ -375,14 +403,26 @@ impl Device {
         let msg_ctrl = pci_read_config_word(self.bus, self.device, self.function, cap_offset + 2);
         // Bit 15: MSI-X Enable, Bit 14: Function Mask (clear to unmask)
         let new_ctrl = (msg_ctrl | (1 << 15)) & !(1 << 14);
-        pci_write_config_word(self.bus, self.device, self.function, cap_offset + 2, new_ctrl);
+        pci_write_config_word(
+            self.bus,
+            self.device,
+            self.function,
+            cap_offset + 2,
+            new_ctrl,
+        );
     }
 
     /// Disable MSI-X (clear Enable bit in Message Control).
     pub fn disable_msix(&self, cap_offset: u8) {
         let msg_ctrl = pci_read_config_word(self.bus, self.device, self.function, cap_offset + 2);
         let new_ctrl = msg_ctrl & !(1 << 15);
-        pci_write_config_word(self.bus, self.device, self.function, cap_offset + 2, new_ctrl);
+        pci_write_config_word(
+            self.bus,
+            self.device,
+            self.function,
+            cap_offset + 2,
+            new_ctrl,
+        );
     }
 
     /// Configure a single MSI-X table entry.
@@ -401,7 +441,11 @@ impl Device {
         }
         let bar_base = self.bars[bar_index as usize].address;
         const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
-        let virt_base = if bar_base >= HHDM_BASE { bar_base } else { HHDM_BASE + bar_base };
+        let virt_base = if bar_base >= HHDM_BASE {
+            bar_base
+        } else {
+            HHDM_BASE + bar_base
+        };
         let entry_addr = virt_base + table_offset as u64 + (vector_index as u64 * 16);
 
         unsafe {
@@ -438,7 +482,7 @@ impl Device {
     /// Returns the previous power state (0=D0, 1=D1, 2=D2, 3=D3hot), or None if no PM cap.
     pub fn set_power_state_d0(&self) -> Option<u8> {
         let pm_cap = self.find_capability(0x01)?; // PCI_CAP_ID_PM = 0x01
-        // PMCSR (Power Management Control/Status Register) is at PM_cap + 4
+                                                  // PMCSR (Power Management Control/Status Register) is at PM_cap + 4
         let pmcsr = pci_read_config_word(self.bus, self.device, self.function, pm_cap + 4);
         let current_state = (pmcsr & 0x03) as u8; // Bits [1:0] = power state
         if current_state != 0 {
@@ -470,11 +514,21 @@ impl Device {
     pub fn dump_capabilities(&self) {
         let status = pci_read_config_word(self.bus, self.device, self.function, 0x06);
         if (status & (1 << 4)) == 0 {
-            crate::serial_println!("[pci] {:02x}:{:02x}.{}: no capabilities list", self.bus, self.device, self.function);
+            crate::serial_println!(
+                "[pci] {:02x}:{:02x}.{}: no capabilities list",
+                self.bus,
+                self.device,
+                self.function
+            );
             return;
         }
         let mut cap_ptr = pci_read_config_byte(self.bus, self.device, self.function, 0x34);
-        crate::serial_println!("[pci] {:02x}:{:02x}.{}: capabilities:", self.bus, self.device, self.function);
+        crate::serial_println!(
+            "[pci] {:02x}:{:02x}.{}: capabilities:",
+            self.bus,
+            self.device,
+            self.function
+        );
         while cap_ptr != 0 {
             let id = pci_read_config_byte(self.bus, self.device, self.function, cap_ptr);
             let cap_name = match id {
@@ -488,8 +542,14 @@ impl Device {
             // Read the full dword at cap_ptr for extra context
             let dw0 = pci_read_config_dword(self.bus, self.device, self.function, cap_ptr);
             let dw1 = pci_read_config_dword(self.bus, self.device, self.function, cap_ptr + 4);
-            crate::serial_println!("  cap 0x{:02x} ({}) @ 0x{:02x}: dw0=0x{:08x} dw1=0x{:08x}",
-                id, cap_name, cap_ptr, dw0, dw1);
+            crate::serial_println!(
+                "  cap 0x{:02x} ({}) @ 0x{:02x}: dw0=0x{:08x} dw1=0x{:08x}",
+                id,
+                cap_name,
+                cap_ptr,
+                dw0,
+                dw1
+            );
             cap_ptr = pci_read_config_byte(self.bus, self.device, self.function, cap_ptr + 1);
         }
     }
@@ -502,8 +562,15 @@ impl Device {
             let dw1 = pci_read_config_dword(self.bus, self.device, self.function, offset + 4);
             let dw2 = pci_read_config_dword(self.bus, self.device, self.function, offset + 8);
             let dw3 = pci_read_config_dword(self.bus, self.device, self.function, offset + 12);
-            crate::serial_println!("[M1] {} +{:03x}: {:08x} {:08x} {:08x} {:08x}",
-                label, offset, dw0, dw1, dw2, dw3);
+            crate::serial_println!(
+                "[M1] {} +{:03x}: {:08x} {:08x} {:08x} {:08x}",
+                label,
+                offset,
+                dw0,
+                dw1,
+                dw2,
+                dw3
+            );
         }
     }
 
@@ -512,11 +579,20 @@ impl Device {
     pub fn linux_style_enable(&self) {
         // 1. Transition to D0 power state (like pci_set_power_state(dev, PCI_D0))
         if let Some(prev_state) = self.set_power_state_d0() {
-            crate::serial_println!("[pci] {:02x}:{:02x}.{}: PM D{} -> D0",
-                self.bus, self.device, self.function, prev_state);
+            crate::serial_println!(
+                "[pci] {:02x}:{:02x}.{}: PM D{} -> D0",
+                self.bus,
+                self.device,
+                self.function,
+                prev_state
+            );
         } else {
-            crate::serial_println!("[pci] {:02x}:{:02x}.{}: no PM capability",
-                self.bus, self.device, self.function);
+            crate::serial_println!(
+                "[pci] {:02x}:{:02x}.{}: no PM capability",
+                self.bus,
+                self.device,
+                self.function
+            );
         }
 
         // 2. Set Cache Line Size (64 bytes = 16 DWORDs, standard for ARM64)
@@ -530,8 +606,14 @@ impl Device {
         // Bit 1: Memory Space, Bit 2: Bus Master, Bit 10: INTx Disable
         let new_command = command | 0x0406;
         pci_write_config_word(self.bus, self.device, self.function, 0x04, new_command);
-        crate::serial_println!("[pci] {:02x}:{:02x}.{}: cmd 0x{:04x} -> 0x{:04x}",
-            self.bus, self.device, self.function, command, new_command);
+        crate::serial_println!(
+            "[pci] {:02x}:{:02x}.{}: cmd 0x{:04x} -> 0x{:04x}",
+            self.bus,
+            self.device,
+            self.function,
+            command,
+            new_command
+        );
 
         // 5. Clear any error bits in Status register (write-1-to-clear)
         let status = pci_read_config_word(self.bus, self.device, self.function, 0x06);
@@ -539,8 +621,13 @@ impl Device {
             // Clear error bits: SERR (14), Parity (15), Sig Target Abort (11),
             // Rcvd Target Abort (12), Rcvd Master Abort (13), Sig System Error (14), Parity (15)
             pci_write_config_word(self.bus, self.device, self.function, 0x06, status);
-            crate::serial_println!("[pci] {:02x}:{:02x}.{}: cleared status errors 0x{:04x}",
-                self.bus, self.device, self.function, status & 0xF900);
+            crate::serial_println!(
+                "[pci] {:02x}:{:02x}.{}: cleared status errors 0x{:04x}",
+                self.bus,
+                self.device,
+                self.function,
+                status & 0xF900
+            );
         }
     }
 }
@@ -564,7 +651,10 @@ impl fmt::Display for Device {
 impl fmt::Debug for Device {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PciDevice")
-            .field("location", &format_args!("{:02x}:{:02x}.{}", self.bus, self.device, self.function))
+            .field(
+                "location",
+                &format_args!("{:02x}:{:02x}.{}", self.bus, self.device, self.function),
+            )
             .field("vendor_id", &format_args!("{:#06x}", self.vendor_id))
             .field("device_id", &format_args!("{:#06x}", self.device_id))
             .field("class", &self.class)
@@ -608,9 +698,9 @@ pub(crate) fn pci_read_config_dword(bus: u8, device: u8, function: u8, offset: u
 
     let addr = ecam_base
         + (((bus as u64) << 20)
-        | ((device as u64) << 15)
-        | ((function as u64) << 12)
-        | ((offset & 0xFC) as u64));
+            | ((device as u64) << 15)
+            | ((function as u64) << 12)
+            | ((offset & 0xFC) as u64));
 
     const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
     let virt = (HHDM_BASE + addr) as *const u32;
@@ -645,9 +735,9 @@ pub(crate) fn pci_write_config_dword(bus: u8, device: u8, function: u8, offset: 
 
     let addr = ecam_base
         + (((bus as u64) << 20)
-        | ((device as u64) << 15)
-        | ((function as u64) << 12)
-        | ((offset & 0xFC) as u64));
+            | ((device as u64) << 15)
+            | ((function as u64) << 12)
+            | ((offset & 0xFC) as u64));
 
     const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
     let virt = (HHDM_BASE + addr) as *mut u32;
@@ -703,7 +793,16 @@ fn read_bar_no_sizing(bus: u8, device: u8, function: u8, bar_index: u8) -> (Bar,
     if bar_low & 0x01 != 0 {
         // I/O space BAR
         let address = (bar_low & 0xFFFF_FFFC) as u64;
-        (Bar { address, size: 0x100, is_io: true, is_64bit: false, prefetchable: false }, false)
+        (
+            Bar {
+                address,
+                size: 0x100,
+                is_io: true,
+                is_64bit: false,
+                prefetchable: false,
+            },
+            false,
+        )
     } else {
         let bar_type = (bar_low >> 1) & 0x03;
         let prefetchable = (bar_low & 0x08) != 0;
@@ -711,11 +810,29 @@ fn read_bar_no_sizing(bus: u8, device: u8, function: u8, bar_index: u8) -> (Bar,
             // 64-bit BAR
             let bar_high = pci_read_config_dword(bus, device, function, offset + 4);
             let address = ((bar_high as u64) << 32) | ((bar_low & 0xFFFF_FFF0) as u64);
-            (Bar { address, size: 0x1000, is_io: false, is_64bit: true, prefetchable }, true)
+            (
+                Bar {
+                    address,
+                    size: 0x1000,
+                    is_io: false,
+                    is_64bit: true,
+                    prefetchable,
+                },
+                true,
+            )
         } else {
             // 32-bit BAR
             let address = (bar_low & 0xFFFF_FFF0) as u64;
-            (Bar { address, size: 0x1000, is_io: false, is_64bit: false, prefetchable }, false)
+            (
+                Bar {
+                    address,
+                    size: 0x1000,
+                    is_io: false,
+                    is_64bit: false,
+                    prefetchable,
+                },
+                false,
+            )
         }
     }
 }
@@ -968,7 +1085,11 @@ pub fn enumerate() -> usize {
                     network_count += 1;
                     log::info!(
                         "PCI:   -> Network controller detected!{}",
-                        if dev.is_virtio_net() { " (VirtIO-net)" } else { "" }
+                        if dev.is_virtio_net() {
+                            " (VirtIO-net)"
+                        } else {
+                            ""
+                        }
                     );
                     // Boot stage marker for E1000 detection
                     if dev.vendor_id == 0x8086 && dev.device_id == 0x100e {
@@ -1002,7 +1123,11 @@ pub fn enumerate() -> usize {
                                 network_count += 1;
                                 log::info!(
                                     "PCI:   -> Network controller detected!{}",
-                                    if func_dev.is_virtio_net() { " (VirtIO-net)" } else { "" }
+                                    if func_dev.is_virtio_net() {
+                                        " (VirtIO-net)"
+                                    } else {
+                                        ""
+                                    }
                                 );
                                 // Boot stage marker for E1000 detection
                                 if func_dev.vendor_id == 0x8086 && func_dev.device_id == 0x100e {
@@ -1042,13 +1167,21 @@ pub fn get_devices() -> Option<Vec<Device>> {
 #[allow(dead_code)] // Part of public API, will be used by VirtIO driver
 pub fn find_device(vendor_id: u16, device_id: u16) -> Option<Device> {
     let devices = PCI_DEVICES.lock();
-    devices.as_ref()?.iter().find(|d| d.vendor_id == vendor_id && d.device_id == device_id).cloned()
+    devices
+        .as_ref()?
+        .iter()
+        .find(|d| d.vendor_id == vendor_id && d.device_id == device_id)
+        .cloned()
 }
 
 /// Find a device by PCI class code, subclass, and programming interface.
 pub fn find_by_class(class: DeviceClass, subclass: u8, prog_if: u8) -> Option<Device> {
     let devices = PCI_DEVICES.lock();
-    devices.as_ref()?.iter().find(|d| d.class == class && d.subclass == subclass && d.prog_if == prog_if).cloned()
+    devices
+        .as_ref()?
+        .iter()
+        .find(|d| d.class == class && d.subclass == subclass && d.prog_if == prog_if)
+        .cloned()
 }
 
 /// Find all VirtIO block devices
@@ -1056,7 +1189,11 @@ pub fn find_by_class(class: DeviceClass, subclass: u8, prog_if: u8) -> Option<De
 pub fn find_virtio_block_devices() -> Vec<Device> {
     let devices = PCI_DEVICES.lock();
     match devices.as_ref() {
-        Some(devs) => devs.iter().filter(|d| d.is_virtio_block()).cloned().collect(),
+        Some(devs) => devs
+            .iter()
+            .filter(|d| d.is_virtio_block())
+            .cloned()
+            .collect(),
         None => Vec::new(),
     }
 }
@@ -1086,7 +1223,11 @@ pub fn find_virtio_net_devices() -> Vec<Device> {
 pub fn find_virtio_sound_devices() -> Vec<Device> {
     let devices = PCI_DEVICES.lock();
     match devices.as_ref() {
-        Some(devs) => devs.iter().filter(|d| d.is_virtio_sound()).cloned().collect(),
+        Some(devs) => devs
+            .iter()
+            .filter(|d| d.is_virtio_sound())
+            .cloned()
+            .collect(),
         None => Vec::new(),
     }
 }

@@ -3,12 +3,12 @@
 //! This module provides a single QEMU instance that runs once and captures
 //! kernel output for all tests to share, eliminating concurrency issues.
 
-use std::process::Command;
 use std::fs;
-use std::time::Duration;
-use std::thread;
 use std::io::Read;
+use std::process::Command;
 use std::sync::OnceLock;
+use std::thread;
+use std::time::Duration;
 
 #[path = "shared_qemu/checkpoint_tracker.rs"]
 mod checkpoint_tracker;
@@ -18,7 +18,7 @@ use checkpoint_tracker::CheckpointTracker;
 static KERNEL_OUTPUT: OnceLock<String> = OnceLock::new();
 
 /// Get the complete kernel output by running QEMU once and capturing until POST completion
-/// 
+///
 /// This function uses OnceLock to ensure QEMU only runs once per test session,
 /// even when called from multiple tests concurrently.
 pub fn get_kernel_output() -> &'static str {
@@ -239,7 +239,8 @@ pub fn get_kernel_output() -> &'static str {
 
 /// Extract timestamps from kernel log lines for timer-related tests
 pub fn extract_timestamps(output: &str) -> Vec<f64> {
-    output.lines()
+    output
+        .lines()
         .filter_map(|line| {
             if line.contains("[ INFO]") && line.contains(" - ") {
                 // Split on " - " and take the first part which should be the timestamp
@@ -259,7 +260,7 @@ pub fn extract_timestamps(output: &str) -> Vec<f64> {
 pub fn validate_post_completion(output: &str) -> Result<(), Vec<String>> {
     let required_messages = [
         "Kernel entry point reached",
-        "Serial port initialized", 
+        "Serial port initialized",
         "Logger fully initialized",
         "GDT initialized",
         "IDT loaded successfully",
@@ -270,15 +271,15 @@ pub fn validate_post_completion(output: &str) -> Result<(), Vec<String>> {
         "Interrupts enabled!",
         "🎯 KERNEL_POST_TESTS_COMPLETE 🎯",
     ];
-    
+
     let mut missing = Vec::new();
-    
+
     for message in &required_messages {
         if !output.contains(message) {
             missing.push(message.to_string());
         }
     }
-    
+
     if missing.is_empty() {
         Ok(())
     } else {

@@ -38,10 +38,13 @@ use alloc::format;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU8, Ordering};
 
-use crate::task::kthread::{kthread_run, kthread_join, KthreadHandle};
+use super::progress::{
+    get_overall_progress, increment_completed, increment_stage_completed, init_subsystem,
+    init_subsystem_stage, mark_failed, mark_started,
+};
+use super::registry::{Subsystem, SubsystemId, TestResult, TestStage, SUBSYSTEMS};
 use crate::serial_println;
-use super::registry::{SUBSYSTEMS, Subsystem, SubsystemId, TestResult, TestStage};
-use super::progress::{init_subsystem, init_subsystem_stage, mark_started, increment_completed, increment_stage_completed, mark_failed, get_overall_progress};
+use crate::task::kthread::{kthread_join, kthread_run, KthreadHandle};
 
 /// Current boot stage - tests with stage <= this can run
 static CURRENT_STAGE: AtomicU8 = AtomicU8::new(TestStage::EarlyBoot as u8);
@@ -57,8 +60,7 @@ use core::sync::atomic::AtomicU64;
 
 /// Get the current test stage
 pub fn current_stage() -> TestStage {
-    TestStage::from_u8(CURRENT_STAGE.load(Ordering::Acquire))
-        .unwrap_or(TestStage::EarlyBoot)
+    TestStage::from_u8(CURRENT_STAGE.load(Ordering::Acquire)).unwrap_or(TestStage::EarlyBoot)
 }
 
 /// Advance to a new stage and run any tests waiting for that stage
@@ -127,7 +129,8 @@ pub fn run_all_tests() -> u32 {
     super::display::init();
 
     // Count total tests across all subsystems for final summary
-    let total_test_count: u32 = SUBSYSTEMS.iter()
+    let total_test_count: u32 = SUBSYSTEMS
+        .iter()
         .map(|s| count_arch_filtered_tests(s))
         .sum();
 
@@ -138,7 +141,8 @@ pub fn run_all_tests() -> u32 {
     }
 
     // Count tests by stage for reporting
-    let early_boot_count: u32 = SUBSYSTEMS.iter()
+    let early_boot_count: u32 = SUBSYSTEMS
+        .iter()
         .map(|s| count_stage_filtered_tests(s, TestStage::EarlyBoot))
         .sum();
     let later_stage_count = total_test_count - early_boot_count;
@@ -146,7 +150,10 @@ pub fn run_all_tests() -> u32 {
     serial_println!("[BOOT_TESTS:TOTAL:{}]", total_test_count);
     serial_println!("[BOOT_TESTS:EARLY_BOOT:{}]", early_boot_count);
     if later_stage_count > 0 {
-        serial_println!("[BOOT_TESTS:STAGED:{} tests waiting for later stages]", later_stage_count);
+        serial_println!(
+            "[BOOT_TESTS:STAGED:{} tests waiting for later stages]",
+            later_stage_count
+        );
     }
 
     // Render initial display state (all subsystems pending)
@@ -210,11 +217,7 @@ fn run_staged_tests(target_stage: TestStage) -> u32 {
                 );
             }
             Err(e) => {
-                serial_println!(
-                    "[SUBSYSTEM:{}:SPAWN_ERROR:{:?}]",
-                    subsystem.name,
-                    e
-                );
+                serial_println!("[SUBSYSTEM:{}:SPAWN_ERROR:{:?}]", subsystem.name, e);
             }
         }
     }
@@ -250,7 +253,12 @@ fn run_staged_tests(target_stage: TestStage) -> u32 {
             serial_println!("[BOOT_TESTS:FAIL:{}]", failed);
         }
     } else {
-        serial_println!("[STAGE:{}:COMPLETE:{}/{}]", target_stage.name(), completed, total);
+        serial_println!(
+            "[STAGE:{}:COMPLETE:{}/{}]",
+            target_stage.name(),
+            completed,
+            total
+        );
     }
 
     // Refresh display
@@ -278,9 +286,8 @@ fn count_stage_filtered_tests(subsystem: &Subsystem, stage: TestStage) -> u32 {
         .iter()
         .enumerate()
         .filter(|(idx, t)| {
-            t.arch.matches_current()
-                && t.stage == stage
-                && (already_run & (1u64 << idx)) == 0 // Not already run
+            t.arch.matches_current() && t.stage == stage && (already_run & (1u64 << idx)) == 0
+            // Not already run
         })
         .count() as u32
 }
@@ -297,9 +304,7 @@ fn count_pending_tests(subsystem: &Subsystem) -> u32 {
         .iter()
         .enumerate()
         .filter(|(idx, t)| {
-            t.arch.matches_current()
-                && t.stage <= current
-                && (already_run & (1u64 << idx)) == 0
+            t.arch.matches_current() && t.stage <= current && (already_run & (1u64 << idx)) == 0
         })
         .count() as u32
 }
@@ -432,7 +437,10 @@ mod tests {
     #[test]
     fn test_count_arch_filtered() {
         // Memory subsystem now has sanity tests
-        let memory = SUBSYSTEMS.iter().find(|s| s.id == SubsystemId::Memory).unwrap();
+        let memory = SUBSYSTEMS
+            .iter()
+            .find(|s| s.id == SubsystemId::Memory)
+            .unwrap();
         // Should have at least the framework_sanity and heap_alloc_basic tests
         assert!(count_arch_filtered_tests(memory) >= 2);
     }

@@ -2,9 +2,9 @@
 //!
 //! Implements: mkfifo (via mknod with S_IFIFO)
 
-use super::SyscallResult;
 #[cfg(target_arch = "x86_64")]
 use super::userptr::copy_cstr_from_user;
+use super::SyscallResult;
 #[cfg(target_arch = "x86_64")]
 use crate::ipc::fifo::FIFO_REGISTRY;
 
@@ -67,8 +67,8 @@ pub fn sys_mkfifo(pathname: u64, mode: u32) -> SyscallResult {
 /// 0 on success, negative errno on failure
 #[cfg(target_arch = "x86_64")]
 pub fn sys_mknod(pathname: u64, mode: u32, _dev: u64) -> SyscallResult {
-    use super::fs::S_IFMT;
     use super::fs::S_IFIFO;
+    use super::fs::S_IFMT;
 
     let file_type = mode & S_IFMT;
 

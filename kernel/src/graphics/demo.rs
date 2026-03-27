@@ -3,13 +3,13 @@
 //! Provides a visual demo of the graphics stack capabilities
 //! that runs during kernel boot.
 
-use alloc::string::String;
 use super::font::Font;
 use super::primitives::{
     draw_circle, draw_line, draw_rect, draw_text, fill_circle, fill_rect, Canvas, Color, Rect,
     TextStyle,
 };
 use super::split_screen::ClippedRegion;
+use alloc::string::String;
 
 /// Format resolution as "WIDTHxHEIGHT" string
 fn format_resolution(width: usize, height: usize) -> String {
@@ -68,9 +68,9 @@ pub fn run_demo(canvas: &mut impl Canvas) {
         Color::RED,
         Color::GREEN,
         Color::BLUE,
-        Color::rgb(255, 255, 0),   // Yellow
-        Color::rgb(255, 0, 255),   // Magenta
-        Color::rgb(0, 255, 255),   // Cyan
+        Color::rgb(255, 255, 0), // Yellow
+        Color::rgb(255, 0, 255), // Magenta
+        Color::rgb(0, 255, 255), // Cyan
     ];
 
     let box_width = 80;
@@ -135,18 +135,18 @@ pub fn run_demo(canvas: &mut impl Canvas) {
 
     // Pre-computed (cos, sin) * 100 for angles 0, 30, 60, ..., 330 degrees
     let directions: [(i32, i32); 12] = [
-        (100, 0),    // 0°
-        (87, 50),    // 30°
-        (50, 87),    // 60°
-        (0, 100),    // 90°
-        (-50, 87),   // 120°
-        (-87, 50),   // 150°
-        (-100, 0),   // 180°
-        (-87, -50),  // 210°
-        (-50, -87),  // 240°
-        (0, -100),   // 270°
-        (50, -87),   // 300°
-        (87, -50),   // 330°
+        (100, 0),   // 0°
+        (87, 50),   // 30°
+        (50, 87),   // 60°
+        (0, 100),   // 90°
+        (-50, 87),  // 120°
+        (-87, 50),  // 150°
+        (-100, 0),  // 180°
+        (-87, -50), // 210°
+        (-50, -87), // 240°
+        (0, -100),  // 270°
+        (50, -87),  // 300°
+        (87, -50),  // 330°
     ];
 
     for (i, (dx, dy)) in directions.iter().enumerate() {
@@ -268,9 +268,9 @@ pub fn run_demo_in_region(canvas: &mut impl Canvas, region: &ClippedRegion) {
         Color::RED,
         Color::GREEN,
         Color::BLUE,
-        Color::rgb(255, 255, 0),   // Yellow
-        Color::rgb(255, 0, 255),   // Magenta
-        Color::rgb(0, 255, 255),   // Cyan
+        Color::rgb(255, 255, 0), // Yellow
+        Color::rgb(255, 0, 255), // Magenta
+        Color::rgb(0, 255, 255), // Cyan
     ];
 
     let box_width = 60;
@@ -314,9 +314,27 @@ pub fn run_demo_in_region(canvas: &mut impl Canvas, region: &ClippedRegion) {
     draw_text(canvas, ox + 30, circle_y, "Circles:", &circle_text_style);
 
     // Filled circles (smaller for region)
-    fill_circle(canvas, ox + 60, circle_y + 45, 20, Color::rgb(255, 100, 100));
-    fill_circle(canvas, ox + 120, circle_y + 45, 16, Color::rgb(100, 255, 100));
-    fill_circle(canvas, ox + 170, circle_y + 45, 12, Color::rgb(100, 100, 255));
+    fill_circle(
+        canvas,
+        ox + 60,
+        circle_y + 45,
+        20,
+        Color::rgb(255, 100, 100),
+    );
+    fill_circle(
+        canvas,
+        ox + 120,
+        circle_y + 45,
+        16,
+        Color::rgb(100, 255, 100),
+    );
+    fill_circle(
+        canvas,
+        ox + 170,
+        circle_y + 45,
+        12,
+        Color::rgb(100, 100, 255),
+    );
 
     // Circle outlines
     draw_circle(canvas, ox + 240, circle_y + 45, 25, Color::WHITE);
@@ -333,18 +351,18 @@ pub fn run_demo_in_region(canvas: &mut impl Canvas, region: &ClippedRegion) {
     let radius = 35i32;
 
     let directions: [(i32, i32); 12] = [
-        (100, 0),    // 0°
-        (87, 50),    // 30°
-        (50, 87),    // 60°
-        (0, 100),    // 90°
-        (-50, 87),   // 120°
-        (-87, 50),   // 150°
-        (-100, 0),   // 180°
-        (-87, -50),  // 210°
-        (-50, -87),  // 240°
-        (0, -100),   // 270°
-        (50, -87),   // 300°
-        (87, -50),   // 330°
+        (100, 0),   // 0°
+        (87, 50),   // 30°
+        (50, 87),   // 60°
+        (0, 100),   // 90°
+        (-50, 87),  // 120°
+        (-87, 50),  // 150°
+        (-100, 0),  // 180°
+        (-87, -50), // 210°
+        (-50, -87), // 240°
+        (0, -100),  // 270°
+        (50, -87),  // 300°
+        (87, -50),  // 330°
     ];
 
     for (i, (dx, dy)) in directions.iter().enumerate() {

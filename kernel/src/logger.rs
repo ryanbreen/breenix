@@ -4,11 +4,11 @@
 
 #![cfg(target_arch = "x86_64")]
 
-use crate::log_serial_println;
-#[cfg(feature = "interactive")]
-use crate::graphics::DoubleBufferedFrameBuffer;
 #[cfg(feature = "interactive")]
 use crate::graphics::primitives::{Canvas, Color};
+#[cfg(feature = "interactive")]
+use crate::graphics::DoubleBufferedFrameBuffer;
+use crate::log_serial_println;
 #[cfg(feature = "interactive")]
 use bootloader_api::info::{FrameBufferInfo, PixelFormat};
 use bootloader_x86_64_common::logger::LockedLogger;
@@ -17,7 +17,9 @@ use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicU64, Ordering};
 use log::{Level, LevelFilter, Log, Metadata, Record};
 #[cfg(feature = "interactive")]
-use noto_sans_mono_bitmap::{get_raster, get_raster_width, FontWeight, RasterHeight, RasterizedChar};
+use noto_sans_mono_bitmap::{
+    get_raster, get_raster_width, FontWeight, RasterHeight, RasterizedChar,
+};
 use spin::Mutex;
 
 pub static FRAMEBUFFER_LOGGER: OnceCell<LockedLogger> = OnceCell::uninit();
@@ -67,13 +69,10 @@ const BORDER_PADDING: usize = 1;
 #[cfg(feature = "interactive")]
 fn get_char_raster(c: char) -> RasterizedChar {
     fn get(c: char) -> Option<RasterizedChar> {
-        get_raster(
-            c,
-            shell_font::FONT_WEIGHT,
-            shell_font::CHAR_RASTER_HEIGHT,
-        )
+        get_raster(c, shell_font::FONT_WEIGHT, shell_font::CHAR_RASTER_HEIGHT)
     }
-    get(c).unwrap_or_else(|| get(shell_font::BACKUP_CHAR).expect("Should get raster of backup char"))
+    get(c)
+        .unwrap_or_else(|| get(shell_font::BACKUP_CHAR).expect("Should get raster of backup char"))
 }
 
 /// Shell framebuffer writer for direct text output
@@ -295,8 +294,8 @@ impl ShellFrameBuffer {
                 if byte >= b'0' && byte <= b'9' {
                     // Accumulate parameter digit
                     if self.ansi_param_idx < 16 {
-                        self.ansi_params[self.ansi_param_idx] = self
-                            .ansi_params[self.ansi_param_idx]
+                        self.ansi_params[self.ansi_param_idx] = self.ansi_params
+                            [self.ansi_param_idx]
                             .saturating_mul(10)
                             .saturating_add(byte - b'0');
                     }
@@ -325,16 +324,16 @@ impl ShellFrameBuffer {
             0x08 => {
                 // Backspace: move cursor back and clear the character
                 if self.x_pos > BORDER_PADDING {
-                    self.x_pos =
-                        self.x_pos
-                            .saturating_sub(shell_font::CHAR_RASTER_WIDTH + LETTER_SPACING);
+                    self.x_pos = self
+                        .x_pos
+                        .saturating_sub(shell_font::CHAR_RASTER_WIDTH + LETTER_SPACING);
                     // Clear the character by writing a space
                     let raster = get_char_raster(' ');
                     self.write_rendered_char(raster);
                     // Move back again since write_rendered_char advances x_pos
-                    self.x_pos =
-                        self.x_pos
-                            .saturating_sub(shell_font::CHAR_RASTER_WIDTH + LETTER_SPACING);
+                    self.x_pos = self
+                        .x_pos
+                        .saturating_sub(shell_font::CHAR_RASTER_WIDTH + LETTER_SPACING);
                 }
             }
             c => {
@@ -505,7 +504,12 @@ impl ShellFrameBuffer {
                 self.write_pixel_no_mark(cursor_x + dx, cursor_y + dy, intensity);
             }
         }
-        self.mark_dirty_rect(cursor_x, cursor_y, shell_font::CHAR_RASTER_WIDTH, cursor_height);
+        self.mark_dirty_rect(
+            cursor_x,
+            cursor_y,
+            shell_font::CHAR_RASTER_WIDTH,
+            cursor_height,
+        );
     }
 
     /// Toggle the cursor visibility (for blinking effect)
@@ -965,9 +969,8 @@ pub fn init_framebuffer(buffer: &'static mut [u8], info: bootloader_api::info::F
         let buffer_len = buffer.len();
 
         // Initialize with direct hardware writes (no double buffering yet)
-        let _ = SHELL_FRAMEBUFFER.get_or_init(|| {
-            Mutex::new(ShellFrameBuffer::new_direct(buffer_ptr, buffer_len, info))
-        });
+        let _ = SHELL_FRAMEBUFFER
+            .get_or_init(|| Mutex::new(ShellFrameBuffer::new_direct(buffer_ptr, buffer_len, info)));
     }
 
     // Initialize framebuffer logger (used for non-interactive mode)
@@ -1092,7 +1095,7 @@ pub fn upgrade_to_double_buffer() {
 #[cfg(feature = "interactive")]
 #[allow(dead_code)]
 pub fn draw_test_pattern() {
-    use crate::graphics::primitives::{fill_rect, Rect, Color};
+    use crate::graphics::primitives::{fill_rect, Color, Rect};
 
     if let Some(fb) = SHELL_FRAMEBUFFER.get() {
         let mut guard = fb.lock();

@@ -176,7 +176,7 @@ fn emit_ring3_syscall_marker() {
     #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
     {
         crate::test_framework::advance_stage_marker_only(
-            crate::test_framework::TestStage::Userspace
+            crate::test_framework::TestStage::Userspace,
         );
     }
 }
@@ -266,17 +266,13 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Sigprocmask) => {
             super::signal::sys_sigprocmask(args.0 as i32, args.1, args.2, args.3)
         }
-        Some(SyscallNumber::Sigpending) => {
-            super::signal::sys_sigpending(args.0, args.1)
-        }
+        Some(SyscallNumber::Sigpending) => super::signal::sys_sigpending(args.0, args.1),
         Some(SyscallNumber::Sigsuspend) => {
             // sigsuspend(mask, sigsetsize) - atomically set mask and wait for signal
             // Needs frame access like pause() for saving userspace context
             super::signal::sys_sigsuspend_with_frame(args.0, args.1, frame)
         }
-        Some(SyscallNumber::Sigaltstack) => {
-            super::signal::sys_sigaltstack(args.0, args.1)
-        }
+        Some(SyscallNumber::Sigaltstack) => super::signal::sys_sigaltstack(args.0, args.1),
         Some(SyscallNumber::Sigreturn) => {
             // CRITICAL: sigreturn restores ALL registers including RAX from the signal frame.
             // We must NOT overwrite RAX with the syscall return value after this call!
@@ -295,39 +291,21 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             crate::per_cpu::preempt_enable();
             return;
         }
-        Some(SyscallNumber::Ioctl) => {
-            super::ioctl::sys_ioctl(args.0, args.1, args.2)
-        }
-        Some(SyscallNumber::Socket) => {
-            super::socket::sys_socket(args.0, args.1, args.2)
-        }
-        Some(SyscallNumber::Bind) => {
-            super::socket::sys_bind(args.0, args.1, args.2)
-        }
+        Some(SyscallNumber::Ioctl) => super::ioctl::sys_ioctl(args.0, args.1, args.2),
+        Some(SyscallNumber::Socket) => super::socket::sys_socket(args.0, args.1, args.2),
+        Some(SyscallNumber::Bind) => super::socket::sys_bind(args.0, args.1, args.2),
         Some(SyscallNumber::SendTo) => {
             super::socket::sys_sendto(args.0, args.1, args.2, args.3, args.4, args.5)
         }
         Some(SyscallNumber::RecvFrom) => {
             super::socket::sys_recvfrom(args.0, args.1, args.2, args.3, args.4, args.5)
         }
-        Some(SyscallNumber::Connect) => {
-            super::socket::sys_connect(args.0, args.1, args.2)
-        }
-        Some(SyscallNumber::Accept) => {
-            super::socket::sys_accept(args.0, args.1, args.2)
-        }
-        Some(SyscallNumber::Listen) => {
-            super::socket::sys_listen(args.0, args.1)
-        }
-        Some(SyscallNumber::Shutdown) => {
-            super::socket::sys_shutdown(args.0, args.1)
-        }
-        Some(SyscallNumber::Getsockname) => {
-            super::socket::sys_getsockname(args.0, args.1, args.2)
-        }
-        Some(SyscallNumber::Getpeername) => {
-            super::socket::sys_getpeername(args.0, args.1, args.2)
-        }
+        Some(SyscallNumber::Connect) => super::socket::sys_connect(args.0, args.1, args.2),
+        Some(SyscallNumber::Accept) => super::socket::sys_accept(args.0, args.1, args.2),
+        Some(SyscallNumber::Listen) => super::socket::sys_listen(args.0, args.1),
+        Some(SyscallNumber::Shutdown) => super::socket::sys_shutdown(args.0, args.1),
+        Some(SyscallNumber::Getsockname) => super::socket::sys_getsockname(args.0, args.1, args.2),
+        Some(SyscallNumber::Getpeername) => super::socket::sys_getpeername(args.0, args.1, args.2),
         Some(SyscallNumber::Socketpair) => {
             super::socket::sys_socketpair(args.0, args.1, args.2, args.3)
         }
@@ -351,13 +329,13 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Nanosleep) => super::time::sys_nanosleep(args.0, args.1),
         Some(SyscallNumber::Getitimer) => super::signal::sys_getitimer(args.0 as i32, args.1),
         Some(SyscallNumber::Alarm) => super::signal::sys_alarm(args.0),
-        Some(SyscallNumber::Setitimer) => super::signal::sys_setitimer(args.0 as i32, args.1, args.2),
+        Some(SyscallNumber::Setitimer) => {
+            super::signal::sys_setitimer(args.0 as i32, args.1, args.2)
+        }
         Some(SyscallNumber::Wait4) => {
             super::handlers::sys_waitpid(args.0 as i64, args.1, args.2 as u32)
         }
-        Some(SyscallNumber::SetPgid) => {
-            super::session::sys_setpgid(args.0 as i32, args.1 as i32)
-        }
+        Some(SyscallNumber::SetPgid) => super::session::sys_setpgid(args.0 as i32, args.1 as i32),
         Some(SyscallNumber::SetSid) => super::session::sys_setsid(),
         Some(SyscallNumber::GetPgid) => super::session::sys_getpgid(args.0 as i32),
         Some(SyscallNumber::GetSid) => super::session::sys_getsid(args.0 as i32),
@@ -366,7 +344,9 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Getcwd) => super::fs::sys_getcwd(args.0, args.1),
         Some(SyscallNumber::Chdir) => super::fs::sys_chdir(args.0),
         Some(SyscallNumber::Open) => super::fs::sys_open(args.0, args.1 as u32, args.2 as u32),
-        Some(SyscallNumber::Lseek) => super::fs::sys_lseek(args.0 as i32, args.1 as i64, args.2 as i32),
+        Some(SyscallNumber::Lseek) => {
+            super::fs::sys_lseek(args.0 as i32, args.1 as i64, args.2 as i32)
+        }
         Some(SyscallNumber::Fstat) => super::fs::sys_fstat(args.0 as i32, args.1),
         Some(SyscallNumber::Getdents64) => super::fs::sys_getdents64(args.0 as i32, args.1, args.2),
         Some(SyscallNumber::Rename) => super::fs::sys_rename(args.0, args.1),
@@ -378,17 +358,35 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Readlink) => super::fs::sys_readlink(args.0, args.1, args.2),
         Some(SyscallNumber::Mknod) => super::fifo::sys_mknod(args.0, args.1 as u32, args.2),
         // *at variants (ARM64 Linux has no legacy syscalls; x86_64 also supports these)
-        Some(SyscallNumber::Openat) => super::fs::sys_openat(args.0 as i32, args.1, args.2 as u32, args.3 as u32),
-        Some(SyscallNumber::Faccessat) => super::fs::sys_faccessat(args.0 as i32, args.1, args.2 as u32, args.3 as u32),
-        Some(SyscallNumber::Mkdirat) => super::fs::sys_mkdirat(args.0 as i32, args.1, args.2 as u32),
-        Some(SyscallNumber::Mknodat) => super::fs::sys_mknodat(args.0 as i32, args.1, args.2 as u32, args.3),
-        Some(SyscallNumber::Unlinkat) => super::fs::sys_unlinkat(args.0 as i32, args.1, args.2 as i32),
+        Some(SyscallNumber::Openat) => {
+            super::fs::sys_openat(args.0 as i32, args.1, args.2 as u32, args.3 as u32)
+        }
+        Some(SyscallNumber::Faccessat) => {
+            super::fs::sys_faccessat(args.0 as i32, args.1, args.2 as u32, args.3 as u32)
+        }
+        Some(SyscallNumber::Mkdirat) => {
+            super::fs::sys_mkdirat(args.0 as i32, args.1, args.2 as u32)
+        }
+        Some(SyscallNumber::Mknodat) => {
+            super::fs::sys_mknodat(args.0 as i32, args.1, args.2 as u32, args.3)
+        }
+        Some(SyscallNumber::Unlinkat) => {
+            super::fs::sys_unlinkat(args.0 as i32, args.1, args.2 as i32)
+        }
         Some(SyscallNumber::Symlinkat) => super::fs::sys_symlinkat(args.0, args.1 as i32, args.2),
-        Some(SyscallNumber::Linkat) => super::fs::sys_linkat(args.0 as i32, args.1, args.2 as i32, args.3, args.4 as i32),
-        Some(SyscallNumber::Renameat) => super::fs::sys_renameat(args.0 as i32, args.1, args.2 as i32, args.3),
-        Some(SyscallNumber::Readlinkat) => super::fs::sys_readlinkat(args.0 as i32, args.1, args.2, args.3),
+        Some(SyscallNumber::Linkat) => {
+            super::fs::sys_linkat(args.0 as i32, args.1, args.2 as i32, args.3, args.4 as i32)
+        }
+        Some(SyscallNumber::Renameat) => {
+            super::fs::sys_renameat(args.0 as i32, args.1, args.2 as i32, args.3)
+        }
+        Some(SyscallNumber::Readlinkat) => {
+            super::fs::sys_readlinkat(args.0 as i32, args.1, args.2, args.3)
+        }
         Some(SyscallNumber::Dup3) => super::handlers::sys_dup2(args.0, args.1),
-        Some(SyscallNumber::Pselect6) => super::handlers::sys_select(args.0 as i32, args.1, args.2, args.3, args.4),
+        Some(SyscallNumber::Pselect6) => {
+            super::handlers::sys_select(args.0 as i32, args.1, args.2, args.3, args.4)
+        }
         Some(SyscallNumber::CowStats) => super::handlers::sys_cow_stats(args.0),
         Some(SyscallNumber::SimulateOom) => super::handlers::sys_simulate_oom(args.0),
         // PTY syscalls
@@ -402,16 +400,23 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Clone) => {
             super::clone::sys_clone(args.0, args.1, args.2, args.3, args.4)
         }
-        Some(SyscallNumber::Futex) => {
-            super::futex::sys_futex(args.0, args.1 as u32, args.2 as u32, args.3, args.4, args.5 as u32)
-        }
+        Some(SyscallNumber::Futex) => super::futex::sys_futex(
+            args.0,
+            args.1 as u32,
+            args.2 as u32,
+            args.3,
+            args.4,
+            args.5 as u32,
+        ),
         // Vectored I/O
         Some(SyscallNumber::Readv) => super::iovec::sys_readv(args.0, args.1, args.2),
         Some(SyscallNumber::Writev) => super::iovec::sys_writev(args.0, args.1, args.2),
         // Stubs for musl libc compatibility
         Some(SyscallNumber::Mremap) => SyscallResult::Err(super::errno::ENOMEM as u64),
         Some(SyscallNumber::Madvise) => SyscallResult::Ok(0),
-        Some(SyscallNumber::Ppoll) => super::handlers::sys_ppoll(args.0, args.1, args.2, args.3, args.4),
+        Some(SyscallNumber::Ppoll) => {
+            super::handlers::sys_ppoll(args.0, args.1, args.2, args.3, args.4)
+        }
         Some(SyscallNumber::SetRobustList) => SyscallResult::Ok(0),
         // arch_prctl - x86_64 TLS setup
         Some(SyscallNumber::ArchPrctl) => {
@@ -419,9 +424,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             const ARCH_GET_FS: u64 = 0x1003;
             match args.0 {
                 ARCH_SET_FS => {
-                    x86_64::registers::model_specific::FsBase::write(
-                        x86_64::VirtAddr::new(args.1),
-                    );
+                    x86_64::registers::model_specific::FsBase::write(x86_64::VirtAddr::new(args.1));
                     SyscallResult::Ok(0)
                 }
                 ARCH_GET_FS => {
@@ -454,13 +457,26 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::GiveBackDisplay) => super::handlers::sys_give_back_display(),
         // Resource limits and system info
         Some(SyscallNumber::Getrlimit) => super::handlers::sys_getrlimit(args.0, args.1),
-        Some(SyscallNumber::Prlimit64) => super::handlers::sys_prlimit64(args.0, args.1, args.2, args.3),
+        Some(SyscallNumber::Prlimit64) => {
+            super::handlers::sys_prlimit64(args.0, args.1, args.2, args.3)
+        }
         Some(SyscallNumber::Uname) => super::handlers::sys_uname(args.0),
         // epoll
         Some(SyscallNumber::EpollCreate1) => super::epoll::sys_epoll_create1(args.0 as u32),
-        Some(SyscallNumber::EpollCtl) => super::epoll::sys_epoll_ctl(args.0 as i32, args.1 as i32, args.2 as i32, args.3),
-        Some(SyscallNumber::EpollWait) => super::epoll::sys_epoll_pwait(args.0 as i32, args.1, args.2 as i32, args.3 as i32, 0, 0),
-        Some(SyscallNumber::EpollPwait) => super::epoll::sys_epoll_pwait(args.0 as i32, args.1, args.2 as i32, args.3 as i32, args.4, args.5),
+        Some(SyscallNumber::EpollCtl) => {
+            super::epoll::sys_epoll_ctl(args.0 as i32, args.1 as i32, args.2 as i32, args.3)
+        }
+        Some(SyscallNumber::EpollWait) => {
+            super::epoll::sys_epoll_pwait(args.0 as i32, args.1, args.2 as i32, args.3 as i32, 0, 0)
+        }
+        Some(SyscallNumber::EpollPwait) => super::epoll::sys_epoll_pwait(
+            args.0 as i32,
+            args.1,
+            args.2 as i32,
+            args.3 as i32,
+            args.4,
+            args.5,
+        ),
         // Identity syscalls
         Some(SyscallNumber::Getuid) => super::handlers::sys_getuid(),
         Some(SyscallNumber::Geteuid) => super::handlers::sys_geteuid(),
@@ -471,10 +487,16 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         // File creation mask
         Some(SyscallNumber::Umask) => super::handlers::sys_umask(args.0 as u32),
         // Timestamps
-        Some(SyscallNumber::Utimensat) => super::fs::sys_utimensat(args.0 as i32, args.1, args.2, args.3 as u32),
+        Some(SyscallNumber::Utimensat) => {
+            super::fs::sys_utimensat(args.0 as i32, args.1, args.2, args.3 as u32)
+        }
         // Positional I/O
-        Some(SyscallNumber::Pread64) => super::handlers::sys_pread64(args.0 as i32, args.1, args.2, args.3 as i64),
-        Some(SyscallNumber::Pwrite64) => super::handlers::sys_pwrite64(args.0 as i32, args.1, args.2, args.3 as i64),
+        Some(SyscallNumber::Pread64) => {
+            super::handlers::sys_pread64(args.0 as i32, args.1, args.2, args.3 as i64)
+        }
+        Some(SyscallNumber::Pwrite64) => {
+            super::handlers::sys_pwrite64(args.0 as i32, args.1, args.2, args.3 as i64)
+        }
         None => {
             log::warn!("Unknown syscall number: {} - returning ENOSYS", syscall_num);
             SyscallResult::Err(super::ErrorCode::NoSys as u64)
@@ -634,11 +656,8 @@ fn check_and_deliver_signals_on_syscall_return(frame: &mut SyscallFrame) {
             };
 
             // Deliver the signal
-            let signal_result = deliver_pending_signals_syscall(
-                process,
-                &mut interrupt_frame,
-                &mut saved_regs,
-            );
+            let signal_result =
+                deliver_pending_signals_syscall(process, &mut interrupt_frame, &mut saved_regs);
 
             // Copy modified values back to syscall frame
             frame.rip = interrupt_frame.rip;
@@ -661,7 +680,9 @@ fn check_and_deliver_signals_on_syscall_return(frame: &mut SyscallFrame) {
             frame.r15 = saved_regs.r15;
 
             // Handle termination case
-            if let crate::signal::delivery::SignalDeliveryResult::Terminated(_notification) = signal_result {
+            if let crate::signal::delivery::SignalDeliveryResult::Terminated(_notification) =
+                signal_result
+            {
                 // Process was terminated by signal - switch to idle
                 crate::task::scheduler::set_need_resched();
                 crate::task::scheduler::switch_to_idle();
@@ -718,7 +739,14 @@ fn deliver_pending_signals_syscall(
             }
             handler_addr => {
                 // User-defined handler - set up signal frame
-                deliver_to_user_handler_syscall(process, frame, saved_regs, sig, handler_addr, &action);
+                deliver_to_user_handler_syscall(
+                    process,
+                    frame,
+                    saved_regs,
+                    sig,
+                    handler_addr,
+                    &action,
+                );
                 return crate::signal::delivery::SignalDeliveryResult::Delivered;
             }
         }

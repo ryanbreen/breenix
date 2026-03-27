@@ -53,10 +53,9 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
 // Architecture-generic HAL wrappers for interrupt control.
-use crate::{
-    arch_interrupts_enabled as are_enabled,
-    arch_without_interrupts as without_interrupts,
-};
+#[cfg(not(target_arch = "aarch64"))]
+use crate::arch_interrupts_enabled as are_enabled;
+use crate::arch_without_interrupts as without_interrupts;
 
 /// Global scheduler instance
 static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
@@ -81,8 +80,14 @@ static CONTEXT_SWITCH_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic:
 /// need_resched on every tick for CPUs that are actually running real work.
 #[cfg(target_arch = "aarch64")]
 static CPU_IS_IDLE: [AtomicBool; MAX_CPUS] = [
-    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
-    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
 ];
 
 /// Counter for unblock() calls - used for testing pipe wake mechanism
@@ -131,6 +136,16 @@ pub fn lock_for_context_switch() -> spin::MutexGuard<'static, Option<Scheduler>>
     SCHEDULER.lock()
 }
 
+/// Force-unlock the scheduler mutex after an inline AArch64 context switch.
+///
+/// The inline scheduler path intentionally leaks the lock guard before hopping
+/// to a per-CPU scheduler stack, then releases the lock from that neutral
+/// stack after the outgoing thread is fully off CPU.
+#[cfg(target_arch = "aarch64")]
+pub unsafe fn force_unlock_scheduler() {
+    SCHEDULER.force_unlock();
+}
+
 /// Check if a specific CPU is running its idle thread (lock-free).
 /// Safe to call from interrupt context (timer handler).
 #[cfg(target_arch = "aarch64")]
@@ -150,10 +165,10 @@ fn set_cpu_idle(cpu_id: usize, idle: bool) {
 /// Per-thread diagnostic entry for soft lockup dump.
 pub struct ThreadDumpEntry {
     pub id: u64,
-    pub state: u8,          // 0=Ready,1=Running,2=Blocked,3=BlockedOnSignal,4=BlockedOnChildExit,5=BlockedOnTimer,6=Terminated
+    pub state: u8, // 0=Ready,1=Running,2=Blocked,3=BlockedOnSignal,4=BlockedOnChildExit,5=BlockedOnTimer,6=Terminated
     pub blocked_in_syscall: bool,
     pub has_wake_time: bool,
-    pub privilege: u8,       // 0=Kernel, 1=User
+    pub privilege: u8, // 0=Kernel, 1=User
 }
 
 /// Diagnostic snapshot of scheduler state for the soft lockup detector.
@@ -162,8 +177,8 @@ pub struct SchedulerDumpInfo {
     pub ready_queue_len: u64,
     pub total_threads: u64,
     pub blocked_count: u64,
-    pub per_cpu_current: [u64; 8],    // current_thread per CPU (0 = none)
-    pub per_cpu_previous: [u64; 8],   // previous_thread per CPU (0 = none)
+    pub per_cpu_current: [u64; 8],  // current_thread per CPU (0 = none)
+    pub per_cpu_previous: [u64; 8], // previous_thread per CPU (0 = none)
     pub threads: alloc::vec::Vec<ThreadDumpEntry>,
     pub ready_queue_ids: alloc::vec::Vec<u64>,
 }
@@ -178,16 +193,20 @@ pub fn try_dump_state() -> Option<SchedulerDumpInfo> {
     let current_thread_id = sched.cpu_state[0].current_thread.unwrap_or(0);
     let ready_queue_len = sched.ready_queue.len() as u64;
     let total_threads = sched.threads.len() as u64;
-    let blocked_count = sched.threads.iter().filter(|t| {
-        matches!(
-            t.state,
-            ThreadState::Blocked
-                | ThreadState::BlockedOnSignal
-                | ThreadState::BlockedOnChildExit
-                | ThreadState::BlockedOnTimer
-                | ThreadState::BlockedOnIO
-        )
-    }).count() as u64;
+    let blocked_count = sched
+        .threads
+        .iter()
+        .filter(|t| {
+            matches!(
+                t.state,
+                ThreadState::Blocked
+                    | ThreadState::BlockedOnSignal
+                    | ThreadState::BlockedOnChildExit
+                    | ThreadState::BlockedOnTimer
+                    | ThreadState::BlockedOnIO
+            )
+        })
+        .count() as u64;
 
     let mut per_cpu_current = [0u64; 8];
     let mut per_cpu_previous = [0u64; 8];
@@ -196,8 +215,10 @@ pub fn try_dump_state() -> Option<SchedulerDumpInfo> {
         per_cpu_previous[cpu] = sched.cpu_state[cpu].previous_thread.unwrap_or(0);
     }
 
-    let threads: alloc::vec::Vec<ThreadDumpEntry> = sched.threads.iter().map(|t| {
-        ThreadDumpEntry {
+    let threads: alloc::vec::Vec<ThreadDumpEntry> = sched
+        .threads
+        .iter()
+        .map(|t| ThreadDumpEntry {
             id: t.id(),
             state: match t.state {
                 ThreadState::Ready => 0,
@@ -211,9 +232,13 @@ pub fn try_dump_state() -> Option<SchedulerDumpInfo> {
             },
             blocked_in_syscall: t.blocked_in_syscall,
             has_wake_time: t.wake_time_ns.is_some(),
-            privilege: if t.privilege == super::thread::ThreadPrivilege::Kernel { 0 } else { 1 },
-        }
-    }).collect();
+            privilege: if t.privilege == super::thread::ThreadPrivilege::Kernel {
+                0
+            } else {
+                1
+            },
+        })
+        .collect();
 
     let ready_queue_ids: alloc::vec::Vec<u64> = sched.ready_queue.iter().copied().collect();
 
@@ -249,7 +274,8 @@ const HISTORY_SIZE: usize = 8;
 #[cfg(target_arch = "aarch64")]
 static CPU_STATE_HISTORY: [[core::sync::atomic::AtomicU64; HISTORY_SIZE * 3]; MAX_CPUS] = {
     const INIT_ENTRY: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-    const INIT_CPU: [core::sync::atomic::AtomicU64; HISTORY_SIZE * 3] = [INIT_ENTRY; HISTORY_SIZE * 3];
+    const INIT_CPU: [core::sync::atomic::AtomicU64; HISTORY_SIZE * 3] =
+        [INIT_ENTRY; HISTORY_SIZE * 3];
     [INIT_CPU; MAX_CPUS]
 };
 #[cfg(target_arch = "aarch64")]
@@ -262,7 +288,8 @@ static CPU_STATE_HISTORY_IDX: [core::sync::atomic::AtomicU64; MAX_CPUS] = {
 #[cfg(target_arch = "aarch64")]
 fn record_cpu_state_change(cpu: usize, setter_id: u64, old_val: u64, new_val: u64) {
     if cpu < MAX_CPUS {
-        let idx = CPU_STATE_HISTORY_IDX[cpu].fetch_add(1, core::sync::atomic::Ordering::Relaxed) as usize;
+        let idx =
+            CPU_STATE_HISTORY_IDX[cpu].fetch_add(1, core::sync::atomic::Ordering::Relaxed) as usize;
         let slot = idx % HISTORY_SIZE;
         let base = slot * 3;
         CPU_STATE_HISTORY[cpu][base].store(setter_id, core::sync::atomic::Ordering::Relaxed);
@@ -275,11 +302,21 @@ fn record_cpu_state_change(cpu: usize, setter_id: u64, old_val: u64, new_val: u6
 #[cfg(target_arch = "aarch64")]
 #[allow(dead_code)]
 pub fn dump_cpu_state_history(cpu: usize) {
-    use crate::arch_impl::aarch64::context_switch::{raw_uart_str, raw_uart_dec};
-    if cpu >= MAX_CPUS { return; }
+    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
+    if cpu >= MAX_CPUS {
+        return;
+    }
     let total = CPU_STATE_HISTORY_IDX[cpu].load(core::sync::atomic::Ordering::Relaxed) as usize;
-    let count = if total < HISTORY_SIZE { total } else { HISTORY_SIZE };
-    let start = if total < HISTORY_SIZE { 0 } else { total - HISTORY_SIZE };
+    let count = if total < HISTORY_SIZE {
+        total
+    } else {
+        HISTORY_SIZE
+    };
+    let start = if total < HISTORY_SIZE {
+        0
+    } else {
+        total - HISTORY_SIZE
+    };
     raw_uart_str("  cpu_state_history[");
     raw_uart_dec(cpu as u64);
     raw_uart_str("] (last ");
@@ -470,12 +507,15 @@ impl Scheduler {
     /// Get the current running thread
     #[allow(dead_code)]
     pub fn current_thread(&self) -> Option<&Thread> {
-        self.cpu_state[Self::current_cpu_id()].current_thread.and_then(|id| self.get_thread(id))
+        self.cpu_state[Self::current_cpu_id()]
+            .current_thread
+            .and_then(|id| self.get_thread(id))
     }
 
     /// Get the current running thread mutably
     pub fn current_thread_mut(&mut self) -> Option<&mut Thread> {
-        self.cpu_state[Self::current_cpu_id()].current_thread
+        self.cpu_state[Self::current_cpu_id()]
+            .current_thread
             .and_then(move |id| self.get_thread_mut(id))
     }
 
@@ -586,7 +626,9 @@ impl Scheduler {
 
         // Important: Don't skip if it's the same thread when there are other threads waiting
         // This was causing the issue where yielding wouldn't switch to other ready threads
-        if Some(next_thread_id) == self.cpu_state[Self::current_cpu_id()].current_thread && !self.ready_queue.is_empty() {
+        if Some(next_thread_id) == self.cpu_state[Self::current_cpu_id()].current_thread
+            && !self.ready_queue.is_empty()
+        {
             // Put current thread back and get the next one
             self.ready_queue.push_back(next_thread_id);
             next_thread_id = self.ready_queue.pop_front()?;
@@ -613,7 +655,9 @@ impl Scheduler {
                             t.set_running();
                         }
                         // Remove from ready queue (was pushed above).
-                        if let Some(pos) = self.ready_queue.iter().position(|&id| id == next_thread_id) {
+                        if let Some(pos) =
+                            self.ready_queue.iter().position(|&id| id == next_thread_id)
+                        {
                             self.ready_queue.remove(pos);
                         }
                         if debug_log {
@@ -637,7 +681,9 @@ impl Scheduler {
                 if debug_log {
                     log_serial_println!(
                         "Thread {} is alone (non-idle), switching to idle {}",
-                        self.cpu_state[Self::current_cpu_id()].current_thread.unwrap_or(0),
+                        self.cpu_state[Self::current_cpu_id()]
+                            .current_thread
+                            .unwrap_or(0),
                         self.cpu_state[Self::current_cpu_id()].idle_thread
                     );
                 }
@@ -661,7 +707,9 @@ impl Scheduler {
         }
 
         // If current is idle and we have a real next thread, allow switch even if idle
-        let old_thread_id = self.cpu_state[Self::current_cpu_id()].current_thread.unwrap_or(self.cpu_state[Self::current_cpu_id()].idle_thread);
+        let old_thread_id = self.cpu_state[Self::current_cpu_id()]
+            .current_thread
+            .unwrap_or(self.cpu_state[Self::current_cpu_id()].idle_thread);
         self.cpu_state[Self::current_cpu_id()].current_thread = Some(next_thread_id);
 
         // Track context switches for soft lockup detection
@@ -711,7 +759,8 @@ impl Scheduler {
         // This ensures the flag is always accurate, even when this function returns None.
         // If we return Some(...), the flag is overwritten with the post-switch state later.
         let cpu = Self::current_cpu_id();
-        let current_is_idle = self.cpu_state[cpu].current_thread == Some(self.cpu_state[cpu].idle_thread);
+        let current_is_idle =
+            self.cpu_state[cpu].current_thread == Some(self.cpu_state[cpu].idle_thread);
         set_cpu_idle(cpu, current_is_idle);
 
         // If current thread is still runnable, mark it as Ready but DON'T add to queue
@@ -774,31 +823,50 @@ impl Scheduler {
                 {
                     use core::sync::atomic::{AtomicU32, Ordering as AO};
                     static STUCK_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
-                    let first_stuck = self.threads.iter().find(|t| {
-                        if t.state != super::thread::ThreadState::Ready { return false; }
-                        let tid = t.id();
-                        // Exclude any CPU's idle thread
-                        if (0..MAX_CPUS).any(|c| self.cpu_state[c].idle_thread == tid) { return false; }
-                        // Exclude threads currently running on any CPU
-                        if (0..MAX_CPUS).any(|c| self.cpu_state[c].current_thread == Some(tid)) { return false; }
-                        // Exclude threads pending deferred requeue on any CPU
-                        if self.is_in_deferred_requeue(tid) { return false; }
-                        true
-                    }).map(|t| t.id());
+                    let first_stuck = self
+                        .threads
+                        .iter()
+                        .find(|t| {
+                            if t.state != super::thread::ThreadState::Ready {
+                                return false;
+                            }
+                            let tid = t.id();
+                            // Exclude any CPU's idle thread
+                            if (0..MAX_CPUS).any(|c| self.cpu_state[c].idle_thread == tid) {
+                                return false;
+                            }
+                            // Exclude threads currently running on any CPU
+                            if (0..MAX_CPUS).any(|c| self.cpu_state[c].current_thread == Some(tid))
+                            {
+                                return false;
+                            }
+                            // Exclude threads pending deferred requeue on any CPU
+                            if self.is_in_deferred_requeue(tid) {
+                                return false;
+                            }
+                            true
+                        })
+                        .map(|t| t.id());
                     if let Some(stuck_tid) = first_stuck {
                         let count = STUCK_LOG_COUNT.fetch_add(1, AO::Relaxed);
                         // Log first 5, then every 1000th
                         if count < 5 || count % 1000 == 0 {
-                            crate::serial_aarch64::raw_serial_str(b"[SCHED] queue_empty stuck_tid=");
+                            crate::serial_aarch64::raw_serial_str(
+                                b"[SCHED] queue_empty stuck_tid=",
+                            );
                             {
                                 let mut n = stuck_tid;
                                 let mut buf = [0u8; 20];
                                 let mut i = 20usize;
                                 if n == 0 {
-                                    buf[i-1] = b'0';
+                                    buf[i - 1] = b'0';
                                     i -= 1;
                                 } else {
-                                    while n > 0 { i -= 1; buf[i] = b'0' + (n % 10) as u8; n /= 10; }
+                                    while n > 0 {
+                                        i -= 1;
+                                        buf[i] = b'0' + (n % 10) as u8;
+                                        n /= 10;
+                                    }
                                 }
                                 crate::serial_aarch64::raw_serial_str(&buf[i..]);
                             }
@@ -808,10 +876,14 @@ impl Scheduler {
                                 let mut buf = [0u8; 20];
                                 let mut i = 20usize;
                                 if n == 0 {
-                                    buf[i-1] = b'0';
+                                    buf[i - 1] = b'0';
                                     i -= 1;
                                 } else {
-                                    while n > 0 { i -= 1; buf[i] = b'0' + (n % 10) as u8; n /= 10; }
+                                    while n > 0 {
+                                        i -= 1;
+                                        buf[i] = b'0' + (n % 10) as u8;
+                                        n /= 10;
+                                    }
                                 }
                                 crate::serial_aarch64::raw_serial_str(&buf[i..]);
                             }
@@ -824,7 +896,9 @@ impl Scheduler {
         };
 
         // Handle same-thread cases
-        if Some(next_thread_id) == self.cpu_state[current_cpu].current_thread && !self.ready_queue.is_empty() {
+        if Some(next_thread_id) == self.cpu_state[current_cpu].current_thread
+            && !self.ready_queue.is_empty()
+        {
             // Current thread was popped but other threads are waiting.
             // DON'T push current back to queue yet — defer until after context save.
             // Just pop the next different thread.
@@ -862,7 +936,8 @@ impl Scheduler {
             }
         }
 
-        let old_thread_id = self.cpu_state[current_cpu].current_thread
+        let old_thread_id = self.cpu_state[current_cpu]
+            .current_thread
             .unwrap_or(self.cpu_state[current_cpu].idle_thread);
 
         // CRITICAL SMP FIX: Do NOT update cpu_state[cpu].current_thread here!
@@ -990,9 +1065,8 @@ impl Scheduler {
                 // same stack, leading to context corruption and crashes (ELR=0x0).
                 // The CPU running the thread will detect the state change (Blocked
                 // → Ready) when its WFI loop checks the thread state after waking.
-                let is_current_on_any_cpu = (0..MAX_CPUS).any(|cpu| {
-                    self.cpu_state[cpu].current_thread == Some(thread_id)
-                });
+                let is_current_on_any_cpu =
+                    (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].current_thread == Some(thread_id));
 
                 // SMP safety: Don't add to ready_queue if thread was just
                 // context-switched out and the old CPU's ERET hasn't completed.
@@ -1117,7 +1191,10 @@ impl Scheduler {
                 thread.blocked_in_syscall = true;
                 // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
                 #[cfg(target_arch = "x86_64")]
-                log_serial_println!("Thread {} blocked waiting for signal (blocked_in_syscall=true)", current_id);
+                log_serial_println!(
+                    "Thread {} blocked waiting for signal (blocked_in_syscall=true)",
+                    current_id
+                );
             }
             // Remove from ready queue (shouldn't be there but make sure)
             self.ready_queue.retain(|&id| id != current_id);
@@ -1164,9 +1241,8 @@ impl Scheduler {
 
                 // SMP safety: Don't add to ready_queue if thread is current on any CPU
                 // (same rationale as unblock() - prevents double-scheduling)
-                let is_current_on_any_cpu = (0..MAX_CPUS).any(|cpu| {
-                    self.cpu_state[cpu].current_thread == Some(thread_id)
-                });
+                let is_current_on_any_cpu =
+                    (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].current_thread == Some(thread_id));
 
                 #[cfg(target_arch = "aarch64")]
                 let is_in_deferred = self.is_in_deferred_requeue(thread_id);
@@ -1237,7 +1313,10 @@ impl Scheduler {
                 thread.blocked_in_syscall = true;
                 // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
                 #[cfg(target_arch = "x86_64")]
-                log_serial_println!("Thread {} blocked waiting for child exit (blocked_in_syscall=true)", current_id);
+                log_serial_println!(
+                    "Thread {} blocked waiting for child exit (blocked_in_syscall=true)",
+                    current_id
+                );
             }
             // Remove from ready queue (shouldn't be there but make sure)
             self.ready_queue.retain(|&id| id != current_id);
@@ -1260,9 +1339,8 @@ impl Scheduler {
 
                 // SMP safety: Don't add to ready_queue if thread is current on any CPU
                 // (same rationale as unblock() - prevents double-scheduling)
-                let is_current_on_any_cpu = (0..MAX_CPUS).any(|cpu| {
-                    self.cpu_state[cpu].current_thread == Some(thread_id)
-                });
+                let is_current_on_any_cpu =
+                    (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].current_thread == Some(thread_id));
 
                 #[cfg(target_arch = "aarch64")]
                 let is_in_deferred = self.is_in_deferred_requeue(thread_id);
@@ -1317,6 +1395,15 @@ impl Scheduler {
     /// The done-check and this call must happen in the same with_scheduler()
     /// invocation to prevent the ISR from racing between the check and the block.
     pub fn block_current_for_io(&mut self) {
+        self.block_current_for_io_with_timeout(None);
+    }
+
+    /// Block the current thread for device I/O, optionally with a timeout.
+    ///
+    /// A timed BlockedOnIO wait is used by completions: the ISR wakes it via
+    /// unblock_for_io(), while the timer path wakes it by observing
+    /// wake_time_ns without clearing blocked_in_syscall prematurely.
+    pub fn block_current_for_io_with_timeout(&mut self, wake_time_ns: Option<u64>) {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
                 // Charge elapsed CPU ticks before blocking
@@ -1325,6 +1412,7 @@ impl Scheduler {
                 thread.run_start_ticks = now;
 
                 thread.state = ThreadState::BlockedOnIO;
+                thread.wake_time_ns = wake_time_ns;
                 // Mark blocked_in_syscall so the context switch path resumes
                 // inside the syscall (wait_timeout loop) rather than restoring
                 // stale userspace context.
@@ -1349,12 +1437,12 @@ impl Scheduler {
         if let Some(thread) = self.get_thread_mut(tid) {
             if thread.state == ThreadState::BlockedOnIO {
                 thread.set_ready();
+                thread.wake_time_ns = None;
                 // Do NOT clear blocked_in_syscall here — the wait_timeout
                 // caller manages it after detecting the wakeup.
 
-                let is_current_on_any_cpu = (0..MAX_CPUS).any(|cpu| {
-                    self.cpu_state[cpu].current_thread == Some(tid)
-                });
+                let is_current_on_any_cpu =
+                    (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].current_thread == Some(tid));
 
                 #[cfg(target_arch = "aarch64")]
                 let is_in_deferred = self.is_in_deferred_requeue(tid);
@@ -1409,11 +1497,14 @@ impl Scheduler {
 
         let mut to_wake = alloc::vec::Vec::new();
         for thread in self.threads.iter() {
-            if thread.state == ThreadState::BlockedOnTimer {
-                if let Some(wake_time) = thread.wake_time_ns {
-                    if now_ns >= wake_time {
-                        to_wake.push(thread.id());
-                    }
+            let timed_wait = matches!(thread.state, ThreadState::BlockedOnTimer)
+                || (thread.state == ThreadState::BlockedOnIO && thread.wake_time_ns.is_some());
+            if !timed_wait {
+                continue;
+            }
+            if let Some(wake_time) = thread.wake_time_ns {
+                if now_ns >= wake_time {
+                    to_wake.push(thread.id());
                 }
             }
         }
@@ -1436,16 +1527,19 @@ impl Scheduler {
             //
             // NOTE: These checks use &self borrows (cpu_state, is_in_deferred_requeue)
             // and must happen BEFORE get_thread_mut() to avoid borrow conflicts.
-            let is_current_on_any_cpu = (0..MAX_CPUS).any(|cpu| {
-                self.cpu_state[cpu].current_thread == Some(id)
-            });
+            let is_current_on_any_cpu =
+                (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].current_thread == Some(id));
             if is_current_on_any_cpu {
                 // Still update state so the running thread detects the change,
                 // but don't clear blocked_in_syscall — the running thread
                 // manages this flag itself when it detects the state change.
                 if let Some(thread) = self.get_thread_mut(id) {
+                    let was_blocked_on_io = thread.state == ThreadState::BlockedOnIO;
                     thread.state = ThreadState::Ready;
                     thread.wake_time_ns = None;
+                    if !was_blocked_on_io {
+                        thread.blocked_in_syscall = false;
+                    }
                 }
                 continue;
             }
@@ -1462,16 +1556,16 @@ impl Scheduler {
             let already_queued = self.ready_queue.contains(&id);
 
             if let Some(thread) = self.get_thread_mut(id) {
+                let was_blocked_on_io = thread.state == ThreadState::BlockedOnIO;
                 thread.state = ThreadState::Ready;
                 thread.wake_time_ns = None;
 
-                // CRITICAL: Clear blocked_in_syscall so the context switch
-                // dispatches the thread through the correct path (userspace vs
-                // kernel) on its next run. Without this, the thread runs to
-                // completion of the syscall, returns to EL0, gets preempted
-                // with a userspace ELR — but blocked_in_syscall=true routes it
-                // through the kernel restore path which rejects the userspace ELR.
-                thread.blocked_in_syscall = false;
+                // Timer-driven I/O wakeups resume back into wait_timeout() so
+                // blocked_in_syscall must stay set until the waiter consumes
+                // the wake reason. Ordinary BlockedOnTimer sleeps clear it here.
+                if !was_blocked_on_io {
+                    thread.blocked_in_syscall = false;
+                }
 
                 if !in_deferred_requeue && !is_idle && !already_queued {
                     self.ready_queue.push_back(id);
@@ -1493,9 +1587,11 @@ impl Scheduler {
     /// Check if scheduler has any runnable threads
     pub fn has_runnable_threads(&self) -> bool {
         !self.ready_queue.is_empty()
-            || self.cpu_state[Self::current_cpu_id()].current_thread.map_or(false, |id| {
-                self.get_thread(id).map_or(false, |t| t.is_runnable())
-            })
+            || self.cpu_state[Self::current_cpu_id()]
+                .current_thread
+                .map_or(false, |id| {
+                    self.get_thread(id).map_or(false, |t| t.is_runnable())
+                })
     }
 
     /// Check if scheduler has any userspace threads (ready, running, or blocked)
@@ -1607,34 +1703,50 @@ impl Scheduler {
     /// contended the rescue simply runs on the next second.
     #[cfg(target_arch = "aarch64")]
     pub fn rescue_stuck_ready_threads(&mut self) -> u32 {
-        use crate::arch_impl::aarch64::context_switch::{raw_uart_str, raw_uart_dec};
+        use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
 
         let mut rescued: u32 = 0;
 
         // Collect IDs of stuck threads first (immutable pass) to avoid borrow
         // conflicts with the subsequent mutable requeue_thread_after_save calls.
-        let stuck_tids: alloc::vec::Vec<u64> = self.threads.iter().filter_map(|t| {
-            if t.state != ThreadState::Ready { return None; }
-            let tid = t.id();
-            // Exclude idle threads — they are never in the ready queue.
-            if (0..MAX_CPUS).any(|c| self.cpu_state[c].idle_thread == tid) { return None; }
-            // Exclude threads already in the ready queue — they are not stuck.
-            if self.ready_queue.contains(&tid) { return None; }
-            // Exclude threads currently running on any CPU — they are being
-            // handled by that CPU's scheduling path.
-            if (0..MAX_CPUS).any(|c| self.cpu_state[c].current_thread == Some(tid)) { return None; }
-            // Exclude threads pending deferred requeue on any CPU — the deferred
-            // mechanism will pick them up at the start of the next context switch.
-            if self.is_in_deferred_requeue(tid) { return None; }
-            // This thread is genuinely stuck — Ready but reachable by nobody.
-            Some(tid)
-        }).collect();
+        let stuck_tids: alloc::vec::Vec<u64> = self
+            .threads
+            .iter()
+            .filter_map(|t| {
+                if t.state != ThreadState::Ready {
+                    return None;
+                }
+                let tid = t.id();
+                // Exclude idle threads — they are never in the ready queue.
+                if (0..MAX_CPUS).any(|c| self.cpu_state[c].idle_thread == tid) {
+                    return None;
+                }
+                // Exclude threads already in the ready queue — they are not stuck.
+                if self.ready_queue.contains(&tid) {
+                    return None;
+                }
+                // Exclude threads currently running on any CPU — they are being
+                // handled by that CPU's scheduling path.
+                if (0..MAX_CPUS).any(|c| self.cpu_state[c].current_thread == Some(tid)) {
+                    return None;
+                }
+                // Exclude threads pending deferred requeue on any CPU — the deferred
+                // mechanism will pick them up at the start of the next context switch.
+                if self.is_in_deferred_requeue(tid) {
+                    return None;
+                }
+                // This thread is genuinely stuck — Ready but reachable by nobody.
+                Some(tid)
+            })
+            .collect();
 
         for tid in stuck_tids {
             // Re-validate under mutable borrow (state could have changed since
             // the immutable scan above, though both run under the scheduler lock).
             if let Some(thread) = self.get_thread(tid) {
-                if thread.state != ThreadState::Ready { continue; }
+                if thread.state != ThreadState::Ready {
+                    continue;
+                }
             } else {
                 continue;
             }
@@ -1643,7 +1755,17 @@ impl Scheduler {
             raw_uart_str("[SCHED_RESCUE] stuck tid=");
             raw_uart_dec(tid);
             raw_uart_str(" bis=");
-            raw_uart_dec(if self.get_thread(tid).map(|t| t.blocked_in_syscall).unwrap_or(false) { 1 } else { 0 });
+            raw_uart_dec(
+                if self
+                    .get_thread(tid)
+                    .map(|t| t.blocked_in_syscall)
+                    .unwrap_or(false)
+                {
+                    1
+                } else {
+                    0
+                },
+            );
             raw_uart_str("\n");
 
             self.ready_queue.push_back(tid);
@@ -1694,7 +1816,10 @@ pub fn init_with_current(current_thread: Box<Thread>) {
     *scheduler_lock = Some(scheduler);
     // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
     #[cfg(target_arch = "x86_64")]
-    log_serial_println!("Scheduler initialized with current thread {} as idle task", thread_id);
+    log_serial_println!(
+        "Scheduler initialized with current thread {} as idle task",
+        thread_id
+    );
     #[cfg(not(target_arch = "x86_64"))]
     let _ = thread_id;
 }
@@ -1780,7 +1905,14 @@ pub fn spawn_as_current(thread: Box<Thread>) {
     });
 }
 
+/// Perform scheduling inline from Rust kernel context (AArch64).
+#[cfg(target_arch = "aarch64")]
+pub fn schedule() {
+    crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
+}
+
 /// Perform scheduling and return threads to switch between
+#[cfg(not(target_arch = "aarch64"))]
 pub fn schedule() -> Option<(u64, u64)> {
     // Check if interrupts are already disabled (i.e., we're in interrupt context)
     let interrupts_were_enabled = are_enabled();
@@ -1968,7 +2100,9 @@ pub fn get_process_cpu_ticks() -> alloc::vec::Vec<(u64, u64)> {
 pub fn current_thread_id() -> Option<u64> {
     without_interrupts(|| {
         let scheduler_lock = SCHEDULER.lock();
-        scheduler_lock.as_ref().and_then(|s| s.cpu_state[Scheduler::current_cpu_id()].current_thread)
+        scheduler_lock
+            .as_ref()
+            .and_then(|s| s.cpu_state[Scheduler::current_cpu_id()].current_thread)
     })
 }
 
@@ -2031,7 +2165,9 @@ pub fn check_and_clear_need_resched() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
         let per_cpu = crate::per_cpu::need_resched();
-        if per_cpu { crate::per_cpu::set_need_resched(false); }
+        if per_cpu {
+            crate::per_cpu::set_need_resched(false);
+        }
         let global = NEED_RESCHED.swap(false, Ordering::Relaxed);
         per_cpu || global
     }
@@ -2085,14 +2221,21 @@ pub fn switch_to_idle() {
             crate::per_cpu::set_current_thread(thread_ptr);
             log::info!(
                 "Exception handler: Set per_cpu thread to idle {} at {:p}",
-                idle_id, thread_ptr
+                idle_id,
+                thread_ptr
             );
         } else {
-            log::error!("Exception handler: Failed to get idle thread {} from scheduler!", idle_id);
+            log::error!(
+                "Exception handler: Failed to get idle thread {} from scheduler!",
+                idle_id
+            );
         }
 
         #[cfg(target_arch = "x86_64")]
-        log::info!("Exception handler: Switched scheduler to idle thread {}", idle_id);
+        log::info!(
+            "Exception handler: Switched scheduler to idle thread {}",
+            idle_id
+        );
     });
 }
 
@@ -2129,9 +2272,9 @@ pub fn switch_to_idle_best_effort() {
 #[cfg(all(test, target_arch = "x86_64"))]
 pub mod tests {
     use super::*;
+    use crate::task::thread::{Thread, ThreadPrivilege, ThreadState};
     use alloc::boxed::Box;
     use alloc::string::String;
-    use crate::task::thread::{Thread, ThreadPrivilege, ThreadState};
     use x86_64::VirtAddr;
 
     fn dummy_entry() {}
@@ -2279,7 +2422,8 @@ pub fn run_scheduler_tests() {
         if thread_id_before != thread_id_after {
             log::error!(
                 "SCHEDULER BUG: yield_current() changed current_thread from {:?} to {:?}!",
-                thread_id_before, thread_id_after
+                thread_id_before,
+                thread_id_after
             );
         } else {
             log::info!("Scheduler invariant check passed: yield_current() preserves state");

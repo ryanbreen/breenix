@@ -363,7 +363,12 @@ pub fn init() {
             let dt = DateTime::from_unix_timestamp(loader_time);
             log::info!(
                 "UEFI RTC initialized: {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
-                dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second
+                dt.year,
+                dt.month,
+                dt.day,
+                dt.hour,
+                dt.minute,
+                dt.second
             );
         } else {
             log::warn!("No RTC available (PL031 absent, UEFI GetTime not provided)");

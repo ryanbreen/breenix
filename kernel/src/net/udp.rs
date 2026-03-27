@@ -108,7 +108,10 @@ pub fn handle_udp(ip: &Ipv4Packet, data: &[u8]) {
 
     log::debug!(
         "UDP: Received packet from {}.{}.{}.{}:{} -> port {} ({} bytes)",
-        ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3],
+        ip.src_ip[0],
+        ip.src_ip[1],
+        ip.src_ip[2],
+        ip.src_ip[3],
         header.src_port,
         header.dst_port,
         payload.len()
@@ -164,14 +167,21 @@ fn deliver_to_socket(
                             data: payload.to_vec(),
                         };
                         socket.enqueue_packet(packet);
-                        crate::serial_println!("UDP: Delivered packet to socket on port {}", dst_port);
+                        crate::serial_println!(
+                            "UDP: Delivered packet to socket on port {}",
+                            dst_port
+                        );
                         return;
                     }
                 }
             }
         }
 
-        log::warn!("UDP: Socket for port {} not found in process {:?} fd_table", dst_port, pid);
+        log::warn!(
+            "UDP: Socket for port {} not found in process {:?} fd_table",
+            dst_port,
+            pid
+        );
     });
 
     if result.is_none() {

@@ -2,7 +2,6 @@
 //!
 //! Verifies invariants related to the Task State Segment.
 
-
 /// Contract: TSS IST entries must point to valid IST stack region (PML4[403])
 pub fn verify_ist_stacks_valid() -> Result<(), alloc::string::String> {
     let tss_ptr = crate::gdt::get_tss_ptr();
@@ -20,7 +19,8 @@ pub fn verify_ist_stacks_valid() -> Result<(), alloc::string::String> {
         if pml4_idx != 403 {
             errors.push(alloc::format!(
                 "IST[0] (double fault) at {:#x} is in PML4[{}], expected PML4[403]",
-                ist0, pml4_idx
+                ist0,
+                pml4_idx
             ));
         }
     }
@@ -32,7 +32,8 @@ pub fn verify_ist_stacks_valid() -> Result<(), alloc::string::String> {
         if pml4_idx != 403 {
             errors.push(alloc::format!(
                 "IST[1] (page fault) at {:#x} is in PML4[{}], expected PML4[403]",
-                ist1, pml4_idx
+                ist1,
+                pml4_idx
             ));
         }
     }
@@ -107,7 +108,8 @@ pub fn verify_tss_config() -> Result<(), alloc::string::String> {
         errors.push(alloc::format!(
             "I/O permission bitmap is enabled (iomap_base={} < tss_size={}). \
              This may cause GP faults during CR3 switches.",
-            iomap_base, tss_size
+            iomap_base,
+            tss_size
         ));
     }
 

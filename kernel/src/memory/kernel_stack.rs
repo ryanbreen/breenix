@@ -3,13 +3,13 @@
 //! Reserves VA range 0xffffc900_0000_0000 – 0xffffc900_07ff_ffff (128 MiB) for kernel stacks.
 //! Each stack gets 512 KiB usable space + 4 KiB guard page (total 516 KiB per slot).
 
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::VirtAddr;
 #[cfg(target_arch = "x86_64")]
 use crate::memory::frame_allocator::allocate_frame;
 use spin::Mutex;
 #[cfg(target_arch = "x86_64")]
 use x86_64::{structures::paging::PageTableFlags, VirtAddr};
-#[cfg(not(target_arch = "x86_64"))]
-use crate::memory::arch_stub::VirtAddr;
 
 /// Base address for kernel stack allocation
 const KERNEL_STACK_BASE: u64 = 0xffffc900_0000_0000;
@@ -149,7 +149,11 @@ pub fn allocate_kernel_stack() -> Result<KernelStack, &'static str> {
 
         // Map it in the global kernel page tables
         unsafe {
-            log::trace!("Mapping kernel stack page {:#x} -> {:#x}", virt_addr, frame.start_address());
+            log::trace!(
+                "Mapping kernel stack page {:#x} -> {:#x}",
+                virt_addr,
+                frame.start_address()
+            );
             crate::memory::kernel_page_table::map_kernel_page(
                 virt_addr,
                 frame.start_address(),
@@ -202,8 +206,8 @@ pub fn init() {
 
 #[cfg(target_arch = "aarch64")]
 mod aarch64 {
-    use core::sync::atomic::{AtomicU64, Ordering};
     use super::VirtAddr;
+    use core::sync::atomic::{AtomicU64, Ordering};
 
     /// ARM64 kernel stack base (in high-half direct map)
     /// Physical range: 0x5420_0000 .. 0x5620_0000 (32MB for kernel stacks)
@@ -275,7 +279,8 @@ mod aarch64 {
 
     /// Initialize the ARM64 kernel stack allocator
     pub fn init() {
-        let total_slots = (ARM64_KERNEL_STACK_END - ARM64_KERNEL_STACK_BASE) / ARM64_STACK_SLOT_SIZE;
+        let total_slots =
+            (ARM64_KERNEL_STACK_END - ARM64_KERNEL_STACK_BASE) / ARM64_STACK_SLOT_SIZE;
         log::info!(
             "ARM64 kernel stack allocator initialized: {} slots available",
             total_slots
@@ -299,7 +304,10 @@ mod aarch64 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub use aarch64::{allocate_kernel_stack as allocate_kernel_stack_aarch64, init as init_aarch64, Aarch64KernelStack};
+pub use aarch64::{
+    allocate_kernel_stack as allocate_kernel_stack_aarch64, init as init_aarch64,
+    Aarch64KernelStack,
+};
 
 /// ARM64: Use the aarch64-specific allocator
 #[cfg(target_arch = "aarch64")]

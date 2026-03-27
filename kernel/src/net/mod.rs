@@ -55,7 +55,9 @@ pub(crate) fn irq_restore(saved: u64) {
 
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
-pub(crate) fn irq_save() -> u64 { 0 }
+pub(crate) fn irq_save() -> u64 {
+    0
+}
 
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
@@ -94,7 +96,9 @@ macro_rules! net_debug {
 
 #[cfg(target_arch = "aarch64")]
 macro_rules! net_debug {
-    ($($arg:tt)*) => { /* No-op on ARM64 for now */ };
+    ($($arg:tt)*) => {
+        /* No-op on ARM64 for now */
+    };
 }
 
 // Driver abstraction functions
@@ -102,7 +106,9 @@ macro_rules! net_debug {
 /// Get the MAC address from the network device
 fn get_mac_address() -> Option<[u8; 6]> {
     #[cfg(target_arch = "x86_64")]
-    { e1000::mac_address() }
+    {
+        e1000::mac_address()
+    }
     #[cfg(target_arch = "aarch64")]
     {
         // Try VirtIO MMIO (QEMU), VirtIO PCI (Parallels), then e1000 (VMware)
@@ -115,7 +121,9 @@ fn get_mac_address() -> Option<[u8; 6]> {
 /// Transmit a raw Ethernet frame
 fn driver_transmit(data: &[u8]) -> Result<(), &'static str> {
     #[cfg(target_arch = "x86_64")]
-    { e1000::transmit(data) }
+    {
+        e1000::transmit(data)
+    }
     #[cfg(target_arch = "aarch64")]
     {
         if net_pci::is_initialized() {
@@ -144,9 +152,9 @@ pub struct NetConfig {
 /// QEMU's default user-mode network uses 10.0.2.0/24 with gateway at 10.0.2.2
 #[allow(dead_code)] // Used conditionally without vmnet feature
 pub const SLIRP_CONFIG: NetConfig = NetConfig {
-    ip_addr: [10, 0, 2, 15],      // Guest IP
+    ip_addr: [10, 0, 2, 15], // Guest IP
     subnet_mask: [255, 255, 255, 0],
-    gateway: [10, 0, 2, 2],       // QEMU gateway
+    gateway: [10, 0, 2, 2], // QEMU gateway
 };
 
 /// Network configuration for macOS vmnet/bridge networking
@@ -156,25 +164,25 @@ pub const SLIRP_CONFIG: NetConfig = NetConfig {
 pub const VMNET_CONFIG: NetConfig = NetConfig {
     ip_addr: [192, 168, 105, 100], // Static guest IP (avoiding DHCP conflicts)
     subnet_mask: [255, 255, 255, 0],
-    gateway: [192, 168, 105, 1],   // vmnet gateway (socket_vmnet default)
+    gateway: [192, 168, 105, 1], // vmnet gateway (socket_vmnet default)
 };
 
 /// Network configuration for Parallels Desktop shared networking (NAT)
 /// Parallels shared network uses 10.211.55.x with gateway at 10.211.55.1
 #[allow(dead_code)] // Used conditionally when PCI net is active
 pub const PARALLELS_CONFIG: NetConfig = NetConfig {
-    ip_addr: [10, 211, 55, 100],   // Static guest IP (avoiding DHCP conflicts)
+    ip_addr: [10, 211, 55, 100], // Static guest IP (avoiding DHCP conflicts)
     subnet_mask: [255, 255, 255, 0],
-    gateway: [10, 211, 55, 1],     // Parallels shared network gateway
+    gateway: [10, 211, 55, 1], // Parallels shared network gateway
 };
 
 /// Network configuration for VMware Fusion NAT networking
 /// VMware NAT (vmnet8) uses 172.16.45.x with gateway at 172.16.45.2
 #[allow(dead_code)] // Used conditionally when e1000 is active on VMware
 pub const VMWARE_CONFIG: NetConfig = NetConfig {
-    ip_addr: [172, 16, 45, 100],   // Static guest IP (avoiding DHCP conflicts)
+    ip_addr: [172, 16, 45, 100], // Static guest IP (avoiding DHCP conflicts)
     subnet_mask: [255, 255, 255, 0],
-    gateway: [172, 16, 45, 2],     // VMware NAT gateway
+    gateway: [172, 16, 45, 2], // VMware NAT gateway
 };
 
 /// Select network config based on compile-time feature or default to SLIRP
@@ -257,7 +265,12 @@ pub fn init() {
     if let Some(mac) = e1000::mac_address() {
         log::info!(
             "NET: MAC address: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+            mac[0],
+            mac[1],
+            mac[2],
+            mac[3],
+            mac[4],
+            mac[5]
         );
     }
 
@@ -293,7 +306,12 @@ pub fn init() {
     if let Some(mac) = get_mac_address() {
         crate::serial_println!(
             "[net] MAC address: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+            mac[0],
+            mac[1],
+            mac[2],
+            mac[3],
+            mac[4],
+            mac[5]
         );
     }
 
@@ -329,8 +347,13 @@ fn init_common() {
 
     // Send ARP request for gateway to test network connectivity
     let gateway = gw;
-    net_log!("NET: Sending ARP request for gateway {}.{}.{}.{}",
-        gateway[0], gateway[1], gateway[2], gateway[3]);
+    net_log!(
+        "NET: Sending ARP request for gateway {}.{}.{}.{}",
+        gateway[0],
+        gateway[1],
+        gateway[2],
+        gateway[3]
+    );
     if let Err(e) = arp::request(&gateway) {
         net_log!("NET: Failed to send ARP request: {}", e);
         return;
@@ -352,9 +375,15 @@ fn init_common() {
         }
         // Check if we got the ARP reply yet
         if let Some(gateway_mac) = arp::lookup(&gateway) {
-            net_log!("NET: ARP resolved gateway MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                gateway_mac[0], gateway_mac[1], gateway_mac[2],
-                gateway_mac[3], gateway_mac[4], gateway_mac[5]);
+            net_log!(
+                "NET: ARP resolved gateway MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                gateway_mac[0],
+                gateway_mac[1],
+                gateway_mac[2],
+                gateway_mac[3],
+                gateway_mac[4],
+                gateway_mac[5]
+            );
             break;
         }
     }
@@ -366,8 +395,13 @@ fn init_common() {
     }
 
     // Send ICMP echo request (ping) to gateway
-    net_log!("NET: Sending ICMP echo request to gateway {}.{}.{}.{}",
-        gateway[0], gateway[1], gateway[2], gateway[3]);
+    net_log!(
+        "NET: Sending ICMP echo request to gateway {}.{}.{}.{}",
+        gateway[0],
+        gateway[1],
+        gateway[2],
+        gateway[3]
+    );
     if let Err(e) = ping(gateway) {
         net_log!("NET: Failed to send ping: {}", e);
         return;
@@ -434,7 +468,10 @@ pub fn process_rx() {
     // Re-entrancy guard: if we're already inside process_rx (e.g., ARP polling
     // loop interrupted by MSI-X → softirq → process_rx), skip this call.
     use core::sync::atomic::Ordering;
-    if RX_PROCESSING.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+    if RX_PROCESSING
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
         return;
     }
 
@@ -513,7 +550,11 @@ fn process_packet(data: &[u8]) {
 }
 
 /// Send an Ethernet frame
-pub fn send_ethernet(dst_mac: &[u8; 6], ethertype: u16, payload: &[u8]) -> Result<(), &'static str> {
+pub fn send_ethernet(
+    dst_mac: &[u8; 6],
+    ethertype: u16,
+    payload: &[u8],
+) -> Result<(), &'static str> {
     let src_mac = get_mac_address().ok_or("Network device not initialized")?;
 
     let frame = ethernet::EthernetFrame::build(&src_mac, dst_mac, ethertype, payload);
@@ -529,12 +570,7 @@ pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'
         net_debug!("NET: Loopback detected, queueing packet for deferred delivery");
 
         // Build IP packet
-        let ip_packet = ipv4::Ipv4Packet::build(
-            config.ip_addr,
-            dst_ip,
-            protocol,
-            payload,
-        );
+        let ip_packet = ipv4::Ipv4Packet::build(config.ip_addr, dst_ip, protocol, payload);
 
         // Queue for deferred delivery (to avoid deadlock with process manager lock)
         // The caller must call drain_loopback_queue() after releasing locks
@@ -563,8 +599,13 @@ pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'
         Some(mac) => mac,
         None => {
             // On-demand ARP resolution: send request and poll for reply.
-            net_log!("NET: ARP cache miss for {}.{}.{}.{}, sending on-demand ARP request",
-                next_hop[0], next_hop[1], next_hop[2], next_hop[3]);
+            net_log!(
+                "NET: ARP cache miss for {}.{}.{}.{}, sending on-demand ARP request",
+                next_hop[0],
+                next_hop[1],
+                next_hop[2],
+                next_hop[3]
+            );
             if let Err(e) = arp::request(&next_hop) {
                 net_warn!("NET: On-demand ARP request failed: {}", e);
                 return Err("ARP request failed");
@@ -578,9 +619,8 @@ pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'
                 if let Some(mac) = arp::lookup(&next_hop) {
                     net_log!("NET: On-demand ARP resolved gateway MAC");
                     return {
-                        let ip_packet = ipv4::Ipv4Packet::build(
-                            config.ip_addr, dst_ip, protocol, payload,
-                        );
+                        let ip_packet =
+                            ipv4::Ipv4Packet::build(config.ip_addr, dst_ip, protocol, payload);
                         send_ethernet(&mac, ethernet::ETHERTYPE_IPV4, &ip_packet)
                     };
                 }
@@ -590,12 +630,7 @@ pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'
     };
 
     // Build IP packet
-    let ip_packet = ipv4::Ipv4Packet::build(
-        config.ip_addr,
-        dst_ip,
-        protocol,
-        payload,
-    );
+    let ip_packet = ipv4::Ipv4Packet::build(config.ip_addr, dst_ip, protocol, payload);
 
     send_ethernet(&dst_mac, ethernet::ETHERTYPE_IPV4, &ip_packet)
 }

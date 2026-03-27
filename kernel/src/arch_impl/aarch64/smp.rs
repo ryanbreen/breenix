@@ -94,10 +94,7 @@ pub fn set_smp_ttbrs() {
         write_bss_boot_var(&SMP_TCR_PTR, tcr);
 
         // Single DSB to ensure all cache cleans complete
-        core::arch::asm!(
-            "dsb ish",
-            options(nostack),
-        );
+        core::arch::asm!("dsb ish", options(nostack),);
     }
 }
 
@@ -154,7 +151,7 @@ static CPUS_ONLINE: AtomicU64 = AtomicU64::new(1);
 
 /// Per-CPU online status flags.
 static CPU_ONLINE: [AtomicBool; MAX_CPUS] = [
-    AtomicBool::new(true),  // CPU 0 is online at boot
+    AtomicBool::new(true), // CPU 0 is online at boot
     AtomicBool::new(false),
     AtomicBool::new(false),
     AtomicBool::new(false),
@@ -250,7 +247,11 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
 
     // If 64-bit failed, try 32-bit function ID (some hypervisors only support this)
     if ret != 0 {
-        crate::serial_println!("[smp] CPU {}: HVC64 failed (ret={}), trying HVC32...", cpu_id, ret);
+        crate::serial_println!(
+            "[smp] CPU {}: HVC64 failed (ret={}), trying HVC32...",
+            cpu_id,
+            ret
+        );
         ret = psci_cpu_on_32(target_mpidr, entry_phys, context_id);
     }
 
@@ -258,8 +259,13 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
     // SMC would trap to EL2 and likely fault. HVC is the correct conduit.
 
     if ret != 0 {
-        crate::serial_println!("[smp] PSCI CPU_ON failed for CPU {}: ret={} (MPIDR={:#x} entry={:#x})",
-            cpu_id, ret, target_mpidr, entry_phys);
+        crate::serial_println!(
+            "[smp] PSCI CPU_ON failed for CPU {}: ret={} (MPIDR={:#x} entry={:#x})",
+            cpu_id,
+            ret,
+            target_mpidr,
+            entry_phys
+        );
     }
 
     ret
@@ -306,7 +312,9 @@ pub extern "C" fn secondary_cpu_entry_rust(cpu_id: u64) -> ! {
 
     // Store the boot TTBR0 as the kernel page table for this CPU.
     let boot_ttbr0: u64;
-    unsafe { core::arch::asm!("mrs {}, ttbr0_el1", out(reg) boot_ttbr0, options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("mrs {}, ttbr0_el1", out(reg) boot_ttbr0, options(nomem, nostack));
+    }
     crate::per_cpu_aarch64::set_kernel_cr3(boot_ttbr0);
 
     // Set kernel stack top for this CPU.
@@ -351,10 +359,10 @@ pub extern "C" fn secondary_cpu_entry_rust(cpu_id: u64) -> ! {
 
 /// Create an idle thread for a secondary CPU and register it with the scheduler.
 fn create_and_register_idle_thread(cpu_id: usize) {
+    use crate::memory::arch_stub::VirtAddr;
+    use crate::task::thread::{Thread, ThreadPrivilege, ThreadState};
     use alloc::boxed::Box;
     use alloc::format;
-    use crate::task::thread::{Thread, ThreadState, ThreadPrivilege};
-    use crate::memory::arch_stub::VirtAddr;
 
     // Boot stack addresses — must match boot.S layout.
     let stack_base = super::constants::percpu_stack_region_base();

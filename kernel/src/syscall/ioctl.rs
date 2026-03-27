@@ -11,7 +11,7 @@ use super::SyscallResult;
 use crate::ipc::fd::FdKind;
 
 /// POSIX error codes
-pub(crate) const EBADF: u64 = 9;   // Bad file descriptor
+pub(crate) const EBADF: u64 = 9; // Bad file descriptor
 pub(crate) const ENOTTY: u64 = 25; // Inappropriate ioctl for device
 
 /// sys_ioctl - Perform I/O control operation on a file descriptor
@@ -44,7 +44,12 @@ pub(crate) const ENOTTY: u64 = 25; // Inappropriate ioctl for device
 /// - TIOCSPTLCK (0x40045431): Lock/unlock PTY slave
 /// - TIOCGPTLCK (0x80045439): Get PTY lock status
 pub fn sys_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
-    log::debug!("sys_ioctl: fd={}, request={:#x}, arg={:#x}", fd, request, arg);
+    log::debug!(
+        "sys_ioctl: fd={}, request={:#x}, arg={:#x}",
+        fd,
+        request,
+        arg
+    );
 
     // First, try to look up the fd in the process's fd table
     // to check if it's a PTY device
@@ -137,7 +142,7 @@ mod tests {
 
     #[test]
     fn test_error_codes_match_posix() {
-        assert_eq!(EBADF, 9);   // Bad file descriptor
+        assert_eq!(EBADF, 9); // Bad file descriptor
         assert_eq!(ENOTTY, 25); // Not a typewriter
     }
 

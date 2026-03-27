@@ -137,7 +137,9 @@ impl TraceCounter {
     pub fn add(&self, amount: u64) {
         let cpu_id = current_cpu_id();
         if cpu_id < MAX_CPUS {
-            self.per_cpu[cpu_id].value.fetch_add(amount, Ordering::Relaxed);
+            self.per_cpu[cpu_id]
+                .value
+                .fetch_add(amount, Ordering::Relaxed);
         }
     }
 
@@ -447,7 +449,8 @@ mod tests {
     use super::*;
 
     // Test counter for unit tests - not registered globally
-    static TEST_COUNTER: TraceCounter = TraceCounter::new("test_counter", "Test counter for unit tests");
+    static TEST_COUNTER: TraceCounter =
+        TraceCounter::new("test_counter", "Test counter for unit tests");
 
     #[test_case]
     fn test_counter_initial_value() {

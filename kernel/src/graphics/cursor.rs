@@ -15,24 +15,24 @@ pub const CURSOR_H: usize = 18;
 /// Arrow cursor bitmap (1 = white, 2 = black outline, 0 = transparent).
 /// Standard arrow pointer shape.
 const CURSOR_BITMAP: [[u8; CURSOR_W]; CURSOR_H] = [
-    [2,0,0,0,0,0,0,0,0,0,0,0],
-    [2,2,0,0,0,0,0,0,0,0,0,0],
-    [2,1,2,0,0,0,0,0,0,0,0,0],
-    [2,1,1,2,0,0,0,0,0,0,0,0],
-    [2,1,1,1,2,0,0,0,0,0,0,0],
-    [2,1,1,1,1,2,0,0,0,0,0,0],
-    [2,1,1,1,1,1,2,0,0,0,0,0],
-    [2,1,1,1,1,1,1,2,0,0,0,0],
-    [2,1,1,1,1,1,1,1,2,0,0,0],
-    [2,1,1,1,1,1,1,1,1,2,0,0],
-    [2,1,1,1,1,1,1,1,1,1,2,0],
-    [2,1,1,1,1,1,2,2,2,2,2,0],
-    [2,1,1,1,1,2,0,0,0,0,0,0],
-    [2,1,1,2,1,1,2,0,0,0,0,0],
-    [2,1,2,0,2,1,1,2,0,0,0,0],
-    [2,2,0,0,2,1,1,2,0,0,0,0],
-    [2,0,0,0,0,2,1,2,0,0,0,0],
-    [0,0,0,0,0,2,2,0,0,0,0,0],
+    [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [2, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [2, 1, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0],
+    [2, 1, 1, 1, 2, 0, 0, 0, 0, 0, 0, 0],
+    [2, 1, 1, 1, 1, 2, 0, 0, 0, 0, 0, 0],
+    [2, 1, 1, 1, 1, 1, 2, 0, 0, 0, 0, 0],
+    [2, 1, 1, 1, 1, 1, 1, 2, 0, 0, 0, 0],
+    [2, 1, 1, 1, 1, 1, 1, 1, 2, 0, 0, 0],
+    [2, 1, 1, 1, 1, 1, 1, 1, 1, 2, 0, 0],
+    [2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 0],
+    [2, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 0],
+    [2, 1, 1, 1, 1, 2, 0, 0, 0, 0, 0, 0],
+    [2, 1, 1, 2, 1, 1, 2, 0, 0, 0, 0, 0],
+    [2, 1, 2, 0, 2, 1, 1, 2, 0, 0, 0, 0],
+    [2, 2, 0, 0, 2, 1, 1, 2, 0, 0, 0, 0],
+    [2, 0, 0, 0, 0, 2, 1, 2, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 0],
 ];
 
 const CURSOR_WHITE: Color = Color::WHITE;
@@ -65,10 +65,14 @@ pub fn erase_cursor(canvas: &mut impl Canvas) {
 
         for row in 0..CURSOR_H {
             let py = cy + row;
-            if py >= h { break; }
+            if py >= h {
+                break;
+            }
             for col in 0..CURSOR_W {
                 let px = cx + col;
-                if px >= w { break; }
+                if px >= w {
+                    break;
+                }
                 if CURSOR_BITMAP[row][col] != 0 {
                     let saved = SAVED_BG[row * CURSOR_W + col];
                     let r = ((saved >> 16) & 0xFF) as u8;
@@ -95,15 +99,21 @@ pub fn draw_cursor(canvas: &mut impl Canvas, x: usize, y: usize) {
         // Save background pixels
         for row in 0..CURSOR_H {
             let py = y + row;
-            if py >= h { break; }
+            if py >= h {
+                break;
+            }
             for col in 0..CURSOR_W {
                 let px = x + col;
-                if px >= w { break; }
+                if px >= w {
+                    break;
+                }
                 if CURSOR_BITMAP[row][col] != 0 {
-                    let color = canvas.get_pixel(px as i32, py as i32)
+                    let color = canvas
+                        .get_pixel(px as i32, py as i32)
                         .unwrap_or(Color::rgb(0, 0, 0));
                     // Pack as 0x00RRGGBB
-                    let packed = ((color.r as u32) << 16) | ((color.g as u32) << 8) | (color.b as u32);
+                    let packed =
+                        ((color.r as u32) << 16) | ((color.g as u32) << 8) | (color.b as u32);
                     SAVED_BG[row * CURSOR_W + col] = packed;
                 }
             }
@@ -112,10 +122,14 @@ pub fn draw_cursor(canvas: &mut impl Canvas, x: usize, y: usize) {
         // Draw cursor pixels
         for row in 0..CURSOR_H {
             let py = y + row;
-            if py >= h { break; }
+            if py >= h {
+                break;
+            }
             for col in 0..CURSOR_W {
                 let px = x + col;
-                if px >= w { break; }
+                if px >= w {
+                    break;
+                }
                 match CURSOR_BITMAP[row][col] {
                     1 => canvas.set_pixel(px as i32, py as i32, CURSOR_WHITE),
                     2 => canvas.set_pixel(px as i32, py as i32, CURSOR_BLACK),

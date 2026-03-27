@@ -1,14 +1,14 @@
 //! PTY pair (master/slave) implementation
 
+use crate::tty::termios::Termios;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use crate::tty::termios::Termios;
 
 /// Global counter: total bytes written through PTY slave_write (diagnostic)
 pub static PTY_SLAVE_BYTES_WRITTEN: AtomicU64 = AtomicU64::new(0);
+use crate::syscall::errno::EAGAIN;
 use crate::tty::ioctl::Winsize;
 use crate::tty::line_discipline::LineDiscipline;
-use crate::syscall::errno::EAGAIN;
 
 /// Ring buffer size for PTY data transfer
 const PTY_BUFFER_SIZE: usize = 4096;

@@ -194,9 +194,16 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                 FdKind::PtyMaster(pty_num) => {
                     // PTY master cleanup - decrement refcount, only release when all masters closed
                     if let Some(pair) = crate::tty::pty::get(pty_num) {
-                        let old_count = pair.master_refcount.fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
-                        log::debug!("sys_close: PTY master fd={} (pty {}) refcount {} -> {}",
-                            fd, pty_num, old_count, old_count - 1);
+                        let old_count = pair
+                            .master_refcount
+                            .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+                        log::debug!(
+                            "sys_close: PTY master fd={} (pty {}) refcount {} -> {}",
+                            fd,
+                            pty_num,
+                            old_count,
+                            old_count - 1
+                        );
                         if old_count == 1 {
                             // Last reference - release the PTY pair
                             crate::tty::pty::release(pty_num);
@@ -290,7 +297,11 @@ pub fn sys_close(fd: i32) -> SyscallResult {
 ///   - EMFILE (24): Too many open files
 ///   - ESRCH (3): Process not found
 pub fn sys_pipe2(pipefd_ptr: u64, pipe_flags: u64) -> SyscallResult {
-    log::debug!("sys_pipe2: Creating pipe with flags={:#x}, pipefd_ptr={:#x}", pipe_flags, pipefd_ptr);
+    log::debug!(
+        "sys_pipe2: Creating pipe with flags={:#x}, pipefd_ptr={:#x}",
+        pipe_flags,
+        pipefd_ptr
+    );
 
     // Validate flags - only O_CLOEXEC and O_NONBLOCK are allowed
     let flags_u32 = pipe_flags as u32;
@@ -345,16 +356,10 @@ pub fn sys_pipe2(pipefd_ptr: u64, pipe_flags: u64) -> SyscallResult {
     };
 
     // Create file descriptors with the appropriate flags
-    let read_fd_entry = FileDescriptor::with_flags(
-        FdKind::PipeRead(read_buffer),
-        fd_flags,
-        status_flags_val,
-    );
-    let write_fd_entry = FileDescriptor::with_flags(
-        FdKind::PipeWrite(write_buffer),
-        fd_flags,
-        status_flags_val,
-    );
+    let read_fd_entry =
+        FileDescriptor::with_flags(FdKind::PipeRead(read_buffer), fd_flags, status_flags_val);
+    let write_fd_entry =
+        FileDescriptor::with_flags(FdKind::PipeWrite(write_buffer), fd_flags, status_flags_val);
 
     // Allocate file descriptors for both ends using alloc_with_entry
     let read_fd = match process.fd_table.alloc_with_entry(read_fd_entry.clone()) {

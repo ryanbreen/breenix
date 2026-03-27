@@ -254,23 +254,39 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::Mounts));
 
     // Register /proc/breenix directory and entries
-    procfs.entries.push(ProcEntry::new(ProcEntryType::BreenixDir));
-    procfs.entries.push(ProcEntry::new(ProcEntryType::BreenixTesting));
+    procfs
+        .entries
+        .push(ProcEntry::new(ProcEntryType::BreenixDir));
+    procfs
+        .entries
+        .push(ProcEntry::new(ProcEntryType::BreenixTesting));
 
     procfs.entries.push(ProcEntry::new(ProcEntryType::Pids));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Kmsg));
 
     // Register /proc/xhci directory and entries
     procfs.entries.push(ProcEntry::new(ProcEntryType::XhciDir));
-    procfs.entries.push(ProcEntry::new(ProcEntryType::XhciTrace));
+    procfs
+        .entries
+        .push(ProcEntry::new(ProcEntryType::XhciTrace));
 
     // Register /proc/trace directory and entries
     procfs.entries.push(ProcEntry::new(ProcEntryType::TraceDir));
-    procfs.entries.push(ProcEntry::new(ProcEntryType::TraceEnable));
-    procfs.entries.push(ProcEntry::new(ProcEntryType::TraceEvents));
-    procfs.entries.push(ProcEntry::new(ProcEntryType::TraceBuffer));
-    procfs.entries.push(ProcEntry::new(ProcEntryType::TraceCounters));
-    procfs.entries.push(ProcEntry::new(ProcEntryType::TraceProviders));
+    procfs
+        .entries
+        .push(ProcEntry::new(ProcEntryType::TraceEnable));
+    procfs
+        .entries
+        .push(ProcEntry::new(ProcEntryType::TraceEvents));
+    procfs
+        .entries
+        .push(ProcEntry::new(ProcEntryType::TraceBuffer));
+    procfs
+        .entries
+        .push(ProcEntry::new(ProcEntryType::TraceCounters));
+    procfs
+        .entries
+        .push(ProcEntry::new(ProcEntryType::TraceProviders));
 
     procfs.initialized = true;
     log::info!("procfs: initialized with {} entries", procfs.entries.len());
@@ -346,16 +362,18 @@ pub fn list_entries() -> Vec<String> {
         procfs
             .entries
             .iter()
-            .filter(|e| !matches!(
-                e.entry_type,
-                ProcEntryType::TraceEnable
-                    | ProcEntryType::TraceEvents
-                    | ProcEntryType::TraceBuffer
-                    | ProcEntryType::TraceCounters
-                    | ProcEntryType::TraceProviders
-                    | ProcEntryType::BreenixTesting
-                    | ProcEntryType::XhciTrace
-            ))
+            .filter(|e| {
+                !matches!(
+                    e.entry_type,
+                    ProcEntryType::TraceEnable
+                        | ProcEntryType::TraceEvents
+                        | ProcEntryType::TraceBuffer
+                        | ProcEntryType::TraceCounters
+                        | ProcEntryType::TraceProviders
+                        | ProcEntryType::BreenixTesting
+                        | ProcEntryType::XhciTrace
+                )
+            })
             .map(|e| String::from(e.entry_type.name()))
             .collect()
     };
@@ -380,14 +398,16 @@ pub fn list_trace_entries() -> Vec<String> {
     procfs
         .entries
         .iter()
-        .filter(|e| matches!(
-            e.entry_type,
-            ProcEntryType::TraceEnable
-                | ProcEntryType::TraceEvents
-                | ProcEntryType::TraceBuffer
-                | ProcEntryType::TraceCounters
-                | ProcEntryType::TraceProviders
-        ))
+        .filter(|e| {
+            matches!(
+                e.entry_type,
+                ProcEntryType::TraceEnable
+                    | ProcEntryType::TraceEvents
+                    | ProcEntryType::TraceBuffer
+                    | ProcEntryType::TraceCounters
+                    | ProcEntryType::TraceProviders
+            )
+        })
         .map(|e| String::from(e.entry_type.name()))
         .collect()
 }
@@ -532,8 +552,8 @@ fn generate_version() -> String {
 
 /// Generate /proc/meminfo content
 fn generate_meminfo() -> String {
-    use alloc::format;
     use crate::memory::slab::{FD_TABLE_SLAB, SIGNAL_HANDLERS_SLAB};
+    use alloc::format;
 
     let stats = crate::memory::frame_allocator::memory_stats();
 
@@ -583,21 +603,21 @@ fn generate_meminfo() -> String {
          VmallocUsed:    {:>8} kB\n",
         total_kb,
         free_kb,
-        free_kb,         // Available ~= free (no page cache pressure)
-        0u64,            // No buffer cache
-        0u64,            // No page cache
-        0u64,            // No swap cache
-        0u64,            // No active/inactive tracking
-        0u64,            // No active/inactive tracking
-        0u64,            // No swap
-        0u64,            // No swap
+        free_kb, // Available ~= free (no page cache pressure)
+        0u64,    // No buffer cache
+        0u64,    // No page cache
+        0u64,    // No swap cache
+        0u64,    // No active/inactive tracking
+        0u64,    // No active/inactive tracking
+        0u64,    // No swap
+        0u64,    // No swap
         slab_kb,
         kernel_stack_kb,
-        0u64,            // Page tables not tracked yet
-        total_kb,        // CommitLimit = total (no overcommit)
-        used_kb,         // Committed_AS = used memory
-        0u64,            // No vmalloc tracking
-        0u64,            // No vmalloc tracking
+        0u64,     // Page tables not tracked yet
+        total_kb, // CommitLimit = total (no overcommit)
+        used_kb,  // Committed_AS = used memory
+        0u64,     // No vmalloc tracking
+        0u64,     // No vmalloc tracking
     )
 }
 
@@ -612,7 +632,7 @@ fn generate_cpuinfo() -> String {
             let freq_hz = crate::arch_impl::x86_64::timer::frequency_hz();
             let mhz = freq_hz / 1_000_000;
             let mhz_frac = (freq_hz % 1_000_000) / 1_000; // 3 decimal places
-            // Linux computes bogomips as 2 * (tsc_freq / 1_000_000)
+                                                          // Linux computes bogomips as 2 * (tsc_freq / 1_000_000)
             let bogomips_int = (freq_hz * 2) / 1_000_000;
             let bogomips_frac = ((freq_hz * 2) % 1_000_000) / 10_000; // 2 decimal places
 
@@ -642,15 +662,25 @@ fn generate_cpuinfo() -> String {
                 info.model,
                 info.brand_str(),
                 info.stepping,
-                mhz, mhz_frac,
+                mhz,
+                mhz_frac,
                 cache_kb,
                 info.logical_processors,
-                if info.features_edx & 1 != 0 { "yes" } else { "no" },
-                if info.features_edx & 1 != 0 { "yes" } else { "no" },
+                if info.features_edx & 1 != 0 {
+                    "yes"
+                } else {
+                    "no"
+                },
+                if info.features_edx & 1 != 0 {
+                    "yes"
+                } else {
+                    "no"
+                },
                 info.max_leaf,
                 info.clflush_size,
                 info.flags_string(),
-                bogomips_int, bogomips_frac,
+                bogomips_int,
+                bogomips_frac,
             )
         } else {
             format!("processor\t: 0\nmodel name\t: Unknown (CPUID not initialized)\n\n")
@@ -679,7 +709,8 @@ fn generate_cpuinfo() -> String {
             let mut output = String::new();
             for cpu_id in 0..num_cpus {
                 use core::fmt::Write;
-                let _ = write!(output,
+                let _ = write!(
+                    output,
                     "processor\t: {}\n\
                      BogoMIPS\t: {}.{:02}\n\
                      Features\t: {}\n\
@@ -691,7 +722,8 @@ fn generate_cpuinfo() -> String {
                      Model name\t: {}\n\
                      Address sizes\t: {} bits physical\n\n",
                     cpu_id,
-                    bogomips_int, bogomips_frac,
+                    bogomips_int,
+                    bogomips_frac,
                     info.features_string(),
                     info.implementer(),
                     info.variant(),
@@ -710,13 +742,17 @@ fn generate_cpuinfo() -> String {
 
 /// Generate /proc/slabinfo content
 fn generate_slabinfo() -> String {
-    use alloc::format;
     use crate::memory::slab::{FD_TABLE_SLAB, SIGNAL_HANDLERS_SLAB};
+    use alloc::format;
 
     let mut out = String::from("# name            active   free  total  objsize  pct\n");
     for slab in &[&FD_TABLE_SLAB, &SIGNAL_HANDLERS_SLAB] {
         let s = slab.stats();
-        let pct = if s.capacity > 0 { (s.allocated * 100) / s.capacity } else { 0 };
+        let pct = if s.capacity > 0 {
+            (s.allocated * 100) / s.capacity
+        } else {
+            0
+        };
         out.push_str(&format!(
             "{:<16}  {:>5}  {:>5}  {:>5}  {:>7}  {:>2}%\n",
             s.name, s.allocated, s.free, s.capacity, s.obj_size, pct,
@@ -727,12 +763,12 @@ fn generate_slabinfo() -> String {
 
 /// Generate /proc/stat content (kernel activity counters)
 fn generate_stat() -> String {
-    use core::fmt::Write;
     use crate::tracing::providers::counters::{
-        SYSCALL_TOTAL, IRQ_TOTAL, CTX_SWITCH_TOTAL, TIMER_TICK_TOTAL,
-        FORK_TOTAL, EXEC_TOTAL, COW_FAULT_TOTAL, IDLE_TICK_TOTAL,
-        GPU_BYTES_UPLOADED, GPU_FULL_UPLOADS, GPU_PARTIAL_UPLOADS,
+        COW_FAULT_TOTAL, CTX_SWITCH_TOTAL, EXEC_TOTAL, FORK_TOTAL, GPU_BYTES_UPLOADED,
+        GPU_FULL_UPLOADS, GPU_PARTIAL_UPLOADS, IDLE_TICK_TOTAL, IRQ_TOTAL, SYSCALL_TOTAL,
+        TIMER_TICK_TOTAL,
     };
+    use core::fmt::Write;
 
     let mut out = String::with_capacity(512);
 
@@ -750,7 +786,8 @@ fn generate_stat() -> String {
     }
 
     // Aggregate counters (existing format, backwards compatible)
-    let _ = write!(out,
+    let _ = write!(
+        out,
         "syscalls {}\n\
          interrupts {}\n\
          context_switches {}\n\
@@ -776,8 +813,11 @@ fn generate_stat() -> String {
     );
     #[cfg(target_arch = "aarch64")]
     {
-        let _ = write!(out, "net_msi_irqs {}\n",
-            crate::drivers::virtio::net_pci::msi_interrupt_count());
+        let _ = write!(
+            out,
+            "net_msi_irqs {}\n",
+            crate::drivers::virtio::net_pci::msi_interrupt_count()
+        );
     }
     out
 }
@@ -927,9 +967,9 @@ fn generate_pid_dir(pid: u64) -> String {
 /// VmStack:    16 kB
 /// ```
 fn generate_pid_status(pid: u64) -> String {
-    use alloc::format;
     use crate::process::ProcessId;
     use crate::process::ProcessState;
+    use alloc::format;
 
     // IMPORTANT: Collect CPU ticks BEFORE acquiring the process manager lock.
     // get_process_cpu_ticks() acquires the SCHEDULER lock internally.
@@ -938,7 +978,8 @@ fn generate_pid_status(pid: u64) -> String {
     // with the timer interrupt context switch path.
     let cpu_ticks = {
         let all_ticks = crate::task::scheduler::get_process_cpu_ticks();
-        all_ticks.iter()
+        all_ticks
+            .iter()
             .filter(|&&(p, _)| p == pid)
             .map(|&(_, t)| t)
             .sum::<u64>()

@@ -57,7 +57,10 @@ pub struct PerCpuData {
     _pad3: [u8; 88],
 }
 
-const _: () = assert!(core::mem::size_of::<PerCpuData>() == 192, "PerCpuData must be 192 bytes");
+const _: () = assert!(
+    core::mem::size_of::<PerCpuData>() == 192,
+    "PerCpuData must be 192 bytes"
+);
 
 impl PerCpuData {
     /// Create a new per-CPU data structure
@@ -112,13 +115,19 @@ pub fn init() {
 
     init_cpu(0);
 
-    log::info!("Per-CPU data initialized at {:#x}", hal_percpu::percpu_base());
+    log::info!(
+        "Per-CPU data initialized at {:#x}",
+        hal_percpu::percpu_base()
+    );
     log::debug!("  TPIDR_EL1 = {:#x}", hal_percpu::percpu_base());
 
     // Verification
     let read_cpu_id = hal_percpu::Aarch64PerCpu::cpu_id();
     if read_cpu_id != 0 {
-        panic!("HAL verification failed: cpu_id read-back mismatch (expected 0, got {})", read_cpu_id);
+        panic!(
+            "HAL verification failed: cpu_id read-back mismatch (expected 0, got {})",
+            read_cpu_id
+        );
     }
     log::info!("HAL read-back verification passed: TPIDR_EL1-relative operations working");
 
@@ -155,7 +164,8 @@ pub fn current_thread_ptr() -> *mut u8 {
 
 /// Get the current thread from per-CPU data
 pub fn current_thread() -> Option<&'static mut crate::task::thread::Thread> {
-    let thread_ptr = hal_percpu::Aarch64PerCpu::current_thread_ptr() as *mut crate::task::thread::Thread;
+    let thread_ptr =
+        hal_percpu::Aarch64PerCpu::current_thread_ptr() as *mut crate::task::thread::Thread;
 
     if thread_ptr.is_null() {
         None
@@ -237,8 +247,10 @@ pub fn in_nmi() -> bool {
 
 /// Enter hardware IRQ context
 pub fn irq_enter() {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
-                  "irq_enter called before per-CPU initialization");
+    debug_assert!(
+        PER_CPU_INITIALIZED.load(Ordering::Acquire),
+        "irq_enter called before per-CPU initialization"
+    );
     unsafe {
         hal_percpu::Aarch64PerCpu::irq_enter();
     }
@@ -246,8 +258,10 @@ pub fn irq_enter() {
 
 /// Exit hardware IRQ context
 pub fn irq_exit() {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
-                  "irq_exit called before per-CPU initialization");
+    debug_assert!(
+        PER_CPU_INITIALIZED.load(Ordering::Acquire),
+        "irq_exit called before per-CPU initialization"
+    );
     unsafe {
         hal_percpu::Aarch64PerCpu::irq_exit();
     }
@@ -255,8 +269,10 @@ pub fn irq_exit() {
 
 /// Enter NMI context
 pub fn nmi_enter() {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
-                  "nmi_enter called before per-CPU initialization");
+    debug_assert!(
+        PER_CPU_INITIALIZED.load(Ordering::Acquire),
+        "nmi_enter called before per-CPU initialization"
+    );
     unsafe {
         hal_percpu::Aarch64PerCpu::nmi_enter();
     }
@@ -264,8 +280,10 @@ pub fn nmi_enter() {
 
 /// Exit NMI context
 pub fn nmi_exit() {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
-                  "nmi_exit called before per-CPU initialization");
+    debug_assert!(
+        PER_CPU_INITIALIZED.load(Ordering::Acquire),
+        "nmi_exit called before per-CPU initialization"
+    );
     unsafe {
         hal_percpu::Aarch64PerCpu::nmi_exit();
     }
@@ -273,8 +291,10 @@ pub fn nmi_exit() {
 
 /// Enter softirq context
 pub fn softirq_enter() {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
-                  "softirq_enter called before per-CPU initialization");
+    debug_assert!(
+        PER_CPU_INITIALIZED.load(Ordering::Acquire),
+        "softirq_enter called before per-CPU initialization"
+    );
     unsafe {
         hal_percpu::Aarch64PerCpu::softirq_enter();
     }
@@ -282,8 +302,10 @@ pub fn softirq_enter() {
 
 /// Exit softirq context
 pub fn softirq_exit() {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
-                  "softirq_exit called before per-CPU initialization");
+    debug_assert!(
+        PER_CPU_INITIALIZED.load(Ordering::Acquire),
+        "softirq_exit called before per-CPU initialization"
+    );
     unsafe {
         hal_percpu::Aarch64PerCpu::softirq_exit();
     }
@@ -291,22 +313,28 @@ pub fn softirq_exit() {
 
 /// Increment preempt count (disable kernel preemption)
 pub fn preempt_disable() {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
-                  "preempt_disable called before per-CPU initialization");
+    debug_assert!(
+        PER_CPU_INITIALIZED.load(Ordering::Acquire),
+        "preempt_disable called before per-CPU initialization"
+    );
     hal_percpu::Aarch64PerCpu::preempt_disable();
 }
 
 /// Decrement preempt count (enable kernel preemption)
 pub fn preempt_enable() {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
-                  "preempt_enable called before per-CPU initialization");
+    debug_assert!(
+        PER_CPU_INITIALIZED.load(Ordering::Acquire),
+        "preempt_enable called before per-CPU initialization"
+    );
     hal_percpu::Aarch64PerCpu::preempt_enable();
 }
 
 /// Get current preempt count
 pub fn preempt_count() -> u32 {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
-                  "preempt_count called before per-CPU initialization");
+    debug_assert!(
+        PER_CPU_INITIALIZED.load(Ordering::Acquire),
+        "preempt_count called before per-CPU initialization"
+    );
     hal_percpu::Aarch64PerCpu::preempt_count()
 }
 

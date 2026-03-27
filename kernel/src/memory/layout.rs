@@ -1,55 +1,54 @@
-
 //! Canonical kernel memory layout constants
-//! 
+//!
 //! Defines the standard memory layout for kernel space, including
 //! per-CPU stacks and other kernel regions. This establishes a
 //! production-grade memory layout that all page tables will share.
 
-#[cfg(target_arch = "x86_64")]
-use x86_64::VirtAddr;
-#[cfg(not(target_arch = "x86_64"))]
-use crate::memory::arch_stub::VirtAddr;
 #[cfg(target_arch = "aarch64")]
 use crate::arch_impl::aarch64::constants as aarch64_const;
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::VirtAddr;
+#[cfg(target_arch = "x86_64")]
+use x86_64::VirtAddr;
 
 // Virtual address layout constants
 #[cfg(target_arch = "x86_64")]
-pub const KERNEL_LOW_BASE: u64 = 0x100000;           // Current low-half kernel base (1MB)
+pub const KERNEL_LOW_BASE: u64 = 0x100000; // Current low-half kernel base (1MB)
 #[cfg(target_arch = "aarch64")]
-pub const KERNEL_LOW_BASE: u64 = 0x40080000;         // Physical load base
+pub const KERNEL_LOW_BASE: u64 = 0x40080000; // Physical load base
 
 #[cfg(target_arch = "x86_64")]
-pub const KERNEL_BASE: u64 = 0xffffffff80000000;     // Upper half kernel base
+pub const KERNEL_BASE: u64 = 0xffffffff80000000; // Upper half kernel base
 #[cfg(target_arch = "aarch64")]
 pub const KERNEL_BASE: u64 = aarch64_const::KERNEL_HIGHER_HALF_BASE + KERNEL_LOW_BASE;
 
 #[allow(dead_code)]
 #[cfg(target_arch = "x86_64")]
-pub const HHDM_BASE: u64 = 0xffff800000000000;       // Higher-half direct map
+pub const HHDM_BASE: u64 = 0xffff800000000000; // Higher-half direct map
 #[allow(dead_code)]
 #[cfg(target_arch = "aarch64")]
-pub const HHDM_BASE: u64 = aarch64_const::HHDM_BASE;  // Higher-half direct map
+pub const HHDM_BASE: u64 = aarch64_const::HHDM_BASE; // Higher-half direct map
 
 #[allow(dead_code)]
 #[cfg(target_arch = "x86_64")]
-pub const PERCPU_BASE: u64 = 0xfffffe0000000000;     // Per-CPU area
+pub const PERCPU_BASE: u64 = 0xfffffe0000000000; // Per-CPU area
 #[allow(dead_code)]
 #[cfg(target_arch = "aarch64")]
 pub const PERCPU_BASE: u64 = aarch64_const::PERCPU_BASE;
 
 #[allow(dead_code)]
 #[cfg(target_arch = "x86_64")]
-pub const FIXMAP_BASE: u64 = 0xfffffd0000000000;     // Fixed mappings (GDT/IDT/TSS)
+pub const FIXMAP_BASE: u64 = 0xfffffd0000000000; // Fixed mappings (GDT/IDT/TSS)
 #[allow(dead_code)]
 #[cfg(target_arch = "aarch64")]
 pub const FIXMAP_BASE: u64 = aarch64_const::FIXMAP_BASE;
 
 #[allow(dead_code)]
 #[cfg(target_arch = "x86_64")]
-pub const MMIO_BASE: u64 = 0xffffe00000000000;       // MMIO regions
+pub const MMIO_BASE: u64 = 0xffffe00000000000; // MMIO regions
 #[allow(dead_code)]
 #[cfg(target_arch = "aarch64")]
-pub const MMIO_BASE: u64 = aarch64_const::MMIO_BASE;  // MMIO regions
+pub const MMIO_BASE: u64 = aarch64_const::MMIO_BASE; // MMIO regions
 
 // === User Space Memory Layout ===
 
@@ -58,7 +57,7 @@ pub const MMIO_BASE: u64 = aarch64_const::MMIO_BASE;  // MMIO regions
 /// This places userspace in PDPT[1] while kernel stays in PDPT[0]
 #[allow(dead_code)]
 #[cfg(target_arch = "x86_64")]
-pub const USERSPACE_BASE: u64 = 0x40000000;          // 1GB - avoids kernel conflict
+pub const USERSPACE_BASE: u64 = 0x40000000; // 1GB - avoids kernel conflict
 #[allow(dead_code)]
 #[cfg(target_arch = "aarch64")]
 pub const USERSPACE_BASE: u64 = aarch64_const::USERSPACE_BASE;
@@ -112,7 +111,7 @@ pub const MAX_USER_STACK_SIZE: u64 = 2 * 1024 * 1024;
 
 // PML4 indices for different regions
 #[allow(dead_code)]
-pub const BOOTSTRAP_PML4_INDEX: u64 = 3;             // Bootstrap stack at 0x180000000000
+pub const BOOTSTRAP_PML4_INDEX: u64 = 3; // Bootstrap stack at 0x180000000000
 
 // === STEP 1: Canonical per-CPU stack layout constants ===
 
@@ -169,7 +168,7 @@ pub const PERCPU_STACK_REGION_SIZE: usize = aarch64_const::PERCPU_STACK_REGION_S
 pub const KERNEL_TLS_REGION_BASE: u64 = PERCPU_STACK_REGION_BASE + 0x3000_0000; // +768 MiB
 
 /// Calculate the virtual address for a specific CPU's stack region
-/// 
+///
 /// Returns the base address of the stack region for the given CPU.
 /// The actual stack grows downward from (base + PERCPU_STACK_SIZE).
 pub fn percpu_stack_base(cpu_id: usize) -> VirtAddr {
@@ -179,7 +178,7 @@ pub fn percpu_stack_base(cpu_id: usize) -> VirtAddr {
 }
 
 /// Calculate the top of the stack for a specific CPU (where RSP starts)
-/// 
+///
 /// The stack grows downward, so the top is at base + size
 pub fn percpu_stack_top(cpu_id: usize) -> VirtAddr {
     let base = percpu_stack_base(cpu_id);
@@ -199,18 +198,23 @@ pub fn percpu_stack_guard(cpu_id: usize) -> VirtAddr {
 /// Log the memory layout during initialization (STEP 1 validation)
 pub fn log_layout() {
     log::info!("LAYOUT: Kernel memory layout initialized:");
-    log::info!("LAYOUT: percpu stack base={:#x}, size={} KiB, stride={} MiB, guard={} KiB",
+    log::info!(
+        "LAYOUT: percpu stack base={:#x}, size={} KiB, stride={} MiB, guard={} KiB",
         PERCPU_STACK_REGION_BASE,
         PERCPU_STACK_SIZE / 1024,
         PERCPU_STACK_STRIDE / (1024 * 1024),
         PERCPU_STACK_GUARD_SIZE / 1024
     );
     log::info!("LAYOUT: Max CPUs supported: {}", MAX_CPUS);
-    log::info!("LAYOUT: Total stack region size: {} MiB", PERCPU_STACK_REGION_SIZE / (1024 * 1024));
-    
+    log::info!(
+        "LAYOUT: Total stack region size: {} MiB",
+        PERCPU_STACK_REGION_SIZE / (1024 * 1024)
+    );
+
     // Log first few CPU stack addresses as examples
     for cpu_id in 0..4.min(MAX_CPUS) {
-        log::info!("LAYOUT: CPU {} stack: base={:#x}, top={:#x}",
+        log::info!(
+            "LAYOUT: CPU {} stack: base={:#x}, top={:#x}",
             cpu_id,
             percpu_stack_base(cpu_id).as_u64(),
             percpu_stack_top(cpu_id).as_u64()
@@ -275,7 +279,7 @@ pub fn log_kernel_layout() {
     let (rodata_start, rodata_end) = get_kernel_rodata_range();
     let (data_start, data_end) = get_kernel_data_range();
     let (bss_start, bss_end) = get_kernel_bss_range();
-    
+
     log::info!(
         "KLAYOUT: image={:#x}..{:#x} text={:#x}..{:#x} rodata={:#x}..{:#x} data={:#x}..{:#x} bss={:#x}..{:#x}",
         image_start, image_end,
@@ -284,7 +288,7 @@ pub fn log_kernel_layout() {
         data_start, data_end,
         bss_start, bss_end
     );
-    
+
     // Log other critical structures
     log_control_structures();
 }
@@ -310,7 +314,11 @@ fn log_control_structures() {
 
     // Get per-CPU info
     let percpu_info = per_cpu::get_percpu_info();
-    log::info!("KLAYOUT: Per-CPU base={:#x} size={:#x}", percpu_info.0, percpu_info.1);
+    log::info!(
+        "KLAYOUT: Per-CPU base={:#x} size={:#x}",
+        percpu_info.0,
+        percpu_info.1
+    );
 }
 
 /// Log control structures (ARM64 - minimal implementation)

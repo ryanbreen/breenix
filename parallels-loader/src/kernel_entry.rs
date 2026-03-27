@@ -8,7 +8,6 @@
 ///   4. Install minimal VBAR_EL1 exception handler (prevents recursive faults)
 ///   5. TLB invalidate + ISB
 ///   6. Jump to kernel_main(hw_config_ptr) -- same binary as QEMU
-
 use crate::hw_config::HardwareConfig;
 use crate::page_tables::{self, PageTableConfig, PageTableStorage};
 
@@ -29,7 +28,11 @@ pub fn jump_to_kernel(
     let (ttbr0, ttbr1) = page_tables::build_page_tables(page_table_storage, pt_config);
     let hw_config_ptr = hw_config as *const HardwareConfig as u64;
 
-    log::info!("Page tables built: TTBR0=0x{:016x}, TTBR1=0x{:016x}", ttbr0, ttbr1);
+    log::info!(
+        "Page tables built: TTBR0=0x{:016x}, TTBR1=0x{:016x}",
+        ttbr0,
+        ttbr1
+    );
     log::info!("Kernel entry: 0x{:016x}", kernel_entry);
     log::info!("HardwareConfig at: 0x{:016x}", hw_config_ptr);
 
@@ -188,16 +191,14 @@ core::arch::global_asm!(
     ".balign 2048",
     ".global loader_exception_vectors",
     "loader_exception_vectors:",
-
     // --- Current EL with SP0 (entries 0-3) ---
     // Entry 0: Synchronous
-    "movz x4, #0x0211, lsl #16",  // x4 = 0x02110000
-    "mov x5, #0x58",              // 'X'
+    "movz x4, #0x0211, lsl #16", // x4 = 0x02110000
+    "mov x5, #0x58",             // 'X'
     "str w5, [x4]",
     "0: wfi",
     "b 0b",
     ".balign 128",
-
     // Entry 1: IRQ
     "movz x4, #0x0211, lsl #16",
     "mov x5, #0x58",
@@ -205,7 +206,6 @@ core::arch::global_asm!(
     "0: wfi",
     "b 0b",
     ".balign 128",
-
     // Entry 2: FIQ
     "movz x4, #0x0211, lsl #16",
     "mov x5, #0x58",
@@ -213,7 +213,6 @@ core::arch::global_asm!(
     "0: wfi",
     "b 0b",
     ".balign 128",
-
     // Entry 3: SError
     "movz x4, #0x0211, lsl #16",
     "mov x5, #0x58",
@@ -221,7 +220,6 @@ core::arch::global_asm!(
     "0: wfi",
     "b 0b",
     ".balign 128",
-
     // --- Current EL with SPx (entries 4-7) ---
     // Entry 4: Synchronous
     "movz x4, #0x0211, lsl #16",
@@ -230,7 +228,6 @@ core::arch::global_asm!(
     "0: wfi",
     "b 0b",
     ".balign 128",
-
     // Entry 5: IRQ
     "movz x4, #0x0211, lsl #16",
     "mov x5, #0x58",
@@ -238,7 +235,6 @@ core::arch::global_asm!(
     "0: wfi",
     "b 0b",
     ".balign 128",
-
     // Entry 6: FIQ
     "movz x4, #0x0211, lsl #16",
     "mov x5, #0x58",
@@ -246,7 +242,6 @@ core::arch::global_asm!(
     "0: wfi",
     "b 0b",
     ".balign 128",
-
     // Entry 7: SError
     "movz x4, #0x0211, lsl #16",
     "mov x5, #0x58",
@@ -254,7 +249,6 @@ core::arch::global_asm!(
     "0: wfi",
     "b 0b",
     ".balign 128",
-
     // --- Lower EL AArch64 (entries 8-11) ---
     // Entry 8: Synchronous
     "movz x4, #0x0211, lsl #16",
@@ -263,7 +257,6 @@ core::arch::global_asm!(
     "0: wfi",
     "b 0b",
     ".balign 128",
-
     // Entry 9: IRQ
     "movz x4, #0x0211, lsl #16",
     "mov x5, #0x58",
@@ -271,7 +264,6 @@ core::arch::global_asm!(
     "0: wfi",
     "b 0b",
     ".balign 128",
-
     // Entry 10: FIQ
     "movz x4, #0x0211, lsl #16",
     "mov x5, #0x58",
@@ -279,7 +271,6 @@ core::arch::global_asm!(
     "0: wfi",
     "b 0b",
     ".balign 128",
-
     // Entry 11: SError
     "movz x4, #0x0211, lsl #16",
     "mov x5, #0x58",
@@ -287,7 +278,6 @@ core::arch::global_asm!(
     "0: wfi",
     "b 0b",
     ".balign 128",
-
     // --- Lower EL AArch32 (entries 12-15) ---
     // Entry 12: Synchronous
     "movz x4, #0x0211, lsl #16",
@@ -296,7 +286,6 @@ core::arch::global_asm!(
     "0: wfi",
     "b 0b",
     ".balign 128",
-
     // Entry 13: IRQ
     "movz x4, #0x0211, lsl #16",
     "mov x5, #0x58",
@@ -304,7 +293,6 @@ core::arch::global_asm!(
     "0: wfi",
     "b 0b",
     ".balign 128",
-
     // Entry 14: FIQ
     "movz x4, #0x0211, lsl #16",
     "mov x5, #0x58",
@@ -312,7 +300,6 @@ core::arch::global_asm!(
     "0: wfi",
     "b 0b",
     ".balign 128",
-
     // Entry 15: SError
     "movz x4, #0x0211, lsl #16",
     "mov x5, #0x58",

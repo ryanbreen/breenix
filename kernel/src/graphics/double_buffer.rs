@@ -374,9 +374,16 @@ impl DoubleBufferedFrameBuffer {
 
     /// Mark an entire rectangular region as dirty in one operation.
     /// Much more efficient than calling mark_region_dirty() for each row.
-    pub fn mark_region_dirty_rect(&mut self, y_start: usize, y_end: usize, x_start: usize, x_end: usize) {
+    pub fn mark_region_dirty_rect(
+        &mut self,
+        y_start: usize,
+        y_end: usize,
+        x_start: usize,
+        x_end: usize,
+    ) {
         self.dirty = true;
-        self.dirty_regions.mark_rect_dirty(y_start, y_end, x_start, x_end);
+        self.dirty_regions
+            .mark_rect_dirty(y_start, y_end, x_start, x_end);
     }
 
     /// Flush only if the buffer has been modified since the last flush.

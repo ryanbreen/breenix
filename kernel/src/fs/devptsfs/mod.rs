@@ -55,9 +55,7 @@ struct DevptsState {
 
 impl DevptsState {
     const fn new() -> Self {
-        Self {
-            initialized: false,
-        }
+        Self { initialized: false }
     }
 }
 

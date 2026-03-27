@@ -4,8 +4,8 @@
 //! Each process has its own file descriptor table that maps small integers
 //! to underlying file objects (pipes, stdio, sockets, etc.).
 
-use alloc::sync::Arc;
 use crate::memory::slab::{SlabBox, FD_TABLE_SLAB};
+use alloc::sync::Arc;
 use spin::Mutex;
 
 /// Maximum number of file descriptors per process
@@ -63,7 +63,7 @@ pub struct RegularFile {
 pub struct DirectoryFile {
     pub inode_num: u64,
     pub mount_id: usize,
-    pub position: u64,  // Current offset in directory entries
+    pub position: u64, // Current offset in directory entries
 }
 
 /// Types of file descriptors
@@ -130,9 +130,15 @@ pub enum FdKind {
     /// FIFO (named pipe) write end - path is stored for cleanup on close
     FifoWrite(alloc::string::String, Arc<Mutex<super::pipe::PipeBuffer>>),
     /// Procfs virtual file (content generated at open time)
-    ProcfsFile { content: alloc::string::String, position: usize },
+    ProcfsFile {
+        content: alloc::string::String,
+        position: usize,
+    },
     /// Procfs directory listing (for /proc and /proc/[pid])
-    ProcfsDirectory { path: alloc::string::String, position: u64 },
+    ProcfsDirectory {
+        path: alloc::string::String,
+        position: u64,
+    },
     /// Epoll instance file descriptor
     Epoll(u64),
 }
@@ -168,8 +174,12 @@ impl core::fmt::Debug for FdKind {
             }
             FdKind::FifoRead(path, _) => write!(f, "FifoRead({})", path),
             FdKind::FifoWrite(path, _) => write!(f, "FifoWrite({})", path),
-            FdKind::ProcfsFile { content, position } => write!(f, "ProcfsFile(len={}, pos={})", content.len(), position),
-            FdKind::ProcfsDirectory { path, position } => write!(f, "ProcfsDirectory(path={}, pos={})", path, position),
+            FdKind::ProcfsFile { content, position } => {
+                write!(f, "ProcfsFile(len={}, pos={})", content.len(), position)
+            }
+            FdKind::ProcfsDirectory { path, position } => {
+                write!(f, "ProcfsDirectory(path={}, pos={})", path, position)
+            }
             FdKind::Epoll(id) => write!(f, "Epoll({})", id),
         }
     }
@@ -261,7 +271,8 @@ impl Clone for FdTable {
                         // Increment PTY master reference count for the clone
                         // No logging - this runs during fork()
                         if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                            pair.master_refcount.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+                            pair.master_refcount
+                                .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
                         }
                     }
                     FdKind::PtySlave(pty_num) => {
@@ -295,7 +306,9 @@ impl FdTable {
             // Slab returns zeroed memory; write None into each slot
             let arr = raw as *mut [Option<FileDescriptor>; MAX_FDS];
             for i in 0..MAX_FDS {
-                unsafe { core::ptr::write(&mut (*arr)[i], None); }
+                unsafe {
+                    core::ptr::write(&mut (*arr)[i], None);
+                }
             }
             unsafe { SlabBox::from_slab(arr, &FD_TABLE_SLAB) }
         } else {
@@ -420,7 +433,9 @@ impl FdTable {
                 }
                 FdKind::PtyMaster(pty_num) => {
                     if let Some(pair) = crate::tty::pty::get(pty_num) {
-                        let old_count = pair.master_refcount.fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+                        let old_count = pair
+                            .master_refcount
+                            .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
                         if old_count == 1 {
                             crate::tty::pty::release(pty_num);
                         }
@@ -453,7 +468,8 @@ impl FdTable {
             }
             FdKind::PtyMaster(pty_num) => {
                 if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                    pair.master_refcount.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+                    pair.master_refcount
+                        .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
                 }
             }
             FdKind::PtySlave(pty_num) => {
@@ -477,7 +493,12 @@ impl FdTable {
     /// Duplicate a file descriptor to slot >= min_fd
     /// Used for fcntl F_DUPFD and F_DUPFD_CLOEXEC
     /// Note: POSIX says dup/F_DUPFD clear FD_CLOEXEC on the new fd
-    pub fn dup_at_least(&mut self, old_fd: i32, min_fd: i32, set_cloexec: bool) -> Result<i32, i32> {
+    pub fn dup_at_least(
+        &mut self,
+        old_fd: i32,
+        min_fd: i32,
+        set_cloexec: bool,
+    ) -> Result<i32, i32> {
         if old_fd < 0 || old_fd as usize >= MAX_FDS {
             return Err(9); // EBADF
         }
@@ -508,7 +529,8 @@ impl FdTable {
             }
             FdKind::PtyMaster(pty_num) => {
                 if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                    pair.master_refcount.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+                    pair.master_refcount
+                        .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
                 }
             }
             FdKind::PtySlave(pty_num) => {
@@ -541,7 +563,9 @@ impl FdTable {
             }
             FdKind::PtyMaster(pty_num) => {
                 if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                    let old = pair.master_refcount.fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+                    let old = pair
+                        .master_refcount
+                        .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
                     if old == 1 {
                         crate::tty::pty::release(*pty_num);
                     }
@@ -610,7 +634,7 @@ impl FdTable {
     /// Only modifies O_NONBLOCK and O_APPEND; other flags are ignored
     pub fn set_status_flags(&mut self, fd: i32, flags: u32) -> Result<(), i32> {
         let fd_entry = self.get_mut(fd).ok_or(9)?; // EBADF
-        // Only allow setting O_NONBLOCK and O_APPEND via F_SETFL
+                                                   // Only allow setting O_NONBLOCK and O_APPEND via F_SETFL
         let settable = status_flags::O_NONBLOCK | status_flags::O_APPEND;
         fd_entry.status_flags = (fd_entry.status_flags & !settable) | (flags & settable);
         Ok(())
@@ -650,7 +674,11 @@ impl Drop for FdTable {
                     FdKind::TcpListener(port) => {
                         // Decrement ref count, remove only if it reaches 0
                         crate::net::tcp::tcp_listener_ref_dec(port);
-                        log::debug!("FdTable::drop() - released TCP listener fd {} on port {}", i, port);
+                        log::debug!(
+                            "FdTable::drop() - released TCP listener fd {} on port {}",
+                            i,
+                            port
+                        );
                     }
                     FdKind::TcpConnection(conn_id) => {
                         // Close the TCP connection
@@ -683,12 +711,22 @@ impl Drop for FdTable {
                     FdKind::PtyMaster(pty_num) => {
                         // PTY master cleanup - decrement refcount, only release when all masters closed
                         if let Some(pair) = crate::tty::pty::get(pty_num) {
-                            let old_count = pair.master_refcount.fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
-                            log::debug!("FdTable::drop() - PTY master fd {} (pty {}) refcount {} -> {}",
-                                i, pty_num, old_count, old_count - 1);
+                            let old_count = pair
+                                .master_refcount
+                                .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+                            log::debug!(
+                                "FdTable::drop() - PTY master fd {} (pty {}) refcount {} -> {}",
+                                i,
+                                pty_num,
+                                old_count,
+                                old_count - 1
+                            );
                             if old_count == 1 {
                                 crate::tty::pty::release(pty_num);
-                                log::debug!("FdTable::drop() - released PTY {} (last master closed)", pty_num);
+                                log::debug!(
+                                    "FdTable::drop() - released PTY {} (last master closed)",
+                                    pty_num
+                                );
                             }
                         }
                     }

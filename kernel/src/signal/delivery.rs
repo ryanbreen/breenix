@@ -80,24 +80,29 @@ pub fn deliver_pending_signals(
                 // Default action may terminate/stop the process
                 match deliver_default_action(process, sig) {
                     DeliverResult::Delivered => return SignalDeliveryResult::Delivered,
-                    DeliverResult::Terminated(notification) => return SignalDeliveryResult::Terminated(notification),
+                    DeliverResult::Terminated(notification) => {
+                        return SignalDeliveryResult::Terminated(notification)
+                    }
                     DeliverResult::Ignored => {
                         // Continue loop to check for more signals
                     }
                 }
             }
             SIG_IGN => {
-                log::debug!(
-                    "Signal {} ignored by process {}",
-                    sig,
-                    process.id.as_u64()
-                );
+                log::debug!("Signal {} ignored by process {}", sig, process.id.as_u64());
                 // Signal ignored - continue loop to check for more signals
             }
             handler_addr => {
                 // User-defined handler - set up signal frame and return
                 // Only one user handler can be delivered at a time
-                if deliver_to_user_handler_x86_64(process, interrupt_frame, saved_regs, sig, handler_addr, &action) {
+                if deliver_to_user_handler_x86_64(
+                    process,
+                    interrupt_frame,
+                    saved_regs,
+                    sig,
+                    handler_addr,
+                    &action,
+                ) {
                     return SignalDeliveryResult::Delivered;
                 }
                 return SignalDeliveryResult::NoAction;
@@ -157,24 +162,29 @@ pub fn deliver_pending_signals(
                 // Default action may terminate/stop the process
                 match deliver_default_action(process, sig) {
                     DeliverResult::Delivered => return SignalDeliveryResult::Delivered,
-                    DeliverResult::Terminated(notification) => return SignalDeliveryResult::Terminated(notification),
+                    DeliverResult::Terminated(notification) => {
+                        return SignalDeliveryResult::Terminated(notification)
+                    }
                     DeliverResult::Ignored => {
                         // Continue loop to check for more signals
                     }
                 }
             }
             SIG_IGN => {
-                log::debug!(
-                    "Signal {} ignored by process {}",
-                    sig,
-                    process.id.as_u64()
-                );
+                log::debug!("Signal {} ignored by process {}", sig, process.id.as_u64());
                 // Signal ignored - continue loop to check for more signals
             }
             handler_addr => {
                 // User-defined handler - set up signal frame and return
                 // Only one user handler can be delivered at a time
-                if deliver_to_user_handler_aarch64(process, exception_frame, saved_regs, sig, handler_addr, &action) {
+                if deliver_to_user_handler_aarch64(
+                    process,
+                    exception_frame,
+                    saved_regs,
+                    sig,
+                    handler_addr,
+                    &action,
+                ) {
                     return SignalDeliveryResult::Delivered;
                 }
                 return SignalDeliveryResult::NoAction;
@@ -360,10 +370,7 @@ fn deliver_to_user_handler_x86_64(
         // Use the restorer function provided by the application/libc
         // Only allocate space for the signal frame (no trampoline needed)
         let frame_rsp = (user_rsp - frame_size) & !0xF; // 16-byte align
-        log::debug!(
-            "Using SA_RESTORER: restorer={:#x}",
-            action.restorer
-        );
+        log::debug!("Using SA_RESTORER: restorer={:#x}", action.restorer);
         (frame_rsp, action.restorer)
     } else {
         // Fall back to writing trampoline on the stack
@@ -399,7 +406,7 @@ fn deliver_to_user_handler_x86_64(
 
         // Signal info
         signal: sig as u64,
-        siginfo_ptr: 0, // Not implemented yet
+        siginfo_ptr: 0,  // Not implemented yet
         ucontext_ptr: 0, // Not implemented yet
 
         // Save current execution state
@@ -450,7 +457,9 @@ fn deliver_to_user_handler_x86_64(
         Err(_) => {
             log::warn!(
                 "Signal {}: non-canonical handler address {:#x} for process {}",
-                sig, handler_addr, process.id.as_u64()
+                sig,
+                handler_addr,
+                process.id.as_u64()
             );
             return false;
         }
@@ -460,7 +469,9 @@ fn deliver_to_user_handler_x86_64(
         Err(_) => {
             log::warn!(
                 "Signal {}: non-canonical stack address {:#x} for process {}",
-                sig, frame_rsp, process.id.as_u64()
+                sig,
+                frame_rsp,
+                process.id.as_u64()
             );
             return false;
         }
@@ -476,9 +487,9 @@ fn deliver_to_user_handler_x86_64(
 
     // Set up arguments for signal handler
     // void handler(int signum, siginfo_t *info, void *ucontext)
-    saved_regs.rdi = sig as u64;           // First argument: signal number
-    saved_regs.rsi = 0;                     // Second argument: siginfo_t* (not implemented)
-    saved_regs.rdx = 0;                     // Third argument: ucontext_t* (not implemented)
+    saved_regs.rdi = sig as u64; // First argument: signal number
+    saved_regs.rsi = 0; // Second argument: siginfo_t* (not implemented)
+    saved_regs.rdx = 0; // Third argument: ucontext_t* (not implemented)
 
     if use_alt_stack {
         log::info!(
@@ -565,10 +576,7 @@ fn deliver_to_user_handler_aarch64(
         // Use the restorer function provided by the application/libc
         // Only allocate space for the signal frame (no trampoline needed)
         let frame_sp = (user_sp - frame_size) & !0xF; // 16-byte align
-        log::debug!(
-            "Using SA_RESTORER: restorer={:#x}",
-            action.restorer
-        );
+        log::debug!("Using SA_RESTORER: restorer={:#x}", action.restorer);
         (frame_sp, action.restorer)
     } else {
         // Fall back to writing trampoline on the stack
@@ -595,14 +603,37 @@ fn deliver_to_user_handler_aarch64(
     // Build signal frame with saved context
     // Copy all X registers to the saved_x array
     let saved_x: [u64; 31] = [
-        saved_regs.x0, saved_regs.x1, saved_regs.x2, saved_regs.x3,
-        saved_regs.x4, saved_regs.x5, saved_regs.x6, saved_regs.x7,
-        saved_regs.x8, saved_regs.x9, saved_regs.x10, saved_regs.x11,
-        saved_regs.x12, saved_regs.x13, saved_regs.x14, saved_regs.x15,
-        saved_regs.x16, saved_regs.x17, saved_regs.x18, saved_regs.x19,
-        saved_regs.x20, saved_regs.x21, saved_regs.x22, saved_regs.x23,
-        saved_regs.x24, saved_regs.x25, saved_regs.x26, saved_regs.x27,
-        saved_regs.x28, saved_regs.x29, saved_regs.x30,
+        saved_regs.x0,
+        saved_regs.x1,
+        saved_regs.x2,
+        saved_regs.x3,
+        saved_regs.x4,
+        saved_regs.x5,
+        saved_regs.x6,
+        saved_regs.x7,
+        saved_regs.x8,
+        saved_regs.x9,
+        saved_regs.x10,
+        saved_regs.x11,
+        saved_regs.x12,
+        saved_regs.x13,
+        saved_regs.x14,
+        saved_regs.x15,
+        saved_regs.x16,
+        saved_regs.x17,
+        saved_regs.x18,
+        saved_regs.x19,
+        saved_regs.x20,
+        saved_regs.x21,
+        saved_regs.x22,
+        saved_regs.x23,
+        saved_regs.x24,
+        saved_regs.x25,
+        saved_regs.x26,
+        saved_regs.x27,
+        saved_regs.x28,
+        saved_regs.x29,
+        saved_regs.x30,
     ];
 
     let signal_frame = SignalFrame {
@@ -614,13 +645,13 @@ fn deliver_to_user_handler_aarch64(
 
         // Signal info
         signal: sig as u64,
-        siginfo_ptr: 0, // Not implemented yet
+        siginfo_ptr: 0,  // Not implemented yet
         ucontext_ptr: 0, // Not implemented yet
 
         // Save current execution state (ARM64 specific)
         saved_pc: saved_regs.elr,      // Program counter (ELR_EL1)
-        saved_sp: original_sp,           // Stack pointer
-        saved_pstate: saved_regs.spsr,  // Processor state (SPSR_EL1)
+        saved_sp: original_sp,         // Stack pointer
+        saved_pstate: saved_regs.spsr, // Processor state (SPSR_EL1)
 
         // Save all general-purpose registers (X0-X30)
         saved_x,
@@ -660,9 +691,9 @@ fn deliver_to_user_handler_aarch64(
 
     // Set up arguments for signal handler (ARM64 ABI: X0-X2)
     // void handler(int signum, siginfo_t *info, void *ucontext)
-    exception_frame.x0 = sig as u64;        // First argument: signal number
-    exception_frame.x1 = 0;                  // Second argument: siginfo_t* (not implemented)
-    exception_frame.x2 = 0;                  // Third argument: ucontext_t* (not implemented)
+    exception_frame.x0 = sig as u64; // First argument: signal number
+    exception_frame.x1 = 0; // Second argument: siginfo_t* (not implemented)
+    exception_frame.x2 = 0; // Third argument: ucontext_t* (not implemented)
     saved_regs.x0 = sig as u64;
     saved_regs.x1 = 0;
     saved_regs.x2 = 0;

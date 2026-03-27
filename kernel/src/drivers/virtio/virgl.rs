@@ -240,7 +240,14 @@ impl CommandBuffer {
     }
 
     /// Create a surface object wrapping a resource.
-    pub fn create_surface(&mut self, handle: u32, res_handle: u32, fmt: u32, level: u32, layers: u32) {
+    pub fn create_surface(
+        &mut self,
+        handle: u32,
+        res_handle: u32,
+        fmt: u32,
+        level: u32,
+        layers: u32,
+    ) {
         self.push(Self::cmd0(ccmd::CREATE_OBJECT, obj::SURFACE, 5));
         self.push(handle);
         self.push(res_handle);
@@ -256,9 +263,9 @@ impl CommandBuffer {
         self.push(handle);
         self.push(0x00000004); // S0: dither enabled (bit 2) — matches Mesa
         self.push(0); // S1: logicop_func = 0
-        // S2[0]: colormask=0xF (write RGBA), blend disabled
-        // VIRGL_OBJ_BLEND_S2_RT_COLORMASK(x) = ((x) & 0xf) << 27 in virgl_hw.h
-        // Mesa sends 0x78000000 — NOT 0xF0000000 (that was a 1-bit shift error)
+                      // S2[0]: colormask=0xF (write RGBA), blend disabled
+                      // VIRGL_OBJ_BLEND_S2_RT_COLORMASK(x) = ((x) & 0xf) << 27 in virgl_hw.h
+                      // Mesa sends 0x78000000 — NOT 0xF0000000 (that was a 1-bit shift error)
         self.push(0xF << 27);
         // S2[1..7]: unused render targets
         for _ in 0..7 {
@@ -283,7 +290,7 @@ impl CommandBuffer {
         self.push(Self::cmd0(ccmd::CREATE_OBJECT, obj::BLEND, 11));
         self.push(handle);
         self.push(0x00000004); // S0: dither enabled
-        self.push(0);          // S1: logicop_func = 0
+        self.push(0); // S1: logicop_func = 0
         self.push(0x7C42_2631); // S2[0]: alpha blend enabled
         for _ in 0..7 {
             self.push(0);
@@ -341,13 +348,23 @@ impl CommandBuffer {
     /// `num_tokens` must be nonzero (Mesa uses the actual TGSI token count).
     /// Parallels' VirGL silently rejects the entire batch if num_tokens=0.
     /// Use 300 as a safe default if the actual token count is unknown.
-    pub fn create_shader(&mut self, handle: u32, shader_type: u32, num_tokens: u32, tgsi_text: &[u8]) {
+    pub fn create_shader(
+        &mut self,
+        handle: u32,
+        shader_type: u32,
+        num_tokens: u32,
+        tgsi_text: &[u8],
+    ) {
         let text_len = tgsi_text.len() + 1; // include null terminator
         let text_dwords = (text_len + 3) / 4;
         // Header DWORDs: handle, type, offset, num_tokens, num_so_outputs = 5
         let payload_len = 5 + text_dwords;
 
-        self.push(Self::cmd0(ccmd::CREATE_OBJECT, obj::SHADER, payload_len as u16));
+        self.push(Self::cmd0(
+            ccmd::CREATE_OBJECT,
+            obj::SHADER,
+            payload_len as u16,
+        ));
         self.push(handle);
         self.push(shader_type);
         // OFFSET field: shader byte length with bit 31 CLEAR = first/only chunk.
@@ -380,7 +397,11 @@ impl CommandBuffer {
     /// Set framebuffer state (nr_cbufs color buffer surface handles, optional depth surface).
     pub fn set_framebuffer_state(&mut self, zsurf_handle: u32, cbuf_handles: &[u32]) {
         let nr_cbufs = cbuf_handles.len() as u32;
-        self.push(Self::cmd0(ccmd::SET_FRAMEBUFFER_STATE, 0, (nr_cbufs + 2) as u16));
+        self.push(Self::cmd0(
+            ccmd::SET_FRAMEBUFFER_STATE,
+            0,
+            (nr_cbufs + 2) as u16,
+        ));
         self.push(nr_cbufs);
         self.push(zsurf_handle);
         for &h in cbuf_handles {
@@ -392,12 +413,12 @@ impl CommandBuffer {
     pub fn set_viewport(&mut self, width: f32, height: f32) {
         self.push(Self::cmd0(ccmd::SET_VIEWPORT_STATE, 0, 7));
         self.push(0); // start_slot = 0
-        self.push(f32_bits(width / 2.0));     // scale_x
-        self.push(f32_bits(-height / 2.0));    // scale_y (negative for GL convention)
-        self.push(f32_bits(0.5));              // scale_z
-        self.push(f32_bits(width / 2.0));      // translate_x
-        self.push(f32_bits(height / 2.0));     // translate_y
-        self.push(f32_bits(0.5));              // translate_z
+        self.push(f32_bits(width / 2.0)); // scale_x
+        self.push(f32_bits(-height / 2.0)); // scale_y (negative for GL convention)
+        self.push(f32_bits(0.5)); // scale_z
+        self.push(f32_bits(width / 2.0)); // translate_x
+        self.push(f32_bits(height / 2.0)); // translate_y
+        self.push(f32_bits(0.5)); // translate_z
     }
 
     /// Set scissor state for one viewport slot.
@@ -444,7 +465,11 @@ impl CommandBuffer {
     /// Each element: (src_offset, instance_divisor, vertex_buffer_index, src_format)
     pub fn create_vertex_elements(&mut self, handle: u32, elements: &[(u32, u32, u32, u32)]) {
         let len = 4 * elements.len() + 1;
-        self.push(Self::cmd0(ccmd::CREATE_OBJECT, obj::VERTEX_ELEMENTS, len as u16));
+        self.push(Self::cmd0(
+            ccmd::CREATE_OBJECT,
+            obj::VERTEX_ELEMENTS,
+            len as u16,
+        ));
         self.push(handle);
         for &(offset, divisor, vb_index, fmt) in elements {
             self.push(offset);
@@ -468,12 +493,7 @@ impl CommandBuffer {
     }
 
     /// Inline write data into a resource (upload vertex/index data).
-    pub fn resource_inline_write(
-        &mut self,
-        res_handle: u32,
-        x: u32, w: u32,
-        data: &[u32],
-    ) {
+    pub fn resource_inline_write(&mut self, res_handle: u32, x: u32, w: u32, data: &[u32]) {
         let len = 11 + data.len();
         self.push(Self::cmd0(ccmd::RESOURCE_INLINE_WRITE, 0, len as u16));
         self.push(res_handle);
@@ -494,47 +514,44 @@ impl CommandBuffer {
     pub fn resource_inline_write_2d(
         &mut self,
         res_handle: u32,
-        x: u32, y: u32, w: u32, h: u32,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
         stride: u32,
         data: &[u32],
     ) {
         let len = 11 + data.len();
         self.push(Self::cmd0(ccmd::RESOURCE_INLINE_WRITE, 0, len as u16));
         self.push(res_handle);
-        self.push(0);       // level
-        self.push(0);       // usage
-        self.push(stride);  // stride in bytes
-        self.push(0);       // layer_stride
-        self.push(x);       // x in pixels
-        self.push(y);       // y in pixels
-        self.push(0);       // z
-        self.push(w);       // width in pixels
-        self.push(h);       // height in pixels
-        self.push(1);       // depth
+        self.push(0); // level
+        self.push(0); // usage
+        self.push(stride); // stride in bytes
+        self.push(0); // layer_stride
+        self.push(x); // x in pixels
+        self.push(y); // y in pixels
+        self.push(0); // z
+        self.push(w); // width in pixels
+        self.push(h); // height in pixels
+        self.push(1); // depth
         self.push_slice(data);
     }
 
     /// Draw primitives.
-    pub fn draw_vbo(
-        &mut self,
-        start: u32,
-        count: u32,
-        mode: u32,
-        max_index: u32,
-    ) {
+    pub fn draw_vbo(&mut self, start: u32, count: u32, mode: u32, max_index: u32) {
         self.push(Self::cmd0(ccmd::DRAW_VBO, 0, 12));
-        self.push(start);           // offset 1: START
-        self.push(count);           // offset 2: COUNT
-        self.push(mode);            // offset 3: MODE
-        self.push(0);               // offset 4: INDEXED = false
-        self.push(1);               // offset 5: INSTANCE_COUNT
-        self.push(0);               // offset 6: INDEX_BIAS
-        self.push(0);               // offset 7: START_INSTANCE
-        self.push(0);               // offset 8: PRIMITIVE_RESTART = disabled
-        self.push(0);               // offset 9: RESTART_INDEX
-        self.push(0);               // offset 10: MIN_INDEX
-        self.push(max_index);       // offset 11: MAX_INDEX
-        self.push(0);               // offset 12: COUNT_FROM_SO
+        self.push(start); // offset 1: START
+        self.push(count); // offset 2: COUNT
+        self.push(mode); // offset 3: MODE
+        self.push(0); // offset 4: INDEXED = false
+        self.push(1); // offset 5: INSTANCE_COUNT
+        self.push(0); // offset 6: INDEX_BIAS
+        self.push(0); // offset 7: START_INSTANCE
+        self.push(0); // offset 8: PRIMITIVE_RESTART = disabled
+        self.push(0); // offset 9: RESTART_INDEX
+        self.push(0); // offset 10: MIN_INDEX
+        self.push(max_index); // offset 11: MAX_INDEX
+        self.push(0); // offset 12: COUNT_FROM_SO
     }
 
     // =========================================================================
@@ -629,7 +646,12 @@ impl CommandBuffer {
     ///
     /// VirGL protocol: BIND_SAMPLER_STATES with DWORDs:
     /// `[shader_type, start_slot, state_handle0, state_handle1, ...]`
-    pub fn bind_sampler_states(&mut self, shader_type: u32, start_slot: u32, state_handles: &[u32]) {
+    pub fn bind_sampler_states(
+        &mut self,
+        shader_type: u32,
+        start_slot: u32,
+        state_handles: &[u32],
+    ) {
         let len = 2 + state_handles.len();
         self.push(Self::cmd0(ccmd::BIND_SAMPLER_STATES, 0, len as u16));
         self.push(shader_type);
@@ -649,8 +671,18 @@ impl CommandBuffer {
     /// entirely on the host — no guest DMA needed.
     pub fn blit(
         &mut self,
-        src_res: u32, src_fmt: u32, src_x: u32, src_y: u32, src_w: u32, src_h: u32,
-        dst_res: u32, dst_fmt: u32, dst_x: u32, dst_y: u32, dst_w: u32, dst_h: u32,
+        src_res: u32,
+        src_fmt: u32,
+        src_x: u32,
+        src_y: u32,
+        src_w: u32,
+        src_h: u32,
+        dst_res: u32,
+        dst_fmt: u32,
+        dst_x: u32,
+        dst_y: u32,
+        dst_w: u32,
+        dst_h: u32,
     ) {
         self.push(Self::cmd0(ccmd::BLIT, 0, 21));
         // S0: mask=0xF (RGBA), filter=0 (NEAREST), no scissor
@@ -660,26 +692,26 @@ impl CommandBuffer {
         // Scissor min/max (unused, set to 0)
         self.push(0); // scissor minx/miny
         self.push(0); // scissor maxx/maxy
-        // Destination
-        self.push(dst_res);  // DST_RES_HANDLE
-        self.push(0);        // DST_LEVEL
-        self.push(dst_fmt);  // DST_FORMAT
-        self.push(dst_x);    // DST_X
-        self.push(dst_y);    // DST_Y
-        self.push(0);        // DST_Z
-        self.push(dst_w);    // DST_W
-        self.push(dst_h);    // DST_H
-        self.push(1);        // DST_D
-        // Source
-        self.push(src_res);  // SRC_RES_HANDLE
-        self.push(0);        // SRC_LEVEL
-        self.push(src_fmt);  // SRC_FORMAT
-        self.push(src_x);    // SRC_X
-        self.push(src_y);    // SRC_Y
-        self.push(0);        // SRC_Z
-        self.push(src_w);    // SRC_W
-        self.push(src_h);    // SRC_H
-        self.push(1);        // SRC_D
+                      // Destination
+        self.push(dst_res); // DST_RES_HANDLE
+        self.push(0); // DST_LEVEL
+        self.push(dst_fmt); // DST_FORMAT
+        self.push(dst_x); // DST_X
+        self.push(dst_y); // DST_Y
+        self.push(0); // DST_Z
+        self.push(dst_w); // DST_W
+        self.push(dst_h); // DST_H
+        self.push(1); // DST_D
+                      // Source
+        self.push(src_res); // SRC_RES_HANDLE
+        self.push(0); // SRC_LEVEL
+        self.push(src_fmt); // SRC_FORMAT
+        self.push(src_x); // SRC_X
+        self.push(src_y); // SRC_Y
+        self.push(0); // SRC_Z
+        self.push(src_w); // SRC_W
+        self.push(src_h); // SRC_H
+        self.push(1); // SRC_D
     }
 }
 

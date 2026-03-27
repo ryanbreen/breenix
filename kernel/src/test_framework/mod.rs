@@ -19,22 +19,22 @@
 //! real-time progress bars to the framebuffer if available.
 
 #[cfg(feature = "boot_tests")]
-pub mod registry;
+pub mod display;
 #[cfg(feature = "boot_tests")]
 pub mod executor;
 #[cfg(feature = "boot_tests")]
 pub mod progress;
 #[cfg(feature = "boot_tests")]
-pub mod display;
+pub mod registry;
 
 #[cfg(feature = "boot_tests")]
-pub use executor::{run_all_tests, advance_to_stage, advance_stage_marker_only, current_stage};
+pub use display::{init as init_display, is_ready as display_ready, render_progress};
 #[cfg(feature = "boot_tests")]
-pub use registry::TestStage;
+pub use executor::{advance_stage_marker_only, advance_to_stage, current_stage, run_all_tests};
 #[cfg(feature = "boot_tests")]
 pub use progress::get_overall_progress;
 #[cfg(feature = "boot_tests")]
-pub use display::{init as init_display, render_progress, is_ready as display_ready};
+pub use registry::TestStage;
 
 // BTRT (Boot Test Result Table) modules
 #[cfg(feature = "btrt")]

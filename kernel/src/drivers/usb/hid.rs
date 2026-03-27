@@ -56,8 +56,10 @@ static MOUSE_WHEEL: AtomicI32 = AtomicI32::new(0);
 /// reporting buttons=0 must not cancel the other's press. We track each endpoint's
 /// buttons separately and OR them: MOUSE_BUTTONS = EP0_BUTTONS | EP1_BUTTONS.
 static EP_BUTTONS: [AtomicU32; 4] = [
-    AtomicU32::new(0), AtomicU32::new(0),
-    AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
 ];
 
 /// Latched button presses: bits set when a press transition (0→1) is detected.
@@ -74,7 +76,6 @@ static IS_ABSOLUTE_TABLET: AtomicBool = AtomicBool::new(false);
 /// Detected by observing byte[0]==0x00 (a report ID is never 0 in HID).
 static TABLET_NO_REPORT_ID: AtomicBool = AtomicBool::new(false);
 
-
 // =============================================================================
 // USB HID Usage ID → Linux Keycode mapping
 // =============================================================================
@@ -89,75 +90,75 @@ static TABLET_NO_REPORT_ID: AtomicBool = AtomicBool::new(false);
 fn hid_usage_to_linux_keycode(usage: u8) -> u16 {
     match usage {
         // Letters: USB 0x04-0x1D → Linux keycodes for QWERTY layout
-        0x04 => 30,  // a
-        0x05 => 48,  // b
-        0x06 => 46,  // c
-        0x07 => 32,  // d
-        0x08 => 18,  // e
-        0x09 => 33,  // f
-        0x0A => 34,  // g
-        0x0B => 35,  // h
-        0x0C => 23,  // i
-        0x0D => 36,  // j
-        0x0E => 37,  // k
-        0x0F => 38,  // l
-        0x10 => 50,  // m
-        0x11 => 49,  // n
-        0x12 => 24,  // o
-        0x13 => 25,  // p
-        0x14 => 16,  // q
-        0x15 => 19,  // r
-        0x16 => 31,  // s
-        0x17 => 20,  // t
-        0x18 => 22,  // u
-        0x19 => 47,  // v
-        0x1A => 17,  // w
-        0x1B => 45,  // x
-        0x1C => 21,  // y
-        0x1D => 44,  // z
+        0x04 => 30, // a
+        0x05 => 48, // b
+        0x06 => 46, // c
+        0x07 => 32, // d
+        0x08 => 18, // e
+        0x09 => 33, // f
+        0x0A => 34, // g
+        0x0B => 35, // h
+        0x0C => 23, // i
+        0x0D => 36, // j
+        0x0E => 37, // k
+        0x0F => 38, // l
+        0x10 => 50, // m
+        0x11 => 49, // n
+        0x12 => 24, // o
+        0x13 => 25, // p
+        0x14 => 16, // q
+        0x15 => 19, // r
+        0x16 => 31, // s
+        0x17 => 20, // t
+        0x18 => 22, // u
+        0x19 => 47, // v
+        0x1A => 17, // w
+        0x1B => 45, // x
+        0x1C => 21, // y
+        0x1D => 44, // z
 
         // Numbers: USB 0x1E-0x27 → Linux keycodes 2-11
-        0x1E => 2,   // 1
-        0x1F => 3,   // 2
-        0x20 => 4,   // 3
-        0x21 => 5,   // 4
-        0x22 => 6,   // 5
-        0x23 => 7,   // 6
-        0x24 => 8,   // 7
-        0x25 => 9,   // 8
-        0x26 => 10,  // 9
-        0x27 => 11,  // 0
+        0x1E => 2,  // 1
+        0x1F => 3,  // 2
+        0x20 => 4,  // 3
+        0x21 => 5,  // 4
+        0x22 => 6,  // 5
+        0x23 => 7,  // 6
+        0x24 => 8,  // 7
+        0x25 => 9,  // 8
+        0x26 => 10, // 9
+        0x27 => 11, // 0
 
         // Special keys
-        0x28 => 28,  // Enter
-        0x29 => 1,   // Escape
-        0x2A => 14,  // Backspace
-        0x2B => 15,  // Tab
-        0x2C => 57,  // Space
-        0x2D => 12,  // - (minus)
-        0x2E => 13,  // = (equals)
-        0x2F => 26,  // [ (left bracket)
-        0x30 => 27,  // ] (right bracket)
-        0x31 => 43,  // \ (backslash)
-        0x33 => 39,  // ; (semicolon)
-        0x34 => 40,  // ' (apostrophe)
-        0x35 => 41,  // ` (grave accent)
-        0x36 => 51,  // , (comma)
-        0x37 => 52,  // . (period)
-        0x38 => 53,  // / (slash)
-        0x39 => 58,  // Caps Lock
+        0x28 => 28, // Enter
+        0x29 => 1,  // Escape
+        0x2A => 14, // Backspace
+        0x2B => 15, // Tab
+        0x2C => 57, // Space
+        0x2D => 12, // - (minus)
+        0x2E => 13, // = (equals)
+        0x2F => 26, // [ (left bracket)
+        0x30 => 27, // ] (right bracket)
+        0x31 => 43, // \ (backslash)
+        0x33 => 39, // ; (semicolon)
+        0x34 => 40, // ' (apostrophe)
+        0x35 => 41, // ` (grave accent)
+        0x36 => 51, // , (comma)
+        0x37 => 52, // . (period)
+        0x38 => 53, // / (slash)
+        0x39 => 58, // Caps Lock
 
         // Function keys
-        0x3A => 59,  // F1
-        0x3B => 60,  // F2
-        0x3C => 61,  // F3
-        0x3D => 62,  // F4
-        0x3E => 63,  // F5
-        0x3F => 64,  // F6
-        0x40 => 65,  // F7
-        0x41 => 66,  // F8
-        0x42 => 67,  // F9
-        0x43 => 68,  // F10
+        0x3A => 59, // F1
+        0x3B => 60, // F2
+        0x3C => 61, // F3
+        0x3D => 62, // F4
+        0x3E => 63, // F5
+        0x3F => 64, // F6
+        0x40 => 65, // F7
+        0x41 => 66, // F8
+        0x42 => 67, // F9
+        0x43 => 68, // F10
 
         // Navigation keys
         0x4F => 106, // Right Arrow
@@ -193,8 +194,7 @@ pub fn process_keyboard_report(report: &[u8]) {
 
     // Diagnostic: track report contents for heartbeat visibility
     let report_u64 = u64::from_le_bytes([
-        report[0], report[1], report[2], report[3],
-        report[4], report[5], report[6], report[7],
+        report[0], report[1], report[2], report[3], report[4], report[5], report[6], report[7],
     ]);
     LAST_KBD_REPORT_U64.store(report_u64, Ordering::Relaxed);
     if report_u64 != 0 {
@@ -210,16 +210,20 @@ pub fn process_keyboard_report(report: &[u8]) {
     // Bit 6: Right Alt,  Bit 7: Right GUI
     // Map GUI (Command on macOS) to ctrl so Command+T/W/C work in terminal
     let shift = (modifiers & 0x02) != 0 || (modifiers & 0x20) != 0;
-    let ctrl = (modifiers & 0x01) != 0 || (modifiers & 0x10) != 0
-             || (modifiers & 0x08) != 0 || (modifiers & 0x80) != 0;
+    let ctrl = (modifiers & 0x01) != 0
+        || (modifiers & 0x10) != 0
+        || (modifiers & 0x08) != 0
+        || (modifiers & 0x80) != 0;
     SHIFT_PRESSED.store(shift, Ordering::Relaxed);
     CTRL_PRESSED.store(ctrl, Ordering::Relaxed);
 
     // Track Super/GUI key state for userspace hotkey detection.
     // Parallels remaps Mac Command to Ctrl at USB HID level, so we treat
     // Ctrl (bits 0/4) and GUI (bits 3/7) as Super for hotkey purposes.
-    let super_now = (modifiers & 0x01) != 0 || (modifiers & 0x10) != 0
-                 || (modifiers & 0x08) != 0 || (modifiers & 0x80) != 0;
+    let super_now = (modifiers & 0x01) != 0
+        || (modifiers & 0x10) != 0
+        || (modifiers & 0x08) != 0
+        || (modifiers & 0x80) != 0;
     SUPER_PRESSED.store(super_now, Ordering::Relaxed);
 
     // Track Alt key state (bits 2/6)
@@ -230,11 +234,15 @@ pub fn process_keyboard_report(report: &[u8]) {
 
     // Detect newly pressed keys (in current but not in previous)
     for &usage in keys {
-        if usage == 0 || usage == 1 { continue; } // 0=no key, 1=rollover error
+        if usage == 0 || usage == 1 {
+            continue;
+        } // 0=no key, 1=rollover error
 
         // Check if this key was already pressed in the previous report
         let was_pressed = prev[2..8].contains(&usage);
-        if was_pressed { continue; } // Key held, not newly pressed
+        if was_pressed {
+            continue;
+        } // Key held, not newly pressed
 
         // Handle Caps Lock toggle on press
         if usage == 0x39 {
@@ -245,7 +253,9 @@ pub fn process_keyboard_report(report: &[u8]) {
 
         // Convert USB HID usage to Linux keycode
         let keycode = hid_usage_to_linux_keycode(usage);
-        if keycode == 0 { continue; }
+        if keycode == 0 {
+            continue;
+        }
 
         inject_keycode(keycode, shift, ctrl);
     }
@@ -302,7 +312,9 @@ fn screen_dimensions() -> (u32, u32) {
     crate::drivers::virtio::gpu_pci::dimensions()
         .or_else(|| crate::drivers::virtio::gpu_mmio::dimensions())
         .or_else(|| {
-            crate::graphics::arm64_fb::FB_INFO_CACHE.get().map(|c| (c.width as u32, c.height as u32))
+            crate::graphics::arm64_fb::FB_INFO_CACHE
+                .get()
+                .map(|c| (c.width as u32, c.height as u32))
         })
         .unwrap_or((1280, 960))
 }
@@ -452,15 +464,24 @@ pub fn process_mouse_report(report: &[u8], ep_idx: u8) {
 /// one physical keypress.
 pub fn poll_modifier_state() -> u32 {
     let mut state = 0u32;
-    if SHIFT_PRESSED.load(Ordering::Relaxed) { state |= 1; }
-    if ALT_PRESSED.load(Ordering::Relaxed)   { state |= 4; }
-    if SUPER_PRESSED.load(Ordering::Relaxed)  { state |= 8; }
+    if SHIFT_PRESSED.load(Ordering::Relaxed) {
+        state |= 1;
+    }
+    if ALT_PRESSED.load(Ordering::Relaxed) {
+        state |= 4;
+    }
+    if SUPER_PRESSED.load(Ordering::Relaxed) {
+        state |= 8;
+    }
     state
 }
 
 /// Get current mouse position in screen coordinates.
 pub fn mouse_position() -> (u32, u32) {
-    (MOUSE_X.load(Ordering::Relaxed), MOUSE_Y.load(Ordering::Relaxed))
+    (
+        MOUSE_X.load(Ordering::Relaxed),
+        MOUSE_Y.load(Ordering::Relaxed),
+    )
 }
 
 /// Consume accumulated scroll wheel delta (resets to 0 after read).

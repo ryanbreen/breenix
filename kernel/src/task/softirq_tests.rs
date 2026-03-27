@@ -9,10 +9,8 @@
 //! 6. Iteration limit and ksoftirqd deferral
 //! 7. ksoftirqd initialization verification
 
+use crate::task::softirqd::{do_softirq, raise_softirq, register_softirq_handler, SoftirqType};
 use crate::{arch_enable_interrupts, arch_halt};
-use crate::task::softirqd::{
-    do_softirq, raise_softirq, register_softirq_handler, SoftirqType,
-};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 pub fn test_softirq() {
@@ -59,7 +57,10 @@ pub fn test_softirq() {
     do_softirq();
 
     let net_rx_count = NET_RX_HANDLER_CALLED.load(Ordering::SeqCst);
-    assert_eq!(net_rx_count, 1, "NetRx handler should have been called once");
+    assert_eq!(
+        net_rx_count, 1,
+        "NetRx handler should have been called once"
+    );
     log::info!("SOFTIRQ_TEST: NetRx softirq passed");
 
     // Test 4: Raise multiple softirqs at once
@@ -70,8 +71,14 @@ pub fn test_softirq() {
 
     let timer_count = TIMER_HANDLER_CALLED.load(Ordering::SeqCst);
     let net_rx_count = NET_RX_HANDLER_CALLED.load(Ordering::SeqCst);
-    assert_eq!(timer_count, 2, "Timer handler should have been called twice");
-    assert_eq!(net_rx_count, 2, "NetRx handler should have been called twice");
+    assert_eq!(
+        timer_count, 2,
+        "Timer handler should have been called twice"
+    );
+    assert_eq!(
+        net_rx_count, 2,
+        "NetRx handler should have been called twice"
+    );
     log::info!("SOFTIRQ_TEST: multiple softirqs passed");
 
     // Test 5: Priority order verification
@@ -108,7 +115,11 @@ pub fn test_softirq() {
         timer_order,
         netrx_order
     );
-    log::info!("SOFTIRQ_TEST: priority order passed (Timer={}, NetRx={})", timer_order, netrx_order);
+    log::info!(
+        "SOFTIRQ_TEST: priority order passed (Timer={}, NetRx={})",
+        timer_order,
+        netrx_order
+    );
 
     // Test 6: Nested interrupt rejection
     // do_softirq() should return false when already in interrupt context
@@ -190,7 +201,9 @@ pub fn test_softirq() {
     // 1. irq_exit's do_softirq() during timer interrupts, or
     // 2. ksoftirqd when it gets scheduled
     // We use yield_current() + HLT to ensure scheduling opportunities
-    unsafe { arch_enable_interrupts(); } // Ensure interrupts are enabled
+    unsafe {
+        arch_enable_interrupts();
+    } // Ensure interrupts are enabled
     for _ in 0..100 {
         // yield_current() sets need_resched, ensuring a context switch opportunity
         // when the next interrupt occurs

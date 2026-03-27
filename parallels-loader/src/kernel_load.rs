@@ -65,7 +65,11 @@ pub fn load_kernel(ram_base_offset: u64) -> Result<LoadedKernel, &'static str> {
         .map_err(|_| "Failed to get kernel file info")?;
     let file_size = info.file_size() as usize;
 
-    log::info!("Kernel file size: {} bytes ({} KB)", file_size, file_size / 1024);
+    log::info!(
+        "Kernel file size: {} bytes ({} KB)",
+        file_size,
+        file_size / 1024
+    );
 
     if file_size < 64 {
         return Err("Kernel file too small for ELF header");
@@ -78,7 +82,9 @@ pub fn load_kernel(ram_base_offset: u64) -> Result<LoadedKernel, &'static str> {
 
     let elf_buf = unsafe { core::slice::from_raw_parts_mut(elf_data.as_ptr(), file_size) };
 
-    let bytes_read = file.read(elf_buf).map_err(|_| "Failed to read kernel file")?;
+    let bytes_read = file
+        .read(elf_buf)
+        .map_err(|_| "Failed to read kernel file")?;
     if bytes_read != file_size {
         return Err("Incomplete read of kernel file");
     }
@@ -123,7 +129,9 @@ fn parse_and_load_elf(elf: &[u8], ram_base_offset: u64) -> Result<LoadedKernel, 
 
     log::info!(
         "ELF: entry={:#x}, {} phdrs, {} shdrs",
-        e_entry, e_phnum, e_shnum
+        e_entry,
+        e_phnum,
+        e_shnum
     );
 
     // Load PT_LOAD segments into physical memory
@@ -164,7 +172,11 @@ fn parse_and_load_elf(elf: &[u8], ram_base_offset: u64) -> Result<LoadedKernel, 
 
         log::info!(
             "  LOAD: vaddr={:#x} paddr={:#x} relocated={:#x} filesz={:#x} memsz={:#x}",
-            p_vaddr, p_paddr, relocated_paddr, p_filesz, p_memsz
+            p_vaddr,
+            p_paddr,
+            relocated_paddr,
+            p_filesz,
+            p_memsz
         );
 
         // Allocate pages at the relocated physical address through UEFI.
@@ -176,12 +188,20 @@ fn parse_and_load_elf(elf: &[u8], ram_base_offset: u64) -> Result<LoadedKernel, 
                 num_pages,
             ) {
                 Ok(_) => {
-                    log::info!("    Allocated {} pages at {:#x}", num_pages, relocated_paddr);
+                    log::info!(
+                        "    Allocated {} pages at {:#x}",
+                        num_pages,
+                        relocated_paddr
+                    );
                 }
                 Err(e) => {
                     // Allocation may fail if pages are already allocated by firmware.
                     // This is OK on Parallels/QEMU — just proceed with direct copy.
-                    log::warn!("    Page alloc at {:#x} failed: {:?} (proceeding anyway)", relocated_paddr, e);
+                    log::warn!(
+                        "    Page alloc at {:#x} failed: {:?} (proceeding anyway)",
+                        relocated_paddr,
+                        e
+                    );
                 }
             }
         }
@@ -220,8 +240,15 @@ fn parse_and_load_elf(elf: &[u8], ram_base_offset: u64) -> Result<LoadedKernel, 
     log::info!("Kernel loaded at phys {:#x}-{:#x}", load_base, load_end);
 
     // Try to find kernel_main symbol
-    let kernel_main_phys = find_symbol(elf, "kernel_main", e_shoff, e_shentsize, e_shnum, e_shstrndx)
-        .map(|vaddr| (vaddr as i64 + vaddr_to_paddr_offset) as u64);
+    let kernel_main_phys = find_symbol(
+        elf,
+        "kernel_main",
+        e_shoff,
+        e_shentsize,
+        e_shnum,
+        e_shstrndx,
+    )
+    .map(|vaddr| (vaddr as i64 + vaddr_to_paddr_offset) as u64);
 
     let entry_phys = match kernel_main_phys {
         Some(addr) => {
@@ -238,7 +265,11 @@ fn parse_and_load_elf(elf: &[u8], ram_base_offset: u64) -> Result<LoadedKernel, 
             } else {
                 (e_entry as i64 + vaddr_to_paddr_offset) as u64
             };
-            log::warn!("kernel_main not found, using ELF entry {:#x} (phys {:#x})", e_entry, fallback);
+            log::warn!(
+                "kernel_main not found, using ELF entry {:#x} (phys {:#x})",
+                e_entry,
+                fallback
+            );
             fallback
         }
     };
@@ -383,12 +414,23 @@ fn read_u16(data: &[u8], offset: usize) -> u16 {
 }
 
 fn read_u32(data: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]])
+    u32::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ])
 }
 
 fn read_u64(data: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes([
-        data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
-        data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7],
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+        data[offset + 4],
+        data[offset + 5],
+        data[offset + 6],
+        data[offset + 7],
     ])
 }

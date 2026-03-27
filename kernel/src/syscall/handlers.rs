@@ -136,10 +136,7 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
     // Get current thread ID from scheduler
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
         log::debug!("sys_exit: Current thread ID from scheduler: {}", thread_id);
-        crate::tracing::providers::process::trace_thread_exit(
-            thread_id as u16,
-            exit_code as u16,
-        );
+        crate::tracing::providers::process::trace_thread_exit(thread_id as u16, exit_code as u16);
 
         // Handle clear_child_tid for clone threads (CLONE_CHILD_CLEARTID)
         // Write 0 to the tid address and futex-wake any joiners
@@ -264,17 +261,31 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
     // to other processes while we're doing serial writes.
     enum WriteOperation {
         StdIo,
-        Pipe { pipe_buffer: alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>, is_nonblocking: bool },
-        Fifo { pipe_buffer: alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>, is_nonblocking: bool },
-        UnixStream { socket: alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixStreamSocket>> },
-        RegularFile { file: alloc::sync::Arc<spin::Mutex<crate::ipc::fd::RegularFile>> },
-        TcpConnection { conn_id: crate::net::tcp::ConnectionId },
-        Device { device_type: crate::fs::devfs::DeviceType },
+        Pipe {
+            pipe_buffer: alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>,
+            is_nonblocking: bool,
+        },
+        Fifo {
+            pipe_buffer: alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>,
+            is_nonblocking: bool,
+        },
+        UnixStream {
+            socket: alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixStreamSocket>>,
+        },
+        RegularFile {
+            file: alloc::sync::Arc<spin::Mutex<crate::ipc::fd::RegularFile>>,
+        },
+        TcpConnection {
+            conn_id: crate::net::tcp::ConnectionId,
+        },
+        Device {
+            device_type: crate::fs::devfs::DeviceType,
+        },
         PtyMaster(u32),
         PtySlave(u32),
         Ebadf,
-        Enotconn,  // Socket not connected
-        Eisdir,    // Is a directory
+        Enotconn,   // Socket not connected
+        Eisdir,     // Is a directory
         Eopnotsupp, // Operation not supported
     }
 
@@ -305,24 +316,32 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         match &fd_entry.kind {
             FdKind::StdIo(n) if *n == 1 || *n == 2 => WriteOperation::StdIo,
             FdKind::StdIo(_) => WriteOperation::Ebadf, // stdin - can't write
-            FdKind::PipeWrite(pipe_buffer) => {
-                WriteOperation::Pipe { pipe_buffer: pipe_buffer.clone(), is_nonblocking: (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0 }
-            }
+            FdKind::PipeWrite(pipe_buffer) => WriteOperation::Pipe {
+                pipe_buffer: pipe_buffer.clone(),
+                is_nonblocking: (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK)
+                    != 0,
+            },
             FdKind::PipeRead(_) => WriteOperation::Ebadf,
-            FdKind::FifoWrite(_path, pipe_buffer) => {
-                WriteOperation::Fifo { pipe_buffer: pipe_buffer.clone(), is_nonblocking: (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0 }
-            }
+            FdKind::FifoWrite(_path, pipe_buffer) => WriteOperation::Fifo {
+                pipe_buffer: pipe_buffer.clone(),
+                is_nonblocking: (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK)
+                    != 0,
+            },
             FdKind::FifoRead(_, _) => WriteOperation::Ebadf,
             FdKind::TcpSocket(_) => WriteOperation::Enotconn,
             FdKind::TcpListener(_) => WriteOperation::Enotconn,
             FdKind::TcpConnection(conn_id) => WriteOperation::TcpConnection { conn_id: *conn_id },
             FdKind::UdpSocket(_) => WriteOperation::Eopnotsupp, // UDP must use sendto
-            FdKind::UnixStream(socket) => WriteOperation::UnixStream { socket: socket.clone() },
-            FdKind::UnixSocket(_) => WriteOperation::Enotconn,  // Unconnected Unix socket
+            FdKind::UnixStream(socket) => WriteOperation::UnixStream {
+                socket: socket.clone(),
+            },
+            FdKind::UnixSocket(_) => WriteOperation::Enotconn, // Unconnected Unix socket
             FdKind::UnixListener(_) => WriteOperation::Enotconn, // Listener can't write
             FdKind::RegularFile(file) => WriteOperation::RegularFile { file: file.clone() },
             FdKind::Directory(_) => WriteOperation::Eisdir,
-            FdKind::Device(device_type) => WriteOperation::Device { device_type: device_type.clone() },
+            FdKind::Device(device_type) => WriteOperation::Device {
+                device_type: device_type.clone(),
+            },
             FdKind::DevfsDirectory { .. } => WriteOperation::Eisdir,
             FdKind::DevptsDirectory { .. } => WriteOperation::Eisdir,
             FdKind::PtyMaster(pty_num) => WriteOperation::PtyMaster(*pty_num),
@@ -361,7 +380,10 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 SyscallResult::Err(5) // EIO
             }
         }
-        WriteOperation::Pipe { pipe_buffer, is_nonblocking } => {
+        WriteOperation::Pipe {
+            pipe_buffer,
+            is_nonblocking,
+        } => {
             let mut pipe = pipe_buffer.lock();
             match pipe.write(&buffer) {
                 Ok(n) => {
@@ -370,13 +392,18 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 }
                 Err(11) if !is_nonblocking => {
                     // Blocking pipe write not implemented, return EAGAIN
-                    log::debug!("sys_write: Pipe full, blocking not implemented - returning EAGAIN");
+                    log::debug!(
+                        "sys_write: Pipe full, blocking not implemented - returning EAGAIN"
+                    );
                     SyscallResult::Err(11) // EAGAIN
                 }
                 Err(e) => SyscallResult::Err(e as u64),
             }
         }
-        WriteOperation::Fifo { pipe_buffer, is_nonblocking } => {
+        WriteOperation::Fifo {
+            pipe_buffer,
+            is_nonblocking,
+        } => {
             let mut pipe = pipe_buffer.lock();
             match pipe.write(&buffer) {
                 Ok(n) => {
@@ -384,7 +411,9 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     SyscallResult::Ok(n as u64)
                 }
                 Err(11) if !is_nonblocking => {
-                    log::debug!("sys_write: FIFO full, blocking not implemented - returning EAGAIN");
+                    log::debug!(
+                        "sys_write: FIFO full, blocking not implemented - returning EAGAIN"
+                    );
                     SyscallResult::Err(11) // EAGAIN
                 }
                 Err(e) => SyscallResult::Err(e as u64),
@@ -441,7 +470,12 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // Write to ext2 regular file
             let (inode_num, position, flags, file_mount_id) = {
                 let file_guard = file.lock();
-                (file_guard.inode_num, file_guard.position, file_guard.flags, file_guard.mount_id)
+                (
+                    file_guard.inode_num,
+                    file_guard.position,
+                    file_guard.flags,
+                    file_guard.mount_id,
+                )
             };
 
             // Dispatch to correct filesystem based on mount_id
@@ -493,7 +527,11 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 file_guard.position = write_offset + bytes_written as u64;
             }
 
-            log::debug!("sys_write: Wrote {} bytes to regular file (inode {})", bytes_written, inode_num);
+            log::debug!(
+                "sys_write: Wrote {} bytes to regular file (inode {})",
+                bytes_written,
+                inode_num
+            );
             SyscallResult::Ok(bytes_written as u64)
         }
     }
@@ -528,7 +566,12 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
     // Use trace level for stdin reads to avoid log spam during interactive shell
     if fd != 0 {
-        log::debug!("sys_read: fd={}, buf_ptr={:#x}, count={}", fd, buf_ptr, count);
+        log::debug!(
+            "sys_read: fd={}, buf_ptr={:#x}, count={}",
+            fd,
+            buf_ptr,
+            count
+        );
     }
 
     // Validate buffer pointer and count
@@ -647,7 +690,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                     }
                                 });
                                 crate::per_cpu::preempt_disable();
-                                log::debug!("sys_read: Thread {} interrupted by signal (EINTR)", thread_id);
+                                log::debug!(
+                                    "sys_read: Thread {} interrupted by signal (EINTR)",
+                                    thread_id
+                                );
                                 return SyscallResult::Err(e as u64);
                             }
 
@@ -661,10 +707,14 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                 } else {
                                     false
                                 }
-                            }).unwrap_or(false);
+                            })
+                            .unwrap_or(false);
 
                             if !still_blocked {
-                                log::trace!("sys_read: Thread {} unblocked from stdin wait", thread_id);
+                                log::trace!(
+                                    "sys_read: Thread {} unblocked from stdin wait",
+                                    thread_id
+                                );
                                 break;
                             }
                         }
@@ -676,7 +726,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         crate::task::scheduler::with_scheduler(|sched| {
                             if let Some(thread) = sched.current_thread_mut() {
                                 thread.blocked_in_syscall = false;
-                                log::trace!("sys_read: Thread {} cleared blocked_in_syscall", thread.id);
+                                log::trace!(
+                                    "sys_read: Thread {} cleared blocked_in_syscall",
+                                    thread.id
+                                );
                             }
                         });
 
@@ -698,7 +751,8 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         }
         FdKind::PipeRead(pipe_buffer) => {
             // Check O_NONBLOCK status flag
-            let is_nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+            let is_nonblocking =
+                (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
             let pipe_buffer_clone = pipe_buffer.clone();
 
             // CRITICAL: Release process manager lock before potentially blocking!
@@ -739,7 +793,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             None => return SyscallResult::Err(3), // ESRCH
                         };
 
-                        log::debug!("sys_read: Pipe empty, thread {} entering blocking path", thread_id);
+                        log::debug!(
+                            "sys_read: Pipe empty, thread {} entering blocking path",
+                            thread_id
+                        );
 
                         // Register as waiter BEFORE setting blocked state (race condition fix)
                         {
@@ -791,7 +848,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                     }
                                 });
                                 crate::per_cpu::preempt_disable();
-                                log::debug!("sys_read: Pipe thread {} interrupted by signal (EINTR)", thread_id);
+                                log::debug!(
+                                    "sys_read: Pipe thread {} interrupted by signal (EINTR)",
+                                    thread_id
+                                );
                                 return SyscallResult::Err(e as u64);
                             }
 
@@ -804,11 +864,15 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                 } else {
                                     false
                                 }
-                            }).unwrap_or(false);
+                            })
+                            .unwrap_or(false);
 
                             if !still_blocked {
                                 crate::per_cpu::preempt_disable();
-                                log::debug!("sys_read: Pipe thread {} woken from blocking", thread_id);
+                                log::debug!(
+                                    "sys_read: Pipe thread {} woken from blocking",
+                                    thread_id
+                                );
                                 break;
                             }
                         }
@@ -838,7 +902,8 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         }
         FdKind::FifoRead(_path, pipe_buffer) => {
             // FIFO read - with blocking support
-            let is_nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+            let is_nonblocking =
+                (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
             let pipe_buffer_clone = pipe_buffer.clone();
 
             // CRITICAL: Release process manager lock before blocking!
@@ -879,7 +944,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             None => return SyscallResult::Err(3), // ESRCH
                         };
 
-                        log::debug!("sys_read: FIFO empty, thread {} entering blocking path", thread_id);
+                        log::debug!(
+                            "sys_read: FIFO empty, thread {} entering blocking path",
+                            thread_id
+                        );
 
                         // Register as waiter BEFORE setting blocked state (race condition fix)
                         {
@@ -931,7 +999,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                     }
                                 });
                                 crate::per_cpu::preempt_disable();
-                                log::debug!("sys_read: FIFO thread {} interrupted by signal (EINTR)", thread_id);
+                                log::debug!(
+                                    "sys_read: FIFO thread {} interrupted by signal (EINTR)",
+                                    thread_id
+                                );
                                 return SyscallResult::Err(e as u64);
                             }
 
@@ -944,11 +1015,15 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                 } else {
                                     false
                                 }
-                            }).unwrap_or(false);
+                            })
+                            .unwrap_or(false);
 
                             if !still_blocked {
                                 crate::per_cpu::preempt_disable();
-                                log::debug!("sys_read: FIFO thread {} woken from blocking", thread_id);
+                                log::debug!(
+                                    "sys_read: FIFO thread {} woken from blocking",
+                                    thread_id
+                                );
                                 break;
                             }
                         }
@@ -1061,7 +1136,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 file.position += bytes_read as u64;
             }
 
-            log::debug!("sys_read: Read {} bytes from regular file (inode {})", bytes_read, inode_num);
+            log::debug!(
+                "sys_read: Read {} bytes from regular file (inode {})",
+                bytes_read,
+                inode_num
+            );
             SyscallResult::Ok(bytes_read as u64)
         }
         FdKind::Directory(_) => {
@@ -1108,7 +1187,8 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // Read from TCP connection with blocking/non-blocking support
             // Clone conn_id and capture flags before dropping manager_guard
             let conn_id = *conn_id;
-            let is_nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+            let is_nonblocking =
+                (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
             drop(manager_guard);
 
             // Drain loopback queue for localhost connections (127.x.x.x, own IP).
@@ -1165,7 +1245,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                 // Double-check for data after setting Blocked state
                 if crate::net::tcp::tcp_has_data(&conn_id) {
-                    log::info!("TCP: Thread {} caught race - data arrived during block setup", thread_id);
+                    log::info!(
+                        "TCP: Thread {} caught race - data arrived during block setup",
+                        thread_id
+                    );
                     crate::task::scheduler::with_scheduler(|sched| {
                         if let Some(thread) = sched.current_thread_mut() {
                             thread.blocked_in_syscall = false;
@@ -1179,7 +1262,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 // Re-enable preemption before HLT loop
                 crate::per_cpu::preempt_enable();
 
-                log::info!("TCP_BLOCK: Thread {} entering blocked state for recv", thread_id);
+                log::info!(
+                    "TCP_BLOCK: Thread {} entering blocked state for recv",
+                    thread_id
+                );
 
                 // HLT loop - wait for data to arrive
                 loop {
@@ -1194,7 +1280,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             }
                         });
                         crate::per_cpu::preempt_disable();
-                        log::debug!("sys_read: TCP thread {} interrupted by signal (EINTR)", thread_id);
+                        log::debug!(
+                            "sys_read: TCP thread {} interrupted by signal (EINTR)",
+                            thread_id
+                        );
                         return SyscallResult::Err(e as u64);
                     }
 
@@ -1207,7 +1296,8 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         } else {
                             false
                         }
-                    }).unwrap_or(false);
+                    })
+                    .unwrap_or(false);
 
                     if !still_blocked {
                         crate::per_cpu::preempt_disable();
@@ -1233,7 +1323,8 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         FdKind::PtyMaster(pty_num) => {
             // Read from PTY master (slave's output) with blocking support
             let pty_num = *pty_num;
-            let is_nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+            let is_nonblocking =
+                (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
             let pair = match crate::tty::pty::get(pty_num) {
                 Some(p) => p,
                 None => {
@@ -1311,7 +1402,8 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         } else {
                             false
                         }
-                    }).unwrap_or(false);
+                    })
+                    .unwrap_or(false);
 
                     if !still_blocked {
                         crate::per_cpu::preempt_disable();
@@ -1332,7 +1424,8 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         FdKind::PtySlave(pty_num) => {
             // Read from PTY slave (from line discipline output) with blocking support
             let pty_num = *pty_num;
-            let is_nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+            let is_nonblocking =
+                (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
             let pair = match crate::tty::pty::get(pty_num) {
                 Some(p) => p,
                 None => {
@@ -1410,7 +1503,8 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         } else {
                             false
                         }
-                    }).unwrap_or(false);
+                    })
+                    .unwrap_or(false);
 
                     if !still_blocked {
                         crate::per_cpu::preempt_disable();
@@ -1430,7 +1524,8 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         }
         FdKind::UnixStream(socket_ref) => {
             // Read from Unix stream socket
-            let is_nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+            let is_nonblocking =
+                (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
             let socket_clone = socket_ref.clone();
 
             // Drop manager guard before potentially blocking
@@ -1518,7 +1613,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                     }
                                 });
                                 crate::per_cpu::preempt_disable();
-                                log::debug!("sys_read: Unix socket thread {} interrupted by signal (EINTR)", thread_id);
+                                log::debug!(
+                                    "sys_read: Unix socket thread {} interrupted by signal (EINTR)",
+                                    thread_id
+                                );
                                 return SyscallResult::Err(e as u64);
                             }
 
@@ -1531,7 +1629,8 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                 } else {
                                     false
                                 }
-                            }).unwrap_or(false);
+                            })
+                            .unwrap_or(false);
 
                             if !still_blocked {
                                 crate::per_cpu::preempt_disable();
@@ -1568,7 +1667,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             log::error!("sys_read: Cannot read from unconnected Unix socket");
             SyscallResult::Err(super::errno::ENOTCONN as u64)
         }
-        FdKind::ProcfsFile { ref content, position } => {
+        FdKind::ProcfsFile {
+            ref content,
+            position,
+        } => {
             // Read from procfs virtual file
             let bytes = content.as_bytes();
             let pos = *position;
@@ -1730,7 +1832,11 @@ fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext)
         // Now re-acquire the lock and complete the fork
         let mut manager_guard = crate::process::manager();
         if let Some(ref mut manager) = *manager_guard {
-            match manager.fork_process_with_parent_context(parent_pid, parent_context, child_page_table) {
+            match manager.fork_process_with_parent_context(
+                parent_pid,
+                parent_context,
+                child_page_table,
+            ) {
                 Ok(child_pid) => {
                     // Get the child's thread ID to add to scheduler
                     if let Some(child_process) = manager.get_process(child_pid) {
@@ -1780,7 +1886,9 @@ pub fn sys_fork() -> SyscallResult {
     // DEPRECATED: This function should not be used - use sys_fork_with_frame instead
     // to get the actual register values at syscall time.
     log::error!("sys_fork() called without frame - this path is deprecated and broken!");
-    log::error!("The syscall handler should use sys_fork_with_frame() to capture registers correctly.");
+    log::error!(
+        "The syscall handler should use sys_fork_with_frame() to capture registers correctly."
+    );
     SyscallResult::Err(22) // EINVAL - invalid argument
 }
 
@@ -1847,7 +1955,10 @@ pub fn sys_exec_with_frame(
             );
 
             // Find the null terminator and extract the name
-            let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
+            let name_len = name_bytes
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(name_bytes.len());
             log::debug!("sys_exec: Found null terminator at position {}", name_len);
             let program_name = match core::str::from_utf8(&name_bytes[..name_len]) {
                 Ok(s) => s,
@@ -1865,7 +1976,10 @@ pub fn sys_exec_with_frame(
                 let elf_vec = crate::userspace_test::get_test_binary(program_name);
                 _elf_vec_storage = Some(elf_vec);
                 _name_storage = Some(alloc::string::String::from(program_name));
-                (_elf_vec_storage.as_ref().unwrap().as_slice(), Some(_name_storage.as_ref().unwrap().as_str()))
+                (
+                    _elf_vec_storage.as_ref().unwrap().as_slice(),
+                    Some(_name_storage.as_ref().unwrap().as_str()),
+                )
             }
             #[cfg(not(feature = "testing"))]
             {
@@ -1880,7 +1994,10 @@ pub fn sys_exec_with_frame(
             #[cfg(feature = "testing")]
             {
                 log::info!("sys_exec: Using generated hello_world test program");
-                (crate::userspace_test::get_test_binary_static("hello_world"), Some("hello_world"))
+                (
+                    crate::userspace_test::get_test_binary_static("hello_world"),
+                    Some("hello_world"),
+                )
             }
             #[cfg(not(feature = "testing"))]
             {
@@ -2014,7 +2131,11 @@ fn load_elf_from_ext2(path: &str) -> Result<Vec<u8>, i32> {
 
     // Determine which filesystem to use based on path
     let is_home = ext2::is_home_path(path);
-    let fs_path = if is_home { ext2::strip_home_prefix(path) } else { path };
+    let fs_path = if is_home {
+        ext2::strip_home_prefix(path)
+    } else {
+        path
+    };
 
     if is_home {
         let fs_guard = ext2::home_fs_read();
@@ -2113,7 +2234,10 @@ pub fn sys_execv_with_frame(
         }
     };
 
-    let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
+    let name_len = name_bytes
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(name_bytes.len());
     let program_name = match core::str::from_utf8(&name_bytes[..name_len]) {
         Ok(s) => s,
         Err(_) => {
@@ -2144,8 +2268,14 @@ pub fn sys_execv_with_frame(
 
             // Interpret as u64 pointer
             let arg_ptr = u64::from_le_bytes([
-                arg_ptr_bytes[0], arg_ptr_bytes[1], arg_ptr_bytes[2], arg_ptr_bytes[3],
-                arg_ptr_bytes[4], arg_ptr_bytes[5], arg_ptr_bytes[6], arg_ptr_bytes[7],
+                arg_ptr_bytes[0],
+                arg_ptr_bytes[1],
+                arg_ptr_bytes[2],
+                arg_ptr_bytes[3],
+                arg_ptr_bytes[4],
+                arg_ptr_bytes[5],
+                arg_ptr_bytes[6],
+                arg_ptr_bytes[7],
             ]);
 
             // NULL pointer marks end of argv
@@ -2157,13 +2287,21 @@ pub fn sys_execv_with_frame(
             let arg_bytes = match copy_string_from_user(arg_ptr, MAX_ARG_LEN) {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    log::error!("sys_execv: Failed to read argv[{}] string at {:#x}: {}", i, arg_ptr, e);
+                    log::error!(
+                        "sys_execv: Failed to read argv[{}] string at {:#x}: {}",
+                        i,
+                        arg_ptr,
+                        e
+                    );
                     return SyscallResult::Err(14); // EFAULT
                 }
             };
 
             // Find null terminator and truncate
-            let arg_len = arg_bytes.iter().position(|&b| b == 0).unwrap_or(arg_bytes.len());
+            let arg_len = arg_bytes
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(arg_bytes.len());
             let mut arg = arg_bytes[..arg_len].to_vec();
             arg.push(0); // Ensure null-terminated
             argv_vec.push(arg);
@@ -2214,7 +2352,10 @@ pub fn sys_execv_with_frame(
                 if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {
                     pid
                 } else {
-                    log::error!("sys_execv: Thread {} not found in any process", current_thread_id);
+                    log::error!(
+                        "sys_execv: Thread {} not found in any process",
+                        current_thread_id
+                    );
                     return SyscallResult::Err(3); // ESRCH
                 }
             } else {
@@ -2237,7 +2378,12 @@ pub fn sys_execv_with_frame(
         crate::arch_without_interrupts(|| {
             let mut manager_guard = crate::process::manager();
             if let Some(ref mut manager) = *manager_guard {
-                match manager.exec_process_with_argv(current_pid, elf_data, Some(program_name), &argv_slices) {
+                match manager.exec_process_with_argv(
+                    current_pid,
+                    elf_data,
+                    Some(program_name),
+                    &argv_slices,
+                ) {
                     Ok((new_entry_point, new_rsp)) => {
                         log::info!(
                             "sys_execv: Successfully replaced process address space, entry={:#x}, rsp={:#x}",
@@ -2284,7 +2430,8 @@ pub fn sys_execv_with_frame(
 
                         log::info!(
                             "sys_execv: Frame updated - RIP={:#x}, RSP={:#x}",
-                            frame.rip, frame.rsp
+                            frame.rip,
+                            frame.rsp
                         );
 
                         SyscallResult::Ok(0)
@@ -2365,7 +2512,10 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             };
 
             // Find the null terminator and extract the name
-            let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
+            let name_len = name_bytes
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(name_bytes.len());
             let program_name = match core::str::from_utf8(&name_bytes[..name_len]) {
                 Ok(s) => s,
                 Err(_) => {
@@ -2382,7 +2532,10 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
                 let elf_vec = crate::userspace_test::get_test_binary(program_name);
                 _elf_vec_storage2 = Some(elf_vec);
                 _name_storage2 = Some(alloc::string::String::from(program_name));
-                (_elf_vec_storage2.as_ref().unwrap().as_slice(), Some(_name_storage2.as_ref().unwrap().as_str()))
+                (
+                    _elf_vec_storage2.as_ref().unwrap().as_slice(),
+                    Some(_name_storage2.as_ref().unwrap().as_str()),
+                )
             }
             #[cfg(not(feature = "testing"))]
             {
@@ -2400,7 +2553,10 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             #[cfg(feature = "testing")]
             {
                 log::info!("sys_exec: Using generated hello_world test program");
-                (crate::userspace_test::get_test_binary_static("hello_world"), Some("hello_world"))
+                (
+                    crate::userspace_test::get_test_binary_static("hello_world"),
+                    Some("hello_world"),
+                )
             }
             #[cfg(not(feature = "testing"))]
             {
@@ -2413,59 +2569,59 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
         {
             // Find current process
             let current_pid = {
-            let manager_guard = crate::process::manager();
-            if let Some(ref manager) = *manager_guard {
-                if let Some((pid, _)) = manager.find_process_by_thread(_current_thread_id) {
-                    pid
+                let manager_guard = crate::process::manager();
+                if let Some(ref manager) = *manager_guard {
+                    if let Some((pid, _)) = manager.find_process_by_thread(_current_thread_id) {
+                        pid
+                    } else {
+                        log::error!(
+                            "sys_exec: Thread {} not found in any process",
+                            _current_thread_id
+                        );
+                        return SyscallResult::Err(3); // ESRCH
+                    }
                 } else {
-                    log::error!(
-                        "sys_exec: Thread {} not found in any process",
-                        _current_thread_id
-                    );
-                    return SyscallResult::Err(3); // ESRCH
+                    log::error!("sys_exec: Process manager not available");
+                    return SyscallResult::Err(12); // ENOMEM
                 }
-            } else {
-                log::error!("sys_exec: Process manager not available");
-                return SyscallResult::Err(12); // ENOMEM
-            }
-        };
+            };
 
-        log::info!(
-            "sys_exec: Replacing process {} (thread {}) with new program",
-            current_pid.as_u64(),
-            _current_thread_id
-        );
+            log::info!(
+                "sys_exec: Replacing process {} (thread {}) with new program",
+                current_pid.as_u64(),
+                _current_thread_id
+            );
 
-        // Replace the process's address space
-        let mut manager_guard = crate::process::manager();
-        if let Some(ref mut manager) = *manager_guard {
-            match manager.exec_process(current_pid, _elf_data, _exec_program_name) {
-                Ok(new_entry_point) => {
-                    log::info!(
+            // Replace the process's address space
+            let mut manager_guard = crate::process::manager();
+            if let Some(ref mut manager) = *manager_guard {
+                match manager.exec_process(current_pid, _elf_data, _exec_program_name) {
+                    Ok(new_entry_point) => {
+                        log::info!(
                         "sys_exec: Successfully replaced process address space, entry point: {:#x}",
                         new_entry_point
                     );
 
-                    // CRITICAL OS-STANDARD VIOLATION:
-                    // exec() should NEVER return on success - the process is completely replaced
-                    // In a proper implementation, exec_process would:
-                    // 1. Replace the address space
-                    // 2. Update the thread context
-                    // 3. Jump directly to the new program (never returning here)
-                    //
-                    // For now, we return success, but this violates POSIX semantics
-                    // The interrupt return path will handle the actual switch
-                    SyscallResult::Ok(0)
+                        // CRITICAL OS-STANDARD VIOLATION:
+                        // exec() should NEVER return on success - the process is completely replaced
+                        // In a proper implementation, exec_process would:
+                        // 1. Replace the address space
+                        // 2. Update the thread context
+                        // 3. Jump directly to the new program (never returning here)
+                        //
+                        // For now, we return success, but this violates POSIX semantics
+                        // The interrupt return path will handle the actual switch
+                        SyscallResult::Ok(0)
+                    }
+                    Err(e) => {
+                        log::error!("sys_exec: Failed to exec process: {}", e);
+                        SyscallResult::Err(12) // ENOMEM
+                    }
                 }
-                Err(e) => {
-                    log::error!("sys_exec: Failed to exec process: {}", e);
-                    SyscallResult::Err(12) // ENOMEM
-                }
+            } else {
+                log::error!("sys_exec: Process manager not available");
+                SyscallResult::Err(12) // ENOMEM
             }
-        } else {
-            log::error!("sys_exec: Process manager not available");
-            SyscallResult::Err(12) // ENOMEM
-        }
         } // End of #[cfg(feature = "testing")] block
     })
 }
@@ -2585,7 +2741,12 @@ pub const WUNTRACED: u32 = 2;
 /// - If WNOHANG and no child terminated: 0
 /// - On error: negative errno (ECHILD, EINVAL, EFAULT)
 pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
-    log::debug!("sys_waitpid: pid={}, status_ptr={:#x}, options={}", pid, status_ptr, options);
+    log::debug!(
+        "sys_waitpid: pid={}, status_ptr={:#x}, options={}",
+        pid,
+        status_ptr,
+        options
+    );
 
     // Get current thread ID
     let thread_id = match crate::task::scheduler::current_thread_id() {
@@ -2612,8 +2773,11 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
         }
     };
 
-    log::debug!("sys_waitpid: Current process PID={}, has {} children",
-                current_pid.as_u64(), current_process.children.len());
+    log::debug!(
+        "sys_waitpid: Current process PID={}, has {} children",
+        current_pid.as_u64(),
+        current_process.children.len()
+    );
 
     // Check for children
     if current_process.children.is_empty() {
@@ -2629,7 +2793,11 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
 
             // Check if target is actually our child
             if !current_process.children.contains(&target_pid) {
-                log::debug!("sys_waitpid: PID {} is not a child of {}", p, current_pid.as_u64());
+                log::debug!(
+                    "sys_waitpid: PID {} is not a child of {}",
+                    p,
+                    current_pid.as_u64()
+                );
                 return SyscallResult::Err(super::errno::ECHILD as u64);
             }
 
@@ -2688,7 +2856,12 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                                     thread.set_ready();
                                 }
                             });
-                            return complete_wait(target_pid, exit_code, status_ptr, &children_copy);
+                            return complete_wait(
+                                target_pid,
+                                exit_code,
+                                status_ptr,
+                                &children_copy,
+                            );
                         }
                     }
                 }
@@ -2707,7 +2880,10 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                         }
                     });
                     crate::per_cpu::preempt_disable();
-                    log::debug!("sys_waitpid: Thread {} interrupted by signal (EINTR)", thread_id);
+                    log::debug!(
+                        "sys_waitpid: Thread {} interrupted by signal (EINTR)",
+                        thread_id
+                    );
                     return SyscallResult::Err(e as u64);
                 }
 
@@ -2723,7 +2899,12 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                         if let crate::process::ProcessState::Terminated(exit_code) = child.state {
                             drop(manager_guard);
                             crate::per_cpu::preempt_disable();
-                            return complete_wait(target_pid, exit_code, status_ptr, &children_copy);
+                            return complete_wait(
+                                target_pid,
+                                exit_code,
+                                status_ptr,
+                                &children_copy,
+                            );
                         }
                     }
                 }
@@ -2742,7 +2923,8 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                     let mut result = None;
                     for &child_pid in &children_copy {
                         if let Some(child) = manager.get_process(child_pid) {
-                            if let crate::process::ProcessState::Terminated(exit_code) = child.state {
+                            if let crate::process::ProcessState::Terminated(exit_code) = child.state
+                            {
                                 result = Some((child_pid, exit_code));
                                 break;
                             }
@@ -2775,7 +2957,8 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                 if let Some(ref manager) = *mg {
                     for &child_pid in &children_copy {
                         if let Some(child) = manager.get_process(child_pid) {
-                            if let crate::process::ProcessState::Terminated(exit_code) = child.state {
+                            if let crate::process::ProcessState::Terminated(exit_code) = child.state
+                            {
                                 drop(mg);
                                 crate::task::scheduler::with_scheduler(|sched| {
                                     if let Some(thread) = sched.current_thread_mut() {
@@ -2783,7 +2966,12 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                                         thread.set_ready();
                                     }
                                 });
-                                return complete_wait(child_pid, exit_code, status_ptr, &children_copy);
+                                return complete_wait(
+                                    child_pid,
+                                    exit_code,
+                                    status_ptr,
+                                    &children_copy,
+                                );
                             }
                         }
                     }
@@ -2803,7 +2991,10 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                         }
                     });
                     crate::per_cpu::preempt_disable();
-                    log::debug!("sys_waitpid: Thread {} interrupted by signal (EINTR)", thread_id);
+                    log::debug!(
+                        "sys_waitpid: Thread {} interrupted by signal (EINTR)",
+                        thread_id
+                    );
                     return SyscallResult::Err(e as u64);
                 }
 
@@ -2817,10 +3008,16 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                 if let Some(ref manager) = *manager_guard {
                     for &child_pid in &children_copy {
                         if let Some(child) = manager.get_process(child_pid) {
-                            if let crate::process::ProcessState::Terminated(exit_code) = child.state {
+                            if let crate::process::ProcessState::Terminated(exit_code) = child.state
+                            {
                                 drop(manager_guard);
                                 crate::per_cpu::preempt_disable();
-                                return complete_wait(child_pid, exit_code, status_ptr, &children_copy);
+                                return complete_wait(
+                                    child_pid,
+                                    exit_code,
+                                    status_ptr,
+                                    &children_copy,
+                                );
                             }
                         }
                     }
@@ -2867,13 +3064,25 @@ fn complete_wait(
         (exit_code & 0xff) << 8
     };
 
-    log::debug!("complete_wait: child {} exited with code {}, wstatus={:#x}{}",
-                child_pid.as_u64(), exit_code, wstatus,
-                if exit_code < 0 { " (signal termination)" } else { " (normal exit)" });
+    log::debug!(
+        "complete_wait: child {} exited with code {}, wstatus={:#x}{}",
+        child_pid.as_u64(),
+        exit_code,
+        wstatus,
+        if exit_code < 0 {
+            " (signal termination)"
+        } else {
+            " (normal exit)"
+        }
+    );
 
     // Write status to userspace if pointer is valid
     if status_ptr != 0 {
-        if let Err(e) = copy_to_user(status_ptr, &wstatus as *const i32 as u64, core::mem::size_of::<i32>()) {
+        if let Err(e) = copy_to_user(
+            status_ptr,
+            &wstatus as *const i32 as u64,
+            core::mem::size_of::<i32>(),
+        ) {
             log::error!("complete_wait: Failed to write status: {}", e);
             return SyscallResult::Err(super::errno::EFAULT as u64);
         }
@@ -2885,11 +3094,16 @@ fn complete_wait(
         if let Some(ref mut manager) = *manager_guard {
             if let Some((_parent_pid, parent)) = manager.find_process_by_thread_mut(thread_id) {
                 parent.children.retain(|&id| id != child_pid);
-                log::debug!("complete_wait: Removed child {} from parent's children list",
-                           child_pid.as_u64());
+                log::debug!(
+                    "complete_wait: Removed child {} from parent's children list",
+                    child_pid.as_u64()
+                );
             }
             manager.remove_process(child_pid);
-            log::debug!("complete_wait: Reaped process {} from process table", child_pid.as_u64());
+            log::debug!(
+                "complete_wait: Reaped process {} from process table",
+                child_pid.as_u64()
+            );
         }
     }
 
@@ -2899,7 +3113,10 @@ fn complete_wait(
         if let Some(thread) = sched.current_thread_mut() {
             if thread.blocked_in_syscall {
                 thread.blocked_in_syscall = false;
-                log::debug!("complete_wait: Cleared blocked_in_syscall flag for thread {}", thread.id);
+                log::debug!(
+                    "complete_wait: Cleared blocked_in_syscall flag for thread {}",
+                    thread.id
+                );
             }
         }
     });
@@ -3053,60 +3270,48 @@ pub fn sys_fcntl(fd: u64, cmd: u64, arg: u64) -> SyscallResult {
     };
 
     match cmd {
-        F_DUPFD => {
-            match process.fd_table.dup_at_least(fd, arg, false) {
-                Ok(new_fd) => {
-                    log::debug!("sys_fcntl F_DUPFD: {} -> {}", fd, new_fd);
-                    SyscallResult::Ok(new_fd as u64)
-                }
-                Err(e) => SyscallResult::Err(e as u64),
+        F_DUPFD => match process.fd_table.dup_at_least(fd, arg, false) {
+            Ok(new_fd) => {
+                log::debug!("sys_fcntl F_DUPFD: {} -> {}", fd, new_fd);
+                SyscallResult::Ok(new_fd as u64)
             }
-        }
-        F_DUPFD_CLOEXEC => {
-            match process.fd_table.dup_at_least(fd, arg, true) {
-                Ok(new_fd) => {
-                    log::debug!("sys_fcntl F_DUPFD_CLOEXEC: {} -> {}", fd, new_fd);
-                    SyscallResult::Ok(new_fd as u64)
-                }
-                Err(e) => SyscallResult::Err(e as u64),
+            Err(e) => SyscallResult::Err(e as u64),
+        },
+        F_DUPFD_CLOEXEC => match process.fd_table.dup_at_least(fd, arg, true) {
+            Ok(new_fd) => {
+                log::debug!("sys_fcntl F_DUPFD_CLOEXEC: {} -> {}", fd, new_fd);
+                SyscallResult::Ok(new_fd as u64)
             }
-        }
-        F_GETFD => {
-            match process.fd_table.get_fd_flags(fd) {
-                Ok(flags) => {
-                    log::debug!("sys_fcntl F_GETFD: fd={} flags={}", fd, flags);
-                    SyscallResult::Ok(flags as u64)
-                }
-                Err(e) => SyscallResult::Err(e as u64),
+            Err(e) => SyscallResult::Err(e as u64),
+        },
+        F_GETFD => match process.fd_table.get_fd_flags(fd) {
+            Ok(flags) => {
+                log::debug!("sys_fcntl F_GETFD: fd={} flags={}", fd, flags);
+                SyscallResult::Ok(flags as u64)
             }
-        }
-        F_SETFD => {
-            match process.fd_table.set_fd_flags(fd, arg as u32) {
-                Ok(()) => {
-                    log::debug!("sys_fcntl F_SETFD: fd={} flags={}", fd, arg);
-                    SyscallResult::Ok(0)
-                }
-                Err(e) => SyscallResult::Err(e as u64),
+            Err(e) => SyscallResult::Err(e as u64),
+        },
+        F_SETFD => match process.fd_table.set_fd_flags(fd, arg as u32) {
+            Ok(()) => {
+                log::debug!("sys_fcntl F_SETFD: fd={} flags={}", fd, arg);
+                SyscallResult::Ok(0)
             }
-        }
-        F_GETFL => {
-            match process.fd_table.get_status_flags(fd) {
-                Ok(flags) => {
-                    log::debug!("sys_fcntl F_GETFL: fd={} flags={:#x}", fd, flags);
-                    SyscallResult::Ok(flags as u64)
-                }
-                Err(e) => SyscallResult::Err(e as u64),
+            Err(e) => SyscallResult::Err(e as u64),
+        },
+        F_GETFL => match process.fd_table.get_status_flags(fd) {
+            Ok(flags) => {
+                log::debug!("sys_fcntl F_GETFL: fd={} flags={:#x}", fd, flags);
+                SyscallResult::Ok(flags as u64)
             }
-        }
-        F_SETFL => {
-            match process.fd_table.set_status_flags(fd, arg as u32) {
-                Ok(()) => {
-                    log::debug!("sys_fcntl F_SETFL: fd={} flags={:#x}", fd, arg);
-                    SyscallResult::Ok(0)
-                }
-                Err(e) => SyscallResult::Err(e as u64),
+            Err(e) => SyscallResult::Err(e as u64),
+        },
+        F_SETFL => match process.fd_table.set_status_flags(fd, arg as u32) {
+            Ok(()) => {
+                log::debug!("sys_fcntl F_SETFL: fd={} flags={:#x}", fd, arg);
+                SyscallResult::Ok(0)
             }
-        }
+            Err(e) => SyscallResult::Err(e as u64),
+        },
         _ => {
             log::warn!("sys_fcntl: Unknown command {}", cmd);
             SyscallResult::Err(22) // EINVAL
@@ -3194,12 +3399,20 @@ pub fn sys_poll(fds_ptr: u64, nfds: u64, timeout: i32) -> SyscallResult {
         let mut count = 0u64;
         for (i, pollfd) in pollfds.iter_mut().enumerate() {
             pollfd.revents = 0;
-            if pollfd.fd < 0 { continue; }
-            match &snapshots[i] {
-                Some(fd_entry) => { pollfd.revents = poll::poll_fd(fd_entry, pollfd.events); }
-                None => { pollfd.revents = events::POLLNVAL; }
+            if pollfd.fd < 0 {
+                continue;
             }
-            if pollfd.revents != 0 { count += 1; }
+            match &snapshots[i] {
+                Some(fd_entry) => {
+                    pollfd.revents = poll::poll_fd(fd_entry, pollfd.events);
+                }
+                None => {
+                    pollfd.revents = events::POLLNVAL;
+                }
+            }
+            if pollfd.revents != 0 {
+                count += 1;
+            }
         }
         count
     };
@@ -3282,7 +3495,8 @@ pub fn sys_poll(fds_ptr: u64, nfds: u64, timeout: i32) -> SyscallResult {
 
             let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                 sched.wake_expired_timers();
-                sched.current_thread_mut()
+                sched
+                    .current_thread_mut()
                     .map(|t| t.state == crate::task::thread::ThreadState::BlockedOnTimer)
                     .unwrap_or(false)
             });
@@ -3293,7 +3507,9 @@ pub fn sys_poll(fds_ptr: u64, nfds: u64, timeout: i32) -> SyscallResult {
 
             crate::task::scheduler::yield_current();
             #[cfg(target_arch = "aarch64")]
-            unsafe { core::arch::asm!("msr daifclr, #3", "wfi", options(nomem, nostack)); }
+            unsafe {
+                core::arch::asm!("msr daifclr, #3", "wfi", options(nomem, nostack));
+            }
             #[cfg(target_arch = "x86_64")]
             x86_64::instructions::hlt();
         }
@@ -3347,14 +3563,19 @@ fn poll_block_until(wake_ns: u64) {
     loop {
         let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
             sched.wake_expired_timers();
-            sched.current_thread_mut()
+            sched
+                .current_thread_mut()
                 .map(|t| t.state == crate::task::thread::ThreadState::BlockedOnTimer)
                 .unwrap_or(false)
         });
-        if !still_blocked.unwrap_or(false) { break; }
+        if !still_blocked.unwrap_or(false) {
+            break;
+        }
         crate::task::scheduler::yield_current();
         #[cfg(target_arch = "aarch64")]
-        unsafe { core::arch::asm!("msr daifclr, #3", "wfi", options(nomem, nostack)); }
+        unsafe {
+            core::arch::asm!("msr daifclr, #3", "wfi", options(nomem, nostack));
+        }
         #[cfg(target_arch = "x86_64")]
         x86_64::instructions::hlt();
     }
@@ -3416,7 +3637,13 @@ fn poll_ensure_address_space() {
 /// - sigsetsize: Size of signal mask (ignored)
 ///
 /// Delegates to sys_poll after converting timespec to milliseconds.
-pub fn sys_ppoll(fds_ptr: u64, nfds: u64, timeout_ts_ptr: u64, _sigmask: u64, _sigsetsize: u64) -> SyscallResult {
+pub fn sys_ppoll(
+    fds_ptr: u64,
+    nfds: u64,
+    timeout_ts_ptr: u64,
+    _sigmask: u64,
+    _sigsetsize: u64,
+) -> SyscallResult {
     let timeout_ms: i32 = if timeout_ts_ptr == 0 {
         -1 // NULL timespec = infinite timeout
     } else {
@@ -3428,8 +3655,15 @@ pub fn sys_ppoll(fds_ptr: u64, nfds: u64, timeout_ts_ptr: u64, _sigmask: u64, _s
         }
         let ts = unsafe { core::ptr::read(timeout_ts_ptr as *const Timespec) };
         // Convert to milliseconds, clamping to i32 range
-        let ms = ts.tv_sec.saturating_mul(1000).saturating_add(ts.tv_nsec / 1_000_000);
-        if ms > i32::MAX as i64 { i32::MAX } else { ms as i32 }
+        let ms = ts
+            .tv_sec
+            .saturating_mul(1000)
+            .saturating_add(ts.tv_nsec / 1_000_000);
+        if ms > i32::MAX as i64 {
+            i32::MAX
+        } else {
+            ms as i32
+        }
     };
     sys_poll(fds_ptr, nfds, timeout_ms)
 }
@@ -3465,7 +3699,11 @@ pub fn sys_select(
 
     log::debug!(
         "sys_select: nfds={}, readfds={:#x}, writefds={:#x}, exceptfds={:#x}, timeout={:#x}",
-        nfds, readfds_ptr, writefds_ptr, exceptfds_ptr, _timeout_ptr
+        nfds,
+        readfds_ptr,
+        writefds_ptr,
+        exceptfds_ptr,
+        _timeout_ptr
     );
 
     // Drain loopback queue for localhost connections (127.x.x.x, own IP).
@@ -3509,7 +3747,9 @@ pub fn sys_select(
 
     log::debug!(
         "sys_select: read={:#x}, write={:#x}, except={:#x}",
-        readfds, writefds, exceptfds
+        readfds,
+        writefds,
+        exceptfds
     );
 
     // Snapshot fd entries under PROCESS_MANAGER lock, then release it.
@@ -3543,9 +3783,8 @@ pub fn sys_select(
 
         for fd in 0..nfds {
             let fd_bit = 1u64 << fd;
-            let in_any = (readfds & fd_bit) != 0
-                || (writefds & fd_bit) != 0
-                || (exceptfds & fd_bit) != 0;
+            let in_any =
+                (readfds & fd_bit) != 0 || (writefds & fd_bit) != 0 || (exceptfds & fd_bit) != 0;
             if in_any {
                 fd_snapshots.push((fd, process.fd_table.get(fd).cloned()));
             }
@@ -3595,18 +3834,27 @@ pub fn sys_select(
 
     // Write results back to userspace (only if pointer is non-NULL)
     if readfds_ptr != 0 {
-        unsafe { *(readfds_ptr as *mut u64) = result_readfds; }
+        unsafe {
+            *(readfds_ptr as *mut u64) = result_readfds;
+        }
     }
     if writefds_ptr != 0 {
-        unsafe { *(writefds_ptr as *mut u64) = result_writefds; }
+        unsafe {
+            *(writefds_ptr as *mut u64) = result_writefds;
+        }
     }
     if exceptfds_ptr != 0 {
-        unsafe { *(exceptfds_ptr as *mut u64) = result_exceptfds; }
+        unsafe {
+            *(exceptfds_ptr as *mut u64) = result_exceptfds;
+        }
     }
 
     log::debug!(
         "sys_select: {} fds ready (read={:#x}, write={:#x}, except={:#x})",
-        ready_count, result_readfds, result_writefds, result_exceptfds
+        ready_count,
+        result_readfds,
+        result_writefds,
+        result_exceptfds
     );
 
     SyscallResult::Ok(ready_count)
@@ -3768,10 +4016,22 @@ pub fn sys_getrlimit(resource: u64, rlim_ptr: u64) -> SyscallResult {
     }
 
     let rlim = match resource {
-        RLIMIT_STACK => Rlimit { rlim_cur: 8 * 1024 * 1024, rlim_max: RLIM_INFINITY },
-        RLIMIT_NOFILE => Rlimit { rlim_cur: 1024, rlim_max: 4096 },
-        RLIMIT_CORE => Rlimit { rlim_cur: 0, rlim_max: RLIM_INFINITY },
-        _ => Rlimit { rlim_cur: RLIM_INFINITY, rlim_max: RLIM_INFINITY },
+        RLIMIT_STACK => Rlimit {
+            rlim_cur: 8 * 1024 * 1024,
+            rlim_max: RLIM_INFINITY,
+        },
+        RLIMIT_NOFILE => Rlimit {
+            rlim_cur: 1024,
+            rlim_max: 4096,
+        },
+        RLIMIT_CORE => Rlimit {
+            rlim_cur: 0,
+            rlim_max: RLIM_INFINITY,
+        },
+        _ => Rlimit {
+            rlim_cur: RLIM_INFINITY,
+            rlim_max: RLIM_INFINITY,
+        },
     };
 
     if super::userptr::copy_to_user(rlim_ptr as *mut Rlimit, &rlim).is_err() {
@@ -3781,7 +4041,12 @@ pub fn sys_getrlimit(resource: u64, rlim_ptr: u64) -> SyscallResult {
 }
 
 /// prlimit64 - Get/set resource limits
-pub fn sys_prlimit64(_pid: u64, resource: u64, _new_rlim_ptr: u64, old_rlim_ptr: u64) -> SyscallResult {
+pub fn sys_prlimit64(
+    _pid: u64,
+    resource: u64,
+    _new_rlim_ptr: u64,
+    old_rlim_ptr: u64,
+) -> SyscallResult {
     if old_rlim_ptr != 0 {
         return sys_getrlimit(resource, old_rlim_ptr);
     }
@@ -4039,11 +4304,7 @@ pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRes
             Ok(data) => {
                 let actual = core::cmp::min(data.len(), to_read);
                 unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        data.as_ptr(),
-                        buf_ptr as *mut u8,
-                        actual,
-                    );
+                    core::ptr::copy_nonoverlapping(data.as_ptr(), buf_ptr as *mut u8, actual);
                 }
                 SyscallResult::Ok(actual as u64)
             }

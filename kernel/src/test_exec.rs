@@ -554,8 +554,9 @@ pub fn test_exec_without_scheduling() {
 
         log::info!("Calling exec to load target program...");
 
-        match crate::process::with_process_manager(|manager| manager.exec_process(pid, target_elf, Some("hello_time")))
-        {
+        match crate::process::with_process_manager(|manager| {
+            manager.exec_process(pid, target_elf, Some("hello_time"))
+        }) {
             Some(Ok(entry_point)) => {
                 log::info!("✓ exec succeeded! New entry point: {:#x}", entry_point);
 
@@ -906,13 +907,20 @@ pub fn test_syscall_enosys() {
             log::info!("Created syscall_enosys process with PID {:?}", pid);
             log::info!("    -> Should print 'ENOSYS OK' if syscall 999 returns -38");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_SYSCALL_ENOSYS);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_SYSCALL_ENOSYS,
+            );
         }
         Err(e) => {
             log::error!("Failed to create syscall_enosys process: {}", e);
             log::error!("ENOSYS test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_SYSCALL_ENOSYS, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_SYSCALL_ENOSYS,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -945,13 +953,20 @@ pub fn test_signal_handler() {
             log::info!("Created signal_handler_test process with PID {:?}", pid);
             log::info!("    -> Should print 'SIGNAL_HANDLER_EXECUTED' if handler runs");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_SIGNAL_HANDLER);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_SIGNAL_HANDLER,
+            );
         }
         Err(e) => {
             log::error!("Failed to create signal_handler_test process: {}", e);
             log::error!("Signal handler test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_SIGNAL_HANDLER, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_SIGNAL_HANDLER,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -990,13 +1005,20 @@ pub fn test_signal_return() {
             log::info!("Created signal_return_test process with PID {:?}", pid);
             log::info!("    -> Should print 'SIGNAL_RETURN_WORKS' if trampoline works");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_SIGNAL_RETURN);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_SIGNAL_RETURN,
+            );
         }
         Err(e) => {
             log::error!("Failed to create signal_return_test process: {}", e);
             log::error!("Signal return test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_SIGNAL_RETURN, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_SIGNAL_RETURN,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1029,13 +1051,20 @@ pub fn test_signal_regs() {
             log::info!("Signal regs test: process scheduled for execution.");
             log::info!("    -> Should print 'SIGNAL_REGS_PRESERVED' if registers preserved");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_SIGNAL_REGS);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_SIGNAL_REGS,
+            );
         }
         Err(e) => {
             log::error!("Failed to create signal_regs_test process: {}", e);
             log::error!("Signal regs test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_SIGNAL_REGS, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_SIGNAL_REGS,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1068,13 +1097,20 @@ pub fn test_unix_socket() {
             log::info!("Unix socket test: process scheduled for execution.");
             log::info!("    -> Emits pass marker on success (UNIX_SOCKET_TEST_...)");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_UNIX_SOCKET);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_UNIX_SOCKET,
+            );
         }
         Err(e) => {
             log::error!("Failed to create unix_socket_test process: {}", e);
             log::error!("Unix socket test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_UNIX_SOCKET, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_UNIX_SOCKET,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1092,7 +1128,8 @@ pub fn test_unix_named_socket() {
     log::info!("Testing named Unix domain socket (bind/listen/accept/connect) functionality");
 
     #[cfg(feature = "testing")]
-    let unix_named_socket_test_elf_buf = crate::userspace_test::get_test_binary("unix_named_socket_test");
+    let unix_named_socket_test_elf_buf =
+        crate::userspace_test::get_test_binary("unix_named_socket_test");
     #[cfg(feature = "testing")]
     let unix_named_socket_test_elf: &[u8] = &unix_named_socket_test_elf_buf;
     #[cfg(not(feature = "testing"))]
@@ -1107,13 +1144,20 @@ pub fn test_unix_named_socket() {
             log::info!("Named Unix socket test: process scheduled for execution.");
             log::info!("    -> Emits pass marker on success (UNIX_NAMED_SOCKET_TEST_...)");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_UNIX_NAMED_SOCKET);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_UNIX_NAMED_SOCKET,
+            );
         }
         Err(e) => {
             log::error!("Failed to create unix_named_socket_test process: {}", e);
             log::error!("Named Unix socket test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_UNIX_NAMED_SOCKET, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_UNIX_NAMED_SOCKET,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1137,22 +1181,26 @@ pub fn test_fifo() {
     #[cfg(not(feature = "testing"))]
     let fifo_test_elf = &create_hello_world_elf();
 
-    match crate::process::creation::create_user_process(
-        String::from("fifo_test"),
-        fifo_test_elf,
-    ) {
+    match crate::process::creation::create_user_process(String::from("fifo_test"), fifo_test_elf) {
         Ok(pid) => {
             log::info!("Created fifo_test process with PID {:?}", pid);
             log::info!("FIFO test: process scheduled for execution.");
             log::info!("    -> Emits pass marker on success (FIFO_TEST_...)");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_FIFO);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_FIFO,
+            );
         }
         Err(e) => {
             log::error!("Failed to create fifo_test process: {}", e);
             log::error!("FIFO test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_FIFO, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_FIFO,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1176,22 +1224,26 @@ pub fn test_pipe() {
     #[cfg(not(feature = "testing"))]
     let pipe_test_elf = &create_hello_world_elf();
 
-    match crate::process::creation::create_user_process(
-        String::from("pipe_test"),
-        pipe_test_elf,
-    ) {
+    match crate::process::creation::create_user_process(String::from("pipe_test"), pipe_test_elf) {
         Ok(pid) => {
             log::info!("Created pipe_test process with PID {:?}", pid);
             log::info!("Pipe test: process scheduled for execution.");
             log::info!("    -> Emits pass marker on success (PIPE_TEST_...)");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_PIPE);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_PIPE,
+            );
         }
         Err(e) => {
             log::error!("Failed to create pipe_test process: {}", e);
             log::error!("Pipe test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_PIPE, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_PIPE,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1224,13 +1276,20 @@ pub fn test_pipe_fork() {
             log::info!("Pipe+fork test: process scheduled for execution.");
             log::info!("    -> Emits pass marker on success (PIPE_FORK_...)");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_PIPE_FORK);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_PIPE_FORK,
+            );
         }
         Err(e) => {
             log::error!("Failed to create pipe_fork_test process: {}", e);
             log::error!("Pipe+fork test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_PIPE_FORK, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_PIPE_FORK,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1248,7 +1307,8 @@ pub fn test_pipe_concurrent() {
     log::info!("Testing concurrent pipe writes from multiple processes");
 
     #[cfg(feature = "testing")]
-    let pipe_concurrent_test_elf_buf = crate::userspace_test::get_test_binary("pipe_concurrent_test");
+    let pipe_concurrent_test_elf_buf =
+        crate::userspace_test::get_test_binary("pipe_concurrent_test");
     #[cfg(feature = "testing")]
     let pipe_concurrent_test_elf: &[u8] = &pipe_concurrent_test_elf_buf;
     #[cfg(not(feature = "testing"))]
@@ -1263,13 +1323,20 @@ pub fn test_pipe_concurrent() {
             log::info!("Pipe concurrent test: process scheduled for execution.");
             log::info!("    -> Emits pass marker on success (PIPE_CONCURRENT_...)");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_PIPE_CONCURRENT);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_PIPE_CONCURRENT,
+            );
         }
         Err(e) => {
             log::error!("Failed to create pipe_concurrent_test process: {}", e);
             log::error!("Pipe concurrent test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_PIPE_CONCURRENT, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_PIPE_CONCURRENT,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1302,13 +1369,20 @@ pub fn test_waitpid() {
             log::info!("Waitpid test: process scheduled for execution.");
             log::info!("    -> Emits pass marker on success (WAITPID_TEST_PASSED)");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_WAITPID);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_WAITPID,
+            );
         }
         Err(e) => {
             log::error!("Failed to create waitpid_test process: {}", e);
             log::error!("Waitpid test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_WAITPID, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_WAITPID,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1341,13 +1415,20 @@ pub fn test_signal_fork() {
             log::info!("Signal fork test: process scheduled for execution.");
             log::info!("    -> Emits pass marker on success (SIGNAL_FORK_TEST_PASSED)");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_SIGNAL_FORK);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_SIGNAL_FORK,
+            );
         }
         Err(e) => {
             log::error!("Failed to create signal_fork_test process: {}", e);
             log::error!("Signal fork test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_SIGNAL_FORK, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_SIGNAL_FORK,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1380,13 +1461,20 @@ pub fn test_signal_kill() {
             log::info!("Signal kill test: process scheduled for execution.");
             log::info!("    -> Userspace will print pass marker when child terminated by SIGTERM");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_SIGNAL_KILL);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_SIGNAL_KILL,
+            );
         }
         Err(e) => {
             log::error!("Failed to create signal_test process: {}", e);
             log::error!("Signal kill test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_SIGNAL_KILL, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_SIGNAL_KILL,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1419,13 +1507,20 @@ pub fn test_sigchld() {
             log::info!("SIGCHLD test: process scheduled for execution.");
             log::info!("    -> Userspace will print pass marker when handler is called");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_SIGCHLD);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_SIGCHLD,
+            );
         }
         Err(e) => {
             log::error!("Failed to create sigchld_test process: {}", e);
             log::error!("SIGCHLD test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_SIGCHLD, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_SIGCHLD,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1458,13 +1553,20 @@ pub fn test_wnohang_timing() {
             log::info!("WNOHANG timing test: process scheduled for execution.");
             log::info!("    -> Emits pass marker on success (WNOHANG_TIMING_TEST_PASSED)");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_WNOHANG_TIMING);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_WNOHANG_TIMING,
+            );
         }
         Err(e) => {
             log::error!("Failed to create wnohang_timing_test process: {}", e);
             log::error!("WNOHANG timing test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_WNOHANG_TIMING, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_WNOHANG_TIMING,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1497,13 +1599,20 @@ pub fn test_signal_exec() {
             log::info!("Signal exec test: process scheduled for execution.");
             log::info!("    -> Test will emit pass marker on success");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_SIGNAL_EXEC);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_SIGNAL_EXEC,
+            );
         }
         Err(e) => {
             log::error!("Failed to create signal_exec_test process: {}", e);
             log::error!("Signal exec test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_SIGNAL_EXEC, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_SIGNAL_EXEC,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1527,22 +1636,27 @@ pub fn test_pause() {
     #[cfg(not(feature = "testing"))]
     let pause_test_elf = &create_hello_world_elf();
 
-    match crate::process::creation::create_user_process(
-        String::from("pause_test"),
-        pause_test_elf,
-    ) {
+    match crate::process::creation::create_user_process(String::from("pause_test"), pause_test_elf)
+    {
         Ok(pid) => {
             log::info!("Created pause_test process with PID {:?}", pid);
             log::info!("Pause test: process scheduled for execution.");
             log::info!("    -> Userspace will emit PAUSE_TEST marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_PAUSE);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_PAUSE,
+            );
         }
         Err(e) => {
             log::error!("Failed to create pause_test process: {}", e);
             log::error!("Pause test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_PAUSE, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_PAUSE,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1560,7 +1674,8 @@ pub fn test_kill_process_group() {
     log::info!("Testing process group kill semantics");
 
     #[cfg(feature = "testing")]
-    let kill_pgroup_test_elf_buf = crate::userspace_test::get_test_binary("kill_process_group_test");
+    let kill_pgroup_test_elf_buf =
+        crate::userspace_test::get_test_binary("kill_process_group_test");
     #[cfg(feature = "testing")]
     let kill_pgroup_test_elf: &[u8] = &kill_pgroup_test_elf_buf;
     #[cfg(not(feature = "testing"))]
@@ -1575,13 +1690,20 @@ pub fn test_kill_process_group() {
             log::info!("Kill process group test: process scheduled for execution.");
             log::info!("    -> Userspace will emit KILL_PGROUP_TEST marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_KILL_PROCESS_GROUP);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_KILL_PROCESS_GROUP,
+            );
         }
         Err(e) => {
             log::error!("Failed to create kill_process_group_test process: {}", e);
             log::error!("Kill process group test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_KILL_PROCESS_GROUP, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_KILL_PROCESS_GROUP,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1614,13 +1736,20 @@ pub fn test_sigsuspend() {
             log::info!("Sigsuspend test: process scheduled for execution.");
             log::info!("    -> Userspace will emit SIGSUSPEND_TEST marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_SIGSUSPEND);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_SIGSUSPEND,
+            );
         }
         Err(e) => {
             log::error!("Failed to create sigsuspend_test process: {}", e);
             log::error!("Sigsuspend test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_SIGSUSPEND, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_SIGSUSPEND,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1653,13 +1782,20 @@ pub fn test_sigaltstack() {
             log::info!("Sigaltstack test: process scheduled for execution.");
             log::info!("    -> Userspace will emit SIGALTSTACK_TEST marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_SIGALTSTACK);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_SIGALTSTACK,
+            );
         }
         Err(e) => {
             log::error!("Failed to create sigaltstack_test process: {}", e);
             log::error!("Sigaltstack test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_SIGALTSTACK, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_SIGALTSTACK,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1683,22 +1819,26 @@ pub fn test_dup() {
     #[cfg(not(feature = "testing"))]
     let dup_test_elf = &create_hello_world_elf();
 
-    match crate::process::creation::create_user_process(
-        String::from("dup_test"),
-        dup_test_elf,
-    ) {
+    match crate::process::creation::create_user_process(String::from("dup_test"), dup_test_elf) {
         Ok(pid) => {
             log::info!("Created dup_test process with PID {:?}", pid);
             log::info!("Dup test: process scheduled for execution.");
             log::info!("    -> Userspace will emit DUP_TEST marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_DUP);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_DUP,
+            );
         }
         Err(e) => {
             log::error!("Failed to create dup_test process: {}", e);
             log::error!("Dup test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_DUP, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_DUP,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1722,22 +1862,27 @@ pub fn test_fcntl() {
     #[cfg(not(feature = "testing"))]
     let fcntl_test_elf = &create_hello_world_elf();
 
-    match crate::process::creation::create_user_process(
-        String::from("fcntl_test"),
-        fcntl_test_elf,
-    ) {
+    match crate::process::creation::create_user_process(String::from("fcntl_test"), fcntl_test_elf)
+    {
         Ok(pid) => {
             log::info!("Created fcntl_test process with PID {:?}", pid);
             log::info!("Fcntl test: process scheduled for execution.");
             log::info!("    -> Userspace will emit FCNTL_TEST marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_FCNTL);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_FCNTL,
+            );
         }
         Err(e) => {
             log::error!("Failed to create fcntl_test process: {}", e);
             log::error!("Fcntl test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_FCNTL, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_FCNTL,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1761,22 +1906,27 @@ pub fn test_pipe2() {
     #[cfg(not(feature = "testing"))]
     let pipe2_test_elf = &create_hello_world_elf();
 
-    match crate::process::creation::create_user_process(
-        String::from("pipe2_test"),
-        pipe2_test_elf,
-    ) {
+    match crate::process::creation::create_user_process(String::from("pipe2_test"), pipe2_test_elf)
+    {
         Ok(pid) => {
             log::info!("Created pipe2_test process with PID {:?}", pid);
             log::info!("Pipe2 test: process scheduled for execution.");
             log::info!("    -> Userspace will emit PIPE2_TEST marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_PIPE2);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_PIPE2,
+            );
         }
         Err(e) => {
             log::error!("Failed to create pipe2_test process: {}", e);
             log::error!("Pipe2 test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_PIPE2, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_PIPE2,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1800,22 +1950,26 @@ pub fn test_poll() {
     #[cfg(not(feature = "testing"))]
     let poll_test_elf = &create_hello_world_elf();
 
-    match crate::process::creation::create_user_process(
-        String::from("poll_test"),
-        poll_test_elf,
-    ) {
+    match crate::process::creation::create_user_process(String::from("poll_test"), poll_test_elf) {
         Ok(pid) => {
             log::info!("Created poll_test process with PID {:?}", pid);
             log::info!("Poll test: process scheduled for execution.");
             log::info!("    -> Userspace will emit POLL_TEST marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_POLL);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_POLL,
+            );
         }
         Err(e) => {
             log::error!("Failed to create poll_test process: {}", e);
             log::error!("Poll test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_POLL, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_POLL,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1848,13 +2002,20 @@ pub fn test_select() {
             log::info!("Select test: process scheduled for execution.");
             log::info!("    -> Userspace will emit SELECT_TEST marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_SELECT);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_SELECT,
+            );
         }
         Err(e) => {
             log::error!("Failed to create select_test process: {}", e);
             log::error!("Select test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_SELECT, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_SELECT,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1887,13 +2048,20 @@ pub fn test_nonblock() {
             log::info!("Nonblock test: process scheduled for execution.");
             log::info!("    -> Userspace will emit NONBLOCK_TEST marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_NONBLOCK);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_NONBLOCK,
+            );
         }
         Err(e) => {
             log::error!("Failed to create nonblock_test process: {}", e);
             log::error!("Nonblock test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_NONBLOCK, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_NONBLOCK,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1917,22 +2085,26 @@ pub fn test_tty() {
     #[cfg(not(feature = "testing"))]
     let tty_test_elf = &create_hello_world_elf();
 
-    match crate::process::creation::create_user_process(
-        String::from("tty_test"),
-        tty_test_elf,
-    ) {
+    match crate::process::creation::create_user_process(String::from("tty_test"), tty_test_elf) {
         Ok(pid) => {
             log::info!("Created tty_test process with PID {:?}", pid);
             log::info!("TTY test: process scheduled for execution.");
             log::info!("    -> Userspace will emit TTY_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_TTY);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_TTY,
+            );
         }
         Err(e) => {
             log::error!("Failed to create tty_test process: {}", e);
             log::error!("TTY test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_TTY, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_TTY,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -1965,13 +2137,20 @@ pub fn test_job_control() {
             log::info!("Job control test: process scheduled for execution.");
             log::info!("    -> Userspace will emit JOB_CONTROL_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_JOB_CONTROL);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_JOB_CONTROL,
+            );
         }
         Err(e) => {
             log::error!("Failed to create job_control_test process: {}", e);
             log::error!("Job control test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_JOB_CONTROL, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_JOB_CONTROL,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2004,13 +2183,20 @@ pub fn test_session() {
             log::info!("Session test: process scheduled for execution.");
             log::info!("    -> Userspace will emit SESSION_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_SESSION);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_SESSION,
+            );
         }
         Err(e) => {
             log::error!("Failed to create session_test process: {}", e);
             log::error!("Session test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_SESSION, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_SESSION,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2043,13 +2229,20 @@ pub fn test_file_read() {
             log::info!("File read test: process scheduled for execution.");
             log::info!("    -> Userspace will emit FILE_READ_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_FILE_READ);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_FILE_READ,
+            );
         }
         Err(e) => {
             log::error!("Failed to create file_read_test process: {}", e);
             log::error!("File read test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_FILE_READ, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_FILE_READ,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2086,13 +2279,20 @@ pub fn test_ctrl_c() {
             log::info!("Ctrl-C test: process scheduled for execution.");
             log::info!("    -> Userspace will emit CTRL_C_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_CTRL_C);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_CTRL_C,
+            );
         }
         Err(e) => {
             log::error!("Failed to create ctrl_c_test process: {}", e);
             log::error!("Ctrl-C test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_CTRL_C, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_CTRL_C,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2117,13 +2317,20 @@ pub fn test_getdents() {
             log::info!("Getdents test: process scheduled for execution.");
             log::info!("    -> Userspace will emit GETDENTS_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_GETDENTS);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_GETDENTS,
+            );
         }
         Err(e) => {
             log::error!("Failed to create getdents_test process: {}", e);
             log::error!("Getdents test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_GETDENTS, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_GETDENTS,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2139,22 +2346,27 @@ pub fn test_lseek() {
     #[cfg(not(feature = "testing"))]
     let lseek_test_elf = &create_hello_world_elf();
 
-    match crate::process::creation::create_user_process(
-        String::from("lseek_test"),
-        lseek_test_elf,
-    ) {
+    match crate::process::creation::create_user_process(String::from("lseek_test"), lseek_test_elf)
+    {
         Ok(pid) => {
             log::info!("Created lseek_test process with PID {:?}", pid);
             log::info!("Lseek test: process scheduled for execution.");
             log::info!("    -> Userspace will emit LSEEK_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_LSEEK);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_LSEEK,
+            );
         }
         Err(e) => {
             log::error!("Failed to create lseek_test process: {}", e);
             log::error!("Lseek test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_LSEEK, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_LSEEK,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2179,13 +2391,20 @@ pub fn test_fs_write() {
             log::info!("Filesystem write test: process scheduled for execution.");
             log::info!("    -> Userspace will emit FS_WRITE_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_FS_WRITE);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_FS_WRITE,
+            );
         }
         Err(e) => {
             log::error!("Failed to create fs_write_test process: {}", e);
             log::error!("Filesystem write test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_FS_WRITE, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_FS_WRITE,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2210,13 +2429,20 @@ pub fn test_fs_rename() {
             log::info!("Filesystem rename test: process scheduled for execution.");
             log::info!("    -> Userspace will emit FS_RENAME_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_FS_RENAME);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_FS_RENAME,
+            );
         }
         Err(e) => {
             log::error!("Failed to create fs_rename_test process: {}", e);
             log::error!("Filesystem rename test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_FS_RENAME, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_FS_RENAME,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2241,13 +2467,20 @@ pub fn test_fs_large_file() {
             log::info!("Large file test: process scheduled for execution.");
             log::info!("    -> Userspace will emit FS_LARGE_FILE_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_FS_LARGE_FILE);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_FS_LARGE_FILE,
+            );
         }
         Err(e) => {
             log::error!("Failed to create fs_large_file_test process: {}", e);
             log::error!("Large file test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_FS_LARGE_FILE, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_FS_LARGE_FILE,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2272,13 +2505,20 @@ pub fn test_fs_directory() {
             log::info!("Directory test: process scheduled for execution.");
             log::info!("    -> Userspace will emit FS_DIRECTORY_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_FS_DIRECTORY);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_FS_DIRECTORY,
+            );
         }
         Err(e) => {
             log::error!("Failed to create fs_directory_test process: {}", e);
             log::error!("Directory test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_FS_DIRECTORY, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_FS_DIRECTORY,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2303,13 +2543,20 @@ pub fn test_fs_link() {
             log::info!("Link test: process scheduled for execution.");
             log::info!("    -> Userspace will emit FS_LINK_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_FS_LINK);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_FS_LINK,
+            );
         }
         Err(e) => {
             log::error!("Failed to create fs_link_test process: {}", e);
             log::error!("Link test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_FS_LINK, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_FS_LINK,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2334,13 +2581,20 @@ pub fn test_access() {
             log::info!("Access test: process scheduled for execution.");
             log::info!("    -> Userspace will emit ACCESS_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_ACCESS);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_ACCESS,
+            );
         }
         Err(e) => {
             log::error!("Failed to create access_test process: {}", e);
             log::error!("Access test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_ACCESS, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_ACCESS,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2356,22 +2610,27 @@ pub fn test_devfs() {
     #[cfg(not(feature = "testing"))]
     let devfs_test_elf = &create_hello_world_elf();
 
-    match crate::process::creation::create_user_process(
-        String::from("devfs_test"),
-        devfs_test_elf,
-    ) {
+    match crate::process::creation::create_user_process(String::from("devfs_test"), devfs_test_elf)
+    {
         Ok(pid) => {
             log::info!("Created devfs_test process with PID {:?}", pid);
             log::info!("Devfs test: process scheduled for execution.");
             log::info!("    -> Userspace will emit DEVFS_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_DEVFS);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_DEVFS,
+            );
         }
         Err(e) => {
             log::error!("Failed to create devfs_test process: {}", e);
             log::error!("Devfs test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_DEVFS, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_DEVFS,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2387,22 +2646,26 @@ pub fn test_cwd() {
     #[cfg(not(feature = "testing"))]
     let cwd_test_elf = &create_hello_world_elf();
 
-    match crate::process::creation::create_user_process(
-        String::from("cwd_test"),
-        cwd_test_elf,
-    ) {
+    match crate::process::creation::create_user_process(String::from("cwd_test"), cwd_test_elf) {
         Ok(pid) => {
             log::info!("Created cwd_test process with PID {:?}", pid);
             log::info!("CWD test: process scheduled for execution.");
             log::info!("    -> Userspace will emit CWD_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_CWD);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_CWD,
+            );
         }
         Err(e) => {
             log::error!("Failed to create cwd_test process: {}", e);
             log::error!("CWD test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_CWD, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_CWD,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2427,13 +2690,20 @@ pub fn test_exec_from_ext2() {
             log::info!("Exec ext2 test: process scheduled for execution.");
             log::info!("    -> Userspace will emit EXEC_EXT2_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_EXEC_FROM_EXT2);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_EXEC_FROM_EXT2,
+            );
         }
         Err(e) => {
             log::error!("Failed to create exec_from_ext2_test process: {}", e);
             log::error!("Exec ext2 test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_EXEC_FROM_EXT2, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_EXEC_FROM_EXT2,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2461,13 +2731,20 @@ pub fn test_fs_block_alloc() {
             log::info!("Block alloc test: process scheduled for execution.");
             log::info!("    -> Userspace will emit BLOCK_ALLOC_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_FS_BLOCK_ALLOC);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_FS_BLOCK_ALLOC,
+            );
         }
         Err(e) => {
             log::error!("Failed to create fs_block_alloc_test process: {}", e);
             log::error!("Block alloc test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_FS_BLOCK_ALLOC, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_FS_BLOCK_ALLOC,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2491,13 +2768,20 @@ pub fn test_hello_std_real() {
             log::info!("Created hello_std_real process with PID {:?}", pid);
             log::info!("hello_std_real test: process scheduled for execution.");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_HELLO_STD_REAL);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_HELLO_STD_REAL,
+            );
         }
         Err(e) => {
             log::error!("Failed to create hello_std_real process: {}", e);
             log::error!("hello_std_real test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_HELLO_STD_REAL, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_HELLO_STD_REAL,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2537,15 +2821,24 @@ pub fn test_fork_memory() {
         Ok(pid) => {
             log::info!("Created fork_memory_test process with PID {:?}", pid);
             log::info!("fork_memory_test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit FORK_MEMORY_ISOLATION_PASSED marker if successful");
+            log::info!(
+                "    -> Userspace will emit FORK_MEMORY_ISOLATION_PASSED marker if successful"
+            );
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_FORK_MEMORY);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_FORK_MEMORY,
+            );
         }
         Err(e) => {
             log::error!("Failed to create fork_memory_test process: {}", e);
             log::error!("Fork memory test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_FORK_MEMORY, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_FORK_MEMORY,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2588,13 +2881,20 @@ pub fn test_fork_state() {
             log::info!("fork_state_test: process scheduled for execution.");
             log::info!("    -> Userspace will emit FORK_STATE_COPY_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_FORK_STATE);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_FORK_STATE,
+            );
         }
         Err(e) => {
             log::error!("Failed to create fork_state_test process: {}", e);
             log::error!("Fork state test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_FORK_STATE, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_FORK_STATE,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2616,17 +2916,27 @@ pub fn test_fork_pending_signal() {
         fork_pending_signal_test_elf,
     ) {
         Ok(pid) => {
-            log::info!("Created fork_pending_signal_test process with PID {:?}", pid);
+            log::info!(
+                "Created fork_pending_signal_test process with PID {:?}",
+                pid
+            );
             log::info!(
                 "    -> Userspace will emit FORK_PENDING_SIGNAL_TEST_PASSED marker if successful"
             );
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_FORK_PENDING_SIGNAL);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_FORK_PENDING_SIGNAL,
+            );
         }
         Err(e) => {
             log::error!("Failed to create fork_pending_signal_test process: {}", e);
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_FORK_PENDING_SIGNAL, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_FORK_PENDING_SIGNAL,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2665,12 +2975,19 @@ pub fn test_cow_signal() {
             log::info!("Created cow_signal_test process with PID {:?}", pid);
             log::info!("    -> Userspace will emit COW_SIGNAL_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_COW_SIGNAL);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_COW_SIGNAL,
+            );
         }
         Err(e) => {
             log::error!("Failed to create cow_signal_test process: {}", e);
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_COW_SIGNAL, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_COW_SIGNAL,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2704,12 +3021,19 @@ pub fn test_cow_cleanup() {
             log::info!("Created cow_cleanup_test process with PID {:?}", pid);
             log::info!("    -> Userspace will emit COW_CLEANUP_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_COW_CLEANUP);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_COW_CLEANUP,
+            );
         }
         Err(e) => {
             log::error!("Failed to create cow_cleanup_test process: {}", e);
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_COW_CLEANUP, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_COW_CLEANUP,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2741,14 +3065,23 @@ pub fn test_cow_sole_owner() {
     ) {
         Ok(pid) => {
             log::info!("Created cow_sole_owner_test process with PID {:?}", pid);
-            log::info!("    -> Userspace will emit COW_SOLE_OWNER_TEST_PASSED marker if successful");
+            log::info!(
+                "    -> Userspace will emit COW_SOLE_OWNER_TEST_PASSED marker if successful"
+            );
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_COW_SOLE_OWNER);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_COW_SOLE_OWNER,
+            );
         }
         Err(e) => {
             log::error!("Failed to create cow_sole_owner_test process: {}", e);
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_COW_SOLE_OWNER, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_COW_SOLE_OWNER,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2783,12 +3116,19 @@ pub fn test_cow_stress() {
             log::info!("Created cow_stress_test process with PID {:?}", pid);
             log::info!("    -> Userspace will emit COW_STRESS_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_COW_STRESS);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_COW_STRESS,
+            );
         }
         Err(e) => {
             log::error!("Failed to create cow_stress_test process: {}", e);
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_COW_STRESS, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_COW_STRESS,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2821,12 +3161,19 @@ pub fn test_cow_readonly() {
             log::info!("Created cow_readonly_test process with PID {:?}", pid);
             log::info!("    -> Userspace will emit COW_READONLY_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_COW_READONLY);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_COW_READONLY,
+            );
         }
         Err(e) => {
             log::error!("Failed to create cow_readonly_test process: {}", e);
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_COW_READONLY, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_COW_READONLY,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2846,21 +3193,25 @@ pub fn test_argv() {
     #[cfg(not(feature = "testing"))]
     let argv_test_elf = &create_hello_world_elf();
 
-    match crate::process::creation::create_user_process(
-        String::from("argv_test"),
-        argv_test_elf,
-    ) {
+    match crate::process::creation::create_user_process(String::from("argv_test"), argv_test_elf) {
         Ok(pid) => {
             log::info!("Created argv_test process with PID {:?}", pid);
             log::info!("    -> Userspace will emit ARGV_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_ARGV);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_ARGV,
+            );
         }
         Err(e) => {
             log::error!("Failed to create argv_test process: {}", e);
             log::error!("Argv test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_ARGV, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_ARGV,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2884,12 +3235,19 @@ pub fn test_exec_argv() {
             log::info!("Created exec_argv_test process with PID {:?}", pid);
             log::info!("    -> Userspace will emit EXEC_ARGV_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_EXEC_ARGV);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_EXEC_ARGV,
+            );
         }
         Err(e) => {
             log::error!("Failed to create exec_argv_test process: {}", e);
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_EXEC_ARGV, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_EXEC_ARGV,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2920,12 +3278,19 @@ pub fn test_exec_stack_argv() {
                 "    -> Userspace will emit EXEC_STACK_ARGV_TEST_PASSED marker if successful"
             );
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_EXEC_STACK_ARGV);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_EXEC_STACK_ARGV,
+            );
         }
         Err(e) => {
             log::error!("Failed to create exec_stack_argv_test process: {}", e);
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_EXEC_STACK_ARGV, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_EXEC_STACK_ARGV,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2949,12 +3314,19 @@ pub fn test_cloexec() {
             log::info!("Created cloexec_test process with PID {:?}", pid);
             log::info!("    -> Userspace will emit CLOEXEC_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_CLOEXEC);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_CLOEXEC,
+            );
         }
         Err(e) => {
             log::error!("Failed to create cloexec_test process: {}", e);
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_CLOEXEC, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_CLOEXEC,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -2989,13 +3361,20 @@ pub fn test_shell_pipe() {
             log::info!("Shell pipe test: process scheduled for execution.");
             log::info!("    -> Userspace will emit SHELL_PIPE_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_SHELL_PIPE);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_SHELL_PIPE,
+            );
         }
         Err(e) => {
             log::error!("Failed to create shell_pipe_test process: {}", e);
             log::error!("Shell pipe test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_SHELL_PIPE, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_SHELL_PIPE,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -3013,22 +3392,26 @@ pub fn test_true_coreutil() {
     #[cfg(not(feature = "testing"))]
     let true_test_elf = &create_hello_world_elf();
 
-    match crate::process::creation::create_user_process(
-        String::from("true_test"),
-        true_test_elf,
-    ) {
+    match crate::process::creation::create_user_process(String::from("true_test"), true_test_elf) {
         Ok(pid) => {
             log::info!("Created true_test process with PID {:?}", pid);
             log::info!("true_test: process scheduled for execution.");
             log::info!("    -> Userspace will emit TRUE_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_TRUE_COREUTIL);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_TRUE_COREUTIL,
+            );
         }
         Err(e) => {
             log::error!("Failed to create true_test process: {}", e);
             log::error!("true_test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_TRUE_COREUTIL, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_TRUE_COREUTIL,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -3046,22 +3429,27 @@ pub fn test_false_coreutil() {
     #[cfg(not(feature = "testing"))]
     let false_test_elf = &create_hello_world_elf();
 
-    match crate::process::creation::create_user_process(
-        String::from("false_test"),
-        false_test_elf,
-    ) {
+    match crate::process::creation::create_user_process(String::from("false_test"), false_test_elf)
+    {
         Ok(pid) => {
             log::info!("Created false_test process with PID {:?}", pid);
             log::info!("false_test: process scheduled for execution.");
             log::info!("    -> Userspace will emit FALSE_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_FALSE_COREUTIL);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_FALSE_COREUTIL,
+            );
         }
         Err(e) => {
             log::error!("Failed to create false_test process: {}", e);
             log::error!("false_test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_FALSE_COREUTIL, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_FALSE_COREUTIL,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -3079,22 +3467,26 @@ pub fn test_head_coreutil() {
     #[cfg(not(feature = "testing"))]
     let head_test_elf = &create_hello_world_elf();
 
-    match crate::process::creation::create_user_process(
-        String::from("head_test"),
-        head_test_elf,
-    ) {
+    match crate::process::creation::create_user_process(String::from("head_test"), head_test_elf) {
         Ok(pid) => {
             log::info!("Created head_test process with PID {:?}", pid);
             log::info!("head_test: process scheduled for execution.");
             log::info!("    -> Userspace will emit HEAD_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_HEAD_COREUTIL);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_HEAD_COREUTIL,
+            );
         }
         Err(e) => {
             log::error!("Failed to create head_test process: {}", e);
             log::error!("head_test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_HEAD_COREUTIL, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_HEAD_COREUTIL,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -3112,22 +3504,26 @@ pub fn test_tail_coreutil() {
     #[cfg(not(feature = "testing"))]
     let tail_test_elf = &create_hello_world_elf();
 
-    match crate::process::creation::create_user_process(
-        String::from("tail_test"),
-        tail_test_elf,
-    ) {
+    match crate::process::creation::create_user_process(String::from("tail_test"), tail_test_elf) {
         Ok(pid) => {
             log::info!("Created tail_test process with PID {:?}", pid);
             log::info!("tail_test: process scheduled for execution.");
             log::info!("    -> Userspace will emit TAIL_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_TAIL_COREUTIL);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_TAIL_COREUTIL,
+            );
         }
         Err(e) => {
             log::error!("Failed to create tail_test process: {}", e);
             log::error!("tail_test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_TAIL_COREUTIL, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_TAIL_COREUTIL,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -3145,22 +3541,26 @@ pub fn test_wc_coreutil() {
     #[cfg(not(feature = "testing"))]
     let wc_test_elf = &create_hello_world_elf();
 
-    match crate::process::creation::create_user_process(
-        String::from("wc_test"),
-        wc_test_elf,
-    ) {
+    match crate::process::creation::create_user_process(String::from("wc_test"), wc_test_elf) {
         Ok(pid) => {
             log::info!("Created wc_test process with PID {:?}", pid);
             log::info!("wc_test: process scheduled for execution.");
             log::info!("    -> Userspace will emit WC_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_WC_COREUTIL);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_WC_COREUTIL,
+            );
         }
         Err(e) => {
             log::error!("Failed to create wc_test process: {}", e);
             log::error!("wc_test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_WC_COREUTIL, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_WC_COREUTIL,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -3178,22 +3578,27 @@ pub fn test_which_coreutil() {
     #[cfg(not(feature = "testing"))]
     let which_test_elf = &create_hello_world_elf();
 
-    match crate::process::creation::create_user_process(
-        String::from("which_test"),
-        which_test_elf,
-    ) {
+    match crate::process::creation::create_user_process(String::from("which_test"), which_test_elf)
+    {
         Ok(pid) => {
             log::info!("Created which_test process with PID {:?}", pid);
             log::info!("which_test: process scheduled for execution.");
             log::info!("    -> Userspace will emit WHICH_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_WHICH_COREUTIL);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_WHICH_COREUTIL,
+            );
         }
         Err(e) => {
             log::error!("Failed to create which_test process: {}", e);
             log::error!("which_test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_WHICH_COREUTIL, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_WHICH_COREUTIL,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -3211,22 +3616,26 @@ pub fn test_cat_coreutil() {
     #[cfg(not(feature = "testing"))]
     let cat_test_elf = &create_hello_world_elf();
 
-    match crate::process::creation::create_user_process(
-        String::from("cat_test"),
-        cat_test_elf,
-    ) {
+    match crate::process::creation::create_user_process(String::from("cat_test"), cat_test_elf) {
         Ok(pid) => {
             log::info!("Created cat_test process with PID {:?}", pid);
             log::info!("cat_test: process scheduled for execution.");
             log::info!("    -> Userspace will emit CAT_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_CAT_COREUTIL);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_CAT_COREUTIL,
+            );
         }
         Err(e) => {
             log::error!("Failed to create cat_test process: {}", e);
             log::error!("cat_test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_CAT_COREUTIL, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_CAT_COREUTIL,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -3244,22 +3653,26 @@ pub fn test_ls_coreutil() {
     #[cfg(not(feature = "testing"))]
     let ls_test_elf = &create_hello_world_elf();
 
-    match crate::process::creation::create_user_process(
-        String::from("ls_test"),
-        ls_test_elf,
-    ) {
+    match crate::process::creation::create_user_process(String::from("ls_test"), ls_test_elf) {
         Ok(pid) => {
             log::info!("Created ls_test process with PID {:?}", pid);
             log::info!("ls_test: process scheduled for execution.");
             log::info!("    -> Userspace will emit LS_TEST_PASSED marker if successful");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_LS_COREUTIL);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_LS_COREUTIL,
+            );
         }
         Err(e) => {
             log::error!("Failed to create ls_test process: {}", e);
             log::error!("ls_test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_LS_COREUTIL, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_LS_COREUTIL,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }
@@ -3291,15 +3704,24 @@ pub fn test_fbinfo() {
     ) {
         Ok(pid) => {
             log::info!("Created fbinfo_test process with PID {:?}", pid);
-            log::info!("    -> Userspace will emit FBINFO_TEST: all tests PASSED marker if successful");
+            log::info!(
+                "    -> Userspace will emit FBINFO_TEST: all tests PASSED marker if successful"
+            );
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::register_pid(pid.as_u64(), crate::test_framework::catalog::UTEST_FBINFO);
+            crate::test_framework::btrt::register_pid(
+                pid.as_u64(),
+                crate::test_framework::catalog::UTEST_FBINFO,
+            );
         }
         Err(e) => {
             log::error!("Failed to create fbinfo_test process: {}", e);
             log::error!("fbinfo_test cannot run without valid userspace process");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(crate::test_framework::catalog::UTEST_FBINFO, crate::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::UTEST_FBINFO,
+                crate::test_framework::btrt::BtrtErrorCode::NoExec,
+                0,
+            );
         }
     }
 }

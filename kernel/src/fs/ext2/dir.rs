@@ -22,10 +22,10 @@ pub const EXT2_FT_SYMLINK: u8 = 7;
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 pub struct Ext2DirEntryRaw {
-    pub inode: u32,        // Inode number (0 = deleted entry)
-    pub rec_len: u16,      // Total entry length (includes padding)
-    pub name_len: u8,      // Name length
-    pub file_type: u8,     // File type (EXT2_FT_*)
+    pub inode: u32,    // Inode number (0 = deleted entry)
+    pub rec_len: u16,  // Total entry length (includes padding)
+    pub name_len: u8,  // Name length
+    pub file_type: u8, // File type (EXT2_FT_*)
 }
 
 /// Parsed directory entry with owned name
@@ -350,10 +350,7 @@ pub fn add_directory_entry(
             dir_data[offset + 2],
             dir_data[offset + 3],
         ]);
-        let rec_len = u16::from_le_bytes([
-            dir_data[offset + 4],
-            dir_data[offset + 5],
-        ]) as usize;
+        let rec_len = u16::from_le_bytes([dir_data[offset + 4], dir_data[offset + 5]]) as usize;
         let entry_name_len = dir_data[offset + 6] as usize;
 
         if rec_len == 0 || rec_len < MIN_DIR_ENTRY_SIZE {
@@ -364,7 +361,14 @@ pub fn add_directory_entry(
             // Deleted entry - check if we can reuse its space
             if rec_len >= new_entry_size {
                 // Reuse this entry
-                write_dir_entry(dir_data, offset, new_inode, rec_len as u16, name_bytes, file_type);
+                write_dir_entry(
+                    dir_data,
+                    offset,
+                    new_inode,
+                    rec_len as u16,
+                    name_bytes,
+                    file_type,
+                );
                 return Ok(());
             }
         } else {
@@ -383,7 +387,14 @@ pub fn add_directory_entry(
 
                 // Write new entry after the existing one
                 let new_offset = offset + actual_size;
-                write_dir_entry(dir_data, new_offset, new_inode, new_entry_rec_len, name_bytes, file_type);
+                write_dir_entry(
+                    dir_data,
+                    new_offset,
+                    new_inode,
+                    new_entry_rec_len,
+                    name_bytes,
+                    file_type,
+                );
                 return Ok(());
             }
         }
@@ -456,7 +467,11 @@ pub fn is_directory_empty(dir_data: &[u8]) -> bool {
 /// # Returns
 /// * `Ok(())` - Entry was updated
 /// * `Err(msg)` - Entry not found or other error
-pub fn update_directory_entry(dir_data: &mut [u8], name: &str, new_inode: u32) -> Result<(), &'static str> {
+pub fn update_directory_entry(
+    dir_data: &mut [u8],
+    name: &str,
+    new_inode: u32,
+) -> Result<(), &'static str> {
     let mut offset = 0usize;
 
     while offset < dir_data.len() {
@@ -472,10 +487,7 @@ pub fn update_directory_entry(dir_data: &mut [u8], name: &str, new_inode: u32) -
             dir_data[offset + 2],
             dir_data[offset + 3],
         ]);
-        let rec_len = u16::from_le_bytes([
-            dir_data[offset + 4],
-            dir_data[offset + 5],
-        ]) as usize;
+        let rec_len = u16::from_le_bytes([dir_data[offset + 4], dir_data[offset + 5]]) as usize;
         let entry_name_len = dir_data[offset + 6] as usize;
 
         if rec_len == 0 || rec_len < MIN_DIR_ENTRY_SIZE {

@@ -79,13 +79,7 @@ pub fn init(pci_dev: &Device) -> Result<(), &'static str> {
 }
 
 #[no_mangle]
-pub extern "C" fn breenix_xhci_trace_raw_c(
-    op: u8,
-    slot: u8,
-    dci: u8,
-    data: *const u8,
-    len: usize,
-) {
+pub extern "C" fn breenix_xhci_trace_raw_c(op: u8, slot: u8, dci: u8, data: *const u8, len: usize) {
     if data.is_null() || len == 0 {
         return;
     }
@@ -94,11 +88,7 @@ pub extern "C" fn breenix_xhci_trace_raw_c(
 }
 
 #[no_mangle]
-pub extern "C" fn breenix_xhci_trace_note_c(
-    slot: u8,
-    data: *const u8,
-    len: usize,
-) {
+pub extern "C" fn breenix_xhci_trace_note_c(slot: u8, data: *const u8, len: usize) {
     if data.is_null() || len == 0 {
         return;
     }

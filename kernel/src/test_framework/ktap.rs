@@ -32,7 +32,10 @@ pub fn emit_pass(test_num: u16, name: &str) {
 pub fn emit_fail(test_num: u16, name: &str, error_code: u8, error_detail: u32) {
     serial_println!(
         "not ok {} {} # FAIL error_code={} detail={:#x}",
-        test_num, name, error_code, error_detail
+        test_num,
+        name,
+        error_code,
+        error_detail
     );
 }
 
@@ -48,5 +51,10 @@ pub fn emit_timeout(test_num: u16, name: &str) {
 
 /// Emit the summary line.
 pub fn emit_summary(passed: u32, failed: u32, skipped: u32) {
-    serial_println!("# {} passed, {} failed, {} skipped", passed, failed, skipped);
+    serial_println!(
+        "# {} passed, {} failed, {} skipped",
+        passed,
+        failed,
+        skipped
+    );
 }

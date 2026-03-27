@@ -27,9 +27,9 @@ use spin::Mutex;
 
 /// VirtIO block request types
 mod request_type {
-    pub const IN: u32 = 0;    // Read from device
+    pub const IN: u32 = 0; // Read from device
     #[allow(dead_code)] // Part of block device API, used by write_sector
-    pub const OUT: u32 = 1;   // Write to device
+    pub const OUT: u32 = 1; // Write to device
 }
 
 /// VirtIO block status codes
@@ -130,7 +130,10 @@ impl VirtioBlockDevice {
         // The QUEUE_SIZE register (0x0C) is read-only - the driver cannot negotiate
         // a smaller size. QEMU uses vring.num to calculate avail/used ring offsets,
         // so if we allocate a differently-sized queue, the offsets won't match.
-        log::info!("VirtIO block: Device queue size = {} (must use exactly)", queue_size);
+        log::info!(
+            "VirtIO block: Device queue size = {} (must use exactly)",
+            queue_size
+        );
 
         // Allocate virtqueue
         let queue = Virtqueue::new(queue_size)?;
@@ -155,11 +158,15 @@ impl VirtioBlockDevice {
         if readback_pfn != expected_pfn {
             log::error!(
                 "VirtIO block: Queue address mismatch! Expected PFN={:#x}, got PFN={:#x}",
-                expected_pfn, readback_pfn
+                expected_pfn,
+                readback_pfn
             );
             return Err("Queue address was not set correctly");
         }
-        log::info!("VirtIO block: Queue address verified: PFN={:#x}", readback_pfn);
+        log::info!(
+            "VirtIO block: Queue address verified: PFN={:#x}",
+            readback_pfn
+        );
 
         // Device is ready
         device.driver_ok();
@@ -238,7 +245,11 @@ impl VirtioBlockDevice {
         if start_sector >= self.capacity {
             return Err("Start sector out of range");
         }
-        if start_sector.checked_add(num_sectors as u64).ok_or("Sector overflow")? > self.capacity {
+        if start_sector
+            .checked_add(num_sectors as u64)
+            .ok_or("Sector overflow")?
+            > self.capacity
+        {
             return Err("Sector range exceeds disk capacity");
         }
 
@@ -291,9 +302,9 @@ impl VirtioBlockDevice {
 
         // Build descriptor chain
         let buffers = [
-            (header_phys, 16, false),                        // Header: device reads
-            (data_phys, SECTOR_SIZE as u32, true),           // Data: device writes
-            (status_phys, 1, true),                          // Status: device writes
+            (header_phys, 16, false),              // Header: device reads
+            (data_phys, SECTOR_SIZE as u32, true), // Data: device writes
+            (status_phys, 1, true),                // Status: device writes
         ];
 
         queue.add_chain(&buffers).ok_or("Queue full")?;
@@ -318,8 +329,11 @@ impl VirtioBlockDevice {
         if timeout == 0 {
             // Debug: dump queue state on timeout
             log::error!("VirtIO block: Read timeout! Dumping queue state...");
-            log::error!("  used_idx={}, last_used_idx={}",
-                queue.debug_used_idx(), queue.debug_last_used_idx());
+            log::error!(
+                "  used_idx={}, last_used_idx={}",
+                queue.debug_used_idx(),
+                queue.debug_last_used_idx()
+            );
             log::error!("  ISR status: {:#x}", self.device.read_isr());
             return Err("Read request timed out");
         }
@@ -335,7 +349,11 @@ impl VirtioBlockDevice {
 
         // Copy data to user buffer
         unsafe {
-            core::ptr::copy_nonoverlapping(data_virt as *const u8, buffer.as_mut_ptr(), SECTOR_SIZE);
+            core::ptr::copy_nonoverlapping(
+                data_virt as *const u8,
+                buffer.as_mut_ptr(),
+                SECTOR_SIZE,
+            );
         }
 
         // Free descriptor chain
@@ -379,14 +397,12 @@ impl VirtioBlockDevice {
 
         // Build descriptor chain
         let buffers = [
-            (header_phys, 16, false),                        // Header: device reads
-            (data_phys, SECTOR_SIZE as u32, false),          // Data: device reads
-            (status_phys, 1, true),                          // Status: device writes
+            (header_phys, 16, false),               // Header: device reads
+            (data_phys, SECTOR_SIZE as u32, false), // Data: device reads
+            (status_phys, 1, true),                 // Status: device writes
         ];
 
-        let _desc_head = queue
-            .add_chain(&buffers)
-            .ok_or("Queue full")?;
+        let _desc_head = queue.add_chain(&buffers).ok_or("Queue full")?;
 
         // Notify device
         core::sync::atomic::fence(Ordering::SeqCst);
@@ -449,7 +465,8 @@ impl VirtioBlockDevice {
 
 // Global block device instances
 static BLOCK_DEVICE: Mutex<Option<Arc<VirtioBlockDevice>>> = Mutex::new(None);
-static BLOCK_DEVICES: Mutex<alloc::vec::Vec<Arc<VirtioBlockDevice>>> = Mutex::new(alloc::vec::Vec::new());
+static BLOCK_DEVICES: Mutex<alloc::vec::Vec<Arc<VirtioBlockDevice>>> =
+    Mutex::new(alloc::vec::Vec::new());
 
 /// Initialize the VirtIO block driver
 ///
@@ -503,7 +520,10 @@ pub fn init() -> Result<(), &'static str> {
     // See kernel/src/interrupts.rs -> virtio_block_interrupt_handler()
     // No dynamic registration needed - the handler is static.
 
-    log::info!("VirtIO block: Driver initialized with {} device(s)", BLOCK_DEVICES.lock().len());
+    log::info!(
+        "VirtIO block: Driver initialized with {} device(s)",
+        BLOCK_DEVICES.lock().len()
+    );
 
     Ok(())
 }
@@ -529,10 +549,7 @@ pub fn test_read() -> Result<(), &'static str> {
     device.read_sector(0, &mut buffer)?;
 
     log::info!("VirtIO block test: Read successful!");
-    log::info!(
-        "  First 16 bytes: {:02x?}",
-        &buffer[..16]
-    );
+    log::info!("  First 16 bytes: {:02x?}", &buffer[..16]);
 
     // Check for MBR signature
     if buffer[510] == 0x55 && buffer[511] == 0xAA {

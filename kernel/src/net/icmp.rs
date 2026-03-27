@@ -114,13 +114,19 @@ pub fn handle_icmp(eth_frame: &EthernetFrame, ip: &Ipv4Packet, icmp: &IcmpPacket
             #[cfg(target_arch = "x86_64")]
             log::info!(
                 "ICMP: Echo request from {}.{}.{}.{} seq={}",
-                ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3],
+                ip.src_ip[0],
+                ip.src_ip[1],
+                ip.src_ip[2],
+                ip.src_ip[3],
                 icmp.sequence
             );
             #[cfg(target_arch = "aarch64")]
             crate::serial_println!(
                 "[icmp] Echo request from {}.{}.{}.{} seq={}",
-                ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3],
+                ip.src_ip[0],
+                ip.src_ip[1],
+                ip.src_ip[2],
+                ip.src_ip[3],
                 icmp.sequence
             );
 
@@ -131,13 +137,19 @@ pub fn handle_icmp(eth_frame: &EthernetFrame, ip: &Ipv4Packet, icmp: &IcmpPacket
             #[cfg(target_arch = "x86_64")]
             log::info!(
                 "NET: ICMP echo reply received from {}.{}.{}.{} seq={}",
-                ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3],
+                ip.src_ip[0],
+                ip.src_ip[1],
+                ip.src_ip[2],
+                ip.src_ip[3],
                 icmp.sequence
             );
             #[cfg(target_arch = "aarch64")]
             crate::serial_println!(
                 "[net] ICMP echo reply received from {}.{}.{}.{} seq={}",
-                ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3],
+                ip.src_ip[0],
+                ip.src_ip[1],
+                ip.src_ip[2],
+                ip.src_ip[3],
                 icmp.sequence
             );
         }
@@ -145,21 +157,31 @@ pub fn handle_icmp(eth_frame: &EthernetFrame, ip: &Ipv4Packet, icmp: &IcmpPacket
             #[cfg(target_arch = "x86_64")]
             log::warn!(
                 "ICMP: Destination unreachable from {}.{}.{}.{} code={}",
-                ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3],
+                ip.src_ip[0],
+                ip.src_ip[1],
+                ip.src_ip[2],
+                ip.src_ip[3],
                 icmp.code
             );
             #[cfg(target_arch = "aarch64")]
             crate::serial_println!(
                 "[icmp] Destination unreachable from {}.{}.{}.{} code={}",
-                ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3],
+                ip.src_ip[0],
+                ip.src_ip[1],
+                ip.src_ip[2],
+                ip.src_ip[3],
                 icmp.code
             );
         }
         _ => {
             #[cfg(target_arch = "x86_64")]
-            log::debug!("ICMP: Unknown type {} from {}.{}.{}.{}",
+            log::debug!(
+                "ICMP: Unknown type {} from {}.{}.{}.{}",
                 icmp.icmp_type,
-                ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3]
+                ip.src_ip[0],
+                ip.src_ip[1],
+                ip.src_ip[2],
+                ip.src_ip[3]
             );
         }
     }
@@ -178,12 +200,7 @@ fn send_echo_reply(eth_frame: &EthernetFrame, ip: &Ipv4Packet, icmp: &IcmpPacket
     let icmp_reply = IcmpPacket::echo_reply(icmp.identifier, icmp.sequence, icmp.payload);
 
     // Build IP packet
-    let ip_packet = Ipv4Packet::build(
-        config.ip_addr,
-        ip.src_ip,
-        PROTOCOL_ICMP,
-        &icmp_reply,
-    );
+    let ip_packet = Ipv4Packet::build(config.ip_addr, ip.src_ip, PROTOCOL_ICMP, &icmp_reply);
 
     // Build Ethernet frame (reply to sender)
     let frame = super::ethernet::EthernetFrame::build(
@@ -198,8 +215,12 @@ fn send_echo_reply(eth_frame: &EthernetFrame, ip: &Ipv4Packet, icmp: &IcmpPacket
         log::warn!("ICMP: Failed to send echo reply: {}", _e);
     } else {
         #[cfg(target_arch = "x86_64")]
-        log::debug!("ICMP: Sent echo reply to {}.{}.{}.{}",
-            ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3]
+        log::debug!(
+            "ICMP: Sent echo reply to {}.{}.{}.{}",
+            ip.src_ip[0],
+            ip.src_ip[1],
+            ip.src_ip[2],
+            ip.src_ip[3]
         );
     }
 }

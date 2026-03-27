@@ -4,9 +4,9 @@
 //! draws to the framebuffer. By running rendering on a dedicated thread with
 //! its own 512 KiB stack, we avoid stack overflow in syscall/interrupt context.
 
-use super::render_queue;
 #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
 use super::log_capture;
+use super::render_queue;
 use crate::task::kthread::{kthread_run, kthread_should_stop, KthreadHandle};
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
@@ -198,9 +198,13 @@ fn update_mouse_cursor() {
 /// Check if there's a pending GPU flush without consuming the dirty state.
 fn has_pending_flush() -> bool {
     #[cfg(target_arch = "aarch64")]
-    { crate::graphics::arm64_fb::has_dirty_rect() }
+    {
+        crate::graphics::arm64_fb::has_dirty_rect()
+    }
     #[cfg(not(target_arch = "aarch64"))]
-    { false }
+    {
+        false
+    }
 }
 
 /// Flush the framebuffer if dirty. Returns true if a flush was performed.

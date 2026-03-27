@@ -12,8 +12,10 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use super::progress::{
+    get_overall_progress, get_progress, get_stage_progress, is_complete, is_started,
+};
 use super::registry::{SubsystemId, TestStage};
-use super::progress::{get_progress, get_stage_progress, is_started, is_complete, get_overall_progress};
 
 /// Whether graphical display is available and initialized
 static DISPLAY_READY: AtomicBool = AtomicBool::new(false);
@@ -75,9 +77,13 @@ fn has_framebuffer_available() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
         #[cfg(feature = "interactive")]
-        { crate::logger::SHELL_FRAMEBUFFER.get().is_some() }
+        {
+            crate::logger::SHELL_FRAMEBUFFER.get().is_some()
+        }
         #[cfg(not(feature = "interactive"))]
-        { false }
+        {
+            false
+        }
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -100,7 +106,7 @@ fn has_framebuffer_available() -> bool {
 #[cfg(any(feature = "interactive", target_arch = "aarch64"))]
 fn render_to_framebuffer() {
     use crate::graphics::primitives::{
-        fill_rect, draw_text, draw_rect, Canvas, Color, Rect, TextStyle,
+        draw_rect, draw_text, fill_rect, Canvas, Color, Rect, TextStyle,
     };
 
     // Color scheme
@@ -115,10 +121,10 @@ fn render_to_framebuffer() {
     const COLOR_BAR_EMPTY: Color = Color::rgb(64, 64, 64);
 
     // Stage colors for progress bar segments
-    const COLOR_STAGE_EARLY: Color = Color::rgb(0, 200, 100);    // Green - EarlyBoot
-    const COLOR_STAGE_SCHED: Color = Color::rgb(0, 150, 255);    // Blue - PostScheduler
-    const COLOR_STAGE_PROC: Color = Color::rgb(255, 200, 0);     // Yellow - ProcessContext
-    const COLOR_STAGE_USER: Color = Color::rgb(180, 100, 255);   // Purple - Userspace
+    const COLOR_STAGE_EARLY: Color = Color::rgb(0, 200, 100); // Green - EarlyBoot
+    const COLOR_STAGE_SCHED: Color = Color::rgb(0, 150, 255); // Blue - PostScheduler
+    const COLOR_STAGE_PROC: Color = Color::rgb(255, 200, 0); // Yellow - ProcessContext
+    const COLOR_STAGE_USER: Color = Color::rgb(180, 100, 255); // Purple - Userspace
 
     // Layout constants
     const PANEL_MARGIN_X: i32 = 40;
@@ -259,10 +265,10 @@ fn render_to_framebuffer() {
     ) {
         // Stage colors in order
         const STAGE_COLORS: [Color; TestStage::COUNT] = [
-            COLOR_STAGE_EARLY,  // EarlyBoot - Green
-            COLOR_STAGE_SCHED,  // PostScheduler - Blue
-            COLOR_STAGE_PROC,   // ProcessContext - Yellow
-            COLOR_STAGE_USER,   // Userspace - Purple
+            COLOR_STAGE_EARLY, // EarlyBoot - Green
+            COLOR_STAGE_SCHED, // PostScheduler - Blue
+            COLOR_STAGE_PROC,  // ProcessContext - Yellow
+            COLOR_STAGE_USER,  // Userspace - Purple
         ];
 
         // Draw background (empty bar)
@@ -380,7 +386,12 @@ fn render_to_framebuffer() {
     }
 
     /// Format the summary line
-    fn format_summary(completed: u32, total: u32, subsystems: u32, failed: u32) -> alloc::string::String {
+    fn format_summary(
+        completed: u32,
+        total: u32,
+        subsystems: u32,
+        failed: u32,
+    ) -> alloc::string::String {
         use alloc::format;
 
         if failed == 0 {

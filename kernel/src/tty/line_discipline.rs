@@ -297,7 +297,11 @@ impl LineDiscipline {
     /// Handle WERASE character (Ctrl+W) - erase last word
     fn handle_word_erase(&mut self, echo_fn: &mut dyn FnMut(u8)) {
         // Skip trailing whitespace
-        while self.line_buffer.last().map_or(false, |&c| c == b' ' || c == b'\t') {
+        while self
+            .line_buffer
+            .last()
+            .map_or(false, |&c| c == b' ' || c == b'\t')
+        {
             self.handle_erase(echo_fn);
         }
 

@@ -53,15 +53,15 @@ pub struct Ext2Inode {
     pub i_flags: u32,       // File flags
     pub i_osd1: u32,        // OS dependent value 1
     pub i_block: [u32; 15], // Block pointers:
-                            //   [0-11]: Direct blocks
-                            //   [12]: Single indirect
-                            //   [13]: Double indirect
-                            //   [14]: Triple indirect
-    pub i_generation: u32,  // File version (for NFS)
-    pub i_file_acl: u32,    // File ACL block
-    pub i_dir_acl: u32,     // Directory ACL / high 32 bits of size
-    pub i_faddr: u32,       // Fragment address
-    pub i_osd2: [u8; 12],   // OS dependent value 2
+    //   [0-11]: Direct blocks
+    //   [12]: Single indirect
+    //   [13]: Double indirect
+    //   [14]: Triple indirect
+    pub i_generation: u32, // File version (for NFS)
+    pub i_file_acl: u32,   // File ACL block
+    pub i_dir_acl: u32,    // Directory ACL / high 32 bits of size
+    pub i_faddr: u32,      // Fragment address
+    pub i_osd2: [u8; 12],  // OS dependent value 2
 }
 
 /// File type enumeration
@@ -136,28 +136,27 @@ impl Ext2Inode {
         // Get the inode table starting block for this block group
         // Safety: block_groups is a packed struct, need unaligned read
         let inode_table_block = unsafe {
-            core::ptr::read_unaligned(core::ptr::addr_of!(block_groups[block_group].bg_inode_table))
+            core::ptr::read_unaligned(core::ptr::addr_of!(
+                block_groups[block_group].bg_inode_table
+            ))
         };
 
         // Calculate byte offset within the inode table
         // Safety: superblock is a packed struct, need unaligned read
-        let s_rev_level = unsafe {
-            core::ptr::read_unaligned(core::ptr::addr_of!(superblock.s_rev_level))
-        };
+        let s_rev_level =
+            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(superblock.s_rev_level)) };
         let inode_size = if s_rev_level == 0 {
             128 // Original ext2 revision uses 128-byte inodes
         } else {
-            let s_inode_size = unsafe {
-                core::ptr::read_unaligned(core::ptr::addr_of!(superblock.s_inode_size))
-            };
+            let s_inode_size =
+                unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(superblock.s_inode_size)) };
             s_inode_size as u32
         };
         let byte_offset = local_index * inode_size;
 
         // Calculate which ext2 block and offset within that block
-        let s_log_block_size = unsafe {
-            core::ptr::read_unaligned(core::ptr::addr_of!(superblock.s_log_block_size))
-        };
+        let s_log_block_size =
+            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(superblock.s_log_block_size)) };
         let ext2_block_size = 1024u32 << s_log_block_size;
         let ext2_block_offset = byte_offset / ext2_block_size;
         let offset_in_ext2_block = (byte_offset % ext2_block_size) as usize;
@@ -232,11 +231,13 @@ impl Ext2Inode {
     /// are stored in i_dir_acl. This allows files larger than 4GB.
     pub fn size(&self) -> u64 {
         // Safety: Reading from packed struct requires unaligned access
-        let low_bits = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.i_size)) } as u64;
+        let low_bits =
+            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.i_size)) } as u64;
 
         // For regular files, i_dir_acl contains high 32 bits of size
         if self.is_file() {
-            let high_bits = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.i_dir_acl)) } as u64;
+            let high_bits =
+                unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.i_dir_acl)) } as u64;
             (high_bits << 32) | low_bits
         } else {
             low_bits
@@ -268,7 +269,12 @@ impl Ext2Inode {
     /// // After changing inode metadata (chmod, chown, etc.)
     /// inode.update_timestamps(false, false, true);
     /// ```
-    pub fn update_timestamps(&mut self, update_atime: bool, update_mtime: bool, update_ctime: bool) {
+    pub fn update_timestamps(
+        &mut self,
+        update_atime: bool,
+        update_mtime: bool,
+        update_ctime: bool,
+    ) {
         let now = crate::time::current_unix_time() as u32;
 
         if update_atime {
@@ -320,7 +326,8 @@ pub fn decrement_inode_links<B: BlockDevice + ?Sized>(
         .map_err(|_| "Failed to read inode")?;
 
     // Decrement the link count
-    let current_links = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_links_count)) };
+    let current_links =
+        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_links_count)) };
     let new_links = current_links.saturating_sub(1);
     inode.i_links_count = new_links;
 
@@ -333,7 +340,11 @@ pub fn decrement_inode_links<B: BlockDevice + ?Sized>(
         // Free all data blocks associated with this inode
         let blocks_freed = free_inode_blocks(device, superblock, block_groups, &inode)?;
         if blocks_freed > 0 {
-            log::debug!("ext2: freed {} blocks for inode {}", blocks_freed, inode_num);
+            log::debug!(
+                "ext2: freed {} blocks for inode {}",
+                blocks_freed,
+                inode_num
+            );
         }
 
         // Free the inode in the bitmap
@@ -341,7 +352,8 @@ pub fn decrement_inode_links<B: BlockDevice + ?Sized>(
     }
 
     // Write the updated inode back
-    inode.write_to(device, inode_num, superblock, block_groups)
+    inode
+        .write_to(device, inode_num, superblock, block_groups)
         .map_err(|_| "Failed to write inode")?;
 
     Ok(new_links)
@@ -375,7 +387,8 @@ pub fn increment_inode_links<B: BlockDevice + ?Sized>(
         .map_err(|_| "Failed to read inode")?;
 
     // Increment the link count (saturating to prevent overflow)
-    let current_links = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_links_count)) };
+    let current_links =
+        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_links_count)) };
     let new_links = current_links.saturating_add(1);
     inode.i_links_count = new_links;
 
@@ -383,7 +396,8 @@ pub fn increment_inode_links<B: BlockDevice + ?Sized>(
     inode.update_timestamps(false, false, true);
 
     // Write the updated inode back
-    inode.write_to(device, inode_num, superblock, block_groups)
+    inode
+        .write_to(device, inode_num, superblock, block_groups)
         .map_err(|_| "Failed to write inode")?;
 
     Ok(new_links)
@@ -411,12 +425,16 @@ fn free_inode_bitmap<B: BlockDevice + ?Sized>(
 
     // Read the inode bitmap block
     // Use stack-based buffer to avoid heap allocation (bump allocator doesn't reclaim)
-    let bitmap_block = unsafe {
-        core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_inode_bitmap))
-    };
+    let bitmap_block =
+        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_inode_bitmap)) };
     let mut bitmap_buf = [0u8; 4096]; // Max block size
-    read_ext2_block(device, bitmap_block, block_size, &mut bitmap_buf[..block_size])
-        .map_err(|_| "Failed to read inode bitmap")?;
+    read_ext2_block(
+        device,
+        bitmap_block,
+        block_size,
+        &mut bitmap_buf[..block_size],
+    )
+    .map_err(|_| "Failed to read inode bitmap")?;
 
     // Clear the bit for this inode
     let byte_index = (local_index / 8) as usize;
@@ -431,9 +449,8 @@ fn free_inode_bitmap<B: BlockDevice + ?Sized>(
         .map_err(|_| "Failed to write inode bitmap")?;
 
     // Update the free inode count
-    let free_inodes = unsafe {
-        core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_free_inodes_count))
-    };
+    let free_inodes =
+        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_free_inodes_count)) };
     unsafe {
         core::ptr::write_unaligned(
             core::ptr::addr_of_mut!(bg.bg_free_inodes_count),
@@ -469,9 +486,7 @@ fn free_inode_blocks<B: BlockDevice + ?Sized>(
     let mut blocks_freed = 0u32;
 
     // Read the i_block array safely from the packed struct
-    let i_block = unsafe {
-        core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block))
-    };
+    let i_block = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block)) };
 
     // 1. Free direct blocks (i_block[0-11])
     for i in 0..12 {
@@ -560,8 +575,13 @@ fn free_double_indirect_block<B: BlockDevice + ?Sized>(
     // Read the double indirect block (contains pointers to single indirect blocks)
     // Use stack-based buffer to avoid heap allocation (bump allocator doesn't reclaim)
     let mut buf = [0u8; 4096]; // Max block size
-    read_ext2_block(device, double_indirect_block, block_size, &mut buf[..block_size])
-        .map_err(|_| "Failed to read double indirect block")?;
+    read_ext2_block(
+        device,
+        double_indirect_block,
+        block_size,
+        &mut buf[..block_size],
+    )
+    .map_err(|_| "Failed to read double indirect block")?;
 
     // For each first-level pointer
     for i in 0..ptrs_per_block {
@@ -575,7 +595,13 @@ fn free_double_indirect_block<B: BlockDevice + ?Sized>(
 
         if first_level_ptr != 0 {
             // Free all data blocks referenced by this single indirect block
-            blocks_freed += free_indirect_block(device, superblock, block_groups, first_level_ptr, block_size)?;
+            blocks_freed += free_indirect_block(
+                device,
+                superblock,
+                block_groups,
+                first_level_ptr,
+                block_size,
+            )?;
             // Free the single indirect block itself
             free_block(device, first_level_ptr, superblock, block_groups)?;
             blocks_freed += 1;
@@ -599,8 +625,13 @@ fn free_triple_indirect_block<B: BlockDevice + ?Sized>(
     // Read the triple indirect block (contains pointers to double indirect blocks)
     // Use stack-based buffer to avoid heap allocation (bump allocator doesn't reclaim)
     let mut buf = [0u8; 4096]; // Max block size
-    read_ext2_block(device, triple_indirect_block, block_size, &mut buf[..block_size])
-        .map_err(|_| "Failed to read triple indirect block")?;
+    read_ext2_block(
+        device,
+        triple_indirect_block,
+        block_size,
+        &mut buf[..block_size],
+    )
+    .map_err(|_| "Failed to read triple indirect block")?;
 
     // For each first-level pointer
     for i in 0..ptrs_per_block {
@@ -614,7 +645,14 @@ fn free_triple_indirect_block<B: BlockDevice + ?Sized>(
 
         if first_level_ptr != 0 {
             // Free all blocks referenced by this double indirect block
-            blocks_freed += free_double_indirect_block(device, superblock, block_groups, first_level_ptr, block_size, ptrs_per_block)?;
+            blocks_freed += free_double_indirect_block(
+                device,
+                superblock,
+                block_groups,
+                first_level_ptr,
+                block_size,
+                ptrs_per_block,
+            )?;
             // Free the double indirect block itself
             free_block(device, first_level_ptr, superblock, block_groups)?;
             blocks_freed += 1;
@@ -655,28 +693,27 @@ impl Ext2Inode {
         // Get the inode table starting block for this block group
         // Safety: block_groups is a packed struct, need unaligned read
         let inode_table_block = unsafe {
-            core::ptr::read_unaligned(core::ptr::addr_of!(block_groups[block_group].bg_inode_table))
+            core::ptr::read_unaligned(core::ptr::addr_of!(
+                block_groups[block_group].bg_inode_table
+            ))
         };
 
         // Calculate byte offset within the inode table
         // Safety: superblock is a packed struct, need unaligned read
-        let s_rev_level = unsafe {
-            core::ptr::read_unaligned(core::ptr::addr_of!(superblock.s_rev_level))
-        };
+        let s_rev_level =
+            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(superblock.s_rev_level)) };
         let inode_size = if s_rev_level == 0 {
             128 // Original ext2 revision uses 128-byte inodes
         } else {
-            let s_inode_size = unsafe {
-                core::ptr::read_unaligned(core::ptr::addr_of!(superblock.s_inode_size))
-            };
+            let s_inode_size =
+                unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(superblock.s_inode_size)) };
             s_inode_size as u32
         };
         let byte_offset = local_index * inode_size;
 
         // Calculate which block and offset within that block
-        let s_log_block_size = unsafe {
-            core::ptr::read_unaligned(core::ptr::addr_of!(superblock.s_log_block_size))
-        };
+        let s_log_block_size =
+            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(superblock.s_log_block_size)) };
         let ext2_block_size = 1024u32 << s_log_block_size;
         let ext2_block_offset = byte_offset / ext2_block_size;
         let offset_in_ext2_block = (byte_offset % ext2_block_size) as usize;
@@ -700,12 +737,8 @@ impl Ext2Inode {
 
         // Write the inode structure into the buffer
         // Safety: We're writing the first 128 bytes of the inode structure
-        let inode_bytes = unsafe {
-            core::slice::from_raw_parts(
-                self as *const Ext2Inode as *const u8,
-                128,
-            )
-        };
+        let inode_bytes =
+            unsafe { core::slice::from_raw_parts(self as *const Ext2Inode as *const u8, 128) };
         block_buf[offset_in_ext2_block..offset_in_ext2_block + 128].copy_from_slice(inode_bytes);
 
         // Write all device blocks back
@@ -730,18 +763,18 @@ impl Ext2Inode {
 
         Self {
             i_mode: EXT2_S_IFREG | (mode & 0o777),
-            i_uid: 0,          // root for now
+            i_uid: 0, // root for now
             i_size: 0,
             i_atime: now,
             i_ctime: now,
             i_mtime: now,
             i_dtime: 0,
-            i_gid: 0,          // root for now
-            i_links_count: 1,  // One link from the directory entry
-            i_blocks: 0,       // No data blocks allocated yet
+            i_gid: 0,         // root for now
+            i_links_count: 1, // One link from the directory entry
+            i_blocks: 0,      // No data blocks allocated yet
             i_flags: 0,
             i_osd1: 0,
-            i_block: [0; 15],  // No blocks allocated
+            i_block: [0; 15], // No blocks allocated
             i_generation: 0,
             i_file_acl: 0,
             i_dir_acl: 0,
@@ -767,18 +800,18 @@ impl Ext2Inode {
 
         let mut inode = Self {
             i_mode: EXT2_S_IFLNK | 0o777, // Symlinks typically have full permissions
-            i_uid: 0,                      // root for now
-            i_size: target_len as u32,     // Size is the length of the target path
+            i_uid: 0,                     // root for now
+            i_size: target_len as u32,    // Size is the length of the target path
             i_atime: now,
             i_ctime: now,
             i_mtime: now,
             i_dtime: 0,
-            i_gid: 0,                      // root for now
-            i_links_count: 1,              // One link from the directory entry
-            i_blocks: 0,                   // Updated if using data block
+            i_gid: 0,         // root for now
+            i_links_count: 1, // One link from the directory entry
+            i_blocks: 0,      // Updated if using data block
             i_flags: 0,
             i_osd1: 0,
-            i_block: [0; 15],              // Will store target if fast symlink
+            i_block: [0; 15], // Will store target if fast symlink
             i_generation: 0,
             i_file_acl: 0,
             i_dir_acl: 0,
@@ -794,9 +827,7 @@ impl Ext2Inode {
             // We treat it as a byte array of 60 bytes
             // Use addr_of_mut! to get a raw pointer without creating a reference to packed field
             let block_ptr = core::ptr::addr_of_mut!(inode.i_block) as *mut u8;
-            let block_bytes = unsafe {
-                core::slice::from_raw_parts_mut(block_ptr, 60)
-            };
+            let block_bytes = unsafe { core::slice::from_raw_parts_mut(block_ptr, 60) };
             block_bytes[..target_len].copy_from_slice(target_bytes);
             // i_blocks stays 0 for fast symlinks (no data blocks used)
         }
@@ -817,18 +848,18 @@ impl Ext2Inode {
 
         Self {
             i_mode: EXT2_S_IFDIR | (mode & 0o777),
-            i_uid: 0,          // root for now
-            i_size: 0,         // Will be set when directory data is written
+            i_uid: 0,  // root for now
+            i_size: 0, // Will be set when directory data is written
             i_atime: now,
             i_ctime: now,
             i_mtime: now,
             i_dtime: 0,
-            i_gid: 0,          // root for now
-            i_links_count: 2,  // Self via "." and parent via directory entry
-            i_blocks: 0,       // Will be set when blocks are allocated
+            i_gid: 0,         // root for now
+            i_links_count: 2, // Self via "." and parent via directory entry
+            i_blocks: 0,      // Will be set when blocks are allocated
             i_flags: 0,
             i_osd1: 0,
-            i_block: [0; 15],  // No blocks allocated yet
+            i_block: [0; 15], // No blocks allocated yet
             i_generation: 0,
             i_file_acl: 0,
             i_dir_acl: 0,
@@ -869,9 +900,8 @@ pub fn allocate_inode<B: BlockDevice + ?Sized>(
     // Search each block group for a free inode
     for (bg_index, bg) in block_groups.iter_mut().enumerate() {
         // Read free inodes count safely from packed struct
-        let free_inodes = unsafe {
-            core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_free_inodes_count))
-        };
+        let free_inodes =
+            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_free_inodes_count)) };
 
         if free_inodes == 0 {
             continue; // No free inodes in this group
@@ -879,12 +909,16 @@ pub fn allocate_inode<B: BlockDevice + ?Sized>(
 
         // Read the inode bitmap block
         // Use stack-based buffer to avoid heap allocation (bump allocator doesn't reclaim)
-        let bitmap_block = unsafe {
-            core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_inode_bitmap))
-        };
+        let bitmap_block =
+            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_inode_bitmap)) };
         let mut bitmap_buf = [0u8; 4096]; // Max block size
-        read_ext2_block(device, bitmap_block, block_size, &mut bitmap_buf[..block_size])
-            .map_err(|_| "Failed to read inode bitmap")?;
+        read_ext2_block(
+            device,
+            bitmap_block,
+            block_size,
+            &mut bitmap_buf[..block_size],
+        )
+        .map_err(|_| "Failed to read inode bitmap")?;
 
         // Search for a free inode in this group
         for local_inode in 0..inodes_per_group {
@@ -1177,10 +1211,11 @@ mod tests {
         // Create an inode with specific block pointers
         let mode = EXT2_S_IFREG | 0o644;
         let blocks: [u32; 15] = [
-            100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, // Direct blocks [0-11]
-            200,  // Single indirect [12]
-            300,  // Double indirect [13]
-            400,  // Triple indirect [14]
+            100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110,
+            111, // Direct blocks [0-11]
+            200, // Single indirect [12]
+            300, // Double indirect [13]
+            400, // Triple indirect [14]
         ];
         let buf = create_mock_inode(mode, 1000, 1000, 1024, 1, &blocks);
 

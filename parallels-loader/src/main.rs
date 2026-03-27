@@ -9,8 +9,8 @@ mod kernel_entry;
 mod kernel_load;
 mod page_tables;
 
-use uefi::prelude::*;
 use uefi::mem::memory_map::{MemoryMap, MemoryType};
+use uefi::prelude::*;
 use uefi::table::cfg::ACPI2_GUID;
 
 use hw_config::HardwareConfig;
@@ -57,7 +57,11 @@ fn main() -> Status {
     match acpi_discovery::discover_hardware(rsdp_addr, config) {
         Ok(()) => {
             log::info!("--- Discovery Complete ---");
-            log::info!("  UART:    0x{:08x} (IRQ {})", config.uart_base_phys, config.uart_irq);
+            log::info!(
+                "  UART:    0x{:08x} (IRQ {})",
+                config.uart_base_phys,
+                config.uart_irq
+            );
             log::info!(
                 "  GICv{}:   GICD=0x{:08x}",
                 config.gic_version,
@@ -96,8 +100,12 @@ fn main() -> Status {
             break;
         }
         let r = &config.ram_regions[i];
-        log::info!("  RAM: {:#x} - {:#x} ({} MB)",
-            r.base, r.base + r.size, r.size / (1024 * 1024));
+        log::info!(
+            "  RAM: {:#x} - {:#x} ({} MB)",
+            r.base,
+            r.base + r.size,
+            r.size / (1024 * 1024)
+        );
     }
 
     // Compute RAM base offset for kernel relocation.
@@ -116,16 +124,24 @@ fn main() -> Status {
         0
     };
     if ram_base_offset != 0 {
-        log::info!("RAM relocation: offset={:#x} (actual={:#x}, expected={:#x})",
-            ram_base_offset, actual_ram_base, expected_ram_base);
+        log::info!(
+            "RAM relocation: offset={:#x} (actual={:#x}, expected={:#x})",
+            ram_base_offset,
+            actual_ram_base,
+            expected_ram_base
+        );
     }
 
     // Load kernel ELF from ESP (with relocation offset applied to load addresses)
     log::info!("--- Loading Kernel ---");
     let loaded_kernel = match kernel_load::load_kernel(ram_base_offset) {
         Ok(k) => {
-            log::info!("Kernel loaded: entry_phys={:#x}, range={:#x}-{:#x}",
-                k.entry_phys, k.load_base, k.load_end);
+            log::info!(
+                "Kernel loaded: entry_phys={:#x}, range={:#x}-{:#x}",
+                k.entry_phys,
+                k.load_base,
+                k.load_end
+            );
             k
         }
         Err(e) => {
@@ -145,15 +161,23 @@ fn main() -> Status {
                         if c == b'\n' {
                             if self.1 == 1 {
                                 let lsr = (self.0 + 5) as *const u8;
-                                while core::ptr::read_volatile(lsr) & 0x20 == 0 { core::hint::spin_loop(); }
+                                while core::ptr::read_volatile(lsr) & 0x20 == 0 {
+                                    core::hint::spin_loop();
+                                }
                                 core::ptr::write_volatile(self.0 as *mut u8, b'\r');
-                            } else { core::ptr::write_volatile(self.0 as *mut u32, b'\r' as u32); }
+                            } else {
+                                core::ptr::write_volatile(self.0 as *mut u32, b'\r' as u32);
+                            }
                         }
                         if self.1 == 1 {
                             let lsr = (self.0 + 5) as *const u8;
-                            while core::ptr::read_volatile(lsr) & 0x20 == 0 { core::hint::spin_loop(); }
+                            while core::ptr::read_volatile(lsr) & 0x20 == 0 {
+                                core::hint::spin_loop();
+                            }
                             core::ptr::write_volatile(self.0 as *mut u8, c);
-                        } else { core::ptr::write_volatile(self.0 as *mut u32, c as u32); }
+                        } else {
+                            core::ptr::write_volatile(self.0 as *mut u32, c as u32);
+                        }
                     }
                 }
                 Ok(())
@@ -162,26 +186,42 @@ fn main() -> Status {
         let mut u = Su(config.uart_base_phys, config.uart_type);
         let _ = writeln!(u, "[ram] {} regions:", config.ram_region_count);
         for i in 0..config.ram_region_count as usize {
-            if i >= config.ram_regions.len() { break; }
+            if i >= config.ram_regions.len() {
+                break;
+            }
             let r = &config.ram_regions[i];
-            let _ = writeln!(u, "[ram]   {:#x} - {:#x} ({} MB)",
-                r.base, r.base + r.size, r.size / (1024 * 1024));
+            let _ = writeln!(
+                u,
+                "[ram]   {:#x} - {:#x} ({} MB)",
+                r.base,
+                r.base + r.size,
+                r.size / (1024 * 1024)
+            );
         }
-        let _ = writeln!(u, "[kern] entry_phys={:#x} load={:#x}-{:#x}",
-            loaded_kernel.entry_phys, loaded_kernel.load_base, loaded_kernel.load_end);
+        let _ = writeln!(
+            u,
+            "[kern] entry_phys={:#x} load={:#x}-{:#x}",
+            loaded_kernel.entry_phys, loaded_kernel.load_base, loaded_kernel.load_end
+        );
     }
 
     // Discover UEFI GOP framebuffer (optional — kernel works without display)
     log::info!("--- GOP Framebuffer Discovery ---");
     match gop_discovery::discover_gop(config) {
         Ok(()) => {
-            log::info!("GOP framebuffer: {}x{} stride={} fmt={} base={:#x} size={:#x}",
+            log::info!(
+                "GOP framebuffer: {}x{} stride={} fmt={} base={:#x} size={:#x}",
                 config.framebuffer.width,
                 config.framebuffer.height,
                 config.framebuffer.stride,
-                if config.framebuffer.pixel_format == 1 { "BGR" } else { "RGB" },
+                if config.framebuffer.pixel_format == 1 {
+                    "BGR"
+                } else {
+                    "RGB"
+                },
                 config.framebuffer.base,
-                config.framebuffer.size);
+                config.framebuffer.size
+            );
         }
         Err(e) => {
             log::warn!("GOP not available: {} (continuing without display)", e);
@@ -191,12 +231,25 @@ fn main() -> Status {
     // Read wall clock time from UEFI before ExitBootServices
     match uefi::runtime::get_time() {
         Ok(time) => {
-            let ts = efi_time_to_unix(time.year(), time.month(), time.day(),
-                                      time.hour(), time.minute(), time.second());
+            let ts = efi_time_to_unix(
+                time.year(),
+                time.month(),
+                time.day(),
+                time.hour(),
+                time.minute(),
+                time.second(),
+            );
             config.boot_wall_time_utc = ts;
-            log::info!("UEFI time: {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC (unix={})",
-                time.year(), time.month(), time.day(),
-                time.hour(), time.minute(), time.second(), ts);
+            log::info!(
+                "UEFI time: {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC (unix={})",
+                time.year(),
+                time.month(),
+                time.day(),
+                time.hour(),
+                time.minute(),
+                time.second(),
+                ts
+            );
         }
         Err(e) => {
             log::warn!("UEFI GetTime failed: {:?}", e);
@@ -210,15 +263,19 @@ fn main() -> Status {
     // kernel can access PCI config space without conflicting with kernel code.
     let ecam_ipa = config.pci_ecam_base;
     let ecam_size = config.pci_ecam_size;
-    let fb_ipa = if config.has_framebuffer != 0 { config.framebuffer.base } else { 0 };
+    let fb_ipa = if config.has_framebuffer != 0 {
+        config.framebuffer.base
+    } else {
+        0
+    };
 
-    if ram_base_offset > 0
-        && ecam_ipa >= 0x4000_0000
-        && ecam_ipa < 0x8000_0000
-        && ecam_size > 0
-    {
-        log::info!("ECAM remap: IPA {:#x} -> VA {:#x} (size {:#x})",
-            ecam_ipa, page_tables::ECAM_REMAP_VA, ecam_size);
+    if ram_base_offset > 0 && ecam_ipa >= 0x4000_0000 && ecam_ipa < 0x8000_0000 && ecam_size > 0 {
+        log::info!(
+            "ECAM remap: IPA {:#x} -> VA {:#x} (size {:#x})",
+            ecam_ipa,
+            page_tables::ECAM_REMAP_VA,
+            ecam_size
+        );
         config.pci_ecam_base = page_tables::ECAM_REMAP_VA;
     }
 
@@ -228,8 +285,16 @@ fn main() -> Status {
         ecam_size,
         fb_ipa,
         gicd_ipa: config.gicd_base,
-        gicr_ipa: if config.gicr_range_count > 0 { config.gicr_ranges[0].base } else { 0 },
-        gicr_size: if config.gicr_range_count > 0 { config.gicr_ranges[0].length as u64 } else { 0 },
+        gicr_ipa: if config.gicr_range_count > 0 {
+            config.gicr_ranges[0].base
+        } else {
+            0
+        },
+        gicr_size: if config.gicr_range_count > 0 {
+            config.gicr_ranges[0].length as u64
+        } else {
+            0
+        },
     };
 
     // --- xHCI: DisconnectController DISABLED ---
@@ -255,7 +320,9 @@ fn main() -> Status {
     unsafe {
         if config.uart_type == 1 {
             let lsr = (config.uart_base_phys + 5) as *const u8;
-            while core::ptr::read_volatile(lsr) & 0x20 == 0 { core::hint::spin_loop(); }
+            while core::ptr::read_volatile(lsr) & 0x20 == 0 {
+                core::hint::spin_loop();
+            }
             core::ptr::write_volatile(config.uart_base_phys as *mut u8, b'Z');
         } else {
             core::ptr::write_volatile(config.uart_base_phys as *mut u32, b'Z' as u32);
@@ -306,7 +373,9 @@ fn main() -> Status {
         // Newline
         if hw_config.uart_type == 1 {
             let lsr = (hw_config.uart_base_phys + 5) as *const u8;
-            while core::ptr::read_volatile(lsr) & 0x20 == 0 { core::hint::spin_loop(); }
+            while core::ptr::read_volatile(lsr) & 0x20 == 0 {
+                core::hint::spin_loop();
+            }
             core::ptr::write_volatile(hw_config.uart_base_phys as *mut u8, b'\n');
         }
     }
@@ -417,7 +486,13 @@ fn efi_time_to_unix(year: u16, month: u8, day: u8, hour: u8, minute: u8, second:
         match m {
             1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
             4 | 6 | 9 | 11 => 30,
-            2 => if is_leap(y) { 29 } else { 28 },
+            2 => {
+                if is_leap(y) {
+                    29
+                } else {
+                    28
+                }
+            }
             _ => 0,
         }
     };
@@ -478,9 +553,9 @@ fn disconnect_xhci_driver() -> u32 {
     use uefi::boot;
 
     // Find all handles with EFI_PCI_IO_PROTOCOL
-    let handles = match boot::locate_handle_buffer(
-        boot::SearchType::ByProtocol(&<PciIoProtocol as uefi::Identify>::GUID),
-    ) {
+    let handles = match boot::locate_handle_buffer(boot::SearchType::ByProtocol(
+        &<PciIoProtocol as uefi::Identify>::GUID,
+    )) {
         Ok(h) => h,
         Err(_) => {
             log::warn!("xHCI disconnect: no PCI handles found");
@@ -488,7 +563,10 @@ fn disconnect_xhci_driver() -> u32 {
         }
     };
 
-    log::info!("xHCI disconnect: found {} PCI device handles", handles.len());
+    log::info!(
+        "xHCI disconnect: found {} PCI device handles",
+        handles.len()
+    );
 
     let image = boot::image_handle();
 
@@ -528,7 +606,13 @@ fn disconnect_xhci_driver() -> u32 {
             continue;
         }
 
-        log::info!("xHCI disconnect: found device at {:04x}:{:02x}:{:02x}.{:x}", seg, bus, dev, fun);
+        log::info!(
+            "xHCI disconnect: found device at {:04x}:{:02x}:{:02x}.{:x}",
+            seg,
+            bus,
+            dev,
+            fun
+        );
 
         // Drop the protocol reference before disconnecting
         drop(pci_io);
@@ -580,12 +664,20 @@ fn pre_ebs_xhci_halt_reset(ecam_base: u64) {
     let cap_length = (cap_word & 0xFF) as u64;
     let op_base = bar0_phys + cap_length;
 
-    log::info!("xHCI pre-EBS reset: cap_length={} op_base=0x{:x}", cap_length, op_base);
+    log::info!(
+        "xHCI pre-EBS reset: cap_length={} op_base=0x{:x}",
+        cap_length,
+        op_base
+    );
 
     // Read current USBCMD and USBSTS
     let usbcmd = unsafe { core::ptr::read_volatile(op_base as *const u32) };
     let usbsts = unsafe { core::ptr::read_volatile((op_base + 4) as *const u32) };
-    log::info!("xHCI pre-EBS: USBCMD=0x{:08x} USBSTS=0x{:08x}", usbcmd, usbsts);
+    log::info!(
+        "xHCI pre-EBS: USBCMD=0x{:08x} USBSTS=0x{:08x}",
+        usbcmd,
+        usbsts
+    );
 
     // Step 1: Halt the controller (clear RS bit 0)
     if usbcmd & 1 != 0 {
@@ -648,5 +740,9 @@ fn pre_ebs_xhci_halt_reset(ecam_base: u64) {
     // Read final state
     let usbcmd_final = unsafe { core::ptr::read_volatile(op_base as *const u32) };
     let usbsts_final = unsafe { core::ptr::read_volatile((op_base + 4) as *const u32) };
-    log::info!("xHCI pre-EBS: final USBCMD=0x{:08x} USBSTS=0x{:08x}", usbcmd_final, usbsts_final);
+    log::info!(
+        "xHCI pre-EBS: final USBCMD=0x{:08x} USBSTS=0x{:08x}",
+        usbcmd_final,
+        usbsts_final
+    );
 }

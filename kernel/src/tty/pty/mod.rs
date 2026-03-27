@@ -7,11 +7,11 @@ pub mod pair;
 // Re-export PtyPair for external use
 pub use pair::PtyPair;
 
+use crate::syscall::errno::{ENOMEM, ENOSPC};
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::{Mutex, Once};
-use crate::syscall::errno::{ENOMEM, ENOSPC};
 
 /// Maximum number of PTY pairs
 pub const MAX_PTYS: u32 = 256;

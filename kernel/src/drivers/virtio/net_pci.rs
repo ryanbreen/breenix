@@ -131,38 +131,99 @@ struct TxBuffer {
 
 // Static buffers
 static mut PCI_RX_QUEUE: QueueMemory = QueueMemory {
-    desc: [VirtqDesc { addr: 0, len: 0, flags: 0, next: 0 }; VIRTQ_SIZE],
-    avail: VirtqAvail { flags: 0, idx: 0, ring: [0; VIRTQ_SIZE] },
+    desc: [VirtqDesc {
+        addr: 0,
+        len: 0,
+        flags: 0,
+        next: 0,
+    }; VIRTQ_SIZE],
+    avail: VirtqAvail {
+        flags: 0,
+        idx: 0,
+        ring: [0; VIRTQ_SIZE],
+    },
     _padding: [0; 8192 - 4096 - (4 + 2 * VIRTQ_SIZE)],
-    used: VirtqUsed { flags: 0, idx: 0, ring: [VirtqUsedElem { id: 0, len: 0 }; VIRTQ_SIZE] },
+    used: VirtqUsed {
+        flags: 0,
+        idx: 0,
+        ring: [VirtqUsedElem { id: 0, len: 0 }; VIRTQ_SIZE],
+    },
 };
 
 static mut PCI_TX_QUEUE: QueueMemory = QueueMemory {
-    desc: [VirtqDesc { addr: 0, len: 0, flags: 0, next: 0 }; VIRTQ_SIZE],
-    avail: VirtqAvail { flags: 0, idx: 0, ring: [0; VIRTQ_SIZE] },
+    desc: [VirtqDesc {
+        addr: 0,
+        len: 0,
+        flags: 0,
+        next: 0,
+    }; VIRTQ_SIZE],
+    avail: VirtqAvail {
+        flags: 0,
+        idx: 0,
+        ring: [0; VIRTQ_SIZE],
+    },
     _padding: [0; 8192 - 4096 - (4 + 2 * VIRTQ_SIZE)],
-    used: VirtqUsed { flags: 0, idx: 0, ring: [VirtqUsedElem { id: 0, len: 0 }; VIRTQ_SIZE] },
+    used: VirtqUsed {
+        flags: 0,
+        idx: 0,
+        ring: [VirtqUsedElem { id: 0, len: 0 }; VIRTQ_SIZE],
+    },
 };
 
 static mut PCI_RX_BUFFER_0: RxBuffer = RxBuffer {
-    hdr: VirtioNetHdr { flags: 0, gso_type: 0, hdr_len: 0, gso_size: 0, csum_start: 0, csum_offset: 0 },
+    hdr: VirtioNetHdr {
+        flags: 0,
+        gso_type: 0,
+        hdr_len: 0,
+        gso_size: 0,
+        csum_start: 0,
+        csum_offset: 0,
+    },
     data: [0; MAX_PACKET_SIZE],
 };
 static mut PCI_RX_BUFFER_1: RxBuffer = RxBuffer {
-    hdr: VirtioNetHdr { flags: 0, gso_type: 0, hdr_len: 0, gso_size: 0, csum_start: 0, csum_offset: 0 },
+    hdr: VirtioNetHdr {
+        flags: 0,
+        gso_type: 0,
+        hdr_len: 0,
+        gso_size: 0,
+        csum_start: 0,
+        csum_offset: 0,
+    },
     data: [0; MAX_PACKET_SIZE],
 };
 static mut PCI_RX_BUFFER_2: RxBuffer = RxBuffer {
-    hdr: VirtioNetHdr { flags: 0, gso_type: 0, hdr_len: 0, gso_size: 0, csum_start: 0, csum_offset: 0 },
+    hdr: VirtioNetHdr {
+        flags: 0,
+        gso_type: 0,
+        hdr_len: 0,
+        gso_size: 0,
+        csum_start: 0,
+        csum_offset: 0,
+    },
     data: [0; MAX_PACKET_SIZE],
 };
 static mut PCI_RX_BUFFER_3: RxBuffer = RxBuffer {
-    hdr: VirtioNetHdr { flags: 0, gso_type: 0, hdr_len: 0, gso_size: 0, csum_start: 0, csum_offset: 0 },
+    hdr: VirtioNetHdr {
+        flags: 0,
+        gso_type: 0,
+        hdr_len: 0,
+        gso_size: 0,
+        csum_start: 0,
+        csum_offset: 0,
+    },
     data: [0; MAX_PACKET_SIZE],
 };
 
 static mut PCI_TX_BUFFER: TxBuffer = TxBuffer {
-    hdr: VirtioNetHdr { flags: 0, gso_type: 0, hdr_len: 0, gso_size: 0, csum_start: 0, csum_offset: 0 },
+    hdr: VirtioNetHdr {
+        flags: 0,
+        gso_type: 0,
+        hdr_len: 0,
+        gso_size: 0,
+        csum_start: 0,
+        csum_offset: 0,
+    },
     data: [0; MAX_PACKET_SIZE],
 };
 
@@ -222,7 +283,11 @@ fn virt_to_phys(addr: u64) -> u64 {
 /// Get the GIC INTID for the VirtIO PCI net interrupt, if MSI is enabled.
 pub fn get_irq() -> Option<u32> {
     let irq = NET_PCI_IRQ.load(Ordering::Relaxed);
-    if irq != 0 { Some(irq) } else { None }
+    if irq != 0 {
+        Some(irq)
+    } else {
+        None
+    }
 }
 
 /// VirtIO legacy MSI-X register offsets (present when MSI-X is enabled at PCI level).
@@ -252,7 +317,10 @@ fn setup_net_pci_msi(pci_dev: &crate::drivers::pci::Device) {
 
     // Try plain MSI first (some VirtIO devices have this)
     if let Some(cap_offset) = pci_dev.find_msi_capability() {
-        crate::serial_println!("[virtio-net-pci] Found MSI capability at offset {:#x}", cap_offset);
+        crate::serial_println!(
+            "[virtio-net-pci] Found MSI capability at offset {:#x}",
+            cap_offset
+        );
         if let Some(doorbell) = resolve_gicv2m_doorbell() {
             let spi = crate::platform_config::allocate_msi_spi();
             if spi != 0 {
@@ -261,7 +329,11 @@ fn setup_net_pci_msi(pci_dev: &crate::drivers::pci::Device) {
                 gic::configure_spi_edge_triggered(spi);
                 NET_PCI_IRQ.store(spi, Ordering::Relaxed);
                 gic::enable_spi(spi);
-                crate::serial_println!("[virtio-net-pci] MSI enabled: SPI {} doorbell={:#x}", spi, doorbell);
+                crate::serial_println!(
+                    "[virtio-net-pci] MSI enabled: SPI {} doorbell={:#x}",
+                    spi,
+                    doorbell
+                );
                 return;
             }
         }
@@ -272,13 +344,19 @@ fn setup_net_pci_msi(pci_dev: &crate::drivers::pci::Device) {
     let msix_cap = match pci_dev.find_msix_capability() {
         Some(cap) => cap,
         None => {
-            crate::serial_println!("[virtio-net-pci] No MSI or MSI-X capability — polling fallback");
+            crate::serial_println!(
+                "[virtio-net-pci] No MSI or MSI-X capability — polling fallback"
+            );
             return;
         }
     };
 
     let table_size = pci_dev.msix_table_size(msix_cap);
-    crate::serial_println!("[virtio-net-pci] MSI-X cap at {:#x}: {} vectors", msix_cap, table_size);
+    crate::serial_println!(
+        "[virtio-net-pci] MSI-X cap at {:#x}: {} vectors",
+        msix_cap,
+        table_size
+    );
 
     let doorbell = match resolve_gicv2m_doorbell() {
         Some(d) => d,
@@ -339,12 +417,15 @@ fn setup_net_pci_msi(pci_dev: &crate::drivers::pci::Device) {
 
     crate::serial_println!(
         "[virtio-net-pci] MSI-X vector assignments: cfg={:#x} rx={:#x}",
-        cfg_rb, rx_rb
+        cfg_rb,
+        rx_rb
     );
 
     // Only RX vector must succeed; config vector is intentionally 0xFFFF
     if rx_rb == 0xFFFF {
-        crate::serial_println!("[virtio-net-pci] MSI-X: device rejected RX vector — polling fallback");
+        crate::serial_println!(
+            "[virtio-net-pci] MSI-X: device rejected RX vector — polling fallback"
+        );
         pci_dev.disable_msix(msix_cap);
         pci_dev.enable_intx();
         NET_PCI_IRQ.store(0, Ordering::Relaxed);
@@ -353,7 +434,9 @@ fn setup_net_pci_msi(pci_dev: &crate::drivers::pci::Device) {
 
     crate::serial_println!(
         "[virtio-net-pci] MSI-X enabled: SPI {} doorbell={:#x} vectors={}",
-        spi, doorbell, table_size
+        spi,
+        doorbell,
+        table_size
     );
 }
 
@@ -369,8 +452,11 @@ pub fn init() -> Result<(), &'static str> {
     let pci_dev = &net_devices[0];
     crate::serial_println!(
         "[virtio-net-pci] Found at {:02x}:{:02x}.{} [{:04x}:{:04x}]",
-        pci_dev.bus, pci_dev.device, pci_dev.function,
-        pci_dev.vendor_id, pci_dev.device_id
+        pci_dev.bus,
+        pci_dev.device,
+        pci_dev.function,
+        pci_dev.vendor_id,
+        pci_dev.device_id
     );
 
     // Get BAR0 physical address
@@ -381,7 +467,12 @@ pub fn init() -> Result<(), &'static str> {
 
     let bar0_phys = bar0.address;
     let bar0_virt = HHDM_BASE + bar0_phys;
-    crate::serial_println!("[virtio-net-pci] BAR0: phys={:#x} virt={:#x} size={}", bar0_phys, bar0_virt, bar0.size);
+    crate::serial_println!(
+        "[virtio-net-pci] BAR0: phys={:#x} virt={:#x} size={}",
+        bar0_phys,
+        bar0_virt,
+        bar0.size
+    );
 
     // Enable PCI memory space and bus mastering
     pci_dev.enable_memory_space();
@@ -401,21 +492,38 @@ pub fn init() -> Result<(), &'static str> {
     reg_write_u8(bar0_virt, REG_DEVICE_STATUS, STATUS_ACKNOWLEDGE);
 
     // Step 3: DRIVER
-    reg_write_u8(bar0_virt, REG_DEVICE_STATUS, STATUS_ACKNOWLEDGE | STATUS_DRIVER);
+    reg_write_u8(
+        bar0_virt,
+        REG_DEVICE_STATUS,
+        STATUS_ACKNOWLEDGE | STATUS_DRIVER,
+    );
 
     // Step 4: Negotiate features
     let device_features = reg_read_u32(bar0_virt, REG_DEVICE_FEATURES);
-    crate::serial_println!("[virtio-net-pci] Device features: {:#010x}", device_features);
+    crate::serial_println!(
+        "[virtio-net-pci] Device features: {:#010x}",
+        device_features
+    );
     let guest_features = device_features & (FEATURE_MAC | FEATURE_STATUS);
     reg_write_u32(bar0_virt, REG_GUEST_FEATURES, guest_features);
 
     // Step 5: FEATURES_OK (for transitional devices that support it)
-    reg_write_u8(bar0_virt, REG_DEVICE_STATUS, STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_FEATURES_OK);
+    reg_write_u8(
+        bar0_virt,
+        REG_DEVICE_STATUS,
+        STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_FEATURES_OK,
+    );
     let status = reg_read_u8(bar0_virt, REG_DEVICE_STATUS);
     if (status & STATUS_FEATURES_OK) == 0 {
         // Legacy-only device doesn't support FEATURES_OK — proceed without it
-        crate::serial_println!("[virtio-net-pci] FEATURES_OK not supported (pure legacy), continuing");
-        reg_write_u8(bar0_virt, REG_DEVICE_STATUS, STATUS_ACKNOWLEDGE | STATUS_DRIVER);
+        crate::serial_println!(
+            "[virtio-net-pci] FEATURES_OK not supported (pure legacy), continuing"
+        );
+        reg_write_u8(
+            bar0_virt,
+            REG_DEVICE_STATUS,
+            STATUS_ACKNOWLEDGE | STATUS_DRIVER,
+        );
     }
 
     // Read MAC address from device config (offset 0x14)
@@ -429,7 +537,12 @@ pub fn init() -> Result<(), &'static str> {
     ];
     crate::serial_println!(
         "[virtio-net-pci] MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+        mac[0],
+        mac[1],
+        mac[2],
+        mac[3],
+        mac[4],
+        mac[5]
     );
 
     // Set up RX queue (queue 0)
@@ -462,13 +575,21 @@ pub fn init() -> Result<(), &'static str> {
     Ok(())
 }
 
-fn setup_legacy_queue(bar0_virt: u64, queue_idx: u16, queue_virt_addr: u64) -> Result<(), &'static str> {
+fn setup_legacy_queue(
+    bar0_virt: u64,
+    queue_idx: u16,
+    queue_virt_addr: u64,
+) -> Result<(), &'static str> {
     // Select queue
     reg_write_u16(bar0_virt, REG_QUEUE_SELECT, queue_idx);
 
     // Read max queue size
     let queue_max = reg_read_u16(bar0_virt, REG_QUEUE_SIZE);
-    crate::serial_println!("[virtio-net-pci] Queue {} max size: {}", queue_idx, queue_max);
+    crate::serial_println!(
+        "[virtio-net-pci] Queue {} max size: {}",
+        queue_idx,
+        queue_max
+    );
 
     if queue_max == 0 {
         return Err("Queue size is 0");
@@ -492,7 +613,12 @@ fn setup_legacy_queue(bar0_virt: u64, queue_idx: u16, queue_virt_addr: u64) -> R
     let queue_pfn = (queue_phys / 4096) as u32;
     reg_write_u32(bar0_virt, REG_QUEUE_PFN, queue_pfn);
 
-    crate::serial_println!("[virtio-net-pci] Queue {} PFN={:#x} (phys={:#x})", queue_idx, queue_pfn, queue_phys);
+    crate::serial_println!(
+        "[virtio-net-pci] Queue {} PFN={:#x} (phys={:#x})",
+        queue_idx,
+        queue_pfn,
+        queue_phys
+    );
 
     Ok(())
 }
@@ -815,12 +941,19 @@ pub fn dump_rx_state() {
     let isr = reg_read_u8(state.bar0_virt, REG_ISR_STATUS);
     let (used_idx, avail_idx) = unsafe {
         let q = &raw const PCI_RX_QUEUE;
-        (read_volatile(&(*q).used.idx), read_volatile(&(*q).avail.idx))
+        (
+            read_volatile(&(*q).used.idx),
+            read_volatile(&(*q).avail.idx),
+        )
     };
     let msi_count = NET_PCI_MSI_COUNT.load(Ordering::Relaxed);
     crate::serial_println!(
         "[virtio-net-pci] RX diag: used_idx={} last_used={} avail_idx={} isr={:#x} msi_count={}",
-        used_idx, state.rx_last_used_idx, avail_idx, isr, msi_count
+        used_idx,
+        state.rx_last_used_idx,
+        avail_idx,
+        isr,
+        msi_count
     );
 }
 

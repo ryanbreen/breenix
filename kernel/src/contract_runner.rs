@@ -6,7 +6,7 @@
 use x86_64::{registers::control::Cr3, structures::paging::PageTable};
 
 #[cfg(feature = "testing")]
-use crate::contracts::{page_table, kernel_stack, tss};
+use crate::contracts::{kernel_stack, page_table, tss};
 
 /// Run all contract tests and report results
 #[cfg(feature = "testing")]
@@ -36,8 +36,11 @@ pub fn run_all_contracts() -> (usize, usize) {
     total_passed += passed;
     total_failed += failed;
 
-    log::info!("=== Contract Tests Complete: {} passed, {} failed ===",
-               total_passed, total_failed);
+    log::info!(
+        "=== Contract Tests Complete: {} passed, {} failed ===",
+        total_passed,
+        total_failed
+    );
 
     (total_passed, total_failed)
 }
@@ -248,7 +251,11 @@ pub fn test_all_processes() -> (usize, usize) {
                             passed += 1;
                         }
                         Err(e) => {
-                            log::error!("  [FAIL] Process {} frame separation: {}", pid.as_u64(), e);
+                            log::error!(
+                                "  [FAIL] Process {} frame separation: {}",
+                                pid.as_u64(),
+                                e
+                            );
                             failed += 1;
                         }
                     }
@@ -280,7 +287,10 @@ pub fn test_all_processes() -> (usize, usize) {
             }
 
             if failed == 0 && process_count > 0 {
-                log::info!("  [PASS] All {} processes passed contract tests", process_count);
+                log::info!(
+                    "  [PASS] All {} processes passed contract tests",
+                    process_count
+                );
             }
         } else {
             log::info!("  [SKIP] Process manager not initialized");

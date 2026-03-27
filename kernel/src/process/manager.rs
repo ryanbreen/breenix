@@ -9,9 +9,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 // Import paging types from appropriate source
 #[cfg(target_arch = "x86_64")]
-use x86_64::VirtAddr;
-#[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::{Page, PageTableFlags, Size4KiB};
+#[cfg(target_arch = "x86_64")]
+use x86_64::VirtAddr;
 
 #[cfg(not(target_arch = "x86_64"))]
 use crate::memory::arch_stub::VirtAddr;
@@ -62,7 +62,11 @@ impl ProcessManager {
         name: String,
         elf_data: &[u8],
     ) -> Result<ProcessId, &'static str> {
-        crate::serial_println!("manager.create_process: ENTRY - name='{}', elf_size={}", name, elf_data.len());
+        crate::serial_println!(
+            "manager.create_process: ENTRY - name='{}', elf_size={}",
+            name,
+            elf_data.len()
+        );
 
         // Generate a new PID
         crate::serial_println!("manager.create_process: Generating PID");
@@ -78,7 +82,10 @@ impl ProcessManager {
                     pid.as_u64(),
                     e
                 );
-                crate::serial_println!("manager.create_process: ProcessPageTable creation failed: {}", e);
+                crate::serial_println!(
+                    "manager.create_process: ProcessPageTable creation failed: {}",
+                    e
+                );
                 "Failed to create process page table"
             })?,
         );
@@ -101,7 +108,10 @@ impl ProcessManager {
         // Use the standard userspace base address for all processes
         crate::serial_println!("manager.create_process: Loading ELF into page table");
         let loaded_elf = elf::load_elf_into_page_table(elf_data, page_table.as_mut())?;
-        crate::serial_println!("manager.create_process: ELF loaded, entry={:#x}", loaded_elf.entry_point.as_u64());
+        crate::serial_println!(
+            "manager.create_process: ELF loaded, entry={:#x}",
+            loaded_elf.entry_point.as_u64()
+        );
 
         // CRITICAL FIX: Re-map kernel low-half after ELF loading
         // The ELF loader may have created new page tables that don't preserve kernel mappings
@@ -109,8 +119,8 @@ impl ProcessManager {
         // Note: This is x86_64-specific due to kernel memory layout differences
         #[cfg(target_arch = "x86_64")]
         {
-            use x86_64::VirtAddr;
             use x86_64::structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB};
+            use x86_64::VirtAddr;
 
             log::info!("Restoring kernel mappings after ELF load...");
             crate::serial_println!("manager.create_process: Restoring kernel mappings");
@@ -161,7 +171,8 @@ impl ProcessManager {
                 let page = Page::<Size4KiB>::containing_address(VirtAddr::new(addr));
                 let frame = PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(addr));
 
-                let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL;
+                let flags =
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL;
 
                 // Ignore if already mapped
                 if page_table.translate_page(VirtAddr::new(addr)).is_some() {
@@ -181,9 +192,12 @@ impl ProcessManager {
             let kernel_test_addr = VirtAddr::new(0x100000);
             match page_table.translate_page(kernel_test_addr) {
                 Some(phys_addr) => {
-                    log::info!("✓✓ VERIFIED: Kernel at {:#x} -> {:#x} after restoration",
-                             kernel_test_addr.as_u64(), phys_addr.as_u64());
-                },
+                    log::info!(
+                        "✓✓ VERIFIED: Kernel at {:#x} -> {:#x} after restoration",
+                        kernel_test_addr.as_u64(),
+                        phys_addr.as_u64()
+                    );
+                }
                 None => {
                     log::error!("✗✗ CRITICAL: Kernel still not mapped after restoration!");
                     return Err("Kernel restoration failed!");
@@ -200,7 +214,10 @@ impl ProcessManager {
         let heap_base = loaded_elf.segments_end;
         process.heap_start = heap_base;
         process.heap_end = heap_base;
-        crate::serial_println!("manager.create_process: Process struct created, heap_start={:#x}", heap_base);
+        crate::serial_println!(
+            "manager.create_process: Process struct created, heap_start={:#x}",
+            heap_base
+        );
 
         // Update memory usage
         process.memory_usage.code_size = elf_data.len();
@@ -212,12 +229,16 @@ impl ProcessManager {
         const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
         crate::serial_println!("manager.create_process: Allocating user stack");
         let user_stack =
-            stack::allocate_stack_with_privilege(USER_STACK_SIZE, ThreadPrivilege::User)
-                .map_err(|_| {
+            stack::allocate_stack_with_privilege(USER_STACK_SIZE, ThreadPrivilege::User).map_err(
+                |_| {
                     crate::serial_println!("manager.create_process: Stack allocation failed");
                     "Failed to allocate user stack"
-                })?;
-        crate::serial_println!("manager.create_process: User stack allocated at {:#x}", user_stack.top());
+                },
+            )?;
+        crate::serial_println!(
+            "manager.create_process: User stack allocated at {:#x}",
+            user_stack.top()
+        );
 
         let stack_top = user_stack.top();
         process.memory_usage.stack_size = USER_STACK_SIZE;
@@ -230,7 +251,9 @@ impl ProcessManager {
         // CRITICAL: Map the user stack pages into the process page table
         // The stack was allocated in the kernel page table, but userspace needs it mapped
         log::debug!("Mapping user stack pages into process page table...");
-        crate::serial_println!("manager.create_process: Mapping user stack into process page table");
+        crate::serial_println!(
+            "manager.create_process: Mapping user stack into process page table"
+        );
         if let Some(ref mut page_table) = process.page_table {
             let stack_bottom = stack_top - USER_STACK_SIZE as u64;
             crate::memory::process_memory::map_user_stack_to_process(
@@ -256,7 +279,10 @@ impl ProcessManager {
         crate::serial_println!("manager.create_process: Main thread set on process");
 
         // Add to ready queue
-        crate::serial_println!("manager.create_process: Adding PID {} to ready queue", pid.as_u64());
+        crate::serial_println!(
+            "manager.create_process: Adding PID {} to ready queue",
+            pid.as_u64()
+        );
         self.ready_queue.push(pid);
 
         // Insert into process table
@@ -264,7 +290,10 @@ impl ProcessManager {
         self.processes.insert(pid, process);
 
         log::info!("Created process {} (PID {})", name, pid.as_u64());
-        crate::serial_println!("manager.create_process: SUCCESS - returning PID {}", pid.as_u64());
+        crate::serial_println!(
+            "manager.create_process: SUCCESS - returning PID {}",
+            pid.as_u64()
+        );
 
         Ok(pid)
     }
@@ -284,11 +313,18 @@ impl ProcessManager {
         // For ARM64, stack allocation uses arch_stub::ThreadPrivilege
         use crate::memory::arch_stub::ThreadPrivilege as StackPrivilege;
 
-        crate::serial_println!("manager.create_process [ARM64]: ENTRY - name='{}', elf_size={}", name, elf_data.len());
+        crate::serial_println!(
+            "manager.create_process [ARM64]: ENTRY - name='{}', elf_size={}",
+            name,
+            elf_data.len()
+        );
 
         // Generate a new PID
         let pid = ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst));
-        crate::serial_println!("manager.create_process [ARM64]: Generated PID {}", pid.as_u64());
+        crate::serial_println!(
+            "manager.create_process [ARM64]: Generated PID {}",
+            pid.as_u64()
+        );
 
         // Create a new page table for this process
         // On ARM64, this creates a TTBR0 page table for userspace only
@@ -301,7 +337,10 @@ impl ProcessManager {
                     pid.as_u64(),
                     e
                 );
-                crate::serial_println!("manager.create_process [ARM64]: ProcessPageTable creation failed: {}", e);
+                crate::serial_println!(
+                    "manager.create_process [ARM64]: ProcessPageTable creation failed: {}",
+                    e
+                );
                 "Failed to create process page table"
             })?,
         );
@@ -348,20 +387,22 @@ impl ProcessManager {
         // 1. Allocate physical memory for the stack
         // 2. Map it at USERSPACE addresses (not kernel HHDM addresses)
         // 3. Use the userspace addresses for the thread's SP
-        use crate::memory::stack;
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
+        use crate::memory::stack;
 
         const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
         crate::serial_println!("manager.create_process [ARM64]: Allocating user stack");
 
         // allocate_stack_with_privilege returns HHDM addresses (kernel-accessible)
         // We need to extract the physical frames and map them to userspace addresses
-        let kernel_stack =
-            stack::allocate_stack_with_privilege(USER_STACK_SIZE, StackPrivilege::User)
-                .map_err(|_| {
-                    crate::serial_println!("manager.create_process [ARM64]: Stack allocation failed");
-                    "Failed to allocate user stack"
-                })?;
+        let kernel_stack = stack::allocate_stack_with_privilege(
+            USER_STACK_SIZE,
+            StackPrivilege::User,
+        )
+        .map_err(|_| {
+            crate::serial_println!("manager.create_process [ARM64]: Stack allocation failed");
+            "Failed to allocate user stack"
+        })?;
 
         // The kernel_stack.top() is an HHDM address - extract physical address
         let kernel_stack_top = kernel_stack.top().as_u64();
@@ -395,7 +436,9 @@ impl ProcessManager {
 
         // Map the physical stack frames into the process page table at USERSPACE addresses
         log::debug!("ARM64: Mapping user stack pages into process page table...");
-        crate::serial_println!("manager.create_process [ARM64]: Mapping user stack into process page table");
+        crate::serial_println!(
+            "manager.create_process [ARM64]: Mapping user stack into process page table"
+        );
         if let Some(ref mut page_table) = process.page_table {
             crate::serial_println!(
                 "manager.create_process [ARM64]: map_user_stack_to_process user_bottom={:#x} user_top={:#x} phys_bottom={:#x}",
@@ -416,11 +459,16 @@ impl ProcessManager {
                     "manager.create_process [ARM64]: map_user_stack_to_process FAILED: {}",
                     e
                 );
-                log::error!("ARM64: Failed to map user stack to process page table: {}", e);
+                log::error!(
+                    "ARM64: Failed to map user stack to process page table: {}",
+                    e
+                );
                 "Failed to map user stack in process page table"
             })?;
             log::debug!("ARM64: User stack mapped in process page table");
-            crate::serial_println!("manager.create_process [ARM64]: User stack mapped successfully");
+            crate::serial_println!(
+                "manager.create_process [ARM64]: User stack mapped successfully"
+            );
         } else {
             return Err("Process page table not available for stack mapping");
         }
@@ -441,7 +489,9 @@ impl ProcessManager {
         self.ready_queue.push(pid);
 
         // Insert into process table
-        crate::serial_println!("manager.create_process [ARM64]: Inserting process into process table");
+        crate::serial_println!(
+            "manager.create_process [ARM64]: Inserting process into process table"
+        );
         self.processes.insert(pid, process);
 
         log::info!("ARM64: Created process {} (PID {})", name, pid.as_u64());
@@ -498,7 +548,9 @@ impl ProcessManager {
         );
 
         // Create a new page table for this process
-        crate::serial_println!("manager.create_process_with_argv [ARM64]: Creating ProcessPageTable");
+        crate::serial_println!(
+            "manager.create_process_with_argv [ARM64]: Creating ProcessPageTable"
+        );
         let mut page_table = Box::new(
             crate::memory::process_memory::ProcessPageTable::new().map_err(|e| {
                 log::error!(
@@ -511,7 +563,9 @@ impl ProcessManager {
         );
 
         // Load the ELF binary into the process's page table
-        crate::serial_println!("manager.create_process_with_argv [ARM64]: Loading ELF into page table");
+        crate::serial_println!(
+            "manager.create_process_with_argv [ARM64]: Loading ELF into page table"
+        );
         let loaded_elf = crate::arch_impl::aarch64::elf::load_elf_into_page_table(
             elf_data,
             page_table.as_mut(),
@@ -535,8 +589,8 @@ impl ProcessManager {
         process.memory_usage.code_size = elf_data.len();
 
         // Allocate physical frames for the stack
-        use crate::memory::stack;
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
+        use crate::memory::stack;
 
         const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
         crate::serial_println!("manager.create_process_with_argv [ARM64]: Allocating user stack");
@@ -575,7 +629,10 @@ impl ProcessManager {
                 stack_phys_bottom,
             )
             .map_err(|e| {
-                log::error!("ARM64: Failed to map user stack to process page table: {}", e);
+                log::error!(
+                    "ARM64: Failed to map user stack to process page table: {}",
+                    e
+                );
                 "Failed to map user stack in process page table"
             })?;
         } else {
@@ -612,7 +669,11 @@ impl ProcessManager {
         );
 
         // Create the main thread with the adjusted stack pointer (pointing to argc)
-        let thread = self.create_main_thread_with_sp(&mut process, VirtAddr::new(user_stack_top), VirtAddr::new(initial_sp))?;
+        let thread = self.create_main_thread_with_sp(
+            &mut process,
+            VirtAddr::new(user_stack_top),
+            VirtAddr::new(initial_sp),
+        )?;
         process.set_main_thread(thread);
 
         // Add to ready queue and insert into process table
@@ -650,7 +711,9 @@ impl ProcessManager {
     ) -> Result<ProcessId, &'static str> {
         // Capture parent attributes before creating child
         let (parent_pgid, parent_sid, parent_cwd) = {
-            let parent = self.processes.get(&parent_pid)
+            let parent = self
+                .processes
+                .get(&parent_pid)
                 .ok_or("Parent process not found")?;
             (parent.pgid, parent.sid, parent.cwd.clone())
         };
@@ -673,7 +736,8 @@ impl ProcessManager {
 
         crate::serial_println!(
             "[spawn] Created child PID {} for parent PID {}",
-            child_pid.as_u64(), parent_pid.as_u64()
+            child_pid.as_u64(),
+            parent_pid.as_u64()
         );
 
         Ok(child_pid)
@@ -1145,7 +1209,8 @@ impl ProcessManager {
     pub fn find_process_by_cr3_mut(&mut self, cr3: u64) -> Option<(ProcessId, &mut Process)> {
         log::trace!("find_process_by_cr3_mut: Looking for CR3={:#x}", cr3);
 
-        let result = self.processes
+        let result = self
+            .processes
             .iter_mut()
             .find(|(_, process)| {
                 if let Some(ref pt) = process.page_table {
@@ -1203,11 +1268,26 @@ impl ProcessManager {
         parent_pid: ProcessId,
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))] userspace_rsp: Option<u64>,
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))] return_rip: Option<u64>,
-        #[cfg_attr(not(feature = "testing"), allow(unused_variables, unused_mut))] mut child_page_table: Box<ProcessPageTable>,
+        #[cfg_attr(not(feature = "testing"), allow(unused_variables, unused_mut))]
+        mut child_page_table: Box<ProcessPageTable>,
     ) -> Result<ProcessId, &'static str> {
         // Get the parent process info we need (including page table for memory copying)
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
-        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_cwd, parent_thread_info, parent_heap_start, parent_heap_end, parent_mmap_hint, parent_vmas, parent_code_size, parent_heap_size, parent_stack_size) = {
+        let (
+            parent_name,
+            parent_entry_point,
+            parent_pgid,
+            parent_sid,
+            parent_cwd,
+            parent_thread_info,
+            parent_heap_start,
+            parent_heap_end,
+            parent_mmap_hint,
+            parent_vmas,
+            parent_code_size,
+            parent_heap_size,
+            parent_stack_size,
+        ) = {
             let parent = self
                 .processes
                 .get(&parent_pid)
@@ -1335,7 +1415,21 @@ impl ProcessManager {
     ) -> Result<ProcessId, &'static str> {
         // Get the parent process info we need (including page table for memory copying)
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
-        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_cwd, parent_thread_info, parent_heap_start, parent_heap_end, parent_mmap_hint, parent_vmas, parent_code_size, parent_heap_size, parent_stack_size) = {
+        let (
+            parent_name,
+            parent_entry_point,
+            parent_pgid,
+            parent_sid,
+            parent_cwd,
+            parent_thread_info,
+            parent_heap_start,
+            parent_heap_end,
+            parent_mmap_hint,
+            parent_vmas,
+            parent_code_size,
+            parent_heap_size,
+            parent_stack_size,
+        ) = {
             let parent = self
                 .processes
                 .get(&parent_pid)
@@ -1465,7 +1559,21 @@ impl ProcessManager {
         crate::tracing::providers::process::trace_fork_entry(parent_pid.as_u64() as u32);
 
         // Get the parent process info
-        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_cwd, parent_thread_info, parent_heap_start, parent_heap_end, parent_mmap_hint, parent_vmas, parent_code_size, parent_heap_size, parent_stack_size) = {
+        let (
+            parent_name,
+            parent_entry_point,
+            parent_pgid,
+            parent_sid,
+            parent_cwd,
+            parent_thread_info,
+            parent_heap_start,
+            parent_heap_end,
+            parent_mmap_hint,
+            parent_vmas,
+            parent_code_size,
+            parent_heap_size,
+            parent_stack_size,
+        ) = {
             let parent = self
                 .processes
                 .get(&parent_pid)
@@ -1592,19 +1700,21 @@ impl ProcessManager {
         let child_tls_block = VirtAddr::new(0x10000 + child_thread_id * 0x1000);
 
         // Allocate a kernel stack for the child thread
-        let child_kernel_stack_top = if parent_thread.privilege == crate::task::thread::ThreadPrivilege::User {
-            let kernel_stack = crate::memory::kernel_stack::allocate_kernel_stack().map_err(|_e| {
-                "Failed to allocate kernel stack for child thread"
-            })?;
-            let kernel_stack_top = kernel_stack.top();
+        let child_kernel_stack_top =
+            if parent_thread.privilege == crate::task::thread::ThreadPrivilege::User {
+                let kernel_stack = crate::memory::kernel_stack::allocate_kernel_stack()
+                    .map_err(|_e| "Failed to allocate kernel stack for child thread")?;
+                let kernel_stack_top = kernel_stack.top();
 
-            // Store the kernel stack (leak for now - TODO: proper cleanup)
-            Box::leak(Box::new(kernel_stack));
+                // Store the kernel stack (leak for now - TODO: proper cleanup)
+                Box::leak(Box::new(kernel_stack));
 
-            kernel_stack_top
-        } else {
-            parent_thread.kernel_stack_top.unwrap_or(parent_thread.stack_top)
-        };
+                kernel_stack_top
+            } else {
+                parent_thread
+                    .kernel_stack_top
+                    .unwrap_or(parent_thread.stack_top)
+            };
 
         // Create the child's main thread
         fn dummy_entry() {}
@@ -1782,12 +1892,18 @@ impl ProcessManager {
                 log::debug!("fork: Using actual parent context from syscall frame");
                 log::debug!(
                     "  Parent registers: rbx={:#x}, r12={:#x}, r13={:#x}, r14={:#x}, r15={:#x}",
-                    ctx.rbx, ctx.r12, ctx.r13, ctx.r14, ctx.r15
+                    ctx.rbx,
+                    ctx.r12,
+                    ctx.r13,
+                    ctx.r14,
+                    ctx.r15
                 );
                 ctx
             }
             None => {
-                log::debug!("fork: Using stale parent_thread.context (may have incorrect register values!)");
+                log::debug!(
+                    "fork: Using stale parent_thread.context (may have incorrect register values!)"
+                );
                 parent_thread.context.clone()
             }
         };
@@ -1845,12 +1961,16 @@ impl ProcessManager {
 
         // Inherit parent's user stack bounds for demand-paged growth
         child_process.user_stack_top = {
-            let parent = self.processes.get(&parent_pid)
+            let parent = self
+                .processes
+                .get(&parent_pid)
                 .ok_or("Parent process not found for stack bounds")?;
             parent.user_stack_top
         };
         child_process.user_stack_bottom = {
-            let parent = self.processes.get(&parent_pid)
+            let parent = self
+                .processes
+                .get(&parent_pid)
                 .ok_or("Parent process not found for stack bounds")?;
             parent.user_stack_bottom
         };
@@ -1905,8 +2025,7 @@ impl ProcessManager {
     pub fn fork_process_with_context(
         &mut self,
         parent_pid: ProcessId,
-        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
-        userspace_rsp: Option<u64>,
+        #[cfg_attr(not(feature = "testing"), allow(unused_variables))] userspace_rsp: Option<u64>,
     ) -> Result<ProcessId, &'static str> {
         // Get the parent process
         let parent = self
@@ -2051,110 +2170,117 @@ impl ProcessManager {
             // We use the parent's stack virtual addresses directly.
             let child_stack_top = parent_thread.stack_top;
 
-        // Allocate a globally unique thread ID for the child's main thread
-        let child_thread_id = crate::task::thread::allocate_thread_id();
+            // Allocate a globally unique thread ID for the child's main thread
+            let child_thread_id = crate::task::thread::allocate_thread_id();
 
-        // Allocate a TLS block for this thread ID
-        let child_tls_block = VirtAddr::new(0x10000 + child_thread_id * 0x1000);
+            // Allocate a TLS block for this thread ID
+            let child_tls_block = VirtAddr::new(0x10000 + child_thread_id * 0x1000);
 
-        // Register this thread with the TLS system
-        if let Err(e) = crate::tls::register_thread_tls(child_thread_id, child_tls_block) {
-            log::warn!(
-                "Failed to register thread {} with TLS system: {}",
-                child_thread_id,
-                e
-            );
-        }
+            // Register this thread with the TLS system
+            if let Err(e) = crate::tls::register_thread_tls(child_thread_id, child_tls_block) {
+                log::warn!(
+                    "Failed to register thread {} with TLS system: {}",
+                    child_thread_id,
+                    e
+                );
+            }
 
-        // Allocate a kernel stack for the child thread (userspace threads need kernel stacks)
-        let child_kernel_stack_top =
-            if parent_thread.privilege == crate::task::thread::ThreadPrivilege::User {
-                let kernel_stack =
-                    crate::memory::kernel_stack::allocate_kernel_stack().map_err(|e| {
-                        log::error!("Failed to allocate kernel stack for child: {}", e);
-                        "Failed to allocate kernel stack for child thread"
-                    })?;
-                let kernel_stack_top = kernel_stack.top();
+            // Allocate a kernel stack for the child thread (userspace threads need kernel stacks)
+            let child_kernel_stack_top =
+                if parent_thread.privilege == crate::task::thread::ThreadPrivilege::User {
+                    let kernel_stack = crate::memory::kernel_stack::allocate_kernel_stack()
+                        .map_err(|e| {
+                            log::error!("Failed to allocate kernel stack for child: {}", e);
+                            "Failed to allocate kernel stack for child thread"
+                        })?;
+                    let kernel_stack_top = kernel_stack.top();
 
-                // Store the kernel stack (we'll need to manage this properly later)
-                // For now, we'll leak it - TODO: proper cleanup
-                Box::leak(Box::new(kernel_stack));
+                    // Store the kernel stack (we'll need to manage this properly later)
+                    // For now, we'll leak it - TODO: proper cleanup
+                    Box::leak(Box::new(kernel_stack));
 
-                Some(kernel_stack_top)
-            } else {
-                None
+                    Some(kernel_stack_top)
+                } else {
+                    None
+                };
+
+            // Create the child thread manually to use specific ID
+            let mut child_thread = Thread {
+                id: child_thread_id,
+                name: child_name,
+                state: crate::task::thread::ThreadState::Ready,
+                context: parent_thread.context.clone(), // Will be modified below
+                stack_top: child_stack_top,
+                stack_bottom: parent_thread.stack_bottom,
+                kernel_stack_top: child_kernel_stack_top,
+                kernel_stack_allocation: None,
+                tls_block: child_tls_block,
+                priority: parent_thread.priority,
+                time_slice: parent_thread.time_slice,
+                entry_point: None,
+                privilege: parent_thread.privilege,
+                has_started: true,
+                blocked_in_syscall: false,
+                saved_userspace_context: None,
+                wake_time_ns: None,
+                run_start_ticks: 0,
+                cpu_ticks_total: 0,
+                owner_pid: Some(child_pid.as_u64()),
             };
 
-        // Create the child thread manually to use specific ID
-        let mut child_thread = Thread {
-            id: child_thread_id,
-            name: child_name,
-            state: crate::task::thread::ThreadState::Ready,
-            context: parent_thread.context.clone(), // Will be modified below
-            stack_top: child_stack_top,
-            stack_bottom: parent_thread.stack_bottom,
-            kernel_stack_top: child_kernel_stack_top,
-            kernel_stack_allocation: None,
-            tls_block: child_tls_block,
-            priority: parent_thread.priority,
-            time_slice: parent_thread.time_slice,
-            entry_point: None,
-            privilege: parent_thread.privilege,
-            has_started: true,
-            blocked_in_syscall: false,
-            saved_userspace_context: None,
-            wake_time_ns: None,
-            run_start_ticks: 0,
-            cpu_ticks_total: 0,
-            owner_pid: Some(child_pid.as_u64()),
-        };
+            // CoW fork: Child uses the same stack virtual addresses as the parent.
+            // The stack pages are CoW-shared, so the child's RSP = parent's RSP.
+            let child_rsp = userspace_rsp.unwrap_or(parent_thread.context.rsp);
+            child_thread.context.rsp = child_rsp;
+            log::info!(
+                "fork: CoW stack - child_rsp={:#x} (same VA as parent)",
+                child_rsp
+            );
 
-        // CoW fork: Child uses the same stack virtual addresses as the parent.
-        // The stack pages are CoW-shared, so the child's RSP = parent's RSP.
-        let child_rsp = userspace_rsp.unwrap_or(parent_thread.context.rsp);
-        child_thread.context.rsp = child_rsp;
-        log::info!("fork: CoW stack - child_rsp={:#x} (same VA as parent)", child_rsp);
+            // IMPORTANT: Set RAX to 0 for the child (fork return value)
+            child_thread.context.rax = 0;
 
-        // IMPORTANT: Set RAX to 0 for the child (fork return value)
-        child_thread.context.rax = 0;
+            // CoW fork: no separate stack allocation
+            child_process.stack = None;
 
-        // CoW fork: no separate stack allocation
-        child_process.stack = None;
+            // Inherit parent's user stack bounds
+            {
+                let parent = self
+                    .processes
+                    .get(&parent_pid)
+                    .ok_or("Parent process not found for stack bounds")?;
+                child_process.user_stack_top = parent.user_stack_top;
+                child_process.user_stack_bottom = parent.user_stack_bottom;
+            }
 
-        // Inherit parent's user stack bounds
-        {
-            let parent = self.processes.get(&parent_pid)
-                .ok_or("Parent process not found for stack bounds")?;
-            child_process.user_stack_top = parent.user_stack_top;
-            child_process.user_stack_bottom = parent.user_stack_bottom;
-        }
+            // Copy all other process state (fd_table, signals, verify pgid/sid)
+            {
+                let parent = self
+                    .processes
+                    .get(&parent_pid)
+                    .ok_or("Parent process not found during state copy")?;
+                super::fork::copy_process_state(parent, &mut child_process)?;
+            }
 
-        // Copy all other process state (fd_table, signals, verify pgid/sid)
-        {
-            let parent = self.processes.get(&parent_pid)
-                .ok_or("Parent process not found during state copy")?;
-            super::fork::copy_process_state(parent, &mut child_process)?;
-        }
+            // Set the child thread as the main thread of the child process
+            child_process.set_main_thread(child_thread);
 
-        // Set the child thread as the main thread of the child process
-        child_process.set_main_thread(child_thread);
+            // Add child to parent's children list
+            if let Some(parent) = self.processes.get_mut(&parent_pid) {
+                parent.add_child(child_pid);
+            }
 
-        // Add child to parent's children list
-        if let Some(parent) = self.processes.get_mut(&parent_pid) {
-            parent.add_child(child_pid);
-        }
+            // Add the child process to the process table
+            self.processes.insert(child_pid, child_process);
 
-        // Add the child process to the process table
-        self.processes.insert(child_pid, child_process);
+            // Add the child to the ready queue so it can be scheduled
+            self.ready_queue.push(child_pid);
 
-        // Add the child to the ready queue so it can be scheduled
-        self.ready_queue.push(child_pid);
-
-        log::info!(
-            "Fork complete: parent {} -> child {}",
-            parent_pid.as_u64(),
-            child_pid.as_u64()
-        );
+            log::info!(
+                "Fork complete: parent {} -> child {}",
+                parent_pid.as_u64(),
+                child_pid.as_u64()
+            );
 
             // Return the child PID to the parent
             Ok(child_pid)
@@ -2172,7 +2298,12 @@ impl ProcessManager {
     /// reload the binary from disk.
     /// Note: Exec requires architecture-specific register manipulation
     #[cfg(target_arch = "x86_64")]
-    pub fn exec_process(&mut self, pid: ProcessId, elf_data: &[u8], program_name: Option<&str>) -> Result<u64, &'static str> {
+    pub fn exec_process(
+        &mut self,
+        pid: ProcessId,
+        elf_data: &[u8],
+        program_name: Option<&str>,
+    ) -> Result<u64, &'static str> {
         log::info!(
             "exec_process: Replacing process {} with new program",
             pid.as_u64()
@@ -2235,9 +2366,8 @@ impl ProcessManager {
         // Typical userspace code location: USERSPACE_BASE + 1MB range
         if let Err(e) = new_page_table.unmap_user_pages(
             VirtAddr::new(crate::memory::layout::USERSPACE_BASE),
-            VirtAddr::new(crate::memory::layout::USERSPACE_BASE + 0x100000)
-        )
-        {
+            VirtAddr::new(crate::memory::layout::USERSPACE_BASE + 0x100000),
+        ) {
             log::warn!("Failed to unmap old user code pages: {}", e);
         }
 
@@ -2276,7 +2406,7 @@ impl ProcessManager {
         // We need to manually allocate stack pages and map them into the new page table,
         // not the current kernel page table
         const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
-        // Use address in valid USER_STACK_REGION (0x7FFF_FF00_0000 - 0x8000_0000_0000)
+                                                  // Use address in valid USER_STACK_REGION (0x7FFF_FF00_0000 - 0x8000_0000_0000)
         const USER_STACK_TOP: u64 = 0x7FFF_FF01_0000;
 
         // Calculate stack range
@@ -2348,7 +2478,11 @@ impl ProcessManager {
         process.vmas.clear();
         // Close FD_CLOEXEC file descriptors per POSIX
         process.fd_table.close_cloexec();
-        log::debug!("exec_process: Reset signal/heap/mmap for process {}, heap_start={:#x}", pid.as_u64(), heap_base);
+        log::debug!(
+            "exec_process: Reset signal/heap/mmap for process {}, heap_start={:#x}",
+            pid.as_u64(),
+            heap_base
+        );
 
         // Replace the page table with the new one containing the loaded program
         process.page_table = Some(new_page_table);
@@ -2513,7 +2647,9 @@ impl ProcessManager {
         // CRITICAL OS-STANDARD CHECK: Is this the current process?
         let is_current_process = self.current_pid == Some(pid);
         if is_current_process {
-            log::info!("exec_process_with_argv: Executing on current process - special handling required");
+            log::info!(
+                "exec_process_with_argv: Executing on current process - special handling required"
+            );
         }
 
         // For now, assume non-current processes are not actively running
@@ -2554,12 +2690,14 @@ impl ProcessManager {
         // Unmap old pages
         if let Err(e) = new_page_table.unmap_user_pages(
             VirtAddr::new(crate::memory::layout::USERSPACE_BASE),
-            VirtAddr::new(crate::memory::layout::USERSPACE_BASE + 0x100000)
+            VirtAddr::new(crate::memory::layout::USERSPACE_BASE + 0x100000),
         ) {
             log::warn!("Failed to unmap old user code pages: {}", e);
         }
 
-        if let Err(e) = new_page_table.unmap_user_pages(VirtAddr::new(0x10001000), VirtAddr::new(0x10010000)) {
+        if let Err(e) =
+            new_page_table.unmap_user_pages(VirtAddr::new(0x10001000), VirtAddr::new(0x10010000))
+        {
             log::warn!("Failed to unmap old user data pages: {}", e);
         }
 
@@ -2643,7 +2781,10 @@ impl ProcessManager {
 
         // Re-borrow the process for the remaining updates.
         // All fallible operations have succeeded — now it's safe to take the old page table.
-        let process = self.processes.get_mut(&pid).ok_or("Process not found during update")?;
+        let process = self
+            .processes
+            .get_mut(&pid)
+            .ok_or("Process not found during update")?;
         let old_page_table = process.page_table.take();
 
         // Update the process with new program data
@@ -2678,7 +2819,7 @@ impl ProcessManager {
 
             // Reset the CPU context for the new program
             thread.context.rip = new_entry_point;
-            thread.context.rsp = initial_rsp;  // Points to argc on stack
+            thread.context.rsp = initial_rsp; // Points to argc on stack
             thread.context.rflags = 0x202;
             thread.stack_top = stack_top;
             thread.stack_bottom = stack_bottom;
@@ -2825,8 +2966,10 @@ impl ProcessManager {
         }
 
         log::info!("exec_process_with_argv [ARM64]: Loading ELF into new page table...");
-        let loaded_elf =
-            crate::arch_impl::aarch64::elf::load_elf_into_page_table(elf_data, new_page_table.as_mut())?;
+        let loaded_elf = crate::arch_impl::aarch64::elf::load_elf_into_page_table(
+            elf_data,
+            new_page_table.as_mut(),
+        )?;
         let new_entry_point = loaded_elf.entry_point;
         log::info!(
             "exec_process_with_argv [ARM64]: ELF loaded successfully, entry point: {:#x}",
@@ -2838,7 +2981,9 @@ impl ProcessManager {
         let stack_bottom = VirtAddr::new(user_stack_top - USER_STACK_SIZE as u64);
         let stack_top = VirtAddr::new(user_stack_top);
 
-        log::info!("exec_process_with_argv [ARM64]: Mapping stack pages into new process page table");
+        log::info!(
+            "exec_process_with_argv [ARM64]: Mapping stack pages into new process page table"
+        );
         let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
         let end_page = Page::<Size4KiB>::containing_address(VirtAddr::new(stack_top.as_u64() - 1));
 
@@ -3033,7 +3178,9 @@ impl ProcessManager {
         // CRITICAL OS-STANDARD CHECK: Is this the current process?
         let is_current_process = self.current_pid == Some(pid);
         if is_current_process {
-            log::info!("exec_process [ARM64]: Executing on current process - special handling required");
+            log::info!(
+                "exec_process [ARM64]: Executing on current process - special handling required"
+            );
         }
 
         // Get the existing process
@@ -3103,8 +3250,10 @@ impl ProcessManager {
 
         // Load the ELF binary into the new page table using ARM64-specific loader
         log::info!("exec_process [ARM64]: Loading ELF into new page table...");
-        let loaded_elf =
-            crate::arch_impl::aarch64::elf::load_elf_into_page_table(elf_data, new_page_table.as_mut())?;
+        let loaded_elf = crate::arch_impl::aarch64::elf::load_elf_into_page_table(
+            elf_data,
+            new_page_table.as_mut(),
+        )?;
         let new_entry_point = loaded_elf.entry_point;
         log::info!(
             "exec_process [ARM64]: ELF loaded successfully, entry point: {:#x}",
@@ -3358,7 +3507,9 @@ impl ProcessManager {
         // have a strong PRNG requirement at boot time
         cursor -= 16;
         let random_addr = cursor;
-        let random_seed = stack_top.wrapping_mul(0x5851F42D4C957F2D).wrapping_add(0x14057B7EF767814F);
+        let random_seed = stack_top
+            .wrapping_mul(0x5851F42D4C957F2D)
+            .wrapping_add(0x14057B7EF767814F);
         let random_bytes: [u8; 16] = [
             (random_seed >> 0) as u8,
             (random_seed >> 8) as u8,
@@ -3564,7 +3715,8 @@ impl ProcessManager {
         // Translate virtual address to physical
         // NOTE: translate_page uses translate_addr which returns the FULL physical
         // address including the page offset - do NOT add page_offset again!
-        let phys_addr = page_table.translate_page(VirtAddr::new(virt_addr))
+        let phys_addr = page_table
+            .translate_page(VirtAddr::new(virt_addr))
             .ok_or("Failed to translate stack address")?;
 
         // Write via direct physical memory mapping

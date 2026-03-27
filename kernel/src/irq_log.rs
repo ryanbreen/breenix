@@ -5,7 +5,7 @@
 //! to avoid locking in the interrupt path.
 
 use core::fmt;
-use core::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// Size of each per-CPU log ring buffer (8 KiB)
 const RING_BUFFER_SIZE: usize = 8192;
@@ -73,15 +73,15 @@ impl LogRing {
         let entry_size = core::mem::size_of::<LogEntry>() + msg_len;
         let write_pos = self.write_pos.load(Ordering::Relaxed);
         let read_pos = self.read_pos.load(Ordering::Relaxed);
-        
+
         let space_used = if write_pos >= read_pos {
             write_pos - read_pos
         } else {
             RING_BUFFER_SIZE - read_pos + write_pos
         };
-        
+
         let space_available = RING_BUFFER_SIZE - space_used - 1; // -1 to distinguish full from empty
-        
+
         if entry_size > space_available {
             // Buffer overflow - drop the message
             self.dropped.fetch_add(1, Ordering::Relaxed);
@@ -93,27 +93,27 @@ impl LogRing {
             level,
             len: msg_len as u16,
         };
-        
+
         // Copy header to buffer
         let header_bytes = unsafe {
             core::slice::from_raw_parts(
                 &entry as *const _ as *const u8,
-                core::mem::size_of::<LogEntry>()
+                core::mem::size_of::<LogEntry>(),
             )
         };
-        
+
         let mut pos = write_pos;
         for &byte in header_bytes {
             self.buffer[pos] = byte;
             pos = (pos + 1) % RING_BUFFER_SIZE;
         }
-        
+
         // Copy message to buffer
         for i in 0..msg_len {
             self.buffer[pos] = temp_buf[i];
             pos = (pos + 1) % RING_BUFFER_SIZE;
         }
-        
+
         // Update write position
         self.write_pos.store(pos, Ordering::Release);
     }
@@ -131,9 +131,8 @@ impl LogRing {
         if dropped > 0 {
             // Try to log dropped message count
             // This should go directly to serial if possible
-            let _ = crate::serial::try_print(format_args!(
-                "[IRQ_LOG] Dropped {} messages\n", dropped
-            ));
+            let _ =
+                crate::serial::try_print(format_args!("[IRQ_LOG] Dropped {} messages\n", dropped));
         }
 
         // Flush all pending messages
@@ -141,11 +140,11 @@ impl LogRing {
         loop {
             let read_pos = self.read_pos.load(Ordering::Acquire);
             let write_pos = self.write_pos.load(Ordering::Acquire);
-            
+
             if read_pos == write_pos {
                 break; // Buffer is empty
             }
-            
+
             // Read the entry header
             let mut header_bytes = [0u8; core::mem::size_of::<LogEntry>()];
             let mut pos = read_pos;
@@ -153,11 +152,9 @@ impl LogRing {
                 *byte = self.buffer[pos];
                 pos = (pos + 1) % RING_BUFFER_SIZE;
             }
-            
-            let entry = unsafe {
-                core::ptr::read(header_bytes.as_ptr() as *const LogEntry)
-            };
-            
+
+            let entry = unsafe { core::ptr::read(header_bytes.as_ptr() as *const LogEntry) };
+
             // Read the message
             let mut msg_buf = [0u8; 512];
             let msg_len = entry.len as usize;
@@ -165,7 +162,7 @@ impl LogRing {
                 msg_buf[i] = self.buffer[pos];
                 pos = (pos + 1) % RING_BUFFER_SIZE;
             }
-            
+
             // Try to output the message
             if let Ok(msg) = core::str::from_utf8(&msg_buf[..msg_len]) {
                 let level_str = match entry.level {
@@ -175,13 +172,11 @@ impl LogRing {
                     LogLevel::Debug => "DEBUG",
                     LogLevel::Trace => "TRACE",
                 };
-                
+
                 // Try to send to serial
-                let _ = crate::serial::try_print(format_args!(
-                    "[{}] {}\n", level_str, msg
-                ));
+                let _ = crate::serial::try_print(format_args!("[{}] {}\n", level_str, msg));
             }
-            
+
             // Update read position
             self.read_pos.store(pos, Ordering::Release);
             flushed = true;
@@ -212,11 +207,10 @@ impl<'a> fmt::Write for BufferWriter<'a> {
         let bytes = s.as_bytes();
         let remaining = self.buffer.len() - self.pos;
         let to_write = bytes.len().min(remaining);
-        
-        self.buffer[self.pos..self.pos + to_write]
-            .copy_from_slice(&bytes[..to_write]);
+
+        self.buffer[self.pos..self.pos + to_write].copy_from_slice(&bytes[..to_write]);
         self.pos += to_write;
-        
+
         if to_write < bytes.len() {
             Err(fmt::Error) // Buffer full
         } else {
@@ -244,12 +238,12 @@ pub fn irq_safe_log(_level: LogLevel, args: fmt::Arguments) {
     // Just try to print directly, ignore failures
     let _ = crate::serial::try_print(args);
     return;
-    
+
     // Original implementation disabled to debug hang:
     /*
     // Check if we're in interrupt context
     let in_interrupt = crate::per_cpu::in_interrupt();
-    
+
     if in_interrupt {
         // In interrupt context - just push to ring buffer
         // Disable interrupts to prevent nested interrupts while modifying ring
@@ -258,7 +252,7 @@ pub fn irq_safe_log(_level: LogLevel, args: fmt::Arguments) {
                 get_log_ring().push(level, args);
             }
         });
-        
+
         // Try opportunistic flush with try-lock
         unsafe {
             let _ = get_log_ring().try_flush();
@@ -286,10 +280,8 @@ pub fn irq_safe_log(_level: LogLevel, args: fmt::Arguments) {
 
 /// Try to flush the local CPU's log ring (non-blocking)
 pub fn flush_local_try() {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        unsafe {
-            let _ = get_log_ring().try_flush();
-        }
+    x86_64::instructions::interrupts::without_interrupts(|| unsafe {
+        let _ = get_log_ring().try_flush();
     });
 }
 
@@ -300,12 +292,10 @@ pub fn emergency_log(args: fmt::Arguments) {
     if crate::serial::emergency_print(args).is_ok() {
         return;
     }
-    
+
     // Fall back to ring buffer if serial is completely broken
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        unsafe {
-            get_log_ring().push(LogLevel::Error, args);
-        }
+    x86_64::instructions::interrupts::without_interrupts(|| unsafe {
+        get_log_ring().push(LogLevel::Error, args);
     });
 }
 

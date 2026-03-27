@@ -8,7 +8,7 @@
 
 use core::mem::offset_of;
 use core::ptr;
-use core::sync::atomic::{compiler_fence, Ordering, AtomicU64};
+use core::sync::atomic::{compiler_fence, AtomicU64, Ordering};
 use x86_64::VirtAddr;
 
 // Import HAL per-CPU operations and traits
@@ -17,11 +17,11 @@ use crate::arch_impl::PerCpuOps;
 
 // Import HAL constants - single source of truth for per-CPU offsets
 use crate::arch_impl::current::constants::{
-    PERCPU_CPU_ID_OFFSET, PERCPU_CURRENT_THREAD_OFFSET, PERCPU_KERNEL_STACK_TOP_OFFSET,
-    PERCPU_IDLE_THREAD_OFFSET, PERCPU_PREEMPT_COUNT_OFFSET, PERCPU_NEED_RESCHED_OFFSET,
-    PERCPU_USER_RSP_SCRATCH_OFFSET, PERCPU_TSS_OFFSET, PERCPU_SOFTIRQ_PENDING_OFFSET,
-    PERCPU_NEXT_CR3_OFFSET, PERCPU_KERNEL_CR3_OFFSET, PERCPU_SAVED_PROCESS_CR3_OFFSET,
-    PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET,
+    PERCPU_CPU_ID_OFFSET, PERCPU_CURRENT_THREAD_OFFSET, PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET,
+    PERCPU_IDLE_THREAD_OFFSET, PERCPU_KERNEL_CR3_OFFSET, PERCPU_KERNEL_STACK_TOP_OFFSET,
+    PERCPU_NEED_RESCHED_OFFSET, PERCPU_NEXT_CR3_OFFSET, PERCPU_PREEMPT_COUNT_OFFSET,
+    PERCPU_SAVED_PROCESS_CR3_OFFSET, PERCPU_SOFTIRQ_PENDING_OFFSET, PERCPU_TSS_OFFSET,
+    PERCPU_USER_RSP_SCRATCH_OFFSET,
 };
 
 // Global tracking counters for irq_enter/irq_exit balance analysis
@@ -98,7 +98,6 @@ pub struct PerCpuData {
     // === Context Switch Diagnostics (Ultra-low overhead) ===
     // These fields detect state corruption during context switches without
     // adding logging overhead to the hot path. Based on seL4/Linux patterns.
-
     /// Pre-switch canary (offset 96): RSP ^ CR3 | MAGIC_PRE
     /// Set before context switch, verified after to detect corruption
     pub switch_pre_canary: u64,
@@ -127,27 +126,27 @@ const PREEMPT_BITS: u32 = 8;
 #[allow(dead_code)]
 const SOFTIRQ_BITS: u32 = 8;
 #[allow(dead_code)]
-const HARDIRQ_BITS: u32 = 10;  // Linux uses 10 bits for HARDIRQ
+const HARDIRQ_BITS: u32 = 10; // Linux uses 10 bits for HARDIRQ
 #[allow(dead_code)]
-const NMI_BITS: u32 = 1;       // Linux uses 1 bit for NMI
+const NMI_BITS: u32 = 1; // Linux uses 1 bit for NMI
 
 #[allow(dead_code)]
 const PREEMPT_SHIFT: u32 = 0;
 #[allow(dead_code)]
-const SOFTIRQ_SHIFT: u32 = PREEMPT_SHIFT + PREEMPT_BITS;  // 8
+const SOFTIRQ_SHIFT: u32 = PREEMPT_SHIFT + PREEMPT_BITS; // 8
 #[allow(dead_code)]
-const HARDIRQ_SHIFT: u32 = SOFTIRQ_SHIFT + SOFTIRQ_BITS;   // 16
+const HARDIRQ_SHIFT: u32 = SOFTIRQ_SHIFT + SOFTIRQ_BITS; // 16
 #[allow(dead_code)]
-const NMI_SHIFT: u32 = HARDIRQ_SHIFT + HARDIRQ_BITS;       // 26
+const NMI_SHIFT: u32 = HARDIRQ_SHIFT + HARDIRQ_BITS; // 26
 
 #[allow(dead_code)]
-const PREEMPT_MASK: u32 = ((1 << PREEMPT_BITS) - 1) << PREEMPT_SHIFT;  // 0x000000FF
+const PREEMPT_MASK: u32 = ((1 << PREEMPT_BITS) - 1) << PREEMPT_SHIFT; // 0x000000FF
 #[allow(dead_code)]
-const SOFTIRQ_MASK: u32 = ((1 << SOFTIRQ_BITS) - 1) << SOFTIRQ_SHIFT;  // 0x0000FF00
+const SOFTIRQ_MASK: u32 = ((1 << SOFTIRQ_BITS) - 1) << SOFTIRQ_SHIFT; // 0x0000FF00
 #[allow(dead_code)]
-const HARDIRQ_MASK: u32 = ((1 << HARDIRQ_BITS) - 1) << HARDIRQ_SHIFT;  // 0x03FF0000
+const HARDIRQ_MASK: u32 = ((1 << HARDIRQ_BITS) - 1) << HARDIRQ_SHIFT; // 0x03FF0000
 #[allow(dead_code)]
-const NMI_MASK: u32 = ((1 << NMI_BITS) - 1) << NMI_SHIFT;              // 0x04000000
+const NMI_MASK: u32 = ((1 << NMI_BITS) - 1) << NMI_SHIFT; // 0x04000000
 
 #[allow(dead_code)]
 const PREEMPT_ACTIVE: u32 = 1 << 28;
@@ -166,41 +165,79 @@ const NMI_OFFSET: u32 = 1 << NMI_SHIFT;
 // These use offset_of! to get actual offsets and compare with HAL constants
 // If any assertion fails, the HAL constant is out of sync with the struct
 
-const _: () = assert!(offset_of!(PerCpuData, cpu_id) == PERCPU_CPU_ID_OFFSET,
-    "PERCPU_CPU_ID_OFFSET mismatch with struct layout");
-const _: () = assert!(offset_of!(PerCpuData, current_thread) == PERCPU_CURRENT_THREAD_OFFSET,
-    "PERCPU_CURRENT_THREAD_OFFSET mismatch with struct layout");
-const _: () = assert!(offset_of!(PerCpuData, kernel_stack_top) == PERCPU_KERNEL_STACK_TOP_OFFSET,
-    "PERCPU_KERNEL_STACK_TOP_OFFSET mismatch with struct layout");
-const _: () = assert!(offset_of!(PerCpuData, idle_thread) == PERCPU_IDLE_THREAD_OFFSET,
-    "PERCPU_IDLE_THREAD_OFFSET mismatch with struct layout");
-const _: () = assert!(offset_of!(PerCpuData, preempt_count) == PERCPU_PREEMPT_COUNT_OFFSET,
-    "PERCPU_PREEMPT_COUNT_OFFSET mismatch with struct layout");
-const _: () = assert!(offset_of!(PerCpuData, need_resched) == PERCPU_NEED_RESCHED_OFFSET,
-    "PERCPU_NEED_RESCHED_OFFSET mismatch with struct layout");
-const _: () = assert!(offset_of!(PerCpuData, user_rsp_scratch) == PERCPU_USER_RSP_SCRATCH_OFFSET,
-    "PERCPU_USER_RSP_SCRATCH_OFFSET mismatch with struct layout");
-const _: () = assert!(offset_of!(PerCpuData, tss) == PERCPU_TSS_OFFSET,
-    "PERCPU_TSS_OFFSET mismatch with struct layout");
-const _: () = assert!(offset_of!(PerCpuData, softirq_pending) == PERCPU_SOFTIRQ_PENDING_OFFSET,
-    "PERCPU_SOFTIRQ_PENDING_OFFSET mismatch with struct layout");
-const _: () = assert!(offset_of!(PerCpuData, next_cr3) == PERCPU_NEXT_CR3_OFFSET,
-    "PERCPU_NEXT_CR3_OFFSET mismatch with struct layout");
-const _: () = assert!(offset_of!(PerCpuData, kernel_cr3) == PERCPU_KERNEL_CR3_OFFSET,
-    "PERCPU_KERNEL_CR3_OFFSET mismatch with struct layout");
-const _: () = assert!(offset_of!(PerCpuData, saved_process_cr3) == PERCPU_SAVED_PROCESS_CR3_OFFSET,
-    "PERCPU_SAVED_PROCESS_CR3_OFFSET mismatch with struct layout");
-const _: () = assert!(offset_of!(PerCpuData, exception_cleanup_context) == PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET,
-    "PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET mismatch with struct layout");
+const _: () = assert!(
+    offset_of!(PerCpuData, cpu_id) == PERCPU_CPU_ID_OFFSET,
+    "PERCPU_CPU_ID_OFFSET mismatch with struct layout"
+);
+const _: () = assert!(
+    offset_of!(PerCpuData, current_thread) == PERCPU_CURRENT_THREAD_OFFSET,
+    "PERCPU_CURRENT_THREAD_OFFSET mismatch with struct layout"
+);
+const _: () = assert!(
+    offset_of!(PerCpuData, kernel_stack_top) == PERCPU_KERNEL_STACK_TOP_OFFSET,
+    "PERCPU_KERNEL_STACK_TOP_OFFSET mismatch with struct layout"
+);
+const _: () = assert!(
+    offset_of!(PerCpuData, idle_thread) == PERCPU_IDLE_THREAD_OFFSET,
+    "PERCPU_IDLE_THREAD_OFFSET mismatch with struct layout"
+);
+const _: () = assert!(
+    offset_of!(PerCpuData, preempt_count) == PERCPU_PREEMPT_COUNT_OFFSET,
+    "PERCPU_PREEMPT_COUNT_OFFSET mismatch with struct layout"
+);
+const _: () = assert!(
+    offset_of!(PerCpuData, need_resched) == PERCPU_NEED_RESCHED_OFFSET,
+    "PERCPU_NEED_RESCHED_OFFSET mismatch with struct layout"
+);
+const _: () = assert!(
+    offset_of!(PerCpuData, user_rsp_scratch) == PERCPU_USER_RSP_SCRATCH_OFFSET,
+    "PERCPU_USER_RSP_SCRATCH_OFFSET mismatch with struct layout"
+);
+const _: () = assert!(
+    offset_of!(PerCpuData, tss) == PERCPU_TSS_OFFSET,
+    "PERCPU_TSS_OFFSET mismatch with struct layout"
+);
+const _: () = assert!(
+    offset_of!(PerCpuData, softirq_pending) == PERCPU_SOFTIRQ_PENDING_OFFSET,
+    "PERCPU_SOFTIRQ_PENDING_OFFSET mismatch with struct layout"
+);
+const _: () = assert!(
+    offset_of!(PerCpuData, next_cr3) == PERCPU_NEXT_CR3_OFFSET,
+    "PERCPU_NEXT_CR3_OFFSET mismatch with struct layout"
+);
+const _: () = assert!(
+    offset_of!(PerCpuData, kernel_cr3) == PERCPU_KERNEL_CR3_OFFSET,
+    "PERCPU_KERNEL_CR3_OFFSET mismatch with struct layout"
+);
+const _: () = assert!(
+    offset_of!(PerCpuData, saved_process_cr3) == PERCPU_SAVED_PROCESS_CR3_OFFSET,
+    "PERCPU_SAVED_PROCESS_CR3_OFFSET mismatch with struct layout"
+);
+const _: () = assert!(
+    offset_of!(PerCpuData, exception_cleanup_context) == PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET,
+    "PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET mismatch with struct layout"
+);
 
 // Alignment assertions
-const _: () = assert!(PERCPU_PREEMPT_COUNT_OFFSET % 4 == 0, "preempt_count must be 4-byte aligned");
-const _: () = assert!(PERCPU_USER_RSP_SCRATCH_OFFSET % 8 == 0, "user_rsp_scratch must be 8-byte aligned");
-const _: () = assert!(core::mem::size_of::<usize>() == 8, "This code assumes 64-bit pointers");
+const _: () = assert!(
+    PERCPU_PREEMPT_COUNT_OFFSET % 4 == 0,
+    "preempt_count must be 4-byte aligned"
+);
+const _: () = assert!(
+    PERCPU_USER_RSP_SCRATCH_OFFSET % 8 == 0,
+    "user_rsp_scratch must be 8-byte aligned"
+);
+const _: () = assert!(
+    core::mem::size_of::<usize>() == 8,
+    "This code assumes 64-bit pointers"
+);
 
 // Verify struct size is 192 bytes due to align(64) attribute
 // The actual data is 128 bytes (switch_violations ends at offset 128), but align(64) rounds up to 192
-const _: () = assert!(core::mem::size_of::<PerCpuData>() == 192, "PerCpuData must be 192 bytes (aligned to 64)");
+const _: () = assert!(
+    core::mem::size_of::<PerCpuData>() == 192,
+    "PerCpuData must be 192 bytes (aligned to 64)"
+);
 
 // Verify bit layout matches Linux kernel
 const _: () = assert!(PREEMPT_MASK == 0x000000FF, "PREEMPT_MASK incorrect");
@@ -244,7 +281,8 @@ static mut CPU0_DATA: PerCpuData = PerCpuData::new(0);
 
 /// Flag to indicate whether per-CPU data is initialized and safe to use
 /// CRITICAL: Interrupts MUST be disabled until this is true
-static PER_CPU_INITIALIZED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static PER_CPU_INITIALIZED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 
 /// Check if per-CPU data has been initialized
 /// Note: Used in non-interactive builds (logger.rs framebuffer check)
@@ -255,8 +293,8 @@ pub fn is_initialized() -> bool {
 
 /// Initialize per-CPU data for the current CPU
 pub fn init() {
-    use crate::arch_impl::PageTableOps;
     use crate::arch_impl::current::paging::X86PageTableOps;
+    use crate::arch_impl::PageTableOps;
 
     log::info!("Initializing per-CPU data via GS segment");
 
@@ -273,14 +311,20 @@ pub fn init() {
 
     log::info!("Per-CPU data initialized at {:#x}", cpu_data_addr);
     log::debug!("  GS_BASE = {:#x}", hal_percpu::msr::read_gs_base_msr());
-    log::debug!("  KERNEL_GS_BASE = {:#x}", hal_percpu::read_kernel_gs_base());
+    log::debug!(
+        "  KERNEL_GS_BASE = {:#x}",
+        hal_percpu::read_kernel_gs_base()
+    );
 
     // HAL Read-back verification: Verify GS-relative operations actually work
     // This catches misconfigured GS base before any interrupt handlers run
 
     let read_cpu_id = hal_percpu::X86PerCpu::cpu_id();
     if read_cpu_id != 0 {
-        panic!("HAL verification failed: cpu_id read-back mismatch (expected 0, got {})", read_cpu_id);
+        panic!(
+            "HAL verification failed: cpu_id read-back mismatch (expected 0, got {})",
+            read_cpu_id
+        );
     }
 
     // Verify preempt_count read/write cycle
@@ -288,20 +332,27 @@ pub fn init() {
     hal_percpu::X86PerCpu::preempt_disable();
     let after_disable = hal_percpu::X86PerCpu::preempt_count();
     if after_disable != initial_preempt + 1 {
-        panic!("HAL verification failed: preempt_disable did not increment (expected {}, got {})",
-               initial_preempt + 1, after_disable);
+        panic!(
+            "HAL verification failed: preempt_disable did not increment (expected {}, got {})",
+            initial_preempt + 1,
+            after_disable
+        );
     }
     hal_percpu::X86PerCpu::preempt_enable();
     let after_enable = hal_percpu::X86PerCpu::preempt_count();
     if after_enable != initial_preempt {
-        panic!("HAL verification failed: preempt_enable did not restore (expected {}, got {})",
-               initial_preempt, after_enable);
+        panic!(
+            "HAL verification failed: preempt_enable did not restore (expected {}, got {})",
+            initial_preempt, after_enable
+        );
     }
     log::info!("HAL read-back verification passed: GS-relative operations working");
 
     // Mark per-CPU data as initialized and safe to use
     PER_CPU_INITIALIZED.store(true, Ordering::Release);
-    log::info!("Per-CPU data marked as initialized - preempt_count functions now use per-CPU storage");
+    log::info!(
+        "Per-CPU data marked as initialized - preempt_count functions now use per-CPU storage"
+    );
 
     // Store the current CR3 as the initial kernel CR3 via HAL
     // NOTE: At this point, we're still using the bootloader's page tables.
@@ -309,12 +360,17 @@ pub fn init() {
     // to the master PML4 and calls set_kernel_cr3() to update this value.
     // This initial value provides a fallback during early boot.
     let kernel_cr3_val = X86PageTableOps::read_root();
-    log::info!("Storing initial kernel_cr3 = {:#x} in per-CPU data (bootloader PT)", kernel_cr3_val);
+    log::info!(
+        "Storing initial kernel_cr3 = {:#x} in per-CPU data (bootloader PT)",
+        kernel_cr3_val
+    );
 
     unsafe {
         hal_percpu::X86PerCpu::set_kernel_cr3(kernel_cr3_val);
     }
-    log::info!("kernel_cr3 stored successfully - interrupt handlers can now switch to kernel page tables");
+    log::info!(
+        "kernel_cr3 stored successfully - interrupt handlers can now switch to kernel page tables"
+    );
 
     // HAL boot stage marker - proves HAL per-CPU operations are working
     log::info!("HAL_PERCPU_INITIALIZED: Per-CPU data setup via HAL complete");
@@ -324,7 +380,8 @@ pub fn init() {
 pub fn current_thread() -> Option<&'static mut crate::task::thread::Thread> {
     // Use HAL for GS-relative access
 
-    let thread_ptr = hal_percpu::X86PerCpu::current_thread_ptr() as *mut crate::task::thread::Thread;
+    let thread_ptr =
+        hal_percpu::X86PerCpu::current_thread_ptr() as *mut crate::task::thread::Thread;
 
     if thread_ptr.is_null() {
         None
@@ -407,8 +464,10 @@ pub fn in_nmi() -> bool {
 
 /// Enter hardware IRQ context (called by interrupt handlers)
 pub fn irq_enter() {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
-                  "irq_enter called before per-CPU initialization");
+    debug_assert!(
+        PER_CPU_INITIALIZED.load(Ordering::Acquire),
+        "irq_enter called before per-CPU initialization"
+    );
 
     // Track irq_enter calls for balance analysis
     IRQ_ENTER_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -423,13 +482,14 @@ pub fn irq_enter() {
 
 /// Exit hardware IRQ context
 pub fn irq_exit() {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
-                  "irq_exit called before per-CPU initialization");
+    debug_assert!(
+        PER_CPU_INITIALIZED.load(Ordering::Acquire),
+        "irq_exit called before per-CPU initialization"
+    );
 
     // Debug-only underflow check: verify we're in hardirq context before decrementing
     #[cfg(debug_assertions)]
     {
-    
         let count_before = hal_percpu::X86PerCpu::preempt_count();
         debug_assert!(
             (count_before & HARDIRQ_MASK) != 0,
@@ -473,8 +533,10 @@ pub fn irq_exit() {
 
 /// Enter NMI context (Non-Maskable Interrupt)
 pub fn nmi_enter() {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
-                  "nmi_enter called before per-CPU initialization");
+    debug_assert!(
+        PER_CPU_INITIALIZED.load(Ordering::Acquire),
+        "nmi_enter called before per-CPU initialization"
+    );
 
     // Use HAL for atomic GS-relative increment (includes compiler fences)
     unsafe {
@@ -484,13 +546,14 @@ pub fn nmi_enter() {
 
 /// Exit NMI context
 pub fn nmi_exit() {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
-                  "nmi_exit called before per-CPU initialization");
+    debug_assert!(
+        PER_CPU_INITIALIZED.load(Ordering::Acquire),
+        "nmi_exit called before per-CPU initialization"
+    );
 
     // Debug-only underflow check: verify we're in NMI context before decrementing
     #[cfg(debug_assertions)]
     {
-    
         let count_before = hal_percpu::X86PerCpu::preempt_count();
         debug_assert!(
             (count_before & NMI_MASK) != 0,
@@ -508,8 +571,10 @@ pub fn nmi_exit() {
 
 /// Enter softirq context (software interrupt / bottom half)
 pub fn softirq_enter() {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
-                  "softirq_enter called before per-CPU initialization");
+    debug_assert!(
+        PER_CPU_INITIALIZED.load(Ordering::Acquire),
+        "softirq_enter called before per-CPU initialization"
+    );
 
     // Use HAL for atomic GS-relative increment (includes compiler fences)
     unsafe {
@@ -519,13 +584,14 @@ pub fn softirq_enter() {
 
 /// Exit softirq context
 pub fn softirq_exit() {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
-                  "softirq_exit called before per-CPU initialization");
+    debug_assert!(
+        PER_CPU_INITIALIZED.load(Ordering::Acquire),
+        "softirq_exit called before per-CPU initialization"
+    );
 
     // Debug-only underflow check: verify we're in softirq context before decrementing
     #[cfg(debug_assertions)]
     {
-    
         let count_before = hal_percpu::X86PerCpu::preempt_count();
         debug_assert!(
             (count_before & SOFTIRQ_MASK) != 0,
@@ -571,11 +637,12 @@ pub fn set_idle_thread(thread: *mut crate::task::thread::Thread) {
 /// This must be called on every context switch to a thread
 pub fn update_tss_rsp0(kernel_stack_top: u64) {
     // Get TSS pointer via HAL
-    let tss_ptr = hal_percpu::X86PerCpu::tss_ptr() as *mut x86_64::structures::tss::TaskStateSegment;
+    let tss_ptr =
+        hal_percpu::X86PerCpu::tss_ptr() as *mut x86_64::structures::tss::TaskStateSegment;
 
     if !tss_ptr.is_null() {
         // Update per-CPU kernel_stack_top via HAL
-    
+
         unsafe {
             hal_percpu::X86PerCpu::set_kernel_stack_top(kernel_stack_top);
         }
@@ -621,8 +688,10 @@ pub fn set_user_rsp_scratch(rsp: u64) {
 /// include them.
 pub fn preempt_disable() {
     // Per-CPU data must be initialized before any preemption operations
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
-                  "preempt_disable called before per-CPU initialization");
+    debug_assert!(
+        PER_CPU_INITIALIZED.load(Ordering::Acquire),
+        "preempt_disable called before per-CPU initialization"
+    );
 
     // Compiler barrier before incrementing preempt count
     compiler_fence(Ordering::Acquire);
@@ -643,8 +712,10 @@ pub fn preempt_disable() {
 /// CRITICAL: Must only be called after per_cpu::init() with interrupts disabled until then
 pub fn preempt_enable() {
     // Per-CPU data must be initialized before any preemption operations
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
-                  "preempt_enable called before per-CPU initialization");
+    debug_assert!(
+        PER_CPU_INITIALIZED.load(Ordering::Acquire),
+        "preempt_enable called before per-CPU initialization"
+    );
 
     // Compiler barrier before decrementing preempt count
     compiler_fence(Ordering::Acquire);
@@ -667,8 +738,10 @@ pub fn preempt_enable() {
 
 /// Get current preempt count
 pub fn preempt_count() -> u32 {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
-                  "preempt_count called before per-CPU initialization");
+    debug_assert!(
+        PER_CPU_INITIALIZED.load(Ordering::Acquire),
+        "preempt_count called before per-CPU initialization"
+    );
 
     // Use HAL for GS-relative access
 
@@ -870,7 +943,8 @@ pub fn can_schedule(saved_cs: u64) -> bool {
     // at CR2=0x8 (offset 8 in PerCpuData = current_thread pointer).
     if current_thread().is_none() {
         // No current thread set yet - cannot schedule
-        static EARLY_RETURN_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        static EARLY_RETURN_COUNT: core::sync::atomic::AtomicU64 =
+            core::sync::atomic::AtomicU64::new(0);
         let count = EARLY_RETURN_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         if count < 10 {
             log::warn!("can_schedule: returning false - current_thread is None");
@@ -903,7 +977,8 @@ pub fn can_schedule(saved_cs: u64) -> bool {
         } else {
             false
         }
-    }).unwrap_or(false);
+    })
+    .unwrap_or(false);
 
     // Check if need_resched is set - kernel threads use yield_current() which sets this flag
     let need_resched_set = crate::task::scheduler::is_need_resched();
@@ -918,12 +993,13 @@ pub fn can_schedule(saved_cs: u64) -> bool {
     // NEW: Allow scheduling for kernel threads (including kthreads) when they call yield_current().
     // yield_current() sets need_resched, and we need to honor that even for kernel threads.
     let result = in_exception_cleanup
-                 || current_thread_blocked_or_terminated
-                 || (current_preempt == 0 && (returning_to_userspace || returning_to_idle_kernel))
-                 || (current_preempt == 0 && need_resched_set);
+        || current_thread_blocked_or_terminated
+        || (current_preempt == 0 && (returning_to_userspace || returning_to_idle_kernel))
+        || (current_preempt == 0 && need_resched_set);
 
     // DEBUG: Print why can_schedule returns false (every 1000 calls)
-    static CAN_SCHED_DEBUG_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    static CAN_SCHED_DEBUG_COUNT: core::sync::atomic::AtomicU32 =
+        core::sync::atomic::AtomicU32::new(0);
     let dbg_count = CAN_SCHED_DEBUG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     if !result && dbg_count % 1000 == 0 {
         // Raw serial output to debug
@@ -933,8 +1009,16 @@ pub fn can_schedule(saved_cs: u64) -> bool {
             // Print: 'p' + preempt_count_hex + 'r' + (need_resched ? '1' : '0')
             port.write(b'p');
             let p = current_preempt as u8;
-            port.write(if (p >> 4) < 10 { b'0' + (p >> 4) } else { b'A' + (p >> 4) - 10 });
-            port.write(if (p & 0xF) < 10 { b'0' + (p & 0xF) } else { b'A' + (p & 0xF) - 10 });
+            port.write(if (p >> 4) < 10 {
+                b'0' + (p >> 4)
+            } else {
+                b'A' + (p >> 4) - 10
+            });
+            port.write(if (p & 0xF) < 10 {
+                b'0' + (p & 0xF)
+            } else {
+                b'A' + (p & 0xF) - 10
+            });
             port.write(b'r');
             port.write(if need_resched_set { b'1' } else { b'0' });
             port.write(b' ');
@@ -971,4 +1055,3 @@ pub fn get_irq_exit_count() -> u64 {
 pub fn get_max_preempt_imbalance() -> u64 {
     MAX_PREEMPT_IMBALANCE.load(Ordering::Relaxed)
 }
-

@@ -28,12 +28,12 @@
 
 #![cfg(target_arch = "aarch64")]
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
+use core::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::Mutex;
 
 use super::descriptors::{
-    class_code, descriptor_type, hid_protocol, hid_request, request,
-    DeviceDescriptor, ConfigDescriptor, InterfaceDescriptor, EndpointDescriptor, SetupPacket,
+    class_code, descriptor_type, hid_protocol, hid_request, request, ConfigDescriptor,
+    DeviceDescriptor, EndpointDescriptor, InterfaceDescriptor, SetupPacket,
 };
 
 // =============================================================================
@@ -339,7 +339,6 @@ static mut MOUSE2_REPORT_BUF: Aligned64<[u8; 64]> = Aligned64([0u8; 64]);
 /// Scratch buffer for control transfer data stages (256 bytes).
 static mut CTRL_DATA_BUF: Aligned64<[u8; 256]> = Aligned64([0u8; 256]);
 
-
 /// Number of successful GET_REPORT polls for mouse (for heartbeat diagnostics).
 pub static GET_REPORT_OK: AtomicU64 = AtomicU64::new(0);
 
@@ -349,7 +348,6 @@ pub static GET_REPORT_NONZERO: AtomicU64 = AtomicU64::new(0);
 /// Number of successful EP0 GET_REPORT polls for keyboard.
 /// Use this in heartbeat to verify keyboard polling is active (gk= equivalent).
 pub static KBD_GET_REPORT_OK: AtomicU64 = AtomicU64::new(0);
-
 
 // =============================================================================
 // Controller State
@@ -578,7 +576,6 @@ static KBD_TRB_FIRST_QUEUED: AtomicBool = AtomicBool::new(false);
 /// processes the first interrupt endpoint transfer.
 static HID_TRBS_QUEUED: AtomicBool = AtomicBool::new(false);
 
-
 // =============================================================================
 // Memory Helpers
 // =============================================================================
@@ -738,8 +735,14 @@ static XHCI_TRACE_DATA_CURSOR: AtomicU32 = AtomicU32::new(0);
 /// Trace record ring buffer.
 static mut XHCI_TRACE_RECORDS: [XhciTraceRecord; XHCI_TRACE_MAX_RECORDS] = {
     const ZERO: XhciTraceRecord = XhciTraceRecord {
-        seq: 0, op: 0, slot: 0, dci: 0, _pad: 0,
-        timestamp: 0, data_offset: 0xFFFF_FFFF, data_len: 0,
+        seq: 0,
+        op: 0,
+        slot: 0,
+        dci: 0,
+        _pad: 0,
+        timestamp: 0,
+        data_offset: 0xFFFF_FFFF,
+        data_len: 0,
     };
     [ZERO; XHCI_TRACE_MAX_RECORDS]
 };
@@ -775,11 +778,7 @@ fn xhci_trace_impl(op: u8, slot: u8, dci: u8, data: &[u8]) {
         let copy_len = len.min(XHCI_TRACE_DATA_SIZE - off);
         unsafe {
             let data_ptr = core::ptr::addr_of_mut!(XHCI_TRACE_DATA) as *mut u8;
-            core::ptr::copy_nonoverlapping(
-                data.as_ptr(),
-                data_ptr.add(off),
-                copy_len,
-            );
+            core::ptr::copy_nonoverlapping(data.as_ptr(), data_ptr.add(off), copy_len);
             if copy_len < len {
                 core::ptr::copy_nonoverlapping(
                     data.as_ptr().add(copy_len),
@@ -859,9 +858,7 @@ fn xhci_trace_note(slot: u8, note: &str) {
 /// Trace a TRB (16 bytes) with the given operation.
 #[allow(dead_code)]
 fn xhci_trace_trb(op: XhciTraceOp, slot: u8, dci: u8, trb: &Trb) {
-    let bytes: [u8; 16] = unsafe {
-        core::mem::transmute_copy(trb)
-    };
+    let bytes: [u8; 16] = unsafe { core::mem::transmute_copy(trb) };
     xhci_trace(op, slot, dci, &bytes);
 }
 
@@ -964,9 +961,7 @@ pub fn format_trace_buffer() -> alloc::string::String {
             if off + len <= XHCI_TRACE_DATA_SIZE {
                 let data = unsafe {
                     core::slice::from_raw_parts(
-                        core::ptr::addr_of!(XHCI_TRACE_DATA)
-                            .cast::<u8>()
-                            .add(off),
+                        core::ptr::addr_of!(XHCI_TRACE_DATA).cast::<u8>().add(off),
                         len,
                     )
                 };
@@ -1009,29 +1004,101 @@ pub fn format_trace_buffer() -> alloc::string::String {
     let _ = writeln!(out, "=== XHCI_DIAG ===");
     let _ = writeln!(out, "poll_count {}", POLL_COUNT.load(Ordering::Relaxed));
     let _ = writeln!(out, "event_count {}", EVENT_COUNT.load(Ordering::Relaxed));
-    let _ = writeln!(out, "consumed_xfer_enum {}", CONSUMED_XFER_DURING_ENUM.load(Ordering::Relaxed));
-    let _ = writeln!(out, "first_xfer_cc {}", DIAG_FIRST_XFER_CC.load(Ordering::Relaxed));
-    let _ = writeln!(out, "first_queue_src {}", DIAG_FIRST_QUEUE_SOURCE.load(Ordering::Relaxed));
-    let _ = writeln!(out, "ep_state_cc12 {}", DIAG_EP_STATE_AFTER_CC12.load(Ordering::Relaxed));
-    let _ = writeln!(out, "endpoint_resets {}", ENDPOINT_RESET_COUNT.load(Ordering::Relaxed));
-    let _ = writeln!(out, "xfer_other {}", XFER_OTHER_COUNT.load(Ordering::Relaxed));
-    let _ = writeln!(out, "ep_before_db 0x{:08x}", DIAG_EP_STATE_BEFORE_DB.load(Ordering::Relaxed));
-    let _ = writeln!(out, "slot_before_db 0x{:08x}", DIAG_SLOT_STATE_BEFORE_DB.load(Ordering::Relaxed));
-    let _ = writeln!(out, "trdp_output 0x{:016x}", DIAG_TRDP_FROM_OUTPUT.load(Ordering::Relaxed));
-    let _ = writeln!(out, "portsc_before_db 0x{:08x}", DIAG_PORTSC_BEFORE_DB.load(Ordering::Relaxed));
-    let _ = writeln!(out, "first_queued_phys 0x{:016x}", DIAG_FIRST_QUEUED_PHYS.load(Ordering::Relaxed));
-    let _ = writeln!(out, "first_xfer_ptr 0x{:016x}", DIAG_FIRST_XFER_PTR.load(Ordering::Relaxed));
+    let _ = writeln!(
+        out,
+        "consumed_xfer_enum {}",
+        CONSUMED_XFER_DURING_ENUM.load(Ordering::Relaxed)
+    );
+    let _ = writeln!(
+        out,
+        "first_xfer_cc {}",
+        DIAG_FIRST_XFER_CC.load(Ordering::Relaxed)
+    );
+    let _ = writeln!(
+        out,
+        "first_queue_src {}",
+        DIAG_FIRST_QUEUE_SOURCE.load(Ordering::Relaxed)
+    );
+    let _ = writeln!(
+        out,
+        "ep_state_cc12 {}",
+        DIAG_EP_STATE_AFTER_CC12.load(Ordering::Relaxed)
+    );
+    let _ = writeln!(
+        out,
+        "endpoint_resets {}",
+        ENDPOINT_RESET_COUNT.load(Ordering::Relaxed)
+    );
+    let _ = writeln!(
+        out,
+        "xfer_other {}",
+        XFER_OTHER_COUNT.load(Ordering::Relaxed)
+    );
+    let _ = writeln!(
+        out,
+        "ep_before_db 0x{:08x}",
+        DIAG_EP_STATE_BEFORE_DB.load(Ordering::Relaxed)
+    );
+    let _ = writeln!(
+        out,
+        "slot_before_db 0x{:08x}",
+        DIAG_SLOT_STATE_BEFORE_DB.load(Ordering::Relaxed)
+    );
+    let _ = writeln!(
+        out,
+        "trdp_output 0x{:016x}",
+        DIAG_TRDP_FROM_OUTPUT.load(Ordering::Relaxed)
+    );
+    let _ = writeln!(
+        out,
+        "portsc_before_db 0x{:08x}",
+        DIAG_PORTSC_BEFORE_DB.load(Ordering::Relaxed)
+    );
+    let _ = writeln!(
+        out,
+        "first_queued_phys 0x{:016x}",
+        DIAG_FIRST_QUEUED_PHYS.load(Ordering::Relaxed)
+    );
+    let _ = writeln!(
+        out,
+        "first_xfer_ptr 0x{:016x}",
+        DIAG_FIRST_XFER_PTR.load(Ordering::Relaxed)
+    );
     let slep = DIAG_FIRST_XFER_SLEP.load(Ordering::Relaxed);
-    let _ = writeln!(out, "first_xfer_slep slot={} ep={}", (slep >> 8) & 0xFF, slep & 0xFF);
-    let _ = writeln!(out, "first_xfer_status 0x{:08x}", DIAG_FIRST_XFER_STATUS.load(Ordering::Relaxed));
-    let _ = writeln!(out, "first_xfer_control 0x{:08x}", DIAG_FIRST_XFER_CONTROL.load(Ordering::Relaxed));
-    let _ = writeln!(out, "ep_state_after_reset 0x{:08x}", DIAG_EP_STATE_AFTER_RESET.load(Ordering::Relaxed));
-    let _ = writeln!(out, "reset_fail_count {}", ENDPOINT_RESET_FAIL_COUNT.load(Ordering::Relaxed));
+    let _ = writeln!(
+        out,
+        "first_xfer_slep slot={} ep={}",
+        (slep >> 8) & 0xFF,
+        slep & 0xFF
+    );
+    let _ = writeln!(
+        out,
+        "first_xfer_status 0x{:08x}",
+        DIAG_FIRST_XFER_STATUS.load(Ordering::Relaxed)
+    );
+    let _ = writeln!(
+        out,
+        "first_xfer_control 0x{:08x}",
+        DIAG_FIRST_XFER_CONTROL.load(Ordering::Relaxed)
+    );
+    let _ = writeln!(
+        out,
+        "ep_state_after_reset 0x{:08x}",
+        DIAG_EP_STATE_AFTER_RESET.load(Ordering::Relaxed)
+    );
+    let _ = writeln!(
+        out,
+        "reset_fail_count {}",
+        ENDPOINT_RESET_FAIL_COUNT.load(Ordering::Relaxed)
+    );
     let _ = writeln!(out, "xo_err_count {}", XO_ERR_COUNT.load(Ordering::Relaxed));
-    let _ = writeln!(out, "xo_last_info slot={} ep={} cc={}",
+    let _ = writeln!(
+        out,
+        "xo_last_info slot={} ep={} cc={}",
         (XO_LAST_INFO.load(Ordering::Relaxed) >> 16) & 0xFF,
         (XO_LAST_INFO.load(Ordering::Relaxed) >> 8) & 0xFF,
-        XO_LAST_INFO.load(Ordering::Relaxed) & 0xFF);
+        XO_LAST_INFO.load(Ordering::Relaxed) & 0xFF
+    );
     let _ = writeln!(out, "skip_bw_dance {}", SKIP_BW_DANCE);
     let _ = writeln!(out, "=== XHCI_DIAG_END ===");
 
@@ -1094,7 +1161,12 @@ fn xhci_trace_dump() {
 
         crate::serial_println!(
             "T {:04} {:12} S={:02} E={:02} TS={:016X} LEN={:04X}",
-            rec.seq, op_name, rec.slot, rec.dci, rec.timestamp, rec.data_len,
+            rec.seq,
+            op_name,
+            rec.slot,
+            rec.dci,
+            rec.timestamp,
+            rec.data_len,
         );
 
         // Dump payload in 16-byte hex lines
@@ -1104,9 +1176,7 @@ fn xhci_trace_dump() {
             if off + len <= XHCI_TRACE_DATA_SIZE {
                 let data = unsafe {
                     core::slice::from_raw_parts(
-                        core::ptr::addr_of!(XHCI_TRACE_DATA)
-                            .cast::<u8>()
-                            .add(off),
+                        core::ptr::addr_of!(XHCI_TRACE_DATA).cast::<u8>().add(off),
                         len,
                     )
                 };
@@ -1181,18 +1251,30 @@ fn xhci_trace_dump() {
 // =============================================================================
 
 // Milestone constants — intentionally kept for re-enablement of tracing macros.
-#[allow(dead_code)] const M_DISCOVERY: u8 = 1;
-#[allow(dead_code)] const M_RESET: u8 = 2;
-#[allow(dead_code)] const M_DATA_STRUC: u8 = 3;
-#[allow(dead_code)] const M_RUNNING: u8 = 4;
-#[allow(dead_code)] const M_PORT_DET: u8 = 5;
-#[allow(dead_code)] const M_SLOT_EN: u8 = 6;
-#[allow(dead_code)] const M_ADDR_DEV: u8 = 7;
-#[allow(dead_code)] const M_EP_CONFIG: u8 = 8;
-#[allow(dead_code)] const M_HID_SETUP: u8 = 9;
-#[allow(dead_code)] const M_INTR_XFER: u8 = 10;
-#[allow(dead_code)] const M_EVT_DELIV: u8 = 11;
-#[allow(dead_code)] const M_TOTAL: u8 = 11;
+#[allow(dead_code)]
+const M_DISCOVERY: u8 = 1;
+#[allow(dead_code)]
+const M_RESET: u8 = 2;
+#[allow(dead_code)]
+const M_DATA_STRUC: u8 = 3;
+#[allow(dead_code)]
+const M_RUNNING: u8 = 4;
+#[allow(dead_code)]
+const M_PORT_DET: u8 = 5;
+#[allow(dead_code)]
+const M_SLOT_EN: u8 = 6;
+#[allow(dead_code)]
+const M_ADDR_DEV: u8 = 7;
+#[allow(dead_code)]
+const M_EP_CONFIG: u8 = 8;
+#[allow(dead_code)]
+const M_HID_SETUP: u8 = 9;
+#[allow(dead_code)]
+const M_INTR_XFER: u8 = 10;
+#[allow(dead_code)]
+const M_EVT_DELIV: u8 = 11;
+#[allow(dead_code)]
+const M_TOTAL: u8 = 11;
 
 #[allow(dead_code)]
 const MILESTONE_NAMES: [&str; 12] = [
@@ -1210,10 +1292,18 @@ const MILESTONE_NAMES: [&str; 12] = [
     "EVENT_DELIVERY",
 ];
 
-macro_rules! ms_begin { ($m:expr) => {}; }
-macro_rules! ms_pass { ($m:expr) => {}; }
-macro_rules! ms_fail { ($m:expr, $reason:expr) => {}; }
-macro_rules! ms_kv { ($m:expr, $fmt:literal $(, $arg:expr)*) => {}; }
+macro_rules! ms_begin {
+    ($m:expr) => {};
+}
+macro_rules! ms_pass {
+    ($m:expr) => {};
+}
+macro_rules! ms_fail {
+    ($m:expr, $reason:expr) => {};
+}
+macro_rules! ms_kv {
+    ($m:expr, $fmt:literal $(, $arg:expr)*) => {};
+}
 
 /// Hex-dump a DMA buffer under a milestone (silenced).
 #[allow(dead_code)]
@@ -1381,14 +1471,9 @@ fn enqueue_command(trb: Trb) {
                 // TC must be bit 1, NOT bit 5 (which is IOC). Without TC set,
                 // the HC never toggles its cycle bit on wrap and ignores all
                 // post-wrap commands, making the ring appear exhausted.
-                control: (trb_type::LINK << 10)
-                    | if cycle { 1 } else { 0 }
-                    | (1 << 1),
+                control: (trb_type::LINK << 10) | if cycle { 1 } else { 0 } | (1 << 1),
             };
-            core::ptr::write_volatile(
-                &mut (*ring).0[CMD_RING_SIZE - 1] as *mut Trb,
-                link,
-            );
+            core::ptr::write_volatile(&mut (*ring).0[CMD_RING_SIZE - 1] as *mut Trb, link);
             dma_cache_clean(
                 &(*ring).0[CMD_RING_SIZE - 1] as *const Trb as *const u8,
                 core::mem::size_of::<Trb>(),
@@ -1444,8 +1529,8 @@ fn wait_for_event_inner(state: &XhciState, command_only: bool) -> Result<Trb, &'
                 }
 
                 // Update ERDP to acknowledge the event
-                let erdp_phys = virt_to_phys(&raw const EVENT_RING as u64)
-                    + (EVENT_RING_DEQUEUE as u64) * 16;
+                let erdp_phys =
+                    virt_to_phys(&raw const EVENT_RING as u64) + (EVENT_RING_DEQUEUE as u64) * 16;
                 let ir0 = state.rt_base + 0x20; // Interrupter 0
                 write64(ir0 + 0x18, erdp_phys | (1 << 3));
 
@@ -1453,7 +1538,10 @@ fn wait_for_event_inner(state: &XhciState, command_only: bool) -> Result<Trb, &'
                 // after every event, matching Linux xhci-ring.c ack_event().
                 // Writing 1 to W1C bits clears them; writing 1 when already clear is a no-op.
                 write32(ir0, read32(ir0) | 1); // W1C IMAN.IP
-                write32(state.op_base + 0x04, read32(state.op_base + 0x04) | (1 << 3)); // W1C EINT
+                write32(
+                    state.op_base + 0x04,
+                    read32(state.op_base + 0x04) | (1 << 3),
+                ); // W1C EINT
 
                 let trb_type_val = trb.trb_type();
                 if trb_type_val == trb_type::COMMAND_COMPLETION {
@@ -1606,11 +1694,11 @@ fn address_device(state: &XhciState, slot_id: u8, port_id: u8) -> Result<(), &'s
         // Determine max packet size based on port speed
         // Speed: 1=Full (64), 2=Low (8), 3=High (64), 4=Super (512)
         let max_packet_size: u16 = match port_speed {
-            1 => 64,   // Full Speed
-            2 => 8,    // Low Speed
-            3 => 64,   // High Speed
-            4 => 512,  // SuperSpeed
-            _ => 64,   // Default to Full Speed
+            1 => 64,  // Full Speed
+            2 => 8,   // Low Speed
+            3 => 64,  // High Speed
+            4 => 512, // SuperSpeed
+            _ => 64,  // Default to Full Speed
         };
 
         // EP0 DW1: Max Packet Size (bits 31:16), EP Type (bits 5:3) = 4 (Control Bidir), CErr (bits 2:1) = 3
@@ -1637,10 +1725,7 @@ fn address_device(state: &XhciState, slot_id: u8, port_id: u8) -> Result<(), &'s
             (ep0_ring_phys as u32) | 1, // DCS = 1
         );
         // DW3: TR Dequeue Pointer (high 32 bits)
-        core::ptr::write_volatile(
-            ep0_ctx.add(0x0C) as *mut u32,
-            (ep0_ring_phys >> 32) as u32,
-        );
+        core::ptr::write_volatile(ep0_ctx.add(0x0C) as *mut u32, (ep0_ring_phys >> 32) as u32);
 
         // EP0 DW4: Max ESIT Payload Lo (bits 31:16) = 0 for control, Average TRB Length (bits 15:0) = 8
         // Linux reference: EP0 DW4 = 0x00000000 (AvgTRBLen=0 for control EP).
@@ -1655,10 +1740,7 @@ fn address_device(state: &XhciState, slot_id: u8, port_id: u8) -> Result<(), &'s
         let dev_ctx_phys = virt_to_phys(&raw const DEVICE_CONTEXTS[slot_idx] as u64);
         let dcbaa = &raw mut DCBAA;
         (*dcbaa).0[slot_id as usize] = dev_ctx_phys;
-        dma_cache_clean(
-            &(*dcbaa).0[slot_id as usize] as *const u64 as *const u8,
-            8,
-        );
+        dma_cache_clean(&(*dcbaa).0[slot_id as usize] as *const u64 as *const u8, 8);
 
         // Build AddressDevice TRB (BSR=0)
         // BSR=0: the xHC assigns an address and sends SET_ADDRESS to the device,
@@ -1667,8 +1749,20 @@ fn address_device(state: &XhciState, slot_id: u8, port_id: u8) -> Result<(), &'s
         // BSR=1 causes CC=19 (Context State Error) on ConfigureEndpoint.
         let input_ctx_phys = virt_to_phys(&raw const INPUT_CONTEXTS[slot_idx] as u64);
 
-        ms_kv!(M_ADDR_DEV, "slot={} port={} speed={}", slot_id, port_id, port_speed);
-        ms_dump(M_ADDR_DEV, "input_ctx", input_ctx_phys, input_base, ctx_size * 3);
+        ms_kv!(
+            M_ADDR_DEV,
+            "slot={} port={} speed={}",
+            slot_id,
+            port_id,
+            port_speed
+        );
+        ms_dump(
+            M_ADDR_DEV,
+            "input_ctx",
+            input_ctx_phys,
+            input_base,
+            ctx_size * 3,
+        );
 
         let trb = Trb {
             param: input_ctx_phys,
@@ -1689,7 +1783,13 @@ fn address_device(state: &XhciState, slot_id: u8, port_id: u8) -> Result<(), &'s
 
         // Dump output context after successful AddressDevice
         dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
-        ms_dump(M_ADDR_DEV, "output_ctx", dev_ctx_phys, (*dev_ctx).0.as_ptr(), ctx_size * 2);
+        ms_dump(
+            M_ADDR_DEV,
+            "output_ctx",
+            dev_ctx_phys,
+            (*dev_ctx).0.as_ptr(),
+            ctx_size * 2,
+        );
 
         xhci_trace_note(slot_id, "address_device");
         Ok(())
@@ -1713,10 +1813,7 @@ fn enqueue_transfer(hid_idx: usize, trb: Trb) {
             t.control &= !1;
         }
 
-        core::ptr::write_volatile(
-            &mut TRANSFER_RINGS[hid_idx][idx] as *mut Trb,
-            t,
-        );
+        core::ptr::write_volatile(&mut TRANSFER_RINGS[hid_idx][idx] as *mut Trb, t);
         dma_cache_clean(
             &TRANSFER_RINGS[hid_idx][idx] as *const Trb as *const u8,
             core::mem::size_of::<Trb>(),
@@ -1733,9 +1830,7 @@ fn enqueue_transfer(hid_idx: usize, trb: Trb) {
             let link = Trb {
                 param: ring_phys,
                 status: 0,
-                control: (trb_type::LINK << 10)
-                    | if cycle { 1 } else { 0 }
-                    | (1 << 1), // TC (Toggle Cycle) bit — xHCI spec bit 1, not bit 5
+                control: (trb_type::LINK << 10) | if cycle { 1 } else { 0 } | (1 << 1), // TC (Toggle Cycle) bit — xHCI spec bit 1, not bit 5
             };
             core::ptr::write_volatile(
                 &mut TRANSFER_RINGS[hid_idx][TRANSFER_RING_SIZE - 1] as *mut Trb,
@@ -1766,9 +1861,7 @@ fn reset_control_endpoint(state: &XhciState, slot_id: u8) {
     let reset_trb = Trb {
         param: 0,
         status: 0,
-        control: (trb_type::RESET_ENDPOINT << 10)
-            | ((slot_id as u32) << 24)
-            | (1u32 << 16),
+        control: (trb_type::RESET_ENDPOINT << 10) | ((slot_id as u32) << 24) | (1u32 << 16),
     };
     enqueue_command(reset_trb);
     ring_doorbell(state, 0, 0);
@@ -1791,14 +1884,11 @@ fn reset_control_endpoint(state: &XhciState, slot_id: u8) {
     let set_deq_trb = Trb {
         param: ring_phys | 1,
         status: 0,
-        control: (trb_type::SET_TR_DEQUEUE_POINTER << 10)
-            | ((slot_id as u32) << 24)
-            | (1u32 << 16),
+        control: (trb_type::SET_TR_DEQUEUE_POINTER << 10) | ((slot_id as u32) << 24) | (1u32 << 16),
     };
     enqueue_command(set_deq_trb);
     ring_doorbell(state, 0, 0);
     let _ = wait_for_command(state);
-
 }
 
 /// Execute a control transfer on a device's default control endpoint (EP0).
@@ -1825,9 +1915,8 @@ fn control_transfer(
 
     // Setup Stage TRB
     // The setup packet (8 bytes) is inlined in the TRB param field
-    let setup_data: u64 = unsafe {
-        core::ptr::read_unaligned(setup as *const SetupPacket as *const u64)
-    };
+    let setup_data: u64 =
+        unsafe { core::ptr::read_unaligned(setup as *const SetupPacket as *const u64) };
 
     // TRT (Transfer Type): 0=No Data, 2=OUT Data, 3=IN Data
     let trt: u32 = if data_len == 0 {
@@ -1864,9 +1953,9 @@ fn control_transfer(
     //   OUT Data Stage (TRT=2):  Status direction = IN  (bit 16 = 1)
     // i.e. Status direction is always opposite of data direction, defaulting to IN.
     let status_dir: u32 = if data_len > 0 && direction_in {
-        0        // IN data stage → Status direction OUT
+        0 // IN data stage → Status direction OUT
     } else {
-        1 << 16  // No data stage or OUT data stage → Status direction IN
+        1 << 16 // No data stage or OUT data stage → Status direction IN
     };
     let status_trb = Trb {
         param: 0,
@@ -1917,10 +2006,7 @@ fn control_transfer(
 ///
 /// Linux reads 8 bytes first to learn bMaxPacketSize0, then sends
 /// SET_ISOCH_DELAY before reading the full 18-byte descriptor.
-fn get_device_descriptor_short(
-    state: &XhciState,
-    slot_id: u8,
-) -> Result<(), &'static str> {
+fn get_device_descriptor_short(state: &XhciState, slot_id: u8) -> Result<(), &'static str> {
     let setup = SetupPacket {
         bm_request_type: 0x80,
         b_request: request::GET_DESCRIPTOR,
@@ -1937,7 +2023,6 @@ fn get_device_descriptor_short(
         let data_phys = virt_to_phys(&raw const CTRL_DATA_BUF as u64);
         control_transfer(state, slot_id, &setup, data_phys, 8, true)?;
         dma_cache_invalidate((*data_buf).0.as_ptr(), 8);
-
     }
 
     Ok(())
@@ -1968,7 +2053,6 @@ fn get_device_descriptor(
 
         buf.copy_from_slice(&(&(*data_buf).0)[..18]);
     }
-
 
     Ok(())
 }
@@ -2013,8 +2097,7 @@ fn read_string_descriptors(
                 Ok(()) => {
                     dma_cache_invalidate((*data_buf).0.as_ptr(), 4);
                 }
-                Err(_) => {
-                }
+                Err(_) => {}
             }
         }
     }
@@ -2026,10 +2109,7 @@ fn read_string_descriptors(
 /// delay to 40us (wValue=0x0028). Linux xhci_hcd sends this after the short
 /// (8-byte) device descriptor read, before reading the full descriptor.
 #[allow(dead_code)]
-fn set_isoch_delay(
-    state: &XhciState,
-    slot_id: u8,
-) -> Result<(), &'static str> {
+fn set_isoch_delay(state: &XhciState, slot_id: u8) -> Result<(), &'static str> {
     let setup = SetupPacket {
         bm_request_type: 0x00, // Host-to-device, Standard, Device
         b_request: 0x1F,       // SET_ISOCH_DELAY
@@ -2046,10 +2126,7 @@ fn set_isoch_delay(
 ///
 /// Linux reads this after the full device descriptor and before the config descriptor.
 /// The BOS descriptor contains USB 3.0 device capabilities.
-fn get_bos_descriptor(
-    state: &XhciState,
-    slot_id: u8,
-) -> Result<(), &'static str> {
+fn get_bos_descriptor(state: &XhciState, slot_id: u8) -> Result<(), &'static str> {
     unsafe {
         // First read: 5-byte BOS header to get wTotalLength
         let data_buf = &raw mut CTRL_DATA_BUF;
@@ -2071,7 +2148,6 @@ fn get_bos_descriptor(
         dma_cache_invalidate((*data_buf).0.as_ptr(), 5);
         let total_len = u16::from_le_bytes([(*data_buf).0[2], (*data_buf).0[3]]) as usize;
 
-
         // Second read: full BOS descriptor
         if total_len > 5 && total_len <= 64 {
             core::ptr::write_bytes((*data_buf).0.as_mut_ptr(), 0, total_len);
@@ -2085,9 +2161,15 @@ fn get_bos_descriptor(
                 w_length: total_len as u16,
             };
 
-            control_transfer(state, slot_id, &setup_full, data_phys, total_len as u16, true)?;
+            control_transfer(
+                state,
+                slot_id,
+                &setup_full,
+                data_phys,
+                total_len as u16,
+                true,
+            )?;
             dma_cache_invalidate((*data_buf).0.as_ptr(), total_len);
-
         }
     }
 
@@ -2122,9 +2204,7 @@ fn get_config_descriptor(
         let config_desc = &*((*data_buf).0.as_ptr() as *const ConfigDescriptor);
         let total_len = config_desc.w_total_length as usize;
 
-
-        if total_len > 256 {
-        }
+        if total_len > 256 {}
 
         let fetch_len = total_len.min(256) as u16;
 
@@ -2150,11 +2230,7 @@ fn get_config_descriptor(
 }
 
 /// Send SET_CONFIGURATION request to select a configuration.
-fn set_configuration(
-    state: &XhciState,
-    slot_id: u8,
-    config_value: u8,
-) -> Result<(), &'static str> {
+fn set_configuration(state: &XhciState, slot_id: u8, config_value: u8) -> Result<(), &'static str> {
     let setup = SetupPacket {
         bm_request_type: 0x00, // Host-to-device, standard, device
         b_request: request::SET_CONFIGURATION,
@@ -2228,7 +2304,10 @@ fn clear_all_port_changes(state: &XhciState) -> u32 {
         // Store the first connected port's PORTSC as a pre-sweep diagnostic.
         if port <= 2 && portsc & 1 != 0 {
             let _ = DIAG_PORTSC_PRE_SWEEP.compare_exchange(
-                0, portsc, Ordering::AcqRel, Ordering::Relaxed,
+                0,
+                portsc,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
             );
         }
         if portsc & change_mask != 0 {
@@ -2239,11 +2318,7 @@ fn clear_all_port_changes(state: &XhciState) -> u32 {
 }
 
 /// Send SET_IDLE request to a HID interface (duration=0 = indefinite).
-fn set_idle(
-    state: &XhciState,
-    slot_id: u8,
-    interface: u8,
-) -> Result<(), &'static str> {
+fn set_idle(state: &XhciState, slot_id: u8, interface: u8) -> Result<(), &'static str> {
     let setup = SetupPacket {
         bm_request_type: 0x21, // Host-to-device, class, interface
         b_request: hid_request::SET_IDLE,
@@ -2284,11 +2359,7 @@ fn set_protocol(
 /// Linux sends this during keyboard init: SET_REPORT(Output, Report ID=0, data=0x00).
 /// This clears NumLock/CapsLock/ScrollLock LEDs and may be required for proper
 /// interrupt endpoint activation on some virtual controllers.
-fn set_report_leds(
-    state: &XhciState,
-    slot_id: u8,
-    interface: u8,
-) -> Result<(), &'static str> {
+fn set_report_leds(state: &XhciState, slot_id: u8, interface: u8) -> Result<(), &'static str> {
     // SET_REPORT: bmRequestType=0x21 (H2D, Class, Interface),
     //   bRequest=0x09, wValue=0x0200 (Output report, ID=0), wLength=1
     let setup = SetupPacket {
@@ -2310,7 +2381,6 @@ fn set_report_leds(
     control_transfer(state, slot_id, &setup, data_phys, 1, false)?;
     Ok(())
 }
-
 
 /// Send GET_REPORT(Feature) then SET_REPORT(Feature) for a mouse HID interface.
 ///
@@ -2372,7 +2442,11 @@ fn get_set_feature_report(
 /// understanding what data the interrupt endpoint delivers.
 fn fetch_hid_report_descriptor(state: &XhciState, slot_id: u8, interface: u8, exact_len: u16) {
     // Use exact length from HID descriptor if available, fall back to 128
-    let req_len = if exact_len > 0 && exact_len <= 256 { exact_len } else { 128 };
+    let req_len = if exact_len > 0 && exact_len <= 256 {
+        exact_len
+    } else {
+        128
+    };
 
     let setup = SetupPacket {
         bm_request_type: 0x81, // Device-to-host, standard, interface
@@ -2464,7 +2538,6 @@ fn configure_endpoints_batch(
         core::ptr::write_volatile(input_base as *mut u32, 0u32);
         core::ptr::write_volatile(input_base.add(0x04) as *mut u32, add_flags);
 
-
         // Slot Context: copy DW0-DW2 from device output context, zero DW3.
         // Linux's xhci_slot_copy() copies DW0 (dev_info), DW1 (dev_info2),
         // DW2 (tt_info), but explicitly zeroes DW3 (dev_state = 0).
@@ -2476,9 +2549,7 @@ fn configure_endpoints_batch(
         dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
         // Copy DW0, DW1, DW2 from output context
         for dw_offset in (0..12).step_by(4) {
-            let val = core::ptr::read_volatile(
-                (*dev_ctx).0.as_ptr().add(dw_offset) as *const u32,
-            );
+            let val = core::ptr::read_volatile((*dev_ctx).0.as_ptr().add(dw_offset) as *const u32);
             core::ptr::write_volatile(slot_ctx.add(dw_offset) as *mut u32, val);
         }
         // DW3 = 0 (zero Address and Slot State, matching Linux)
@@ -2588,14 +2659,8 @@ fn configure_endpoints_batch(
                 let ring_phys = virt_to_phys(&raw const TRANSFER_RINGS[ring_idx] as u64);
 
                 // EP DW2-DW3: TR Dequeue Pointer with DCS = 1
-                core::ptr::write_volatile(
-                    ep_ctx.add(0x08) as *mut u32,
-                    (ring_phys as u32) | 1,
-                );
-                core::ptr::write_volatile(
-                    ep_ctx.add(0x0C) as *mut u32,
-                    (ring_phys >> 32) as u32,
-                );
+                core::ptr::write_volatile(ep_ctx.add(0x08) as *mut u32, (ring_phys as u32) | 1);
+                core::ptr::write_volatile(ep_ctx.add(0x0C) as *mut u32, (ring_phys >> 32) as u32);
 
                 // EP DW4: Average TRB Length + Max ESIT Payload Lo
                 // C harness uses avg_trb_len = max_esit_payload (matching Linux's
@@ -2604,7 +2669,6 @@ fn configure_endpoints_batch(
                 let avg_trb_len: u32 = esit_payload.max(1);
                 let ep_dw4: u32 = (esit_lo << 16) | avg_trb_len;
                 core::ptr::write_volatile(ep_ctx.add(0x10) as *mut u32, ep_dw4);
-
             }
         }
 
@@ -2613,9 +2677,21 @@ fn configure_endpoints_batch(
 
         // Issue batch ConfigureEndpoint using INPUT_CONTEXTS directly.
         let input_ctx_phys = virt_to_phys(&raw const INPUT_CONTEXTS[slot_idx] as u64);
-        ms_kv!(M_EP_CONFIG, "slot={} ep_count={} add_flags=0x{:x} max_dci={}",
-               slot_id, ep_count, add_flags, max_dci);
-        ms_dump(M_EP_CONFIG, "input_ctx", input_ctx_phys, input_base, (1 + max_dci as usize + 1) * ctx_size);
+        ms_kv!(
+            M_EP_CONFIG,
+            "slot={} ep_count={} add_flags=0x{:x} max_dci={}",
+            slot_id,
+            ep_count,
+            add_flags,
+            max_dci
+        );
+        ms_dump(
+            M_EP_CONFIG,
+            "input_ctx",
+            input_ctx_phys,
+            input_base,
+            (1 + max_dci as usize + 1) * ctx_size,
+        );
         {
             xhci_trace_input_ctx(slot_id, input_base, ctx_size, max_dci as u8);
             let trb = Trb {
@@ -2631,8 +2707,13 @@ fn configure_endpoints_batch(
             let event = wait_for_command(state)?;
             xhci_trace_trb(XhciTraceOp::CommandComplete, slot_id, 0, &event);
             let cc = event.completion_code();
-            ms_kv!(M_EP_CONFIG, "ConfigureEndpoint slot={} CC={} add_flags=0x{:x}",
-                   slot_id, cc, add_flags);
+            ms_kv!(
+                M_EP_CONFIG,
+                "ConfigureEndpoint slot={} CC={} add_flags=0x{:x}",
+                slot_id,
+                cc,
+                add_flags
+            );
             if cc != completion_code::SUCCESS {
                 ms_fail!(M_EP_CONFIG, "ConfigureEndpoint command failed");
                 return Err("XHCI ConfigureEndpoint failed");
@@ -2642,8 +2723,13 @@ fn configure_endpoints_batch(
             dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
             let out_ctx_len = (1 + max_dci as usize) * ctx_size;
             let dev_ctx_phys = virt_to_phys(&raw const DEVICE_CONTEXTS[slot_idx] as u64);
-            ms_dump(M_EP_CONFIG, "output_ctx_post_cfgep", dev_ctx_phys,
-                    (*dev_ctx).0.as_ptr(), out_ctx_len);
+            ms_dump(
+                M_EP_CONFIG,
+                "output_ctx_post_cfgep",
+                dev_ctx_phys,
+                (*dev_ctx).0.as_ptr(),
+                out_ctx_len,
+            );
         }
 
         // Bandwidth dance: StopEndpoint + re-ConfigureEndpoint per endpoint.
@@ -2665,7 +2751,12 @@ fn configure_endpoints_batch(
         // the same endpoint contexts. Only the Slot Context is refreshed from
         // the Output Context.
         if !SKIP_BW_DANCE {
-            ms_kv!(M_EP_CONFIG, "BW_dance: slot={} ep_count={}", slot_id, ep_count);
+            ms_kv!(
+                M_EP_CONFIG,
+                "BW_dance: slot={} ep_count={}",
+                slot_id,
+                ep_count
+            );
             // BW dance: StopEndpoint + re-ConfigureEndpoint per endpoint.
             //
             // Linux reuses ONE re-ConfigEP Input Context (distinct from the initial
@@ -2695,14 +2786,20 @@ fn configure_endpoints_batch(
                     let stop_event = wait_for_command(state)?;
                     xhci_trace_trb(XhciTraceOp::CommandComplete, slot_id, dci, &stop_event);
                     let _stop_cc = stop_event.completion_code();
-                    ms_kv!(M_EP_CONFIG, "StopEndpoint slot={} dci={} CC={}", slot_id, dci, _stop_cc);
+                    ms_kv!(
+                        M_EP_CONFIG,
+                        "StopEndpoint slot={} dci={} CC={}",
+                        slot_id,
+                        dci,
+                        _stop_cc
+                    );
                     // Read output context EP state after StopEP (should be 3=Stopped)
                     dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
                     let _stop_ep_state = core::ptr::read_volatile(
-                        (*dev_ctx).0.as_ptr().add((dci as usize) * ctx_size) as *const u32
+                        (*dev_ctx).0.as_ptr().add((dci as usize) * ctx_size) as *const u32,
                     ) & 0x7;
                     let _stop_deq_lo = core::ptr::read_volatile(
-                        (*dev_ctx).0.as_ptr().add((dci as usize) * ctx_size + 8) as *const u32
+                        (*dev_ctx).0.as_ptr().add((dci as usize) * ctx_size + 8) as *const u32,
                     );
 
                     // Step 2: Rebuild the shared reconfig context from Output Context,
@@ -2720,7 +2817,7 @@ fn configure_endpoints_batch(
                     let rc_slot = reconfig_base.add(ctx_size);
                     for dw_offset in (0..12usize).step_by(4) {
                         let val = core::ptr::read_volatile(
-                            (*dev_ctx).0.as_ptr().add(dw_offset) as *const u32,
+                            (*dev_ctx).0.as_ptr().add(dw_offset) as *const u32
                         );
                         core::ptr::write_volatile(rc_slot.add(dw_offset) as *mut u32, val);
                     }
@@ -2743,9 +2840,8 @@ fn configure_endpoints_batch(
                             let rc_ep = reconfig_base.add((1 + ep_dci) * ctx_size);
                             let src_ep = (*dev_ctx).0.as_ptr().add(ep_dci * ctx_size);
                             for dw_offset in (0..32usize).step_by(4) {
-                                let val = core::ptr::read_volatile(
-                                    src_ep.add(dw_offset) as *const u32,
-                                );
+                                let val =
+                                    core::ptr::read_volatile(src_ep.add(dw_offset) as *const u32);
                                 let val_clean = if dw_offset == 0 { val & !0x7u32 } else { val };
                                 core::ptr::write_volatile(
                                     rc_ep.add(dw_offset) as *mut u32,
@@ -2762,8 +2858,7 @@ fn configure_endpoints_batch(
                     let reconfig_trb = Trb {
                         param: reconfig_phys,
                         status: 0,
-                        control: (trb_type::CONFIGURE_ENDPOINT << 10)
-                            | ((slot_id as u32) << 24),
+                        control: (trb_type::CONFIGURE_ENDPOINT << 10) | ((slot_id as u32) << 24),
                     };
                     xhci_trace_trb(XhciTraceOp::CommandSubmit, slot_id, 0, &reconfig_trb);
                     enqueue_command(reconfig_trb);
@@ -2771,7 +2866,13 @@ fn configure_endpoints_batch(
                     let reconfig_event = wait_for_command(state)?;
                     xhci_trace_trb(XhciTraceOp::CommandComplete, slot_id, 0, &reconfig_event);
                     let _reconfig_cc = reconfig_event.completion_code();
-                    ms_kv!(M_EP_CONFIG, "BW_dance slot={} dci={} CC={}", slot_id, dci, _reconfig_cc);
+                    ms_kv!(
+                        M_EP_CONFIG,
+                        "BW_dance slot={} dci={} CC={}",
+                        slot_id,
+                        dci,
+                        _reconfig_cc
+                    );
 
                     // Diagnostic: verify TR Dequeue pointer in output context after re-ConfigEP.
                     dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
@@ -2779,16 +2880,20 @@ fn configure_endpoints_batch(
                     let _post_dw0 = core::ptr::read_volatile(ep_out_base as *const u32);
                     let _post_dw2 = core::ptr::read_volatile(ep_out_base.add(8) as *const u32);
                     let _post_dw3 = core::ptr::read_volatile(ep_out_base.add(12) as *const u32);
-                    let _ring_phys_check = virt_to_phys(
-                        &raw const TRANSFER_RINGS[HID_RING_BASE + ep.hid_idx] as u64
-                    );
+                    let _ring_phys_check =
+                        virt_to_phys(&raw const TRANSFER_RINGS[HID_RING_BASE + ep.hid_idx] as u64);
                     xhci_trace_output_ctx(slot_id, (*dev_ctx).0.as_ptr(), ctx_size, max_dci as u8);
 
                     // Dump output device context after BW dance StopEndpoint+Reconfigure for this DCI
                     let dev_ctx_phys_bw = virt_to_phys(&raw const DEVICE_CONTEXTS[slot_idx] as u64);
                     let out_ctx_len_bw = (1 + max_dci as usize) * ctx_size;
-                    ms_dump(M_EP_CONFIG, "output_ctx_post_bw_dance", dev_ctx_phys_bw,
-                            (*dev_ctx).0.as_ptr(), out_ctx_len_bw);
+                    ms_dump(
+                        M_EP_CONFIG,
+                        "output_ctx_post_bw_dance",
+                        dev_ctx_phys_bw,
+                        (*dev_ctx).0.as_ptr(),
+                        out_ctx_len_bw,
+                    );
                 }
             }
         }
@@ -2807,11 +2912,9 @@ fn configure_endpoints_batch(
                 let _ep_out_dw1 = core::ptr::read_volatile(ep_out.add(4) as *const u32);
                 let _ep_out_dw2 = core::ptr::read_volatile(ep_out.add(8) as *const u32);
                 let _ep_out_dw3 = core::ptr::read_volatile(ep_out.add(12) as *const u32);
-                let _ring_phys_chk = virt_to_phys(
-                    &raw const TRANSFER_RINGS[HID_RING_BASE + ep.hid_idx] as u64
-                );
-                if ep_state == 0 {
-                }
+                let _ring_phys_chk =
+                    virt_to_phys(&raw const TRANSFER_RINGS[HID_RING_BASE + ep.hid_idx] as u64);
+                if ep_state == 0 {}
             }
         }
     }
@@ -2854,11 +2957,11 @@ fn configure_hid(
     struct HidIfaceInfo {
         interface_number: u8,
         is_keyboard: bool,
-        is_nkro: bool, // Non-boot HID interface (subclass=0, Report ID protocol)
-        is_boot: bool, // Boot-class interface (subclass=1)
+        is_nkro: bool,  // Non-boot HID interface (subclass=0, Report ID protocol)
+        is_boot: bool,  // Boot-class interface (subclass=1)
         hid_idx: usize, // Transfer ring index (0=kbd boot, 1=mouse, 2=kbd NKRO, 3=mouse2)
         dci: u8,
-        hid_report_len: u16,   // wDescriptorLength from HID descriptor (0 = unknown)
+        hid_report_len: u16, // wDescriptorLength from HID descriptor (0 = unknown)
     }
     let mut ifaces: [Option<HidIfaceInfo>; 4] = [None, None, None, None];
     let mut iface_count: usize = 0;
@@ -2888,17 +2991,20 @@ fn configure_hid(
         }
 
         if desc_type == descriptor_type::INTERFACE && desc_len >= 9 {
-            let iface = unsafe {
-                &*(config_buf.as_ptr().add(offset) as *const InterfaceDescriptor)
-            };
+            let iface =
+                unsafe { &*(config_buf.as_ptr().add(offset) as *const InterfaceDescriptor) };
 
-            crate::serial_println!("[xhci] slot{} iface{}: class={:#04x} sub={:#04x} proto={:#04x} numEP={}",
-                slot_id, iface.b_interface_number,
-                iface.b_interface_class, iface.b_interface_sub_class,
-                iface.b_interface_protocol, iface.b_num_endpoints);
+            crate::serial_println!(
+                "[xhci] slot{} iface{}: class={:#04x} sub={:#04x} proto={:#04x} numEP={}",
+                slot_id,
+                iface.b_interface_number,
+                iface.b_interface_class,
+                iface.b_interface_sub_class,
+                iface.b_interface_protocol,
+                iface.b_num_endpoints
+            );
 
             if iface.b_interface_class == class_code::HID {
-
                 // Parse HID descriptor (type 0x21) for wDescriptorLength.
                 // The HID descriptor immediately follows the interface descriptor.
                 let mut hid_report_len: u16 = 0;
@@ -2907,8 +3013,12 @@ fn configure_hid(
                     while hid_off + 2 <= config_len {
                         let hd_len = config_buf[hid_off] as usize;
                         let hd_type = config_buf[hid_off + 1];
-                        if hd_len == 0 || hid_off + hd_len > config_len { break; }
-                        if hd_type == descriptor_type::INTERFACE || hd_type == descriptor_type::ENDPOINT {
+                        if hd_len == 0 || hid_off + hd_len > config_len {
+                            break;
+                        }
+                        if hd_type == descriptor_type::INTERFACE
+                            || hd_type == descriptor_type::ENDPOINT
+                        {
                             break; // Past the HID descriptor
                         }
                         if hd_type == 0x21 && hd_len >= 9 {
@@ -2956,7 +3066,10 @@ fn configure_hid(
                             if ss_offset + 2 <= config_len {
                                 let ss_len = config_buf[ss_offset] as usize;
                                 let ss_type = config_buf[ss_offset + 1];
-                                if ss_type == 0x30 && ss_len >= 6 && ss_offset + ss_len <= config_len {
+                                if ss_type == 0x30
+                                    && ss_len >= 6
+                                    && ss_offset + ss_len <= config_len
+                                {
                                     ss_max_burst = config_buf[ss_offset + 2];
                                     // bmAttributes bits[1:0] = Mult (max burst multiplier)
                                     _ss_mult = config_buf[ss_offset + 3] & 0x3;
@@ -3013,10 +3126,19 @@ fn configure_hid(
                                     (1usize, false, false)
                                 };
 
-                            crate::serial_println!("[xhci] HID iface: proto={} subclass={} -> {} (hid_idx={})",
-                                iface.b_interface_protocol, iface.b_interface_sub_class,
-                                if is_keyboard { "keyboard" } else if is_nkro { "NKRO" } else { "mouse" },
-                                hid_idx);
+                            crate::serial_println!(
+                                "[xhci] HID iface: proto={} subclass={} -> {} (hid_idx={})",
+                                iface.b_interface_protocol,
+                                iface.b_interface_sub_class,
+                                if is_keyboard {
+                                    "keyboard"
+                                } else if is_nkro {
+                                    "NKRO"
+                                } else {
+                                    "mouse"
+                                },
+                                hid_idx
+                            );
 
                             // Calculate DCI (Device Context Index) for this endpoint
                             let ep_num = ep_desc.endpoint_number();
@@ -3083,7 +3205,12 @@ fn configure_hid(
 
     // --- M9: HID_CLASS_SETUP ---
     ms_begin!(M_HID_SETUP);
-    ms_kv!(M_HID_SETUP, "SET_CONFIGURATION slot={} config={}", slot_id, config_value);
+    ms_kv!(
+        M_HID_SETUP,
+        "SET_CONFIGURATION slot={} config={}",
+        slot_id,
+        config_value
+    );
 
     set_configuration(state, slot_id, config_value)?;
 
@@ -3102,8 +3229,13 @@ fn configure_hid(
             // Dump output device context after SET_CONFIGURATION
             let dev_ctx_phys = virt_to_phys(&raw const DEVICE_CONTEXTS[slot_idx] as u64);
             let out_ctx_len = (1 + max_dci as usize) * ctx_size;
-            ms_dump(M_HID_SETUP, "output_ctx_post_set_config", dev_ctx_phys,
-                    (*dev_ctx).0.as_ptr(), out_ctx_len);
+            ms_dump(
+                M_HID_SETUP,
+                "output_ctx_post_set_config",
+                dev_ctx_phys,
+                (*dev_ctx).0.as_ptr(),
+                out_ctx_len,
+            );
         }
     }
 
@@ -3123,12 +3255,22 @@ fn configure_hid(
     //   5. GET_REPORT/SET_REPORT (Feature) — mouse only
     //   6. SET_REPORT (LED)         — keyboard only
     // =========================================================================
-    ms_kv!(M_HID_SETUP, "hid_interfaces={} slot={}", iface_count, slot_id);
+    ms_kv!(
+        M_HID_SETUP,
+        "hid_interfaces={} slot={}",
+        iface_count,
+        slot_id
+    );
 
     for i in 0..iface_count {
         if let Some(ref info) = ifaces[i] {
             // Step 1: SET_INTERFACE(alt=0) — matches working Linux module.
-            ms_kv!(M_HID_SETUP, "SET_INTERFACE slot={} iface={}", slot_id, info.interface_number);
+            ms_kv!(
+                M_HID_SETUP,
+                "SET_INTERFACE slot={} iface={}",
+                slot_id,
+                info.interface_number
+            );
             match set_interface(state, slot_id, info.interface_number, 0) {
                 Ok(()) => {}
                 Err(_) => {} // Non-fatal: some devices may STALL
@@ -3137,7 +3279,12 @@ fn configure_hid(
             if !MINIMAL_INIT {
                 // Step 2: SET_PROTOCOL(boot=0) for boot-class interfaces (subclass=1).
                 if info.is_boot {
-                    ms_kv!(M_HID_SETUP, "SET_PROTOCOL slot={} iface={}", slot_id, info.interface_number);
+                    ms_kv!(
+                        M_HID_SETUP,
+                        "SET_PROTOCOL slot={} iface={}",
+                        slot_id,
+                        info.interface_number
+                    );
                     match set_protocol(state, slot_id, info.interface_number, 0) {
                         Ok(()) => {}
                         Err(_) => {} // Non-fatal: some devices may STALL
@@ -3148,12 +3295,22 @@ fn configure_hid(
             if info.is_nkro {
                 // NKRO keyboard: SET_IDLE + GET_HID_REPORT_DESC then ep2in TRB.
                 if !MINIMAL_INIT {
-                    ms_kv!(M_HID_SETUP, "SET_IDLE slot={} iface={}", slot_id, info.interface_number);
+                    ms_kv!(
+                        M_HID_SETUP,
+                        "SET_IDLE slot={} iface={}",
+                        slot_id,
+                        info.interface_number
+                    );
                     match set_idle(state, slot_id, info.interface_number) {
                         Ok(()) => {}
                         Err(_) => {}
                     }
-                    fetch_hid_report_descriptor(state, slot_id, info.interface_number, info.hid_report_len);
+                    fetch_hid_report_descriptor(
+                        state,
+                        slot_id,
+                        info.interface_number,
+                        info.hid_report_len,
+                    );
                 }
                 state.kbd_slot = slot_id;
                 state.kbd_nkro_endpoint = info.dci;
@@ -3161,16 +3318,25 @@ fn configure_hid(
                 // TRB queueing deferred to post-enumeration in init() to prevent
                 // Transfer Events from being silently consumed by subsequent
                 // control_transfer() and wait_for_command() calls.
-
             } else if info.is_keyboard {
                 // Boot keyboard: SET_IDLE + GET_HID_REPORT_DESC + SET_REPORT(LED=0).
                 if !MINIMAL_INIT {
-                    ms_kv!(M_HID_SETUP, "SET_IDLE slot={} iface={}", slot_id, info.interface_number);
+                    ms_kv!(
+                        M_HID_SETUP,
+                        "SET_IDLE slot={} iface={}",
+                        slot_id,
+                        info.interface_number
+                    );
                     match set_idle(state, slot_id, info.interface_number) {
                         Ok(()) => {}
                         Err(_) => {}
                     }
-                    fetch_hid_report_descriptor(state, slot_id, info.interface_number, info.hid_report_len);
+                    fetch_hid_report_descriptor(
+                        state,
+                        slot_id,
+                        info.interface_number,
+                        info.hid_report_len,
+                    );
                     match set_report_leds(state, slot_id, info.interface_number) {
                         Ok(()) => {}
                         Err(_) => {}
@@ -3182,20 +3348,30 @@ fn configure_hid(
                 // TRB queueing deferred to post-enumeration in start_hid_polling()
                 // to prevent Transfer Events from being silently consumed by
                 // subsequent control_transfer() and wait_for_command() calls.
-
             } else {
                 // Mouse: SET_IDLE + GET_HID_REPORT_DESC + GET_REPORT(Feature) + SET_REPORT(Feature).
                 // Linux sends SET_IDLE and fetches the HID report descriptor for ALL
                 // HID interfaces, including mouse — not just keyboards.
                 if !MINIMAL_INIT {
-                    ms_kv!(M_HID_SETUP, "SET_IDLE slot={} iface={} (mouse)", slot_id, info.interface_number);
+                    ms_kv!(
+                        M_HID_SETUP,
+                        "SET_IDLE slot={} iface={} (mouse)",
+                        slot_id,
+                        info.interface_number
+                    );
                     match set_idle(state, slot_id, info.interface_number) {
                         Ok(()) => {}
                         Err(_) => {}
                     }
-                    fetch_hid_report_descriptor(state, slot_id, info.interface_number, info.hid_report_len);
+                    fetch_hid_report_descriptor(
+                        state,
+                        slot_id,
+                        info.interface_number,
+                        info.hid_report_len,
+                    );
                     let feature_id: u8 = if info.hid_idx == 3 { 0x12 } else { 0x11 };
-                    match get_set_feature_report(state, slot_id, info.interface_number, feature_id) {
+                    match get_set_feature_report(state, slot_id, info.interface_number, feature_id)
+                    {
                         Ok(()) => {}
                         Err(_) => {}
                     }
@@ -3223,8 +3399,13 @@ fn configure_hid(
             dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
             let dev_ctx_phys = virt_to_phys(&raw const DEVICE_CONTEXTS[slot_idx] as u64);
             let out_ctx_len = (1 + max_dci as usize) * ctx_size;
-            ms_dump(M_HID_SETUP, "output_ctx_post_hid_setup", dev_ctx_phys,
-                    (*dev_ctx).0.as_ptr(), out_ctx_len);
+            ms_dump(
+                M_HID_SETUP,
+                "output_ctx_post_hid_setup",
+                dev_ctx_phys,
+                (*dev_ctx).0.as_ptr(),
+                out_ctx_len,
+            );
         }
     }
 
@@ -3294,10 +3475,13 @@ fn queue_hid_transfer(
 
     // Record physical address of queued TRB (first time only)
     unsafe {
-        let trb_phys = virt_to_phys(&raw const TRANSFER_RINGS[ring_idx] as u64)
-            + (enq_idx as u64) * 16;
+        let trb_phys =
+            virt_to_phys(&raw const TRANSFER_RINGS[ring_idx] as u64) + (enq_idx as u64) * 16;
         let _ = DIAG_FIRST_QUEUED_PHYS.compare_exchange(
-            0, trb_phys, Ordering::AcqRel, Ordering::Relaxed,
+            0,
+            trb_phys,
+            Ordering::AcqRel,
+            Ordering::Relaxed,
         );
     }
 
@@ -3311,9 +3495,7 @@ fn queue_hid_transfer(
             dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
 
             // Read Slot Context DW3: bits 31:27 = Slot State, bits 7:0 = USB Device Address
-            let slot_dw3 = core::ptr::read_volatile(
-                (*dev_ctx).0.as_ptr().add(12) as *const u32,
-            );
+            let slot_dw3 = core::ptr::read_volatile((*dev_ctx).0.as_ptr().add(12) as *const u32);
             DIAG_SLOT_STATE_BEFORE_DB.store(slot_dw3, Ordering::Relaxed);
 
             // Read EP context for this DCI: DW0 bits 2:0 = EP State
@@ -3332,9 +3514,7 @@ fn queue_hid_transfer(
             DIAG_TRDP_FROM_OUTPUT.store(trdp, Ordering::Relaxed);
 
             // Read PORTSC for this slot's root hub port (from Slot Context DW1 bits 23:16).
-            let slot_dw1 = core::ptr::read_volatile(
-                (*dev_ctx).0.as_ptr().add(4) as *const u32,
-            );
+            let slot_dw1 = core::ptr::read_volatile((*dev_ctx).0.as_ptr().add(4) as *const u32);
             let root_port = ((slot_dw1 >> 16) & 0xFF) as u8;
             if root_port > 0 {
                 let portsc = read32(state.op_base + 0x400 + ((root_port - 1) as u64) * 0x10);
@@ -3374,7 +3554,6 @@ fn drain_stale_events(state: &XhciState) {
                 break; // No more events
             }
 
-
             // Advance dequeue pointer
             EVENT_RING_DEQUEUE = (idx + 1) % EVENT_RING_SIZE;
             if EVENT_RING_DEQUEUE == 0 {
@@ -3383,8 +3562,8 @@ fn drain_stale_events(state: &XhciState) {
 
             // Update ERDP with EHB bit
             let ir0 = state.rt_base + 0x20;
-            let erdp_phys = virt_to_phys(&raw const EVENT_RING as u64)
-                + (EVENT_RING_DEQUEUE as u64) * 16;
+            let erdp_phys =
+                virt_to_phys(&raw const EVENT_RING as u64) + (EVENT_RING_DEQUEUE as u64) * 16;
             write64(ir0 + 0x18, erdp_phys | (1 << 3));
 
             drained += 1;
@@ -3433,16 +3612,16 @@ fn dump_endpoint_contexts(state: &XhciState) {
             // Slot Context DW0
             let _slot_dw0 = core::ptr::read_volatile((*dev_ctx).0.as_ptr() as *const u32);
 
-
             // Dump each endpoint DCI we care about (full 5 DWORDs)
             for &dci in &[state.kbd_endpoint, state.kbd_nkro_endpoint] {
-                if dci == 0 { continue; }
+                if dci == 0 {
+                    continue;
+                }
                 let ep_base = (*dev_ctx).0.as_ptr().add(dci as usize * ctx_size);
                 let _ep_dw0 = core::ptr::read_volatile(ep_base as *const u32);
                 let _ep_dw1 = core::ptr::read_volatile(ep_base.add(4) as *const u32);
                 let _ep_dw2 = core::ptr::read_volatile(ep_base.add(8) as *const u32);
                 let _ep_dw3 = core::ptr::read_volatile(ep_base.add(12) as *const u32);
-
             }
         }
     }
@@ -3499,8 +3678,8 @@ fn wait_for_command_completion(state: &XhciState) -> Result<u32, &'static str> {
                 }
 
                 // Update ERDP
-                let erdp_phys = virt_to_phys(&raw const EVENT_RING as u64)
-                    + (EVENT_RING_DEQUEUE as u64) * 16;
+                let erdp_phys =
+                    virt_to_phys(&raw const EVENT_RING as u64) + (EVENT_RING_DEQUEUE as u64) * 16;
                 let ir0 = state.rt_base + 0x20;
                 write64(ir0 + 0x18, erdp_phys | (1 << 3));
 
@@ -3522,9 +3701,7 @@ fn wait_for_command_completion(state: &XhciState) -> Result<u32, &'static str> {
                     // command completion. Without PENDING check, late responses that
                     // arrive after the 200-tick stale-clear are also caught here.
                     // Post-enumeration, the only EP0 events from mouse_slot are GET_REPORT.
-                    if slot == state.mouse_slot
-                        && endpoint == 1
-                    {
+                    if slot == state.mouse_slot && endpoint == 1 {
                         MOUSE_GET_REPORT_PENDING.store(false, Ordering::Release);
                         // Record last CC seen (fd= heartbeat field, 0xFF = no event yet).
                         DIAG_FIRST_DB.store(cc, Ordering::Relaxed);
@@ -3538,7 +3715,8 @@ fn wait_for_command_completion(state: &XhciState) -> Result<u32, &'static str> {
                                 super::hid::process_mouse_report(report, 0);
                             }
                         }
-                    } else if cc != completion_code::SUCCESS && cc != completion_code::SHORT_PACKET {
+                    } else if cc != completion_code::SUCCESS && cc != completion_code::SHORT_PACKET
+                    {
                         // CC=12 during a command wait: endpoint is halted but re-flagging
                         // NEEDS_RESET_* here causes cascading resets (each reset's command
                         // wait sees the other endpoint's CC=12, triggering another reset).
@@ -3618,9 +3796,7 @@ fn reset_halted_endpoint(
         param: 0,
         status: 0,
         // Reset Endpoint: type=14, slot_id in bits [31:24], DCI in bits [20:16]
-        control: (trb_type::RESET_ENDPOINT << 10)
-            | ((slot_id as u32) << 24)
-            | ((dci as u32) << 16),
+        control: (trb_type::RESET_ENDPOINT << 10) | ((slot_id as u32) << 24) | ((dci as u32) << 16),
     };
     enqueue_command(reset_trb);
     ring_doorbell(state, 0, 0); // Command ring doorbell
@@ -3651,10 +3827,7 @@ fn reset_halted_endpoint(
             status: 0,
             control: (trb_type::LINK << 10) | (1 << 1), // Link, TC, cycle=0 (matches Linux)
         };
-        core::ptr::write_volatile(
-            &mut (*ring)[TRANSFER_RING_SIZE - 1] as *mut Trb,
-            link,
-        );
+        core::ptr::write_volatile(&mut (*ring)[TRANSFER_RING_SIZE - 1] as *mut Trb, link);
 
         dma_cache_clean(
             &TRANSFER_RINGS[ring_idx] as *const [Trb; TRANSFER_RING_SIZE] as *const u8,
@@ -3724,9 +3897,15 @@ fn start_hid_polling(state: &XhciState) {
     // --- M10: INTERRUPT_TRANSFER ---
     ms_begin!(M_INTR_XFER);
 
-    crate::serial_println!("[xhci] start_hid_polling: kbd=slot{}/dci{} nkro=dci{} mouse=slot{}/dci{} mouse2=dci{}",
-        state.kbd_slot, state.kbd_endpoint, state.kbd_nkro_endpoint,
-        state.mouse_slot, state.mouse_endpoint, state.mouse_nkro_endpoint);
+    crate::serial_println!(
+        "[xhci] start_hid_polling: kbd=slot{}/dci{} nkro=dci{} mouse=slot{}/dci{} mouse2=dci{}",
+        state.kbd_slot,
+        state.kbd_endpoint,
+        state.kbd_nkro_endpoint,
+        state.mouse_slot,
+        state.mouse_endpoint,
+        state.mouse_nkro_endpoint
+    );
 
     // Drain any stale Transfer Events that may have been generated during
     // port scanning or previous enumeration attempts.
@@ -3740,22 +3919,42 @@ fn start_hid_polling(state: &XhciState) {
     // Queue interrupt TRBs for all configured HID endpoints.
     // Keyboard boot
     if state.kbd_slot != 0 && state.kbd_endpoint != 0 {
-        ms_kv!(M_INTR_XFER, "queued+doorbell: slot={} dci={} hid_idx=0", state.kbd_slot, state.kbd_endpoint);
+        ms_kv!(
+            M_INTR_XFER,
+            "queued+doorbell: slot={} dci={} hid_idx=0",
+            state.kbd_slot,
+            state.kbd_endpoint
+        );
         let _ = queue_hid_transfer(state, 0, state.kbd_slot, state.kbd_endpoint);
     }
     // Keyboard NKRO
     if state.kbd_slot != 0 && state.kbd_nkro_endpoint != 0 {
-        ms_kv!(M_INTR_XFER, "queued+doorbell: slot={} dci={} hid_idx=2", state.kbd_slot, state.kbd_nkro_endpoint);
+        ms_kv!(
+            M_INTR_XFER,
+            "queued+doorbell: slot={} dci={} hid_idx=2",
+            state.kbd_slot,
+            state.kbd_nkro_endpoint
+        );
         let _ = queue_hid_transfer(state, 2, state.kbd_slot, state.kbd_nkro_endpoint);
     }
     // Mouse boot
     if state.mouse_slot != 0 && state.mouse_endpoint != 0 {
-        ms_kv!(M_INTR_XFER, "queued+doorbell: slot={} dci={} hid_idx=1", state.mouse_slot, state.mouse_endpoint);
+        ms_kv!(
+            M_INTR_XFER,
+            "queued+doorbell: slot={} dci={} hid_idx=1",
+            state.mouse_slot,
+            state.mouse_endpoint
+        );
         let _ = queue_hid_transfer(state, 1, state.mouse_slot, state.mouse_endpoint);
     }
     // Mouse2
     if state.mouse_slot != 0 && state.mouse_nkro_endpoint != 0 {
-        ms_kv!(M_INTR_XFER, "queued+doorbell: slot={} dci={} hid_idx=3", state.mouse_slot, state.mouse_nkro_endpoint);
+        ms_kv!(
+            M_INTR_XFER,
+            "queued+doorbell: slot={} dci={} hid_idx=3",
+            state.mouse_slot,
+            state.mouse_nkro_endpoint
+        );
         let _ = queue_hid_transfer(state, 3, state.mouse_slot, state.mouse_nkro_endpoint);
     }
 
@@ -3799,9 +3998,7 @@ fn inherit_uefi_endpoints(state: &mut XhciState) -> Result<(), &'static str> {
             let num_entries = (slot_dw0 >> 27) & 0x1F;
 
             // Slot Context DW3: bits 31:27 = Slot State
-            let slot_dw3 = core::ptr::read_volatile(
-                (*dev_ctx).0.as_ptr().add(12) as *const u32,
-            );
+            let slot_dw3 = core::ptr::read_volatile((*dev_ctx).0.as_ptr().add(12) as *const u32);
             let slot_state = (slot_dw3 >> 27) & 0x1F;
 
             // Slot states: 0=Disabled/Enabled, 1=Default, 2=Addressed, 3=Configured
@@ -3859,10 +4056,10 @@ fn inherit_uefi_endpoints(state: &mut XhciState) -> Result<(), &'static str> {
     // Sequence: StopEndpoint (if Running) → SetTRDequeuePointer → ready for Normal TRBs.
     let endpoints_to_redirect: [(u8, u8, usize); 4] = [
         // (slot_id, dci, hid_idx)
-        (state.mouse_slot, state.mouse_endpoint, 1),        // hid_idx 1 = mouse boot
-        (state.mouse_slot, state.mouse_nkro_endpoint, 3),   // hid_idx 3 = mouse2
-        (state.kbd_slot, state.kbd_endpoint, 0),             // hid_idx 0 = kbd boot
-        (state.kbd_slot, state.kbd_nkro_endpoint, 2),        // hid_idx 2 = kbd NKRO
+        (state.mouse_slot, state.mouse_endpoint, 1), // hid_idx 1 = mouse boot
+        (state.mouse_slot, state.mouse_nkro_endpoint, 3), // hid_idx 3 = mouse2
+        (state.kbd_slot, state.kbd_endpoint, 0),     // hid_idx 0 = kbd boot
+        (state.kbd_slot, state.kbd_nkro_endpoint, 2), // hid_idx 2 = kbd NKRO
     ];
 
     for &(slot_id, dci, hid_idx) in &endpoints_to_redirect {
@@ -3913,11 +4110,7 @@ fn inherit_uefi_endpoints(state: &mut XhciState) -> Result<(), &'static str> {
         let ring_idx = HID_RING_BASE + hid_idx;
         // Zero the transfer ring and reset enqueue index
         unsafe {
-            core::ptr::write_bytes(
-                TRANSFER_RINGS[ring_idx].as_mut_ptr(),
-                0,
-                TRANSFER_RING_SIZE,
-            );
+            core::ptr::write_bytes(TRANSFER_RINGS[ring_idx].as_mut_ptr(), 0, TRANSFER_RING_SIZE);
             TRANSFER_ENQUEUE[ring_idx] = 0;
             TRANSFER_CYCLE[ring_idx] = true;
             dma_cache_clean(
@@ -3948,7 +4141,6 @@ fn inherit_uefi_endpoints(state: &mut XhciState) -> Result<(), &'static str> {
 
 /// Scan all root hub ports for connected devices, enumerate, and configure HID devices.
 fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
-
     // CRITICAL: Clear ALL PORTSC change bits BEFORE any Enable Slot command.
     //
     // MMIO comparison shows Linux's hub driver clears CSC (Connection Status
@@ -3980,15 +4172,31 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
         }
 
         let port_id = port as u8 + 1; // 1-based port ID
-        crate::serial_println!("[xhci] port {} connected: PORTSC=0x{:08x} PED={} speed={}",
-            port_id, portsc, (portsc >> 1) & 1, (portsc >> 10) & 0xF);
+        crate::serial_println!(
+            "[xhci] port {} connected: PORTSC=0x{:08x} PED={} speed={}",
+            port_id,
+            portsc,
+            (portsc >> 1) & 1,
+            (portsc >> 10) & 0xF
+        );
 
         // --- M5: PORT_DETECTION ---
         ms_begin!(M_PORT_DET);
-        ms_kv!(M_PORT_DET, "port={} PORTSC=0x{:08x} CCS={} PED={}",
-               port_id, portsc, portsc & 1, (portsc >> 1) & 1);
-        ms_kv!(M_PORT_DET, "port={} speed_raw={} PRC={}",
-               port_id, (portsc >> 10) & 0xF, (portsc >> 21) & 1);
+        ms_kv!(
+            M_PORT_DET,
+            "port={} PORTSC=0x{:08x} CCS={} PED={}",
+            port_id,
+            portsc,
+            portsc & 1,
+            (portsc >> 1) & 1
+        );
+        ms_kv!(
+            M_PORT_DET,
+            "port={} speed_raw={} PRC={}",
+            port_id,
+            (portsc >> 10) & 0xF,
+            (portsc >> 21) & 1
+        );
 
         // Port reset: only when PED=0 (matching Linux kernel module behavior).
         //
@@ -4011,19 +4219,12 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
             //
             // All W1C/W1CS bits must be written as 0 to avoid side effects.
             // This matches Linux's xhci_port_state_to_neutral().
-            let preserve_mask: u32 = !(
-                (1 << 1) |  // PED - W1CS, writing 1 disables port!
-                (1 << 17) | (1 << 18) | (1 << 19) | (1 << 20) | (1 << 21) | (1 << 22) | (1 << 23)
-            );
+            let preserve_mask: u32 = !((1 << 1) |  // PED - W1CS, writing 1 disables port!
+                (1 << 17) | (1 << 18) | (1 << 19) | (1 << 20) | (1 << 21) | (1 << 22) | (1 << 23));
             write32(portsc_addr, (portsc & preserve_mask) | (1 << 4));
 
             // Wait for PRC (Port Reset Change, bit 21)
-            if wait_for(
-                || read32(portsc_addr) & (1 << 21) != 0,
-                500_000,
-            )
-            .is_err()
-            {
+            if wait_for(|| read32(portsc_addr) & (1 << 21) != 0, 500_000).is_err() {
                 crate::serial_println!("[xhci] port {} reset timeout", port_id);
                 ms_kv!(M_PORT_DET, "port={} reset timeout", port_id);
                 continue;
@@ -4035,15 +4236,29 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
             write32(portsc_addr, (portsc_after & preserve_mask) | (1 << 21));
 
             let portsc_final = read32(portsc_addr);
-            crate::serial_println!("[xhci] port {} post-reset: PORTSC=0x{:08x} PED={} speed={}",
-                port_id, portsc_final, (portsc_final >> 1) & 1, (portsc_final >> 10) & 0xF);
-            ms_kv!(M_PORT_DET, "port={} post_reset PORTSC=0x{:08x} PED={}",
-                   port_id, portsc_final, (portsc_final >> 1) & 1);
+            crate::serial_println!(
+                "[xhci] port {} post-reset: PORTSC=0x{:08x} PED={} speed={}",
+                port_id,
+                portsc_final,
+                (portsc_final >> 1) & 1,
+                (portsc_final >> 10) & 0xF
+            );
+            ms_kv!(
+                M_PORT_DET,
+                "port={} post_reset PORTSC=0x{:08x} PED={}",
+                port_id,
+                portsc_final,
+                (portsc_final >> 1) & 1
+            );
             if portsc_final & (1 << 1) == 0 {
                 continue;
             }
         } else {
-            ms_kv!(M_PORT_DET, "port={} PED=1, skipping port reset (matching Linux module)", port_id);
+            ms_kv!(
+                M_PORT_DET,
+                "port={} PED=1, skipping port reset (matching Linux module)",
+                port_id
+            );
         }
 
         ms_pass!(M_PORT_DET);
@@ -4071,15 +4286,24 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
         slots_used += 1;
 
         // --- M7: DEVICE_ADDRESS ---
-        ms_kv!(M_ADDR_DEV, "port={} speed={} slot={}",
-               port_id, (read32(portsc_addr) >> 10) & 0xF, slot_id);
+        ms_kv!(
+            M_ADDR_DEV,
+            "port={} speed={} slot={}",
+            port_id,
+            (read32(portsc_addr) >> 10) & 0xF,
+            slot_id
+        );
         ms_begin!(M_ADDR_DEV);
         // Address Device (port numbers are 1-based)
         if let Err(e) = address_device(state, slot_id, port_id) {
             crate::serial_println!("[xhci] port {} AddressDevice failed: {}", port_id, e);
             continue;
         }
-        crate::serial_println!("[xhci] port {} AddressDevice OK (slot {})", port_id, slot_id);
+        crate::serial_println!(
+            "[xhci] port {} AddressDevice OK (slot {})",
+            port_id,
+            slot_id
+        );
         ms_pass!(M_ADDR_DEV);
 
         // Linux USB 3.0 enumeration sequence (from ftrace):
@@ -4109,14 +4333,19 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
             let dd = unsafe { &*(desc_buf.as_ptr() as *const DeviceDescriptor) };
             let vid = dd.id_vendor;
             let pid = dd.id_product;
-            crate::serial_println!("[xhci] slot{}: vid={:#06x} pid={:#06x} class={:#04x}/{:#04x}/{:#04x}",
-                slot_id, vid, pid,
-                dd.b_device_class, dd.b_device_sub_class, dd.b_device_protocol);
+            crate::serial_println!(
+                "[xhci] slot{}: vid={:#06x} pid={:#06x} class={:#04x}/{:#04x}/{:#04x}",
+                slot_id,
+                vid,
+                pid,
+                dd.b_device_class,
+                dd.b_device_sub_class,
+                dd.b_device_protocol
+            );
         }
 
         // Step 4: BOS descriptor
-        if let Err(_) = get_bos_descriptor(state, slot_id) {
-        }
+        if let Err(_) = get_bos_descriptor(state, slot_id) {}
 
         // Get Configuration Descriptor
         let mut config_buf = [0u8; 256];
@@ -4142,8 +4371,7 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
         }
 
         // Configure HID devices
-        if let Err(_) = configure_hid(state, slot_id, &config_buf, config_len) {
-        }
+        if let Err(_) = configure_hid(state, slot_id, &config_buf, config_len) {}
     }
 
     Ok(())
@@ -4166,9 +4394,7 @@ fn setup_xhci_msi(pci_dev: &crate::drivers::pci::Device) -> u32 {
 
     // Step 1: Find MSI capability in PCI config space
     let msi_cap = match pci_dev.find_msi_capability() {
-        Some(offset) => {
-            offset
-        }
+        Some(offset) => offset,
         None => {
             xhci_trace_note(0, "no_msi_cap");
             return 0;
@@ -4197,7 +4423,6 @@ fn setup_xhci_msi(pci_dev: &crate::drivers::pci::Device) -> u32 {
         return 0;
     };
 
-
     if spi_count == 0 {
         xhci_trace_note(0, "err:no_spis");
         return 0;
@@ -4218,14 +4443,12 @@ fn setup_xhci_msi(pci_dev: &crate::drivers::pci::Device) -> u32 {
     pci_dev.configure_msi(msi_cap, msi_address, msi_data);
     pci_dev.disable_intx();
 
-
     // Step 5: Configure GIC for this SPI (edge-triggered).
     //
     // The SPI is NOT enabled here — init() enables it after disabling IMAN.IE
     // to prevent an interrupt storm. With IMAN.IE=0, the XHCI won't write MSI
     // doorbell writes, so the SPI won't fire even though it's enabled.
     gic::configure_spi_edge_triggered(intid);
-
 
     intid
 }
@@ -4253,12 +4476,19 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     // the BAR-unmapped gap (matching linux-probe's ~95ms gap).
     {
         let cmd_before = crate::drivers::pci::pci_read_config_word(
-            pci_dev.bus, pci_dev.device, pci_dev.function, 0x04,
+            pci_dev.bus,
+            pci_dev.device,
+            pci_dev.function,
+            0x04,
         );
         let cmd_new = cmd_before | 0x0006; // MemSpace + BusMaster
         if cmd_new != cmd_before {
             crate::drivers::pci::pci_write_config_word(
-                pci_dev.bus, pci_dev.device, pci_dev.function, 0x04, cmd_new,
+                pci_dev.bus,
+                pci_dev.device,
+                pci_dev.function,
+                0x04,
+                cmd_new,
             );
         }
     }
@@ -4289,11 +4519,18 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     // 1c. Clear Status register error bits (w1c)
     {
         let status = crate::drivers::pci::pci_read_config_word(
-            pci_dev.bus, pci_dev.device, pci_dev.function, 0x06,
+            pci_dev.bus,
+            pci_dev.device,
+            pci_dev.function,
+            0x06,
         );
         if status & 0xF900 != 0 {
             crate::drivers::pci::pci_write_config_word(
-                pci_dev.bus, pci_dev.device, pci_dev.function, 0x06, status,
+                pci_dev.bus,
+                pci_dev.device,
+                pci_dev.function,
+                0x06,
+                status,
             );
         }
     }
@@ -4306,7 +4543,10 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
 
     // Verify the result
     let pci_cmd_after = crate::drivers::pci::pci_read_config_word(
-        pci_dev.bus, pci_dev.device, pci_dev.function, 0x04,
+        pci_dev.bus,
+        pci_dev.device,
+        pci_dev.function,
+        0x04,
     );
     if pci_cmd_after & 0x06 != 0x06 {
         crate::serial_println!("[xhci-pci] WARNING: bus master or mem space NOT set!");
@@ -4316,7 +4556,10 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     //    Read BAR0 directly from PCI config (not cached self.bars) because
     //    Step 0 may have reassigned BAR0 to a new address.
     let bar0_raw = crate::drivers::pci::pci_read_config_dword(
-        pci_dev.bus, pci_dev.device, pci_dev.function, 0x10,
+        pci_dev.bus,
+        pci_dev.device,
+        pci_dev.function,
+        0x10,
     );
     let bar0_phys = (bar0_raw & 0xFFFFF000) as u64;
     let base = HHDM_BASE + bar0_phys;
@@ -4342,7 +4585,14 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
 
     // Check for scratchpad buffers (Linux confirms 0 needed on Parallels vxHC)
     let num_sp = ((hcsparams2 >> 16) & 0x3e0) | ((hcsparams2 >> 27) & 0x1f);
-    xhci_trace_note(0, if num_sp > 0 { "scratchpad_needed" } else { "scratchpad_none" });
+    xhci_trace_note(
+        0,
+        if num_sp > 0 {
+            "scratchpad_needed"
+        } else {
+            "scratchpad_none"
+        },
+    );
 
     let op_base = base + cap_length as u64;
     let rt_base = base + rts_offset as u64;
@@ -4351,11 +4601,32 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     // --- M1: CONTROLLER_DISCOVERY ---
     ms_begin!(M_DISCOVERY);
     ms_kv!(M_DISCOVERY, "BAR0_phys=0x{:x}", bar0_phys);
-    ms_kv!(M_DISCOVERY, "xHCI_version=0x{:04x}", (cap_word >> 16) & 0xFFFF);
-    ms_kv!(M_DISCOVERY, "max_slots={} max_ports={} ctx_size={}", max_slots, max_ports, context_size);
-    ms_kv!(M_DISCOVERY, "cap_len={} op_off=0x{:x} rt_off=0x{:x} db_off=0x{:x}",
-           cap_length, cap_length as u32, rts_offset, db_offset);
-    ms_kv!(M_DISCOVERY, "HCSPARAMS1=0x{:08x} HCCPARAMS1=0x{:08x}", hcsparams1, hccparams1);
+    ms_kv!(
+        M_DISCOVERY,
+        "xHCI_version=0x{:04x}",
+        (cap_word >> 16) & 0xFFFF
+    );
+    ms_kv!(
+        M_DISCOVERY,
+        "max_slots={} max_ports={} ctx_size={}",
+        max_slots,
+        max_ports,
+        context_size
+    );
+    ms_kv!(
+        M_DISCOVERY,
+        "cap_len={} op_off=0x{:x} rt_off=0x{:x} db_off=0x{:x}",
+        cap_length,
+        cap_length as u32,
+        rts_offset,
+        db_offset
+    );
+    ms_kv!(
+        M_DISCOVERY,
+        "HCSPARAMS1=0x{:08x} HCCPARAMS1=0x{:08x}",
+        hcsparams1,
+        hccparams1
+    );
     ms_pass!(M_DISCOVERY);
 
     // 3b. Walk Extended Capabilities list for Supported Protocol info.
@@ -4392,9 +4663,10 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
                 // Also disable SMI on USB events (USBLEGCTLSTS at ecap_addr + 4)
                 // Set bits 1, 4, 13, 14, 15 to disable SMI routing
                 let legctl = read32(ecap_addr + 4);
-                write32(ecap_addr + 4, legctl & !(
-                    (1 << 0) | (1 << 1) | (1 << 4) | (1 << 13) | (1 << 14) | (1 << 15)
-                ));
+                write32(
+                    ecap_addr + 4,
+                    legctl & !((1 << 0) | (1 << 1) | (1 << 4) | (1 << 13) | (1 << 14) | (1 << 15)),
+                );
             } else if cap_id == 2 {
                 // Supported Protocol Capability (ID=2)
                 // DW0: cap_id(7:0), next(15:8), minor_rev(23:16), major_rev(31:24)
@@ -4405,7 +4677,6 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
                 let _dw2 = read32(ecap_addr + 8);
                 // DW3: protocol slot type (3:0)
                 let _dw3 = read32(ecap_addr + 12);
-
             } else if cap_id != 0 {
             }
 
@@ -4429,22 +4700,32 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     // the UEFI firmware leaves Bus Master enabled and we just confirm it.
     {
         let cmd = crate::drivers::pci::pci_read_config_word(
-            pci_dev.bus, pci_dev.device, pci_dev.function, 0x04,
+            pci_dev.bus,
+            pci_dev.device,
+            pci_dev.function,
+            0x04,
         );
 
         // Disable Bus Master (clear bit 2), keep Memory Space (bit 1)
         let cmd_no_bm = cmd & !0x0004;
         crate::drivers::pci::pci_write_config_word(
-            pci_dev.bus, pci_dev.device, pci_dev.function, 0x04, cmd_no_bm,
+            pci_dev.bus,
+            pci_dev.device,
+            pci_dev.function,
+            0x04,
+            cmd_no_bm,
         );
         delay_ms(10); // Brief settle
 
         // Re-enable Bus Master
         crate::drivers::pci::pci_write_config_word(
-            pci_dev.bus, pci_dev.device, pci_dev.function, 0x04, cmd,
+            pci_dev.bus,
+            pci_dev.device,
+            pci_dev.function,
+            0x04,
+            cmd,
         );
         delay_ms(10);
-
     }
 
     // 4. Stop controller + HCRST
@@ -4471,7 +4752,9 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
 
         // Read UEFI's DCBAAP before we overwrite it
         let uefi_dcbaap = read64(op_base + 0x30);
-        unsafe { UEFI_DCBAAP_SAVED = uefi_dcbaap; }
+        unsafe {
+            UEFI_DCBAAP_SAVED = uefi_dcbaap;
+        }
     } else if SKIP_HCRST {
         xhci_trace_note(0, "ctrl_halt_no_reset");
     } else {
@@ -4496,8 +4779,13 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     ms_begin!(M_RESET);
     {
         let usbsts_post = read32(op_base + 0x04);
-        ms_kv!(M_RESET, "USBSTS=0x{:08x} HCH={} CNR={}", usbsts_post,
-               usbsts_post & 1, (usbsts_post >> 11) & 1);
+        ms_kv!(
+            M_RESET,
+            "USBSTS=0x{:08x} HCH={} CNR={}",
+            usbsts_post,
+            usbsts_post & 1,
+            (usbsts_post >> 11) & 1
+        );
         ms_regs(M_RESET, op_base, rt_base + 0x20);
         if (usbsts_post & 1) != 0 && (usbsts_post & (1 << 11)) == 0 {
             ms_pass!(M_RESET);
@@ -4523,7 +4811,10 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
         // Zero the DCBAA (256 u64 entries)
         let dcbaa = &raw mut DCBAA;
         core::ptr::write_bytes((*dcbaa).0.as_mut_ptr(), 0, 256);
-        dma_cache_clean((*dcbaa).0.as_ptr() as *const u8, 256 * core::mem::size_of::<u64>());
+        dma_cache_clean(
+            (*dcbaa).0.as_ptr() as *const u8,
+            256 * core::mem::size_of::<u64>(),
+        );
     }
     // INHERIT_UEFI: copy UEFI's device context data into our DEVICE_CONTEXTS
     // arrays BEFORE writing DCBAAP, so the xHC sees UEFI's endpoint state
@@ -4535,9 +4826,7 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
             dma_cache_invalidate(uefi_dcbaa_virt as *const u8, 256 * 8);
             for slot_id in 1..=slots_en {
                 let ctx_ptr_phys = unsafe {
-                    core::ptr::read_volatile(
-                        (uefi_dcbaa_virt + slot_id as u64 * 8) as *const u64,
-                    )
+                    core::ptr::read_volatile((uefi_dcbaa_virt + slot_id as u64 * 8) as *const u64)
                 };
                 if ctx_ptr_phys == 0 {
                     continue;
@@ -4554,8 +4843,7 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
                     );
                     dma_cache_clean(DEVICE_CONTEXTS[slot_idx].0.as_ptr(), 4096);
                     // Set DCBAA entry to point to our copy
-                    let our_ctx_phys =
-                        virt_to_phys((&raw const DEVICE_CONTEXTS[slot_idx]) as u64);
+                    let our_ctx_phys = virt_to_phys((&raw const DEVICE_CONTEXTS[slot_idx]) as u64);
                     let dcbaa = &raw mut DCBAA;
                     (*dcbaa).0[slot_id as usize] = our_ctx_phys;
                 }
@@ -4572,8 +4860,13 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     write64(op_base + 0x30, dcbaa_phys);
     // Readback DCBAAP to verify write (volatile read ensures write posted)
     let _dcbaap_rb = read64(op_base + 0x30);
-    ms_kv!(M_DATA_STRUC, "DCBAA: phys=0x{:x} written=0x{:x} readback=0x{:x}",
-           dcbaa_phys, dcbaa_phys, _dcbaap_rb);
+    ms_kv!(
+        M_DATA_STRUC,
+        "DCBAA: phys=0x{:x} written=0x{:x} readback=0x{:x}",
+        dcbaa_phys,
+        dcbaa_phys,
+        _dcbaap_rb
+    );
 
     // 8. Set Command Ring Control Register (CRCR)
     let cmd_ring_phys = virt_to_phys((&raw const CMD_RING) as u64);
@@ -4583,13 +4876,21 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
         core::ptr::write_bytes((*ring).0.as_mut_ptr(), 0, CMD_RING_SIZE);
         CMD_RING_ENQUEUE = 0;
         CMD_RING_CYCLE = true;
-        dma_cache_clean((*ring).0.as_ptr() as *const u8, CMD_RING_SIZE * core::mem::size_of::<Trb>());
+        dma_cache_clean(
+            (*ring).0.as_ptr() as *const u8,
+            CMD_RING_SIZE * core::mem::size_of::<Trb>(),
+        );
     }
     // CRCR: physical address | RCS (Ring Cycle State) = 1
     let crcr_val = cmd_ring_phys | 1;
     write64(op_base + 0x18, crcr_val);
-    ms_kv!(M_DATA_STRUC, "CMD_RING: phys=0x{:x} CRCR_written=0x{:x} readback=0x{:x}",
-           cmd_ring_phys, crcr_val, read64(op_base + 0x18));
+    ms_kv!(
+        M_DATA_STRUC,
+        "CMD_RING: phys=0x{:x} CRCR_written=0x{:x} readback=0x{:x}",
+        cmd_ring_phys,
+        crcr_val,
+        read64(op_base + 0x18)
+    );
 
     // 9. Set up Event Ring for Interrupter 0
     let event_ring_phys = virt_to_phys((&raw const EVENT_RING) as u64);
@@ -4601,7 +4902,10 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
         core::ptr::write_bytes((*ering).0.as_mut_ptr(), 0, EVENT_RING_SIZE);
         EVENT_RING_DEQUEUE = 0;
         EVENT_RING_CYCLE = true;
-        dma_cache_clean((*ering).0.as_ptr() as *const u8, EVENT_RING_SIZE * core::mem::size_of::<Trb>());
+        dma_cache_clean(
+            (*ering).0.as_ptr() as *const u8,
+            EVENT_RING_SIZE * core::mem::size_of::<Trb>(),
+        );
 
         // Set up ERST entry
         let erst = &raw mut ERST;
@@ -4610,7 +4914,10 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
             size: EVENT_RING_SIZE as u32,
             _rsvd: 0,
         };
-        dma_cache_clean((*erst).0.as_ptr() as *const u8, core::mem::size_of::<ErstEntry>());
+        dma_cache_clean(
+            (*erst).0.as_ptr() as *const u8,
+            core::mem::size_of::<ErstEntry>(),
+        );
     }
 
     let ir0 = rt_base + 0x20; // Interrupter 0 register set
@@ -4626,12 +4933,25 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     // ERSTBA (Event Ring Segment Table Base Address) - must be written AFTER ERSTSZ
     write64(ir0 + 0x10, erst_phys);
     ms_kv!(M_DATA_STRUC, "EVT_RING: seg_phys=0x{:x}", event_ring_phys);
-    ms_kv!(M_DATA_STRUC, "ERST: phys=0x{:x} seg_addr=0x{:x} seg_size={}",
-           erst_phys, event_ring_phys, EVENT_RING_SIZE);
-    ms_kv!(M_DATA_STRUC, "ERDP: written=0x{:x} readback=0x{:x}",
-           event_ring_phys, read64(ir0 + 0x18));
-    ms_kv!(M_DATA_STRUC, "ERSTBA: written=0x{:x} readback=0x{:x}",
-           erst_phys, read64(ir0 + 0x10));
+    ms_kv!(
+        M_DATA_STRUC,
+        "ERST: phys=0x{:x} seg_addr=0x{:x} seg_size={}",
+        erst_phys,
+        event_ring_phys,
+        EVENT_RING_SIZE
+    );
+    ms_kv!(
+        M_DATA_STRUC,
+        "ERDP: written=0x{:x} readback=0x{:x}",
+        event_ring_phys,
+        read64(ir0 + 0x18)
+    );
+    ms_kv!(
+        M_DATA_STRUC,
+        "ERSTBA: written=0x{:x} readback=0x{:x}",
+        erst_phys,
+        read64(ir0 + 0x10)
+    );
     ms_regs(M_DATA_STRUC, op_base, ir0);
     ms_pass!(M_DATA_STRUC);
 
@@ -4718,13 +5038,26 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
 
     // Diagnostic: print DMA addresses used for XHCI data structures.
     // On VMware (ram_base_offset=0x40000000), these must be IPAs in the 0x80XXXXXX range.
-    crate::serial_println!("[xhci] DMA addrs: DCBAA=0x{:x} CMD_RING=0x{:x} EVT_RING=0x{:x} ERST=0x{:x}",
-        dcbaa_phys, cmd_ring_phys, event_ring_phys, erst_phys);
-    crate::serial_println!("[xhci] Regs: USBCMD=0x{:x} USBSTS=0x{:x} CRCR=0x{:x} DCBAAP=0x{:x}",
-        read32(op_base), read32(op_base + 0x04),
-        read64(op_base + 0x18), read64(op_base + 0x30));
-    crate::serial_println!("[xhci] IR0: IMAN=0x{:x} ERDP=0x{:x} ERSTBA=0x{:x}",
-        read32(ir0), read64(ir0 + 0x18), read64(ir0 + 0x10));
+    crate::serial_println!(
+        "[xhci] DMA addrs: DCBAA=0x{:x} CMD_RING=0x{:x} EVT_RING=0x{:x} ERST=0x{:x}",
+        dcbaa_phys,
+        cmd_ring_phys,
+        event_ring_phys,
+        erst_phys
+    );
+    crate::serial_println!(
+        "[xhci] Regs: USBCMD=0x{:x} USBSTS=0x{:x} CRCR=0x{:x} DCBAAP=0x{:x}",
+        read32(op_base),
+        read32(op_base + 0x04),
+        read64(op_base + 0x18),
+        read64(op_base + 0x30)
+    );
+    crate::serial_println!(
+        "[xhci] IR0: IMAN=0x{:x} ERDP=0x{:x} ERSTBA=0x{:x}",
+        read32(ir0),
+        read64(ir0 + 0x18),
+        read64(ir0 + 0x10)
+    );
 
     // NOOP command: warm up the command ring before real commands.
     // Linux xhci_hcd sends a NEC vendor NOOP as its first command after RS=1.
@@ -4733,10 +5066,16 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     if let Err(e) = send_noop(&xhci_state) {
         crate::serial_println!("[xhci] NOOP command failed: {}", e);
         // Dump post-NOOP state for debugging
-        crate::serial_println!("[xhci] Post-NOOP: USBSTS=0x{:x} CRCR=0x{:x}",
-            read32(op_base + 0x04), read64(op_base + 0x18));
-        crate::serial_println!("[xhci] Post-NOOP IR0: IMAN=0x{:x} ERDP=0x{:x}",
-            read32(ir0), read64(ir0 + 0x18));
+        crate::serial_println!(
+            "[xhci] Post-NOOP: USBSTS=0x{:x} CRCR=0x{:x}",
+            read32(op_base + 0x04),
+            read64(op_base + 0x18)
+        );
+        crate::serial_println!(
+            "[xhci] Post-NOOP IR0: IMAN=0x{:x} ERDP=0x{:x}",
+            read32(ir0),
+            read64(ir0 + 0x18)
+        );
         // Read back first event ring entry to see if controller wrote anything
         unsafe {
             let ring = &raw const EVENT_RING;
@@ -4745,8 +5084,12 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
                 core::mem::size_of::<Trb>(),
             );
             let trb = core::ptr::read_volatile(&(*ring).0[0]);
-            crate::serial_println!("[xhci] EVT[0]: param=0x{:x} status=0x{:x} control=0x{:x}",
-                trb.param, trb.status, trb.control);
+            crate::serial_println!(
+                "[xhci] EVT[0]: param=0x{:x} status=0x{:x} control=0x{:x}",
+                trb.param,
+                trb.status,
+                trb.control
+            );
         }
     }
 
@@ -4760,8 +5103,14 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
                 let ccs = psc & 1;
                 let ped = (psc >> 1) & 1;
                 let speed = (psc >> 10) & 0xF;
-                crate::serial_println!("[xhci]   port {}: PORTSC=0x{:08x} CCS={} PED={} speed={}",
-                    p + 1, psc, ccs, ped, speed);
+                crate::serial_println!(
+                    "[xhci]   port {}: PORTSC=0x{:08x} CCS={} PED={} speed={}",
+                    p + 1,
+                    psc,
+                    ccs,
+                    ped,
+                    speed
+                );
             }
         }
     }
@@ -4769,7 +5118,10 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     // 15. Scan ports and configure HID devices.
     if INHERIT_UEFI {
         if let Err(e) = inherit_uefi_endpoints(&mut xhci_state) {
-            crate::serial_println!("[xhci] INHERIT_UEFI failed: {}, falling back to scan_ports", e);
+            crate::serial_println!(
+                "[xhci] INHERIT_UEFI failed: {}, falling back to scan_ports",
+                e
+            );
             if let Err(_) = scan_ports(&mut xhci_state) {
                 xhci_trace_note(0, "err:port_scan");
             }
@@ -4777,7 +5129,6 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     } else if let Err(_) = scan_ports(&mut xhci_state) {
         xhci_trace_note(0, "err:port_scan");
     }
-
 
     // 15. Store state and set INITIALIZED before enabling GIC SPI.
     //
@@ -4790,9 +5141,7 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     XHCI_INITIALIZED.store(true, Ordering::Release);
 
     // 16. Queue initial HID transfers.
-    let xhci_state_ref = unsafe {
-        (*(&raw const XHCI_STATE)).as_ref().unwrap()
-    };
+    let xhci_state_ref = unsafe { (*(&raw const XHCI_STATE)).as_ref().unwrap() };
 
     // Diagnostic: dump endpoint context states AFTER all init (Phase 1-3 complete).
     // This verifies SET_CONFIGURATION and Phase 3 didn't reset the endpoint states.
@@ -4872,7 +5221,11 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     // post-init events (Transfer Events, doorbell rings, etc.)
 
     // Single summary line for successful init
-    crate::serial_println!("[xhci] Initialized: {} slots, MSI irq={}", slots_en, early_irq);
+    crate::serial_println!(
+        "[xhci] Initialized: {} slots, MSI irq={}",
+        slots_en,
+        early_irq
+    );
 
     Ok(())
 }
@@ -4970,14 +5323,22 @@ pub fn handle_interrupt() {
                     // Record first Transfer Event diagnostics (MSI handler often
                     // processes events before poll_hid_events sees them).
                     let _ = DIAG_FIRST_XFER_CC.compare_exchange(
-                        0xFF, cc, Ordering::AcqRel, Ordering::Relaxed,
+                        0xFF,
+                        cc,
+                        Ordering::AcqRel,
+                        Ordering::Relaxed,
                     );
                     let _ = DIAG_FIRST_XFER_PTR.compare_exchange(
-                        0, trb.param, Ordering::AcqRel, Ordering::Relaxed,
+                        0,
+                        trb.param,
+                        Ordering::AcqRel,
+                        Ordering::Relaxed,
                     );
                     let _ = DIAG_FIRST_XFER_SLEP.compare_exchange(
-                        0, ((slot as u32) << 8) | (endpoint as u32),
-                        Ordering::AcqRel, Ordering::Relaxed,
+                        0,
+                        ((slot as u32) << 8) | (endpoint as u32),
+                        Ordering::AcqRel,
+                        Ordering::Relaxed,
                     );
 
                     if cc == completion_code::SUCCESS || cc == completion_code::SHORT_PACKET {
@@ -4991,8 +5352,8 @@ pub fn handle_interrupt() {
                             dma_cache_invalidate((*report_buf).0.as_ptr(), 9);
                             let nkro = &(*report_buf).0;
                             let nkro_snap = u64::from_le_bytes([
-                                nkro[0], nkro[1], nkro[2], nkro[3],
-                                nkro[4], nkro[5], nkro[6], nkro[7],
+                                nkro[0], nkro[1], nkro[2], nkro[3], nkro[4], nkro[5], nkro[6],
+                                nkro[7],
                             ]);
                             LAST_NKRO_REPORT_U64.store(nkro_snap, Ordering::Relaxed);
                             if nkro[0] == 1 {
@@ -5050,8 +5411,8 @@ pub fn handle_interrupt() {
                             dma_cache_invalidate((*buf).0.as_ptr(), 8);
                             let report = &(&(*buf).0)[..8];
                             let snap = u64::from_le_bytes([
-                                report[0], report[1], report[2], report[3],
-                                report[4], report[5], report[6], report[7],
+                                report[0], report[1], report[2], report[3], report[4], report[5],
+                                report[6], report[7],
                             ]);
                             LAST_GET_REPORT_U64.store(snap, Ordering::Relaxed);
                             if report.iter().any(|&b| b != 0) {
@@ -5113,8 +5474,8 @@ pub fn handle_interrupt() {
             }
 
             // Update ERDP with EHB bit to acknowledge
-            let erdp_phys = virt_to_phys(&raw const EVENT_RING as u64)
-                + (EVENT_RING_DEQUEUE as u64) * 16;
+            let erdp_phys =
+                virt_to_phys(&raw const EVENT_RING as u64) + (EVENT_RING_DEQUEUE as u64) * 16;
             write64(ir0 + 0x18, erdp_phys | (1 << 3));
         }
     }
@@ -5129,7 +5490,6 @@ pub fn handle_interrupt() {
         crate::arch_impl::aarch64::gic::clear_spi_pending(state.irq);
         crate::arch_impl::aarch64::gic::enable_spi(state.irq);
     }
-
 }
 
 // =============================================================================
@@ -5205,7 +5565,12 @@ fn deferred_reconfigure_only(state: &XhciState) {
         // causing wait_for_command to block forever (no Command Completion event).
 
         if let Err(e) = configure_endpoints_batch(state, slot_id, &pending_eps, ep_count) {
-            crate::serial_println!("[xhci] deferred mouse slot {} cfg_ep FAIL: {} (ep_count={})", slot_id, e, ep_count);
+            crate::serial_println!(
+                "[xhci] deferred mouse slot {} cfg_ep FAIL: {} (ep_count={})",
+                slot_id,
+                e,
+                ep_count
+            );
         }
     }
 
@@ -5269,10 +5634,14 @@ fn deferred_reconfigure_only(state: &XhciState) {
         // Deconfigure (DC=1) REMOVED: Parallels vxHC hangs on this command.
 
         if let Err(e) = configure_endpoints_batch(state, slot_id, &pending_eps, ep_count) {
-            crate::serial_println!("[xhci] deferred kbd slot {} cfg_ep FAIL: {} (ep_count={})", slot_id, e, ep_count);
+            crate::serial_println!(
+                "[xhci] deferred kbd slot {} cfg_ep FAIL: {} (ep_count={})",
+                slot_id,
+                e,
+                ep_count
+            );
         }
     }
-
 }
 
 /// Phase 2 of deferred init: queue TRBs and ring doorbells for all HID
@@ -5387,21 +5756,35 @@ pub fn poll_hid_events() {
                     let cc = trb.completion_code();
                     // Record first Transfer Event details (CC, TRB Pointer, slot/ep)
                     let _ = DIAG_FIRST_XFER_PTR.compare_exchange(
-                        0, trb.param, Ordering::AcqRel, Ordering::Relaxed,
+                        0,
+                        trb.param,
+                        Ordering::AcqRel,
+                        Ordering::Relaxed,
                     );
                     let _ = DIAG_FIRST_XFER_STATUS.compare_exchange(
-                        0, trb.status | 1, Ordering::AcqRel, Ordering::Relaxed,
+                        0,
+                        trb.status | 1,
+                        Ordering::AcqRel,
+                        Ordering::Relaxed,
                     );
                     let _ = DIAG_FIRST_XFER_CONTROL.compare_exchange(
-                        0, trb.control | 1, Ordering::AcqRel, Ordering::Relaxed,
+                        0,
+                        trb.control | 1,
+                        Ordering::AcqRel,
+                        Ordering::Relaxed,
                     );
                     let _ = DIAG_FIRST_XFER_SLEP.compare_exchange(
-                        0, ((slot as u32) << 8) | (endpoint as u32),
-                        Ordering::AcqRel, Ordering::Relaxed,
+                        0,
+                        ((slot as u32) << 8) | (endpoint as u32),
+                        Ordering::AcqRel,
+                        Ordering::Relaxed,
                     );
                     // Record first Transfer Event CC (0xFF = unset sentinel)
                     let _ = DIAG_FIRST_XFER_CC.compare_exchange(
-                        0xFF, cc, Ordering::AcqRel, Ordering::Relaxed,
+                        0xFF,
+                        cc,
+                        Ordering::AcqRel,
+                        Ordering::Relaxed,
                     );
 
                     // EP0 GET_REPORT response (non-blocking async path).
@@ -5441,7 +5824,8 @@ pub fn poll_hid_events() {
                                 super::hid::process_mouse_report(report, 0);
                             }
                         }
-                    } else if cc == completion_code::SUCCESS || cc == completion_code::SHORT_PACKET {
+                    } else if cc == completion_code::SUCCESS || cc == completion_code::SHORT_PACKET
+                    {
                         // NKRO keyboard interrupt endpoint (DCI 5, interface 1)
                         // Parallels sends actual keystrokes on this endpoint.
                         if slot == state.kbd_slot
@@ -5457,8 +5841,8 @@ pub fn poll_hid_events() {
 
                             // Store first 8 bytes for heartbeat diagnostics
                             let nkro_snap = u64::from_le_bytes([
-                                nkro[0], nkro[1], nkro[2], nkro[3],
-                                nkro[4], nkro[5], nkro[6], nkro[7],
+                                nkro[0], nkro[1], nkro[2], nkro[3], nkro[4], nkro[5], nkro[6],
+                                nkro[7],
                             ]);
                             LAST_NKRO_REPORT_U64.store(nkro_snap, Ordering::Relaxed);
 
@@ -5475,12 +5859,15 @@ pub fn poll_hid_events() {
                                 super::hid::process_keyboard_report(&boot_fmt);
                             }
 
-                            let _ = queue_hid_transfer(state, 2, state.kbd_slot, state.kbd_nkro_endpoint);
+                            let _ = queue_hid_transfer(
+                                state,
+                                2,
+                                state.kbd_slot,
+                                state.kbd_nkro_endpoint,
+                            );
                         }
                         // Boot keyboard interrupt endpoint (DCI 3, interface 0)
-                        else if slot == state.kbd_slot
-                            && endpoint == state.kbd_endpoint
-                        {
+                        else if slot == state.kbd_slot && endpoint == state.kbd_endpoint {
                             KBD_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
                             DMA_SENTINEL_REPLACED.fetch_add(1, Ordering::SeqCst);
 
@@ -5489,7 +5876,8 @@ pub fn poll_hid_events() {
                             let report = &(*report_buf).0;
 
                             super::hid::process_keyboard_report(report);
-                            let _ = queue_hid_transfer(state, 0, state.kbd_slot, state.kbd_endpoint);
+                            let _ =
+                                queue_hid_transfer(state, 0, state.kbd_slot, state.kbd_endpoint);
                         }
                         // Mouse interrupt endpoint event (DCI 3)
                         else if slot == state.mouse_slot && endpoint == state.mouse_endpoint {
@@ -5497,7 +5885,12 @@ pub fn poll_hid_events() {
                             dma_cache_invalidate((*report_buf).0.as_ptr(), 8);
                             let report = &(*report_buf).0;
                             super::hid::process_mouse_report(report, 0);
-                            let _ = queue_hid_transfer(state, 1, state.mouse_slot, state.mouse_endpoint);
+                            let _ = queue_hid_transfer(
+                                state,
+                                1,
+                                state.mouse_slot,
+                                state.mouse_endpoint,
+                            );
                         }
                         // Mouse2 interrupt endpoint event (DCI 5)
                         else if slot == state.mouse_slot
@@ -5508,7 +5901,12 @@ pub fn poll_hid_events() {
                             dma_cache_invalidate((*report_buf).0.as_ptr(), 9);
                             let report = &(*report_buf).0;
                             super::hid::process_mouse_report(report, 1);
-                            let _ = queue_hid_transfer(state, 3, state.mouse_slot, state.mouse_nkro_endpoint);
+                            let _ = queue_hid_transfer(
+                                state,
+                                3,
+                                state.mouse_slot,
+                                state.mouse_nkro_endpoint,
+                            );
                         } else {
                             XFER_OTHER_COUNT.fetch_add(1, Ordering::Relaxed);
                             XO_LAST_INFO.store(
@@ -5545,17 +5943,37 @@ pub fn poll_hid_events() {
                             );
                             // Capture full EP context DW0-DW4
                             DIAG_CC12_EP_DW0.store(dw0, Ordering::Relaxed);
-                            DIAG_CC12_EP_DW1.store(core::ptr::read_volatile(ep_out.add(4) as *const u32), Ordering::Relaxed);
-                            DIAG_CC12_EP_DW2.store(core::ptr::read_volatile(ep_out.add(8) as *const u32), Ordering::Relaxed);
-                            DIAG_CC12_EP_DW3.store(core::ptr::read_volatile(ep_out.add(12) as *const u32), Ordering::Relaxed);
-                            DIAG_CC12_EP_DW4.store(core::ptr::read_volatile(ep_out.add(16) as *const u32), Ordering::Relaxed);
+                            DIAG_CC12_EP_DW1.store(
+                                core::ptr::read_volatile(ep_out.add(4) as *const u32),
+                                Ordering::Relaxed,
+                            );
+                            DIAG_CC12_EP_DW2.store(
+                                core::ptr::read_volatile(ep_out.add(8) as *const u32),
+                                Ordering::Relaxed,
+                            );
+                            DIAG_CC12_EP_DW3.store(
+                                core::ptr::read_volatile(ep_out.add(12) as *const u32),
+                                Ordering::Relaxed,
+                            );
+                            DIAG_CC12_EP_DW4.store(
+                                core::ptr::read_volatile(ep_out.add(16) as *const u32),
+                                Ordering::Relaxed,
+                            );
                             // Capture Slot Context DW0 and DW3
-                            DIAG_CC12_SLOT_DW0.store(core::ptr::read_volatile(ctx_base as *const u32), Ordering::Relaxed);
-                            DIAG_CC12_SLOT_DW3.store(core::ptr::read_volatile(ctx_base.add(12) as *const u32), Ordering::Relaxed);
+                            DIAG_CC12_SLOT_DW0.store(
+                                core::ptr::read_volatile(ctx_base as *const u32),
+                                Ordering::Relaxed,
+                            );
+                            DIAG_CC12_SLOT_DW3.store(
+                                core::ptr::read_volatile(ctx_base.add(12) as *const u32),
+                                Ordering::Relaxed,
+                            );
                             // Capture DCBAA entry for this slot
                             let dcbaa = &raw const DCBAA;
                             dma_cache_invalidate(
-                                &(*dcbaa).0[slot as usize] as *const u64 as *const u8, 8);
+                                &(*dcbaa).0[slot as usize] as *const u64 as *const u8,
+                                8,
+                            );
                             DIAG_CC12_DCBAA.store((*dcbaa).0[slot as usize], Ordering::Relaxed);
                         }
                         if slot == state.kbd_slot && endpoint == state.kbd_endpoint {
@@ -5596,8 +6014,8 @@ pub fn poll_hid_events() {
             }
 
             // Update ERDP with EHB bit
-            let erdp_phys = virt_to_phys(&raw const EVENT_RING as u64)
-                + (EVENT_RING_DEQUEUE as u64) * 16;
+            let erdp_phys =
+                virt_to_phys(&raw const EVENT_RING as u64) + (EVENT_RING_DEQUEUE as u64) * 16;
             write64(ir0 + 0x18, erdp_phys | (1 << 3));
         }
     }
@@ -5667,7 +6085,8 @@ pub fn poll_hid_events() {
             NEEDS_RESET_MOUSE2.store(false, Ordering::Release);
             MOUSE2_RESET_POLL.store(poll, Ordering::Relaxed);
             if state.mouse_slot != 0 && state.mouse_nkro_endpoint != 0 {
-                let _ = reset_halted_endpoint(state, state.mouse_slot, state.mouse_nkro_endpoint, 3);
+                let _ =
+                    reset_halted_endpoint(state, state.mouse_slot, state.mouse_nkro_endpoint, 3);
             }
         }
     }
@@ -5762,7 +6181,10 @@ pub fn poll_hid_events() {
             // Event ring state: dequeue index + cycle bit
             let er_idx = EVENT_RING_DEQUEUE;
             let er_cycle = EVENT_RING_CYCLE;
-            DIAG_ER_STATE.store(((er_idx as u32) << 1) | if er_cycle { 1 } else { 0 }, Ordering::Relaxed);
+            DIAG_ER_STATE.store(
+                ((er_idx as u32) << 1) | if er_cycle { 1 } else { 0 },
+                Ordering::Relaxed,
+            );
 
             // Raw event ring TRB at current dequeue index
             {
@@ -5781,10 +6203,16 @@ pub fn poll_hid_events() {
                 let ctx_size = state.context_size;
                 let dev_ctx = &raw const DEVICE_CONTEXTS[slot_idx];
                 dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
-                let ep_base = (*dev_ctx).0.as_ptr().add(state.mouse_endpoint as usize * ctx_size);
+                let ep_base = (*dev_ctx)
+                    .0
+                    .as_ptr()
+                    .add(state.mouse_endpoint as usize * ctx_size);
                 let trdp_lo = core::ptr::read_volatile(ep_base.add(8) as *const u32);
                 let trdp_hi = core::ptr::read_volatile(ep_base.add(12) as *const u32);
-                DIAG_RUNTIME_TRDP.store(((trdp_hi as u64) << 32) | (trdp_lo as u64), Ordering::Relaxed);
+                DIAG_RUNTIME_TRDP.store(
+                    ((trdp_hi as u64) << 32) | (trdp_lo as u64),
+                    Ordering::Relaxed,
+                );
             }
 
             // Raw transfer ring TRB at position 0 for mouse ring (hid_idx=1)
@@ -5807,13 +6235,23 @@ pub fn poll_hid_events() {
                 dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
 
                 let dci3_state = if state.kbd_endpoint != 0 {
-                    let ep_base = (*dev_ctx).0.as_ptr().add(state.kbd_endpoint as usize * ctx_size);
+                    let ep_base = (*dev_ctx)
+                        .0
+                        .as_ptr()
+                        .add(state.kbd_endpoint as usize * ctx_size);
                     core::ptr::read_volatile(ep_base as *const u32) & 0x7
-                } else { 0 };
+                } else {
+                    0
+                };
                 let dci5_state = if state.kbd_nkro_endpoint != 0 {
-                    let ep_base = (*dev_ctx).0.as_ptr().add(state.kbd_nkro_endpoint as usize * ctx_size);
+                    let ep_base = (*dev_ctx)
+                        .0
+                        .as_ptr()
+                        .add(state.kbd_nkro_endpoint as usize * ctx_size);
                     core::ptr::read_volatile(ep_base as *const u32) & 0x7
-                } else { 0 };
+                } else {
+                    0
+                };
                 DIAG_KBD_EP_STATE.store((dci3_state << 4) | dci5_state, Ordering::Relaxed);
             }
         }

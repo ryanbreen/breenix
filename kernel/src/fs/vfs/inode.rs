@@ -64,15 +64,33 @@ impl FilePermissions {
     /// Convert permissions to POSIX mode value
     pub fn to_mode(&self) -> u16 {
         let mut mode = 0u16;
-        if self.owner_read { mode |= 0o400; }
-        if self.owner_write { mode |= 0o200; }
-        if self.owner_exec { mode |= 0o100; }
-        if self.group_read { mode |= 0o040; }
-        if self.group_write { mode |= 0o020; }
-        if self.group_exec { mode |= 0o010; }
-        if self.other_read { mode |= 0o004; }
-        if self.other_write { mode |= 0o002; }
-        if self.other_exec { mode |= 0o001; }
+        if self.owner_read {
+            mode |= 0o400;
+        }
+        if self.owner_write {
+            mode |= 0o200;
+        }
+        if self.owner_exec {
+            mode |= 0o100;
+        }
+        if self.group_read {
+            mode |= 0o040;
+        }
+        if self.group_write {
+            mode |= 0o020;
+        }
+        if self.group_exec {
+            mode |= 0o010;
+        }
+        if self.other_read {
+            mode |= 0o004;
+        }
+        if self.other_write {
+            mode |= 0o002;
+        }
+        if self.other_exec {
+            mode |= 0o001;
+        }
         mode
     }
 }

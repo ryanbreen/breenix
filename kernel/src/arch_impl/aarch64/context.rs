@@ -33,7 +33,8 @@ pub use crate::task::thread::CpuContext;
 //   112      sp_el0 (user stack pointer)
 //   120      elr_el1 (exception return address)
 //   128      spsr_el1 (saved program status)
-core::arch::global_asm!(r#"
+core::arch::global_asm!(
+    r#"
 .section .text
 .global switch_context
 .type switch_context, @function
@@ -156,7 +157,8 @@ switch_to_user:
 
     // Exception return - jumps to EL0 at ELR_EL1
     eret
-"#);
+"#
+);
 
 extern "C" {
     /// Switch from the current context to a new context.
@@ -279,7 +281,10 @@ pub unsafe fn return_to_userspace(entry: u64, user_sp: u64) -> ! {
 ///
 /// Called when taking an exception from userspace to save the user's
 /// register state for later restoration.
-pub fn save_user_context(ctx: &mut CpuContext, frame: &super::exception_frame::Aarch64ExceptionFrame) {
+pub fn save_user_context(
+    ctx: &mut CpuContext,
+    frame: &super::exception_frame::Aarch64ExceptionFrame,
+) {
     // Save x0 (important for fork return value)
     ctx.x0 = frame.x0;
     // Save callee-saved registers
@@ -309,7 +314,10 @@ pub fn save_user_context(ctx: &mut CpuContext, frame: &super::exception_frame::A
 /// Restore userspace context to an exception frame.
 ///
 /// Called before returning to userspace to set up the exception return frame.
-pub fn restore_user_context(frame: &mut super::exception_frame::Aarch64ExceptionFrame, ctx: &CpuContext) {
+pub fn restore_user_context(
+    frame: &mut super::exception_frame::Aarch64ExceptionFrame,
+    ctx: &CpuContext,
+) {
     // Restore x0 (important for fork return value - child gets 0, parent gets child PID)
     frame.x0 = ctx.x0;
     // Restore callee-saved registers

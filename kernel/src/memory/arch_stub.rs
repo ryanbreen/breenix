@@ -56,23 +56,23 @@ const ENTRIES_PER_TABLE: usize = 512;
 const DESC_ADDR_MASK: u64 = 0x0000_FFFF_FFFF_F000;
 
 // ARM64 descriptor bits
-const DESC_VALID: u64 = 1 << 0;           // Valid bit
-const DESC_TABLE: u64 = 1 << 1;           // Table descriptor (vs block)
-const DESC_AF: u64 = 1 << 10;             // Access Flag
-const DESC_SH_INNER: u64 = 0b11 << 8;     // Inner Shareable
-const DESC_AP_RW_EL1: u64 = 0b00 << 6;    // AP[2:1] = RW at EL1, no access at EL0
-const DESC_AP_RW_ALL: u64 = 0b01 << 6;    // AP[2:1] = RW at EL1/EL0
-const DESC_AP_RO_EL1: u64 = 0b10 << 6;    // AP[2:1] = RO at EL1, no access at EL0
-const DESC_AP_RO_ALL: u64 = 0b11 << 6;    // AP[2:1] = RO at EL1/EL0
-const DESC_PXN: u64 = 1 << 53;            // Privileged Execute Never
-const DESC_UXN: u64 = 1 << 54;            // User Execute Never (also called XN)
+const DESC_VALID: u64 = 1 << 0; // Valid bit
+const DESC_TABLE: u64 = 1 << 1; // Table descriptor (vs block)
+const DESC_AF: u64 = 1 << 10; // Access Flag
+const DESC_SH_INNER: u64 = 0b11 << 8; // Inner Shareable
+const DESC_AP_RW_EL1: u64 = 0b00 << 6; // AP[2:1] = RW at EL1, no access at EL0
+const DESC_AP_RW_ALL: u64 = 0b01 << 6; // AP[2:1] = RW at EL1/EL0
+const DESC_AP_RO_EL1: u64 = 0b10 << 6; // AP[2:1] = RO at EL1, no access at EL0
+const DESC_AP_RO_ALL: u64 = 0b11 << 6; // AP[2:1] = RO at EL1/EL0
+const DESC_PXN: u64 = 1 << 53; // Privileged Execute Never
+const DESC_UXN: u64 = 1 << 54; // User Execute Never (also called XN)
 
 // Memory attribute indices (MAIR_EL1 configured during boot)
-const DESC_ATTR_DEVICE: u64 = 0 << 2;     // Device-nGnRnE (index 0 in MAIR)
-const DESC_ATTR_NORMAL: u64 = 1 << 2;     // Normal memory (index 1 in MAIR)
+const DESC_ATTR_DEVICE: u64 = 0 << 2; // Device-nGnRnE (index 0 in MAIR)
+const DESC_ATTR_NORMAL: u64 = 1 << 2; // Normal memory (index 1 in MAIR)
 
 // OS-available bits for software use
-const DESC_SW_BIT_55: u64 = 1 << 55;      // Software bit (used for COW marker)
+const DESC_SW_BIT_55: u64 = 1 << 55; // Software bit (used for COW marker)
 
 // =============================================================================
 // VirtAddr
@@ -496,15 +496,15 @@ impl PageTableFlags {
         let user = self.contains(Self::USER_ACCESSIBLE);
 
         match (user, writable) {
-            (false, true) => desc |= DESC_AP_RW_EL1,   // Kernel RW, no user access
-            (false, false) => desc |= DESC_AP_RO_EL1,  // Kernel RO, no user access
-            (true, true) => desc |= DESC_AP_RW_ALL,    // Both RW
-            (true, false) => desc |= DESC_AP_RO_ALL,   // Both RO
+            (false, true) => desc |= DESC_AP_RW_EL1, // Kernel RW, no user access
+            (false, false) => desc |= DESC_AP_RO_EL1, // Kernel RO, no user access
+            (true, true) => desc |= DESC_AP_RW_ALL,  // Both RW
+            (true, false) => desc |= DESC_AP_RO_ALL, // Both RO
         }
 
         // Execute permissions
         if self.contains(Self::NO_EXECUTE) {
-            desc |= DESC_PXN | DESC_UXN;  // Neither kernel nor user can execute
+            desc |= DESC_PXN | DESC_UXN; // Neither kernel nor user can execute
         } else if !user {
             // Kernel-only page: disable user execute
             desc |= DESC_UXN;
@@ -590,7 +590,7 @@ impl PageTableEntry {
                 flags.insert(PageTableFlags::WRITABLE);
                 flags.insert(PageTableFlags::USER_ACCESSIBLE);
             }
-            0b10 => {} // RO EL1 only
+            0b10 => {}                                             // RO EL1 only
             0b11 => flags.insert(PageTableFlags::USER_ACCESSIBLE), // RO all
             _ => {}
         }
@@ -920,10 +920,10 @@ pub mod tlb {
     pub fn flush_all() {
         unsafe {
             core::arch::asm!(
-                "dsb ishst",           // Ensure stores complete
-                "tlbi vmalle1is",      // Invalidate all EL1 entries
-                "dsb ish",             // Ensure invalidation completes
-                "isb",                 // Sync instruction stream
+                "dsb ishst",      // Ensure stores complete
+                "tlbi vmalle1is", // Invalidate all EL1 entries
+                "dsb ish",        // Ensure invalidation completes
+                "isb",            // Sync instruction stream
                 options(nostack)
             );
         }
@@ -1171,30 +1171,24 @@ impl<'a> Mapper<Size4KiB> for OffsetPageTable<'a> {
 
         // Walk/create the page table hierarchy
         // L0 -> L1
-        let l1_phys = get_or_create_table_inner(
-            &mut self.l0_table[l0_idx],
-            phys_offset,
-            frame_allocator,
-        )?;
+        let l1_phys =
+            get_or_create_table_inner(&mut self.l0_table[l0_idx], phys_offset, frame_allocator)?;
 
         // L1 -> L2
-        let l1_table = &mut *(VirtAddr::new(l1_phys.as_u64() + phys_offset.as_u64()).as_mut_ptr() as *mut PageTable);
-        let l2_phys = get_or_create_table_inner(
-            &mut l1_table[l1_idx],
-            phys_offset,
-            frame_allocator,
-        )?;
+        let l1_table = &mut *(VirtAddr::new(l1_phys.as_u64() + phys_offset.as_u64()).as_mut_ptr()
+            as *mut PageTable);
+        let l2_phys =
+            get_or_create_table_inner(&mut l1_table[l1_idx], phys_offset, frame_allocator)?;
 
         // L2 -> L3
-        let l2_table = &mut *(VirtAddr::new(l2_phys.as_u64() + phys_offset.as_u64()).as_mut_ptr() as *mut PageTable);
-        let l3_phys = get_or_create_table_inner(
-            &mut l2_table[l2_idx],
-            phys_offset,
-            frame_allocator,
-        )?;
+        let l2_table = &mut *(VirtAddr::new(l2_phys.as_u64() + phys_offset.as_u64()).as_mut_ptr()
+            as *mut PageTable);
+        let l3_phys =
+            get_or_create_table_inner(&mut l2_table[l2_idx], phys_offset, frame_allocator)?;
 
         // Map the page in L3
-        let l3_table = &mut *(VirtAddr::new(l3_phys.as_u64() + phys_offset.as_u64()).as_mut_ptr() as *mut PageTable);
+        let l3_table = &mut *(VirtAddr::new(l3_phys.as_u64() + phys_offset.as_u64()).as_mut_ptr()
+            as *mut PageTable);
         let entry = &mut l3_table[l3_idx];
 
         // Check if page is already mapped
@@ -1213,7 +1207,10 @@ impl<'a> Mapper<Size4KiB> for OffsetPageTable<'a> {
         Ok(MapperFlush::new(page))
     }
 
-    fn unmap(&mut self, page: Page<Size4KiB>) -> Result<(PhysFrame<Size4KiB>, MapperFlush<Size4KiB>), UnmapError> {
+    fn unmap(
+        &mut self,
+        page: Page<Size4KiB>,
+    ) -> Result<(PhysFrame<Size4KiB>, MapperFlush<Size4KiB>), UnmapError> {
         let virt = page.start_address();
         let phys_offset = self.phys_offset;
 

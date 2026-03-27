@@ -49,7 +49,9 @@ pub fn dispatch_syscall(
             super::time::sys_clock_settime(clock_id, user_timespec_ptr)
         }
         SyscallNumber::Brk => super::memory::sys_brk(arg1),
-        SyscallNumber::Mmap => super::mmap::sys_mmap(arg1, arg2, arg3 as u32, arg4 as u32, arg5 as i64, arg6),
+        SyscallNumber::Mmap => {
+            super::mmap::sys_mmap(arg1, arg2, arg3 as u32, arg4 as u32, arg5 as i64, arg6)
+        }
         SyscallNumber::Munmap => super::mmap::sys_munmap(arg1, arg2),
         SyscallNumber::Mprotect => super::mmap::sys_mprotect(arg1, arg2, arg3 as u32),
         SyscallNumber::Kill => super::signal::sys_kill(arg1 as i64, arg2 as i32),
@@ -113,12 +115,16 @@ pub fn dispatch_syscall(
         SyscallNumber::Mknod => super::fifo::sys_mknod(arg1, arg2 as u32, arg3),
         // *at variants (Linux ARM64 uses these, x86_64 also supports them)
         SyscallNumber::Openat => super::fs::sys_openat(arg1 as i32, arg2, arg3 as u32, arg4 as u32),
-        SyscallNumber::Faccessat => super::fs::sys_faccessat(arg1 as i32, arg2, arg3 as u32, arg4 as u32),
+        SyscallNumber::Faccessat => {
+            super::fs::sys_faccessat(arg1 as i32, arg2, arg3 as u32, arg4 as u32)
+        }
         SyscallNumber::Mkdirat => super::fs::sys_mkdirat(arg1 as i32, arg2, arg3 as u32),
         SyscallNumber::Mknodat => super::fs::sys_mknodat(arg1 as i32, arg2, arg3 as u32, arg4),
         SyscallNumber::Unlinkat => super::fs::sys_unlinkat(arg1 as i32, arg2, arg3 as i32),
         SyscallNumber::Symlinkat => super::fs::sys_symlinkat(arg1, arg2 as i32, arg3),
-        SyscallNumber::Linkat => super::fs::sys_linkat(arg1 as i32, arg2, arg3 as i32, arg4, arg5 as i32),
+        SyscallNumber::Linkat => {
+            super::fs::sys_linkat(arg1 as i32, arg2, arg3 as i32, arg4, arg5 as i32)
+        }
         SyscallNumber::Renameat => super::fs::sys_renameat(arg1 as i32, arg2, arg3 as i32, arg4),
         SyscallNumber::Readlinkat => super::fs::sys_readlinkat(arg1 as i32, arg2, arg3, arg4),
         SyscallNumber::Dup3 => handlers::sys_dup2(arg1, arg2), // dup3 with flags=0 is dup2
@@ -130,7 +136,9 @@ pub fn dispatch_syscall(
         SyscallNumber::Ptsname => super::pty::sys_ptsname(arg1, arg2, arg3),
         SyscallNumber::GetRandom => super::random::sys_getrandom(arg1, arg2, arg3 as u32),
         SyscallNumber::Clone => super::clone::sys_clone(arg1, arg2, arg3, arg4, arg5),
-        SyscallNumber::Futex => super::futex::sys_futex(arg1, arg2 as u32, arg3 as u32, arg4, arg5, arg6 as u32),
+        SyscallNumber::Futex => {
+            super::futex::sys_futex(arg1, arg2 as u32, arg3 as u32, arg4, arg5, arg6 as u32)
+        }
         // Graphics syscalls (Breenix-specific)
         SyscallNumber::FbInfo => super::graphics::sys_fbinfo(arg1),
         SyscallNumber::FbDraw => super::graphics::sys_fbdraw(arg1),
@@ -156,9 +164,7 @@ pub fn dispatch_syscall(
             const ARCH_GET_FS: u64 = 0x1003;
             match arg1 {
                 ARCH_SET_FS => {
-                    x86_64::registers::model_specific::FsBase::write(
-                        x86_64::VirtAddr::new(arg2),
-                    );
+                    x86_64::registers::model_specific::FsBase::write(x86_64::VirtAddr::new(arg2));
                     SyscallResult::Ok(0)
                 }
                 ARCH_GET_FS => {
@@ -172,7 +178,9 @@ pub fn dispatch_syscall(
             }
         }
         // Filesystem: newfstatat
-        SyscallNumber::Newfstatat => super::fs::sys_newfstatat(arg1 as i32, arg2, arg3, arg4 as u32),
+        SyscallNumber::Newfstatat => {
+            super::fs::sys_newfstatat(arg1 as i32, arg2, arg3, arg4 as u32)
+        }
         // GetTime is not mapped on x86_64 (kept for ARM64 compat)
         SyscallNumber::GetTime => SyscallResult::Err(38), // ENOSYS
         // Testing/diagnostic syscalls (Breenix-specific)
@@ -184,9 +192,15 @@ pub fn dispatch_syscall(
         SyscallNumber::Uname => handlers::sys_uname(arg1),
         // epoll
         SyscallNumber::EpollCreate1 => super::epoll::sys_epoll_create1(arg1 as u32),
-        SyscallNumber::EpollCtl => super::epoll::sys_epoll_ctl(arg1 as i32, arg2 as i32, arg3 as i32, arg4),
-        SyscallNumber::EpollWait => super::epoll::sys_epoll_pwait(arg1 as i32, arg2, arg3 as i32, arg4 as i32, 0, 0),
-        SyscallNumber::EpollPwait => super::epoll::sys_epoll_pwait(arg1 as i32, arg2, arg3 as i32, arg4 as i32, arg5, arg6),
+        SyscallNumber::EpollCtl => {
+            super::epoll::sys_epoll_ctl(arg1 as i32, arg2 as i32, arg3 as i32, arg4)
+        }
+        SyscallNumber::EpollWait => {
+            super::epoll::sys_epoll_pwait(arg1 as i32, arg2, arg3 as i32, arg4 as i32, 0, 0)
+        }
+        SyscallNumber::EpollPwait => {
+            super::epoll::sys_epoll_pwait(arg1 as i32, arg2, arg3 as i32, arg4 as i32, arg5, arg6)
+        }
         // Identity syscalls
         SyscallNumber::Getuid => handlers::sys_getuid(),
         SyscallNumber::Geteuid => handlers::sys_geteuid(),

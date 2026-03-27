@@ -18,7 +18,8 @@
 //! - Uses TPIDR_EL1 for per-CPU data (like GS segment on x86)
 //! - Memory barriers (DSB, ISB) required after page table switches
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::mem::MaybeUninit;
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use super::exception_frame::Aarch64ExceptionFrame;
 use super::percpu::Aarch64PerCpu;
@@ -26,6 +27,121 @@ use crate::arch_impl::traits::PerCpuOps;
 use crate::task::scheduler::Scheduler;
 use crate::task::thread::{CpuContext, Thread, ThreadPrivilege, ThreadState};
 use crate::tracing::providers::sched::trace_ctx_switch;
+
+const SPSR_MODE_MASK: u64 = 0xF;
+const SPSR_EL1H: u64 = 0x5;
+const SPSR_DAIF_IRQ_BIT: u64 = 1 << 7;
+
+#[inline]
+fn kernel_dispatch_spsr(spsr: u64) -> u64 {
+    ((spsr & !SPSR_MODE_MASK) | SPSR_EL1H) & !SPSR_DAIF_IRQ_BIT
+}
+
+core::arch::global_asm!(
+    r#"
+.section .text
+.global aarch64_inline_schedule_switch
+.type aarch64_inline_schedule_switch, @function
+aarch64_inline_schedule_switch:
+    // aarch64_inline_schedule_switch(old_ctx, scheduler_stack_top, trampoline)
+    //   x0 = *mut CpuContext for the outgoing thread
+    //   x1 = per-CPU scheduler stack top
+    //   x2 = trampoline function entry
+    //
+    // Save the callee-saved kernel context at the exact point of the call,
+    // then move to a neutral per-CPU stack before entering Rust again.
+    stp x19, x20, [x0, #152]
+    stp x21, x22, [x0, #168]
+    stp x23, x24, [x0, #184]
+    stp x25, x26, [x0, #200]
+    stp x27, x28, [x0, #216]
+    stp x29, x30, [x0, #232]
+    mov x3, sp
+    str x3, [x0, #248]
+
+    mov sp, x1
+    br x2
+
+.global aarch64_enter_exception_frame
+.type aarch64_enter_exception_frame, @function
+aarch64_enter_exception_frame:
+    // aarch64_enter_exception_frame(frame) -> !
+    //   x0 = *const Aarch64ExceptionFrame
+    //
+    // Reuse the same restore/ERET rules as the IRQ return path by treating
+    // the prepared frame as if it had been produced by an exception entry.
+    mov sp, x0
+
+    ldr x1, [sp, #248]
+    cmp x1, #0x1000
+    b.hs 1f
+    adrp x1, idle_loop_arm64
+    add x1, x1, :lo12:idle_loop_arm64
+    str x1, [sp, #248]
+    mov x2, #0x5
+    str x2, [sp, #256]
+1:
+    msr elr_el1, x1
+    ldr x1, [sp, #256]
+    msr spsr_el1, x1
+
+    ldp x0, x1, [sp, #0]
+    ldp x2, x3, [sp, #16]
+    ldp x4, x5, [sp, #32]
+    ldp x6, x7, [sp, #48]
+    ldp x8, x9, [sp, #64]
+    ldp x10, x11, [sp, #80]
+    ldp x12, x13, [sp, #96]
+    ldp x14, x15, [sp, #112]
+    ldr x17, [sp, #136]
+    ldp x18, x19, [sp, #144]
+    ldp x20, x21, [sp, #160]
+    ldp x22, x23, [sp, #176]
+    ldp x24, x25, [sp, #192]
+    ldp x26, x27, [sp, #208]
+    ldp x28, x29, [sp, #224]
+    ldr x30, [sp, #240]
+
+    mrs x16, tpidr_el1
+    ldr x17, [sp, #128]
+    str x17, [x16, #96]
+    ldr x17, [sp, #136]
+
+    mrs x16, spsr_el1
+    and x16, x16, #0xF
+    cbnz x16, 2f
+    mrs x16, tpidr_el1
+    ldr x16, [x16, #16]
+    b 3f
+2:
+    mrs x16, tpidr_el1
+    ldr x16, [x16, #40]
+3:
+    mov sp, x16
+
+    mrs x16, tpidr_el1
+    ldr x16, [x16, #96]
+    eret
+"#
+);
+
+extern "C" {
+    fn aarch64_inline_schedule_switch(
+        old_context: *mut CpuContext,
+        scheduler_stack_top: u64,
+        trampoline: extern "C" fn() -> !,
+    );
+
+    fn aarch64_enter_exception_frame(frame: *const Aarch64ExceptionFrame) -> !;
+}
+
+const _: () = assert!(core::mem::offset_of!(CpuContext, x19) == 152);
+const _: () = assert!(core::mem::offset_of!(CpuContext, x30) == 240);
+const _: () = assert!(core::mem::offset_of!(CpuContext, sp) == 248);
+const _: () = assert!(core::mem::offset_of!(Aarch64ExceptionFrame, x16) == 128);
+const _: () = assert!(core::mem::offset_of!(Aarch64ExceptionFrame, x30) == 240);
+const _: () = assert!(core::mem::offset_of!(Aarch64ExceptionFrame, elr) == 248);
+const _: () = assert!(core::mem::offset_of!(Aarch64ExceptionFrame, spsr) == 256);
 
 /// Diagnostic counter: number of times a thread dispatch hit ProcessGone
 /// (TTBR0 lookup couldn't find the thread's process).
@@ -52,8 +168,73 @@ pub static TTBR_PM_LOCK_BUSY_COUNT: AtomicU64 = AtomicU64::new(0);
 ///
 /// Value 0 = no pending requeue. Non-zero = thread ID to requeue.
 static DEFERRED_REQUEUE: [AtomicU64; 8] = [
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+
+struct InlineScheduleState {
+    scheduler_ptr: AtomicUsize,
+    old_thread_id: AtomicU64,
+    new_thread_id: AtomicU64,
+    should_requeue_old: AtomicBool,
+}
+
+static INLINE_SCHEDULE_STATE: [InlineScheduleState;
+    crate::arch_impl::aarch64::constants::MAX_CPUS] = [
+    InlineScheduleState {
+        scheduler_ptr: AtomicUsize::new(0),
+        old_thread_id: AtomicU64::new(0),
+        new_thread_id: AtomicU64::new(0),
+        should_requeue_old: AtomicBool::new(false),
+    },
+    InlineScheduleState {
+        scheduler_ptr: AtomicUsize::new(0),
+        old_thread_id: AtomicU64::new(0),
+        new_thread_id: AtomicU64::new(0),
+        should_requeue_old: AtomicBool::new(false),
+    },
+    InlineScheduleState {
+        scheduler_ptr: AtomicUsize::new(0),
+        old_thread_id: AtomicU64::new(0),
+        new_thread_id: AtomicU64::new(0),
+        should_requeue_old: AtomicBool::new(false),
+    },
+    InlineScheduleState {
+        scheduler_ptr: AtomicUsize::new(0),
+        old_thread_id: AtomicU64::new(0),
+        new_thread_id: AtomicU64::new(0),
+        should_requeue_old: AtomicBool::new(false),
+    },
+    InlineScheduleState {
+        scheduler_ptr: AtomicUsize::new(0),
+        old_thread_id: AtomicU64::new(0),
+        new_thread_id: AtomicU64::new(0),
+        should_requeue_old: AtomicBool::new(false),
+    },
+    InlineScheduleState {
+        scheduler_ptr: AtomicUsize::new(0),
+        old_thread_id: AtomicU64::new(0),
+        new_thread_id: AtomicU64::new(0),
+        should_requeue_old: AtomicBool::new(false),
+    },
+    InlineScheduleState {
+        scheduler_ptr: AtomicUsize::new(0),
+        old_thread_id: AtomicU64::new(0),
+        new_thread_id: AtomicU64::new(0),
+        should_requeue_old: AtomicBool::new(false),
+    },
+    InlineScheduleState {
+        scheduler_ptr: AtomicUsize::new(0),
+        old_thread_id: AtomicU64::new(0),
+        new_thread_id: AtomicU64::new(0),
+        should_requeue_old: AtomicBool::new(false),
+    },
 ];
 
 // =============================================================================
@@ -76,7 +257,7 @@ struct DispatchEntry {
     spsr: u64,
     x30: u64,
     sp: u64,
-    path: u8,    // K=kernel, U=userspace, I=idle, F=first_entry, B=BUG-terminated
+    path: u8, // K=kernel, U=userspace, I=idle, F=first_entry, B=BUG-terminated
     from_el0: u8,
 }
 
@@ -89,7 +270,14 @@ struct DispatchRing {
 
 static mut DISPATCH_TRACE: [DispatchRing; MAX_CPUS_TRACE] = {
     const EMPTY_ENTRY: DispatchEntry = DispatchEntry {
-        tid: 0, old_tid: 0, elr: 0, spsr: 0, x30: 0, sp: 0, path: 0, from_el0: 0,
+        tid: 0,
+        old_tid: 0,
+        elr: 0,
+        spsr: 0,
+        x30: 0,
+        sp: 0,
+        path: 0,
+        from_el0: 0,
     };
     const EMPTY_RING: DispatchRing = DispatchRing {
         entries: [EMPTY_ENTRY; DISPATCH_RING_SIZE],
@@ -101,22 +289,45 @@ static mut DISPATCH_TRACE: [DispatchRing; MAX_CPUS_TRACE] = {
 
 /// Record a dispatch event. Called at the END of dispatch_thread_locked
 /// after all frame writes are complete.
-fn record_dispatch(cpu_id: usize, old_tid: u64, tid: u64, elr: u64, spsr: u64, x30: u64, sp: u64, path: u8, from_el0: bool) {
-    if cpu_id >= MAX_CPUS_TRACE { return; }
+fn record_dispatch(
+    cpu_id: usize,
+    old_tid: u64,
+    tid: u64,
+    elr: u64,
+    spsr: u64,
+    x30: u64,
+    sp: u64,
+    path: u8,
+    from_el0: bool,
+) {
+    if cpu_id >= MAX_CPUS_TRACE {
+        return;
+    }
     unsafe {
         let ring = &mut DISPATCH_TRACE[cpu_id];
         let idx = ring.write_idx;
         ring.entries[idx] = DispatchEntry {
-            tid, old_tid, elr, spsr, x30, sp, path, from_el0: from_el0 as u8,
+            tid,
+            old_tid,
+            elr,
+            spsr,
+            x30,
+            sp,
+            path,
+            from_el0: from_el0 as u8,
         };
         ring.write_idx = (idx + 1) % DISPATCH_RING_SIZE;
-        if ring.count < DISPATCH_RING_SIZE { ring.count += 1; }
+        if ring.count < DISPATCH_RING_SIZE {
+            ring.count += 1;
+        }
     }
 }
 
 /// Dump the dispatch trace for a specific CPU. Called from the crash handler.
 pub fn dump_dispatch_trace(cpu_id: usize) {
-    if cpu_id >= MAX_CPUS_TRACE { return; }
+    if cpu_id >= MAX_CPUS_TRACE {
+        return;
+    }
     unsafe {
         let ring = &DISPATCH_TRACE[cpu_id];
         let count = ring.count;
@@ -232,6 +443,39 @@ fn ensure_user_rsp_scratch_for_el0() {
     }
 }
 
+#[inline(always)]
+fn read_daif() -> u64 {
+    let daif: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack));
+    }
+    daif
+}
+
+#[inline(always)]
+fn read_sp_el0() -> u64 {
+    let sp_el0: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, sp_el0", out(reg) sp_el0, options(nomem, nostack));
+    }
+    sp_el0
+}
+
+#[inline(always)]
+fn read_tpidr_el0() -> u64 {
+    let tpidr: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, tpidr_el0", out(reg) tpidr, options(nomem, nostack));
+    }
+    tpidr
+}
+
+#[inline(always)]
+fn scheduler_stack_top(cpu_id: usize) -> u64 {
+    const STACK_SIZE: u64 = 0x20_0000;
+    super::constants::percpu_stack_region_base() + ((cpu_id as u64) + 1) * STACK_SIZE
+}
+
 // =============================================================================
 // Inline context save/restore helpers
 //
@@ -340,7 +584,7 @@ fn save_kernel_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFrame
 
     // Save program counter and processor state
     thread.context.elr_el1 = frame.elr;
-    thread.context.spsr_el1 = frame.spsr;
+    thread.context.spsr_el1 = kernel_dispatch_spsr(frame.spsr);
 
     // Save the kernel stack pointer.
     // The exception frame is allocated on the stack, so the SP before the
@@ -380,8 +624,8 @@ fn restore_kernel_context_inline(
         // First run - mark as started and set up entry point.
         // CRITICAL: Also initialize elr_el1 and spsr_el1 to safe values.
         thread.has_started = true;
-        thread.context.elr_el1 = thread.context.x30;  // Entry point
-        thread.context.spsr_el1 = 0x5;  // EL1h, interrupts enabled
+        thread.context.elr_el1 = thread.context.x30; // Entry point
+        thread.context.spsr_el1 = kernel_dispatch_spsr(thread.context.spsr_el1);
     }
 
     // Validate ELR before restoring any registers.
@@ -398,8 +642,7 @@ fn restore_kernel_context_inline(
     const KERNEL_PHYS_LIMIT: u64 = 0xC000_0000;
     #[inline]
     fn is_kernel_addr(addr: u64) -> bool {
-        addr >= KERNEL_VIRT_BASE
-            || (addr >= KERNEL_PHYS_BASE && addr < KERNEL_PHYS_LIMIT)
+        addr >= KERNEL_VIRT_BASE || (addr >= KERNEL_PHYS_BASE && addr < KERNEL_PHYS_LIMIT)
     }
     let elr_valid = if !has_started {
         // First run: x30 must be a valid kernel address
@@ -428,7 +671,11 @@ fn restore_kernel_context_inline(
             ThreadPrivilege::User => b'U',
         });
         raw_uart_str(" blocked_in_syscall=");
-        raw_uart_char(if thread.blocked_in_syscall { b'1' } else { b'0' });
+        raw_uart_char(if thread.blocked_in_syscall {
+            b'1'
+        } else {
+            b'0'
+        });
         raw_uart_str(" cpu=");
         raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
         raw_uart_str("\n");
@@ -470,15 +717,16 @@ fn restore_kernel_context_inline(
 
     // Set return address and SPSR
     if !has_started {
-        frame.elr = thread.context.x30;  // First run: jump to entry point
-        frame.spsr = 0x5;  // EL1h, DAIF clear (interrupts enabled)
+        frame.elr = thread.context.x30; // First run: jump to entry point
+        frame.spsr = kernel_dispatch_spsr(thread.context.spsr_el1);
     } else if is_kernel_addr(thread.context.elr_el1) {
         // Resume: return to where we left off.
         // On QEMU, kernel addresses are >= KERNEL_VIRT_BASE (HHDM).
         // On Parallels, kernel runs identity-mapped at physical addresses
         // (KERNEL_PHYS_BASE..KERNEL_PHYS_LIMIT), so we must accept both.
         frame.elr = thread.context.elr_el1;
-        frame.spsr = thread.context.spsr_el1;  // Restore saved processor state
+        thread.context.spsr_el1 = kernel_dispatch_spsr(thread.context.spsr_el1);
+        frame.spsr = thread.context.spsr_el1; // Restore saved processor state
     } else {
         // elr_el1 == 0 or not a valid kernel address — redirect to idle
         raw_uart_str("WARN: bad elr=");
@@ -628,10 +876,7 @@ fn setup_first_entry_inline(thread: &mut Thread, frame: &mut Aarch64ExceptionFra
 
     // Clear TPIDR_EL0 - musl will set it during __init_tls
     unsafe {
-        core::arch::asm!(
-            "msr tpidr_el0, xzr",
-            options(nomem, nostack)
-        );
+        core::arch::asm!("msr tpidr_el0, xzr", options(nomem, nostack));
     }
 }
 
@@ -677,7 +922,8 @@ fn setup_idle_return_locked(
 
     // Get idle thread's kernel stack
     let idle_id = sched.cpu_state[cpu_id].idle_thread;
-    let idle_stack = sched.get_thread(idle_id)
+    let idle_stack = sched
+        .get_thread(idle_id)
         .and_then(|t| t.kernel_stack_top.map(|v| v.as_u64()))
         .unwrap_or_else(|| {
             let cpu_id64 = cpu_id as u64;
@@ -741,23 +987,24 @@ fn dispatch_idle_locked(
         // Also accept physical kernel addresses on Parallels
         const KERNEL_PHYS_BASE: u64 = 0x4008_0000;
         const KERNEL_PHYS_LIMIT: u64 = 0xC000_0000;
-        let has_saved_context = sched.get_thread(thread_id).map(|thread| {
-            let elr = thread.context.elr_el1;
-            let sp = thread.context.sp;
-            let spsr = thread.context.spsr_el1;
-            let elr_is_kernel = elr >= KERNEL_VIRT_BASE
-                || (elr >= KERNEL_PHYS_BASE && elr < KERNEL_PHYS_LIMIT);
-            let sp_is_kernel = sp >= KERNEL_VIRT_BASE
-                || (sp >= KERNEL_PHYS_BASE && sp < KERNEL_PHYS_LIMIT);
-            let near_idle = elr >= idle_loop_addr && elr < idle_loop_addr + 16;
-            elr_is_kernel
-                && !near_idle
-                && sp_is_kernel
-                && (spsr & 0xF) != 0
-        }).unwrap_or(false);
+        let has_saved_context = sched
+            .get_thread(thread_id)
+            .map(|thread| {
+                let elr = thread.context.elr_el1;
+                let sp = thread.context.sp;
+                let spsr = thread.context.spsr_el1;
+                let elr_is_kernel =
+                    elr >= KERNEL_VIRT_BASE || (elr >= KERNEL_PHYS_BASE && elr < KERNEL_PHYS_LIMIT);
+                let sp_is_kernel =
+                    sp >= KERNEL_VIRT_BASE || (sp >= KERNEL_PHYS_BASE && sp < KERNEL_PHYS_LIMIT);
+                let near_idle = elr >= idle_loop_addr && elr < idle_loop_addr + 16;
+                elr_is_kernel && !near_idle && sp_is_kernel && (spsr & 0xF) != 0
+            })
+            .unwrap_or(false);
 
         if has_saved_context {
-            let ok = sched.get_thread_mut(thread_id)
+            let ok = sched
+                .get_thread_mut(thread_id)
                 .map(|thread| restore_kernel_context_inline(thread, frame, thread_id))
                 .unwrap_or(false);
             if !ok {
@@ -793,7 +1040,15 @@ fn dispatch_thread_locked(
         let elr = thread.context.elr_el1;
         let kernel_stack_top = thread.kernel_stack_top;
         let thread_ptr = thread as *const _ as *mut u8;
-        (state, privilege, blocked_in_syscall, has_started, elr, kernel_stack_top, thread_ptr)
+        (
+            state,
+            privilege,
+            blocked_in_syscall,
+            has_started,
+            elr,
+            kernel_stack_top,
+            thread_ptr,
+        )
     });
 
     let (state, privilege, blocked_in_syscall, has_started, elr, kernel_stack_top, thread_ptr) =
@@ -880,7 +1135,8 @@ fn dispatch_thread_locked(
             }
         }
 
-        let restore_ok = sched.get_thread_mut(thread_id)
+        let restore_ok = sched
+            .get_thread_mut(thread_id)
             .map(|thread| restore_kernel_context_inline(thread, frame, thread_id))
             .unwrap_or(false);
 
@@ -1236,7 +1492,17 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         core::arch::asm!("mrs {}, tpidr_el1", out(reg) base, options(nomem, nostack));
         core::ptr::read_volatile((base + 40) as *const u64) // user_rsp_scratch
     };
-    record_dispatch(cpu_id, old_id, new_id, frame.elr, frame.spsr, frame.x30, dispatch_sp, dispatch_path, from_el0);
+    record_dispatch(
+        cpu_id,
+        old_id,
+        new_id,
+        frame.elr,
+        frame.spsr,
+        frame.x30,
+        dispatch_sp,
+        dispatch_path,
+        from_el0,
+    );
 
     // Also store in per-CPU fields for crash diagnostics
     unsafe {
@@ -1252,6 +1518,191 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         Aarch64PerCpu::clear_preempt_active();
     }
     crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
+}
+
+extern "C" fn inline_schedule_trampoline() -> ! {
+    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    let state = &INLINE_SCHEDULE_STATE[cpu_id];
+    let sched_ptr = state.scheduler_ptr.swap(0, Ordering::Relaxed) as *mut Scheduler;
+    let old_id = state.old_thread_id.load(Ordering::Relaxed);
+    let new_id = state.new_thread_id.load(Ordering::Relaxed);
+    let should_requeue_old = state.should_requeue_old.swap(false, Ordering::Relaxed);
+
+    if sched_ptr.is_null() {
+        idle_loop_arm64();
+    }
+
+    let sched = unsafe { &mut *sched_ptr };
+
+    if let Some(old_thread) = sched.get_thread_mut(old_id) {
+        // Resume after the inline-switch helper call when this thread is
+        // eventually scheduled again.
+        old_thread.context.elr_el1 = old_thread.context.x30;
+    }
+
+    sched.commit_cpu_state_after_save(new_id);
+    sched.cpu_state[cpu_id].previous_thread = None;
+    if should_requeue_old {
+        sched.requeue_thread_after_save(old_id);
+    }
+
+    let mut frame = unsafe { MaybeUninit::<Aarch64ExceptionFrame>::zeroed().assume_init() };
+
+    dispatch_thread_locked(sched, new_id, &mut frame, cpu_id);
+
+    let idle_addr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
+    let dispatch_path = if frame.elr == idle_addr {
+        b'I'
+    } else if (frame.spsr & 0xF) == 0 {
+        b'U'
+    } else {
+        b'K'
+    };
+    let dispatch_sp = unsafe {
+        let base: u64;
+        core::arch::asm!("mrs {}, tpidr_el1", out(reg) base, options(nomem, nostack));
+        core::ptr::read_volatile((base + 40) as *const u64)
+    };
+    record_dispatch(
+        cpu_id,
+        old_id,
+        new_id,
+        frame.elr,
+        frame.spsr,
+        frame.x30,
+        dispatch_sp,
+        dispatch_path,
+        false,
+    );
+
+    unsafe {
+        Aarch64PerCpu::set_dispatch_elr(frame.elr);
+        Aarch64PerCpu::set_dispatch_spsr(frame.spsr);
+        crate::task::scheduler::force_unlock_scheduler();
+    }
+
+    crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
+
+    unsafe {
+        aarch64_enter_exception_frame(&frame as *const Aarch64ExceptionFrame);
+    }
+}
+
+pub fn schedule_from_kernel() {
+    let mut saved_daif = read_daif();
+    unsafe {
+        crate::arch_impl::aarch64::cpu::disable_interrupts();
+    }
+
+    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    let mut guard = crate::task::scheduler::lock_for_context_switch();
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => {
+            unsafe {
+                core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
+            }
+            return;
+        }
+    };
+
+    let deferred_tid = if cpu_id < DEFERRED_REQUEUE.len() {
+        DEFERRED_REQUEUE[cpu_id].swap(0, Ordering::Acquire)
+    } else {
+        0
+    };
+    sched.cpu_state[cpu_id].previous_thread = None;
+    if deferred_tid != 0 {
+        sched.requeue_thread_after_save(deferred_tid);
+    }
+
+    let real_thread_ptr = Aarch64PerCpu::current_thread_ptr();
+    if !real_thread_ptr.is_null() {
+        let real_tid = unsafe { &*(real_thread_ptr as *const Thread) }.id();
+        sched.fix_stale_idle_cpu_state(real_tid);
+    }
+
+    let schedule_result = sched.schedule_deferred_requeue();
+    let Some((old_id, new_id, should_requeue_old)) = schedule_result else {
+        drop(guard);
+        unsafe {
+            core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
+        }
+        return;
+    };
+
+    if old_id == new_id {
+        if should_requeue_old {
+            sched.requeue_thread_after_save(old_id);
+        }
+        drop(guard);
+        unsafe {
+            core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
+        }
+        return;
+    }
+
+    let old_is_idle = sched.is_idle_thread_inner(old_id);
+    if old_is_idle {
+        // The CPU0 idle thread may resume through the parked
+        // schedule_from_kernel() frame instead of jumping straight to
+        // idle_loop_arm64. If we preserve DAIF.I=1 here, that resumed "idle"
+        // path can run with IRQs masked and strand pending AHCI completions.
+        saved_daif &= !SPSR_DAIF_IRQ_BIT;
+    }
+
+    trace_ctx_switch(old_id, new_id);
+    crate::tracing::providers::sched::trace_sched_queue_state(
+        sched.ready_queue_length() as u16,
+        new_id as u16,
+    );
+    crate::task::scheduler::increment_context_switch_count();
+
+    let old_context_ptr = match sched.get_thread_mut(old_id) {
+        Some(old_thread) => {
+            old_thread.context.sp_el0 = read_sp_el0();
+            old_thread.context.tpidr_el0 = read_tpidr_el0();
+            // Preserve the caller's pre-switch state, but never persist
+            // DAIF.I=1 into a parked EL1 thread. Restoring an IRQ-masked SPSR
+            // via ERET strands this CPU with interrupts disabled.
+            old_thread.context.spsr_el1 = kernel_dispatch_spsr(saved_daif & 0x3C0);
+            &mut old_thread.context as *mut CpuContext
+        }
+        None => {
+            drop(guard);
+            unsafe {
+                core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
+            }
+            return;
+        }
+    };
+
+    INLINE_SCHEDULE_STATE[cpu_id]
+        .scheduler_ptr
+        .store(sched as *mut Scheduler as usize, Ordering::Relaxed);
+    INLINE_SCHEDULE_STATE[cpu_id]
+        .old_thread_id
+        .store(old_id, Ordering::Relaxed);
+    INLINE_SCHEDULE_STATE[cpu_id]
+        .new_thread_id
+        .store(new_id, Ordering::Relaxed);
+    INLINE_SCHEDULE_STATE[cpu_id]
+        .should_requeue_old
+        .store(should_requeue_old, Ordering::Relaxed);
+
+    let _ = spin::MutexGuard::leak(guard);
+
+    unsafe {
+        aarch64_inline_schedule_switch(
+            old_context_ptr,
+            scheduler_stack_top(cpu_id),
+            inline_schedule_trampoline,
+        );
+    }
+
+    unsafe {
+        core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
+    }
 }
 
 // =============================================================================
@@ -1277,7 +1728,8 @@ fn setup_idle_return_arm64(frame: &mut Aarch64ExceptionFrame) {
     .flatten()
     .unwrap_or_else(|| {
         let cpu_id = Aarch64PerCpu::cpu_id() as u64;
-        let boot_stack_top = super::constants::percpu_stack_region_base() + (cpu_id + 1) * 0x20_0000;
+        let boot_stack_top =
+            super::constants::percpu_stack_region_base() + (cpu_id + 1) * 0x20_0000;
         boot_stack_top
     });
 
@@ -1450,8 +1902,8 @@ pub extern "C" fn idle_loop_arm64() -> ! {
     loop {
         unsafe {
             core::arch::asm!(
-                "msr daifclr, #0xf",  // Enable all interrupts
-                "wfi",                 // Wait for interrupt
+                "msr daifclr, #0xf", // Enable all interrupts
+                "wfi",               // Wait for interrupt
                 options(nomem, nostack)
             );
         }
@@ -1461,10 +1913,7 @@ pub extern "C" fn idle_loop_arm64() -> ! {
 /// Perform a context switch between two threads using the low-level
 /// assembly switch_context function.
 #[allow(dead_code)]
-pub unsafe fn perform_context_switch(
-    old_context: &mut CpuContext,
-    new_context: &CpuContext,
-) {
+pub unsafe fn perform_context_switch(old_context: &mut CpuContext, new_context: &CpuContext) {
     super::context::switch_context(
         old_context as *mut CpuContext,
         new_context as *const CpuContext,
@@ -1586,7 +2035,10 @@ fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aarch64Excepti
                 );
 
                 // If signals were delivered, update SP_EL0 with new stack pointer
-                if !matches!(signal_result, crate::signal::delivery::SignalDeliveryResult::NoAction) {
+                if !matches!(
+                    signal_result,
+                    crate::signal::delivery::SignalDeliveryResult::NoAction
+                ) {
                     unsafe {
                         core::arch::asm!(
                             "msr sp_el0, {}",

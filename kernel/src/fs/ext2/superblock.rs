@@ -19,40 +19,40 @@ const SUPERBLOCK_OFFSET: usize = 1024;
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 pub struct Ext2Superblock {
-    pub s_inodes_count: u32,         // Total inodes
-    pub s_blocks_count: u32,         // Total blocks
-    pub s_r_blocks_count: u32,       // Reserved blocks
-    pub s_free_blocks_count: u32,    // Free blocks
-    pub s_free_inodes_count: u32,    // Free inodes
-    pub s_first_data_block: u32,     // First data block (0 for 1024+ block sizes, 1 for 1024)
-    pub s_log_block_size: u32,       // Block size = 1024 << s_log_block_size
-    pub s_log_frag_size: u32,        // Fragment size
-    pub s_blocks_per_group: u32,     // Blocks per group
-    pub s_frags_per_group: u32,      // Fragments per group
-    pub s_inodes_per_group: u32,     // Inodes per group
-    pub s_mtime: u32,                // Mount time
-    pub s_wtime: u32,                // Write time
-    pub s_mnt_count: u16,            // Mount count
-    pub s_max_mnt_count: u16,        // Max mount count
-    pub s_magic: u16,                // Magic number (0xEF53)
-    pub s_state: u16,                // State (clean/errors)
-    pub s_errors: u16,               // Error handling
-    pub s_minor_rev_level: u16,      // Minor revision
-    pub s_lastcheck: u32,            // Last check time
-    pub s_checkinterval: u32,        // Check interval
-    pub s_creator_os: u32,           // Creator OS
-    pub s_rev_level: u32,            // Revision level
-    pub s_def_resuid: u16,           // Default UID for reserved blocks
-    pub s_def_resgid: u16,           // Default GID for reserved blocks
+    pub s_inodes_count: u32,      // Total inodes
+    pub s_blocks_count: u32,      // Total blocks
+    pub s_r_blocks_count: u32,    // Reserved blocks
+    pub s_free_blocks_count: u32, // Free blocks
+    pub s_free_inodes_count: u32, // Free inodes
+    pub s_first_data_block: u32,  // First data block (0 for 1024+ block sizes, 1 for 1024)
+    pub s_log_block_size: u32,    // Block size = 1024 << s_log_block_size
+    pub s_log_frag_size: u32,     // Fragment size
+    pub s_blocks_per_group: u32,  // Blocks per group
+    pub s_frags_per_group: u32,   // Fragments per group
+    pub s_inodes_per_group: u32,  // Inodes per group
+    pub s_mtime: u32,             // Mount time
+    pub s_wtime: u32,             // Write time
+    pub s_mnt_count: u16,         // Mount count
+    pub s_max_mnt_count: u16,     // Max mount count
+    pub s_magic: u16,             // Magic number (0xEF53)
+    pub s_state: u16,             // State (clean/errors)
+    pub s_errors: u16,            // Error handling
+    pub s_minor_rev_level: u16,   // Minor revision
+    pub s_lastcheck: u32,         // Last check time
+    pub s_checkinterval: u32,     // Check interval
+    pub s_creator_os: u32,        // Creator OS
+    pub s_rev_level: u32,         // Revision level
+    pub s_def_resuid: u16,        // Default UID for reserved blocks
+    pub s_def_resgid: u16,        // Default GID for reserved blocks
     // Extended superblock fields (rev 1+)
-    pub s_first_ino: u32,            // First non-reserved inode
-    pub s_inode_size: u16,           // Inode size
-    pub s_block_group_nr: u16,       // Block group number of this superblock
-    pub s_feature_compat: u32,       // Compatible features
-    pub s_feature_incompat: u32,     // Incompatible features
-    pub s_feature_ro_compat: u32,    // Read-only compatible features
-    pub s_uuid: [u8; 16],            // UUID
-    pub s_volume_name: [u8; 16],     // Volume name
+    pub s_first_ino: u32,         // First non-reserved inode
+    pub s_inode_size: u16,        // Inode size
+    pub s_block_group_nr: u16,    // Block group number of this superblock
+    pub s_feature_compat: u32,    // Compatible features
+    pub s_feature_incompat: u32,  // Incompatible features
+    pub s_feature_ro_compat: u32, // Read-only compatible features
+    pub s_uuid: [u8; 16],         // UUID
+    pub s_volume_name: [u8; 16],  // Volume name
     // Padding to 1024 bytes total
     _reserved: [u8; 788],
 }
@@ -89,24 +89,23 @@ impl Ext2Superblock {
                 &mut buffer[i * device_block_size..(i + 1) * device_block_size],
             )?;
         }
-        
+
         // Extract superblock from the buffer
         let sb_bytes = &buffer[offset_in_block..offset_in_block + superblock_size];
-        
+
         // SAFETY: We're reading from a properly aligned buffer into a packed struct
         // The buffer is guaranteed to be large enough by the calculation above
-        let superblock: Ext2Superblock = unsafe {
-            core::ptr::read_unaligned(sb_bytes.as_ptr() as *const Ext2Superblock)
-        };
-        
+        let superblock: Ext2Superblock =
+            unsafe { core::ptr::read_unaligned(sb_bytes.as_ptr() as *const Ext2Superblock) };
+
         // Validate the magic number
         if !superblock.is_valid() {
             return Err(BlockError::IoError);
         }
-        
+
         Ok(superblock)
     }
-    
+
     /// Validate magic number
     ///
     /// # Returns
@@ -115,7 +114,7 @@ impl Ext2Superblock {
     pub fn is_valid(&self) -> bool {
         self.s_magic == EXT2_SUPER_MAGIC
     }
-    
+
     /// Calculate block size in bytes
     ///
     /// ext2 block size is computed as: 1024 << s_log_block_size
@@ -126,7 +125,7 @@ impl Ext2Superblock {
     pub fn block_size(&self) -> usize {
         1024 << self.s_log_block_size
     }
-    
+
     /// Calculate number of block groups
     ///
     /// The number of block groups is determined by dividing the total number
@@ -137,7 +136,7 @@ impl Ext2Superblock {
     pub fn block_group_count(&self) -> u32 {
         (self.s_blocks_count + self.s_blocks_per_group - 1) / self.s_blocks_per_group
     }
-    
+
     /// Calculate inode size (128 for rev 0, s_inode_size for rev 1+)
     ///
     /// # Returns
@@ -169,9 +168,8 @@ impl Ext2Superblock {
 
         // SAFETY: We've verified the slice is large enough.
         // The struct is packed so alignment is not a concern.
-        let superblock: Ext2Superblock = unsafe {
-            core::ptr::read_unaligned(bytes.as_ptr() as *const Ext2Superblock)
-        };
+        let superblock: Ext2Superblock =
+            unsafe { core::ptr::read_unaligned(bytes.as_ptr() as *const Ext2Superblock) };
 
         Some(superblock)
     }
@@ -208,10 +206,7 @@ impl Ext2Superblock {
         // Copy superblock into the buffer
         // Safety: We're writing the packed superblock structure as raw bytes
         let sb_bytes = unsafe {
-            core::slice::from_raw_parts(
-                self as *const Ext2Superblock as *const u8,
-                superblock_size,
-            )
+            core::slice::from_raw_parts(self as *const Ext2Superblock as *const u8, superblock_size)
         };
         buffer[offset_in_block..offset_in_block + superblock_size].copy_from_slice(sb_bytes);
 
@@ -230,9 +225,8 @@ impl Ext2Superblock {
     ///
     /// Call this after allocating an inode and before writing the superblock.
     pub fn decrement_free_inodes(&mut self) {
-        let current = unsafe {
-            core::ptr::read_unaligned(core::ptr::addr_of!(self.s_free_inodes_count))
-        };
+        let current =
+            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.s_free_inodes_count)) };
         if current > 0 {
             unsafe {
                 core::ptr::write_unaligned(
@@ -247,9 +241,8 @@ impl Ext2Superblock {
     ///
     /// Call this after allocating a block and before writing the superblock.
     pub fn decrement_free_blocks(&mut self) {
-        let current = unsafe {
-            core::ptr::read_unaligned(core::ptr::addr_of!(self.s_free_blocks_count))
-        };
+        let current =
+            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.s_free_blocks_count)) };
         if current > 0 {
             unsafe {
                 core::ptr::write_unaligned(
@@ -264,9 +257,8 @@ impl Ext2Superblock {
     ///
     /// Call this after freeing an inode and before writing the superblock.
     pub fn increment_free_inodes(&mut self) {
-        let current = unsafe {
-            core::ptr::read_unaligned(core::ptr::addr_of!(self.s_free_inodes_count))
-        };
+        let current =
+            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.s_free_inodes_count)) };
         unsafe {
             core::ptr::write_unaligned(
                 core::ptr::addr_of_mut!(self.s_free_inodes_count),
@@ -279,9 +271,8 @@ impl Ext2Superblock {
     ///
     /// Call this after freeing blocks and before writing the superblock.
     pub fn increment_free_blocks(&mut self, count: u32) {
-        let current = unsafe {
-            core::ptr::read_unaligned(core::ptr::addr_of!(self.s_free_blocks_count))
-        };
+        let current =
+            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.s_free_blocks_count)) };
         unsafe {
             core::ptr::write_unaligned(
                 core::ptr::addr_of_mut!(self.s_free_blocks_count),
@@ -362,7 +353,10 @@ mod tests {
         let bytes = create_mock_superblock_bytes();
         let sb = Ext2Superblock::from_bytes(&bytes).expect("Failed to parse superblock");
 
-        assert!(sb.is_valid(), "Superblock should be valid with correct magic 0xEF53");
+        assert!(
+            sb.is_valid(),
+            "Superblock should be valid with correct magic 0xEF53"
+        );
         assert_eq!(sb.s_magic, 0xEF53, "Magic number should be 0xEF53");
     }
 
@@ -372,17 +366,29 @@ mod tests {
 
         // Test with s_log_block_size = 2 (4096 bytes)
         let sb = Ext2Superblock::from_bytes(&bytes).expect("Failed to parse superblock");
-        assert_eq!(sb.block_size(), 4096, "Block size should be 4096 when log=2");
+        assert_eq!(
+            sb.block_size(),
+            4096,
+            "Block size should be 4096 when log=2"
+        );
 
         // Test with s_log_block_size = 0 (1024 bytes)
         bytes[24..28].copy_from_slice(&0u32.to_le_bytes());
         let sb = Ext2Superblock::from_bytes(&bytes).expect("Failed to parse superblock");
-        assert_eq!(sb.block_size(), 1024, "Block size should be 1024 when log=0");
+        assert_eq!(
+            sb.block_size(),
+            1024,
+            "Block size should be 1024 when log=0"
+        );
 
         // Test with s_log_block_size = 1 (2048 bytes)
         bytes[24..28].copy_from_slice(&1u32.to_le_bytes());
         let sb = Ext2Superblock::from_bytes(&bytes).expect("Failed to parse superblock");
-        assert_eq!(sb.block_size(), 2048, "Block size should be 2048 when log=1");
+        assert_eq!(
+            sb.block_size(),
+            2048,
+            "Block size should be 2048 when log=1"
+        );
     }
 
     #[test]
@@ -401,12 +407,20 @@ mod tests {
         // With 10000 blocks and 8192 blocks_per_group, should be 2 groups (rounds up)
         bytes[4..8].copy_from_slice(&10000u32.to_le_bytes());
         let sb = Ext2Superblock::from_bytes(&bytes).expect("Failed to parse superblock");
-        assert_eq!(sb.block_group_count(), 2, "Should have 2 block groups (10000/8192 rounds up)");
+        assert_eq!(
+            sb.block_group_count(),
+            2,
+            "Should have 2 block groups (10000/8192 rounds up)"
+        );
 
         // With 1 block and 8192 blocks_per_group, should be 1 group
         bytes[4..8].copy_from_slice(&1u32.to_le_bytes());
         let sb = Ext2Superblock::from_bytes(&bytes).expect("Failed to parse superblock");
-        assert_eq!(sb.block_group_count(), 1, "Should have 1 block group for minimal filesystem");
+        assert_eq!(
+            sb.block_group_count(),
+            1,
+            "Should have 1 block group for minimal filesystem"
+        );
     }
 
     #[test]
@@ -416,17 +430,26 @@ mod tests {
         // Set wrong magic number
         bytes[56..58].copy_from_slice(&0x0000u16.to_le_bytes());
         let sb = Ext2Superblock::from_bytes(&bytes).expect("Failed to parse superblock");
-        assert!(!sb.is_valid(), "Superblock should be invalid with wrong magic 0x0000");
+        assert!(
+            !sb.is_valid(),
+            "Superblock should be invalid with wrong magic 0x0000"
+        );
 
         // Another wrong magic
         bytes[56..58].copy_from_slice(&0xFFFFu16.to_le_bytes());
         let sb = Ext2Superblock::from_bytes(&bytes).expect("Failed to parse superblock");
-        assert!(!sb.is_valid(), "Superblock should be invalid with wrong magic 0xFFFF");
+        assert!(
+            !sb.is_valid(),
+            "Superblock should be invalid with wrong magic 0xFFFF"
+        );
 
         // Almost correct magic (swapped bytes)
         bytes[56..58].copy_from_slice(&0x53EFu16.to_le_bytes());
         let sb = Ext2Superblock::from_bytes(&bytes).expect("Failed to parse superblock");
-        assert!(!sb.is_valid(), "Superblock should be invalid with swapped magic bytes");
+        assert!(
+            !sb.is_valid(),
+            "Superblock should be invalid with swapped magic bytes"
+        );
     }
 
     #[test]
@@ -459,8 +482,14 @@ mod tests {
 
         assert_eq!(sb.s_inodes_count, 1024, "Inodes count should be 1024");
         assert_eq!(sb.s_blocks_count, 8192, "Blocks count should be 8192");
-        assert_eq!(sb.s_blocks_per_group, 8192, "Blocks per group should be 8192");
-        assert_eq!(sb.s_inodes_per_group, 1024, "Inodes per group should be 1024");
+        assert_eq!(
+            sb.s_blocks_per_group, 8192,
+            "Blocks per group should be 8192"
+        );
+        assert_eq!(
+            sb.s_inodes_per_group, 1024,
+            "Inodes per group should be 1024"
+        );
         assert_eq!(sb.s_first_ino, 11, "First non-reserved inode should be 11");
     }
 }

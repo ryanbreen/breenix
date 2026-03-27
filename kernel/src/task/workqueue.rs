@@ -31,10 +31,13 @@ use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use spin::Mutex;
 
-use super::kthread::{kthread_join, kthread_park, kthread_run, kthread_should_stop, kthread_stop, kthread_unpark, KthreadHandle};
+use super::kthread::{
+    kthread_join, kthread_park, kthread_run, kthread_should_stop, kthread_stop, kthread_unpark,
+    KthreadHandle,
+};
 
 // Architecture-generic HAL wrappers for interrupt control and halt.
-use crate::{arch_halt, arch_enable_interrupts};
+use crate::{arch_enable_interrupts, arch_halt};
 
 /// Work states
 const WORK_IDLE: u8 = 0;
@@ -172,7 +175,8 @@ pub struct Workqueue {
     /// Shutdown flag - signals worker to exit
     shutdown: AtomicBool,
     /// Debug name for this workqueue
-    #[allow(dead_code)] // Used by Workqueue::queue() and ensure_worker() which are part of the workqueue API
+    #[allow(dead_code)]
+    // Used by Workqueue::queue() and ensure_worker() which are part of the workqueue API
     name: &'static str,
 }
 
@@ -303,7 +307,9 @@ impl Drop for Workqueue {
 #[allow(dead_code)] // Called by Workqueue::ensure_worker() which is part of the workqueue API
 fn worker_thread_fn(wq: Arc<Workqueue>) {
     // Enable interrupts for preemption
-    unsafe { arch_enable_interrupts(); }
+    unsafe {
+        arch_enable_interrupts();
+    }
 
     // NOTE: No logging here - log statements in kernel threads can cause deadlocks
     // when timer interrupts fire while holding the logger lock. The KWORKER_SPAWN

@@ -60,9 +60,15 @@ impl OpenFlags {
             Self::O_RDONLY
         };
 
-        if self.append { flags |= Self::O_APPEND; }
-        if self.create { flags |= Self::O_CREAT; }
-        if self.truncate { flags |= Self::O_TRUNC; }
+        if self.append {
+            flags |= Self::O_APPEND;
+        }
+        if self.create {
+            flags |= Self::O_CREAT;
+        }
+        if self.truncate {
+            flags |= Self::O_TRUNC;
+        }
 
         flags
     }

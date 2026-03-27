@@ -862,15 +862,27 @@ mod tests {
 
     #[test_case]
     fn test_event_type_name() {
-        assert_eq!(event_type_name(TraceEventType::SYSCALL_ENTRY), "SYSCALL_ENTRY");
-        assert_eq!(event_type_name(TraceEventType::SYSCALL_EXIT), "SYSCALL_EXIT");
+        assert_eq!(
+            event_type_name(TraceEventType::SYSCALL_ENTRY),
+            "SYSCALL_ENTRY"
+        );
+        assert_eq!(
+            event_type_name(TraceEventType::SYSCALL_EXIT),
+            "SYSCALL_EXIT"
+        );
         assert_eq!(event_type_name(TraceEventType::TIMER_TICK), "TIMER_TICK");
         assert_eq!(event_type_name(0xFFFF), "UNKNOWN");
     }
 
     #[test_case]
     fn test_payload_description() {
-        assert_eq!(payload_description(TraceEventType::SYSCALL_ENTRY), "syscall_nr");
-        assert_eq!(payload_description(TraceEventType::CTX_SWITCH_ENTRY), "old_tid<<16|new_tid");
+        assert_eq!(
+            payload_description(TraceEventType::SYSCALL_ENTRY),
+            "syscall_nr"
+        );
+        assert_eq!(
+            payload_description(TraceEventType::CTX_SWITCH_ENTRY),
+            "old_tid<<16|new_tid"
+        );
     }
 }

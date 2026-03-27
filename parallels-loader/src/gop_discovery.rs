@@ -70,12 +70,23 @@ pub fn discover_gop(config: &mut HardwareConfig) -> Result<(), &'static str> {
     use core::fmt::Write;
 
     // Raw UART writer for serial output (UEFI log goes to display, not serial)
-    let mut uart = UartWriter { base: config.uart_base_phys, uart_type: config.uart_type };
+    let mut uart = UartWriter {
+        base: config.uart_base_phys,
+        uart_type: config.uart_type,
+    };
 
     // Log UART configuration for diagnostics
-    let _ = writeln!(uart, "[gop-serial] UART: base=0x{:x} type={} ({})",
-        config.uart_base_phys, config.uart_type,
-        if config.uart_type == 1 { "16550" } else { "PL011" });
+    let _ = writeln!(
+        uart,
+        "[gop-serial] UART: base=0x{:x} type={} ({})",
+        config.uart_base_phys,
+        config.uart_type,
+        if config.uart_type == 1 {
+            "16550"
+        } else {
+            "PL011"
+        }
+    );
 
     // Find the GOP handle
     let handle = uefi::boot::get_handle_for_protocol::<GraphicsOutput>()
@@ -108,14 +119,19 @@ pub fn discover_gop(config: &mut HardwareConfig) -> Result<(), &'static str> {
         let pixels = w * h;
 
         log::info!("[gop]   Mode {}: {}x{} format={:?}", mode_count, w, h, pf);
-        let _ = write!(uart, "[gop-serial]   Mode {}: {}x{} format={}\n",
-            mode_count, w, h,
+        let _ = write!(
+            uart,
+            "[gop-serial]   Mode {}: {}x{} format={}\n",
+            mode_count,
+            w,
+            h,
             match pf {
                 PixelFormat::Rgb => "RGB",
                 PixelFormat::Bgr => "BGR",
                 PixelFormat::Bitmask => "Bitmask",
                 PixelFormat::BltOnly => "BltOnly",
-            });
+            }
+        );
 
         mode_count += 1;
 
@@ -140,10 +156,18 @@ pub fn discover_gop(config: &mut HardwareConfig) -> Result<(), &'static str> {
     // Use the capped best mode, or fall back to smallest oversized mode
     if best_mode.is_none() {
         best_mode = fallback_mode;
-        best_pixels = if fallback_pixels == usize::MAX { 0 } else { fallback_pixels };
+        best_pixels = if fallback_pixels == usize::MAX {
+            0
+        } else {
+            fallback_pixels
+        };
     }
 
-    let _ = write!(uart, "[gop-serial] {} modes total, best={} pixels\n", mode_count, best_pixels);
+    let _ = write!(
+        uart,
+        "[gop-serial] {} modes total, best={} pixels\n",
+        mode_count, best_pixels
+    );
 
     // Set the best mode if it's different from the current one
     if let Some(ref mode) = best_mode {
@@ -153,7 +177,11 @@ pub fn discover_gop(config: &mut HardwareConfig) -> Result<(), &'static str> {
 
         if bw != cw || bh != ch {
             log::info!("[gop] Switching from {}x{} to {}x{}", cw, ch, bw, bh);
-            let _ = write!(uart, "[gop-serial] Switching from {}x{} to {}x{}\n", cw, ch, bw, bh);
+            let _ = write!(
+                uart,
+                "[gop-serial] Switching from {}x{} to {}x{}\n",
+                cw, ch, bw, bh
+            );
             gop.set_mode(mode).map_err(|_| "Failed to set GOP mode")?;
             log::info!("[gop] Mode set successfully");
             let _ = write!(uart, "[gop-serial] Mode switch successful\n");
@@ -178,10 +206,18 @@ pub fn discover_gop(config: &mut HardwareConfig) -> Result<(), &'static str> {
 
     log::info!(
         "[gop] Framebuffer: {}x{} stride={} format={:?} base={:#x} size={:#x}",
-        width, height, stride, pixel_format, fb_base, fb_size,
+        width,
+        height,
+        stride,
+        pixel_format,
+        fb_base,
+        fb_size,
     );
-    let _ = write!(uart, "[gop-serial] Selected: {}x{} stride={} base={:#x} size={:#x}\n",
-        width, height, stride, fb_base, fb_size);
+    let _ = write!(
+        uart,
+        "[gop-serial] Selected: {}x{} stride={} base={:#x} size={:#x}\n",
+        width, height, stride, fb_base, fb_size
+    );
 
     // Map UEFI pixel format to our convention: 0 = RGB, 1 = BGR
     let pf = match pixel_format {

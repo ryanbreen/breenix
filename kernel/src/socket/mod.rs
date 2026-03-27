@@ -64,7 +64,10 @@ impl SocketRegistry {
     }
 
     /// Allocate an ephemeral port
-    fn alloc_ephemeral_port(&self, ports: &alloc::collections::BTreeMap<u16, (ProcessId, SocketHandle)>) -> Option<u16> {
+    fn alloc_ephemeral_port(
+        &self,
+        ports: &alloc::collections::BTreeMap<u16, (ProcessId, SocketHandle)>,
+    ) -> Option<u16> {
         let mut next = self.next_ephemeral.lock();
         let start = *next;
 

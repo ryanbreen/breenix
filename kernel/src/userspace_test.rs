@@ -11,19 +11,19 @@ use alloc::vec::Vec;
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
 struct TestDiskHeader {
-    magic: [u8; 8],       // "BXTEST\0\0"
-    version: u32,         // Format version (1)
-    binary_count: u32,    // Number of binaries
-    reserved: [u8; 48],   // Padding to 64 bytes
+    magic: [u8; 8],     // "BXTEST\0\0"
+    version: u32,       // Format version (1)
+    binary_count: u32,  // Number of binaries
+    reserved: [u8; 48], // Padding to 64 bytes
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct BinaryEntry {
-    name: [u8; 32],       // Null-terminated name (e.g., "hello_world")
-    sector_offset: u64,   // Starting sector (from disk start)
-    size_bytes: u64,      // Actual binary size
-    reserved: [u8; 16],   // Padding to 64 bytes
+    name: [u8; 32],     // Null-terminated name (e.g., "hello_world")
+    sector_offset: u64, // Starting sector (from disk start)
+    size_bytes: u64,    // Actual binary size
+    reserved: [u8; 16], // Padding to 64 bytes
 }
 
 const SECTOR_SIZE: usize = 512;
@@ -123,7 +123,11 @@ pub fn load_test_binary_from_disk(name: &str) -> Result<Vec<u8>, &'static str> {
         };
 
         // Extract null-terminated name as string
-        let name_len = entry.name.iter().position(|&c| c == 0).unwrap_or(entry.name.len());
+        let name_len = entry
+            .name
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(entry.name.len());
         let name_str = core::str::from_utf8(&entry.name[..name_len]).unwrap_or("");
 
         if name_str == name {
@@ -166,7 +170,11 @@ pub fn get_test_binary(name: &str) -> alloc::vec::Vec<u8> {
     // ALWAYS use disk loading - no fallback
     match load_test_binary_from_disk(name) {
         Ok(binary) => {
-            log::info!("✓ Loaded '{}' from test disk ({} bytes)", name, binary.len());
+            log::info!(
+                "✓ Loaded '{}' from test disk ({} bytes)",
+                name,
+                binary.len()
+            );
             binary
         }
         Err(e) => {
@@ -678,30 +686,20 @@ fn create_minimal_valid_elf() -> alloc::vec::Vec<u8> {
     elf.extend_from_slice(&[
         // === Print "Hello from userspace!\n" ===
         // 0x00: mov rax, 1 (sys_write)
-        0x48, 0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00,
-        // 0x07: mov rdi, 1 (stdout)
+        0x48, 0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00, // 0x07: mov rdi, 1 (stdout)
         0x48, 0xc7, 0xc7, 0x01, 0x00, 0x00, 0x00,
         // 0x0e: lea rsi, [rip+0x0d] (hello_msg at 0x22)
-        0x48, 0x8d, 0x35, 0x0d, 0x00, 0x00, 0x00,
-        // 0x15: mov rdx, 22 (length)
-        0x48, 0xc7, 0xc2, 0x16, 0x00, 0x00, 0x00,
-        // 0x1c: int 0x80
-        0xcd, 0x80,
-
-        // === Exit ===
+        0x48, 0x8d, 0x35, 0x0d, 0x00, 0x00, 0x00, // 0x15: mov rdx, 22 (length)
+        0x48, 0xc7, 0xc2, 0x16, 0x00, 0x00, 0x00, // 0x1c: int 0x80
+        0xcd, 0x80, // === Exit ===
         // 0x1e: mov rax, 0 (sys_exit)
-        0x48, 0xc7, 0xc0, 0x00, 0x00, 0x00, 0x00,
-        // 0x25: xor rdi, rdi (exit code 0)
-        0x48, 0x31, 0xff,
-        // 0x28: int 0x80
+        0x48, 0xc7, 0xc0, 0x00, 0x00, 0x00, 0x00, // 0x25: xor rdi, rdi (exit code 0)
+        0x48, 0x31, 0xff, // 0x28: int 0x80
         0xcd, 0x80,
-
         // === Data: hello message ===
         // 0x2b: "Hello from userspace!\n" (22 bytes)
-        b'H', b'e', b'l', b'l', b'o', b' ',
-        b'f', b'r', b'o', b'm', b' ',
-        b'u', b's', b'e', b'r', b's', b'p',
-        b'a', b'c', b'e', b'!', b'\n',
+        b'H', b'e', b'l', b'l', b'o', b' ', b'f', b'r', b'o', b'm', b' ', b'u', b's', b'e', b'r',
+        b's', b'p', b'a', b'c', b'e', b'!', b'\n',
     ]);
 
     elf

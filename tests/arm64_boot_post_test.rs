@@ -577,9 +577,9 @@ fn test_arm64_timer_interrupt() {
     // Verify scheduler is running (proves timer interrupts are working)
     // When the shell prompt appears, timer-driven preemptive scheduling is working
     print!("  {:.<40} ", "Scheduler running (timer-driven)");
-    let scheduler_running = output.contains("breenix>") ||
-                           output.contains("init_shell") ||
-                           output.contains("Hello from ARM64");
+    let scheduler_running = output.contains("breenix>")
+        || output.contains("init_shell")
+        || output.contains("Hello from ARM64");
     if scheduler_running {
         println!("PASS");
     } else {
@@ -598,7 +598,10 @@ fn test_arm64_timer_interrupt() {
     // All checks must pass
     assert!(timer_init, "Timer interrupt not initialized");
     assert!(timer_configured || freq_valid, "Timer not configured");
-    assert!(scheduler_running, "Scheduler not running - timer interrupts may not be working");
+    assert!(
+        scheduler_running,
+        "Scheduler not running - timer interrupts may not be working"
+    );
     assert!(interrupts_enabled, "Interrupts not enabled");
 
     println!("\nTimer interrupt test passed!");
@@ -631,9 +634,9 @@ fn test_arm64_timer_initialization() {
     let timer_init_checks = [
         ("Timer Init", "Initializing Generic Timer"),
         ("Timer Frequency", "Timer frequency:"),
-        ("Timer IRQ Init", "Initializing timer interrupt"),  // From main_aarch64.rs line 352
-        ("Timer Configured", "Timer configured for"),        // From timer_interrupt.rs line 80
-        ("Timer Complete", "Timer interrupt initialized"),   // From main_aarch64.rs line 354
+        ("Timer IRQ Init", "Initializing timer interrupt"), // From main_aarch64.rs line 352
+        ("Timer Configured", "Timer configured for"),       // From timer_interrupt.rs line 80
+        ("Timer Complete", "Timer interrupt initialized"),  // From main_aarch64.rs line 354
     ];
 
     let mut all_passed = true;
@@ -756,9 +759,9 @@ fn test_arm64_timer_ticks() {
 
     // Verify boot completion (proves timer ticks are working)
     print!("  {:.<40} ", "Boot completed (timer-driven)");
-    let boot_complete = output.contains("Boot Complete") ||
-                       output.contains("Hello from ARM64") ||
-                       output.contains("breenix>");
+    let boot_complete = output.contains("Boot Complete")
+        || output.contains("Hello from ARM64")
+        || output.contains("breenix>");
     if boot_complete {
         println!("PASS");
     } else {
@@ -777,8 +780,14 @@ fn test_arm64_timer_ticks() {
 
     // All critical checks must pass
     assert!(freq_hz.is_some(), "Timer frequency not reported");
-    assert!(tick_hz.is_some() || output.contains("Timer configured"), "Timer tick rate not configured");
-    assert!(boot_complete, "Boot did not complete - timer may not be ticking");
+    assert!(
+        tick_hz.is_some() || output.contains("Timer configured"),
+        "Timer tick rate not configured"
+    );
+    assert!(
+        boot_complete,
+        "Boot did not complete - timer may not be ticking"
+    );
 
     println!("\nTimer ticks test passed!");
 }
@@ -963,7 +972,8 @@ fn test_arm64_el0_smoke() {
     // Check for EL0 syscall path verification marker - definitive proof syscall came from EL0
     // This is printed by context_switch.rs:776 when first userspace syscall is confirmed
     // The marker "syscall path verified" proves the full userspace -> kernel -> userspace path works
-    let found_el0_confirmed = output.contains("EL0_SMOKE: userspace executed + syscall path verified")
+    let found_el0_confirmed = output
+        .contains("EL0_SMOKE: userspace executed + syscall path verified")
         || output.contains("syscall path verified");
 
     // Check for process creation
@@ -992,7 +1002,9 @@ fn test_arm64_el0_smoke() {
     if found_el0_confirmed {
         println!("  [PASS] EL0_SYSCALL_VERIFIED - Syscall from EL0 (SPSR[3:0]=0)!");
     } else {
-        println!("  [----] EL0_SYSCALL_VERIFIED - Not found (userspace may not have executed syscall)");
+        println!(
+            "  [----] EL0_SYSCALL_VERIFIED - Not found (userspace may not have executed syscall)"
+        );
     }
 
     if found_el0_enter {
@@ -1284,9 +1296,17 @@ fn test_arm64_logging_initialization() {
     // ARM64 uses PL011 UART, not 16550. The presence of kernel output proves serial works.
     // Check for logging markers that indicate the serial/logging system is working.
     let logging_checks = [
-        ("Serial Working", "========================================", "Banner proves PL011 UART is working"),
+        (
+            "Serial Working",
+            "========================================",
+            "Banner proves PL011 UART is working",
+        ),
         ("Boot Log", "[boot]", "Boot log messages present"),
-        ("Kernel Starting", "Breenix ARM64 Kernel Starting", "Kernel entry logged"),
+        (
+            "Kernel Starting",
+            "Breenix ARM64 Kernel Starting",
+            "Kernel entry logged",
+        ),
     ];
 
     let mut all_passed = true;
@@ -1470,7 +1490,9 @@ fn test_arm64_serial_output() {
     // Verify output quality (not garbled by checking for readable ASCII)
     let readable_chars = output
         .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || c.is_ascii_punctuation() || c.is_ascii_whitespace())
+        .filter(|c| {
+            c.is_ascii_alphanumeric() || c.is_ascii_punctuation() || c.is_ascii_whitespace()
+        })
         .count();
     let total_chars = output.len();
     let readable_ratio = if total_chars > 0 {
@@ -1483,10 +1505,17 @@ fn test_arm64_serial_output() {
     if readable_ratio >= 95.0 {
         println!("PASS ({:.1}% readable ASCII)", readable_ratio);
     } else {
-        println!("WARN ({:.1}% readable, may be partially garbled)", readable_ratio);
+        println!(
+            "WARN ({:.1}% readable, may be partially garbled)",
+            readable_ratio
+        );
     }
 
-    assert!(lines.len() >= 10, "Too few lines of output: {}", lines.len());
+    assert!(
+        lines.len() >= 10,
+        "Too few lines of output: {}",
+        lines.len()
+    );
     assert!(
         bracketed_lines >= 5,
         "Output may be garbled (only {} bracketed lines)",
@@ -1537,7 +1566,8 @@ fn test_arm64_enosys() {
         || output.contains("Created syscall_enosys process");
 
     // Check for test result with specific userspace output marker
-    let found_enosys_ok = output.contains("USERSPACE OUTPUT: ENOSYS OK") || output.contains("ENOSYS OK");
+    let found_enosys_ok =
+        output.contains("USERSPACE OUTPUT: ENOSYS OK") || output.contains("ENOSYS OK");
 
     let found_enosys_fail =
         output.contains("USERSPACE OUTPUT: ENOSYS FAIL") || output.contains("ENOSYS FAIL");
@@ -1931,10 +1961,7 @@ fn test_arm64_input_subsystem_ordering() {
             boot_complete_found = true;
         } else if line.contains("[interactive] Entering interactive mode") {
             // Interactive mode should come after boot complete
-            assert!(
-                boot_complete_found,
-                "Interactive mode before boot complete"
-            );
+            assert!(boot_complete_found, "Interactive mode before boot complete");
             interactive_mode_found = true;
         }
     }
@@ -2232,7 +2259,8 @@ fn test_arm64_memory_management_completeness() {
 
     // Check for process manager (creates process page tables)
     print!("  {:.<40} ", "Process Manager");
-    if output.contains("Initializing process manager") || output.contains("Process manager initialized")
+    if output.contains("Initializing process manager")
+        || output.contains("Process manager initialized")
     {
         println!("PASS");
         passed_count += 1;
@@ -2665,17 +2693,17 @@ fn test_arm64_boot_sequence() {
     // ARM64 boot sequence (based on kernel/src/main_aarch64.rs kernel_main())
     // These must appear in this exact order
     let boot_steps = [
-        "Breenix ARM64 Kernel Starting",       // Kernel entry point reached
-        "Current exception level: EL1",        // Running at correct privilege
-        "MMU already enabled",                 // MMU status verified
-        "Initializing memory management",      // Memory subsystem starting
-        "Memory management ready",             // Memory subsystem complete
-        "Initializing Generic Timer",          // Timer setup starting
-        "Timer frequency:",                    // Timer calibrated
-        "Initializing GICv2",                  // Interrupt controller starting
-        "GIC initialized",                     // Interrupt controller ready
-        "Enabling interrupts",                 // About to enable IRQs
-        "Interrupts enabled:",                 // IRQs active
+        "Breenix ARM64 Kernel Starting",  // Kernel entry point reached
+        "Current exception level: EL1",   // Running at correct privilege
+        "MMU already enabled",            // MMU status verified
+        "Initializing memory management", // Memory subsystem starting
+        "Memory management ready",        // Memory subsystem complete
+        "Initializing Generic Timer",     // Timer setup starting
+        "Timer frequency:",               // Timer calibrated
+        "Initializing GICv2",             // Interrupt controller starting
+        "GIC initialized",                // Interrupt controller ready
+        "Enabling interrupts",            // About to enable IRQs
+        "Interrupts enabled:",            // IRQs active
     ];
 
     let mut last_position = 0;

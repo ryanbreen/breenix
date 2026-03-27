@@ -27,10 +27,10 @@
 //! Reads compiled ELF binaries from `userspace/programs/*.elf` and creates
 //! `target/test_binaries.img`.
 
+use anyhow::{bail, Result};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::Path;
-use anyhow::{bail, Result};
 
 const SECTOR_SIZE: usize = 512;
 const MAGIC: &[u8; 8] = b"BXTEST\0\0";
@@ -44,10 +44,10 @@ const DATA_START_SECTOR: u64 = 128;
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct TestDiskHeader {
-    magic: [u8; 8],       // "BXTEST\0\0"
-    version: u32,         // Format version (currently 1)
-    binary_count: u32,    // Number of binaries on disk
-    reserved: [u8; 48],   // Padding for future use
+    magic: [u8; 8],     // "BXTEST\0\0"
+    version: u32,       // Format version (currently 1)
+    binary_count: u32,  // Number of binaries on disk
+    reserved: [u8; 48], // Padding for future use
 }
 
 impl TestDiskHeader {
@@ -76,10 +76,10 @@ impl TestDiskHeader {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct BinaryEntry {
-    name: [u8; 32],       // Null-terminated binary name (e.g., "hello_world")
-    sector_offset: u64,   // Starting sector (from disk start)
-    size_bytes: u64,      // Actual binary size in bytes
-    reserved: [u8; 16],   // Padding for future use
+    name: [u8; 32],     // Null-terminated binary name (e.g., "hello_world")
+    sector_offset: u64, // Starting sector (from disk start)
+    size_bytes: u64,    // Actual binary size in bytes
+    reserved: [u8; 16], // Padding for future use
 }
 
 impl BinaryEntry {
@@ -117,7 +117,10 @@ pub fn create_test_disk() -> Result<()> {
     let mut binaries = Vec::new();
 
     if !userspace_dir.exists() {
-        bail!("Userspace tests directory not found: {}", userspace_dir.display());
+        bail!(
+            "Userspace tests directory not found: {}",
+            userspace_dir.display()
+        );
     }
 
     for entry in fs::read_dir(userspace_dir)? {
@@ -162,11 +165,18 @@ pub fn create_test_disk() -> Result<()> {
     }
 
     if binaries.is_empty() {
-        bail!("No test binaries found (checked {}/**.elf and userspace/programs/)", userspace_dir.display());
+        bail!(
+            "No test binaries found (checked {}/**.elf and userspace/programs/)",
+            userspace_dir.display()
+        );
     }
 
     if binaries.len() > MAX_BINARIES {
-        bail!("Too many binaries: {} (max: {})", binaries.len(), MAX_BINARIES);
+        bail!(
+            "Too many binaries: {} (max: {})",
+            binaries.len(),
+            MAX_BINARIES
+        );
     }
 
     // Sort binaries by name for deterministic output
@@ -242,8 +252,10 @@ pub fn create_test_disk() -> Result<()> {
         let start_sector = entry.sector_offset;
         let end_sector = start_sector + sectors_needed as u64 - 1;
 
-        println!("  Added: {} ({} bytes, sectors {}-{})",
-                 name, size_bytes, start_sector, end_sector);
+        println!(
+            "  Added: {} ({} bytes, sectors {}-{})",
+            name, size_bytes, start_sector, end_sector
+        );
 
         // Write data
         output.write_all(data)?;
@@ -261,8 +273,15 @@ pub fn create_test_disk() -> Result<()> {
 
     println!("\nTest disk created: {}", output_path.display());
     println!("  Binaries: {}", binaries.len());
-    println!("  Data size: {} bytes ({:.2} MB)", total_bytes, total_bytes as f64 / (1024.0 * 1024.0));
-    println!("  Disk size: {} sectors ({:.2} MB)", total_sectors, total_mb);
+    println!(
+        "  Data size: {} bytes ({:.2} MB)",
+        total_bytes,
+        total_bytes as f64 / (1024.0 * 1024.0)
+    );
+    println!(
+        "  Disk size: {} sectors ({:.2} MB)",
+        total_sectors, total_mb
+    );
 
     Ok(())
 }
@@ -356,7 +375,12 @@ pub fn create_test_disk_aarch64() -> Result<()> {
 
     for (i, (name, data)) in binaries.iter().enumerate() {
         let entry = &entries[i];
-        println!("  Added: {} ({} bytes, sector {})", name, data.len(), entry.sector_offset);
+        println!(
+            "  Added: {} ({} bytes, sector {})",
+            name,
+            data.len(),
+            entry.sector_offset
+        );
         output.write_all(data)?;
         let remainder = data.len() % SECTOR_SIZE;
         if remainder != 0 {

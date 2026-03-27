@@ -138,7 +138,9 @@ pub fn flush_dirty_rect(x: u32, y: u32, w: u32, h: u32) -> Result<(), &'static s
         //   - Per-ball VirtIO DMA: 5-7 FPS (28 VirtIO round-trips/frame)
         //   - Full-pane VirtIO DMA: 4-8 FPS (2 round-trips but ~7.5MB DMA)
         //   - Direct BAR0 MMIO:    12 FPS (14 small per-ball copies, ~340KB total)
-        unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+        unsafe {
+            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        }
         Ok(())
     } else if crate::drivers::virtio::gpu_pci::is_initialized() {
         crate::drivers::virtio::gpu_pci::flush_rect(x, y, w, h)
@@ -195,7 +197,12 @@ pub fn gop_framebuffer() -> Option<&'static mut [u8]> {
     if ptr == 0 || len == 0 {
         return None;
     }
-    unsafe { Some(core::slice::from_raw_parts_mut(ptr as *mut u8, len as usize)) }
+    unsafe {
+        Some(core::slice::from_raw_parts_mut(
+            ptr as *mut u8,
+            len as usize,
+        ))
+    }
 }
 
 /// Get the GOP framebuffer as an immutable byte slice.
@@ -235,9 +242,13 @@ pub fn init_gop_framebuffer() -> Result<(), &'static str> {
 
     crate::serial_println!(
         "[arm64-fb] GOP framebuffer: {}x{} stride={} {} base_phys={:#x} virt={:#x} size={:#x}",
-        width, height, stride,
+        width,
+        height,
+        stride,
         if is_bgr { "BGR" } else { "RGB" },
-        base, virt_ptr, size
+        base,
+        virt_ptr,
+        size
     );
 
     // Create Arm64FrameBuffer with GOP parameters
@@ -251,7 +262,10 @@ pub fn init_gop_framebuffer() -> Result<(), &'static str> {
     };
 
     // Initialize SHELL_FRAMEBUFFER
-    let shell_fb = ShellFrameBuffer { fb, double_buffer: None };
+    let shell_fb = ShellFrameBuffer {
+        fb,
+        double_buffer: None,
+    };
 
     // Cache immutable dimensions for lock-free access by sys_fbinfo
     let _ = FB_INFO_CACHE.try_init_once(|| FbInfoCache {
@@ -264,7 +278,11 @@ pub fn init_gop_framebuffer() -> Result<(), &'static str> {
 
     let _ = SHELL_FRAMEBUFFER.try_init_once(|| Mutex::new(shell_fb));
 
-    crate::serial_println!("[arm64-fb] GOP shell framebuffer initialized: {}x{}", width, height);
+    crate::serial_println!(
+        "[arm64-fb] GOP shell framebuffer initialized: {}x{}",
+        width,
+        height
+    );
     Ok(())
 }
 
@@ -281,8 +299,8 @@ pub fn init_gpu_pci_gop_framebuffer() -> Result<(), &'static str> {
         return Err("GPU PCI not initialized");
     }
 
-    let (width, height) = crate::drivers::virtio::gpu_pci::dimensions()
-        .ok_or("GPU PCI has no dimensions")?;
+    let (width, height) =
+        crate::drivers::virtio::gpu_pci::dimensions().ok_or("GPU PCI has no dimensions")?;
     let width = width as usize;
     let height = height as usize;
     let stride = width; // VirtIO GPU stride = width (no padding)
@@ -300,7 +318,11 @@ pub fn init_gpu_pci_gop_framebuffer() -> Result<(), &'static str> {
     let gop_size = crate::platform_config::fb_size() as usize;
     crate::serial_println!(
         "[arm64-fb] GPU PCI+GOP hybrid: {}x{} stride={} need={} bytes, GOP region={} bytes",
-        width, height, stride, needed, gop_size
+        width,
+        height,
+        stride,
+        needed,
+        gop_size
     );
     // GOP size from UEFI may report only 1024x768 worth; the actual BAR is larger.
     // Proceed even if needed > gop_size — the BAR0 region extends well beyond.
@@ -320,11 +342,14 @@ pub fn init_gpu_pci_gop_framebuffer() -> Result<(), &'static str> {
         height,
         bytes_per_pixel,
         stride,
-        is_gop: true, // Writes go to GOP memory, flush uses DSB
+        is_gop: true,      // Writes go to GOP memory, flush uses DSB
         is_bgr_flag: true, // B8G8R8A8_UNORM
     };
 
-    let shell_fb = ShellFrameBuffer { fb, double_buffer: None };
+    let shell_fb = ShellFrameBuffer {
+        fb,
+        double_buffer: None,
+    };
 
     let _ = FB_INFO_CACHE.try_init_once(|| FbInfoCache {
         width,
@@ -338,7 +363,9 @@ pub fn init_gpu_pci_gop_framebuffer() -> Result<(), &'static str> {
 
     crate::serial_println!(
         "[arm64-fb] GPU PCI+GOP hybrid framebuffer: {}x{} base_phys={:#x}",
-        width, height, base
+        width,
+        height,
+        base
     );
     Ok(())
 }
@@ -366,8 +393,8 @@ impl Arm64FrameBuffer {
     /// Returns None if no VirtIO GPU is initialized.
     pub fn new() -> Option<Self> {
         // Try GPU PCI first (Parallels), then GPU MMIO (QEMU)
-        let (width, height) = crate::drivers::virtio::gpu_pci::dimensions()
-            .or_else(|| gpu_mmio::dimensions())?;
+        let (width, height) =
+            crate::drivers::virtio::gpu_pci::dimensions().or_else(|| gpu_mmio::dimensions())?;
 
         Some(Self {
             width: width as usize,
@@ -383,7 +410,9 @@ impl Arm64FrameBuffer {
     pub fn flush(&self) -> Result<(), &'static str> {
         if self.is_gop {
             // GOP: writes go directly to display memory. DSB ensures visibility.
-            unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+            unsafe {
+                core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+            }
             Ok(())
         } else if crate::drivers::virtio::gpu_pci::is_initialized() {
             crate::drivers::virtio::gpu_pci::flush()
@@ -395,7 +424,9 @@ impl Arm64FrameBuffer {
     /// Flush a rectangular region of the framebuffer to the display
     pub fn flush_rect(&self, x: u32, y: u32, w: u32, h: u32) -> Result<(), &'static str> {
         if self.is_gop {
-            unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+            unsafe {
+                core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+            }
             Ok(())
         } else if crate::drivers::virtio::gpu_pci::is_initialized() {
             crate::drivers::virtio::gpu_pci::flush_rect(x, y, w, h)
@@ -437,11 +468,20 @@ impl Canvas for Arm64FrameBuffer {
         }
 
         let buffer = if self.is_gop {
-            match gop_framebuffer() { Some(b) => b, None => return }
+            match gop_framebuffer() {
+                Some(b) => b,
+                None => return,
+            }
         } else if crate::drivers::virtio::gpu_pci::is_initialized() {
-            match crate::drivers::virtio::gpu_pci::framebuffer() { Some(b) => b, None => return }
+            match crate::drivers::virtio::gpu_pci::framebuffer() {
+                Some(b) => b,
+                None => return,
+            }
         } else {
-            match gpu_mmio::framebuffer() { Some(b) => b, None => return }
+            match gpu_mmio::framebuffer() {
+                Some(b) => b,
+                None => return,
+            }
         };
 
         let pixel_bytes = color.to_pixel_bytes(self.bytes_per_pixel, self.is_bgr_flag);
@@ -495,7 +535,9 @@ impl Canvas for Arm64FrameBuffer {
         if self.is_gop {
             gop_framebuffer_ref().unwrap_or(&[])
         } else if crate::drivers::virtio::gpu_pci::is_initialized() {
-            crate::drivers::virtio::gpu_pci::framebuffer().map(|b| &*b).unwrap_or(&[])
+            crate::drivers::virtio::gpu_pci::framebuffer()
+                .map(|b| &*b)
+                .unwrap_or(&[])
         } else {
             gpu_mmio::framebuffer().map(|b| &*b).unwrap_or(&[])
         }
@@ -534,35 +576,60 @@ pub fn draw_test_pattern() -> Result<(), &'static str> {
     // Clear screen with dark blue
     fill_rect(
         fb,
-        Rect { x: 0, y: 0, width, height },
+        Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        },
         Color::rgb(20, 30, 50),
     );
 
     // Draw a red rectangle in the top-left
     fill_rect(
         fb,
-        Rect { x: 50, y: 50, width: 200, height: 150 },
+        Rect {
+            x: 50,
+            y: 50,
+            width: 200,
+            height: 150,
+        },
         Color::RED,
     );
 
     // Draw a green rectangle
     fill_rect(
         fb,
-        Rect { x: 300, y: 100, width: 200, height: 150 },
+        Rect {
+            x: 300,
+            y: 100,
+            width: 200,
+            height: 150,
+        },
         Color::GREEN,
     );
 
     // Draw a blue rectangle
     fill_rect(
         fb,
-        Rect { x: 550, y: 150, width: 200, height: 150 },
+        Rect {
+            x: 550,
+            y: 150,
+            width: 200,
+            height: 150,
+        },
         Color::BLUE,
     );
 
     // Draw a white rectangle
     fill_rect(
         fb,
-        Rect { x: 200, y: 350, width: 300, height: 100 },
+        Rect {
+            x: 200,
+            y: 350,
+            width: 300,
+            height: 100,
+        },
         Color::WHITE,
     );
 
@@ -596,7 +663,16 @@ pub fn clear_screen(color: Color) -> Result<(), &'static str> {
     let fb = guard.as_mut().ok_or("Framebuffer not initialized")?;
 
     let (width, height) = (fb.width() as u32, fb.height() as u32);
-    fill_rect(fb, Rect { x: 0, y: 0, width, height }, color);
+    fill_rect(
+        fb,
+        Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        },
+        color,
+    );
 
     fb.flush()
 }
@@ -657,7 +733,9 @@ impl ShellFrameBuffer {
     }
 
     /// Get mutable access to the double buffer, if available.
-    pub fn double_buffer_mut(&mut self) -> Option<&mut super::double_buffer::DoubleBufferedFrameBuffer> {
+    pub fn double_buffer_mut(
+        &mut self,
+    ) -> Option<&mut super::double_buffer::DoubleBufferedFrameBuffer> {
         self.double_buffer.as_mut()
     }
 
@@ -708,7 +786,9 @@ impl ShellFrameBuffer {
 
         crate::serial_println!(
             "[arm64-fb] Upgraded to double buffering: {}x{} shadow buffer ({} KB)",
-            self.fb.width, self.fb.height, hw_len / 1024
+            self.fb.width,
+            self.fb.height,
+            hw_len / 1024
         );
     }
 }
@@ -928,7 +1008,7 @@ pub fn has_double_buffer() -> bool {
 
 /// Get the framebuffer dimensions
 pub fn dimensions() -> Option<(usize, usize)> {
-    SHELL_FRAMEBUFFER.get().and_then(|fb| {
-        fb.try_lock().map(|guard| (guard.width(), guard.height()))
-    })
+    SHELL_FRAMEBUFFER
+        .get()
+        .and_then(|fb| fb.try_lock().map(|guard| (guard.width(), guard.height())))
 }

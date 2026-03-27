@@ -5,7 +5,6 @@
 
 // Gate the entire file to x86_64. On ARM64, only the minimal stub at the bottom compiles.
 #![cfg_attr(not(target_arch = "x86_64"), allow(unused_imports))]
-
 #![no_std] // don't link the Rust standard library
 #![no_main] // disable all Rust-level entry points
 #![cfg_attr(target_arch = "x86_64", feature(abi_x86_interrupt))]
@@ -33,13 +32,13 @@ mod aarch64_stub {
 extern crate alloc;
 
 #[cfg(target_arch = "x86_64")]
-use kernel::syscall::SyscallResult;
-#[cfg(target_arch = "x86_64")]
 use alloc::boxed::Box;
 #[cfg(target_arch = "x86_64")]
 use alloc::string::ToString;
 #[cfg(target_arch = "x86_64")]
 use bootloader_api::config::{BootloaderConfig, Mapping};
+#[cfg(target_arch = "x86_64")]
+use kernel::syscall::SyscallResult;
 #[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
 
@@ -63,20 +62,26 @@ bootloader_api::entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 extern crate kernel;
 
 // Re-import commonly used kernel modules for unqualified access
-#[cfg(target_arch = "x86_64")]
-use kernel::{
-    drivers, gdt, interrupts, keyboard, logger, memory, net, per_cpu,
-    preempt_count_test, process, serial, stack_switch, syscall, task, test_exec, time,
-    tls, tracing, tty, userspace_test,
-};
-#[cfg(all(target_arch = "x86_64", not(any(feature = "kthread_test_only", feature = "kthread_stress_test", feature = "workqueue_test_only"))))]
-use kernel::{clock_gettime_test, time_test};
-#[cfg(all(target_arch = "x86_64", feature = "testing"))]
-use kernel::{contract_runner, gdt_tests, userspace_fault_tests};
 #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
 use kernel::graphics;
 #[cfg(all(target_arch = "x86_64", any(feature = "boot_tests", feature = "btrt")))]
 use kernel::test_framework;
+#[cfg(all(
+    target_arch = "x86_64",
+    not(any(
+        feature = "kthread_test_only",
+        feature = "kthread_stress_test",
+        feature = "workqueue_test_only"
+    ))
+))]
+use kernel::{clock_gettime_test, time_test};
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
+use kernel::{contract_runner, gdt_tests, userspace_fault_tests};
+#[cfg(target_arch = "x86_64")]
+use kernel::{
+    drivers, gdt, interrupts, keyboard, logger, memory, net, per_cpu, preempt_count_test, process,
+    serial, stack_switch, syscall, task, test_exec, time, tls, tracing, tty, userspace_test,
+};
 
 // Fault test thread function
 #[cfg(all(target_arch = "x86_64", feature = "testing"))]
@@ -149,7 +154,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Set the TSS pointer in per-CPU data
     per_cpu::set_tss(gdt::get_tss_ptr());
     log::info!("Per-CPU data initialized");
-    
+
     // Run comprehensive preempt_count tests (before interrupts are enabled)
     log::info!("Running preempt_count comprehensive tests...");
     preempt_count_test::test_preempt_count_comprehensive();
@@ -258,7 +263,10 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
 
     // Initialize PCI and enumerate devices (needed for disk I/O)
     let pci_device_count = drivers::init();
-    log::info!("PCI subsystem initialized: {} devices found", pci_device_count);
+    log::info!(
+        "PCI subsystem initialized: {} devices found",
+        pci_device_count
+    );
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::PCI_ENUMERATION);
 
@@ -301,9 +309,12 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
 
     // Detect CPU features (must be before procfs so /proc/cpuinfo has real data)
     kernel::arch_impl::x86_64::cpuinfo::init();
-    log::info!("CPU detected: {}", kernel::arch_impl::x86_64::cpuinfo::get()
-        .map(|c| c.brand_str())
-        .unwrap_or("Unknown"));
+    log::info!(
+        "CPU detected: {}",
+        kernel::arch_impl::x86_64::cpuinfo::get()
+            .map(|c| c.brand_str())
+            .unwrap_or("Unknown")
+    );
 
     // Initialize procfs (/proc virtual filesystem)
     kernel::fs::procfs::init();
@@ -466,9 +477,12 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     let idle_kernel_stack = memory::kernel_stack::allocate_kernel_stack()
         .expect("Failed to allocate kernel stack for idle thread");
     let idle_kernel_stack_top = idle_kernel_stack.top();
-    log::info!("Idle thread kernel stack allocated at {:#x} (PML4[{}])", 
-        idle_kernel_stack_top, (idle_kernel_stack_top.as_u64() >> 39) & 0x1FF);
-    
+    log::info!(
+        "Idle thread kernel stack allocated at {:#x} (PML4[{}])",
+        idle_kernel_stack_top,
+        (idle_kernel_stack_top.as_u64() >> 39) & 0x1FF
+    );
+
     // CRITICAL: Update TSS and switch stacks atomically
     // This ensures no interrupts can occur between TSS update and stack switch
     x86_64::instructions::interrupts::without_interrupts(|| {
@@ -476,20 +490,26 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         // This ensures interrupts from userspace will use the correct stack
         per_cpu::set_kernel_stack_top(idle_kernel_stack_top.as_u64());
         per_cpu::update_tss_rsp0(idle_kernel_stack_top.as_u64());
-        log::info!("TSS.RSP0 set to kernel stack at {:#x}", idle_kernel_stack_top);
-        
+        log::info!(
+            "TSS.RSP0 set to kernel stack at {:#x}",
+            idle_kernel_stack_top
+        );
+
         // Keep the kernel stack alive (it will be used forever)
         // Using mem::forget is acceptable here with clear comment
         core::mem::forget(idle_kernel_stack); // Intentionally leaked - idle stack lives forever
-        
+
         // Log the current bootstrap stack before switching
         let current_rsp: u64;
         unsafe {
             core::arch::asm!("mov {}, rsp", out(reg) current_rsp, options(nomem, nostack));
         }
-        log::info!("About to switch from bootstrap stack at {:#x} (PML4[{}]) to kernel stack", 
-            current_rsp, (current_rsp >> 39) & 0x1FF);
-        
+        log::info!(
+            "About to switch from bootstrap stack at {:#x} (PML4[{}]) to kernel stack",
+            current_rsp,
+            (current_rsp >> 39) & 0x1FF
+        );
+
         // CRITICAL: Actually switch to the kernel stack!
         // After this point, we're running on the upper-half kernel stack
         unsafe {
@@ -516,22 +536,29 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     unsafe {
         core::arch::asm!("mov {}, rsp", out(reg) current_rsp, options(nomem, nostack));
     }
-    debug_assert_eq!(current_rsp & 0xF, 8, "SysV stack misaligned at callee entry");
+    debug_assert_eq!(
+        current_rsp & 0xF,
+        8,
+        "SysV stack misaligned at callee entry"
+    );
 
     // Log that we're now on the kernel stack
-    log::info!("Successfully switched to kernel stack! RSP={:#x} (PML4[{}])",
-        current_rsp, (current_rsp >> 39) & 0x1FF);
+    log::info!(
+        "Successfully switched to kernel stack! RSP={:#x} (PML4[{}])",
+        current_rsp,
+        (current_rsp >> 39) & 0x1FF
+    );
 
     // Use the actual kernel stack top passed from kernel_main
     let idle_kernel_stack_top = VirtAddr::new(arg as u64);
-    
+
     // Create init_task (PID 0) - represents the currently running boot thread
     // This is the Linux swapper/idle task pattern
     let tls_base = tls::current_tls_base();
     let mut init_task = Box::new(task::thread::Thread::new(
-        "swapper/0".to_string(),  // Linux convention: swapper/0 is the idle task
+        "swapper/0".to_string(), // Linux convention: swapper/0 is the idle task
         idle_thread_fn,
-        VirtAddr::new(0), // Will be set to current RSP
+        VirtAddr::new(0),      // Will be set to current RSP
         idle_kernel_stack_top, // Use the properly allocated kernel stack
         VirtAddr::new(tls_base),
         task::thread::ThreadPrivilege::Kernel,
@@ -540,15 +567,15 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     // Mark init_task as already running with ID 0 (boot CPU idle task)
     init_task.state = task::thread::ThreadState::Running;
     init_task.id = 0; // PID 0 is the idle/swapper task
-    
+
     // Store the kernel stack in the thread (important for context switching)
     init_task.kernel_stack_top = Some(idle_kernel_stack_top);
-    
+
     // Set up per-CPU current thread and idle thread
     let init_task_ptr = &*init_task as *const _ as *mut task::thread::Thread;
     per_cpu::set_current_thread(init_task_ptr);
     per_cpu::set_idle_thread(init_task_ptr);
-    
+
     // CRITICAL: Ensure TSS.RSP0 is set to the kernel stack
     // This was already done before the stack switch, but verify it
     per_cpu::set_kernel_stack_top(idle_kernel_stack_top.as_u64());
@@ -562,8 +589,9 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     log::info!("Threading subsystem initialized with init_task (swapper/0)");
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::SCHEDULER_INIT);
-    
-    log::info!("percpu: cpu0 base={:#x}, current=swapper/0, rsp0={:#x}", 
+
+    log::info!(
+        "percpu: cpu0 base={:#x}, current=swapper/0, rsp0={:#x}",
         x86_64::registers::model_specific::GsBase::read().as_u64(),
         idle_kernel_stack_top
     );
@@ -622,7 +650,9 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
             let mut port = Port::new(0xf4);
             port.write(0x00u32);
         }
-        loop { x86_64::instructions::hlt(); }
+        loop {
+            x86_64::instructions::hlt();
+        }
     }
 
     // In workqueue_test_only mode, exit immediately after workqueue test
@@ -634,9 +664,11 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
         unsafe {
             use x86_64::instructions::port::Port;
             let mut port = Port::new(0xf4);
-            port.write(0x00u32);  // This causes QEMU to exit
+            port.write(0x00u32); // This causes QEMU to exit
         }
-        loop { x86_64::instructions::hlt(); }
+        loop {
+            x86_64::instructions::hlt();
+        }
     }
 
     // In kthread_stress_test mode, run stress test and exit
@@ -650,23 +682,57 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
             let mut port = Port::new(0xf4);
             port.write(0x00u32);
         }
-        loop { x86_64::instructions::hlt(); }
+        loop {
+            x86_64::instructions::hlt();
+        }
     }
 
-    #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
+    #[cfg(all(
+        feature = "testing",
+        not(feature = "kthread_test_only"),
+        not(feature = "kthread_stress_test"),
+        not(feature = "workqueue_test_only")
+    ))]
     kernel::task::kthread_tests::test_kthread_exit_code();
-    #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
+    #[cfg(all(
+        feature = "testing",
+        not(feature = "kthread_test_only"),
+        not(feature = "kthread_stress_test"),
+        not(feature = "workqueue_test_only")
+    ))]
     kernel::task::kthread_tests::test_kthread_park_unpark();
-    #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
+    #[cfg(all(
+        feature = "testing",
+        not(feature = "kthread_test_only"),
+        not(feature = "kthread_stress_test"),
+        not(feature = "workqueue_test_only")
+    ))]
     kernel::task::kthread_tests::test_kthread_double_stop();
-    #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
+    #[cfg(all(
+        feature = "testing",
+        not(feature = "kthread_test_only"),
+        not(feature = "kthread_stress_test"),
+        not(feature = "workqueue_test_only")
+    ))]
     kernel::task::kthread_tests::test_kthread_should_stop_non_kthread();
-    #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
+    #[cfg(all(
+        feature = "testing",
+        not(feature = "kthread_test_only"),
+        not(feature = "kthread_stress_test"),
+        not(feature = "workqueue_test_only")
+    ))]
     kernel::task::kthread_tests::test_kthread_stop_after_exit();
 
     // Continue with the rest of kernel initialization...
     // (This will include creating user processes, enabling interrupts, etc.)
-    #[cfg(not(any(feature = "kthread_test_only", feature = "kthread_stress_test", feature = "workqueue_test_only", feature = "dns_test_only", feature = "blocking_recv_test", feature = "nonblock_eagain_test")))]
+    #[cfg(not(any(
+        feature = "kthread_test_only",
+        feature = "kthread_stress_test",
+        feature = "workqueue_test_only",
+        feature = "dns_test_only",
+        feature = "blocking_recv_test",
+        feature = "nonblock_eagain_test"
+    )))]
     kernel_main_continue();
 
     // DNS_TEST_ONLY mode: Skip all other tests, just run dns_test
@@ -695,7 +761,10 @@ fn dns_test_only_main() -> ! {
         let elf = userspace_test::get_test_binary("dns_test");
         match process::create_user_process(String::from("dns_test"), &elf) {
             Ok(pid) => {
-                log::info!("DNS_TEST_ONLY: Created dns_test process with PID {}", pid.as_u64());
+                log::info!(
+                    "DNS_TEST_ONLY: Created dns_test process with PID {}",
+                    pid.as_u64()
+                );
             }
             Err(e) => {
                 log::error!("DNS_TEST_ONLY: Failed to create dns_test: {}", e);
@@ -703,7 +772,7 @@ fn dns_test_only_main() -> ! {
                 unsafe {
                     use x86_64::instructions::port::Port;
                     let mut port = Port::new(0xf4);
-                    port.write(0x01u32);  // Error exit
+                    port.write(0x01u32); // Error exit
                 }
             }
         }
@@ -744,7 +813,10 @@ fn blocking_recv_test_main() -> ! {
         let elf = match userspace_test::load_test_binary_from_disk("blocking_recv_test") {
             Ok(elf) => elf,
             Err(e) => {
-                log::error!("BLOCKING_RECV_TEST: Failed to load blocking_recv_test: {}", e);
+                log::error!(
+                    "BLOCKING_RECV_TEST: Failed to load blocking_recv_test: {}",
+                    e
+                );
                 unsafe {
                     use x86_64::instructions::port::Port;
                     let mut port = Port::new(0xf4);
@@ -761,7 +833,10 @@ fn blocking_recv_test_main() -> ! {
                 );
             }
             Err(e) => {
-                log::error!("BLOCKING_RECV_TEST: Failed to create blocking_recv_test: {}", e);
+                log::error!(
+                    "BLOCKING_RECV_TEST: Failed to create blocking_recv_test: {}",
+                    e
+                );
                 unsafe {
                     use x86_64::instructions::port::Port;
                     let mut port = Port::new(0xf4);
@@ -804,7 +879,10 @@ fn nonblock_eagain_test_main() -> ! {
         let elf = match userspace_test::load_test_binary_from_disk("nonblock_eagain_test") {
             Ok(elf) => elf,
             Err(e) => {
-                log::error!("NONBLOCK_EAGAIN_TEST: Failed to load nonblock_eagain_test: {}", e);
+                log::error!(
+                    "NONBLOCK_EAGAIN_TEST: Failed to load nonblock_eagain_test: {}",
+                    e
+                );
                 unsafe {
                     use x86_64::instructions::port::Port;
                     let mut port = Port::new(0xf4);
@@ -821,7 +899,10 @@ fn nonblock_eagain_test_main() -> ! {
                 );
             }
             Err(e) => {
-                log::error!("NONBLOCK_EAGAIN_TEST: Failed to create nonblock_eagain_test: {}", e);
+                log::error!(
+                    "NONBLOCK_EAGAIN_TEST: Failed to create nonblock_eagain_test: {}",
+                    e
+                );
                 unsafe {
                     use x86_64::instructions::port::Port;
                     let mut port = Port::new(0xf4);
@@ -837,7 +918,9 @@ fn nonblock_eagain_test_main() -> ! {
 
     // Enter idle loop - nonblock_eagain_test will run via scheduler
     // This test should complete quickly since it just verifies EAGAIN return
-    log::info!("NONBLOCK_EAGAIN_TEST: Entering idle loop (nonblock_eagain_test running via scheduler)");
+    log::info!(
+        "NONBLOCK_EAGAIN_TEST: Entering idle loop (nonblock_eagain_test running via scheduler)"
+    );
     loop {
         x86_64::instructions::interrupts::enable_and_hlt();
 
@@ -853,7 +936,17 @@ fn nonblock_eagain_test_main() -> ! {
 }
 
 /// Continue kernel initialization after setting up threading
-#[cfg(all(target_arch = "x86_64", not(any(feature = "kthread_test_only", feature = "kthread_stress_test", feature = "workqueue_test_only", feature = "dns_test_only", feature = "blocking_recv_test", feature = "nonblock_eagain_test"))))]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(any(
+        feature = "kthread_test_only",
+        feature = "kthread_stress_test",
+        feature = "workqueue_test_only",
+        feature = "dns_test_only",
+        feature = "blocking_recv_test",
+        feature = "nonblock_eagain_test"
+    ))
+))]
 fn kernel_main_continue() -> ! {
     // INTERACTIVE MODE: Load init_shell as the only userspace process
     #[cfg(feature = "interactive")]
@@ -901,10 +994,17 @@ fn kernel_main_continue() -> ! {
             // Launch register_init_test to verify registers are properly initialized
             {
                 serial_println!("RING3_SMOKE: creating register_init_test userspace process");
-                let register_test_buf = kernel::userspace_test::get_test_binary("register_init_test");
-                match process::creation::create_user_process(String::from("register_init_test"), &register_test_buf) {
+                let register_test_buf =
+                    kernel::userspace_test::get_test_binary("register_init_test");
+                match process::creation::create_user_process(
+                    String::from("register_init_test"),
+                    &register_test_buf,
+                ) {
                     Ok(pid) => {
-                        log::info!("Created register_init_test process with PID {}", pid.as_u64());
+                        log::info!(
+                            "Created register_init_test process with PID {}",
+                            pid.as_u64()
+                        );
                     }
                     Err(e) => {
                         log::error!("Failed to create register_init_test process: {}", e);
@@ -916,9 +1016,15 @@ fn kernel_main_continue() -> ! {
             {
                 serial_println!("RING3_SMOKE: creating clock_gettime_test userspace process");
                 let clock_test_buf = kernel::userspace_test::get_test_binary("clock_gettime_test");
-                match process::creation::create_user_process(String::from("clock_gettime_test"), &clock_test_buf) {
+                match process::creation::create_user_process(
+                    String::from("clock_gettime_test"),
+                    &clock_test_buf,
+                ) {
                     Ok(pid) => {
-                        log::info!("Created clock_gettime_test process with PID {}", pid.as_u64());
+                        log::info!(
+                            "Created clock_gettime_test process with PID {}",
+                            pid.as_u64()
+                        );
                     }
                     Err(e) => {
                         log::error!("Failed to create clock_gettime_test process: {}", e);
@@ -930,7 +1036,10 @@ fn kernel_main_continue() -> ! {
             {
                 serial_println!("RING3_SMOKE: creating brk_test userspace process");
                 let brk_test_buf = kernel::userspace_test::get_test_binary("brk_test");
-                match process::creation::create_user_process(String::from("brk_test"), &brk_test_buf) {
+                match process::creation::create_user_process(
+                    String::from("brk_test"),
+                    &brk_test_buf,
+                ) {
                     Ok(pid) => {
                         log::info!("Created brk_test process with PID {}", pid.as_u64());
                     }
@@ -944,7 +1053,10 @@ fn kernel_main_continue() -> ! {
             {
                 serial_println!("RING3_SMOKE: creating test_mmap userspace process");
                 let test_mmap_buf = kernel::userspace_test::get_test_binary("test_mmap");
-                match process::creation::create_user_process(String::from("test_mmap"), &test_mmap_buf) {
+                match process::creation::create_user_process(
+                    String::from("test_mmap"),
+                    &test_mmap_buf,
+                ) {
                     Ok(pid) => {
                         log::info!("Created test_mmap process with PID {}", pid.as_u64());
                     }
@@ -957,10 +1069,17 @@ fn kernel_main_continue() -> ! {
             // Launch syscall_diagnostic_test to isolate register corruption bug
             {
                 serial_println!("RING3_SMOKE: creating syscall_diagnostic_test userspace process");
-                let diagnostic_test_buf = kernel::userspace_test::get_test_binary("syscall_diagnostic_test");
-                match process::creation::create_user_process(String::from("syscall_diagnostic_test"), &diagnostic_test_buf) {
+                let diagnostic_test_buf =
+                    kernel::userspace_test::get_test_binary("syscall_diagnostic_test");
+                match process::creation::create_user_process(
+                    String::from("syscall_diagnostic_test"),
+                    &diagnostic_test_buf,
+                ) {
                     Ok(pid) => {
-                        log::info!("Created syscall_diagnostic_test process with PID {}", pid.as_u64());
+                        log::info!(
+                            "Created syscall_diagnostic_test process with PID {}",
+                            pid.as_u64()
+                        );
                     }
                     Err(e) => {
                         log::error!("Failed to create syscall_diagnostic_test process: {}", e);
@@ -972,7 +1091,10 @@ fn kernel_main_continue() -> ! {
             {
                 serial_println!("RING3_SMOKE: creating udp_socket_test userspace process");
                 let udp_test_buf = kernel::userspace_test::get_test_binary("udp_socket_test");
-                match process::creation::create_user_process(String::from("udp_socket_test"), &udp_test_buf) {
+                match process::creation::create_user_process(
+                    String::from("udp_socket_test"),
+                    &udp_test_buf,
+                ) {
                     Ok(pid) => {
                         log::info!("Created udp_socket_test process with PID {}", pid.as_u64());
                     }
@@ -986,7 +1108,10 @@ fn kernel_main_continue() -> ! {
             {
                 serial_println!("RING3_SMOKE: creating tcp_socket_test userspace process");
                 let tcp_test_buf = kernel::userspace_test::get_test_binary("tcp_socket_test");
-                match process::creation::create_user_process(String::from("tcp_socket_test"), &tcp_test_buf) {
+                match process::creation::create_user_process(
+                    String::from("tcp_socket_test"),
+                    &tcp_test_buf,
+                ) {
                     Ok(pid) => {
                         log::info!("Created tcp_socket_test process with PID {}", pid.as_u64());
                     }
@@ -1000,7 +1125,10 @@ fn kernel_main_continue() -> ! {
             {
                 serial_println!("RING3_SMOKE: creating dns_test userspace process");
                 let dns_test_buf = kernel::userspace_test::get_test_binary("dns_test");
-                match process::creation::create_user_process(String::from("dns_test"), &dns_test_buf) {
+                match process::creation::create_user_process(
+                    String::from("dns_test"),
+                    &dns_test_buf,
+                ) {
                     Ok(pid) => {
                         log::info!("Created dns_test process with PID {}", pid.as_u64());
                     }
@@ -1014,7 +1142,10 @@ fn kernel_main_continue() -> ! {
             {
                 serial_println!("RING3_SMOKE: creating http_test userspace process");
                 let http_test_buf = kernel::userspace_test::get_test_binary("http_test");
-                match process::creation::create_user_process(String::from("http_test"), &http_test_buf) {
+                match process::creation::create_user_process(
+                    String::from("http_test"),
+                    &http_test_buf,
+                ) {
                     Ok(pid) => {
                         log::info!("Created http_test process with PID {}", pid.as_u64());
                     }
@@ -1036,7 +1167,7 @@ fn kernel_main_continue() -> ! {
     log::info!("Testing breakpoint interrupt...");
     x86_64::instructions::interrupts::int3();
     log::info!("Breakpoint test completed!");
-    
+
     // Run user-only fault tests after initial Ring 3 validation
     // TEMPORARILY DISABLED: fault_tester thread calls yield_current() in a loop,
     // which prevents user threads from getting their FIRST RUN setup via interrupt return.
@@ -1326,7 +1457,10 @@ fn kernel_main_continue() -> ! {
     let _scheduler_state = task::scheduler::with_scheduler(|s| {
         let has_runnable = s.has_runnable_threads();
         let has_user = s.has_userspace_threads();
-        log::info!("CHECKPOINT B: scheduler has_runnable_threads = {}", has_runnable);
+        log::info!(
+            "CHECKPOINT B: scheduler has_runnable_threads = {}",
+            has_runnable
+        );
         log::info!("CHECKPOINT B: has_userspace_threads = {}", has_user);
         (has_runnable, has_user)
     });
@@ -1393,7 +1527,9 @@ fn kernel_main_continue() -> ! {
         log::info!("PRECONDITION 5: Scheduler has runnable threads ✓ PASS");
     } else {
         log::error!("PRECONDITION 5: Scheduler has runnable threads ✗ FAIL");
-        log::error!("  No runnable threads in scheduler - timer interrupt will have nothing to schedule!");
+        log::error!(
+            "  No runnable threads in scheduler - timer interrupt will have nothing to schedule!"
+        );
     }
 
     // PRECONDITION 6: Current Thread Set
@@ -1432,8 +1568,12 @@ fn kernel_main_continue() -> ! {
     log::info!("================================================================");
 
     // Summary of precondition validation
-    let all_passed = idt_valid && pit_counting && irq0_unmasked &&
-                     has_runnable.unwrap_or(false) && has_current_thread && !interrupts_enabled;
+    let all_passed = idt_valid
+        && pit_counting
+        && irq0_unmasked
+        && has_runnable.unwrap_or(false)
+        && has_current_thread
+        && !interrupts_enabled;
 
     if all_passed {
         log::info!("✓ ALL PRECONDITIONS PASSED - Safe to enable interrupts");
@@ -1483,7 +1623,6 @@ fn kernel_main_continue() -> ! {
     // registered test processes have completed.
     #[cfg(all(feature = "btrt", not(feature = "testing")))]
     kernel::test_framework::btrt::finalize();
-
 
     // Enable interrupts for preemptive multitasking - userspace processes will now run
     // WARNING: After this call, kernel_main will likely be preempted immediately
@@ -1910,7 +2049,6 @@ fn test_threading() {
 
     log::info!("Threading infrastructure test completed successfully!");
 }
-
 
 // =============================================================================
 // Non-x86_64 note:

@@ -145,7 +145,11 @@ impl HardwareConfig {
             gicc_base: 0,
             gicr_range_count: 0,
             _pad2: 0,
-            gicr_ranges: [GicrRange { base: 0, length: 0, _pad: 0 }; MAX_GICR_RANGES],
+            gicr_ranges: [GicrRange {
+                base: 0,
+                length: 0,
+                _pad: 0,
+            }; MAX_GICR_RANGES],
             pci_ecam_base: 0,
             pci_ecam_size: 0,
             pci_bus_start: 0,

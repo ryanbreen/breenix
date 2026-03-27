@@ -209,18 +209,18 @@ impl Default for Termios {
         let mut c_cc = [0u8; NCCS];
 
         // Set default control characters
-        c_cc[VINTR] = CTRL_C;      // Ctrl+C for SIGINT
+        c_cc[VINTR] = CTRL_C; // Ctrl+C for SIGINT
         c_cc[VQUIT] = CTRL_BACKSLASH; // Ctrl+\ for SIGQUIT
-        c_cc[VERASE] = DEL;        // DEL for erase
-        c_cc[VKILL] = CTRL_U;      // Ctrl+U for kill line
-        c_cc[VEOF] = CTRL_D;       // Ctrl+D for EOF
-        c_cc[VTIME] = 0;           // No timeout
-        c_cc[VMIN] = 1;            // Minimum 1 character for read
-        c_cc[VSUSP] = CTRL_Z;      // Ctrl+Z for SIGTSTP
-        c_cc[VSTART] = CTRL_Q;     // Ctrl+Q for XON
-        c_cc[VSTOP] = CTRL_S;      // Ctrl+S for XOFF
-        c_cc[VLNEXT] = CTRL_V;     // Ctrl+V for literal next
-        c_cc[VWERASE] = CTRL_W;    // Ctrl+W for word erase
+        c_cc[VERASE] = DEL; // DEL for erase
+        c_cc[VKILL] = CTRL_U; // Ctrl+U for kill line
+        c_cc[VEOF] = CTRL_D; // Ctrl+D for EOF
+        c_cc[VTIME] = 0; // No timeout
+        c_cc[VMIN] = 1; // Minimum 1 character for read
+        c_cc[VSUSP] = CTRL_Z; // Ctrl+Z for SIGTSTP
+        c_cc[VSTART] = CTRL_Q; // Ctrl+Q for XON
+        c_cc[VSTOP] = CTRL_S; // Ctrl+S for XOFF
+        c_cc[VLNEXT] = CTRL_V; // Ctrl+V for literal next
+        c_cc[VWERASE] = CTRL_W; // Ctrl+W for word erase
 
         Self {
             // Input: map CR to NL
@@ -409,12 +409,12 @@ mod tests {
         let termios = Termios::default();
 
         // Check all control character accessors
-        assert_eq!(termios.intr_char(), CTRL_C);         // Ctrl+C for SIGINT
+        assert_eq!(termios.intr_char(), CTRL_C); // Ctrl+C for SIGINT
         assert_eq!(termios.quit_char(), CTRL_BACKSLASH); // Ctrl+\ for SIGQUIT
-        assert_eq!(termios.susp_char(), CTRL_Z);         // Ctrl+Z for SIGTSTP
-        assert_eq!(termios.eof_char(), CTRL_D);          // Ctrl+D for EOF
-        assert_eq!(termios.erase_char(), DEL);           // DEL for backspace
-        assert_eq!(termios.kill_char(), CTRL_U);         // Ctrl+U for kill line
+        assert_eq!(termios.susp_char(), CTRL_Z); // Ctrl+Z for SIGTSTP
+        assert_eq!(termios.eof_char(), CTRL_D); // Ctrl+D for EOF
+        assert_eq!(termios.erase_char(), DEL); // DEL for backspace
+        assert_eq!(termios.kill_char(), CTRL_U); // Ctrl+U for kill line
     }
 
     #[test]

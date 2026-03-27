@@ -67,13 +67,29 @@ impl Color {
 
         let (r, g, b) = if is_bgr {
             let b = bytes[0];
-            let g = if bytes_per_pixel > 1 && bytes.len() > 1 { bytes[1] } else { 0 };
-            let r = if bytes_per_pixel > 2 && bytes.len() > 2 { bytes[2] } else { 0 };
+            let g = if bytes_per_pixel > 1 && bytes.len() > 1 {
+                bytes[1]
+            } else {
+                0
+            };
+            let r = if bytes_per_pixel > 2 && bytes.len() > 2 {
+                bytes[2]
+            } else {
+                0
+            };
             (r, g, b)
         } else {
             let r = bytes[0];
-            let g = if bytes_per_pixel > 1 && bytes.len() > 1 { bytes[1] } else { 0 };
-            let b = if bytes_per_pixel > 2 && bytes.len() > 2 { bytes[2] } else { 0 };
+            let g = if bytes_per_pixel > 1 && bytes.len() > 1 {
+                bytes[1]
+            } else {
+                0
+            };
+            let b = if bytes_per_pixel > 2 && bytes.len() > 2 {
+                bytes[2]
+            } else {
+                0
+            };
             (r, g, b)
         };
 
@@ -496,7 +512,8 @@ pub fn draw_char(canvas: &mut impl Canvas, x: i32, y: i32, c: char, style: &Text
 /// Draw a glyph at the specified position with the given style.
 fn draw_glyph(canvas: &mut impl Canvas, x: i32, y: i32, glyph: &Glyph, style: &TextStyle) {
     // Fast path: glyph fully within canvas bounds — write directly to buffer
-    if x >= 0 && y >= 0
+    if x >= 0
+        && y >= 0
         && (x as usize + glyph.width()) <= canvas.width()
         && (y as usize + glyph.height()) <= canvas.height()
     {
@@ -535,7 +552,13 @@ fn draw_glyph(canvas: &mut impl Canvas, x: i32, y: i32, glyph: &Glyph, style: &T
 /// Fast-path glyph rendering: writes directly to buffer_mut() without per-pixel
 /// bounds checks or function calls. The caller must ensure the glyph is fully
 /// within canvas bounds.
-fn draw_glyph_direct(canvas: &mut impl Canvas, x: usize, y: usize, glyph: &Glyph, style: &TextStyle) {
+fn draw_glyph_direct(
+    canvas: &mut impl Canvas,
+    x: usize,
+    y: usize,
+    glyph: &Glyph,
+    style: &TextStyle,
+) {
     let bpp = canvas.bytes_per_pixel();
     let stride = canvas.stride();
     let is_bgr = canvas.is_bgr();
@@ -589,7 +612,8 @@ fn draw_glyph_direct(canvas: &mut impl Canvas, x: usize, y: usize, glyph: &Glyph
                     buffer[offset..offset + bpp].copy_from_slice(&fg_bytes[..bpp]);
                 } else {
                     // Read existing pixel, blend
-                    let existing = Color::from_pixel_bytes(&buffer[offset..offset + bpp], bpp, is_bgr);
+                    let existing =
+                        Color::from_pixel_bytes(&buffer[offset..offset + bpp], bpp, is_bgr);
                     let blended = blend_colors(style.foreground, existing, intensity);
                     let px = blended.to_pixel_bytes(bpp, is_bgr);
                     buffer[offset..offset + bpp].copy_from_slice(&px[..bpp]);
@@ -761,7 +785,11 @@ mod tests {
             if offset + self.bpp > self.buffer.len() {
                 return None;
             }
-            Some(Color::from_pixel_bytes(&self.buffer[offset..offset + self.bpp], self.bpp, self.is_bgr))
+            Some(Color::from_pixel_bytes(
+                &self.buffer[offset..offset + self.bpp],
+                self.bpp,
+                self.is_bgr,
+            ))
         }
 
         fn buffer_mut(&mut self) -> &mut [u8] {

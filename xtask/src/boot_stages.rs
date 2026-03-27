@@ -62,7 +62,8 @@ pub fn get_dns_stages() -> Vec<BootStage> {
             name: "DNS test starting",
             marker: "DNS Test: Starting",
             failure_meaning: "DNS test binary did not start executing",
-            check_hint: "Check scheduler is running userspace, check userspace/programs/dns_test.rs",
+            check_hint:
+                "Check scheduler is running userspace, check userspace/programs/dns_test.rs",
         },
         BootStage {
             name: "DNS google resolve",
