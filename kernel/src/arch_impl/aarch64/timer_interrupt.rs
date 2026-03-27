@@ -14,9 +14,9 @@
 //! 4. Handler updates time, checks quantum, sets need_resched
 //! 5. On exception return, check need_resched and perform context switch if needed
 
+use crate::arch_impl::traits::PerCpuOps;
 use crate::task::scheduler;
 use crate::tracing::providers::irq::trace_timer_tick;
-use crate::arch_impl::traits::PerCpuOps;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// Virtual timer interrupt ID (PPI 27) — used on QEMU/Parallels

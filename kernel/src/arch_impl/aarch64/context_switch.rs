@@ -74,6 +74,34 @@ fn emit_schedule_breadcrumb(old_id: u64, new_id: u64) {
     raw_serial_char(b'\n');
 }
 
+#[inline(always)]
+fn emit_dispatch_spsr_diag(
+    cpu_id: usize,
+    thread_id: u64,
+    path: &str,
+    before: u64,
+    normalized: u64,
+    after: u64,
+) {
+    if cpu_id != 0 || thread_id != 10 {
+        return;
+    }
+
+    raw_uart_str("\n[DISPATCH_SPSR] cpu=");
+    raw_uart_dec(cpu_id as u64);
+    raw_uart_str(" tid=");
+    raw_uart_dec(thread_id);
+    raw_uart_str(" path=");
+    raw_uart_str(path);
+    raw_uart_str(" before=");
+    raw_uart_hex(before);
+    raw_uart_str(" normalized=");
+    raw_uart_hex(normalized);
+    raw_uart_str(" after=");
+    raw_uart_hex(after);
+    raw_uart_str("\n");
+}
+
 core::arch::global_asm!(
     r#"
 .section .text
@@ -661,6 +689,7 @@ fn restore_kernel_context_inline(
     frame: &mut Aarch64ExceptionFrame,
     thread_id: u64,
 ) -> bool {
+    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
     let has_started = thread.has_started;
 
     if !has_started {
@@ -760,16 +789,35 @@ fn restore_kernel_context_inline(
 
     // Set return address and SPSR
     if !has_started {
+        let spsr_before = thread.context.spsr_el1;
         frame.elr = thread.context.x30; // First run: jump to entry point
-        frame.spsr = kernel_dispatch_spsr(thread.context.spsr_el1);
+        let normalized_spsr = kernel_dispatch_spsr(thread.context.spsr_el1);
+        frame.spsr = normalized_spsr;
+        emit_dispatch_spsr_diag(
+            cpu_id,
+            thread_id,
+            "kernel-first",
+            spsr_before,
+            normalized_spsr,
+            frame.spsr,
+        );
     } else if is_kernel_addr(thread.context.elr_el1) {
         // Resume: return to where we left off.
         // On QEMU, kernel addresses are >= KERNEL_VIRT_BASE (HHDM).
         // On Parallels, kernel runs identity-mapped at physical addresses
         // (KERNEL_PHYS_BASE..KERNEL_PHYS_LIMIT), so we must accept both.
+        let spsr_before = thread.context.spsr_el1;
         frame.elr = thread.context.elr_el1;
         thread.context.spsr_el1 = kernel_dispatch_spsr(thread.context.spsr_el1);
         frame.spsr = dispatch_spsr(thread.context.spsr_el1); // Restore saved processor state
+        emit_dispatch_spsr_diag(
+            cpu_id,
+            thread_id,
+            "kernel-resume",
+            spsr_before,
+            thread.context.spsr_el1,
+            frame.spsr,
+        );
     } else {
         // elr_el1 == 0 or not a valid kernel address — redirect to idle
         raw_uart_str("WARN: bad elr=");
@@ -811,7 +859,12 @@ fn restore_kernel_context_inline(
 }
 
 /// Restore userspace context into frame — called inside scheduler lock hold.
-fn restore_userspace_context_inline(thread: &mut Thread, frame: &mut Aarch64ExceptionFrame) {
+fn restore_userspace_context_inline(
+    thread: &mut Thread,
+    frame: &mut Aarch64ExceptionFrame,
+    thread_id: u64,
+    cpu_id: usize,
+) {
     frame.x0 = thread.context.x0;
     frame.x1 = thread.context.x1;
     frame.x2 = thread.context.x2;
@@ -845,8 +898,17 @@ fn restore_userspace_context_inline(thread: &mut Thread, frame: &mut Aarch64Exce
     frame.x30 = thread.context.x30;
 
     // Restore program counter and status
+    let spsr_before = thread.context.spsr_el1;
     frame.elr = thread.context.elr_el1;
     frame.spsr = dispatch_spsr(thread.context.spsr_el1);
+    emit_dispatch_spsr_diag(
+        cpu_id,
+        thread_id,
+        "user-resume",
+        spsr_before,
+        thread.context.spsr_el1,
+        frame.spsr,
+    );
 
     // Restore SP_EL0 (user stack pointer)
     unsafe {
@@ -1205,7 +1267,7 @@ fn dispatch_thread_locked(
             }
         } else {
             if let Some(thread) = sched.get_thread_mut(thread_id) {
-                restore_userspace_context_inline(thread, frame);
+                restore_userspace_context_inline(thread, frame, thread_id, cpu_id);
             }
 
             // SAFETY GUARD: Check for corrupted ELR before committing to dispatch.
