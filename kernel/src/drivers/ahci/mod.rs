@@ -1286,6 +1286,36 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
         AHCI_LAST_ISR_PORT1_IS.load(Ordering::Relaxed),
         AHCI_LAST_ISR_PORT1_CMD_NUM.load(Ordering::Relaxed),
     );
+    // Read additional GIC CPU interface state
+    let (igrpen1, icc_ctlr, bpr1): (u64, u64, u64);
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("mrs {}, icc_igrpen1_el1", out(reg) igrpen1, options(nomem, nostack));
+        core::arch::asm!("mrs {}, icc_ctlr_el1", out(reg) icc_ctlr, options(nomem, nostack));
+        core::arch::asm!("mrs {}, icc_bpr1_el1", out(reg) bpr1, options(nomem, nostack));
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        igrpen1 = 0;
+        icc_ctlr = 0;
+        bpr1 = 0;
+    }
+    crate::serial_println!(
+        "[ahci]   IGRPEN1={:#x} ICC_CTLR={:#x} BPR1={:#x}",
+        igrpen1, icc_ctlr, bpr1,
+    );
+    // Read GICD_ISENABLER1 to confirm SPI34 is still enabled at distributor
+    #[cfg(target_arch = "aarch64")]
+    {
+        // GICD_ISENABLER1 at offset 0x104 covers SPIs 32-63
+        // SPI34 = bit 2 (34 - 32 = 2)
+        let gicd_isenabler1 = ahci_gicd_read_u32(0x104);
+        let spi34_enabled = (gicd_isenabler1 >> 2) & 1;
+        crate::serial_println!(
+            "[ahci]   GICD_ISENABLER1={:#x} SPI34_enabled={}",
+            gicd_isenabler1, spi34_enabled,
+        );
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
