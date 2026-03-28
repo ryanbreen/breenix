@@ -480,7 +480,7 @@ sync_exception_handler:
 10:
     msr elr_el1, x1
     ldr x1, [sp, #256]       // x1 = frame.spsr
-    bic x1, x1, #0x80        // Clear DAIF.I bit — prevent IRQ death
+    bic x1, x1, #0xC0        // Clear DAIF.I+F bits — prevent IRQ/FIQ death
     msr spsr_el1, x1
     ldp x0, x1, [sp, #0]
     ldp x2, x3, [sp, #16]
@@ -610,7 +610,7 @@ irq_handler:
 1:
     msr elr_el1, x16
     ldr x16, [sp, #256]      // x16 = frame.spsr
-    bic x16, x16, #0x80      // Clear DAIF.I — never ERET with IRQs masked
+    bic x16, x16, #0xC0      // Clear DAIF.I+F — never ERET with IRQs/FIQs masked
     msr spsr_el1, x16
 
     // Restore all general-purpose registers from the exception frame
@@ -668,7 +668,7 @@ irq_handler:
     ldr x16, [sp, #248]      // x16 = frame.elr
     msr elr_el1, x16
     ldr x16, [sp, #256]      // x16 = frame.spsr
-    bic x16, x16, #0x80      // Clear DAIF.I — never ERET with IRQs masked
+    bic x16, x16, #0xC0      // Clear DAIF.I+F — never ERET with IRQs/FIQs masked
     msr spsr_el1, x16
 
     ldp x0, x1, [sp, #0]
