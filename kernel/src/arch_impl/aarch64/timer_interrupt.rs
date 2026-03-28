@@ -69,6 +69,15 @@ pub static TIMER_TICK_DAIF: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 /// If CPU 0 stops receiving interrupts, its count will stall while others advance.
 pub static TIMER_TICK_COUNT: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 
+/// Per-CPU: hardware MPIDR Aff0 at last timer tick (index = software cpu_id).
+/// Used to detect cpu_id() returning wrong values after per-CPU data corruption.
+/// 0xDEAD = never updated.
+pub static TIMER_TICK_HW_CPU: [AtomicU64; 8] = [const { AtomicU64::new(0xDEAD) }; 8];
+
+/// Per-CPU: tick count indexed by HARDWARE cpu (MPIDR & 0xFF).
+/// Compared against TIMER_TICK_COUNT (indexed by software cpu_id) to find misattribution.
+pub static TIMER_TICK_HW_COUNT: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+
 /// Whether the timer is initialized
 static TIMER_INITIALIZED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
@@ -301,6 +310,19 @@ pub extern "C" fn timer_interrupt_handler() {
     if cpu_id < 8 {
         TIMER_TICK_DAIF[cpu_id].store(spsr, Ordering::Relaxed);
         TIMER_TICK_COUNT[cpu_id].fetch_add(1, Ordering::Relaxed);
+    }
+
+    // Track hardware CPU identity vs software cpu_id for mismatch detection.
+    let hw_cpu: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, mpidr_el1", out(reg) hw_cpu, options(nomem, nostack));
+    }
+    let hw_cpu_id = (hw_cpu & 0xFF) as usize;
+    if cpu_id < 8 {
+        TIMER_TICK_HW_CPU[cpu_id].store(hw_cpu_id as u64, Ordering::Relaxed);
+    }
+    if hw_cpu_id < 8 {
+        TIMER_TICK_HW_COUNT[hw_cpu_id].fetch_add(1, Ordering::Relaxed);
     }
 
     // Re-arm the timer for the next interrupt using the dynamically calculated value

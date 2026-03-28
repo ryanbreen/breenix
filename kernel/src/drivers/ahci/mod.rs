@@ -193,6 +193,8 @@ static AHCI_COMPLETIONS: [[Completion; AHCI_MAX_CONCURRENT]; MAX_AHCI_PORTS] =
 
 /// Count ISR invocations (for diagnostic/timeout reporting).
 static AHCI_ISR_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Hardware MPIDR Aff0 of the CPU that last ran the AHCI ISR (0xDEAD = never ran).
+static AHCI_ISR_LAST_MPIDR: AtomicU64 = AtomicU64::new(0xDEAD);
 /// Count commands issued via issue_cmd_slot0 (for diagnostic/timeout reporting).
 static AHCI_CMD_COUNT: AtomicU32 = AtomicU32::new(0);
 /// Per-port token for the command currently issued in slot 0. 0 = none.
@@ -1286,6 +1288,11 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
         AHCI_LAST_ISR_PORT1_IS.load(Ordering::Relaxed),
         AHCI_LAST_ISR_PORT1_CMD_NUM.load(Ordering::Relaxed),
     );
+    #[cfg(target_arch = "aarch64")]
+    crate::serial_println!(
+        "[ahci]   isr_last_hw_cpu={}",
+        AHCI_ISR_LAST_MPIDR.load(Ordering::Relaxed),
+    );
     // Read additional GIC CPU interface state
     let (igrpen1, icc_ctlr, bpr1): (u64, u64, u64);
     #[cfg(target_arch = "aarch64")]
@@ -1352,6 +1359,29 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
             TIMER_TICK_COUNT[5].load(Ordering::Relaxed),
             TIMER_TICK_COUNT[6].load(Ordering::Relaxed),
             TIMER_TICK_COUNT[7].load(Ordering::Relaxed),
+        );
+        use crate::arch_impl::aarch64::timer_interrupt::{TIMER_TICK_HW_CPU, TIMER_TICK_HW_COUNT};
+        crate::serial_println!(
+            "[ahci]   hw_tick_count=[{},{},{},{},{},{},{},{}]",
+            TIMER_TICK_HW_COUNT[0].load(Ordering::Relaxed),
+            TIMER_TICK_HW_COUNT[1].load(Ordering::Relaxed),
+            TIMER_TICK_HW_COUNT[2].load(Ordering::Relaxed),
+            TIMER_TICK_HW_COUNT[3].load(Ordering::Relaxed),
+            TIMER_TICK_HW_COUNT[4].load(Ordering::Relaxed),
+            TIMER_TICK_HW_COUNT[5].load(Ordering::Relaxed),
+            TIMER_TICK_HW_COUNT[6].load(Ordering::Relaxed),
+            TIMER_TICK_HW_COUNT[7].load(Ordering::Relaxed),
+        );
+        crate::serial_println!(
+            "[ahci]   sw_to_hw_map=[{},{},{},{},{},{},{},{}]",
+            TIMER_TICK_HW_CPU[0].load(Ordering::Relaxed),
+            TIMER_TICK_HW_CPU[1].load(Ordering::Relaxed),
+            TIMER_TICK_HW_CPU[2].load(Ordering::Relaxed),
+            TIMER_TICK_HW_CPU[3].load(Ordering::Relaxed),
+            TIMER_TICK_HW_CPU[4].load(Ordering::Relaxed),
+            TIMER_TICK_HW_CPU[5].load(Ordering::Relaxed),
+            TIMER_TICK_HW_CPU[6].load(Ordering::Relaxed),
+            TIMER_TICK_HW_CPU[7].load(Ordering::Relaxed),
         );
     }
 }
@@ -2028,6 +2058,16 @@ pub fn handle_interrupt() {
     }
 
     let _count = AHCI_ISR_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    // Snapshot hardware MPIDR Aff0 to verify which physical CPU runs the ISR.
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mpidr: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
+        }
+        AHCI_ISR_LAST_MPIDR.store(mpidr & 0xFF, Ordering::Relaxed);
+    }
 
     // Snapshot ICC_PMR_EL1 at ISR entry for diagnostic visibility.
     #[cfg(target_arch = "aarch64")]
