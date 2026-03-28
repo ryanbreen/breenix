@@ -1342,7 +1342,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     // Process deferred requeue BEFORE checking preempt_count.
     // This is safe even when preempt_count > 0 because we only add the
     // thread to the ready queue — we don't context switch.
-    if deferred_tid != 0 {
+    let deferred_already_processed = if deferred_tid != 0 {
         // Need the scheduler lock to process the requeue.
         let mut guard = crate::task::scheduler::lock_for_context_switch();
         if let Some(sched) = guard.as_mut() {
@@ -1350,7 +1350,10 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             sched.requeue_thread_after_save(deferred_tid);
         }
         drop(guard);
-    }
+        true
+    } else {
+        false
+    };
 
     if !from_el0 && (preempt_count & 0xFF) > 0 {
         // Kernel code holding locks — not safe to preempt.
@@ -1373,6 +1376,46 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     } else {
         None
     };
+
+    // ── Fast path: skip lock when no scheduling work needed ─────
+    // On every IRQ exit we reach here. 95%+ of the time there is no
+    // reschedule pending and the current thread is not blocked. Reading
+    // the thread state from the per-CPU pointer is lock-free and safe:
+    // only this CPU modifies its own thread's state during syscalls, and
+    // remote unblock (ISR buffer drain) only transitions Blocked→Ready
+    // which is a no-op for our decision (we'd still skip).
+    // When deferred_tid was non-zero, we already processed it above under
+    // the lock and can treat it as "done" for fast-path eligibility.
+    if !need_resched && (deferred_tid == 0 || deferred_already_processed) {
+        let current_blocked = {
+            let thread_ptr = Aarch64PerCpu::current_thread_ptr();
+            if !thread_ptr.is_null() {
+                let thread = unsafe { &*(thread_ptr as *const Thread) };
+                matches!(
+                    thread.state,
+                    ThreadState::Blocked
+                        | ThreadState::BlockedOnSignal
+                        | ThreadState::BlockedOnChildExit
+                        | ThreadState::BlockedOnTimer
+                        | ThreadState::BlockedOnIO
+                        | ThreadState::Terminated
+                )
+            } else {
+                false
+            }
+        };
+
+        if !current_blocked {
+            // No work to do — return without acquiring the global lock.
+            // fix_eret_cpu_state_locked is skipped; any stale cpu_state
+            // will be corrected on the next tick that does acquire the lock.
+            if from_el0 {
+                check_and_deliver_signals_for_current_thread_arm64(frame);
+                ensure_user_rsp_scratch_for_el0();
+            }
+            return;
+        }
+    }
 
     // ── Single lock acquisition ───────────────────────────────────
     let mut guard = crate::task::scheduler::lock_for_context_switch();
