@@ -89,6 +89,32 @@ pub static TIMER_TICK_HW_COUNT: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8
 /// Bit 0: ENABLE, Bit 1: IMASK, Bit 2: ISTATUS.
 pub static TIMER_TICK_CNTV_CTL: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 
+/// CPU 0's ELR_EL1 at the last timer tick — the interrupted PC.
+/// Shows what CPU 0 was executing when the last timer interrupt fired.
+/// After CPU 0 dies (no more timer ticks), this holds the last captured PC.
+pub static CPU0_LAST_TIMER_ELR: AtomicU64 = AtomicU64::new(0);
+
+/// CPU 0 breadcrumb ID — updated at key scheduler/context-switch points.
+/// After CPU 0 dies, the value identifies exactly which function and stage
+/// CPU 0 last executed before getting stuck.
+///
+/// Breadcrumb map:
+///   1  = schedule_from_kernel() entry
+///   2  = schedule_from_kernel() after disable_interrupts
+///   3  = schedule_from_kernel() after lock acquisition
+///   4  = schedule_from_kernel() after schedule_deferred_requeue
+///   5  = schedule_from_kernel() after context switch (daifclr)
+///   10 = check_need_resched_and_switch_arm64() entry
+///   11 = check_need_resched_and_switch_arm64() after lock acquisition
+///   12 = check_need_resched_and_switch_arm64() after scheduling decision
+///   13 = check_need_resched_and_switch_arm64() performing context switch
+///   14 = check_need_resched_and_switch_arm64() return
+///   20 = with_scheduler() entry
+///   21 = with_scheduler() after lock acquisition
+///   22 = with_scheduler() after closure
+///   23 = with_scheduler() after DAIF restore
+pub static CPU0_BREADCRUMB_ID: AtomicU64 = AtomicU64::new(0);
+
 /// Whether the timer is initialized
 static TIMER_INITIALIZED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
@@ -383,6 +409,17 @@ pub extern "C" fn timer_interrupt_handler() {
     }
     if hw_cpu_id < 8 {
         TIMER_TICK_HW_COUNT[hw_cpu_id].fetch_add(1, Ordering::Relaxed);
+    }
+
+    // CPU 0 only: capture the interrupted PC (ELR_EL1).
+    // ELR_EL1 holds the address CPU 0 was executing when this timer interrupt
+    // fired. After CPU 0 stops receiving interrupts, this is the last known PC.
+    if cpu_id == 0 {
+        let elr: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, elr_el1", out(reg) elr, options(nomem, nostack));
+        }
+        CPU0_LAST_TIMER_ELR.store(elr, Ordering::Relaxed);
     }
 
     // Load ticks value early (before handler work) but defer the actual re-arm

@@ -2243,9 +2243,37 @@ pub fn with_scheduler<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut Scheduler) -> R,
 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::timer_interrupt::CPU0_BREADCRUMB_ID;
+        use core::sync::atomic::Ordering;
+        let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
+        if cpu_id == 0 {
+            CPU0_BREADCRUMB_ID.store(20, Ordering::Relaxed); // with_scheduler entry
+        }
+    }
     without_interrupts(|| {
         let mut scheduler_lock = SCHEDULER.lock();
-        scheduler_lock.as_mut().map(f)
+        #[cfg(target_arch = "aarch64")]
+        {
+            use crate::arch_impl::aarch64::timer_interrupt::CPU0_BREADCRUMB_ID;
+            use core::sync::atomic::Ordering;
+            let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
+            if cpu_id == 0 {
+                CPU0_BREADCRUMB_ID.store(21, Ordering::Relaxed); // after lock acquisition
+            }
+        }
+        let result = scheduler_lock.as_mut().map(f);
+        #[cfg(target_arch = "aarch64")]
+        {
+            use crate::arch_impl::aarch64::timer_interrupt::CPU0_BREADCRUMB_ID;
+            use core::sync::atomic::Ordering;
+            let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
+            if cpu_id == 0 {
+                CPU0_BREADCRUMB_ID.store(22, Ordering::Relaxed); // after closure
+            }
+        }
+        result
     })
 }
 

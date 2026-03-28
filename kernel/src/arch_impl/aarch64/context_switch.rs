@@ -1317,6 +1317,8 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
 ) {
     // ── Lock-free pre-checks ──────────────────────────────────────
     let preempt_count = Aarch64PerCpu::preempt_count();
+    let cpu_id_early = Aarch64PerCpu::cpu_id() as usize;
+    cpu0_breadcrumb(cpu_id_early, 10); // entry
 
     if (preempt_count & 0x10000000) != 0 {
         // PREEMPT_ACTIVE: in the middle of returning from a previous
@@ -1423,6 +1425,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         Some(s) => s,
         None => return,
     };
+    cpu0_breadcrumb(cpu_id, 11); // after lock acquisition
 
     // 1. Process deferred requeue from PREVIOUS context switch.
     //    May have already been processed above (for the preempt_count > 0 path).
@@ -1477,6 +1480,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
 
     // 4. Scheduling decision (deferred requeue — old thread stays out of queue)
     let schedule_result = sched.schedule_deferred_requeue();
+    cpu0_breadcrumb(cpu_id, 12); // after scheduling decision
 
     if schedule_result.is_none() {
         fix_eret_cpu_state_locked(sched, frame);
@@ -1575,6 +1579,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     }
 
     // 9. Dispatch new thread (all checks + restore inside lock hold)
+    cpu0_breadcrumb(cpu_id, 13); // performing context switch
     dispatch_thread_locked(sched, new_id, frame, cpu_id);
 
     // Record dispatch trace AFTER all frame writes are complete.
@@ -1619,6 +1624,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     }
     crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
     crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
+    cpu0_breadcrumb(cpu_id, 14); // return
 }
 
 extern "C" fn inline_schedule_trampoline() -> ! {
@@ -1759,13 +1765,23 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     }
 }
 
+/// Record a CPU 0 breadcrumb — zero-cost on other CPUs.
+#[inline(always)]
+fn cpu0_breadcrumb(cpu_id: usize, id: u64) {
+    if cpu_id == 0 {
+        super::timer_interrupt::CPU0_BREADCRUMB_ID.store(id, Ordering::Relaxed);
+    }
+}
+
 pub fn schedule_from_kernel() {
     let saved_daif = read_daif();
+    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    cpu0_breadcrumb(cpu_id, 1); // entry
     unsafe {
         crate::arch_impl::aarch64::cpu::disable_interrupts();
     }
+    cpu0_breadcrumb(cpu_id, 2); // after disable_interrupts
 
-    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
     let mut guard = crate::task::scheduler::lock_for_context_switch();
     let sched = match guard.as_mut() {
         Some(s) => s,
@@ -1776,6 +1792,7 @@ pub fn schedule_from_kernel() {
             return;
         }
     };
+    cpu0_breadcrumb(cpu_id, 3); // after lock acquisition
 
     let deferred_tid = if cpu_id < DEFERRED_REQUEUE.len() {
         DEFERRED_REQUEUE[cpu_id].swap(0, Ordering::Acquire)
@@ -1794,6 +1811,7 @@ pub fn schedule_from_kernel() {
     }
 
     let schedule_result = sched.schedule_deferred_requeue();
+    cpu0_breadcrumb(cpu_id, 4); // after schedule_deferred_requeue
     let Some((old_id, new_id, should_requeue_old)) = schedule_result else {
         drop(guard);
         unsafe {
@@ -1880,6 +1898,8 @@ pub fn schedule_from_kernel() {
         // re-masks DAIF.I permanently.
         core::arch::asm!("msr daifclr, #3; isb", options(nomem, nostack));
     }
+    let cpu_id_after = Aarch64PerCpu::cpu_id() as usize;
+    cpu0_breadcrumb(cpu_id_after, 5); // after context switch resume
 
     // Re-arm timer as safety net after context switch resume.
     // If the Parallels/HVF vtimer is dead on this CPU, re-arming here

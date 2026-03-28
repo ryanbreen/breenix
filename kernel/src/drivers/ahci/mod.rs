@@ -219,6 +219,12 @@ static AHCI_ISR_LAST_PMR: AtomicU64 = AtomicU64::new(0);
 static AHCI_LAST_ISR_PORT1_IS: AtomicU32 = AtomicU32::new(0);
 /// cmd_num swapped from PORT_ACTIVE_CMD_NUM[1] (last ISR invocation for port 1).
 static AHCI_LAST_ISR_PORT1_CMD_NUM: AtomicU32 = AtomicU32::new(0);
+/// ELR_EL1 captured at AHCI ISR entry — the PC that was interrupted by the AHCI IRQ.
+/// Shows what CPU 0 was doing when the AHCI SPI fired.
+static AHCI_ISR_LAST_ELR: AtomicU64 = AtomicU64::new(0);
+/// SPSR_EL1 captured at AHCI ISR entry — the saved PSTATE from before the AHCI IRQ.
+/// Bits [9:6] = DAIF mask of the interrupted context.
+static AHCI_ISR_LAST_SPSR: AtomicU64 = AtomicU64::new(0);
 
 /// Per-port I/O serialisation lock.
 ///
@@ -1293,6 +1299,22 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
         "[ahci]   isr_last_hw_cpu={}",
         AHCI_ISR_LAST_MPIDR.load(Ordering::Relaxed),
     );
+    #[cfg(target_arch = "aarch64")]
+    crate::serial_println!(
+        "[ahci]   isr_last_elr={:#x} isr_last_spsr={:#x}",
+        AHCI_ISR_LAST_ELR.load(Ordering::Relaxed),
+        AHCI_ISR_LAST_SPSR.load(Ordering::Relaxed),
+    );
+    // CPU 0 timer ELR and breadcrumb from timer_interrupt.rs
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::timer_interrupt::{CPU0_LAST_TIMER_ELR, CPU0_BREADCRUMB_ID};
+        crate::serial_println!(
+            "[ahci]   cpu0_last_timer_elr={:#x} cpu0_breadcrumb={}",
+            CPU0_LAST_TIMER_ELR.load(Ordering::Relaxed),
+            CPU0_BREADCRUMB_ID.load(Ordering::Relaxed),
+        );
+    }
     // Read additional GIC CPU interface state
     let (igrpen1, icc_ctlr, bpr1): (u64, u64, u64);
     #[cfg(target_arch = "aarch64")]
@@ -2157,6 +2179,20 @@ pub fn handle_interrupt() {
             core::arch::asm!("mrs {}, icc_pmr_el1", out(reg) pmr, options(nomem, nostack));
         }
         AHCI_ISR_LAST_PMR.store(pmr, Ordering::Relaxed);
+    }
+
+    // Capture ELR_EL1 and SPSR_EL1 — the interrupted PC and saved PSTATE.
+    // These show what CPU 0 was doing when the AHCI ISR fired.
+    #[cfg(target_arch = "aarch64")]
+    {
+        let elr: u64;
+        let spsr: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, elr_el1", out(reg) elr, options(nomem, nostack));
+            core::arch::asm!("mrs {}, spsr_el1", out(reg) spsr, options(nomem, nostack));
+        }
+        AHCI_ISR_LAST_ELR.store(elr, Ordering::Relaxed);
+        AHCI_ISR_LAST_SPSR.store(spsr, Ordering::Relaxed);
     }
 
     // Read the global interrupt status.
