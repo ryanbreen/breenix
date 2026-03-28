@@ -1383,6 +1383,42 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
             TIMER_TICK_HW_CPU[6].load(Ordering::Relaxed),
             TIMER_TICK_HW_CPU[7].load(Ordering::Relaxed),
         );
+        // Per-CPU CNTV_CTL_EL0 snapshots from the last timer tick on each CPU.
+        // Bit 0 = ENABLE, Bit 1 = IMASK, Bit 2 = ISTATUS.
+        // If CPU 0's value has ENABLE=0 or IMASK=1, the timer was silently killed.
+        use crate::arch_impl::aarch64::timer_interrupt::TIMER_TICK_CNTV_CTL;
+        crate::serial_println!(
+            "[ahci]   timer_ctl=[{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x}]",
+            TIMER_TICK_CNTV_CTL[0].load(Ordering::Relaxed),
+            TIMER_TICK_CNTV_CTL[1].load(Ordering::Relaxed),
+            TIMER_TICK_CNTV_CTL[2].load(Ordering::Relaxed),
+            TIMER_TICK_CNTV_CTL[3].load(Ordering::Relaxed),
+            TIMER_TICK_CNTV_CTL[4].load(Ordering::Relaxed),
+            TIMER_TICK_CNTV_CTL[5].load(Ordering::Relaxed),
+            TIMER_TICK_CNTV_CTL[6].load(Ordering::Relaxed),
+            TIMER_TICK_CNTV_CTL[7].load(Ordering::Relaxed),
+        );
+    }
+    // Read THIS CPU's timer hardware registers (per-CPU, so this is the
+    // timeout thread's CPU, not necessarily CPU 0).
+    #[cfg(target_arch = "aarch64")]
+    {
+        let (cntv_ctl, cntv_tval, cntp_ctl, cntp_tval, cntfrq): (u64, u64, u64, u64, u64);
+        unsafe {
+            core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) cntv_ctl, options(nomem, nostack));
+            core::arch::asm!("mrs {}, cntv_tval_el0", out(reg) cntv_tval, options(nomem, nostack));
+            core::arch::asm!("mrs {}, cntp_ctl_el0", out(reg) cntp_ctl, options(nomem, nostack));
+            core::arch::asm!("mrs {}, cntp_tval_el0", out(reg) cntp_tval, options(nomem, nostack));
+            core::arch::asm!("mrs {}, cntfrq_el0", out(reg) cntfrq, options(nomem, nostack));
+        }
+        crate::serial_println!(
+            "[ahci]   timer: CNTV_CTL={:#x} CNTV_TVAL={} CNTP_CTL={:#x} CNTP_TVAL={} CNTFRQ={}",
+            cntv_ctl, cntv_tval as i64, cntp_ctl, cntp_tval as i64, cntfrq,
+        );
+        crate::serial_println!(
+            "[ahci]   timer: TICKS_PER_INTERRUPT={}",
+            crate::arch_impl::aarch64::timer_interrupt::TICKS_PER_INTERRUPT.load(core::sync::atomic::Ordering::Relaxed),
+        );
     }
 }
 

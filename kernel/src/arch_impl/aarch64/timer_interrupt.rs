@@ -45,7 +45,7 @@ const TARGET_TIMER_HZ: u64 = 1000;
 
 /// Dynamically calculated ticks per interrupt based on actual timer frequency
 /// Set during init() and used by the interrupt handler for consistent timing
-static TICKS_PER_INTERRUPT: AtomicU64 = AtomicU64::new(DEFAULT_TICKS_PER_INTERRUPT);
+pub static TICKS_PER_INTERRUPT: AtomicU64 = AtomicU64::new(DEFAULT_TICKS_PER_INTERRUPT);
 
 /// Per-CPU time quantum counters.
 /// Each CPU decrements its own quantum independently.
@@ -77,6 +77,11 @@ pub static TIMER_TICK_HW_CPU: [AtomicU64; 8] = [const { AtomicU64::new(0xDEAD) }
 /// Per-CPU: tick count indexed by HARDWARE cpu (MPIDR & 0xFF).
 /// Compared against TIMER_TICK_COUNT (indexed by software cpu_id) to find misattribution.
 pub static TIMER_TICK_HW_COUNT: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+
+/// Per-CPU CNTV_CTL_EL0 snapshot at last timer tick.
+/// Index = CPU ID, value = CNTV_CTL_EL0 register.
+/// Bit 0: ENABLE, Bit 1: IMASK, Bit 2: ISTATUS.
+pub static TIMER_TICK_CNTV_CTL: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 
 /// Whether the timer is initialized
 static TIMER_INITIALIZED: core::sync::atomic::AtomicBool =
@@ -310,6 +315,17 @@ pub extern "C" fn timer_interrupt_handler() {
     if cpu_id < 8 {
         TIMER_TICK_DAIF[cpu_id].store(spsr, Ordering::Relaxed);
         TIMER_TICK_COUNT[cpu_id].fetch_add(1, Ordering::Relaxed);
+    }
+
+    // Snapshot CNTV_CTL_EL0 for this CPU — captures the timer hardware state
+    // at the moment of the tick.  If ENABLE=0 or IMASK=1 after re-arm, the
+    // timer was silently disabled by something between ticks.
+    let cntv_ctl: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) cntv_ctl, options(nomem, nostack));
+    }
+    if cpu_id < 8 {
+        TIMER_TICK_CNTV_CTL[cpu_id].store(cntv_ctl, Ordering::Relaxed);
     }
 
     // Track hardware CPU identity vs software cpu_id for mismatch detection.
