@@ -286,6 +286,7 @@ syscall_entry_from_el0:
 
     /* Read SPSR from exception frame */
     ldr x10, [sp, #256]      /* x10 = frame.spsr */
+    bic x10, x10, #0x80      /* Clear DAIF.I bit — prevent IRQ death */
     msr spsr_el1, x10
 
     /* Restore x30 (link register) */

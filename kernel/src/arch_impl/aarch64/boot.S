@@ -480,6 +480,7 @@ sync_exception_handler:
 10:
     msr elr_el1, x1
     ldr x1, [sp, #256]       // x1 = frame.spsr
+    bic x1, x1, #0x80        // Clear DAIF.I bit — prevent IRQ death
     msr spsr_el1, x1
     ldp x0, x1, [sp, #0]
     ldp x2, x3, [sp, #16]
