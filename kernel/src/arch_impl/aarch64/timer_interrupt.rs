@@ -60,6 +60,10 @@ static CURRENT_QUANTUM: [AtomicU32; crate::arch_impl::aarch64::constants::MAX_CP
     AtomicU32::new(TIME_QUANTUM),
 ];
 
+/// Per-CPU DAIF snapshot, updated every timer tick.
+/// Index = CPU ID, value = DAIF register value.
+pub static TIMER_TICK_DAIF: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+
 /// Whether the timer is initialized
 static TIMER_INITIALIZED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
@@ -280,6 +284,16 @@ pub extern "C" fn timer_interrupt_handler() {
     crate::per_cpu_aarch64::irq_enter();
 
     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+
+    // Snapshot DAIF for this CPU (before any other work) so AHCI timeout
+    // diagnostics can inspect CPU 0's interrupt mask remotely.
+    let daif_snap: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, daif", out(reg) daif_snap, options(nomem, nostack));
+    }
+    if cpu_id < 8 {
+        TIMER_TICK_DAIF[cpu_id].store(daif_snap, Ordering::Relaxed);
+    }
 
     // Re-arm the timer for the next interrupt using the dynamically calculated value
     let ticks = TICKS_PER_INTERRUPT.load(Ordering::Relaxed);

@@ -1316,6 +1316,32 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
             gicd_isenabler1, spi34_enabled,
         );
     }
+    // Per-CPU DAIF snapshots from the timer tick handler.
+    // The local `daif` above reads THIS CPU's DAIF; TIMER_TICK_DAIF[0]
+    // shows CPU 0's DAIF as of its last timer tick, which is what we need
+    // to confirm the "CPU 0 IRQ death" hypothesis.
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::timer_interrupt::TIMER_TICK_DAIF;
+        let current_cpu: u64;
+        unsafe {
+            let mpidr: u64;
+            core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
+            current_cpu = mpidr & 0xFF;
+        }
+        crate::serial_println!(
+            "[ahci]   timeout_cpu={} cpu_daif=[{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x}]",
+            current_cpu,
+            TIMER_TICK_DAIF[0].load(Ordering::Relaxed),
+            TIMER_TICK_DAIF[1].load(Ordering::Relaxed),
+            TIMER_TICK_DAIF[2].load(Ordering::Relaxed),
+            TIMER_TICK_DAIF[3].load(Ordering::Relaxed),
+            TIMER_TICK_DAIF[4].load(Ordering::Relaxed),
+            TIMER_TICK_DAIF[5].load(Ordering::Relaxed),
+            TIMER_TICK_DAIF[6].load(Ordering::Relaxed),
+            TIMER_TICK_DAIF[7].load(Ordering::Relaxed),
+        );
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
