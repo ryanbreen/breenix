@@ -269,21 +269,33 @@ pub fn init() {
 fn arm_timer(ticks: u64) {
     if crate::platform_config::use_physical_timer() {
         unsafe {
+            // Disable timer first — some hypervisors need the ENABLE bit cleared
+            // before re-arming so the vGIC properly detects the new countdown
+            // and reasserts the PPI.
+            core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 0u64, options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
             core::arch::asm!(
                 "msr cntp_tval_el0, {}",
                 in(reg) ticks,
                 options(nomem, nostack)
             );
             core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
         }
     } else {
         unsafe {
+            // Disable timer first — some hypervisors need the ENABLE bit cleared
+            // before re-arming so the vGIC properly detects the new countdown
+            // and reasserts the PPI.
+            core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 0u64, options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
             core::arch::asm!(
                 "msr cntv_tval_el0, {}",
                 in(reg) ticks,
                 options(nomem, nostack)
             );
             core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
         }
     }
 }
@@ -345,11 +357,16 @@ pub extern "C" fn timer_interrupt_handler() {
     let ticks = TICKS_PER_INTERRUPT.load(Ordering::Relaxed);
     if crate::platform_config::is_vmware() {
         // VMware: re-arm both timers until we know which one fires
+        // Disable first so the vGIC detects the re-arm
         unsafe {
+            core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 0u64, options(nomem, nostack));
+            core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 0u64, options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
             core::arch::asm!("msr cntv_tval_el0, {}", in(reg) ticks, options(nomem, nostack));
             core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
             core::arch::asm!("msr cntp_tval_el0, {}", in(reg) ticks, options(nomem, nostack));
             core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
         }
     } else {
         arm_timer(ticks);
@@ -898,11 +915,16 @@ pub fn rearm_timer() {
     let ticks = TICKS_PER_INTERRUPT.load(Ordering::Relaxed);
 
     if crate::platform_config::is_vmware() {
+        // Disable first so the vGIC detects the re-arm
         unsafe {
+            core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 0u64, options(nomem, nostack));
+            core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 0u64, options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
             core::arch::asm!("msr cntv_tval_el0, {}", in(reg) ticks, options(nomem, nostack));
             core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
             core::arch::asm!("msr cntp_tval_el0, {}", in(reg) ticks, options(nomem, nostack));
             core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
         }
     } else {
         arm_timer(ticks);
