@@ -72,9 +72,6 @@ pub fn timer_is_running() -> bool {
 /// Total timer interrupt count (for frequency verification)
 static TIMER_INTERRUPT_COUNT: AtomicU64 = AtomicU64::new(0);
 
-/// CPU 0 timer interrupt count, used to prove CPU 0 continues taking timer IRQs.
-static TIMER_TICKS_CPU0: AtomicU64 = AtomicU64::new(0);
-
 #[cfg(feature = "boot_tests")]
 static RESET_QUANTUM_CALL_COUNT: AtomicU64 = AtomicU64::new(0);
 
@@ -300,7 +297,6 @@ pub extern "C" fn timer_interrupt_handler() {
 
     // CPU 0 only: update global wall clock time (single atomic operation)
     if cpu_id == 0 {
-        TIMER_TICKS_CPU0.fetch_add(1, Ordering::Relaxed);
         crate::time::timer_interrupt();
     }
 
@@ -832,6 +828,27 @@ pub fn reset_quantum() {
     CURRENT_QUANTUM[idx].store(TIME_QUANTUM, Ordering::Relaxed);
 }
 
+/// Re-arm the current CPU's timer using the configured scheduling interval.
+///
+/// Context switches can return to kernel code that briefly masks IRQs before
+/// finishing its critical section. Re-programming the per-CPU timer before the
+/// resumed thread runs ensures the next tick is pending on this CPU even if the
+/// thread immediately re-enters a short interrupt-masked region.
+pub fn rearm_timer() {
+    let ticks = TICKS_PER_INTERRUPT.load(Ordering::Relaxed);
+
+    if crate::platform_config::is_vmware() {
+        unsafe {
+            core::arch::asm!("msr cntv_tval_el0, {}", in(reg) ticks, options(nomem, nostack));
+            core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
+            core::arch::asm!("msr cntp_tval_el0, {}", in(reg) ticks, options(nomem, nostack));
+            core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
+        }
+    } else {
+        arm_timer(ticks);
+    }
+}
+
 /// Get reset_quantum() call count for tests.
 #[cfg(feature = "boot_tests")]
 pub fn reset_quantum_call_count() -> u64 {
@@ -864,11 +881,6 @@ pub fn init_secondary() {
 /// Check if the timer is initialized
 pub fn is_initialized() -> bool {
     TIMER_INITIALIZED.load(Ordering::Acquire)
-}
-
-/// Get the number of timer interrupts handled by CPU 0.
-pub fn cpu0_tick_count() -> u64 {
-    TIMER_TICKS_CPU0.load(Ordering::Relaxed)
 }
 
 /// Get the current CPU's quantum value (for debugging)

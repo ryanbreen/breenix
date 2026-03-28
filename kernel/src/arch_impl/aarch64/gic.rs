@@ -563,12 +563,12 @@ impl InterruptController for Gicv2 {
             let are_enabled = (ctlr & GICD_CTLR_ARE_NS) != 0;
 
             if version >= 3 || are_enabled {
-                // GICv3 / ARE mode: Route SPI via GICD_IROUTER
+                // GICv3 / ARE mode: Route SPI to current CPU via GICD_IROUTER
                 let mpidr: u64;
                 unsafe {
                     core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
                 }
-                let affinity = mpidr & 0xFF_00FF_FFFF; // Aff3.Aff2.Aff1.Aff0
+                let affinity = mpidr & 0xFF_00FF_FFFF;
                 gicd_write(GICD_IROUTER + (irq_num as usize * 8), affinity as u32);
                 gicd_write(
                     GICD_IROUTER + (irq_num as usize * 8) + 4,
@@ -839,12 +839,15 @@ pub fn enable_spi(irq: u32) {
     let bit = irq % 32;
 
     if version >= 3 {
-        // GICv3: Route SPI to current CPU via GICD_IROUTER
+        // GICv3: Route SPI to CPU 0 via GICD_IROUTER.
+        // Use CPU 0's MPIDR affinity for explicit routing. 1-of-N mode
+        // (IRM=1) is not reliably supported by all hypervisors.
         let mpidr: u64;
         unsafe {
+            // Read boot CPU's MPIDR (we're always called from CPU 0 during init)
             core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
         }
-        let affinity = mpidr & 0xFF_00FF_FFFF; // Aff3.Aff2.Aff1.Aff0
+        let affinity = mpidr & 0xFF_00FF_FFFF;
         gicd_write(GICD_IROUTER + (irq as usize * 8), affinity as u32);
         gicd_write(
             GICD_IROUTER + (irq as usize * 8) + 4,

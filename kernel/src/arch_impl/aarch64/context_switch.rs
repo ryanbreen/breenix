@@ -38,11 +38,6 @@ fn dispatch_spsr(spsr: u64) -> u64 {
 }
 
 #[inline]
-fn schedule_return_daif(daif: u64) -> u64 {
-    daif & !SPSR_DAIF_IRQ_BIT
-}
-
-#[inline]
 fn kernel_dispatch_spsr(spsr: u64) -> u64 {
     ((spsr & !SPSR_MODE_MASK) | SPSR_EL1H) & !SPSR_DAIF_IRQ_BIT
 }
@@ -75,6 +70,40 @@ aarch64_inline_schedule_switch:
 
     mov sp, x1
     br x2
+
+// Linux-style ret-based kernel thread dispatch.
+// Restores callee-saved registers + SP from a CpuContext, then ret to x30.
+// This avoids ERET entirely, so no SPSR/DAIF state is restored from the
+// thread's saved context. The caller controls DAIF independently.
+//
+// ret-based kernel thread dispatch. Avoids ERET entirely — no SPSR/DAIF
+// state is restored from the thread. Prevents CPU IRQ death caused by
+// ERET restoring PSTATE.I from a thread interrupted inside without_interrupts.
+// Used for ALL kernel thread dispatches from schedule_from_kernel().
+.global aarch64_ret_to_kernel_context
+.type aarch64_ret_to_kernel_context, @function
+aarch64_ret_to_kernel_context:
+    // aarch64_ret_to_kernel_context(ctx: *const CpuContext, resume_pc: u64) -> !
+    //   x0 = *const CpuContext to restore callee-saved regs + SP from
+    //   x1 = resume PC (elr_el1 for exception-saved, x30 for inline-saved)
+    ldp x19, x20, [x0, #152]
+    ldp x21, x22, [x0, #168]
+    ldp x23, x24, [x0, #184]
+    ldp x25, x26, [x0, #200]
+    ldp x27, x28, [x0, #216]
+    ldp x29, x30, [x0, #232]
+    ldr x2, [x0, #248]
+    mov sp, x2
+    // Enable IRQs before branching (matches Linux finish_task_switch).
+    // daifclr unmasks IRQs, ISB is a context synchronization event that
+    // ensures pending interrupts are recognized. On Parallels' GICv3
+    // emulation, ISB alone may not be sufficient — WFI guarantees the
+    // hypervisor checks for pending virtual interrupts.
+    msr daifclr, #3
+    isb
+    // If a pending IRQ exists, it will fire here (between ISB and br).
+    // If not, we branch directly to the resume PC.
+    br x1
 
 .global aarch64_enter_exception_frame
 .type aarch64_enter_exception_frame, @function
@@ -149,6 +178,7 @@ extern "C" {
     );
 
     fn aarch64_enter_exception_frame(frame: *const Aarch64ExceptionFrame) -> !;
+    fn aarch64_ret_to_kernel_context(ctx: *const CpuContext, resume_pc: u64) -> !;
 }
 
 const _: () = assert!(core::mem::offset_of!(CpuContext, x19) == 152);
@@ -542,6 +572,9 @@ fn save_userspace_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFr
     thread.context.elr_el1 = frame.elr;
     thread.context.spsr_el1 = frame.spsr;
 
+    // Clear inline-schedule flag (saved by exception path, needs ERET dispatch)
+    thread.saved_by_inline_schedule = false;
+
     // Read and save SP_EL0 (user stack pointer)
     let sp_el0: u64;
     unsafe {
@@ -601,6 +634,11 @@ fn save_kernel_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFrame
     // Save program counter and processor state
     thread.context.elr_el1 = frame.elr;
     thread.context.spsr_el1 = kernel_dispatch_spsr(frame.spsr);
+
+    // Clear inline-schedule flag: this thread was saved by the IRQ-return
+    // exception path (full register set), so it must be re-dispatched via
+    // ERET, not the ret-based path.
+    thread.saved_by_inline_schedule = false;
 
     // Save the kernel stack pointer.
     // The exception frame is allocated on the stack, so the SP before the
@@ -784,7 +822,10 @@ fn restore_kernel_context_inline(
 }
 
 /// Restore userspace context into frame — called inside scheduler lock hold.
-fn restore_userspace_context_inline(thread: &mut Thread, frame: &mut Aarch64ExceptionFrame) {
+fn restore_userspace_context_inline(
+    thread: &mut Thread,
+    frame: &mut Aarch64ExceptionFrame,
+) {
     frame.x0 = thread.context.x0;
     frame.x1 = thread.context.x1;
     frame.x2 = thread.context.x2;
@@ -1534,6 +1575,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         Aarch64PerCpu::clear_preempt_active();
     }
     crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
+    crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
 }
 
 extern "C" fn inline_schedule_trampoline() -> ! {
@@ -1562,6 +1604,75 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         sched.requeue_thread_after_save(old_id);
     }
 
+    // Determine dispatch mode for the new thread.
+    // Kernel threads that have started (saved context exists) use ret-based
+    // dispatch to avoid ERET restoring PSTATE.I from the saved SPSR. This
+    // prevents CPU IRQ death when a thread was interrupted inside
+    // without_interrupts. User threads, idle, and first-run use ERET.
+    let is_idle = sched.is_idle_thread_inner(new_id);
+    let ret_dispatch_info = if !is_idle {
+        sched.get_thread_mut(new_id).and_then(|t| {
+            let is_kernel = t.privilege == ThreadPrivilege::Kernel;
+            let has_started = t.has_started;
+            let blocked_in_syscall = t.blocked_in_syscall;
+            let is_kernel_mode = t.context.elr_el1 >= 0xFFFF_0000_0000_0000
+                || (t.context.elr_el1 >= 0x4008_0000 && t.context.elr_el1 < 0xC000_0000);
+
+            // Use ret-based dispatch for kernel threads and userspace threads
+            // that are currently executing in kernel mode (blocked in syscall
+            // or preempted during kernel execution).
+            if has_started && (is_kernel || blocked_in_syscall || is_kernel_mode) {
+                t.saved_by_inline_schedule = false;
+                let thread_ptr = t as *const _ as *mut u8;
+                let ctx_ptr = &t.context as *const CpuContext;
+                let resume_pc = t.context.elr_el1;
+                let kst = t.kernel_stack_top;
+                let sp_el0 = t.context.sp_el0;
+                Some((thread_ptr, ctx_ptr, resume_pc, kst, sp_el0))
+            } else {
+                None
+            }
+        })
+    } else {
+        None
+    };
+
+    if let Some((thread_ptr, ctx_ptr, resume_pc, kst, sp_el0)) = ret_dispatch_info {
+        // ret-based dispatch: restore callee-saved regs + SP, branch to
+        // resume_pc (= elr_el1). No ERET, no SPSR, no DAIF from the thread.
+        // IRQs are enabled by the assembly before branching.
+        unsafe {
+            Aarch64PerCpu::set_current_thread_ptr(thread_ptr);
+        }
+        if let Some(kst) = kst {
+            unsafe {
+                Aarch64PerCpu::set_kernel_stack_top(kst.as_u64());
+            }
+        }
+        if sp_el0 != 0 {
+            unsafe {
+                core::arch::asm!(
+                    "msr sp_el0, {}",
+                    in(reg) sp_el0,
+                    options(nomem, nostack)
+                );
+            }
+        }
+
+        unsafe {
+            crate::task::scheduler::force_unlock_scheduler();
+        }
+
+        crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
+        crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
+
+        unsafe {
+            aarch64_ret_to_kernel_context(ctx_ptr, resume_pc);
+        }
+    }
+
+    // ERET-based dispatch: for idle threads, user threads, and first-run
+    // kernel threads that haven't been context-switched yet.
     let mut frame = unsafe { MaybeUninit::<Aarch64ExceptionFrame>::zeroed().assume_init() };
 
     dispatch_thread_locked(sched, new_id, &mut frame, cpu_id);
@@ -1598,6 +1709,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     }
 
     crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
+    crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
 
     unsafe {
         aarch64_enter_exception_frame(&frame as *const Aarch64ExceptionFrame);
@@ -1606,7 +1718,6 @@ extern "C" fn inline_schedule_trampoline() -> ! {
 
 pub fn schedule_from_kernel() {
     let saved_daif = read_daif();
-    let return_daif = schedule_return_daif(saved_daif);
     unsafe {
         crate::arch_impl::aarch64::cpu::disable_interrupts();
     }
@@ -1617,7 +1728,7 @@ pub fn schedule_from_kernel() {
         Some(s) => s,
         None => {
             unsafe {
-                core::arch::asm!("msr daif, {}", in(reg) return_daif, options(nomem, nostack));
+                core::arch::asm!("msr daifclr, #3; isb", options(nomem, nostack));
             }
             return;
         }
@@ -1643,7 +1754,7 @@ pub fn schedule_from_kernel() {
     let Some((old_id, new_id, should_requeue_old)) = schedule_result else {
         drop(guard);
         unsafe {
-            core::arch::asm!("msr daif, {}", in(reg) return_daif, options(nomem, nostack));
+            core::arch::asm!("msr daifclr, #3; isb", options(nomem, nostack));
         }
         return;
     };
@@ -1654,7 +1765,7 @@ pub fn schedule_from_kernel() {
         }
         drop(guard);
         unsafe {
-            core::arch::asm!("msr daif, {}", in(reg) return_daif, options(nomem, nostack));
+            core::arch::asm!("msr daifclr, #3; isb", options(nomem, nostack));
         }
         return;
     }
@@ -1670,16 +1781,17 @@ pub fn schedule_from_kernel() {
         Some(old_thread) => {
             old_thread.context.sp_el0 = read_sp_el0();
             old_thread.context.tpidr_el0 = read_tpidr_el0();
-            // Preserve the caller's pre-switch state, but never persist
-            // DAIF.I=1 into a parked EL1 thread. Restoring an IRQ-masked SPSR
-            // via ERET strands this CPU with interrupts disabled.
             old_thread.context.spsr_el1 = kernel_dispatch_spsr(saved_daif & 0x3C0);
+            // Mark that this thread was saved by inline schedule, so the
+            // dispatcher uses ret-based restore instead of ERET. This avoids
+            // the CPU 0 IRQ death bug (ERET into without_interrupts code).
+            old_thread.saved_by_inline_schedule = true;
             &mut old_thread.context as *mut CpuContext
         }
         None => {
             drop(guard);
             unsafe {
-                core::arch::asm!("msr daif, {}", in(reg) return_daif, options(nomem, nostack));
+                core::arch::asm!("msr daifclr, #3; isb", options(nomem, nostack));
             }
             return;
         }
@@ -1709,12 +1821,15 @@ pub fn schedule_from_kernel() {
     }
 
     unsafe {
-        // Execution reaches here only when this thread is later redispatched.
-        // The trampoline snapshots old_thread.context.x30 into elr_el1, and the
-        // resume happens through aarch64_enter_exception_frame/ERET back to this
-        // call site rather than via a raw `ret` from aarch64_inline_schedule_switch.
-        core::arch::asm!("msr daif, {}", in(reg) return_daif, options(nomem, nostack));
-        core::arch::asm!("msr daifclr, #3", options(nomem, nostack));
+        // Execution reaches here when this thread is re-dispatched via
+        // aarch64_ret_to_kernel_context (ret to saved x30).
+        //
+        // Like Linux's finish_task_switch: unconditionally enable IRQs.
+        // schedule_from_kernel() always returns with IRQs enabled regardless
+        // of the caller's IRQ state. This prevents the CPU 0 IRQ death bug
+        // where a thread resumes inside a without_interrupts block and
+        // re-masks DAIF.I permanently.
+        core::arch::asm!("msr daifclr, #3; isb", options(nomem, nostack));
     }
 }
 

@@ -268,31 +268,16 @@ impl Completion {
                         return Ok(true);
                     }
 
+                    // Yield CPU via schedule (Linux-equivalent wait_for_completion).
+                    // schedule_from_kernel() blocks this thread (BlockedOnIO) and
+                    // switches to another. The AHCI ISR calls complete() →
+                    // unblock_for_io() to wake us. After re-dispatch, ensure IRQs
+                    // are enabled and give the CPU a window to take any pending
+                    // interrupt before re-entering the scheduler.
                     #[cfg(target_arch = "aarch64")]
-                    crate::task::scheduler::schedule();
+                    crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
                     #[cfg(not(target_arch = "aarch64"))]
                     Cpu::halt_with_interrupts();
-
-                    #[cfg(target_arch = "aarch64")]
-                    let daif_after_schedule: u64 = {
-                        let daif: u64;
-                        unsafe {
-                            core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack));
-                        }
-                        daif
-                    };
-                    #[cfg(target_arch = "aarch64")]
-                    unsafe {
-                        // schedule_from_kernel() returns via ERET; give any
-                        // queued IRQ a chance to preempt this waiter before it
-                        // can immediately block again on another I/O path.
-                        core::arch::asm!("msr daifclr, #3", options(nostack, preserves_flags));
-                        core::arch::asm!("isb", options(nostack, preserves_flags));
-                    }
-                    #[cfg(target_arch = "aarch64")]
-                    crate::drivers::ahci::maybe_dump_wait_cmd_slot0_post_schedule(
-                        daif_after_schedule,
-                    );
 
                     // Clear BlockedOnIO state after wake (could be timer or ISR).
                     clear_blocked_in_syscall_current();

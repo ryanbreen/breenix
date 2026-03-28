@@ -450,6 +450,14 @@ pub struct Thread {
     /// This prevents the scheduler from restoring stale userspace context.
     pub blocked_in_syscall: bool,
 
+    /// Was this thread's context saved by schedule_from_kernel() (inline schedule)?
+    /// When true, the thread should be resumed via ret-based dispatch (restore
+    /// callee-saved regs + SP, then ret to x30) instead of ERET. This avoids
+    /// the CPU 0 IRQ death bug where ERET dispatches a thread into code that
+    /// re-masks DAIF.I (e.g., inside a without_interrupts block).
+    /// Matches Linux's cpu_switch_to approach: kernel-to-kernel switches use ret.
+    pub saved_by_inline_schedule: bool,
+
     /// Saved userspace context when blocked in syscall (for signal delivery)
     /// When a thread blocks in a syscall (pause/waitpid), we save the pre-syscall
     /// userspace context here. If a signal arrives while blocked, we use this
@@ -491,6 +499,7 @@ impl Clone for Thread {
             privilege: self.privilege,
             has_started: self.has_started,
             blocked_in_syscall: self.blocked_in_syscall,
+            saved_by_inline_schedule: false,
             saved_userspace_context: self.saved_userspace_context.clone(),
             wake_time_ns: self.wake_time_ns,
             run_start_ticks: self.run_start_ticks,
@@ -553,6 +562,7 @@ impl Thread {
             privilege: ThreadPrivilege::Kernel,
             has_started: false,        // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
+            saved_by_inline_schedule: false,
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
@@ -610,6 +620,7 @@ impl Thread {
             privilege: ThreadPrivilege::Kernel,
             has_started: false,
             blocked_in_syscall: false,
+            saved_by_inline_schedule: false,
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
@@ -654,6 +665,7 @@ impl Thread {
             privilege,
             has_started: false,        // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
+            saved_by_inline_schedule: false,
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
@@ -697,6 +709,7 @@ impl Thread {
             privilege,
             has_started: false,
             blocked_in_syscall: false,
+            saved_by_inline_schedule: false,
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
@@ -753,6 +766,7 @@ impl Thread {
             privilege: ThreadPrivilege::User,
             has_started: false,        // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
+            saved_by_inline_schedule: false,
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
@@ -804,6 +818,7 @@ impl Thread {
             privilege: ThreadPrivilege::User,
             has_started: false,
             blocked_in_syscall: false,
+            saved_by_inline_schedule: false,
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
@@ -880,6 +895,7 @@ impl Thread {
             privilege,
             has_started: false,        // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
+            saved_by_inline_schedule: false,
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
@@ -919,6 +935,7 @@ impl Thread {
             privilege,
             has_started: false,
             blocked_in_syscall: false,
+            saved_by_inline_schedule: false,
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,

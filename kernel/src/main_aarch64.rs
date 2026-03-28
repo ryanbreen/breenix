@@ -1212,17 +1212,17 @@ fn load_test_binaries_from_ext2() {
             };
 
             // Try each search directory until we find the binary
-            let mut found_inode = None;
+            let mut found_entry = None;
             for dir in &search_dirs {
                 let path = format!("{}/{}", dir, name);
                 if let Ok(num) = fs.resolve_path(&path) {
-                    found_inode = Some(num);
+                    found_entry = Some((num, path));
                     break;
                 }
             }
 
-            let inode_num = match found_inode {
-                Some(num) => num,
+            let (inode_num, resolved_path) = match found_entry {
+                Some(entry) => entry,
                 None => {
                     // Binary not present in any search path - skip silently
                     continue;
@@ -1241,7 +1241,7 @@ fn load_test_binaries_from_ext2() {
             match fs.read_file_content(&inode) {
                 Ok(data) => data,
                 Err(e) => {
-                    serial_println!("[test] Failed to read {}: {}", path, e);
+                    serial_println!("[test] Failed to read {}: {}", resolved_path, e);
                     failed += 1;
                     continue;
                 }

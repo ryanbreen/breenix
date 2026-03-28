@@ -609,6 +609,7 @@ irq_handler:
 1:
     msr elr_el1, x16
     ldr x16, [sp, #256]      // x16 = frame.spsr
+    bic x16, x16, #0x80      // Clear DAIF.I — never ERET with IRQs masked
     msr spsr_el1, x16
 
     // Restore all general-purpose registers from the exception frame
@@ -666,6 +667,7 @@ irq_handler:
     ldr x16, [sp, #248]      // x16 = frame.elr
     msr elr_el1, x16
     ldr x16, [sp, #256]      // x16 = frame.spsr
+    bic x16, x16, #0x80      // Clear DAIF.I — never ERET with IRQs masked
     msr spsr_el1, x16
 
     ldp x0, x1, [sp, #0]
