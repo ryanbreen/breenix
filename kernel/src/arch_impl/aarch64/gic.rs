@@ -1249,6 +1249,19 @@ pub fn read_gicr_ispendr0(cpu_id: usize) -> u32 {
     gicr_read(cpu_offset + GICR_SGI_OFFSET, 0x200) // ISPENDR0 offset
 }
 
+/// Read the priority of a specific interrupt (0-31) from CPU 0's GICR.
+/// Returns the 8-bit priority value (lower = higher priority).
+pub fn read_gicr_priority_cpu0(irq: u32) -> u8 {
+    if !GICR_VALID.load(Ordering::Relaxed) {
+        return 0xFF;
+    }
+    let cpu_offset = 0; // CPU 0
+    let reg_index = (irq / 4) as usize;
+    let byte_index = (irq % 4) as usize;
+    let reg_val = gicr_read(cpu_offset + GICR_SGI_OFFSET, GICR_IPRIORITYR0 + reg_index * 4);
+    ((reg_val >> (byte_index * 8)) & 0xFF) as u8
+}
+
 /// Get the active GIC version (for diagnostic purposes).
 pub fn active_version() -> u8 {
     ACTIVE_GIC_VERSION.load(Ordering::Relaxed)

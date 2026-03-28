@@ -1339,6 +1339,19 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
             cpu0_ppi_pending, ppi27_pending,
         );
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let ppi27_priority = crate::arch_impl::aarch64::gic::read_gicr_priority_cpu0(27);
+        let spi34_priority = {
+            // SPI 34 priority is in GICD_IPRIORITYR[34]
+            let reg = ahci_gicd_read_u32(0x400 + (34 / 4) * 4); // GICD_IPRIORITYR base = 0x400
+            ((reg >> ((34 % 4) * 8)) & 0xFF) as u8
+        };
+        crate::serial_println!(
+            "[ahci]   PPI27_priority={:#x} SPI34_priority={:#x} PMR=0xf8",
+            ppi27_priority, spi34_priority,
+        );
+    }
     // Per-CPU SPSR_EL1 snapshots from the timer tick handler.
     // SPSR_EL1 is the saved PSTATE from before the interrupt was taken.
     // Bits [9:6] = pre-interrupt DAIF mask.  If bit 7 (I) is set, the CPU
