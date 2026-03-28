@@ -1629,11 +1629,14 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
 
 extern "C" fn inline_schedule_trampoline() -> ! {
     let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    cpu0_breadcrumb(cpu_id, 30); // trampoline entry
     let state = &INLINE_SCHEDULE_STATE[cpu_id];
     let sched_ptr = state.scheduler_ptr.swap(0, Ordering::Relaxed) as *mut Scheduler;
     let old_id = state.old_thread_id.load(Ordering::Relaxed);
     let new_id = state.new_thread_id.load(Ordering::Relaxed);
     let should_requeue_old = state.should_requeue_old.swap(false, Ordering::Relaxed);
+
+    cpu0_breadcrumb(cpu_id, 31); // after reading INLINE_SCHEDULE_STATE
 
     if sched_ptr.is_null() {
         idle_loop_arm64();
@@ -1648,16 +1651,19 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     }
 
     sched.commit_cpu_state_after_save(new_id);
+    cpu0_breadcrumb(cpu_id, 32); // after commit_cpu_state_after_save
     sched.cpu_state[cpu_id].previous_thread = None;
     if should_requeue_old {
         sched.requeue_thread_after_save(old_id);
     }
+    cpu0_breadcrumb(cpu_id, 33); // after requeue_thread_after_save
 
     // Determine dispatch mode for the new thread.
     // Kernel threads that have started (saved context exists) use ret-based
     // dispatch to avoid ERET restoring PSTATE.I from the saved SPSR. This
     // prevents CPU IRQ death when a thread was interrupted inside
     // without_interrupts. User threads, idle, and first-run use ERET.
+    cpu0_breadcrumb(cpu_id, 34); // before ret-based dispatch check
     let is_idle = sched.is_idle_thread_inner(new_id);
     let ret_dispatch_info = if !is_idle {
         sched.get_thread_mut(new_id).and_then(|t| {
@@ -1687,6 +1693,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     };
 
     if let Some((thread_ptr, ctx_ptr, resume_pc, kst, sp_el0)) = ret_dispatch_info {
+        cpu0_breadcrumb(cpu_id, 35); // taking ret-based dispatch
         // ret-based dispatch: restore callee-saved regs + SP, branch to
         // resume_pc (= elr_el1). No ERET, no SPSR, no DAIF from the thread.
         // IRQs are enabled by the assembly before branching.
@@ -1715,6 +1722,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
         crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
 
+        cpu0_breadcrumb(cpu_id, 36); // before aarch64_ret_to_kernel_context
         unsafe {
             aarch64_ret_to_kernel_context(ctx_ptr, resume_pc);
         }
@@ -1722,9 +1730,12 @@ extern "C" fn inline_schedule_trampoline() -> ! {
 
     // ERET-based dispatch: for idle threads, user threads, and first-run
     // kernel threads that haven't been context-switched yet.
+    cpu0_breadcrumb(cpu_id, 40); // taking ERET-based dispatch
     let mut frame = unsafe { MaybeUninit::<Aarch64ExceptionFrame>::zeroed().assume_init() };
 
+    cpu0_breadcrumb(cpu_id, 41); // before dispatch_thread_locked
     dispatch_thread_locked(sched, new_id, &mut frame, cpu_id);
+    cpu0_breadcrumb(cpu_id, 42); // after dispatch_thread_locked
 
     let idle_addr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
     let dispatch_path = if frame.elr == idle_addr {
@@ -1760,6 +1771,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
     crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
 
+    cpu0_breadcrumb(cpu_id, 43); // before aarch64_enter_exception_frame
     unsafe {
         aarch64_enter_exception_frame(&frame as *const Aarch64ExceptionFrame);
     }
