@@ -205,6 +205,19 @@ static PORT_ACTIVE_CMD_NUM: [AtomicU32; MAX_AHCI_PORTS] =
 static PORT_ACTIVE_MASK: [AtomicU32; MAX_AHCI_PORTS] =
     [const { AtomicU32::new(0) }; MAX_AHCI_PORTS];
 
+/// Per-port ISR hit counter: incremented each time the ISR sees PORT_IS != 0 for a port.
+static AHCI_ISR_PORT_HIT: [AtomicU32; MAX_AHCI_PORTS] =
+    [const { AtomicU32::new(0) }; MAX_AHCI_PORTS];
+/// Per-port completion hit counter: incremented each time the ISR calls complete() for a port.
+static AHCI_ISR_COMPLETE_HIT: [AtomicU32; MAX_AHCI_PORTS] =
+    [const { AtomicU32::new(0) }; MAX_AHCI_PORTS];
+/// ICC_PMR_EL1 value captured at ISR entry (last invocation).
+static AHCI_ISR_LAST_PMR: AtomicU64 = AtomicU64::new(0);
+/// PORT_IS value seen by the ISR for port 1 (last invocation that saw port 1 active).
+static AHCI_LAST_ISR_PORT1_IS: AtomicU32 = AtomicU32::new(0);
+/// cmd_num swapped from PORT_ACTIVE_CMD_NUM[1] (last ISR invocation for port 1).
+static AHCI_LAST_ISR_PORT1_CMD_NUM: AtomicU32 = AtomicU32::new(0);
+
 /// Per-port I/O serialisation lock.
 ///
 /// Serialises transitions of `PORT_IO_IN_PROGRESS` and short setup/finish
@@ -1260,6 +1273,19 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
         pmr,
         rpr
     );
+    crate::serial_println!(
+        "[ahci]   port_isr_hits=[{},{}] complete_hits=[{},{}]",
+        AHCI_ISR_PORT_HIT[0].load(Ordering::Relaxed),
+        AHCI_ISR_PORT_HIT[1].load(Ordering::Relaxed),
+        AHCI_ISR_COMPLETE_HIT[0].load(Ordering::Relaxed),
+        AHCI_ISR_COMPLETE_HIT[1].load(Ordering::Relaxed),
+    );
+    crate::serial_println!(
+        "[ahci]   isr_last_pmr={:#x} last_port1_IS={:#x} last_port1_cmd_num={}",
+        AHCI_ISR_LAST_PMR.load(Ordering::Relaxed),
+        AHCI_LAST_ISR_PORT1_IS.load(Ordering::Relaxed),
+        AHCI_LAST_ISR_PORT1_CMD_NUM.load(Ordering::Relaxed),
+    );
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -1935,6 +1961,16 @@ pub fn handle_interrupt() {
 
     let _count = AHCI_ISR_COUNT.fetch_add(1, Ordering::Relaxed);
 
+    // Snapshot ICC_PMR_EL1 at ISR entry for diagnostic visibility.
+    #[cfg(target_arch = "aarch64")]
+    {
+        let pmr: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, icc_pmr_el1", out(reg) pmr, options(nomem, nostack));
+        }
+        AHCI_ISR_LAST_PMR.store(pmr, Ordering::Relaxed);
+    }
+
     // Read the global interrupt status.
     let hba_is = hba_read(abar, HBA_IS);
 
@@ -1957,6 +1993,10 @@ pub fn handle_interrupt() {
         if is == 0 {
             continue;
         }
+        AHCI_ISR_PORT_HIT[port].fetch_add(1, Ordering::Relaxed);
+        if port == 1 {
+            AHCI_LAST_ISR_PORT1_IS.store(is, Ordering::Relaxed);
+        }
         ack_port_interrupt(abar, port, is);
 
         if (is & (PORT_IRQ_COMPLETE | PORT_IRQ_ERROR)) != 0 {
@@ -1970,8 +2010,12 @@ pub fn handle_interrupt() {
                 // causing the waiter to time out.
                 let cmd_num =
                     PORT_ACTIVE_CMD_NUM[port].swap(0, Ordering::AcqRel);
+                if port == 1 {
+                    AHCI_LAST_ISR_PORT1_CMD_NUM.store(cmd_num, Ordering::Relaxed);
+                }
                 if cmd_num != 0 {
                     AHCI_COMPLETIONS[port][0].complete(cmd_num);
+                    AHCI_ISR_COMPLETE_HIT[port].fetch_add(1, Ordering::Relaxed);
                 }
                 PORT_ACTIVE_MASK[port].store(0, Ordering::Release);
             }
