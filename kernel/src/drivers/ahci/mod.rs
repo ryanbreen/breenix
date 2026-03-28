@@ -1323,6 +1323,22 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
             gicd_isenabler1, spi34_enabled,
         );
     }
+    // Read CPU 0's GICR PPI enable and pending state (redistributor-level)
+    #[cfg(target_arch = "aarch64")]
+    {
+        let cpu0_ppi_enable = crate::arch_impl::aarch64::gic::read_gicr_isenabler0(0);
+        let ppi27_enabled = (cpu0_ppi_enable >> 27) & 1;
+        crate::serial_println!(
+            "[ahci]   CPU0_GICR_ISENABLER0={:#010x} PPI27_enabled={}",
+            cpu0_ppi_enable, ppi27_enabled,
+        );
+        let cpu0_ppi_pending = crate::arch_impl::aarch64::gic::read_gicr_ispendr0(0);
+        let ppi27_pending = (cpu0_ppi_pending >> 27) & 1;
+        crate::serial_println!(
+            "[ahci]   CPU0_GICR_ISPENDR0={:#010x} PPI27_pending={}",
+            cpu0_ppi_pending, ppi27_pending,
+        );
+    }
     // Per-CPU SPSR_EL1 snapshots from the timer tick handler.
     // SPSR_EL1 is the saved PSTATE from before the interrupt was taken.
     // Bits [9:6] = pre-interrupt DAIF mask.  If bit 7 (I) is set, the CPU

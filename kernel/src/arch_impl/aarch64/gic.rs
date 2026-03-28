@@ -1227,6 +1227,28 @@ fn init_gicv3_cpu_interface() {
     }
 }
 
+/// Read GICR_ISENABLER0 for a specific CPU (SGI/PPI enable register).
+/// Returns the 32-bit enable mask for interrupts 0-31 (SGIs 0-15, PPIs 16-31).
+/// PPI 27 (timer) = bit 27.
+pub fn read_gicr_isenabler0(cpu_id: usize) -> u32 {
+    if !GICR_VALID.load(Ordering::Relaxed) {
+        return 0xDEAD_BEEF; // sentinel: GICR not initialized
+    }
+    let cpu_offset = cpu_id * GICR_FRAME_SIZE;
+    gicr_read(cpu_offset + GICR_SGI_OFFSET, GICR_ISENABLER0)
+}
+
+/// Read GICR_ISPENDR0 for a specific CPU (SGI/PPI pending register).
+/// Returns the 32-bit pending mask for interrupts 0-31 (SGIs 0-15, PPIs 16-31).
+/// PPI 27 (timer) = bit 27.
+pub fn read_gicr_ispendr0(cpu_id: usize) -> u32 {
+    if !GICR_VALID.load(Ordering::Relaxed) {
+        return 0xDEAD_BEEF; // sentinel: GICR not initialized
+    }
+    let cpu_offset = cpu_id * GICR_FRAME_SIZE;
+    gicr_read(cpu_offset + GICR_SGI_OFFSET, 0x200) // ISPENDR0 offset
+}
+
 /// Get the active GIC version (for diagnostic purposes).
 pub fn active_version() -> u8 {
     ACTIVE_GIC_VERSION.load(Ordering::Relaxed)
