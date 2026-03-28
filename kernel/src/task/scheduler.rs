@@ -50,13 +50,79 @@ use super::thread::{Thread, ThreadState};
 use crate::log_serial_println;
 use alloc::{boxed::Box, collections::BinaryHeap, collections::VecDeque};
 use core::cmp::Reverse;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
 // Architecture-generic HAL wrappers for interrupt control.
 #[cfg(not(target_arch = "aarch64"))]
 use crate::arch_interrupts_enabled as are_enabled;
 use crate::arch_without_interrupts as without_interrupts;
+
+// ---------------------------------------------------------------------------
+// Lock-free ISR wakeup buffer
+//
+// The AHCI ISR calls `isr_unblock_for_io(tid)` which writes the thread ID
+// into a per-CPU slot array using atomic CAS — no lock, no allocation.
+// The scheduler drains these buffers under its own lock at the top of every
+// `schedule_deferred_requeue()` / `schedule()` call, performing the actual
+// state transition + queue push.
+//
+// This breaks the ISR's dependency on the global SCHEDULER mutex, which was
+// the root cause of CPU 0's IRQ death: the AHCI ISR on CPU 0 would spin on
+// the lock (held by another CPU) with IRQs masked, starving the timer.
+// ---------------------------------------------------------------------------
+
+const ISR_WAKEUP_SLOTS: usize = 32;
+const ISR_WAKEUP_EMPTY: u64 = 0;
+
+/// Per-CPU lock-free buffer for ISR wakeups.
+/// ISR writes thread IDs here via atomic CAS. Scheduler drains on each schedule.
+struct IsrWakeupBuffer {
+    slots: [AtomicU64; ISR_WAKEUP_SLOTS],
+}
+
+// SAFETY: All access is via atomics.
+unsafe impl Sync for IsrWakeupBuffer {}
+
+impl IsrWakeupBuffer {
+    const fn new() -> Self {
+        Self {
+            slots: [const { AtomicU64::new(ISR_WAKEUP_EMPTY) }; ISR_WAKEUP_SLOTS],
+        }
+    }
+
+    /// Push a thread ID (called from ISR context, no locks).
+    /// Returns true if pushed, false if buffer full.
+    fn push(&self, tid: u64) -> bool {
+        for slot in &self.slots {
+            if slot
+                .compare_exchange(
+                    ISR_WAKEUP_EMPTY,
+                    tid,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                return true;
+            }
+        }
+        false // Buffer full — should never happen with 32 slots
+    }
+
+    /// Drain all entries (called from scheduler under lock).
+    fn drain(&self, out: &mut alloc::vec::Vec<u64>) {
+        for slot in &self.slots {
+            let tid = slot.swap(ISR_WAKEUP_EMPTY, Ordering::AcqRel);
+            if tid != ISR_WAKEUP_EMPTY {
+                out.push(tid);
+            }
+        }
+    }
+}
+
+static ISR_WAKEUP_BUFFERS: [IsrWakeupBuffer; 8] =
+    [const { IsrWakeupBuffer::new() }; 8];
 
 /// Global scheduler instance
 static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
@@ -577,6 +643,17 @@ impl Scheduler {
         #[cfg(not(target_arch = "x86_64"))]
         let debug_log = false;
 
+        // Drain lock-free ISR wakeup buffers (see schedule_deferred_requeue for rationale).
+        {
+            let mut wakeups = alloc::vec::Vec::new();
+            for buf in ISR_WAKEUP_BUFFERS.iter() {
+                buf.drain(&mut wakeups);
+            }
+            for tid in wakeups {
+                self.unblock_for_io(tid);
+            }
+        }
+
         // If current thread is still runnable, put it back in ready queue
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if current_id != self.cpu_state[Self::current_cpu_id()].idle_thread {
@@ -815,6 +892,20 @@ impl Scheduler {
         let current_is_idle =
             self.cpu_state[cpu].current_thread == Some(self.cpu_state[cpu].idle_thread);
         set_cpu_idle(cpu, current_is_idle);
+
+        // Drain lock-free ISR wakeup buffers — ISRs (AHCI, etc.) push thread IDs
+        // here via isr_unblock_for_io() to avoid spinning on SCHEDULER from ISR
+        // context.  We drain ALL CPUs' buffers because the ISR that completed the
+        // I/O may have run on any CPU.
+        {
+            let mut wakeups = alloc::vec::Vec::new();
+            for buf in ISR_WAKEUP_BUFFERS.iter() {
+                buf.drain(&mut wakeups);
+            }
+            for tid in wakeups {
+                self.unblock_for_io(tid);
+            }
+        }
 
         // If current thread is still runnable, mark it as Ready but DON'T add to queue
         let mut should_requeue_old = false;
@@ -2343,6 +2434,70 @@ pub fn is_need_resched() -> bool {
     {
         // ARM64: Check per-CPU flag and global atomic
         crate::per_cpu_aarch64::need_resched() || NEED_RESCHED.load(Ordering::Relaxed)
+    }
+}
+
+/// Lock-free ISR wakeup: push thread ID to per-CPU wakeup buffer.
+///
+/// Called from the AHCI ISR (via `Completion::complete()`) instead of
+/// `with_scheduler(|s| s.unblock_for_io(tid))`.  This avoids acquiring the
+/// global SCHEDULER mutex from ISR context, which was the root cause of
+/// CPU 0's IRQ death: the ISR would spin on the lock with IRQs masked,
+/// starving the timer for milliseconds.
+///
+/// The scheduler drains the buffer under its own lock at the top of every
+/// `schedule_deferred_requeue()` / `schedule()` call.
+pub fn isr_unblock_for_io(tid: u64) {
+    let cpu = current_cpu_id_raw();
+    if cpu < ISR_WAKEUP_BUFFERS.len() {
+        ISR_WAKEUP_BUFFERS[cpu].push(tid);
+    }
+    set_need_resched();
+    // Send IPI to idle CPUs so the buffer is drained promptly.
+    #[cfg(target_arch = "aarch64")]
+    {
+        let online = crate::arch_impl::aarch64::smp::cpus_online() as usize;
+        for target in 0..online.min(MAX_CPUS) {
+            if target != cpu && is_cpu_idle(target) {
+                crate::arch_impl::aarch64::gic::send_sgi(
+                    crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
+                    target as u8,
+                );
+            }
+        }
+    }
+}
+
+/// Read the current CPU ID directly from hardware (MPIDR_EL1 on ARM64).
+/// Safe to call from ISR context — no per-CPU data, no locks.
+#[inline]
+fn current_cpu_id_raw() -> usize {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mpidr: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
+        }
+        (mpidr & 0xFF) as usize
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        0
+    }
+}
+
+/// Check if a CPU is idle without acquiring any lock (raw version for ISR use).
+/// On non-aarch64, always returns false.
+#[allow(dead_code)]
+pub fn is_cpu_idle_raw(cpu_id: usize) -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        is_cpu_idle(cpu_id)
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let _ = cpu_id;
+        false
     }
 }
 
