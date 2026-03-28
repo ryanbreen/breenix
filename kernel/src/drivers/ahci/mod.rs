@@ -1308,11 +1308,27 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
     // CPU 0 timer ELR and breadcrumb from timer_interrupt.rs
     #[cfg(target_arch = "aarch64")]
     {
-        use crate::arch_impl::aarch64::timer_interrupt::{CPU0_LAST_TIMER_ELR, CPU0_BREADCRUMB_ID};
+        use crate::arch_impl::aarch64::timer_interrupt::{
+            CPU0_LAST_TIMER_ELR, CPU0_BREADCRUMB_ID,
+            CPU0_DISPATCH_TID, CPU0_DISPATCH_ELR, CPU0_DISPATCH_SPSR,
+        };
         crate::serial_println!(
             "[ahci]   cpu0_last_timer_elr={:#x} cpu0_breadcrumb={}",
             CPU0_LAST_TIMER_ELR.load(Ordering::Relaxed),
             CPU0_BREADCRUMB_ID.load(Ordering::Relaxed),
+        );
+        crate::serial_println!(
+            "[ahci]   cpu0_dispatch: tid={} elr={:#x} spsr={:#x}",
+            CPU0_DISPATCH_TID.load(Ordering::Relaxed),
+            CPU0_DISPATCH_ELR.load(Ordering::Relaxed),
+            CPU0_DISPATCH_SPSR.load(Ordering::Relaxed),
+        );
+        let spsr = CPU0_DISPATCH_SPSR.load(Ordering::Relaxed);
+        let spsr_after_bic = spsr & !0xC0u64;
+        crate::serial_println!(
+            "[ahci]   cpu0_dispatch_spsr_after_bic={:#x} DAIF_bits={:#x}",
+            spsr_after_bic,
+            (spsr_after_bic >> 6) & 0xF,
         );
     }
     // Read additional GIC CPU interface state

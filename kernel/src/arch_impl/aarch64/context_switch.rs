@@ -1768,6 +1768,16 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         crate::task::scheduler::force_unlock_scheduler();
     }
 
+    // Capture what CPU 0 is dispatching via ERET and where it's going
+    if cpu_id == 0 {
+        use crate::arch_impl::aarch64::timer_interrupt::{
+            CPU0_DISPATCH_TID, CPU0_DISPATCH_ELR, CPU0_DISPATCH_SPSR,
+        };
+        CPU0_DISPATCH_TID.store(new_id, Ordering::Relaxed);
+        CPU0_DISPATCH_ELR.store(frame.elr, Ordering::Relaxed);
+        CPU0_DISPATCH_SPSR.store(frame.spsr, Ordering::Relaxed);
+    }
+
     crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
     crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
 
@@ -2125,6 +2135,8 @@ fn set_next_ttbr0_for_thread(thread_id: u64) -> TtbrResult {
 pub extern "C" fn idle_loop_arm64() -> ! {
     // Get CPU ID once (cheap MRS).
     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    // Breadcrumb 50: CPU 0 reached the idle loop after ERET dispatch
+    cpu0_breadcrumb(cpu_id, 50);
     loop {
         // Diagnostic: track idle loop iterations per CPU.
         if cpu_id < 8 {

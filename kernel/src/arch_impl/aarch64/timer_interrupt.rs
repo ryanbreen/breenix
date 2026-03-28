@@ -115,6 +115,12 @@ pub static CPU0_LAST_TIMER_ELR: AtomicU64 = AtomicU64::new(0);
 ///   23 = with_scheduler() after DAIF restore
 pub static CPU0_BREADCRUMB_ID: AtomicU64 = AtomicU64::new(0);
 
+/// CPU 0 dispatch diagnostics — set in the trampoline just before ERET.
+/// After CPU 0 dies, these identify the thread and destination.
+pub static CPU0_DISPATCH_TID: AtomicU64 = AtomicU64::new(0);
+pub static CPU0_DISPATCH_ELR: AtomicU64 = AtomicU64::new(0);
+pub static CPU0_DISPATCH_SPSR: AtomicU64 = AtomicU64::new(0);
+
 /// Whether the timer is initialized
 static TIMER_INITIALIZED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
