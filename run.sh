@@ -943,10 +943,12 @@ rm -f "$QMP_SOCK"
 QMP_OPTS="-qmp unix:${QMP_SOCK},server,nowait"
 
 # GDB stub (--debug flag)
+# -s = GDB server on localhost:1234
+# -S = halt CPU at startup (wait for GDB to continue)
 GDB_OPTS=""
 if [ "$DEBUG" = true ]; then
-    GDB_OPTS="-s"
-    echo "GDB stub: target remote :1234"
+    GDB_OPTS="-s -S"
+    echo "GDB stub: target remote :1234 (CPU halted, waiting for GDB)"
 fi
 
 # Pass resolution to kernel via fw_cfg
