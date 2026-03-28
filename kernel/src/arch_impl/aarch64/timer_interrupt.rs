@@ -60,9 +60,14 @@ static CURRENT_QUANTUM: [AtomicU32; crate::arch_impl::aarch64::constants::MAX_CP
     AtomicU32::new(TIME_QUANTUM),
 ];
 
-/// Per-CPU DAIF snapshot, updated every timer tick.
-/// Index = CPU ID, value = DAIF register value.
+/// Per-CPU SPSR_EL1 snapshot, updated every timer tick.
+/// Index = CPU ID, value = SPSR_EL1 (saved PSTATE from before the interrupt).
+/// Bits [9:6] contain the DAIF bits that were active when the CPU was interrupted.
 pub static TIMER_TICK_DAIF: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+
+/// Per-CPU tick counter, incremented every timer tick.
+/// If CPU 0 stops receiving interrupts, its count will stall while others advance.
+pub static TIMER_TICK_COUNT: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 
 /// Whether the timer is initialized
 static TIMER_INITIALIZED: core::sync::atomic::AtomicBool =
@@ -285,14 +290,17 @@ pub extern "C" fn timer_interrupt_handler() {
 
     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
 
-    // Snapshot DAIF for this CPU (before any other work) so AHCI timeout
-    // diagnostics can inspect CPU 0's interrupt mask remotely.
-    let daif_snap: u64;
+    // Snapshot SPSR_EL1 for this CPU — this is the saved PSTATE from BEFORE
+    // the interrupt was taken.  Bits [9:6] are the pre-interrupt DAIF mask.
+    // Reading DAIF inside the handler always yields 0x3c0 (all masked on entry),
+    // which is useless.  SPSR_EL1 tells us the actual pre-interrupt state.
+    let spsr: u64;
     unsafe {
-        core::arch::asm!("mrs {}, daif", out(reg) daif_snap, options(nomem, nostack));
+        core::arch::asm!("mrs {}, spsr_el1", out(reg) spsr, options(nomem, nostack));
     }
     if cpu_id < 8 {
-        TIMER_TICK_DAIF[cpu_id].store(daif_snap, Ordering::Relaxed);
+        TIMER_TICK_DAIF[cpu_id].store(spsr, Ordering::Relaxed);
+        TIMER_TICK_COUNT[cpu_id].fetch_add(1, Ordering::Relaxed);
     }
 
     // Re-arm the timer for the next interrupt using the dynamically calculated value
