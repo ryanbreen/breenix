@@ -1427,6 +1427,21 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
             TIMER_TICK_CNTV_CTL[6].load(Ordering::Relaxed),
             TIMER_TICK_CNTV_CTL[7].load(Ordering::Relaxed),
         );
+        // Per-CPU idle loop iteration counters.
+        // If CPU 0's idle_count is advancing but tick_count is frozen, CPU 0 IS
+        // executing WFI but the timer interrupt isn't being delivered.
+        use crate::arch_impl::aarch64::timer_interrupt::IDLE_LOOP_COUNT;
+        crate::serial_println!(
+            "[ahci]   idle_count=[{},{},{},{},{},{},{},{}]",
+            IDLE_LOOP_COUNT[0].load(Ordering::Relaxed),
+            IDLE_LOOP_COUNT[1].load(Ordering::Relaxed),
+            IDLE_LOOP_COUNT[2].load(Ordering::Relaxed),
+            IDLE_LOOP_COUNT[3].load(Ordering::Relaxed),
+            IDLE_LOOP_COUNT[4].load(Ordering::Relaxed),
+            IDLE_LOOP_COUNT[5].load(Ordering::Relaxed),
+            IDLE_LOOP_COUNT[6].load(Ordering::Relaxed),
+            IDLE_LOOP_COUNT[7].load(Ordering::Relaxed),
+        );
     }
     // Read THIS CPU's timer hardware registers (per-CPU, so this is the
     // timeout thread's CPU, not necessarily CPU 0).

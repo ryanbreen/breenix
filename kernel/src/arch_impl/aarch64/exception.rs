@@ -1049,6 +1049,13 @@ pub extern "C" fn handle_irq() {
                 if irq_id == constants::SGI_RESCHEDULE {
                     // IPI reschedule: another CPU unblocked a thread and wants us to pick it up
                     crate::per_cpu_aarch64::set_need_resched(true);
+                } else if irq_id == constants::SGI_TIMER_REARM {
+                    // IPI timer re-arm: another CPU detected our timer is dead
+                    // and wants us to re-arm it. This fixes Parallels HVF vtimer
+                    // death where PPI 27 is pending but never delivered — the SGI
+                    // proves the CPU CAN receive interrupts, so re-arming the
+                    // timer here should make PPI 27 deliverable again.
+                    crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
                 }
             }
 

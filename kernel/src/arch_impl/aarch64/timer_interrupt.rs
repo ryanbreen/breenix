@@ -69,6 +69,12 @@ pub static TIMER_TICK_DAIF: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 /// If CPU 0 stops receiving interrupts, its count will stall while others advance.
 pub static TIMER_TICK_COUNT: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 
+/// Per-CPU idle loop iteration counter, incremented before each WFI.
+/// If CPU 0 stops receiving timer interrupts but this counter advances,
+/// it means CPU 0 IS in the idle loop and WFI returns (probably due to
+/// non-timer interrupts) but the timer interrupt is not being delivered.
+pub static IDLE_LOOP_COUNT: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+
 /// Per-CPU: hardware MPIDR Aff0 at last timer tick (index = software cpu_id).
 /// Used to detect cpu_id() returning wrong values after per-CPU data corruption.
 /// 0xDEAD = never updated.
@@ -379,30 +385,11 @@ pub extern "C" fn timer_interrupt_handler() {
         TIMER_TICK_HW_COUNT[hw_cpu_id].fetch_add(1, Ordering::Relaxed);
     }
 
-    // Re-arm the timer for the next interrupt using the dynamically calculated value.
-    // IMASK was set to 1 above (handler entry). arm_timer() writes a future CVAL and
-    // then clears IMASK (CTL=1), which is the Linux-matching sequence.
+    // Load ticks value early (before handler work) but defer the actual re-arm
+    // until the very end. IMASK stays set (=1) throughout the handler, giving
+    // the Parallels/HVF VMM time to observe the acknowledge via VM exits that
+    // occur during the handler work (atomic ops, MMIO reads, etc.).
     let ticks = TICKS_PER_INTERRUPT.load(Ordering::Relaxed);
-    if crate::platform_config::is_vmware() {
-        // VMware: re-arm both timers using CVAL (absolute compare value)
-        unsafe {
-            // Virtual timer: read counter, compute future CVAL, enable+unmask
-            let vcnt: u64;
-            core::arch::asm!("mrs {}, cntvct_el0", out(reg) vcnt, options(nomem, nostack));
-            let vcval = vcnt.wrapping_add(ticks);
-            core::arch::asm!("msr cntv_cval_el0, {}", in(reg) vcval, options(nomem, nostack));
-            core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
-            // Physical timer: read counter, compute future CVAL, enable+unmask
-            let pcnt: u64;
-            core::arch::asm!("mrs {}, cntpct_el0", out(reg) pcnt, options(nomem, nostack));
-            let pcval = pcnt.wrapping_add(ticks);
-            core::arch::asm!("msr cntp_cval_el0, {}", in(reg) pcval, options(nomem, nostack));
-            core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
-            core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
-        }
-    } else {
-        arm_timer(ticks);
-    }
 
     // CPU 0 only: update global wall clock time (single atomic operation)
     if cpu_id == 0 {
@@ -468,6 +455,23 @@ pub extern "C" fn timer_interrupt_handler() {
         }
     }
 
+    // Cross-CPU timer rescue: if CPU 0's timer appears dead (tick count frozen
+    // while other CPUs are advancing), send an SGI_TIMER_REARM IPI to CPU 0.
+    // This forces CPU 0 to re-arm its vtimer from inside an interrupt handler
+    // context, which the Parallels/HVF VMM will observe on the SGI's VM exit.
+    // Only CPU 1 does this check (every 100 ticks) to avoid IPI storms.
+    if cpu_id == 1 && _count % 100 == 0 {
+        let cpu0_ticks = TIMER_TICK_COUNT[0].load(Ordering::Relaxed);
+        let my_ticks = TIMER_TICK_COUNT[1].load(Ordering::Relaxed);
+        // If CPU 0 has ≤10 ticks and we have >100, CPU 0's timer is dead
+        if cpu0_ticks <= 10 && my_ticks > 100 {
+            crate::arch_impl::aarch64::gic::send_sgi(
+                crate::arch_impl::aarch64::constants::SGI_TIMER_REARM as u8,
+                0, // target CPU 0
+            );
+        }
+    }
+
     // Decrement per-CPU quantum and check for reschedule
     let quantum_idx = if cpu_id < crate::arch_impl::aarch64::constants::MAX_CPUS {
         cpu_id
@@ -489,6 +493,30 @@ pub extern "C" fn timer_interrupt_handler() {
     // queue is empty, so the overhead is negligible for idle CPUs.
     if scheduler::is_cpu_idle(cpu_id) {
         scheduler::set_need_resched();
+    }
+
+    // Re-arm the timer at the very end of the handler.
+    // IMASK has been 1 (set at handler entry) throughout all the handler work
+    // above, giving the Parallels/HVF VMM multiple VM exit opportunities to
+    // observe the IMASK=1 acknowledge. Now we write a future CVAL and clear
+    // IMASK (CTL=1), matching Linux's set_next_event pattern.
+    if crate::platform_config::is_vmware() {
+        // VMware: re-arm both timers using CVAL (absolute compare value)
+        unsafe {
+            let vcnt: u64;
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) vcnt, options(nomem, nostack));
+            let vcval = vcnt.wrapping_add(ticks);
+            core::arch::asm!("msr cntv_cval_el0, {}", in(reg) vcval, options(nomem, nostack));
+            core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
+            let pcnt: u64;
+            core::arch::asm!("mrs {}, cntpct_el0", out(reg) pcnt, options(nomem, nostack));
+            let pcval = pcnt.wrapping_add(ticks);
+            core::arch::asm!("msr cntp_cval_el0, {}", in(reg) pcval, options(nomem, nostack));
+            core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
+        }
+    } else {
+        arm_timer(ticks);
     }
 
     // Exit IRQ context (decrement HARDIRQ count)

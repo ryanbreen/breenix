@@ -1799,6 +1799,12 @@ pub fn schedule_from_kernel() {
         unsafe {
             core::arch::asm!("msr daifclr, #3; isb", options(nomem, nostack));
         }
+        // Re-arm timer as safety net: if the vtimer is dead (Parallels HVF
+        // bug), re-arming here gives the VMM another chance on the next
+        // interrupt or WFI.
+        if crate::arch_impl::aarch64::timer_interrupt::is_initialized() {
+            crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
+        }
         return;
     };
 
@@ -1873,6 +1879,13 @@ pub fn schedule_from_kernel() {
         // where a thread resumes inside a without_interrupts block and
         // re-masks DAIF.I permanently.
         core::arch::asm!("msr daifclr, #3; isb", options(nomem, nostack));
+    }
+
+    // Re-arm timer as safety net after context switch resume.
+    // If the Parallels/HVF vtimer is dead on this CPU, re-arming here
+    // gives the VMM another chance to observe the timer state.
+    if crate::arch_impl::aarch64::timer_interrupt::is_initialized() {
+        crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
     }
 }
 
@@ -2068,9 +2081,29 @@ fn set_next_ttbr0_for_thread(thread_id: u64) -> TtbrResult {
 // =============================================================================
 
 /// ARM64 idle loop - wait for interrupts.
+///
+/// Before each WFI, unconditionally re-arm the virtual timer. This works
+/// around Parallels/HVF vtimer death: if the VMM permanently masks the
+/// physical vtimer (because it never saw the guest acknowledge via IMASK),
+/// re-arming in the idle loop gives the VMM a fresh chance to observe the
+/// timer state on the WFI trap. Writing CVAL (future) then CTL=1 ensures
+/// ISTATUS=0 at the WFI exit, which should cause the VMM to re-arm the
+/// physical vtimer.
 #[no_mangle]
 pub extern "C" fn idle_loop_arm64() -> ! {
+    // Get CPU ID once (cheap MRS).
+    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
     loop {
+        // Diagnostic: track idle loop iterations per CPU.
+        if cpu_id < 8 {
+            crate::arch_impl::aarch64::timer_interrupt::IDLE_LOOP_COUNT[cpu_id]
+                .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
+        // Re-arm timer before WFI as a safety net against HVF vtimer death.
+        // This is cheap (4 instructions) and harmless if the timer is already armed.
+        if crate::arch_impl::aarch64::timer_interrupt::is_initialized() {
+            crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
+        }
         unsafe {
             core::arch::asm!(
                 "msr daifclr, #0xf", // Enable all interrupts
