@@ -1639,19 +1639,6 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         );
     }
 
-    // Force a VM exit to sync HVF vtimer state.
-    // On Apple HVF, the vtimer is only checked at VM exits. Without this,
-    // the re-armed timer might not be visible to the hypervisor until the
-    // next natural VM exit (which could be seconds away if the dispatched
-    // thread does pure computation). Reading GICD_CTLR is a safe MMIO
-    // operation that forces the hypervisor to process pending state.
-    unsafe {
-        let gicd_base = crate::platform_config::gicd_base_phys() as usize;
-        let hhdm = 0xFFFF_0000_0000_0000usize;
-        let addr = (hhdm + gicd_base) as *const u32;
-        core::ptr::read_volatile(addr); // MMIO read → VM exit
-    }
-
     cpu0_breadcrumb(cpu_id, 14); // return
 }
 
@@ -1822,19 +1809,6 @@ extern "C" fn inline_schedule_trampoline() -> ! {
             "isb",               // Synchronize - pending IRQs fire after ISB
             options(nomem, nostack)
         );
-    }
-
-    // Force a VM exit to sync HVF vtimer state.
-    // On Apple HVF, the vtimer is only checked at VM exits. Without this,
-    // the re-armed timer might not be visible to the hypervisor until the
-    // next natural VM exit (which could be seconds away if the dispatched
-    // thread does pure computation). Reading GICD_CTLR is a safe MMIO
-    // operation that forces the hypervisor to process pending state.
-    unsafe {
-        let gicd_base = crate::platform_config::gicd_base_phys() as usize;
-        let hhdm = 0xFFFF_0000_0000_0000usize;
-        let addr = (hhdm + gicd_base) as *const u32;
-        core::ptr::read_volatile(addr); // MMIO read → VM exit
     }
 
     // If a pending IRQ fired above (e.g., timer PPI), it was handled on the

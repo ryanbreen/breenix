@@ -394,8 +394,32 @@ pub extern "C" fn timer_interrupt_handler() {
         }
     }
 
+    // IMMEDIATELY re-arm the timer — clears IMASK and sets a future CVAL.
+    // This MUST happen before any potentially-blocking handler work (keyboard
+    // poll, USB XHCI poll, etc.). If that work hangs on a spinlock, the timer
+    // is still re-armed with IMASK=0, preventing permanent timer death on this CPU.
+    let ticks = TICKS_PER_INTERRUPT.load(Ordering::Relaxed);
+    if crate::platform_config::is_vmware() {
+        // VMware: re-arm both timers using CVAL (absolute compare value)
+        unsafe {
+            let vcnt: u64;
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) vcnt, options(nomem, nostack));
+            let vcval = vcnt.wrapping_add(ticks);
+            core::arch::asm!("msr cntv_cval_el0, {}", in(reg) vcval, options(nomem, nostack));
+            core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
+            let pcnt: u64;
+            core::arch::asm!("mrs {}, cntpct_el0", out(reg) pcnt, options(nomem, nostack));
+            let pcval = pcnt.wrapping_add(ticks);
+            core::arch::asm!("msr cntp_cval_el0, {}", in(reg) pcval, options(nomem, nostack));
+            core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
+        }
+    } else {
+        arm_timer(ticks);
+    }
+
     // Snapshot CNTV_CTL_EL0 for this CPU — captures the timer hardware state
-    // after we set IMASK.  This should show CTL=3 (ENABLE=1, IMASK=1).
+    // after re-arm. Should show CTL=1 (ENABLE=1, IMASK=0) or CTL=5 if ISTATUS.
     let cntv_ctl: u64;
     unsafe {
         core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) cntv_ctl, options(nomem, nostack));
@@ -427,12 +451,6 @@ pub extern "C" fn timer_interrupt_handler() {
         }
         CPU0_LAST_TIMER_ELR.store(elr, Ordering::Relaxed);
     }
-
-    // Load ticks value early (before handler work) but defer the actual re-arm
-    // until the very end. IMASK stays set (=1) throughout the handler, giving
-    // the Parallels/HVF VMM time to observe the acknowledge via VM exits that
-    // occur during the handler work (atomic ops, MMIO reads, etc.).
-    let ticks = TICKS_PER_INTERRUPT.load(Ordering::Relaxed);
 
     // CPU 0 only: update global wall clock time (single atomic operation)
     if cpu_id == 0 {
@@ -536,44 +554,6 @@ pub extern "C" fn timer_interrupt_handler() {
     // queue is empty, so the overhead is negligible for idle CPUs.
     if scheduler::is_cpu_idle(cpu_id) {
         scheduler::set_need_resched();
-    }
-
-    // Re-arm the timer at the very end of the handler.
-    // IMASK has been 1 (set at handler entry) throughout all the handler work
-    // above, giving the Parallels/HVF VMM multiple VM exit opportunities to
-    // observe the IMASK=1 acknowledge. Now we write a future CVAL and clear
-    // IMASK (CTL=1), matching Linux's set_next_event pattern.
-    if crate::platform_config::is_vmware() {
-        // VMware: re-arm both timers using CVAL (absolute compare value)
-        unsafe {
-            let vcnt: u64;
-            core::arch::asm!("mrs {}, cntvct_el0", out(reg) vcnt, options(nomem, nostack));
-            let vcval = vcnt.wrapping_add(ticks);
-            core::arch::asm!("msr cntv_cval_el0, {}", in(reg) vcval, options(nomem, nostack));
-            core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
-            let pcnt: u64;
-            core::arch::asm!("mrs {}, cntpct_el0", out(reg) pcnt, options(nomem, nostack));
-            let pcval = pcnt.wrapping_add(ticks);
-            core::arch::asm!("msr cntp_cval_el0, {}", in(reg) pcval, options(nomem, nostack));
-            core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
-            core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
-        }
-    } else {
-        arm_timer(ticks);
-    }
-
-    // Force VM exit to sync vtimer after re-arm.
-    // On Apple HVF, the vtimer is only checked at VM exits. Without this,
-    // the re-armed timer might not be visible to the hypervisor until the
-    // next natural VM exit (which could be seconds away if the dispatched
-    // thread does pure computation). Reading GICD_CTLR is a safe MMIO
-    // operation that forces the hypervisor to process pending state.
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        let gicd_base = crate::platform_config::gicd_base_phys() as usize;
-        let hhdm = 0xFFFF_0000_0000_0000usize;
-        let addr = (hhdm + gicd_base) as *const u32;
-        core::ptr::read_volatile(addr);
     }
 
     // Exit IRQ context (decrement HARDIRQ count)
