@@ -1449,7 +1449,9 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     }
 
     // 4. Scheduling decision (deferred requeue — old thread stays out of queue)
+    cpu0_breadcrumb(cpu_id, 100); // before schedule_deferred_requeue
     let schedule_result = sched.schedule_deferred_requeue();
+    cpu0_breadcrumb(cpu_id, 101); // after schedule_deferred_requeue returns
     cpu0_breadcrumb(cpu_id, 12); // after scheduling decision
 
     if schedule_result.is_none() {
@@ -1549,8 +1551,10 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     }
 
     // 9. Dispatch new thread (all checks + restore inside lock hold)
+    cpu0_breadcrumb(cpu_id, 102); // before dispatch_thread_locked
     cpu0_breadcrumb(cpu_id, 13); // performing context switch
     dispatch_thread_locked(sched, new_id, frame, cpu_id);
+    cpu0_breadcrumb(cpu_id, 103); // after dispatch_thread_locked
 
     // Record dispatch trace AFTER all frame writes are complete.
     // This captures EXACTLY what the assembly ERET path will read.
@@ -1601,6 +1605,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     // Safe: any IRQ handler pushes a NEW frame below SP (sub sp, #272), so the
     // existing frame at SP is not corrupted. After the nested IRQ ERETSs back
     // here, we continue with the original frame intact.
+    cpu0_breadcrumb(cpu_id, 104); // before daifclr window
     unsafe {
         core::arch::asm!(
             "msr daifclr, #3",
@@ -1608,7 +1613,9 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             options(nomem, nostack)
         );
     }
+    cpu0_breadcrumb(cpu_id, 105); // after daifclr window
 
+    cpu0_breadcrumb(cpu_id, 106); // before function return
     cpu0_breadcrumb(cpu_id, 14); // return
 }
 
@@ -1791,10 +1798,16 @@ extern "C" fn inline_schedule_trampoline() -> ! {
 }
 
 /// Record a CPU 0 breadcrumb — zero-cost on other CPUs.
+/// Also captures CNTV_CTL_EL0 at each point so we can see timer state transitions.
 #[inline(always)]
 fn cpu0_breadcrumb(cpu_id: usize, id: u64) {
     if cpu_id == 0 {
         super::timer_interrupt::CPU0_BREADCRUMB_ID.store(id, Ordering::Relaxed);
+        let ctl: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) ctl, options(nomem, nostack));
+        }
+        super::timer_interrupt::CPU0_BREADCRUMB_CTL.store(ctl, Ordering::Relaxed);
     }
 }
 

@@ -122,7 +122,21 @@ pub static CPU0_LAST_TIMER_ELR: AtomicU64 = AtomicU64::new(0);
 ///   21 = with_scheduler() after lock acquisition
 ///   22 = with_scheduler() after closure
 ///   23 = with_scheduler() after DAIF restore
+///   50 = sys_fork_aarch64() entry
+///   51 = sys_fork_aarch64() child created + spawned
+///   100 = check_need_resched: before schedule_deferred_requeue
+///   101 = check_need_resched: after schedule_deferred_requeue returns
+///   102 = check_need_resched: before dispatch_thread_locked
+///   103 = check_need_resched: after dispatch_thread_locked
+///   104 = check_need_resched: before daifclr window
+///   105 = check_need_resched: after daifclr window
+///   106 = check_need_resched: before function return
 pub static CPU0_BREADCRUMB_ID: AtomicU64 = AtomicU64::new(0);
+
+/// CPU 0 CNTV_CTL_EL0 snapshot at each breadcrumb point.
+/// After CPU 0 dies, shows the timer control register state at the last breadcrumb.
+/// Bit 0: ENABLE, Bit 1: IMASK, Bit 2: ISTATUS.
+pub static CPU0_BREADCRUMB_CTL: AtomicU64 = AtomicU64::new(0);
 
 /// CPU 0 dispatch diagnostics — set in the trampoline just before ERET.
 /// After CPU 0 dies, these identify the thread and destination.
@@ -398,6 +412,17 @@ pub extern "C" fn timer_interrupt_handler() {
     if cpu_id < 8 {
         TIMER_TICK_DAIF[cpu_id].store(spsr, Ordering::Relaxed);
         TIMER_TICK_COUNT[cpu_id].fetch_add(1, Ordering::Relaxed);
+    }
+
+    // CPU 0 only: emit raw serial breadcrumb for first 10 ticks.
+    // Shows 'T0' through 'T9' so we can see exactly when timer ticks stop
+    // relative to fork/context-switch breadcrumbs in the serial log.
+    if cpu_id == 0 {
+        let count = TIMER_TICK_COUNT[0].load(Ordering::Relaxed);
+        if count <= 10 {
+            crate::serial_aarch64::raw_serial_char(b'T');
+            crate::serial_aarch64::raw_serial_char(b'0' + (count % 10) as u8);
+        }
     }
 
     // CPU 0 only: periodic tick count reporting every 5000 ticks (~5 seconds)

@@ -887,6 +887,20 @@ fn sys_clock_gettime(clock_id: u32, user_timespec_ptr: *mut Timespec) -> u64 {
 /// - To child: 0
 /// - On error: negative errno
 fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
+    // Breadcrumb: fork entry on CPU 0
+    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    if cpu_id == 0 {
+        crate::arch_impl::aarch64::timer_interrupt::CPU0_BREADCRUMB_ID
+            .store(50, core::sync::atomic::Ordering::Relaxed);
+        let ctl: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) ctl, options(nomem, nostack));
+        }
+        crate::arch_impl::aarch64::timer_interrupt::CPU0_BREADCRUMB_CTL
+            .store(ctl, core::sync::atomic::Ordering::Relaxed);
+    }
+    crate::serial_aarch64::raw_serial_char(b'F'); // Fork entry
+
     // Read SP_EL0 (user stack pointer) which isn't in the exception frame
     let user_sp: u64;
     unsafe {
@@ -958,6 +972,18 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
                     current_thread_id as u16,
                     child_thread_id as u16,
                 );
+                // Breadcrumb: child created and spawned
+                crate::serial_aarch64::raw_serial_char(b'C'); // Child created
+                if cpu_id == 0 {
+                    crate::arch_impl::aarch64::timer_interrupt::CPU0_BREADCRUMB_ID
+                        .store(51, core::sync::atomic::Ordering::Relaxed);
+                    let ctl: u64;
+                    unsafe {
+                        core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) ctl, options(nomem, nostack));
+                    }
+                    crate::arch_impl::aarch64::timer_interrupt::CPU0_BREADCRUMB_CTL
+                        .store(ctl, core::sync::atomic::Ordering::Relaxed);
+                }
                 child_pid.as_u64()
             } else {
                 (-12_i64) as u64 // -ENOMEM
