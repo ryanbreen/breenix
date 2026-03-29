@@ -126,8 +126,8 @@ aarch64_enter_exception_frame:
 1:
     msr elr_el1, x1
     ldr x1, [sp, #256]
-    // Never propagate a stale saved DAIF.I bit through ERET.
-    bic x1, x1, #0x80
+    // Never propagate stale DAIF.I+F bits through ERET (timer is GIC Group 0 = FIQ).
+    bic x1, x1, #0xC0
     msr spsr_el1, x1
 
     ldp x0, x1, [sp, #0]
@@ -1317,6 +1317,8 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
 ) {
     // ── Lock-free pre-checks ──────────────────────────────────────
     let preempt_count = Aarch64PerCpu::preempt_count();
+    let cpu_id_early = Aarch64PerCpu::cpu_id() as usize;
+    cpu0_breadcrumb(cpu_id_early, 10); // entry
 
     if (preempt_count & 0x10000000) != 0 {
         // PREEMPT_ACTIVE: in the middle of returning from a previous
@@ -1342,7 +1344,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     // Process deferred requeue BEFORE checking preempt_count.
     // This is safe even when preempt_count > 0 because we only add the
     // thread to the ready queue — we don't context switch.
-    if deferred_tid != 0 {
+    let deferred_already_processed = if deferred_tid != 0 {
         // Need the scheduler lock to process the requeue.
         let mut guard = crate::task::scheduler::lock_for_context_switch();
         if let Some(sched) = guard.as_mut() {
@@ -1350,7 +1352,10 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             sched.requeue_thread_after_save(deferred_tid);
         }
         drop(guard);
-    }
+        true
+    } else {
+        false
+    };
 
     if !from_el0 && (preempt_count & 0xFF) > 0 {
         // Kernel code holding locks — not safe to preempt.
@@ -1374,12 +1379,53 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         None
     };
 
+    // ── Fast path: skip lock when no scheduling work needed ─────
+    // On every IRQ exit we reach here. 95%+ of the time there is no
+    // reschedule pending and the current thread is not blocked. Reading
+    // the thread state from the per-CPU pointer is lock-free and safe:
+    // only this CPU modifies its own thread's state during syscalls, and
+    // remote unblock (ISR buffer drain) only transitions Blocked→Ready
+    // which is a no-op for our decision (we'd still skip).
+    // When deferred_tid was non-zero, we already processed it above under
+    // the lock and can treat it as "done" for fast-path eligibility.
+    if !need_resched && (deferred_tid == 0 || deferred_already_processed) {
+        let current_blocked = {
+            let thread_ptr = Aarch64PerCpu::current_thread_ptr();
+            if !thread_ptr.is_null() {
+                let thread = unsafe { &*(thread_ptr as *const Thread) };
+                matches!(
+                    thread.state,
+                    ThreadState::Blocked
+                        | ThreadState::BlockedOnSignal
+                        | ThreadState::BlockedOnChildExit
+                        | ThreadState::BlockedOnTimer
+                        | ThreadState::BlockedOnIO
+                        | ThreadState::Terminated
+                )
+            } else {
+                false
+            }
+        };
+
+        if !current_blocked {
+            // No work to do — return without acquiring the global lock.
+            // fix_eret_cpu_state_locked is skipped; any stale cpu_state
+            // will be corrected on the next tick that does acquire the lock.
+            if from_el0 {
+                check_and_deliver_signals_for_current_thread_arm64(frame);
+                ensure_user_rsp_scratch_for_el0();
+            }
+            return;
+        }
+    }
+
     // ── Single lock acquisition ───────────────────────────────────
     let mut guard = crate::task::scheduler::lock_for_context_switch();
     let sched = match guard.as_mut() {
         Some(s) => s,
         None => return,
     };
+    cpu0_breadcrumb(cpu_id, 11); // after lock acquisition
 
     // 1. Process deferred requeue from PREVIOUS context switch.
     //    May have already been processed above (for the preempt_count > 0 path).
@@ -1434,6 +1480,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
 
     // 4. Scheduling decision (deferred requeue — old thread stays out of queue)
     let schedule_result = sched.schedule_deferred_requeue();
+    cpu0_breadcrumb(cpu_id, 12); // after scheduling decision
 
     if schedule_result.is_none() {
         fix_eret_cpu_state_locked(sched, frame);
@@ -1532,6 +1579,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     }
 
     // 9. Dispatch new thread (all checks + restore inside lock hold)
+    cpu0_breadcrumb(cpu_id, 13); // performing context switch
     dispatch_thread_locked(sched, new_id, frame, cpu_id);
 
     // Record dispatch trace AFTER all frame writes are complete.
@@ -1576,15 +1624,19 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     }
     crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
     crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
+    cpu0_breadcrumb(cpu_id, 14); // return
 }
 
 extern "C" fn inline_schedule_trampoline() -> ! {
     let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    cpu0_breadcrumb(cpu_id, 30); // trampoline entry
     let state = &INLINE_SCHEDULE_STATE[cpu_id];
     let sched_ptr = state.scheduler_ptr.swap(0, Ordering::Relaxed) as *mut Scheduler;
     let old_id = state.old_thread_id.load(Ordering::Relaxed);
     let new_id = state.new_thread_id.load(Ordering::Relaxed);
     let should_requeue_old = state.should_requeue_old.swap(false, Ordering::Relaxed);
+
+    cpu0_breadcrumb(cpu_id, 31); // after reading INLINE_SCHEDULE_STATE
 
     if sched_ptr.is_null() {
         idle_loop_arm64();
@@ -1599,16 +1651,19 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     }
 
     sched.commit_cpu_state_after_save(new_id);
+    cpu0_breadcrumb(cpu_id, 32); // after commit_cpu_state_after_save
     sched.cpu_state[cpu_id].previous_thread = None;
     if should_requeue_old {
         sched.requeue_thread_after_save(old_id);
     }
+    cpu0_breadcrumb(cpu_id, 33); // after requeue_thread_after_save
 
     // Determine dispatch mode for the new thread.
     // Kernel threads that have started (saved context exists) use ret-based
     // dispatch to avoid ERET restoring PSTATE.I from the saved SPSR. This
     // prevents CPU IRQ death when a thread was interrupted inside
     // without_interrupts. User threads, idle, and first-run use ERET.
+    cpu0_breadcrumb(cpu_id, 34); // before ret-based dispatch check
     let is_idle = sched.is_idle_thread_inner(new_id);
     let ret_dispatch_info = if !is_idle {
         sched.get_thread_mut(new_id).and_then(|t| {
@@ -1638,6 +1693,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     };
 
     if let Some((thread_ptr, ctx_ptr, resume_pc, kst, sp_el0)) = ret_dispatch_info {
+        cpu0_breadcrumb(cpu_id, 35); // taking ret-based dispatch
         // ret-based dispatch: restore callee-saved regs + SP, branch to
         // resume_pc (= elr_el1). No ERET, no SPSR, no DAIF from the thread.
         // IRQs are enabled by the assembly before branching.
@@ -1666,6 +1722,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
         crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
 
+        cpu0_breadcrumb(cpu_id, 36); // before aarch64_ret_to_kernel_context
         unsafe {
             aarch64_ret_to_kernel_context(ctx_ptr, resume_pc);
         }
@@ -1673,9 +1730,12 @@ extern "C" fn inline_schedule_trampoline() -> ! {
 
     // ERET-based dispatch: for idle threads, user threads, and first-run
     // kernel threads that haven't been context-switched yet.
+    cpu0_breadcrumb(cpu_id, 40); // taking ERET-based dispatch
     let mut frame = unsafe { MaybeUninit::<Aarch64ExceptionFrame>::zeroed().assume_init() };
 
+    cpu0_breadcrumb(cpu_id, 41); // before dispatch_thread_locked
     dispatch_thread_locked(sched, new_id, &mut frame, cpu_id);
+    cpu0_breadcrumb(cpu_id, 42); // after dispatch_thread_locked
 
     let idle_addr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
     let dispatch_path = if frame.elr == idle_addr {
@@ -1708,21 +1768,42 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         crate::task::scheduler::force_unlock_scheduler();
     }
 
+    // Capture what CPU 0 is dispatching via ERET and where it's going
+    if cpu_id == 0 {
+        use crate::arch_impl::aarch64::timer_interrupt::{
+            CPU0_DISPATCH_TID, CPU0_DISPATCH_ELR, CPU0_DISPATCH_SPSR,
+        };
+        CPU0_DISPATCH_TID.store(new_id, Ordering::Relaxed);
+        CPU0_DISPATCH_ELR.store(frame.elr, Ordering::Relaxed);
+        CPU0_DISPATCH_SPSR.store(frame.spsr, Ordering::Relaxed);
+    }
+
     crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
     crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
 
+    cpu0_breadcrumb(cpu_id, 43); // before aarch64_enter_exception_frame
     unsafe {
         aarch64_enter_exception_frame(&frame as *const Aarch64ExceptionFrame);
     }
 }
 
+/// Record a CPU 0 breadcrumb — zero-cost on other CPUs.
+#[inline(always)]
+fn cpu0_breadcrumb(cpu_id: usize, id: u64) {
+    if cpu_id == 0 {
+        super::timer_interrupt::CPU0_BREADCRUMB_ID.store(id, Ordering::Relaxed);
+    }
+}
+
 pub fn schedule_from_kernel() {
     let saved_daif = read_daif();
+    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    cpu0_breadcrumb(cpu_id, 1); // entry
     unsafe {
         crate::arch_impl::aarch64::cpu::disable_interrupts();
     }
+    cpu0_breadcrumb(cpu_id, 2); // after disable_interrupts
 
-    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
     let mut guard = crate::task::scheduler::lock_for_context_switch();
     let sched = match guard.as_mut() {
         Some(s) => s,
@@ -1733,6 +1814,7 @@ pub fn schedule_from_kernel() {
             return;
         }
     };
+    cpu0_breadcrumb(cpu_id, 3); // after lock acquisition
 
     let deferred_tid = if cpu_id < DEFERRED_REQUEUE.len() {
         DEFERRED_REQUEUE[cpu_id].swap(0, Ordering::Acquire)
@@ -1751,10 +1833,17 @@ pub fn schedule_from_kernel() {
     }
 
     let schedule_result = sched.schedule_deferred_requeue();
+    cpu0_breadcrumb(cpu_id, 4); // after schedule_deferred_requeue
     let Some((old_id, new_id, should_requeue_old)) = schedule_result else {
         drop(guard);
         unsafe {
             core::arch::asm!("msr daifclr, #3; isb", options(nomem, nostack));
+        }
+        // Re-arm timer as safety net: if the vtimer is dead (Parallels HVF
+        // bug), re-arming here gives the VMM another chance on the next
+        // interrupt or WFI.
+        if crate::arch_impl::aarch64::timer_interrupt::is_initialized() {
+            crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
         }
         return;
     };
@@ -1830,6 +1919,15 @@ pub fn schedule_from_kernel() {
         // where a thread resumes inside a without_interrupts block and
         // re-masks DAIF.I permanently.
         core::arch::asm!("msr daifclr, #3; isb", options(nomem, nostack));
+    }
+    let cpu_id_after = Aarch64PerCpu::cpu_id() as usize;
+    cpu0_breadcrumb(cpu_id_after, 5); // after context switch resume
+
+    // Re-arm timer as safety net after context switch resume.
+    // If the Parallels/HVF vtimer is dead on this CPU, re-arming here
+    // gives the VMM another chance to observe the timer state.
+    if crate::arch_impl::aarch64::timer_interrupt::is_initialized() {
+        crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
     }
 }
 
@@ -2025,9 +2123,31 @@ fn set_next_ttbr0_for_thread(thread_id: u64) -> TtbrResult {
 // =============================================================================
 
 /// ARM64 idle loop - wait for interrupts.
+///
+/// Before each WFI, unconditionally re-arm the virtual timer. This works
+/// around Parallels/HVF vtimer death: if the VMM permanently masks the
+/// physical vtimer (because it never saw the guest acknowledge via IMASK),
+/// re-arming in the idle loop gives the VMM a fresh chance to observe the
+/// timer state on the WFI trap. Writing CVAL (future) then CTL=1 ensures
+/// ISTATUS=0 at the WFI exit, which should cause the VMM to re-arm the
+/// physical vtimer.
 #[no_mangle]
 pub extern "C" fn idle_loop_arm64() -> ! {
+    // Get CPU ID once (cheap MRS).
+    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    // Breadcrumb 50: CPU 0 reached the idle loop after ERET dispatch
+    cpu0_breadcrumb(cpu_id, 50);
     loop {
+        // Diagnostic: track idle loop iterations per CPU.
+        if cpu_id < 8 {
+            crate::arch_impl::aarch64::timer_interrupt::IDLE_LOOP_COUNT[cpu_id]
+                .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
+        // Re-arm timer before WFI as a safety net against HVF vtimer death.
+        // This is cheap (4 instructions) and harmless if the timer is already armed.
+        if crate::arch_impl::aarch64::timer_interrupt::is_initialized() {
+            crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
+        }
         unsafe {
             core::arch::asm!(
                 "msr daifclr, #0xf", // Enable all interrupts

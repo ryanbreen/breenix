@@ -46,15 +46,20 @@ class GDBChat:
     """Interactive GDB session for Breenix debugging."""
 
     GDB_PROMPT = "(gdb)"
-    # Breenix kernel is loaded at 1 TiB (PIE binary)
-    KERNEL_BASE = 0x10000000000
+    # x86_64: Breenix kernel is loaded at 1 TiB (PIE binary)
+    KERNEL_BASE_X86 = 0x10000000000
+    # ARM64: kernel has split layout - boot code at phys 0x40080000,
+    # main kernel at high-half 0xFFFF000040000000+. ELF VMAs are correct,
+    # so no base address adjustment is needed for symbol loading.
     # Serial output file for capturing kernel print statements
     SERIAL_LOG_FILE = "/tmp/breenix_gdb_serial.log"
 
-    def __init__(self, kernel_binary: Path, mode: str = "uefi", profile: str = "release"):
+    def __init__(self, kernel_binary: Path, mode: str = "uefi", profile: str = "release",
+                 arch: str = "x86_64"):
         self.kernel_binary = kernel_binary
         self.mode = mode
         self.profile = profile  # "release" or "dev" (debug)
+        self.arch = arch  # "x86_64" or "aarch64"
         self.gdb_process: Optional[subprocess.Popen] = None
         self.qemu_process: Optional[subprocess.Popen] = None
         # Use the script's directory to find breenix root (supports worktrees)
@@ -74,15 +79,21 @@ class GDBChat:
 
         # Start QEMU
         self.qemu_process = self._start_qemu()
-        # Wait longer for UEFI bootloader to load kernel (8 seconds minimum)
-        time.sleep(8)
+
+        if self.arch == "aarch64":
+            # ARM64 direct kernel boot is faster, no UEFI bootloader
+            time.sleep(3)
+        else:
+            # Wait longer for UEFI bootloader to load kernel (8 seconds minimum)
+            time.sleep(8)
 
         if self.qemu_process.poll() is not None:
             return {"success": False, "error": "QEMU failed to start"}
 
-        # Start GDB
+        # Start GDB - use --nx to skip .gdbinit (we configure everything here)
+        gdb_cmd = ["gdb", "--nx", "-q", str(self.kernel_binary)]
         self.gdb_process = subprocess.Popen(
-            ["gdb", "-q", str(self.kernel_binary)],
+            gdb_cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -100,27 +111,38 @@ class GDBChat:
         self._send_raw("set pagination off")
         self._send_raw("set confirm off")
 
+        # Set architecture explicitly for x86_64 (ARM64 auto-detects from ELF)
+        if self.arch == "x86_64":
+            self._send_raw("set architecture i386:x86-64:intel")
+            self._send_raw("set disassembly-flavor intel")
+
         # Connect to QEMU
         output = self._send_raw("target remote localhost:1234")
         if "Connection refused" in output:
             return {"success": False, "error": "Cannot connect to QEMU"}
 
-        # Load symbols at correct runtime addresses for PIE kernel
-        symbol_output = self._load_symbols_at_runtime_addr()
+        # Load symbols at correct runtime addresses
+        if self.arch == "aarch64":
+            symbol_output = self._load_symbols_aarch64()
+            symbol_info = "loaded from ELF (high-half VMA)"
+        else:
+            symbol_output = self._load_symbols_at_runtime_addr()
+            symbol_info = f"loaded at base {hex(self.KERNEL_BASE_X86)}"
 
-        # Note: QEMU starts halted at reset vector (0xFFF0) when using -S flag.
-        # The bootloader runs when GDB issues 'continue', which loads the kernel.
-        # Breakpoints will be hit after the bootloader loads the kernel.
+        # Note: QEMU starts halted when using -S flag.
+        # x86_64: halted at reset vector (0xFFF0), bootloader loads kernel on continue
+        # ARM64: halted at _start (0x40080000), kernel runs directly on continue
 
-        # Get any initial serial output from UEFI bootloader
+        # Get any initial serial output
         initial_serial = self.get_new_serial_output()
 
         result = {
             "success": True,
+            "arch": self.arch,
             "gdb_pid": self.gdb_process.pid,
             "qemu_pid": self.qemu_process.pid,
             "status": "connected",
-            "symbols": f"loaded at base {hex(self.KERNEL_BASE)}",
+            "symbols": symbol_info,
             "sections": {k: hex(v) for k, v in self.section_addrs.items()},
             "serial_log_file": self.SERIAL_LOG_FILE
         }
@@ -136,23 +158,71 @@ class GDBChat:
         env = os.environ.copy()
         env["BREENIX_GDB"] = "1"
 
-        # Build command based on profile
-        # Note: Debug builds have timing issues (interrupts fire before init completes)
-        # Release builds are recommended for GDB debugging
+        if self.arch == "aarch64":
+            return self._start_qemu_aarch64(env)
+        else:
+            return self._start_qemu_x86(env)
+
+    def _start_qemu_x86(self, env: dict) -> subprocess.Popen:
+        """Start x86_64 QEMU via cargo run (UEFI boot)."""
         if self.profile == "dev":
             cmd = ["cargo", "run", "--profile", "dev", "--features", "testing,external_test_bins", "--bin", f"qemu-{self.mode}"]
         else:
             cmd = ["cargo", "run", "--release", "--features", "testing,external_test_bins", "--bin", f"qemu-{self.mode}"]
 
         # Serial output goes to file so we can read it and include in JSON responses
-        # This allows agents to see boot stage markers and kernel print statements
         cmd.extend(["--", "-serial", f"file:{self.SERIAL_LOG_FILE}", "-display", "none"])
 
         return subprocess.Popen(
             cmd,
-            stdin=subprocess.DEVNULL,  # Don't inherit stdin!
-            stdout=subprocess.DEVNULL,  # Cargo build output goes to /dev/null
-            stderr=subprocess.DEVNULL,  # Cargo warnings go to /dev/null
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            cwd=self.breenix_dir
+        )
+
+    def _start_qemu_aarch64(self, env: dict) -> subprocess.Popen:
+        """Start ARM64 QEMU directly (direct kernel boot, no UEFI)."""
+        kernel = str(self.kernel_binary)
+
+        # Find ext2 disk if available
+        ext2_disk = self.breenix_dir / "target" / "ext2-aarch64.img"
+        disk_opts = []
+        if ext2_disk.exists():
+            # Create writable copy for the session
+            session_disk = Path("/tmp/breenix_gdb_ext2_session.img")
+            import shutil
+            shutil.copy2(str(ext2_disk), str(session_disk))
+            disk_opts = [
+                "-device", "virtio-blk-device,drive=ext2disk",
+                "-drive", f"if=none,id=ext2disk,format=raw,file={session_disk}",
+            ]
+
+        cmd = [
+            "qemu-system-aarch64",
+            "-M", "virt",
+            "-cpu", "cortex-a72",
+            "-smp", "4",
+            "-m", "512M",
+            "-kernel", kernel,
+            "-display", "none",
+            "-device", "virtio-gpu-device",
+            "-device", "virtio-keyboard-device",
+            "-device", "virtio-tablet-device",
+            *disk_opts,
+            "-device", "virtio-net-device,netdev=net0",
+            "-netdev", "user,id=net0",
+            "-serial", f"file:{self.SERIAL_LOG_FILE}",
+            "-no-reboot",
+            "-s", "-S",  # GDB server on :1234, halt at start
+        ]
+
+        return subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             env=env,
             cwd=self.breenix_dir
         )
@@ -181,7 +251,10 @@ class GDBChat:
                         int(parts[0])
                         name = parts[1]
                         vma = int(parts[3], 16)  # Virtual Memory Address
-                        if name in ('.text', '.rodata', '.data', '.bss'):
+                        # Capture standard sections and ARM64 boot sections
+                        if name in ('.text', '.rodata', '.data', '.bss',
+                                    '.text.boot', '.text.vectors', '.text.vectors.boot',
+                                    '.bss.boot', '.bss.stack', '.dma'):
                             sections[name] = vma
                     except (ValueError, IndexError):
                         continue
@@ -190,7 +263,7 @@ class GDBChat:
         return sections
 
     def _load_symbols_at_runtime_addr(self) -> str:
-        """Load symbols with correct offsets for PIE kernel at runtime address."""
+        """Load symbols with correct offsets for x86_64 PIE kernel at runtime address."""
         sections = self._parse_elf_sections()
         if not sections or '.text' not in sections:
             return "Failed to parse ELF sections"
@@ -198,14 +271,14 @@ class GDBChat:
         self.section_addrs = sections
 
         # Calculate runtime addresses: kernel_base + elf_section_addr
-        text_addr = self.KERNEL_BASE + sections['.text']
+        text_addr = self.KERNEL_BASE_X86 + sections['.text']
 
         cmd = f"add-symbol-file {self.kernel_binary} {hex(text_addr)}"
 
         # Add other sections if available
         for name in ['.rodata', '.data', '.bss']:
             if name in sections:
-                runtime_addr = self.KERNEL_BASE + sections[name]
+                runtime_addr = self.KERNEL_BASE_X86 + sections[name]
                 cmd += f" -s {name} {hex(runtime_addr)}"
 
         # Execute the command
@@ -216,6 +289,32 @@ class GDBChat:
         sys.stderr.write(f"[INFO] Runtime addresses: .text={hex(text_addr)}\n")
 
         return output
+
+    def _load_symbols_aarch64(self) -> str:
+        """Load symbols for ARM64 kernel.
+
+        The ARM64 kernel has a split layout:
+        - Boot code (.text.boot) at physical VMA 0x40080000
+        - Main kernel (.text, .rodata, .data, .bss) at high-half VMA 0xFFFF0000_40099000+
+
+        The ELF VMAs are already correct for post-MMU execution, so GDB's
+        default symbol loading from the ELF works. However, QEMU starts halted
+        before MMU is enabled, so initially the CPU is at physical addresses.
+
+        We load symbols from the ELF directly (GDB reads VMAs automatically).
+        For boot code debugging before MMU is on, use physical addresses directly.
+        """
+        sections = self._parse_elf_sections()
+        self.section_addrs = sections
+
+        # The ELF is already loaded by GDB (passed on command line), so symbols
+        # for high-half sections are already at the correct VMAs.
+        # Log section info for diagnostics.
+        for name, addr in sorted(sections.items()):
+            sys.stderr.write(f"[INFO] ARM64 section {name}: VMA={hex(addr)}\n")
+
+        # No add-symbol-file needed - GDB already loaded the ELF with correct VMAs
+        return "ARM64 symbols loaded from ELF (VMAs are correct)"
 
     def _wait_for_prompt(self, timeout: int = 10, allow_breakpoint: bool = False) -> str:
         """Wait for GDB prompt or breakpoint hit."""
@@ -440,12 +539,28 @@ class GDBChat:
                 self.qemu_process.kill()
 
 
-def find_kernel(profile: str = "release") -> Path:
-    """Find kernel binary for the specified profile."""
+def find_kernel(profile: str = "release", arch: str = "x86_64") -> Path:
+    """Find kernel binary for the specified profile and architecture."""
     import glob as glob_mod
 
-    breenix = Path.home() / "fun/code/breenix"
+    # Use the script's directory to find breenix root (supports worktrees)
+    script_dir = Path(__file__).resolve().parent
+    breenix = script_dir.parent.parent
 
+    if arch == "aarch64":
+        # ARM64 kernel binary
+        profile_dir = "debug" if profile == "dev" else "release"
+        kernel_path = breenix / f"target/aarch64-breenix/{profile_dir}/kernel-aarch64"
+        if kernel_path.exists():
+            return kernel_path
+        raise FileNotFoundError(
+            f"ARM64 kernel not found at {kernel_path}\n"
+            f"Build with: cargo build --release --target aarch64-breenix.json "
+            f"-Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem "
+            f"-p kernel --bin kernel-aarch64"
+        )
+
+    # x86_64 path
     # First try the symlink location (works for debug builds)
     if profile == "dev":
         symlink_path = breenix / "target/x86_64-breenix/debug/kernel"
@@ -461,7 +576,24 @@ def find_kernel(profile: str = "release") -> Path:
         # Return the most recently modified one
         return Path(max(matches, key=lambda p: Path(p).stat().st_mtime))
 
-    raise FileNotFoundError(f"Kernel not found for profile {profile}")
+    raise FileNotFoundError(f"x86_64 kernel not found for profile {profile}")
+
+
+def detect_arch_from_elf(path: Path) -> str:
+    """Detect architecture from ELF binary header."""
+    try:
+        with open(path, 'rb') as f:
+            magic = f.read(20)
+            if len(magic) >= 19:
+                # ELF e_machine field at offset 18 (2 bytes, little-endian)
+                e_machine = int.from_bytes(magic[18:20], byteorder='little')
+                if e_machine == 0xB7:  # EM_AARCH64
+                    return "aarch64"
+                elif e_machine == 0x3E:  # EM_X86_64
+                    return "x86_64"
+    except Exception:
+        pass
+    return "x86_64"  # Default
 
 
 def main():
@@ -470,6 +602,8 @@ def main():
     parser = argparse.ArgumentParser(description="GDB chat for Breenix kernel")
     parser.add_argument("--profile", choices=["release", "dev"], default="release",
                         help="Build profile (default: release)")
+    parser.add_argument("--arch", choices=["x86_64", "aarch64"], default=None,
+                        help="Target architecture (default: auto-detect from kernel binary)")
     args = parser.parse_args()
 
     # Force stdin line buffering
@@ -479,15 +613,32 @@ def main():
         line_buffering=True
     )
 
+    # Determine architecture
+    arch = args.arch
+
     # Find kernel
     try:
-        kernel = find_kernel(args.profile)
+        if arch:
+            kernel = find_kernel(args.profile, arch)
+        else:
+            # Try x86_64 first (backward compatible default), fall back to aarch64
+            try:
+                kernel = find_kernel(args.profile, "x86_64")
+                arch = "x86_64"
+            except FileNotFoundError:
+                kernel = find_kernel(args.profile, "aarch64")
+                arch = "aarch64"
+
+        # Auto-detect arch from ELF if not specified
+        if not arch:
+            arch = detect_arch_from_elf(kernel)
+
     except FileNotFoundError as e:
         print(json.dumps({"success": False, "error": str(e)}))
         sys.exit(1)
 
     # Create session
-    chat = GDBChat(kernel, profile=args.profile)
+    chat = GDBChat(kernel, profile=args.profile, arch=arch)
 
     # Handle Ctrl+C
     def signal_handler(sig, frame):

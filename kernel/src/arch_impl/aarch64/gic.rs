@@ -1227,6 +1227,41 @@ fn init_gicv3_cpu_interface() {
     }
 }
 
+/// Read GICR_ISENABLER0 for a specific CPU (SGI/PPI enable register).
+/// Returns the 32-bit enable mask for interrupts 0-31 (SGIs 0-15, PPIs 16-31).
+/// PPI 27 (timer) = bit 27.
+pub fn read_gicr_isenabler0(cpu_id: usize) -> u32 {
+    if !GICR_VALID.load(Ordering::Relaxed) {
+        return 0xDEAD_BEEF; // sentinel: GICR not initialized
+    }
+    let cpu_offset = cpu_id * GICR_FRAME_SIZE;
+    gicr_read(cpu_offset + GICR_SGI_OFFSET, GICR_ISENABLER0)
+}
+
+/// Read GICR_ISPENDR0 for a specific CPU (SGI/PPI pending register).
+/// Returns the 32-bit pending mask for interrupts 0-31 (SGIs 0-15, PPIs 16-31).
+/// PPI 27 (timer) = bit 27.
+pub fn read_gicr_ispendr0(cpu_id: usize) -> u32 {
+    if !GICR_VALID.load(Ordering::Relaxed) {
+        return 0xDEAD_BEEF; // sentinel: GICR not initialized
+    }
+    let cpu_offset = cpu_id * GICR_FRAME_SIZE;
+    gicr_read(cpu_offset + GICR_SGI_OFFSET, 0x200) // ISPENDR0 offset
+}
+
+/// Read the priority of a specific interrupt (0-31) from CPU 0's GICR.
+/// Returns the 8-bit priority value (lower = higher priority).
+pub fn read_gicr_priority_cpu0(irq: u32) -> u8 {
+    if !GICR_VALID.load(Ordering::Relaxed) {
+        return 0xFF;
+    }
+    let cpu_offset = 0; // CPU 0
+    let reg_index = (irq / 4) as usize;
+    let byte_index = (irq % 4) as usize;
+    let reg_val = gicr_read(cpu_offset + GICR_SGI_OFFSET, GICR_IPRIORITYR0 + reg_index * 4);
+    ((reg_val >> (byte_index * 8)) & 0xFF) as u8
+}
+
 /// Get the active GIC version (for diagnostic purposes).
 pub fn active_version() -> u8 {
     ACTIVE_GIC_VERSION.load(Ordering::Relaxed)

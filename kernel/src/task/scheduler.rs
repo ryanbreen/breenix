@@ -48,14 +48,81 @@
 
 use super::thread::{Thread, ThreadState};
 use crate::log_serial_println;
-use alloc::{boxed::Box, collections::VecDeque};
-use core::sync::atomic::{AtomicBool, Ordering};
+use alloc::{boxed::Box, collections::BinaryHeap, collections::VecDeque};
+use core::cmp::Reverse;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
 // Architecture-generic HAL wrappers for interrupt control.
 #[cfg(not(target_arch = "aarch64"))]
 use crate::arch_interrupts_enabled as are_enabled;
 use crate::arch_without_interrupts as without_interrupts;
+
+// ---------------------------------------------------------------------------
+// Lock-free ISR wakeup buffer
+//
+// The AHCI ISR calls `isr_unblock_for_io(tid)` which writes the thread ID
+// into a per-CPU slot array using atomic CAS — no lock, no allocation.
+// The scheduler drains these buffers under its own lock at the top of every
+// `schedule_deferred_requeue()` / `schedule()` call, performing the actual
+// state transition + queue push.
+//
+// This breaks the ISR's dependency on the global SCHEDULER mutex, which was
+// the root cause of CPU 0's IRQ death: the AHCI ISR on CPU 0 would spin on
+// the lock (held by another CPU) with IRQs masked, starving the timer.
+// ---------------------------------------------------------------------------
+
+const ISR_WAKEUP_SLOTS: usize = 32;
+const ISR_WAKEUP_EMPTY: u64 = 0;
+
+/// Per-CPU lock-free buffer for ISR wakeups.
+/// ISR writes thread IDs here via atomic CAS. Scheduler drains on each schedule.
+struct IsrWakeupBuffer {
+    slots: [AtomicU64; ISR_WAKEUP_SLOTS],
+}
+
+// SAFETY: All access is via atomics.
+unsafe impl Sync for IsrWakeupBuffer {}
+
+impl IsrWakeupBuffer {
+    const fn new() -> Self {
+        Self {
+            slots: [const { AtomicU64::new(ISR_WAKEUP_EMPTY) }; ISR_WAKEUP_SLOTS],
+        }
+    }
+
+    /// Push a thread ID (called from ISR context, no locks).
+    /// Returns true if pushed, false if buffer full.
+    fn push(&self, tid: u64) -> bool {
+        for slot in &self.slots {
+            if slot
+                .compare_exchange(
+                    ISR_WAKEUP_EMPTY,
+                    tid,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                return true;
+            }
+        }
+        false // Buffer full — should never happen with 32 slots
+    }
+
+    /// Drain all entries (called from scheduler under lock).
+    fn drain(&self, out: &mut alloc::vec::Vec<u64>) {
+        for slot in &self.slots {
+            let tid = slot.swap(ISR_WAKEUP_EMPTY, Ordering::AcqRel);
+            if tid != ISR_WAKEUP_EMPTY {
+                out.push(tid);
+            }
+        }
+    }
+}
+
+static ISR_WAKEUP_BUFFERS: [IsrWakeupBuffer; 8] =
+    [const { IsrWakeupBuffer::new() }; 8];
 
 /// Global scheduler instance
 static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
@@ -379,6 +446,12 @@ pub struct Scheduler {
 
     /// Per-CPU scheduler state (current_thread + idle_thread per CPU)
     pub(crate) cpu_state: [CpuSchedulerState; MAX_CPUS],
+
+    /// Min-heap of (wake_time_ns, thread_id) for timer-blocked threads.
+    /// Replaces O(N) scan in wake_expired_timers with O(log N) insert + O(1) peek.
+    /// Stale entries (threads already woken by ISR or terminated) are harmless —
+    /// wake_expired_timers validates each entry before acting on it.
+    timer_heap: BinaryHeap<Reverse<(u64, u64)>>,
 }
 
 impl Scheduler {
@@ -415,6 +488,7 @@ impl Scheduler {
             threads: alloc::vec![idle_thread],
             per_cpu_queues,
             cpu_state,
+            timer_heap: BinaryHeap::new(),
         };
 
         scheduler
@@ -568,6 +642,17 @@ impl Scheduler {
         let debug_log = _count < 5 || (_count % 500 == 0);
         #[cfg(not(target_arch = "x86_64"))]
         let debug_log = false;
+
+        // Drain lock-free ISR wakeup buffers (see schedule_deferred_requeue for rationale).
+        {
+            let mut wakeups = alloc::vec::Vec::new();
+            for buf in ISR_WAKEUP_BUFFERS.iter() {
+                buf.drain(&mut wakeups);
+            }
+            for tid in wakeups {
+                self.unblock_for_io(tid);
+            }
+        }
 
         // If current thread is still runnable, put it back in ready queue
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
@@ -807,6 +892,20 @@ impl Scheduler {
         let current_is_idle =
             self.cpu_state[cpu].current_thread == Some(self.cpu_state[cpu].idle_thread);
         set_cpu_idle(cpu, current_is_idle);
+
+        // Drain lock-free ISR wakeup buffers — ISRs (AHCI, etc.) push thread IDs
+        // here via isr_unblock_for_io() to avoid spinning on SCHEDULER from ISR
+        // context.  We drain ALL CPUs' buffers because the ISR that completed the
+        // I/O may have run on any CPU.
+        {
+            let mut wakeups = alloc::vec::Vec::new();
+            for buf in ISR_WAKEUP_BUFFERS.iter() {
+                buf.drain(&mut wakeups);
+            }
+            for tid in wakeups {
+                self.unblock_for_io(tid);
+            }
+        }
 
         // If current thread is still runnable, mark it as Ready but DON'T add to queue
         let mut should_requeue_old = false;
@@ -1457,6 +1556,8 @@ impl Scheduler {
                 thread.wake_time_ns = Some(wake_time_ns);
                 thread.blocked_in_syscall = true;
             }
+            // Insert into timer heap for O(1) expiry detection
+            self.timer_heap.push(Reverse((wake_time_ns, current_id)));
             for q in self.per_cpu_queues.iter_mut() {
                 q.retain(|&id| id != current_id);
             }
@@ -1494,6 +1595,10 @@ impl Scheduler {
                 // inside the syscall (wait_timeout loop) rather than restoring
                 // stale userspace context.
                 thread.blocked_in_syscall = true;
+            }
+            // Insert into timer heap if a timeout was specified
+            if let Some(wt) = wake_time_ns {
+                self.timer_heap.push(Reverse((wt, current_id)));
             }
             // Remove from all per-CPU queues (shouldn't be there, but guard against races)
             for q in self.per_cpu_queues.iter_mut() {
@@ -1569,13 +1674,22 @@ impl Scheduler {
                 thread.wake_time_ns = Some(timeout_ns);
                 thread.blocked_in_syscall = true;
             }
+            // Insert into timer heap for O(1) expiry detection
+            self.timer_heap.push(Reverse((timeout_ns, current_id)));
             for q in self.per_cpu_queues.iter_mut() {
                 q.retain(|&id| id != current_id);
             }
         }
     }
 
-    /// Check all threads for expired timer-based sleep and wake them.
+    /// Check the timer heap for expired timer-based sleep and wake them.
+    ///
+    /// Uses a BinaryHeap (min-heap via Reverse) so only expired entries at the
+    /// front are visited — O(1) peek + O(log N) pop per expired timer, vs the
+    /// old O(N) scan of ALL threads. Stale entries (threads already woken by
+    /// ISR, signal, or terminated) are detected by the validation step and
+    /// discarded without any side effects.
+    ///
     /// Called from schedule() on every reschedule, and from the nanosleep
     /// HLT loop to immediately detect timer expiry without waiting for
     /// a scheduling decision on another CPU.
@@ -1583,21 +1697,29 @@ impl Scheduler {
         let (secs, nanos) = crate::time::get_monotonic_time_ns();
         let now_ns = secs as u64 * 1_000_000_000 + nanos as u64;
 
-        let mut to_wake = alloc::vec::Vec::new();
-        for thread in self.threads.iter() {
-            let timed_wait = matches!(thread.state, ThreadState::BlockedOnTimer)
-                || (thread.state == ThreadState::BlockedOnIO && thread.wake_time_ns.is_some());
-            if !timed_wait {
-                continue;
+        // Pop all expired entries from the min-heap
+        while let Some(&Reverse((wake_time, tid))) = self.timer_heap.peek() {
+            if wake_time > now_ns {
+                break; // All remaining entries are in the future
             }
-            if let Some(wake_time) = thread.wake_time_ns {
-                if now_ns >= wake_time {
-                    to_wake.push(thread.id());
-                }
-            }
-        }
+            self.timer_heap.pop();
 
-        for id in to_wake {
+            // Validate: thread might have been woken already (by ISR, signal, etc.)
+            // or terminated. Only process if still in a timed-wait state with a
+            // wake_time set.
+            let is_timed_wait = if let Some(thread) = self.get_thread(tid) {
+                (matches!(thread.state, ThreadState::BlockedOnTimer)
+                    || (thread.state == ThreadState::BlockedOnIO
+                        && thread.wake_time_ns.is_some()))
+                    && thread.wake_time_ns.is_some()
+            } else {
+                false
+            };
+
+            if !is_timed_wait {
+                continue; // Stale entry — thread already woken or terminated
+            }
+
             // SMP safety: Don't add to ready_queue if thread is currently
             // running on any CPU. Same protection as unblock() — a thread
             // in BlockedOnTimer state might still be executing its WFI poll
@@ -1612,16 +1734,13 @@ impl Scheduler {
             // state after waking from WFI. If the thread is context-switched
             // out before detecting it, DEFERRED_REQUEUE will properly add it
             // to the ready_queue when the kernel stack is free.
-            //
-            // NOTE: These checks use &self borrows (cpu_state, is_in_deferred_requeue)
-            // and must happen BEFORE get_thread_mut() to avoid borrow conflicts.
             let is_current_on_any_cpu =
-                (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].current_thread == Some(id));
+                (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].current_thread == Some(tid));
             if is_current_on_any_cpu {
                 // Still update state so the running thread detects the change,
                 // but don't clear blocked_in_syscall — the running thread
                 // manages this flag itself when it detects the state change.
-                if let Some(thread) = self.get_thread_mut(id) {
+                if let Some(thread) = self.get_thread_mut(tid) {
                     let was_blocked_on_io = thread.state == ThreadState::BlockedOnIO;
                     thread.state = ThreadState::Ready;
                     thread.wake_time_ns = None;
@@ -1636,14 +1755,14 @@ impl Scheduler {
             // context-switched out and the old CPU's ERET hasn't completed.
             // The deferred requeue will add it when the kernel stack is free.
             #[cfg(target_arch = "aarch64")]
-            let in_deferred_requeue = self.is_in_deferred_requeue(id);
+            let in_deferred_requeue = self.is_in_deferred_requeue(tid);
             #[cfg(not(target_arch = "aarch64"))]
             let in_deferred_requeue = false;
 
-            let is_idle = id == self.cpu_state[Self::current_cpu_id()].idle_thread;
-            let already_queued = self.per_cpu_queues.iter().any(|q| q.contains(&id));
+            let is_idle = tid == self.cpu_state[Self::current_cpu_id()].idle_thread;
+            let already_queued = self.per_cpu_queues.iter().any(|q| q.contains(&tid));
 
-            if let Some(thread) = self.get_thread_mut(id) {
+            if let Some(thread) = self.get_thread_mut(tid) {
                 let was_blocked_on_io = thread.state == ThreadState::BlockedOnIO;
                 thread.state = ThreadState::Ready;
                 thread.wake_time_ns = None;
@@ -1656,8 +1775,8 @@ impl Scheduler {
                 }
 
                 if !in_deferred_requeue && !is_idle && !already_queued {
-                    let target = self.find_target_cpu_for_wakeup(id);
-                    self.per_cpu_queues[target].push_back(id);
+                    let target = self.find_target_cpu_for_wakeup(tid);
+                    self.per_cpu_queues[target].push_back(tid);
                 }
             }
         }
@@ -2124,9 +2243,37 @@ pub fn with_scheduler<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut Scheduler) -> R,
 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::timer_interrupt::CPU0_BREADCRUMB_ID;
+        use core::sync::atomic::Ordering;
+        let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
+        if cpu_id == 0 {
+            CPU0_BREADCRUMB_ID.store(20, Ordering::Relaxed); // with_scheduler entry
+        }
+    }
     without_interrupts(|| {
         let mut scheduler_lock = SCHEDULER.lock();
-        scheduler_lock.as_mut().map(f)
+        #[cfg(target_arch = "aarch64")]
+        {
+            use crate::arch_impl::aarch64::timer_interrupt::CPU0_BREADCRUMB_ID;
+            use core::sync::atomic::Ordering;
+            let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
+            if cpu_id == 0 {
+                CPU0_BREADCRUMB_ID.store(21, Ordering::Relaxed); // after lock acquisition
+            }
+        }
+        let result = scheduler_lock.as_mut().map(f);
+        #[cfg(target_arch = "aarch64")]
+        {
+            use crate::arch_impl::aarch64::timer_interrupt::CPU0_BREADCRUMB_ID;
+            use core::sync::atomic::Ordering;
+            let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
+            if cpu_id == 0 {
+                CPU0_BREADCRUMB_ID.store(22, Ordering::Relaxed); // after closure
+            }
+        }
+        result
     })
 }
 
@@ -2315,6 +2462,70 @@ pub fn is_need_resched() -> bool {
     {
         // ARM64: Check per-CPU flag and global atomic
         crate::per_cpu_aarch64::need_resched() || NEED_RESCHED.load(Ordering::Relaxed)
+    }
+}
+
+/// Lock-free ISR wakeup: push thread ID to per-CPU wakeup buffer.
+///
+/// Called from the AHCI ISR (via `Completion::complete()`) instead of
+/// `with_scheduler(|s| s.unblock_for_io(tid))`.  This avoids acquiring the
+/// global SCHEDULER mutex from ISR context, which was the root cause of
+/// CPU 0's IRQ death: the ISR would spin on the lock with IRQs masked,
+/// starving the timer for milliseconds.
+///
+/// The scheduler drains the buffer under its own lock at the top of every
+/// `schedule_deferred_requeue()` / `schedule()` call.
+pub fn isr_unblock_for_io(tid: u64) {
+    let cpu = current_cpu_id_raw();
+    if cpu < ISR_WAKEUP_BUFFERS.len() {
+        ISR_WAKEUP_BUFFERS[cpu].push(tid);
+    }
+    set_need_resched();
+    // Send IPI to idle CPUs so the buffer is drained promptly.
+    #[cfg(target_arch = "aarch64")]
+    {
+        let online = crate::arch_impl::aarch64::smp::cpus_online() as usize;
+        for target in 0..online.min(MAX_CPUS) {
+            if target != cpu && is_cpu_idle(target) {
+                crate::arch_impl::aarch64::gic::send_sgi(
+                    crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
+                    target as u8,
+                );
+            }
+        }
+    }
+}
+
+/// Read the current CPU ID directly from hardware (MPIDR_EL1 on ARM64).
+/// Safe to call from ISR context — no per-CPU data, no locks.
+#[inline]
+fn current_cpu_id_raw() -> usize {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mpidr: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
+        }
+        (mpidr & 0xFF) as usize
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        0
+    }
+}
+
+/// Check if a CPU is idle without acquiring any lock (raw version for ISR use).
+/// On non-aarch64, always returns false.
+#[allow(dead_code)]
+pub fn is_cpu_idle_raw(cpu_id: usize) -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        is_cpu_idle(cpu_id)
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let _ = cpu_id;
+        false
     }
 }
 

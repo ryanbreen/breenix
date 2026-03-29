@@ -401,10 +401,13 @@ impl Completion {
 
     /// Signal completion from ISR or any other context.
     ///
-    /// Sets `done = token`, then wakes the waiter thread (if any) by calling
-    /// `unblock_for_io()` under the scheduler lock.  This is safe from ISR
-    /// context because `with_scheduler()` disables interrupts before locking,
-    /// and the ISR already runs with IRQs masked.
+    /// Sets `done = token`, then wakes the waiter thread (if any) via the
+    /// lock-free ISR wakeup buffer.  The actual state transition + queue push
+    /// happens when the scheduler drains the buffer on the next schedule call.
+    ///
+    /// This avoids acquiring the global SCHEDULER mutex from ISR context,
+    /// which was the root cause of CPU 0's IRQ death: the AHCI ISR would
+    /// spin on the contended lock with IRQs masked, starving the timer.
     ///
     /// Idempotent: calling `complete()` multiple times is safe (the second
     /// call stores the same token again and a waiter of 0, which is a no-op).
@@ -425,9 +428,10 @@ impl Completion {
 
         let tid = self.waiter.load(Ordering::Acquire);
         if tid != 0 {
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.unblock_for_io(tid);
-            });
+            // Lock-free path: push to ISR wakeup buffer instead of acquiring
+            // the global scheduler lock.  The scheduler will drain this buffer
+            // and call unblock_for_io(tid) on the next schedule() call.
+            crate::task::scheduler::isr_unblock_for_io(tid);
         }
     }
 }

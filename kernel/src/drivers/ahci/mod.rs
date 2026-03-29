@@ -193,6 +193,8 @@ static AHCI_COMPLETIONS: [[Completion; AHCI_MAX_CONCURRENT]; MAX_AHCI_PORTS] =
 
 /// Count ISR invocations (for diagnostic/timeout reporting).
 static AHCI_ISR_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Hardware MPIDR Aff0 of the CPU that last ran the AHCI ISR (0xDEAD = never ran).
+static AHCI_ISR_LAST_MPIDR: AtomicU64 = AtomicU64::new(0xDEAD);
 /// Count commands issued via issue_cmd_slot0 (for diagnostic/timeout reporting).
 static AHCI_CMD_COUNT: AtomicU32 = AtomicU32::new(0);
 /// Per-port token for the command currently issued in slot 0. 0 = none.
@@ -204,6 +206,25 @@ static PORT_ACTIVE_CMD_NUM: [AtomicU32; MAX_AHCI_PORTS] =
 /// AtomicU32 for lock-free access from the ISR.
 static PORT_ACTIVE_MASK: [AtomicU32; MAX_AHCI_PORTS] =
     [const { AtomicU32::new(0) }; MAX_AHCI_PORTS];
+
+/// Per-port ISR hit counter: incremented each time the ISR sees PORT_IS != 0 for a port.
+static AHCI_ISR_PORT_HIT: [AtomicU32; MAX_AHCI_PORTS] =
+    [const { AtomicU32::new(0) }; MAX_AHCI_PORTS];
+/// Per-port completion hit counter: incremented each time the ISR calls complete() for a port.
+static AHCI_ISR_COMPLETE_HIT: [AtomicU32; MAX_AHCI_PORTS] =
+    [const { AtomicU32::new(0) }; MAX_AHCI_PORTS];
+/// ICC_PMR_EL1 value captured at ISR entry (last invocation).
+static AHCI_ISR_LAST_PMR: AtomicU64 = AtomicU64::new(0);
+/// PORT_IS value seen by the ISR for port 1 (last invocation that saw port 1 active).
+static AHCI_LAST_ISR_PORT1_IS: AtomicU32 = AtomicU32::new(0);
+/// cmd_num swapped from PORT_ACTIVE_CMD_NUM[1] (last ISR invocation for port 1).
+static AHCI_LAST_ISR_PORT1_CMD_NUM: AtomicU32 = AtomicU32::new(0);
+/// ELR_EL1 captured at AHCI ISR entry — the PC that was interrupted by the AHCI IRQ.
+/// Shows what CPU 0 was doing when the AHCI SPI fired.
+static AHCI_ISR_LAST_ELR: AtomicU64 = AtomicU64::new(0);
+/// SPSR_EL1 captured at AHCI ISR entry — the saved PSTATE from before the AHCI IRQ.
+/// Bits [9:6] = DAIF mask of the interrupted context.
+static AHCI_ISR_LAST_SPSR: AtomicU64 = AtomicU64::new(0);
 
 /// Per-port I/O serialisation lock.
 ///
@@ -1260,6 +1281,252 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
         pmr,
         rpr
     );
+    crate::serial_println!(
+        "[ahci]   port_isr_hits=[{},{}] complete_hits=[{},{}]",
+        AHCI_ISR_PORT_HIT[0].load(Ordering::Relaxed),
+        AHCI_ISR_PORT_HIT[1].load(Ordering::Relaxed),
+        AHCI_ISR_COMPLETE_HIT[0].load(Ordering::Relaxed),
+        AHCI_ISR_COMPLETE_HIT[1].load(Ordering::Relaxed),
+    );
+    crate::serial_println!(
+        "[ahci]   isr_last_pmr={:#x} last_port1_IS={:#x} last_port1_cmd_num={}",
+        AHCI_ISR_LAST_PMR.load(Ordering::Relaxed),
+        AHCI_LAST_ISR_PORT1_IS.load(Ordering::Relaxed),
+        AHCI_LAST_ISR_PORT1_CMD_NUM.load(Ordering::Relaxed),
+    );
+    #[cfg(target_arch = "aarch64")]
+    crate::serial_println!(
+        "[ahci]   isr_last_hw_cpu={}",
+        AHCI_ISR_LAST_MPIDR.load(Ordering::Relaxed),
+    );
+    #[cfg(target_arch = "aarch64")]
+    crate::serial_println!(
+        "[ahci]   isr_last_elr={:#x} isr_last_spsr={:#x}",
+        AHCI_ISR_LAST_ELR.load(Ordering::Relaxed),
+        AHCI_ISR_LAST_SPSR.load(Ordering::Relaxed),
+    );
+    // CPU 0 timer ELR and breadcrumb from timer_interrupt.rs
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::timer_interrupt::{
+            CPU0_LAST_TIMER_ELR, CPU0_BREADCRUMB_ID,
+            CPU0_DISPATCH_TID, CPU0_DISPATCH_ELR, CPU0_DISPATCH_SPSR,
+        };
+        crate::serial_println!(
+            "[ahci]   cpu0_last_timer_elr={:#x} cpu0_breadcrumb={}",
+            CPU0_LAST_TIMER_ELR.load(Ordering::Relaxed),
+            CPU0_BREADCRUMB_ID.load(Ordering::Relaxed),
+        );
+        crate::serial_println!(
+            "[ahci]   cpu0_dispatch: tid={} elr={:#x} spsr={:#x}",
+            CPU0_DISPATCH_TID.load(Ordering::Relaxed),
+            CPU0_DISPATCH_ELR.load(Ordering::Relaxed),
+            CPU0_DISPATCH_SPSR.load(Ordering::Relaxed),
+        );
+        let spsr = CPU0_DISPATCH_SPSR.load(Ordering::Relaxed);
+        let spsr_after_bic = spsr & !0xC0u64;
+        crate::serial_println!(
+            "[ahci]   cpu0_dispatch_spsr_after_bic={:#x} DAIF_bits={:#x}",
+            spsr_after_bic,
+            (spsr_after_bic >> 6) & 0xF,
+        );
+    }
+    // Read additional GIC CPU interface state
+    let (igrpen1, icc_ctlr, bpr1): (u64, u64, u64);
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("mrs {}, icc_igrpen1_el1", out(reg) igrpen1, options(nomem, nostack));
+        core::arch::asm!("mrs {}, icc_ctlr_el1", out(reg) icc_ctlr, options(nomem, nostack));
+        core::arch::asm!("mrs {}, icc_bpr1_el1", out(reg) bpr1, options(nomem, nostack));
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        igrpen1 = 0;
+        icc_ctlr = 0;
+        bpr1 = 0;
+    }
+    crate::serial_println!(
+        "[ahci]   IGRPEN1={:#x} ICC_CTLR={:#x} BPR1={:#x}",
+        igrpen1, icc_ctlr, bpr1,
+    );
+    // Read GICD_ISENABLER1 to confirm SPI34 is still enabled at distributor
+    #[cfg(target_arch = "aarch64")]
+    {
+        // GICD_ISENABLER1 at offset 0x104 covers SPIs 32-63
+        // SPI34 = bit 2 (34 - 32 = 2)
+        let gicd_isenabler1 = ahci_gicd_read_u32(0x104);
+        let spi34_enabled = (gicd_isenabler1 >> 2) & 1;
+        crate::serial_println!(
+            "[ahci]   GICD_ISENABLER1={:#x} SPI34_enabled={}",
+            gicd_isenabler1, spi34_enabled,
+        );
+    }
+    // Read CPU 0's GICR PPI enable and pending state (redistributor-level)
+    #[cfg(target_arch = "aarch64")]
+    {
+        let cpu0_ppi_enable = crate::arch_impl::aarch64::gic::read_gicr_isenabler0(0);
+        let ppi27_enabled = (cpu0_ppi_enable >> 27) & 1;
+        crate::serial_println!(
+            "[ahci]   CPU0_GICR_ISENABLER0={:#010x} PPI27_enabled={}",
+            cpu0_ppi_enable, ppi27_enabled,
+        );
+        let cpu0_ppi_pending = crate::arch_impl::aarch64::gic::read_gicr_ispendr0(0);
+        let ppi27_pending = (cpu0_ppi_pending >> 27) & 1;
+        crate::serial_println!(
+            "[ahci]   CPU0_GICR_ISPENDR0={:#010x} PPI27_pending={}",
+            cpu0_ppi_pending, ppi27_pending,
+        );
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let ppi27_priority = crate::arch_impl::aarch64::gic::read_gicr_priority_cpu0(27);
+        let spi34_priority = {
+            // SPI 34 priority is in GICD_IPRIORITYR[34]
+            let reg = ahci_gicd_read_u32(0x400 + (34 / 4) * 4); // GICD_IPRIORITYR base = 0x400
+            ((reg >> ((34 % 4) * 8)) & 0xFF) as u8
+        };
+        crate::serial_println!(
+            "[ahci]   PPI27_priority={:#x} SPI34_priority={:#x} PMR=0xf8",
+            ppi27_priority, spi34_priority,
+        );
+    }
+    // Per-CPU SPSR_EL1 snapshots from the timer tick handler.
+    // SPSR_EL1 is the saved PSTATE from before the interrupt was taken.
+    // Bits [9:6] = pre-interrupt DAIF mask.  If bit 7 (I) is set, the CPU
+    // was running with IRQs masked when it was interrupted by the timer.
+    // TIMER_TICK_COUNT detects if a CPU stopped receiving timer interrupts entirely.
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::timer_interrupt::{TIMER_TICK_DAIF, TIMER_TICK_COUNT};
+        let current_cpu: u64;
+        unsafe {
+            let mpidr: u64;
+            core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
+            current_cpu = mpidr & 0xFF;
+        }
+        crate::serial_println!(
+            "[ahci]   timeout_cpu={} cpu_spsr=[{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x}]",
+            current_cpu,
+            TIMER_TICK_DAIF[0].load(Ordering::Relaxed),
+            TIMER_TICK_DAIF[1].load(Ordering::Relaxed),
+            TIMER_TICK_DAIF[2].load(Ordering::Relaxed),
+            TIMER_TICK_DAIF[3].load(Ordering::Relaxed),
+            TIMER_TICK_DAIF[4].load(Ordering::Relaxed),
+            TIMER_TICK_DAIF[5].load(Ordering::Relaxed),
+            TIMER_TICK_DAIF[6].load(Ordering::Relaxed),
+            TIMER_TICK_DAIF[7].load(Ordering::Relaxed),
+        );
+        crate::serial_println!(
+            "[ahci]   tick_count=[{},{},{},{},{},{},{},{}]",
+            TIMER_TICK_COUNT[0].load(Ordering::Relaxed),
+            TIMER_TICK_COUNT[1].load(Ordering::Relaxed),
+            TIMER_TICK_COUNT[2].load(Ordering::Relaxed),
+            TIMER_TICK_COUNT[3].load(Ordering::Relaxed),
+            TIMER_TICK_COUNT[4].load(Ordering::Relaxed),
+            TIMER_TICK_COUNT[5].load(Ordering::Relaxed),
+            TIMER_TICK_COUNT[6].load(Ordering::Relaxed),
+            TIMER_TICK_COUNT[7].load(Ordering::Relaxed),
+        );
+        use crate::arch_impl::aarch64::timer_interrupt::{TIMER_TICK_HW_CPU, TIMER_TICK_HW_COUNT};
+        crate::serial_println!(
+            "[ahci]   hw_tick_count=[{},{},{},{},{},{},{},{}]",
+            TIMER_TICK_HW_COUNT[0].load(Ordering::Relaxed),
+            TIMER_TICK_HW_COUNT[1].load(Ordering::Relaxed),
+            TIMER_TICK_HW_COUNT[2].load(Ordering::Relaxed),
+            TIMER_TICK_HW_COUNT[3].load(Ordering::Relaxed),
+            TIMER_TICK_HW_COUNT[4].load(Ordering::Relaxed),
+            TIMER_TICK_HW_COUNT[5].load(Ordering::Relaxed),
+            TIMER_TICK_HW_COUNT[6].load(Ordering::Relaxed),
+            TIMER_TICK_HW_COUNT[7].load(Ordering::Relaxed),
+        );
+        crate::serial_println!(
+            "[ahci]   sw_to_hw_map=[{},{},{},{},{},{},{},{}]",
+            TIMER_TICK_HW_CPU[0].load(Ordering::Relaxed),
+            TIMER_TICK_HW_CPU[1].load(Ordering::Relaxed),
+            TIMER_TICK_HW_CPU[2].load(Ordering::Relaxed),
+            TIMER_TICK_HW_CPU[3].load(Ordering::Relaxed),
+            TIMER_TICK_HW_CPU[4].load(Ordering::Relaxed),
+            TIMER_TICK_HW_CPU[5].load(Ordering::Relaxed),
+            TIMER_TICK_HW_CPU[6].load(Ordering::Relaxed),
+            TIMER_TICK_HW_CPU[7].load(Ordering::Relaxed),
+        );
+        // Per-CPU CNTV_CTL_EL0 snapshots from the last timer tick on each CPU.
+        // Bit 0 = ENABLE, Bit 1 = IMASK, Bit 2 = ISTATUS.
+        // If CPU 0's value has ENABLE=0 or IMASK=1, the timer was silently killed.
+        use crate::arch_impl::aarch64::timer_interrupt::TIMER_TICK_CNTV_CTL;
+        crate::serial_println!(
+            "[ahci]   timer_ctl=[{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x}]",
+            TIMER_TICK_CNTV_CTL[0].load(Ordering::Relaxed),
+            TIMER_TICK_CNTV_CTL[1].load(Ordering::Relaxed),
+            TIMER_TICK_CNTV_CTL[2].load(Ordering::Relaxed),
+            TIMER_TICK_CNTV_CTL[3].load(Ordering::Relaxed),
+            TIMER_TICK_CNTV_CTL[4].load(Ordering::Relaxed),
+            TIMER_TICK_CNTV_CTL[5].load(Ordering::Relaxed),
+            TIMER_TICK_CNTV_CTL[6].load(Ordering::Relaxed),
+            TIMER_TICK_CNTV_CTL[7].load(Ordering::Relaxed),
+        );
+        // Per-CPU idle loop iteration counters.
+        // If CPU 0's idle_count is advancing but tick_count is frozen, CPU 0 IS
+        // executing WFI but the timer interrupt isn't being delivered.
+        use crate::arch_impl::aarch64::timer_interrupt::IDLE_LOOP_COUNT;
+        crate::serial_println!(
+            "[ahci]   idle_count=[{},{},{},{},{},{},{},{}]",
+            IDLE_LOOP_COUNT[0].load(Ordering::Relaxed),
+            IDLE_LOOP_COUNT[1].load(Ordering::Relaxed),
+            IDLE_LOOP_COUNT[2].load(Ordering::Relaxed),
+            IDLE_LOOP_COUNT[3].load(Ordering::Relaxed),
+            IDLE_LOOP_COUNT[4].load(Ordering::Relaxed),
+            IDLE_LOOP_COUNT[5].load(Ordering::Relaxed),
+            IDLE_LOOP_COUNT[6].load(Ordering::Relaxed),
+            IDLE_LOOP_COUNT[7].load(Ordering::Relaxed),
+        );
+    }
+    // Per-CPU sync exception counter: detects infinite fault loops (e.g., ERET
+    // to unmapped page -> instruction abort -> ERET -> repeat).
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::exception::{
+            SYNC_EXCEPTION_COUNT, CPU0_LAST_SYNC_ESR, CPU0_LAST_SYNC_FAR, CPU0_LAST_SYNC_ELR,
+        };
+        crate::serial_println!(
+            "[ahci]   sync_exc_count=[{},{},{},{},{},{},{},{}]",
+            SYNC_EXCEPTION_COUNT[0].load(Ordering::Relaxed),
+            SYNC_EXCEPTION_COUNT[1].load(Ordering::Relaxed),
+            SYNC_EXCEPTION_COUNT[2].load(Ordering::Relaxed),
+            SYNC_EXCEPTION_COUNT[3].load(Ordering::Relaxed),
+            SYNC_EXCEPTION_COUNT[4].load(Ordering::Relaxed),
+            SYNC_EXCEPTION_COUNT[5].load(Ordering::Relaxed),
+            SYNC_EXCEPTION_COUNT[6].load(Ordering::Relaxed),
+            SYNC_EXCEPTION_COUNT[7].load(Ordering::Relaxed),
+        );
+        crate::serial_println!(
+            "[ahci]   cpu0_last_sync: esr={:#x} far={:#x} elr={:#x}",
+            CPU0_LAST_SYNC_ESR.load(Ordering::Relaxed),
+            CPU0_LAST_SYNC_FAR.load(Ordering::Relaxed),
+            CPU0_LAST_SYNC_ELR.load(Ordering::Relaxed),
+        );
+    }
+    // Read THIS CPU's timer hardware registers (per-CPU, so this is the
+    // timeout thread's CPU, not necessarily CPU 0).
+    #[cfg(target_arch = "aarch64")]
+    {
+        let (cntv_ctl, cntv_tval, cntp_ctl, cntp_tval, cntfrq): (u64, u64, u64, u64, u64);
+        unsafe {
+            core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) cntv_ctl, options(nomem, nostack));
+            core::arch::asm!("mrs {}, cntv_tval_el0", out(reg) cntv_tval, options(nomem, nostack));
+            core::arch::asm!("mrs {}, cntp_ctl_el0", out(reg) cntp_ctl, options(nomem, nostack));
+            core::arch::asm!("mrs {}, cntp_tval_el0", out(reg) cntp_tval, options(nomem, nostack));
+            core::arch::asm!("mrs {}, cntfrq_el0", out(reg) cntfrq, options(nomem, nostack));
+        }
+        crate::serial_println!(
+            "[ahci]   timer: CNTV_CTL={:#x} CNTV_TVAL={} CNTP_CTL={:#x} CNTP_TVAL={} CNTFRQ={}",
+            cntv_ctl, cntv_tval as i64, cntp_ctl, cntp_tval as i64, cntfrq,
+        );
+        crate::serial_println!(
+            "[ahci]   timer: TICKS_PER_INTERRUPT={}",
+            crate::arch_impl::aarch64::timer_interrupt::TICKS_PER_INTERRUPT.load(core::sync::atomic::Ordering::Relaxed),
+        );
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -1935,6 +2202,40 @@ pub fn handle_interrupt() {
 
     let _count = AHCI_ISR_COUNT.fetch_add(1, Ordering::Relaxed);
 
+    // Snapshot hardware MPIDR Aff0 to verify which physical CPU runs the ISR.
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mpidr: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
+        }
+        AHCI_ISR_LAST_MPIDR.store(mpidr & 0xFF, Ordering::Relaxed);
+    }
+
+    // Snapshot ICC_PMR_EL1 at ISR entry for diagnostic visibility.
+    #[cfg(target_arch = "aarch64")]
+    {
+        let pmr: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, icc_pmr_el1", out(reg) pmr, options(nomem, nostack));
+        }
+        AHCI_ISR_LAST_PMR.store(pmr, Ordering::Relaxed);
+    }
+
+    // Capture ELR_EL1 and SPSR_EL1 — the interrupted PC and saved PSTATE.
+    // These show what CPU 0 was doing when the AHCI ISR fired.
+    #[cfg(target_arch = "aarch64")]
+    {
+        let elr: u64;
+        let spsr: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, elr_el1", out(reg) elr, options(nomem, nostack));
+            core::arch::asm!("mrs {}, spsr_el1", out(reg) spsr, options(nomem, nostack));
+        }
+        AHCI_ISR_LAST_ELR.store(elr, Ordering::Relaxed);
+        AHCI_ISR_LAST_SPSR.store(spsr, Ordering::Relaxed);
+    }
+
     // Read the global interrupt status.
     let hba_is = hba_read(abar, HBA_IS);
 
@@ -1957,6 +2258,10 @@ pub fn handle_interrupt() {
         if is == 0 {
             continue;
         }
+        AHCI_ISR_PORT_HIT[port].fetch_add(1, Ordering::Relaxed);
+        if port == 1 {
+            AHCI_LAST_ISR_PORT1_IS.store(is, Ordering::Relaxed);
+        }
         ack_port_interrupt(abar, port, is);
 
         if (is & (PORT_IRQ_COMPLETE | PORT_IRQ_ERROR)) != 0 {
@@ -1970,8 +2275,12 @@ pub fn handle_interrupt() {
                 // causing the waiter to time out.
                 let cmd_num =
                     PORT_ACTIVE_CMD_NUM[port].swap(0, Ordering::AcqRel);
+                if port == 1 {
+                    AHCI_LAST_ISR_PORT1_CMD_NUM.store(cmd_num, Ordering::Relaxed);
+                }
                 if cmd_num != 0 {
                     AHCI_COMPLETIONS[port][0].complete(cmd_num);
+                    AHCI_ISR_COMPLETE_HIT[port].fetch_add(1, Ordering::Relaxed);
                 }
                 PORT_ACTIVE_MASK[port].store(0, Ordering::Release);
             }

@@ -275,6 +275,16 @@ extern "C" fn kthread_entry(arg: u64) -> ! {
     // output for debugging only. The KTHREAD_CREATE marker in kthread_run() is
     // sufficient for boot stage verification.
 
+    // Breadcrumb 70: CPU 0 reached kthread_entry after ERET dispatch
+    #[cfg(target_arch = "aarch64")]
+    {
+        let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+        if cpu_id == 0 {
+            crate::arch_impl::aarch64::timer_interrupt::CPU0_BREADCRUMB_ID
+                .store(70, core::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
     // CRITICAL: Enable interrupts for kernel threads!
     // Kernel threads are initialized with RFLAGS = 0x002 (IF=0, interrupts disabled)
     // on x86_64, or with DAIF.I=1 (IRQs masked) on ARM64, to prevent preemption
