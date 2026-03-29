@@ -9,12 +9,24 @@
 
 #![allow(dead_code)]
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use crate::arch_impl::aarch64::constants;
 use crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame;
 use crate::arch_impl::aarch64::gic;
 use crate::arch_impl::aarch64::syscall_entry::rust_syscall_handler_aarch64;
 use crate::arch_impl::traits::PerCpuOps;
 use crate::arch_impl::traits::SyscallFrame;
+
+/// Per-CPU sync exception counter: detects if a CPU is stuck in an infinite fault loop.
+pub static SYNC_EXCEPTION_COUNT: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+
+/// CPU 0 last sync exception ESR (Exception Syndrome Register).
+pub static CPU0_LAST_SYNC_ESR: AtomicU64 = AtomicU64::new(0);
+/// CPU 0 last sync exception FAR (Fault Address Register).
+pub static CPU0_LAST_SYNC_FAR: AtomicU64 = AtomicU64::new(0);
+/// CPU 0 last sync exception ELR (Exception Link Register — faulting instruction).
+pub static CPU0_LAST_SYNC_ELR: AtomicU64 = AtomicU64::new(0);
 
 /// Set the per-CPU idle/boot stack in `user_rsp_scratch` so the assembly ERET
 /// path restores SP to a safe stack when redirecting to idle_loop_arm64.
@@ -117,6 +129,20 @@ mod exception_class {
 /// - x2 = FAR_EL1 (Fault Address Register)
 #[no_mangle]
 pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: u64, far: u64) {
+    // Per-CPU sync exception counter — increment FIRST, before any branching.
+    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    if cpu_id < 8 {
+        SYNC_EXCEPTION_COUNT[cpu_id].fetch_add(1, Ordering::Relaxed);
+    }
+    // CPU 0: capture last ESR, FAR, and ELR for post-mortem diagnosis.
+    if cpu_id == 0 {
+        CPU0_LAST_SYNC_ESR.store(esr, Ordering::Relaxed);
+        CPU0_LAST_SYNC_FAR.store(far, Ordering::Relaxed);
+        let elr: u64;
+        unsafe { core::arch::asm!("mrs {}, elr_el1", out(reg) elr, options(nomem, nostack)); }
+        CPU0_LAST_SYNC_ELR.store(elr, Ordering::Relaxed);
+    }
+
     let ec = ((esr >> 26) & 0x3F) as u32; // Exception Class
     let iss = (esr & 0x1FFFFFF) as u32; // Instruction Specific Syndrome
 

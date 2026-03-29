@@ -1481,6 +1481,31 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
             IDLE_LOOP_COUNT[7].load(Ordering::Relaxed),
         );
     }
+    // Per-CPU sync exception counter: detects infinite fault loops (e.g., ERET
+    // to unmapped page -> instruction abort -> ERET -> repeat).
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::exception::{
+            SYNC_EXCEPTION_COUNT, CPU0_LAST_SYNC_ESR, CPU0_LAST_SYNC_FAR, CPU0_LAST_SYNC_ELR,
+        };
+        crate::serial_println!(
+            "[ahci]   sync_exc_count=[{},{},{},{},{},{},{},{}]",
+            SYNC_EXCEPTION_COUNT[0].load(Ordering::Relaxed),
+            SYNC_EXCEPTION_COUNT[1].load(Ordering::Relaxed),
+            SYNC_EXCEPTION_COUNT[2].load(Ordering::Relaxed),
+            SYNC_EXCEPTION_COUNT[3].load(Ordering::Relaxed),
+            SYNC_EXCEPTION_COUNT[4].load(Ordering::Relaxed),
+            SYNC_EXCEPTION_COUNT[5].load(Ordering::Relaxed),
+            SYNC_EXCEPTION_COUNT[6].load(Ordering::Relaxed),
+            SYNC_EXCEPTION_COUNT[7].load(Ordering::Relaxed),
+        );
+        crate::serial_println!(
+            "[ahci]   cpu0_last_sync: esr={:#x} far={:#x} elr={:#x}",
+            CPU0_LAST_SYNC_ESR.load(Ordering::Relaxed),
+            CPU0_LAST_SYNC_FAR.load(Ordering::Relaxed),
+            CPU0_LAST_SYNC_ELR.load(Ordering::Relaxed),
+        );
+    }
     // Read THIS CPU's timer hardware registers (per-CPU, so this is the
     // timeout thread's CPU, not necessarily CPU 0).
     #[cfg(target_arch = "aarch64")]
