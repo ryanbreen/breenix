@@ -89,6 +89,15 @@ pub static TIMER_TICK_HW_COUNT: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8
 /// Bit 0: ENABLE, Bit 1: IMASK, Bit 2: ISTATUS.
 pub static TIMER_TICK_CNTV_CTL: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 
+/// CPU 0's CNTV_CVAL_EL0 after the last arm_timer call.
+/// This is the absolute compare value — the counter value at which the timer
+/// should fire next. If CNTVCT > CVAL, the timer has expired.
+pub static CPU0_LAST_CVAL: AtomicU64 = AtomicU64::new(0);
+
+/// CPU 0's CNTVCT_EL0 immediately after arm_timer set the new CVAL.
+/// Comparing CVAL - CNTVCT_AT_ARM should yield ~TICKS_PER_INTERRUPT (24000).
+pub static CPU0_LAST_CNTVCT: AtomicU64 = AtomicU64::new(0);
+
 /// CPU 0's ELR_EL1 at the last timer tick — the interrupted PC.
 /// Shows what CPU 0 was executing when the last timer interrupt fired.
 /// After CPU 0 dies (no more timer ticks), this holds the last captured PC.
@@ -426,6 +435,22 @@ pub extern "C" fn timer_interrupt_handler() {
     }
     if cpu_id < 8 {
         TIMER_TICK_CNTV_CTL[cpu_id].store(cntv_ctl, Ordering::Relaxed);
+    }
+
+    // CPU 0 only: snapshot the absolute timer deadline (CVAL) and the current
+    // counter (CNTVCT) right after arm_timer set the new CVAL.  At timeout
+    // diagnosis time we compare these with the then-current CNTVCT to determine
+    // whether CVAL is sane (cntvct_at_arm + 24000) and whether the timer has
+    // long since expired (delta >> 0) or is impossibly in the future.
+    if cpu_id == 0 {
+        let cval: u64;
+        let cntvct: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntv_cval_el0", out(reg) cval, options(nomem, nostack));
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) cntvct, options(nomem, nostack));
+        }
+        CPU0_LAST_CVAL.store(cval, Ordering::Relaxed);
+        CPU0_LAST_CNTVCT.store(cntvct, Ordering::Relaxed);
     }
 
     // Track hardware CPU identity vs software cpu_id for mismatch detection.

@@ -1527,6 +1527,28 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
             crate::arch_impl::aarch64::timer_interrupt::TICKS_PER_INTERRUPT.load(core::sync::atomic::Ordering::Relaxed),
         );
     }
+    // CPU 0's last CVAL and CNTVCT from the timer handler, plus current CNTVCT.
+    // delta = cntvct_now - cval: positive = timer expired long ago, negative = CVAL in future.
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::timer_interrupt::{CPU0_LAST_CVAL, CPU0_LAST_CNTVCT};
+        // Read current CNTVCT (shared across all CPUs, so valid from any CPU)
+        let current_cntvct: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) current_cntvct, options(nomem, nostack));
+        }
+        let cpu0_cval = CPU0_LAST_CVAL.load(Ordering::Relaxed);
+        let cpu0_cntvct_at_arm = CPU0_LAST_CNTVCT.load(Ordering::Relaxed);
+        let delta = current_cntvct.wrapping_sub(cpu0_cval);
+        crate::serial_println!(
+            "[ahci]   cpu0_timer: cval={} cntvct_at_arm={} cntvct_now={} delta={} ({}ms)",
+            cpu0_cval,
+            cpu0_cntvct_at_arm,
+            current_cntvct,
+            delta as i64,
+            delta / 24000,
+        );
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
