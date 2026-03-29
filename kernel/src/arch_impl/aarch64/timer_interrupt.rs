@@ -290,7 +290,29 @@ pub fn init() {
             );
         }
     } else {
-        // Non-VMware: use the selected timer only
+        // Non-VMware (Parallels, QEMU): use the selected timer only.
+        //
+        // CRITICAL: Set IMASK=1 before the first arm to establish HVF vtimer protocol.
+        // On Apple HVF, the VMM tracks whether the guest has acknowledged timer
+        // interrupts via the IMASK bit in CNTV_CTL. Linux's clockevents init always
+        // writes CTL with IMASK set (shutdown state) before the first set_next_event.
+        // Without this, HVF may not properly initialize vtimer tracking for this CPU,
+        // causing PPI 27 to stop being delivered after a few ticks.
+        if crate::platform_config::use_physical_timer() {
+            unsafe {
+                // Write ENABLE=1, IMASK=1 — tells HVF "guest is managing the timer"
+                core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 3u64, options(nomem, nostack));
+                core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
+            }
+        } else {
+            unsafe {
+                // Write ENABLE=1, IMASK=1 — tells HVF "guest is managing the timer"
+                core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 3u64, options(nomem, nostack));
+                core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
+            }
+        }
+
+        // Now arm: writes CVAL (future) + CTL=1 (ENABLE=1, IMASK=0) — unmasks
         arm_timer(ticks_per_interrupt);
         let irq = timer_irq();
         gic::Gicv2::enable_irq(irq as u8);
@@ -1078,6 +1100,21 @@ pub fn reset_quantum_call_count_reset() {
 /// does not need re-configuration for PPIs. We just arm the timer and enable
 /// the interrupt in this CPU's GIC interface.
 pub fn init_secondary() {
+    // CRITICAL: Set IMASK=1 before the first arm to establish HVF vtimer protocol.
+    // Same rationale as init() — HVF needs to see the IMASK transition to properly
+    // track vtimer state for this secondary CPU.
+    if crate::platform_config::use_physical_timer() {
+        unsafe {
+            core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 3u64, options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
+        }
+    } else {
+        unsafe {
+            core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 3u64, options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
+        }
+    }
+
     // Arm the timer with the same interval as CPU 0
     let ticks = TICKS_PER_INTERRUPT.load(Ordering::Relaxed);
     arm_timer(ticks);
