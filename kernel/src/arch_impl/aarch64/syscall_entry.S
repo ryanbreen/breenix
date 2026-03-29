@@ -411,6 +411,19 @@ syscall_entry_from_el0:
     mrs x0, tpidr_el1
     ldr x0, [x0, #96]          /* x0 = saved frame.x0 */
 
+    /*
+     * HVF vtimer fix: set IMASK=1 before ERET to signal the hypervisor that
+     * the guest has acknowledged the vtimer. HVF uses ERET as a sync point;
+     * if IMASK=0 and ISTATUS=1 at ERET time, HVF may permanently mask the
+     * virtual timer. The timer rearm path clears IMASK immediately.
+     * x0 is already restored; use stp/ldp to preserve it across the write.
+     */
+    stp x0, x1, [sp, #-16]!
+    mov x0, #3                  /* ENABLE=1, IMASK=1 */
+    msr cntv_ctl_el0, x0
+    isb
+    ldp x0, x1, [sp], #16
+
     eret
 
     /* Should never reach here - debug marker */
@@ -523,6 +536,16 @@ syscall_return_to_userspace_aarch64:
     mov x28, #0
     mov x29, #0
     mov x30, #0
+
+    /*
+     * HVF vtimer fix: set IMASK=1 before ERET (first entry to userspace).
+     * All registers are zeroed above, so x0 is available as scratch.
+     * Restore x0=0 after the write.
+     */
+    mov x0, #3                  /* ENABLE=1, IMASK=1 */
+    msr cntv_ctl_el0, x0
+    isb
+    mov x0, #0                  /* Re-zero x0 for userspace */
 
     /* Return to userspace */
     eret

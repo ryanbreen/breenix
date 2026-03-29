@@ -164,6 +164,14 @@ aarch64_enter_exception_frame:
 3:
     mov sp, x16
 
+    // HVF vtimer fix: set IMASK=1 before ERET to signal the hypervisor that
+    // the guest has acknowledged the vtimer. HVF uses ERET as a sync point;
+    // if IMASK=0 and ISTATUS=1 at ERET time, HVF may permanently mask the
+    // virtual timer. The idle loop's rearm_timer() clears IMASK immediately.
+    mov x16, #3          // ENABLE=1, IMASK=1
+    msr cntv_ctl_el0, x16
+    isb
+
     mrs x16, tpidr_el1
     ldr x16, [x16, #96]
     eret

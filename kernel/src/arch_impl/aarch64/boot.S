@@ -536,6 +536,11 @@ sync_exception_handler:
     ldr x16, [x16, #40]      // x16 = user_rsp_scratch
 71: mov sp, x16               // SP = correct stack
 
+    // HVF vtimer fix: set IMASK=1 before ERET (see context_switch.rs comment)
+    mov x16, #3              // ENABLE=1, IMASK=1
+    msr cntv_ctl_el0, x16
+    isb
+
     // Restore x16 from per-CPU ERET scratch
     mrs x16, tpidr_el1
     ldr x16, [x16, #96]      // x16 = saved frame.x16
@@ -666,6 +671,11 @@ irq_handler:
     ldr x16, [x16, #40]      // x16 = user_rsp_scratch
 61: mov sp, x16               // SP = correct stack
 
+    // HVF vtimer fix: set IMASK=1 before ERET (see context_switch.rs comment)
+    mov x16, #3              // ENABLE=1, IMASK=1
+    msr cntv_ctl_el0, x16
+    isb
+
     // Restore x16 from per-CPU ERET scratch
     mrs x16, tpidr_el1
     ldr x16, [x16, #96]      // x16 = saved frame.x16
@@ -699,6 +709,17 @@ irq_handler:
     ldp x28, x29, [sp, #224]
     ldr x30, [sp, #240]
     add sp, sp, #272          // Restore SP (undo the sub at entry)
+
+    // HVF vtimer fix: set IMASK=1 before ERET (early boot path)
+    // Use x16 as scratch — it was already restored from frame above.
+    // After ERET, x16 will be restored from SPSR_EL1 -> PSTATE, and x16 is
+    // caller-saved, so clobbering it here is safe for early boot IRQs.
+    stp x16, x17, [sp, #-16]!
+    mov x16, #3              // ENABLE=1, IMASK=1
+    msr cntv_ctl_el0, x16
+    isb
+    ldp x16, x17, [sp], #16
+
     eret
 
 unhandled_exception:
