@@ -683,7 +683,7 @@ struct CmdToken {
 ///   2. `wait_cmd_slot0()` with no lock held     (sleeps / polls)
 ///   3. [Optional] Lock → finish (cache invalidate, copy result)
 ///
-/// Three wait modes selected by the token:
+/// Two wait modes selected by the token:
 ///
 /// SCHEDULER SLEEP (normal, timer running):
 ///   Calls `Completion::wait_timeout()` which puts the thread into
@@ -691,12 +691,12 @@ struct CmdToken {
 ///   The ISR calls `complete()` → `unblock_for_io()` to wake us.
 ///   This is the path that eliminates SCHED_RESCUE and lockup reports.
 ///
-/// INTERRUPT-DRIVEN POLLING (IRQ registered, scheduler/timer not yet ready):
-///   Spin-polls the Completion done flag (set by ISR) using `yield`.
-///   Safe because no lock is held.
-///
-/// PORT_CI POLLING (early boot, before IRQ registered):
-///   Polls PORT_CI directly until the command clears.
+/// PORT_CI POLLING (scheduler not running — early boot):
+///   Polls PORT_CI directly until the command clears.  Completions are NOT
+///   armed, so the ISR (which still fires on SPI34) sees cmd_num==0 and
+///   takes the fast path without calling complete() or isr_unblock_for_io.
+///   This matches Linux's AHCI driver which masks device-level interrupts
+///   during polling mode.
 fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
     let abar = AHCI_ABAR.load(Ordering::Relaxed);
     let port = token.port;
@@ -731,42 +731,14 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
                 return Err("AHCI: interrupted");
             }
         }
-    } else if token.has_irq {
-        // ============================================================
-        // INTERRUPT-DRIVEN POLLING PATH
-        //
-        // IRQ registered but scheduler/timer not yet ready (early boot).
-        // Spin-poll with yield — safe because no lock is held.
-        // ============================================================
-        let (start, freq) = read_cntpct_and_freq();
-        let deadline = start + freq * AHCI_TIMEOUT_SECS;
-        loop {
-            if AHCI_COMPLETIONS[port][0].done.load(Ordering::Acquire) == cmd_num {
-                let tfd = port_read(abar, port, PORT_TFD);
-                if (tfd & 1) != 0 {
-                    return Err("AHCI: task file error");
-                }
-                return Ok(());
-            }
-
-            let now = read_cntpct();
-            if now >= deadline {
-                dump_timeout_state_free(port, cmd_num);
-                return Err("AHCI: command timeout");
-            }
-
-            #[cfg(target_arch = "aarch64")]
-            unsafe {
-                core::arch::asm!("yield", options(nomem, nostack));
-            }
-            #[cfg(not(target_arch = "aarch64"))]
-            core::hint::spin_loop();
-        }
     } else {
         // ============================================================
-        // POLLING PATH (early boot, before IRQ registered)
+        // PORT_CI POLLING PATH (scheduler not running)
         //
-        // No ISR available — poll PORT_CI directly.
+        // Completions are NOT armed (setup_cmd_slot0 skips arming when
+        // !scheduler_running). The ISR still fires but sees cmd_num==0
+        // and returns without calling complete() or setting NEED_RESCHED.
+        // We poll PORT_CI directly for completion.
         // ============================================================
         let (start, freq) = read_cntpct_and_freq();
         let deadline = start + freq * AHCI_TIMEOUT_SECS;
@@ -796,7 +768,7 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
 
             #[cfg(target_arch = "aarch64")]
             unsafe {
-                core::arch::asm!("wfe", options(nomem, nostack));
+                core::arch::asm!("yield", options(nomem, nostack));
             }
             #[cfg(not(target_arch = "aarch64"))]
             core::hint::spin_loop();
@@ -1111,39 +1083,9 @@ impl AhciController {
             return Err("AHCI: command engine not running");
         }
 
-        // --- Reset completion BEFORE writing PORT_CI ---
+        // --- Determine wait mode BEFORE arming completions ---
         let has_irq = AHCI_IRQ.load(Ordering::Relaxed) != 0 && port < MAX_AHCI_PORTS;
-        if has_irq {
-            AHCI_COMPLETIONS[port][0].reset();
-            PORT_ACTIVE_CMD_NUM[port].store(0, Ordering::Release);
-        }
 
-        let cmd_num = next_cmd_num();
-
-        // Mark slot 0 as in-flight BEFORE writing PORT_CI.
-        // The ISR reads this mask to determine which slots completed.
-        if has_irq && port < MAX_AHCI_PORTS {
-            PORT_ACTIVE_CMD_NUM[port].store(cmd_num, Ordering::Release);
-            PORT_ACTIVE_MASK[port].fetch_or(1, Ordering::Release);
-        }
-
-        // Write PORT_CI to issue the command.
-        port_write(abar, port, PORT_CI, 1);
-
-        // DSB SY + ISB: ensure the PORT_CI MMIO write is fully committed to
-        // the device interconnect before we enter the wait loop. On ARM64,
-        // device memory writes can be buffered in the store buffer; without
-        // this barrier the HBA may not see the command issue for many cycles,
-        // causing the completion interrupt to arrive late (or appear to not
-        // arrive at all if we time out first).
-        #[cfg(target_arch = "aarch64")]
-        unsafe {
-            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-            core::arch::asm!("isb", options(nostack, preserves_flags));
-        }
-
-        // Determine wait mode.
-        //
         // Two conditions must hold for the scheduler-sleep path:
         // 1. Scheduler is running (current_thread_id returns Some).
         // 2. Timer is running (timer_is_running() = true after timer init).
@@ -1163,6 +1105,44 @@ impl AhciController {
         };
         let scheduler_running =
             has_irq && crate::task::scheduler::current_thread_id().is_some() && timer_running;
+
+        // --- Arm completion tracking ONLY for scheduler-sleep mode ---
+        //
+        // During polling (scheduler not running), we do NOT arm
+        // PORT_ACTIVE_CMD_NUM. The ISR still fires (hardware raises SPI34
+        // on command completion), but sees cmd_num==0, so it skips
+        // complete() and isr_unblock_for_io(). This prevents the
+        // check_need_resched storm (1184 context-switch attempts during
+        // boot) that kills CPU 0's timer delivery on Parallels/HVF.
+        //
+        // The polling path uses PORT_CI polling directly and does not
+        // need ISR-driven completion.  This matches Linux's AHCI driver,
+        // which masks device-level interrupts during polling mode.
+        let arm_completion = has_irq && scheduler_running;
+        if arm_completion {
+            AHCI_COMPLETIONS[port][0].reset();
+            PORT_ACTIVE_CMD_NUM[port].store(0, Ordering::Release);
+        }
+        let cmd_num = next_cmd_num();
+        if arm_completion {
+            PORT_ACTIVE_CMD_NUM[port].store(cmd_num, Ordering::Release);
+            PORT_ACTIVE_MASK[port].fetch_or(1, Ordering::Release);
+        }
+
+        // Write PORT_CI to issue the command.
+        port_write(abar, port, PORT_CI, 1);
+
+        // DSB SY + ISB: ensure the PORT_CI MMIO write is fully committed to
+        // the device interconnect before we enter the wait loop. On ARM64,
+        // device memory writes can be buffered in the store buffer; without
+        // this barrier the HBA may not see the command issue for many cycles,
+        // causing the completion interrupt to arrive late (or appear to not
+        // arrive at all if we time out first).
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+            core::arch::asm!("isb", options(nostack, preserves_flags));
+        }
 
         Ok(CmdToken {
             port,
