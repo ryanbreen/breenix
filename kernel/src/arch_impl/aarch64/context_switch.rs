@@ -1790,8 +1790,29 @@ extern "C" fn inline_schedule_trampoline() -> ! {
 
     // If a pending IRQ fired above (e.g., timer PPI), it was handled on the
     // scheduler stack. The handler saved/restored all registers. We're back here
-    // with the frame still intact. Now proceed to ERET.
-    cpu0_breadcrumb(cpu_id, 43); // before aarch64_enter_exception_frame
+    // with the frame still intact. Now proceed to dispatch.
+
+    if is_idle {
+        // ret-based dispatch for idle — avoids ERET which kills HVF vtimer on Parallels.
+        // setup_idle_return_locked already set kernel_stack_top and current_thread_ptr.
+        // We just set SP to the idle stack, enable IRQs, and branch directly.
+        cpu0_breadcrumb(cpu_id, 45); // ret-based idle dispatch (NOT ERET)
+        let idle_addr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
+        let idle_sp = Aarch64PerCpu::kernel_stack_top();
+        unsafe {
+            core::arch::asm!(
+                "mov sp, {stack}",
+                "msr daifclr, #0xf",
+                "isb",
+                "br {target}",
+                stack = in(reg) idle_sp,
+                target = in(reg) idle_addr,
+                options(noreturn)
+            );
+        }
+    }
+
+    cpu0_breadcrumb(cpu_id, 43); // before aarch64_enter_exception_frame (non-idle ERET)
     unsafe {
         aarch64_enter_exception_frame(&frame as *const Aarch64ExceptionFrame);
     }
