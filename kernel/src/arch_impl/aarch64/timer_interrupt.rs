@@ -562,6 +562,20 @@ pub extern "C" fn timer_interrupt_handler() {
         arm_timer(ticks);
     }
 
+    // Force VM exit to sync vtimer after re-arm.
+    // On Apple HVF, the vtimer is only checked at VM exits. Without this,
+    // the re-armed timer might not be visible to the hypervisor until the
+    // next natural VM exit (which could be seconds away if the dispatched
+    // thread does pure computation). Reading GICD_CTLR is a safe MMIO
+    // operation that forces the hypervisor to process pending state.
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        let gicd_base = crate::platform_config::gicd_base_phys() as usize;
+        let hhdm = 0xFFFF_0000_0000_0000usize;
+        let addr = (hhdm + gicd_base) as *const u32;
+        core::ptr::read_volatile(addr);
+    }
+
     // Exit IRQ context (decrement HARDIRQ count)
     crate::per_cpu_aarch64::irq_exit();
 }

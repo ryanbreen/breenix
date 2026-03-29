@@ -1624,6 +1624,34 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     }
     crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
     crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
+
+    // Open IRQ window - same rationale as inline_schedule_trampoline ERET path.
+    // check_need_resched_and_switch_arm64 returns to boot.S which does ERET.
+    // Without this window, pending timer PPIs have no chance to fire on HVF.
+    // Safe: any IRQ handler pushes a NEW frame below SP (sub sp, #272), so the
+    // existing frame at SP is not corrupted. After the nested IRQ ERETSs back
+    // here, we continue with the original frame intact.
+    unsafe {
+        core::arch::asm!(
+            "msr daifclr, #3",
+            "isb",
+            options(nomem, nostack)
+        );
+    }
+
+    // Force a VM exit to sync HVF vtimer state.
+    // On Apple HVF, the vtimer is only checked at VM exits. Without this,
+    // the re-armed timer might not be visible to the hypervisor until the
+    // next natural VM exit (which could be seconds away if the dispatched
+    // thread does pure computation). Reading GICD_CTLR is a safe MMIO
+    // operation that forces the hypervisor to process pending state.
+    unsafe {
+        let gicd_base = crate::platform_config::gicd_base_phys() as usize;
+        let hhdm = 0xFFFF_0000_0000_0000usize;
+        let addr = (hhdm + gicd_base) as *const u32;
+        core::ptr::read_volatile(addr); // MMIO read → VM exit
+    }
+
     cpu0_breadcrumb(cpu_id, 14); // return
 }
 
@@ -1781,6 +1809,37 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
     crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
 
+    // CRITICAL: Open an IRQ window in kernel mode before ERET.
+    // This matches Linux's finish_task_switch -> raw_spin_unlock_irq -> local_irq_enable.
+    // On Parallels/HVF, the hypervisor only injects virtual timer interrupts when
+    // the guest has IRQs enabled. Without this window, the timer PPI stays pending
+    // indefinitely because the ERET opens the window for only ~1 instruction before
+    // the dispatched thread might re-mask (syscall entry). The ISB ensures the
+    // daifclr takes effect before any instruction that might branch.
+    unsafe {
+        core::arch::asm!(
+            "msr daifclr, #3",   // Enable IRQs + FIQs
+            "isb",               // Synchronize - pending IRQs fire after ISB
+            options(nomem, nostack)
+        );
+    }
+
+    // Force a VM exit to sync HVF vtimer state.
+    // On Apple HVF, the vtimer is only checked at VM exits. Without this,
+    // the re-armed timer might not be visible to the hypervisor until the
+    // next natural VM exit (which could be seconds away if the dispatched
+    // thread does pure computation). Reading GICD_CTLR is a safe MMIO
+    // operation that forces the hypervisor to process pending state.
+    unsafe {
+        let gicd_base = crate::platform_config::gicd_base_phys() as usize;
+        let hhdm = 0xFFFF_0000_0000_0000usize;
+        let addr = (hhdm + gicd_base) as *const u32;
+        core::ptr::read_volatile(addr); // MMIO read → VM exit
+    }
+
+    // If a pending IRQ fired above (e.g., timer PPI), it was handled on the
+    // scheduler stack. The handler saved/restored all registers. We're back here
+    // with the frame still intact. Now proceed to ERET.
     cpu0_breadcrumb(cpu_id, 43); // before aarch64_enter_exception_frame
     unsafe {
         aarch64_enter_exception_frame(&frame as *const Aarch64ExceptionFrame);
