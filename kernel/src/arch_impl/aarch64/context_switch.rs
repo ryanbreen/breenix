@@ -164,14 +164,9 @@ aarch64_enter_exception_frame:
 3:
     mov sp, x16
 
-    // HVF vtimer investigation: disable+re-enable the vtimer before ERET.
-    // ERET is trapped by HVF. If ISTATUS=1 and IMASK=0 when HVF processes
-    // the ERET, it may permanently mask the vtimer. Writing CTL=0 then CTL=1
-    // clears ISTATUS and forces HVF to see a fresh timer enable transition.
-    mov x16, #0           // Disable timer (CTL=0, clears ISTATUS)
-    msr cntv_ctl_el0, x16
-    isb
-    mov x16, #1           // Re-enable timer (CTL=1: ENABLE=1, IMASK=0)
+    // HVF vtimer fix: write CTL=1 + ISB before ERET.
+    // Minimal version of Test 4 — just re-affirm ENABLE=1 without disable.
+    mov x16, #1           // ENABLE=1, IMASK=0
     msr cntv_ctl_el0, x16
     isb
 

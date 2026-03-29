@@ -536,14 +536,6 @@ sync_exception_handler:
     ldr x16, [x16, #40]      // x16 = user_rsp_scratch
 71: mov sp, x16               // SP = correct stack
 
-    // HVF vtimer fix: disable+re-enable timer before ERET (see context_switch.rs)
-    mov x16, #0
-    msr cntv_ctl_el0, x16
-    isb
-    mov x16, #1
-    msr cntv_ctl_el0, x16
-    isb
-
     // Restore x16 from per-CPU ERET scratch
     mrs x16, tpidr_el1
     ldr x16, [x16, #96]      // x16 = saved frame.x16
@@ -674,14 +666,6 @@ irq_handler:
     ldr x16, [x16, #40]      // x16 = user_rsp_scratch
 61: mov sp, x16               // SP = correct stack
 
-    // HVF vtimer fix: disable+re-enable timer before ERET (see context_switch.rs)
-    mov x16, #0
-    msr cntv_ctl_el0, x16
-    isb
-    mov x16, #1
-    msr cntv_ctl_el0, x16
-    isb
-
     // Restore x16 from per-CPU ERET scratch
     mrs x16, tpidr_el1
     ldr x16, [x16, #96]      // x16 = saved frame.x16
@@ -715,16 +699,6 @@ irq_handler:
     ldp x28, x29, [sp, #224]
     ldr x30, [sp, #240]
     add sp, sp, #272          // Restore SP (undo the sub at entry)
-
-    // HVF vtimer fix: disable+re-enable timer before ERET (early boot path)
-    stp x16, x17, [sp, #-16]!
-    mov x16, #0
-    msr cntv_ctl_el0, x16
-    isb
-    mov x16, #1
-    msr cntv_ctl_el0, x16
-    isb
-    ldp x16, x17, [sp], #16
 
     eret
 
