@@ -164,10 +164,8 @@ aarch64_enter_exception_frame:
 3:
     mov sp, x16
 
-    // HVF vtimer fix: write CTL=1 + ISB before ERET.
-    // Minimal version of Test 4 — just re-affirm ENABLE=1 without disable.
-    mov x16, #1           // ENABLE=1, IMASK=0
-    msr cntv_ctl_el0, x16
+    // Test: ISB-only before ERET (no timer write).
+    // Determines if the fix is the ISB synchronization or the CTL write.
     isb
 
     mrs x16, tpidr_el1
