@@ -411,7 +411,6 @@ syscall_entry_from_el0:
     mrs x0, tpidr_el1
     ldr x0, [x0, #96]          /* x0 = saved frame.x0 */
 
-    isb                              /* ISB before ERET - required for HVF */
     eret
 
     /* Should never reach here - debug marker */
@@ -526,7 +525,6 @@ syscall_return_to_userspace_aarch64:
     mov x30, #0
 
     /* Return to userspace */
-    isb                              /* ISB before ERET - required for HVF */
     eret
 
     /* Should never reach here */

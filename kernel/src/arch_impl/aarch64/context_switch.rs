@@ -1211,8 +1211,19 @@ fn dispatch_thread_locked(
             setup_idle_return_locked(sched, frame, cpu_id);
             let idle_id = sched.cpu_state[cpu_id].idle_thread;
             sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+            // Requeue the thread being dispatched to a non-CPU0 queue.
             sched.requeue_thread_after_save(thread_id);
             sched.set_need_resched_inner();
+            // Send self-IPI to drain the deferred requeue slot on CPU 0.
+            // DEFERRED_REQUEUE[0] may hold the old thread from the context
+            // switch; without an interrupt to trigger processing, it would
+            // be stranded because CPU 0's vtimer is dead. The SGI fires
+            // when idle_loop_arm64 enables IRQs (daifclr), causing
+            // check_need_resched_and_switch_arm64 to run and drain the slot.
+            crate::arch_impl::aarch64::gic::send_sgi(
+                crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
+                0, // target CPU 0 (self)
+            );
             return;
         }
 
