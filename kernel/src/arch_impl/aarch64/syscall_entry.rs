@@ -925,6 +925,7 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
     };
 
     // Phase 1: Read parent info under PM lock (NO logging — interrupts disabled)
+    crate::serial_aarch64::raw_serial_char(b'1'); // Fork phase 1: PM lock
     let parent_pid = {
         let manager_guard = crate::process::manager();
         let process_info = if let Some(ref manager) = *manager_guard {
@@ -937,20 +938,26 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
             None => return (-3_i64) as u64, // -ESRCH
         }
     }; // PM lock dropped, interrupts restored
+    crate::serial_aarch64::raw_serial_char(b'2'); // Fork phase 1 done, PM lock dropped
 
     // Create child page table OUTSIDE PM lock (heap allocation safe — interrupts enabled)
+    crate::serial_aarch64::raw_serial_char(b'3'); // Fork: allocating page table
     let child_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
         Ok(pt) => Box::new(pt),
         Err(_e) => return (-12_i64) as u64, // -ENOMEM
     };
+    crate::serial_aarch64::raw_serial_char(b'4'); // Fork: page table allocated
 
     // Phase 2: Fork under PM lock (NO logging inside — interrupts disabled by PM lock)
+    crate::serial_aarch64::raw_serial_char(b'5'); // Fork phase 2: PM lock
     let mut manager_guard = crate::process::manager();
+    crate::serial_aarch64::raw_serial_char(b'6'); // Fork: PM lock acquired
     let fork_result = if let Some(ref mut manager) = *manager_guard {
         manager.fork_process_aarch64(parent_pid, parent_context, child_page_table)
     } else {
         Err("Process manager not available")
     };
+    crate::serial_aarch64::raw_serial_char(b'7'); // Fork: fork_process_aarch64 returned
 
     match fork_result {
         Ok(child_pid) => {
@@ -964,9 +971,12 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
             };
 
             // Drop PM lock BEFORE any logging or scheduler operations
+            crate::serial_aarch64::raw_serial_char(b'8'); // Fork: dropping PM lock
             drop(manager_guard);
+            crate::serial_aarch64::raw_serial_char(b'9'); // Fork: PM lock dropped
 
             if let Some((child_thread_id, child_thread_clone)) = child_info {
+                crate::serial_aarch64::raw_serial_char(b'S'); // Fork: calling spawn_front
                 crate::task::scheduler::spawn_front(Box::new(child_thread_clone));
                 crate::tracing::providers::process::trace_spawn_front(
                     current_thread_id as u16,
