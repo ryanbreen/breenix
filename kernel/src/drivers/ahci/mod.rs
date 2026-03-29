@@ -1549,6 +1549,32 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
             delta / 24000,
         );
     }
+    // CPU 0 idle-loop GIC/timer register snapshots: these are read ON CPU 0
+    // inside idle_loop_arm64, so they reflect CPU 0's actual ICC register state.
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::context_switch::{
+            CPU0_IDLE_DAIF, CPU0_IDLE_PMR, CPU0_IDLE_IGRPEN1,
+            CPU0_IDLE_CNTV_CTL, CPU0_IDLE_CNTV_CVAL, CPU0_IDLE_CNTVCT,
+            CPU0_IDLE_ITERATIONS,
+        };
+        let cval = CPU0_IDLE_CNTV_CVAL.load(Ordering::Relaxed);
+        let cntvct = CPU0_IDLE_CNTVCT.load(Ordering::Relaxed);
+        crate::serial_println!(
+            "[ahci]   cpu0_idle: iters={} daif={:#x} pmr={:#x} igrpen1={:#x} cntv_ctl={:#x}",
+            CPU0_IDLE_ITERATIONS.load(Ordering::Relaxed),
+            CPU0_IDLE_DAIF.load(Ordering::Relaxed),
+            CPU0_IDLE_PMR.load(Ordering::Relaxed),
+            CPU0_IDLE_IGRPEN1.load(Ordering::Relaxed),
+            CPU0_IDLE_CNTV_CTL.load(Ordering::Relaxed),
+        );
+        crate::serial_println!(
+            "[ahci]   cpu0_idle: cval={} cntvct={} delta={} ({}ms)",
+            cval, cntvct,
+            cntvct.wrapping_sub(cval) as i64,
+            cntvct.wrapping_sub(cval) / 24000,
+        );
+    }
 }
 
 #[cfg(target_arch = "aarch64")]

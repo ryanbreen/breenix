@@ -2155,6 +2155,15 @@ fn set_next_ttbr0_for_thread(thread_id: u64) -> TtbrResult {
 // Idle loop and low-level context switch primitives
 // =============================================================================
 
+// CPU 0 idle-loop GIC/timer register snapshots (readable from any CPU via GDB or AHCI diag).
+pub static CPU0_IDLE_DAIF: AtomicU64 = AtomicU64::new(0xDEAD);
+pub static CPU0_IDLE_PMR: AtomicU64 = AtomicU64::new(0xDEAD);
+pub static CPU0_IDLE_IGRPEN1: AtomicU64 = AtomicU64::new(0xDEAD);
+pub static CPU0_IDLE_CNTV_CTL: AtomicU64 = AtomicU64::new(0xDEAD);
+pub static CPU0_IDLE_CNTV_CVAL: AtomicU64 = AtomicU64::new(0);
+pub static CPU0_IDLE_CNTVCT: AtomicU64 = AtomicU64::new(0);
+pub static CPU0_IDLE_ITERATIONS: AtomicU64 = AtomicU64::new(0);
+
 /// ARM64 idle loop - wait for interrupts.
 ///
 /// Before each WFI, unconditionally re-arm the virtual timer. This works
@@ -2181,6 +2190,33 @@ pub extern "C" fn idle_loop_arm64() -> ! {
         if crate::arch_impl::aarch64::timer_interrupt::is_initialized() {
             crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
         }
+
+        // CPU 0 diagnostic: read GIC CPU interface + timer registers BEFORE
+        // enabling IRQs, so we see the state that prevents interrupt delivery.
+        if cpu_id == 0 {
+            CPU0_IDLE_ITERATIONS.fetch_add(1, Ordering::Relaxed);
+            unsafe {
+                let daif: u64;
+                let pmr: u64;
+                let igrpen1: u64;
+                let cntv_ctl: u64;
+                let cntv_cval: u64;
+                let cntvct: u64;
+                core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack));
+                core::arch::asm!("mrs {}, icc_pmr_el1", out(reg) pmr, options(nomem, nostack));
+                core::arch::asm!("mrs {}, icc_igrpen1_el1", out(reg) igrpen1, options(nomem, nostack));
+                core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) cntv_ctl, options(nomem, nostack));
+                core::arch::asm!("mrs {}, cntv_cval_el0", out(reg) cntv_cval, options(nomem, nostack));
+                core::arch::asm!("mrs {}, cntvct_el0", out(reg) cntvct, options(nomem, nostack));
+                CPU0_IDLE_DAIF.store(daif, Ordering::Relaxed);
+                CPU0_IDLE_PMR.store(pmr, Ordering::Relaxed);
+                CPU0_IDLE_IGRPEN1.store(igrpen1, Ordering::Relaxed);
+                CPU0_IDLE_CNTV_CTL.store(cntv_ctl, Ordering::Relaxed);
+                CPU0_IDLE_CNTV_CVAL.store(cntv_cval, Ordering::Relaxed);
+                CPU0_IDLE_CNTVCT.store(cntvct, Ordering::Relaxed);
+            }
+        }
+
         unsafe {
             core::arch::asm!(
                 "msr daifclr, #0xf", // Enable all interrupts
