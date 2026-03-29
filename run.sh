@@ -15,6 +15,8 @@
 #   ./run.sh --parallels --no-build  # Deploy existing build to Parallels
 #   ./run.sh --parallels --test      # Build, boot, wait, screenshot, exit
 #   ./run.sh --parallels --test 60   # Same with custom wait (default: 35s)
+#   ./run.sh --ahci             # ARM64 with AHCI (SATA) disk instead of virtio-blk
+#   ./run.sh --ahci --headless # ARM64 AHCI with serial output only
 #   ./run.sh --btrt            # ARM64 BTRT structured boot test
 #   ./run.sh --btrt --x86      # x86_64 BTRT structured boot test
 #
@@ -44,6 +46,7 @@ VMWARE=false
 DEBUG=false
 REBUILD_HOME=false
 RESOLUTION=""
+USE_AHCI=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -95,6 +98,10 @@ while [[ $# -gt 0 ]]; do
             DEBUG=true
             shift
             ;;
+        --ahci)
+            USE_AHCI=true
+            shift
+            ;;
         --rebuild-home)
             REBUILD_HOME=true
             shift
@@ -127,6 +134,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --headless, --serial       Run without display (serial only)"
             echo "  --graphics, --vnc          Run with VNC display (default)"
             echo "  --btrt                     Run BTRT structured boot test"
+            echo "  --ahci                     Use AHCI (SATA) disk instead of virtio-blk (ARM64)"
             echo "  --debug                    Enable GDB stub (port 1234) for debugging"
             echo "  --resolution WxH           Set display resolution (e.g. 1920x1080)"
             echo "                             Default: auto-detect from screen"
@@ -864,7 +872,13 @@ if [ -f "$EXT2_DISK" ]; then
         echo "Reusing existing session disk (use --clean to reset)"
     fi
     if [ "$ARCH" = "arm64" ]; then
-        DISK_OPTS="-device virtio-blk-device,drive=ext2disk -drive if=none,id=ext2disk,format=raw,file=$EXT2_WRITABLE"
+        if [ "$USE_AHCI" = true ]; then
+            # AHCI (SATA) disk — reproduces Parallels AHCI interrupt behavior on QEMU
+            DISK_OPTS="-device ahci,id=ahci0 -device ide-hd,drive=ext2disk,bus=ahci0.0 -drive id=ext2disk,file=$EXT2_WRITABLE,format=raw,if=none"
+            echo "  Using AHCI controller for ext2 disk"
+        else
+            DISK_OPTS="-device virtio-blk-device,drive=ext2disk -drive if=none,id=ext2disk,format=raw,file=$EXT2_WRITABLE"
+        fi
     else
         # x86_64 uses virtio-blk-pci for UEFI compatibility
         DISK_OPTS="-drive if=none,id=ext2disk,format=raw,file=$EXT2_WRITABLE -device virtio-blk-pci,drive=ext2disk,disable-modern=on,disable-legacy=off"
@@ -872,7 +886,11 @@ if [ -f "$EXT2_DISK" ]; then
 else
     echo "Disk image: (none - shell commands will be limited)"
     if [ "$ARCH" = "arm64" ]; then
-        DISK_OPTS="-device virtio-blk-device,drive=hd0 -drive if=none,id=hd0,format=raw,file=/dev/null"
+        if [ "$USE_AHCI" = true ]; then
+            DISK_OPTS="-device ahci,id=ahci0 -device ide-hd,drive=hd0,bus=ahci0.0 -drive id=hd0,file=/dev/null,format=raw,if=none"
+        else
+            DISK_OPTS="-device virtio-blk-device,drive=hd0 -drive if=none,id=hd0,format=raw,file=/dev/null"
+        fi
     fi
 fi
 
@@ -888,7 +906,12 @@ if [ -f "$HOME_DISK" ]; then
         echo "Reusing existing home session disk (use --rebuild-home to reset)"
     fi
     if [ "$ARCH" = "arm64" ]; then
-        HOME_DISK_OPTS="-device virtio-blk-device,drive=homedisk -drive if=none,id=homedisk,format=raw,file=$HOME_SESSION"
+        if [ "$USE_AHCI" = true ]; then
+            # Home disk on AHCI port 1 (same controller as ext2 disk on port 0)
+            HOME_DISK_OPTS="-device ide-hd,drive=homedisk,bus=ahci0.1 -drive id=homedisk,file=$HOME_SESSION,format=raw,if=none"
+        else
+            HOME_DISK_OPTS="-device virtio-blk-device,drive=homedisk -drive if=none,id=homedisk,format=raw,file=$HOME_SESSION"
+        fi
     else
         HOME_DISK_OPTS="-drive if=none,id=homedisk,format=raw,file=$HOME_SESSION -device virtio-blk-pci,drive=homedisk,disable-modern=on,disable-legacy=off"
     fi

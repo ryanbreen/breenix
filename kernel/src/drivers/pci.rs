@@ -1157,6 +1157,69 @@ pub fn enumerate() -> usize {
     device_count
 }
 
+/// Assign MMIO addresses to PCI BARs that have no address yet.
+///
+/// On QEMU virt (ARM64), there is no firmware to assign BAR addresses.
+/// This function walks all discovered devices and assigns addresses from
+/// the PCI MMIO window for any BAR with address==0 but size>0.
+///
+/// Must be called after `enumerate()`.
+#[cfg(target_arch = "aarch64")]
+pub fn assign_bars() {
+    let mmio_base = crate::platform_config::pci_mmio_base();
+    let mmio_size = crate::platform_config::pci_mmio_size();
+    if mmio_base == 0 || mmio_size == 0 {
+        return;
+    }
+
+    // Start allocating from 0x10000000 + 0x01000000 to avoid conflicts with
+    // VirtIO MMIO devices that QEMU places at 0x0a000000-0x0a003fff.
+    // The PCI MMIO window is 0x10000000 - 0x3efeffff.
+    let mut next_addr = mmio_base + 0x01000000; // 0x11000000
+
+    let mut devices = PCI_DEVICES.lock();
+    let Some(ref mut devs) = *devices else { return };
+
+    for dev in devs.iter_mut() {
+        for bar_idx in 0..6u8 {
+            let bar = &mut dev.bars[bar_idx as usize];
+            if bar.size > 0 && !bar.is_io && bar.address == 0 {
+                // Align the allocation to the BAR size (PCI spec requirement)
+                let align = bar.size;
+                next_addr = (next_addr + align - 1) & !(align - 1);
+
+                if next_addr + bar.size > mmio_base + mmio_size {
+                    log::warn!("PCI: MMIO window exhausted, cannot assign BAR{} for {:02x}:{:02x}.{}",
+                        bar_idx, dev.bus, dev.device, dev.function);
+                    continue;
+                }
+
+                // Write the BAR address to PCI config space
+                let offset = 0x10 + bar_idx * 4;
+                let bar_value = next_addr as u32 | if bar.prefetchable { 0x08 } else { 0x00 }
+                    | if bar.is_64bit { 0x04 } else { 0x00 };
+                pci_write_config_dword(dev.bus, dev.device, dev.function, offset, bar_value);
+                if bar.is_64bit {
+                    pci_write_config_dword(dev.bus, dev.device, dev.function, offset + 4, (next_addr >> 32) as u32);
+                }
+
+                log::info!("PCI: Assigned BAR{} for {:02x}:{:02x}.{} -> {:#x} (size {:#x})",
+                    bar_idx, dev.bus, dev.device, dev.function, next_addr, bar.size);
+
+                bar.address = next_addr;
+                next_addr += bar.size;
+            }
+        }
+
+        // Enable memory space and bus mastering for devices with assigned BARs
+        let has_mmio_bar = dev.bars.iter().any(|b| b.is_valid() && !b.is_io && b.address != 0);
+        if has_mmio_bar {
+            dev.enable_memory_space();
+            dev.enable_bus_master();
+        }
+    }
+}
+
 /// Get a copy of all discovered PCI devices
 #[allow(dead_code)] // Part of public API, will be used by VirtIO driver
 pub fn get_devices() -> Option<Vec<Device>> {

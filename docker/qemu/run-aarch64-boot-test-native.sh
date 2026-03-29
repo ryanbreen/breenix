@@ -61,6 +61,15 @@ run_single_test() {
     # Run QEMU with 30s timeout
     # Always include GPU, keyboard, and network so kernel VirtIO enumeration finds them
     # Use writable disk copy (no readonly=on) to allow filesystem writes
+    #
+    # BREENIX_AHCI=1 switches from virtio-blk to AHCI (SATA) disk to reproduce
+    # the AHCI interrupt storm that kills CPU 0's timer on Parallels.
+    local DISK_DEVICE_OPTS
+    if [ "${BREENIX_AHCI:-0}" = "1" ]; then
+        DISK_DEVICE_OPTS="-device ahci,id=ahci0 -device ide-hd,drive=ext2,bus=ahci0.0"
+    else
+        DISK_DEVICE_OPTS="-device virtio-blk-device,drive=ext2"
+    fi
     timeout 30 qemu-system-aarch64 \
         -M virt -cpu max -m 512 -smp 4 \
         -kernel "$KERNEL" \
@@ -68,7 +77,7 @@ run_single_test() {
         -device virtio-gpu-device \
         -device virtio-keyboard-device \
         -device virtio-tablet-device \
-        -device virtio-blk-device,drive=ext2 \
+        $DISK_DEVICE_OPTS \
         -drive if=none,id=ext2,format=raw,file="$EXT2_WRITABLE" \
         -device virtio-net-device,netdev=net0 \
         -netdev user,id=net0 \
