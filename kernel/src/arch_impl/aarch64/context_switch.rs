@@ -1029,51 +1029,21 @@ fn setup_idle_return_locked(
 }
 
 /// Dispatch an idle thread — called inside scheduler lock hold.
+///
+/// ALL CPUs (including CPU 0) always use a clean idle return. CPU 0's idle
+/// thread doubles as the boot thread, so its saved context may point into
+/// an exception handler (e.g., handle_sync_exception after a page fault).
+/// Restoring that context resumes execution with IRQs masked, permanently
+/// starving CPU 0 of timer ticks and SPI delivery. By the time the idle
+/// thread is dispatched, boot is complete and there is no reason to resume
+/// the boot-time saved context.
 fn dispatch_idle_locked(
     sched: &mut Scheduler,
-    thread_id: u64,
+    _thread_id: u64,
     frame: &mut Aarch64ExceptionFrame,
     cpu_id: usize,
 ) {
-    if cpu_id == 0 {
-        // CPU 0 (boot thread): May be preempted while running meaningful kernel
-        // code (e.g., kthread_join's polling loop during test execution). In that
-        // case we need to restore the saved context so the boot thread resumes.
-        let idle_loop_addr = idle_loop_arm64 as *const () as u64;
-        const KERNEL_VIRT_BASE: u64 = 0xFFFF_0000_0000_0000;
-        // Also accept physical kernel addresses on Parallels
-        const KERNEL_PHYS_BASE: u64 = 0x4008_0000;
-        const KERNEL_PHYS_LIMIT: u64 = 0xC000_0000;
-        let has_saved_context = sched
-            .get_thread(thread_id)
-            .map(|thread| {
-                let elr = thread.context.elr_el1;
-                let sp = thread.context.sp;
-                let spsr = thread.context.spsr_el1;
-                let elr_is_kernel =
-                    elr >= KERNEL_VIRT_BASE || (elr >= KERNEL_PHYS_BASE && elr < KERNEL_PHYS_LIMIT);
-                let sp_is_kernel =
-                    sp >= KERNEL_VIRT_BASE || (sp >= KERNEL_PHYS_BASE && sp < KERNEL_PHYS_LIMIT);
-                let near_idle = elr >= idle_loop_addr && elr < idle_loop_addr + 16;
-                elr_is_kernel && !near_idle && sp_is_kernel && (spsr & 0xF) != 0
-            })
-            .unwrap_or(false);
-
-        if has_saved_context {
-            let ok = sched
-                .get_thread_mut(thread_id)
-                .map(|thread| restore_kernel_context_inline(thread, frame, thread_id))
-                .unwrap_or(false);
-            if !ok {
-                setup_idle_return_locked(sched, frame, cpu_id);
-            }
-        } else {
-            setup_idle_return_locked(sched, frame, cpu_id);
-        }
-    } else {
-        // Secondary CPUs: always use clean idle return
-        setup_idle_return_locked(sched, frame, cpu_id);
-    }
+    setup_idle_return_locked(sched, frame, cpu_id);
 }
 
 /// Dispatch a non-idle thread — called inside scheduler lock hold.
