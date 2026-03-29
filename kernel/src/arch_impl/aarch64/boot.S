@@ -536,6 +536,9 @@ sync_exception_handler:
     ldr x16, [x16, #40]      // x16 = user_rsp_scratch
 71: mov sp, x16               // SP = correct stack
 
+    // ISB before ERET — required for HVF (see context_switch.rs comment)
+    isb
+
     // Restore x16 from per-CPU ERET scratch
     mrs x16, tpidr_el1
     ldr x16, [x16, #96]      // x16 = saved frame.x16
@@ -666,6 +669,9 @@ irq_handler:
     ldr x16, [x16, #40]      // x16 = user_rsp_scratch
 61: mov sp, x16               // SP = correct stack
 
+    // ISB before ERET — required for HVF (see context_switch.rs comment)
+    isb
+
     // Restore x16 from per-CPU ERET scratch
     mrs x16, tpidr_el1
     ldr x16, [x16, #96]      // x16 = saved frame.x16
@@ -699,7 +705,7 @@ irq_handler:
     ldp x28, x29, [sp, #224]
     ldr x30, [sp, #240]
     add sp, sp, #272          // Restore SP (undo the sub at entry)
-
+    isb                        // ISB before ERET — required for HVF
     eret
 
 unhandled_exception:

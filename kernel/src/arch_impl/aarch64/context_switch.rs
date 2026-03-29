@@ -164,8 +164,21 @@ aarch64_enter_exception_frame:
 3:
     mov sp, x16
 
-    // Test: ISB-only before ERET (no timer write).
-    // Determines if the fix is the ISB synchronization or the CTL write.
+    // CRITICAL: ISB before ERET — required for HVF (Apple Hypervisor Framework).
+    //
+    // Without this ISB, the SPSR_EL1/ELR_EL1 writes above may not be visible
+    // to HVF when it processes the ERET trap. HVF reads guest SPSR to determine
+    // PSTATE.DAIF for the vtimer injection decision. If it sees stale SPSR with
+    // DAIF.I=1 (interrupts masked), it permanently masks the virtual timer,
+    // killing all timer interrupts on this CPU.
+    //
+    // On real hardware, ERET is itself a context synchronization event, so ISB
+    // before ERET is architecturally redundant. But HVF intercepts ERET before
+    // it executes, and the interception sees pre-synchronization register state.
+    //
+    // Evidence: without ISB, timer dies after ~4 ticks. With ISB, timer survives
+    // 300000+ ticks indefinitely. The ret-based path (daifclr+br) was immune
+    // because it doesn't go through HVF's ERET trap.
     isb
 
     mrs x16, tpidr_el1
@@ -1185,7 +1198,24 @@ fn dispatch_thread_locked(
             return;
         }
     } else {
-        // Userspace thread
+        // Userspace thread — needs EL0 ERET.
+        //
+        // CPU 0 GUARD: On Parallels/HVF, ERET to EL0 kills CPU 0's vtimer
+        // PPI 27 delivery. Without the timer, CPU 0 cannot preempt and any
+        // thread dispatched here monopolises the CPU. Redirect to idle and
+        // requeue the thread on CPUs 1-7 where the timer works.
+        if cpu_id == 0 && crate::arch_impl::aarch64::smp::cpus_online() > 1 {
+            if let Some(thread) = sched.get_thread_mut(thread_id) {
+                thread.state = ThreadState::Ready;
+            }
+            setup_idle_return_locked(sched, frame, cpu_id);
+            let idle_id = sched.cpu_state[cpu_id].idle_thread;
+            sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+            sched.requeue_thread_after_save(thread_id);
+            sched.set_need_resched_inner();
+            return;
+        }
+
         if !has_started {
             if let Some(thread) = sched.get_thread_mut(thread_id) {
                 thread.has_started = true;
