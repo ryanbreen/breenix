@@ -87,6 +87,55 @@ pub fn init() -> usize {
 
     let ecam_base = crate::platform_config::pci_ecam_base();
 
+    let is_qemu = crate::platform_config::is_qemu();
+
+    // On QEMU with PCI enabled (--ahci flag), we need both MMIO and PCI:
+    // MMIO for VirtIO GPU/keyboard/net, PCI for AHCI controller.
+    if ecam_base != 0 && is_qemu {
+        // Hybrid mode: VirtIO MMIO + PCI (QEMU with AHCI disk)
+        serial_println!("[drivers] Hybrid mode: VirtIO MMIO + PCI AHCI");
+        let mmio_count = init_virtio_mmio();
+        serial_println!(
+            "[drivers] PCI ECAM at {:#x}, enumerating PCI bus...",
+            ecam_base
+        );
+        let pci_count = pci::enumerate();
+        serial_println!("[drivers] Found {} PCI devices", pci_count);
+
+        // Assign BAR addresses (QEMU virt has no firmware to do this)
+        pci::assign_bars();
+
+        // Dump PCI devices (after BAR assignment so addresses are visible)
+        if let Some(devices) = pci::get_devices() {
+            for dev in &devices {
+                serial_println!(
+                    "[pci] {:02x}:{:02x}.{} [{:04x}:{:04x}] class={:02x}/{:02x}",
+                    dev.bus, dev.device, dev.function,
+                    dev.vendor_id, dev.device_id,
+                    dev.class as u8, dev.subclass
+                );
+                for (i, bar) in dev.bars.iter().enumerate() {
+                    if bar.is_valid() {
+                        serial_println!("[pci]   BAR{}: {:#x} ({})", i, bar.address, bar.size);
+                    }
+                }
+            }
+        }
+
+        // Initialize AHCI from PCI
+        match ahci::init() {
+            Ok(count) => {
+                serial_println!("[drivers] AHCI initialized (PCI): {} SATA device(s)", count);
+            }
+            Err(e) => {
+                serial_println!("[drivers] AHCI PCI init failed: {}", e);
+            }
+        }
+
+        serial_println!("[drivers] Driver subsystem initialized (hybrid MMIO+PCI)");
+        return mmio_count + pci_count;
+    }
+
     if ecam_base != 0 {
         // PCI-based platform (Parallels): enumerate PCI bus
         serial_println!(

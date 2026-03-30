@@ -89,6 +89,15 @@ pub static TIMER_TICK_HW_COUNT: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8
 /// Bit 0: ENABLE, Bit 1: IMASK, Bit 2: ISTATUS.
 pub static TIMER_TICK_CNTV_CTL: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 
+/// CPU 0's CNTV_CVAL_EL0 after the last arm_timer call.
+/// This is the absolute compare value — the counter value at which the timer
+/// should fire next. If CNTVCT > CVAL, the timer has expired.
+pub static CPU0_LAST_CVAL: AtomicU64 = AtomicU64::new(0);
+
+/// CPU 0's CNTVCT_EL0 immediately after arm_timer set the new CVAL.
+/// Comparing CVAL - CNTVCT_AT_ARM should yield ~TICKS_PER_INTERRUPT (24000).
+pub static CPU0_LAST_CNTVCT: AtomicU64 = AtomicU64::new(0);
+
 /// CPU 0's ELR_EL1 at the last timer tick — the interrupted PC.
 /// Shows what CPU 0 was executing when the last timer interrupt fired.
 /// After CPU 0 dies (no more timer ticks), this holds the last captured PC.
@@ -113,7 +122,21 @@ pub static CPU0_LAST_TIMER_ELR: AtomicU64 = AtomicU64::new(0);
 ///   21 = with_scheduler() after lock acquisition
 ///   22 = with_scheduler() after closure
 ///   23 = with_scheduler() after DAIF restore
+///   50 = sys_fork_aarch64() entry
+///   51 = sys_fork_aarch64() child created + spawned
+///   100 = check_need_resched: before schedule_deferred_requeue
+///   101 = check_need_resched: after schedule_deferred_requeue returns
+///   102 = check_need_resched: before dispatch_thread_locked
+///   103 = check_need_resched: after dispatch_thread_locked
+///   104 = check_need_resched: before daifclr window
+///   105 = check_need_resched: after daifclr window
+///   106 = check_need_resched: before function return
 pub static CPU0_BREADCRUMB_ID: AtomicU64 = AtomicU64::new(0);
+
+/// CPU 0 CNTV_CTL_EL0 snapshot at each breadcrumb point.
+/// After CPU 0 dies, shows the timer control register state at the last breadcrumb.
+/// Bit 0: ENABLE, Bit 1: IMASK, Bit 2: ISTATUS.
+pub static CPU0_BREADCRUMB_CTL: AtomicU64 = AtomicU64::new(0);
 
 /// CPU 0 dispatch diagnostics — set in the trampoline just before ERET.
 /// After CPU 0 dies, these identify the thread and destination.
@@ -281,7 +304,29 @@ pub fn init() {
             );
         }
     } else {
-        // Non-VMware: use the selected timer only
+        // Non-VMware (Parallels, QEMU): use the selected timer only.
+        //
+        // CRITICAL: Set IMASK=1 before the first arm to establish HVF vtimer protocol.
+        // On Apple HVF, the VMM tracks whether the guest has acknowledged timer
+        // interrupts via the IMASK bit in CNTV_CTL. Linux's clockevents init always
+        // writes CTL with IMASK set (shutdown state) before the first set_next_event.
+        // Without this, HVF may not properly initialize vtimer tracking for this CPU,
+        // causing PPI 27 to stop being delivered after a few ticks.
+        if crate::platform_config::use_physical_timer() {
+            unsafe {
+                // Write ENABLE=1, IMASK=1 — tells HVF "guest is managing the timer"
+                core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 3u64, options(nomem, nostack));
+                core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
+            }
+        } else {
+            unsafe {
+                // Write ENABLE=1, IMASK=1 — tells HVF "guest is managing the timer"
+                core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 3u64, options(nomem, nostack));
+                core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
+            }
+        }
+
+        // Now arm: writes CVAL (future) + CTL=1 (ENABLE=1, IMASK=0) — unmasks
         arm_timer(ticks_per_interrupt);
         let irq = timer_irq();
         gic::Gicv2::enable_irq(irq as u8);
@@ -369,6 +414,40 @@ pub extern "C" fn timer_interrupt_handler() {
         TIMER_TICK_COUNT[cpu_id].fetch_add(1, Ordering::Relaxed);
     }
 
+    // CPU 0 only: emit raw serial breadcrumb for first 10 ticks.
+    // Shows 'T0' through 'T9' so we can see exactly when timer ticks stop
+    // relative to fork/context-switch breadcrumbs in the serial log.
+    if cpu_id == 0 {
+        let count = TIMER_TICK_COUNT[0].load(Ordering::Relaxed);
+        if count <= 10 {
+            crate::serial_aarch64::raw_serial_char(b'T');
+            crate::serial_aarch64::raw_serial_char(b'0' + (count % 10) as u8);
+        }
+    }
+
+    // CPU 0 only: periodic tick count reporting every 5000 ticks (~5 seconds)
+    if cpu_id == 0 {
+        let count = TIMER_TICK_COUNT[0].load(Ordering::Relaxed);
+        if count > 0 && count % 5000 == 0 {
+            crate::serial_aarch64::raw_serial_str(b"[timer] cpu0 ticks=");
+            let mut n = count;
+            let mut buf = [0u8; 20];
+            let mut i = 20usize;
+            if n == 0 {
+                i -= 1;
+                buf[i] = b'0';
+            } else {
+                while n > 0 {
+                    i -= 1;
+                    buf[i] = b'0' + (n % 10) as u8;
+                    n /= 10;
+                }
+            }
+            crate::serial_aarch64::raw_serial_str(&buf[i..]);
+            crate::serial_aarch64::raw_serial_str(b"\n");
+        }
+    }
+
     // Mask the timer interrupt at the source (set IMASK=1, keep ENABLE=1).
     // This de-asserts the PPI line, which signals the hypervisor (Parallels/HVF)
     // that the guest has acknowledged the interrupt. Without this, the HVF
@@ -394,14 +473,54 @@ pub extern "C" fn timer_interrupt_handler() {
         }
     }
 
+    // IMMEDIATELY re-arm the timer — clears IMASK and sets a future CVAL.
+    // This MUST happen before any potentially-blocking handler work (keyboard
+    // poll, USB XHCI poll, etc.). If that work hangs on a spinlock, the timer
+    // is still re-armed with IMASK=0, preventing permanent timer death on this CPU.
+    let ticks = TICKS_PER_INTERRUPT.load(Ordering::Relaxed);
+    if crate::platform_config::is_vmware() {
+        // VMware: re-arm both timers using CVAL (absolute compare value)
+        unsafe {
+            let vcnt: u64;
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) vcnt, options(nomem, nostack));
+            let vcval = vcnt.wrapping_add(ticks);
+            core::arch::asm!("msr cntv_cval_el0, {}", in(reg) vcval, options(nomem, nostack));
+            core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
+            let pcnt: u64;
+            core::arch::asm!("mrs {}, cntpct_el0", out(reg) pcnt, options(nomem, nostack));
+            let pcval = pcnt.wrapping_add(ticks);
+            core::arch::asm!("msr cntp_cval_el0, {}", in(reg) pcval, options(nomem, nostack));
+            core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
+        }
+    } else {
+        arm_timer(ticks);
+    }
+
     // Snapshot CNTV_CTL_EL0 for this CPU — captures the timer hardware state
-    // after we set IMASK.  This should show CTL=3 (ENABLE=1, IMASK=1).
+    // after re-arm. Should show CTL=1 (ENABLE=1, IMASK=0) or CTL=5 if ISTATUS.
     let cntv_ctl: u64;
     unsafe {
         core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) cntv_ctl, options(nomem, nostack));
     }
     if cpu_id < 8 {
         TIMER_TICK_CNTV_CTL[cpu_id].store(cntv_ctl, Ordering::Relaxed);
+    }
+
+    // CPU 0 only: snapshot the absolute timer deadline (CVAL) and the current
+    // counter (CNTVCT) right after arm_timer set the new CVAL.  At timeout
+    // diagnosis time we compare these with the then-current CNTVCT to determine
+    // whether CVAL is sane (cntvct_at_arm + 24000) and whether the timer has
+    // long since expired (delta >> 0) or is impossibly in the future.
+    if cpu_id == 0 {
+        let cval: u64;
+        let cntvct: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntv_cval_el0", out(reg) cval, options(nomem, nostack));
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) cntvct, options(nomem, nostack));
+        }
+        CPU0_LAST_CVAL.store(cval, Ordering::Relaxed);
+        CPU0_LAST_CNTVCT.store(cntvct, Ordering::Relaxed);
     }
 
     // Track hardware CPU identity vs software cpu_id for mismatch detection.
@@ -427,12 +546,6 @@ pub extern "C" fn timer_interrupt_handler() {
         }
         CPU0_LAST_TIMER_ELR.store(elr, Ordering::Relaxed);
     }
-
-    // Load ticks value early (before handler work) but defer the actual re-arm
-    // until the very end. IMASK stays set (=1) throughout the handler, giving
-    // the Parallels/HVF VMM time to observe the acknowledge via VM exits that
-    // occur during the handler work (atomic ops, MMIO reads, etc.).
-    let ticks = TICKS_PER_INTERRUPT.load(Ordering::Relaxed);
 
     // CPU 0 only: update global wall clock time (single atomic operation)
     if cpu_id == 0 {
@@ -536,30 +649,6 @@ pub extern "C" fn timer_interrupt_handler() {
     // queue is empty, so the overhead is negligible for idle CPUs.
     if scheduler::is_cpu_idle(cpu_id) {
         scheduler::set_need_resched();
-    }
-
-    // Re-arm the timer at the very end of the handler.
-    // IMASK has been 1 (set at handler entry) throughout all the handler work
-    // above, giving the Parallels/HVF VMM multiple VM exit opportunities to
-    // observe the IMASK=1 acknowledge. Now we write a future CVAL and clear
-    // IMASK (CTL=1), matching Linux's set_next_event pattern.
-    if crate::platform_config::is_vmware() {
-        // VMware: re-arm both timers using CVAL (absolute compare value)
-        unsafe {
-            let vcnt: u64;
-            core::arch::asm!("mrs {}, cntvct_el0", out(reg) vcnt, options(nomem, nostack));
-            let vcval = vcnt.wrapping_add(ticks);
-            core::arch::asm!("msr cntv_cval_el0, {}", in(reg) vcval, options(nomem, nostack));
-            core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
-            let pcnt: u64;
-            core::arch::asm!("mrs {}, cntpct_el0", out(reg) pcnt, options(nomem, nostack));
-            let pcval = pcnt.wrapping_add(ticks);
-            core::arch::asm!("msr cntp_cval_el0, {}", in(reg) pcval, options(nomem, nostack));
-            core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
-            core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
-        }
-    } else {
-        arm_timer(ticks);
     }
 
     // Exit IRQ context (decrement HARDIRQ count)
@@ -1059,6 +1148,21 @@ pub fn reset_quantum_call_count_reset() {
 /// does not need re-configuration for PPIs. We just arm the timer and enable
 /// the interrupt in this CPU's GIC interface.
 pub fn init_secondary() {
+    // CRITICAL: Set IMASK=1 before the first arm to establish HVF vtimer protocol.
+    // Same rationale as init() — HVF needs to see the IMASK transition to properly
+    // track vtimer state for this secondary CPU.
+    if crate::platform_config::use_physical_timer() {
+        unsafe {
+            core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 3u64, options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
+        }
+    } else {
+        unsafe {
+            core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 3u64, options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
+        }
+    }
+
     // Arm the timer with the same interval as CPU 0
     let ticks = TICKS_PER_INTERRUPT.load(Ordering::Relaxed);
     arm_timer(ticks);

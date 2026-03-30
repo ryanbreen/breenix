@@ -164,6 +164,23 @@ aarch64_enter_exception_frame:
 3:
     mov sp, x16
 
+    // CRITICAL: ISB before ERET — required for HVF (Apple Hypervisor Framework).
+    //
+    // Without this ISB, the SPSR_EL1/ELR_EL1 writes above may not be visible
+    // to HVF when it processes the ERET trap. HVF reads guest SPSR to determine
+    // PSTATE.DAIF for the vtimer injection decision. If it sees stale SPSR with
+    // DAIF.I=1 (interrupts masked), it permanently masks the virtual timer,
+    // killing all timer interrupts on this CPU.
+    //
+    // On real hardware, ERET is itself a context synchronization event, so ISB
+    // before ERET is architecturally redundant. But HVF intercepts ERET before
+    // it executes, and the interception sees pre-synchronization register state.
+    //
+    // Evidence: without ISB, timer dies after ~4 ticks. With ISB, timer survives
+    // 300000+ ticks indefinitely. The ret-based path (daifclr+br) was immune
+    // because it doesn't go through HVF's ERET trap.
+    isb
+
     mrs x16, tpidr_el1
     ldr x16, [x16, #96]
     eret
@@ -1029,51 +1046,21 @@ fn setup_idle_return_locked(
 }
 
 /// Dispatch an idle thread — called inside scheduler lock hold.
+///
+/// ALL CPUs (including CPU 0) always use a clean idle return. CPU 0's idle
+/// thread doubles as the boot thread, so its saved context may point into
+/// an exception handler (e.g., handle_sync_exception after a page fault).
+/// Restoring that context resumes execution with IRQs masked, permanently
+/// starving CPU 0 of timer ticks and SPI delivery. By the time the idle
+/// thread is dispatched, boot is complete and there is no reason to resume
+/// the boot-time saved context.
 fn dispatch_idle_locked(
     sched: &mut Scheduler,
-    thread_id: u64,
+    _thread_id: u64,
     frame: &mut Aarch64ExceptionFrame,
     cpu_id: usize,
 ) {
-    if cpu_id == 0 {
-        // CPU 0 (boot thread): May be preempted while running meaningful kernel
-        // code (e.g., kthread_join's polling loop during test execution). In that
-        // case we need to restore the saved context so the boot thread resumes.
-        let idle_loop_addr = idle_loop_arm64 as *const () as u64;
-        const KERNEL_VIRT_BASE: u64 = 0xFFFF_0000_0000_0000;
-        // Also accept physical kernel addresses on Parallels
-        const KERNEL_PHYS_BASE: u64 = 0x4008_0000;
-        const KERNEL_PHYS_LIMIT: u64 = 0xC000_0000;
-        let has_saved_context = sched
-            .get_thread(thread_id)
-            .map(|thread| {
-                let elr = thread.context.elr_el1;
-                let sp = thread.context.sp;
-                let spsr = thread.context.spsr_el1;
-                let elr_is_kernel =
-                    elr >= KERNEL_VIRT_BASE || (elr >= KERNEL_PHYS_BASE && elr < KERNEL_PHYS_LIMIT);
-                let sp_is_kernel =
-                    sp >= KERNEL_VIRT_BASE || (sp >= KERNEL_PHYS_BASE && sp < KERNEL_PHYS_LIMIT);
-                let near_idle = elr >= idle_loop_addr && elr < idle_loop_addr + 16;
-                elr_is_kernel && !near_idle && sp_is_kernel && (spsr & 0xF) != 0
-            })
-            .unwrap_or(false);
-
-        if has_saved_context {
-            let ok = sched
-                .get_thread_mut(thread_id)
-                .map(|thread| restore_kernel_context_inline(thread, frame, thread_id))
-                .unwrap_or(false);
-            if !ok {
-                setup_idle_return_locked(sched, frame, cpu_id);
-            }
-        } else {
-            setup_idle_return_locked(sched, frame, cpu_id);
-        }
-    } else {
-        // Secondary CPUs: always use clean idle return
-        setup_idle_return_locked(sched, frame, cpu_id);
-    }
+    setup_idle_return_locked(sched, frame, cpu_id);
 }
 
 /// Dispatch a non-idle thread — called inside scheduler lock hold.
@@ -1211,7 +1198,35 @@ fn dispatch_thread_locked(
             return;
         }
     } else {
-        // Userspace thread
+        // Userspace thread — needs EL0 ERET.
+        //
+        // CPU 0 GUARD: On Parallels/HVF, ERET to EL0 kills CPU 0's vtimer
+        // PPI 27 delivery. Without the timer, CPU 0 cannot preempt and any
+        // thread dispatched here monopolises the CPU. Redirect to idle and
+        // requeue the thread on CPUs 1-7 where the timer works.
+        if cpu_id == 0 && crate::arch_impl::aarch64::smp::cpus_online() > 1 {
+            if let Some(thread) = sched.get_thread_mut(thread_id) {
+                thread.state = ThreadState::Ready;
+            }
+            setup_idle_return_locked(sched, frame, cpu_id);
+            let idle_id = sched.cpu_state[cpu_id].idle_thread;
+            sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+            // Requeue the thread being dispatched to a non-CPU0 queue.
+            sched.requeue_thread_after_save(thread_id);
+            sched.set_need_resched_inner();
+            // Send self-IPI to drain the deferred requeue slot on CPU 0.
+            // DEFERRED_REQUEUE[0] may hold the old thread from the context
+            // switch; without an interrupt to trigger processing, it would
+            // be stranded because CPU 0's vtimer is dead. The SGI fires
+            // when idle_loop_arm64 enables IRQs (daifclr), causing
+            // check_need_resched_and_switch_arm64 to run and drain the slot.
+            crate::arch_impl::aarch64::gic::send_sgi(
+                crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
+                0, // target CPU 0 (self)
+            );
+            return;
+        }
+
         if !has_started {
             if let Some(thread) = sched.get_thread_mut(thread_id) {
                 thread.has_started = true;
@@ -1479,7 +1494,9 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     }
 
     // 4. Scheduling decision (deferred requeue — old thread stays out of queue)
+    cpu0_breadcrumb(cpu_id, 100); // before schedule_deferred_requeue
     let schedule_result = sched.schedule_deferred_requeue();
+    cpu0_breadcrumb(cpu_id, 101); // after schedule_deferred_requeue returns
     cpu0_breadcrumb(cpu_id, 12); // after scheduling decision
 
     if schedule_result.is_none() {
@@ -1579,8 +1596,10 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     }
 
     // 9. Dispatch new thread (all checks + restore inside lock hold)
+    cpu0_breadcrumb(cpu_id, 102); // before dispatch_thread_locked
     cpu0_breadcrumb(cpu_id, 13); // performing context switch
     dispatch_thread_locked(sched, new_id, frame, cpu_id);
+    cpu0_breadcrumb(cpu_id, 103); // after dispatch_thread_locked
 
     // Record dispatch trace AFTER all frame writes are complete.
     // This captures EXACTLY what the assembly ERET path will read.
@@ -1624,6 +1643,24 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     }
     crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
     crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
+
+    // Open IRQ window - same rationale as inline_schedule_trampoline ERET path.
+    // check_need_resched_and_switch_arm64 returns to boot.S which does ERET.
+    // Without this window, pending timer PPIs have no chance to fire on HVF.
+    // Safe: any IRQ handler pushes a NEW frame below SP (sub sp, #272), so the
+    // existing frame at SP is not corrupted. After the nested IRQ ERETSs back
+    // here, we continue with the original frame intact.
+    cpu0_breadcrumb(cpu_id, 104); // before daifclr window
+    unsafe {
+        core::arch::asm!(
+            "msr daifclr, #3",
+            "isb",
+            options(nomem, nostack)
+        );
+    }
+    cpu0_breadcrumb(cpu_id, 105); // after daifclr window
+
+    cpu0_breadcrumb(cpu_id, 106); // before function return
     cpu0_breadcrumb(cpu_id, 14); // return
 }
 
@@ -1781,17 +1818,62 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
     crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
 
-    cpu0_breadcrumb(cpu_id, 43); // before aarch64_enter_exception_frame
+    // CRITICAL: Open an IRQ window in kernel mode before ERET.
+    // This matches Linux's finish_task_switch -> raw_spin_unlock_irq -> local_irq_enable.
+    // On Parallels/HVF, the hypervisor only injects virtual timer interrupts when
+    // the guest has IRQs enabled. Without this window, the timer PPI stays pending
+    // indefinitely because the ERET opens the window for only ~1 instruction before
+    // the dispatched thread might re-mask (syscall entry). The ISB ensures the
+    // daifclr takes effect before any instruction that might branch.
+    unsafe {
+        core::arch::asm!(
+            "msr daifclr, #3",   // Enable IRQs + FIQs
+            "isb",               // Synchronize - pending IRQs fire after ISB
+            options(nomem, nostack)
+        );
+    }
+
+    // If a pending IRQ fired above (e.g., timer PPI), it was handled on the
+    // scheduler stack. The handler saved/restored all registers. We're back here
+    // with the frame still intact. Now proceed to dispatch.
+
+    if is_idle {
+        // ret-based dispatch for idle — avoids ERET which kills HVF vtimer on Parallels.
+        // setup_idle_return_locked already set kernel_stack_top and current_thread_ptr.
+        // We just set SP to the idle stack, enable IRQs, and branch directly.
+        cpu0_breadcrumb(cpu_id, 45); // ret-based idle dispatch (NOT ERET)
+        let idle_addr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
+        let idle_sp = Aarch64PerCpu::kernel_stack_top();
+        unsafe {
+            core::arch::asm!(
+                "mov sp, {stack}",
+                "msr daifclr, #0xf",
+                "isb",
+                "br {target}",
+                stack = in(reg) idle_sp,
+                target = in(reg) idle_addr,
+                options(noreturn)
+            );
+        }
+    }
+
+    cpu0_breadcrumb(cpu_id, 43); // before aarch64_enter_exception_frame (non-idle ERET)
     unsafe {
         aarch64_enter_exception_frame(&frame as *const Aarch64ExceptionFrame);
     }
 }
 
 /// Record a CPU 0 breadcrumb — zero-cost on other CPUs.
+/// Also captures CNTV_CTL_EL0 at each point so we can see timer state transitions.
 #[inline(always)]
 fn cpu0_breadcrumb(cpu_id: usize, id: u64) {
     if cpu_id == 0 {
         super::timer_interrupt::CPU0_BREADCRUMB_ID.store(id, Ordering::Relaxed);
+        let ctl: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) ctl, options(nomem, nostack));
+        }
+        super::timer_interrupt::CPU0_BREADCRUMB_CTL.store(ctl, Ordering::Relaxed);
     }
 }
 
@@ -2122,6 +2204,15 @@ fn set_next_ttbr0_for_thread(thread_id: u64) -> TtbrResult {
 // Idle loop and low-level context switch primitives
 // =============================================================================
 
+// CPU 0 idle-loop GIC/timer register snapshots (readable from any CPU via GDB or AHCI diag).
+pub static CPU0_IDLE_DAIF: AtomicU64 = AtomicU64::new(0xDEAD);
+pub static CPU0_IDLE_PMR: AtomicU64 = AtomicU64::new(0xDEAD);
+pub static CPU0_IDLE_IGRPEN1: AtomicU64 = AtomicU64::new(0xDEAD);
+pub static CPU0_IDLE_CNTV_CTL: AtomicU64 = AtomicU64::new(0xDEAD);
+pub static CPU0_IDLE_CNTV_CVAL: AtomicU64 = AtomicU64::new(0);
+pub static CPU0_IDLE_CNTVCT: AtomicU64 = AtomicU64::new(0);
+pub static CPU0_IDLE_ITERATIONS: AtomicU64 = AtomicU64::new(0);
+
 /// ARM64 idle loop - wait for interrupts.
 ///
 /// Before each WFI, unconditionally re-arm the virtual timer. This works
@@ -2148,6 +2239,33 @@ pub extern "C" fn idle_loop_arm64() -> ! {
         if crate::arch_impl::aarch64::timer_interrupt::is_initialized() {
             crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
         }
+
+        // CPU 0 diagnostic: read GIC CPU interface + timer registers BEFORE
+        // enabling IRQs, so we see the state that prevents interrupt delivery.
+        if cpu_id == 0 {
+            CPU0_IDLE_ITERATIONS.fetch_add(1, Ordering::Relaxed);
+            unsafe {
+                let daif: u64;
+                let pmr: u64;
+                let igrpen1: u64;
+                let cntv_ctl: u64;
+                let cntv_cval: u64;
+                let cntvct: u64;
+                core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack));
+                core::arch::asm!("mrs {}, icc_pmr_el1", out(reg) pmr, options(nomem, nostack));
+                core::arch::asm!("mrs {}, icc_igrpen1_el1", out(reg) igrpen1, options(nomem, nostack));
+                core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) cntv_ctl, options(nomem, nostack));
+                core::arch::asm!("mrs {}, cntv_cval_el0", out(reg) cntv_cval, options(nomem, nostack));
+                core::arch::asm!("mrs {}, cntvct_el0", out(reg) cntvct, options(nomem, nostack));
+                CPU0_IDLE_DAIF.store(daif, Ordering::Relaxed);
+                CPU0_IDLE_PMR.store(pmr, Ordering::Relaxed);
+                CPU0_IDLE_IGRPEN1.store(igrpen1, Ordering::Relaxed);
+                CPU0_IDLE_CNTV_CTL.store(cntv_ctl, Ordering::Relaxed);
+                CPU0_IDLE_CNTV_CVAL.store(cntv_cval, Ordering::Relaxed);
+                CPU0_IDLE_CNTVCT.store(cntvct, Ordering::Relaxed);
+            }
+        }
+
         unsafe {
             core::arch::asm!(
                 "msr daifclr, #0xf", // Enable all interrupts

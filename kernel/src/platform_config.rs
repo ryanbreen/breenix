@@ -286,6 +286,27 @@ pub fn pci_ecam_base() -> u64 {
     PCI_ECAM_BASE.load(Ordering::Relaxed)
 }
 
+/// Configure PCI ECAM for QEMU virt machine.
+///
+/// QEMU's `virt` machine places the PCI ECAM at physical 0x40_10000000
+/// (from the device tree: `pcie@10000000 { reg = <0x40 0x10000000 ...> }`).
+/// The MMIO window for BARs is at 0x10000000 (within L1[0] device region).
+/// Bus range is 0-255.
+///
+/// Called from kernel_main when hw_config_ptr == 0 (QEMU boot, not Parallels).
+#[cfg(target_arch = "aarch64")]
+pub fn init_qemu_pci() {
+    // QEMU virt PCI ECAM: physical 0x40_10000000, size 0x10000000 (256 MB)
+    PCI_ECAM_BASE.store(0x40_10000000, Ordering::Relaxed);
+    PCI_ECAM_SIZE.store(0x10000000, Ordering::Relaxed);
+    // MMIO window: 0x10000000 - 0x3efeffff
+    PCI_MMIO_BASE.store(0x10000000, Ordering::Relaxed);
+    PCI_MMIO_SIZE.store(0x2eff0000, Ordering::Relaxed);
+    // Bus range 0-1 (QEMU virt only uses bus 0; limit to avoid slow ECAM scans)
+    PCI_BUS_START.store(0, Ordering::Relaxed);
+    PCI_BUS_END.store(1, Ordering::Relaxed);
+}
+
 /// PCI ECAM region size in bytes.
 #[cfg(target_arch = "aarch64")]
 #[inline]
