@@ -539,6 +539,71 @@ fn scheduler_stack_top(cpu_id: usize) -> u64 {
     super::constants::percpu_stack_region_base() + ((cpu_id as u64) + 1) * STACK_SIZE
 }
 
+#[inline(always)]
+fn thread_kernel_stack_contains(thread: &Thread, sp: u64) -> bool {
+    let Some(kst) = thread.kernel_stack_top else {
+        return false;
+    };
+    let top = kst.as_u64();
+    let bottom = top.saturating_sub(crate::arch_impl::aarch64::constants::KERNEL_STACK_SIZE as u64);
+    sp >= bottom && sp <= top
+}
+
+#[inline(always)]
+fn idle_loop_addr() -> u64 {
+    idle_loop_arm64 as *const () as u64
+}
+
+#[inline(always)]
+fn log_bad_thread_sp(tag: &str, thread: &Thread, sp: u64, elr: u64, x30: u64, spsr: u64) {
+    raw_uart_str("\n[");
+    raw_uart_str(tag);
+    raw_uart_str("] tid=");
+    raw_uart_dec(thread.id());
+    raw_uart_str(" pid=");
+    raw_uart_dec(thread.owner_pid.unwrap_or(0));
+    raw_uart_str(" cpu=");
+    raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
+    raw_uart_str(" sp=");
+    raw_uart_hex(sp);
+    raw_uart_str(" kst=");
+    raw_uart_hex(thread.kernel_stack_top.map(|v| v.as_u64()).unwrap_or(0));
+    raw_uart_str(" elr=");
+    raw_uart_hex(elr);
+    raw_uart_str(" x30=");
+    raw_uart_hex(x30);
+    raw_uart_str(" spsr=");
+    raw_uart_hex(spsr);
+    raw_uart_str("\n");
+}
+
+#[inline(always)]
+fn log_idle_thread_context(tag: &str, thread: &Thread, sp: u64, elr: u64, x30: u64, spsr: u64) {
+    let idle = idle_loop_addr();
+    if elr < idle || elr > idle + 0x400 {
+        return;
+    }
+    raw_uart_str("\n[");
+    raw_uart_str(tag);
+    raw_uart_str("] tid=");
+    raw_uart_dec(thread.id());
+    raw_uart_str(" pid=");
+    raw_uart_dec(thread.owner_pid.unwrap_or(0));
+    raw_uart_str(" cpu=");
+    raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
+    raw_uart_str(" sp=");
+    raw_uart_hex(sp);
+    raw_uart_str(" kst=");
+    raw_uart_hex(thread.kernel_stack_top.map(|v| v.as_u64()).unwrap_or(0));
+    raw_uart_str(" elr=");
+    raw_uart_hex(elr);
+    raw_uart_str(" x30=");
+    raw_uart_hex(x30);
+    raw_uart_str(" spsr=");
+    raw_uart_hex(spsr);
+    raw_uart_str("\n");
+}
+
 // =============================================================================
 // Inline context save/restore helpers
 //
@@ -549,6 +614,17 @@ fn scheduler_stack_top(cpu_id: usize) -> u64 {
 
 /// Save userspace context — called inside scheduler lock hold.
 fn save_userspace_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFrame) {
+    if frame.elr == 0 && frame.x30 == 0 && frame.spsr == 0 {
+        raw_uart_str("\n[SKIP_ZERO_FRAME_SAVE] path=U tid=");
+        raw_uart_dec(thread.id());
+        raw_uart_str(" pid=");
+        raw_uart_dec(thread.owner_pid.unwrap_or(0));
+        raw_uart_str(" cpu=");
+        raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
+        raw_uart_str("\n");
+        return;
+    }
+
     // Save ALL general-purpose registers from exception frame.
     // CRITICAL: When a userspace thread is context-switched (e.g., for blocking I/O
     // or preemption), its caller-saved registers (x1-x18) may contain important
@@ -608,10 +684,61 @@ fn save_userspace_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFr
 
     // CRITICAL: Save kernel stack pointer for blocked-in-syscall restoration.
     thread.context.sp = frame as *const _ as u64 + 272;
+
+    if thread.owner_pid.is_some() && thread.blocked_in_syscall {
+        if !thread_kernel_stack_contains(thread, thread.context.sp) {
+            log_bad_thread_sp(
+                "BAD_THREAD_SP_SAVE_U",
+                thread,
+                thread.context.sp,
+                frame.elr,
+                frame.x30,
+                frame.spsr,
+            );
+        }
+        log_idle_thread_context(
+            "IDLE_CTX_SAVE_U",
+            thread,
+            thread.context.sp,
+            frame.elr,
+            frame.x30,
+            frame.spsr,
+        );
+    }
+
+    if thread.owner_pid.is_some()
+        && thread.blocked_in_syscall
+        && (frame.elr == 0 || frame.x30 == 0)
+    {
+        raw_uart_str("\n[ZERO_CTX_SAVE] path=U tid=");
+        raw_uart_dec(thread.id());
+        raw_uart_str(" pid=");
+        raw_uart_dec(thread.owner_pid.unwrap_or(0));
+        raw_uart_str(" cpu=");
+        raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
+        raw_uart_str(" elr=");
+        raw_uart_hex(frame.elr);
+        raw_uart_str(" x30=");
+        raw_uart_hex(frame.x30);
+        raw_uart_str(" spsr=");
+        raw_uart_hex(frame.spsr);
+        raw_uart_str("\n");
+    }
 }
 
 /// Save kernel context — called inside scheduler lock hold.
 fn save_kernel_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFrame) {
+    if frame.elr == 0 && frame.x30 == 0 && frame.spsr == 0 {
+        raw_uart_str("\n[SKIP_ZERO_FRAME_SAVE] path=K tid=");
+        raw_uart_dec(thread.id());
+        raw_uart_str(" pid=");
+        raw_uart_dec(thread.owner_pid.unwrap_or(0));
+        raw_uart_str(" cpu=");
+        raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
+        raw_uart_str("\n");
+        return;
+    }
+
     // Save ALL general-purpose registers, not just callee-saved.
     // This is critical for context switching: when a thread is preempted in the
     // middle of a loop (like kthread_join's WFI loop), its caller-saved registers
@@ -676,6 +803,46 @@ fn save_kernel_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFrame
         core::arch::asm!("mrs {}, tpidr_el0", out(reg) tpidr, options(nomem, nostack));
     }
     thread.context.tpidr_el0 = tpidr;
+
+    if thread.owner_pid.is_some() && thread.blocked_in_syscall {
+        if !thread_kernel_stack_contains(thread, thread.context.sp) {
+            log_bad_thread_sp(
+                "BAD_THREAD_SP_SAVE_K",
+                thread,
+                thread.context.sp,
+                frame.elr,
+                frame.x30,
+                frame.spsr,
+            );
+        }
+        log_idle_thread_context(
+            "IDLE_CTX_SAVE_K",
+            thread,
+            thread.context.sp,
+            frame.elr,
+            frame.x30,
+            frame.spsr,
+        );
+    }
+
+    if thread.owner_pid.is_some()
+        && thread.blocked_in_syscall
+        && (frame.elr == 0 || frame.x30 == 0)
+    {
+        raw_uart_str("\n[ZERO_CTX_SAVE] path=K tid=");
+        raw_uart_dec(thread.id());
+        raw_uart_str(" pid=");
+        raw_uart_dec(thread.owner_pid.unwrap_or(0));
+        raw_uart_str(" cpu=");
+        raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
+        raw_uart_str(" elr=");
+        raw_uart_hex(frame.elr);
+        raw_uart_str(" x30=");
+        raw_uart_hex(frame.x30);
+        raw_uart_str(" spsr=");
+        raw_uart_hex(frame.spsr);
+        raw_uart_str("\n");
+    }
 }
 
 /// Restore kernel thread context into frame — called inside scheduler lock hold.
@@ -751,6 +918,27 @@ fn restore_kernel_context_inline(
         raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
         raw_uart_str("\n");
         return false;
+    }
+
+    if thread.owner_pid.is_some() && thread.blocked_in_syscall {
+        if !thread_kernel_stack_contains(thread, thread.context.sp) {
+            log_bad_thread_sp(
+                "BAD_THREAD_SP_RESTORE",
+                thread,
+                thread.context.sp,
+                thread.context.elr_el1,
+                thread.context.x30,
+                thread.context.spsr_el1,
+            );
+        }
+        log_idle_thread_context(
+            "IDLE_CTX_RESTORE",
+            thread,
+            thread.context.sp,
+            thread.context.elr_el1,
+            thread.context.x30,
+            thread.context.spsr_el1,
+        );
     }
 
     // Restore ALL general-purpose registers directly from thread.context.
@@ -1330,6 +1518,8 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     frame: &mut Aarch64ExceptionFrame,
     from_el0: bool,
 ) {
+    crate::task::process_task::drain_deferred_fault_sigsegv_exits();
+
     // ── Lock-free pre-checks ──────────────────────────────────────
     let preempt_count = Aarch64PerCpu::preempt_count();
     let cpu_id_early = Aarch64PerCpu::cpu_id() as usize;
@@ -1639,7 +1829,12 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
 
     // ── Lock-free post-switch ─────────────────────────────────────
     unsafe {
-        Aarch64PerCpu::clear_preempt_active();
+        // We are returning from one exception frame into a newly dispatched thread,
+        // but SP has not switched to that thread's saved kernel stack yet.
+        // If the pre-ERET IRQ window below takes a nested interrupt, the nested
+        // scheduler path must NOT save context against the new thread using this
+        // transient scheduler/exception stack.
+        Aarch64PerCpu::set_preempt_active();
     }
     crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
     crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
@@ -1687,10 +1882,15 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         old_thread.context.elr_el1 = old_thread.context.x30;
     }
 
+    let old_ready_after_save = sched
+        .get_thread(old_id)
+        .map(|thread| thread.state == ThreadState::Ready)
+        .unwrap_or(false);
+
     sched.commit_cpu_state_after_save(new_id);
     cpu0_breadcrumb(cpu_id, 32); // after commit_cpu_state_after_save
     sched.cpu_state[cpu_id].previous_thread = None;
-    if should_requeue_old {
+    if should_requeue_old || old_ready_after_save {
         sched.requeue_thread_after_save(old_id);
     }
     cpu0_breadcrumb(cpu_id, 33); // after requeue_thread_after_save
@@ -1878,6 +2078,8 @@ fn cpu0_breadcrumb(cpu_id: usize, id: u64) {
 }
 
 pub fn schedule_from_kernel() {
+    crate::task::process_task::drain_deferred_fault_sigsegv_exits();
+
     let saved_daif = read_daif();
     let cpu_id = Aarch64PerCpu::cpu_id() as usize;
     cpu0_breadcrumb(cpu_id, 1); // entry

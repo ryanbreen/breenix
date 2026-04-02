@@ -9,7 +9,7 @@
 
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::arch_impl::aarch64::constants;
 use crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame;
@@ -27,6 +27,7 @@ pub static CPU0_LAST_SYNC_ESR: AtomicU64 = AtomicU64::new(0);
 pub static CPU0_LAST_SYNC_FAR: AtomicU64 = AtomicU64::new(0);
 /// CPU 0 last sync exception ELR (Exception Link Register — faulting instruction).
 pub static CPU0_LAST_SYNC_ELR: AtomicU64 = AtomicU64::new(0);
+static PC_ALIGN_VERBOSE_CAPTURED: AtomicBool = AtomicBool::new(false);
 
 /// Set the per-CPU idle/boot stack in `user_rsp_scratch` so the assembly ERET
 /// path restores SP to a safe stack when redirecting to idle_loop_arm64.
@@ -91,6 +92,23 @@ fn terminate_current_scheduler_thread() {
             }
             sched.remove_from_ready_queue(thread_id);
         });
+    }
+}
+
+fn defer_current_user_thread_sigsegv_exit(label: &str) {
+    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
+
+    if let Some(tid) = crate::task::scheduler::current_thread_id() {
+        let queued = crate::task::process_task::defer_fault_sigsegv_exit(tid);
+        raw_uart_str(label);
+        raw_uart_str(" deferred_tid=");
+        raw_uart_dec(tid);
+        raw_uart_str(" queued=");
+        raw_uart_dec(if queued { 1 } else { 0 });
+        raw_uart_str("\n");
+    } else {
+        raw_uart_str(label);
+        raw_uart_str(" deferred_tid=none\n");
     }
 }
 
@@ -237,6 +255,10 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     raw_uart_hex(frame_ref.x19);
                     raw_uart_str(" x20=");
                     raw_uart_hex(frame_ref.x20);
+                    raw_uart_str(" x8=");
+                    raw_uart_hex(frame_ref.x8);
+                    raw_uart_str(" x9=");
+                    raw_uart_hex(frame_ref.x9);
                     raw_uart_str(" x29=");
                     raw_uart_hex(frame_ref.x29);
                     raw_uart_str(" x30=");
@@ -282,6 +304,19 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                             raw_uart_hex(kst);
                         }
                     }
+
+                    let (armed_port, armed_cmd, isr_port, isr_cmd, waiter_tid) =
+                        crate::drivers::ahci::last_irq_debug_snapshot();
+                    raw_uart_str("\n  AHCI arm port=");
+                    raw_uart_dec(armed_port as u64);
+                    raw_uart_str(" cmd=");
+                    raw_uart_dec(armed_cmd as u64);
+                    raw_uart_str(" isr port=");
+                    raw_uart_dec(isr_port as u64);
+                    raw_uart_str(" cmd=");
+                    raw_uart_dec(isr_cmd as u64);
+                    raw_uart_str(" waiter_tid=");
+                    raw_uart_dec(waiter_tid);
 
                     // Classify which stack region the frame is on
                     let frame_addr = frame as u64;
@@ -420,35 +455,18 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 }
             }
 
-            // From kernel or couldn't terminate — try to terminate the user
-            // process (best effort, using try_lock to avoid deadlock) then
-            // redirect to idle loop.
+            // From kernel or couldn't terminate — defer full process cleanup to
+            // the next safe scheduling point, then redirect to idle.
             {
                 use crate::arch_impl::aarch64::context_switch::raw_uart_str;
-                raw_uart_str("[DATA_ABORT] kernel-mode fault, attempting process cleanup\n");
+                raw_uart_str("[DATA_ABORT] kernel-mode fault, deferring process cleanup\n");
             }
-
-            // Best-effort process termination: use try_manager() to avoid
-            // deadlock if another CPU holds PROCESS_MANAGER.
-            let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
-            if let Some(mut guard) = crate::process::try_manager() {
-                if let Some(pm) = guard.as_mut() {
-                    if let Some((pid, process)) = pm.find_process_by_cr3_mut(page_table_phys) {
-                        if !process.is_terminated() {
-                            crate::tracing::providers::process::trace_process_exit(
-                                pid.as_u64() as u16,
-                                (-11i16) as u16,
-                            );
-                            pm.exit_process(pid, -11); // SIGSEGV
-                        }
-                    }
-                }
-                drop(guard);
-            }
+            defer_current_user_thread_sigsegv_exit("[DATA_ABORT]");
 
             // Mark scheduler thread as terminated (best effort)
             terminate_current_scheduler_thread();
             switch_ttbr0_to_kernel();
+            crate::task::scheduler::set_need_resched();
 
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort() —
             // if switch_to_idle panics or hits a nested exception, the frame
@@ -734,14 +752,19 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 }
             }
 
-            // From kernel or couldn't terminate — redirect to idle loop.
+            // From kernel or couldn't terminate — defer full process cleanup to
+            // the next safe scheduling point, then redirect to idle.
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort() —
             // if switch_to_idle panics or hits a nested exception, the frame
             // must already have safe ELR/SPSR for the assembly ERET path.
             {
                 use crate::arch_impl::aarch64::context_switch::raw_uart_str;
-                raw_uart_str("[INSTRUCTION_ABORT] redirecting to idle\n");
+                raw_uart_str("[INSTRUCTION_ABORT] deferring process cleanup\n");
             }
+            defer_current_user_thread_sigsegv_exit("[INSTRUCTION_ABORT]");
+            terminate_current_scheduler_thread();
+            switch_ttbr0_to_kernel();
+            crate::task::scheduler::set_need_resched();
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
             frame_ref.spsr = 0x5; // EL1h, DAIF clear (interrupts enabled)
 
@@ -804,16 +827,67 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
         0x22 => {
             let frame_ref = unsafe { &mut *frame };
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
+            let verbose = PC_ALIGN_VERBOSE_CAPTURED
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok();
             {
                 use crate::arch_impl::aarch64::context_switch::{
-                    raw_uart_char, raw_uart_hex, raw_uart_str,
+                    raw_uart_char, raw_uart_dec, raw_uart_hex, raw_uart_str,
                 };
+                let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
                 raw_uart_str("\n[PC_ALIGN] ELR=");
                 raw_uart_hex(frame_ref.elr);
                 raw_uart_str(" FAR=");
                 raw_uart_hex(far);
                 raw_uart_str(" from_el0=");
                 raw_uart_char(if from_el0 { b'1' } else { b'0' });
+                raw_uart_str(" cpu=");
+                raw_uart_dec(cpu_id as u64);
+                if verbose {
+                    let dispatch_elr =
+                        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::dispatch_elr();
+                    let dispatch_spsr =
+                        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::dispatch_spsr();
+                    let sp = frame_ref as *const _ as u64 + 272;
+                    raw_uart_str(" sp=");
+                    raw_uart_hex(sp);
+                    raw_uart_str("\n  x29=");
+                    raw_uart_hex(frame_ref.x29);
+                    raw_uart_str(" x30=");
+                    raw_uart_hex(frame_ref.x30);
+                    raw_uart_str(" x0=");
+                    raw_uart_hex(frame_ref.x0);
+                    raw_uart_str(" x1=");
+                    raw_uart_hex(frame_ref.x1);
+                    if let Some(tid) = crate::task::scheduler::current_thread_id() {
+                        raw_uart_str("\n  current_tid=");
+                        raw_uart_dec(tid);
+                        if let Some(dump) = crate::task::scheduler::try_dump_state() {
+                            if let Some(thread) = dump.threads.iter().find(|t| t.id == tid) {
+                                raw_uart_str(" owner_pid=");
+                                raw_uart_dec(thread.owner_pid);
+                                raw_uart_str(" bis=");
+                                raw_uart_char(if thread.blocked_in_syscall { b'1' } else { b'0' });
+                                raw_uart_str(" saved_elr=");
+                                raw_uart_hex(thread.elr_el1);
+                                raw_uart_str(" saved_x30=");
+                                raw_uart_hex(thread.x30);
+                            }
+                        }
+                    }
+                    raw_uart_str("\n  last_dispatch_elr=");
+                    raw_uart_hex(dispatch_elr);
+                    raw_uart_str(" last_dispatch_spsr=");
+                    raw_uart_hex(dispatch_spsr);
+                    raw_uart_str("\n  stack[0]=");
+                    raw_uart_hex(unsafe { core::ptr::read_volatile(sp as *const u64) });
+                    raw_uart_str(" stack[1]=");
+                    raw_uart_hex(unsafe { core::ptr::read_volatile((sp + 8) as *const u64) });
+                    raw_uart_str(" stack[2]=");
+                    raw_uart_hex(unsafe { core::ptr::read_volatile((sp + 16) as *const u64) });
+                    raw_uart_str(" stack[3]=");
+                    raw_uart_hex(unsafe { core::ptr::read_volatile((sp + 24) as *const u64) });
+                }
                 raw_uart_str("\n");
             }
             if from_el0 {

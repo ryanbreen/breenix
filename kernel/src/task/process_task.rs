@@ -7,6 +7,58 @@ use crate::ipc::fd::FileDescriptor;
 use crate::process::ProcessId;
 use crate::task::scheduler;
 use crate::task::thread::{Thread, ThreadPrivilege};
+use core::sync::atomic::{AtomicU64, Ordering};
+
+const DEFERRED_FAULT_EXIT_SLOTS: usize = 16;
+const DEFERRED_FAULT_EXIT_EMPTY: u64 = 0;
+
+struct DeferredFaultExitBuffer {
+    slots: [AtomicU64; DEFERRED_FAULT_EXIT_SLOTS],
+}
+
+unsafe impl Sync for DeferredFaultExitBuffer {}
+
+impl DeferredFaultExitBuffer {
+    const fn new() -> Self {
+        Self {
+            slots: [const { AtomicU64::new(DEFERRED_FAULT_EXIT_EMPTY) };
+                DEFERRED_FAULT_EXIT_SLOTS],
+        }
+    }
+
+    fn push(&self, tid: u64) -> bool {
+        for slot in &self.slots {
+            if slot
+                .compare_exchange(
+                    DEFERRED_FAULT_EXIT_EMPTY,
+                    tid,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn drain(&self, out: &mut alloc::vec::Vec<u64>) {
+        for slot in &self.slots {
+            let tid = slot.swap(DEFERRED_FAULT_EXIT_EMPTY, Ordering::AcqRel);
+            if tid != DEFERRED_FAULT_EXIT_EMPTY {
+                out.push(tid);
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+static DEFERRED_FAULT_EXIT_BUFFERS: [DeferredFaultExitBuffer; 8] =
+    [const { DeferredFaultExitBuffer::new() }; 8];
+#[cfg(not(target_arch = "aarch64"))]
+static DEFERRED_FAULT_EXIT_BUFFERS: [DeferredFaultExitBuffer; 1] =
+    [const { DeferredFaultExitBuffer::new() }];
 
 /// Close extracted file descriptor entries outside the PM lock.
 ///
@@ -185,6 +237,28 @@ impl ProcessScheduler {
                 .find_process_by_thread(thread_id)
                 .map(|(pid, _)| pid)
         })
+    }
+}
+
+/// Defer a SIGSEGV-style process exit for a user thread that faulted in kernel mode.
+pub fn defer_fault_sigsegv_exit(thread_id: u64) -> bool {
+    #[cfg(target_arch = "aarch64")]
+    let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    #[cfg(not(target_arch = "aarch64"))]
+    let cpu = 0usize;
+
+    let idx = cpu.min(DEFERRED_FAULT_EXIT_BUFFERS.len().saturating_sub(1));
+    DEFERRED_FAULT_EXIT_BUFFERS[idx].push(thread_id)
+}
+
+/// Drain deferred kernel-fault exits from a normal scheduling context.
+pub fn drain_deferred_fault_sigsegv_exits() {
+    let mut tids = alloc::vec::Vec::new();
+    for buf in &DEFERRED_FAULT_EXIT_BUFFERS {
+        buf.drain(&mut tids);
+    }
+    for tid in tids {
+        ProcessScheduler::handle_thread_exit(tid, -11);
     }
 }
 

@@ -464,8 +464,15 @@ sync_exception_handler:
     // with the idle thread's boot stack, just like the IRQ handler does.
     // PERCPU_USER_RSP_SCRATCH_OFFSET = 40
     mrs x2, tpidr_el1
+    // Preserve the outer return SP across nested exceptions while
+    // PREEMPT_ACTIVE is set. In that window, user_rsp_scratch already holds
+    // the dispatched thread's target SP; overwriting it with this transient
+    // exception-stack SP would bounce the return path back onto the wrong stack.
+    ldr w3, [x2, #32]
+    tbnz w3, #28, 9f
     add x3, sp, #272
     str x3, [x2, #40]          // user_rsp_scratch = sp + 272
+9:
 
     // Call Rust handler
     mov x0, sp              // Pass frame pointer
@@ -594,8 +601,14 @@ irq_handler:
     cbz x2, 50f
 
     // --- Normal path: per-CPU data is available ---
+    // If PREEMPT_ACTIVE is set, we're nested inside the outer path's pre-ERET
+    // IRQ window. Keep the outer user_rsp_scratch so the final return still
+    // lands on the dispatched thread's stack.
+    ldr w3, [x2, #32]
+    tbnz w3, #28, 51f
     add x3, sp, #272
     str x3, [x2, #40]
+51:
 
     mov x0, sp
     bl check_need_resched_and_switch_arm64
@@ -650,6 +663,19 @@ irq_handler:
 
     // Re-restore x17 from frame (was used as temp above)
     ldr x17, [sp, #136]      // x17 = frame.x17 (final value)
+
+    // Clear PREEMPT_ACTIVE before restoring the final SP and ERETing into the
+    // dispatched context. A nested IRQ may have fired in Rust's pre-ERET IRQ
+    // window; while PREEMPT_ACTIVE was set, that nested return path skipped any
+    // context switch/save against the transient scheduler stack. Clear it only
+    // now, when we are committed to this return path.
+    mrs x16, tpidr_el1
+    cbz x16, 59f
+    ldr w17, [x16, #32]
+    bic w17, w17, #0x10000000
+    str w17, [x16, #32]
+    ldr x17, [sp, #136]      // restore frame.x17 after scratch use
+59:
 
     // Set SP based on ERET destination:
     // - EL0 return (SPSR.M[3:0] == 0): use kernel_stack_top (offset 16).

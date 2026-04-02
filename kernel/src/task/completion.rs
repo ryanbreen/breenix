@@ -101,6 +101,10 @@ impl Completion {
         self.waiter.store(0, Ordering::Release);
     }
 
+    pub fn waiter_tid(&self) -> u64 {
+        self.waiter.load(Ordering::Acquire)
+    }
+
     /// Wait for completion with a wall-clock timeout.
     ///
     /// Sleeps the current thread until:
@@ -402,18 +406,12 @@ impl Completion {
     /// Signal completion from ISR or any other context.
     ///
     /// Sets `done = token`, then wakes the waiter thread (if any) via the
-    /// synchronous `with_scheduler` path.  This acquires the scheduler lock
-    /// and calls `unblock_for_io(tid)` directly, ensuring the thread is set
-    /// to Ready AND added to a per-CPU queue atomically.
+    /// lock-free ISR wakeup buffer. The scheduler drains that buffer under its
+    /// own lock at the top of the next scheduling decision.
     ///
-    /// The previous lock-free ISR wakeup buffer approach had a race condition:
-    /// if `rescue_stuck_ready_threads` set the thread to Ready before the
-    /// buffer was drained, `unblock_for_io` would see state != BlockedOnIO
-    /// and skip the queue push, stranding the thread indefinitely.
-    ///
-    /// Lock contention with the AHCI ISR was the original motivation for the
-    /// lock-free path, but the ISR storm has been eliminated, so contention
-    /// is minimal.
+    /// This keeps the hardirq path out of `with_scheduler()`, which is closer
+    /// to Linux's completion wakeup model and avoids inlining the full
+    /// scheduler mutation path into the AHCI IRQ handler.
     ///
     /// Idempotent: calling `complete()` multiple times is safe (the second
     /// call stores the same token again and a waiter of 0, which is a no-op).
@@ -434,13 +432,7 @@ impl Completion {
 
         let tid = self.waiter.load(Ordering::Acquire);
         if tid != 0 {
-            // Synchronous path: acquire the scheduler lock and unblock the
-            // waiter directly.  This guarantees state=Ready + queue push are
-            // atomic, eliminating the race where the lock-free buffer drain
-            // finds the thread already Ready (set by rescue) and skips it.
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.unblock_for_io(tid);
-            });
+            crate::task::scheduler::isr_unblock_for_io(tid);
         }
     }
 }

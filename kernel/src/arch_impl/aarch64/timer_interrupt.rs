@@ -965,6 +965,14 @@ fn dump_lockup_state(stall_ticks: u64) {
             if t.privilege == 1 {
                 raw_serial_str(b" user");
             }
+            if t.owner_pid != 0 {
+                raw_serial_str(b" pid=");
+                print_timer_count_decimal(t.owner_pid);
+            }
+            raw_serial_str(b" elr=");
+            crate::arch_impl::aarch64::context_switch::raw_uart_hex(t.elr_el1);
+            raw_serial_str(b" x30=");
+            crate::arch_impl::aarch64::context_switch::raw_uart_hex(t.x30);
             raw_serial_str(b"\n");
         }
     } else {

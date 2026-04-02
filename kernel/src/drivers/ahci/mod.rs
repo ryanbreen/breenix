@@ -27,6 +27,26 @@ use crate::task::completion::Completion;
 use crate::block::{BlockDevice, BlockError};
 use crate::drivers::pci;
 
+/// Some ARM64 LL/SC paths are sensitive to stronger-than-natural alignment for
+/// 32-bit atomics in IRQ context. Keep these per-port ISR atomics on 8-byte
+/// boundaries so each lane is naturally isolated.
+#[repr(align(8))]
+struct AlignedAtomicU32(AtomicU32);
+
+impl AlignedAtomicU32 {
+    const fn new(value: u32) -> Self {
+        Self(AtomicU32::new(value))
+    }
+}
+
+impl core::ops::Deref for AlignedAtomicU32 {
+    type Target = AtomicU32;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 /// HHDM base for memory-mapped access.
 const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
 
@@ -198,21 +218,21 @@ static AHCI_ISR_LAST_MPIDR: AtomicU64 = AtomicU64::new(0xDEAD);
 /// Count commands issued via issue_cmd_slot0 (for diagnostic/timeout reporting).
 static AHCI_CMD_COUNT: AtomicU32 = AtomicU32::new(0);
 /// Per-port token for the command currently issued in slot 0. 0 = none.
-static PORT_ACTIVE_CMD_NUM: [AtomicU32; MAX_AHCI_PORTS] =
-    [const { AtomicU32::new(0) }; MAX_AHCI_PORTS];
+static PORT_ACTIVE_CMD_NUM: [AlignedAtomicU32; MAX_AHCI_PORTS] =
+    [const { AlignedAtomicU32::new(0) }; MAX_AHCI_PORTS];
 /// Per-port bitmask of in-flight command slots, indexed by port number.
 /// Bit N = slot N is currently in flight (PORT_CI bit N was set by us).
 /// Written by setup_cmd_slot0 (sets bit), cleared by handle_interrupt.
 /// AtomicU32 for lock-free access from the ISR.
-static PORT_ACTIVE_MASK: [AtomicU32; MAX_AHCI_PORTS] =
-    [const { AtomicU32::new(0) }; MAX_AHCI_PORTS];
+static PORT_ACTIVE_MASK: [AlignedAtomicU32; MAX_AHCI_PORTS] =
+    [const { AlignedAtomicU32::new(0) }; MAX_AHCI_PORTS];
 
 /// Per-port ISR hit counter: incremented each time the ISR sees PORT_IS != 0 for a port.
-static AHCI_ISR_PORT_HIT: [AtomicU32; MAX_AHCI_PORTS] =
-    [const { AtomicU32::new(0) }; MAX_AHCI_PORTS];
+static AHCI_ISR_PORT_HIT: [AlignedAtomicU32; MAX_AHCI_PORTS] =
+    [const { AlignedAtomicU32::new(0) }; MAX_AHCI_PORTS];
 /// Per-port completion hit counter: incremented each time the ISR calls complete() for a port.
-static AHCI_ISR_COMPLETE_HIT: [AtomicU32; MAX_AHCI_PORTS] =
-    [const { AtomicU32::new(0) }; MAX_AHCI_PORTS];
+static AHCI_ISR_COMPLETE_HIT: [AlignedAtomicU32; MAX_AHCI_PORTS] =
+    [const { AlignedAtomicU32::new(0) }; MAX_AHCI_PORTS];
 /// ICC_PMR_EL1 value captured at ISR entry (last invocation).
 static AHCI_ISR_LAST_PMR: AtomicU64 = AtomicU64::new(0);
 /// PORT_IS value seen by the ISR for port 1 (last invocation that saw port 1 active).
@@ -225,6 +245,13 @@ static AHCI_ISR_LAST_ELR: AtomicU64 = AtomicU64::new(0);
 /// SPSR_EL1 captured at AHCI ISR entry — the saved PSTATE from before the AHCI IRQ.
 /// Bits [9:6] = DAIF mask of the interrupted context.
 static AHCI_ISR_LAST_SPSR: AtomicU64 = AtomicU64::new(0);
+/// Last slot-0 command armed for IRQ completion.
+static AHCI_LAST_ARMED_PORT: AtomicU32 = AtomicU32::new(u32::MAX);
+static AHCI_LAST_ARMED_CMD: AtomicU32 = AtomicU32::new(0);
+/// Last completion the ISR was about to publish.
+static AHCI_LAST_ISR_COMPLETE_PORT: AtomicU32 = AtomicU32::new(u32::MAX);
+static AHCI_LAST_ISR_COMPLETE_CMD: AtomicU32 = AtomicU32::new(0);
+static AHCI_LAST_ISR_COMPLETE_WAITER: AtomicU64 = AtomicU64::new(0);
 
 /// Per-port I/O serialisation lock.
 ///
@@ -1125,6 +1152,8 @@ impl AhciController {
         }
         let cmd_num = next_cmd_num();
         if arm_completion {
+            AHCI_LAST_ARMED_PORT.store(port as u32, Ordering::Relaxed);
+            AHCI_LAST_ARMED_CMD.store(cmd_num, Ordering::Relaxed);
             PORT_ACTIVE_CMD_NUM[port].store(cmd_num, Ordering::Release);
             PORT_ACTIVE_MASK[port].fetch_or(1, Ordering::Release);
         }
@@ -2308,6 +2337,12 @@ pub fn handle_interrupt() {
                     AHCI_LAST_ISR_PORT1_CMD_NUM.store(cmd_num, Ordering::Relaxed);
                 }
                 if cmd_num != 0 {
+                    AHCI_LAST_ISR_COMPLETE_PORT.store(port as u32, Ordering::Relaxed);
+                    AHCI_LAST_ISR_COMPLETE_CMD.store(cmd_num, Ordering::Relaxed);
+                    AHCI_LAST_ISR_COMPLETE_WAITER.store(
+                        AHCI_COMPLETIONS[port][0].waiter_tid(),
+                        Ordering::Relaxed,
+                    );
                     AHCI_COMPLETIONS[port][0].complete(cmd_num);
                     AHCI_ISR_COMPLETE_HIT[port].fetch_add(1, Ordering::Relaxed);
                 }
@@ -2356,6 +2391,17 @@ pub fn get_irq() -> Option<u32> {
     } else {
         None
     }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn last_irq_debug_snapshot() -> (u32, u32, u32, u32, u64) {
+    (
+        AHCI_LAST_ARMED_PORT.load(Ordering::Relaxed),
+        AHCI_LAST_ARMED_CMD.load(Ordering::Relaxed),
+        AHCI_LAST_ISR_COMPLETE_PORT.load(Ordering::Relaxed),
+        AHCI_LAST_ISR_COMPLETE_CMD.load(Ordering::Relaxed),
+        AHCI_LAST_ISR_COMPLETE_WAITER.load(Ordering::Relaxed),
+    )
 }
 
 // =============================================================================

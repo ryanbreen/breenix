@@ -236,6 +236,9 @@ pub struct ThreadDumpEntry {
     pub blocked_in_syscall: bool,
     pub has_wake_time: bool,
     pub privilege: u8, // 0=Kernel, 1=User
+    pub owner_pid: u64,
+    pub elr_el1: u64,
+    pub x30: u64,
 }
 
 /// Diagnostic snapshot of scheduler state for the soft lockup detector.
@@ -304,6 +307,9 @@ pub fn try_dump_state() -> Option<SchedulerDumpInfo> {
             } else {
                 1
             },
+            owner_pid: t.owner_pid.unwrap_or(0),
+            elr_el1: t.context.elr_el1,
+            x30: t.context.x30,
         })
         .collect();
 
@@ -1619,28 +1625,37 @@ impl Scheduler {
     /// the ISR runs with interrupts already masked by hardware.
     pub fn unblock_for_io(&mut self, tid: u64) {
         if let Some(thread) = self.get_thread_mut(tid) {
-            if thread.state == ThreadState::BlockedOnIO {
+            let should_queue = if thread.state == ThreadState::BlockedOnIO {
                 thread.set_ready();
                 thread.wake_time_ns = None;
                 // Do NOT clear blocked_in_syscall here — the wait_timeout
                 // caller manages it after detecting the wakeup.
+                true
+            } else {
+                // If the completion wakeup was deferred through the lock-free
+                // ISR buffer, the thread may already have been marked Ready by
+                // another path before the buffer is drained. As long as it is
+                // still blocked in the syscall, it still needs a ready-queue
+                // insertion to resume and observe `done=token`.
+                thread.state == ThreadState::Ready && thread.blocked_in_syscall
+            };
 
-                // Skip is_current_on_any_cpu check for BlockedOnIO.
-                // A thread that explicitly called block_current_for_io() is
-                // in the process of being switched out by schedule_from_kernel().
-                // cpu_state[].current_thread may still point to this thread
-                // (not yet updated by commit_cpu_state_after_save in the
-                // trampoline). The old is_current check caused the thread to
-                // be set Ready but never added to the ready queue — stranding
-                // it until the rescue timer fired (~1s), well past the 5s AHCI
-                // timeout. The deferred-requeue check is still safe because
-                // previous_thread is set AFTER commit_cpu_state_after_save.
+            if should_queue {
+                // Do not enqueue a thread that is still current on some CPU.
+                // For BlockedOnIO waiters this means the wakeup won the race
+                // against the old CPU's context save; that CPU will publish
+                // the saved context and requeue the Ready thread after the
+                // save point completes.
+                let is_current_on_any_cpu =
+                    (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].current_thread == Some(tid));
+
                 #[cfg(target_arch = "aarch64")]
                 let is_in_deferred = self.is_in_deferred_requeue(tid);
                 #[cfg(not(target_arch = "aarch64"))]
                 let is_in_deferred = false;
 
-                if !is_in_deferred
+                if !is_current_on_any_cpu
+                    && !is_in_deferred
                     && tid != self.cpu_state[Self::current_cpu_id()].idle_thread
                     && !self.per_cpu_queues.iter().any(|q| q.contains(&tid))
                 {
