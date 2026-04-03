@@ -223,6 +223,10 @@ impl TraceEventType {
     pub const RESCHED_TAIL_SP: u16 = 0xFF32;
     pub const RESCHED_TAIL_X30: u16 = 0xFF33;
     pub const RESCHED_TAIL_SLOTX30: u16 = 0xFF34;
+    pub const CPU0_USER_DISPATCH_STAGE: u16 = 0xFF35;
+    pub const CPU0_USER_DISPATCH_ELR: u16 = 0xFF36;
+    pub const CPU0_USER_DISPATCH_SPSR: u16 = 0xFF37;
+    pub const CPU0_USER_DISPATCH_TTBR0: u16 = 0xFF38;
 }
 
 // =============================================================================

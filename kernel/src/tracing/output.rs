@@ -334,6 +334,10 @@ pub fn event_type_name(event_type: u16) -> &'static str {
         TraceEventType::RESCHED_TAIL_SP => "RESCHED_TAIL_SP",
         TraceEventType::RESCHED_TAIL_X30 => "RESCHED_TAIL_X30",
         TraceEventType::RESCHED_TAIL_SLOTX30 => "RESCHED_TAIL_SLOTX30",
+        TraceEventType::CPU0_USER_DISPATCH_STAGE => "CPU0_USER_DISPATCH_STAGE",
+        TraceEventType::CPU0_USER_DISPATCH_ELR => "CPU0_USER_DISPATCH_ELR",
+        TraceEventType::CPU0_USER_DISPATCH_SPSR => "CPU0_USER_DISPATCH_SPSR",
+        TraceEventType::CPU0_USER_DISPATCH_TTBR0 => "CPU0_USER_DISPATCH_TTBR0",
 
         _ => "UNKNOWN",
     }
@@ -414,6 +418,10 @@ fn payload_description(event_type: u16) -> &'static str {
         TraceEventType::RESCHED_TAIL_SP => "sp_low32",
         TraceEventType::RESCHED_TAIL_X30 => "x30_low32",
         TraceEventType::RESCHED_TAIL_SLOTX30 => "slot_x30_low32",
+        TraceEventType::CPU0_USER_DISPATCH_STAGE => "stage<<16|tid",
+        TraceEventType::CPU0_USER_DISPATCH_ELR => "elr_low32",
+        TraceEventType::CPU0_USER_DISPATCH_SPSR => "spsr_low32",
+        TraceEventType::CPU0_USER_DISPATCH_TTBR0 => "ttbr0_low32",
         _ => "payload",
     }
 }

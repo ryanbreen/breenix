@@ -133,11 +133,18 @@ pub static CPU0_LAST_TIMER_ELR: AtomicU64 = AtomicU64::new(0);
 ///   104 = check_need_resched: before daifclr window
 ///   105 = check_need_resched: after daifclr window
 ///   106 = check_need_resched: before function return
+///   107 = aarch64_enter_exception_frame: after frame SP switch
+///   108 = aarch64_enter_exception_frame: after ELR/SPSR programmed
+///   111 = aarch64_enter_exception_frame: after frame ELR load/normalize
+///   109 = aarch64_enter_exception_frame: after target SP pivot
+///   110 = aarch64_enter_exception_frame: just before ERET
+#[no_mangle]
 pub static CPU0_BREADCRUMB_ID: AtomicU64 = AtomicU64::new(0);
 
 /// CPU 0 CNTV_CTL_EL0 snapshot at each breadcrumb point.
 /// After CPU 0 dies, shows the timer control register state at the last breadcrumb.
 /// Bit 0: ENABLE, Bit 1: IMASK, Bit 2: ISTATUS.
+#[no_mangle]
 pub static CPU0_BREADCRUMB_CTL: AtomicU64 = AtomicU64::new(0);
 
 /// CPU 0 dispatch diagnostics — set in the trampoline just before ERET.

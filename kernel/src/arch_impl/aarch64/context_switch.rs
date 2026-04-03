@@ -43,6 +43,9 @@ const TRACE_REDIRECT_TTBR_PM_LOCK_BUSY: u16 = 3;
 const TRACE_REDIRECT_TTBR_PROCESS_GONE: u16 = 4;
 const TRACE_REDIRECT_RESTORE_FAILED: u16 = 5;
 const TRACE_REDIRECT_CPU0_USER_GUARD: u16 = 6;
+const TRACE_CPU0_USER_DISPATCH_CANDIDATE: u16 = 1;
+const TRACE_CPU0_USER_DISPATCH_PREPARED: u16 = 2;
+const TRACE_CPU0_USER_DISPATCH_GUARD_REDIRECT: u16 = 3;
 const TRACE_SCHEDULE_RESUME_PRE_IRQ_ENABLE: u16 = 1;
 const TRACE_SCHEDULE_RESUME_POST_SWITCH: u16 = 2;
 const TRACE_SCHEDULE_RESUME_PRE_RETURN: u16 = 3;
@@ -178,6 +181,39 @@ fn trace_pm_lock_busy(thread_id: u64) {
         crate::tracing::TraceEventType::PM_LOCK_BUSY_OWNER,
         0,
         owner_tid as u32,
+    );
+}
+
+#[inline(always)]
+fn read_ttbr0_el1() -> u64 {
+    let ttbr0: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
+    }
+    ttbr0
+}
+
+#[inline(always)]
+fn trace_cpu0_user_dispatch(stage: u16, thread_id: u64, elr: u64, spsr: u64, ttbr0: u64) {
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::CPU0_USER_DISPATCH_STAGE,
+        0,
+        ((stage as u32) << 16) | ((thread_id as u32) & 0xFFFF),
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::CPU0_USER_DISPATCH_ELR,
+        0,
+        elr as u32,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::CPU0_USER_DISPATCH_SPSR,
+        0,
+        spsr as u32,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::CPU0_USER_DISPATCH_TTBR0,
+        0,
+        ttbr0 as u32,
     );
 }
 
@@ -383,6 +419,18 @@ aarch64_enter_exception_frame:
     // Reuse the same restore/ERET rules as the IRQ return path by treating
     // the prepared frame as if it had been produced by an exception entry.
     mov sp, x0
+    mrs x16, mpidr_el1
+    and x16, x16, #0xFF
+    cbnz x16, 0f
+    adrp x16, CPU0_BREADCRUMB_ID
+    add x16, x16, :lo12:CPU0_BREADCRUMB_ID
+    mov x17, #107
+    str x17, [x16]
+    mrs x17, cntv_ctl_el0
+    adrp x16, CPU0_BREADCRUMB_CTL
+    add x16, x16, :lo12:CPU0_BREADCRUMB_CTL
+    str x17, [x16]
+0:
 
     ldr x1, [sp, #248]
     cmp x1, #0x1000
@@ -393,11 +441,35 @@ aarch64_enter_exception_frame:
     mov x2, #0x5
     str x2, [sp, #256]
 1:
+    mrs x16, mpidr_el1
+    and x16, x16, #0xFF
+    cbnz x16, 7f
+    adrp x16, CPU0_BREADCRUMB_ID
+    add x16, x16, :lo12:CPU0_BREADCRUMB_ID
+    mov x17, #111
+    str x17, [x16]
+    mrs x17, cntv_ctl_el0
+    adrp x16, CPU0_BREADCRUMB_CTL
+    add x16, x16, :lo12:CPU0_BREADCRUMB_CTL
+    str x17, [x16]
+7:
     msr elr_el1, x1
     ldr x1, [sp, #256]
     // Never propagate stale DAIF.I+F bits through ERET (timer is GIC Group 0 = FIQ).
     bic x1, x1, #0xC0
     msr spsr_el1, x1
+    mrs x16, mpidr_el1
+    and x16, x16, #0xFF
+    cbnz x16, 4f
+    adrp x16, CPU0_BREADCRUMB_ID
+    add x16, x16, :lo12:CPU0_BREADCRUMB_ID
+    mov x17, #108
+    str x17, [x16]
+    mrs x17, cntv_ctl_el0
+    adrp x16, CPU0_BREADCRUMB_CTL
+    add x16, x16, :lo12:CPU0_BREADCRUMB_CTL
+    str x17, [x16]
+4:
 
     ldp x0, x1, [sp, #0]
     ldp x2, x3, [sp, #16]
@@ -432,6 +504,18 @@ aarch64_enter_exception_frame:
     ldr x16, [x16, #40]
 3:
     mov sp, x16
+    mrs x16, mpidr_el1
+    and x16, x16, #0xFF
+    cbnz x16, 5f
+    adrp x16, CPU0_BREADCRUMB_ID
+    add x16, x16, :lo12:CPU0_BREADCRUMB_ID
+    mov x17, #109
+    str x17, [x16]
+    mrs x17, cntv_ctl_el0
+    adrp x16, CPU0_BREADCRUMB_CTL
+    add x16, x16, :lo12:CPU0_BREADCRUMB_CTL
+    str x17, [x16]
+5:
 
     // CRITICAL: ISB before ERET — required for HVF (Apple Hypervisor Framework).
     //
@@ -449,6 +533,18 @@ aarch64_enter_exception_frame:
     // 300000+ ticks indefinitely. The ret-based path (daifclr+br) was immune
     // because it doesn't go through HVF's ERET trap.
     isb
+    mrs x16, mpidr_el1
+    and x16, x16, #0xFF
+    cbnz x16, 6f
+    adrp x16, CPU0_BREADCRUMB_ID
+    add x16, x16, :lo12:CPU0_BREADCRUMB_ID
+    mov x17, #110
+    str x17, [x16]
+    mrs x17, cntv_ctl_el0
+    adrp x16, CPU0_BREADCRUMB_CTL
+    add x16, x16, :lo12:CPU0_BREADCRUMB_CTL
+    str x17, [x16]
+6:
 
     mrs x16, tpidr_el1
     ldr x16, [x16, #96]
@@ -1801,12 +1897,44 @@ fn dispatch_thread_locked(
         }
     } else {
         // Userspace thread — needs EL0 ERET.
+        if cpu_id == 0 {
+            if let Some(thread) = sched.get_thread(thread_id) {
+                let candidate_elr = thread.context.elr_el1;
+                let candidate_spsr = if thread.has_started {
+                    dispatch_spsr(thread.context.spsr_el1)
+                } else {
+                    0
+                };
+                trace_cpu0_user_dispatch(
+                    TRACE_CPU0_USER_DISPATCH_CANDIDATE,
+                    thread_id,
+                    candidate_elr,
+                    candidate_spsr,
+                    thread.cached_ttbr0,
+                );
+            }
+        }
         //
         // CPU 0 GUARD: On Parallels/HVF, ERET to EL0 kills CPU 0's vtimer
         // PPI 27 delivery. Without the timer, CPU 0 cannot preempt and any
         // thread dispatched here monopolises the CPU. Redirect to idle and
         // requeue the thread on CPUs 1-7 where the timer works.
         if cpu_id == 0 && crate::arch_impl::aarch64::smp::cpus_online() > 1 {
+            if let Some(thread) = sched.get_thread(thread_id) {
+                let candidate_elr = thread.context.elr_el1;
+                let candidate_spsr = if thread.has_started {
+                    dispatch_spsr(thread.context.spsr_el1)
+                } else {
+                    0
+                };
+                trace_cpu0_user_dispatch(
+                    TRACE_CPU0_USER_DISPATCH_GUARD_REDIRECT,
+                    thread_id,
+                    candidate_elr,
+                    candidate_spsr,
+                    thread.cached_ttbr0,
+                );
+            }
             trace_dispatch_redirect(thread_id, TRACE_REDIRECT_CPU0_USER_GUARD);
             if let Some(thread) = sched.get_thread_mut(thread_id) {
                 thread.state = ThreadState::Ready;
@@ -1920,6 +2048,16 @@ fn dispatch_thread_locked(
                 sched.cpu_state[cpu_id].current_thread = Some(idle_id);
                 return;
             }
+        }
+
+        if cpu_id == 0 {
+            trace_cpu0_user_dispatch(
+                TRACE_CPU0_USER_DISPATCH_PREPARED,
+                thread_id,
+                frame.elr,
+                frame.spsr,
+                read_ttbr0_el1(),
+            );
         }
 
         // CRITICAL: Set user_rsp_scratch to this thread's kernel stack top.

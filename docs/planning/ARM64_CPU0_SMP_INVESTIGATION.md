@@ -1081,3 +1081,139 @@ the cached-TTBR0 baseline.
    before CPU0 stops servicing work.
 3. Do not revisit the no-guard branch unless a new hypothesis explains why the
    cached-TTBR0 baseline still depends on the guard in some runs and not others.
+
+### 2026-04-03: CPU0 User-Dispatch Probe Reframed The Remaining Guarded Failure
+
+- Fixed-state probe:
+  - [fixed-state-cpu0-user-dispatch](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/fixed-state-cpu0-user-dispatch)
+- Result:
+  - the first eight runs were clean enough that the guarded branch did not
+    reappear
+  - the ninth run reproduced the remaining timeout branch:
+    - [run9](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/fixed-state-cpu0-user-dispatch/run9)
+  - the decisive new evidence in that bad run was:
+    - CPU0 received a real EL0-capable dispatch candidate for `tid=10`
+    - `ELR=0x4000f0e0`, `SPSR=0x80000000`, `TTBR0=0x44000000`
+    - the CPU0 EL0 redirect guard then fired immediately:
+      `TRACE_REDIRECT_CPU0_USER_GUARD`
+    - later, the machine still timed out in AHCI with:
+      - `cpu0_dispatch: tid=10 elr=0xffff0000400fda64 spsr=0x5`
+      - `cpu0_breadcrumb=43`
+      - `PPI27_pending=1`
+- Interpretation:
+  - the remaining guarded failure is not "CPU0 never had an EL0 candidate"
+  - CPU0 does reach a real EL0-capable dispatch point, the workaround guard
+    redirects it away, and CPU0 still later wedges in a kernel-mode dispatch
+    corridor
+  - that means the guard is not containing the entire bug; it is only changing
+    where the surviving failure is expressed
+
+### 2026-04-03: Unguarded User-Dispatch Probe Was Not A Clean Comparison
+
+- Experiment:
+  - temporarily remove the CPU0 EL0 redirect guard on the same probe build
+- Artifact:
+  - [no-cpu0-guard-user-dispatch-probe/run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/no-cpu0-guard-user-dispatch-probe/run1)
+- Result:
+  - the machine ran much further and reached:
+    - `bsshd: listening on 0.0.0.0:2222`
+    - `Welcome to Breenix OS`
+  - it still timed out later with:
+    - `cpu0_dispatch: tid=13 elr=0xffff00004010b204 spsr=0x82000305`
+    - `cpu0_breadcrumb=43`
+    - `PPI27_pending=1`
+  - the CPU0 trace buffer wrapped heavily:
+    - `write_idx=68578`
+    - `dropped=67554`
+  - no decisive `CPU0_USER_DISPATCH_*` evidence survived in that wrapped trace
+- Disposition:
+  - this run is not a clean answer to the guarded `tid=10` branch
+  - keep the guard in place for now and continue from the quieter guarded
+    baseline
+
+### 2026-04-03: Exception-Frame Breadcrumb Probe Collapsed The Live Window
+
+- Probe artifacts:
+  - [guarded-asm-breadcrumb-probe/run10](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/guarded-asm-breadcrumb-probe/run10)
+  - [guarded-asm-breadcrumb-probe-batch2/run4](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/guarded-asm-breadcrumb-probe-batch2/run4)
+- Probe design:
+  - add CPU0-only assembly breadcrumbs inside
+    `aarch64_enter_exception_frame()`:
+    - `107`: after `mov sp, x0`
+    - `108`: after `ELR_EL1` / `SPSR_EL1` are programmed
+    - `109`: after the target-SP pivot
+    - `110`: just before `eret`
+- Cross-artifact result:
+  - both bad guarded runs now converge on the same terminal breadcrumb:
+    - `cpu0_breadcrumb=107`
+  - the same two runs end with:
+    - `cpu0_dispatch: tid=11 elr=0xffff0000400fda64 spsr=0x5`
+      on [run10](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/guarded-asm-breadcrumb-probe/run10)
+    - `cpu0_dispatch: tid=10 elr=0xffff0000400fda64 spsr=0x5`
+      on [run4](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/guarded-asm-breadcrumb-probe-batch2/run4)
+  - `0xffff0000400fda64` resolves to `idle_loop_arm64`
+  - the last sampled CPU0 timer PCs differ across the two bad runs:
+    - [run10](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/guarded-asm-breadcrumb-probe/run10):
+      `cpu0_last_timer_elr=0xffff0000400c0bf0`
+      inside `AhciBlockDevice::read_block()`
+    - [run4](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/guarded-asm-breadcrumb-probe-batch2/run4):
+      `cpu0_last_timer_elr=0xffff0000400fdc68`
+      inside `idle_loop_arm64`
+  - there are currently no observed bad runs with:
+    - `cpu0_breadcrumb=108`
+    - `cpu0_breadcrumb=109`
+    - `cpu0_breadcrumb=110`
+- Interpretation:
+  - the remaining guarded timeout branch now clusters in a much smaller place:
+    inside `aarch64_enter_exception_frame()`, after the frame pointer is
+    adopted as `sp`, but before the path reaches the existing "ELR/SPSR
+    programmed" breadcrumb
+  - the terminal `cpu0_dispatch` state is consistently an idle-style target
+    even when the victim thread ID changes
+  - the timer side is still race-shaped, but the handoff-side clustering is now
+    stable enough to justify one more minimal assembly probe inside the
+    `107 -> 108` corridor
+
+### Active Decision Point
+
+- Current best branch:
+  - the live failure window is no longer generic "CPU0 liveness collapse"
+  - it is the first half of `aarch64_enter_exception_frame()`, before the
+    existing `108` breadcrumb
+- Immediate next probe:
+  - add one additional CPU0-only breadcrumb between `107` and `108`, after the
+    frame `ELR` has been read and normalized but before `msr elr_el1`
+  - rerun fixed-state guarded captures
+  - use the new terminal breadcrumb to decide whether the next cut should be:
+    - frame-read / fallback-normalization
+    - `ELR_EL1` programming
+    - or `SPSR_EL1` programming
+
+### 2026-04-03: The New Seam Probe Still Dies Before ELR Normalization Completes
+
+- Probe artifact:
+  - [guarded-asm-breadcrumb-probe-111/run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/guarded-asm-breadcrumb-probe-111/run1)
+- Probe design:
+  - add `111` inside `aarch64_enter_exception_frame()` after the frame `ELR`
+    has been read / normalized and just before `msr elr_el1`
+- Result:
+  - the very first fixed-state rerun reproduced the timeout branch
+  - the new terminal state is still:
+    - `cpu0_breadcrumb=107`
+  - there is still no observed `cpu0_breadcrumb=111`
+  - this run ended with:
+    - `cpu0_dispatch: tid=13 elr=0xffff00004014dfb4 spsr=0x82000305`
+    - `0xffff00004014dfb4` is inside `sys_nanosleep()`, immediately after
+      `wfi`, at the call to `check_signals_for_eintr()`
+    - `cpu0_last_timer_elr=0xffff0000400fdc94`
+      inside `idle_loop_arm64`, immediately after `wfi`
+- Updated interpretation:
+  - the live handoff window is narrower again:
+    - after `mov sp, x0`
+    - before the code reaches the new "frame `ELR` load/normalize complete"
+      marker
+  - the next justified cut is no longer `111 -> 108`
+  - it is:
+    - frame `ELR` load itself
+    - the low-address idle fallback compare/branch
+    - or the fallback stores that rewrite the frame to `idle_loop_arm64`
