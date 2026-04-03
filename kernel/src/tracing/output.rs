@@ -338,6 +338,11 @@ pub fn event_type_name(event_type: u16) -> &'static str {
         TraceEventType::CPU0_USER_DISPATCH_ELR => "CPU0_USER_DISPATCH_ELR",
         TraceEventType::CPU0_USER_DISPATCH_SPSR => "CPU0_USER_DISPATCH_SPSR",
         TraceEventType::CPU0_USER_DISPATCH_TTBR0 => "CPU0_USER_DISPATCH_TTBR0",
+        TraceEventType::DEFER_REQUEUE_STAGE => "DEFER_REQUEUE_STAGE",
+        TraceEventType::DEFER_REQUEUE_SP => "DEFER_REQUEUE_SP",
+        TraceEventType::DEFER_REQUEUE_ELR => "DEFER_REQUEUE_ELR",
+        TraceEventType::DEFER_REQUEUE_X30 => "DEFER_REQUEUE_X30",
+        TraceEventType::DEFER_REQUEUE_FLAGS => "DEFER_REQUEUE_FLAGS",
 
         _ => "UNKNOWN",
     }
@@ -422,6 +427,11 @@ fn payload_description(event_type: u16) -> &'static str {
         TraceEventType::CPU0_USER_DISPATCH_ELR => "elr_low32",
         TraceEventType::CPU0_USER_DISPATCH_SPSR => "spsr_low32",
         TraceEventType::CPU0_USER_DISPATCH_TTBR0 => "ttbr0_low32",
+        TraceEventType::DEFER_REQUEUE_STAGE => "stage<<16|tid",
+        TraceEventType::DEFER_REQUEUE_SP => "sp_low32",
+        TraceEventType::DEFER_REQUEUE_ELR => "elr_low32",
+        TraceEventType::DEFER_REQUEUE_X30 => "x30_low32",
+        TraceEventType::DEFER_REQUEUE_FLAGS => "aux_tid<<16|flags",
         _ => "payload",
     }
 }

@@ -1323,3 +1323,109 @@ the cached-TTBR0 baseline.
   - but CPU0 EL0 dispatch is not yet cleanly solved on the new baseline
   - keep the guard in tree for now while treating the post-fix no-guard result
     as a new, separate branch rather than a regression to the old one
+
+### 2026-04-03: The New No-Guard Branch Points At Deferred-Requeue Contract Pressure, Not Generic CPU0 EL0 Failure
+
+- Cross-run comparison:
+  - the relocated-frame guarded baseline
+    [fixed-state-inline-frame-relocation](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/fixed-state-inline-frame-relocation)
+    has no `DEFER_EVICT`
+  - the post-fix no-guard sweep
+    [no-cpu0-guard-after-frame-relocation](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/no-cpu0-guard-after-frame-relocation)
+    shows `DEFER_EVICT` in all 3 runs
+- Stable observations from the no-guard runs:
+  - CPU0 is not simply unable to run EL0:
+    - in `run3`, CPU0 repeatedly performs real `0 -> 13 -> 0` switches
+    - `CPU0_USER_DISPATCH_STAGE` appears only on some of those `0 -> 13`
+      handoffs, after `EXEC_ENTRY pid=3`
+  - `tid=13` behaves normally on CPUs 1-3 for a long interval before CPU0 joins
+    the ownership set
+  - the bad collapse in `run3` is:
+    - `[DEFER_EVICT] cpu=0 evicted=1 new=11`
+    - then `dispatch_thread: bad context tid=11 ... cpu=3`
+    - postmortem for `tid=11` shows `sp=0xffff0000431fffb0`, which is on CPU0's
+      scheduler stack rather than the thread's own kernel stack
+- Interpretation:
+  - the current no-guard branch is not best described as
+    "CPU0 EL0 dispatch immediately kills timer semantics"
+  - the first code path unique to this branch is pressure on the deferred
+    requeue mechanism, specifically the eviction path that requeues an older
+    switched-out thread before the normal deferred-slot drain point
+- Active hypothesis:
+  - `DEFER_EVICT` is making a thread runnable again while some live frame or
+    stack-ownership assumption is still outstanding
+  - if true, the next probe should instrument deferred-slot store, drain, and
+    eviction directly rather than adding more EL0 symptom probes
+
+### 2026-04-03: Next Probe Records Deferred-Requeue Store, Drain, And Eviction
+
+- Decision:
+  - add low-overhead trace-buffer events for:
+    - early deferred drain at IRQ entry
+    - normal deferred drain in the consolidated resched path
+    - inline-schedule deferred drain
+    - deferred-slot store
+    - deferred-slot eviction
+- Data recorded for each event:
+  - `tid`
+  - stage id
+  - saved `sp`
+  - saved `elr`
+  - saved `x30`
+  - compact flags for thread state / blocked-in-syscall / inline-saved /
+    has-started / user-vs-kernel
+  - counterpart `tid` where relevant:
+    - previous slot occupant on store
+    - replacement `old_id` on eviction
+- Why this is the right cut:
+  - it tests the first branch that is unique to the no-guard failures
+  - it keeps the probe on the scheduler contract itself instead of jumping back
+    to generic CPU0 EL0 speculation
+
+### 2026-04-03: Re-running The No-Guard Branch Showed The Failure Is Not Specific To `tid=13`
+
+- Probe artifacts:
+  - [no-guard-defer-requeue-probe/run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/no-guard-defer-requeue-probe/run1)
+  - [no-guard-defer-requeue-probe/run2](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/no-guard-defer-requeue-probe/run2)
+  - [no-guard-defer-requeue-probe/run4-long](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/no-guard-defer-requeue-probe/run4-long)
+- Results:
+  - `run1` reproduced the bad-context/soft-lockup branch quickly:
+    - `DEFER_EVICT cpu=0 evicted=1 new=11`
+    - then `dispatch_thread: bad context tid=11 ... cpu=0`
+    - `stuck_tid=13`
+  - `run2` reproduced the earlier early-abort branch instead:
+    - `DEFER_EVICT cpu=0 evicted=1 new=10`
+    - then `INSTRUCTION_ABORT FAR=0x0 ELR=0x0`
+    - no `CPU0_USER_DISPATCH_STAGE`
+  - `run4-long` produced a different but still relevant no-guard lockup:
+    - one `DEFER_EVICT cpu=0 evicted=1 new=10`
+    - soft lockup with `stuck_tid=11`
+    - CPU0 `current=11`
+    - postmortem showed `tid=10` published with
+      `sp=0xffff0000431fffb0`, which is on CPU0's scheduler stack
+    - CPU0 trace buffer showed repeated `0 <-> 11` wait-timeout loops, not a
+      `tid=13` ownership problem
+- Interpretation:
+  - the no-guard failure is broader than
+    "CPU0 starts running `tid=13` after `EXEC_ENTRY pid=3` and then wedges"
+  - CPU0 can also get stuck in a `0 <-> 11` blocked-syscall loop earlier in
+    boot, and another userspace thread (`tid=10`) can still end up published
+    with CPU0 scheduler-stack state
+  - `DEFER_EVICT` remains the only branch-local mechanism seen across these
+    no-guard failures, but the victim thread is not stable
+
+### 2026-04-03: The Next Durable Postmortem Needs Deferred-Requeue Snapshots In Soft-Lockup Dumps
+
+- Problem encountered:
+  - the ring buffer did not reliably preserve the new deferred-slot trace events
+    long enough to survive into the postmortem dump
+  - the bad-context snapshot path only fires on one branch; the long no-guard
+    run wedged before hitting that path
+- Adjustment:
+  - retain the deferred-slot trace events
+  - add per-CPU deferred-requeue snapshots to the soft-lockup dump as well
+- Why:
+  - the current investigation question is no longer "did `DEFER_EVICT` happen?"
+  - it is "which thread/control-state did CPU0 last publish into the deferred
+    requeue contract immediately before the scheduler-stack contamination shows
+    up in another user thread?"

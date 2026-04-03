@@ -227,6 +227,11 @@ impl TraceEventType {
     pub const CPU0_USER_DISPATCH_ELR: u16 = 0xFF36;
     pub const CPU0_USER_DISPATCH_SPSR: u16 = 0xFF37;
     pub const CPU0_USER_DISPATCH_TTBR0: u16 = 0xFF38;
+    pub const DEFER_REQUEUE_STAGE: u16 = 0xFF39;
+    pub const DEFER_REQUEUE_SP: u16 = 0xFF3A;
+    pub const DEFER_REQUEUE_ELR: u16 = 0xFF3B;
+    pub const DEFER_REQUEUE_X30: u16 = 0xFF3C;
+    pub const DEFER_REQUEUE_FLAGS: u16 = 0xFF3D;
 }
 
 // =============================================================================

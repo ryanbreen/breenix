@@ -1130,6 +1130,9 @@ fn dump_lockup_state(stall_ticks: u64) {
             raw_serial_str(b"\n");
         }
 
+        raw_serial_str(b"\n  Deferred requeue snapshots:\n");
+        crate::arch_impl::aarch64::context_switch::dump_defer_requeue_snapshots();
+
         raw_serial_str(b"\n  Trace buffers:\n");
         crate::tracing::dump_all_buffers();
     } else {

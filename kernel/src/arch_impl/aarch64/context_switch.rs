@@ -49,6 +49,11 @@ const TRACE_CPU0_USER_DISPATCH_GUARD_REDIRECT: u16 = 3;
 const TRACE_SCHEDULE_RESUME_PRE_IRQ_ENABLE: u16 = 1;
 const TRACE_SCHEDULE_RESUME_POST_SWITCH: u16 = 2;
 const TRACE_SCHEDULE_RESUME_PRE_RETURN: u16 = 3;
+const TRACE_DEFER_REQUEUE_EARLY_DRAIN: u16 = 1;
+const TRACE_DEFER_REQUEUE_MAIN_DRAIN: u16 = 2;
+const TRACE_DEFER_REQUEUE_STORE: u16 = 3;
+const TRACE_DEFER_REQUEUE_EVICT: u16 = 4;
+const TRACE_DEFER_REQUEUE_INLINE_DRAIN: u16 = 5;
 const TRACE_KERNEL_RESUME_IRQ_SCHEDULE_FROM_KERNEL: u16 = 1;
 pub(crate) const TRACE_KERNEL_RESUME_IRQ_INLINE_TRAMPOLINE: u16 = 2;
 pub(crate) const TRACE_KERNEL_RESUME_IRQ_RESCHED_TAIL: u16 = 3;
@@ -105,6 +110,111 @@ fn trace_ctx_publish(thread: &Thread, stage: u16) {
         0,
         thread.inline_schedule_saved_sp as u32,
     );
+}
+
+#[inline(always)]
+fn trace_thread_state_code(state: ThreadState) -> u16 {
+    match state {
+        ThreadState::Running => 1,
+        ThreadState::Ready => 2,
+        ThreadState::Blocked => 3,
+        ThreadState::BlockedOnSignal => 4,
+        ThreadState::BlockedOnChildExit => 5,
+        ThreadState::BlockedOnTimer => 6,
+        ThreadState::BlockedOnIO => 7,
+        ThreadState::Terminated => 8,
+    }
+}
+
+#[inline(always)]
+fn trace_defer_requeue(
+    stage: u16,
+    thread_id: u64,
+    aux_tid: u64,
+    thread: Option<&Thread>,
+) {
+    let tid = (thread_id as u32) & 0xFFFF;
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::DEFER_REQUEUE_STAGE,
+        0,
+        ((stage as u32) << 16) | tid,
+    );
+
+    let mut flags: u16 = 0x8000;
+    let mut sp = 0;
+    let mut elr = 0;
+    let mut x30 = 0;
+
+    if let Some(thread) = thread {
+        flags = trace_thread_state_code(thread.state)
+            | ((thread.saved_by_inline_schedule as u16) << 8)
+            | ((thread.blocked_in_syscall as u16) << 9)
+            | ((thread.has_started as u16) << 10)
+            | ((thread.owner_pid.is_some() as u16) << 11);
+        sp = thread.context.sp as u32;
+        elr = thread.context.elr_el1 as u32;
+        x30 = thread.context.x30 as u32;
+    }
+
+    let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    if cpu_id < LAST_DEFER_REQUEUE_INFO.len() {
+        let info = ((stage as u64) << 48)
+            | ((thread_id & 0xFFFF) << 32)
+            | ((aux_tid & 0xFFFF) << 16)
+            | flags as u64;
+        LAST_DEFER_REQUEUE_INFO[cpu_id].store(info, Ordering::Relaxed);
+        LAST_DEFER_REQUEUE_SP[cpu_id].store(sp as u64, Ordering::Relaxed);
+        LAST_DEFER_REQUEUE_ELR[cpu_id].store(elr as u64, Ordering::Relaxed);
+        LAST_DEFER_REQUEUE_X30[cpu_id].store(x30 as u64, Ordering::Relaxed);
+    }
+
+    crate::tracing::record_event(crate::tracing::TraceEventType::DEFER_REQUEUE_SP, 0, sp);
+    crate::tracing::record_event(crate::tracing::TraceEventType::DEFER_REQUEUE_ELR, 0, elr);
+    crate::tracing::record_event(crate::tracing::TraceEventType::DEFER_REQUEUE_X30, 0, x30);
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::DEFER_REQUEUE_FLAGS,
+        0,
+        (((aux_tid as u32) & 0xFFFF) << 16) | flags as u32,
+    );
+}
+
+#[inline(always)]
+fn log_last_defer_requeue_snapshot(cpu_id: usize) {
+    if cpu_id >= LAST_DEFER_REQUEUE_INFO.len() {
+        return;
+    }
+
+    let info = LAST_DEFER_REQUEUE_INFO[cpu_id].load(Ordering::Relaxed);
+    let stage = (info >> 48) & 0xFFFF;
+    let tid = (info >> 32) & 0xFFFF;
+    let aux_tid = (info >> 16) & 0xFFFF;
+    let flags = info & 0xFFFF;
+
+    raw_uart_str("[DEFER_SNAP] cpu=");
+    raw_uart_dec(cpu_id as u64);
+    raw_uart_str(" stage=");
+    raw_uart_dec(stage);
+    raw_uart_str(" tid=");
+    raw_uart_dec(tid);
+    raw_uart_str(" aux=");
+    raw_uart_dec(aux_tid);
+    raw_uart_str(" flags=");
+    raw_uart_hex(flags);
+    raw_uart_str(" sp=");
+    raw_uart_hex(LAST_DEFER_REQUEUE_SP[cpu_id].load(Ordering::Relaxed));
+    raw_uart_str(" elr=");
+    raw_uart_hex(LAST_DEFER_REQUEUE_ELR[cpu_id].load(Ordering::Relaxed));
+    raw_uart_str(" x30=");
+    raw_uart_hex(LAST_DEFER_REQUEUE_X30[cpu_id].load(Ordering::Relaxed));
+    raw_uart_str("\n");
+}
+
+pub fn dump_defer_requeue_snapshots() {
+    for cpu_id in 0..LAST_DEFER_REQUEUE_INFO.len() {
+        if LAST_DEFER_REQUEUE_INFO[cpu_id].load(Ordering::Relaxed) != 0 {
+            log_last_defer_requeue_snapshot(cpu_id);
+        }
+    }
 }
 
 #[inline(always)]
@@ -625,6 +735,11 @@ static DEFERRED_REQUEUE: [AtomicU64; 8] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
 ];
+
+static LAST_DEFER_REQUEUE_INFO: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+static LAST_DEFER_REQUEUE_SP: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+static LAST_DEFER_REQUEUE_ELR: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+static LAST_DEFER_REQUEUE_X30: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 
 struct InlineScheduleState {
     scheduler_ptr: AtomicUsize,
@@ -2014,6 +2129,7 @@ fn dispatch_thread_locked(
                 raw_uart_str(" cpu=");
                 raw_uart_dec(cpu_id as u64);
                 raw_uart_str(", terminating thread\n");
+                log_last_defer_requeue_snapshot(cpu_id);
 
                 // Terminate the thread — a corrupt context (ELR=0 or garbage SPSR)
                 // is unrecoverable. Previously this requeued the thread, which
@@ -2154,6 +2270,13 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         // Need the scheduler lock to process the requeue.
         let mut guard = crate::task::scheduler::lock_for_context_switch();
         if let Some(sched) = guard.as_mut() {
+            let deferred_thread = sched.get_thread(deferred_tid);
+            trace_defer_requeue(
+                TRACE_DEFER_REQUEUE_EARLY_DRAIN,
+                deferred_tid,
+                0,
+                deferred_thread,
+            );
             sched.cpu_state[cpu_id].previous_thread = None;
             sched.requeue_thread_after_save(deferred_tid);
         }
@@ -2247,6 +2370,15 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     //    processed, requeue_thread_after_save is a no-op (thread already in queue).
     sched.cpu_state[cpu_id].previous_thread = None;
     if deferred_tid != 0 {
+        if !deferred_already_processed {
+            let deferred_thread = sched.get_thread(deferred_tid);
+            trace_defer_requeue(
+                TRACE_DEFER_REQUEUE_MAIN_DRAIN,
+                deferred_tid,
+                0,
+                deferred_thread,
+            );
+        }
         sched.requeue_thread_after_save(deferred_tid);
     }
 
@@ -2378,11 +2510,20 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     //    not be overwritten until after ERET.
     if cpu_id < DEFERRED_REQUEUE.len() {
         let previous = DEFERRED_REQUEUE[cpu_id].swap(old_id, Ordering::AcqRel);
+        let old_thread = sched.get_thread(old_id);
+        trace_defer_requeue(TRACE_DEFER_REQUEUE_STORE, old_id, previous, old_thread);
         if previous != 0 {
             // A previously deferred requeue is being evicted before it was processed.
             // This means two rapid context switches happened on the same CPU without an
             // intervening check_need_resched_and_switch_arm64 call to drain the slot.
             // Requeue the evicted thread now (under the scheduler lock) and log the event.
+            let previous_thread = sched.get_thread(previous);
+            trace_defer_requeue(
+                TRACE_DEFER_REQUEUE_EVICT,
+                previous,
+                old_id,
+                previous_thread,
+            );
             raw_uart_str("[DEFER_EVICT] cpu=");
             raw_uart_dec(cpu_id as u64);
             raw_uart_str(" evicted=");
@@ -2797,6 +2938,13 @@ pub fn schedule_from_kernel() {
     };
     sched.cpu_state[cpu_id].previous_thread = None;
     if deferred_tid != 0 {
+        let deferred_thread = sched.get_thread(deferred_tid);
+        trace_defer_requeue(
+            TRACE_DEFER_REQUEUE_INLINE_DRAIN,
+            deferred_tid,
+            0,
+            deferred_thread,
+        );
         sched.requeue_thread_after_save(deferred_tid);
     }
 
