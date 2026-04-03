@@ -136,6 +136,7 @@ pub static CPU0_LAST_TIMER_ELR: AtomicU64 = AtomicU64::new(0);
 ///   107 = aarch64_enter_exception_frame: after frame SP switch
 ///   108 = aarch64_enter_exception_frame: after ELR/SPSR programmed
 ///   111 = aarch64_enter_exception_frame: after frame ELR load/normalize
+///   112 = aarch64_enter_exception_frame: after frame ELR load
 ///   109 = aarch64_enter_exception_frame: after target SP pivot
 ///   110 = aarch64_enter_exception_frame: just before ERET
 #[no_mangle]
@@ -146,6 +147,18 @@ pub static CPU0_BREADCRUMB_ID: AtomicU64 = AtomicU64::new(0);
 /// Bit 0: ENABLE, Bit 1: IMASK, Bit 2: ISTATUS.
 #[no_mangle]
 pub static CPU0_BREADCRUMB_CTL: AtomicU64 = AtomicU64::new(0);
+
+/// CPU 0 SP snapshot at the last breadcrumb point.
+/// For the exception-frame breadcrumbs, this is the exact frame pointer the
+/// handoff path adopted before the next load/store in assembly.
+#[no_mangle]
+pub static CPU0_BREADCRUMB_SP: AtomicU64 = AtomicU64::new(0);
+
+/// CPU 0 snapshot of the exception-frame ELR slot at the last breadcrumb point.
+/// This is the raw value at `[sp + 248]` before `aarch64_enter_exception_frame`
+/// programs `ELR_EL1`.
+#[no_mangle]
+pub static CPU0_BREADCRUMB_ELR_SLOT: AtomicU64 = AtomicU64::new(0);
 
 /// CPU 0 dispatch diagnostics — set in the trampoline just before ERET.
 /// After CPU 0 dies, these identify the thread and destination.

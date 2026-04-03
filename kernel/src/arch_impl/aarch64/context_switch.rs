@@ -430,9 +430,29 @@ aarch64_enter_exception_frame:
     adrp x16, CPU0_BREADCRUMB_CTL
     add x16, x16, :lo12:CPU0_BREADCRUMB_CTL
     str x17, [x16]
+    adrp x16, CPU0_BREADCRUMB_SP
+    add x16, x16, :lo12:CPU0_BREADCRUMB_SP
+    mov x17, sp
+    str x17, [x16]
+    ldr x17, [sp, #248]
+    adrp x16, CPU0_BREADCRUMB_ELR_SLOT
+    add x16, x16, :lo12:CPU0_BREADCRUMB_ELR_SLOT
+    str x17, [x16]
 0:
 
     ldr x1, [sp, #248]
+    mrs x16, mpidr_el1
+    and x16, x16, #0xFF
+    cbnz x16, 8f
+    adrp x16, CPU0_BREADCRUMB_ID
+    add x16, x16, :lo12:CPU0_BREADCRUMB_ID
+    mov x17, #112
+    str x17, [x16]
+    mrs x17, cntv_ctl_el0
+    adrp x16, CPU0_BREADCRUMB_CTL
+    add x16, x16, :lo12:CPU0_BREADCRUMB_CTL
+    str x17, [x16]
+8:
     cmp x1, #0x1000
     b.hs 1f
     adrp x1, idle_loop_arm64
@@ -664,6 +684,21 @@ static INLINE_SCHEDULE_STATE: [InlineScheduleState;
         should_requeue_old: AtomicBool::new(false),
     },
 ];
+
+static mut INLINE_SCHEDULE_ERET_FRAMES: [MaybeUninit<Aarch64ExceptionFrame>;
+    crate::arch_impl::aarch64::constants::MAX_CPUS] =
+    [const { MaybeUninit::zeroed() }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+
+#[inline(always)]
+fn inline_schedule_dispatch_frame(cpu_id: usize) -> &'static mut Aarch64ExceptionFrame {
+    debug_assert!(cpu_id < crate::arch_impl::aarch64::constants::MAX_CPUS);
+    unsafe {
+        let slot = core::ptr::addr_of_mut!(INLINE_SCHEDULE_ERET_FRAMES[cpu_id]);
+        let frame = (*slot).as_mut_ptr();
+        core::ptr::write_bytes(frame, 0, 1);
+        &mut *frame
+    }
+}
 
 // =============================================================================
 // Per-CPU dispatch trace ring buffer — diagnostic instrumentation
@@ -2603,7 +2638,11 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     // ERET-based dispatch: for idle threads, user threads, and first-run
     // kernel threads that haven't been context-switched yet.
     cpu0_breadcrumb(cpu_id, 40); // taking ERET-based dispatch
-    let mut frame = unsafe { MaybeUninit::<Aarch64ExceptionFrame>::zeroed().assume_init() };
+    // Keep the prepared ERET frame off the live scheduler stack. The pre-ERET
+    // IRQ window runs on that stack, and nested exception entry can otherwise
+    // overwrite a stack-local frame before aarch64_enter_exception_frame()
+    // consumes it.
+    let frame = inline_schedule_dispatch_frame(cpu_id);
     let trace_eret_tid = sched.get_thread(new_id).and_then(|thread| {
         if thread.owner_pid.is_some() && thread.blocked_in_syscall {
             Some(new_id)
@@ -2616,7 +2655,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     if let Some(trace_tid) = trace_eret_tid {
         trace_eret_dispatch(trace_tid, TRACE_ERET_DISPATCH_PRE, &frame);
     }
-    dispatch_thread_locked(sched, new_id, &mut frame, cpu_id);
+    dispatch_thread_locked(sched, new_id, frame, cpu_id);
     if let Some(trace_tid) = trace_eret_tid {
         trace_eret_dispatch(trace_tid, TRACE_ERET_DISPATCH_POST, &frame);
     }
@@ -2710,7 +2749,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
 
     cpu0_breadcrumb(cpu_id, 43); // before aarch64_enter_exception_frame (non-idle ERET)
     unsafe {
-        aarch64_enter_exception_frame(&frame as *const Aarch64ExceptionFrame);
+        aarch64_enter_exception_frame(frame as *const Aarch64ExceptionFrame);
     }
 }
 

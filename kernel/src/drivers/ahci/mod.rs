@@ -1327,14 +1327,17 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
     #[cfg(target_arch = "aarch64")]
     {
         use crate::arch_impl::aarch64::timer_interrupt::{
-            CPU0_LAST_TIMER_ELR, CPU0_BREADCRUMB_ID, CPU0_BREADCRUMB_CTL,
+            CPU0_LAST_TIMER_ELR, CPU0_BREADCRUMB_ID, CPU0_BREADCRUMB_CTL, CPU0_BREADCRUMB_SP,
+            CPU0_BREADCRUMB_ELR_SLOT,
             CPU0_DISPATCH_TID, CPU0_DISPATCH_ELR, CPU0_DISPATCH_SPSR,
         };
         crate::serial_println!(
-            "[ahci]   cpu0_last_timer_elr={:#x} cpu0_breadcrumb={} ctl={:#x}",
+            "[ahci]   cpu0_last_timer_elr={:#x} cpu0_breadcrumb={} ctl={:#x} sp={:#x} elr_slot={:#x}",
             CPU0_LAST_TIMER_ELR.load(Ordering::Relaxed),
             CPU0_BREADCRUMB_ID.load(Ordering::Relaxed),
             CPU0_BREADCRUMB_CTL.load(Ordering::Relaxed),
+            CPU0_BREADCRUMB_SP.load(Ordering::Relaxed),
+            CPU0_BREADCRUMB_ELR_SLOT.load(Ordering::Relaxed),
         );
         crate::serial_println!(
             "[ahci]   cpu0_dispatch: tid={} elr={:#x} spsr={:#x}",

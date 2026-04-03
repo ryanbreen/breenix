@@ -1217,3 +1217,84 @@ the cached-TTBR0 baseline.
     - frame `ELR` load itself
     - the low-address idle fallback compare/branch
     - or the fallback stores that rewrite the frame to `idle_loop_arm64`
+
+### 2026-04-03: Stack-Local Trampoline Frame Was Arriving At The Handoff With `elr_slot=0`
+
+- Probe artifacts:
+  - [guarded-asm-breadcrumb-sp/run4](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/guarded-asm-breadcrumb-sp/run4)
+  - [guarded-asm-breadcrumb-elr-slot/run3](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/guarded-asm-breadcrumb-elr-slot/run3)
+- Results:
+  - the `107` snapshot showed a sane adopted frame pointer:
+    - `sp=0xffff0000431ffea8`
+  - that address is inside CPU0's per-CPU scheduler stack:
+    - CPU0 stack range:
+      `0xffff000043000000..0xffff000043200000`
+    - distance from stack top:
+      `0x158`
+  - the same bad run still died at breadcrumb `107`
+  - after adding a raw ELR-slot snapshot, the bad run showed:
+    - `elr_slot=0x0`
+    - while the timeout still reported a nonzero CPU0 dispatch target:
+      - `cpu0_dispatch: tid=13 elr=0xffff000040147894 spsr=0x82000305`
+      - `0xffff000040147894` is inside `sys_nanosleep()`
+- Interpretation:
+  - `dispatch_thread_locked()` was not simply producing a zero `frame.elr`
+  - the stronger mismatch was:
+    - CPU0 recorded a sane dispatch target before the IRQ window
+    - the frame consumed by `aarch64_enter_exception_frame()` later had
+      `elr_slot=0`
+  - this pointed upstream to the stack-local frame itself being clobbered
+    between the pre-ERET `daifclr` window and the handoff call
+
+### 2026-04-03: The Active Root Cause Became The Inline-Trampoline Stack Geometry
+
+- Code-path comparison:
+  - `check_need_resched_and_switch_arm64()` reuses the already-live exception
+    frame at current `SP`
+  - nested IRQs there push a new frame below the existing one, which is why
+    that path's comment about frame integrity remains coherent
+  - `inline_schedule_trampoline()`, however, allocated a fresh
+    `Aarch64ExceptionFrame` as a stack local near the top of the scheduler
+    stack, then opened the IRQ window before calling
+    `aarch64_enter_exception_frame()`
+- Why that geometry is bad:
+  - the trampoline-local frame sat only `0x158` below the top of CPU0's live
+    scheduler stack
+  - nested IRQ/exception entry in the pre-ERET window uses that same stack
+  - that created a concrete overwrite path for the stack-local dispatch frame
+    before `aarch64_enter_exception_frame()` consumed it
+- Root-cause statement:
+  - the remaining guarded AHCI timeout branch was not "CPU0 cannot handle ERET"
+  - it was "the inline-schedule trampoline enables IRQs while its prepared ERET
+    frame still lives on the live IRQ stack"
+
+### 2026-04-03: Moving The Trampoline ERET Frame Off The Live IRQ Stack Eliminated The Timeout Branch In The First Sweep
+
+- Structural change under test:
+  - replace the inline-trampoline stack-local `Aarch64ExceptionFrame` with
+    per-CPU scratch storage
+  - keep the pre-ERET IRQ window intact
+  - only change the lifetime / placement of the prepared frame
+- Validation sweep:
+  - [fixed-state-inline-frame-relocation](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/fixed-state-inline-frame-relocation)
+- Cross-run result:
+  - 5/5 runs were clean
+  - all 5 runs had:
+    - `soft_lockup=0`
+    - `queue_empty_lines=0`
+    - no `AHCI: command timeout`
+    - no `cpu0_breadcrumb=...`
+    - no `cpu0_dispatch: ...`
+    - no `DISPATCH_REDIRECT`
+    - no `CPU0_USER_DISPATCH_*`
+  - CPU0 timer progress stayed live on every run:
+    - `last_cpu0_tick=5000` or `10000`
+  - 3/5 runs reached:
+    - `bsshd: listening on 0.0.0.0:2222`
+- Current interpretation:
+  - this is the strongest architectural fix result in the investigation so far
+  - it directly matches the identified divergence:
+    move the prepared ERET frame off the stack that services the nested IRQ
+    window
+  - the old `elr_slot=0` / breadcrumb-`107` timeout branch has not recurred in
+    the first fixed-state sweep after that change
