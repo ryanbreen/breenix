@@ -915,6 +915,36 @@ difference.
     - branch B is a new, narrower post-fix bug: a kernel-mode `sys_fstat`
       user-pointer abort / deferred-fault cleanup path
 
+### 2026-04-03: `sys_fstat` / `newfstatat` Copyout Bug
+
+- Source-level observation:
+  - both `sys_fstat()` and `sys_newfstatat()` were bypassing
+    `copy_to_user()` and performing raw `ptr::write()` into userspace
+  - that means an in-range-but-unmapped userspace pointer would trigger a
+    kernel `DATA_ABORT` instead of returning `-EFAULT`
+- Failure artifact that exposed it:
+  - [fixed-state-inline-ret-dispatch/run4](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/fixed-state-inline-ret-dispatch/run4)
+  - fault site:
+    - `ELR=0xffff00004016608c`
+    - `FAR=0xfffffeffe130`
+    - resolves to `sys_fstat` storing into the user `statbuf`
+- Minimal fix:
+  - `Stat` is now trivially copyable
+  - both `sys_fstat()` and `sys_newfstatat()` now use `copy_to_user()`
+- First validation artifact:
+  - [20260403-fstat-copyout-fix-test1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/20260403-fstat-copyout-fix-test1)
+- Initial result:
+  - returned to the clean post-ret-dispatch baseline:
+    - no `DATA_ABORT`
+    - no `INLINE_SAVE_OVERWRITE`
+    - no soft lockup in the collector window
+    - `bsshd: listening on 0.0.0.0:2222`
+    - `[timer] cpu0 ticks=5000`
+- Remaining caution:
+  - this is only the first rerun of the copyout fix
+  - the next confirmation step should be another fixed-state sweep to ensure
+    the `run4` failure mode does not recur under the new build
+
 ### Reopen Criteria For The Old Branch
 
 - Reopen the old nested-resume / inline-save branch only if any of the
@@ -959,8 +989,7 @@ Treat the active bug as the post-fix `sys_fstat` user-pointer abort path.
 1. Reproduce the `run4`-style `sys_fstat` `DATA_ABORT` and confirm whether the
    faulting user pointer (`0xfffffeffe130`) is valid, unmapped, or racing with
    process teardown.
-2. Compare Breenix's `sys_fstat` user-memory write contract against Linux:
-   invalid user pointers must return `-EFAULT`, not wedge the kernel in the
-   deferred-fault cleanup path.
+2. Validate the new `copy_to_user()` fix with another fixed-state sweep; the
+   expected Linux-like behavior is `-EFAULT`, not a kernel abort.
 3. Only reopen the old nested-resume investigation if the pre-fix signatures
    return on this new baseline.

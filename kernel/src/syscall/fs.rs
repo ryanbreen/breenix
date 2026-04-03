@@ -101,6 +101,7 @@ pub const S_IFIFO: u32 = 0o010000; // FIFO (pipe)
 /// Key differences: field order (nlink/mode swapped), nlink width (u64 vs u32),
 /// blksize width (i64 vs i32), and trailing reserved space (24 vs 8 bytes).
 #[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub struct Stat {
     pub st_dev: u64,
@@ -157,6 +158,7 @@ impl Stat {
 ///
 /// Layout from include/uapi/asm-generic/stat.h used by aarch64 Linux.
 #[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub struct Stat {
     pub st_dev: u64,
@@ -779,7 +781,7 @@ pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
 /// 0 on success, negative errno on failure
 pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
     use super::errno::{EBADF, EFAULT};
-    use core::ptr;
+    use super::userptr::copy_to_user;
 
     // Validate statbuf pointer
     if statbuf == 0 {
@@ -1035,10 +1037,8 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
         }
     }
 
-    // Copy stat structure to userspace
-    let statbuf_ptr = statbuf as *mut Stat;
-    unsafe {
-        ptr::write(statbuf_ptr, stat);
+    if let Err(errno) = copy_to_user(statbuf as *mut Stat, &stat) {
+        return SyscallResult::Err(errno);
     }
 
     SyscallResult::Ok(0)
@@ -3742,7 +3742,7 @@ fn handle_fifo_open(path: &str, flags: u32) -> SyscallResult {
 /// to the current working directory. Required by musl libc.
 pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, _flags: u32) -> SyscallResult {
     use super::errno::{EFAULT, ENOENT};
-    use super::userptr::copy_cstr_from_user;
+    use super::userptr::{copy_cstr_from_user, copy_to_user};
     use crate::fs::ext2;
 
     const AT_FDCWD: i32 = -100;
@@ -3832,11 +3832,8 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, _flags: u32) -> S
         stat.st_blocks = inode_stat.blocks;
     }
 
-    // Copy stat to userspace using raw pointer write
-    // (Stat doesn't implement Copy, so we can't use copy_to_user)
-    unsafe {
-        let user_stat = statbuf as *mut Stat;
-        core::ptr::write(user_stat, stat);
+    if let Err(errno) = copy_to_user(statbuf as *mut Stat, &stat) {
+        return SyscallResult::Err(errno);
     }
 
     SyscallResult::Ok(0)
