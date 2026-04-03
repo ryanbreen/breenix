@@ -201,6 +201,338 @@ inside `kernel::drivers::ahci::handle_interrupt` with bit 0 set. That makes
 "corrupted kernel resume PC in a blocked-in-syscall or kernel-mode resume path"
 the strongest current divergence candidate.
 
+## Fixed-State Five-Run Comparison
+
+To avoid overfitting one race artifact, the current ARM64 kernel image was held
+fixed and run five consecutive times on the same Parallels VM:
+
+- kernel sha1: `303c91eb99a7a1ff446f666e9165f88fe5007da6`
+- git commit base: `ebf15238`
+- artifact root:
+  - [fixed-state-303c91eb](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/fixed-state-303c91eb)
+
+Per-run summary:
+
+| Run | Artifact | Abort tid | Stable abort value | Stable pre-abort sequence |
+|-----|----------|-----------|--------------------|---------------------------|
+| 1 | [run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/fixed-state-303c91eb/run1) | 13 | `ELR=x30=0x3b9aca00` | `EINTR s1/s2/s3/s5/s6 -> WAIT s0 -> 13->idle -> idle->13 -> timer -> abort` |
+| 2 | [run2](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/fixed-state-303c91eb/run2) | 11 | `ELR=x30=0x3b9aca00` | `EINTR s1/s2/s3/s5/s6 -> WAIT s0 -> 11->idle -> timer -> idle->11 -> timer -> abort` |
+| 3 | [run3](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/fixed-state-303c91eb/run3) | 11 | `ELR=x30=0x3b9aca00` | `EINTR s1/s2/s3/s5/s6 -> WAIT s0 -> 11->idle -> idle->11 -> timer -> abort` |
+| 4 | [run4](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/fixed-state-303c91eb/run4) | 11 | `ELR=x30=0x3b9aca00` | `EINTR s3/s5/s6 -> WAIT s0 -> 11->idle -> timer*3 -> idle->11 -> timer -> abort` |
+| 5 | [run5](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/fixed-state-303c91eb/run5) | 13 | `ELR=x30=0x3b9aca00` | `EINTR s2/s3/s5/s6 on tid 11 -> WAIT s0 on tid 11 -> 11->idle -> timer*2 -> idle->13 -> timer -> abort` |
+
+Cross-run commonality:
+
+- all 5 runs soft-lock the system
+- all 5 runs still show CPU 0 timer progress reaching `"[timer] cpu0 ticks=5000"`
+- all 5 runs fault in EL1 with the same poisoned value:
+  - `ELR=0x3b9aca00`
+  - `x30=0x3b9aca00`
+- all 5 runs preserve the same suspended caller LR:
+  - `saved_lr=0xffff000040169df8`
+- the trace window before the fault is always:
+  - `check_signals_for_eintr()` completes
+  - `Completion::wait_timeout()` reaches `WAIT_TIMEOUT stage 0`
+  - the thread is switched away to idle
+  - one or more timer ticks happen
+  - a resumed blocked-in-syscall thread faults before the next successful
+    post-resume `WAIT_TIMEOUT stage 1`
+
+The thread ID is not stable (`11` in three runs, `13` in two runs), which is
+strong evidence that the race is not tied to one specific task identity. The
+stable part is the return corridor: the resumed thread faults with the same
+`0x3b9aca00` return target after the same `wait_timeout()`/idle/resume pattern.
+
+The preserved addresses are also now concrete:
+
+- `0xffff000040169884` = `Completion::wait_timeout()` start
+- `0xffff000040169bc8` = traced `check_signals_for_eintr()` return corridor
+- `0xffff000040169be8` = traced `WAIT_TIMEOUT stage 0` corridor
+- `0xffff000040169df8` = suspended caller LR preserved at fault time
+
+Those offsets keep the investigation centered in the `Completion::wait_timeout()`
+post-wake path rather than in timer delivery or generic signal checking.
+
+Follow-up repro after adding faulting-CPU/all-CPU trace dumps:
+
+- artifact:
+  - [20260403-faulting-cpu-dump](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/20260403-faulting-cpu-dump)
+- result:
+  - the faulting CPU in that run was CPU 0
+  - the fault still showed `ELR=x30=0x3b9aca00`
+  - the faulting CPU buffer still did **not** contain `RET_DISPATCH_*`
+
+That means "the decisive ret-dispatch event was merely hidden on another CPU"
+is not sufficient to explain the missing markers. In at least one canonical
+repro, the fault happens on CPU 0 without traversing the currently instrumented
+`saved_by_inline_schedule` ret-dispatch branch.
+
+## Decision Log
+
+This section is the living control point for the investigation. Update it
+whenever a branch is opened, closed, or intentionally revisited.
+
+### Current Decision Point
+
+We have two observable families:
+
+- canonical family:
+  - `ELR=x30=0x3b9aca00`
+  - `wait_timeout() -> idle/resume -> abort`
+  - CPU 0 continues taking timer ticks
+- older/noisier family:
+  - `INLINE_SAVE_OVERWRITE`
+  - occasional AHCI timeout / `exec bsh: EIO`
+
+Current operating rule:
+
+- treat the canonical family as the primary root-cause corridor
+- treat the overwrite/AHCI family as either:
+  - an upstream race that can perturb the canonical path, or
+  - a second manifestation of the same bad publication/resume bug
+- do not switch full-time to the overwrite/AHCI branch unless the canonical
+  family stops reproducing or the overwrite detector identifies the first bad
+  writer directly
+
+Latest high-value evidence:
+
+- probe artifact:
+  - [20260403-eret-publish-probe](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/20260403-eret-publish-probe)
+- result:
+  - `CTX_PUBLISH` for `tid=11` recorded sane blocked-in-syscall state:
+    - `sp=0x54231480`
+    - `elr=x30=0x4016422c`
+    - `flags=0b111`
+  - immediately after that, `ERET_DISPATCH` for the same `tid=11` published:
+    - `elr=idle_loop_arm64 (0x40165f74)`
+    - `x30=0`
+    - `spsr=0x5`
+  - the run then hit an `ELR=0` idle-side abort before later falling through
+    to the canonical `0x3b9aca00` abort on another thread
+
+Interpretation:
+
+- the first trustworthy divergence is now inside or immediately around
+  `dispatch_thread_locked()` / ERET frame construction
+- at least one blocked-in-syscall thread is not simply resuming with poisoned
+  saved state; it is being actively redirected into an idle-style frame after a
+  sane publication
+
+Follow-up branch probe:
+
+- probe artifact:
+  - [20260403-dispatch-redirect-probe](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/20260403-dispatch-redirect-probe)
+- result:
+  - the same blocked-in-syscall victim path records an explicit
+    `DISPATCH_REDIRECT reason=3 tid=11`
+  - reason `3` is `TRACE_REDIRECT_TTBR_PM_LOCK_BUSY`
+  - immediately after that redirect, the ERET frame for the same tid is
+    rewritten to idle-style state
+  - the same run also records `DISPATCH_REDIRECT reason=6 tid=13`, which is
+    the existing CPU 0 EL0 guard firing on a different user thread
+
+Updated interpretation:
+
+- the first concrete semantic divergence is no longer just "some code inside
+  dispatch rewrote the frame to idle"
+- we now know at least one canonical blocked-in-syscall failure reaches the
+  `set_next_ttbr0_for_thread()` -> `TtbrResult::PmLockBusy` fallback, and that
+  fallback is what rewrites the victim's dispatch frame to idle on CPU 0
+- this does not yet prove `PmLockBusy` is the original bug; it may still be a
+  downstream manifestation of holding `PROCESS_MANAGER` across the wrong
+  corridor
+
+Counterexample probe:
+
+- probe artifact:
+  - [20260403-pm-lock-owner-probe-long](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/20260403-pm-lock-owner-probe-long)
+- result:
+  - the canonical `ELR=x30=0x3b9aca00` abort reproduced on CPU 0
+  - this run emitted **no** `PM_LOCK_BUSY_*` markers
+  - this run emitted **no** `DISPATCH_REDIRECT` markers
+  - the last ERET dispatch for `tid=11` recorded:
+    - stage 2 / stage 3 `elr=x30=0x400f672c`
+    - `0x400f672c` is inside `check_need_resched_and_switch_arm64`
+  - a timer tick then fires, and only after that do we hit
+    `EL1_INLINE_ABORT x30=0x3b9aca00`
+
+Refined interpretation:
+
+- `PmLockBusy` is now a confirmed branch, but not a universal explanation for
+  the canonical abort
+- the stronger invariant is now:
+  - canonical crash happens after a blocked-in-syscall resume returns through
+    the scheduler/kernel resume corridor
+  - `x30` becomes `1_000_000_000` after the last traced ERET dispatch, not
+    before it
+- that means the next probe must stay on the post-ERET kernel return corridor,
+  and `PmLockBusy` must be treated as a secondary branch unless it becomes
+  repeatable again
+
+Schedule-resume probe:
+
+- probe artifact:
+  - [20260403-schedule-resume-probe](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/20260403-schedule-resume-probe)
+- result:
+  - good wake cycles now show the full healthy sequence:
+    - `WAIT_TIMEOUT stage 0`
+    - `SCHEDULE_RESUME stage 1`
+    - `SCHEDULE_RESUME stage 2`
+    - `WAIT_TIMEOUT stage 1`
+    - `WAIT_TIMEOUT stage 2`
+  - the failing wake cycle shows:
+    - `WAIT_TIMEOUT stage 0`
+    - context publication for the sleeping blocked-in-syscall thread
+    - `ERET_DISPATCH stage 2/3 elr=x30=0x4014d83c`
+    - one timer tick
+    - `EL1_INLINE_ABORT x30=0x3b9aca00`
+  - `0x4014d83c` is inside `schedule_from_kernel()`
+  - there is **no** `SCHEDULE_RESUME stage 1` on the failing cycle
+
+Current best interpretation:
+
+- the bad cycle is no longer "somewhere after wake"
+- it is specifically:
+  - after the thread is re-dispatched to the resumed `schedule_from_kernel()`
+    return address
+  - before `schedule_from_kernel()` reaches its first traced post-switch
+    instruction on that cycle
+- that makes the immediate resumed `schedule_from_kernel()` tail the tightest
+  current target
+
+### Active Branches
+
+#### Branch A: ERET Resume Corridor
+
+- Question:
+  - what mutates the resumed kernel-mode return path after the last sane ERET
+    dispatch and before `x30` becomes `0x3b9aca00`?
+- Why active:
+  - the fixed-duration repro shows the canonical abort without any redirect
+    branch
+  - the last traced state before the abort is a normal ERET dispatch back into
+    `check_need_resched_and_switch_arm64`
+- Next evidence needed:
+  - the first instruction window in resumed `schedule_from_kernel()` on the bad
+    cycle
+  - whether the corruption happens:
+    - before the first `SCHEDULE_RESUME` trace point
+    - in the earliest resumed instructions of `schedule_from_kernel()`
+    - via nested interrupt/exception before that first trace point can execute
+
+#### Branch B: TTBR / `PmLockBusy` Secondary Path
+
+- Question:
+  - when `PmLockBusy` does occur, is it a secondary amplification of the main
+    bug or a separate independent race?
+- Why active:
+  - [20260403-dispatch-redirect-probe](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/20260403-dispatch-redirect-probe)
+    proved this branch exists
+  - [20260403-pm-lock-owner-probe-long](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/20260403-pm-lock-owner-probe-long)
+    proved it is not required for the canonical abort
+- Next evidence needed:
+  - repeatable repros that actually emit `PM_LOCK_BUSY_*`
+  - owner-CPU evidence when they do
+  - correlation, if any, between `PmLockBusy` and later canonical aborts
+
+#### Branch C: Control-Field Publication
+
+- Question:
+  - which writer first publishes the bad `sp` / `elr_el1` / `x30` state for a
+    blocked-in-syscall thread?
+- Why active:
+  - the fault preserves a stable suspended caller LR but not a sane return
+    target
+- Next evidence needed:
+  - ordered publication trace from:
+    - exception save path
+    - inline schedule save path
+    - ERET restore path
+
+Current status:
+
+- publication tracing is now in place
+- for at least one canonical repro, publication looked sane before the ERET
+  frame was redirected to idle
+- a later fixed-duration repro reproduced the same canonical abort with no
+  redirect markers at all
+- `PmLockBusy` stays tracked, but it is no longer the primary branch
+- Branch A remains the strongest immediate target
+
+### Closed Branches
+
+These are not dead forever, but we do not return to them without the stated
+trigger.
+
+#### Closed 1: Platform Timer Death
+
+- Status:
+  - closed
+- Why:
+  - Linux disproves it
+  - Breenix keeps ticking after lockup
+- Reopen only if:
+  - a future repro shows timer counters or timer-marked trace progress stopping
+    before scheduler failure
+
+#### Closed 2: Generic `check_signals_for_eintr()` Failure
+
+- Status:
+  - closed
+- Why:
+  - trace repeatedly reaches the expected signal-check stages and post-drop
+    stages before the abort
+- Reopen only if:
+  - a future repro shows the canonical crash before those stages complete
+
+#### Closed 3: Hidden Ret-Dispatch On Another CPU
+
+- Status:
+  - closed as the primary explanation
+- Why:
+  - the faulting-CPU dump reproduced the canonical crash on CPU 0 and still did
+    not emit `RET_DISPATCH_*`
+- Reopen only if:
+  - a future repro shows a non-CPU0 fault with decisive ret-dispatch markers on
+    the owning CPU
+
+#### Closed 4: Unknown Idle Rewrite Branch
+
+- Status:
+  - closed
+- Why:
+  - [20260403-dispatch-redirect-probe](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/20260403-dispatch-redirect-probe)
+    identifies a concrete branch:
+    `TRACE_REDIRECT_TTBR_PM_LOCK_BUSY`
+- Reopen only if:
+  - a future canonical repro shows the blocked-in-syscall victim redirected to
+    idle without any `PmLockBusy` marker in the owning CPU trace
+
+#### Closed 5: `PmLockBusy` As Universal Root Cause
+
+- Status:
+  - closed
+- Why:
+  - [20260403-pm-lock-owner-probe-long](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/20260403-pm-lock-owner-probe-long)
+    reproduced the canonical abort with no `PM_LOCK_BUSY_*` or
+    `DISPATCH_REDIRECT` markers
+- Reopen only if:
+  - repeated fixed-state runs show every canonical abort traversing
+    `PmLockBusy` before the fault
+
+### Loop Prevention Rules
+
+- Every experiment must name:
+  - the branch it serves
+  - the specific question it answers
+  - the exact observation that would cause us to change branches
+- We do not revisit a closed branch just because a new crash looks unfamiliar.
+  We revisit only if the branch's explicit reopen condition is met.
+- If a new build changes the failure mix, compare it against the last clean
+  fixed-state baseline before drawing architectural conclusions.
+- When a redirect branch is identified, move the next probe one layer earlier
+  in the same corridor instead of reopening older symptom branches.
+
 ## Reproducible Breenix Collector
 
 Use the host-side collector script:
@@ -261,10 +593,182 @@ Every Breenix session must follow this order:
 | H1 | Parallels/HVF fundamentally kills CPU 0 timer delivery during normal interrupt-driven SMP | Linux CPU 0 would also lose timer PPI or SGI-driven scheduling semantics | Falsified |
 | H2 | The current failure is still plain CPU 0 timer death | After soft lockup, CPU 0 timer counters and timer-marked serial output would stop advancing | Falsified |
 | H3 | The first meaningful Breenix divergence is scheduler/dispatch liveness after EL0 entry, not platform timer delivery itself | Breenix will continue taking timer IRQs after the stall while one or more threads become unreachable from the ready queue/current-thread/deferred-requeue sets | Supported |
-| H4 | A blocked-in-syscall or kernel-mode resume path corrupts `elr_el1` by setting bit 0 before ret-based kernel dispatch | The failing thread will show an odd EL1 resume PC that resolves to a valid kernel symbol address plus `+1`, and the PC alignment fault will precede scheduler liveness collapse | Active |
+| H4 | A blocked-in-syscall or kernel-mode resume path corrupts `elr_el1` by setting bit 0 before ret-based kernel dispatch | The failing thread will show an odd EL1 resume PC that resolves to a valid kernel symbol address plus `+1`, and the PC alignment fault will precede scheduler liveness collapse | Superseded by newer evidence |
+| H5 | The stable fault is a poisoned return target in the `Completion::wait_timeout()` post-wake corridor, not timer loss and not generic signal-check logic | Repeated fixed-state runs will keep producing `ELR=x30=0x3b9aca00` after `EINTR stages -> WAIT stage 0 -> idle/resume`, while `saved_lr` remains the same suspended `wait_timeout()` caller site | Supported |
+| H6 | The race is not CPU0-specific and can land on whichever blocked-in-syscall thread resumes next, so CPU0-only dumps can hide the decisive trace | Fixed-state runs will vary the victim tid while preserving the same `wait_timeout()`/idle/resume/abort corridor; the next decisive trace must come from the faulting CPU rather than always CPU 0 | Supported |
+| H7 | The current `RET_DISPATCH_*` probes are on the wrong branch for at least one canonical crash, so the live failing path is likely the ERET-based resume corridor rather than `saved_by_inline_schedule` ret-dispatch | A repro with explicit faulting-CPU dump will still omit `RET_DISPATCH_*` even when CPU 0 is the faulting CPU | Supported |
+| H8 | `dispatch_thread_locked()` is actively rewriting at least one sane blocked-in-syscall resume target into an idle-style ERET frame on CPU 0 | A run with publication + ERET frame probes will show sane `CTX_PUBLISH` for a target tid, followed by `ERET_DISPATCH elr=idle_loop_arm64, x30=0, spsr=0x5` for that same tid before the downstream aborts | Supported |
+| H9 | The poisoned `0x3b9aca00` return target is already present in the sleeping blocked-in-syscall frame before ERET dispatch | Immediately before dispatch, `ERET_RESUME_SLOT20` for the victim thread will already equal `0x3b9aca00` or some other bad target | Falsified |
+| H10 | The canonical corruption happens after resume on the live kernel stack, not in the dormant sleeping frame before dispatch | Repeated runs will show sane `ERET_RESUME_SLOT20` immediately before dispatch, then later `EL1_INLINE_ABORT x30=0x3b9aca00` after successful resume markers or a later post-wake cycle | Supported |
 
 Add new hypotheses only when they are falsifiable and tied to a predicted trace
 difference.
+
+## Recent Results
+
+### 2026-04-03: ERET Resume Slot Probe
+
+- Build:
+  - kernel SHA1 `734b864e30d2b4fda8e6b9bc88d6f33d6e36239f`
+- Artifacts:
+  - [20260403-eret-slot20-probe](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/20260403-eret-slot20-probe)
+  - [20260403-eret-slot20-probe-2](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/20260403-eret-slot20-probe-2)
+- Question:
+  - Is the sleeping blocked-in-syscall frame already poisoned before ERET
+    dispatch, or does the corruption happen only after resume?
+- Result:
+  - In both runs, the canonical abort still reproduced with
+    `EL1_INLINE_ABORT x30=0x3b9aca00`.
+  - Immediately before dispatch, the victim thread's `ERET_RESUME_SLOT20`
+    remained sane:
+    - `tid=11`: `ERET_RESUME_SLOT20 = 0x400d7ff0` in both runs
+    - `tid=13`: `ERET_RESUME_SLOT20 = 0x400d7ff0` in the second run
+  - After that sane pre-dispatch state, the resumed thread still reached the
+    canonical abort corridor.
+- Disposition:
+  - `H9` falsified
+  - `H10` supported
+- Consequence:
+  - Stop treating dormant pre-dispatch frame corruption as the primary cause
+    of the canonical `0x3b9aca00` abort. The next probe must target the live
+    post-resume kernel stack corridor.
+
+### 2026-04-03: Caller-Frame LR Probe
+
+- Build:
+  - kernel SHA1 `3c99fd7c40a5f21ee29b5b8c4cf053e53b95f50e`
+- Artifact:
+  - [20260403-callerlr-probe](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/20260403-callerlr-probe)
+- Question:
+  - Can a frame-pointer-chain probe follow the resumed caller LR without
+    perturbing the canonical failure shape?
+- Result:
+  - No. This build regressed to a noisier `queue_empty stuck_tid=10` /
+    soft-lockup shape and did not produce a useful canonical abort trace.
+- Disposition:
+  - probe rejected as too intrusive / not trustworthy as reference evidence
+- Consequence:
+  - Do not use the frame-pointer-chain caller-LR probe as the main evidence
+    path for this investigation. Keep the lower-perturbation `ERET_RESUME_*`
+    probe and move the next instrumentation closer to the live post-resume
+    helper chain.
+
+### 2026-04-03: Register-Clobber Signal And Probe Refinement
+
+- Build:
+  - clean redeployed repro kernel SHA1 `b04353e8a8684ca056142b69abfc5d448e53d93b`
+- Artifact:
+  - [20260403-redeployed-clean-repro](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/20260403-redeployed-clean-repro)
+- Result:
+  - the canonical abort reproduced again on CPU 0 with
+    `EL1_INLINE_ABORT x30=0x3b9aca00`
+  - at abort time:
+    - `x29=0xffff000040af7afc`
+    - `slot20=0xffff000040b5e310`
+  - those resolve to real globals, not stack addresses:
+    - `x29` = `timer::TIMER_INITIALIZED`
+    - `slot20` = `ahci::PORT_DMA`
+- Interpretation:
+  - this is a stronger signal for register clobber across an EL1 interrupt /
+    return corridor, not just a dormant-frame LR overwrite theory
+  - the preserved `saved_lr` still points to the blocked `wait_timeout()`
+    caller site, but the live aborting frame pointer and nearby saved slot now
+    look like unrelated global-state addresses
+
+### 2026-04-03: Scheduler-Entry Probe Was Too Late
+
+- Build:
+  - kernel SHA1 `a7db2b970ee6e099cc3127effb07a0081f4ecdf0`
+- Artifact:
+  - [20260403-kernel-resume-irq-probe](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/20260403-kernel-resume-irq-probe)
+- Question:
+  - does the timer tick immediately before the canonical abort reach
+    `check_need_resched_and_switch_arm64()` while the blocked thread is still
+    in the resumed `schedule_from_kernel()` window?
+- Result:
+  - the canonical `0x3b9aca00` abort still reproduced
+  - the trace showed:
+    - `ERET_DISPATCH stage 2/3 -> elr=x30=schedule_from_kernel resume`
+    - one timer tick
+    - `EL1_INLINE_ABORT`
+  - but there were no `KERNEL_RESUME_IRQ_*` markers from the scheduler-entry
+    probe
+- Interpretation:
+  - the decisive timer interrupt either:
+    - does not reach the scheduler path before the corruption manifests, or
+    - corrupts the frame earlier than `check_need_resched_and_switch_arm64()`
+      can observe it
+  - that moves the next meaningful probe one layer earlier, to raw timer / IRQ
+    entry with direct access to the saved exception frame
+
+### 2026-04-03: Raw Timer-Frame Probe Follow-Up
+
+- Builds:
+  - verbose raw-frame probe kernel SHA1 `c3e5bfde7ca798030016c3475cdaa5cbb3da19ff`
+  - quieter follow-up kernel SHA1 `01246c95f0cc13867db4cc2d53a7f976073aeaf3`
+- Artifacts:
+  - [20260403-raw-timer-frame-probe](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/20260403-raw-timer-frame-probe)
+  - [20260403-raw-timer-frame-probe-quiet](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/20260403-raw-timer-frame-probe-quiet)
+- Result:
+  - the verbose raw-frame build still reproduced the canonical abort, but CPU 0
+    dropped `4295` trace events before the fault dump, so absence of
+    `KERNEL_RESUME_IRQ_*` markers is not trustworthy there
+  - the quieter follow-up did not reach the old failure corridor within the
+    collector window and is therefore not yet a valid replacement baseline
+- Consequence:
+  - do not draw architectural conclusions from the quiet follow-up yet
+  - the active branch remains "capture the raw timer-frame state on a canonical
+    repro without overflowing the trace buffer"
+
+### 2026-04-03: Raw IRQ Classification Recovered The Missing Corridor
+
+- Builds:
+  - broadened IRQ classifier kernel SHA1 `536bf1232cfac1ace284f74bc593d475fbf090f7`
+  - timer entry/exit probe kernel SHA1 `c3ca78b4da9bd75a6eeb6409931c2d1c16a1cac4`
+  - resched-slot probe kernel SHA1 `fb150e5a9e217bdace63701422328dbd4d772b94`
+- Artifacts:
+  - [20260403-broadened-irq-classifier](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/20260403-broadened-irq-classifier)
+  - [20260403-timer-entry-exit-probe](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/20260403-timer-entry-exit-probe)
+  - [20260403-resched-slotx30-probe](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/20260403-resched-slotx30-probe)
+- Result:
+  - the canonical soft-lockup / `EL1_INLINE_ABORT x30=0x3b9aca00` corridor
+    still reproduced cleanly with `dropped=0`
+  - the previously missing raw timer-frame markers now appear and classify as
+    `kind=3`, i.e. the nested timer IRQ is hitting the
+    `check_need_resched_and_switch_arm64()` tail, not the
+    `schedule_from_kernel()` body
+  - the captured raw frame is:
+    - `ELR=0x4010cf78` / `0x4010cf74` region
+    - `x30=0x4010cc68`
+  - disassembly resolves that to:
+    - the nested timer lands at the `isb` immediately after
+      `msr daifclr, #3` in `check_need_resched_and_switch_arm64()`
+    - the interrupted `x30` still points at the earlier in-function return site
+      after `rearm_timer()`
+- Entry/exit conclusion:
+  - the timer-handler exit probe (`kind=0x103`) shows the same
+    `ELR/x30` pair as timer-handler entry (`kind=0x003`)
+  - so the canonical corruption does **not** happen inside
+    `timer_interrupt_handler()` or raw IRQ handling
+- Suspended-slot conclusion:
+  - the resched-tail slot probe records the interrupted stack's saved caller LR
+    slot as stable across timer entry and timer-handler exit
+  - that slot resolves to `irq_handler + 136`, which is the expected caller
+    return target for `check_need_resched_and_switch_arm64()`
+  - so the nested timer IRQ is **not** poisoning the suspended caller LR slot
+    during raw IRQ handling
+- Interpretation:
+  - the active bug is now much narrower:
+    - outer `check_need_resched_and_switch_arm64()` opens the `daifclr/isb`
+      window
+    - a nested timer IRQ lands in that window
+    - the nested timer returns with a sane saved frame and sane suspended caller
+      slot
+    - corruption happens only after control re-enters the resched tail and
+      before the final control transfer out of that corridor
+  - the strongest remaining architectural hypothesis is re-entrant / nested
+    `check_need_resched_and_switch_arm64()` activity on IRQ return, not timer
+    death, not pre-dispatch frame poison, and not timer-handler stack clobber
 
 ## Issue Map
 
@@ -295,5 +799,13 @@ This investigation is complete only when all of the following are true:
 
 ## Immediate Next Step
 
-Capture the equivalent Breenix CPU 0 trace set for the same Linux scenarios and
-identify the first semantic divergence, not the tenth symptom.
+Treat the live bug as a nested-reschedule return-path problem.
+
+1. Confirm from source and traces that a nested timer IRQ can run its own
+   `check_need_resched_and_switch_arm64()` return path before the outer
+   resched tail has completed.
+2. Probe only the tiny post-IRQ remainder of the outer
+   `check_need_resched_and_switch_arm64()` tail, not generic timer handling or
+   dormant blocked-thread frames.
+3. Compare that control-flow contract against Linux's IRQ-exit / preemption
+   rules before attempting any fix.

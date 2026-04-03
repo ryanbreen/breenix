@@ -47,6 +47,9 @@ fn set_idle_stack_for_eret() {
     let idle_stack = stack_base + (cpu_id + 1) * 0x20_0000;
     unsafe {
         Aarch64PerCpu::set_user_rsp_scratch(idle_stack);
+        Aarch64PerCpu::set_kernel_stack_top(idle_stack);
+        Aarch64PerCpu::set_current_thread_ptr(core::ptr::null_mut());
+        Aarch64PerCpu::clear_preempt_active();
     }
 }
 
@@ -508,6 +511,51 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 raw_uart_str(" from_el0=");
                 raw_uart_char(if from_el0 { b'1' } else { b'0' });
 
+                if !from_el0 {
+                    if let Some(tid) = crate::task::scheduler::current_thread_id() {
+                        crate::task::scheduler::with_thread_mut(tid, |thread| {
+                            if thread.inline_schedule_saved_sp != 0 {
+                                let current_sp = frame as u64 + 272;
+                                let current_slot20 = unsafe {
+                                    core::ptr::read_volatile((current_sp + 0x20) as *const u64)
+                                };
+                                let saved_slot20 = unsafe {
+                                    core::ptr::read_volatile(
+                                        (thread.inline_schedule_saved_sp + 0x20) as *const u64,
+                                    )
+                                };
+                                raw_uart_str("\n[EL1_INLINE_ABORT] tid=");
+                                raw_uart_dec(tid);
+                                raw_uart_str(" x29=");
+                                raw_uart_hex(frame_ref.x29);
+                                raw_uart_str(" x30=");
+                                raw_uart_hex(frame_ref.x30);
+                                raw_uart_str(" sp=");
+                                raw_uart_hex(current_sp);
+                                raw_uart_str(" slot20=");
+                                raw_uart_hex(current_slot20);
+                                raw_uart_str(" saved_sp=");
+                                raw_uart_hex(thread.inline_schedule_saved_sp);
+                                raw_uart_str(" saved_lr=");
+                                raw_uart_hex(thread.inline_schedule_caller_lr);
+                                raw_uart_str(" saved_slot20=");
+                                raw_uart_hex(saved_slot20);
+                                crate::tracing::record_event(
+                                    crate::tracing::TraceEventType::EL1_INLINE_ABORT,
+                                    0,
+                                    frame_ref.x30 as u32,
+                                );
+                            }
+                        });
+                    }
+
+                    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
+                    raw_uart_str("\n[INSTRUCTION_ABORT] trace_buffer_cpu=");
+                    raw_uart_dec(cpu_id as u64);
+                    raw_uart_str("\n");
+                    crate::tracing::dump_buffer(cpu_id as usize);
+                }
+
                 // Register dump for EL0 instruction abort at low address —
                 // helps diagnose whether context switch corrupted a register
                 // (e.g., x30=0x18 → ret jumps to 0x18) vs a BWM code bug.
@@ -542,7 +590,10 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     raw_uart_str("\n");
                 }
 
-                if !from_el0 && frame_ref.elr < 0x1000 {
+                if !from_el0
+                    && frame_ref.elr < 0x1000
+                    && !PC_ALIGN_VERBOSE_CAPTURED.swap(true, Ordering::Relaxed)
+                {
                     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
                     raw_uart_str("\n[DIAG] ELR=");
                     raw_uart_hex(frame_ref.elr);
@@ -1121,7 +1172,7 @@ const UART0_IRQ: u32 = 33;
 /// Called from assembly after saving registers.
 /// This is the main IRQ dispatch point for ARM64.
 #[no_mangle]
-pub extern "C" fn handle_irq() {
+pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
     crate::tracing::providers::counters::count_irq();
 
     // Acknowledge the interrupt from GIC
@@ -1136,7 +1187,7 @@ pub extern "C" fn handle_irq() {
                 // - Updating global time
                 // - Decrementing time quantum
                 // - Setting need_resched flag
-                crate::arch_impl::aarch64::timer_interrupt::timer_interrupt_handler();
+                crate::arch_impl::aarch64::timer_interrupt::timer_interrupt_handler(frame);
             }
 
             // UART0 receive interrupt (SPI 1 = IRQ 33)
@@ -1166,7 +1217,7 @@ pub extern "C" fn handle_irq() {
                 if irq == crate::arch_impl::aarch64::timer_interrupt::VIRT_TIMER_IRQ
                     || irq == crate::arch_impl::aarch64::timer_interrupt::PHYS_TIMER_IRQ
                 {
-                    crate::arch_impl::aarch64::timer_interrupt::timer_interrupt_handler();
+                    crate::arch_impl::aarch64::timer_interrupt::timer_interrupt_handler(frame);
                 }
                 // Diagnostic: emit raw serial for any unexpected PPI
                 if irq != crate::arch_impl::aarch64::timer_interrupt::timer_irq()

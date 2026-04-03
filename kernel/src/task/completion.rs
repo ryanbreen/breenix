@@ -56,6 +56,52 @@ type Cpu = crate::arch_impl::x86_64::cpu::X86Cpu;
 /// POSIX EINTR errno value.
 const EINTR: i32 = 4;
 
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn trace_wait_timeout_stage(stage: u16) {
+    if stage != 0 {
+        return;
+    }
+
+    use crate::arch_impl::aarch64::percpu::Aarch64PerCpu;
+    use crate::arch_impl::traits::PerCpuOps;
+
+    let sp: u64;
+    let x30: u64;
+    let slot20: u64;
+    unsafe {
+        core::arch::asm!(
+            "mov {}, sp",
+            "mov {}, x30",
+            out(reg) sp,
+            out(reg) x30,
+            options(nomem, nostack, preserves_flags)
+        );
+        slot20 = core::ptr::read_volatile((sp + 0x20) as *const u64);
+    }
+    let tid = unsafe {
+        let thread_ptr = Aarch64PerCpu::current_thread_ptr() as *const crate::task::thread::Thread;
+        if thread_ptr.is_null() {
+            0
+        } else {
+            (*thread_ptr).id() as u16
+        }
+    };
+
+    crate::tracing::record_event_2(crate::tracing::TraceEventType::WAIT_TIMEOUT_STAGE, stage, tid);
+    crate::tracing::record_event(crate::tracing::TraceEventType::WAIT_TIMEOUT_SP, 0, sp as u32);
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::WAIT_TIMEOUT_X30,
+        0,
+        x30 as u32,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::WAIT_TIMEOUT_SLOT20,
+        0,
+        slot20 as u32,
+    );
+}
+
 #[inline]
 fn clear_blocked_in_syscall_current() {
     crate::task::scheduler::with_scheduler(|sched| {
@@ -279,12 +325,21 @@ impl Completion {
                     // are enabled and give the CPU a window to take any pending
                     // interrupt before re-entering the scheduler.
                     #[cfg(target_arch = "aarch64")]
+                    trace_wait_timeout_stage(0);
+
+                    #[cfg(target_arch = "aarch64")]
                     crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
                     #[cfg(not(target_arch = "aarch64"))]
                     Cpu::halt_with_interrupts();
 
+                    #[cfg(target_arch = "aarch64")]
+                    trace_wait_timeout_stage(1);
+
                     // Clear BlockedOnIO state after wake (could be timer or ISR).
                     clear_blocked_in_syscall_current();
+
+                    #[cfg(target_arch = "aarch64")]
+                    trace_wait_timeout_stage(2);
 
                     // Check done after wake.
                     if self.done.load(Ordering::Acquire) == expected_token {
@@ -299,10 +354,15 @@ impl Completion {
                         return Err(EINTR);
                     }
 
+                    #[cfg(target_arch = "aarch64")]
+                    trace_wait_timeout_stage(3);
+
                     // Wall-clock timeout.
                     #[cfg(target_arch = "aarch64")]
                     {
+                        trace_wait_timeout_stage(4);
                         let (secs, nanos) = crate::time::get_monotonic_time_ns();
+                        trace_wait_timeout_stage(5);
                         let now_ns = secs as u64 * 1_000_000_000 + nanos as u64;
                         if now_ns >= deadline_ns {
                             self.waiter.store(0, Ordering::Release);

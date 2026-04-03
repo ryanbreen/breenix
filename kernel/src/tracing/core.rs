@@ -186,6 +186,39 @@ impl TraceEventType {
     pub const MARKER_B: u16 = 0xFF01;
     pub const MARKER_C: u16 = 0xFF02;
     pub const MARKER_D: u16 = 0xFF03;
+    pub const WAIT_TIMEOUT_STAGE: u16 = 0xFF10;
+    pub const WAIT_TIMEOUT_SP: u16 = 0xFF11;
+    pub const WAIT_TIMEOUT_X30: u16 = 0xFF12;
+    pub const EL1_INLINE_ABORT: u16 = 0xFF13;
+    pub const EINTR_CHECK_STAGE: u16 = 0xFF14;
+    pub const EINTR_CHECK_X30: u16 = 0xFF15;
+    pub const RET_DISPATCH_SP: u16 = 0xFF16;
+    pub const RET_DISPATCH_LR: u16 = 0xFF17;
+    pub const ERET_DISPATCH_STAGE: u16 = 0xFF18;
+    pub const ERET_DISPATCH_ELR: u16 = 0xFF19;
+    pub const ERET_DISPATCH_X30: u16 = 0xFF1A;
+    pub const ERET_DISPATCH_SPSR: u16 = 0xFF1B;
+    pub const CTX_PUBLISH_STAGE: u16 = 0xFF1C;
+    pub const CTX_PUBLISH_SP: u16 = 0xFF1D;
+    pub const CTX_PUBLISH_ELR: u16 = 0xFF1E;
+    pub const CTX_PUBLISH_X30: u16 = 0xFF1F;
+    pub const CTX_PUBLISH_FLAGS: u16 = 0xFF20;
+    pub const CTX_PUBLISH_AUX: u16 = 0xFF21;
+    pub const DISPATCH_REDIRECT: u16 = 0xFF22;
+    pub const PM_LOCK_BUSY_CONTEXT: u16 = 0xFF23;
+    pub const PM_LOCK_BUSY_OWNER: u16 = 0xFF24;
+    pub const SCHEDULE_RESUME_STAGE: u16 = 0xFF25;
+    pub const SCHEDULE_RESUME_SP: u16 = 0xFF26;
+    pub const SCHEDULE_RESUME_X30: u16 = 0xFF27;
+    pub const WAIT_TIMEOUT_SLOT20: u16 = 0xFF28;
+    pub const ERET_RESUME_INFO: u16 = 0xFF29;
+    pub const ERET_RESUME_SP: u16 = 0xFF2A;
+    pub const ERET_RESUME_SLOT20: u16 = 0xFF2B;
+    pub const KERNEL_RESUME_IRQ_INFO: u16 = 0xFF2C;
+    pub const KERNEL_RESUME_IRQ_ELR: u16 = 0xFF2D;
+    pub const KERNEL_RESUME_IRQ_X29: u16 = 0xFF2E;
+    pub const KERNEL_RESUME_IRQ_X30: u16 = 0xFF2F;
+    pub const KERNEL_RESUME_IRQ_SLOTX30: u16 = 0xFF30;
 }
 
 // =============================================================================

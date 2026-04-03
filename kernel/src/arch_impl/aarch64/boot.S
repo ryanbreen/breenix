@@ -572,7 +572,8 @@ irq_handler:
     stp x30, x0, [sp, #240]
     str x1, [sp, #256]
 
-    // Call Rust IRQ handler
+    // Call Rust IRQ handler with x0 = exception-frame base.
+    mov x0, sp
     bl handle_irq
 
     // Check if we need to reschedule before returning from IRQ

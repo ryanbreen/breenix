@@ -31,6 +31,24 @@ use crate::tracing::providers::sched::trace_ctx_switch;
 const SPSR_MODE_MASK: u64 = 0xF;
 const SPSR_EL1H: u64 = 0x5;
 const SPSR_DAIF_IRQ_BIT: u64 = 1 << 7;
+const TRACE_CTX_PUBLISH_SAVE_USER: u16 = 1;
+const TRACE_CTX_PUBLISH_SAVE_KERNEL: u16 = 2;
+const TRACE_CTX_PUBLISH_INLINE_SAVE: u16 = 3;
+const TRACE_ERET_DISPATCH_PRE: u16 = 1;
+const TRACE_ERET_DISPATCH_POST: u16 = 2;
+const TRACE_ERET_DISPATCH_PRE_DAIFCLR: u16 = 3;
+const TRACE_REDIRECT_THREAD_MISSING: u16 = 1;
+const TRACE_REDIRECT_THREAD_TERMINATED: u16 = 2;
+const TRACE_REDIRECT_TTBR_PM_LOCK_BUSY: u16 = 3;
+const TRACE_REDIRECT_TTBR_PROCESS_GONE: u16 = 4;
+const TRACE_REDIRECT_RESTORE_FAILED: u16 = 5;
+const TRACE_REDIRECT_CPU0_USER_GUARD: u16 = 6;
+const TRACE_SCHEDULE_RESUME_PRE_IRQ_ENABLE: u16 = 1;
+const TRACE_SCHEDULE_RESUME_POST_SWITCH: u16 = 2;
+const TRACE_SCHEDULE_RESUME_PRE_RETURN: u16 = 3;
+const TRACE_KERNEL_RESUME_IRQ_SCHEDULE_FROM_KERNEL: u16 = 1;
+pub(crate) const TRACE_KERNEL_RESUME_IRQ_INLINE_TRAMPOLINE: u16 = 2;
+pub(crate) const TRACE_KERNEL_RESUME_IRQ_RESCHED_TAIL: u16 = 3;
 
 #[inline]
 fn dispatch_spsr(spsr: u64) -> u64 {
@@ -40,6 +58,219 @@ fn dispatch_spsr(spsr: u64) -> u64 {
 #[inline]
 fn kernel_dispatch_spsr(spsr: u64) -> u64 {
     ((spsr & !SPSR_MODE_MASK) | SPSR_EL1H) & !SPSR_DAIF_IRQ_BIT
+}
+
+#[inline(always)]
+fn trace_ctx_publish(thread: &Thread, stage: u16) {
+    if thread.owner_pid.is_none() || !thread.blocked_in_syscall {
+        return;
+    }
+
+    let tid = (thread.id() as u32) & 0xFFFF;
+    let flags = (thread.saved_by_inline_schedule as u32)
+        | ((thread.blocked_in_syscall as u32) << 1)
+        | ((thread.has_started as u32) << 2);
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::CTX_PUBLISH_STAGE,
+        0,
+        ((stage as u32) << 16) | tid,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::CTX_PUBLISH_SP,
+        0,
+        thread.context.sp as u32,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::CTX_PUBLISH_ELR,
+        0,
+        thread.context.elr_el1 as u32,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::CTX_PUBLISH_X30,
+        0,
+        thread.context.x30 as u32,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::CTX_PUBLISH_FLAGS,
+        0,
+        flags,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::CTX_PUBLISH_AUX,
+        0,
+        thread.inline_schedule_saved_sp as u32,
+    );
+}
+
+#[inline(always)]
+fn trace_eret_dispatch(thread_id: u64, stage: u16, frame: &Aarch64ExceptionFrame) {
+    let tid = (thread_id as u32) & 0xFFFF;
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::ERET_DISPATCH_STAGE,
+        0,
+        ((stage as u32) << 16) | tid,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::ERET_DISPATCH_ELR,
+        0,
+        frame.elr as u32,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::ERET_DISPATCH_X30,
+        0,
+        frame.x30 as u32,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::ERET_DISPATCH_SPSR,
+        0,
+        frame.spsr as u32,
+    );
+}
+
+fn trace_eret_resume(thread: &Thread) {
+    if thread.owner_pid.is_none() || !thread.blocked_in_syscall {
+        return;
+    }
+
+    let slot20 = if thread.context.sp >= 0x20 {
+        unsafe { core::ptr::read_volatile((thread.context.sp + 0x20) as *const u64) }
+    } else {
+        0
+    };
+
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::ERET_RESUME_INFO,
+        0,
+        thread.id() as u32,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::ERET_RESUME_SP,
+        0,
+        thread.context.sp as u32,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::ERET_RESUME_SLOT20,
+        0,
+        slot20 as u32,
+    );
+}
+
+#[inline(always)]
+fn trace_dispatch_redirect(thread_id: u64, reason: u16) {
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::DISPATCH_REDIRECT,
+        0,
+        ((reason as u32) << 16) | ((thread_id as u32) & 0xFFFF),
+    );
+}
+
+#[inline(always)]
+fn trace_pm_lock_busy(thread_id: u64) {
+    let (owner_cpu, owner_tid) = crate::process::process_manager_owner_snapshot().unwrap_or((0, 0));
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::PM_LOCK_BUSY_CONTEXT,
+        0,
+        (((owner_cpu as u32) & 0xFFFF) << 16) | ((thread_id as u32) & 0xFFFF),
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::PM_LOCK_BUSY_OWNER,
+        0,
+        owner_tid as u32,
+    );
+}
+
+#[inline(always)]
+fn trace_schedule_resume(stage: u16, thread: &Thread) {
+    if stage != TRACE_SCHEDULE_RESUME_PRE_IRQ_ENABLE {
+        return;
+    }
+
+    if thread.owner_pid.is_none() || !thread.blocked_in_syscall {
+        return;
+    }
+
+    let tid = (thread.id() as u32) & 0xFFFF;
+    let sp: u64;
+    let x30: u64;
+    unsafe {
+        core::arch::asm!("mov {}, sp", out(reg) sp, options(nomem, nostack, preserves_flags));
+        core::arch::asm!("mov {}, x30", out(reg) x30, options(nomem, nostack, preserves_flags));
+    }
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::SCHEDULE_RESUME_STAGE,
+        0,
+        ((stage as u32) << 16) | tid,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::SCHEDULE_RESUME_SP,
+        0,
+        sp as u32,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::SCHEDULE_RESUME_X30,
+        0,
+        x30 as u32,
+    );
+}
+
+#[inline(always)]
+pub(crate) fn classify_kernel_resume_irq_elr(elr: u64) -> Option<u16> {
+    let schedule_start = schedule_from_kernel as usize as u64;
+    if elr >= schedule_start && elr < schedule_start + 0x1200 {
+        return Some(TRACE_KERNEL_RESUME_IRQ_SCHEDULE_FROM_KERNEL);
+    }
+
+    let trampoline_start = inline_schedule_trampoline as usize as u64;
+    if elr >= trampoline_start + 0xE80 && elr < trampoline_start + 0xF40 {
+        return Some(TRACE_KERNEL_RESUME_IRQ_INLINE_TRAMPOLINE);
+    }
+
+    let resched_start = check_need_resched_and_switch_arm64 as usize as u64;
+    if elr >= resched_start + 0x2AE0 && elr < resched_start + 0x2BC0 {
+        return Some(TRACE_KERNEL_RESUME_IRQ_RESCHED_TAIL);
+    }
+
+    None
+}
+
+#[inline(always)]
+fn trace_kernel_resume_irq(frame: &Aarch64ExceptionFrame) {
+    let thread_ptr = Aarch64PerCpu::current_thread_ptr() as *const Thread;
+    if thread_ptr.is_null() {
+        return;
+    }
+
+    let thread = unsafe { &*thread_ptr };
+    if thread.owner_pid.is_none() || !thread.blocked_in_syscall {
+        return;
+    }
+
+    let elr = frame.elr;
+    let Some(kind) = classify_kernel_resume_irq_elr(elr) else {
+        return;
+    };
+
+    let tid = (thread.id() as u32) & 0xFFFF;
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::KERNEL_RESUME_IRQ_INFO,
+        0,
+        ((kind as u32) << 16) | tid,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::KERNEL_RESUME_IRQ_ELR,
+        0,
+        elr as u32,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::KERNEL_RESUME_IRQ_X29,
+        0,
+        frame.x29 as u32,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::KERNEL_RESUME_IRQ_X30,
+        0,
+        frame.x30 as u32,
+    );
 }
 
 core::arch::global_asm!(
@@ -94,15 +325,8 @@ aarch64_ret_to_kernel_context:
     ldp x29, x30, [x0, #232]
     ldr x2, [x0, #248]
     mov sp, x2
-    // Enable IRQs before branching (matches Linux finish_task_switch).
-    // daifclr unmasks IRQs, ISB is a context synchronization event that
-    // ensures pending interrupts are recognized. On Parallels' GICv3
-    // emulation, ISB alone may not be sufficient — WFI guarantees the
-    // hypervisor checks for pending virtual interrupts.
     msr daifclr, #3
     isb
-    // If a pending IRQ exists, it will fire here (between ISB and br).
-    // If not, we branch directly to the resume PC.
     br x1
 
 .global aarch64_enter_exception_frame
@@ -684,6 +908,7 @@ fn save_userspace_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFr
 
     // CRITICAL: Save kernel stack pointer for blocked-in-syscall restoration.
     thread.context.sp = frame as *const _ as u64 + 272;
+    trace_ctx_publish(thread, TRACE_CTX_PUBLISH_SAVE_USER);
 
     if thread.owner_pid.is_some() && thread.blocked_in_syscall {
         if !thread_kernel_stack_contains(thread, thread.context.sp) {
@@ -779,6 +1004,38 @@ fn save_kernel_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFrame
     thread.context.elr_el1 = frame.elr;
     thread.context.spsr_el1 = kernel_dispatch_spsr(frame.spsr);
 
+    if thread.inline_schedule_saved_sp != 0
+        && thread.owner_pid.is_some()
+        && thread.blocked_in_syscall
+    {
+        let current_sp = frame as *const _ as u64 + 272;
+        let slot20 = unsafe { core::ptr::read_volatile((current_sp + 0x20) as *const u64) };
+        let saved_slot20 = unsafe {
+            core::ptr::read_volatile((thread.inline_schedule_saved_sp + 0x20) as *const u64)
+        };
+        raw_uart_str("\n[INLINE_SAVE_OVERWRITE] tid=");
+        raw_uart_dec(thread.id());
+        raw_uart_str(" sp=");
+        raw_uart_hex(current_sp);
+        raw_uart_str(" old_sp=");
+        raw_uart_hex(thread.context.sp);
+        raw_uart_str(" saved_sp=");
+        raw_uart_hex(thread.inline_schedule_saved_sp);
+        raw_uart_str(" delta=");
+        raw_uart_hex(current_sp.wrapping_sub(thread.inline_schedule_saved_sp));
+        raw_uart_str(" saved_lr=");
+        raw_uart_hex(thread.inline_schedule_caller_lr);
+        raw_uart_str(" saved_slot20=");
+        raw_uart_hex(saved_slot20);
+        raw_uart_str(" slot20=");
+        raw_uart_hex(slot20);
+        raw_uart_str(" elr=");
+        raw_uart_hex(frame.elr);
+        raw_uart_str(" x30=");
+        raw_uart_hex(frame.x30);
+        raw_uart_str("\n");
+    }
+
     // Clear inline-schedule flag: this thread was saved by the IRQ-return
     // exception path (full register set), so it must be re-dispatched via
     // ERET, not the ret-based path.
@@ -803,6 +1060,7 @@ fn save_kernel_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFrame
         core::arch::asm!("mrs {}, tpidr_el0", out(reg) tpidr, options(nomem, nostack));
     }
     thread.context.tpidr_el0 = tpidr;
+    trace_ctx_publish(thread, TRACE_CTX_PUBLISH_SAVE_KERNEL);
 
     if thread.owner_pid.is_some() && thread.blocked_in_syscall {
         if !thread_kernel_stack_contains(thread, thread.context.sp) {
@@ -1000,6 +1258,7 @@ fn restore_kernel_context_inline(
     unsafe {
         Aarch64PerCpu::set_user_rsp_scratch(thread.context.sp);
     }
+    trace_eret_resume(thread);
 
     // CRITICAL: Restore SP_EL0 for userspace threads blocked in syscalls.
     if thread.context.sp_el0 != 0 {
@@ -1287,6 +1546,7 @@ fn dispatch_thread_locked(
         match thread_info {
             Some(info) => info,
             None => {
+                trace_dispatch_redirect(thread_id, TRACE_REDIRECT_THREAD_MISSING);
                 setup_idle_return_locked(sched, frame, cpu_id);
                 return;
             }
@@ -1294,6 +1554,7 @@ fn dispatch_thread_locked(
 
     // DEFENSE: Verify thread is not terminated before dispatch.
     if state == ThreadState::Terminated {
+        trace_dispatch_redirect(thread_id, TRACE_REDIRECT_THREAD_TERMINATED);
         setup_idle_return_locked(sched, frame, cpu_id);
         return;
     }
@@ -1336,6 +1597,7 @@ fn dispatch_thread_locked(
                     // CRITICAL: Update cpu_state BEFORE requeue_thread_after_save,
                     // because requeue checks cpu_state[].current_thread and silently
                     // drops threads that appear to be running on any CPU.
+                    trace_dispatch_redirect(thread_id, TRACE_REDIRECT_TTBR_PM_LOCK_BUSY);
                     if let Some(thread) = sched.get_thread_mut(thread_id) {
                         thread.state = ThreadState::Ready;
                     }
@@ -1348,6 +1610,7 @@ fn dispatch_thread_locked(
                 }
                 TtbrResult::ProcessGone => {
                     TTBR_PROCESS_GONE_COUNT.fetch_add(1, Ordering::Relaxed);
+                    trace_dispatch_redirect(thread_id, TRACE_REDIRECT_TTBR_PROCESS_GONE);
                     raw_uart_str("\n[TTBR_GONE_K] tid=");
                     raw_uart_dec(thread_id);
                     raw_uart_str(" elr=");
@@ -1377,6 +1640,7 @@ fn dispatch_thread_locked(
             // and redirect to idle. CRITICAL: We must update cpu_state here,
             // otherwise the next timer preemption will save idle-loop registers
             // into this thread's context slot, compounding the corruption.
+            trace_dispatch_redirect(thread_id, TRACE_REDIRECT_RESTORE_FAILED);
             if let Some(thread) = sched.get_thread_mut(thread_id) {
                 thread.state = ThreadState::Terminated;
             }
@@ -1393,6 +1657,7 @@ fn dispatch_thread_locked(
         // thread dispatched here monopolises the CPU. Redirect to idle and
         // requeue the thread on CPUs 1-7 where the timer works.
         if cpu_id == 0 && crate::arch_impl::aarch64::smp::cpus_online() > 1 {
+            trace_dispatch_redirect(thread_id, TRACE_REDIRECT_CPU0_USER_GUARD);
             if let Some(thread) = sched.get_thread_mut(thread_id) {
                 thread.state = ThreadState::Ready;
             }
@@ -1523,6 +1788,9 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     // ── Lock-free pre-checks ──────────────────────────────────────
     let preempt_count = Aarch64PerCpu::preempt_count();
     let cpu_id_early = Aarch64PerCpu::cpu_id() as usize;
+    if !from_el0 {
+        trace_kernel_resume_irq(frame);
+    }
     cpu0_breadcrumb(cpu_id_early, 10); // entry
 
     if (preempt_count & 0x10000000) != 0 {
@@ -1570,6 +1838,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
 
     // Check if reschedule is needed (atomic, clears the flag)
     let need_resched = crate::task::scheduler::check_and_clear_need_resched();
+    let exception_cleanup_context = Aarch64PerCpu::exception_cleanup_context();
 
     // Read real_tid_fixup for stale cpu_state detection (lock-free)
     let real_tid_fixup = if from_el0 && (frame.spsr & 0xF) == 0 {
@@ -1593,7 +1862,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     // which is a no-op for our decision (we'd still skip).
     // When deferred_tid was non-zero, we already processed it above under
     // the lock and can treat it as "done" for fast-path eligibility.
-    if !need_resched && (deferred_tid == 0 || deferred_already_processed) {
+    if !exception_cleanup_context && !need_resched && (deferred_tid == 0 || deferred_already_processed) {
         let current_blocked = {
             let thread_ptr = Aarch64PerCpu::current_thread_ptr();
             if !thread_ptr.is_null() {
@@ -1630,6 +1899,13 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         Some(s) => s,
         None => return,
     };
+
+    if exception_cleanup_context {
+        sched.fix_exception_cleanup_cpu_state();
+        unsafe {
+            Aarch64PerCpu::set_exception_cleanup_context(false);
+        }
+    }
     cpu0_breadcrumb(cpu_id, 11); // after lock acquisition
 
     // 1. Process deferred requeue from PREVIOUS context switch.
@@ -1786,9 +2062,22 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     }
 
     // 9. Dispatch new thread (all checks + restore inside lock hold)
+    let trace_eret_tid = sched.get_thread(new_id).and_then(|thread| {
+        if thread.owner_pid.is_some() && thread.blocked_in_syscall {
+            Some(new_id)
+        } else {
+            None
+        }
+    });
     cpu0_breadcrumb(cpu_id, 102); // before dispatch_thread_locked
     cpu0_breadcrumb(cpu_id, 13); // performing context switch
+    if let Some(trace_tid) = trace_eret_tid {
+        trace_eret_dispatch(trace_tid, TRACE_ERET_DISPATCH_PRE, frame);
+    }
     dispatch_thread_locked(sched, new_id, frame, cpu_id);
+    if let Some(trace_tid) = trace_eret_tid {
+        trace_eret_dispatch(trace_tid, TRACE_ERET_DISPATCH_POST, frame);
+    }
     cpu0_breadcrumb(cpu_id, 103); // after dispatch_thread_locked
 
     // Record dispatch trace AFTER all frame writes are complete.
@@ -1846,6 +2135,9 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     // existing frame at SP is not corrupted. After the nested IRQ ERETSs back
     // here, we continue with the original frame intact.
     cpu0_breadcrumb(cpu_id, 104); // before daifclr window
+    if let Some(trace_tid) = trace_eret_tid {
+        trace_eret_dispatch(trace_tid, TRACE_ERET_DISPATCH_PRE_DAIFCLR, frame);
+    }
     unsafe {
         core::arch::asm!(
             "msr daifclr, #3",
@@ -1904,23 +2196,25 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     let is_idle = sched.is_idle_thread_inner(new_id);
     let ret_dispatch_info = if !is_idle {
         sched.get_thread_mut(new_id).and_then(|t| {
-            let is_kernel = t.privilege == ThreadPrivilege::Kernel;
             let has_started = t.has_started;
-            let blocked_in_syscall = t.blocked_in_syscall;
-            let is_kernel_mode = t.context.elr_el1 >= 0xFFFF_0000_0000_0000
-                || (t.context.elr_el1 >= 0x4008_0000 && t.context.elr_el1 < 0xC000_0000);
+            let saved_by_inline_schedule = t.saved_by_inline_schedule;
 
-            // Use ret-based dispatch for kernel threads and userspace threads
-            // that are currently executing in kernel mode (blocked in syscall
-            // or preempted during kernel execution).
-            if has_started && (is_kernel || blocked_in_syscall || is_kernel_mode) {
+            // ret-based dispatch is valid only for contexts explicitly saved
+            // by schedule_from_kernel() / aarch64_inline_schedule_switch.
+            // Exception-saved EL1 contexts must return through the full ERET
+            // path so caller-saved registers and SPSR are restored from the
+            // saved exception frame.
+            if has_started && saved_by_inline_schedule {
                 t.saved_by_inline_schedule = false;
                 let thread_ptr = t as *const _ as *mut u8;
                 let ctx_ptr = &t.context as *const CpuContext;
                 let resume_pc = t.context.elr_el1;
                 let kst = t.kernel_stack_top;
                 let sp_el0 = t.context.sp_el0;
-                Some((thread_ptr, ctx_ptr, resume_pc, kst, sp_el0))
+                let resume_sp = t.context.sp;
+                let resume_lr_slot =
+                    unsafe { core::ptr::read_volatile((resume_sp + 0x20) as *const u64) };
+                Some((thread_ptr, ctx_ptr, resume_pc, kst, sp_el0, resume_sp, resume_lr_slot))
             } else {
                 None
             }
@@ -1929,11 +2223,23 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         None
     };
 
-    if let Some((thread_ptr, ctx_ptr, resume_pc, kst, sp_el0)) = ret_dispatch_info {
+    if let Some((thread_ptr, ctx_ptr, resume_pc, kst, sp_el0, resume_sp, resume_lr_slot)) =
+        ret_dispatch_info
+    {
         cpu0_breadcrumb(cpu_id, 35); // taking ret-based dispatch
         // ret-based dispatch: restore callee-saved regs + SP, branch to
         // resume_pc (= elr_el1). No ERET, no SPSR, no DAIF from the thread.
         // IRQs are enabled by the assembly before branching.
+        crate::tracing::record_event(
+            crate::tracing::TraceEventType::RET_DISPATCH_SP,
+            0,
+            resume_sp as u32,
+        );
+        crate::tracing::record_event(
+            crate::tracing::TraceEventType::RET_DISPATCH_LR,
+            0,
+            resume_lr_slot as u32,
+        );
         unsafe {
             Aarch64PerCpu::set_current_thread_ptr(thread_ptr);
         }
@@ -1969,9 +2275,22 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     // kernel threads that haven't been context-switched yet.
     cpu0_breadcrumb(cpu_id, 40); // taking ERET-based dispatch
     let mut frame = unsafe { MaybeUninit::<Aarch64ExceptionFrame>::zeroed().assume_init() };
+    let trace_eret_tid = sched.get_thread(new_id).and_then(|thread| {
+        if thread.owner_pid.is_some() && thread.blocked_in_syscall {
+            Some(new_id)
+        } else {
+            None
+        }
+    });
 
     cpu0_breadcrumb(cpu_id, 41); // before dispatch_thread_locked
+    if let Some(trace_tid) = trace_eret_tid {
+        trace_eret_dispatch(trace_tid, TRACE_ERET_DISPATCH_PRE, &frame);
+    }
     dispatch_thread_locked(sched, new_id, &mut frame, cpu_id);
+    if let Some(trace_tid) = trace_eret_tid {
+        trace_eret_dispatch(trace_tid, TRACE_ERET_DISPATCH_POST, &frame);
+    }
     cpu0_breadcrumb(cpu_id, 42); // after dispatch_thread_locked
 
     let idle_addr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
@@ -2025,6 +2344,9 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     // indefinitely because the ERET opens the window for only ~1 instruction before
     // the dispatched thread might re-mask (syscall entry). The ISB ensures the
     // daifclr takes effect before any instruction that might branch.
+    if let Some(trace_tid) = trace_eret_tid {
+        trace_eret_dispatch(trace_tid, TRACE_ERET_DISPATCH_PRE_DAIFCLR, &frame);
+    }
     unsafe {
         core::arch::asm!(
             "msr daifclr, #3",   // Enable IRQs + FIQs
@@ -2152,13 +2474,21 @@ pub fn schedule_from_kernel() {
 
     let old_context_ptr = match sched.get_thread_mut(old_id) {
         Some(old_thread) => {
+            let schedule_sp: u64;
+            unsafe {
+                core::arch::asm!("mov {}, sp", out(reg) schedule_sp, options(nomem, nostack, preserves_flags));
+            }
             old_thread.context.sp_el0 = read_sp_el0();
             old_thread.context.tpidr_el0 = read_tpidr_el0();
             old_thread.context.spsr_el1 = kernel_dispatch_spsr(saved_daif & 0x3C0);
+            old_thread.inline_schedule_caller_lr =
+                unsafe { core::ptr::read_volatile((schedule_sp + 0x20) as *const u64) };
+            old_thread.inline_schedule_saved_sp = schedule_sp;
             // Mark that this thread was saved by inline schedule, so the
             // dispatcher uses ret-based restore instead of ERET. This avoids
             // the CPU 0 IRQ death bug (ERET into without_interrupts code).
             old_thread.saved_by_inline_schedule = true;
+            trace_ctx_publish(old_thread, TRACE_CTX_PUBLISH_INLINE_SAVE);
             &mut old_thread.context as *mut CpuContext
         }
         None => {
@@ -2193,6 +2523,12 @@ pub fn schedule_from_kernel() {
         );
     }
 
+    let resumed_thread_ptr = Aarch64PerCpu::current_thread_ptr();
+    if !resumed_thread_ptr.is_null() {
+        let resumed_thread = unsafe { &*(resumed_thread_ptr as *const Thread) };
+        trace_schedule_resume(TRACE_SCHEDULE_RESUME_PRE_IRQ_ENABLE, resumed_thread);
+    }
+
     unsafe {
         // Execution reaches here when this thread is re-dispatched via
         // aarch64_ret_to_kernel_context (ret to saved x30).
@@ -2206,12 +2542,20 @@ pub fn schedule_from_kernel() {
     }
     let cpu_id_after = Aarch64PerCpu::cpu_id() as usize;
     cpu0_breadcrumb(cpu_id_after, 5); // after context switch resume
+    if !resumed_thread_ptr.is_null() {
+        let resumed_thread = unsafe { &*(resumed_thread_ptr as *const Thread) };
+        trace_schedule_resume(TRACE_SCHEDULE_RESUME_POST_SWITCH, resumed_thread);
+    }
 
     // Re-arm timer as safety net after context switch resume.
     // If the Parallels/HVF vtimer is dead on this CPU, re-arming here
     // gives the VMM another chance to observe the timer state.
     if crate::arch_impl::aarch64::timer_interrupt::is_initialized() {
         crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
+    }
+    if !resumed_thread_ptr.is_null() {
+        let resumed_thread = unsafe { &*(resumed_thread_ptr as *const Thread) };
+        trace_schedule_resume(TRACE_SCHEDULE_RESUME_PRE_RETURN, resumed_thread);
     }
 }
 
@@ -2348,6 +2692,7 @@ fn set_next_ttbr0_for_thread(thread_id: u64) -> TtbrResult {
     let manager_guard = match crate::process::try_manager() {
         Some(guard) => guard,
         None => {
+            trace_pm_lock_busy(thread_id);
             return TtbrResult::PmLockBusy;
         }
     };

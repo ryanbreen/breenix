@@ -234,11 +234,15 @@ pub struct ThreadDumpEntry {
     pub id: u64,
     pub state: u8, // 0=Ready,1=Running,2=Blocked,3=BlockedOnSignal,4=BlockedOnChildExit,5=BlockedOnTimer,6=Terminated
     pub blocked_in_syscall: bool,
+    pub saved_by_inline_schedule: bool,
+    pub inline_schedule_caller_lr: u64,
+    pub inline_schedule_saved_sp: u64,
     pub has_wake_time: bool,
     pub privilege: u8, // 0=Kernel, 1=User
     pub owner_pid: u64,
     pub elr_el1: u64,
     pub x30: u64,
+    pub sp: u64,
 }
 
 /// Diagnostic snapshot of scheduler state for the soft lockup detector.
@@ -301,6 +305,9 @@ pub fn try_dump_state() -> Option<SchedulerDumpInfo> {
                 ThreadState::Terminated => 6,
             },
             blocked_in_syscall: t.blocked_in_syscall,
+            saved_by_inline_schedule: t.saved_by_inline_schedule,
+            inline_schedule_caller_lr: t.inline_schedule_caller_lr,
+            inline_schedule_saved_sp: t.inline_schedule_saved_sp,
             has_wake_time: t.wake_time_ns.is_some(),
             privilege: if t.privilege == super::thread::ThreadPrivilege::Kernel {
                 0
@@ -310,6 +317,7 @@ pub fn try_dump_state() -> Option<SchedulerDumpInfo> {
             owner_pid: t.owner_pid.unwrap_or(0),
             elr_el1: t.context.elr_el1,
             x30: t.context.x30,
+            sp: t.context.sp,
         })
         .collect();
 
@@ -2042,6 +2050,26 @@ impl Scheduler {
             self.cpu_state[cpu].current_thread = Some(real_tid);
         }
     }
+
+    /// Repair stale cpu_state after an exception handler redirected to idle.
+    ///
+    /// The exception path may have committed the per-CPU return state to the
+    /// idle loop but failed to update scheduler cpu_state if the global lock was
+    /// contended. Before the next save/dispatch, force the CPU's logical owner
+    /// back to its idle thread so we do not save an idle-loop frame into the
+    /// previously running user thread.
+    #[cfg(target_arch = "aarch64")]
+    pub fn fix_exception_cleanup_cpu_state(&mut self) {
+        let cpu = Self::current_cpu_id();
+        let idle = self.cpu_state[cpu].idle_thread;
+        let current = self.cpu_state[cpu].current_thread.unwrap_or(0xDEAD);
+        if current != idle {
+            record_cpu_state_change(cpu, 3, current, idle);
+            self.cpu_state[cpu].current_thread = Some(idle);
+        }
+        self.cpu_state[cpu].previous_thread = None;
+        set_cpu_idle(cpu, true);
+    }
 }
 
 /// Initialize the global scheduler
@@ -2602,6 +2630,15 @@ pub fn switch_to_idle_best_effort() {
             // context switch, previous_thread stays set permanently blocking that thread
             // from being requeued on any CPU.
             sched.cpu_state[cpu_id].previous_thread = None;
+            unsafe {
+                crate::arch_impl::aarch64::percpu::Aarch64PerCpu::set_exception_cleanup_context(
+                    false,
+                );
+            }
+        }
+    } else {
+        unsafe {
+            crate::arch_impl::aarch64::percpu::Aarch64PerCpu::set_exception_cleanup_context(true);
         }
     }
     // If try_lock fails, the scheduler state will be stale. This function
