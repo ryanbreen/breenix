@@ -1298,3 +1298,28 @@ the cached-TTBR0 baseline.
     window
   - the old `elr_slot=0` / breadcrumb-`107` timeout branch has not recurred in
     the first fixed-state sweep after that change
+
+### 2026-04-03: Removing The CPU0 EL0 Guard After The Frame Fix Still Exposes A New Branch
+
+- Experiment:
+  - temporarily remove the CPU0 EL0 redirect guard on top of the relocated-frame baseline
+- Validation sweep:
+  - [no-cpu0-guard-after-frame-relocation](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/no-cpu0-guard-after-frame-relocation)
+- Result:
+  - [run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/no-cpu0-guard-after-frame-relocation/run1)
+    reached `cpu0 ticks=5000` cleanly
+  - [run2](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/no-cpu0-guard-after-frame-relocation/run2)
+    timed out in AHCI, but not via the old `107/elr_slot=0` branch:
+    - `cpu0_breadcrumb=50`
+    - `ctl=0x5`
+    - `sp=0xffff000041ba9460`
+    - `elr_slot=0xffff000040191e10`
+    - `cpu0_dispatch: tid=0 elr=0xffff000040194e18 spsr=0x5`
+  - [run3](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/no-cpu0-guard-after-frame-relocation/run3)
+    soft-locked after reaching `cpu0 ticks=5000`, with repeated
+    `CPU0_USER_DISPATCH_STAGE` markers and no redirect markers
+- Disposition:
+  - the old stack-local trampoline-frame corruption branch appears neutralized
+  - but CPU0 EL0 dispatch is not yet cleanly solved on the new baseline
+  - keep the guard in tree for now while treating the post-fix no-guard result
+    as a new, separate branch rather than a regression to the old one
