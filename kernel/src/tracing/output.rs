@@ -330,6 +330,10 @@ pub fn event_type_name(event_type: u16) -> &'static str {
         TraceEventType::KERNEL_RESUME_IRQ_X29 => "KERNEL_RESUME_IRQ_X29",
         TraceEventType::KERNEL_RESUME_IRQ_X30 => "KERNEL_RESUME_IRQ_X30",
         TraceEventType::KERNEL_RESUME_IRQ_SLOTX30 => "KERNEL_RESUME_IRQ_SLOTX30",
+        TraceEventType::RESCHED_TAIL_STAGE => "RESCHED_TAIL_STAGE",
+        TraceEventType::RESCHED_TAIL_SP => "RESCHED_TAIL_SP",
+        TraceEventType::RESCHED_TAIL_X30 => "RESCHED_TAIL_X30",
+        TraceEventType::RESCHED_TAIL_SLOTX30 => "RESCHED_TAIL_SLOTX30",
 
         _ => "UNKNOWN",
     }
@@ -406,6 +410,10 @@ fn payload_description(event_type: u16) -> &'static str {
         TraceEventType::KERNEL_RESUME_IRQ_X29 => "x29_low32",
         TraceEventType::KERNEL_RESUME_IRQ_X30 => "x30_low32",
         TraceEventType::KERNEL_RESUME_IRQ_SLOTX30 => "slot_x30_low32",
+        TraceEventType::RESCHED_TAIL_STAGE => "stage<<16|tid",
+        TraceEventType::RESCHED_TAIL_SP => "sp_low32",
+        TraceEventType::RESCHED_TAIL_X30 => "x30_low32",
+        TraceEventType::RESCHED_TAIL_SLOTX30 => "slot_x30_low32",
         _ => "payload",
     }
 }

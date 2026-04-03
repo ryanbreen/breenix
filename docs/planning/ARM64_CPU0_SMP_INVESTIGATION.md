@@ -770,6 +770,42 @@ difference.
     `check_need_resched_and_switch_arm64()` activity on IRQ return, not timer
     death, not pre-dispatch frame poison, and not timer-handler stack clobber
 
+### 2026-04-03: Outer Resched Tail Slot Mutates After Nested IRQ Return
+
+- Build:
+  - live resched-tail probe kernel SHA1 `bd5a0a50294141fd519b8a1027bd777a138847b6`
+- Artifact:
+  - [20260403-resched-tail-live-probe](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/20260403-resched-tail-live-probe)
+- Result:
+  - the canonical abort reproduced again on CPU 0
+  - immediately before the failing nested timer IRQ:
+    - `KERNEL_RESUME_IRQ_X30 = 0x401a351c`
+    - `KERNEL_RESUME_IRQ_SLOTX30 = 0x40172700`
+  - `0x40172700` resolves to `irq_handler + 136`, which is the sane caller LR
+    slot for the outer `check_need_resched_and_switch_arm64()` frame
+  - after the nested IRQ returns, the first outer-tail probe shows:
+    - `RESCHED_TAIL_X30 = 0x401a351c` (still sane)
+    - `RESCHED_TAIL_SLOTX30 = 0x3b9aca00` (now poisoned)
+  - only after that does the outer path hit:
+    - `EL1_INLINE_ABORT x30=0x3b9aca00`
+- Important implication:
+  - the poison lands in the outer resched frame's saved `x30` slot **after**
+    raw timer handling and **before** the outer epilogue reloads `x29/x30`
+  - this rules out:
+    - raw timer-handler register clobber
+    - immediate register corruption at nested IRQ entry
+    - dormant blocked-thread frame poison as the active branch
+- Additional signal:
+  - the same run emitted:
+    - `INLINE_SAVE_OVERWRITE tid=11 ... elr=0x4010cf90 x30=0x401a507c`
+  - that indicates a nested save path is still touching stack memory in the
+    same resched-tail corridor and remains a prime candidate for the slot
+    mutation mechanism
+- Consequence:
+  - the next justified target is the nested save / nested
+    `check_need_resched_and_switch_arm64()` return interaction that can write
+    into the outer frame between IRQ return and final `ret`
+
 ## Issue Map
 
 - `breenix-jhh`: ARM64 CPU0 interrupt-driven SMP investigation
@@ -804,8 +840,8 @@ Treat the live bug as a nested-reschedule return-path problem.
 1. Confirm from source and traces that a nested timer IRQ can run its own
    `check_need_resched_and_switch_arm64()` return path before the outer
    resched tail has completed.
-2. Probe only the tiny post-IRQ remainder of the outer
-   `check_need_resched_and_switch_arm64()` tail, not generic timer handling or
-   dormant blocked-thread frames.
+2. Treat the outer resched frame's saved `x30` slot as the active corruption
+   target; the next probe should identify which nested save / restore path
+   writes `0x3b9aca00` into that slot.
 3. Compare that control-flow contract against Linux's IRQ-exit / preemption
    rules before attempting any fix.

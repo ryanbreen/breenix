@@ -219,6 +219,10 @@ impl TraceEventType {
     pub const KERNEL_RESUME_IRQ_X29: u16 = 0xFF2E;
     pub const KERNEL_RESUME_IRQ_X30: u16 = 0xFF2F;
     pub const KERNEL_RESUME_IRQ_SLOTX30: u16 = 0xFF30;
+    pub const RESCHED_TAIL_STAGE: u16 = 0xFF31;
+    pub const RESCHED_TAIL_SP: u16 = 0xFF32;
+    pub const RESCHED_TAIL_X30: u16 = 0xFF33;
+    pub const RESCHED_TAIL_SLOTX30: u16 = 0xFF34;
 }
 
 // =============================================================================

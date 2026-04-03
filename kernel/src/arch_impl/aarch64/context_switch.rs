@@ -49,6 +49,8 @@ const TRACE_SCHEDULE_RESUME_PRE_RETURN: u16 = 3;
 const TRACE_KERNEL_RESUME_IRQ_SCHEDULE_FROM_KERNEL: u16 = 1;
 pub(crate) const TRACE_KERNEL_RESUME_IRQ_INLINE_TRAMPOLINE: u16 = 2;
 pub(crate) const TRACE_KERNEL_RESUME_IRQ_RESCHED_TAIL: u16 = 3;
+const TRACE_RESCHED_TAIL_AFTER_IRQ_WINDOW: u16 = 1;
+const TRACE_RESCHED_TAIL_BEFORE_RETURN: u16 = 2;
 
 #[inline]
 fn dispatch_spsr(spsr: u64) -> u64 {
@@ -270,6 +272,49 @@ fn trace_kernel_resume_irq(frame: &Aarch64ExceptionFrame) {
         crate::tracing::TraceEventType::KERNEL_RESUME_IRQ_X30,
         0,
         frame.x30 as u32,
+    );
+}
+
+#[inline(always)]
+fn trace_resched_tail(stage: u16, expected_tid: u64) {
+    let thread_ptr = Aarch64PerCpu::current_thread_ptr() as *const Thread;
+    if thread_ptr.is_null() {
+        return;
+    }
+
+    let thread = unsafe { &*thread_ptr };
+    if thread.owner_pid.is_none() || !thread.blocked_in_syscall || thread.id() != expected_tid {
+        return;
+    }
+
+    let sp: u64;
+    let x30: u64;
+    unsafe {
+        core::arch::asm!("mov {}, sp", out(reg) sp, options(nomem, nostack, preserves_flags));
+        core::arch::asm!("mov {}, x30", out(reg) x30, options(nomem, nostack, preserves_flags));
+    }
+    let slot_x30 = unsafe { core::ptr::read_volatile((sp + 0x48) as *const u64) };
+    let tid = (expected_tid as u32) & 0xFFFF;
+
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::RESCHED_TAIL_STAGE,
+        0,
+        ((stage as u32) << 16) | tid,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::RESCHED_TAIL_SP,
+        0,
+        sp as u32,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::RESCHED_TAIL_X30,
+        0,
+        x30 as u32,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::RESCHED_TAIL_SLOTX30,
+        0,
+        slot_x30 as u32,
     );
 }
 
@@ -2146,9 +2191,15 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         );
     }
     cpu0_breadcrumb(cpu_id, 105); // after daifclr window
+    if let Some(trace_tid) = trace_eret_tid {
+        trace_resched_tail(TRACE_RESCHED_TAIL_AFTER_IRQ_WINDOW, trace_tid);
+    }
 
     cpu0_breadcrumb(cpu_id, 106); // before function return
     cpu0_breadcrumb(cpu_id, 14); // return
+    if let Some(trace_tid) = trace_eret_tid {
+        trace_resched_tail(TRACE_RESCHED_TAIL_BEFORE_RETURN, trace_tid);
+    }
 }
 
 extern "C" fn inline_schedule_trampoline() -> ! {
