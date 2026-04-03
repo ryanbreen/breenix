@@ -489,6 +489,11 @@ pub struct Thread {
     /// Owner process PID (for mapping thread CPU time to process in btop).
     /// None for idle threads and kernel-internal threads not associated with a process.
     pub owner_pid: Option<u64>,
+
+    /// Last known good TTBR0/CR3 value for this thread's userspace address space.
+    /// On ARM64 this lets the scheduler resume blocked-in-syscall threads without
+    /// taking PROCESS_MANAGER in the hot dispatch path when the lock is contended.
+    pub cached_ttbr0: u64,
 }
 
 impl Clone for Thread {
@@ -517,6 +522,7 @@ impl Clone for Thread {
             run_start_ticks: self.run_start_ticks,
             cpu_ticks_total: self.cpu_ticks_total,
             owner_pid: self.owner_pid,
+            cached_ttbr0: self.cached_ttbr0,
         }
     }
 }
@@ -582,6 +588,7 @@ impl Thread {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
+            cached_ttbr0: 0,
         })
     }
 
@@ -642,6 +649,7 @@ impl Thread {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
+            cached_ttbr0: 0,
         })
     }
 
@@ -689,6 +697,7 @@ impl Thread {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
+            cached_ttbr0: 0,
         }
     }
 
@@ -735,6 +744,7 @@ impl Thread {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
+            cached_ttbr0: 0,
         }
     }
 
@@ -794,6 +804,7 @@ impl Thread {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
+            cached_ttbr0: 0,
         }
     }
 
@@ -848,6 +859,7 @@ impl Thread {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
+            cached_ttbr0: 0,
         }
     }
 
@@ -927,6 +939,7 @@ impl Thread {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
+            cached_ttbr0: 0,
         }
     }
 
@@ -969,6 +982,7 @@ impl Thread {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
+            cached_ttbr0: 0,
         }
     }
 }

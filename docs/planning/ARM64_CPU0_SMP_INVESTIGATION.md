@@ -945,6 +945,84 @@ difference.
   - the next confirmation step should be another fixed-state sweep to ensure
     the `run4` failure mode does not recur under the new build
 
+### 2026-04-03: Ret-Dispatch For Blocked Syscalls Was Missing TTBR0 Setup
+
+- Failure that exposed it:
+  - [fixed-state-ahci-timeout-trace/run5](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/fixed-state-ahci-timeout-trace/run5)
+  - kernel `DATA_ABORT` after `bsshd` starts:
+    - `FAR=0x7ffffdf6b010`
+    - `ELR=0xffff0000401cf2b0` (`memcpy`)
+    - `x30=0xffff0000401560d0` (`copy_to_user`)
+    - `AHCI arm port=1 cmd=7014 ... waiter_tid=13`
+- Source-level divergence:
+  - the normal ERET dispatch path already set up `TTBR0_EL1` for
+    `blocked_in_syscall` userspace threads
+  - the inline ret-dispatch corridors bypassed that setup completely
+  - that meant a resumed blocked-in-syscall thread could return into kernel
+    code and hit `copy_to_user()` with the wrong userspace page table active
+- Minimal fix:
+  - ret-dispatch now only proceeds after the same TTBR0 preparation that the
+    ERET path requires
+  - if TTBR0 cannot be prepared, the code falls back to the existing ERET
+    corridor instead of resuming blindly
+- Validation sweep:
+  - [fixed-state-inline-ret-ttbr0](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/fixed-state-inline-ret-ttbr0)
+- Result:
+  - the CPU3 `copy_to_user()` / `memcpy` abort did not recur in the 5-run sweep
+  - the active failure branch narrowed back to intermittent AHCI timeout /
+    CPU0 liveness, not post-resume kernel copyout faults
+
+### 2026-04-03: Cached TTBR0 Removes PM-Lock Contention From The Timeout Corridor
+
+- New hypothesis:
+  - even after the ret-dispatch TTBR0 fix, CPU0 could still hit
+    `PmLockBusy` during blocked-in-syscall resume because dispatch still
+    required a `try_manager()` lookup for the process page table
+- Structural change under test:
+  - cache the last known-good live `TTBR0_EL1` on the thread when saving
+    userspace or blocked-in-syscall kernel context
+  - when dispatch sees `PmLockBusy`, use the cached TTBR0 instead of
+    redirecting immediately
+- Validation sweep:
+  - [fixed-state-cached-ttbr0](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/fixed-state-cached-ttbr0)
+- Cross-run result:
+  - 4/5 runs reached the good baseline:
+    - `bsshd: listening on 0.0.0.0:2222`
+    - `[timer] cpu0 ticks=5000`
+  - the one remaining bad run still timed out in AHCI:
+    - [run2](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/fixed-state-cached-ttbr0/run2)
+  - but the bad corridor changed materially:
+    - `PM_LOCK_BUSY_CONTEXT` disappeared from the bad run
+    - the only remaining last-live CPU0 redirects were `reason=6`:
+      `TRACE_REDIRECT_CPU0_USER_GUARD` for user threads on CPU0
+- Interpretation:
+  - the cached-TTBR0 change is a real architectural improvement
+  - it removed one source of scheduler-side address-space contention from the
+    hot resume path
+  - the remaining timeout branch is now more tightly coupled to the CPU0 EL0
+    redirect workaround itself
+
+### 2026-04-03: Removing The CPU0 EL0 Redirect Guard Is Not Yet Safe
+
+- Hypothesis under test:
+  - after the cached-TTBR0 change, the remaining timeout branch might be
+    sustained primarily by the CPU0 EL0 redirect workaround
+- Experiment:
+  - remove the CPU0 user-dispatch guard and rerun the fixed-state sweep
+- Validation sweep:
+  - [fixed-state-no-cpu0-guard](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/fixed-state-no-cpu0-guard)
+- Result:
+  - the experiment regressed badly
+  - the first three runs all timed out early in AHCI bring-up
+  - `PM_LOCK_BUSY_CONTEXT` reappeared on the first bad run
+  - the sweep was stopped after 3 runs because the failure mix was clearly
+    worse than the cached-TTBR0 baseline
+- Disposition:
+  - removing the CPU0 EL0 redirect guard is currently falsified as a
+    standalone fix
+  - keep the guard for now and continue from the cleaner cached-TTBR0
+    baseline instead of looping back into the noisier no-guard branch
+
 ### Reopen Criteria For The Old Branch
 
 - Reopen the old nested-resume / inline-save branch only if any of the
@@ -954,6 +1032,14 @@ difference.
   - `queue_empty stuck_tid=...`
   - CPU0-specific timer/scheduler death before `bsshd` comes up
 - Otherwise treat the post-fix `sys_fstat` abort as the active bug.
+- Update:
+  - the `sys_fstat` / `copy_to_user` abort branch is now closed on the current
+    baseline
+  - the active branch is:
+    - intermittent AHCI timeout with CPU0 timer / interrupt liveness collapse
+    - on the best current baseline, that bad run no longer needs
+      `PM_LOCK_BUSY_CONTEXT`; it dies with the CPU0 EL0 redirect guard still in
+      the last-live CPU0 corridor
 
 ## Issue Map
 
@@ -984,12 +1070,14 @@ This investigation is complete only when all of the following are true:
 
 ## Immediate Next Step
 
-Treat the active bug as the post-fix `sys_fstat` user-pointer abort path.
+Treat the active bug as the remaining AHCI timeout / CPU0 liveness branch on
+the cached-TTBR0 baseline.
 
-1. Reproduce the `run4`-style `sys_fstat` `DATA_ABORT` and confirm whether the
-   faulting user pointer (`0xfffffeffe130`) is valid, unmapped, or racing with
-   process teardown.
-2. Validate the new `copy_to_user()` fix with another fixed-state sweep; the
-   expected Linux-like behavior is `-EFAULT`, not a kernel abort.
-3. Only reopen the old nested-resume investigation if the pre-fix signatures
-   return on this new baseline.
+1. Use [fixed-state-cached-ttbr0/run2](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/fixed-state-cached-ttbr0/run2)
+   as the current reference bad artifact, because it is the cleanest bad run
+   with `PM_LOCK_BUSY_CONTEXT` removed.
+2. Compare that bad run against the good cached-TTBR0 runs and isolate exactly
+   why the last-live CPU0 events are still `TRACE_REDIRECT_CPU0_USER_GUARD`
+   before CPU0 stops servicing work.
+3. Do not revisit the no-guard branch unless a new hypothesis explains why the
+   cached-TTBR0 baseline still depends on the guard in some runs and not others.

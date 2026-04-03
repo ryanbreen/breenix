@@ -916,6 +916,63 @@ fn take_inline_ret_dispatch_info(
     ))
 }
 
+#[inline(always)]
+fn inline_ret_dispatch_info_if_ready(
+    sched: &mut Scheduler,
+    thread_id: u64,
+) -> Option<(*mut u8, *const CpuContext, u64, Option<crate::task::thread::VirtAddr>, u64, u64, u64)>
+{
+    const KERNEL_VIRT_BASE: u64 = 0xFFFF_0000_0000_0000;
+
+    let should_use_inline_ret = match sched.get_thread(thread_id) {
+        Some(thread) if thread.has_started && thread.saved_by_inline_schedule => {
+            let needs_ttbr0 = thread.owner_pid.is_some()
+                && thread.privilege != ThreadPrivilege::Kernel
+                && (thread.blocked_in_syscall || thread.context.elr_el1 >= KERNEL_VIRT_BASE);
+
+            if needs_ttbr0 {
+                match set_next_ttbr0_for_thread(thread_id) {
+                    TtbrResult::Ok => {
+                        switch_ttbr0_if_needed(thread_id);
+                        true
+                    }
+                    TtbrResult::PmLockBusy if thread.cached_ttbr0 != 0 => {
+                        unsafe {
+                            Aarch64PerCpu::set_next_cr3(thread.cached_ttbr0);
+                        }
+                        switch_ttbr0_if_needed(thread_id);
+                        true
+                    }
+                    TtbrResult::PmLockBusy | TtbrResult::ProcessGone => false,
+                }
+            } else {
+                true
+            }
+        }
+        _ => false,
+    };
+
+    if !should_use_inline_ret {
+        return None;
+    }
+
+    sched.get_thread_mut(thread_id)
+        .and_then(take_inline_ret_dispatch_info)
+}
+
+#[inline(always)]
+fn cache_thread_ttbr0(thread: &mut Thread) {
+    if thread.owner_pid.is_none() {
+        return;
+    }
+
+    let ttbr0: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
+    }
+    thread.cached_ttbr0 = ttbr0;
+}
+
 /// Save userspace context — called inside scheduler lock hold.
 fn save_userspace_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFrame) {
     if frame.elr == 0 && frame.x30 == 0 && frame.spsr == 0 {
@@ -985,6 +1042,7 @@ fn save_userspace_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFr
         core::arch::asm!("mrs {}, tpidr_el0", out(reg) tpidr, options(nomem, nostack));
     }
     thread.context.tpidr_el0 = tpidr;
+    cache_thread_ttbr0(thread);
 
     // CRITICAL: Save kernel stack pointer for blocked-in-syscall restoration.
     thread.context.sp = frame as *const _ as u64 + 272;
@@ -1141,6 +1199,7 @@ fn save_kernel_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFrame
         core::arch::asm!("mrs {}, tpidr_el0", out(reg) tpidr, options(nomem, nostack));
     }
     thread.context.tpidr_el0 = tpidr;
+    cache_thread_ttbr0(thread);
     trace_ctx_publish(thread, TRACE_CTX_PUBLISH_SAVE_KERNEL);
 
     if thread.owner_pid.is_some() && thread.blocked_in_syscall {
@@ -1667,9 +1726,19 @@ fn dispatch_thread_locked(
         // Must succeed BEFORE restoring context — if TTBR0 setup fails,
         // redirect to idle (same pattern as regular userspace threads).
         if (blocked_in_syscall || is_in_kernel_mode) && !is_kernel {
+            let cached_ttbr0 = sched
+                .get_thread(thread_id)
+                .map(|thread| thread.cached_ttbr0)
+                .unwrap_or(0);
             let ttbr_result = set_next_ttbr0_for_thread(thread_id);
             match ttbr_result {
                 TtbrResult::Ok => {
+                    switch_ttbr0_if_needed(thread_id);
+                }
+                TtbrResult::PmLockBusy if cached_ttbr0 != 0 => {
+                    unsafe {
+                        Aarch64PerCpu::set_next_cr3(cached_ttbr0);
+                    }
                     switch_ttbr0_if_needed(thread_id);
                 }
                 TtbrResult::PmLockBusy => {
@@ -1802,9 +1871,19 @@ fn dispatch_thread_locked(
         // If PM lock is contended, redirect to idle and requeue. The thread
         // will be rescheduled on the next timer tick (~5ms). Spinning here
         // wastes CPU cycles that other threads need for fork/exec to complete.
+        let cached_ttbr0 = sched
+            .get_thread(thread_id)
+            .map(|thread| thread.cached_ttbr0)
+            .unwrap_or(0);
         let ttbr_result = set_next_ttbr0_for_thread(thread_id);
         match ttbr_result {
             TtbrResult::Ok => {
+                switch_ttbr0_if_needed(thread_id);
+            }
+            TtbrResult::PmLockBusy if cached_ttbr0 != 0 => {
+                unsafe {
+                    Aarch64PerCpu::set_next_cr3(cached_ttbr0);
+                }
                 switch_ttbr0_if_needed(thread_id);
             }
             TtbrResult::PmLockBusy => {
@@ -2144,8 +2223,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
 
     let is_idle = sched.is_idle_thread_inner(new_id);
     let ret_dispatch_info = if !is_idle {
-        sched.get_thread_mut(new_id)
-            .and_then(take_inline_ret_dispatch_info)
+        inline_ret_dispatch_info_if_ready(sched, new_id)
     } else {
         None
     };
@@ -2331,8 +2409,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     cpu0_breadcrumb(cpu_id, 34); // before ret-based dispatch check
     let is_idle = sched.is_idle_thread_inner(new_id);
     let ret_dispatch_info = if !is_idle {
-        sched.get_thread_mut(new_id)
-            .and_then(take_inline_ret_dispatch_info)
+        inline_ret_dispatch_info_if_ready(sched, new_id)
     } else {
         None
     };

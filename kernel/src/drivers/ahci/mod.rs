@@ -252,6 +252,7 @@ static AHCI_LAST_ARMED_CMD: AtomicU32 = AtomicU32::new(0);
 static AHCI_LAST_ISR_COMPLETE_PORT: AtomicU32 = AtomicU32::new(u32::MAX);
 static AHCI_LAST_ISR_COMPLETE_CMD: AtomicU32 = AtomicU32::new(0);
 static AHCI_LAST_ISR_COMPLETE_WAITER: AtomicU64 = AtomicU64::new(0);
+static AHCI_TIMEOUT_TRACE_DUMPED: AtomicBool = AtomicBool::new(false);
 
 /// Per-port I/O serialisation lock.
 ///
@@ -1240,6 +1241,14 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
     {
         daif = 0;
     }
+    #[cfg(target_arch = "aarch64")]
+    let timeout_cpu: u64 = {
+        let mpidr: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
+        }
+        mpidr & 0xFF
+    };
     crate::serial_println!(
         "[ahci] Port {} TIMEOUT ({}s): CI={:#x} IS={:#x} TFD={:#x} HBA_IS={:#x}",
         port,
@@ -1408,15 +1417,9 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
     #[cfg(target_arch = "aarch64")]
     {
         use crate::arch_impl::aarch64::timer_interrupt::{TIMER_TICK_DAIF, TIMER_TICK_COUNT};
-        let current_cpu: u64;
-        unsafe {
-            let mpidr: u64;
-            core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
-            current_cpu = mpidr & 0xFF;
-        }
         crate::serial_println!(
             "[ahci]   timeout_cpu={} cpu_spsr=[{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x}]",
-            current_cpu,
+            timeout_cpu,
             TIMER_TICK_DAIF[0].load(Ordering::Relaxed),
             TIMER_TICK_DAIF[1].load(Ordering::Relaxed),
             TIMER_TICK_DAIF[2].load(Ordering::Relaxed),
@@ -1584,6 +1587,17 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
             cntvct.wrapping_sub(cval) as i64,
             cntvct.wrapping_sub(cval) / 24000,
         );
+        if !AHCI_TIMEOUT_TRACE_DUMPED.swap(true, Ordering::Relaxed) {
+            crate::serial_println!("[ahci]   dumping trace buffer cpu0");
+            crate::tracing::dump_buffer(0);
+            if timeout_cpu != 0 {
+                crate::serial_println!(
+                    "[ahci]   dumping trace buffer timeout_cpu={}",
+                    timeout_cpu
+                );
+                crate::tracing::dump_buffer(timeout_cpu as usize);
+            }
+        }
     }
 }
 

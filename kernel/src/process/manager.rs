@@ -829,6 +829,7 @@ impl ProcessManager {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: Some(process.id.as_u64()),
+            cached_ttbr0: 0,
         };
 
         Ok(thread)
@@ -907,6 +908,7 @@ impl ProcessManager {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: Some(process.id.as_u64()),
+            cached_ttbr0: 0,
         };
 
         Ok(thread)
@@ -990,6 +992,7 @@ impl ProcessManager {
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: Some(process.id.as_u64()),
+            cached_ttbr0: 0,
         };
 
         Ok(thread)
@@ -2238,6 +2241,7 @@ impl ProcessManager {
                 run_start_ticks: 0,
                 cpu_ticks_total: 0,
                 owner_pid: Some(child_pid.as_u64()),
+                cached_ttbr0: parent_thread.cached_ttbr0,
             };
 
             // CoW fork: Child uses the same stack virtual addresses as the parent.
