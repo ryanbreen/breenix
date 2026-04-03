@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "breenix",
+  "project_id": "39072c45-2ab4-4e05-b539-9180fafff339"
+}

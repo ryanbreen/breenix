@@ -15,6 +15,8 @@
 //! 5. On exception return, check need_resched and perform context switch if needed
 
 use crate::task::scheduler;
+use super::exception_frame::Aarch64ExceptionFrame;
+use crate::arch_impl::traits::PerCpuOps;
 use crate::tracing::providers::irq::trace_timer_tick;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -131,12 +133,32 @@ pub static CPU0_LAST_TIMER_ELR: AtomicU64 = AtomicU64::new(0);
 ///   104 = check_need_resched: before daifclr window
 ///   105 = check_need_resched: after daifclr window
 ///   106 = check_need_resched: before function return
+///   107 = aarch64_enter_exception_frame: after frame SP switch
+///   108 = aarch64_enter_exception_frame: after ELR/SPSR programmed
+///   111 = aarch64_enter_exception_frame: after frame ELR load/normalize
+///   112 = aarch64_enter_exception_frame: after frame ELR load
+///   109 = aarch64_enter_exception_frame: after target SP pivot
+///   110 = aarch64_enter_exception_frame: just before ERET
+#[no_mangle]
 pub static CPU0_BREADCRUMB_ID: AtomicU64 = AtomicU64::new(0);
 
 /// CPU 0 CNTV_CTL_EL0 snapshot at each breadcrumb point.
 /// After CPU 0 dies, shows the timer control register state at the last breadcrumb.
 /// Bit 0: ENABLE, Bit 1: IMASK, Bit 2: ISTATUS.
+#[no_mangle]
 pub static CPU0_BREADCRUMB_CTL: AtomicU64 = AtomicU64::new(0);
+
+/// CPU 0 SP snapshot at the last breadcrumb point.
+/// For the exception-frame breadcrumbs, this is the exact frame pointer the
+/// handoff path adopted before the next load/store in assembly.
+#[no_mangle]
+pub static CPU0_BREADCRUMB_SP: AtomicU64 = AtomicU64::new(0);
+
+/// CPU 0 snapshot of the exception-frame ELR slot at the last breadcrumb point.
+/// This is the raw value at `[sp + 248]` before `aarch64_enter_exception_frame`
+/// programs `ELR_EL1`.
+#[no_mangle]
+pub static CPU0_BREADCRUMB_ELR_SLOT: AtomicU64 = AtomicU64::new(0);
 
 /// CPU 0 dispatch diagnostics — set in the trampoline just before ERET.
 /// After CPU 0 dies, these identify the thread and destination.
@@ -385,6 +407,54 @@ fn arm_timer(ticks: u64) {
     }
 }
 
+#[inline(always)]
+fn trace_kernel_resume_timer_irq(frame: &Aarch64ExceptionFrame, kind: u16) {
+    let thread_ptr =
+        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::current_thread_ptr()
+            as *const crate::task::thread::Thread;
+    if thread_ptr.is_null() {
+        return;
+    }
+
+    let thread = unsafe { &*thread_ptr };
+    if thread.owner_pid.is_none() || !thread.blocked_in_syscall {
+        return;
+    }
+
+    let tid = (thread.id() as u32) & 0xFFFF;
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::KERNEL_RESUME_IRQ_INFO,
+        0,
+        ((kind as u32) << 16) | tid,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::KERNEL_RESUME_IRQ_ELR,
+        0,
+        frame.elr as u32,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::KERNEL_RESUME_IRQ_X29,
+        0,
+        frame.x29 as u32,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::KERNEL_RESUME_IRQ_X30,
+        0,
+        frame.x30 as u32,
+    );
+
+    if (kind & 0xFF) == crate::arch_impl::aarch64::context_switch::TRACE_KERNEL_RESUME_IRQ_RESCHED_TAIL
+    {
+        let interrupted_sp = frame as *const _ as u64 + 272;
+        let slot_x30 = unsafe { core::ptr::read_volatile((interrupted_sp + 0x48) as *const u64) };
+        crate::tracing::record_event(
+            crate::tracing::TraceEventType::KERNEL_RESUME_IRQ_SLOTX30,
+            0,
+            slot_x30 as u32,
+        );
+    }
+}
+
 /// Timer interrupt handler - minimal work in interrupt context
 ///
 /// This is called from handle_irq() when IRQ 27 (virtual timer) fires.
@@ -395,9 +465,21 @@ fn arm_timer(ticks: u64) {
 /// 4. All CPUs: decrements per-CPU time quantum
 /// 5. CPU 0 only: sets need_resched if quantum expired (Phase 2: only CPU 0 schedules)
 #[no_mangle]
-pub extern "C" fn timer_interrupt_handler() {
+pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
     // Enter IRQ context (increment HARDIRQ count)
     crate::per_cpu_aarch64::irq_enter();
+
+    let resume_irq_kind = if frame.is_null() {
+        None
+    } else {
+        crate::arch_impl::aarch64::context_switch::classify_kernel_resume_irq_elr(
+            unsafe { &*frame }.elr,
+        )
+    };
+
+    if let (Some(kind), false) = (resume_irq_kind, frame.is_null()) {
+        trace_kernel_resume_timer_irq(unsafe { &*frame }, kind);
+    }
 
     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
 
@@ -652,6 +734,9 @@ pub extern "C" fn timer_interrupt_handler() {
     }
 
     // Exit IRQ context (decrement HARDIRQ count)
+    if let (Some(kind), false) = (resume_irq_kind, frame.is_null()) {
+        trace_kernel_resume_timer_irq(unsafe { &*frame }, kind | 0x100);
+    }
     crate::per_cpu_aarch64::irq_exit();
 }
 
@@ -903,6 +988,7 @@ fn dump_lockup_state(stall_ticks: u64) {
     raw_serial_str(b" seconds (");
     print_timer_count_decimal(stall_ticks);
     raw_serial_str(b" ticks)\n");
+    crate::tracing::disable();
 
     // Try to get scheduler info without blocking (try_lock)
     // If the scheduler lock is held, that itself is diagnostic info
@@ -959,14 +1045,96 @@ fn dump_lockup_state(stall_ticks: u64) {
             if t.blocked_in_syscall {
                 raw_serial_str(b" bis");
             }
+            if t.saved_by_inline_schedule {
+                raw_serial_str(b" inl");
+            }
             if t.has_wake_time {
                 raw_serial_str(b" wt");
             }
             if t.privilege == 1 {
                 raw_serial_str(b" user");
             }
+            if t.owner_pid != 0 {
+                raw_serial_str(b" pid=");
+                print_timer_count_decimal(t.owner_pid);
+            }
+            raw_serial_str(b" elr=");
+            crate::arch_impl::aarch64::context_switch::raw_uart_hex(t.elr_el1);
+            raw_serial_str(b" x30=");
+            crate::arch_impl::aarch64::context_switch::raw_uart_hex(t.x30);
+            raw_serial_str(b" sp=");
+            crate::arch_impl::aarch64::context_switch::raw_uart_hex(t.sp);
+            if t.saved_by_inline_schedule
+                && t.sp >= 0xFFFF_0000_5200_0000
+                && t.sp < 0xFFFF_0000_5600_0000
+            {
+                let mut saved_lr_rel = i64::MIN;
+                let mut rel = -0x80i64;
+                while rel <= 0x100 {
+                    let addr = if rel < 0 {
+                        t.sp.wrapping_sub((-rel) as u64)
+                    } else {
+                        t.sp.wrapping_add(rel as u64)
+                    };
+                    let slot = unsafe { core::ptr::read_volatile(addr as *const u64) };
+                    if slot == t.inline_schedule_caller_lr {
+                        saved_lr_rel = rel;
+                        break;
+                    }
+                    rel += 8;
+                }
+                raw_serial_str(b" saved_lr=");
+                crate::arch_impl::aarch64::context_switch::raw_uart_hex(
+                    t.inline_schedule_caller_lr,
+                );
+                raw_serial_str(b" saved_sp=");
+                crate::arch_impl::aarch64::context_switch::raw_uart_hex(
+                    t.inline_schedule_saved_sp,
+                );
+                raw_serial_str(b" sp_delta=");
+                crate::arch_impl::aarch64::context_switch::raw_uart_hex(
+                    t.sp.wrapping_sub(t.inline_schedule_saved_sp),
+                );
+                raw_serial_str(b" lr_rel=");
+                if saved_lr_rel == i64::MIN {
+                    raw_serial_str(b"none");
+                } else {
+                    if saved_lr_rel < 0 {
+                        raw_serial_str(b"-");
+                        crate::arch_impl::aarch64::context_switch::raw_uart_hex(
+                            (-saved_lr_rel) as u64,
+                        );
+                    } else {
+                        crate::arch_impl::aarch64::context_switch::raw_uart_hex(saved_lr_rel as u64);
+                    }
+                }
+                let frame20 = unsafe { core::ptr::read_volatile((t.sp + 0x20) as *const u64) };
+                let frame30 = unsafe { core::ptr::read_volatile((t.sp + 0x30) as *const u64) };
+                let frame40 = unsafe { core::ptr::read_volatile((t.sp + 0x40) as *const u64) };
+                let frame50 = unsafe { core::ptr::read_volatile((t.sp + 0x50) as *const u64) };
+                let frame60 = unsafe { core::ptr::read_volatile((t.sp + 0x60) as *const u64) };
+                let frame70 = unsafe { core::ptr::read_volatile((t.sp + 0x70) as *const u64) };
+                raw_serial_str(b" f20=");
+                crate::arch_impl::aarch64::context_switch::raw_uart_hex(frame20);
+                raw_serial_str(b" f30=");
+                crate::arch_impl::aarch64::context_switch::raw_uart_hex(frame30);
+                raw_serial_str(b" f40=");
+                crate::arch_impl::aarch64::context_switch::raw_uart_hex(frame40);
+                raw_serial_str(b" f50=");
+                crate::arch_impl::aarch64::context_switch::raw_uart_hex(frame50);
+                raw_serial_str(b" f60=");
+                crate::arch_impl::aarch64::context_switch::raw_uart_hex(frame60);
+                raw_serial_str(b" f70=");
+                crate::arch_impl::aarch64::context_switch::raw_uart_hex(frame70);
+            }
             raw_serial_str(b"\n");
         }
+
+        raw_serial_str(b"\n  Deferred requeue snapshots:\n");
+        crate::arch_impl::aarch64::context_switch::dump_defer_requeue_snapshots();
+
+        raw_serial_str(b"\n  Trace buffers:\n");
+        crate::tracing::dump_all_buffers();
     } else {
         raw_serial_str(b"HELD (possible deadlock)\n");
     }

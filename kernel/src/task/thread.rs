@@ -458,6 +458,16 @@ pub struct Thread {
     /// Matches Linux's cpu_switch_to approach: kernel-to-kernel switches use ret.
     pub saved_by_inline_schedule: bool,
 
+    /// Diagnostic: caller LR saved in the suspended schedule_from_kernel() frame.
+    /// Used to detect whether the inline-saved kernel frame is already corrupt
+    /// by the time a later exception save overwrites this thread's context.
+    pub inline_schedule_caller_lr: u64,
+
+    /// Diagnostic: original SP of the suspended schedule_from_kernel() frame.
+    /// Used to distinguish dormant-frame overwrite from later publication of an
+    /// incorrect thread.context.sp value.
+    pub inline_schedule_saved_sp: u64,
+
     /// Saved userspace context when blocked in syscall (for signal delivery)
     /// When a thread blocks in a syscall (pause/waitpid), we save the pre-syscall
     /// userspace context here. If a signal arrives while blocked, we use this
@@ -479,6 +489,11 @@ pub struct Thread {
     /// Owner process PID (for mapping thread CPU time to process in btop).
     /// None for idle threads and kernel-internal threads not associated with a process.
     pub owner_pid: Option<u64>,
+
+    /// Last known good TTBR0/CR3 value for this thread's userspace address space.
+    /// On ARM64 this lets the scheduler resume blocked-in-syscall threads without
+    /// taking PROCESS_MANAGER in the hot dispatch path when the lock is contended.
+    pub cached_ttbr0: u64,
 }
 
 impl Clone for Thread {
@@ -500,11 +515,14 @@ impl Clone for Thread {
             has_started: self.has_started,
             blocked_in_syscall: self.blocked_in_syscall,
             saved_by_inline_schedule: false,
+            inline_schedule_caller_lr: self.inline_schedule_caller_lr,
+            inline_schedule_saved_sp: self.inline_schedule_saved_sp,
             saved_userspace_context: self.saved_userspace_context.clone(),
             wake_time_ns: self.wake_time_ns,
             run_start_ticks: self.run_start_ticks,
             cpu_ticks_total: self.cpu_ticks_total,
             owner_pid: self.owner_pid,
+            cached_ttbr0: self.cached_ttbr0,
         }
     }
 }
@@ -563,11 +581,14 @@ impl Thread {
             has_started: false,        // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
             saved_by_inline_schedule: false,
+            inline_schedule_caller_lr: 0,
+            inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
+            cached_ttbr0: 0,
         })
     }
 
@@ -621,11 +642,14 @@ impl Thread {
             has_started: false,
             blocked_in_syscall: false,
             saved_by_inline_schedule: false,
+            inline_schedule_caller_lr: 0,
+            inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
+            cached_ttbr0: 0,
         })
     }
 
@@ -666,11 +690,14 @@ impl Thread {
             has_started: false,        // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
             saved_by_inline_schedule: false,
+            inline_schedule_caller_lr: 0,
+            inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
+            cached_ttbr0: 0,
         }
     }
 
@@ -710,11 +737,14 @@ impl Thread {
             has_started: false,
             blocked_in_syscall: false,
             saved_by_inline_schedule: false,
+            inline_schedule_caller_lr: 0,
+            inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
+            cached_ttbr0: 0,
         }
     }
 
@@ -767,11 +797,14 @@ impl Thread {
             has_started: false,        // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
             saved_by_inline_schedule: false,
+            inline_schedule_caller_lr: 0,
+            inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
+            cached_ttbr0: 0,
         }
     }
 
@@ -819,11 +852,14 @@ impl Thread {
             has_started: false,
             blocked_in_syscall: false,
             saved_by_inline_schedule: false,
+            inline_schedule_caller_lr: 0,
+            inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
+            cached_ttbr0: 0,
         }
     }
 
@@ -896,11 +932,14 @@ impl Thread {
             has_started: false,        // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
             saved_by_inline_schedule: false,
+            inline_schedule_caller_lr: 0,
+            inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
+            cached_ttbr0: 0,
         }
     }
 
@@ -936,11 +975,14 @@ impl Thread {
             has_started: false,
             blocked_in_syscall: false,
             saved_by_inline_schedule: false,
+            inline_schedule_caller_lr: 0,
+            inline_schedule_saved_sp: 0,
             saved_userspace_context: None,
             wake_time_ns: None,
             run_start_ticks: 0,
             cpu_ticks_total: 0,
             owner_pid: None,
+            cached_ttbr0: 0,
         }
     }
 }

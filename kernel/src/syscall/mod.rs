@@ -576,12 +576,17 @@ pub fn check_signals_for_eintr() -> Option<i32> {
     };
 
     let manager_guard = crate::process::manager();
+    let mut interrupted = false;
     if let Some(ref manager) = *manager_guard {
         if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
             if crate::signal::delivery::has_deliverable_signals(process) {
-                return Some(errno::EINTR);
+                interrupted = true;
             }
         }
+    }
+    drop(manager_guard);
+    if interrupted {
+        return Some(errno::EINTR);
     }
     None
 }

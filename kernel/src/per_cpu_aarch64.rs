@@ -34,7 +34,9 @@ pub struct PerCpuData {
     _pad: [u8; 3],
     /// User SP scratch space (offset 40)
     pub user_sp_scratch: u64,
-    /// TSS-equivalent pointer (offset 48) - unused on ARM64
+    /// Scratch slot used by assembly nested-IRQ EL1 return paths (offset 48).
+    /// The field name remains `tss` for layout compatibility with shared
+    /// per-CPU constants, but ARM64 repurposes it as a nested resume-SP slot.
     pub tss: *mut u8,
     /// Softirq pending bitmap (offset 56)
     pub softirq_pending: u32,

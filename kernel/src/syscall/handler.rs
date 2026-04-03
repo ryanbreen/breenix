@@ -497,6 +497,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Pwrite64) => {
             super::handlers::sys_pwrite64(args.0 as i32, args.1, args.2, args.3 as i64)
         }
+        Some(SyscallNumber::Spawn) => SyscallResult::Err(super::ErrorCode::NoSys as u64),
         None => {
             log::warn!("Unknown syscall number: {} - returning ENOSYS", syscall_num);
             SyscallResult::Err(super::ErrorCode::NoSys as u64)

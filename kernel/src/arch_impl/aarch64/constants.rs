@@ -127,7 +127,7 @@ pub const PERCPU_NEED_RESCHED_OFFSET: usize = 36;
 /// Offset of user_rsp_scratch in PerCpuData.
 pub const PERCPU_USER_RSP_SCRATCH_OFFSET: usize = 40;
 
-/// Offset of TSS pointer in PerCpuData.
+/// Offset of the shared TSS / ARM64 nested-resume scratch slot in PerCpuData.
 pub const PERCPU_TSS_OFFSET: usize = 48;
 
 /// Offset of softirq_pending in PerCpuData.

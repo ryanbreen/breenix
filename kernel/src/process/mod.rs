@@ -3,6 +3,7 @@
 //! This module handles process creation, scheduling, and lifecycle management.
 //! A process is a running instance of a program with its own address space.
 
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 pub mod creation;
@@ -12,6 +13,12 @@ pub mod process;
 
 pub use manager::ProcessManager;
 pub use process::{Process, ProcessId, ProcessState};
+
+const PM_LOCK_OWNER_NONE: u64 = u64::MAX;
+
+/// Best-effort owner snapshot for PROCESS_MANAGER lock contention analysis.
+static PROCESS_MANAGER_OWNER_CPU: AtomicU64 = AtomicU64::new(PM_LOCK_OWNER_NONE);
+static PROCESS_MANAGER_OWNER_TID: AtomicU64 = AtomicU64::new(PM_LOCK_OWNER_NONE);
 
 /// Wrapper that holds the process manager lock and restores interrupt state on drop.
 ///
@@ -37,6 +44,8 @@ impl Drop for ProcessManagerGuard {
         unsafe {
             core::mem::ManuallyDrop::drop(&mut self._guard);
         }
+
+        note_process_manager_lock_released();
 
         #[cfg(target_arch = "aarch64")]
         unsafe {
@@ -66,6 +75,42 @@ impl core::ops::DerefMut for ProcessManagerGuard {
 /// Global process manager
 pub static PROCESS_MANAGER: Mutex<Option<ProcessManager>> = Mutex::new(None);
 
+#[inline(always)]
+fn note_process_manager_lock_acquired() {
+    let (cpu, tid) = current_process_manager_owner_identity();
+    PROCESS_MANAGER_OWNER_TID.store(tid, Ordering::Relaxed);
+    PROCESS_MANAGER_OWNER_CPU.store(cpu, Ordering::Release);
+}
+
+#[inline(always)]
+fn note_process_manager_lock_released() {
+    PROCESS_MANAGER_OWNER_TID.store(PM_LOCK_OWNER_NONE, Ordering::Relaxed);
+    PROCESS_MANAGER_OWNER_CPU.store(PM_LOCK_OWNER_NONE, Ordering::Release);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn current_process_manager_owner_identity() -> (u64, u64) {
+    let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
+    (cpu, 0)
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline(always)]
+fn current_process_manager_owner_identity() -> (u64, u64) {
+    (0, 0)
+}
+
+/// Snapshot the best-effort PROCESS_MANAGER lock owner.
+pub fn process_manager_owner_snapshot() -> Option<(u64, u64)> {
+    let cpu = PROCESS_MANAGER_OWNER_CPU.load(Ordering::Acquire);
+    if cpu == PM_LOCK_OWNER_NONE {
+        return None;
+    }
+    let tid = PROCESS_MANAGER_OWNER_TID.load(Ordering::Relaxed);
+    Some((cpu, tid))
+}
+
 /// Initialize the process management system
 pub fn init() {
     let manager = ProcessManager::new();
@@ -87,6 +132,7 @@ pub fn manager() -> ProcessManagerGuard {
             core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
         }
         let guard = PROCESS_MANAGER.lock();
+        note_process_manager_lock_acquired();
         ProcessManagerGuard {
             _guard: core::mem::ManuallyDrop::new(guard),
             saved_daif,
@@ -95,6 +141,7 @@ pub fn manager() -> ProcessManagerGuard {
     #[cfg(not(target_arch = "aarch64"))]
     {
         let guard = PROCESS_MANAGER.lock();
+        note_process_manager_lock_acquired();
         ProcessManagerGuard {
             _guard: core::mem::ManuallyDrop::new(guard),
         }

@@ -56,6 +56,52 @@ type Cpu = crate::arch_impl::x86_64::cpu::X86Cpu;
 /// POSIX EINTR errno value.
 const EINTR: i32 = 4;
 
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn trace_wait_timeout_stage(stage: u16) {
+    if stage != 0 {
+        return;
+    }
+
+    use crate::arch_impl::aarch64::percpu::Aarch64PerCpu;
+    use crate::arch_impl::traits::PerCpuOps;
+
+    let sp: u64;
+    let x30: u64;
+    let slot20: u64;
+    unsafe {
+        core::arch::asm!(
+            "mov {}, sp",
+            "mov {}, x30",
+            out(reg) sp,
+            out(reg) x30,
+            options(nomem, nostack, preserves_flags)
+        );
+        slot20 = core::ptr::read_volatile((sp + 0x20) as *const u64);
+    }
+    let tid = unsafe {
+        let thread_ptr = Aarch64PerCpu::current_thread_ptr() as *const crate::task::thread::Thread;
+        if thread_ptr.is_null() {
+            0
+        } else {
+            (*thread_ptr).id() as u16
+        }
+    };
+
+    crate::tracing::record_event_2(crate::tracing::TraceEventType::WAIT_TIMEOUT_STAGE, stage, tid);
+    crate::tracing::record_event(crate::tracing::TraceEventType::WAIT_TIMEOUT_SP, 0, sp as u32);
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::WAIT_TIMEOUT_X30,
+        0,
+        x30 as u32,
+    );
+    crate::tracing::record_event(
+        crate::tracing::TraceEventType::WAIT_TIMEOUT_SLOT20,
+        0,
+        slot20 as u32,
+    );
+}
+
 #[inline]
 fn clear_blocked_in_syscall_current() {
     crate::task::scheduler::with_scheduler(|sched| {
@@ -99,6 +145,10 @@ impl Completion {
     pub fn reset(&self) {
         self.done.store(0, Ordering::Release);
         self.waiter.store(0, Ordering::Release);
+    }
+
+    pub fn waiter_tid(&self) -> u64 {
+        self.waiter.load(Ordering::Acquire)
     }
 
     /// Wait for completion with a wall-clock timeout.
@@ -275,12 +325,21 @@ impl Completion {
                     // are enabled and give the CPU a window to take any pending
                     // interrupt before re-entering the scheduler.
                     #[cfg(target_arch = "aarch64")]
+                    trace_wait_timeout_stage(0);
+
+                    #[cfg(target_arch = "aarch64")]
                     crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
                     #[cfg(not(target_arch = "aarch64"))]
                     Cpu::halt_with_interrupts();
 
+                    #[cfg(target_arch = "aarch64")]
+                    trace_wait_timeout_stage(1);
+
                     // Clear BlockedOnIO state after wake (could be timer or ISR).
                     clear_blocked_in_syscall_current();
+
+                    #[cfg(target_arch = "aarch64")]
+                    trace_wait_timeout_stage(2);
 
                     // Check done after wake.
                     if self.done.load(Ordering::Acquire) == expected_token {
@@ -295,10 +354,15 @@ impl Completion {
                         return Err(EINTR);
                     }
 
+                    #[cfg(target_arch = "aarch64")]
+                    trace_wait_timeout_stage(3);
+
                     // Wall-clock timeout.
                     #[cfg(target_arch = "aarch64")]
                     {
+                        trace_wait_timeout_stage(4);
                         let (secs, nanos) = crate::time::get_monotonic_time_ns();
+                        trace_wait_timeout_stage(5);
                         let now_ns = secs as u64 * 1_000_000_000 + nanos as u64;
                         if now_ns >= deadline_ns {
                             self.waiter.store(0, Ordering::Release);
@@ -402,18 +466,12 @@ impl Completion {
     /// Signal completion from ISR or any other context.
     ///
     /// Sets `done = token`, then wakes the waiter thread (if any) via the
-    /// synchronous `with_scheduler` path.  This acquires the scheduler lock
-    /// and calls `unblock_for_io(tid)` directly, ensuring the thread is set
-    /// to Ready AND added to a per-CPU queue atomically.
+    /// lock-free ISR wakeup buffer. The scheduler drains that buffer under its
+    /// own lock at the top of the next scheduling decision.
     ///
-    /// The previous lock-free ISR wakeup buffer approach had a race condition:
-    /// if `rescue_stuck_ready_threads` set the thread to Ready before the
-    /// buffer was drained, `unblock_for_io` would see state != BlockedOnIO
-    /// and skip the queue push, stranding the thread indefinitely.
-    ///
-    /// Lock contention with the AHCI ISR was the original motivation for the
-    /// lock-free path, but the ISR storm has been eliminated, so contention
-    /// is minimal.
+    /// This keeps the hardirq path out of `with_scheduler()`, which is closer
+    /// to Linux's completion wakeup model and avoids inlining the full
+    /// scheduler mutation path into the AHCI IRQ handler.
     ///
     /// Idempotent: calling `complete()` multiple times is safe (the second
     /// call stores the same token again and a waiter of 0, which is a no-op).
@@ -434,13 +492,7 @@ impl Completion {
 
         let tid = self.waiter.load(Ordering::Acquire);
         if tid != 0 {
-            // Synchronous path: acquire the scheduler lock and unblock the
-            // waiter directly.  This guarantees state=Ready + queue push are
-            // atomic, eliminating the race where the lock-free buffer drain
-            // finds the thread already Ready (set by rescue) and skips it.
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.unblock_for_io(tid);
-            });
+            crate::task::scheduler::isr_unblock_for_io(tid);
         }
     }
 }

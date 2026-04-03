@@ -96,4 +96,11 @@ scripts/parallels/breenix-efi.hds/
 # Debug capture files
 serial-capture*.txt
 xhci_ftrace*.txt
+logs/linux-probe-cpu0/
+logs/breenix-parallels-cpu0/
 .claude/worktrees/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
