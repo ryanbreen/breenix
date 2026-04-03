@@ -292,7 +292,14 @@ pub fn try_dump_state() -> Option<SchedulerDumpInfo> {
     let threads: alloc::vec::Vec<ThreadDumpEntry> = sched
         .threads
         .iter()
-        .map(|t| ThreadDumpEntry {
+        .map(|t| {
+            #[cfg(target_arch = "aarch64")]
+            let (elr_el1, x30, sp) = (t.context.elr_el1, t.context.x30, t.context.sp);
+
+            #[cfg(not(target_arch = "aarch64"))]
+            let (elr_el1, x30, sp) = (0, 0, t.context.rsp);
+
+            ThreadDumpEntry {
             id: t.id(),
             state: match t.state {
                 ThreadState::Ready => 0,
@@ -315,9 +322,10 @@ pub fn try_dump_state() -> Option<SchedulerDumpInfo> {
                 1
             },
             owner_pid: t.owner_pid.unwrap_or(0),
-            elr_el1: t.context.elr_el1,
-            x30: t.context.x30,
-            sp: t.context.sp,
+            elr_el1,
+            x30,
+            sp,
+        }
         })
         .collect();
 

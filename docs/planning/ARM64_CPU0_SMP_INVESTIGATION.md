@@ -806,6 +806,125 @@ difference.
     `check_need_resched_and_switch_arm64()` return interaction that can write
     into the outer frame between IRQ return and final `ret`
 
+### 2026-04-03: Hypothesis Under Test - Nested IRQ Return Restores The Wrong EL1 SP
+
+- Source-level observation:
+  - in [boot.S](/Users/wrb/fun/code/breenix/kernel/src/arch_impl/aarch64/boot.S),
+    `irq_handler` preserves `user_rsp_scratch` when `PREEMPT_ACTIVE` is set,
+    but still uses `user_rsp_scratch` as the EL1 return SP later in the same
+    path
+- Trace correlation from
+  [20260403-resched-tail-live-probe](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/20260403-resched-tail-live-probe):
+  - before the nested timer IRQ:
+    - `KERNEL_RESUME_IRQ_SLOTX30 = 0x40172700`
+    - `RESCHED_TAIL_SP = 0x41fffe50`
+  - after the nested IRQ returns:
+    - `RESCHED_TAIL_SP = 0x542313a0`
+    - `RESCHED_TAIL_SLOTX30 = 0x3b9aca00`
+  - `0x542313a0` matches the blocked thread's published kernel resume SP, not
+    the interrupted outer resched-tail SP
+- Working hypothesis:
+  - the slot did not actually mutate in place
+  - instead, the nested IRQ returned to the outer resched tail with the wrong
+    EL1 `sp`, so the outer epilogue reloaded `x29/x30` from the blocked
+    thread's resume stack instead of the real outer frame
+- Minimal test:
+  - while `PREEMPT_ACTIVE` is still set in `irq_handler`, nested EL1 returns
+    should restore `sp` from the interrupted frame (`sp + 272`) rather than
+    from `user_rsp_scratch`
+
+### 2026-04-03: Nested EL1 Resume-SP Scratch Removes The Canonical CPU0 Abort
+
+- Change under test:
+  - `irq_handler` now uses a dedicated per-CPU nested EL1 resume-SP scratch
+    instead of overloading `user_rsp_scratch`
+  - nested EL1 IRQ returns restore `sp` from that dedicated scratch and clear
+    it after use
+- First clean artifact after fixing the temporary `x17` restore regression:
+  - [20260403-nested-slot-fix-test2](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/20260403-nested-slot-fix-test2)
+- Result:
+  - the canonical CPU0 failure disappeared in this run:
+    - no `EL1_INLINE_ABORT x30=0x3b9aca00`
+    - no `queue_empty`
+    - no soft lockup in the collector window
+  - the system progressed materially further:
+    - `bsshd: listening on 0.0.0.0:2222`
+  - but `INLINE_SAVE_OVERWRITE` still fired repeatedly
+- Interpretation:
+  - the wrong-nested-SP bug was real and fixing it removed the original
+    control-flow corruption
+  - the remaining live signal shifted to the blocked-I/O wake path and
+    dormant inline-save bookkeeping / resume semantics
+
+### 2026-04-03: Inline-Saved Kernel Contexts Were Still Being Resumed Through ERET
+
+- Source-level observation:
+  - `schedule_from_kernel()` already honored `saved_by_inline_schedule` and
+    used ret-based restore for those contexts
+  - the general interrupt-driven dispatch path in
+    [context_switch.rs](/Users/wrb/fun/code/breenix/kernel/src/arch_impl/aarch64/context_switch.rs)
+    restored blocked-in-syscall kernel contexts generically and ignored
+    `saved_by_inline_schedule`
+- Consequence:
+  - a thread saved by the inline scheduler path could still be redispatched
+    later through the ERET path, which violated the contract that inline-saved
+    kernel contexts must resume through `aarch64_ret_to_kernel_context`
+- Supporting evidence:
+  - after clearing stale inline-save metadata at consumption/supersession, the
+    remaining `INLINE_SAVE_OVERWRITE` reports still required
+    `saved_by_inline_schedule == true`
+  - that meant the flag survived until later exception-save time, which could
+    only happen if the thread was resumed without passing through the existing
+    ret-dispatch branch in `schedule_from_kernel()`
+
+### 2026-04-03: General Ret-Dispatch Fix Establishes A New Baseline
+
+- Change under test:
+  - both dispatch corridors now honor `saved_by_inline_schedule`
+  - the interrupt-driven `check_need_resched_and_switch_arm64()` path can now
+    ret-dispatch inline-saved kernel contexts instead of forcing them through
+    the generic ERET restore path
+- Primary validation artifact:
+  - [20260403-inline-ret-dispatch-fix-test1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/20260403-inline-ret-dispatch-fix-test1)
+- Fixed-state follow-up sweep:
+  - [fixed-state-inline-ret-dispatch/run2](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/fixed-state-inline-ret-dispatch/run2)
+  - [fixed-state-inline-ret-dispatch/run3](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/fixed-state-inline-ret-dispatch/run3)
+  - [fixed-state-inline-ret-dispatch/run4](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/fixed-state-inline-ret-dispatch/run4)
+- Cross-run result:
+  - `INLINE_SAVE_OVERWRITE` disappeared from all 4 post-fix runs
+  - the old canonical failure signatures did not recur:
+    - no `EL1_INLINE_ABORT x30=0x3b9aca00`
+    - no `queue_empty`
+  - three runs completed cleanly through userland bring-up:
+    - `bsshd: listening on 0.0.0.0:2222`
+    - `[init] Boot script completed`
+    - `[syscall] exit(0) pid=3 name=/bin/bsh`
+    - CPU0 reached `[timer] cpu0 ticks=5000`
+  - one run regressed into a distinct new failure:
+    - [run4](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/fixed-state-inline-ret-dispatch/run4)
+    - kernel `DATA_ABORT` on CPU0 in `sys_fstat`
+    - `FAR=0xfffffeffe130`
+    - `ELR=0xffff00004016608c`
+    - faulting thread: `tid=13 name=init_child_3_main`
+    - boot script still completed before the later soft lockup
+- Interpretation:
+  - the old scheduler/control-flow corruption is no longer the dominant bug
+  - the investigation has crossed a real decision point:
+    - branch A is now effectively closed unless the old `0x3b9aca00` /
+      `INLINE_SAVE_OVERWRITE` corridor reappears
+    - branch B is a new, narrower post-fix bug: a kernel-mode `sys_fstat`
+      user-pointer abort / deferred-fault cleanup path
+
+### Reopen Criteria For The Old Branch
+
+- Reopen the old nested-resume / inline-save branch only if any of the
+  following reappear on the post-fix baseline:
+  - `EL1_INLINE_ABORT x30=0x3b9aca00`
+  - `INLINE_SAVE_OVERWRITE`
+  - `queue_empty stuck_tid=...`
+  - CPU0-specific timer/scheduler death before `bsshd` comes up
+- Otherwise treat the post-fix `sys_fstat` abort as the active bug.
+
 ## Issue Map
 
 - `breenix-jhh`: ARM64 CPU0 interrupt-driven SMP investigation
@@ -835,13 +954,13 @@ This investigation is complete only when all of the following are true:
 
 ## Immediate Next Step
 
-Treat the live bug as a nested-reschedule return-path problem.
+Treat the active bug as the post-fix `sys_fstat` user-pointer abort path.
 
-1. Confirm from source and traces that a nested timer IRQ can run its own
-   `check_need_resched_and_switch_arm64()` return path before the outer
-   resched tail has completed.
-2. Treat the outer resched frame's saved `x30` slot as the active corruption
-   target; the next probe should identify which nested save / restore path
-   writes `0x3b9aca00` into that slot.
-3. Compare that control-flow contract against Linux's IRQ-exit / preemption
-   rules before attempting any fix.
+1. Reproduce the `run4`-style `sys_fstat` `DATA_ABORT` and confirm whether the
+   faulting user pointer (`0xfffffeffe130`) is valid, unmapped, or racing with
+   process teardown.
+2. Compare Breenix's `sys_fstat` user-memory write contract against Linux:
+   invalid user pointers must return `-EFAULT`, not wedge the kernel in the
+   deferred-fault cleanup path.
+3. Only reopen the old nested-resume investigation if the pre-fix signatures
+   return on this new baseline.

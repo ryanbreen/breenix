@@ -881,6 +881,41 @@ fn log_idle_thread_context(tag: &str, thread: &Thread, sp: u64, elr: u64, x30: u
 // hold in check_need_resched_and_switch_arm64.
 // =============================================================================
 
+#[inline(always)]
+fn clear_inline_schedule_state(thread: &mut Thread) {
+    thread.saved_by_inline_schedule = false;
+    thread.inline_schedule_saved_sp = 0;
+    thread.inline_schedule_caller_lr = 0;
+}
+
+#[inline(always)]
+fn take_inline_ret_dispatch_info(
+    thread: &mut Thread,
+) -> Option<(*mut u8, *const CpuContext, u64, Option<crate::task::thread::VirtAddr>, u64, u64, u64)>
+{
+    if !thread.has_started || !thread.saved_by_inline_schedule {
+        return None;
+    }
+
+    let thread_ptr = thread as *const _ as *mut u8;
+    let ctx_ptr = &thread.context as *const CpuContext;
+    let resume_pc = thread.context.elr_el1;
+    let kst = thread.kernel_stack_top;
+    let sp_el0 = thread.context.sp_el0;
+    let resume_sp = thread.context.sp;
+    let resume_lr_slot = unsafe { core::ptr::read_volatile((resume_sp + 0x20) as *const u64) };
+    clear_inline_schedule_state(thread);
+    Some((
+        thread_ptr,
+        ctx_ptr,
+        resume_pc,
+        kst,
+        sp_el0,
+        resume_sp,
+        resume_lr_slot,
+    ))
+}
+
 /// Save userspace context — called inside scheduler lock hold.
 fn save_userspace_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFrame) {
     if frame.elr == 0 && frame.x30 == 0 && frame.spsr == 0 {
@@ -934,8 +969,8 @@ fn save_userspace_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFr
     thread.context.elr_el1 = frame.elr;
     thread.context.spsr_el1 = frame.spsr;
 
-    // Clear inline-schedule flag (saved by exception path, needs ERET dispatch)
-    thread.saved_by_inline_schedule = false;
+    // Exception-save supersedes any previously suspended inline-schedule frame.
+    clear_inline_schedule_state(thread);
 
     // Read and save SP_EL0 (user stack pointer)
     let sp_el0: u64;
@@ -1049,7 +1084,8 @@ fn save_kernel_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFrame
     thread.context.elr_el1 = frame.elr;
     thread.context.spsr_el1 = kernel_dispatch_spsr(frame.spsr);
 
-    if thread.inline_schedule_saved_sp != 0
+    if thread.saved_by_inline_schedule
+        && thread.inline_schedule_saved_sp != 0
         && thread.owner_pid.is_some()
         && thread.blocked_in_syscall
     {
@@ -1084,7 +1120,7 @@ fn save_kernel_context_inline(thread: &mut Thread, frame: &Aarch64ExceptionFrame
     // Clear inline-schedule flag: this thread was saved by the IRQ-return
     // exception path (full register set), so it must be re-dispatched via
     // ERET, not the ret-based path.
-    thread.saved_by_inline_schedule = false;
+    clear_inline_schedule_state(thread);
 
     // Save the kernel stack pointer.
     // The exception frame is allocated on the stack, so the SP before the
@@ -2106,6 +2142,55 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         }
     }
 
+    let is_idle = sched.is_idle_thread_inner(new_id);
+    let ret_dispatch_info = if !is_idle {
+        sched.get_thread_mut(new_id)
+            .and_then(take_inline_ret_dispatch_info)
+    } else {
+        None
+    };
+
+    if let Some((thread_ptr, ctx_ptr, resume_pc, kst, sp_el0, resume_sp, resume_lr_slot)) =
+        ret_dispatch_info
+    {
+        crate::tracing::record_event(
+            crate::tracing::TraceEventType::RET_DISPATCH_SP,
+            0,
+            resume_sp as u32,
+        );
+        crate::tracing::record_event(
+            crate::tracing::TraceEventType::RET_DISPATCH_LR,
+            0,
+            resume_lr_slot as u32,
+        );
+        unsafe {
+            Aarch64PerCpu::set_current_thread_ptr(thread_ptr);
+        }
+        if let Some(kst) = kst {
+            unsafe {
+                Aarch64PerCpu::set_kernel_stack_top(kst.as_u64());
+            }
+        }
+        if sp_el0 != 0 {
+            unsafe {
+                core::arch::asm!(
+                    "msr sp_el0, {}",
+                    in(reg) sp_el0,
+                    options(nomem, nostack)
+                );
+            }
+        }
+        unsafe {
+            Aarch64PerCpu::set_dispatch_elr(resume_pc);
+        }
+        drop(guard);
+        crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
+        crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
+        unsafe {
+            aarch64_ret_to_kernel_context(ctx_ptr, resume_pc);
+        }
+    }
+
     // 9. Dispatch new thread (all checks + restore inside lock hold)
     let trace_eret_tid = sched.get_thread(new_id).and_then(|thread| {
         if thread.owner_pid.is_some() && thread.blocked_in_syscall {
@@ -2246,30 +2331,8 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     cpu0_breadcrumb(cpu_id, 34); // before ret-based dispatch check
     let is_idle = sched.is_idle_thread_inner(new_id);
     let ret_dispatch_info = if !is_idle {
-        sched.get_thread_mut(new_id).and_then(|t| {
-            let has_started = t.has_started;
-            let saved_by_inline_schedule = t.saved_by_inline_schedule;
-
-            // ret-based dispatch is valid only for contexts explicitly saved
-            // by schedule_from_kernel() / aarch64_inline_schedule_switch.
-            // Exception-saved EL1 contexts must return through the full ERET
-            // path so caller-saved registers and SPSR are restored from the
-            // saved exception frame.
-            if has_started && saved_by_inline_schedule {
-                t.saved_by_inline_schedule = false;
-                let thread_ptr = t as *const _ as *mut u8;
-                let ctx_ptr = &t.context as *const CpuContext;
-                let resume_pc = t.context.elr_el1;
-                let kst = t.kernel_stack_top;
-                let sp_el0 = t.context.sp_el0;
-                let resume_sp = t.context.sp;
-                let resume_lr_slot =
-                    unsafe { core::ptr::read_volatile((resume_sp + 0x20) as *const u64) };
-                Some((thread_ptr, ctx_ptr, resume_pc, kst, sp_el0, resume_sp, resume_lr_slot))
-            } else {
-                None
-            }
-        })
+        sched.get_thread_mut(new_id)
+            .and_then(take_inline_ret_dispatch_info)
     } else {
         None
     };

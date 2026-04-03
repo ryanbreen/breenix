@@ -215,5 +215,6 @@ pub fn dispatch_syscall(
         // Positional I/O
         SyscallNumber::Pread64 => handlers::sys_pread64(arg1 as i32, arg2, arg3, arg4 as i64),
         SyscallNumber::Pwrite64 => handlers::sys_pwrite64(arg1 as i32, arg2, arg3, arg4 as i64),
+        SyscallNumber::Spawn => SyscallResult::Err(38),
     }
 }
