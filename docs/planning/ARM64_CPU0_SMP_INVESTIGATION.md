@@ -1429,3 +1429,553 @@ the cached-TTBR0 baseline.
   - it is "which thread/control-state did CPU0 last publish into the deferred
     requeue contract immediately before the scheduler-stack contamination shows
     up in another user thread?"
+
+### 2026-04-03: Fresh Parallels Deployment Corrected The Ground Truth For The Current Local Kernel
+
+- Important correction:
+  - several earlier local collector runs on this branch were not trustworthy
+    for the latest source state
+  - `scripts/parallels/collect-breenix-cpu0-traces.sh` reboots and captures the
+    existing Parallels VM, but does not rebuild or redeploy the ARM64 EFI image
+  - after noticing that new postmortem markers were absent from the timeout
+    output, the investigation switched back to the real deployment path:
+    - build `parallels-loader` for `aarch64-unknown-uefi`
+    - build `kernel-aarch64` for `aarch64-breenix.json`
+    - deploy/boot with `./run.sh --parallels --test 20`
+- Fresh deployed VM:
+  - `breenix-1775259455`
+- Consequence:
+  - only runs captured after that deployment are authoritative for the current
+    local no-guard tree
+  - stale-VM local runs remain useful historical context, but not evidence for
+    what the current source tree actually does
+
+### 2026-04-03: The Properly Deployed No-Guard Kernel Currently Fails In The AHCI Completion Corridor
+
+- Trustworthy artifacts:
+  - [post-deploy-current-kernel-run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-current-kernel-run1)
+  - [post-deploy-current-kernel-sweep1/run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-current-kernel-sweep1/run1)
+  - [post-deploy-current-kernel-sweep1/run2](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-current-kernel-sweep1/run2)
+  - [post-deploy-current-kernel-sweep1/run3](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-current-kernel-sweep1/run3)
+- Results:
+  - `run1`: early AHCI timeout on port 1 during init
+  - `run2`: no timeout within the collector window
+  - `run3`: same early AHCI timeout on port 1 during init
+  - none of these three runs reproduced the older immediate `queue_empty` or
+    soft-lockup corridor inside the collector window
+- Stable timeout-side observations from the two failing runs:
+  - the timeout happens shortly after `[init] Breenix init starting (PID 1)`
+  - `[init] bsshd started (PID 2)` does not appear before the timeout
+  - hardware AHCI IRQs still arrive:
+    - `IS=0x1`
+    - `isr_count=1186`
+    - `port_isr_hits=[1,1185]`
+  - the waiter still times out:
+    - `completion_done=0`
+    - `complete_hits=[0,4]`
+  - the last observed interrupt CPU is consistently CPU 0:
+    - `isr_last_hw_cpu=0`
+  - the interrupted EL1 PC is consistently inside
+    `kernel::arch_impl::aarch64::context_switch::inline_schedule_trampoline`
+    rather than AHCI itself:
+    - `isr_last_elr=0xffff000040130098`
+- Updated interpretation:
+  - the active branch on the correctly deployed local no-guard tree is no
+    longer best described as generic timer loss or immediate scheduler collapse
+  - interrupts are arriving, but the completion/wakeup contract for the AHCI
+    wait path is still failing often enough to time out during early init
+  - the next evidence cut should stay on the publication chain:
+    - `setup_cmd_slot0()` arms the command
+    - `handle_interrupt()` swaps `PORT_ACTIVE_CMD_NUM`
+    - `Completion::complete()` publishes `done`
+    - `isr_unblock_for_io()` pushes the waiter into the wake buffer
+    - scheduler drain wakes the blocked thread
+
+### 2026-04-03: Next Probe Narrows To Completion Publication, ISR Wake Push, And Scheduler Drain
+
+- Decision:
+  - add minimal snapshot-style instrumentation at exactly these ownership
+    boundaries:
+    - `Completion::reset()`
+    - waiter registration in `Completion::wait_timeout()`
+    - `Completion::complete()`
+    - `isr_unblock_for_io()`
+    - wake-buffer drain in `schedule()` / `schedule_deferred_requeue()`
+- Why this is the right cut:
+  - the current timeout branch already proves that AHCI IRQs arrive
+  - the missing fact is whether the same completion object sees a matching
+    `complete(token)` and, if it does, whether the waiter TID is successfully
+    pushed and later drained
+  - this is lower perturbation than adding new string-heavy live-path logging
+    or broad trace-buffer spam, and it directly distinguishes:
+    - publication failure
+    - wake-buffer push failure
+    - scheduler-drain failure
+
+### 2026-04-03: Completion-Chain Snapshots Falsified The Wake-Propagation Branch
+
+- Probe artifacts:
+  - [post-deploy-completion-chain-sweep/run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-completion-chain-sweep/run1)
+  - [post-deploy-completion-chain-sweep/run3](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-completion-chain-sweep/run3)
+- Stable result across the timeout runs:
+  - the timed-out token is **not** the token seen by `Completion::complete()`
+  - instead, the snapshot chain consistently shows:
+    - `reset.done_before = previous_token`
+    - waiter registration for `current_token`
+    - `complete(previous_token)`
+    - successful `isr_wake_push`
+    - successful wake-buffer drain for the same waiter
+  - example:
+    - timeout token `1189`
+    - `complete(token=1188, waiter_tid=11)`
+    - `isr_wake_push tid=11 pushed=1`
+    - `isr_wake_drain tid=11 batch=1`
+- Interpretation:
+  - the previously suspected branch
+    "AHCI completion publishes the token but wake propagation loses it"
+    is falsified for the current timeout corridor
+  - the current command never reaches `complete(current_token)` at all
+  - the next branch has to stay earlier, at active-command ownership and the
+    delivery of the current AHCI interrupt itself
+
+### 2026-04-03: The Timed-Out Command Remains The Live Active Command At Timeout
+
+- Probe artifacts:
+  - [post-deploy-active-cmd-probe/run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-active-cmd-probe/run1)
+  - [post-deploy-active-cmd-probe/run2](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-active-cmd-probe/run2)
+- Stable timeout-side state:
+  - `CI=0`
+  - `IS=0x1`
+  - `SPI34 pend=true act=false`
+  - `active_cmd_num=current_token`
+  - `active_mask=0x1`
+  - `last_armed=current_token`
+  - `last_complete=previous_token`
+- Examples:
+  - `active_cmd_num=1189` and `last_complete=1188`
+  - `active_cmd_num=7049` and `last_complete=7048`
+- Interpretation:
+  - software is **not** losing ownership of the current command by clearing
+    `PORT_ACTIVE_CMD_NUM`
+  - the command is still published as active, while hardware shows the command
+    itself is done (`CI=0`) and the port has a pending D2H interrupt (`IS=0x1`)
+  - this means the current branch is:
+    - the completion interrupt for the current command exists
+    - but it is not being taken / serviced before the waiter times out
+
+### 2026-04-03: Linux Does Not Justify A CPU-Affinity Workaround Here
+
+- Linux probe reference:
+  - `/proc/interrupts` on `linux-probe` shows the same Parallels AHCI device on
+    `GICv3 34 Level ahci[PRL4010:00]`
+  - `/proc/irq/15/smp_affinity_list` is `0-3`
+  - `/proc/irq/15/effective_affinity_list` is `0`
+- Interpretation:
+  - Linux currently handles the AHCI interrupt effectively on CPU 0 on this
+    platform
+  - so "route the AHCI SPI away from CPU 0" is not justified as a root-cause
+    fix, even though Linux allows a broader affinity mask
+  - the divergence to explain is still:
+    - Linux can service the pending SPI on CPU 0
+    - Breenix sometimes leaves the same SPI pending and unserviced on CPU 0
+
+### 2026-04-03: CPU0 Is Not Trivially Masking IRQs At The Sticky Breadcrumb
+
+- Probe artifact:
+  - [post-deploy-breadcrumb-daif-probe/run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-breadcrumb-daif-probe/run1)
+- Result:
+  - the timeout reproduces with:
+    - `cpu0_breadcrumb=107`
+    - `daif=0x300`
+    - `pmr=0xf8`
+    - `SPI34 pend=true act=false`
+    - `active_cmd_num=1189`
+  - `isr_last_elr` is still inside
+    `inline_schedule_trampoline`
+- Interpretation:
+  - at the sticky CPU 0 handoff point, live `DAIF` does **not** show IRQ masked
+    (`I=0`)
+  - `ICC_PMR_EL1=0xf8` should admit the AHCI SPI priority (`0xa0`)
+  - so this branch is not explained by a simple "CPU 0 forgot to unmask IRQs"
+    or "priority mask still blocks the device interrupt"
+  - the next target is now specifically the exception-return / pending-SPI
+    window around:
+    - `inline_schedule_trampoline`
+    - `aarch64_enter_exception_frame`
+    - the final ERET handoff to the resumed EL1/EL0 context
+
+### 2026-04-03: Raising SPI34 Priority Above The Timer PPI Did Not Fix The Timeout Corridor
+
+- Hypothesis under test:
+  - CPU 0 might be starving AHCI SPI34 behind a continuously pending timer PPI
+    because both were running at priority `0xa0`
+  - test change:
+    - raise `SPI34_priority` to `0x90`
+    - leave `PPI27_priority` at `0xa0`
+- Probe artifacts:
+  - [post-deploy-ahci-priority-test/run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-ahci-priority-test/run1)
+  - [post-deploy-ahci-priority-test/run2](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-ahci-priority-test/run2)
+  - [post-deploy-ahci-priority-test/run3](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-ahci-priority-test/run3)
+  - [post-deploy-ahci-priority-test/run4](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-ahci-priority-test/run4)
+  - [post-deploy-ahci-priority-test/run5](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-ahci-priority-test/run5)
+- Result:
+  - the change did **not** eliminate the AHCI timeout branch
+  - the five-run sweep produced:
+    - 2 runs that reached the normal early-userland path without a timeout in
+      the collector window (`run1`, `run4`)
+    - 3 runs that still timed out (`run2`, `run3`, `run5`)
+  - the bad runs all confirm the test was live:
+    - `SPI34_priority=0x90`
+    - `PPI27_priority=0xa0`
+  - the canonical bad shape still exists under the priority bump:
+    - `active_cmd_num=current_token`
+    - `last_complete=previous_token`
+    - `CI=0`
+    - `IS=0x1`
+    - `SPI34 pend=true act=false`
+    - `cpu0_breadcrumb=107`
+    - `PPI27_pending=1`
+  - `run2` even drifted into a noisier branch with:
+    - `INSTRUCTION_ABORT`
+    - `UNHANDLED_EC`
+    - `SPI34 pend=true act=true`
+    - the same AHCI timeout afterward
+- Interpretation:
+  - "equal-priority starvation behind the timer PPI" is **not** a sufficient
+    explanation for the current timeout corridor
+  - if priority contributes at all, it is not the primary missing invariant
+  - compared with the earlier cached-TTBR0 baseline (`4/5` good), this probe is
+    not an improvement and may have widened the failure mix
+  - this branch is therefore treated as falsified for root-cause purposes, and
+    the temporary priority override should not remain in the tree
+- Next target:
+  - compare Linux and Breenix IRQ-exit semantics more directly, especially
+    whether Linux drains additional pending IRQs before the resched/ERET
+    corridor while Breenix services only one IRQ and returns
+
+### 2026-04-03: Linux IRQ-Exit Semantics Differ From Breenix At The Critical Window
+
+- Primary-source reference:
+  - Linux ARM64 entry path:
+    - `arch/arm64/kernel/entry-common.c`
+    - official mirror used for this pass:
+      `https://android.googlesource.com/kernel/common/+/fee48f3bdd751/arch/arm64/kernel/entry-common.c`
+  - Linux GICv3 irqchip path:
+    - `drivers/irqchip/irq-gic-v3.c`
+    - official mirror used for this pass:
+      `https://android.googlesource.com/kernel/common/+/refs/tags/android15-6.6-2024-11_r15/drivers/irqchip/irq-gic-v3.c`
+- Linux facts from source:
+  - `el1_interrupt()` does:
+    - exception entry
+    - `do_interrupt_handler(regs, handle_arch_irq)`
+    - optional `arm64_preempt_schedule_irq()`
+    - exception exit
+  - `gic_handle_irq()` reads IAR and, on the normal IRQ-enabled path, does:
+    - `gic_pmr_mask_irqs()`
+    - `gic_arch_enable_irqs()`
+    - then `__gic_handle_irq(...)`
+  - this means Linux does **not** rely on a custom "final pre-ERET IRQ window"
+    to admit a follow-on normal IRQ on the same CPU
+- Breenix facts from current tree:
+  - `handle_irq()` acknowledges one IRQ, handles it, EOIs it, runs softirqs,
+    and returns
+  - the actual context-switch / resumed-return logic then happens in
+    `check_need_resched_and_switch_arm64()`
+  - Breenix opens a bespoke nested-IRQ window only at the tail of that path:
+    - `msr daifclr, #3`
+    - `isb`
+    - return to `boot.S`
+    - final `ERET`
+- Inference:
+  - this is the first architectural divergence that directly matches the
+    current breadcrumb:
+    - pending SPI34
+    - sticky CPU0 breadcrumb `107`
+    - timeout-side `isr_last_elr` in the trampoline / resched corridor
+  - this does **not** prove the root cause yet
+  - it does justify the next probe:
+    - determine whether the AHCI completion SPI is getting stranded because
+      Breenix only gives it a chance in the bespoke pre-ERET window, while
+      Linux re-opens IRQ handling earlier under irqchip control
+
+### 2026-04-03: Breenix Is Missing Generic HARDIRQ Accounting For Non-Timer IRQs
+
+- Local source facts:
+  - generic ARM64 IRQ dispatch lives in:
+    - [exception.rs](/Users/wrb/fun/code/breenix/kernel/src/arch_impl/aarch64/exception.rs)
+  - generic hardirq accounting helpers live in:
+    - [per_cpu_aarch64.rs](/Users/wrb/fun/code/breenix/kernel/src/per_cpu_aarch64.rs)
+    - [percpu.rs](/Users/wrb/fun/code/breenix/kernel/src/arch_impl/aarch64/percpu.rs)
+  - `irq_enter()` / `irq_exit()` are currently called only by:
+    - [timer_interrupt.rs](/Users/wrb/fun/code/breenix/kernel/src/arch_impl/aarch64/timer_interrupt.rs)
+- Concrete divergence:
+  - `handle_irq()` dispatches AHCI and other SPIs without a generic
+    `irq_enter()` / `irq_exit()` wrapper
+  - the timer path is special-cased and does maintain HARDIRQ count
+  - AHCI completion IRQs therefore run without generic hardirq accounting
+- Why this matters:
+  - code that checks `in_interrupt()` / `in_hardirq()` gets the wrong answer for
+    AHCI and other non-timer IRQs
+  - softirq processing and irq-exit logic are then running on a semantic model
+    that already diverges from Linux before the scheduler tail even starts
+  - this is exactly the class of bug that can hide as a race because the system
+    "usually works" until one path depends on correct hardirq nesting state
+- Current disposition:
+  - not fixed yet
+  - strong next hypothesis
+- Next target:
+  - validate whether moving HARDIRQ entry/exit accounting to the generic
+    `handle_irq()` wrapper, and removing the timer-only special-case accounting,
+    collapses the AHCI timeout corridor without reintroducing the older CPU0
+    resume corruption branches
+
+### 2026-04-03: Generic HARDIRQ Accounting Probe Applied
+
+- Probe change:
+  - move `irq_enter()` / `irq_exit()` ownership to the generic ARM64
+    `handle_irq()` wrapper
+  - remove the timer-only `irq_enter()` / `irq_exit()` calls so the timer path
+    no longer double-counts HARDIRQ nesting
+- Why this probe is justified:
+  - it aligns Breenix more closely with Linux's generic EL1 IRQ entry/exit model
+  - it corrects a real semantic mismatch for AHCI and other SPIs
+  - it is narrower than changing IRQ-priority policy or inventing another
+    special-case CPU0 dispatch rule
+- What this probe should answer:
+  - whether the AHCI timeout corridor depends on non-timer IRQs falsely running
+    as if they were thread context
+  - whether `do_softirq()` / resched-on-IRQ-exit behavior becomes more stable
+    once AHCI completion IRQs participate in the same HARDIRQ accounting model as
+    timer IRQs
+- Reopen criteria if this fails:
+  - if the timeout reproduces unchanged, the generic HARDIRQ mismatch is not the
+    dominant root cause for this branch
+  - if old CPU0 resume corruption signatures come back, then the new probe is
+    interacting with nested-return assumptions and must be analyzed on that axis
+
+### 2026-04-04: Generic HARDIRQ Accounting Did Not Collapse The AHCI Timeout Corridor
+
+- Probe artifacts:
+  - [post-deploy-generic-hardirq-accounting/run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-generic-hardirq-accounting/run1)
+  - [post-deploy-generic-hardirq-accounting/run2](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-generic-hardirq-accounting/run2)
+  - [post-deploy-generic-hardirq-accounting/run3](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-generic-hardirq-accounting/run3)
+  - [post-deploy-generic-hardirq-accounting/run4](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-generic-hardirq-accounting/run4)
+  - [post-deploy-generic-hardirq-accounting/run5](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-generic-hardirq-accounting/run5)
+- Result:
+  - `run1` reached the normal boot corridor and `cpu0 ticks=5000`
+  - `run2` was inconclusive in the collector window: no timeout, no soft lockup,
+    but it also did not reach the later boot markers before the 25-second stop
+  - `run3`, `run4`, and `run5` all reproduced the canonical AHCI timeout branch
+- Stable bad-run state:
+  - `SPI34_priority=0xa0`
+  - `PPI27_priority=0xa0`
+  - `active_cmd_num=current_token`
+  - `last_complete=previous_token`
+  - `CI=0`
+  - `IS=0x1`
+  - `SPI34 pend=true act=false`
+  - `cpu0_breadcrumb=107`
+  - `cpu0_last_timer_elr=0xffff0000401abbec`
+- Interpretation:
+  - generic HARDIRQ accounting is a real semantic correction, but it does **not**
+    collapse the currently dominant AHCI timeout corridor by itself
+  - the bad branch still points at the same pending-SPI / CPU0 return window as
+    before
+  - importantly, this probe did **not** reintroduce the older dominant CPU0
+    resume-corruption signatures in this five-run sample
+- Disposition:
+  - the "missing HARDIRQ accounting is the dominant root cause" branch is
+    falsified
+  - the broader "IRQ admission / return semantics differ from Linux" branch
+    remains open
+- Next target:
+  - return to the Linux/Breenix IRQ-admission divergence:
+    - Linux re-opens IRQ handling inside the irqchip path under PMR control
+    - Breenix still relies on the bespoke pre-ERET `daifclr` window
+  - the next probe should focus on that admission model, not on another token /
+    waiter / completion-publication branch
+
+### 2026-04-04: Admission-Model Probe Moved The IRQ Window Into The Timer Handler
+
+- Probe change:
+  - after masking the timer source and re-arming it, temporarily re-enable
+    IRQ/FIQ inside `timer_interrupt_handler()`
+  - only do this when the interrupted context had IRQ/FIQ unmasked in
+    `SPSR_EL1`
+  - restore masked state before returning to the generic IRQ-exit path
+- Why this is the right next cut:
+  - it directly tests the still-open Linux/Breenix divergence:
+    - Linux admits follow-on IRQ work much earlier under irqchip control
+    - Breenix currently tends to admit it only in the bespoke pre-ERET window
+  - it changes one variable:
+    - *when* a pending SPI can be admitted during the timer corridor
+  - it does **not** claim to be the final architecture
+- Prediction:
+  - if the AHCI timeout branch is primarily caused by “SPI34 waits too long for
+    admission while CPU0 is busy in the timer/resched corridor,” timeout rate
+    should drop materially on the same five-run sweep
+  - if the timeout branch is unchanged, then mere earlier DAIF admission inside
+    the timer body is not enough, and the remaining divergence is likely deeper
+    in GIC/EOI/return semantics
+
+### 2026-04-04: Wide Timer-Body Admission Window Removed AHCI Timeouts But Exposed A New Corruption Branch
+
+- Probe artifacts:
+  - [post-deploy-timer-early-admission/run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-timer-early-admission/run1)
+  - [post-deploy-timer-early-admission/run2](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-timer-early-admission/run2)
+  - [post-deploy-timer-early-admission/run3](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-timer-early-admission/run3)
+  - [post-deploy-timer-early-admission/run4](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-timer-early-admission/run4)
+  - [post-deploy-timer-early-admission/run5](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-timer-early-admission/run5)
+- Result:
+  - in this five-run sample, the canonical AHCI timeout branch did **not**
+    reproduce
+  - but the wider timer-body admission window was not clean:
+    - `run1` and `run4` emitted repeated `DEFER_EVICT` with
+      `evicted=18446462599808842688`
+    - that value resolves to `0xffff000040227bc0`, i.e.
+      `kernel::process::PROCESS_MANAGER`, not a tid
+    - `run4` then faulted with `DATA_ABORT ... ELR=0x0`
+    - `run5` ended with `UNHANDLED_EC cpu=0 EC=0x0 ELR=0xffff0000542426c8`
+  - `run2` was the cleanest sample of the batch
+  - `run3` did not hit the old timeout branch within the collector window but
+    also did not establish a stronger success marker than "boot progressed"
+- Interpretation:
+  - earlier interrupt admission during the timer corridor appears to be a
+    meaningful lever against the AHCI timeout branch
+  - but the *wide* admission window allowed nested IRQs to execute through too
+    much unrelated timer bookkeeping and exposed a different corruption path
+  - so the honest next step is not "ship this"
+  - it is "tighten the admission window and see whether the timeout benefit
+    survives without the new deferred-requeue corruption"
+
+### 2026-04-04: Follow-Up Probe Narrows Timer Admission To The Immediate Post-Rearm Block
+
+- Probe refinement:
+  - keep the same basic hypothesis
+  - reduce the open-IRQ region to the immediate post-rearm register snapshot
+    block only
+  - re-mask before:
+    - wall-clock update
+    - input polling
+    - soft-lockup logic
+    - scheduler-facing timer bookkeeping
+- Why this refinement is justified:
+  - it preserves the strongest new signal from the prior probe:
+    earlier admission seems relevant
+  - it removes the part most likely to create unrelated nested-execution
+    corruption:
+    broad timer-body reentrancy
+
+### 2026-04-04: Fatal Exception Postmortems Now Dump Deferred-Requeue And Trace State
+
+- Probe change:
+  - add a one-shot per-CPU fatal postmortem helper in
+    [exception.rs](/Users/wrb/fun/code/breenix/kernel/src/arch_impl/aarch64/exception.rs)
+  - wire it into kernel-side:
+    - `INSTRUCTION_ABORT`
+    - `DATA_ABORT`
+    - `UNHANDLED_EC`
+- Dump contents:
+  - deferred-requeue snapshots
+  - last user-context-write snapshots
+  - trace buffers
+- Why this was necessary:
+  - the narrowed timer-admission probe had exposed early
+    `DEFER_EVICT` / `UNHANDLED_EC` branches, but those fatal paths were still
+    printing only the headline and then redirecting to idle
+  - soft-lockup dumps already had the right ownership evidence; early fatal
+    runs did not
+- Guardrail:
+  - the dump is one-shot per CPU so repeated exception storms do not flood the
+    serial stream and destroy the artifact
+
+### 2026-04-04: Five Short-Window Reruns Did Not Reproduce The Earlier Early-Fatal Branch
+
+- Probe artifacts:
+  - [post-deploy-narrow-admission-fatal-postmortem/run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-narrow-admission-fatal-postmortem/run1)
+  - [post-deploy-narrow-admission-fatal-postmortem/run2](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-narrow-admission-fatal-postmortem/run2)
+  - [post-deploy-narrow-admission-fatal-postmortem/run3](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-narrow-admission-fatal-postmortem/run3)
+  - [post-deploy-narrow-admission-fatal-postmortem/run4](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-narrow-admission-fatal-postmortem/run4)
+  - [post-deploy-narrow-admission-fatal-postmortem/run5](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-narrow-admission-fatal-postmortem/run5)
+- Fixed-state image:
+  - freshly rebuilt and redeployed via `./run.sh --parallels --test 20`
+  - VM: `breenix-1775292409`
+- Result:
+  - `run1`, `run2`, `run4`, and `run5` all reached `[init] bsshd started (PID 2)`
+    without:
+    - `DEFER_EVICT`
+    - `UNHANDLED_EC`
+    - `DATA_ABORT`
+    - `FATAL_POSTMORTEM`
+    - soft lockup
+  - `run3` reproduced the plain AHCI timeout corridor instead:
+    - `[ahci] read_block(491526) wait failed: AHCI: command timeout`
+- Stable timeout-side state in `run3`:
+  - `SPI34 pend=true act=false`
+  - `active_cmd_num=1189`
+  - `last_complete=1188`
+  - `completion_done=0`
+  - `waiter_tid=0` at timeout snapshot, after the prior-token completion/wake
+  - `timeout_cpu=5`
+  - `cpu0_breadcrumb=107`
+- Interpretation:
+  - the new fatal-postmortem hook did **not** itself perturb the system back
+    into the earlier early-fatal branch in this five-run sample
+  - but the surviving bad run is still the familiar AHCI timeout corridor, not
+    a solved system
+
+### 2026-04-04: Longer Dwell Shows The Current Narrowed-Admission Branch Still Times Out
+
+- Probe artifacts:
+  - [post-deploy-narrow-admission-fatal-postmortem-long60/run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-narrow-admission-fatal-postmortem-long60/run1)
+  - [post-deploy-narrow-admission-fatal-postmortem-long60/run2](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-narrow-admission-fatal-postmortem-long60/run2)
+  - [post-deploy-narrow-admission-fatal-postmortem-long60/run3](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-narrow-admission-fatal-postmortem-long60/run3)
+- Method:
+  - same exact VM image: `breenix-1775292409`
+  - same kernel state as the short-window sweep
+  - collector dwell increased from `25s` to `60s`
+- Result:
+  - `run1` timed out later:
+    - `[ahci] read_block(497224) wait failed: AHCI: command timeout`
+    - then `[init] Boot script completed`
+  - `run2` stayed clean within the 60-second collector window
+  - `run3` timed out later:
+    - `[ahci] read_block(491526) wait failed: AHCI: command timeout`
+  - none of the three long runs reproduced:
+    - `DEFER_EVICT`
+    - `UNHANDLED_EC`
+    - `DATA_ABORT`
+    - soft lockup
+- Stable timeout-side state across the two long-run failures:
+  - `SPI34 pend=true act=false`
+  - `completion_done=0`
+  - `active_cmd_num=current_token`
+  - `last_complete=previous_token`
+  - `isr_last_hw_cpu=0`
+  - CPU 0 still reports breadcrumb `107`
+  - timeout CPU is not fixed:
+    - `run1`: `timeout_cpu=2`
+    - `run3`: timeout side activity concentrated on `CPU6`
+- Interpretation:
+  - the narrowed timer-admission probe is buying something against the earlier
+    early-corruption branch
+  - but it is **not** eliminating the dominant long-run AHCI completion timeout
+    corridor
+  - short collector windows were therefore overstating stability
+
+### 2026-04-04: Branch Disposition After The Short- And Long-Window Sweeps
+
+- Closed branches:
+  - "the fatal-postmortem hook itself reintroduced the early-fatal branch"
+    is not supported by today’s reruns
+  - "the narrowed timer-admission probe made the system genuinely stable"
+    is falsified by the 60-second sweep
+- Still-open branch:
+  - Linux admits follow-on IRQ work earlier in the irqchip/generic IRQ path,
+    while Breenix still relies primarily on:
+    - the timer-local admission probe
+    - later resched / exception-return windows
+- Next target:
+  - move from the timer-specific admission experiment toward a generic ARM64
+    IRQ-admission probe in `handle_irq()` / GIC-facing logic, using Linux’s
+    `gic_handle_irq()` semantics as the architectural reference
