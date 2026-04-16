@@ -184,26 +184,36 @@ forward progress.
 
 ## Proposed Fix
 
-Remove the ISR-context idle-CPU broadcast scan from `isr_unblock_for_io()`.
+Remove the ISR-context idle-CPU broadcast scan from `isr_unblock_for_io()` and
+replace it with a selected-target wake:
+
+- Record the current CPU when a thread enters `BlockedOnIO`.
+- In `isr_unblock_for_io(tid)`, look up that CPU without taking the scheduler
+  lock.
+- Push the wake entry to that CPU's ISR wake buffer.
+- Send at most one reschedule SGI to that target CPU when it differs from the
+  IRQ CPU.
 
 Rationale:
 
-- The wake event is already published to `ISR_WAKEUP_BUFFERS[cpu]` before the
-  scan (`scheduler.rs:2558-2572`).
+- The wake event is already published to an ISR wake buffer before the scan
+  (`scheduler.rs:2558-2572`).
 - The current CPU is already requested to schedule after IRQ return via
-  `set_need_resched()` (`scheduler.rs:2600`, `scheduler.rs:2470-2477`).
+  `set_need_resched()` (`scheduler.rs:2600`, `scheduler.rs:2470-2477`), but a
+  remote waiter still needs its owning CPU nudged to drain the wake promptly.
 - Scheduler code drains all ISR wake buffers on the next schedule entry
   (`scheduler.rs:912-923`).
-- Linux's equivalent does not perform idle-CPU broadcast selection; it targets a
-  selected CPU and sends a single IPI when queueing remote wake work.
+- Linux's equivalent does not perform idle-CPU broadcast selection; it targets
+  one selected CPU and sends a single IPI when queueing remote wake work.
 
 Expected behavioral signature:
 
 - The AHCI ring should no longer emit `UNBLOCK_SCAN_START`, `UNBLOCK_SCAN_CPU`,
-  `UNBLOCK_BEFORE_SEND_SGI`, `UNBLOCK_AFTER_SEND_SGI`, or `UNBLOCK_SCAN_DONE`
-  from `isr_unblock_for_io()`.
+  or `UNBLOCK_SCAN_DONE` from `isr_unblock_for_io()`.
+- `UNBLOCK_BEFORE_SEND_SGI` / `UNBLOCK_AFTER_SEND_SGI` should appear only for a
+  single selected remote wake target, not once per idle CPU.
 - Stalls between `UNBLOCK_AFTER_NEED_RESCHED` and `UNBLOCK_SCAN_DONE` should
   disappear because the scan corridor no longer exists.
-- Wake latency should remain bounded by the current CPU's interrupt-return
-  scheduling path, which consumes the local per-CPU `need_resched` plus the
-  global `NEED_RESCHED` flag.
+- Wake latency should be bounded by either the IRQ CPU's interrupt-return
+  scheduling path for local wakes or one selected reschedule SGI for remote
+  waiters.

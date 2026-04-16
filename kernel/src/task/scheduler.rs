@@ -75,6 +75,9 @@ use crate::arch_without_interrupts as without_interrupts;
 const ISR_WAKEUP_SLOTS: usize = 32;
 const ISR_WAKEUP_EMPTY: u64 = 0;
 
+#[cfg(target_arch = "aarch64")]
+const ISR_WAKEUP_TARGET_SLOTS: usize = 256;
+
 /// Per-CPU lock-free buffer for ISR wakeups.
 /// ISR writes thread IDs here via atomic CAS. Scheduler drains on each schedule.
 struct IsrWakeupBuffer {
@@ -117,6 +120,10 @@ impl IsrWakeupBuffer {
 }
 
 static ISR_WAKEUP_BUFFERS: [IsrWakeupBuffer; 8] = [const { IsrWakeupBuffer::new() }; 8];
+
+#[cfg(target_arch = "aarch64")]
+static ISR_WAKEUP_TARGETS: [AtomicU64; ISR_WAKEUP_TARGET_SLOTS] =
+    [const { AtomicU64::new(0) }; ISR_WAKEUP_TARGET_SLOTS];
 
 /// Global scheduler instance
 static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
@@ -220,6 +227,42 @@ pub fn is_cpu_idle(cpu_id: usize) -> bool {
 fn set_cpu_idle(cpu_id: usize, idle: bool) {
     if cpu_id < MAX_CPUS {
         CPU_IS_IDLE[cpu_id].store(idle, Ordering::Relaxed);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn record_isr_wakeup_target(tid: u64, cpu_id: usize) {
+    if cpu_id >= MAX_CPUS || tid >> 56 != 0 {
+        return;
+    }
+
+    let slot = (tid as usize) % ISR_WAKEUP_TARGET_SLOTS;
+    let packed = (tid << 8) | ((cpu_id as u64) + 1);
+    ISR_WAKEUP_TARGETS[slot].store(packed, Ordering::Release);
+}
+
+#[cfg(target_arch = "aarch64")]
+fn lookup_isr_wakeup_target(tid: u64) -> Option<usize> {
+    if tid >> 56 != 0 {
+        return None;
+    }
+
+    let slot = (tid as usize) % ISR_WAKEUP_TARGET_SLOTS;
+    let packed = ISR_WAKEUP_TARGETS[slot].load(Ordering::Acquire);
+    if packed >> 8 != tid {
+        return None;
+    }
+
+    let cpu_plus_one = (packed & 0xff) as usize;
+    if cpu_plus_one == 0 {
+        return None;
+    }
+
+    let cpu = cpu_plus_one - 1;
+    if cpu < MAX_CPUS && crate::arch_impl::aarch64::smp::is_cpu_online(cpu) {
+        Some(cpu)
+    } else {
+        None
     }
 }
 
@@ -1606,7 +1649,8 @@ impl Scheduler {
     /// unblock_for_io(), while the timer path wakes it by observing
     /// wake_time_ns without clearing blocked_in_syscall prematurely.
     pub fn block_current_for_io_with_timeout(&mut self, wake_time_ns: Option<u64>) {
-        if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
+        let current_cpu = Self::current_cpu_id();
+        if let Some(current_id) = self.cpu_state[current_cpu].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
                 // Charge elapsed CPU ticks before blocking
                 let now = crate::time::get_ticks();
@@ -1620,6 +1664,8 @@ impl Scheduler {
                 // stale userspace context.
                 thread.blocked_in_syscall = true;
             }
+            #[cfg(target_arch = "aarch64")]
+            record_isr_wakeup_target(current_id, current_cpu);
             // Insert into timer heap if a timeout was specified
             if let Some(wt) = wake_time_ns {
                 self.timer_heap.push(Reverse((wt, current_id)));
@@ -2543,6 +2589,10 @@ pub fn isr_unblock_for_io(tid: u64) {
     );
     let cpu = current_cpu_id_raw();
     #[cfg(target_arch = "aarch64")]
+    let wake_cpu = lookup_isr_wakeup_target(tid).unwrap_or(cpu);
+    #[cfg(not(target_arch = "aarch64"))]
+    let wake_cpu = cpu;
+    #[cfg(target_arch = "aarch64")]
     crate::drivers::ahci::push_ahci_event(
         crate::drivers::ahci::AHCI_TRACE_UNBLOCK_AFTER_CPU,
         0,
@@ -2555,7 +2605,7 @@ pub fn isr_unblock_for_io(tid: u64) {
         0,
         false,
     );
-    if cpu < ISR_WAKEUP_BUFFERS.len() {
+    if wake_cpu < ISR_WAKEUP_BUFFERS.len() {
         #[cfg(target_arch = "aarch64")]
         crate::drivers::ahci::push_ahci_event(
             crate::drivers::ahci::AHCI_TRACE_WAKEBUF_BEFORE_PUSH,
@@ -2569,7 +2619,7 @@ pub fn isr_unblock_for_io(tid: u64) {
             0,
             false,
         );
-        ISR_WAKEUP_BUFFERS[cpu].push(tid);
+        ISR_WAKEUP_BUFFERS[wake_cpu].push(tid);
         #[cfg(target_arch = "aarch64")]
         crate::drivers::ahci::push_ahci_event(
             crate::drivers::ahci::AHCI_TRACE_WAKEBUF_AFTER_PUSH,
@@ -2611,99 +2661,35 @@ pub fn isr_unblock_for_io(tid: u64) {
         0,
         false,
     );
-    // Send IPI to idle CPUs so the buffer is drained promptly.
+    // Wake the CPU that blocked on this I/O. This follows Linux's TTWU shape:
+    // queue wake work to one selected target CPU, not a broadcast idle-CPU scan.
     #[cfg(target_arch = "aarch64")]
-    {
+    if wake_cpu != cpu && wake_cpu < MAX_CPUS {
         crate::drivers::ahci::push_ahci_event(
-            crate::drivers::ahci::AHCI_TRACE_SCAN_START,
+            crate::drivers::ahci::AHCI_TRACE_UNBLOCK_BEFORE_SEND_SGI,
             0,
             0,
             0,
             0,
             0,
             tid,
-            0,
+            wake_cpu as u32,
             0,
             false,
         );
-        let online = crate::arch_impl::aarch64::smp::cpus_online() as usize;
-        crate::drivers::ahci::push_ahci_event(
-            crate::drivers::ahci::AHCI_TRACE_UNBLOCK_BEFORE_SGI_SCAN,
-            0,
-            0,
-            0,
-            0,
-            0,
-            tid,
-            0,
-            0,
-            false,
+        crate::arch_impl::aarch64::gic::send_sgi(
+            crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
+            wake_cpu as u8,
         );
-        for target in 0..online.min(MAX_CPUS) {
-            crate::drivers::ahci::push_ahci_event(
-                crate::drivers::ahci::AHCI_TRACE_SCAN_CPU,
-                0,
-                0,
-                0,
-                0,
-                0,
-                tid,
-                target as u32,
-                0,
-                false,
-            );
-            if target != cpu && is_cpu_idle(target) {
-                crate::drivers::ahci::push_ahci_event(
-                    crate::drivers::ahci::AHCI_TRACE_UNBLOCK_PER_SGI,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    tid,
-                    target as u32,
-                    0,
-                    false,
-                );
-                crate::drivers::ahci::push_ahci_event(
-                    crate::drivers::ahci::AHCI_TRACE_UNBLOCK_BEFORE_SEND_SGI,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    tid,
-                    target as u32,
-                    0,
-                    false,
-                );
-                crate::arch_impl::aarch64::gic::send_sgi(
-                    crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
-                    target as u8,
-                );
-                crate::drivers::ahci::push_ahci_event(
-                    crate::drivers::ahci::AHCI_TRACE_UNBLOCK_AFTER_SEND_SGI,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    tid,
-                    target as u32,
-                    0,
-                    false,
-                );
-            }
-        }
         crate::drivers::ahci::push_ahci_event(
-            crate::drivers::ahci::AHCI_TRACE_SCAN_DONE,
+            crate::drivers::ahci::AHCI_TRACE_UNBLOCK_AFTER_SEND_SGI,
             0,
             0,
             0,
             0,
             0,
             tid,
-            0,
+            wake_cpu as u32,
             0,
             false,
         );
