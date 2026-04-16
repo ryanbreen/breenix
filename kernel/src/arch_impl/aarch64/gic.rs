@@ -993,6 +993,19 @@ pub fn dump_stuck_state_for_spi(intid: u32) {
         "peer_cpu_reason",
         "no_existing_ipi_callback_mechanism",
     );
+
+    if intid == 34 {
+        raw_dump_prefix(intid);
+        raw_uart_str("AHCI_PORT0_IS=");
+        if let Some(port0_is) = crate::drivers::ahci::port0_is_snapshot() {
+            raw_uart_hex(port0_is as u64);
+        } else {
+            raw_uart_str("unavailable");
+        }
+        raw_uart_str("\n");
+
+        crate::drivers::ahci::dump_recent_ahci_events(None, 16);
+    }
 }
 
 /// Send a Software Generated Interrupt (SGI) to a target CPU.
