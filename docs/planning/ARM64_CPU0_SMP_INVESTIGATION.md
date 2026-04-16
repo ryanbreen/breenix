@@ -3145,3 +3145,97 @@ timeouts.
 The residual signature is intermittent AHCI timeout after successful boot with
 Linux-parity PMR confirmed on all CPUs. F16 should audit the idle-scan loop
 logic / scan-to-SGI handoff semantics. F15 does not justify F-final.
+
+## 2026-04-16 - F17 local IRQ-return wake-buffer audit
+
+F17 audited the local-wake path left after F16 removed the broadcast idle-CPU
+scan. The target case was AHCI completion on the same CPU as the blocked waiter,
+where no SGI should be needed: the ISR should publish the wake, set
+`need_resched`, and the same CPU's IRQ-return path should drain the wake buffer
+before making the scheduling decision.
+
+### Ordering audit
+
+`isr_unblock_for_io()` now records the local path around the wake publication:
+`TTWU_LOCAL_ENTRY` after resolving the current CPU, `WAKEBUF_BEFORE_PUSH` /
+`WAKEBUF_AFTER_PUSH` around the per-CPU wake-buffer write, and
+`TTWU_LOCAL_SET_RESCHED` after `set_need_resched()`.
+
+The scheduler drain point is at the top of `schedule_deferred_requeue()`: it
+drains all `ISR_WAKEUP_BUFFERS`, calls `unblock_for_io()` for each drained TID,
+and records `RESCHED_CHECK_DRAINED_WAKE` with the drained count, ready-queue
+length, and current `need_resched` value.
+
+On ARM64 IRQ return, `handle_irq()` records `IRQ_TAIL_CHECK_RESCHED` before its
+tail resched wrapper, and `boot.S` then calls
+`check_need_resched_and_switch_arm64()` before restoring the exception frame.
+`check_need_resched_and_switch_arm64()` records `RESCHED_CHECK_ENTRY`,
+`RESCHED_CHECK_SWITCHED`, and `RESCHED_CHECK_RETURN`.
+
+### Validation sweep
+
+Artifacts:
+
+```text
+logs/breenix-parallels-cpu0/f17-local-wake/run{1..5}/
+logs/breenix-parallels-cpu0/f17-local-wake/summary.txt
+logs/breenix-parallels-cpu0/f17-local-wake/exit.md
+```
+
+| Run | Reached bsshd | AHCI timeout | Corruption markers | Failed exec | Soft lockup | `ttwu_local_entry` | `ttwu_local_set_resched` | `irq_tail_check_resched` | `resched_check_entry` | `resched_check_drained_wake` | `resched_check_switched` | `resched_check_return` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| run1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| run2 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| run3 | 1 | 2 | 0 | 1 | 2 | 1 | 0 | 3 | 3 | 3 | 1 | 2 |
+| run4 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| run5 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+The final sweep therefore passed the explicit AHCI-timeout criteria in four of
+five runs and failed run3. All five runs reached `[init] bsshd started (PID 2)`;
+no corruption markers were observed.
+
+Run3 preserved the local-wake corridor:
+
+```text
+TTWU_LOCAL_ENTRY cpu=0 waiter_tid=11 slot_mask=0x0 token=1
+WAKEBUF_AFTER_PUSH waiter_tid=11
+IRQ_TAIL_CHECK_RESCHED cpu=0 slot_mask=0x1 token=1
+RESCHED_CHECK_ENTRY cpu=0 slot_mask=0x1 token=1
+RESCHED_CHECK_DRAINED_WAKE cpu=0 waiter_tid=1 slot_mask=0x1 token=1 wake_success=1
+RESCHED_CHECK_SWITCHED cpu=0 waiter_tid=11 token=1 wake_success=1
+RESCHED_CHECK_RETURN cpu=0 slot_mask=0x0 token=0
+```
+
+The explicit `TTWU_LOCAL_SET_RESCHED` breadcrumb was present in diagnostic-run2
+before the final sweep. Final run3's AHCI ring dump has a sequence gap at the
+expected slot, but the immediately following `IRQ_TAIL_CHECK_RESCHED` shows
+`token=1` and `slot_mask=0x1`, confirming that `need_resched` and the wake
+buffer depth were visible at IRQ tail.
+
+### Determination
+
+F17 falsifies H1: `TTWU_LOCAL_ENTRY` is followed by
+`IRQ_TAIL_CHECK_RESCHED` and `RESCHED_CHECK_ENTRY`, so the IRQ-return scheduler
+check is reached.
+
+F17 also falsifies H2: `RESCHED_CHECK_DRAINED_WAKE` with `wake_success=1`
+appears before `RESCHED_CHECK_SWITCHED`, so the wake buffer is drained before
+the scheduling decision and the woken TID is selected.
+
+Confirmed bucket: **Other**. The local wake path works through switch. The
+remaining failure is later in the AHCI/SPI34 corridor: run3 times out on a later
+command (`cmd#=1374`) after the completed local wake (`last_port1_cmd_num=1372`)
+and reports `GICD_ISPENDR[1]` pending for SPI34, `GICD_ISACTIVER[1]` active for
+SPI34, `AHCI_PORT1_IS=0x1`, and `CI=0x0`.
+
+### Verdict
+
+Verdict: **FAIL**. F17 should not merge as a final fix. No F17 scheduler fix was
+applied because both local scheduler hypotheses were disproven and the remaining
+suspect area is outside the F17 non-goals.
+
+Recommended F18 direction: investigate why SPI34 remains active/pending with
+AHCI Port1 `IS=0x1` and no completion for a later command after the local wake
+path has already switched successfully. The next audit should focus on AHCI
+interrupt completion / EOI-deactivation ordering or command publication, not on
+the local IRQ-return wake-buffer drain.

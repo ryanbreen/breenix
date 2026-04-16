@@ -1,0 +1,68 @@
+# F17 Local Wake + IRQ-Return Resched Summary
+
+Branch: diagnostic-fix/f17-local-wake
+Base: 4bd74caa probe/f16-idle-scan-fix
+Command: ./run.sh --parallels --test 60
+Log root: logs/breenix-parallels-cpu0/f17-local-wake/run{1..5}/
+
+## Per-run counts
+
+| run | bsshd_started | ahci_timeouts | corruption_markers | failed_exec | soft_lockups | scan_start | scan_cpu | scan_done | unblock_before_send_sgi | unblock_after_send_sgi | ttwu_local_entry | ttwu_local_set_resched | irq_tail_check_resched | resched_check_entry | resched_check_drained_wake | resched_check_switched | resched_check_return |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| run1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| run2 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| run3 | 1 | 2 | 0 | 1 | 2 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 3 | 3 | 3 | 1 | 2 |
+| run4 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| run5 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+Notes:
+- `ahci_timeouts` counts `[ahci] Port N TIMEOUT`, not internal WAIT_TIMEOUT trace records from post-timeout dumps.
+- `corruption_markers` counts `CORRUPT|DATA_ABORT|INSTRUCTION_ABORT|PC_ALIGN|panic|PANIC`.
+- `ttwu_local_set_resched` was explicitly observed in diagnostic-run2 before the final sweep. In final run3, the ring dump has a sequence gap at the expected slot, but the immediately following `IRQ_TAIL_CHECK_RESCHED token=1 slot_mask=0x1` confirms the need-resched flag and wake-buffer depth were visible at IRQ tail.
+
+## Key failing-run breadcrumb sequence
+
+Final run3 preserved the local-wake corridor in the AHCI ring dump:
+
+```text
+ENTER port=1 token=1372
+POST_CLEAR port=1 token=1372
+BEFORE_COMPLETE port=1 token=1372
+WAKE_ENTER waiter_tid=11 token=1372
+UNBLOCK_ENTRY waiter_tid=11
+TTWU_LOCAL_ENTRY cpu=0 waiter_tid=11 slot_mask=0x0 token=1
+WAKEBUF_BEFORE_PUSH waiter_tid=11
+WAKEBUF_AFTER_PUSH waiter_tid=11
+IRQ_TAIL_CHECK_RESCHED cpu=0 slot_mask=0x1 token=1
+RESCHED_CHECK_ENTRY cpu=0 slot_mask=0x1 token=1
+RESCHED_CHECK_DRAINED_WAKE cpu=0 waiter_tid=1 slot_mask=0x1 token=1 wake_success=1
+RESCHED_CHECK_SWITCHED cpu=0 waiter_tid=11 token=1 wake_success=1
+RESCHED_CHECK_DRAINED_WAKE cpu=0 waiter_tid=0 slot_mask=0x0 token=1 wake_success=0
+RESCHED_CHECK_RETURN cpu=0 slot_mask=0x0 token=0
+```
+
+Diagnostic-run2, captured before the final 5-run sweep, included the complete expected marker sequence including `TTWU_LOCAL_SET_RESCHED`:
+
+```text
+TTWU_LOCAL_ENTRY cpu=0 waiter_tid=11 slot_mask=0x0 token=1
+WAKEBUF_AFTER_PUSH waiter_tid=11
+TTWU_LOCAL_SET_RESCHED cpu=0 waiter_tid=11 slot_mask=0x1 token=1 wake_success=1
+IRQ_TAIL_CHECK_RESCHED cpu=0 slot_mask=0x1 token=1
+RESCHED_CHECK_ENTRY cpu=0 slot_mask=0x1 token=1
+RESCHED_CHECK_DRAINED_WAKE cpu=0 waiter_tid=1 slot_mask=0x1 token=1 wake_success=1
+RESCHED_CHECK_SWITCHED cpu=0 waiter_tid=11 token=1 wake_success=1
+```
+
+## Determination
+
+H1 is falsified: IRQ return calls the resched path. Both diagnostic-run2 and final run3 show `IRQ_TAIL_CHECK_RESCHED` followed by `RESCHED_CHECK_ENTRY`.
+
+H2 is falsified: the resched path drains the wake buffer before the scheduling decision. Both diagnostic-run2 and final run3 show `RESCHED_CHECK_DRAINED_WAKE` with `wake_success=1` before `RESCHED_CHECK_SWITCHED`.
+
+Confirmed bucket: Other. The local wake path completes and switches to the woken task. The later failure is an AHCI/SPI34 condition: the timeout dump reports `GICD_ISPENDR[1]` pending for SPI34, `GICD_ISACTIVER[1]` active for SPI34, `AHCI_PORT1_IS=0x1`, `CI=0x0`, and a later command number (`cmd#=1374`) than the completed local wake (`last_port1_cmd_num=1372`).
+
+## Verdict
+
+VERDICT: FAIL. Four of five final runs met the pass criteria. Run3 reached `[init] bsshd started (PID 2)` but later had two AHCI port timeouts and soft lockup dumps. No corruption markers were observed.
+
+Recommended F18 direction: investigate why SPI34 remains active/pending with AHCI Port1 `IS=0x1` and no completion for a later command after the local wake path has already switched successfully. This likely belongs in the AHCI interrupt EOI/deactivation or command publication/completion corridor, not the local IRQ-return scheduler drain path.
