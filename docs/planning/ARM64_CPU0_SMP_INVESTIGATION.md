@@ -2091,3 +2091,66 @@ the cached-TTBR0 baseline.
   - reason: the timeout corridor persisted without new corruption, so the next
     falsifiable cut is to add a live PMR admission gate rather than changing
     the return path
+
+### 2026-04-15: F7 Combined Linux Admission Sweep Improved Stability but Did Not Reach 5/5
+
+- Probe change summary:
+  - kept the GICv3 CPU-interface in `EOImode1` and retained the split
+    `priority_drop_irq()` / `deactivate_irq()` helpers in
+    [gic.rs](/Users/wrb/fun/code/breenix-worktrees/f7-combined-linux-admission/kernel/src/arch_impl/aarch64/gic.rs)
+  - updated
+    [exception.rs](/Users/wrb/fun/code/breenix-worktrees/f7-combined-linux-admission/kernel/src/arch_impl/aarch64/exception.rs)
+    so the generic IRQ path now follows the Linux ordering:
+    `acknowledge_irq() -> irq_enter() -> priority_drop_irq() -> isb ->
+    guarded daifclr -> dispatch -> guarded daifset -> deactivate_irq() ->
+    irq_exit() -> do_softirq() -> resched`
+  - removed the bespoke context-switch admission/rearm scaffolding from
+    [context_switch.rs](/Users/wrb/fun/code/breenix-worktrees/f7-combined-linux-admission/kernel/src/arch_impl/aarch64/context_switch.rs)
+    that F7 replaces, and dropped the timer-local extra HARDIRQ accounting from
+    [timer_interrupt.rs](/Users/wrb/fun/code/breenix-worktrees/f7-combined-linux-admission/kernel/src/arch_impl/aarch64/timer_interrupt.rs)
+    so generic `handle_irq()` owns the accounting window
+  - kept the F6-style timeout telemetry by adding
+    `dump_stuck_state_for_spi(34)` to the AHCI timeout path in
+    [ahci/mod.rs](/Users/wrb/fun/code/breenix-worktrees/f7-combined-linux-admission/kernel/src/drivers/ahci/mod.rs)
+- Artifacts:
+  - [run1](/Users/wrb/fun/code/breenix-worktrees/f7-combined-linux-admission/logs/breenix-parallels-cpu0/f7-combined-admission/run1)
+  - [run2](/Users/wrb/fun/code/breenix-worktrees/f7-combined-linux-admission/logs/breenix-parallels-cpu0/f7-combined-admission/run2)
+  - [run3](/Users/wrb/fun/code/breenix-worktrees/f7-combined-linux-admission/logs/breenix-parallels-cpu0/f7-combined-admission/run3)
+  - [run4](/Users/wrb/fun/code/breenix-worktrees/f7-combined-linux-admission/logs/breenix-parallels-cpu0/f7-combined-admission/run4)
+  - [run5](/Users/wrb/fun/code/breenix-worktrees/f7-combined-linux-admission/logs/breenix-parallels-cpu0/f7-combined-admission/run5)
+- Result:
+  - `run1`: FAIL — reached `[init] bsshd started (PID 2)` and later hit two
+    AHCI completion timeouts (`ahci_timeouts=2`, `stuck_state_dumps=32`)
+  - `run2`: FAIL — reached `[init] bsshd started (PID 2)` and later hit one
+    AHCI completion timeout (`ahci_timeouts=1`, `stuck_state_dumps=16`)
+  - `run3`: FAIL — reached `[init] bsshd started (PID 2)` and later hit two
+    AHCI completion timeouts (`ahci_timeouts=2`, `stuck_state_dumps=32`)
+  - `run4`: PASS — reached `[init] bsshd started (PID 2)` with no AHCI
+    timeout and no corruption markers in the 60-second collector window
+  - `run5`: PASS — reached `[init] bsshd started (PID 2)` with no AHCI
+    timeout and no corruption markers in the 60-second collector window
+- Stable state from failing runs:
+  - all failing samples stayed on the timeout branch; none showed
+    `DATA_ABORT`, `UNHANDLED_EC`, `FATAL_POSTMORTEM`, or `DEFER_EVICT`
+  - unlike the earlier `pend=true act=false` admission-blocked signature, the
+    F7 stuck-state dumps consistently showed `SPI34 pend=true act=true` with
+    `ICC_RPR_EL1=0xff`, `ICC_PMR_EL1=0xf8`, `ICC_HPPIR1_EL1=0x3ff`, and
+    `DAIF=0x300` outside exception context at timeout time
+  - all five runs reached `[init] bsshd started (PID 2)`, so the remaining
+    failures happen after init is already live rather than on a pre-init
+    corruption branch
+- Interpretation:
+  - the complete Linux-style admission model is **not** sufficient by itself:
+    F7 improved stability to `2/5` clean runs and avoided the corruption branch,
+    but it still missed the `5/5` pass criterion
+  - the timeout branch remains dominant, so the investigation stays on the
+    timeout side rather than moving to D4/return-discipline corruption work
+  - the new `act=true` stuck-state signature weakens the original
+    "same-priority admission never opens" explanation; by timeout time the AHCI
+    SPI is already active, which points more toward post-admission routing /
+    level-deassert / completion-state handling than to the old DAIF+EOI gate
+- Next target:
+  - follow the timeout branch, not the corruption branch
+  - next probe should treat this as a D3/routing-style follow-up: verify why
+    SPI34 stays `pending+active` after the combined admission window already
+    admitted it, rather than spending another cycle on return-path cleanup
