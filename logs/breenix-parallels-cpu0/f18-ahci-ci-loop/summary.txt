@@ -1,0 +1,25 @@
+# F18 AHCI CI Loop Validation Summary
+
+Branch: `probe/f18-ahci-ci-loop`
+Fix commit: `1dc65313 fix(ahci): drain completions by CI level`
+Command: `./run.sh --parallels --test 60`
+Log root: `logs/breenix-parallels-cpu0/f18-ahci-ci-loop/`
+
+Note: each `run.sh` invocation exited `1` because the Parallels screenshot
+helper could not find the generated VM window. Serial logs are the validation
+source, matching prior F-series sweeps.
+
+| run | bsshd_started | ahci_timeouts | corruption_markers | failed_exec | soft_lockups | scan_start | scan_cpu | scan_done | unblock_before_send_sgi | unblock_after_send_sgi | ttwu_local_entry | ttwu_local_set_resched | irq_tail_check_resched | resched_check_entry | resched_check_drained_wake | resched_check_switched | resched_check_return | ahci_ci_loop_iterations | result |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| run1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | PASS |
+| run2 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | PASS |
+| run3 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | PASS |
+| run4 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | PASS |
+| run5 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | PASS |
+
+VERDICT: PASS. All five final runs reached `[init] bsshd started (PID 2)` with
+`ahci_timeouts=0` and `corruption_markers=0`.
+
+`ahci_ci_loop_iterations` counts visible `site=CI_LOOP` AHCI ring events in the
+serial logs. Passing runs did not trigger timeout-time AHCI ring dumps, so the
+visible count is `0` for all final runs.

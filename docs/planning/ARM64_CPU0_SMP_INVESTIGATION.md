@@ -3239,3 +3239,85 @@ AHCI Port1 `IS=0x1` and no completion for a later command after the local wake
 path has already switched successfully. The next audit should focus on AHCI
 interrupt completion / EOI-deactivation ordering or command publication, not on
 the local IRQ-return wake-buffer drain.
+
+## 2026-04-16 - F18 AHCI CI-level completion loop
+
+F18 targeted the AHCI completion race isolated by F17: timeout dumps showed
+`CI=0x0` and `AHCI_PORT1_IS=0x1` while the waiter was blocked on a command
+newer than the last command completed by the ISR. That means hardware had
+completed the command, but the software completion path missed the waiter wake.
+
+### Audit summary
+
+The F17 Breenix AHCI handler was edge-sensitive. It read `PORT_IS`, cleared
+`PORT_IS`/`HBA_IS`, read `PORT_CI` once, and completed at most one slot from
+that single sampled interrupt state. That can miss a completion once the
+hardware `PORT_CI` bit has already dropped but no new software completion pass
+runs for the active slot.
+
+Linux v6.8 is level-sensitive. In `/tmp/linux-v6.8/drivers/ata/libahci.c`,
+`ahci_port_intr()` reads and acknowledges `PORT_IRQ_STAT` at lines 1963-1964,
+then calls `ahci_handle_port_interrupt()` at line 1966. The command completion
+path runs through `ahci_qc_complete()`; it reads `PORT_SCR_ACT` and
+`PORT_CMD_ISSUE` into `qc_active` at lines 1875-1885, then calls
+`ata_qc_complete_multiple(ap, qc_active)` at line 1888. The important parity
+point is deriving completions from currently active hardware command bits, not
+from a single interrupt edge.
+
+### Fix description
+
+`kernel/src/drivers/ahci/mod.rs` now bounds the AHCI completion drain loop at
+eight iterations. For each active port, it:
+
+- reads the per-port active software mask and `PORT_CI`;
+- computes completed slots as `PORT_ACTIVE_MASK & !PORT_CI`;
+- clears completed active bits atomically;
+- acknowledges sampled `PORT_IS`;
+- re-reads `PORT_IS` and `PORT_CI`, looping if the port reasserted or another
+  active slot is now clear.
+
+Because the current driver issues only slot 0, the slot-0 completion token is
+recorded during the CI loop and the actual wake is published only after the
+port interrupt is stable. This prevents the woken waiter from issuing the next
+slot-0 command while the prior AHCI interrupt line remains asserted. The prior
+single-active-slot fallback for controllers that signal completion before
+`PORT_CI` is observed clear was preserved.
+
+F18 also added AHCI ring site `CI_LOOP`; the loop iteration count is emitted
+in the event `token` field. Passing validation runs did not trigger
+timeout-time AHCI ring dumps, so visible `ahci_ci_loop_iterations` is `0` in
+the final serial logs.
+
+### Validation sweep
+
+Artifacts:
+
+```text
+logs/breenix-parallels-cpu0/f18-ahci-ci-loop/run{1..5}/
+logs/breenix-parallels-cpu0/f18-ahci-ci-loop/summary.txt
+logs/breenix-parallels-cpu0/f18-ahci-ci-loop/exit.md
+```
+
+Each `./run.sh --parallels --test 60` invocation exited 1 because the
+Parallels screenshot helper could not find the generated VM window. As in
+prior F-series sweeps, the serial log is the validation source.
+
+| Run | Reached bsshd | AHCI timeout | Corruption markers | Failed exec | Soft lockup | `ahci_ci_loop_iterations` | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| run1 | 1 | 0 | 0 | 0 | 0 | 0 | PASS |
+| run2 | 1 | 0 | 0 | 0 | 0 | 0 | PASS |
+| run3 | 1 | 0 | 0 | 0 | 0 | 0 | PASS |
+| run4 | 1 | 0 | 0 | 0 | 0 | 0 | PASS |
+| run5 | 1 | 0 | 0 | 0 | 0 | 0 | PASS |
+
+### Verdict
+
+Verdict: **PASS**. F18 reached the target 5/5 Parallels sweep: every final run
+reached `[init] bsshd started (PID 2)` with `ahci_timeouts=0` and
+`corruption_markers=0`.
+
+The ARM64 CPU0/AHCI timeout investigation is therefore complete for this
+failure signature. Recommended next step: open a cleanup PR to remove the
+F8-F17 diagnostic scaffolding and keep only the minimal AHCI CI-level
+completion behavior plus any low-cost regression signal needed for future
+AHCI timeout triage.

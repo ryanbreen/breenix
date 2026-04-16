@@ -291,6 +291,7 @@ pub(crate) const AHCI_TRACE_RESCHED_CHECK_ENTRY: u32 = 32;
 pub(crate) const AHCI_TRACE_RESCHED_CHECK_DRAINED_WAKE: u32 = 33;
 pub(crate) const AHCI_TRACE_RESCHED_CHECK_SWITCHED: u32 = 34;
 pub(crate) const AHCI_TRACE_RESCHED_CHECK_RETURN: u32 = 35;
+pub(crate) const AHCI_TRACE_CI_LOOP: u32 = 36;
 
 struct AhciTraceSlot {
     site: AtomicU32,
@@ -461,6 +462,7 @@ fn ahci_trace_site_name(site: u32) -> &'static str {
         AHCI_TRACE_RESCHED_CHECK_DRAINED_WAKE => "RESCHED_CHECK_DRAINED_WAKE",
         AHCI_TRACE_RESCHED_CHECK_SWITCHED => "RESCHED_CHECK_SWITCHED",
         AHCI_TRACE_RESCHED_CHECK_RETURN => "RESCHED_CHECK_RETURN",
+        AHCI_TRACE_CI_LOOP => "CI_LOOP",
         _ => "UNKNOWN",
     }
 }
@@ -2625,13 +2627,17 @@ fn probe_platform_irq(ctrl: &AhciController) {
 
 /// AHCI MSI interrupt handler — called from the IRQ dispatch in `exception.rs`.
 ///
-/// Reads HBA_IS to identify which port(s) fired, reads and clears PORT_IS,
-/// then sets the per-port `AHCI_PORT_COMPLETE` flag so `issue_cmd_slot0` can
-/// wake up.  Clears HBA_IS last (AHCI spec requires PORT_IS cleared first).
+/// Reads HBA_IS to identify which port(s) fired, acknowledges the sampled
+/// PORT_IS, then derives completions from the per-port active-slot mask and
+/// PORT_CI until the port is stable.
 ///
 /// This function must be lock-free and allocation-free (called from IRQ context).
+const AHCI_CI_COMPLETION_LOOP_LIMIT: u32 = 8;
+const AHCI_TRACKED_SLOT_MASK: u32 = (1u32 << AHCI_MAX_CONCURRENT) - 1;
+
 #[inline]
 fn detect_completed_slots(active: u32, ci_after: u32, port_is: u32) -> u32 {
+    let active = active & AHCI_TRACKED_SLOT_MASK;
     let mut completed = active & !ci_after;
 
     if completed == 0
@@ -2715,11 +2721,12 @@ pub fn handle_interrupt() {
         if !check_all && (hba_is & (1 << port)) == 0 {
             continue;
         }
-        let is = port_read(abar, port, PORT_IS);
-        if is == 0 {
+        let mut is = port_read(abar, port, PORT_IS);
+        let ci_entry = port_read(abar, port, PORT_CI);
+        let active_entry = PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & AHCI_TRACKED_SLOT_MASK;
+        if is == 0 && (active_entry & !ci_entry) == 0 {
             continue;
         }
-        let ci_entry = port_read(abar, port, PORT_CI);
         let sact_entry = port_read(abar, port, PORT_SACT);
         let serr_entry = port_read(abar, port, PORT_SERR);
         push_ahci_event(
@@ -2730,100 +2737,162 @@ pub fn handle_interrupt() {
             sact_entry,
             serr_entry,
             AHCI_COMPLETIONS[port][0].waiter_tid(),
-            0,
+            active_entry,
             PORT_ACTIVE_CMD_NUM[port].load(Ordering::Acquire),
             false,
         );
-        AHCI_ISR_PORT_HIT[port].fetch_add(1, Ordering::Relaxed);
+        if is != 0 {
+            AHCI_ISR_PORT_HIT[port].fetch_add(1, Ordering::Relaxed);
+        }
         if port == 1 {
             AHCI_LAST_ISR_PORT1_IS.store(is, Ordering::Relaxed);
         }
-        ack_port_interrupt(abar, port, is);
 
-        let is_after_clear = port_read(abar, port, PORT_IS);
-        let ci_after_clear = port_read(abar, port, PORT_CI);
-        let sact_after_clear = port_read(abar, port, PORT_SACT);
-        let active_mask = PORT_ACTIVE_MASK[port].load(Ordering::Acquire);
-        let completed_slots = detect_completed_slots(active_mask, ci_after_clear, is);
         let mut waiter_tid = 0u64;
-        let mut cmd_num = 0u32;
         let mut wake_success = false;
         let mut slots_processed = 0u32;
+        let mut loop_iterations = 0u32;
+        // Slot 0 is the only issued slot today. Defer the wake until after
+        // PORT_IS has been acknowledged and the CI drain loop is stable, so the
+        // woken thread cannot issue the next command while this interrupt line
+        // is still asserted.
+        let mut pending_cmd_num = 0u32;
+        let mut pending_waiter_tid = 0u64;
+        let mut pending_slot_bit = 0u32;
+        let mut pending_is = 0u32;
+        let mut pending_ci = 0u32;
+        let mut pending_sact = 0u32;
+        let mut pending_serr = 0u32;
+        let mut is_after_clear: u32;
+        let mut ci_after_clear: u32;
+        let mut sact_after_clear: u32;
+        let mut serr_after_clear: u32;
 
-        if (is & (PORT_IRQ_COMPLETE | PORT_IRQ_ERROR)) != 0 {
-            if port < MAX_AHCI_PORTS {
-                // Atomically load-and-clear the active command number.
-                // If cmd_num > 0, this is the first ISR invocation for this
-                // command — signal completion. If cmd_num == 0, a previous
-                // ISR already completed this command (level-triggered
-                // re-delivery or spurious). Calling complete(0) would
-                // overwrite done with 0, destroying the real token and
-                // causing the waiter to time out.
-                cmd_num = PORT_ACTIVE_CMD_NUM[port].swap(0, Ordering::AcqRel);
-                if port == 1 {
-                    AHCI_LAST_ISR_PORT1_CMD_NUM.store(cmd_num, Ordering::Relaxed);
-                }
-                waiter_tid = AHCI_COMPLETIONS[port][0].waiter_tid();
-                push_ahci_event(
-                    AHCI_TRACE_POST_CLEAR,
-                    port as u32,
-                    is_after_clear,
-                    ci_after_clear,
-                    sact_after_clear,
-                    serr_entry,
-                    waiter_tid,
-                    completed_slots,
-                    cmd_num,
-                    false,
-                );
-                if cmd_num != 0 {
-                    AHCI_LAST_ISR_COMPLETE_PORT.store(port as u32, Ordering::Relaxed);
-                    AHCI_LAST_ISR_COMPLETE_CMD.store(cmd_num, Ordering::Relaxed);
-                    AHCI_LAST_ISR_COMPLETE_WAITER.store(waiter_tid, Ordering::Relaxed);
-                    push_ahci_event(
-                        AHCI_TRACE_BEFORE_COMPLETE,
-                        port as u32,
-                        is_after_clear,
-                        ci_after_clear,
-                        sact_after_clear,
-                        serr_entry,
-                        waiter_tid,
-                        completed_slots,
-                        cmd_num,
-                        false,
-                    );
-                    AHCI_COMPLETIONS[port][0].complete(cmd_num);
-                    push_ahci_event(
-                        AHCI_TRACE_AFTER_COMPLETE,
-                        port as u32,
-                        is_after_clear,
-                        ci_after_clear,
-                        sact_after_clear,
-                        serr_entry,
-                        waiter_tid,
-                        completed_slots,
-                        cmd_num,
-                        false,
-                    );
-                    AHCI_ISR_COMPLETE_HIT[port].fetch_add(1, Ordering::Relaxed);
-                    wake_success = waiter_tid != 0;
-                    slots_processed = completed_slots.count_ones();
-                }
-                PORT_ACTIVE_MASK[port].store(0, Ordering::Release);
+        loop {
+            loop_iterations += 1;
+
+            let sampled_is = is;
+            if sampled_is != 0 {
+                ack_port_interrupt(abar, port, sampled_is);
             }
-        } else {
+
+            let ci = port_read(abar, port, PORT_CI);
+            let sact = port_read(abar, port, PORT_SACT);
+            let serr = port_read(abar, port, PORT_SERR);
+            let active_mask =
+                PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & AHCI_TRACKED_SLOT_MASK;
+            let completed_slots = detect_completed_slots(active_mask, ci, sampled_is);
+
+            push_ahci_event(
+                AHCI_TRACE_CI_LOOP,
+                port as u32,
+                sampled_is,
+                ci,
+                sact,
+                serr,
+                AHCI_COMPLETIONS[port][0].waiter_tid(),
+                completed_slots,
+                loop_iterations,
+                completed_slots != 0,
+            );
+
+            let mut remaining = completed_slots;
+            while remaining != 0 {
+                let slot = remaining.trailing_zeros() as usize;
+                let slot_bit = 1u32 << slot;
+                remaining &= !slot_bit;
+
+                let was_active =
+                    (PORT_ACTIVE_MASK[port].fetch_and(!slot_bit, Ordering::AcqRel) & slot_bit) != 0;
+                if !was_active {
+                    continue;
+                }
+
+                slots_processed += 1;
+
+                // The current driver issues only slot 0. The arrays are sized
+                // for future multi-slot work, but only slot 0 has a command
+                // token to publish back to wait_cmd_slot0().
+                if slot == 0 {
+                    let cmd_num = PORT_ACTIVE_CMD_NUM[port].swap(0, Ordering::AcqRel);
+                    if port == 1 {
+                        AHCI_LAST_ISR_PORT1_CMD_NUM.store(cmd_num, Ordering::Relaxed);
+                    }
+                    waiter_tid = AHCI_COMPLETIONS[port][slot].waiter_tid();
+                    if cmd_num != 0 {
+                        pending_cmd_num = cmd_num;
+                        pending_waiter_tid = waiter_tid;
+                        pending_slot_bit = slot_bit;
+                        pending_is = sampled_is;
+                        pending_ci = ci;
+                        pending_sact = sact;
+                        pending_serr = serr;
+                    }
+                }
+            }
+
+            is_after_clear = port_read(abar, port, PORT_IS);
+            ci_after_clear = port_read(abar, port, PORT_CI);
+            sact_after_clear = port_read(abar, port, PORT_SACT);
+            serr_after_clear = port_read(abar, port, PORT_SERR);
+            let active_after =
+                PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & AHCI_TRACKED_SLOT_MASK;
+            let completed_after_clear = active_after & !ci_after_clear;
+
             push_ahci_event(
                 AHCI_TRACE_POST_CLEAR,
                 port as u32,
                 is_after_clear,
                 ci_after_clear,
                 sact_after_clear,
-                serr_entry,
-                AHCI_COMPLETIONS[port][0].waiter_tid(),
-                completed_slots,
-                0,
+                serr_after_clear,
+                waiter_tid,
+                completed_after_clear,
+                loop_iterations,
+                completed_after_clear != 0,
+            );
+
+            if loop_iterations >= AHCI_CI_COMPLETION_LOOP_LIMIT {
+                break;
+            }
+            if is_after_clear == 0 && completed_after_clear == 0 {
+                break;
+            }
+            is = is_after_clear;
+        }
+
+        if pending_cmd_num != 0 {
+            AHCI_LAST_ISR_COMPLETE_PORT.store(port as u32, Ordering::Relaxed);
+            AHCI_LAST_ISR_COMPLETE_CMD.store(pending_cmd_num, Ordering::Relaxed);
+            AHCI_LAST_ISR_COMPLETE_WAITER.store(pending_waiter_tid, Ordering::Relaxed);
+            push_ahci_event(
+                AHCI_TRACE_BEFORE_COMPLETE,
+                port as u32,
+                pending_is,
+                pending_ci,
+                pending_sact,
+                pending_serr,
+                pending_waiter_tid,
+                pending_slot_bit,
+                pending_cmd_num,
                 false,
             );
+            AHCI_COMPLETIONS[port][0].complete(pending_cmd_num);
+            push_ahci_event(
+                AHCI_TRACE_AFTER_COMPLETE,
+                port as u32,
+                pending_is,
+                pending_ci,
+                pending_sact,
+                pending_serr,
+                pending_waiter_tid,
+                pending_slot_bit,
+                pending_cmd_num,
+                false,
+            );
+            AHCI_ISR_COMPLETE_HIT[port].fetch_add(1, Ordering::Relaxed);
+            waiter_tid = pending_waiter_tid;
+            wake_success |= pending_waiter_tid != 0;
         }
 
         push_ahci_event(
@@ -2832,10 +2901,10 @@ pub fn handle_interrupt() {
             is_after_clear,
             ci_after_clear,
             sact_after_clear,
-            serr_entry,
+            serr_after_clear,
             waiter_tid,
             slots_processed,
-            cmd_num,
+            loop_iterations,
             wake_success,
         );
     }
