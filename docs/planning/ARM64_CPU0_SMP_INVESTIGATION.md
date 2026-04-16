@@ -2360,3 +2360,198 @@ wake_exit=2
   - likely F10 split: if the last site is before/inside `send_sgi()`, audit
     SGI delivery/GICR targeting; if it is before `set_need_resched()` or
     buffer push, audit the per-CPU wake buffer atomics
+
+### 2026-04-16: F10 `isr_unblock_for_io()` Internal Breadcrumb Diagnostic
+
+- Probe change summary:
+  - branched from `diagnostic/f9-completion-boundary` to
+    `diagnostic/f10-isr-unblock-boundary`
+  - extended the existing AHCI trace ring in
+    [ahci/mod.rs](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/kernel/src/drivers/ahci/mod.rs)
+    with `UNBLOCK_ENTRY`, `UNBLOCK_AFTER_CPU`, `UNBLOCK_AFTER_BUFFER`,
+    `UNBLOCK_AFTER_NEED_RESCHED`, `UNBLOCK_BEFORE_SGI_SCAN`,
+    `UNBLOCK_PER_SGI`, and `UNBLOCK_EXIT`
+  - instrumented
+    [scheduler.rs](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/kernel/src/task/scheduler.rs)
+    `isr_unblock_for_io(tid)` with ring-only breadcrumbs at the requested
+    internal boundaries
+  - encoded `UNBLOCK_PER_SGI` target CPU in the existing `slot_mask` field;
+    non-SGI `UNBLOCK_*` entries leave `slot_mask=0`
+- Validation:
+  - clean aarch64 build:
+    `cargo build --release --target aarch64-breenix.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64`
+  - `grep -E '^(warning|error)' /tmp/f10-aarch64-build.log` produced no output
+  - `git diff --check` passed
+  - repo-wide `cargo fmt --check` still fails on pre-existing unrelated
+    formatting/trailing-whitespace issues; no broad formatter was applied
+- Artifacts:
+  - [run1](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/logs/breenix-parallels-cpu0/f10-isr-unblock/run1)
+  - [run2](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/logs/breenix-parallels-cpu0/f10-isr-unblock/run2)
+  - [run3](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/logs/breenix-parallels-cpu0/f10-isr-unblock/run3)
+  - [run4](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/logs/breenix-parallels-cpu0/f10-isr-unblock/run4)
+  - [run5](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/logs/breenix-parallels-cpu0/f10-isr-unblock/run5)
+- Sweep summaries:
+
+```text
+run1:
+exit_status=1
+ahci_timeouts=14
+ahci_ring_entries=64
+ahci_port0_is=2
+ahci_port1_is=2
+bsshd_started=1
+before_complete=10
+after_complete=8
+wake_enter=2
+wake_exit=2
+unblock_entry=2
+unblock_after_cpu=2
+unblock_after_buffer=2
+unblock_after_need_resched=2
+unblock_before_sgi_scan=2
+unblock_per_sgi=6
+unblock_exit=2
+
+run2:
+exit_status=1
+ahci_timeouts=74
+ahci_ring_entries=64
+ahci_port0_is=2
+ahci_port1_is=2
+bsshd_started=1
+before_complete=10
+after_complete=8
+wake_enter=2
+wake_exit=2
+unblock_entry=2
+unblock_after_cpu=2
+unblock_after_buffer=0
+unblock_after_need_resched=0
+unblock_before_sgi_scan=0
+unblock_per_sgi=12
+unblock_exit=2
+
+run3:
+exit_status=1
+ahci_timeouts=1227
+ahci_ring_entries=31
+ahci_port0_is=1
+ahci_port1_is=1
+bsshd_started=1
+before_complete=4
+after_complete=4
+wake_enter=1
+wake_exit=1
+unblock_entry=1
+unblock_after_cpu=1
+unblock_after_buffer=1
+unblock_after_need_resched=1
+unblock_before_sgi_scan=1
+unblock_per_sgi=3
+unblock_exit=1
+
+run4:
+exit_status=1
+ahci_timeouts=0
+ahci_ring_entries=0
+ahci_port0_is=0
+ahci_port1_is=0
+bsshd_started=1
+before_complete=0
+after_complete=0
+wake_enter=0
+wake_exit=0
+unblock_entry=0
+unblock_after_cpu=0
+unblock_after_buffer=0
+unblock_after_need_resched=0
+unblock_before_sgi_scan=0
+unblock_per_sgi=0
+unblock_exit=0
+
+run5:
+exit_status=1
+ahci_timeouts=670
+ahci_ring_entries=64
+ahci_port0_is=2
+ahci_port1_is=2
+bsshd_started=1
+before_complete=6
+after_complete=8
+wake_enter=2
+wake_exit=2
+unblock_entry=2
+unblock_after_cpu=2
+unblock_after_buffer=2
+unblock_after_need_resched=2
+unblock_before_sgi_scan=2
+unblock_per_sgi=12
+unblock_exit=2
+```
+
+- Primary stalled-token extract from `run1`:
+
+```text
+[ahci] Port 1 TIMEOUT (5s): CI=0x0 IS=0x1 TFD=0x40 HBA_IS=0x2
+[ahci]   GIC: SPI34 pend=true act=true DAIF=0x300 pend_snap=[0x800004,0x0,0x0]
+[ahci]   isr_count=1210 cmd#=1214 completion_done=0 PMR=0xf8 RPR=0xff
+[ahci]   port_isr_hits=[1,1209] complete_hits=[0,3]
+[ahci]   isr_last_pmr=0xf8 last_port1_IS=0x1 last_port1_cmd_num=1212
+[ahci] read_block(522) wait failed: AHCI: command timeout
+[STUCK_SPI34] cpu=3 gic_version=3
+[STUCK_SPI34] GICD_ISPENDR[1]=0x800004 bit=2 pending=true
+[STUCK_SPI34] GICD_ISACTIVER[1]=0x4 bit=2 active=true
+[STUCK_SPI34] ICC_RPR_EL1=0xff
+[STUCK_SPI34] ICC_PMR_EL1=0xf8
+[STUCK_SPI34] DAIF=0x300
+[STUCK_SPI34] AHCI_PORT0_IS=0x0
+[STUCK_SPI34] AHCI_PORT1_IS=0x1
+[AHCI_RING] nsec=2379603791 site=UNBLOCK_PER_SGI cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x2 token=0 wake_success=0 seq=3677
+[AHCI_RING] nsec=2379602916 site=UNBLOCK_BEFORE_SGI_SCAN cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=3676
+[AHCI_RING] nsec=2379602041 site=UNBLOCK_AFTER_NEED_RESCHED cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=3675
+[AHCI_RING] nsec=2379601166 site=UNBLOCK_AFTER_BUFFER cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=3674
+[AHCI_RING] nsec=2379600291 site=UNBLOCK_AFTER_CPU cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=3673
+[AHCI_RING] nsec=2379599416 site=UNBLOCK_ENTRY cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=3672
+[AHCI_RING] nsec=2379598541 site=WAKE_ENTER cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=1212 wake_success=0 seq=3671
+[AHCI_RING] nsec=2379597666 site=BEFORE_COMPLETE cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1212 wake_success=0 seq=3670
+[AHCI_RING] nsec=2379596750 site=POST_CLEAR cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1212 wake_success=0 seq=3669
+[AHCI_RING] nsec=2379589250 site=ENTER cpu=0 port=1 IS=0x1 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=1212 wake_success=0 seq=3668
+[AHCI_RING] nsec=2378591666 site=RETURN cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1211 wake_success=1 seq=3667
+[AHCI_RING] nsec=2378590416 site=AFTER_COMPLETE cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1211 wake_success=0 seq=3666
+[AHCI_RING] nsec=2378589375 site=WAKE_EXIT cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=1211 wake_success=0 seq=3665
+[AHCI_RING] nsec=2378588333 site=UNBLOCK_EXIT cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=3664
+```
+
+- Last-site verdict:
+  - primary sample `run1`: stuck token `1212`, waiter `tid=11`, reached
+    `UNBLOCK_PER_SGI` with `slot_mask=0x2` (target CPU 2) and never emitted
+    another `UNBLOCK_PER_SGI`, `UNBLOCK_EXIT`, `WAKE_EXIT`, `AFTER_COMPLETE`,
+    or `RETURN` for that token
+  - corroborating sample `run3`: stuck token `1396`, waiter `tid=13`, reached
+    `UNBLOCK_PER_SGI` with `slot_mask=0x1` (target CPU 1) and did not emit
+    `UNBLOCK_EXIT` / `WAKE_EXIT` for that token
+  - alternate sample `run2`: stuck token `1263`, waiter `tid=13`, reached
+    `UNBLOCK_AFTER_CPU` and did not emit `UNBLOCK_AFTER_BUFFER`; this keeps the
+    wake-buffer push path on the candidate list, but it was not the majority
+    signature in this sweep
+- Candidate root-cause ranking:
+  1. SGI delivery path: strongest current lead. Two timeout captures stop after
+     `UNBLOCK_PER_SGI`, which is emitted immediately before
+     `gic::send_sgi(SGI_RESCHEDULE, target)`. The target CPU is visible in
+     `slot_mask` (`0x2` in `run1`, `0x1` in `run3`).
+  2. Wake-buffer push path: one timeout capture stops after
+     `UNBLOCK_AFTER_CPU`, before `UNBLOCK_AFTER_BUFFER`, implying a possible
+     stall inside `ISR_WAKEUP_BUFFERS[cpu].push(tid)` or an adjacent memory
+     corruption/ring-retention artifact.
+  3. `set_need_resched()` / SGI scan predicate: lower probability. The primary
+     samples pass `UNBLOCK_AFTER_NEED_RESCHED` and
+     `UNBLOCK_BEFORE_SGI_SCAN` before stalling.
+- F11 recommendation:
+  - primary F11 probe direction: audit SGI delivery by instrumenting
+    `gic::send_sgi()` / SGI target construction with ring-only breadcrumbs
+    before and after each architectural write, preserving the target CPU in the
+    ring entry
+  - secondary F11 guardrail: keep one minimal breadcrumb around the
+    `IsrWakeupBuffer::push()` CAS loop or add a bounded push-site counter so the
+    `run2` `UNBLOCK_AFTER_CPU` signature can be confirmed or eliminated without
+    changing scheduler semantics
