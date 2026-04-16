@@ -697,13 +697,13 @@ pub fn acknowledge_irq() -> Option<u32> {
     }
 }
 
-/// Signal end of interrupt by ID.
+/// Drop active IRQ priority by ID.
 ///
 /// Uses EOIR0 for Group 0 interrupts (VMware) and EOIR1 for Group 1 (normal).
 /// CRITICAL: `#[inline(never)]` prevents the compiler from hoisting the
 /// GICC/ICC base into a callee-saved register shared with acknowledge_irq.
 #[inline(never)]
-pub fn end_of_interrupt(irq_id: u32) {
+pub fn priority_drop_irq(irq_id: u32) {
     let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
     if version >= 3 {
         let group = LAST_ACK_GROUP.load(Ordering::Relaxed);
@@ -720,10 +720,36 @@ pub fn end_of_interrupt(irq_id: u32) {
                 core::arch::asm!("isb", options(nostack, preserves_flags));
             }
         }
+    }
+}
+
+/// Deactivate an IRQ after handler completion.
+///
+/// In GICv3 EOImode1, deactivation is a distinct ICC_DIR_EL1 write after the
+/// earlier priority drop. On GICv2, EOIR remains the combined drop+deactivate
+/// step, so this helper preserves the legacy post-handler semantics there.
+#[inline(never)]
+pub fn deactivate_irq(irq_id: u32) {
+    let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
+    if version >= 3 {
+        unsafe {
+            core::arch::asm!("msr icc_dir_el1, {}", in(reg) irq_id as u64, options(nomem, nostack));
+            core::arch::asm!("isb", options(nostack, preserves_flags));
+        }
     } else {
         // GICv2: Write GICC_EOIR
         gicc_write(GICC_EOIR, irq_id);
     }
+}
+
+/// Signal end of interrupt by ID.
+///
+/// Retained as the combined helper for any paths that still want priority drop
+/// and deactivation back-to-back.
+#[inline(never)]
+pub fn end_of_interrupt(irq_id: u32) {
+    priority_drop_irq(irq_id);
+    deactivate_irq(irq_id);
 }
 
 /// Check if an IRQ is in Active state (GICD_ISACTIVER)
@@ -874,6 +900,7 @@ pub fn enable_spi(irq: u32) {
         core::arch::asm!("isb", options(nomem, nostack));
     }
 }
+
 
 /// Disable an SPI in the GIC distributor (GICD_ICENABLER).
 ///
@@ -1180,21 +1207,20 @@ fn init_gicv3_cpu_interface() {
         core::arch::asm!("msr icc_sre_el1, {}", in(reg) sre, options(nomem, nostack));
         core::arch::asm!("isb", options(nomem, nostack));
 
-        // Explicitly set ICC_CTLR_EL1 with EOImode=0 (combined priority drop +
-        // deactivation). Linux does this in gic_cpu_sys_reg_init(). Without it,
-        // if the hypervisor sets EOImode=1, writing ICC_EOIR1_EL1 only drops
-        // priority — the interrupt stays Active and can never re-trigger.
+        // Explicitly set ICC_CTLR_EL1.EOImode = 1 (bit 1) so GICv3 uses split
+        // priority-drop and deactivate semantics. With EOImode1, ICC_EOIR1_EL1
+        // drops priority before dispatch and ICC_DIR_EL1 deactivates after the
+        // handler returns, matching Linux's default GICv3 irqchip path.
         let icc_ctlr: u64;
         core::arch::asm!("mrs {}, icc_ctlr_el1", out(reg) icc_ctlr, options(nomem, nostack));
-        // Clear EOImode (bit 1) to ensure combined drop+deactivate
-        let new_ctlr = icc_ctlr & !(1u64 << 1);
+        let new_ctlr = icc_ctlr | (1u64 << 1);
         core::arch::asm!("msr icc_ctlr_el1, {}", in(reg) new_ctlr, options(nomem, nostack));
         core::arch::asm!("isb", options(nostack, preserves_flags));
         crate::serial_println!(
             "[gic] ICC_CTLR_EL1: {:#x} -> {:#x} (EOImode={})",
             icc_ctlr,
             new_ctlr,
-            (icc_ctlr >> 1) & 1
+            (new_ctlr >> 1) & 1
         );
 
         // Set priority mask to accept all (ICC_PMR_EL1)

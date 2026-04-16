@@ -1202,6 +1202,8 @@ pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
 
     // Acknowledge the interrupt from GIC
     if let Some(irq_id) = gic::acknowledge_irq() {
+        gic::priority_drop_irq(irq_id);
+
         // Handle the interrupt based on ID
         match irq_id {
             // Timer interrupt — virtual (PPI 27) or physical (PPI 30)
@@ -1307,8 +1309,7 @@ pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
             _ => {}
         }
 
-        // Signal end of interrupt
-        gic::end_of_interrupt(irq_id);
+        gic::deactivate_irq(irq_id);
 
         if have_percpu {
             crate::per_cpu_aarch64::irq_exit();
