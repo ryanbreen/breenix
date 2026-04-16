@@ -2555,3 +2555,231 @@ unblock_exit=2
     `IsrWakeupBuffer::push()` CAS loop or add a bounded push-site counter so the
     `run2` `UNBLOCK_AFTER_CPU` signature can be confirmed or eliminated without
     changing scheduler semantics
+
+### 2026-04-16: F11 `send_sgi()` and Wake-Buffer Push Boundary Diagnostic
+
+- Branch: `diagnostic/f11-send-sgi-boundary`
+- Code changes:
+  - added AHCI ring site tags `SGI_ENTRY`, `SGI_AFTER_MPIDR`,
+    `SGI_AFTER_COMPOSE`, `SGI_BEFORE_MSR`, `SGI_AFTER_MSR`,
+    `SGI_AFTER_ISB`, `SGI_EXIT`, `WAKEBUF_BEFORE_PUSH`, and
+    `WAKEBUF_AFTER_PUSH`
+  - instrumented `gic::send_sgi(sgi_id, target_cpu)` with seven ring-only
+    breadcrumbs; `slot_mask` encodes `target_cpu`
+  - instrumented the existing `ISR_WAKEUP_BUFFERS[cpu].push(tid)` call with
+    before/after breadcrumbs
+  - widened the SPI34 postmortem AHCI-ring dump from 16 to 64 entries so the
+    higher-volume SGI breadcrumbs remain correlatable with the F10 corridor
+- Validation:
+  - aarch64 kernel build completed with no `warning` or `error` lines
+  - 5x `./run.sh --parallels --test 60`
+  - final logs: `logs/breenix-parallels-cpu0/f11-send-sgi/run{1..5}/`
+
+Sweep summaries:
+
+```text
+run1:
+exit_status=1
+ahci_timeouts=0
+ahci_ring_entries=0
+ahci_port0_is=0
+ahci_port1_is=0
+bsshd_started=1
+before_complete=0
+after_complete=0
+wake_enter=0
+wake_exit=0
+unblock_entry=0
+unblock_after_cpu=0
+unblock_after_buffer=0
+unblock_after_need_resched=0
+unblock_before_sgi_scan=0
+unblock_per_sgi=0
+unblock_exit=0
+sgi_entry=0
+sgi_after_mpidr=0
+sgi_after_compose=0
+sgi_before_msr=0
+sgi_after_msr=0
+sgi_after_isb=0
+sgi_exit=0
+wakebuf_before_push=0
+wakebuf_after_push=0
+
+run2:
+exit_status=1
+ahci_timeouts=0
+ahci_ring_entries=0
+ahci_port0_is=0
+ahci_port1_is=0
+bsshd_started=1
+before_complete=0
+after_complete=0
+wake_enter=0
+wake_exit=0
+unblock_entry=0
+unblock_after_cpu=0
+unblock_after_buffer=0
+unblock_after_need_resched=0
+unblock_before_sgi_scan=0
+unblock_per_sgi=0
+unblock_exit=0
+sgi_entry=0
+sgi_after_mpidr=0
+sgi_after_compose=0
+sgi_before_msr=0
+sgi_after_msr=0
+sgi_after_isb=0
+sgi_exit=0
+wakebuf_before_push=0
+wakebuf_after_push=0
+
+run3:
+exit_status=1
+ahci_timeouts=4
+ahci_ring_entries=130
+ahci_port0_is=2
+ahci_port1_is=2
+bsshd_started=1
+before_complete=0
+after_complete=0
+wake_enter=0
+wake_exit=0
+unblock_entry=0
+unblock_after_cpu=0
+unblock_after_buffer=0
+unblock_after_need_resched=0
+unblock_before_sgi_scan=0
+unblock_per_sgi=2
+unblock_exit=0
+sgi_entry=17
+sgi_after_mpidr=18
+sgi_after_compose=18
+sgi_before_msr=18
+sgi_after_msr=18
+sgi_after_isb=18
+sgi_exit=19
+wakebuf_before_push=0
+wakebuf_after_push=0
+
+run4:
+exit_status=1
+ahci_timeouts=0
+ahci_ring_entries=0
+ahci_port0_is=0
+ahci_port1_is=0
+bsshd_started=1
+before_complete=0
+after_complete=0
+wake_enter=0
+wake_exit=0
+unblock_entry=0
+unblock_after_cpu=0
+unblock_after_buffer=0
+unblock_after_need_resched=0
+unblock_before_sgi_scan=0
+unblock_per_sgi=0
+unblock_exit=0
+sgi_entry=0
+sgi_after_mpidr=0
+sgi_after_compose=0
+sgi_before_msr=0
+sgi_after_msr=0
+sgi_after_isb=0
+sgi_exit=0
+wakebuf_before_push=0
+wakebuf_after_push=0
+
+run5:
+exit_status=1
+ahci_timeouts=4
+ahci_ring_entries=138
+ahci_port0_is=2
+ahci_port1_is=2
+bsshd_started=1
+before_complete=3
+after_complete=2
+wake_enter=1
+wake_exit=0
+unblock_entry=1
+unblock_after_cpu=1
+unblock_after_buffer=1
+unblock_after_need_resched=1
+unblock_before_sgi_scan=1
+unblock_per_sgi=1
+unblock_exit=0
+sgi_entry=16
+sgi_after_mpidr=17
+sgi_after_compose=17
+sgi_before_msr=17
+sgi_after_msr=16
+sgi_after_isb=16
+sgi_exit=17
+wakebuf_before_push=1
+wakebuf_after_push=1
+```
+
+- Primary stalled-token extract from `run5`:
+
+```text
+[ahci] read_block(494667) wait failed: AHCI: command timeout
+[STUCK_SPI34] cpu=5 gic_version=3
+[STUCK_SPI34] GICD_ISPENDR[1]=0x800004 bit=2 pending=true
+[STUCK_SPI34] GICD_ISACTIVER[1]=0x4 bit=2 active=true
+[STUCK_SPI34] ICC_RPR_EL1=0xff
+[STUCK_SPI34] ICC_PMR_EL1=0xf8
+[STUCK_SPI34] DAIF=0x300
+[STUCK_SPI34] AHCI_PORT0_IS=0x0
+[STUCK_SPI34] AHCI_PORT1_IS=0x1
+[AHCI_RING] nsec=2450015250 site=SGI_BEFORE_MSR cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=0 slot_mask=0x1 token=0 wake_success=0 seq=6170
+[AHCI_RING] nsec=2450014333 site=SGI_AFTER_COMPOSE cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=0 slot_mask=0x1 token=0 wake_success=0 seq=6169
+[AHCI_RING] nsec=2450013291 site=SGI_AFTER_MPIDR cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=0 slot_mask=0x1 token=0 wake_success=0 seq=6168
+[AHCI_RING] nsec=2450012375 site=SGI_ENTRY cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=0 slot_mask=0x1 token=0 wake_success=0 seq=6167
+[AHCI_RING] nsec=2449989500 site=SGI_BEFORE_MSR cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=0 slot_mask=0x1 token=0 wake_success=0 seq=6165
+[AHCI_RING] nsec=2449988625 site=SGI_AFTER_COMPOSE cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=0 slot_mask=0x1 token=0 wake_success=0 seq=6164
+[AHCI_RING] nsec=2449987750 site=SGI_AFTER_MPIDR cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=0 slot_mask=0x1 token=0 wake_success=0 seq=6163
+[AHCI_RING] nsec=2449986791 site=SGI_ENTRY cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=0 slot_mask=0x1 token=0 wake_success=0 seq=6162
+[AHCI_RING] nsec=2449985791 site=UNBLOCK_PER_SGI cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=0 wake_success=0 seq=6161
+[AHCI_RING] nsec=2449984875 site=UNBLOCK_BEFORE_SGI_SCAN cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=6160
+[AHCI_RING] nsec=2449983958 site=UNBLOCK_AFTER_NEED_RESCHED cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=6159
+[AHCI_RING] nsec=2449983083 site=UNBLOCK_AFTER_BUFFER cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=6158
+[AHCI_RING] nsec=2449982166 site=WAKEBUF_AFTER_PUSH cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=6157
+[AHCI_RING] nsec=2449981250 site=WAKEBUF_BEFORE_PUSH cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=6156
+[AHCI_RING] nsec=2449980000 site=UNBLOCK_AFTER_CPU cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=6155
+[AHCI_RING] nsec=2449978750 site=UNBLOCK_ENTRY cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=6154
+[AHCI_RING] nsec=2449977208 site=WAKE_ENTER cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=1239 wake_success=0 seq=6153
+[AHCI_RING] nsec=2449975708 site=BEFORE_COMPLETE cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1239 wake_success=0 seq=6152
+[AHCI_RING] nsec=2449974375 site=POST_CLEAR cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1239 wake_success=0 seq=6151
+[AHCI_RING] nsec=2449502375 site=ENTER cpu=0 port=1 IS=0x1 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=1239 wake_success=0 seq=6150
+```
+
+- Last-site verdict:
+  - primary signature: `run5`, token `1239`, waiter `tid=11`, reached
+    `UNBLOCK_PER_SGI` with `slot_mask=0x1` (target CPU 1). The contiguous SGI
+    breadcrumb sequence for that target reached `SGI_BEFORE_MSR`; no
+    `SGI_AFTER_MSR` was emitted for that contiguous call before the trace moved
+    on. This points at the `ICC_SGI1R_EL1` write corridor.
+  - corroborating but less clean signature: `run3`, waiter `tid=13`, had
+    `UNBLOCK_PER_SGI` for targets 5 and 6. The target-6 SGI reached
+    `SGI_AFTER_ISB` without a following `SGI_EXIT` in the captured ring, but
+    later CPU-0 SGI entries make this weaker as a single-call proof.
+  - secondary wake-buffer signature: not reproduced in the decisive sample.
+    `WAKEBUF_BEFORE_PUSH` and `WAKEBUF_AFTER_PUSH` both appear for `tid=11`,
+    so `IsrWakeupBuffer::push()` did not stall in `run5`.
+- Caveat:
+  - F11 uses only existing ring fields, so SGI calls are correlated by
+    adjacency and `slot_mask`, not by a per-call ID. The `SGI_BEFORE_MSR`
+    verdict is the best available last-site result for the primary stuck token,
+    but F12 should add a per-SGI diagnostic call ID if it needs to distinguish
+    concurrent or later same-target SGI calls with absolute certainty.
+- F12 recommendation:
+  - primary next action: audit the `msr ICC_SGI1R_EL1, xN` corridor and GICv3
+    CPU-interface state for system-register SGI delivery. The current best
+    verdict is `SGI_BEFORE_MSR` stops, which means the register write itself or
+    its immediate architectural effects are the suspect.
+  - verify SRE/ICC state on participating CPUs, especially whether the sender
+    and targets have GICv3 system-register access consistently enabled before
+    scheduler IPIs.
+  - keep wake-buffer push as lower priority for now. The decisive run had
+    before/after push markers, eliminating the F10 run2-style secondary
+    signature for that sample.
