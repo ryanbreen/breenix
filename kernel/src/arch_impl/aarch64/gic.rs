@@ -224,8 +224,8 @@ const IRQS_PER_TARGET_REG: u32 = 4;
 
 /// Default priority for all interrupts (lower = higher priority)
 const DEFAULT_PRIORITY: u8 = 0xA0;
-/// Priority mask: accept all priorities
-const PRIORITY_MASK: u8 = 0xFF;
+/// Priority mask threshold used by Linux for GIC CPU interface init.
+const LINUX_DEFAULT_PMR: u8 = 0xF0;
 
 /// Spurious interrupt ID (no pending interrupt)
 const SPURIOUS_IRQ: u32 = 1023;
@@ -460,7 +460,7 @@ impl Gicv2 {
     /// Initialize the GIC CPU interface
     fn init_cpu_interface() {
         // Set priority mask to accept all priorities
-        gicc_write(GICC_PMR, PRIORITY_MASK as u32);
+        gicc_write(GICC_PMR, LINUX_DEFAULT_PMR as u32);
 
         // No preemption (binary point = 7 means all priority bits used for priority, none for subpriority)
         gicc_write(GICC_BPR, 7);
@@ -483,7 +483,7 @@ pub fn init_cpu_interface_secondary() {
     let version = ACTIVE_GIC_VERSION.load(Ordering::Acquire);
     match version {
         2 => {
-            gicc_write(GICC_PMR, PRIORITY_MASK as u32);
+            gicc_write(GICC_PMR, LINUX_DEFAULT_PMR as u32);
             gicc_write(GICC_BPR, 7);
             gicc_write(GICC_CTLR, 0x7);
         }
@@ -1813,7 +1813,7 @@ fn init_gicv3_cpu_interface() {
         );
 
         // Set priority mask to accept all (ICC_PMR_EL1)
-        let pmr: u64 = PRIORITY_MASK as u64;
+        let pmr: u64 = LINUX_DEFAULT_PMR as u64;
         core::arch::asm!("msr icc_pmr_el1, {}", in(reg) pmr, options(nomem, nostack));
 
         // No preemption for Group 1 (ICC_BPR1_EL1)
