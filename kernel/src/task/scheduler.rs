@@ -2527,17 +2527,93 @@ pub fn is_need_resched() -> bool {
 /// The scheduler drains the buffer under its own lock at the top of every
 /// `schedule_deferred_requeue()` / `schedule()` call.
 pub fn isr_unblock_for_io(tid: u64) {
+    #[cfg(target_arch = "aarch64")]
+    crate::drivers::ahci::push_ahci_event(
+        crate::drivers::ahci::AHCI_TRACE_UNBLOCK_ENTRY,
+        0,
+        0,
+        0,
+        0,
+        0,
+        tid,
+        0,
+        0,
+        false,
+    );
     let cpu = current_cpu_id_raw();
+    #[cfg(target_arch = "aarch64")]
+    crate::drivers::ahci::push_ahci_event(
+        crate::drivers::ahci::AHCI_TRACE_UNBLOCK_AFTER_CPU,
+        0,
+        0,
+        0,
+        0,
+        0,
+        tid,
+        0,
+        0,
+        false,
+    );
     if cpu < ISR_WAKEUP_BUFFERS.len() {
         ISR_WAKEUP_BUFFERS[cpu].push(tid);
     }
+    #[cfg(target_arch = "aarch64")]
+    crate::drivers::ahci::push_ahci_event(
+        crate::drivers::ahci::AHCI_TRACE_UNBLOCK_AFTER_BUFFER,
+        0,
+        0,
+        0,
+        0,
+        0,
+        tid,
+        0,
+        0,
+        false,
+    );
     set_need_resched();
+    #[cfg(target_arch = "aarch64")]
+    crate::drivers::ahci::push_ahci_event(
+        crate::drivers::ahci::AHCI_TRACE_UNBLOCK_AFTER_NEED_RESCHED,
+        0,
+        0,
+        0,
+        0,
+        0,
+        tid,
+        0,
+        0,
+        false,
+    );
     // Send IPI to idle CPUs so the buffer is drained promptly.
     #[cfg(target_arch = "aarch64")]
     {
         let online = crate::arch_impl::aarch64::smp::cpus_online() as usize;
+        crate::drivers::ahci::push_ahci_event(
+            crate::drivers::ahci::AHCI_TRACE_UNBLOCK_BEFORE_SGI_SCAN,
+            0,
+            0,
+            0,
+            0,
+            0,
+            tid,
+            0,
+            0,
+            false,
+        );
         for target in 0..online.min(MAX_CPUS) {
             if target != cpu && is_cpu_idle(target) {
+                crate::drivers::ahci::push_ahci_event(
+                    crate::drivers::ahci::AHCI_TRACE_UNBLOCK_PER_SGI,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    tid,
+                    target as u32,
+                    0,
+                    false,
+                );
                 crate::arch_impl::aarch64::gic::send_sgi(
                     crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
                     target as u8,
@@ -2545,6 +2621,19 @@ pub fn isr_unblock_for_io(tid: u64) {
             }
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    crate::drivers::ahci::push_ahci_event(
+        crate::drivers::ahci::AHCI_TRACE_UNBLOCK_EXIT,
+        0,
+        0,
+        0,
+        0,
+        0,
+        tid,
+        0,
+        0,
+        false,
+    );
 }
 
 /// Read the current CPU ID directly from hardware (MPIDR_EL1 on ARM64).
