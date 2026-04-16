@@ -2867,3 +2867,122 @@ non-garbled per-CPU audit of `ICC_SRE_EL1`, `ICC_CTLR_EL1`, `ICC_PMR_EL1`,
 `ICC_IGRPEN1_EL1`, MPIDR affinity, and the selected GICR frame, then compare the
 redistributor wake/config state for CPUs that later report SPI34 stuck
 pending+active.
+
+## 2026-04-16 F13: Per-CPU GIC Audit and Idle-Scan Breadcrumbs
+
+Branch: `diagnostic/f13-gic-audit`
+
+F13 extended the GICv3 CPU-interface audit and added three AHCI ring
+breadcrumbs around the idle-CPU scan in `isr_unblock_for_io()`. The per-CPU
+audit values are captured at each CPU's ICC init and emitted from CPU0 after SMP
+bring-up to avoid secondary boot raw-UART bytes corrupting the audit prefix.
+
+### Linux expected values
+
+| Field | Linux reference | Linux expected | F13 Breenix observed | Divergence |
+| --- | --- | --- | --- | --- |
+| `ICC_SRE_EL1` | `/tmp/linux-v6.8/include/linux/irqchip/arm-gic-v3.h:644-656`; `/tmp/linux-v6.8/drivers/irqchip/irq-gic-v3.c:1147-1155` | SRE bit set | `0x7` on CPUs 0-7 | No. SRE, DFB, and DIB are set. |
+| `ICC_CTLR_EL1` | `/tmp/linux-v6.8/drivers/irqchip/irq-gic-v3.c:1188-1193` | EOImode drop bit set | `0x40402` on CPUs 0-7 | No for EOImode. Extra implementation bits are present. |
+| `ICC_PMR_EL1` | `/tmp/linux-v6.8/drivers/irqchip/irq-gic-v3.c:1161-1164` | `DEFAULT_PMR_VALUE` = `0xf0` | `0xf8` on CPUs 0-7 | Yes. All CPUs use a stricter mask than Linux default. |
+| `ICC_IGRPEN1_EL1` | `/tmp/linux-v6.8/drivers/irqchip/irq-gic-v3.c:1231-1233` | `1` | `0x1` on CPUs 0-7 | No. |
+| Redistributor lookup | `/tmp/linux-v6.8/drivers/irqchip/irq-gic-v3.c:978-1011`, `:1017-1045`, `:1274-1299` | Iterate GICR frames and match `GICR_TYPER[63:32]` to MPIDR affinity before enabling the redistributor | F13 diagnostic reads by `target_cpu * 0x20000`; all dumped `GICR_TYPER` values are `0x0` | Yes or diagnostic-map invalid. Linux does not assume logical CPU ID equals redist frame index without an affinity match. |
+
+Linux register offsets used for the GICR dump are from
+`/tmp/linux-v6.8/include/linux/irqchip/arm-gic-v3.h:114-125`; WAKER bit meanings
+are at `:148-149`.
+
+### Validation sweep
+
+Artifacts:
+
+```text
+logs/breenix-parallels-cpu0/f13-gic-audit/run{1..5}/
+```
+
+| Run | AHCI timeout | `gic_cpu_audit_lines` | `gicr_waker_lines` | `scan_start` | `scan_cpu` | `scan_done` | Last emitted scan/unblock site |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| run1 | 0 | 8 | 0 | 0 | 0 | 0 | none |
+| run2 | 0 | 8 | 0 | 0 | 0 | 0 | none |
+| run3 | 2 | 8 | 16 | 0 | 0 | 0 | none in dumped ring; failure was SGI-side only |
+| run4 | 2 | 8 | 16 | 1 | 2 | 0 | `UNBLOCK_SCAN_CPU` / `UNBLOCK_PER_SGI` |
+| run5 | 2 | 8 | 16 | 0 | 0 | 1 | `UNBLOCK_SCAN_DONE` / `UNBLOCK_AFTER_CPU` |
+
+The sweep is still FAIL: 2/5 runs had no AHCI timeout, 3/5 produced AHCI
+timeouts. The new audit coverage criterion is met: every run produced eight
+`[GIC_CPU_AUDIT]` rows.
+
+### GIC CPU audit rows
+
+Representative rows from run4:
+
+```text
+[GIC_CPU_AUDIT] cpu=0 mpidr=0x80000000 sre=0x7 ctlr=0x40402 pmr=0xf8 igrpen1=0x1 mismatch=1
+[GIC_CPU_AUDIT] cpu=1 mpidr=0x80000001 sre=0x7 ctlr=0x40402 pmr=0xf8 igrpen1=0x1 mismatch=1
+[GIC_CPU_AUDIT] cpu=2 mpidr=0x80000002 sre=0x7 ctlr=0x40402 pmr=0xf8 igrpen1=0x1 mismatch=1
+T3[GIC_CPU_AUDIT] cpu=3 mpidr=0x80000003 sre=0x7 ctlr=0x40402 pmr=0xf8 igrpen1=0x1 mismatch=1
+[GIC_CPU_AUDIT] cpu=4 mpidr=0x80000004 sre=0x7 ctlr=0x40402 pmr=0xf8 igrpen1=0x1 mismatch=1
+[GIC_CPU_AUDIT] cpu=5 mpidr=0x80000005 sre=0x7 ctlr=0x40402 pmr=0xf8 igrpen1=0x1 mismatch=1
+[GIC_CPU_AUDIT] cpu=6 mpidr=0x80000006 sre=0x7 ctlr=0x40402 pmr=0xf8 igrpen1=0x1 mismatch=1
+T4[GIC_CPU_AUDIT] cpu=7 mpidr=0x80000007 sre=0x7 ctlr=0x40402 pmr=0xf8 igrpen1=0x1 mismatch=1
+```
+
+The `T3`/`T4` prefixes are raw timer breadcrumbs interleaving before the locked
+serial line; the `[GIC_CPU_AUDIT]` payload itself is intact. The mismatch flag is
+set on every CPU because `ICC_PMR_EL1` is `0xf8`, not Linux's `0xf0`.
+
+### GICR state at timeout
+
+Run4's stuck unblock selected target CPU 1 immediately before entering
+`send_sgi()`:
+
+```text
+[AHCI_RING] nsec=2388322625 site=UNBLOCK_PER_SGI cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=0 wake_success=0 seq=5749
+[AHCI_RING] nsec=2388321750 site=UNBLOCK_SCAN_CPU cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=0 wake_success=0 seq=5748
+[AHCI_RING] nsec=2388320875 site=UNBLOCK_SCAN_CPU cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=5747
+[AHCI_RING] nsec=2388319166 site=UNBLOCK_SCAN_START cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=5745
+```
+
+The target CPU 1 GICR dump from the same timeout:
+
+```text
+[GICR_STATE] cpu=1 waker=0x0 ctlr=0x0 typer=0x0 syncr=0x0
+```
+
+All target-history CPUs dumped in runs 3-5 had the same shape:
+`waker=0x0 ctlr=0x0 typer=0x0 syncr=0x0`. `WAKER=0` means
+`ProcessorSleep=0` and `ChildrenAsleep=0`, so the dumped frame does not look
+asleep. The concerning value is `GICR_TYPER=0x0`: Linux expects redistributor
+selection to be validated by matching `GICR_TYPER[63:32]` to CPU affinity. F13's
+dump therefore does not prove the redistributor for CPU 1 is healthy; it proves
+the current logical-CPU-to-GICR-frame diagnostic map is suspect.
+
+### Interpretation
+
+F13 did not reproduce a CPU-specific SRE/CTLR failure. Every captured CPU has
+SRE enabled, EOImode enabled, and Group1 enabled. The only ICC divergence is
+global, not CPU-specific: PMR is `0xf8` on every CPU versus Linux's `0xf0`.
+
+The timeout corridor is not purely "before the scan" anymore. Run4 shows the
+wake path entered the scan, inspected CPU 0 and CPU 1, emitted
+`UNBLOCK_PER_SGI` for target CPU 1, and did not emit `UNBLOCK_SCAN_DONE`. That
+narrows this instance to the scan-to-SGI handoff, most likely between
+`UNBLOCK_PER_SGI` and the first `SGI_ENTRY` breadcrumb inside `send_sgi()`.
+
+Verdict: not (a) a specific CPU with broken SRE/CTLR. Not proven (b) a sleeping
+redistributor, because WAKER is clear, but GICR selection is not trustworthy
+while `GICR_TYPER` reads as zero for every target frame. The current best answer
+is (c) still inside the scan/SGI handoff logic, with a parallel redistributor
+mapping defect to resolve before trusting target-state dumps.
+
+### F14 recommendation
+
+F14 should do two targeted things:
+
+1. Add Linux-style redistributor discovery: iterate GICR frames, read
+   `GICR_TYPER`, match affinity bits against MPIDR, and store a per-CPU RD base.
+   Use that map for `dump_gicr_state_for_cpu()` first; only change live GICR init
+   semantics after the diagnostic map proves the current frame index is wrong.
+2. Add two more ring sites around the call in `isr_unblock_for_io()`:
+   `UNBLOCK_BEFORE_SEND_SGI` and `UNBLOCK_AFTER_SEND_SGI`. Run4's latest
+   sequence stops at `UNBLOCK_PER_SGI`, so F14 needs to distinguish call-entry
+   failure from an early `send_sgi()` body failure.

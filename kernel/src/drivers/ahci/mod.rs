@@ -279,6 +279,9 @@ pub(crate) const AHCI_TRACE_SGI_AFTER_ISB: u32 = 20;
 pub(crate) const AHCI_TRACE_SGI_EXIT: u32 = 21;
 pub(crate) const AHCI_TRACE_WAKEBUF_BEFORE_PUSH: u32 = 22;
 pub(crate) const AHCI_TRACE_WAKEBUF_AFTER_PUSH: u32 = 23;
+pub(crate) const AHCI_TRACE_SCAN_START: u32 = 24;
+pub(crate) const AHCI_TRACE_SCAN_CPU: u32 = 25;
+pub(crate) const AHCI_TRACE_SCAN_DONE: u32 = 26;
 
 struct AhciTraceSlot {
     site: AtomicU32,
@@ -437,6 +440,9 @@ fn ahci_trace_site_name(site: u32) -> &'static str {
         AHCI_TRACE_SGI_EXIT => "SGI_EXIT",
         AHCI_TRACE_WAKEBUF_BEFORE_PUSH => "WAKEBUF_BEFORE_PUSH",
         AHCI_TRACE_WAKEBUF_AFTER_PUSH => "WAKEBUF_AFTER_PUSH",
+        AHCI_TRACE_SCAN_START => "UNBLOCK_SCAN_START",
+        AHCI_TRACE_SCAN_CPU => "UNBLOCK_SCAN_CPU",
+        AHCI_TRACE_SCAN_DONE => "UNBLOCK_SCAN_DONE",
         _ => "UNKNOWN",
     }
 }
@@ -544,6 +550,54 @@ pub fn dump_recent_ahci_events(port_filter: Option<u8>, n: usize) {
             port_filter.map_or(255u32, |port| port as u32)
         );
     }
+}
+
+fn is_sgi_target_trace_site(site: u32) -> bool {
+    matches!(
+        site,
+        AHCI_TRACE_UNBLOCK_PER_SGI
+            | AHCI_TRACE_SGI_ENTRY
+            | AHCI_TRACE_SGI_AFTER_MPIDR
+            | AHCI_TRACE_SGI_AFTER_COMPOSE
+            | AHCI_TRACE_SGI_BEFORE_MSR
+            | AHCI_TRACE_SGI_AFTER_MSR
+            | AHCI_TRACE_SGI_AFTER_ISB
+            | AHCI_TRACE_SGI_EXIT
+    )
+}
+
+pub(crate) fn collect_recent_sgi_targets(out: &mut [u8]) -> usize {
+    let mut count = 0usize;
+
+    for cpu in 0..AHCI_TRACE_CPUS {
+        for index in 0..AHCI_TRACE_LEN {
+            let Some(event) = load_ahci_trace_slot(cpu, index, None) else {
+                continue;
+            };
+
+            if !is_sgi_target_trace_site(event.site) {
+                continue;
+            }
+
+            let target = event.slot_mask as usize;
+            if target >= AHCI_TRACE_CPUS {
+                continue;
+            }
+
+            if out[..count].iter().any(|seen| *seen as usize == target) {
+                continue;
+            }
+
+            if count == out.len() {
+                return count;
+            }
+
+            out[count] = target as u8;
+            count += 1;
+        }
+    }
+
+    count
 }
 
 pub fn port0_is_snapshot() -> Option<u32> {
@@ -1632,9 +1686,8 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
     #[cfg(target_arch = "aarch64")]
     {
         use crate::arch_impl::aarch64::timer_interrupt::{
-            CPU0_LAST_TIMER_ELR, CPU0_BREADCRUMB_ID, CPU0_BREADCRUMB_CTL, CPU0_BREADCRUMB_SP,
-            CPU0_BREADCRUMB_ELR_SLOT,
-            CPU0_DISPATCH_TID, CPU0_DISPATCH_ELR, CPU0_DISPATCH_SPSR,
+            CPU0_BREADCRUMB_CTL, CPU0_BREADCRUMB_ELR_SLOT, CPU0_BREADCRUMB_ID, CPU0_BREADCRUMB_SP,
+            CPU0_DISPATCH_ELR, CPU0_DISPATCH_SPSR, CPU0_DISPATCH_TID, CPU0_LAST_TIMER_ELR,
         };
         crate::serial_println!(
             "[ahci]   cpu0_last_timer_elr={:#x} cpu0_breadcrumb={} ctl={:#x} sp={:#x} elr_slot={:#x}",
@@ -1674,7 +1727,9 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
     }
     crate::serial_println!(
         "[ahci]   IGRPEN1={:#x} ICC_CTLR={:#x} BPR1={:#x}",
-        igrpen1, icc_ctlr, bpr1,
+        igrpen1,
+        icc_ctlr,
+        bpr1,
     );
     // Read GICD_ISENABLER1 to confirm SPI34 is still enabled at distributor
     #[cfg(target_arch = "aarch64")]
@@ -1685,7 +1740,8 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
         let spi34_enabled = (gicd_isenabler1 >> 2) & 1;
         crate::serial_println!(
             "[ahci]   GICD_ISENABLER1={:#x} SPI34_enabled={}",
-            gicd_isenabler1, spi34_enabled,
+            gicd_isenabler1,
+            spi34_enabled,
         );
     }
     // Read CPU 0's GICR PPI enable and pending state (redistributor-level)
@@ -1695,13 +1751,15 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
         let ppi27_enabled = (cpu0_ppi_enable >> 27) & 1;
         crate::serial_println!(
             "[ahci]   CPU0_GICR_ISENABLER0={:#010x} PPI27_enabled={}",
-            cpu0_ppi_enable, ppi27_enabled,
+            cpu0_ppi_enable,
+            ppi27_enabled,
         );
         let cpu0_ppi_pending = crate::arch_impl::aarch64::gic::read_gicr_ispendr0(0);
         let ppi27_pending = (cpu0_ppi_pending >> 27) & 1;
         crate::serial_println!(
             "[ahci]   CPU0_GICR_ISPENDR0={:#010x} PPI27_pending={}",
-            cpu0_ppi_pending, ppi27_pending,
+            cpu0_ppi_pending,
+            ppi27_pending,
         );
     }
     #[cfg(target_arch = "aarch64")]
@@ -1714,7 +1772,8 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
         };
         crate::serial_println!(
             "[ahci]   PPI27_priority={:#x} SPI34_priority={:#x} PMR=0xf8",
-            ppi27_priority, spi34_priority,
+            ppi27_priority,
+            spi34_priority,
         );
     }
     // Per-CPU SPSR_EL1 snapshots from the timer tick handler.
@@ -1724,7 +1783,7 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
     // TIMER_TICK_COUNT detects if a CPU stopped receiving timer interrupts entirely.
     #[cfg(target_arch = "aarch64")]
     {
-        use crate::arch_impl::aarch64::timer_interrupt::{TIMER_TICK_DAIF, TIMER_TICK_COUNT};
+        use crate::arch_impl::aarch64::timer_interrupt::{TIMER_TICK_COUNT, TIMER_TICK_DAIF};
         crate::serial_println!(
             "[ahci]   timeout_cpu={} cpu_spsr=[{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x}]",
             timeout_cpu,
@@ -1748,7 +1807,7 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
             TIMER_TICK_COUNT[6].load(Ordering::Relaxed),
             TIMER_TICK_COUNT[7].load(Ordering::Relaxed),
         );
-        use crate::arch_impl::aarch64::timer_interrupt::{TIMER_TICK_HW_CPU, TIMER_TICK_HW_COUNT};
+        use crate::arch_impl::aarch64::timer_interrupt::{TIMER_TICK_HW_COUNT, TIMER_TICK_HW_CPU};
         crate::serial_println!(
             "[ahci]   hw_tick_count=[{},{},{},{},{},{},{},{}]",
             TIMER_TICK_HW_COUNT[0].load(Ordering::Relaxed),
@@ -1807,7 +1866,7 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
     #[cfg(target_arch = "aarch64")]
     {
         use crate::arch_impl::aarch64::exception::{
-            SYNC_EXCEPTION_COUNT, CPU0_LAST_SYNC_ESR, CPU0_LAST_SYNC_FAR, CPU0_LAST_SYNC_ELR,
+            CPU0_LAST_SYNC_ELR, CPU0_LAST_SYNC_ESR, CPU0_LAST_SYNC_FAR, SYNC_EXCEPTION_COUNT,
         };
         crate::serial_println!(
             "[ahci]   sync_exc_count=[{},{},{},{},{},{},{},{}]",
@@ -1841,18 +1900,23 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
         }
         crate::serial_println!(
             "[ahci]   timer: CNTV_CTL={:#x} CNTV_TVAL={} CNTP_CTL={:#x} CNTP_TVAL={} CNTFRQ={}",
-            cntv_ctl, cntv_tval as i64, cntp_ctl, cntp_tval as i64, cntfrq,
+            cntv_ctl,
+            cntv_tval as i64,
+            cntp_ctl,
+            cntp_tval as i64,
+            cntfrq,
         );
         crate::serial_println!(
             "[ahci]   timer: TICKS_PER_INTERRUPT={}",
-            crate::arch_impl::aarch64::timer_interrupt::TICKS_PER_INTERRUPT.load(core::sync::atomic::Ordering::Relaxed),
+            crate::arch_impl::aarch64::timer_interrupt::TICKS_PER_INTERRUPT
+                .load(core::sync::atomic::Ordering::Relaxed),
         );
     }
     // CPU 0's last CVAL and CNTVCT from the timer handler, plus current CNTVCT.
     // delta = cntvct_now - cval: positive = timer expired long ago, negative = CVAL in future.
     #[cfg(target_arch = "aarch64")]
     {
-        use crate::arch_impl::aarch64::timer_interrupt::{CPU0_LAST_CVAL, CPU0_LAST_CNTVCT};
+        use crate::arch_impl::aarch64::timer_interrupt::{CPU0_LAST_CNTVCT, CPU0_LAST_CVAL};
         // Read current CNTVCT (shared across all CPUs, so valid from any CPU)
         let current_cntvct: u64;
         unsafe {
@@ -1875,9 +1939,8 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
     #[cfg(target_arch = "aarch64")]
     {
         use crate::arch_impl::aarch64::context_switch::{
-            CPU0_IDLE_DAIF, CPU0_IDLE_PMR, CPU0_IDLE_IGRPEN1,
-            CPU0_IDLE_CNTV_CTL, CPU0_IDLE_CNTV_CVAL, CPU0_IDLE_CNTVCT,
-            CPU0_IDLE_ITERATIONS,
+            CPU0_IDLE_CNTVCT, CPU0_IDLE_CNTV_CTL, CPU0_IDLE_CNTV_CVAL, CPU0_IDLE_DAIF,
+            CPU0_IDLE_IGRPEN1, CPU0_IDLE_ITERATIONS, CPU0_IDLE_PMR,
         };
         let cval = CPU0_IDLE_CNTV_CVAL.load(Ordering::Relaxed);
         let cntvct = CPU0_IDLE_CNTVCT.load(Ordering::Relaxed);
@@ -1891,7 +1954,8 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
         );
         crate::serial_println!(
             "[ahci]   cpu0_idle: cval={} cntvct={} delta={} ({}ms)",
-            cval, cntvct,
+            cval,
+            cntvct,
             cntvct.wrapping_sub(cval) as i64,
             cntvct.wrapping_sub(cval) / 24000,
         );
@@ -1899,10 +1963,7 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
             crate::serial_println!("[ahci]   dumping trace buffer cpu0");
             crate::tracing::dump_buffer(0);
             if timeout_cpu != 0 {
-                crate::serial_println!(
-                    "[ahci]   dumping trace buffer timeout_cpu={}",
-                    timeout_cpu
-                );
+                crate::serial_println!("[ahci]   dumping trace buffer timeout_cpu={}", timeout_cpu);
                 crate::tracing::dump_buffer(timeout_cpu as usize);
             }
         }
