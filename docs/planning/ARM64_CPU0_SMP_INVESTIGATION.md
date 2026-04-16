@@ -2251,3 +2251,112 @@ the cached-TTBR0 baseline.
     `AFTER_COMPLETE`, F9 should move to the completion/scheduler wake path; if
     `AFTER_COMPLETE` and AHCI `RETURN` appear but SPI34 still dumps
     `active=true`, F9 should become a narrow F7 DIR/deactivation audit
+
+### 2026-04-16: F9 Completion Boundary Diagnostic
+
+- Probe change summary:
+  - branched from `diagnostic/f8-ahci-completion` to
+    `diagnostic/f9-completion-boundary`
+  - extended the existing AHCI trace ring in
+    [ahci/mod.rs](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/kernel/src/drivers/ahci/mod.rs)
+    with `BEFORE_COMPLETE`, `AFTER_COMPLETE`, `WAKE_ENTER`, and `WAKE_EXIT`
+    site tags
+  - wrapped the existing `AHCI_COMPLETIONS[port][0].complete(cmd_num)` call
+    with `BEFORE_COMPLETE` / `AFTER_COMPLETE`
+  - wrapped the existing `Completion::complete()` call to
+    `scheduler::isr_unblock_for_io(tid)` with `WAKE_ENTER` / `WAKE_EXIT`
+  - extended the SPI34 stuck-state dump to emit both
+    `[STUCK_SPI34] AHCI_PORT0_IS=<value>` and
+    `[STUCK_SPI34] AHCI_PORT1_IS=<value>`
+- Validation:
+  - clean aarch64 build:
+    `cargo build --release --target aarch64-breenix.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64`
+  - `grep -E '^(warning|error)' /tmp/f9-aarch64-build.log` produced no output
+  - `git diff --check` passed
+- Artifacts:
+  - [run1](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/logs/breenix-parallels-cpu0/f9-completion-boundary/run1)
+  - [run2](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/logs/breenix-parallels-cpu0/f9-completion-boundary/run2)
+  - [run3](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/logs/breenix-parallels-cpu0/f9-completion-boundary/run3)
+  - [run4](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/logs/breenix-parallels-cpu0/f9-completion-boundary/run4)
+  - [run5](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/logs/breenix-parallels-cpu0/f9-completion-boundary/run5)
+- Result:
+  - `run1`: FAIL, soft-lockup branch before `bsshd`; no AHCI timeout and no
+    AHCI ring dump in the retained serial tail
+  - `run2`: FAIL, reached `bsshd`, then hit one AHCI completion timeout with
+    `ahci_ring_entries=32`, `ahci_port0_is=1`, `ahci_port1_is=1`,
+    `before_complete=7`, `after_complete=5`, `wake_enter=3`, `wake_exit=2`
+  - `run3`: PASS-like within the 60-second collector window, reached `bsshd`
+    with no AHCI timeout and no AHCI ring dump
+  - `run4`: PASS-like within the 60-second collector window, reached `bsshd`
+    with no AHCI timeout and no AHCI ring dump
+  - `run5`: PASS-like within the 60-second collector window, reached `bsshd`
+    with no AHCI timeout and no AHCI ring dump
+  - all `run.sh` invocations returned `exit_status=1` because the headless
+    screenshot helper could not complete; compile output stayed warning-free
+- Run 2 summaries:
+
+```text
+exit_status=1
+ahci_timeouts=1
+ahci_ring_entries=32
+ahci_port0_is=1
+ahci_port1_is=1
+bsshd_started=1
+before_complete=7
+after_complete=5
+wake_enter=3
+wake_exit=2
+```
+
+- Verbatim extract from `run2`:
+
+```text
+[ahci] Port 1 TIMEOUT (5s): CI=0x0 IS=0x1 TFD=0x40 HBA_IS=0x2
+[ahci]   GIC: SPI34 pend=true act=true DAIF=0x300 pend_snap=[0x800004,0x0,0x0]
+[ahci]   isr_count=1217 cmd#=1221 completion_done=0 PMR=0xf8 RPR=0xff
+[ahci]   port_isr_hits=[1,1216] complete_hits=[0,10]
+[ahci] read_block(522) wait failed: AHCI: command timeout
+[STUCK_SPI34] cpu=6 gic_version=3
+[STUCK_SPI34] GICD_ISPENDR[1]=0x800004 bit=2 pending=true
+[STUCK_SPI34] GICD_ISACTIVER[1]=0x4 bit=2 active=true
+[STUCK_SPI34] ICC_RPR_EL1=0xff
+[STUCK_SPI34] ICC_PMR_EL1=0xf8
+[STUCK_SPI34] DAIF=0x300
+[STUCK_SPI34] AHCI_PORT0_IS=0x0
+[STUCK_SPI34] AHCI_PORT1_IS=0x1
+[AHCI_RING] nsec=2366781458 site=WAKE_ENTER cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=1219 wake_success=0 seq=3690
+[AHCI_RING] nsec=2366780583 site=BEFORE_COMPLETE cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1219 wake_success=0 seq=3689
+[AHCI_RING] nsec=2366779666 site=POST_CLEAR cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1219 wake_success=0 seq=3688
+[AHCI_RING] nsec=2366771250 site=ENTER cpu=0 port=1 IS=0x1 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=1219 wake_success=0 seq=3687
+[AHCI_RING] nsec=2364838458 site=RETURN cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1218 wake_success=1 seq=3686
+[AHCI_RING] nsec=2364837541 site=AFTER_COMPLETE cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1218 wake_success=0 seq=3685
+[AHCI_RING] nsec=2364836541 site=WAKE_EXIT cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=1218 wake_success=0 seq=3684
+[AHCI_RING] nsec=2364808208 site=WAKE_ENTER cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=1218 wake_success=0 seq=3683
+[AHCI_RING] nsec=2364807250 site=BEFORE_COMPLETE cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1218 wake_success=0 seq=3682
+```
+
+- Case verdict:
+  - **Case A by the top-level F9 decision rule**: the stuck token (`1219`)
+    has `BEFORE_COMPLETE` without `AFTER_COMPLETE`, so the handler is stuck
+    inside `Completion::complete()`
+  - the new `WAKE_ENTER` without `WAKE_EXIT` for the same token further
+    narrows the in-`complete()` stall to the scheduler wake helper,
+    `scheduler::isr_unblock_for_io(tid)`, rather than to the initial
+    `done.store`, fence, `sev`, or waiter load
+  - the previous token (`1218`) completed the full
+    `BEFORE_COMPLETE -> WAKE_ENTER -> WAKE_EXIT -> AFTER_COMPLETE -> RETURN`
+    sequence, so the new probe is discriminating the stalled token rather than
+    globally breaking the path
+- F10 recommendation:
+  - probe name: `f10-isr-unblock-boundary`
+  - add ring sites inside
+    [scheduler.rs](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/kernel/src/task/scheduler.rs)
+    `isr_unblock_for_io(tid)` at:
+    entry after `current_cpu_id_raw()`, after `ISR_WAKEUP_BUFFERS[cpu].push(tid)`,
+    after `set_need_resched()`, before the idle-CPU SGI loop, before each
+    `send_sgi()`, after each `send_sgi()`, and final exit
+  - keep the probe atomic/ring-only; do not add logging to interrupt or
+    syscall hot paths
+  - likely F10 split: if the last site is before/inside `send_sgi()`, audit
+    SGI delivery/GICR targeting; if it is before `set_need_resched()` or
+    buffer push, audit the per-CPU wake buffer atomics
