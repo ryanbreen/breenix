@@ -2638,15 +2638,26 @@ const AHCI_TRACKED_SLOT_MASK: u32 = (1u32 << AHCI_MAX_CONCURRENT) - 1;
 #[inline]
 fn detect_completed_slots(active: u32, ci_after: u32, port_is: u32) -> u32 {
     let active = active & AHCI_TRACKED_SLOT_MASK;
+
+    // Require a hardware completion IRQ signal before declaring any slot done.
+    // Without this gate, `active & !ci_after` is ambiguous during the
+    // submission window between `PORT_ACTIVE_MASK |= 1` and `port_write(PORT_CI, 1)`:
+    // a concurrent or stale ISR can read active=1, CI=0 and falsely conclude
+    // the command already completed — stealing the cmd_num and clearing the
+    // active bit before hardware is even kicked. The real completion IRQ then
+    // finds active=0 and gets dropped, leaving the waiter blocked forever
+    // (manifests as `cmd#=N+1, last_port1_cmd_num=N, CI=0, IS=1` at timeout).
+    if (port_is & (PORT_IRQ_COMPLETE | PORT_IRQ_ERROR)) == 0 {
+        return 0;
+    }
+
     let mut completed = active & !ci_after;
 
-    if completed == 0
-        && active.count_ones() == 1
-        && (port_is & (PORT_IRQ_COMPLETE | PORT_IRQ_ERROR)) != 0
-    {
+    if completed == 0 && active.count_ones() == 1 {
         // Some HBAs raise the completion/error interrupt before PORT_CI is
-        // observed cleared. With exactly one active slot, the interrupt itself
-        // still identifies the finished command unambiguously.
+        // observed cleared. With exactly one active slot and the completion
+        // IRQ signal already gated above, the interrupt still identifies the
+        // finished command unambiguously.
         completed = active;
     }
 
