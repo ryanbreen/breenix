@@ -491,6 +491,11 @@ pub fn init_cpu_interface_secondary() {
             // Get CPU ID from MPIDR_EL1 for redistributor offset
             let cpu_id = get_cpu_id_from_mpidr();
 
+            // ICC system registers are per-CPU and independent of the
+            // redistributor MMIO aperture. Bring SRE/PMR/IGRPEN up before any
+            // GICR range guard so every CPU emits the SRE audit line.
+            init_gicv3_cpu_interface();
+
             // Validate against GICR region before any MMIO access.
             let gicr_size = crate::platform_config::gicr_size() as usize;
             let max_redists = if gicr_size > 0 {
@@ -507,7 +512,6 @@ pub fn init_cpu_interface_secondary() {
             }
 
             init_gicv3_redistributor(cpu_id);
-            init_gicv3_cpu_interface();
         }
         _ => {}
     }
@@ -1029,6 +1033,10 @@ pub fn send_sgi(sgi_id: u8, target_cpu: u8) {
 
     let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
     if version >= 3 {
+        unsafe {
+            core::arch::asm!("dsb ishst", options(nomem, nostack));
+        }
+
         // GICv3: Write ICC_SGI1R_EL1
         // Bits 55:48 = Aff3, 39:32 = Aff2, 23:16 = Aff1
         // Bits 15:0 = TargetList (bitmask within Aff1 group)
@@ -1474,6 +1482,22 @@ fn init_gicv3_cpu_interface() {
         let sre: u64 = 0x7; // SRE | DFB | DIB
         core::arch::asm!("msr icc_sre_el1, {}", in(reg) sre, options(nomem, nostack));
         core::arch::asm!("isb", options(nomem, nostack));
+        let sre_readback: u64;
+        core::arch::asm!("mrs {}, icc_sre_el1", out(reg) sre_readback, options(nomem, nostack));
+        {
+            use crate::arch_impl::aarch64::context_switch::{
+                raw_uart_dec, raw_uart_hex, raw_uart_str,
+            };
+
+            let cpu_id = get_cpu_id_from_mpidr();
+            raw_uart_str("[SRE_AUDIT] cpu=");
+            raw_uart_dec(cpu_id as u64);
+            raw_uart_str(" sre=");
+            raw_uart_dec(sre_readback & 1);
+            raw_uart_str(" raw=");
+            raw_uart_hex(sre_readback);
+            raw_uart_str("\n");
+        }
 
         // Explicitly set ICC_CTLR_EL1.EOImode = 1 (bit 1) so GICv3 uses split
         // priority-drop and deactivate semantics. This matches Linux's regular
