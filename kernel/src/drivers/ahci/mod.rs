@@ -256,9 +256,13 @@ static AHCI_TIMEOUT_TRACE_DUMPED: AtomicBool = AtomicBool::new(false);
 
 const AHCI_TRACE_CPUS: usize = 8;
 const AHCI_TRACE_LEN: usize = 64;
-const AHCI_TRACE_ENTER: u32 = 1;
-const AHCI_TRACE_POST_CLEAR: u32 = 2;
-const AHCI_TRACE_RETURN: u32 = 3;
+pub(crate) const AHCI_TRACE_ENTER: u32 = 1;
+pub(crate) const AHCI_TRACE_POST_CLEAR: u32 = 2;
+pub(crate) const AHCI_TRACE_RETURN: u32 = 3;
+pub(crate) const AHCI_TRACE_BEFORE_COMPLETE: u32 = 4;
+pub(crate) const AHCI_TRACE_AFTER_COMPLETE: u32 = 5;
+pub(crate) const AHCI_TRACE_WAKE_ENTER: u32 = 6;
+pub(crate) const AHCI_TRACE_WAKE_EXIT: u32 = 7;
 
 struct AhciTraceSlot {
     site: AtomicU32,
@@ -357,7 +361,7 @@ fn trace_now_ns() -> u64 {
 }
 
 #[inline]
-fn push_ahci_event(
+pub(crate) fn push_ahci_event(
     site: u32,
     port: u32,
     is: u32,
@@ -397,6 +401,10 @@ fn ahci_trace_site_name(site: u32) -> &'static str {
         AHCI_TRACE_ENTER => "ENTER",
         AHCI_TRACE_POST_CLEAR => "POST_CLEAR",
         AHCI_TRACE_RETURN => "RETURN",
+        AHCI_TRACE_BEFORE_COMPLETE => "BEFORE_COMPLETE",
+        AHCI_TRACE_AFTER_COMPLETE => "AFTER_COMPLETE",
+        AHCI_TRACE_WAKE_ENTER => "WAKE_ENTER",
+        AHCI_TRACE_WAKE_EXIT => "WAKE_EXIT",
         _ => "UNKNOWN",
     }
 }
@@ -507,11 +515,15 @@ pub fn dump_recent_ahci_events(port_filter: Option<u8>, n: usize) {
 }
 
 pub fn port0_is_snapshot() -> Option<u32> {
+    port_is_snapshot(0)
+}
+
+pub fn port_is_snapshot(port: usize) -> Option<u32> {
     let abar = AHCI_ABAR.load(Ordering::Relaxed);
     if abar == 0 {
         None
     } else {
-        Some(port_read(abar, 0, PORT_IS))
+        Some(port_read(abar, port, PORT_IS))
     }
 }
 
@@ -2655,7 +2667,31 @@ pub fn handle_interrupt() {
                     AHCI_LAST_ISR_COMPLETE_PORT.store(port as u32, Ordering::Relaxed);
                     AHCI_LAST_ISR_COMPLETE_CMD.store(cmd_num, Ordering::Relaxed);
                     AHCI_LAST_ISR_COMPLETE_WAITER.store(waiter_tid, Ordering::Relaxed);
+                    push_ahci_event(
+                        AHCI_TRACE_BEFORE_COMPLETE,
+                        port as u32,
+                        is_after_clear,
+                        ci_after_clear,
+                        sact_after_clear,
+                        serr_entry,
+                        waiter_tid,
+                        completed_slots,
+                        cmd_num,
+                        false,
+                    );
                     AHCI_COMPLETIONS[port][0].complete(cmd_num);
+                    push_ahci_event(
+                        AHCI_TRACE_AFTER_COMPLETE,
+                        port as u32,
+                        is_after_clear,
+                        ci_after_clear,
+                        sact_after_clear,
+                        serr_entry,
+                        waiter_tid,
+                        completed_slots,
+                        cmd_num,
+                        false,
+                    );
                     AHCI_ISR_COMPLETE_HIT[port].fetch_add(1, Ordering::Relaxed);
                     wake_success = waiter_tid != 0;
                     slots_processed = completed_slots.count_ones();

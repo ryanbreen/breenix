@@ -1003,6 +1003,14 @@ pub fn dump_stuck_state_for_spi(intid: u32) {
             raw_uart_str("unavailable");
         }
         raw_uart_str("\n");
+        raw_dump_prefix(intid);
+        raw_uart_str("AHCI_PORT1_IS=");
+        if let Some(port1_is) = crate::drivers::ahci::port_is_snapshot(1) {
+            raw_uart_hex(port1_is as u64);
+        } else {
+            raw_uart_str("unavailable");
+        }
+        raw_uart_str("\n");
 
         crate::drivers::ahci::dump_recent_ahci_events(None, 16);
     }
