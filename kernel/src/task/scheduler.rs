@@ -114,6 +114,14 @@ impl IsrWakeupBuffer {
             }
         }
     }
+
+    /// Count pending entries without modifying the buffer.
+    fn depth(&self) -> usize {
+        self.slots
+            .iter()
+            .filter(|slot| slot.load(Ordering::Acquire) != ISR_WAKEUP_EMPTY)
+            .count()
+    }
 }
 
 static ISR_WAKEUP_BUFFERS: [IsrWakeupBuffer; 8] = [const { IsrWakeupBuffer::new() }; 8];
@@ -149,6 +157,18 @@ static CPU_IS_IDLE: [AtomicBool; MAX_CPUS] = [
     AtomicBool::new(false),
     AtomicBool::new(false),
     AtomicBool::new(false),
+];
+
+#[cfg(target_arch = "aarch64")]
+static F17_RESCHED_TRACE_BUDGET: [AtomicU64; MAX_CPUS] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
 ];
 
 /// Counter for unblock() calls - used for testing pipe wake mechanism
@@ -918,8 +938,24 @@ impl Scheduler {
             for buf in ISR_WAKEUP_BUFFERS.iter() {
                 buf.drain(&mut wakeups);
             }
+            let drained_count = wakeups.len();
             for tid in wakeups {
                 self.unblock_for_io(tid);
+            }
+            #[cfg(target_arch = "aarch64")]
+            if take_f17_resched_trace_budget(cpu) {
+                crate::drivers::ahci::push_ahci_event(
+                    crate::drivers::ahci::AHCI_TRACE_RESCHED_CHECK_DRAINED_WAKE,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    drained_count as u64,
+                    self.ready_queue_length() as u32,
+                    if is_need_resched() { 1 } else { 0 },
+                    drained_count != 0,
+                );
             }
         }
 
@@ -2517,6 +2553,49 @@ pub fn is_need_resched() -> bool {
     }
 }
 
+/// Count pending ISR wakeups for one CPU.
+///
+/// This is diagnostic-only and lock-free; it reads the wake buffer atomically
+/// without draining it.
+#[cfg(target_arch = "aarch64")]
+pub fn isr_wakeup_depth(cpu: usize) -> usize {
+    if cpu < ISR_WAKEUP_BUFFERS.len() {
+        ISR_WAKEUP_BUFFERS[cpu].depth()
+    } else {
+        0
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn arm_f17_resched_trace(cpu: usize) {
+    if cpu < F17_RESCHED_TRACE_BUDGET.len() {
+        F17_RESCHED_TRACE_BUDGET[cpu].store(16, Ordering::Release);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn take_f17_resched_trace_budget(cpu: usize) -> bool {
+    if cpu >= F17_RESCHED_TRACE_BUDGET.len() {
+        return false;
+    }
+
+    let budget = &F17_RESCHED_TRACE_BUDGET[cpu];
+    let mut current = budget.load(Ordering::Acquire);
+    while current != 0 {
+        match budget.compare_exchange_weak(
+            current,
+            current - 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return true,
+            Err(next) => current = next,
+        }
+    }
+
+    false
+}
+
 /// Lock-free ISR wakeup: push thread ID to per-CPU wakeup buffer.
 ///
 /// Called from the AHCI ISR (via `Completion::complete()`) instead of
@@ -2542,6 +2621,21 @@ pub fn isr_unblock_for_io(tid: u64) {
         false,
     );
     let cpu = current_cpu_id_raw();
+    #[cfg(target_arch = "aarch64")]
+    arm_f17_resched_trace(cpu);
+    #[cfg(target_arch = "aarch64")]
+    crate::drivers::ahci::push_ahci_event(
+        crate::drivers::ahci::AHCI_TRACE_TTWU_LOCAL_ENTRY,
+        0,
+        0,
+        0,
+        0,
+        0,
+        tid,
+        isr_wakeup_depth(cpu) as u32,
+        if is_need_resched() { 1 } else { 0 },
+        false,
+    );
     #[cfg(target_arch = "aarch64")]
     crate::drivers::ahci::push_ahci_event(
         crate::drivers::ahci::AHCI_TRACE_UNBLOCK_AFTER_CPU,
@@ -2598,6 +2692,21 @@ pub fn isr_unblock_for_io(tid: u64) {
         false,
     );
     set_need_resched();
+    #[cfg(target_arch = "aarch64")]
+    arm_f17_resched_trace(cpu);
+    #[cfg(target_arch = "aarch64")]
+    crate::drivers::ahci::push_ahci_event(
+        crate::drivers::ahci::AHCI_TRACE_TTWU_LOCAL_SET_RESCHED,
+        0,
+        0,
+        0,
+        0,
+        0,
+        tid,
+        isr_wakeup_depth(cpu) as u32,
+        if is_need_resched() { 1 } else { 0 },
+        true,
+    );
     #[cfg(target_arch = "aarch64")]
     crate::drivers::ahci::push_ahci_event(
         crate::drivers::ahci::AHCI_TRACE_UNBLOCK_AFTER_NEED_RESCHED,

@@ -59,6 +59,30 @@ pub(crate) const TRACE_KERNEL_RESUME_IRQ_RESCHED_TAIL: u16 = 3;
 const TRACE_RESCHED_TAIL_BEFORE_RETURN: u16 = 2;
 
 #[inline]
+fn trace_f17_resched_site(site: u32, cpu: usize, tid: u64, switched: bool) {
+    if !crate::task::scheduler::take_f17_resched_trace_budget(cpu) {
+        return;
+    }
+
+    crate::drivers::ahci::push_ahci_event(
+        site,
+        0,
+        0,
+        0,
+        0,
+        0,
+        tid,
+        crate::task::scheduler::isr_wakeup_depth(cpu) as u32,
+        if crate::task::scheduler::is_need_resched() {
+            1
+        } else {
+            0
+        },
+        switched,
+    );
+}
+
+#[inline]
 fn dispatch_spsr(spsr: u64) -> u64 {
     spsr & !SPSR_DAIF_IRQ_BIT
 }
@@ -2230,11 +2254,19 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     frame: &mut Aarch64ExceptionFrame,
     from_el0: bool,
 ) {
+    let f17_cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    trace_f17_resched_site(
+        crate::drivers::ahci::AHCI_TRACE_RESCHED_CHECK_ENTRY,
+        f17_cpu_id,
+        0,
+        false,
+    );
+
     crate::task::process_task::drain_deferred_fault_sigsegv_exits();
 
     // ── Lock-free pre-checks ──────────────────────────────────────
     let preempt_count = Aarch64PerCpu::preempt_count();
-    let cpu_id_early = Aarch64PerCpu::cpu_id() as usize;
+    let cpu_id_early = f17_cpu_id;
     if !from_el0 {
         trace_kernel_resume_irq(frame);
     }
@@ -2243,6 +2275,12 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     if (preempt_count & 0x10000000) != 0 {
         // PREEMPT_ACTIVE: in the middle of returning from a previous
         // exception — don't context switch now.
+        trace_f17_resched_site(
+            crate::drivers::ahci::AHCI_TRACE_RESCHED_CHECK_RETURN,
+            f17_cpu_id,
+            0,
+            false,
+        );
         return;
     }
 
@@ -2287,6 +2325,12 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     if !from_el0 && (preempt_count & 0xFF) > 0 {
         // Kernel code holding locks — not safe to preempt.
         // Deferred requeue was already processed above.
+        trace_f17_resched_site(
+            crate::drivers::ahci::AHCI_TRACE_RESCHED_CHECK_RETURN,
+            cpu_id,
+            0,
+            false,
+        );
         return;
     }
 
@@ -2343,6 +2387,12 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
                 check_and_deliver_signals_for_current_thread_arm64(frame);
                 ensure_user_rsp_scratch_for_el0();
             }
+            trace_f17_resched_site(
+                crate::drivers::ahci::AHCI_TRACE_RESCHED_CHECK_RETURN,
+                cpu_id,
+                0,
+                false,
+            );
             return;
         }
     }
@@ -2351,7 +2401,15 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     let mut guard = crate::task::scheduler::lock_for_context_switch();
     let sched = match guard.as_mut() {
         Some(s) => s,
-        None => return,
+        None => {
+            trace_f17_resched_site(
+                crate::drivers::ahci::AHCI_TRACE_RESCHED_CHECK_RETURN,
+                cpu_id,
+                0,
+                false,
+            );
+            return;
+        }
     };
 
     if exception_cleanup_context {
@@ -2414,6 +2472,12 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             check_and_deliver_signals_for_current_thread_arm64(frame);
             ensure_user_rsp_scratch_for_el0();
         }
+        trace_f17_resched_site(
+            crate::drivers::ahci::AHCI_TRACE_RESCHED_CHECK_RETURN,
+            cpu_id,
+            0,
+            false,
+        );
         return;
     }
 
@@ -2435,6 +2499,12 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             check_and_deliver_signals_for_current_thread_arm64(frame);
             ensure_user_rsp_scratch_for_el0();
         }
+        trace_f17_resched_site(
+            crate::drivers::ahci::AHCI_TRACE_RESCHED_CHECK_RETURN,
+            cpu_id,
+            0,
+            false,
+        );
         return;
     }
 
@@ -2452,11 +2522,23 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             check_and_deliver_signals_for_current_thread_arm64(frame);
             ensure_user_rsp_scratch_for_el0();
         }
+        trace_f17_resched_site(
+            crate::drivers::ahci::AHCI_TRACE_RESCHED_CHECK_RETURN,
+            cpu_id,
+            new_id,
+            false,
+        );
         return;
     }
 
     // 5. Trace context switch + queue state + increment watchdog counter
     trace_ctx_switch(old_id, new_id);
+    trace_f17_resched_site(
+        crate::drivers::ahci::AHCI_TRACE_RESCHED_CHECK_SWITCHED,
+        cpu_id,
+        new_id,
+        true,
+    );
     crate::tracing::providers::sched::trace_sched_queue_state(
         sched.ready_queue_length() as u16,
         new_id as u16,
@@ -2649,6 +2731,12 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
 
     cpu0_breadcrumb(cpu_id, 106); // before function return
     cpu0_breadcrumb(cpu_id, 14); // return
+    trace_f17_resched_site(
+        crate::drivers::ahci::AHCI_TRACE_RESCHED_CHECK_RETURN,
+        cpu_id,
+        new_id,
+        true,
+    );
     if let Some(trace_tid) = trace_eret_tid {
         trace_resched_tail(TRACE_RESCHED_TAIL_BEFORE_RETURN, trace_tid);
     }
