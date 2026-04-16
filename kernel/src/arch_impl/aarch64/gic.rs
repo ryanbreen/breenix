@@ -496,18 +496,7 @@ pub fn init_cpu_interface_secondary() {
             // GICR range guard so every CPU emits the SRE audit line.
             init_gicv3_cpu_interface();
 
-            // Validate against GICR region before any MMIO access.
-            let gicr_size = crate::platform_config::gicr_size() as usize;
-            let max_redists = if gicr_size > 0 {
-                gicr_size / GICR_FRAME_SIZE
-            } else {
-                0
-            };
-            if max_redists > 0 && cpu_id >= max_redists {
-                crate::serial_println!(
-                    "[gic] CPU {} (MPIDR Aff0) exceeds GICR region ({} redistributors), skipping GIC init",
-                    cpu_id, max_redists
-                );
+            if !validate_gicr_range_for_cpu(cpu_id) {
                 return;
             }
 
@@ -563,6 +552,7 @@ impl InterruptController for Gicv2 {
                 // idempotent (guarded by GICR_PROBED), so calling it again
                 // inside init_gicv3_redistributor(0) is a no-op.
                 probe_and_validate_gicr();
+                refresh_gicr_rdist_map(GICR_MAP_SLOTS, false);
                 init_gicv3_distributor();
                 init_gicv3_redistributor(0); // CPU 0
                 init_gicv3_cpu_interface();
@@ -588,18 +578,12 @@ impl InterruptController for Gicv2 {
                     return; // No valid GICR — skip
                 }
                 let cpu_id = get_cpu_id_from_mpidr();
-                let gicr_size = crate::platform_config::gicr_size() as usize;
-                let max_redists = if gicr_size > 0 {
-                    gicr_size / GICR_FRAME_SIZE
-                } else {
-                    0
-                };
-                if max_redists > 0 && cpu_id >= max_redists {
+                if !validate_gicr_range_for_cpu(cpu_id) {
                     return; // No redistributor for this CPU
                 }
-                let cpu_offset = cpu_id * GICR_FRAME_SIZE;
-                let sgi_offset = GICR_SGI_OFFSET; // SGI_base frame within redistributor
-                gicr_write(cpu_offset + sgi_offset, GICR_ISENABLER0, 1 << irq_num);
+                if let Some(rd_base) = gicr_init_rd_base_for_cpu(cpu_id) {
+                    gicr_write_at_rd_base(rd_base, GICR_SGI_OFFSET + GICR_ISENABLER0, 1 << irq_num);
+                }
             } else {
                 gicd_write(GICD_ISENABLER, 1 << irq_num);
             }
@@ -655,17 +639,12 @@ impl InterruptController for Gicv2 {
                     return; // No valid GICR — skip
                 }
                 let cpu_id = get_cpu_id_from_mpidr();
-                let gicr_size = crate::platform_config::gicr_size() as usize;
-                let max_redists = if gicr_size > 0 {
-                    gicr_size / GICR_FRAME_SIZE
-                } else {
-                    0
-                };
-                if max_redists > 0 && cpu_id >= max_redists {
+                if !validate_gicr_range_for_cpu(cpu_id) {
                     return; // No redistributor for this CPU
                 }
-                let cpu_offset = cpu_id * GICR_FRAME_SIZE;
-                gicr_write(cpu_offset + GICR_SGI_OFFSET, GICR_ICENABLER0, 1 << irq_num);
+                if let Some(rd_base) = gicr_init_rd_base_for_cpu(cpu_id) {
+                    gicr_write_at_rd_base(rd_base, GICR_SGI_OFFSET + GICR_ICENABLER0, 1 << irq_num);
+                }
             } else {
                 gicd_write(GICD_ICENABLER, 1 << irq_num);
             }
@@ -1249,6 +1228,8 @@ pub fn dump_irq_state(irq: u32) {
 /// Each redistributor has two 64KB frames: RD_base and SGI_base.
 const GICR_FRAME_SIZE: usize = 0x2_0000; // 128KB per CPU (2 x 64KB frames)
 const GICR_SGI_OFFSET: usize = 0x1_0000; // SGI_base is second 64KB frame
+const GICR_TYPER_LAST: u64 = 1 << 4;
+const GICR_MAP_SLOTS: usize = crate::arch_impl::aarch64::smp::MAX_CPUS;
 
 /// GICR RD_base registers
 const GICR_CTLR: usize = 0x000;
@@ -1333,6 +1314,37 @@ static GIC_CPU_AUDIT_MISMATCH: [AtomicU8; GIC_CPU_AUDIT_SLOTS] = [
     AtomicU8::new(0),
 ];
 
+static GICR_PER_CPU_BASE: [AtomicU64; GICR_MAP_SLOTS] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+static GICR_PER_CPU_TYPER: [AtomicU64; GICR_MAP_SLOTS] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+static GICR_PER_CPU_AFFINITY: [AtomicU64; GICR_MAP_SLOTS] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+
 /// GICR SGI_base registers (at GICR_SGI_OFFSET from RD_base)
 const GICR_IGROUPR0: usize = 0x080;
 const GICR_ISENABLER0: usize = 0x100;
@@ -1371,6 +1383,165 @@ fn read_mpidr_el1() -> u64 {
     mpidr
 }
 
+fn mpidr_to_gicr_affinity(mpidr: u64) -> u32 {
+    let aff0 = mpidr & 0xff;
+    let aff1 = (mpidr >> 8) & 0xff;
+    let aff2 = (mpidr >> 16) & 0xff;
+    let aff3 = (mpidr >> 32) & 0xff;
+    ((aff3 << 24) | (aff2 << 16) | (aff1 << 8) | aff0) as u32
+}
+
+fn expected_gicr_affinity_for_cpu(cpu_id: usize) -> u32 {
+    if cpu_id < GIC_CPU_AUDIT_SLOTS && GIC_CPU_AUDIT_VALID[cpu_id].load(Ordering::Acquire) {
+        mpidr_to_gicr_affinity(GIC_CPU_AUDIT_MPIDR[cpu_id].load(Ordering::Acquire))
+    } else {
+        mpidr_to_gicr_affinity(cpu_id as u64)
+    }
+}
+
+#[inline]
+fn gicr_read_at_rd_base(rd_base_phys: usize, offset: usize) -> u32 {
+    unsafe {
+        let addr = (GIC_HHDM + rd_base_phys + offset) as *const u32;
+        core::ptr::read_volatile(addr)
+    }
+}
+
+#[inline]
+fn gicr_write_at_rd_base(rd_base_phys: usize, offset: usize, value: u32) {
+    unsafe {
+        let addr = (GIC_HHDM + rd_base_phys + offset) as *mut u32;
+        core::ptr::write_volatile(addr, value);
+    }
+}
+
+#[inline]
+fn gicr_read_u64_at_rd_base(rd_base_phys: usize, offset: usize) -> u64 {
+    unsafe {
+        let addr = (GIC_HHDM + rd_base_phys + offset) as *const u64;
+        core::ptr::read_volatile(addr)
+    }
+}
+
+#[inline]
+fn gicr_rd_base_for_cpu(cpu_id: usize) -> Option<usize> {
+    if cpu_id >= GICR_MAP_SLOTS {
+        return None;
+    }
+
+    let rd_base = GICR_PER_CPU_BASE[cpu_id].load(Ordering::Acquire);
+    if rd_base == 0 {
+        None
+    } else {
+        Some(rd_base as usize)
+    }
+}
+
+fn fallback_gicr_rd_base_for_cpu(cpu_id: usize) -> Option<usize> {
+    let gicr_size = crate::platform_config::gicr_size() as usize;
+    let max_redists = if gicr_size > 0 {
+        gicr_size / GICR_FRAME_SIZE
+    } else {
+        0
+    };
+    if max_redists > 0 && cpu_id >= max_redists {
+        None
+    } else {
+        Some(crate::platform_config::gicr_base_phys() as usize + cpu_id * GICR_FRAME_SIZE)
+    }
+}
+
+fn gicr_init_rd_base_for_cpu(cpu_id: usize) -> Option<usize> {
+    gicr_rd_base_for_cpu(cpu_id).or_else(|| fallback_gicr_rd_base_for_cpu(cpu_id))
+}
+
+fn validate_gicr_range_for_cpu(cpu_id: usize) -> bool {
+    let gicr_size = crate::platform_config::gicr_size() as usize;
+    let max_redists = if gicr_size > 0 {
+        gicr_size / GICR_FRAME_SIZE
+    } else {
+        0
+    };
+    if max_redists > 0 && cpu_id >= max_redists {
+        crate::serial_println!(
+            "[gic] CPU {} (MPIDR Aff0) exceeds GICR region ({} redistributors), skipping GIC init",
+            cpu_id,
+            max_redists
+        );
+        return false;
+    }
+
+    true
+}
+
+fn refresh_gicr_rdist_map(max_cpus: usize, emit_logs: bool) {
+    if !GICR_VALID.load(Ordering::Acquire) {
+        if emit_logs {
+            crate::serial_println!("[GICR_MAP] unavailable=gicr_not_valid");
+        }
+        return;
+    }
+
+    let target_cpus = max_cpus.min(GICR_MAP_SLOTS);
+    for cpu_id in 0..target_cpus {
+        GICR_PER_CPU_BASE[cpu_id].store(0, Ordering::Release);
+        GICR_PER_CPU_TYPER[cpu_id].store(0, Ordering::Release);
+        GICR_PER_CPU_AFFINITY[cpu_id].store(0, Ordering::Release);
+    }
+
+    let base = crate::platform_config::gicr_base_phys() as usize;
+    let gicr_size = crate::platform_config::gicr_size() as usize;
+    let max_frames = if gicr_size > 0 {
+        (gicr_size / GICR_FRAME_SIZE).max(1)
+    } else {
+        GICR_MAP_SLOTS
+    };
+
+    for frame in 0..max_frames {
+        let rd_base = base + frame * GICR_FRAME_SIZE;
+        let typer = gicr_read_u64_at_rd_base(rd_base, GICR_TYPER);
+        let affinity = (typer >> 32) as u32;
+
+        for cpu_id in 0..target_cpus {
+            if expected_gicr_affinity_for_cpu(cpu_id) == affinity {
+                GICR_PER_CPU_BASE[cpu_id].store(rd_base as u64, Ordering::Release);
+                GICR_PER_CPU_TYPER[cpu_id].store(typer, Ordering::Release);
+                GICR_PER_CPU_AFFINITY[cpu_id].store(affinity as u64, Ordering::Release);
+                break;
+            }
+        }
+
+        if (typer & GICR_TYPER_LAST) != 0 {
+            break;
+        }
+    }
+
+    if emit_logs {
+        for cpu_id in 0..target_cpus {
+            let rd_base = GICR_PER_CPU_BASE[cpu_id].load(Ordering::Acquire);
+            if rd_base == 0 {
+                crate::serial_println!("[GICR_MAP] cpu={} NOT_FOUND", cpu_id);
+            } else {
+                crate::serial_println!(
+                    "[GICR_MAP] cpu={} rd_base={:#x} typer={:#x} affinity={:#x}",
+                    cpu_id,
+                    rd_base,
+                    GICR_PER_CPU_TYPER[cpu_id].load(Ordering::Acquire),
+                    GICR_PER_CPU_AFFINITY[cpu_id].load(Ordering::Acquire)
+                );
+            }
+        }
+    }
+}
+
+/// Build and emit the Linux-style redistributor map.
+///
+/// Linux walks each 128KB redistributor frame and matches `GICR_TYPER[63:32]`
+/// to the CPU affinity value; see irq-gic-v3.c `gic_populate_rdist()`.
+pub fn init_gicr_rdist_map(max_cpus: usize) {
+    refresh_gicr_rdist_map(max_cpus, true);
+}
+
 pub fn dump_gicr_state_for_cpu(target_cpu: usize) {
     use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_hex, raw_uart_str};
 
@@ -1382,27 +1553,18 @@ pub fn dump_gicr_state_for_cpu(target_cpu: usize) {
         return;
     }
 
-    let gicr_size = crate::platform_config::gicr_size() as usize;
-    let max_redists = if gicr_size > 0 {
-        gicr_size / GICR_FRAME_SIZE
-    } else {
-        0
-    };
-    if max_redists > 0 && target_cpu >= max_redists {
-        raw_uart_str(" unavailable=out_of_range max_redists=");
-        raw_uart_dec(max_redists as u64);
-        raw_uart_str("\n");
+    let Some(rd_base) = gicr_rd_base_for_cpu(target_cpu) else {
+        raw_uart_str(" unavailable=rdist_not_found\n");
         return;
-    }
+    };
 
-    let cpu_offset = target_cpu * GICR_FRAME_SIZE;
-    let waker = gicr_read(cpu_offset, GICR_WAKER);
-    let ctlr = gicr_read(cpu_offset, GICR_CTLR);
-    let typer_lo = gicr_read(cpu_offset, GICR_TYPER) as u64;
-    let typer_hi = gicr_read(cpu_offset, GICR_TYPER + 4) as u64;
-    let typer = typer_lo | (typer_hi << 32);
-    let syncr = gicr_read(cpu_offset, GICR_SYNCR);
+    let waker = gicr_read_at_rd_base(rd_base, GICR_WAKER);
+    let ctlr = gicr_read_at_rd_base(rd_base, GICR_CTLR);
+    let typer = gicr_read_u64_at_rd_base(rd_base, GICR_TYPER);
+    let syncr = gicr_read_at_rd_base(rd_base, GICR_SYNCR);
 
+    raw_uart_str(" rd_base=");
+    raw_uart_hex(rd_base as u64);
     raw_uart_str(" waker=");
     raw_uart_hex(waker as u64);
     raw_uart_str(" ctlr=");
@@ -1550,49 +1712,31 @@ fn init_gicv3_redistributor(cpu_id: usize) {
         return;
     }
 
-    // Validate cpu_id against the GICR region size before accessing MMIO.
-    // On M5 Max, PSCI may succeed for more CPUs than the GICR region covers,
-    // causing a Synchronous External Abort (DFSC=0x10) on out-of-range access.
-    let gicr_size = crate::platform_config::gicr_size() as usize;
-    let max_redists = if gicr_size > 0 {
-        gicr_size / GICR_FRAME_SIZE
-    } else {
-        0
-    };
-
-    // If gicr_size is unknown (QEMU with no explicit size), allow any cpu_id
-    // since QEMU allocates enough redistributors for all CPUs in MAX_CPUS.
-    if max_redists > 0 && cpu_id >= max_redists {
+    let Some(rd_base) = gicr_init_rd_base_for_cpu(cpu_id) else {
         crate::serial_println!(
-            "[gic] CPU {} GICR out of range (region size={:#x} covers {} redistributors), skipping",
-            cpu_id,
-            gicr_size,
-            max_redists
+            "[gic] CPU {} has no redistributor frame, skipping GICR init",
+            cpu_id
         );
         return;
-    }
-
-    let cpu_offset = cpu_id * GICR_FRAME_SIZE;
+    };
 
     // Wake up the redistributor
-    let waker = gicr_read(cpu_offset, GICR_WAKER);
-    gicr_write(cpu_offset, GICR_WAKER, waker & !(1 << 1)); // Clear ProcessorSleep
+    let waker = gicr_read_at_rd_base(rd_base, GICR_WAKER);
+    gicr_write_at_rd_base(rd_base, GICR_WAKER, waker & !(1 << 1)); // Clear ProcessorSleep
 
     // Wait for ChildrenAsleep to clear
     for _ in 0..10_000 {
-        let w = gicr_read(cpu_offset, GICR_WAKER);
+        let w = gicr_read_at_rd_base(rd_base, GICR_WAKER);
         if (w & (1 << 2)) == 0 {
             break;
         }
         core::hint::spin_loop();
     }
 
-    let sgi_base = cpu_offset + GICR_SGI_OFFSET;
-
     // Configure SGIs (0-15) and PPIs (16-31) in the redistributor
 
     // Set all SGI/PPI to Group 1
-    gicr_write(sgi_base, GICR_IGROUPR0, 0xFFFF_FFFF);
+    gicr_write_at_rd_base(rd_base, GICR_SGI_OFFSET + GICR_IGROUPR0, 0xFFFF_FFFF);
 
     // Barrier to ensure the write completes before readback
     unsafe {
@@ -1601,7 +1745,7 @@ fn init_gicv3_redistributor(cpu_id: usize) {
     }
 
     // Read back IGROUPR0 to verify the write took effect
-    let igroupr0 = gicr_read(sgi_base, GICR_IGROUPR0);
+    let igroupr0 = gicr_read_at_rd_base(rd_base, GICR_SGI_OFFSET + GICR_IGROUPR0);
 
     if cpu_id == 0 {
         crate::serial_println!(
@@ -1627,17 +1771,21 @@ fn init_gicv3_redistributor(cpu_id: usize) {
     }
 
     // Disable all SGI/PPI first
-    gicr_write(sgi_base, GICR_ICENABLER0, 0xFFFF_FFFF);
+    gicr_write_at_rd_base(rd_base, GICR_SGI_OFFSET + GICR_ICENABLER0, 0xFFFF_FFFF);
 
     // Set default priority for SGIs and PPIs
     for i in 0..8u32 {
         let priority_val = (DEFAULT_PRIORITY as u32) * 0x0101_0101;
-        gicr_write(sgi_base, GICR_IPRIORITYR0 + (i as usize * 4), priority_val);
+        gicr_write_at_rd_base(
+            rd_base,
+            GICR_SGI_OFFSET + GICR_IPRIORITYR0 + (i as usize * 4),
+            priority_val,
+        );
     }
 
     // Configure PPIs as level-triggered (default)
-    gicr_write(sgi_base, GICR_ICFGR0, 0); // SGIs: always edge
-    gicr_write(sgi_base, GICR_ICFGR0 + 4, 0); // PPIs: level-triggered
+    gicr_write_at_rd_base(rd_base, GICR_SGI_OFFSET + GICR_ICFGR0, 0); // SGIs: always edge
+    gicr_write_at_rd_base(rd_base, GICR_SGI_OFFSET + GICR_ICFGR0 + 4, 0); // PPIs: level-triggered
 }
 
 /// Initialize GICv3 CPU Interface via ICC system registers.
@@ -1730,8 +1878,11 @@ pub fn read_gicr_isenabler0(cpu_id: usize) -> u32 {
     if !GICR_VALID.load(Ordering::Relaxed) {
         return 0xDEAD_BEEF; // sentinel: GICR not initialized
     }
-    let cpu_offset = cpu_id * GICR_FRAME_SIZE;
-    gicr_read(cpu_offset + GICR_SGI_OFFSET, GICR_ISENABLER0)
+    if let Some(rd_base) = gicr_rd_base_for_cpu(cpu_id) {
+        gicr_read_at_rd_base(rd_base, GICR_SGI_OFFSET + GICR_ISENABLER0)
+    } else {
+        0xDEAD_BEEF
+    }
 }
 
 /// Read GICR_ISPENDR0 for a specific CPU (SGI/PPI pending register).
@@ -1741,8 +1892,11 @@ pub fn read_gicr_ispendr0(cpu_id: usize) -> u32 {
     if !GICR_VALID.load(Ordering::Relaxed) {
         return 0xDEAD_BEEF; // sentinel: GICR not initialized
     }
-    let cpu_offset = cpu_id * GICR_FRAME_SIZE;
-    gicr_read(cpu_offset + GICR_SGI_OFFSET, 0x200) // ISPENDR0 offset
+    if let Some(rd_base) = gicr_rd_base_for_cpu(cpu_id) {
+        gicr_read_at_rd_base(rd_base, GICR_SGI_OFFSET + 0x200) // ISPENDR0 offset
+    } else {
+        0xDEAD_BEEF
+    }
 }
 
 /// Read the priority of a specific interrupt (0-31) from CPU 0's GICR.
@@ -1751,13 +1905,12 @@ pub fn read_gicr_priority_cpu0(irq: u32) -> u8 {
     if !GICR_VALID.load(Ordering::Relaxed) {
         return 0xFF;
     }
-    let cpu_offset = 0; // CPU 0
     let reg_index = (irq / 4) as usize;
     let byte_index = (irq % 4) as usize;
-    let reg_val = gicr_read(
-        cpu_offset + GICR_SGI_OFFSET,
-        GICR_IPRIORITYR0 + reg_index * 4,
-    );
+    let Some(rd_base) = gicr_rd_base_for_cpu(0) else {
+        return 0xFF;
+    };
+    let reg_val = gicr_read_at_rd_base(rd_base, GICR_SGI_OFFSET + GICR_IPRIORITYR0 + reg_index * 4);
     ((reg_val >> (byte_index * 8)) & 0xFF) as u8
 }
 

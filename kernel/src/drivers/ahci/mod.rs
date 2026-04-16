@@ -282,6 +282,8 @@ pub(crate) const AHCI_TRACE_WAKEBUF_AFTER_PUSH: u32 = 23;
 pub(crate) const AHCI_TRACE_SCAN_START: u32 = 24;
 pub(crate) const AHCI_TRACE_SCAN_CPU: u32 = 25;
 pub(crate) const AHCI_TRACE_SCAN_DONE: u32 = 26;
+pub(crate) const AHCI_TRACE_UNBLOCK_BEFORE_SEND_SGI: u32 = 27;
+pub(crate) const AHCI_TRACE_UNBLOCK_AFTER_SEND_SGI: u32 = 28;
 
 struct AhciTraceSlot {
     site: AtomicU32,
@@ -443,6 +445,8 @@ fn ahci_trace_site_name(site: u32) -> &'static str {
         AHCI_TRACE_SCAN_START => "UNBLOCK_SCAN_START",
         AHCI_TRACE_SCAN_CPU => "UNBLOCK_SCAN_CPU",
         AHCI_TRACE_SCAN_DONE => "UNBLOCK_SCAN_DONE",
+        AHCI_TRACE_UNBLOCK_BEFORE_SEND_SGI => "UNBLOCK_BEFORE_SEND_SGI",
+        AHCI_TRACE_UNBLOCK_AFTER_SEND_SGI => "UNBLOCK_AFTER_SEND_SGI",
         _ => "UNKNOWN",
     }
 }
@@ -556,6 +560,8 @@ fn is_sgi_target_trace_site(site: u32) -> bool {
     matches!(
         site,
         AHCI_TRACE_UNBLOCK_PER_SGI
+            | AHCI_TRACE_UNBLOCK_BEFORE_SEND_SGI
+            | AHCI_TRACE_UNBLOCK_AFTER_SEND_SGI
             | AHCI_TRACE_SGI_ENTRY
             | AHCI_TRACE_SGI_AFTER_MPIDR
             | AHCI_TRACE_SGI_AFTER_COMPOSE
