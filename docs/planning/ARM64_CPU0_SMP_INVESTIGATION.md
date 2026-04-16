@@ -2032,3 +2032,62 @@ the cached-TTBR0 baseline.
   - reason: the dominant failure signature after P1 is still the unchanged
     AHCI timeout corridor, which points next at late priority drop / EOImode0
     semantics rather than at admission timing alone
+
+### 2026-04-15: P2 EOImode1 Split Priority Drop Sweep Did Not Reach 5/5
+
+- Probe change summary:
+  - set `ICC_CTLR_EL1.EOImode` bit 1 to `1` in
+    [gic.rs](/Users/wrb/fun/code/breenix/kernel/src/arch_impl/aarch64/gic.rs)
+    so the shared GICv3 CPU-interface init path uses split priority-drop /
+    deactivate semantics on both primary and secondary CPUs
+  - split the old combined EOI helper into `priority_drop_irq()` and
+    `deactivate_irq()` in
+    [gic.rs](/Users/wrb/fun/code/breenix/kernel/src/arch_impl/aarch64/gic.rs)
+    while keeping `end_of_interrupt()` as a wrapper for any future combined
+    path
+  - updated
+    [exception.rs](/Users/wrb/fun/code/breenix/kernel/src/arch_impl/aarch64/exception.rs)
+    so `handle_irq()` now does:
+    `acknowledge_irq() -> priority_drop_irq() -> dispatch -> deactivate_irq()`
+    without changing the timer-body admission window, PMR policy, or the
+    resched / return tail
+- Artifacts:
+  - [run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/p2-eoimode1-split/run1)
+  - [run2](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/p2-eoimode1-split/run2)
+  - [run3](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/p2-eoimode1-split/run3)
+  - [run4](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/p2-eoimode1-split/run4)
+  - [run5](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/p2-eoimode1-split/run5)
+- Result:
+  - `run1`: PASS — reached `[init] bsshd started (PID 2)` with no AHCI
+    timeout and no corruption markers in the 60-second collector window
+  - `run2`: FAIL — hit
+    `[ahci] read_block(65542) wait failed: AHCI: command timeout` before
+    `bsshd` came up
+  - `run3`: FAIL — reached `[init] bsshd started (PID 2)` and later hit
+    `[ahci] read_block(65542) wait failed: AHCI: command timeout`
+  - `run4`: FAIL — hit
+    `[ahci] read_block(196614) wait failed: AHCI: command timeout` before
+    `bsshd` came up
+  - `run5`: PASS — reached `[init] bsshd started (PID 2)` with no AHCI
+    timeout and no corruption markers in the 60-second collector window
+- Stable state from failing runs:
+  - all failing samples stayed on the AHCI timeout branch; none showed
+    `DATA_ABORT`, `UNHANDLED_EC`, `FATAL_POSTMORTEM`, or `DEFER_EVICT`
+  - the timeout signature remained the same completion-wait failure path:
+    `[ahci] read_block(...) wait failed: AHCI: command timeout`
+  - two failing runs (`run2`, `run4`) never reached `bsshd`, while one
+    (`run3`) did; the sweep therefore still shows the timeout corridor both
+    before and after init completes
+- Interpretation:
+  - D2 is falsified as a sufficient next cut: moving Breenix to EOImode1-style
+    priority drop before dispatch did **not** collapse the sweep to `5/5`
+  - unlike the P1 sweep, P2 did not shift any sample into a new corruption
+    branch; the dominant surviving problem is still the existing AHCI timeout
+    corridor
+  - that leaves the strongest remaining explanation at D3: early priority drop
+    alone is still not Linux-like while PMR remains a static `0xff` gate
+- Next target:
+  - P3 should move to rank 1 for F6
+  - reason: the timeout corridor persisted without new corruption, so the next
+    falsifiable cut is to add a live PMR admission gate rather than changing
+    the return path
