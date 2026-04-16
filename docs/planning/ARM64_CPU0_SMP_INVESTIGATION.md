@@ -1979,3 +1979,56 @@ the cached-TTBR0 baseline.
   - move from the timer-specific admission experiment toward a generic ARM64
     IRQ-admission probe in `handle_irq()` / GIC-facing logic, using Linux’s
     `gic_handle_irq()` semantics as the architectural reference
+
+### 2026-04-15: P1 Generic Post-EOI Admission Sweep Did Not Reach 5/5
+
+- Probe change summary:
+  - added a bounded generic post-EOI admission seam in
+    [exception.rs](/Users/wrb/fun/code/breenix-worktrees/p1-generic-post-eoi-admission/kernel/src/arch_impl/aarch64/exception.rs)
+    immediately after `gic::end_of_interrupt()` and before inline
+    `do_softirq()` / the resched tail
+  - gated the seam from the saved interrupt-frame `spsr` using the same
+    `(spsr & 0xC0) == 0` rule as the narrowed timer-local admission probe
+  - kept the narrowed timer-body window in
+    [timer_interrupt.rs](/Users/wrb/fun/code/breenix-worktrees/p1-generic-post-eoi-admission/kernel/src/arch_impl/aarch64/timer_interrupt.rs)
+    unchanged as baseline
+- Artifacts:
+  - [run1](/Users/wrb/fun/code/breenix-worktrees/p1-generic-post-eoi-admission/logs/breenix-parallels-cpu0/p1-generic-admission/run1)
+  - [run2](/Users/wrb/fun/code/breenix-worktrees/p1-generic-post-eoi-admission/logs/breenix-parallels-cpu0/p1-generic-admission/run2)
+  - [run3](/Users/wrb/fun/code/breenix-worktrees/p1-generic-post-eoi-admission/logs/breenix-parallels-cpu0/p1-generic-admission/run3)
+  - [run4](/Users/wrb/fun/code/breenix-worktrees/p1-generic-post-eoi-admission/logs/breenix-parallels-cpu0/p1-generic-admission/run4)
+  - [run5](/Users/wrb/fun/code/breenix-worktrees/p1-generic-post-eoi-admission/logs/breenix-parallels-cpu0/p1-generic-admission/run5)
+- Result:
+  - `run1`: FAIL — reached `[init] bsshd started (PID 2)` and later hit
+    `[ahci] read_block(172796) wait failed: AHCI: command timeout`
+  - `run2`: FAIL — no AHCI timeout, but hit a kernel `DATA_ABORT` before
+    `bsshd` came up
+  - `run3`: FAIL — reached `[init] bsshd started (PID 2)` and later hit
+    `[ahci] read_block(464828) wait failed: AHCI: command timeout`
+  - `run4`: PASS — reached `[init] bsshd started (PID 2)` with no AHCI timeout
+    and no corruption markers in the 60-second collector window
+  - `run5`: FAIL — reached `[init] bsshd started (PID 2)` and later hit
+    `[ahci] read_block(299030) wait failed: AHCI: command timeout`
+- Stable state from failing runs:
+  - dominant timeout branch (`run1`, `run3`, `run5`):
+    - `[init] bsshd started (PID 2)` is present
+    - later AHCI completion wait still times out in the long dwell window
+    - no `DATA_ABORT`, `UNHANDLED_EC`, `FATAL_POSTMORTEM`, or `DEFER_EVICT`
+      accompanied those three failures
+  - secondary corruption branch (`run2`):
+    - `[DATA_ABORT] FAR=0xffff00000200000c ELR=0xffff0000401822f0`
+    - `ESR=0x96000010 DFSC=0x10 TTBR0=0x140016000 from_el0=0 cpu=0`
+    - `bsshd` never started in that run
+- Interpretation:
+  - D1 is falsified as a sufficient next cut: adding the generic post-EOI seam
+    did **not** collapse the sweep to `5/5`
+  - the dominant surviving bad branch is still the AHCI timeout corridor
+    (`3/5` runs), so moving generic DAIF admission earlier is not enough by
+    itself
+  - one run (`run2`) also shifted into corruption, which keeps the PMR-gating
+    risk from D3 alive, but that was not the dominant outcome of the sweep
+- Next target:
+  - D2 should move to rank 1 for F5
+  - reason: the dominant failure signature after P1 is still the unchanged
+    AHCI timeout corridor, which points next at late priority drop / EOImode0
+    semantics rather than at admission timing alone
