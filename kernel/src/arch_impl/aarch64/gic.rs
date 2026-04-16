@@ -304,6 +304,219 @@ fn gicc_write(offset: usize, value: u32) {
     }
 }
 
+#[inline]
+fn gicd_read_u64(offset: usize) -> u64 {
+    let lo = gicd_read(offset) as u64;
+    let hi = gicd_read(offset + 4) as u64;
+    lo | (hi << 32)
+}
+
+#[inline]
+fn raw_dump_prefix(intid: u32) {
+    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
+
+    raw_uart_str("[STUCK_SPI");
+    raw_uart_dec(intid as u64);
+    raw_uart_str("] ");
+}
+
+#[inline]
+fn raw_dump_u64(intid: u32, label: &str, value: u64) {
+    use crate::arch_impl::aarch64::context_switch::{raw_uart_hex, raw_uart_str};
+
+    raw_dump_prefix(intid);
+    raw_uart_str(label);
+    raw_uart_str("=");
+    raw_uart_hex(value);
+    raw_uart_str("\n");
+}
+
+#[inline]
+fn raw_dump_bool(intid: u32, label: &str, value: bool) {
+    use crate::arch_impl::aarch64::context_switch::raw_uart_str;
+
+    raw_dump_prefix(intid);
+    raw_uart_str(label);
+    raw_uart_str("=");
+    raw_uart_str(if value { "true" } else { "false" });
+    raw_uart_str("\n");
+}
+
+#[inline]
+fn raw_dump_note(intid: u32, label: &str, note: &str) {
+    use crate::arch_impl::aarch64::context_switch::raw_uart_str;
+
+    raw_dump_prefix(intid);
+    raw_uart_str(label);
+    raw_uart_str("=");
+    raw_uart_str(note);
+    raw_uart_str("\n");
+}
+
+/// Dump a read-only GIC stuck-state snapshot for a pending SPI.
+///
+/// This is an observational diagnostic only: it performs volatile MMIO reads
+/// and system-register reads but does not modify distributor or CPU-interface
+/// state.
+pub fn dump_stuck_state_for_spi(intid: u32) {
+    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_hex, raw_uart_str};
+
+    let cpu_id = get_cpu_id_from_mpidr() as u64;
+    let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
+    let reg_index = intid / 32;
+    let bit_index = intid % 32;
+    let ispendr_reg = gicd_read(GICD_ISPENDR + (reg_index as usize * 4));
+    let isactiver_reg = gicd_read(GICD_ISACTIVER + (reg_index as usize * 4));
+    let pending = (ispendr_reg & (1 << bit_index)) != 0;
+    let active = (isactiver_reg & (1 << bit_index)) != 0;
+
+    let icfgr_reg_index = intid / 16;
+    let icfgr_field_shift = (intid % 16) * 2;
+    let icfgr_reg = gicd_read(GICD_ICFGR + (icfgr_reg_index as usize * 4));
+    let icfgr_bits = (icfgr_reg >> icfgr_field_shift) & 0x3;
+
+    let ipriorityr_reg_index = intid / 4;
+    let ipriorityr_byte_shift = (intid % 4) * 8;
+    let ipriorityr_reg = gicd_read(GICD_IPRIORITYR + (ipriorityr_reg_index as usize * 4));
+    let priority = (ipriorityr_reg >> ipriorityr_byte_shift) & 0xff;
+
+    raw_dump_prefix(intid);
+    raw_uart_str("cpu=");
+    raw_uart_dec(cpu_id);
+    raw_uart_str(" gic_version=");
+    raw_uart_dec(version as u64);
+    raw_uart_str("\n");
+
+    raw_dump_prefix(intid);
+    raw_uart_str("GICD_ISPENDR[");
+    raw_uart_dec(reg_index as u64);
+    raw_uart_str("]=");
+    raw_uart_hex(ispendr_reg as u64);
+    raw_uart_str(" bit=");
+    raw_uart_dec(bit_index as u64);
+    raw_uart_str(" pending=");
+    raw_uart_str(if pending { "true" } else { "false" });
+    raw_uart_str("\n");
+
+    raw_dump_prefix(intid);
+    raw_uart_str("GICD_ISACTIVER[");
+    raw_uart_dec(reg_index as u64);
+    raw_uart_str("]=");
+    raw_uart_hex(isactiver_reg as u64);
+    raw_uart_str(" bit=");
+    raw_uart_dec(bit_index as u64);
+    raw_uart_str(" active=");
+    raw_uart_str(if active { "true" } else { "false" });
+    raw_uart_str("\n");
+
+    raw_dump_prefix(intid);
+    raw_uart_str("GICD_ICFGR[");
+    raw_uart_dec(icfgr_reg_index as u64);
+    raw_uart_str("]=");
+    raw_uart_hex(icfgr_reg as u64);
+    raw_uart_str(" bits=");
+    raw_uart_hex(icfgr_bits as u64);
+    raw_uart_str(" trigger=");
+    raw_uart_str(if (icfgr_bits & 0b10) != 0 { "edge" } else { "level" });
+    raw_uart_str("\n");
+
+    raw_dump_prefix(intid);
+    raw_uart_str("GICD_IPRIORITYR[");
+    raw_uart_dec(intid as u64);
+    raw_uart_str("]=");
+    raw_uart_hex(priority as u64);
+    raw_uart_str("\n");
+
+    let gicd_ctlr = gicd_read(GICD_CTLR);
+    let are_enabled = (gicd_ctlr & GICD_CTLR_ARE_NS) != 0;
+    if version >= 3 || are_enabled {
+        let router = gicd_read_u64(GICD_IROUTER + (intid as usize * 8));
+        raw_dump_prefix(intid);
+        raw_uart_str("GICD_IROUTER[");
+        raw_uart_dec(intid as u64);
+        raw_uart_str("]=");
+        raw_uart_hex(router);
+        raw_uart_str("\n");
+    } else {
+        let target_reg_index = intid / 4;
+        let target_byte_shift = (intid % 4) * 8;
+        let itargetsr_reg = gicd_read(GICD_ITARGETSR + (target_reg_index as usize * 4));
+        let target = (itargetsr_reg >> target_byte_shift) & 0xff;
+        raw_dump_prefix(intid);
+        raw_uart_str("GICD_ITARGETSR[");
+        raw_uart_dec(intid as u64);
+        raw_uart_str("]=");
+        raw_uart_hex(target as u64);
+        raw_uart_str("\n");
+    }
+
+    let current_el: u64;
+    let daif: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, currentel", out(reg) current_el, options(nomem, nostack));
+        core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack));
+    }
+
+    let (rpr, pmr, bpr1, hppir1, ap1r0) = if version >= 3 {
+        let rpr: u64;
+        let pmr: u64;
+        let bpr1: u64;
+        let hppir1: u64;
+        let ap1r0: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, S3_0_C12_C11_3", out(reg) rpr, options(nomem, nostack));
+            core::arch::asm!("mrs {}, icc_pmr_el1", out(reg) pmr, options(nomem, nostack));
+            core::arch::asm!("mrs {}, icc_bpr1_el1", out(reg) bpr1, options(nomem, nostack));
+            core::arch::asm!("mrs {}, icc_hppir1_el1", out(reg) hppir1, options(nomem, nostack));
+            core::arch::asm!("mrs {}, icc_ap1r0_el1", out(reg) ap1r0, options(nomem, nostack));
+        }
+        (rpr, pmr, bpr1, hppir1, ap1r0)
+    } else {
+        (
+            gicc_read(GICC_RPR) as u64,
+            gicc_read(GICC_PMR) as u64,
+            gicc_read(GICC_BPR) as u64,
+            gicc_read(GICC_HPPIR) as u64,
+            0,
+        )
+    };
+
+    raw_dump_u64(intid, "ICC_RPR_EL1", rpr);
+    raw_dump_u64(intid, "ICC_PMR_EL1", pmr);
+    raw_dump_u64(intid, "ICC_BPR1_EL1", bpr1);
+    raw_dump_u64(intid, "ICC_HPPIR1_EL1", hppir1);
+    if version >= 3 {
+        raw_dump_u64(intid, "ICC_AP1R0_EL1", ap1r0);
+    } else {
+        raw_dump_note(intid, "ICC_AP1R0_EL1", "unsupported_on_gicv2");
+    }
+    raw_dump_u64(intid, "DAIF", daif);
+
+    if crate::arch_impl::aarch64::exception::FATAL_POSTMORTEM_SPSR_VALID.load(Ordering::Acquire) {
+        raw_dump_u64(
+            intid,
+            "SPSR_EL1",
+            crate::arch_impl::aarch64::exception::FATAL_POSTMORTEM_SPSR.load(Ordering::Relaxed),
+        );
+    } else if crate::per_cpu_aarch64::in_interrupt() {
+        let spsr: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, spsr_el1", out(reg) spsr, options(nomem, nostack));
+        }
+        raw_dump_u64(intid, "SPSR_EL1", spsr);
+    } else {
+        raw_dump_note(intid, "SPSR_EL1", "not_in_exception_context");
+    }
+
+    raw_dump_u64(intid, "CurrentEL", current_el);
+    raw_dump_bool(intid, "peer_cpu_scan", false);
+    raw_dump_note(
+        intid,
+        "peer_cpu_reason",
+        "no_existing_ipi_callback_mechanism",
+    );
+}
+
 /// Read a 32-bit GICR register (GICv3 only).
 /// `cpu_offset` is the redistributor offset for this CPU (cpu * 0x20000).
 ///

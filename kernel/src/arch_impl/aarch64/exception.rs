@@ -29,6 +29,8 @@ pub static CPU0_LAST_SYNC_FAR: AtomicU64 = AtomicU64::new(0);
 pub static CPU0_LAST_SYNC_ELR: AtomicU64 = AtomicU64::new(0);
 static PC_ALIGN_VERBOSE_CAPTURED: AtomicBool = AtomicBool::new(false);
 static FATAL_POSTMORTEM_CAPTURED: [AtomicBool; 8] = [const { AtomicBool::new(false) }; 8];
+pub(crate) static FATAL_POSTMORTEM_SPSR: AtomicU64 = AtomicU64::new(0);
+pub(crate) static FATAL_POSTMORTEM_SPSR_VALID: AtomicBool = AtomicBool::new(false);
 
 /// Set the per-CPU idle/boot stack in `user_rsp_scratch` so the assembly ERET
 /// path restores SP to a safe stack when redirecting to idle_loop_arm64.
@@ -134,8 +136,17 @@ fn dump_fatal_postmortem_once(label: &str) {
     crate::arch_impl::aarch64::context_switch::dump_defer_requeue_snapshots();
     raw_uart_str("\n  User context write snapshots:\n");
     crate::arch_impl::aarch64::context_switch::dump_all_user_ctx_write_snapshots();
+    raw_uart_str("\n  GIC stuck-state diagnostic:\n");
+    gic::dump_stuck_state_for_spi(34);
     raw_uart_str("\n  Trace buffers:\n");
     crate::tracing::dump_all_buffers();
+    FATAL_POSTMORTEM_SPSR_VALID.store(false, Ordering::Release);
+}
+
+#[inline]
+fn capture_fatal_postmortem_spsr(spsr: u64) {
+    FATAL_POSTMORTEM_SPSR.store(spsr, Ordering::Relaxed);
+    FATAL_POSTMORTEM_SPSR_VALID.store(true, Ordering::Release);
 }
 
 /// ARM64 syscall result type (mirrors x86_64 version)
@@ -488,6 +499,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 raw_uart_str("[DATA_ABORT] kernel-mode fault, deferring process cleanup\n");
             }
             defer_current_user_thread_sigsegv_exit("[DATA_ABORT]");
+            capture_fatal_postmortem_spsr(frame_ref.spsr);
             dump_fatal_postmortem_once("DATA_ABORT");
 
             // Mark scheduler thread as terminated (best effort)
@@ -573,6 +585,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                         });
                     }
 
+                    capture_fatal_postmortem_spsr(frame_ref.spsr);
                     dump_fatal_postmortem_once("INSTRUCTION_ABORT");
                 }
 
@@ -1009,6 +1022,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 raw_uart_hex(frame_ref.elr);
                 raw_uart_str("\n");
             }
+            capture_fatal_postmortem_spsr(frame_ref.spsr);
             dump_fatal_postmortem_once("UNHANDLED_EC");
             // Redirect to idle instead of hanging — allows system to recover.
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
