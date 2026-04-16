@@ -3145,3 +3145,93 @@ timeouts.
 The residual signature is intermittent AHCI timeout after successful boot with
 Linux-parity PMR confirmed on all CPUs. F16 should audit the idle-scan loop
 logic / scan-to-SGI handoff semantics. F15 does not justify F-final.
+
+## 2026-04-16 - F16 `isr_unblock_for_io()` idle-scan audit
+
+Branch: `probe/f16-idle-scan-fix`
+
+F16 audited `kernel/src/task/scheduler.rs::isr_unblock_for_io(tid)` against
+Linux v6.8's wake path. The audit is recorded in
+`docs/planning/f16-scheduler-audit.md` and in the run artifact
+`logs/breenix-parallels-cpu0/f16-idle-scan/audit.md`.
+
+### Audit summary
+
+The original hypothesis was an unbounded wait, contended atomic, or CAS loop in
+the post-`UNBLOCK_AFTER_NEED_RESCHED` idle scan. The audit did not find an
+unbounded loop:
+
+- `IsrWakeupBuffer::push()` is a bounded 32-slot CAS probe.
+- `cpus_online()` is a single acquire load.
+- `is_cpu_idle(target)` is a single relaxed load from `CPU_IS_IDLE[target]`.
+- The idle scan itself is bounded by `0..online.min(MAX_CPUS)`.
+
+The Linux divergence is still real: Breenix performed an ISR-context scan over
+all online CPUs that looked idle and sent SGI 0 to each idle target. Linux does
+not wake tasks by broadcasting to idle CPUs. In
+`/tmp/linux-v6.8/kernel/sched/core.c:3930-3944`,
+`__ttwu_queue_wakelist()` queues the wake on one target CPU; in
+`/tmp/linux-v6.8/kernel/sched/core.c:4018-4049`, `ttwu_queue()` either uses that
+target CPU's wakelist or directly activates the task on that target runqueue; in
+`/tmp/linux-v6.8/kernel/smp.c:349-383`, the single-call queue sends an IPI only
+when the target CPU's list transitions from empty to non-empty. ARM64's
+reschedule IPI is a single target cross-call at
+`/tmp/linux-v6.8/arch/arm64/kernel/smp.c:1044-1047`.
+
+### Fix attempted
+
+F16 removed the broadcast idle scan from `isr_unblock_for_io()` and replaced it
+with a selected-target wake:
+
+1. `block_current_for_io_with_timeout()` records the CPU that owns the
+   `BlockedOnIO` waiter in a lock-free `tid -> cpu` table.
+2. `isr_unblock_for_io(tid)` looks up that target CPU without taking the
+   scheduler lock.
+3. The ISR pushes `tid` to the target CPU's ISR wake buffer.
+4. The ISR sends at most one reschedule SGI to the target CPU if it differs from
+   the IRQ CPU.
+
+An intermediate local-only variant, which removed the scan and relied only on
+the IRQ CPU's `need_resched`, was also swept. It reached `bsshd` in all five
+runs but produced AHCI command timeouts in all five, proving local-only
+`need_resched` is insufficient.
+
+### Validation sweep
+
+Artifacts:
+
+```text
+logs/breenix-parallels-cpu0/f16-idle-scan/run{1..5}/
+logs/breenix-parallels-cpu0/f16-idle-scan/summary.txt
+```
+
+Each `./run.sh --parallels --test 60` invocation completed the boot window and
+captured `serial.log`, but returned exit status 1 because the screenshot helper
+could not find the generated Parallels window. The serial log is the validation
+source below.
+
+| Run | Reached bsshd | AHCI timeout | Corruption markers | `gic_cpu_audit_lines` | `gicr_map_lines` | `gicr_state_lines` | `unblock_before_send_sgi` | `unblock_after_send_sgi` | `scan_start` | `scan_cpu` | `scan_done` | PMR observed |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| run1 | 1 | 2 | 0 | 8 | 8 | 15 | 0 | 0 | 0 | 0 | 0 | `ICC_PMR_EL1=0xf0`, `pmr=0xf0` |
+| run2 | 1 | 2 | 0 | 8 | 8 | 15 | 0 | 0 | 0 | 0 | 0 | `ICC_PMR_EL1=0xf0`, `pmr=0xf0` |
+| run3 | 1 | 0 | 0 | 8 | 8 | 0 | 0 | 0 | 0 | 0 | 0 | `pmr=0xf0` |
+| run4 | 1 | 2 | 0 | 8 | 8 | 16 | 0 | 0 | 0 | 0 | 0 | `ICC_PMR_EL1=0xf0`, `pmr=0xf0` |
+| run5 | 1 | 2 | 0 | 8 | 8 | 16 | 0 | 0 | 0 | 0 | 0 | `ICC_PMR_EL1=0xf0`, `pmr=0xf0` |
+
+### Verdict
+
+Verdict: **FAIL**. The selected-target wake removed the idle-scan corridor but
+did not close the AHCI timeout corridor. All five runs reached
+`[init] bsshd started (PID 2)` and had `corruption_markers=0`, but runs 1, 2,
+4, and 5 each produced two AHCI command timeouts. Pass rate by the probe
+standard is 1/5.
+
+The important new signature is that `scan_start`, `scan_cpu`, and `scan_done`
+are all zero, so the old idle-scan corridor is gone. However,
+`UNBLOCK_BEFORE_SEND_SGI` and `UNBLOCK_AFTER_SEND_SGI` are also zero in all
+runs, meaning the selected-target path observed these AHCI wakeups as local to
+the IRQ CPU. The remaining failure is therefore not GIC admission and not idle
+CPU selection. The next direction is the local IRQ-return scheduler path after
+`isr_unblock_for_io()`: verify whether the AArch64 per-CPU `need_resched` bit
+survives hardirq exit and whether `check_need_resched_and_switch` runs for the
+kernel wait path that owns the AHCI completion waiter.
