@@ -270,6 +270,15 @@ pub(crate) const AHCI_TRACE_UNBLOCK_AFTER_NEED_RESCHED: u32 = 11;
 pub(crate) const AHCI_TRACE_UNBLOCK_BEFORE_SGI_SCAN: u32 = 12;
 pub(crate) const AHCI_TRACE_UNBLOCK_PER_SGI: u32 = 13;
 pub(crate) const AHCI_TRACE_UNBLOCK_EXIT: u32 = 14;
+pub(crate) const AHCI_TRACE_SGI_ENTRY: u32 = 15;
+pub(crate) const AHCI_TRACE_SGI_AFTER_MPIDR: u32 = 16;
+pub(crate) const AHCI_TRACE_SGI_AFTER_COMPOSE: u32 = 17;
+pub(crate) const AHCI_TRACE_SGI_BEFORE_MSR: u32 = 18;
+pub(crate) const AHCI_TRACE_SGI_AFTER_MSR: u32 = 19;
+pub(crate) const AHCI_TRACE_SGI_AFTER_ISB: u32 = 20;
+pub(crate) const AHCI_TRACE_SGI_EXIT: u32 = 21;
+pub(crate) const AHCI_TRACE_WAKEBUF_BEFORE_PUSH: u32 = 22;
+pub(crate) const AHCI_TRACE_WAKEBUF_AFTER_PUSH: u32 = 23;
 
 struct AhciTraceSlot {
     site: AtomicU32,
@@ -419,6 +428,15 @@ fn ahci_trace_site_name(site: u32) -> &'static str {
         AHCI_TRACE_UNBLOCK_BEFORE_SGI_SCAN => "UNBLOCK_BEFORE_SGI_SCAN",
         AHCI_TRACE_UNBLOCK_PER_SGI => "UNBLOCK_PER_SGI",
         AHCI_TRACE_UNBLOCK_EXIT => "UNBLOCK_EXIT",
+        AHCI_TRACE_SGI_ENTRY => "SGI_ENTRY",
+        AHCI_TRACE_SGI_AFTER_MPIDR => "SGI_AFTER_MPIDR",
+        AHCI_TRACE_SGI_AFTER_COMPOSE => "SGI_AFTER_COMPOSE",
+        AHCI_TRACE_SGI_BEFORE_MSR => "SGI_BEFORE_MSR",
+        AHCI_TRACE_SGI_AFTER_MSR => "SGI_AFTER_MSR",
+        AHCI_TRACE_SGI_AFTER_ISB => "SGI_AFTER_ISB",
+        AHCI_TRACE_SGI_EXIT => "SGI_EXIT",
+        AHCI_TRACE_WAKEBUF_BEFORE_PUSH => "WAKEBUF_BEFORE_PUSH",
+        AHCI_TRACE_WAKEBUF_AFTER_PUSH => "WAKEBUF_AFTER_PUSH",
         _ => "UNKNOWN",
     }
 }

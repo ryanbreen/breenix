@@ -1012,7 +1012,7 @@ pub fn dump_stuck_state_for_spi(intid: u32) {
         }
         raw_uart_str("\n");
 
-        crate::drivers::ahci::dump_recent_ahci_events(None, 16);
+        crate::drivers::ahci::dump_recent_ahci_events(None, 64);
     }
 }
 
@@ -1021,7 +1021,9 @@ pub fn dump_stuck_state_for_spi(intid: u32) {
 /// SGIs are interrupts 0-15 and are used for IPIs.
 /// `target_cpu` is the CPU ID (0-7), NOT a bitmask.
 pub fn send_sgi(sgi_id: u8, target_cpu: u8) {
+    trace_sgi_boundary(crate::drivers::ahci::AHCI_TRACE_SGI_ENTRY, target_cpu);
     if sgi_id > 15 {
+        trace_sgi_boundary(crate::drivers::ahci::AHCI_TRACE_SGI_EXIT, target_cpu);
         return;
     }
 
@@ -1033,17 +1035,64 @@ pub fn send_sgi(sgi_id: u8, target_cpu: u8) {
         // Bits 27:24 = INTID (SGI number)
         // For simple SMP (CPUs 0-7 in same affinity group):
         let target_list = 1u64 << (target_cpu as u64);
+        trace_sgi_boundary(
+            crate::drivers::ahci::AHCI_TRACE_SGI_AFTER_MPIDR,
+            target_cpu,
+        );
         let sgir = ((sgi_id as u64) << 24) | target_list;
+        trace_sgi_boundary(
+            crate::drivers::ahci::AHCI_TRACE_SGI_AFTER_COMPOSE,
+            target_cpu,
+        );
+        trace_sgi_boundary(
+            crate::drivers::ahci::AHCI_TRACE_SGI_BEFORE_MSR,
+            target_cpu,
+        );
         unsafe {
             core::arch::asm!("msr icc_sgi1r_el1, {}", in(reg) sgir, options(nomem, nostack));
+        }
+        trace_sgi_boundary(crate::drivers::ahci::AHCI_TRACE_SGI_AFTER_MSR, target_cpu);
+        unsafe {
             core::arch::asm!("isb", options(nomem, nostack));
         }
+        trace_sgi_boundary(crate::drivers::ahci::AHCI_TRACE_SGI_AFTER_ISB, target_cpu);
     } else {
         // GICv2: Write GICD_SGIR
         let target_mask = 1u32 << (target_cpu as u32);
+        trace_sgi_boundary(
+            crate::drivers::ahci::AHCI_TRACE_SGI_AFTER_MPIDR,
+            target_cpu,
+        );
         let sgir = (target_mask << 16) | (sgi_id as u32);
+        trace_sgi_boundary(
+            crate::drivers::ahci::AHCI_TRACE_SGI_AFTER_COMPOSE,
+            target_cpu,
+        );
+        trace_sgi_boundary(
+            crate::drivers::ahci::AHCI_TRACE_SGI_BEFORE_MSR,
+            target_cpu,
+        );
         gicd_write(0xF00, sgir);
+        trace_sgi_boundary(crate::drivers::ahci::AHCI_TRACE_SGI_AFTER_MSR, target_cpu);
+        trace_sgi_boundary(crate::drivers::ahci::AHCI_TRACE_SGI_AFTER_ISB, target_cpu);
     }
+    trace_sgi_boundary(crate::drivers::ahci::AHCI_TRACE_SGI_EXIT, target_cpu);
+}
+
+#[inline(always)]
+fn trace_sgi_boundary(site: u32, target_cpu: u8) {
+    crate::drivers::ahci::push_ahci_event(
+        site,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        target_cpu as u32,
+        0,
+        false,
+    );
 }
 
 /// Check if GIC is initialized

@@ -2555,7 +2555,33 @@ pub fn isr_unblock_for_io(tid: u64) {
         false,
     );
     if cpu < ISR_WAKEUP_BUFFERS.len() {
+        #[cfg(target_arch = "aarch64")]
+        crate::drivers::ahci::push_ahci_event(
+            crate::drivers::ahci::AHCI_TRACE_WAKEBUF_BEFORE_PUSH,
+            0,
+            0,
+            0,
+            0,
+            0,
+            tid,
+            0,
+            0,
+            false,
+        );
         ISR_WAKEUP_BUFFERS[cpu].push(tid);
+        #[cfg(target_arch = "aarch64")]
+        crate::drivers::ahci::push_ahci_event(
+            crate::drivers::ahci::AHCI_TRACE_WAKEBUF_AFTER_PUSH,
+            0,
+            0,
+            0,
+            0,
+            0,
+            tid,
+            0,
+            0,
+            false,
+        );
     }
     #[cfg(target_arch = "aarch64")]
     crate::drivers::ahci::push_ahci_event(
