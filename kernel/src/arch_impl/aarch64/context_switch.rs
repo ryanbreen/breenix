@@ -36,7 +36,6 @@ const TRACE_CTX_PUBLISH_SAVE_KERNEL: u16 = 2;
 const TRACE_CTX_PUBLISH_INLINE_SAVE: u16 = 3;
 const TRACE_ERET_DISPATCH_PRE: u16 = 1;
 const TRACE_ERET_DISPATCH_POST: u16 = 2;
-const TRACE_ERET_DISPATCH_PRE_DAIFCLR: u16 = 3;
 const TRACE_REDIRECT_THREAD_MISSING: u16 = 1;
 const TRACE_REDIRECT_THREAD_TERMINATED: u16 = 2;
 const TRACE_REDIRECT_TTBR_PM_LOCK_BUSY: u16 = 3;
@@ -57,7 +56,6 @@ const TRACE_DEFER_REQUEUE_INLINE_DRAIN: u16 = 5;
 const TRACE_KERNEL_RESUME_IRQ_SCHEDULE_FROM_KERNEL: u16 = 1;
 pub(crate) const TRACE_KERNEL_RESUME_IRQ_INLINE_TRAMPOLINE: u16 = 2;
 pub(crate) const TRACE_KERNEL_RESUME_IRQ_RESCHED_TAIL: u16 = 3;
-const TRACE_RESCHED_TAIL_AFTER_IRQ_WINDOW: u16 = 1;
 const TRACE_RESCHED_TAIL_BEFORE_RETURN: u16 = 2;
 
 #[inline]
@@ -2642,35 +2640,12 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     unsafe {
         // We are returning from one exception frame into a newly dispatched thread,
         // but SP has not switched to that thread's saved kernel stack yet.
-        // If the pre-ERET IRQ window below takes a nested interrupt, the nested
-        // scheduler path must NOT save context against the new thread using this
-        // transient scheduler/exception stack.
+        // Mark the handoff as preempt-active so any nested scheduler activity
+        // does not save context against the new thread using this transient
+        // scheduler/exception stack.
         Aarch64PerCpu::set_preempt_active();
     }
     crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
-    crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
-
-    // Open IRQ window - same rationale as inline_schedule_trampoline ERET path.
-    // check_need_resched_and_switch_arm64 returns to boot.S which does ERET.
-    // Without this window, pending timer PPIs have no chance to fire on HVF.
-    // Safe: any IRQ handler pushes a NEW frame below SP (sub sp, #272), so the
-    // existing frame at SP is not corrupted. After the nested IRQ ERETSs back
-    // here, we continue with the original frame intact.
-    cpu0_breadcrumb(cpu_id, 104); // before daifclr window
-    if let Some(trace_tid) = trace_eret_tid {
-        trace_eret_dispatch(trace_tid, TRACE_ERET_DISPATCH_PRE_DAIFCLR, frame);
-    }
-    unsafe {
-        core::arch::asm!(
-            "msr daifclr, #3",
-            "isb",
-            options(nomem, nostack)
-        );
-    }
-    cpu0_breadcrumb(cpu_id, 105); // after daifclr window
-    if let Some(trace_tid) = trace_eret_tid {
-        trace_resched_tail(TRACE_RESCHED_TAIL_AFTER_IRQ_WINDOW, trace_tid);
-    }
 
     cpu0_breadcrumb(cpu_id, 106); // before function return
     cpu0_breadcrumb(cpu_id, 14); // return
@@ -2779,10 +2754,9 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     // ERET-based dispatch: for idle threads, user threads, and first-run
     // kernel threads that haven't been context-switched yet.
     cpu0_breadcrumb(cpu_id, 40); // taking ERET-based dispatch
-    // Keep the prepared ERET frame off the live scheduler stack. The pre-ERET
-    // IRQ window runs on that stack, and nested exception entry can otherwise
-    // overwrite a stack-local frame before aarch64_enter_exception_frame()
-    // consumes it.
+    // Keep the prepared ERET frame off the live scheduler stack so nested
+    // exception entry cannot overwrite a stack-local frame before
+    // aarch64_enter_exception_frame() consumes it.
     let frame = inline_schedule_dispatch_frame(cpu_id);
     let trace_eret_tid = sched.get_thread(new_id).and_then(|thread| {
         if thread.owner_pid.is_some() && thread.blocked_in_syscall {
@@ -2844,29 +2818,6 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     }
 
     crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
-    crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
-
-    // CRITICAL: Open an IRQ window in kernel mode before ERET.
-    // This matches Linux's finish_task_switch -> raw_spin_unlock_irq -> local_irq_enable.
-    // On Parallels/HVF, the hypervisor only injects virtual timer interrupts when
-    // the guest has IRQs enabled. Without this window, the timer PPI stays pending
-    // indefinitely because the ERET opens the window for only ~1 instruction before
-    // the dispatched thread might re-mask (syscall entry). The ISB ensures the
-    // daifclr takes effect before any instruction that might branch.
-    if let Some(trace_tid) = trace_eret_tid {
-        trace_eret_dispatch(trace_tid, TRACE_ERET_DISPATCH_PRE_DAIFCLR, &frame);
-    }
-    unsafe {
-        core::arch::asm!(
-            "msr daifclr, #3",   // Enable IRQs + FIQs
-            "isb",               // Synchronize - pending IRQs fire after ISB
-            options(nomem, nostack)
-        );
-    }
-
-    // If a pending IRQ fired above (e.g., timer PPI), it was handled on the
-    // scheduler stack. The handler saved/restored all registers. We're back here
-    // with the frame still intact. Now proceed to dispatch.
 
     if is_idle {
         // ret-based dispatch for idle — avoids ERET which kills HVF vtimer on Parallels.
@@ -3061,13 +3012,6 @@ pub fn schedule_from_kernel() {
     if !resumed_thread_ptr.is_null() {
         let resumed_thread = unsafe { &*(resumed_thread_ptr as *const Thread) };
         trace_schedule_resume(TRACE_SCHEDULE_RESUME_POST_SWITCH, resumed_thread);
-    }
-
-    // Re-arm timer as safety net after context switch resume.
-    // If the Parallels/HVF vtimer is dead on this CPU, re-arming here
-    // gives the VMM another chance to observe the timer state.
-    if crate::arch_impl::aarch64::timer_interrupt::is_initialized() {
-        crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
     }
     if !resumed_thread_ptr.is_null() {
         let resumed_thread = unsafe { &*(resumed_thread_ptr as *const Thread) };

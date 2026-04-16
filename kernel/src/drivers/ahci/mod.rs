@@ -2473,7 +2473,12 @@ impl BlockDevice for AhciBlockDevice {
         // ── PHASE 2: wait (NO locks held) ────────────────────────────────────
         let wait_result = wait_cmd_slot0(token).map_err(|e| {
             #[cfg(target_arch = "aarch64")]
-            crate::serial_println!("[ahci] read_block({}) wait failed: {}", block_num, e);
+            {
+                crate::serial_println!("[ahci] read_block({}) wait failed: {}", block_num, e);
+                if e == "AHCI: command timeout" {
+                    crate::arch_impl::aarch64::gic::dump_stuck_state_for_spi(34);
+                }
+            }
             BlockError::IoError
         });
 

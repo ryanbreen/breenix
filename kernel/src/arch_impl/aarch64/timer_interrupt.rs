@@ -466,9 +466,6 @@ fn trace_kernel_resume_timer_irq(frame: &Aarch64ExceptionFrame, kind: u16) {
 /// 5. CPU 0 only: sets need_resched if quantum expired (Phase 2: only CPU 0 schedules)
 #[no_mangle]
 pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
-    // Enter IRQ context (increment HARDIRQ count)
-    crate::per_cpu_aarch64::irq_enter();
-
     let resume_irq_kind = if frame.is_null() {
         None
     } else {
@@ -733,11 +730,9 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
         scheduler::set_need_resched();
     }
 
-    // Exit IRQ context (decrement HARDIRQ count)
     if let (Some(kind), false) = (resume_irq_kind, frame.is_null()) {
         trace_kernel_resume_timer_irq(unsafe { &*frame }, kind | 0x100);
     }
-    crate::per_cpu_aarch64::irq_exit();
 }
 
 /// Dump GIC register state for VMware timer debugging.

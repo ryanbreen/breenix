@@ -132,8 +132,6 @@ fn dump_fatal_postmortem_once(label: &str) {
     raw_uart_str(label);
     raw_uart_str("\n  Deferred requeue snapshots:\n");
     crate::arch_impl::aarch64::context_switch::dump_defer_requeue_snapshots();
-    raw_uart_str("\n  User context write snapshots:\n");
-    crate::arch_impl::aarch64::context_switch::dump_all_user_ctx_write_snapshots();
     raw_uart_str("\n  Trace buffers:\n");
     crate::tracing::dump_all_buffers();
 }
@@ -1188,6 +1186,11 @@ fn sys_clock_gettime(clock_id: u32, user_timespec_ptr: *mut Timespec) -> Syscall
 /// PL011 UART IRQ number (SPI 1, which is IRQ 33)
 const UART0_IRQ: u32 = 33;
 
+#[inline(always)]
+fn interrupted_context_had_irqs_unmasked(frame: *const Aarch64ExceptionFrame) -> bool {
+    !frame.is_null() && unsafe { ((*frame).spsr & 0xC0) == 0 }
+}
+
 /// Handle IRQ interrupts
 ///
 /// Called from assembly after saving registers.
@@ -1196,12 +1199,29 @@ const UART0_IRQ: u32 = 33;
 pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
     crate::tracing::providers::counters::count_irq();
     let have_percpu = crate::per_cpu_aarch64::is_initialized();
-    if have_percpu {
-        crate::per_cpu_aarch64::irq_enter();
-    }
 
     // Acknowledge the interrupt from GIC
     if let Some(irq_id) = gic::acknowledge_irq() {
+        if have_percpu {
+            crate::per_cpu_aarch64::irq_enter();
+        }
+
+        gic::priority_drop_irq(irq_id);
+        unsafe {
+            core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
+        }
+
+        let reopen_nested_irq_window = interrupted_context_had_irqs_unmasked(frame);
+        if reopen_nested_irq_window {
+            unsafe {
+                core::arch::asm!(
+                    "msr daifclr, #3",
+                    "isb",
+                    options(nomem, nostack)
+                );
+            }
+        }
+
         // Handle the interrupt based on ID
         match irq_id {
             // Timer interrupt — virtual (PPI 27) or physical (PPI 30)
@@ -1307,8 +1327,17 @@ pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
             _ => {}
         }
 
-        // Signal end of interrupt
-        gic::end_of_interrupt(irq_id);
+        if reopen_nested_irq_window {
+            unsafe {
+                core::arch::asm!(
+                    "msr daifset, #3",
+                    "isb",
+                    options(nomem, nostack)
+                );
+            }
+        }
+
+        gic::deactivate_irq(irq_id);
 
         if have_percpu {
             crate::per_cpu_aarch64::irq_exit();
@@ -1322,8 +1351,6 @@ pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
         // Check if we need to reschedule after handling the interrupt
         // This is the ARM64 equivalent of x86's check_need_resched_and_switch
         check_need_resched_on_irq_exit();
-    } else if have_percpu {
-        crate::per_cpu_aarch64::irq_exit();
     }
 }
 
