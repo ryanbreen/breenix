@@ -1429,3 +1429,1719 @@ the cached-TTBR0 baseline.
   - it is "which thread/control-state did CPU0 last publish into the deferred
     requeue contract immediately before the scheduler-stack contamination shows
     up in another user thread?"
+
+### 2026-04-03: Fresh Parallels Deployment Corrected The Ground Truth For The Current Local Kernel
+
+- Important correction:
+  - several earlier local collector runs on this branch were not trustworthy
+    for the latest source state
+  - `scripts/parallels/collect-breenix-cpu0-traces.sh` reboots and captures the
+    existing Parallels VM, but does not rebuild or redeploy the ARM64 EFI image
+  - after noticing that new postmortem markers were absent from the timeout
+    output, the investigation switched back to the real deployment path:
+    - build `parallels-loader` for `aarch64-unknown-uefi`
+    - build `kernel-aarch64` for `aarch64-breenix.json`
+    - deploy/boot with `./run.sh --parallels --test 20`
+- Fresh deployed VM:
+  - `breenix-1775259455`
+- Consequence:
+  - only runs captured after that deployment are authoritative for the current
+    local no-guard tree
+  - stale-VM local runs remain useful historical context, but not evidence for
+    what the current source tree actually does
+
+### 2026-04-03: The Properly Deployed No-Guard Kernel Currently Fails In The AHCI Completion Corridor
+
+- Trustworthy artifacts:
+  - [post-deploy-current-kernel-run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-current-kernel-run1)
+  - [post-deploy-current-kernel-sweep1/run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-current-kernel-sweep1/run1)
+  - [post-deploy-current-kernel-sweep1/run2](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-current-kernel-sweep1/run2)
+  - [post-deploy-current-kernel-sweep1/run3](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-current-kernel-sweep1/run3)
+- Results:
+  - `run1`: early AHCI timeout on port 1 during init
+  - `run2`: no timeout within the collector window
+  - `run3`: same early AHCI timeout on port 1 during init
+  - none of these three runs reproduced the older immediate `queue_empty` or
+    soft-lockup corridor inside the collector window
+- Stable timeout-side observations from the two failing runs:
+  - the timeout happens shortly after `[init] Breenix init starting (PID 1)`
+  - `[init] bsshd started (PID 2)` does not appear before the timeout
+  - hardware AHCI IRQs still arrive:
+    - `IS=0x1`
+    - `isr_count=1186`
+    - `port_isr_hits=[1,1185]`
+  - the waiter still times out:
+    - `completion_done=0`
+    - `complete_hits=[0,4]`
+  - the last observed interrupt CPU is consistently CPU 0:
+    - `isr_last_hw_cpu=0`
+  - the interrupted EL1 PC is consistently inside
+    `kernel::arch_impl::aarch64::context_switch::inline_schedule_trampoline`
+    rather than AHCI itself:
+    - `isr_last_elr=0xffff000040130098`
+- Updated interpretation:
+  - the active branch on the correctly deployed local no-guard tree is no
+    longer best described as generic timer loss or immediate scheduler collapse
+  - interrupts are arriving, but the completion/wakeup contract for the AHCI
+    wait path is still failing often enough to time out during early init
+  - the next evidence cut should stay on the publication chain:
+    - `setup_cmd_slot0()` arms the command
+    - `handle_interrupt()` swaps `PORT_ACTIVE_CMD_NUM`
+    - `Completion::complete()` publishes `done`
+    - `isr_unblock_for_io()` pushes the waiter into the wake buffer
+    - scheduler drain wakes the blocked thread
+
+### 2026-04-03: Next Probe Narrows To Completion Publication, ISR Wake Push, And Scheduler Drain
+
+- Decision:
+  - add minimal snapshot-style instrumentation at exactly these ownership
+    boundaries:
+    - `Completion::reset()`
+    - waiter registration in `Completion::wait_timeout()`
+    - `Completion::complete()`
+    - `isr_unblock_for_io()`
+    - wake-buffer drain in `schedule()` / `schedule_deferred_requeue()`
+- Why this is the right cut:
+  - the current timeout branch already proves that AHCI IRQs arrive
+  - the missing fact is whether the same completion object sees a matching
+    `complete(token)` and, if it does, whether the waiter TID is successfully
+    pushed and later drained
+  - this is lower perturbation than adding new string-heavy live-path logging
+    or broad trace-buffer spam, and it directly distinguishes:
+    - publication failure
+    - wake-buffer push failure
+    - scheduler-drain failure
+
+### 2026-04-03: Completion-Chain Snapshots Falsified The Wake-Propagation Branch
+
+- Probe artifacts:
+  - [post-deploy-completion-chain-sweep/run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-completion-chain-sweep/run1)
+  - [post-deploy-completion-chain-sweep/run3](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-completion-chain-sweep/run3)
+- Stable result across the timeout runs:
+  - the timed-out token is **not** the token seen by `Completion::complete()`
+  - instead, the snapshot chain consistently shows:
+    - `reset.done_before = previous_token`
+    - waiter registration for `current_token`
+    - `complete(previous_token)`
+    - successful `isr_wake_push`
+    - successful wake-buffer drain for the same waiter
+  - example:
+    - timeout token `1189`
+    - `complete(token=1188, waiter_tid=11)`
+    - `isr_wake_push tid=11 pushed=1`
+    - `isr_wake_drain tid=11 batch=1`
+- Interpretation:
+  - the previously suspected branch
+    "AHCI completion publishes the token but wake propagation loses it"
+    is falsified for the current timeout corridor
+  - the current command never reaches `complete(current_token)` at all
+  - the next branch has to stay earlier, at active-command ownership and the
+    delivery of the current AHCI interrupt itself
+
+### 2026-04-03: The Timed-Out Command Remains The Live Active Command At Timeout
+
+- Probe artifacts:
+  - [post-deploy-active-cmd-probe/run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-active-cmd-probe/run1)
+  - [post-deploy-active-cmd-probe/run2](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-active-cmd-probe/run2)
+- Stable timeout-side state:
+  - `CI=0`
+  - `IS=0x1`
+  - `SPI34 pend=true act=false`
+  - `active_cmd_num=current_token`
+  - `active_mask=0x1`
+  - `last_armed=current_token`
+  - `last_complete=previous_token`
+- Examples:
+  - `active_cmd_num=1189` and `last_complete=1188`
+  - `active_cmd_num=7049` and `last_complete=7048`
+- Interpretation:
+  - software is **not** losing ownership of the current command by clearing
+    `PORT_ACTIVE_CMD_NUM`
+  - the command is still published as active, while hardware shows the command
+    itself is done (`CI=0`) and the port has a pending D2H interrupt (`IS=0x1`)
+  - this means the current branch is:
+    - the completion interrupt for the current command exists
+    - but it is not being taken / serviced before the waiter times out
+
+### 2026-04-03: Linux Does Not Justify A CPU-Affinity Workaround Here
+
+- Linux probe reference:
+  - `/proc/interrupts` on `linux-probe` shows the same Parallels AHCI device on
+    `GICv3 34 Level ahci[PRL4010:00]`
+  - `/proc/irq/15/smp_affinity_list` is `0-3`
+  - `/proc/irq/15/effective_affinity_list` is `0`
+- Interpretation:
+  - Linux currently handles the AHCI interrupt effectively on CPU 0 on this
+    platform
+  - so "route the AHCI SPI away from CPU 0" is not justified as a root-cause
+    fix, even though Linux allows a broader affinity mask
+  - the divergence to explain is still:
+    - Linux can service the pending SPI on CPU 0
+    - Breenix sometimes leaves the same SPI pending and unserviced on CPU 0
+
+### 2026-04-03: CPU0 Is Not Trivially Masking IRQs At The Sticky Breadcrumb
+
+- Probe artifact:
+  - [post-deploy-breadcrumb-daif-probe/run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-breadcrumb-daif-probe/run1)
+- Result:
+  - the timeout reproduces with:
+    - `cpu0_breadcrumb=107`
+    - `daif=0x300`
+    - `pmr=0xf8`
+    - `SPI34 pend=true act=false`
+    - `active_cmd_num=1189`
+  - `isr_last_elr` is still inside
+    `inline_schedule_trampoline`
+- Interpretation:
+  - at the sticky CPU 0 handoff point, live `DAIF` does **not** show IRQ masked
+    (`I=0`)
+  - `ICC_PMR_EL1=0xf8` should admit the AHCI SPI priority (`0xa0`)
+  - so this branch is not explained by a simple "CPU 0 forgot to unmask IRQs"
+    or "priority mask still blocks the device interrupt"
+  - the next target is now specifically the exception-return / pending-SPI
+    window around:
+    - `inline_schedule_trampoline`
+    - `aarch64_enter_exception_frame`
+    - the final ERET handoff to the resumed EL1/EL0 context
+
+### 2026-04-03: Raising SPI34 Priority Above The Timer PPI Did Not Fix The Timeout Corridor
+
+- Hypothesis under test:
+  - CPU 0 might be starving AHCI SPI34 behind a continuously pending timer PPI
+    because both were running at priority `0xa0`
+  - test change:
+    - raise `SPI34_priority` to `0x90`
+    - leave `PPI27_priority` at `0xa0`
+- Probe artifacts:
+  - [post-deploy-ahci-priority-test/run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-ahci-priority-test/run1)
+  - [post-deploy-ahci-priority-test/run2](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-ahci-priority-test/run2)
+  - [post-deploy-ahci-priority-test/run3](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-ahci-priority-test/run3)
+  - [post-deploy-ahci-priority-test/run4](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-ahci-priority-test/run4)
+  - [post-deploy-ahci-priority-test/run5](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-ahci-priority-test/run5)
+- Result:
+  - the change did **not** eliminate the AHCI timeout branch
+  - the five-run sweep produced:
+    - 2 runs that reached the normal early-userland path without a timeout in
+      the collector window (`run1`, `run4`)
+    - 3 runs that still timed out (`run2`, `run3`, `run5`)
+  - the bad runs all confirm the test was live:
+    - `SPI34_priority=0x90`
+    - `PPI27_priority=0xa0`
+  - the canonical bad shape still exists under the priority bump:
+    - `active_cmd_num=current_token`
+    - `last_complete=previous_token`
+    - `CI=0`
+    - `IS=0x1`
+    - `SPI34 pend=true act=false`
+    - `cpu0_breadcrumb=107`
+    - `PPI27_pending=1`
+  - `run2` even drifted into a noisier branch with:
+    - `INSTRUCTION_ABORT`
+    - `UNHANDLED_EC`
+    - `SPI34 pend=true act=true`
+    - the same AHCI timeout afterward
+- Interpretation:
+  - "equal-priority starvation behind the timer PPI" is **not** a sufficient
+    explanation for the current timeout corridor
+  - if priority contributes at all, it is not the primary missing invariant
+  - compared with the earlier cached-TTBR0 baseline (`4/5` good), this probe is
+    not an improvement and may have widened the failure mix
+  - this branch is therefore treated as falsified for root-cause purposes, and
+    the temporary priority override should not remain in the tree
+- Next target:
+  - compare Linux and Breenix IRQ-exit semantics more directly, especially
+    whether Linux drains additional pending IRQs before the resched/ERET
+    corridor while Breenix services only one IRQ and returns
+
+### 2026-04-03: Linux IRQ-Exit Semantics Differ From Breenix At The Critical Window
+
+- Primary-source reference:
+  - Linux ARM64 entry path:
+    - `arch/arm64/kernel/entry-common.c`
+    - official mirror used for this pass:
+      `https://android.googlesource.com/kernel/common/+/fee48f3bdd751/arch/arm64/kernel/entry-common.c`
+  - Linux GICv3 irqchip path:
+    - `drivers/irqchip/irq-gic-v3.c`
+    - official mirror used for this pass:
+      `https://android.googlesource.com/kernel/common/+/refs/tags/android15-6.6-2024-11_r15/drivers/irqchip/irq-gic-v3.c`
+- Linux facts from source:
+  - `el1_interrupt()` does:
+    - exception entry
+    - `do_interrupt_handler(regs, handle_arch_irq)`
+    - optional `arm64_preempt_schedule_irq()`
+    - exception exit
+  - `gic_handle_irq()` reads IAR and, on the normal IRQ-enabled path, does:
+    - `gic_pmr_mask_irqs()`
+    - `gic_arch_enable_irqs()`
+    - then `__gic_handle_irq(...)`
+  - this means Linux does **not** rely on a custom "final pre-ERET IRQ window"
+    to admit a follow-on normal IRQ on the same CPU
+- Breenix facts from current tree:
+  - `handle_irq()` acknowledges one IRQ, handles it, EOIs it, runs softirqs,
+    and returns
+  - the actual context-switch / resumed-return logic then happens in
+    `check_need_resched_and_switch_arm64()`
+  - Breenix opens a bespoke nested-IRQ window only at the tail of that path:
+    - `msr daifclr, #3`
+    - `isb`
+    - return to `boot.S`
+    - final `ERET`
+- Inference:
+  - this is the first architectural divergence that directly matches the
+    current breadcrumb:
+    - pending SPI34
+    - sticky CPU0 breadcrumb `107`
+    - timeout-side `isr_last_elr` in the trampoline / resched corridor
+  - this does **not** prove the root cause yet
+  - it does justify the next probe:
+    - determine whether the AHCI completion SPI is getting stranded because
+      Breenix only gives it a chance in the bespoke pre-ERET window, while
+      Linux re-opens IRQ handling earlier under irqchip control
+
+### 2026-04-03: Breenix Is Missing Generic HARDIRQ Accounting For Non-Timer IRQs
+
+- Local source facts:
+  - generic ARM64 IRQ dispatch lives in:
+    - [exception.rs](/Users/wrb/fun/code/breenix/kernel/src/arch_impl/aarch64/exception.rs)
+  - generic hardirq accounting helpers live in:
+    - [per_cpu_aarch64.rs](/Users/wrb/fun/code/breenix/kernel/src/per_cpu_aarch64.rs)
+    - [percpu.rs](/Users/wrb/fun/code/breenix/kernel/src/arch_impl/aarch64/percpu.rs)
+  - `irq_enter()` / `irq_exit()` are currently called only by:
+    - [timer_interrupt.rs](/Users/wrb/fun/code/breenix/kernel/src/arch_impl/aarch64/timer_interrupt.rs)
+- Concrete divergence:
+  - `handle_irq()` dispatches AHCI and other SPIs without a generic
+    `irq_enter()` / `irq_exit()` wrapper
+  - the timer path is special-cased and does maintain HARDIRQ count
+  - AHCI completion IRQs therefore run without generic hardirq accounting
+- Why this matters:
+  - code that checks `in_interrupt()` / `in_hardirq()` gets the wrong answer for
+    AHCI and other non-timer IRQs
+  - softirq processing and irq-exit logic are then running on a semantic model
+    that already diverges from Linux before the scheduler tail even starts
+  - this is exactly the class of bug that can hide as a race because the system
+    "usually works" until one path depends on correct hardirq nesting state
+- Current disposition:
+  - not fixed yet
+  - strong next hypothesis
+- Next target:
+  - validate whether moving HARDIRQ entry/exit accounting to the generic
+    `handle_irq()` wrapper, and removing the timer-only special-case accounting,
+    collapses the AHCI timeout corridor without reintroducing the older CPU0
+    resume corruption branches
+
+### 2026-04-03: Generic HARDIRQ Accounting Probe Applied
+
+- Probe change:
+  - move `irq_enter()` / `irq_exit()` ownership to the generic ARM64
+    `handle_irq()` wrapper
+  - remove the timer-only `irq_enter()` / `irq_exit()` calls so the timer path
+    no longer double-counts HARDIRQ nesting
+- Why this probe is justified:
+  - it aligns Breenix more closely with Linux's generic EL1 IRQ entry/exit model
+  - it corrects a real semantic mismatch for AHCI and other SPIs
+  - it is narrower than changing IRQ-priority policy or inventing another
+    special-case CPU0 dispatch rule
+- What this probe should answer:
+  - whether the AHCI timeout corridor depends on non-timer IRQs falsely running
+    as if they were thread context
+  - whether `do_softirq()` / resched-on-IRQ-exit behavior becomes more stable
+    once AHCI completion IRQs participate in the same HARDIRQ accounting model as
+    timer IRQs
+- Reopen criteria if this fails:
+  - if the timeout reproduces unchanged, the generic HARDIRQ mismatch is not the
+    dominant root cause for this branch
+  - if old CPU0 resume corruption signatures come back, then the new probe is
+    interacting with nested-return assumptions and must be analyzed on that axis
+
+### 2026-04-04: Generic HARDIRQ Accounting Did Not Collapse The AHCI Timeout Corridor
+
+- Probe artifacts:
+  - [post-deploy-generic-hardirq-accounting/run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-generic-hardirq-accounting/run1)
+  - [post-deploy-generic-hardirq-accounting/run2](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-generic-hardirq-accounting/run2)
+  - [post-deploy-generic-hardirq-accounting/run3](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-generic-hardirq-accounting/run3)
+  - [post-deploy-generic-hardirq-accounting/run4](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-generic-hardirq-accounting/run4)
+  - [post-deploy-generic-hardirq-accounting/run5](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-generic-hardirq-accounting/run5)
+- Result:
+  - `run1` reached the normal boot corridor and `cpu0 ticks=5000`
+  - `run2` was inconclusive in the collector window: no timeout, no soft lockup,
+    but it also did not reach the later boot markers before the 25-second stop
+  - `run3`, `run4`, and `run5` all reproduced the canonical AHCI timeout branch
+- Stable bad-run state:
+  - `SPI34_priority=0xa0`
+  - `PPI27_priority=0xa0`
+  - `active_cmd_num=current_token`
+  - `last_complete=previous_token`
+  - `CI=0`
+  - `IS=0x1`
+  - `SPI34 pend=true act=false`
+  - `cpu0_breadcrumb=107`
+  - `cpu0_last_timer_elr=0xffff0000401abbec`
+- Interpretation:
+  - generic HARDIRQ accounting is a real semantic correction, but it does **not**
+    collapse the currently dominant AHCI timeout corridor by itself
+  - the bad branch still points at the same pending-SPI / CPU0 return window as
+    before
+  - importantly, this probe did **not** reintroduce the older dominant CPU0
+    resume-corruption signatures in this five-run sample
+- Disposition:
+  - the "missing HARDIRQ accounting is the dominant root cause" branch is
+    falsified
+  - the broader "IRQ admission / return semantics differ from Linux" branch
+    remains open
+- Next target:
+  - return to the Linux/Breenix IRQ-admission divergence:
+    - Linux re-opens IRQ handling inside the irqchip path under PMR control
+    - Breenix still relies on the bespoke pre-ERET `daifclr` window
+  - the next probe should focus on that admission model, not on another token /
+    waiter / completion-publication branch
+
+### 2026-04-04: Admission-Model Probe Moved The IRQ Window Into The Timer Handler
+
+- Probe change:
+  - after masking the timer source and re-arming it, temporarily re-enable
+    IRQ/FIQ inside `timer_interrupt_handler()`
+  - only do this when the interrupted context had IRQ/FIQ unmasked in
+    `SPSR_EL1`
+  - restore masked state before returning to the generic IRQ-exit path
+- Why this is the right next cut:
+  - it directly tests the still-open Linux/Breenix divergence:
+    - Linux admits follow-on IRQ work much earlier under irqchip control
+    - Breenix currently tends to admit it only in the bespoke pre-ERET window
+  - it changes one variable:
+    - *when* a pending SPI can be admitted during the timer corridor
+  - it does **not** claim to be the final architecture
+- Prediction:
+  - if the AHCI timeout branch is primarily caused by “SPI34 waits too long for
+    admission while CPU0 is busy in the timer/resched corridor,” timeout rate
+    should drop materially on the same five-run sweep
+  - if the timeout branch is unchanged, then mere earlier DAIF admission inside
+    the timer body is not enough, and the remaining divergence is likely deeper
+    in GIC/EOI/return semantics
+
+### 2026-04-04: Wide Timer-Body Admission Window Removed AHCI Timeouts But Exposed A New Corruption Branch
+
+- Probe artifacts:
+  - [post-deploy-timer-early-admission/run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-timer-early-admission/run1)
+  - [post-deploy-timer-early-admission/run2](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-timer-early-admission/run2)
+  - [post-deploy-timer-early-admission/run3](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-timer-early-admission/run3)
+  - [post-deploy-timer-early-admission/run4](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-timer-early-admission/run4)
+  - [post-deploy-timer-early-admission/run5](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-timer-early-admission/run5)
+- Result:
+  - in this five-run sample, the canonical AHCI timeout branch did **not**
+    reproduce
+  - but the wider timer-body admission window was not clean:
+    - `run1` and `run4` emitted repeated `DEFER_EVICT` with
+      `evicted=18446462599808842688`
+    - that value resolves to `0xffff000040227bc0`, i.e.
+      `kernel::process::PROCESS_MANAGER`, not a tid
+    - `run4` then faulted with `DATA_ABORT ... ELR=0x0`
+    - `run5` ended with `UNHANDLED_EC cpu=0 EC=0x0 ELR=0xffff0000542426c8`
+  - `run2` was the cleanest sample of the batch
+  - `run3` did not hit the old timeout branch within the collector window but
+    also did not establish a stronger success marker than "boot progressed"
+- Interpretation:
+  - earlier interrupt admission during the timer corridor appears to be a
+    meaningful lever against the AHCI timeout branch
+  - but the *wide* admission window allowed nested IRQs to execute through too
+    much unrelated timer bookkeeping and exposed a different corruption path
+  - so the honest next step is not "ship this"
+  - it is "tighten the admission window and see whether the timeout benefit
+    survives without the new deferred-requeue corruption"
+
+### 2026-04-04: Follow-Up Probe Narrows Timer Admission To The Immediate Post-Rearm Block
+
+- Probe refinement:
+  - keep the same basic hypothesis
+  - reduce the open-IRQ region to the immediate post-rearm register snapshot
+    block only
+  - re-mask before:
+    - wall-clock update
+    - input polling
+    - soft-lockup logic
+    - scheduler-facing timer bookkeeping
+- Why this refinement is justified:
+  - it preserves the strongest new signal from the prior probe:
+    earlier admission seems relevant
+  - it removes the part most likely to create unrelated nested-execution
+    corruption:
+    broad timer-body reentrancy
+
+### 2026-04-04: Fatal Exception Postmortems Now Dump Deferred-Requeue And Trace State
+
+- Probe change:
+  - add a one-shot per-CPU fatal postmortem helper in
+    [exception.rs](/Users/wrb/fun/code/breenix/kernel/src/arch_impl/aarch64/exception.rs)
+  - wire it into kernel-side:
+    - `INSTRUCTION_ABORT`
+    - `DATA_ABORT`
+    - `UNHANDLED_EC`
+- Dump contents:
+  - deferred-requeue snapshots
+  - last user-context-write snapshots
+  - trace buffers
+- Why this was necessary:
+  - the narrowed timer-admission probe had exposed early
+    `DEFER_EVICT` / `UNHANDLED_EC` branches, but those fatal paths were still
+    printing only the headline and then redirecting to idle
+  - soft-lockup dumps already had the right ownership evidence; early fatal
+    runs did not
+- Guardrail:
+  - the dump is one-shot per CPU so repeated exception storms do not flood the
+    serial stream and destroy the artifact
+
+### 2026-04-04: Five Short-Window Reruns Did Not Reproduce The Earlier Early-Fatal Branch
+
+- Probe artifacts:
+  - [post-deploy-narrow-admission-fatal-postmortem/run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-narrow-admission-fatal-postmortem/run1)
+  - [post-deploy-narrow-admission-fatal-postmortem/run2](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-narrow-admission-fatal-postmortem/run2)
+  - [post-deploy-narrow-admission-fatal-postmortem/run3](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-narrow-admission-fatal-postmortem/run3)
+  - [post-deploy-narrow-admission-fatal-postmortem/run4](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-narrow-admission-fatal-postmortem/run4)
+  - [post-deploy-narrow-admission-fatal-postmortem/run5](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-narrow-admission-fatal-postmortem/run5)
+- Fixed-state image:
+  - freshly rebuilt and redeployed via `./run.sh --parallels --test 20`
+  - VM: `breenix-1775292409`
+- Result:
+  - `run1`, `run2`, `run4`, and `run5` all reached `[init] bsshd started (PID 2)`
+    without:
+    - `DEFER_EVICT`
+    - `UNHANDLED_EC`
+    - `DATA_ABORT`
+    - `FATAL_POSTMORTEM`
+    - soft lockup
+  - `run3` reproduced the plain AHCI timeout corridor instead:
+    - `[ahci] read_block(491526) wait failed: AHCI: command timeout`
+- Stable timeout-side state in `run3`:
+  - `SPI34 pend=true act=false`
+  - `active_cmd_num=1189`
+  - `last_complete=1188`
+  - `completion_done=0`
+  - `waiter_tid=0` at timeout snapshot, after the prior-token completion/wake
+  - `timeout_cpu=5`
+  - `cpu0_breadcrumb=107`
+- Interpretation:
+  - the new fatal-postmortem hook did **not** itself perturb the system back
+    into the earlier early-fatal branch in this five-run sample
+  - but the surviving bad run is still the familiar AHCI timeout corridor, not
+    a solved system
+
+### 2026-04-04: Longer Dwell Shows The Current Narrowed-Admission Branch Still Times Out
+
+- Probe artifacts:
+  - [post-deploy-narrow-admission-fatal-postmortem-long60/run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-narrow-admission-fatal-postmortem-long60/run1)
+  - [post-deploy-narrow-admission-fatal-postmortem-long60/run2](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-narrow-admission-fatal-postmortem-long60/run2)
+  - [post-deploy-narrow-admission-fatal-postmortem-long60/run3](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/post-deploy-narrow-admission-fatal-postmortem-long60/run3)
+- Method:
+  - same exact VM image: `breenix-1775292409`
+  - same kernel state as the short-window sweep
+  - collector dwell increased from `25s` to `60s`
+- Result:
+  - `run1` timed out later:
+    - `[ahci] read_block(497224) wait failed: AHCI: command timeout`
+    - then `[init] Boot script completed`
+  - `run2` stayed clean within the 60-second collector window
+  - `run3` timed out later:
+    - `[ahci] read_block(491526) wait failed: AHCI: command timeout`
+  - none of the three long runs reproduced:
+    - `DEFER_EVICT`
+    - `UNHANDLED_EC`
+    - `DATA_ABORT`
+    - soft lockup
+- Stable timeout-side state across the two long-run failures:
+  - `SPI34 pend=true act=false`
+  - `completion_done=0`
+  - `active_cmd_num=current_token`
+  - `last_complete=previous_token`
+  - `isr_last_hw_cpu=0`
+  - CPU 0 still reports breadcrumb `107`
+  - timeout CPU is not fixed:
+    - `run1`: `timeout_cpu=2`
+    - `run3`: timeout side activity concentrated on `CPU6`
+- Interpretation:
+  - the narrowed timer-admission probe is buying something against the earlier
+    early-corruption branch
+  - but it is **not** eliminating the dominant long-run AHCI completion timeout
+    corridor
+  - short collector windows were therefore overstating stability
+
+### 2026-04-04: Branch Disposition After The Short- And Long-Window Sweeps
+
+- Closed branches:
+  - "the fatal-postmortem hook itself reintroduced the early-fatal branch"
+    is not supported by today’s reruns
+  - "the narrowed timer-admission probe made the system genuinely stable"
+    is falsified by the 60-second sweep
+- Still-open branch:
+  - Linux admits follow-on IRQ work earlier in the irqchip/generic IRQ path,
+    while Breenix still relies primarily on:
+    - the timer-local admission probe
+    - later resched / exception-return windows
+- Next target:
+  - move from the timer-specific admission experiment toward a generic ARM64
+    IRQ-admission probe in `handle_irq()` / GIC-facing logic, using Linux’s
+    `gic_handle_irq()` semantics as the architectural reference
+
+### 2026-04-15: P1 Generic Post-EOI Admission Sweep Did Not Reach 5/5
+
+- Probe change summary:
+  - added a bounded generic post-EOI admission seam in
+    [exception.rs](/Users/wrb/fun/code/breenix-worktrees/p1-generic-post-eoi-admission/kernel/src/arch_impl/aarch64/exception.rs)
+    immediately after `gic::end_of_interrupt()` and before inline
+    `do_softirq()` / the resched tail
+  - gated the seam from the saved interrupt-frame `spsr` using the same
+    `(spsr & 0xC0) == 0` rule as the narrowed timer-local admission probe
+  - kept the narrowed timer-body window in
+    [timer_interrupt.rs](/Users/wrb/fun/code/breenix-worktrees/p1-generic-post-eoi-admission/kernel/src/arch_impl/aarch64/timer_interrupt.rs)
+    unchanged as baseline
+- Artifacts:
+  - [run1](/Users/wrb/fun/code/breenix-worktrees/p1-generic-post-eoi-admission/logs/breenix-parallels-cpu0/p1-generic-admission/run1)
+  - [run2](/Users/wrb/fun/code/breenix-worktrees/p1-generic-post-eoi-admission/logs/breenix-parallels-cpu0/p1-generic-admission/run2)
+  - [run3](/Users/wrb/fun/code/breenix-worktrees/p1-generic-post-eoi-admission/logs/breenix-parallels-cpu0/p1-generic-admission/run3)
+  - [run4](/Users/wrb/fun/code/breenix-worktrees/p1-generic-post-eoi-admission/logs/breenix-parallels-cpu0/p1-generic-admission/run4)
+  - [run5](/Users/wrb/fun/code/breenix-worktrees/p1-generic-post-eoi-admission/logs/breenix-parallels-cpu0/p1-generic-admission/run5)
+- Result:
+  - `run1`: FAIL — reached `[init] bsshd started (PID 2)` and later hit
+    `[ahci] read_block(172796) wait failed: AHCI: command timeout`
+  - `run2`: FAIL — no AHCI timeout, but hit a kernel `DATA_ABORT` before
+    `bsshd` came up
+  - `run3`: FAIL — reached `[init] bsshd started (PID 2)` and later hit
+    `[ahci] read_block(464828) wait failed: AHCI: command timeout`
+  - `run4`: PASS — reached `[init] bsshd started (PID 2)` with no AHCI timeout
+    and no corruption markers in the 60-second collector window
+  - `run5`: FAIL — reached `[init] bsshd started (PID 2)` and later hit
+    `[ahci] read_block(299030) wait failed: AHCI: command timeout`
+- Stable state from failing runs:
+  - dominant timeout branch (`run1`, `run3`, `run5`):
+    - `[init] bsshd started (PID 2)` is present
+    - later AHCI completion wait still times out in the long dwell window
+    - no `DATA_ABORT`, `UNHANDLED_EC`, `FATAL_POSTMORTEM`, or `DEFER_EVICT`
+      accompanied those three failures
+  - secondary corruption branch (`run2`):
+    - `[DATA_ABORT] FAR=0xffff00000200000c ELR=0xffff0000401822f0`
+    - `ESR=0x96000010 DFSC=0x10 TTBR0=0x140016000 from_el0=0 cpu=0`
+    - `bsshd` never started in that run
+- Interpretation:
+  - D1 is falsified as a sufficient next cut: adding the generic post-EOI seam
+    did **not** collapse the sweep to `5/5`
+  - the dominant surviving bad branch is still the AHCI timeout corridor
+    (`3/5` runs), so moving generic DAIF admission earlier is not enough by
+    itself
+  - one run (`run2`) also shifted into corruption, which keeps the PMR-gating
+    risk from D3 alive, but that was not the dominant outcome of the sweep
+- Next target:
+  - D2 should move to rank 1 for F5
+  - reason: the dominant failure signature after P1 is still the unchanged
+    AHCI timeout corridor, which points next at late priority drop / EOImode0
+    semantics rather than at admission timing alone
+
+### 2026-04-15: P2 EOImode1 Split Priority Drop Sweep Did Not Reach 5/5
+
+- Probe change summary:
+  - set `ICC_CTLR_EL1.EOImode` bit 1 to `1` in
+    [gic.rs](/Users/wrb/fun/code/breenix/kernel/src/arch_impl/aarch64/gic.rs)
+    so the shared GICv3 CPU-interface init path uses split priority-drop /
+    deactivate semantics on both primary and secondary CPUs
+  - split the old combined EOI helper into `priority_drop_irq()` and
+    `deactivate_irq()` in
+    [gic.rs](/Users/wrb/fun/code/breenix/kernel/src/arch_impl/aarch64/gic.rs)
+    while keeping `end_of_interrupt()` as a wrapper for any future combined
+    path
+  - updated
+    [exception.rs](/Users/wrb/fun/code/breenix/kernel/src/arch_impl/aarch64/exception.rs)
+    so `handle_irq()` now does:
+    `acknowledge_irq() -> priority_drop_irq() -> dispatch -> deactivate_irq()`
+    without changing the timer-body admission window, PMR policy, or the
+    resched / return tail
+- Artifacts:
+  - [run1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/p2-eoimode1-split/run1)
+  - [run2](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/p2-eoimode1-split/run2)
+  - [run3](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/p2-eoimode1-split/run3)
+  - [run4](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/p2-eoimode1-split/run4)
+  - [run5](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/p2-eoimode1-split/run5)
+- Result:
+  - `run1`: PASS — reached `[init] bsshd started (PID 2)` with no AHCI
+    timeout and no corruption markers in the 60-second collector window
+  - `run2`: FAIL — hit
+    `[ahci] read_block(65542) wait failed: AHCI: command timeout` before
+    `bsshd` came up
+  - `run3`: FAIL — reached `[init] bsshd started (PID 2)` and later hit
+    `[ahci] read_block(65542) wait failed: AHCI: command timeout`
+  - `run4`: FAIL — hit
+    `[ahci] read_block(196614) wait failed: AHCI: command timeout` before
+    `bsshd` came up
+  - `run5`: PASS — reached `[init] bsshd started (PID 2)` with no AHCI
+    timeout and no corruption markers in the 60-second collector window
+- Stable state from failing runs:
+  - all failing samples stayed on the AHCI timeout branch; none showed
+    `DATA_ABORT`, `UNHANDLED_EC`, `FATAL_POSTMORTEM`, or `DEFER_EVICT`
+  - the timeout signature remained the same completion-wait failure path:
+    `[ahci] read_block(...) wait failed: AHCI: command timeout`
+  - two failing runs (`run2`, `run4`) never reached `bsshd`, while one
+    (`run3`) did; the sweep therefore still shows the timeout corridor both
+    before and after init completes
+- Interpretation:
+  - D2 is falsified as a sufficient next cut: moving Breenix to EOImode1-style
+    priority drop before dispatch did **not** collapse the sweep to `5/5`
+  - unlike the P1 sweep, P2 did not shift any sample into a new corruption
+    branch; the dominant surviving problem is still the existing AHCI timeout
+    corridor
+  - that leaves the strongest remaining explanation at D3: early priority drop
+    alone is still not Linux-like while PMR remains a static `0xff` gate
+- Next target:
+  - P3 should move to rank 1 for F6
+  - reason: the timeout corridor persisted without new corruption, so the next
+    falsifiable cut is to add a live PMR admission gate rather than changing
+    the return path
+
+### 2026-04-15: F7 Combined Linux Admission Sweep Improved Stability but Did Not Reach 5/5
+
+- Probe change summary:
+  - kept the GICv3 CPU-interface in `EOImode1` and retained the split
+    `priority_drop_irq()` / `deactivate_irq()` helpers in
+    [gic.rs](/Users/wrb/fun/code/breenix-worktrees/f7-combined-linux-admission/kernel/src/arch_impl/aarch64/gic.rs)
+  - updated
+    [exception.rs](/Users/wrb/fun/code/breenix-worktrees/f7-combined-linux-admission/kernel/src/arch_impl/aarch64/exception.rs)
+    so the generic IRQ path now follows the Linux ordering:
+    `acknowledge_irq() -> irq_enter() -> priority_drop_irq() -> isb ->
+    guarded daifclr -> dispatch -> guarded daifset -> deactivate_irq() ->
+    irq_exit() -> do_softirq() -> resched`
+  - removed the bespoke context-switch admission/rearm scaffolding from
+    [context_switch.rs](/Users/wrb/fun/code/breenix-worktrees/f7-combined-linux-admission/kernel/src/arch_impl/aarch64/context_switch.rs)
+    that F7 replaces, and dropped the timer-local extra HARDIRQ accounting from
+    [timer_interrupt.rs](/Users/wrb/fun/code/breenix-worktrees/f7-combined-linux-admission/kernel/src/arch_impl/aarch64/timer_interrupt.rs)
+    so generic `handle_irq()` owns the accounting window
+  - kept the F6-style timeout telemetry by adding
+    `dump_stuck_state_for_spi(34)` to the AHCI timeout path in
+    [ahci/mod.rs](/Users/wrb/fun/code/breenix-worktrees/f7-combined-linux-admission/kernel/src/drivers/ahci/mod.rs)
+- Artifacts:
+  - [run1](/Users/wrb/fun/code/breenix-worktrees/f7-combined-linux-admission/logs/breenix-parallels-cpu0/f7-combined-admission/run1)
+  - [run2](/Users/wrb/fun/code/breenix-worktrees/f7-combined-linux-admission/logs/breenix-parallels-cpu0/f7-combined-admission/run2)
+  - [run3](/Users/wrb/fun/code/breenix-worktrees/f7-combined-linux-admission/logs/breenix-parallels-cpu0/f7-combined-admission/run3)
+  - [run4](/Users/wrb/fun/code/breenix-worktrees/f7-combined-linux-admission/logs/breenix-parallels-cpu0/f7-combined-admission/run4)
+  - [run5](/Users/wrb/fun/code/breenix-worktrees/f7-combined-linux-admission/logs/breenix-parallels-cpu0/f7-combined-admission/run5)
+- Result:
+  - `run1`: FAIL — reached `[init] bsshd started (PID 2)` and later hit two
+    AHCI completion timeouts (`ahci_timeouts=2`, `stuck_state_dumps=32`)
+  - `run2`: FAIL — reached `[init] bsshd started (PID 2)` and later hit one
+    AHCI completion timeout (`ahci_timeouts=1`, `stuck_state_dumps=16`)
+  - `run3`: FAIL — reached `[init] bsshd started (PID 2)` and later hit two
+    AHCI completion timeouts (`ahci_timeouts=2`, `stuck_state_dumps=32`)
+  - `run4`: PASS — reached `[init] bsshd started (PID 2)` with no AHCI
+    timeout and no corruption markers in the 60-second collector window
+  - `run5`: PASS — reached `[init] bsshd started (PID 2)` with no AHCI
+    timeout and no corruption markers in the 60-second collector window
+- Stable state from failing runs:
+  - all failing samples stayed on the timeout branch; none showed
+    `DATA_ABORT`, `UNHANDLED_EC`, `FATAL_POSTMORTEM`, or `DEFER_EVICT`
+  - unlike the earlier `pend=true act=false` admission-blocked signature, the
+    F7 stuck-state dumps consistently showed `SPI34 pend=true act=true` with
+    `ICC_RPR_EL1=0xff`, `ICC_PMR_EL1=0xf8`, `ICC_HPPIR1_EL1=0x3ff`, and
+    `DAIF=0x300` outside exception context at timeout time
+  - all five runs reached `[init] bsshd started (PID 2)`, so the remaining
+    failures happen after init is already live rather than on a pre-init
+    corruption branch
+- Interpretation:
+  - the complete Linux-style admission model is **not** sufficient by itself:
+    F7 improved stability to `2/5` clean runs and avoided the corruption branch,
+    but it still missed the `5/5` pass criterion
+  - the timeout branch remains dominant, so the investigation stays on the
+    timeout side rather than moving to D4/return-discipline corruption work
+  - the new `act=true` stuck-state signature weakens the original
+    "same-priority admission never opens" explanation; by timeout time the AHCI
+    SPI is already active, which points more toward post-admission routing /
+    level-deassert / completion-state handling than to the old DAIF+EOI gate
+- Next target:
+  - follow the timeout branch, not the corruption branch
+  - next probe should treat this as a D3/routing-style follow-up: verify why
+    SPI34 stays `pending+active` after the combined admission window already
+    admitted it, rather than spending another cycle on return-path cleanup
+
+### 2026-04-16: F8 AHCI Completion Diagnostic
+
+- Probe change summary:
+  - added a fixed-size, per-CPU AHCI completion trace ring in
+    [ahci/mod.rs](/Users/wrb/fun/code/breenix-worktrees/f8-ahci-completion/kernel/src/drivers/ahci/mod.rs)
+    with `ENTER`, `POST_CLEAR`, and `RETURN` records for port index, `IS`,
+    `CI`, `SACT`, `SERR`, waiter TID, slot mask, token, wake result, timestamp,
+    and CPU id
+  - extended
+    [gic.rs](/Users/wrb/fun/code/breenix-worktrees/f8-ahci-completion/kernel/src/arch_impl/aarch64/gic.rs)
+    so `dump_stuck_state_for_spi(34)` emits
+    `[STUCK_SPI34] AHCI_PORT0_IS=<value>` and flushes recent `[AHCI_RING]`
+    records
+  - kept the F7 `handle_irq()` ordering unchanged:
+    `acknowledge_irq() -> irq_enter() -> priority_drop_irq() -> dispatch ->
+    deactivate_irq() -> irq_exit()`
+- Artifacts:
+  - [run1](/Users/wrb/fun/code/breenix-worktrees/f8-ahci-completion/logs/breenix-parallels-cpu0/f8-ahci-diag/run1)
+  - [run2](/Users/wrb/fun/code/breenix-worktrees/f8-ahci-completion/logs/breenix-parallels-cpu0/f8-ahci-diag/run2)
+  - [run3](/Users/wrb/fun/code/breenix-worktrees/f8-ahci-completion/logs/breenix-parallels-cpu0/f8-ahci-diag/run3)
+  - [run4](/Users/wrb/fun/code/breenix-worktrees/f8-ahci-completion/logs/breenix-parallels-cpu0/f8-ahci-diag/run4)
+  - [run5](/Users/wrb/fun/code/breenix-worktrees/f8-ahci-completion/logs/breenix-parallels-cpu0/f8-ahci-diag/run5)
+- Result:
+  - `run1`: PASS-like, reached `[init] bsshd started (PID 2)` with no AHCI
+    timeout in the 60-second window; run command bookkeeping was interrupted
+    by the first sweep-loop shell variable bug, but serial output was captured
+  - `run2`: FAIL, `ahci_timeouts=2`, `ahci_ring_entries=64`,
+    `ahci_port0_is=2`, reached `bsshd`
+  - `run3`: FAIL, `ahci_timeouts=2`, `ahci_ring_entries=64`,
+    `ahci_port0_is=2`, reached `bsshd`
+  - `run4`: FAIL, `ahci_timeouts=2`, `ahci_ring_entries=64`,
+    `ahci_port0_is=2`, reached `bsshd`
+  - `run5`: FAIL, `ahci_timeouts=2`, `ahci_ring_entries=64`,
+    `ahci_port0_is=2`, reached `bsshd`
+- Verbatim extract from `run2`:
+
+```text
+[ahci] read_block(72711) wait failed: AHCI: command timeout
+[STUCK_SPI34] cpu=7 gic_version=3
+[STUCK_SPI34] GICD_ISPENDR[1]=0x800004 bit=2 pending=true
+[STUCK_SPI34] GICD_ISACTIVER[1]=0x4 bit=2 active=true
+[STUCK_SPI34] GICD_ICFGR[2]=0x0 bits=0x0 trigger=level
+[STUCK_SPI34] ICC_RPR_EL1=0xff
+[STUCK_SPI34] ICC_PMR_EL1=0xf8
+[STUCK_SPI34] DAIF=0x300
+[STUCK_SPI34] AHCI_PORT0_IS=0x0
+[AHCI_RING] nsec=2348570958 site=POST_CLEAR cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1231 wake_success=0 seq=3686
+[AHCI_RING] nsec=2348563291 site=ENTER cpu=0 port=1 IS=0x1 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=1231 wake_success=0 seq=3685
+[AHCI_RING] nsec=2345107041 site=RETURN cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1230 wake_success=1 seq=3684
+```
+
+- Additional timeout state from the same run:
+
+```text
+[ahci] Port 1 TIMEOUT (5s): CI=0x0 IS=0x1 TFD=0x40 HBA_IS=0x2
+[ahci]   GIC: SPI34 pend=true act=true DAIF=0x300 pend_snap=[0x800004,0x0,0x0]
+[ahci]   isr_count=1229 cmd#=1232 completion_done=0 PMR=0xf8 RPR=0xff
+[ahci]   port_isr_hits=[1,1228] complete_hits=[0,22]
+[ahci]   isr_last_hw_cpu=0
+```
+
+- Hypothesis ranking:
+  - H5 strongest as the observed GIC-level symptom: SPI34 remains active
+    because the admitted AHCI dispatch did not reach the handler `RETURN`
+    record for the newest serviced token, so `handle_irq()` cannot yet execute
+    the F7 `deactivate_irq()` write for that interrupt
+  - H3 also strongly supported at the AHCI line level: the handler observed
+    port 1 `IS=0x1`, recorded `POST_CLEAR` with `IS=0x0`, and timeout state
+    later shows port 1 `IS=0x1`; the level line reasserted after the clear
+  - H2 is weak: for every recorded serviced completion, `POST_CLEAR` reports
+    `IS=0x0`, so the handler is clearing the `IS` bits it observes
+  - H4 is weak: the ring consistently records port 1, matching the ext2 AHCI
+    device, while the new `AHCI_PORT0_IS` field is `0x0`
+  - H1 is falsified: `[AHCI_RING] ENTER` and `POST_CLEAR` records prove SPI34
+    dispatch reaches AHCI code
+- Interpretation:
+  - F8 narrows the failure from "AHCI interrupt not admitted" to "AHCI
+    completion handler does not complete the newest wake path before the next
+    level assertion waits behind an already-active SPI"
+  - the missing `RETURN` for the latest token is the key new signal; the last
+    complete `ENTER/POST_CLEAR/RETURN` triplet is for the previous token, while
+    the newest token reaches `POST_CLEAR` but not `RETURN`
+- F9 recommendation:
+  - probe name: `f9-ahci-complete-return-boundary`
+  - touch:
+    [ahci/mod.rs](/Users/wrb/fun/code/breenix-worktrees/f8-ahci-completion/kernel/src/drivers/ahci/mod.rs),
+    [completion.rs](/Users/wrb/fun/code/breenix-worktrees/f8-ahci-completion/kernel/src/task/completion.rs),
+    and optionally
+    [exception.rs](/Users/wrb/fun/code/breenix-worktrees/f8-ahci-completion/kernel/src/arch_impl/aarch64/exception.rs)
+    for a non-hot-path stuck-state counter showing last `deactivate_irq(34)`
+  - add AHCI ring sites immediately before and after `Completion::complete()`,
+    plus a minimal atomic breadcrumb at `isr_unblock_for_io()` entry/exit
+  - expected signature change: if `BEFORE_COMPLETE` appears without
+    `AFTER_COMPLETE`, F9 should move to the completion/scheduler wake path; if
+    `AFTER_COMPLETE` and AHCI `RETURN` appear but SPI34 still dumps
+    `active=true`, F9 should become a narrow F7 DIR/deactivation audit
+
+### 2026-04-16: F9 Completion Boundary Diagnostic
+
+- Probe change summary:
+  - branched from `diagnostic/f8-ahci-completion` to
+    `diagnostic/f9-completion-boundary`
+  - extended the existing AHCI trace ring in
+    [ahci/mod.rs](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/kernel/src/drivers/ahci/mod.rs)
+    with `BEFORE_COMPLETE`, `AFTER_COMPLETE`, `WAKE_ENTER`, and `WAKE_EXIT`
+    site tags
+  - wrapped the existing `AHCI_COMPLETIONS[port][0].complete(cmd_num)` call
+    with `BEFORE_COMPLETE` / `AFTER_COMPLETE`
+  - wrapped the existing `Completion::complete()` call to
+    `scheduler::isr_unblock_for_io(tid)` with `WAKE_ENTER` / `WAKE_EXIT`
+  - extended the SPI34 stuck-state dump to emit both
+    `[STUCK_SPI34] AHCI_PORT0_IS=<value>` and
+    `[STUCK_SPI34] AHCI_PORT1_IS=<value>`
+- Validation:
+  - clean aarch64 build:
+    `cargo build --release --target aarch64-breenix.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64`
+  - `grep -E '^(warning|error)' /tmp/f9-aarch64-build.log` produced no output
+  - `git diff --check` passed
+- Artifacts:
+  - [run1](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/logs/breenix-parallels-cpu0/f9-completion-boundary/run1)
+  - [run2](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/logs/breenix-parallels-cpu0/f9-completion-boundary/run2)
+  - [run3](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/logs/breenix-parallels-cpu0/f9-completion-boundary/run3)
+  - [run4](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/logs/breenix-parallels-cpu0/f9-completion-boundary/run4)
+  - [run5](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/logs/breenix-parallels-cpu0/f9-completion-boundary/run5)
+- Result:
+  - `run1`: FAIL, soft-lockup branch before `bsshd`; no AHCI timeout and no
+    AHCI ring dump in the retained serial tail
+  - `run2`: FAIL, reached `bsshd`, then hit one AHCI completion timeout with
+    `ahci_ring_entries=32`, `ahci_port0_is=1`, `ahci_port1_is=1`,
+    `before_complete=7`, `after_complete=5`, `wake_enter=3`, `wake_exit=2`
+  - `run3`: PASS-like within the 60-second collector window, reached `bsshd`
+    with no AHCI timeout and no AHCI ring dump
+  - `run4`: PASS-like within the 60-second collector window, reached `bsshd`
+    with no AHCI timeout and no AHCI ring dump
+  - `run5`: PASS-like within the 60-second collector window, reached `bsshd`
+    with no AHCI timeout and no AHCI ring dump
+  - all `run.sh` invocations returned `exit_status=1` because the headless
+    screenshot helper could not complete; compile output stayed warning-free
+- Run 2 summaries:
+
+```text
+exit_status=1
+ahci_timeouts=1
+ahci_ring_entries=32
+ahci_port0_is=1
+ahci_port1_is=1
+bsshd_started=1
+before_complete=7
+after_complete=5
+wake_enter=3
+wake_exit=2
+```
+
+- Verbatim extract from `run2`:
+
+```text
+[ahci] Port 1 TIMEOUT (5s): CI=0x0 IS=0x1 TFD=0x40 HBA_IS=0x2
+[ahci]   GIC: SPI34 pend=true act=true DAIF=0x300 pend_snap=[0x800004,0x0,0x0]
+[ahci]   isr_count=1217 cmd#=1221 completion_done=0 PMR=0xf8 RPR=0xff
+[ahci]   port_isr_hits=[1,1216] complete_hits=[0,10]
+[ahci] read_block(522) wait failed: AHCI: command timeout
+[STUCK_SPI34] cpu=6 gic_version=3
+[STUCK_SPI34] GICD_ISPENDR[1]=0x800004 bit=2 pending=true
+[STUCK_SPI34] GICD_ISACTIVER[1]=0x4 bit=2 active=true
+[STUCK_SPI34] ICC_RPR_EL1=0xff
+[STUCK_SPI34] ICC_PMR_EL1=0xf8
+[STUCK_SPI34] DAIF=0x300
+[STUCK_SPI34] AHCI_PORT0_IS=0x0
+[STUCK_SPI34] AHCI_PORT1_IS=0x1
+[AHCI_RING] nsec=2366781458 site=WAKE_ENTER cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=1219 wake_success=0 seq=3690
+[AHCI_RING] nsec=2366780583 site=BEFORE_COMPLETE cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1219 wake_success=0 seq=3689
+[AHCI_RING] nsec=2366779666 site=POST_CLEAR cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1219 wake_success=0 seq=3688
+[AHCI_RING] nsec=2366771250 site=ENTER cpu=0 port=1 IS=0x1 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=1219 wake_success=0 seq=3687
+[AHCI_RING] nsec=2364838458 site=RETURN cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1218 wake_success=1 seq=3686
+[AHCI_RING] nsec=2364837541 site=AFTER_COMPLETE cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1218 wake_success=0 seq=3685
+[AHCI_RING] nsec=2364836541 site=WAKE_EXIT cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=1218 wake_success=0 seq=3684
+[AHCI_RING] nsec=2364808208 site=WAKE_ENTER cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=1218 wake_success=0 seq=3683
+[AHCI_RING] nsec=2364807250 site=BEFORE_COMPLETE cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1218 wake_success=0 seq=3682
+```
+
+- Case verdict:
+  - **Case A by the top-level F9 decision rule**: the stuck token (`1219`)
+    has `BEFORE_COMPLETE` without `AFTER_COMPLETE`, so the handler is stuck
+    inside `Completion::complete()`
+  - the new `WAKE_ENTER` without `WAKE_EXIT` for the same token further
+    narrows the in-`complete()` stall to the scheduler wake helper,
+    `scheduler::isr_unblock_for_io(tid)`, rather than to the initial
+    `done.store`, fence, `sev`, or waiter load
+  - the previous token (`1218`) completed the full
+    `BEFORE_COMPLETE -> WAKE_ENTER -> WAKE_EXIT -> AFTER_COMPLETE -> RETURN`
+    sequence, so the new probe is discriminating the stalled token rather than
+    globally breaking the path
+- F10 recommendation:
+  - probe name: `f10-isr-unblock-boundary`
+  - add ring sites inside
+    [scheduler.rs](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/kernel/src/task/scheduler.rs)
+    `isr_unblock_for_io(tid)` at:
+    entry after `current_cpu_id_raw()`, after `ISR_WAKEUP_BUFFERS[cpu].push(tid)`,
+    after `set_need_resched()`, before the idle-CPU SGI loop, before each
+    `send_sgi()`, after each `send_sgi()`, and final exit
+  - keep the probe atomic/ring-only; do not add logging to interrupt or
+    syscall hot paths
+  - likely F10 split: if the last site is before/inside `send_sgi()`, audit
+    SGI delivery/GICR targeting; if it is before `set_need_resched()` or
+    buffer push, audit the per-CPU wake buffer atomics
+
+### 2026-04-16: F10 `isr_unblock_for_io()` Internal Breadcrumb Diagnostic
+
+- Probe change summary:
+  - branched from `diagnostic/f9-completion-boundary` to
+    `diagnostic/f10-isr-unblock-boundary`
+  - extended the existing AHCI trace ring in
+    [ahci/mod.rs](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/kernel/src/drivers/ahci/mod.rs)
+    with `UNBLOCK_ENTRY`, `UNBLOCK_AFTER_CPU`, `UNBLOCK_AFTER_BUFFER`,
+    `UNBLOCK_AFTER_NEED_RESCHED`, `UNBLOCK_BEFORE_SGI_SCAN`,
+    `UNBLOCK_PER_SGI`, and `UNBLOCK_EXIT`
+  - instrumented
+    [scheduler.rs](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/kernel/src/task/scheduler.rs)
+    `isr_unblock_for_io(tid)` with ring-only breadcrumbs at the requested
+    internal boundaries
+  - encoded `UNBLOCK_PER_SGI` target CPU in the existing `slot_mask` field;
+    non-SGI `UNBLOCK_*` entries leave `slot_mask=0`
+- Validation:
+  - clean aarch64 build:
+    `cargo build --release --target aarch64-breenix.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64`
+  - `grep -E '^(warning|error)' /tmp/f10-aarch64-build.log` produced no output
+  - `git diff --check` passed
+  - repo-wide `cargo fmt --check` still fails on pre-existing unrelated
+    formatting/trailing-whitespace issues; no broad formatter was applied
+- Artifacts:
+  - [run1](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/logs/breenix-parallels-cpu0/f10-isr-unblock/run1)
+  - [run2](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/logs/breenix-parallels-cpu0/f10-isr-unblock/run2)
+  - [run3](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/logs/breenix-parallels-cpu0/f10-isr-unblock/run3)
+  - [run4](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/logs/breenix-parallels-cpu0/f10-isr-unblock/run4)
+  - [run5](/Users/wrb/fun/code/breenix-worktrees/f9-completion-boundary/logs/breenix-parallels-cpu0/f10-isr-unblock/run5)
+- Sweep summaries:
+
+```text
+run1:
+exit_status=1
+ahci_timeouts=14
+ahci_ring_entries=64
+ahci_port0_is=2
+ahci_port1_is=2
+bsshd_started=1
+before_complete=10
+after_complete=8
+wake_enter=2
+wake_exit=2
+unblock_entry=2
+unblock_after_cpu=2
+unblock_after_buffer=2
+unblock_after_need_resched=2
+unblock_before_sgi_scan=2
+unblock_per_sgi=6
+unblock_exit=2
+
+run2:
+exit_status=1
+ahci_timeouts=74
+ahci_ring_entries=64
+ahci_port0_is=2
+ahci_port1_is=2
+bsshd_started=1
+before_complete=10
+after_complete=8
+wake_enter=2
+wake_exit=2
+unblock_entry=2
+unblock_after_cpu=2
+unblock_after_buffer=0
+unblock_after_need_resched=0
+unblock_before_sgi_scan=0
+unblock_per_sgi=12
+unblock_exit=2
+
+run3:
+exit_status=1
+ahci_timeouts=1227
+ahci_ring_entries=31
+ahci_port0_is=1
+ahci_port1_is=1
+bsshd_started=1
+before_complete=4
+after_complete=4
+wake_enter=1
+wake_exit=1
+unblock_entry=1
+unblock_after_cpu=1
+unblock_after_buffer=1
+unblock_after_need_resched=1
+unblock_before_sgi_scan=1
+unblock_per_sgi=3
+unblock_exit=1
+
+run4:
+exit_status=1
+ahci_timeouts=0
+ahci_ring_entries=0
+ahci_port0_is=0
+ahci_port1_is=0
+bsshd_started=1
+before_complete=0
+after_complete=0
+wake_enter=0
+wake_exit=0
+unblock_entry=0
+unblock_after_cpu=0
+unblock_after_buffer=0
+unblock_after_need_resched=0
+unblock_before_sgi_scan=0
+unblock_per_sgi=0
+unblock_exit=0
+
+run5:
+exit_status=1
+ahci_timeouts=670
+ahci_ring_entries=64
+ahci_port0_is=2
+ahci_port1_is=2
+bsshd_started=1
+before_complete=6
+after_complete=8
+wake_enter=2
+wake_exit=2
+unblock_entry=2
+unblock_after_cpu=2
+unblock_after_buffer=2
+unblock_after_need_resched=2
+unblock_before_sgi_scan=2
+unblock_per_sgi=12
+unblock_exit=2
+```
+
+- Primary stalled-token extract from `run1`:
+
+```text
+[ahci] Port 1 TIMEOUT (5s): CI=0x0 IS=0x1 TFD=0x40 HBA_IS=0x2
+[ahci]   GIC: SPI34 pend=true act=true DAIF=0x300 pend_snap=[0x800004,0x0,0x0]
+[ahci]   isr_count=1210 cmd#=1214 completion_done=0 PMR=0xf8 RPR=0xff
+[ahci]   port_isr_hits=[1,1209] complete_hits=[0,3]
+[ahci]   isr_last_pmr=0xf8 last_port1_IS=0x1 last_port1_cmd_num=1212
+[ahci] read_block(522) wait failed: AHCI: command timeout
+[STUCK_SPI34] cpu=3 gic_version=3
+[STUCK_SPI34] GICD_ISPENDR[1]=0x800004 bit=2 pending=true
+[STUCK_SPI34] GICD_ISACTIVER[1]=0x4 bit=2 active=true
+[STUCK_SPI34] ICC_RPR_EL1=0xff
+[STUCK_SPI34] ICC_PMR_EL1=0xf8
+[STUCK_SPI34] DAIF=0x300
+[STUCK_SPI34] AHCI_PORT0_IS=0x0
+[STUCK_SPI34] AHCI_PORT1_IS=0x1
+[AHCI_RING] nsec=2379603791 site=UNBLOCK_PER_SGI cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x2 token=0 wake_success=0 seq=3677
+[AHCI_RING] nsec=2379602916 site=UNBLOCK_BEFORE_SGI_SCAN cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=3676
+[AHCI_RING] nsec=2379602041 site=UNBLOCK_AFTER_NEED_RESCHED cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=3675
+[AHCI_RING] nsec=2379601166 site=UNBLOCK_AFTER_BUFFER cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=3674
+[AHCI_RING] nsec=2379600291 site=UNBLOCK_AFTER_CPU cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=3673
+[AHCI_RING] nsec=2379599416 site=UNBLOCK_ENTRY cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=3672
+[AHCI_RING] nsec=2379598541 site=WAKE_ENTER cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=1212 wake_success=0 seq=3671
+[AHCI_RING] nsec=2379597666 site=BEFORE_COMPLETE cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1212 wake_success=0 seq=3670
+[AHCI_RING] nsec=2379596750 site=POST_CLEAR cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1212 wake_success=0 seq=3669
+[AHCI_RING] nsec=2379589250 site=ENTER cpu=0 port=1 IS=0x1 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=1212 wake_success=0 seq=3668
+[AHCI_RING] nsec=2378591666 site=RETURN cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1211 wake_success=1 seq=3667
+[AHCI_RING] nsec=2378590416 site=AFTER_COMPLETE cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1211 wake_success=0 seq=3666
+[AHCI_RING] nsec=2378589375 site=WAKE_EXIT cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=1211 wake_success=0 seq=3665
+[AHCI_RING] nsec=2378588333 site=UNBLOCK_EXIT cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=3664
+```
+
+- Last-site verdict:
+  - primary sample `run1`: stuck token `1212`, waiter `tid=11`, reached
+    `UNBLOCK_PER_SGI` with `slot_mask=0x2` (target CPU 2) and never emitted
+    another `UNBLOCK_PER_SGI`, `UNBLOCK_EXIT`, `WAKE_EXIT`, `AFTER_COMPLETE`,
+    or `RETURN` for that token
+  - corroborating sample `run3`: stuck token `1396`, waiter `tid=13`, reached
+    `UNBLOCK_PER_SGI` with `slot_mask=0x1` (target CPU 1) and did not emit
+    `UNBLOCK_EXIT` / `WAKE_EXIT` for that token
+  - alternate sample `run2`: stuck token `1263`, waiter `tid=13`, reached
+    `UNBLOCK_AFTER_CPU` and did not emit `UNBLOCK_AFTER_BUFFER`; this keeps the
+    wake-buffer push path on the candidate list, but it was not the majority
+    signature in this sweep
+- Candidate root-cause ranking:
+  1. SGI delivery path: strongest current lead. Two timeout captures stop after
+     `UNBLOCK_PER_SGI`, which is emitted immediately before
+     `gic::send_sgi(SGI_RESCHEDULE, target)`. The target CPU is visible in
+     `slot_mask` (`0x2` in `run1`, `0x1` in `run3`).
+  2. Wake-buffer push path: one timeout capture stops after
+     `UNBLOCK_AFTER_CPU`, before `UNBLOCK_AFTER_BUFFER`, implying a possible
+     stall inside `ISR_WAKEUP_BUFFERS[cpu].push(tid)` or an adjacent memory
+     corruption/ring-retention artifact.
+  3. `set_need_resched()` / SGI scan predicate: lower probability. The primary
+     samples pass `UNBLOCK_AFTER_NEED_RESCHED` and
+     `UNBLOCK_BEFORE_SGI_SCAN` before stalling.
+- F11 recommendation:
+  - primary F11 probe direction: audit SGI delivery by instrumenting
+    `gic::send_sgi()` / SGI target construction with ring-only breadcrumbs
+    before and after each architectural write, preserving the target CPU in the
+    ring entry
+  - secondary F11 guardrail: keep one minimal breadcrumb around the
+    `IsrWakeupBuffer::push()` CAS loop or add a bounded push-site counter so the
+    `run2` `UNBLOCK_AFTER_CPU` signature can be confirmed or eliminated without
+    changing scheduler semantics
+
+### 2026-04-16: F11 `send_sgi()` and Wake-Buffer Push Boundary Diagnostic
+
+- Branch: `diagnostic/f11-send-sgi-boundary`
+- Code changes:
+  - added AHCI ring site tags `SGI_ENTRY`, `SGI_AFTER_MPIDR`,
+    `SGI_AFTER_COMPOSE`, `SGI_BEFORE_MSR`, `SGI_AFTER_MSR`,
+    `SGI_AFTER_ISB`, `SGI_EXIT`, `WAKEBUF_BEFORE_PUSH`, and
+    `WAKEBUF_AFTER_PUSH`
+  - instrumented `gic::send_sgi(sgi_id, target_cpu)` with seven ring-only
+    breadcrumbs; `slot_mask` encodes `target_cpu`
+  - instrumented the existing `ISR_WAKEUP_BUFFERS[cpu].push(tid)` call with
+    before/after breadcrumbs
+  - widened the SPI34 postmortem AHCI-ring dump from 16 to 64 entries so the
+    higher-volume SGI breadcrumbs remain correlatable with the F10 corridor
+- Validation:
+  - aarch64 kernel build completed with no `warning` or `error` lines
+  - 5x `./run.sh --parallels --test 60`
+  - final logs: `logs/breenix-parallels-cpu0/f11-send-sgi/run{1..5}/`
+
+Sweep summaries:
+
+```text
+run1:
+exit_status=1
+ahci_timeouts=0
+ahci_ring_entries=0
+ahci_port0_is=0
+ahci_port1_is=0
+bsshd_started=1
+before_complete=0
+after_complete=0
+wake_enter=0
+wake_exit=0
+unblock_entry=0
+unblock_after_cpu=0
+unblock_after_buffer=0
+unblock_after_need_resched=0
+unblock_before_sgi_scan=0
+unblock_per_sgi=0
+unblock_exit=0
+sgi_entry=0
+sgi_after_mpidr=0
+sgi_after_compose=0
+sgi_before_msr=0
+sgi_after_msr=0
+sgi_after_isb=0
+sgi_exit=0
+wakebuf_before_push=0
+wakebuf_after_push=0
+
+run2:
+exit_status=1
+ahci_timeouts=0
+ahci_ring_entries=0
+ahci_port0_is=0
+ahci_port1_is=0
+bsshd_started=1
+before_complete=0
+after_complete=0
+wake_enter=0
+wake_exit=0
+unblock_entry=0
+unblock_after_cpu=0
+unblock_after_buffer=0
+unblock_after_need_resched=0
+unblock_before_sgi_scan=0
+unblock_per_sgi=0
+unblock_exit=0
+sgi_entry=0
+sgi_after_mpidr=0
+sgi_after_compose=0
+sgi_before_msr=0
+sgi_after_msr=0
+sgi_after_isb=0
+sgi_exit=0
+wakebuf_before_push=0
+wakebuf_after_push=0
+
+run3:
+exit_status=1
+ahci_timeouts=4
+ahci_ring_entries=130
+ahci_port0_is=2
+ahci_port1_is=2
+bsshd_started=1
+before_complete=0
+after_complete=0
+wake_enter=0
+wake_exit=0
+unblock_entry=0
+unblock_after_cpu=0
+unblock_after_buffer=0
+unblock_after_need_resched=0
+unblock_before_sgi_scan=0
+unblock_per_sgi=2
+unblock_exit=0
+sgi_entry=17
+sgi_after_mpidr=18
+sgi_after_compose=18
+sgi_before_msr=18
+sgi_after_msr=18
+sgi_after_isb=18
+sgi_exit=19
+wakebuf_before_push=0
+wakebuf_after_push=0
+
+run4:
+exit_status=1
+ahci_timeouts=0
+ahci_ring_entries=0
+ahci_port0_is=0
+ahci_port1_is=0
+bsshd_started=1
+before_complete=0
+after_complete=0
+wake_enter=0
+wake_exit=0
+unblock_entry=0
+unblock_after_cpu=0
+unblock_after_buffer=0
+unblock_after_need_resched=0
+unblock_before_sgi_scan=0
+unblock_per_sgi=0
+unblock_exit=0
+sgi_entry=0
+sgi_after_mpidr=0
+sgi_after_compose=0
+sgi_before_msr=0
+sgi_after_msr=0
+sgi_after_isb=0
+sgi_exit=0
+wakebuf_before_push=0
+wakebuf_after_push=0
+
+run5:
+exit_status=1
+ahci_timeouts=4
+ahci_ring_entries=138
+ahci_port0_is=2
+ahci_port1_is=2
+bsshd_started=1
+before_complete=3
+after_complete=2
+wake_enter=1
+wake_exit=0
+unblock_entry=1
+unblock_after_cpu=1
+unblock_after_buffer=1
+unblock_after_need_resched=1
+unblock_before_sgi_scan=1
+unblock_per_sgi=1
+unblock_exit=0
+sgi_entry=16
+sgi_after_mpidr=17
+sgi_after_compose=17
+sgi_before_msr=17
+sgi_after_msr=16
+sgi_after_isb=16
+sgi_exit=17
+wakebuf_before_push=1
+wakebuf_after_push=1
+```
+
+- Primary stalled-token extract from `run5`:
+
+```text
+[ahci] read_block(494667) wait failed: AHCI: command timeout
+[STUCK_SPI34] cpu=5 gic_version=3
+[STUCK_SPI34] GICD_ISPENDR[1]=0x800004 bit=2 pending=true
+[STUCK_SPI34] GICD_ISACTIVER[1]=0x4 bit=2 active=true
+[STUCK_SPI34] ICC_RPR_EL1=0xff
+[STUCK_SPI34] ICC_PMR_EL1=0xf8
+[STUCK_SPI34] DAIF=0x300
+[STUCK_SPI34] AHCI_PORT0_IS=0x0
+[STUCK_SPI34] AHCI_PORT1_IS=0x1
+[AHCI_RING] nsec=2450015250 site=SGI_BEFORE_MSR cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=0 slot_mask=0x1 token=0 wake_success=0 seq=6170
+[AHCI_RING] nsec=2450014333 site=SGI_AFTER_COMPOSE cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=0 slot_mask=0x1 token=0 wake_success=0 seq=6169
+[AHCI_RING] nsec=2450013291 site=SGI_AFTER_MPIDR cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=0 slot_mask=0x1 token=0 wake_success=0 seq=6168
+[AHCI_RING] nsec=2450012375 site=SGI_ENTRY cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=0 slot_mask=0x1 token=0 wake_success=0 seq=6167
+[AHCI_RING] nsec=2449989500 site=SGI_BEFORE_MSR cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=0 slot_mask=0x1 token=0 wake_success=0 seq=6165
+[AHCI_RING] nsec=2449988625 site=SGI_AFTER_COMPOSE cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=0 slot_mask=0x1 token=0 wake_success=0 seq=6164
+[AHCI_RING] nsec=2449987750 site=SGI_AFTER_MPIDR cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=0 slot_mask=0x1 token=0 wake_success=0 seq=6163
+[AHCI_RING] nsec=2449986791 site=SGI_ENTRY cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=0 slot_mask=0x1 token=0 wake_success=0 seq=6162
+[AHCI_RING] nsec=2449985791 site=UNBLOCK_PER_SGI cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=0 wake_success=0 seq=6161
+[AHCI_RING] nsec=2449984875 site=UNBLOCK_BEFORE_SGI_SCAN cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=6160
+[AHCI_RING] nsec=2449983958 site=UNBLOCK_AFTER_NEED_RESCHED cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=6159
+[AHCI_RING] nsec=2449983083 site=UNBLOCK_AFTER_BUFFER cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=6158
+[AHCI_RING] nsec=2449982166 site=WAKEBUF_AFTER_PUSH cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=6157
+[AHCI_RING] nsec=2449981250 site=WAKEBUF_BEFORE_PUSH cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=6156
+[AHCI_RING] nsec=2449980000 site=UNBLOCK_AFTER_CPU cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=6155
+[AHCI_RING] nsec=2449978750 site=UNBLOCK_ENTRY cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=6154
+[AHCI_RING] nsec=2449977208 site=WAKE_ENTER cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=1239 wake_success=0 seq=6153
+[AHCI_RING] nsec=2449975708 site=BEFORE_COMPLETE cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1239 wake_success=0 seq=6152
+[AHCI_RING] nsec=2449974375 site=POST_CLEAR cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1239 wake_success=0 seq=6151
+[AHCI_RING] nsec=2449502375 site=ENTER cpu=0 port=1 IS=0x1 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=1239 wake_success=0 seq=6150
+```
+
+- Last-site verdict:
+  - primary signature: `run5`, token `1239`, waiter `tid=11`, reached
+    `UNBLOCK_PER_SGI` with `slot_mask=0x1` (target CPU 1). The contiguous SGI
+    breadcrumb sequence for that target reached `SGI_BEFORE_MSR`; no
+    `SGI_AFTER_MSR` was emitted for that contiguous call before the trace moved
+    on. This points at the `ICC_SGI1R_EL1` write corridor.
+  - corroborating but less clean signature: `run3`, waiter `tid=13`, had
+    `UNBLOCK_PER_SGI` for targets 5 and 6. The target-6 SGI reached
+    `SGI_AFTER_ISB` without a following `SGI_EXIT` in the captured ring, but
+    later CPU-0 SGI entries make this weaker as a single-call proof.
+  - secondary wake-buffer signature: not reproduced in the decisive sample.
+    `WAKEBUF_BEFORE_PUSH` and `WAKEBUF_AFTER_PUSH` both appear for `tid=11`,
+    so `IsrWakeupBuffer::push()` did not stall in `run5`.
+- Caveat:
+  - F11 uses only existing ring fields, so SGI calls are correlated by
+    adjacency and `slot_mask`, not by a per-call ID. The `SGI_BEFORE_MSR`
+    verdict is the best available last-site result for the primary stuck token,
+    but F12 should add a per-SGI diagnostic call ID if it needs to distinguish
+    concurrent or later same-target SGI calls with absolute certainty.
+- F12 recommendation:
+  - primary next action: audit the `msr ICC_SGI1R_EL1, xN` corridor and GICv3
+    CPU-interface state for system-register SGI delivery. The current best
+    verdict is `SGI_BEFORE_MSR` stops, which means the register write itself or
+    its immediate architectural effects are the suspect.
+  - verify SRE/ICC state on participating CPUs, especially whether the sender
+    and targets have GICv3 system-register access consistently enabled before
+    scheduler IPIs.
+  - keep wake-buffer push as lower priority for now. The decisive run had
+    before/after push markers, eliminating the F10 run2-style secondary
+    signature for that sample.
+## 2026-04-16 - F12 SGI Linux parity probe
+
+F12 tested the first fix probe after the F11 SGI boundary finding. The probe
+matched the Linux v6.8 GICv3 SGI ordering around `ICC_SGI1R_EL1`, added a
+per-CPU `ICC_SRE_EL1` audit at CPU-interface initialization, and reran the
+5x Parallels CPU0 sweep.
+
+### Linux parity comparison
+
+| Linux reference | Breenix reference | Divergence | Applied fix |
+| --- | --- | --- | --- |
+| `/tmp/linux-v6.8/drivers/irqchip/irq-gic-v3.c:1365-1387` | `kernel/src/arch_impl/aarch64/gic.rs:1027-1066` | Linux runs `dsb(ishst)` before emitting SGIs and `isb()` after the `ICC_SGI1R_EL1` writes. Breenix already had the post-MSR `isb`, but did not have the pre-MSR `dsb ishst`. | Added `dsb ishst` before SGI target-list construction and the `msr icc_sgi1r_el1` write. Kept the existing post-MSR `isb`. |
+| `/tmp/linux-v6.8/drivers/irqchip/irq-gic-v3.c:1350-1363` | `kernel/src/arch_impl/aarch64/gic.rs:1040-1061` | Linux composes affinity, routing selector, INTID, and target list before `gic_write_sgi1r(val)`. Breenix composes INTID and a same-affinity target list for the simple CPU0-7 topology. No DAIF/preemption masking and no WFE/SEV pairing appear in this Linux path. | No DAIF, WFE, or SEV changes were made. The write remains `msr icc_sgi1r_el1, <sgir>`. |
+| F12 requirement | `kernel/src/arch_impl/aarch64/gic.rs:482-515`, `kernel/src/arch_impl/aarch64/gic.rs:1478-1499` | Breenix had no one-time `ICC_SRE_EL1` audit for each CPU. Secondary CPU-interface init could return before the ICC system-register setup when the GICR range guard rejected the MPIDR-derived CPU ID. | Added `[SRE_AUDIT] cpu=<id> sre=<value> raw=<value>` after `ICC_SRE_EL1` readback, and moved secondary ICC system-register setup before the GICR MMIO range guard. |
+
+### Validation sweep
+
+All runs used:
+
+```text
+./run.sh --parallels --test 60
+```
+
+Artifacts are in:
+
+```text
+logs/breenix-parallels-cpu0/f12-sgi-parity/run{1..5}/
+```
+
+| Run | Result | bsshd | AHCI timeouts | Corruption markers | SRE audit lines | Stuck-state signature |
+| --- | --- | --- | --- | --- | --- | --- |
+| run1 | PASS | 1 | 0 | 0 | 2 | None. Reached `[init] bsshd started (PID 2)`. |
+| run2 | PASS with SRE audit anomaly | 1 | 0 | 0 | 4 | None. Reached `[init] bsshd started (PID 2)`. One garbled SRE line did not contain literal `sre=1`, so `sre_unexpected=1`; this appears to be raw UART interleaving, not a confirmed SRE=0. |
+| run3 | FAIL | 1 | 2 | 0 | 1 | SPI34 stuck pending+active on cpu=3 and cpu=6. `ICC_PMR_EL1=0xf8`, `ICC_RPR_EL1=0xff`, `DAIF=0x300`, `AHCI_PORT1_IS=0x1`; later `[init] Failed to exec bsh: EIO`. |
+| run4 | FAIL | 1 | 2 | 0 | 1 | SPI34 stuck pending+active on cpu=4 and cpu=5, followed by `[init] Failed to exec bsh: EIO` and `SOFT LOCKUP DETECTED`. |
+| run5 | PASS | 1 | 0 | 0 | 1 | None. Reached `[init] bsshd started (PID 2)`. |
+
+### SRE audit output
+
+Observed SRE audit lines from the final sweep:
+
+```text
+run1:
+[SRE_AUDIT] cpu=0 sre=1 raw=0x7
+[3@1ABgic]CDE eFG3[SRE_AUDIT] cIpu=3 sre=1 raw=0x7
+
+run2:
+[SRE_AUDIT] cpu=0 sre=1 raw=0x7
+T1[smp] 1C@PU1A 1:B CDPSCI CPU_ONEe suFGc1[SRE_AUDIT] ccpuess=
+[g6@1ABCDEeFG6[SRE_AUDIT] cpu=6i sre=1 rawc=] ICC0_xCTL7
+7@1ABCDEeFG7[SRE_AUDIT] cpu=7 sre=1 raw=0x7
+
+run3:
+[SRE_AUDIT] cpu=0 sre=1 raw=0x7
+
+run4:
+[SRE_AUDIT] cpu=0 sre=1 raw=0x7
+
+run5:
+[SRE_AUDIT] cpu=0 sre=1 raw=0x7
+```
+
+CPU0 consistently reads `ICC_SRE_EL1=0x7` (`sre=1`). Secondary CPU audit
+coverage is incomplete and raw UART lines can interleave with other boot output.
+The visible secondary samples also indicate `sre=1`, but F12 did not produce a
+clean one-line-per-CPU proof for all CPUs. That is a finding for the next probe.
+
+### Interpretation
+
+The Linux SGI ordering change is not sufficient to close the AHCI timeout
+corridor. The original SGI-write hang signature is improved in the sense that
+all five runs reached `[init] bsshd started (PID 2)`, but the probe pass criteria
+were stricter: all five runs also needed `ahci_timeouts=0` and
+`corruption_markers=0`. Runs 3 and 4 still produced AHCI command timeouts with
+SPI34 pending+active and no corruption markers.
+
+F12 verdict: FAIL.
+
+Recommended F13 direction: pivot from another SGI-side barrier probe to
+per-CPU GIC state and redistributor configuration. Specifically, add a
+non-garbled per-CPU audit of `ICC_SRE_EL1`, `ICC_CTLR_EL1`, `ICC_PMR_EL1`,
+`ICC_IGRPEN1_EL1`, MPIDR affinity, and the selected GICR frame, then compare the
+redistributor wake/config state for CPUs that later report SPI34 stuck
+pending+active.
+
+## 2026-04-16 F13: Per-CPU GIC Audit and Idle-Scan Breadcrumbs
+
+Branch: `diagnostic/f13-gic-audit`
+
+F13 extended the GICv3 CPU-interface audit and added three AHCI ring
+breadcrumbs around the idle-CPU scan in `isr_unblock_for_io()`. The per-CPU
+audit values are captured at each CPU's ICC init and emitted from CPU0 after SMP
+bring-up to avoid secondary boot raw-UART bytes corrupting the audit prefix.
+
+### Linux expected values
+
+| Field | Linux reference | Linux expected | F13 Breenix observed | Divergence |
+| --- | --- | --- | --- | --- |
+| `ICC_SRE_EL1` | `/tmp/linux-v6.8/include/linux/irqchip/arm-gic-v3.h:644-656`; `/tmp/linux-v6.8/drivers/irqchip/irq-gic-v3.c:1147-1155` | SRE bit set | `0x7` on CPUs 0-7 | No. SRE, DFB, and DIB are set. |
+| `ICC_CTLR_EL1` | `/tmp/linux-v6.8/drivers/irqchip/irq-gic-v3.c:1188-1193` | EOImode drop bit set | `0x40402` on CPUs 0-7 | No for EOImode. Extra implementation bits are present. |
+| `ICC_PMR_EL1` | `/tmp/linux-v6.8/drivers/irqchip/irq-gic-v3.c:1161-1164` | `DEFAULT_PMR_VALUE` = `0xf0` | `0xf8` on CPUs 0-7 | Yes. All CPUs use a stricter mask than Linux default. |
+| `ICC_IGRPEN1_EL1` | `/tmp/linux-v6.8/drivers/irqchip/irq-gic-v3.c:1231-1233` | `1` | `0x1` on CPUs 0-7 | No. |
+| Redistributor lookup | `/tmp/linux-v6.8/drivers/irqchip/irq-gic-v3.c:978-1011`, `:1017-1045`, `:1274-1299` | Iterate GICR frames and match `GICR_TYPER[63:32]` to MPIDR affinity before enabling the redistributor | F13 diagnostic reads by `target_cpu * 0x20000`; all dumped `GICR_TYPER` values are `0x0` | Yes or diagnostic-map invalid. Linux does not assume logical CPU ID equals redist frame index without an affinity match. |
+
+Linux register offsets used for the GICR dump are from
+`/tmp/linux-v6.8/include/linux/irqchip/arm-gic-v3.h:114-125`; WAKER bit meanings
+are at `:148-149`.
+
+### Validation sweep
+
+Artifacts:
+
+```text
+logs/breenix-parallels-cpu0/f13-gic-audit/run{1..5}/
+```
+
+| Run | AHCI timeout | `gic_cpu_audit_lines` | `gicr_waker_lines` | `scan_start` | `scan_cpu` | `scan_done` | Last emitted scan/unblock site |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| run1 | 0 | 8 | 0 | 0 | 0 | 0 | none |
+| run2 | 0 | 8 | 0 | 0 | 0 | 0 | none |
+| run3 | 2 | 8 | 16 | 0 | 0 | 0 | none in dumped ring; failure was SGI-side only |
+| run4 | 2 | 8 | 16 | 1 | 2 | 0 | `UNBLOCK_SCAN_CPU` / `UNBLOCK_PER_SGI` |
+| run5 | 2 | 8 | 16 | 0 | 0 | 1 | `UNBLOCK_SCAN_DONE` / `UNBLOCK_AFTER_CPU` |
+
+The sweep is still FAIL: 2/5 runs had no AHCI timeout, 3/5 produced AHCI
+timeouts. The new audit coverage criterion is met: every run produced eight
+`[GIC_CPU_AUDIT]` rows.
+
+### GIC CPU audit rows
+
+Representative rows from run4:
+
+```text
+[GIC_CPU_AUDIT] cpu=0 mpidr=0x80000000 sre=0x7 ctlr=0x40402 pmr=0xf8 igrpen1=0x1 mismatch=1
+[GIC_CPU_AUDIT] cpu=1 mpidr=0x80000001 sre=0x7 ctlr=0x40402 pmr=0xf8 igrpen1=0x1 mismatch=1
+[GIC_CPU_AUDIT] cpu=2 mpidr=0x80000002 sre=0x7 ctlr=0x40402 pmr=0xf8 igrpen1=0x1 mismatch=1
+T3[GIC_CPU_AUDIT] cpu=3 mpidr=0x80000003 sre=0x7 ctlr=0x40402 pmr=0xf8 igrpen1=0x1 mismatch=1
+[GIC_CPU_AUDIT] cpu=4 mpidr=0x80000004 sre=0x7 ctlr=0x40402 pmr=0xf8 igrpen1=0x1 mismatch=1
+[GIC_CPU_AUDIT] cpu=5 mpidr=0x80000005 sre=0x7 ctlr=0x40402 pmr=0xf8 igrpen1=0x1 mismatch=1
+[GIC_CPU_AUDIT] cpu=6 mpidr=0x80000006 sre=0x7 ctlr=0x40402 pmr=0xf8 igrpen1=0x1 mismatch=1
+T4[GIC_CPU_AUDIT] cpu=7 mpidr=0x80000007 sre=0x7 ctlr=0x40402 pmr=0xf8 igrpen1=0x1 mismatch=1
+```
+
+The `T3`/`T4` prefixes are raw timer breadcrumbs interleaving before the locked
+serial line; the `[GIC_CPU_AUDIT]` payload itself is intact. The mismatch flag is
+set on every CPU because `ICC_PMR_EL1` is `0xf8`, not Linux's `0xf0`.
+
+### GICR state at timeout
+
+Run4's stuck unblock selected target CPU 1 immediately before entering
+`send_sgi()`:
+
+```text
+[AHCI_RING] nsec=2388322625 site=UNBLOCK_PER_SGI cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=0 wake_success=0 seq=5749
+[AHCI_RING] nsec=2388321750 site=UNBLOCK_SCAN_CPU cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=0 wake_success=0 seq=5748
+[AHCI_RING] nsec=2388320875 site=UNBLOCK_SCAN_CPU cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=5747
+[AHCI_RING] nsec=2388319166 site=UNBLOCK_SCAN_START cpu=0 port=0 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=0 wake_success=0 seq=5745
+```
+
+The target CPU 1 GICR dump from the same timeout:
+
+```text
+[GICR_STATE] cpu=1 waker=0x0 ctlr=0x0 typer=0x0 syncr=0x0
+```
+
+All target-history CPUs dumped in runs 3-5 had the same shape:
+`waker=0x0 ctlr=0x0 typer=0x0 syncr=0x0`. `WAKER=0` means
+`ProcessorSleep=0` and `ChildrenAsleep=0`, so the dumped frame does not look
+asleep. The concerning value is `GICR_TYPER=0x0`: Linux expects redistributor
+selection to be validated by matching `GICR_TYPER[63:32]` to CPU affinity. F13's
+dump therefore does not prove the redistributor for CPU 1 is healthy; it proves
+the current logical-CPU-to-GICR-frame diagnostic map is suspect.
+
+### Interpretation
+
+F13 did not reproduce a CPU-specific SRE/CTLR failure. Every captured CPU has
+SRE enabled, EOImode enabled, and Group1 enabled. The only ICC divergence is
+global, not CPU-specific: PMR is `0xf8` on every CPU versus Linux's `0xf0`.
+
+The timeout corridor is not purely "before the scan" anymore. Run4 shows the
+wake path entered the scan, inspected CPU 0 and CPU 1, emitted
+`UNBLOCK_PER_SGI` for target CPU 1, and did not emit `UNBLOCK_SCAN_DONE`. That
+narrows this instance to the scan-to-SGI handoff, most likely between
+`UNBLOCK_PER_SGI` and the first `SGI_ENTRY` breadcrumb inside `send_sgi()`.
+
+Verdict: not (a) a specific CPU with broken SRE/CTLR. Not proven (b) a sleeping
+redistributor, because WAKER is clear, but GICR selection is not trustworthy
+while `GICR_TYPER` reads as zero for every target frame. The current best answer
+is (c) still inside the scan/SGI handoff logic, with a parallel redistributor
+mapping defect to resolve before trusting target-state dumps.
+
+### F14 recommendation
+
+F14 should do two targeted things:
+
+1. Add Linux-style redistributor discovery: iterate GICR frames, read
+   `GICR_TYPER`, match affinity bits against MPIDR, and store a per-CPU RD base.
+   Use that map for `dump_gicr_state_for_cpu()` first; only change live GICR init
+   semantics after the diagnostic map proves the current frame index is wrong.
+2. Add two more ring sites around the call in `isr_unblock_for_io()`:
+   `UNBLOCK_BEFORE_SEND_SGI` and `UNBLOCK_AFTER_SEND_SGI`. Run4's latest
+   sequence stops at `UNBLOCK_PER_SGI`, so F14 needs to distinguish call-entry
+   failure from an early `send_sgi()` body failure.
+
+## 2026-04-16 F14: Linux-Style GICR Discovery and Send-SGI Call-Site Breadcrumbs
+
+Branch: `probe/f14-gicr-discovery`
+
+F14 replaced the logical-CPU-index GICR assumption with Linux-style
+redistributor discovery. The scan walks RD frames in `0x20000` strides from the
+validated GICR base and matches `GICR_TYPER[63:32]` against each CPU's MPIDR
+affinity, following Linux's `gic_iterate_rdists()` /
+`__gic_populate_rdist()` model in
+`/tmp/linux-v6.8/drivers/irqchip/irq-gic-v3.c:978-1011` and `:1017-1045`.
+`GICR_TYPER_LAST` is bit 4 per
+`/tmp/linux-v6.8/include/linux/irqchip/arm-gic-v3.h:238-249`; the F14 prompt's
+bit-31 wording conflicts with the supplied Linux source.
+
+F14 also added `UNBLOCK_BEFORE_SEND_SGI` and `UNBLOCK_AFTER_SEND_SGI` around
+the caller-side `send_sgi()` invocation in `isr_unblock_for_io()`. `send_sgi()`
+itself was not changed.
+
+### Validation sweep
+
+Artifacts:
+
+```text
+logs/breenix-parallels-cpu0/f14-gicr-discovery/run{1..5}/
+logs/breenix-parallels-cpu0/f14-gicr-discovery/summary.txt
+```
+
+Each `./run.sh --parallels --test 60` invocation completed the 60-second boot
+window and captured `serial.log`, but returned exit status 1 because the
+screenshot helper could not find the generated Parallels window. The serial log
+is the validation source below.
+
+| Run | Reached bsshd | AHCI timeout | Corruption markers | `gic_cpu_audit_lines` | `gicr_map_lines` | `gicr_map_found` | `gicr_map_not_found` | `gicr_state_lines` | `unblock_before_send_sgi` | `unblock_after_send_sgi` | `scan_start` | `scan_cpu` | `scan_done` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| run1 | 1 | 0 | 0 | 8 | 8 | 8 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| run2 | 1 | 2 | 0 | 8 | 8 | 8 | 0 | 16 | 0 | 1 | 0 | 0 | 1 |
+| run3 | 1 | 2 | 0 | 8 | 8 | 8 | 0 | 16 | 2 | 1 | 1 | 3 | 0 |
+| run4 | 1 | 0 | 0 | 8 | 8 | 8 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| run5 | 1 | 0 | 0 | 8 | 8 | 8 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+Verdict: **FAIL**. All five runs reached `[init] bsshd started (PID 2)`, and
+all five had `corruption_markers=0`, but runs 2 and 3 each produced two AHCI
+port timeouts.
+
+### GICR map output
+
+Representative run2 output:
+
+```text
+T4[GICR_MAP] cpu=0 rd_base=0x2500000 typer=0x0 affinity=0x0
+[GICR_MAP] cpu=1 rd_base=0x25e0000 typer=0x100000710 affinity=0x1
+[GICR_MAP] cpu=2 rd_base=0x25c0000 typer=0x200000600 affinity=0x2
+[GICR_MAP] cpu=3 rd_base=0x2540000 typer=0x300000200 affinity=0x3
+[GICR_MAP] cpu=4 rd_base=0x2580000 typer=0x400000400 affinity=0x4
+T5[GICR_MAP] cpu=5 rd_base=0x2560000 typer=0x500000300 affinity=0x5
+[GICR_MAP] cpu=6 rd_base=0x2520000 typer=0x600000100 affinity=0x6
+[GICR_MAP] cpu=7 rd_base=0x25a0000 typer=0x700000500 affinity=0x7
+```
+
+The redistributor frame order is not logical-CPU order and changes across
+boots under Parallels/HVF. F14 confirms F13's `target_cpu * 0x20000` diagnostic
+read was wrong for CPUs 1-7. CPU0's `GICR_TYPER=0x0` is the real first-frame
+value: affinity 0, processor number 0, and no LAST bit can encode as zero.
+
+### GICR state before and after
+
+F13 before, target CPU 1:
+
+```text
+[GICR_STATE] cpu=1 waker=0x0 ctlr=0x0 typer=0x0 syncr=0x0
+```
+
+F14 after, run2:
+
+```text
+[GICR_STATE] cpu=1 rd_base=0x25e0000 waker=0x0 ctlr=0x0 typer=0x100000710 syncr=0x0
+[GICR_STATE] cpu=2 rd_base=0x25c0000 waker=0x0 ctlr=0x0 typer=0x200000600 syncr=0x0
+[GICR_STATE] cpu=3 rd_base=0x2540000 waker=0x0 ctlr=0x0 typer=0x300000200 syncr=0x0
+[GICR_STATE] cpu=0 rd_base=0x2500000 waker=0x0 ctlr=0x0 typer=0x0 syncr=0x0
+```
+
+Timeout-time dumps now show non-zero `GICR_TYPER` values for target CPUs 1-7.
+CPU0 remains zero for the valid first RD frame.
+
+### Interpretation
+
+F14 fixes the GICR map defect but does not close the AHCI timeout corridor. In
+run3, the dumped AHCI ring includes `UNBLOCK_BEFORE_SEND_SGI` without a matching
+newest `UNBLOCK_AFTER_SEND_SGI` for the same target, while earlier SGI-entry
+breadcrumbs are present for other targets. That keeps the scan-to-SGI handoff
+in scope.
+
+Recommended F15 direction: with redistributor mapping now trustworthy, target
+the remaining Linux divergence (`ICC_PMR_EL1=0xf8` in Breenix versus Linux's
+`0xf0`) or inspect the idle-scan/send_sgi handoff logic directly. F14 does not
+justify F-final.
+
+## 2026-04-16 - F15 ICC_PMR_EL1 Linux parity
+
+F15 targeted the last isolated ICC hot-path divergence from F13/F14:
+Breenix runtime `ICC_PMR_EL1=0xf8` versus Linux's default `0xf0`.
+
+Linux v6.8 defines `DEFAULT_PMR_VALUE` as `0xf0` in
+`/tmp/linux-v6.8/drivers/irqchip/irq-gic-v3.c:146`, writes that value to
+`ICC_PMR_EL1` in `/tmp/linux-v6.8/drivers/irqchip/irq-gic-v3.c:1161-1164`,
+and defines the GICv2 CPU-interface threshold `GICC_INT_PRI_THRESHOLD` as
+`0xf0` in `/tmp/linux-v6.8/include/linux/irqchip/arm-gic.h:23`.
+
+### PMR write audit
+
+`kernel/src/arch_impl/aarch64/gic.rs` had three PMR init writes:
+
+- Primary GICv2 CPU-interface init wrote `GICC_PMR`.
+- Secondary GICv2 CPU-interface init wrote `GICC_PMR`.
+- GICv3 CPU-interface init wrote `ICC_PMR_EL1`.
+
+No non-init `ICC_PMR_EL1` write was found in `gic.rs`. Wider kernel grep found
+PMR reads in diagnostics, but no additional PMR writes. The prior runtime
+`0xf8` is consistent with writing `0xff` and reading back only implemented
+priority bits. F15 replaced the shared PMR init value with Linux's `0xf0`.
+
+### Validation sweep
+
+Artifacts:
+
+```text
+logs/breenix-parallels-cpu0/f15-pmr-parity/run{1..5}/
+logs/breenix-parallels-cpu0/f15-pmr-parity/summary.txt
+```
+
+Each `./run.sh --parallels --test 60` invocation completed the 60-second boot
+window and captured `serial.log`, but returned exit status 1 because the
+screenshot helper could not find the generated Parallels window. The serial log
+is the validation source below.
+
+| Run | Reached bsshd | AHCI timeout | Corruption markers | `gic_cpu_audit_lines` | `gicr_map_lines` | `gicr_map_found` | `gicr_map_not_found` | `gicr_state_lines` | `unblock_before_send_sgi` | `unblock_after_send_sgi` | `pmr_observed` | `audit_pmr_observed` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| run1 | 1 | 2 | 0 | 8 | 8 | 8 | 0 | 16 | 2 | 2 | `ICC_PMR_EL1=0xf0` | `pmr=0xf0` |
+| run2 | 1 | 2 | 0 | 8 | 8 | 8 | 0 | 16 | 2 | 1 | `ICC_PMR_EL1=0xf0` | `pmr=0xf0` |
+| run3 | 1 | 0 | 0 | 8 | 8 | 8 | 0 | 0 | 0 | 0 |  | `pmr=0xf0` |
+| run4 | 1 | 2 | 0 | 8 | 8 | 8 | 0 | 16 | 0 | 0 | `ICC_PMR_EL1=0xf0` | `pmr=0xf0` |
+| run5 | 1 | 0 | 0 | 8 | 8 | 8 | 0 | 0 | 0 | 0 |  | `pmr=0xf0` |
+
+Observed PMR values across CPUs: every run emitted eight `[GIC_CPU_AUDIT]`
+lines, one per CPU, and every audit line reported `pmr=0xf0` with
+`mismatch=0`. Timeout-time stuck-state dumps in runs 1, 2, and 4 also reported
+`ICC_PMR_EL1=0xf0`.
+
+### Verdict
+
+Verdict: **FAIL**. F15 closes the PMR parity gap, but it does not close the
+AHCI timeout corridor. All five runs reached `[init] bsshd started (PID 2)` and
+had `corruption_markers=0`, but runs 1, 2, and 4 each produced two AHCI
+timeouts.
+
+The residual signature is intermittent AHCI timeout after successful boot with
+Linux-parity PMR confirmed on all CPUs. F16 should audit the idle-scan loop
+logic / scan-to-SGI handoff semantics. F15 does not justify F-final.

@@ -28,6 +28,7 @@ pub static CPU0_LAST_SYNC_FAR: AtomicU64 = AtomicU64::new(0);
 /// CPU 0 last sync exception ELR (Exception Link Register — faulting instruction).
 pub static CPU0_LAST_SYNC_ELR: AtomicU64 = AtomicU64::new(0);
 static PC_ALIGN_VERBOSE_CAPTURED: AtomicBool = AtomicBool::new(false);
+static FATAL_POSTMORTEM_CAPTURED: [AtomicBool; 8] = [const { AtomicBool::new(false) }; 8];
 
 /// Set the per-CPU idle/boot stack in `user_rsp_scratch` so the assembly ERET
 /// path restores SP to a safe stack when redirecting to idle_loop_arm64.
@@ -113,6 +114,26 @@ fn defer_current_user_thread_sigsegv_exit(label: &str) {
         raw_uart_str(label);
         raw_uart_str(" deferred_tid=none\n");
     }
+}
+
+fn dump_fatal_postmortem_once(label: &str) {
+    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
+
+    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    if cpu_id >= FATAL_POSTMORTEM_CAPTURED.len()
+        || FATAL_POSTMORTEM_CAPTURED[cpu_id].swap(true, Ordering::AcqRel)
+    {
+        return;
+    }
+
+    raw_uart_str("[FATAL_POSTMORTEM] cpu=");
+    raw_uart_dec(cpu_id as u64);
+    raw_uart_str(" label=");
+    raw_uart_str(label);
+    raw_uart_str("\n  Deferred requeue snapshots:\n");
+    crate::arch_impl::aarch64::context_switch::dump_defer_requeue_snapshots();
+    raw_uart_str("\n  Trace buffers:\n");
+    crate::tracing::dump_all_buffers();
 }
 
 /// ARM64 syscall result type (mirrors x86_64 version)
@@ -465,6 +486,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 raw_uart_str("[DATA_ABORT] kernel-mode fault, deferring process cleanup\n");
             }
             defer_current_user_thread_sigsegv_exit("[DATA_ABORT]");
+            dump_fatal_postmortem_once("DATA_ABORT");
 
             // Mark scheduler thread as terminated (best effort)
             terminate_current_scheduler_thread();
@@ -549,11 +571,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                         });
                     }
 
-                    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
-                    raw_uart_str("\n[INSTRUCTION_ABORT] trace_buffer_cpu=");
-                    raw_uart_dec(cpu_id as u64);
-                    raw_uart_str("\n");
-                    crate::tracing::dump_buffer(cpu_id as usize);
+                    dump_fatal_postmortem_once("INSTRUCTION_ABORT");
                 }
 
                 // Register dump for EL0 instruction abort at low address —
@@ -989,6 +1007,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 raw_uart_hex(frame_ref.elr);
                 raw_uart_str("\n");
             }
+            dump_fatal_postmortem_once("UNHANDLED_EC");
             // Redirect to idle instead of hanging — allows system to recover.
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
@@ -1167,6 +1186,11 @@ fn sys_clock_gettime(clock_id: u32, user_timespec_ptr: *mut Timespec) -> Syscall
 /// PL011 UART IRQ number (SPI 1, which is IRQ 33)
 const UART0_IRQ: u32 = 33;
 
+#[inline(always)]
+fn interrupted_context_had_irqs_unmasked(frame: *const Aarch64ExceptionFrame) -> bool {
+    !frame.is_null() && unsafe { ((*frame).spsr & 0xC0) == 0 }
+}
+
 /// Handle IRQ interrupts
 ///
 /// Called from assembly after saving registers.
@@ -1174,9 +1198,30 @@ const UART0_IRQ: u32 = 33;
 #[no_mangle]
 pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
     crate::tracing::providers::counters::count_irq();
+    let have_percpu = crate::per_cpu_aarch64::is_initialized();
 
     // Acknowledge the interrupt from GIC
     if let Some(irq_id) = gic::acknowledge_irq() {
+        if have_percpu {
+            crate::per_cpu_aarch64::irq_enter();
+        }
+
+        gic::priority_drop_irq(irq_id);
+        unsafe {
+            core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
+        }
+
+        let reopen_nested_irq_window = interrupted_context_had_irqs_unmasked(frame);
+        if reopen_nested_irq_window {
+            unsafe {
+                core::arch::asm!(
+                    "msr daifclr, #3",
+                    "isb",
+                    options(nomem, nostack)
+                );
+            }
+        }
+
         // Handle the interrupt based on ID
         match irq_id {
             // Timer interrupt — virtual (PPI 27) or physical (PPI 30)
@@ -1282,8 +1327,21 @@ pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
             _ => {}
         }
 
-        // Signal end of interrupt
-        gic::end_of_interrupt(irq_id);
+        if reopen_nested_irq_window {
+            unsafe {
+                core::arch::asm!(
+                    "msr daifset, #3",
+                    "isb",
+                    options(nomem, nostack)
+                );
+            }
+        }
+
+        gic::deactivate_irq(irq_id);
+
+        if have_percpu {
+            crate::per_cpu_aarch64::irq_exit();
+        }
 
         // Process pending softirqs (deferred work from interrupt handlers)
         // This must happen after EOI but before rescheduling, while still

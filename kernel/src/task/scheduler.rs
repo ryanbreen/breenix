@@ -96,12 +96,7 @@ impl IsrWakeupBuffer {
     fn push(&self, tid: u64) -> bool {
         for slot in &self.slots {
             if slot
-                .compare_exchange(
-                    ISR_WAKEUP_EMPTY,
-                    tid,
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
-                )
+                .compare_exchange(ISR_WAKEUP_EMPTY, tid, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
             {
                 return true;
@@ -121,8 +116,7 @@ impl IsrWakeupBuffer {
     }
 }
 
-static ISR_WAKEUP_BUFFERS: [IsrWakeupBuffer; 8] =
-    [const { IsrWakeupBuffer::new() }; 8];
+static ISR_WAKEUP_BUFFERS: [IsrWakeupBuffer; 8] = [const { IsrWakeupBuffer::new() }; 8];
 
 /// Global scheduler instance
 static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
@@ -300,32 +294,32 @@ pub fn try_dump_state() -> Option<SchedulerDumpInfo> {
             let (elr_el1, x30, sp) = (0, 0, t.context.rsp);
 
             ThreadDumpEntry {
-            id: t.id(),
-            state: match t.state {
-                ThreadState::Ready => 0,
-                ThreadState::Running => 1,
-                ThreadState::Blocked => 2,
-                ThreadState::BlockedOnSignal => 3,
-                ThreadState::BlockedOnChildExit => 4,
-                ThreadState::BlockedOnTimer => 5,
-                ThreadState::BlockedOnIO => 7,
-                ThreadState::Terminated => 6,
-            },
-            blocked_in_syscall: t.blocked_in_syscall,
-            saved_by_inline_schedule: t.saved_by_inline_schedule,
-            inline_schedule_caller_lr: t.inline_schedule_caller_lr,
-            inline_schedule_saved_sp: t.inline_schedule_saved_sp,
-            has_wake_time: t.wake_time_ns.is_some(),
-            privilege: if t.privilege == super::thread::ThreadPrivilege::Kernel {
-                0
-            } else {
-                1
-            },
-            owner_pid: t.owner_pid.unwrap_or(0),
-            elr_el1,
-            x30,
-            sp,
-        }
+                id: t.id(),
+                state: match t.state {
+                    ThreadState::Ready => 0,
+                    ThreadState::Running => 1,
+                    ThreadState::Blocked => 2,
+                    ThreadState::BlockedOnSignal => 3,
+                    ThreadState::BlockedOnChildExit => 4,
+                    ThreadState::BlockedOnTimer => 5,
+                    ThreadState::BlockedOnIO => 7,
+                    ThreadState::Terminated => 6,
+                },
+                blocked_in_syscall: t.blocked_in_syscall,
+                saved_by_inline_schedule: t.saved_by_inline_schedule,
+                inline_schedule_caller_lr: t.inline_schedule_caller_lr,
+                inline_schedule_saved_sp: t.inline_schedule_saved_sp,
+                has_wake_time: t.wake_time_ns.is_some(),
+                privilege: if t.privilege == super::thread::ThreadPrivilege::Kernel {
+                    0
+                } else {
+                    1
+                },
+                owner_pid: t.owner_pid.unwrap_or(0),
+                elr_el1,
+                x30,
+                sp,
+            }
         })
         .collect();
 
@@ -1276,7 +1270,11 @@ impl Scheduler {
                     self.per_cpu_queues[target].push_back(thread_id);
                     // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
                     #[cfg(target_arch = "x86_64")]
-                    log_serial_println!("unblock({}): Added to per_cpu_queues[{}]", thread_id, target);
+                    log_serial_println!(
+                        "unblock({}): Added to per_cpu_queues[{}]",
+                        thread_id,
+                        target
+                    );
 
                     // Send IPI to wake an idle CPU so it can pick up the unblocked thread
                     #[cfg(target_arch = "aarch64")]
@@ -1551,7 +1549,11 @@ impl Scheduler {
                     self.per_cpu_queues[target].push_back(thread_id);
                     // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
                     #[cfg(target_arch = "x86_64")]
-                    log_serial_println!("Thread {} unblocked by child exit, queued to cpu {}", thread_id, target);
+                    log_serial_println!(
+                        "Thread {} unblocked by child exit, queued to cpu {}",
+                        thread_id,
+                        target
+                    );
 
                     // Send IPI to wake an idle CPU
                     #[cfg(target_arch = "aarch64")]
@@ -1740,8 +1742,7 @@ impl Scheduler {
             // wake_time set.
             let is_timed_wait = if let Some(thread) = self.get_thread(tid) {
                 (matches!(thread.state, ThreadState::BlockedOnTimer)
-                    || (thread.state == ThreadState::BlockedOnIO
-                        && thread.wake_time_ns.is_some()))
+                    || (thread.state == ThreadState::BlockedOnIO && thread.wake_time_ns.is_some()))
                     && thread.wake_time_ns.is_some()
             } else {
                 false
@@ -2527,24 +2528,199 @@ pub fn is_need_resched() -> bool {
 /// The scheduler drains the buffer under its own lock at the top of every
 /// `schedule_deferred_requeue()` / `schedule()` call.
 pub fn isr_unblock_for_io(tid: u64) {
+    #[cfg(target_arch = "aarch64")]
+    crate::drivers::ahci::push_ahci_event(
+        crate::drivers::ahci::AHCI_TRACE_UNBLOCK_ENTRY,
+        0,
+        0,
+        0,
+        0,
+        0,
+        tid,
+        0,
+        0,
+        false,
+    );
     let cpu = current_cpu_id_raw();
+    #[cfg(target_arch = "aarch64")]
+    crate::drivers::ahci::push_ahci_event(
+        crate::drivers::ahci::AHCI_TRACE_UNBLOCK_AFTER_CPU,
+        0,
+        0,
+        0,
+        0,
+        0,
+        tid,
+        0,
+        0,
+        false,
+    );
     if cpu < ISR_WAKEUP_BUFFERS.len() {
+        #[cfg(target_arch = "aarch64")]
+        crate::drivers::ahci::push_ahci_event(
+            crate::drivers::ahci::AHCI_TRACE_WAKEBUF_BEFORE_PUSH,
+            0,
+            0,
+            0,
+            0,
+            0,
+            tid,
+            0,
+            0,
+            false,
+        );
         ISR_WAKEUP_BUFFERS[cpu].push(tid);
+        #[cfg(target_arch = "aarch64")]
+        crate::drivers::ahci::push_ahci_event(
+            crate::drivers::ahci::AHCI_TRACE_WAKEBUF_AFTER_PUSH,
+            0,
+            0,
+            0,
+            0,
+            0,
+            tid,
+            0,
+            0,
+            false,
+        );
     }
+    #[cfg(target_arch = "aarch64")]
+    crate::drivers::ahci::push_ahci_event(
+        crate::drivers::ahci::AHCI_TRACE_UNBLOCK_AFTER_BUFFER,
+        0,
+        0,
+        0,
+        0,
+        0,
+        tid,
+        0,
+        0,
+        false,
+    );
     set_need_resched();
+    #[cfg(target_arch = "aarch64")]
+    crate::drivers::ahci::push_ahci_event(
+        crate::drivers::ahci::AHCI_TRACE_UNBLOCK_AFTER_NEED_RESCHED,
+        0,
+        0,
+        0,
+        0,
+        0,
+        tid,
+        0,
+        0,
+        false,
+    );
     // Send IPI to idle CPUs so the buffer is drained promptly.
     #[cfg(target_arch = "aarch64")]
     {
+        crate::drivers::ahci::push_ahci_event(
+            crate::drivers::ahci::AHCI_TRACE_SCAN_START,
+            0,
+            0,
+            0,
+            0,
+            0,
+            tid,
+            0,
+            0,
+            false,
+        );
         let online = crate::arch_impl::aarch64::smp::cpus_online() as usize;
+        crate::drivers::ahci::push_ahci_event(
+            crate::drivers::ahci::AHCI_TRACE_UNBLOCK_BEFORE_SGI_SCAN,
+            0,
+            0,
+            0,
+            0,
+            0,
+            tid,
+            0,
+            0,
+            false,
+        );
         for target in 0..online.min(MAX_CPUS) {
+            crate::drivers::ahci::push_ahci_event(
+                crate::drivers::ahci::AHCI_TRACE_SCAN_CPU,
+                0,
+                0,
+                0,
+                0,
+                0,
+                tid,
+                target as u32,
+                0,
+                false,
+            );
             if target != cpu && is_cpu_idle(target) {
+                crate::drivers::ahci::push_ahci_event(
+                    crate::drivers::ahci::AHCI_TRACE_UNBLOCK_PER_SGI,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    tid,
+                    target as u32,
+                    0,
+                    false,
+                );
+                crate::drivers::ahci::push_ahci_event(
+                    crate::drivers::ahci::AHCI_TRACE_UNBLOCK_BEFORE_SEND_SGI,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    tid,
+                    target as u32,
+                    0,
+                    false,
+                );
                 crate::arch_impl::aarch64::gic::send_sgi(
                     crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
                     target as u8,
                 );
+                crate::drivers::ahci::push_ahci_event(
+                    crate::drivers::ahci::AHCI_TRACE_UNBLOCK_AFTER_SEND_SGI,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    tid,
+                    target as u32,
+                    0,
+                    false,
+                );
             }
         }
+        crate::drivers::ahci::push_ahci_event(
+            crate::drivers::ahci::AHCI_TRACE_SCAN_DONE,
+            0,
+            0,
+            0,
+            0,
+            0,
+            tid,
+            0,
+            0,
+            false,
+        );
     }
+    #[cfg(target_arch = "aarch64")]
+    crate::drivers::ahci::push_ahci_event(
+        crate::drivers::ahci::AHCI_TRACE_UNBLOCK_EXIT,
+        0,
+        0,
+        0,
+        0,
+        0,
+        tid,
+        0,
+        0,
+        false,
+    );
 }
 
 /// Read the current CPU ID directly from hardware (MPIDR_EL1 on ARM64).
