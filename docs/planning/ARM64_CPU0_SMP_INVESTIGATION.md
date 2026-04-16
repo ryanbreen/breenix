@@ -2783,3 +2783,87 @@ wakebuf_after_push=1
   - keep wake-buffer push as lower priority for now. The decisive run had
     before/after push markers, eliminating the F10 run2-style secondary
     signature for that sample.
+## 2026-04-16 - F12 SGI Linux parity probe
+
+F12 tested the first fix probe after the F11 SGI boundary finding. The probe
+matched the Linux v6.8 GICv3 SGI ordering around `ICC_SGI1R_EL1`, added a
+per-CPU `ICC_SRE_EL1` audit at CPU-interface initialization, and reran the
+5x Parallels CPU0 sweep.
+
+### Linux parity comparison
+
+| Linux reference | Breenix reference | Divergence | Applied fix |
+| --- | --- | --- | --- |
+| `/tmp/linux-v6.8/drivers/irqchip/irq-gic-v3.c:1365-1387` | `kernel/src/arch_impl/aarch64/gic.rs:1027-1066` | Linux runs `dsb(ishst)` before emitting SGIs and `isb()` after the `ICC_SGI1R_EL1` writes. Breenix already had the post-MSR `isb`, but did not have the pre-MSR `dsb ishst`. | Added `dsb ishst` before SGI target-list construction and the `msr icc_sgi1r_el1` write. Kept the existing post-MSR `isb`. |
+| `/tmp/linux-v6.8/drivers/irqchip/irq-gic-v3.c:1350-1363` | `kernel/src/arch_impl/aarch64/gic.rs:1040-1061` | Linux composes affinity, routing selector, INTID, and target list before `gic_write_sgi1r(val)`. Breenix composes INTID and a same-affinity target list for the simple CPU0-7 topology. No DAIF/preemption masking and no WFE/SEV pairing appear in this Linux path. | No DAIF, WFE, or SEV changes were made. The write remains `msr icc_sgi1r_el1, <sgir>`. |
+| F12 requirement | `kernel/src/arch_impl/aarch64/gic.rs:482-515`, `kernel/src/arch_impl/aarch64/gic.rs:1478-1499` | Breenix had no one-time `ICC_SRE_EL1` audit for each CPU. Secondary CPU-interface init could return before the ICC system-register setup when the GICR range guard rejected the MPIDR-derived CPU ID. | Added `[SRE_AUDIT] cpu=<id> sre=<value> raw=<value>` after `ICC_SRE_EL1` readback, and moved secondary ICC system-register setup before the GICR MMIO range guard. |
+
+### Validation sweep
+
+All runs used:
+
+```text
+./run.sh --parallels --test 60
+```
+
+Artifacts are in:
+
+```text
+logs/breenix-parallels-cpu0/f12-sgi-parity/run{1..5}/
+```
+
+| Run | Result | bsshd | AHCI timeouts | Corruption markers | SRE audit lines | Stuck-state signature |
+| --- | --- | --- | --- | --- | --- | --- |
+| run1 | PASS | 1 | 0 | 0 | 2 | None. Reached `[init] bsshd started (PID 2)`. |
+| run2 | PASS with SRE audit anomaly | 1 | 0 | 0 | 4 | None. Reached `[init] bsshd started (PID 2)`. One garbled SRE line did not contain literal `sre=1`, so `sre_unexpected=1`; this appears to be raw UART interleaving, not a confirmed SRE=0. |
+| run3 | FAIL | 1 | 2 | 0 | 1 | SPI34 stuck pending+active on cpu=3 and cpu=6. `ICC_PMR_EL1=0xf8`, `ICC_RPR_EL1=0xff`, `DAIF=0x300`, `AHCI_PORT1_IS=0x1`; later `[init] Failed to exec bsh: EIO`. |
+| run4 | FAIL | 1 | 2 | 0 | 1 | SPI34 stuck pending+active on cpu=4 and cpu=5, followed by `[init] Failed to exec bsh: EIO` and `SOFT LOCKUP DETECTED`. |
+| run5 | PASS | 1 | 0 | 0 | 1 | None. Reached `[init] bsshd started (PID 2)`. |
+
+### SRE audit output
+
+Observed SRE audit lines from the final sweep:
+
+```text
+run1:
+[SRE_AUDIT] cpu=0 sre=1 raw=0x7
+[3@1ABgic]CDE eFG3[SRE_AUDIT] cIpu=3 sre=1 raw=0x7
+
+run2:
+[SRE_AUDIT] cpu=0 sre=1 raw=0x7
+T1[smp] 1C@PU1A 1:B CDPSCI CPU_ONEe suFGc1[SRE_AUDIT] ccpuess=
+[g6@1ABCDEeFG6[SRE_AUDIT] cpu=6i sre=1 rawc=] ICC0_xCTL7
+7@1ABCDEeFG7[SRE_AUDIT] cpu=7 sre=1 raw=0x7
+
+run3:
+[SRE_AUDIT] cpu=0 sre=1 raw=0x7
+
+run4:
+[SRE_AUDIT] cpu=0 sre=1 raw=0x7
+
+run5:
+[SRE_AUDIT] cpu=0 sre=1 raw=0x7
+```
+
+CPU0 consistently reads `ICC_SRE_EL1=0x7` (`sre=1`). Secondary CPU audit
+coverage is incomplete and raw UART lines can interleave with other boot output.
+The visible secondary samples also indicate `sre=1`, but F12 did not produce a
+clean one-line-per-CPU proof for all CPUs. That is a finding for the next probe.
+
+### Interpretation
+
+The Linux SGI ordering change is not sufficient to close the AHCI timeout
+corridor. The original SGI-write hang signature is improved in the sense that
+all five runs reached `[init] bsshd started (PID 2)`, but the probe pass criteria
+were stricter: all five runs also needed `ahci_timeouts=0` and
+`corruption_markers=0`. Runs 3 and 4 still produced AHCI command timeouts with
+SPI34 pending+active and no corruption markers.
+
+F12 verdict: FAIL.
+
+Recommended F13 direction: pivot from another SGI-side barrier probe to
+per-CPU GIC state and redistributor configuration. Specifically, add a
+non-garbled per-CPU audit of `ICC_SRE_EL1`, `ICC_CTLR_EL1`, `ICC_PMR_EL1`,
+`ICC_IGRPEN1_EL1`, MPIDR affinity, and the selected GICR frame, then compare the
+redistributor wake/config state for CPUs that later report SPI34 stuck
+pending+active.
