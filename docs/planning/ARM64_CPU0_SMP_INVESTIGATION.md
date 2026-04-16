@@ -2154,3 +2154,100 @@ the cached-TTBR0 baseline.
   - next probe should treat this as a D3/routing-style follow-up: verify why
     SPI34 stays `pending+active` after the combined admission window already
     admitted it, rather than spending another cycle on return-path cleanup
+
+### 2026-04-16: F8 AHCI Completion Diagnostic
+
+- Probe change summary:
+  - added a fixed-size, per-CPU AHCI completion trace ring in
+    [ahci/mod.rs](/Users/wrb/fun/code/breenix-worktrees/f8-ahci-completion/kernel/src/drivers/ahci/mod.rs)
+    with `ENTER`, `POST_CLEAR`, and `RETURN` records for port index, `IS`,
+    `CI`, `SACT`, `SERR`, waiter TID, slot mask, token, wake result, timestamp,
+    and CPU id
+  - extended
+    [gic.rs](/Users/wrb/fun/code/breenix-worktrees/f8-ahci-completion/kernel/src/arch_impl/aarch64/gic.rs)
+    so `dump_stuck_state_for_spi(34)` emits
+    `[STUCK_SPI34] AHCI_PORT0_IS=<value>` and flushes recent `[AHCI_RING]`
+    records
+  - kept the F7 `handle_irq()` ordering unchanged:
+    `acknowledge_irq() -> irq_enter() -> priority_drop_irq() -> dispatch ->
+    deactivate_irq() -> irq_exit()`
+- Artifacts:
+  - [run1](/Users/wrb/fun/code/breenix-worktrees/f8-ahci-completion/logs/breenix-parallels-cpu0/f8-ahci-diag/run1)
+  - [run2](/Users/wrb/fun/code/breenix-worktrees/f8-ahci-completion/logs/breenix-parallels-cpu0/f8-ahci-diag/run2)
+  - [run3](/Users/wrb/fun/code/breenix-worktrees/f8-ahci-completion/logs/breenix-parallels-cpu0/f8-ahci-diag/run3)
+  - [run4](/Users/wrb/fun/code/breenix-worktrees/f8-ahci-completion/logs/breenix-parallels-cpu0/f8-ahci-diag/run4)
+  - [run5](/Users/wrb/fun/code/breenix-worktrees/f8-ahci-completion/logs/breenix-parallels-cpu0/f8-ahci-diag/run5)
+- Result:
+  - `run1`: PASS-like, reached `[init] bsshd started (PID 2)` with no AHCI
+    timeout in the 60-second window; run command bookkeeping was interrupted
+    by the first sweep-loop shell variable bug, but serial output was captured
+  - `run2`: FAIL, `ahci_timeouts=2`, `ahci_ring_entries=64`,
+    `ahci_port0_is=2`, reached `bsshd`
+  - `run3`: FAIL, `ahci_timeouts=2`, `ahci_ring_entries=64`,
+    `ahci_port0_is=2`, reached `bsshd`
+  - `run4`: FAIL, `ahci_timeouts=2`, `ahci_ring_entries=64`,
+    `ahci_port0_is=2`, reached `bsshd`
+  - `run5`: FAIL, `ahci_timeouts=2`, `ahci_ring_entries=64`,
+    `ahci_port0_is=2`, reached `bsshd`
+- Verbatim extract from `run2`:
+
+```text
+[ahci] read_block(72711) wait failed: AHCI: command timeout
+[STUCK_SPI34] cpu=7 gic_version=3
+[STUCK_SPI34] GICD_ISPENDR[1]=0x800004 bit=2 pending=true
+[STUCK_SPI34] GICD_ISACTIVER[1]=0x4 bit=2 active=true
+[STUCK_SPI34] GICD_ICFGR[2]=0x0 bits=0x0 trigger=level
+[STUCK_SPI34] ICC_RPR_EL1=0xff
+[STUCK_SPI34] ICC_PMR_EL1=0xf8
+[STUCK_SPI34] DAIF=0x300
+[STUCK_SPI34] AHCI_PORT0_IS=0x0
+[AHCI_RING] nsec=2348570958 site=POST_CLEAR cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1231 wake_success=0 seq=3686
+[AHCI_RING] nsec=2348563291 site=ENTER cpu=0 port=1 IS=0x1 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x0 token=1231 wake_success=0 seq=3685
+[AHCI_RING] nsec=2345107041 site=RETURN cpu=0 port=1 IS=0x0 CI=0x0 SACT=0x0 SERR=0x0 waiter_tid=11 slot_mask=0x1 token=1230 wake_success=1 seq=3684
+```
+
+- Additional timeout state from the same run:
+
+```text
+[ahci] Port 1 TIMEOUT (5s): CI=0x0 IS=0x1 TFD=0x40 HBA_IS=0x2
+[ahci]   GIC: SPI34 pend=true act=true DAIF=0x300 pend_snap=[0x800004,0x0,0x0]
+[ahci]   isr_count=1229 cmd#=1232 completion_done=0 PMR=0xf8 RPR=0xff
+[ahci]   port_isr_hits=[1,1228] complete_hits=[0,22]
+[ahci]   isr_last_hw_cpu=0
+```
+
+- Hypothesis ranking:
+  - H5 strongest as the observed GIC-level symptom: SPI34 remains active
+    because the admitted AHCI dispatch did not reach the handler `RETURN`
+    record for the newest serviced token, so `handle_irq()` cannot yet execute
+    the F7 `deactivate_irq()` write for that interrupt
+  - H3 also strongly supported at the AHCI line level: the handler observed
+    port 1 `IS=0x1`, recorded `POST_CLEAR` with `IS=0x0`, and timeout state
+    later shows port 1 `IS=0x1`; the level line reasserted after the clear
+  - H2 is weak: for every recorded serviced completion, `POST_CLEAR` reports
+    `IS=0x0`, so the handler is clearing the `IS` bits it observes
+  - H4 is weak: the ring consistently records port 1, matching the ext2 AHCI
+    device, while the new `AHCI_PORT0_IS` field is `0x0`
+  - H1 is falsified: `[AHCI_RING] ENTER` and `POST_CLEAR` records prove SPI34
+    dispatch reaches AHCI code
+- Interpretation:
+  - F8 narrows the failure from "AHCI interrupt not admitted" to "AHCI
+    completion handler does not complete the newest wake path before the next
+    level assertion waits behind an already-active SPI"
+  - the missing `RETURN` for the latest token is the key new signal; the last
+    complete `ENTER/POST_CLEAR/RETURN` triplet is for the previous token, while
+    the newest token reaches `POST_CLEAR` but not `RETURN`
+- F9 recommendation:
+  - probe name: `f9-ahci-complete-return-boundary`
+  - touch:
+    [ahci/mod.rs](/Users/wrb/fun/code/breenix-worktrees/f8-ahci-completion/kernel/src/drivers/ahci/mod.rs),
+    [completion.rs](/Users/wrb/fun/code/breenix-worktrees/f8-ahci-completion/kernel/src/task/completion.rs),
+    and optionally
+    [exception.rs](/Users/wrb/fun/code/breenix-worktrees/f8-ahci-completion/kernel/src/arch_impl/aarch64/exception.rs)
+    for a non-hot-path stuck-state counter showing last `deactivate_irq(34)`
+  - add AHCI ring sites immediately before and after `Completion::complete()`,
+    plus a minimal atomic breadcrumb at `isr_unblock_for_io()` entry/exit
+  - expected signature change: if `BEFORE_COMPLETE` appears without
+    `AFTER_COMPLETE`, F9 should move to the completion/scheduler wake path; if
+    `AFTER_COMPLETE` and AHCI `RETURN` appear but SPI34 still dumps
+    `active=true`, F9 should become a narrow F7 DIR/deactivation audit
