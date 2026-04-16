@@ -2032,3 +2032,105 @@ the cached-TTBR0 baseline.
   - reason: the dominant failure signature after P1 is still the unchanged
     AHCI timeout corridor, which points next at late priority drop / EOImode0
     semantics rather than at admission timing alone
+
+### 2026-04-15: SPI34 Stuck-State Diagnostic Capture
+
+- Probe change summary:
+  - observational only
+  - added `gic::dump_stuck_state_for_spi(34)` in
+    [gic.rs](/Users/wrb/fun/code/breenix/kernel/src/arch_impl/aarch64/gic.rs)
+  - wired the dump into fatal postmortem, AHCI timeout reporting, and the
+    soft-lockup reporter
+  - no distributor writes, no GIC init changes, no IRQ-semantic changes
+- Artifacts:
+  - [f6-gic-diagnostic sweep](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/f6-gic-diagnostic)
+  - [f6-gic-diagnostic rerun1](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/f6-gic-diagnostic-rerun1)
+  - only one failing run in the combined ten-run sample produced diagnostic
+    output:
+    [run4](/Users/wrb/fun/code/breenix/logs/breenix-parallels-cpu0/f6-gic-diagnostic/run4)
+
+- Raw captured `[STUCK_SPI34]` blocks from the failing run:
+
+```text
+[STUCK_SPI34] cpu=3 gic_version=3
+[STUCK_SPI34] GICD_ISPENDR[1]=0x800000 bit=2 pending=false
+[STUCK_SPI34] GICD_ISACTIVER[1]=0x0 bit=2 active=false
+[STUCK_SPI34] GICD_ICFGR[2]=0x0 bits=0x0 trigger=level
+[STUCK_SPI34] GICD_IPRIORITYR[34]=0xa0
+[STUCK_SPI34] GICD_IROUTER[34]=0x0
+[STUCK_SPI34] ICC_RPR_EL1=0xff
+[STUCK_SPI34] ICC_PMR_EL1=0xf8
+[STUCK_SPI34] ICC_BPR1_EL1=0x7
+[STUCK_SPI34] ICC_HPPIR1_EL1=0x1b
+[STUCK_SPI34] ICC_AP1R0_EL1=0x0
+[STUCK_SPI34] DAIF=0x3c0
+[STUCK_SPI34] SPSR_EL1=0xa20003c5
+[STUCK_SPI34] CurreT9ntEL=0x4
+[STUCK_SPI34] peer_cpu_scan=false
+[STUCK_SPI34] peer_cpu_reason=no_existing_ipi_callback_mechanism
+```
+
+```text
+[STUCK_SPI34] cpu=0 gic_version=3
+[STUCK_SPI34] GICD_ISPENDR[1]=0x800000 bit=2 pending=false
+[STUCK_SPI34] GICD_ISACTIVER[1]=0x0 bit=2 active=false
+[STUCK_SPI34] GICD_ICFGR[2]=0x0 bits=0x0 trigger=level
+[STUCK_SPI34] GICD_IPRIORITYR[34]=0xa0
+[STUCK_SPI34] GICD_IROUTER[34]=0x0
+[STUCK_SPI34] ICC_RPR_EL1=0xa0
+[STUCK_SPI34] ICC_PMR_EL1=0xf8
+[STUCK_SPI34] ICC_BPR1_EL1=0x7
+[STUCK_SPI34] ICC_HPPIR1_EL1=0x3ff
+[STUCK_SPI34] ICC_AP1R0_EL1=0x100000
+[STUCK_SPI34] DAIF=0x3c0
+[STUCK_SPI34] SPSR_EL1=0x5
+[STUCK_SPI34] CurrentEL=0x4
+[STUCK_SPI34] peer_cpu_scan=false
+[STUCK_SPI34] peer_cpu_reason=no_existing_ipi_callback_mechanism
+```
+
+```text
+[STUCK_SPI34] cpu=2 gic_version=3
+[STUCK_SPI34] GICD_ISPENDR[1]=0x800000 bit=2 pending=false
+[STUCK_SPI34] GICD_ISACTIVER[1]=0x0 bit=2 active=false
+[STUCK_SPI34] GICD_ICFGR[2]=0x0 bits=0x0 trigger=level
+[STUCK_SPI34] GICD_IPRIORITYR[34]=0xa0
+[STUCK_SPI34] GICD_IROUTER[34]=0x0
+[STUCK_SPI34] ICC_RPR_EL1=0xff
+[STUCK_SPI34] ICC_PMR_EL1=0xf8
+[STUCK_SPI34] ICC_BPR1_EL1=0x7
+[STUCK_SPI34] ICC_HPPIR1_EL1=0x1b
+[STUCK_SPI34] ICC_AP1R0_EL1=0x0
+[STUCK_SPI34] DAIF=0x3c0
+[STUCK_SPI34] SPSR_EL1=0x420003c5
+[STUCK_SPI34] CurrentEL=0x4
+[STUCK_SPI34] peer_cpu_scan=false
+[STUCK_SPI34] peer_cpu_reason=no_existing_ipi_callback_mechanism
+```
+
+- Interpretation:
+  - `GICD_IROUTER[34]=0x0`, so SPI34 is not in the `0xffffffff_80000000`
+    "any CPU" mode; it is explicitly routed to affinity `0x0`, i.e. CPU0’s
+    MPIDR affinity value.
+  - CPU0’s own dump shows `ICC_RPR_EL1=0xa0`, which matches SPI34’s
+    `GICD_IPRIORITYR[34]=0xa0`; CPU0 was not at idle priority (`0xff`) when
+    the dump fired, it was already running at the same priority band as the
+    AHCI SPI.
+  - CPU0’s `DAIF=0x3c0`, so IRQs were masked at dump time, not open
+    (`0x000`) and not merely the single-IRQ-mask case (`0x080`).
+  - `ICC_PMR_EL1=0xf8` still admits priority `0xa0`, so the data does not
+    support "PMR is gating SPI34" as the primary stuck-state mechanism.
+  - `ICC_BPR1_EL1=0x7` and CPU0’s `ICC_AP1R0_EL1=0x100000` point instead at a
+    live active-priority / preemption-group state on CPU0 when the fatal path
+    runs.
+
+- Hypothesis refinement:
+  - P3 recommendation: do **not** rank PMR-gate probing first for F7; PMR is
+    already open enough for SPI34 (`0xa0 < 0xf8`).
+  - Alternative routing probe: do **not** pivot to an IROUTER repair first;
+    the captured state shows explicit CPU0 affinity (`0x0`), not accidental
+    "route to any CPU" or an obviously wrong nonzero MPIDR.
+  - Orthogonal probe: F7 should prioritize a binary-point / active-priority
+    investigation next, because `ICC_BPR1_EL1=0x7`, `ICC_RPR_EL1=0xa0`, and
+    `ICC_AP1R0_EL1=0x100000` are more consistent with CPU0 being trapped in a
+    live priority band than with PMR masking.
