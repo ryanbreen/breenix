@@ -2665,9 +2665,33 @@ pub fn isr_unblock_for_io(tid: u64) {
                     0,
                     false,
                 );
+                crate::drivers::ahci::push_ahci_event(
+                    crate::drivers::ahci::AHCI_TRACE_UNBLOCK_BEFORE_SEND_SGI,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    tid,
+                    target as u32,
+                    0,
+                    false,
+                );
                 crate::arch_impl::aarch64::gic::send_sgi(
                     crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
                     target as u8,
+                );
+                crate::drivers::ahci::push_ahci_event(
+                    crate::drivers::ahci::AHCI_TRACE_UNBLOCK_AFTER_SEND_SGI,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    tid,
+                    target as u32,
+                    0,
+                    false,
                 );
             }
         }

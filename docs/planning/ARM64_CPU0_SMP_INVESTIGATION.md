@@ -2986,3 +2986,100 @@ F14 should do two targeted things:
    `UNBLOCK_BEFORE_SEND_SGI` and `UNBLOCK_AFTER_SEND_SGI`. Run4's latest
    sequence stops at `UNBLOCK_PER_SGI`, so F14 needs to distinguish call-entry
    failure from an early `send_sgi()` body failure.
+
+## 2026-04-16 F14: Linux-Style GICR Discovery and Send-SGI Call-Site Breadcrumbs
+
+Branch: `probe/f14-gicr-discovery`
+
+F14 replaced the logical-CPU-index GICR assumption with Linux-style
+redistributor discovery. The scan walks RD frames in `0x20000` strides from the
+validated GICR base and matches `GICR_TYPER[63:32]` against each CPU's MPIDR
+affinity, following Linux's `gic_iterate_rdists()` /
+`__gic_populate_rdist()` model in
+`/tmp/linux-v6.8/drivers/irqchip/irq-gic-v3.c:978-1011` and `:1017-1045`.
+`GICR_TYPER_LAST` is bit 4 per
+`/tmp/linux-v6.8/include/linux/irqchip/arm-gic-v3.h:238-249`; the F14 prompt's
+bit-31 wording conflicts with the supplied Linux source.
+
+F14 also added `UNBLOCK_BEFORE_SEND_SGI` and `UNBLOCK_AFTER_SEND_SGI` around
+the caller-side `send_sgi()` invocation in `isr_unblock_for_io()`. `send_sgi()`
+itself was not changed.
+
+### Validation sweep
+
+Artifacts:
+
+```text
+logs/breenix-parallels-cpu0/f14-gicr-discovery/run{1..5}/
+logs/breenix-parallels-cpu0/f14-gicr-discovery/summary.txt
+```
+
+Each `./run.sh --parallels --test 60` invocation completed the 60-second boot
+window and captured `serial.log`, but returned exit status 1 because the
+screenshot helper could not find the generated Parallels window. The serial log
+is the validation source below.
+
+| Run | Reached bsshd | AHCI timeout | Corruption markers | `gic_cpu_audit_lines` | `gicr_map_lines` | `gicr_map_found` | `gicr_map_not_found` | `gicr_state_lines` | `unblock_before_send_sgi` | `unblock_after_send_sgi` | `scan_start` | `scan_cpu` | `scan_done` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| run1 | 1 | 0 | 0 | 8 | 8 | 8 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| run2 | 1 | 2 | 0 | 8 | 8 | 8 | 0 | 16 | 0 | 1 | 0 | 0 | 1 |
+| run3 | 1 | 2 | 0 | 8 | 8 | 8 | 0 | 16 | 2 | 1 | 1 | 3 | 0 |
+| run4 | 1 | 0 | 0 | 8 | 8 | 8 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| run5 | 1 | 0 | 0 | 8 | 8 | 8 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+Verdict: **FAIL**. All five runs reached `[init] bsshd started (PID 2)`, and
+all five had `corruption_markers=0`, but runs 2 and 3 each produced two AHCI
+port timeouts.
+
+### GICR map output
+
+Representative run2 output:
+
+```text
+T4[GICR_MAP] cpu=0 rd_base=0x2500000 typer=0x0 affinity=0x0
+[GICR_MAP] cpu=1 rd_base=0x25e0000 typer=0x100000710 affinity=0x1
+[GICR_MAP] cpu=2 rd_base=0x25c0000 typer=0x200000600 affinity=0x2
+[GICR_MAP] cpu=3 rd_base=0x2540000 typer=0x300000200 affinity=0x3
+[GICR_MAP] cpu=4 rd_base=0x2580000 typer=0x400000400 affinity=0x4
+T5[GICR_MAP] cpu=5 rd_base=0x2560000 typer=0x500000300 affinity=0x5
+[GICR_MAP] cpu=6 rd_base=0x2520000 typer=0x600000100 affinity=0x6
+[GICR_MAP] cpu=7 rd_base=0x25a0000 typer=0x700000500 affinity=0x7
+```
+
+The redistributor frame order is not logical-CPU order and changes across
+boots under Parallels/HVF. F14 confirms F13's `target_cpu * 0x20000` diagnostic
+read was wrong for CPUs 1-7. CPU0's `GICR_TYPER=0x0` is the real first-frame
+value: affinity 0, processor number 0, and no LAST bit can encode as zero.
+
+### GICR state before and after
+
+F13 before, target CPU 1:
+
+```text
+[GICR_STATE] cpu=1 waker=0x0 ctlr=0x0 typer=0x0 syncr=0x0
+```
+
+F14 after, run2:
+
+```text
+[GICR_STATE] cpu=1 rd_base=0x25e0000 waker=0x0 ctlr=0x0 typer=0x100000710 syncr=0x0
+[GICR_STATE] cpu=2 rd_base=0x25c0000 waker=0x0 ctlr=0x0 typer=0x200000600 syncr=0x0
+[GICR_STATE] cpu=3 rd_base=0x2540000 waker=0x0 ctlr=0x0 typer=0x300000200 syncr=0x0
+[GICR_STATE] cpu=0 rd_base=0x2500000 waker=0x0 ctlr=0x0 typer=0x0 syncr=0x0
+```
+
+Timeout-time dumps now show non-zero `GICR_TYPER` values for target CPUs 1-7.
+CPU0 remains zero for the valid first RD frame.
+
+### Interpretation
+
+F14 fixes the GICR map defect but does not close the AHCI timeout corridor. In
+run3, the dumped AHCI ring includes `UNBLOCK_BEFORE_SEND_SGI` without a matching
+newest `UNBLOCK_AFTER_SEND_SGI` for the same target, while earlier SGI-entry
+breadcrumbs are present for other targets. That keeps the scan-to-SGI handoff
+in scope.
+
+Recommended F15 direction: with redistributor mapping now trustworthy, target
+the remaining Linux divergence (`ICC_PMR_EL1=0xf8` in Breenix versus Linux's
+`0xf0`) or inspect the idle-scan/send_sgi handoff logic directly. F14 does not
+justify F-final.
