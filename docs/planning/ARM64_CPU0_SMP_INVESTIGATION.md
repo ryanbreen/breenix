@@ -3083,3 +3083,65 @@ Recommended F15 direction: with redistributor mapping now trustworthy, target
 the remaining Linux divergence (`ICC_PMR_EL1=0xf8` in Breenix versus Linux's
 `0xf0`) or inspect the idle-scan/send_sgi handoff logic directly. F14 does not
 justify F-final.
+
+## 2026-04-16 - F15 ICC_PMR_EL1 Linux parity
+
+F15 targeted the last isolated ICC hot-path divergence from F13/F14:
+Breenix runtime `ICC_PMR_EL1=0xf8` versus Linux's default `0xf0`.
+
+Linux v6.8 defines `DEFAULT_PMR_VALUE` as `0xf0` in
+`/tmp/linux-v6.8/drivers/irqchip/irq-gic-v3.c:146`, writes that value to
+`ICC_PMR_EL1` in `/tmp/linux-v6.8/drivers/irqchip/irq-gic-v3.c:1161-1164`,
+and defines the GICv2 CPU-interface threshold `GICC_INT_PRI_THRESHOLD` as
+`0xf0` in `/tmp/linux-v6.8/include/linux/irqchip/arm-gic.h:23`.
+
+### PMR write audit
+
+`kernel/src/arch_impl/aarch64/gic.rs` had three PMR init writes:
+
+- Primary GICv2 CPU-interface init wrote `GICC_PMR`.
+- Secondary GICv2 CPU-interface init wrote `GICC_PMR`.
+- GICv3 CPU-interface init wrote `ICC_PMR_EL1`.
+
+No non-init `ICC_PMR_EL1` write was found in `gic.rs`. Wider kernel grep found
+PMR reads in diagnostics, but no additional PMR writes. The prior runtime
+`0xf8` is consistent with writing `0xff` and reading back only implemented
+priority bits. F15 replaced the shared PMR init value with Linux's `0xf0`.
+
+### Validation sweep
+
+Artifacts:
+
+```text
+logs/breenix-parallels-cpu0/f15-pmr-parity/run{1..5}/
+logs/breenix-parallels-cpu0/f15-pmr-parity/summary.txt
+```
+
+Each `./run.sh --parallels --test 60` invocation completed the 60-second boot
+window and captured `serial.log`, but returned exit status 1 because the
+screenshot helper could not find the generated Parallels window. The serial log
+is the validation source below.
+
+| Run | Reached bsshd | AHCI timeout | Corruption markers | `gic_cpu_audit_lines` | `gicr_map_lines` | `gicr_map_found` | `gicr_map_not_found` | `gicr_state_lines` | `unblock_before_send_sgi` | `unblock_after_send_sgi` | `pmr_observed` | `audit_pmr_observed` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| run1 | 1 | 2 | 0 | 8 | 8 | 8 | 0 | 16 | 2 | 2 | `ICC_PMR_EL1=0xf0` | `pmr=0xf0` |
+| run2 | 1 | 2 | 0 | 8 | 8 | 8 | 0 | 16 | 2 | 1 | `ICC_PMR_EL1=0xf0` | `pmr=0xf0` |
+| run3 | 1 | 0 | 0 | 8 | 8 | 8 | 0 | 0 | 0 | 0 |  | `pmr=0xf0` |
+| run4 | 1 | 2 | 0 | 8 | 8 | 8 | 0 | 16 | 0 | 0 | `ICC_PMR_EL1=0xf0` | `pmr=0xf0` |
+| run5 | 1 | 0 | 0 | 8 | 8 | 8 | 0 | 0 | 0 | 0 |  | `pmr=0xf0` |
+
+Observed PMR values across CPUs: every run emitted eight `[GIC_CPU_AUDIT]`
+lines, one per CPU, and every audit line reported `pmr=0xf0` with
+`mismatch=0`. Timeout-time stuck-state dumps in runs 1, 2, and 4 also reported
+`ICC_PMR_EL1=0xf0`.
+
+### Verdict
+
+Verdict: **FAIL**. F15 closes the PMR parity gap, but it does not close the
+AHCI timeout corridor. All five runs reached `[init] bsshd started (PID 2)` and
+had `corruption_markers=0`, but runs 1, 2, and 4 each produced two AHCI
+timeouts.
+
+The residual signature is intermittent AHCI timeout after successful boot with
+Linux-parity PMR confirmed on all CPUs. F16 should audit the idle-scan loop
+logic / scan-to-SGI handoff semantics. F15 does not justify F-final.
