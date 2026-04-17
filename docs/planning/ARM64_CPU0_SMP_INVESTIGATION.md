@@ -3658,3 +3658,107 @@ init did not observe child exit, and no instruction/data abort log appeared.
 Verdict: **NS1 confirmed**. Rust std startup is not required to reproduce the
 silent pre-first-instruction hang. The root cause is now narrowed to kernel
 exec/return-to-userspace behavior for larger/high-entry ELF layouts.
+
+## 2026-04-17 - F19 Phase 2 exec-read isolation
+
+The next probe added ARM64 exec-path breadcrumbs and an ELF entry-byte verifier.
+The verifier compares the first instruction word at the loaded ELF entry VA
+against the expected bytes from the ELF file after segment loading.
+
+### Hypotheses
+
+EP0: if exec reaches the ext2 file-content read but never reaches the loader,
+the observed silent hang is an exec-read problem rather than Rust startup or
+ELF entry dispatch.
+
+EP1: if file read completes and the entry verifier reports `match=1`, but the
+program still produces no raw marker, the remaining failure is in frame/TTBR
+return-to-userspace handling.
+
+CON0: if skipping the background bsshd fork makes the same
+`hello_nostd_padded` exec succeed, overlapping early boot exec reads are the
+trigger.
+
+### Probe A: bsshd + hello_nostd_padded
+
+With bsshd still started in the background, init's child printed immediately
+before calling `execv("/bin/hello_nostd_padded")`, proving the forked child had
+returned to userspace and fd 1 still worked:
+
+```text
+[init] Breenix init starting (PID 1)
+F123456789SC
+[F19_EXEC] E
+[F19_EXEC] N
+[F19_EXEC] A
+[F19_EXEC] O
+[F19_EXEC] r
+[F19_EXEC] g
+[init] bsshd started (PID 2)
+F123456789SC[init-child] before hello_nostd_padded exec
+[F19_EXEC] E
+[F19_EXEC] N
+[F19_EXEC] A
+[F19_EXEC] O
+[F19_EXEC] r
+[F19_EXEC] g
+T9T0
+[F19_EXEC] i
+[F19_EXEC] n
+[F19_EXEC] p
+[F19_EXEC] q
+[F19_EXEC] i
+!!! SOFT LOCKUP DETECTED !!!
+...
+[ahci] read_block(360472) wait failed: AHCI: command timeout
+[init] Failed to exec hello_nostd_padded: EIO
+```
+
+The last unambiguous tag for the hello exec was `q`: about to read ELF file
+content. No `d` (file content read complete) and no exec-target `[F19_ELF]`
+entry verification appeared before the AHCI timeout.
+
+### Probe B: skip bsshd
+
+When init temporarily skipped bsshd and performed only the boot-script exec,
+the same target completed:
+
+```text
+[init] Breenix init starting (PID 1)
+[init] bsshd skipped for F19
+F123456789SC[init-child] before hello_nostd_padded exec
+[F19_EXEC] E
+[F19_EXEC] N
+[F19_EXEC] A
+[F19_EXEC] O
+[F19_EXEC] r
+[F19_EXEC] g
+[F19_EXEC] i
+[F19_EXEC] n
+[F19_EXEC] p
+[F19_EXEC] q
+[F19_EXEC] d
+[F19_EXEC] L
+[F19_EXEC] P
+[F19_EXEC] M
+[F19_ELF] entry=0x40018004 phys=0x4405b004 loaded=0xf81f0ffe expected=0xf81f0ffe match=1
+[F19_EXEC] S
+[F19_EXEC] F
+[F19_EXEC] T
+[F19_EXEC] R
+[hello_nostd_padded] raw-before
+[hello_nostd_padded] raw-after
+[syscall] exit(42) pid=2 name=/bin/hello_nostd_padded
+[init] Boot script exited with code 42
+```
+
+### Verdict
+
+Verdict: **CON0 confirmed**. The no-std high-entry diagnostic executes
+correctly when it is the only early boot exec read. The bsh symptom is not Rust
+std startup and not ELF entry mapping. It is triggered by overlapping early
+boot exec reads: the background bsshd exec and the boot shell exec contend in
+the ext2/AHCI read path, leading to a stalled file-content read and eventual
+AHCI timeout/EIO under instrumentation. The minimal F19 fix should serialize
+early boot exec reads by running the boot shell first and starting bsshd only
+after the boot script has completed.
