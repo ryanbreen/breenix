@@ -2,7 +2,7 @@
 # F21 VirGL scanout bisect verdict.
 #
 # git-bisect exit semantics:
-#   0   known-good display update (cornflower-blue-ish)
+#   0   known-good display update (cornflower-blue-ish or rendered non-red)
 #   1   known-bad display update (solid red)
 #   125 skip inconclusive/build/capture failures
 
@@ -149,13 +149,14 @@ r, g, b = [int(v) for v in rgb]
 redish = float(data.get("redish_fraction", 0.0))
 solid_red = bool(data.get("solid_red", False))
 
-# The verified good commit captures CSS cornflower blue: (100, 149, 237).
-# Keep a small tolerance around that exact value instead of using a brittle
-# green > 150 cutoff that would reject the known-good capture.
+# The first verified good commit captures CSS cornflower blue: (100, 149, 237).
+# Later known-good commits render a dark desktop/compositor pattern instead of
+# cornflower blue, so rendered non-red content is also scanout-good.
 blue_good = r < 150 and 130 <= g <= 180 and b > 200
 red_bad = solid_red or (r > 200 and g < 80 and b < 80) or redish >= 0.95
+rendered_nonred_good = bool(data.get("passes_rendered_desktop_bar", False)) and redish < 0.10
 
-if blue_good:
+if blue_good or rendered_nonred_good:
     print(f"good rgb={r},{g},{b}")
 elif red_bad:
     print(f"bad rgb={r},{g},{b}")
@@ -180,4 +181,3 @@ case "$verdict" in
         skip "inconclusive ${verdict#skip }"
         ;;
 esac
-
