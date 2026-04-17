@@ -94,7 +94,7 @@ distinct=102
 
 ## PR
 
-Pending before branch push.
+https://github.com/ryanbreen/breenix/pull/315
 
 ## Self-Audit
 
