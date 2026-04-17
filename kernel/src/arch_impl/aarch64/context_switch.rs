@@ -3367,7 +3367,7 @@ fn audit_f20d_idle_state_once(cpu_id: usize, moment: &str, done: &[AtomicBool; 8
     let gicr_ispendr0 = crate::arch_impl::aarch64::gic::read_gicr_ispendr0(cpu_id);
 
     while F20D_IDLE_AUDIT_PRINT_LOCK
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
         .is_err()
     {
         core::hint::spin_loop();
@@ -3412,7 +3412,7 @@ fn audit_f20d_idle_state_once(cpu_id: usize, moment: &str, done: &[AtomicBool; 8
         core::arch::asm!("msr daif, {}", in(reg) print_daif, options(nomem, nostack));
         core::arch::asm!("isb", options(nomem, nostack));
     }
-    F20D_IDLE_AUDIT_PRINT_LOCK.store(false, Ordering::Relaxed);
+    F20D_IDLE_AUDIT_PRINT_LOCK.store(false, Ordering::Release);
 }
 
 /// ARM64 idle loop - wait for interrupts.
