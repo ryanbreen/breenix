@@ -69,6 +69,163 @@ fn read_init_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> 
     Ok(elf_data)
 }
 
+#[cfg(target_arch = "aarch64")]
+static F20D_END_BOOT_AUDIT_DUMPED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// F20d diagnostic: emit a one-shot per-CPU timer/idle snapshot after the
+/// `--test 45` dwell has had time to expose CPU 0 WFI behavior.
+#[cfg(target_arch = "aarch64")]
+fn spawn_f20d_end_boot_audit_threads() {
+    let online = kernel::arch_impl::aarch64::smp::cpus_online()
+        .max(1)
+        .min(kernel::arch_impl::aarch64::constants::MAX_CPUS as u64);
+
+    for _ in 0..online {
+        if kernel::task::kthread::kthread_run(f20d_end_boot_audit_thread, "f20d_audit").is_err() {
+            serial_println!("[F20D] failed to spawn end-of-boot audit thread");
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn f20d_end_boot_audit_thread() {
+    let freq = kernel::arch_impl::aarch64::timer::frequency_hz();
+    let wait_ticks = freq.saturating_mul(30);
+    let start = kernel::arch_impl::aarch64::timer::rdtsc();
+
+    while kernel::arch_impl::aarch64::timer::rdtsc().wrapping_sub(start) < wait_ticks {
+        unsafe {
+            core::arch::asm!("msr daifclr, #0xf", "wfi", options(nomem, nostack));
+        }
+    }
+
+    if !F20D_END_BOOT_AUDIT_DUMPED.swap(true, core::sync::atomic::Ordering::AcqRel) {
+        f20d_dump_end_boot_audit();
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn f20d_dump_end_boot_audit() {
+    use core::sync::atomic::Ordering;
+    use kernel::arch_impl::aarch64::context_switch::{
+        F20D_LAST_IDLE_ARM_TICK, F20D_LAST_IDLE_ARM_TSC, F20D_LAST_POST_WFI_TICK,
+        F20D_POST_WFI_COUNT,
+    };
+    use kernel::arch_impl::aarch64::timer_interrupt::{
+        IDLE_LOOP_COUNT, TIMER_TICK_CNTV_CTL, TIMER_TICK_COUNT, TIMER_TICK_HW_COUNT,
+        TIMER_TICK_HW_CPU,
+    };
+
+    let cpu = kernel::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
+    serial_println!(
+        "[END_OF_BOOT_AUDIT] cpu={} cntvct={} global_ticks={} cpus_online={}",
+        cpu,
+        kernel::arch_impl::aarch64::timer::rdtsc(),
+        kernel::time::get_ticks(),
+        kernel::arch_impl::aarch64::smp::cpus_online(),
+    );
+    serial_println!(
+        "[END_OF_BOOT_AUDIT] tick_count=[{},{},{},{},{},{},{},{}]",
+        TIMER_TICK_COUNT[0].load(Ordering::Relaxed),
+        TIMER_TICK_COUNT[1].load(Ordering::Relaxed),
+        TIMER_TICK_COUNT[2].load(Ordering::Relaxed),
+        TIMER_TICK_COUNT[3].load(Ordering::Relaxed),
+        TIMER_TICK_COUNT[4].load(Ordering::Relaxed),
+        TIMER_TICK_COUNT[5].load(Ordering::Relaxed),
+        TIMER_TICK_COUNT[6].load(Ordering::Relaxed),
+        TIMER_TICK_COUNT[7].load(Ordering::Relaxed),
+    );
+    serial_println!(
+        "[END_OF_BOOT_AUDIT] idle_arm_tick=[{},{},{},{},{},{},{},{}]",
+        F20D_LAST_IDLE_ARM_TICK[0].load(Ordering::Relaxed),
+        F20D_LAST_IDLE_ARM_TICK[1].load(Ordering::Relaxed),
+        F20D_LAST_IDLE_ARM_TICK[2].load(Ordering::Relaxed),
+        F20D_LAST_IDLE_ARM_TICK[3].load(Ordering::Relaxed),
+        F20D_LAST_IDLE_ARM_TICK[4].load(Ordering::Relaxed),
+        F20D_LAST_IDLE_ARM_TICK[5].load(Ordering::Relaxed),
+        F20D_LAST_IDLE_ARM_TICK[6].load(Ordering::Relaxed),
+        F20D_LAST_IDLE_ARM_TICK[7].load(Ordering::Relaxed),
+    );
+    serial_println!(
+        "[END_OF_BOOT_AUDIT] idle_arm_tsc=[{},{},{},{},{},{},{},{}]",
+        F20D_LAST_IDLE_ARM_TSC[0].load(Ordering::Relaxed),
+        F20D_LAST_IDLE_ARM_TSC[1].load(Ordering::Relaxed),
+        F20D_LAST_IDLE_ARM_TSC[2].load(Ordering::Relaxed),
+        F20D_LAST_IDLE_ARM_TSC[3].load(Ordering::Relaxed),
+        F20D_LAST_IDLE_ARM_TSC[4].load(Ordering::Relaxed),
+        F20D_LAST_IDLE_ARM_TSC[5].load(Ordering::Relaxed),
+        F20D_LAST_IDLE_ARM_TSC[6].load(Ordering::Relaxed),
+        F20D_LAST_IDLE_ARM_TSC[7].load(Ordering::Relaxed),
+    );
+    serial_println!(
+        "[END_OF_BOOT_AUDIT] post_wfi_count=[{},{},{},{},{},{},{},{}]",
+        F20D_POST_WFI_COUNT[0].load(Ordering::Relaxed),
+        F20D_POST_WFI_COUNT[1].load(Ordering::Relaxed),
+        F20D_POST_WFI_COUNT[2].load(Ordering::Relaxed),
+        F20D_POST_WFI_COUNT[3].load(Ordering::Relaxed),
+        F20D_POST_WFI_COUNT[4].load(Ordering::Relaxed),
+        F20D_POST_WFI_COUNT[5].load(Ordering::Relaxed),
+        F20D_POST_WFI_COUNT[6].load(Ordering::Relaxed),
+        F20D_POST_WFI_COUNT[7].load(Ordering::Relaxed),
+    );
+    serial_println!(
+        "[END_OF_BOOT_AUDIT] post_wfi_tick=[{},{},{},{},{},{},{},{}]",
+        F20D_LAST_POST_WFI_TICK[0].load(Ordering::Relaxed),
+        F20D_LAST_POST_WFI_TICK[1].load(Ordering::Relaxed),
+        F20D_LAST_POST_WFI_TICK[2].load(Ordering::Relaxed),
+        F20D_LAST_POST_WFI_TICK[3].load(Ordering::Relaxed),
+        F20D_LAST_POST_WFI_TICK[4].load(Ordering::Relaxed),
+        F20D_LAST_POST_WFI_TICK[5].load(Ordering::Relaxed),
+        F20D_LAST_POST_WFI_TICK[6].load(Ordering::Relaxed),
+        F20D_LAST_POST_WFI_TICK[7].load(Ordering::Relaxed),
+    );
+    serial_println!(
+        "[END_OF_BOOT_AUDIT] idle_count=[{},{},{},{},{},{},{},{}]",
+        IDLE_LOOP_COUNT[0].load(Ordering::Relaxed),
+        IDLE_LOOP_COUNT[1].load(Ordering::Relaxed),
+        IDLE_LOOP_COUNT[2].load(Ordering::Relaxed),
+        IDLE_LOOP_COUNT[3].load(Ordering::Relaxed),
+        IDLE_LOOP_COUNT[4].load(Ordering::Relaxed),
+        IDLE_LOOP_COUNT[5].load(Ordering::Relaxed),
+        IDLE_LOOP_COUNT[6].load(Ordering::Relaxed),
+        IDLE_LOOP_COUNT[7].load(Ordering::Relaxed),
+    );
+    serial_println!(
+        "[END_OF_BOOT_AUDIT] hw_tick_count=[{},{},{},{},{},{},{},{}]",
+        TIMER_TICK_HW_COUNT[0].load(Ordering::Relaxed),
+        TIMER_TICK_HW_COUNT[1].load(Ordering::Relaxed),
+        TIMER_TICK_HW_COUNT[2].load(Ordering::Relaxed),
+        TIMER_TICK_HW_COUNT[3].load(Ordering::Relaxed),
+        TIMER_TICK_HW_COUNT[4].load(Ordering::Relaxed),
+        TIMER_TICK_HW_COUNT[5].load(Ordering::Relaxed),
+        TIMER_TICK_HW_COUNT[6].load(Ordering::Relaxed),
+        TIMER_TICK_HW_COUNT[7].load(Ordering::Relaxed),
+    );
+    serial_println!(
+        "[END_OF_BOOT_AUDIT] sw_to_hw_map=[{},{},{},{},{},{},{},{}]",
+        TIMER_TICK_HW_CPU[0].load(Ordering::Relaxed),
+        TIMER_TICK_HW_CPU[1].load(Ordering::Relaxed),
+        TIMER_TICK_HW_CPU[2].load(Ordering::Relaxed),
+        TIMER_TICK_HW_CPU[3].load(Ordering::Relaxed),
+        TIMER_TICK_HW_CPU[4].load(Ordering::Relaxed),
+        TIMER_TICK_HW_CPU[5].load(Ordering::Relaxed),
+        TIMER_TICK_HW_CPU[6].load(Ordering::Relaxed),
+        TIMER_TICK_HW_CPU[7].load(Ordering::Relaxed),
+    );
+    serial_println!(
+        "[END_OF_BOOT_AUDIT] timer_ctl=[{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x}]",
+        TIMER_TICK_CNTV_CTL[0].load(Ordering::Relaxed),
+        TIMER_TICK_CNTV_CTL[1].load(Ordering::Relaxed),
+        TIMER_TICK_CNTV_CTL[2].load(Ordering::Relaxed),
+        TIMER_TICK_CNTV_CTL[3].load(Ordering::Relaxed),
+        TIMER_TICK_CNTV_CTL[4].load(Ordering::Relaxed),
+        TIMER_TICK_CNTV_CTL[5].load(Ordering::Relaxed),
+        TIMER_TICK_CNTV_CTL[6].load(Ordering::Relaxed),
+        TIMER_TICK_CNTV_CTL[7].load(Ordering::Relaxed),
+    );
+}
+
 /// Create a userspace process from a pre-loaded ELF and jump to it.
 ///
 /// Takes ELF bytes that were read earlier (e.g., before SMP bring-up) and
@@ -208,6 +365,7 @@ fn launch_init_from_elf(
             idle_count,
             cpus_online
         );
+        kernel::arch_impl::aarch64::context_switch::enable_f20d_idle_audit();
     }
 
     // Set per-CPU pointers to the thread in the scheduler
@@ -1044,6 +1202,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         #[cfg(feature = "btrt")]
         kernel::test_framework::btrt::pass(kernel::test_framework::catalog::BOOT_TESTS_COMPLETE);
     }
+
+    #[cfg(target_arch = "aarch64")]
+    spawn_f20d_end_boot_audit_threads();
 
     // Finalize BTRT: in non-testing mode, finalize now (kernel milestones only).
     // In testing mode, auto-finalize happens via on_process_exit() when all

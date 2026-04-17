@@ -1,0 +1,363 @@
+[ram] 6 regions:
+[ram]   0x40000000 - 0xffff0000 (3071 MB)
+[ram]   0x100000000 - 0x140000000 (1024 MB)
+[ram]   0x140025000 - 0x23be0f000 (4029 MB)
+[ram]   0x23c000000 - 0x23c020000 (0 MB)
+[ram]   0x23c080000 - 0x23f550000 (52 MB)
+[ram]   0x23f930000 - 0x240000000 (6 MB)
+[kern] entry_phys=0x40099fa8 load=0x40080000-0x50104000
+[gop-serial] UART: base=0x2110000 type=0 (PL011)
+[gop-serial] Enumerating GOP display modes:
+[gop-serial]   Mode 0: 1024x768 format=BGR
+[gop-serial] 1 modes total, best=786432 pixels
+[gop-serial] Already at best mode: 1024x768
+[gop-serial] Selected: 1024x768 stride=1024 base=0x10000000 size=0x300000
+ZZ0000000040099fa8BDMTIVL!J>12KPHEOS
+========================================
+  Breenix ARM64 Kernel Starting
+  BUILD_ID: 0069c7aee517f7
+========================================
+
+[boot] DIAG_MARKER_XHCI_A
+[boot] DIAG_MARKER_XHCI_B
+[boot] DIAG_MARKER_XHCI_C
+[boot] loader xhci_hcrst_raw=0x0 ecam=0x2300000
+[boot] Current exception level: EL1
+[boot] MMU already enabled (high-half kernel)
+[boot] Initializing memory management (0x44000000-0x50000000)...
+[boot] Memory management ready
+[boot] Initializing Generic Timer...
+[boot] Timer frequency: 24000000 Hz (24 MHz)
+[boot] Initializing PL031 RTC...
+[boot] Current timestamp: 24645762
+[boot] Initializing GIC...
+[gic] GICR probe 0x02500000: WAKER=0x00000000 <<< VALID
+[gic] GICD_CTLR wrote 0x53, readback=0x53
+[gic] GICR_IGROUPR0: wrote 0xFFFFFFFF, readback=0xffffffff
+[gic] ICC_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[boot] GIC initialized (version 3)
+[boot] Enabling UART interrupts...
+[boot] Enabling GIC IRQ 33 (UART0)...
+[uart] IMSC: 0x0 -> 0x50 (verify: 0x50)
+[uart] FR=0x90 (RXFE=1), RIS=0x20
+[gic] IRQ 33 state (GICv3):
+  enabled=true, group1=true, pending=false
+  priority=0xa0, GICD_CTLR=0x53
+  ICC_PMR=0xf0
+[boot] UART interrupts enabled
+[boot] Enabling interrupts...
+[boot] Interrupts enabled: true
+[boot] Initializing device drivers...
+[drivers] Initializing driver subsystem...
+[drivers] PCI ECAM at 0x2300000, enumerating PCI bus...
+[drivers] Found 7 PCI devices
+[pci] 00:01.0 [8086:293e] class=04/03
+[pci]   BAR0: 0x18008000 (16384)
+[pci] 00:02.0 [8086:265c] class=0c/03
+[pci]   BAR0: 0x18012000 (4096)
+[pci]   BAR1: 0x0 (4096)
+[pci]   BAR2: 0x0 (4096)
+[pci]   BAR3: 0x0 (4096)
+[pci]   BAR4: 0x0 (4096)
+[pci]   BAR5: 0x0 (4096)
+[pci] 00:03.0 [1033:0194] class=0c/03
+[pci]   BAR0: 0x18011000 (4096)
+[pci]   BAR1: 0x0 (4096)
+[pci]   BAR2: 0x0 (4096)
+[pci]   BAR3: 0x0 (4096)
+[pci]   BAR4: 0x0 (4096)
+[pci]   BAR5: 0x0 (4096)
+[pci] 00:05.0 [1af4:1000] class=02/00
+[pci]   BAR0: 0x18010000 (4096)
+[pci]   BAR1: 0x1800f000 (4096)
+[pci] 00:09.0 [1ab8:4000] class=ff/00
+[pci]   BAR0: 0x1800e000 (4096)
+[pci] 00:0a.0 [1af4:1050] class=03/00
+[pci]   BAR0: 0x10000000 (134217728)
+[pci]   BAR1: 0x1800d000 (4096)
+[pci]   BAR4: 0x18004000 (16384)
+[pci] 00:0e.0 [1af4:1053] class=07/80
+[pci]   BAR1: 0x1800c000 (4096)
+[pci]   BAR4: 0x18000000 (16384)
+[drivers] Found 2 VirtIO PCI devices
+[virtio-gpu-pci] Device features: 0x0000000100000001
+[virtio-gpu-pci] VIRGL offered: true
+[virtio-gpu-pci] Negotiated: 0x0000000100000001 (VIRGL=true)
+[virtio-gpu-pci] VIRGL_ENABLED stored=true, readback=true, addr=0xffff0000412ab0c0
+[pci] 00:0a.0: capabilities:
+  cap 0x11 (MSI-X) @ 0xb0: dw0=0x0001bc11 dw1=0x00000001
+  cap 0x09 (?) @ 0xbc: dw0=0x0410cc09 dw1=0x00000004
+  cap 0x09 (?) @ 0xcc: dw0=0x0310dc09 dw1=0x00000004
+  cap 0x09 (?) @ 0xdc: dw0=0x0214f009 dw1=0x00000004
+  cap 0x09 (?) @ 0xf0: dw0=0x01100009 dw1=0x00000004
+[gicv2m] MSI_TYPER raw=0x80350040 -> base_spi=53, num_spi=64
+[virtio-gpu-pci] MSI-X cap at 0xb0: 2 vectors
+[virtio-gpu-pci] MSI-X enabled: SPI 53 doorbell=0x2250040 vectors=2
+[virtio-gpu-pci] config_msix_vector: wrote=0x0 readback=0x0
+[virtio-gpu-pci] Device has 2 queues
+[virtio-gpu-pci] Queue 0 msix_vector: wrote=0x0 readback=0x0
+[virtio-gpu-pci] Queue 1 msix_vector: wrote=0x0 readback=0x0
+[virtio-gpu-pci] Cursor queue (q1) set up: size=16
+[virtio-gpu-pci] Config: num_scanouts=16, num_capsets=1
+[virtio-gpu-pci] Capset 0: id=2, max_ver=2, max_size=768
+[virtio-gpu-pci] GET_CAPSET(id=2, ver=2): resp=0x1103
+[virtio-gpu-pci] Display reports: 1024x768
+[virtio-gpu-pci] Resolution: 1280x960 (display=1024x768, GOP=1024x768, min=1280x960)
+[virtio-gpu-pci] 2D resource created and scanout set
+[virtio-gpu-pci] MSI-X configured (SPI=53, deferred enable after VirGL init)
+[virtio-gpu-pci] Initialized: 1280x960
+[drivers] VirtIO GPU (PCI) initialized
+[virgl] Initializing VirGL 3D pipeline...
+[virgl] 3D framebuffer backing: heap ptr=0xffff0000502e2000, phys=0x502e2000, size=4915200
+[virgl] Step 1: context created
+[virgl] Step 2: 3D resource created (1280x960, bind=0x0014000a)
+[virgl] attach_backing: phys=0x502e2000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x40302000(32B), entries=0x50792000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl] Step 3: backing attached
+[virgl] Step 4: resource attached to context
+[virgl] Step 5: resource primed
+[virgl] SUBMIT_3D OK: id=1 used_len=0 resp_flags=0x1 resp_fence=1
+[virgl] Step 6: VirGL CLEAR (cornflower blue)
+[virgl] Step 7: SET_SCANOUT + RESOURCE_FLUSH done
+[virgl] Step 7: VB resource created (no backing, INLINE_WRITE only)
+[virgl-composite] Texture backing: heap ptr=0xffff000050792000, phys=0x50792000, 1280x960 (4915200B, 1200 pages)
+[virgl] attach_backing: phys=0x50792000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x40302000(32B), entries=0x50c42000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-composite] Texture resource initialized (id=5)
+[virgl] attach_backing: phys=0x50c42000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x40302000(32B), entries=0x510f2000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=0 res_id=10 1280x960
+[virgl] attach_backing: phys=0x510f2000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x40302000(32B), entries=0x515a2000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=1 res_id=11 1280x960
+[virgl] attach_backing: phys=0x515a2000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x40302000(32B), entries=0x51a52000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=2 res_id=12 1280x960
+[virgl] attach_backing: phys=0x51a52000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x40302000(32B), entries=0x51f02000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=3 res_id=13 1280x960
+[virgl] attach_backing: phys=0x51f02000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x40302000(32B), entries=0x523b2000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=4 res_id=14 1280x960
+[virgl] attach_backing: phys=0x523b2000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x40302000(32B), entries=0x52862000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=5 res_id=15 1280x960
+[virgl] attach_backing: phys=0x52862000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x40302000(32B), entries=0x52d12000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=6 res_id=16 1280x960
+[virgl] attach_backing: phys=0x52d12000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x40302000(32B), entries=0x531c2000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=7 res_id=17 1280x960
+[virgl] attach_backing: phys=0x531c2000, len=8192, nr_pages=2
+[virgl] attach_backing: sending 3-desc chain: hdr=0x40302000(32B), entries=0x502e0040(32B)
+[virgl] attach_backing: OK (2 pages attached)
+[virgl-cursor] Cursor texture initialized (id=6, 16x80, 5 shapes)
+[virgl] attach_backing: phys=0x531c4000, len=4096, nr_pages=1
+[virgl] attach_backing: sending 3-desc chain: hdr=0x40302000(32B), entries=0x502e0040(16B)
+[virgl] attach_backing: OK (1 pages attached)
+[virgl-dimmer] Dimmer texture initialized (id=7, 4x4)
+[virgl] Step 8: Compositor texture initialized
+[virgl] Step 9: full pipeline+draw batch (191 DWORDs)
+[virgl] SUBMIT_3D OK: id=2 used_len=0 resp_flags=0x1 resp_fence=2
+[virgl] Step 10: SET_SCANOUT + RESOURCE_FLUSH
+[virgl] VirGL 3D pipeline initialized successfully
+[drivers] VirGL 3D acceleration active
+[drivers] Compositor backend: VirGL
+[virtio-gpu-pci] MSI-X SPI 53 enabled — interrupt-driven GPU wake active
+[virtio-net-pci] Searching for VirtIO network device on PCI bus...
+[virtio-net-pci] Found at 00:05.0 [1af4:1000]
+[virtio-net-pci] BAR0: phys=0x18010000 virt=0xffff000018010000 size=4096
+[virtio-net-pci] Device features: 0x6187bfa3
+[virtio-net-pci] MAC: 00:1c:42:1a:48:8d
+[virtio-net-pci] Queue 0 max size: 256
+[virtio-net-pci] Queue 0 PFN=0x402f5 (phys=0x402f5000)
+[virtio-net-pci] Queue 1 max size: 256
+[virtio-net-pci] Queue 1 PFN=0x402f8 (phys=0x402f8000)
+[pci] 00:05.0: capabilities:
+  cap 0x10 (PCIe) @ 0x48: dw0=0x00024010 dw1=0x00000fc0
+  cap 0x01 (PM) @ 0x40: dw0=0x0022f401 dw1=0x00000000
+  cap 0x11 (MSI-X) @ 0xf4: dw0=0x00020011 dw1=0x00000001
+[virtio-net-pci] MSI-X cap at 0xf4: 3 vectors
+[virtio-net-pci] MSI-X vector assignments: cfg=0xffff rx=0x0
+[virtio-net-pci] MSI-X enabled: SPI 54 doorbell=0x2250040 vectors=3
+[virtio-net-pci] Network device initialized successfully
+[drivers] VirtIO network (PCI) initialized
+[drivers] SVGA3 init skipped: SVGA3 device not found
+[drivers] Found XHCI at 00:03.0 [1033:0194]
+[xhci] DMA addrs: DCBAA=0x4027e000 CMD_RING=0x4027f000 EVT_RING=0x4028f000 ERST=0x402fd000
+[xhci] Regs: USBCMD=0x5 USBSTS=0x0 CRCR=0x0 DCBAAP=0x4027e000
+[xhci] IR0: IMAN=0x2 ERDP=0x4028f000 ERSTBA=0x402fd000
+[xhci] Port scan: 14 ports
+[xhci]   port 1: PORTSC=0x00021203 CCS=1 PED=1 speed=4
+[xhci]   port 2: PORTSC=0x00021203 CCS=1 PED=1 speed=4
+[xhci]   port 3: PORTSC=0x00021203 CCS=1 PED=1 speed=4
+[xhci]   port 4: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 5: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 6: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 7: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 8: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 9: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 10: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 11: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 12: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 13: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 14: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci] port 1 connected: PORTSC=0x00001203 PED=1 speed=4
+[xhci] port 1 EnableSlot -> slot 1
+[xhci] port 1 AddressDevice OK (slot 1)
+[xhci] port 2 connected: PORTSC=0x00001203 PED=1 speed=4
+[xhci] port 2 EnableSlot -> slot 2
+[xhci] port 2 AddressDevice OK (slot 2)
+[xhci] slot2: vid=0x203a pid=0xfffb class=0x00/0x00/0x00
+[xhci] slot2 iface0: class=0x03 sub=0x01 proto=0x01 numEP=1
+[xhci] HID iface: proto=1 subclass=1 -> keyboard (hid_idx=0)
+[xhci] slot2 iface1: class=0x03 sub=0x00 proto=0x00 numEP=1
+[xhci] HID iface: proto=0 subclass=0 -> NKRO (hid_idx=2)
+[xhci] port 3 connected: PORTSC=0x00001203 PED=1 speed=4
+[xhci] port 3 EnableSlot -> slot 3
+[xhci] port 3 AddressDevice OK (slot 3)
+[xhci] slot3: vid=0x203a pid=0xfff9 class=0xef/0x02/0x01
+[xhci] slot3 iface0: class=0x0e sub=0x01 proto=0x00 numEP=0
+[xhci] slot3 iface1: class=0x0e sub=0x02 proto=0x00 numEP=1
+[xhci] start_hid_polling: kbd=slot2/dci3 nkro=dci5 mouse=slot0/dci0 mouse2=dci0
+[xhci] Initialized: 32 slots, MSI irq=55
+[drivers] XHCI USB controller initialized
+[ahci] Platform AHCI at phys 0x2140000, virt 0xffff000002140000
+[ahci] HBA version 1.256, 6 ports, 32 cmd slots, PI=0x0000003f
+[ahci] Port 0: Sata, 131072 sectors (64 MB)
+[ahci] Port 1: Sata, 524288 sectors (256 MB)
+[ahci] IRQ probe: using port 0 dma_index 0
+[ahci] IRQ probe: ISPENDR before=[0x00800000, 0x00000000, 0x00000000] after=[0x00800004, 0x00000000, 0x00000000]
+[ahci] IRQ probe: PORT_IS=0x00000001 (should have D2H bit set)
+[ahci] Platform IRQ probe: discovered SPI 34
+[ahci] Platform IRQ enabled: SPI 34 (wired, level-triggered)
+[drivers] AHCI initialized (platform MMIO): 2 SATA device(s)
+[drivers] Driver subsystem initialized (PCI)
+[boot] Found 7 devices
+[boot] Initializing network stack...
+[net] Initializing network stack...
+[net] Using VirtIO net PCI driver (Parallels)
+[net] MAC address: 00:1c:42:1a:48:8d
+NET: IP address: 10.211.55.100
+NET: Gateway: 10.211.55.1
+Network stack initialized
+NET: Sending ARP request for gateway 10.211.55.1
+ARP request sent successfully
+[virtio-net-pci] RX diag: used_idx=1 last_used=0 avail_idx=4 isr=0x0 msi_count=0
+[virtio-net-pci] RX diag: used_idx=1 last_used=1 avail_idx=8 isr=0x0 msi_count=0
+NET: ARP resolved gateway MAC: 00:1c:42:00:00:18
+NET: Sending ICMP echo request to gateway 10.211.55.1
+[net] ICMP echo reply received from 10.211.55.1 seq=1
+NET: Network initialization complete
+[virtio-net-pci] MSI-X SPI 54 enabled (post-init)
+[boot] Initializing filesystem...
+[ext2] No VirtIO block device, trying AHCI...
+[ext2] AHCI device 0: 131072 sectors (64 MB)
+[ext2] AHCI device 0: not ext2 (magic=0x0064)
+[ext2] AHCI device 1: 524288 sectors (256 MB)
+[ext2] Found ext2 superblock on AHCI device 1
+[boot] ext2 root filesystem mounted
+[boot] No home filesystem: No home block device available (expected at device index 3 or 1) (continuing)
+[boot] devfs initialized at /dev
+[boot] devptsfs initialized at /dev/pts
+[boot] CPU detected: ARM Unknown
+[boot] procfs initialized at /proc
+[boot] TTY subsystem initialized
+[boot] Initializing graphics...
+[boot] VirGL active — skipping GOP framebuffer init (2D resource already set up in gpu_pci::init)
+[boot] FB_INFO_CACHE populated for VirGL display (1280x960)
+[boot] USB HID input active via XHCI (polled from timer)
+[boot] Initializing per-CPU data...
+[boot] Per-CPU data initialized
+[boot] Initializing process manager...
+[boot] Process manager initialized
+[boot] Initializing scheduler...
+[boot] Scheduler initialized
+[boot] Workqueue subsystem initialized
+[boot] Softirq subsystem initialized
+[boot] Render thread skipped — VirGL owns the display
+[boot] Tracing subsystem initialized and enabled
+[boot] Pre-loading /sbin/init from ext2 (before timer)...
+[boot] Init binary pre-loaded: 293208 bytes
+[boot] Initializing timer interrupt...
+[timer] Timer configured for ~1000 Hz (24000 ticks per interrupt)
+[timer] Using virtual timer (PPI 27)
+[boot] Timer interrupt initialized
+[smp] CPU 0 MPIDR=0x80000000, stack_base=0x43000000
+[smp] GICR covers 8 redistributors, probing CPUs 1..8
+[smp] Probing secondary CPUs via PSCI...
+[s1m@p1A]B CDCEPeUFG 11: PSCI CPU_ON success
+[gi2@1c]ABC DEIeFCGC2_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[gic] ICC_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[smp] CPU 2: PSCI CPU_ON success
+T1[3s@1mABpCD]Ee FGC3PU 3: PSCI CPU_ON success
+[g4@1iABcCD]Ee FGI4CC_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[gic] ICC_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[smp] CPU 4: PSCI CPU_ON success
+[5@1AsBCmDpEeF]G 5CPU 5: PSCI CPU_ON success
+[g6i@1cA]BC DEIeCFGC_6CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[smp] CPU 6: PSCI CPU_ON success
+[T2gic]7@ 1IABCCDCE_CeFTGL7R_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[smp] CPU 7: PSCI CPU_ON success
+[gic] ICC_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[smp] 8 CPUs online
+[GIC_CPU_AUDIT] cpu=0 mpidr=0x80000000 sre=0x7 ctlr=0x40402 pmr=0xf0 igrpen1=0x1 mismatch=0
+[GIC_CPU_AUDIT] cpu=1 mpidr=0x80000001 sre=0x7 ctlr=0x40402 pmr=0xf0 igrpen1=0x1 mismatch=0
+T3[GIC_CPU_AUDIT] cpu=2 mpidr=0x80000002 sre=0x7 ctlr=0x40402 pmr=0xf0 igrpen1=0x1 mismatch=0
+[GIC_CPU_AUDIT] cpu=3 mpidr=0x80000003 sre=0x7 ctlr=0x40402 pmr=0xf0 igrpen1=0x1 mismatch=0
+[GIC_CPU_AUDIT] cpu=4 mpidr=0x80000004 sre=0x7 ctlr=0x40402 pmr=0xf0 igrpen1=0x1 mismatch=0
+[GIC_CPU_AUDIT] cpu=5 mpidr=0x80000005 sre=0x7 ctlr=0x40402 pmr=0xf0 igrpen1=0x1 mismatch=0
+T4[GIC_CPU_AUDIT] cpu=6 mpidr=0x80000006 sre=0x7 ctlr=0x40402 pmr=0xf0 igrpen1=0x1 mismatch=0
+[GIC_CPU_AUDIT] cpu=7 mpidr=0x80000007 sre=0x7 ctlr=0x40402 pmr=0xf0 igrpen1=0x1 mismatch=0
+[GICR_MAP] cpu=0 rd_base=0x2500000 typer=0x0 affinity=0x0
+[GICR_MAP] cpu=1 rd_base=0x2520000 typer=0x100000100 affinity=0x1
+[GICR_MAP] cpu=2 rd_base=0x25c0000 typer=0x200000600 affinity=0x2
+T5[GICR_MAP] cpu=3 rd_base=0x2540000 typer=0x300000200 affinity=0x3
+[GICR_MAP] cpu=4 rd_base=0x2560000 typer=0x400000300 affinity=0x4
+[GICR_MAP] cpu=5 rd_base=0x2580000 typer=0x500000400 affinity=0x5
+[GICR_MAP] cpu=6 rd_base=0x25e0000 typer=0x600000710 affinity=0x6
+[GICR_MAP] cpu=7 rd_base=0x25a0000 typer=0x700000500 affinity=0x7
+T6
+========================================
+  Breenix ARM64 Boot Complete!
+========================================
+
+Hello from ARM64!
+
+[boot] Launching init from pre-loaded ELF...
+manager.create_process_with_argv [ARM64]: ENTRY - name='init', elf_size=293208, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 1
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f108
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 1
+[boot] Reset 8 idle thread contexts (CPUs online: 8)
+T7T8T9EL0_SYSCALTL0: First syscall from userspace (SPSR confirms EL0)
+[ OK ] syscall path verified
+[init] Breenix init starting (PID 1)
+F123456789SC[PER_CPU_IDLE_AUDIT] moment=pre_wfi cpu=2 mpidr=0x80000002 cntv_ctl=0x1 cntv_cval=0x35e1b4b cntvct=0x35dbd92 cntv_delta=0x5db9 icc_pmr=0xf0 icc_igrpen1=0x1 daif=0x0 icc_rpr=0xff gicr_isenabler0=0x8000000 gicr_ispendr0=0x1
+[PER_CPU_IDLE_AUDIT] moment=pre_wfi cpu=3 mpidr=0x80000003 cntv_ctl=0x1 cntv_cval=0x35e4115 cntvct=0x35de358 cntv_delta=0x5dbd icc_pmr=0xf0 icc_igrpen1=0x1 daif=0x0 icc_rpr=0xff gicr_isenabler0=0x8000000 gicr_ispendr0=0x1
+[PER_CPU_IDLE_AUDIT] moment=pre_wfi cpu=7 mpidr=0x80000007 cntv_ctl=0x1 cntv_cval=0x35e4ba4 cntvct=0x35dede6 cntv_delta=0x5dbe icc_pmr=0xf0 icc_igrpen1=0x1 daif=0x0 icc_rpr=0xff gicr_isenabler0=0x8000000 gicr_ispendr0=0x1
+[END_OF_BOOT_AUDIT] cpu=0 cntvct=776273856 global_ticks=29 cpus_online=8
+[END_OF_BOOT_AUDIT] tick_count=[29,24170,24166,24164,24167,24162,24167,24163]
+[END_OF_BOOT_AUDIT] idle_arm_tick=[29,24162,24166,24156,24159,24155,24159,24163]
+[END_OF_BOOT_AUDIT] idle_arm_tsc=[168007853,776050313,776280445,776050175,776050092,776060865,776050854,776276748]
+[END_OF_BOOT_AUDIT] post_wfi_count=[80,59,57,79,69,72,50,69]
+[END_OF_BOOT_AUDIT] post_wfi_tick=[29,23019,22973,17228,17209,17184,17176,17106]
+[END_OF_BOOT_AUDIT] idle_count=[123,2263,2251,2259,2262,2260,2236,2257]
+[END_OF_BOOT_AUDIT] hw_tick_count=[29,24171,24167,24165,24168,24164,24168,24164]
+[END_OF_BOOT_AUDIT] sw_to_hw_map=[0,1,2,3,4,5,6,7]
+[END_OF_BOOT_AUDIT] timer_ctl=[0x1,0x1,0x1,0x1,0x1,0x1,0x1,0x1]

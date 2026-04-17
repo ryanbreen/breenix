@@ -3308,6 +3308,113 @@ pub static CPU0_IDLE_CNTV_CVAL: AtomicU64 = AtomicU64::new(0);
 pub static CPU0_IDLE_CNTVCT: AtomicU64 = AtomicU64::new(0);
 pub static CPU0_IDLE_ITERATIONS: AtomicU64 = AtomicU64::new(0);
 
+static F20D_IDLE_PRE_AUDIT_DONE: [AtomicBool; 8] = [const { AtomicBool::new(false) }; 8];
+static F20D_IDLE_POST_AUDIT_DONE: [AtomicBool; 8] = [const { AtomicBool::new(false) }; 8];
+static F20D_IDLE_AUDIT_PRINT_LOCK: AtomicBool = AtomicBool::new(false);
+static F20D_IDLE_AUDIT_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// F20d diagnostic: per-CPU tick counter observed immediately before WFI.
+pub static F20D_LAST_IDLE_ARM_TICK: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+
+/// F20d diagnostic: CNTVCT observed immediately before WFI.
+pub static F20D_LAST_IDLE_ARM_TSC: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+
+/// F20d diagnostic: per-CPU tick counter observed if execution resumes after WFI.
+pub static F20D_LAST_POST_WFI_TICK: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+
+/// F20d diagnostic: number of times each CPU resumed at the instruction after WFI.
+pub static F20D_POST_WFI_COUNT: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+
+pub fn enable_f20d_idle_audit() {
+    F20D_IDLE_AUDIT_ENABLED.store(true, Ordering::Release);
+}
+
+#[inline(never)]
+fn audit_f20d_idle_state_once(cpu_id: usize, moment: &str, done: &[AtomicBool; 8]) {
+    if !F20D_IDLE_AUDIT_ENABLED.load(Ordering::Acquire) {
+        return;
+    }
+    if cpu_id >= done.len() {
+        return;
+    }
+    if done[cpu_id]
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+
+    let mpidr: u64;
+    let cntv_ctl: u64;
+    let cntv_cval: u64;
+    let cntvct: u64;
+    let icc_pmr: u64;
+    let icc_igrpen1: u64;
+    let daif: u64;
+    let icc_rpr: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
+        core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) cntv_ctl, options(nomem, nostack));
+        core::arch::asm!("mrs {}, cntv_cval_el0", out(reg) cntv_cval, options(nomem, nostack));
+        core::arch::asm!("mrs {}, cntvct_el0", out(reg) cntvct, options(nomem, nostack));
+        core::arch::asm!("mrs {}, icc_pmr_el1", out(reg) icc_pmr, options(nomem, nostack));
+        core::arch::asm!("mrs {}, icc_igrpen1_el1", out(reg) icc_igrpen1, options(nomem, nostack));
+        core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack));
+        core::arch::asm!("mrs {}, S3_0_C12_C11_3", out(reg) icc_rpr, options(nomem, nostack));
+    }
+
+    let gicr_isenabler0 = crate::arch_impl::aarch64::gic::read_gicr_isenabler0(cpu_id);
+    let gicr_ispendr0 = crate::arch_impl::aarch64::gic::read_gicr_ispendr0(cpu_id);
+
+    while F20D_IDLE_AUDIT_PRINT_LOCK
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        core::hint::spin_loop();
+    }
+
+    let print_daif: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, daif", out(reg) print_daif, options(nomem, nostack));
+        core::arch::asm!("msr daifset, #3", options(nomem, nostack));
+        core::arch::asm!("isb", options(nomem, nostack));
+    }
+
+    raw_uart_str("[PER_CPU_IDLE_AUDIT] moment=");
+    raw_uart_str(moment);
+    raw_uart_str(" cpu=");
+    raw_uart_dec(cpu_id as u64);
+    raw_uart_str(" mpidr=");
+    raw_uart_hex(mpidr);
+    raw_uart_str(" cntv_ctl=");
+    raw_uart_hex(cntv_ctl);
+    raw_uart_str(" cntv_cval=");
+    raw_uart_hex(cntv_cval);
+    raw_uart_str(" cntvct=");
+    raw_uart_hex(cntvct);
+    raw_uart_str(" cntv_delta=");
+    raw_uart_hex(cntv_cval.wrapping_sub(cntvct));
+    raw_uart_str(" icc_pmr=");
+    raw_uart_hex(icc_pmr);
+    raw_uart_str(" icc_igrpen1=");
+    raw_uart_hex(icc_igrpen1);
+    raw_uart_str(" daif=");
+    raw_uart_hex(daif);
+    raw_uart_str(" icc_rpr=");
+    raw_uart_hex(icc_rpr);
+    raw_uart_str(" gicr_isenabler0=");
+    raw_uart_hex(gicr_isenabler0 as u64);
+    raw_uart_str(" gicr_ispendr0=");
+    raw_uart_hex(gicr_ispendr0 as u64);
+    raw_uart_str("\n");
+
+    unsafe {
+        core::arch::asm!("msr daif, {}", in(reg) print_daif, options(nomem, nostack));
+        core::arch::asm!("isb", options(nomem, nostack));
+    }
+    F20D_IDLE_AUDIT_PRINT_LOCK.store(false, Ordering::Release);
+}
+
 /// ARM64 idle loop - wait for interrupts.
 ///
 /// Before each WFI, unconditionally re-arm the virtual timer. This works
@@ -3335,6 +3442,8 @@ pub extern "C" fn idle_loop_arm64() -> ! {
             crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
         }
 
+        audit_f20d_idle_state_once(cpu_id, "pre_wfi", &F20D_IDLE_PRE_AUDIT_DONE);
+
         // CPU 0 diagnostic: read GIC CPU interface + timer registers BEFORE
         // enabling IRQs, so we see the state that prevents interrupt delivery.
         if cpu_id == 0 {
@@ -3361,6 +3470,19 @@ pub extern "C" fn idle_loop_arm64() -> ! {
             }
         }
 
+        if cpu_id < F20D_LAST_IDLE_ARM_TICK.len() {
+            let cntvct: u64;
+            unsafe {
+                core::arch::asm!("mrs {}, cntvct_el0", out(reg) cntvct, options(nomem, nostack));
+            }
+            F20D_LAST_IDLE_ARM_TICK[cpu_id].store(
+                crate::arch_impl::aarch64::timer_interrupt::TIMER_TICK_COUNT[cpu_id]
+                    .load(Ordering::Relaxed),
+                Ordering::Relaxed,
+            );
+            F20D_LAST_IDLE_ARM_TSC[cpu_id].store(cntvct, Ordering::Relaxed);
+        }
+
         unsafe {
             core::arch::asm!(
                 "msr daifclr, #0xf", // Enable all interrupts
@@ -3368,6 +3490,17 @@ pub extern "C" fn idle_loop_arm64() -> ! {
                 options(nomem, nostack)
             );
         }
+
+        if cpu_id < F20D_LAST_POST_WFI_TICK.len() {
+            F20D_LAST_POST_WFI_TICK[cpu_id].store(
+                crate::arch_impl::aarch64::timer_interrupt::TIMER_TICK_COUNT[cpu_id]
+                    .load(Ordering::Relaxed),
+                Ordering::Relaxed,
+            );
+            F20D_POST_WFI_COUNT[cpu_id].fetch_add(1, Ordering::Relaxed);
+        }
+
+        audit_f20d_idle_state_once(cpu_id, "post_wfi", &F20D_IDLE_POST_AUDIT_DONE);
     }
 }
 
