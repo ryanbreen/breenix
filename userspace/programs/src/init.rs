@@ -33,18 +33,19 @@ fn main() {
         }
     }
 
-    // Fork bsh — it will detect it's the init shell and load /etc/init.js
+    // F19 Phase 0 diagnostic: temporarily exec hello_raw instead of bsh.
+    // Expected successful signature: "[hello_raw] start" then exit code 42.
     match fork() {
         Ok(ForkResult::Child) => {
-            let arg0 = b"bsh\0";
+            let arg0 = b"hello_raw\0";
             let argv: [*const u8; 2] = [
                 arg0.as_ptr(),
                 core::ptr::null(),
             ];
-            match execv(b"/bin/bsh\0", argv.as_ptr()) {
+            match execv(b"/bin/hello_raw\0", argv.as_ptr()) {
                 Ok(_) => unreachable!(),
                 Err(e) => {
-                    print!("[init] Failed to exec bsh: {}\n", e);
+                    print!("[init] Failed to exec hello_raw: {}\n", e);
                     std::process::exit(127);
                 }
             }
