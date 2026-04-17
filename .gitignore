@@ -99,6 +99,7 @@ xhci_ftrace*.txt
 .factory-runs/
 logs/linux-probe-cpu0/
 logs/breenix-parallels-cpu0/
+logs/f20f-*/
 .claude/worktrees/
 
 # Beads / Dolt files (added by bd init)
