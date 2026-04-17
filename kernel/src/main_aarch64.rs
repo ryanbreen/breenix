@@ -868,8 +868,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
 
     // Bring up secondary CPUs via PSCI CPU_ON.
     // Probe-based: try each CPU ID and let PSCI tell us which exist.
-    // Works on QEMU, Parallels, and VMware — all support PSCI via HVC.
-    {
+    //
+    // Parallels is intentionally excluded for now. Its secondary CPU path still
+    // faults after PSCI CPU_ON, which aborts boot before userspace can render.
+    // Keep Parallels single-CPU until the secondary MMU/stack path is fixed.
+    if kernel::platform_config::is_qemu() || kernel::platform_config::is_vmware() {
         // Tell boot.S the correct UART address for this platform's serial debug output
         kernel::arch_impl::aarch64::smp::set_uart_phys(kernel::platform_config::uart_base_phys());
 
@@ -964,6 +967,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         kernel::arch_impl::aarch64::gic::init_gicr_rdist_map(
             kernel::arch_impl::aarch64::smp::cpus_online() as usize,
         );
+    } else {
+        serial_println!("[smp] Skipping secondary CPUs on Parallels (single-CPU boot)");
     }
 
     // Test kthread lifecycle BEFORE creating userspace processes

@@ -82,7 +82,8 @@ pkill -9 qemu-system-x86 >/dev/null 2>&1 || true
 killall -9 qemu-system-x86_64 >/dev/null 2>&1 || true
 
 RUN_ARGS=(--parallels)
-if ./run.sh --help 2>/dev/null | grep -q -- '--parallels --test'; then
+RUN_HELP="$(./run.sh --help 2>/dev/null || true)"
+if [[ "$RUN_HELP" == *"--parallels --test"* ]]; then
     RUN_ARGS+=(--test "${F21_PARALLELS_TEST_SECONDS:-90}")
 else
     log "run.sh at ${SHA} lacks --test; using legacy --parallels path"
