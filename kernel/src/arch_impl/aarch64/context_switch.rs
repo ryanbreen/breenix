@@ -3309,14 +3309,6 @@ pub static CPU0_IDLE_CNTVCT: AtomicU64 = AtomicU64::new(0);
 pub static CPU0_IDLE_ITERATIONS: AtomicU64 = AtomicU64::new(0);
 
 /// ARM64 idle loop - wait for interrupts.
-///
-/// Before each WFI, unconditionally re-arm the virtual timer. This works
-/// around Parallels/HVF vtimer death: if the VMM permanently masks the
-/// physical vtimer (because it never saw the guest acknowledge via IMASK),
-/// re-arming in the idle loop gives the VMM a fresh chance to observe the
-/// timer state on the WFI trap. Writing CVAL (future) then CTL=1 ensures
-/// ISTATUS=0 at the WFI exit, which should cause the VMM to re-arm the
-/// physical vtimer.
 #[no_mangle]
 pub extern "C" fn idle_loop_arm64() -> ! {
     // Get CPU ID once (cheap MRS).
@@ -3328,11 +3320,6 @@ pub extern "C" fn idle_loop_arm64() -> ! {
         if cpu_id < 8 {
             crate::arch_impl::aarch64::timer_interrupt::IDLE_LOOP_COUNT[cpu_id]
                 .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        }
-        // Re-arm timer before WFI as a safety net against HVF vtimer death.
-        // This is cheap (4 instructions) and harmless if the timer is already armed.
-        if crate::arch_impl::aarch64::timer_interrupt::is_initialized() {
-            crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
         }
 
         // CPU 0 diagnostic: read GIC CPU interface + timer registers BEFORE
@@ -3363,6 +3350,7 @@ pub extern "C" fn idle_loop_arm64() -> ! {
 
         unsafe {
             core::arch::asm!(
+                "dsb sy",            // Match Linux cpu_do_idle() before WFI
                 "msr daifclr, #0xf", // Enable all interrupts
                 "wfi",               // Wait for interrupt
                 options(nomem, nostack)
