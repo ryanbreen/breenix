@@ -64,6 +64,28 @@ Serial checkpoints:
 [spawn] path='/sbin/telnetd'
 ```
 
+### Cycle 3 — PASS After Commit Rewrite
+
+- Branch HEAD: `f1cc7ae9`
+- Rebuild command: `./run.sh --clean --parallels --test 90`
+- Capture timing: fresh boot from rewritten PR branch HEAD; the first 75-second capture window had already elapsed, and `capture-display.sh` completed once Parallels released `prlctl capture`.
+- Capture: `.factory-runs/f23-bwm-parallels-render/cycle-3/fresh-capture.png`
+
+```text
+distinct=100 dominant=(17, 19, 48) dom_frac=0.0246
+big_color_buckets=10 blue_baseline=False red_baseline=False
+VERDICT=PASS
+```
+
+Serial checkpoints:
+
+```text
+[spawn] path='/bin/bwm'
+[bwm] Breenix Window Manager starting... (v2-chromeless-skip)
+[virgl-composite] Frame #1: 1280x960 → 1280x960 display
+[spawn] path='/sbin/telnetd'
+```
+
 ## Quality Gates
 
 - `userspace/programs/build.sh --arch aarch64`: pass.
@@ -76,7 +98,7 @@ Serial checkpoints:
 - No interrupt/syscall hot path changes.
 - No reverts of F1-F22 or PRs through #315.
 - No polling fallback added.
-- No false-positive claim: final PASS is from a fresh clean rebuild of branch HEAD `a2f58990`, captured after the target 75-second window and evaluated by `scripts/f23-render-verdict.sh`.
+- No false-positive claim: final PASS is from a fresh clean rebuild of rewritten PR branch HEAD `f1cc7ae9`, captured from that same boot and evaluated by `scripts/f23-render-verdict.sh`.
 
 ## PR
 
