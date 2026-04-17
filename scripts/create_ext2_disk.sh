@@ -295,13 +295,7 @@ HOTKEYS
 // spawn() starts a process in the background and returns its PID.
 // sleep() between spawns lets each child complete exec before the next fork.
 
-// System services
-spawn("/sbin/telnetd");
-sleep(1000);
-spawn("/sbin/blogd");
-sleep(1000);
-
-// Window compositor (must start before GUI apps)
+// Window compositor (must start before GUI apps and background services)
 spawn("/bin/bwm");
 sleep(1000);
 
@@ -313,6 +307,11 @@ sleep(1000);
 spawn("/bin/bounce");
 sleep(1000);
 spawn("/bin/bcheck");
+
+// System services
+spawn("/sbin/telnetd");
+sleep(1000);
+spawn("/sbin/blogd");
 INITJS
             echo "  Created /etc/init.js"
 
@@ -556,13 +555,7 @@ HOTKEYS
 // spawn() starts a process in the background and returns its PID.
 // sleep() between spawns lets each child complete exec before the next fork.
 
-// System services
-spawn("/sbin/telnetd");
-sleep(1000);
-spawn("/sbin/blogd");
-sleep(1000);
-
-// Window compositor (must start before GUI apps)
+// Window compositor (must start before GUI apps and background services)
 spawn("/bin/bwm");
 sleep(1000);
 
@@ -574,6 +567,11 @@ sleep(1000);
 spawn("/bin/bounce");
 sleep(1000);
 spawn("/bin/bcheck");
+
+// System services
+spawn("/sbin/telnetd");
+sleep(1000);
+spawn("/sbin/blogd");
 INITJS
     echo "  Created /etc/init.js"
 

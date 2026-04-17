@@ -1255,7 +1255,7 @@ fn native_sleep(
 
 /// spawn(cmd) -> pid
 ///
-/// Starts the command in the background.
+/// Forks a child process and executes the command in the background.
 /// Does NOT wait for the child to finish. Returns the child PID.
 /// Used by init scripts to start services without blocking.
 fn native_spawn(
@@ -1273,9 +1273,9 @@ fn native_spawn(
         return Err(JsError::type_error("spawn: command must be a string"));
     };
 
-    // Copy path to a stack buffer before invoking the process primitive.
-    // ARM64 uses the kernel spawn syscall to avoid fork/COW issues with GUI
-    // processes and shared display mappings. Other architectures keep fork+exec.
+    // Copy path to a stack buffer before fork.
+    // After fork, heap pages may not be accessible due to CoW issues,
+    // but stack pages are reliably available.
     let cmd_bytes = cmd_str.as_bytes();
     if cmd_bytes.len() >= 255 {
         return Err(JsError::type_error("spawn: path too long"));
@@ -1285,31 +1285,22 @@ fn native_spawn(
     path_buf[cmd_bytes.len()] = 0;
     let path_len = cmd_bytes.len() + 1;
 
-    #[cfg(target_arch = "aarch64")]
-    {
-        return match libbreenix::process::spawn(&path_buf[..path_len]) {
-            Ok(pid) => Ok(JsValue::number(pid.raw() as f64)),
-            Err(e) => Err(JsError::runtime(format!("spawn: syscall failed: {:?}", e))),
-        };
-    }
+    let fork_result = match libbreenix::process::fork() {
+        Ok(r) => r,
+        Err(_) => return Err(JsError::runtime("spawn: fork() failed")),
+    };
 
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        let fork_result = match libbreenix::process::fork() {
-            Ok(r) => r,
-            Err(_) => return Err(JsError::runtime("spawn: fork() failed")),
-        };
-
-        match fork_result {
-            libbreenix::process::ForkResult::Child => match libbreenix::process::exec(&path_buf[..path_len]) {
+    match fork_result {
+        libbreenix::process::ForkResult::Child => {
+            match libbreenix::process::exec(&path_buf[..path_len]) {
                 Ok(_) => unreachable!(),
                 Err(_) => {
                     libbreenix::process::exit(127);
                 }
-            },
-            libbreenix::process::ForkResult::Parent(child_pid) => {
-                Ok(JsValue::number(child_pid.raw() as f64))
             }
+        }
+        libbreenix::process::ForkResult::Parent(child_pid) => {
+            Ok(JsValue::number(child_pid.raw() as f64))
         }
     }
 }
