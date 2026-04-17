@@ -116,6 +116,7 @@ impl IsrWakeupBuffer {
     }
 
     /// Count pending entries without modifying the buffer.
+    #[cfg(target_arch = "aarch64")]
     fn depth(&self) -> usize {
         self.slots
             .iter()

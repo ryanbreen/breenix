@@ -3,7 +3,7 @@
 //! PID 1 - runs bsh (no arguments), then starts background services and reaps zombies.
 //! bsh detects it's the init shell (PID 2) and loads /etc/init.js.
 
-use libbreenix::process::{fork, execv, waitpid, getpid, ForkResult};
+use libbreenix::process::{spawn, waitpid, getpid, yield_now};
 
 fn main() {
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
@@ -34,22 +34,28 @@ fn main() {
 }
 
 fn run_boot_script() {
-    match fork() {
-        Ok(ForkResult::Child) => {
-            let arg0 = b"bsh\0";
-            let argv: [*const u8; 2] = [
-                arg0.as_ptr(),
-                core::ptr::null(),
-            ];
-            match execv(b"/bin/bsh\0", argv.as_ptr()) {
-                Ok(_) => unreachable!(),
-                Err(e) => {
-                    print!("[init] Failed to exec bsh: {}\n", e);
-                    std::process::exit(127);
-                }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // ARM64 Parallels boots from AHCI. Loading the large bsh ELF during the
+        // early single-CPU boot window can stall before init.js runs, so mirror
+        // the boot script's service sequence directly from init.
+        const SERVICES: &[&[u8]] = &[
+            b"/sbin/telnetd\0",
+            b"/bin/bwm\0",
+        ];
+        for path in SERVICES {
+            if let Err(e) = spawn(path) {
+                print!("[init] Warning: failed to spawn service: {}\n", e);
             }
+            let _ = yield_now();
         }
-        Ok(ForkResult::Parent(child_pid)) => {
+        print!("[init] Boot script completed\n");
+        return;
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    match spawn(b"/bin/bsh\0") {
+        Ok(child_pid) => {
             let child_raw = child_pid.raw() as i32;
             let mut status: i32 = 0;
             let _ = waitpid(child_raw, &mut status as *mut i32, 0);
@@ -61,7 +67,7 @@ fn run_boot_script() {
             }
         }
         Err(e) => {
-            print!("[init] Failed to fork for boot script: {}\n", e);
+            print!("[init] Failed to spawn boot script: {}\n", e);
         }
     }
 }
@@ -69,22 +75,8 @@ fn run_boot_script() {
 fn start_bsshd() {
     // Start bsshd after the boot script to avoid overlapping early exec reads
     // against the AHCI-backed ext2 root during initial userspace bring-up.
-    match fork() {
-        Ok(ForkResult::Child) => {
-            let arg0 = b"bsshd\0";
-            let argv: [*const u8; 2] = [
-                arg0.as_ptr(),
-                core::ptr::null(),
-            ];
-            match execv(b"/bin/bsshd\0", argv.as_ptr()) {
-                Ok(_) => unreachable!(),
-                Err(_) => {
-                    // bsshd not installed — silently exit
-                    std::process::exit(0);
-                }
-            }
-        }
-        Ok(ForkResult::Parent(child_pid)) => {
+    match spawn(b"/bin/bsshd\0") {
+        Ok(child_pid) => {
             print!("[init] bsshd started (PID {})\n", child_pid.raw());
         }
         Err(_) => {
