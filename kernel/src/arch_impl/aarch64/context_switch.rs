@@ -3412,7 +3412,7 @@ fn audit_f20d_idle_state_once(cpu_id: usize, moment: &str, done: &[AtomicBool; 8
         core::arch::asm!("msr daif, {}", in(reg) print_daif, options(nomem, nostack));
         core::arch::asm!("isb", options(nomem, nostack));
     }
-    F20D_IDLE_AUDIT_PRINT_LOCK.store(false, Ordering::Release);
+    F20D_IDLE_AUDIT_PRINT_LOCK.store(false, Ordering::Relaxed);
 }
 
 /// ARM64 idle loop - wait for interrupts.
