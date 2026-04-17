@@ -1,0 +1,25 @@
+           CPU0       CPU1       CPU2       CPU3       
+ 10:      15545       9199      13774      14403     GICv3  27 Level     arch_timer
+ 12:          0          0          0          0     GICv3  48 Edge      ACPI:Ged
+ 14:          0          0          0          0     GICv3  38 Edge      virtio0
+ 15:       7023          0          0          0     GICv3  34 Level     ahci[PRL4010:00]
+ 20:          0          0          0          0       MSI 81920 Edge      virtio1-config
+ 21:        381          0          0          0       MSI 81921 Edge      virtio1-input.0
+ 22:        259          0          0          0       MSI 81922 Edge      virtio1-output.0
+ 23:          0          0          0          0     GICv3  35 Level     ehci_hcd:usb1
+ 24:          0          0          0          0     GICv3  23 Level     arm-pmu
+ 26:         97          0          0          0       MSI 49152 Edge      xhci_hcd
+ 27:          1          0          0          0       MSI 163840 Edge      virtio2-config
+ 28:       4336          0          0          0       MSI 163841 Edge      virtio2-virtqueues
+ 29:          0          0          0          0       MSI 229376 Edge      virtio3-config
+ 30:          0          0          0          0       MSI 229377 Edge      virtio3-virtqueues
+ 32:        173          0          0          0       MSI 16384 Edge      snd_hda_intel:card0
+IPI0:       496       1243        951        990       Rescheduling interrupts
+IPI1:      3295       4020       4677       4114       Function call interrupts
+IPI2:         0          0          0          0       CPU stop interrupts
+IPI3:         0          0          0          0       CPU stop NMIs
+IPI4:         0          0          0          0       Timer broadcast interrupts
+IPI5:        80          6          0          7       IRQ work interrupts
+IPI6:         0          0          0          0       CPU backtrace interrupts
+IPI7:         0          0          0          0       KGDB roundup interrupts
+Err:          0
