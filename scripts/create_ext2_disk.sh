@@ -295,10 +295,6 @@ HOTKEYS
 // spawn() starts a process in the background and returns its PID.
 // sleep() between spawns lets each child complete exec before the next fork.
 
-// Window compositor (must start before GUI apps and background services)
-spawn("/bin/bwm");
-sleep(1000);
-
 // GUI applications
 spawn("/bin/bterm");
 sleep(1000);
@@ -554,10 +550,6 @@ HOTKEYS
 // Breenix boot script - executed by bsh on startup
 // spawn() starts a process in the background and returns its PID.
 // sleep() between spawns lets each child complete exec before the next fork.
-
-// Window compositor (must start before GUI apps and background services)
-spawn("/bin/bwm");
-sleep(1000);
 
 // GUI applications
 spawn("/bin/bterm");

@@ -9,6 +9,7 @@ fn main() {
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
     print!("[init] Breenix init starting (PID {})\n", pid);
 
+    start_bwm();
     run_boot_script();
     start_bsshd();
 
@@ -29,6 +30,33 @@ fn main() {
                 let ts = libbreenix::types::Timespec { tv_sec: 1, tv_nsec: 0 };
                 let _ = libbreenix::time::nanosleep(&ts);
             }
+        }
+    }
+}
+
+fn start_bwm() {
+    // Start the compositor directly from PID 1 before the JavaScript boot
+    // script launches GUI clients that need a window manager.
+    match fork() {
+        Ok(ForkResult::Child) => {
+            let arg0 = b"bwm\0";
+            let argv: [*const u8; 2] = [
+                arg0.as_ptr(),
+                core::ptr::null(),
+            ];
+            match execv(b"/bin/bwm\0", argv.as_ptr()) {
+                Ok(_) => unreachable!(),
+                Err(e) => {
+                    print!("[init] Failed to exec bwm: {}\n", e);
+                    std::process::exit(127);
+                }
+            }
+        }
+        Ok(ForkResult::Parent(child_pid)) => {
+            print!("[init] bwm started (PID {})\n", child_pid.raw());
+        }
+        Err(e) => {
+            print!("[init] Warning: failed to start bwm: {}\n", e);
         }
     }
 }
