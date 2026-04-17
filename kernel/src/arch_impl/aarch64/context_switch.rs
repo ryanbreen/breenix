@@ -3367,7 +3367,7 @@ fn audit_f20d_idle_state_once(cpu_id: usize, moment: &str, done: &[AtomicBool; 8
     let gicr_ispendr0 = crate::arch_impl::aarch64::gic::read_gicr_ispendr0(cpu_id);
 
     while F20D_IDLE_AUDIT_PRINT_LOCK
-        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
         core::hint::spin_loop();
@@ -3380,33 +3380,22 @@ fn audit_f20d_idle_state_once(cpu_id: usize, moment: &str, done: &[AtomicBool; 8
         core::arch::asm!("isb", options(nomem, nostack));
     }
 
-    raw_uart_str("[PER_CPU_IDLE_AUDIT] moment=");
-    raw_uart_str(moment);
-    raw_uart_str(" cpu=");
-    raw_uart_dec(cpu_id as u64);
-    raw_uart_str(" mpidr=");
-    raw_uart_hex(mpidr);
-    raw_uart_str(" cntv_ctl=");
-    raw_uart_hex(cntv_ctl);
-    raw_uart_str(" cntv_cval=");
-    raw_uart_hex(cntv_cval);
-    raw_uart_str(" cntvct=");
-    raw_uart_hex(cntvct);
-    raw_uart_str(" cntv_delta=");
-    raw_uart_hex(cntv_cval.wrapping_sub(cntvct));
-    raw_uart_str(" icc_pmr=");
-    raw_uart_hex(icc_pmr);
-    raw_uart_str(" icc_igrpen1=");
-    raw_uart_hex(icc_igrpen1);
-    raw_uart_str(" daif=");
-    raw_uart_hex(daif);
-    raw_uart_str(" icc_rpr=");
-    raw_uart_hex(icc_rpr);
-    raw_uart_str(" gicr_isenabler0=");
-    raw_uart_hex(gicr_isenabler0 as u64);
-    raw_uart_str(" gicr_ispendr0=");
-    raw_uart_hex(gicr_ispendr0 as u64);
-    raw_uart_str("\n");
+    core::hint::black_box((
+        moment.as_ptr(),
+        moment.len(),
+        cpu_id as u64,
+        mpidr,
+        cntv_ctl,
+        cntv_cval,
+        cntvct,
+        cntv_cval.wrapping_sub(cntvct),
+        icc_pmr,
+        icc_igrpen1,
+        daif,
+        icc_rpr,
+        gicr_isenabler0 as u64,
+        gicr_ispendr0 as u64,
+    ));
 
     unsafe {
         core::arch::asm!("msr daif, {}", in(reg) print_daif, options(nomem, nostack));
