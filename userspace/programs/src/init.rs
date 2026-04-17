@@ -33,19 +33,19 @@ fn main() {
         }
     }
 
-    // F19 Phase 2 diagnostic: temporarily exec hello_println instead of bsh.
-    // Expected successful signature: "[hello_println] start" then exit code 42.
+    // F19 Phase 2 diagnostic: raw write before std println.
+    // Expected signature distinguishes pre-main/linkage from println blocking.
     match fork() {
         Ok(ForkResult::Child) => {
-            let arg0 = b"hello_println\0";
+            let arg0 = b"hello_raw_then_println\0";
             let argv: [*const u8; 2] = [
                 arg0.as_ptr(),
                 core::ptr::null(),
             ];
-            match execv(b"/bin/hello_println\0", argv.as_ptr()) {
+            match execv(b"/bin/hello_raw_then_println\0", argv.as_ptr()) {
                 Ok(_) => unreachable!(),
                 Err(e) => {
-                    print!("[init] Failed to exec hello_println: {}\n", e);
+                    print!("[init] Failed to exec hello_raw_then_println: {}\n", e);
                     std::process::exit(127);
                 }
             }

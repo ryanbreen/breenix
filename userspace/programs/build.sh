@@ -194,6 +194,7 @@ STD_BINARIES=(
     "spinner"
     "hello_raw"
     "hello_println"
+    "hello_raw_then_println"
     "hello_time"
     "fbinfo_test"
     "demo"

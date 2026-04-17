@@ -3478,3 +3478,57 @@ Verdict: **P1 confirmed for the println-only control**. A minimal std
 diagnostic should put a raw fd-1 write before `println!` in the same binary to
 separate "main not reached when println is linked" from "main reached, then
 blocks inside std stdout/println".
+
+## 2026-04-17 - F19 Phase 2 raw-before-println control
+
+The next control added `/bin/hello_raw_then_println`, whose `main` performs a
+raw fd-1 write before invoking std `println!`:
+
+```text
+raw write: [hello_raw_then_println] raw-before
+println!:  [hello_raw_then_println] println
+raw write: [hello_raw_then_println] raw-after
+exit(42)
+```
+
+Init was temporarily changed to exec `/bin/hello_raw_then_println`.
+
+### Hypothesis
+
+RP0: if the first raw marker does not appear and init remains blocked, the
+binary does not reach user `main()` when `println!` is linked/used.
+
+RP1: if the first raw marker appears but the `println!` marker and second raw
+marker do not appear, the binary reaches `main()` and hangs inside std
+stdout/`println!`.
+
+RP2: if all markers appear and init observes exit code 42, the previous
+println-only result was not stable and should be repeated.
+
+### Probe
+
+Validation command:
+
+```text
+./run.sh --parallels --test 45
+```
+
+The serial log reached:
+
+```text
+[init] Breenix init starting (PID 1)
+F123456789SC[init] bsshd started (PID 2)
+F123456789SCT9T0
+```
+
+No `[hello_raw_then_println] raw-before` marker appeared, no later marker
+appeared, and init did not observe child exit.
+
+### Verdict
+
+Verdict: **RP0 confirmed**. The failing control does not reach user `main()`;
+the first stdout operation is not the hang site. The next diagnostic should
+distinguish a std/runtime linkage issue from an ELF text-size/page-layout
+threshold. Local ELF inspection shows the successful `hello_raw` text segment
+ends below `0x4000f000`, while both `hello_raw_then_println` and bsh have larger
+text layouts that extend beyond that page.
