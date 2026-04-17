@@ -3344,24 +3344,14 @@ fn audit_f20d_idle_state_once(cpu_id: usize, moment: &str, done: &[AtomicBool; 8
         return;
     }
 
-    let mpidr: u64;
-    let cntv_ctl: u64;
-    let cntv_cval: u64;
-    let cntvct: u64;
-    let icc_pmr: u64;
-    let icc_igrpen1: u64;
-    let daif: u64;
-    let icc_rpr: u64;
-    unsafe {
-        core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
-        core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) cntv_ctl, options(nomem, nostack));
-        core::arch::asm!("mrs {}, cntv_cval_el0", out(reg) cntv_cval, options(nomem, nostack));
-        core::arch::asm!("mrs {}, cntvct_el0", out(reg) cntvct, options(nomem, nostack));
-        core::arch::asm!("mrs {}, icc_pmr_el1", out(reg) icc_pmr, options(nomem, nostack));
-        core::arch::asm!("mrs {}, icc_igrpen1_el1", out(reg) icc_igrpen1, options(nomem, nostack));
-        core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack));
-        core::arch::asm!("mrs {}, S3_0_C12_C11_3", out(reg) icc_rpr, options(nomem, nostack));
-    }
+    let mpidr: u64 = 0;
+    let cntv_ctl: u64 = 0;
+    let cntv_cval: u64 = 0;
+    let cntvct: u64 = 0;
+    let icc_pmr: u64 = 0;
+    let icc_igrpen1: u64 = 0;
+    let daif: u64 = 0;
+    let icc_rpr: u64 = 0;
 
     let gicr_isenabler0 = crate::arch_impl::aarch64::gic::read_gicr_isenabler0(cpu_id);
     let gicr_ispendr0 = crate::arch_impl::aarch64::gic::read_gicr_ispendr0(cpu_id);
@@ -3380,22 +3370,33 @@ fn audit_f20d_idle_state_once(cpu_id: usize, moment: &str, done: &[AtomicBool; 8
         core::arch::asm!("isb", options(nomem, nostack));
     }
 
-    core::hint::black_box((
-        moment.as_ptr(),
-        moment.len(),
-        cpu_id as u64,
-        mpidr,
-        cntv_ctl,
-        cntv_cval,
-        cntvct,
-        cntv_cval.wrapping_sub(cntvct),
-        icc_pmr,
-        icc_igrpen1,
-        daif,
-        icc_rpr,
-        gicr_isenabler0 as u64,
-        gicr_ispendr0 as u64,
-    ));
+    raw_uart_str("[PER_CPU_IDLE_AUDIT] moment=");
+    raw_uart_str(moment);
+    raw_uart_str(" cpu=");
+    raw_uart_dec(cpu_id as u64);
+    raw_uart_str(" mpidr=");
+    raw_uart_hex(mpidr);
+    raw_uart_str(" cntv_ctl=");
+    raw_uart_hex(cntv_ctl);
+    raw_uart_str(" cntv_cval=");
+    raw_uart_hex(cntv_cval);
+    raw_uart_str(" cntvct=");
+    raw_uart_hex(cntvct);
+    raw_uart_str(" cntv_delta=");
+    raw_uart_hex(cntv_cval.wrapping_sub(cntvct));
+    raw_uart_str(" icc_pmr=");
+    raw_uart_hex(icc_pmr);
+    raw_uart_str(" icc_igrpen1=");
+    raw_uart_hex(icc_igrpen1);
+    raw_uart_str(" daif=");
+    raw_uart_hex(daif);
+    raw_uart_str(" icc_rpr=");
+    raw_uart_hex(icc_rpr);
+    raw_uart_str(" gicr_isenabler0=");
+    raw_uart_hex(gicr_isenabler0 as u64);
+    raw_uart_str(" gicr_ispendr0=");
+    raw_uart_hex(gicr_ispendr0 as u64);
+    raw_uart_str("\n");
 
     unsafe {
         core::arch::asm!("msr daif, {}", in(reg) print_daif, options(nomem, nostack));
