@@ -10,6 +10,8 @@ fn main() {
     print!("[init] Breenix init starting (PID {})\n", pid);
 
     start_bwm();
+    let ts = libbreenix::types::Timespec { tv_sec: 1, tv_nsec: 0 };
+    let _ = libbreenix::time::nanosleep(&ts);
     run_boot_script();
     start_bsshd();
 
