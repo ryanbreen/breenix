@@ -1300,8 +1300,6 @@ fn native_spawn(
             }
         }
         libbreenix::process::ForkResult::Parent(child_pid) => {
-            // Yield to give child time to exec before we fork again
-            let _ = libbreenix::process::yield_now();
             Ok(JsValue::number(child_pid.raw() as f64))
         }
     }
@@ -2205,11 +2203,12 @@ fn run_repl() {
     // Load startup scripts
     load_rc_file(&mut ctx, "/etc/bshrc");
 
-    // If we're the init shell (PID 3, child of init), run the boot script and exit.
-    // PID 3 because init=1 forks bsshd=2 first, then bsh=3.
+    // If we're the init shell, run the boot script and exit.
+    // PID 2 is the serialized boot path; PID 3 covers older init ordering where
+    // bsshd was forked before bsh.
     // Spawned services get reparented to init (PID 1) for zombie reaping.
     if let Ok(pid) = libbreenix::process::getpid() {
-        if pid.raw() == 3 {
+        if pid.raw() == 2 || pid.raw() == 3 {
             load_rc_file(&mut ctx, "/etc/init.js");
             return;
         }
@@ -2576,8 +2575,6 @@ fn run_file(path: &str) {
 }
 
 fn main() {
-    let _ = libbreenix::io::write(libbreenix::Fd::STDOUT, b"[bsh] RAW main() entry\n");
-
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() == 1 {

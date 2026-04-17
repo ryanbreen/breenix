@@ -297,21 +297,21 @@ HOTKEYS
 
 // System services
 spawn("/sbin/telnetd");
-sleep(50);
+sleep(1000);
 spawn("/sbin/blogd");
-sleep(50);
+sleep(1000);
 
 // Window compositor (must start before GUI apps)
 spawn("/bin/bwm");
-sleep(100);
+sleep(1000);
 
 // GUI applications
 spawn("/bin/bterm");
-sleep(50);
+sleep(1000);
 spawn("/bin/blog");
-sleep(50);
+sleep(1000);
 spawn("/bin/bounce");
-sleep(50);
+sleep(1000);
 spawn("/bin/bcheck");
 INITJS
             echo "  Created /etc/init.js"
@@ -558,21 +558,21 @@ HOTKEYS
 
 // System services
 spawn("/sbin/telnetd");
-sleep(50);
+sleep(1000);
 spawn("/sbin/blogd");
-sleep(50);
+sleep(1000);
 
 // Window compositor (must start before GUI apps)
 spawn("/bin/bwm");
-sleep(100);
+sleep(1000);
 
 // GUI applications
 spawn("/bin/bterm");
-sleep(50);
+sleep(1000);
 spawn("/bin/blog");
-sleep(50);
+sleep(1000);
 spawn("/bin/bounce");
-sleep(50);
+sleep(1000);
 spawn("/bin/bcheck");
 INITJS
     echo "  Created /etc/init.js"
