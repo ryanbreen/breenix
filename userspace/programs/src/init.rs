@@ -38,10 +38,12 @@ fn run_boot_script() {
     {
         // ARM64 Parallels boots from AHCI. Loading the large bsh ELF during the
         // early single-CPU boot window can stall before init.js runs, so mirror
-        // the boot script's service sequence directly from init.
+        // the boot script's service sequence directly from init. Start bwm
+        // before network services so the compositor replaces the kernel VirGL
+        // proof clear within the Parallels validation window.
         const SERVICES: &[&[u8]] = &[
-            b"/sbin/telnetd\0",
             b"/bin/bwm\0",
+            b"/sbin/telnetd\0",
         ];
         for path in SERVICES {
             if let Err(e) = spawn(path) {
