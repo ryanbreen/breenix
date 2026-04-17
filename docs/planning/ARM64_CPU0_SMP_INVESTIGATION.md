@@ -3321,3 +3321,61 @@ failure signature. Recommended next step: open a cleanup PR to remove the
 F8-F17 diagnostic scaffolding and keep only the minimal AHCI CI-level
 completion behavior plus any low-cost regression signal needed for future
 AHCI timeout triage.
+
+## 2026-04-17 - F19 Phase 0 hello_raw post-exec probe
+
+F19 begins from the post-F18 state where `/sbin/init` can fork and exec
+`/bin/bsh` without the prior AHCI `EIO`, but bsh produces no serial output and
+init remains blocked in `waitpid`.
+
+### Hypothesis
+
+H0: if a minimal `/bin/hello_raw` binary writes to fd 1 after init execs it and
+then exits with code 42, then the broad ARM64 exec path, fd inheritance, raw
+write syscall path, and process exit/waitpid path are healthy for a simple
+post-exec binary. The next phase should trace bsh userspace runtime startup.
+
+H1: if `/bin/hello_raw` produces no output and init remains blocked in
+`waitpid`, then the kernel exec/fd path is suspect and the next phase should
+trace the kernel exec path.
+
+H2: if `/bin/hello_raw` produces no output but init observes an exit code other
+than 42, then the kernel likely enters userspace but lands at the wrong entry
+point or terminates the process early; the next phase should also trace the
+kernel exec path.
+
+### Probe
+
+Added `userspace/programs/src/hello_raw.rs`, registered it in
+`userspace/programs/Cargo.toml`, installed it from
+`userspace/programs/build.sh`, and temporarily changed
+`userspace/programs/src/init.rs` to exec `/bin/hello_raw` instead of
+`/bin/bsh`.
+
+Validation command:
+
+```text
+./run.sh --parallels --test 45
+```
+
+The command exited nonzero because the screenshot helper could not find the
+generated Parallels VM window. As in prior F-series sweeps, serial output is the
+validation source. `/tmp/breenix-parallels-serial.log` contained:
+
+```text
+[init] Breenix init starting (PID 1)
+F123456789SC[init] bsshd started (PID 2)
+F123456789SCT9T0[hello_raw] start
+[syscall] exit(42) pid=3 name=/bin/hello_raw
+[init] Boot script exited with code 42
+```
+
+### Verdict
+
+Verdict: **H0 confirmed**. A minimal post-exec userspace binary runs, can write
+to fd 1, exits with code 42, and is observed by init through `waitpid`.
+
+F19 Phase 0 therefore rules out a broad kernel exec/fd-inheritance failure for
+the minimal path. The next branch should be **Phase 2**:
+`diagnostic/f19-runtime-trace`, focused on bsh's userspace startup path
+(`_start` / Rust runtime / `main`) and subsequent shell initialization.
