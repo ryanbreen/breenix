@@ -3762,3 +3762,87 @@ the ext2/AHCI read path, leading to a stalled file-content read and eventual
 AHCI timeout/EIO under instrumentation. The minimal F19 fix should serialize
 early boot exec reads by running the boot shell first and starting bsshd only
 after the boot script has completed.
+
+## 2026-04-17 - F19 Phase 3 fix
+
+The fix restores init to execute `/bin/bsh` for the boot script and defers the
+background `/bin/bsshd` start until after the boot script child exits. This
+keeps the first two large userspace ELF reads from overlapping during early
+boot, while preserving bsshd startup after the GUI boot script has completed.
+Because the serialized ordering makes the boot shell PID 2 instead of PID 3,
+bsh's init-shell detection now accepts both PID 2 (new serialized path) and PID
+3 (old bsshd-first path).
+
+The Phase 2 raw serial diagnostics were removed from the kernel exec and ELF
+loader paths before validation. The temporary Phase 2 control binaries were
+also removed from the normal userspace build; `/bin/hello_raw` remains as the
+small future exec/fd diagnostic added in Phase 0.
+
+### Validation target
+
+The acceptance bar for F19 is:
+
+```text
+[init] Boot script completed
+```
+
+in `/tmp/breenix-parallels-serial.log` from:
+
+```text
+./run.sh --parallels
+```
+
+### Validation result
+
+`./run.sh --parallels` reached the acceptance marker in the serial log:
+
+```text
+[syscall] exit(0) pid=2 name=/bin/bsh
+[init] Boot script completed
+[init] bsshd started (PID 10)
+```
+
+The final ordering confirms that the boot script shell now completes before
+the background ssh daemon is forked. The bsh process runs as PID 2 in this
+serialized path and exits cleanly with code 0.
+
+Quality gates:
+
+```text
+./userspace/programs/build.sh --arch aarch64
+build_status=0
+no_compiler_warnings_or_errors
+
+cargo build --release --target aarch64-breenix.json \
+  -Z build-std=core,alloc \
+  -Z build-std-features=compiler-builtins-mem \
+  -p kernel --bin kernel-aarch64
+build_status=0
+no_compiler_warnings_or_errors
+
+./scripts/create_ext2_disk.sh --arch aarch64
+create_ext2_status=0
+Installed 47 binaries in /bin
+```
+
+The regenerated aarch64 ext2 image no longer includes the temporary Phase 2
+diagnostic binaries (`hello_println`, `hello_raw_then_println`,
+`hello_raw_padded`, or `hello_nostd_padded`). `/bin/hello_raw` remains as the
+small Phase 0 diagnostic because it is useful for future exec/fd checks.
+
+### F19 final verdict
+
+Phase 0 proved that post-exec userspace, fd 1 inheritance, raw writes, and
+process exit work for a minimal diagnostic binary. Phase 2 then proved the
+silent bsh symptom did not require Rust std startup: a no-std padded binary
+also stalled before its first instruction when bsshd exec ran concurrently.
+Kernel breadcrumbs narrowed the stall to the ELF file-content read, and the
+same binary succeeded when bsshd was skipped.
+
+Root cause: early boot launched two large AHCI-backed exec reads concurrently
+(`/bin/bsshd` and `/bin/bsh`). That overlapping read pattern can stall the
+ext2/AHCI read path before the boot shell's ELF bytes reach the loader. The
+F19 fix avoids that unstable boot pattern by running the boot shell first,
+then starting bsshd only after `/etc/init.js` completes. Because this changes
+the boot shell from PID 3 to PID 2, bsh's init-script mode accepts either PID
+2 or PID 3.

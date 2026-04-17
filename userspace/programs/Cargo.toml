@@ -340,22 +340,6 @@ name = "hello_raw"
 path = "src/hello_raw.rs"
 
 [[bin]]
-name = "hello_println"
-path = "src/hello_println.rs"
-
-[[bin]]
-name = "hello_raw_then_println"
-path = "src/hello_raw_then_println.rs"
-
-[[bin]]
-name = "hello_raw_padded"
-path = "src/hello_raw_padded.rs"
-
-[[bin]]
-name = "hello_nostd_padded"
-path = "src/hello_nostd_padded.rs"
-
-[[bin]]
 name = "http_test"
 path = "src/http_test.rs"
 

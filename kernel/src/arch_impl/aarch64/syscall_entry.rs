@@ -1010,34 +1010,6 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
 // Exec syscall implementation for ARM64
 // =============================================================================
 
-/// F19 exec-path serial breadcrumbs (single-letter tags):
-/// - `E`: exec syscall entered
-/// - `N`: program name copied from userspace
-/// - `A`: argv copied from userspace
-/// - `O`: about to open/read target ELF from ext2
-/// - `L`: target ELF bytes read into kernel memory
-/// - `P`: current process identified
-/// - `M`: entering process-manager exec replacement
-/// - `S`: process-manager exec replacement succeeded
-/// - `F`: exception frame updated for the new image
-/// - `T`: TTBR0 switched to the new process page table
-/// - `R`: exec syscall about to return to the assembly exit path
-/// - `r`: load_elf_from_ext2 entered
-/// - `g`: ext2 filesystem guard acquired
-/// - `i`: path resolved to inode
-/// - `n`: inode read
-/// - `p`: execute permissions accepted
-/// - `q`: about to read file content
-/// - `d`: file content read complete
-#[inline(never)]
-fn f19_exec_tag(tag: u8) {
-    use crate::arch_impl::aarch64::context_switch::{raw_uart_char, raw_uart_str};
-
-    raw_uart_str("\n[F19_EXEC] ");
-    raw_uart_char(tag);
-    raw_uart_str("\n");
-}
-
 /// sys_exec for ARM64 - Replace current process with a new program
 ///
 /// This function replaces the current process's address space with a new program.
@@ -1058,7 +1030,6 @@ fn sys_exec_aarch64(
 ) -> u64 {
     // Trace: exec syscall entered
     super::trace::trace_exec(b'E');
-    f19_exec_tag(b'E');
 
     log::info!(
         "sys_exec_aarch64: program_name_ptr={:#x}, argv_ptr={:#x}",
@@ -1097,7 +1068,6 @@ fn sys_exec_aarch64(
 
     // Trace: program name parsed successfully
     super::trace::trace_exec(b'N');
-    f19_exec_tag(b'N');
 
     log::info!("sys_exec_aarch64: Loading program '{}'", program_name);
 
@@ -1150,11 +1120,9 @@ fn sys_exec_aarch64(
         arg0.push(0);
         argv_vec.push(arg0);
     }
-    f19_exec_tag(b'A');
 
     // Trace: attempting to open ELF file
     super::trace::trace_exec(b'O');
-    f19_exec_tag(b'O');
 
     let elf_vec = if program_name.contains('/') {
         match load_elf_from_ext2(&program_name) {
@@ -1183,7 +1151,6 @@ fn sys_exec_aarch64(
 
     // Trace: ELF file loaded from filesystem
     super::trace::trace_exec(b'L');
-    f19_exec_tag(b'L');
 
     let elf_data = elf_vec.as_slice();
 
@@ -1204,7 +1171,6 @@ fn sys_exec_aarch64(
             return (-12_i64) as u64; // -ENOMEM
         }
     };
-    f19_exec_tag(b'P');
 
     log::info!(
         "sys_exec_aarch64: Replacing process {} (thread {}) with new program",
@@ -1219,7 +1185,6 @@ fn sys_exec_aarch64(
         if let Some(ref mut manager) = *manager_guard {
             // Trace: calling exec_process_with_argv (process manager)
             super::trace::trace_exec(b'M');
-            f19_exec_tag(b'M');
 
             match manager.exec_process_with_argv(
                 current_pid,
@@ -1230,7 +1195,6 @@ fn sys_exec_aarch64(
                 Ok((new_entry_point, new_rsp)) => {
                     // Trace: exec_process_with_argv succeeded
                     super::trace::trace_exec(b'S');
-                    f19_exec_tag(b'S');
 
                     log::info!(
                             "sys_exec_aarch64: Successfully replaced process address space, entry point: {:#x}",
@@ -1283,7 +1247,6 @@ fn sys_exec_aarch64(
 
                     // Trace: frame registers zeroed, SPSR set
                     super::trace::trace_exec(b'F');
-                    f19_exec_tag(b'F');
 
                     if let Some(process) = manager.get_process(current_pid) {
                         if let Some(ref page_table) = process.page_table {
@@ -1303,7 +1266,6 @@ fn sys_exec_aarch64(
                             }
                             // Trace: TTBR0 page table switched
                             super::trace::trace_exec(b'P');
-                            f19_exec_tag(b'T');
 
                             // CRITICAL: Update saved_process_cr3 so the assembly ERET
                             // path doesn't restore the OLD (now-freed) page table.
@@ -1323,7 +1285,6 @@ fn sys_exec_aarch64(
                     );
                     // Trace: about to return 0 from exec syscall
                     super::trace::trace_exec(b'R');
-                    f19_exec_tag(b'R');
 
                     0
                 }
@@ -1350,7 +1311,6 @@ fn load_elf_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, i32> {
 
     // Trace: entering load_elf_from_ext2
     super::trace::trace_exec(b'1');
-    f19_exec_tag(b'r');
 
     // Determine which filesystem to use based on path
     let is_home = ext2::is_home_path(path);
@@ -1363,14 +1323,12 @@ fn load_elf_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, i32> {
     if is_home {
         let fs_guard = ext2::home_fs_read();
         super::trace::trace_exec(b'2');
-        f19_exec_tag(b'g');
         let fs = fs_guard.as_ref().ok_or(EIO)?;
         super::trace::trace_exec(b'3');
         load_elf_from_ext2_inner(fs, fs_path)
     } else {
         let fs_guard = ext2::root_fs_read();
         super::trace::trace_exec(b'2');
-        f19_exec_tag(b'g');
         let fs = fs_guard.as_ref().ok_or(EIO)?;
         super::trace::trace_exec(b'3');
         load_elf_from_ext2_inner(fs, fs_path)
@@ -1393,14 +1351,12 @@ fn load_elf_from_ext2_inner(
         }
     })?;
     super::trace::trace_exec(b'4');
-    f19_exec_tag(b'i');
 
     let inode = fs.read_inode(inode_num).map_err(|_| {
         super::trace::trace_exec(b'@');
         EIO
     })?;
     super::trace::trace_exec(b'5');
-    f19_exec_tag(b'n');
 
     if inode.is_dir() {
         super::trace::trace_exec(b'#');
@@ -1413,15 +1369,12 @@ fn load_elf_from_ext2_inner(
         return Err(EACCES);
     }
     super::trace::trace_exec(b'6');
-    f19_exec_tag(b'p');
 
-    f19_exec_tag(b'q');
     let data = fs.read_file_content(&inode).map_err(|_| {
         super::trace::trace_exec(b'%');
         EIO
     })?;
     super::trace::trace_exec(b'7');
-    f19_exec_tag(b'd');
 
     Ok(data)
 }
