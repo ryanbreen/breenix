@@ -3337,10 +3337,12 @@ fn audit_f20d_idle_state_once(cpu_id: usize, moment: &str, done: &[AtomicBool; 8
     if cpu_id >= done.len() {
         return;
     }
-    if done[cpu_id].load(Ordering::Relaxed) {
+    if done[cpu_id]
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
         return;
     }
-    done[cpu_id].store(true, Ordering::Relaxed);
 
     let mpidr: u64;
     let cntv_ctl: u64;
