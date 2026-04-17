@@ -5364,7 +5364,7 @@ pub fn virgl_init() -> Result<(), &'static str> {
         cmdbuf.set_tweaks(2, width);
         cmdbuf.create_surface(1, RESOURCE_3D_ID, vfmt::B8G8R8X8_UNORM, 0, 0);
         cmdbuf.set_framebuffer_state(0, &[1]);
-        cmdbuf.clear_color(0.047, 0.063, 0.149, 1.0); // Near-black matching desktop bg
+        cmdbuf.clear_color(0.392, 0.584, 0.929, 1.0);
         virgl_submit_sync(cmdbuf.as_slice())?;
         crate::serial_println!("[virgl] Step 6: VirGL CLEAR (cornflower blue)");
     }
@@ -5400,7 +5400,7 @@ pub fn virgl_init() -> Result<(), &'static str> {
     // Step 8b removed: VB data is uploaded via RESOURCE_INLINE_WRITE in the batch below.
 
     // Step 9: Full pipeline + CLEAR + DRAW_VBO batch.
-    // Expected: dark blue background (CLEAR) + red quad (DRAW_VBO).
+    // Expected: cornflower blue baseline from both CLEAR and DRAW_VBO.
     {
         let mut cmdbuf = CommandBuffer::new();
         cmdbuf.create_sub_ctx(1);
@@ -5434,8 +5434,8 @@ pub fn virgl_init() -> Result<(), &'static str> {
         cmdbuf.set_min_samples(1);
         cmdbuf.set_viewport(width as f32, height as f32);
 
-        // CLEAR to near-black matching desktop background
-        cmdbuf.clear_color(0.047, 0.063, 0.149, 1.0);
+        // CLEAR to the documented VirGL baseline color.
+        cmdbuf.clear_color(0.392, 0.584, 0.929, 1.0);
 
         // Upload vertex data inline
         let quad_verts: [u32; 16] = [
@@ -5458,14 +5458,14 @@ pub fn virgl_init() -> Result<(), &'static str> {
         ];
         cmdbuf.resource_inline_write(RESOURCE_VB_ID, 0, 64, &quad_verts);
 
-        // Constant buffer: RED color for fragment shader
+        // Constant buffer: cornflower blue for fragment shader.
         cmdbuf.set_constant_buffer(
             pipe::SHADER_FRAGMENT,
             0,
             &[
-                1.0f32.to_bits(),
-                0.0f32.to_bits(),
-                0.0f32.to_bits(),
+                0.392f32.to_bits(),
+                0.584f32.to_bits(),
+                0.929f32.to_bits(),
                 1.0f32.to_bits(),
             ],
         );
