@@ -3532,3 +3532,66 @@ distinguish a std/runtime linkage issue from an ELF text-size/page-layout
 threshold. Local ELF inspection shows the successful `hello_raw` text segment
 ends below `0x4000f000`, while both `hello_raw_then_println` and bsh have larger
 text layouts that extend beyond that page.
+
+## 2026-04-17 - F19 Phase 2 padded raw-only control
+
+The next control added `/bin/hello_raw_padded`, a raw-only diagnostic that
+executes a referenced NOP block in executable text between two raw fd-1 writes:
+
+```text
+raw write: [hello_raw_padded] raw-before
+execute padded .text block
+raw write: [hello_raw_padded] raw-after
+exit(42)
+```
+
+Init was temporarily changed to exec `/bin/hello_raw_padded`.
+
+### Hypothesis
+
+PAD0: if the first raw marker does not appear, larger executable layout is
+enough to reproduce the pre-user-main hang without std `println!`.
+
+PAD1: if both raw markers appear and init observes exit code 42, padded text
+alone works and the failing differentiator is a runtime/linkage path pulled in
+by `println!`/bsh rather than text size.
+
+PAD2: if the first raw marker appears but the second does not, control reaches
+user `main()` but executing the padded text block hangs or faults.
+
+### Probe
+
+Local ELF inspection confirmed that the padded control exercises a much larger
+executable layout:
+
+```text
+Entry:           0x400160e8
+Executable LOAD: vaddr=0x40000000 filesz=92688
+main shim:       0x4000bfe4
+_start:          0x400160e8
+```
+
+Validation command:
+
+```text
+./run.sh --parallels --test 45
+```
+
+The serial log reached:
+
+```text
+[init] Breenix init starting (PID 1)
+F123456789SC[init] bsshd started (PID 2)
+F123456789SCT9T0
+```
+
+No `[hello_raw_padded] raw-before` marker appeared, no later marker appeared,
+and init did not observe child exit.
+
+### Verdict
+
+Verdict: **PAD0 confirmed**. A raw-only binary with larger executable layout
+also hangs before user Rust `main()`. This narrows the failure beyond
+`println!`, but the padded binary still uses Rust std's `_start`/`lang_start`
+path. The next control should bypass std entirely with a `#![no_std]`
+`#![no_main]` `_start` binary using a similar large executable layout.

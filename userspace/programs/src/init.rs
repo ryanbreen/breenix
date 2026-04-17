@@ -33,19 +33,19 @@ fn main() {
         }
     }
 
-    // F19 Phase 2 diagnostic: raw write before std println.
-    // Expected signature distinguishes pre-main/linkage from println blocking.
+    // F19 Phase 2 diagnostic: raw-only binary with padded executable text.
+    // Expected signature distinguishes ELF layout from std/println linkage.
     match fork() {
         Ok(ForkResult::Child) => {
-            let arg0 = b"hello_raw_then_println\0";
+            let arg0 = b"hello_raw_padded\0";
             let argv: [*const u8; 2] = [
                 arg0.as_ptr(),
                 core::ptr::null(),
             ];
-            match execv(b"/bin/hello_raw_then_println\0", argv.as_ptr()) {
+            match execv(b"/bin/hello_raw_padded\0", argv.as_ptr()) {
                 Ok(_) => unreachable!(),
                 Err(e) => {
-                    print!("[init] Failed to exec hello_raw_then_println: {}\n", e);
+                    print!("[init] Failed to exec hello_raw_padded: {}\n", e);
                     std::process::exit(127);
                 }
             }
