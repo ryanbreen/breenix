@@ -33,3 +33,8 @@ Phase 2 capture result:
 - `cargo fmt --check` failed due pre-existing rustfmt drift/trailing whitespace outside the F20d change set, notably `tests/shared_qemu.rs`; no repo-wide formatting was applied to avoid unrelated churn.
 - `cargo build --release --features testing,external_test_bins --bin qemu-uefi`: clean, no warning/error lines after adding the missing aarch64 cfg guards around AHCI-only trace calls.
 - `cargo build --release --target aarch64-breenix.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64`: clean, no warning/error lines.
+
+Starting Phase 3 divergence table:
+
+- First non-logging divergence identified from captured artifacts: Linux CPU 0 receives `arch_timer` interrupts while idle (134 over 5s), Breenix CPU 0 has `tick_count[0]=29` at idle-arm and end audit (`delta=0`) while CPUs 1-7 advance to ~24.16k ticks.
+- Wrote `docs/planning/f20d-linux-diff/divergence-table.md`.
