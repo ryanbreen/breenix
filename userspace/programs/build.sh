@@ -196,6 +196,7 @@ STD_BINARIES=(
     "hello_println"
     "hello_raw_then_println"
     "hello_raw_padded"
+    "hello_nostd_padded"
     "hello_time"
     "fbinfo_test"
     "demo"

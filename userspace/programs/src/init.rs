@@ -33,19 +33,19 @@ fn main() {
         }
     }
 
-    // F19 Phase 2 diagnostic: raw-only binary with padded executable text.
-    // Expected signature distinguishes ELF layout from std/println linkage.
+    // F19 Phase 2 diagnostic: no-std raw _start with padded executable text.
+    // Expected signature distinguishes kernel ELF exec from Rust std startup.
     match fork() {
         Ok(ForkResult::Child) => {
-            let arg0 = b"hello_raw_padded\0";
+            let arg0 = b"hello_nostd_padded\0";
             let argv: [*const u8; 2] = [
                 arg0.as_ptr(),
                 core::ptr::null(),
             ];
-            match execv(b"/bin/hello_raw_padded\0", argv.as_ptr()) {
+            match execv(b"/bin/hello_nostd_padded\0", argv.as_ptr()) {
                 Ok(_) => unreachable!(),
                 Err(e) => {
-                    print!("[init] Failed to exec hello_raw_padded: {}\n", e);
+                    print!("[init] Failed to exec hello_nostd_padded: {}\n", e);
                     std::process::exit(127);
                 }
             }

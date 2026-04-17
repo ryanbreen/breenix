@@ -3595,3 +3595,66 @@ also hangs before user Rust `main()`. This narrows the failure beyond
 `println!`, but the padded binary still uses Rust std's `_start`/`lang_start`
 path. The next control should bypass std entirely with a `#![no_std]`
 `#![no_main]` `_start` binary using a similar large executable layout.
+
+## 2026-04-17 - F19 Phase 2 no-std padded control
+
+The next control added `/bin/hello_nostd_padded`, a `#![no_std]`
+`#![no_main]` binary with direct `_start`, direct raw syscall assembly, and a
+large referenced NOP block in executable text:
+
+```text
+_start:
+  raw write: [hello_nostd_padded] raw-before
+  execute padded .text block
+  raw write: [hello_nostd_padded] raw-after
+  exit(42)
+```
+
+Init was temporarily changed to exec `/bin/hello_nostd_padded`.
+
+### Hypothesis
+
+NS0: if both raw markers appear and init observes exit code 42, the kernel can
+exec a large/high-entry image and the remaining hang is in Rust std startup
+before the user main function.
+
+NS1: if the first raw marker does not appear and init remains blocked, std
+startup is not required; kernel exec/ELF/page-table handling remains suspect
+for larger/high-entry layouts.
+
+NS2: if the first raw marker appears but the second does not, direct `_start`
+runs but executing the padded text block hangs or faults.
+
+### Probe
+
+The adjusted no-std ELF exercised the high-entry layout:
+
+```text
+Entry:           0x40018004
+Executable LOAD: vaddr=0x40000000 filesz=98384
+pad symbol:      0x40000000
+_start:          0x40018004
+```
+
+Validation command:
+
+```text
+./run.sh --parallels --test 45
+```
+
+The serial log reached:
+
+```text
+[init] Breenix init starting (PID 1)
+F123456789SC[init] bsshd started (PID 2)
+F123456789SCT9T0
+```
+
+No `[hello_nostd_padded] raw-before` marker appeared, no later marker appeared,
+init did not observe child exit, and no instruction/data abort log appeared.
+
+### Verdict
+
+Verdict: **NS1 confirmed**. Rust std startup is not required to reproduce the
+silent pre-first-instruction hang. The root cause is now narrowed to kernel
+exec/return-to-userspace behavior for larger/high-entry ELF layouts.
