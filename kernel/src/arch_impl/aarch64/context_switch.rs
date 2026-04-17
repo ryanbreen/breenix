@@ -3308,6 +3308,18 @@ pub static CPU0_IDLE_CNTV_CVAL: AtomicU64 = AtomicU64::new(0);
 pub static CPU0_IDLE_CNTVCT: AtomicU64 = AtomicU64::new(0);
 pub static CPU0_IDLE_ITERATIONS: AtomicU64 = AtomicU64::new(0);
 
+/// F20c diagnostic: per-CPU tick counter observed immediately before WFI.
+pub static F20C_LAST_IDLE_ARM_TICK: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+
+/// F20c diagnostic: CNTVCT observed immediately before WFI.
+pub static F20C_LAST_IDLE_ARM_TSC: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+
+/// F20c diagnostic: per-CPU tick counter observed if execution resumes after WFI.
+pub static F20C_LAST_POST_WFI_TICK: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+
+/// F20c diagnostic: number of times each CPU resumed at the instruction after WFI.
+pub static F20C_POST_WFI_COUNT: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+
 /// ARM64 idle loop - wait for interrupts.
 ///
 /// Before each WFI, unconditionally re-arm the virtual timer. This works
@@ -3361,12 +3373,34 @@ pub extern "C" fn idle_loop_arm64() -> ! {
             }
         }
 
+        if cpu_id < F20C_LAST_IDLE_ARM_TICK.len() {
+            let cntvct: u64;
+            unsafe {
+                core::arch::asm!("mrs {}, cntvct_el0", out(reg) cntvct, options(nomem, nostack));
+            }
+            F20C_LAST_IDLE_ARM_TICK[cpu_id].store(
+                crate::arch_impl::aarch64::timer_interrupt::TIMER_TICK_COUNT[cpu_id]
+                    .load(Ordering::Relaxed),
+                Ordering::Relaxed,
+            );
+            F20C_LAST_IDLE_ARM_TSC[cpu_id].store(cntvct, Ordering::Relaxed);
+        }
+
         unsafe {
             core::arch::asm!(
                 "msr daifclr, #0xf", // Enable all interrupts
                 "wfi",               // Wait for interrupt
                 options(nomem, nostack)
             );
+        }
+
+        if cpu_id < F20C_LAST_POST_WFI_TICK.len() {
+            F20C_LAST_POST_WFI_TICK[cpu_id].store(
+                crate::arch_impl::aarch64::timer_interrupt::TIMER_TICK_COUNT[cpu_id]
+                    .load(Ordering::Relaxed),
+                Ordering::Relaxed,
+            );
+            F20C_POST_WFI_COUNT[cpu_id].fetch_add(1, Ordering::Relaxed);
         }
     }
 }
