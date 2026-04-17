@@ -208,6 +208,7 @@ fn launch_init_from_elf(
             idle_count,
             cpus_online
         );
+        kernel::arch_impl::aarch64::context_switch::enable_f20b_idle_audit();
     }
 
     // Set per-CPU pointers to the thread in the scheduler

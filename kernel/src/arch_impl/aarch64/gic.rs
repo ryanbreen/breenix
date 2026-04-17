@@ -1899,6 +1899,21 @@ pub fn read_gicr_ispendr0(cpu_id: usize) -> u32 {
     }
 }
 
+/// Read GICR_ICENABLER0 for a specific CPU (SGI/PPI clear-enable register).
+///
+/// This is a read-only diagnostic snapshot. Architecturally, ICENABLER reads
+/// return the enable state just like ISENABLER; writes clear enable bits.
+pub fn read_gicr_icenabler0(cpu_id: usize) -> u32 {
+    if !GICR_VALID.load(Ordering::Relaxed) {
+        return 0xDEAD_BEEF; // sentinel: GICR not initialized
+    }
+    if let Some(rd_base) = gicr_rd_base_for_cpu(cpu_id) {
+        gicr_read_at_rd_base(rd_base, GICR_SGI_OFFSET + GICR_ICENABLER0)
+    } else {
+        0xDEAD_BEEF
+    }
+}
+
 /// Read the priority of a specific interrupt (0-31) from CPU 0's GICR.
 /// Returns the 8-bit priority value (lower = higher priority).
 pub fn read_gicr_priority_cpu0(irq: u32) -> u8 {

@@ -3308,6 +3308,126 @@ pub static CPU0_IDLE_CNTV_CVAL: AtomicU64 = AtomicU64::new(0);
 pub static CPU0_IDLE_CNTVCT: AtomicU64 = AtomicU64::new(0);
 pub static CPU0_IDLE_ITERATIONS: AtomicU64 = AtomicU64::new(0);
 
+static PER_CPU_IDLE_PRE_AUDIT_DONE: [AtomicBool; 8] = [
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+];
+
+static PER_CPU_IDLE_POST_AUDIT_DONE: [AtomicBool; 8] = [
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+];
+
+static PER_CPU_IDLE_AUDIT_PRINT_LOCK: AtomicBool = AtomicBool::new(false);
+static PER_CPU_IDLE_AUDIT_ENABLED: AtomicBool = AtomicBool::new(false);
+
+pub fn enable_f20b_idle_audit() {
+    PER_CPU_IDLE_AUDIT_ENABLED.store(true, Ordering::Release);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(never)]
+fn audit_idle_state_once(cpu_id: usize, moment: &str, done: &[AtomicBool; 8]) {
+    if !PER_CPU_IDLE_AUDIT_ENABLED.load(Ordering::Acquire) {
+        return;
+    }
+    if cpu_id >= done.len() {
+        return;
+    }
+
+    if done[cpu_id]
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+
+    let mpidr: u64;
+    let cntv_ctl: u64;
+    let cntv_cval: u64;
+    let cntvct: u64;
+    let icc_pmr: u64;
+    let icc_igrpen1: u64;
+    let daif: u64;
+    let icc_rpr: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
+        core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) cntv_ctl, options(nomem, nostack));
+        core::arch::asm!("mrs {}, cntv_cval_el0", out(reg) cntv_cval, options(nomem, nostack));
+        core::arch::asm!("mrs {}, cntvct_el0", out(reg) cntvct, options(nomem, nostack));
+        core::arch::asm!("mrs {}, icc_pmr_el1", out(reg) icc_pmr, options(nomem, nostack));
+        core::arch::asm!("mrs {}, icc_igrpen1_el1", out(reg) icc_igrpen1, options(nomem, nostack));
+        core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack));
+        core::arch::asm!("mrs {}, S3_0_C12_C11_3", out(reg) icc_rpr, options(nomem, nostack));
+    }
+
+    let gicr_isenabler0 = crate::arch_impl::aarch64::gic::read_gicr_isenabler0(cpu_id);
+    let gicr_ispendr0 = crate::arch_impl::aarch64::gic::read_gicr_ispendr0(cpu_id);
+    let gicr_icenabler0 = crate::arch_impl::aarch64::gic::read_gicr_icenabler0(cpu_id);
+
+    while PER_CPU_IDLE_AUDIT_PRINT_LOCK
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        core::hint::spin_loop();
+    }
+
+    let print_daif: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, daif", out(reg) print_daif, options(nomem, nostack));
+        core::arch::asm!("msr daifset, #3", options(nomem, nostack));
+        core::arch::asm!("isb", options(nomem, nostack));
+    }
+
+    raw_uart_str("[PER_CPU_IDLE_AUDIT] moment=");
+    raw_uart_str(moment);
+    raw_uart_str(" cpu=");
+    raw_uart_dec(cpu_id as u64);
+    raw_uart_str(" mpidr=");
+    raw_uart_hex(mpidr);
+    raw_uart_str(" cntv_ctl=");
+    raw_uart_hex(cntv_ctl);
+    raw_uart_str(" cntv_cval=");
+    raw_uart_hex(cntv_cval);
+    raw_uart_str(" cntvct=");
+    raw_uart_hex(cntvct);
+    raw_uart_str(" cntv_delta=");
+    raw_uart_hex(cntv_cval.wrapping_sub(cntvct));
+    raw_uart_str(" icc_pmr=");
+    raw_uart_hex(icc_pmr);
+    raw_uart_str(" icc_igrpen1=");
+    raw_uart_hex(icc_igrpen1);
+    raw_uart_str(" daif=");
+    raw_uart_hex(daif);
+    raw_uart_str(" icc_rpr=");
+    raw_uart_hex(icc_rpr);
+    raw_uart_str(" gicr_isenabler0=");
+    raw_uart_hex(gicr_isenabler0 as u64);
+    raw_uart_str(" gicr_ispendr0=");
+    raw_uart_hex(gicr_ispendr0 as u64);
+    raw_uart_str(" gicr_icenabler0=");
+    raw_uart_hex(gicr_icenabler0 as u64);
+    raw_uart_str("\n");
+
+    unsafe {
+        core::arch::asm!("msr daif, {}", in(reg) print_daif, options(nomem, nostack));
+        core::arch::asm!("isb", options(nomem, nostack));
+    }
+    PER_CPU_IDLE_AUDIT_PRINT_LOCK.store(false, Ordering::Release);
+}
+
 /// ARM64 idle loop - wait for interrupts.
 ///
 /// Before each WFI, unconditionally re-arm the virtual timer. This works
@@ -3334,6 +3454,8 @@ pub extern "C" fn idle_loop_arm64() -> ! {
         if crate::arch_impl::aarch64::timer_interrupt::is_initialized() {
             crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
         }
+
+        audit_idle_state_once(cpu_id, "pre_wfi", &PER_CPU_IDLE_PRE_AUDIT_DONE);
 
         // CPU 0 diagnostic: read GIC CPU interface + timer registers BEFORE
         // enabling IRQs, so we see the state that prevents interrupt delivery.
@@ -3368,6 +3490,8 @@ pub extern "C" fn idle_loop_arm64() -> ! {
                 options(nomem, nostack)
             );
         }
+
+        audit_idle_state_once(cpu_id, "post_wfi", &PER_CPU_IDLE_POST_AUDIT_DONE);
     }
 }
 
