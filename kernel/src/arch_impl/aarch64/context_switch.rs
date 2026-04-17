@@ -3337,21 +3337,29 @@ fn audit_f20d_idle_state_once(cpu_id: usize, moment: &str, done: &[AtomicBool; 8
     if cpu_id >= done.len() {
         return;
     }
-    if done[cpu_id]
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
+    if done[cpu_id].load(Ordering::Relaxed) {
         return;
     }
+    done[cpu_id].store(true, Ordering::Relaxed);
 
-    let mpidr: u64 = 0;
-    let cntv_ctl: u64 = 0;
-    let cntv_cval: u64 = 0;
-    let cntvct: u64 = 0;
-    let icc_pmr: u64 = 0;
-    let icc_igrpen1: u64 = 0;
-    let daif: u64 = 0;
-    let icc_rpr: u64 = 0;
+    let mpidr: u64;
+    let cntv_ctl: u64;
+    let cntv_cval: u64;
+    let cntvct: u64;
+    let icc_pmr: u64;
+    let icc_igrpen1: u64;
+    let daif: u64;
+    let icc_rpr: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
+        core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) cntv_ctl, options(nomem, nostack));
+        core::arch::asm!("mrs {}, cntv_cval_el0", out(reg) cntv_cval, options(nomem, nostack));
+        core::arch::asm!("mrs {}, cntvct_el0", out(reg) cntvct, options(nomem, nostack));
+        core::arch::asm!("mrs {}, icc_pmr_el1", out(reg) icc_pmr, options(nomem, nostack));
+        core::arch::asm!("mrs {}, icc_igrpen1_el1", out(reg) icc_igrpen1, options(nomem, nostack));
+        core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack));
+        core::arch::asm!("mrs {}, S3_0_C12_C11_3", out(reg) icc_rpr, options(nomem, nostack));
+    }
 
     let gicr_isenabler0 = crate::arch_impl::aarch64::gic::read_gicr_isenabler0(cpu_id);
     let gicr_ispendr0 = crate::arch_impl::aarch64::gic::read_gicr_ispendr0(cpu_id);
