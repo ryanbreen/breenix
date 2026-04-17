@@ -3846,3 +3846,59 @@ F19 fix avoids that unstable boot pattern by running the boot shell first,
 then starting bsshd only after `/etc/init.js` completes. Because this changes
 the boot shell from PID 3 to PID 2, bsh's init-script mode accepts either PID
 2 or PID 3.
+
+## F20b: Per-CPU Timer Delivery at Scheduler-Idle WFI
+
+### Phase 2 audit result
+
+F20b added a one-shot `[PER_CPU_IDLE_AUDIT]` snapshot in `idle_loop_arm64`,
+enabled only after the boot code resets scheduler idle contexts. The audit
+captures the first scheduler-idle WFI entry per CPU and the first actual WFI
+wake if it happens.
+
+Clean Phase 2 run:
+
+```text
+pre_wfi cpu=0 mpidr=0x80000000 cntv_ctl=0x1 cntv_delta=0x5dbf icc_pmr=0xf0 icc_igrpen1=0x1 daif=0x0 icc_rpr=0xff gicr_isenabler0=0x8000000 gicr_ispendr0=0x0
+pre_wfi cpu=1 mpidr=0x80000001 cntv_ctl=0x1 cntv_delta=0x5dbe icc_pmr=0xf0 icc_igrpen1=0x1 daif=0x0 icc_rpr=0xff gicr_isenabler0=0x8000000 gicr_ispendr0=0x0
+pre_wfi cpu=2 mpidr=0x80000002 cntv_ctl=0x1 cntv_delta=0x5dbf icc_pmr=0xf0 icc_igrpen1=0x1 daif=0x0 icc_rpr=0xff gicr_isenabler0=0x8000000 gicr_ispendr0=0x1
+pre_wfi cpu=3 mpidr=0x80000003 cntv_ctl=0x1 cntv_delta=0x5dbe icc_pmr=0xf0 icc_igrpen1=0x1 daif=0x0 icc_rpr=0xff gicr_isenabler0=0x8000000 gicr_ispendr0=0x1
+pre_wfi cpu=4 mpidr=0x80000004 cntv_ctl=0x1 cntv_delta=0x5dbe icc_pmr=0xf0 icc_igrpen1=0x1 daif=0x0 icc_rpr=0xff gicr_isenabler0=0x8000000 gicr_ispendr0=0x1
+pre_wfi cpu=5 mpidr=0x80000005 cntv_ctl=0x1 cntv_delta=0x5dbe icc_pmr=0xf0 icc_igrpen1=0x1 daif=0x0 icc_rpr=0xff gicr_isenabler0=0x8000000 gicr_ispendr0=0x1
+pre_wfi cpu=6 mpidr=0x80000006 cntv_ctl=0x1 cntv_delta=0x5dbe icc_pmr=0xf0 icc_igrpen1=0x1 daif=0x0 icc_rpr=0xff gicr_isenabler0=0x8000000 gicr_ispendr0=0x1
+pre_wfi cpu=7 mpidr=0x80000007 cntv_ctl=0x1 cntv_delta=0x5dbf icc_pmr=0xf0 icc_igrpen1=0x1 daif=0x0 icc_rpr=0xff gicr_isenabler0=0x8000000 gicr_ispendr0=0x1
+```
+
+Observed against expected state:
+
+- `CNTV_CTL_EL0` was enabled (`0x1`) on every CPU.
+- `CNTV_CVAL_EL0 - CNTVCT_EL0` was about one 24 MHz millisecond on every CPU.
+- `ICC_PMR_EL1` was `0xf0` on every CPU.
+- `ICC_IGRPEN1_EL1` was enabled on every CPU.
+- `DAIF.I` and `DAIF.F` were clear on every CPU.
+- `ICC_RPR_EL1` was idle priority (`0xff`) on every CPU.
+- `GICR_ISENABLER0` had PPI27 enabled on every CPU.
+
+Actual wake evidence:
+
+- CPUs 2-7 emitted clean `post_wfi` rows.
+- CPU 1 emitted a `post_wfi` row with a CPU0 `T` breadcrumb inserted into one
+  field, but the row is otherwise present.
+- CPU 0 emitted no `post_wfi` row before `[init] Boot script completed`.
+
+### Failed Phase 3 attempts
+
+Two minimal fixes were tested and backed out:
+
+- Add `isb` between `msr daifclr, #0xf` and `wfi`: did not produce a CPU0
+  `post_wfi` row and regressed 30-second boot completion.
+- Enable SGI0/SGI1 per redistributor after GICR SGI/PPI clear: changed
+  `GICR_ISENABLER0` to `0x8000003`, but regressed 30-second boot completion.
+
+### F20b interim verdict
+
+The original candidate masks were not the blocker in the clean audit. CPU0
+enters scheduler-idle WFI with PPI27 enabled, the virtual timer programmed for
+the next millisecond, priority mask open, Group 1 enabled, and IRQ/FIQ unmasked.
+The remaining failure is CPU0-specific WFI wake/delivery behavior after that
+correct pre-WFI state. No fix from F20b is safe to merge yet.
