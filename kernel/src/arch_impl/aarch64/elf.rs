@@ -363,6 +363,8 @@ pub fn load_elf_into_page_table(
         }
     }
 
+    f19_verify_entry_mapping(data, header, page_table);
+
     // Page-align the heap start (4KB alignment)
     let heap_start = (max_segment_end + 0xfff) & !0xfff;
 
@@ -404,6 +406,84 @@ pub fn load_elf_into_page_table(
         phnum: header.phnum,
         phentsize: header.phentsize,
     })
+}
+
+/// F19 diagnostic tags:
+/// - `[F19_ELF] match=1`: entry VA translated and first word matches ELF bytes
+/// - `[F19_ELF] match=0`: entry VA translated but copied bytes differ
+/// - `[F19_ELF] missing`: entry VA did not translate in the new page table
+fn f19_verify_entry_mapping(
+    data: &[u8],
+    header: &Elf64Header,
+    page_table: &crate::memory::process_memory::ProcessPageTable,
+) {
+    use crate::arch_impl::aarch64::context_switch::{raw_uart_hex, raw_uart_str};
+
+    let Some(expected_word) = f19_expected_entry_word(data, header) else {
+        raw_uart_str("\n[F19_ELF] no_entry_file_word entry=");
+        raw_uart_hex(header.entry);
+        raw_uart_str("\n");
+        return;
+    };
+
+    let Some(entry_phys) = page_table.translate_page(VirtAddr::new(header.entry)) else {
+        raw_uart_str("\n[F19_ELF] missing entry=");
+        raw_uart_hex(header.entry);
+        raw_uart_str(" expected=");
+        raw_uart_hex(expected_word as u64);
+        raw_uart_str("\n");
+        return;
+    };
+
+    let physical_memory_offset = crate::memory::physical_memory_offset();
+    let entry_ptr = (physical_memory_offset.as_u64() + entry_phys.as_u64()) as *const u32;
+    let loaded_word = unsafe { core::ptr::read_volatile(entry_ptr) };
+    raw_uart_str("\n[F19_ELF] entry=");
+    raw_uart_hex(header.entry);
+    raw_uart_str(" phys=");
+    raw_uart_hex(entry_phys.as_u64());
+    raw_uart_str(" loaded=");
+    raw_uart_hex(loaded_word as u64);
+    raw_uart_str(" expected=");
+    raw_uart_hex(expected_word as u64);
+    raw_uart_str(" match=");
+    raw_uart_str(if loaded_word == expected_word { "1" } else { "0" });
+    raw_uart_str("\n");
+}
+
+fn f19_expected_entry_word(data: &[u8], header: &Elf64Header) -> Option<u32> {
+    let ph_offset = header.phoff as usize;
+    let ph_size = header.phentsize as usize;
+    let ph_count = header.phnum as usize;
+
+    for i in 0..ph_count {
+        let ph_start = ph_offset.checked_add(i.checked_mul(ph_size)?)?;
+        let ph_end = ph_start.checked_add(mem::size_of::<Elf64ProgramHeader>())?;
+        if ph_end > data.len() {
+            return None;
+        }
+
+        let mut ph_bytes = [0u8; mem::size_of::<Elf64ProgramHeader>()];
+        ph_bytes.copy_from_slice(&data[ph_start..ph_end]);
+        let ph: &Elf64ProgramHeader = unsafe { &*(ph_bytes.as_ptr() as *const Elf64ProgramHeader) };
+
+        if ph.p_type != SegmentType::Load as u32 {
+            continue;
+        }
+
+        let seg_start = ph.p_vaddr;
+        let seg_file_end = ph.p_vaddr.checked_add(ph.p_filesz)?;
+        if header.entry < seg_start || header.entry.checked_add(4)? > seg_file_end {
+            continue;
+        }
+
+        let entry_offset = header.entry.checked_sub(ph.p_vaddr)?;
+        let file_offset = (ph.p_offset.checked_add(entry_offset)?) as usize;
+        let bytes = data.get(file_offset..file_offset.checked_add(4)?)?;
+        return Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
+    }
+
+    None
 }
 
 /// Load a single ELF segment into a process page table.

@@ -4,48 +4,60 @@
 //! bsh detects it's the init shell (PID 2) and loads /etc/init.js.
 
 use libbreenix::process::{fork, execv, waitpid, getpid, ForkResult};
+use libbreenix::types::Fd;
 
 fn main() {
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
     print!("[init] Breenix init starting (PID {})\n", pid);
 
-    // Fork bsshd — SSH server daemon (background)
-    match fork() {
-        Ok(ForkResult::Child) => {
-            let arg0 = b"bsshd\0";
-            let argv: [*const u8; 2] = [
-                arg0.as_ptr(),
-                core::ptr::null(),
-            ];
-            match execv(b"/bin/bsshd\0", argv.as_ptr()) {
-                Ok(_) => unreachable!(),
-                Err(_) => {
-                    // bsshd not installed — silently exit
-                    std::process::exit(0);
+    // F19 diagnostic: skip bsshd to isolate whether concurrent boot-time exec
+    // reads are what starve the boot shell replacement exec.
+    let start_bsshd = false;
+    if start_bsshd {
+        // Fork bsshd — SSH server daemon (background)
+        match fork() {
+            Ok(ForkResult::Child) => {
+                let arg0 = b"bsshd\0";
+                let argv: [*const u8; 2] = [
+                    arg0.as_ptr(),
+                    core::ptr::null(),
+                ];
+                match execv(b"/bin/bsshd\0", argv.as_ptr()) {
+                    Ok(_) => unreachable!(),
+                    Err(_) => {
+                        // bsshd not installed — silently exit
+                        std::process::exit(0);
+                    }
                 }
             }
+            Ok(ForkResult::Parent(child_pid)) => {
+                print!("[init] bsshd started (PID {})\n", child_pid.raw());
+            }
+            Err(_) => {
+                print!("[init] Warning: failed to start bsshd\n");
+            }
         }
-        Ok(ForkResult::Parent(child_pid)) => {
-            print!("[init] bsshd started (PID {})\n", child_pid.raw());
-        }
-        Err(_) => {
-            print!("[init] Warning: failed to start bsshd\n");
-        }
+    } else {
+        print!("[init] bsshd skipped for F19\n");
     }
 
-    // F19 Phase 0 diagnostic: temporarily exec hello_raw instead of bsh.
-    // Expected successful signature: "[hello_raw] start" then exit code 42.
+    // F19 Phase 2 diagnostic: no-std raw _start with padded executable text.
+    // Expected signature distinguishes kernel ELF exec from Rust std startup.
     match fork() {
         Ok(ForkResult::Child) => {
-            let arg0 = b"hello_raw\0";
+            let _ = libbreenix::io::write(
+                Fd::STDOUT,
+                b"[init-child] before hello_nostd_padded exec\n",
+            );
+            let arg0 = b"hello_nostd_padded\0";
             let argv: [*const u8; 2] = [
                 arg0.as_ptr(),
                 core::ptr::null(),
             ];
-            match execv(b"/bin/hello_raw\0", argv.as_ptr()) {
+            match execv(b"/bin/hello_nostd_padded\0", argv.as_ptr()) {
                 Ok(_) => unreachable!(),
                 Err(e) => {
-                    print!("[init] Failed to exec hello_raw: {}\n", e);
+                    print!("[init] Failed to exec hello_nostd_padded: {}\n", e);
                     std::process::exit(127);
                 }
             }

@@ -3379,3 +3379,386 @@ F19 Phase 0 therefore rules out a broad kernel exec/fd-inheritance failure for
 the minimal path. The next branch should be **Phase 2**:
 `diagnostic/f19-runtime-trace`, focused on bsh's userspace startup path
 (`_start` / Rust runtime / `main`) and subsequent shell initialization.
+
+## 2026-04-17 - F19 Phase 2 bsh main-entry probe
+
+Phase 2 restored init to exec `/bin/bsh` and added a single raw fd-1 marker as
+the first statement in `bsh::main()`:
+
+```text
+[bsh] RAW main() entry
+```
+
+### Hypothesis
+
+R0: if the marker appears, bsh reaches Rust `main()` and the hang is later in
+argument collection, REPL/init script selection, JavaScript context setup, or
+script execution.
+
+R1: if the marker does not appear and init remains blocked in `waitpid`, bsh is
+hanging before or during entry to Rust `main()` even though Phase 0 proved a
+minimal std binary reaches `main()` and can raw-write fd 1.
+
+### Probe
+
+Validation command:
+
+```text
+./run.sh --parallels --test 45
+```
+
+As before, the command exited nonzero because the screenshot helper could not
+find the generated Parallels VM window. The serial log is the validation source.
+`/tmp/breenix-parallels-serial.log` reached:
+
+```text
+[init] Breenix init starting (PID 1)
+F123456789SC[init] bsshd started (PID 2)
+F123456789SCT0
+```
+
+No `[bsh] RAW main() entry` marker appeared, and init did not report a child
+exit.
+
+### Verdict
+
+Verdict: **R1 confirmed**. bsh does not reach its Rust `main()` on ARM64
+Parallels in this boot path. The next Phase 2 diagnostic should compare against
+a minimal std `println!` binary to separate "std println/stdout startup" from a
+bsh-specific pre-main/ELF/runtime issue.
+
+## 2026-04-17 - F19 Phase 2 hello_println control
+
+The next control added a minimal std binary, `/bin/hello_println`, whose `main`
+does only:
+
+```text
+println!("[hello_println] start");
+std::process::exit(42);
+```
+
+Init was temporarily changed to exec `/bin/hello_println`.
+
+### Hypothesis
+
+P0: if `[hello_println] start` appears and init observes exit code 42, minimal
+std startup and std stdout/`println!` work after init exec. bsh's failure is
+therefore bsh-specific before `main()`.
+
+P1: if `[hello_println] start` does not appear and init remains blocked, std
+stdout/`println!` is suspect despite Phase 0 proving that a minimal std binary
+can reach `main()` and raw-write fd 1.
+
+### Probe
+
+Attempt 1 was invalid: the serial log showed an AHCI timeout and
+`[init] Failed to exec hello_println: EIO`, so the binary did not run.
+
+Attempt 2 used the same validation command:
+
+```text
+./run.sh --parallels --test 45
+```
+
+Attempt 2 serial reached:
+
+```text
+[init] Breenix init starting (PID 1)
+F123456789SC[init] bsshd started (PID 2)
+F123456789SCT9T0
+```
+
+No `[hello_println] start` marker appeared, and init did not observe child
+exit.
+
+### Verdict
+
+Verdict: **P1 confirmed for the println-only control**. A minimal std
+`println!` binary hangs silently where `hello_raw` succeeded. The next
+diagnostic should put a raw fd-1 write before `println!` in the same binary to
+separate "main not reached when println is linked" from "main reached, then
+blocks inside std stdout/println".
+
+## 2026-04-17 - F19 Phase 2 raw-before-println control
+
+The next control added `/bin/hello_raw_then_println`, whose `main` performs a
+raw fd-1 write before invoking std `println!`:
+
+```text
+raw write: [hello_raw_then_println] raw-before
+println!:  [hello_raw_then_println] println
+raw write: [hello_raw_then_println] raw-after
+exit(42)
+```
+
+Init was temporarily changed to exec `/bin/hello_raw_then_println`.
+
+### Hypothesis
+
+RP0: if the first raw marker does not appear and init remains blocked, the
+binary does not reach user `main()` when `println!` is linked/used.
+
+RP1: if the first raw marker appears but the `println!` marker and second raw
+marker do not appear, the binary reaches `main()` and hangs inside std
+stdout/`println!`.
+
+RP2: if all markers appear and init observes exit code 42, the previous
+println-only result was not stable and should be repeated.
+
+### Probe
+
+Validation command:
+
+```text
+./run.sh --parallels --test 45
+```
+
+The serial log reached:
+
+```text
+[init] Breenix init starting (PID 1)
+F123456789SC[init] bsshd started (PID 2)
+F123456789SCT9T0
+```
+
+No `[hello_raw_then_println] raw-before` marker appeared, no later marker
+appeared, and init did not observe child exit.
+
+### Verdict
+
+Verdict: **RP0 confirmed**. The failing control does not reach user `main()`;
+the first stdout operation is not the hang site. The next diagnostic should
+distinguish a std/runtime linkage issue from an ELF text-size/page-layout
+threshold. Local ELF inspection shows the successful `hello_raw` text segment
+ends below `0x4000f000`, while both `hello_raw_then_println` and bsh have larger
+text layouts that extend beyond that page.
+
+## 2026-04-17 - F19 Phase 2 padded raw-only control
+
+The next control added `/bin/hello_raw_padded`, a raw-only diagnostic that
+executes a referenced NOP block in executable text between two raw fd-1 writes:
+
+```text
+raw write: [hello_raw_padded] raw-before
+execute padded .text block
+raw write: [hello_raw_padded] raw-after
+exit(42)
+```
+
+Init was temporarily changed to exec `/bin/hello_raw_padded`.
+
+### Hypothesis
+
+PAD0: if the first raw marker does not appear, larger executable layout is
+enough to reproduce the pre-user-main hang without std `println!`.
+
+PAD1: if both raw markers appear and init observes exit code 42, padded text
+alone works and the failing differentiator is a runtime/linkage path pulled in
+by `println!`/bsh rather than text size.
+
+PAD2: if the first raw marker appears but the second does not, control reaches
+user `main()` but executing the padded text block hangs or faults.
+
+### Probe
+
+Local ELF inspection confirmed that the padded control exercises a much larger
+executable layout:
+
+```text
+Entry:           0x400160e8
+Executable LOAD: vaddr=0x40000000 filesz=92688
+main shim:       0x4000bfe4
+_start:          0x400160e8
+```
+
+Validation command:
+
+```text
+./run.sh --parallels --test 45
+```
+
+The serial log reached:
+
+```text
+[init] Breenix init starting (PID 1)
+F123456789SC[init] bsshd started (PID 2)
+F123456789SCT9T0
+```
+
+No `[hello_raw_padded] raw-before` marker appeared, no later marker appeared,
+and init did not observe child exit.
+
+### Verdict
+
+Verdict: **PAD0 confirmed**. A raw-only binary with larger executable layout
+also hangs before user Rust `main()`. This narrows the failure beyond
+`println!`, but the padded binary still uses Rust std's `_start`/`lang_start`
+path. The next control should bypass std entirely with a `#![no_std]`
+`#![no_main]` `_start` binary using a similar large executable layout.
+
+## 2026-04-17 - F19 Phase 2 no-std padded control
+
+The next control added `/bin/hello_nostd_padded`, a `#![no_std]`
+`#![no_main]` binary with direct `_start`, direct raw syscall assembly, and a
+large referenced NOP block in executable text:
+
+```text
+_start:
+  raw write: [hello_nostd_padded] raw-before
+  execute padded .text block
+  raw write: [hello_nostd_padded] raw-after
+  exit(42)
+```
+
+Init was temporarily changed to exec `/bin/hello_nostd_padded`.
+
+### Hypothesis
+
+NS0: if both raw markers appear and init observes exit code 42, the kernel can
+exec a large/high-entry image and the remaining hang is in Rust std startup
+before the user main function.
+
+NS1: if the first raw marker does not appear and init remains blocked, std
+startup is not required; kernel exec/ELF/page-table handling remains suspect
+for larger/high-entry layouts.
+
+NS2: if the first raw marker appears but the second does not, direct `_start`
+runs but executing the padded text block hangs or faults.
+
+### Probe
+
+The adjusted no-std ELF exercised the high-entry layout:
+
+```text
+Entry:           0x40018004
+Executable LOAD: vaddr=0x40000000 filesz=98384
+pad symbol:      0x40000000
+_start:          0x40018004
+```
+
+Validation command:
+
+```text
+./run.sh --parallels --test 45
+```
+
+The serial log reached:
+
+```text
+[init] Breenix init starting (PID 1)
+F123456789SC[init] bsshd started (PID 2)
+F123456789SCT9T0
+```
+
+No `[hello_nostd_padded] raw-before` marker appeared, no later marker appeared,
+init did not observe child exit, and no instruction/data abort log appeared.
+
+### Verdict
+
+Verdict: **NS1 confirmed**. Rust std startup is not required to reproduce the
+silent pre-first-instruction hang. The root cause is now narrowed to kernel
+exec/return-to-userspace behavior for larger/high-entry ELF layouts.
+
+## 2026-04-17 - F19 Phase 2 exec-read isolation
+
+The next probe added ARM64 exec-path breadcrumbs and an ELF entry-byte verifier.
+The verifier compares the first instruction word at the loaded ELF entry VA
+against the expected bytes from the ELF file after segment loading.
+
+### Hypotheses
+
+EP0: if exec reaches the ext2 file-content read but never reaches the loader,
+the observed silent hang is an exec-read problem rather than Rust startup or
+ELF entry dispatch.
+
+EP1: if file read completes and the entry verifier reports `match=1`, but the
+program still produces no raw marker, the remaining failure is in frame/TTBR
+return-to-userspace handling.
+
+CON0: if skipping the background bsshd fork makes the same
+`hello_nostd_padded` exec succeed, overlapping early boot exec reads are the
+trigger.
+
+### Probe A: bsshd + hello_nostd_padded
+
+With bsshd still started in the background, init's child printed immediately
+before calling `execv("/bin/hello_nostd_padded")`, proving the forked child had
+returned to userspace and fd 1 still worked:
+
+```text
+[init] Breenix init starting (PID 1)
+F123456789SC
+[F19_EXEC] E
+[F19_EXEC] N
+[F19_EXEC] A
+[F19_EXEC] O
+[F19_EXEC] r
+[F19_EXEC] g
+[init] bsshd started (PID 2)
+F123456789SC[init-child] before hello_nostd_padded exec
+[F19_EXEC] E
+[F19_EXEC] N
+[F19_EXEC] A
+[F19_EXEC] O
+[F19_EXEC] r
+[F19_EXEC] g
+T9T0
+[F19_EXEC] i
+[F19_EXEC] n
+[F19_EXEC] p
+[F19_EXEC] q
+[F19_EXEC] i
+!!! SOFT LOCKUP DETECTED !!!
+...
+[ahci] read_block(360472) wait failed: AHCI: command timeout
+[init] Failed to exec hello_nostd_padded: EIO
+```
+
+The last unambiguous tag for the hello exec was `q`: about to read ELF file
+content. No `d` (file content read complete) and no exec-target `[F19_ELF]`
+entry verification appeared before the AHCI timeout.
+
+### Probe B: skip bsshd
+
+When init temporarily skipped bsshd and performed only the boot-script exec,
+the same target completed:
+
+```text
+[init] Breenix init starting (PID 1)
+[init] bsshd skipped for F19
+F123456789SC[init-child] before hello_nostd_padded exec
+[F19_EXEC] E
+[F19_EXEC] N
+[F19_EXEC] A
+[F19_EXEC] O
+[F19_EXEC] r
+[F19_EXEC] g
+[F19_EXEC] i
+[F19_EXEC] n
+[F19_EXEC] p
+[F19_EXEC] q
+[F19_EXEC] d
+[F19_EXEC] L
+[F19_EXEC] P
+[F19_EXEC] M
+[F19_ELF] entry=0x40018004 phys=0x4405b004 loaded=0xf81f0ffe expected=0xf81f0ffe match=1
+[F19_EXEC] S
+[F19_EXEC] F
+[F19_EXEC] T
+[F19_EXEC] R
+[hello_nostd_padded] raw-before
+[hello_nostd_padded] raw-after
+[syscall] exit(42) pid=2 name=/bin/hello_nostd_padded
+[init] Boot script exited with code 42
+```
+
+### Verdict
+
+Verdict: **CON0 confirmed**. The no-std high-entry diagnostic executes
+correctly when it is the only early boot exec read. The bsh symptom is not Rust
+std startup and not ELF entry mapping. It is triggered by overlapping early
+boot exec reads: the background bsshd exec and the boot shell exec contend in
+the ext2/AHCI read path, leading to a stalled file-content read and eventual
+AHCI timeout/EIO under instrumentation. The minimal F19 fix should serialize
+early boot exec reads by running the boot shell first and starting bsshd only
+after the boot script has completed.
