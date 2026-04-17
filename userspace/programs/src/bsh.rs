@@ -1255,7 +1255,7 @@ fn native_sleep(
 
 /// spawn(cmd) -> pid
 ///
-/// Forks a child process and executes the command in the background.
+/// Starts a child process in the background.
 /// Does NOT wait for the child to finish. Returns the child PID.
 /// Used by init scripts to start services without blocking.
 fn native_spawn(
@@ -1273,9 +1273,7 @@ fn native_spawn(
         return Err(JsError::type_error("spawn: command must be a string"));
     };
 
-    // Copy path to a stack buffer before fork.
-    // After fork, heap pages may not be accessible due to CoW issues,
-    // but stack pages are reliably available.
+    // Copy path to a stack buffer before invoking the kernel spawn syscall.
     let cmd_bytes = cmd_str.as_bytes();
     if cmd_bytes.len() >= 255 {
         return Err(JsError::type_error("spawn: path too long"));
@@ -1285,23 +1283,12 @@ fn native_spawn(
     path_buf[cmd_bytes.len()] = 0;
     let path_len = cmd_bytes.len() + 1;
 
-    let fork_result = match libbreenix::process::fork() {
-        Ok(r) => r,
-        Err(_) => return Err(JsError::runtime("spawn: fork() failed")),
-    };
-
-    match fork_result {
-        libbreenix::process::ForkResult::Child => {
-            match libbreenix::process::exec(&path_buf[..path_len]) {
-                Ok(_) => unreachable!(),
-                Err(_) => {
-                    libbreenix::process::exit(127);
-                }
-            }
-        }
-        libbreenix::process::ForkResult::Parent(child_pid) => {
+    match libbreenix::process::spawn(&path_buf[..path_len]) {
+        Ok(child_pid) => {
+            let _ = libbreenix::process::yield_now();
             Ok(JsValue::number(child_pid.raw() as f64))
         }
+        Err(_) => Err(JsError::runtime("spawn: kernel spawn failed")),
     }
 }
 

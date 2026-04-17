@@ -9,14 +9,18 @@
 
 use std::process;
 
+#[cfg(not(target_arch = "aarch64"))]
 use libbreenix::fs;
 use libbreenix::graphics::{self, WindowInputEvent, input_event_type};
 use libbreenix::io;
 use libbreenix::signal;
 use libbreenix::types::Fd;
 
+#[cfg(not(target_arch = "aarch64"))]
 use breengel::FontConfig;
-use libfont::{Font, CachedFont};
+use libfont::CachedFont;
+#[cfg(not(target_arch = "aarch64"))]
+use libfont::Font;
 use libgfx::bitmap_font;
 use libgfx::ttf_font;
 use libgfx::color::Color;
@@ -266,6 +270,7 @@ impl HotkeyManager {
     ///   Super+Super = exec blauncher
     ///   Alt+F4 = close
     ///   Super+Return = exec bterm
+    #[cfg(not(target_arch = "aarch64"))]
     fn load_config(&mut self, path: &str) {
         let fd = match fs::open(path, fs::O_RDONLY) {
             Ok(fd) => fd,
@@ -328,6 +333,7 @@ impl HotkeyManager {
         });
     }
 
+    #[cfg(not(target_arch = "aarch64"))]
     fn parse_line(line: &[u8]) -> Option<Hotkey> {
         // Split on '='
         let eq_pos = line.iter().position(|&b| b == b'=')?;
@@ -478,6 +484,7 @@ impl HotkeyManager {
     }
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 fn trim(s: &[u8]) -> &[u8] {
     let start = s.iter().position(|&b| b != b' ' && b != b'\t' && b != b'\r').unwrap_or(s.len());
     let end = s.iter().rposition(|&b| b != b' ' && b != b'\t' && b != b'\r').map(|i| i + 1).unwrap_or(start);
@@ -1151,6 +1158,14 @@ fn redraw_all_windows(fb: &mut FrameBuf, windows: &[Window], focused_win: usize,
     draw_appbar(fb, windows, focused_win, ui_font);
 }
 
+fn restore_full_background(vram: &mut [u32], fb: &mut FrameBuf, bg: &[u32]) {
+    if bg.is_empty() {
+        paint_background(fb);
+    } else {
+        vram.copy_from_slice(bg);
+    }
+}
+
 /// Compose a full-redraw into `vram` without flashing.
 ///
 /// When a shadow buffer is available (SVGA3 direct-mapped VRAM), composes into
@@ -1167,11 +1182,11 @@ fn compose_full_redraw(
     ui_font: &mut Option<CachedFont>,
 ) {
     if let Some((ref mut sbuf, ref mut sfb)) = shadow {
-        sbuf.copy_from_slice(bg);
+        restore_full_background(sbuf, sfb, bg);
         redraw_all_windows(sfb, windows, focused, clock, ui_font);
         vram.copy_from_slice(sbuf);
     } else {
-        vram.copy_from_slice(bg);
+        restore_full_background(vram, fb, bg);
         redraw_all_windows(fb, windows, focused, clock, ui_font);
     }
 }
@@ -1197,6 +1212,10 @@ fn compose_partial_redraw(
     let dx1 = dx1.min(screen_w);
     let dy1 = dy1.min(screen_h);
     if dx0 >= dx1 || dy0 >= dy1 { return; }
+    if bg.is_empty() {
+        compose_full_redraw(vram, fb, shadow, bg, windows, focused, clock, ui_font);
+        return;
+    }
 
     if let Some((ref mut sbuf, ref mut sfb)) = shadow {
         for row in dy0..dy1 {
@@ -1372,39 +1391,43 @@ fn main() {
         )
     };
 
-    // Shadow buffer for double-buffered full redraws on direct-mapped VRAM (SVGA3).
-    // VRAM traces auto-display every pixel write, causing a flash when we do
-    // "clear to bg → redraw all windows". The shadow lets us compose off-screen,
-    // then bulk-copy the final result to VRAM in one memcpy.
-    // For VirGL (non-direct-mapped), composite_buf is a heap buffer so no flash.
-    let mut shadow_fb: Option<(&'static mut [u32], FrameBuf)> = if direct_mapped {
-        let v = vec![0u32; screen_w * screen_h];
-        let buf = v.leak();
-        let sfb = unsafe {
-            FrameBuf::from_raw(
-                buf.as_mut_ptr() as *mut u8,
-                screen_w, screen_h, screen_w * bpp, bpp, info.is_bgr(),
-            )
-        };
-        Some((buf, sfb))
-    } else {
+    // VirGL direct-mapped texture writes are not visible until the explicit
+    // compositor submit, so a second full-screen shadow buffer only burns heap
+    // during early boot. Keep the hook for non-direct fallback paths.
+    let mut shadow_fb: Option<(&'static mut [u32], FrameBuf)> = None;
+
+    // Avoid filesystem reads before the first ARM64 compositor submit. On
+    // single-CPU Parallels, opening /etc/fonts.conf here can stall bwm before
+    // it replaces the kernel proof draw. Bitmap chrome is enough for boot.
+    #[cfg(target_arch = "aarch64")]
+    let mut ui_font: Option<CachedFont> = {
+        print!("[bwm] using bitmap font fallback for early boot\n");
         None
     };
+    #[cfg(not(target_arch = "aarch64"))]
+    let mut ui_font: Option<CachedFont> = {
+        let config = FontConfig::load();
+        let font = std::fs::read(&config.display_path).ok()
+            .and_then(|data| Font::parse(&data).ok())
+            .map(|f| CachedFont::new(f, 256));
+        if font.is_some() {
+            print!("[bwm] display font loaded: {}\n", config.display_path);
+        } else {
+            print!("[bwm] no display font, using bitmap fallback\n");
+        }
+        font
+    };
 
-    // Load display font for window chrome, taskbar, and appbar
-    let config = FontConfig::load();
-    let mut ui_font: Option<CachedFont> = std::fs::read(&config.display_path).ok()
-        .and_then(|data| Font::parse(&data).ok())
-        .map(|f| CachedFont::new(f, 256));
-    if ui_font.is_some() {
-        print!("[bwm] display font loaded: {}\n", config.display_path);
-    } else {
-        print!("[bwm] no display font, using bitmap fallback\n");
-    }
-
-    // Paint decorative background and cache it for fast restoration
+    // Paint decorative background. ARM64 keeps no full-screen cache during
+    // early boot; repainting avoids a multi-megabyte allocation before bwm's
+    // first visible VirGL submit.
     paint_background(&mut fb);
-    let bg_cache = composite_buf.to_vec();
+    #[cfg(target_arch = "aarch64")]
+    let bg_cache: &[u32] = &[];
+    #[cfg(not(target_arch = "aarch64"))]
+    let bg_cache_storage = composite_buf.to_vec();
+    #[cfg(not(target_arch = "aarch64"))]
+    let bg_cache: &[u32] = &bg_cache_storage;
 
     // Enter raw mode on stdin
     let mut orig_termios = libbreenix::termios::Termios::default();
@@ -1437,14 +1460,30 @@ fn main() {
     let mut next_creation_order: u32 = 0;
     // Hotkey system: load config from /etc/hotkeys.conf
     let mut hotkey_mgr = HotkeyManager::new();
+    #[cfg(target_arch = "aarch64")]
+    {
+        hotkey_mgr.load_defaults();
+        print!("[bwm] hotkeys: using built-in defaults for early boot\n");
+    }
+    #[cfg(not(target_arch = "aarch64"))]
     hotkey_mgr.load_config("/etc/hotkeys.conf");
 
-    // Initial composite
-    if direct_mapped {
-        // Data is already in COMPOSITE_TEX — just tell kernel to upload + display
-        let _ = graphics::virgl_composite_windows_rect(&[], 0, 0, 1, 0, 0, screen_w as u32, screen_h as u32);
-    } else {
-        let _ = graphics::virgl_composite_windows(&composite_buf, screen_w as u32, screen_h as u32, true);
+    // Initial composite. On ARM64 Parallels, the op16 SUBMIT_3D compositor path
+    // times out after bwm takes over scanout, so present the CPU-composited
+    // desktop through the proven direct VirGL blit path.
+    #[cfg(target_arch = "aarch64")]
+    {
+        let _ = direct_mapped;
+        let _ = graphics::virgl_composite(composite_buf, screen_w as u32, screen_h as u32);
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        if direct_mapped {
+            // Data is already in COMPOSITE_TEX — just tell kernel to upload + display
+            let _ = graphics::virgl_composite_windows_rect(&[], 0, 0, 1, 0, 0, screen_w as u32, screen_h as u32);
+        } else {
+            let _ = graphics::virgl_composite_windows(&composite_buf, screen_w as u32, screen_h as u32, true);
+        }
     }
 
     let mut read_buf = [0u8; 512];
@@ -1938,6 +1977,18 @@ fn main() {
         // (hotkey cooldown is managed inside HotkeyManager::update)
 
         // ── 6. Composite to GPU (only when something changed) ──
+        #[cfg(target_arch = "aarch64")]
+        {
+            if full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame {
+                let _dirty_rect_snapshot = (dirty_x0, dirty_y0, dirty_x1, dirty_y1);
+                let _ = graphics::virgl_composite(composite_buf, screen_w as u32, screen_h as u32);
+                full_redraw = false;
+                content_dirty = false;
+                windows_dirty = false;
+            }
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
         let (cbuf, cw, ch): (&[u32], u32, u32) = if direct_mapped {
             (&[], 0, 0)
         } else {
@@ -1973,6 +2024,7 @@ fn main() {
                 0, 0, 0, 0, 0,
             );
             windows_dirty = false;
+        }
         }
         // No sleep — compositor_wait handles blocking
     }

@@ -657,6 +657,22 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                 unsafe { core::slice::from_raw_parts(buf_ptr as *const u32, pixel_count as usize) };
             match crate::graphics::compositor_backend() {
                 crate::graphics::CompositorBackend::VirGL => {
+                    #[cfg(target_arch = "aarch64")]
+                    {
+                        return match crate::drivers::virtio::gpu_pci::virgl_composite_frame(
+                            pixels, width, height,
+                        ) {
+                            Ok(()) => SyscallResult::Ok(0),
+                            Err(e) => {
+                                crate::serial_println!(
+                                    "[composite] VirGL direct composite_frame FAILED: {}",
+                                    e
+                                );
+                                SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
+                            }
+                        };
+                    }
+                    #[cfg(not(target_arch = "aarch64"))]
                     match crate::drivers::virtio::gpu_pci::virgl_composite_frame_textured(
                         pixels, width, height,
                     ) {

@@ -293,26 +293,25 @@ HOTKEYS
             cat > /mnt/ext2/etc/init.js << 'INITJS'
 // Breenix boot script - executed by bsh on startup
 // spawn() starts a process in the background and returns its PID.
-// sleep() between spawns lets each child complete exec before the next fork.
+// Keep launch non-blocking; timer sleeps during early single-CPU Parallels boot
+// can delay the visible desktop behind background tasks.
 
-// System services
+// Network service
 spawn("/sbin/telnetd");
-sleep(1000);
-spawn("/sbin/blogd");
-sleep(1000);
 
 // Window compositor (must start before GUI apps)
 spawn("/bin/bwm");
-sleep(1000);
 
 // GUI applications
 spawn("/bin/bterm");
-sleep(1000);
 spawn("/bin/blog");
-sleep(1000);
 spawn("/bin/bounce");
-sleep(1000);
 spawn("/bin/bcheck");
+
+// Log daemon starts after the visible desktop. On single-CPU Parallels, blogd
+// initial /proc/kmsg drain can otherwise starve the boot script before GUI apps
+// get scheduled.
+spawn("/sbin/blogd");
 INITJS
             echo "  Created /etc/init.js"
 
@@ -554,26 +553,25 @@ HOTKEYS
     cat > "$MOUNT_DIR/etc/init.js" << 'INITJS'
 // Breenix boot script - executed by bsh on startup
 // spawn() starts a process in the background and returns its PID.
-// sleep() between spawns lets each child complete exec before the next fork.
+// Keep launch non-blocking; timer sleeps during early single-CPU Parallels boot
+// can delay the visible desktop behind background tasks.
 
-// System services
+// Network service
 spawn("/sbin/telnetd");
-sleep(1000);
-spawn("/sbin/blogd");
-sleep(1000);
 
 // Window compositor (must start before GUI apps)
 spawn("/bin/bwm");
-sleep(1000);
 
 // GUI applications
 spawn("/bin/bterm");
-sleep(1000);
 spawn("/bin/blog");
-sleep(1000);
 spawn("/bin/bounce");
-sleep(1000);
 spawn("/bin/bcheck");
+
+// Log daemon starts after the visible desktop. On single-CPU Parallels, blogd
+// initial /proc/kmsg drain can otherwise starve the boot script before GUI apps
+// get scheduled.
+spawn("/sbin/blogd");
 INITJS
     echo "  Created /etc/init.js"
 
