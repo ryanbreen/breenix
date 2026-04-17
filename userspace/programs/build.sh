@@ -193,6 +193,7 @@ STD_BINARIES=(
     "counter"
     "spinner"
     "hello_raw"
+    "hello_println"
     "hello_time"
     "fbinfo_test"
     "demo"

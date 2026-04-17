@@ -340,6 +340,10 @@ name = "hello_raw"
 path = "src/hello_raw.rs"
 
 [[bin]]
+name = "hello_println"
+path = "src/hello_println.rs"
+
+[[bin]]
 name = "http_test"
 path = "src/http_test.rs"
 

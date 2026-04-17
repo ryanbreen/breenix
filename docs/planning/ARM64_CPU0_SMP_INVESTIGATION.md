@@ -3426,3 +3426,55 @@ Verdict: **R1 confirmed**. bsh does not reach its Rust `main()` on ARM64
 Parallels in this boot path. The next Phase 2 diagnostic should compare against
 a minimal std `println!` binary to separate "std println/stdout startup" from a
 bsh-specific pre-main/ELF/runtime issue.
+
+## 2026-04-17 - F19 Phase 2 hello_println control
+
+The next control added a minimal std binary, `/bin/hello_println`, whose `main`
+does only:
+
+```text
+println!("[hello_println] start");
+std::process::exit(42);
+```
+
+Init was temporarily changed to exec `/bin/hello_println`.
+
+### Hypothesis
+
+P0: if `[hello_println] start` appears and init observes exit code 42, minimal
+std startup and std stdout/`println!` work after init exec. bsh's failure is
+therefore bsh-specific before `main()`.
+
+P1: if `[hello_println] start` does not appear and init remains blocked, std
+stdout/`println!` is suspect despite Phase 0 proving that a minimal std binary
+can reach `main()` and raw-write fd 1.
+
+### Probe
+
+Attempt 1 was invalid: the serial log showed an AHCI timeout and
+`[init] Failed to exec hello_println: EIO`, so the binary did not run.
+
+Attempt 2 used the same validation command:
+
+```text
+./run.sh --parallels --test 45
+```
+
+Attempt 2 serial reached:
+
+```text
+[init] Breenix init starting (PID 1)
+F123456789SC[init] bsshd started (PID 2)
+F123456789SCT9T0
+```
+
+No `[hello_println] start` marker appeared, and init did not observe child
+exit.
+
+### Verdict
+
+Verdict: **P1 confirmed for the println-only control**. A minimal std
+`println!` binary hangs silently where `hello_raw` succeeded. The next
+diagnostic should put a raw fd-1 write before `println!` in the same binary to
+separate "main not reached when println is linked" from "main reached, then
+blocks inside std stdout/println".
