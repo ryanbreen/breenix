@@ -2576,6 +2576,8 @@ fn run_file(path: &str) {
 }
 
 fn main() {
+    let _ = libbreenix::io::write(libbreenix::Fd::STDOUT, b"[bsh] RAW main() entry\n");
+
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() == 1 {

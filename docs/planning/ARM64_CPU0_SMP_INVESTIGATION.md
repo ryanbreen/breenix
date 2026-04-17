@@ -3379,3 +3379,50 @@ F19 Phase 0 therefore rules out a broad kernel exec/fd-inheritance failure for
 the minimal path. The next branch should be **Phase 2**:
 `diagnostic/f19-runtime-trace`, focused on bsh's userspace startup path
 (`_start` / Rust runtime / `main`) and subsequent shell initialization.
+
+## 2026-04-17 - F19 Phase 2 bsh main-entry probe
+
+Phase 2 restored init to exec `/bin/bsh` and added a single raw fd-1 marker as
+the first statement in `bsh::main()`:
+
+```text
+[bsh] RAW main() entry
+```
+
+### Hypothesis
+
+R0: if the marker appears, bsh reaches Rust `main()` and the hang is later in
+argument collection, REPL/init script selection, JavaScript context setup, or
+script execution.
+
+R1: if the marker does not appear and init remains blocked in `waitpid`, bsh is
+hanging before or during entry to Rust `main()` even though Phase 0 proved a
+minimal std binary reaches `main()` and can raw-write fd 1.
+
+### Probe
+
+Validation command:
+
+```text
+./run.sh --parallels --test 45
+```
+
+As before, the command exited nonzero because the screenshot helper could not
+find the generated Parallels VM window. The serial log is the validation source.
+`/tmp/breenix-parallels-serial.log` reached:
+
+```text
+[init] Breenix init starting (PID 1)
+F123456789SC[init] bsshd started (PID 2)
+F123456789SCT0
+```
+
+No `[bsh] RAW main() entry` marker appeared, and init did not report a child
+exit.
+
+### Verdict
+
+Verdict: **R1 confirmed**. bsh does not reach its Rust `main()` on ARM64
+Parallels in this boot path. The next Phase 2 diagnostic should compare against
+a minimal std `println!` binary to separate "std println/stdout startup" from a
+bsh-specific pre-main/ELF/runtime issue.
