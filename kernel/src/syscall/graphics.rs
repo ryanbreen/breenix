@@ -41,26 +41,6 @@ use crate::graphics::primitives::{
 #[cfg(target_arch = "aarch64")]
 pub static FB_FLUSH_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
-/// Client frame waits completed by explicit compositor upload wake.
-#[cfg(target_arch = "aarch64")]
-static FRAME_WAKE_EVENT_COUNT: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0);
-
-/// Client frame waits completed by the 5 ms fallback timeout.
-#[cfg(target_arch = "aarch64")]
-static FRAME_WAKE_FALLBACK_COUNT: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0);
-
-/// Last serial dump timestamp for frame wake counters.
-#[cfg(target_arch = "aarch64")]
-static FRAME_WAKE_LAST_DUMP_NS: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0);
-
-/// Last total-wake bucket dumped for frame wake counters.
-#[cfg(target_arch = "aarch64")]
-static FRAME_WAKE_LAST_DUMP_TOTAL_BUCKET: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0);
-
 /// Thread ID of the compositor when it's waiting for a dirty window.
 /// Set by op=16 when nothing is dirty; cleared when the compositor wakes.
 /// op=15 (mark_window_dirty) reads this to wake the compositor immediately.
@@ -96,80 +76,6 @@ static COMPOSITOR_LAST_WAKE_NS: core::sync::atomic::AtomicU64 =
 /// the compositor from running flat-out when events arrive continuously.
 #[cfg(target_arch = "aarch64")]
 const MIN_FRAME_INTERVAL_NS: u64 = 5_000_000;
-
-/// Minimum interval between serial dumps of frame wake counters.
-#[cfg(target_arch = "aarch64")]
-const FRAME_WAKE_DUMP_INTERVAL_NS: u64 = 5_000_000_000;
-
-/// Dump frame wake counters every N counted client waits.
-#[cfg(target_arch = "aarch64")]
-const FRAME_WAKE_DUMP_EVERY_TOTAL: u64 = 1_000;
-
-#[cfg(target_arch = "aarch64")]
-fn dump_frame_wake_counts() {
-    use core::sync::atomic::Ordering;
-
-    let events = FRAME_WAKE_EVENT_COUNT.load(Ordering::Relaxed);
-    let fallbacks = FRAME_WAKE_FALLBACK_COUNT.load(Ordering::Relaxed);
-    let total = events.saturating_add(fallbacks);
-    let fallback_ppm = if total == 0 {
-        0
-    } else {
-        fallbacks.saturating_mul(1_000_000) / total
-    };
-
-    crate::serial_println!(
-        "[gfx-wake] event={} fallback={} total={} fallback_ppm={}",
-        events,
-        fallbacks,
-        total,
-        fallback_ppm
-    );
-}
-
-#[cfg(target_arch = "aarch64")]
-fn maybe_dump_frame_wake_counts(now_ns: u64) {
-    use core::sync::atomic::Ordering;
-
-    let last = FRAME_WAKE_LAST_DUMP_NS.load(Ordering::Relaxed);
-    if now_ns.saturating_sub(last) < FRAME_WAKE_DUMP_INTERVAL_NS {
-        return;
-    }
-
-    if FRAME_WAKE_LAST_DUMP_NS
-        .compare_exchange(last, now_ns, Ordering::Relaxed, Ordering::Relaxed)
-        .is_err()
-    {
-        return;
-    }
-
-    dump_frame_wake_counts();
-}
-
-#[cfg(target_arch = "aarch64")]
-fn maybe_dump_frame_wake_counts_by_total() {
-    use core::sync::atomic::Ordering;
-
-    let total = FRAME_WAKE_EVENT_COUNT
-        .load(Ordering::Relaxed)
-        .saturating_add(FRAME_WAKE_FALLBACK_COUNT.load(Ordering::Relaxed));
-    let bucket = total / FRAME_WAKE_DUMP_EVERY_TOTAL;
-    if bucket == 0 {
-        return;
-    }
-
-    let last = FRAME_WAKE_LAST_DUMP_TOTAL_BUCKET.load(Ordering::Relaxed);
-    if bucket <= last {
-        return;
-    }
-
-    if FRAME_WAKE_LAST_DUMP_TOTAL_BUCKET
-        .compare_exchange(last, bucket, Ordering::Relaxed, Ordering::Relaxed)
-        .is_ok()
-    {
-        dump_frame_wake_counts();
-    }
-}
 
 /// Wake the compositor thread if it's blocked in compositor_wait (op=23).
 /// Called from input interrupt handlers (mouse, keyboard) to provide low-latency
@@ -938,7 +844,7 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             // This provides Wayland-style back-pressure / frame pacing — the client
             // renders at exactly the compositor's display rate.
             //
-            // Uses BlockedOnTimer with a 5ms timeout as fallback. The compositor
+            // Uses BlockedOnTimer with a 50ms timeout as fallback. The compositor
             // calls unblock() to wake the client early when it uploads the frame.
             // p1=buffer_id
             let buffer_id = cmd.p1 as u32;
@@ -1012,21 +918,6 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
 
                 crate::task::scheduler::yield_current();
                 crate::arch_halt_with_interrupts();
-            }
-
-            let woke_by_fallback = {
-                let mut reg = WINDOW_REGISTRY.lock();
-                match reg.find_mut(buffer_id) {
-                    Some(buf) if buf.waiting_thread_id == Some(thread_id) => {
-                        buf.waiting_thread_id = None;
-                        true
-                    }
-                    _ => false,
-                }
-            };
-            if woke_by_fallback {
-                FRAME_WAKE_FALLBACK_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                maybe_dump_frame_wake_counts_by_total();
             }
 
             // Clear blocked_in_syscall and re-disable preemption before returning
@@ -1363,8 +1254,6 @@ fn handle_compositor_wait(cmd: &FbDrawCmd) -> SyscallResult {
     // blocking section to re-block and wait for the full 16ms timeout.
     let (s, n) = crate::time::get_monotonic_time_ns();
     let now_ns = (s as u64) * 1_000_000_000 + (n as u64);
-    maybe_dump_frame_wake_counts(now_ns);
-
     let last_wake = COMPOSITOR_LAST_WAKE_NS.load(Ordering::Relaxed);
     if last_wake != 0 {
         let earliest_return = last_wake + MIN_FRAME_INTERVAL_NS;
@@ -1440,13 +1329,12 @@ fn handle_compositor_wait(cmd: &FbDrawCmd) -> SyscallResult {
     }
 
     // Nothing urgent — block until woken by mark_window_dirty, mouse, or registry change.
-    // Publish COMPOSITOR_WAITING_THREAD only after this thread is marked blocked.
-    // Otherwise mark_window_dirty can see a waiter that is still running, call
-    // unblock(), and lose the wake before this syscall actually goes to sleep.
+    // mark_window_dirty (op=15) wakes us immediately via COMPOSITOR_WAITING_THREAD.
     let compositor_tid = match crate::task::scheduler::current_thread_id() {
         Some(id) => id,
         None => return SyscallResult::Ok(0),
     };
+    COMPOSITOR_WAITING_THREAD.store(compositor_tid, Ordering::Release);
 
     let (s, n) = crate::time::get_monotonic_time_ns();
     let now_ns = (s as u64) * 1_000_000_000 + (n as u64);
@@ -1455,45 +1343,6 @@ fn handle_compositor_wait(cmd: &FbDrawCmd) -> SyscallResult {
     crate::task::scheduler::with_scheduler(|sched| {
         sched.block_current_for_compositor(timeout_ns);
     });
-    COMPOSITOR_WAITING_THREAD.store(compositor_tid, Ordering::Release);
-
-    // Close the sign-up race: a dirty/input/registry wake may have arrived
-    // after the initial ready checks but before the waiter was published.
-    // Re-check after publishing; if anything is pending, make this still-running
-    // blocked syscall ready again and return without waiting for the timeout.
-    let mut ready_registered: u64 = 0;
-    if COMPOSITOR_DIRTY_WAKE.swap(false, Ordering::Relaxed) {
-        ready_registered |= 1;
-    }
-
-    let (mx_registered, my_registered, mb_registered) = crate::drivers::usb::hid::mouse_state();
-    let mouse_packed_registered =
-        ((mx_registered as u64) << 32) | ((my_registered as u64) << 16) | (mb_registered as u64);
-    if mouse_packed_registered != prev_mouse
-        || crate::drivers::usb::hid::has_pending_press()
-        || crate::drivers::usb::hid::has_pending_scroll()
-    {
-        ready_registered |= 2;
-    }
-
-    let cur_reg_gen_registered = REGISTRY_GENERATION.load(Ordering::Relaxed);
-    if cur_reg_gen_registered != last_registry_gen {
-        ready_registered |= 4;
-    }
-
-    if ready_registered != 0 {
-        COMPOSITOR_WAITING_THREAD.store(0, Ordering::Release);
-        crate::task::scheduler::with_scheduler(|sched| {
-            sched.unblock(compositor_tid);
-        });
-        COMPOSITOR_LAST_MOUSE.store(mouse_packed_registered, Ordering::Relaxed);
-        let (ws_registered, wn_registered) = crate::time::get_monotonic_time_ns();
-        COMPOSITOR_LAST_WAKE_NS.store(
-            (ws_registered as u64) * 1_000_000_000 + (wn_registered as u64),
-            Ordering::Relaxed,
-        );
-        return SyscallResult::Ok(ready_registered | ((cur_reg_gen_registered & 0x00FF_FFFF) << 8));
-    }
 
     #[cfg(target_arch = "aarch64")]
     crate::per_cpu_aarch64::preempt_enable();
@@ -1799,8 +1648,6 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
         crate::task::scheduler::with_scheduler(|sched| {
             sched.unblock(*tid);
         });
-        FRAME_WAKE_EVENT_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        maybe_dump_frame_wake_counts_by_total();
     }
 
     result
