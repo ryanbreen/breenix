@@ -533,6 +533,7 @@ fn run_window_loop(win: &mut Window, spheres: &mut [Sphere; NUM_SPHERES]) {
         fps.draw(fb);
 
         let _ = win.present();
+        let _ = time::sleep_ms(1);
     }
 }
 

@@ -24,18 +24,32 @@ pub fn read_ext2_block<B: BlockDevice + ?Sized>(
     ext2_block_size: usize,
     buf: &mut [u8],
 ) -> Result<(), BlockError> {
+    read_ext2_blocks(device, ext2_block_num, 1, ext2_block_size, buf)
+}
+
+/// Read consecutive ext2 blocks using the block device's multi-block path.
+pub fn read_ext2_blocks<B: BlockDevice + ?Sized>(
+    device: &B,
+    ext2_block_num: u32,
+    ext2_block_count: usize,
+    ext2_block_size: usize,
+    buf: &mut [u8],
+) -> Result<(), BlockError> {
     let device_block_size = device.block_size();
     let device_blocks_per_ext2_block = ext2_block_size / device_block_size;
     let start_device_block = (ext2_block_num as usize) * device_blocks_per_ext2_block;
+    let total_device_blocks = ext2_block_count * device_blocks_per_ext2_block;
+    let byte_count = ext2_block_count * ext2_block_size;
 
-    for i in 0..device_blocks_per_ext2_block {
-        device.read_block(
-            (start_device_block + i) as u64,
-            &mut buf[i * device_block_size..(i + 1) * device_block_size],
-        )?;
+    if buf.len() < byte_count {
+        return Err(BlockError::IoError);
     }
 
-    Ok(())
+    device.read_blocks(
+        start_device_block as u64,
+        total_device_blocks,
+        &mut buf[..byte_count],
+    )
 }
 
 /// Write an ext2 block using device block numbers
@@ -261,37 +275,112 @@ pub fn read_file_range<B: BlockDevice + ?Sized>(
     let offset_in_first_block = (offset % block_size as u64) as usize;
     let end_offset = offset + actual_length as u64;
     let end_block = ((end_offset + block_size as u64 - 1) / block_size as u64) as u32;
+    let ptrs_per_block = (block_size / 4) as u32;
+    let i_block = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block)) };
+    let single_indirect_cache = if end_block > DIRECT_BLOCKS && i_block[SINGLE_INDIRECT] != 0 {
+        Some(read_indirect_block(
+            device,
+            i_block[SINGLE_INDIRECT],
+            block_size,
+        )?)
+    } else {
+        None
+    };
+
+    let physical_for = |logical: u32| -> Result<Option<u32>, BlockError> {
+        if logical < DIRECT_BLOCKS {
+            let block_num = i_block[logical as usize];
+            return Ok(if block_num == 0 {
+                None
+            } else {
+                Some(block_num)
+            });
+        }
+
+        let single_index = logical - DIRECT_BLOCKS;
+        if single_index < ptrs_per_block {
+            if let Some(ptrs) = single_indirect_cache.as_ref() {
+                let block_num = ptrs[single_index as usize];
+                return Ok(if block_num == 0 {
+                    None
+                } else {
+                    Some(block_num)
+                });
+            }
+            return Ok(None);
+        }
+
+        get_block_num(device, inode, superblock, logical)
+    };
 
     let mut result = Vec::with_capacity(actual_length);
     // Use stack-based buffer to avoid heap allocation (bump allocator doesn't reclaim)
     let mut block_buf = [0u8; 4096]; // Max block size
+    let max_run_blocks = core::cmp::max(1, 65536 / block_size);
+    let mut run_buf = Vec::with_capacity(max_run_blocks * block_size);
 
-    for logical_block in start_block..end_block {
+    let mut logical_block = start_block;
+    while logical_block < end_block {
         // Get physical block number (or None for sparse holes)
-        let physical_block = get_block_num(device, inode, superblock, logical_block)?;
+        let physical_block = physical_for(logical_block)?;
 
         // Read block or fill with zeros for sparse holes
         if let Some(block_num) = physical_block {
-            read_ext2_block(device, block_num, block_size, &mut block_buf[..block_size])?;
+            let mut run_len = 1usize;
+            while run_len < max_run_blocks && logical_block + (run_len as u32) < end_block {
+                let next_logical = logical_block + run_len as u32;
+                let next_physical = physical_for(next_logical)?;
+                if next_physical != Some(block_num + run_len as u32) {
+                    break;
+                }
+                run_len += 1;
+            }
+
+            let run_bytes = run_len * block_size;
+            run_buf.clear();
+            run_buf.resize(run_bytes, 0);
+            read_ext2_blocks(device, block_num, run_len, block_size, &mut run_buf)?;
+
+            for run_index in 0..run_len {
+                let current_logical = logical_block + run_index as u32;
+                let block_offset = current_logical as u64 * block_size as u64;
+                let start_in_block = if block_offset < offset {
+                    offset_in_first_block
+                } else {
+                    0
+                };
+                let end_in_block = if block_offset + block_size as u64 > end_offset {
+                    (end_offset - block_offset) as usize
+                } else {
+                    block_size
+                };
+                let run_start = run_index * block_size;
+                result.extend_from_slice(
+                    &run_buf[run_start + start_in_block..run_start + end_in_block],
+                );
+            }
+
+            logical_block += run_len as u32;
         } else {
             // Sparse hole - fill with zeros
             block_buf[..block_size].fill(0);
+
+            // Calculate which bytes from this block to copy
+            let block_offset = logical_block as u64 * block_size as u64;
+            let start_in_block = if block_offset < offset {
+                offset_in_first_block
+            } else {
+                0
+            };
+            let end_in_block = if block_offset + block_size as u64 > end_offset {
+                (end_offset - block_offset) as usize
+            } else {
+                block_size
+            };
+
+            result.extend_from_slice(&block_buf[start_in_block..end_in_block]);
+            logical_block += 1;
         }
-
-        // Calculate which bytes from this block to copy
-        let block_offset = logical_block as u64 * block_size as u64;
-        let start_in_block = if block_offset < offset {
-            offset_in_first_block
-        } else {
-            0
-        };
-        let end_in_block = if block_offset + block_size as u64 > end_offset {
-            (end_offset - block_offset) as usize
-        } else {
-            block_size
-        };
-
-        result.extend_from_slice(&block_buf[start_in_block..end_in_block]);
     }
 
     Ok(result)
