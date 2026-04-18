@@ -59,10 +59,16 @@ impl WaitQueueHead {
             if !waiters.iter().any(|waiter| waiter.tid == tid) {
                 waiters.push_back(Waiter::new(tid));
             }
-        });
 
-        crate::task::scheduler::with_scheduler(|sched| {
-            sched.block_current_for_io();
+            crate::task::scheduler::with_scheduler(|sched| {
+                sched.block_current_for_io();
+            });
+
+            // Linux prepare_to_wait() holds wq_head->lock across list insertion
+            // and set_current_state(), whose smp_store_mb() publishes the blocked
+            // state before the lock is released. Keep the same ordering so a wake
+            // that drains this TID cannot run before BlockedOnIO is visible.
+            core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         });
 
         Some(tid)
