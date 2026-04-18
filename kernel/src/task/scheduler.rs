@@ -160,18 +160,6 @@ static CPU_IS_IDLE: [AtomicBool; MAX_CPUS] = [
     AtomicBool::new(false),
 ];
 
-#[cfg(target_arch = "aarch64")]
-static F17_RESCHED_TRACE_BUDGET: [AtomicU64; MAX_CPUS] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-
 /// Counter for unblock() calls - used for testing pipe wake mechanism
 /// This is a global atomic because:
 /// 1. unblock() is called via with_scheduler() which already holds the scheduler lock
@@ -939,24 +927,8 @@ impl Scheduler {
             for buf in ISR_WAKEUP_BUFFERS.iter() {
                 buf.drain(&mut wakeups);
             }
-            let drained_count = wakeups.len();
             for tid in wakeups {
                 self.unblock_for_io(tid);
-            }
-            #[cfg(target_arch = "aarch64")]
-            if take_f17_resched_trace_budget(cpu) {
-                crate::drivers::ahci::push_ahci_event(
-                    crate::drivers::ahci::AHCI_TRACE_RESCHED_CHECK_DRAINED_WAKE,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    drained_count as u64,
-                    self.ready_queue_length() as u32,
-                    if is_need_resched() { 1 } else { 0 },
-                    drained_count != 0,
-                );
             }
         }
 
@@ -2567,36 +2539,6 @@ pub fn isr_wakeup_depth(cpu: usize) -> usize {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
-pub fn arm_f17_resched_trace(cpu: usize) {
-    if cpu < F17_RESCHED_TRACE_BUDGET.len() {
-        F17_RESCHED_TRACE_BUDGET[cpu].store(16, Ordering::Release);
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-pub fn take_f17_resched_trace_budget(cpu: usize) -> bool {
-    if cpu >= F17_RESCHED_TRACE_BUDGET.len() {
-        return false;
-    }
-
-    let budget = &F17_RESCHED_TRACE_BUDGET[cpu];
-    let mut current = budget.load(Ordering::Acquire);
-    while current != 0 {
-        match budget.compare_exchange_weak(
-            current,
-            current - 1,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => return true,
-            Err(next) => current = next,
-        }
-    }
-
-    false
-}
-
 /// Lock-free ISR wakeup: push thread ID to per-CPU wakeup buffer.
 ///
 /// Called from the AHCI ISR (via `Completion::complete()`) instead of
@@ -2608,135 +2550,14 @@ pub fn take_f17_resched_trace_budget(cpu: usize) -> bool {
 /// The scheduler drains the buffer under its own lock at the top of every
 /// `schedule_deferred_requeue()` / `schedule()` call.
 pub fn isr_unblock_for_io(tid: u64) {
-    #[cfg(target_arch = "aarch64")]
-    crate::drivers::ahci::push_ahci_event(
-        crate::drivers::ahci::AHCI_TRACE_UNBLOCK_ENTRY,
-        0,
-        0,
-        0,
-        0,
-        0,
-        tid,
-        0,
-        0,
-        false,
-    );
     let cpu = current_cpu_id_raw();
-    #[cfg(target_arch = "aarch64")]
-    arm_f17_resched_trace(cpu);
-    #[cfg(target_arch = "aarch64")]
-    crate::drivers::ahci::push_ahci_event(
-        crate::drivers::ahci::AHCI_TRACE_TTWU_LOCAL_ENTRY,
-        0,
-        0,
-        0,
-        0,
-        0,
-        tid,
-        isr_wakeup_depth(cpu) as u32,
-        if is_need_resched() { 1 } else { 0 },
-        false,
-    );
-    #[cfg(target_arch = "aarch64")]
-    crate::drivers::ahci::push_ahci_event(
-        crate::drivers::ahci::AHCI_TRACE_UNBLOCK_AFTER_CPU,
-        0,
-        0,
-        0,
-        0,
-        0,
-        tid,
-        0,
-        0,
-        false,
-    );
     if cpu < ISR_WAKEUP_BUFFERS.len() {
-        #[cfg(target_arch = "aarch64")]
-        crate::drivers::ahci::push_ahci_event(
-            crate::drivers::ahci::AHCI_TRACE_WAKEBUF_BEFORE_PUSH,
-            0,
-            0,
-            0,
-            0,
-            0,
-            tid,
-            0,
-            0,
-            false,
-        );
         ISR_WAKEUP_BUFFERS[cpu].push(tid);
-        #[cfg(target_arch = "aarch64")]
-        crate::drivers::ahci::push_ahci_event(
-            crate::drivers::ahci::AHCI_TRACE_WAKEBUF_AFTER_PUSH,
-            0,
-            0,
-            0,
-            0,
-            0,
-            tid,
-            0,
-            0,
-            false,
-        );
     }
-    #[cfg(target_arch = "aarch64")]
-    crate::drivers::ahci::push_ahci_event(
-        crate::drivers::ahci::AHCI_TRACE_UNBLOCK_AFTER_BUFFER,
-        0,
-        0,
-        0,
-        0,
-        0,
-        tid,
-        0,
-        0,
-        false,
-    );
     set_need_resched();
-    #[cfg(target_arch = "aarch64")]
-    arm_f17_resched_trace(cpu);
-    #[cfg(target_arch = "aarch64")]
-    crate::drivers::ahci::push_ahci_event(
-        crate::drivers::ahci::AHCI_TRACE_TTWU_LOCAL_SET_RESCHED,
-        0,
-        0,
-        0,
-        0,
-        0,
-        tid,
-        isr_wakeup_depth(cpu) as u32,
-        if is_need_resched() { 1 } else { 0 },
-        true,
-    );
-    #[cfg(target_arch = "aarch64")]
-    crate::drivers::ahci::push_ahci_event(
-        crate::drivers::ahci::AHCI_TRACE_UNBLOCK_AFTER_NEED_RESCHED,
-        0,
-        0,
-        0,
-        0,
-        0,
-        tid,
-        0,
-        0,
-        false,
-    );
     // The current CPU will drain the wake buffer on IRQ-return scheduling.
     // Avoid broadcasting reschedule SGIs from hard IRQ context; Linux's TTWU
     // path queues wake work to a selected target CPU rather than scanning idle CPUs.
-    #[cfg(target_arch = "aarch64")]
-    crate::drivers::ahci::push_ahci_event(
-        crate::drivers::ahci::AHCI_TRACE_UNBLOCK_EXIT,
-        0,
-        0,
-        0,
-        0,
-        0,
-        tid,
-        0,
-        0,
-        false,
-    );
 }
 
 /// Read the current CPU ID directly from hardware (MPIDR_EL1 on ARM64).

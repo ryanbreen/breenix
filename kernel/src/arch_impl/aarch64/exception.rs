@@ -1350,27 +1350,6 @@ pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
 
         // Check if we need to reschedule after handling the interrupt
         // This is the ARM64 equivalent of x86's check_need_resched_and_switch
-        if have_percpu {
-            let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
-            if crate::task::scheduler::take_f17_resched_trace_budget(cpu) {
-                crate::drivers::ahci::push_ahci_event(
-                    crate::drivers::ahci::AHCI_TRACE_IRQ_TAIL_CHECK_RESCHED,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    crate::task::scheduler::isr_wakeup_depth(cpu) as u32,
-                    if crate::task::scheduler::is_need_resched() {
-                        1
-                    } else {
-                        0
-                    },
-                    false,
-                );
-            }
-        }
         check_need_resched_on_irq_exit();
     }
 }
