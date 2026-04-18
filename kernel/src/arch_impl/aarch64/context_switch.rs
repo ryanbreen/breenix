@@ -2090,8 +2090,9 @@ fn dispatch_thread_locked(
             setup_idle_return_locked(sched, frame, cpu_id);
             let idle_id = sched.cpu_state[cpu_id].idle_thread;
             sched.cpu_state[cpu_id].current_thread = Some(idle_id);
-            // Requeue the thread being dispatched to a non-CPU0 queue.
-            sched.requeue_thread_after_save(thread_id);
+            // Requeue the thread being dispatched to a non-CPU0 queue. This is
+            // the late fallback for the scheduler-side CPU0 EL0 filter.
+            sched.requeue_user_el0_away_from_cpu0(thread_id);
             sched.set_need_resched_inner();
             // Send self-IPI to drain the deferred requeue slot on CPU 0.
             // DEFERRED_REQUEUE[0] may hold the old thread from the context

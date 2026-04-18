@@ -566,8 +566,11 @@ impl Scheduler {
         let thread_name = thread.name.clone();
         let is_user = thread.privilege == super::thread::ThreadPrivilege::User;
         self.threads.push(thread);
-        // Route to least-loaded CPU queue (or current CPU if tied).
-        let target = self.least_loaded_cpu();
+        // Route userspace EL0 work away from CPU0 on ARM64 SMP. The aarch64
+        // dispatcher has a CPU0 EL0 guard for the Parallels/HVF vtimer bug; if
+        // new user threads are queued on CPU0 anyway, CPU0 repeatedly redirects
+        // them to idle instead of doing useful work.
+        let target = self.least_loaded_cpu_for_thread(is_user);
         if front {
             self.per_cpu_queues[target].push_front(thread_id);
         } else {
@@ -981,6 +984,11 @@ impl Scheduler {
                         continue;
                     }
                 }
+                #[cfg(target_arch = "aarch64")]
+                if self.should_keep_user_el0_off_cpu0(current_cpu, n) {
+                    self.requeue_user_el0_away_from_cpu0(n);
+                    break 'sched_outer self.cpu_state[current_cpu].idle_thread;
+                }
                 break 'sched_outer n;
             }
             // Work-steal from other CPUs
@@ -993,6 +1001,11 @@ impl Scheduler {
                         if thread.state == ThreadState::Terminated {
                             continue;
                         }
+                    }
+                    #[cfg(target_arch = "aarch64")]
+                    if self.should_keep_user_el0_off_cpu0(current_cpu, n) {
+                        self.requeue_user_el0_away_from_cpu0(n);
+                        break 'sched_outer self.cpu_state[current_cpu].idle_thread;
                     }
                     break 'sched_outer n;
                 }
@@ -1214,6 +1227,57 @@ impl Scheduler {
             // Send IPI to wake an idle CPU to pick up the requeued thread
             self.send_resched_ipi();
         }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub fn requeue_user_el0_away_from_cpu0(&mut self, thread_id: u64) {
+        if !self.should_keep_user_el0_off_cpu0(0, thread_id) {
+            self.requeue_thread_after_save(thread_id);
+            return;
+        }
+
+        if self.is_idle_thread_inner(thread_id) {
+            return;
+        }
+        if (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].current_thread == Some(thread_id)) {
+            return;
+        }
+        if self.is_in_deferred_requeue(thread_id) {
+            return;
+        }
+        if let Some(thread) = self.get_thread(thread_id) {
+            if thread.state != ThreadState::Ready {
+                return;
+            }
+        } else {
+            return;
+        }
+        if self.per_cpu_queues.iter().any(|q| q.contains(&thread_id)) {
+            return;
+        }
+
+        let target = self.least_loaded_cpu_excluding(0);
+        self.per_cpu_queues[target].push_back(thread_id);
+        self.send_resched_ipi();
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn should_keep_user_el0_off_cpu0(&self, cpu: usize, thread_id: u64) -> bool {
+        if cpu != 0 || crate::arch_impl::aarch64::smp::cpus_online() <= 1 {
+            return false;
+        }
+        if self.is_idle_thread_inner(thread_id) {
+            return false;
+        }
+
+        const KERNEL_VIRT_BASE: u64 = 0xFFFF_0000_0000_0000;
+        self.get_thread(thread_id)
+            .map(|thread| {
+                thread.privilege == super::thread::ThreadPrivilege::User
+                    && !thread.blocked_in_syscall
+                    && thread.context.elr_el1 < KERNEL_VIRT_BASE
+            })
+            .unwrap_or(false)
     }
 
     /// Block the current thread
@@ -1609,6 +1673,26 @@ impl Scheduler {
         self.block_current_for_io_with_timeout(None);
     }
 
+    /// Publish the current thread's waitqueue I/O wait state.
+    ///
+    /// This is the Breenix equivalent of Linux's `set_current_state()` in
+    /// `prepare_to_wait()`: it only makes the blocked state visible. The caller
+    /// must still release the waitqueue lock and then call the scheduler.
+    pub fn publish_current_io_wait_state(&mut self) {
+        if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
+            if let Some(thread) = self.get_thread_mut(current_id) {
+                // Charge elapsed CPU ticks before publishing the sleep state.
+                let now = crate::time::get_ticks();
+                thread.cpu_ticks_total += now.wrapping_sub(thread.run_start_ticks);
+                thread.run_start_ticks = now;
+
+                thread.state = ThreadState::BlockedOnIO;
+                thread.wake_time_ns = None;
+                thread.blocked_in_syscall = true;
+            }
+        }
+    }
+
     /// Block the current thread for device I/O, optionally with a timeout.
     ///
     /// A timed BlockedOnIO wait is used by completions: the ISR wakes it via
@@ -1886,6 +1970,31 @@ impl Scheduler {
     fn least_loaded_cpu(&self) -> usize {
         let current_cpu = Self::current_cpu_id();
         (0..MAX_CPUS)
+            .min_by_key(|&cpu| self.per_cpu_queues[cpu].len())
+            .unwrap_or(current_cpu)
+    }
+
+    fn least_loaded_cpu_for_thread(&self, is_user: bool) -> usize {
+        #[cfg(target_arch = "aarch64")]
+        {
+            if is_user && crate::arch_impl::aarch64::smp::cpus_online() > 1 {
+                return self.least_loaded_cpu_excluding(0);
+            }
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        let _ = is_user;
+
+        self.least_loaded_cpu()
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn least_loaded_cpu_excluding(&self, avoid_cpu: usize) -> usize {
+        let current_cpu = Self::current_cpu_id();
+        let online = crate::arch_impl::aarch64::smp::cpus_online() as usize;
+        let limit = core::cmp::min(online.max(1), MAX_CPUS);
+
+        (0..limit)
+            .filter(|&cpu| cpu != avoid_cpu)
             .min_by_key(|&cpu| self.per_cpu_queues[cpu].len())
             .unwrap_or(current_cpu)
     }

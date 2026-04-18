@@ -61,13 +61,15 @@ impl WaitQueueHead {
             }
 
             crate::task::scheduler::with_scheduler(|sched| {
-                sched.block_current_for_io();
+                sched.publish_current_io_wait_state();
             });
 
             // Linux prepare_to_wait() holds wq_head->lock across list insertion
             // and set_current_state(), whose smp_store_mb() publishes the blocked
-            // state before the lock is released. Keep the same ordering so a wake
-            // that drains this TID cannot run before BlockedOnIO is visible.
+            // state before the lock is released (`kernel/sched/wait.c:233-238`,
+            // `include/linux/sched.h:227-231` in Linux v6.8). Breenix mirrors
+            // that state-publication ordering here, but the actual schedule
+            // call remains after the waitqueue lock is released.
             core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         });
 
