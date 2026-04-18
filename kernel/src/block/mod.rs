@@ -26,6 +26,32 @@ pub trait BlockDevice: Send + Sync {
     /// Returns `BlockError::IoError` if the read operation fails
     fn read_block(&self, block_num: u64, buf: &mut [u8]) -> Result<(), BlockError>;
 
+    /// Read consecutive blocks into the provided buffer.
+    ///
+    /// The default implementation preserves compatibility for simple block
+    /// devices. Drivers with native multi-block commands should override this
+    /// to avoid issuing one hardware command per sector.
+    fn read_blocks(
+        &self,
+        start_block: u64,
+        block_count: usize,
+        buf: &mut [u8],
+    ) -> Result<(), BlockError> {
+        let block_size = self.block_size();
+        if buf.len() < block_count.saturating_mul(block_size) {
+            return Err(BlockError::IoError);
+        }
+
+        for i in 0..block_count {
+            self.read_block(
+                start_block + i as u64,
+                &mut buf[i * block_size..(i + 1) * block_size],
+            )?;
+        }
+
+        Ok(())
+    }
+
     /// Write a block from the provided buffer
     ///
     /// # Arguments

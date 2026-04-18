@@ -3,7 +3,7 @@
 //! PID 1 - runs bsh (no arguments), then starts background services and reaps zombies.
 //! bsh detects it's the init shell (PID 2) and loads /etc/init.js.
 
-use libbreenix::process::{spawn, waitpid, getpid, yield_now};
+use libbreenix::process::{getpid, spawn, waitpid, yield_now};
 
 fn main() {
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
@@ -11,6 +11,8 @@ fn main() {
 
     run_boot_script();
     start_bsshd();
+    #[cfg(target_arch = "aarch64")]
+    start_bounce();
 
     // Reap zombies forever
     let mut status: i32 = 0;
@@ -26,7 +28,10 @@ fn main() {
                 }
             }
             Err(_) => {
-                let ts = libbreenix::types::Timespec { tv_sec: 1, tv_nsec: 0 };
+                let ts = libbreenix::types::Timespec {
+                    tv_sec: 1,
+                    tv_nsec: 0,
+                };
                 let _ = libbreenix::time::nanosleep(&ts);
             }
         }
@@ -41,15 +46,17 @@ fn run_boot_script() {
         // the boot script's service sequence directly from init. Start bwm
         // before network services so the compositor replaces the kernel VirGL
         // proof clear within the Parallels validation window.
-        const SERVICES: &[&[u8]] = &[
-            b"/bin/bwm\0",
-            b"/sbin/telnetd\0",
-        ];
+        const SERVICES: &[&[u8]] = &[b"/bin/bwm\0", b"/sbin/telnetd\0"];
         for path in SERVICES {
             if let Err(e) = spawn(path) {
                 print!("[init] Warning: failed to spawn service: {}\n", e);
             }
             let _ = yield_now();
+            let ts = libbreenix::types::Timespec {
+                tv_sec: 0,
+                tv_nsec: 75_000_000,
+            };
+            let _ = libbreenix::time::nanosleep(&ts);
         }
         print!("[init] Boot script completed\n");
         return;
@@ -70,6 +77,27 @@ fn run_boot_script() {
         }
         Err(e) => {
             print!("[init] Failed to spawn boot script: {}\n", e);
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn start_bounce() {
+    // Start the animated GUI demo last. It continuously presents frames, so
+    // keeping it after the early service execs avoids overlapping AHCI-backed
+    // ELF reads with active compositor traffic.
+    let _ = yield_now();
+    let ts = libbreenix::types::Timespec {
+        tv_sec: 0,
+        tv_nsec: 75_000_000,
+    };
+    let _ = libbreenix::time::nanosleep(&ts);
+    match spawn(b"/bin/bounce\0") {
+        Ok(child_pid) => {
+            print!("[init] bounce started (PID {})\n", child_pid.raw());
+        }
+        Err(_) => {
+            print!("[init] Warning: failed to start bounce\n");
         }
     }
 }

@@ -2986,63 +2986,110 @@ pub struct AhciBlockDevice {
 
 impl BlockDevice for AhciBlockDevice {
     fn read_block(&self, block_num: u64, buf: &mut [u8]) -> Result<(), BlockError> {
-        if block_num >= self.sector_count {
+        self.read_blocks(block_num, 1, buf)
+    }
+
+    fn read_blocks(
+        &self,
+        start_block: u64,
+        block_count: usize,
+        buf: &mut [u8],
+    ) -> Result<(), BlockError> {
+        if block_count == 0 {
+            return Ok(());
+        }
+        if start_block >= self.sector_count
+            || start_block.saturating_add(block_count as u64) > self.sector_count
+        {
             return Err(BlockError::OutOfBounds);
         }
-        if buf.len() < SECTOR_SIZE {
+        let total_bytes = block_count
+            .checked_mul(SECTOR_SIZE)
+            .ok_or(BlockError::IoError)?;
+        if buf.len() < total_bytes {
             return Err(BlockError::IoError);
         }
 
-        // ── PHASE 1: lock + setup (PORT_IO_IN_PROGRESS=true) ─────────────────
-        let port_guard = begin_port_io(self.port_num);
-        let setup_result: Result<(CmdToken, usize), BlockError> = {
-            let ctrl = AHCI_CONTROLLER.lock();
-            match ctrl.as_ref() {
-                Some(ctrl) => ctrl
-                    .setup_read_sectors(self.port_num, self.dma_index, block_num, 1)
-                    .map_err(|e| {
-                        #[cfg(target_arch = "aarch64")]
-                        crate::serial_println!(
-                            "[ahci] read_block({}) setup failed: {}",
-                            block_num,
-                            e
-                        );
-                        BlockError::IoError
-                    }),
-                None => Err(BlockError::DeviceNotReady),
-            }
-        }; // AHCI_CONTROLLER lock released
-        let (token, byte_count) = match setup_result {
-            Ok(value) => value,
-            Err(err) => {
-                end_port_io(self.port_num);
-                drop(port_guard);
-                return Err(err);
-            }
-        };
-        drop(port_guard);
+        let mut current_block = start_block;
+        let mut remaining = block_count;
+        let mut offset = 0usize;
 
-        // ── PHASE 2: wait (NO locks held) ────────────────────────────────────
-        let wait_result = wait_cmd_slot0(token).map_err(|e| {
-            #[cfg(target_arch = "aarch64")]
-            {
-                crate::serial_println!("[ahci] read_block({}) wait failed: {}", block_num, e);
-                if e == "AHCI: command timeout" {
-                    crate::arch_impl::aarch64::gic::dump_stuck_state_for_spi(34);
-                    dump_recent_ahci_events(Some(self.port_num as u8), 16);
+        while remaining > 0 {
+            let chunk = remaining.min(128);
+
+            // PHASE 1: lock + setup (PORT_IO_IN_PROGRESS=true)
+            let port_guard = begin_port_io(self.port_num);
+            let setup_result: Result<(CmdToken, usize), BlockError> = {
+                let ctrl = AHCI_CONTROLLER.lock();
+                match ctrl.as_ref() {
+                    Some(ctrl) => ctrl
+                        .setup_read_sectors(
+                            self.port_num,
+                            self.dma_index,
+                            current_block,
+                            chunk as u16,
+                        )
+                        .map_err(|e| {
+                            #[cfg(target_arch = "aarch64")]
+                            crate::serial_println!(
+                                "[ahci] read_blocks({}, {}) setup failed: {}",
+                                current_block,
+                                chunk,
+                                e
+                            );
+                            BlockError::IoError
+                        }),
+                    None => Err(BlockError::DeviceNotReady),
                 }
-            }
-            BlockError::IoError
-        });
+            }; // AHCI_CONTROLLER lock released
+            let (token, byte_count) = match setup_result {
+                Ok(value) => value,
+                Err(err) => {
+                    end_port_io(self.port_num);
+                    drop(port_guard);
+                    return Err(err);
+                }
+            };
+            drop(port_guard);
 
-        // ── PHASE 3: re-lock + finish (copy DMA result before next issue) ────
-        let port_guard = PORT_IO_LOCK[self.port_num].lock();
-        let result = wait_result.and_then(|_| {
-            finish_read_sectors(self.dma_index, byte_count, buf).map_err(|_| BlockError::IoError)
-        });
-        end_port_io(self.port_num);
-        drop(port_guard);
-        result
+            // PHASE 2: wait (NO locks held)
+            let wait_result = wait_cmd_slot0(token).map_err(|e| {
+                #[cfg(target_arch = "aarch64")]
+                {
+                    crate::serial_println!(
+                        "[ahci] read_blocks({}, {}) wait failed: {}",
+                        current_block,
+                        chunk,
+                        e
+                    );
+                    if e == "AHCI: command timeout" {
+                        crate::arch_impl::aarch64::gic::dump_stuck_state_for_spi(34);
+                        dump_recent_ahci_events(Some(self.port_num as u8), 16);
+                    }
+                }
+                BlockError::IoError
+            });
+
+            // PHASE 3: re-lock + finish (copy DMA result before next issue)
+            let port_guard = PORT_IO_LOCK[self.port_num].lock();
+            let result = wait_result.and_then(|_| {
+                finish_read_sectors(
+                    self.dma_index,
+                    byte_count,
+                    &mut buf[offset..offset + byte_count],
+                )
+                .map_err(|_| BlockError::IoError)
+            });
+            end_port_io(self.port_num);
+            drop(port_guard);
+
+            result?;
+            current_block += chunk as u64;
+            remaining -= chunk;
+            offset += byte_count;
+        }
+
+        Ok(())
     }
 
     fn write_block(&self, block_num: u64, buf: &[u8]) -> Result<(), BlockError> {
