@@ -254,387 +254,6 @@ static AHCI_LAST_ISR_COMPLETE_CMD: AtomicU32 = AtomicU32::new(0);
 static AHCI_LAST_ISR_COMPLETE_WAITER: AtomicU64 = AtomicU64::new(0);
 static AHCI_TIMEOUT_TRACE_DUMPED: AtomicBool = AtomicBool::new(false);
 
-const AHCI_TRACE_CPUS: usize = 8;
-const AHCI_TRACE_LEN: usize = 64;
-pub(crate) const AHCI_TRACE_ENTER: u32 = 1;
-pub(crate) const AHCI_TRACE_POST_CLEAR: u32 = 2;
-pub(crate) const AHCI_TRACE_RETURN: u32 = 3;
-pub(crate) const AHCI_TRACE_BEFORE_COMPLETE: u32 = 4;
-pub(crate) const AHCI_TRACE_AFTER_COMPLETE: u32 = 5;
-pub(crate) const AHCI_TRACE_WAKE_ENTER: u32 = 6;
-pub(crate) const AHCI_TRACE_WAKE_EXIT: u32 = 7;
-pub(crate) const AHCI_TRACE_UNBLOCK_ENTRY: u32 = 8;
-pub(crate) const AHCI_TRACE_UNBLOCK_AFTER_CPU: u32 = 9;
-pub(crate) const AHCI_TRACE_UNBLOCK_AFTER_BUFFER: u32 = 10;
-pub(crate) const AHCI_TRACE_UNBLOCK_AFTER_NEED_RESCHED: u32 = 11;
-pub(crate) const AHCI_TRACE_UNBLOCK_BEFORE_SGI_SCAN: u32 = 12;
-pub(crate) const AHCI_TRACE_UNBLOCK_PER_SGI: u32 = 13;
-pub(crate) const AHCI_TRACE_UNBLOCK_EXIT: u32 = 14;
-pub(crate) const AHCI_TRACE_SGI_ENTRY: u32 = 15;
-pub(crate) const AHCI_TRACE_SGI_AFTER_MPIDR: u32 = 16;
-pub(crate) const AHCI_TRACE_SGI_AFTER_COMPOSE: u32 = 17;
-pub(crate) const AHCI_TRACE_SGI_BEFORE_MSR: u32 = 18;
-pub(crate) const AHCI_TRACE_SGI_AFTER_MSR: u32 = 19;
-pub(crate) const AHCI_TRACE_SGI_AFTER_ISB: u32 = 20;
-pub(crate) const AHCI_TRACE_SGI_EXIT: u32 = 21;
-pub(crate) const AHCI_TRACE_WAKEBUF_BEFORE_PUSH: u32 = 22;
-pub(crate) const AHCI_TRACE_WAKEBUF_AFTER_PUSH: u32 = 23;
-pub(crate) const AHCI_TRACE_SCAN_START: u32 = 24;
-pub(crate) const AHCI_TRACE_SCAN_CPU: u32 = 25;
-pub(crate) const AHCI_TRACE_SCAN_DONE: u32 = 26;
-pub(crate) const AHCI_TRACE_UNBLOCK_BEFORE_SEND_SGI: u32 = 27;
-pub(crate) const AHCI_TRACE_UNBLOCK_AFTER_SEND_SGI: u32 = 28;
-pub(crate) const AHCI_TRACE_TTWU_LOCAL_ENTRY: u32 = 29;
-pub(crate) const AHCI_TRACE_TTWU_LOCAL_SET_RESCHED: u32 = 30;
-pub(crate) const AHCI_TRACE_IRQ_TAIL_CHECK_RESCHED: u32 = 31;
-pub(crate) const AHCI_TRACE_RESCHED_CHECK_ENTRY: u32 = 32;
-pub(crate) const AHCI_TRACE_RESCHED_CHECK_DRAINED_WAKE: u32 = 33;
-pub(crate) const AHCI_TRACE_RESCHED_CHECK_SWITCHED: u32 = 34;
-pub(crate) const AHCI_TRACE_RESCHED_CHECK_RETURN: u32 = 35;
-pub(crate) const AHCI_TRACE_CI_LOOP: u32 = 36;
-
-struct AhciTraceSlot {
-    site: AtomicU32,
-    port: AtomicU32,
-    is: AtomicU32,
-    ci: AtomicU32,
-    sact: AtomicU32,
-    serr: AtomicU32,
-    slot_mask: AtomicU32,
-    cpu_id: AtomicU32,
-    token: AtomicU32,
-    wake_success: AtomicU32,
-    nsec: AtomicU64,
-    waiter_tid: AtomicU64,
-    seq: AtomicU64,
-}
-
-impl AhciTraceSlot {
-    const fn new() -> Self {
-        Self {
-            site: AtomicU32::new(0),
-            port: AtomicU32::new(0),
-            is: AtomicU32::new(0),
-            ci: AtomicU32::new(0),
-            sact: AtomicU32::new(0),
-            serr: AtomicU32::new(0),
-            slot_mask: AtomicU32::new(0),
-            cpu_id: AtomicU32::new(0),
-            token: AtomicU32::new(0),
-            wake_success: AtomicU32::new(0),
-            nsec: AtomicU64::new(0),
-            waiter_tid: AtomicU64::new(0),
-            seq: AtomicU64::new(0),
-        }
-    }
-}
-
-struct AhciTraceRing {
-    head: AtomicU64,
-    slots: [AhciTraceSlot; AHCI_TRACE_LEN],
-}
-
-impl AhciTraceRing {
-    const fn new() -> Self {
-        Self {
-            head: AtomicU64::new(0),
-            slots: [const { AhciTraceSlot::new() }; AHCI_TRACE_LEN],
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct AhciTraceSnapshot {
-    site: u32,
-    port: u32,
-    is: u32,
-    ci: u32,
-    sact: u32,
-    serr: u32,
-    slot_mask: u32,
-    cpu_id: u32,
-    token: u32,
-    wake_success: u32,
-    nsec: u64,
-    waiter_tid: u64,
-    seq: u64,
-}
-
-static AHCI_TRACE_RINGS: [AhciTraceRing; AHCI_TRACE_CPUS] =
-    [const { AhciTraceRing::new() }; AHCI_TRACE_CPUS];
-
-#[inline]
-fn current_trace_cpu() -> usize {
-    #[cfg(target_arch = "aarch64")]
-    {
-        let mpidr: u64;
-        unsafe {
-            core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
-        }
-        (mpidr & 0xff) as usize
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        0
-    }
-}
-
-#[inline]
-fn trace_now_ns() -> u64 {
-    let (cnt, freq) = read_cntpct_and_freq();
-    if freq == 0 {
-        0
-    } else {
-        ((cnt as u128 * 1_000_000_000u128) / freq as u128) as u64
-    }
-}
-
-#[inline]
-pub(crate) fn push_ahci_event(
-    site: u32,
-    port: u32,
-    is: u32,
-    ci: u32,
-    sact: u32,
-    serr: u32,
-    waiter_tid: u64,
-    slot_mask: u32,
-    token: u32,
-    wake_success: bool,
-) {
-    let actual_cpu = current_trace_cpu() as u32;
-    let ring_cpu = actual_cpu as usize % AHCI_TRACE_CPUS;
-    let ring = &AHCI_TRACE_RINGS[ring_cpu];
-    let seq = ring.head.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
-    let slot = &ring.slots[(seq as usize - 1) % AHCI_TRACE_LEN];
-
-    slot.site.store(0, Ordering::Release);
-    slot.port.store(port, Ordering::Relaxed);
-    slot.is.store(is, Ordering::Relaxed);
-    slot.ci.store(ci, Ordering::Relaxed);
-    slot.sact.store(sact, Ordering::Relaxed);
-    slot.serr.store(serr, Ordering::Relaxed);
-    slot.slot_mask.store(slot_mask, Ordering::Relaxed);
-    slot.cpu_id.store(actual_cpu, Ordering::Relaxed);
-    slot.token.store(token, Ordering::Relaxed);
-    slot.wake_success
-        .store(if wake_success { 1 } else { 0 }, Ordering::Relaxed);
-    slot.nsec.store(trace_now_ns(), Ordering::Relaxed);
-    slot.waiter_tid.store(waiter_tid, Ordering::Relaxed);
-    slot.seq.store(seq, Ordering::Relaxed);
-    slot.site.store(site, Ordering::Release);
-}
-
-fn ahci_trace_site_name(site: u32) -> &'static str {
-    match site {
-        AHCI_TRACE_ENTER => "ENTER",
-        AHCI_TRACE_POST_CLEAR => "POST_CLEAR",
-        AHCI_TRACE_RETURN => "RETURN",
-        AHCI_TRACE_BEFORE_COMPLETE => "BEFORE_COMPLETE",
-        AHCI_TRACE_AFTER_COMPLETE => "AFTER_COMPLETE",
-        AHCI_TRACE_WAKE_ENTER => "WAKE_ENTER",
-        AHCI_TRACE_WAKE_EXIT => "WAKE_EXIT",
-        AHCI_TRACE_UNBLOCK_ENTRY => "UNBLOCK_ENTRY",
-        AHCI_TRACE_UNBLOCK_AFTER_CPU => "UNBLOCK_AFTER_CPU",
-        AHCI_TRACE_UNBLOCK_AFTER_BUFFER => "UNBLOCK_AFTER_BUFFER",
-        AHCI_TRACE_UNBLOCK_AFTER_NEED_RESCHED => "UNBLOCK_AFTER_NEED_RESCHED",
-        AHCI_TRACE_UNBLOCK_BEFORE_SGI_SCAN => "UNBLOCK_BEFORE_SGI_SCAN",
-        AHCI_TRACE_UNBLOCK_PER_SGI => "UNBLOCK_PER_SGI",
-        AHCI_TRACE_UNBLOCK_EXIT => "UNBLOCK_EXIT",
-        AHCI_TRACE_SGI_ENTRY => "SGI_ENTRY",
-        AHCI_TRACE_SGI_AFTER_MPIDR => "SGI_AFTER_MPIDR",
-        AHCI_TRACE_SGI_AFTER_COMPOSE => "SGI_AFTER_COMPOSE",
-        AHCI_TRACE_SGI_BEFORE_MSR => "SGI_BEFORE_MSR",
-        AHCI_TRACE_SGI_AFTER_MSR => "SGI_AFTER_MSR",
-        AHCI_TRACE_SGI_AFTER_ISB => "SGI_AFTER_ISB",
-        AHCI_TRACE_SGI_EXIT => "SGI_EXIT",
-        AHCI_TRACE_WAKEBUF_BEFORE_PUSH => "WAKEBUF_BEFORE_PUSH",
-        AHCI_TRACE_WAKEBUF_AFTER_PUSH => "WAKEBUF_AFTER_PUSH",
-        AHCI_TRACE_SCAN_START => "UNBLOCK_SCAN_START",
-        AHCI_TRACE_SCAN_CPU => "UNBLOCK_SCAN_CPU",
-        AHCI_TRACE_SCAN_DONE => "UNBLOCK_SCAN_DONE",
-        AHCI_TRACE_UNBLOCK_BEFORE_SEND_SGI => "UNBLOCK_BEFORE_SEND_SGI",
-        AHCI_TRACE_UNBLOCK_AFTER_SEND_SGI => "UNBLOCK_AFTER_SEND_SGI",
-        AHCI_TRACE_TTWU_LOCAL_ENTRY => "TTWU_LOCAL_ENTRY",
-        AHCI_TRACE_TTWU_LOCAL_SET_RESCHED => "TTWU_LOCAL_SET_RESCHED",
-        AHCI_TRACE_IRQ_TAIL_CHECK_RESCHED => "IRQ_TAIL_CHECK_RESCHED",
-        AHCI_TRACE_RESCHED_CHECK_ENTRY => "RESCHED_CHECK_ENTRY",
-        AHCI_TRACE_RESCHED_CHECK_DRAINED_WAKE => "RESCHED_CHECK_DRAINED_WAKE",
-        AHCI_TRACE_RESCHED_CHECK_SWITCHED => "RESCHED_CHECK_SWITCHED",
-        AHCI_TRACE_RESCHED_CHECK_RETURN => "RESCHED_CHECK_RETURN",
-        AHCI_TRACE_CI_LOOP => "CI_LOOP",
-        _ => "UNKNOWN",
-    }
-}
-
-fn load_ahci_trace_slot(
-    cpu: usize,
-    index: usize,
-    port_filter: Option<u8>,
-) -> Option<AhciTraceSnapshot> {
-    let slot = &AHCI_TRACE_RINGS[cpu].slots[index];
-    let site = slot.site.load(Ordering::Acquire);
-    if site == 0 {
-        return None;
-    }
-
-    let port = slot.port.load(Ordering::Relaxed);
-    if let Some(filter) = port_filter {
-        if port != filter as u32 {
-            return None;
-        }
-    }
-
-    Some(AhciTraceSnapshot {
-        site,
-        port,
-        is: slot.is.load(Ordering::Relaxed),
-        ci: slot.ci.load(Ordering::Relaxed),
-        sact: slot.sact.load(Ordering::Relaxed),
-        serr: slot.serr.load(Ordering::Relaxed),
-        slot_mask: slot.slot_mask.load(Ordering::Relaxed),
-        cpu_id: slot.cpu_id.load(Ordering::Relaxed),
-        token: slot.token.load(Ordering::Relaxed),
-        wake_success: slot.wake_success.load(Ordering::Relaxed),
-        nsec: slot.nsec.load(Ordering::Relaxed),
-        waiter_tid: slot.waiter_tid.load(Ordering::Relaxed),
-        seq: slot.seq.load(Ordering::Relaxed),
-    })
-}
-
-fn trace_is_before_cursor(event: AhciTraceSnapshot, cursor: Option<(u64, u32, u64)>) -> bool {
-    if let Some((cursor_nsec, cursor_cpu, cursor_seq)) = cursor {
-        event.nsec < cursor_nsec
-            || (event.nsec == cursor_nsec
-                && (event.cpu_id < cursor_cpu
-                    || (event.cpu_id == cursor_cpu && event.seq < cursor_seq)))
-    } else {
-        true
-    }
-}
-
-fn trace_is_after(left: AhciTraceSnapshot, right: AhciTraceSnapshot) -> bool {
-    left.nsec > right.nsec
-        || (left.nsec == right.nsec
-            && (left.cpu_id > right.cpu_id
-                || (left.cpu_id == right.cpu_id && left.seq > right.seq)))
-}
-
-pub fn dump_recent_ahci_events(port_filter: Option<u8>, n: usize) {
-    let mut cursor: Option<(u64, u32, u64)> = None;
-    let mut emitted = 0usize;
-
-    while emitted < n {
-        let mut best: Option<AhciTraceSnapshot> = None;
-        for cpu in 0..AHCI_TRACE_CPUS {
-            for index in 0..AHCI_TRACE_LEN {
-                if let Some(event) = load_ahci_trace_slot(cpu, index, port_filter) {
-                    if trace_is_before_cursor(event, cursor) {
-                        best = match best {
-                            Some(current) if trace_is_after(current, event) => Some(current),
-                            _ => Some(event),
-                        };
-                    }
-                }
-            }
-        }
-
-        let Some(event) = best else {
-            break;
-        };
-
-        crate::serial_println!(
-            "[AHCI_RING] nsec={} site={} cpu={} port={} IS={:#x} CI={:#x} SACT={:#x} SERR={:#x} waiter_tid={} slot_mask={:#x} token={} wake_success={} seq={}",
-            event.nsec,
-            ahci_trace_site_name(event.site),
-            event.cpu_id,
-            event.port,
-            event.is,
-            event.ci,
-            event.sact,
-            event.serr,
-            event.waiter_tid,
-            event.slot_mask,
-            event.token,
-            event.wake_success,
-            event.seq,
-        );
-
-        cursor = Some((event.nsec, event.cpu_id, event.seq));
-        emitted += 1;
-    }
-
-    if emitted == 0 {
-        crate::serial_println!(
-            "[AHCI_RING] no events port_filter={}",
-            port_filter.map_or(255u32, |port| port as u32)
-        );
-    }
-}
-
-fn is_sgi_target_trace_site(site: u32) -> bool {
-    matches!(
-        site,
-        AHCI_TRACE_UNBLOCK_PER_SGI
-            | AHCI_TRACE_UNBLOCK_BEFORE_SEND_SGI
-            | AHCI_TRACE_UNBLOCK_AFTER_SEND_SGI
-            | AHCI_TRACE_SGI_ENTRY
-            | AHCI_TRACE_SGI_AFTER_MPIDR
-            | AHCI_TRACE_SGI_AFTER_COMPOSE
-            | AHCI_TRACE_SGI_BEFORE_MSR
-            | AHCI_TRACE_SGI_AFTER_MSR
-            | AHCI_TRACE_SGI_AFTER_ISB
-            | AHCI_TRACE_SGI_EXIT
-    )
-}
-
-pub(crate) fn collect_recent_sgi_targets(out: &mut [u8]) -> usize {
-    let mut count = 0usize;
-
-    for cpu in 0..AHCI_TRACE_CPUS {
-        for index in 0..AHCI_TRACE_LEN {
-            let Some(event) = load_ahci_trace_slot(cpu, index, None) else {
-                continue;
-            };
-
-            if !is_sgi_target_trace_site(event.site) {
-                continue;
-            }
-
-            let target = event.slot_mask as usize;
-            if target >= AHCI_TRACE_CPUS {
-                continue;
-            }
-
-            if out[..count].iter().any(|seen| *seen as usize == target) {
-                continue;
-            }
-
-            if count == out.len() {
-                return count;
-            }
-
-            out[count] = target as u8;
-            count += 1;
-        }
-    }
-
-    count
-}
-
-pub fn port0_is_snapshot() -> Option<u32> {
-    port_is_snapshot(0)
-}
-
-pub fn port_is_snapshot(port: usize) -> Option<u32> {
-    let abar = AHCI_ABAR.load(Ordering::Relaxed);
-    if abar == 0 {
-        None
-    } else {
-        Some(port_read(abar, port, PORT_IS))
-    }
-}
-
 /// Per-port I/O serialisation lock.
 ///
 /// Serialises transitions of `PORT_IO_IN_PROGRESS` and short setup/finish
@@ -2738,20 +2357,6 @@ pub fn handle_interrupt() {
         if is == 0 && (active_entry & !ci_entry) == 0 {
             continue;
         }
-        let sact_entry = port_read(abar, port, PORT_SACT);
-        let serr_entry = port_read(abar, port, PORT_SERR);
-        push_ahci_event(
-            AHCI_TRACE_ENTER,
-            port as u32,
-            is,
-            ci_entry,
-            sact_entry,
-            serr_entry,
-            AHCI_COMPLETIONS[port][0].waiter_tid(),
-            active_entry,
-            PORT_ACTIVE_CMD_NUM[port].load(Ordering::Acquire),
-            false,
-        );
         if is != 0 {
             AHCI_ISR_PORT_HIT[port].fetch_add(1, Ordering::Relaxed);
         }
@@ -2759,9 +2364,6 @@ pub fn handle_interrupt() {
             AHCI_LAST_ISR_PORT1_IS.store(is, Ordering::Relaxed);
         }
 
-        let mut waiter_tid = 0u64;
-        let mut wake_success = false;
-        let mut slots_processed = 0u32;
         let mut loop_iterations = 0u32;
         // Slot 0 is the only issued slot today. Defer the wake until after
         // PORT_IS has been acknowledged and the CI drain loop is stable, so the
@@ -2769,15 +2371,8 @@ pub fn handle_interrupt() {
         // is still asserted.
         let mut pending_cmd_num = 0u32;
         let mut pending_waiter_tid = 0u64;
-        let mut pending_slot_bit = 0u32;
-        let mut pending_is = 0u32;
-        let mut pending_ci = 0u32;
-        let mut pending_sact = 0u32;
-        let mut pending_serr = 0u32;
         let mut is_after_clear: u32;
         let mut ci_after_clear: u32;
-        let mut sact_after_clear: u32;
-        let mut serr_after_clear: u32;
 
         loop {
             loop_iterations += 1;
@@ -2788,24 +2383,9 @@ pub fn handle_interrupt() {
             }
 
             let ci = port_read(abar, port, PORT_CI);
-            let sact = port_read(abar, port, PORT_SACT);
-            let serr = port_read(abar, port, PORT_SERR);
             let active_mask =
                 PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & AHCI_TRACKED_SLOT_MASK;
             let completed_slots = detect_completed_slots(active_mask, ci, sampled_is);
-
-            push_ahci_event(
-                AHCI_TRACE_CI_LOOP,
-                port as u32,
-                sampled_is,
-                ci,
-                sact,
-                serr,
-                AHCI_COMPLETIONS[port][0].waiter_tid(),
-                completed_slots,
-                loop_iterations,
-                completed_slots != 0,
-            );
 
             let mut remaining = completed_slots;
             while remaining != 0 {
@@ -2819,8 +2399,6 @@ pub fn handle_interrupt() {
                     continue;
                 }
 
-                slots_processed += 1;
-
                 // The current driver issues only slot 0. The arrays are sized
                 // for future multi-slot work, but only slot 0 has a command
                 // token to publish back to wait_cmd_slot0().
@@ -2829,39 +2407,18 @@ pub fn handle_interrupt() {
                     if port == 1 {
                         AHCI_LAST_ISR_PORT1_CMD_NUM.store(cmd_num, Ordering::Relaxed);
                     }
-                    waiter_tid = AHCI_COMPLETIONS[port][slot].waiter_tid();
                     if cmd_num != 0 {
                         pending_cmd_num = cmd_num;
-                        pending_waiter_tid = waiter_tid;
-                        pending_slot_bit = slot_bit;
-                        pending_is = sampled_is;
-                        pending_ci = ci;
-                        pending_sact = sact;
-                        pending_serr = serr;
+                        pending_waiter_tid = AHCI_COMPLETIONS[port][slot].waiter_tid();
                     }
                 }
             }
 
             is_after_clear = port_read(abar, port, PORT_IS);
             ci_after_clear = port_read(abar, port, PORT_CI);
-            sact_after_clear = port_read(abar, port, PORT_SACT);
-            serr_after_clear = port_read(abar, port, PORT_SERR);
             let active_after =
                 PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & AHCI_TRACKED_SLOT_MASK;
             let completed_after_clear = active_after & !ci_after_clear;
-
-            push_ahci_event(
-                AHCI_TRACE_POST_CLEAR,
-                port as u32,
-                is_after_clear,
-                ci_after_clear,
-                sact_after_clear,
-                serr_after_clear,
-                waiter_tid,
-                completed_after_clear,
-                loop_iterations,
-                completed_after_clear != 0,
-            );
 
             if loop_iterations >= AHCI_CI_COMPLETION_LOOP_LIMIT {
                 break;
@@ -2876,48 +2433,9 @@ pub fn handle_interrupt() {
             AHCI_LAST_ISR_COMPLETE_PORT.store(port as u32, Ordering::Relaxed);
             AHCI_LAST_ISR_COMPLETE_CMD.store(pending_cmd_num, Ordering::Relaxed);
             AHCI_LAST_ISR_COMPLETE_WAITER.store(pending_waiter_tid, Ordering::Relaxed);
-            push_ahci_event(
-                AHCI_TRACE_BEFORE_COMPLETE,
-                port as u32,
-                pending_is,
-                pending_ci,
-                pending_sact,
-                pending_serr,
-                pending_waiter_tid,
-                pending_slot_bit,
-                pending_cmd_num,
-                false,
-            );
             AHCI_COMPLETIONS[port][0].complete(pending_cmd_num);
-            push_ahci_event(
-                AHCI_TRACE_AFTER_COMPLETE,
-                port as u32,
-                pending_is,
-                pending_ci,
-                pending_sact,
-                pending_serr,
-                pending_waiter_tid,
-                pending_slot_bit,
-                pending_cmd_num,
-                false,
-            );
             AHCI_ISR_COMPLETE_HIT[port].fetch_add(1, Ordering::Relaxed);
-            waiter_tid = pending_waiter_tid;
-            wake_success |= pending_waiter_tid != 0;
         }
-
-        push_ahci_event(
-            AHCI_TRACE_RETURN,
-            port as u32,
-            is_after_clear,
-            ci_after_clear,
-            sact_after_clear,
-            serr_after_clear,
-            waiter_tid,
-            slots_processed,
-            loop_iterations,
-            wake_success,
-        );
     }
 
     // For edge-triggered MSI: clear the SPI pending bit to re-arm.
