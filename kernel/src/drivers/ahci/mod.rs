@@ -3062,10 +3062,6 @@ impl BlockDevice for AhciBlockDevice {
                         chunk,
                         e
                     );
-                    if e == "AHCI: command timeout" {
-                        crate::arch_impl::aarch64::gic::dump_stuck_state_for_spi(34);
-                        dump_recent_ahci_events(Some(self.port_num as u8), 16);
-                    }
                 }
                 BlockError::IoError
             });

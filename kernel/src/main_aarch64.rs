@@ -961,9 +961,6 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             "[smp] {} CPUs online",
             kernel::arch_impl::aarch64::smp::cpus_online()
         );
-        kernel::arch_impl::aarch64::gic::dump_gic_cpu_audit_snapshot(
-            kernel::arch_impl::aarch64::smp::cpus_online() as usize,
-        );
         kernel::arch_impl::aarch64::gic::init_gicr_rdist_map(
             kernel::arch_impl::aarch64::smp::cpus_online() as usize,
         );
