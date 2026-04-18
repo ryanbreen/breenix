@@ -93,6 +93,15 @@ const CLOSE_BTN_TEXT: Color = Color::rgb(255, 255, 255);
 const MINIMIZE_BTN_BG: Color = Color::rgb(80, 85, 100);
 const MINIMIZE_BTN_TEXT: Color = Color::rgb(255, 255, 255);
 
+#[cfg(target_arch = "aarch64")]
+const SOFTWARE_CURSOR_W: usize = 16;
+#[cfg(target_arch = "aarch64")]
+const SOFTWARE_CURSOR_H: usize = 16;
+#[cfg(target_arch = "aarch64")]
+const SOFTWARE_CURSOR_WHITE: u32 = 0x00ff_ffff;
+#[cfg(target_arch = "aarch64")]
+const SOFTWARE_CURSOR_BLACK: u32 = 0x0001_0101;
+
 // ─── Input Parser ────────────────────────────────────────────────────────────
 // Parses stdin bytes (keyboard input) into InputEvents that BWM can either
 // handle internally (F-key focus switching) or route to the focused client
@@ -1213,6 +1222,102 @@ fn blit_window_contents(vram: &mut [u32], screen_w: usize, screen_h: usize, wind
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+fn software_cursor_hotspot(shape: u32) -> (i32, i32) {
+    if shape == graphics::cursor_shape::ARROW {
+        (0, 0)
+    } else {
+        (8, 8)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn cursor_body_pixel(shape: u32, row: i32, col: i32) -> bool {
+    match shape {
+        graphics::cursor_shape::RESIZE_NS => {
+            (col == 7 && (3..=12).contains(&row))
+                || (row <= 3 && (col - 7).abs() <= 3 - row)
+                || (row >= 12 && (col - 7).abs() <= row - 12)
+        }
+        graphics::cursor_shape::RESIZE_EW => {
+            (row == 7 && (3..=12).contains(&col))
+                || (col <= 3 && (row - 7).abs() <= 3 - col)
+                || (col >= 12 && (row - 7).abs() <= col - 12)
+        }
+        graphics::cursor_shape::RESIZE_NWSE => {
+            ((2..=13).contains(&row) && (col == row || col == row + 1))
+                || (row <= 4 && col <= 4 && row + col <= 5)
+                || (row >= 11 && col >= 11 && row + col >= 25)
+        }
+        graphics::cursor_shape::RESIZE_NESW => {
+            ((2..=13).contains(&row) && (col == 15 - row || col == 14 - row))
+                || (row <= 4 && col >= 11 && col - row >= 11)
+                || (row >= 11 && col <= 4 && row - col >= 11)
+        }
+        _ => {
+            (row <= 9 && col >= 1 && col < row)
+                || (row == 10 && (1..=5).contains(&col))
+                || (row == 11 && ((1..=3).contains(&col) || (4..=5).contains(&col)))
+                || (row == 12 && (4..=6).contains(&col))
+                || ((13..=14).contains(&row) && (5..=6).contains(&col))
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn cursor_pixel(shape: u32, row: usize, col: usize) -> u32 {
+    let row = row as i32;
+    let col = col as i32;
+    if cursor_body_pixel(shape, row, col) {
+        return SOFTWARE_CURSOR_WHITE;
+    }
+
+    for dy in -1..=1 {
+        for dx in -1..=1 {
+            if dx == 0 && dy == 0 {
+                continue;
+            }
+            if cursor_body_pixel(shape, row + dy, col + dx) {
+                return SOFTWARE_CURSOR_BLACK;
+            }
+        }
+    }
+
+    0
+}
+
+#[cfg(target_arch = "aarch64")]
+fn draw_software_cursor(
+    vram: &mut [u32],
+    screen_w: usize,
+    screen_h: usize,
+    mouse_x: i32,
+    mouse_y: i32,
+    shape: u32,
+) {
+    let shape = shape.min(graphics::cursor_shape::RESIZE_NESW);
+    let (hot_x, hot_y) = software_cursor_hotspot(shape);
+    let base_x = mouse_x - hot_x;
+    let base_y = mouse_y - hot_y;
+
+    for row in 0..SOFTWARE_CURSOR_H {
+        let y = base_y + row as i32;
+        if y < 0 || y >= screen_h as i32 {
+            continue;
+        }
+        for col in 0..SOFTWARE_CURSOR_W {
+            let x = base_x + col as i32;
+            if x < 0 || x >= screen_w as i32 {
+                continue;
+            }
+            let pixel = cursor_pixel(shape, row, col);
+            if pixel != 0 {
+                vram[y as usize * screen_w + x as usize] = pixel;
+            }
+        }
+    }
+}
+
 fn restore_full_background(vram: &mut [u32], fb: &mut FrameBuf, bg: &[u32]) {
     if bg.is_empty() {
         paint_background(fb);
@@ -1496,6 +1601,8 @@ fn main() {
     let mut input_parser = InputParser::new();
     let mut mouse_x: i32 = 0;
     let mut mouse_y: i32 = 0;
+    #[cfg(target_arch = "aarch64")]
+    let mut active_cursor_shape = graphics::cursor_shape::ARROW;
     let mut prev_buttons: u32 = 0;
     let mut dragging: Option<(usize, i32, i32)> = None;
     // Active resize: (win_idx, edge, anchor_x, anchor_y, orig_x, orig_y, orig_w, orig_h)
@@ -1529,6 +1636,14 @@ fn main() {
     #[cfg(target_arch = "aarch64")]
     {
         let _ = direct_mapped;
+        draw_software_cursor(
+            composite_buf,
+            screen_w,
+            screen_h,
+            mouse_x,
+            mouse_y,
+            active_cursor_shape,
+        );
         let _ = graphics::virgl_composite(composite_buf, screen_w as u32, screen_h as u32);
     }
     #[cfg(not(target_arch = "aarch64"))]
@@ -1654,6 +1769,8 @@ fn main() {
         let mut dirty_y0 = i32::MAX;
         let mut dirty_x1 = 0i32;
         let mut dirty_y1 = 0i32;
+        #[cfg(target_arch = "aarch64")]
+        let mut cursor_dirty = false;
 
         // ── 4. Process mouse input (only when mouse changed) ──
         let mut mouse_moved_this_frame = false;
@@ -1807,6 +1924,11 @@ fn main() {
                             }
                         }
                         let _ = graphics::set_cursor_shape(hover_shape);
+                        #[cfg(target_arch = "aarch64")]
+                        {
+                            cursor_dirty |= active_cursor_shape != hover_shape;
+                            active_cursor_shape = hover_shape;
+                        }
                     }
                 }
 
@@ -1817,6 +1939,11 @@ fn main() {
                     if let Some((win_idx, _, _, _, _, _, orig_w, orig_h)) = resizing.take() {
                         // Reset cursor shape back to arrow
                         let _ = graphics::set_cursor_shape(graphics::cursor_shape::ARROW);
+                        #[cfg(target_arch = "aarch64")]
+                        {
+                            cursor_dirty |= active_cursor_shape != graphics::cursor_shape::ARROW;
+                            active_cursor_shape = graphics::cursor_shape::ARROW;
+                        }
                         // Resize ended — notify client of new content dimensions
                         let new_cw = windows[win_idx].content_width();
                         let new_ch = windows[win_idx].content_height();
@@ -1955,6 +2082,11 @@ fn main() {
                                     ResizeEdge::TopRight | ResizeEdge::BottomLeft => graphics::cursor_shape::RESIZE_NESW,
                                 };
                                 let _ = graphics::set_cursor_shape(shape);
+                                #[cfg(target_arch = "aarch64")]
+                                {
+                                    cursor_dirty |= active_cursor_shape != shape;
+                                    active_cursor_shape = shape;
+                                }
                                 resizing = Some((
                                     top, edge,
                                     mouse_x, mouse_y,
@@ -2034,9 +2166,29 @@ fn main() {
         // ── 6. Composite to GPU (only when something changed) ──
         #[cfg(target_arch = "aarch64")]
         {
-            if full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame {
+            if full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame || cursor_dirty {
                 let _dirty_rect_snapshot = (dirty_x0, dirty_y0, dirty_x1, dirty_y1);
+                if mouse_moved_this_frame || cursor_dirty {
+                    compose_full_redraw(
+                        composite_buf,
+                        &mut fb,
+                        &mut shadow_fb,
+                        &bg_cache,
+                        &windows,
+                        focused_win,
+                        &clock_text,
+                        &mut ui_font,
+                    );
+                }
                 blit_window_contents(composite_buf, screen_w, screen_h, &windows);
+                draw_software_cursor(
+                    composite_buf,
+                    screen_w,
+                    screen_h,
+                    mouse_x,
+                    mouse_y,
+                    active_cursor_shape,
+                );
                 let _ = graphics::virgl_composite(composite_buf, screen_w as u32, screen_h as u32);
                 full_redraw = false;
                 content_dirty = false;
