@@ -206,11 +206,6 @@ const GICC_BPR: usize = 0x008;
 const GICC_IAR: usize = 0x00C;
 /// End of Interrupt Register
 const GICC_EOIR: usize = 0x010;
-/// Running Priority Register
-const GICC_RPR: usize = 0x014;
-/// Highest Priority Pending Interrupt Register
-const GICC_HPPIR: usize = 0x018;
-
 // =============================================================================
 // Constants
 // =============================================================================
@@ -302,55 +297,6 @@ fn gicc_write(offset: usize, value: u32) {
         let addr = (GIC_HHDM + base + offset) as *mut u32;
         core::ptr::write_volatile(addr, value);
     }
-}
-
-#[inline]
-fn gicd_read_u64(offset: usize) -> u64 {
-    let lo = gicd_read(offset) as u64;
-    let hi = gicd_read(offset + 4) as u64;
-    lo | (hi << 32)
-}
-
-#[inline]
-fn raw_dump_prefix(intid: u32) {
-    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
-
-    raw_uart_str("[STUCK_SPI");
-    raw_uart_dec(intid as u64);
-    raw_uart_str("] ");
-}
-
-#[inline]
-fn raw_dump_u64(intid: u32, label: &str, value: u64) {
-    use crate::arch_impl::aarch64::context_switch::{raw_uart_hex, raw_uart_str};
-
-    raw_dump_prefix(intid);
-    raw_uart_str(label);
-    raw_uart_str("=");
-    raw_uart_hex(value);
-    raw_uart_str("\n");
-}
-
-#[inline]
-fn raw_dump_bool(intid: u32, label: &str, value: bool) {
-    use crate::arch_impl::aarch64::context_switch::raw_uart_str;
-
-    raw_dump_prefix(intid);
-    raw_uart_str(label);
-    raw_uart_str("=");
-    raw_uart_str(if value { "true" } else { "false" });
-    raw_uart_str("\n");
-}
-
-#[inline]
-fn raw_dump_note(intid: u32, label: &str, note: &str) {
-    use crate::arch_impl::aarch64::context_switch::raw_uart_str;
-
-    raw_dump_prefix(intid);
-    raw_uart_str(label);
-    raw_uart_str("=");
-    raw_uart_str(note);
-    raw_uart_str("\n");
 }
 
 /// Read a 32-bit GICR register (GICv3 only).
@@ -552,7 +498,7 @@ impl InterruptController for Gicv2 {
                 // idempotent (guarded by GICR_PROBED), so calling it again
                 // inside init_gicv3_redistributor(0) is a no-op.
                 probe_and_validate_gicr();
-                refresh_gicr_rdist_map(GICR_MAP_SLOTS, false);
+                refresh_gicr_rdist_map(GICR_RDIST_SLOTS);
                 init_gicv3_distributor();
                 init_gicv3_redistributor(0); // CPU 0
                 init_gicv3_cpu_interface();
@@ -822,201 +768,12 @@ pub fn snapshot_pending_spis() -> [u32; 3] {
     ]
 }
 
-/// Dump a read-only GIC stuck-state snapshot for a pending SPI.
-///
-/// This is an observational diagnostic only: it performs volatile MMIO reads
-/// and system-register reads but does not modify distributor or CPU-interface
-/// state.
-pub fn dump_stuck_state_for_spi(intid: u32) {
-    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_hex, raw_uart_str};
-
-    let cpu_id = get_cpu_id_from_mpidr() as u64;
-    let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
-    let reg_index = intid / 32;
-    let bit_index = intid % 32;
-    let ispendr_reg = gicd_read(GICD_ISPENDR + (reg_index as usize * 4));
-    let isactiver_reg = gicd_read(GICD_ISACTIVER + (reg_index as usize * 4));
-    let pending = (ispendr_reg & (1 << bit_index)) != 0;
-    let active = (isactiver_reg & (1 << bit_index)) != 0;
-
-    let icfgr_reg_index = intid / 16;
-    let icfgr_field_shift = (intid % 16) * 2;
-    let icfgr_reg = gicd_read(GICD_ICFGR + (icfgr_reg_index as usize * 4));
-    let icfgr_bits = (icfgr_reg >> icfgr_field_shift) & 0x3;
-
-    let ipriorityr_reg_index = intid / 4;
-    let ipriorityr_byte_shift = (intid % 4) * 8;
-    let ipriorityr_reg = gicd_read(GICD_IPRIORITYR + (ipriorityr_reg_index as usize * 4));
-    let priority = (ipriorityr_reg >> ipriorityr_byte_shift) & 0xff;
-
-    raw_dump_prefix(intid);
-    raw_uart_str("cpu=");
-    raw_uart_dec(cpu_id);
-    raw_uart_str(" gic_version=");
-    raw_uart_dec(version as u64);
-    raw_uart_str("\n");
-
-    raw_dump_prefix(intid);
-    raw_uart_str("GICD_ISPENDR[");
-    raw_uart_dec(reg_index as u64);
-    raw_uart_str("]=");
-    raw_uart_hex(ispendr_reg as u64);
-    raw_uart_str(" bit=");
-    raw_uart_dec(bit_index as u64);
-    raw_uart_str(" pending=");
-    raw_uart_str(if pending { "true" } else { "false" });
-    raw_uart_str("\n");
-
-    raw_dump_prefix(intid);
-    raw_uart_str("GICD_ISACTIVER[");
-    raw_uart_dec(reg_index as u64);
-    raw_uart_str("]=");
-    raw_uart_hex(isactiver_reg as u64);
-    raw_uart_str(" bit=");
-    raw_uart_dec(bit_index as u64);
-    raw_uart_str(" active=");
-    raw_uart_str(if active { "true" } else { "false" });
-    raw_uart_str("\n");
-
-    raw_dump_prefix(intid);
-    raw_uart_str("GICD_ICFGR[");
-    raw_uart_dec(icfgr_reg_index as u64);
-    raw_uart_str("]=");
-    raw_uart_hex(icfgr_reg as u64);
-    raw_uart_str(" bits=");
-    raw_uart_hex(icfgr_bits as u64);
-    raw_uart_str(" trigger=");
-    raw_uart_str(if (icfgr_bits & 0b10) != 0 {
-        "edge"
-    } else {
-        "level"
-    });
-    raw_uart_str("\n");
-
-    raw_dump_prefix(intid);
-    raw_uart_str("GICD_IPRIORITYR[");
-    raw_uart_dec(intid as u64);
-    raw_uart_str("]=");
-    raw_uart_hex(priority as u64);
-    raw_uart_str("\n");
-
-    let gicd_ctlr = gicd_read(GICD_CTLR);
-    let are_enabled = (gicd_ctlr & GICD_CTLR_ARE_NS) != 0;
-    if version >= 3 || are_enabled {
-        let router = gicd_read_u64(GICD_IROUTER + (intid as usize * 8));
-        raw_dump_prefix(intid);
-        raw_uart_str("GICD_IROUTER[");
-        raw_uart_dec(intid as u64);
-        raw_uart_str("]=");
-        raw_uart_hex(router);
-        raw_uart_str("\n");
-    } else {
-        let target_reg_index = intid / 4;
-        let target_byte_shift = (intid % 4) * 8;
-        let itargetsr_reg = gicd_read(GICD_ITARGETSR + (target_reg_index as usize * 4));
-        let target = (itargetsr_reg >> target_byte_shift) & 0xff;
-        raw_dump_prefix(intid);
-        raw_uart_str("GICD_ITARGETSR[");
-        raw_uart_dec(intid as u64);
-        raw_uart_str("]=");
-        raw_uart_hex(target as u64);
-        raw_uart_str("\n");
-    }
-
-    let current_el: u64;
-    let daif: u64;
-    unsafe {
-        core::arch::asm!("mrs {}, currentel", out(reg) current_el, options(nomem, nostack));
-        core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack));
-    }
-
-    let (rpr, pmr, bpr1, hppir1, ap1r0) = if version >= 3 {
-        let rpr: u64;
-        let pmr: u64;
-        let bpr1: u64;
-        let hppir1: u64;
-        let ap1r0: u64;
-        unsafe {
-            core::arch::asm!("mrs {}, S3_0_C12_C11_3", out(reg) rpr, options(nomem, nostack));
-            core::arch::asm!("mrs {}, icc_pmr_el1", out(reg) pmr, options(nomem, nostack));
-            core::arch::asm!("mrs {}, icc_bpr1_el1", out(reg) bpr1, options(nomem, nostack));
-            core::arch::asm!("mrs {}, icc_hppir1_el1", out(reg) hppir1, options(nomem, nostack));
-            core::arch::asm!("mrs {}, icc_ap1r0_el1", out(reg) ap1r0, options(nomem, nostack));
-        }
-        (rpr, pmr, bpr1, hppir1, ap1r0)
-    } else {
-        (
-            gicc_read(GICC_RPR) as u64,
-            gicc_read(GICC_PMR) as u64,
-            gicc_read(GICC_BPR) as u64,
-            gicc_read(GICC_HPPIR) as u64,
-            0,
-        )
-    };
-
-    raw_dump_u64(intid, "ICC_RPR_EL1", rpr);
-    raw_dump_u64(intid, "ICC_PMR_EL1", pmr);
-    raw_dump_u64(intid, "ICC_BPR1_EL1", bpr1);
-    raw_dump_u64(intid, "ICC_HPPIR1_EL1", hppir1);
-    if version >= 3 {
-        raw_dump_u64(intid, "ICC_AP1R0_EL1", ap1r0);
-    } else {
-        raw_dump_note(intid, "ICC_AP1R0_EL1", "unsupported_on_gicv2");
-    }
-    raw_dump_u64(intid, "DAIF", daif);
-    if crate::per_cpu_aarch64::in_interrupt() {
-        let spsr: u64;
-        unsafe {
-            core::arch::asm!("mrs {}, spsr_el1", out(reg) spsr, options(nomem, nostack));
-        }
-        raw_dump_u64(intid, "SPSR_EL1", spsr);
-    } else {
-        raw_dump_note(intid, "SPSR_EL1", "not_in_exception_context");
-    }
-    raw_dump_u64(intid, "CurrentEL", current_el);
-    raw_dump_bool(intid, "peer_cpu_scan", false);
-    raw_dump_note(
-        intid,
-        "peer_cpu_reason",
-        "no_existing_ipi_callback_mechanism",
-    );
-
-    if intid == 34 {
-        let mut sgi_targets = [0u8; 8];
-        let target_count = crate::drivers::ahci::collect_recent_sgi_targets(&mut sgi_targets);
-        for target in sgi_targets.iter().take(target_count) {
-            dump_gicr_state_for_cpu(*target as usize);
-        }
-
-        raw_dump_prefix(intid);
-        raw_uart_str("AHCI_PORT0_IS=");
-        if let Some(port0_is) = crate::drivers::ahci::port0_is_snapshot() {
-            raw_uart_hex(port0_is as u64);
-        } else {
-            raw_uart_str("unavailable");
-        }
-        raw_uart_str("\n");
-        raw_dump_prefix(intid);
-        raw_uart_str("AHCI_PORT1_IS=");
-        if let Some(port1_is) = crate::drivers::ahci::port_is_snapshot(1) {
-            raw_uart_hex(port1_is as u64);
-        } else {
-            raw_uart_str("unavailable");
-        }
-        raw_uart_str("\n");
-
-        crate::drivers::ahci::dump_recent_ahci_events(None, 64);
-    }
-}
-
 /// Send a Software Generated Interrupt (SGI) to a target CPU.
 ///
 /// SGIs are interrupts 0-15 and are used for IPIs.
 /// `target_cpu` is the CPU ID (0-7), NOT a bitmask.
 pub fn send_sgi(sgi_id: u8, target_cpu: u8) {
-    trace_sgi_boundary(crate::drivers::ahci::AHCI_TRACE_SGI_ENTRY, target_cpu);
     if sgi_id > 15 {
-        trace_sgi_boundary(crate::drivers::ahci::AHCI_TRACE_SGI_EXIT, target_cpu);
         return;
     }
 
@@ -1032,41 +789,19 @@ pub fn send_sgi(sgi_id: u8, target_cpu: u8) {
         // Bits 27:24 = INTID (SGI number)
         // For simple SMP (CPUs 0-7 in same affinity group):
         let target_list = 1u64 << (target_cpu as u64);
-        trace_sgi_boundary(crate::drivers::ahci::AHCI_TRACE_SGI_AFTER_MPIDR, target_cpu);
         let sgir = ((sgi_id as u64) << 24) | target_list;
-        trace_sgi_boundary(
-            crate::drivers::ahci::AHCI_TRACE_SGI_AFTER_COMPOSE,
-            target_cpu,
-        );
-        trace_sgi_boundary(crate::drivers::ahci::AHCI_TRACE_SGI_BEFORE_MSR, target_cpu);
         unsafe {
             core::arch::asm!("msr icc_sgi1r_el1, {}", in(reg) sgir, options(nomem, nostack));
         }
-        trace_sgi_boundary(crate::drivers::ahci::AHCI_TRACE_SGI_AFTER_MSR, target_cpu);
         unsafe {
             core::arch::asm!("isb", options(nomem, nostack));
         }
-        trace_sgi_boundary(crate::drivers::ahci::AHCI_TRACE_SGI_AFTER_ISB, target_cpu);
     } else {
         // GICv2: Write GICD_SGIR
         let target_mask = 1u32 << (target_cpu as u32);
-        trace_sgi_boundary(crate::drivers::ahci::AHCI_TRACE_SGI_AFTER_MPIDR, target_cpu);
         let sgir = (target_mask << 16) | (sgi_id as u32);
-        trace_sgi_boundary(
-            crate::drivers::ahci::AHCI_TRACE_SGI_AFTER_COMPOSE,
-            target_cpu,
-        );
-        trace_sgi_boundary(crate::drivers::ahci::AHCI_TRACE_SGI_BEFORE_MSR, target_cpu);
         gicd_write(0xF00, sgir);
-        trace_sgi_boundary(crate::drivers::ahci::AHCI_TRACE_SGI_AFTER_MSR, target_cpu);
-        trace_sgi_boundary(crate::drivers::ahci::AHCI_TRACE_SGI_AFTER_ISB, target_cpu);
     }
-    trace_sgi_boundary(crate::drivers::ahci::AHCI_TRACE_SGI_EXIT, target_cpu);
-}
-
-#[inline(always)]
-fn trace_sgi_boundary(site: u32, target_cpu: u8) {
-    crate::drivers::ahci::push_ahci_event(site, 0, 0, 0, 0, 0, 0, target_cpu as u32, 0, false);
 }
 
 /// Check if GIC is initialized
@@ -1229,31 +964,13 @@ pub fn dump_irq_state(irq: u32) {
 const GICR_FRAME_SIZE: usize = 0x2_0000; // 128KB per CPU (2 x 64KB frames)
 const GICR_SGI_OFFSET: usize = 0x1_0000; // SGI_base is second 64KB frame
 const GICR_TYPER_LAST: u64 = 1 << 4;
-const GICR_MAP_SLOTS: usize = crate::arch_impl::aarch64::smp::MAX_CPUS;
+const GICR_RDIST_SLOTS: usize = crate::arch_impl::aarch64::smp::MAX_CPUS;
 
 /// GICR RD_base registers
-const GICR_CTLR: usize = 0x000;
 const GICR_WAKER: usize = 0x014;
 const GICR_TYPER: usize = 0x008;
-const GICR_SYNCR: usize = 0x0C0;
 
-const LINUX_EXPECTED_SRE_ENABLED: u64 = 1;
-const LINUX_EXPECTED_CTLR_EOIMODE: u64 = 1 << 1;
-const LINUX_EXPECTED_PMR: u64 = 0xF0;
-const LINUX_EXPECTED_IGRPEN1_ENABLED: u64 = 1;
-const GIC_CPU_AUDIT_SLOTS: usize = 8;
-
-static GIC_CPU_AUDIT_VALID: [AtomicBool; GIC_CPU_AUDIT_SLOTS] = [
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-];
-static GIC_CPU_AUDIT_MPIDR: [AtomicU64; GIC_CPU_AUDIT_SLOTS] = [
+static GICR_PER_CPU_BASE: [AtomicU64; GICR_RDIST_SLOTS] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
@@ -1263,7 +980,7 @@ static GIC_CPU_AUDIT_MPIDR: [AtomicU64; GIC_CPU_AUDIT_SLOTS] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
 ];
-static GIC_CPU_AUDIT_SRE: [AtomicU64; GIC_CPU_AUDIT_SLOTS] = [
+static GICR_PER_CPU_TYPER: [AtomicU64; GICR_RDIST_SLOTS] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
@@ -1273,68 +990,7 @@ static GIC_CPU_AUDIT_SRE: [AtomicU64; GIC_CPU_AUDIT_SLOTS] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
 ];
-static GIC_CPU_AUDIT_CTLR: [AtomicU64; GIC_CPU_AUDIT_SLOTS] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static GIC_CPU_AUDIT_PMR: [AtomicU64; GIC_CPU_AUDIT_SLOTS] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static GIC_CPU_AUDIT_IGRPEN1: [AtomicU64; GIC_CPU_AUDIT_SLOTS] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static GIC_CPU_AUDIT_MISMATCH: [AtomicU8; GIC_CPU_AUDIT_SLOTS] = [
-    AtomicU8::new(0),
-    AtomicU8::new(0),
-    AtomicU8::new(0),
-    AtomicU8::new(0),
-    AtomicU8::new(0),
-    AtomicU8::new(0),
-    AtomicU8::new(0),
-    AtomicU8::new(0),
-];
-
-static GICR_PER_CPU_BASE: [AtomicU64; GICR_MAP_SLOTS] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static GICR_PER_CPU_TYPER: [AtomicU64; GICR_MAP_SLOTS] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static GICR_PER_CPU_AFFINITY: [AtomicU64; GICR_MAP_SLOTS] = [
+static GICR_PER_CPU_AFFINITY: [AtomicU64; GICR_RDIST_SLOTS] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
@@ -1375,14 +1031,6 @@ fn get_cpu_id_from_mpidr() -> usize {
     (mpidr & 0xFF) as usize
 }
 
-fn read_mpidr_el1() -> u64 {
-    let mpidr: u64;
-    unsafe {
-        core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
-    }
-    mpidr
-}
-
 fn mpidr_to_gicr_affinity(mpidr: u64) -> u32 {
     let aff0 = mpidr & 0xff;
     let aff1 = (mpidr >> 8) & 0xff;
@@ -1392,11 +1040,7 @@ fn mpidr_to_gicr_affinity(mpidr: u64) -> u32 {
 }
 
 fn expected_gicr_affinity_for_cpu(cpu_id: usize) -> u32 {
-    if cpu_id < GIC_CPU_AUDIT_SLOTS && GIC_CPU_AUDIT_VALID[cpu_id].load(Ordering::Acquire) {
-        mpidr_to_gicr_affinity(GIC_CPU_AUDIT_MPIDR[cpu_id].load(Ordering::Acquire))
-    } else {
-        mpidr_to_gicr_affinity(cpu_id as u64)
-    }
+    mpidr_to_gicr_affinity(cpu_id as u64)
 }
 
 #[inline]
@@ -1425,7 +1069,7 @@ fn gicr_read_u64_at_rd_base(rd_base_phys: usize, offset: usize) -> u64 {
 
 #[inline]
 fn gicr_rd_base_for_cpu(cpu_id: usize) -> Option<usize> {
-    if cpu_id >= GICR_MAP_SLOTS {
+    if cpu_id >= GICR_RDIST_SLOTS {
         return None;
     }
 
@@ -1474,15 +1118,12 @@ fn validate_gicr_range_for_cpu(cpu_id: usize) -> bool {
     true
 }
 
-fn refresh_gicr_rdist_map(max_cpus: usize, emit_logs: bool) {
+fn refresh_gicr_rdist_map(max_cpus: usize) {
     if !GICR_VALID.load(Ordering::Acquire) {
-        if emit_logs {
-            crate::serial_println!("[GICR_MAP] unavailable=gicr_not_valid");
-        }
         return;
     }
 
-    let target_cpus = max_cpus.min(GICR_MAP_SLOTS);
+    let target_cpus = max_cpus.min(GICR_RDIST_SLOTS);
     for cpu_id in 0..target_cpus {
         GICR_PER_CPU_BASE[cpu_id].store(0, Ordering::Release);
         GICR_PER_CPU_TYPER[cpu_id].store(0, Ordering::Release);
@@ -1494,7 +1135,7 @@ fn refresh_gicr_rdist_map(max_cpus: usize, emit_logs: bool) {
     let max_frames = if gicr_size > 0 {
         (gicr_size / GICR_FRAME_SIZE).max(1)
     } else {
-        GICR_MAP_SLOTS
+        GICR_RDIST_SLOTS
     };
 
     for frame in 0..max_frames {
@@ -1516,113 +1157,14 @@ fn refresh_gicr_rdist_map(max_cpus: usize, emit_logs: bool) {
         }
     }
 
-    if emit_logs {
-        for cpu_id in 0..target_cpus {
-            let rd_base = GICR_PER_CPU_BASE[cpu_id].load(Ordering::Acquire);
-            if rd_base == 0 {
-                crate::serial_println!("[GICR_MAP] cpu={} NOT_FOUND", cpu_id);
-            } else {
-                crate::serial_println!(
-                    "[GICR_MAP] cpu={} rd_base={:#x} typer={:#x} affinity={:#x}",
-                    cpu_id,
-                    rd_base,
-                    GICR_PER_CPU_TYPER[cpu_id].load(Ordering::Acquire),
-                    GICR_PER_CPU_AFFINITY[cpu_id].load(Ordering::Acquire)
-                );
-            }
-        }
-    }
 }
 
-/// Build and emit the Linux-style redistributor map.
+/// Build the Linux-style redistributor map.
 ///
 /// Linux walks each 128KB redistributor frame and matches `GICR_TYPER[63:32]`
 /// to the CPU affinity value; see irq-gic-v3.c `gic_populate_rdist()`.
 pub fn init_gicr_rdist_map(max_cpus: usize) {
-    refresh_gicr_rdist_map(max_cpus, true);
-}
-
-pub fn dump_gicr_state_for_cpu(target_cpu: usize) {
-    use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_hex, raw_uart_str};
-
-    raw_uart_str("[GICR_STATE] cpu=");
-    raw_uart_dec(target_cpu as u64);
-
-    if !GICR_VALID.load(Ordering::Relaxed) {
-        raw_uart_str(" unavailable=gicr_not_valid\n");
-        return;
-    }
-
-    let Some(rd_base) = gicr_rd_base_for_cpu(target_cpu) else {
-        raw_uart_str(" unavailable=rdist_not_found\n");
-        return;
-    };
-
-    let waker = gicr_read_at_rd_base(rd_base, GICR_WAKER);
-    let ctlr = gicr_read_at_rd_base(rd_base, GICR_CTLR);
-    let typer = gicr_read_u64_at_rd_base(rd_base, GICR_TYPER);
-    let syncr = gicr_read_at_rd_base(rd_base, GICR_SYNCR);
-
-    raw_uart_str(" rd_base=");
-    raw_uart_hex(rd_base as u64);
-    raw_uart_str(" waker=");
-    raw_uart_hex(waker as u64);
-    raw_uart_str(" ctlr=");
-    raw_uart_hex(ctlr as u64);
-    raw_uart_str(" typer=");
-    raw_uart_hex(typer);
-    raw_uart_str(" syncr=");
-    raw_uart_hex(syncr as u64);
-    raw_uart_str("\n");
-}
-
-fn record_gic_cpu_audit(
-    cpu_id: usize,
-    mpidr: u64,
-    sre: u64,
-    ctlr: u64,
-    pmr: u64,
-    igrpen1: u64,
-    mismatch: bool,
-) {
-    if cpu_id >= GIC_CPU_AUDIT_SLOTS {
-        return;
-    }
-
-    GIC_CPU_AUDIT_MPIDR[cpu_id].store(mpidr, Ordering::Release);
-    GIC_CPU_AUDIT_SRE[cpu_id].store(sre, Ordering::Release);
-    GIC_CPU_AUDIT_CTLR[cpu_id].store(ctlr, Ordering::Release);
-    GIC_CPU_AUDIT_PMR[cpu_id].store(pmr, Ordering::Release);
-    GIC_CPU_AUDIT_IGRPEN1[cpu_id].store(igrpen1, Ordering::Release);
-    GIC_CPU_AUDIT_MISMATCH[cpu_id].store(if mismatch { 1 } else { 0 }, Ordering::Release);
-    GIC_CPU_AUDIT_VALID[cpu_id].store(true, Ordering::Release);
-}
-
-/// Emit CPU-interface audit values captured when each CPU initialized ICC state.
-///
-/// Secondary CPU boot.S emits raw UART breadcrumbs before Rust reaches the serial
-/// lock, so printing these lines directly from each secondary can corrupt the
-/// `[GIC_CPU_AUDIT]` prefix. This CPU0-owned snapshot keeps the required audit
-/// rows parseable while preserving init-time register values.
-pub fn dump_gic_cpu_audit_snapshot(max_cpus: usize) {
-    let count = max_cpus.min(GIC_CPU_AUDIT_SLOTS);
-    for cpu_id in 0..count {
-        if !GIC_CPU_AUDIT_VALID[cpu_id].load(Ordering::Acquire) {
-            crate::serial_println!("[GIC_CPU_AUDIT] cpu={} missing=1", cpu_id);
-            continue;
-        }
-
-        crate::serial_println!(
-            "[GIC_CPU_AUDIT] cpu={} mpidr={:#x} sre={:#x} ctlr={:#x} pmr={:#x} igrpen1={:#x} mismatch={}",
-            cpu_id,
-            GIC_CPU_AUDIT_MPIDR[cpu_id].load(Ordering::Acquire),
-            GIC_CPU_AUDIT_SRE[cpu_id].load(Ordering::Acquire),
-            GIC_CPU_AUDIT_CTLR[cpu_id].load(Ordering::Acquire),
-            GIC_CPU_AUDIT_PMR[cpu_id].load(Ordering::Acquire),
-            GIC_CPU_AUDIT_IGRPEN1[cpu_id].load(Ordering::Acquire),
-            GIC_CPU_AUDIT_MISMATCH[cpu_id].load(Ordering::Acquire)
-        );
-    }
+    refresh_gicr_rdist_map(max_cpus);
 }
 
 /// Initialize GICv3 Distributor (GICD).
@@ -1840,6 +1382,9 @@ fn init_gicv3_cpu_interface() {
 
         core::arch::asm!("isb", options(nomem, nostack));
 
+        // Parallels requires these ICC readbacks after enabling Group 1. They
+        // are not diagnostic output; removing them has caused userspace spawn
+        // progress to stall after early compositor frames.
         let sre_readback: u64;
         let ctlr_readback: u64;
         let pmr_readback: u64;
@@ -1848,26 +1393,12 @@ fn init_gicv3_cpu_interface() {
         core::arch::asm!("mrs {}, icc_ctlr_el1", out(reg) ctlr_readback, options(nomem, nostack));
         core::arch::asm!("mrs {}, icc_pmr_el1", out(reg) pmr_readback, options(nomem, nostack));
         core::arch::asm!("mrs {}, icc_igrpen1_el1", out(reg) igrpen1_readback, options(nomem, nostack));
-        {
-            let cpu_id = get_cpu_id_from_mpidr();
-            let mpidr = read_mpidr_el1();
-            let sre_enabled = sre_readback & 1;
-            let igrpen1_enabled = igrpen1_readback & 1;
-            let mismatch = sre_enabled != LINUX_EXPECTED_SRE_ENABLED
-                || (ctlr_readback & LINUX_EXPECTED_CTLR_EOIMODE) != LINUX_EXPECTED_CTLR_EOIMODE
-                || pmr_readback != LINUX_EXPECTED_PMR
-                || igrpen1_enabled != LINUX_EXPECTED_IGRPEN1_ENABLED;
-
-            record_gic_cpu_audit(
-                cpu_id,
-                mpidr,
-                sre_readback,
-                ctlr_readback,
-                pmr_readback,
-                igrpen1_readback,
-                mismatch,
-            );
-        }
+        core::hint::black_box((
+            sre_readback,
+            ctlr_readback,
+            pmr_readback,
+            igrpen1_readback,
+        ));
     }
 }
 

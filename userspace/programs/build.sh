@@ -192,7 +192,6 @@ STD_BINARIES=(
     "simple_exit"
     "counter"
     "spinner"
-    "hello_raw"
     "hello_time"
     "fbinfo_test"
     "demo"

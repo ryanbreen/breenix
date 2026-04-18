@@ -492,33 +492,7 @@ impl Completion {
 
         let tid = self.waiter.load(Ordering::Acquire);
         if tid != 0 {
-            #[cfg(target_arch = "aarch64")]
-            crate::drivers::ahci::push_ahci_event(
-                crate::drivers::ahci::AHCI_TRACE_WAKE_ENTER,
-                0,
-                0,
-                0,
-                0,
-                0,
-                tid,
-                0,
-                token,
-                false,
-            );
             crate::task::scheduler::isr_unblock_for_io(tid);
-            #[cfg(target_arch = "aarch64")]
-            crate::drivers::ahci::push_ahci_event(
-                crate::drivers::ahci::AHCI_TRACE_WAKE_EXIT,
-                0,
-                0,
-                0,
-                0,
-                0,
-                tid,
-                0,
-                token,
-                false,
-            );
         }
     }
 }
