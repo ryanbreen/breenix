@@ -575,6 +575,12 @@ struct Window {
     /// Chromeless windows have no title bar, border, or chrome buttons.
     /// Detected by title prefix \x01.
     chromeless: bool,
+    #[cfg(target_arch = "aarch64")]
+    mapped_pixels: Option<*const u32>,
+    #[cfg(target_arch = "aarch64")]
+    mapped_width: usize,
+    #[cfg(target_arch = "aarch64")]
+    mapped_height: usize,
 }
 
 impl Window {
@@ -1120,6 +1126,11 @@ fn discover_windows(
 
         let order = *next_order;
         *next_order += 1;
+        #[cfg(target_arch = "aarch64")]
+        let (mapped_pixels, mapped_width, mapped_height) = match graphics::map_window_buffer(info.buffer_id) {
+            Ok((ptr, w, h)) => (Some(ptr), w as usize, h as usize),
+            Err(_) => (None, 0, 0),
+        };
         windows.push(Window {
             x: win_x, y: win_y, width: win_w, height: win_h,
             title, title_len, window_id: info.buffer_id,
@@ -1127,6 +1138,12 @@ fn discover_windows(
             minimized: false,
             creation_order: order,
             chromeless,
+            #[cfg(target_arch = "aarch64")]
+            mapped_pixels,
+            #[cfg(target_arch = "aarch64")]
+            mapped_width,
+            #[cfg(target_arch = "aarch64")]
+            mapped_height,
         });
         added = true;
     }
@@ -1156,6 +1173,44 @@ fn redraw_all_windows(fb: &mut FrameBuf, windows: &[Window], focused_win: usize,
         draw_window_frame(fb, &windows[i], i == focused_win, ui_font);
     }
     draw_appbar(fb, windows, focused_win, ui_font);
+}
+
+#[cfg(target_arch = "aarch64")]
+fn blit_window_contents(vram: &mut [u32], screen_w: usize, screen_h: usize, windows: &[Window]) {
+    for win in windows {
+        if win.minimized {
+            continue;
+        }
+        let Some(ptr) = win.mapped_pixels else {
+            continue;
+        };
+
+        let src_w = win.mapped_width.min(win.content_width());
+        let src_h = win.mapped_height.min(win.content_height());
+        if src_w == 0 || src_h == 0 {
+            continue;
+        }
+
+        let dst_x = win.content_x();
+        let dst_y = win.content_y();
+        if dst_x < 0 || dst_y < 0 {
+            continue;
+        }
+        let dst_x = dst_x as usize;
+        let dst_y = dst_y as usize;
+        if dst_x >= screen_w || dst_y >= screen_h {
+            continue;
+        }
+        let copy_w = src_w.min(screen_w - dst_x);
+        let copy_h = src_h.min(screen_h - dst_y);
+        let src = unsafe { core::slice::from_raw_parts(ptr, win.mapped_width * win.mapped_height) };
+
+        for row in 0..copy_h {
+            let src_start = row * win.mapped_width;
+            let dst_start = (dst_y + row) * screen_w + dst_x;
+            vram[dst_start..dst_start + copy_w].copy_from_slice(&src[src_start..src_start + copy_w]);
+        }
+    }
 }
 
 fn restore_full_background(vram: &mut [u32], fb: &mut FrameBuf, bg: &[u32]) {
@@ -1981,6 +2036,7 @@ fn main() {
         {
             if full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame {
                 let _dirty_rect_snapshot = (dirty_x0, dirty_y0, dirty_x1, dirty_y1);
+                blit_window_contents(composite_buf, screen_w, screen_h, &windows);
                 let _ = graphics::virgl_composite(composite_buf, screen_w as u32, screen_h as u32);
                 full_redraw = false;
                 content_dirty = false;
