@@ -375,6 +375,15 @@ pub fn is_vmware() -> bool {
     ram_base_offset() > 0
 }
 
+/// Returns true if running on Parallels Desktop.
+/// Detected as the UEFI/ACPI ARM64 platform with GICv3 redistributors and RAM
+/// at the QEMU-compatible base.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn is_parallels() -> bool {
+    !is_qemu() && ram_base_offset() == 0 && gicr_base_phys() != 0
+}
+
 /// Returns true if the physical timer (CNTP) should be used instead of the
 /// virtual timer (CNTV). VMware Fusion doesn't deliver virtual timer (PPI 27)
 /// interrupts to EL1 guests; use the physical timer (PPI 30) instead.
