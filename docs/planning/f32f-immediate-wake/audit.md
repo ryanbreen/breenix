@@ -1,0 +1,41 @@
+# F32f Audit - Immediate Wake Under Waitqueue Lock
+
+## Linux Citations
+
+Linux waitqueue wake traversal is synchronous with the waitqueue lock. `__wake_up_common_lock` takes `wq_head->lock`, calls `__wake_up_common`, then unlocks (`/tmp/linux-v6.8/kernel/sched/wait.c:99-108`). `__wake_up_common` asserts that lock is held, iterates entries, and invokes each waiter's wake function while still inside that lock (`/tmp/linux-v6.8/kernel/sched/wait.c:73-96`).
+
+The default wait entry installed by `init_wait_entry` is `autoremove_wake_function` (`/tmp/linux-v6.8/kernel/sched/wait.c:261-266`). That function calls `default_wake_function` and removes the wait-list entry only if the wake succeeds (`/tmp/linux-v6.8/kernel/sched/wait.c:382-389`). This means a successful Linux waitqueue wake both transitions the task and removes it before the wake call returns.
+
+`try_to_wake_up` states its conceptual contract directly: if the requested state matches the task state, set it to `TASK_RUNNING`, and if the task was not queued/runnable, place it back on a runqueue (`/tmp/linux-v6.8/kernel/sched/core.c:4186-4197`). It also states it is atomic against `schedule()` and issues a full memory barrier before accessing task state (`/tmp/linux-v6.8/kernel/sched/core.c:4197-4203`).
+
+The Linux state-transition point is inside `try_to_wake_up`: after taking `p->pi_lock`, it executes `smp_mb__after_spinlock()` and tests state with `ttwu_state_match` (`/tmp/linux-v6.8/kernel/sched/core.c:4247-4256`). If the task is not already runnable, the SMP path writes `TASK_WAKING` before enqueue work (`/tmp/linux-v6.8/kernel/sched/core.c:4312-4319`), then calls `ttwu_queue` to enqueue the task (`/tmp/linux-v6.8/kernel/sched/core.c:4354-4369`). The local `ttwu_queue` path takes the target runqueue lock and activates the task before returning (`/tmp/linux-v6.8/kernel/sched/core.c:4038-4049`).
+
+Linux's cross-CPU signaling is a delivery optimization after the state decision, not a substitute for it. The remote wake-list path queues wake work and causes an IPI when needed (`/tmp/linux-v6.8/kernel/sched/core.c:3930-3944`), while the direct path enqueues under the runqueue lock (`/tmp/linux-v6.8/kernel/sched/core.c:4038-4049`). The lock nesting is waitqueue lock outside, task/runqueue scheduler locks inside: waitqueue traversal holds `wq_head->lock` while invoking the wake function (`/tmp/linux-v6.8/kernel/sched/wait.c:73-108`), and `try_to_wake_up` then uses `p->pi_lock` plus at most one runqueue lock (`/tmp/linux-v6.8/kernel/sched/core.c:4202-4214`).
+
+Linux prepare-side comments rely on that same-lock wake behavior. `prepare_to_wait_event` says the caller cannot miss the event because wakeup locks and unlocks the same `wq_head->lock` (`/tmp/linux-v6.8/kernel/sched/wait.c:275-300`).
+
+## Breenix Findings
+
+`WaitQueueHead::prepare_to_wait` now matches F32e's tighter prepare/schedule split: it records the current TID under the waitqueue lock, calls `publish_current_io_wait_state`, removes the waiter if publication fails, and returns before the caller schedules (`kernel/src/task/waitqueue.rs:51-80`). The actual wait schedule remains outside the waitqueue lock in `schedule_current_wait`, which re-checks whether the current thread is still `BlockedOnIO` before entering the architecture scheduler (`kernel/src/task/waitqueue.rs:177-205`).
+
+`WaitQueueHead::wake_up` and `wake_up_one` still do not perform the scheduler state transition inline. They hold the waitqueue lock, pop waiters, and call `scheduler::isr_unblock_for_io` for each popped TID (`kernel/src/task/waitqueue.rs:104-119`). `isr_unblock_for_io` writes the TID into a per-CPU lock-free buffer and sets `need_resched`; it does not mutate the thread state or enqueue the thread (`kernel/src/task/scheduler.rs:2564-2583`).
+
+The `BlockedOnIO -> Ready` transition happens later, when scheduler code drains the ISR wake buffers and calls `unblock_for_io`. On x86_64-style `Scheduler::schedule`, the drain happens at the top of `schedule()` (`kernel/src/task/scheduler.rs:671-680`). On AArch64, the drain happens at the top of `schedule_deferred_requeue` (`kernel/src/task/scheduler.rs:921-933`), which is called by the inline kernel scheduling path (`kernel/src/arch_impl/aarch64/context_switch.rs:2862-2909`) and by IRQ-return scheduling after `check_need_resched_and_switch_arm64` takes the scheduler lock and reaches the scheduling decision (`kernel/src/arch_impl/aarch64/context_switch.rs:2229-2420`).
+
+`Scheduler::unblock_for_io` is the real wake operation. It changes `BlockedOnIO` to `Ready`, clears `wake_time_ns`, conditionally adds the thread to a per-CPU ready queue, sends an AArch64 reschedule IPI when it enqueues, and sets `need_resched` (`kernel/src/task/scheduler.rs:1675-1717`). AArch64 SGI reschedule delivery sets the receiver's per-CPU `need_resched` flag (`kernel/src/arch_impl/aarch64/exception.rs:1243-1248`), and `send_resched_ipi` sends SGI 0 to idle CPUs after queue insertion (`kernel/src/task/scheduler.rs:1296-1328`).
+
+The deferred ISR ring is correct for genuine interrupt completion paths. `Completion::complete` explicitly documents that it may run from ISR context and therefore stores the waiter TID through `isr_unblock_for_io` instead of taking the scheduler lock (`kernel/src/task/completion.rs:466-496`). The scheduler comments give the same reason: the AHCI ISR must not spin on the global scheduler mutex with IRQs masked (`kernel/src/task/scheduler.rs:61-73`, `kernel/src/task/scheduler.rs:2564-2573`).
+
+The same deferral is not Linux-equivalent for task-context waitqueue wakers. Graphics syscall paths call `COMPOSITOR_FRAME_WQ.wake_up`, `CLIENT_FRAME_WQ.wake_up`, and `WAIT_STRESS_WQ.wake_up` from ordinary syscall/task context after publishing readiness (`kernel/src/syscall/graphics.rs:186-210`, `kernel/src/syscall/graphics.rs:958-1010`, `kernel/src/syscall/graphics.rs:1328-1375`, `kernel/src/syscall/graphics.rs:1620-1624`). Those task-context callers can safely acquire the scheduler lock through `with_scheduler`, but today they still route through the ISR-only ring.
+
+## Answers
+
+1. Breenix waitqueue waiters actually transition from `BlockedOnIO` to `Ready` in `Scheduler::unblock_for_io`, not inline under `WaitQueueHead::wake_up`. The current waitqueue wake path only removes entries from the wait list and publishes TIDs to the ISR wake buffer before returning (`kernel/src/task/waitqueue.rs:104-119`, `kernel/src/task/scheduler.rs:2564-2583`).
+
+2. The drain can run on any CPU that enters the scheduler path. On x86_64 it runs inside `Scheduler::schedule` (`kernel/src/task/scheduler.rs:671-680`). On AArch64 it runs inside `schedule_deferred_requeue` (`kernel/src/task/scheduler.rs:921-933`), reached from explicit task-context scheduling via `schedule_from_kernel` (`kernel/src/arch_impl/aarch64/context_switch.rs:2862-2909`) and from IRQ-return scheduling via `check_need_resched_and_switch_arm64` (`kernel/src/arch_impl/aarch64/context_switch.rs:2229-2420`). It is therefore not timer-IRQ-only, but it is still deferred until a scheduler entry occurs.
+
+3. There is an architectural latency window between "waitqueue wake returned" and "waiter is runnable": the window starts after `WaitQueueHead::wake_up` pushes the TID into the ISR buffer and ends only after a later scheduler drain calls `unblock_for_io`. Under CPU0 AHCI/timer/syscall contention this can be milliseconds, because the wake can sit in the per-CPU ring until scheduler entry. Task-context waitqueue callers do not need this route; the ISR ring exists to keep hard IRQ handlers away from the scheduler lock, while Linux's waitqueue wake performs the state transition synchronously under the waitqueue traversal.
+
+## Conclusion
+
+The likely F32f gap is real: Breenix's waitqueue wake path is still using an ISR-only deferred delivery mechanism for task-context wakeups. The Linux-equivalent repair is to keep F32e's prepare-side lock scope, but make task-context `WaitQueueHead::wake_up` call a scheduler immediate I/O wake while still inside the waitqueue lock. Genuine ISR completion paths should continue using `isr_unblock_for_io`.
