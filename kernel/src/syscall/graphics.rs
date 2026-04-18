@@ -51,6 +51,18 @@ static COMPOSITOR_FRAME_WQ: crate::task::waitqueue::WaitQueueHead =
 static CLIENT_FRAME_WQ: crate::task::waitqueue::WaitQueueHead =
     crate::task::waitqueue::WaitQueueHead::new();
 
+/// Dedicated F32c waitqueue race reproducer. These test-only FBDRAW ops let a
+/// userspace harness drive wait/wake races without involving BWM state.
+#[cfg(target_arch = "aarch64")]
+static WAIT_STRESS_WQ: crate::task::waitqueue::WaitQueueHead =
+    crate::task::waitqueue::WaitQueueHead::new();
+#[cfg(target_arch = "aarch64")]
+static WAIT_STRESS_ENTERED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+#[cfg(target_arch = "aarch64")]
+static WAIT_STRESS_RETURNED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+#[cfg(target_arch = "aarch64")]
+static WAIT_STRESS_WAKES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 /// Registry generation counter — bumped when windows are registered/unregistered.
 /// compositor_wait (op=23) compares this against its saved value to detect changes.
 #[cfg(target_arch = "aarch64")]
@@ -169,6 +181,73 @@ fn compositor_ready_bits(last_registry_gen: u64, prev_mouse: u64) -> (u64, u64, 
     }
 
     (ready, cur_reg_gen, mouse_packed)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn handle_wait_stress_reset() -> SyscallResult {
+    use core::sync::atomic::Ordering;
+
+    WAIT_STRESS_WQ.wake_up();
+    WAIT_STRESS_ENTERED.store(0, Ordering::SeqCst);
+    WAIT_STRESS_RETURNED.store(0, Ordering::SeqCst);
+    WAIT_STRESS_WAKES.store(0, Ordering::SeqCst);
+    SyscallResult::Ok(0)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn handle_wait_stress_wait() -> SyscallResult {
+    use core::sync::atomic::Ordering;
+
+    let entered = WAIT_STRESS_ENTERED.fetch_add(1, Ordering::SeqCst) + 1;
+    if WAIT_STRESS_WQ
+        .prepare_to_wait(crate::task::thread::ThreadState::BlockedOnIO)
+        .is_none()
+    {
+        return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+    }
+
+    crate::task::waitqueue::schedule_current_wait();
+    WAIT_STRESS_WQ.finish_wait();
+    ensure_current_address_space();
+
+    WAIT_STRESS_RETURNED.fetch_add(1, Ordering::SeqCst);
+    SyscallResult::Ok(entered)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn handle_wait_stress_wake() -> SyscallResult {
+    use core::sync::atomic::Ordering;
+
+    let wakes = WAIT_STRESS_WAKES.fetch_add(1, Ordering::SeqCst) + 1;
+    WAIT_STRESS_WQ.wake_up();
+    SyscallResult::Ok(wakes)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn handle_wait_stress_stats(cmd: &FbDrawCmd) -> SyscallResult {
+    use core::sync::atomic::Ordering;
+
+    let out_ptr = (cmd.p1 as u32 as u64) | ((cmd.p2 as u32 as u64) << 32);
+    let out_len = cmd.p3 as u32;
+    if out_ptr == 0 || out_ptr >= USER_SPACE_MAX || out_len < 4 {
+        return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+    }
+
+    let out_end = out_ptr + 4 * core::mem::size_of::<u64>() as u64;
+    if out_end > USER_SPACE_MAX {
+        return SyscallResult::Err(super::ErrorCode::Fault as u64);
+    }
+
+    let waiters = if WAIT_STRESS_WQ.has_waiters() { 1 } else { 0 };
+    unsafe {
+        let dst = out_ptr as *mut u64;
+        core::ptr::write(dst.add(0), WAIT_STRESS_ENTERED.load(Ordering::SeqCst));
+        core::ptr::write(dst.add(1), WAIT_STRESS_RETURNED.load(Ordering::SeqCst));
+        core::ptr::write(dst.add(2), WAIT_STRESS_WAKES.load(Ordering::SeqCst));
+        core::ptr::write(dst.add(3), waiters);
+    }
+
+    SyscallResult::Ok(0)
 }
 
 // =============================================================================
@@ -1220,6 +1299,24 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             // Bits: 0=Shift, 1=Ctrl, 2=Alt, 3=Super
             let state = crate::drivers::usb::hid::poll_modifier_state();
             SyscallResult::Ok(state as u64)
+        }
+        27 => {
+            // F32c waitqueue stress reset.
+            handle_wait_stress_reset()
+        }
+        28 => {
+            // F32c waitqueue stress wait. Intentionally has no persistent
+            // condition; a wake after prepare_to_wait must make schedule a
+            // no-op, matching the Linux waitqueue race-closure invariant.
+            handle_wait_stress_wait()
+        }
+        29 => {
+            // F32c waitqueue stress wake.
+            handle_wait_stress_wake()
+        }
+        30 => {
+            // F32c waitqueue stress stats.
+            handle_wait_stress_stats(cmd)
         }
         _ => {
             crate::serial_println!("[virgl-op] UNKNOWN op={}", cmd.op);
