@@ -3,7 +3,9 @@
 //! PID 1 - runs bsh (no arguments), then starts background services and reaps zombies.
 //! bsh detects it's the init shell (PID 2) and loads /etc/init.js.
 
-use libbreenix::process::{getpid, spawn, waitpid, yield_now};
+use libbreenix::process::{getpid, spawn, waitpid};
+#[cfg(target_arch = "aarch64")]
+use libbreenix::process::yield_now;
 
 fn main() {
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
