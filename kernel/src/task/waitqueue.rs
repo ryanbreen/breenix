@@ -43,7 +43,7 @@ impl WaitQueueHead {
         }
     }
 
-    /// Enqueue the current thread and set its scheduler state.
+    /// Enqueue the current thread and publish its scheduler wait state.
     ///
     /// F32 initially supports `BlockedOnIO` because that is the state wired to
     /// `scheduler::isr_unblock_for_io`. Unsupported states return `None` rather
@@ -55,23 +55,28 @@ impl WaitQueueHead {
 
         let tid = crate::task::scheduler::current_thread_id()?;
 
-        self.with_waiters(|waiters| {
+        let published = self.with_waiters(|waiters| {
             if !waiters.iter().any(|waiter| waiter.tid == tid) {
                 waiters.push_back(Waiter::new(tid));
             }
 
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.block_current_for_io();
-            });
+            let published = crate::task::scheduler::with_scheduler(|sched| {
+                sched.publish_current_io_wait_state()
+            })
+            .unwrap_or(false);
 
-            // Linux prepare_to_wait() holds wq_head->lock across list insertion
-            // and set_current_state(), whose smp_store_mb() publishes the blocked
-            // state before the lock is released. Keep the same ordering so a wake
-            // that drains this TID cannot run before BlockedOnIO is visible.
-            core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+            if !published {
+                waiters.retain(|waiter| waiter.tid != tid);
+            }
+
+            published
         });
 
-        Some(tid)
+        if published {
+            Some(tid)
+        } else {
+            None
+        }
     }
 
     /// Remove the current thread from the waitqueue and normalize syscall state.
@@ -98,16 +103,20 @@ impl WaitQueueHead {
 
     /// Wake all waiters.
     pub fn wake_up(&self) {
-        for waiter in self.drain_waiters() {
-            crate::task::scheduler::isr_unblock_for_io(waiter.tid);
-        }
+        self.with_waiters(|waiters| {
+            while let Some(waiter) = waiters.pop_front() {
+                crate::task::scheduler::isr_unblock_for_io(waiter.tid);
+            }
+        });
     }
 
     /// Wake the first waiter, if any.
     pub fn wake_up_one(&self) {
-        if let Some(waiter) = self.pop_one_waiter() {
-            crate::task::scheduler::isr_unblock_for_io(waiter.tid);
-        }
+        self.with_waiters(|waiters| {
+            if let Some(waiter) = waiters.pop_front() {
+                crate::task::scheduler::isr_unblock_for_io(waiter.tid);
+            }
+        });
     }
 
     /// Return whether the queue currently has waiters.
@@ -122,10 +131,12 @@ impl WaitQueueHead {
         });
     }
 
+    #[cfg(test)]
     fn drain_waiters(&self) -> VecDeque<Waiter> {
         self.with_waiters(|waiters| waiters.drain(..).collect::<VecDeque<_>>())
     }
 
+    #[cfg(test)]
     fn pop_one_waiter(&self) -> Option<Waiter> {
         self.with_waiters(|waiters| waiters.pop_front())
     }
