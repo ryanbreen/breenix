@@ -118,8 +118,25 @@ impl FontWatcher {
         }
     }
 
+    pub(crate) fn disabled() -> Self {
+        Self {
+            mono_path: String::from(DEFAULT_MONO_FONT),
+            mono_size: DEFAULT_MONO_SIZE,
+            display_path: String::from(DEFAULT_DISPLAY_FONT),
+            display_size: DEFAULT_DISPLAY_SIZE,
+            mono_font: None,
+            display_font: None,
+            poll_counter: 0,
+            poll_interval: 0,
+        }
+    }
+
     pub(crate) fn set_poll_interval(&mut self, interval: u32) {
         self.poll_interval = interval.max(1);
+    }
+
+    pub(crate) fn disable_polling(&mut self) {
+        self.poll_interval = 0;
     }
 
     pub(crate) fn mono_path(&self) -> &str {
@@ -161,6 +178,10 @@ impl FontWatcher {
     /// Poll the config file for changes. Returns true if fonts changed.
     /// Internally rate-limited by `poll_interval`.
     pub(crate) fn poll(&mut self) -> bool {
+        if self.poll_interval == 0 {
+            return false;
+        }
+
         self.poll_counter += 1;
         if self.poll_counter < self.poll_interval {
             return false;

@@ -37,6 +37,23 @@ impl Window {
     /// The window is immediately visible at a compositor-chosen position.
     /// System fonts are loaded automatically from `/etc/fonts.conf`.
     pub fn new(title: &[u8], width: u32, height: u32) -> Result<Self, Error> {
+        Self::new_with_font_watcher(title, width, height, FontWatcher::new())
+    }
+
+    /// Create a window without loading or polling system fonts.
+    ///
+    /// This is intended for continuous animation demos that must avoid
+    /// filesystem I/O after the compositor is already active.
+    pub fn new_without_fonts(title: &[u8], width: u32, height: u32) -> Result<Self, Error> {
+        Self::new_with_font_watcher(title, width, height, FontWatcher::disabled())
+    }
+
+    fn new_with_font_watcher(
+        title: &[u8],
+        width: u32,
+        height: u32,
+        font_watcher: FontWatcher,
+    ) -> Result<Self, Error> {
         let win = graphics::create_window(width, height)?;
         graphics::register_window(win.id, title)?;
 
@@ -58,7 +75,7 @@ impl Window {
             fb,
             width,
             height,
-            font_watcher: FontWatcher::new(),
+            font_watcher,
         })
     }
 
@@ -181,6 +198,11 @@ impl Window {
     /// Default is 20 (at 50ms sleep = ~1 second).
     pub fn set_font_poll_interval(&mut self, interval: u32) {
         self.font_watcher.set_poll_interval(interval);
+    }
+
+    /// Disable automatic font config polling after the initial font load.
+    pub fn disable_font_polling(&mut self) {
+        self.font_watcher.disable_polling();
     }
 
     // ── Window metadata ─────────────────────────────────────────────────
