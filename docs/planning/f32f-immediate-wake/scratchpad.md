@@ -14,3 +14,12 @@ Starting M2. I will leave `Completion::complete` and `isr_unblock_for_io` untouc
 
 ## 2026-04-18T22:39:00Z
 M2 implementation done in `kernel/src/task/waitqueue.rs` and `kernel/src/task/scheduler.rs`. Standard release build passed with no warning/error lines in `/tmp/f32f-build-clean.log`; aarch64 kernel build passed with no warning/error lines in `/tmp/f32f-aarch64-build-clean.log`. `cargo fmt` across the workspace is blocked by pre-existing trailing whitespace in unrelated tests, so I used targeted `rustfmt` on the changed kernel files and verified `git diff --check`.
+
+## 2026-04-18T22:11:18Z
+Starting M3 wait-stress validation. Command: `BREENIX_WAIT_STRESS=1 ./run.sh --parallels --test 150`. I cleaned QEMU processes first per repo protocol, even though this gate uses Parallels.
+
+## 2026-04-18T22:15:00Z
+Wait-stress gate passed. Serial evidence: `WAIT_STRESS_PASS entered=596936 returned=596935 wakes=700683 waiters=0`, no `WAIT_STRESS_STALL`. Strict screenshot verdict also passed. Next: normal Parallels `./run.sh --parallels --test 120` runs, stopping on the first failed gate.
+
+## 2026-04-18T22:19:08Z
+Parallels normal boot run 1 failed the gate. Serial reached `bsshd: listening on 0.0.0.0:2222` and `[init] bsshd started (PID 4)`, then stopped at `[spawn] path='/bin/bounce'`. Missing bounce lifecycle, sustained frame cadence/FPS evidence, and CPU0 tick evidence. No AHCI timeout markers; strict screenshot verdict was `PASS`. Per F32f instructions, stop and document that the remaining Parallels issue is not task-context waitqueue wake latency.

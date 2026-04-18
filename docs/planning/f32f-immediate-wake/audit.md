@@ -39,3 +39,11 @@ The same deferral is not Linux-equivalent for task-context waitqueue wakers. Gra
 ## Conclusion
 
 The likely F32f gap is real: Breenix's waitqueue wake path is still using an ISR-only deferred delivery mechanism for task-context wakeups. The Linux-equivalent repair is to keep F32e's prepare-side lock scope, but make task-context `WaitQueueHead::wake_up` call a scheduler immediate I/O wake while still inside the waitqueue lock. Genuine ISR completion paths should continue using `isr_unblock_for_io`.
+
+## Post-Implementation Evidence
+
+F32f implemented that repair. `WaitQueueHead::wake_up` and `wake_up_one` now pop waiters under the waitqueue lock and call `wake_waiter` before returning (`kernel/src/task/waitqueue.rs:105-120`). `wake_waiter` keeps genuine interrupt-context callers on `isr_unblock_for_io`, but routes task-context callers to `scheduler::wake_waitqueue_thread` (`kernel/src/task/waitqueue.rs:172-188`). The scheduler helper performs the `BlockedOnIO -> Ready` transition through `wake_io_thread_locked`, queues the thread when safe, sets `need_resched`, and sends a targeted AArch64 reschedule SGI when the target CPU is remote (`kernel/src/task/scheduler.rs:1713-1772`, `kernel/src/task/scheduler.rs:1346-1362`, `kernel/src/task/scheduler.rs:2467-2473`).
+
+Validation disproved wake latency as the remaining bwm/bsshd/bounce failure. The wait-stress reproducer passed after the immediate wake change with `WAIT_STRESS_PASS entered=596936 returned=596935 wakes=700683 waiters=0` and no `WAIT_STRESS_STALL` (`.factory-runs/f32f-immediate-wake/wait-stress.serial.log:417`). The first required 120s normal Parallels boot still failed the gate: serial output reached `bsshd: listening on 0.0.0.0:2222` and `[init] bsshd started (PID 4)`, then stopped at `[spawn] path='/bin/bounce'` without `[init] bounce started`, `[bounce] Window mode`, sustained frame output, or CPU0 tick evidence (`.factory-runs/f32f-immediate-wake/parallels-run1.serial.log:387-390`). There were no AHCI timeout markers, and the screenshot verdict was `PASS`, but the lifecycle/FPS/CPU0 criteria were not met.
+
+Per the F32f run instructions, this means the remaining Parallels boot gap is not the task-context waitqueue wake latency gap audited above. Stop here rather than iterating a fourth scheduler mechanism change.
