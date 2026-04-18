@@ -74,7 +74,7 @@ The final grep commands should produce no output.
 
 ## PR
 
-Pending.
+https://github.com/ryanbreen/breenix/pull/320
 
 ## Self-Audit
 
