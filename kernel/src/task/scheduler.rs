@@ -167,6 +167,18 @@ static CPU_IS_IDLE: [AtomicBool; MAX_CPUS] = [
 /// 3. AtomicU64 ensures visibility across threads without additional locking
 static UNBLOCK_CALL_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
+#[derive(Clone, Copy, Default)]
+struct IoWakeResult {
+    enqueued_target: Option<usize>,
+    current_cpu: Option<usize>,
+}
+
+impl IoWakeResult {
+    fn resched_target(self) -> Option<usize> {
+        self.enqueued_target.or(self.current_cpu)
+    }
+}
+
 /// Get the current unblock() call count (for testing)
 ///
 /// This function is used by the test framework to verify that pipe wake
@@ -1331,6 +1343,24 @@ impl Scheduler {
         }
     }
 
+    /// Send a reschedule IPI to the CPU that received a newly runnable task.
+    #[cfg(target_arch = "aarch64")]
+    fn send_resched_ipi_to_cpu(&self, target_cpu: usize) {
+        use crate::arch_impl::aarch64::smp;
+
+        if target_cpu == Self::current_cpu_id() {
+            return;
+        }
+        if target_cpu >= MAX_CPUS || target_cpu >= smp::cpus_online() as usize {
+            return;
+        }
+
+        crate::arch_impl::aarch64::gic::send_sgi(
+            crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
+            target_cpu as u8,
+        );
+    }
+
     /// Block current thread until a signal is delivered
     /// Used by the pause() syscall
     ///
@@ -1673,6 +1703,30 @@ impl Scheduler {
     /// with_scheduler() disables interrupts before acquiring the lock, and
     /// the ISR runs with interrupts already masked by hardware.
     pub fn unblock_for_io(&mut self, tid: u64) {
+        let wake = self.wake_io_thread_locked(tid);
+        if wake.enqueued_target.is_some() {
+            #[cfg(target_arch = "aarch64")]
+            self.send_resched_ipi();
+        }
+    }
+
+    /// Immediate task-context waitqueue wake.
+    ///
+    /// Mirrors Linux's waitqueue -> try_to_wake_up nesting: the waitqueue lock
+    /// is held by the caller, and this helper performs the scheduler state
+    /// transition before the waitqueue wake returns.
+    pub fn wake_waitqueue_thread(&mut self, tid: u64) {
+        let wake = self.wake_io_thread_locked(tid);
+        #[cfg(target_arch = "aarch64")]
+        if let Some(target) = wake.resched_target() {
+            self.send_resched_ipi_to_cpu(target);
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        let _ = wake.resched_target();
+    }
+
+    fn wake_io_thread_locked(&mut self, tid: u64) -> IoWakeResult {
+        let mut wake = IoWakeResult::default();
         if let Some(thread) = self.get_thread_mut(tid) {
             let should_queue = if thread.state == ThreadState::BlockedOnIO {
                 thread.set_ready();
@@ -1695,27 +1749,27 @@ impl Scheduler {
                 // against the old CPU's context save; that CPU will publish
                 // the saved context and requeue the Ready thread after the
                 // save point completes.
-                let is_current_on_any_cpu =
-                    (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].current_thread == Some(tid));
+                wake.current_cpu =
+                    (0..MAX_CPUS).find(|&cpu| self.cpu_state[cpu].current_thread == Some(tid));
 
                 #[cfg(target_arch = "aarch64")]
                 let is_in_deferred = self.is_in_deferred_requeue(tid);
                 #[cfg(not(target_arch = "aarch64"))]
                 let is_in_deferred = false;
 
-                if !is_current_on_any_cpu
+                if wake.current_cpu.is_none()
                     && !is_in_deferred
                     && tid != self.cpu_state[Self::current_cpu_id()].idle_thread
                     && !self.per_cpu_queues.iter().any(|q| q.contains(&tid))
                 {
                     let target = self.find_target_cpu_for_wakeup(tid);
                     self.per_cpu_queues[target].push_back(tid);
-                    #[cfg(target_arch = "aarch64")]
-                    self.send_resched_ipi();
+                    wake.enqueued_target = Some(target);
                 }
                 set_need_resched();
             }
         }
+        wake
     }
 
     /// Block current thread for compositor frame pacing (mark_window_dirty syscall).
@@ -2408,6 +2462,14 @@ where
             .as_mut()
             .and_then(|sched| sched.get_thread_mut(thread_id).map(f))
     })
+}
+
+/// Wake a waitqueue waiter immediately from task context.
+///
+/// The caller must not be in interrupt context; hard IRQ paths must use
+/// `isr_unblock_for_io` so they never spin on the scheduler lock.
+pub fn wake_waitqueue_thread(tid: u64) {
+    with_scheduler(|sched| sched.wake_waitqueue_thread(tid));
 }
 
 /// Get per-process accumulated CPU ticks from all threads in the scheduler.

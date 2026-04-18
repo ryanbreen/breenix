@@ -2,8 +2,9 @@
 //!
 //! This is Breenix's equivalent of Linux waitqueues: callers enqueue the
 //! current thread, mark it blocked in the scheduler, re-check their condition,
-//! then schedule if the condition is still false. Wakers remove queued TIDs and
-//! deliver wakeups through F16's lock-free `isr_unblock_for_io` path.
+//! then schedule if the condition is still false. Task-context wakers remove
+//! queued TIDs and wake them inline; interrupt-context wakers use F16's
+//! lock-free `isr_unblock_for_io` path.
 
 use alloc::collections::VecDeque;
 
@@ -105,7 +106,7 @@ impl WaitQueueHead {
     pub fn wake_up(&self) {
         self.with_waiters(|waiters| {
             while let Some(waiter) = waiters.pop_front() {
-                crate::task::scheduler::isr_unblock_for_io(waiter.tid);
+                wake_waiter(waiter);
             }
         });
     }
@@ -114,7 +115,7 @@ impl WaitQueueHead {
     pub fn wake_up_one(&self) {
         self.with_waiters(|waiters| {
             if let Some(waiter) = waiters.pop_front() {
-                crate::task::scheduler::isr_unblock_for_io(waiter.tid);
+                wake_waiter(waiter);
             }
         });
     }
@@ -165,6 +166,25 @@ impl WaitQueueHead {
     #[cfg(test)]
     fn contains_waiter_for_test(&self, tid: u64) -> bool {
         self.with_waiters(|waiters| waiters.iter().any(|waiter| waiter.tid == tid))
+    }
+}
+
+fn wake_waiter(waiter: Waiter) {
+    if in_interrupt_context() {
+        crate::task::scheduler::isr_unblock_for_io(waiter.tid);
+    } else {
+        crate::task::scheduler::wake_waitqueue_thread(waiter.tid);
+    }
+}
+
+fn in_interrupt_context() -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::per_cpu_aarch64::in_interrupt()
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        crate::per_cpu::in_interrupt()
     }
 }
 

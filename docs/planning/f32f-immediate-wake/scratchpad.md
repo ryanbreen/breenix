@@ -8,3 +8,9 @@ M1 findings: Linux `__wake_up_common_lock` holds `wq_head->lock` while invoking 
 
 ## 2026-04-18T22:17:00Z
 M1 validation passed with `test -s docs/planning/f32f-immediate-wake/audit.md && rg "Linux Citations|Breenix Findings|Conclusion" docs/planning/f32f-immediate-wake/audit.md`. Next I will commit the audit docs, then start M2 by adding a scheduler helper for immediate task-context waitqueue wake.
+
+## 2026-04-18T22:22:00Z
+Starting M2. I will leave `Completion::complete` and `isr_unblock_for_io` untouched for hard IRQ completion wakes, add an immediate waitqueue wake wrapper around the existing scheduler `unblock_for_io` state transition, and have `WaitQueueHead::wake_up` choose immediate vs deferred based on interrupt context.
+
+## 2026-04-18T22:39:00Z
+M2 implementation done in `kernel/src/task/waitqueue.rs` and `kernel/src/task/scheduler.rs`. Standard release build passed with no warning/error lines in `/tmp/f32f-build-clean.log`; aarch64 kernel build passed with no warning/error lines in `/tmp/f32f-aarch64-build-clean.log`. `cargo fmt` across the workspace is blocked by pre-existing trailing whitespace in unrelated tests, so I used targeted `rustfmt` on the changed kernel files and verified `git diff --check`.
