@@ -867,8 +867,24 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                 }
             }
 
-            // Wake compositor if it's blocked waiting for a dirty window.
-            // This gives immediate frame delivery instead of waiting for a timer tick.
+            // Calculate timeout from now. This is only a fallback if the
+            // compositor wake is missed; use the same 5ms frame interval as
+            // compositor_wait pacing so a missed wake degrades to ~200Hz, not
+            // the old 20Hz/50ms behavior.
+            let (cur_secs, cur_nanos) = crate::time::get_monotonic_time_ns();
+            let now_ns = cur_secs as u64 * 1_000_000_000 + cur_nanos as u64;
+            let timeout_ns = now_ns.saturating_add(MIN_FRAME_INTERVAL_NS);
+
+            // Block the thread using the scheduler's timer infrastructure.
+            // The compositor will call unblock() when it consumes our frame,
+            // or wake_expired_timers() will wake us after the fallback interval.
+            crate::task::scheduler::with_scheduler(|sched| {
+                sched.block_current_for_compositor(timeout_ns);
+            });
+
+            // Wake compositor after the client is marked blocked. Waking before
+            // this point lets bwm consume the frame and "unblock" a still-running
+            // client, after which the client blocks and waits for the 50ms fallback.
             #[cfg(target_arch = "aarch64")]
             {
                 COMPOSITOR_DIRTY_WAKE.store(true, core::sync::atomic::Ordering::Relaxed);
@@ -880,18 +896,6 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                     });
                 }
             }
-
-            // Calculate timeout: 50ms from now (fallback if compositor doesn't wake us)
-            let (cur_secs, cur_nanos) = crate::time::get_monotonic_time_ns();
-            let now_ns = cur_secs as u64 * 1_000_000_000 + cur_nanos as u64;
-            let timeout_ns = now_ns.saturating_add(50_000_000); // 50ms
-
-            // Block the thread using the scheduler's timer infrastructure.
-            // The compositor will call unblock() when it consumes our frame,
-            // or wake_expired_timers() will wake us after 50ms as fallback.
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.block_current_for_compositor(timeout_ns);
-            });
 
             // Enable preemption so timer interrupts can context-switch us out
             #[cfg(target_arch = "aarch64")]

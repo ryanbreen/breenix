@@ -418,7 +418,12 @@ if [ "$PARALLELS" = true ]; then
         echo "=== Screenshot ==="
         SCREENSHOT_SCRIPT="$BREENIX_ROOT/scripts/parallels/screenshot-vm.sh"
         if [ -x "$SCREENSHOT_SCRIPT" ]; then
-            "$SCREENSHOT_SCRIPT" "$PARALLELS_VM" "$SCREENSHOT"
+            if "$SCREENSHOT_SCRIPT" "$PARALLELS_VM" "$SCREENSHOT" \
+                || prlctl capture "$PARALLELS_VM" --file "$SCREENSHOT" 2>/dev/null; then
+                echo "Screenshot: $SCREENSHOT"
+            else
+                echo "Screenshot failed (VM may not be displaying yet)"
+            fi
         else
             prlctl capture "$PARALLELS_VM" --file "$SCREENSHOT" 2>/dev/null \
                 && echo "Screenshot: $SCREENSHOT" \

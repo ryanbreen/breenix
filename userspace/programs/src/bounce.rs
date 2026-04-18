@@ -375,7 +375,7 @@ fn main() {
     println!("Bounce spheres demo starting (for Gus!) [boot_id={:016x}]", boot_id);
 
     // Try window-buffer mode first: BWM composites us as a floating window
-    match Window::new(b"Bounce", WIN_W, WIN_H) {
+    match Window::new_without_fonts(b"Bounce", WIN_W, WIN_H) {
         Ok(mut win) => {
             println!("[bounce] Window mode: id={} {}x{} [boot_id={:016x}]",
                      win.id(), WIN_W, WIN_H, boot_id);
@@ -533,7 +533,6 @@ fn run_window_loop(win: &mut Window, spheres: &mut [Sphere; NUM_SPHERES]) {
         fps.draw(fb);
 
         let _ = win.present();
-        let _ = time::sleep_ms(1);
     }
 }
 
