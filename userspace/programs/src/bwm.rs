@@ -1214,6 +1214,8 @@ fn blit_window_contents(vram: &mut [u32], screen_w: usize, screen_h: usize, wind
         let copy_h = src_h.min(screen_h - dst_y);
         let src = unsafe { core::slice::from_raw_parts(ptr, win.mapped_width * win.mapped_height) };
 
+        let _ = graphics::check_window_dirty(win.window_id);
+
         for row in 0..copy_h {
             let src_start = row * win.mapped_width;
             let dst_start = (dst_y + row) * screen_w + dst_x;
