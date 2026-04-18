@@ -10,6 +10,7 @@ use core::{
 pub mod completion;
 pub mod executor;
 pub mod thread;
+pub mod waitqueue;
 
 // Architecture-specific context switching
 // Note: context.rs contains x86_64 assembly - ARM64 uses separate implementation

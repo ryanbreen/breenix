@@ -1,0 +1,230 @@
+//! Scheduler-integrated wait queues.
+//!
+//! This is Breenix's equivalent of Linux waitqueues: callers enqueue the
+//! current thread, mark it blocked in the scheduler, re-check their condition,
+//! then schedule if the condition is still false. Wakers remove queued TIDs and
+//! deliver wakeups through F16's lock-free `isr_unblock_for_io` path.
+
+use alloc::collections::VecDeque;
+
+use super::thread::ThreadState;
+
+/// A single waiter recorded by thread ID.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Waiter {
+    tid: u64,
+}
+
+impl Waiter {
+    pub const fn new(tid: u64) -> Self {
+        Self { tid }
+    }
+
+    pub const fn tid(&self) -> u64 {
+        self.tid
+    }
+}
+
+/// Wait queue head for event-driven scheduler waits.
+///
+/// Linux stores caller-owned intrusive wait entries. Breenix's scheduler wake
+/// API is TID-based, so the first implementation stores duplicate-free TIDs
+/// behind a small spin mutex. The public semantics match Linux's core pattern:
+/// prepare, check condition, schedule, finish.
+pub struct WaitQueueHead {
+    waiters: spin::Mutex<VecDeque<Waiter>>,
+}
+
+impl WaitQueueHead {
+    /// Create an empty waitqueue.
+    pub const fn new() -> Self {
+        Self {
+            waiters: spin::Mutex::new(VecDeque::new()),
+        }
+    }
+
+    /// Enqueue the current thread and set its scheduler state.
+    ///
+    /// F32 initially supports `BlockedOnIO` because that is the state wired to
+    /// `scheduler::isr_unblock_for_io`. Unsupported states return `None` rather
+    /// than duplicating scheduler policy.
+    pub fn prepare_to_wait(&self, state: ThreadState) -> Option<u64> {
+        if state != ThreadState::BlockedOnIO {
+            return None;
+        }
+
+        let tid = crate::task::scheduler::current_thread_id()?;
+
+        self.with_waiters(|waiters| {
+            if !waiters.iter().any(|waiter| waiter.tid == tid) {
+                waiters.push_back(Waiter::new(tid));
+            }
+        });
+
+        crate::task::scheduler::with_scheduler(|sched| {
+            sched.block_current_for_io();
+        });
+
+        Some(tid)
+    }
+
+    /// Remove the current thread from the waitqueue and normalize syscall state.
+    ///
+    /// This mirrors Linux `finish_wait`: a thread that was prepared but never
+    /// actually slept must become runnable before returning from the syscall.
+    pub fn finish_wait(&self) {
+        let Some(tid) = crate::task::scheduler::current_thread_id() else {
+            return;
+        };
+
+        self.remove_waiter(tid);
+
+        crate::task::scheduler::with_scheduler(|sched| {
+            if let Some(thread) = sched.current_thread_mut() {
+                if thread.state == ThreadState::BlockedOnIO {
+                    thread.set_ready();
+                    thread.wake_time_ns = None;
+                }
+                thread.blocked_in_syscall = false;
+            }
+        });
+    }
+
+    /// Wake all waiters.
+    pub fn wake_up(&self) {
+        for waiter in self.drain_waiters() {
+            crate::task::scheduler::isr_unblock_for_io(waiter.tid);
+        }
+    }
+
+    /// Wake the first waiter, if any.
+    pub fn wake_up_one(&self) {
+        if let Some(waiter) = self.pop_one_waiter() {
+            crate::task::scheduler::isr_unblock_for_io(waiter.tid);
+        }
+    }
+
+    /// Return whether the queue currently has waiters.
+    #[allow(dead_code)]
+    pub fn has_waiters(&self) -> bool {
+        self.with_waiters(|waiters| !waiters.is_empty())
+    }
+
+    fn remove_waiter(&self, tid: u64) {
+        self.with_waiters(|waiters| {
+            waiters.retain(|waiter| waiter.tid != tid);
+        });
+    }
+
+    fn drain_waiters(&self) -> VecDeque<Waiter> {
+        self.with_waiters(|waiters| waiters.drain(..).collect::<VecDeque<_>>())
+    }
+
+    fn pop_one_waiter(&self) -> Option<Waiter> {
+        self.with_waiters(|waiters| waiters.pop_front())
+    }
+
+    fn with_waiters<R>(&self, f: impl FnOnce(&mut VecDeque<Waiter>) -> R) -> R {
+        crate::arch_without_interrupts(|| {
+            let mut waiters = self.waiters.lock();
+            f(&mut waiters)
+        })
+    }
+
+    #[cfg(test)]
+    fn push_waiter_for_test(&self, tid: u64) {
+        self.with_waiters(|waiters| {
+            if !waiters.iter().any(|waiter| waiter.tid == tid) {
+                waiters.push_back(Waiter::new(tid));
+            }
+        });
+    }
+
+    #[cfg(test)]
+    fn waiter_count_for_test(&self) -> usize {
+        self.with_waiters(|waiters| waiters.len())
+    }
+
+    #[cfg(test)]
+    fn contains_waiter_for_test(&self, tid: u64) -> bool {
+        self.with_waiters(|waiters| waiters.iter().any(|waiter| waiter.tid == tid))
+    }
+}
+
+/// Sleep the current prepared waiter until the scheduler wake path makes it
+/// runnable again.
+///
+/// Syscall handlers enter with preemption disabled. Waiting must enable
+/// preemption before scheduling and restore the syscall entry invariant before
+/// returning to the caller.
+pub fn schedule_current_wait() {
+    #[cfg(target_arch = "aarch64")]
+    crate::per_cpu_aarch64::preempt_enable();
+    #[cfg(not(target_arch = "aarch64"))]
+    crate::per_cpu::preempt_enable();
+
+    loop {
+        let still_waiting = crate::task::scheduler::with_scheduler(|sched| {
+            sched
+                .current_thread_mut()
+                .map(|thread| thread.state == ThreadState::BlockedOnIO)
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+
+        if !still_waiting {
+            break;
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
+        #[cfg(not(target_arch = "aarch64"))]
+        crate::arch_halt_with_interrupts();
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    crate::per_cpu_aarch64::preempt_disable();
+    #[cfg(not(target_arch = "aarch64"))]
+    crate::per_cpu::preempt_disable();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WaitQueueHead;
+
+    #[test]
+    fn duplicate_waiters_are_ignored() {
+        let waitq = WaitQueueHead::new();
+
+        waitq.push_waiter_for_test(42);
+        waitq.push_waiter_for_test(42);
+
+        assert_eq!(waitq.waiter_count_for_test(), 1);
+    }
+
+    #[test]
+    fn wake_up_one_removes_single_waiter() {
+        let waitq = WaitQueueHead::new();
+
+        waitq.push_waiter_for_test(1);
+        waitq.push_waiter_for_test(2);
+        let waiter = waitq.pop_one_waiter();
+
+        assert_eq!(waiter.map(|waiter| waiter.tid()), Some(1));
+        assert_eq!(waitq.waiter_count_for_test(), 1);
+        assert!(!waitq.contains_waiter_for_test(1));
+        assert!(waitq.contains_waiter_for_test(2));
+    }
+
+    #[test]
+    fn wake_up_drains_waiters() {
+        let waitq = WaitQueueHead::new();
+
+        waitq.push_waiter_for_test(1);
+        waitq.push_waiter_for_test(2);
+        let waiters = waitq.drain_waiters();
+
+        assert_eq!(waiters.len(), 2);
+        assert_eq!(waitq.waiter_count_for_test(), 0);
+    }
+}
