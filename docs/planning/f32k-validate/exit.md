@@ -1,7 +1,7 @@
 # F32k Validation Exit
 
 Branch: `f32k-ttwu-input-cursor`  
-HEAD: `8cb108a9 feat(gui): F32k migrate op 19 ReadWindowInput to waitqueue`  
+Validated A+B commit: `8cb108a9 feat(gui): F32k migrate op 19 ReadWindowInput to waitqueue`  
 Run artifacts: `.factory-runs/F32k-validate-20260419-162008/`
 
 ## Verdict
