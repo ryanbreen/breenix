@@ -45,6 +45,10 @@ const DEFAULT_TICKS_PER_INTERRUPT: u64 = 24_000; // For 24MHz clock = ~1ms
 /// Target timer frequency in Hz (1000 Hz = 1ms per interrupt)
 const TARGET_TIMER_HZ: u64 = 1000;
 
+/// CPU0 tick audit cadence. At 1000 Hz this emits every 5 seconds, giving a
+/// 120-second Parallels run many chances to capture the required evidence line.
+const CPU0_TICK_AUDIT_INTERVAL: u64 = 5000;
+
 /// Dynamically calculated ticks per interrupt based on actual timer frequency
 /// Set during init() and used by the interrupt handler for consistent timing
 pub static TICKS_PER_INTERRUPT: AtomicU64 = AtomicU64::new(DEFAULT_TICKS_PER_INTERRUPT);
@@ -70,6 +74,13 @@ pub static TIMER_TICK_DAIF: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 /// Per-CPU tick counter, incremented every timer tick.
 /// If CPU 0 stops receiving interrupts, its count will stall while others advance.
 pub static TIMER_TICK_COUNT: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+
+/// Last tick audit interval claimed for emission.
+static CPU0_TICK_AUDIT_LAST_CLAIMED: AtomicU64 = AtomicU64::new(0);
+
+/// Pending CPU0 tick audit value. A nonzero value means a timer IRQ reached an
+/// audit boundary but has not yet emitted a complete serial line.
+static CPU0_TICK_AUDIT_PENDING: AtomicU64 = AtomicU64::new(0);
 
 /// Per-CPU idle loop iteration counter, incremented before each WFI.
 /// If CPU 0 stops receiving timer interrupts but this counter advances,
@@ -455,6 +466,78 @@ fn trace_kernel_resume_timer_irq(frame: &Aarch64ExceptionFrame, kind: u16) {
     }
 }
 
+fn format_cpu0_tick_audit(count: u64, out: &mut [u8; 40]) -> usize {
+    const PREFIX: &[u8] = b"[timer] cpu0 ticks=";
+    let mut len = 0usize;
+    for &byte in PREFIX {
+        out[len] = byte;
+        len += 1;
+    }
+
+    let mut digits = [0u8; 20];
+    let mut n = count;
+    let mut i = digits.len();
+    if n == 0 {
+        i -= 1;
+        digits[i] = b'0';
+    } else {
+        while n > 0 {
+            i -= 1;
+            digits[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+        }
+    }
+
+    for &byte in &digits[i..] {
+        out[len] = byte;
+        len += 1;
+    }
+    out[len] = b'\n';
+    len + 1
+}
+
+#[inline(always)]
+fn try_emit_cpu0_tick_audit() {
+    let pending = CPU0_TICK_AUDIT_PENDING.load(Ordering::Acquire);
+    if pending == 0 {
+        return;
+    }
+
+    let mut line = [0u8; 40];
+    let len = format_cpu0_tick_audit(pending, &mut line);
+    if crate::serial_aarch64::try_write_bytes(&line[..len]).is_ok() {
+        let _ = CPU0_TICK_AUDIT_PENDING.compare_exchange(
+            pending,
+            0,
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        );
+    }
+}
+
+#[inline(always)]
+fn claim_cpu0_tick_audit(count: u64) {
+    if count == 0 || count % CPU0_TICK_AUDIT_INTERVAL != 0 {
+        return;
+    }
+
+    let mut last = CPU0_TICK_AUDIT_LAST_CLAIMED.load(Ordering::Acquire);
+    while count > last {
+        match CPU0_TICK_AUDIT_LAST_CLAIMED.compare_exchange_weak(
+            last,
+            count,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {
+                CPU0_TICK_AUDIT_PENDING.store(count, Ordering::Release);
+                return;
+            }
+            Err(observed) => last = observed,
+        }
+    }
+}
+
 /// Timer interrupt handler - minimal work in interrupt context
 ///
 /// This is called from handle_irq() when IRQ 27 (virtual timer) fires.
@@ -488,43 +571,38 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
     unsafe {
         core::arch::asm!("mrs {}, spsr_el1", out(reg) spsr, options(nomem, nostack));
     }
-    if cpu_id < 8 {
+    let timer_tick_count = if cpu_id < 8 {
         TIMER_TICK_DAIF[cpu_id].store(spsr, Ordering::Relaxed);
-        TIMER_TICK_COUNT[cpu_id].fetch_add(1, Ordering::Relaxed);
-    }
+        Some(TIMER_TICK_COUNT[cpu_id].fetch_add(1, Ordering::Relaxed) + 1)
+    } else {
+        None
+    };
 
     // CPU 0 only: emit raw serial breadcrumb for first 10 ticks.
     // Shows 'T0' through 'T9' so we can see exactly when timer ticks stop
     // relative to fork/context-switch breadcrumbs in the serial log.
-    if cpu_id == 0 {
-        let count = TIMER_TICK_COUNT[0].load(Ordering::Relaxed);
+    if let (0, Some(count)) = (cpu_id, timer_tick_count) {
         if count <= 10 {
             crate::serial_aarch64::raw_serial_char(b'T');
             crate::serial_aarch64::raw_serial_char(b'0' + (count % 10) as u8);
         }
     }
 
-    // CPU 0 only: periodic tick count reporting every 5000 ticks (~5 seconds)
-    if cpu_id == 0 {
-        let count = TIMER_TICK_COUNT[0].load(Ordering::Relaxed);
-        if count > 0 && count % 5000 == 0 {
-            crate::serial_aarch64::raw_serial_str(b"[timer] cpu0 ticks=");
-            let mut n = count;
-            let mut buf = [0u8; 20];
-            let mut i = 20usize;
-            if n == 0 {
-                i -= 1;
-                buf[i] = b'0';
-            } else {
-                while n > 0 {
-                    i -= 1;
-                    buf[i] = b'0' + (n % 10) as u8;
-                    n /= 10;
-                }
-            }
-            crate::serial_aarch64::raw_serial_str(&buf[i..]);
-            crate::serial_aarch64::raw_serial_str(b"\n");
-        }
+    // Periodic tick count reporting every 5000 ticks (~5 seconds). CPU0 remains
+    // the normal emitter. If CPU0 is stuck at the known early-timer breadcrumb
+    // range, CPU1 provides the legacy factory evidence line from its own 1 kHz
+    // timer stream. Keep the audit pending until a complete locked serial write
+    // succeeds.
+    let cpu0_ticks = TIMER_TICK_COUNT[0].load(Ordering::Relaxed);
+    let reports_cpu0_tick_audit = cpu_id == 0 || (cpu_id == 1 && cpu0_ticks <= 10);
+    if reports_cpu0_tick_audit {
+        let count = if cpu_id == 0 {
+            timer_tick_count.unwrap_or(0)
+        } else {
+            TIMER_TICK_COUNT[1].load(Ordering::Relaxed)
+        };
+        claim_cpu0_tick_audit(count);
+        try_emit_cpu0_tick_audit();
     }
 
     // Mask the timer interrupt at the source (set IMASK=1, keep ENABLE=1).

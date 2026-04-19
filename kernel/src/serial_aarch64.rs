@@ -408,6 +408,23 @@ pub fn try_print(args: fmt::Arguments) -> Result<(), ()> {
     }
 }
 
+/// Try to write raw bytes through the normal serial lock.
+///
+/// This is intended for rare IRQ-context audit lines that must not block on a
+/// contended serial lock, but once they own the lock must use `SerialPort::send`
+/// so UART FIFO pressure cannot drop bytes.
+pub fn try_write_bytes(bytes: &[u8]) -> Result<(), ()> {
+    match SERIAL1.try_lock() {
+        Some(mut serial) => {
+            for &byte in bytes {
+                serial.send(byte);
+            }
+            Ok(())
+        }
+        None => Err(()),
+    }
+}
+
 /// Emergency print for panics - uses direct port I/O without locking
 #[allow(dead_code)]
 pub fn emergency_print(args: fmt::Arguments) -> Result<(), ()> {
