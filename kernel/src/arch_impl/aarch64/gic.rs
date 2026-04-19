@@ -1328,6 +1328,18 @@ fn init_gicv3_redistributor(cpu_id: usize) {
     // Configure PPIs as level-triggered (default)
     gicr_write_at_rd_base(rd_base, GICR_SGI_OFFSET + GICR_ICFGR0, 0); // SGIs: always edge
     gicr_write_at_rd_base(rd_base, GICR_SGI_OFFSET + GICR_ICFGR0 + 4, 0); // PPIs: level-triggered
+
+    // Linux's GICv3 CPU init configures SGIs/PPIs together before enabling the
+    // CPU interface. Breenix uses SGI0 for reschedule and SGI1 for timer rearm;
+    // leaving them disabled lets ISPENDR0 latch the SGI while HPPIR1/IAR1 stay
+    // spurious.
+    let sgi_enable_mask =
+        (1u32 << super::constants::SGI_RESCHEDULE) | (1u32 << super::constants::SGI_TIMER_REARM);
+    gicr_write_at_rd_base(rd_base, GICR_SGI_OFFSET + GICR_ISENABLER0, sgi_enable_mask);
+    unsafe {
+        core::arch::asm!("dsb sy", options(nomem, nostack));
+        core::arch::asm!("isb", options(nomem, nostack));
+    }
 }
 
 /// Initialize GICv3 CPU Interface via ICC system registers.
