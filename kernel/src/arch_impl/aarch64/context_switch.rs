@@ -3221,35 +3221,23 @@ pub static CPU0_IDLE_CNTVCT: AtomicU64 = AtomicU64::new(0);
 pub static CPU0_IDLE_ITERATIONS: AtomicU64 = AtomicU64::new(0);
 
 #[inline(always)]
-fn idle_pending_isr_wakeups() -> bool {
-    for cpu in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
-        if crate::task::scheduler::isr_wakeup_depth(cpu) != 0 {
-            return true;
-        }
-    }
-    false
-}
-
-#[inline(always)]
-fn idle_gate_state() -> (bool, bool) {
+fn idle_gate_state() -> bool {
     let need_resched = crate::task::scheduler::is_need_resched();
     unsafe {
         // Linux's generic idle loop pairs the sleep gate with rmb(); on ARM64
         // a full inner-shareable DMB gives the same ordering before WFI.
         core::arch::asm!("dmb ish", options(nomem, nostack));
     }
-    (need_resched, idle_pending_isr_wakeups())
+    need_resched
 }
 
 #[inline(always)]
 fn idle_enter_scheduler_if_needed() -> bool {
-    let (need_resched, pending_isr_wakeups) = idle_gate_state();
-    if !need_resched && !pending_isr_wakeups {
+    let need_resched = idle_gate_state();
+    if !need_resched {
         return false;
     }
-    if need_resched {
-        let _ = crate::task::scheduler::check_and_clear_need_resched();
-    }
+    let _ = crate::task::scheduler::check_and_clear_need_resched();
     schedule_from_kernel();
     true
 }

@@ -84,10 +84,13 @@ pub const TIMER_IRQ: u32 = 30;
 /// Software generated interrupt for rescheduling IPIs.
 pub const SGI_RESCHEDULE: u32 = 0;
 
+/// Linux-parity function-call IPI used to drain per-CPU TTWU wake lists.
+pub const SGI_CALL_FUNC: u32 = 1;
+
 /// Software generated interrupt for timer re-arm.
 /// Sent to a CPU whose timer has stopped firing (Parallels HVF vtimer death).
 /// The receiving CPU re-arms its virtual timer in the SGI handler.
-pub const SGI_TIMER_REARM: u32 = 1;
+pub const SGI_TIMER_REARM: u32 = 2;
 
 // ============================================================================
 // GIC Constants

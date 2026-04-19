@@ -3,8 +3,8 @@
 //! This is Breenix's equivalent of Linux waitqueues: callers enqueue the
 //! current thread, mark it blocked in the scheduler, re-check their condition,
 //! then schedule if the condition is still false. Task-context wakers remove
-//! queued TIDs and wake them inline; interrupt-context wakers use F16's
-//! lock-free `isr_unblock_for_io` path.
+//! queued TIDs and wake them inline; interrupt-context wakers queue work to
+//! the waiter CPU's TTWU wake list and send a function-call IPI.
 
 use alloc::collections::VecDeque;
 
@@ -14,15 +14,20 @@ use super::thread::ThreadState;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Waiter {
     tid: u64,
+    target_cpu: usize,
 }
 
 impl Waiter {
-    pub const fn new(tid: u64) -> Self {
-        Self { tid }
+    pub const fn new(tid: u64, target_cpu: usize) -> Self {
+        Self { tid, target_cpu }
     }
 
     pub const fn tid(&self) -> u64 {
         self.tid
+    }
+
+    pub const fn target_cpu(&self) -> usize {
+        self.target_cpu
     }
 }
 
@@ -47,7 +52,7 @@ impl WaitQueueHead {
     /// Enqueue the current thread and publish its scheduler wait state.
     ///
     /// F32 initially supports `BlockedOnIO` because that is the state wired to
-    /// `scheduler::isr_unblock_for_io`. Unsupported states return `None` rather
+    /// the scheduler's I/O wake path. Unsupported states return `None` rather
     /// than duplicating scheduler policy.
     pub fn prepare_to_wait(&self, state: ThreadState) -> Option<u64> {
         if state != ThreadState::BlockedOnIO {
@@ -55,10 +60,11 @@ impl WaitQueueHead {
         }
 
         let tid = crate::task::scheduler::current_thread_id()?;
+        let target_cpu = current_cpu_id();
 
         let published = self.with_waiters(|waiters| {
             if !waiters.iter().any(|waiter| waiter.tid == tid) {
-                waiters.push_back(Waiter::new(tid));
+                waiters.push_back(Waiter::new(tid, target_cpu));
             }
 
             let published = crate::task::scheduler::with_scheduler(|sched| {
@@ -153,7 +159,7 @@ impl WaitQueueHead {
     fn push_waiter_for_test(&self, tid: u64) {
         self.with_waiters(|waiters| {
             if !waiters.iter().any(|waiter| waiter.tid == tid) {
-                waiters.push_back(Waiter::new(tid));
+                waiters.push_back(Waiter::new(tid, 0));
             }
         });
     }
@@ -171,9 +177,20 @@ impl WaitQueueHead {
 
 fn wake_waiter(waiter: Waiter) {
     if in_interrupt_context() {
-        crate::task::scheduler::isr_unblock_for_io(waiter.tid);
+        crate::task::scheduler::ttwu_queue_wakelist_for_io(waiter.tid, waiter.target_cpu);
     } else {
         crate::task::scheduler::wake_waitqueue_thread(waiter.tid);
+    }
+}
+
+fn current_cpu_id() -> usize {
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        0
     }
 }
 

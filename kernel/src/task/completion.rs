@@ -8,10 +8,9 @@
 //!
 //! The done-check and `block_current_for_io()` execute under a single
 //! `with_scheduler()` call, matching Linux's `raw_spin_lock_irq` around
-//! `__prepare_to_swait`.  The ISR calls `complete(token)` which itself acquires
-//! the scheduler lock via `with_scheduler()`.  Because `with_scheduler()`
-//! disables interrupts before locking, and the ISR runs with interrupts
-//! already masked by hardware, there is no deadlock risk.
+//! `__prepare_to_swait`.  The ISR calls `complete(token)`, which publishes the
+//! waiter to the target CPU's TTWU wake list and sends a function-call IPI
+//! instead of acquiring the scheduler lock from the device interrupt path.
 //!
 //! # Caller contract
 //!
@@ -127,6 +126,8 @@ pub struct Completion {
     pub(crate) done: AtomicU32,
     /// TID of the sleeping waiter thread. 0 means no waiter.
     waiter: AtomicU64,
+    /// CPU that published the waiter.
+    waiter_cpu: AtomicU32,
 }
 
 impl Completion {
@@ -135,6 +136,7 @@ impl Completion {
         Self {
             done: AtomicU32::new(0),
             waiter: AtomicU64::new(0),
+            waiter_cpu: AtomicU32::new(0),
         }
     }
 
@@ -145,6 +147,7 @@ impl Completion {
     pub fn reset(&self) {
         self.done.store(0, Ordering::Release);
         self.waiter.store(0, Ordering::Release);
+        self.waiter_cpu.store(0, Ordering::Release);
     }
 
     pub fn waiter_tid(&self) -> u64 {
@@ -188,6 +191,7 @@ impl Completion {
 
         if let Some(tid) = tid {
             // Store TID so complete() can wake us.
+            self.waiter_cpu.store(current_cpu_id() as u32, Ordering::Release);
             self.waiter.store(tid, Ordering::Release);
             // SeqCst fence: ensure the waiter store is visible to any
             // concurrent complete() before we re-check done.
@@ -492,7 +496,20 @@ impl Completion {
 
         let tid = self.waiter.load(Ordering::Acquire);
         if tid != 0 {
-            crate::task::scheduler::isr_unblock_for_io(tid);
+            let target_cpu = self.waiter_cpu.load(Ordering::Acquire) as usize;
+            crate::task::scheduler::ttwu_queue_wakelist_for_io(tid, target_cpu);
         }
+    }
+}
+
+#[inline]
+fn current_cpu_id() -> usize {
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        0
     }
 }

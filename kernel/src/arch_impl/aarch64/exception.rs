@@ -1245,6 +1245,9 @@ pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
                 if irq_id == constants::SGI_RESCHEDULE {
                     // IPI reschedule: another CPU unblocked a thread and wants us to pick it up
                     crate::per_cpu_aarch64::set_need_resched(true);
+                } else if irq_id == constants::SGI_CALL_FUNC {
+                    // Linux-parity function-call IPI: drain this CPU's TTWU wake list.
+                    crate::task::scheduler::handle_call_function_ipi();
                 } else if irq_id == constants::SGI_TIMER_REARM {
                     // IPI timer re-arm: another CPU detected our timer is dead
                     // and wants us to re-arm it. This fixes Parallels HVF vtimer

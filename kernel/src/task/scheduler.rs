@@ -50,7 +50,9 @@ use super::thread::{Thread, ThreadState};
 use crate::log_serial_println;
 use alloc::{boxed::Box, collections::BinaryHeap, collections::VecDeque};
 use core::cmp::Reverse;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_arch = "aarch64")]
+use core::sync::atomic::AtomicU64;
 use spin::Mutex;
 
 // Architecture-generic HAL wrappers for interrupt control.
@@ -59,44 +61,43 @@ use crate::arch_interrupts_enabled as are_enabled;
 use crate::arch_without_interrupts as without_interrupts;
 
 // ---------------------------------------------------------------------------
-// Lock-free ISR wakeup buffer
+// Linux-parity TTWU wake lists
 //
-// The AHCI ISR calls `isr_unblock_for_io(tid)` which writes the thread ID
-// into a per-CPU slot array using atomic CAS — no lock, no allocation.
-// The scheduler drains these buffers under its own lock at the top of every
-// `schedule_deferred_requeue()` / `schedule()` call, performing the actual
-// state transition + queue push.
-//
-// This breaks the ISR's dependency on the global SCHEDULER mutex, which was
-// the root cause of CPU 0's IRQ death: the AHCI ISR on CPU 0 would spin on
-// the lock (held by another CPU) with IRQs masked, starving the timer.
+// Linux's `ttwu_queue_wakelist()` queues remote wake work on the target CPU and
+// sends `IPI_CALL_FUNC`. The target CPU drains that list from its function-call
+// IPI handler and performs the scheduler state transition locally.
 // ---------------------------------------------------------------------------
 
-const ISR_WAKEUP_SLOTS: usize = 32;
-const ISR_WAKEUP_EMPTY: u64 = 0;
+#[cfg(target_arch = "aarch64")]
+const TTWU_WAKE_LIST_SLOTS: usize = 64;
+#[cfg(target_arch = "aarch64")]
+const TTWU_WAKE_LIST_EMPTY: u64 = 0;
 
-/// Per-CPU lock-free buffer for ISR wakeups.
-/// ISR writes thread IDs here via atomic CAS. Scheduler drains on each schedule.
-struct IsrWakeupBuffer {
-    slots: [AtomicU64; ISR_WAKEUP_SLOTS],
+#[cfg(target_arch = "aarch64")]
+struct TtwuWakeList {
+    slots: [AtomicU64; TTWU_WAKE_LIST_SLOTS],
 }
 
-// SAFETY: All access is via atomics.
-unsafe impl Sync for IsrWakeupBuffer {}
+#[cfg(target_arch = "aarch64")]
+unsafe impl Sync for TtwuWakeList {}
 
-impl IsrWakeupBuffer {
+#[cfg(target_arch = "aarch64")]
+impl TtwuWakeList {
     const fn new() -> Self {
         Self {
-            slots: [const { AtomicU64::new(ISR_WAKEUP_EMPTY) }; ISR_WAKEUP_SLOTS],
+            slots: [const { AtomicU64::new(TTWU_WAKE_LIST_EMPTY) }; TTWU_WAKE_LIST_SLOTS],
         }
     }
 
-    /// Push a thread ID (called from ISR context, no locks).
-    /// Returns true if pushed, false if buffer full.
     fn push(&self, tid: u64) -> bool {
         for slot in &self.slots {
             if slot
-                .compare_exchange(ISR_WAKEUP_EMPTY, tid, Ordering::AcqRel, Ordering::Relaxed)
+                .compare_exchange(
+                    TTWU_WAKE_LIST_EMPTY,
+                    tid,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
                 .is_ok()
             {
                 return true;
@@ -105,27 +106,21 @@ impl IsrWakeupBuffer {
         false // Buffer full — should never happen with 32 slots
     }
 
-    /// Drain all entries (called from scheduler under lock).
-    fn drain(&self, out: &mut alloc::vec::Vec<u64>) {
+    fn drain_into(&self, out: &mut [u64; TTWU_WAKE_LIST_SLOTS]) -> usize {
+        let mut count = 0;
         for slot in &self.slots {
-            let tid = slot.swap(ISR_WAKEUP_EMPTY, Ordering::AcqRel);
-            if tid != ISR_WAKEUP_EMPTY {
-                out.push(tid);
+            let tid = slot.swap(TTWU_WAKE_LIST_EMPTY, Ordering::AcqRel);
+            if tid != TTWU_WAKE_LIST_EMPTY && count < out.len() {
+                out[count] = tid;
+                count += 1;
             }
         }
-    }
-
-    /// Count pending entries without modifying the buffer.
-    #[cfg(target_arch = "aarch64")]
-    fn depth(&self) -> usize {
-        self.slots
-            .iter()
-            .filter(|slot| slot.load(Ordering::Acquire) != ISR_WAKEUP_EMPTY)
-            .count()
+        count
     }
 }
 
-static ISR_WAKEUP_BUFFERS: [IsrWakeupBuffer; 8] = [const { IsrWakeupBuffer::new() }; 8];
+#[cfg(target_arch = "aarch64")]
+static TTWU_WAKE_LISTS: [TtwuWakeList; MAX_CPUS] = [const { TtwuWakeList::new() }; MAX_CPUS];
 
 /// Global scheduler instance
 static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
@@ -680,17 +675,6 @@ impl Scheduler {
         #[cfg(not(target_arch = "x86_64"))]
         let debug_log = false;
 
-        // Drain lock-free ISR wakeup buffers (see schedule_deferred_requeue for rationale).
-        {
-            let mut wakeups = alloc::vec::Vec::new();
-            for buf in ISR_WAKEUP_BUFFERS.iter() {
-                buf.drain(&mut wakeups);
-            }
-            for tid in wakeups {
-                self.unblock_for_io(tid);
-            }
-        }
-
         // If current thread is still runnable, put it back in ready queue
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if current_id != self.cpu_state[Self::current_cpu_id()].idle_thread {
@@ -929,20 +913,6 @@ impl Scheduler {
         let current_is_idle =
             self.cpu_state[cpu].current_thread == Some(self.cpu_state[cpu].idle_thread);
         set_cpu_idle(cpu, current_is_idle);
-
-        // Drain lock-free ISR wakeup buffers — ISRs (AHCI, etc.) push thread IDs
-        // here via isr_unblock_for_io() to avoid spinning on SCHEDULER from ISR
-        // context.  We drain ALL CPUs' buffers because the ISR that completed the
-        // I/O may have run on any CPU.
-        {
-            let mut wakeups = alloc::vec::Vec::new();
-            for buf in ISR_WAKEUP_BUFFERS.iter() {
-                buf.drain(&mut wakeups);
-            }
-            for tid in wakeups {
-                self.unblock_for_io(tid);
-            }
-        }
 
         // If current thread is still runnable, mark it as Ready but DON'T add to queue
         let mut should_requeue_old = false;
@@ -1726,6 +1696,19 @@ impl Scheduler {
     }
 
     fn wake_io_thread_locked(&mut self, tid: u64) -> IoWakeResult {
+        self.wake_io_thread_locked_on(tid, None)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn wake_io_thread_on_cpu_locked(&mut self, tid: u64, target_cpu: usize) -> IoWakeResult {
+        self.wake_io_thread_locked_on(tid, Some(target_cpu))
+    }
+
+    fn wake_io_thread_locked_on(
+        &mut self,
+        tid: u64,
+        target_override: Option<usize>,
+    ) -> IoWakeResult {
         let mut wake = IoWakeResult::default();
         if let Some(thread) = self.get_thread_mut(tid) {
             let should_queue = if thread.state == ThreadState::BlockedOnIO {
@@ -1762,7 +1745,9 @@ impl Scheduler {
                     && tid != self.cpu_state[Self::current_cpu_id()].idle_thread
                     && !self.per_cpu_queues.iter().any(|q| q.contains(&tid))
                 {
-                    let target = self.find_target_cpu_for_wakeup(tid);
+                    let target = target_override
+                        .filter(|&cpu| cpu < MAX_CPUS)
+                        .unwrap_or_else(|| self.find_target_cpu_for_wakeup(tid));
                     self.per_cpu_queues[target].push_back(tid);
                     wake.enqueued_target = Some(target);
                 }
@@ -2467,7 +2452,7 @@ where
 /// Wake a waitqueue waiter immediately from task context.
 ///
 /// The caller must not be in interrupt context; hard IRQ paths must use
-/// `isr_unblock_for_io` so they never spin on the scheduler lock.
+/// `ttwu_queue_wakelist_for_io` so they never spin on the scheduler lock.
 pub fn wake_waitqueue_thread(tid: u64) {
     with_scheduler(|sched| sched.wake_waitqueue_thread(tid));
 }
@@ -2610,56 +2595,72 @@ pub fn is_need_resched() -> bool {
     }
 }
 
-/// Count pending ISR wakeups for one CPU.
+/// Queue an ISR-context I/O wake on the target CPU's TTWU wake list.
 ///
-/// This is diagnostic-only and lock-free; it reads the wake buffer atomically
-/// without draining it.
+/// This mirrors Linux `ttwu_queue_wakelist`: the hardirq producer only publishes
+/// the waiter to the target CPU and sends a function-call IPI. The target CPU's
+/// IPI handler performs the scheduler state transition.
 #[cfg(target_arch = "aarch64")]
-pub fn isr_wakeup_depth(cpu: usize) -> usize {
-    if cpu < ISR_WAKEUP_BUFFERS.len() {
-        ISR_WAKEUP_BUFFERS[cpu].depth()
+pub fn ttwu_queue_wakelist_for_io(tid: u64, target_cpu: usize) {
+    let target = if target_cpu < MAX_CPUS {
+        target_cpu
     } else {
-        0
+        current_cpu_id_raw().min(MAX_CPUS - 1)
+    };
+
+    if TTWU_WAKE_LISTS[target].push(tid) {
+        core::sync::atomic::fence(Ordering::SeqCst);
+        crate::arch_impl::aarch64::gic::send_sgi(
+            crate::arch_impl::aarch64::constants::SGI_CALL_FUNC as u8,
+            target as u8,
+        );
     }
 }
 
-/// Lock-free ISR wakeup: push thread ID to per-CPU wakeup buffer.
-///
-/// Called from the AHCI ISR (via `Completion::complete()`) instead of
-/// `with_scheduler(|s| s.unblock_for_io(tid))`.  This avoids acquiring the
-/// global SCHEDULER mutex from ISR context, which was the root cause of
-/// CPU 0's IRQ death: the ISR would spin on the lock with IRQs masked,
-/// starving the timer for milliseconds.
-///
-/// The scheduler drains the buffer under its own lock at the top of every
-/// `schedule_deferred_requeue()` / `schedule()` call.
-pub fn isr_unblock_for_io(tid: u64) {
+#[cfg(not(target_arch = "aarch64"))]
+pub fn ttwu_queue_wakelist_for_io(tid: u64, _target_cpu: usize) {
+    with_scheduler(|sched| sched.unblock_for_io(tid));
+}
+
+/// Handle the ARM64 function-call IPI by draining this CPU's TTWU wake list.
+#[cfg(target_arch = "aarch64")]
+pub fn handle_call_function_ipi() {
     let cpu = current_cpu_id_raw();
-    if cpu < ISR_WAKEUP_BUFFERS.len() {
-        ISR_WAKEUP_BUFFERS[cpu].push(tid);
+    if cpu >= MAX_CPUS {
+        return;
     }
-    set_need_resched();
-    // The current CPU will drain the wake buffer on IRQ-return scheduling.
-    // Avoid broadcasting reschedule SGIs from hard IRQ context; Linux's TTWU
-    // path queues wake work to a selected target CPU rather than scanning idle CPUs.
+
+    let Some(mut guard) = SCHEDULER.try_lock() else {
+        set_need_resched();
+        crate::arch_impl::aarch64::gic::send_sgi(
+            crate::arch_impl::aarch64::constants::SGI_CALL_FUNC as u8,
+            cpu as u8,
+        );
+        return;
+    };
+
+    let Some(sched) = guard.as_mut() else {
+        return;
+    };
+
+    let mut wakeups = [0u64; TTWU_WAKE_LIST_SLOTS];
+    let count = TTWU_WAKE_LISTS[cpu].drain_into(&mut wakeups);
+    for &tid in wakeups.iter().take(count) {
+        sched.wake_io_thread_on_cpu_locked(tid, cpu);
+    }
+    crate::per_cpu_aarch64::set_need_resched(true);
 }
 
 /// Read the current CPU ID directly from hardware (MPIDR_EL1 on ARM64).
 /// Safe to call from ISR context — no per-CPU data, no locks.
 #[inline]
+#[cfg(target_arch = "aarch64")]
 fn current_cpu_id_raw() -> usize {
-    #[cfg(target_arch = "aarch64")]
-    {
-        let mpidr: u64;
-        unsafe {
-            core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
-        }
-        (mpidr & 0xFF) as usize
+    let mpidr: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
     }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        0
-    }
+    (mpidr & 0xFF) as usize
 }
 
 /// Check if a CPU is idle without acquiring any lock (raw version for ISR use).

@@ -716,13 +716,13 @@ struct CmdToken {
 /// SCHEDULER SLEEP (normal, timer running):
 ///   Calls `Completion::wait_timeout()` which puts the thread into
 ///   `BlockedOnIO` state.  The scheduler runs other threads while we wait.
-///   The ISR calls `complete()` → `unblock_for_io()` to wake us.
+///   The ISR calls `complete()` → TTWU wake-list IPI to wake us.
 ///   This is the path that eliminates SCHED_RESCUE and lockup reports.
 ///
 /// PORT_CI POLLING (scheduler not running — early boot):
 ///   Polls PORT_CI directly until the command clears.  Completions are NOT
 ///   armed, so the ISR (which still fires on SPI34) sees cmd_num==0 and
-///   takes the fast path without calling complete() or isr_unblock_for_io.
+///   takes the fast path without calling complete() or queuing a TTWU wake.
 ///   This matches Linux's AHCI driver which masks device-level interrupts
 ///   during polling mode.
 fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
@@ -1139,7 +1139,7 @@ impl AhciController {
         // During polling (scheduler not running), we do NOT arm
         // PORT_ACTIVE_CMD_NUM. The ISR still fires (hardware raises SPI34
         // on command completion), but sees cmd_num==0, so it skips
-        // complete() and isr_unblock_for_io(). This prevents the
+        // complete() and TTWU wake-list path. This prevents the
         // check_need_resched storm (1184 context-switch attempts during
         // boot) that kills CPU 0's timer delivery on Parallels/HVF.
         //
