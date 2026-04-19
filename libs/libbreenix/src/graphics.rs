@@ -144,6 +144,14 @@ pub mod draw_op {
     pub const SET_CURSOR_SHAPE: u32 = 25;
     /// Poll modifier key state (returns bitmask: bit0=Shift, bit1=Ctrl, bit2=Alt, bit3=Super)
     pub const POLL_MODIFIER_STATE: u32 = 26;
+    /// F32c waitqueue stress reset.
+    pub const WAIT_STRESS_RESET: u32 = 27;
+    /// F32c waitqueue stress wait.
+    pub const WAIT_STRESS_WAIT: u32 = 28;
+    /// F32c waitqueue stress wake.
+    pub const WAIT_STRESS_WAKE: u32 = 29;
+    /// F32c waitqueue stress stats.
+    pub const WAIT_STRESS_STATS: u32 = 30;
 }
 
 /// Ball descriptor for VirGL GPU rendering.
@@ -187,6 +195,61 @@ pub fn fb_clear(color: u32) -> Result<(), Error> {
         p3: 0,
         p4: 0,
         color,
+    };
+    fbdraw(&cmd)
+}
+
+/// Reset the F32c waitqueue stress counters and wake any stale waiter.
+pub fn wait_stress_reset() -> Result<(), Error> {
+    let cmd = FbDrawCmd {
+        op: draw_op::WAIT_STRESS_RESET,
+        p1: 0,
+        p2: 0,
+        p3: 0,
+        p4: 0,
+        color: 0,
+    };
+    fbdraw(&cmd)
+}
+
+/// Block once on the F32c waitqueue stress queue.
+pub fn wait_stress_wait() -> Result<u64, Error> {
+    let cmd = FbDrawCmd {
+        op: draw_op::WAIT_STRESS_WAIT,
+        p1: 0,
+        p2: 0,
+        p3: 0,
+        p4: 0,
+        color: 0,
+    };
+    let ret = unsafe { raw::syscall1(nr::FBDRAW, &cmd as *const FbDrawCmd as u64) as i64 };
+    Error::from_syscall(ret).map(|value| value as u64)
+}
+
+/// Wake the F32c waitqueue stress queue once.
+pub fn wait_stress_wake() -> Result<u64, Error> {
+    let cmd = FbDrawCmd {
+        op: draw_op::WAIT_STRESS_WAKE,
+        p1: 0,
+        p2: 0,
+        p3: 0,
+        p4: 0,
+        color: 0,
+    };
+    let ret = unsafe { raw::syscall1(nr::FBDRAW, &cmd as *const FbDrawCmd as u64) as i64 };
+    Error::from_syscall(ret).map(|value| value as u64)
+}
+
+/// Read F32c waitqueue stress counters: entered, returned, wakes, has_waiters.
+pub fn wait_stress_stats(out: &mut [u64; 4]) -> Result<(), Error> {
+    let ptr = out.as_mut_ptr() as u64;
+    let cmd = FbDrawCmd {
+        op: draw_op::WAIT_STRESS_STATS,
+        p1: ptr as u32 as i32,
+        p2: (ptr >> 32) as u32 as i32,
+        p3: out.len() as i32,
+        p4: 0,
+        color: 0,
     };
     fbdraw(&cmd)
 }

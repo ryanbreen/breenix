@@ -189,6 +189,7 @@ STD_BINARIES=(
     "nonblock_eagain_test"
     "blocking_recv_test"
     "tcp_client_test"
+    "wait_stress"
     "simple_exit"
     "counter"
     "spinner"
