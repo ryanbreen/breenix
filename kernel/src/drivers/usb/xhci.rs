@@ -5027,7 +5027,7 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
         max_slots: slots_en,
         max_ports,
         context_size,
-        irq: 0,
+        irq: early_irq,
         kbd_slot: 0,
         kbd_endpoint: 0,
         kbd_nkro_endpoint: 0,
