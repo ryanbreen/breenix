@@ -1601,8 +1601,9 @@ fn main() {
     let mut windows: Vec<Window> = Vec::new();
     let mut focused_win: usize = 0;
     let mut input_parser = InputParser::new();
-    let mut mouse_x: i32 = 0;
-    let mut mouse_y: i32 = 0;
+    let (mut mouse_x, mut mouse_y) = graphics::mouse_pos()
+        .map(|(x, y)| (x as i32, y as i32))
+        .unwrap_or((0, 0));
     #[cfg(target_arch = "aarch64")]
     let mut active_cursor_shape = graphics::cursor_shape::ARROW;
     let mut prev_buttons: u32 = 0;
@@ -1674,10 +1675,17 @@ fn main() {
     loop {
         // ── 0. Block until something needs compositing ──
         // compositor_wait blocks in the kernel until: window dirty, mouse moved,
-        // registry changed, or timeout. Replaces the old poll+sleep_ms(2) pattern.
-        // 16ms timeout ensures keyboard input via stdin is checked at least ~60Hz.
-        let (ready, new_reg_gen) = graphics::compositor_wait(16, registry_gen).unwrap_or((0, registry_gen));
-        registry_gen = new_reg_gen;
+        // or registry changed. If bwm already has local work prepared (for
+        // example the initial window discovery redraw), drain and present it
+        // before entering the kernel wait.
+        let ready = if full_redraw || content_dirty || windows_dirty {
+            0
+        } else {
+            let (ready, new_reg_gen) =
+                graphics::compositor_wait(0, registry_gen).unwrap_or((0, registry_gen));
+            registry_gen = new_reg_gen;
+            ready
+        };
 
         // ── 0b. Poll modifier state and check hotkeys ──
         let current_mods = graphics::poll_modifier_state() as u8;
