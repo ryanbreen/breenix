@@ -3220,6 +3220,40 @@ pub static CPU0_IDLE_CNTV_CVAL: AtomicU64 = AtomicU64::new(0);
 pub static CPU0_IDLE_CNTVCT: AtomicU64 = AtomicU64::new(0);
 pub static CPU0_IDLE_ITERATIONS: AtomicU64 = AtomicU64::new(0);
 
+#[inline(always)]
+fn idle_pending_isr_wakeups() -> bool {
+    for cpu in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
+        if crate::task::scheduler::isr_wakeup_depth(cpu) != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+#[inline(always)]
+fn idle_gate_state() -> (bool, bool) {
+    let need_resched = crate::task::scheduler::is_need_resched();
+    unsafe {
+        // Linux's generic idle loop pairs the sleep gate with rmb(); on ARM64
+        // a full inner-shareable DMB gives the same ordering before WFI.
+        core::arch::asm!("dmb ish", options(nomem, nostack));
+    }
+    (need_resched, idle_pending_isr_wakeups())
+}
+
+#[inline(always)]
+fn idle_enter_scheduler_if_needed() -> bool {
+    let (need_resched, pending_isr_wakeups) = idle_gate_state();
+    if !need_resched && !pending_isr_wakeups {
+        return false;
+    }
+    if need_resched {
+        let _ = crate::task::scheduler::check_and_clear_need_resched();
+    }
+    schedule_from_kernel();
+    true
+}
+
 /// ARM64 idle loop - wait for interrupts.
 #[no_mangle]
 pub extern "C" fn idle_loop_arm64() -> ! {
@@ -3228,6 +3262,13 @@ pub extern "C" fn idle_loop_arm64() -> ! {
     // Breadcrumb 50: CPU 0 reached the idle loop after ERET dispatch
     cpu0_breadcrumb(cpu_id, 50);
     loop {
+        unsafe {
+            // Match Linux's generic idle rule: after deciding whether sleep is
+            // allowed, do not re-enable interrupts until the sleep instruction
+            // has been reached and completed.
+            core::arch::asm!("msr daifset, #0xf", "isb", options(nomem, nostack));
+        }
+
         // Diagnostic: track idle loop iterations per CPU.
         if cpu_id < 8 {
             crate::arch_impl::aarch64::timer_interrupt::IDLE_LOOP_COUNT[cpu_id]
@@ -3260,14 +3301,21 @@ pub extern "C" fn idle_loop_arm64() -> ! {
             }
         }
 
+        if idle_enter_scheduler_if_needed() {
+            continue;
+        }
+
         unsafe {
             core::arch::asm!(
-                "dsb sy",            // Match Linux cpu_do_idle() before WFI
-                "msr daifclr, #0xf", // Enable all interrupts
-                "wfi",               // Wait for interrupt
+                "dsb sy", // Match Linux cpu_do_idle() before WFI
+                "wfi",    // Wait for interrupt with IRQ/FIQ masked
+                "msr daifclr, #0xf",
+                "isb",
                 options(nomem, nostack)
             );
         }
+
+        let _ = idle_enter_scheduler_if_needed();
     }
 }
 

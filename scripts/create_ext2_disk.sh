@@ -87,6 +87,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
         -v "$USERSPACE_DIR:/binaries:ro" \
         -v "$PROJECT_ROOT/fonts:/fonts:ro" \
         -e "OUTPUT_FILENAME=$OUTPUT_FILENAME" \
+        -e "BREENIX_WAIT_STRESS=${BREENIX_WAIT_STRESS:-0}" \
         alpine:latest \
         sh -c '
             set -e
@@ -206,6 +207,11 @@ BSHRC
 
             # Create /tmp for filesystem write tests
             mkdir -p /mnt/ext2/tmp
+
+            if [ "${BREENIX_WAIT_STRESS:-0}" = "1" ]; then
+                touch /mnt/ext2/etc/wait_stress.enabled
+                echo "  Enabled wait_stress init gate"
+            fi
 
             # Create /home for user data (Gus Kit saves, etc.)
             mkdir -p /mnt/ext2/home
@@ -468,6 +474,11 @@ BSHRC
 
     # Create /tmp for filesystem write tests
     mkdir -p "$MOUNT_DIR/tmp"
+
+    if [ "${BREENIX_WAIT_STRESS:-0}" = "1" ]; then
+        touch "$MOUNT_DIR/etc/wait_stress.enabled"
+        echo "  Enabled wait_stress init gate"
+    fi
 
     # Create /home for user data (Gus Kit saves, etc.)
     mkdir -p "$MOUNT_DIR/home"

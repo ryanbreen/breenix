@@ -280,6 +280,10 @@ name = "concurrent_recv_stress"
 path = "src/concurrent_recv_stress.rs"
 
 [[bin]]
+name = "wait_stress"
+path = "src/wait_stress.rs"
+
+[[bin]]
 name = "counter"
 path = "src/counter.rs"
 

@@ -3,14 +3,18 @@
 //! PID 1 - runs bsh (no arguments), then starts background services and reaps zombies.
 //! bsh detects it's the init shell (PID 2) and loads /etc/init.js.
 
+#[cfg(target_arch = "aarch64")]
+use libbreenix::fs;
 use libbreenix::process::{getpid, spawn, waitpid};
 #[cfg(target_arch = "aarch64")]
-use libbreenix::process::yield_now;
+use libbreenix::process::{spawnv, yield_now};
 
 fn main() {
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
     print!("[init] Breenix init starting (PID {})\n", pid);
 
+    #[cfg(target_arch = "aarch64")]
+    run_wait_stress_if_enabled();
     run_boot_script();
     start_bsshd();
     #[cfg(target_arch = "aarch64")]
@@ -36,6 +40,35 @@ fn main() {
                 };
                 let _ = libbreenix::time::nanosleep(&ts);
             }
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn run_wait_stress_if_enabled() {
+    if fs::access("/etc/wait_stress.enabled", fs::F_OK).is_err() {
+        return;
+    }
+
+    print!("[init] wait_stress enabled; starting 60s waitqueue stress\n");
+    let path = b"/bin/wait_stress\0";
+    let arg0 = b"wait_stress\0";
+    let arg1 = b"60\0";
+    let argv = [arg0.as_ptr(), arg1.as_ptr(), core::ptr::null()];
+
+    match spawnv(path, argv.as_ptr()) {
+        Ok(child_pid) => {
+            let mut status = 0i32;
+            let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
+            let exit_code = (status >> 8) & 0xFF;
+            print!(
+                "[init] wait_stress exited pid={} code={}\n",
+                child_pid.raw(),
+                exit_code
+            );
+        }
+        Err(e) => {
+            print!("[init] Warning: failed to start wait_stress: {}\n", e);
         }
     }
 }
