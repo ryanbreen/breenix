@@ -51,6 +51,11 @@ static COMPOSITOR_FRAME_WQ: crate::task::waitqueue::WaitQueueHead =
 static CLIENT_FRAME_WQ: crate::task::waitqueue::WaitQueueHead =
     crate::task::waitqueue::WaitQueueHead::new();
 
+/// Waitqueue for client input reads (op=19).
+#[cfg(target_arch = "aarch64")]
+static INPUT_EVENT_WQ: crate::task::waitqueue::WaitQueueHead =
+    crate::task::waitqueue::WaitQueueHead::new();
+
 /// Dedicated F32c waitqueue race reproducer. These test-only FBDRAW ops let a
 /// userspace harness drive wait/wake races without involving BWM state.
 #[cfg(target_arch = "aarch64")]
@@ -134,6 +139,30 @@ fn window_frame_pending(buffer_id: u32, thread_id: u64) -> bool {
     reg.find(buffer_id)
         .map(|buf| buf.waiting_thread_id == Some(thread_id))
         .unwrap_or(false)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn read_window_input_events(
+    buffer_id: u32,
+    out_ptr: u64,
+    max_count: usize,
+) -> Result<usize, u64> {
+    let mut reg = WINDOW_REGISTRY.lock();
+    let Some(buf) = reg.find_mut(buffer_id) else {
+        return Err(super::ErrorCode::InvalidArgument as u64);
+    };
+
+    let mut n = 0usize;
+    while n < max_count && buf.input_tail != buf.input_head {
+        let event = buf.input_ring[buf.input_tail];
+        unsafe {
+            core::ptr::write((out_ptr as *mut WindowInputEvent).add(n), event);
+        }
+        buf.input_tail = (buf.input_tail + 1) & (INPUT_RING_SIZE - 1);
+        n += 1;
+    }
+
+    Ok(n)
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -340,8 +369,6 @@ struct WindowBuffer {
     input_head: usize,
     /// Read position in input ring (advanced by client)
     input_tail: usize,
-    /// Thread ID blocked on read_window_input (client waiting for input)
-    input_waiting_thread: Option<u64>,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -432,7 +459,6 @@ impl WindowRegistry {
             input_ring: [WindowInputEvent::default(); INPUT_RING_SIZE],
             input_head: 0,
             input_tail: 0,
-            input_waiting_thread: None,
         });
         Some(id)
     }
@@ -1072,7 +1098,7 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                 }
             }
 
-            let wake_tid = {
+            {
                 let mut reg = WINDOW_REGISTRY.lock();
                 match reg.find_mut(buffer_id) {
                     Some(buf) => {
@@ -1083,20 +1109,12 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                         }
                         buf.input_ring[buf.input_head] = event;
                         buf.input_head = next_head;
-                        // Wake client if it's blocked waiting for input
-                        buf.input_waiting_thread.take()
                     }
                     None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
                 }
-            };
-
-            // Wake blocked client thread outside the registry lock
-            if let Some(tid) = wake_tid {
-                crate::task::scheduler::with_scheduler(|sched| {
-                    sched.unblock(tid);
-                });
             }
 
+            INPUT_EVENT_WQ.wake_up();
             SyscallResult::Ok(0)
         }
         19 => {
@@ -1113,105 +1131,44 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                 return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
             }
 
-            // Try to read events from the ring
-            let count = {
-                let mut reg = WINDOW_REGISTRY.lock();
-                match reg.find_mut(buffer_id) {
-                    Some(buf) => {
-                        let mut n = 0usize;
-                        while n < max_count && buf.input_tail != buf.input_head {
-                            let event = buf.input_ring[buf.input_tail];
-                            unsafe {
-                                core::ptr::write((out_ptr as *mut WindowInputEvent).add(n), event);
-                            }
-                            buf.input_tail = (buf.input_tail + 1) & (INPUT_RING_SIZE - 1);
-                            n += 1;
-                        }
-                        n
-                    }
-                    None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
-                }
-            };
-
-            if count > 0 || non_blocking {
-                return SyscallResult::Ok(count as u64);
-            }
-
-            // Blocking mode: no events available, block until BWM writes one.
-            let thread_id = match crate::task::scheduler::current_thread_id() {
-                Some(id) => id,
-                None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
-            };
-
-            // Register this thread as waiting for input
-            {
-                let mut reg = WINDOW_REGISTRY.lock();
-                if let Some(buf) = reg.find_mut(buffer_id) {
-                    buf.input_waiting_thread = Some(thread_id);
-                }
-            }
-
-            // Block with 100ms timeout (fallback if BWM doesn't send events)
-            let (cur_secs, cur_nanos) = crate::time::get_monotonic_time_ns();
-            let now_ns = cur_secs as u64 * 1_000_000_000 + cur_nanos as u64;
-            let timeout_ns = now_ns.saturating_add(100_000_000); // 100ms
-
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.block_current_for_compositor(timeout_ns);
-            });
-
-            #[cfg(target_arch = "aarch64")]
-            crate::per_cpu_aarch64::preempt_enable();
-
             loop {
-                let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
-                    sched.wake_expired_timers();
-                    sched
-                        .current_thread_mut()
-                        .map(|t| t.state == crate::task::thread::ThreadState::BlockedOnTimer)
-                        .unwrap_or(false)
-                });
-                if !still_blocked.unwrap_or(false) {
-                    break;
+                let count = match read_window_input_events(buffer_id, out_ptr, max_count) {
+                    Ok(count) => count,
+                    Err(err) => return SyscallResult::Err(err),
+                };
+                if count > 0 || non_blocking {
+                    return SyscallResult::Ok(count as u64);
                 }
-                crate::task::scheduler::yield_current();
-                crate::arch_halt_with_interrupts();
-            }
 
-            crate::task::scheduler::with_scheduler(|sched| {
-                if let Some(thread) = sched.current_thread_mut() {
-                    thread.blocked_in_syscall = false;
+                if INPUT_EVENT_WQ
+                    .prepare_to_wait(crate::task::thread::ThreadState::BlockedOnIO)
+                    .is_none()
+                {
+                    return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
                 }
-            });
 
-            #[cfg(target_arch = "aarch64")]
-            crate::per_cpu_aarch64::preempt_disable();
-
-            #[cfg(target_arch = "aarch64")]
-            ensure_current_address_space();
-
-            // Try to read again after waking
-            let count = {
-                let mut reg = WINDOW_REGISTRY.lock();
-                match reg.find_mut(buffer_id) {
-                    Some(buf) => {
-                        buf.input_waiting_thread = None;
-                        let mut n = 0usize;
-                        while n < max_count && buf.input_tail != buf.input_head {
-                            let event = buf.input_ring[buf.input_tail];
-                            unsafe {
-                                core::ptr::write((out_ptr as *mut WindowInputEvent).add(n), event);
-                            }
-                            buf.input_tail = (buf.input_tail + 1) & (INPUT_RING_SIZE - 1);
-                            n += 1;
-                        }
-                        n
+                // Race closure: BWM may write after the first empty check but
+                // before the current thread is queued and marked BlockedOnIO.
+                // Re-check after prepare_to_wait; if input is present, finish_wait
+                // restores runnable state without entering the scheduler.
+                match read_window_input_events(buffer_id, out_ptr, max_count) {
+                    Ok(count) if count > 0 => {
+                        INPUT_EVENT_WQ.finish_wait();
+                        return SyscallResult::Ok(count as u64);
                     }
-                    None => 0,
+                    Ok(_) => {}
+                    Err(err) => {
+                        INPUT_EVENT_WQ.finish_wait();
+                        return SyscallResult::Err(err);
+                    }
                 }
-            };
 
-            SyscallResult::Ok(count as u64)
+                crate::task::waitqueue::schedule_current_wait();
+                INPUT_EVENT_WQ.finish_wait();
+
+                #[cfg(target_arch = "aarch64")]
+                ensure_current_address_space();
+            }
         }
         20 => {
             // MapCompositorTexture: map COMPOSITE_TEX backing pages into caller's

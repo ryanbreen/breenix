@@ -786,8 +786,8 @@ pub fn write_window_input(buffer_id: u32, event: &WindowInputEvent) -> Result<()
 /// Read input events from a window's kernel ring buffer.
 ///
 /// Returns the number of events read. If `blocking` is true, blocks until
-/// at least one event is available (with 100ms timeout). If false, returns
-/// immediately with 0 if no events are pending.
+/// at least one event is available. If false, returns immediately with 0 if
+/// no events are pending.
 pub fn read_window_input(buffer_id: u32, out: &mut [WindowInputEvent], blocking: bool) -> Result<usize, Error> {
     let out_ptr = out.as_ptr() as u64;
     let cmd = FbDrawCmd {
