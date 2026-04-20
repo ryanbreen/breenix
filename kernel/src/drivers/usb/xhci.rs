@@ -5016,7 +5016,11 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     // init (even if later unbound). On Breenix, UEFI never configured MSI.
     let early_irq = setup_xhci_msi(pci_dev);
 
-    // 14. Create state with IRQ already set
+    // 14. Create state with IRQ already set.
+    // F32t: Now that configure_msi() uses Linux ordering (disable → mask →
+    // write → flush → INTx off → enable → unmask) no MSI storm is expected,
+    // so the deferred SPI activation path can enable this irq (was irq: 0
+    // as a workaround since commit 488d2fc2).
     let mut xhci_state = XhciState {
         base,
         cap_length,
@@ -5026,7 +5030,7 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
         max_slots: slots_en,
         max_ports,
         context_size,
-        irq: 0,
+        irq: early_irq,
         kbd_slot: 0,
         kbd_endpoint: 0,
         kbd_nkro_endpoint: 0,
