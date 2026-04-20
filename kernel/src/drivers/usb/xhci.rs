@@ -4441,7 +4441,6 @@ fn setup_xhci_msi(pci_dev: &crate::drivers::pci::Device) -> u32 {
     let msi_address = (base + 0x40) as u32;
     let msi_data = spi as u16;
     pci_dev.configure_msi(msi_cap, msi_address, msi_data);
-    pci_dev.disable_intx();
 
     // Step 5: Configure GIC for this SPI (edge-triggered).
     //

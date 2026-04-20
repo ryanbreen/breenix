@@ -325,7 +325,6 @@ fn setup_net_pci_msi(pci_dev: &crate::drivers::pci::Device) {
             let spi = crate::platform_config::allocate_msi_spi();
             if spi != 0 {
                 pci_dev.configure_msi(cap_offset, doorbell as u32, spi as u16);
-                pci_dev.disable_intx();
                 gic::configure_spi_edge_triggered(spi);
                 NET_PCI_IRQ.store(spi, Ordering::Relaxed);
                 gic::enable_spi(spi);

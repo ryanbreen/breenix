@@ -62,6 +62,21 @@ pub const PCI_CAP_ID_MSI: u8 = 0x05;
 /// PCI Capability ID for MSI-X
 pub const PCI_CAP_ID_MSIX: u8 = 0x11;
 
+const PCI_COMMAND_OFFSET: u8 = 0x04;
+const PCI_COMMAND_INTX_DISABLE: u16 = 1 << 10;
+const PCI_MSI_FLAGS_OFFSET: u8 = 0x02;
+const PCI_MSI_ADDRESS_LO_OFFSET: u8 = 0x04;
+const PCI_MSI_ADDRESS_HI_OFFSET: u8 = 0x08;
+const PCI_MSI_DATA_32_OFFSET: u8 = 0x08;
+const PCI_MSI_DATA_64_OFFSET: u8 = 0x0c;
+const PCI_MSI_MASK_32_OFFSET: u8 = 0x0c;
+const PCI_MSI_MASK_64_OFFSET: u8 = 0x10;
+const PCI_MSI_FLAGS_ENABLE: u16 = 1 << 0;
+const PCI_MSI_FLAGS_QSIZE: u16 = 0x0070;
+const PCI_MSI_FLAGS_64BIT: u16 = 1 << 7;
+const PCI_MSI_FLAGS_MASKBIT: u16 = 1 << 8;
+const PCI_MSI_VECTOR0_MASK: u32 = 1;
+
 /// Intel vendor ID (for reference - common in QEMU)
 pub const INTEL_VENDOR_ID: u16 = 0x8086;
 /// Red Hat / QEMU vendor ID
@@ -256,26 +271,25 @@ impl Device {
 
     /// Disable legacy INTx interrupts (set DisINTx bit in PCI Command register).
     pub fn disable_intx(&self) {
-        let command = pci_read_config_word(self.bus, self.device, self.function, 0x04);
-        // Bit 10: Interrupt Disable
+        let command = pci_read_config_word(self.bus, self.device, self.function, PCI_COMMAND_OFFSET);
         pci_write_config_word(
             self.bus,
             self.device,
             self.function,
-            0x04,
-            command | (1 << 10),
+            PCI_COMMAND_OFFSET,
+            command | PCI_COMMAND_INTX_DISABLE,
         );
     }
 
     /// Enable legacy INTx interrupts (clear DisINTx bit in PCI Command register).
     pub fn enable_intx(&self) {
-        let command = pci_read_config_word(self.bus, self.device, self.function, 0x04);
+        let command = pci_read_config_word(self.bus, self.device, self.function, PCI_COMMAND_OFFSET);
         pci_write_config_word(
             self.bus,
             self.device,
             self.function,
-            0x04,
-            command & !(1 << 10),
+            PCI_COMMAND_OFFSET,
+            command & !PCI_COMMAND_INTX_DISABLE,
         );
     }
 
@@ -328,50 +342,93 @@ impl Device {
     /// `address`: MSI target address (e.g., GICv2m doorbell register)
     /// `data`: MSI data value (e.g., SPI number)
     pub fn configure_msi(&self, cap_offset: u8, address: u32, data: u16) {
-        // Read Message Control to determine capability layout
-        let msg_ctrl = pci_read_config_word(self.bus, self.device, self.function, cap_offset + 2);
-        let is_64bit = (msg_ctrl & (1 << 7)) != 0;
-        let has_mask = (msg_ctrl & (1 << 8)) != 0;
-
-        // Write Message Address (always at cap+4)
-        pci_write_config_dword(
+        let msg_ctrl = pci_read_config_word(
             self.bus,
             self.device,
             self.function,
-            cap_offset + 4,
-            address,
+            cap_offset + PCI_MSI_FLAGS_OFFSET,
         );
-
-        // Write Message Data
+        let is_64bit = (msg_ctrl & PCI_MSI_FLAGS_64BIT) != 0;
+        let has_mask = (msg_ctrl & PCI_MSI_FLAGS_MASKBIT) != 0;
         let data_offset = if is_64bit {
-            // 64-bit: upper address at cap+8, data at cap+12
-            pci_write_config_dword(self.bus, self.device, self.function, cap_offset + 8, 0);
-            cap_offset + 12
+            cap_offset + PCI_MSI_DATA_64_OFFSET
         } else {
-            // 32-bit: data at cap+8
-            cap_offset + 8
+            cap_offset + PCI_MSI_DATA_32_OFFSET
         };
-        pci_write_config_word(self.bus, self.device, self.function, data_offset, data);
+        let mask_offset = if is_64bit {
+            cap_offset + PCI_MSI_MASK_64_OFFSET
+        } else {
+            cap_offset + PCI_MSI_MASK_32_OFFSET
+        };
 
-        // Clear mask bits if per-vector masking is supported
-        if has_mask {
-            let mask_offset = if is_64bit {
-                cap_offset + 16
-            } else {
-                cap_offset + 12
-            };
-            pci_write_config_dword(self.bus, self.device, self.function, mask_offset, 0);
-        }
-
-        // Enable MSI (bit 0 of Message Control), single message (bits 6:4 = 000)
-        let new_ctrl = (msg_ctrl & !0x0070) | 0x0001; // Clear MME, set Enable
+        // Linux disables MSI before setup, masks vectors, writes the message,
+        // flushes by reading flags, disables INTx, enables MSI, then unmasks:
+        // /tmp/linux-v6.8/drivers/pci/msi/msi.c:359-389 and :184-204.
+        let disabled_ctrl = msg_ctrl & !PCI_MSI_FLAGS_ENABLE;
         pci_write_config_word(
             self.bus,
             self.device,
             self.function,
-            cap_offset + 2,
-            new_ctrl,
+            cap_offset + PCI_MSI_FLAGS_OFFSET,
+            disabled_ctrl,
         );
+
+        if has_mask {
+            pci_write_config_dword(
+                self.bus,
+                self.device,
+                self.function,
+                mask_offset,
+                PCI_MSI_VECTOR0_MASK,
+            );
+        }
+
+        let single_vector_ctrl = disabled_ctrl & !PCI_MSI_FLAGS_QSIZE;
+        pci_write_config_word(
+            self.bus,
+            self.device,
+            self.function,
+            cap_offset + PCI_MSI_FLAGS_OFFSET,
+            single_vector_ctrl,
+        );
+
+        pci_write_config_dword(
+            self.bus,
+            self.device,
+            self.function,
+            cap_offset + PCI_MSI_ADDRESS_LO_OFFSET,
+            address,
+        );
+        if is_64bit {
+            pci_write_config_dword(
+                self.bus,
+                self.device,
+                self.function,
+                cap_offset + PCI_MSI_ADDRESS_HI_OFFSET,
+                0,
+            );
+        }
+        pci_write_config_word(self.bus, self.device, self.function, data_offset, data);
+
+        pci_read_config_word(
+            self.bus,
+            self.device,
+            self.function,
+            cap_offset + PCI_MSI_FLAGS_OFFSET,
+        );
+        self.disable_intx();
+
+        pci_write_config_word(
+            self.bus,
+            self.device,
+            self.function,
+            cap_offset + PCI_MSI_FLAGS_OFFSET,
+            single_vector_ctrl | PCI_MSI_FLAGS_ENABLE,
+        );
+
+        if has_mask {
+            pci_write_config_dword(self.bus, self.device, self.function, mask_offset, 0);
+        }
     }
 
     /// Find the MSI-X capability in the PCI capability list.
