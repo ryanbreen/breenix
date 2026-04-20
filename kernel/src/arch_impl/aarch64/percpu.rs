@@ -18,7 +18,7 @@ use crate::arch_impl::aarch64::constants::{
     PERCPU_TSS_OFFSET, PERCPU_USER_RSP_SCRATCH_OFFSET, PREEMPT_ACTIVE, SOFTIRQ_MASK, SOFTIRQ_SHIFT,
 };
 use crate::arch_impl::traits::PerCpuOps;
-use core::sync::atomic::{compiler_fence, AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{compiler_fence, AtomicU32, Ordering};
 
 pub struct Aarch64PerCpu;
 
@@ -77,16 +77,6 @@ fn percpu_atomic_u32(offset: usize) -> Option<&'static AtomicU32> {
         return None;
     }
     unsafe { Some(&*((base as *const u8).add(offset) as *const AtomicU32)) }
-}
-
-/// Get atomic reference to a bool field in per-CPU data
-#[inline(always)]
-fn percpu_atomic_bool(offset: usize) -> Option<&'static AtomicBool> {
-    let base = read_tpidr_el1();
-    if base == 0 {
-        return None;
-    }
-    unsafe { Some(&*((base as *const u8).add(offset) as *const AtomicBool)) }
 }
 
 impl PerCpuOps for Aarch64PerCpu {
@@ -231,17 +221,13 @@ impl Aarch64PerCpu {
     /// Get the need_resched flag.
     #[inline(always)]
     pub fn need_resched() -> bool {
-        percpu_atomic_bool(PERCPU_NEED_RESCHED_OFFSET)
-            .map(|flag| flag.load(Ordering::Acquire))
-            .unwrap_or(false)
+        percpu_read_u8(PERCPU_NEED_RESCHED_OFFSET) != 0
     }
 
     /// Set the need_resched flag.
     #[inline(always)]
     pub unsafe fn set_need_resched(need: bool) {
-        if let Some(flag) = percpu_atomic_bool(PERCPU_NEED_RESCHED_OFFSET) {
-            flag.store(need, Ordering::Release);
-        }
+        percpu_write_u8(PERCPU_NEED_RESCHED_OFFSET, if need { 1 } else { 0 });
     }
 
     /// Get the next TTBR0 value (for context switching).

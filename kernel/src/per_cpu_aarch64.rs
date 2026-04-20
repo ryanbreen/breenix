@@ -29,7 +29,7 @@ pub struct PerCpuData {
     /// Preempt count (offset 32)
     pub preempt_count: u32,
     /// Need resched flag (offset 36)
-    pub need_resched: AtomicBool,
+    pub need_resched: u8,
     /// Padding
     _pad: [u8; 3],
     /// User SP scratch space (offset 40)
@@ -73,7 +73,7 @@ impl PerCpuData {
             kernel_stack_top: 0,
             idle_thread: core::ptr::null_mut(),
             preempt_count: 0,
-            need_resched: AtomicBool::new(false),
+            need_resched: 0,
             _pad: [0; 3],
             user_sp_scratch: 0,
             tss: core::ptr::null_mut(),
@@ -225,26 +225,6 @@ pub fn set_need_resched(need: bool) {
             hal_percpu::Aarch64PerCpu::set_need_resched(need);
         }
     }
-}
-
-/// Set another CPU's reschedule-needed flag.
-///
-/// This is scheduler-owned plumbing for targeted wakeups. Most code should use
-/// scheduler::resched_cpu() instead of touching remote per-CPU state directly.
-pub fn set_need_resched_for_cpu(cpu: usize, need: bool) -> bool {
-    if !PER_CPU_INITIALIZED.load(Ordering::Acquire)
-        || cpu >= crate::arch_impl::aarch64::constants::MAX_CPUS
-    {
-        return false;
-    }
-
-    unsafe {
-        let all_cpu_data = core::ptr::addr_of!(ALL_CPU_DATA) as *const PerCpuData;
-        (*all_cpu_data.add(cpu))
-            .need_resched
-            .store(need, Ordering::Release);
-    }
-    true
 }
 
 /// Check if we're in any interrupt context
