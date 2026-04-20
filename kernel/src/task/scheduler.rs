@@ -2569,6 +2569,36 @@ pub fn set_need_resched() {
     crate::per_cpu_aarch64::set_need_resched(true);
 }
 
+/// Mark one CPU for reschedule.
+///
+/// Mirrors Linux's resched_cpu()/resched_curr() split: mark the target CPU's
+/// reschedule flag, then send a reschedule IPI only when the target is remote.
+#[cfg(target_arch = "aarch64")]
+pub fn resched_cpu(target: u8) -> bool {
+    let target = target as usize;
+    let current_cpu = Scheduler::current_cpu_id();
+    if target >= MAX_CPUS {
+        return false;
+    }
+
+    let online = crate::arch_impl::aarch64::smp::cpus_online() as usize;
+    if target >= online && target != current_cpu {
+        return false;
+    }
+
+    if !crate::per_cpu_aarch64::set_need_resched_for_cpu(target, true) {
+        return false;
+    }
+
+    if target != current_cpu {
+        crate::arch_impl::aarch64::gic::send_sgi(
+            crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
+            target as u8,
+        );
+    }
+    true
+}
+
 /// Check and clear the need_resched flag (called from interrupt return path)
 pub fn check_and_clear_need_resched() -> bool {
     #[cfg(target_arch = "x86_64")]
