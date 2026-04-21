@@ -1447,7 +1447,6 @@ fn setup_gpu_msi(pci_dev: &crate::drivers::pci::Device) -> u32 {
     // Step 4: Fall back to plain MSI
     if let Some(msi_cap) = pci_dev.find_msi_capability() {
         pci_dev.configure_msi(msi_cap, msi_address as u32, spi as u16);
-        pci_dev.disable_intx();
         gic::configure_spi_edge_triggered(spi);
         crate::serial_println!("[virtio-gpu-pci] MSI configured: SPI={}", spi);
         return spi;

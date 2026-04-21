@@ -2031,7 +2031,6 @@ fn setup_ahci_msi(pci_dev: &pci::Device) -> u32 {
     // Step 4: Fall back to plain MSI.
     if let Some(msi_cap) = pci_dev.find_msi_capability() {
         pci_dev.configure_msi(msi_cap, msi_address as u32, spi as u16);
-        pci_dev.disable_intx();
         gic::configure_spi_edge_triggered(spi);
         gic::clear_spi_pending(spi);
         gic::enable_spi(spi);
