@@ -5211,6 +5211,18 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     // Store the IRQ from the early setup.
     XHCI_IRQ.store(early_irq, Ordering::Release);
 
+    // F32t Phase 5a: enable the GIC SPI inline now that TRBs are queued and
+    // IMAN.IE + USBCMD.RS are set. This replaces the deferred activation that
+    // lived at poll=50 inside poll_hid_events(). Linux parity:
+    // /tmp/linux-v6.8/drivers/usb/host/xhci.c::xhci_run_finished_at enables
+    // interrupts at the end of controller bring-up.
+    if early_irq != 0 && !SPI_ACTIVATED.swap(true, Ordering::AcqRel) {
+        crate::arch_impl::aarch64::gic::clear_spi_pending(early_irq);
+        crate::arch_impl::aarch64::gic::enable_spi(early_irq);
+        DIAG_SPI_ENABLE_COUNT.fetch_add(1, Ordering::Relaxed);
+        crate::serial_println!("[xhci] SPI {} enabled at init complete", early_irq);
+    }
+
     xhci_trace_note(0, "init_complete");
     // Trace data available via GDB (call trace_dump()) or /proc/xhci/trace
 
@@ -6094,17 +6106,8 @@ pub fn poll_hid_events() {
         }
     }
 
-    // Deferred MSI activation.
-    // Enable SPI after a short stabilization period (50 polls = 250ms)
-    // so xHCI init completes before interrupts start firing.
-    // Once enabled, handle_interrupt() re-enables SPI after each invocation,
-    // so this only matters for the very first activation.
-    if state.irq != 0 && poll >= 50 && !SPI_ACTIVATED.load(Ordering::Relaxed) {
-        SPI_ACTIVATED.store(true, Ordering::Release);
-        crate::arch_impl::aarch64::gic::clear_spi_pending(state.irq);
-        crate::arch_impl::aarch64::gic::enable_spi(state.irq);
-        DIAG_SPI_ENABLE_COUNT.fetch_add(1, Ordering::Relaxed);
-    }
+    // F32t Phase 5a: SPI activation moved to end of xhci::init() so the
+    // deferred poll-counter path is no longer required to enable MSI.
 
     // Ensure HID_TRBS_QUEUED is set after initialization completes.
     if poll >= 100 && !HID_TRBS_QUEUED.load(Ordering::Acquire) {
