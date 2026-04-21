@@ -155,6 +155,16 @@ switch_to_user:
     // x18: platform register (some platforms reserve it)
     mov x18, #0
 
+    // CRITICAL: ISB before ERET — required for HVF (Apple Hypervisor Framework).
+    // Without this ISB, SPSR_EL1/ELR_EL1 writes above may not be visible to HVF
+    // when it intercepts the ERET. HVF would then read stale SPSR (potentially
+    // with DAIF.I=1) and permanently mask the vtimer, killing timer delivery.
+    //
+    // Same fix as aeb3e989 (aarch64_enter_exception_frame), which was missed for
+    // this ERET path. aade0871 kept ISB at the dispatch ERET; this ERET is the
+    // initial EL1→EL0 transition, not an IRQ/syscall return, so the ISB is safe
+    // here too.
+    isb
     // Exception return - jumps to EL0 at ELR_EL1
     eret
 "#
@@ -269,6 +279,15 @@ pub unsafe fn return_to_userspace(entry: u64, user_sp: u64) -> ! {
         "mov x29, #0",
         "mov x30, #0",
 
+        // CRITICAL: ISB before ERET — required for HVF (Apple Hypervisor Framework).
+        // Without this ISB, SPSR_EL1/ELR_EL1 writes above may not be visible to
+        // HVF when it intercepts the ERET. HVF would read stale SPSR and could
+        // permanently mask CPU0's vtimer, killing timer delivery.
+        //
+        // Same fix as aeb3e989 in aarch64_enter_exception_frame, which was
+        // missed for this path. This is the EL1→EL0 transition for init launch
+        // (via main_aarch64.rs:return_to_userspace), not an IRQ/syscall return.
+        "isb",
         // Exception return - jumps to EL0
         "eret",
         entry = in(reg) entry,
