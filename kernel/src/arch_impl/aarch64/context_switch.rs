@@ -3266,7 +3266,12 @@ pub extern "C" fn idle_loop_arm64() -> ! {
             // Match Linux's generic idle rule: after deciding whether sleep is
             // allowed, do not re-enable interrupts until the sleep instruction
             // has been reached and completed.
-            core::arch::asm!("msr daifset, #0xf", "isb", options(nomem, nostack));
+            //
+            // Use daifset #3 (F+I bits) to match Linux's arch_local_irq_disable
+            // (/tmp/linux-v6.8/arch/arm64/include/asm/irqflags.h). Previously
+            // this was #0xf which also masks A (SError) and D (Debug), which
+            // Linux does NOT mask during idle.
+            core::arch::asm!("msr daifset, #3", "isb", options(nomem, nostack));
         }
 
         // Diagnostic: track idle loop iterations per CPU.
@@ -3307,9 +3312,9 @@ pub extern "C" fn idle_loop_arm64() -> ! {
 
         unsafe {
             core::arch::asm!(
-                "dsb sy", // Match Linux cpu_do_idle() before WFI
-                "wfi",    // Wait for interrupt with IRQ/FIQ masked
-                "msr daifclr, #0xf",
+                "dsb sy",           // Match Linux cpu_do_idle() before WFI
+                "wfi",              // Wait for interrupt with IRQ/FIQ masked
+                "msr daifclr, #3",  // Unmask F+I only to match Linux (A+D weren't masked)
                 "isb",
                 options(nomem, nostack)
             );
