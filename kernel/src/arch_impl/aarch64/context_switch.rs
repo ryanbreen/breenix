@@ -3280,6 +3280,17 @@ pub extern "C" fn idle_loop_arm64() -> ! {
                 .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         }
 
+        // Safety net against HVF vtimer death: re-arm timer each idle iteration
+        // even if no timer IRQ fired. F20e (bff1d92a) removed this on the
+        // assumption that dsb sy alone was sufficient, but empirically CPU0
+        // still dies at ~tick 10 when the only re-arm path is the IRQ handler.
+        // If HVF permanently masks the vtimer (vtimer death), no IRQ fires,
+        // so the handler-driven re-arm from e4e16b68 never runs. Restoring
+        // the idle-loop re-arm gives HVF a fresh chance each idle iteration.
+        if crate::arch_impl::aarch64::timer_interrupt::is_initialized() {
+            crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
+        }
+
         // CPU 0 diagnostic: read GIC CPU interface + timer registers BEFORE
         // enabling IRQs, so we see the state that prevents interrupt delivery.
         if cpu_id == 0 {
