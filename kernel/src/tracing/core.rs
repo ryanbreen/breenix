@@ -232,6 +232,12 @@ impl TraceEventType {
     pub const DEFER_REQUEUE_ELR: u16 = 0xFF3B;
     pub const DEFER_REQUEUE_X30: u16 = 0xFF3C;
     pub const DEFER_REQUEUE_FLAGS: u16 = 0xFF3D;
+    // AHCI completion-miss diagnostics (focused on fork/exec load race)
+    pub const AHCI_CMD_ISSUE: u16 = 0xFF50;       // payload: cmd_num, flags: port<<4|arm
+    pub const AHCI_ISR_ENTRY: u16 = 0xFF51;       // payload: is_low32, flags: port
+    pub const AHCI_ISR_STATE: u16 = 0xFF52;       // payload: (active<<16)|ci, flags: port
+    pub const AHCI_ISR_COMPLETE: u16 = 0xFF53;    // payload: cmd_num, flags: port
+    pub const AHCI_ISR_NOCOMPLETE: u16 = 0xFF54;  // payload: (is<<16)|active, flags: port
 }
 
 // =============================================================================

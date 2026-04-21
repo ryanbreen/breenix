@@ -1158,6 +1158,12 @@ impl AhciController {
             PORT_ACTIVE_CMD_NUM[port].store(cmd_num, Ordering::Release);
             PORT_ACTIVE_MASK[port].fetch_or(1, Ordering::Release);
         }
+        // Diagnostic: record every issue site with its arm state + port.
+        crate::tracing::record_event(
+            crate::tracing::TraceEventType::AHCI_CMD_ISSUE,
+            ((port as u8) << 4) | (arm_completion as u8),
+            cmd_num,
+        );
 
         // Write PORT_CI to issue the command.
         port_write(abar, port, PORT_CI, 1);
@@ -2353,6 +2359,17 @@ pub fn handle_interrupt() {
         let mut is = port_read(abar, port, PORT_IS);
         let ci_entry = port_read(abar, port, PORT_CI);
         let active_entry = PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & AHCI_TRACKED_SLOT_MASK;
+        // Diagnostic: record every ISR entry with full port state.
+        crate::tracing::record_event(
+            crate::tracing::TraceEventType::AHCI_ISR_ENTRY,
+            port as u8,
+            is,
+        );
+        crate::tracing::record_event(
+            crate::tracing::TraceEventType::AHCI_ISR_STATE,
+            port as u8,
+            ((active_entry & 0xFFFF) << 16) | (ci_entry & 0xFFFF),
+        );
         if is == 0 && (active_entry & !ci_entry) == 0 {
             continue;
         }
@@ -2434,6 +2451,19 @@ pub fn handle_interrupt() {
             AHCI_LAST_ISR_COMPLETE_WAITER.store(pending_waiter_tid, Ordering::Relaxed);
             AHCI_COMPLETIONS[port][0].complete(pending_cmd_num);
             AHCI_ISR_COMPLETE_HIT[port].fetch_add(1, Ordering::Relaxed);
+            crate::tracing::record_event(
+                crate::tracing::TraceEventType::AHCI_ISR_COMPLETE,
+                port as u8,
+                pending_cmd_num,
+            );
+        } else {
+            // Diagnostic: ISR fired, state looked suspicious, but no completion
+            // was recorded. The (is, active) payload pins the exact miss.
+            crate::tracing::record_event(
+                crate::tracing::TraceEventType::AHCI_ISR_NOCOMPLETE,
+                port as u8,
+                ((is_after_clear & 0xFFFF) << 16) | (ci_after_clear & 0xFFFF),
+            );
         }
     }
 

@@ -343,6 +343,11 @@ pub fn event_type_name(event_type: u16) -> &'static str {
         TraceEventType::DEFER_REQUEUE_ELR => "DEFER_REQUEUE_ELR",
         TraceEventType::DEFER_REQUEUE_X30 => "DEFER_REQUEUE_X30",
         TraceEventType::DEFER_REQUEUE_FLAGS => "DEFER_REQUEUE_FLAGS",
+        TraceEventType::AHCI_CMD_ISSUE => "AHCI_CMD_ISSUE",
+        TraceEventType::AHCI_ISR_ENTRY => "AHCI_ISR_ENTRY",
+        TraceEventType::AHCI_ISR_STATE => "AHCI_ISR_STATE",
+        TraceEventType::AHCI_ISR_COMPLETE => "AHCI_ISR_COMPLETE",
+        TraceEventType::AHCI_ISR_NOCOMPLETE => "AHCI_ISR_NOCOMPLETE",
 
         _ => "UNKNOWN",
     }
