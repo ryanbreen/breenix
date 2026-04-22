@@ -1329,10 +1329,27 @@ fn init_gicv3_redistributor(cpu_id: usize) {
     gicr_write_at_rd_base(rd_base, GICR_SGI_OFFSET + GICR_ICFGR0, 0); // SGIs: always edge
     gicr_write_at_rd_base(rd_base, GICR_SGI_OFFSET + GICR_ICFGR0 + 4, 0); // PPIs: level-triggered
 
-    // Linux's GICv3 CPU init configures SGIs/PPIs together before enabling the
-    // CPU interface. Breenix uses SGI0 for reschedule and SGI1 for timer rearm;
-    // leaving them disabled lets ISPENDR0 latch the SGI while HPPIR1/IAR1 stay
-    // spurious.
+    // ═══════════════════════════════════════════════════════════════════════
+    // 🔒 GOLD-MASTER REGION — SGI admission enable
+    // ═══════════════════════════════════════════════════════════════════════
+    //
+    // Frozen by F32j (commit 946b2812, PR #328) and retained by PR #334.
+    // Without enabling the SGIs Breenix actually uses (SGI_RESCHEDULE and
+    // SGI_TIMER_REARM) in each CPU's GICR_ISENABLER0, the SGIs can latch
+    // in GICR_ISPENDR0 but never be admitted by the CPU interface —
+    // ICC_HPPIR1_EL1 returns spurious (1023) and the reschedule IPI is
+    // silently dropped. F32i validated this via linux-probe comparison
+    // (20/20 Linux wakes of idle CPU0 in 14-54µs on same Parallels hypervisor).
+    // Linux parity: /tmp/linux-v6.8/drivers/irqchip/irq-gic-v3.c::gic_cpu_config.
+    //
+    // DO NOT remove or relax this ISENABLER write. Any future SGI Breenix
+    // introduces (beyond SGI 0 and 1) must also be OR'd into this mask.
+    // The `dsb sy; isb` after the write ensures the CPU interface sees
+    // the enable before any subsequent SGI send.
+    //
+    // See docs/planning/cpu0-user-guard-autopsy/README.md for the forensic
+    // record of the CPU0 regression this fix was part of addressing.
+    // ═══════════════════════════════════════════════════════════════════════
     let sgi_enable_mask =
         (1u32 << super::constants::SGI_RESCHEDULE) | (1u32 << super::constants::SGI_TIMER_REARM);
     gicr_write_at_rd_base(rd_base, GICR_SGI_OFFSET + GICR_ISENABLER0, sgi_enable_mask);
@@ -1340,6 +1357,7 @@ fn init_gicv3_redistributor(cpu_id: usize) {
         core::arch::asm!("dsb sy", options(nomem, nostack));
         core::arch::asm!("isb", options(nomem, nostack));
     }
+    // ═══════════════════════════════════════════════════════════════════════
 }
 
 /// Initialize GICv3 CPU Interface via ICC system registers.
