@@ -2063,48 +2063,21 @@ fn dispatch_thread_locked(
             }
         }
         //
-        // CPU 0 GUARD: On Parallels/HVF, ERET to EL0 kills CPU 0's vtimer
-        // PPI 27 delivery. Without the timer, CPU 0 cannot preempt and any
-        // thread dispatched here monopolises the CPU. Redirect to idle and
-        // requeue the thread on CPUs 1-7 where the timer works.
-        if cpu_id == 0 && crate::arch_impl::aarch64::smp::cpus_online() > 1 {
-            if let Some(thread) = sched.get_thread(thread_id) {
-                let candidate_elr = thread.context.elr_el1;
-                let candidate_spsr = if thread.has_started {
-                    dispatch_spsr(thread.context.spsr_el1)
-                } else {
-                    0
-                };
-                trace_cpu0_user_dispatch(
-                    TRACE_CPU0_USER_DISPATCH_GUARD_REDIRECT,
-                    thread_id,
-                    candidate_elr,
-                    candidate_spsr,
-                    thread.cached_ttbr0,
-                );
-            }
-            trace_dispatch_redirect(thread_id, TRACE_REDIRECT_CPU0_USER_GUARD);
-            if let Some(thread) = sched.get_thread_mut(thread_id) {
-                thread.state = ThreadState::Ready;
-            }
-            setup_idle_return_locked(sched, frame, cpu_id);
-            let idle_id = sched.cpu_state[cpu_id].idle_thread;
-            sched.cpu_state[cpu_id].current_thread = Some(idle_id);
-            // Requeue the thread being dispatched to a non-CPU0 queue.
-            sched.requeue_thread_after_save(thread_id);
-            sched.set_need_resched_inner();
-            // Send self-IPI to drain the deferred requeue slot on CPU 0.
-            // DEFERRED_REQUEUE[0] may hold the old thread from the context
-            // switch; without an interrupt to trigger processing, it would
-            // be stranded because CPU 0's vtimer is dead. The SGI fires
-            // when idle_loop_arm64 enables IRQs (daifclr), causing
-            // check_need_resched_and_switch_arm64 to run and drain the slot.
-            crate::arch_impl::aarch64::gic::send_sgi(
-                crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
-                0, // target CPU 0 (self)
-            );
-            return;
-        }
+        // (Removed) CPU 0 user-guard — redirect EL0 away from CPU0 under SMP.
+        // The guard's requeue path (`requeue_thread_after_save`) puts the
+        // thread right back on CPU0's own ready queue, so CPU0's scheduler
+        // immediately re-dispatches it, hits the guard again, requeues, loops
+        // at ~24 kHz — never reaching userspace and starving CPU0's timer ISR
+        // of chance to run anything else. Evidence from cpu0-trace-dump-probe
+        // at 30s uptime: CPU0 ran the dispatch→redirect→requeue loop with no
+        // progress while CPUs 1-7 accumulated 28K-30K timer ticks.
+        //
+        // The guard's original rationale was "ERET to EL0 kills CPU0 vtimer
+        // on HVF", but the redirect loop kills CPU0 just as effectively
+        // while also starving userspace entirely. Remove the guard and let
+        // CPU0 run EL0 normally. If HVF vtimer-death on EL0-return is still
+        // a real issue, it will reproduce as a distinct signature we can
+        // target with a non-looping fix.
 
         if !has_started {
             if let Some(thread) = sched.get_thread_mut(thread_id) {
