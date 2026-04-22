@@ -527,6 +527,55 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
         }
     }
 
+    // F34-followup: one-shot trace dump after 30 seconds of uptime, triggered
+    // from any healthy CPU. CPU0 timer dies in some environments (not F34's),
+    // so we use CPU1-CPU7's tick counter as the time reference. This captures
+    // a trace of whatever CPU0 was doing before/around its death — evidence
+    // F34 was blocked on.
+    if cpu_id >= 1 && cpu_id < 8 {
+        static DUMPED: core::sync::atomic::AtomicBool =
+            core::sync::atomic::AtomicBool::new(false);
+        // 30000 ticks at ~1000 Hz = ~30 seconds
+        let this_cpu_ticks = TIMER_TICK_COUNT[cpu_id].load(Ordering::Relaxed);
+        if this_cpu_ticks == 30000
+            && DUMPED
+                .compare_exchange(
+                    false,
+                    true,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+        {
+            crate::serial_aarch64::raw_serial_str(
+                b"\n[probe] 30s uptime reached; dumping all CPU trace buffers\n",
+            );
+            // Per-CPU tick snapshot
+            crate::serial_aarch64::raw_serial_str(b"[probe] tick_count per cpu: ");
+            for c in 0..8 {
+                let n = TIMER_TICK_COUNT[c].load(Ordering::Relaxed);
+                let mut buf = [0u8; 20];
+                let mut i = 20usize;
+                let mut n2 = n;
+                if n2 == 0 {
+                    i -= 1;
+                    buf[i] = b'0';
+                } else {
+                    while n2 > 0 {
+                        i -= 1;
+                        buf[i] = b'0' + (n2 % 10) as u8;
+                        n2 /= 10;
+                    }
+                }
+                crate::serial_aarch64::raw_serial_str(&buf[i..]);
+                crate::serial_aarch64::raw_serial_char(b' ');
+            }
+            crate::serial_aarch64::raw_serial_char(b'\n');
+            crate::tracing::dump_all_buffers();
+            crate::serial_aarch64::raw_serial_str(b"[probe] trace dump complete\n");
+        }
+    }
+
     // Mask the timer interrupt at the source (set IMASK=1, keep ENABLE=1).
     // This de-asserts the PPI line, which signals the hypervisor (Parallels/HVF)
     // that the guest has acknowledged the interrupt. Without this, the HVF

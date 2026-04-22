@@ -15,6 +15,9 @@
 #   ./run.sh --parallels --no-build  # Deploy existing build to Parallels
 #   ./run.sh --parallels --test      # Build, boot, wait, screenshot, exit
 #   ./run.sh --parallels --test 60   # Same with custom wait (default: 35s)
+#   ./run.sh --parallels --nuclear   # Force-bounce dispatcher + wipe all
+#                                     breenix VM state, then clean rebuild.
+#                                     Use when Parallels state feels stuck.
 #   ./run.sh --ahci             # ARM64 with AHCI (SATA) disk instead of virtio-blk
 #   ./run.sh --ahci --headless # ARM64 AHCI with serial output only
 #   ./run.sh --btrt            # ARM64 BTRT structured boot test
@@ -61,6 +64,11 @@ while [[ $# -gt 0 ]]; do
             ;;
         --clean)
             CLEAN=true
+            shift
+            ;;
+        --nuclear)
+            NUCLEAR=true
+            CLEAN=true  # imply --clean
             shift
             ;;
         --no-build)
@@ -123,6 +131,8 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  --clean                    Full rebuild: userspace, system ext2, kernel"
+            echo "  --nuclear                  Force-bounce Parallels dispatcher + wipe all breenix VM state,"
+            echo "                             then full rebuild (implies --clean). Requires sudo. Parallels only."
             echo "  --rebuild-home             Recreate home disk (destroys user data)"
             echo "  --no-build                 Skip all builds, use existing artifacts"
             echo "  --x86, --x86_64, --amd64   Run x86_64 kernel (default: ARM64)"
@@ -188,6 +198,56 @@ if [ "$PARALLELS" = true ]; then
     if ! command -v prl_disk_tool &>/dev/null; then
         echo "ERROR: prl_disk_tool not found. Is Parallels Desktop installed?"
         exit 1
+    fi
+
+    if [ "${NUCLEAR:-false}" = true ]; then
+        echo ""
+        echo "========================================="
+        echo "NUCLEAR Parallels cleanup"
+        echo "========================================="
+        echo "This will:"
+        echo "  1. Force-restart the Parallels dispatcher service (requires sudo)"
+        echo "  2. Stop all breenix-* VMs"
+        echo "  3. Delete all ~/Parallels/breenix-*.pvm bundles"
+        echo "  4. Clear the serial log"
+        echo "Dispatcher restart clears any stuck/ghost VM state that persists"
+        echo "across runs. After this, run.sh does its normal --clean rebuild."
+        echo ""
+
+        # Step 1: Force-bounce the Parallels dispatcher. Requires sudo.
+        # macOS auto-relaunches prl_disp_service after SIGKILL.
+        echo "[nuclear] Force-killing prl_disp_service (requires sudo)..."
+        sudo pkill -9 -f prl_disp_service || true
+        echo "[nuclear] Waiting 5s for dispatcher to relaunch..."
+        sleep 5
+        # Wait for prlctl to work again (dispatcher back up)
+        for i in $(seq 1 20); do
+            if prlctl list --all &>/dev/null; then
+                echo "[nuclear] Dispatcher responsive again after ${i}s"
+                break
+            fi
+            sleep 1
+        done
+
+        # Step 2: Stop any running breenix VMs
+        echo "[nuclear] Stopping any running breenix VMs..."
+        prlctl list --all 2>/dev/null \
+            | awk '/breenix-/ {print $NF}' \
+            | while read -r vm; do
+                echo "[nuclear]   stop --kill $vm"
+                prlctl stop "$vm" --kill 2>&1 | tail -1 || true
+            done
+
+        # Step 3: Delete ~/Parallels/breenix-*.pvm bundles (keep linux-probe, .hdd)
+        echo "[nuclear] Removing ~/Parallels/breenix-*.pvm bundles..."
+        rm -rf ~/Parallels/breenix-*.pvm 2>/dev/null || true
+
+        # Step 4: Clear serial log
+        echo "[nuclear] Truncating serial log..."
+        : > /tmp/breenix-parallels-serial.log
+
+        echo "[nuclear] Cleanup complete. Proceeding with clean rebuild..."
+        echo ""
     fi
 
     PARALLELS_DIR="$BREENIX_ROOT/target/parallels"
