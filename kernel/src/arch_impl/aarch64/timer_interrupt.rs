@@ -631,10 +631,35 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
         }
     }
 
-    // IMMEDIATELY re-arm the timer — clears IMASK and sets a future CVAL.
-    // This MUST happen before any potentially-blocking handler work (keyboard
-    // poll, USB XHCI poll, etc.). If that work hangs on a spinlock, the timer
-    // is still re-armed with IMASK=0, preventing permanent timer death on this CPU.
+    // ═══════════════════════════════════════════════════════════════════════
+    // 🔒 GOLD-MASTER REGION — arm_timer at TOP of handler
+    // ═══════════════════════════════════════════════════════════════════════
+    //
+    // Frozen by PR #336 after review. Original fix in commit e4e16b68
+    // (2026-03-29): "move arm_timer to top of handler — prevents IMASK death
+    // when handler work hangs".
+    //
+    // Invariant: after the IMASK=1 write above (which tells HVF the guest is
+    // acknowledging the interrupt), the very next thing is an unconditional
+    // re-arm that clears IMASK and sets a future CVAL. This MUST happen
+    // BEFORE any potentially-blocking handler work (keyboard poll, USB XHCI
+    // poll, scheduler bookkeeping). If the handler later hangs on a lock,
+    // the timer is already re-armed with IMASK=0 so the CPU's vtimer keeps
+    // ticking instead of dying permanently.
+    //
+    // DO NOT:
+    //   - Move this re-arm later in the handler ("just a quick poll first,
+    //     then arm" has been tried and regresses to IMASK-death).
+    //   - Gate it on any condition — every timer-handler entry re-arms,
+    //     unconditionally, even if the previous arm happened 1µs ago.
+    //   - Replace the direct CNTV_CTL=1 + CVAL write with an arm function
+    //     that could take a lock.
+    //
+    // Diagnostic proof of the IMASK-death class is in the e4e16b68 commit
+    // message: `timer_ctl[0]=0x7 (ENABLE=1, IMASK=1, ISTATUS=1)` on a dead
+    // CPU0 before the fix. See also docs/planning/cpu0-user-guard-autopsy
+    // for the broader CPU0-liveness story.
+    // ═══════════════════════════════════════════════════════════════════════
     let ticks = TICKS_PER_INTERRUPT.load(Ordering::Relaxed);
     if crate::platform_config::is_vmware() {
         // VMware: re-arm both timers using CVAL (absolute compare value)
@@ -654,6 +679,7 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
     } else {
         arm_timer(ticks);
     }
+    // ═══════════════════════════════════════════════════════════════════════
 
     // Snapshot CNTV_CTL_EL0 for this CPU — captures the timer hardware state
     // after re-arm. Should show CTL=1 (ENABLE=1, IMASK=0) or CTL=5 if ISTATUS.
