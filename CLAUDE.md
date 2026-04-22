@@ -386,7 +386,9 @@ the constraints.
 |---|---|---|
 | `kernel/src/arch_impl/aarch64/context_switch.rs` (EL0 dispatch site) | NO CPU0-specific EL0 dispatch guard | `docs/planning/cpu0-user-guard-autopsy/README.md` |
 | `kernel/src/arch_impl/aarch64/context_switch.rs::idle_loop_arm64` | Sleep gate + `dsb sy; wfi; daifclr` sequence | same |
+| `kernel/src/arch_impl/aarch64/context_switch.rs::aarch64_enter_exception_frame` | ISB before dispatch ERET (narrow placement — do NOT add ISBs at other ERETs) | same |
 | `kernel/src/arch_impl/aarch64/gic.rs::init_gicv3_redistributor` (SGI enable block) | `GICR_ISENABLER0` write for SGI_RESCHEDULE + SGI_TIMER_REARM | same |
+| `kernel/src/arch_impl/aarch64/timer_interrupt.rs` (handler arm-at-top) | Unconditional re-arm BEFORE any handler work (prevents IMASK death if handler hangs) | same |
 | `kernel/src/arch_impl/aarch64/timer_interrupt.rs` (CPU0 regression alarm) | Panic at 30s if CPU0 tick_count < 10% of max peer | same |
 
 The CPU0 user-guard regression (PR #334 fixed it) burned ~1 week because

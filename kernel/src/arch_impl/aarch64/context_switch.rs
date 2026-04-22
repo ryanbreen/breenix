@@ -645,21 +645,37 @@ aarch64_enter_exception_frame:
     str x17, [x16]
 5:
 
-    // CRITICAL: ISB before ERET — required for HVF (Apple Hypervisor Framework).
+    // ═════════════════════════════════════════════════════════════════════
+    // 🔒 GOLD-MASTER REGION — ISB before dispatch ERET
+    // ═════════════════════════════════════════════════════════════════════
     //
-    // Without this ISB, the SPSR_EL1/ELR_EL1 writes above may not be visible
-    // to HVF when it processes the ERET trap. HVF reads guest SPSR to determine
-    // PSTATE.DAIF for the vtimer injection decision. If it sees stale SPSR with
-    // DAIF.I=1 (interrupts masked), it permanently masks the virtual timer,
-    // killing all timer interrupts on this CPU.
+    // Frozen by PR #336. Original fix: aeb3e989 (added ISB at 6 ERET sites)
+    // then aade0871 (narrowed to this ONE site). Narrow placement is
+    // load-bearing: ISBs at the other ERET sites (IRQ return, syscall
+    // return, first-entry-to-userspace) caused a DIFFERENT timer death at
+    // ~10K ticks. Only the dispatch ERET needs the ISB.
     //
-    // On real hardware, ERET is itself a context synchronization event, so ISB
-    // before ERET is architecturally redundant. But HVF intercepts ERET before
-    // it executes, and the interception sees pre-synchronization register state.
+    // Bisection evidence (aeb3e989 commit message):
+    //   - ret-based dispatch (no ERET): timer survives 55000+ ticks
+    //   - ERET without ISB: timer dies after ~4 ticks
+    //   - ERET with ISB: timer survives 300000+ ticks indefinitely
     //
-    // Evidence: without ISB, timer dies after ~4 ticks. With ISB, timer survives
-    // 300000+ ticks indefinitely. The ret-based path (daifclr+br) was immune
-    // because it doesn't go through HVF's ERET trap.
+    // Rationale: HVF intercepts ERET before it executes as a context-sync
+    // event. Without the ISB, HVF reads guest SPSR_EL1/ELR_EL1 pre-sync.
+    // On real hardware ERET is itself a sync, so this ISB is architecturally
+    // redundant — but HVF doesn't get the sync until it runs the interception.
+    //
+    // DO NOT:
+    //   - Remove this isb.
+    //   - Add ISBs before other ERETs (boot.S sync/irq handlers, syscall
+    //     return in syscall_entry.S). aade0871 specifically removed them
+    //     from those sites because they caused timer death.
+    //   - Inline additional instructions between this isb and the eret
+    //     below unless you've verified (via boot + 30s trace) that the
+    //     timer still survives.
+    //
+    // See docs/planning/cpu0-user-guard-autopsy/README.md.
+    // ═════════════════════════════════════════════════════════════════════
     isb
     mrs x16, mpidr_el1
     and x16, x16, #0xFF
