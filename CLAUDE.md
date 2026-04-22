@@ -375,6 +375,25 @@ prlctl start breenix-dev
 - Red zone: disabled for interrupt safety
 - Features: `-mmx,-sse,+soft-float`
 
+## 🔒 GOLD-MASTER REGIONS — FROZEN 🔒
+
+Specific code regions are **frozen as gold-master** and must not be modified
+without reading the linked forensic record and obtaining PR signoff from the
+project owner. Each region carries an inline comment block that calls out
+the constraints.
+
+| File:line | Region | Autopsy |
+|---|---|---|
+| `kernel/src/arch_impl/aarch64/context_switch.rs` (EL0 dispatch site) | NO CPU0-specific EL0 dispatch guard | `docs/planning/cpu0-user-guard-autopsy/README.md` |
+| `kernel/src/arch_impl/aarch64/context_switch.rs::idle_loop_arm64` | Sleep gate + `dsb sy; wfi; daifclr` sequence | same |
+| `kernel/src/arch_impl/aarch64/gic.rs::init_gicv3_redistributor` (SGI enable block) | `GICR_ISENABLER0` write for SGI_RESCHEDULE + SGI_TIMER_REARM | same |
+| `kernel/src/arch_impl/aarch64/timer_interrupt.rs` (CPU0 regression alarm) | Panic at 30s if CPU0 tick_count < 10% of max peer | same |
+
+The CPU0 user-guard regression (PR #334 fixed it) burned ~1 week because
+agents kept accepting "HVF kills CPU0 vtimer on EL0 return" as truth without
+evidence. The markers in these regions exist to break that pattern. If you
+think you need to modify one, read the autopsy first.
+
 ## 🚨 PROHIBITED CODE SECTIONS 🚨
 
 The following files are on the **prohibited modifications list**. Agents MUST NOT modify these files without explicit user approval.

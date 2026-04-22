@@ -2062,22 +2062,40 @@ fn dispatch_thread_locked(
                 );
             }
         }
+        // ═══════════════════════════════════════════════════════════════════
+        // 🔒 GOLD-MASTER REGION — DO NOT ADD A CPU0-SPECIFIC EL0 DISPATCH GUARD
+        // ═══════════════════════════════════════════════════════════════════
         //
-        // (Removed) CPU 0 user-guard — redirect EL0 away from CPU0 under SMP.
-        // The guard's requeue path (`requeue_thread_after_save`) puts the
-        // thread right back on CPU0's own ready queue, so CPU0's scheduler
-        // immediately re-dispatches it, hits the guard again, requeues, loops
-        // at ~24 kHz — never reaching userspace and starving CPU0's timer ISR
-        // of chance to run anything else. Evidence from cpu0-trace-dump-probe
-        // at 30s uptime: CPU0 ran the dispatch→redirect→requeue loop with no
-        // progress while CPUs 1-7 accumulated 28K-30K timer ticks.
+        // Frozen by PR #334 (commit 9da897f4, 2026-04-22) after a one-week
+        // investigation attributed CPU0 "timer death" to an HVF vtimer issue.
+        // The real bug was a CPU0-specific guard here that redirected every
+        // EL0 candidate, then called `requeue_thread_after_save(thread_id)`
+        // to "route away from CPU0." That function does NOT route away from
+        // CPU0 — it re-enqueues on CPU0's own ready queue. CPU0 picked the
+        // same thread, hit the guard, requeued, looped at ~24 kHz,
+        // indefinitely, never reaching userspace.
         //
-        // The guard's original rationale was "ERET to EL0 kills CPU0 vtimer
-        // on HVF", but the redirect loop kills CPU0 just as effectively
-        // while also starving userspace entirely. Remove the guard and let
-        // CPU0 run EL0 normally. If HVF vtimer-death on EL0-return is still
-        // a real issue, it will reproduce as a distinct signature we can
-        // target with a non-looping fix.
+        // RULE: CPU0 dispatches EL0 threads IDENTICALLY to CPUs 1-7. Do not
+        // add any CPU-specific branch here.
+        //
+        // IF YOU BELIEVE CPU0 NEEDS SPECIAL HANDLING, DO ALL OF:
+        //   1. Read docs/planning/cpu0-user-guard-autopsy/README.md first.
+        //   2. Reproduce the problem with cpu0-trace-dump-probe evidence,
+        //      specifically per-CPU tick_count parity at 30s uptime.
+        //   3. Verify on the Linux probe VM (10.211.55.3) that Linux needs
+        //      the behavior you're proposing. If Linux works without it,
+        //      Breenix can work without it.
+        //   4. Ensure any requeue you add demonstrably routes to a NON-CPU0
+        //      ready queue (NOT requeue_thread_after_save which re-enqueues
+        //      on the current CPU).
+        //   5. Obtain PR signoff from the project owner.
+        //
+        // The boot-time regression alarm in timer_interrupt.rs (panics if
+        // CPU0 tick_count < 10% of max peer at 30s) will catch you if any
+        // change to this region reintroduces the loop.
+        //
+        // DO NOT REMOVE OR RELAX THIS COMMENT BLOCK.
+        // ═══════════════════════════════════════════════════════════════════
 
         if !has_started {
             if let Some(thread) = sched.get_thread_mut(thread_id) {
@@ -3229,6 +3247,32 @@ fn idle_enter_scheduler_if_needed() -> bool {
 
 /// ARM64 idle loop - wait for interrupts.
 #[no_mangle]
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔒 GOLD-MASTER REGION — idle_loop_arm64
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Frozen by PR #334 (commit 9da897f4, 2026-04-22). The (daifset → gate check
+// → dsb sy → wfi → daifclr) sequence in this loop is the result of F20e
+// (bff1d92a), F32j's sleep gate (part of PR #328), and the empirical
+// finding that Linux runs the same pattern on the same Parallels
+// hypervisor without issue.
+//
+// In particular:
+//   - `dsb sy` BEFORE wfi matches Linux's `arch/arm64/kernel/process.c::cpu_do_idle`
+//   - WFI runs with IRQs masked; masked IRQs still wake WFI per ARM spec
+//   - `daifclr` after WFI unmasks to take the pending IRQ
+//
+// DO NOT:
+//   - Re-add the idle-loop `rearm_timer()` that F20e removed (handler-level
+//     re-arm from e4e16b68 covers this)
+//   - Change the DAIF mask width without citing Linux arch_local_irq_disable
+//   - Add a CPU0-specific branch here (the previous guard was what caused
+//     the week-long "CPU0 regression" — see
+//     docs/planning/cpu0-user-guard-autopsy/README.md)
+//
+// The regression alarm in timer_interrupt.rs fires if CPU0 tick_count
+// diverges from peer CPUs at 30s uptime.
+// ═══════════════════════════════════════════════════════════════════════════
 pub extern "C" fn idle_loop_arm64() -> ! {
     // Get CPU ID once (cheap MRS).
     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;

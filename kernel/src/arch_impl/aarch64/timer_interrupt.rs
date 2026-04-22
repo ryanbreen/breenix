@@ -527,6 +527,85 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // 🔒 GOLD-MASTER REGION — CPU0 divergence regression alarm
+    // ═══════════════════════════════════════════════════════════════════════
+    //
+    // Installed by PR #334 (2026-04-22) after the CPU0 user-guard dispatch
+    // loop cost ~1 week to diagnose. The alarm fires a `panic!` at 30s
+    // uptime if CPU0's tick count is less than 10% of the max non-CPU0 CPU.
+    // This would have caught the guard loop on its first boot instead of
+    // letting users hunt "cursor doesn't work" symptoms for days.
+    //
+    // Trigger conditions:
+    //   - Any non-CPU0 CPU reaches tick 30000 (~30s of uptime)
+    //   - CPU0's tick count is < 10% of the max non-CPU0 tick count
+    //
+    // A panic is intentionally loud: this regression SHOULD make the
+    // system unbootable because silent degradation was the whole problem.
+    //
+    // See docs/planning/cpu0-user-guard-autopsy/README.md.
+    // ═══════════════════════════════════════════════════════════════════════
+    if cpu_id >= 1 && cpu_id < 8 {
+        let this_cpu_ticks = TIMER_TICK_COUNT[cpu_id].load(Ordering::Relaxed);
+        if this_cpu_ticks == 30000 {
+            let cpu0 = TIMER_TICK_COUNT[0].load(Ordering::Relaxed);
+            let mut max_peer: u64 = 0;
+            for c in 1..8 {
+                let v = TIMER_TICK_COUNT[c].load(Ordering::Relaxed);
+                if v > max_peer {
+                    max_peer = v;
+                }
+            }
+            // 10% threshold: cpu0 * 10 < max_peer means cpu0 < 10% of max.
+            if cpu0.saturating_mul(10) < max_peer {
+                crate::serial_aarch64::raw_serial_str(
+                    b"\n!!! CPU0 REGRESSION ALARM !!!\n",
+                );
+                crate::serial_aarch64::raw_serial_str(b"CPU0 tick_count = ");
+                let mut n = cpu0;
+                let mut buf = [0u8; 20];
+                let mut i = 20usize;
+                if n == 0 {
+                    i -= 1;
+                    buf[i] = b'0';
+                } else {
+                    while n > 0 {
+                        i -= 1;
+                        buf[i] = b'0' + (n % 10) as u8;
+                        n /= 10;
+                    }
+                }
+                crate::serial_aarch64::raw_serial_str(&buf[i..]);
+                crate::serial_aarch64::raw_serial_str(b", max peer = ");
+                let mut n = max_peer;
+                let mut buf = [0u8; 20];
+                let mut i = 20usize;
+                if n == 0 {
+                    i -= 1;
+                    buf[i] = b'0';
+                } else {
+                    while n > 0 {
+                        i -= 1;
+                        buf[i] = b'0' + (n % 10) as u8;
+                        n /= 10;
+                    }
+                }
+                crate::serial_aarch64::raw_serial_str(&buf[i..]);
+                crate::serial_aarch64::raw_serial_str(
+                    b"\nSee docs/planning/cpu0-user-guard-autopsy/README.md\n",
+                );
+                panic!(
+                    "CPU0 timer regression: tick_count={} but peer max={}; \
+                     read docs/planning/cpu0-user-guard-autopsy/README.md \
+                     before touching anything",
+                    cpu0, max_peer
+                );
+            }
+        }
+    }
+    // ═══════════════════════════════════════════════════════════════════════
+
     // Mask the timer interrupt at the source (set IMASK=1, keep ENABLE=1).
     // This de-asserts the PPI line, which signals the hypervisor (Parallels/HVF)
     // that the guest has acknowledged the interrupt. Without this, the HVF
