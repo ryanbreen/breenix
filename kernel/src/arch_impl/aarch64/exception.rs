@@ -1191,6 +1191,120 @@ fn interrupted_context_had_irqs_unmasked(frame: *const Aarch64ExceptionFrame) ->
     !frame.is_null() && unsafe { ((*frame).spsr & 0xC0) == 0 }
 }
 
+#[inline(always)]
+fn dispatch_irq_action(irq_id: u32, frame: *const Aarch64ExceptionFrame) {
+    // Handle the interrupt based on ID
+    match irq_id {
+        // Timer interrupt — virtual (PPI 27) or physical (PPI 30)
+        // This is the scheduling timer - calls into scheduler
+        irq if irq == crate::arch_impl::aarch64::timer_interrupt::timer_irq() => {
+            // Call the timer interrupt handler which handles:
+            // - Re-arming the timer
+            // - Updating global time
+            // - Decrementing time quantum
+            // - Setting need_resched flag
+            crate::arch_impl::aarch64::timer_interrupt::timer_interrupt_handler(frame);
+        }
+
+        // UART0 receive interrupt (SPI 1 = IRQ 33)
+        UART0_IRQ => {
+            handle_uart_interrupt();
+        }
+
+        // SGIs (0-15) - Inter-processor interrupts
+        0..=15 => {
+            if irq_id == constants::SGI_RESCHEDULE {
+                // IPI reschedule: another CPU unblocked a thread and wants us to pick it up
+                crate::per_cpu_aarch64::set_need_resched(true);
+            } else if irq_id == constants::SGI_TIMER_REARM {
+                // IPI timer re-arm: another CPU detected our timer is dead
+                // and wants us to re-arm it. This fixes Parallels HVF vtimer
+                // death where PPI 27 is pending but never delivered — the SGI
+                // proves the CPU CAN receive interrupts, so re-arming the
+                // timer here should make PPI 27 deliverable again.
+                crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
+            }
+        }
+
+        // PPIs (16-31) - Private peripheral interrupts (excluding timer)
+        // On VMware, we enable both virtual (27) and physical (30) timers
+        // to discover which fires. Handle either as a timer interrupt.
+        irq @ 16..=31 => {
+            if irq == crate::arch_impl::aarch64::timer_interrupt::VIRT_TIMER_IRQ
+                || irq == crate::arch_impl::aarch64::timer_interrupt::PHYS_TIMER_IRQ
+            {
+                crate::arch_impl::aarch64::timer_interrupt::timer_interrupt_handler(frame);
+            }
+            // Diagnostic: emit raw serial for any unexpected PPI
+            if irq != crate::arch_impl::aarch64::timer_interrupt::timer_irq()
+                && irq != crate::arch_impl::aarch64::timer_interrupt::VIRT_TIMER_IRQ
+                && irq != crate::arch_impl::aarch64::timer_interrupt::PHYS_TIMER_IRQ
+            {
+                crate::serial_aarch64::raw_serial_char(b'P');
+                crate::serial_aarch64::raw_serial_char(b'0' + (irq / 10) as u8);
+                crate::serial_aarch64::raw_serial_char(b'0' + (irq % 10) as u8);
+            }
+        }
+
+        // SPIs (32-1019) - Shared peripheral interrupts
+        // Note: No logging here - interrupt handlers must be < 1000 cycles
+        32..=1019 => {
+            // VirtIO input (keyboard) interrupt dispatch
+            if let Some(input_irq) = crate::drivers::virtio::input_mmio::get_irq() {
+                if irq_id == input_irq {
+                    crate::drivers::virtio::input_mmio::handle_interrupt();
+                }
+            }
+            // VirtIO tablet (pointer) interrupt dispatch
+            if let Some(tablet_irq) = crate::drivers::virtio::input_mmio::get_tablet_irq() {
+                if irq_id == tablet_irq {
+                    crate::drivers::virtio::input_mmio::handle_tablet_interrupt();
+                }
+            }
+            // VirtIO network interrupt dispatch
+            if let Some(net_irq) = crate::drivers::virtio::net_mmio::get_irq() {
+                if irq_id == net_irq {
+                    crate::drivers::virtio::net_mmio::handle_interrupt();
+                }
+            }
+            // XHCI USB interrupt dispatch
+            if let Some(xhci_irq) = crate::drivers::usb::xhci::get_irq() {
+                if irq_id == xhci_irq {
+                    crate::drivers::usb::xhci::handle_interrupt();
+                }
+            }
+            // VirtIO GPU PCI interrupt dispatch (MSI completion)
+            if let Some(gpu_irq) = crate::drivers::virtio::gpu_pci::get_irq() {
+                if irq_id == gpu_irq {
+                    crate::drivers::virtio::gpu_pci::handle_interrupt();
+                }
+            }
+            // VirtIO network PCI interrupt dispatch (GICv2m MSI)
+            if let Some(net_pci_irq) = crate::drivers::virtio::net_pci::get_irq() {
+                if irq_id == net_pci_irq {
+                    crate::drivers::virtio::net_pci::handle_interrupt();
+                }
+            }
+            // AHCI storage interrupt dispatch (GICv2m MSI/MSI-X)
+            #[cfg(target_arch = "aarch64")]
+            if let Some(ahci_irq) = crate::drivers::ahci::get_irq() {
+                if irq_id == ahci_irq {
+                    crate::drivers::ahci::handle_interrupt();
+                }
+            }
+        }
+
+        // Should not happen - GIC filters invalid IDs (1020+)
+        _ => {}
+    }
+}
+
+#[inline(always)]
+fn handle_irq_event(irq_id: u32, frame: *const Aarch64ExceptionFrame) {
+    dispatch_irq_action(irq_id, frame);
+    gic::deactivate_irq(irq_id);
+}
+
 /// Handle IRQ interrupts
 ///
 /// Called from assembly after saving registers.
@@ -1222,110 +1336,7 @@ pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
             }
         }
 
-        // Handle the interrupt based on ID
-        match irq_id {
-            // Timer interrupt — virtual (PPI 27) or physical (PPI 30)
-            // This is the scheduling timer - calls into scheduler
-            irq if irq == crate::arch_impl::aarch64::timer_interrupt::timer_irq() => {
-                // Call the timer interrupt handler which handles:
-                // - Re-arming the timer
-                // - Updating global time
-                // - Decrementing time quantum
-                // - Setting need_resched flag
-                crate::arch_impl::aarch64::timer_interrupt::timer_interrupt_handler(frame);
-            }
-
-            // UART0 receive interrupt (SPI 1 = IRQ 33)
-            UART0_IRQ => {
-                handle_uart_interrupt();
-            }
-
-            // SGIs (0-15) - Inter-processor interrupts
-            0..=15 => {
-                if irq_id == constants::SGI_RESCHEDULE {
-                    // IPI reschedule: another CPU unblocked a thread and wants us to pick it up
-                    crate::per_cpu_aarch64::set_need_resched(true);
-                } else if irq_id == constants::SGI_TIMER_REARM {
-                    // IPI timer re-arm: another CPU detected our timer is dead
-                    // and wants us to re-arm it. This fixes Parallels HVF vtimer
-                    // death where PPI 27 is pending but never delivered — the SGI
-                    // proves the CPU CAN receive interrupts, so re-arming the
-                    // timer here should make PPI 27 deliverable again.
-                    crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
-                }
-            }
-
-            // PPIs (16-31) - Private peripheral interrupts (excluding timer)
-            // On VMware, we enable both virtual (27) and physical (30) timers
-            // to discover which fires. Handle either as a timer interrupt.
-            irq @ 16..=31 => {
-                if irq == crate::arch_impl::aarch64::timer_interrupt::VIRT_TIMER_IRQ
-                    || irq == crate::arch_impl::aarch64::timer_interrupt::PHYS_TIMER_IRQ
-                {
-                    crate::arch_impl::aarch64::timer_interrupt::timer_interrupt_handler(frame);
-                }
-                // Diagnostic: emit raw serial for any unexpected PPI
-                if irq != crate::arch_impl::aarch64::timer_interrupt::timer_irq()
-                    && irq != crate::arch_impl::aarch64::timer_interrupt::VIRT_TIMER_IRQ
-                    && irq != crate::arch_impl::aarch64::timer_interrupt::PHYS_TIMER_IRQ
-                {
-                    crate::serial_aarch64::raw_serial_char(b'P');
-                    crate::serial_aarch64::raw_serial_char(b'0' + (irq / 10) as u8);
-                    crate::serial_aarch64::raw_serial_char(b'0' + (irq % 10) as u8);
-                }
-            }
-
-            // SPIs (32-1019) - Shared peripheral interrupts
-            // Note: No logging here - interrupt handlers must be < 1000 cycles
-            32..=1019 => {
-                // VirtIO input (keyboard) interrupt dispatch
-                if let Some(input_irq) = crate::drivers::virtio::input_mmio::get_irq() {
-                    if irq_id == input_irq {
-                        crate::drivers::virtio::input_mmio::handle_interrupt();
-                    }
-                }
-                // VirtIO tablet (pointer) interrupt dispatch
-                if let Some(tablet_irq) = crate::drivers::virtio::input_mmio::get_tablet_irq() {
-                    if irq_id == tablet_irq {
-                        crate::drivers::virtio::input_mmio::handle_tablet_interrupt();
-                    }
-                }
-                // VirtIO network interrupt dispatch
-                if let Some(net_irq) = crate::drivers::virtio::net_mmio::get_irq() {
-                    if irq_id == net_irq {
-                        crate::drivers::virtio::net_mmio::handle_interrupt();
-                    }
-                }
-                // XHCI USB interrupt dispatch
-                if let Some(xhci_irq) = crate::drivers::usb::xhci::get_irq() {
-                    if irq_id == xhci_irq {
-                        crate::drivers::usb::xhci::handle_interrupt();
-                    }
-                }
-                // VirtIO GPU PCI interrupt dispatch (MSI completion)
-                if let Some(gpu_irq) = crate::drivers::virtio::gpu_pci::get_irq() {
-                    if irq_id == gpu_irq {
-                        crate::drivers::virtio::gpu_pci::handle_interrupt();
-                    }
-                }
-                // VirtIO network PCI interrupt dispatch (GICv2m MSI)
-                if let Some(net_pci_irq) = crate::drivers::virtio::net_pci::get_irq() {
-                    if irq_id == net_pci_irq {
-                        crate::drivers::virtio::net_pci::handle_interrupt();
-                    }
-                }
-                // AHCI storage interrupt dispatch (GICv2m MSI/MSI-X)
-                #[cfg(target_arch = "aarch64")]
-                if let Some(ahci_irq) = crate::drivers::ahci::get_irq() {
-                    if irq_id == ahci_irq {
-                        crate::drivers::ahci::handle_interrupt();
-                    }
-                }
-            }
-
-            // Should not happen - GIC filters invalid IDs (1020+)
-            _ => {}
-        }
+        handle_irq_event(irq_id, frame);
 
         if reopen_nested_irq_window {
             unsafe {
@@ -1336,8 +1347,6 @@ pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
                 );
             }
         }
-
-        gic::deactivate_irq(irq_id);
 
         if have_percpu {
             crate::per_cpu_aarch64::irq_exit();
