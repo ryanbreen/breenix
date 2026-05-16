@@ -23,6 +23,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use super::exception_frame::Aarch64ExceptionFrame;
 use super::percpu::Aarch64PerCpu;
+use crate::arch_impl::aarch64::constants::{HARDIRQ_MASK, NMI_MASK, PREEMPT_MASK, SOFTIRQ_MASK};
 use crate::arch_impl::traits::PerCpuOps;
 use crate::task::scheduler::Scheduler;
 use crate::task::thread::{CpuContext, Thread, ThreadPrivilege, ThreadState};
@@ -31,6 +32,7 @@ use crate::tracing::providers::sched::trace_ctx_switch;
 const SPSR_MODE_MASK: u64 = 0xF;
 const SPSR_EL1H: u64 = 0x5;
 const SPSR_DAIF_IRQ_BIT: u64 = 1 << 7;
+const PREEMPT_GUARD_MASK: u32 = PREEMPT_MASK | SOFTIRQ_MASK | HARDIRQ_MASK | NMI_MASK;
 const TRACE_CTX_PUBLISH_SAVE_USER: u16 = 1;
 const TRACE_CTX_PUBLISH_SAVE_KERNEL: u16 = 2;
 const TRACE_CTX_PUBLISH_INLINE_SAVE: u16 = 3;
@@ -2291,8 +2293,8 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         false
     };
 
-    if !from_el0 && (preempt_count & 0xFF) > 0 {
-        // Kernel code holding locks — not safe to preempt.
+    if (preempt_count & PREEMPT_GUARD_MASK) != 0 {
+        // Kernel or interrupt context is not safe to preempt.
         // Deferred requeue was already processed above.
         return;
     }
