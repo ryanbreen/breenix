@@ -879,6 +879,53 @@ pub fn enable_spi(irq: u32) {
     }
 }
 
+/// Enable an SPI and route it to a specific CPU.
+///
+/// Existing callers should continue using `enable_spi()` unless they
+/// intentionally need a non-default target.
+pub fn enable_spi_on_cpu(irq: u32, cpu_id: usize) {
+    if irq < 32 || cpu_id >= GICR_RDIST_SLOTS {
+        return; // Only SPIs (32+) and known CPU targets.
+    }
+
+    let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
+    let reg_index = irq / 32;
+    let bit = irq % 32;
+
+    if version >= 3 {
+        let mapped_affinity = GICR_PER_CPU_AFFINITY[cpu_id].load(Ordering::Acquire);
+        let affinity = if mapped_affinity != 0 {
+            mapped_affinity
+        } else {
+            expected_gicr_affinity_for_cpu(cpu_id) as u64
+        };
+        gicd_write(GICD_IROUTER + (irq as usize * 8), affinity as u32);
+        gicd_write(
+            GICD_IROUTER + (irq as usize * 8) + 4,
+            (affinity >> 32) as u32,
+        );
+    } else {
+        if cpu_id >= 8 {
+            return;
+        }
+        let target_reg = irq / 4;
+        let target_byte = irq % 4;
+        let current = gicd_read(GICD_ITARGETSR + (target_reg as usize * 4));
+        let mask = 0xFFu32 << (target_byte * 8);
+        let target_val = (1u32 << cpu_id) << (target_byte * 8);
+        gicd_write(
+            GICD_ITARGETSR + (target_reg as usize * 4),
+            (current & !mask) | target_val,
+        );
+    }
+
+    gicd_write(GICD_ISENABLER + (reg_index as usize * 4), 1 << bit);
+    unsafe {
+        core::arch::asm!("dsb sy", options(nomem, nostack));
+        core::arch::asm!("isb", options(nomem, nostack));
+    }
+}
+
 /// Disable an SPI in the GIC distributor (GICD_ICENABLER).
 ///
 /// Only valid for IRQs >= 32 (SPIs).

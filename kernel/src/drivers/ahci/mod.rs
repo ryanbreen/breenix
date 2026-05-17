@@ -2236,7 +2236,8 @@ fn probe_platform_irq(ctrl: &AhciController) {
     gic::clear_spi_pending(found_spi);
     AHCI_IRQ_EDGE.store(false, Ordering::Release);
     AHCI_IRQ.store(found_spi, Ordering::Release);
-    gic::enable_spi(found_spi);
+    // Route platform AHCI away from CPU0; on Parallels, CPU0 delivery can stop its timer.
+    gic::enable_spi_on_cpu(found_spi, 2);
     crate::serial_println!(
         "[ahci] Platform IRQ enabled: SPI {} (wired, level-triggered)",
         found_spi
