@@ -2293,6 +2293,7 @@ fn send_command(
     virtgpu_trace_flush_pre_notify(cmd_type, resource_id);
     virtgpu::trace_q_notify(0, virtgpu_trace_used_idx());
     let wait_start_ms = monotonic_ms();
+    virtgpu::trace_wait_completion_enter(cmd_type, resource_id, virtgpu::WAIT_PATH_2DESC);
     state.device.notify_queue_fast(0);
 
     // Wait for used ring update — tight spin for 2-desc commands.
@@ -2317,12 +2318,24 @@ fn send_command(
         };
         if used_idx != state.last_used_idx {
             virtgpu::trace_q_complete(0, used_idx);
+            virtgpu::trace_wait_completion_exit(
+                cmd_type,
+                resource_id,
+                virtgpu::WAIT_PATH_2DESC,
+                true,
+            );
             state.last_used_idx = used_idx;
             return Ok(());
         }
         spin_count = spin_count.wrapping_add(1);
         if spin_count & 0x3fff == 0 && monotonic_ms().saturating_sub(wait_start_ms) > 1000 {
             let expected_used_idx = state.last_used_idx.wrapping_add(1);
+            virtgpu::trace_wait_completion_exit(
+                cmd_type,
+                resource_id,
+                virtgpu::WAIT_PATH_2DESC,
+                false,
+            );
             report_wait_timeout(cmd_type, resource_id, expected_used_idx, used_idx);
             return Err("GPU PCI command timeout");
         }
@@ -2469,9 +2482,15 @@ fn send_command_3desc(
     }
 
     // Notify device
+    let wait_path = if has_msi && can_yield {
+        virtgpu::WAIT_PATH_3DESC_MSI
+    } else {
+        virtgpu::WAIT_PATH_3DESC_POLL
+    };
     virtgpu_trace_flush_pre_notify(cmd_type, resource_id);
     virtgpu::trace_q_notify(0, virtgpu_trace_used_idx());
     let wait_start_ms = monotonic_ms();
+    virtgpu::trace_wait_completion_enter(cmd_type, resource_id, wait_path);
     state.device.notify_queue_fast(0);
 
     let used_len;
@@ -2558,6 +2577,7 @@ fn send_command_3desc(
 
         if completed {
             virtgpu::trace_q_complete(0, virtgpu_trace_used_idx());
+            virtgpu::trace_wait_completion_exit(cmd_type, resource_id, wait_path, true);
             used_len = unsafe {
                 let q = &raw const PCI_CTRL_QUEUE;
                 let elem_idx = (state.last_used_idx % 16) as usize;
@@ -2573,6 +2593,7 @@ fn send_command_3desc(
             // and cascade-fail with DEADBEEF responses.
             let actual_used_idx = virtgpu_trace_used_idx();
             let expected_used_idx = state.last_used_idx.wrapping_add(1);
+            virtgpu::trace_wait_completion_exit(cmd_type, resource_id, wait_path, false);
             report_wait_timeout(cmd_type, resource_id, expected_used_idx, actual_used_idx);
             state.last_used_idx = state.last_used_idx.wrapping_add(1);
             return Err("GPU PCI 3-desc command timeout (1000ms)");
@@ -2596,6 +2617,7 @@ fn send_command_3desc(
             };
             if used_idx != state.last_used_idx {
                 virtgpu::trace_q_complete(0, used_idx);
+                virtgpu::trace_wait_completion_exit(cmd_type, resource_id, wait_path, true);
                 used_len = unsafe {
                     let q = &raw const PCI_CTRL_QUEUE;
                     let elem_idx = (state.last_used_idx % 16) as usize;
@@ -2616,6 +2638,7 @@ fn send_command_3desc(
             if spin_count & 0x3fff == 0 && monotonic_ms().saturating_sub(wait_start_ms) > 1000 {
                 // Speculatively advance so the next command doesn't cascade-fail
                 let expected_used_idx = state.last_used_idx.wrapping_add(1);
+                virtgpu::trace_wait_completion_exit(cmd_type, resource_id, wait_path, false);
                 report_wait_timeout(cmd_type, resource_id, expected_used_idx, used_idx);
                 state.last_used_idx = state.last_used_idx.wrapping_add(1);
                 return Err("GPU PCI 3-desc command timeout");
@@ -3105,6 +3128,7 @@ fn resource_flush_cmd(
     caller_tag: u8,
 ) -> Result<(), &'static str> {
     let resource_id = state.resource_id;
+    virtgpu::trace_flush_enter(virtgpu::FLUSH_HELPER_2D, caller_tag, resource_id);
     virtgpu::trace_flush_construct_if_unexpected(
         caller_tag,
         virtgpu::FLUSH_HELPER_2D,
@@ -3136,7 +3160,15 @@ fn resource_flush_cmd(
         }
         core::sync::atomic::compiler_fence(Ordering::Release);
     }
-    send_command_expect_ok(state, core::mem::size_of::<VirtioGpuResourceFlush>() as u32)
+    let result =
+        send_command_expect_ok(state, core::mem::size_of::<VirtioGpuResourceFlush>() as u32);
+    virtgpu::trace_flush_exit(
+        virtgpu::FLUSH_HELPER_2D,
+        caller_tag,
+        resource_id,
+        result.is_ok(),
+    );
+    result
 }
 
 // =============================================================================
@@ -3624,6 +3656,7 @@ fn resource_flush_3d(
     resource_id: u32,
     caller_tag: u8,
 ) -> Result<(), &'static str> {
+    virtgpu::trace_flush_enter(virtgpu::FLUSH_HELPER_3D, caller_tag, resource_id);
     virtgpu::trace_flush_construct_if_unexpected(
         caller_tag,
         virtgpu::FLUSH_HELPER_3D,
@@ -3659,7 +3692,15 @@ fn resource_flush_3d(
         "RESOURCE_FLUSH",
         core::mem::size_of::<VirtioGpuResourceFlush>(),
     );
-    send_command_expect_ok(state, core::mem::size_of::<VirtioGpuResourceFlush>() as u32)
+    let result =
+        send_command_expect_ok(state, core::mem::size_of::<VirtioGpuResourceFlush>() as u32);
+    virtgpu::trace_flush_exit(
+        virtgpu::FLUSH_HELPER_3D,
+        caller_tag,
+        resource_id,
+        result.is_ok(),
+    );
+    result
 }
 
 /// Transfer a 3D resource from guest backing to host texture (upload).
@@ -3854,6 +3895,7 @@ fn virgl_submit_3d_cmd(
 
     let submit_id = state.next_fence_id;
     state.next_fence_id += 1;
+    virtgpu::trace_submit_3d_enter(submit_id, cmds.len() as u32);
 
     // Write header + payload contiguously to PCI_3D_CMD_BUF.
     // Descriptors will point to different offsets within this buffer.
@@ -3888,13 +3930,19 @@ fn virgl_submit_3d_cmd(
     let payload_phys = hdr_phys + hdr_size as u64;
 
     // 3-descriptor chain: header (readable) + payload (readable) + response (writable)
-    let (used_len, resp_type) = send_command_3desc(
+    let (used_len, resp_type) = match send_command_3desc(
         state,
         hdr_phys,
         hdr_size as u32,
         payload_phys,
         payload_bytes as u32,
-    )?;
+    ) {
+        Ok(result) => result,
+        Err(e) => {
+            virtgpu::trace_submit_3d_exit(submit_id, 0xffff, false);
+            return Err(e);
+        }
+    };
 
     // Read response flags and fence_id
     let (resp_flags, resp_fence) = unsafe {
@@ -3907,6 +3955,7 @@ fn virgl_submit_3d_cmd(
     };
 
     if resp_type != cmd::RESP_OK_NODATA {
+        virtgpu::trace_submit_3d_exit(submit_id, resp_type, false);
         crate::serial_println!(
             "[virtio-gpu-pci] SUBMIT_3D failed: resp={:#x} used_len={} flags={:#x} fence={}",
             resp_type,
@@ -3925,6 +3974,7 @@ fn virgl_submit_3d_cmd(
             resp_fence
         );
     }
+    virtgpu::trace_submit_3d_exit(submit_id, resp_type, true);
     Ok(SubmitResult {
         submit_id,
         resp_fence,

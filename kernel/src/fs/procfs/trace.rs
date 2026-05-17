@@ -17,6 +17,7 @@ use core::sync::atomic::Ordering;
 
 use crate::tracing::counter::{list_counters, TRACE_COUNTER_COUNT};
 use crate::tracing::provider::{TRACE_PROVIDERS, TRACE_PROVIDER_COUNT};
+use crate::tracing::providers::virtgpu;
 use crate::tracing::{
     event_type_name, TraceEventType, MAX_CPUS, TRACE_BUFFERS, TRACE_BUFFER_SIZE, TRACE_ENABLED,
 };
@@ -70,6 +71,46 @@ pub fn generate_events() -> String {
         (TraceEventType::LOCK_ACQUIRE, "lock acquire"),
         (TraceEventType::LOCK_RELEASE, "lock release"),
         (TraceEventType::LOCK_CONTEND, "lock contention"),
+        // VirtIO GPU PCI events (0x07xx)
+        (virtgpu::VIRTGPU_CMD_SUBMIT, "GPU command submit"),
+        (virtgpu::VIRTGPU_CMD_RESOURCE, "GPU command resource id"),
+        (virtgpu::VIRTGPU_Q_NOTIFY, "GPU virtqueue notify"),
+        (virtgpu::VIRTGPU_Q_COMPLETE, "GPU virtqueue completion"),
+        (virtgpu::VIRTGPU_RESPONSE, "GPU command response"),
+        (virtgpu::VIRTGPU_STALE_DRAIN, "GPU stale completion drain"),
+        (
+            virtgpu::VIRTGPU_FLUSH_CONSTRUCT,
+            "GPU RESOURCE_FLUSH command construction",
+        ),
+        (
+            virtgpu::VIRTGPU_FLUSH_BUFFER_PRE_NOTIFY,
+            "GPU RESOURCE_FLUSH wire resource id",
+        ),
+        (
+            virtgpu::VIRTGPU_FLUSH_READBACK_MISMATCH,
+            "GPU RESOURCE_FLUSH readback mismatch",
+        ),
+        (virtgpu::VIRTGPU_WAIT_TIMEOUT, "GPU used-ring wait timeout"),
+        (
+            virtgpu::BWM_COMPOSITE_FRAME_ENTER,
+            "BWM op10 composite frame entry",
+        ),
+        (
+            virtgpu::BWM_COMPOSITE_FRAME_EXIT,
+            "BWM op10 composite frame exit",
+        ),
+        (virtgpu::VIRTGPU_FLUSH_ENTER, "GPU RESOURCE_FLUSH entry"),
+        (virtgpu::VIRTGPU_FLUSH_EXIT, "GPU RESOURCE_FLUSH exit"),
+        (virtgpu::VIRTGPU_SUBMIT_3D_ENTER, "GPU SUBMIT_3D entry"),
+        (virtgpu::VIRTGPU_SUBMIT_3D_EXIT, "GPU SUBMIT_3D exit"),
+        (
+            virtgpu::VIRTGPU_WAIT_COMPLETION_ENTER,
+            "GPU used-ring wait entry",
+        ),
+        (
+            virtgpu::VIRTGPU_WAIT_COMPLETION_EXIT,
+            "GPU used-ring wait exit",
+        ),
         // Debug markers (0xFFxx)
         (TraceEventType::MARKER_A, "debug marker A"),
         (TraceEventType::MARKER_B, "debug marker B"),

@@ -142,11 +142,7 @@ fn window_frame_pending(buffer_id: u32, thread_id: u64) -> bool {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn read_window_input_events(
-    buffer_id: u32,
-    out_ptr: u64,
-    max_count: usize,
-) -> Result<usize, u64> {
+fn read_window_input_events(buffer_id: u32, out_ptr: u64, max_count: usize) -> Result<usize, u64> {
     let mut reg = WINDOW_REGISTRY.lock();
     let Some(buf) = reg.find_mut(buffer_id) else {
         return Err(super::ErrorCode::InvalidArgument as u64);
@@ -787,15 +783,19 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             let buf_ptr = (cmd.p1 as u32 as u64) | ((cmd.p2 as u32 as u64) << 32);
             let width = cmd.p3 as u32;
             let height = cmd.p4 as u32;
+            crate::tracing::providers::virtgpu::trace_bwm_composite_frame_enter(width, height);
             if buf_ptr == 0 || buf_ptr >= USER_SPACE_MAX {
+                crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(1);
                 return SyscallResult::Err(super::ErrorCode::Fault as u64);
             }
             if width == 0 || height == 0 || width > 4096 || height > 4096 {
+                crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(1);
                 return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
             }
             let pixel_count = (width as u64) * (height as u64);
             let buf_end = buf_ptr + pixel_count * 4;
             if buf_end > USER_SPACE_MAX {
+                crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(1);
                 return SyscallResult::Err(super::ErrorCode::Fault as u64);
             }
             let pixels =
@@ -808,10 +808,16 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                             pixels, width, height,
                         ) {
                             Ok(()) => {
+                                crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(
+                                    0,
+                                );
                                 wake_presented_client_frames();
                                 SyscallResult::Ok(0)
                             }
                             Err(e) => {
+                                crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(
+                                    1,
+                                );
                                 crate::serial_println!(
                                     "[composite] VirGL direct composite_frame FAILED: {}",
                                     e
@@ -824,13 +830,20 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                     match crate::drivers::virtio::gpu_pci::virgl_composite_frame_textured(
                         pixels, width, height,
                     ) {
-                        Ok(()) => SyscallResult::Ok(0),
+                        Ok(()) => {
+                            crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(0);
+                            SyscallResult::Ok(0)
+                        }
                         Err(_) => {
                             match crate::drivers::virtio::gpu_pci::virgl_composite_frame(
                                 pixels, width, height,
                             ) {
-                                Ok(()) => SyscallResult::Ok(0),
+                                Ok(()) => {
+                                    crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(0);
+                                    SyscallResult::Ok(0)
+                                }
                                 Err(e) => {
+                                    crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(1);
                                     crate::serial_println!(
                                         "[composite] VirGL composite_frame FAILED: {}",
                                         e
@@ -843,8 +856,12 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                 }
                 crate::graphics::CompositorBackend::Svga3Stdu => {
                     match crate::drivers::vmware::svga3::composite_frame(pixels, width, height) {
-                        Ok(()) => SyscallResult::Ok(0),
+                        Ok(()) => {
+                            crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(0);
+                            SyscallResult::Ok(0)
+                        }
                         Err(e) => {
+                            crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(1);
                             crate::serial_println!(
                                 "[composite] SVGA3 composite_frame FAILED: {}",
                                 e
@@ -854,6 +871,7 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                     }
                 }
                 crate::graphics::CompositorBackend::None => {
+                    crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(1);
                     SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
                 }
             }
