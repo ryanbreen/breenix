@@ -1957,7 +1957,7 @@ fn virtgpu_trace_submission(cmd_type: u32, resource_id: u32) {
 #[inline(always)]
 fn virtgpu_trace_flush_pre_notify(cmd_type: u32, resource_id: u32) {
     if cmd_type == cmd::RESOURCE_FLUSH {
-        virtgpu::trace_flush_buffer_pre_notify(resource_id);
+        virtgpu::trace_flush_buffer_pre_notify_if_zero(resource_id);
     }
 }
 
@@ -2910,7 +2910,12 @@ fn resource_flush_cmd(
     height: u32,
     caller_tag: u8,
 ) -> Result<(), &'static str> {
-    virtgpu::trace_flush_construct(caller_tag, virtgpu::FLUSH_HELPER_2D, state.resource_id);
+    virtgpu::trace_flush_construct_if_unexpected(
+        caller_tag,
+        virtgpu::FLUSH_HELPER_2D,
+        state.resource_id,
+        state.resource_id == 0,
+    );
     unsafe {
         let cmd_ptr = &raw mut PCI_CMD_BUF;
         let cmd = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut VirtioGpuResourceFlush);
@@ -3418,7 +3423,12 @@ fn resource_flush_3d(
     resource_id: u32,
     caller_tag: u8,
 ) -> Result<(), &'static str> {
-    virtgpu::trace_flush_construct(caller_tag, virtgpu::FLUSH_HELPER_3D, resource_id);
+    virtgpu::trace_flush_construct_if_unexpected(
+        caller_tag,
+        virtgpu::FLUSH_HELPER_3D,
+        resource_id,
+        resource_id != RESOURCE_3D_ID,
+    );
     unsafe {
         let cmd_ptr = &raw mut PCI_CMD_BUF;
         let cmd = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut VirtioGpuResourceFlush);

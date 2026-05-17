@@ -113,6 +113,12 @@ pub static VIRTGPU_R2_UNREF_OR_DETACH: TraceCounter = TraceCounter::new(
 );
 
 #[no_mangle]
+pub static VIRTGPU_FLUSH_WITH_ZERO_RES: TraceCounter = TraceCounter::new(
+    "VIRTGPU_FLUSH_WITH_ZERO_RES",
+    "RESOURCE_FLUSH constructed or submitted with resource_id 0",
+);
+
+#[no_mangle]
 pub static VIRTGPU_FLUSH_BY_CALLER_2D_FULL: TraceCounter = TraceCounter::new(
     "VIRTGPU_FLUSH_BY_CALLER_2D_FULL",
     "2D full framebuffer flush calls",
@@ -199,6 +205,7 @@ pub fn init() {
     register_counter(&VIRTGPU_R2_FLUSH_OK);
     register_counter(&VIRTGPU_R2_FLUSH_FAIL);
     register_counter(&VIRTGPU_R2_UNREF_OR_DETACH);
+    register_counter(&VIRTGPU_FLUSH_WITH_ZERO_RES);
     register_counter(&VIRTGPU_FLUSH_BY_CALLER_2D_FULL);
     register_counter(&VIRTGPU_FLUSH_BY_CALLER_2D_RECT);
     register_counter(&VIRTGPU_FLUSH_BY_CALLER_2D_ONLY);
@@ -249,7 +256,19 @@ pub fn trace_stale_drain(entries_drained: u16, last_used_idx_after: u16) {
 }
 
 #[inline(always)]
-pub fn trace_flush_construct(caller_tag: u8, helper_id: u8, resource_id_arg: u32) {
+pub fn trace_flush_construct_if_unexpected(
+    caller_tag: u8,
+    helper_id: u8,
+    resource_id_arg: u32,
+    unexpected: bool,
+) {
+    if resource_id_arg == 0 {
+        VIRTGPU_FLUSH_WITH_ZERO_RES.increment();
+    }
+    if !unexpected {
+        return;
+    }
+
     let payload =
         ((resource_id_arg & 0xffff) << 16) | ((helper_id as u32) << 8) | (caller_tag as u32);
     crate::trace_event!(VIRTGPU_PROVIDER, VIRTGPU_FLUSH_CONSTRUCT, payload);
@@ -257,7 +276,12 @@ pub fn trace_flush_construct(caller_tag: u8, helper_id: u8, resource_id_arg: u32
 }
 
 #[inline(always)]
-pub fn trace_flush_buffer_pre_notify(resource_id_on_wire: u32) {
+pub fn trace_flush_buffer_pre_notify_if_zero(resource_id_on_wire: u32) {
+    if resource_id_on_wire != 0 {
+        return;
+    }
+
+    VIRTGPU_FLUSH_WITH_ZERO_RES.increment();
     crate::trace_event!(
         VIRTGPU_PROVIDER,
         VIRTGPU_FLUSH_BUFFER_PRE_NOTIFY,
