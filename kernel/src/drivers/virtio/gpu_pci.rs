@@ -2910,11 +2910,12 @@ fn resource_flush_cmd(
     height: u32,
     caller_tag: u8,
 ) -> Result<(), &'static str> {
+    let resource_id = state.resource_id;
     virtgpu::trace_flush_construct_if_unexpected(
         caller_tag,
         virtgpu::FLUSH_HELPER_2D,
-        state.resource_id,
-        state.resource_id == 0,
+        resource_id,
+        resource_id == 0,
     );
     unsafe {
         let cmd_ptr = &raw mut PCI_CMD_BUF;
@@ -2931,9 +2932,15 @@ fn resource_flush_cmd(
             r_y: y,
             r_width: width,
             r_height: height,
-            resource_id: state.resource_id,
+            resource_id,
             padding: 0,
         };
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*cmd).resource_id), resource_id);
+        let readback = core::ptr::read_volatile(core::ptr::addr_of!((*cmd).resource_id));
+        if readback != resource_id {
+            virtgpu::trace_flush_readback_mismatch(resource_id, readback);
+        }
+        core::sync::atomic::compiler_fence(Ordering::Release);
     }
     send_command_expect_ok(state, core::mem::size_of::<VirtioGpuResourceFlush>() as u32)
 }
@@ -3447,6 +3454,12 @@ fn resource_flush_3d(
             resource_id,
             padding: 0,
         };
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*cmd).resource_id), resource_id);
+        let readback = core::ptr::read_volatile(core::ptr::addr_of!((*cmd).resource_id));
+        if readback != resource_id {
+            virtgpu::trace_flush_readback_mismatch(resource_id, readback);
+        }
+        core::sync::atomic::compiler_fence(Ordering::Release);
     }
     hex_dump_cmd_buf(
         "RESOURCE_FLUSH",

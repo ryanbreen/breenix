@@ -9,6 +9,7 @@
 //! - `VIRTGPU_STALE_DRAIN`: `entries_drained[15:0] | last_used_idx_after[31:16]`
 //! - `VIRTGPU_FLUSH_CONSTRUCT`: `caller_tag[7:0] | helper_id[15:8] | resource_id_arg[31:16]`
 //! - `VIRTGPU_FLUSH_BUFFER_PRE_NOTIFY`: `resource_id_on_wire[31:0]`
+//! - `VIRTGPU_FLUSH_READBACK_MISMATCH`: `expected_resource_id[15:0] | readback_resource_id[31:16]`
 
 use crate::tracing::counter::{register_counter, TraceCounter};
 use crate::tracing::provider::{register_provider, TraceProvider};
@@ -35,6 +36,7 @@ pub const PROBE_RESPONSE: u8 = 0x04;
 pub const PROBE_STALE_DRAIN: u8 = 0x05;
 pub const PROBE_FLUSH_CONSTRUCT: u8 = 0x06;
 pub const PROBE_FLUSH_BUFFER_PRE_NOTIFY: u8 = 0x07;
+pub const PROBE_FLUSH_READBACK_MISMATCH: u8 = 0x08;
 
 pub const VIRTGPU_CMD_SUBMIT: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_CMD_SUBMIT as u16);
 pub const VIRTGPU_CMD_RESOURCE: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_CMD_RESOURCE as u16);
@@ -46,6 +48,8 @@ pub const VIRTGPU_FLUSH_CONSTRUCT: u16 =
     ((PROVIDER_ID as u16) << 8) | (PROBE_FLUSH_CONSTRUCT as u16);
 pub const VIRTGPU_FLUSH_BUFFER_PRE_NOTIFY: u16 =
     ((PROVIDER_ID as u16) << 8) | (PROBE_FLUSH_BUFFER_PRE_NOTIFY as u16);
+pub const VIRTGPU_FLUSH_READBACK_MISMATCH: u16 =
+    ((PROVIDER_ID as u16) << 8) | (PROBE_FLUSH_READBACK_MISMATCH as u16);
 
 pub const FLUSH_HELPER_3D: u8 = 0;
 pub const FLUSH_HELPER_2D: u8 = 1;
@@ -287,6 +291,12 @@ pub fn trace_flush_buffer_pre_notify_if_zero(resource_id_on_wire: u32) {
         VIRTGPU_FLUSH_BUFFER_PRE_NOTIFY,
         resource_id_on_wire
     );
+}
+
+#[inline(always)]
+pub fn trace_flush_readback_mismatch(expected: u32, readback: u32) {
+    let payload = ((readback & 0xffff) << 16) | (expected & 0xffff);
+    crate::trace_event!(VIRTGPU_PROVIDER, VIRTGPU_FLUSH_READBACK_MISMATCH, payload);
 }
 
 #[inline(always)]

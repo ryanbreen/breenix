@@ -302,6 +302,7 @@ pub fn event_type_name(event_type: u16) -> &'static str {
         virtgpu::VIRTGPU_STALE_DRAIN => "VIRTGPU_STALE_DRAIN",
         virtgpu::VIRTGPU_FLUSH_CONSTRUCT => "VIRTGPU_FLUSH_CONSTRUCT",
         virtgpu::VIRTGPU_FLUSH_BUFFER_PRE_NOTIFY => "VIRTGPU_FLUSH_BUFFER_PRE_NOTIFY",
+        virtgpu::VIRTGPU_FLUSH_READBACK_MISMATCH => "VIRTGPU_FLUSH_READBACK_MISMATCH",
 
         // Debug markers (0xFFxx)
         TraceEventType::MARKER_A => "MARKER_A",
@@ -401,6 +402,7 @@ fn payload_description(event_type: u16) -> &'static str {
         virtgpu::VIRTGPU_STALE_DRAIN => "last_used_idx_after<<16|entries_drained",
         virtgpu::VIRTGPU_FLUSH_CONSTRUCT => "resource_id_arg<<16|helper_id<<8|caller_tag",
         virtgpu::VIRTGPU_FLUSH_BUFFER_PRE_NOTIFY => "resource_id_on_wire",
+        virtgpu::VIRTGPU_FLUSH_READBACK_MISMATCH => "readback<<16|expected",
         TraceEventType::MARKER_A => "user_data",
         TraceEventType::MARKER_B => "user_data",
         TraceEventType::MARKER_C => "user_data",
