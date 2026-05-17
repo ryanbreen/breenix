@@ -7,6 +7,8 @@
 //! - `VIRTGPU_Q_COMPLETE`: `head_desc_idx[15:0] | used_idx_after[31:16]`
 //! - `VIRTGPU_RESPONSE`: `resp_type[31:0]`
 //! - `VIRTGPU_STALE_DRAIN`: `entries_drained[15:0] | last_used_idx_after[31:16]`
+//! - `VIRTGPU_FLUSH_CONSTRUCT`: `caller_tag[7:0] | helper_id[15:8] | resource_id_arg[31:16]`
+//! - `VIRTGPU_FLUSH_BUFFER_PRE_NOTIFY`: `resource_id_on_wire[31:0]`
 
 use crate::tracing::counter::{register_counter, TraceCounter};
 use crate::tracing::provider::{register_provider, TraceProvider};
@@ -31,6 +33,8 @@ pub const PROBE_Q_NOTIFY: u8 = 0x02;
 pub const PROBE_Q_COMPLETE: u8 = 0x03;
 pub const PROBE_RESPONSE: u8 = 0x04;
 pub const PROBE_STALE_DRAIN: u8 = 0x05;
+pub const PROBE_FLUSH_CONSTRUCT: u8 = 0x06;
+pub const PROBE_FLUSH_BUFFER_PRE_NOTIFY: u8 = 0x07;
 
 pub const VIRTGPU_CMD_SUBMIT: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_CMD_SUBMIT as u16);
 pub const VIRTGPU_CMD_RESOURCE: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_CMD_RESOURCE as u16);
@@ -38,6 +42,27 @@ pub const VIRTGPU_Q_NOTIFY: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_Q_NOTIFY 
 pub const VIRTGPU_Q_COMPLETE: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_Q_COMPLETE as u16);
 pub const VIRTGPU_RESPONSE: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_RESPONSE as u16);
 pub const VIRTGPU_STALE_DRAIN: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_STALE_DRAIN as u16);
+pub const VIRTGPU_FLUSH_CONSTRUCT: u16 =
+    ((PROVIDER_ID as u16) << 8) | (PROBE_FLUSH_CONSTRUCT as u16);
+pub const VIRTGPU_FLUSH_BUFFER_PRE_NOTIFY: u16 =
+    ((PROVIDER_ID as u16) << 8) | (PROBE_FLUSH_BUFFER_PRE_NOTIFY as u16);
+
+pub const FLUSH_HELPER_3D: u8 = 0;
+pub const FLUSH_HELPER_2D: u8 = 1;
+
+pub const FLUSH_CALLER_2D_FULL: u8 = 1;
+pub const FLUSH_CALLER_2D_RECT: u8 = 2;
+pub const FLUSH_CALLER_2D_ONLY: u8 = 3;
+pub const FLUSH_CALLER_VIRGL_RENDER_FRAME: u8 = 4;
+pub const FLUSH_CALLER_VIRGL_RENDER_RECTS: u8 = 5;
+pub const FLUSH_CALLER_VIRGL_COMPOSITE_FRAME: u8 = 6;
+pub const FLUSH_CALLER_VIRGL_COMPOSITE_FRAME_TEXTURED: u8 = 7;
+pub const FLUSH_CALLER_VIRGL_COMPOSITE_SINGLE_QUAD: u8 = 8;
+pub const FLUSH_CALLER_VIRGL_FLUSH: u8 = 9;
+pub const FLUSH_CALLER_VIRGL_INIT_PRIME: u8 = 10;
+pub const FLUSH_CALLER_VIRGL_INIT_STEP7: u8 = 11;
+pub const FLUSH_CALLER_VIRGL_INIT_STEP10: u8 = 12;
+pub const FLUSH_CALLER_VIRGL_TEST_TEXTURED_QUAD: u8 = 13;
 
 #[no_mangle]
 pub static VIRTGPU_R2_CREATE: TraceCounter = TraceCounter::new(
@@ -87,6 +112,82 @@ pub static VIRTGPU_R2_UNREF_OR_DETACH: TraceCounter = TraceCounter::new(
     "UNREF, DETACH_BACKING, or CTX_DETACH submissions for resource 2",
 );
 
+#[no_mangle]
+pub static VIRTGPU_FLUSH_BY_CALLER_2D_FULL: TraceCounter = TraceCounter::new(
+    "VIRTGPU_FLUSH_BY_CALLER_2D_FULL",
+    "2D full framebuffer flush calls",
+);
+
+#[no_mangle]
+pub static VIRTGPU_FLUSH_BY_CALLER_2D_RECT: TraceCounter = TraceCounter::new(
+    "VIRTGPU_FLUSH_BY_CALLER_2D_RECT",
+    "2D rectangular flush calls",
+);
+
+#[no_mangle]
+pub static VIRTGPU_FLUSH_BY_CALLER_2D_ONLY: TraceCounter =
+    TraceCounter::new("VIRTGPU_FLUSH_BY_CALLER_2D_ONLY", "2D flush-only calls");
+
+#[no_mangle]
+pub static VIRTGPU_FLUSH_BY_CALLER_VIRGL_RENDER_FRAME: TraceCounter = TraceCounter::new(
+    "VIRTGPU_FLUSH_BY_CALLER_VIRGL_RENDER_FRAME",
+    "VirGL circle render frame flush calls",
+);
+
+#[no_mangle]
+pub static VIRTGPU_FLUSH_BY_CALLER_VIRGL_RENDER_RECTS: TraceCounter = TraceCounter::new(
+    "VIRTGPU_FLUSH_BY_CALLER_VIRGL_RENDER_RECTS",
+    "VirGL rectangle render flush calls",
+);
+
+#[no_mangle]
+pub static VIRTGPU_FLUSH_BY_CALLER_VIRGL_COMPOSITE_FRAME: TraceCounter = TraceCounter::new(
+    "VIRTGPU_FLUSH_BY_CALLER_VIRGL_COMPOSITE_FRAME",
+    "Direct CPU composite frame flush calls",
+);
+
+#[no_mangle]
+pub static VIRTGPU_FLUSH_BY_CALLER_VIRGL_COMPOSITE_FRAME_TEXTURED: TraceCounter = TraceCounter::new(
+    "VIRTGPU_FLUSH_BY_CALLER_VIRGL_COMPOSITE_FRAME_TEXTURED",
+    "Textured composite frame flush calls",
+);
+
+#[no_mangle]
+pub static VIRTGPU_FLUSH_BY_CALLER_VIRGL_COMPOSITE_SINGLE_QUAD: TraceCounter = TraceCounter::new(
+    "VIRTGPU_FLUSH_BY_CALLER_VIRGL_COMPOSITE_SINGLE_QUAD",
+    "Single-quad compositor flush calls",
+);
+
+#[no_mangle]
+pub static VIRTGPU_FLUSH_BY_CALLER_VIRGL_FLUSH: TraceCounter = TraceCounter::new(
+    "VIRTGPU_FLUSH_BY_CALLER_VIRGL_FLUSH",
+    "Public virgl_flush calls",
+);
+
+#[no_mangle]
+pub static VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_PRIME: TraceCounter = TraceCounter::new(
+    "VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_PRIME",
+    "VirGL init resource prime flush calls",
+);
+
+#[no_mangle]
+pub static VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_STEP7: TraceCounter = TraceCounter::new(
+    "VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_STEP7",
+    "VirGL init step 7 flush calls",
+);
+
+#[no_mangle]
+pub static VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_STEP10: TraceCounter = TraceCounter::new(
+    "VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_STEP10",
+    "VirGL init step 10 flush calls",
+);
+
+#[no_mangle]
+pub static VIRTGPU_FLUSH_BY_CALLER_VIRGL_TEST_TEXTURED_QUAD: TraceCounter = TraceCounter::new(
+    "VIRTGPU_FLUSH_BY_CALLER_VIRGL_TEST_TEXTURED_QUAD",
+    "VirGL textured quad test flush calls",
+);
+
 /// Register the provider and counters.
 pub fn init() {
     register_provider(&VIRTGPU_PROVIDER);
@@ -98,6 +199,19 @@ pub fn init() {
     register_counter(&VIRTGPU_R2_FLUSH_OK);
     register_counter(&VIRTGPU_R2_FLUSH_FAIL);
     register_counter(&VIRTGPU_R2_UNREF_OR_DETACH);
+    register_counter(&VIRTGPU_FLUSH_BY_CALLER_2D_FULL);
+    register_counter(&VIRTGPU_FLUSH_BY_CALLER_2D_RECT);
+    register_counter(&VIRTGPU_FLUSH_BY_CALLER_2D_ONLY);
+    register_counter(&VIRTGPU_FLUSH_BY_CALLER_VIRGL_RENDER_FRAME);
+    register_counter(&VIRTGPU_FLUSH_BY_CALLER_VIRGL_RENDER_RECTS);
+    register_counter(&VIRTGPU_FLUSH_BY_CALLER_VIRGL_COMPOSITE_FRAME);
+    register_counter(&VIRTGPU_FLUSH_BY_CALLER_VIRGL_COMPOSITE_FRAME_TEXTURED);
+    register_counter(&VIRTGPU_FLUSH_BY_CALLER_VIRGL_COMPOSITE_SINGLE_QUAD);
+    register_counter(&VIRTGPU_FLUSH_BY_CALLER_VIRGL_FLUSH);
+    register_counter(&VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_PRIME);
+    register_counter(&VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_STEP7);
+    register_counter(&VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_STEP10);
+    register_counter(&VIRTGPU_FLUSH_BY_CALLER_VIRGL_TEST_TEXTURED_QUAD);
 }
 
 #[inline(always)]
@@ -132,4 +246,49 @@ pub fn trace_response(resp_type: u32) {
 pub fn trace_stale_drain(entries_drained: u16, last_used_idx_after: u16) {
     let payload = ((last_used_idx_after as u32) << 16) | (entries_drained as u32);
     crate::trace_event!(VIRTGPU_PROVIDER, VIRTGPU_STALE_DRAIN, payload);
+}
+
+#[inline(always)]
+pub fn trace_flush_construct(caller_tag: u8, helper_id: u8, resource_id_arg: u32) {
+    let payload =
+        ((resource_id_arg & 0xffff) << 16) | ((helper_id as u32) << 8) | (caller_tag as u32);
+    crate::trace_event!(VIRTGPU_PROVIDER, VIRTGPU_FLUSH_CONSTRUCT, payload);
+    count_flush_caller(caller_tag);
+}
+
+#[inline(always)]
+pub fn trace_flush_buffer_pre_notify(resource_id_on_wire: u32) {
+    crate::trace_event!(
+        VIRTGPU_PROVIDER,
+        VIRTGPU_FLUSH_BUFFER_PRE_NOTIFY,
+        resource_id_on_wire
+    );
+}
+
+#[inline(always)]
+fn count_flush_caller(caller_tag: u8) {
+    match caller_tag {
+        FLUSH_CALLER_2D_FULL => VIRTGPU_FLUSH_BY_CALLER_2D_FULL.increment(),
+        FLUSH_CALLER_2D_RECT => VIRTGPU_FLUSH_BY_CALLER_2D_RECT.increment(),
+        FLUSH_CALLER_2D_ONLY => VIRTGPU_FLUSH_BY_CALLER_2D_ONLY.increment(),
+        FLUSH_CALLER_VIRGL_RENDER_FRAME => VIRTGPU_FLUSH_BY_CALLER_VIRGL_RENDER_FRAME.increment(),
+        FLUSH_CALLER_VIRGL_RENDER_RECTS => VIRTGPU_FLUSH_BY_CALLER_VIRGL_RENDER_RECTS.increment(),
+        FLUSH_CALLER_VIRGL_COMPOSITE_FRAME => {
+            VIRTGPU_FLUSH_BY_CALLER_VIRGL_COMPOSITE_FRAME.increment()
+        }
+        FLUSH_CALLER_VIRGL_COMPOSITE_FRAME_TEXTURED => {
+            VIRTGPU_FLUSH_BY_CALLER_VIRGL_COMPOSITE_FRAME_TEXTURED.increment()
+        }
+        FLUSH_CALLER_VIRGL_COMPOSITE_SINGLE_QUAD => {
+            VIRTGPU_FLUSH_BY_CALLER_VIRGL_COMPOSITE_SINGLE_QUAD.increment()
+        }
+        FLUSH_CALLER_VIRGL_FLUSH => VIRTGPU_FLUSH_BY_CALLER_VIRGL_FLUSH.increment(),
+        FLUSH_CALLER_VIRGL_INIT_PRIME => VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_PRIME.increment(),
+        FLUSH_CALLER_VIRGL_INIT_STEP7 => VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_STEP7.increment(),
+        FLUSH_CALLER_VIRGL_INIT_STEP10 => VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_STEP10.increment(),
+        FLUSH_CALLER_VIRGL_TEST_TEXTURED_QUAD => {
+            VIRTGPU_FLUSH_BY_CALLER_VIRGL_TEST_TEXTURED_QUAD.increment()
+        }
+        _ => {}
+    }
 }

@@ -1955,6 +1955,13 @@ fn virtgpu_trace_submission(cmd_type: u32, resource_id: u32) {
 }
 
 #[inline(always)]
+fn virtgpu_trace_flush_pre_notify(cmd_type: u32, resource_id: u32) {
+    if cmd_type == cmd::RESOURCE_FLUSH {
+        virtgpu::trace_flush_buffer_pre_notify(resource_id);
+    }
+}
+
+#[inline(always)]
 fn virtgpu_note_resource2_submit(cmd_type: u32, resource_id: u32) {
     if resource_id != RESOURCE_3D_ID {
         return;
@@ -2095,6 +2102,8 @@ fn send_command(
 
     // Signal that we're waiting for a completion, then notify device
     GPU_CMD_COMPLETE.store(false, Ordering::Release);
+    let (cmd_type, resource_id) = virtgpu_decode_pci_cmd();
+    virtgpu_trace_flush_pre_notify(cmd_type, resource_id);
     virtgpu::trace_q_notify(0, virtgpu_trace_used_idx());
     state.device.notify_queue_fast(0);
 
@@ -2270,6 +2279,7 @@ fn send_command_3desc(
     }
 
     // Notify device
+    virtgpu_trace_flush_pre_notify(cmd_type, resource_id);
     virtgpu::trace_q_notify(0, virtgpu_trace_used_idx());
     state.device.notify_queue_fast(0);
 
@@ -2898,7 +2908,9 @@ fn resource_flush_cmd(
     y: u32,
     width: u32,
     height: u32,
+    caller_tag: u8,
 ) -> Result<(), &'static str> {
+    virtgpu::trace_flush_construct(caller_tag, virtgpu::FLUSH_HELPER_2D, state.resource_id);
     unsafe {
         let cmd_ptr = &raw mut PCI_CMD_BUF;
         let cmd = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut VirtioGpuResourceFlush);
@@ -3401,7 +3413,12 @@ fn virgl_attach_backing_from_pages(
 }
 
 /// Flush a specific resource to the display (SET_SCANOUT must point at it first).
-fn resource_flush_3d(state: &mut GpuPciDeviceState, resource_id: u32) -> Result<(), &'static str> {
+fn resource_flush_3d(
+    state: &mut GpuPciDeviceState,
+    resource_id: u32,
+    caller_tag: u8,
+) -> Result<(), &'static str> {
+    virtgpu::trace_flush_construct(caller_tag, virtgpu::FLUSH_HELPER_3D, resource_id);
     unsafe {
         let cmd_ptr = &raw mut PCI_CMD_BUF;
         let cmd = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut VirtioGpuResourceFlush);
@@ -3833,7 +3850,14 @@ pub fn flush() -> Result<(), &'static str> {
     with_device_state(|state| {
         fence(Ordering::SeqCst);
         transfer_to_host(state, 0, 0, state.width, state.height)?;
-        resource_flush_cmd(state, 0, 0, state.width, state.height)
+        resource_flush_cmd(
+            state,
+            0,
+            0,
+            state.width,
+            state.height,
+            virtgpu::FLUSH_CALLER_2D_FULL,
+        )
     })
 }
 
@@ -3842,7 +3866,7 @@ pub fn flush_rect(x: u32, y: u32, width: u32, height: u32) -> Result<(), &'stati
     with_device_state(|state| {
         fence(Ordering::SeqCst);
         transfer_to_host(state, x, y, width, height)?;
-        resource_flush_cmd(state, x, y, width, height)
+        resource_flush_cmd(state, x, y, width, height, virtgpu::FLUSH_CALLER_2D_RECT)
     })
 }
 
@@ -3855,7 +3879,7 @@ pub fn flush_rect(x: u32, y: u32, width: u32, height: u32) -> Result<(), &'stati
 pub fn resource_flush_only(x: u32, y: u32, width: u32, height: u32) -> Result<(), &'static str> {
     with_device_state(|state| {
         fence(Ordering::SeqCst);
-        resource_flush_cmd(state, x, y, width, height)
+        resource_flush_cmd(state, x, y, width, height, virtgpu::FLUSH_CALLER_2D_ONLY)
     })
 }
 
@@ -4107,7 +4131,13 @@ pub fn virgl_render_frame(
     }
 
     // Linux-style display: SUBMIT_3D → RESOURCE_FLUSH (no transfers).
-    with_device_state(|state| resource_flush_3d(state, RESOURCE_3D_ID))?;
+    with_device_state(|state| {
+        resource_flush_3d(
+            state,
+            RESOURCE_3D_ID,
+            virtgpu::FLUSH_CALLER_VIRGL_RENDER_FRAME,
+        )
+    })?;
 
     Ok(())
 }
@@ -4261,7 +4291,11 @@ pub fn virgl_render_rects(
     // Linux ftrace proves SET_SCANOUT is issued every frame, not just once.
     with_device_state(|state| {
         set_scanout_resource(state, RESOURCE_3D_ID)?;
-        resource_flush_3d(state, RESOURCE_3D_ID)
+        resource_flush_3d(
+            state,
+            RESOURCE_3D_ID,
+            virtgpu::FLUSH_CALLER_VIRGL_RENDER_RECTS,
+        )
     })?;
 
     Ok(())
@@ -4388,7 +4422,11 @@ pub fn virgl_composite_frame(pixels: &[u32], width: u32, height: u32) -> Result<
     // SET_SCANOUT + RESOURCE_FLUSH
     with_device_state(|state| {
         set_scanout_resource(state, RESOURCE_3D_ID)?;
-        resource_flush_3d(state, RESOURCE_3D_ID)
+        resource_flush_3d(
+            state,
+            RESOURCE_3D_ID,
+            virtgpu::FLUSH_CALLER_VIRGL_COMPOSITE_FRAME,
+        )
     })?;
 
     Ok(())
@@ -4568,7 +4606,11 @@ pub fn virgl_composite_frame_textured(
 
     with_device_state(|state| {
         set_scanout_resource(state, RESOURCE_3D_ID)?;
-        resource_flush_3d(state, RESOURCE_3D_ID)
+        resource_flush_3d(
+            state,
+            RESOURCE_3D_ID,
+            virtgpu::FLUSH_CALLER_VIRGL_COMPOSITE_FRAME_TEXTURED,
+        )
     })?;
 
     Ok(())
@@ -4995,7 +5037,13 @@ fn virgl_composite_single_quad(
 
     virgl_submit_sync(cmdbuf.as_slice())?;
     with_device_state(|state| set_scanout_resource(state, RESOURCE_3D_ID))?;
-    with_device_state(|state| resource_flush_3d(state, RESOURCE_3D_ID))
+    with_device_state(|state| {
+        resource_flush_3d(
+            state,
+            RESOURCE_3D_ID,
+            virtgpu::FLUSH_CALLER_VIRGL_COMPOSITE_SINGLE_QUAD,
+        )
+    })
 }
 
 /// Multi-window GPU compositor.
@@ -5417,7 +5465,7 @@ pub fn virgl_flush() -> Result<(), &'static str> {
     }
     with_device_state(|state| {
         set_scanout_resource(state, RESOURCE_3D_ID)?;
-        resource_flush_3d(state, RESOURCE_3D_ID)
+        resource_flush_3d(state, RESOURCE_3D_ID, virtgpu::FLUSH_CALLER_VIRGL_FLUSH)
     })
 }
 
@@ -5499,7 +5547,13 @@ pub fn virgl_init() -> Result<(), &'static str> {
             transfer_to_host_3d(state, RESOURCE_3D_ID, 0, 0, width, height, width * 4)
         })?;
         with_device_state(|state| set_scanout_resource(state, RESOURCE_3D_ID))?;
-        with_device_state(|state| resource_flush_3d(state, RESOURCE_3D_ID))?;
+        with_device_state(|state| {
+            resource_flush_3d(
+                state,
+                RESOURCE_3D_ID,
+                virtgpu::FLUSH_CALLER_VIRGL_INIT_PRIME,
+            )
+        })?;
         crate::serial_println!("[virgl] Step 5: resource primed");
     }
 
@@ -5520,7 +5574,11 @@ pub fn virgl_init() -> Result<(), &'static str> {
     // Step 7: SET_SCANOUT + RESOURCE_FLUSH — matching Linux per-frame pattern.
     with_device_state(|state| {
         set_scanout_resource(state, RESOURCE_3D_ID)?;
-        resource_flush_3d(state, RESOURCE_3D_ID)
+        resource_flush_3d(
+            state,
+            RESOURCE_3D_ID,
+            virtgpu::FLUSH_CALLER_VIRGL_INIT_STEP7,
+        )
     })?;
     crate::serial_println!("[virgl] Step 7: SET_SCANOUT + RESOURCE_FLUSH done");
 
@@ -5634,7 +5692,11 @@ pub fn virgl_init() -> Result<(), &'static str> {
     // SET_SCANOUT must be re-issued after every SUBMIT_3D, not just once.
     with_device_state(|state| {
         set_scanout_resource(state, RESOURCE_3D_ID)?;
-        resource_flush_3d(state, RESOURCE_3D_ID)
+        resource_flush_3d(
+            state,
+            RESOURCE_3D_ID,
+            virtgpu::FLUSH_CALLER_VIRGL_INIT_STEP10,
+        )
     })?;
     crate::serial_println!("[virgl] Step 10: SET_SCANOUT + RESOURCE_FLUSH");
 
@@ -5900,7 +5962,11 @@ fn virgl_test_textured_quad() -> Result<(), &'static str> {
         crate::serial_println!("[virgl-tex] TRANSFER_TO_HOST_3D OK");
         set_scanout_resource(state, RESOURCE_3D_ID)?;
         crate::serial_println!("[virgl-tex] SET_SCANOUT OK");
-        resource_flush_3d(state, RESOURCE_3D_ID)?;
+        resource_flush_3d(
+            state,
+            RESOURCE_3D_ID,
+            virtgpu::FLUSH_CALLER_VIRGL_TEST_TEXTURED_QUAD,
+        )?;
         crate::serial_println!("[virgl-tex] RESOURCE_FLUSH OK");
         Ok(())
     })?;
