@@ -1233,6 +1233,9 @@ static GPU_SLEEP_TICKS_PHASES: AtomicU64 = AtomicU64::new(0);
 /// The GPU interrupt handler uses this to wake the thread immediately.
 static GPU_WAITING_THREAD: AtomicU64 = AtomicU64::new(0);
 
+/// Ensures the Turn 6 freeze watchdog kthread is spawned only once.
+static FREEZE_WATCH_STARTED: AtomicBool = AtomicBool::new(false);
+
 /// Enable yielding during GPU command waits.
 /// Called after GPU init completes, when the scheduler is fully running.
 pub fn enable_gpu_yield() {
@@ -1276,6 +1279,97 @@ pub fn enable_gpu_yield() {
 // =============================================================================
 // Helpers
 // =============================================================================
+
+pub fn start_freeze_watchdog() {
+    if FREEZE_WATCH_STARTED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+
+    let _ = crate::task::kthread::kthread_run(freeze_watchdog_thread, "freeze-watch");
+}
+
+fn freeze_watchdog_thread() {
+    let (_, _, _, _, mut last_r2_flush_ok, _) = virtgpu::freeze_watch_snapshot();
+    let mut last_ms = monotonic_ms();
+
+    loop {
+        freeze_watch_sleep_ms(5_000);
+
+        let uptime_ms = monotonic_ms();
+        let (submits, completes, fails, last_completion_ms, r2_flush_ok, _) =
+            virtgpu::freeze_watch_snapshot();
+        let elapsed_ms = uptime_ms.saturating_sub(last_ms).max(1);
+        let frames = r2_flush_ok.saturating_sub(last_r2_flush_ok);
+        let fps_last_5s = frames.saturating_mul(1000) / elapsed_ms;
+
+        crate::serial_println!(
+            "[freeze-watch] uptime_ms={} submits={} completes={} fails={} last_completion_ms={} fps_last_5s={}",
+            uptime_ms,
+            submits,
+            completes,
+            fails,
+            last_completion_ms,
+            fps_last_5s
+        );
+
+        last_ms = uptime_ms;
+        last_r2_flush_ok = r2_flush_ok;
+    }
+}
+
+fn freeze_watch_sleep_ms(ms: u64) {
+    let wake_ns = monotonic_ns().saturating_add(ms.saturating_mul(1_000_000));
+    crate::task::scheduler::with_scheduler(|sched| {
+        sched.block_current_for_timer(wake_ns);
+    });
+
+    loop {
+        let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+            sched.wake_expired_timers();
+            sched
+                .current_thread_mut()
+                .map(|thread| thread.state == crate::task::thread::ThreadState::BlockedOnTimer)
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+
+        if !still_blocked {
+            break;
+        }
+
+        crate::task::scheduler::yield_current();
+        crate::arch_halt_with_interrupts();
+    }
+}
+
+#[inline]
+fn monotonic_ms() -> u64 {
+    let (secs, nanos) = crate::time::get_monotonic_time_ns();
+    secs.saturating_mul(1000) + nanos / 1_000_000
+}
+
+#[inline]
+fn monotonic_ns() -> u64 {
+    let (secs, nanos) = crate::time::get_monotonic_time_ns();
+    secs.saturating_mul(1_000_000_000) + nanos
+}
+
+#[inline(never)]
+fn report_wait_timeout(
+    cmd_type: u32,
+    resource_id: u32,
+    expected_used_idx: u16,
+    actual_used_idx: u16,
+) {
+    virtgpu::trace_wait_timeout(cmd_type, resource_id);
+    crate::serial_println!(
+        "[gpu-pci] WAIT_TIMEOUT after 1000ms cmd_type=0x{:04x} resource_id={} expected_used_idx={} actual_used_idx={}",
+        cmd_type,
+        resource_id,
+        expected_used_idx,
+        actual_used_idx
+    );
+}
 
 /// Convert a kernel virtual address to a physical address.
 ///
@@ -2105,13 +2199,14 @@ fn send_command(
     let (cmd_type, resource_id) = virtgpu_decode_pci_cmd();
     virtgpu_trace_flush_pre_notify(cmd_type, resource_id);
     virtgpu::trace_q_notify(0, virtgpu_trace_used_idx());
+    let wait_start_ms = monotonic_ms();
     state.device.notify_queue_fast(0);
 
     // Wait for used ring update — tight spin for 2-desc commands.
     // These complete in microseconds (SET_SCANOUT, RESOURCE_FLUSH, TRANSFER_TO_HOST_3D).
     // Yielding here adds ~1-2ms of context switch overhead per command, which is
     // catastrophic with 5+ commands per frame.
-    let mut timeout = 10_000_000u32;
+    let mut spin_count = 0u32;
     loop {
         // Invalidate used ring cache line so we see the device's DMA write
         #[cfg(target_arch = "aarch64")]
@@ -2132,8 +2227,10 @@ fn send_command(
             state.last_used_idx = used_idx;
             return Ok(());
         }
-        timeout -= 1;
-        if timeout == 0 {
+        spin_count = spin_count.wrapping_add(1);
+        if spin_count & 0x3fff == 0 && monotonic_ms().saturating_sub(wait_start_ms) > 1000 {
+            let expected_used_idx = state.last_used_idx.wrapping_add(1);
+            report_wait_timeout(cmd_type, resource_id, expected_used_idx, used_idx);
             return Err("GPU PCI command timeout");
         }
         core::hint::spin_loop();
@@ -2281,13 +2378,14 @@ fn send_command_3desc(
     // Notify device
     virtgpu_trace_flush_pre_notify(cmd_type, resource_id);
     virtgpu::trace_q_notify(0, virtgpu_trace_used_idx());
+    let wait_start_ms = monotonic_ms();
     state.device.notify_queue_fast(0);
 
     let used_len;
 
     #[cfg(target_arch = "aarch64")]
     if has_msi && can_yield {
-        // MSI-X path: retry blocking up to 20 times (200ms total).
+        // MSI-X path: retry blocking up to 100 times (1000ms total).
         // Tolerates VM scheduling jitter where Parallels preempts the VirGL
         // GPU thread. Previous single 10ms+spin approach caused cascading
         // DEADBEEF failures on ~25% of sustained sessions.
@@ -2297,7 +2395,7 @@ fn send_command_3desc(
         }
 
         let mut completed = false;
-        for _attempt in 0..20 {
+        for _attempt in 0..100 {
             // Check if complete (race: device may finish between notify/re-block)
             let done = unsafe {
                 let q = &raw const PCI_CTRL_QUEUE;
@@ -2377,15 +2475,17 @@ fn send_command_3desc(
             };
             state.last_used_idx = state.last_used_idx.wrapping_add(1);
         } else {
-            // Timeout after 200ms. Speculatively advance last_used_idx so the
+            // Timeout after 1000ms. Speculatively advance last_used_idx so the
             // next command's drain doesn't pick up this command's late completion
             // and cascade-fail with DEADBEEF responses.
+            let actual_used_idx = virtgpu_trace_used_idx();
+            let expected_used_idx = state.last_used_idx.wrapping_add(1);
+            report_wait_timeout(cmd_type, resource_id, expected_used_idx, actual_used_idx);
             state.last_used_idx = state.last_used_idx.wrapping_add(1);
-            return Err("GPU PCI 3-desc command timeout (200ms)");
+            return Err("GPU PCI 3-desc command timeout (1000ms)");
         }
     } else {
         // Polling fallback: spin then block with timer wake.
-        let mut timeout = 10_000_000u32;
         let mut spin_count = 0u32;
         loop {
             #[cfg(target_arch = "aarch64")]
@@ -2420,9 +2520,10 @@ fn send_command_3desc(
                 state.last_used_idx = used_idx;
                 break;
             }
-            timeout -= 1;
-            if timeout == 0 {
+            if spin_count & 0x3fff == 0 && monotonic_ms().saturating_sub(wait_start_ms) > 1000 {
                 // Speculatively advance so the next command doesn't cascade-fail
+                let expected_used_idx = state.last_used_idx.wrapping_add(1);
+                report_wait_timeout(cmd_type, resource_id, expected_used_idx, used_idx);
                 state.last_used_idx = state.last_used_idx.wrapping_add(1);
                 return Err("GPU PCI 3-desc command timeout");
             }

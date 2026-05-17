@@ -10,10 +10,11 @@
 //! - `VIRTGPU_FLUSH_CONSTRUCT`: `caller_tag[7:0] | helper_id[15:8] | resource_id_arg[31:16]`
 //! - `VIRTGPU_FLUSH_BUFFER_PRE_NOTIFY`: `resource_id_on_wire[31:0]`
 //! - `VIRTGPU_FLUSH_READBACK_MISMATCH`: `expected_resource_id[15:0] | readback_resource_id[31:16]`
+//! - `VIRTGPU_WAIT_TIMEOUT`: `cmd_type[15:0] | resource_id[31:16]`
 
 use crate::tracing::counter::{register_counter, TraceCounter};
 use crate::tracing::provider::{register_provider, TraceProvider};
-use core::sync::atomic::AtomicU64;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Provider ID for VirtIO GPU events (0x07xx range).
 pub const PROVIDER_ID: u8 = 0x07;
@@ -37,6 +38,7 @@ pub const PROBE_STALE_DRAIN: u8 = 0x05;
 pub const PROBE_FLUSH_CONSTRUCT: u8 = 0x06;
 pub const PROBE_FLUSH_BUFFER_PRE_NOTIFY: u8 = 0x07;
 pub const PROBE_FLUSH_READBACK_MISMATCH: u8 = 0x08;
+pub const PROBE_WAIT_TIMEOUT: u8 = 0x09;
 
 pub const VIRTGPU_CMD_SUBMIT: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_CMD_SUBMIT as u16);
 pub const VIRTGPU_CMD_RESOURCE: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_CMD_RESOURCE as u16);
@@ -50,6 +52,7 @@ pub const VIRTGPU_FLUSH_BUFFER_PRE_NOTIFY: u16 =
     ((PROVIDER_ID as u16) << 8) | (PROBE_FLUSH_BUFFER_PRE_NOTIFY as u16);
 pub const VIRTGPU_FLUSH_READBACK_MISMATCH: u16 =
     ((PROVIDER_ID as u16) << 8) | (PROBE_FLUSH_READBACK_MISMATCH as u16);
+pub const VIRTGPU_WAIT_TIMEOUT: u16 = ((PROVIDER_ID as u16) << 8) | (PROBE_WAIT_TIMEOUT as u16);
 
 pub const FLUSH_HELPER_3D: u8 = 0;
 pub const FLUSH_HELPER_2D: u8 = 1;
@@ -67,6 +70,29 @@ pub const FLUSH_CALLER_VIRGL_INIT_PRIME: u8 = 10;
 pub const FLUSH_CALLER_VIRGL_INIT_STEP7: u8 = 11;
 pub const FLUSH_CALLER_VIRGL_INIT_STEP10: u8 = 12;
 pub const FLUSH_CALLER_VIRGL_TEST_TEXTURED_QUAD: u8 = 13;
+
+#[no_mangle]
+pub static VIRTGPU_SUBMIT_TOTAL: TraceCounter =
+    TraceCounter::new("VIRTGPU_SUBMIT_TOTAL", "VirtIO GPU command submissions");
+
+#[no_mangle]
+pub static VIRTGPU_COMPLETE_TOTAL: TraceCounter = TraceCounter::new(
+    "VIRTGPU_COMPLETE_TOTAL",
+    "VirtIO GPU command queue completions",
+);
+
+#[no_mangle]
+pub static VIRTGPU_FAIL_TOTAL: TraceCounter =
+    TraceCounter::new("VIRTGPU_FAIL_TOTAL", "VirtIO GPU command failures");
+
+#[no_mangle]
+pub static VIRTGPU_WAIT_TIMEOUT_COUNT: TraceCounter = TraceCounter::new(
+    "VIRTGPU_WAIT_TIMEOUT_COUNT",
+    "VirtIO GPU command wait timeouts",
+);
+
+#[no_mangle]
+pub static VIRTGPU_LAST_COMPLETION_MS: AtomicU64 = AtomicU64::new(0);
 
 #[no_mangle]
 pub static VIRTGPU_R2_CREATE: TraceCounter = TraceCounter::new(
@@ -201,6 +227,10 @@ pub static VIRTGPU_FLUSH_BY_CALLER_VIRGL_TEST_TEXTURED_QUAD: TraceCounter = Trac
 /// Register the provider and counters.
 pub fn init() {
     register_provider(&VIRTGPU_PROVIDER);
+    register_counter(&VIRTGPU_SUBMIT_TOTAL);
+    register_counter(&VIRTGPU_COMPLETE_TOTAL);
+    register_counter(&VIRTGPU_FAIL_TOTAL);
+    register_counter(&VIRTGPU_WAIT_TIMEOUT_COUNT);
     register_counter(&VIRTGPU_R2_CREATE);
     register_counter(&VIRTGPU_R2_ATTACH_BACKING);
     register_counter(&VIRTGPU_R2_CTX_ATTACH);
@@ -227,6 +257,7 @@ pub fn init() {
 
 #[inline(always)]
 pub fn trace_cmd_submit(cmd_type: u32, seq: u16) {
+    VIRTGPU_SUBMIT_TOTAL.increment();
     let payload = ((seq as u32) << 16) | (cmd_type & 0xffff);
     crate::trace_event!(VIRTGPU_PROVIDER, VIRTGPU_CMD_SUBMIT, payload);
 }
@@ -244,12 +275,17 @@ pub fn trace_q_notify(head_desc_idx: u16, used_idx_before: u16) {
 
 #[inline(always)]
 pub fn trace_q_complete(head_desc_idx: u16, used_idx_after: u16) {
+    VIRTGPU_COMPLETE_TOTAL.increment();
+    VIRTGPU_LAST_COMPLETION_MS.store(now_ms(), Ordering::Relaxed);
     let payload = ((used_idx_after as u32) << 16) | (head_desc_idx as u32);
     crate::trace_event!(VIRTGPU_PROVIDER, VIRTGPU_Q_COMPLETE, payload);
 }
 
 #[inline(always)]
 pub fn trace_response(resp_type: u32) {
+    if resp_type >= 0x1200 {
+        VIRTGPU_FAIL_TOTAL.increment();
+    }
     crate::trace_event!(VIRTGPU_PROVIDER, VIRTGPU_RESPONSE, resp_type);
 }
 
@@ -297,6 +333,32 @@ pub fn trace_flush_buffer_pre_notify_if_zero(resource_id_on_wire: u32) {
 pub fn trace_flush_readback_mismatch(expected: u32, readback: u32) {
     let payload = ((readback & 0xffff) << 16) | (expected & 0xffff);
     crate::trace_event!(VIRTGPU_PROVIDER, VIRTGPU_FLUSH_READBACK_MISMATCH, payload);
+}
+
+#[inline(always)]
+pub fn trace_wait_timeout(cmd_type: u32, resource_id: u32) {
+    VIRTGPU_WAIT_TIMEOUT_COUNT.increment();
+    VIRTGPU_FAIL_TOTAL.increment();
+    let payload = ((resource_id & 0xffff) << 16) | (cmd_type & 0xffff);
+    crate::trace_event!(VIRTGPU_PROVIDER, VIRTGPU_WAIT_TIMEOUT, payload);
+}
+
+#[inline]
+pub fn freeze_watch_snapshot() -> (u64, u64, u64, u64, u64, u64) {
+    (
+        VIRTGPU_SUBMIT_TOTAL.aggregate(),
+        VIRTGPU_COMPLETE_TOTAL.aggregate(),
+        VIRTGPU_FAIL_TOTAL.aggregate(),
+        VIRTGPU_LAST_COMPLETION_MS.load(Ordering::Relaxed),
+        VIRTGPU_R2_FLUSH_OK.aggregate(),
+        VIRTGPU_WAIT_TIMEOUT_COUNT.aggregate(),
+    )
+}
+
+#[inline(always)]
+fn now_ms() -> u64 {
+    let (secs, nanos) = crate::time::get_monotonic_time_ns();
+    secs.saturating_mul(1000) + nanos / 1_000_000
 }
 
 #[inline(always)]
