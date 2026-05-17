@@ -80,8 +80,10 @@ fn run_boot_script() {
         // early single-CPU boot window can stall before init.js runs, so mirror
         // the boot script's service sequence directly from init. Start bwm
         // before network services so the compositor replaces the kernel VirGL
-        // proof clear within the Parallels validation window.
-        const SERVICES: &[&[u8]] = &[b"/bin/bwm\0", b"/sbin/telnetd\0"];
+        // proof clear within the Parallels validation window. Start the
+        // heartbeat first so scheduler liveness is visible even if BWM wedges
+        // immediately after spawn.
+        const SERVICES: &[&[u8]] = &[b"/bin/heartbeat\0", b"/bin/bwm\0", b"/sbin/telnetd\0"];
         for path in SERVICES {
             if let Err(e) = spawn(path) {
                 print!("[init] Warning: failed to spawn service: {}\n", e);

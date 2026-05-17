@@ -1477,6 +1477,12 @@ fn execute_hotkey_action(action: &HotkeyAction, windows: &mut Vec<Window>, focus
     }
 }
 
+fn monotonic_ms() -> Option<u64> {
+    libbreenix::time::now_monotonic()
+        .ok()
+        .map(|ts| ts.tv_sec as u64 * 1000 + ts.tv_nsec as u64 / 1_000_000)
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -1622,6 +1628,8 @@ fn main() {
     let mut clock_text = [0u8; 11];
     format_clock(0, &mut clock_text);
     let mut frame_counter: u32 = 0;
+    let mut fps_frames_since_last: u32 = 0;
+    let mut fps_last_ms = monotonic_ms().unwrap_or(0);
     let mut next_creation_order: u32 = 0;
     // Hotkey system: load config from /etc/hotkeys.conf
     let mut hotkey_mgr = HotkeyManager::new();
@@ -2156,6 +2164,20 @@ fn main() {
         // ── 5b. Update clock (once per second) ──
         // Only check realtime every 30 frames (~5-6 checks/sec at 200 FPS)
         frame_counter = frame_counter.wrapping_add(1);
+        fps_frames_since_last = fps_frames_since_last.wrapping_add(1);
+        if let Some(now_ms) = monotonic_ms() {
+            let elapsed_ms = now_ms.saturating_sub(fps_last_ms);
+            if elapsed_ms >= 1000 {
+                let instantaneous_fps =
+                    fps_frames_since_last as u64 * 1000 / elapsed_ms.max(1);
+                print!(
+                    "[bwm-fps] frames_since_last={} elapsed_ms={} instantaneous_fps={}\n",
+                    fps_frames_since_last, elapsed_ms, instantaneous_fps
+                );
+                fps_frames_since_last = 0;
+                fps_last_ms = now_ms;
+            }
+        }
         if frame_counter % 30 == 0 {
             if let Ok(ts) = libbreenix::time::now_realtime() {
                 if ts.tv_sec != last_clock_sec {

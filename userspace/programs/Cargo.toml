@@ -340,6 +340,10 @@ name = "hello_time"
 path = "src/hello_time.rs"
 
 [[bin]]
+name = "heartbeat"
+path = "src/heartbeat.rs"
+
+[[bin]]
 name = "http_test"
 path = "src/http_test.rs"
 

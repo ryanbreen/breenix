@@ -8,6 +8,7 @@
 //! `pci_transport.rs`) instead of MMIO registers.
 
 use super::pci_transport::VirtioPciDevice;
+use crate::tracing::providers::virtgpu;
 use core::ptr::read_volatile;
 use core::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::Mutex;
@@ -17,6 +18,7 @@ use spin::Mutex;
 /// Without this, concurrent callers corrupt the shared command/response
 /// buffers and virtqueue state.
 static GPU_PCI_LOCK: Mutex<()> = Mutex::new(());
+static VIRTGPU_CMD_SEQ: AtomicU32 = AtomicU32::new(0);
 
 // =============================================================================
 // VirtIO GPU Protocol (same as gpu_mmio.rs)
@@ -1231,6 +1233,9 @@ static GPU_SLEEP_TICKS_PHASES: AtomicU64 = AtomicU64::new(0);
 /// The GPU interrupt handler uses this to wake the thread immediately.
 static GPU_WAITING_THREAD: AtomicU64 = AtomicU64::new(0);
 
+/// Ensures the Turn 6 freeze watchdog kthread is spawned only once.
+static FREEZE_WATCH_STARTED: AtomicBool = AtomicBool::new(false);
+
 /// Enable yielding during GPU command waits.
 /// Called after GPU init completes, when the scheduler is fully running.
 pub fn enable_gpu_yield() {
@@ -1274,6 +1279,190 @@ pub fn enable_gpu_yield() {
 // =============================================================================
 // Helpers
 // =============================================================================
+
+pub fn start_freeze_watchdog() {
+    if FREEZE_WATCH_STARTED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+
+    let _ = crate::task::kthread::kthread_run(freeze_watchdog_thread, "freeze-watch");
+}
+
+fn freeze_watchdog_thread() {
+    let (_, _, _, _, mut last_r2_flush_ok, _) = virtgpu::freeze_watch_snapshot();
+    let mut last_ms = monotonic_ms();
+
+    loop {
+        let sleep_ms = if monotonic_ms() < 10_000 { 500 } else { 5_000 };
+        freeze_watch_sleep_ms(sleep_ms);
+
+        let uptime_ms = monotonic_ms();
+        let (submits, completes, fails, last_completion_ms, r2_flush_ok, _) =
+            virtgpu::freeze_watch_snapshot();
+        let elapsed_ms = uptime_ms.saturating_sub(last_ms).max(1);
+        let frames = r2_flush_ok.saturating_sub(last_r2_flush_ok);
+        let fps_last_5s = frames.saturating_mul(1000) / elapsed_ms;
+        let cpu = current_cpu_id_for_watch();
+        let ctx_switches = crate::task::scheduler::context_switch_count();
+        let timer_ticks = timer_tick_snapshot();
+        let sched_snapshot = crate::task::scheduler::try_liveness_snapshot(cpu);
+        let sched_lock = if sched_snapshot.is_some() {
+            "ok"
+        } else {
+            "busy"
+        };
+        let sched = sched_snapshot.unwrap_or_default();
+        let procmgr_lock = process_manager_lock_status();
+        let gpu_pci_lock = gpu_pci_lock_status();
+
+        crate::serial_println!(
+            "[freeze-watch] uptime_ms={} submits={} completes={} fails={} last_completion_ms={} fps_last_5s={} cpu={} tid={} ctx_switches={} timer_ticks_cpu0={} timer_ticks_cpu1={} timer_ticks_cpu2={} timer_ticks_cpu3={} timer_ticks_cpu4={} timer_ticks_cpu5={} timer_ticks_cpu6={} timer_ticks_cpu7={} rq_total={} rq_cpu0={} rq_cpu1={} rq_cpu2={} rq_cpu3={} rq_cpu4={} rq_cpu5={} rq_cpu6={} rq_cpu7={} cur_cpu0={} cur_cpu1={} cur_cpu2={} cur_cpu3={} cur_cpu4={} cur_cpu5={} cur_cpu6={} cur_cpu7={} total_threads={} blocked_threads={} sched_lock={} procmgr_lock={} gpu_pci_lock={}",
+            uptime_ms,
+            submits,
+            completes,
+            fails,
+            last_completion_ms,
+            fps_last_5s,
+            cpu,
+            sched.current_thread_id,
+            ctx_switches,
+            timer_ticks[0],
+            timer_ticks[1],
+            timer_ticks[2],
+            timer_ticks[3],
+            timer_ticks[4],
+            timer_ticks[5],
+            timer_ticks[6],
+            timer_ticks[7],
+            sched.ready_queue_len,
+            sched.per_cpu_ready_len[0],
+            sched.per_cpu_ready_len[1],
+            sched.per_cpu_ready_len[2],
+            sched.per_cpu_ready_len[3],
+            sched.per_cpu_ready_len[4],
+            sched.per_cpu_ready_len[5],
+            sched.per_cpu_ready_len[6],
+            sched.per_cpu_ready_len[7],
+            sched.per_cpu_current[0],
+            sched.per_cpu_current[1],
+            sched.per_cpu_current[2],
+            sched.per_cpu_current[3],
+            sched.per_cpu_current[4],
+            sched.per_cpu_current[5],
+            sched.per_cpu_current[6],
+            sched.per_cpu_current[7],
+            sched.total_threads,
+            sched.blocked_count,
+            sched_lock,
+            procmgr_lock,
+            gpu_pci_lock
+        );
+
+        last_ms = uptime_ms;
+        last_r2_flush_ok = r2_flush_ok;
+    }
+}
+
+#[inline]
+fn current_cpu_id_for_watch() -> usize {
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        0
+    }
+}
+
+#[inline]
+fn timer_tick_snapshot() -> [u64; 8] {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mut ticks = [0u64; 8];
+        for (idx, slot) in ticks.iter_mut().enumerate() {
+            *slot = crate::arch_impl::aarch64::timer_interrupt::TIMER_TICK_COUNT[idx]
+                .load(Ordering::Relaxed);
+        }
+        ticks
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        [0; 8]
+    }
+}
+
+#[inline]
+fn process_manager_lock_status() -> &'static str {
+    if let Some(_guard) = crate::process::PROCESS_MANAGER.try_lock() {
+        "ok"
+    } else {
+        "busy"
+    }
+}
+
+#[inline]
+fn gpu_pci_lock_status() -> &'static str {
+    if let Some(_guard) = GPU_PCI_LOCK.try_lock() {
+        "ok"
+    } else {
+        "busy"
+    }
+}
+
+fn freeze_watch_sleep_ms(ms: u64) {
+    let wake_ns = monotonic_ns().saturating_add(ms.saturating_mul(1_000_000));
+    crate::task::scheduler::with_scheduler(|sched| {
+        sched.block_current_for_timer(wake_ns);
+    });
+
+    loop {
+        let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+            sched.wake_expired_timers();
+            sched
+                .current_thread_mut()
+                .map(|thread| thread.state == crate::task::thread::ThreadState::BlockedOnTimer)
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+
+        if !still_blocked {
+            break;
+        }
+
+        crate::task::scheduler::yield_current();
+        crate::arch_halt_with_interrupts();
+    }
+}
+
+#[inline]
+fn monotonic_ms() -> u64 {
+    let (secs, nanos) = crate::time::get_monotonic_time_ns();
+    secs.saturating_mul(1000) + nanos / 1_000_000
+}
+
+#[inline]
+fn monotonic_ns() -> u64 {
+    let (secs, nanos) = crate::time::get_monotonic_time_ns();
+    secs.saturating_mul(1_000_000_000) + nanos
+}
+
+#[inline(never)]
+fn report_wait_timeout(
+    cmd_type: u32,
+    resource_id: u32,
+    expected_used_idx: u16,
+    actual_used_idx: u16,
+) {
+    virtgpu::trace_wait_timeout(cmd_type, resource_id);
+    crate::serial_println!(
+        "[gpu-pci] WAIT_TIMEOUT after 1000ms cmd_type=0x{:04x} resource_id={} expected_used_idx={} actual_used_idx={}",
+        cmd_type,
+        resource_id,
+        expected_used_idx,
+        actual_used_idx
+    );
+}
 
 /// Convert a kernel virtual address to a physical address.
 ///
@@ -1866,6 +2055,146 @@ fn framebuffer_len(state: &GpuPciDeviceState) -> Result<usize, &'static str> {
     Ok(len)
 }
 
+#[inline(always)]
+fn virtgpu_next_trace_seq() -> u16 {
+    VIRTGPU_CMD_SEQ
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1) as u16
+}
+
+#[inline(always)]
+fn virtgpu_decode_command(buf: *const u8) -> (u32, u32) {
+    unsafe {
+        let hdr = &*(buf as *const VirtioGpuCtrlHdr);
+        let cmd_type = core::ptr::read_volatile(&hdr.type_);
+        let resource_id = match cmd_type {
+            cmd::RESOURCE_CREATE_2D => {
+                let cmd = &*(buf as *const VirtioGpuResourceCreate2d);
+                core::ptr::read_volatile(&cmd.resource_id)
+            }
+            cmd::RESOURCE_UNREF | cmd::RESOURCE_DETACH_BACKING => {
+                let cmd = &*(buf as *const VirtioGpuCtxResource);
+                core::ptr::read_volatile(&cmd.resource_id)
+            }
+            cmd::SET_SCANOUT => {
+                let cmd = &*(buf as *const VirtioGpuSetScanout);
+                core::ptr::read_volatile(&cmd.resource_id)
+            }
+            cmd::RESOURCE_FLUSH => {
+                let cmd = &*(buf as *const VirtioGpuResourceFlush);
+                core::ptr::read_volatile(&cmd.resource_id)
+            }
+            cmd::TRANSFER_TO_HOST_2D => {
+                let cmd = &*(buf as *const VirtioGpuTransferToHost2d);
+                core::ptr::read_volatile(&cmd.resource_id)
+            }
+            cmd::RESOURCE_ATTACH_BACKING => {
+                let cmd = &*(buf as *const VirtioGpuResourceAttachBacking);
+                core::ptr::read_volatile(&cmd.resource_id)
+            }
+            cmd::CTX_ATTACH_RESOURCE | cmd::CTX_DETACH_RESOURCE => {
+                let cmd = &*(buf as *const VirtioGpuCtxResource);
+                core::ptr::read_volatile(&cmd.resource_id)
+            }
+            cmd::RESOURCE_CREATE_3D => {
+                let cmd = &*(buf as *const VirtioGpuResourceCreate3d);
+                core::ptr::read_volatile(&cmd.resource_id)
+            }
+            cmd::TRANSFER_TO_HOST_3D => {
+                let cmd = &*(buf as *const VirtioGpuTransferHost3d);
+                core::ptr::read_volatile(&cmd.resource_id)
+            }
+            cmd::SUBMIT_3D => core::ptr::read_volatile(&hdr.ctx_id),
+            _ => 0,
+        };
+        (cmd_type, resource_id)
+    }
+}
+
+#[inline(always)]
+fn virtgpu_decode_pci_cmd() -> (u32, u32) {
+    let cmd_ptr = &raw const PCI_CMD_BUF;
+    unsafe { virtgpu_decode_command((*cmd_ptr).data.as_ptr()) }
+}
+
+#[inline(always)]
+fn virtgpu_decode_3desc_command(hdr_phys: u64) -> (u32, u32) {
+    let pci_cmd_phys = virt_to_phys(&raw const PCI_CMD_BUF as u64);
+    if hdr_phys == pci_cmd_phys {
+        return virtgpu_decode_pci_cmd();
+    }
+
+    let pci_3d_phys = virt_to_phys(&raw const PCI_3D_CMD_BUF as u64);
+    if hdr_phys == pci_3d_phys {
+        let cmd_ptr = &raw const PCI_3D_CMD_BUF;
+        return unsafe { virtgpu_decode_command((*cmd_ptr).data.as_ptr()) };
+    }
+
+    (0, 0)
+}
+
+#[inline(always)]
+fn virtgpu_trace_submission(cmd_type: u32, resource_id: u32) {
+    let seq = virtgpu_next_trace_seq();
+    virtgpu::trace_cmd_submit(cmd_type, seq);
+    virtgpu::trace_cmd_resource(resource_id);
+    virtgpu_note_resource2_submit(cmd_type, resource_id);
+}
+
+#[inline(always)]
+fn virtgpu_trace_flush_pre_notify(cmd_type: u32, resource_id: u32) {
+    if cmd_type == cmd::RESOURCE_FLUSH {
+        virtgpu::trace_flush_buffer_pre_notify_if_zero(resource_id);
+    }
+}
+
+#[inline(always)]
+fn virtgpu_note_resource2_submit(cmd_type: u32, resource_id: u32) {
+    if resource_id != RESOURCE_3D_ID {
+        return;
+    }
+
+    match cmd_type {
+        cmd::RESOURCE_CREATE_3D => virtgpu::VIRTGPU_R2_CREATE.increment(),
+        cmd::RESOURCE_ATTACH_BACKING => virtgpu::VIRTGPU_R2_ATTACH_BACKING.increment(),
+        cmd::CTX_ATTACH_RESOURCE => virtgpu::VIRTGPU_R2_CTX_ATTACH.increment(),
+        cmd::TRANSFER_TO_HOST_3D => virtgpu::VIRTGPU_R2_TRANSFER.increment(),
+        cmd::SET_SCANOUT => virtgpu::VIRTGPU_R2_SET_SCANOUT.increment(),
+        cmd::RESOURCE_UNREF | cmd::RESOURCE_DETACH_BACKING | cmd::CTX_DETACH_RESOURCE => {
+            virtgpu::VIRTGPU_R2_UNREF_OR_DETACH.increment()
+        }
+        _ => {}
+    }
+}
+
+#[inline(always)]
+fn virtgpu_note_resource2_response(cmd_type: u32, resource_id: u32, resp_type: u32) {
+    if cmd_type == cmd::RESOURCE_FLUSH && resource_id == RESOURCE_3D_ID {
+        if resp_type == cmd::RESP_OK_NODATA {
+            virtgpu::VIRTGPU_R2_FLUSH_OK.increment();
+        } else {
+            virtgpu::VIRTGPU_R2_FLUSH_FAIL.increment();
+        }
+    }
+}
+
+#[inline(always)]
+fn virtgpu_trace_used_idx() -> u16 {
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        let q = &raw const PCI_CTRL_QUEUE;
+        let used_addr = &(*q).used as *const _ as usize;
+        core::arch::asm!("dc civac, {}", in(reg) used_addr, options(nostack));
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+
+    fence(Ordering::Acquire);
+    unsafe {
+        let q = &raw const PCI_CTRL_QUEUE;
+        read_volatile(&(*q).used.idx)
+    }
+}
+
 // =============================================================================
 // Command Submission
 // =============================================================================
@@ -1896,6 +2225,7 @@ fn send_command(
         let diff = cur.wrapping_sub(state.last_used_idx);
         if diff > 0 && diff < 32768 {
             state.last_used_idx = cur;
+            virtgpu::trace_stale_drain(diff, cur);
         }
     }
 
@@ -1959,13 +2289,18 @@ fn send_command(
 
     // Signal that we're waiting for a completion, then notify device
     GPU_CMD_COMPLETE.store(false, Ordering::Release);
+    let (cmd_type, resource_id) = virtgpu_decode_pci_cmd();
+    virtgpu_trace_flush_pre_notify(cmd_type, resource_id);
+    virtgpu::trace_q_notify(0, virtgpu_trace_used_idx());
+    let wait_start_ms = monotonic_ms();
+    virtgpu::trace_wait_completion_enter(cmd_type, resource_id, virtgpu::WAIT_PATH_2DESC);
     state.device.notify_queue_fast(0);
 
     // Wait for used ring update — tight spin for 2-desc commands.
     // These complete in microseconds (SET_SCANOUT, RESOURCE_FLUSH, TRANSFER_TO_HOST_3D).
     // Yielding here adds ~1-2ms of context switch overhead per command, which is
     // catastrophic with 5+ commands per frame.
-    let mut timeout = 10_000_000u32;
+    let mut spin_count = 0u32;
     loop {
         // Invalidate used ring cache line so we see the device's DMA write
         #[cfg(target_arch = "aarch64")]
@@ -1982,11 +2317,26 @@ fn send_command(
             read_volatile(&(*q).used.idx)
         };
         if used_idx != state.last_used_idx {
+            virtgpu::trace_q_complete(0, used_idx);
+            virtgpu::trace_wait_completion_exit(
+                cmd_type,
+                resource_id,
+                virtgpu::WAIT_PATH_2DESC,
+                true,
+            );
             state.last_used_idx = used_idx;
             return Ok(());
         }
-        timeout -= 1;
-        if timeout == 0 {
+        spin_count = spin_count.wrapping_add(1);
+        if spin_count & 0x3fff == 0 && monotonic_ms().saturating_sub(wait_start_ms) > 1000 {
+            let expected_used_idx = state.last_used_idx.wrapping_add(1);
+            virtgpu::trace_wait_completion_exit(
+                cmd_type,
+                resource_id,
+                virtgpu::WAIT_PATH_2DESC,
+                false,
+            );
+            report_wait_timeout(cmd_type, resource_id, expected_used_idx, used_idx);
             return Err("GPU PCI command timeout");
         }
         core::hint::spin_loop();
@@ -2006,6 +2356,9 @@ fn send_command_3desc(
     payload_phys: u64,
     payload_len: u32,
 ) -> Result<(u32, u32), &'static str> {
+    let (cmd_type, resource_id) = virtgpu_decode_3desc_command(hdr_phys);
+    virtgpu_trace_submission(cmd_type, resource_id);
+
     // Drain stale completions (same forward-only logic as send_command).
     #[cfg(target_arch = "aarch64")]
     unsafe {
@@ -2018,6 +2371,7 @@ fn send_command_3desc(
         let diff = cur.wrapping_sub(state.last_used_idx);
         if diff > 0 && diff < 32768 {
             state.last_used_idx = cur;
+            virtgpu::trace_stale_drain(diff, cur);
         }
     }
 
@@ -2128,13 +2482,22 @@ fn send_command_3desc(
     }
 
     // Notify device
+    let wait_path = if has_msi && can_yield {
+        virtgpu::WAIT_PATH_3DESC_MSI
+    } else {
+        virtgpu::WAIT_PATH_3DESC_POLL
+    };
+    virtgpu_trace_flush_pre_notify(cmd_type, resource_id);
+    virtgpu::trace_q_notify(0, virtgpu_trace_used_idx());
+    let wait_start_ms = monotonic_ms();
+    virtgpu::trace_wait_completion_enter(cmd_type, resource_id, wait_path);
     state.device.notify_queue_fast(0);
 
     let used_len;
 
     #[cfg(target_arch = "aarch64")]
     if has_msi && can_yield {
-        // MSI-X path: retry blocking up to 20 times (200ms total).
+        // MSI-X path: retry blocking up to 100 times (1000ms total).
         // Tolerates VM scheduling jitter where Parallels preempts the VirGL
         // GPU thread. Previous single 10ms+spin approach caused cascading
         // DEADBEEF failures on ~25% of sustained sessions.
@@ -2144,7 +2507,7 @@ fn send_command_3desc(
         }
 
         let mut completed = false;
-        for _attempt in 0..20 {
+        for _attempt in 0..100 {
             // Check if complete (race: device may finish between notify/re-block)
             let done = unsafe {
                 let q = &raw const PCI_CTRL_QUEUE;
@@ -2213,6 +2576,8 @@ fn send_command_3desc(
         }
 
         if completed {
+            virtgpu::trace_q_complete(0, virtgpu_trace_used_idx());
+            virtgpu::trace_wait_completion_exit(cmd_type, resource_id, wait_path, true);
             used_len = unsafe {
                 let q = &raw const PCI_CTRL_QUEUE;
                 let elem_idx = (state.last_used_idx % 16) as usize;
@@ -2223,15 +2588,18 @@ fn send_command_3desc(
             };
             state.last_used_idx = state.last_used_idx.wrapping_add(1);
         } else {
-            // Timeout after 200ms. Speculatively advance last_used_idx so the
+            // Timeout after 1000ms. Speculatively advance last_used_idx so the
             // next command's drain doesn't pick up this command's late completion
             // and cascade-fail with DEADBEEF responses.
+            let actual_used_idx = virtgpu_trace_used_idx();
+            let expected_used_idx = state.last_used_idx.wrapping_add(1);
+            virtgpu::trace_wait_completion_exit(cmd_type, resource_id, wait_path, false);
+            report_wait_timeout(cmd_type, resource_id, expected_used_idx, actual_used_idx);
             state.last_used_idx = state.last_used_idx.wrapping_add(1);
-            return Err("GPU PCI 3-desc command timeout (200ms)");
+            return Err("GPU PCI 3-desc command timeout (1000ms)");
         }
     } else {
         // Polling fallback: spin then block with timer wake.
-        let mut timeout = 10_000_000u32;
         let mut spin_count = 0u32;
         loop {
             #[cfg(target_arch = "aarch64")]
@@ -2248,6 +2616,8 @@ fn send_command_3desc(
                 read_volatile(&(*q).used.idx)
             };
             if used_idx != state.last_used_idx {
+                virtgpu::trace_q_complete(0, used_idx);
+                virtgpu::trace_wait_completion_exit(cmd_type, resource_id, wait_path, true);
                 used_len = unsafe {
                     let q = &raw const PCI_CTRL_QUEUE;
                     let elem_idx = (state.last_used_idx % 16) as usize;
@@ -2265,9 +2635,11 @@ fn send_command_3desc(
                 state.last_used_idx = used_idx;
                 break;
             }
-            timeout -= 1;
-            if timeout == 0 {
+            if spin_count & 0x3fff == 0 && monotonic_ms().saturating_sub(wait_start_ms) > 1000 {
                 // Speculatively advance so the next command doesn't cascade-fail
+                let expected_used_idx = state.last_used_idx.wrapping_add(1);
+                virtgpu::trace_wait_completion_exit(cmd_type, resource_id, wait_path, false);
+                report_wait_timeout(cmd_type, resource_id, expected_used_idx, used_idx);
                 state.last_used_idx = state.last_used_idx.wrapping_add(1);
                 return Err("GPU PCI 3-desc command timeout");
             }
@@ -2326,6 +2698,9 @@ fn send_command_3desc(
         core::ptr::read_volatile(&h.type_)
     };
 
+    virtgpu::trace_response(resp_type);
+    virtgpu_note_resource2_response(cmd_type, resource_id, resp_type);
+
     Ok((used_len, resp_type))
 }
 
@@ -2343,12 +2718,8 @@ fn send_command_expect_ok(state: &mut GpuPciDeviceState, cmd_len: u32) -> Result
         core::ptr::write_volatile(&mut hdr.flags, 0xDEADBEEF);
     }
 
-    // Read command type for diagnostic
-    let cmd_type = unsafe {
-        let cmd_ptr = &raw const PCI_CMD_BUF;
-        let hdr = &*((*cmd_ptr).data.as_ptr() as *const VirtioGpuCtrlHdr);
-        core::ptr::read_volatile(&hdr.type_)
-    };
+    let (cmd_type, resource_id) = virtgpu_decode_pci_cmd();
+    virtgpu_trace_submission(cmd_type, resource_id);
 
     // Flush command buffer and response poison from CPU cache to physical RAM.
     // On ARM64, WB-cacheable BSS may not be visible to the hypervisor's DMA
@@ -2403,7 +2774,12 @@ fn send_command_expect_ok(state: &mut GpuPciDeviceState, cmd_len: u32) -> Result
             core::ptr::read_volatile(&hdr.fence_id),
         )
     };
+    virtgpu::trace_response(resp_type);
+    virtgpu_note_resource2_response(cmd_type, resource_id, resp_type);
+
     if resp_type != cmd::RESP_OK_NODATA {
+        crate::tracing::output::trace_dump_latest(256);
+        crate::tracing::output::trace_dump_counters();
         crate::serial_println!("[virtio-gpu-pci] cmd={:#x} FAILED: resp_type={:#x} flags={:#x} fence={} (poison=0xDEADBEEF means no device response)",
             cmd_type, resp_type, resp_flags, resp_fence);
         return Err("GPU PCI command failed");
@@ -2749,7 +3125,16 @@ fn resource_flush_cmd(
     y: u32,
     width: u32,
     height: u32,
+    caller_tag: u8,
 ) -> Result<(), &'static str> {
+    let resource_id = state.resource_id;
+    virtgpu::trace_flush_enter(virtgpu::FLUSH_HELPER_2D, caller_tag, resource_id);
+    virtgpu::trace_flush_construct_if_unexpected(
+        caller_tag,
+        virtgpu::FLUSH_HELPER_2D,
+        resource_id,
+        resource_id == 0,
+    );
     unsafe {
         let cmd_ptr = &raw mut PCI_CMD_BUF;
         let cmd = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut VirtioGpuResourceFlush);
@@ -2765,11 +3150,25 @@ fn resource_flush_cmd(
             r_y: y,
             r_width: width,
             r_height: height,
-            resource_id: state.resource_id,
+            resource_id,
             padding: 0,
         };
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*cmd).resource_id), resource_id);
+        let readback = core::ptr::read_volatile(core::ptr::addr_of!((*cmd).resource_id));
+        if readback != resource_id {
+            virtgpu::trace_flush_readback_mismatch(resource_id, readback);
+        }
+        core::sync::atomic::compiler_fence(Ordering::Release);
     }
-    send_command_expect_ok(state, core::mem::size_of::<VirtioGpuResourceFlush>() as u32)
+    let result =
+        send_command_expect_ok(state, core::mem::size_of::<VirtioGpuResourceFlush>() as u32);
+    virtgpu::trace_flush_exit(
+        virtgpu::FLUSH_HELPER_2D,
+        caller_tag,
+        resource_id,
+        result.is_ok(),
+    );
+    result
 }
 
 // =============================================================================
@@ -3252,7 +3651,18 @@ fn virgl_attach_backing_from_pages(
 }
 
 /// Flush a specific resource to the display (SET_SCANOUT must point at it first).
-fn resource_flush_3d(state: &mut GpuPciDeviceState, resource_id: u32) -> Result<(), &'static str> {
+fn resource_flush_3d(
+    state: &mut GpuPciDeviceState,
+    resource_id: u32,
+    caller_tag: u8,
+) -> Result<(), &'static str> {
+    virtgpu::trace_flush_enter(virtgpu::FLUSH_HELPER_3D, caller_tag, resource_id);
+    virtgpu::trace_flush_construct_if_unexpected(
+        caller_tag,
+        virtgpu::FLUSH_HELPER_3D,
+        resource_id,
+        resource_id != RESOURCE_3D_ID,
+    );
     unsafe {
         let cmd_ptr = &raw mut PCI_CMD_BUF;
         let cmd = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut VirtioGpuResourceFlush);
@@ -3271,12 +3681,26 @@ fn resource_flush_3d(state: &mut GpuPciDeviceState, resource_id: u32) -> Result<
             resource_id,
             padding: 0,
         };
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*cmd).resource_id), resource_id);
+        let readback = core::ptr::read_volatile(core::ptr::addr_of!((*cmd).resource_id));
+        if readback != resource_id {
+            virtgpu::trace_flush_readback_mismatch(resource_id, readback);
+        }
+        core::sync::atomic::compiler_fence(Ordering::Release);
     }
     hex_dump_cmd_buf(
         "RESOURCE_FLUSH",
         core::mem::size_of::<VirtioGpuResourceFlush>(),
     );
-    send_command_expect_ok(state, core::mem::size_of::<VirtioGpuResourceFlush>() as u32)
+    let result =
+        send_command_expect_ok(state, core::mem::size_of::<VirtioGpuResourceFlush>() as u32);
+    virtgpu::trace_flush_exit(
+        virtgpu::FLUSH_HELPER_3D,
+        caller_tag,
+        resource_id,
+        result.is_ok(),
+    );
+    result
 }
 
 /// Transfer a 3D resource from guest backing to host texture (upload).
@@ -3471,6 +3895,7 @@ fn virgl_submit_3d_cmd(
 
     let submit_id = state.next_fence_id;
     state.next_fence_id += 1;
+    virtgpu::trace_submit_3d_enter(submit_id, cmds.len() as u32);
 
     // Write header + payload contiguously to PCI_3D_CMD_BUF.
     // Descriptors will point to different offsets within this buffer.
@@ -3505,13 +3930,19 @@ fn virgl_submit_3d_cmd(
     let payload_phys = hdr_phys + hdr_size as u64;
 
     // 3-descriptor chain: header (readable) + payload (readable) + response (writable)
-    let (used_len, resp_type) = send_command_3desc(
+    let (used_len, resp_type) = match send_command_3desc(
         state,
         hdr_phys,
         hdr_size as u32,
         payload_phys,
         payload_bytes as u32,
-    )?;
+    ) {
+        Ok(result) => result,
+        Err(e) => {
+            virtgpu::trace_submit_3d_exit(submit_id, 0xffff, false);
+            return Err(e);
+        }
+    };
 
     // Read response flags and fence_id
     let (resp_flags, resp_fence) = unsafe {
@@ -3524,6 +3955,7 @@ fn virgl_submit_3d_cmd(
     };
 
     if resp_type != cmd::RESP_OK_NODATA {
+        virtgpu::trace_submit_3d_exit(submit_id, resp_type, false);
         crate::serial_println!(
             "[virtio-gpu-pci] SUBMIT_3D failed: resp={:#x} used_len={} flags={:#x} fence={}",
             resp_type,
@@ -3542,6 +3974,7 @@ fn virgl_submit_3d_cmd(
             resp_fence
         );
     }
+    virtgpu::trace_submit_3d_exit(submit_id, resp_type, true);
     Ok(SubmitResult {
         submit_id,
         resp_fence,
@@ -3684,7 +4117,14 @@ pub fn flush() -> Result<(), &'static str> {
     with_device_state(|state| {
         fence(Ordering::SeqCst);
         transfer_to_host(state, 0, 0, state.width, state.height)?;
-        resource_flush_cmd(state, 0, 0, state.width, state.height)
+        resource_flush_cmd(
+            state,
+            0,
+            0,
+            state.width,
+            state.height,
+            virtgpu::FLUSH_CALLER_2D_FULL,
+        )
     })
 }
 
@@ -3693,7 +4133,7 @@ pub fn flush_rect(x: u32, y: u32, width: u32, height: u32) -> Result<(), &'stati
     with_device_state(|state| {
         fence(Ordering::SeqCst);
         transfer_to_host(state, x, y, width, height)?;
-        resource_flush_cmd(state, x, y, width, height)
+        resource_flush_cmd(state, x, y, width, height, virtgpu::FLUSH_CALLER_2D_RECT)
     })
 }
 
@@ -3706,7 +4146,7 @@ pub fn flush_rect(x: u32, y: u32, width: u32, height: u32) -> Result<(), &'stati
 pub fn resource_flush_only(x: u32, y: u32, width: u32, height: u32) -> Result<(), &'static str> {
     with_device_state(|state| {
         fence(Ordering::SeqCst);
-        resource_flush_cmd(state, x, y, width, height)
+        resource_flush_cmd(state, x, y, width, height, virtgpu::FLUSH_CALLER_2D_ONLY)
     })
 }
 
@@ -3958,7 +4398,13 @@ pub fn virgl_render_frame(
     }
 
     // Linux-style display: SUBMIT_3D → RESOURCE_FLUSH (no transfers).
-    with_device_state(|state| resource_flush_3d(state, RESOURCE_3D_ID))?;
+    with_device_state(|state| {
+        resource_flush_3d(
+            state,
+            RESOURCE_3D_ID,
+            virtgpu::FLUSH_CALLER_VIRGL_RENDER_FRAME,
+        )
+    })?;
 
     Ok(())
 }
@@ -4112,7 +4558,11 @@ pub fn virgl_render_rects(
     // Linux ftrace proves SET_SCANOUT is issued every frame, not just once.
     with_device_state(|state| {
         set_scanout_resource(state, RESOURCE_3D_ID)?;
-        resource_flush_3d(state, RESOURCE_3D_ID)
+        resource_flush_3d(
+            state,
+            RESOURCE_3D_ID,
+            virtgpu::FLUSH_CALLER_VIRGL_RENDER_RECTS,
+        )
     })?;
 
     Ok(())
@@ -4239,7 +4689,11 @@ pub fn virgl_composite_frame(pixels: &[u32], width: u32, height: u32) -> Result<
     // SET_SCANOUT + RESOURCE_FLUSH
     with_device_state(|state| {
         set_scanout_resource(state, RESOURCE_3D_ID)?;
-        resource_flush_3d(state, RESOURCE_3D_ID)
+        resource_flush_3d(
+            state,
+            RESOURCE_3D_ID,
+            virtgpu::FLUSH_CALLER_VIRGL_COMPOSITE_FRAME,
+        )
     })?;
 
     Ok(())
@@ -4419,7 +4873,11 @@ pub fn virgl_composite_frame_textured(
 
     with_device_state(|state| {
         set_scanout_resource(state, RESOURCE_3D_ID)?;
-        resource_flush_3d(state, RESOURCE_3D_ID)
+        resource_flush_3d(
+            state,
+            RESOURCE_3D_ID,
+            virtgpu::FLUSH_CALLER_VIRGL_COMPOSITE_FRAME_TEXTURED,
+        )
     })?;
 
     Ok(())
@@ -4846,7 +5304,13 @@ fn virgl_composite_single_quad(
 
     virgl_submit_sync(cmdbuf.as_slice())?;
     with_device_state(|state| set_scanout_resource(state, RESOURCE_3D_ID))?;
-    with_device_state(|state| resource_flush_3d(state, RESOURCE_3D_ID))
+    with_device_state(|state| {
+        resource_flush_3d(
+            state,
+            RESOURCE_3D_ID,
+            virtgpu::FLUSH_CALLER_VIRGL_COMPOSITE_SINGLE_QUAD,
+        )
+    })
 }
 
 /// Multi-window GPU compositor.
@@ -5268,7 +5732,7 @@ pub fn virgl_flush() -> Result<(), &'static str> {
     }
     with_device_state(|state| {
         set_scanout_resource(state, RESOURCE_3D_ID)?;
-        resource_flush_3d(state, RESOURCE_3D_ID)
+        resource_flush_3d(state, RESOURCE_3D_ID, virtgpu::FLUSH_CALLER_VIRGL_FLUSH)
     })
 }
 
@@ -5350,7 +5814,13 @@ pub fn virgl_init() -> Result<(), &'static str> {
             transfer_to_host_3d(state, RESOURCE_3D_ID, 0, 0, width, height, width * 4)
         })?;
         with_device_state(|state| set_scanout_resource(state, RESOURCE_3D_ID))?;
-        with_device_state(|state| resource_flush_3d(state, RESOURCE_3D_ID))?;
+        with_device_state(|state| {
+            resource_flush_3d(
+                state,
+                RESOURCE_3D_ID,
+                virtgpu::FLUSH_CALLER_VIRGL_INIT_PRIME,
+            )
+        })?;
         crate::serial_println!("[virgl] Step 5: resource primed");
     }
 
@@ -5371,7 +5841,11 @@ pub fn virgl_init() -> Result<(), &'static str> {
     // Step 7: SET_SCANOUT + RESOURCE_FLUSH — matching Linux per-frame pattern.
     with_device_state(|state| {
         set_scanout_resource(state, RESOURCE_3D_ID)?;
-        resource_flush_3d(state, RESOURCE_3D_ID)
+        resource_flush_3d(
+            state,
+            RESOURCE_3D_ID,
+            virtgpu::FLUSH_CALLER_VIRGL_INIT_STEP7,
+        )
     })?;
     crate::serial_println!("[virgl] Step 7: SET_SCANOUT + RESOURCE_FLUSH done");
 
@@ -5485,7 +5959,11 @@ pub fn virgl_init() -> Result<(), &'static str> {
     // SET_SCANOUT must be re-issued after every SUBMIT_3D, not just once.
     with_device_state(|state| {
         set_scanout_resource(state, RESOURCE_3D_ID)?;
-        resource_flush_3d(state, RESOURCE_3D_ID)
+        resource_flush_3d(
+            state,
+            RESOURCE_3D_ID,
+            virtgpu::FLUSH_CALLER_VIRGL_INIT_STEP10,
+        )
     })?;
     crate::serial_println!("[virgl] Step 10: SET_SCANOUT + RESOURCE_FLUSH");
 
@@ -5751,7 +6229,11 @@ fn virgl_test_textured_quad() -> Result<(), &'static str> {
         crate::serial_println!("[virgl-tex] TRANSFER_TO_HOST_3D OK");
         set_scanout_resource(state, RESOURCE_3D_ID)?;
         crate::serial_println!("[virgl-tex] SET_SCANOUT OK");
-        resource_flush_3d(state, RESOURCE_3D_ID)?;
+        resource_flush_3d(
+            state,
+            RESOURCE_3D_ID,
+            virtgpu::FLUSH_CALLER_VIRGL_TEST_TEXTURED_QUAD,
+        )?;
         crate::serial_println!("[virgl-tex] RESOURCE_FLUSH OK");
         Ok(())
     })?;

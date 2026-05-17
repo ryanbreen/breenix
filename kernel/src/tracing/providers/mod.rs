@@ -31,6 +31,7 @@ pub mod irq;
 pub mod process;
 pub mod sched;
 pub mod syscall;
+pub mod virtgpu;
 // #[cfg(feature = "btrt")]
 // pub mod boot_test;
 
@@ -39,6 +40,7 @@ pub use irq::IRQ_PROVIDER;
 pub use process::PROCESS_PROVIDER;
 pub use sched::SCHED_PROVIDER;
 pub use syscall::SYSCALL_PROVIDER;
+pub use virtgpu::VIRTGPU_PROVIDER;
 // #[cfg(feature = "btrt")]
 // pub use boot_test::BOOT_TEST_PROVIDER;
 
@@ -54,16 +56,18 @@ pub fn init() {
     sched::init();
     irq::init();
     process::init();
+    virtgpu::init();
     // #[cfg(feature = "btrt")]
     // boot_test::init();
     counters::init();
 
     log::info!(
-        "Tracing providers initialized: syscall={:#x}, sched={:#x}, irq={:#x}, process={:#x}",
+        "Tracing providers initialized: syscall={:#x}, sched={:#x}, irq={:#x}, process={:#x}, virtgpu={:#x}",
         syscall::PROVIDER_ID,
         sched::PROVIDER_ID,
         irq::PROVIDER_ID,
-        process::PROVIDER_ID
+        process::PROVIDER_ID,
+        virtgpu::PROVIDER_ID
     );
 }
 
@@ -74,6 +78,7 @@ pub fn enable_all() {
     SCHED_PROVIDER.enable_all();
     IRQ_PROVIDER.enable_all();
     PROCESS_PROVIDER.enable_all();
+    VIRTGPU_PROVIDER.enable_all();
     // #[cfg(feature = "btrt")]
     // BOOT_TEST_PROVIDER.enable_all();
 }
@@ -85,6 +90,7 @@ pub fn disable_all() {
     SCHED_PROVIDER.disable_all();
     IRQ_PROVIDER.disable_all();
     PROCESS_PROVIDER.disable_all();
+    VIRTGPU_PROVIDER.disable_all();
     // #[cfg(feature = "btrt")]
     // BOOT_TEST_PROVIDER.disable_all();
 }
