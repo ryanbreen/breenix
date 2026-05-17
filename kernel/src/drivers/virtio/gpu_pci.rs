@@ -8,6 +8,7 @@
 //! `pci_transport.rs`) instead of MMIO registers.
 
 use super::pci_transport::VirtioPciDevice;
+use crate::tracing::providers::virtgpu;
 use core::ptr::read_volatile;
 use core::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::Mutex;
@@ -17,6 +18,7 @@ use spin::Mutex;
 /// Without this, concurrent callers corrupt the shared command/response
 /// buffers and virtqueue state.
 static GPU_PCI_LOCK: Mutex<()> = Mutex::new(());
+static VIRTGPU_CMD_SEQ: AtomicU32 = AtomicU32::new(0);
 
 // =============================================================================
 // VirtIO GPU Protocol (same as gpu_mmio.rs)
@@ -1866,6 +1868,139 @@ fn framebuffer_len(state: &GpuPciDeviceState) -> Result<usize, &'static str> {
     Ok(len)
 }
 
+#[inline(always)]
+fn virtgpu_next_trace_seq() -> u16 {
+    VIRTGPU_CMD_SEQ
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1) as u16
+}
+
+#[inline(always)]
+fn virtgpu_decode_command(buf: *const u8) -> (u32, u32) {
+    unsafe {
+        let hdr = &*(buf as *const VirtioGpuCtrlHdr);
+        let cmd_type = core::ptr::read_volatile(&hdr.type_);
+        let resource_id = match cmd_type {
+            cmd::RESOURCE_CREATE_2D => {
+                let cmd = &*(buf as *const VirtioGpuResourceCreate2d);
+                core::ptr::read_volatile(&cmd.resource_id)
+            }
+            cmd::RESOURCE_UNREF | cmd::RESOURCE_DETACH_BACKING => {
+                let cmd = &*(buf as *const VirtioGpuCtxResource);
+                core::ptr::read_volatile(&cmd.resource_id)
+            }
+            cmd::SET_SCANOUT => {
+                let cmd = &*(buf as *const VirtioGpuSetScanout);
+                core::ptr::read_volatile(&cmd.resource_id)
+            }
+            cmd::RESOURCE_FLUSH => {
+                let cmd = &*(buf as *const VirtioGpuResourceFlush);
+                core::ptr::read_volatile(&cmd.resource_id)
+            }
+            cmd::TRANSFER_TO_HOST_2D => {
+                let cmd = &*(buf as *const VirtioGpuTransferToHost2d);
+                core::ptr::read_volatile(&cmd.resource_id)
+            }
+            cmd::RESOURCE_ATTACH_BACKING => {
+                let cmd = &*(buf as *const VirtioGpuResourceAttachBacking);
+                core::ptr::read_volatile(&cmd.resource_id)
+            }
+            cmd::CTX_ATTACH_RESOURCE | cmd::CTX_DETACH_RESOURCE => {
+                let cmd = &*(buf as *const VirtioGpuCtxResource);
+                core::ptr::read_volatile(&cmd.resource_id)
+            }
+            cmd::RESOURCE_CREATE_3D => {
+                let cmd = &*(buf as *const VirtioGpuResourceCreate3d);
+                core::ptr::read_volatile(&cmd.resource_id)
+            }
+            cmd::TRANSFER_TO_HOST_3D => {
+                let cmd = &*(buf as *const VirtioGpuTransferHost3d);
+                core::ptr::read_volatile(&cmd.resource_id)
+            }
+            cmd::SUBMIT_3D => core::ptr::read_volatile(&hdr.ctx_id),
+            _ => 0,
+        };
+        (cmd_type, resource_id)
+    }
+}
+
+#[inline(always)]
+fn virtgpu_decode_pci_cmd() -> (u32, u32) {
+    let cmd_ptr = &raw const PCI_CMD_BUF;
+    unsafe { virtgpu_decode_command((*cmd_ptr).data.as_ptr()) }
+}
+
+#[inline(always)]
+fn virtgpu_decode_3desc_command(hdr_phys: u64) -> (u32, u32) {
+    let pci_cmd_phys = virt_to_phys(&raw const PCI_CMD_BUF as u64);
+    if hdr_phys == pci_cmd_phys {
+        return virtgpu_decode_pci_cmd();
+    }
+
+    let pci_3d_phys = virt_to_phys(&raw const PCI_3D_CMD_BUF as u64);
+    if hdr_phys == pci_3d_phys {
+        let cmd_ptr = &raw const PCI_3D_CMD_BUF;
+        return unsafe { virtgpu_decode_command((*cmd_ptr).data.as_ptr()) };
+    }
+
+    (0, 0)
+}
+
+#[inline(always)]
+fn virtgpu_trace_submission(cmd_type: u32, resource_id: u32) {
+    let seq = virtgpu_next_trace_seq();
+    virtgpu::trace_cmd_submit(cmd_type, seq);
+    virtgpu::trace_cmd_resource(resource_id);
+    virtgpu_note_resource2_submit(cmd_type, resource_id);
+}
+
+#[inline(always)]
+fn virtgpu_note_resource2_submit(cmd_type: u32, resource_id: u32) {
+    if resource_id != RESOURCE_3D_ID {
+        return;
+    }
+
+    match cmd_type {
+        cmd::RESOURCE_CREATE_3D => virtgpu::VIRTGPU_R2_CREATE.increment(),
+        cmd::RESOURCE_ATTACH_BACKING => virtgpu::VIRTGPU_R2_ATTACH_BACKING.increment(),
+        cmd::CTX_ATTACH_RESOURCE => virtgpu::VIRTGPU_R2_CTX_ATTACH.increment(),
+        cmd::TRANSFER_TO_HOST_3D => virtgpu::VIRTGPU_R2_TRANSFER.increment(),
+        cmd::SET_SCANOUT => virtgpu::VIRTGPU_R2_SET_SCANOUT.increment(),
+        cmd::RESOURCE_UNREF | cmd::RESOURCE_DETACH_BACKING | cmd::CTX_DETACH_RESOURCE => {
+            virtgpu::VIRTGPU_R2_UNREF_OR_DETACH.increment()
+        }
+        _ => {}
+    }
+}
+
+#[inline(always)]
+fn virtgpu_note_resource2_response(cmd_type: u32, resource_id: u32, resp_type: u32) {
+    if cmd_type == cmd::RESOURCE_FLUSH && resource_id == RESOURCE_3D_ID {
+        if resp_type == cmd::RESP_OK_NODATA {
+            virtgpu::VIRTGPU_R2_FLUSH_OK.increment();
+        } else {
+            virtgpu::VIRTGPU_R2_FLUSH_FAIL.increment();
+        }
+    }
+}
+
+#[inline(always)]
+fn virtgpu_trace_used_idx() -> u16 {
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        let q = &raw const PCI_CTRL_QUEUE;
+        let used_addr = &(*q).used as *const _ as usize;
+        core::arch::asm!("dc civac, {}", in(reg) used_addr, options(nostack));
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+
+    fence(Ordering::Acquire);
+    unsafe {
+        let q = &raw const PCI_CTRL_QUEUE;
+        read_volatile(&(*q).used.idx)
+    }
+}
+
 // =============================================================================
 // Command Submission
 // =============================================================================
@@ -1896,6 +2031,7 @@ fn send_command(
         let diff = cur.wrapping_sub(state.last_used_idx);
         if diff > 0 && diff < 32768 {
             state.last_used_idx = cur;
+            virtgpu::trace_stale_drain(diff, cur);
         }
     }
 
@@ -1959,6 +2095,7 @@ fn send_command(
 
     // Signal that we're waiting for a completion, then notify device
     GPU_CMD_COMPLETE.store(false, Ordering::Release);
+    virtgpu::trace_q_notify(0, virtgpu_trace_used_idx());
     state.device.notify_queue_fast(0);
 
     // Wait for used ring update — tight spin for 2-desc commands.
@@ -1982,6 +2119,7 @@ fn send_command(
             read_volatile(&(*q).used.idx)
         };
         if used_idx != state.last_used_idx {
+            virtgpu::trace_q_complete(0, used_idx);
             state.last_used_idx = used_idx;
             return Ok(());
         }
@@ -2006,6 +2144,9 @@ fn send_command_3desc(
     payload_phys: u64,
     payload_len: u32,
 ) -> Result<(u32, u32), &'static str> {
+    let (cmd_type, resource_id) = virtgpu_decode_3desc_command(hdr_phys);
+    virtgpu_trace_submission(cmd_type, resource_id);
+
     // Drain stale completions (same forward-only logic as send_command).
     #[cfg(target_arch = "aarch64")]
     unsafe {
@@ -2018,6 +2159,7 @@ fn send_command_3desc(
         let diff = cur.wrapping_sub(state.last_used_idx);
         if diff > 0 && diff < 32768 {
             state.last_used_idx = cur;
+            virtgpu::trace_stale_drain(diff, cur);
         }
     }
 
@@ -2128,6 +2270,7 @@ fn send_command_3desc(
     }
 
     // Notify device
+    virtgpu::trace_q_notify(0, virtgpu_trace_used_idx());
     state.device.notify_queue_fast(0);
 
     let used_len;
@@ -2213,6 +2356,7 @@ fn send_command_3desc(
         }
 
         if completed {
+            virtgpu::trace_q_complete(0, virtgpu_trace_used_idx());
             used_len = unsafe {
                 let q = &raw const PCI_CTRL_QUEUE;
                 let elem_idx = (state.last_used_idx % 16) as usize;
@@ -2248,6 +2392,7 @@ fn send_command_3desc(
                 read_volatile(&(*q).used.idx)
             };
             if used_idx != state.last_used_idx {
+                virtgpu::trace_q_complete(0, used_idx);
                 used_len = unsafe {
                     let q = &raw const PCI_CTRL_QUEUE;
                     let elem_idx = (state.last_used_idx % 16) as usize;
@@ -2326,6 +2471,9 @@ fn send_command_3desc(
         core::ptr::read_volatile(&h.type_)
     };
 
+    virtgpu::trace_response(resp_type);
+    virtgpu_note_resource2_response(cmd_type, resource_id, resp_type);
+
     Ok((used_len, resp_type))
 }
 
@@ -2343,12 +2491,8 @@ fn send_command_expect_ok(state: &mut GpuPciDeviceState, cmd_len: u32) -> Result
         core::ptr::write_volatile(&mut hdr.flags, 0xDEADBEEF);
     }
 
-    // Read command type for diagnostic
-    let cmd_type = unsafe {
-        let cmd_ptr = &raw const PCI_CMD_BUF;
-        let hdr = &*((*cmd_ptr).data.as_ptr() as *const VirtioGpuCtrlHdr);
-        core::ptr::read_volatile(&hdr.type_)
-    };
+    let (cmd_type, resource_id) = virtgpu_decode_pci_cmd();
+    virtgpu_trace_submission(cmd_type, resource_id);
 
     // Flush command buffer and response poison from CPU cache to physical RAM.
     // On ARM64, WB-cacheable BSS may not be visible to the hypervisor's DMA
@@ -2403,7 +2547,12 @@ fn send_command_expect_ok(state: &mut GpuPciDeviceState, cmd_len: u32) -> Result
             core::ptr::read_volatile(&hdr.fence_id),
         )
     };
+    virtgpu::trace_response(resp_type);
+    virtgpu_note_resource2_response(cmd_type, resource_id, resp_type);
+
     if resp_type != cmd::RESP_OK_NODATA {
+        crate::tracing::output::trace_dump_latest(256);
+        crate::tracing::output::trace_dump_counters();
         crate::serial_println!("[virtio-gpu-pci] cmd={:#x} FAILED: resp_type={:#x} flags={:#x} fence={} (poison=0xDEADBEEF means no device response)",
             cmd_type, resp_type, resp_flags, resp_fence);
         return Err("GPU PCI command failed");

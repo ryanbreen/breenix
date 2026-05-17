@@ -110,6 +110,7 @@ use super::buffer::TRACE_BUFFER_SIZE;
 use super::core::{TraceEvent, TraceEventType, MAX_CPUS, TRACE_BUFFERS, TRACE_ENABLED};
 use super::counter::{list_counters, CounterIterator, TRACE_COUNTERS, TRACE_COUNTER_COUNT};
 use super::provider::{TRACE_PROVIDERS, TRACE_PROVIDER_COUNT};
+use super::providers::virtgpu;
 use super::timestamp::timestamp_frequency_hz;
 use core::sync::atomic::Ordering;
 
@@ -292,6 +293,14 @@ pub fn event_type_name(event_type: u16) -> &'static str {
         TraceEventType::PROCESS_EXIT => "PROCESS_EXIT",
         TraceEventType::COW_LOCK_FAIL => "COW_LOCK_FAIL",
 
+        // VirtIO GPU PCI events (0x07xx)
+        virtgpu::VIRTGPU_CMD_SUBMIT => "VIRTGPU_CMD_SUBMIT",
+        virtgpu::VIRTGPU_CMD_RESOURCE => "VIRTGPU_CMD_RESOURCE",
+        virtgpu::VIRTGPU_Q_NOTIFY => "VIRTGPU_Q_NOTIFY",
+        virtgpu::VIRTGPU_Q_COMPLETE => "VIRTGPU_Q_COMPLETE",
+        virtgpu::VIRTGPU_RESPONSE => "VIRTGPU_RESPONSE",
+        virtgpu::VIRTGPU_STALE_DRAIN => "VIRTGPU_STALE_DRAIN",
+
         // Debug markers (0xFFxx)
         TraceEventType::MARKER_A => "MARKER_A",
         TraceEventType::MARKER_B => "MARKER_B",
@@ -382,6 +391,12 @@ fn payload_description(event_type: u16) -> &'static str {
         TraceEventType::DATA_ABORT => "pid<<16|dfsc",
         TraceEventType::PROCESS_EXIT => "pid<<16|exit_code",
         TraceEventType::COW_LOCK_FAIL => "pid",
+        virtgpu::VIRTGPU_CMD_SUBMIT => "seq<<16|cmd_type",
+        virtgpu::VIRTGPU_CMD_RESOURCE => "resource_id",
+        virtgpu::VIRTGPU_Q_NOTIFY => "used_idx_before<<16|head_desc_idx",
+        virtgpu::VIRTGPU_Q_COMPLETE => "used_idx_after<<16|head_desc_idx",
+        virtgpu::VIRTGPU_RESPONSE => "resp_type",
+        virtgpu::VIRTGPU_STALE_DRAIN => "last_used_idx_after<<16|entries_drained",
         TraceEventType::MARKER_A => "user_data",
         TraceEventType::MARKER_B => "user_data",
         TraceEventType::MARKER_C => "user_data",
@@ -833,6 +848,7 @@ pub fn dump_event_summary() {
         (0x04, "Memory"),
         (0x05, "Lock"),
         (0x06, "Process"),
+        (0x07, "VirtIO GPU"),
         (0xFF, "Marker/Debug"),
     ];
 
