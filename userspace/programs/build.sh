@@ -194,6 +194,7 @@ STD_BINARIES=(
     "counter"
     "spinner"
     "hello_time"
+    "heartbeat"
     "fbinfo_test"
     "demo"
     "bounce"

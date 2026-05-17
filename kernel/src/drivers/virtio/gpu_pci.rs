@@ -1293,7 +1293,8 @@ fn freeze_watchdog_thread() {
     let mut last_ms = monotonic_ms();
 
     loop {
-        freeze_watch_sleep_ms(5_000);
+        let sleep_ms = if monotonic_ms() < 10_000 { 500 } else { 5_000 };
+        freeze_watch_sleep_ms(sleep_ms);
 
         let uptime_ms = monotonic_ms();
         let (submits, completes, fails, last_completion_ms, r2_flush_ok, _) =
@@ -1301,19 +1302,111 @@ fn freeze_watchdog_thread() {
         let elapsed_ms = uptime_ms.saturating_sub(last_ms).max(1);
         let frames = r2_flush_ok.saturating_sub(last_r2_flush_ok);
         let fps_last_5s = frames.saturating_mul(1000) / elapsed_ms;
+        let cpu = current_cpu_id_for_watch();
+        let ctx_switches = crate::task::scheduler::context_switch_count();
+        let timer_ticks = timer_tick_snapshot();
+        let sched_snapshot = crate::task::scheduler::try_liveness_snapshot(cpu);
+        let sched_lock = if sched_snapshot.is_some() {
+            "ok"
+        } else {
+            "busy"
+        };
+        let sched = sched_snapshot.unwrap_or_default();
+        let procmgr_lock = process_manager_lock_status();
+        let gpu_pci_lock = gpu_pci_lock_status();
 
         crate::serial_println!(
-            "[freeze-watch] uptime_ms={} submits={} completes={} fails={} last_completion_ms={} fps_last_5s={}",
+            "[freeze-watch] uptime_ms={} submits={} completes={} fails={} last_completion_ms={} fps_last_5s={} cpu={} tid={} ctx_switches={} timer_ticks_cpu0={} timer_ticks_cpu1={} timer_ticks_cpu2={} timer_ticks_cpu3={} timer_ticks_cpu4={} timer_ticks_cpu5={} timer_ticks_cpu6={} timer_ticks_cpu7={} rq_total={} rq_cpu0={} rq_cpu1={} rq_cpu2={} rq_cpu3={} rq_cpu4={} rq_cpu5={} rq_cpu6={} rq_cpu7={} cur_cpu0={} cur_cpu1={} cur_cpu2={} cur_cpu3={} cur_cpu4={} cur_cpu5={} cur_cpu6={} cur_cpu7={} total_threads={} blocked_threads={} sched_lock={} procmgr_lock={} gpu_pci_lock={}",
             uptime_ms,
             submits,
             completes,
             fails,
             last_completion_ms,
-            fps_last_5s
+            fps_last_5s,
+            cpu,
+            sched.current_thread_id,
+            ctx_switches,
+            timer_ticks[0],
+            timer_ticks[1],
+            timer_ticks[2],
+            timer_ticks[3],
+            timer_ticks[4],
+            timer_ticks[5],
+            timer_ticks[6],
+            timer_ticks[7],
+            sched.ready_queue_len,
+            sched.per_cpu_ready_len[0],
+            sched.per_cpu_ready_len[1],
+            sched.per_cpu_ready_len[2],
+            sched.per_cpu_ready_len[3],
+            sched.per_cpu_ready_len[4],
+            sched.per_cpu_ready_len[5],
+            sched.per_cpu_ready_len[6],
+            sched.per_cpu_ready_len[7],
+            sched.per_cpu_current[0],
+            sched.per_cpu_current[1],
+            sched.per_cpu_current[2],
+            sched.per_cpu_current[3],
+            sched.per_cpu_current[4],
+            sched.per_cpu_current[5],
+            sched.per_cpu_current[6],
+            sched.per_cpu_current[7],
+            sched.total_threads,
+            sched.blocked_count,
+            sched_lock,
+            procmgr_lock,
+            gpu_pci_lock
         );
 
         last_ms = uptime_ms;
         last_r2_flush_ok = r2_flush_ok;
+    }
+}
+
+#[inline]
+fn current_cpu_id_for_watch() -> usize {
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        0
+    }
+}
+
+#[inline]
+fn timer_tick_snapshot() -> [u64; 8] {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mut ticks = [0u64; 8];
+        for (idx, slot) in ticks.iter_mut().enumerate() {
+            *slot = crate::arch_impl::aarch64::timer_interrupt::TIMER_TICK_COUNT[idx]
+                .load(Ordering::Relaxed);
+        }
+        ticks
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        [0; 8]
+    }
+}
+
+#[inline]
+fn process_manager_lock_status() -> &'static str {
+    if let Some(_guard) = crate::process::PROCESS_MANAGER.try_lock() {
+        "ok"
+    } else {
+        "busy"
+    }
+}
+
+#[inline]
+fn gpu_pci_lock_status() -> &'static str {
+    if let Some(_guard) = GPU_PCI_LOCK.try_lock() {
+        "ok"
+    } else {
+        "busy"
     }
 }
 

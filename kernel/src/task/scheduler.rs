@@ -272,6 +272,62 @@ pub struct SchedulerDumpInfo {
     pub ready_queue_ids: alloc::vec::Vec<u64>,
 }
 
+/// Lock-free-consumer liveness snapshot for watchdog diagnostics.
+///
+/// Collected with `SCHEDULER.try_lock()` so callers never block on the
+/// scheduler lock while trying to report a wedge.
+#[derive(Clone, Copy, Default)]
+pub struct SchedulerLivenessSnapshot {
+    pub current_thread_id: u64,
+    pub ready_queue_len: u64,
+    pub total_threads: u64,
+    pub blocked_count: u64,
+    pub per_cpu_ready_len: [u64; 8],
+    pub per_cpu_current: [u64; 8],
+}
+
+/// Try to snapshot scheduler state without blocking.
+///
+/// Returns `None` when the scheduler lock is busy or uninitialized; both are
+/// diagnostic for watchdog output.
+pub fn try_liveness_snapshot(cpu_id: usize) -> Option<SchedulerLivenessSnapshot> {
+    let guard = SCHEDULER.try_lock()?;
+    let sched = guard.as_ref()?;
+    let cpu = cpu_id.min(MAX_CPUS.saturating_sub(1));
+
+    let mut per_cpu_ready_len = [0u64; 8];
+    let mut per_cpu_current = [0u64; 8];
+    for idx in 0..MAX_CPUS.min(8) {
+        per_cpu_ready_len[idx] = sched.per_cpu_queues[idx].len() as u64;
+        per_cpu_current[idx] = sched.cpu_state[idx].current_thread.unwrap_or(0);
+    }
+
+    let ready_queue_len = sched.per_cpu_queues.iter().map(|q| q.len()).sum::<usize>() as u64;
+    let blocked_count = sched
+        .threads
+        .iter()
+        .filter(|t| {
+            matches!(
+                t.state,
+                ThreadState::Blocked
+                    | ThreadState::BlockedOnSignal
+                    | ThreadState::BlockedOnChildExit
+                    | ThreadState::BlockedOnTimer
+                    | ThreadState::BlockedOnIO
+            )
+        })
+        .count() as u64;
+
+    Some(SchedulerLivenessSnapshot {
+        current_thread_id: sched.cpu_state[cpu].current_thread.unwrap_or(0),
+        ready_queue_len,
+        total_threads: sched.threads.len() as u64,
+        blocked_count,
+        per_cpu_ready_len,
+        per_cpu_current,
+    })
+}
+
 /// Try to get a snapshot of scheduler state without blocking.
 /// Returns None if the scheduler lock is held (which is itself diagnostic).
 /// Safe to call from interrupt context.
