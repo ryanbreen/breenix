@@ -200,6 +200,12 @@ static AHCI_ABAR: AtomicU64 = AtomicU64::new(0);
 /// GIC SPI number allocated for AHCI MSI/MSI-X/wired. 0 = polling mode.
 static AHCI_IRQ: AtomicU32 = AtomicU32::new(0);
 
+/// Returns the SPI number currently allocated to AHCI, or 0 if AHCI has not
+/// been initialized / no SPI was allocated.
+pub fn ahci_irq() -> u32 {
+    AHCI_IRQ.load(core::sync::atomic::Ordering::Acquire)
+}
+
 /// Whether the AHCI IRQ is edge-triggered (MSI) or level-triggered (wired).
 /// For edge-triggered, the ISR must clear the SPI pending bit.
 /// For level-triggered, clearing PORT_IS de-asserts the line; no SPI clear needed.
