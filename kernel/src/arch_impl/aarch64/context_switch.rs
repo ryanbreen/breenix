@@ -816,6 +816,51 @@ static INLINE_SCHEDULE_STATE: [InlineScheduleState;
     },
 ];
 
+const INLINE_SCHEDULE_BREADCRUMB_CPUS: usize = crate::arch_impl::aarch64::constants::MAX_CPUS;
+const INLINE_SCHEDULE_BREADCRUMB_SLOTS: usize = 16;
+const INLINE_BC_TRAMPOLINE_ENTRY: u8 = 0x30;
+const INLINE_BC_STATE_SWAP: u8 = 0x31;
+const INLINE_BC_STATE_IDS: u8 = 0x32;
+const INLINE_BC_NULL_FALLBACK: u8 = 0x3f;
+const INLINE_BC_FORCE_UNLOCK_RET: u8 = 0x45;
+const INLINE_BC_FORCE_UNLOCK_ERET: u8 = 0x46;
+const INLINE_BC_IDLE_RET_BRANCH: u8 = 0x47;
+
+#[no_mangle]
+pub static INLINE_SCHEDULE_BREADCRUMB_TRAIL: [[AtomicU64; INLINE_SCHEDULE_BREADCRUMB_SLOTS];
+    INLINE_SCHEDULE_BREADCRUMB_CPUS] = [const {
+    [const { AtomicU64::new(0) }; INLINE_SCHEDULE_BREADCRUMB_SLOTS]
+}; INLINE_SCHEDULE_BREADCRUMB_CPUS];
+
+#[no_mangle]
+pub static INLINE_SCHEDULE_BREADCRUMB_INDEX: [AtomicU64; INLINE_SCHEDULE_BREADCRUMB_CPUS] =
+    [const { AtomicU64::new(0) }; INLINE_SCHEDULE_BREADCRUMB_CPUS];
+
+#[inline(always)]
+fn inline_schedule_breadcrumb(cpu_id: usize, site: u8, extra: u16) {
+    if cpu_id >= INLINE_SCHEDULE_BREADCRUMB_CPUS {
+        return;
+    }
+
+    let timestamp: u64;
+    unsafe {
+        core::arch::asm!(
+            "mrs {}, CNTVCT_EL0",
+            out(reg) timestamp,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+
+    let idx = (INLINE_SCHEDULE_BREADCRUMB_INDEX[cpu_id].fetch_add(1, Ordering::Relaxed)
+        as usize)
+        & (INLINE_SCHEDULE_BREADCRUMB_SLOTS - 1);
+    let value = ((timestamp & 0xffff_ffff) << 32)
+        | ((site as u64) << 24)
+        | (((cpu_id as u64) & 0xff) << 16)
+        | (extra as u64);
+    INLINE_SCHEDULE_BREADCRUMB_TRAIL[cpu_id][idx].store(value, Ordering::Relaxed);
+}
+
 static mut INLINE_SCHEDULE_ERET_FRAMES: [MaybeUninit<Aarch64ExceptionFrame>;
     crate::arch_impl::aarch64::constants::MAX_CPUS] =
     [const { MaybeUninit::zeroed() }; crate::arch_impl::aarch64::constants::MAX_CPUS];
@@ -1161,7 +1206,11 @@ fn take_inline_ret_dispatch_info(
 
     let thread_ptr = thread as *const _ as *mut u8;
     let ctx_ptr = &thread.context as *const CpuContext;
-    let resume_pc = thread.context.elr_el1;
+    // WHY: inline ret-dispatch restores only callee-saved registers + SP, so
+    // it must resume at the safe post-inline-switch return target, not a
+    // mid-function ELR that may require stale volatile registers.
+    let resume_pc = thread.context.x30;
+    thread.context.elr_el1 = resume_pc;
     let kst = thread.kernel_stack_top;
     let sp_el0 = thread.context.sp_el0;
     let resume_sp = thread.context.sp;
@@ -2665,6 +2714,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
 
 extern "C" fn inline_schedule_trampoline() -> ! {
     let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    inline_schedule_breadcrumb(cpu_id, INLINE_BC_TRAMPOLINE_ENTRY, 0);
     cpu0_breadcrumb(cpu_id, 30); // trampoline entry
     let state = &INLINE_SCHEDULE_STATE[cpu_id];
     let sched_ptr = state.scheduler_ptr.swap(0, Ordering::Relaxed) as *mut Scheduler;
@@ -2672,10 +2722,58 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     let new_id = state.new_thread_id.load(Ordering::Relaxed);
     let should_requeue_old = state.should_requeue_old.swap(false, Ordering::Relaxed);
 
+    let state_extra =
+        ((if sched_ptr.is_null() { 0u16 } else { 1u16 }) << 8) | should_requeue_old as u16;
+    inline_schedule_breadcrumb(cpu_id, INLINE_BC_STATE_SWAP, state_extra);
+    inline_schedule_breadcrumb(
+        cpu_id,
+        INLINE_BC_STATE_IDS,
+        (((old_id as u16) & 0xff) << 8) | ((new_id as u16) & 0xff),
+    );
     cpu0_breadcrumb(cpu_id, 31); // after reading INLINE_SCHEDULE_STATE
 
     if sched_ptr.is_null() {
-        idle_loop_arm64();
+        inline_schedule_breadcrumb(cpu_id, INLINE_BC_NULL_FALLBACK, 0);
+        unsafe {
+            inline_schedule_breadcrumb(cpu_id, INLINE_BC_FORCE_UNLOCK_RET, 1);
+            crate::task::scheduler::force_unlock_scheduler();
+        }
+
+        let idle_sp = crate::task::scheduler::with_scheduler(|sched| {
+            let idle_id = sched.cpu_state[cpu_id].idle_thread;
+            let idle_sp = sched
+                .get_thread(idle_id)
+                .and_then(|thread| thread.kernel_stack_top.map(|stack| stack.as_u64()))
+                .unwrap_or_else(|| scheduler_stack_top(cpu_id));
+            sched.fix_exception_cleanup_cpu_state();
+            idle_sp
+        })
+        .unwrap_or_else(|| scheduler_stack_top(cpu_id));
+
+        unsafe {
+            Aarch64PerCpu::set_user_rsp_scratch(idle_sp);
+            Aarch64PerCpu::set_kernel_stack_top(idle_sp);
+            Aarch64PerCpu::set_current_thread_ptr(core::ptr::null_mut());
+            Aarch64PerCpu::clear_preempt_active();
+        }
+        crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
+        if crate::arch_impl::aarch64::timer_interrupt::is_initialized() {
+            crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
+        }
+
+        inline_schedule_breadcrumb(cpu_id, INLINE_BC_IDLE_RET_BRANCH, 1);
+        let idle_addr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
+        unsafe {
+            core::arch::asm!(
+                "mov sp, {stack}",
+                "msr daifclr, #0xf",
+                "isb",
+                "br {target}",
+                stack = in(reg) idle_sp,
+                target = in(reg) idle_addr,
+                options(noreturn)
+            );
+        }
     }
 
     let sched = unsafe { &mut *sched_ptr };
@@ -2748,6 +2846,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         }
 
         unsafe {
+            inline_schedule_breadcrumb(cpu_id, INLINE_BC_FORCE_UNLOCK_RET, 0);
             crate::task::scheduler::force_unlock_scheduler();
         }
 
@@ -2813,6 +2912,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     unsafe {
         Aarch64PerCpu::set_dispatch_elr(frame.elr);
         Aarch64PerCpu::set_dispatch_spsr(frame.spsr);
+        inline_schedule_breadcrumb(cpu_id, INLINE_BC_FORCE_UNLOCK_ERET, is_idle as u16);
         crate::task::scheduler::force_unlock_scheduler();
     }
 
@@ -2832,6 +2932,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         // ret-based dispatch for idle — avoids ERET which kills HVF vtimer on Parallels.
         // setup_idle_return_locked already set kernel_stack_top and current_thread_ptr.
         // We just set SP to the idle stack, enable IRQs, and branch directly.
+        inline_schedule_breadcrumb(cpu_id, INLINE_BC_IDLE_RET_BRANCH, 0);
         cpu0_breadcrumb(cpu_id, 45); // ret-based idle dispatch (NOT ERET)
         let idle_addr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
         let idle_sp = Aarch64PerCpu::kernel_stack_top();

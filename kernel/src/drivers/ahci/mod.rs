@@ -200,6 +200,12 @@ static AHCI_ABAR: AtomicU64 = AtomicU64::new(0);
 /// GIC SPI number allocated for AHCI MSI/MSI-X/wired. 0 = polling mode.
 static AHCI_IRQ: AtomicU32 = AtomicU32::new(0);
 
+/// Returns the SPI number currently allocated to AHCI, or 0 if AHCI has not
+/// been initialized / no SPI was allocated.
+pub fn ahci_irq() -> u32 {
+    AHCI_IRQ.load(core::sync::atomic::Ordering::Acquire)
+}
+
 /// Whether the AHCI IRQ is edge-triggered (MSI) or level-triggered (wired).
 /// For edge-triggered, the ISR must clear the SPI pending bit.
 /// For level-triggered, clearing PORT_IS de-asserts the line; no SPI clear needed.
@@ -2233,14 +2239,33 @@ fn probe_platform_irq(ctrl: &AhciController) {
 
     crate::serial_println!("[ahci] Platform IRQ probe: discovered SPI {}", found_spi);
 
-    gic::clear_spi_pending(found_spi);
-    AHCI_IRQ_EDGE.store(false, Ordering::Release);
-    AHCI_IRQ.store(found_spi, Ordering::Release);
-    gic::enable_spi(found_spi);
-    crate::serial_println!(
-        "[ahci] Platform IRQ enabled: SPI {} (wired, level-triggered)",
-        found_spi
-    );
+    #[cfg(target_arch = "aarch64")]
+    {
+        // Parallels GICv3 quirk (Turn 10 E4): GICD_IROUTER writes are RAZ/WI for
+        // platform AHCI SPI even with GICD_CTLR.ARE_NS set. Combined with the
+        // observation that AHCI ISR delivery on CPU0 deterministically kills the
+        // CPU0 vtimer on Parallels HVF (Turn 11 Path A, 5/5 boots), the only
+        // production-safe configuration on aarch64 is AHCI polling mode.
+        //
+        // The existing AHCI driver path already uses timer-tick polling when
+        // AHCI_IRQ remains 0. Silence the discovered SPI in the distributor and
+        // return without storing AHCI_IRQ.
+        gic::disable_spi(found_spi);
+        return;
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        gic::clear_spi_pending(found_spi);
+        AHCI_IRQ_EDGE.store(false, Ordering::Release);
+        AHCI_IRQ.store(found_spi, Ordering::Release);
+        // Route platform AHCI away from CPU0; on Parallels, CPU0 delivery can stop its timer.
+        gic::enable_spi_on_cpu(found_spi, 2);
+        crate::serial_println!(
+            "[ahci] Platform IRQ enabled: SPI {} (wired, level-triggered)",
+            found_spi
+        );
+    }
 }
 
 /// AHCI MSI interrupt handler — called from the IRQ dispatch in `exception.rs`.

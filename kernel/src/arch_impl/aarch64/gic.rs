@@ -259,6 +259,16 @@ const GIC_HHDM: usize = crate::arch_impl::aarch64::constants::HHDM_BASE as usize
 /// Active GIC version: 2 for GICv2, 3 for GICv3. Set during init.
 static ACTIVE_GIC_VERSION: AtomicU8 = AtomicU8::new(0);
 
+pub static LAST_ENABLE_SPI_IRQ: AtomicU32 = AtomicU32::new(0);
+pub static LAST_ENABLE_SPI_CPU: AtomicU32 = AtomicU32::new(0);
+pub static LAST_ENABLE_SPI_GIC_VERSION: AtomicU32 = AtomicU32::new(0);
+pub static LAST_ENABLE_SPI_MAPPED_AFFINITY: AtomicU64 = AtomicU64::new(0);
+pub static LAST_ENABLE_SPI_AFFINITY_WRITTEN: AtomicU64 = AtomicU64::new(0);
+pub static LAST_ENABLE_SPI_IROUTER_READBACK: AtomicU64 = AtomicU64::new(0);
+pub static LAST_ENABLE_SPI_ISENABLER_READBACK: AtomicU32 = AtomicU32::new(0);
+pub static LAST_ENABLE_SPI_RETRY_COUNT: AtomicU32 = AtomicU32::new(0);
+pub static LAST_ENABLE_SPI_OUTCOME: AtomicU32 = AtomicU32::new(0);
+
 /// Read a 32-bit GICD register (address from platform_config).
 #[inline]
 fn gicd_read(offset: usize) -> u32 {
@@ -873,6 +883,128 @@ pub fn enable_spi(irq: u32) {
     gicd_write(GICD_ISENABLER + (reg_index as usize * 4), 1 << bit);
     // DSB ensures the GICD write has completed (drained from write buffer)
     // before we return. ISB ensures subsequent instructions see the effect.
+    unsafe {
+        core::arch::asm!("dsb sy", options(nomem, nostack));
+        core::arch::asm!("isb", options(nomem, nostack));
+    }
+}
+
+/// Enable an SPI and route it to a specific CPU.
+///
+/// Existing callers should continue using `enable_spi()` unless they
+/// intentionally need a non-default target.
+pub fn enable_spi_on_cpu(irq: u32, cpu_id: usize) {
+    if irq < 32 || cpu_id >= GICR_RDIST_SLOTS {
+        LAST_ENABLE_SPI_IRQ.store(irq, Ordering::Release);
+        LAST_ENABLE_SPI_CPU.store(cpu_id as u32, Ordering::Release);
+        LAST_ENABLE_SPI_GIC_VERSION.store(0, Ordering::Release);
+        LAST_ENABLE_SPI_MAPPED_AFFINITY.store(0, Ordering::Release);
+        LAST_ENABLE_SPI_AFFINITY_WRITTEN.store(0, Ordering::Release);
+        LAST_ENABLE_SPI_IROUTER_READBACK.store(0, Ordering::Release);
+        LAST_ENABLE_SPI_ISENABLER_READBACK.store(0, Ordering::Release);
+        LAST_ENABLE_SPI_RETRY_COUNT.store(0, Ordering::Release);
+        LAST_ENABLE_SPI_OUTCOME.store(3, Ordering::Release);
+        return; // Only SPIs (32+) and known CPU targets.
+    }
+
+    let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
+    let reg_index = irq / 32;
+    let bit = irq % 32;
+    LAST_ENABLE_SPI_IRQ.store(irq, Ordering::Release);
+    LAST_ENABLE_SPI_CPU.store(cpu_id as u32, Ordering::Release);
+    LAST_ENABLE_SPI_GIC_VERSION.store(version as u32, Ordering::Release);
+    LAST_ENABLE_SPI_MAPPED_AFFINITY.store(0, Ordering::Release);
+    LAST_ENABLE_SPI_AFFINITY_WRITTEN.store(0, Ordering::Release);
+    LAST_ENABLE_SPI_IROUTER_READBACK.store(0, Ordering::Release);
+    LAST_ENABLE_SPI_ISENABLER_READBACK.store(0, Ordering::Release);
+    LAST_ENABLE_SPI_RETRY_COUNT.store(0, Ordering::Release);
+    LAST_ENABLE_SPI_OUTCOME.store(0, Ordering::Release);
+
+    if version >= 3 {
+        let mapped_affinity = GICR_PER_CPU_AFFINITY[cpu_id].load(Ordering::Acquire);
+        let affinity = if mapped_affinity != 0 {
+            mapped_affinity
+        } else {
+            expected_gicr_affinity_for_cpu(cpu_id) as u64
+        };
+        let enable_offset = GICD_ISENABLER + (reg_index as usize * 4);
+        let router_offset = GICD_IROUTER + (irq as usize * 8);
+        let bit_mask = 1 << bit;
+
+        LAST_ENABLE_SPI_MAPPED_AFFINITY.store(mapped_affinity, Ordering::Release);
+        LAST_ENABLE_SPI_AFFINITY_WRITTEN.store(affinity, Ordering::Release);
+
+        gicd_write(GICD_ICENABLER + (reg_index as usize * 4), bit_mask);
+        unsafe {
+            core::arch::asm!("dsb sy", options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack));
+        }
+
+        gicd_write(GICD_ICPENDR + (reg_index as usize * 4), bit_mask);
+        unsafe {
+            core::arch::asm!("dsb sy", options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack));
+        }
+
+        gicd_write(router_offset, affinity as u32);
+        gicd_write(router_offset + 4, (affinity >> 32) as u32);
+        unsafe {
+            core::arch::asm!("dsb sy", options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack));
+        }
+
+        let mut readback =
+            gicd_read(router_offset) as u64 | ((gicd_read(router_offset + 4) as u64) << 32);
+        let mut retries = 0u32;
+        while readback != affinity && retries < 3 {
+            retries += 1;
+            gicd_write(router_offset, affinity as u32);
+            gicd_write(router_offset + 4, (affinity >> 32) as u32);
+            unsafe {
+                core::arch::asm!("dsb sy", options(nomem, nostack));
+                core::arch::asm!("isb", options(nomem, nostack));
+            }
+            readback =
+                gicd_read(router_offset) as u64 | ((gicd_read(router_offset + 4) as u64) << 32);
+        }
+
+        let outcome = if readback == affinity {
+            if retries == 0 {
+                0
+            } else {
+                1
+            }
+        } else {
+            2
+        };
+
+        LAST_ENABLE_SPI_IROUTER_READBACK.store(readback, Ordering::Release);
+        LAST_ENABLE_SPI_RETRY_COUNT.store(retries, Ordering::Release);
+        LAST_ENABLE_SPI_OUTCOME.store(outcome, Ordering::Release);
+
+        gicd_write(enable_offset, bit_mask);
+        unsafe {
+            core::arch::asm!("dsb sy", options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack));
+        }
+        LAST_ENABLE_SPI_ISENABLER_READBACK.store(gicd_read(enable_offset), Ordering::Release);
+        return;
+    } else {
+        if cpu_id >= 8 {
+            return;
+        }
+        let target_reg = irq / 4;
+        let target_byte = irq % 4;
+        let current = gicd_read(GICD_ITARGETSR + (target_reg as usize * 4));
+        let mask = 0xFFu32 << (target_byte * 8);
+        let target_val = (1u32 << cpu_id) << (target_byte * 8);
+        gicd_write(
+            GICD_ITARGETSR + (target_reg as usize * 4),
+            (current & !mask) | target_val,
+        );
+    }
+
+    gicd_write(GICD_ISENABLER + (reg_index as usize * 4), 1 << bit);
     unsafe {
         core::arch::asm!("dsb sy", options(nomem, nostack));
         core::arch::asm!("isb", options(nomem, nostack));
