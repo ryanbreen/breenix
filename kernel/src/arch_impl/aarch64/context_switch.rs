@@ -2730,6 +2730,10 @@ extern "C" fn inline_schedule_trampoline() -> ! {
 
     if sched_ptr.is_null() {
         inline_schedule_breadcrumb(cpu_id, INLINE_BC_NULL_FALLBACK, 0);
+        unsafe {
+            inline_schedule_breadcrumb(cpu_id, INLINE_BC_FORCE_UNLOCK_RET, 1);
+            crate::task::scheduler::force_unlock_scheduler();
+        }
         idle_loop_arm64();
     }
 
