@@ -1206,7 +1206,11 @@ fn take_inline_ret_dispatch_info(
 
     let thread_ptr = thread as *const _ as *mut u8;
     let ctx_ptr = &thread.context as *const CpuContext;
-    let resume_pc = thread.context.elr_el1;
+    // WHY: inline ret-dispatch restores only callee-saved registers + SP, so
+    // it must resume at the safe post-inline-switch return target, not a
+    // mid-function ELR that may require stale volatile registers.
+    let resume_pc = thread.context.x30;
+    thread.context.elr_el1 = resume_pc;
     let kst = thread.kernel_stack_top;
     let sp_el0 = thread.context.sp_el0;
     let resume_sp = thread.context.sp;
