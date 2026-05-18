@@ -2300,6 +2300,10 @@ fn send_command(
     // These complete in microseconds (SET_SCANOUT, RESOURCE_FLUSH, TRANSFER_TO_HOST_3D).
     // Yielding here adds ~1-2ms of context switch overhead per command, which is
     // catastrophic with 5+ commands per frame.
+    // WHY: keep last_used_idx out of a long-lived static-base access in the
+    // polling loop. Parallels BWM stress hit FAR=0xccd when caller-saved x17,
+    // holding the GPU_PCI_STATE page base for state.last_used_idx, was clobbered.
+    let mut last_used_idx = state.last_used_idx;
     let mut spin_count = 0u32;
     loop {
         // Invalidate used ring cache line so we see the device's DMA write
@@ -2316,7 +2320,7 @@ fn send_command(
             let q = &raw const PCI_CTRL_QUEUE;
             read_volatile(&(*q).used.idx)
         };
-        if used_idx != state.last_used_idx {
+        if used_idx != last_used_idx {
             virtgpu::trace_q_complete(0, used_idx);
             virtgpu::trace_wait_completion_exit(
                 cmd_type,
@@ -2324,12 +2328,13 @@ fn send_command(
                 virtgpu::WAIT_PATH_2DESC,
                 true,
             );
-            state.last_used_idx = used_idx;
+            last_used_idx = used_idx;
+            state.last_used_idx = last_used_idx;
             return Ok(());
         }
         spin_count = spin_count.wrapping_add(1);
         if spin_count & 0x3fff == 0 && monotonic_ms().saturating_sub(wait_start_ms) > 1000 {
-            let expected_used_idx = state.last_used_idx.wrapping_add(1);
+            let expected_used_idx = last_used_idx.wrapping_add(1);
             virtgpu::trace_wait_completion_exit(
                 cmd_type,
                 resource_id,
