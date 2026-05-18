@@ -981,17 +981,6 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         if ahci_irq != 0 {
             kernel::arch_impl::aarch64::gic::enable_spi_on_cpu(ahci_irq, 2);
         }
-        // TURN 11 DIAGNOSTIC PROBE: disable AHCI SPI to test whether AHCI ISR delivery
-        // on CPU0 is the proximate cause of CPU0 vtimer regression. Parallels' GIC
-        // silently drops GICD_IROUTER writes (Turn 10 E4 verdict), so we cannot move
-        // AHCI off CPU0 via standard mechanisms. By disabling the SPI entirely, AHCI
-        // will fall back to no interrupt delivery (polling-only via the existing
-        // driver code paths). If CPU0 timer regression DISAPPEARS in this run, AHCI
-        // ISR on CPU0 is confirmed as the cause. If it PERSISTS, AHCI is innocent
-        // and the bug lives in the vtimer / CPU0 interrupt path.
-        if ahci_irq != 0 {
-            kernel::arch_impl::aarch64::gic::disable_spi(ahci_irq);
-        }
     }
 
     // Test kthread lifecycle BEFORE creating userspace processes
