@@ -2734,7 +2734,42 @@ extern "C" fn inline_schedule_trampoline() -> ! {
             inline_schedule_breadcrumb(cpu_id, INLINE_BC_FORCE_UNLOCK_RET, 1);
             crate::task::scheduler::force_unlock_scheduler();
         }
-        idle_loop_arm64();
+
+        let idle_sp = crate::task::scheduler::with_scheduler(|sched| {
+            let idle_id = sched.cpu_state[cpu_id].idle_thread;
+            let idle_sp = sched
+                .get_thread(idle_id)
+                .and_then(|thread| thread.kernel_stack_top.map(|stack| stack.as_u64()))
+                .unwrap_or_else(|| scheduler_stack_top(cpu_id));
+            sched.fix_exception_cleanup_cpu_state();
+            idle_sp
+        })
+        .unwrap_or_else(|| scheduler_stack_top(cpu_id));
+
+        unsafe {
+            Aarch64PerCpu::set_user_rsp_scratch(idle_sp);
+            Aarch64PerCpu::set_kernel_stack_top(idle_sp);
+            Aarch64PerCpu::set_current_thread_ptr(core::ptr::null_mut());
+            Aarch64PerCpu::clear_preempt_active();
+        }
+        crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
+        if crate::arch_impl::aarch64::timer_interrupt::is_initialized() {
+            crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
+        }
+
+        inline_schedule_breadcrumb(cpu_id, INLINE_BC_IDLE_RET_BRANCH, 1);
+        let idle_addr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
+        unsafe {
+            core::arch::asm!(
+                "mov sp, {stack}",
+                "msr daifclr, #0xf",
+                "isb",
+                "br {target}",
+                stack = in(reg) idle_sp,
+                target = in(reg) idle_addr,
+                options(noreturn)
+            );
+        }
     }
 
     let sched = unsafe { &mut *sched_ptr };
