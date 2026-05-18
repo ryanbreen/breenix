@@ -1319,6 +1319,10 @@ fn handle_compositor_wait(cmd: &FbDrawCmd) -> SyscallResult {
     let prev_mouse = COMPOSITOR_LAST_MOUSE.load(Ordering::Relaxed);
 
     loop {
+        // WHY: repair the read-but-not-released wedge captured in
+        // turn3-wedge-snapshot.md before BWM sleeps on the compositor latch.
+        wake_presented_client_frames();
+
         let (ready, cur_reg_gen, mouse_packed) =
             compositor_ready_bits(last_registry_gen, prev_mouse);
         if ready != 0 {
