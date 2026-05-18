@@ -1,0 +1,133 @@
+=== TURN2 GDB SOFTLOCK STATE: COMPOSITOR WAIT ===
+Target: Parallels guestdebugger on 127.0.0.1:9600
+warning: while parsing target description (at line 1): Target description specified unknown architecture "org.gnu.gdb.aarch64"
+warning: Could not load XML target description; ignoring
+warning: while parsing target description (at line 1): Target description specified unknown architecture "org.gnu.gdb.aarch64"
+warning: Could not load XML target description; ignoring
+0xffff0000401d65b4 in idle_loop_arm64 ()
+=== SYMBOL ADDRESS MAP ===
+SCHEDULER=0xffff00004022d000
+COMPOSITOR_FRAME_WQ=0xffff00004022d2b0
+WINDOW_REGISTRY=0xffff00004022d2d8
+CLIENT_FRAME_WQ=0xffff000040231258
+COMPOSITOR_DIRTY_WAKE=0xffff00004024afdc
+NEED_RESCHED=0xffff000040242000 CONTEXT_SWITCH_COUNT=0xffff000040242008 CPU_IS_IDLE=0xffff000040242010
+BWM_COMPOSITE_FRAME_ENTER_TOTAL=0xffff00004023af40 BWM_COMPOSITE_FRAME_EXIT_TOTAL=0xffff00004023b380
+VIRGL_COMPOSITE_WINDOWS_FRAME=0xffff000041200aa8 VIRGL_COMPOSITE_WINDOWS_WORK_FRAME=0xffff000041200aac
+DEFERRED_REQUEUE=0xffff000041bc7840 INLINE_SCHEDULE_STATE=0xffff000041bc7980
+=== RAW BINARY SNAPSHOTS ===
+=== LIVENESS LOCK SNAPSHOT ===
+scheduler_lock_byte=0 scheduler_word=0x0
+process_manager_lock_byte=0 process_owner_cpu=0xffffffffffffffff process_owner_tid=0xffffffffffffffff
+gpu_pci_lock_byte=1 gpu_pci_word=0x1
+ahci_irq=0
+need_resched_byte=0 context_switch_count=176585
+cpu_is_idle bytes: 0xffff000040242010 <_ZN6kernel4task9scheduler11CPU_IS_IDLE17h95504b151607a445E.llvm.13701255875122720927>:	0x01	0x01	0x00	0x01	0x01	0x01	0x01	0x01
+=== COMPOSITOR DOMAIN DECODE ===
+COMPOSITOR_DIRTY_WAKE.byte=0
+=== WAITQUEUE COMPOSITOR_FRAME_WQ DECODE ===
+COMPOSITOR_FRAME_WQ.lock_byte=0 cap=4 ptr=0xffff0000502e1e60 head=2 len=0
+COMPOSITOR_FRAME_WQ.logical_waiters=[]
+COMPOSITOR_FRAME_WQ.raw_ring=[13, 13, 13, 13]
+=== WAITQUEUE CLIENT_FRAME_WQ DECODE ===
+CLIENT_FRAME_WQ.lock_byte=0 cap=4 ptr=0xffff0000502e1fc8 head=2 len=1
+CLIENT_FRAME_WQ.logical_waiters=[16]
+CLIENT_FRAME_WQ.raw_ring=[16, 16, 16, 16]
+=== WINDOW REGISTRY DECODE ===
+window_registry.lock_byte=0 data=0xffff00004022d2e0 slot_size=984 max_slots=16
+window[00] slot=0xffff00004022d2e0 tag=1 id=1 buffer_id=1 owner=6 size=480000 mapped=0x7ffffdf86000 width=400 height=300 x=32 y=72 z=0 registered=1 resource=0 virgl_init=0 generation=25944 last_uploaded_gen=0 last_read_gen=25944 pending=True waiting_thread_id=Some(16) input_head=0 input_tail=0
+window[01] empty_or_none slot=0xffff00004022d6b8 tag=2 id=0 buffer_id=0 generation=0 last_uploaded_gen=0 waiting_thread_id=tag2(0x0)
+window[02] empty_or_none slot=0xffff00004022da90 tag=2 id=0 buffer_id=0 generation=0 last_uploaded_gen=0 waiting_thread_id=tag2(0x0)
+window[03] empty_or_none slot=0xffff00004022de68 tag=2 id=0 buffer_id=0 generation=0 last_uploaded_gen=0 waiting_thread_id=tag2(0x0)
+window[04] empty_or_none slot=0xffff00004022e240 tag=2 id=0 buffer_id=0 generation=0 last_uploaded_gen=0 waiting_thread_id=tag2(0x0)
+window[05] empty_or_none slot=0xffff00004022e618 tag=2 id=0 buffer_id=0 generation=0 last_uploaded_gen=0 waiting_thread_id=tag2(0x0)
+window[06] empty_or_none slot=0xffff00004022e9f0 tag=2 id=0 buffer_id=0 generation=0 last_uploaded_gen=0 waiting_thread_id=tag2(0x0)
+window[07] empty_or_none slot=0xffff00004022edc8 tag=2 id=0 buffer_id=0 generation=0 last_uploaded_gen=0 waiting_thread_id=tag2(0x0)
+window[08] empty_or_none slot=0xffff00004022f1a0 tag=2 id=0 buffer_id=0 generation=0 last_uploaded_gen=0 waiting_thread_id=tag2(0x0)
+window[09] empty_or_none slot=0xffff00004022f578 tag=2 id=0 buffer_id=0 generation=0 last_uploaded_gen=0 waiting_thread_id=tag2(0x0)
+window[10] empty_or_none slot=0xffff00004022f950 tag=2 id=0 buffer_id=0 generation=0 last_uploaded_gen=0 waiting_thread_id=tag2(0x0)
+window[11] empty_or_none slot=0xffff00004022fd28 tag=2 id=0 buffer_id=0 generation=0 last_uploaded_gen=0 waiting_thread_id=tag2(0x0)
+window[12] empty_or_none slot=0xffff000040230100 tag=2 id=0 buffer_id=0 generation=0 last_uploaded_gen=0 waiting_thread_id=tag2(0x0)
+window[13] empty_or_none slot=0xffff0000402304d8 tag=2 id=0 buffer_id=0 generation=0 last_uploaded_gen=0 waiting_thread_id=tag2(0x0)
+window[14] empty_or_none slot=0xffff0000402308b0 tag=2 id=0 buffer_id=0 generation=0 last_uploaded_gen=0 waiting_thread_id=tag2(0x0)
+window[15] empty_or_none slot=0xffff000040230c88 tag=2 id=0 buffer_id=0 generation=0 last_uploaded_gen=0 waiting_thread_id=tag2(0x0)
+window_registry.active_or_nonempty_slots=1
+window_registry.next_id_candidate=2
+=== SCHEDULER DECODE ===
+scheduler.lock_byte=0 data=0xffff00004022d008
+cpu_state[0] current=Some(0) previous=None idle_tid=0
+cpu_state[1] current=Some(4) previous=None idle_tid=4
+cpu_state[2] current=Some(13) previous=None idle_tid=5
+cpu_state[3] current=Some(6) previous=None idle_tid=6
+cpu_state[4] current=Some(7) previous=None idle_tid=7
+cpu_state[5] current=Some(8) previous=None idle_tid=8
+cpu_state[6] current=Some(9) previous=None idle_tid=9
+cpu_state[7] current=Some(10) previous=None idle_tid=10
+threads_vec cap=16 ptr=0xffff0000502e0c40 len=16
+thread_box[00]=0xffff0000502e11a0 first8q=[1, 18446462599840137216, 0, 0, 0, 2, 0, 0]
+thread_box[01]=0xffff0000502e14b0 first8q=[1, 18446462600144293888, 1, 0, 18446462600144228352, 18446462600144293888, 0, 0]
+thread_box_detail[01] ptr=0xffff0000502e14b0 match_offsets=[(536, 16)] first32q=[1, 18446462600144293888, 1, 0, 18446462600144228352, 18446462600144293888, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+thread_box[02]=0xffff0000502e17c0 first8q=[1, 18446462600144363520, 1, 0, 18446462600144297984, 18446462600144363520, 0, 0]
+thread_box[03]=0xffff0000502e1ad0 first8q=[1, 18446462599861108736, 0, 0, 0, 0, 0, 18446462599808803264]
+thread_box_detail[03] ptr=0xffff0000502e1ad0 match_offsets=[(376, 16)] first32q=[1, 18446462599861108736, 0, 0, 0, 0, 0, 18446462599808803264, 1, 18446462599861108304, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+thread_box[04]=0xffff00005320e748 first8q=[1, 18446462599863205888, 0, 0, 0, 0, 0, 18446462599808803264]
+thread_box_detail[04] ptr=0xffff00005320e748 match_offsets=[(376, 16)] first32q=[1, 18446462599863205888, 0, 0, 0, 0, 0, 18446462599808803264, 1, 18446462599863205456, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+thread_box[05]=0xffff00005320ea58 first8q=[1, 18446462599865303040, 0, 0, 0, 0, 0, 18446462599808803264]
+thread_box_detail[05] ptr=0xffff00005320ea58 match_offsets=[(376, 16)] first32q=[1, 18446462599865303040, 0, 0, 0, 0, 0, 18446462599808803264, 1, 18446462599865302608, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+thread_box[06]=0xffff00005320ed68 first8q=[1, 18446462599867400192, 0, 0, 0, 0, 0, 18446462599808803264]
+thread_box_detail[06] ptr=0xffff00005320ed68 match_offsets=[(376, 16)] first32q=[1, 18446462599867400192, 0, 0, 0, 0, 0, 18446462599808803264, 1, 18446462599867399760, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+thread_box[07]=0xffff00005320f078 first8q=[1, 18446462599869497344, 0, 0, 0, 0, 0, 18446462599808803264]
+thread_box_detail[07] ptr=0xffff00005320f078 match_offsets=[(376, 16)] first32q=[1, 18446462599869497344, 0, 0, 0, 0, 0, 18446462599808803264, 1, 18446462599869496912, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+thread_box[08]=0xffff00005320f388 first8q=[1, 18446462599871594496, 0, 0, 0, 0, 0, 18446462599808803264]
+thread_box_detail[08] ptr=0xffff00005320f388 match_offsets=[(376, 16)] first32q=[1, 18446462599871594496, 0, 0, 0, 0, 0, 18446462599808803264, 1, 18446462599871594064, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+thread_box[09]=0xffff00005320f698 first8q=[1, 18446462599873691648, 0, 0, 0, 0, 0, 18446462599808803264]
+thread_box_detail[09] ptr=0xffff00005320f698 match_offsets=[(376, 16)] first32q=[1, 18446462599873691648, 0, 0, 0, 0, 0, 18446462599808803264, 1, 18446462599873691216, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+thread_box[10]=0xffff0000532134d8 first8q=[1, 18446462600144433152, 0, 936747622985637556, 7493989779944505344, 936747622986690050, 0, 0]
+thread_box[11]=0xffff0000532137e8 first8q=[1, 18446462600144502784, 0, 3, 88373247082496, 0, 0, 1]
+thread_box[12]=0xffff000053213bf8 first8q=[1, 18446462600144572416, 0, 3, 88373247082496, 0, 0, 1]
+thread_box_detail[12] ptr=0xffff000053213bf8 match_offsets=[(400, 13)] first32q=[1, 18446462600144572416, 0, 3, 88373247082496, 0, 0, 1, 18446462600078036352, 18446462599808946176, 18446462599808088568, 18446462599808947816, 768, 1, 18446462600078036352, 1, 18446462599808947952, 3, 3, 18446462600127528952, 429208, 0, 18446462599808706225, 18446462599826440192, 18446462599808954328, 18446462599808950272, 18446462599808954312, 10, 17347, 0, 18446744073709551615, 18446462599808864888]
+thread_box[13]=0xffff0000532140b8 first8q=[1, 18446462600144642048, 0, 3, 88373247082496, 0, 0, 1]
+thread_box_detail[13] ptr=0xffff0000532140b8 match_offsets=[] first32q=[1, 18446462600144642048, 0, 3, 88373247082496, 0, 0, 1, 18446462600127527720, 18446462599808946176, 18446462599808088568, 18446462599808947816, 768, 1, 18446462600127527720, 1, 18446462600144431200, 7, 4, 18446462600127530088, 298632, 0, 18446462599808706225, 18446462599826440192, 18446462599808954328, 18446462599808950272, 18446462599808954312, 10, 18532, 18446462600144431200, 18446744073709551615, 18446462599808947952]
+thread_box[14]=0xffff000053214940 first8q=[1, 18446462600144711680, 0, 3, 88373247082496, 0, 0, 1]
+thread_box[15]=0xffff000053214d10 first8q=[1, 18446462600144781312, 0, 3, 88373247082496, 0, 0, 1]
+thread_box_detail[15] ptr=0xffff000053214d10 match_offsets=[(400, 16), (728, 18446462599807530512)] first32q=[1, 18446462600144781312, 0, 3, 88373247082496, 0, 0, 1, 18446462600127527720, 18446462599808946176, 18446462599808088568, 18446462599808947816, 768, 1, 18446462600127527720, 1, 18446462600144431200, 6, 6, 18446462600127533232, 388152, 0, 18446462599808706225, 18446462599826440192, 18446462599808954328, 18446462599808950272, 18446462599808954312, 10, 20090, 18446462600144431200, 18446744073709551615, 18446462599808864888]
+ready_queue[0] cap=4 ptr=0xffff0000502e0860 head=3 len=0 ids=[]
+ready_queue[1] cap=4 ptr=0xffff0000502e0b70 head=0 len=0 ids=[]
+ready_queue[2] cap=4 ptr=0xffff0000502e0d20 head=3 len=0 ids=[]
+ready_queue[3] cap=4 ptr=0xffff000053214c70 head=0 len=0 ids=[]
+ready_queue[4] cap=4 ptr=0xffff0000502e0d70 head=3 len=0 ids=[]
+ready_queue[5] cap=4 ptr=0xffff000053214c50 head=3 len=0 ids=[]
+ready_queue[6] cap=4 ptr=0xffff0000502e0d40 head=1 len=0 ids=[]
+ready_queue[7] cap=4 ptr=0xffff000053214c90 head=2 len=0 ids=[]
+timer_heap cap=4 ptr=0xffff0000502e0be0 len=2
+tid_location tid=13 current_cpus=[2] previous_cpus=[] ready_queues=[]
+tid_location tid=16 current_cpus=[] previous_cpus=[] ready_queues=[]
+=== PER-CPU STATIC STATE ===
+need_resched_byte=0 context_switch_count=176585
+cpu_is_idle=[1, 1, 0, 1, 1, 1, 1, 1]
+deferred_requeue=[0, 0, 0, 0, 0, 0, 0, 0]
+last_defer_info=['0x1000d00000c02', '0x1000d00000c02', '0x1000500000501', '0x1000d00000c02', '0x1000d00000c02', '0x1000d00000c02', '0x1001000000c02', '0x1000d00000c02']
+last_defer_sp=['0x54255000', '0x54255000', '0x435fff40', '0x54255000', '0x54255000', '0x54255000', '0x54288000', '0x54255000']
+last_defer_elr=['0x4000934c', '0x4000934c', '0x401d4124', '0x4000934c', '0x4000934c', '0x4000934c', '0x40006cbc', '0x4000934c']
+last_defer_x30=['0x4000933c', '0x4000933c', '0x401d4124', '0x4000933c', '0x4000933c', '0x4000933c', '0x40006e00', '0x4000933c']
+inline_schedule_state[0] scheduler_ptr=0x0 old_tid=16 new_tid=13 should_requeue_old=0
+inline_schedule_state[1] scheduler_ptr=0x0 old_tid=16 new_tid=13 should_requeue_old=0
+inline_schedule_state[2] scheduler_ptr=0x0 old_tid=13 new_tid=5 should_requeue_old=0
+inline_schedule_state[3] scheduler_ptr=0x0 old_tid=16 new_tid=13 should_requeue_old=0
+inline_schedule_state[4] scheduler_ptr=0x0 old_tid=16 new_tid=13 should_requeue_old=0
+inline_schedule_state[5] scheduler_ptr=0x0 old_tid=16 new_tid=13 should_requeue_old=0
+inline_schedule_state[6] scheduler_ptr=0x0 old_tid=13 new_tid=9 should_requeue_old=0
+inline_schedule_state[7] scheduler_ptr=0x0 old_tid=13 new_tid=10 should_requeue_old=0
+=== GRAPHICS COUNTERS / STATIC COUNTER PROBE ===
+exact_mark_window_dirty_counter=absent
+exact_handle_composite_windows_counter=absent
+exact_compositor_ready_bits_counter=absent
+exact_wake_compositor_if_waiting_counter=absent
+BWM_COMPOSITE_FRAME_ENTER_TOTAL first8=[18446462599808799975, 31, 18446462599808608608, 32, 0, 0, 0, 0]
+BWM_COMPOSITE_FRAME_EXIT_TOTAL first8=[18446462599808800006, 30, 18446462599808800036, 30, 0, 0, 0, 0]
+FB_FLUSH_COUNT=0
+VIRGL_COMPOSITE_WINDOWS_FRAME.u32=0
+VIRGL_COMPOSITE_WINDOWS_WORK_FRAME.u32=0
+Python Exception <class 'NameError'>: name 'deferred' is not defined
+/Users/wrb/fun/code/breenix/turn3-artifacts/gdb_softlock_capture_v2.gdb:353: Error in sourced command file:
+Error occurred in Python: name 'deferred' is not defined
