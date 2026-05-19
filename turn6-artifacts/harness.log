@@ -1,0 +1,34 @@
+[2026-05-19 05:59:30] starting Turn 6 5-boot Parallels gate
+[2026-05-19 05:59:30] boot-1: preparing clean environment
+[2026-05-19 05:59:46] boot-1: detected VM breenix-1779184785
+[2026-05-19 05:59:46] boot boot-1: starting guest-debugger for breenix-1779184785 on port 9601
+[2026-05-19 06:00:47] boot boot-1: guest-debugger port did not open
+[2026-05-19 06:00:47] boot-1: waiting 90s for boot and timer-regression window
+[2026-05-19 06:02:18] boot boot-1: starting guest-debugger for breenix-1779184785 on port 9601
+[2026-05-19 06:06:46] boot-2: preparing clean environment
+[2026-05-19 06:07:05] boot-2: detected VM breenix-1779185225
+[2026-05-19 06:07:06] boot boot-2: starting guest-debugger for breenix-1779185225 on port 9602
+[2026-05-19 06:08:06] boot boot-2: guest-debugger port did not open
+[2026-05-19 06:08:07] boot-2: waiting 90s for boot and timer-regression window
+[2026-05-19 06:09:38] boot boot-2: starting guest-debugger for breenix-1779185225 on port 9602
+[2026-05-19 06:10:39] boot boot-2: guest-debugger port did not open
+[2026-05-19 06:15:19] boot-3: preparing clean environment
+[2026-05-19 06:15:41] boot-3: detected VM breenix-1779185741
+[2026-05-19 06:15:41] boot boot-3: starting guest-debugger for breenix-1779185741 on port 9603
+[2026-05-19 06:16:42] boot boot-3: guest-debugger port did not open
+[2026-05-19 06:16:42] boot-3: waiting 90s for boot and timer-regression window
+[2026-05-19 06:18:13] boot boot-3: starting guest-debugger for breenix-1779185741 on port 9603
+[2026-05-19 06:19:14] boot boot-3: guest-debugger port did not open
+[2026-05-19 06:20:55] boot-4: preparing clean environment
+[2026-05-19 06:21:12] boot-4: detected VM breenix-1779186072
+[2026-05-19 06:21:12] boot boot-4: starting guest-debugger for breenix-1779186072 on port 9604
+[2026-05-19 06:22:13] boot boot-4: guest-debugger port did not open
+[2026-05-19 06:22:13] boot-4: waiting 90s for boot and timer-regression window
+[2026-05-19 06:23:44] boot boot-4: starting guest-debugger for breenix-1779186072 on port 9604
+[2026-05-19 06:28:10] boot-5: preparing clean environment
+[2026-05-19 06:28:29] boot-5: detected VM breenix-1779186509
+[2026-05-19 06:28:29] boot boot-5: starting guest-debugger for breenix-1779186509 on port 9605
+[2026-05-19 06:29:30] boot boot-5: guest-debugger port did not open
+[2026-05-19 06:29:30] boot-5: waiting 90s for boot and timer-regression window
+[2026-05-19 06:31:01] boot boot-5: starting guest-debugger for breenix-1779186509 on port 9605
+[2026-05-19 06:33:06] Turn 6 5-boot Parallels gate complete

@@ -1,0 +1,17 @@
+boot=3
+status=fail
+reason=ahci_irq=missing;ahci_isr_count=missing;ahci_cpu=missing;post_poll=missing;gdb_rc=guestdebugger-port-timeout;cpu0_pct=0.00
+ahci_irq=
+ahci_isr_count=
+ahci_isr_last_mpidr_aff0=
+ahci_polled_completion_count=
+ahci_polled_post_registration_count=
+timer_tick_count_cpu0=
+timer_tick_count_cpu1=
+timer_tick_count_cpu2=
+timer_tick_count_cpu3=
+peer_max=0
+cpu0_pct_of_max=0.00
+ahci_timeout_markers=0
+panic_markers=0
+userspace_markers=1

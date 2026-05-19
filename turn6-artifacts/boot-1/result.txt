@@ -1,0 +1,17 @@
+boot=1
+status=fail
+reason=post_poll=69
+ahci_irq=34
+ahci_isr_count=1123
+ahci_isr_last_mpidr_aff0=0
+ahci_polled_completion_count=71
+ahci_polled_post_registration_count=69
+timer_tick_count_cpu0=120332
+timer_tick_count_cpu1=120362
+timer_tick_count_cpu2=120504
+timer_tick_count_cpu3=120239
+peer_max=120504
+cpu0_pct_of_max=99.86
+ahci_timeout_markers=0
+panic_markers=0
+userspace_markers=1
