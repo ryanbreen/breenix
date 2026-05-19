@@ -1,0 +1,135 @@
+ 0)               |  gic_handle_irq() {
+ 0)               |    __gic_handle_irq_from_irqson.isra.0() {
+ 0)   2.000 us    |      gic_read_iar();
+ 0)               |      generic_handle_domain_irq() {
+ 0)               |        __irq_resolve_mapping() {
+ 0)   0.125 us    |          __rcu_read_lock();
+ 0)   0.125 us    |          __rcu_read_unlock();
+ 0)   1.334 us    |        }
+ 0)               |        handle_irq_desc() {
+ 0)               |          handle_fasteoi_irq() {
+ 0)   0.083 us    |            _raw_spin_lock();
+ 0)               |            handle_irq_event() {
+ 0)   0.125 us    |              _raw_spin_unlock();
+ 0)               |              __handle_irq_event_percpu() {
+ 0)               |                __traceiter_irq_handler_entry() {
+ 0)   0.167 us    |                  arch_counter_read();
+ 0)               |                  /* irq_handler_entry: irq=15 name=ahci[PRL4010:00] */
+ 0)   0.167 us    |                  arch_counter_read();
+ 0)   1.959 us    |                }
+ 0)               |                ahci_single_level_irq_intr() {
+ 0) + 13.459 us   |                  _raw_spin_lock();
+ 0)               |                  ahci_handle_port_intr() {
+ 0)               |                    ahci_handle_port_interrupt() {
+ 0)   0.167 us    |                      sata_lpm_ignore_phy_events();
+ 0)               |                      ahci_qc_complete() {
+ 0)               |                        ata_qc_complete_multiple() {
+ 0)   0.292 us    |                          ahci_qc_ncq_fill_rtf();
+ 0)               |                          ata_qc_complete() {
+ 0)               |                            ledtrig_disk_activity() {
+ 0)               |                              led_trigger_blink_oneshot() {
+ 0)   0.125 us    |                                __rcu_read_lock();
+ 0)   0.125 us    |                                __rcu_read_unlock();
+ 0)   0.708 us    |                              }
+ 0)               |                              led_trigger_blink_oneshot() {
+ 0)   0.125 us    |                                __rcu_read_lock();
+ 0)   0.083 us    |                                __rcu_read_unlock();
+ 0)   0.666 us    |                              }
+ 0)   1.792 us    |                            }
+ 0)               |                            __ata_qc_complete() {
+ 0)               |                              dma_unmap_sg_attrs() {
+ 0)   1.167 us    |                                dma_direct_unmap_sg();
+ 0)   1.750 us    |                              }
+ 0)               |                              ata_scsi_qc_complete() {
+ 0)   0.125 us    |                                ata_qc_free();
+ 0)               |                                scsi_done() {
+ 0)               |                                  scsi_done_internal() {
+ 0)               |                                    blk_mq_complete_request() {
+ 0)               |                                      blk_mq_complete_request_remote() {
+ 0)   0.208 us    |                                        cpus_share_cache();
+ 0)               |                                        raise_softirq() {
+ 0)               |                                          __raise_softirq_irqoff() {
+ 0)   0.167 us    |                                            arch_counter_read();
+ 0)               |                                            /* softirq_raise: vec=4 [action=BLOCK] */
+ 0)   0.208 us    |                                            arch_counter_read();
+ 0)   1.250 us    |                                          }
+ 0)   1.500 us    |                                        }
+ 0)   2.208 us    |                                      }
+ 0)   2.417 us    |                                    }
+ 0)   2.833 us    |                                  }
+ 0)   3.042 us    |                                }
+ 0)   3.458 us    |                              }
+ 0)   5.625 us    |                            }
+ 0)   7.875 us    |                          }
+ 0)               |                          ata_qc_complete() {
+ 0)               |                            ledtrig_disk_activity() {
+ 0)               |                              led_trigger_blink_oneshot() {
+ 0)   0.125 us    |                                __rcu_read_lock();
+ 0)   0.083 us    |                                __rcu_read_unlock();
+ 0)   0.458 us    |                              }
+ 0)               |                              led_trigger_blink_oneshot() {
+ 0)   0.083 us    |                                __rcu_read_lock();
+ 0)   0.125 us    |                                __rcu_read_unlock();
+ 0)   0.500 us    |                              }
+ 0)   1.208 us    |                            }
+ 0)               |                            __ata_qc_complete() {
+ 0)               |                              dma_unmap_sg_attrs() {
+ 0)   0.416 us    |                                dma_direct_unmap_sg();
+ 0)   0.584 us    |                              }
+ 0)               |                              ata_scsi_qc_complete() {
+ 0)   0.083 us    |                                ata_qc_free();
+ 0)               |                                scsi_done() {
+ 0)               |                                  scsi_done_internal() {
+ 0)               |                                    blk_mq_complete_request() {
+ 0)               |                                      blk_mq_complete_request_remote() {
+ 0)   0.125 us    |                                        cpus_share_cache();
+ 0)   0.333 us    |                                      }
+ 0)   0.500 us    |                                    }
+ 0)   0.750 us    |                                  }
+ 0)   0.917 us    |                                }
+ 0)   1.291 us    |                              }
+ 0)   2.209 us    |                            }
+ 0)   3.750 us    |                          }
+ 0) + 13.125 us   |                        }
+ 0) + 14.916 us   |                      }
+ 0) + 16.084 us   |                    }
+ 0) + 24.417 us   |                  }
+ 0)   0.167 us    |                  _raw_spin_unlock();
+ 0) + 45.000 us   |                }
+ 0)               |                __traceiter_irq_handler_exit() {
+ 0)   0.125 us    |                  arch_counter_read();
+ 0)               |                  /* irq_handler_exit: irq=15 ret=handled */
+ 0)   0.125 us    |                  arch_counter_read();
+ 0)   1.292 us    |                }
+ 0) + 49.041 us   |              }
+ 0)               |              add_interrupt_randomness() {
+ 0)   0.167 us    |                fast_mix();
+ 0)   0.625 us    |              }
+ 0)   0.125 us    |              note_interrupt();
+ 0)   0.125 us    |              _raw_spin_lock();
+ 0) + 50.917 us   |            }
+ 0)               |            cond_unmask_eoi_irq() {
+ 0)   1.458 us    |              gic_eoi_irq();
+ 0)   1.667 us    |            }
+ 0)   0.083 us    |            _raw_spin_unlock();
+ 0) + 54.041 us   |          }
+ 0) + 54.458 us   |        }
+ 0) + 56.084 us   |      }
+ 0) + 58.667 us   |    }
+ 0) + 59.584 us   |  }
+ 0)   <========== |
+ 0)               |  /* softirq_entry: vec=4 [action=BLOCK] */
+ 0)               |  /* softirq_exit: vec=4 [action=BLOCK] */
+ ------------------------------------------
+ 1)    dd-40538    =>    <idle>-0   
+ ------------------------------------------
+
+ 1)   ==========> |
+ 1)               |  gic_handle_irq() {
+ 1)               |    __gic_handle_irq_from_irqson.isra.0() {
+ 1)   1.792 us    |      gic_read_iar();
+ 1)               |      generic_handle_domain_irq() {
+ 1)               |        __irq_resolve_mapping() {
+ 1)   0.125 us    |          __rcu_read_lock();
+ 1)   0.125 us    |          __rcu_read_unlock();
+ 1)   0.709 us    |        }

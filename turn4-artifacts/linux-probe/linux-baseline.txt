@@ -1,0 +1,74 @@
+## uname
+Linux probe 6.8.0-107-generic #107-Ubuntu SMP PREEMPT_DYNAMIC Fri Mar 13 19:42:33 UTC 2026 aarch64 aarch64 aarch64 GNU/Linux
+
+## cmdline
+BOOT_IMAGE=/vmlinuz-6.8.0-107-generic root=/dev/mapper/ubuntu--vg-ubuntu--lv ro console=tty0
+
+## ahci interrupt
+ 10:    2750940    2321776    1956312    4048628     GICv3  27 Level     arch_timer
+ 12:         28          0          0          0     GICv3  48 Edge      ACPI:Ged
+ 14:          0          0          0          0     GICv3  38 Edge      virtio0
+ 15:     166442          0          0          0     GICv3  34 Level     ahci[PRL4010:00]
+ 23:          0          0          0          0     GICv3  35 Level     ehci_hcd:usb1
+ 24:          0          0          0          0     GICv3  23 Level     arm-pmu
+
+## proc irq affinity
+/proc/irq/15/smp_affinity=f
+/proc/irq/15/smp_affinity_list=0-3
+/proc/irq/15/effective_affinity=1
+/proc/irq/15/effective_affinity_list=0
+/proc/irq/15/node=-1
+
+## sysfs irq 15 files
+/sys/kernel/irq/15/actions=ahci[PRL4010:00]
+/sys/kernel/irq/15/chip_name=GICv3
+/sys/kernel/irq/15/hwirq=34
+/sys/kernel/irq/15/name=/sys/kernel/irq/15/per_cpu_count=166443,0,0,0
+/sys/kernel/irq/15/type=level
+/sys/kernel/irq/15/wakeup=disabled
+
+## platform ahci driver
+total 0
+drwxr-xr-x   2 root root    0 Jul  8 19:42 .
+drwxr-xr-x 499 root root    0 Jul  8 19:42 ..
+lrwxrwxrwx   1 root root    0 Jul  8 19:42 PRL4010:00 -> ../../../../devices/platform/PRL4010:00
+--w-------   1 root root 4096 Jul  8 19:42 bind
+lrwxrwxrwx   1 root root    0 Jul  8 19:39 module -> ../../../../module/ahci_platform
+--w-------   1 root root 4096 Jul  8 19:42 uevent
+--w-------   1 root root 4096 Jul  8 19:42 unbind
+
+## platform PRL4010 device
+
+## iomem gic/ahci/prl
+02010000-0201ffff : GICD
+02140000-02141fff : PRL4010:00
+  02140000-02141fff : PRL4010:00 PRL4010:00
+02500000-0257ffff : GICR
+
+## dmesg gic/ahci/prl
+[    0.000000] CPU features: detected: GIC system register CPU interface
+[    0.000000] GICv3: 988 SPIs implemented
+[    0.000000] GICv3: 0 Extended SPIs implemented
+[    0.000000] Root IRQ handler: gic_handle_irq
+[    0.000000] GICv3: GICv3 features: 16 PPIs, RSS
+[    0.000000] GICv3: CPU0: found redistributor 0 region 0:0x0000000002500000
+[    0.000000] GICv2m: range[mem 0x02250000-0x02250fff], SPI[53:116]
+[    0.013758] GICv3: CPU1: found redistributor 1 region 0:0x0000000002520000
+[    0.014477] GICv3: CPU2: found redistributor 2 region 0:0x0000000002560000
+[    0.014960] GICv3: CPU3: found redistributor 3 region 0:0x0000000002540000
+[    0.023556] ACPI: Using GIC for interrupt routing
+[    0.348978] ahci PRL4010:00: supply ahci not found, using dummy regulator
+[    0.358549] ahci PRL4010:00: supply phy not found, using dummy regulator
+[    0.360067] ahci PRL4010:00: supply target not found, using dummy regulator
+[    0.360160] ahci PRL4010:00: SSS flag set, parallel bus scan disabled
+[    0.360357] ahci PRL4010:00: AHCI 0001.0100 32 slots 6 ports 3 Gbps 0x3f impl platform mode
+[    0.360363] ahci PRL4010:00: flags: 64bit ncq stag pm led only slum part 
+[    0.363928] scsi host0: ahci
+[    0.365004] scsi host1: ahci
+[    0.365295] scsi host2: ahci
+[    0.365508] scsi host3: ahci
+[    0.365682] scsi host4: ahci
+[    0.365830] scsi host5: ahci
+[    0.678854] sd 0:0:0:0: [sda] 67108864 512-byte logical blocks: (34.4 GB/32.0 GiB)
+[ 7673.638159]  ip_tables x_tables autofs4 btrfs blake2b_generic raid10 raid456 async_raid6_recov async_memcpy async_pq async_xor async_tx xor xor_neon raid6_pq libcrc32c raid1 raid0 hid_generic crct10dif_ce polyval_ce polyval_generic usbhid hid ghash_ce sm4 sha3_ce sha2_ce sha256_arm64 virtio_gpu xhci_pci sha1_ce virtio_dma_buf ahci_platform xhci_pci_renesas aes_neon_bs aes_neon_blk aes_ce_blk aes_ce_cipher
+[ 7673.638287] Modules linked in: tls qrtr uvcvideo uvc snd_hda_codec_generic videobuf2_vmalloc videobuf2_memops videobuf2_v4l2 snd_hda_intel snd_intel_dspcfg videodev snd_hda_codec snd_hda_core videobuf2_common snd_hwdep snd_pcm snd_timer snd cfg80211 mc soundcore binfmt_misc acpi_tad nls_iso8859_1 input_leds joydev sch_fq_codel dm_multipath efi_pstore nfnetlink dmi_sysfs vmw_vsock_virtio_transport vmw_vsock_virtio_transport_common vsock ip_tables x_tables autofs4 btrfs blake2b_generic raid10 raid456 async_raid6_recov async_memcpy async_pq async_xor async_tx xor xor_neon raid6_pq libcrc32c raid1 raid0 hid_generic crct10dif_ce polyval_ce polyval_generic usbhid hid ghash_ce sm4 sha3_ce sha2_ce sha256_arm64 virtio_gpu xhci_pci sha1_ce virtio_dma_buf ahci_platform xhci_pci_renesas aes_neon_bs aes_neon_blk aes_ce_blk aes_ce_cipher

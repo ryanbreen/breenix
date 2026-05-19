@@ -1,0 +1,7 @@
+CONFIG_GENERIC_IRQ_CHIP=y
+CONFIG_IRQ_DOMAIN_HIERARCHY=y
+CONFIG_ARM64_PSEUDO_NMI=y
+[ 7673.638155] Sending NMI from CPU 2 to CPUs 1:
+[ 7673.638319] NMI backtrace for cpu 1
+[ 7673.639163] Sending NMI from CPU 2 to CPUs 0:
+[ 7673.639179] NMI backtrace for cpu 0

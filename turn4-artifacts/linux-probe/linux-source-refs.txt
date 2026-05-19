@@ -1,0 +1,29 @@
+Linux source references used for Turn 4 (upstream stable v6.8, matching the Ubuntu 6.8 family used by linux-probe):
+
+- drivers/irqchip/irq-gic-v3.c
+  https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/drivers/irqchip/irq-gic-v3.c?h=v6.8
+  Relevant lines from downloaded snapshot before cleanup:
+  - 775-785: __gic_handle_irq() calls gic_complete_ack(), then generic_handle_domain_irq(), deactivating only unhandled IRQs.
+  - 812-833: __gic_handle_irq_from_irqson() reads IAR, optionally PMR-masks regular IRQs for pseudo-NMI support, then handles the IRQ.
+  - 627-641: gic_eoi_irq() writes ICC_EOIR1_EL1 and ISB.
+  - 643-656: gic_eoimode1_eoi_irq() writes DIR/deactivates.
+  - 1410-1448: gic_set_affinity() writes GICD_IROUTER and records effective affinity.
+  - 1491-1514: runtime irq_chip function tables for gic_eoi_irq vs gic_eoimode1_eoi_irq.
+
+- drivers/irqchip/irq-gic-common.c
+  https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/drivers/irqchip/irq-gic-common.c?h=v6.8
+  Relevant lines from downloaded snapshot before cleanup:
+  - 93-124: gic_dist_config() sets SPIs level-triggered, default priority, then deactivates/disables all SPIs.
+
+- kernel/irq/chip.c
+  https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/kernel/irq/chip.c?h=v6.8
+  Relevant lines from downloaded snapshot before cleanup:
+  - 657-676: cond_unmask_eoi_irq() calls chip->irq_eoi() in the normal non-oneshot path.
+  - 687-722: handle_fasteoi_irq() calls handle_irq_event() before cond_unmask_eoi_irq().
+
+- drivers/ata/libahci.c
+  https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/drivers/ata/libahci.c?h=v6.8
+  Relevant lines from downloaded snapshot before cleanup:
+  - 1963-1966: ahci_port_intr() reads and clears PORT_IRQ_STAT, then handles the port interrupt.
+  - 1985-2008: ahci_handle_port_intr() handles only ports selected by HOST_IRQ_STAT & port_map.
+  - 2011-2044: ahci_single_level_irq_intr() returns IRQ_NONE if HOST_IRQ_STAT is zero, locks host, handles ports, then clears HOST_IRQ_STAT.
