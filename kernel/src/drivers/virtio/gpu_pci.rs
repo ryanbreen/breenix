@@ -1714,40 +1714,31 @@ fn setup_gpu_msi(pci_dev: &crate::drivers::pci::Device) -> GpuMsiConfig {
 /// Handle GPU virtqueue MSI-X interrupt — called from exception.rs IRQ dispatch.
 #[cfg(target_arch = "aarch64")]
 pub fn handle_interrupt() {
-    use crate::arch_impl::aarch64::gic;
-
     let irq = GPU_IRQ.load(Ordering::Relaxed);
     if irq == 0 {
         return;
     }
 
-    gic::disable_spi(irq);
-    gic::clear_spi_pending(irq);
-
+    // MSI-X delivery is edge-like. Do not mask or clear the SPI here: a new
+    // queue interrupt arriving while this handler runs must remain pending for
+    // the normal IRQ acknowledge/EOI path. Linux's virtqueue callback likewise
+    // does not mask the interrupt-controller line in its top half.
     let used_idx = virtgpu_trace_used_idx();
     let previous = GPU_COMPLETED_USED_IDX.load(Ordering::Acquire) as u16;
     if used_idx != previous {
         GPU_COMPLETED_USED_IDX.store(used_idx as u32, Ordering::Release);
         GPU_COMPLETION.complete(ctrlq_completion_token(used_idx));
     }
-
-    gic::clear_spi_pending(irq);
-    gic::enable_spi(irq);
 }
 
 /// Handle GPU config MSI-X interrupt. Display hot-plug/config changes are not
 /// used yet, so acknowledge the device condition and return.
 #[cfg(target_arch = "aarch64")]
 pub fn handle_config_interrupt() {
-    use crate::arch_impl::aarch64::gic;
-
     let irq = GPU_CONFIG_IRQ.load(Ordering::Relaxed);
     if irq == 0 {
         return;
     }
-
-    gic::disable_spi(irq);
-    gic::clear_spi_pending(irq);
 
     if GPU_PCI_INITIALIZED.load(Ordering::Acquire) {
         unsafe {
@@ -1757,9 +1748,6 @@ pub fn handle_config_interrupt() {
             }
         }
     }
-
-    gic::clear_spi_pending(irq);
-    gic::enable_spi(irq);
 }
 
 /// Get the GIC INTID for the GPU interrupt (for exception dispatch).

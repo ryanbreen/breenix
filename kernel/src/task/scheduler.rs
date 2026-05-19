@@ -1065,9 +1065,11 @@ impl Scheduler {
                     break 'sched_outer n;
                 }
             }
-            // All queues empty — emit diagnostic (rate-limited) for threads
-            // that are truly stuck: Ready state, not current on any CPU, not in
-            // any deferred-requeue slot.
+            // All queues empty — before falling back to idle, rescue a thread
+            // that is already Ready but unreachable from any run queue. This is
+            // the same predicate used by the timer safety net, but handling it
+            // here avoids multi-second stalls while the scheduler is already
+            // holding the authoritative state.
             #[cfg(target_arch = "aarch64")]
             {
                 use core::sync::atomic::{AtomicU32, Ordering as AO};
@@ -1095,7 +1097,7 @@ impl Scheduler {
                 if let Some(stuck_tid) = first_stuck {
                     let count = STUCK_LOG_COUNT.fetch_add(1, AO::Relaxed);
                     if count < 5 || count % 1000 == 0 {
-                        crate::serial_aarch64::raw_serial_str(b"[SCHED] queue_empty stuck_tid=");
+                        crate::serial_aarch64::raw_serial_str(b"[SCHED] queue_empty rescue_tid=");
                         {
                             let mut n = stuck_tid;
                             let mut buf = [0u8; 20];
@@ -1131,6 +1133,7 @@ impl Scheduler {
                         }
                         crate::serial_aarch64::raw_serial_str(b"\n");
                     }
+                    break 'sched_outer stuck_tid;
                 }
             }
             break self.cpu_state[current_cpu].idle_thread;
