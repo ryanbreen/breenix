@@ -152,6 +152,23 @@ const READY_SITE_TIMER: u64 = 7;
 
 static WAKE_LAST_READY_SITE: [AtomicU64; WAKE_ATTRIB_MAX_TIDS] =
     [const { AtomicU64::new(READY_SITE_NONE) }; WAKE_ATTRIB_MAX_TIDS];
+static WAKE_SCHEDULE_READY_DETAIL: [AtomicU64; WAKE_ATTRIB_MAX_TIDS] =
+    [const { AtomicU64::new(READY_SCHED_DETAIL_NONE) }; WAKE_ATTRIB_MAX_TIDS];
+
+const READY_SCHED_DETAIL_NONE: u64 = 0;
+const READY_SCHED_DETAIL_REGULAR_SCHEDULE: u64 = 1 << 0;
+const READY_SCHED_DETAIL_DEFERRED_REQUEUE: u64 = 1 << 1;
+const READY_SCHED_DETAIL_SHOULD_REQUEUE: u64 = 1 << 2;
+const READY_SCHED_DETAIL_MARKER_PUBLISHED: u64 = 1 << 3;
+const READY_SCHED_DETAIL_NO_SWITCH: u64 = 1 << 4;
+const READY_SCHED_DETAIL_MARKER_CLEARED_BEFORE_REQUEUE: u64 = 1 << 5;
+const READY_SCHED_DETAIL_OWNERSHIP_SKIP: u64 = 1 << 6;
+const READY_SCHED_DETAIL_QUEUE_PRESENT_AT_PUBLISH: u64 = 1 << 7;
+const READY_SCHED_DETAIL_REQUEUE_ALREADY_QUEUED: u64 = 1 << 8;
+const READY_SCHED_DETAIL_EXCEPTION_CLEANUP_CLEARED: u64 = 1 << 9;
+
+const RESCUE_PATH_INLINE: u64 = 1;
+const RESCUE_PATH_TIMER: u64 = 2;
 
 pub static WAKE_SITE_SCHEDULE: AtomicU64 = AtomicU64::new(0);
 pub static WAKE_SITE_UNBLOCK: AtomicU64 = AtomicU64::new(0);
@@ -175,6 +192,14 @@ pub static RESCUE_REASON_WAKE_WITHOUT_ENQUEUE: AtomicU64 = AtomicU64::new(0);
 pub static RESCUE_REASON_OTHER: AtomicU64 = AtomicU64::new(0);
 pub static RESCUE_INLINE_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static RESCUE_TIMER_COUNT: AtomicU64 = AtomicU64::new(0);
+pub static READY_SITE_SCHEDULE_DROPPED_NO_SWITCH: AtomicU64 = AtomicU64::new(0);
+pub static READY_SITE_SCHEDULE_DROPPED_INLINE_SCHED: AtomicU64 = AtomicU64::new(0);
+pub static READY_SITE_SCHEDULE_DROPPED_EXC_RETURN: AtomicU64 = AtomicU64::new(0);
+pub static READY_SITE_SCHEDULE_DROPPED_MARKER_CLEARED: AtomicU64 = AtomicU64::new(0);
+pub static READY_SITE_SCHEDULE_DROPPED_OWNERSHIP_SKIP: AtomicU64 = AtomicU64::new(0);
+pub static READY_SITE_SCHEDULE_DROPPED_STALE_QUEUE: AtomicU64 = AtomicU64::new(0);
+pub static READY_SITE_SCHEDULE_DROPPED_OTHER: AtomicU64 = AtomicU64::new(0);
+static READY_SITE_SCHEDULE_DROPPED_INLINE_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 #[inline]
 fn wake_tid_index(tid: u64) -> Option<usize> {
@@ -190,6 +215,9 @@ fn wake_tid_index(tid: u64) -> Option<usize> {
 fn record_ready_site(tid: u64, site: u64) {
     if let Some(idx) = wake_tid_index(tid) {
         WAKE_LAST_READY_SITE[idx].store(site, Ordering::Relaxed);
+        if site != READY_SITE_SCHEDULE {
+            WAKE_SCHEDULE_READY_DETAIL[idx].store(READY_SCHED_DETAIL_NONE, Ordering::Relaxed);
+        }
     }
 }
 
@@ -201,10 +229,66 @@ fn ready_site_for_tid(tid: u64) -> u64 {
 }
 
 #[inline]
-fn classify_rescue_for_tid(tid: u64) {
+fn record_schedule_ready_detail(tid: u64, detail: u64) {
+    if let Some(idx) = wake_tid_index(tid) {
+        WAKE_SCHEDULE_READY_DETAIL[idx].store(detail, Ordering::Relaxed);
+    }
+}
+
+#[inline]
+fn mark_schedule_ready_detail(tid: u64, detail: u64) {
+    if ready_site_for_tid(tid) != READY_SITE_SCHEDULE {
+        return;
+    }
+    if let Some(idx) = wake_tid_index(tid) {
+        WAKE_SCHEDULE_READY_DETAIL[idx].fetch_or(detail, Ordering::Relaxed);
+    }
+}
+
+#[inline]
+fn schedule_ready_detail_for_tid(tid: u64) -> u64 {
+    wake_tid_index(tid)
+        .map(|idx| WAKE_SCHEDULE_READY_DETAIL[idx].load(Ordering::Relaxed))
+        .unwrap_or(READY_SCHED_DETAIL_NONE)
+}
+
+#[inline]
+fn classify_schedule_dropped_detail(tid: u64) {
+    let detail = schedule_ready_detail_for_tid(tid);
+    let bucket = if (detail & READY_SCHED_DETAIL_NO_SWITCH) != 0 {
+        &READY_SITE_SCHEDULE_DROPPED_NO_SWITCH
+    } else if (detail & READY_SCHED_DETAIL_REGULAR_SCHEDULE) != 0 {
+        &READY_SITE_SCHEDULE_DROPPED_INLINE_SCHED
+    } else if (detail & READY_SCHED_DETAIL_OWNERSHIP_SKIP) != 0 {
+        &READY_SITE_SCHEDULE_DROPPED_OWNERSHIP_SKIP
+    } else if (detail
+        & (READY_SCHED_DETAIL_MARKER_CLEARED_BEFORE_REQUEUE
+            | READY_SCHED_DETAIL_EXCEPTION_CLEANUP_CLEARED))
+        != 0
+    {
+        &READY_SITE_SCHEDULE_DROPPED_MARKER_CLEARED
+    } else if (detail
+        & (READY_SCHED_DETAIL_QUEUE_PRESENT_AT_PUBLISH | READY_SCHED_DETAIL_REQUEUE_ALREADY_QUEUED))
+        != 0
+    {
+        &READY_SITE_SCHEDULE_DROPPED_STALE_QUEUE
+    } else if (detail & READY_SCHED_DETAIL_DEFERRED_REQUEUE) != 0 {
+        &READY_SITE_SCHEDULE_DROPPED_EXC_RETURN
+    } else {
+        &READY_SITE_SCHEDULE_DROPPED_OTHER
+    };
+    READY_SITE_SCHEDULE_DROPPED_INLINE_TOTAL.fetch_add(1, Ordering::Relaxed);
+    bucket.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+fn classify_rescue_for_tid(tid: u64, rescue_path: u64) {
     match ready_site_for_tid(tid) {
         READY_SITE_SCHEDULE => {
             RESCUE_REASON_DEFERRED_DROPPED.fetch_add(1, Ordering::Relaxed);
+            if rescue_path == RESCUE_PATH_INLINE {
+                classify_schedule_dropped_detail(tid);
+            }
         }
         READY_SITE_WAKE_IO_ISR_DRAIN => {
             RESCUE_REASON_ISR_BUFFER_LOST.fetch_add(1, Ordering::Relaxed);
@@ -223,6 +307,21 @@ fn classify_rescue_for_tid(tid: u64) {
 }
 
 pub fn emit_wake_attribution_counters() {
+    let detail_no_switch = READY_SITE_SCHEDULE_DROPPED_NO_SWITCH.load(Ordering::Relaxed);
+    let detail_inline_sched = READY_SITE_SCHEDULE_DROPPED_INLINE_SCHED.load(Ordering::Relaxed);
+    let detail_exc_return = READY_SITE_SCHEDULE_DROPPED_EXC_RETURN.load(Ordering::Relaxed);
+    let detail_marker_cleared = READY_SITE_SCHEDULE_DROPPED_MARKER_CLEARED.load(Ordering::Relaxed);
+    let detail_ownership_skip = READY_SITE_SCHEDULE_DROPPED_OWNERSHIP_SKIP.load(Ordering::Relaxed);
+    let detail_stale_queue = READY_SITE_SCHEDULE_DROPPED_STALE_QUEUE.load(Ordering::Relaxed);
+    let detail_other = READY_SITE_SCHEDULE_DROPPED_OTHER.load(Ordering::Relaxed);
+    let detail_sum = detail_no_switch
+        + detail_inline_sched
+        + detail_exc_return
+        + detail_marker_cleared
+        + detail_ownership_skip
+        + detail_stale_queue
+        + detail_other;
+    let detail_expected = READY_SITE_SCHEDULE_DROPPED_INLINE_TOTAL.load(Ordering::Relaxed);
     crate::serial_println!(
         "[wake-attrib] schedule={} unblock={} isr_unblock={} wake_io={} signal={} child={} timer={}",
         WAKE_SITE_SCHEDULE.load(Ordering::Relaxed),
@@ -253,6 +352,26 @@ pub fn emit_wake_attribution_counters() {
         RESCUE_TIMER_COUNT.load(Ordering::Relaxed),
         ready_thread_rescue_count()
     );
+    crate::serial_println!(
+        "[rescue-detail] no_switch={} inline_sched={} exc_return={} marker_cleared={} ownership_skip={} stale_queue={} other={}",
+        detail_no_switch,
+        detail_inline_sched,
+        detail_exc_return,
+        detail_marker_cleared,
+        detail_ownership_skip,
+        detail_stale_queue,
+        detail_other
+    );
+    if detail_sum != detail_expected {
+        crate::serial_println!(
+            "[rescue-detail-mismatch] sum={} expected={} dropped={} inline={} timer={}",
+            detail_sum,
+            detail_expected,
+            RESCUE_REASON_DEFERRED_DROPPED.load(Ordering::Relaxed),
+            RESCUE_INLINE_COUNT.load(Ordering::Relaxed),
+            RESCUE_TIMER_COUNT.load(Ordering::Relaxed)
+        );
+    }
 }
 
 /// Global scheduler instance
@@ -900,6 +1019,10 @@ impl Scheduler {
                             current.set_ready();
                             WAKE_SITE_SCHEDULE.fetch_add(1, Ordering::Relaxed);
                             record_ready_site(current_id, READY_SITE_SCHEDULE);
+                            record_schedule_ready_detail(
+                                current_id,
+                                READY_SCHED_DETAIL_REGULAR_SCHEDULE,
+                            );
                             true
                         } else {
                             // Reset run_start_ticks so the next dispatch doesn't
@@ -1167,6 +1290,15 @@ impl Scheduler {
                 // Instead of adding to a queue, just record whether we SHOULD
                 should_requeue_old = published_ready && !in_queue;
                 if published_ready {
+                    let mut detail = READY_SCHED_DETAIL_DEFERRED_REQUEUE;
+                    if should_requeue_old {
+                        detail |=
+                            READY_SCHED_DETAIL_SHOULD_REQUEUE | READY_SCHED_DETAIL_MARKER_PUBLISHED;
+                    }
+                    if in_queue {
+                        detail |= READY_SCHED_DETAIL_QUEUE_PRESENT_AT_PUBLISH;
+                    }
+                    record_schedule_ready_detail(current_id, detail);
                     if should_requeue_old {
                         self.cpu_state[Self::current_cpu_id()].previous_thread = Some(current_id);
                     }
@@ -1249,7 +1381,7 @@ impl Scheduler {
                     .map(|t| t.id());
                 if let Some(stuck_tid) = first_stuck {
                     RESCUE_INLINE_COUNT.fetch_add(1, AO::Relaxed);
-                    classify_rescue_for_tid(stuck_tid);
+                    classify_rescue_for_tid(stuck_tid, RESCUE_PATH_INLINE);
                     READY_THREAD_RESCUE_COUNT.fetch_add(1, AO::Relaxed);
                     let count = STUCK_LOG_COUNT.fetch_add(1, AO::Relaxed);
                     if count < 5 || count % 1000 == 0 {
@@ -1335,6 +1467,7 @@ impl Scheduler {
                     // handled next time schedule_deferred_requeue is called.
                     // Restore Running state and clear the deferred marker (both
                     // were set above before we knew this thread would continue).
+                    mark_schedule_ready_detail(next_thread_id, READY_SCHED_DETAIL_NO_SWITCH);
                     if self.cpu_state[current_cpu].previous_thread == Some(next_thread_id) {
                         self.cpu_state[current_cpu].previous_thread = None;
                     }
@@ -1413,7 +1546,13 @@ impl Scheduler {
             return;
         }
         let cpu = Self::current_cpu_id();
-        if cpu < MAX_CPUS && self.cpu_state[cpu].previous_thread == Some(thread_id) {
+        let same_cpu_marker_present =
+            cpu < MAX_CPUS && self.cpu_state[cpu].previous_thread == Some(thread_id);
+        let detail = schedule_ready_detail_for_tid(thread_id);
+        if (detail & READY_SCHED_DETAIL_MARKER_PUBLISHED) != 0 && !same_cpu_marker_present {
+            mark_schedule_ready_detail(thread_id, READY_SCHED_DETAIL_MARKER_CLEARED_BEFORE_REQUEUE);
+        }
+        if same_cpu_marker_present {
             self.cpu_state[cpu].previous_thread = None;
         }
         // CRITICAL: Don't requeue threads that are currently running on any CPU.
@@ -1424,12 +1563,14 @@ impl Scheduler {
         // CPU simultaneously — sharing the same kernel stack and Thread context,
         // leading to register/stack corruption (DATA_ABORT, INSTRUCTION_ABORT, etc.).
         if (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].current_thread == Some(thread_id)) {
+            mark_schedule_ready_detail(thread_id, READY_SCHED_DETAIL_OWNERSHIP_SKIP);
             return;
         }
         // Don't requeue threads still pending deferred requeue on another CPU.
         // This is a defense-in-depth check — the primary protection is in
         // the wakeup paths (unblock, wake_expired_timers, etc.).
         if self.is_in_deferred_requeue(thread_id) {
+            mark_schedule_ready_detail(thread_id, READY_SCHED_DETAIL_OWNERSHIP_SKIP);
             return;
         }
         // Safety checks: only requeue if the thread is in Ready state and not already queued.
@@ -1450,6 +1591,7 @@ impl Scheduler {
             // Send IPI to wake an idle CPU to pick up the requeued thread
             self.send_resched_ipi();
         } else {
+            mark_schedule_ready_detail(thread_id, READY_SCHED_DETAIL_REQUEUE_ALREADY_QUEUED);
             ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -2410,7 +2552,7 @@ impl Scheduler {
             raw_uart_str("\n");
 
             RESCUE_TIMER_COUNT.fetch_add(1, Ordering::Relaxed);
-            classify_rescue_for_tid(tid);
+            classify_rescue_for_tid(tid, RESCUE_PATH_TIMER);
             READY_THREAD_RESCUE_COUNT.fetch_add(1, Ordering::Relaxed);
             let target = self.find_target_cpu_for_wakeup(tid);
             self.per_cpu_queues[target].push_back(tid);
@@ -2452,6 +2594,9 @@ impl Scheduler {
         if current != idle {
             record_cpu_state_change(cpu, 3, current, idle);
             self.cpu_state[cpu].current_thread = Some(idle);
+        }
+        if let Some(previous) = self.cpu_state[cpu].previous_thread {
+            mark_schedule_ready_detail(previous, READY_SCHED_DETAIL_EXCEPTION_CLEANUP_CLEARED);
         }
         self.cpu_state[cpu].previous_thread = None;
         set_cpu_idle(cpu, true);
