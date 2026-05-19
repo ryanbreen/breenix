@@ -1,0 +1,15 @@
+boot=3
+status=pass
+vm_name=breenix-1779189473
+attrib_line=[ahci-poll-attrib] total=72 post_reg=70 pre_sched=70 post_sched=0
+total=72
+post_reg=70
+pre_sched=70
+post_sched=0
+cpu0_pct=98.99
+ahci_spi_rc=0
+userspace_rc=0
+timeouts=0
+panics=0
+cpu0_alarm=0
+reason=-

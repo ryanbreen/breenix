@@ -1,0 +1,17 @@
+[2026-05-19 07:12:07] starting Turn 8 5-boot serial gate
+[2026-05-19 07:12:07] boot 1: starting fresh Parallels VM
+[2026-05-19 07:13:07] boot 1: detected VM breenix-1779189186
+[2026-05-19 07:13:07] boot 1: waiting 90s for scheduler-ready attribution and health window
+[2026-05-19 07:15:15] boot 2: starting fresh Parallels VM
+[2026-05-19 07:15:25] boot 2: detected VM breenix-1779189324
+[2026-05-19 07:15:25] boot 2: waiting 90s for scheduler-ready attribution and health window
+[2026-05-19 07:17:44] boot 3: starting fresh Parallels VM
+[2026-05-19 07:17:54] boot 3: detected VM breenix-1779189473
+[2026-05-19 07:17:54] boot 3: waiting 90s for scheduler-ready attribution and health window
+[2026-05-19 07:20:55] boot 4: starting fresh Parallels VM
+[2026-05-19 07:21:09] boot 4: detected VM breenix-1779189668
+[2026-05-19 07:21:09] boot 4: waiting 90s for scheduler-ready attribution and health window
+[2026-05-19 07:23:51] boot 5: starting fresh Parallels VM
+[2026-05-19 07:23:58] boot 5: detected VM breenix-1779189838
+[2026-05-19 07:23:58] boot 5: waiting 90s for scheduler-ready attribution and health window
+[2026-05-19 07:26:13] Turn 8 5-boot serial gate complete
