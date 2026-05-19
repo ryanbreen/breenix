@@ -127,6 +127,19 @@ impl IsrWakeupBuffer {
 
 static ISR_WAKEUP_BUFFERS: [IsrWakeupBuffer; 8] = [const { IsrWakeupBuffer::new() }; 8];
 
+#[cfg(target_arch = "aarch64")]
+static READY_THREAD_RESCUE_COUNT: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_arch = "aarch64")]
+pub fn ready_thread_rescue_count() -> u64 {
+    READY_THREAD_RESCUE_COUNT.load(Ordering::Relaxed)
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+pub fn ready_thread_rescue_count() -> u64 {
+    0
+}
+
 /// Global scheduler instance
 static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
 
@@ -1065,9 +1078,11 @@ impl Scheduler {
                     break 'sched_outer n;
                 }
             }
-            // All queues empty — emit diagnostic (rate-limited) for threads
-            // that are truly stuck: Ready state, not current on any CPU, not in
-            // any deferred-requeue slot.
+            // All queues empty — before falling back to idle, rescue a thread
+            // that is already Ready but unreachable from any run queue. This is
+            // the same predicate used by the timer safety net, but handling it
+            // here avoids multi-second stalls while the scheduler is already
+            // holding the authoritative state.
             #[cfg(target_arch = "aarch64")]
             {
                 use core::sync::atomic::{AtomicU32, Ordering as AO};
@@ -1093,9 +1108,10 @@ impl Scheduler {
                     })
                     .map(|t| t.id());
                 if let Some(stuck_tid) = first_stuck {
+                    READY_THREAD_RESCUE_COUNT.fetch_add(1, AO::Relaxed);
                     let count = STUCK_LOG_COUNT.fetch_add(1, AO::Relaxed);
                     if count < 5 || count % 1000 == 0 {
-                        crate::serial_aarch64::raw_serial_str(b"[SCHED] queue_empty stuck_tid=");
+                        crate::serial_aarch64::raw_serial_str(b"[SCHED] queue_empty rescue_tid=");
                         {
                             let mut n = stuck_tid;
                             let mut buf = [0u8; 20];
@@ -1131,6 +1147,7 @@ impl Scheduler {
                         }
                         crate::serial_aarch64::raw_serial_str(b"\n");
                     }
+                    break 'sched_outer stuck_tid;
                 }
             }
             break self.cpu_state[current_cpu].idle_thread;
@@ -2176,6 +2193,7 @@ impl Scheduler {
             );
             raw_uart_str("\n");
 
+            READY_THREAD_RESCUE_COUNT.fetch_add(1, Ordering::Relaxed);
             let target = self.find_target_cpu_for_wakeup(tid);
             self.per_cpu_queues[target].push_back(tid);
             self.send_resched_ipi();

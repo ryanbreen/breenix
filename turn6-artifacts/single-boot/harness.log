@@ -1,0 +1,17 @@
+[2026-05-19 08:13:55] preflight Parallels VMs
+NAME                             STATUS
+[2026-05-19 08:13:56] run_pid=890
+[2026-05-19 08:14:12] detected_vm=breenix-1779192852
+[2026-05-19 08:14:42] monitor active=0s size=22779
+[2026-05-19 08:14:59] active rendering/freeze-watch detected
+[2026-05-19 08:15:12] monitor active=13s size=74085
+[2026-05-19 08:15:42] monitor active=43s size=82078
+[2026-05-19 08:16:12] monitor active=73s size=90175
+[2026-05-19 08:16:42] monitor active=103s size=98903
+[2026-05-19 08:17:12] monitor active=133s size=106439
+[2026-05-19 08:17:42] monitor active=163s size=114660
+[2026-05-19 08:18:12] monitor active=193s size=122560
+[2026-05-19 08:18:39] active window complete: 220s
+[2026-05-19 08:19:45] done vm=breenix-1779192852 attrib_lines=       8
+NAME                             STATUS
+breenix-1779192852               running

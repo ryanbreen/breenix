@@ -10,14 +10,164 @@
 use super::pci_transport::VirtioPciDevice;
 use crate::tracing::providers::virtgpu;
 use core::ptr::read_volatile;
-use core::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering};
-use spin::Mutex;
+use core::sync::atomic::{fence, AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
+
+struct GpuPciLock {
+    locked: AtomicBool,
+    waiters: crate::task::waitqueue::WaitQueueHead,
+}
+
+struct GpuPciGuard {
+    lock: &'static GpuPciLock,
+}
+
+impl GpuPciLock {
+    const fn new() -> Self {
+        Self {
+            locked: AtomicBool::new(false),
+            waiters: crate::task::waitqueue::WaitQueueHead::new(),
+        }
+    }
+
+    fn try_lock(&'static self) -> Option<GpuPciGuard> {
+        self.locked
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| {
+                gpu_pci_lock_record_acquire();
+                GpuPciGuard { lock: self }
+            })
+    }
+
+    fn lock(&'static self) -> GpuPciGuard {
+        loop {
+            if let Some(guard) = self.try_lock() {
+                return guard;
+            }
+
+            if gpu_lock_can_sleep() {
+                if self
+                    .waiters
+                    .prepare_to_wait(crate::task::thread::ThreadState::BlockedOnIO)
+                    .is_some()
+                {
+                    if self.locked.load(Ordering::Acquire) {
+                        crate::task::waitqueue::schedule_current_wait();
+                    }
+                    self.waiters.finish_wait();
+                    continue;
+                }
+            }
+
+            relax_gpu_lock_wait();
+        }
+    }
+}
+
+impl Drop for GpuPciGuard {
+    fn drop(&mut self) {
+        gpu_pci_lock_record_release();
+        self.lock.locked.store(false, Ordering::Release);
+        self.lock.waiters.wake_up_one();
+    }
+}
+
+pub static GPU_PCI_LOCK_HOLDER_TID: AtomicI64 = AtomicI64::new(-1);
+pub static GPU_PCI_LOCK_ACQUIRED_AT_NS: AtomicU64 = AtomicU64::new(0);
+pub static GPU_PCI_LOCK_MAX_HOLD_NS: AtomicU64 = AtomicU64::new(0);
+pub static GPU_PCI_LOCK_MAX_HOLD_HOLDER_TID: AtomicI64 = AtomicI64::new(-1);
+
+#[inline]
+fn gpu_pci_current_tid_for_lock() -> i64 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::per_cpu_aarch64::current_thread()
+            .map(|thread| thread.id() as i64)
+            .unwrap_or(-1)
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        crate::task::scheduler::current_thread_id()
+            .map(|tid| tid as i64)
+            .unwrap_or(-1)
+    }
+}
+
+#[inline]
+fn gpu_pci_lock_record_acquire() {
+    let now_ns = monotonic_ns();
+    let tid = gpu_pci_current_tid_for_lock();
+    GPU_PCI_LOCK_HOLDER_TID.store(tid, Ordering::Release);
+    GPU_PCI_LOCK_ACQUIRED_AT_NS.store(now_ns, Ordering::Release);
+}
+
+#[inline]
+fn gpu_pci_lock_record_release() {
+    let now_ns = monotonic_ns();
+    let acquired_at = GPU_PCI_LOCK_ACQUIRED_AT_NS.load(Ordering::Acquire);
+    if acquired_at != 0 {
+        let hold_ns = now_ns.saturating_sub(acquired_at);
+        let prev_max = GPU_PCI_LOCK_MAX_HOLD_NS.load(Ordering::Relaxed);
+        if hold_ns > prev_max {
+            GPU_PCI_LOCK_MAX_HOLD_NS.store(hold_ns, Ordering::Release);
+            let held_by = GPU_PCI_LOCK_HOLDER_TID.load(Ordering::Relaxed);
+            GPU_PCI_LOCK_MAX_HOLD_HOLDER_TID.store(held_by, Ordering::Release);
+        }
+    }
+    GPU_PCI_LOCK_HOLDER_TID.store(-1, Ordering::Release);
+    GPU_PCI_LOCK_ACQUIRED_AT_NS.store(0, Ordering::Release);
+}
+
+fn gpu_pci_lock_hold_snapshot() -> (u64, i64) {
+    let mut max_hold_ns = GPU_PCI_LOCK_MAX_HOLD_NS.load(Ordering::Acquire);
+    let mut holder_tid = GPU_PCI_LOCK_MAX_HOLD_HOLDER_TID.load(Ordering::Acquire);
+    let acquired_at = GPU_PCI_LOCK_ACQUIRED_AT_NS.load(Ordering::Acquire);
+
+    if acquired_at != 0 {
+        let current_hold_ns = monotonic_ns().saturating_sub(acquired_at);
+        if current_hold_ns > max_hold_ns {
+            max_hold_ns = current_hold_ns;
+            holder_tid = GPU_PCI_LOCK_HOLDER_TID.load(Ordering::Acquire);
+        }
+    }
+
+    (max_hold_ns, holder_tid)
+}
+
+#[inline]
+fn gpu_lock_can_sleep() -> bool {
+    if !GPU_YIELD_ENABLED.load(Ordering::Acquire) {
+        return false;
+    }
+    if crate::task::scheduler::current_thread_id().is_none() {
+        return false;
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::per_cpu_aarch64::preempt_count() > 0
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        crate::per_cpu::preempt_count() > 0
+    }
+}
+
+#[inline]
+fn relax_gpu_lock_wait() {
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("yield", options(nomem, nostack));
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    core::hint::spin_loop();
+}
 
 /// Lock protecting the GPU PCI command path (PCI_CMD_BUF, PCI_RESP_BUF,
 /// PCI_CTRL_QUEUE, GPU_PCI_STATE).
 /// Without this, concurrent callers corrupt the shared command/response
 /// buffers and virtqueue state.
-static GPU_PCI_LOCK: Mutex<()> = Mutex::new(());
+static GPU_PCI_LOCK: GpuPciLock = GpuPciLock::new();
 static VIRTGPU_CMD_SEQ: AtomicU32 = AtomicU32::new(0);
 
 // =============================================================================
@@ -1189,6 +1339,25 @@ fn init_dimmer_texture() -> Result<(), &'static str> {
 
 /// VirtIO GPU fence flag — tells the host to signal completion via fence_id.
 const VIRTIO_GPU_FLAG_FENCE: u32 = 1;
+const GPU_MSIX_CONFIG_VECTOR: u16 = 0;
+const GPU_MSIX_QUEUE_VECTOR: u16 = 1;
+
+#[derive(Clone, Copy)]
+struct GpuMsiConfig {
+    config_spi: u32,
+    queue_spi: u32,
+}
+
+impl GpuMsiConfig {
+    const NONE: Self = Self {
+        config_spi: 0,
+        queue_spi: 0,
+    };
+
+    fn is_enabled(self) -> bool {
+        self.config_spi != 0 && self.queue_spi != 0
+    }
+}
 
 /// Combined GPU PCI device state (transport + GPU state)
 struct GpuPciDeviceState {
@@ -1207,11 +1376,16 @@ struct GpuPciDeviceState {
 static mut GPU_PCI_STATE: Option<GpuPciDeviceState> = None;
 static GPU_PCI_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-/// GIC INTID (SPI number) allocated for GPU MSI. 0 = polling mode.
+/// GIC INTID (SPI number) allocated for the GPU virtqueue MSI-X vector.
 static GPU_IRQ: AtomicU32 = AtomicU32::new(0);
+static GPU_CONFIG_IRQ: AtomicU32 = AtomicU32::new(0);
 
-/// Set by the interrupt handler to wake the WFI loop in send_command().
-static GPU_CMD_COMPLETE: AtomicBool = AtomicBool::new(false);
+const GPU_COMPLETION_TIMEOUT_NS: u64 = 5_000_000_000;
+
+/// Updated by the interrupt handler to publish the latest used-ring index.
+static GPU_COMPLETED_USED_IDX: AtomicU32 = AtomicU32::new(0);
+static GPU_COMPLETION: crate::task::completion::Completion =
+    crate::task::completion::Completion::new();
 
 /// Whether GPU command waits should yield to the scheduler instead of spinning.
 /// False during init (single-threaded, scheduler may not be ready).
@@ -1228,11 +1402,6 @@ static GPU_SLEEP_TICKS: AtomicU64 = AtomicU64::new(0);
 /// gpu-phases needs its own counter to avoid interference.
 static GPU_SLEEP_TICKS_PHASES: AtomicU64 = AtomicU64::new(0);
 
-/// Thread ID of the thread currently blocked waiting for GPU command completion.
-/// Set before blocking in send_command_3desc, cleared after waking.
-/// The GPU interrupt handler uses this to wake the thread immediately.
-static GPU_WAITING_THREAD: AtomicU64 = AtomicU64::new(0);
-
 /// Ensures the Turn 6 freeze watchdog kthread is spawned only once.
 static FREEZE_WATCH_STARTED: AtomicBool = AtomicBool::new(false);
 
@@ -1240,40 +1409,7 @@ static FREEZE_WATCH_STARTED: AtomicBool = AtomicBool::new(false);
 /// Called after GPU init completes, when the scheduler is fully running.
 pub fn enable_gpu_yield() {
     GPU_YIELD_ENABLED.store(true, Ordering::Release);
-
-    // Enable GPU MSI-X SPI now that VirGL init is complete.
-    // During init, the SPI is configured but not enabled to avoid interrupt storms.
-    let irq = GPU_IRQ.load(Ordering::Relaxed);
-    if irq != 0 {
-        #[cfg(target_arch = "aarch64")]
-        {
-            use crate::arch_impl::aarch64::gic;
-
-            // Assign VirtIO-level MSI-X vectors via modern transport common config.
-            // Config change → no interrupt (0xFFFF). Controlq (0) → vector 0.
-            unsafe {
-                let ptr = &raw const GPU_PCI_STATE;
-                if let Some(ref state) = *ptr {
-                    state.device.set_config_msix_vector(0xFFFF);
-                    state.device.select_queue(0);
-                    let rb = state.device.set_queue_msix_vector(0);
-                    if rb == 0xFFFF {
-                        crate::serial_println!(
-                            "[virtio-gpu-pci] MSI-X: device rejected controlq vector — disabling"
-                        );
-                        GPU_IRQ.store(0, Ordering::Relaxed);
-                    } else {
-                        // Clear any pending SPI from init/VirGL commands before enabling
-                        gic::clear_spi_pending(irq);
-                        gic::enable_spi(irq);
-                        crate::serial_println!("[virtio-gpu-pci] MSI-X SPI {} enabled — interrupt-driven GPU wake active", irq);
-                    }
-                }
-            }
-        }
-    } else {
-        crate::serial_println!("[virtio-gpu-pci] GPU yield enabled (polling mode — no MSI-X)");
-    }
+    crate::serial_println!("[virtio-gpu-pci] GPU command waits use scheduler waitqueue");
 }
 
 // =============================================================================
@@ -1291,6 +1427,7 @@ pub fn start_freeze_watchdog() {
 fn freeze_watchdog_thread() {
     let (_, _, _, _, mut last_r2_flush_ok, _) = virtgpu::freeze_watch_snapshot();
     let mut last_ms = monotonic_ms();
+    let mut last_lock_attrib_ms = 0u64;
 
     loop {
         let sleep_ms = if monotonic_ms() < 10_000 { 500 } else { 5_000 };
@@ -1357,6 +1494,17 @@ fn freeze_watchdog_thread() {
             procmgr_lock,
             gpu_pci_lock
         );
+
+        if last_lock_attrib_ms == 0 || uptime_ms.saturating_sub(last_lock_attrib_ms) >= 30_000 {
+            let (max_hold_ns, max_hold_holder_tid) = gpu_pci_lock_hold_snapshot();
+            crate::serial_println!(
+                "[gpu-pci-lock-attrib] max_hold_ms={} max_hold_holder_tid={} rescues={}",
+                max_hold_ns / 1_000_000,
+                max_hold_holder_tid,
+                crate::task::scheduler::ready_thread_rescue_count()
+            );
+            last_lock_attrib_ms = uptime_ms;
+        }
 
         last_ms = uptime_ms;
         last_r2_flush_ok = r2_flush_ok;
@@ -1445,23 +1593,6 @@ fn monotonic_ms() -> u64 {
 fn monotonic_ns() -> u64 {
     let (secs, nanos) = crate::time::get_monotonic_time_ns();
     secs.saturating_mul(1_000_000_000) + nanos
-}
-
-#[inline(never)]
-fn report_wait_timeout(
-    cmd_type: u32,
-    resource_id: u32,
-    expected_used_idx: u16,
-    actual_used_idx: u16,
-) {
-    virtgpu::trace_wait_timeout(cmd_type, resource_id);
-    crate::serial_println!(
-        "[gpu-pci] WAIT_TIMEOUT after 1000ms cmd_type=0x{:04x} resource_id={} expected_used_idx={} actual_used_idx={}",
-        cmd_type,
-        resource_id,
-        expected_used_idx,
-        actual_used_idx
-    );
 }
 
 /// Convert a kernel virtual address to a physical address.
@@ -1568,13 +1699,13 @@ pub fn disable_virgl() {
 
 /// Set up PCI MSI-X or MSI for the VirtIO GPU through GICv2m.
 ///
-/// VirtIO modern (PCI) devices use MSI-X (cap 0x11), not plain MSI (cap 0x05).
-/// Tries MSI-X first (matching Linux's virtio_pci_modern driver), falls back
-/// to plain MSI if MSI-X is not available.
+/// VirtIO modern GPU devices use MSI-X (cap 0x11), not plain MSI (cap 0x05).
+/// Breenix requires the same two-vector layout Linux uses on Parallels:
+/// vector 0 for config and vector 1 shared by all virtqueues.
 ///
-/// Returns the allocated SPI number, or 0 if neither MSI-X nor MSI is available.
+/// Returns the allocated config and shared-virtqueue SPIs, or NONE if MSI-X is unavailable.
 #[cfg(target_arch = "aarch64")]
-fn setup_gpu_msi(pci_dev: &crate::drivers::pci::Device) -> u32 {
+fn setup_gpu_msi(pci_dev: &crate::drivers::pci::Device) -> GpuMsiConfig {
     use crate::arch_impl::aarch64::gic;
 
     // Dump PCI capabilities for diagnostic visibility
@@ -1588,15 +1719,16 @@ fn setup_gpu_msi(pci_dev: &crate::drivers::pci::Device) -> u32 {
     } else if crate::platform_config::probe_gicv2m(PARALLELS_GICV2M_BASE) {
         PARALLELS_GICV2M_BASE
     } else {
-        crate::serial_println!("[virtio-gpu-pci] GICv2m not available, using polling");
-        return 0;
+        crate::serial_println!("[virtio-gpu-pci] GICv2m not available; MSI-X required");
+        return GpuMsiConfig::NONE;
     };
 
-    // Step 2: Allocate SPI
-    let spi = crate::platform_config::allocate_msi_spi();
-    if spi == 0 {
-        crate::serial_println!("[virtio-gpu-pci] No SPIs available, using polling");
-        return 0;
+    // Step 2: Allocate Linux-shaped vectors: vector 0=config, vector 1=shared virtqueues.
+    let config_spi = crate::platform_config::allocate_msi_spi();
+    let queue_spi = crate::platform_config::allocate_msi_spi();
+    if config_spi == 0 || queue_spi == 0 {
+        crate::serial_println!("[virtio-gpu-pci] Need two GICv2m SPIs for MSI-X");
+        return GpuMsiConfig::NONE;
     }
 
     let msi_address = base + 0x40;
@@ -1610,58 +1742,82 @@ fn setup_gpu_msi(pci_dev: &crate::drivers::pci::Device) -> u32 {
             table_size
         );
 
-        // Program all MSI-X table entries with same SPI (single-vector mode)
-        for v in 0..table_size {
-            pci_dev.configure_msix_entry(msix_cap, v, msi_address, spi);
+        if table_size < 2 {
+            crate::serial_println!(
+                "[virtio-gpu-pci] MSI-X table too small: {} vectors, need 2",
+                table_size
+            );
+            return GpuMsiConfig::NONE;
         }
 
-        gic::configure_spi_edge_triggered(spi);
-        // Do NOT store GPU_IRQ or enable SPI here. GPU_IRQ=0 during init means
-        // send_command uses spin-polling and the interrupt handler ignores GPU SPIs.
-        // Both are activated after all init commands succeed (see end of init()).
+        pci_dev.configure_msix_entry(
+            msix_cap,
+            GPU_MSIX_CONFIG_VECTOR,
+            msi_address,
+            config_spi,
+        );
+        pci_dev.configure_msix_entry(msix_cap, GPU_MSIX_QUEUE_VECTOR, msi_address, queue_spi);
+
+        gic::configure_spi_edge_triggered(config_spi);
+        gic::configure_spi_edge_triggered(queue_spi);
 
         // Enable MSI-X at PCI level and disable legacy INTx
         pci_dev.enable_msix(msix_cap);
         pci_dev.disable_intx();
 
         crate::serial_println!(
-            "[virtio-gpu-pci] MSI-X enabled: SPI {} doorbell={:#x} vectors={}",
-            spi,
+            "[virtio-gpu-pci] MSI-X enabled: config_spi={} queue_spi={} doorbell={:#x} vectors={}",
+            config_spi,
+            queue_spi,
             msi_address,
             table_size
         );
-        return spi;
+        return GpuMsiConfig {
+            config_spi,
+            queue_spi,
+        };
     }
 
-    // Step 4: Fall back to plain MSI
+    // Plain MSI provides only one vector; virtio-gpu on Parallels needs the
+    // Linux-shaped two-vector MSI-X layout. Do not fall back to polling.
     if let Some(msi_cap) = pci_dev.find_msi_capability() {
-        pci_dev.configure_msi(msi_cap, msi_address as u32, spi as u16);
-        gic::configure_spi_edge_triggered(spi);
-        crate::serial_println!("[virtio-gpu-pci] MSI configured: SPI={}", spi);
-        return spi;
+        let _ = msi_cap;
+        crate::serial_println!("[virtio-gpu-pci] Plain MSI present but not usable for GPU queues");
     }
 
-    crate::serial_println!("[virtio-gpu-pci] No MSI-X or MSI capability found, using polling");
-    0
+    crate::serial_println!("[virtio-gpu-pci] MSI-X capability not found; interrupt completion unavailable");
+    GpuMsiConfig::NONE
 }
 
-/// Handle GPU MSI interrupt — called from exception.rs IRQ dispatch.
-///
-/// Wakes the WFI loop in send_command() by setting GPU_CMD_COMPLETE.
-/// Follows the xHCI pattern: disable SPI, clear pending, ack, re-enable.
+/// Handle GPU virtqueue MSI-X interrupt — called from exception.rs IRQ dispatch.
 #[cfg(target_arch = "aarch64")]
 pub fn handle_interrupt() {
-    use crate::arch_impl::aarch64::gic;
-
     let irq = GPU_IRQ.load(Ordering::Relaxed);
     if irq == 0 {
         return;
     }
 
-    gic::disable_spi(irq);
-    gic::clear_spi_pending(irq);
+    // MSI-X delivery is edge-like. Do not mask or clear the SPI here: a new
+    // queue interrupt arriving while this handler runs must remain pending for
+    // the normal IRQ acknowledge/EOI path. Linux's virtqueue callback likewise
+    // does not mask the interrupt-controller line in its top half.
+    let used_idx = virtgpu_trace_used_idx();
+    let previous = GPU_COMPLETED_USED_IDX.load(Ordering::Acquire) as u16;
+    if used_idx != previous {
+        GPU_COMPLETED_USED_IDX.store(used_idx as u32, Ordering::Release);
+        GPU_COMPLETION.complete(ctrlq_completion_token(used_idx));
+    }
+}
 
-    // Read ISR to auto-acknowledge the VirtIO interrupt condition
+/// Handle GPU config MSI-X interrupt. Display hot-plug/config changes are not
+/// used yet, so acknowledge the device condition and return.
+#[cfg(target_arch = "aarch64")]
+pub fn handle_config_interrupt() {
+    let irq = GPU_CONFIG_IRQ.load(Ordering::Relaxed);
+    if irq == 0 {
+        return;
+    }
+
     if GPU_PCI_INITIALIZED.load(Ordering::Acquire) {
         unsafe {
             let ptr = &raw const GPU_PCI_STATE;
@@ -1670,25 +1826,21 @@ pub fn handle_interrupt() {
             }
         }
     }
-
-    GPU_CMD_COMPLETE.store(true, Ordering::Release);
-
-    // Wake the compositor thread blocked in send_command_3desc.
-    let waiting_tid = GPU_WAITING_THREAD.load(Ordering::Acquire);
-    if waiting_tid != 0 {
-        crate::task::scheduler::with_scheduler(|sched| {
-            sched.unblock(waiting_tid);
-        });
-        crate::task::scheduler::set_need_resched();
-    }
-
-    gic::clear_spi_pending(irq);
-    gic::enable_spi(irq);
 }
 
 /// Get the GIC INTID for the GPU interrupt (for exception dispatch).
 pub fn get_irq() -> Option<u32> {
     let irq = GPU_IRQ.load(Ordering::Relaxed);
+    if irq != 0 {
+        Some(irq)
+    } else {
+        None
+    }
+}
+
+/// Get the GIC INTID for the GPU config interrupt.
+pub fn get_config_irq() -> Option<u32> {
+    let irq = GPU_CONFIG_IRQ.load(Ordering::Relaxed);
     if irq != 0 {
         Some(irq)
     } else {
@@ -1751,20 +1903,21 @@ pub fn init() -> Result<(), &'static str> {
         &VIRGL_ENABLED as *const _ as usize
     );
 
-    // Set up MSI-X/MSI BEFORE queue setup. Linux's virtio_pci_modern driver
+    // Set up MSI-X BEFORE queue setup. Linux's virtio_pci_modern driver
     // enables MSI-X first, then sets up queues with MSI-X vectors. The VirtIO
     // spec requires MSI-X to be enabled at the PCI level before writing
     // queue_msix_vector in the common config.
     #[cfg(target_arch = "aarch64")]
-    let msi_spi = setup_gpu_msi(virtio.pci_device());
+    let msi_config = setup_gpu_msi(virtio.pci_device());
     #[cfg(not(target_arch = "aarch64"))]
-    let msi_spi = 0u32;
+    let msi_config = GpuMsiConfig::NONE;
 
-    // Determine the MSI-X vector number for queues. If MSI-X was configured,
-    // use vector 0 for all queues. Otherwise use NO_VECTOR (0xFFFF).
-    let has_msix = virtio.pci_device().find_msix_capability().is_some() && msi_spi != 0;
-    let queue_vector: u16 = if has_msix { 0 } else { 0xFFFF };
-    let config_vector: u16 = if has_msix { 0 } else { 0xFFFF };
+    if !msi_config.is_enabled() {
+        return Err("VirtIO GPU requires MSI-X interrupt completion");
+    }
+
+    let queue_vector = GPU_MSIX_QUEUE_VECTOR;
+    let config_vector = GPU_MSIX_CONFIG_VECTOR;
 
     // Write config_msix_vector (Linux does this in vp_find_vqs_msix)
     let readback = virtio.set_config_msix_vector(config_vector);
@@ -1773,6 +1926,9 @@ pub fn init() -> Result<(), &'static str> {
         config_vector,
         readback
     );
+    if readback != config_vector {
+        return Err("GPU config MSI-X vector rejected");
+    }
 
     // Log number of queues
     let num_queues = virtio.num_queues();
@@ -1823,6 +1979,9 @@ pub fn init() -> Result<(), &'static str> {
         queue_vector,
         q0_readback
     );
+    if q0_readback != queue_vector {
+        return Err("GPU controlq MSI-X vector rejected");
+    }
 
     virtio.set_queue_ready(true);
 
@@ -1862,6 +2021,9 @@ pub fn init() -> Result<(), &'static str> {
             queue_vector,
             q1_readback
         );
+        if q1_readback != queue_vector {
+            return Err("GPU cursorq MSI-X vector rejected");
+        }
 
         virtio.set_queue_ready(true);
         crate::serial_println!(
@@ -1874,9 +2036,6 @@ pub fn init() -> Result<(), &'static str> {
 
     // Mark device ready — MUST happen before sending any commands (Linux: virtio_device_ready())
     virtio.driver_ok();
-
-    // GPU_IRQ=0 at this point (set in setup_gpu_msi but NOT stored in GPU_IRQ).
-    // All init commands below use spin-polling. SPI is enabled after init succeeds.
 
     // Read device-specific config (Linux reads num_scanouts + num_capsets here)
     let num_scanouts = virtio.read_config_u32(GPU_CFG_NUM_SCANOUTS);
@@ -1910,6 +2069,28 @@ pub fn init() -> Result<(), &'static str> {
         });
     }
     // Don't set GPU_PCI_INITIALIZED yet — the GPU commands below can fail.
+    // Queue completion interrupts are enabled now so init commands use the same
+    // interrupt-driven completion path as runtime commands.
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::gic;
+
+        GPU_CONFIG_IRQ.store(msi_config.config_spi, Ordering::Release);
+        GPU_IRQ.store(msi_config.queue_spi, Ordering::Release);
+        GPU_COMPLETED_USED_IDX.store(0, Ordering::Release);
+        GPU_COMPLETION.reset();
+
+        gic::clear_spi_pending(msi_config.config_spi);
+        gic::clear_spi_pending(msi_config.queue_spi);
+        gic::enable_spi(msi_config.config_spi);
+        gic::enable_spi(msi_config.queue_spi);
+        crate::serial_println!(
+            "[virtio-gpu-pci] MSI-X active: config_spi={} queue_spi={} queue_vector={}",
+            msi_config.config_spi,
+            msi_config.queue_spi,
+            GPU_MSIX_QUEUE_VECTOR
+        );
+    }
 
     // GET_CAPSET_INFO + GET_CAPSET for each capset (Linux does both before GET_DISPLAY_INFO).
     // The GET_CAPSET handshake may be required to fully activate VirGL rendering on the host.
@@ -2010,19 +2191,6 @@ pub fn init() -> Result<(), &'static str> {
 
     // All GPU setup commands succeeded — now mark as initialized.
     GPU_PCI_INITIALIZED.store(true, Ordering::Release);
-
-    // Store GPU_IRQ now so enable_gpu_yield() (called after virgl_init) can
-    // activate interrupt-driven wake. We do NOT enable the SPI here — all
-    // VirGL init commands also use spin-polling. enable_gpu_yield() handles
-    // clearing pending, storing GPU_IRQ, and enabling the SPI.
-    #[cfg(target_arch = "aarch64")]
-    if msi_spi != 0 {
-        GPU_IRQ.store(msi_spi, Ordering::Release);
-        crate::serial_println!(
-            "[virtio-gpu-pci] MSI-X configured (SPI={}, deferred enable after VirGL init)",
-            msi_spi
-        );
-    }
 
     crate::serial_println!("[virtio-gpu-pci] Initialized: {}x{}", use_width, use_height);
     Ok(())
@@ -2195,6 +2363,122 @@ fn virtgpu_trace_used_idx() -> u16 {
     }
 }
 
+#[inline(always)]
+fn ctrlq_used_len_at(idx: u16) -> u32 {
+    unsafe {
+        let q = &raw const PCI_CTRL_QUEUE;
+        let elem_idx = (idx % 16) as usize;
+        #[cfg(target_arch = "aarch64")]
+        {
+            let entry_addr = &(*q).used.ring[elem_idx] as *const _ as usize;
+            core::arch::asm!("dc civac, {}", in(reg) entry_addr, options(nostack));
+            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        }
+        read_volatile(&(*q).used.ring[elem_idx].len)
+    }
+}
+
+fn drain_stale_ctrlq_completions(state: &mut GpuPciDeviceState) {
+    let cur = virtgpu_trace_used_idx();
+    let diff = cur.wrapping_sub(state.last_used_idx);
+    if diff > 0 && diff < 32768 {
+        state.last_used_idx = cur;
+        GPU_COMPLETED_USED_IDX.store(cur as u32, Ordering::Release);
+        virtgpu::trace_stale_drain(diff, cur);
+    }
+}
+
+#[inline(always)]
+fn ctrlq_completion_token(used_idx: u16) -> u32 {
+    used_idx as u32 + 1
+}
+
+fn enable_ctrlq_interrupts() {
+    unsafe {
+        let q = &raw mut PCI_CTRL_QUEUE;
+        (*q).avail.flags = 0;
+        #[cfg(target_arch = "aarch64")]
+        dma_cache_clean(&(*q).avail.flags as *const u16 as *const u8, 64);
+    }
+}
+
+fn prepare_ctrlq_completion_wait(previous_used_idx: u16) -> Result<(), &'static str> {
+    if GPU_IRQ.load(Ordering::Acquire) == 0 {
+        return Err("GPU PCI virtqueue MSI-X IRQ not configured");
+    }
+
+    GPU_COMPLETION.reset();
+    GPU_COMPLETED_USED_IDX.store(previous_used_idx as u32, Ordering::Release);
+    Ok(())
+}
+
+fn record_gpu_wait_ticks(start_ticks: u64) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let end_ticks: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) end_ticks, options(nomem, nostack));
+        }
+        let slept = end_ticks.saturating_sub(start_ticks);
+        GPU_SLEEP_TICKS.fetch_add(slept, Ordering::Relaxed);
+        GPU_SLEEP_TICKS_PHASES.fetch_add(slept, Ordering::Relaxed);
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let _ = start_ticks;
+    }
+}
+
+fn wait_for_ctrlq_completion(
+    state: &mut GpuPciDeviceState,
+    previous_used_idx: u16,
+    cmd_type: u32,
+    resource_id: u32,
+    wait_path: u8,
+) -> Result<u32, &'static str> {
+    let sleep_start: u64;
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("mrs {}, cntvct_el0", out(reg) sleep_start, options(nomem, nostack));
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        sleep_start = 0;
+    }
+
+    let expected_used_idx = previous_used_idx.wrapping_add(1);
+    let expected_token = ctrlq_completion_token(expected_used_idx);
+    match GPU_COMPLETION.wait_timeout(expected_token, GPU_COMPLETION_TIMEOUT_NS) {
+        Ok(true) => {}
+        Ok(false) => {
+            record_gpu_wait_ticks(sleep_start);
+            virtgpu::trace_wait_completion_exit(cmd_type, resource_id, wait_path, false);
+            return Err("GPU PCI command completion timeout");
+        }
+        Err(_eintr) => {
+            record_gpu_wait_ticks(sleep_start);
+            virtgpu::trace_wait_completion_exit(cmd_type, resource_id, wait_path, false);
+            return Err("GPU PCI command completion interrupted");
+        }
+    }
+
+    record_gpu_wait_ticks(sleep_start);
+
+    let used_idx = virtgpu_trace_used_idx();
+    if used_idx == previous_used_idx {
+        virtgpu::trace_wait_completion_exit(cmd_type, resource_id, wait_path, false);
+        return Err("GPU PCI command woke without used-ring completion");
+    }
+
+    virtgpu::trace_q_complete(0, used_idx);
+    virtgpu::trace_wait_completion_exit(cmd_type, resource_id, wait_path, true);
+    let used_len = ctrlq_used_len_at(previous_used_idx);
+    state.last_used_idx = used_idx;
+    GPU_COMPLETED_USED_IDX.store(used_idx as u32, Ordering::Release);
+    Ok(used_len)
+}
+
 // =============================================================================
 // Command Submission
 // =============================================================================
@@ -2203,7 +2487,7 @@ fn virtgpu_trace_used_idx() -> u16 {
 ///
 /// Descriptor 0: command (device reads)
 /// Descriptor 1: response (device writes)
-/// Then notify the device via PCI transport and spin-wait for completion.
+/// Then notify the device via PCI transport and wait for the completion IRQ.
 fn send_command(
     state: &mut GpuPciDeviceState,
     cmd_phys: u64,
@@ -2211,23 +2495,9 @@ fn send_command(
     resp_phys: u64,
     resp_len: u32,
 ) -> Result<(), &'static str> {
-    // Drain stale completions from previous timed-out commands.
-    // Only advance forward (diff > 0 && < 32768 in wrapping u16 space)
-    // to avoid undoing a speculative advance from a prior timeout recovery.
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        let q = &raw const PCI_CTRL_QUEUE;
-        let used_addr = &(*q).used as *const _ as usize;
-        core::arch::asm!("dc civac, {}", in(reg) used_addr, options(nostack));
-        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-        fence(Ordering::Acquire);
-        let cur = read_volatile(&(*q).used.idx);
-        let diff = cur.wrapping_sub(state.last_used_idx);
-        if diff > 0 && diff < 32768 {
-            state.last_used_idx = cur;
-            virtgpu::trace_stale_drain(diff, cur);
-        }
-    }
+    drain_stale_ctrlq_completions(state);
+    let previous_used_idx = state.last_used_idx;
+    prepare_ctrlq_completion_wait(previous_used_idx)?;
 
     unsafe {
         let q = &raw mut PCI_CTRL_QUEUE;
@@ -2279,73 +2549,22 @@ fn send_command(
         fence(Ordering::SeqCst);
     }
 
-    // Suppress device interrupts for fast 2-desc commands (spin-only).
-    unsafe {
-        let q = &raw mut PCI_CTRL_QUEUE;
-        (*q).avail.flags = 1; // VRING_AVAIL_F_NO_INTERRUPT
-        #[cfg(target_arch = "aarch64")]
-        dma_cache_clean(&(*q).avail.flags as *const u16 as *const u8, 64);
-    }
+    enable_ctrlq_interrupts();
 
     // Signal that we're waiting for a completion, then notify device
-    GPU_CMD_COMPLETE.store(false, Ordering::Release);
     let (cmd_type, resource_id) = virtgpu_decode_pci_cmd();
     virtgpu_trace_flush_pre_notify(cmd_type, resource_id);
     virtgpu::trace_q_notify(0, virtgpu_trace_used_idx());
-    let wait_start_ms = monotonic_ms();
     virtgpu::trace_wait_completion_enter(cmd_type, resource_id, virtgpu::WAIT_PATH_2DESC);
     state.device.notify_queue_fast(0);
-
-    // Wait for used ring update — tight spin for 2-desc commands.
-    // These complete in microseconds (SET_SCANOUT, RESOURCE_FLUSH, TRANSFER_TO_HOST_3D).
-    // Yielding here adds ~1-2ms of context switch overhead per command, which is
-    // catastrophic with 5+ commands per frame.
-    // WHY: keep last_used_idx out of a long-lived static-base access in the
-    // polling loop. Parallels BWM stress hit FAR=0xccd when caller-saved x17,
-    // holding the GPU_PCI_STATE page base for state.last_used_idx, was clobbered.
-    let mut last_used_idx = state.last_used_idx;
-    let mut spin_count = 0u32;
-    loop {
-        // Invalidate used ring cache line so we see the device's DMA write
-        #[cfg(target_arch = "aarch64")]
-        unsafe {
-            let q = &raw const PCI_CTRL_QUEUE;
-            let used_addr = &(*q).used as *const _ as usize;
-            core::arch::asm!("dc civac, {}", in(reg) used_addr, options(nostack));
-            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-        }
-
-        fence(Ordering::Acquire);
-        let used_idx = unsafe {
-            let q = &raw const PCI_CTRL_QUEUE;
-            read_volatile(&(*q).used.idx)
-        };
-        if used_idx != last_used_idx {
-            virtgpu::trace_q_complete(0, used_idx);
-            virtgpu::trace_wait_completion_exit(
-                cmd_type,
-                resource_id,
-                virtgpu::WAIT_PATH_2DESC,
-                true,
-            );
-            last_used_idx = used_idx;
-            state.last_used_idx = last_used_idx;
-            return Ok(());
-        }
-        spin_count = spin_count.wrapping_add(1);
-        if spin_count & 0x3fff == 0 && monotonic_ms().saturating_sub(wait_start_ms) > 1000 {
-            let expected_used_idx = last_used_idx.wrapping_add(1);
-            virtgpu::trace_wait_completion_exit(
-                cmd_type,
-                resource_id,
-                virtgpu::WAIT_PATH_2DESC,
-                false,
-            );
-            report_wait_timeout(cmd_type, resource_id, expected_used_idx, used_idx);
-            return Err("GPU PCI command timeout");
-        }
-        core::hint::spin_loop();
-    }
+    let _used_len = wait_for_ctrlq_completion(
+        state,
+        previous_used_idx,
+        cmd_type,
+        resource_id,
+        virtgpu::WAIT_PATH_2DESC,
+    )?;
+    Ok(())
 }
 
 /// Send a command using a 3-descriptor chain (Linux format):
@@ -2353,7 +2572,7 @@ fn send_command(
 ///   Desc 1: command payload (device reads)
 ///   Desc 2: response (device writes)
 ///
-/// Returns Ok((used_len, resp_type)) on completion, Err on timeout.
+/// Returns Ok((used_len, resp_type)) on completion.
 fn send_command_3desc(
     state: &mut GpuPciDeviceState,
     hdr_phys: u64,
@@ -2364,21 +2583,9 @@ fn send_command_3desc(
     let (cmd_type, resource_id) = virtgpu_decode_3desc_command(hdr_phys);
     virtgpu_trace_submission(cmd_type, resource_id);
 
-    // Drain stale completions (same forward-only logic as send_command).
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        let q = &raw const PCI_CTRL_QUEUE;
-        let used_addr = &(*q).used as *const _ as usize;
-        core::arch::asm!("dc civac, {}", in(reg) used_addr, options(nostack));
-        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-        fence(Ordering::Acquire);
-        let cur = read_volatile(&(*q).used.idx);
-        let diff = cur.wrapping_sub(state.last_used_idx);
-        if diff > 0 && diff < 32768 {
-            state.last_used_idx = cur;
-            virtgpu::trace_stale_drain(diff, cur);
-        }
-    }
+    drain_stale_ctrlq_completions(state);
+    let previous_used_idx = state.last_used_idx;
+    prepare_ctrlq_completion_wait(previous_used_idx)?;
 
     let resp_phys = virt_to_phys(&raw const PCI_RESP_BUF as u64);
     let resp_len = core::mem::size_of::<VirtioGpuCtrlHdr>() as u32;
@@ -2449,245 +2656,16 @@ fn send_command_3desc(
         fence(Ordering::SeqCst);
     }
 
-    let can_yield = GPU_YIELD_ENABLED.load(Ordering::Relaxed);
-    let has_msi = GPU_IRQ.load(Ordering::Relaxed) != 0;
-
-    // When MSI-X is active: zero-spin, pure interrupt-driven wake.
-    // CRITICAL: Enable interrupts and register the waiting thread BEFORE notifying
-    // the device. The previous send_command (2-desc) leaves avail.flags=1 (NO_INTERRUPT).
-    // If we notify first, the device sees NO_INTERRUPT, processes the command without
-    // firing MSI-X, and we block forever (until the 10ms safety timeout).
-    //
-    // When MSI-X is not available: spin briefly then block with timer fallback.
-    if !has_msi {
-        // No MSI-X — suppress interrupts, we'll poll.
-        unsafe {
-            let q = &raw mut PCI_CTRL_QUEUE;
-            (*q).avail.flags = 1; // VRING_AVAIL_F_NO_INTERRUPT
-            #[cfg(target_arch = "aarch64")]
-            dma_cache_clean(&(*q).avail.flags as *const u16 as *const u8, 64);
-        }
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    if has_msi && can_yield {
-        // Register thread for interrupt-driven wake BEFORE notify
-        if let Some(tid) = crate::task::scheduler::current_thread_id() {
-            GPU_WAITING_THREAD.store(tid, Ordering::Release);
-        }
-
-        // Enable device interrupts BEFORE notify — so the device sees avail.flags=0
-        // when it processes the command and fires MSI-X on completion.
-        unsafe {
-            let q = &raw mut PCI_CTRL_QUEUE;
-            (*q).avail.flags = 0; // Enable notifications
-            dma_cache_clean(&(*q).avail.flags as *const u16 as *const u8, 64);
-        }
-        fence(Ordering::SeqCst);
-    }
+    enable_ctrlq_interrupts();
 
     // Notify device
-    let wait_path = if has_msi && can_yield {
-        virtgpu::WAIT_PATH_3DESC_MSI
-    } else {
-        virtgpu::WAIT_PATH_3DESC_POLL
-    };
+    let wait_path = virtgpu::WAIT_PATH_3DESC_MSI;
     virtgpu_trace_flush_pre_notify(cmd_type, resource_id);
     virtgpu::trace_q_notify(0, virtgpu_trace_used_idx());
-    let wait_start_ms = monotonic_ms();
     virtgpu::trace_wait_completion_enter(cmd_type, resource_id, wait_path);
     state.device.notify_queue_fast(0);
-
-    let used_len;
-
-    #[cfg(target_arch = "aarch64")]
-    if has_msi && can_yield {
-        // MSI-X path: retry blocking up to 100 times (1000ms total).
-        // Tolerates VM scheduling jitter where Parallels preempts the VirGL
-        // GPU thread. Previous single 10ms+spin approach caused cascading
-        // DEADBEEF failures on ~25% of sustained sessions.
-        let sleep_start: u64;
-        unsafe {
-            core::arch::asm!("mrs {}, cntvct_el0", out(reg) sleep_start, options(nomem, nostack));
-        }
-
-        let mut completed = false;
-        for _attempt in 0..100 {
-            // Check if complete (race: device may finish between notify/re-block)
-            let done = unsafe {
-                let q = &raw const PCI_CTRL_QUEUE;
-                let used_addr = &(*q).used as *const _ as usize;
-                core::arch::asm!("dc civac, {}", in(reg) used_addr, options(nostack));
-                core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-                fence(Ordering::Acquire);
-                read_volatile(&(*q).used.idx) != state.last_used_idx
-            };
-            if done {
-                completed = true;
-                break;
-            }
-
-            // Re-register for MSI-X wake before each block
-            if let Some(tid) = crate::task::scheduler::current_thread_id() {
-                GPU_WAITING_THREAD.store(tid, Ordering::Release);
-            }
-
-            let (s, n) = crate::time::get_monotonic_time_ns();
-            let now_ns = (s as u64) * 1_000_000_000 + (n as u64);
-            let wake_ns = now_ns + 10_000_000; // 10ms per attempt
-
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.block_current_for_compositor(wake_ns);
-            });
-            crate::per_cpu_aarch64::preempt_enable();
-            crate::task::scheduler::yield_current();
-            crate::arch_halt_with_interrupts();
-
-            crate::task::scheduler::with_scheduler(|sched| {
-                if let Some(thread) = sched.current_thread_mut() {
-                    thread.blocked_in_syscall = false;
-                }
-            });
-            crate::per_cpu_aarch64::preempt_disable();
-        }
-
-        GPU_WAITING_THREAD.store(0, Ordering::Release);
-
-        // Suppress interrupts now that we're awake
-        unsafe {
-            let q = &raw mut PCI_CTRL_QUEUE;
-            (*q).avail.flags = 1; // NO_INTERRUPT
-            dma_cache_clean(&(*q).avail.flags as *const u16 as *const u8, 64);
-        }
-
-        let sleep_end: u64;
-        unsafe {
-            core::arch::asm!("mrs {}, cntvct_el0", out(reg) sleep_end, options(nomem, nostack));
-        }
-        let slept = sleep_end.saturating_sub(sleep_start);
-        GPU_SLEEP_TICKS.fetch_add(slept, Ordering::Relaxed);
-        GPU_SLEEP_TICKS_PHASES.fetch_add(slept, Ordering::Relaxed);
-
-        if !completed {
-            // Final check after all retries
-            completed = unsafe {
-                let q = &raw const PCI_CTRL_QUEUE;
-                let used_addr = &(*q).used as *const _ as usize;
-                core::arch::asm!("dc civac, {}", in(reg) used_addr, options(nostack));
-                core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-                fence(Ordering::Acquire);
-                read_volatile(&(*q).used.idx) != state.last_used_idx
-            };
-        }
-
-        if completed {
-            virtgpu::trace_q_complete(0, virtgpu_trace_used_idx());
-            virtgpu::trace_wait_completion_exit(cmd_type, resource_id, wait_path, true);
-            used_len = unsafe {
-                let q = &raw const PCI_CTRL_QUEUE;
-                let elem_idx = (state.last_used_idx % 16) as usize;
-                let entry_addr = &(*q).used.ring[elem_idx] as *const _ as usize;
-                core::arch::asm!("dc civac, {}", in(reg) entry_addr, options(nostack));
-                core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-                read_volatile(&(*q).used.ring[elem_idx].len)
-            };
-            state.last_used_idx = state.last_used_idx.wrapping_add(1);
-        } else {
-            // Timeout after 1000ms. Speculatively advance last_used_idx so the
-            // next command's drain doesn't pick up this command's late completion
-            // and cascade-fail with DEADBEEF responses.
-            let actual_used_idx = virtgpu_trace_used_idx();
-            let expected_used_idx = state.last_used_idx.wrapping_add(1);
-            virtgpu::trace_wait_completion_exit(cmd_type, resource_id, wait_path, false);
-            report_wait_timeout(cmd_type, resource_id, expected_used_idx, actual_used_idx);
-            state.last_used_idx = state.last_used_idx.wrapping_add(1);
-            return Err("GPU PCI 3-desc command timeout (1000ms)");
-        }
-    } else {
-        // Polling fallback: spin then block with timer wake.
-        let mut spin_count = 0u32;
-        loop {
-            #[cfg(target_arch = "aarch64")]
-            unsafe {
-                let q = &raw const PCI_CTRL_QUEUE;
-                let used_addr = &(*q).used as *const _ as usize;
-                core::arch::asm!("dc civac, {}", in(reg) used_addr, options(nostack));
-                core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-            }
-
-            fence(Ordering::Acquire);
-            let used_idx = unsafe {
-                let q = &raw const PCI_CTRL_QUEUE;
-                read_volatile(&(*q).used.idx)
-            };
-            if used_idx != state.last_used_idx {
-                virtgpu::trace_q_complete(0, used_idx);
-                virtgpu::trace_wait_completion_exit(cmd_type, resource_id, wait_path, true);
-                used_len = unsafe {
-                    let q = &raw const PCI_CTRL_QUEUE;
-                    let elem_idx = (state.last_used_idx % 16) as usize;
-                    // Invalidate the specific cache line containing this entry.
-                    // Entries at index >= 8 are in a different cache line from
-                    // used.idx, so the earlier invalidation doesn't cover them.
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        let entry_addr = &(*q).used.ring[elem_idx] as *const _ as usize;
-                        core::arch::asm!("dc civac, {}", in(reg) entry_addr, options(nostack));
-                        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-                    }
-                    read_volatile(&(*q).used.ring[elem_idx].len)
-                };
-                state.last_used_idx = used_idx;
-                break;
-            }
-            if spin_count & 0x3fff == 0 && monotonic_ms().saturating_sub(wait_start_ms) > 1000 {
-                // Speculatively advance so the next command doesn't cascade-fail
-                let expected_used_idx = state.last_used_idx.wrapping_add(1);
-                virtgpu::trace_wait_completion_exit(cmd_type, resource_id, wait_path, false);
-                report_wait_timeout(cmd_type, resource_id, expected_used_idx, used_idx);
-                state.last_used_idx = state.last_used_idx.wrapping_add(1);
-                return Err("GPU PCI 3-desc command timeout");
-            }
-            spin_count += 1;
-            if can_yield && spin_count == 5_000 {
-                #[cfg(target_arch = "aarch64")]
-                {
-                    let sleep_start: u64;
-                    unsafe {
-                        core::arch::asm!("mrs {}, cntvct_el0", out(reg) sleep_start, options(nomem, nostack));
-                    }
-
-                    let (s, n) = crate::time::get_monotonic_time_ns();
-                    let now_ns = (s as u64) * 1_000_000_000 + (n as u64);
-                    let wake_ns = now_ns + 4_000_000; // 4ms timeout
-
-                    crate::task::scheduler::with_scheduler(|sched| {
-                        sched.block_current_for_compositor(wake_ns);
-                    });
-                    crate::per_cpu_aarch64::preempt_enable();
-                    crate::task::scheduler::yield_current();
-                    crate::arch_halt_with_interrupts();
-                    crate::task::scheduler::with_scheduler(|sched| {
-                        if let Some(thread) = sched.current_thread_mut() {
-                            thread.blocked_in_syscall = false;
-                        }
-                    });
-                    crate::per_cpu_aarch64::preempt_disable();
-
-                    let sleep_end: u64;
-                    unsafe {
-                        core::arch::asm!("mrs {}, cntvct_el0", out(reg) sleep_end, options(nomem, nostack));
-                    }
-                    let slept = sleep_end.saturating_sub(sleep_start);
-                    GPU_SLEEP_TICKS.fetch_add(slept, Ordering::Relaxed);
-                    GPU_SLEEP_TICKS_PHASES.fetch_add(slept, Ordering::Relaxed);
-                }
-                spin_count = 0;
-            } else {
-                core::hint::spin_loop();
-            }
-        }
-    }
+    let used_len =
+        wait_for_ctrlq_completion(state, previous_used_idx, cmd_type, resource_id, wait_path)?;
 
     // Invalidate response cache
     #[cfg(target_arch = "aarch64")]
@@ -3986,103 +3964,81 @@ fn virgl_submit_3d_cmd(
     })
 }
 
-/// Wait for the host to confirm a GPU fence has completed.
+/// Ask the host once whether a GPU fence has completed.
 ///
-/// Sends NOP SUBMIT_3D commands with fences and polls until the response
-/// fence_id >= target_fence_id. Uses WFI between polls to sleep until the
-/// next interrupt rather than spinning, dramatically reducing CPU waste.
+/// This is a one-shot verification command, not a polling loop. The NOP
+/// submission itself completes via the interrupt-driven controlq path. If the
+/// host still does not report the target fence, callers get an error instead of
+/// hiding the missing fence signal behind repeated NOP submissions.
 fn virgl_fence_sync(
     state: &mut GpuPciDeviceState,
     target_fence_id: u64,
 ) -> Result<(), &'static str> {
     use super::virgl::CommandBuffer;
 
-    // Heap-allocate once outside the loop to avoid 12KB stack allocation per iteration
     let mut cmdbuf = alloc::boxed::Box::new(CommandBuffer::new());
 
-    for round in 0..100u32 {
-        // Sleep until next interrupt before polling (skip on first round).
-        // The GPU completion or timer interrupt (1000Hz) will wake us.
-        if round > 0 {
-            #[cfg(target_arch = "aarch64")]
-            unsafe {
-                core::arch::asm!("wfi", options(nomem, nostack));
-            }
-        }
+    cmdbuf.clear();
+    cmdbuf.set_sub_ctx(1);
 
-        // Build a NOP VirGL command (set_sub_ctx is minimal)
-        cmdbuf.clear();
-        cmdbuf.set_sub_ctx(1);
+    let payload = cmdbuf.as_slice();
+    let payload_bytes = payload.len() * 4;
+    let hdr_size = core::mem::size_of::<VirtioGpuCmdSubmit>();
 
-        let payload = cmdbuf.as_slice();
-        let payload_bytes = payload.len() * 4;
-        let hdr_size = core::mem::size_of::<VirtioGpuCmdSubmit>();
+    let fence_id = state.next_fence_id;
+    state.next_fence_id += 1;
 
-        let fence_id = state.next_fence_id;
-        state.next_fence_id += 1;
+    unsafe {
+        let buf_ptr = &raw mut PCI_3D_CMD_BUF;
+        let base = (*buf_ptr).data.as_mut_ptr();
 
-        // Write header + payload contiguously to PCI_3D_CMD_BUF
-        unsafe {
-            let buf_ptr = &raw mut PCI_3D_CMD_BUF;
-            let base = (*buf_ptr).data.as_mut_ptr();
-
-            let hdr = &mut *(base as *mut VirtioGpuCmdSubmit);
-            *hdr = VirtioGpuCmdSubmit {
-                hdr: VirtioGpuCtrlHdr {
-                    type_: cmd::SUBMIT_3D,
-                    flags: VIRTIO_GPU_FLAG_FENCE,
-                    fence_id,
-                    ctx_id: VIRGL_CTX_ID,
-                    padding: 0,
-                },
-                size: payload_bytes as u32,
-                _padding: 0,
-            };
-
-            let payload_dst = base.add(hdr_size) as *mut u32;
-            core::ptr::copy_nonoverlapping(payload.as_ptr(), payload_dst, payload.len());
-        }
-
-        let total_len = hdr_size + payload_bytes;
-        dma_cache_clean(&raw const PCI_3D_CMD_BUF as *const u8, total_len);
-
-        let hdr_phys = virt_to_phys(&raw const PCI_3D_CMD_BUF as u64);
-        let payload_phys = hdr_phys + hdr_size as u64;
-
-        let (_used_len, resp_type) = send_command_3desc(
-            state,
-            hdr_phys,
-            hdr_size as u32,
-            payload_phys,
-            payload_bytes as u32,
-        )?;
-
-        if resp_type != cmd::RESP_OK_NODATA {
-            crate::serial_println!("[virgl] fence_sync: NOP failed resp={:#x}", resp_type);
-            return Err("fence sync NOP rejected");
-        }
-
-        // Check if the host reported our target fence as complete
-        let resp_fence = unsafe {
-            let resp_ptr = &raw const PCI_RESP_BUF;
-            let hdr = &*((*resp_ptr).data.as_ptr() as *const VirtioGpuCtrlHdr);
-            core::ptr::read_volatile(&hdr.fence_id)
+        let hdr = &mut *(base as *mut VirtioGpuCmdSubmit);
+        *hdr = VirtioGpuCmdSubmit {
+            hdr: VirtioGpuCtrlHdr {
+                type_: cmd::SUBMIT_3D,
+                flags: VIRTIO_GPU_FLAG_FENCE,
+                fence_id,
+                ctx_id: VIRGL_CTX_ID,
+                padding: 0,
+            },
+            size: payload_bytes as u32,
+            _padding: 0,
         };
 
-        if resp_fence >= target_fence_id {
-            if round > 0 {
-                crate::serial_println!(
-                    "[virgl] fence_sync: completed after {} polls (target={}, got={})",
-                    round + 1,
-                    target_fence_id,
-                    resp_fence
-                );
-            }
-            return Ok(());
-        }
+        let payload_dst = base.add(hdr_size) as *mut u32;
+        core::ptr::copy_nonoverlapping(payload.as_ptr(), payload_dst, payload.len());
     }
 
-    Err("fence sync: target fence never completed after 100 polls")
+    let total_len = hdr_size + payload_bytes;
+    dma_cache_clean(&raw const PCI_3D_CMD_BUF as *const u8, total_len);
+
+    let hdr_phys = virt_to_phys(&raw const PCI_3D_CMD_BUF as u64);
+    let payload_phys = hdr_phys + hdr_size as u64;
+
+    let (_used_len, resp_type) = send_command_3desc(
+        state,
+        hdr_phys,
+        hdr_size as u32,
+        payload_phys,
+        payload_bytes as u32,
+    )?;
+
+    if resp_type != cmd::RESP_OK_NODATA {
+        crate::serial_println!("[virgl] fence_sync: NOP failed resp={:#x}", resp_type);
+        return Err("fence sync NOP rejected");
+    }
+
+    let resp_fence = unsafe {
+        let resp_ptr = &raw const PCI_RESP_BUF;
+        let hdr = &*((*resp_ptr).data.as_ptr() as *const VirtioGpuCtrlHdr);
+        core::ptr::read_volatile(&hdr.fence_id)
+    };
+
+    if resp_fence >= target_fence_id {
+        Ok(())
+    } else {
+        Err("fence sync: target fence not completed by one-shot NOP")
+    }
 }
 
 /// Set scanout to a specific resource ID (used for 3D render targets).
@@ -4557,7 +4513,7 @@ pub fn virgl_render_rects(
             cmdbuf.as_slice().len()
         );
     }
-    virgl_submit_sync(cmdbuf.as_slice())?;
+    let _fence_id = virgl_submit(cmdbuf.as_slice())?;
 
     // Linux per-frame display pattern: SUBMIT_3D → SET_SCANOUT → RESOURCE_FLUSH.
     // Linux ftrace proves SET_SCANOUT is issued every frame, not just once.
@@ -4874,7 +4830,7 @@ pub fn virgl_composite_frame_textured(
             cmdbuf.as_slice().len()
         );
     }
-    virgl_submit_sync(cmdbuf.as_slice())?;
+    let _fence_id = virgl_submit(cmdbuf.as_slice())?;
 
     with_device_state(|state| {
         set_scanout_resource(state, RESOURCE_3D_ID)?;
@@ -5307,7 +5263,7 @@ fn virgl_composite_single_quad(
         );
     }
 
-    virgl_submit_sync(cmdbuf.as_slice())?;
+    let _fence_id = virgl_submit(cmdbuf.as_slice())?;
     with_device_state(|state| set_scanout_resource(state, RESOURCE_3D_ID))?;
     with_device_state(|state| {
         resource_flush_3d(
@@ -5627,7 +5583,7 @@ pub fn virgl_submit(cmds: &[u32]) -> Result<u64, &'static str> {
 ///
 /// Optimization: if the SUBMIT_3D response already confirms the fence
 /// (FLAG_FENCE means the device waited for GPU completion), skip the
-/// expensive fence_sync NOP polling entirely.
+/// extra fence verification command entirely.
 pub fn virgl_submit_sync(cmds: &[u32]) -> Result<(), &'static str> {
     let result = with_device_state(|state| virgl_submit_3d_cmd(state, VIRGL_CTX_ID, cmds))?;
 
@@ -5638,7 +5594,8 @@ pub fn virgl_submit_sync(cmds: &[u32]) -> Result<(), &'static str> {
         return Ok(());
     }
 
-    // Slow path: fence not yet confirmed, poll with WFI between rounds
+    // Slow path: fence not yet confirmed; issue one interrupt-completed NOP
+    // and fail if the host still does not report the target fence.
     with_device_state(|state| virgl_fence_sync(state, result.submit_id))
 }
 

@@ -1,0 +1,11 @@
+/home/wrb/gl_multi_texture_test
+/home/wrb/multi_tex_poison_test
+/home/wrb/multi_texture_test
+/home/wrb/poison_batch
+/home/wrb/poison_debug
+/home/wrb/poison_fixed
+/home/wrb/poison_noscanout
+/home/wrb/poison_sequential
+/home/wrb/simple_virgl_clear
+/home/wrb/virgl_raw_test
+/home/wrb/virtio_desc_head_test

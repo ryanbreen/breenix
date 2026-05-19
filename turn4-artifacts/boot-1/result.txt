@@ -1,0 +1,17 @@
+status=fail
+reason=gpu_pci_lock_busy_gt_5s
+max_uptime_ms=222571
+last_completion_ms=220573
+final_fps=130
+final_completes=121166
+rescue_tid13=5
+stuck_tid13=0
+softlock=0
+cpu0_regression=0
+far_0xccd=0
+panic_or_exception=0
+poll_markers=1
+max_busy_ms=15007
+serial_bytes=  111713
+vm=breenix-1779186957
+final_freeze=[freeze-watch] uptime_ms=220577 submits=121164 completes=121166 fails=0 last_completion_ms=220573 fps_last_5s=130 cpu=0 tid=3 ctx_switches=531217 timer_ticks_cpu0=156646 timer_ticks_cpu1=183544 timer_ticks_cpu2=183992 timer_ticks_cpu3=182416 timer_ticks_cpu4=182500 timer_ticks_cpu5=183480 timer_ticks_cpu6=184304 timer_ticks_cpu7=184604 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=3 cur_cpu1=12 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=7 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy

@@ -1,0 +1,7 @@
+ffff80007b9ef5b0 t virtgpu_gem_map_dma_buf	[virtio_gpu]
+ffff80007b9ef680 t virtgpu_virtio_get_uuid	[virtio_gpu]
+ffff80007b9ef798 t virtgpu_gem_unmap_dma_buf	[virtio_gpu]
+ffff80007b9fbad8 r virtgpu_dmabuf_ops	[virtio_gpu]
+ffff80007b9efba0 t virtgpu_gem_prime_import_sg_table	[virtio_gpu]
+ffff80007b9efad0 t virtgpu_gem_prime_import	[virtio_gpu]
+ffff80007b9ef8d8 t virtgpu_gem_prime_export	[virtio_gpu]

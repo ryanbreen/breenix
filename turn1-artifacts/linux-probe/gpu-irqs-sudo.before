@@ -1,0 +1,8 @@
+ 14:          0          0          0          0     GICv3  38 Edge      virtio0
+ 20:          1          0          0          0       MSI 81920 Edge      virtio1-config
+ 21:      59923          0          0          0       MSI 81921 Edge      virtio1-input.0
+ 22:      68237          0          0          0       MSI 81922 Edge      virtio1-output.0
+ 27:          2          0          0          0       MSI 163840 Edge      virtio2-config
+ 28:      77789          0          0          0       MSI 163841 Edge      virtio2-virtqueues
+ 29:          0          0          0          0       MSI 229376 Edge      virtio3-config
+ 30:          1          0          0          0       MSI 229377 Edge      virtio3-virtqueues

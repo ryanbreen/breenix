@@ -1,0 +1,37 @@
+drmModeFreeCrtc
+drmModeGetCrtc
+drmModeGetConnector
+drmSetMaster
+drmModeFreeEncoder
+drmModeAddFB
+drmModeSetCrtc
+drmModeFreeConnector
+drmModeRmFB
+drmModeGetEncoder
+drmIoctl
+drmModeFreeResources
+drmModeGetResources
+libdrm.so.2
+/dev/dri/card0
+DRM: %s 
+DRM: connector=%u, crtc=%u
+RESOURCE_CREATE_3D (render target)
+No DRM device found
+=== DRM KMS Display ===
+drmModeAddFB failed: %s
+drmModeSetCrtc failed: %s
+/dev/dri/card1
+drm_fd
+drmModeSetCrtc
+drmModeGetResources
+drmModeGetConnector
+drmModeRmFB
+drmModeFreeEncoder
+drmModeAddFB
+drmModeFreeResources
+drmSetMaster
+drmModeFreeConnector
+drmModeGetCrtc
+drmIoctl
+drmModeFreeCrtc
+drmModeGetEncoder

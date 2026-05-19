@@ -1,0 +1,30 @@
+[2026-05-19 07:10:41] elapsed=18s ahci_state=WAITING_CODEX prl_rc=0
+breenix_vms:
+breenix-1779188680               running
+[2026-05-19 07:12:43] elapsed=140s ahci_state=WAITING_CODEX prl_rc=0
+breenix_vms:
+breenix-1779188680               stopped
+[2026-05-19 07:15:04] elapsed=281s ahci_state=WAITING_CODEX prl_rc=0
+breenix_vms:
+breenix-1779189186               running
+[2026-05-19 07:17:32] elapsed=429s ahci_state=WAITING_CODEX prl_rc=0
+breenix_vms:
+breenix-1779189324               running
+[2026-05-19 07:19:33] elapsed=550s ahci_state=WAITING_CODEX prl_rc=0
+breenix_vms:
+breenix-1779189473               starting
+[2026-05-19 07:21:35] elapsed=672s ahci_state=WAITING_CODEX prl_rc=0
+breenix_vms:
+breenix-1779189668               stopped
+[2026-05-19 07:23:37] elapsed=794s ahci_state=WAITING_CODEX prl_rc=0
+breenix_vms:
+breenix-1779189668               running
+[2026-05-19 07:25:59] elapsed=936s ahci_state=WAITING_CODEX prl_rc=0
+breenix_vms:
+breenix-1779189838               running
+[2026-05-19 07:28:00] elapsed=1057s ahci_state=WAITING_CODEX prl_rc=0
+breenix_vms: none
+[2026-05-19 07:30:00] elapsed=1177s ahci_state=WAITING_CODEX prl_rc=0
+breenix_vms: none
+[2026-05-19 07:32:01] elapsed=1298s ahci_state=AWAITING_REVIEW prl_rc=0
+breenix_vms: none

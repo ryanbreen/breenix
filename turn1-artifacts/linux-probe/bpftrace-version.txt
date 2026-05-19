@@ -1,0 +1,2 @@
+/usr/bin/bpftrace
+bpftrace v0.20.2

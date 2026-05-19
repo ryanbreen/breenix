@@ -1,0 +1,9 @@
+boot-1: fail + gpu_pci_lock_busy_gt_5s
+boot-2: fail + gpu_pci_lock_busy_gt_5s
+boot-3: fail + gpu_pci_lock_busy_gt_5s
+boot-4: fail + gpu_pci_lock_busy_gt_5s
+boot-5: fail + gpu_pci_lock_busy_gt_5s
+overall: fail
+fps_at_end: min=130, max=216, mean=191.8
+completes_at_end: min=121166, max=188765, mean=146003.0
+rescue_tid13_events: min=0, max=5, mean=3.2
