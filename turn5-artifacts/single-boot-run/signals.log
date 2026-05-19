@@ -1,0 +1,133 @@
+[ahci] Platform AHCI at phys 0x2140000, virt 0xffff000002140000
+[ahci] HBA version 1.256, 6 ports, 32 cmd slots, PI=0x0000003f
+[ahci] Port 0: Sata, 131072 sectors (64 MB)
+[ahci] Port 1: Sata, 524288 sectors (256 MB)
+[ahci] IRQ probe: using port 0 dma_index 0
+[ahci] IRQ probe: ISPENDR before=[0x00800000, 0x00000000, 0x00000000] after=[0x00800004, 0x00000000, 0x00000000]
+[ahci] IRQ probe: PORT_IS=0x00000001 (should have D2H bit set)
+[ahci] Platform IRQ probe: discovered SPI 34
+[ahci] Platform IRQ enabled: SPI 34 (wired, level-triggered, CPU0)
+[drivers] AHCI initialized (platform MMIO): 2 SATA device(s)
+[ext2] No VirtIO block device, trying AHCI...
+[ext2] AHCI device 0: 131072 sectors (64 MB)
+[ext2] AHCI device 0: not ext2 (magic=0x0064)
+[ext2] AHCI device 1: 524288 sectors (256 MB)
+[ext2] Found ext2 superblock on AHCI device 1
+[virgl-composite] Frame #0: 1x1 → 1280x960 display (first1k: 1 nonzero, first=0xff000000)
+[virgl-composite] Frame #1: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x00121832)
+[virgl-composite] Frame #2: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x00121832)
+[freeze-watch] uptime_ms=1930 submits=71 completes=74 fails=0 last_completion_ms=1638 fps_last_5s=6 cpu=0 tid=3 ctx_switches=1585 timer_ticks_cpu0=283 timer_ticks_cpu1=415 timer_ticks_cpu2=413 timer_ticks_cpu3=417 timer_ticks_cpu4=415 timer_ticks_cpu5=415 timer_ticks_cpu6=414 timer_ticks_cpu7=405 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=3 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=15 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=2434 submits=236 completes=239 fails=0 last_completion_ms=2433 fps_last_5s=109 cpu=2 tid=3 ctx_switches=2357 timer_ticks_cpu0=666 timer_ticks_cpu1=831 timer_ticks_cpu2=842 timer_ticks_cpu3=837 timer_ticks_cpu4=829 timer_ticks_cpu5=829 timer_ticks_cpu6=831 timer_ticks_cpu7=822 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=3 cur_cpu3=16 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=84 elapsed_ms=1006 instantaneous_fps=83
+[freeze-watch] uptime_ms=2939 submits=431 completes=434 fails=0 last_completion_ms=2935 fps_last_5s=128 cpu=5 tid=3 ctx_switches=2808 timer_ticks_cpu0=1078 timer_ticks_cpu1=1243 timer_ticks_cpu2=1258 timer_ticks_cpu3=1252 timer_ticks_cpu4=1244 timer_ticks_cpu5=1246 timer_ticks_cpu6=1245 timer_ticks_cpu7=1237 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=13 cur_cpu4=7 cur_cpu5=3 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=3443 submits=638 completes=641 fails=0 last_completion_ms=3438 fps_last_5s=136 cpu=4 tid=3 ctx_switches=3275 timer_ticks_cpu0=1486 timer_ticks_cpu1=1657 timer_ticks_cpu2=1672 timer_ticks_cpu3=1664 timer_ticks_cpu4=1660 timer_ticks_cpu5=1659 timer_ticks_cpu6=1659 timer_ticks_cpu7=1653 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=13 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=133 elapsed_ms=1005 instantaneous_fps=132
+[freeze-watch] uptime_ms=3947 submits=843 completes=845 fails=0 last_completion_ms=3942 fps_last_5s=134 cpu=6 tid=3 ctx_switches=3747 timer_ticks_cpu0=1903 timer_ticks_cpu1=2069 timer_ticks_cpu2=2085 timer_ticks_cpu3=2077 timer_ticks_cpu4=2074 timer_ticks_cpu5=2074 timer_ticks_cpu6=2075 timer_ticks_cpu7=2067 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=13 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=3 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+[freeze-watch] uptime_ms=4452 submits=1046 completes=1049 fails=0 last_completion_ms=4450 fps_last_5s=134 cpu=6 tid=3 ctx_switches=4210 timer_ticks_cpu0=2321 timer_ticks_cpu1=2483 timer_ticks_cpu2=2497 timer_ticks_cpu3=2489 timer_ticks_cpu4=2488 timer_ticks_cpu5=2488 timer_ticks_cpu6=2487 timer_ticks_cpu7=2483 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=13 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=3 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=133 elapsed_ms=1000 instantaneous_fps=133
+[freeze-watch] uptime_ms=4956 submits=1232 completes=1235 fails=0 last_completion_ms=4954 fps_last_5s=123 cpu=0 tid=3 ctx_switches=4661 timer_ticks_cpu0=2738 timer_ticks_cpu1=2898 timer_ticks_cpu2=2907 timer_ticks_cpu3=2900 timer_ticks_cpu4=2899 timer_ticks_cpu5=2904 timer_ticks_cpu6=2900 timer_ticks_cpu7=2897 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=3 cur_cpu1=13 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=5460 submits=1442 completes=1445 fails=0 last_completion_ms=5456 fps_last_5s=138 cpu=2 tid=3 ctx_switches=5130 timer_ticks_cpu0=3149 timer_ticks_cpu1=3312 timer_ticks_cpu2=3321 timer_ticks_cpu3=3314 timer_ticks_cpu4=3314 timer_ticks_cpu5=3318 timer_ticks_cpu6=3316 timer_ticks_cpu7=3313 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=13 cur_cpu1=4 cur_cpu2=3 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=134 elapsed_ms=1005 instantaneous_fps=133
+[virgl-composite] Frame #500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[freeze-watch] uptime_ms=5963 submits=1635 completes=1637 fails=0 last_completion_ms=5957 fps_last_5s=127 cpu=2 tid=3 ctx_switches=5572 timer_ticks_cpu0=3562 timer_ticks_cpu1=3725 timer_ticks_cpu2=3731 timer_ticks_cpu3=3728 timer_ticks_cpu4=3727 timer_ticks_cpu5=3729 timer_ticks_cpu6=3729 timer_ticks_cpu7=3726 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=13 cur_cpu1=4 cur_cpu2=3 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+[freeze-watch] uptime_ms=6469 submits=1833 completes=1835 fails=0 last_completion_ms=6463 fps_last_5s=130 cpu=3 tid=0 ctx_switches=6033 timer_ticks_cpu0=3977 timer_ticks_cpu1=4139 timer_ticks_cpu2=4141 timer_ticks_cpu3=4140 timer_ticks_cpu4=4142 timer_ticks_cpu5=4146 timer_ticks_cpu6=4147 timer_ticks_cpu7=4141 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=busy
+[bwm-fps] frames_since_last=128 elapsed_ms=1002 instantaneous_fps=127
+[freeze-watch] uptime_ms=6972 submits=2012 completes=2015 fails=0 last_completion_ms=6971 fps_last_5s=119 cpu=4 tid=3 ctx_switches=6466 timer_ticks_cpu0=4394 timer_ticks_cpu1=4558 timer_ticks_cpu2=4557 timer_ticks_cpu3=4550 timer_ticks_cpu4=4556 timer_ticks_cpu5=4560 timer_ticks_cpu6=4564 timer_ticks_cpu7=4556 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=7477 submits=2204 completes=2207 fails=0 last_completion_ms=7474 fps_last_5s=126 cpu=4 tid=3 ctx_switches=6905 timer_ticks_cpu0=4812 timer_ticks_cpu1=4970 timer_ticks_cpu2=4967 timer_ticks_cpu3=4965 timer_ticks_cpu4=4963 timer_ticks_cpu5=4970 timer_ticks_cpu6=4973 timer_ticks_cpu7=4966 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=122 elapsed_ms=1000 instantaneous_fps=122
+[freeze-watch] uptime_ms=7981 submits=2393 completes=2395 fails=0 last_completion_ms=7981 fps_last_5s=123 cpu=7 tid=3 ctx_switches=7321 timer_ticks_cpu0=5225 timer_ticks_cpu1=5394 timer_ticks_cpu2=5381 timer_ticks_cpu3=5376 timer_ticks_cpu4=5376 timer_ticks_cpu5=5385 timer_ticks_cpu6=5389 timer_ticks_cpu7=5382 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=13 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=3 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+[freeze-watch] uptime_ms=8485 submits=2610 completes=2612 fails=0 last_completion_ms=8480 fps_last_5s=144 cpu=6 tid=3 ctx_switches=7811 timer_ticks_cpu0=5644 timer_ticks_cpu1=5810 timer_ticks_cpu2=5798 timer_ticks_cpu3=5789 timer_ticks_cpu4=5789 timer_ticks_cpu5=5799 timer_ticks_cpu6=5804 timer_ticks_cpu7=5793 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=13 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=3 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+[bwm-fps] frames_since_last=139 elapsed_ms=1000 instantaneous_fps=139
+[freeze-watch] uptime_ms=8989 submits=2810 completes=2813 fails=0 last_completion_ms=8986 fps_last_5s=132 cpu=7 tid=3 ctx_switches=8263 timer_ticks_cpu0=6065 timer_ticks_cpu1=6224 timer_ticks_cpu2=6211 timer_ticks_cpu3=6209 timer_ticks_cpu4=6205 timer_ticks_cpu5=6215 timer_ticks_cpu6=6225 timer_ticks_cpu7=6212 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=13 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=3 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=9493 submits=2994 completes=2996 fails=0 last_completion_ms=9488 fps_last_5s=121 cpu=3 tid=3 ctx_switches=8668 timer_ticks_cpu0=6483 timer_ticks_cpu1=6646 timer_ticks_cpu2=6634 timer_ticks_cpu3=6622 timer_ticks_cpu4=6619 timer_ticks_cpu5=6630 timer_ticks_cpu6=6640 timer_ticks_cpu7=6628 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=13 cur_cpu1=4 cur_cpu2=5 cur_cpu3=3 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+[bwm-fps] frames_since_last=126 elapsed_ms=1004 instantaneous_fps=125
+[virgl-composite] Frame #1000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[freeze-watch] uptime_ms=9997 submits=3209 completes=3212 fails=0 last_completion_ms=9990 fps_last_5s=142 cpu=4 tid=3 ctx_switches=9174 timer_ticks_cpu0=6898 timer_ticks_cpu1=7047 timer_ticks_cpu2=7044 timer_ticks_cpu3=7036 timer_ticks_cpu4=7031 timer_ticks_cpu5=7039 timer_ticks_cpu6=7049 timer_ticks_cpu7=7043 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=13 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=136 elapsed_ms=1021 instantaneous_fps=133
+[bwm-fps] frames_since_last=150 elapsed_ms=1000 instantaneous_fps=150
+[bwm-fps] frames_since_last=128 elapsed_ms=1039 instantaneous_fps=123
+[virgl-composite] Frame #1500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[bwm-fps] frames_since_last=118 elapsed_ms=1008 instantaneous_fps=117
+[bwm-fps] frames_since_last=114 elapsed_ms=1000 instantaneous_fps=114
+[freeze-watch] uptime_ms=15001 submits=5123 completes=5126 fails=0 last_completion_ms=14993 fps_last_5s=127 cpu=0 tid=0 ctx_switches=13551 timer_ticks_cpu0=11064 timer_ticks_cpu1=11167 timer_ticks_cpu2=11135 timer_ticks_cpu3=11164 timer_ticks_cpu4=11136 timer_ticks_cpu5=11146 timer_ticks_cpu6=11159 timer_ticks_cpu7=11153 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=145 elapsed_ms=1000 instantaneous_fps=145
+[bwm-fps] frames_since_last=117 elapsed_ms=1001 instantaneous_fps=116
+[virgl-composite] Frame #2000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[bwm-fps] frames_since_last=131 elapsed_ms=1003 instantaneous_fps=130
+[bwm-fps] frames_since_last=118 elapsed_ms=1005 instantaneous_fps=117
+[bwm-fps] frames_since_last=135 elapsed_ms=1005 instantaneous_fps=134
+[freeze-watch] uptime_ms=20006 submits=7056 completes=7058 fails=0 last_completion_ms=19999 fps_last_5s=128 cpu=6 tid=3 ctx_switches=18064 timer_ticks_cpu0=15183 timer_ticks_cpu1=15268 timer_ticks_cpu2=15289 timer_ticks_cpu3=15291 timer_ticks_cpu4=15264 timer_ticks_cpu5=15271 timer_ticks_cpu6=15301 timer_ticks_cpu7=15276 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=13 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=3 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+[bwm-fps] frames_since_last=113 elapsed_ms=1003 instantaneous_fps=112
+[virgl-composite] Frame #2500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[bwm-fps] frames_since_last=133 elapsed_ms=1002 instantaneous_fps=132
+[bwm-fps] frames_since_last=116 elapsed_ms=1005 instantaneous_fps=115
+[bwm-fps] frames_since_last=132 elapsed_ms=1001 instantaneous_fps=131
+[bwm-fps] frames_since_last=142 elapsed_ms=1005 instantaneous_fps=141
+[freeze-watch] uptime_ms=25009 submits=8925 completes=8927 fails=0 last_completion_ms=25003 fps_last_5s=124 cpu=2 tid=3 ctx_switches=22345 timer_ticks_cpu0=19337 timer_ticks_cpu1=19427 timer_ticks_cpu2=19446 timer_ticks_cpu3=19422 timer_ticks_cpu4=19384 timer_ticks_cpu5=19400 timer_ticks_cpu6=19424 timer_ticks_cpu7=19398 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=3 cur_cpu3=13 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+[virgl-composite] Frame #3000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[bwm-fps] frames_since_last=97 elapsed_ms=1002 instantaneous_fps=96
+[bwm-fps] frames_since_last=123 elapsed_ms=1014 instantaneous_fps=121
+[bwm-fps] frames_since_last=131 elapsed_ms=1004 instantaneous_fps=130
+[bwm-fps] frames_since_last=113 elapsed_ms=1003 instantaneous_fps=112
+[virgl-composite] Frame #3500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[bwm-fps] frames_since_last=131 elapsed_ms=1001 instantaneous_fps=130
+[freeze-watch] uptime_ms=30012 submits=10736 completes=10739 fails=0 last_completion_ms=30010 fps_last_5s=120 cpu=4 tid=3 ctx_switches=26466 timer_ticks_cpu0=23487 timer_ticks_cpu1=23619 timer_ticks_cpu2=23561 timer_ticks_cpu3=23564 timer_ticks_cpu4=23493 timer_ticks_cpu5=23513 timer_ticks_cpu6=23554 timer_ticks_cpu7=23521 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=13 cur_cpu2=5 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=113 elapsed_ms=1004 instantaneous_fps=112
+[bwm-fps] frames_since_last=147 elapsed_ms=1006 instantaneous_fps=146
+[bwm-fps] frames_since_last=115 elapsed_ms=1004 instantaneous_fps=114
+[virgl-composite] Frame #4000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[bwm-fps] frames_since_last=143 elapsed_ms=1002 instantaneous_fps=142
+[bwm-fps] frames_since_last=124 elapsed_ms=1017 instantaneous_fps=121
+[freeze-watch] uptime_ms=35016 submits=12611 completes=12614 fails=0 last_completion_ms=35015 fps_last_5s=124 cpu=6 tid=3 ctx_switches=30713 timer_ticks_cpu0=27626 timer_ticks_cpu1=27720 timer_ticks_cpu2=27718 timer_ticks_cpu3=27689 timer_ticks_cpu4=27618 timer_ticks_cpu5=27640 timer_ticks_cpu6=27688 timer_ticks_cpu7=27637 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=3 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=110 elapsed_ms=1000 instantaneous_fps=110
+[bwm-fps] frames_since_last=154 elapsed_ms=1000 instantaneous_fps=154
+[virgl-composite] Frame #4500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[bwm-fps] frames_since_last=135 elapsed_ms=1003 instantaneous_fps=134
+[bwm-fps] frames_since_last=131 elapsed_ms=1005 instantaneous_fps=130
+[bwm-fps] frames_since_last=124 elapsed_ms=1000 instantaneous_fps=124
+[freeze-watch] uptime_ms=40020 submits=14574 completes=14576 fails=0 last_completion_ms=40013 fps_last_5s=130 cpu=1 tid=0 ctx_switches=35247 timer_ticks_cpu0=31729 timer_ticks_cpu1=31881 timer_ticks_cpu2=31838 timer_ticks_cpu3=31813 timer_ticks_cpu4=31744 timer_ticks_cpu5=31792 timer_ticks_cpu6=31809 timer_ticks_cpu7=31760 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=busy
+[bwm-fps] frames_since_last=133 elapsed_ms=1001 instantaneous_fps=132
+[virgl-composite] Frame #5000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[bwm-fps] frames_since_last=132 elapsed_ms=1003 instantaneous_fps=131
+[bwm-fps] frames_since_last=146 elapsed_ms=1041 instantaneous_fps=140
+[bwm-fps] frames_since_last=148 elapsed_ms=1026 instantaneous_fps=144
+[virgl-composite] Frame #5500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[bwm-fps] frames_since_last=160 elapsed_ms=1000 instantaneous_fps=160
+[freeze-watch] uptime_ms=45023 submits=16743 completes=16745 fails=0 last_completion_ms=45018 fps_last_5s=144 cpu=0 tid=3 ctx_switches=40056 timer_ticks_cpu0=35845 timer_ticks_cpu1=35988 timer_ticks_cpu2=35991 timer_ticks_cpu3=35929 timer_ticks_cpu4=35888 timer_ticks_cpu5=35925 timer_ticks_cpu6=35953 timer_ticks_cpu7=35901 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=3 cur_cpu1=13 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+[bwm-fps] frames_since_last=145 elapsed_ms=1003 instantaneous_fps=144
+[bwm-fps] frames_since_last=152 elapsed_ms=1014 instantaneous_fps=149
+[bwm-fps] frames_since_last=121 elapsed_ms=1006 instantaneous_fps=120
+[virgl-composite] Frame #6000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[bwm-fps] frames_since_last=110 elapsed_ms=1001 instantaneous_fps=109
+[bwm-fps] frames_since_last=136 elapsed_ms=1005 instantaneous_fps=135
+[freeze-watch] uptime_ms=50032 submits=18725 completes=18728 fails=0 last_completion_ms=50032 fps_last_5s=131 cpu=1 tid=3 ctx_switches=44466 timer_ticks_cpu0=39958 timer_ticks_cpu1=40139 timer_ticks_cpu2=40125 timer_ticks_cpu3=40048 timer_ticks_cpu4=40023 timer_ticks_cpu5=40051 timer_ticks_cpu6=40073 timer_ticks_cpu7=40045 rq_total=1 rq_cpu0=1 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=3 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=5 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=136 elapsed_ms=1004 instantaneous_fps=135
+[bwm-fps] frames_since_last=147 elapsed_ms=1013 instantaneous_fps=145
+[virgl-composite] Frame #6500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[bwm-fps] frames_since_last=109 elapsed_ms=1003 instantaneous_fps=108
+[bwm-fps] frames_since_last=136 elapsed_ms=1006 instantaneous_fps=135
+[bwm-fps] frames_since_last=126 elapsed_ms=1002 instantaneous_fps=125
+[freeze-watch] uptime_ms=55036 submits=20673 completes=20675 fails=0 last_completion_ms=55031 fps_last_5s=129 cpu=5 tid=3 ctx_switches=48883 timer_ticks_cpu0=44085 timer_ticks_cpu1=44252 timer_ticks_cpu2=44222 timer_ticks_cpu3=44155 timer_ticks_cpu4=44123 timer_ticks_cpu5=44165 timer_ticks_cpu6=44173 timer_ticks_cpu7=44144 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=13 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=3 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+[bwm-fps] frames_since_last=127 elapsed_ms=1002 instantaneous_fps=126
+[virgl-composite] Frame #7000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[bwm-fps] frames_since_last=127 elapsed_ms=1004 instantaneous_fps=126
+[bwm-fps] frames_since_last=135 elapsed_ms=1001 instantaneous_fps=134
+[bwm-fps] frames_since_last=141 elapsed_ms=1006 instantaneous_fps=140
+[virgl-composite] Frame #7500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[bwm-fps] frames_since_last=133 elapsed_ms=1002 instantaneous_fps=132
+[freeze-watch] uptime_ms=60040 submits=22653 completes=22655 fails=0 last_completion_ms=60034 fps_last_5s=131 cpu=2 tid=0 ctx_switches=53446 timer_ticks_cpu0=48212 timer_ticks_cpu1=48338 timer_ticks_cpu2=48324 timer_ticks_cpu3=48250 timer_ticks_cpu4=48237 timer_ticks_cpu5=48283 timer_ticks_cpu6=48276 timer_ticks_cpu7=48260 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=busy
+[bwm-fps] frames_since_last=119 elapsed_ms=1006 instantaneous_fps=118
+[bwm-fps] frames_since_last=116 elapsed_ms=1004 instantaneous_fps=115
+[bwm-fps] frames_since_last=115 elapsed_ms=1006 instantaneous_fps=114
+[bwm-fps] frames_since_last=106 elapsed_ms=1001 instantaneous_fps=105
+[virgl-composite] Frame #8000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[bwm-fps] frames_since_last=130 elapsed_ms=1008 instantaneous_fps=128
+[freeze-watch] uptime_ms=65044 submits=24401 completes=24404 fails=0 last_completion_ms=65038 fps_last_5s=116 cpu=6 tid=3 ctx_switches=57395 timer_ticks_cpu0=52334 timer_ticks_cpu1=52405 timer_ticks_cpu2=52410 timer_ticks_cpu3=52330 timer_ticks_cpu4=52299 timer_ticks_cpu5=52343 timer_ticks_cpu6=52349 timer_ticks_cpu7=52327 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=13 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=3 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=111 elapsed_ms=1007 instantaneous_fps=110
+[bwm-fps] frames_since_last=125 elapsed_ms=1004 instantaneous_fps=124
+[bwm-fps] frames_since_last=132 elapsed_ms=1001 instantaneous_fps=131
+[virgl-composite] Frame #8500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[bwm-fps] frames_since_last=148 elapsed_ms=1004 instantaneous_fps=147
+[bwm-fps] frames_since_last=129 elapsed_ms=1006 instantaneous_fps=128
+[freeze-watch] uptime_ms=70049 submits=26333 completes=26336 fails=0 last_completion_ms=70048 fps_last_5s=128 cpu=1 tid=3 ctx_switches=61791 timer_ticks_cpu0=56485 timer_ticks_cpu1=56542 timer_ticks_cpu2=56536 timer_ticks_cpu3=56450 timer_ticks_cpu4=56433 timer_ticks_cpu5=56469 timer_ticks_cpu6=56474 timer_ticks_cpu7=56450 rq_total=1 rq_cpu0=1 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=3 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=141 elapsed_ms=1004 instantaneous_fps=140
