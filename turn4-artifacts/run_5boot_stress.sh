@@ -4,6 +4,7 @@ set -u
 
 ROOT="/Users/wrb/fun/code/breenix.worktrees/virtio-gpu-interrupt-driven"
 CONTROL="/Users/wrb/Downloads/Ralph/breenix-virtio-gpu-interrupt-driven-1779178791"
+AHCI_CONTROL="/Users/wrb/Downloads/Ralph/breenix-ahci-interrupt-driven-1779178791"
 ART="$ROOT/turn4-artifacts"
 HB="$CONTROL/heartbeat"
 SERIAL_LOG="/tmp/breenix-parallels-serial.log"
@@ -14,6 +15,7 @@ BOOT_COUNT=5
 ACTIVE_SECONDS=220
 BOOT_PROGRESS_TIMEOUT=180
 PRL_TIMEOUT=30
+COORDINATION_WAIT_SECONDS=1800
 
 for arg in "$@"; do
   case "$arg" in
@@ -51,18 +53,62 @@ qemu_cleanup() {
   killall -9 qemu-system-x86_64 2>/dev/null || true
 }
 
-list_breenix_vms() {
-  timeout "$PRL_TIMEOUT" prlctl list --all 2>/dev/null \
-    | awk 'NR > 1 && $NF ~ /^breenix-/ { print $NF }'
+coordination_snapshot() {
+  local out_file="$1"
+  local err_file="$2"
+  : >"$out_file"
+  : >"$err_file"
+  timeout -k 5 "$PRL_TIMEOUT" prlctl list -a -o name,status >"$out_file" 2>"$err_file"
 }
 
-delete_breenix_vms() {
-  local vm
-  while IFS= read -r vm; do
-    [ -n "$vm" ] || continue
-    timeout "$PRL_TIMEOUT" prlctl stop "$vm" --kill >>"$HARNESS_LOG" 2>&1 || true
-    timeout "$PRL_TIMEOUT" prlctl delete "$vm" >>"$HARNESS_LOG" 2>&1 || true
-  done < <(list_breenix_vms)
+wait_for_coordination_gate() {
+  local boot_num="$1"
+  local boot_dir="$ART/boot-$boot_num"
+  local coord_log="$boot_dir/coordination.log"
+  local prl_out="$boot_dir/prlctl-coordination.out"
+  local prl_err="$boot_dir/prlctl-coordination.err"
+  local start now elapsed ahci_state prl_rc breenix_lines active_lines
+  mkdir -p "$boot_dir"
+  : >"$coord_log"
+  start="$(date +%s)"
+
+  while true; do
+    heartbeat
+    ahci_state="$(cat "$AHCI_CONTROL/state.txt" 2>/dev/null || echo MISSING)"
+    coordination_snapshot "$prl_out" "$prl_err"
+    prl_rc="$?"
+    breenix_lines="$(awk 'NR > 1 && $1 ~ /^breenix-/ { print }' "$prl_out" 2>/dev/null)"
+    active_lines="$(printf '%s\n' "$breenix_lines" | awk '$2 == "running" || $2 == "stopping" { print }')"
+    now="$(date +%s)"
+    elapsed=$((now - start))
+    {
+      printf '[%s] elapsed=%ss ahci_state=%s prl_rc=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$elapsed" "$ahci_state" "$prl_rc"
+      if [ -n "$breenix_lines" ]; then
+        printf 'breenix_vms:\n%s\n' "$breenix_lines"
+      else
+        printf 'breenix_vms: none\n'
+      fi
+      if [ -s "$prl_err" ]; then
+        printf 'prlctl_stderr:\n'
+        cat "$prl_err"
+      fi
+    } >>"$coord_log"
+
+    case "$ahci_state" in
+      AWAITING_REVIEW|STOP|MISSING)
+        if [ "$prl_rc" -eq 0 ] && [ -z "$breenix_lines" ] && [ -z "$active_lines" ]; then
+          log "boot-$boot_num: coordination gate open ahci_state=$ahci_state"
+          return 0
+        fi
+        ;;
+    esac
+
+    if [ "$elapsed" -ge "$COORDINATION_WAIT_SECONDS" ]; then
+      log "boot-$boot_num: coordination gate timeout ahci_state=$ahci_state"
+      return 1
+    fi
+    sleep 120
+  done
 }
 
 cleanup_run_process() {
@@ -169,7 +215,7 @@ capture_gdb_state() {
     echo "guest-debugger:"
   } >"$gdb_state"
 
-  timeout "$PRL_TIMEOUT" prlctl guest-debugger "$vm" --port "$port" >>"$boot_dir/guest-debugger.log" 2>&1 &
+  timeout -k 5 "$PRL_TIMEOUT" prlctl guest-debugger "$vm" --port "$port" >>"$boot_dir/guest-debugger.log" 2>&1 &
   local dbg_pid=$!
   local opened=0
   local i
@@ -195,7 +241,7 @@ p/x VIRTGPU_LAST_COMPLETION_MS
 detach
 quit
 GDBEOF
-    timeout 45 gdb -nx -batch -x "$boot_dir/gdb-commands.txt" "$KERNEL_ELF" >>"$gdb_state" 2>&1
+    timeout -k 5 45 gdb -nx -batch -x "$boot_dir/gdb-commands.txt" "$KERNEL_ELF" >>"$gdb_state" 2>&1
     echo "gdb_exit=$?" >>"$gdb_state"
   else
     echo "guest_debugger_port=timeout" >>"$gdb_state"
@@ -225,7 +271,7 @@ classify_boot() {
   cpu0="$(count_pattern 'CPU0 REGRESSION|CPU0 tick_count.*peer max' "$serial")"
   far="$(count_pattern 'FAR=0x0*ccd|FAR=0xccd' "$serial")"
   panic="$(count_pattern 'KERNEL PANIC|Synchronous exception|Data Abort' "$serial")"
-  poll="$(count_pattern '_poll' "$serial")"
+  poll="$(count_pattern 'virtio.*poll|gpu.*poll|fence.*poll|used\.idx.*poll|polling loop' "$serial")"
   max_busy="$(max_busy_window_ms "$serial")"
   serial_bytes="$(wc -c <"$serial" 2>/dev/null || echo 0)"
 
@@ -305,9 +351,19 @@ run_boot() {
   VM_NAME=""
   RUN_PID=""
 
+  log "boot-$boot_num: waiting for coordination gate"
+  if ! wait_for_coordination_gate "$boot_num"; then
+    {
+      echo "status=blocked"
+      echo "reason=coordination_gate_timeout"
+      echo "vm="
+    } >"$boot_dir/result.txt"
+    printf 'boot-%s\tblocked\tcoordination_gate_timeout\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t\n' "$boot_num" >>"$METRICS"
+    return
+  fi
+
   log "boot-$boot_num: cleanup before launch"
   qemu_cleanup
-  delete_breenix_vms
   heartbeat
 
   log "boot-$boot_num: starting ./run.sh --parallels --no-build"
@@ -324,6 +380,7 @@ run_boot() {
     VM_NAME="$(vm_name_from_run_out "$boot_dir/run.out")"
     if [ -n "$VM_NAME" ]; then
       log "boot-$boot_num: detected VM $VM_NAME"
+      echo "$VM_NAME" >"$boot_dir/vm-name.txt"
       break
     fi
     if ! kill -0 "$RUN_PID" 2>/dev/null; then
@@ -414,7 +471,7 @@ run_boot() {
     "$boot_dir/serial.log" >"$boot_dir/signals.log" 2>/dev/null || true
 
   if [ -n "$VM_NAME" ]; then
-    timeout "$PRL_TIMEOUT" prlctl capture "$VM_NAME" --file "$boot_dir/screenshot.png" >>"$boot_dir/prlctl-capture.log" 2>&1 || true
+    timeout -k 5 "$PRL_TIMEOUT" prlctl capture "$VM_NAME" --file "$boot_dir/screenshot.png" >>"$boot_dir/prlctl-capture.log" 2>&1 || true
     capture_gdb_state "$boot_dir" "$boot_num" "$VM_NAME" "$boot_dir/serial.log"
   else
     echo "vm=unknown" >"$boot_dir/gdb-state.log"
@@ -425,10 +482,9 @@ run_boot() {
 
   cleanup_run_process
   if [ -n "$VM_NAME" ]; then
-    timeout "$PRL_TIMEOUT" prlctl stop "$VM_NAME" --kill >>"$boot_dir/prlctl-stop.log" 2>&1 || true
-    timeout "$PRL_TIMEOUT" prlctl delete "$VM_NAME" >>"$boot_dir/prlctl-delete.log" 2>&1 || true
+    timeout -k 5 "$PRL_TIMEOUT" prlctl stop "$VM_NAME" --kill >>"$boot_dir/prlctl-stop.log" 2>&1 || true
+    timeout -k 5 "$PRL_TIMEOUT" prlctl delete "$VM_NAME" >>"$boot_dir/prlctl-delete.log" 2>&1 || true
   fi
-  delete_breenix_vms
   qemu_cleanup
 }
 
