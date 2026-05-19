@@ -1,0 +1,17 @@
+kprobe:try_to_wake_up
+{
+  @entry[tid] = nsecs;
+  @caller[kstack()] = count();
+}
+
+kretprobe:try_to_wake_up
+/@entry[tid]/
+{
+  @latency_ns = hist(nsecs - @entry[tid]);
+  delete(@entry[tid]);
+}
+
+interval:s:10
+{
+  exit();
+}

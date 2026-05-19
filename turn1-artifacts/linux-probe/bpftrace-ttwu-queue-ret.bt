@@ -1,0 +1,39 @@
+kprobe:try_to_wake_up
+{
+  @ttwu = count();
+}
+
+kprobe:ttwu_queue_wakelist
+{
+  @ttwu_queue_wakelist_entry = count();
+}
+
+kretprobe:ttwu_queue_wakelist /retval != 0/
+{
+  @ttwu_queue_wakelist_true = count();
+}
+
+kretprobe:ttwu_queue_wakelist /retval == 0/
+{
+  @ttwu_queue_wakelist_false = count();
+}
+
+kprobe:__smp_call_single_queue
+{
+  @smp_call_single_queue = count();
+}
+
+kprobe:ttwu_do_activate
+{
+  @ttwu_do_activate = count();
+}
+
+kprobe:arch_smp_send_reschedule
+{
+  @resched_ipi = count();
+}
+
+interval:s:5
+{
+  exit();
+}

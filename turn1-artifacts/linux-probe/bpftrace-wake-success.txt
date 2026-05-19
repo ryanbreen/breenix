@@ -1,0 +1,33 @@
+Attaching 11 probes...
+
+
+@activate: 8948
+@activate_per_cpu[2]: 1994
+@activate_per_cpu[1]: 2247
+@activate_per_cpu[3]: 2299
+@activate_per_cpu[0]: 2408
+@enqueue_all: 12574
+@enqueue_all_by_func[kprobe:enqueue_task_stop]: 106
+@enqueue_all_by_func[kprobe:enqueue_task_rt]: 152
+@enqueue_all_by_func[kprobe:enqueue_task_fair]: 12316
+@ipi: 227
+@ipi_per_cpu[3]: 46
+@ipi_per_cpu[2]: 52
+@ipi_per_cpu[1]: 54
+@ipi_per_cpu[0]: 75
+@new_task: 1795
+@queue_remote: 8977
+@queue_remote_per_cpu[2]: 1907
+@queue_remote_per_cpu[3]: 2161
+@queue_remote_per_cpu[1]: 2325
+@queue_remote_per_cpu[0]: 2584
+@ttwu_entry: 10925
+@ttwu_entry_per_cpu[2]: 2366
+@ttwu_entry_per_cpu[3]: 2560
+@ttwu_entry_per_cpu[1]: 2873
+@ttwu_entry_per_cpu[0]: 3126
+@ttwu_noop: 1932
+@ttwu_success: 8678
+
+--- STDERR ---
+[sudo] password for wrb:

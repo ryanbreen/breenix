@@ -1,0 +1,39 @@
+kprobe:try_to_wake_up
+{
+  @ttwu = count();
+}
+
+kprobe:ttwu_queue_wakelist
+{
+  @ttwu_wakelist = count();
+}
+
+kprobe:__smp_call_single_queue
+{
+  @smp_call_single_queue = count();
+}
+
+kprobe:generic_smp_call_function_single_interrupt
+{
+  @smp_call_single_interrupt = count();
+}
+
+kprobe:arch_smp_send_reschedule
+{
+  @resched_ipi = count();
+}
+
+tracepoint:ipi:ipi_send_cpu
+{
+  @ipi_send_cpu = count();
+}
+
+tracepoint:ipi:ipi_entry
+{
+  @ipi_entry = count();
+}
+
+interval:s:5
+{
+  exit();
+}

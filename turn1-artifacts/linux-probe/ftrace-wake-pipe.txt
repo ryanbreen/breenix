@@ -1,0 +1,4619 @@
+# tracer: function_graph
+#
+# CPU  DURATION                  FUNCTION CALLS
+# |     |   |                     |   |   |   |
+ 0)               |  wake_up_new_task() {
+ 0)   1.083 us    |    enqueue_task_fair();
+ 0) + 17.292 us   |  }
+ 1)               |  schedule_idle() {
+ ------------------------------------------
+ 1)    <idle>-0    =>   seq-42441
+ ------------------------------------------
+
+ 1)   0.291 us    |  wake_up_bit();
+ ------------------------------------------
+ 1)   seq-42441    =>    <idle>-0
+ ------------------------------------------
+
+ 1) ! 236.916 us  |  } /* schedule_idle */
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0)               |  /* hrtimer_expire_entry: hrtimer=0000000013f5ffc0 function=tick_nohz_highres_handler now=3002461973608099825 */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* hrtimer_expire_exit: hrtimer=0000000013f5ffc0 */
+ 0)               |  /* softirq_raise: vec=4 [action=BLOCK] */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  /* softirq_entry: vec=4 [action=BLOCK] */
+ 0)               |  wake_up_state() {
+ 0)               |    try_to_wake_up() {
+ 0)   2.959 us    |      ttwu_queue_wakelist();
+ 0)   3.459 us    |    }
+ 0)   3.875 us    |  }
+ 0)               |  /* softirq_exit: vec=4 [action=BLOCK] */
+ 1)               |  ttwu_do_activate() {
+ 1)   0.625 us    |    enqueue_task_fair();
+ 1)   1.833 us    |  }
+ 1)               |  schedule_idle() {
+ ------------------------------------------
+ 1)    <idle>-0    =>   seq-42441
+ ------------------------------------------
+
+ 1)   0.167 us    |  wake_up_bit();
+ ------------------------------------------
+ 1)   seq-42441    =>    <idle>-0
+ ------------------------------------------
+
+ 1) + 82.916 us   |  } /* schedule_idle */
+ 0)               |  /* softirq_raise: vec=4 [action=BLOCK] */
+ 0)               |  /* softirq_entry: vec=4 [action=BLOCK] */
+ 0)               |  /* softirq_exit: vec=4 [action=BLOCK] */
+ 0)               |  /* softirq_raise: vec=4 [action=BLOCK] */
+ 0)               |  /* softirq_entry: vec=4 [action=BLOCK] */
+ 0)               |  wake_up_state() {
+ 0)               |    try_to_wake_up() {
+ 0)   2.417 us    |      ttwu_queue_wakelist();
+ 0)   2.791 us    |    }
+ 0)   3.125 us    |  }
+ 0)               |  /* softirq_exit: vec=4 [action=BLOCK] */
+ 1)               |  ttwu_do_activate() {
+ 1)   0.708 us    |    enqueue_task_fair();
+ 1)   2.834 us    |  }
+ 1)               |  schedule_idle() {
+ ------------------------------------------
+ 1)    <idle>-0    =>   seq-42441
+ ------------------------------------------
+
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   4.125 us    |      ttwu_queue_wakelist();
+ 1)   4.667 us    |    }
+ 1)   5.000 us    |  }
+ 0)               |  ttwu_do_activate() {
+ 0)   0.834 us    |    enqueue_task_fair();
+ 0)   2.125 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)   0.208 us    |  wake_up_bit();
+ 1)   0.333 us    |  enqueue_task_fair();
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 17.333 us   |  } /* schedule_idle */
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   2.875 us    |      ttwu_queue_wakelist();
+ 1)   3.250 us    |    }
+ 1)   3.417 us    |  }
+ ------------------------------------------
+ 1)   seq-42441    =>    <idle>-0
+ ------------------------------------------
+
+ 1) ! 277.042 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   0.875 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.875 us    |    enqueue_task_fair();
+ 0)   6.417 us    |  }
+ 2)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.666 us    |    enqueue_task_fair();
+ 0)   4.791 us    |  }
+ 3)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) ! 128.958 us  |  } /* schedule_idle */
+ ------------------------------------------
+ 2)    <idle>-0    =>   bash-42442
+ ------------------------------------------
+
+ 2)   0.375 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   2.708 us    |      ttwu_queue_wakelist();
+ 2)   3.042 us    |    }
+ 2)   3.250 us    |  }
+ ------------------------------------------
+ 2)   bash-42442   =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 115.792 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.541 us    |    enqueue_task_fair();
+ 0)   1.500 us    |  }
+ 0)   5.917 us    |  schedule_idle();
+ ------------------------------------------
+ 3)    <idle>-0    =>   cat-42443
+ ------------------------------------------
+
+ 3)               |  /* hrtimer_expire_entry: hrtimer=00000000ff1100e4 function=tick_nohz_highres_handler now=3002461973609003211 */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=7 [action=SCHED] */
+ 3)               |  /* hrtimer_expire_exit: hrtimer=00000000ff1100e4 */
+ 3)               |  /* softirq_entry: vec=7 [action=SCHED] */
+ 3)               |  /* softirq_exit: vec=7 [action=SCHED] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  /* softirq_raise: vec=7 [action=SCHED] */
+ 1)               |  /* hrtimer_expire_entry: hrtimer=00000000ac91cf4e function=tick_nohz_highres_handler now=3002461973609016336 */
+ 1)               |  /* softirq_raise: vec=1 [action=TIMER] */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* softirq_raise: vec=7 [action=SCHED] */
+ 1)               |  /* hrtimer_expire_exit: hrtimer=00000000ac91cf4e */
+ 1)               |  /* softirq_entry: vec=7 [action=SCHED] */
+ 1)               |  /* softirq_exit: vec=7 [action=SCHED] */
+ 1)               |  /* softirq_entry: vec=1 [action=TIMER] */
+ 1)               |  /* softirq_exit: vec=1 [action=TIMER] */
+ 1)               |  /* softirq_entry: vec=7 [action=SCHED] */
+ 1)               |  /* softirq_exit: vec=7 [action=SCHED] */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  /* hrtimer_expire_entry: hrtimer=0000000013f5ffc0 function=tick_nohz_highres_handler now=3002461973609032836 */
+ 2)               |  /* hrtimer_expire_entry: hrtimer=0000000021deaad6 function=tick_nohz_highres_handler now=3002461973609032961 */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* hrtimer_expire_exit: hrtimer=0000000021deaad6 */
+ 0)               |  /* hrtimer_expire_exit: hrtimer=0000000013f5ffc0 */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)   0.291 us    |  wake_up_bit();
+ 3)   0.292 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   3.500 us    |      ttwu_queue_wakelist();
+ 3)   3.875 us    |    }
+ 3)   4.083 us    |  }
+ ------------------------------------------
+ 3)   cat-42443    =>    <idle>-0
+ ------------------------------------------
+
+ 3) ! 315.750 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.667 us    |    enqueue_task_fair();
+ 0)   1.833 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   5.042 us    |  }
+ 1)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.416 us    |    enqueue_task_fair();
+ 0)   3.417 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 90.625 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 1)    <idle>-0    =>   bash-42444
+ ------------------------------------------
+
+ 1)   0.291 us    |  enqueue_task_fair();
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   2.500 us    |      ttwu_queue_wakelist();
+ 1)   2.750 us    |    }
+ 1)   2.917 us    |  }
+ ------------------------------------------
+ 1)   bash-42444   =>    <idle>-0
+ ------------------------------------------
+
+ 1) + 92.625 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.667 us    |    enqueue_task_fair();
+ 0)   1.750 us    |  }
+ 0)   4.125 us    |  schedule_idle();
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42445
+ ------------------------------------------
+
+ 2)   0.292 us    |  wake_up_bit();
+ 2)   0.292 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   3.166 us    |      ttwu_queue_wakelist();
+ 2)   3.500 us    |    }
+ 2)   3.667 us    |  }
+ ------------------------------------------
+ 2)   cat-42445    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 262.000 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.750 us    |    enqueue_task_fair();
+ 0)   2.166 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.417 us    |    enqueue_task_fair();
+ 0)   3.709 us    |  }
+ 2)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.292 us    |    enqueue_task_fair();
+ 0)   3.875 us    |  }
+ 1)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 82.458 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 2)    <idle>-0    =>   bash-42446
+ ------------------------------------------
+
+ 2)   0.250 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   2.458 us    |      ttwu_queue_wakelist();
+ 2)   2.750 us    |    }
+ 2)   2.875 us    |  }
+ ------------------------------------------
+ 2)   bash-42446   =>    <idle>-0
+ ------------------------------------------
+
+ 2) + 92.833 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.541 us    |    enqueue_task_fair();
+ 0)   1.625 us    |  }
+ 0)   3.750 us    |  schedule_idle();
+ ------------------------------------------
+ 1)    <idle>-0    =>   cat-42447
+ ------------------------------------------
+
+ 1)   0.209 us    |  wake_up_bit();
+ 1)   0.208 us    |  enqueue_task_fair();
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   3.083 us    |      ttwu_queue_wakelist();
+ 1)   3.292 us    |    }
+ 1)   3.458 us    |  }
+ ------------------------------------------
+ 1)   cat-42447    =>    <idle>-0
+ ------------------------------------------
+
+ 1) ! 248.500 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.500 us    |    enqueue_task_fair();
+ 0)   1.958 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.291 us    |    enqueue_task_fair();
+ 0)   3.167 us    |  }
+ 1)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   3.250 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 89.500 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 1)    <idle>-0    =>   bash-42448
+ ------------------------------------------
+
+ 1)   0.333 us    |  enqueue_task_fair();
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   2.500 us    |      ttwu_queue_wakelist();
+ 1)   2.750 us    |    }
+ 1)   2.875 us    |  }
+ ------------------------------------------
+ 1)   bash-42448   =>    <idle>-0
+ ------------------------------------------
+
+ 1) + 95.625 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.458 us    |    enqueue_task_fair();
+ 0)   1.667 us    |  }
+ 0)   3.792 us    |  schedule_idle();
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42449
+ ------------------------------------------
+
+ 2)               |  /* hrtimer_expire_entry: hrtimer=0000000021deaad6 function=tick_nohz_highres_handler now=3002461973610003097 */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* hrtimer_expire_exit: hrtimer=0000000021deaad6 */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  /* hrtimer_expire_entry: hrtimer=0000000013f5ffc0 function=tick_nohz_highres_handler now=3002461973610008264 */
+ 0)               |  /* hrtimer_expire_exit: hrtimer=0000000013f5ffc0 */
+ 1)               |  /* hrtimer_expire_entry: hrtimer=00000000ac91cf4e function=tick_nohz_highres_handler now=3002461973610012014 */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* hrtimer_expire_exit: hrtimer=00000000ac91cf4e */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  try_to_wake_up() {
+ 1)   2.375 us    |    ttwu_queue_wakelist();
+ 1)   2.833 us    |  }
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* hrtimer_expire_entry: hrtimer=00000000ff1100e4 function=tick_nohz_highres_handler now=3002461973610019972 */
+ 3)               |  /* softirq_raise: vec=7 [action=SCHED] */
+ 3)               |  /* hrtimer_expire_exit: hrtimer=00000000ff1100e4 */
+ 3)               |  ttwu_do_activate() {
+ 3)   0.417 us    |    enqueue_task_fair();
+ 3)   4.250 us    |  }
+ 3)               |  /* softirq_entry: vec=7 [action=SCHED] */
+ 3)               |  /* softirq_exit: vec=7 [action=SCHED] */
+ 3)   3.166 us    |  schedule_idle();
+ 2)   0.250 us    |  wake_up_bit();
+ 2)   0.250 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   2.791 us    |      ttwu_queue_wakelist();
+ 2)   3.042 us    |    }
+ 2)   3.208 us    |  }
+ ------------------------------------------
+ 2)   cat-42449    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 289.875 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   1.042 us    |    enqueue_task_fair();
+ 0)   2.583 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.416 us    |    enqueue_task_fair();
+ 0)   4.083 us    |  }
+ 3)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   5.708 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 94.750 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 3)    <idle>-0    =>   bash-42450
+ ------------------------------------------
+
+ 3)   0.291 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   2.584 us    |      ttwu_queue_wakelist();
+ 3)   3.000 us    |    }
+ 3)   3.125 us    |  }
+ ------------------------------------------
+ 3)   bash-42450   =>    <idle>-0
+ ------------------------------------------
+
+ 3) ! 102.208 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.583 us    |    enqueue_task_fair();
+ 0)   1.708 us    |  }
+ 0)   4.792 us    |  schedule_idle();
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42451
+ ------------------------------------------
+
+ 2)   0.208 us    |  wake_up_bit();
+ 2)   0.250 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   2.833 us    |      ttwu_queue_wakelist();
+ 2)   3.083 us    |    }
+ 2)   3.250 us    |  }
+ ------------------------------------------
+ 2)   cat-42451    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 249.084 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.792 us    |    enqueue_task_fair();
+ 0)   2.292 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.334 us    |    enqueue_task_fair();
+ 0)   3.166 us    |  }
+ 2)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   3.166 us    |  }
+ 1)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 80.917 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 2)    <idle>-0    =>   bash-42452
+ ------------------------------------------
+
+ 2)   0.208 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   4.791 us    |      ttwu_queue_wakelist();
+ 2)   5.084 us    |    }
+ 2)   5.250 us    |  }
+ ------------------------------------------
+ 2)   bash-42452   =>    <idle>-0
+ ------------------------------------------
+
+ 2) + 92.708 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.541 us    |    enqueue_task_fair();
+ 0)   1.666 us    |  }
+ 0)   4.000 us    |  schedule_idle();
+ ------------------------------------------
+ 1)    <idle>-0    =>   cat-42453
+ ------------------------------------------
+
+ 1)   0.208 us    |  wake_up_bit();
+ 1)   0.209 us    |  enqueue_task_fair();
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   2.916 us    |      ttwu_queue_wakelist();
+ 1)   3.166 us    |    }
+ 1)   3.334 us    |  }
+ ------------------------------------------
+ 1)   cat-42453    =>    <idle>-0
+ ------------------------------------------
+
+ 1) ! 246.291 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.541 us    |    enqueue_task_fair();
+ 0)   1.959 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.291 us    |    enqueue_task_fair();
+ 0)   3.125 us    |  }
+ 1)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.333 us    |    enqueue_task_fair();
+ 0)   3.208 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 74.834 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42455
+ ------------------------------------------
+
+ 2)               |  /* hrtimer_expire_entry: hrtimer=0000000021deaad6 function=tick_nohz_highres_handler now=3002461973611002775 */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ ------------------------------------------
+ 1)    <idle>-0    =>   bash-42454
+ ------------------------------------------
+
+ 1)               |  /* hrtimer_expire_entry: hrtimer=00000000ac91cf4e function=tick_nohz_highres_handler now=3002461973611003150 */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* hrtimer_expire_exit: hrtimer=0000000021deaad6 */
+ 1)               |  /* hrtimer_expire_exit: hrtimer=00000000ac91cf4e */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  /* hrtimer_expire_entry: hrtimer=0000000013f5ffc0 function=tick_nohz_highres_handler now=3002461973611018734 */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_raise: vec=7 [action=SCHED] */
+ 0)               |  /* hrtimer_expire_exit: hrtimer=0000000013f5ffc0 */
+ 1)   0.250 us    |  enqueue_task_fair();
+ 0)               |  /* softirq_entry: vec=7 [action=SCHED] */
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   1.958 us    |      ttwu_queue_wakelist();
+ 0)               |  /* softirq_exit: vec=7 [action=SCHED] */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)   2.167 us    |    }
+ 1)   2.333 us    |  }
+ ------------------------------------------
+ 1)   bash-42454   =>    <idle>-0
+ ------------------------------------------
+
+ 1) + 96.917 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.208 us    |    enqueue_task_fair();
+ 0)   0.542 us    |  }
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)   2.791 us    |  schedule_idle();
+ 3)               |  /* hrtimer_expire_entry: hrtimer=00000000ff1100e4 function=tick_nohz_highres_handler now=3002461973611082068 */
+ 3)               |  /* softirq_raise: vec=1 [action=TIMER] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=7 [action=SCHED] */
+ 3)               |  /* hrtimer_expire_exit: hrtimer=00000000ff1100e4 */
+ 3)               |  /* softirq_entry: vec=1 [action=TIMER] */
+ 3)               |  /* softirq_exit: vec=1 [action=TIMER] */
+ 3)               |  /* softirq_entry: vec=7 [action=SCHED] */
+ 3)               |  /* softirq_exit: vec=7 [action=SCHED] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)   0.292 us    |  wake_up_bit();
+ 2)   0.250 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   2.708 us    |      ttwu_queue_wakelist();
+ 2)   2.958 us    |    }
+ 2)   3.083 us    |  }
+ ------------------------------------------
+ 2)   cat-42455    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 252.583 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   1.084 us    |    enqueue_task_fair();
+ 0)   2.250 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   3.209 us    |  }
+ 3)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.333 us    |    enqueue_task_fair();
+ 0)   3.167 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 74.958 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 3)    <idle>-0    =>   bash-42456
+ ------------------------------------------
+
+ 3)   0.333 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   2.334 us    |      ttwu_queue_wakelist();
+ 3)   2.583 us    |    }
+ 3)   2.709 us    |  }
+ ------------------------------------------
+ 3)   bash-42456   =>    <idle>-0
+ ------------------------------------------
+
+ 3) + 89.625 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.334 us    |    enqueue_task_fair();
+ 0)   0.958 us    |  }
+ 0)   3.334 us    |  schedule_idle();
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42457
+ ------------------------------------------
+
+ 2)   0.291 us    |  wake_up_bit();
+ 2)   0.209 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   3.416 us    |      ttwu_queue_wakelist();
+ 2)   3.708 us    |    }
+ 2)   3.792 us    |  }
+ ------------------------------------------
+ 2)   cat-42457    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 231.167 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.792 us    |    enqueue_task_fair();
+ 0)   2.459 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.500 us    |    enqueue_task_fair();
+ 0)   5.875 us    |  }
+ 2)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.459 us    |    enqueue_task_fair();
+ 0)   4.625 us    |  }
+ 1)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) ! 119.958 us  |  } /* schedule_idle */
+ ------------------------------------------
+ 2)    <idle>-0    =>   bash-42458
+ ------------------------------------------
+
+ 2)   0.542 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   6.417 us    |      ttwu_queue_wakelist();
+ 2)   6.875 us    |    }
+ 2)   7.041 us    |  }
+ ------------------------------------------
+ 2)   bash-42458   =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 108.625 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.500 us    |    enqueue_task_fair();
+ 0)   1.792 us    |  }
+ 0)   5.875 us    |  schedule_idle();
+ ------------------------------------------
+ 1)    <idle>-0    =>   cat-42459
+ ------------------------------------------
+
+ 1)   0.333 us    |  wake_up_bit();
+ 1)   0.209 us    |  enqueue_task_fair();
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   4.083 us    |      ttwu_queue_wakelist();
+ 1)   4.459 us    |    }
+ 1)   4.625 us    |  }
+ ------------------------------------------
+ 1)   cat-42459    =>    <idle>-0
+ ------------------------------------------
+
+ 1) ! 260.667 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.417 us    |    enqueue_task_fair();
+ 0)   1.541 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.333 us    |    enqueue_task_fair();
+ 0)   3.750 us    |  }
+ 1)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.333 us    |    enqueue_task_fair();
+ 0)   3.417 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42461
+ ------------------------------------------
+
+ 2)               |  /* hrtimer_expire_entry: hrtimer=0000000021deaad6 function=tick_nohz_highres_handler now=3002461973612002704 */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* hrtimer_expire_entry: hrtimer=0000000013f5ffc0 function=tick_nohz_highres_handler now=3002461973612003204 */
+ ------------------------------------------
+ 1)    <idle>-0    =>   bash-42460
+ ------------------------------------------
+
+ 1)               |  /* hrtimer_expire_entry: hrtimer=00000000ac91cf4e function=tick_nohz_highres_handler now=3002461973612003495 */
+ 2)               |  /* hrtimer_expire_exit: hrtimer=0000000021deaad6 */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* hrtimer_expire_exit: hrtimer=0000000013f5ffc0 */
+ 1)               |  /* hrtimer_expire_exit: hrtimer=00000000ac91cf4e */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  try_to_wake_up() {
+ 1)   2.875 us    |    ttwu_queue_wakelist();
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 97.375 us   |  } /* schedule_idle */
+ 1)   3.500 us    |  }
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  ttwu_do_activate() {
+ 3)   0.250 us    |    enqueue_task_fair();
+ 3)   1.250 us    |  }
+ 3)               |  /* hrtimer_expire_entry: hrtimer=00000000ff1100e4 function=tick_nohz_highres_handler now=3002461973612021870 */
+ 3)               |  /* hrtimer_expire_exit: hrtimer=00000000ff1100e4 */
+ 3)   2.167 us    |  schedule_idle();
+ 1)   0.333 us    |  enqueue_task_fair();
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   4.500 us    |      ttwu_queue_wakelist();
+ 1)   4.833 us    |    }
+ 1)   5.000 us    |  }
+ ------------------------------------------
+ 1)   bash-42460   =>    <idle>-0
+ ------------------------------------------
+
+ 1) ! 111.708 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.708 us    |    enqueue_task_fair();
+ 0)   2.500 us    |  }
+ 0)   5.500 us    |  schedule_idle();
+ 2)   0.333 us    |  wake_up_bit();
+ 2)   0.250 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   3.666 us    |      ttwu_queue_wakelist();
+ 2)   3.875 us    |    }
+ 2)   4.042 us    |  }
+ ------------------------------------------
+ 2)   cat-42461    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 256.625 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   1.375 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.417 us    |    enqueue_task_fair();
+ 0)   4.083 us    |  }
+ 2)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   3.458 us    |  }
+ 1)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 90.917 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 2)    <idle>-0    =>   bash-42462
+ ------------------------------------------
+
+ 2)   0.250 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   3.250 us    |      ttwu_queue_wakelist();
+ 2)   3.458 us    |    }
+ 2)   3.583 us    |  }
+ ------------------------------------------
+ 2)   bash-42462   =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 102.125 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.541 us    |    enqueue_task_fair();
+ 0)   1.500 us    |  }
+ 0)   4.416 us    |  schedule_idle();
+ ------------------------------------------
+ 1)    <idle>-0    =>   cat-42463
+ ------------------------------------------
+
+ 1)   0.292 us    |  wake_up_bit();
+ 1)   0.250 us    |  enqueue_task_fair();
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   4.084 us    |      ttwu_queue_wakelist();
+ 1)   4.417 us    |    }
+ 1)   4.625 us    |  }
+ ------------------------------------------
+ 1)   cat-42463    =>    <idle>-0
+ ------------------------------------------
+
+ 1) ! 323.125 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.459 us    |    enqueue_task_fair();
+ 0)   1.875 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.292 us    |    enqueue_task_fair();
+ 0)   3.958 us    |  }
+ 1)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   3.667 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 86.333 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 1)    <idle>-0    =>   bash-42464
+ ------------------------------------------
+
+ 1)   0.334 us    |  enqueue_task_fair();
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   2.792 us    |      ttwu_queue_wakelist();
+ 1)   3.125 us    |    }
+ 1)   3.250 us    |  }
+ ------------------------------------------
+ 1)   bash-42464   =>    <idle>-0
+ ------------------------------------------
+
+ 1) + 92.750 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.459 us    |    enqueue_task_fair();
+ 0)   1.417 us    |  }
+ 0)   3.916 us    |  schedule_idle();
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42465
+ ------------------------------------------
+
+ 2)               |  /* hrtimer_expire_entry: hrtimer=0000000021deaad6 function=tick_nohz_highres_handler now=3002461973613003507 */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* hrtimer_expire_exit: hrtimer=0000000021deaad6 */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  wake_up_process() {
+ 2)               |    try_to_wake_up() {
+ 2)   0.125 us    |      ttwu_queue_wakelist();
+ 2)               |      ttwu_do_activate() {
+ 2)   0.250 us    |        enqueue_task_fair();
+ 2)   1.333 us    |      }
+ 2)   2.375 us    |    }
+ 2)   2.666 us    |  }
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  /* hrtimer_expire_entry: hrtimer=0000000013f5ffc0 function=tick_nohz_highres_handler now=3002461973613051591 */
+ 0)               |  /* softirq_raise: vec=1 [action=TIMER] */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* hrtimer_expire_exit: hrtimer=0000000013f5ffc0 */
+ 1)               |  /* hrtimer_expire_entry: hrtimer=00000000ac91cf4e function=tick_nohz_highres_handler now=3002461973613053882 */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_entry: vec=1 [action=TIMER] */
+ 1)               |  /* hrtimer_expire_exit: hrtimer=00000000ac91cf4e */
+ 0)               |  wake_up_process() {
+ 0)               |    try_to_wake_up() {
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)   0.083 us    |      ttwu_queue_wakelist();
+ 0)               |      ttwu_do_activate() {
+ 0)   0.208 us    |        enqueue_task_fair();
+ 0)   1.000 us    |      }
+ 0)   1.709 us    |    }
+ 0)   2.125 us    |  }
+ 0)               |  /* softirq_exit: vec=1 [action=TIMER] */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)   0.167 us    |  wake_up_bit();
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)   3.208 us    |  schedule_idle();
+ 1)               |  wake_up_process() {
+ 1)               |    try_to_wake_up() {
+ 1)   0.209 us    |      ttwu_queue_wakelist();
+ 1)               |      ttwu_do_activate() {
+ 1)   0.250 us    |        enqueue_task_fair();
+ 1)   0.875 us    |      }
+ 1)   1.792 us    |    }
+ 1)   2.166 us    |  }
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  wake_up_process() {
+ 1)               |    try_to_wake_up() {
+ 1)   0.084 us    |      ttwu_queue_wakelist();
+ 1)               |      ttwu_do_activate() {
+ 1)   0.167 us    |        enqueue_task_fair();
+ 1)   0.750 us    |      }
+ 1)   1.375 us    |    }
+ 1)   1.542 us    |  }
+ 1)               |  schedule_idle() {
+ 2)   0.334 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   3.250 us    |      ttwu_queue_wakelist();
+ ------------------------------------------
+ 1)    <idle>-0    =>   ksoftir-24
+ ------------------------------------------
+
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)   3.625 us    |    }
+ 2)   3.750 us    |  }
+ 1)               |  wake_up_process() {
+ 1)               |    try_to_wake_up() {
+ 1)   0.083 us    |      ttwu_queue_wakelist();
+ 1)               |      ttwu_do_activate() {
+ 1)   0.208 us    |        enqueue_task_fair();
+ 1)   0.584 us    |      }
+ 1)   0.916 us    |    }
+ 1)   4.375 us    |  }
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ ------------------------------------------
+ 1)   ksoftir-24   =>    <idle>-0
+ ------------------------------------------
+
+ 1) + 14.500 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 2)   cat-42465    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 336.125 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.583 us    |    enqueue_task_fair();
+ 0)   1.958 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.458 us    |    enqueue_task_fair();
+ 0)   4.042 us    |  }
+ 2)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   3.917 us    |  }
+ 3)               |  /* hrtimer_expire_entry: hrtimer=00000000ff1100e4 function=tick_nohz_highres_handler now=3002461973613170259 */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* hrtimer_expire_exit: hrtimer=00000000ff1100e4 */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  schedule_idle() {
+ 3)               |  wake_up_process() {
+ 3)               |    try_to_wake_up() {
+ 3)   0.084 us    |      ttwu_queue_wakelist();
+ 3)               |      ttwu_do_activate() {
+ 3)   0.250 us    |        enqueue_task_fair();
+ 3)   0.750 us    |      }
+ 3)   1.500 us    |    }
+ 3)   1.834 us    |  }
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)   2.541 us    |  schedule_idle();
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 89.125 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 2)    <idle>-0    =>   bash-42466
+ ------------------------------------------
+
+ 2)   0.250 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   2.583 us    |      ttwu_queue_wakelist();
+ 2)   2.791 us    |    }
+ 2)   2.917 us    |  }
+ ------------------------------------------
+ 2)   bash-42466   =>    <idle>-0
+ ------------------------------------------
+
+ 2) + 85.416 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.625 us    |    enqueue_task_fair();
+ 0)   1.708 us    |  }
+ 0)   4.791 us    |  schedule_idle();
+ ------------------------------------------
+ 1)    <idle>-0    =>   cat-42467
+ ------------------------------------------
+
+ 1)   0.375 us    |  wake_up_bit();
+ 1)   0.375 us    |  enqueue_task_fair();
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   3.750 us    |      ttwu_queue_wakelist();
+ 1)   4.125 us    |    }
+ 1)   4.250 us    |  }
+ ------------------------------------------
+ 1)   cat-42467    =>    <idle>-0
+ ------------------------------------------
+
+ 1) ! 283.834 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   1.125 us    |    enqueue_task_fair();
+ 0)   2.625 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.583 us    |    enqueue_task_fair();
+ 0)   4.375 us    |  }
+ 3)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.334 us    |    enqueue_task_fair();
+ 0)   3.875 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) ! 124.333 us  |  } /* schedule_idle */
+ ------------------------------------------
+ 3)    <idle>-0    =>   bash-42468
+ ------------------------------------------
+
+ 3)   0.375 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   2.584 us    |      ttwu_queue_wakelist();
+ 3)   3.000 us    |    }
+ 3)   3.166 us    |  }
+ ------------------------------------------
+ 3)   bash-42468   =>    <idle>-0
+ ------------------------------------------
+
+ 3) ! 108.791 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.708 us    |    enqueue_task_fair();
+ 0)   1.833 us    |  }
+ 0)   4.625 us    |  schedule_idle();
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42469
+ ------------------------------------------
+
+ 2)   0.250 us    |  wake_up_bit();
+ 2)   0.250 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   3.042 us    |      ttwu_queue_wakelist();
+ 2)   3.333 us    |    }
+ 2)   3.500 us    |  }
+ ------------------------------------------
+ 2)   cat-42469    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 272.084 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.583 us    |    enqueue_task_fair();
+ 0)   2.084 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   3.416 us    |  }
+ 2)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.292 us    |    enqueue_task_fair();
+ 0)   3.333 us    |  }
+ 3)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 83.541 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 3)    <idle>-0    =>   cat-42471
+ ------------------------------------------
+
+ 3)               |  /* hrtimer_expire_entry: hrtimer=00000000ff1100e4 function=tick_nohz_highres_handler now=3002461973614002685 */
+ 3)               |  /* hrtimer_expire_exit: hrtimer=00000000ff1100e4 */
+ ------------------------------------------
+ 2)    <idle>-0    =>   bash-42470
+ ------------------------------------------
+
+ 2)               |  /* hrtimer_expire_entry: hrtimer=0000000021deaad6 function=tick_nohz_highres_handler now=3002461973614003643 */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* hrtimer_expire_exit: hrtimer=0000000021deaad6 */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)   0.292 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   2.000 us    |      ttwu_queue_wakelist();
+ 2)   2.250 us    |    }
+ 2)   2.417 us    |  }
+ 0)               |  /* hrtimer_expire_entry: hrtimer=0000000013f5ffc0 function=tick_nohz_highres_handler now=3002461973614016560 */
+ ------------------------------------------
+ 2)   bash-42470   =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 100.084 us  |  } /* schedule_idle */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* hrtimer_expire_exit: hrtimer=0000000013f5ffc0 */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.291 us    |    enqueue_task_fair();
+ 0)   0.708 us    |  }
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  try_to_wake_up() {
+ 0)   0.333 us    |    set_task_cpu();
+ 0)   2.333 us    |    ttwu_queue_wakelist();
+ 0)   3.541 us    |  }
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)   3.250 us    |  schedule_idle();
+ 1)               |  ttwu_do_activate() {
+ 1)   0.375 us    |    enqueue_task_fair();
+ 1)   1.334 us    |  }
+ 1)               |  /* hrtimer_expire_entry: hrtimer=00000000ac91cf4e function=tick_nohz_highres_handler now=3002461973614038727 */
+ 1)               |  /* hrtimer_expire_exit: hrtimer=00000000ac91cf4e */
+ 1)   2.417 us    |  schedule_idle();
+ 3)   0.250 us    |  wake_up_bit();
+ 3)   0.208 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   2.875 us    |      ttwu_queue_wakelist();
+ 3)   3.125 us    |    }
+ 3)   3.292 us    |  }
+ ------------------------------------------
+ 3)   cat-42471    =>    <idle>-0
+ ------------------------------------------
+
+ 3) ! 263.458 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.458 us    |    enqueue_task_fair();
+ 0)   1.791 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.417 us    |    enqueue_task_fair();
+ 0)   3.792 us    |  }
+ 2)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.334 us    |    enqueue_task_fair();
+ 0)   3.333 us    |  }
+ 3)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 84.250 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 2)    <idle>-0    =>   bash-42472
+ ------------------------------------------
+
+ 2)   0.334 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   2.250 us    |      ttwu_queue_wakelist();
+ 2)   2.667 us    |    }
+ 2)   2.833 us    |  }
+ ------------------------------------------
+ 2)   bash-42472   =>    <idle>-0
+ ------------------------------------------
+
+ 2) + 85.542 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.750 us    |    enqueue_task_fair();
+ 0)   1.750 us    |  }
+ 0)   4.083 us    |  schedule_idle();
+ ------------------------------------------
+ 3)    <idle>-0    =>   cat-42473
+ ------------------------------------------
+
+ 3)   0.250 us    |  wake_up_bit();
+ 3)   0.209 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   3.250 us    |      ttwu_queue_wakelist();
+ 3)   3.458 us    |    }
+ 3)   3.625 us    |  }
+ ------------------------------------------
+ 3)   cat-42473    =>    <idle>-0
+ ------------------------------------------
+
+ 3) ! 239.916 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.625 us    |    enqueue_task_fair();
+ 0)   2.167 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.417 us    |    enqueue_task_fair();
+ 0)   3.750 us    |  }
+ 2)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.333 us    |    enqueue_task_fair();
+ 0)   3.542 us    |  }
+ 3)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) ! 112.209 us  |  } /* schedule_idle */
+ ------------------------------------------
+ 2)    <idle>-0    =>   bash-42474
+ ------------------------------------------
+
+ 2)   0.250 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   3.708 us    |      ttwu_queue_wakelist();
+ 2)   3.916 us    |    }
+ 2)   4.042 us    |  }
+ ------------------------------------------
+ 2)   bash-42474   =>    <idle>-0
+ ------------------------------------------
+
+ 2) + 96.250 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   1.000 us    |  }
+ 0)   3.459 us    |  schedule_idle();
+ ------------------------------------------
+ 3)    <idle>-0    =>   cat-42475
+ ------------------------------------------
+
+ 3)   0.250 us    |  wake_up_bit();
+ 3)   0.250 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   6.250 us    |      ttwu_queue_wakelist();
+ 3)   6.500 us    |    }
+ 3)   6.666 us    |  }
+ ------------------------------------------
+ 3)   cat-42475    =>    <idle>-0
+ ------------------------------------------
+
+ 3) ! 241.250 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.625 us    |    enqueue_task_fair();
+ 0)   2.208 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.292 us    |    enqueue_task_fair();
+ 0)   3.042 us    |  }
+ 3)               |  schedule_idle() {
+ 0)               |  /* hrtimer_expire_entry: hrtimer=0000000013f5ffc0 function=tick_nohz_highres_handler now=3002461973615004488 */
+ 0)               |  /* softirq_raise: vec=1 [action=TIMER] */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ ------------------------------------------
+ 3)    <idle>-0    =>   bash-42476
+ ------------------------------------------
+
+ 3)               |  /* hrtimer_expire_entry: hrtimer=00000000ff1100e4 function=tick_nohz_highres_handler now=3002461973615005197 */
+ 0)               |  /* hrtimer_expire_exit: hrtimer=0000000013f5ffc0 */
+ 3)               |  /* softirq_raise: vec=1 [action=TIMER] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* hrtimer_expire_exit: hrtimer=00000000ff1100e4 */
+ 0)               |  /* softirq_entry: vec=1 [action=TIMER] */
+ 0)               |  wake_up_process() {
+ 0)               |    try_to_wake_up() {
+ 3)               |  /* softirq_entry: vec=1 [action=TIMER] */
+ 0)   0.041 us    |      ttwu_queue_wakelist();
+ 0)               |      ttwu_do_activate() {
+ 3)               |  /* softirq_exit: vec=1 [action=TIMER] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)   0.208 us    |        enqueue_task_fair();
+ 0)   0.667 us    |      }
+ 0)   1.084 us    |    }
+ 0)   1.250 us    |  }
+ 0)               |  /* softirq_exit: vec=1 [action=TIMER] */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  wake_up_process() {
+ 3)               |    try_to_wake_up() {
+ 3)   0.083 us    |      ttwu_queue_wakelist();
+ 3)               |      ttwu_do_activate() {
+ 3)   0.333 us    |        enqueue_task_fair();
+ 3)   0.833 us    |      }
+ 0)               |  wake_up_process() {
+ 3)   1.459 us    |    }
+ 0)   0.084 us    |    try_to_wake_up();
+ 3)   1.666 us    |  }
+ 0)   0.208 us    |  }
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)   0.333 us    |  enqueue_task_fair();
+ 0)               |  wake_up_new_task() {
+ 0)   0.292 us    |    enqueue_task_fair();
+ 0)   3.042 us    |  }
+ ------------------------------------------
+ 3)   bash-42476   =>    <idle>-0
+ ------------------------------------------
+
+ 3) ! 114.584 us  |  } /* schedule_idle */
+ 2)               |  /* hrtimer_expire_entry: hrtimer=0000000021deaad6 function=tick_nohz_highres_handler now=3002461973615075156 */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* hrtimer_expire_exit: hrtimer=0000000021deaad6 */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  wake_up_process() {
+ 2)               |    try_to_wake_up() {
+ 2)   0.084 us    |      ttwu_queue_wakelist();
+ 2)               |      ttwu_do_activate() {
+ 2)   0.333 us    |        enqueue_task_fair();
+ 2)   0.917 us    |      }
+ 2)   1.833 us    |    }
+ 2)   2.084 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 2)    <idle>-0    =>   ksoftir-30
+ ------------------------------------------
+
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) ! 183.250 us  |  } /* schedule_idle */
+ 2)               |  wake_up_process() {
+ 2)               |    try_to_wake_up() {
+ 2)   0.042 us    |      ttwu_queue_wakelist();
+ 2)               |      ttwu_do_activate() {
+ 2)   0.250 us    |        enqueue_task_fair();
+ 2)   0.667 us    |      }
+ 2)   1.000 us    |    }
+ 2)   3.458 us    |  }
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  wake_up_process() {
+ 2)   0.084 us    |    try_to_wake_up();
+ 2)   0.166 us    |  }
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  wake_up_process() {
+ 2)   0.042 us    |    try_to_wake_up();
+ 2)   0.208 us    |  }
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  /* hrtimer_expire_entry: hrtimer=00000000ac91cf4e function=tick_nohz_highres_handler now=3002461973615246949 */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* hrtimer_expire_exit: hrtimer=00000000ac91cf4e */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  wake_up_process() {
+ 1)               |    try_to_wake_up() {
+ 1)   0.084 us    |      ttwu_queue_wakelist();
+ 1)               |      ttwu_do_activate() {
+ 1)   0.625 us    |        enqueue_task_fair();
+ 1)   1.083 us    |      }
+ 1)   1.667 us    |    }
+ 1)   1.916 us    |  }
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  wake_up_process() {
+ 1)               |    try_to_wake_up() {
+ 1)   0.083 us    |      ttwu_queue_wakelist();
+ 1)               |      ttwu_do_activate() {
+ 1)   0.166 us    |        enqueue_task_fair();
+ 1)   0.416 us    |      }
+ 1)   0.708 us    |    }
+ 1)   0.875 us    |  }
+ 1)               |  schedule_idle() {
+ ------------------------------------------
+ 1)    <idle>-0    =>   ksoftir-24
+ ------------------------------------------
+
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ ------------------------------------------
+ 1)   ksoftir-24   =>    <idle>-0
+ ------------------------------------------
+
+ 1) + 12.208 us   |  }
+ ------------------------------------------
+ 2)   ksoftir-30   =>   cat-42477
+ ------------------------------------------
+
+ 2)   0.208 us    |  wake_up_bit();
+ 2)   0.250 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   2.875 us    |      ttwu_queue_wakelist();
+ 2)   3.083 us    |    }
+ 2)   3.250 us    |  }
+ ------------------------------------------
+ 2)   cat-42477    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 253.750 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.625 us    |    enqueue_task_fair();
+ 0)   2.166 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   3.291 us    |  }
+ 1)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   3.333 us    |  }
+ 3)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 84.292 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 1)    <idle>-0    =>   bash-42478
+ ------------------------------------------
+
+ 1)   0.334 us    |  enqueue_task_fair();
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   2.958 us    |      ttwu_queue_wakelist();
+ 1)   3.208 us    |    }
+ 1)   3.375 us    |  }
+ ------------------------------------------
+ 1)   bash-42478   =>    <idle>-0
+ ------------------------------------------
+
+ 1) + 86.709 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   1.000 us    |  }
+ 0)   3.125 us    |  schedule_idle();
+ ------------------------------------------
+ 3)    <idle>-0    =>   cat-42479
+ ------------------------------------------
+
+ 3)   0.167 us    |  wake_up_bit();
+ 3)   0.250 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   2.916 us    |      ttwu_queue_wakelist();
+ 3)   3.125 us    |    }
+ 3)   3.292 us    |  }
+ ------------------------------------------
+ 3)   cat-42479    =>    <idle>-0
+ ------------------------------------------
+
+ 3) ! 231.958 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.709 us    |    enqueue_task_fair();
+ 0)   2.417 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.500 us    |    enqueue_task_fair();
+ 0)   3.541 us    |  }
+ 2)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   3.416 us    |  }
+ 3)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 97.666 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 2)    <idle>-0    =>   bash-42480
+ ------------------------------------------
+
+ 2)   0.291 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   2.250 us    |      ttwu_queue_wakelist();
+ 2)   2.458 us    |    }
+ 2)   2.584 us    |  }
+ ------------------------------------------
+ 2)   bash-42480   =>    <idle>-0
+ ------------------------------------------
+
+ 2) + 97.333 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   1.042 us    |  }
+ 0)   3.458 us    |  schedule_idle();
+ ------------------------------------------
+ 3)    <idle>-0    =>   cat-42481
+ ------------------------------------------
+
+ 3)   0.209 us    |  wake_up_bit();
+ 3)   0.208 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   3.209 us    |      ttwu_queue_wakelist();
+ 3)   3.500 us    |    }
+ 3)   3.625 us    |  }
+ ------------------------------------------
+ 3)   cat-42481    =>    <idle>-0
+ ------------------------------------------
+
+ 3) ! 235.958 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.542 us    |    enqueue_task_fair();
+ 0)   1.625 us    |  }
+ 3)               |  /* hrtimer_expire_entry: hrtimer=00000000ff1100e4 function=tick_nohz_highres_handler now=3002461973616007375 */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* hrtimer_expire_entry: hrtimer=0000000013f5ffc0 function=tick_nohz_highres_handler now=3002461973616007583 */
+ 3)               |  /* softirq_raise: vec=7 [action=SCHED] */
+ 3)               |  /* hrtimer_expire_exit: hrtimer=00000000ff1100e4 */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* hrtimer_expire_exit: hrtimer=0000000013f5ffc0 */
+ 3)               |  /* softirq_entry: vec=7 [action=SCHED] */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  schedule_idle() {
+ 3)               |  /* softirq_exit: vec=7 [action=SCHED] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  try_to_wake_up() {
+ 3)   2.000 us    |    ttwu_queue_wakelist();
+ 3)   2.333 us    |  }
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  ttwu_do_activate() {
+ 1)   0.292 us    |    enqueue_task_fair();
+ 1)   0.917 us    |  }
+ 1)               |  /* hrtimer_expire_entry: hrtimer=00000000ac91cf4e function=tick_nohz_highres_handler now=3002461973616028250 */
+ 1)               |  /* softirq_raise: vec=7 [action=SCHED] */
+ 1)               |  /* hrtimer_expire_exit: hrtimer=00000000ac91cf4e */
+ 1)               |  /* softirq_entry: vec=7 [action=SCHED] */
+ 1)               |  /* softirq_exit: vec=7 [action=SCHED] */
+ 1)   2.000 us    |  schedule_idle();
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.416 us    |    enqueue_task_fair();
+ 2)               |  /* hrtimer_expire_entry: hrtimer=0000000021deaad6 function=tick_nohz_highres_handler now=3002461973616048709 */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=7 [action=SCHED] */
+ 2)               |  /* hrtimer_expire_exit: hrtimer=0000000021deaad6 */
+ 2)               |  /* softirq_entry: vec=7 [action=SCHED] */
+ 0)   3.792 us    |  }
+ 2)               |  /* softirq_exit: vec=7 [action=SCHED] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  wake_up_process() {
+ 2)               |    try_to_wake_up() {
+ 2)   0.167 us    |      ttwu_queue_wakelist();
+ 3)               |  schedule_idle() {
+ 2)               |      ttwu_do_activate() {
+ 2)   0.250 us    |        enqueue_task_fair();
+ 2)   0.625 us    |      }
+ 2)   1.167 us    |    }
+ 2)   1.417 us    |  }
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  wake_up_process() {
+ 2)               |    try_to_wake_up() {
+ 2)   0.083 us    |      ttwu_queue_wakelist();
+ 2)               |      ttwu_do_activate() {
+ 2)   0.167 us    |        enqueue_task_fair();
+ 2)   0.750 us    |      }
+ 2)   1.167 us    |    }
+ 2)   1.333 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 2)    <idle>-0    =>   ksoftir-30
+ ------------------------------------------
+
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  wake_up_process() {
+ 2)   0.125 us    |    try_to_wake_up();
+ 2)   0.333 us    |  }
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ ------------------------------------------
+ 2)   ksoftir-30   =>    <idle>-0
+ ------------------------------------------
+
+ 2) + 18.250 us   |  } /* schedule_idle */
+ 0)               |  wake_up_new_task() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   3.208 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) ! 101.917 us  |  } /* schedule_idle */
+ ------------------------------------------
+ 3)    <idle>-0    =>   bash-42482
+ ------------------------------------------
+
+ 3)   0.250 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   2.333 us    |      ttwu_queue_wakelist();
+ 3)   2.584 us    |    }
+ 3)   2.708 us    |  }
+ ------------------------------------------
+ 3)   bash-42482   =>    <idle>-0
+ ------------------------------------------
+
+ 3) + 93.750 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.459 us    |    enqueue_task_fair();
+ 0)   1.250 us    |  }
+ 0)   5.208 us    |  schedule_idle();
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42483
+ ------------------------------------------
+
+ 2)   0.209 us    |  wake_up_bit();
+ 2)   0.250 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   3.166 us    |      ttwu_queue_wakelist();
+ 2)   3.417 us    |    }
+ 2)   3.542 us    |  }
+ ------------------------------------------
+ 2)   cat-42483    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 234.958 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.708 us    |    enqueue_task_fair();
+ 0)   2.042 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.417 us    |    enqueue_task_fair();
+ 0)   3.250 us    |  }
+ 1)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.333 us    |    enqueue_task_fair();
+ 0)   3.083 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 91.375 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 1)    <idle>-0    =>   bash-42484
+ ------------------------------------------
+
+ 1)   0.250 us    |  enqueue_task_fair();
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   2.292 us    |      ttwu_queue_wakelist();
+ 1)   2.500 us    |    }
+ 1)   2.625 us    |  }
+ ------------------------------------------
+ 1)   bash-42484   =>    <idle>-0
+ ------------------------------------------
+
+ 1) + 87.750 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.458 us    |    enqueue_task_fair();
+ 0)   1.083 us    |  }
+ 0)   3.292 us    |  schedule_idle();
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42485
+ ------------------------------------------
+
+ 2)   0.167 us    |  wake_up_bit();
+ 2)   0.208 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   2.792 us    |      ttwu_queue_wakelist();
+ 2)   3.042 us    |    }
+ 2)   3.208 us    |  }
+ ------------------------------------------
+ 2)   cat-42485    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 231.250 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.583 us    |    enqueue_task_fair();
+ 0)   2.042 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.333 us    |    enqueue_task_fair();
+ 0)   3.042 us    |  }
+ 2)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   3.500 us    |  }
+ 3)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 93.333 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 2)    <idle>-0    =>   bash-42486
+ ------------------------------------------
+
+ 2)   0.291 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   2.292 us    |      ttwu_queue_wakelist();
+ 2)   2.500 us    |    }
+ 2)   2.667 us    |  }
+ ------------------------------------------
+ 2)   bash-42486   =>    <idle>-0
+ ------------------------------------------
+
+ 2) + 86.208 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.333 us    |    enqueue_task_fair();
+ 0)   0.959 us    |  }
+ 0)   3.416 us    |  schedule_idle();
+ ------------------------------------------
+ 3)    <idle>-0    =>   cat-42487
+ ------------------------------------------
+
+ 3)   0.208 us    |  wake_up_bit();
+ 3)   0.250 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   3.083 us    |      ttwu_queue_wakelist();
+ 3)   3.292 us    |    }
+ 3)   3.458 us    |  }
+ ------------------------------------------
+ 3)   cat-42487    =>    <idle>-0
+ ------------------------------------------
+
+ 3) ! 228.250 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.500 us    |    enqueue_task_fair();
+ 0)   1.708 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  /* hrtimer_expire_entry: hrtimer=0000000013f5ffc0 function=tick_nohz_highres_handler now=3002461973617002303 */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* hrtimer_expire_exit: hrtimer=0000000013f5ffc0 */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* hrtimer_expire_entry: hrtimer=00000000ff1100e4 function=tick_nohz_highres_handler now=3002461973617007386 */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  wake_up_process() {
+ 0)               |    try_to_wake_up() {
+ 3)               |  /* hrtimer_expire_exit: hrtimer=00000000ff1100e4 */
+ 0)   0.084 us    |      ttwu_queue_wakelist();
+ 0)               |      ttwu_do_activate() {
+ 0)   0.208 us    |        enqueue_task_fair();
+ 0)   0.583 us    |      }
+ 0)   1.000 us    |    }
+ 0)   1.208 us    |  }
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  wake_up_new_task() {
+ 0)   0.250 us    |    enqueue_task_fair();
+ 0)   3.042 us    |  }
+ 3)               |  schedule_idle() {
+ 2)               |  /* hrtimer_expire_entry: hrtimer=0000000021deaad6 function=tick_nohz_highres_handler now=3002461973617057429 */
+ 2)               |  /* hrtimer_expire_exit: hrtimer=0000000021deaad6 */
+ 1)               |  /* hrtimer_expire_entry: hrtimer=00000000ac91cf4e function=tick_nohz_highres_handler now=3002461973617058262 */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* softirq_raise: vec=7 [action=SCHED] */
+ 1)               |  /* hrtimer_expire_exit: hrtimer=00000000ac91cf4e */
+ 1)               |  /* softirq_entry: vec=7 [action=SCHED] */
+ 1)               |  /* softirq_exit: vec=7 [action=SCHED] */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  wake_up_process() {
+ 1)               |    try_to_wake_up() {
+ 1)   0.083 us    |      ttwu_queue_wakelist();
+ 1)               |      ttwu_do_activate() {
+ 1)   0.167 us    |        enqueue_task_fair();
+ 1)   0.667 us    |      }
+ 1)   1.166 us    |    }
+ 1)   1.542 us    |  }
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  wake_up_process() {
+ 1)               |    try_to_wake_up() {
+ 1)   0.084 us    |      ttwu_queue_wakelist();
+ 1)               |      ttwu_do_activate() {
+ 1)   0.125 us    |        enqueue_task_fair();
+ 1)   0.417 us    |      }
+ 1)   0.792 us    |    }
+ 1)   0.917 us    |  }
+ 1)               |  schedule_idle() {
+ ------------------------------------------
+ 1)    <idle>-0    =>   ksoftir-24
+ ------------------------------------------
+
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  wake_up_process() {
+ 1)               |    try_to_wake_up() {
+ 1)   0.083 us    |      ttwu_queue_wakelist();
+ 1)               |      ttwu_do_activate() {
+ 1)   0.166 us    |        enqueue_task_fair();
+ 1)   0.458 us    |      }
+ 1)   0.709 us    |    }
+ 1)   1.042 us    |  }
+ 0)               |  wake_up_new_task() {
+ 0)   0.417 us    |    enqueue_task_fair();
+ 0)   6.125 us    |  }
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  wake_up_process() {
+ 1)   0.083 us    |    try_to_wake_up();
+ 1)   0.250 us    |  }
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  wake_up_process() {
+ 1)               |    try_to_wake_up() {
+ 1)   0.083 us    |      ttwu_queue_wakelist();
+ 1)               |      ttwu_do_activate() {
+ 1)   0.125 us    |        enqueue_task_fair();
+ 1)   0.333 us    |      }
+ 1)   0.625 us    |    }
+ 1)   0.750 us    |  }
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 1)   ksoftir-24   =>    <idle>-0
+ ------------------------------------------
+
+ 1) + 26.208 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) ! 111.584 us  |  } /* schedule_idle */
+ ------------------------------------------
+ 3)    <idle>-0    =>   bash-42488
+ ------------------------------------------
+
+ 3)   0.292 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   2.208 us    |      ttwu_queue_wakelist();
+ 3)   2.459 us    |    }
+ 3)   2.583 us    |  }
+ ------------------------------------------
+ 3)   bash-42488   =>    <idle>-0
+ ------------------------------------------
+
+ 3) + 88.708 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.708 us    |    enqueue_task_fair();
+ 0)   1.875 us    |  }
+ 0)   4.125 us    |  schedule_idle();
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42489
+ ------------------------------------------
+
+ 2)   0.208 us    |  wake_up_bit();
+ 2)   0.209 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   2.667 us    |      ttwu_queue_wakelist();
+ 2)   2.917 us    |    }
+ 2)   3.083 us    |  }
+ ------------------------------------------
+ 2)   cat-42489    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 227.125 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.834 us    |    enqueue_task_fair();
+ 0)   2.416 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.334 us    |    enqueue_task_fair();
+ 0)   3.125 us    |  }
+ 1)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.291 us    |    enqueue_task_fair();
+ 0)   3.167 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 86.000 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 1)    <idle>-0    =>   bash-42490
+ ------------------------------------------
+
+ 1)   0.292 us    |  enqueue_task_fair();
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   3.125 us    |      ttwu_queue_wakelist();
+ 1)   3.375 us    |    }
+ 1)   3.542 us    |  }
+ ------------------------------------------
+ 1)   bash-42490   =>    <idle>-0
+ ------------------------------------------
+
+ 1) + 84.375 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   0.958 us    |  }
+ 0)   3.375 us    |  schedule_idle();
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42491
+ ------------------------------------------
+
+ 2)   0.167 us    |  wake_up_bit();
+ 2)   0.209 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   2.708 us    |      ttwu_queue_wakelist();
+ 2)   2.916 us    |    }
+ 2)   3.084 us    |  }
+ ------------------------------------------
+ 2)   cat-42491    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 223.916 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.875 us    |    enqueue_task_fair();
+ 0)   2.291 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.291 us    |    enqueue_task_fair();
+ 0)   3.083 us    |  }
+ 2)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   3.125 us    |  }
+ 3)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 86.542 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 2)    <idle>-0    =>   bash-42492
+ ------------------------------------------
+
+ 2)   0.250 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   2.209 us    |      ttwu_queue_wakelist();
+ 2)   2.458 us    |    }
+ 2)   2.625 us    |  }
+ ------------------------------------------
+ 2)   bash-42492   =>    <idle>-0
+ ------------------------------------------
+
+ 2) + 82.167 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.292 us    |    enqueue_task_fair();
+ 0)   0.916 us    |  }
+ 0)   3.584 us    |  schedule_idle();
+ ------------------------------------------
+ 3)    <idle>-0    =>   cat-42493
+ ------------------------------------------
+
+ 3)   0.208 us    |  wake_up_bit();
+ 3)   0.209 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   2.708 us    |      ttwu_queue_wakelist();
+ 3)   2.958 us    |    }
+ 3)   3.125 us    |  }
+ ------------------------------------------
+ 3)   cat-42493    =>    <idle>-0
+ ------------------------------------------
+
+ 3) ! 226.709 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.584 us    |    enqueue_task_fair();
+ 0)   2.000 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  /* hrtimer_expire_entry: hrtimer=0000000013f5ffc0 function=tick_nohz_highres_handler now=3002461973618002606 */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* hrtimer_expire_exit: hrtimer=0000000013f5ffc0 */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  wake_up_new_task() {
+ 0)   0.584 us    |    enqueue_task_fair();
+ 0)   3.334 us    |  }
+ 3)               |  /* hrtimer_expire_entry: hrtimer=00000000ff1100e4 function=tick_nohz_highres_handler now=3002461973618019023 */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* hrtimer_expire_exit: hrtimer=00000000ff1100e4 */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  try_to_wake_up() {
+ 3)   1.958 us    |    ttwu_queue_wakelist();
+ 3)   2.583 us    |  }
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  schedule_idle() {
+ 1)               |  ttwu_do_activate() {
+ 1)   0.375 us    |    enqueue_task_fair();
+ 1)   1.208 us    |  }
+ 1)               |  /* hrtimer_expire_entry: hrtimer=00000000ac91cf4e function=tick_nohz_highres_handler now=3002461973618036815 */
+ 1)               |  /* softirq_raise: vec=1 [action=TIMER] */
+ 1)               |  /* hrtimer_expire_exit: hrtimer=00000000ac91cf4e */
+ 1)               |  /* softirq_entry: vec=1 [action=TIMER] */
+ 1)               |  /* softirq_exit: vec=1 [action=TIMER] */
+ 1)   2.292 us    |  schedule_idle();
+ 0)               |  wake_up_new_task() {
+ 0)   0.334 us    |    enqueue_task_fair();
+ 0)   6.500 us    |  }
+ 2)               |  /* hrtimer_expire_entry: hrtimer=0000000021deaad6 function=tick_nohz_highres_handler now=3002461973618051774 */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* hrtimer_expire_exit: hrtimer=0000000021deaad6 */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  wake_up_process() {
+ 2)               |    try_to_wake_up() {
+ 2)   0.042 us    |      ttwu_queue_wakelist();
+ 2)               |      ttwu_do_activate() {
+ 2)   0.292 us    |        enqueue_task_fair();
+ 2)   0.750 us    |      }
+ 2)   1.291 us    |    }
+ 2)   1.708 us    |  }
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 97.875 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 3)    <idle>-0    =>   bash-42494
+ ------------------------------------------
+
+ 3)   0.250 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   4.000 us    |      ttwu_queue_wakelist();
+ 3)   4.208 us    |    }
+ 3)   4.375 us    |  }
+ ------------------------------------------
+ 3)   bash-42494   =>    <idle>-0
+ ------------------------------------------
+
+ 3) + 90.958 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.583 us    |    enqueue_task_fair();
+ 0)   1.750 us    |  }
+ 0)   4.375 us    |  schedule_idle();
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42495
+ ------------------------------------------
+
+ 2)   0.209 us    |  wake_up_bit();
+ 2)   0.208 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   2.791 us    |      ttwu_queue_wakelist();
+ 2)   3.000 us    |    }
+ 2)   3.167 us    |  }
+ ------------------------------------------
+ 2)   cat-42495    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 233.000 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.625 us    |    enqueue_task_fair();
+ 0)   2.041 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.292 us    |    enqueue_task_fair();
+ 0)   3.000 us    |  }
+ 2)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.334 us    |    enqueue_task_fair();
+ 0)   3.000 us    |  }
+ 3)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 91.958 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 2)    <idle>-0    =>   bash-42496
+ ------------------------------------------
+
+ 2)   0.333 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   2.208 us    |      ttwu_queue_wakelist();
+ 2)   2.416 us    |    }
+ 2)   2.542 us    |  }
+ ------------------------------------------
+ 2)   bash-42496   =>    <idle>-0
+ ------------------------------------------
+
+ 2) + 85.959 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.333 us    |    enqueue_task_fair();
+ 0)   0.916 us    |  }
+ 0)   3.167 us    |  schedule_idle();
+ ------------------------------------------
+ 3)    <idle>-0    =>   cat-42497
+ ------------------------------------------
+
+ 3)   0.166 us    |  wake_up_bit();
+ 3)   0.209 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   2.750 us    |      ttwu_queue_wakelist();
+ 3)   3.000 us    |    }
+ 3)   3.167 us    |  }
+ ------------------------------------------
+ 3)   cat-42497    =>    <idle>-0
+ ------------------------------------------
+
+ 3) ! 225.458 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.667 us    |    enqueue_task_fair();
+ 0)   1.750 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.250 us    |    enqueue_task_fair();
+ 0)   2.958 us    |  }
+ 3)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   3.083 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 85.375 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 3)    <idle>-0    =>   bash-42498
+ ------------------------------------------
+
+ 3)   0.250 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   2.292 us    |      ttwu_queue_wakelist();
+ 3)   2.500 us    |    }
+ 3)   2.625 us    |  }
+ ------------------------------------------
+ 3)   bash-42498   =>    <idle>-0
+ ------------------------------------------
+
+ 3) + 86.833 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.292 us    |    enqueue_task_fair();
+ 0)   0.875 us    |  }
+ 0)   3.500 us    |  schedule_idle();
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42499
+ ------------------------------------------
+
+ 2)   0.208 us    |  wake_up_bit();
+ 2)   0.208 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   2.708 us    |      ttwu_queue_wakelist();
+ 2)   2.958 us    |    }
+ 2)   3.125 us    |  }
+ ------------------------------------------
+ 2)   cat-42499    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 227.209 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.750 us    |    enqueue_task_fair();
+ 0)   2.125 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.333 us    |    enqueue_task_fair();
+ 0)   3.209 us    |  }
+ 3)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.292 us    |    enqueue_task_fair();
+ 0)   3.083 us    |  }
+ 2)               |  schedule_idle() {
+ 0)               |  /* hrtimer_expire_entry: hrtimer=0000000013f5ffc0 function=tick_nohz_highres_handler now=3002461973619002951 */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ ------------------------------------------
+ 3)    <idle>-0    =>   bash-42500
+ ------------------------------------------
+
+ 3)               |  /* hrtimer_expire_entry: hrtimer=00000000ff1100e4 function=tick_nohz_highres_handler now=3002461973619003785 */
+ 0)               |  /* softirq_raise: vec=7 [action=SCHED] */
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42501
+ ------------------------------------------
+
+ 2)               |  /* hrtimer_expire_entry: hrtimer=0000000021deaad6 function=tick_nohz_highres_handler now=3002461973619004076 */
+ 0)               |  /* hrtimer_expire_exit: hrtimer=0000000013f5ffc0 */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* hrtimer_expire_exit: hrtimer=00000000ff1100e4 */
+ 2)               |  /* hrtimer_expire_exit: hrtimer=0000000021deaad6 */
+ 0)               |  /* softirq_entry: vec=7 [action=SCHED] */
+ 0)               |  /* softirq_exit: vec=7 [action=SCHED] */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  wake_up_process() {
+ 0)               |    try_to_wake_up() {
+ 0)   0.083 us    |      ttwu_queue_wakelist();
+ 0)               |      ttwu_do_activate() {
+ 0)   0.250 us    |        enqueue_task_fair();
+ 0)   0.834 us    |      }
+ 0)   1.375 us    |    }
+ 0)   1.583 us    |  }
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  wake_up_process() {
+ 0)               |    try_to_wake_up() {
+ 0)   0.083 us    |      ttwu_queue_wakelist();
+ 0)               |      ttwu_do_activate() {
+ 0)   0.167 us    |        enqueue_task_fair();
+ 0)   0.500 us    |      }
+ 0)   1.042 us    |    }
+ 0)   1.167 us    |  }
+ ------------------------------------------
+ 0)   bash-42440   =>   ksoftir-16
+ ------------------------------------------
+
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  /* hrtimer_expire_entry: hrtimer=00000000ac91cf4e function=tick_nohz_highres_handler now=3002461973619030202 */
+ ------------------------------------------
+ 0)   ksoftir-16   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 98.042 us   |  } /* schedule_idle */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* hrtimer_expire_exit: hrtimer=00000000ac91cf4e */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  wake_up_process() {
+ 1)               |    try_to_wake_up() {
+ 1)   0.208 us    |      ttwu_queue_wakelist();
+ 1)               |      ttwu_do_activate() {
+ 1)   0.333 us    |        enqueue_task_fair();
+ 1)   0.917 us    |      }
+ 1)   1.625 us    |    }
+ 1)   2.000 us    |  }
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)   9.666 us    |  schedule_idle();
+ 3)   0.333 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   2.459 us    |      ttwu_queue_wakelist();
+ 3)   2.708 us    |    }
+ 3)   2.792 us    |  }
+ ------------------------------------------
+ 3)   bash-42500   =>    <idle>-0
+ ------------------------------------------
+
+ 3) ! 101.875 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.209 us    |    enqueue_task_fair();
+ 0)   1.250 us    |  }
+ 0)   2.875 us    |  schedule_idle();
+ 2)   0.208 us    |  wake_up_bit();
+ 2)   0.209 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   2.750 us    |      ttwu_queue_wakelist();
+ 2)   2.959 us    |    }
+ 2)   3.125 us    |  }
+ ------------------------------------------
+ 2)   cat-42501    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 235.417 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.708 us    |    enqueue_task_fair();
+ 0)   1.792 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   3.125 us    |  }
+ 1)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.291 us    |    enqueue_task_fair();
+ 0)   3.083 us    |  }
+ 3)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 71.084 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 1)    <idle>-0    =>   bash-42502
+ ------------------------------------------
+
+ 1)   0.250 us    |  enqueue_task_fair();
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   2.292 us    |      ttwu_queue_wakelist();
+ 1)   2.458 us    |    }
+ 1)   2.625 us    |  }
+ ------------------------------------------
+ 1)   bash-42502   =>    <idle>-0
+ ------------------------------------------
+
+ 1) + 83.125 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.333 us    |    enqueue_task_fair();
+ 0)   0.917 us    |  }
+ 0)   3.125 us    |  schedule_idle();
+ ------------------------------------------
+ 3)    <idle>-0    =>   cat-42503
+ ------------------------------------------
+
+ 3)   0.209 us    |  wake_up_bit();
+ 3)   0.209 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   6.000 us    |      ttwu_queue_wakelist();
+ 3)   6.209 us    |    }
+ 3)   6.375 us    |  }
+ ------------------------------------------
+ 3)   cat-42503    =>    <idle>-0
+ ------------------------------------------
+
+ 3) ! 234.417 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.667 us    |    enqueue_task_fair();
+ 0)   2.000 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.333 us    |    enqueue_task_fair();
+ 0)   3.041 us    |  }
+ 3)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.333 us    |    enqueue_task_fair();
+ 0)   3.166 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 77.500 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 3)    <idle>-0    =>   bash-42504
+ ------------------------------------------
+
+ 3)   0.250 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   2.334 us    |      ttwu_queue_wakelist();
+ 3)   2.583 us    |    }
+ 3)   2.667 us    |  }
+ ------------------------------------------
+ 3)   bash-42504   =>    <idle>-0
+ ------------------------------------------
+
+ 3) + 94.000 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.292 us    |    enqueue_task_fair();
+ 0)   0.917 us    |  }
+ 0)   3.083 us    |  schedule_idle();
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42505
+ ------------------------------------------
+
+ 2)   0.209 us    |  wake_up_bit();
+ 2)   0.167 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   3.292 us    |      ttwu_queue_wakelist();
+ 2)   3.542 us    |    }
+ 2)   3.666 us    |  }
+ ------------------------------------------
+ 2)   cat-42505    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 228.667 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.708 us    |    enqueue_task_fair();
+ 0)   1.917 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.500 us    |    enqueue_task_fair();
+ 0)   4.750 us    |  }
+ 3)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.542 us    |    enqueue_task_fair();
+ 0)   4.583 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) ! 104.000 us  |  } /* schedule_idle */
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42507
+ ------------------------------------------
+
+ 2)               |  /* hrtimer_expire_entry: hrtimer=0000000021deaad6 function=tick_nohz_highres_handler now=3002461973620002879 */
+ ------------------------------------------
+ 3)    <idle>-0    =>   bash-42506
+ ------------------------------------------
+
+ 3)               |  /* hrtimer_expire_entry: hrtimer=00000000ff1100e4 function=tick_nohz_highres_handler now=3002461973620003463 */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* hrtimer_expire_exit: hrtimer=0000000021deaad6 */
+ 3)               |  /* hrtimer_expire_exit: hrtimer=00000000ff1100e4 */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  wake_up_process() {
+ 3)               |    try_to_wake_up() {
+ 3)   0.166 us    |      ttwu_queue_wakelist();
+ 3)               |      ttwu_do_activate() {
+ 3)   0.208 us    |        enqueue_task_fair();
+ 3)   1.125 us    |      }
+ 3)   1.834 us    |    }
+ 3)   2.000 us    |  }
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  wake_up_process() {
+ 3)               |    try_to_wake_up() {
+ 3)   0.084 us    |      ttwu_queue_wakelist();
+ 3)               |      ttwu_do_activate() {
+ 3)   0.209 us    |        enqueue_task_fair();
+ 3)   0.750 us    |      }
+ 3)   1.417 us    |    }
+ 3)   1.541 us    |  }
+ 0)               |  /* hrtimer_expire_entry: hrtimer=0000000013f5ffc0 function=tick_nohz_highres_handler now=3002461973620013921 */
+ 0)               |  /* softirq_raise: vec=7 [action=SCHED] */
+ 0)               |  /* hrtimer_expire_exit: hrtimer=0000000013f5ffc0 */
+ ------------------------------------------
+ 3)   bash-42506   =>   ksoftir-36
+ ------------------------------------------
+
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  /* softirq_entry: vec=7 [action=SCHED] */
+ 0)               |  /* softirq_exit: vec=7 [action=SCHED] */
+ 3)               |  try_to_wake_up() {
+ 3)   2.667 us    |    ttwu_queue_wakelist();
+ 3)   6.333 us    |  }
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  ttwu_do_activate() {
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)   0.291 us    |    enqueue_task_fair();
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)   1.084 us    |  }
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  /* hrtimer_expire_entry: hrtimer=00000000ac91cf4e function=tick_nohz_highres_handler now=3002461973620030755 */
+ 1)               |  /* softirq_raise: vec=1 [action=TIMER] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  /* hrtimer_expire_exit: hrtimer=00000000ac91cf4e */
+ 1)               |  /* softirq_entry: vec=1 [action=TIMER] */
+ 1)               |  /* softirq_exit: vec=1 [action=TIMER] */
+ 1)   3.750 us    |  schedule_idle();
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  wake_up_process() {
+ 3)   0.083 us    |    try_to_wake_up();
+ 3)   0.209 us    |  }
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  wake_up_process() {
+ 3)   0.083 us    |    try_to_wake_up();
+ 3)   0.209 us    |  }
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  wake_up_process() {
+ 3)   0.084 us    |    try_to_wake_up();
+ 3)   0.208 us    |  }
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  wake_up_process() {
+ 3)   0.083 us    |    try_to_wake_up();
+ 3)   0.250 us    |  }
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ ------------------------------------------
+ 3)   ksoftir-36   =>   bash-42506
+ ------------------------------------------
+
+ 3)   0.250 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   3.625 us    |      ttwu_queue_wakelist();
+ 3)   3.833 us    |    }
+ 3)   4.000 us    |  }
+ ------------------------------------------
+ 3)   bash-42506   =>    <idle>-0
+ ------------------------------------------
+
+ 3) ! 189.583 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.666 us    |    enqueue_task_fair();
+ 0)   1.958 us    |  }
+ 0)   7.041 us    |  schedule_idle();
+ 2)   0.291 us    |  wake_up_bit();
+ 2)   0.333 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   3.125 us    |      ttwu_queue_wakelist();
+ 2)   3.542 us    |    }
+ 2)   3.708 us    |  }
+ ------------------------------------------
+ 2)   cat-42507    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 309.500 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.583 us    |    enqueue_task_fair();
+ 0)   1.959 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.500 us    |    enqueue_task_fair();
+ 0)   4.125 us    |  }
+ 1)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.542 us    |    enqueue_task_fair();
+ 0)   4.000 us    |  }
+ 3)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) ! 105.667 us  |  } /* schedule_idle */
+ ------------------------------------------
+ 1)    <idle>-0    =>   bash-42508
+ ------------------------------------------
+
+ 1)   0.333 us    |  enqueue_task_fair();
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   2.458 us    |      ttwu_queue_wakelist();
+ 1)   2.833 us    |    }
+ 1)   2.959 us    |  }
+ ------------------------------------------
+ 1)   bash-42508   =>    <idle>-0
+ ------------------------------------------
+
+ 1) + 96.584 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.541 us    |    enqueue_task_fair();
+ 0)   1.708 us    |  }
+ 0)   4.542 us    |  schedule_idle();
+ ------------------------------------------
+ 3)    <idle>-0    =>   cat-42509
+ ------------------------------------------
+
+ 3)   0.250 us    |  wake_up_bit();
+ 3)   0.333 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   3.250 us    |      ttwu_queue_wakelist();
+ 3)   3.541 us    |    }
+ 3)   3.709 us    |  }
+ ------------------------------------------
+ 3)   cat-42509    =>    <idle>-0
+ ------------------------------------------
+
+ 3) ! 278.000 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.750 us    |    enqueue_task_fair();
+ 0)   2.083 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.667 us    |    enqueue_task_fair();
+ 0)   4.541 us    |  }
+ 2)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.334 us    |    enqueue_task_fair();
+ 0)   3.542 us    |  }
+ 3)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) ! 102.625 us  |  } /* schedule_idle */
+ ------------------------------------------
+ 2)    <idle>-0    =>   bash-42510
+ ------------------------------------------
+
+ 2)   0.250 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   2.667 us    |      ttwu_queue_wakelist();
+ 2)   3.000 us    |    }
+ 2)   3.167 us    |  }
+ ------------------------------------------
+ 2)   bash-42510   =>    <idle>-0
+ ------------------------------------------
+
+ 2) + 92.834 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.583 us    |    enqueue_task_fair();
+ 0)   1.792 us    |  }
+ 0)   4.417 us    |  schedule_idle();
+ ------------------------------------------
+ 3)    <idle>-0    =>   cat-42511
+ ------------------------------------------
+
+ 3)               |  /* hrtimer_expire_entry: hrtimer=00000000ff1100e4 function=tick_nohz_highres_handler now=3002461973621004016 */
+ 3)               |  /* hrtimer_expire_exit: hrtimer=00000000ff1100e4 */
+ 3)   0.292 us    |  wake_up_bit();
+ 3)   0.333 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   2.625 us    |      ttwu_queue_wakelist();
+ 3)   3.000 us    |    }
+ 3)   3.167 us    |  }
+ ------------------------------------------
+ 3)   cat-42511    =>    <idle>-0
+ ------------------------------------------
+
+ 3) ! 285.166 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.500 us    |    enqueue_task_fair();
+ 0)   1.708 us    |  }
+ 1)               |  /* hrtimer_expire_entry: hrtimer=00000000ac91cf4e function=tick_nohz_highres_handler now=3002461973621056725 */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* hrtimer_expire_exit: hrtimer=00000000ac91cf4e */
+ 0)               |  /* hrtimer_expire_entry: hrtimer=0000000013f5ffc0 function=tick_nohz_highres_handler now=3002461973621059183 */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* hrtimer_expire_exit: hrtimer=0000000013f5ffc0 */
+ 1)               |  wake_up_process() {
+ 1)               |    try_to_wake_up() {
+ 1)   0.084 us    |      ttwu_queue_wakelist();
+ 1)               |      ttwu_do_activate() {
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)   0.291 us    |        enqueue_task_fair();
+ 1)   1.083 us    |      }
+ 1)   1.750 us    |    }
+ 1)   2.083 us    |  }
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1) + 13.833 us   |  schedule_idle();
+ 0)               |  wake_up_process() {
+ 0)               |    try_to_wake_up() {
+ 0)   0.166 us    |      ttwu_queue_wakelist();
+ 0)               |      ttwu_do_activate() {
+ 0)   0.292 us    |        enqueue_task_fair();
+ 0)   0.833 us    |      }
+ 0)   1.584 us    |    }
+ 0)   1.750 us    |  }
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  wake_up_process() {
+ 0)               |    try_to_wake_up() {
+ 0)   0.083 us    |      ttwu_queue_wakelist();
+ 0)               |      ttwu_do_activate() {
+ 0)   0.708 us    |        enqueue_task_fair();
+ 0)   1.166 us    |      }
+ 0)   1.667 us    |    }
+ 0)   1.833 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  wake_up_process() {
+ 0)               |    try_to_wake_up() {
+ 0)   0.083 us    |      ttwu_queue_wakelist();
+ 0)               |      ttwu_do_activate() {
+ 0)   0.250 us    |        enqueue_task_fair();
+ 0)   0.542 us    |      }
+ 0)   0.916 us    |    }
+ 0)   1.125 us    |  }
+ 2)               |  /* hrtimer_expire_entry: hrtimer=0000000021deaad6 function=tick_nohz_highres_handler now=3002461973621075184 */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* hrtimer_expire_exit: hrtimer=0000000021deaad6 */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  wake_up_process() {
+ 2)               |    try_to_wake_up() {
+ 2)   0.083 us    |      ttwu_queue_wakelist();
+ 2)               |      ttwu_do_activate() {
+ 2)   0.208 us    |        enqueue_task_fair();
+ 2)   0.875 us    |      }
+ 2)   1.417 us    |    }
+ 2)   1.792 us    |  }
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  wake_up_process() {
+ 2)               |    try_to_wake_up() {
+ 2)   0.084 us    |      ttwu_queue_wakelist();
+ 2)               |      ttwu_do_activate() {
+ 2)   0.166 us    |        enqueue_task_fair();
+ 2)   0.500 us    |      }
+ 2)   1.125 us    |    }
+ 2)   1.250 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 2)    <idle>-0    =>   ksoftir-30
+ ------------------------------------------
+
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  try_to_wake_up() {
+ 2)   2.875 us    |    ttwu_queue_wakelist();
+ 2)   3.333 us    |  }
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)               |  ttwu_do_activate() {
+ 1)   0.208 us    |    enqueue_task_fair();
+ ------------------------------------------
+ 2)   ksoftir-30   =>    <idle>-0
+ ------------------------------------------
+
+ 2) + 10.583 us   |  } /* schedule_idle */
+ 1)   0.833 us    |  }
+ 1)   3.333 us    |  schedule_idle();
+ 0)               |  wake_up_new_task() {
+ 0)   0.583 us    |    enqueue_task_fair();
+ 0)   4.750 us    |  }
+ 2)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.625 us    |    enqueue_task_fair();
+ 0)   4.458 us    |  }
+ 1)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) ! 113.000 us  |  } /* schedule_idle */
+ ------------------------------------------
+ 2)    <idle>-0    =>   bash-42512
+ ------------------------------------------
+
+ 2)   0.333 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   3.834 us    |      ttwu_queue_wakelist();
+ 2)   4.208 us    |    }
+ 2)   4.333 us    |  }
+ ------------------------------------------
+ 2)   bash-42512   =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 108.041 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.500 us    |    enqueue_task_fair();
+ 0)   1.583 us    |  }
+ 0)   4.750 us    |  schedule_idle();
+ ------------------------------------------
+ 1)    <idle>-0    =>   cat-42513
+ ------------------------------------------
+
+ 1)   0.250 us    |  wake_up_bit();
+ 1)   0.208 us    |  enqueue_task_fair();
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   3.417 us    |      ttwu_queue_wakelist();
+ 1)   3.625 us    |    }
+ 1)   3.792 us    |  }
+ ------------------------------------------
+ 1)   cat-42513    =>    <idle>-0
+ ------------------------------------------
+
+ 1) ! 251.125 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.542 us    |    enqueue_task_fair();
+ 0)   1.917 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.333 us    |    enqueue_task_fair();
+ 0)   3.666 us    |  }
+ 3)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.334 us    |    enqueue_task_fair();
+ 0)   3.417 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 85.166 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 3)    <idle>-0    =>   bash-42514
+ ------------------------------------------
+
+ 3)   0.291 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   2.500 us    |      ttwu_queue_wakelist();
+ 3)   2.708 us    |    }
+ 3)   2.875 us    |  }
+ ------------------------------------------
+ 3)   bash-42514   =>    <idle>-0
+ ------------------------------------------
+
+ 3) + 87.167 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.500 us    |    enqueue_task_fair();
+ 0)   1.791 us    |  }
+ 0)   4.500 us    |  schedule_idle();
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42515
+ ------------------------------------------
+
+ 2)   0.291 us    |  wake_up_bit();
+ 2)   0.250 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   3.125 us    |      ttwu_queue_wakelist();
+ 2)   3.375 us    |    }
+ 2)   3.500 us    |  }
+ ------------------------------------------
+ 2)   cat-42515    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 252.458 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.917 us    |    enqueue_task_fair();
+ 0)   2.375 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.292 us    |    enqueue_task_fair();
+ 0)   2.958 us    |  }
+ 2)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.334 us    |    enqueue_task_fair();
+ 0)   3.333 us    |  }
+ 3)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 80.250 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 2)    <idle>-0    =>   bash-42516
+ ------------------------------------------
+
+ 2)   0.333 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   2.459 us    |      ttwu_queue_wakelist();
+ 2)   2.667 us    |    }
+ 2)   2.833 us    |  }
+ ------------------------------------------
+ 2)   bash-42516   =>    <idle>-0
+ ------------------------------------------
+
+ 2) + 92.750 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.625 us    |    enqueue_task_fair();
+ 0)   1.583 us    |  }
+ 0)   4.791 us    |  schedule_idle();
+ ------------------------------------------
+ 3)    <idle>-0    =>   cat-42517
+ ------------------------------------------
+
+ 3)               |  /* hrtimer_expire_entry: hrtimer=00000000ff1100e4 function=tick_nohz_highres_handler now=3002461973622003319 */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* hrtimer_expire_exit: hrtimer=00000000ff1100e4 */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  wake_up_process() {
+ 3)               |    try_to_wake_up() {
+ 3)   0.125 us    |      ttwu_queue_wakelist();
+ 3)               |      ttwu_do_activate() {
+ 3)   0.292 us    |        enqueue_task_fair();
+ 3)   0.875 us    |      }
+ 3)   1.417 us    |    }
+ 3)   1.666 us    |  }
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  wake_up_process() {
+ 3)               |    try_to_wake_up() {
+ 3)   0.083 us    |      ttwu_queue_wakelist();
+ 3)               |      ttwu_do_activate() {
+ 3)   0.125 us    |        enqueue_task_fair();
+ 3)   0.583 us    |      }
+ 3)   1.166 us    |    }
+ 3)   1.292 us    |  }
+ 0)               |  /* hrtimer_expire_entry: hrtimer=0000000013f5ffc0 function=tick_nohz_highres_handler now=3002461973622027820 */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* hrtimer_expire_exit: hrtimer=0000000013f5ffc0 */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* hrtimer_expire_entry: hrtimer=0000000021deaad6 function=tick_nohz_highres_handler now=3002461973622032195 */
+ 1)               |  /* hrtimer_expire_entry: hrtimer=00000000ac91cf4e function=tick_nohz_highres_handler now=3002461973622032820 */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* softirq_raise: vec=1 [action=TIMER] */
+ 2)               |  /* softirq_raise: vec=7 [action=SCHED] */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* hrtimer_expire_exit: hrtimer=0000000021deaad6 */
+ 1)               |  /* softirq_raise: vec=7 [action=SCHED] */
+ 1)               |  /* hrtimer_expire_exit: hrtimer=00000000ac91cf4e */
+ 0)               |  wake_up_process() {
+ 0)               |    try_to_wake_up() {
+ 0)   0.125 us    |      ttwu_queue_wakelist();
+ 0)               |      ttwu_do_activate() {
+ 2)               |  /* softirq_entry: vec=7 [action=SCHED] */
+ 0)   0.208 us    |        enqueue_task_fair();
+ 1)               |  /* softirq_entry: vec=1 [action=TIMER] */
+ 0)   0.708 us    |      }
+ 1)               |  /* softirq_exit: vec=1 [action=TIMER] */
+ 0)   1.167 us    |    }
+ 1)               |  /* softirq_entry: vec=7 [action=SCHED] */
+ 0)   1.541 us    |  }
+ 2)               |  /* softirq_exit: vec=7 [action=SCHED] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  /* softirq_exit: vec=7 [action=SCHED] */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  wake_up_process() {
+ 0)               |    try_to_wake_up() {
+ 0)   0.041 us    |      ttwu_queue_wakelist();
+ 0)               |      ttwu_do_activate() {
+ 0)   0.166 us    |        enqueue_task_fair();
+ 0)   0.500 us    |      }
+ 0)   0.959 us    |    }
+ 0)   1.083 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   ksoftir-16
+ ------------------------------------------
+
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  wake_up_process() {
+ 1)               |    try_to_wake_up() {
+ 1)   0.083 us    |      ttwu_queue_wakelist();
+ 1)               |      ttwu_do_activate() {
+ 1)   0.167 us    |        enqueue_task_fair();
+ 1)   0.708 us    |      }
+ 1)   1.250 us    |    }
+ 1)   1.625 us    |  }
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)   3.291 us    |  schedule_idle();
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ ------------------------------------------
+ 0)   ksoftir-16   =>    <idle>-0
+ ------------------------------------------
+
+ 0)   6.792 us    |  }
+ 2)               |  wake_up_process() {
+ 2)               |    try_to_wake_up() {
+ 2)   0.125 us    |      ttwu_queue_wakelist();
+ 2)               |      ttwu_do_activate() {
+ 2)   0.209 us    |        enqueue_task_fair();
+ 2)   0.709 us    |      }
+ 2)   1.208 us    |    }
+ 2)   1.459 us    |  }
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  wake_up_process() {
+ 2)               |    try_to_wake_up() {
+ 2)   0.083 us    |      ttwu_queue_wakelist();
+ 2)               |      ttwu_do_activate() {
+ 2)   0.292 us    |        enqueue_task_fair();
+ 2)   0.625 us    |      }
+ 2)   1.000 us    |    }
+ 2)   1.083 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 2)    <idle>-0    =>   ksoftir-30
+ ------------------------------------------
+
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  wake_up_process() {
+ 2)   0.042 us    |    try_to_wake_up();
+ 2)   0.208 us    |  }
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  wake_up_process() {
+ 2)   0.083 us    |    try_to_wake_up();
+ 2)   0.208 us    |  }
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  wake_up_process() {
+ 2)   0.084 us    |    try_to_wake_up();
+ 2)   0.208 us    |  }
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ ------------------------------------------
+ 2)   ksoftir-30   =>    <idle>-0
+ ------------------------------------------
+
+ 2) + 51.042 us   |  } /* schedule_idle */
+ 3)   0.208 us    |  wake_up_bit();
+ 3)   0.333 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   2.375 us    |      ttwu_queue_wakelist();
+ 3)   2.584 us    |    }
+ 3)   2.708 us    |  }
+ ------------------------------------------
+ 3)   cat-42517    =>   ksoftir-36
+ ------------------------------------------
+
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  try_to_wake_up() {
+ 3)   2.042 us    |    ttwu_queue_wakelist();
+ 3)   2.500 us    |  }
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  wake_up_process() {
+ 3)               |    try_to_wake_up() {
+ 3)   0.083 us    |      ttwu_queue_wakelist();
+ 3)               |      ttwu_do_activate() {
+ 3)   0.209 us    |        enqueue_task_fair();
+ 3)   0.542 us    |      }
+ 3)   0.875 us    |    }
+ 3)   1.042 us    |  }
+ 0)               |  ttwu_do_activate() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 1)               |  ttwu_do_activate() {
+ 0)   1.417 us    |  }
+ 1)   0.333 us    |    enqueue_task_fair();
+ 1)   1.166 us    |  }
+ 0)               |  schedule_idle() {
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  wake_up_process() {
+ 1)   3.125 us    |  schedule_idle();
+ 3)   0.084 us    |    try_to_wake_up();
+ 3)   0.208 us    |  }
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  wake_up_process() {
+ 3)               |    try_to_wake_up() {
+ 3)   0.083 us    |      ttwu_queue_wakelist();
+ 3)               |      ttwu_do_activate() {
+ 3)   0.167 us    |        enqueue_task_fair();
+ 3)   0.375 us    |      }
+ 3)   0.709 us    |    }
+ 3)   0.875 us    |  }
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ ------------------------------------------
+ 3)   ksoftir-36   =>    <idle>-0
+ ------------------------------------------
+
+ 3) ! 300.042 us  |  } /* schedule_idle */
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   4.084 us    |  }
+ 3)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.333 us    |    enqueue_task_fair();
+ 0)   3.500 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 90.458 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 3)    <idle>-0    =>   bash-42518
+ ------------------------------------------
+
+ 3)   0.375 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   2.666 us    |      ttwu_queue_wakelist();
+ 3)   3.000 us    |    }
+ 3)   3.167 us    |  }
+ ------------------------------------------
+ 3)   bash-42518   =>    <idle>-0
+ ------------------------------------------
+
+ 3) + 92.125 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.458 us    |    enqueue_task_fair();
+ 0)   1.625 us    |  }
+ 0)   3.875 us    |  schedule_idle();
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42519
+ ------------------------------------------
+
+ 2)   0.292 us    |  wake_up_bit();
+ 2)   0.292 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   3.459 us    |      ttwu_queue_wakelist();
+ 2)   3.750 us    |    }
+ 2)   3.917 us    |  }
+ ------------------------------------------
+ 2)   cat-42519    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 271.625 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.667 us    |    enqueue_task_fair();
+ 0)   2.083 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.334 us    |    enqueue_task_fair();
+ 0)   3.167 us    |  }
+ 1)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   4.625 us    |  }
+ 3)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 92.541 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 1)    <idle>-0    =>   bash-42520
+ ------------------------------------------
+
+ 1)   0.292 us    |  enqueue_task_fair();
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   3.125 us    |      ttwu_queue_wakelist();
+ 1)   3.417 us    |    }
+ 1)   3.541 us    |  }
+ ------------------------------------------
+ 1)   bash-42520   =>    <idle>-0
+ ------------------------------------------
+
+ 1) + 92.583 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.500 us    |    enqueue_task_fair();
+ 0)   1.625 us    |  }
+ 0)   3.583 us    |  schedule_idle();
+ ------------------------------------------
+ 3)    <idle>-0    =>   cat-42521
+ ------------------------------------------
+
+ 3)   0.250 us    |  wake_up_bit();
+ 3)   0.250 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   3.625 us    |      ttwu_queue_wakelist();
+ 3)   3.917 us    |    }
+ 3)   4.042 us    |  }
+ ------------------------------------------
+ 3)   cat-42521    =>    <idle>-0
+ ------------------------------------------
+
+ 3) ! 273.000 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.667 us    |    enqueue_task_fair();
+ 0)   2.209 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.417 us    |    enqueue_task_fair();
+ 0)   4.708 us    |  }
+ 3)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.417 us    |    enqueue_task_fair();
+ 0)   4.417 us    |  }
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 85.125 us   |  } /* schedule_idle */
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42523
+ ------------------------------------------
+
+ 2)               |  /* hrtimer_expire_entry: hrtimer=0000000021deaad6 function=tick_nohz_highres_handler now=3002461973623002873 */
+ ------------------------------------------
+ 3)    <idle>-0    =>   bash-42522
+ ------------------------------------------
+
+ 3)               |  /* hrtimer_expire_entry: hrtimer=00000000ff1100e4 function=tick_nohz_highres_handler now=3002461973623003456 */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* hrtimer_expire_exit: hrtimer=0000000021deaad6 */
+ 3)               |  /* hrtimer_expire_exit: hrtimer=00000000ff1100e4 */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)   0.333 us    |  enqueue_task_fair();
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  default_wake_function() {
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |    try_to_wake_up() {
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)   2.083 us    |      ttwu_queue_wakelist();
+ 3)   2.666 us    |    }
+ 3)   2.792 us    |  }
+ 2)               |  wake_up_process() {
+ 2)               |    try_to_wake_up() {
+ 2)   0.083 us    |      ttwu_queue_wakelist();
+ 2)               |      ttwu_do_activate() {
+ ------------------------------------------
+ 3)   bash-42522   =>    <idle>-0
+ ------------------------------------------
+
+ 3) ! 103.209 us  |  } /* schedule_idle */
+ 2)   0.208 us    |        enqueue_task_fair();
+ 2)   0.625 us    |      }
+ 2)   1.209 us    |    }
+ 2)   1.416 us    |  }
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.250 us    |    enqueue_task_fair();
+ 0)   0.625 us    |  }
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  /* hrtimer_expire_entry: hrtimer=0000000013f5ffc0 function=tick_nohz_highres_handler now=3002461973623022123 */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  wake_up_process() {
+ 2)               |    try_to_wake_up() {
+ 2)   0.042 us    |      ttwu_queue_wakelist();
+ 2)               |      ttwu_do_activate() {
+ 2)   0.166 us    |        enqueue_task_fair();
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* hrtimer_expire_exit: hrtimer=0000000013f5ffc0 */
+ 2)   0.542 us    |      }
+ 2)   0.958 us    |    }
+ 2)   1.084 us    |  }
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ ------------------------------------------
+ 2)   cat-42523    =>   ksoftir-30
+ ------------------------------------------
+
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  wake_up_process() {
+ 0)               |    try_to_wake_up() {
+ 0)   0.084 us    |      ttwu_queue_wakelist();
+ 0)               |      ttwu_do_activate() {
+ 0)   0.167 us    |        enqueue_task_fair();
+ 0)   0.667 us    |      }
+ 0)   1.166 us    |    }
+ 0)   1.375 us    |  }
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  schedule_idle() {
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ ------------------------------------------
+ 0)    <idle>-0    =>   ksoftir-16
+ ------------------------------------------
+
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  wake_up_process() {
+ 0)               |    try_to_wake_up() {
+ 0)   0.084 us    |      ttwu_queue_wakelist();
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |      ttwu_do_activate() {
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)   0.167 us    |        enqueue_task_fair();
+ 0)   0.500 us    |      }
+ 0)   0.958 us    |    }
+ 0)   5.333 us    |  }
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ ------------------------------------------
+ 0)   ksoftir-16   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 23.417 us   |  } /* schedule_idle */
+ 1)               |  /* hrtimer_expire_entry: hrtimer=00000000ac91cf4e function=tick_nohz_highres_handler now=3002461973623100707 */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* hrtimer_expire_exit: hrtimer=00000000ac91cf4e */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  try_to_wake_up() {
+ 1)   0.084 us    |    ttwu_queue_wakelist();
+ 1)               |    ttwu_do_activate() {
+ 1)   0.209 us    |      enqueue_task_fair();
+ 1)   0.583 us    |    }
+ 1)   1.416 us    |  }
+ 1)               |  wake_up_process() {
+ 1)               |    try_to_wake_up() {
+ 1)   0.042 us    |      ttwu_queue_wakelist();
+ 1)               |      ttwu_do_activate() {
+ 1)   0.125 us    |        enqueue_task_fair();
+ 1)   0.459 us    |      }
+ 1)   0.958 us    |    }
+ 1)   1.084 us    |  }
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)   4.917 us    |  schedule_idle();
+ ------------------------------------------
+ 2)   ksoftir-30   =>   cat-42523
+ ------------------------------------------
+
+ 2)   0.250 us    |  wake_up_bit();
+ 2)   0.209 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   3.416 us    |      ttwu_queue_wakelist();
+ 2)   3.625 us    |    }
+ 2)   3.792 us    |  }
+ ------------------------------------------
+ 2)   cat-42523    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 309.625 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.625 us    |    enqueue_task_fair();
+ 0)   1.792 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.334 us    |    enqueue_task_fair();
+ 0)   3.209 us    |  }
+ 1)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.333 us    |    enqueue_task_fair();
+ 0)   4.083 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 75.250 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 1)    <idle>-0    =>   bash-42524
+ ------------------------------------------
+
+ 1)   0.334 us    |  enqueue_task_fair();
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   2.667 us    |      ttwu_queue_wakelist();
+ 1)   2.958 us    |    }
+ 1)   3.125 us    |  }
+ ------------------------------------------
+ 1)   bash-42524   =>    <idle>-0
+ ------------------------------------------
+
+ 1) + 93.084 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.417 us    |    enqueue_task_fair();
+ 0)   1.375 us    |  }
+ 0)   4.084 us    |  schedule_idle();
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42525
+ ------------------------------------------
+
+ 2)   0.209 us    |  wake_up_bit();
+ 2)   0.209 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   3.000 us    |      ttwu_queue_wakelist();
+ 2)   3.209 us    |    }
+ 2)   3.375 us    |  }
+ ------------------------------------------
+ 2)   cat-42525    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 245.917 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.750 us    |    enqueue_task_fair();
+ 0)   2.291 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.750 us    |    enqueue_task_fair();
+ 0)   3.625 us    |  }
+ 3)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.334 us    |    enqueue_task_fair();
+ 0)   3.583 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 82.708 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 3)    <idle>-0    =>   bash-42526
+ ------------------------------------------
+
+ 3)   0.292 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   2.666 us    |      ttwu_queue_wakelist();
+ 3)   2.875 us    |    }
+ 3)   3.042 us    |  }
+ ------------------------------------------
+ 3)   bash-42526   =>    <idle>-0
+ ------------------------------------------
+
+ 3) + 96.917 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.459 us    |    enqueue_task_fair();
+ 0)   1.459 us    |  }
+ 0)   3.833 us    |  schedule_idle();
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42527
+ ------------------------------------------
+
+ 2)   0.292 us    |  wake_up_bit();
+ 2)   0.250 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   5.917 us    |      ttwu_queue_wakelist();
+ 2)   6.166 us    |    }
+ 2)   6.292 us    |  }
+ ------------------------------------------
+ 2)   cat-42527    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 262.125 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.625 us    |    enqueue_task_fair();
+ 0)   1.750 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  /* hrtimer_expire_entry: hrtimer=0000000013f5ffc0 function=tick_nohz_highres_handler now=3002461973624007092 */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_raise: vec=7 [action=SCHED] */
+ 0)               |  /* hrtimer_expire_exit: hrtimer=0000000013f5ffc0 */
+ 0)               |  /* softirq_entry: vec=7 [action=SCHED] */
+ 0)               |  /* softirq_exit: vec=7 [action=SCHED] */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* hrtimer_expire_entry: hrtimer=0000000021deaad6 function=tick_nohz_highres_handler now=3002461973624014384 */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* hrtimer_expire_exit: hrtimer=0000000021deaad6 */
+ 0)               |  wake_up_process() {
+ 0)               |    try_to_wake_up() {
+ 0)   0.125 us    |      ttwu_queue_wakelist();
+ 0)               |      ttwu_do_activate() {
+ 0)   0.167 us    |        enqueue_task_fair();
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)   0.625 us    |      }
+ 0)   1.084 us    |    }
+ 0)   1.333 us    |  }
+ 2)               |  wake_up_process() {
+ 2)               |    try_to_wake_up() {
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)   0.083 us    |      ttwu_queue_wakelist();
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |      ttwu_do_activate() {
+ 2)   0.209 us    |        enqueue_task_fair();
+ 2)   0.666 us    |      }
+ 2)   1.167 us    |    }
+ 2)   1.333 us    |  }
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  wake_up_process() {
+ 2)               |    try_to_wake_up() {
+ 2)   0.083 us    |      ttwu_queue_wakelist();
+ 2)               |      ttwu_do_activate() {
+ 2)   0.209 us    |        enqueue_task_fair();
+ 2)   0.500 us    |      }
+ 2)   0.917 us    |    }
+ 2)   1.041 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 2)    <idle>-0    =>   ksoftir-30
+ ------------------------------------------
+
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  wake_up_new_task() {
+ 0)   0.417 us    |    enqueue_task_fair();
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)   3.750 us    |  }
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* hrtimer_expire_entry: hrtimer=00000000ff1100e4 function=tick_nohz_highres_handler now=3002461973624037468 */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=7 [action=SCHED] */
+ 3)               |  /* hrtimer_expire_exit: hrtimer=00000000ff1100e4 */
+ ------------------------------------------
+ 2)   ksoftir-30   =>    <idle>-0
+ ------------------------------------------
+
+ 2) + 14.958 us   |  }
+ 3)               |  /* softirq_entry: vec=7 [action=SCHED] */
+ 3)               |  /* softirq_exit: vec=7 [action=SCHED] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  wake_up_process() {
+ 3)               |    try_to_wake_up() {
+ 3)   0.167 us    |      ttwu_queue_wakelist();
+ 3)               |      ttwu_do_activate() {
+ 3)   0.458 us    |        enqueue_task_fair();
+ 3)   1.250 us    |      }
+ 3)   1.917 us    |    }
+ 3)   2.250 us    |  }
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  wake_up_process() {
+ 3)               |    try_to_wake_up() {
+ 3)   0.042 us    |      ttwu_queue_wakelist();
+ 3)               |      ttwu_do_activate() {
+ 3)   0.209 us    |        enqueue_task_fair();
+ 3)   0.625 us    |      }
+ 3)   1.042 us    |    }
+ 3)   1.166 us    |  }
+ 3)               |  schedule_idle() {
+ ------------------------------------------
+ 3)    <idle>-0    =>   ksoftir-36
+ ------------------------------------------
+
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  wake_up_process() {
+ 3)               |    try_to_wake_up() {
+ 3)   0.083 us    |      ttwu_queue_wakelist();
+ 3)               |      ttwu_do_activate() {
+ 3)   0.167 us    |        enqueue_task_fair();
+ 3)   1.292 us    |      }
+ 3)   1.584 us    |    }
+ 3)   1.875 us    |  }
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  wake_up_process() {
+ 0)               |  wake_up_new_task() {
+ 3)   0.041 us    |    try_to_wake_up();
+ 3)   0.209 us    |  }
+ 0)   0.292 us    |    enqueue_task_fair();
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)   3.084 us    |  }
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  wake_up_process() {
+ 3)               |    try_to_wake_up() {
+ 3)   0.083 us    |      ttwu_queue_wakelist();
+ 3)               |      ttwu_do_activate() {
+ 3)   0.167 us    |        enqueue_task_fair();
+ 3)   0.458 us    |      }
+ 3)   0.834 us    |    }
+ 3)   0.958 us    |  }
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  schedule_idle() {
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 3)               |  wake_up_process() {
+ 3)   0.084 us    |    try_to_wake_up();
+ 3)   0.208 us    |  }
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) ! 109.583 us  |  } /* schedule_idle */
+ 1)               |  /* hrtimer_expire_entry: hrtimer=00000000ac91cf4e function=tick_nohz_highres_handler now=3002461973624155178 */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* hrtimer_expire_exit: hrtimer=00000000ac91cf4e */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  wake_up_process() {
+ 1)               |    try_to_wake_up() {
+ 1)   0.083 us    |      ttwu_queue_wakelist();
+ 1)               |      ttwu_do_activate() {
+ 1)   0.208 us    |        enqueue_task_fair();
+ 1)   0.625 us    |      }
+ 1)   1.167 us    |    }
+ 1)   1.500 us    |  }
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)   3.459 us    |  schedule_idle();
+ ------------------------------------------
+ 3)   ksoftir-36   =>   bash-42528
+ ------------------------------------------
+
+ 3)   0.334 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   2.542 us    |      ttwu_queue_wakelist();
+ 3)   2.791 us    |    }
+ 3)   3.000 us    |  }
+ ------------------------------------------
+ 3)   bash-42528   =>    <idle>-0
+ ------------------------------------------
+
+ 3) ! 147.166 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.458 us    |    enqueue_task_fair();
+ 0)   1.334 us    |  }
+ 0)   4.375 us    |  schedule_idle();
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42529
+ ------------------------------------------
+
+ 2)   0.250 us    |  wake_up_bit();
+ 2)   0.250 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   3.959 us    |      ttwu_queue_wakelist();
+ 2)   4.250 us    |    }
+ 2)   4.416 us    |  }
+ ------------------------------------------
+ 2)   cat-42529    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 282.666 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.709 us    |    enqueue_task_fair();
+ 0)   2.167 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.500 us    |    enqueue_task_fair();
+ 0)   4.250 us    |  }
+ 3)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.292 us    |    enqueue_task_fair();
+ 0)   3.917 us    |  }
+ 1)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 96.375 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 3)    <idle>-0    =>   bash-42530
+ ------------------------------------------
+
+ 3)   0.292 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   4.500 us    |      ttwu_queue_wakelist();
+ 3)   4.750 us    |    }
+ 3)   5.208 us    |  }
+ ------------------------------------------
+ 3)   bash-42530   =>    <idle>-0
+ ------------------------------------------
+
+ 3) ! 101.750 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.250 us    |    enqueue_task_fair();
+ 0)   0.750 us    |  }
+ 0)   4.333 us    |  schedule_idle();
+ ------------------------------------------
+ 1)    <idle>-0    =>   cat-42531
+ ------------------------------------------
+
+ 1)   0.209 us    |  wake_up_bit();
+ 1)   0.208 us    |  enqueue_task_fair();
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   4.041 us    |      ttwu_queue_wakelist();
+ 1)   4.375 us    |    }
+ 1)   4.500 us    |  }
+ ------------------------------------------
+ 1)   cat-42531    =>    <idle>-0
+ ------------------------------------------
+
+ 1) ! 253.416 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.541 us    |    enqueue_task_fair();
+ 0)   1.958 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   3.125 us    |  }
+ 3)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.334 us    |    enqueue_task_fair();
+ 0)   3.500 us    |  }
+ 1)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 80.500 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 3)    <idle>-0    =>   bash-42532
+ ------------------------------------------
+
+ 3)   0.250 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   2.500 us    |      ttwu_queue_wakelist();
+ 3)   2.834 us    |    }
+ 3)   2.958 us    |  }
+ ------------------------------------------
+ 3)   bash-42532   =>    <idle>-0
+ ------------------------------------------
+
+ 3) + 89.458 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.792 us    |    enqueue_task_fair();
+ 0)   1.875 us    |  }
+ 0)   4.000 us    |  schedule_idle();
+ ------------------------------------------
+ 1)    <idle>-0    =>   cat-42533
+ ------------------------------------------
+
+ 1)               |  /* hrtimer_expire_entry: hrtimer=00000000ac91cf4e function=tick_nohz_highres_handler now=3002461973625003146 */
+ 1)               |  /* hrtimer_expire_exit: hrtimer=00000000ac91cf4e */
+ 1)   0.208 us    |  wake_up_bit();
+ 1)   0.208 us    |  enqueue_task_fair();
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   2.375 us    |      ttwu_queue_wakelist();
+ 1)   2.625 us    |    }
+ 1)   2.792 us    |  }
+ ------------------------------------------
+ 1)   cat-42533    =>    <idle>-0
+ ------------------------------------------
+
+ 1) ! 245.833 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 3)               |  /* hrtimer_expire_entry: hrtimer=00000000ff1100e4 function=tick_nohz_highres_handler now=3002461973625044188 */
+ 0)   0.375 us    |    enqueue_task_fair();
+ 3)               |  /* softirq_raise: vec=7 [action=SCHED] */
+ 0)   1.416 us    |  }
+ 3)               |  /* hrtimer_expire_exit: hrtimer=00000000ff1100e4 */
+ 3)               |  /* softirq_entry: vec=7 [action=SCHED] */
+ 0)               |  /* hrtimer_expire_entry: hrtimer=0000000013f5ffc0 function=tick_nohz_highres_handler now=3002461973625047980 */
+ 3)               |  /* softirq_exit: vec=7 [action=SCHED] */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_raise: vec=7 [action=SCHED] */
+ 0)               |  /* hrtimer_expire_exit: hrtimer=0000000013f5ffc0 */
+ 0)               |  /* softirq_entry: vec=7 [action=SCHED] */
+ 0)               |  /* softirq_exit: vec=7 [action=SCHED] */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  try_to_wake_up() {
+ 0)   2.875 us    |    ttwu_queue_wakelist();
+ 0)   3.458 us    |  }
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  schedule_idle() {
+ 1)               |  ttwu_do_activate() {
+ 1)   0.458 us    |    enqueue_task_fair();
+ 1)   1.875 us    |  }
+ 1)   3.375 us    |  schedule_idle();
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.333 us    |    enqueue_task_fair();
+ 0)   6.417 us    |  }
+ 3)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.375 us    |    enqueue_task_fair();
+ 0)   3.291 us    |  }
+ 1)               |  schedule_idle() {
+ 2)               |  /* hrtimer_expire_entry: hrtimer=0000000021deaad6 function=tick_nohz_highres_handler now=3002461973625139189 */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 85.000 us   |  } /* schedule_idle */
+ 2)               |  /* hrtimer_expire_exit: hrtimer=0000000021deaad6 */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  wake_up_process() {
+ 2)               |    try_to_wake_up() {
+ 2)   0.083 us    |      ttwu_queue_wakelist();
+ 2)               |      ttwu_do_activate() {
+ 2)   0.250 us    |        enqueue_task_fair();
+ 2)   0.833 us    |      }
+ 2)   1.417 us    |    }
+ 2)   1.708 us    |  }
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 2)   2.625 us    |  schedule_idle();
+ ------------------------------------------
+ 3)    <idle>-0    =>   bash-42534
+ ------------------------------------------
+
+ 3)   0.333 us    |  enqueue_task_fair();
+ 3)               |  default_wake_function() {
+ 3)               |    try_to_wake_up() {
+ 3)   2.958 us    |      ttwu_queue_wakelist();
+ 3)   3.333 us    |    }
+ 3)   3.542 us    |  }
+ ------------------------------------------
+ 3)   bash-42534   =>    <idle>-0
+ ------------------------------------------
+
+ 3) ! 104.208 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.333 us    |    enqueue_task_fair();
+ 0)   0.792 us    |  }
+ 0)   3.667 us    |  schedule_idle();
+ ------------------------------------------
+ 1)    <idle>-0    =>   cat-42535
+ ------------------------------------------
+
+ 1)   0.292 us    |  wake_up_bit();
+ 1)   0.250 us    |  enqueue_task_fair();
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   2.958 us    |      ttwu_queue_wakelist();
+ 1)   3.250 us    |    }
+ 1)   3.417 us    |  }
+ ------------------------------------------
+ 1)   cat-42535    =>    <idle>-0
+ ------------------------------------------
+
+ 1) ! 264.084 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.458 us    |    enqueue_task_fair();
+ 0)   1.708 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.334 us    |    enqueue_task_fair();
+ 0)   3.250 us    |  }
+ 1)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.458 us    |    enqueue_task_fair();
+ 0)   3.375 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 88.375 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 1)    <idle>-0    =>   bash-42536
+ ------------------------------------------
+
+ 1)   0.250 us    |  enqueue_task_fair();
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   8.375 us    |      ttwu_queue_wakelist();
+ 1)   8.584 us    |    }
+ 1)   8.750 us    |  }
+ ------------------------------------------
+ 1)   bash-42536   =>    <idle>-0
+ ------------------------------------------
+
+ 1) + 92.166 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.292 us    |    enqueue_task_fair();
+ 0)   0.916 us    |  }
+ 0)   3.709 us    |  schedule_idle();
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42537
+ ------------------------------------------
+
+ 2)   0.291 us    |  wake_up_bit();
+ 2)   0.250 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   2.709 us    |      ttwu_queue_wakelist();
+ 2)   3.000 us    |    }
+ 2)   3.167 us    |  }
+ ------------------------------------------
+ 2)   cat-42537    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 232.833 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.542 us    |    enqueue_task_fair();
+ 0)   1.916 us    |  }
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.250 us    |    enqueue_task_fair();
+ 0)   3.875 us    |  }
+ 2)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.292 us    |    enqueue_task_fair();
+ 0)   3.083 us    |  }
+ 1)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 76.458 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 2)    <idle>-0    =>   bash-42538
+ ------------------------------------------
+
+ 2)   0.250 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   2.250 us    |      ttwu_queue_wakelist();
+ 2)   2.500 us    |    }
+ 2)   2.625 us    |  }
+ ------------------------------------------
+ 2)   bash-42538   =>    <idle>-0
+ ------------------------------------------
+
+ 2) + 82.417 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.292 us    |    enqueue_task_fair();
+ 0)   0.875 us    |  }
+ 0)   3.167 us    |  schedule_idle();
+ ------------------------------------------
+ 1)    <idle>-0    =>   cat-42539
+ ------------------------------------------
+
+ 1)               |  /* hrtimer_expire_entry: hrtimer=00000000ac91cf4e function=tick_nohz_highres_handler now=3002461973626003032 */
+ 1)               |  /* softirq_raise: vec=1 [action=TIMER] */
+ 1)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 1)               |  /* hrtimer_expire_exit: hrtimer=00000000ac91cf4e */
+ 1)               |  /* softirq_entry: vec=1 [action=TIMER] */
+ 1)               |  /* softirq_exit: vec=1 [action=TIMER] */
+ 1)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 1)               |  wake_up_process() {
+ 1)               |    try_to_wake_up() {
+ 1)   0.083 us    |      ttwu_queue_wakelist();
+ 1)               |      ttwu_do_activate() {
+ 1)   0.250 us    |        enqueue_task_fair();
+ 1)   0.792 us    |      }
+ 1)   1.375 us    |    }
+ 1)   1.625 us    |  }
+ 1)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  /* hrtimer_expire_entry: hrtimer=0000000013f5ffc0 function=tick_nohz_highres_handler now=3002461973626039491 */
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_raise: vec=7 [action=SCHED] */
+ 0)               |  /* hrtimer_expire_exit: hrtimer=0000000013f5ffc0 */
+ 1)   0.209 us    |  wake_up_bit();
+ 0)               |  /* softirq_entry: vec=7 [action=SCHED] */
+ 2)               |  /* hrtimer_expire_entry: hrtimer=0000000021deaad6 function=tick_nohz_highres_handler now=3002461973626043408 */
+ 0)               |  /* softirq_exit: vec=7 [action=SCHED] */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 2)               |  /* softirq_raise: vec=7 [action=SCHED] */
+ 2)               |  /* hrtimer_expire_exit: hrtimer=0000000021deaad6 */
+ 2)               |  /* softirq_entry: vec=7 [action=SCHED] */
+ 2)               |  /* softirq_exit: vec=7 [action=SCHED] */
+ 2)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 2)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 1)   0.334 us    |  enqueue_task_fair();
+ 0)               |  wake_up_process() {
+ 0)               |    try_to_wake_up() {
+ 0)   0.083 us    |      ttwu_queue_wakelist();
+ 1)               |  default_wake_function() {
+ 0)               |      ttwu_do_activate() {
+ 1)               |    try_to_wake_up() {
+ 1)   2.083 us    |      ttwu_queue_wakelist();
+ 0)   0.209 us    |        enqueue_task_fair();
+ 0)   0.667 us    |      }
+ 0)   1.167 us    |    }
+ 0)   1.458 us    |  }
+ 0)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  wake_up_process() {
+ 0)               |    try_to_wake_up() {
+ 1)   2.292 us    |    }
+ 1)   2.416 us    |  }
+ 0)   0.125 us    |      ttwu_queue_wakelist();
+ 0)               |      ttwu_do_activate() {
+ 0)   0.166 us    |        enqueue_task_fair();
+ 0)   0.625 us    |      }
+ 0)   2.542 us    |    }
+ 0)   2.666 us    |  }
+ 0)               |  ttwu_do_activate() {
+ 0)   0.333 us    |    enqueue_task_fair();
+ 0)   0.792 us    |  }
+ ------------------------------------------
+ 1)   cat-42539    =>    <idle>-0
+ ------------------------------------------
+
+ 1) ! 257.834 us  |  } /* schedule_idle */
+ 0)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 0)               |  /* softirq_exit: vec=9 [action=RCU] */
+ 0)               |  schedule_idle() {
+ ------------------------------------------
+ 0)    <idle>-0    =>   bash-42440
+ ------------------------------------------
+
+ 0)               |  wake_up_new_task() {
+ 0)   0.333 us    |    enqueue_task_fair();
+ 0)   3.000 us    |  }
+ 1)               |  schedule_idle() {
+ 0)               |  wake_up_new_task() {
+ 0)   0.292 us    |    enqueue_task_fair();
+ 0)   3.083 us    |  }
+ 2)               |  schedule_idle() {
+ ------------------------------------------
+ 0)   bash-42440   =>    <idle>-0
+ ------------------------------------------
+
+ 0) + 76.417 us   |  } /* schedule_idle */
+ ------------------------------------------
+ 1)    <idle>-0    =>   bash-42540
+ ------------------------------------------
+
+ 1)   0.333 us    |  enqueue_task_fair();
+ 1)               |  default_wake_function() {
+ 1)               |    try_to_wake_up() {
+ 1)   2.500 us    |      ttwu_queue_wakelist();
+ 1)   2.709 us    |    }
+ 1)   2.875 us    |  }
+ ------------------------------------------
+ 1)   bash-42540   =>    <idle>-0
+ ------------------------------------------
+
+ 1) + 85.958 us   |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.416 us    |    enqueue_task_fair();
+ 0)   1.334 us    |  }
+ 0)   3.667 us    |  schedule_idle();
+ 3)               |  /* hrtimer_expire_entry: hrtimer=00000000ff1100e4 function=tick_nohz_highres_handler now=3002461973626208535 */
+ 3)               |  /* softirq_raise: vec=9 [action=RCU] */
+ 3)               |  /* hrtimer_expire_exit: hrtimer=00000000ff1100e4 */
+ 3)               |  /* softirq_entry: vec=9 [action=RCU] */
+ 3)               |  /* softirq_exit: vec=9 [action=RCU] */
+ ------------------------------------------
+ 2)    <idle>-0    =>   cat-42541
+ ------------------------------------------
+
+ 2)   0.208 us    |  wake_up_bit();
+ 2)   0.208 us    |  enqueue_task_fair();
+ 2)               |  default_wake_function() {
+ 2)               |    try_to_wake_up() {
+ 2)   2.792 us    |      ttwu_queue_wakelist();
+ 2)   3.084 us    |    }
+ 2)   3.250 us    |  }
+ ------------------------------------------
+ 2)   cat-42541    =>    <idle>-0
+ ------------------------------------------
+
+ 2) ! 238.625 us  |  } /* schedule_idle */
+ 0)               |  ttwu_do_activate() {
+ 0)   0.625 us    |    enqueue_task_fair();
+ 0)   2.125 us    |  }
+ 0)               |  schedule_idle() {
