@@ -139,27 +139,6 @@ const READY_SITE_TIMER: u64 = 7;
 
 static WAKE_LAST_READY_SITE: [AtomicU64; WAKE_ATTRIB_MAX_TIDS] =
     [const { AtomicU64::new(READY_SITE_NONE) }; WAKE_ATTRIB_MAX_TIDS];
-static WAKE_SCHEDULE_READY_DETAIL: [AtomicU64; WAKE_ATTRIB_MAX_TIDS] =
-    [const { AtomicU64::new(READY_SCHED_DETAIL_NONE) }; WAKE_ATTRIB_MAX_TIDS];
-static WAKE_MARKER_CLEAR_SOURCE: [AtomicU64; WAKE_ATTRIB_MAX_TIDS] =
-    [const { AtomicU64::new(MARKER_CLEAR_SOURCE_NONE) }; WAKE_ATTRIB_MAX_TIDS];
-
-const READY_SCHED_DETAIL_NONE: u64 = 0;
-const READY_SCHED_DETAIL_REGULAR_SCHEDULE: u64 = 1 << 0;
-const READY_SCHED_DETAIL_DEFERRED_REQUEUE: u64 = 1 << 1;
-const READY_SCHED_DETAIL_SHOULD_REQUEUE: u64 = 1 << 2;
-const READY_SCHED_DETAIL_MARKER_PUBLISHED: u64 = 1 << 3;
-const READY_SCHED_DETAIL_NO_SWITCH: u64 = 1 << 4;
-const READY_SCHED_DETAIL_MARKER_CLEARED_BEFORE_REQUEUE: u64 = 1 << 5;
-const READY_SCHED_DETAIL_OWNERSHIP_SKIP_CURRENT: u64 = 1 << 6;
-const READY_SCHED_DETAIL_QUEUE_PRESENT_AT_PUBLISH: u64 = 1 << 7;
-const READY_SCHED_DETAIL_REQUEUE_ALREADY_QUEUED: u64 = 1 << 8;
-const READY_SCHED_DETAIL_EXCEPTION_CLEANUP_CLEARED: u64 = 1 << 9;
-const READY_SCHED_DETAIL_OWNERSHIP_SKIP_OTHER_DEFERRED: u64 = 1 << 10;
-
-const MARKER_CLEAR_SOURCE_NONE: u64 = 0;
-const MARKER_CLEAR_SOURCE_EXCEPTION_CLEANUP: u64 = 1;
-const MARKER_CLEAR_SOURCE_CALLER_PRE_CLEAR: u64 = 2;
 
 pub static WAKE_SITE_SCHEDULE: AtomicU64 = AtomicU64::new(0);
 pub static WAKE_SITE_UNBLOCK: AtomicU64 = AtomicU64::new(0);
@@ -177,21 +156,6 @@ pub static ENQUEUE_ISR_BUFFER_DRAINED_OK: AtomicU64 = AtomicU64::new(0);
 pub static ENQUEUE_ALREADY_QUEUED_OK: AtomicU64 = AtomicU64::new(0);
 pub static ENQUEUE_ISR_BUFFER_FULL: AtomicU64 = AtomicU64::new(0);
 
-pub static READY_SITE_SCHEDULE_DROPPED_NO_SWITCH: AtomicU64 = AtomicU64::new(0);
-pub static READY_SITE_SCHEDULE_DROPPED_INLINE_SCHED: AtomicU64 = AtomicU64::new(0);
-pub static READY_SITE_SCHEDULE_DROPPED_EXC_RETURN: AtomicU64 = AtomicU64::new(0);
-pub static READY_SITE_SCHEDULE_DROPPED_MARKER_CLEARED_EXCEPTION_CLEANUP: AtomicU64 =
-    AtomicU64::new(0);
-pub static READY_SITE_SCHEDULE_DROPPED_MARKER_CLEARED_CALLER_PRE: AtomicU64 = AtomicU64::new(0);
-pub static READY_SITE_SCHEDULE_DROPPED_MARKER_CLEARED_MISSING_AT_ENTRY: AtomicU64 =
-    AtomicU64::new(0);
-pub static READY_SITE_SCHEDULE_DROPPED_OWNERSHIP_SKIP_CURRENT: AtomicU64 = AtomicU64::new(0);
-pub static READY_SITE_SCHEDULE_DROPPED_OWNERSHIP_SKIP_OTHER_DEFERRED: AtomicU64 =
-    AtomicU64::new(0);
-pub static READY_SITE_SCHEDULE_DROPPED_STALE_QUEUE: AtomicU64 = AtomicU64::new(0);
-pub static READY_SITE_SCHEDULE_DROPPED_OTHER: AtomicU64 = AtomicU64::new(0);
-static READY_SITE_SCHEDULE_DROPPED_INLINE_TOTAL: AtomicU64 = AtomicU64::new(0);
-
 #[inline]
 fn wake_tid_index(tid: u64) -> Option<usize> {
     let idx = tid as usize;
@@ -206,123 +170,10 @@ fn wake_tid_index(tid: u64) -> Option<usize> {
 fn record_ready_site(tid: u64, site: u64) {
     if let Some(idx) = wake_tid_index(tid) {
         WAKE_LAST_READY_SITE[idx].store(site, Ordering::Relaxed);
-        if site != READY_SITE_SCHEDULE {
-            WAKE_SCHEDULE_READY_DETAIL[idx].store(READY_SCHED_DETAIL_NONE, Ordering::Relaxed);
-            WAKE_MARKER_CLEAR_SOURCE[idx].store(MARKER_CLEAR_SOURCE_NONE, Ordering::Relaxed);
-        }
     }
-}
-
-#[inline]
-fn ready_site_for_tid(tid: u64) -> u64 {
-    wake_tid_index(tid)
-        .map(|idx| WAKE_LAST_READY_SITE[idx].load(Ordering::Relaxed))
-        .unwrap_or(READY_SITE_NONE)
-}
-
-#[inline]
-fn record_schedule_ready_detail(tid: u64, detail: u64) {
-    if let Some(idx) = wake_tid_index(tid) {
-        WAKE_SCHEDULE_READY_DETAIL[idx].store(detail, Ordering::Relaxed);
-        WAKE_MARKER_CLEAR_SOURCE[idx].store(MARKER_CLEAR_SOURCE_NONE, Ordering::Relaxed);
-    }
-}
-
-#[inline]
-fn mark_schedule_ready_detail(tid: u64, detail: u64) {
-    if ready_site_for_tid(tid) != READY_SITE_SCHEDULE {
-        return;
-    }
-    if let Some(idx) = wake_tid_index(tid) {
-        WAKE_SCHEDULE_READY_DETAIL[idx].fetch_or(detail, Ordering::Relaxed);
-    }
-}
-
-#[inline]
-fn schedule_ready_detail_for_tid(tid: u64) -> u64 {
-    wake_tid_index(tid)
-        .map(|idx| WAKE_SCHEDULE_READY_DETAIL[idx].load(Ordering::Relaxed))
-        .unwrap_or(READY_SCHED_DETAIL_NONE)
-}
-
-#[inline]
-fn record_marker_clear_source(tid: u64, source: u64) {
-    if let Some(idx) = wake_tid_index(tid) {
-        WAKE_MARKER_CLEAR_SOURCE[idx].store(source, Ordering::Relaxed);
-    }
-}
-
-#[inline]
-fn marker_clear_source_for_tid(tid: u64) -> u64 {
-    wake_tid_index(tid)
-        .map(|idx| WAKE_MARKER_CLEAR_SOURCE[idx].load(Ordering::Relaxed))
-        .unwrap_or(MARKER_CLEAR_SOURCE_NONE)
-}
-
-#[inline]
-fn classify_schedule_dropped_detail(tid: u64) {
-    let detail = schedule_ready_detail_for_tid(tid);
-    let bucket = if (detail & READY_SCHED_DETAIL_NO_SWITCH) != 0 {
-        &READY_SITE_SCHEDULE_DROPPED_NO_SWITCH
-    } else if (detail & READY_SCHED_DETAIL_REGULAR_SCHEDULE) != 0 {
-        &READY_SITE_SCHEDULE_DROPPED_INLINE_SCHED
-    } else if (detail & READY_SCHED_DETAIL_OWNERSHIP_SKIP_CURRENT) != 0 {
-        &READY_SITE_SCHEDULE_DROPPED_OWNERSHIP_SKIP_CURRENT
-    } else if (detail & READY_SCHED_DETAIL_OWNERSHIP_SKIP_OTHER_DEFERRED) != 0 {
-        &READY_SITE_SCHEDULE_DROPPED_OWNERSHIP_SKIP_OTHER_DEFERRED
-    } else if (detail & READY_SCHED_DETAIL_EXCEPTION_CLEANUP_CLEARED) != 0 {
-        &READY_SITE_SCHEDULE_DROPPED_MARKER_CLEARED_EXCEPTION_CLEANUP
-    } else if (detail & READY_SCHED_DETAIL_MARKER_CLEARED_BEFORE_REQUEUE) != 0 {
-        match marker_clear_source_for_tid(tid) {
-            MARKER_CLEAR_SOURCE_EXCEPTION_CLEANUP => {
-                &READY_SITE_SCHEDULE_DROPPED_MARKER_CLEARED_EXCEPTION_CLEANUP
-            }
-            MARKER_CLEAR_SOURCE_CALLER_PRE_CLEAR => {
-                &READY_SITE_SCHEDULE_DROPPED_MARKER_CLEARED_CALLER_PRE
-            }
-            _ => &READY_SITE_SCHEDULE_DROPPED_MARKER_CLEARED_MISSING_AT_ENTRY,
-        }
-    } else if (detail
-        & (READY_SCHED_DETAIL_QUEUE_PRESENT_AT_PUBLISH | READY_SCHED_DETAIL_REQUEUE_ALREADY_QUEUED))
-        != 0
-    {
-        &READY_SITE_SCHEDULE_DROPPED_STALE_QUEUE
-    } else if (detail & READY_SCHED_DETAIL_DEFERRED_REQUEUE) != 0 {
-        &READY_SITE_SCHEDULE_DROPPED_EXC_RETURN
-    } else {
-        &READY_SITE_SCHEDULE_DROPPED_OTHER
-    };
-    READY_SITE_SCHEDULE_DROPPED_INLINE_TOTAL.fetch_add(1, Ordering::Relaxed);
-    bucket.fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn emit_wake_attribution_counters() {
-    let detail_no_switch = READY_SITE_SCHEDULE_DROPPED_NO_SWITCH.load(Ordering::Relaxed);
-    let detail_inline_sched = READY_SITE_SCHEDULE_DROPPED_INLINE_SCHED.load(Ordering::Relaxed);
-    let detail_exc_return = READY_SITE_SCHEDULE_DROPPED_EXC_RETURN.load(Ordering::Relaxed);
-    let detail_marker_exc =
-        READY_SITE_SCHEDULE_DROPPED_MARKER_CLEARED_EXCEPTION_CLEANUP.load(Ordering::Relaxed);
-    let detail_marker_caller =
-        READY_SITE_SCHEDULE_DROPPED_MARKER_CLEARED_CALLER_PRE.load(Ordering::Relaxed);
-    let detail_marker_missing =
-        READY_SITE_SCHEDULE_DROPPED_MARKER_CLEARED_MISSING_AT_ENTRY.load(Ordering::Relaxed);
-    let detail_ownership_current =
-        READY_SITE_SCHEDULE_DROPPED_OWNERSHIP_SKIP_CURRENT.load(Ordering::Relaxed);
-    let detail_ownership_other_deferred =
-        READY_SITE_SCHEDULE_DROPPED_OWNERSHIP_SKIP_OTHER_DEFERRED.load(Ordering::Relaxed);
-    let detail_stale_queue = READY_SITE_SCHEDULE_DROPPED_STALE_QUEUE.load(Ordering::Relaxed);
-    let detail_other = READY_SITE_SCHEDULE_DROPPED_OTHER.load(Ordering::Relaxed);
-    let detail_sum = detail_no_switch
-        + detail_inline_sched
-        + detail_exc_return
-        + detail_marker_exc
-        + detail_marker_caller
-        + detail_marker_missing
-        + detail_ownership_current
-        + detail_ownership_other_deferred
-        + detail_stale_queue
-        + detail_other;
-    let detail_expected = READY_SITE_SCHEDULE_DROPPED_INLINE_TOTAL.load(Ordering::Relaxed);
     crate::serial_println!(
         "[wake-attrib] schedule={} unblock={} isr_unblock={} wake_io={} signal={} child={} timer={}",
         WAKE_SITE_SCHEDULE.load(Ordering::Relaxed),
@@ -343,26 +194,6 @@ pub fn emit_wake_attribution_counters() {
         ENQUEUE_ALREADY_QUEUED_OK.load(Ordering::Relaxed),
         ENQUEUE_ISR_BUFFER_FULL.load(Ordering::Relaxed)
     );
-    crate::serial_println!(
-        "[rescue-detail] no_switch={} inline_sched={} exc_return={} marker_cleared_exception_cleanup={} marker_cleared_caller_pre={} marker_cleared_missing_at_entry={} ownership_skip_current={} ownership_skip_other_deferred={} stale_queue={} other={}",
-        detail_no_switch,
-        detail_inline_sched,
-        detail_exc_return,
-        detail_marker_exc,
-        detail_marker_caller,
-        detail_marker_missing,
-        detail_ownership_current,
-        detail_ownership_other_deferred,
-        detail_stale_queue,
-        detail_other
-    );
-    if detail_sum != detail_expected {
-        crate::serial_println!(
-            "[rescue-detail-mismatch] sum={} expected={}",
-            detail_sum,
-            detail_expected
-        );
-    }
 }
 
 /// Global scheduler instance
@@ -1010,10 +841,6 @@ impl Scheduler {
                             current.set_ready();
                             WAKE_SITE_SCHEDULE.fetch_add(1, Ordering::Relaxed);
                             record_ready_site(current_id, READY_SITE_SCHEDULE);
-                            record_schedule_ready_detail(
-                                current_id,
-                                READY_SCHED_DETAIL_REGULAR_SCHEDULE,
-                            );
                             true
                         } else {
                             // Reset run_start_ticks so the next dispatch doesn't
@@ -1281,15 +1108,6 @@ impl Scheduler {
                 // Instead of adding to a queue, just record whether we SHOULD
                 should_requeue_old = published_ready && !in_queue;
                 if published_ready {
-                    let mut detail = READY_SCHED_DETAIL_DEFERRED_REQUEUE;
-                    if should_requeue_old {
-                        detail |=
-                            READY_SCHED_DETAIL_SHOULD_REQUEUE | READY_SCHED_DETAIL_MARKER_PUBLISHED;
-                    }
-                    if in_queue {
-                        detail |= READY_SCHED_DETAIL_QUEUE_PRESENT_AT_PUBLISH;
-                    }
-                    record_schedule_ready_detail(current_id, detail);
                     if should_requeue_old {
                         self.cpu_state[Self::current_cpu_id()].previous_thread = Some(current_id);
                     }
@@ -1384,12 +1202,7 @@ impl Scheduler {
                     // handled next time schedule_deferred_requeue is called.
                     // Restore Running state and clear the deferred marker (both
                     // were set above before we knew this thread would continue).
-                    mark_schedule_ready_detail(next_thread_id, READY_SCHED_DETAIL_NO_SWITCH);
                     if self.cpu_state[current_cpu].previous_thread == Some(next_thread_id) {
-                        record_marker_clear_source(
-                            next_thread_id,
-                            MARKER_CLEAR_SOURCE_CALLER_PRE_CLEAR,
-                        );
                         self.cpu_state[current_cpu].previous_thread = None;
                     }
                     if let Some(t) = self.get_thread_mut(next_thread_id) {
@@ -1469,10 +1282,6 @@ impl Scheduler {
         let cpu = Self::current_cpu_id();
         let same_cpu_marker_present =
             cpu < MAX_CPUS && self.cpu_state[cpu].previous_thread == Some(thread_id);
-        let detail = schedule_ready_detail_for_tid(thread_id);
-        if (detail & READY_SCHED_DETAIL_MARKER_PUBLISHED) != 0 && !same_cpu_marker_present {
-            mark_schedule_ready_detail(thread_id, READY_SCHED_DETAIL_MARKER_CLEARED_BEFORE_REQUEUE);
-        }
         if same_cpu_marker_present {
             self.cpu_state[cpu].previous_thread = None;
         }
@@ -1484,17 +1293,12 @@ impl Scheduler {
         // CPU simultaneously — sharing the same kernel stack and Thread context,
         // leading to register/stack corruption (DATA_ABORT, INSTRUCTION_ABORT, etc.).
         if (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].current_thread == Some(thread_id)) {
-            mark_schedule_ready_detail(thread_id, READY_SCHED_DETAIL_OWNERSHIP_SKIP_CURRENT);
             return;
         }
         // Don't requeue threads still pending deferred requeue on another CPU.
         // This is a defense-in-depth check — the primary protection is in
         // the wakeup paths (unblock, wake_expired_timers, etc.).
         if self.is_in_deferred_requeue(thread_id) {
-            mark_schedule_ready_detail(
-                thread_id,
-                READY_SCHED_DETAIL_OWNERSHIP_SKIP_OTHER_DEFERRED,
-            );
             return;
         }
         // Safety checks: only requeue if the thread is in Ready state and not already queued.
@@ -1515,7 +1319,6 @@ impl Scheduler {
             // Send IPI to wake an idle CPU to pick up the requeued thread
             self.send_resched_ipi();
         } else {
-            mark_schedule_ready_detail(thread_id, READY_SCHED_DETAIL_REQUEUE_ALREADY_QUEUED);
             ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -2401,9 +2204,6 @@ impl Scheduler {
         let Some(previous) = self.cpu_state[cpu].previous_thread else {
             return;
         };
-
-        mark_schedule_ready_detail(previous, READY_SCHED_DETAIL_EXCEPTION_CLEANUP_CLEARED);
-        record_marker_clear_source(previous, MARKER_CLEAR_SOURCE_EXCEPTION_CLEANUP);
 
         let is_idle = (0..MAX_CPUS).any(|c| self.cpu_state[c].idle_thread == previous);
         let is_ready = self
