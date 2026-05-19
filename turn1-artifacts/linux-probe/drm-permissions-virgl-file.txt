@@ -1,0 +1,8 @@
+total 0
+drwxr-xr-x 2 root root         80 May 17  2026 by-path
+crw-rw---- 1 root video  226,   1 Jul  8 19:37 card1
+crw-rw---- 1 root render 226, 128 May 17  2026 renderD128
+uid=1000(wrb) gid=1000(wrb) groups=1000(wrb),4(adm),24(cdrom),27(sudo),30(dip),46(plugdev),101(lxd),993(render)
+wrb adm cdrom sudo dip plugdev lxd render
+-rwxrwxr-x 1 wrb wrb 72080 Mar  5  2026 /home/wrb/virgl_raw_test
+/home/wrb/virgl_raw_test: ELF 64-bit LSB pie executable, ARM aarch64, version 1 (SYSV), dynamically linked, interpreter /lib/ld-linux-aarch64.so.1, BuildID[sha1]=b1b22d552795c86064b0f5b20776a6eaa9afd786, for GNU/Linux 3.7.0, not stripped

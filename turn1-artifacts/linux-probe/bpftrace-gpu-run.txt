@@ -1,0 +1,23 @@
+bpftrace_status=0
+virgl_tail
+
+=== DRM KMS Display ===
+Using stride=4096 for AddFB
+AddFB: fb_id=146 (depth=24, bpp=32, stride=4096, bo=1)
+SetCrtc: OK — display should show CORNFLOWER BLUE
+
+Holding display for 5 seconds...
+Done.
+bpftrace_out
+Attaching 5 probes...
+@vp: 22
+@vring: 45
+@ctrl: 21
+@cursor: 0
+
+
+@ctrl: 21
+@cursor: 0
+@vp: 22
+@vring: 45
+bpftrace_err

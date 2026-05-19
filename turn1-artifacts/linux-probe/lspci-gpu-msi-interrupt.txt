@@ -1,0 +1,2 @@
+	Interrupt: pin A routed to IRQ 18
+	Capabilities: [b0] MSI-X: Enable+ Count=2 Masked-

@@ -1,0 +1,12 @@
+total 0
+drwxr-xr-x  2 root root    0 Jul  8 19:39 .
+drwxr-xr-x 14 root root    0 May 17  2026 ..
+lrwxrwxrwx  1 root root    0 Jul  8 19:39 0000:00:05.0 -> ../../../../devices/pci0000:00/0000:00:05.0
+lrwxrwxrwx  1 root root    0 Jul  8 19:39 0000:00:0a.0 -> ../../../../devices/pci0000:00/0000:00:0a.0
+lrwxrwxrwx  1 root root    0 Jul  8 19:39 0000:00:0e.0 -> ../../../../devices/pci0000:00/0000:00:0e.0
+--w-------  1 root root 4096 Jul  8 19:39 bind
+lrwxrwxrwx  1 root root    0 Jul  8 19:39 module -> ../../../../module/virtio_pci
+--w-------  1 root root 4096 Jul  8 19:39 new_id
+--w-------  1 root root 4096 Jul  8 19:39 remove_id
+--w-------  1 root root 4096 May 17  2026 uevent
+--w-------  1 root root 4096 Jul  8 19:39 unbind

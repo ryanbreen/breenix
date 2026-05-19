@@ -1,0 +1,16 @@
+=== /sys/bus/pci/drivers/virtio-pci/0000:00:05.0/ ===
+irq=17
+msi_irqs:
+  20: msix
+  21: msix
+  22: msix
+=== /sys/bus/pci/drivers/virtio-pci/0000:00:0a.0/ ===
+irq=18
+msi_irqs:
+  27: msix
+  28: msix
+=== /sys/bus/pci/drivers/virtio-pci/0000:00:0e.0/ ===
+irq=19
+msi_irqs:
+  29: msix
+  30: msix

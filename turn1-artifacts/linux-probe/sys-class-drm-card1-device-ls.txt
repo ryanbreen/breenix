@@ -1,0 +1,42 @@
+total 0
+drwxr-xr-x  8 root root        0 Jul  8 19:39 .
+drwxr-xr-x 11 root root        0 May 17  2026 ..
+-r--r--r--  1 root root     4096 Jul  8 19:39 ari_enabled
+-r--r--r--  1 root root     4096 Jul  8 19:39 boot_vga
+-rw-r--r--  1 root root     4096 Jul  8 19:39 broken_parity_status
+-r--r--r--  1 root root     4096 May 17  2026 class
+-rw-r--r--  1 root root      256 Jul  8 19:38 config
+-r--r--r--  1 root root     4096 Jul  8 19:39 consistent_dma_mask_bits
+-rw-r--r--  1 root root     4096 Jul  8 19:39 d3cold_allowed
+-r--r--r--  1 root root     4096 May 17  2026 device
+-r--r--r--  1 root root     4096 Jul  8 19:39 devspec
+-r--r--r--  1 root root     4096 Jul  8 19:39 dma_mask_bits
+lrwxrwxrwx  1 root root        0 May 17  2026 driver -> ../../../bus/pci/drivers/virtio-pci
+-rw-r--r--  1 root root     4096 Jul  8 19:39 driver_override
+drwxr-xr-x  4 root root        0 May 17  2026 drm
+-rw-r--r--  1 root root     4096 Jul  8 19:39 enable
+drwxr-xr-x  3 root root        0 May 17  2026 graphics
+-r--r--r--  1 root root     4096 Jul  8 19:38 irq
+drwxr-xr-x  2 root root        0 May 17  2026 link
+-r--r--r--  1 root root     4096 Jul  8 19:39 local_cpulist
+-r--r--r--  1 root root     4096 Jul  8 19:39 local_cpus
+-r--r--r--  1 root root     4096 May 17  2026 modalias
+-rw-r--r--  1 root root     4096 Jul  8 19:39 msi_bus
+drwxr-xr-x  2 root root        0 May 17  2026 msi_irqs
+-rw-r--r--  1 root root     4096 Jul  8 19:38 numa_node
+drwxr-xr-x  2 root root        0 May 17  2026 power
+-r--r--r--  1 root root     4096 Jul  8 19:39 power_state
+--w--w----  1 root root     4096 Jul  8 19:39 remove
+--w-------  1 root root     4096 Jul  8 19:39 rescan
+-r--r--r--  1 root root     4096 Jul  8 19:38 resource
+-rw-------  1 root root 67108864 Jul  8 19:39 resource0
+-rw-------  1 root root 67108864 Jul  8 19:39 resource0_wc
+-rw-------  1 root root     4096 Jul  8 19:39 resource1
+-rw-------  1 root root    16384 Jul  8 19:39 resource4
+-r--r--r--  1 root root     4096 May 17  2026 revision
+lrwxrwxrwx  1 root root        0 May 17  2026 subsystem -> ../../../bus/pci
+-r--r--r--  1 root root     4096 May 17  2026 subsystem_device
+-r--r--r--  1 root root     4096 May 17  2026 subsystem_vendor
+-rw-r--r--  1 root root     4096 May 17  2026 uevent
+-r--r--r--  1 root root     4096 May 17  2026 vendor
+drwxr-xr-x  3 root root        0 May 17  2026 virtio2

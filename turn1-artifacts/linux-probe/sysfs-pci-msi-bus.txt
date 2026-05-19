@@ -1,0 +1,14 @@
+=== /sys/bus/pci/devices/0000:00:01.0 ===
+1
+=== /sys/bus/pci/devices/0000:00:02.0 ===
+1
+=== /sys/bus/pci/devices/0000:00:03.0 ===
+1
+=== /sys/bus/pci/devices/0000:00:05.0 ===
+1
+=== /sys/bus/pci/devices/0000:00:09.0 ===
+1
+=== /sys/bus/pci/devices/0000:00:0a.0 ===
+1
+=== /sys/bus/pci/devices/0000:00:0e.0 ===
+1

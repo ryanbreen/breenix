@@ -1,0 +1,25 @@
+00:05.0 Ethernet controller: Red Hat, Inc. Virtio network device
+	Subsystem: Parallels, Inc. Virtio network device
+	Flags: bus master, fast devsel, latency 0, IRQ 17
+	Memory at 1400d000 (32-bit, non-prefetchable) [size=4K]
+	Memory at 1400e000 (32-bit, non-prefetchable) [size=4K]
+	Capabilities: <access denied>
+	Kernel driver in use: virtio-pci
+
+00:0a.0 VGA compatible controller: Red Hat, Inc. Virtio 1.0 GPU (rev 01) (prog-if 00 [VGA controller])
+	Subsystem: Parallels, Inc. Virtio 1.0 GPU
+	Flags: bus master, fast devsel, latency 0, IRQ 18
+	Memory at 10000000 (32-bit, prefetchable) [size=64M]
+	Memory at 14010000 (32-bit, non-prefetchable) [size=4K]
+	Memory at 14004000 (32-bit, non-prefetchable) [size=16K]
+	Capabilities: <access denied>
+	Kernel driver in use: virtio-pci
+
+00:0e.0 Communication controller: Red Hat, Inc. Virtio 1.0 socket (rev 01)
+	Subsystem: Parallels, Inc. Virtio 1.0 socket
+	Flags: bus master, fast devsel, latency 0, IRQ 19
+	Memory at 14011000 (32-bit, non-prefetchable) [size=4K]
+	Memory at 14008000 (32-bit, non-prefetchable) [size=16K]
+	Capabilities: <access denied>
+	Kernel driver in use: virtio-pci
+

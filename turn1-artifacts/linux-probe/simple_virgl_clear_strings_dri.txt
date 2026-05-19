@@ -1,0 +1,22 @@
+drmModeGetConnector
+drmSetMaster
+drmModeFreeEncoder
+drmModeAddFB
+drmModeSetCrtc
+drmModeFreeConnector
+drmModeGetEncoder
+drmIoctl
+drmModeGetResources
+libdrm.so.2
+/dev/dri/card1
+/dev/dri/card0
+open card
+drmModeSetCrtc
+drmModeGetResources
+drmModeGetConnector
+drmModeFreeEncoder
+drmModeAddFB
+drmSetMaster
+drmModeFreeConnector
+drmIoctl
+drmModeGetEncoder
