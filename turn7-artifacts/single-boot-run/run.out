@@ -1,0 +1,565 @@
+
+=========================================
+Breenix on Parallels Desktop
+=========================================
+
+[1/6] Building UEFI loader...
+    Finished `release` profile [optimized] target(s) in 0.12s
+
+[2/6] Building kernel...
+    Finished `release` profile [optimized] target(s) in 0.23s
+
+[3/6] Building userspace binaries (aarch64)...
+========================================
+  STD USERSPACE BUILD (Rust std library)
+========================================
+  Architecture: aarch64
+
+[1/3] Building libbreenix-libc (aarch64)...
+  Finished `release` profile [optimized] target(s) in 0.04s
+  libbreenix-libc built successfully
+
+[2/3] Building userspace (aarch64)...
+  Finished `release` profile [optimized] target(s) in 0.14s
+  Userspace build successful
+
+[3/3] Installing std binaries...
+  Installed hello_world.elf (355352 bytes)
+  Installed syscall_enosys.elf (290216 bytes)
+  Installed clock_gettime_test.elf (299224 bytes)
+  Installed file_read_test.elf (292368 bytes)
+  Installed lseek_test.elf (292592 bytes)
+  Installed fs_write_test.elf (293472 bytes)
+  Installed fs_rename_test.elf (297384 bytes)
+  Installed fs_large_file_test.elf (292344 bytes)
+  Installed fs_directory_test.elf (293256 bytes)
+  Installed fs_link_test.elf (293304 bytes)
+  Installed access_test.elf (291568 bytes)
+  Installed devfs_test.elf (292600 bytes)
+  Installed cwd_test.elf (292552 bytes)
+  Installed getdents_test.elf (293936 bytes)
+  Installed pipe_test.elf (299304 bytes)
+  Installed pipe2_test.elf (304336 bytes)
+  Installed dup_test.elf (305152 bytes)
+  Installed fcntl_test.elf (299688 bytes)
+  Installed poll_test.elf (304752 bytes)
+  Installed select_test.elf (304480 bytes)
+  Installed nonblock_test.elf (304040 bytes)
+  Installed brk_test.elf (297016 bytes)
+  Installed signal_handler_test.elf (298072 bytes)
+  Installed signal_return_test.elf (299352 bytes)
+  Installed signal_regs_test.elf (298664 bytes)
+  Installed sigaltstack_test.elf (309432 bytes)
+  Installed sigsuspend_test.elf (304864 bytes)
+  Installed pause_test.elf (299448 bytes)
+  Installed tty_test.elf (303400 bytes)
+  Installed session_test.elf (304864 bytes)
+  Installed unix_socket_test.elf (327144 bytes)
+  Installed unix_named_socket_test.elf (314408 bytes)
+  Installed fifo_test.elf (317344 bytes)
+  Installed fork_test.elf (298176 bytes)
+  Installed fork_memory_test.elf (304384 bytes)
+  Installed fork_state_test.elf (305040 bytes)
+  Installed waitpid_test.elf (298992 bytes)
+  Installed exec_argv_test.elf (291280 bytes)
+  Installed cloexec_test.elf (307584 bytes)
+  Installed kill_process_group_test.elf (299344 bytes)
+  Installed sigchld_test.elf (292080 bytes)
+  Installed sigchld_job_test.elf (298776 bytes)
+  Installed ctrl_c_test.elf (298728 bytes)
+  Installed job_control_test.elf (302680 bytes)
+  Installed signal_fork_test.elf (298840 bytes)
+  Installed signal_exec_test.elf (299752 bytes)
+  Installed wnohang_timing_test.elf (292544 bytes)
+  Installed fork_pending_signal_test.elf (297712 bytes)
+  Installed shell_pipe_test.elf (293232 bytes)
+  Installed pipeline_test.elf (305744 bytes)
+  Installed cow_cleanup_test.elf (292416 bytes)
+  Installed cow_sole_owner_test.elf (297744 bytes)
+  Installed cow_stress_test.elf (297808 bytes)
+  Installed cow_readonly_test.elf (297624 bytes)
+  Installed cow_signal_test.elf (299216 bytes)
+  Installed resolution.elf (301488 bytes)
+  Installed init_shell.elf (388880 bytes)
+  Installed argv_test.elf (298224 bytes)
+  Installed job_table_test.elf (312648 bytes)
+  Installed test_mmap.elf (292008 bytes)
+  Installed stdin_test.elf (291896 bytes)
+  Installed true_test.elf (291944 bytes)
+  Installed false_test.elf (291952 bytes)
+  Installed echo_argv_test.elf (291776 bytes)
+  Installed mkdir_argv_test.elf (292248 bytes)
+  Installed rm_argv_test.elf (291880 bytes)
+  Installed cp_mv_argv_test.elf (292936 bytes)
+  Installed nonblock_eagain_test.elf (297488 bytes)
+  Installed blocking_recv_test.elf (297984 bytes)
+  Installed tcp_client_test.elf (297232 bytes)
+  Installed wait_stress.elf (306160 bytes)
+  Installed simple_exit.elf (276848 bytes)
+  Installed counter.elf (290488 bytes)
+  Installed spinner.elf (290520 bytes)
+  Installed hello_time.elf (290368 bytes)
+  Installed heartbeat.elf (290168 bytes)
+  Installed fbinfo_test.elf (297264 bytes)
+  Installed demo.elf (304040 bytes)
+  Installed bounce.elf (388128 bytes)
+  Installed rectangles.elf (305392 bytes)
+  Installed particles.elf (304232 bytes)
+  Installed confetti.elf (303568 bytes)
+  Installed tones.elf (294352 bytes)
+  Installed fart.elf (302432 bytes)
+  Installed http_test.elf (622864 bytes)
+  Installed register_init_test.elf (288928 bytes)
+  Installed head_test.elf (297464 bytes)
+  Installed tail_test.elf (297416 bytes)
+  Installed wc_test.elf (302016 bytes)
+  Installed which_test.elf (293192 bytes)
+  Installed cat_test.elf (297704 bytes)
+  Installed ls_test.elf (302752 bytes)
+  Installed exec_stack_argv_test.elf (292928 bytes)
+  Installed exec_from_ext2_test.elf (298824 bytes)
+  Installed pipe_fork_test.elf (305128 bytes)
+  Installed pipe_concurrent_test.elf (304368 bytes)
+  Installed fs_block_alloc_test.elf (304336 bytes)
+  Installed cow_oom_test.elf (296920 bytes)
+  Installed signal_test.elf (298320 bytes)
+  Installed alarm_test.elf (297512 bytes)
+  Installed itimer_test.elf (297968 bytes)
+  Installed timer_test.elf (291536 bytes)
+  Installed sleep_debug_test.elf (304624 bytes)
+  Installed pipe_refcount_test.elf (316656 bytes)
+  Installed udp_socket_test.elf (309760 bytes)
+  Installed tcp_socket_test.elf (318736 bytes)
+  Installed tcp_blocking_test.elf (324144 bytes)
+  Installed concurrent_recv_stress.elf (303376 bytes)
+  Installed dns_test.elf (306984 bytes)
+  Installed net_test.elf (307344 bytes)
+  Installed http_fetch_test.elf (616864 bytes)
+  Installed syscall_diagnostic_test.elf (289120 bytes)
+  Installed pty_test.elf (297600 bytes)
+  Installed signal_exec_check.elf (291128 bytes)
+  Installed bsh.elf (738432 bytes)
+  Installed bwm.elf (433320 bytes)
+  Installed btop.elf (293144 bytes)
+  Installed burl.elf (640376 bytes)
+  Installed init.elf (296824 bytes)
+  Installed telnetd.elf (298672 bytes)
+  Installed blogd.elf (291576 bytes)
+  Installed btrace.elf (311032 bytes)
+  Installed bless.elf (294696 bytes)
+  Installed bcheck.elf (422232 bytes)
+  Installed biconkit.elf (362264 bytes)
+  Installed guskit.elf (538736 bytes)
+  Installed bterm.elf (480656 bytes)
+  Installed blog.elf (471960 bytes)
+  Installed bfontpicker.elf (488808 bytes)
+  Installed blauncher.elf (464704 bytes)
+  Installed bsshd.elf (441064 bytes)
+  Installed bssh.elf (412984 bytes)
+
+========================================
+  STD BUILD COMPLETE (aarch64)
+  Installed: 132 binaries
+========================================
+  Userspace build successful
+
+[4/6] Creating ext2 data disk image...
+Creating ext2 disk image...
+  Arch: aarch64
+  Output: /Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/target/ext2-aarch64.img
+  Size: 256MB
+  Using Docker to create ext2 filesystem...
+  WARNING: busybox.elf not found, skipping coreutils
+Installing other binaries...
+  Installed 34 binaries in /bin
+  Installed 3 binaries in /sbin
+  Installed 0 C binaries in /usr/local/cbin
+  Installed 95 test binaries in /usr/local/test/bin
+  Installed 29 fonts in /usr/share/fonts
+  Created /etc/fonts.conf
+  Created /etc/hotkeys.conf
+  Created /etc/init.js
+
+ext2 filesystem contents:
+  Binaries in /bin:
+total 12500
+drwxr-xr-x    2 root     root          1024 May 19 10:54 .
+drwxr-xr-x   12 root     root          1024 May 19 10:54 ..
+-rwxr-xr-x    1 root     root        422232 May 19 10:54 bcheck
+-rwxr-xr-x    1 root     root        488808 May 19 10:54 bfontpicker
+-rwxr-xr-x    1 root     root        362264 May 19 10:54 biconkit
+-rwxr-xr-x    1 root     root        464704 May 19 10:54 blauncher
+-rwxr-xr-x    1 root     root        294696 May 19 10:54 bless
+-rwxr-xr-x    1 root     root        471960 May 19 10:54 blog
+-rwxr-xr-x    1 root     root        388128 May 19 10:54 bounce
+-rwxr-xr-x    1 root     root        738432 May 19 10:54 bsh
+-rwxr-xr-x    1 root     root        412984 May 19 10:54 bssh
+-rwxr-xr-x    1 root     root        441064 May 19 10:54 bsshd
+-rwxr-xr-x    1 root     root        480656 May 19 10:54 bterm
+-rwxr-xr-x    1 root     root        293144 May 19 10:54 btop
+-rwxr-xr-x    1 root     root        311032 May 19 10:54 btrace
+-rwxr-xr-x    1 root     root        640376 May 19 10:54 burl
+-rwxr-xr-x    1 root     root        433320 May 19 10:54 bwm
+-rwxr-xr-x    1 root     root        303376 May 19 10:54 concurrent_recv_stress
+-rwxr-xr-x    1 root     root        303568 May 19 10:54 confetti
+-rwxr-xr-x    1 root     root        290488 May 19 10:54 counter
+-rwxr-xr-x    1 root     root        304040 May 19 10:54 demo
+-rwxr-xr-x    1 root     root        302432 May 19 10:54 fart
+-rwxr-xr-x    1 root     root        538736 May 19 10:54 guskit
+-rwxr-xr-x    1 root     root        290168 May 19 10:54 heartbeat
+-rwxr-xr-x    1 root     root        290368 May 19 10:54 hello_time
+-rwxr-xr-x    1 root     root        355352 May 19 10:54 hello_world
+-rwxr-xr-x    1 root     root        388880 May 19 10:54 init_shell
+-rwxr-xr-x    1 root     root        304232 May 19 10:54 particles
+-rwxr-xr-x    1 root     root        305392 May 19 10:54 rectangles
+-rwxr-xr-x    1 root     root        301488 May 19 10:54 resolution
+-rwxr-xr-x    1 root     root        291128 May 19 10:54 signal_exec_check
+-rwxr-xr-x    1 root     root        276848 May 19 10:54 simple_exit
+-rwxr-xr-x    1 root     root        290520 May 19 10:54 spinner
+-rwxr-xr-x    1 root     root        290216 May 19 10:54 syscall_enosys
+-rwxr-xr-x    1 root     root        294352 May 19 10:54 tones
+-rwxr-xr-x    1 root     root        306160 May 19 10:54 wait_stress
+  Test binaries in /usr/local/test/bin:
+total 28769
+drwxr-xr-x    2 root     root          5120 May 19 10:54 .
+drwxr-xr-x    3 root     root          1024 May 19 10:54 ..
+-rwxr-xr-x    1 root     root        291568 May 19 10:54 access_test
+-rwxr-xr-x    1 root     root        297512 May 19 10:54 alarm_test
+-rwxr-xr-x    1 root     root        298224 May 19 10:54 argv_test
+-rwxr-xr-x    1 root     root        297984 May 19 10:54 blocking_recv_test
+-rwxr-xr-x    1 root     root        297016 May 19 10:54 brk_test
+-rwxr-xr-x    1 root     root        297704 May 19 10:54 cat_test
+-rwxr-xr-x    1 root     root        299224 May 19 10:54 clock_gettime_test
+-rwxr-xr-x    1 root     root        307584 May 19 10:54 cloexec_test
+-rwxr-xr-x    1 root     root        292416 May 19 10:54 cow_cleanup_test
+-rwxr-xr-x    1 root     root        296920 May 19 10:54 cow_oom_test
+-rwxr-xr-x    1 root     root        297624 May 19 10:54 cow_readonly_test
+-rwxr-xr-x    1 root     root        299216 May 19 10:54 cow_signal_test
+-rwxr-xr-x    1 root     root        297744 May 19 10:54 cow_sole_owner_test
+-rwxr-xr-x    1 root     root        297808 May 19 10:54 cow_stress_test
+-rwxr-xr-x    1 root     root        292936 May 19 10:54 cp_mv_argv_test
+-rwxr-xr-x    1 root     root        298728 May 19 10:54 ctrl_c_test
+-rwxr-xr-x    1 root     root        292552 May 19 10:54 cwd_test
+-rwxr-xr-x    1 root     root        292600 May 19 10:54 devfs_test
+-rwxr-xr-x    1 root     root        306984 May 19 10:54 dns_test
+-rwxr-xr-x    1 root     root        305152 May 19 10:54 dup_test
+-rwxr-xr-x    1 root     root        291776 May 19 10:54 echo_argv_test
+-rwxr-xr-x    1 root     root        291280 May 19 10:54 exec_argv_test
+-rwxr-xr-x    1 root     root        298824 May 19 10:54 exec_from_ext2_test
+-rwxr-xr-x    1 root     root        292928 May 19 10:54 exec_stack_argv_test
+-rwxr-xr-x    1 root     root        291952 May 19 10:54 false_test
+-rwxr-xr-x    1 root     root        297264 May 19 10:54 fbinfo_test
+-rwxr-xr-x    1 root     root        299688 May 19 10:54 fcntl_test
+-rwxr-xr-x    1 root     root        317344 May 19 10:54 fifo_test
+-rwxr-xr-x    1 root     root        292368 May 19 10:54 file_read_test
+-rwxr-xr-x    1 root     root        304384 May 19 10:54 fork_memory_test
+-rwxr-xr-x    1 root     root        297712 May 19 10:54 fork_pending_signal_test
+-rwxr-xr-x    1 root     root        305040 May 19 10:54 fork_state_test
+-rwxr-xr-x    1 root     root        298176 May 19 10:54 fork_test
+-rwxr-xr-x    1 root     root        304336 May 19 10:54 fs_block_alloc_test
+-rwxr-xr-x    1 root     root        293256 May 19 10:54 fs_directory_test
+-rwxr-xr-x    1 root     root        292344 May 19 10:54 fs_large_file_test
+-rwxr-xr-x    1 root     root        293304 May 19 10:54 fs_link_test
+-rwxr-xr-x    1 root     root        297384 May 19 10:54 fs_rename_test
+-rwxr-xr-x    1 root     root        293472 May 19 10:54 fs_write_test
+-rwxr-xr-x    1 root     root        293936 May 19 10:54 getdents_test
+-rwxr-xr-x    1 root     root        297464 May 19 10:54 head_test
+-rwxr-xr-x    1 root     root        616864 May 19 10:54 http_fetch_test
+-rwxr-xr-x    1 root     root        622864 May 19 10:54 http_test
+-rwxr-xr-x    1 root     root        297968 May 19 10:54 itimer_test
+-rwxr-xr-x    1 root     root        302680 May 19 10:54 job_control_test
+-rwxr-xr-x    1 root     root        312648 May 19 10:54 job_table_test
+-rwxr-xr-x    1 root     root        299344 May 19 10:54 kill_process_group_test
+-rwxr-xr-x    1 root     root        302752 May 19 10:54 ls_test
+-rwxr-xr-x    1 root     root        292592 May 19 10:54 lseek_test
+-rwxr-xr-x    1 root     root        292248 May 19 10:54 mkdir_argv_test
+-rwxr-xr-x    1 root     root        307344 May 19 10:54 net_test
+-rwxr-xr-x    1 root     root        297488 May 19 10:54 nonblock_eagain_test
+-rwxr-xr-x    1 root     root        304040 May 19 10:54 nonblock_test
+-rwxr-xr-x    1 root     root        299448 May 19 10:54 pause_test
+-rwxr-xr-x    1 root     root        304336 May 19 10:54 pipe2_test
+-rwxr-xr-x    1 root     root        304368 May 19 10:54 pipe_concurrent_test
+-rwxr-xr-x    1 root     root        305128 May 19 10:54 pipe_fork_test
+-rwxr-xr-x    1 root     root        316656 May 19 10:54 pipe_refcount_test
+-rwxr-xr-x    1 root     root        299304 May 19 10:54 pipe_test
+-rwxr-xr-x    1 root     root        305744 May 19 10:54 pipeline_test
+-rwxr-xr-x    1 root     root        304752 May 19 10:54 poll_test
+-rwxr-xr-x    1 root     root        297600 May 19 10:54 pty_test
+-rwxr-xr-x    1 root     root        288928 May 19 10:54 register_init_test
+-rwxr-xr-x    1 root     root        291880 May 19 10:54 rm_argv_test
+-rwxr-xr-x    1 root     root        304480 May 19 10:54 select_test
+-rwxr-xr-x    1 root     root        304864 May 19 10:54 session_test
+-rwxr-xr-x    1 root     root        293232 May 19 10:54 shell_pipe_test
+-rwxr-xr-x    1 root     root        309432 May 19 10:54 sigaltstack_test
+-rwxr-xr-x    1 root     root        298776 May 19 10:54 sigchld_job_test
+-rwxr-xr-x    1 root     root        292080 May 19 10:54 sigchld_test
+-rwxr-xr-x    1 root     root        299752 May 19 10:54 signal_exec_test
+-rwxr-xr-x    1 root     root        298840 May 19 10:54 signal_fork_test
+-rwxr-xr-x    1 root     root        298072 May 19 10:54 signal_handler_test
+-rwxr-xr-x    1 root     root        298664 May 19 10:54 signal_regs_test
+-rwxr-xr-x    1 root     root        299352 May 19 10:54 signal_return_test
+-rwxr-xr-x    1 root     root        298320 May 19 10:54 signal_test
+-rwxr-xr-x    1 root     root        304864 May 19 10:54 sigsuspend_test
+-rwxr-xr-x    1 root     root        304624 May 19 10:54 sleep_debug_test
+-rwxr-xr-x    1 root     root        291896 May 19 10:54 stdin_test
+-rwxr-xr-x    1 root     root        289120 May 19 10:54 syscall_diagnostic_test
+-rwxr-xr-x    1 root     root        297416 May 19 10:54 tail_test
+-rwxr-xr-x    1 root     root        324144 May 19 10:54 tcp_blocking_test
+-rwxr-xr-x    1 root     root        297232 May 19 10:54 tcp_client_test
+-rwxr-xr-x    1 root     root        318736 May 19 10:54 tcp_socket_test
+-rwxr-xr-x    1 root     root        292008 May 19 10:54 test_mmap
+-rwxr-xr-x    1 root     root        291536 May 19 10:54 timer_test
+-rwxr-xr-x    1 root     root        291944 May 19 10:54 true_test
+-rwxr-xr-x    1 root     root        303400 May 19 10:54 tty_test
+-rwxr-xr-x    1 root     root        309760 May 19 10:54 udp_socket_test
+-rwxr-xr-x    1 root     root        314408 May 19 10:54 unix_named_socket_test
+-rwxr-xr-x    1 root     root        327144 May 19 10:54 unix_socket_test
+-rwxr-xr-x    1 root     root        298992 May 19 10:54 waitpid_test
+-rwxr-xr-x    1 root     root        302016 May 19 10:54 wc_test
+-rwxr-xr-x    1 root     root        293192 May 19 10:54 which_test
+-rwxr-xr-x    1 root     root        292544 May 19 10:54 wnohang_timing_test
+  Test files:
+-rw-r--r--    1 root     root            19 May 19 10:54 /mnt/ext2/trunctest.txt
+-rw-r--r--    1 root     root            20 May 19 10:54 /mnt/ext2/test/nested.txt
+-rw-r--r--    1 root     root             0 May 19 10:54 /mnt/ext2/empty.txt
+-rw-r--r--    1 root     root        744936 May 19 10:54 /mnt/ext2/usr/share/fonts/Montserrat-Regular.ttf
+-rw-r--r--    1 root     root        757076 May 19 10:54 /mnt/ext2/usr/share/fonts/DejaVuSans.ttf
+-rw-r--r--    1 root     root        282844 May 19 10:54 /mnt/ext2/usr/share/fonts/Merriweather-Regular.ttf
+-rw-r--r--    1 root     root        312352 May 19 10:54 /mnt/ext2/usr/share/fonts/Raleway-Regular.ttf
+-rw-r--r--    1 root     root        488584 May 19 10:54 /mnt/ext2/usr/share/fonts/Roboto-Regular.ttf
+-rw-r--r--    1 root     root        598060 May 19 10:54 /mnt/ext2/usr/share/fonts/CascadiaCode-Regular.ttf
+-rw-r--r--    1 root     root        300724 May 19 10:54 /mnt/ext2/usr/share/fonts/PlayfairDisplay-Regular.ttf
+-rw-r--r--    1 root     root        359048 May 19 10:54 /mnt/ext2/usr/share/fonts/PTSerif-Regular.ttf
+-rw-r--r--    1 root     root        183700 May 19 10:54 /mnt/ext2/usr/share/fonts/RobotoMono-Regular.ttf
+-rw-r--r--    1 root     root        273900 May 19 10:54 /mnt/ext2/usr/share/fonts/JetBrainsMono-Regular.ttf
+-rw-r--r--    1 root     root        108684 May 19 10:54 /mnt/ext2/usr/share/fonts/Inconsolata-Regular.ttf
+-rw-r--r--    1 root     root        646340 May 19 10:54 /mnt/ext2/usr/share/fonts/SourceSans3-Regular.ttf
+-rw-r--r--    1 root     root       1708408 May 19 10:54 /mnt/ext2/usr/share/fonts/NotoSansMono-Regular.ttf
+-rw-r--r--    1 root     root        135580 May 19 10:54 /mnt/ext2/usr/share/fonts/IBMPlexMono-Regular.ttf
+-rw-r--r--    1 root     root        876576 May 19 10:54 /mnt/ext2/usr/share/fonts/Inter-Regular.ttf
+-rw-r--r--    1 root     root        340712 May 19 10:54 /mnt/ext2/usr/share/fonts/DejaVuSansMono.ttf
+-rw-r--r--    1 root     root        212196 May 19 10:54 /mnt/ext2/usr/share/fonts/Lora-Regular.ttf
+-rw-r--r--    1 root     root        276932 May 19 10:54 /mnt/ext2/usr/share/fonts/Nunito-Regular.ttf
+-rw-r--r--    1 root     root        656568 May 19 10:54 /mnt/ext2/usr/share/fonts/Lato-Regular.ttf
+-rw-r--r--    1 root     root        160316 May 19 10:54 /mnt/ext2/usr/share/fonts/Poppins-Regular.ttf
+-rw-r--r--    1 root     root        205748 May 19 10:54 /mnt/ext2/usr/share/fonts/UbuntuMono-Regular.ttf
+-rw-r--r--    1 root     root        309408 May 19 10:54 /mnt/ext2/usr/share/fonts/Hack-Regular.ttf
+-rw-r--r--    1 root     root       1887192 May 19 10:54 /mnt/ext2/usr/share/fonts/NotoSerif-Regular.ttf
+-rw-r--r--    1 root     root        260364 May 19 10:54 /mnt/ext2/usr/share/fonts/FiraCode-Regular.ttf
+-rw-r--r--    1 root     root       2049096 May 19 10:54 /mnt/ext2/usr/share/fonts/NotoSans-Regular.ttf
+-rw-r--r--    1 root     root        212340 May 19 10:54 /mnt/ext2/usr/share/fonts/SourceCodePro-Regular.ttf
+-rw-r--r--    1 root     root       1209508 May 19 10:54 /mnt/ext2/usr/share/fonts/SourceSerif4-Regular.ttf
+-rw-r--r--    1 root     root        351884 May 19 10:54 /mnt/ext2/usr/share/fonts/Ubuntu-Regular.ttf
+-rw-r--r--    1 root     root        532636 May 19 10:54 /mnt/ext2/usr/share/fonts/OpenSans-Regular.ttf
+-rw-r--r--    1 root     root            17 May 19 10:54 /mnt/ext2/hello.txt
+-rwxr-xr-x    1 root     root        291576 May 19 10:54 /mnt/ext2/sbin/blogd
+-rwxr-xr-x    1 root     root        296824 May 19 10:54 /mnt/ext2/sbin/init
+-rwxr-xr-x    1 root     root        298672 May 19 10:54 /mnt/ext2/sbin/telnetd
+-rw-r--r--    1 root     root            20 May 19 10:54 /mnt/ext2/deep/path/to/file/data.txt
+-rw-r--r--    1 root     root           111 May 19 10:54 /mnt/ext2/lines.txt
+-rw-r--r--    1 root     root            83 May 19 10:54 /mnt/ext2/etc/passwd
+-rw-r--r--    1 root     root            26 May 19 10:54 /mnt/ext2/etc/group
+-rw-r--r--    1 root     root           349 May 19 10:54 /mnt/ext2/etc/hotkeys.conf
+-rw-r--r--    1 root     root           367 May 19 10:54 /mnt/ext2/etc/bshrc
+-rw-r--r--    1 root     root           445 May 19 10:54 /mnt/ext2/etc/fonts.conf
+-rw-r--r--    1 root     root           679 May 19 10:54 /mnt/ext2/etc/init.js
+
+ext2 image created successfully
+
+ext2 disk created and copied to testdata/:
+  /Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/target/ext2-aarch64.img
+  /Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/testdata/ext2-aarch64.img
+  Size: 256M
+
+Contents:
+  /bin/busybox - BusyBox multi-call binary
+  /bin/{cat,ls,head,...} - BusyBox hardlinks
+  /sbin/{true,false} - BusyBox hardlinks
+  /bin/* - Other userspace binaries (demos)
+  /usr/local/test/bin/* - Test binaries (*_test, test_*)
+  /sbin/telnetd - telnet daemon
+  /hello.txt - test file (1 line)
+  /lines.txt - multi-line test file (15 lines) for head/tail/wc
+  /test/nested.txt - nested test file
+  /deep/path/to/file/data.txt - deep nested test file
+
+[5/6] Creating FAT32 EFI disk image...
+  Loader: 80896 bytes
+  Kernel: 2426000 bytes
+
+[6/6] Creating Parallels disks...
+  Patched 1 partition(s) to EFI System Partition type
+  EFI disk: /Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/target/parallels/breenix-efi.hdd
+  ext2 disk: /Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/target/parallels/breenix-ext2.hdd (256MB)
+
+--- Configuring Parallels VM ---
+VM name: breenix-1779188088
+Creating fresh VM 'breenix-1779188088'...
+Creating the virtual machine...
+Generate the VM configuration for linux.
+Remove the hdd0 device.
+The VM has been successfully created.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+Remove the cdrom0 device.
+
+The VM has been successfully configured.
+Remove the serial0 device.
+
+The VM has been successfully configured.
+Creating hdd0 (+) sata:0 image='/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/target/parallels/breenix-efi.hdd' online-compact=off
+
+Created hdd0 (+) sata:0 image='/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/target/parallels/breenix-efi.hdd' type='plain' 64Mb online-compact=on
+
+
+The VM has been successfully configured.
+Creating hdd1 (+) sata:1 image='/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/target/parallels/breenix-ext2.hdd' online-compact=off
+
+Created hdd1 (+) sata:1 image='/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/target/parallels/breenix-ext2.hdd' type='plain' 256Mb online-compact=on
+
+
+The VM has been successfully configured.
+  hdd0: EFI boot disk (FAT32) at sata:0
+  hdd1: ext2 data disk at sata:1
+
+The VM has been successfully configured.
+Creating serial0 (+) output='/tmp/breenix-parallels-serial.log' state=disconnected
+
+Created serial0 (+) output='/tmp/breenix-parallels-serial.log' state=disconnected
+
+
+The VM has been successfully configured.
+Configured serial0 (+) output='/tmp/breenix-parallels-serial.log'
+
+
+The VM has been successfully configured.
+
+--- Starting VM ---
+Starting the VM...
+The VM has been successfully started.
+
+=========================================
+Breenix running on Parallels
+=========================================
+VM:     breenix-1779188088
+Serial: /tmp/breenix-parallels-serial.log
+Stop:   prlctl stop breenix-1779188088 --kill
+
+Tailing serial output (Ctrl+C to detach)...
+
+[parallels-log] 05-19 06:55:22.823 I /MonitorArm:40252:5277e82/ VCPU0 PSCI: CPU_ON(target_cpu = 1, entry_point_addr = 40080258, context_id = 1)
+[parallels-log] 05-19 06:55:22.823 I /MonitorArm:40252:5277e82/ VCPU0 PSCI: CPU_ON(target_cpu = 2, entry_point_addr = 40080258, context_id = 2)
+[parallels-log] 05-19 06:55:22.824 I /MonitorArm:40252:5277e82/ VCPU0 PSCI: CPU_ON(target_cpu = 3, entry_point_addr = 40080258, context_id = 3)
+[parallels-log] 05-19 06:55:22.824 I /MonitorArm:40252:5277e82/ VCPU0 PSCI: CPU_ON(target_cpu = 4, entry_point_addr = 40080258, context_id = 4)
+[parallels-log] 05-19 06:55:22.824 I /MonitorArm:40252:5277e82/ VCPU0 PSCI: CPU_ON(target_cpu = 5, entry_point_addr = 40080258, context_id = 5)
+[parallels-log] 05-19 06:55:22.825 I /MonitorArm:40252:5277e82/ VCPU0 PSCI: CPU_ON(target_cpu = 6, entry_point_addr = 40080258, context_id = 6)
+[parallels-log] 05-19 06:55:22.825 I /MonitorArm:40252:5277e82/ VCPU0 PSCI: CPU_ON(target_cpu = 7, entry_point_addr = 40080258, context_id = 7)
+[virgl-composite] Frame #10000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[timer] cpu0 ticks=55000
+[bwm-fps] frames_since_last=141 elapsed_ms=1004 instantaneous_fps=140
+[heartbeat] tid=12 uptime_ms=68321
+[bwm-fps] frames_since_last=123 elapsed_ms=1000 instantaneous_fps=123
+[heartbeat] tid=12 uptime_ms=69322
+[bwm-fps] frames_since_last=141 elapsed_ms=1005 instantaneous_fps=140
+[heartbeat] tid=12 uptime_ms=70322
+[freeze-watch] uptime_ms=70354 submits=31214 completes=31217 fails=0 last_completion_ms=70353 fps_last_5s=134 cpu=6 tid=3 ctx_switches=73136 timer_ticks_cpu0=57210 timer_ticks_cpu1=57143 timer_ticks_cpu2=57145 timer_ticks_cpu3=57223 timer_ticks_cpu4=57349 timer_ticks_cpu5=57510 timer_ticks_cpu6=57593 timer_ticks_cpu7=57558 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=3 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=135 elapsed_ms=1004 instantaneous_fps=134
+[virgl-composite] Frame #10500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=12 uptime_ms=71323
+[bwm-fps] frames_since_last=131 elapsed_ms=1014 instantaneous_fps=129
+[heartbeat] tid=12 uptime_ms=72323
+[bwm-fps] frames_since_last=98 elapsed_ms=1004 instantaneous_fps=97
+[heartbeat] tid=12 uptime_ms=73324
+[timer] cpu0 ticks=60000
+[bwm-fps] frames_since_last=135 elapsed_ms=1001 instantaneous_fps=134
+[heartbeat] tid=12 uptime_ms=74324
+[bwm-fps] frames_since_last=141 elapsed_ms=1005 instantaneous_fps=140
+[virgl-composite] Frame #11000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=12 uptime_ms=75324
+[freeze-watch] uptime_ms=75358 submits=33173 completes=33176 fails=0 last_completion_ms=75354 fps_last_5s=130 cpu=1 tid=3 ctx_switches=77702 timer_ticks_cpu0=61329 timer_ticks_cpu1=61258 timer_ticks_cpu2=61285 timer_ticks_cpu3=61353 timer_ticks_cpu4=61481 timer_ticks_cpu5=61637 timer_ticks_cpu6=61739 timer_ticks_cpu7=61692 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=3 cur_cpu2=13 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=127 elapsed_ms=1001 instantaneous_fps=126
+[heartbeat] tid=12 uptime_ms=76324
+[bwm-fps] frames_since_last=114 elapsed_ms=1003 instantaneous_fps=113
+[heartbeat] tid=12 uptime_ms=77325
+[bwm-fps] frames_since_last=157 elapsed_ms=1001 instantaneous_fps=156
+[heartbeat] tid=12 uptime_ms=78326
+[virgl-composite] Frame #11500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[bwm-fps] frames_since_last=143 elapsed_ms=1001 instantaneous_fps=142
+[heartbeat] tid=12 uptime_ms=79326
+[timer] cpu0 ticks=65000
+[bwm-fps] frames_since_last=140 elapsed_ms=1003 instantaneous_fps=139
+[heartbeat] tid=12 uptime_ms=80327
+[freeze-watch] uptime_ms=80362 submits=35247 completes=35249 fails=0 last_completion_ms=80357 fps_last_5s=138 cpu=5 tid=3 ctx_switches=82532 timer_ticks_cpu0=65499 timer_ticks_cpu1=65377 timer_ticks_cpu2=65420 timer_ticks_cpu3=65488 timer_ticks_cpu4=65614 timer_ticks_cpu5=65777 timer_ticks_cpu6=65896 timer_ticks_cpu7=65831 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=13 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=3 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+[bwm-fps] frames_since_last=162 elapsed_ms=1003 instantaneous_fps=161
+[heartbeat] tid=12 uptime_ms=81327
+[bwm-fps] frames_since_last=152 elapsed_ms=1002 instantaneous_fps=151
+[virgl-composite] Frame #12000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=12 uptime_ms=82329
+[bwm-fps] frames_since_last=133 elapsed_ms=1003 instantaneous_fps=132
+[heartbeat] tid=12 uptime_ms=83330
+[bwm-fps] frames_since_last=152 elapsed_ms=1012 instantaneous_fps=150
+[heartbeat] tid=12 uptime_ms=84330
+[bwm-fps] frames_since_last=148 elapsed_ms=1000 instantaneous_fps=148
+[heartbeat] tid=12 uptime_ms=85330
+[freeze-watch] uptime_ms=85365 submits=37466 completes=37469 fails=0 last_completion_ms=85364 fps_last_5s=147 cpu=5 tid=3 ctx_switches=87606 timer_ticks_cpu0=69645 timer_ticks_cpu1=69495 timer_ticks_cpu2=69569 timer_ticks_cpu3=69668 timer_ticks_cpu4=69760 timer_ticks_cpu5=69933 timer_ticks_cpu6=70058 timer_ticks_cpu7=69995 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=3 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[virgl-composite] Frame #12500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[timer] cpu0 ticks=70000
+[bwm-fps] frames_since_last=131 elapsed_ms=1035 instantaneous_fps=126
+[heartbeat] tid=12 uptime_ms=86331
+[bwm-fps] frames_since_last=141 elapsed_ms=1036 instantaneous_fps=136
+[heartbeat] tid=12 uptime_ms=87331
+[bwm-fps] frames_since_last=116 elapsed_ms=1023 instantaneous_fps=113
+[heartbeat] tid=12 uptime_ms=88331
+[bwm-fps] frames_since_last=188 elapsed_ms=1004 instantaneous_fps=187
+[virgl-composite] Frame #13000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=12 uptime_ms=89332
+[bwm-fps] frames_since_last=138 elapsed_ms=1002 instantaneous_fps=137
+[heartbeat] tid=12 uptime_ms=90333
+[freeze-watch] uptime_ms=90368 submits=39554 completes=39557 fails=0 last_completion_ms=90368 fps_last_5s=139 cpu=1 tid=3 ctx_switches=92297 timer_ticks_cpu0=73815 timer_ticks_cpu1=73670 timer_ticks_cpu2=73723 timer_ticks_cpu3=73819 timer_ticks_cpu4=73904 timer_ticks_cpu5=74087 timer_ticks_cpu6=74208 timer_ticks_cpu7=74154 rq_total=1 rq_cpu0=1 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=3 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=5 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=148 elapsed_ms=1000 instantaneous_fps=148
+[heartbeat] tid=12 uptime_ms=91333
+[timer] cpu0 ticks=75000
+[bwm-fps] frames_since_last=133 elapsed_ms=1003 instantaneous_fps=132
+[heartbeat] tid=12 uptime_ms=92334
+[virgl-composite] Frame #13500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[bwm-fps] frames_since_last=137 elapsed_ms=1001 instantaneous_fps=136
+[heartbeat] tid=12 uptime_ms=93334
+[bwm-fps] frames_since_last=148 elapsed_ms=1003 instantaneous_fps=147
+[heartbeat] tid=12 uptime_ms=94334
+[bwm-fps] frames_since_last=156 elapsed_ms=1028 instantaneous_fps=151
+[heartbeat] tid=12 uptime_ms=95335
+[freeze-watch] uptime_ms=95371 submits=41691 completes=41693 fails=0 last_completion_ms=95367 fps_last_5s=142 cpu=3 tid=3 ctx_switches=97164 timer_ticks_cpu0=78003 timer_ticks_cpu1=77833 timer_ticks_cpu2=77857 timer_ticks_cpu3=77955 timer_ticks_cpu4=78054 timer_ticks_cpu5=78248 timer_ticks_cpu6=78365 timer_ticks_cpu7=78313 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=13 cur_cpu1=4 cur_cpu2=5 cur_cpu3=3 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+[bwm-fps] frames_since_last=146 elapsed_ms=1002 instantaneous_fps=145
+[virgl-composite] Frame #14000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=12 uptime_ms=96337
+[bwm-fps] frames_since_last=146 elapsed_ms=1000 instantaneous_fps=146
+[heartbeat] tid=12 uptime_ms=97339
+[timer] cpu0 ticks=80000
+[bwm-fps] frames_since_last=164 elapsed_ms=1002 instantaneous_fps=163
+[heartbeat] tid=12 uptime_ms=98340
+[bwm-fps] frames_since_last=139 elapsed_ms=1001 instantaneous_fps=138
+[heartbeat] tid=12 uptime_ms=99340
+[virgl-composite] Frame #14500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[bwm-fps] frames_since_last=103 elapsed_ms=1005 instantaneous_fps=102
+./run.sh: line 463: 42271 Terminated: 15          tail -f "$SERIAL_LOG"
+./run.sh: line 463: 42197 Terminated: 15          ( tail -f "$VM_LOG" 2> /dev/null | while IFS= read -r line; do
+    case "$line" in 
+        *VCPU* | *Exception* | *Synchronous* | *fault* | *FAULT* | *recursive*)
+            echo "[parallels-log] $line"
+        ;;
+    esac;
+done )
