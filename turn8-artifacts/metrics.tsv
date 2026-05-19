@@ -1,0 +1,6 @@
+boot	status	total	post_reg	pre_sched	post_sched	cpu0_pct	ahci_spi	userspace	timeouts	panics	cpu0_alarm	reason
+1	pass	72	70	70	0	99.23	0	0	0	0	0	-
+2	pass	72	70	70	0	99.36	0	0	0	0	0	-
+3	pass	72	70	70	0	98.99	0	0	0	0	0	-
+4	pass	71	69	69	0	99.64	0	0	0	0	0	-
+5	pass	72	70	70	0	99.71	0	0	0	0	0	-

@@ -1,0 +1,26 @@
+[    0.348978] ahci PRL4010:00: supply ahci not found, using dummy regulator
+[    0.358549] ahci PRL4010:00: supply phy not found, using dummy regulator
+[    0.360067] ahci PRL4010:00: supply target not found, using dummy regulator
+[    0.360160] ahci PRL4010:00: SSS flag set, parallel bus scan disabled
+[    0.360357] ahci PRL4010:00: AHCI 0001.0100 32 slots 6 ports 3 Gbps 0x3f impl platform mode
+[    0.360363] ahci PRL4010:00: flags: 64bit ncq stag pm led only slum part 
+[    0.363928] scsi host0: ahci
+[    0.365004] scsi host1: ahci
+[    0.365295] scsi host2: ahci
+[    0.365508] scsi host3: ahci
+[    0.365682] scsi host4: ahci
+[    0.365830] scsi host5: ahci
+[    0.365863] ata1: SATA max UDMA/133 mmio [mem 0x02140000-0x02141fff] port 0x100 irq 15 lpm-pol 0
+[    0.365867] ata2: SATA max UDMA/133 mmio [mem 0x02140000-0x02141fff] port 0x180 irq 15 lpm-pol 0
+[    0.365870] ata3: SATA max UDMA/133 mmio [mem 0x02140000-0x02141fff] port 0x200 irq 15 lpm-pol 0
+[    0.365872] ata4: SATA max UDMA/133 mmio [mem 0x02140000-0x02141fff] port 0x280 irq 15 lpm-pol 0
+[    0.365875] ata5: SATA max UDMA/133 mmio [mem 0x02140000-0x02141fff] port 0x300 irq 15 lpm-pol 0
+[    0.365878] ata6: SATA max UDMA/133 mmio [mem 0x02140000-0x02141fff] port 0x380 irq 15 lpm-pol 0
+[    0.678087] ata1: SATA link up 1.5 Gbps (SStatus 113 SControl 300)
+[    0.991039] ata2: SATA link up 1.5 Gbps (SStatus 113 SControl 300)
+[    1.346984] ata3: SATA link down (SStatus 0 SControl 300)
+[    1.663676] ata4: SATA link down (SStatus 0 SControl 300)
+[    1.981699] ata5: SATA link down (SStatus 0 SControl 300)
+[    2.293549] ata6: SATA link down (SStatus 0 SControl 300)
+[ 7673.638159]  ip_tables x_tables autofs4 btrfs blake2b_generic raid10 raid456 async_raid6_recov async_memcpy async_pq async_xor async_tx xor xor_neon raid6_pq libcrc32c raid1 raid0 hid_generic crct10dif_ce polyval_ce polyval_generic usbhid hid ghash_ce sm4 sha3_ce sha2_ce sha256_arm64 virtio_gpu xhci_pci sha1_ce virtio_dma_buf ahci_platform xhci_pci_renesas aes_neon_bs aes_neon_blk aes_ce_blk aes_ce_cipher
+[ 7673.638287] Modules linked in: tls qrtr uvcvideo uvc snd_hda_codec_generic videobuf2_vmalloc videobuf2_memops videobuf2_v4l2 snd_hda_intel snd_intel_dspcfg videodev snd_hda_codec snd_hda_core videobuf2_common snd_hwdep snd_pcm snd_timer snd cfg80211 mc soundcore binfmt_misc acpi_tad nls_iso8859_1 input_leds joydev sch_fq_codel dm_multipath efi_pstore nfnetlink dmi_sysfs vmw_vsock_virtio_transport vmw_vsock_virtio_transport_common vsock ip_tables x_tables autofs4 btrfs blake2b_generic raid10 raid456 async_raid6_recov async_memcpy async_pq async_xor async_tx xor xor_neon raid6_pq libcrc32c raid1 raid0 hid_generic crct10dif_ce polyval_ce polyval_generic usbhid hid ghash_ce sm4 sha3_ce sha2_ce sha256_arm64 virtio_gpu xhci_pci sha1_ce virtio_dma_buf ahci_platform xhci_pci_renesas aes_neon_bs aes_neon_blk aes_ce_blk aes_ce_cipher

@@ -1,0 +1,8 @@
+boot-1: pass total=72 post_reg=70 pre_sched=70 post_sched=0 cpu0_pct=99.23 reason=-
+boot-2: pass total=72 post_reg=70 pre_sched=70 post_sched=0 cpu0_pct=99.36 reason=-
+boot-3: pass total=72 post_reg=70 pre_sched=70 post_sched=0 cpu0_pct=98.99 reason=-
+boot-4: pass total=71 post_reg=69 pre_sched=69 post_sched=0 cpu0_pct=99.64 reason=-
+boot-5: pass total=72 post_reg=70 pre_sched=70 post_sched=0 cpu0_pct=99.71 reason=-
+overall: pass
+post_sched: max across all boots = 0
+pre_sched: distribution = 70,70,70,69,70

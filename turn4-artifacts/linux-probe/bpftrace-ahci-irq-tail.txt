@@ -1,0 +1,8 @@
+512+0 records in
+512+0 records out
+536870912 bytes (537 MB, 512 MiB) copied, 0.155446 s, 3.5 GB/s
+/tmp/turn4-ahci-irq.bt:3-4: WARNING: gic_handle_irq is not traceable (either non-existing, inlined, or marked as "notrace"); attaching to it will likely fail
+/tmp/turn4-ahci-irq.bt:4-5: WARNING: gic_handle_irq is not traceable (either non-existing, inlined, or marked as "notrace"); attaching to it will likely fail
+Attaching 15 probes...
+cannot attach kprobe, Invalid argument
+ERROR: Error attaching probe: 'kretprobe:gic_handle_irq'

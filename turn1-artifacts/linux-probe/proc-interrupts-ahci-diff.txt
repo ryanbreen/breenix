@@ -1,0 +1,5 @@
+--- turn1-artifacts/linux-probe/proc-interrupts-ahci-before.txt	2026-05-19 04:29:42
++++ turn1-artifacts/linux-probe/proc-interrupts-ahci-after.txt	2026-05-19 04:29:42
+@@ -1 +1 @@
+- 15:     126677          0          0          0     GICv3  34 Level     ahci[PRL4010:00]
++ 15:     127236          0          0          0     GICv3  34 Level     ahci[PRL4010:00]

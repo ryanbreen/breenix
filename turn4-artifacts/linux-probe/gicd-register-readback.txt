@@ -1,0 +1,35 @@
+GICD_BASE=0x02010000
+GICD_CTLR @ 0x2010000 (off=0x0000) = 0x0
+GICD_TYPER @ 0x2010004 (off=0x0004) = READ_FAILED
+# [sudo] password for wrb: /dev/mem opened.
+# Memory mapped at address 0xf24fcd833000.
+GICD_IGROUPR_1 @ 0x2010084 (off=0x0084) = READ_FAILED
+# [sudo] password for wrb: /dev/mem opened.
+# Memory mapped at address 0xf65fedf56000.
+GICD_ISENABLER_1 @ 0x2010104 (off=0x0104) = READ_FAILED
+# [sudo] password for wrb: /dev/mem opened.
+# Memory mapped at address 0xf9213af99000.
+GICD_ICENABLER_1 @ 0x2010184 (off=0x0184) = READ_FAILED
+# [sudo] password for wrb: /dev/mem opened.
+# Memory mapped at address 0xf68ce4ff5000.
+GICD_ISPENDR_1 @ 0x2010204 (off=0x0204) = READ_FAILED
+# [sudo] password for wrb: /dev/mem opened.
+# Memory mapped at address 0xe77348819000.
+GICD_ICPENDR_1 @ 0x2010284 (off=0x0284) = READ_FAILED
+# [sudo] password for wrb: /dev/mem opened.
+# Memory mapped at address 0xeb87b1c7b000.
+GICD_ISACTIVER_1 @ 0x2010304 (off=0x0304) = READ_FAILED
+# [sudo] password for wrb: /dev/mem opened.
+# Memory mapped at address 0xf29c2e5f0000.
+GICD_ICACTIVER_1 @ 0x2010384 (off=0x0384) = READ_FAILED
+# [sudo] password for wrb: /dev/mem opened.
+# Memory mapped at address 0xfc67cd9db000.
+GICD_IPRIORITYR_32_35 @ 0x2010420 (off=0x0420) = 0x0
+GICD_IPRIORITYR_DIRECTIVE_0488 @ 0x2010488 (off=0x0488) = 0x0
+GICD_ITARGETSR_32_35 @ 0x2010820 (off=0x0820) = 0x0
+GICD_ITARGETSR_DIRECTIVE_0888 @ 0x2010888 (off=0x0888) = 0x0
+GICD_ICFGR_32_47 @ 0x2010c08 (off=0x0c08) = 0x0
+GICD_IROUTER_34_LO @ 0x2016110 (off=0x6110) = 0x0
+GICD_IROUTER_34_HI @ 0x2016114 (off=0x6114) = READ_FAILED
+# [sudo] password for wrb: /dev/mem opened.
+# Memory mapped at address 0xe3142dab9000.

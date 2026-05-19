@@ -1,0 +1,53 @@
+00:01.0 Audio device: Intel Corporation 82801I (ICH9 Family) HD Audio Controller
+	Subsystem: Parallels, Inc. 82801I (ICH9 Family) HD Audio Controller
+	Flags: bus master, fast devsel, latency 0, IRQ 32
+	Memory at 14000000 (32-bit, non-prefetchable) [size=16K]
+	Capabilities: <access denied>
+	Kernel driver in use: snd_hda_intel
+	Kernel modules: snd_hda_intel
+
+00:02.0 USB controller: Intel Corporation 82801FB/FBM/FR/FW/FRW (ICH6 Family) USB2 EHCI Controller (rev 02) (prog-if 20 [EHCI])
+	Subsystem: Parallels, Inc. 82801FB/FBM/FR/FW/FRW (ICH6 Family) USB2 EHCI Controller
+	Flags: bus master, medium devsel, latency 0, IRQ 23
+	Memory at 14012000 (32-bit, non-prefetchable) [size=1K]
+	Kernel driver in use: ehci-pci
+
+00:03.0 USB controller: NEC Corporation uPD720200 USB 3.0 Host Controller (rev 04) (prog-if 30 [XHCI])
+	Subsystem: Parallels, Inc. uPD720200 USB 3.0 Host Controller
+	Flags: bus master, medium devsel, latency 0, IRQ 26
+	Memory at 1400c000 (32-bit, non-prefetchable) [size=4K]
+	Capabilities: <access denied>
+	Kernel driver in use: xhci_hcd
+	Kernel modules: xhci_pci
+
+00:05.0 Ethernet controller: Red Hat, Inc. Virtio network device
+	Subsystem: Parallels, Inc. Virtio network device
+	Flags: bus master, fast devsel, latency 0, IRQ 17
+	Memory at 1400d000 (32-bit, non-prefetchable) [size=4K]
+	Memory at 1400e000 (32-bit, non-prefetchable) [size=4K]
+	Capabilities: <access denied>
+	Kernel driver in use: virtio-pci
+
+00:09.0 Unassigned class [ff00]: Parallels, Inc. Virtual Machine Communication Interface
+	Subsystem: Parallels, Inc. Virtual Machine Communication Interface
+	Flags: medium devsel, IRQ 255
+	Memory at 1400f000 (32-bit, non-prefetchable) [disabled] [size=4K]
+	Capabilities: <access denied>
+
+00:0a.0 VGA compatible controller: Red Hat, Inc. Virtio 1.0 GPU (rev 01) (prog-if 00 [VGA controller])
+	Subsystem: Parallels, Inc. Virtio 1.0 GPU
+	Flags: bus master, fast devsel, latency 0, IRQ 18
+	Memory at 10000000 (32-bit, prefetchable) [size=64M]
+	Memory at 14010000 (32-bit, non-prefetchable) [size=4K]
+	Memory at 14004000 (32-bit, non-prefetchable) [size=16K]
+	Capabilities: <access denied>
+	Kernel driver in use: virtio-pci
+
+00:0e.0 Communication controller: Red Hat, Inc. Virtio 1.0 socket (rev 01)
+	Subsystem: Parallels, Inc. Virtio 1.0 socket
+	Flags: bus master, fast devsel, latency 0, IRQ 19
+	Memory at 14011000 (32-bit, non-prefetchable) [size=4K]
+	Memory at 14008000 (32-bit, non-prefetchable) [size=16K]
+	Capabilities: <access denied>
+	Kernel driver in use: virtio-pci
+

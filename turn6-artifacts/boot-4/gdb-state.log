@@ -1,0 +1,22 @@
+=== TURN6 BOOT ENDPOINT STATE ===
+warning: while parsing target description (at line 1): Target description specified unknown architecture "org.gnu.gdb.aarch64"
+warning: Could not load XML target description; ignoring
+warning: while parsing target description (at line 1): Target description specified unknown architecture "org.gnu.gdb.aarch64"
+warning: Could not load XML target description; ignoring
+0xffff000040104164 in kernel::drivers::virtio::gpu_pci::send_command ()
+ahci_irq=34
+ahci_isr_count=1124
+ahci_isr_last_mpidr_aff0=0
+ahci_polled_completion_count=72
+ahci_polled_post_registration_count=70
+timer_tick_count_cpu0=133451
+timer_tick_count_cpu1=132052
+timer_tick_count_cpu2=131466
+timer_tick_count_cpu3=127955
+timer_tick_hw_count_cpu0=133451
+timer_tick_hw_count_cpu1=132052
+timer_tick_hw_count_cpu2=131466
+timer_tick_hw_count_cpu3=127955
+timer_interrupt_count=1033496
+[Inferior 1 (Remote target) detached]
+gdb_rc=0

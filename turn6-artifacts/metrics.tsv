@@ -1,0 +1,6 @@
+boot	status	ahci_isr_count	cpu0_ticks	peer_max	cpu0_pct_of_max	post_poll_count	reason
+boot-1	fail	1123	120332	120504	99.86	69	post_poll=69
+boot-2	fail	0	0	0	0.00	missing	ahci_irq=missing;ahci_isr_count=missing;ahci_cpu=missing;post_poll=missing;gdb_rc=guestdebugger-port-timeout;cpu0_pct=0.00
+boot-3	fail	0	0	0	0.00	missing	ahci_irq=missing;ahci_isr_count=missing;ahci_cpu=missing;post_poll=missing;gdb_rc=guestdebugger-port-timeout;cpu0_pct=0.00
+boot-4	fail	1124	133451	133451	100.00	70	post_poll=70
+boot-5	fail	1124	96279	96286	99.99	70	post_poll=70

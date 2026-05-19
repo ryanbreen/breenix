@@ -1,0 +1,7 @@
+ahci_irq_addr=0xffff000041201f80
+ahci_isr_count_addr=0xffff00004121f230
+ahci_isr_last_mpidr_aff0_addr=0xffff000040233148
+ahci_polled_completion_count_addr=0xffff000041201f84
+timer_tick_count_addr=0xffff000041b7efd8
+timer_tick_hw_count_addr=0xffff000041b7f018
+timer_interrupt_count_addr=0xffff000041b7f180

@@ -1,0 +1,8 @@
+total 0
+drwxr-xr-x   2 root root    0 Jul  8 19:42 .
+drwxr-xr-x 499 root root    0 May 17  2026 ..
+lrwxrwxrwx   1 root root    0 Jul  8 19:42 PRL4010:00 -> ../../../../devices/platform/PRL4010:00
+--w-------   1 root root 4096 Jul  8 19:42 bind
+lrwxrwxrwx   1 root root    0 Jul  8 19:39 module -> ../../../../module/ahci_platform
+--w-------   1 root root 4096 May 17  2026 uevent
+--w-------   1 root root 4096 Jul  8 19:42 unbind
