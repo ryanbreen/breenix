@@ -1,0 +1,6 @@
+boot-1: pass rescue_max=0 final_uptime=285488ms final_fps=149
+boot-2: pass rescue_max=0 final_uptime=285513ms final_fps=151
+boot-3: pass rescue_max=0 final_uptime=285529ms final_fps=144
+boot-4: pass rescue_max=0 final_uptime=285525ms final_fps=132
+boot-5: pass rescue_max=0 final_uptime=290527ms final_fps=141
+overall: pass

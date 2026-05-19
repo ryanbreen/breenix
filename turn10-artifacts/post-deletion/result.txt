@@ -1,0 +1,2 @@
+post-deletion: pass final_uptime=285459ms final_fps=187
+final submits=158846 completes=158849 last_completion_ms=285458 timer_ticks_cpu0=188734
