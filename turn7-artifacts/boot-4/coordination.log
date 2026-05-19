@@ -1,0 +1,5 @@
+[2026-05-19 08:51:27] elapsed=25s ahci_state=STOP prl_rc=0
+breenix_vms:
+breenix-1779194661               running
+[2026-05-19 08:53:27] elapsed=145s ahci_state=STOP prl_rc=0
+breenix_vms: none

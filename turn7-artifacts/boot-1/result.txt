@@ -1,0 +1,20 @@
+status=pass
+reason=pass
+max_uptime_ms=308515
+last_completion_ms=305498
+final_fps=103
+final_completes=110792
+rescues=5
+stuck_tid13=0
+softlock=0
+cpu0_regression=0
+far_0xccd=0
+panic_or_exception=0
+poll_markers=0
+max_hold_ms=46
+max_hold_holder_tid=13
+sample_busy_max_ms=25021
+serial_bytes=   59203
+vm=breenix-1779193962
+final_freeze=[freeze-watch] uptime_ms=305504 submits=110789 completes=110792 fails=0 last_completion_ms=305498 fps_last_5s=103 cpu=0 tid=3 ctx_switches=543328 timer_ticks_cpu0=225059 timer_ticks_cpu1=234139 timer_ticks_cpu2=227400 timer_ticks_cpu3=231560 timer_ticks_cpu4=231293 timer_ticks_cpu5=232684 timer_ticks_cpu6=234095 timer_ticks_cpu7=233551 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=3 cur_cpu1=4 cur_cpu2=12 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=13 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+final_lock_attrib=[gpu-pci-lock-attrib] max_hold_ms=46 max_hold_holder_tid=13 rescues=5

@@ -1,0 +1,10 @@
+boot-1: pass + max_hold_ms=46 rescues=5 fps=103 + reason=pass
+boot-2: pass + max_hold_ms=45 rescues=28 fps=169 + reason=pass
+boot-3: pass + max_hold_ms=44 rescues=28 fps=166 + reason=pass
+boot-4: pass + max_hold_ms=89 rescues=26 fps=160 + reason=pass
+boot-5: pass + max_hold_ms=89 rescues=21 fps=151 + reason=pass
+overall: pass
+max_hold_ms: distribution = 46,45,44,89,89, max across all = 89
+rescues: distribution = 5,28,28,26,21, max across all = 28
+fps_at_end: min=103, max=169, mean=149.8
+completes_at_end: min=105947, max=139793, mean=117358.4
