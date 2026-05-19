@@ -1,0 +1,7 @@
+NAME                      MAJ:MIN  SIZE TYPE MOUNTPOINTS MODEL
+sda                         8:0     32G disk             harddisk1 SSD
+├─sda1                      8:1      1G part /boot/efi   
+├─sda2                      8:2      2G part /boot       
+└─sda3                      8:3   28.9G part             
+  └─ubuntu--vg-ubuntu--lv 252:0   14.5G lvm  /           
+sr0                        11:0   1024M rom              Virtual DVD-ROM [1]

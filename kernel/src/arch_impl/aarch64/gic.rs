@@ -836,6 +836,23 @@ pub fn configure_spi_edge_triggered(irq: u32) {
     gicd_write(GICD_ICFGR + (reg_index as usize * 4), new_val);
 }
 
+/// Return true when an SPI is configured as level-triggered.
+///
+/// GICD_ICFGR has 2 bits per IRQ: 0b00 = level, 0b10 = edge.
+/// This helper intentionally returns false for SGIs/PPIs; callers use it to
+/// gate behavior that is specific to external level-triggered SPIs.
+pub fn is_spi_level_triggered(irq: u32) -> bool {
+    if irq < 32 {
+        return false;
+    }
+
+    let reg_index = irq / 16;
+    let field = (irq % 16) * 2;
+    let current = gicd_read(GICD_ICFGR + (reg_index as usize * 4));
+
+    (current & (0b10 << field)) == 0
+}
+
 /// Enable an SPI in the GIC distributor (GICD_ISENABLER).
 ///
 /// Also routes the SPI to the current CPU via ITARGETSR (GICv2) or

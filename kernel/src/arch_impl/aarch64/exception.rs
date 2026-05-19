@@ -1330,7 +1330,8 @@ pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
             core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
         }
 
-        let reopen_nested_irq_window = interrupted_context_had_irqs_unmasked(frame);
+        let reopen_nested_irq_window =
+            interrupted_context_had_irqs_unmasked(frame) && !gic::is_spi_level_triggered(irq_id);
         if reopen_nested_irq_window {
             unsafe {
                 core::arch::asm!(

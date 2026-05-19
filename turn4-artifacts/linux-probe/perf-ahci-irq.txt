@@ -1,0 +1,450 @@
+## perf record
+1024+0 records in
+1024+0 records out
+1073741824 bytes (1.1 GB, 1.0 GiB) copied, 0.458161 s, 2.3 GB/s
+[ perf record: Woken up 10 times to write data ]
+[ perf record: Captured and wrote 2.720 MB /tmp/ahci-perf.data (9614 samples) ]
+
+## perf report
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 4K of event 'irq:irq_handler_entry'
+# Event count (approx.): 4807
+#
+# Overhead  Command          Shared Object      Symbol                           
+# ........  ...............  .................  .................................
+#
+    92.49%  swapper          [kernel.kallsyms]  [k] __traceiter_irq_handler_entry
+            |
+            ---__traceiter_irq_handler_entry
+               __traceiter_irq_handler_entry
+               |          
+               |--71.06%--handle_percpu_devid_irq
+               |          handle_irq_desc
+               |          generic_handle_domain_irq
+               |          __gic_handle_irq_from_irqson.isra.0
+               |          gic_handle_irq
+               |          |          
+               |          |--49.45%--call_on_irq_stack
+               |          |          do_interrupt_handler
+               |          |          el1_interrupt
+               |          |          el1h_64_irq_handler
+               |          |          el1h_64_irq
+               |          |          |          
+               |          |           --48.93%--cpuidle_idle_call
+               |          |                     do_idle
+               |          |                     cpu_startup_entry
+               |          |                     |          
+               |          |                     |--43.35%--secondary_start_kernel
+               |          |                     |          __secondary_switched
+               |          |                     |          
+               |          |                      --5.58%--rest_init
+               |          |                                arch_call_rest_init
+               |          |                                start_kernel
+               |          |                                __primary_switched
+               |          |          
+               |           --21.61%--do_interrupt_handler
+               |                     el1_interrupt
+               |                     el1h_64_irq_handler
+               |                     el1h_64_irq
+               |                     |          
+               |                      --21.59%--handle_softirqs
+               |                                __do_softirq
+               |                                ____do_softirq
+               |                                call_on_irq_stack
+               |                                do_softirq_own_stack
+               |                                __irq_exit_rcu
+               |                                irq_exit_rcu
+               |                                el1_interrupt
+               |                                el1h_64_irq_handler
+               |                                el1h_64_irq
+               |                                |          
+               |                                 --21.57%--cpuidle_idle_call
+               |                                           do_idle
+               |                                           cpu_startup_entry
+               |                                           |          
+               |                                            --21.55%--rest_init
+               |                                                      arch_call_rest_init
+               |                                                      start_kernel
+               |                                                      __primary_switched
+               |          
+                --21.43%--__handle_irq_event_percpu
+                          handle_irq_event
+                          handle_fasteoi_irq
+                          handle_irq_desc
+                          generic_handle_domain_irq
+                          __gic_handle_irq_from_irqson.isra.0
+                          gic_handle_irq
+                          |          
+                           --21.12%--call_on_irq_stack
+                                     do_interrupt_handler
+                                     el1_interrupt
+                                     el1h_64_irq_handler
+                                     el1h_64_irq
+                                     |          
+                                      --21.09%--cpuidle_idle_call
+                                                do_idle
+                                                cpu_startup_entry
+                                                rest_init
+                                                arch_call_rest_init
+                                                start_kernel
+                                                __primary_switched
+
+     4.60%  dd               [kernel.kallsyms]  [k] __traceiter_irq_handler_entry
+            |
+            ---__traceiter_irq_handler_entry
+               __traceiter_irq_handler_entry
+               handle_percpu_devid_irq
+               handle_irq_desc
+               generic_handle_domain_irq
+               __gic_handle_irq_from_irqson.isra.0
+               gic_handle_irq
+               |          
+                --4.58%--call_on_irq_stack
+                          do_interrupt_handler
+                          |          
+                           --4.54%--el1_interrupt
+                                     el1h_64_irq_handler
+                                     el1h_64_irq
+                                     |          
+                                     |--1.98%--arch_counter_get_cntvct
+                                     |          |          
+                                     |           --1.96%--sched_clock
+                                     |                     trace_clock_local
+                                     |                     function_graph_enter
+                                     |                     ftrace_graph_func
+                                     |                     ftrace_caller
+                                     |          
+                                     |--0.75%--internal_get_user_pages_fast
+                                     |          pin_user_pages_fast
+                                     |          iov_iter_extract_pages
+                                     |          __bio_iov_iter_get_pages
+                                     |          bio_iov_iter_get_pages
+                                     |          __blkdev_direct_IO_simple
+                                     |          blkdev_direct_IO.part.0
+                                     |          blkdev_read_iter
+                                     |          vfs_read
+                                     |          ksys_read
+                                     |          __arm64_sys_read
+                                     |          invoke_syscall
+                                     |          el0_svc_common.constprop.0
+                                     |          do_el0_svc
+                                     |          el0_svc
+                                     |          el0t_64_sync_handler
+                                     |          el0t_64_sync
+                                     |          read
+                                     |          0xb88479aba690
+                                     |          0xb88479ab2d58
+                                     |          0xe796c6f784c4
+                                     |          __libc_start_main
+                                     |          0xb88479ab3a30
+                                     |          
+                                      --0.56%--trace_graph_entry
+                                                ftrace_graph_entry_test
+                                                function_graph_enter
+                                                ftrace_graph_func
+                                                ftrace_caller
+
+     1.87%  bpftrace         [kernel.kallsyms]  [k] __traceiter_irq_handler_entry
+            |
+            ---__traceiter_irq_handler_entry
+               __traceiter_irq_handler_entry
+               handle_percpu_devid_irq
+               handle_irq_desc
+               generic_handle_domain_irq
+               __gic_handle_irq_from_irqson.isra.0
+               gic_handle_irq
+               call_on_irq_stack
+               do_interrupt_handler
+               |          
+               |--1.37%--el1_interrupt
+               |          el1h_64_irq_handler
+               |          el1h_64_irq
+               |          |          
+               |           --0.52%--arch_counter_get_cntvct
+               |                     sched_clock
+               |                     trace_clock_local
+               |                     function_graph_enter
+               |                     ftrace_graph_func
+               |                     ftrace_caller
+               |          
+                --0.50%--el0_interrupt
+                          __el0_irq_handler_common
+                          el0t_64_irq_handler
+                          el0t_64_irq
+
+     0.77%  kworker/1:1H-kb  [kernel.kallsyms]  [k] __traceiter_irq_handler_entry
+            |
+            ---__traceiter_irq_handler_entry
+               __traceiter_irq_handler_entry
+               handle_percpu_devid_irq
+               handle_irq_desc
+               generic_handle_domain_irq
+               __gic_handle_irq_from_irqson.isra.0
+               gic_handle_irq
+               call_on_irq_stack
+               do_interrupt_handler
+               el1_interrupt
+               el1h_64_irq_handler
+               el1h_64_irq
+
+     0.17%  perf             [kernel.kallsyms]  [k] __traceiter_irq_handler_entry
+     0.06%  bash             [kernel.kallsyms]  [k] __traceiter_irq_handler_entry
+     0.02%  multipathd       [kernel.kallsyms]  [k] __traceiter_irq_handler_entry
+     0.02%  perf-exec        [kernel.kallsyms]  [k] __traceiter_irq_handler_entry
+
+
+# Samples: 4K of event 'irq:irq_handler_exit'
+# Event count (approx.): 4807
+#
+# Overhead  Command          Shared Object      Symbol                          
+# ........  ...............  .................  ................................
+#
+    92.49%  swapper          [kernel.kallsyms]  [k] __traceiter_irq_handler_exit
+            |
+            ---__traceiter_irq_handler_exit
+               __traceiter_irq_handler_exit
+               |          
+               |--71.06%--handle_percpu_devid_irq
+               |          handle_irq_desc
+               |          generic_handle_domain_irq
+               |          __gic_handle_irq_from_irqson.isra.0
+               |          gic_handle_irq
+               |          |          
+               |          |--49.45%--call_on_irq_stack
+               |          |          do_interrupt_handler
+               |          |          el1_interrupt
+               |          |          el1h_64_irq_handler
+               |          |          el1h_64_irq
+               |          |          |          
+               |          |           --48.93%--cpuidle_idle_call
+               |          |                     do_idle
+               |          |                     cpu_startup_entry
+               |          |                     |          
+               |          |                     |--43.35%--secondary_start_kernel
+               |          |                     |          __secondary_switched
+
+## perf script irq snippets
+swapper       0 [001] 10752.287814: irq:irq_handler_entry: irq=2 name=IPI
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+perf   40247 [003] 10752.287822: irq:irq_handler_entry: irq=10 name=arch_timer
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [001] 10752.287827:  irq:irq_handler_exit: irq=2 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+perf   40247 [003] 10752.287847:  irq:irq_handler_exit: irq=10 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [000] 10752.287863: irq:irq_handler_entry: irq=2 name=IPI
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [000] 10752.287870:  irq:irq_handler_exit: irq=2 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+perf-exec   40250 [001] 10752.288826: irq:irq_handler_entry: irq=10 name=arch_timer
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+perf-exec   40250 [001] 10752.288856:  irq:irq_handler_exit: irq=10 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [000] 10752.288866: irq:irq_handler_entry: irq=2 name=IPI
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [000] 10752.288872:  irq:irq_handler_exit: irq=2 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+bash   40250 [001] 10752.289823: irq:irq_handler_entry: irq=10 name=arch_timer
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+bash   40250 [001] 10752.289839:  irq:irq_handler_exit: irq=10 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [003] 10752.289873: irq:irq_handler_entry: irq=2 name=IPI
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [003] 10752.289883:  irq:irq_handler_exit: irq=2 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+bash   40250 [001] 10752.290824: irq:irq_handler_entry: irq=10 name=arch_timer
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+bash   40250 [001] 10752.290844:  irq:irq_handler_exit: irq=10 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+bash   40250 [001] 10752.291824: irq:irq_handler_entry: irq=10 name=arch_timer
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+bash   40250 [001] 10752.291840:  irq:irq_handler_exit: irq=10 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+dd   40250 [001] 10752.292824: irq:irq_handler_entry: irq=10 name=arch_timer
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+dd   40250 [001] 10752.292841:  irq:irq_handler_exit: irq=10 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+dd   40250 [001] 10752.293827: irq:irq_handler_entry: irq=10 name=arch_timer
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+dd   40250 [001] 10752.293851:  irq:irq_handler_exit: irq=10 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [003] 10752.294815: irq:irq_handler_entry: irq=10 name=arch_timer
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+dd   40250 [001] 10752.294829: irq:irq_handler_entry: irq=10 name=arch_timer
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [003] 10752.294834:  irq:irq_handler_exit: irq=10 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+dd   40250 [001] 10752.294857:  irq:irq_handler_exit: irq=10 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+dd   40250 [001] 10752.295828: irq:irq_handler_entry: irq=10 name=arch_timer
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+dd   40250 [001] 10752.295851:  irq:irq_handler_exit: irq=10 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [000] 10752.296842: irq:irq_handler_entry: irq=15 name=ahci[PRL4010:00]
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [000] 10752.296889:  irq:irq_handler_exit: irq=15 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [000] 10752.296900: irq:irq_handler_entry: irq=6 name=IPI
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [000] 10752.296917:  irq:irq_handler_exit: irq=6 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [002] 10752.296936: irq:irq_handler_entry: irq=2 name=IPI
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [001] 10752.296948: irq:irq_handler_entry: irq=2 name=IPI
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [002] 10752.296952:  irq:irq_handler_exit: irq=2 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [001] 10752.296963:  irq:irq_handler_exit: irq=2 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [001] 10752.296971: irq:irq_handler_entry: irq=10 name=arch_timer
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [001] 10752.296981:  irq:irq_handler_exit: irq=10 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [000] 10752.297711: irq:irq_handler_entry: irq=15 name=ahci[PRL4010:00]
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [000] 10752.297747:  irq:irq_handler_exit: irq=15 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [000] 10752.297757: irq:irq_handler_entry: irq=6 name=IPI
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [000] 10752.297770:  irq:irq_handler_exit: irq=6 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [002] 10752.297782: irq:irq_handler_entry: irq=2 name=IPI
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [002] 10752.297793:  irq:irq_handler_exit: irq=2 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+bpftrace   40085 [002] 10752.297823: irq:irq_handler_entry: irq=10 name=arch_timer
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+bpftrace   40085 [002] 10752.297845:  irq:irq_handler_exit: irq=10 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [001] 10752.297878: irq:irq_handler_entry: irq=2 name=IPI
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [000] 10752.297914: irq:irq_handler_entry: irq=2 name=IPI
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [000] 10752.297919:  irq:irq_handler_exit: irq=2 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [001] 10752.297928:  irq:irq_handler_exit: irq=2 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [001] 10752.297940: irq:irq_handler_entry: irq=10 name=arch_timer
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [001] 10752.297952:  irq:irq_handler_exit: irq=10 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [000] 10752.297957: irq:irq_handler_entry: irq=2 name=IPI
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [000] 10752.297967:  irq:irq_handler_exit: irq=2 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [000] 10752.298722: irq:irq_handler_entry: irq=15 name=ahci[PRL4010:00]
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [000] 10752.298760:  irq:irq_handler_exit: irq=15 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [000] 10752.298772: irq:irq_handler_entry: irq=6 name=IPI
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [000] 10752.298786:  irq:irq_handler_exit: irq=6 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [002] 10752.298801: irq:irq_handler_entry: irq=2 name=IPI
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [002] 10752.298813:  irq:irq_handler_exit: irq=2 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [001] 10752.298831: irq:irq_handler_entry: irq=2 name=IPI
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [001] 10752.298844:  irq:irq_handler_exit: irq=2 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [001] 10752.298851: irq:irq_handler_entry: irq=10 name=arch_timer
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [001] 10752.298865:  irq:irq_handler_exit: irq=10 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [000] 10752.298893: irq:irq_handler_entry: irq=2 name=IPI
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [000] 10752.298903:  irq:irq_handler_exit: irq=2 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [000] 10752.299552: irq:irq_handler_entry: irq=15 name=ahci[PRL4010:00]
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [000] 10752.299586:  irq:irq_handler_exit: irq=15 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [000] 10752.299596: irq:irq_handler_entry: irq=6 name=IPI
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [000] 10752.299610:  irq:irq_handler_exit: irq=6 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [002] 10752.299624: irq:irq_handler_entry: irq=2 name=IPI
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [002] 10752.299635:  irq:irq_handler_exit: irq=2 ret=handled
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+	ffff8000800d3918 __traceiter_irq_handler_exit+0x58 ([kernel.kallsyms])
+swapper       0 [001] 10752.299664: irq:irq_handler_entry: irq=2 name=IPI
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+	ffff8000800d3864 __traceiter_irq_handler_entry+0x4c ([kernel.kallsyms])
+swapper       0 [001] 10752.299676:  irq:irq_handler_exit: irq=2 ret=handled

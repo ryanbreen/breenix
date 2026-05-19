@@ -1,0 +1,6 @@
+512+0 records in
+512+0 records out
+536870912 bytes (537 MB, 512 MiB) copied, 0.187256 s, 2.9 GB/s
+Attaching 14 probes...
+cannot attach kprobe, Invalid argument
+ERROR: Error attaching probe: 'kprobe:gic_unmask_irq'

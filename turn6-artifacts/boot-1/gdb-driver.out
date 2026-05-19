@@ -1,0 +1,22 @@
+The target architecture is set to "aarch64".
+=== TURN6 BOOT ENDPOINT STATE ===
+warning: while parsing target description (at line 1): Target description specified unknown architecture "org.gnu.gdb.aarch64"
+warning: Could not load XML target description; ignoring
+warning: while parsing target description (at line 1): Target description specified unknown architecture "org.gnu.gdb.aarch64"
+warning: Could not load XML target description; ignoring
+0xffff0000401e1694 in memcpy ()
+ahci_irq=34
+ahci_isr_count=1123
+ahci_isr_last_mpidr_aff0=0
+ahci_polled_completion_count=71
+ahci_polled_post_registration_count=69
+timer_tick_count_cpu0=120332
+timer_tick_count_cpu1=120362
+timer_tick_count_cpu2=120504
+timer_tick_count_cpu3=120239
+timer_tick_hw_count_cpu0=120332
+timer_tick_hw_count_cpu1=120362
+timer_tick_hw_count_cpu2=120504
+timer_tick_hw_count_cpu3=120239
+timer_interrupt_count=964940
+[Inferior 1 (Remote target) detached]

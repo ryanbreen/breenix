@@ -1,0 +1,21 @@
+=== TURN3 AHCI CPU0 ENDPOINT STATE ===
+warning: while parsing target description (at line 1): Target description specified unknown architecture "org.gnu.gdb.aarch64"
+warning: Could not load XML target description; ignoring
+warning: while parsing target description (at line 1): Target description specified unknown architecture "org.gnu.gdb.aarch64"
+warning: Could not load XML target description; ignoring
+0xffff000040098a00 in curr_el_spx_sync ()
+ahci_irq=34
+ahci_isr_count=113
+ahci_isr_last_mpidr_aff0=0
+ahci_polled_completion_count=72
+timer_tick_count_cpu0=5
+timer_tick_count_cpu1=30000
+timer_tick_count_cpu2=30000
+timer_tick_count_cpu3=30000
+timer_tick_hw_count_cpu0=5
+timer_tick_hw_count_cpu1=29999
+timer_tick_hw_count_cpu2=29999
+timer_tick_hw_count_cpu3=29999
+timer_interrupt_count=209998
+[Inferior 1 (Remote target) detached]
+gdb_rc=0

@@ -1,0 +1,7 @@
+[2026-05-19 04:55:59] starting Turn 3 AHCI CPU0 single Parallels boot
+[2026-05-19 04:55:59] waiting for fresh VM name
+[2026-05-19 04:56:51] detected VM breenix-1779181010
+[2026-05-19 04:56:51] waiting 90s after VM start for boot and CPU0 timer alarm window
+[2026-05-19 04:58:22] starting guest-debugger for breenix-1779181010 on port 9600
+[2026-05-19 04:58:25] running GDB endpoint capture
+[2026-05-19 04:58:54] Turn 3 single boot harness complete

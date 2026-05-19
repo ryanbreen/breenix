@@ -1,0 +1,12 @@
+--- /sys/class/scsi_host/host0/proc_name
+ahci
+--- /sys/class/scsi_host/host1/proc_name
+ahci
+--- /sys/class/scsi_host/host2/proc_name
+ahci
+--- /sys/class/scsi_host/host3/proc_name
+ahci
+--- /sys/class/scsi_host/host4/proc_name
+ahci
+--- /sys/class/scsi_host/host5/proc_name
+ahci

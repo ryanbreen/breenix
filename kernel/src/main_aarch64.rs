@@ -171,6 +171,7 @@ fn launch_init_from_elf(
 
     // Register the userspace thread with the scheduler as the current running thread.
     kernel::task::scheduler::spawn_as_current(alloc::boxed::Box::new(main_thread_clone));
+    kernel::drivers::ahci::emit_polling_attribution_once_if_scheduler_ready();
 
     // CRITICAL: Reset ALL idle threads' saved contexts to point to idle_loop_arm64.
     // Timer interrupts during boot may have saved idle threads' ELR pointing to
@@ -971,16 +972,6 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         kernel::arch_impl::aarch64::gic::init_gicr_rdist_map(
             kernel::arch_impl::aarch64::smp::cpus_online() as usize,
         );
-        // Re-apply AHCI SPI routing now that the per-CPU redistributor affinity
-        // map is initialized. The early call in AHCI init ran before SMP bring-up
-        // and used `expected_gicr_affinity_for_cpu` as a fallback, which does
-        // not match Parallels' actual CPU2 affinity. Without this re-route, AHCI
-        // SPI34 continues to deliver on CPU0, which correlates with the CPU0
-        // vtimer regression class seen in Turn 5-8.
-        let ahci_irq = kernel::drivers::ahci::ahci_irq();
-        if ahci_irq != 0 {
-            kernel::arch_impl::aarch64::gic::enable_spi_on_cpu(ahci_irq, 2);
-        }
     }
 
     // Test kthread lifecycle BEFORE creating userspace processes

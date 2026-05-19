@@ -1,0 +1,10 @@
+=== IRQ 15 ===
+smp_affinity: f
+smp_affinity_list: 0-3
+effective_affinity: 1
+effective_affinity_list: 0
+spurious: count 0
+unhandled 0
+last_unhandled 0 ms
+actions:
+/proc/irq/15/ahci[PRL4010:00]

@@ -1,0 +1,9 @@
+Attaching 4 probes...
+@irq: 4633
+@port: 4593
+@complete: 4559
+
+
+@complete: 4559
+@irq: 4633
+@port: 4593

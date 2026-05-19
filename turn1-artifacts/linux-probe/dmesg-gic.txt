@@ -1,0 +1,12 @@
+[    0.000000] CPU features: detected: GIC system register CPU interface
+[    0.000000] GICv3: 988 SPIs implemented
+[    0.000000] GICv3: 0 Extended SPIs implemented
+[    0.000000] Root IRQ handler: gic_handle_irq
+[    0.000000] GICv3: GICv3 features: 16 PPIs, RSS
+[    0.000000] GICv3: CPU0: found redistributor 0 region 0:0x0000000002500000
+[    0.000000] GICv2m: range[mem 0x02250000-0x02250fff], SPI[53:116]
+[    0.013758] GICv3: CPU1: found redistributor 1 region 0:0x0000000002520000
+[    0.014477] GICv3: CPU2: found redistributor 2 region 0:0x0000000002560000
+[    0.014960] GICv3: CPU3: found redistributor 3 region 0:0x0000000002540000
+[    0.023556] ACPI: Using GIC for interrupt routing
+[    0.678854] sd 0:0:0:0: [sda] 67108864 512-byte logical blocks: (34.4 GB/32.0 GiB)

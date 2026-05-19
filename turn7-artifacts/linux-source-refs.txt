@@ -1,0 +1,54 @@
+Linux source references for Turn 7
+==================================
+
+Upstream stable Linux v6.8 was used, matching the source family from the
+Turn 4 linux-probe notes. Temporary source snapshots were downloaded for
+inspection and then removed before commit; this file records the primary
+source URLs and line ranges used.
+
+- include/linux/libata.h
+  https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/linux/libata.h?h=v6.8
+  Relevant lines:
+  - 81: ATA_TFLAG_POLLING is the libata taskfile flag for nIEN/polling.
+  - 1771-1774: ata_qc_set_polling() sets ATA_NIEN in the taskfile control byte.
+
+- drivers/ata/libata-core.c
+  https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/drivers/ata/libata-core.c?h=v6.8
+  Relevant lines:
+  - 1483-1593: ata_exec_internal_sg() prepares an internal qc, issues it, and waits for completion.
+  - 1760-1765: ata_do_dev_read_id() executes IDENTIFY through ata_exec_internal().
+  - 1769-1836: ata_dev_read_id() builds IDENTIFY and sets ATA_TFLAG_POLLING before issuing it.
+  - 5867-5884: ata_port_probe() schedules error handling for boot probing.
+  - 5887-5907: async_port_probe() runs the probe and waits for EH before SCSI scan.
+  - 5992-5995: ata_host_register() schedules async port probes.
+  - 6039-6063: ata_host_activate() starts the host and requests IRQ before ata_host_register().
+
+- drivers/ata/libata-eh.c
+  https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/drivers/ata/libata-eh.c?h=v6.8
+  Relevant lines:
+  - 3033-3170: ata_eh_revalidate_and_attach() reads IDENTIFY for newly probed devices.
+  - 3677-3818: ata_eh_recover() resets the link, then revalidates/attaches devices.
+
+- drivers/ata/libata-pmp.c
+  https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/drivers/ata/libata-pmp.c?h=v6.8
+  Relevant lines:
+  - 936-937: non-PMP recovery calls ata_eh_recover() with the port ops reset callbacks.
+  - 1095-1100: sata_pmp_error_handler() drives PMP-capable AHCI error handling.
+
+- drivers/ata/libahci.c
+  https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/drivers/ata/libahci.c?h=v6.8
+  Relevant lines:
+  - 154-170: ahci_ops wires qc_prep, qc_issue, reset, and error-handler callbacks.
+  - 1413-1448: ahci_exec_polled_cmd() issues PORT_CMD_ISSUE and polls it.
+  - 1490-1502: ahci_do_softreset() uses ahci_exec_polled_cmd() for the two SRST FISes.
+  - 1541-1546: ahci_softreset() delegates to ahci_do_softreset().
+  - 2049-2077: ahci_qc_issue() issues normal queued commands by writing PORT_CMD_ISSUE.
+  - 2214-2220: AHCI thaw clears IRQ state and unmasks port interrupts.
+  - 2223-2237: ahci_error_handler() invokes sata_pmp_error_handler().
+  - 2749-2770: ahci_host_activate() delegates to ata_host_activate() for the single-IRQ path.
+
+- drivers/ata/ahci.c
+  https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/drivers/ata/ahci.c?h=v6.8
+  Relevant lines:
+  - 1911-1915: ahci_init_one() initializes MSI/INTx and records the IRQ vector.
+  - 1963-1972: ahci_init_one() initializes the controller, sets bus master, then calls ahci_host_activate().

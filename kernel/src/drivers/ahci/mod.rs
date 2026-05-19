@@ -219,6 +219,19 @@ static AHCI_COMPLETIONS: [[Completion; AHCI_MAX_CONCURRENT]; MAX_AHCI_PORTS] =
 
 /// Count ISR invocations (for diagnostic/timeout reporting).
 static AHCI_ISR_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Count commands that fall back to PORT_CI polling instead of IRQ completion.
+#[export_name = "ahci_polled_completion_count"]
+pub static AHCI_POLLED_COMPLETION_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Count post-IRQ-registration commands that still fall back to PORT_CI polling.
+#[export_name = "ahci_polled_post_registration_count"]
+pub static AHCI_POLLED_POST_REGISTRATION_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Count post-IRQ-registration polls before the scheduler-sleep path is available.
+#[export_name = "ahci_polled_post_reg_pre_scheduler"]
+pub static AHCI_POLLED_POST_REG_PRE_SCHEDULER: AtomicU64 = AtomicU64::new(0);
+/// Count post-IRQ-registration polls after the scheduler-sleep path is available.
+#[export_name = "ahci_polled_post_reg_scheduler_running"]
+pub static AHCI_POLLED_POST_REG_SCHEDULER_RUNNING: AtomicU64 = AtomicU64::new(0);
+static AHCI_POLL_ATTRIB_EMITTED: AtomicBool = AtomicBool::new(false);
 /// Hardware MPIDR Aff0 of the CPU that last ran the AHCI ISR (0xDEAD = never ran).
 static AHCI_ISR_LAST_MPIDR: AtomicU64 = AtomicU64::new(0xDEAD);
 /// Count commands issued via issue_cmd_slot0 (for diagnostic/timeout reporting).
@@ -710,6 +723,29 @@ struct CmdToken {
     scheduler_running: bool,
 }
 
+#[inline]
+fn scheduler_sleep_ready(has_irq: bool) -> bool {
+    // Two conditions must hold for the scheduler-sleep path:
+    // 1. Scheduler is running (current_thread_id returns Some).
+    // 2. Timer is running (timer_is_running() = true after timer init).
+    //
+    // The timer check is critical: during the boot sequence on ARM64,
+    // main_aarch64 calls preempt_disable() BEFORE timer_interrupt::init().
+    // The pre-load of /sbin/init from ext2 happens in this window.
+    let timer_running = {
+        #[cfg(target_arch = "aarch64")]
+        {
+            crate::arch_impl::aarch64::timer_interrupt::timer_is_running()
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            true
+        }
+    };
+
+    has_irq && crate::task::scheduler::current_thread_id().is_some() && timer_running
+}
+
 /// Wait for a slot-0 command to complete, with NO locks held.
 ///
 /// This is the second half of the split command issue protocol:
@@ -766,6 +802,15 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
             }
         }
     } else {
+        if token.has_irq {
+            AHCI_POLLED_POST_REGISTRATION_COUNT.fetch_add(1, Ordering::Relaxed);
+            if scheduler_sleep_ready(token.has_irq) {
+                AHCI_POLLED_POST_REG_SCHEDULER_RUNNING.fetch_add(1, Ordering::Relaxed);
+            } else {
+                AHCI_POLLED_POST_REG_PRE_SCHEDULER.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        AHCI_POLLED_COMPLETION_COUNT.fetch_add(1, Ordering::Relaxed);
         // ============================================================
         // PORT_CI POLLING PATH (scheduler not running)
         //
@@ -1120,25 +1165,7 @@ impl AhciController {
         // --- Determine wait mode BEFORE arming completions ---
         let has_irq = AHCI_IRQ.load(Ordering::Relaxed) != 0 && port < MAX_AHCI_PORTS;
 
-        // Two conditions must hold for the scheduler-sleep path:
-        // 1. Scheduler is running (current_thread_id returns Some).
-        // 2. Timer is running (timer_is_running() = true after timer init).
-        //
-        // The timer check is critical: during the boot sequence on ARM64,
-        // main_aarch64 calls preempt_disable() BEFORE timer_interrupt::init().
-        // The pre-load of /sbin/init from ext2 happens in this window.
-        let timer_running = {
-            #[cfg(target_arch = "aarch64")]
-            {
-                crate::arch_impl::aarch64::timer_interrupt::timer_is_running()
-            }
-            #[cfg(not(target_arch = "aarch64"))]
-            {
-                true
-            }
-        };
-        let scheduler_running =
-            has_irq && crate::task::scheduler::current_thread_id().is_some() && timer_running;
+        let scheduler_running = scheduler_sleep_ready(has_irq);
 
         // --- Arm completion tracking ONLY for scheduler-sleep mode ---
         //
@@ -2239,33 +2266,14 @@ fn probe_platform_irq(ctrl: &AhciController) {
 
     crate::serial_println!("[ahci] Platform IRQ probe: discovered SPI {}", found_spi);
 
-    #[cfg(target_arch = "aarch64")]
-    {
-        // Parallels GICv3 quirk (Turn 10 E4): GICD_IROUTER writes are RAZ/WI for
-        // platform AHCI SPI even with GICD_CTLR.ARE_NS set. Combined with the
-        // observation that AHCI ISR delivery on CPU0 deterministically kills the
-        // CPU0 vtimer on Parallels HVF (Turn 11 Path A, 5/5 boots), the only
-        // production-safe configuration on aarch64 is AHCI polling mode.
-        //
-        // The existing AHCI driver path already uses timer-tick polling when
-        // AHCI_IRQ remains 0. Silence the discovered SPI in the distributor and
-        // return without storing AHCI_IRQ.
-        gic::disable_spi(found_spi);
-        return;
-    }
-
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        gic::clear_spi_pending(found_spi);
-        AHCI_IRQ_EDGE.store(false, Ordering::Release);
-        AHCI_IRQ.store(found_spi, Ordering::Release);
-        // Route platform AHCI away from CPU0; on Parallels, CPU0 delivery can stop its timer.
-        gic::enable_spi_on_cpu(found_spi, 2);
-        crate::serial_println!(
-            "[ahci] Platform IRQ enabled: SPI {} (wired, level-triggered)",
-            found_spi
-        );
-    }
+    gic::clear_spi_pending(found_spi);
+    AHCI_IRQ_EDGE.store(false, Ordering::Release);
+    AHCI_IRQ.store(found_spi, Ordering::Release);
+    gic::enable_spi(found_spi);
+    crate::serial_println!(
+        "[ahci] Platform IRQ enabled: SPI {} (wired, level-triggered, CPU0)",
+        found_spi
+    );
 }
 
 /// AHCI MSI interrupt handler — called from the IRQ dispatch in `exception.rs`.
@@ -2502,6 +2510,34 @@ pub fn get_irq() -> Option<u32> {
     } else {
         None
     }
+}
+
+/// Emit one serial attribution line after AHCI can use scheduler-sleep completions.
+///
+/// This is intentionally not called from the AHCI wait path or interrupt handler.
+/// Boot code calls it after the scheduler has a current thread and the timer is
+/// running, so the line can be parsed by multi-boot ratification harnesses without
+/// perturbing command completion timing.
+pub fn emit_polling_attribution_once_if_scheduler_ready() {
+    let has_irq = AHCI_IRQ.load(Ordering::Relaxed) != 0;
+    if !scheduler_sleep_ready(has_irq) {
+        return;
+    }
+
+    if AHCI_POLL_ATTRIB_EMITTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+
+    crate::serial_println!(
+        "[ahci-poll-attrib] total={} post_reg={} pre_sched={} post_sched={}",
+        AHCI_POLLED_COMPLETION_COUNT.load(Ordering::Relaxed),
+        AHCI_POLLED_POST_REGISTRATION_COUNT.load(Ordering::Relaxed),
+        AHCI_POLLED_POST_REG_PRE_SCHEDULER.load(Ordering::Relaxed),
+        AHCI_POLLED_POST_REG_SCHEDULER_RUNNING.load(Ordering::Relaxed)
+    );
 }
 
 #[cfg(target_arch = "aarch64")]

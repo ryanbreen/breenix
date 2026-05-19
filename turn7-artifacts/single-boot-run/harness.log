@@ -1,0 +1,7 @@
+[2026-05-19 06:54:32] starting Turn 7 AHCI polling-attribution single Parallels boot
+[2026-05-19 06:54:33] waiting for fresh VM name
+[2026-05-19 06:54:48] detected VM breenix-1779188088
+[2026-05-19 06:54:48] waiting 90s after VM start for boot and CPU0 timer alarm window
+[2026-05-19 06:56:20] starting guest-debugger for breenix-1779188088 on port 9604
+[2026-05-19 06:56:51] running GDB endpoint capture
+[2026-05-19 06:59:48] Turn 7 polling-attribution single boot harness complete

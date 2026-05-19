@@ -1,0 +1,10 @@
+vm_name=breenix-1779188088
+serial_bytes=   55989
+gdb_endpoint_log=/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/turn7-artifacts/gdb-endpoint-state.log
+polling_counter=72
+post_registration_polling_counter=70
+pre_scheduler_polling_counter=70
+scheduler_running_polling_counter=0
+ahci_timeout_markers=0
+cpu0_timer_related_markers=35
+panic_markers=0

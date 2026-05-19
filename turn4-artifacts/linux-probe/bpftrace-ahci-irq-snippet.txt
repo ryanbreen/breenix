@@ -1,0 +1,61 @@
+3002442170716329727 cpu=0 handle_irq_event
+3002442170716337019 cpu=0 __handle_irq_event_percpu
+3002442170851566250 cpu=0 handle_irq_event
+3002442170851574417 cpu=0 __handle_irq_event_percpu
+3002442170851576917 cpu=0 irq_entry irq=15 name=ahci[PRL4010:00]
+3002442170851581959 cpu=0 ahci_single_level_irq_intr irq_arg=15
+3002442170851588042 cpu=0 ahci_handle_port_intr
+3002442170851593459 cpu=0 ahci_handle_port_interrupt
+3002442170851595792 cpu=0 ahci_qc_complete
+3002442170851603876 cpu=0 irq_exit irq=15 ret=1
+3002442170921830896 cpu=0 handle_irq_event
+3002442170921843897 cpu=0 __handle_irq_event_percpu
+3002442170922188859 cpu=0 handle_irq_event
+3002442170922196151 cpu=0 __handle_irq_event_percpu
+3002442171130943399 cpu=0 handle_irq_event
+3002442171130956941 cpu=0 __handle_irq_event_percpu
+3002442171131363738 cpu=0 handle_irq_event
+3002442171131372571 cpu=0 __handle_irq_event_percpu
+3002442171338227339 cpu=0 handle_irq_event
+3002442171338239214 cpu=0 __handle_irq_event_percpu
+3002442171338536218 cpu=0 handle_irq_event
+3002442171338543093 cpu=0 __handle_irq_event_percpu
+3002442171546953296 cpu=0 handle_irq_event
+3002442171546965838 cpu=0 __handle_irq_event_percpu
+3002442171547244133 cpu=0 handle_irq_event
+3002442171547297800 cpu=0 __handle_irq_event_percpu
+3002442171753557937 cpu=0 handle_irq_event
+3002442171753569895 cpu=0 __handle_irq_event_percpu
+3002442171753924691 cpu=0 handle_irq_event
+3002442171753932191 cpu=0 __handle_irq_event_percpu
+3002442171762002868 cpu=0 handle_irq_event
+3002442171762009659 cpu=0 __handle_irq_event_percpu
+3002442171762011576 cpu=0 irq_entry irq=15 name=ahci[PRL4010:00]
+3002442171762014993 cpu=0 ahci_single_level_irq_intr irq_arg=15
+3002442171762021826 cpu=0 ahci_handle_port_intr
+3002442171762027118 cpu=0 ahci_handle_port_interrupt
+3002442171762029160 cpu=0 ahci_qc_complete
+3002442171762037785 cpu=0 irq_exit irq=15 ret=1
+3002442171762652375 cpu=0 handle_irq_event
+3002442171762656292 cpu=0 __handle_irq_event_percpu
+3002442171762657500 cpu=0 irq_entry irq=15 name=ahci[PRL4010:00]
+3002442171762659167 cpu=0 ahci_single_level_irq_intr irq_arg=15
+3002442171762663125 cpu=0 ahci_handle_port_intr
+3002442171762667417 cpu=0 ahci_handle_port_interrupt
+3002442171762668584 cpu=0 ahci_qc_complete
+3002442171762675417 cpu=0 irq_exit irq=15 ret=1
+3002442171763240382 cpu=0 handle_irq_event
+3002442171763245215 cpu=0 __handle_irq_event_percpu
+3002442171763246799 cpu=0 irq_entry irq=15 name=ahci[PRL4010:00]
+3002442171763249049 cpu=0 ahci_single_level_irq_intr irq_arg=15
+3002442171763254424 cpu=0 ahci_handle_port_intr
+3002442171763259382 cpu=0 ahci_handle_port_interrupt
+3002442171763260757 cpu=0 ahci_qc_complete
+3002442171763268341 cpu=0 irq_exit irq=15 ret=1
+3002442171763730804 cpu=0 handle_irq_event
+3002442171763734596 cpu=0 __handle_irq_event_percpu
+3002442171763735971 cpu=0 irq_entry irq=15 name=ahci[PRL4010:00]
+3002442171763737513 cpu=0 ahci_single_level_irq_intr irq_arg=15
+3002442171763741054 cpu=0 ahci_handle_port_intr
+3002442171763745305 cpu=0 ahci_handle_port_interrupt
+3002442171763746555 cpu=0 ahci_qc_complete
