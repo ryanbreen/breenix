@@ -127,6 +127,19 @@ impl IsrWakeupBuffer {
 
 static ISR_WAKEUP_BUFFERS: [IsrWakeupBuffer; 8] = [const { IsrWakeupBuffer::new() }; 8];
 
+#[cfg(target_arch = "aarch64")]
+static READY_THREAD_RESCUE_COUNT: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_arch = "aarch64")]
+pub fn ready_thread_rescue_count() -> u64 {
+    READY_THREAD_RESCUE_COUNT.load(Ordering::Relaxed)
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+pub fn ready_thread_rescue_count() -> u64 {
+    0
+}
+
 /// Global scheduler instance
 static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
 
@@ -1095,6 +1108,7 @@ impl Scheduler {
                     })
                     .map(|t| t.id());
                 if let Some(stuck_tid) = first_stuck {
+                    READY_THREAD_RESCUE_COUNT.fetch_add(1, AO::Relaxed);
                     let count = STUCK_LOG_COUNT.fetch_add(1, AO::Relaxed);
                     if count < 5 || count % 1000 == 0 {
                         crate::serial_aarch64::raw_serial_str(b"[SCHED] queue_empty rescue_tid=");
@@ -2179,6 +2193,7 @@ impl Scheduler {
             );
             raw_uart_str("\n");
 
+            READY_THREAD_RESCUE_COUNT.fetch_add(1, Ordering::Relaxed);
             let target = self.find_target_cpu_for_wakeup(tid);
             self.per_cpu_queues[target].push_back(tid);
             self.send_resched_ipi();

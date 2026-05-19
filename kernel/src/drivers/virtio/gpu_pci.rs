@@ -10,7 +10,7 @@
 use super::pci_transport::VirtioPciDevice;
 use crate::tracing::providers::virtgpu;
 use core::ptr::read_volatile;
-use core::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{fence, AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 struct GpuPciLock {
     locked: AtomicBool,
@@ -33,7 +33,10 @@ impl GpuPciLock {
         self.locked
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .ok()
-            .map(|_| GpuPciGuard { lock: self })
+            .map(|_| {
+                gpu_pci_lock_record_acquire();
+                GpuPciGuard { lock: self }
+            })
     }
 
     fn lock(&'static self) -> GpuPciGuard {
@@ -63,9 +66,72 @@ impl GpuPciLock {
 
 impl Drop for GpuPciGuard {
     fn drop(&mut self) {
+        gpu_pci_lock_record_release();
         self.lock.locked.store(false, Ordering::Release);
         self.lock.waiters.wake_up_one();
     }
+}
+
+pub static GPU_PCI_LOCK_HOLDER_TID: AtomicI64 = AtomicI64::new(-1);
+pub static GPU_PCI_LOCK_ACQUIRED_AT_NS: AtomicU64 = AtomicU64::new(0);
+pub static GPU_PCI_LOCK_MAX_HOLD_NS: AtomicU64 = AtomicU64::new(0);
+pub static GPU_PCI_LOCK_MAX_HOLD_HOLDER_TID: AtomicI64 = AtomicI64::new(-1);
+
+#[inline]
+fn gpu_pci_current_tid_for_lock() -> i64 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::per_cpu_aarch64::current_thread()
+            .map(|thread| thread.id() as i64)
+            .unwrap_or(-1)
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        crate::task::scheduler::current_thread_id()
+            .map(|tid| tid as i64)
+            .unwrap_or(-1)
+    }
+}
+
+#[inline]
+fn gpu_pci_lock_record_acquire() {
+    let now_ns = monotonic_ns();
+    let tid = gpu_pci_current_tid_for_lock();
+    GPU_PCI_LOCK_HOLDER_TID.store(tid, Ordering::Release);
+    GPU_PCI_LOCK_ACQUIRED_AT_NS.store(now_ns, Ordering::Release);
+}
+
+#[inline]
+fn gpu_pci_lock_record_release() {
+    let now_ns = monotonic_ns();
+    let acquired_at = GPU_PCI_LOCK_ACQUIRED_AT_NS.load(Ordering::Acquire);
+    if acquired_at != 0 {
+        let hold_ns = now_ns.saturating_sub(acquired_at);
+        let prev_max = GPU_PCI_LOCK_MAX_HOLD_NS.load(Ordering::Relaxed);
+        if hold_ns > prev_max {
+            GPU_PCI_LOCK_MAX_HOLD_NS.store(hold_ns, Ordering::Release);
+            let held_by = GPU_PCI_LOCK_HOLDER_TID.load(Ordering::Relaxed);
+            GPU_PCI_LOCK_MAX_HOLD_HOLDER_TID.store(held_by, Ordering::Release);
+        }
+    }
+    GPU_PCI_LOCK_HOLDER_TID.store(-1, Ordering::Release);
+    GPU_PCI_LOCK_ACQUIRED_AT_NS.store(0, Ordering::Release);
+}
+
+fn gpu_pci_lock_hold_snapshot() -> (u64, i64) {
+    let mut max_hold_ns = GPU_PCI_LOCK_MAX_HOLD_NS.load(Ordering::Acquire);
+    let mut holder_tid = GPU_PCI_LOCK_MAX_HOLD_HOLDER_TID.load(Ordering::Acquire);
+    let acquired_at = GPU_PCI_LOCK_ACQUIRED_AT_NS.load(Ordering::Acquire);
+
+    if acquired_at != 0 {
+        let current_hold_ns = monotonic_ns().saturating_sub(acquired_at);
+        if current_hold_ns > max_hold_ns {
+            max_hold_ns = current_hold_ns;
+            holder_tid = GPU_PCI_LOCK_HOLDER_TID.load(Ordering::Acquire);
+        }
+    }
+
+    (max_hold_ns, holder_tid)
 }
 
 #[inline]
@@ -1361,6 +1427,7 @@ pub fn start_freeze_watchdog() {
 fn freeze_watchdog_thread() {
     let (_, _, _, _, mut last_r2_flush_ok, _) = virtgpu::freeze_watch_snapshot();
     let mut last_ms = monotonic_ms();
+    let mut last_lock_attrib_ms = 0u64;
 
     loop {
         let sleep_ms = if monotonic_ms() < 10_000 { 500 } else { 5_000 };
@@ -1427,6 +1494,17 @@ fn freeze_watchdog_thread() {
             procmgr_lock,
             gpu_pci_lock
         );
+
+        if last_lock_attrib_ms == 0 || uptime_ms.saturating_sub(last_lock_attrib_ms) >= 30_000 {
+            let (max_hold_ns, max_hold_holder_tid) = gpu_pci_lock_hold_snapshot();
+            crate::serial_println!(
+                "[gpu-pci-lock-attrib] max_hold_ms={} max_hold_holder_tid={} rescues={}",
+                max_hold_ns / 1_000_000,
+                max_hold_holder_tid,
+                crate::task::scheduler::ready_thread_rescue_count()
+            );
+            last_lock_attrib_ms = uptime_ms;
+        }
 
         last_ms = uptime_ms;
         last_r2_flush_ok = r2_flush_ok;
