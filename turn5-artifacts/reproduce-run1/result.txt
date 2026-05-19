@@ -1,0 +1,17 @@
+classification=no-softlock-within-window
+run_rc=still-running-at-capture
+gdb_rc=0
+vm=breenix-1779144068
+max_frame=2
+max_uptime_ms=50341
+stuck_tid13_count=0
+softlock_count=0
+far_0xccd_count=0
+panic_count=2
+data_abort_count=0
+scheduler_lock_byte=0
+process_manager_lock_byte=0
+gpu_pci_lock_byte=0
+ahci_irq=0
+window_serial_bytes=34089
+full_serial_bytes=38810

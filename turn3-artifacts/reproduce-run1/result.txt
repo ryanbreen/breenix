@@ -1,0 +1,17 @@
+classification=softlock-leading-edge
+run_rc=still-running-at-capture
+gdb_rc=0
+vm=breenix-1779142410
+max_frame=26000
+max_uptime_ms=191585
+stuck_tid13_count=14
+softlock_count=12
+far_0xccd_count=0
+panic_count=0
+data_abort_count=0
+scheduler_lock_byte=0
+process_manager_lock_byte=0
+gpu_pci_lock_byte=1
+ahci_irq=0
+window_serial_bytes=482196
+full_serial_bytes=4053609
