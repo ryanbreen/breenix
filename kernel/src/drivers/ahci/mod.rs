@@ -225,6 +225,12 @@ pub static AHCI_POLLED_COMPLETION_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Count post-IRQ-registration commands that still fall back to PORT_CI polling.
 #[export_name = "ahci_polled_post_registration_count"]
 pub static AHCI_POLLED_POST_REGISTRATION_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Count post-IRQ-registration polls before the scheduler-sleep path is available.
+#[export_name = "ahci_polled_post_reg_pre_scheduler"]
+pub static AHCI_POLLED_POST_REG_PRE_SCHEDULER: AtomicU64 = AtomicU64::new(0);
+/// Count post-IRQ-registration polls after the scheduler-sleep path is available.
+#[export_name = "ahci_polled_post_reg_scheduler_running"]
+pub static AHCI_POLLED_POST_REG_SCHEDULER_RUNNING: AtomicU64 = AtomicU64::new(0);
 /// Hardware MPIDR Aff0 of the CPU that last ran the AHCI ISR (0xDEAD = never ran).
 static AHCI_ISR_LAST_MPIDR: AtomicU64 = AtomicU64::new(0xDEAD);
 /// Count commands issued via issue_cmd_slot0 (for diagnostic/timeout reporting).
@@ -716,6 +722,29 @@ struct CmdToken {
     scheduler_running: bool,
 }
 
+#[inline]
+fn scheduler_sleep_ready(has_irq: bool) -> bool {
+    // Two conditions must hold for the scheduler-sleep path:
+    // 1. Scheduler is running (current_thread_id returns Some).
+    // 2. Timer is running (timer_is_running() = true after timer init).
+    //
+    // The timer check is critical: during the boot sequence on ARM64,
+    // main_aarch64 calls preempt_disable() BEFORE timer_interrupt::init().
+    // The pre-load of /sbin/init from ext2 happens in this window.
+    let timer_running = {
+        #[cfg(target_arch = "aarch64")]
+        {
+            crate::arch_impl::aarch64::timer_interrupt::timer_is_running()
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            true
+        }
+    };
+
+    has_irq && crate::task::scheduler::current_thread_id().is_some() && timer_running
+}
+
 /// Wait for a slot-0 command to complete, with NO locks held.
 ///
 /// This is the second half of the split command issue protocol:
@@ -772,12 +801,15 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
             }
         }
     } else {
-        if AHCI_IRQ.load(Ordering::Relaxed) == 0 {
-            AHCI_POLLED_COMPLETION_COUNT.fetch_add(1, Ordering::Relaxed);
-        } else {
+        if token.has_irq {
             AHCI_POLLED_POST_REGISTRATION_COUNT.fetch_add(1, Ordering::Relaxed);
-            AHCI_POLLED_COMPLETION_COUNT.fetch_add(1, Ordering::Relaxed);
+            if scheduler_sleep_ready(token.has_irq) {
+                AHCI_POLLED_POST_REG_SCHEDULER_RUNNING.fetch_add(1, Ordering::Relaxed);
+            } else {
+                AHCI_POLLED_POST_REG_PRE_SCHEDULER.fetch_add(1, Ordering::Relaxed);
+            }
         }
+        AHCI_POLLED_COMPLETION_COUNT.fetch_add(1, Ordering::Relaxed);
         // ============================================================
         // PORT_CI POLLING PATH (scheduler not running)
         //
@@ -1132,25 +1164,7 @@ impl AhciController {
         // --- Determine wait mode BEFORE arming completions ---
         let has_irq = AHCI_IRQ.load(Ordering::Relaxed) != 0 && port < MAX_AHCI_PORTS;
 
-        // Two conditions must hold for the scheduler-sleep path:
-        // 1. Scheduler is running (current_thread_id returns Some).
-        // 2. Timer is running (timer_is_running() = true after timer init).
-        //
-        // The timer check is critical: during the boot sequence on ARM64,
-        // main_aarch64 calls preempt_disable() BEFORE timer_interrupt::init().
-        // The pre-load of /sbin/init from ext2 happens in this window.
-        let timer_running = {
-            #[cfg(target_arch = "aarch64")]
-            {
-                crate::arch_impl::aarch64::timer_interrupt::timer_is_running()
-            }
-            #[cfg(not(target_arch = "aarch64"))]
-            {
-                true
-            }
-        };
-        let scheduler_running =
-            has_irq && crate::task::scheduler::current_thread_id().is_some() && timer_running;
+        let scheduler_running = scheduler_sleep_ready(has_irq);
 
         // --- Arm completion tracking ONLY for scheduler-sleep mode ---
         //
