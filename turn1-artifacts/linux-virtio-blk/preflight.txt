@@ -1,0 +1,29 @@
+Warning: Permanently added '10.211.55.3' (ED25519) to the list of known hosts.
+[sudo] password for wrb: Linux probe 6.8.0-111-generic #111-Ubuntu SMP PREEMPT_DYNAMIC Sat Apr 11 22:59:23 UTC 2026 aarch64 aarch64 aarch64 GNU/Linux
+---lsblk---
+NAME                      TYPE  SIZE MODEL               MOUNTPOINT
+sda                       disk   32G harddisk1 SSD       
+├─sda1                    part    1G                     /boot/efi
+├─sda2                    part    2G                     /boot
+└─sda3                    part 28.9G                     
+  └─ubuntu--vg-ubuntu--lv lvm  14.5G                     /
+sr0                       rom  1024M Virtual DVD-ROM [1] 
+---virtio---
+00:05.0 Ethernet controller [0200]: Red Hat, Inc. Virtio network device [1af4:1000]
+00:0a.0 VGA compatible controller [0300]: Red Hat, Inc. Virtio 1.0 GPU [1af4:1050] (rev 01)
+00:0e.0 Communication controller [0780]: Red Hat, Inc. Virtio 1.0 socket [1af4:1053] (rev 01)
+---interrupts---
+ 14:          0          0          0          0     GICv3  38 Edge      virtio0
+ 20:          0          0          0          0       MSI 81920 Edge      virtio1-config
+ 21:        118          0          0          0       MSI 81921 Edge      virtio1-input.0
+ 22:         99          0          0          0       MSI 81922 Edge      virtio1-output.0
+ 27:          0          0          0          0       MSI 163840 Edge      virtio2-config
+ 28:       1785          0          0          0       MSI 163841 Edge      virtio2-virtqueues
+ 29:          0          0          0          0       MSI 229376 Edge      virtio3-config
+ 30:          0          0          0          0       MSI 229377 Edge      virtio3-virtqueues
+ 32:        173          0          0          0       MSI 16384 Edge      snd_hda_intel:card0
+---tracing---
+debugfs on /sys/kernel/debug type debugfs (rw,nosuid,nodev,noexec,relatime)
+tracing-present
+---bpftrace---
+/usr/bin/bpftrace

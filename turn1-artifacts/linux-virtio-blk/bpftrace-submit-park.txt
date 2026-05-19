@@ -1,0 +1,36 @@
+Warning: Permanently added '10.211.55.3' (ED25519) to the list of known hosts.
+[sudo] password for wrb: 128+0 records in
+128+0 records out
+134217728 bytes (134 MB, 128 MiB) copied, 0.0210616 s, 6.4 GB/s
+Attaching 4 probes...
+wake from 
+        try_to_wake_up+0
+        cpu_stop_queue_work+200
+        queue_stop_cpus_work.constprop.0+176
+        stop_machine_cpuslocked+360
+        aarch64_insn_patch_text+84
+        arch_arm_kprobe+80
+        enable_kprobe+216
+        enable_trace_kprobe+164
+        kprobe_register+136
+        perf_trace_event_reg+328
+        perf_trace_event_init+72
+        perf_kprobe_init+108
+        perf_kprobe_event_init+88
+        perf_try_init_event+92
+        perf_init_event+208
+        perf_event_alloc+1176
+        __do_sys_perf_event_open+512
+        __arm64_sys_perf_event_open+52
+        invoke_syscall+124
+        el0_svc_common.constprop.0+76
+        do_el0_svc+40
+        el0_svc+64
+        el0t_64_sync_handler+328
+        el0t_64_sync+432
+
+
+
+
+
+@wake_started: 1

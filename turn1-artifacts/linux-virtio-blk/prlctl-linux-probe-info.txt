@@ -1,0 +1,123 @@
+INFO
+ID: {47d0c006-c435-4ac3-a1e4-f30c7c4843a9}
+Name: linux-probe
+Description: 
+Type: VM
+State: running
+OS: ubuntu
+Template: no
+Uptime: 4 days 00:21:59 (since 2026-03-21 14:54:00)
+Home path: /Users/wrb/Parallels/linux-probe.pvm/config.pvs
+Home: /Users/wrb/Parallels/linux-probe.pvm/
+Restore Image: 
+GuestTools: state=not_installed
+Mouse and Keyboard:
+  Smart mouse optimized for games: auto
+  Sticky mouse: off
+  Smooth scrolling: off
+  Keyboard optimization mode: auto
+USB and Bluetooth:
+  Automatic sharing cameras: on
+  Automatic sharing bluetooth: off
+  Automatic sharing smart cards: off
+  Automatic sharing gamepads: on
+  Support USB 3.0: on
+Startup and Shutdown:
+  Autostart: off
+  Autostart delay: 0
+  Autostop: suspend
+  Startup view: same
+  On shutdown: close
+  On window close: suspend
+  Pause idle: off
+  Undo disks: off
+Optimization:
+  Faster virtual machine: on
+  Hypervisor type: apple
+  Adaptive hypervisor: off
+  Disabled Windows logo: on
+  Auto compress virtual disks: off
+  Nested virtualization: off
+  PMU virtualization: off
+  Longer battery life: off
+  Show battery status: on
+Travel mode:
+  Enter condition: never
+  Enter threshold: 30
+  Quit condition: never
+Security:
+  Encrypted: no
+  TPM enabled: no
+  TPM type: off
+  Custom password protection: off
+  Configuration is locked: off
+  Protected: no
+  Archived: no
+  Packed: no
+Smart Guard: (-)
+Modality:
+  Opacity (percentage): 50
+  Stay on top: on
+  Show on all spaces : on
+  Capture mouse clicks: on
+Fullscreen:
+  Use all displays: off
+  Activate spaces on click: on
+  Optimize for games: off
+  Gamma control: on
+  Scale view mode: auto
+Coherence:
+  Show Windows systray in Mac menu: on
+  Auto-switch to full screen: on
+Time Synchronization: (+)
+  Smart mode: off
+  Interval (in seconds): 60
+  Timezone synchronization disabled: off
+Expiration: (-)
+Boot order: cdrom0 hdd0 
+BIOS type: efi64
+EFI Secure boot: off
+Allow select boot device: off
+External boot device: 
+SMBIOS settings:
+  BIOS Version: 
+  System serial number: 
+  Board Manufacturer: 
+Hardware:
+  cpu cpus=4 auto=off VT-x accl=high mode=64 type=arm
+  memory size=4096Mb auto=off
+  video adapter-type=virtio size=0Mb 3d-acceleration=highest vertical-sync=on high-resolution=off high-resolution-in-guest=on native-scaling-in-guest=off automatic-video-memory=on
+  memory_quota auto=yes
+  hdd0 (+) sata:0 image='/Users/wrb/Parallels/linux-probe.pvm/harddisk1.hdd' type='expanded' 32768Mb online-compact=on
+  cdrom0 (+) sata:1 image='/Users/wrb/Downloads/ubuntu-24.04.4-live-server-arm64.iso' state=disconnected
+  serial0 (+) real='/dev/cu.debug-console' state=disconnected
+  usb (+)
+  net0 (+) type=shared mac=001C42A78279 card=virtio
+  sound0 (+) output='Default' mixer='Default'
+Host Shared Folders: (-)
+Host defined sharing: Off
+Shared Profile: (-)
+Shared Applications: (+)
+  Host-to-guest apps sharing: on
+  Guest-to-host apps sharing: on
+  Show guest apps folder in Dock: off
+  Show guest notifications: on
+  Bounce dock icon when app flashes: on
+SmartMount: (+)
+  Removable drives: on
+  CD/DVD drives: on
+  Network shares: on
+Network:
+  Conditioned: off
+  IP Addresses: 10.211.55.3,fe80::21c:42ff:fea7:8279
+Miscellaneous Sharing:
+  Shared clipboard mode: on
+  Shared cloud: on
+Advanced:
+  VM hostname synchronization: off
+  Public SSH keys synchronization: off
+  Show developer tools: off
+  Swipe from edges: off
+  Share host location: on
+  Rosetta Linux: off
+

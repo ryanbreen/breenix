@@ -1,0 +1,159 @@
+Warning: Permanently added '10.211.55.3' (ED25519) to the list of known hosts.
+[sudo] password for wrb: ---block-devices-with-drivers---
+dm-0 driver=none
+dm-0 device=/sys/devices/virtual/block/dm-0/device
+loop0 driver=none
+loop0 device=/sys/devices/virtual/block/loop0/device
+loop1 driver=none
+loop1 device=/sys/devices/virtual/block/loop1/device
+loop2 driver=none
+loop2 device=/sys/devices/virtual/block/loop2/device
+loop3 driver=none
+loop3 device=/sys/devices/virtual/block/loop3/device
+loop4 driver=none
+loop4 device=/sys/devices/virtual/block/loop4/device
+loop5 driver=none
+loop5 device=/sys/devices/virtual/block/loop5/device
+loop6 driver=none
+loop6 device=/sys/devices/virtual/block/loop6/device
+loop7 driver=none
+loop7 device=/sys/devices/virtual/block/loop7/device
+sda driver=/sys/bus/scsi/drivers/sd
+sda device=/sys/devices/platform/PRL4010:00/ata1/host0/target0:0:0/0:0:0:0
+sr0 driver=/sys/bus/scsi/drivers/sr
+sr0 device=/sys/devices/platform/PRL4010:00/ata2/host1/target1:0:0/1:0:0:0
+---virtio-bus-devices---
+/sys/bus/virtio/devices
+/sys/bus/virtio/devices/virtio0
+/sys/bus/virtio/devices/virtio1
+/sys/bus/virtio/devices/virtio2
+/sys/bus/virtio/devices/virtio3
+---virtio-drivers---
+/sys/bus/virtio/drivers
+/sys/bus/virtio/drivers/scmi-virtio
+/sys/bus/virtio/drivers/virtio_balloon
+/sys/bus/virtio/drivers/virtio_balloon/virtio0
+/sys/bus/virtio/drivers/virtio_blk
+/sys/bus/virtio/drivers/virtio_console
+/sys/bus/virtio/drivers/virtio_gpu
+/sys/bus/virtio/drivers/virtio_gpu/module
+/sys/bus/virtio/drivers/virtio_gpu/virtio2
+/sys/bus/virtio/drivers/virtio_iommu
+/sys/bus/virtio/drivers/virtio_net
+/sys/bus/virtio/drivers/virtio_net/virtio1
+/sys/bus/virtio/drivers/virtio_rproc_serial
+/sys/bus/virtio/drivers/virtio_scsi
+/sys/bus/virtio/drivers/vmw_vsock_virtio_transport
+/sys/bus/virtio/drivers/vmw_vsock_virtio_transport/module
+/sys/bus/virtio/drivers/vmw_vsock_virtio_transport/virtio3
+---pci-virtio-verbose---
+
+	Subsystem: Parallels, Inc. Virtio network device [1ab8:0001]
+	Control: I/O+ Mem+ BusMaster+ SpecCycle- MemWINV- VGASnoop- ParErr- Stepping- SERR- FastB2B- DisINTx+
+	Status: Cap+ 66MHz- UDF- FastB2B- ParErr- DEVSEL=fast >TAbort- <TAbort- <MAbort- >SERR- <PERR- INTx-
+	Latency: 0
+	Interrupt: pin A routed to IRQ 17
+	Region 0: Memory at 1400d000 (32-bit, non-prefetchable) [size=4K]
+	Region 1: Memory at 1400e000 (32-bit, non-prefetchable) [size=4K]
+	Capabilities: [48] Express (v2) Endpoint, MSI 00
+		DevCap:	MaxPayload 128 bytes, PhantFunc 0, Latency L0s unlimited, L1 unlimited
+			ExtTag- AttnBtn- AttnInd- PwrInd- RBE- FLReset- SlotPowerLimit 0W
+		DevCtl:	CorrErr- NonFatalErr- FatalErr- UnsupReq-
+			RlxdOrd+ ExtTag- PhantFunc- AuxPwr- NoSnoop-
+			MaxPayload 128 bytes, MaxReadReq 512 bytes
+		DevSta:	CorrErr- NonFatalErr- FatalErr- UnsupReq- AuxPwr- TransPend-
+		LnkCap:	Port #0, Speed 2.5GT/s, Width x1, ASPM not supported
+			ClockPM- Surprise- LLActRep- BwNot- ASPMOptComp-
+		LnkCtl:	ASPM Disabled; RCB 64 bytes, Disabled- CommClk-
+			ExtSynch- ClockPM- AutWidDis- BWInt- AutBWInt-
+		LnkSta:	Speed 2.5GT/s, Width x1
+			TrErr- Train- SlotClk+ DLActive- BWMgmt- ABWMgmt-
+		DevCap2: Completion Timeout: Not Supported, TimeoutDis- NROPrPrP- LTR-
+			 10BitTagComp- 10BitTagReq- OBFF Not Supported, ExtFmt- EETLPPrefix-
+			 EmergencyPowerReduction Not Supported, EmergencyPowerReductionInit-
+			 FRS- TPHComp- ExtTPHComp-
+			 AtomicOpsCap: 32bit- 64bit- 128bitCAS-
+		DevCtl2: Completion Timeout: 50us to 50ms, TimeoutDis- LTR- 10BitTagReq- OBFF Disabled,
+			 AtomicOpsCtl: ReqEn-
+		LnkSta2: Current De-emphasis Level: -6dB, EqualizationComplete- EqualizationPhase1-
+			 EqualizationPhase2- EqualizationPhase3- LinkEqualizationRequest-
+			 Retimer- 2Retimers- CrosslinkRes: unsupported
+	Capabilities: [40] Power Management version 2
+		Flags: PMEClk- DSI+ D1- D2- AuxCurrent=0mA PME(D0-,D1-,D2-,D3hot-,D3cold-)
+		Status: D0 NoSoftRst- PME-Enable- DSel=0 DScale=0 PME-
+	Capabilities: [f4] MSI-X: Enable+ Count=3 Masked-
+		Vector table: BAR=1 offset=00000000
+		PBA: BAR=1 offset=00000800
+	Capabilities: [100 v1] Device Serial Number 00-1c-42-ff-ff-a7-82-79
+	Kernel driver in use: virtio-pci
+
+
+
+	Subsystem: Parallels, Inc. Virtio 1.0 GPU [1ab8:0010]
+	Control: I/O+ Mem+ BusMaster+ SpecCycle- MemWINV- VGASnoop- ParErr- Stepping- SERR- FastB2B- DisINTx+
+	Status: Cap+ 66MHz- UDF- FastB2B- ParErr- DEVSEL=fast >TAbort- <TAbort- <MAbort- >SERR- <PERR- INTx-
+	Latency: 0
+	Interrupt: pin A routed to IRQ 18
+	Region 0: Memory at 10000000 (32-bit, prefetchable) [size=64M]
+	Region 1: Memory at 14010000 (32-bit, non-prefetchable) [size=4K]
+	Region 4: Memory at 14004000 (32-bit, non-prefetchable) [size=16K]
+	Capabilities: [b0] MSI-X: Enable+ Count=2 Masked-
+		Vector table: BAR=1 offset=00000000
+		PBA: BAR=1 offset=00000800
+	Capabilities: [bc] Vendor Specific Information: VirtIO: DeviceCfg
+		BAR=4 offset=00003000 size=00001000
+	Capabilities: [cc] Vendor Specific Information: VirtIO: ISR
+		BAR=4 offset=00002000 size=00001000
+	Capabilities: [dc] Vendor Specific Information: VirtIO: Notify
+		BAR=4 offset=00001000 size=00001000 multiplier=00000000
+	Capabilities: [f0] Vendor Specific Information: VirtIO: CommonCfg
+		BAR=4 offset=00000000 size=00001000
+	Kernel driver in use: virtio-pci
+
+
+	Subsystem: Parallels, Inc. Virtio 1.0 socket [1ab8:0013]
+	Control: I/O- Mem+ BusMaster+ SpecCycle- MemWINV- VGASnoop- ParErr- Stepping- SERR- FastB2B- DisINTx+
+	Status: Cap+ 66MHz- UDF- FastB2B- ParErr- DEVSEL=fast >TAbort- <TAbort- <MAbort- >SERR- <PERR- INTx-
+	Latency: 0
+	Interrupt: pin A routed to IRQ 19
+	Region 1: Memory at 14011000 (32-bit, non-prefetchable) [size=4K]
+	Region 4: Memory at 14008000 (32-bit, non-prefetchable) [size=16K]
+	Capabilities: [b0] MSI-X: Enable+ Count=2 Masked-
+		Vector table: BAR=1 offset=00000000
+		PBA: BAR=1 offset=00000800
+	Capabilities: [bc] Vendor Specific Information: VirtIO: DeviceCfg
+		BAR=4 offset=00003000 size=00001000
+	Capabilities: [cc] Vendor Specific Information: VirtIO: ISR
+		BAR=4 offset=00002000 size=00001000
+	Capabilities: [dc] Vendor Specific Information: VirtIO: Notify
+		BAR=4 offset=00001000 size=00001000 multiplier=00000000
+	Capabilities: [f0] Vendor Specific Information: VirtIO: CommonCfg
+		BAR=4 offset=00000000 size=00001000
+	Kernel driver in use: virtio-pci
+
+---interrupts-before-dd---
+ 14:          0          0          0          0     GICv3  38 Edge      virtio0
+ 15:       5615          0          0          0     GICv3  34 Level     ahci[PRL4010:00]
+ 20:          0          0          0          0       MSI 81920 Edge      virtio1-config
+ 21:        310          0          0          0       MSI 81921 Edge      virtio1-input.0
+ 22:        233          0          0          0       MSI 81922 Edge      virtio1-output.0
+ 27:          0          0          0          0       MSI 163840 Edge      virtio2-config
+ 28:       2461          0          0          0       MSI 163841 Edge      virtio2-virtqueues
+ 29:          0          0          0          0       MSI 229376 Edge      virtio3-config
+ 30:          0          0          0          0       MSI 229377 Edge      virtio3-virtqueues
+ 32:        173          0          0          0       MSI 16384 Edge      snd_hda_intel:card0
+---dd-sda-direct---
+10+0 records in
+10+0 records out
+10485760 bytes (10 MB, 10 MiB) copied, 0.00242011 s, 4.3 GB/s
+---interrupts-after-dd---
+ 14:          0          0          0          0     GICv3  38 Edge      virtio0
+ 15:       5628          0          0          0     GICv3  34 Level     ahci[PRL4010:00]
+ 20:          0          0          0          0       MSI 81920 Edge      virtio1-config
+ 21:        314          0          0          0       MSI 81921 Edge      virtio1-input.0
+ 22:        237          0          0          0       MSI 81922 Edge      virtio1-output.0
+ 27:          0          0          0          0       MSI 163840 Edge      virtio2-config
+ 28:       2461          0          0          0       MSI 163841 Edge      virtio2-virtqueues
+ 29:          0          0          0          0       MSI 229376 Edge      virtio3-config
+ 30:          0          0          0          0       MSI 229377 Edge      virtio3-virtqueues
+ 32:        173          0          0          0       MSI 16384 Edge      snd_hda_intel:card0

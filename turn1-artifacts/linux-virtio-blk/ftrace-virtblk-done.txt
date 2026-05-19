@@ -1,0 +1,11 @@
+Warning: Permanently added '10.211.55.3' (ED25519) to the list of known hosts.
+[sudo] password for wrb: 10+0 records in
+10+0 records out
+10485760 bytes (10 MB, 10 MiB) copied, 0.00714275 s, 1.5 GB/s
+---trace-head---
+# tracer: function_graph
+#
+# CPU  DURATION                  FUNCTION CALLS
+# |     |   |                     |   |   |   |
+---set_graph_function---
+virtblk_done
