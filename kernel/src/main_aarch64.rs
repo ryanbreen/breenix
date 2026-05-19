@@ -171,6 +171,7 @@ fn launch_init_from_elf(
 
     // Register the userspace thread with the scheduler as the current running thread.
     kernel::task::scheduler::spawn_as_current(alloc::boxed::Box::new(main_thread_clone));
+    kernel::drivers::ahci::emit_polling_attribution_once_if_scheduler_ready();
 
     // CRITICAL: Reset ALL idle threads' saved contexts to point to idle_loop_arm64.
     // Timer interrupts during boot may have saved idle threads' ELR pointing to

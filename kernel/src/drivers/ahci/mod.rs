@@ -231,6 +231,7 @@ pub static AHCI_POLLED_POST_REG_PRE_SCHEDULER: AtomicU64 = AtomicU64::new(0);
 /// Count post-IRQ-registration polls after the scheduler-sleep path is available.
 #[export_name = "ahci_polled_post_reg_scheduler_running"]
 pub static AHCI_POLLED_POST_REG_SCHEDULER_RUNNING: AtomicU64 = AtomicU64::new(0);
+static AHCI_POLL_ATTRIB_EMITTED: AtomicBool = AtomicBool::new(false);
 /// Hardware MPIDR Aff0 of the CPU that last ran the AHCI ISR (0xDEAD = never ran).
 static AHCI_ISR_LAST_MPIDR: AtomicU64 = AtomicU64::new(0xDEAD);
 /// Count commands issued via issue_cmd_slot0 (for diagnostic/timeout reporting).
@@ -2509,6 +2510,34 @@ pub fn get_irq() -> Option<u32> {
     } else {
         None
     }
+}
+
+/// Emit one serial attribution line after AHCI can use scheduler-sleep completions.
+///
+/// This is intentionally not called from the AHCI wait path or interrupt handler.
+/// Boot code calls it after the scheduler has a current thread and the timer is
+/// running, so the line can be parsed by multi-boot ratification harnesses without
+/// perturbing command completion timing.
+pub fn emit_polling_attribution_once_if_scheduler_ready() {
+    let has_irq = AHCI_IRQ.load(Ordering::Relaxed) != 0;
+    if !scheduler_sleep_ready(has_irq) {
+        return;
+    }
+
+    if AHCI_POLL_ATTRIB_EMITTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+
+    crate::serial_println!(
+        "[ahci-poll-attrib] total={} post_reg={} pre_sched={} post_sched={}",
+        AHCI_POLLED_COMPLETION_COUNT.load(Ordering::Relaxed),
+        AHCI_POLLED_POST_REGISTRATION_COUNT.load(Ordering::Relaxed),
+        AHCI_POLLED_POST_REG_PRE_SCHEDULER.load(Ordering::Relaxed),
+        AHCI_POLLED_POST_REG_SCHEDULER_RUNNING.load(Ordering::Relaxed)
+    );
 }
 
 #[cfg(target_arch = "aarch64")]
