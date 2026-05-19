@@ -79,10 +79,10 @@ All QEMU processes killed
 
 ## E. PR URL
 
-TBD after `gh pr create`.
+https://github.com/ryanbreen/breenix/pull/342
 
 ## F. Status
 
-COMPLETE pending PR creation.
+COMPLETE.
 
 The 5-boot serial gate ratifies the Turn 7 success criterion: there is no AHCI polling after the scheduler/timer path is ready. The remaining boot-probe polling is pre-scheduler-ready and matches the Linux boot-probe policy documented in Turn 7.
