@@ -1,0 +1,2 @@
+boot-2: pass rescue_max=0 final_uptime=285513ms final_fps=151
+final submits=123455 completes=123458 last_completion_ms=285508 timer_ticks_cpu0=179998

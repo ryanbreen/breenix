@@ -1,0 +1,47 @@
+kprobe:try_to_wake_up
+{
+  @ttwu_entry = count();
+  @ttwu_entry_per_cpu[cpu] = count();
+}
+
+kretprobe:try_to_wake_up /retval != 0/
+{
+  @ttwu_success = count();
+}
+
+kretprobe:try_to_wake_up /retval == 0/
+{
+  @ttwu_noop = count();
+}
+
+kprobe:ttwu_queue_wakelist
+{
+  @queue_remote = count();
+  @queue_remote_per_cpu[cpu] = count();
+}
+
+kprobe:ttwu_do_activate
+{
+  @activate = count();
+  @activate_per_cpu[cpu] = count();
+}
+
+kprobe:enqueue_task_fair,
+kprobe:enqueue_task_rt,
+kprobe:enqueue_task_dl,
+kprobe:enqueue_task_stop
+{
+  @enqueue_all = count();
+  @enqueue_all_by_func[probe] = count();
+}
+
+kprobe:wake_up_new_task
+{
+  @new_task = count();
+}
+
+kprobe:arch_smp_send_reschedule
+{
+  @ipi = count();
+  @ipi_per_cpu[cpu] = count();
+}

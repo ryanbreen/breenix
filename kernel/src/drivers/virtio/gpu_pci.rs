@@ -1498,11 +1498,11 @@ fn freeze_watchdog_thread() {
         if last_lock_attrib_ms == 0 || uptime_ms.saturating_sub(last_lock_attrib_ms) >= 30_000 {
             let (max_hold_ns, max_hold_holder_tid) = gpu_pci_lock_hold_snapshot();
             crate::serial_println!(
-                "[gpu-pci-lock-attrib] max_hold_ms={} max_hold_holder_tid={} rescues={}",
+                "[gpu-pci-lock-attrib] max_hold_ms={} max_hold_holder_tid={}",
                 max_hold_ns / 1_000_000,
-                max_hold_holder_tid,
-                crate::task::scheduler::ready_thread_rescue_count()
+                max_hold_holder_tid
             );
+            crate::task::scheduler::emit_wake_attribution_counters();
             last_lock_attrib_ms = uptime_ms;
         }
 
@@ -1750,12 +1750,7 @@ fn setup_gpu_msi(pci_dev: &crate::drivers::pci::Device) -> GpuMsiConfig {
             return GpuMsiConfig::NONE;
         }
 
-        pci_dev.configure_msix_entry(
-            msix_cap,
-            GPU_MSIX_CONFIG_VECTOR,
-            msi_address,
-            config_spi,
-        );
+        pci_dev.configure_msix_entry(msix_cap, GPU_MSIX_CONFIG_VECTOR, msi_address, config_spi);
         pci_dev.configure_msix_entry(msix_cap, GPU_MSIX_QUEUE_VECTOR, msi_address, queue_spi);
 
         gic::configure_spi_edge_triggered(config_spi);
@@ -1785,7 +1780,9 @@ fn setup_gpu_msi(pci_dev: &crate::drivers::pci::Device) -> GpuMsiConfig {
         crate::serial_println!("[virtio-gpu-pci] Plain MSI present but not usable for GPU queues");
     }
 
-    crate::serial_println!("[virtio-gpu-pci] MSI-X capability not found; interrupt completion unavailable");
+    crate::serial_println!(
+        "[virtio-gpu-pci] MSI-X capability not found; interrupt completion unavailable"
+    );
     GpuMsiConfig::NONE
 }
 

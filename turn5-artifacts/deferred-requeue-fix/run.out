@@ -1,0 +1,463 @@
+
+=========================================
+Breenix on Parallels Desktop
+=========================================
+
+[1/6] Building UEFI loader...
+    Finished `release` profile [optimized] target(s) in 0.03s
+
+[2/6] Building kernel...
+    Finished `release` profile [optimized] target(s) in 0.05s
+
+[3/6] Building userspace binaries (aarch64)...
+========================================
+  STD USERSPACE BUILD (Rust std library)
+========================================
+  Architecture: aarch64
+
+[1/3] Building libbreenix-libc (aarch64)...
+  Finished `release` profile [optimized] target(s) in 0.02s
+  libbreenix-libc built successfully
+
+[2/3] Building userspace (aarch64)...
+  ERROR: rust-fork/library not found
+  The forked Rust compiler is required for std support
+  WARNING: Userspace build failed (rust-fork may not be set up)
+  Continuing without userspace binaries — ext2 will still have test files
+
+[4/6] Creating ext2 data disk image...
+Creating ext2 disk image...
+  Arch: aarch64
+  Output: /Users/wrb/fun/code/breenix.worktrees/scheduler-wake-atomic/target/ext2-aarch64.img
+  Size: 256MB
+  Using Docker to create ext2 filesystem...
+  Installed BusyBox with hardlinks in /bin and /sbin
+Installing other binaries...
+  Installed 50 binaries in /bin
+  Installed 3 binaries in /sbin
+  Installed 5 C binaries in /usr/local/cbin
+  Installed 95 test binaries in /usr/local/test/bin
+  Installed 29 fonts in /usr/share/fonts
+  Created /etc/fonts.conf
+  Created /etc/hotkeys.conf
+  Created /etc/init.js
+
+ext2 filesystem contents:
+  Binaries in /bin:
+total 33151
+drwxr-xr-x    2 root     root          3072 May 19 18:40 .
+drwxr-xr-x   12 root     root          1024 May 19 18:40 ..
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 ash
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 awk
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 basename
+-rwxr-xr-x    1 root     root        311600 May 19 18:40 bcat
+-rwxr-xr-x    1 root     root        422256 May 19 18:40 bcheck
+-rwxr-xr-x    1 root     root        305128 May 19 18:40 bcp
+-rwxr-xr-x    1 root     root        297456 May 19 18:40 becho
+-rwxr-xr-x    1 root     root        276808 May 19 18:40 bfalse
+-rwxr-xr-x    1 root     root        484760 May 19 18:40 bfontpicker
+-rwxr-xr-x    1 root     root        313408 May 19 18:40 bhead
+-rwxr-xr-x    1 root     root        358184 May 19 18:40 biconkit
+-rwxr-xr-x    1 root     root        460632 May 19 18:40 blauncher
+-rwxr-xr-x    1 root     root        294680 May 19 18:40 bless
+-rwxr-xr-x    1 root     root        467888 May 19 18:40 blog
+-rwxr-xr-x    1 root     root        325832 May 19 18:40 bls
+-rwxr-xr-x    1 root     root        306520 May 19 18:40 bmkdir
+-rwxr-xr-x    1 root     root        302608 May 19 18:40 bmv
+-rwxr-xr-x    1 root     root        388152 May 19 18:40 bounce
+-rwxr-xr-x    1 root     root        302184 May 19 18:40 brm
+-rwxr-xr-x    1 root     root        302184 May 19 18:40 brmdir
+-rwxr-xr-x    1 root     root        734392 May 19 18:40 bsh
+-rwxr-xr-x    1 root     root        408848 May 19 18:40 bssh
+-rwxr-xr-x    1 root     root        441008 May 19 18:40 bsshd
+-rwxr-xr-x    1 root     root        315816 May 19 18:40 btail
+-rwxr-xr-x    1 root     root        476584 May 19 18:40 bterm
+-rwxr-xr-x    1 root     root        293112 May 19 18:40 btop
+-rwxr-xr-x    1 root     root        306896 May 19 18:40 btrace
+-rwxr-xr-x    1 root     root        276800 May 19 18:40 btrue
+-rwxr-xr-x    1 root     root        636224 May 19 18:40 burl
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 busybox
+-rwxr-xr-x    1 root     root        312144 May 19 18:40 bwc
+-rwxr-xr-x    1 root     root        303160 May 19 18:40 bwhich
+-rwxr-xr-x    1 root     root        429208 May 19 18:40 bwm
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 cat
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 chgrp
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 chmod
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 chown
+-rwxr-xr-x    1 root     root        303336 May 19 18:40 concurrent_recv_stress
+-rwxr-xr-x    1 root     root        303536 May 19 18:40 confetti
+-rwxr-xr-x    1 root     root        290448 May 19 18:40 counter
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 cp
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 cut
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 date
+-rwxr-xr-x    1 root     root        304008 May 19 18:40 demo
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 df
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 dirname
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 du
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 echo
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 env
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 expr
+-rwxr-xr-x    1 root     root        294184 May 19 18:40 f32o_perfdiag
+-rwxr-xr-x    1 root     root        302392 May 19 18:40 fart
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 find
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 free
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 grep
+-rwxr-xr-x    1 root     root        538784 May 19 18:40 guskit
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 head
+-rwxr-xr-x    1 root     root        290128 May 19 18:40 heartbeat
+-rwxr-xr-x    1 root     root        278000 May 19 18:40 hello_raw
+-rwxr-xr-x    1 root     root        290328 May 19 18:40 hello_time
+-rwxr-xr-x    1 root     root        351216 May 19 18:40 hello_world
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 hexdump
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 hostname
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 id
+-rwxr-xr-x    1 root     root        388856 May 19 18:40 init_shell
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 ls
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 md5sum
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 mkdir
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 more
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 mv
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 od
+-rwxr-xr-x    1 root     root        304200 May 19 18:40 particles
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 printf
+-rwxr-xr-x    1 root     root        305352 May 19 18:40 rectangles
+-rwxr-xr-x    1 root     root        301448 May 19 18:40 resolution
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 rm
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 rmdir
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 sed
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 seq
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 sh
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 sha256sum
+-rwxr-xr-x    1 root     root        291080 May 19 18:40 signal_exec_check
+-rwxr-xr-x    1 root     root        276816 May 19 18:40 simple_exit
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 sleep
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 sort
+-rwxr-xr-x    1 root     root        290472 May 19 18:40 spinner
+-rwxr-xr-x    1 root     root        290176 May 19 18:40 syscall_enosys
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 tail
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 tee
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 test
+-rwxr-xr-x    1 root     root        294304 May 19 18:40 tones
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 tr
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 uniq
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 vi
+-rwxr-xr-x    1 root     root        306120 May 19 18:40 wait_stress
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 wc
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 which
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 whoami
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 xargs
+  Test binaries in /usr/local/test/bin:
+total 28663
+drwxr-xr-x    2 root     root          5120 May 19 18:40 .
+drwxr-xr-x    3 root     root          1024 May 19 18:40 ..
+-rwxr-xr-x    1 root     root        291528 May 19 18:40 access_test
+-rwxr-xr-x    1 root     root        293376 May 19 18:40 alarm_test
+-rwxr-xr-x    1 root     root        298184 May 19 18:40 argv_test
+-rwxr-xr-x    1 root     root        293848 May 19 18:40 blocking_recv_test
+-rwxr-xr-x    1 root     root        292880 May 19 18:40 brk_test
+-rwxr-xr-x    1 root     root        293560 May 19 18:40 cat_test
+-rwxr-xr-x    1 root     root        295096 May 19 18:40 clock_gettime_test
+-rwxr-xr-x    1 root     root        307552 May 19 18:40 cloexec_test
+-rwxr-xr-x    1 root     root        292368 May 19 18:40 cow_cleanup_test
+-rwxr-xr-x    1 root     root        292784 May 19 18:40 cow_oom_test
+-rwxr-xr-x    1 root     root        293488 May 19 18:40 cow_readonly_test
+-rwxr-xr-x    1 root     root        299168 May 19 18:40 cow_signal_test
+-rwxr-xr-x    1 root     root        293600 May 19 18:40 cow_sole_owner_test
+-rwxr-xr-x    1 root     root        293672 May 19 18:40 cow_stress_test
+-rwxr-xr-x    1 root     root        292896 May 19 18:40 cp_mv_argv_test
+-rwxr-xr-x    1 root     root        298680 May 19 18:40 ctrl_c_test
+-rwxr-xr-x    1 root     root        292504 May 19 18:40 cwd_test
+-rwxr-xr-x    1 root     root        292560 May 19 18:40 devfs_test
+-rwxr-xr-x    1 root     root        306952 May 19 18:40 dns_test
+-rwxr-xr-x    1 root     root        305112 May 19 18:40 dup_test
+-rwxr-xr-x    1 root     root        291736 May 19 18:40 echo_argv_test
+-rwxr-xr-x    1 root     root        291240 May 19 18:40 exec_argv_test
+-rwxr-xr-x    1 root     root        298784 May 19 18:40 exec_from_ext2_test
+-rwxr-xr-x    1 root     root        292888 May 19 18:40 exec_stack_argv_test
+-rwxr-xr-x    1 root     root        291904 May 19 18:40 false_test
+-rwxr-xr-x    1 root     root        297224 May 19 18:40 fbinfo_test
+-rwxr-xr-x    1 root     root        299648 May 19 18:40 fcntl_test
+-rwxr-xr-x    1 root     root        317304 May 19 18:40 fifo_test
+-rwxr-xr-x    1 root     root        292328 May 19 18:40 file_read_test
+-rwxr-xr-x    1 root     root        304344 May 19 18:40 fork_memory_test
+-rwxr-xr-x    1 root     root        297664 May 19 18:40 fork_pending_signal_test
+-rwxr-xr-x    1 root     root        305000 May 19 18:40 fork_state_test
+-rwxr-xr-x    1 root     root        298128 May 19 18:40 fork_test
+-rwxr-xr-x    1 root     root        300200 May 19 18:40 fs_block_alloc_test
+-rwxr-xr-x    1 root     root        293208 May 19 18:40 fs_directory_test
+-rwxr-xr-x    1 root     root        292296 May 19 18:40 fs_large_file_test
+-rwxr-xr-x    1 root     root        293256 May 19 18:40 fs_link_test
+-rwxr-xr-x    1 root     root        297336 May 19 18:40 fs_rename_test
+-rwxr-xr-x    1 root     root        293432 May 19 18:40 fs_write_test
+-rwxr-xr-x    1 root     root        293888 May 19 18:40 getdents_test
+-rwxr-xr-x    1 root     root        293328 May 19 18:40 head_test
+-rwxr-xr-x    1 root     root        616784 May 19 18:40 http_fetch_test
+-rwxr-xr-x    1 root     root        622792 May 19 18:40 http_test
+-rwxr-xr-x    1 root     root        293832 May 19 18:40 itimer_test
+-rwxr-xr-x    1 root     root        298536 May 19 18:40 job_control_test
+-rwxr-xr-x    1 root     root        308504 May 19 18:40 job_table_test
+-rwxr-xr-x    1 root     root        299304 May 19 18:40 kill_process_group_test
+-rwxr-xr-x    1 root     root        298616 May 19 18:40 ls_test
+-rwxr-xr-x    1 root     root        292544 May 19 18:40 lseek_test
+-rwxr-xr-x    1 root     root        292200 May 19 18:40 mkdir_argv_test
+-rwxr-xr-x    1 root     root        303200 May 19 18:40 net_test
+-rwxr-xr-x    1 root     root        293344 May 19 18:40 nonblock_eagain_test
+-rwxr-xr-x    1 root     root        303992 May 19 18:40 nonblock_test
+-rwxr-xr-x    1 root     root        299408 May 19 18:40 pause_test
+-rwxr-xr-x    1 root     root        304296 May 19 18:40 pipe2_test
+-rwxr-xr-x    1 root     root        304320 May 19 18:40 pipe_concurrent_test
+-rwxr-xr-x    1 root     root        305080 May 19 18:40 pipe_fork_test
+-rwxr-xr-x    1 root     root        316608 May 19 18:40 pipe_refcount_test
+-rwxr-xr-x    1 root     root        299256 May 19 18:40 pipe_test
+-rwxr-xr-x    1 root     root        305704 May 19 18:40 pipeline_test
+-rwxr-xr-x    1 root     root        304712 May 19 18:40 poll_test
+-rwxr-xr-x    1 root     root        293456 May 19 18:40 pty_test
+-rwxr-xr-x    1 root     root        288888 May 19 18:40 register_init_test
+-rwxr-xr-x    1 root     root        291840 May 19 18:40 rm_argv_test
+-rwxr-xr-x    1 root     root        304440 May 19 18:40 select_test
+-rwxr-xr-x    1 root     root        304824 May 19 18:40 session_test
+-rwxr-xr-x    1 root     root        293192 May 19 18:40 shell_pipe_test
+-rwxr-xr-x    1 root     root        305296 May 19 18:40 sigaltstack_test
+-rwxr-xr-x    1 root     root        294632 May 19 18:40 sigchld_job_test
+-rwxr-xr-x    1 root     root        292040 May 19 18:40 sigchld_test
+-rwxr-xr-x    1 root     root        299712 May 19 18:40 signal_exec_test
+-rwxr-xr-x    1 root     root        298800 May 19 18:40 signal_fork_test
+-rwxr-xr-x    1 root     root        298032 May 19 18:40 signal_handler_test
+-rwxr-xr-x    1 root     root        298616 May 19 18:40 signal_regs_test
+-rwxr-xr-x    1 root     root        299304 May 19 18:40 signal_return_test
+-rwxr-xr-x    1 root     root        298280 May 19 18:40 signal_test
+-rwxr-xr-x    1 root     root        304816 May 19 18:40 sigsuspend_test
+-rwxr-xr-x    1 root     root        304584 May 19 18:40 sleep_debug_test
+-rwxr-xr-x    1 root     root        291856 May 19 18:40 stdin_test
+-rwxr-xr-x    1 root     root        289072 May 19 18:40 syscall_diagnostic_test
+-rwxr-xr-x    1 root     root        293272 May 19 18:40 tail_test
+-rwxr-xr-x    1 root     root        320008 May 19 18:40 tcp_blocking_test
+-rwxr-xr-x    1 root     root        297192 May 19 18:40 tcp_client_test
+-rwxr-xr-x    1 root     root        318696 May 19 18:40 tcp_socket_test
+-rwxr-xr-x    1 root     root        291968 May 19 18:40 test_mmap
+-rwxr-xr-x    1 root     root        291496 May 19 18:40 timer_test
+-rwxr-xr-x    1 root     root        291904 May 19 18:40 true_test
+-rwxr-xr-x    1 root     root        303352 May 19 18:40 tty_test
+-rwxr-xr-x    1 root     root        305616 May 19 18:40 udp_socket_test
+-rwxr-xr-x    1 root     root        310280 May 19 18:40 unix_named_socket_test
+-rwxr-xr-x    1 root     root        323008 May 19 18:40 unix_socket_test
+-rwxr-xr-x    1 root     root        298944 May 19 18:40 waitpid_test
+-rwxr-xr-x    1 root     root        297880 May 19 18:40 wc_test
+-rwxr-xr-x    1 root     root        293152 May 19 18:40 which_test
+-rwxr-xr-x    1 root     root        292496 May 19 18:40 wnohang_timing_test
+  Test files:
+-rw-r--r--    1 root     root            20 May 19 18:40 /mnt/ext2/deep/path/to/file/data.txt
+-rw-r--r--    1 root     root            19 May 19 18:40 /mnt/ext2/trunctest.txt
+-rw-r--r--    1 root     root           111 May 19 18:40 /mnt/ext2/lines.txt
+-rw-r--r--    1 root     root           445 May 19 18:40 /mnt/ext2/etc/fonts.conf
+-rw-r--r--    1 root     root           367 May 19 18:40 /mnt/ext2/etc/bshrc
+-rw-r--r--    1 root     root            83 May 19 18:40 /mnt/ext2/etc/passwd
+-rw-r--r--    1 root     root           679 May 19 18:40 /mnt/ext2/etc/init.js
+-rw-r--r--    1 root     root            26 May 19 18:40 /mnt/ext2/etc/group
+-rw-r--r--    1 root     root           349 May 19 18:40 /mnt/ext2/etc/hotkeys.conf
+-rw-r--r--    1 root     root            17 May 19 18:40 /mnt/ext2/hello.txt
+-rw-r--r--    1 root     root             0 May 19 18:40 /mnt/ext2/empty.txt
+-rwxr-xr-x    1 root     root        296776 May 19 18:40 /mnt/ext2/sbin/init
+-rwxr-xr-x    1 root     root        291528 May 19 18:40 /mnt/ext2/sbin/blogd
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 /mnt/ext2/sbin/false
+-rwxr-xr-x   51 root     root        329400 May 19 18:40 /mnt/ext2/sbin/true
+-rwxr-xr-x    1 root     root        298632 May 19 18:40 /mnt/ext2/sbin/telnetd
+-rwxr-xr-x    1 root     root        133160 May 19 18:40 /mnt/ext2/usr/local/cbin/identity_musl_test
+-rwxr-xr-x    1 root     root        108720 May 19 18:40 /mnt/ext2/usr/local/cbin/hello_musl
+-rwxr-xr-x    1 root     root        108816 May 19 18:40 /mnt/ext2/usr/local/cbin/rlimit_musl_test
+-rwxr-xr-x    1 root     root        109624 May 19 18:40 /mnt/ext2/usr/local/cbin/env_musl_test
+-rwxr-xr-x    1 root     root        108904 May 19 18:40 /mnt/ext2/usr/local/cbin/uname_musl_test
+-rw-r--r--    1 root     root        598060 May 19 18:40 /mnt/ext2/usr/share/fonts/CascadiaCode-Regular.ttf
+-rw-r--r--    1 root     root        757076 May 19 18:40 /mnt/ext2/usr/share/fonts/DejaVuSans.ttf
+-rw-r--r--    1 root     root        108684 May 19 18:40 /mnt/ext2/usr/share/fonts/Inconsolata-Regular.ttf
+-rw-r--r--    1 root     root       1708408 May 19 18:40 /mnt/ext2/usr/share/fonts/NotoSansMono-Regular.ttf
+-rw-r--r--    1 root     root        183700 May 19 18:40 /mnt/ext2/usr/share/fonts/RobotoMono-Regular.ttf
+-rw-r--r--    1 root     root        351884 May 19 18:40 /mnt/ext2/usr/share/fonts/Ubuntu-Regular.ttf
+-rw-r--r--    1 root     root        312352 May 19 18:40 /mnt/ext2/usr/share/fonts/Raleway-Regular.ttf
+-rw-r--r--    1 root     root        744936 May 19 18:40 /mnt/ext2/usr/share/fonts/Montserrat-Regular.ttf
+-rw-r--r--    1 root     root        309408 May 19 18:40 /mnt/ext2/usr/share/fonts/Hack-Regular.ttf
+-rw-r--r--    1 root     root        359048 May 19 18:40 /mnt/ext2/usr/share/fonts/PTSerif-Regular.ttf
+-rw-r--r--    1 root     root        876576 May 19 18:40 /mnt/ext2/usr/share/fonts/Inter-Regular.ttf
+-rw-r--r--    1 root     root        646340 May 19 18:40 /mnt/ext2/usr/share/fonts/SourceSans3-Regular.ttf
+-rw-r--r--    1 root     root        488584 May 19 18:40 /mnt/ext2/usr/share/fonts/Roboto-Regular.ttf
+-rw-r--r--    1 root     root        282844 May 19 18:40 /mnt/ext2/usr/share/fonts/Merriweather-Regular.ttf
+-rw-r--r--    1 root     root       1887192 May 19 18:40 /mnt/ext2/usr/share/fonts/NotoSerif-Regular.ttf
+-rw-r--r--    1 root     root        212196 May 19 18:40 /mnt/ext2/usr/share/fonts/Lora-Regular.ttf
+-rw-r--r--    1 root     root        160316 May 19 18:40 /mnt/ext2/usr/share/fonts/Poppins-Regular.ttf
+-rw-r--r--    1 root     root       1209508 May 19 18:40 /mnt/ext2/usr/share/fonts/SourceSerif4-Regular.ttf
+-rw-r--r--    1 root     root        260364 May 19 18:40 /mnt/ext2/usr/share/fonts/FiraCode-Regular.ttf
+-rw-r--r--    1 root     root        276932 May 19 18:40 /mnt/ext2/usr/share/fonts/Nunito-Regular.ttf
+-rw-r--r--    1 root     root        212340 May 19 18:40 /mnt/ext2/usr/share/fonts/SourceCodePro-Regular.ttf
+-rw-r--r--    1 root     root        300724 May 19 18:40 /mnt/ext2/usr/share/fonts/PlayfairDisplay-Regular.ttf
+-rw-r--r--    1 root     root        205748 May 19 18:40 /mnt/ext2/usr/share/fonts/UbuntuMono-Regular.ttf
+-rw-r--r--    1 root     root        532636 May 19 18:40 /mnt/ext2/usr/share/fonts/OpenSans-Regular.ttf
+-rw-r--r--    1 root     root        135580 May 19 18:40 /mnt/ext2/usr/share/fonts/IBMPlexMono-Regular.ttf
+-rw-r--r--    1 root     root        340712 May 19 18:40 /mnt/ext2/usr/share/fonts/DejaVuSansMono.ttf
+-rw-r--r--    1 root     root       2049096 May 19 18:40 /mnt/ext2/usr/share/fonts/NotoSans-Regular.ttf
+-rw-r--r--    1 root     root        273900 May 19 18:40 /mnt/ext2/usr/share/fonts/JetBrainsMono-Regular.ttf
+-rw-r--r--    1 root     root        656568 May 19 18:40 /mnt/ext2/usr/share/fonts/Lato-Regular.ttf
+-rw-r--r--    1 root     root            20 May 19 18:40 /mnt/ext2/test/nested.txt
+
+ext2 image created successfully
+
+ext2 disk created and copied to testdata/:
+  /Users/wrb/fun/code/breenix.worktrees/scheduler-wake-atomic/target/ext2-aarch64.img
+  /Users/wrb/fun/code/breenix.worktrees/scheduler-wake-atomic/testdata/ext2-aarch64.img
+  Size: 256M
+
+Contents:
+  /bin/busybox - BusyBox multi-call binary
+  /bin/{cat,ls,head,...} - BusyBox hardlinks
+  /sbin/{true,false} - BusyBox hardlinks
+  /bin/* - Other userspace binaries (demos)
+  /usr/local/test/bin/* - Test binaries (*_test, test_*)
+  /sbin/telnetd - telnet daemon
+  /hello.txt - test file (1 line)
+  /lines.txt - multi-line test file (15 lines) for head/tail/wc
+  /test/nested.txt - nested test file
+  /deep/path/to/file/data.txt - deep nested test file
+
+[5/6] Creating FAT32 EFI disk image...
+  Loader: 80896 bytes
+  Kernel: 2491576 bytes
+
+[6/6] Creating Parallels disks...
+  Patched 1 partition(s) to EFI System Partition type
+  EFI disk: /Users/wrb/fun/code/breenix.worktrees/scheduler-wake-atomic/target/parallels/breenix-efi.hdd
+  ext2 disk: /Users/wrb/fun/code/breenix.worktrees/scheduler-wake-atomic/target/parallels/breenix-ext2.hdd (256MB)
+
+--- Configuring Parallels VM ---
+VM name: breenix-1779216023
+Creating fresh VM 'breenix-1779216023'...
+Creating the virtual machine...
+Generate the VM configuration for linux.
+Remove the hdd0 device.
+The VM has been successfully created.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+Remove the cdrom0 device.
+
+The VM has been successfully configured.
+Remove the serial0 device.
+
+The VM has been successfully configured.
+Creating hdd0 (+) sata:0 image='/Users/wrb/fun/code/breenix.worktrees/scheduler-wake-atomic/target/parallels/breenix-efi.hdd' online-compact=off
+
+Created hdd0 (+) sata:0 image='/Users/wrb/fun/code/breenix.worktrees/scheduler-wake-atomic/target/parallels/breenix-efi.hdd' type='plain' 64Mb online-compact=on
+
+
+The VM has been successfully configured.
+Creating hdd1 (+) sata:1 image='/Users/wrb/fun/code/breenix.worktrees/scheduler-wake-atomic/target/parallels/breenix-ext2.hdd' online-compact=off
+
+Created hdd1 (+) sata:1 image='/Users/wrb/fun/code/breenix.worktrees/scheduler-wake-atomic/target/parallels/breenix-ext2.hdd' type='plain' 256Mb online-compact=on
+
+
+The VM has been successfully configured.
+  hdd0: EFI boot disk (FAT32) at sata:0
+  hdd1: ext2 data disk at sata:1
+
+The VM has been successfully configured.
+Creating serial0 (+) output='/tmp/breenix-parallels-serial.log' state=disconnected
+
+Created serial0 (+) output='/tmp/breenix-parallels-serial.log' state=disconnected
+
+
+The VM has been successfully configured.
+Configured serial0 (+) output='/tmp/breenix-parallels-serial.log'
+
+
+The VM has been successfully configured.
+
+--- Starting VM ---
+Starting the VM...
+The VM has been successfully started.
+
+=========================================
+Breenix running on Parallels
+=========================================
+VM:     breenix-1779216023
+Serial: /tmp/breenix-parallels-serial.log
+Stop:   prlctl stop breenix-1779216023 --kill
+
+Tailing serial output (Ctrl+C to detach)...
+
+[parallels-log] 05-19 14:40:36.797 I /MonitorArm:83271:55bed56/ VCPU0 PSCI: CPU_ON(target_cpu = 1, entry_point_addr = 40080258, context_id = 1)
+[parallels-log] 05-19 14:40:36.797 I /MonitorArm:83271:55bed56/ VCPU0 PSCI: CPU_ON(target_cpu = 2, entry_point_addr = 40080258, context_id = 2)
+[parallels-log] 05-19 14:40:36.798 I /MonitorArm:83271:55bed56/ VCPU0 PSCI: CPU_ON(target_cpu = 3, entry_point_addr = 40080258, context_id = 3)
+[parallels-log] 05-19 14:40:36.798 I /MonitorArm:83271:55bed56/ VCPU0 PSCI: CPU_ON(target_cpu = 4, entry_point_addr = 40080258, context_id = 4)
+[parallels-log] 05-19 14:40:36.798 I /MonitorArm:83271:55bed56/ VCPU0 PSCI: CPU_ON(target_cpu = 5, entry_point_addr = 40080258, context_id = 5)
+[parallels-log] 05-19 14:40:36.798 I /MonitorArm:83271:55bed56/ VCPU0 PSCI: CPU_ON(target_cpu = 6, entry_point_addr = 40080258, context_id = 6)
+[parallels-log] 05-19 14:40:36.799 I /MonitorArm:83271:55bed56/ VCPU0 PSCI: CPU_ON(target_cpu = 7, entry_point_addr = 40080258, context_id = 7)
+[window] create_window_buffer: 400x300 (480000 bytes, 118 pages)
+[window] Created buffer id=1 for pid=6: 400x300 at virt=0x7ffffdf86000 phys=0x44172000
+[init] bounce started (PID 6)
+[bwm] Discovered window 'Bounce' (id=1, 400x300) at (30,38)
+[bounce] Windo[compositor] Mapped window 1 into BWM: virt=0x7ffffdad4000, 400x300, 118 pages
+w mode: id=1 400x300 [boot_id=0000000069c0b571]
+[freeze-watch] uptime_ms=2255 submits=329 completes=331 fails=0 last_completion_ms=2254 fps_last_5s=167 cpu=1 tid=0 ctx_switches=3369 timer_ticks_cpu0=558 timer_ticks_cpu1=764 timer_ticks_cpu2=763 timer_ticks_cpu3=751 timer_ticks_cpu4=746 timer_ticks_cpu5=761 timer_ticks_cpu6=760 timer_ticks_cpu7=764 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=busy
+[heartbeat] tid=12 uptime_ms=2267
+[bwm-fps] frames_since_last=119 elapsed_ms=1001 instantaneous_fps=118
+[freeze-watch] uptime_ms=2757 submits=611 completes=614 fails=0 last_completion_ms=2757 fps_last_5s=189 cpu=1 tid=0 ctx_switches=4506 timer_ticks_cpu0=867 timer_ticks_cpu1=1158 timer_ticks_cpu2=1160 timer_ticks_cpu3=1138 timer_ticks_cpu4=1130 timer_ticks_cpu5=1143 timer_ticks_cpu6=1143 timer_ticks_cpu7=1154 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=3261 submits=857 completes=860 fails=0 last_completion_ms=3261 fps_last_5s=162 cpu=4 tid=3 ctx_switches=5524 timer_ticks_cpu0=1178 timer_ticks_cpu1=1555 timer_ticks_cpu2=1549 timer_ticks_cpu3=1520 timer_ticks_cpu4=1507 timer_ticks_cpu5=1527 timer_ticks_cpu6=1529 timer_ticks_cpu7=1540 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[heartbeat] tid=12 uptime_ms=3267
+[bwm-fps] frames_since_last=167 elapsed_ms=1001 instantaneous_fps=166
+[freeze-watch] uptime_ms=3763 submits=1110 completes=1113 fails=0 last_completion_ms=3763 fps_last_5s=167 cpu=3 tid=0 ctx_switches=6562 timer_ticks_cpu0=1490 timer_ticks_cpu1=1941 timer_ticks_cpu2=1936 timer_ticks_cpu3=1896 timer_ticks_cpu4=1881 timer_ticks_cpu5=1905 timer_ticks_cpu6=1915 timer_ticks_cpu7=1924 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=busy
+[freeze-watch] uptime_ms=4266 submits=1382 completes=1385 fails=0 last_completion_ms=4263 fps_last_5s=180 cpu=6 tid=0 ctx_switches=7635 timer_ticks_cpu0=1800 timer_ticks_cpu1=2333 timer_ticks_cpu2=2328 timer_ticks_cpu3=2276 timer_ticks_cpu4=2260 timer_ticks_cpu5=2292 timer_ticks_cpu6=2307 timer_ticks_cpu7=2312 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+[heartbeat] tid=12 uptime_ms=4268
+[bwm-fps] frames_since_last=182 elapsed_ms=1002 instantaneous_fps=181
+[virgl-composite] Frame #500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[freeze-watch] uptime_ms=4768 submits=1640 completes=1643 fails=0 last_completion_ms=4766 fps_last_5s=171 cpu=2 tid=3 ctx_switches=8667 timer_ticks_cpu0=2111 timer_ticks_cpu1=2725 timer_ticks_cpu2=2724 timer_ticks_cpu3=2660 timer_ticks_cpu4=2645 timer_ticks_cpu5=2673 timer_ticks_cpu6=2696 timer_ticks_cpu7=2702 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=13 cur_cpu2=3 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=5270 submits=1892 completes=1895 fails=0 last_completion_ms=5270 fps_last_5s=167 cpu=6 tid=3 ctx_switches=9738 timer_ticks_cpu0=2422 timer_ticks_cpu1=3122 timer_ticks_cpu2=3112 timer_ticks_cpu3=3031 timer_ticks_cpu4=3020 timer_ticks_cpu5=3051 timer_ticks_cpu6=3078 timer_ticks_cpu7=3086 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=16 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=3 cur_cpu7=10 total_threads=16 blocked_threads=4 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[heartbeat] tid=12 uptime_ms=5269
+[bwm-fps] frames_since_last=168 elapsed_ms=1001 instantaneous_fps=167
+[freeze-watch] uptime_ms=5772 submits=2160 completes=2162 fails=0 last_completion_ms=5766 fps_last_5s=177 cpu=0 tid=0 ctx_switches=10816 timer_ticks_cpu0=2738 timer_ticks_cpu1=3500 timer_ticks_cpu2=3499 timer_ticks_cpu3=3405 timer_ticks_cpu4=3392 timer_ticks_cpu5=3434 timer_ticks_cpu6=3461 timer_ticks_cpu7=3471 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=busy
+[heartbeat] tid=12 uptime_ms=6273
+[freeze-watch] uptime_ms=6275 submits=2424 completes=2426 fails=0 last_completion_ms=6271 fps_last_5s=174 cpu=0 tid=3 ctx_switches=11902 timer_ticks_cpu0=3040 timer_ticks_cpu1=3889 timer_ticks_cpu2=3884 timer_ticks_cpu3=3790 timer_ticks_cpu4=3774 timer_ticks_cpu5=3816 timer_ticks_cpu6=3847 timer_ticks_cpu7=3853 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=3 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=7 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+[SCHED] queue_empty rescue_tid=13 count=0
+[bwm-fps] frames_since_last=177 elapsed_ms=1002 instantaneous_fps=176
+[freeze-watch] uptime_ms=6777 submits=2696 completes=2699 fails=0 last_completion_ms=6773 fps_last_5s=181 cpu=5 tid=3 ctx_switches=12987 timer_ticks_cpu0=3340 timer_ticks_cpu1=4278 timer_ticks_cpu2=4275 timer_ticks_cpu3=4169 timer_ticks_cpu4=4148 timer_ticks_cpu5=4200 timer_ticks_cpu6=4236 timer_ticks_cpu7=4241 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=13 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=3 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[heartbeat] tid=12 uptime_ms=7273
+[freeze-watch] uptime_ms=7279 submits=2972 completes=2975 fails=0 last_completion_ms=7277 fps_last_5s=183 cpu=2 tid=3 ctx_switches=14164 timer_ticks_cpu0=3637 timer_ticks_cpu1=4672 timer_ticks_cpu2=4665 timer_ticks_cpu3=4547 timer_ticks_cpu4=4526 timer_ticks_cpu5=4583 timer_ticks_cpu6=4626 timer_ticks_cpu7=4632 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=3 cur_cpu3=13 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=178 elapsed_ms=1001 instantaneous_fps=177
+[virgl-composite] Frame #1000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[freeze-watch] uptime_ms=7783 submits=3218 completes=3221 fails=0 last_completion_ms=7783 fps_last_5s=162 cpu=6 tid=3 ctx_switches=15295 timer_ticks_cpu0=3954 timer_ticks_cpu1=5056 timer_ticks_cpu2=5048 timer_ticks_cpu3=4921 timer_ticks_cpu4=4897 timer_ticks_cpu5=4967 timer_ticks_cpu6=5015 timer_ticks_cpu7=5019 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=3 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[heartbeat] tid=12 uptime_ms=8273
+[freeze-watch] uptime_ms=8288 submits=3428 completes=3431 fails=0 last_completion_ms=8287 fps_last_5s=138 cpu=1 tid=3 ctx_switches=16274 timer_ticks_cpu0=4272 timer_ticks_cpu1=5442 timer_ticks_cpu2=5442 timer_ticks_cpu3=5300 timer_ticks_cpu4=5273 timer_ticks_cpu5=5348 timer_ticks_cpu6=5397 timer_ticks_cpu7=5404 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=3 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=147 elapsed_ms=1000 instantaneous_fps=147
+[freeze-watch] uptime_ms=8795 submits=3659 completes=3662 fails=0 last_completion_ms=8795 fps_last_5s=149 cpu=2 tid=3 ctx_switches=17325 timer_ticks_cpu0=4591 timer_ticks_cpu1=5824 timer_ticks_cpu2=5828 timer_ticks_cpu3=5675 timer_ticks_cpu4=5645 timer_ticks_cpu5=5725 timer_ticks_cpu6=5784 timer_ticks_cpu7=5788 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=13 cur_cpu1=4 cur_cpu2=3 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[heartbeat] tid=12 uptime_ms=9274
+[freeze-watch] uptime_ms=9296 submits=3912 completes=3914 fails=0 last_completion_ms=9291 fps_last_5s=169 cpu=7 tid=3 ctx_switches=18443 timer_ticks_cpu0=4886 timer_ticks_cpu1=6212 timer_ticks_cpu2=6215 timer_ticks_cpu3=6052 timer_ticks_cpu4=6026 timer_ticks_cpu5=6103 timer_ticks_cpu6=6171 timer_ticks_cpu7=6174 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=3 total_threads=16 blocked_threads=7 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+[bwm-fps] frames_since_last=168 elapsed_ms=1000 instantaneous_fps=168
+[timer] cpu0 ticks=5000
+[freeze-watch] uptime_ms=9799 submits=4171 completes=4173 fails=0 last_completion_ms=9798 fps_last_5s=170 cpu=1 tid=3 ctx_switches=19585 timer_ticks_cpu0=5187 timer_ticks_cpu1=6605 timer_ticks_cpu2=6603 timer_ticks_cpu3=6433 timer_ticks_cpu4=6403 timer_ticks_cpu5=6484 timer_ticks_cpu6=6553 timer_ticks_cpu7=6558 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=3 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+[heartbeat] tid=12 uptime_ms=10277
+[freeze-watch] uptime_ms=10303 submits=4430 completes=4433 fails=0 last_completion_ms=10299 fps_last_5s=172 cpu=5 tid=0 ctx_switches=20701 timer_ticks_cpu0=5493 timer_ticks_cpu1=6987 timer_ticks_cpu2=6987 timer_ticks_cpu3=6812 timer_ticks_cpu4=6773 timer_ticks_cpu5=6864 timer_ticks_cpu6=6934 timer_ticks_cpu7=6945 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=169 elapsed_ms=1001 instantaneous_fps=168
+[virgl-composite] Frame #1500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=12 uptime_ms=11277
+[bwm-fps] frames_since_last=162 elapsed_ms=1000 instantaneous_fps=162
+[heartbeat] tid=12 uptime_ms=12278
+[bwm-fps] frames_since_last=174 elapsed_ms=1001 instantaneous_fps=173
+[SCHED] queue_empty rescue_tid=13 count=1
+[heartbeat] tid=12 uptime_ms=13278
+[bwm-fps] frames_since_last=159 elapsed_ms=1006 instantaneous_fps=158
+[virgl-composite] Frame #2000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=12 uptime_ms=14279
+[bwm-fps] frames_since_last=166 elapsed_ms=1006 instantaneous_fps=165
+[heartbeat] tid=12 uptime_ms=15279
+[freeze-watch] uptime_ms=15305 submits=6938 completes=6941 fails=0 last_completion_ms=15300 fps_last_5s=167 cpu=0 tid=3 ctx_switches=31540 timer_ticks_cpu0=8547 timer_ticks_cpu1=10879 timer_ticks_cpu2=10844 timer_ticks_cpu3=10578 timer_ticks_cpu4=10516 timer_ticks_cpu5=10655 timer_ticks_cpu6=10773 timer_ticks_cpu7=10780 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=3 cur_cpu1=13 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=178 elapsed_ms=1001 instantaneous_fps=177

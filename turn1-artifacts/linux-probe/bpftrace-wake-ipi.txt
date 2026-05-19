@@ -1,0 +1,13 @@
+Attaching 8 probes...
+
+
+@ipi_entry: 140
+@ipi_send_cpu: 103
+@resched_ipi: 20
+@smp_call_single_interrupt: 131
+@smp_call_single_queue: 132
+@ttwu: 1892
+@ttwu_wakelist: 1267
+
+--- STDERR ---
+[sudo] password for wrb:
