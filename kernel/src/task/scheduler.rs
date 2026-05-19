@@ -140,6 +140,121 @@ pub fn ready_thread_rescue_count() -> u64 {
     0
 }
 
+const WAKE_ATTRIB_MAX_TIDS: usize = 4096;
+const READY_SITE_NONE: u64 = 0;
+const READY_SITE_SCHEDULE: u64 = 1;
+const READY_SITE_UNBLOCK: u64 = 2;
+const READY_SITE_SIGNAL: u64 = 3;
+const READY_SITE_CHILD_EXIT: u64 = 4;
+const READY_SITE_WAKE_IO_LOCKED: u64 = 5;
+const READY_SITE_WAKE_IO_ISR_DRAIN: u64 = 6;
+const READY_SITE_TIMER: u64 = 7;
+
+static WAKE_LAST_READY_SITE: [AtomicU64; WAKE_ATTRIB_MAX_TIDS] =
+    [const { AtomicU64::new(READY_SITE_NONE) }; WAKE_ATTRIB_MAX_TIDS];
+
+pub static WAKE_SITE_SCHEDULE: AtomicU64 = AtomicU64::new(0);
+pub static WAKE_SITE_UNBLOCK: AtomicU64 = AtomicU64::new(0);
+pub static WAKE_SITE_ISR_UNBLOCK: AtomicU64 = AtomicU64::new(0);
+pub static WAKE_SITE_WAKE_IO_LOCKED: AtomicU64 = AtomicU64::new(0);
+pub static WAKE_SITE_SIGNAL: AtomicU64 = AtomicU64::new(0);
+pub static WAKE_SITE_CHILD_EXIT: AtomicU64 = AtomicU64::new(0);
+pub static WAKE_SITE_TIMER: AtomicU64 = AtomicU64::new(0);
+
+pub static ENQUEUE_SAME_LOCK_OK: AtomicU64 = AtomicU64::new(0);
+pub static ENQUEUE_DEFERRED: AtomicU64 = AtomicU64::new(0);
+pub static ENQUEUE_ISR_BUFFER: AtomicU64 = AtomicU64::new(0);
+pub static ENQUEUE_DEFERRED_DRAINED_OK: AtomicU64 = AtomicU64::new(0);
+pub static ENQUEUE_ISR_BUFFER_DRAINED_OK: AtomicU64 = AtomicU64::new(0);
+pub static ENQUEUE_ALREADY_QUEUED_OK: AtomicU64 = AtomicU64::new(0);
+pub static ENQUEUE_ISR_BUFFER_FULL: AtomicU64 = AtomicU64::new(0);
+
+pub static RESCUE_REASON_DEFERRED_DROPPED: AtomicU64 = AtomicU64::new(0);
+pub static RESCUE_REASON_ISR_BUFFER_LOST: AtomicU64 = AtomicU64::new(0);
+pub static RESCUE_REASON_WAKE_WITHOUT_ENQUEUE: AtomicU64 = AtomicU64::new(0);
+pub static RESCUE_REASON_OTHER: AtomicU64 = AtomicU64::new(0);
+pub static RESCUE_INLINE_COUNT: AtomicU64 = AtomicU64::new(0);
+pub static RESCUE_TIMER_COUNT: AtomicU64 = AtomicU64::new(0);
+
+#[inline]
+fn wake_tid_index(tid: u64) -> Option<usize> {
+    let idx = tid as usize;
+    if idx < WAKE_ATTRIB_MAX_TIDS {
+        Some(idx)
+    } else {
+        None
+    }
+}
+
+#[inline]
+fn record_ready_site(tid: u64, site: u64) {
+    if let Some(idx) = wake_tid_index(tid) {
+        WAKE_LAST_READY_SITE[idx].store(site, Ordering::Relaxed);
+    }
+}
+
+#[inline]
+fn ready_site_for_tid(tid: u64) -> u64 {
+    wake_tid_index(tid)
+        .map(|idx| WAKE_LAST_READY_SITE[idx].load(Ordering::Relaxed))
+        .unwrap_or(READY_SITE_NONE)
+}
+
+#[inline]
+fn classify_rescue_for_tid(tid: u64) {
+    match ready_site_for_tid(tid) {
+        READY_SITE_SCHEDULE => {
+            RESCUE_REASON_DEFERRED_DROPPED.fetch_add(1, Ordering::Relaxed);
+        }
+        READY_SITE_WAKE_IO_ISR_DRAIN => {
+            RESCUE_REASON_ISR_BUFFER_LOST.fetch_add(1, Ordering::Relaxed);
+        }
+        READY_SITE_UNBLOCK
+        | READY_SITE_SIGNAL
+        | READY_SITE_CHILD_EXIT
+        | READY_SITE_WAKE_IO_LOCKED
+        | READY_SITE_TIMER => {
+            RESCUE_REASON_WAKE_WITHOUT_ENQUEUE.fetch_add(1, Ordering::Relaxed);
+        }
+        _ => {
+            RESCUE_REASON_OTHER.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+pub fn emit_wake_attribution_counters() {
+    crate::serial_println!(
+        "[wake-attrib] schedule={} unblock={} isr_unblock={} wake_io={} signal={} child={} timer={}",
+        WAKE_SITE_SCHEDULE.load(Ordering::Relaxed),
+        WAKE_SITE_UNBLOCK.load(Ordering::Relaxed),
+        WAKE_SITE_ISR_UNBLOCK.load(Ordering::Relaxed),
+        WAKE_SITE_WAKE_IO_LOCKED.load(Ordering::Relaxed),
+        WAKE_SITE_SIGNAL.load(Ordering::Relaxed),
+        WAKE_SITE_CHILD_EXIT.load(Ordering::Relaxed),
+        WAKE_SITE_TIMER.load(Ordering::Relaxed)
+    );
+    crate::serial_println!(
+        "[enqueue-attrib] same_lock={} deferred={} isr_buf={} deferred_drained={} isr_buf_drained={} already_queued={} isr_buf_full={}",
+        ENQUEUE_SAME_LOCK_OK.load(Ordering::Relaxed),
+        ENQUEUE_DEFERRED.load(Ordering::Relaxed),
+        ENQUEUE_ISR_BUFFER.load(Ordering::Relaxed),
+        ENQUEUE_DEFERRED_DRAINED_OK.load(Ordering::Relaxed),
+        ENQUEUE_ISR_BUFFER_DRAINED_OK.load(Ordering::Relaxed),
+        ENQUEUE_ALREADY_QUEUED_OK.load(Ordering::Relaxed),
+        ENQUEUE_ISR_BUFFER_FULL.load(Ordering::Relaxed)
+    );
+    crate::serial_println!(
+        "[rescue-attrib] dropped={} isr_lost={} wake_no_enq={} other={} inline={} timer={} total={}",
+        RESCUE_REASON_DEFERRED_DROPPED.load(Ordering::Relaxed),
+        RESCUE_REASON_ISR_BUFFER_LOST.load(Ordering::Relaxed),
+        RESCUE_REASON_WAKE_WITHOUT_ENQUEUE.load(Ordering::Relaxed),
+        RESCUE_REASON_OTHER.load(Ordering::Relaxed),
+        RESCUE_INLINE_COUNT.load(Ordering::Relaxed),
+        RESCUE_TIMER_COUNT.load(Ordering::Relaxed),
+        ready_thread_rescue_count()
+    );
+}
+
 /// Global scheduler instance
 static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
 
@@ -756,7 +871,7 @@ impl Scheduler {
                 buf.drain(&mut wakeups);
             }
             for tid in wakeups {
-                self.unblock_for_io(tid);
+                self.unblock_for_io_from_isr_buffer(tid);
             }
         }
 
@@ -764,7 +879,7 @@ impl Scheduler {
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if current_id != self.cpu_state[Self::current_cpu_id()].idle_thread {
                 // Check the state and determine what to do
-                let (is_terminated, is_blocked) =
+                let (is_terminated, is_blocked, published_ready) =
                     if let Some(current) = self.get_thread_mut(current_id) {
                         let was_terminated = current.state == ThreadState::Terminated;
                         // Check for any blocked state
@@ -778,20 +893,24 @@ impl Scheduler {
                         // if it was actually running. Blocked threads already had
                         // their ticks charged at block time — charging again here
                         // would count blocked/sleeping time as CPU usage.
-                        if !was_blocked && !was_terminated {
+                        let published_ready = if !was_blocked && !was_terminated {
                             let now = crate::time::get_ticks();
                             current.cpu_ticks_total += now.wrapping_sub(current.run_start_ticks);
                             current.run_start_ticks = now;
                             current.set_ready();
+                            WAKE_SITE_SCHEDULE.fetch_add(1, Ordering::Relaxed);
+                            record_ready_site(current_id, READY_SITE_SCHEDULE);
+                            true
                         } else {
                             // Reset run_start_ticks so the next dispatch doesn't
                             // charge stale time from the blocked period.
                             current.run_start_ticks = crate::time::get_ticks();
-                        }
+                            false
+                        };
 
-                        (was_terminated, was_blocked)
+                        (was_terminated, was_blocked, published_ready)
                     } else {
-                        (true, false)
+                        (true, false, false)
                     };
 
                 // Put non-terminated, non-blocked threads back in ready queue
@@ -804,6 +923,11 @@ impl Scheduler {
                 if will_add {
                     let cpu = Self::current_cpu_id();
                     self.per_cpu_queues[cpu].push_back(current_id);
+                    if published_ready {
+                        ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
+                    }
+                } else if published_ready && in_queue {
+                    ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
@@ -1009,7 +1133,7 @@ impl Scheduler {
                 buf.drain(&mut wakeups);
             }
             for tid in wakeups {
-                self.unblock_for_io(tid);
+                self.unblock_for_io_from_isr_buffer(tid);
             }
         }
 
@@ -1017,7 +1141,7 @@ impl Scheduler {
         let mut should_requeue_old = false;
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if current_id != self.cpu_state[Self::current_cpu_id()].idle_thread {
-                let (is_terminated, is_blocked) =
+                let (is_terminated, is_blocked, published_ready) =
                     if let Some(current) = self.get_thread_mut(current_id) {
                         let was_terminated = current.state == ThreadState::Terminated;
                         let was_blocked = current.state == ThreadState::Blocked
@@ -1027,23 +1151,34 @@ impl Scheduler {
                             || current.state == ThreadState::BlockedOnIO;
 
                         // Only charge CPU ticks if thread was actually running
-                        if !was_blocked && !was_terminated {
+                        let published_ready = if !was_blocked && !was_terminated {
                             let now = crate::time::get_ticks();
                             current.cpu_ticks_total += now.wrapping_sub(current.run_start_ticks);
                             current.run_start_ticks = now;
                             current.set_ready();
+                            WAKE_SITE_SCHEDULE.fetch_add(1, Ordering::Relaxed);
+                            record_ready_site(current_id, READY_SITE_SCHEDULE);
+                            true
                         } else {
                             current.run_start_ticks = crate::time::get_ticks();
-                        }
+                            false
+                        };
 
-                        (was_terminated, was_blocked)
+                        (was_terminated, was_blocked, published_ready)
                     } else {
-                        (true, false)
+                        (true, false, false)
                     };
 
                 let in_queue = self.per_cpu_queues.iter().any(|q| q.contains(&current_id));
                 // Instead of adding to a queue, just record whether we SHOULD
                 should_requeue_old = !is_terminated && !is_blocked && !in_queue;
+                if published_ready {
+                    if should_requeue_old {
+                        ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
+                    } else if in_queue {
+                        ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
                 // NOTE: We intentionally do NOT push to any queue here.
                 // The caller will do so after saving context via requeue_thread_after_save().
             }
@@ -1108,6 +1243,8 @@ impl Scheduler {
                     })
                     .map(|t| t.id());
                 if let Some(stuck_tid) = first_stuck {
+                    RESCUE_INLINE_COUNT.fetch_add(1, AO::Relaxed);
+                    classify_rescue_for_tid(stuck_tid);
                     READY_THREAD_RESCUE_COUNT.fetch_add(1, AO::Relaxed);
                     let count = STUCK_LOG_COUNT.fetch_add(1, AO::Relaxed);
                     if count < 5 || count % 1000 == 0 {
@@ -1296,8 +1433,11 @@ impl Scheduler {
         if !in_any_queue {
             let cpu = Self::current_cpu_id();
             self.per_cpu_queues[cpu].push_back(thread_id);
+            ENQUEUE_DEFERRED_DRAINED_OK.fetch_add(1, Ordering::Relaxed);
             // Send IPI to wake an idle CPU to pick up the requeued thread
             self.send_resched_ipi();
+        } else {
+            ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -1327,6 +1467,8 @@ impl Scheduler {
                 || thread.state == ThreadState::BlockedOnIO
             {
                 thread.set_ready();
+                WAKE_SITE_UNBLOCK.fetch_add(1, Ordering::Relaxed);
+                record_ready_site(thread_id, READY_SITE_UNBLOCK);
                 // For BlockedOnIO, do NOT clear blocked_in_syscall here —
                 // the wait_timeout caller manages it after detecting the wakeup.
                 // For other states it is safe (and necessary) to clear.
@@ -1355,13 +1497,15 @@ impl Scheduler {
                 #[cfg(not(target_arch = "aarch64"))]
                 let is_in_deferred = false;
 
+                let already_queued = self.per_cpu_queues.iter().any(|q| q.contains(&thread_id));
                 if !is_current_on_any_cpu
                     && !is_in_deferred
                     && thread_id != self.cpu_state[Self::current_cpu_id()].idle_thread
-                    && !self.per_cpu_queues.iter().any(|q| q.contains(&thread_id))
+                    && !already_queued
                 {
                     let target = self.find_target_cpu_for_wakeup(thread_id);
                     self.per_cpu_queues[target].push_back(thread_id);
+                    ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
                     // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
                     #[cfg(target_arch = "x86_64")]
                     log_serial_println!(
@@ -1373,6 +1517,10 @@ impl Scheduler {
                     // Send IPI to wake an idle CPU so it can pick up the unblocked thread
                     #[cfg(target_arch = "aarch64")]
                     self.send_resched_ipi();
+                } else if is_current_on_any_cpu || is_in_deferred {
+                    ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
+                } else if already_queued {
+                    ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
@@ -1537,6 +1685,8 @@ impl Scheduler {
             }
             if thread.state == ThreadState::BlockedOnSignal {
                 thread.set_ready();
+                WAKE_SITE_SIGNAL.fetch_add(1, Ordering::Relaxed);
+                record_ready_site(thread_id, READY_SITE_SIGNAL);
                 // NOTE: Do NOT clear blocked_in_syscall here!
                 // The thread needs to resume inside the syscall and complete it.
                 // blocked_in_syscall will be cleared when the syscall actually returns.
@@ -1551,13 +1701,15 @@ impl Scheduler {
                 #[cfg(not(target_arch = "aarch64"))]
                 let is_in_deferred = false;
 
+                let already_queued = self.per_cpu_queues.iter().any(|q| q.contains(&thread_id));
                 if !is_current_on_any_cpu
                     && !is_in_deferred
                     && thread_id != self.cpu_state[Self::current_cpu_id()].idle_thread
-                    && !self.per_cpu_queues.iter().any(|q| q.contains(&thread_id))
+                    && !already_queued
                 {
                     let target = self.find_target_cpu_for_wakeup(thread_id);
                     self.per_cpu_queues[target].push_back(thread_id);
+                    ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
                     #[cfg(target_arch = "x86_64")]
                     log_serial_println!(
                         "unblock_for_signal: Thread {} unblocked, added to per_cpu_queues[{}]",
@@ -1568,6 +1720,10 @@ impl Scheduler {
                     // Send IPI to wake an idle CPU
                     #[cfg(target_arch = "aarch64")]
                     self.send_resched_ipi();
+                } else if is_current_on_any_cpu || is_in_deferred {
+                    ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
+                } else if already_queued {
+                    ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
                 } else {
                     #[cfg(target_arch = "x86_64")]
                     log_serial_println!(
@@ -1641,6 +1797,8 @@ impl Scheduler {
         if let Some(thread) = self.get_thread_mut(thread_id) {
             if thread.state == ThreadState::BlockedOnChildExit {
                 thread.set_ready();
+                WAKE_SITE_CHILD_EXIT.fetch_add(1, Ordering::Relaxed);
+                record_ready_site(thread_id, READY_SITE_CHILD_EXIT);
 
                 // SMP safety: Don't add to ready_queue if thread is current on any CPU
                 // (same rationale as unblock() - prevents double-scheduling)
@@ -1652,13 +1810,15 @@ impl Scheduler {
                 #[cfg(not(target_arch = "aarch64"))]
                 let is_in_deferred = false;
 
+                let already_queued = self.per_cpu_queues.iter().any(|q| q.contains(&thread_id));
                 if !is_current_on_any_cpu
                     && !is_in_deferred
                     && thread_id != self.cpu_state[Self::current_cpu_id()].idle_thread
-                    && !self.per_cpu_queues.iter().any(|q| q.contains(&thread_id))
+                    && !already_queued
                 {
                     let target = self.find_target_cpu_for_wakeup(thread_id);
                     self.per_cpu_queues[target].push_back(thread_id);
+                    ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
                     // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
                     #[cfg(target_arch = "x86_64")]
                     log_serial_println!(
@@ -1670,6 +1830,10 @@ impl Scheduler {
                     // Send IPI to wake an idle CPU
                     #[cfg(target_arch = "aarch64")]
                     self.send_resched_ipi();
+                } else if is_current_on_any_cpu || is_in_deferred {
+                    ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
+                } else if already_queued {
+                    ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
                 }
                 // CRITICAL: Request reschedule so the unblocked thread can run promptly.
                 // Without this, the thread is added to ready queue but the scheduler
@@ -1776,7 +1940,15 @@ impl Scheduler {
     /// with_scheduler() disables interrupts before acquiring the lock, and
     /// the ISR runs with interrupts already masked by hardware.
     pub fn unblock_for_io(&mut self, tid: u64) {
-        let wake = self.wake_io_thread_locked(tid);
+        self.unblock_for_io_attributed(tid, false);
+    }
+
+    fn unblock_for_io_from_isr_buffer(&mut self, tid: u64) {
+        self.unblock_for_io_attributed(tid, true);
+    }
+
+    fn unblock_for_io_attributed(&mut self, tid: u64, from_isr_buffer: bool) {
+        let wake = self.wake_io_thread_locked(tid, from_isr_buffer);
         if wake.enqueued_target.is_some() {
             #[cfg(target_arch = "aarch64")]
             self.send_resched_ipi();
@@ -1789,7 +1961,7 @@ impl Scheduler {
     /// is held by the caller, and this helper performs the scheduler state
     /// transition before the waitqueue wake returns.
     pub fn wake_waitqueue_thread(&mut self, tid: u64) {
-        let wake = self.wake_io_thread_locked(tid);
+        let wake = self.wake_io_thread_locked(tid, false);
         #[cfg(target_arch = "aarch64")]
         if let Some(target) = wake.resched_target() {
             self.send_resched_ipi_to_cpu(target);
@@ -1798,11 +1970,22 @@ impl Scheduler {
         let _ = wake.resched_target();
     }
 
-    fn wake_io_thread_locked(&mut self, tid: u64) -> IoWakeResult {
+    fn wake_io_thread_locked(&mut self, tid: u64, from_isr_buffer: bool) -> IoWakeResult {
         let mut wake = IoWakeResult::default();
         if let Some(thread) = self.get_thread_mut(tid) {
+            let mut published_ready = false;
             let should_queue = if thread.state == ThreadState::BlockedOnIO {
                 thread.set_ready();
+                WAKE_SITE_WAKE_IO_LOCKED.fetch_add(1, Ordering::Relaxed);
+                record_ready_site(
+                    tid,
+                    if from_isr_buffer {
+                        READY_SITE_WAKE_IO_ISR_DRAIN
+                    } else {
+                        READY_SITE_WAKE_IO_LOCKED
+                    },
+                );
+                published_ready = true;
                 thread.wake_time_ns = None;
                 // Do NOT clear blocked_in_syscall here — the wait_timeout
                 // caller manages it after detecting the wakeup.
@@ -1830,14 +2013,24 @@ impl Scheduler {
                 #[cfg(not(target_arch = "aarch64"))]
                 let is_in_deferred = false;
 
+                let already_queued = self.per_cpu_queues.iter().any(|q| q.contains(&tid));
                 if wake.current_cpu.is_none()
                     && !is_in_deferred
                     && tid != self.cpu_state[Self::current_cpu_id()].idle_thread
-                    && !self.per_cpu_queues.iter().any(|q| q.contains(&tid))
+                    && !already_queued
                 {
                     let target = self.find_target_cpu_for_wakeup(tid);
                     self.per_cpu_queues[target].push_back(tid);
                     wake.enqueued_target = Some(target);
+                    if from_isr_buffer {
+                        ENQUEUE_ISR_BUFFER_DRAINED_OK.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
+                    }
+                } else if published_ready && (wake.current_cpu.is_some() || is_in_deferred) {
+                    ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
+                } else if already_queued {
+                    ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
                 }
                 set_need_resched();
             }
@@ -1933,6 +2126,9 @@ impl Scheduler {
                 if let Some(thread) = self.get_thread_mut(tid) {
                     let was_blocked_on_io = thread.state == ThreadState::BlockedOnIO;
                     thread.state = ThreadState::Ready;
+                    WAKE_SITE_TIMER.fetch_add(1, Ordering::Relaxed);
+                    record_ready_site(tid, READY_SITE_TIMER);
+                    ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
                     thread.wake_time_ns = None;
                     if !was_blocked_on_io {
                         thread.blocked_in_syscall = false;
@@ -1955,6 +2151,8 @@ impl Scheduler {
             if let Some(thread) = self.get_thread_mut(tid) {
                 let was_blocked_on_io = thread.state == ThreadState::BlockedOnIO;
                 thread.state = ThreadState::Ready;
+                WAKE_SITE_TIMER.fetch_add(1, Ordering::Relaxed);
+                record_ready_site(tid, READY_SITE_TIMER);
                 thread.wake_time_ns = None;
 
                 // Timer-driven I/O wakeups resume back into wait_timeout() so
@@ -1967,6 +2165,11 @@ impl Scheduler {
                 if !in_deferred_requeue && !is_idle && !already_queued {
                     let target = self.find_target_cpu_for_wakeup(tid);
                     self.per_cpu_queues[target].push_back(tid);
+                    ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
+                } else if in_deferred_requeue {
+                    ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
+                } else if already_queued {
+                    ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
@@ -2193,6 +2396,8 @@ impl Scheduler {
             );
             raw_uart_str("\n");
 
+            RESCUE_TIMER_COUNT.fetch_add(1, Ordering::Relaxed);
+            classify_rescue_for_tid(tid);
             READY_THREAD_RESCUE_COUNT.fetch_add(1, Ordering::Relaxed);
             let target = self.find_target_cpu_for_wakeup(tid);
             self.per_cpu_queues[target].push_back(tid);
@@ -2710,7 +2915,12 @@ pub fn isr_wakeup_depth(cpu: usize) -> usize {
 pub fn isr_unblock_for_io(tid: u64) {
     let cpu = current_cpu_id_raw();
     if cpu < ISR_WAKEUP_BUFFERS.len() {
-        ISR_WAKEUP_BUFFERS[cpu].push(tid);
+        WAKE_SITE_ISR_UNBLOCK.fetch_add(1, Ordering::Relaxed);
+        if ISR_WAKEUP_BUFFERS[cpu].push(tid) {
+            ENQUEUE_ISR_BUFFER.fetch_add(1, Ordering::Relaxed);
+        } else {
+            ENQUEUE_ISR_BUFFER_FULL.fetch_add(1, Ordering::Relaxed);
+        }
     }
     set_need_resched();
     // The current CPU will drain the wake buffer on IRQ-return scheduling.
