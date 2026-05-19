@@ -1552,33 +1552,9 @@ impl Scheduler {
         if (detail & READY_SCHED_DETAIL_MARKER_PUBLISHED) != 0 && !same_cpu_marker_present {
             mark_schedule_ready_detail(thread_id, READY_SCHED_DETAIL_MARKER_CLEARED_BEFORE_REQUEUE);
         }
-
-        let thread_is_ready = if let Some(thread) = self.get_thread(thread_id) {
-            thread.state == ThreadState::Ready
-        } else {
-            if same_cpu_marker_present {
-                self.cpu_state[cpu].previous_thread = None;
-            }
-            return;
-        };
-        let in_any_queue = self.per_cpu_queues.iter().any(|q| q.contains(&thread_id));
-
-        if !thread_is_ready {
-            if same_cpu_marker_present {
-                self.cpu_state[cpu].previous_thread = None;
-            }
-            return;
+        if same_cpu_marker_present {
+            self.cpu_state[cpu].previous_thread = None;
         }
-
-        if in_any_queue {
-            if same_cpu_marker_present {
-                self.cpu_state[cpu].previous_thread = None;
-            }
-            mark_schedule_ready_detail(thread_id, READY_SCHED_DETAIL_REQUEUE_ALREADY_QUEUED);
-            ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
-
         // CRITICAL: Don't requeue threads that are currently running on any CPU.
         // Race condition: wake_expired_timers (or unblock) can wake a thread and
         // dispatch it on another CPU while this CPU's DEFERRED_REQUEUE still holds
@@ -1588,40 +1564,36 @@ impl Scheduler {
         // leading to register/stack corruption (DATA_ABORT, INSTRUCTION_ABORT, etc.).
         if (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].current_thread == Some(thread_id)) {
             mark_schedule_ready_detail(thread_id, READY_SCHED_DETAIL_OWNERSHIP_SKIP);
-            // A post-save requeue should not see the saved old thread both Ready
-            // and current. Treat that combination as stale ownership and restore
-            // queue reachability rather than leaving a Ready orphan.
-            let target = self.find_target_cpu_for_wakeup(thread_id);
-            self.per_cpu_queues[target].push_back(thread_id);
-            ENQUEUE_DEFERRED_DRAINED_OK.fetch_add(1, Ordering::Relaxed);
-            if same_cpu_marker_present {
-                self.cpu_state[cpu].previous_thread = None;
-            }
-            self.send_resched_ipi();
             return;
         }
         // Don't requeue threads still pending deferred requeue on another CPU.
         // This is a defense-in-depth check — the primary protection is in
         // the wakeup paths (unblock, wake_expired_timers, etc.).
-        let in_other_deferred = (0..MAX_CPUS).any(|other_cpu| {
-            other_cpu != cpu && self.cpu_state[other_cpu].previous_thread == Some(thread_id)
-        });
-        if in_other_deferred {
+        if self.is_in_deferred_requeue(thread_id) {
             mark_schedule_ready_detail(thread_id, READY_SCHED_DETAIL_OWNERSHIP_SKIP);
-            if same_cpu_marker_present {
-                self.cpu_state[cpu].previous_thread = None;
-            }
             return;
         }
-
-        let target = self.find_target_cpu_for_wakeup(thread_id);
-        self.per_cpu_queues[target].push_back(thread_id);
-        ENQUEUE_DEFERRED_DRAINED_OK.fetch_add(1, Ordering::Relaxed);
-        if same_cpu_marker_present {
-            self.cpu_state[cpu].previous_thread = None;
+        // Safety checks: only requeue if the thread is in Ready state and not already queued.
+        // Also handle the deferred-window race: if unblock_for_io() fired while the thread
+        // was in the deferred slot (set Ready but couldn't enqueue), enqueue it now.
+        if let Some(thread) = self.get_thread(thread_id) {
+            if thread.state != ThreadState::Ready {
+                return; // Thread state changed (terminated/blocked) - don't requeue
+            }
+        } else {
+            return;
         }
-        // Send IPI to wake an idle CPU to pick up the requeued thread
-        self.send_resched_ipi();
+        let in_any_queue = self.per_cpu_queues.iter().any(|q| q.contains(&thread_id));
+        if !in_any_queue {
+            let cpu = Self::current_cpu_id();
+            self.per_cpu_queues[cpu].push_back(thread_id);
+            ENQUEUE_DEFERRED_DRAINED_OK.fetch_add(1, Ordering::Relaxed);
+            // Send IPI to wake an idle CPU to pick up the requeued thread
+            self.send_resched_ipi();
+        } else {
+            mark_schedule_ready_detail(thread_id, READY_SCHED_DETAIL_REQUEUE_ALREADY_QUEUED);
+            ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Block the current thread
@@ -2625,19 +2597,6 @@ impl Scheduler {
         }
         if let Some(previous) = self.cpu_state[cpu].previous_thread {
             mark_schedule_ready_detail(previous, READY_SCHED_DETAIL_EXCEPTION_CLEANUP_CLEARED);
-            let previous_ready = self
-                .get_thread(previous)
-                .map(|thread| thread.state == ThreadState::Ready)
-                .unwrap_or(false);
-            let previous_queued = self.per_cpu_queues.iter().any(|q| q.contains(&previous));
-            let previous_current =
-                (0..MAX_CPUS).any(|c| self.cpu_state[c].current_thread == Some(previous));
-            if previous_ready && !previous_queued && !previous_current {
-                let target = self.find_target_cpu_for_wakeup(previous);
-                self.per_cpu_queues[target].push_back(previous);
-                ENQUEUE_DEFERRED_DRAINED_OK.fetch_add(1, Ordering::Relaxed);
-                self.send_resched_ipi();
-            }
         }
         self.cpu_state[cpu].previous_thread = None;
         set_cpu_idle(cpu, true);
