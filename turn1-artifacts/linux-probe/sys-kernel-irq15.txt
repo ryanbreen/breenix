@@ -1,0 +1,13 @@
+--- /sys/kernel/irq/15/actions
+ahci[PRL4010:00]
+--- /sys/kernel/irq/15/chip_name
+GICv3
+--- /sys/kernel/irq/15/hwirq
+34
+--- /sys/kernel/irq/15/name
+--- /sys/kernel/irq/15/per_cpu_count
+153272,0,0,0
+--- /sys/kernel/irq/15/type
+level
+--- /sys/kernel/irq/15/wakeup
+disabled

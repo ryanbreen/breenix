@@ -1,0 +1,31 @@
+--- /sys/devices/LNXSYSTM:00/LNXSYBUS:00/PRL4010:00/hid
+PRL4010
+--- /sys/devices/LNXSYSTM:00/LNXSYBUS:00/PRL4010:00/modalias
+acpi:PRL4010:010601:
+--- /sys/devices/LNXSYSTM:00/LNXSYBUS:00/PRL4010:00/path
+\_SB_.AHC0
+--- /sys/devices/LNXSYSTM:00/LNXSYBUS:00/PRL4010:00/status
+15
+--- /sys/devices/LNXSYSTM:00/LNXSYBUS:00/PRL4010:00/uevent
+MODALIAS=acpi:PRL4010:010601:
+--- /sys/devices/platform/PRL4010:00/driver_override
+(null)
+--- /sys/devices/platform/PRL4010:00/modalias
+acpi:PRL4010:010601:
+--- /sys/devices/platform/PRL4010:00/uevent
+DRIVER=ahci
+MODALIAS=acpi:PRL4010:010601:
+--- /sys/devices/platform/PRL4010:00/ata1/ata_port/ata1/idle_irq
+0
+--- /sys/devices/platform/PRL4010:00/ata1/host0/scsi_host/host0/proc_name
+ahci
+--- /sys/devices/platform/PRL4010:00/ata1/host0/scsi_host/host0/ahci_host_caps
+ce247f05
+--- /sys/devices/platform/PRL4010:00/ata1/host0/scsi_host/host0/ahci_host_cap2
+0
+--- /sys/devices/platform/PRL4010:00/ata1/host0/scsi_host/host0/ahci_host_version
+10100
+--- /sys/devices/platform/PRL4010:00/ata1/host0/scsi_host/host0/ahci_port_cmd
+1000c013
+--- driver
+/sys/bus/platform/drivers/ahci
