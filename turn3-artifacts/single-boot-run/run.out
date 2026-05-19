@@ -1,0 +1,1017 @@
+
+=========================================
+Breenix on Parallels Desktop
+=========================================
+
+[1/6] Building UEFI loader...
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.45
+   Compiling syn v1.0.109
+   Compiling bit_field v0.10.3
+   Compiling bitflags v2.11.1
+   Compiling uguid v2.2.1
+   Compiling log v0.4.29
+   Compiling cfg-if v1.0.4
+   Compiling ucs2 v0.3.3
+   Compiling acpi v5.2.0
+   Compiling syn v2.0.117
+   Compiling ptr_meta_derive v0.2.0
+   Compiling uefi-macros v0.17.0
+   Compiling ptr_meta v0.2.0
+   Compiling uefi-raw v0.9.0
+   Compiling uefi v0.33.0
+   Compiling parallels-loader v0.1.0 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/parallels-loader)
+    Finished `release` profile [optimized] target(s) in 2.72s
+
+[2/6] Building kernel...
+    Finished `release` profile [optimized] target(s) in 0.07s
+
+[3/6] Building userspace binaries (aarch64)...
+========================================
+  STD USERSPACE BUILD (Rust std library)
+========================================
+  Architecture: aarch64
+
+[1/3] Building libbreenix-libc (aarch64)...
+  Compiling compiler_builtins v0.1.160 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins)
+  Compiling core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+  Compiling libbreenix v0.1.0 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/libs/libbreenix)
+  Compiling libbreenix-libc v0.1.0 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/libs/libbreenix-libc)
+  Finished `release` profile [optimized] target(s) in 4.74s
+  libbreenix-libc built successfully
+
+[2/3] Building userspace (aarch64)...
+  Updating crates.io index
+  Locking 10 packages to latest compatible versions
+  Compiling compiler_builtins v0.1.160 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/rust-fork/library/compiler-builtins/compiler-builtins)
+  Compiling core v0.0.0 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/rust-fork/library/core)
+  Compiling libc v0.2.174 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/libs/libc)
+  Compiling std v0.0.0 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/rust-fork/library/std)
+  Compiling rustc-std-workspace-core v1.99.0 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/rust-fork/library/rustc-std-workspace-core)
+  Compiling alloc v0.0.0 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/rust-fork/library/alloc)
+  Compiling panic_abort v0.0.0 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/rust-fork/library/panic_abort)
+  Compiling cfg-if v1.0.1
+  Compiling rustc-demangle v0.1.25
+  Compiling unwind v0.0.0 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/rust-fork/library/unwind)
+  Compiling rustc-std-workspace-alloc v1.99.0 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/rust-fork/library/rustc-std-workspace-alloc)
+  Compiling panic_unwind v0.0.0 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/rust-fork/library/panic_unwind)
+  Compiling std_detect v0.1.5 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/rust-fork/library/stdarch/crates/std_detect)
+  Compiling hashbrown v0.15.4
+  Compiling rustc-std-workspace-std v1.99.0 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/rust-fork/library/rustc-std-workspace-std)
+  Compiling rustc-literal-escaper v0.0.2
+  Compiling proc_macro v0.0.0 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/rust-fork/library/proc_macro)
+  Compiling libfont v0.1.0 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/libs/libfont)
+  Compiling noto-sans-mono-bitmap v0.3.2
+  Compiling libbreenix v0.1.0 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/libs/libbreenix)
+  Compiling breenish-js v0.1.0 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/libs/breenish-js)
+  Compiling libimg v0.1.0 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/libs/libimg)
+  Compiling libgfx v0.1.0 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/libs/libgfx)
+  Compiling libbui v0.1.0 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/libs/libbui)
+  Compiling libicon v0.1.0 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/libs/libicon)
+  Compiling breengel v0.1.0 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/libs/breengel)
+  Compiling libcollab v0.1.0 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/libs/libcollab)
+  Compiling userspace-programs v0.1.0 (/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/userspace/programs)
+  Finished `release` profile [optimized] target(s) in 18.94s
+  Userspace build successful
+
+[3/3] Installing std binaries...
+  Installed hello_world.elf (355352 bytes)
+  Installed syscall_enosys.elf (290216 bytes)
+  Installed clock_gettime_test.elf (299224 bytes)
+  Installed file_read_test.elf (292368 bytes)
+  Installed lseek_test.elf (292592 bytes)
+  Installed fs_write_test.elf (293472 bytes)
+  Installed fs_rename_test.elf (297384 bytes)
+  Installed fs_large_file_test.elf (292344 bytes)
+  Installed fs_directory_test.elf (293256 bytes)
+  Installed fs_link_test.elf (293304 bytes)
+  Installed access_test.elf (291568 bytes)
+  Installed devfs_test.elf (292600 bytes)
+  Installed cwd_test.elf (292552 bytes)
+  Installed getdents_test.elf (293936 bytes)
+  Installed pipe_test.elf (299304 bytes)
+  Installed pipe2_test.elf (304336 bytes)
+  Installed dup_test.elf (305152 bytes)
+  Installed fcntl_test.elf (299688 bytes)
+  Installed poll_test.elf (304752 bytes)
+  Installed select_test.elf (304480 bytes)
+  Installed nonblock_test.elf (304040 bytes)
+  Installed brk_test.elf (297016 bytes)
+  Installed signal_handler_test.elf (298072 bytes)
+  Installed signal_return_test.elf (299352 bytes)
+  Installed signal_regs_test.elf (298664 bytes)
+  Installed sigaltstack_test.elf (309432 bytes)
+  Installed sigsuspend_test.elf (304864 bytes)
+  Installed pause_test.elf (299448 bytes)
+  Installed tty_test.elf (303400 bytes)
+  Installed session_test.elf (304864 bytes)
+  Installed unix_socket_test.elf (327144 bytes)
+  Installed unix_named_socket_test.elf (314408 bytes)
+  Installed fifo_test.elf (317344 bytes)
+  Installed fork_test.elf (298176 bytes)
+  Installed fork_memory_test.elf (304384 bytes)
+  Installed fork_state_test.elf (305040 bytes)
+  Installed waitpid_test.elf (298992 bytes)
+  Installed exec_argv_test.elf (291280 bytes)
+  Installed cloexec_test.elf (307584 bytes)
+  Installed kill_process_group_test.elf (299344 bytes)
+  Installed sigchld_test.elf (292080 bytes)
+  Installed sigchld_job_test.elf (298776 bytes)
+  Installed ctrl_c_test.elf (298728 bytes)
+  Installed job_control_test.elf (302680 bytes)
+  Installed signal_fork_test.elf (298840 bytes)
+  Installed signal_exec_test.elf (299752 bytes)
+  Installed wnohang_timing_test.elf (292544 bytes)
+  Installed fork_pending_signal_test.elf (297712 bytes)
+  Installed shell_pipe_test.elf (293232 bytes)
+  Installed pipeline_test.elf (305744 bytes)
+  Installed cow_cleanup_test.elf (292416 bytes)
+  Installed cow_sole_owner_test.elf (297744 bytes)
+  Installed cow_stress_test.elf (297808 bytes)
+  Installed cow_readonly_test.elf (297624 bytes)
+  Installed cow_signal_test.elf (299216 bytes)
+  Installed resolution.elf (301488 bytes)
+  Installed init_shell.elf (388880 bytes)
+  Installed argv_test.elf (298224 bytes)
+  Installed job_table_test.elf (312648 bytes)
+  Installed test_mmap.elf (292008 bytes)
+  Installed stdin_test.elf (291896 bytes)
+  Installed true_test.elf (291944 bytes)
+  Installed false_test.elf (291952 bytes)
+  Installed echo_argv_test.elf (291776 bytes)
+  Installed mkdir_argv_test.elf (292248 bytes)
+  Installed rm_argv_test.elf (291880 bytes)
+  Installed cp_mv_argv_test.elf (292936 bytes)
+  Installed nonblock_eagain_test.elf (297488 bytes)
+  Installed blocking_recv_test.elf (297984 bytes)
+  Installed tcp_client_test.elf (297232 bytes)
+  Installed wait_stress.elf (306160 bytes)
+  Installed simple_exit.elf (276848 bytes)
+  Installed counter.elf (290488 bytes)
+  Installed spinner.elf (290520 bytes)
+  Installed hello_time.elf (290368 bytes)
+  Installed heartbeat.elf (290168 bytes)
+  Installed fbinfo_test.elf (297264 bytes)
+  Installed demo.elf (304040 bytes)
+  Installed bounce.elf (388128 bytes)
+  Installed rectangles.elf (305392 bytes)
+  Installed particles.elf (304232 bytes)
+  Installed confetti.elf (303568 bytes)
+  Installed tones.elf (294352 bytes)
+  Installed fart.elf (302432 bytes)
+  Installed http_test.elf (622864 bytes)
+  Installed register_init_test.elf (288928 bytes)
+  Installed head_test.elf (297464 bytes)
+  Installed tail_test.elf (297416 bytes)
+  Installed wc_test.elf (302016 bytes)
+  Installed which_test.elf (293192 bytes)
+  Installed cat_test.elf (297704 bytes)
+  Installed ls_test.elf (302752 bytes)
+  Installed exec_stack_argv_test.elf (292928 bytes)
+  Installed exec_from_ext2_test.elf (298824 bytes)
+  Installed pipe_fork_test.elf (305128 bytes)
+  Installed pipe_concurrent_test.elf (304368 bytes)
+  Installed fs_block_alloc_test.elf (304336 bytes)
+  Installed cow_oom_test.elf (296920 bytes)
+  Installed signal_test.elf (298320 bytes)
+  Installed alarm_test.elf (297512 bytes)
+  Installed itimer_test.elf (297968 bytes)
+  Installed timer_test.elf (291536 bytes)
+  Installed sleep_debug_test.elf (304624 bytes)
+  Installed pipe_refcount_test.elf (316656 bytes)
+  Installed udp_socket_test.elf (309760 bytes)
+  Installed tcp_socket_test.elf (318736 bytes)
+  Installed tcp_blocking_test.elf (324144 bytes)
+  Installed concurrent_recv_stress.elf (303376 bytes)
+  Installed dns_test.elf (306984 bytes)
+  Installed net_test.elf (307344 bytes)
+  Installed http_fetch_test.elf (616864 bytes)
+  Installed syscall_diagnostic_test.elf (289120 bytes)
+  Installed pty_test.elf (297600 bytes)
+  Installed signal_exec_check.elf (291128 bytes)
+  Installed bsh.elf (738432 bytes)
+  Installed bwm.elf (433320 bytes)
+  Installed btop.elf (293144 bytes)
+  Installed burl.elf (640376 bytes)
+  Installed init.elf (296824 bytes)
+  Installed telnetd.elf (298672 bytes)
+  Installed blogd.elf (291576 bytes)
+  Installed btrace.elf (311032 bytes)
+  Installed bless.elf (294696 bytes)
+  Installed bcheck.elf (422232 bytes)
+  Installed biconkit.elf (362264 bytes)
+  Installed guskit.elf (538736 bytes)
+  Installed bterm.elf (480656 bytes)
+  Installed blog.elf (471960 bytes)
+  Installed bfontpicker.elf (488808 bytes)
+  Installed blauncher.elf (464704 bytes)
+  Installed bsshd.elf (441064 bytes)
+  Installed bssh.elf (412984 bytes)
+
+========================================
+  STD BUILD COMPLETE (aarch64)
+  Installed: 132 binaries
+========================================
+  Userspace build successful
+
+[4/6] Creating ext2 data disk image...
+Creating ext2 disk image...
+  Arch: aarch64
+  Output: /Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/target/ext2-aarch64.img
+  Size: 256MB
+  Using Docker to create ext2 filesystem...
+Unable to find image 'alpine:latest' locally
+latest: Pulling from library/alpine
+d17f077ada11: Pulling fs layer
+2bf6ea167e4a: Download complete
+4c52853c1057: Download complete
+d17f077ada11: Download complete
+d17f077ada11: Pull complete
+Digest: sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11
+Status: Downloaded newer image for alpine:latest
+  WARNING: busybox.elf not found, skipping coreutils
+Installing other binaries...
+  Installed 34 binaries in /bin
+  Installed 3 binaries in /sbin
+  Installed 0 C binaries in /usr/local/cbin
+  Installed 95 test binaries in /usr/local/test/bin
+  Installed 29 fonts in /usr/share/fonts
+  Created /etc/fonts.conf
+  Created /etc/hotkeys.conf
+  Created /etc/init.js
+
+ext2 filesystem contents:
+  Binaries in /bin:
+total 12500
+drwxr-xr-x    2 root     root          1024 May 19 08:56 .
+drwxr-xr-x   12 root     root          1024 May 19 08:56 ..
+-rwxr-xr-x    1 root     root        422232 May 19 08:56 bcheck
+-rwxr-xr-x    1 root     root        488808 May 19 08:56 bfontpicker
+-rwxr-xr-x    1 root     root        362264 May 19 08:56 biconkit
+-rwxr-xr-x    1 root     root        464704 May 19 08:56 blauncher
+-rwxr-xr-x    1 root     root        294696 May 19 08:56 bless
+-rwxr-xr-x    1 root     root        471960 May 19 08:56 blog
+-rwxr-xr-x    1 root     root        388128 May 19 08:56 bounce
+-rwxr-xr-x    1 root     root        738432 May 19 08:56 bsh
+-rwxr-xr-x    1 root     root        412984 May 19 08:56 bssh
+-rwxr-xr-x    1 root     root        441064 May 19 08:56 bsshd
+-rwxr-xr-x    1 root     root        480656 May 19 08:56 bterm
+-rwxr-xr-x    1 root     root        293144 May 19 08:56 btop
+-rwxr-xr-x    1 root     root        311032 May 19 08:56 btrace
+-rwxr-xr-x    1 root     root        640376 May 19 08:56 burl
+-rwxr-xr-x    1 root     root        433320 May 19 08:56 bwm
+-rwxr-xr-x    1 root     root        303376 May 19 08:56 concurrent_recv_stress
+-rwxr-xr-x    1 root     root        303568 May 19 08:56 confetti
+-rwxr-xr-x    1 root     root        290488 May 19 08:56 counter
+-rwxr-xr-x    1 root     root        304040 May 19 08:56 demo
+-rwxr-xr-x    1 root     root        302432 May 19 08:56 fart
+-rwxr-xr-x    1 root     root        538736 May 19 08:56 guskit
+-rwxr-xr-x    1 root     root        290168 May 19 08:56 heartbeat
+-rwxr-xr-x    1 root     root        290368 May 19 08:56 hello_time
+-rwxr-xr-x    1 root     root        355352 May 19 08:56 hello_world
+-rwxr-xr-x    1 root     root        388880 May 19 08:56 init_shell
+-rwxr-xr-x    1 root     root        304232 May 19 08:56 particles
+-rwxr-xr-x    1 root     root        305392 May 19 08:56 rectangles
+-rwxr-xr-x    1 root     root        301488 May 19 08:56 resolution
+-rwxr-xr-x    1 root     root        291128 May 19 08:56 signal_exec_check
+-rwxr-xr-x    1 root     root        276848 May 19 08:56 simple_exit
+-rwxr-xr-x    1 root     root        290520 May 19 08:56 spinner
+-rwxr-xr-x    1 root     root        290216 May 19 08:56 syscall_enosys
+-rwxr-xr-x    1 root     root        294352 May 19 08:56 tones
+-rwxr-xr-x    1 root     root        306160 May 19 08:56 wait_stress
+  Test binaries in /usr/local/test/bin:
+total 28768
+drwxr-xr-x    2 root     root          4096 May 19 08:56 .
+drwxr-xr-x    3 root     root          1024 May 19 08:56 ..
+-rwxr-xr-x    1 root     root        291568 May 19 08:56 access_test
+-rwxr-xr-x    1 root     root        297512 May 19 08:56 alarm_test
+-rwxr-xr-x    1 root     root        298224 May 19 08:56 argv_test
+-rwxr-xr-x    1 root     root        297984 May 19 08:56 blocking_recv_test
+-rwxr-xr-x    1 root     root        297016 May 19 08:56 brk_test
+-rwxr-xr-x    1 root     root        297704 May 19 08:56 cat_test
+-rwxr-xr-x    1 root     root        299224 May 19 08:56 clock_gettime_test
+-rwxr-xr-x    1 root     root        307584 May 19 08:56 cloexec_test
+-rwxr-xr-x    1 root     root        292416 May 19 08:56 cow_cleanup_test
+-rwxr-xr-x    1 root     root        296920 May 19 08:56 cow_oom_test
+-rwxr-xr-x    1 root     root        297624 May 19 08:56 cow_readonly_test
+-rwxr-xr-x    1 root     root        299216 May 19 08:56 cow_signal_test
+-rwxr-xr-x    1 root     root        297744 May 19 08:56 cow_sole_owner_test
+-rwxr-xr-x    1 root     root        297808 May 19 08:56 cow_stress_test
+-rwxr-xr-x    1 root     root        292936 May 19 08:56 cp_mv_argv_test
+-rwxr-xr-x    1 root     root        298728 May 19 08:56 ctrl_c_test
+-rwxr-xr-x    1 root     root        292552 May 19 08:56 cwd_test
+-rwxr-xr-x    1 root     root        292600 May 19 08:56 devfs_test
+-rwxr-xr-x    1 root     root        306984 May 19 08:56 dns_test
+-rwxr-xr-x    1 root     root        305152 May 19 08:56 dup_test
+-rwxr-xr-x    1 root     root        291776 May 19 08:56 echo_argv_test
+-rwxr-xr-x    1 root     root        291280 May 19 08:56 exec_argv_test
+-rwxr-xr-x    1 root     root        298824 May 19 08:56 exec_from_ext2_test
+-rwxr-xr-x    1 root     root        292928 May 19 08:56 exec_stack_argv_test
+-rwxr-xr-x    1 root     root        291952 May 19 08:56 false_test
+-rwxr-xr-x    1 root     root        297264 May 19 08:56 fbinfo_test
+-rwxr-xr-x    1 root     root        299688 May 19 08:56 fcntl_test
+-rwxr-xr-x    1 root     root        317344 May 19 08:56 fifo_test
+-rwxr-xr-x    1 root     root        292368 May 19 08:56 file_read_test
+-rwxr-xr-x    1 root     root        304384 May 19 08:56 fork_memory_test
+-rwxr-xr-x    1 root     root        297712 May 19 08:56 fork_pending_signal_test
+-rwxr-xr-x    1 root     root        305040 May 19 08:56 fork_state_test
+-rwxr-xr-x    1 root     root        298176 May 19 08:56 fork_test
+-rwxr-xr-x    1 root     root        304336 May 19 08:56 fs_block_alloc_test
+-rwxr-xr-x    1 root     root        293256 May 19 08:56 fs_directory_test
+-rwxr-xr-x    1 root     root        292344 May 19 08:56 fs_large_file_test
+-rwxr-xr-x    1 root     root        293304 May 19 08:56 fs_link_test
+-rwxr-xr-x    1 root     root        297384 May 19 08:56 fs_rename_test
+-rwxr-xr-x    1 root     root        293472 May 19 08:56 fs_write_test
+-rwxr-xr-x    1 root     root        293936 May 19 08:56 getdents_test
+-rwxr-xr-x    1 root     root        297464 May 19 08:56 head_test
+-rwxr-xr-x    1 root     root        616864 May 19 08:56 http_fetch_test
+-rwxr-xr-x    1 root     root        622864 May 19 08:56 http_test
+-rwxr-xr-x    1 root     root        297968 May 19 08:56 itimer_test
+-rwxr-xr-x    1 root     root        302680 May 19 08:56 job_control_test
+-rwxr-xr-x    1 root     root        312648 May 19 08:56 job_table_test
+-rwxr-xr-x    1 root     root        299344 May 19 08:56 kill_process_group_test
+-rwxr-xr-x    1 root     root        302752 May 19 08:56 ls_test
+-rwxr-xr-x    1 root     root        292592 May 19 08:56 lseek_test
+-rwxr-xr-x    1 root     root        292248 May 19 08:56 mkdir_argv_test
+-rwxr-xr-x    1 root     root        307344 May 19 08:56 net_test
+-rwxr-xr-x    1 root     root        297488 May 19 08:56 nonblock_eagain_test
+-rwxr-xr-x    1 root     root        304040 May 19 08:56 nonblock_test
+-rwxr-xr-x    1 root     root        299448 May 19 08:56 pause_test
+-rwxr-xr-x    1 root     root        304336 May 19 08:56 pipe2_test
+-rwxr-xr-x    1 root     root        304368 May 19 08:56 pipe_concurrent_test
+-rwxr-xr-x    1 root     root        305128 May 19 08:56 pipe_fork_test
+-rwxr-xr-x    1 root     root        316656 May 19 08:56 pipe_refcount_test
+-rwxr-xr-x    1 root     root        299304 May 19 08:56 pipe_test
+-rwxr-xr-x    1 root     root        305744 May 19 08:56 pipeline_test
+-rwxr-xr-x    1 root     root        304752 May 19 08:56 poll_test
+-rwxr-xr-x    1 root     root        297600 May 19 08:56 pty_test
+-rwxr-xr-x    1 root     root        288928 May 19 08:56 register_init_test
+-rwxr-xr-x    1 root     root        291880 May 19 08:56 rm_argv_test
+-rwxr-xr-x    1 root     root        304480 May 19 08:56 select_test
+-rwxr-xr-x    1 root     root        304864 May 19 08:56 session_test
+-rwxr-xr-x    1 root     root        293232 May 19 08:56 shell_pipe_test
+-rwxr-xr-x    1 root     root        309432 May 19 08:56 sigaltstack_test
+-rwxr-xr-x    1 root     root        298776 May 19 08:56 sigchld_job_test
+-rwxr-xr-x    1 root     root        292080 May 19 08:56 sigchld_test
+-rwxr-xr-x    1 root     root        299752 May 19 08:56 signal_exec_test
+-rwxr-xr-x    1 root     root        298840 May 19 08:56 signal_fork_test
+-rwxr-xr-x    1 root     root        298072 May 19 08:56 signal_handler_test
+-rwxr-xr-x    1 root     root        298664 May 19 08:56 signal_regs_test
+-rwxr-xr-x    1 root     root        299352 May 19 08:56 signal_return_test
+-rwxr-xr-x    1 root     root        298320 May 19 08:56 signal_test
+-rwxr-xr-x    1 root     root        304864 May 19 08:56 sigsuspend_test
+-rwxr-xr-x    1 root     root        304624 May 19 08:56 sleep_debug_test
+-rwxr-xr-x    1 root     root        291896 May 19 08:56 stdin_test
+-rwxr-xr-x    1 root     root        289120 May 19 08:56 syscall_diagnostic_test
+-rwxr-xr-x    1 root     root        297416 May 19 08:56 tail_test
+-rwxr-xr-x    1 root     root        324144 May 19 08:56 tcp_blocking_test
+-rwxr-xr-x    1 root     root        297232 May 19 08:56 tcp_client_test
+-rwxr-xr-x    1 root     root        318736 May 19 08:56 tcp_socket_test
+-rwxr-xr-x    1 root     root        292008 May 19 08:56 test_mmap
+-rwxr-xr-x    1 root     root        291536 May 19 08:56 timer_test
+-rwxr-xr-x    1 root     root        291944 May 19 08:56 true_test
+-rwxr-xr-x    1 root     root        303400 May 19 08:56 tty_test
+-rwxr-xr-x    1 root     root        309760 May 19 08:56 udp_socket_test
+-rwxr-xr-x    1 root     root        314408 May 19 08:56 unix_named_socket_test
+-rwxr-xr-x    1 root     root        327144 May 19 08:56 unix_socket_test
+-rwxr-xr-x    1 root     root        298992 May 19 08:56 waitpid_test
+-rwxr-xr-x    1 root     root        302016 May 19 08:56 wc_test
+-rwxr-xr-x    1 root     root        293192 May 19 08:56 which_test
+-rwxr-xr-x    1 root     root        292544 May 19 08:56 wnohang_timing_test
+  Test files:
+-rwxr-xr-x    1 root     root        291576 May 19 08:56 /mnt/ext2/sbin/blogd
+-rwxr-xr-x    1 root     root        296824 May 19 08:56 /mnt/ext2/sbin/init
+-rwxr-xr-x    1 root     root        298672 May 19 08:56 /mnt/ext2/sbin/telnetd
+-rw-r--r--    1 root     root           111 May 19 08:56 /mnt/ext2/lines.txt
+-rw-r--r--    1 root     root            20 May 19 08:56 /mnt/ext2/deep/path/to/file/data.txt
+-rw-r--r--    1 root     root           349 May 19 08:56 /mnt/ext2/etc/hotkeys.conf
+-rw-r--r--    1 root     root           367 May 19 08:56 /mnt/ext2/etc/bshrc
+-rw-r--r--    1 root     root           445 May 19 08:56 /mnt/ext2/etc/fonts.conf
+-rw-r--r--    1 root     root           679 May 19 08:56 /mnt/ext2/etc/init.js
+-rw-r--r--    1 root     root            26 May 19 08:56 /mnt/ext2/etc/group
+-rw-r--r--    1 root     root            83 May 19 08:56 /mnt/ext2/etc/passwd
+-rw-r--r--    1 root     root            17 May 19 08:56 /mnt/ext2/hello.txt
+-rw-r--r--    1 root     root            19 May 19 08:56 /mnt/ext2/trunctest.txt
+-rw-r--r--    1 root     root             0 May 19 08:56 /mnt/ext2/empty.txt
+-rw-r--r--    1 root     root            20 May 19 08:56 /mnt/ext2/test/nested.txt
+-rw-r--r--    1 root     root        598060 May 19 08:56 /mnt/ext2/usr/share/fonts/CascadiaCode-Regular.ttf
+-rw-r--r--    1 root     root        260364 May 19 08:56 /mnt/ext2/usr/share/fonts/FiraCode-Regular.ttf
+-rw-r--r--    1 root     root        532636 May 19 08:56 /mnt/ext2/usr/share/fonts/OpenSans-Regular.ttf
+-rw-r--r--    1 root     root        205748 May 19 08:56 /mnt/ext2/usr/share/fonts/UbuntuMono-Regular.ttf
+-rw-r--r--    1 root     root        282844 May 19 08:56 /mnt/ext2/usr/share/fonts/Merriweather-Regular.ttf
+-rw-r--r--    1 root     root        488584 May 19 08:56 /mnt/ext2/usr/share/fonts/Roboto-Regular.ttf
+-rw-r--r--    1 root     root       2049096 May 19 08:56 /mnt/ext2/usr/share/fonts/NotoSans-Regular.ttf
+-rw-r--r--    1 root     root        646340 May 19 08:56 /mnt/ext2/usr/share/fonts/SourceSans3-Regular.ttf
+-rw-r--r--    1 root     root        359048 May 19 08:56 /mnt/ext2/usr/share/fonts/PTSerif-Regular.ttf
+-rw-r--r--    1 root     root       1708408 May 19 08:56 /mnt/ext2/usr/share/fonts/NotoSansMono-Regular.ttf
+-rw-r--r--    1 root     root        160316 May 19 08:56 /mnt/ext2/usr/share/fonts/Poppins-Regular.ttf
+-rw-r--r--    1 root     root        309408 May 19 08:56 /mnt/ext2/usr/share/fonts/Hack-Regular.ttf
+-rw-r--r--    1 root     root        108684 May 19 08:56 /mnt/ext2/usr/share/fonts/Inconsolata-Regular.ttf
+-rw-r--r--    1 root     root        876576 May 19 08:56 /mnt/ext2/usr/share/fonts/Inter-Regular.ttf
+-rw-r--r--    1 root     root        276932 May 19 08:56 /mnt/ext2/usr/share/fonts/Nunito-Regular.ttf
+-rw-r--r--    1 root     root        212340 May 19 08:56 /mnt/ext2/usr/share/fonts/SourceCodePro-Regular.ttf
+-rw-r--r--    1 root     root        744936 May 19 08:56 /mnt/ext2/usr/share/fonts/Montserrat-Regular.ttf
+-rw-r--r--    1 root     root        300724 May 19 08:56 /mnt/ext2/usr/share/fonts/PlayfairDisplay-Regular.ttf
+-rw-r--r--    1 root     root        212196 May 19 08:56 /mnt/ext2/usr/share/fonts/Lora-Regular.ttf
+-rw-r--r--    1 root     root        135580 May 19 08:56 /mnt/ext2/usr/share/fonts/IBMPlexMono-Regular.ttf
+-rw-r--r--    1 root     root       1209508 May 19 08:56 /mnt/ext2/usr/share/fonts/SourceSerif4-Regular.ttf
+-rw-r--r--    1 root     root        273900 May 19 08:56 /mnt/ext2/usr/share/fonts/JetBrainsMono-Regular.ttf
+-rw-r--r--    1 root     root        183700 May 19 08:56 /mnt/ext2/usr/share/fonts/RobotoMono-Regular.ttf
+-rw-r--r--    1 root     root        656568 May 19 08:56 /mnt/ext2/usr/share/fonts/Lato-Regular.ttf
+-rw-r--r--    1 root     root        312352 May 19 08:56 /mnt/ext2/usr/share/fonts/Raleway-Regular.ttf
+-rw-r--r--    1 root     root        351884 May 19 08:56 /mnt/ext2/usr/share/fonts/Ubuntu-Regular.ttf
+-rw-r--r--    1 root     root       1887192 May 19 08:56 /mnt/ext2/usr/share/fonts/NotoSerif-Regular.ttf
+-rw-r--r--    1 root     root        340712 May 19 08:56 /mnt/ext2/usr/share/fonts/DejaVuSansMono.ttf
+-rw-r--r--    1 root     root        757076 May 19 08:56 /mnt/ext2/usr/share/fonts/DejaVuSans.ttf
+
+ext2 image created successfully
+
+ext2 disk created and copied to testdata/:
+  /Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/target/ext2-aarch64.img
+  /Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/testdata/ext2-aarch64.img
+  Size: 256M
+
+Contents:
+  /bin/busybox - BusyBox multi-call binary
+  /bin/{cat,ls,head,...} - BusyBox hardlinks
+  /sbin/{true,false} - BusyBox hardlinks
+  /bin/* - Other userspace binaries (demos)
+  /usr/local/test/bin/* - Test binaries (*_test, test_*)
+  /sbin/telnetd - telnet daemon
+  /hello.txt - test file (1 line)
+  /lines.txt - multi-line test file (15 lines) for head/tail/wc
+  /test/nested.txt - nested test file
+  /deep/path/to/file/data.txt - deep nested test file
+
+[5/6] Creating FAT32 EFI disk image...
+  Loader: 80896 bytes
+  Kernel: 2425888 bytes
+
+[6/6] Creating Parallels disks...
+  Patched 1 partition(s) to EFI System Partition type
+  EFI disk: /Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/target/parallels/breenix-efi.hdd
+  ext2 disk: /Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/target/parallels/breenix-ext2.hdd (256MB)
+
+--- Configuring Parallels VM ---
+VM name: breenix-1779181010
+Creating fresh VM 'breenix-1779181010'...
+Creating the virtual machine...
+Generate the VM configuration for linux.
+Remove the hdd0 device.
+The VM has been successfully created.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+Remove the cdrom0 device.
+
+The VM has been successfully configured.
+Remove the serial0 device.
+
+The VM has been successfully configured.
+Creating hdd0 (+) sata:0 image='/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/target/parallels/breenix-efi.hdd' online-compact=off
+
+Created hdd0 (+) sata:0 image='/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/target/parallels/breenix-efi.hdd' type='plain' 64Mb online-compact=on
+
+
+The VM has been successfully configured.
+Creating hdd1 (+) sata:1 image='/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/target/parallels/breenix-ext2.hdd' online-compact=off
+
+Created hdd1 (+) sata:1 image='/Users/wrb/fun/code/breenix.worktrees/ahci-interrupt-driven/target/parallels/breenix-ext2.hdd' type='plain' 256Mb online-compact=on
+
+
+The VM has been successfully configured.
+  hdd0: EFI boot disk (FAT32) at sata:0
+  hdd1: ext2 data disk at sata:1
+
+The VM has been successfully configured.
+Creating serial0 (+) output='/tmp/breenix-parallels-serial.log' state=disconnected
+
+Created serial0 (+) output='/tmp/breenix-parallels-serial.log' state=disconnected
+
+
+The VM has been successfully configured.
+Configured serial0 (+) output='/tmp/breenix-parallels-serial.log'
+
+
+The VM has been successfully configured.
+
+--- Starting VM ---
+Starting the VM...
+The VM has been successfully started.
+
+=========================================
+Breenix running on Parallels
+=========================================
+VM:     breenix-1779181010
+Serial: /tmp/breenix-parallels-serial.log
+Stop:   prlctl stop breenix-1779181010 --kill
+
+Tailing serial output (Ctrl+C to detach)...
+
+[parallels-log] 05-19 04:57:45.076 F /vm:86838:519d913/ Initing VCPUs
+[parallels-log] 05-19 04:57:45.076 F /StateMachine:86838:519d913/ VCPU0 state(unknown): initialized to VcpuStateUninitialized
+[parallels-log] 05-19 04:57:45.076 F /StateMachine:86838:519d913/ VCPU0 state(VcpuStateUninitialized): enqueued 'VcpuCmdInit'(8) command
+[parallels-log] 05-19 04:57:45.076 F /StateMachine:86838:519d913/ VCPU1 state(unknown): initialized to VcpuStateUninitialized
+[parallels-log] 05-19 04:57:45.076 F /vm:86838:519da02/ VCPU #0 initialized (thread 0x171227000)
+[parallels-log] 05-19 04:57:45.076 F /StateMachine:86838:519d913/ VCPU1 state(VcpuStateUninitialized): enqueued 'VcpuCmdInit'(8) command
+[parallels-log] 05-19 04:57:45.076 F /StateMachine:86838:519d913/ VCPU2 state(unknown): initialized to VcpuStateUninitialized
+[parallels-log] 05-19 04:57:45.077 F /StateMachine:86838:519d913/ VCPU2 state(VcpuStateUninitialized): enqueued 'VcpuCmdInit'(8) command
+[parallels-log] 05-19 04:57:45.077 F /StateMachine:86838:519d913/ VCPU3 state(unknown): initialized to VcpuStateUninitialized
+[parallels-log] 05-19 04:57:45.077 F /StateMachine:86838:519d913/ VCPU3 state(VcpuStateUninitialized): enqueued 'VcpuCmdInit'(8) command
+[parallels-log] 05-19 04:57:45.077 F /StateMachine:86838:519d913/ VCPU4 state(unknown): initialized to VcpuStateUninitialized
+[parallels-log] 05-19 04:57:45.077 F /StateMachine:86838:519d913/ VCPU4 state(VcpuStateUninitialized): enqueued 'VcpuCmdInit'(8) command
+[parallels-log] 05-19 04:57:45.077 F /StateMachine:86838:519d913/ VCPU5 state(unknown): initialized to VcpuStateUninitialized
+[parallels-log] 05-19 04:57:45.077 F /StateMachine:86838:519d913/ VCPU5 state(VcpuStateUninitialized): enqueued 'VcpuCmdInit'(8) command
+[parallels-log] 05-19 04:57:45.077 F /StateMachine:86838:519d913/ VCPU6 state(unknown): initialized to VcpuStateUninitialized
+[parallels-log] 05-19 04:57:45.077 F /vm:86838:519da04/ VCPU #2 initialized (thread 0x17133F000)
+[parallels-log] 05-19 04:57:45.077 F /vm:86838:519da03/ VCPU #1 initialized (thread 0x1712B3000)
+[parallels-log] 05-19 04:57:45.077 F /StateMachine:86838:519d913/ VCPU6 state(VcpuStateUninitialized): enqueued 'VcpuCmdInit'(8) command
+[parallels-log] 05-19 04:57:45.077 F /vm:86838:519da05/ VCPU #3 initialized (thread 0x1713CB000)
+[parallels-log] 05-19 04:57:45.077 F /StateMachine:86838:519d913/ VCPU7 state(unknown): initialized to VcpuStateUninitialized
+[parallels-log] 05-19 04:57:45.077 F /StateMachine:86838:519da02/ VCPU0 state(VcpuStateUninitialized): completed current 'VcpuCmdInit'(8) command with result 0x0
+[parallels-log] 05-19 04:57:45.077 F /StateMachine:86838:519d913/ VCPU7 state(VcpuStateUninitialized): enqueued 'VcpuCmdInit'(8) command
+[parallels-log] 05-19 04:57:45.077 F /vm:86838:519da08/ VCPU #6 initialized (thread 0x17156F000)
+[parallels-log] 05-19 04:57:45.077 F /vm:86838:519da06/ VCPU #4 initialized (thread 0x171457000)
+[parallels-log] 05-19 04:57:45.077 F /vm:86838:519da09/ VCPU #7 initialized (thread 0x1715FB000)
+[parallels-log] 05-19 04:57:45.077 F /vm:86838:519da07/ VCPU #5 initialized (thread 0x1714E3000)
+[parallels-log] 05-19 04:57:45.077 F /StateMachine:86838:519da03/ VCPU1 state(VcpuStateUninitialized): completed current 'VcpuCmdInit'(8) command with result 0x0
+[parallels-log] 05-19 04:57:45.077 F /StateMachine:86838:519da04/ VCPU2 state(VcpuStateUninitialized): completed current 'VcpuCmdInit'(8) command with result 0x0
+[parallels-log] 05-19 04:57:45.077 F /StateMachine:86838:519da05/ VCPU3 state(VcpuStateUninitialized): completed current 'VcpuCmdInit'(8) command with result 0x0
+[parallels-log] 05-19 04:57:45.077 F /StateMachine:86838:519da07/ VCPU5 state(VcpuStateUninitialized): completed current 'VcpuCmdInit'(8) command with result 0x0
+[parallels-log] 05-19 04:57:45.077 F /StateMachine:86838:519da09/ VCPU7 state(VcpuStateUninitialized): completed current 'VcpuCmdInit'(8) command with result 0x0
+[parallels-log] 05-19 04:57:45.077 F /StateMachine:86838:519da06/ VCPU4 state(VcpuStateUninitialized): completed current 'VcpuCmdInit'(8) command with result 0x0
+[parallels-log] 05-19 04:57:45.077 F /StateMachine:86838:519da08/ VCPU6 state(VcpuStateUninitialized): completed current 'VcpuCmdInit'(8) command with result 0x0
+[parallels-log] 05-19 04:57:45.078 F /vm:86838:519d913/ [Profile] VCPUs initialization time is 1 msecs
+[parallels-log] 05-19 04:57:45.080 F /StateMachine:86838:519d913/ VCPU0 state(VcpuStateUninitialized): enqueued 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 04:57:45.080 F /StateMachine:86838:519da02/ VCPU0 state(VcpuStateUninitialized): changed to VcpuStateInitializing
+[parallels-log] 05-19 04:57:45.080 F /StateMachine:86838:519da02/ VCPU0 state(VcpuStateInitializing): delay 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 04:57:45.080 F /MonitorArm:86838:519da02/ Initializing VCPU #0...
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da02/ VCPU1 state(VcpuStateUninitialized): enqueued 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da02/ VCPU2 state(VcpuStateUninitialized): enqueued 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da02/ VCPU3 state(VcpuStateUninitialized): enqueued 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da02/ VCPU4 state(VcpuStateUninitialized): enqueued 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da02/ VCPU5 state(VcpuStateUninitialized): enqueued 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da04/ VCPU2 state(VcpuStateUninitialized): changed to VcpuStateInitializing
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da03/ VCPU1 state(VcpuStateUninitialized): changed to VcpuStateInitializing
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da06/ VCPU4 state(VcpuStateUninitialized): changed to VcpuStateInitializing
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da04/ VCPU2 state(VcpuStateInitializing): delay 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da02/ VCPU6 state(VcpuStateUninitialized): enqueued 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da03/ VCPU1 state(VcpuStateInitializing): delay 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 04:57:45.084 F /MonitorArm:86838:519da04/ Initializing VCPU #2...
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da07/ VCPU5 state(VcpuStateUninitialized): changed to VcpuStateInitializing
+[parallels-log] 05-19 04:57:45.084 F /MonitorArm:86838:519da03/ Initializing VCPU #1...
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da02/ VCPU7 state(VcpuStateUninitialized): enqueued 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da05/ VCPU3 state(VcpuStateUninitialized): changed to VcpuStateInitializing
+[parallels-log] 05-19 04:57:45.084 F /MonitorArm:86838:519da02/ Initializing VCPU #0... done
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da06/ VCPU4 state(VcpuStateInitializing): delay 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da07/ VCPU5 state(VcpuStateInitializing): delay 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 04:57:45.084 F /MonitorArm:86838:519da04/ Initializing VCPU #2... done
+[parallels-log] 05-19 04:57:45.084 F /MonitorArm:86838:519da03/ Initializing VCPU #1... done
+[parallels-log] 05-19 04:57:45.084 F /MonitorArm:86838:519da06/ Initializing VCPU #4...
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da05/ VCPU3 state(VcpuStateInitializing): delay 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da02/ VCPU0 state(VcpuStateInitializing): changed to VcpuStateTransition
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da04/ VCPU2 state(VcpuStateInitializing): changed to VcpuStateTransition
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da02/ VCPU0 state(VcpuStateTransition): changed to VcpuStatePaused
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da03/ VCPU1 state(VcpuStateInitializing): changed to VcpuStateTransition
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da02/ VCPU0 state(VcpuStatePaused): completed current 'VcpuCmdPause'(0) command with result 0x0
+[parallels-log] 05-19 04:57:45.084 F /MonitorArm:86838:519da06/ Initializing VCPU #4... done
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da03/ VCPU1 state(VcpuStateTransition): changed to VcpuStatePaused
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da04/ VCPU2 state(VcpuStateTransition): changed to VcpuStatePaused
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da03/ VCPU1 state(VcpuStatePaused): completed current 'VcpuCmdPause'(0) command with result 0x0
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da08/ VCPU6 state(VcpuStateUninitialized): changed to VcpuStateInitializing
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da04/ VCPU2 state(VcpuStatePaused): completed current 'VcpuCmdPause'(0) command with result 0x0
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da08/ VCPU6 state(VcpuStateInitializing): delay 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 04:57:45.084 F /MonitorArm:86838:519da07/ Initializing VCPU #5...
+[parallels-log] 05-19 04:57:45.084 F /MonitorArm:86838:519da05/ Initializing VCPU #3...
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da09/ VCPU7 state(VcpuStateUninitialized): changed to VcpuStateInitializing
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da06/ VCPU4 state(VcpuStateInitializing): changed to VcpuStateTransition
+[parallels-log] 05-19 04:57:45.084 F /MonitorArm:86838:519da07/ Initializing VCPU #5... done
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da07/ VCPU5 state(VcpuStateInitializing): changed to VcpuStateTransition
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da07/ VCPU5 state(VcpuStateTransition): changed to VcpuStatePaused
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da07/ VCPU5 state(VcpuStatePaused): completed current 'VcpuCmdPause'(0) command with result 0x0
+[parallels-log] 05-19 04:57:45.084 F /MonitorArm:86838:519da08/ Initializing VCPU #6...
+[parallels-log] 05-19 04:57:45.084 F /MonitorArm:86838:519da08/ Initializing VCPU #6... done
+[parallels-log] 05-19 04:57:45.084 F /MonitorArm:86838:519da05/ Initializing VCPU #3... done
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da05/ VCPU3 state(VcpuStateInitializing): changed to VcpuStateTransition
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da05/ VCPU3 state(VcpuStateTransition): changed to VcpuStatePaused
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da09/ VCPU7 state(VcpuStateInitializing): delay 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da05/ VCPU3 state(VcpuStatePaused): completed current 'VcpuCmdPause'(0) command with result 0x0
+[parallels-log] 05-19 04:57:45.084 F /MonitorArm:86838:519da09/ Initializing VCPU #7...
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da06/ VCPU4 state(VcpuStateTransition): changed to VcpuStatePaused
+[parallels-log] 05-19 04:57:45.084 F /MonitorArm:86838:519da09/ Initializing VCPU #7... done
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da09/ VCPU7 state(VcpuStateInitializing): changed to VcpuStateTransition
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da06/ VCPU4 state(VcpuStatePaused): completed current 'VcpuCmdPause'(0) command with result 0x0
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da09/ VCPU7 state(VcpuStateTransition): changed to VcpuStatePaused
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da09/ VCPU7 state(VcpuStatePaused): completed current 'VcpuCmdPause'(0) command with result 0x0
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da08/ VCPU6 state(VcpuStateInitializing): changed to VcpuStateTransition
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da08/ VCPU6 state(VcpuStateTransition): changed to VcpuStatePaused
+[parallels-log] 05-19 04:57:45.084 F /StateMachine:86838:519da08/ VCPU6 state(VcpuStatePaused): completed current 'VcpuCmdPause'(0) command with result 0x0
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519d913/ VCPU0 state(VcpuStatePaused): enqueued 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519d913/ VCPU1 state(VcpuStatePaused): enqueued 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519d913/ VCPU2 state(VcpuStatePaused): enqueued 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519d913/ VCPU3 state(VcpuStatePaused): enqueued 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da02/ VCPU0 state(VcpuStatePaused): changed to VcpuStateUnpausing
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519d913/ VCPU4 state(VcpuStatePaused): enqueued 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da02/ VCPU0 state(VcpuStateUnpausing): delay 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da02/ VCPU0 state(VcpuStateUnpausing): changed to VcpuStateTransition
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519d913/ VCPU5 state(VcpuStatePaused): enqueued 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da02/ VCPU0 state(VcpuStateTransition): changed to VcpuStateRunning
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da02/ VCPU0 state(VcpuStateRunning): completed current 'VcpuCmdRun'(1) command with result 0x0
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519d913/ VCPU6 state(VcpuStatePaused): enqueued 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da04/ VCPU2 state(VcpuStatePaused): changed to VcpuStateUnpausing
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da03/ VCPU1 state(VcpuStatePaused): changed to VcpuStateUnpausing
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da05/ VCPU3 state(VcpuStatePaused): changed to VcpuStateUnpausing
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da04/ VCPU2 state(VcpuStateUnpausing): delay 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519d913/ VCPU7 state(VcpuStatePaused): enqueued 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da06/ VCPU4 state(VcpuStatePaused): changed to VcpuStateUnpausing
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da03/ VCPU1 state(VcpuStateUnpausing): delay 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da05/ VCPU3 state(VcpuStateUnpausing): delay 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da04/ VCPU2 state(VcpuStateUnpausing): changed to VcpuStateTransition
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da06/ VCPU4 state(VcpuStateUnpausing): delay 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da04/ VCPU2 state(VcpuStateTransition): changed to VcpuStateRunning
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da07/ VCPU5 state(VcpuStatePaused): changed to VcpuStateUnpausing
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da03/ VCPU1 state(VcpuStateUnpausing): changed to VcpuStateTransition
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da04/ VCPU2 state(VcpuStateRunning): completed current 'VcpuCmdRun'(1) command with result 0x0
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da03/ VCPU1 state(VcpuStateTransition): changed to VcpuStateRunning
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da07/ VCPU5 state(VcpuStateUnpausing): delay 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da05/ VCPU3 state(VcpuStateUnpausing): changed to VcpuStateTransition
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da03/ VCPU1 state(VcpuStateRunning): completed current 'VcpuCmdRun'(1) command with result 0x0
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da06/ VCPU4 state(VcpuStateUnpausing): changed to VcpuStateTransition
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da05/ VCPU3 state(VcpuStateTransition): changed to VcpuStateRunning
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da07/ VCPU5 state(VcpuStateUnpausing): changed to VcpuStateTransition
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da05/ VCPU3 state(VcpuStateRunning): completed current 'VcpuCmdRun'(1) command with result 0x0
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da06/ VCPU4 state(VcpuStateTransition): changed to VcpuStateRunning
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da07/ VCPU5 state(VcpuStateTransition): changed to VcpuStateRunning
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da06/ VCPU4 state(VcpuStateRunning): completed current 'VcpuCmdRun'(1) command with result 0x0
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da07/ VCPU5 state(VcpuStateRunning): completed current 'VcpuCmdRun'(1) command with result 0x0
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da09/ VCPU7 state(VcpuStatePaused): changed to VcpuStateUnpausing
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da08/ VCPU6 state(VcpuStatePaused): changed to VcpuStateUnpausing
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da08/ VCPU6 state(VcpuStateUnpausing): delay 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da09/ VCPU7 state(VcpuStateUnpausing): delay 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da08/ VCPU6 state(VcpuStateUnpausing): changed to VcpuStateTransition
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da08/ VCPU6 state(VcpuStateTransition): changed to VcpuStateRunning
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da08/ VCPU6 state(VcpuStateRunning): completed current 'VcpuCmdRun'(1) command with result 0x0
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da09/ VCPU7 state(VcpuStateUnpausing): changed to VcpuStateTransition
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da09/ VCPU7 state(VcpuStateTransition): changed to VcpuStateRunning
+[parallels-log] 05-19 04:57:45.147 F /StateMachine:86838:519da09/ VCPU7 state(VcpuStateRunning): completed current 'VcpuCmdRun'(1) command with result 0x0
+[virtio-gpu-pci] GET_CAPSET(id=2, ver=2): resp=0x1103
+[virtio-gpu-pci] Display reports: 1280x960
+[virtio-gpu-pci] Resolution: 1280x960 (display=1280x960, GOP=1024x768, min=1280x960)
+[virtio-gpu-pci] 2D resource created and scanout set
+[virtio-gpu-pci] MSI-X configured (SPI=53, deferred enable after VirGL init)
+[virtio-gpu-pci] Initialized: 1280x960
+[drivers] VirtIO GPU (PCI) initialized
+[virgl] Initializing VirGL 3D pipeline...
+[virgl] 3D framebuffer backing: heap ptr=0xffff0000502e2000, phys=0x502e2000, size=4915200
+[virgl] Step 1: context created
+[virgl] Step 2: 3D resource created (1280x960, bind=0x0014000a)
+[virgl] attach_backing: phys=0x502e2000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x40251000(32B), entries=0x50792000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl] Step 3: backing attached
+[virgl] Step 4: resource attached to context
+[virgl] Step 5: resource primed
+[virgl] SUBMIT_3D OK: id=1 used_len=0 resp_flags=0x1 resp_fence=1
+[virgl] Step 6: VirGL CLEAR (cornflower blue)
+[virgl] Step 7: SET_SCANOUT + RESOURCE_FLUSH done
+[virgl] Step 7: VB resource created (no backing, INLINE_WRITE only)
+[virgl-composite] Texture backing: heap ptr=0xffff000050792000, phys=0x50792000, 1280x960 (4915200B, 1200 pages)
+[virgl] attach_backing: phys=0x50792000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x40251000(32B), entries=0x50c42000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-composite] Texture resource initialized (id=5)
+[virgl] attach_backing: phys=0x50c42000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x40251000(32B), entries=0x510f2000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=0 res_id=10 1280x960
+[virgl] attach_backing: phys=0x510f2000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x40251000(32B), entries=0x515a2000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=1 res_id=11 1280x960
+[virgl] attach_backing: phys=0x515a2000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x40251000(32B), entries=0x51a52000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=2 res_id=12 1280x960
+[virgl] attach_backing: phys=0x51a52000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x40251000(32B), entries=0x51f02000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=3 res_id=13 1280x960
+[virgl] attach_backing: phys=0x51f02000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x40251000(32B), entries=0x523b2000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=4 res_id=14 1280x960
+[virgl] attach_backing: phys=0x523b2000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x40251000(32B), entries=0x52862000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=5 res_id=15 1280x960
+[virgl] attach_backing: phys=0x52862000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x40251000(32B), entries=0x52d12000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=6 res_id=16 1280x960
+[virgl] attach_backing: phys=0x52d12000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x40251000(32B), entries=0x531c2000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=7 res_id=17 1280x960
+[virgl] attach_backing: phys=0x531c2000, len=8192, nr_pages=2
+[virgl] attach_backing: sending 3-desc chain: hdr=0x40251000(32B), entries=0x502e0040(32B)
+[virgl] attach_backing: OK (2 pages attached)
+[virgl-cursor] Cursor texture initialized (id=6, 16x80, 5 shapes)
+[virgl] attach_backing: phys=0x531c4000, len=4096, nr_pages=1
+[virgl] attach_backing: sending 3-desc chain: hdr=0x40251000(32B), entries=0x502e0040(16B)
+[virgl] attach_backing: OK (1 pages attached)
+[virgl-dimmer] Dimmer texture initialized (id=7, 4x4)
+[virgl] Step 8: Compositor texture initialized
+[virgl] Step 9: full pipeline+draw batch (191 DWORDs)
+[virgl] SUBMIT_3D OK: id=2 used_len=0 resp_flags=0x1 resp_fence=2
+[virgl] Step 10: SET_SCANOUT + RESOURCE_FLUSH
+[virgl] VirGL 3D pipeline initialized successfully
+[drivers] VirGL 3D acceleration active
+[drivers] Compositor backend: VirGL
+[virtio-gpu-pci] MSI-X SPI 53 enabled — interrupt-driven GPU wake active
+[virtio-net-pci] Searching for VirtIO network device on PCI bus...
+[virtio-net-pci] Found at 00:05.0 [1af4:1000]
+[virtio-net-pci] BAR0: phys=0x18010000 virt=0xffff000018010000 size=4096
+[virtio-net-pci] Device features: 0x6187bfa3
+[virtio-net-pci] MAC: 00:1c:42:17:e6:68
+[virtio-net-pci] Queue 0 max size: 256
+[virtio-net-pci] Queue 0 PFN=0x4120f (phys=0x4120f000)
+[virtio-net-pci] Queue 1 max size: 256
+[virtio-net-pci] Queue 1 PFN=0x41212 (phys=0x41212000)
+[pci] 00:05.0: capabilities:
+  cap 0x10 (PCIe) @ 0x48: dw0=0x00024010 dw1=0x00000fc0
+  cap 0x01 (PM) @ 0x40: dw0=0x0022f401 dw1=0x00000000
+  cap 0x11 (MSI-X) @ 0xf4: dw0=0x00020011 dw1=0x00000001
+[virtio-net-pci] MSI-X cap at 0xf4: 3 vectors
+[virtio-net-pci] MSI-X vector assignments: cfg=0xffff rx=0x0
+[virtio-net-pci] MSI-X enabled: SPI 54 doorbell=0x2250040 vectors=3
+[virtio-net-pci] Network device initialized successfully
+[drivers] VirtIO network (PCI) initialized
+[drivers] SVGA3 init skipped: SVGA3 device not found
+[drivers] Found XHCI at 00:03.0 [1033:0194]
+[parallels-log] 05-19 04:57:46.131 F /MonitorArm:86838:519da02/ VCPU0: OnExitBootServices()
+[xhci] DMA addrs: DCBAA=0x41b40000 CMD_RING=0x41b41000 EVT_RING=0x41b51000 ERST=0x41bc7340
+[xhci] Regs: USBCMD=0x5 USBSTS=0x0 CRCR=0x0 DCBAAP=0x41b40000
+[xhci] IR0: IMAN=0x2 ERDP=0x41b51000 ERSTBA=0x41bc7340
+[xhci] Port scan: 14 ports
+[xhci]   port 1: PORTSC=0x00021203 CCS=1 PED=1 speed=4
+[xhci]   port 2: PORTSC=0x00021203 CCS=1 PED=1 speed=4
+[xhci]   port 3: PORTSC=0x00021203 CCS=1 PED=1 speed=4
+[xhci]   port 4: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 5: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 6: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 7: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 8: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 9: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 10: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 11: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 12: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 13: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 14: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci] port 1 connected: PORTSC=0x00001203 PED=1 speed=4
+[xhci] port 1 EnableSlot -> slot 1
+[xhci] port 1 AddressDevice OK (slot 1)
+[xhci] slot1: vid=0x203a pid=0xfffc class=0x00/0x00/0x00
+[xhci] slot1 iface0: class=0x03 sub=0x00 proto=0x02 numEP=1
+[xhci] HID iface: proto=2 subclass=0 -> mouse (hid_idx=1)
+[xhci] slot1 iface1: class=0x03 sub=0x00 proto=0x02 numEP=1
+[xhci] HID iface: proto=2 subclass=0 -> mouse (hid_idx=3)
+[xhci] port 2 connected: PORTSC=0x00001203 PED=1 speed=4
+[xhci] port 2 EnableSlot -> slot 2
+[xhci] port 2 AddressDevice OK (slot 2)
+[xhci] slot2: vid=0x203a pid=0xfffb class=0x00/0x00/0x00
+[xhci] slot2 iface0: class=0x03 sub=0x01 proto=0x01 numEP=1
+[xhci] HID iface: proto=1 subclass=1 -> keyboard (hid_idx=0)
+[xhci] slot2 iface1: class=0x03 sub=0x00 proto=0x00 numEP=1
+[xhci] HID iface: proto=0 subclass=0 -> NKRO (hid_idx=2)
+[xhci] port 3 connected: PORTSC=0x00001203 PED=1 speed=4
+[xhci] port 3 EnableSlot -> slot 3
+[xhci] port 3 AddressDevice OK (slot 3)
+[xhci] slot3: vid=0x203a pid=0xfff9 class=0xef/0x02/0x01
+[xhci] slot3 iface0: class=0x0e sub=0x01 proto=0x00 numEP=0
+[xhci] slot3 iface1: class=0x0e sub=0x02 proto=0x00 numEP=1
+[xhci] start_hid_polling: kbd=slot2/dci3 nkro=dci5 mouse=slot1/dci3 mouse2=dci5
+[xhci] Initialized: 32 slots, MSI irq=55
+[drivers] XHCI USB controller initialized
+[ahci] Platform AHCI at phys 0x2140000, virt 0xffff000002140000
+[ahci] HBA version 1.256, 6 ports, 32 cmd slots, PI=0x0000003f
+[ahci] Port 0: Sata, 131072 sectors (64 MB)
+[ahci] Port 1: Sata, 524288 sectors (256 MB)
+[ahci] IRQ probe: using port 0 dma_index 0
+[ahci] IRQ probe: ISPENDR before=[0x00c00000, 0x00000000, 0x00000000] after=[0x00c00004, 0x00000000, 0x00000000]
+[ahci] IRQ probe: PORT_IS=0x00000001 (should have D2H bit set)
+[ahci] Platform IRQ probe: discovered SPI 34
+[ahci] Platform IRQ enabled: SPI 34 (wired, level-triggered, CPU0)
+[drivers] AHCI initialized (platform MMIO): 2 SATA device(s)
+[drivers] Driver subsystem initialized (PCI)
+[boot] Found 7 devices
+[boot] Initializing network stack...
+[net] Initializing network stack...
+[net] Using VirtIO net PCI driver (Parallels)
+[net] MAC address: 00:1c:42:17:e6:68
+NET: IP address: 10.211.55.100
+NET: Gateway: 10.211.55.1
+Network stack initialized
+NET: Sending ARP request for gateway 10.211.55.1
+ARP request sent successfully
+[virtio-net-pci] RX diag: used_idx=2 last_used=1 avail_idx=8 isr=0x0 msi_count=0
+[virtio-net-pci] RX diag: used_idx=2 last_used=2 avail_idx=12 isr=0x0 msi_count=0
+NET: ARP resolved gateway MAC: 00:1c:42:00:00:18
+NET: Sending ICMP echo request to gateway 10.211.55.1
+[net] ICMP echo reply received from 10.211.55.1 seq=1
+NET: Network initialization complete
+[virtio-net-pci] MSI-X SPI 54 enabled (post-init)
+[boot] Initializing filesystem...
+[ext2] No VirtIO block device, trying AHCI...
+[ext2] AHCI device 0: 131072 sectors (64 MB)
+[ext2] AHCI device 0: not ext2 (magic=0x0064)
+[ext2] AHCI device 1: 524288 sectors (256 MB)
+[ext2] Found ext2 superblock on AHCI device 1
+[boot] ext2 root filesystem mounted
+[boot] No home filesystem: No home block device available (expected at device index 3 or 1) (continuing)
+[boot] devfs initialized at /dev
+[boot] devptsfs initialized at /dev/pts
+[boot] CPU detected: ARM Unknown
+[boot] procfs initialized at /proc
+[boot] TTY subsystem initialized
+[boot] Initializing graphics...
+[boot] VirGL active — skipping GOP framebuffer init (2D resource already set up in gpu_pci::init)
+[boot] FB_INFO_CACHE populated for VirGL display (1280x960)
+[boot] USB HID input active via XHCI (polled from timer)
+[boot] Initializing per-CPU data...
+[boot] Per-CPU data initialized
+[boot] Initializing process manager...
+[boot] Process manager initialized
+[boot] Initializing scheduler...
+[boot] Scheduler initialized
+[boot] Workqueue subsystem initialized
+[boot] Softirq subsystem initialized
+[boot] Render thread skipped — VirGL owns the display
+[boot] Tracing subsystem initialized and enabled
+[boot] Pre-loading /sbin/init from ext2 (before timer)...
+[boot] Init binary pre-loaded: 296824 bytes
+[boot] Initializing timer interrupt...
+[timer] Timer configured for ~1000 Hz (24000 ticks per interrupt)
+[timer] Using virtual timer (PPI 27)
+[boot] Timer interrupt initialized
+[smp] CPU 0 MPIDR=0x80000000, stack_base=0x43000000
+[smp] GICR covers 8 redistributors, probing CPUs 1..8
+[smp] Probing secondary CPUs via PSCI...
+[sm1p@]1A BCCDPEeUFG 11: PSCI CPU_ON success
+[gic] ICC_CTL2R@1_ABECDLEe1FG:2 0x40400 -> 0x40402 (EOImode=1)
+[gic] ICC_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[smp] CPU 2: PSCI CPU_ON success
+T1[sm3@p1]A BCCDPEUeF G33: PSCI CPU_ON success
+[gi4@c1A]BC DEIeFCGC_4CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[smp] CPU 4: PSCI CPU_ON success
+[gic5@]1A BCIDCEeCF_GC5TLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[gic] ICC_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[smp] CPU 5: PSCI CPU_ON success
+[s6@m1ApB]CD ECeFPUG 66: PSCI CPU_ON success
+[T2gic] IC7C@1A_BCCDETeFLGR7_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[gic] ICC_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[smp] CPU 7: PSCI CPU_ON success
+[smp] 8 CPUs online
+
+========================================
+  Breenix ARM64 Boot Complete!
+========================================
+
+Hello from ARM64!
+
+[boot] Launching init from pre-loaded ELF...
+manager.create_process_with_argv [ARM64]: ENTRY - name='init', elf_size=296824, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 1
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f1f0
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 1
+[boot] Reset 8 idle thread contexts (CPUs online: 8)
+T3T4EL0_SYSCALL: First syscall from userspace (SPSR confirms EL0)
+[ OK ] syscall path verified
+[init] Breenix init starting (PID 1)
+T5[spawn] path='/bin/heartbeat'
+[freeze-watch] uptime_ms=1762 submits=62 completes=65 fails=0 last_completion_ms=92 fps_last_5s=0 cpu=6 tid=0 ctx_switches=89 timer_ticks_cpu0=5 timer_ticks_cpu1=403 timer_ticks_cpu2=402 timer_ticks_cpu3=403 timer_ticks_cpu4=401 timer_ticks_cpu5=403 timer_ticks_cpu6=402 timer_ticks_cpu7=402 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+[parallels-log] 05-19 04:57:47.394 I /MonitorArm:86838:519da02/ VCPU0 PSCI: CPU_ON(target_cpu = 1, entry_point_addr = 40080258, context_id = 1)
+[parallels-log] 05-19 04:57:47.394 I /MonitorArm:86838:519da02/ VCPU0 PSCI: CPU_ON(target_cpu = 2, entry_point_addr = 40080258, context_id = 2)
+[parallels-log] 05-19 04:57:47.395 I /MonitorArm:86838:519da02/ VCPU0 PSCI: CPU_ON(target_cpu = 3, entry_point_addr = 40080258, context_id = 3)
+[parallels-log] 05-19 04:57:47.395 I /MonitorArm:86838:519da02/ VCPU0 PSCI: CPU_ON(target_cpu = 4, entry_point_addr = 40080258, context_id = 4)
+[parallels-log] 05-19 04:57:47.395 I /MonitorArm:86838:519da02/ VCPU0 PSCI: CPU_ON(target_cpu = 5, entry_point_addr = 40080258, context_id = 5)
+[parallels-log] 05-19 04:57:47.396 I /MonitorArm:86838:519da02/ VCPU0 PSCI: CPU_ON(target_cpu = 6, entry_point_addr = 40080258, context_id = 6)
+[parallels-log] 05-19 04:57:47.396 I /MonitorArm:86838:519da02/ VCPU0 PSCI: CPU_ON(target_cpu = 7, entry_point_addr = 40080258, context_id = 7)
+[freeze-watch] uptime_ms=2264 submits=62 completes=65 fails=0 last_completion_ms=92 fps_last_5s=0 cpu=5 tid=3 ctx_switches=91 timer_ticks_cpu0=5 timer_ticks_cpu1=806 timer_ticks_cpu2=806 timer_ticks_cpu3=804 timer_ticks_cpu4=803 timer_ticks_cpu5=807 timer_ticks_cpu6=803 timer_ticks_cpu7=804 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=3 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=2767 submits=62 completes=65 fails=0 last_completion_ms=92 fps_last_5s=0 cpu=5 tid=0 ctx_switches=93 timer_ticks_cpu0=5 timer_ticks_cpu1=1209 timer_ticks_cpu2=1210 timer_ticks_cpu3=1207 timer_ticks_cpu4=1205 timer_ticks_cpu5=1210 timer_ticks_cpu6=1207 timer_ticks_cpu7=1206 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=3268 submits=62 completes=65 fails=0 last_completion_ms=92 fps_last_5s=0 cpu=5 tid=3 ctx_switches=95 timer_ticks_cpu0=5 timer_ticks_cpu1=1611 timer_ticks_cpu2=1611 timer_ticks_cpu3=1611 timer_ticks_cpu4=1608 timer_ticks_cpu5=1611 timer_ticks_cpu6=1609 timer_ticks_cpu7=1609 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=3 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=3770 submits=62 completes=65 fails=0 last_completion_ms=92 fps_last_5s=0 cpu=7 tid=3 ctx_switches=97 timer_ticks_cpu0=5 timer_ticks_cpu1=2013 timer_ticks_cpu2=2013 timer_ticks_cpu3=2013 timer_ticks_cpu4=2010 timer_ticks_cpu5=2013 timer_ticks_cpu6=2010 timer_ticks_cpu7=2012 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=3 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=4273 submits=62 completes=65 fails=0 last_completion_ms=92 fps_last_5s=0 cpu=5 tid=3 ctx_switches=99 timer_ticks_cpu0=5 timer_ticks_cpu1=2421 timer_ticks_cpu2=2422 timer_ticks_cpu3=2419 timer_ticks_cpu4=2418 timer_ticks_cpu5=2421 timer_ticks_cpu6=2417 timer_ticks_cpu7=2418 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=3 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=4776 submits=62 completes=65 fails=0 last_completion_ms=92 fps_last_5s=0 cpu=4 tid=0 ctx_switches=101 timer_ticks_cpu0=5 timer_ticks_cpu1=2828 timer_ticks_cpu2=2828 timer_ticks_cpu3=2827 timer_ticks_cpu4=2826 timer_ticks_cpu5=2826 timer_ticks_cpu6=2826 timer_ticks_cpu7=2825 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=5278 submits=62 completes=65 fails=0 last_completion_ms=92 fps_last_5s=0 cpu=3 tid=3 ctx_switches=103 timer_ticks_cpu0=5 timer_ticks_cpu1=3233 timer_ticks_cpu2=3231 timer_ticks_cpu3=3233 timer_ticks_cpu4=3229 timer_ticks_cpu5=3231 timer_ticks_cpu6=3228 timer_ticks_cpu7=3229 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=3 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=5780 submits=62 completes=65 fails=0 last_completion_ms=92 fps_last_5s=0 cpu=4 tid=3 ctx_switches=105 timer_ticks_cpu0=5 timer_ticks_cpu1=3634 timer_ticks_cpu2=3633 timer_ticks_cpu3=3633 timer_ticks_cpu4=3631 timer_ticks_cpu5=3631 timer_ticks_cpu6=3629 timer_ticks_cpu7=3630 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=6283 submits=62 completes=65 fails=0 last_completion_ms=92 fps_last_5s=0 cpu=7 tid=3 ctx_switches=107 timer_ticks_cpu0=5 timer_ticks_cpu1=4037 timer_ticks_cpu2=4038 timer_ticks_cpu3=4037 timer_ticks_cpu4=4034 timer_ticks_cpu5=4035 timer_ticks_cpu6=4032 timer_ticks_cpu7=4033 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=3 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=6785 submits=62 completes=65 fails=0 last_completion_ms=92 fps_last_5s=0 cpu=4 tid=0 ctx_switches=109 timer_ticks_cpu0=5 timer_ticks_cpu1=4440 timer_ticks_cpu2=4442 timer_ticks_cpu3=4441 timer_ticks_cpu4=4437 timer_ticks_cpu5=4437 timer_ticks_cpu6=4436 timer_ticks_cpu7=4435 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=7287 submits=62 completes=65 fails=0 last_completion_ms=92 fps_last_5s=0 cpu=7 tid=0 ctx_switches=111 timer_ticks_cpu0=5 timer_ticks_cpu1=4844 timer_ticks_cpu2=4844 timer_ticks_cpu3=4843 timer_ticks_cpu4=4839 timer_ticks_cpu5=4839 timer_ticks_cpu6=4839 timer_ticks_cpu7=4837 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=7789 submits=62 completes=65 fails=0 last_completion_ms=92 fps_last_5s=0 cpu=5 tid=0 ctx_switches=113 timer_ticks_cpu0=5 timer_ticks_cpu1=5246 timer_ticks_cpu2=5246 timer_ticks_cpu3=5246 timer_ticks_cpu4=5241 timer_ticks_cpu5=5242 timer_ticks_cpu6=5240 timer_ticks_cpu7=5237 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=8290 submits=62 completes=65 fails=0 last_completion_ms=92 fps_last_5s=0 cpu=3 tid=3 ctx_switches=115 timer_ticks_cpu0=5 timer_ticks_cpu1=5651 timer_ticks_cpu2=5651 timer_ticks_cpu3=5650 timer_ticks_cpu4=5645 timer_ticks_cpu5=5646 timer_ticks_cpu6=5644 timer_ticks_cpu7=5640 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=3 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=8793 submits=62 completes=65 fails=0 last_completion_ms=92 fps_last_5s=0 cpu=5 tid=0 ctx_switches=117 timer_ticks_cpu0=5 timer_ticks_cpu1=6056 timer_ticks_cpu2=6057 timer_ticks_cpu3=6052 timer_ticks_cpu4=6047 timer_ticks_cpu5=6051 timer_ticks_cpu6=6048 timer_ticks_cpu7=6045 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=9295 submits=62 completes=65 fails=0 last_completion_ms=92 fps_last_5s=0 cpu=4 tid=3 ctx_switches=119 timer_ticks_cpu0=5 timer_ticks_cpu1=6460 timer_ticks_cpu2=6461 timer_ticks_cpu3=6455 timer_ticks_cpu4=6451 timer_ticks_cpu5=6455 timer_ticks_cpu6=6452 timer_ticks_cpu7=6450 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=9797 submits=62 completes=65 fails=0 last_completion_ms=92 fps_last_5s=0 cpu=3 tid=3 ctx_switches=121 timer_ticks_cpu0=5 timer_ticks_cpu1=6863 timer_ticks_cpu2=6866 timer_ticks_cpu3=6854 timer_ticks_cpu4=6849 timer_ticks_cpu5=6859 timer_ticks_cpu6=6856 timer_ticks_cpu7=6854 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=3 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=10299 submits=62 completes=65 fails=0 last_completion_ms=92 fps_last_5s=0 cpu=3 tid=3 ctx_switches=123 timer_ticks_cpu0=5 timer_ticks_cpu1=7265 timer_ticks_cpu2=7268 timer_ticks_cpu3=7256 timer_ticks_cpu4=7252 timer_ticks_cpu5=7262 timer_ticks_cpu6=7259 timer_ticks_cpu7=7256 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=3 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=15301 submits=62 completes=65 fails=0 last_completion_ms=92 fps_last_5s=0 cpu=2 tid=3 ctx_switches=125 timer_ticks_cpu0=5 timer_ticks_cpu1=11272 timer_ticks_cpu2=11276 timer_ticks_cpu3=11265 timer_ticks_cpu4=11257 timer_ticks_cpu5=11268 timer_ticks_cpu6=11267 timer_ticks_cpu7=11264 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=3 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=20303 submits=62 completes=65 fails=0 last_completion_ms=92 fps_last_5s=0 cpu=4 tid=3 ctx_switches=127 timer_ticks_cpu0=5 timer_ticks_cpu1=15279 timer_ticks_cpu2=15281 timer_ticks_cpu3=15272 timer_ticks_cpu4=15263 timer_ticks_cpu5=15275 timer_ticks_cpu6=15273 timer_ticks_cpu7=15275 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=25306 submits=62 completes=65 fails=0 last_completion_ms=92 fps_last_5s=0 cpu=2 tid=0 ctx_switches=129 timer_ticks_cpu0=5 timer_ticks_cpu1=19320 timer_ticks_cpu2=19317 timer_ticks_cpu3=19317 timer_ticks_cpu4=19301 timer_ticks_cpu5=19315 timer_ticks_cpu6=19311 timer_ticks_cpu7=19319 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=30308 submits=62 completes=65 fails=0 last_completion_ms=92 fps_last_5s=0 cpu=4 tid=3 ctx_switches=131 timer_ticks_cpu0=5 timer_ticks_cpu1=23364 timer_ticks_cpu2=23351 timer_ticks_cpu3=23360 timer_ticks_cpu4=23341 timer_ticks_cpu5=23353 timer_ticks_cpu6=23345 timer_ticks_cpu7=23360 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=35309 submits=62 completes=65 fails=0 last_completion_ms=92 fps_last_5s=0 cpu=1 tid=3 ctx_switches=133 timer_ticks_cpu0=5 timer_ticks_cpu1=27423 timer_ticks_cpu2=27414 timer_ticks_cpu3=27425 timer_ticks_cpu4=27399 timer_ticks_cpu5=27414 timer_ticks_cpu6=27402 timer_ticks_cpu7=27416 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=3 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+
+!!! CPU0 REGRESSION ALARM !!!
+CPU0 tick_count = 5, max peer = 30000
+See docs/planning/cpu0-user-guard-autopsy/README.md
+
+========================================
+  KERNEL PANIC!
+========================================
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+
+
+!!! CPU0 REGRESSION ALARM !!!
+CPU0 tick_count = 5, max peer = 30000
+See docs/planning/cpu0-user-guard-autopsy/README.md
+
+========================================
+  KERNEL PANIC!
+========================================
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+
+
+!!! CPU0 REGRESSION ALARM !!!
+CPU0 tick_count = 5, max peer = 30000
+See docs/planning/cpu0-user-guard-autopsy/README.md
+
+========================================
+  KERNEL PANIC!
+========================================
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+
+
+!!! CPU0 REGRESSION ALARM !!!
+CPU0 tick_count = 5, max peer = 30000
+See docs/planning/cpu0-user-guard-autopsy/README.md
+
+========================================
+  KERNEL PANIC!
+========================================
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+
+
+!!! CPU0 REGRESSION ALARM !!!
+CPU0 tick_count = 5, max peer = 30000
+See docs/planning/cpu0-user-guard-autopsy/README.md
+
+========================================
+  KERNEL PANIC!
+========================================
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+
+
+!!! CPU0 REGRESSION ALARM !!!
+CPU0 tick_count = 5, max peer = 30000
+See docs/planning/cpu0-user-guard-autopsy/README.md
+
+========================================
+  KERNEL PANIC!
+========================================
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+
+
+!!! CPU0 REGRESSION ALARM !!!
+CPU0 tick_count = 5, max peer = 30000
+See docs/planning/cpu0-user-guard-autopsy/README.md
+
+========================================
+  KERNEL PANIC!
+========================================
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+
+./run.sh: line 463: 86927 Terminated: 15          tail -f "$SERIAL_LOG"
