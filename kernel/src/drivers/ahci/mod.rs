@@ -221,7 +221,10 @@ static AHCI_COMPLETIONS: [[Completion; AHCI_MAX_CONCURRENT]; MAX_AHCI_PORTS] =
 static AHCI_ISR_COUNT: AtomicU32 = AtomicU32::new(0);
 /// Count commands that fall back to PORT_CI polling instead of IRQ completion.
 #[export_name = "ahci_polled_completion_count"]
-pub static AHCI_POLLED_COMPLETION_COUNT: AtomicU32 = AtomicU32::new(0);
+pub static AHCI_POLLED_COMPLETION_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Count post-IRQ-registration commands that still fall back to PORT_CI polling.
+#[export_name = "ahci_polled_post_registration_count"]
+pub static AHCI_POLLED_POST_REGISTRATION_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Hardware MPIDR Aff0 of the CPU that last ran the AHCI ISR (0xDEAD = never ran).
 static AHCI_ISR_LAST_MPIDR: AtomicU64 = AtomicU64::new(0xDEAD);
 /// Count commands issued via issue_cmd_slot0 (for diagnostic/timeout reporting).
@@ -769,7 +772,12 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
             }
         }
     } else {
-        AHCI_POLLED_COMPLETION_COUNT.fetch_add(1, Ordering::Relaxed);
+        if AHCI_IRQ.load(Ordering::Relaxed) == 0 {
+            AHCI_POLLED_COMPLETION_COUNT.fetch_add(1, Ordering::Relaxed);
+        } else {
+            AHCI_POLLED_POST_REGISTRATION_COUNT.fetch_add(1, Ordering::Relaxed);
+            AHCI_POLLED_COMPLETION_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
         // ============================================================
         // PORT_CI POLLING PATH (scheduler not running)
         //
