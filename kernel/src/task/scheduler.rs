@@ -127,19 +127,6 @@ impl IsrWakeupBuffer {
 
 static ISR_WAKEUP_BUFFERS: [IsrWakeupBuffer; 8] = [const { IsrWakeupBuffer::new() }; 8];
 
-#[cfg(target_arch = "aarch64")]
-static READY_THREAD_RESCUE_COUNT: AtomicU64 = AtomicU64::new(0);
-
-#[cfg(target_arch = "aarch64")]
-pub fn ready_thread_rescue_count() -> u64 {
-    READY_THREAD_RESCUE_COUNT.load(Ordering::Relaxed)
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-pub fn ready_thread_rescue_count() -> u64 {
-    0
-}
-
 const WAKE_ATTRIB_MAX_TIDS: usize = 4096;
 const READY_SITE_NONE: u64 = 0;
 const READY_SITE_SCHEDULE: u64 = 1;
@@ -174,9 +161,6 @@ const MARKER_CLEAR_SOURCE_NONE: u64 = 0;
 const MARKER_CLEAR_SOURCE_EXCEPTION_CLEANUP: u64 = 1;
 const MARKER_CLEAR_SOURCE_CALLER_PRE_CLEAR: u64 = 2;
 
-const RESCUE_PATH_INLINE: u64 = 1;
-const RESCUE_PATH_TIMER: u64 = 2;
-
 pub static WAKE_SITE_SCHEDULE: AtomicU64 = AtomicU64::new(0);
 pub static WAKE_SITE_UNBLOCK: AtomicU64 = AtomicU64::new(0);
 pub static WAKE_SITE_ISR_UNBLOCK: AtomicU64 = AtomicU64::new(0);
@@ -193,12 +177,6 @@ pub static ENQUEUE_ISR_BUFFER_DRAINED_OK: AtomicU64 = AtomicU64::new(0);
 pub static ENQUEUE_ALREADY_QUEUED_OK: AtomicU64 = AtomicU64::new(0);
 pub static ENQUEUE_ISR_BUFFER_FULL: AtomicU64 = AtomicU64::new(0);
 
-pub static RESCUE_REASON_DEFERRED_DROPPED: AtomicU64 = AtomicU64::new(0);
-pub static RESCUE_REASON_ISR_BUFFER_LOST: AtomicU64 = AtomicU64::new(0);
-pub static RESCUE_REASON_WAKE_WITHOUT_ENQUEUE: AtomicU64 = AtomicU64::new(0);
-pub static RESCUE_REASON_OTHER: AtomicU64 = AtomicU64::new(0);
-pub static RESCUE_INLINE_COUNT: AtomicU64 = AtomicU64::new(0);
-pub static RESCUE_TIMER_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static READY_SITE_SCHEDULE_DROPPED_NO_SWITCH: AtomicU64 = AtomicU64::new(0);
 pub static READY_SITE_SCHEDULE_DROPPED_INLINE_SCHED: AtomicU64 = AtomicU64::new(0);
 pub static READY_SITE_SCHEDULE_DROPPED_EXC_RETURN: AtomicU64 = AtomicU64::new(0);
@@ -318,31 +296,6 @@ fn classify_schedule_dropped_detail(tid: u64) {
     bucket.fetch_add(1, Ordering::Relaxed);
 }
 
-#[inline]
-fn classify_rescue_for_tid(tid: u64, rescue_path: u64) {
-    match ready_site_for_tid(tid) {
-        READY_SITE_SCHEDULE => {
-            RESCUE_REASON_DEFERRED_DROPPED.fetch_add(1, Ordering::Relaxed);
-            if rescue_path == RESCUE_PATH_INLINE {
-                classify_schedule_dropped_detail(tid);
-            }
-        }
-        READY_SITE_WAKE_IO_ISR_DRAIN => {
-            RESCUE_REASON_ISR_BUFFER_LOST.fetch_add(1, Ordering::Relaxed);
-        }
-        READY_SITE_UNBLOCK
-        | READY_SITE_SIGNAL
-        | READY_SITE_CHILD_EXIT
-        | READY_SITE_WAKE_IO_LOCKED
-        | READY_SITE_TIMER => {
-            RESCUE_REASON_WAKE_WITHOUT_ENQUEUE.fetch_add(1, Ordering::Relaxed);
-        }
-        _ => {
-            RESCUE_REASON_OTHER.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-}
-
 pub fn emit_wake_attribution_counters() {
     let detail_no_switch = READY_SITE_SCHEDULE_DROPPED_NO_SWITCH.load(Ordering::Relaxed);
     let detail_inline_sched = READY_SITE_SCHEDULE_DROPPED_INLINE_SCHED.load(Ordering::Relaxed);
@@ -391,16 +344,6 @@ pub fn emit_wake_attribution_counters() {
         ENQUEUE_ISR_BUFFER_FULL.load(Ordering::Relaxed)
     );
     crate::serial_println!(
-        "[rescue-attrib] dropped={} isr_lost={} wake_no_enq={} other={} inline={} timer={} total={}",
-        RESCUE_REASON_DEFERRED_DROPPED.load(Ordering::Relaxed),
-        RESCUE_REASON_ISR_BUFFER_LOST.load(Ordering::Relaxed),
-        RESCUE_REASON_WAKE_WITHOUT_ENQUEUE.load(Ordering::Relaxed),
-        RESCUE_REASON_OTHER.load(Ordering::Relaxed),
-        RESCUE_INLINE_COUNT.load(Ordering::Relaxed),
-        RESCUE_TIMER_COUNT.load(Ordering::Relaxed),
-        ready_thread_rescue_count()
-    );
-    crate::serial_println!(
         "[rescue-detail] no_switch={} inline_sched={} exc_return={} marker_cleared_exception_cleanup={} marker_cleared_caller_pre={} marker_cleared_missing_at_entry={} ownership_skip_current={} ownership_skip_other_deferred={} stale_queue={} other={}",
         detail_no_switch,
         detail_inline_sched,
@@ -415,12 +358,9 @@ pub fn emit_wake_attribution_counters() {
     );
     if detail_sum != detail_expected {
         crate::serial_println!(
-            "[rescue-detail-mismatch] sum={} expected={} dropped={} inline={} timer={}",
+            "[rescue-detail-mismatch] sum={} expected={}",
             detail_sum,
-            detail_expected,
-            RESCUE_REASON_DEFERRED_DROPPED.load(Ordering::Relaxed),
-            RESCUE_INLINE_COUNT.load(Ordering::Relaxed),
-            RESCUE_TIMER_COUNT.load(Ordering::Relaxed)
+            detail_expected
         );
     }
 }
@@ -1399,80 +1339,6 @@ impl Scheduler {
                         }
                     }
                     break 'sched_outer n;
-                }
-            }
-            // All queues empty — before falling back to idle, rescue a thread
-            // that is already Ready but unreachable from any run queue. This is
-            // the same predicate used by the timer safety net, but handling it
-            // here avoids multi-second stalls while the scheduler is already
-            // holding the authoritative state.
-            #[cfg(target_arch = "aarch64")]
-            {
-                use core::sync::atomic::{AtomicU32, Ordering as AO};
-                static STUCK_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
-                let first_stuck = self
-                    .threads
-                    .iter()
-                    .find(|t| {
-                        if t.state != super::thread::ThreadState::Ready {
-                            return false;
-                        }
-                        let tid = t.id();
-                        if (0..MAX_CPUS).any(|c| self.cpu_state[c].idle_thread == tid) {
-                            return false;
-                        }
-                        if (0..MAX_CPUS).any(|c| self.cpu_state[c].current_thread == Some(tid)) {
-                            return false;
-                        }
-                        if self.is_in_deferred_requeue(tid) {
-                            return false;
-                        }
-                        true
-                    })
-                    .map(|t| t.id());
-                if let Some(stuck_tid) = first_stuck {
-                    RESCUE_INLINE_COUNT.fetch_add(1, AO::Relaxed);
-                    classify_rescue_for_tid(stuck_tid, RESCUE_PATH_INLINE);
-                    READY_THREAD_RESCUE_COUNT.fetch_add(1, AO::Relaxed);
-                    let count = STUCK_LOG_COUNT.fetch_add(1, AO::Relaxed);
-                    if count < 5 || count % 1000 == 0 {
-                        crate::serial_aarch64::raw_serial_str(b"[SCHED] queue_empty rescue_tid=");
-                        {
-                            let mut n = stuck_tid;
-                            let mut buf = [0u8; 20];
-                            let mut i = 20usize;
-                            if n == 0 {
-                                buf[i - 1] = b'0';
-                                i -= 1;
-                            } else {
-                                while n > 0 {
-                                    i -= 1;
-                                    buf[i] = b'0' + (n % 10) as u8;
-                                    n /= 10;
-                                }
-                            }
-                            crate::serial_aarch64::raw_serial_str(&buf[i..]);
-                        }
-                        crate::serial_aarch64::raw_serial_str(b" count=");
-                        {
-                            let mut n = count as u64;
-                            let mut buf = [0u8; 20];
-                            let mut i = 20usize;
-                            if n == 0 {
-                                buf[i - 1] = b'0';
-                                i -= 1;
-                            } else {
-                                while n > 0 {
-                                    i -= 1;
-                                    buf[i] = b'0' + (n % 10) as u8;
-                                    n /= 10;
-                                }
-                            }
-                            crate::serial_aarch64::raw_serial_str(&buf[i..]);
-                        }
-                        crate::serial_aarch64::raw_serial_str(b"\n");
-                    }
-                    break 'sched_outer stuck_tid;
                 }
             }
             break self.cpu_state[current_cpu].idle_thread;
@@ -2511,116 +2377,6 @@ impl Scheduler {
         crate::per_cpu_aarch64::set_need_resched(true);
     }
 
-    /// Rescue threads that are Ready but stuck outside the ready queue.
-    ///
-    /// Safety net for the block/unblock race described in completion.rs: a thread
-    /// may end up with state=Ready but not in the ready queue, not current on any
-    /// CPU, and not in a DEFERRED_REQUEUE slot.  This can happen when:
-    ///
-    ///   1. `block_current_for_io()` sets state=BlockedOnIO and the thread is
-    ///      still "current" (is_current_on_any_cpu=true).
-    ///   2. A timer fires and the scheduler switches the thread out — without
-    ///      requeueing it (correctly, since it is Blocked).
-    ///   3. The AHCI ISR calls `unblock_for_io()`. At this moment the thread is
-    ///      no longer "current" and not in DEFERRED_REQUEUE (the deferred slot was
-    ///      already drained by a subsequent context switch). `unblock_for_io` sets
-    ///      state=Ready and adds the thread to the ready queue — correct.
-    ///
-    ///   BUT: a second, subtler race exists around `previous_thread`.  Between
-    ///   `commit_cpu_state_after_save` (which clears is_current) and
-    ///   `DEFERRED_REQUEUE[cpu].swap(old_id, …)` (which publishes the deferred
-    ///   slot), there is a window in which the thread is neither "current" nor
-    ///   in DEFERRED_REQUEUE.  If `unblock_for_io` fires in that window it
-    ///   adds the thread to the ready queue.  Then the deferred-requeue
-    ///   processing at the NEXT context switch calls `requeue_thread_after_save`
-    ///   which skips the add (thread already in queue) — correct.
-    ///
-    ///   The actual slow-leak scenario we protect against is any path — now or
-    ///   in future — that leaves state=Ready without a corresponding ready-queue
-    ///   entry.  Running this rescue every ~1 second bounds the maximum stall.
-    ///
-    /// Called from the timer interrupt handler on CPU 0 every 1000 ticks (~1 s).
-    /// Runs under a try_lock to avoid blocking the timer handler; if the lock is
-    /// contended the rescue simply runs on the next second.
-    #[cfg(target_arch = "aarch64")]
-    pub fn rescue_stuck_ready_threads(&mut self) -> u32 {
-        use crate::arch_impl::aarch64::context_switch::{raw_uart_dec, raw_uart_str};
-
-        let mut rescued: u32 = 0;
-
-        // Collect IDs of stuck threads first (immutable pass) to avoid borrow
-        // conflicts with the subsequent mutable requeue_thread_after_save calls.
-        let stuck_tids: alloc::vec::Vec<u64> = self
-            .threads
-            .iter()
-            .filter_map(|t| {
-                if t.state != ThreadState::Ready {
-                    return None;
-                }
-                let tid = t.id();
-                // Exclude idle threads — they are never in the ready queue.
-                if (0..MAX_CPUS).any(|c| self.cpu_state[c].idle_thread == tid) {
-                    return None;
-                }
-                // Exclude threads already in any per-CPU queue — they are not stuck.
-                if self.per_cpu_queues.iter().any(|q| q.contains(&tid)) {
-                    return None;
-                }
-                // Exclude threads currently running on any CPU — they are being
-                // handled by that CPU's scheduling path.
-                if (0..MAX_CPUS).any(|c| self.cpu_state[c].current_thread == Some(tid)) {
-                    return None;
-                }
-                // Exclude threads pending deferred requeue on any CPU — the deferred
-                // mechanism will pick them up at the start of the next context switch.
-                if self.is_in_deferred_requeue(tid) {
-                    return None;
-                }
-                // This thread is genuinely stuck — Ready but reachable by nobody.
-                Some(tid)
-            })
-            .collect();
-
-        for tid in stuck_tids {
-            // Re-validate under mutable borrow (state could have changed since
-            // the immutable scan above, though both run under the scheduler lock).
-            if let Some(thread) = self.get_thread(tid) {
-                if thread.state != ThreadState::Ready {
-                    continue;
-                }
-            } else {
-                continue;
-            }
-
-            // Diagnostic: emit once per rescued thread (lock-free UART).
-            raw_uart_str("[SCHED_RESCUE] stuck tid=");
-            raw_uart_dec(tid);
-            raw_uart_str(" bis=");
-            raw_uart_dec(
-                if self
-                    .get_thread(tid)
-                    .map(|t| t.blocked_in_syscall)
-                    .unwrap_or(false)
-                {
-                    1
-                } else {
-                    0
-                },
-            );
-            raw_uart_str("\n");
-
-            RESCUE_TIMER_COUNT.fetch_add(1, Ordering::Relaxed);
-            classify_rescue_for_tid(tid, RESCUE_PATH_TIMER);
-            READY_THREAD_RESCUE_COUNT.fetch_add(1, Ordering::Relaxed);
-            let target = self.find_target_cpu_for_wakeup(tid);
-            self.per_cpu_queues[target].push_back(tid);
-            self.send_resched_ipi();
-            rescued += 1;
-        }
-
-        rescued
-    }
-
     /// Fix stale cpu_state where it says idle but a real thread is running.
     ///
     /// Called from within the consolidated context switch lock hold, before
@@ -2935,22 +2691,6 @@ where
         }
         result
     })
-}
-
-/// Attempt a non-blocking rescue of stuck ready threads.
-///
-/// Called from the timer interrupt handler (CPU 0) every ~1000 ticks (~1 s).
-/// Uses `try_lock` so it never blocks the timer handler — if the scheduler lock
-/// is contended we simply skip this cycle and try again next second.
-///
-/// See `Scheduler::rescue_stuck_ready_threads` for the full rationale.
-#[cfg(target_arch = "aarch64")]
-pub fn rescue_stuck_ready_threads_try() {
-    if let Some(mut guard) = SCHEDULER.try_lock() {
-        if let Some(sched) = guard.as_mut() {
-            sched.rescue_stuck_ready_threads();
-        }
-    }
 }
 
 /// Collect the idle thread ID for each online CPU into a fixed-size buffer.

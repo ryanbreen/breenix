@@ -1498,10 +1498,9 @@ fn freeze_watchdog_thread() {
         if last_lock_attrib_ms == 0 || uptime_ms.saturating_sub(last_lock_attrib_ms) >= 30_000 {
             let (max_hold_ns, max_hold_holder_tid) = gpu_pci_lock_hold_snapshot();
             crate::serial_println!(
-                "[gpu-pci-lock-attrib] max_hold_ms={} max_hold_holder_tid={} rescues={}",
+                "[gpu-pci-lock-attrib] max_hold_ms={} max_hold_holder_tid={}",
                 max_hold_ns / 1_000_000,
-                max_hold_holder_tid,
-                crate::task::scheduler::ready_thread_rescue_count()
+                max_hold_holder_tid
             );
             crate::task::scheduler::emit_wake_attribution_counters();
             last_lock_attrib_ms = uptime_ms;
