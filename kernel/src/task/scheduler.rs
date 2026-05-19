@@ -2637,6 +2637,37 @@ impl Scheduler {
         }
     }
 
+    #[cfg(target_arch = "aarch64")]
+    fn resolve_exception_cleanup_previous_thread(&mut self, cpu: usize) {
+        if cpu >= MAX_CPUS {
+            return;
+        }
+        let Some(previous) = self.cpu_state[cpu].previous_thread else {
+            return;
+        };
+
+        mark_schedule_ready_detail(previous, READY_SCHED_DETAIL_EXCEPTION_CLEANUP_CLEARED);
+        record_marker_clear_source(previous, MARKER_CLEAR_SOURCE_EXCEPTION_CLEANUP);
+
+        let is_idle = (0..MAX_CPUS).any(|c| self.cpu_state[c].idle_thread == previous);
+        let is_ready = self
+            .get_thread(previous)
+            .map(|thread| thread.state == ThreadState::Ready)
+            .unwrap_or(false);
+        let is_queued = self.per_cpu_queues.iter().any(|q| q.contains(&previous));
+        let is_current = (0..MAX_CPUS).any(|c| self.cpu_state[c].current_thread == Some(previous));
+        let is_other_deferred = (0..MAX_CPUS)
+            .any(|c| c != cpu && self.cpu_state[c].previous_thread == Some(previous));
+
+        if is_ready && !is_idle && !is_queued && !is_current && !is_other_deferred {
+            self.per_cpu_queues[cpu].push_back(previous);
+            ENQUEUE_DEFERRED_DRAINED_OK.fetch_add(1, Ordering::Relaxed);
+            set_need_resched();
+        }
+
+        self.cpu_state[cpu].previous_thread = None;
+    }
+
     /// Repair stale cpu_state after an exception handler redirected to idle.
     ///
     /// The exception path may have committed the per-CPU return state to the
@@ -2653,11 +2684,7 @@ impl Scheduler {
             record_cpu_state_change(cpu, 3, current, idle);
             self.cpu_state[cpu].current_thread = Some(idle);
         }
-        if let Some(previous) = self.cpu_state[cpu].previous_thread {
-            mark_schedule_ready_detail(previous, READY_SCHED_DETAIL_EXCEPTION_CLEANUP_CLEARED);
-            record_marker_clear_source(previous, MARKER_CLEAR_SOURCE_EXCEPTION_CLEANUP);
-        }
-        self.cpu_state[cpu].previous_thread = None;
+        self.resolve_exception_cleanup_previous_thread(cpu);
         set_cpu_idle(cpu, true);
     }
 }
@@ -3232,14 +3259,9 @@ pub fn switch_to_idle_best_effort() {
             let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
             record_cpu_state_change(cpu_id, 3, old_val, idle_id);
             sched.cpu_state[cpu_id].current_thread = Some(idle_id);
-            // Clear previous_thread to prevent starvation: if a crash occurred during
-            // context switch, previous_thread stays set permanently blocking that thread
-            // from being requeued on any CPU.
-            if let Some(previous) = sched.cpu_state[cpu_id].previous_thread {
-                mark_schedule_ready_detail(previous, READY_SCHED_DETAIL_EXCEPTION_CLEANUP_CLEARED);
-                record_marker_clear_source(previous, MARKER_CLEAR_SOURCE_EXCEPTION_CLEANUP);
-            }
-            sched.cpu_state[cpu_id].previous_thread = None;
+            // Resolve previous_thread before returning to idle. If it is a stranded
+            // Ready thread, make it queue-reachable instead of simply dropping the marker.
+            sched.resolve_exception_cleanup_previous_thread(cpu_id);
             unsafe {
                 crate::arch_impl::aarch64::percpu::Aarch64PerCpu::set_exception_cleanup_context(
                     false,
