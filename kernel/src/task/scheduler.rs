@@ -1137,42 +1137,47 @@ impl Scheduler {
             }
         }
 
-        // If current thread is still runnable, mark it as Ready but DON'T add to queue
+        // If current thread is still runnable, mark it as Ready but DON'T add to queue.
+        //
+        // Linux invariant: a task published as runnable must either already be
+        // queued, still be current, or have an unloseable handoff marker.  The
+        // AArch64 context-switch tail cannot enqueue the old thread until its
+        // context is saved, so publish previous_thread before Ready for the
+        // deferred case.  That keeps other CPUs from observing Ready without a
+        // queue/deferred owner.
         let mut should_requeue_old = false;
         if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if current_id != self.cpu_state[Self::current_cpu_id()].idle_thread {
-                let (is_terminated, is_blocked, published_ready) =
-                    if let Some(current) = self.get_thread_mut(current_id) {
-                        let was_terminated = current.state == ThreadState::Terminated;
-                        let was_blocked = current.state == ThreadState::Blocked
-                            || current.state == ThreadState::BlockedOnSignal
-                            || current.state == ThreadState::BlockedOnChildExit
-                            || current.state == ThreadState::BlockedOnTimer
-                            || current.state == ThreadState::BlockedOnIO;
+                let (is_terminated, is_blocked) = if let Some(current) = self.get_thread(current_id)
+                {
+                    let was_terminated = current.state == ThreadState::Terminated;
+                    let was_blocked = current.state == ThreadState::Blocked
+                        || current.state == ThreadState::BlockedOnSignal
+                        || current.state == ThreadState::BlockedOnChildExit
+                        || current.state == ThreadState::BlockedOnTimer
+                        || current.state == ThreadState::BlockedOnIO;
 
-                        // Only charge CPU ticks if thread was actually running
-                        let published_ready = if !was_blocked && !was_terminated {
-                            let now = crate::time::get_ticks();
-                            current.cpu_ticks_total += now.wrapping_sub(current.run_start_ticks);
-                            current.run_start_ticks = now;
-                            current.set_ready();
-                            WAKE_SITE_SCHEDULE.fetch_add(1, Ordering::Relaxed);
-                            record_ready_site(current_id, READY_SITE_SCHEDULE);
-                            true
-                        } else {
-                            current.run_start_ticks = crate::time::get_ticks();
-                            false
-                        };
+                    (was_terminated, was_blocked)
+                } else {
+                    (true, false)
+                };
 
-                        (was_terminated, was_blocked, published_ready)
-                    } else {
-                        (true, false, false)
-                    };
-
+                let published_ready = !is_terminated && !is_blocked;
                 let in_queue = self.per_cpu_queues.iter().any(|q| q.contains(&current_id));
                 // Instead of adding to a queue, just record whether we SHOULD
-                should_requeue_old = !is_terminated && !is_blocked && !in_queue;
+                should_requeue_old = published_ready && !in_queue;
                 if published_ready {
+                    if should_requeue_old {
+                        self.cpu_state[Self::current_cpu_id()].previous_thread = Some(current_id);
+                    }
+                    if let Some(current) = self.get_thread_mut(current_id) {
+                        let now = crate::time::get_ticks();
+                        current.cpu_ticks_total += now.wrapping_sub(current.run_start_ticks);
+                        current.run_start_ticks = now;
+                        current.set_ready();
+                    }
+                    WAKE_SITE_SCHEDULE.fetch_add(1, Ordering::Relaxed);
+                    record_ready_site(current_id, READY_SITE_SCHEDULE);
                     if should_requeue_old {
                         ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
                     } else if in_queue {
@@ -1328,7 +1333,11 @@ impl Scheduler {
                     // No switch needed. The current thread continues running on
                     // this CPU. Don't requeue — it's still "current" and will be
                     // handled next time schedule_deferred_requeue is called.
-                    // Restore Running state (was set to Ready at line 541 above).
+                    // Restore Running state and clear the deferred marker (both
+                    // were set above before we knew this thread would continue).
+                    if self.cpu_state[current_cpu].previous_thread == Some(next_thread_id) {
+                        self.cpu_state[current_cpu].previous_thread = None;
+                    }
                     if let Some(t) = self.get_thread_mut(next_thread_id) {
                         t.set_running();
                     }
@@ -1402,6 +1411,10 @@ impl Scheduler {
         // Don't requeue idle threads (they are never in the ready queue)
         if (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].idle_thread == thread_id) {
             return;
+        }
+        let cpu = Self::current_cpu_id();
+        if cpu < MAX_CPUS && self.cpu_state[cpu].previous_thread == Some(thread_id) {
+            self.cpu_state[cpu].previous_thread = None;
         }
         // CRITICAL: Don't requeue threads that are currently running on any CPU.
         // Race condition: wake_expired_timers (or unblock) can wake a thread and
