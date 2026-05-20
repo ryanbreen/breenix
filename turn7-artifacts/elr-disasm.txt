@@ -1,0 +1,34 @@
+
+target/aarch64-breenix/release/kernel-aarch64:	file format elf64-littleaarch64
+
+Disassembly of section .text:
+
+ffff0000401bfb10 <_ZN6kernel9arch_impl7aarch649exception26dump_fatal_postmortem_once17h55200acfcee6dac3E>:
+ffff0000401bfe20: f9412268     	ldr	x8, [x19, #0x240]
+ffff0000401bfe24: 38346909     	strb	w9, [x8, x20]
+ffff0000401bfe28: 52800e89     	mov	w9, #0x74       // =116
+ffff0000401bfe2c: f9412268     	ldr	x8, [x19, #0x240]
+ffff0000401bfe30: 38346909     	strb	w9, [x8, x20]
+ffff0000401bfe34: f9412268     	ldr	x8, [x19, #0x240]
+ffff0000401bfe38: 3834691b     	strb	w27, [x8, x20]
+ffff0000401bfe3c: f9412268     	ldr	x8, [x19, #0x240]
+ffff0000401bfe40: 3834691d     	strb	w29, [x8, x20]
+ffff0000401bfe44: f9412268     	ldr	x8, [x19, #0x240]
+ffff0000401bfe48: 38346915     	strb	w21, [x8, x20]
+ffff0000401bfe4c: 97fba91b     	bl	0xffff0000400aa2b8 <_ZN6kernel9arch_impl7aarch6414context_switch28dump_defer_requeue_snapshots17h7feffca5f6814c6eE>
+ffff0000401bfe50: f9412268     	ldr	x8, [x19, #0x240]
+ffff0000401bfe54: 52800a89     	mov	w9, #0x54       // =84
+ffff0000401bfe58: 38346915     	strb	w21, [x8, x20]
+ffff0000401bfe5c: f9412268     	ldr	x8, [x19, #0x240]
+ffff0000401bfe60: 38346917     	strb	w23, [x8, x20]
+ffff0000401bfe64: f9412268     	ldr	x8, [x19, #0x240]
+ffff0000401bfe68: 38346917     	strb	w23, [x8, x20]
+ffff0000401bfe6c: f9412268     	ldr	x8, [x19, #0x240]
+ffff0000401bfe70: 38346909     	strb	w9, [x8, x20]
+ffff0000401bfe74: 52800c69     	mov	w9, #0x63       // =99
+ffff0000401bfe78: f9412268     	ldr	x8, [x19, #0x240]
+ffff0000401bfe7c: 38346919     	strb	w25, [x8, x20]
+ffff0000401bfe80: f9412268     	ldr	x8, [x19, #0x240]
+ffff0000401bfe84: 3834691c     	strb	w28, [x8, x20]
+ffff0000401bfe88: f9412268     	ldr	x8, [x19, #0x240]
+ffff0000401bfe8c: 38346909     	strb	w9, [x8, x20]

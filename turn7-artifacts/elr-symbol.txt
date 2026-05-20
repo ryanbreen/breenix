@@ -1,0 +1,16 @@
+tools:
+/Users/wrb/.cargo/bin/addr2line
+/Users/wrb/.cargo/bin/rust-objdump
+
+section headers excerpt:
+
+address candidates:
+--- 0xffff0000401bfe50 ---
+kernel::arch_impl::aarch64::exception::dump_fatal_postmortem_once
+??:0
+--- 0x401bfe50 ---
+??
+??:0
+--- 0x13fe50 ---
+??
+??:0

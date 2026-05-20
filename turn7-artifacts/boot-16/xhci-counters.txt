@@ -1,0 +1,3 @@
+371:[xhci-counters] XHCI_MSI_EVENT_TOTAL=59
+372:[xhci-counters] XHCI_IRQ_ENTRY_TOTAL=60
+373:[xhci-counters] XHCI_LOCK_CONTENDED_TOTAL=1

@@ -1,0 +1,12 @@
+--- 0xffff0000400d0bd8 ---
+idle_loop_arm64 at ??:0
+--- 0xffff0000400d0bd4 ---
+idle_loop_arm64 at ??:0
+--- 0xffff0000400d17f8 ---
+rust_syscall_handler_aarch64 at ??:0
+--- 0xffff000040235000 ---
+kernel::task::scheduler::SCHEDULER at ??:0
+--- 0xffff000040235008 ---
+kernel::task::scheduler::SCHEDULER at ??:0
+--- 0xffff0000412f5204 ---
+kernel::drivers::virtio::gpu_mmio::CTRL_QUEUE at ??:0

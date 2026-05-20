@@ -1,0 +1,113 @@
+--- idle_loop around 0xffff0000400d0b80..0xffff0000400d0c20 ---
+
+target/aarch64-breenix/release/kernel-aarch64:	file format elf64-littleaarch64
+
+Disassembly of section .text:
+
+ffff0000400d0a6c <idle_loop_arm64>:
+ffff0000400d0b80: b4000220     	cbz	x0, 0xffff0000400d0bc4 <idle_loop_arm64+0x158>
+ffff0000400d0b84: 34fffa37     	cbz	w23, 0xffff0000400d0ac8 <idle_loop_arm64+0x5c>
+ffff0000400d0b88: 08dffe88     	ldarb	w8, [x20]
+ffff0000400d0b8c: 34000148     	cbz	w8, 0xffff0000400d0bb4 <idle_loop_arm64+0x148>
+ffff0000400d0b90: d538d088     	mrs	x8, TPIDR_EL1
+ffff0000400d0b94: b4000108     	cbz	x8, 0xffff0000400d0bb4 <idle_loop_arm64+0x148>
+ffff0000400d0b98: 39409108     	ldrb	w8, [x8, #0x24]
+ffff0000400d0b9c: 340000c8     	cbz	w8, 0xffff0000400d0bb4 <idle_loop_arm64+0x148>
+ffff0000400d0ba0: 08dffe88     	ldarb	w8, [x20]
+ffff0000400d0ba4: 34000088     	cbz	w8, 0xffff0000400d0bb4 <idle_loop_arm64+0x148>
+ffff0000400d0ba8: d538d088     	mrs	x8, TPIDR_EL1
+ffff0000400d0bac: b4000048     	cbz	x8, 0xffff0000400d0bb4 <idle_loop_arm64+0x148>
+ffff0000400d0bb0: 3900911f     	strb	wzr, [x8, #0x24]
+ffff0000400d0bb4: 085f7edf     	ldxrb	wzr, [x22]
+ffff0000400d0bb8: 08087edf     	stxrb	w8, wzr, [x22]
+ffff0000400d0bbc: 35ffffc8     	cbnz	w8, 0xffff0000400d0bb4 <idle_loop_arm64+0x148>
+ffff0000400d0bc0: 17ffffc2     	b	0xffff0000400d0ac8 <idle_loop_arm64+0x5c>
+ffff0000400d0bc4: 3707fe37     	tbnz	w23, #0x0, 0xffff0000400d0b88 <idle_loop_arm64+0x11c>
+ffff0000400d0bc8: d5033f9f     	dsb	sy
+ffff0000400d0bcc: d503207f     	wfi
+ffff0000400d0bd0: d5034fff     	msr	DAIFClr, #0xf
+ffff0000400d0bd4: d5033fdf     	isb
+ffff0000400d0bd8: 08dffe88     	ldarb	w8, [x20]
+ffff0000400d0bdc: 34000168     	cbz	w8, 0xffff0000400d0c08 <idle_loop_arm64+0x19c>
+ffff0000400d0be0: d538d088     	mrs	x8, TPIDR_EL1
+ffff0000400d0be4: b4000128     	cbz	x8, 0xffff0000400d0c08 <idle_loop_arm64+0x19c>
+ffff0000400d0be8: 39409108     	ldrb	w8, [x8, #0x24]
+ffff0000400d0bec: 340000e8     	cbz	w8, 0xffff0000400d0c08 <idle_loop_arm64+0x19c>
+ffff0000400d0bf0: 52800037     	mov	w23, #0x1       // =1
+ffff0000400d0bf4: aa1f03e0     	mov	x0, xzr
+ffff0000400d0bf8: d5033bbf     	dmb	ish
+ffff0000400d0bfc: 97ff58b2     	bl	0xffff0000400a6ec4 <_ZN6kernel4task9scheduler16isr_wakeup_depth17haccfe329d9645accE>
+ffff0000400d0c00: b50003c0     	cbnz	x0, 0xffff0000400d0c78 <idle_loop_arm64+0x20c>
+ffff0000400d0c04: 14000008     	b	0xffff0000400d0c24 <idle_loop_arm64+0x1b8>
+ffff0000400d0c08: 3941c2a8     	ldrb	w8, [x21, #0x70]
+ffff0000400d0c0c: 7100011f     	cmp	w8, #0x0
+ffff0000400d0c10: 1a9f07f7     	cset	w23, ne
+ffff0000400d0c14: aa1f03e0     	mov	x0, xzr
+ffff0000400d0c18: d5033bbf     	dmb	ish
+ffff0000400d0c1c: 97ff58aa     	bl	0xffff0000400a6ec4 <_ZN6kernel4task9scheduler16isr_wakeup_depth17haccfe329d9645accE>
+
+--- rust_syscall_handler around 0xffff0000400d17c0..0xffff0000400d1830 ---
+
+target/aarch64-breenix/release/kernel-aarch64:	file format elf64-littleaarch64
+
+Disassembly of section .text:
+
+ffff0000400d1798 <_ZN6kernel9arch_impl7aarch6413syscall_entry23emit_el0_syscall_marker17h31f643f766c9a25eE>:
+ffff0000400d17c0: aa0c03e9     	mov	x9, x12
+ffff0000400d17c4: 54ffff61     	b.ne	0xffff0000400d17b0 <_ZN6kernel9arch_impl7aarch6413syscall_entry23emit_el0_syscall_marker17h31f643f766c9a25eE+0x18>
+ffff0000400d17c8: d65f03c0     	ret
+
+ffff0000400d17cc <rust_syscall_handler_aarch64>:
+ffff0000400d17cc: a9ba7bfd     	stp	x29, x30, [sp, #-0x60]!
+ffff0000400d17d0: a9016ffc     	stp	x28, x27, [sp, #0x10]
+ffff0000400d17d4: a90267fa     	stp	x26, x25, [sp, #0x20]
+ffff0000400d17d8: a9035ff8     	stp	x24, x23, [sp, #0x30]
+ffff0000400d17dc: a90457f6     	stp	x22, x21, [sp, #0x40]
+ffff0000400d17e0: a9054ff4     	stp	x20, x19, [sp, #0x50]
+ffff0000400d17e4: d10983ff     	sub	sp, sp, #0x260
+ffff0000400d17e8: aa0003f3     	mov	x19, x0
+ffff0000400d17ec: d538d088     	mrs	x8, TPIDR_EL1
+ffff0000400d17f0: b40000c8     	cbz	x8, 0xffff0000400d1808 <rust_syscall_handler_aarch64+0x3c>
+ffff0000400d17f4: 91008108     	add	x8, x8, #0x20
+ffff0000400d17f8: 885f7d09     	ldxr	w9, [x8]
+ffff0000400d17fc: 11000529     	add	w9, w9, #0x1
+ffff0000400d1800: 880a7d09     	stxr	w10, w9, [x8]
+ffff0000400d1804: 35ffffaa     	cbnz	w10, 0xffff0000400d17f8 <rust_syscall_handler_aarch64+0x2c>
+ffff0000400d1808: 39440268     	ldrb	w8, [x19, #0x100]
+ffff0000400d180c: 72000d1f     	tst	w8, #0xf
+ffff0000400d1810: 54000160     	b.eq	0xffff0000400d183c <rust_syscall_handler_aarch64+0x70>
+ffff0000400d1814: 92800008     	mov	x8, #-0x1       // =-1
+ffff0000400d1818: f9000268     	str	x8, [x19]
+ffff0000400d181c: d538d088     	mrs	x8, TPIDR_EL1
+ffff0000400d1820: b4003188     	cbz	x8, 0xffff0000400d1e50 <rust_syscall_handler_aarch64+0x684>
+ffff0000400d1824: 91008108     	add	x8, x8, #0x20
+ffff0000400d1828: 885f7d09     	ldxr	w9, [x8]
+ffff0000400d182c: 51000529     	sub	w9, w9, #0x1
+
+--- exception_frame around 0xffff0000400a7bc0..0xffff0000400a7c10 ---
+
+target/aarch64-breenix/release/kernel-aarch64:	file format elf64-littleaarch64
+
+Disassembly of section .text:
+
+ffff0000400a7b0c <syscall_entry_from_el0>:
+ffff0000400a7bc0: d538d089     	mrs	x9, TPIDR_EL1
+ffff0000400a7bc4: b4000089     	cbz	x9, 0xffff0000400a7bd4 <syscall_entry_from_el0+0xc8>
+ffff0000400a7bc8: b940212a     	ldr	w10, [x9, #0x20]
+ffff0000400a7bcc: 1203794a     	and	w10, w10, #0xefffffff
+ffff0000400a7bd0: b900212a     	str	w10, [x9, #0x20]
+ffff0000400a7bd4: d50343ff     	msr	DAIFClr, #0x3
+ffff0000400a7bd8: 910003e0     	mov	x0, sp
+ffff0000400a7bdc: 9400a6fc     	bl	0xffff0000400d17cc <rust_syscall_handler_aarch64>
+ffff0000400a7be0: d50343df     	msr	DAIFSet, #0x3
+ffff0000400a7be4: d538d089     	mrs	x9, TPIDR_EL1
+ffff0000400a7be8: b4000069     	cbz	x9, 0xffff0000400a7bf4 <syscall_entry_from_el0+0xe8>
+ffff0000400a7bec: 910443ea     	add	x10, sp, #0x110
+ffff0000400a7bf0: f900152a     	str	x10, [x9, #0x28]
+ffff0000400a7bf4: 910003e0     	mov	x0, sp
+ffff0000400a7bf8: d2800021     	mov	x1, #0x1        // =1
+ffff0000400a7bfc: 94008306     	bl	0xffff0000400c8814 <check_need_resched_and_switch_arm64>
+ffff0000400a7c00: d538d089     	mrs	x9, TPIDR_EL1
+ffff0000400a7c04: b4000089     	cbz	x9, 0xffff0000400a7c14 <syscall_entry_from_el0+0x108>
+ffff0000400a7c08: b940212a     	ldr	w10, [x9, #0x20]
+ffff0000400a7c0c: 3204014a     	orr	w10, w10, #0x10000000
