@@ -1,0 +1,147 @@
+Turn 18 Breenix P6/P7/P8 polling surface inventory
+==================================================
+
+Scope read:
+- kernel/src/net/mod.rs
+- kernel/src/drivers/virtio/net_pci.rs
+- kernel/src/drivers/virtio/net_mmio.rs
+- kernel/src/main.rs
+- kernel/src/task/softirqd.rs
+- kernel/src/arch_impl/aarch64/exception.rs
+- timer grep for NetRx/raise_softirq in timer files
+
+Important nuance:
+- The comments in net/mod.rs and net_pci.rs describe a 10ms timer-raised
+  NetRx contract, but `rg -n "NetRx|raise_softirq"` over timer files found no
+  live timer raise in the current source snapshot. Treat this as a stale or
+  incomplete contract risk: the PCI MSI path still suppresses interrupts and
+  relies on a later NetRx softirq re-enable path, while the PCI IRQ handler
+  itself never raises NetRx.
+
+Timer-driven device polling / timer-gated PCI completion
+--------------------------------------------------------
+
+1. kernel/src/net/mod.rs:235-247
+   Category: Timer-driven device polling (documented contract; live timer
+   raise not found by grep).
+   Surface: `net_rx_softirq_handler` calls `process_rx()` and then, on aarch64
+   PCI net, calls `net_pci::re_enable_irq()`. The comment says NetRx is raised
+   by a timer every 10ms and that the MSI handler does not raise softirq.
+
+2. kernel/src/drivers/virtio/net_pci.rs:828-868
+   Category: Timer-driven device polling / timer-gated MSI suppression.
+   Surface: PCI MSI-X `handle_interrupt()` increments the MSI counter,
+   suppresses virtqueue callbacks with `VRING_AVAIL_F_NO_INTERRUPT`, disables
+   and clears the GIC SPI, reads the ISR, and leaves both levels suppressed.
+   It does not process packets and does not raise `SoftirqType::NetRx`.
+
+3. kernel/src/drivers/virtio/net_pci.rs:871-928
+   Category: Timer-driven device polling / timer-gated re-enable.
+   Surface: `re_enable_irq()` is documented as called by the NetRx softirq
+   after draining the used ring. It clears the device interrupt condition,
+   clears `NO_INTERRUPT`, checks `used.idx` against `rx_last_used_idx`, and
+   either re-suppresses callbacks or re-enables the GIC SPI.
+
+4. kernel/src/net/mod.rs:467-518
+   Category: Timer-driven device polling when reached from NetRx, also shared
+   by synchronous init/on-demand paths.
+   Surface: aarch64 `process_rx()` loops over `net_pci::receive()` or
+   `net_mmio::receive()` until no packet remains, then drains deferred TCP TX.
+   It is the common ring-drain primitive for timer/softirq, init polling, and
+   on-demand ARP polling.
+
+5. kernel/src/net/mod.rs:448-458 plus kernel/src/main.rs:805-816,
+   kernel/src/main.rs:871-882, kernel/src/main.rs:940-951
+   Category: Timer-driven device polling (idle/hlt-loop variant).
+   Surface: x86 `process_rx()` drains e1000 while `can_receive()` remains true.
+   Three test-only idle loops call `net::process_rx()` after `enable_and_hlt()`
+   as a workaround for softirq timing.
+
+MSI-driven completion (already closer to Linux; keep or preserve shape)
+----------------------------------------------------------------------
+
+6. kernel/src/drivers/virtio/net_mmio.rs:716-745
+   Category: MSI-driven completion.
+   Surface: MMIO VirtIO net IRQ handler acknowledges the MMIO interrupt status
+   and raises `SoftirqType::NetRx`. This matches the broad Linux shape:
+   interrupt context defers packet processing to softirq/NAPI context.
+
+7. kernel/src/arch_impl/aarch64/exception.rs:1264-1268
+   Category: MSI-driven completion.
+   Surface: aarch64 GIC dispatch routes the MMIO net IRQ to
+   `net_mmio::handle_interrupt()`.
+
+8. kernel/src/arch_impl/aarch64/exception.rs:1301-1305
+   Category: Timer-gated PCI completion gap.
+   Surface: aarch64 GIC dispatch routes the PCI net MSI to
+   `net_pci::handle_interrupt()`. Unlike the MMIO path, the PCI handler does
+   not raise NetRx.
+
+Synchronous init polling
+------------------------
+
+9. kernel/src/net/mod.rs:348-389
+   Category: Synchronous init polling.
+   Surface: network init sends a gateway ARP request and then loops 100 times
+   calling `process_rx()`, spinning between iterations, and optionally dumping
+   PCI RX state.
+
+10. kernel/src/net/mod.rs:397-417
+    Category: Synchronous init polling.
+    Surface: after sending an ICMP echo request to the gateway, init loops 20
+    times calling `process_rx()` and spinning between iterations.
+
+11. kernel/src/net/mod.rs:421-433
+    Category: Synchronous init polling.
+    Surface: aarch64 enables PCI MSI-X or MMIO IRQs only after the synchronous
+    ARP/ICMP polling loops finish.
+
+12. kernel/src/drivers/virtio/net_pci.rs:379-389 and
+    kernel/src/drivers/virtio/net_pci.rs:959-984
+    Category: Synchronous init polling.
+    Surface: PCI MSI-X is configured at PCI level during driver init, but the
+    GIC SPI is not enabled until `enable_msi_spi()` runs after init polling.
+
+13. kernel/src/drivers/virtio/net_mmio.rs:253-284 and
+    kernel/src/drivers/virtio/net_mmio.rs:690-704
+    Category: Synchronous init polling.
+    Surface: MMIO net records its IRQ during device init but delays enabling
+    it until `enable_net_irq()` after network stack initialization.
+
+Synchronous on-demand resolution
+--------------------------------
+
+14. kernel/src/net/mod.rs:596-628
+    Category: Synchronous on-demand resolution.
+    Surface: on ARP cache miss, Breenix sends an ARP request, loops 50 times
+    calling `process_rx()` with spin delays, and either sends after the reply
+    arrives or returns an ARP lookup failure.
+
+TX completion busy-wait
+-----------------------
+
+15. kernel/src/drivers/virtio/net_pci.rs:700-747
+    Category: TX completion busy-wait.
+    Surface: PCI VirtIO net posts a TX descriptor, notifies queue 1, then loops
+    on `PCI_TX_QUEUE.used.idx` until it differs from `tx_last_used_idx`, timing
+    out after a spin-loop countdown.
+
+16. kernel/src/drivers/virtio/net_mmio.rs:548-588
+    Category: TX completion busy-wait.
+    Surface: MMIO VirtIO net posts a TX descriptor, notifies queue 1, then
+    loops on `TX_QUEUE.used.idx` until it differs from `tx_last_used_idx`,
+    timing out after a spin-loop countdown.
+
+Softirq substrate
+-----------------
+
+17. kernel/src/task/softirqd.rs:48-82
+    Category: MSI-driven completion substrate.
+    Surface: `SoftirqType::NetRx` is softirq number 3.
+
+18. kernel/src/task/softirqd.rs:141-145 and kernel/src/task/softirqd.rs:162-224
+    Category: MSI-driven completion substrate.
+    Surface: `raise_softirq()` marks softirq pending; `do_softirq()` processes
+    pending handlers with restart bounds and ksoftirqd fallback. The substrate
+    is usable for Linux-shaped IRQ/NAPI-style completion; the PCI driver path
+    is the current mismatch.
