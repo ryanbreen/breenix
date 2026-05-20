@@ -1,0 +1,134 @@
+[2026-05-20 09:38:44] starting Turn 8 20-boot scheduler gate boots=20 wait=90s
+[2026-05-20 09:38:44] boot-1: cleanup before launch
+[2026-05-20 09:38:45] boot-1: starting ./run.sh --parallels --no-build --test 90
+[2026-05-20 09:39:15] boot-1: monitor elapsed=30s vm=breenix-1779284325
+[2026-05-20 09:39:45] boot-1: monitor elapsed=60s vm=breenix-1779284325
+[2026-05-20 09:40:15] boot-1: monitor elapsed=90s vm=breenix-1779284325
+[2026-05-20 09:40:42] boot-1: boot=1 run_status=0 status=pass reason=- activity=yes max_uptime_ms=97354 cpu=60062 msi=60 irq=60 irq_delta=0 lock=0 stale_not_ready=0 stale_current=0 stale_deferred=0 failures=0 data_abort=0 pid1=yes vm=breenix-1779284325
+[2026-05-20 09:40:50] boot-2: cleanup before launch
+[2026-05-20 09:40:51] boot-2: starting ./run.sh --parallels --no-build --test 90
+[2026-05-20 09:41:21] boot-2: monitor elapsed=30s vm=breenix-1779284451
+[2026-05-20 09:41:51] boot-2: monitor elapsed=60s vm=breenix-1779284451
+[2026-05-20 09:42:21] boot-2: monitor elapsed=90s vm=breenix-1779284451
+[2026-05-20 09:42:51] boot-2: monitor elapsed=120s vm=breenix-1779284451
+[2026-05-20 09:43:00] boot-2: boot=2 run_status=0 status=pass reason=- activity=yes max_uptime_ms=112370 cpu=66203 msi=59 irq=59 irq_delta=0 lock=1 stale_not_ready=0 stale_current=0 stale_deferred=0 failures=0 data_abort=0 pid1=yes vm=breenix-1779284451
+[2026-05-20 09:43:16] boot-3: cleanup before launch
+[2026-05-20 09:43:16] boot-3: starting ./run.sh --parallels --no-build --test 90
+[2026-05-20 09:43:46] boot-3: monitor elapsed=30s vm=breenix-1779284597
+[2026-05-20 09:44:16] boot-3: monitor elapsed=60s vm=breenix-1779284597
+[2026-05-20 09:44:46] boot-3: monitor elapsed=90s vm=breenix-1779284597
+[2026-05-20 09:45:05] boot-3: boot=3 run_status=0 status=pass reason=- activity=yes max_uptime_ms=89319 cpu=54210 msi=59 irq=60 irq_delta=1 lock=1 stale_not_ready=0 stale_current=0 stale_deferred=0 failures=0 data_abort=0 pid1=yes vm=breenix-1779284597
+[2026-05-20 09:45:10] boot-4: cleanup before launch
+[2026-05-20 09:45:11] boot-4: starting ./run.sh --parallels --no-build --test 90
+[2026-05-20 09:45:41] boot-4: monitor elapsed=30s vm=breenix-1779284712
+[2026-05-20 09:46:11] boot-4: monitor elapsed=60s vm=breenix-1779284712
+[2026-05-20 09:46:41] boot-4: monitor elapsed=90s vm=breenix-1779284712
+[2026-05-20 09:47:00] boot-4: boot=4 run_status=0 status=pass reason=- activity=yes max_uptime_ms=92297 cpu=59525 msi=59 irq=60 irq_delta=1 lock=1 stale_not_ready=0 stale_current=0 stale_deferred=0 failures=0 data_abort=0 pid1=yes vm=breenix-1779284712
+[2026-05-20 09:47:13] boot-5: cleanup before launch
+[2026-05-20 09:47:14] boot-5: starting ./run.sh --parallels --no-build --test 90
+[2026-05-20 09:47:44] boot-5: monitor elapsed=30s vm=breenix-1779284834
+[2026-05-20 09:48:14] boot-5: monitor elapsed=60s vm=breenix-1779284834
+[2026-05-20 09:48:44] boot-5: monitor elapsed=90s vm=breenix-1779284834
+[2026-05-20 09:48:58] boot-5: boot=5 run_status=0 status=pass reason=- activity=yes max_uptime_ms=91311 cpu=56567 msi=60 irq=59 irq_delta=1 lock=0 stale_not_ready=0 stale_current=0 stale_deferred=0 failures=0 data_abort=0 pid1=yes vm=breenix-1779284834
+[2026-05-20 09:49:02] boot-6: cleanup before launch
+[2026-05-20 09:49:02] boot-6: starting ./run.sh --parallels --no-build --test 90
+[2026-05-20 09:49:32] boot-6: monitor elapsed=30s vm=breenix-1779284943
+[2026-05-20 09:50:02] boot-6: monitor elapsed=60s vm=breenix-1779284943
+[2026-05-20 09:50:33] boot-6: monitor elapsed=91s vm=breenix-1779284943
+[2026-05-20 09:50:57] boot-6: boot=6 run_status=0 status=pass reason=- activity=yes max_uptime_ms=97299 cpu=62978 msi=59 irq=60 irq_delta=1 lock=1 stale_not_ready=0 stale_current=0 stale_deferred=0 failures=0 data_abort=0 pid1=yes vm=breenix-1779284943
+[2026-05-20 09:51:20] boot-7: cleanup before launch
+[2026-05-20 09:51:20] boot-7: starting ./run.sh --parallels --no-build --test 90
+[2026-05-20 09:51:50] boot-7: monitor elapsed=30s vm=breenix-1779285081
+[2026-05-20 09:52:20] boot-7: monitor elapsed=60s vm=breenix-1779285081
+[2026-05-20 09:52:50] boot-7: monitor elapsed=90s vm=breenix-1779285081
+[2026-05-20 09:53:08] boot-7: boot=7 run_status=0 status=pass reason=- activity=yes max_uptime_ms=90320 cpu=56180 msi=59 irq=59 irq_delta=0 lock=1 stale_not_ready=0 stale_current=0 stale_deferred=0 failures=0 data_abort=0 pid1=yes vm=breenix-1779285081
+[2026-05-20 09:53:11] boot-8: cleanup before launch
+[2026-05-20 09:53:12] boot-8: starting ./run.sh --parallels --no-build --test 90
+[2026-05-20 09:53:42] boot-8: monitor elapsed=30s vm=breenix-1779285192
+[2026-05-20 09:54:12] boot-8: monitor elapsed=60s vm=breenix-1779285192
+[2026-05-20 09:54:42] boot-8: monitor elapsed=90s vm=breenix-1779285192
+[2026-05-20 09:55:12] boot-8: monitor elapsed=120s vm=breenix-1779285192
+[2026-05-20 09:55:17] boot-8: boot=8 run_status=0 status=pass reason=- activity=yes max_uptime_ms=106307 cpu=69682 msi=59 irq=60 irq_delta=1 lock=1 stale_not_ready=0 stale_current=0 stale_deferred=0 failures=0 data_abort=0 pid1=yes vm=breenix-1779285192
+[2026-05-20 09:55:43] boot-9: cleanup before launch
+[2026-05-20 09:55:44] boot-9: starting ./run.sh --parallels --no-build --test 90
+[2026-05-20 09:56:14] boot-9: monitor elapsed=30s vm=breenix-1779285344
+[2026-05-20 09:56:44] boot-9: monitor elapsed=60s vm=breenix-1779285344
+[2026-05-20 09:57:14] boot-9: monitor elapsed=90s vm=breenix-1779285344
+[2026-05-20 09:57:44] boot-9: monitor elapsed=120s vm=breenix-1779285344
+[2026-05-20 09:57:48] boot-9: boot=9 run_status=0 status=pass reason=- activity=yes max_uptime_ms=104321 cpu=66259 msi=59 irq=60 irq_delta=1 lock=1 stale_not_ready=0 stale_current=0 stale_deferred=0 failures=0 data_abort=0 pid1=yes vm=breenix-1779285344
+[2026-05-20 09:58:23] boot-10: cleanup before launch
+[2026-05-20 09:58:23] boot-10: starting ./run.sh --parallels --no-build --test 90
+[2026-05-20 09:58:53] boot-10: monitor elapsed=30s vm=breenix-1779285503
+[2026-05-20 09:59:23] boot-10: monitor elapsed=60s vm=breenix-1779285503
+[2026-05-20 09:59:53] boot-10: monitor elapsed=90s vm=breenix-1779285503
+[2026-05-20 10:00:23] boot-10: monitor elapsed=120s vm=breenix-1779285503
+[2026-05-20 10:00:39] boot-10: boot=10 run_status=0 status=pass reason=- activity=yes max_uptime_ms=113351 cpu=70104 msi=38 irq=38 irq_delta=0 lock=1 stale_not_ready=0 stale_current=0 stale_deferred=0 failures=0 data_abort=0 pid1=yes vm=breenix-1779285503
+[2026-05-20 10:01:10] boot-11: cleanup before launch
+[2026-05-20 10:01:11] boot-11: starting ./run.sh --parallels --no-build --test 90
+[2026-05-20 10:01:41] boot-11: monitor elapsed=30s vm=breenix-1779285672
+[2026-05-20 10:02:11] boot-11: monitor elapsed=60s vm=breenix-1779285672
+[2026-05-20 10:02:41] boot-11: monitor elapsed=90s vm=breenix-1779285672
+[2026-05-20 10:03:11] boot-11: monitor elapsed=120s vm=breenix-1779285672
+[2026-05-20 10:03:20] boot-11: boot=11 run_status=0 status=pass reason=- activity=yes max_uptime_ms=113327 cpu=73364 msi=60 irq=60 irq_delta=0 lock=0 stale_not_ready=0 stale_current=0 stale_deferred=0 failures=0 data_abort=0 pid1=yes vm=breenix-1779285672
+[2026-05-20 10:03:40] boot-12: cleanup before launch
+[2026-05-20 10:03:41] boot-12: starting ./run.sh --parallels --no-build --test 90
+[2026-05-20 10:04:11] boot-12: monitor elapsed=30s vm=breenix-1779285821
+[2026-05-20 10:04:41] boot-12: monitor elapsed=60s vm=breenix-1779285821
+[2026-05-20 10:05:11] boot-12: monitor elapsed=90s vm=breenix-1779285821
+[2026-05-20 10:05:41] boot-12: monitor elapsed=120s vm=breenix-1779285821
+[2026-05-20 10:05:51] boot-12: boot=12 run_status=0 status=pass reason=- activity=yes max_uptime_ms=115328 cpu=73183 msi=59 irq=60 irq_delta=1 lock=1 stale_not_ready=0 stale_current=0 stale_deferred=0 failures=0 data_abort=0 pid1=yes vm=breenix-1779285821
+[2026-05-20 10:06:19] boot-13: cleanup before launch
+[2026-05-20 10:06:19] boot-13: starting ./run.sh --parallels --no-build --test 90
+[2026-05-20 10:06:49] boot-13: monitor elapsed=30s vm=breenix-1779285979
+[2026-05-20 10:07:19] boot-13: monitor elapsed=60s vm=breenix-1779285979
+[2026-05-20 10:07:49] boot-13: monitor elapsed=90s vm=breenix-1779285979
+[2026-05-20 10:08:09] boot-13: boot=13 run_status=0 status=pass reason=- activity=yes max_uptime_ms=90358 cpu=59854 msi=60 irq=60 irq_delta=0 lock=0 stale_not_ready=0 stale_current=0 stale_deferred=0 failures=0 data_abort=0 pid1=yes vm=breenix-1779285979
+[2026-05-20 10:08:27] boot-14: cleanup before launch
+[2026-05-20 10:08:27] boot-14: starting ./run.sh --parallels --no-build --test 90
+[2026-05-20 10:08:57] boot-14: monitor elapsed=30s vm=breenix-1779286107
+[2026-05-20 10:09:27] boot-14: monitor elapsed=60s vm=breenix-1779286107
+[2026-05-20 10:09:57] boot-14: monitor elapsed=90s vm=breenix-1779286107
+[2026-05-20 10:10:27] boot-14: monitor elapsed=120s vm=breenix-1779286107
+[2026-05-20 10:10:57] boot-14: monitor elapsed=150s vm=breenix-1779286107
+[2026-05-20 10:11:19] boot-14: boot=14 run_status=0 status=pass reason=- activity=yes max_uptime_ms=152356 cpu=94105 msi=24 irq=23 irq_delta=1 lock=1 stale_not_ready=0 stale_current=0 stale_deferred=0 failures=0 data_abort=0 pid1=yes vm=breenix-1779286107
+[2026-05-20 10:11:37] boot-15: cleanup before launch
+[2026-05-20 10:11:37] boot-15: starting ./run.sh --parallels --no-build --test 90
+[2026-05-20 10:12:07] boot-15: monitor elapsed=30s vm=breenix-1779286297
+[2026-05-20 10:12:37] boot-15: monitor elapsed=60s vm=breenix-1779286297
+[2026-05-20 10:13:07] boot-15: monitor elapsed=90s vm=breenix-1779286297
+[2026-05-20 10:13:37] boot-15: monitor elapsed=120s vm=breenix-1779286297
+[2026-05-20 10:13:42] boot-15: boot=15 run_status=0 status=pass reason=- activity=yes max_uptime_ms=105333 cpu=66417 msi=59 irq=59 irq_delta=0 lock=1 stale_not_ready=0 stale_current=0 stale_deferred=0 failures=0 data_abort=0 pid1=yes vm=breenix-1779286297
+[2026-05-20 10:14:13] boot-16: cleanup before launch
+[2026-05-20 10:14:13] boot-16: starting ./run.sh --parallels --no-build --test 90
+[2026-05-20 10:14:43] boot-16: monitor elapsed=30s vm=breenix-1779286453
+[2026-05-20 10:15:13] boot-16: monitor elapsed=60s vm=breenix-1779286453
+[2026-05-20 10:15:43] boot-16: monitor elapsed=90s vm=breenix-1779286453
+[2026-05-20 10:16:04] boot-16: boot=16 run_status=0 status=pass reason=- activity=yes max_uptime_ms=89313 cpu=56048 msi=59 irq=60 irq_delta=1 lock=1 stale_not_ready=0 stale_current=0 stale_deferred=0 failures=0 data_abort=0 pid1=yes vm=breenix-1779286453
+[2026-05-20 10:16:11] boot-17: cleanup before launch
+[2026-05-20 10:16:11] boot-17: starting ./run.sh --parallels --no-build --test 90
+[2026-05-20 10:16:41] boot-17: monitor elapsed=30s vm=breenix-1779286572
+[2026-05-20 10:17:11] boot-17: monitor elapsed=60s vm=breenix-1779286572
+[2026-05-20 10:17:41] boot-17: monitor elapsed=90s vm=breenix-1779286572
+[2026-05-20 10:18:00] boot-17: boot=17 run_status=0 status=pass reason=- activity=yes max_uptime_ms=90340 cpu=58493 msi=59 irq=60 irq_delta=1 lock=1 stale_not_ready=0 stale_current=0 stale_deferred=0 failures=0 data_abort=0 pid1=yes vm=breenix-1779286572
+[2026-05-20 10:18:05] boot-18: cleanup before launch
+[2026-05-20 10:18:05] boot-18: starting ./run.sh --parallels --no-build --test 90
+[2026-05-20 10:18:35] boot-18: monitor elapsed=30s vm=breenix-1779286685
+[2026-05-20 10:19:05] boot-18: monitor elapsed=60s vm=breenix-1779286685
+[2026-05-20 10:19:35] boot-18: monitor elapsed=90s vm=breenix-1779286685
+[2026-05-20 10:20:05] boot-18: monitor elapsed=120s vm=breenix-1779286685
+[2026-05-20 10:20:09] boot-18: boot=18 run_status=0 status=pass reason=- activity=yes max_uptime_ms=99315 cpu=61729 msi=59 irq=60 irq_delta=1 lock=1 stale_not_ready=0 stale_current=0 stale_deferred=0 failures=0 data_abort=0 pid1=yes vm=breenix-1779286685
+[2026-05-20 10:20:36] boot-19: cleanup before launch
+[2026-05-20 10:20:36] boot-19: starting ./run.sh --parallels --no-build --test 90
+[2026-05-20 10:21:06] boot-19: monitor elapsed=30s vm=breenix-1779286836
+[2026-05-20 10:21:36] boot-19: monitor elapsed=60s vm=breenix-1779286836
+[2026-05-20 10:22:06] boot-19: monitor elapsed=90s vm=breenix-1779286836
+[2026-05-20 10:22:36] boot-19: monitor elapsed=120s vm=breenix-1779286836
+[2026-05-20 10:22:56] boot-19: boot=19 run_status=0 status=pass reason=- activity=yes max_uptime_ms=108369 cpu=11919 msi=59 irq=60 irq_delta=1 lock=1 stale_not_ready=0 stale_current=0 stale_deferred=0 failures=0 data_abort=0 pid1=yes vm=breenix-1779286836
+[2026-05-20 10:23:12] boot-20: cleanup before launch
+[2026-05-20 10:23:13] boot-20: starting ./run.sh --parallels --no-build --test 90
+[2026-05-20 10:23:43] boot-20: monitor elapsed=30s vm=breenix-1779286993
+[2026-05-20 10:24:13] boot-20: monitor elapsed=60s vm=breenix-1779286993
+[2026-05-20 10:24:43] boot-20: monitor elapsed=90s vm=breenix-1779286993
+[2026-05-20 10:25:13] boot-20: monitor elapsed=120s vm=breenix-1779286993
+[2026-05-20 10:25:43] boot-20: boot=20 run_status=0 status=pass reason=- activity=yes max_uptime_ms=127325 cpu=82365 msi=60 irq=60 irq_delta=0 lock=0 stale_not_ready=0 stale_current=0 stale_deferred=0 failures=0 data_abort=0 pid1=yes vm=breenix-1779286993
+[2026-05-20 10:26:09] Turn 8 20-boot scheduler gate complete

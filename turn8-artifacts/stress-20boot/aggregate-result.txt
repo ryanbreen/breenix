@@ -1,0 +1,23 @@
+boot-1: pass run_status=0 activity=yes msi=60 irq=60 delta=0 stale_not_ready=0 stale_current=0 stale_deferred=0 data_abort=0 pid1=yes reason=-
+boot-2: pass run_status=0 activity=yes msi=59 irq=59 delta=0 stale_not_ready=0 stale_current=0 stale_deferred=0 data_abort=0 pid1=yes reason=-
+boot-3: pass run_status=0 activity=yes msi=59 irq=60 delta=1 stale_not_ready=0 stale_current=0 stale_deferred=0 data_abort=0 pid1=yes reason=-
+boot-4: pass run_status=0 activity=yes msi=59 irq=60 delta=1 stale_not_ready=0 stale_current=0 stale_deferred=0 data_abort=0 pid1=yes reason=-
+boot-5: pass run_status=0 activity=yes msi=60 irq=59 delta=1 stale_not_ready=0 stale_current=0 stale_deferred=0 data_abort=0 pid1=yes reason=-
+boot-6: pass run_status=0 activity=yes msi=59 irq=60 delta=1 stale_not_ready=0 stale_current=0 stale_deferred=0 data_abort=0 pid1=yes reason=-
+boot-7: pass run_status=0 activity=yes msi=59 irq=59 delta=0 stale_not_ready=0 stale_current=0 stale_deferred=0 data_abort=0 pid1=yes reason=-
+boot-8: pass run_status=0 activity=yes msi=59 irq=60 delta=1 stale_not_ready=0 stale_current=0 stale_deferred=0 data_abort=0 pid1=yes reason=-
+boot-9: pass run_status=0 activity=yes msi=59 irq=60 delta=1 stale_not_ready=0 stale_current=0 stale_deferred=0 data_abort=0 pid1=yes reason=-
+boot-10: pass run_status=0 activity=yes msi=38 irq=38 delta=0 stale_not_ready=0 stale_current=0 stale_deferred=0 data_abort=0 pid1=yes reason=-
+boot-11: pass run_status=0 activity=yes msi=60 irq=60 delta=0 stale_not_ready=0 stale_current=0 stale_deferred=0 data_abort=0 pid1=yes reason=-
+boot-12: pass run_status=0 activity=yes msi=59 irq=60 delta=1 stale_not_ready=0 stale_current=0 stale_deferred=0 data_abort=0 pid1=yes reason=-
+boot-13: pass run_status=0 activity=yes msi=60 irq=60 delta=0 stale_not_ready=0 stale_current=0 stale_deferred=0 data_abort=0 pid1=yes reason=-
+boot-14: pass run_status=0 activity=yes msi=24 irq=23 delta=1 stale_not_ready=0 stale_current=0 stale_deferred=0 data_abort=0 pid1=yes reason=-
+boot-15: pass run_status=0 activity=yes msi=59 irq=59 delta=0 stale_not_ready=0 stale_current=0 stale_deferred=0 data_abort=0 pid1=yes reason=-
+boot-16: pass run_status=0 activity=yes msi=59 irq=60 delta=1 stale_not_ready=0 stale_current=0 stale_deferred=0 data_abort=0 pid1=yes reason=-
+boot-17: pass run_status=0 activity=yes msi=59 irq=60 delta=1 stale_not_ready=0 stale_current=0 stale_deferred=0 data_abort=0 pid1=yes reason=-
+boot-18: pass run_status=0 activity=yes msi=59 irq=60 delta=1 stale_not_ready=0 stale_current=0 stale_deferred=0 data_abort=0 pid1=yes reason=-
+boot-19: pass run_status=0 activity=yes msi=59 irq=60 delta=1 stale_not_ready=0 stale_current=0 stale_deferred=0 data_abort=0 pid1=yes reason=-
+boot-20: pass run_status=0 activity=yes msi=60 irq=60 delta=0 stale_not_ready=0 stale_current=0 stale_deferred=0 data_abort=0 pid1=yes reason=-
+overall: pass
+boots: 20 failures=0 data_abort_boots=0 max_msi_irq_delta=1
+scheduler_stale_totals: not_ready=0 current=0 deferred=0
