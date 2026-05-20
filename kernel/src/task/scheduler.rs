@@ -48,9 +48,6 @@
 
 use super::thread::{Thread, ThreadState};
 use crate::log_serial_println;
-use crate::tracing::providers::counters::{
-    SCHED_STALE_QUEUE_CURRENT, SCHED_STALE_QUEUE_DEFERRED, SCHED_STALE_QUEUE_NOT_READY,
-};
 use alloc::{boxed::Box, collections::BinaryHeap, collections::VecDeque};
 use core::cmp::Reverse;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -879,11 +876,34 @@ impl Scheduler {
         // Check for expired timer-blocked threads and wake them
         self.wake_expired_timers();
 
-        // Get next dispatchable thread from ready queue (local first, then steal).
+        // Get next thread from ready queue (local first, then steal), skipping terminated.
         let current_cpu = Self::current_cpu_id();
-        let mut next_thread_id = self
-            .pop_next_dispatchable_thread(current_cpu)
-            .unwrap_or(self.cpu_state[current_cpu].idle_thread);
+        let mut next_thread_id = 'outer: loop {
+            // Try local queue first
+            while let Some(n) = self.per_cpu_queues[current_cpu].pop_front() {
+                if let Some(thread) = self.get_thread(n) {
+                    if thread.state == ThreadState::Terminated {
+                        continue;
+                    }
+                }
+                break 'outer n;
+            }
+            // Local queue empty — work-steal from other CPUs
+            for steal_cpu in 0..MAX_CPUS {
+                if steal_cpu == current_cpu {
+                    continue;
+                }
+                while let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
+                    if let Some(thread) = self.get_thread(n) {
+                        if thread.state == ThreadState::Terminated {
+                            continue;
+                        }
+                    }
+                    break 'outer n;
+                }
+            }
+            break self.cpu_state[current_cpu].idle_thread;
+        };
 
         if debug_log {
             log_serial_println!(
@@ -896,19 +916,28 @@ impl Scheduler {
         // Important: Don't skip if it's the same thread when there are other threads waiting
         // This was causing the issue where yielding wouldn't switch to other ready threads
         let any_queued = self.per_cpu_queues.iter().any(|q| !q.is_empty());
-        let mut same_thread_requeued = false;
         if Some(next_thread_id) == self.cpu_state[current_cpu].current_thread && any_queued {
             // Put current thread back in its CPU queue and get the next one
             self.per_cpu_queues[current_cpu].push_back(next_thread_id);
-            same_thread_requeued = true;
-            if let Some(found) =
-                self.pop_next_dispatchable_thread_excluding(current_cpu, Some(next_thread_id))
-            {
-                next_thread_id = found;
-            }
-        }
-
-        if Some(next_thread_id) == self.cpu_state[current_cpu].current_thread {
+            // Pop from local queue first; fall back to any CPU
+            next_thread_id = {
+                let mut found = None;
+                if let Some(n) = self.per_cpu_queues[current_cpu].pop_front() {
+                    found = Some(n);
+                } else {
+                    for steal_cpu in 0..MAX_CPUS {
+                        if steal_cpu == current_cpu {
+                            continue;
+                        }
+                        if let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
+                            found = Some(n);
+                            break;
+                        }
+                    }
+                }
+                found?
+            };
+        } else if Some(next_thread_id) == self.cpu_state[current_cpu].current_thread {
             // Current thread is the only runnable thread.
             // If it's NOT the idle thread, switch to idle to give it a chance.
             // This is important for kthreads that yield while waiting for the idle
@@ -946,9 +975,7 @@ impl Scheduler {
                         return None;
                     }
                 }
-                if !same_thread_requeued {
-                    self.per_cpu_queues[current_cpu].push_back(next_thread_id);
-                }
+                self.per_cpu_queues[current_cpu].push_back(next_thread_id);
                 next_thread_id = self.cpu_state[current_cpu].idle_thread;
                 // CRITICAL: Set NEED_RESCHED so the next timer interrupt will
                 // switch back to the deferred thread. Without this, idle would
@@ -1106,11 +1133,34 @@ impl Scheduler {
         // Check for expired timer-blocked threads and wake them
         self.wake_expired_timers();
 
-        // Get next dispatchable thread: local queue first, then work-steal, then idle.
+        // Get next thread: local queue first, then work-steal, then idle.
         let current_cpu = Self::current_cpu_id();
-        let mut next_thread_id = self
-            .pop_next_dispatchable_thread(current_cpu)
-            .unwrap_or(self.cpu_state[current_cpu].idle_thread);
+        let mut next_thread_id = 'sched_outer: loop {
+            // Try local queue
+            while let Some(n) = self.per_cpu_queues[current_cpu].pop_front() {
+                if let Some(thread) = self.get_thread(n) {
+                    if thread.state == ThreadState::Terminated {
+                        continue;
+                    }
+                }
+                break 'sched_outer n;
+            }
+            // Work-steal from other CPUs
+            for steal_cpu in 0..MAX_CPUS {
+                if steal_cpu == current_cpu {
+                    continue;
+                }
+                while let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
+                    if let Some(thread) = self.get_thread(n) {
+                        if thread.state == ThreadState::Terminated {
+                            continue;
+                        }
+                    }
+                    break 'sched_outer n;
+                }
+            }
+            break self.cpu_state[current_cpu].idle_thread;
+        };
 
         // Handle same-thread cases
         let any_other_queued = self.per_cpu_queues.iter().any(|q| !q.is_empty());
@@ -1119,14 +1169,28 @@ impl Scheduler {
             // DON'T push current back to queue yet — defer until after context save.
             // Just pop the next different thread.
             should_requeue_old = true;
-            if let Some(found) =
-                self.pop_next_dispatchable_thread_excluding(current_cpu, Some(next_thread_id))
-            {
-                next_thread_id = found;
-            }
-        }
-
-        if Some(next_thread_id) == self.cpu_state[current_cpu].current_thread {
+            // Try local queue first, then steal
+            next_thread_id = {
+                let mut found = None;
+                if let Some(n) = self.per_cpu_queues[current_cpu].pop_front() {
+                    found = Some(n);
+                } else {
+                    for steal_cpu in 0..MAX_CPUS {
+                        if steal_cpu == current_cpu {
+                            continue;
+                        }
+                        if let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
+                            found = Some(n);
+                            break;
+                        }
+                    }
+                }
+                match found {
+                    Some(id) => id,
+                    None => return None,
+                }
+            };
+        } else if Some(next_thread_id) == self.cpu_state[current_cpu].current_thread {
             if next_thread_id != self.cpu_state[current_cpu].idle_thread {
                 let is_userspace = self
                     .get_thread(next_thread_id)
@@ -2033,90 +2097,6 @@ impl Scheduler {
     /// Get the total ready queue length across all CPUs (for tracing)
     pub fn ready_queue_length(&self) -> usize {
         self.per_cpu_queues.iter().map(|q| q.len()).sum()
-    }
-
-    fn queued_thread_is_dispatchable(&self, tid: u64, current_cpu: usize) -> bool {
-        let Some(thread) = self.get_thread(tid) else {
-            return false;
-        };
-
-        if thread.state == ThreadState::Terminated {
-            return false;
-        }
-        if thread.state != ThreadState::Ready {
-            SCHED_STALE_QUEUE_NOT_READY.increment();
-            return false;
-        }
-
-        if (0..MAX_CPUS).any(|cpu| {
-            cpu != current_cpu && self.cpu_state[cpu].current_thread == Some(tid)
-        }) {
-            SCHED_STALE_QUEUE_CURRENT.increment();
-            return false;
-        }
-
-        if (0..MAX_CPUS).any(|cpu| cpu != current_cpu && self.cpu_state[cpu].idle_thread == tid) {
-            return false;
-        }
-
-        #[cfg(target_arch = "aarch64")]
-        if self.is_in_deferred_requeue(tid) {
-            SCHED_STALE_QUEUE_DEFERRED.increment();
-            return false;
-        }
-
-        true
-    }
-
-    fn pop_dispatchable_from_cpu_queue_excluding(
-        &mut self,
-        queue_cpu: usize,
-        current_cpu: usize,
-        excluded_tid: Option<u64>,
-    ) -> Option<u64> {
-        let scan_count = self.per_cpu_queues[queue_cpu].len();
-        for _ in 0..scan_count {
-            let tid = self.per_cpu_queues[queue_cpu].pop_front()?;
-            if Some(tid) == excluded_tid {
-                self.per_cpu_queues[queue_cpu].push_back(tid);
-                continue;
-            }
-            if self.queued_thread_is_dispatchable(tid, current_cpu) {
-                return Some(tid);
-            }
-        }
-        None
-    }
-
-    fn pop_next_dispatchable_thread(&mut self, current_cpu: usize) -> Option<u64> {
-        self.pop_next_dispatchable_thread_excluding(current_cpu, None)
-    }
-
-    fn pop_next_dispatchable_thread_excluding(
-        &mut self,
-        current_cpu: usize,
-        excluded_tid: Option<u64>,
-    ) -> Option<u64> {
-        if let Some(tid) =
-            self.pop_dispatchable_from_cpu_queue_excluding(current_cpu, current_cpu, excluded_tid)
-        {
-            return Some(tid);
-        }
-
-        for steal_cpu in 0..MAX_CPUS {
-            if steal_cpu == current_cpu {
-                continue;
-            }
-            if let Some(tid) = self.pop_dispatchable_from_cpu_queue_excluding(
-                steal_cpu,
-                current_cpu,
-                excluded_tid,
-            ) {
-                return Some(tid);
-            }
-        }
-
-        None
     }
 
     /// Find which CPU this thread last ran on, or the least-loaded CPU if unknown.
