@@ -1,0 +1,2 @@
+kernel/src/drivers/usb/xhci.rs:5282:        None => return, // Lock contended, skip — poll_hid_events will handle events
+kernel/src/drivers/virtio/net_mmio.rs:280:                    "[virtio-net] Network device IRQ {} (will enable after net init)",

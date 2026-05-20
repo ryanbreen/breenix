@@ -1,0 +1,6 @@
+kernel/src/drivers/usb/xhci.rs:3245:    // Linux does all setup for interface N before moving to interface N+1.
+kernel/src/drivers/usb/xhci.rs:4516:    //     Linux does NOT set Bus Master or INTx Disable here.
+kernel/src/drivers/usb/xhci.rs:4540:    // Note: Linux does NOT write Cache Line Size or Latency Timer for PCIe devices.
+kernel/src/drivers/virtio/gpu_pci.rs:1919:    // Write config_msix_vector (Linux does this in vp_find_vqs_msix)
+kernel/src/drivers/virtio/gpu_pci.rs:2092:    // GET_CAPSET_INFO + GET_CAPSET for each capset (Linux does both before GET_DISPLAY_INFO).
+kernel/src/drivers/virtio/gpu_pci.rs:2140:    // but SET_SCANOUT at a larger resolution works fine (Linux does arbitrary mode

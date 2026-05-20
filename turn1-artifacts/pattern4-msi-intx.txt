@@ -1,0 +1,242 @@
+kernel/src/drivers/vmware/svga3.rs:6://!   - MSI-X interrupt support
+kernel/src/drivers/usb/xhci.rs:411:/// Whether start_hid_polling has been called (deferred from init to after MSI active).
+kernel/src/drivers/usb/xhci.rs:430:/// Counts events processed via MSI interrupt handler (handle_interrupt).
+kernel/src/drivers/usb/xhci.rs:431:pub static MSI_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
+kernel/src/drivers/usb/xhci.rs:433:/// Flags set by MSI interrupt handler to request requeue from timer poll.
+kernel/src/drivers/usb/xhci.rs:434:/// Requeuing from IRQ context causes MSI storms on virtual XHCI controllers.
+kernel/src/drivers/usb/xhci.rs:435:static MSI_KBD_NEEDS_REQUEUE: AtomicBool = AtomicBool::new(false);
+kernel/src/drivers/usb/xhci.rs:436:static MSI_MOUSE_NEEDS_REQUEUE: AtomicBool = AtomicBool::new(false);
+kernel/src/drivers/usb/xhci.rs:437:static MSI_NKRO_NEEDS_REQUEUE: AtomicBool = AtomicBool::new(false);
+kernel/src/drivers/usb/xhci.rs:438:static MSI_MOUSE2_NEEDS_REQUEUE: AtomicBool = AtomicBool::new(false);
+kernel/src/drivers/usb/xhci.rs:539:/// 4=MSI requeue, 5=CC=SUCCESS requeue, 6=poll CC=SUCCESS requeue
+kernel/src/drivers/usb/xhci.rs:570:/// before the MSI pathway is active. Only set once; re-queue via MSI/error handlers.
+kernel/src/drivers/usb/xhci.rs:575:/// MSI → GIC SPI → CPU ISR → IMAN.IP ack pathway is active when the xHC
+kernel/src/drivers/usb/xhci.rs:3723:                        // Use MSI_*_NEEDS_REQUEUE to defer: the next timer tick's state
+kernel/src/drivers/usb/xhci.rs:3728:                                MSI_KBD_NEEDS_REQUEUE.store(true, Ordering::Release);
+kernel/src/drivers/usb/xhci.rs:3733:                                MSI_NKRO_NEEDS_REQUEUE.store(true, Ordering::Release);
+kernel/src/drivers/usb/xhci.rs:3735:                                MSI_MOUSE_NEEDS_REQUEUE.store(true, Ordering::Release);
+kernel/src/drivers/usb/xhci.rs:3740:                                MSI_MOUSE2_NEEDS_REQUEUE.store(true, Ordering::Release);
+kernel/src/drivers/usb/xhci.rs:4384:/// Set up PCI MSI for the XHCI controller through GICv2m.
+kernel/src/drivers/usb/xhci.rs:4386:/// Walks the PCI capability list to find the MSI capability, probes for
+kernel/src/drivers/usb/xhci.rs:4388:/// MSI registers, configures the GIC, and enables the interrupt.
+kernel/src/drivers/usb/xhci.rs:4391:/// Falls back to polling (returns 0) if MSI or GICv2m is unavailable.
+kernel/src/drivers/usb/xhci.rs:4395:    // Step 1: Find MSI capability in PCI config space
+kernel/src/drivers/usb/xhci.rs:4439:    // Step 4: Program PCI MSI registers
+kernel/src/drivers/usb/xhci.rs:4440:    // MSI address = GICv2m doorbell (MSI_SETSPI_NS at offset 0x40)
+kernel/src/drivers/usb/xhci.rs:4448:    // to prevent an interrupt storm. With IMAN.IE=0, the XHCI won't write MSI
+kernel/src/drivers/usb/xhci.rs:4516:    //     Linux does NOT set Bus Master or INTx Disable here.
+kernel/src/drivers/usb/xhci.rs:4957:    // 10. MSI is NOT configured here — matching Linux module order.
+kernel/src/drivers/usb/xhci.rs:4960:    // During enumeration, Linux has: no MSI configured, INTx enabled.
+kernel/src/drivers/usb/xhci.rs:4961:    // MSI will be configured after start_hid_polling() below.
+kernel/src/drivers/usb/xhci.rs:5013:    // EXPERIMENT: Configure MSI BEFORE enumeration.
+kernel/src/drivers/usb/xhci.rs:5014:    // Theory: Parallels hypervisor needs MSI configured before it will create
+kernel/src/drivers/usb/xhci.rs:5015:    // internal endpoint state. On Linux, xhci_hcd always configures MSI during
+kernel/src/drivers/usb/xhci.rs:5016:    // init (even if later unbound). On Breenix, UEFI never configured MSI.
+kernel/src/drivers/usb/xhci.rs:5021:    // write → flush → INTx off → enable → unmask) no MSI storm is expected,
+kernel/src/drivers/usb/xhci.rs:5138:    // Once the SPI is enabled, pending MSI writes will immediately fire
+kernel/src/drivers/usb/xhci.rs:5210:    // 16. MSI was already configured BEFORE enumeration (experiment).
+kernel/src/drivers/usb/xhci.rs:5228:        "[xhci] Initialized: {} slots, MSI irq={}",
+kernel/src/drivers/usb/xhci.rs:5266:    // Disable the GIC SPI FIRST to prevent continuous MSI re-delivery.
+kernel/src/drivers/usb/xhci.rs:5267:    // The Parallels virtual xHC generates new MSIs on every IMAN/ERDP
+kernel/src/drivers/usb/xhci.rs:5271:    // before we touch xHC registers (which could trigger new MSIs).
+kernel/src/drivers/usb/xhci.rs:5272:    // clear_spi_pending removes any MSI that arrived between the GIC
+kernel/src/drivers/usb/xhci.rs:5316:            MSI_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
+kernel/src/drivers/usb/xhci.rs:5326:                    // Record first Transfer Event diagnostics (MSI handler often
+kernel/src/drivers/usb/xhci.rs:5385:                            // of handle_interrupt so no MSI storm is possible.
+kernel/src/drivers/usb/xhci.rs:5407:                            // EP0 GET_REPORT response consumed by MSI handler.
+kernel/src/drivers/usb/xhci.rs:5408:                            // The MSI fires before the timer event loop runs, so all
+kernel/src/drivers/usb/xhci.rs:5487:    // Any MSI generated by the IMAN/ERDP writes above will fire as a
+kernel/src/drivers/usb/xhci.rs:5685:/// - Draining any events the MSI handler missed (safety net only;
+kernel/src/drivers/usb/xhci.rs:6026:    // MSI requeue fallback: if the MSI handler failed to requeue (e.g., lock
+kernel/src/drivers/usb/xhci.rs:6028:    if MSI_KBD_NEEDS_REQUEUE.swap(false, Ordering::AcqRel) {
+kernel/src/drivers/usb/xhci.rs:6033:    if MSI_NKRO_NEEDS_REQUEUE.swap(false, Ordering::AcqRel) {
+kernel/src/drivers/usb/xhci.rs:6038:    if MSI_MOUSE_NEEDS_REQUEUE.swap(false, Ordering::AcqRel) {
+kernel/src/drivers/usb/xhci.rs:6043:    if MSI_MOUSE2_NEEDS_REQUEUE.swap(false, Ordering::AcqRel) {
+kernel/src/drivers/usb/xhci.rs:6097:    // Deferred MSI activation.
+kernel/src/drivers/pci.rs:60:/// PCI Capability ID for MSI
+kernel/src/drivers/pci.rs:61:pub const PCI_CAP_ID_MSI: u8 = 0x05;
+kernel/src/drivers/pci.rs:62:/// PCI Capability ID for MSI-X
+kernel/src/drivers/pci.rs:63:pub const PCI_CAP_ID_MSIX: u8 = 0x11;
+kernel/src/drivers/pci.rs:67:const PCI_MSI_FLAGS_OFFSET: u8 = 0x02;
+kernel/src/drivers/pci.rs:68:const PCI_MSI_ADDRESS_LO_OFFSET: u8 = 0x04;
+kernel/src/drivers/pci.rs:69:const PCI_MSI_ADDRESS_HI_OFFSET: u8 = 0x08;
+kernel/src/drivers/pci.rs:70:const PCI_MSI_DATA_32_OFFSET: u8 = 0x08;
+kernel/src/drivers/pci.rs:71:const PCI_MSI_DATA_64_OFFSET: u8 = 0x0c;
+kernel/src/drivers/pci.rs:72:const PCI_MSI_MASK_32_OFFSET: u8 = 0x0c;
+kernel/src/drivers/pci.rs:73:const PCI_MSI_MASK_64_OFFSET: u8 = 0x10;
+kernel/src/drivers/pci.rs:74:const PCI_MSI_FLAGS_ENABLE: u16 = 1 << 0;
+kernel/src/drivers/pci.rs:75:const PCI_MSI_FLAGS_QSIZE: u16 = 0x0070;
+kernel/src/drivers/pci.rs:76:const PCI_MSI_FLAGS_64BIT: u16 = 1 << 7;
+kernel/src/drivers/pci.rs:77:const PCI_MSI_FLAGS_MASKBIT: u16 = 1 << 8;
+kernel/src/drivers/pci.rs:78:const PCI_MSI_VECTOR0_MASK: u32 = 1;
+kernel/src/drivers/pci.rs:272:    /// Disable legacy INTx interrupts (set DisINTx bit in PCI Command register).
+kernel/src/drivers/pci.rs:284:    /// Enable legacy INTx interrupts (clear DisINTx bit in PCI Command register).
+kernel/src/drivers/pci.rs:296:    /// Disable PCI MSI. Clears the MSI Enable bit in the MSI Message Control register.
+kernel/src/drivers/pci.rs:297:    /// Returns true if MSI was found and disabled, false if no MSI capability exists.
+kernel/src/drivers/pci.rs:302:            // Clear bit 0 (MSI Enable)
+kernel/src/drivers/pci.rs:316:    /// Find the MSI capability in the PCI capability list.
+kernel/src/drivers/pci.rs:318:    /// Returns the config space offset of the MSI capability, or None if not found.
+kernel/src/drivers/pci.rs:331:            if cap_id == PCI_CAP_ID_MSI {
+kernel/src/drivers/pci.rs:339:    /// Configure and enable PCI MSI with a 32-bit message address.
+kernel/src/drivers/pci.rs:341:    /// `cap_offset`: config space offset of the MSI capability
+kernel/src/drivers/pci.rs:342:    /// `address`: MSI target address (e.g., GICv2m doorbell register)
+kernel/src/drivers/pci.rs:343:    /// `data`: MSI data value (e.g., SPI number)
+kernel/src/drivers/pci.rs:349:            cap_offset + PCI_MSI_FLAGS_OFFSET,
+kernel/src/drivers/pci.rs:351:        let is_64bit = (msg_ctrl & PCI_MSI_FLAGS_64BIT) != 0;
+kernel/src/drivers/pci.rs:352:        let has_mask = (msg_ctrl & PCI_MSI_FLAGS_MASKBIT) != 0;
+kernel/src/drivers/pci.rs:354:            cap_offset + PCI_MSI_DATA_64_OFFSET
+kernel/src/drivers/pci.rs:356:            cap_offset + PCI_MSI_DATA_32_OFFSET
+kernel/src/drivers/pci.rs:359:            cap_offset + PCI_MSI_MASK_64_OFFSET
+kernel/src/drivers/pci.rs:361:            cap_offset + PCI_MSI_MASK_32_OFFSET
+kernel/src/drivers/pci.rs:364:        // Linux disables MSI before setup, masks vectors, writes the message,
+kernel/src/drivers/pci.rs:365:        // flushes by reading flags, disables INTx, enables MSI, then unmasks:
+kernel/src/drivers/pci.rs:367:        let disabled_ctrl = msg_ctrl & !PCI_MSI_FLAGS_ENABLE;
+kernel/src/drivers/pci.rs:372:            cap_offset + PCI_MSI_FLAGS_OFFSET,
+kernel/src/drivers/pci.rs:382:                PCI_MSI_VECTOR0_MASK,
+kernel/src/drivers/pci.rs:386:        let single_vector_ctrl = disabled_ctrl & !PCI_MSI_FLAGS_QSIZE;
+kernel/src/drivers/pci.rs:391:            cap_offset + PCI_MSI_FLAGS_OFFSET,
+kernel/src/drivers/pci.rs:399:            cap_offset + PCI_MSI_ADDRESS_LO_OFFSET,
+kernel/src/drivers/pci.rs:407:                cap_offset + PCI_MSI_ADDRESS_HI_OFFSET,
+kernel/src/drivers/pci.rs:417:            cap_offset + PCI_MSI_FLAGS_OFFSET,
+kernel/src/drivers/pci.rs:425:            cap_offset + PCI_MSI_FLAGS_OFFSET,
+kernel/src/drivers/pci.rs:426:            single_vector_ctrl | PCI_MSI_FLAGS_ENABLE,
+kernel/src/drivers/pci.rs:434:    /// Find the MSI-X capability in the PCI capability list.
+kernel/src/drivers/pci.rs:436:    /// Returns the config space offset of the MSI-X capability, or None if not found.
+kernel/src/drivers/pci.rs:438:        self.find_capability(PCI_CAP_ID_MSIX)
+kernel/src/drivers/pci.rs:441:    /// Read MSI-X table size from the capability.
+kernel/src/drivers/pci.rs:442:    /// Returns the number of MSI-X vectors (Table Size + 1).
+kernel/src/drivers/pci.rs:448:    /// Read MSI-X Table BAR index and offset.
+kernel/src/drivers/pci.rs:458:    /// Enable MSI-X (set Enable bit in Message Control, clear Function Mask).
+kernel/src/drivers/pci.rs:461:        // Bit 15: MSI-X Enable, Bit 14: Function Mask (clear to unmask)
+kernel/src/drivers/pci.rs:472:    /// Disable MSI-X (clear Enable bit in Message Control).
+kernel/src/drivers/pci.rs:485:    /// Configure a single MSI-X table entry.
+kernel/src/drivers/pci.rs:487:    /// `cap_offset`: config space offset of the MSI-X capability
+kernel/src/drivers/pci.rs:488:    /// `vector_index`: which MSI-X vector to program (0-based)
+kernel/src/drivers/pci.rs:489:    /// `address`: MSI target address (e.g. GICv2m doorbell)
+kernel/src/drivers/pci.rs:490:    /// `data`: MSI data value (e.g. SPI number)
+kernel/src/drivers/pci.rs:492:    /// The MSI-X table is memory-mapped in the BAR indicated by the capability.
+kernel/src/drivers/pci.rs:593:                0x05 => "MSI",
+kernel/src/drivers/pci.rs:595:                0x11 => "MSI-X",
+kernel/src/drivers/pci.rs:634:    /// Full Linux-style PCI device enable: D0 transition + bus master + memory space + INTx disable.
+kernel/src/drivers/pci.rs:661:        // 4. Enable Memory Space + Bus Master + Disable INTx (all in one write)
+kernel/src/drivers/pci.rs:663:        // Bit 1: Memory Space, Bit 2: Bus Master, Bit 10: INTx Disable
+kernel/src/drivers/virtio/net_pci.rs:70:/// When set in avail.flags, tells the device NOT to send interrupts (MSIs)
+kernel/src/drivers/virtio/net_pci.rs:72:/// coalescing: handler sets this to suppress MSI storm, softirq clears it
+kernel/src/drivers/virtio/net_pci.rs:245:static NET_PCI_MSI_COUNT: AtomicU32 = AtomicU32::new(0);
+kernel/src/drivers/virtio/net_pci.rs:283:/// Get the GIC INTID for the VirtIO PCI net interrupt, if MSI is enabled.
+kernel/src/drivers/virtio/net_pci.rs:293:/// VirtIO legacy MSI-X register offsets (present when MSI-X is enabled at PCI level).
+kernel/src/drivers/virtio/net_pci.rs:295:const MSIX_CONFIG_VECTOR: usize = 0x14;
+kernel/src/drivers/virtio/net_pci.rs:296:const MSIX_QUEUE_VECTOR: usize = 0x16;
+kernel/src/drivers/virtio/net_pci.rs:298:/// Resolve a GICv2m doorbell address. Returns the MSI_SETSPI_NS physical address.
+kernel/src/drivers/virtio/net_pci.rs:312:/// Set up PCI MSI or MSI-X delivery for the VirtIO network device through GICv2m.
+kernel/src/drivers/virtio/net_pci.rs:318:    // Try plain MSI first (some VirtIO devices have this)
+kernel/src/drivers/virtio/net_pci.rs:321:            "[virtio-net-pci] Found MSI capability at offset {:#x}",
+kernel/src/drivers/virtio/net_pci.rs:332:                    "[virtio-net-pci] MSI enabled: SPI {} doorbell={:#x}",
+kernel/src/drivers/virtio/net_pci.rs:339:        crate::serial_println!("[virtio-net-pci] MSI setup failed — trying MSI-X");
+kernel/src/drivers/virtio/net_pci.rs:342:    // Try MSI-X (Parallels VirtIO net PCI 1af4:1000 has MSI-X with 3 vectors)
+kernel/src/drivers/virtio/net_pci.rs:347:                "[virtio-net-pci] No MSI or MSI-X capability — polling fallback"
+kernel/src/drivers/virtio/net_pci.rs:355:        "[virtio-net-pci] MSI-X cap at {:#x}: {} vectors",
+kernel/src/drivers/virtio/net_pci.rs:370:        crate::serial_println!("[virtio-net-pci] Failed to allocate MSI SPI — polling fallback");
+kernel/src/drivers/virtio/net_pci.rs:374:    // Program all MSI-X table entries with the same SPI (single-vector mode).
+kernel/src/drivers/virtio/net_pci.rs:383:    // during init (the device fires MSIs for ARP replies, and the level
+kernel/src/drivers/virtio/net_pci.rs:387:    // Enable MSI-X at PCI level and disable legacy INTx
+kernel/src/drivers/virtio/net_pci.rs:391:    // Assign VirtIO-level MSI-X vectors.
+kernel/src/drivers/virtio/net_pci.rs:397:                crate::serial_println!("[virtio-net-pci] MSI-X: device state not available");
+kernel/src/drivers/virtio/net_pci.rs:404:    // MSIs that could cause an interrupt storm unrelated to packet RX.
+kernel/src/drivers/virtio/net_pci.rs:405:    reg_write_u16(bar0_virt, MSIX_CONFIG_VECTOR, 0xFFFF);
+kernel/src/drivers/virtio/net_pci.rs:406:    let cfg_rb = reg_read_u16(bar0_virt, MSIX_CONFIG_VECTOR);
+kernel/src/drivers/virtio/net_pci.rs:410:    reg_write_u16(bar0_virt, MSIX_QUEUE_VECTOR, 0);
+kernel/src/drivers/virtio/net_pci.rs:411:    let rx_rb = reg_read_u16(bar0_virt, MSIX_QUEUE_VECTOR);
+kernel/src/drivers/virtio/net_pci.rs:415:    reg_write_u16(bar0_virt, MSIX_QUEUE_VECTOR, 0xFFFF);
+kernel/src/drivers/virtio/net_pci.rs:418:        "[virtio-net-pci] MSI-X vector assignments: cfg={:#x} rx={:#x}",
+kernel/src/drivers/virtio/net_pci.rs:426:            "[virtio-net-pci] MSI-X: device rejected RX vector — polling fallback"
+kernel/src/drivers/virtio/net_pci.rs:435:        "[virtio-net-pci] MSI-X enabled: SPI {} doorbell={:#x} vectors={}",
+kernel/src/drivers/virtio/net_pci.rs:823:/// Get the MSI interrupt count (for diagnostics).
+kernel/src/drivers/virtio/net_pci.rs:825:    NET_PCI_MSI_COUNT.load(Ordering::Relaxed)
+kernel/src/drivers/virtio/net_pci.rs:828:/// Interrupt handler for VirtIO network PCI device (MSI-X).
+kernel/src/drivers/virtio/net_pci.rs:832:///    writing MSIs to GICv2m entirely.
+kernel/src/drivers/virtio/net_pci.rs:842:    NET_PCI_MSI_COUNT.fetch_add(1, Ordering::Relaxed);
+kernel/src/drivers/virtio/net_pci.rs:849:    // Suppress at the device level FIRST — prevents new MSI writes to GICv2m.
+kernel/src/drivers/virtio/net_pci.rs:871:/// Re-enable the network device's MSI-X interrupt after softirq processing.
+kernel/src/drivers/virtio/net_pci.rs:930:/// Diagnostic: dump RX queue state for debugging MSI-X issues.
+kernel/src/drivers/virtio/net_pci.rs:948:    let msi_count = NET_PCI_MSI_COUNT.load(Ordering::Relaxed);
+kernel/src/drivers/virtio/net_pci.rs:959:/// Enable the MSI-X SPI at the GIC after init polling is complete.
+kernel/src/drivers/virtio/net_pci.rs:983:    crate::serial_println!("[virtio-net-pci] MSI-X SPI {} enabled (post-init)", irq);
+kernel/src/drivers/virtio/gpu_pci.rs:1342:const GPU_MSIX_CONFIG_VECTOR: u16 = 0;
+kernel/src/drivers/virtio/gpu_pci.rs:1343:const GPU_MSIX_QUEUE_VECTOR: u16 = 1;
+kernel/src/drivers/virtio/gpu_pci.rs:1379:/// GIC INTID (SPI number) allocated for the GPU virtqueue MSI-X vector.
+kernel/src/drivers/virtio/gpu_pci.rs:1697:// MSI Interrupt Support
+kernel/src/drivers/virtio/gpu_pci.rs:1700:/// Set up PCI MSI-X or MSI for the VirtIO GPU through GICv2m.
+kernel/src/drivers/virtio/gpu_pci.rs:1702:/// VirtIO modern GPU devices use MSI-X (cap 0x11), not plain MSI (cap 0x05).
+kernel/src/drivers/virtio/gpu_pci.rs:1706:/// Returns the allocated config and shared-virtqueue SPIs, or NONE if MSI-X is unavailable.
+kernel/src/drivers/virtio/gpu_pci.rs:1714:    // Step 1: Probe GICv2m (needed for both MSI-X and MSI)
+kernel/src/drivers/virtio/gpu_pci.rs:1722:        crate::serial_println!("[virtio-gpu-pci] GICv2m not available; MSI-X required");
+kernel/src/drivers/virtio/gpu_pci.rs:1730:        crate::serial_println!("[virtio-gpu-pci] Need two GICv2m SPIs for MSI-X");
+kernel/src/drivers/virtio/gpu_pci.rs:1736:    // Step 3: Try MSI-X (what VirtIO modern devices use)
+kernel/src/drivers/virtio/gpu_pci.rs:1740:            "[virtio-gpu-pci] MSI-X cap at {:#x}: {} vectors",
+kernel/src/drivers/virtio/gpu_pci.rs:1747:                "[virtio-gpu-pci] MSI-X table too small: {} vectors, need 2",
+kernel/src/drivers/virtio/gpu_pci.rs:1753:        pci_dev.configure_msix_entry(msix_cap, GPU_MSIX_CONFIG_VECTOR, msi_address, config_spi);
+kernel/src/drivers/virtio/gpu_pci.rs:1754:        pci_dev.configure_msix_entry(msix_cap, GPU_MSIX_QUEUE_VECTOR, msi_address, queue_spi);
+kernel/src/drivers/virtio/gpu_pci.rs:1759:        // Enable MSI-X at PCI level and disable legacy INTx
+kernel/src/drivers/virtio/gpu_pci.rs:1764:            "[virtio-gpu-pci] MSI-X enabled: config_spi={} queue_spi={} doorbell={:#x} vectors={}",
+kernel/src/drivers/virtio/gpu_pci.rs:1776:    // Plain MSI provides only one vector; virtio-gpu on Parallels needs the
+kernel/src/drivers/virtio/gpu_pci.rs:1777:    // Linux-shaped two-vector MSI-X layout. Do not fall back to polling.
+kernel/src/drivers/virtio/gpu_pci.rs:1780:        crate::serial_println!("[virtio-gpu-pci] Plain MSI present but not usable for GPU queues");
+kernel/src/drivers/virtio/gpu_pci.rs:1784:        "[virtio-gpu-pci] MSI-X capability not found; interrupt completion unavailable"
+kernel/src/drivers/virtio/gpu_pci.rs:1789:/// Handle GPU virtqueue MSI-X interrupt — called from exception.rs IRQ dispatch.
+kernel/src/drivers/virtio/gpu_pci.rs:1797:    // MSI-X delivery is edge-like. Do not mask or clear the SPI here: a new
+kernel/src/drivers/virtio/gpu_pci.rs:1809:/// Handle GPU config MSI-X interrupt. Display hot-plug/config changes are not
+kernel/src/drivers/virtio/gpu_pci.rs:1903:    // Set up MSI-X BEFORE queue setup. Linux's virtio_pci_modern driver
+kernel/src/drivers/virtio/gpu_pci.rs:1904:    // enables MSI-X first, then sets up queues with MSI-X vectors. The VirtIO
+kernel/src/drivers/virtio/gpu_pci.rs:1905:    // spec requires MSI-X to be enabled at the PCI level before writing
+kernel/src/drivers/virtio/gpu_pci.rs:1913:        return Err("VirtIO GPU requires MSI-X interrupt completion");
+kernel/src/drivers/virtio/gpu_pci.rs:1916:    let queue_vector = GPU_MSIX_QUEUE_VECTOR;
+kernel/src/drivers/virtio/gpu_pci.rs:1917:    let config_vector = GPU_MSIX_CONFIG_VECTOR;
+kernel/src/drivers/virtio/gpu_pci.rs:1927:        return Err("GPU config MSI-X vector rejected");
+kernel/src/drivers/virtio/gpu_pci.rs:1971:    // Write queue MSI-X vector BEFORE enabling the queue (Linux's vp_setup_vq order)
+kernel/src/drivers/virtio/gpu_pci.rs:1980:        return Err("GPU controlq MSI-X vector rejected");
+kernel/src/drivers/virtio/gpu_pci.rs:2013:        // Write queue 1 MSI-X vector before enabling
+kernel/src/drivers/virtio/gpu_pci.rs:2022:            return Err("GPU cursorq MSI-X vector rejected");
+kernel/src/drivers/virtio/gpu_pci.rs:2085:            "[virtio-gpu-pci] MSI-X active: config_spi={} queue_spi={} queue_vector={}",
+kernel/src/drivers/virtio/gpu_pci.rs:2088:            GPU_MSIX_QUEUE_VECTOR
+kernel/src/drivers/virtio/gpu_pci.rs:2404:        return Err("GPU PCI virtqueue MSI-X IRQ not configured");
+kernel/src/drivers/virtio/gpu_pci.rs:2659:    let wait_path = virtgpu::WAIT_PATH_3DESC_MSI;
+kernel/src/drivers/virtio/pci_transport.rs:53:/// MSI-X configuration vector
+kernel/src/drivers/virtio/pci_transport.rs:54:const COMMON_MSIX: usize = 0x10;
+kernel/src/drivers/virtio/pci_transport.rs:65:/// Queue MSI-X vector
+kernel/src/drivers/virtio/pci_transport.rs:66:const COMMON_Q_MSIX: usize = 0x1A;
+kernel/src/drivers/virtio/pci_transport.rs:524:    // MSI-X Vector Configuration
+kernel/src/drivers/virtio/pci_transport.rs:529:    /// This tells the device which MSI-X vector to use for configuration
+kernel/src/drivers/virtio/pci_transport.rs:530:    /// change notifications. Write VIRTIO_MSI_NO_VECTOR (0xFFFF) if not
+kernel/src/drivers/virtio/pci_transport.rs:531:    /// using MSI-X for config changes.
+kernel/src/drivers/virtio/pci_transport.rs:536:        self.common.write_u16(COMMON_MSIX, vector);
+kernel/src/drivers/virtio/pci_transport.rs:537:        self.common.read_u16(COMMON_MSIX)
+kernel/src/drivers/virtio/pci_transport.rs:542:        self.common.read_u16(COMMON_MSIX)
+kernel/src/drivers/virtio/pci_transport.rs:547:    /// Must be called after select_queue(). Tells the device which MSI-X
+kernel/src/drivers/virtio/pci_transport.rs:549:    /// VIRTIO_MSI_NO_VECTOR (0xFFFF) if not using MSI-X for this queue.
+kernel/src/drivers/virtio/pci_transport.rs:553:        self.common.write_u16(COMMON_Q_MSIX, vector);
+kernel/src/drivers/virtio/pci_transport.rs:554:        self.common.read_u16(COMMON_Q_MSIX)
+kernel/src/drivers/virtio/pci_transport.rs:559:        self.common.read_u16(COMMON_Q_MSIX)
+kernel/src/drivers/ahci/mod.rs:200:/// GIC SPI number allocated for AHCI MSI/MSI-X/wired. 0 = polling mode.
+kernel/src/drivers/ahci/mod.rs:209:/// Whether the AHCI IRQ is edge-triggered (MSI) or level-triggered (wired).
+kernel/src/drivers/ahci/mod.rs:879:        // Set up MSI/MSI-X interrupt after the controller is running.
+kernel/src/drivers/ahci/mod.rs:921:        // GHC_IE (bit 1) allows the HBA to generate MSI/INTx completions.
+kernel/src/drivers/ahci/mod.rs:1036:        // will fire an MSI when any of these events occur.
+kernel/src/drivers/ahci/mod.rs:1987:// MSI Interrupt Support
+kernel/src/drivers/ahci/mod.rs:1990:/// Set up PCI MSI-X or MSI for the AHCI controller through GICv2m.
+kernel/src/drivers/ahci/mod.rs:1993:/// MSI-X first (capability 0x11), falls back to plain MSI (capability 0x05).
+kernel/src/drivers/ahci/mod.rs:2001:/// Returns the allocated SPI, or 0 if no MSI support is available.
+kernel/src/drivers/ahci/mod.rs:2009:    // Step 1: Probe GICv2m (needed for both MSI-X and MSI).
+kernel/src/drivers/ahci/mod.rs:2028:    // The MSI message address is the GICv2m doorbell (base + 0x40).
+kernel/src/drivers/ahci/mod.rs:2031:    // Step 3: Try MSI-X first.
+kernel/src/drivers/ahci/mod.rs:2035:            "[ahci] MSI-X cap at {:#x}: {} vectors",
+kernel/src/drivers/ahci/mod.rs:2040:        // Program all MSI-X table entries with the same SPI (single-vector).
+kernel/src/drivers/ahci/mod.rs:2056:            "[ahci] MSI-X enabled: SPI {} doorbell={:#x} vectors={}",
+kernel/src/drivers/ahci/mod.rs:2064:    // Step 4: Fall back to plain MSI.
+kernel/src/drivers/ahci/mod.rs:2072:        crate::serial_println!("[ahci] MSI configured: SPI={}", spi);
+kernel/src/drivers/ahci/mod.rs:2076:    crate::serial_println!("[ahci] No MSI-X or MSI capability found, using polling");
+kernel/src/drivers/ahci/mod.rs:2082:/// Platform AHCI (not on PCI) cannot use MSI. Instead, the HBA drives a
+kernel/src/drivers/ahci/mod.rs:2279:/// AHCI MSI interrupt handler — called from the IRQ dispatch in `exception.rs`.
+kernel/src/drivers/ahci/mod.rs:2373:    // when using wired interrupts (vs MSI where each message sets HBA_IS).
+kernel/src/drivers/ahci/mod.rs:2381:        // For MSI: only check ports with HBA_IS bits set.
+kernel/src/drivers/ahci/mod.rs:2473:    // For edge-triggered MSI: clear the SPI pending bit to re-arm.

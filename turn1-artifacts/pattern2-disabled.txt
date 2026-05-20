@@ -1,0 +1,17 @@
+kernel/src/drivers/vmware/svga3.rs:688:            "disabled"
+kernel/src/drivers/usb/xhci.rs:3961:    // Stop MMIO write tracing (dump disabled — CC=12 investigation complete)
+kernel/src/drivers/usb/xhci.rs:4160:        // the Parallels virtual xHC to leave keyboard interrupt endpoints disabled.
+kernel/src/drivers/usb/xhci.rs:5384:                            // Requeue immediately — SPI is disabled at the top
+kernel/src/drivers/usb/xhci.rs:6158:    // NOTE: Mouse EP0 GET_REPORT polling is disabled.
+kernel/src/drivers/pci.rs:297:    /// Returns true if MSI was found and disabled, false if no MSI capability exists.
+kernel/src/drivers/pci.rs:367:        let disabled_ctrl = msg_ctrl & !PCI_MSI_FLAGS_ENABLE;
+kernel/src/drivers/pci.rs:373:            disabled_ctrl,
+kernel/src/drivers/pci.rs:386:        let single_vector_ctrl = disabled_ctrl & !PCI_MSI_FLAGS_QSIZE;
+kernel/src/drivers/virtio/virgl.rs:266:                      // S2[0]: colormask=0xF (write RGBA), blend disabled
+kernel/src/drivers/virtio/virgl.rs:270:        // S2[1..7]: unused render targets
+kernel/src/drivers/virtio/virgl.rs:550:        self.push(0); // offset 8: PRIMITIVE_RESTART = disabled
+kernel/src/drivers/virtio/virgl.rs:692:        // Scissor min/max (unused, set to 0)
+kernel/src/drivers/e1000/regs.rs:6:// Allow unused constants - these are hardware register definitions that form
+kernel/src/drivers/virtio/gpu_pci.rs:695:/// Currently unused: VB data is uploaded via RESOURCE_INLINE_WRITE in the batch.
+kernel/src/drivers/virtio/gpu_pci.rs:1655:/// Currently unused but kept for future TRANSFER_FROM_HOST operations.
+kernel/src/drivers/virtio/gpu_pci.rs:3487:/// Currently unused: VB uses RESOURCE_INLINE_WRITE instead.

@@ -1,0 +1,12 @@
+kernel/src/drivers/usb/xhci.rs:4036:        return Err("INHERIT_UEFI: no interrupt IN endpoints found");
+kernel/src/drivers/usb/xhci.rs:5499:// Polling Mode (fallback for systems without interrupt support)
+kernel/src/drivers/usb/xhci.rs:6026:    // MSI requeue fallback: if the MSI handler failed to requeue (e.g., lock
+kernel/src/drivers/virtio/net_pci.rs:347:                "[virtio-net-pci] No MSI or MSI-X capability — polling fallback"
+kernel/src/drivers/virtio/net_pci.rs:363:            crate::serial_println!("[virtio-net-pci] GICv2m not available — polling fallback");
+kernel/src/drivers/virtio/net_pci.rs:370:        crate::serial_println!("[virtio-net-pci] Failed to allocate MSI SPI — polling fallback");
+kernel/src/drivers/virtio/net_pci.rs:403:    // Config change → no interrupt (0xFFFF). Avoids spurious config-change
+kernel/src/drivers/virtio/net_pci.rs:413:    // TX queue (1) → no interrupt
+kernel/src/drivers/virtio/net_pci.rs:426:            "[virtio-net-pci] MSI-X: device rejected RX vector — polling fallback"
+kernel/src/drivers/virtio/input_mmio.rs:198:/// Get current screen dimensions from the GPU driver (fallback to 1280x800)
+kernel/src/drivers/ahci/mod.rs:108:            // the actual ordering guarantee. On cacheable memory (fallback),
+kernel/src/drivers/ahci/mod.rs:2050:        // controller mutex so there is no interrupt storm risk.
