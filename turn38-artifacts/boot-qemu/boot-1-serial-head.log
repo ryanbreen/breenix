@@ -1,0 +1,1200 @@
+EOS
+========================================
+  Breenix ARM64 Kernel Starting
+  BUILD_ID: 006a0dc9b62829
+========================================
+
+[boot] DIAG_MARKER_XHCI_A
+[boot] DIAG_MARKER_XHCI_B
+[boot] DIAG_MARKER_XHCI_C
+[boot] loader xhci_hcrst_raw=0x0 ecam=0x0
+[boot] Current exception level: EL1
+[boot] MMU already enabled (high-half kernel)
+[boot] Initializing memory management (0x44000000-0x50000000)...
+[boot] Memory management ready
+[boot] Initializing Generic Timer...
+[boot] Timer frequency: 1000000000 Hz (1000 MHz)
+[boot] Initializing PL031 RTC...
+[boot] Current timestamp: 14717000
+[boot] Initializing GIC...
+[boot] GIC initialized (version 2)
+[boot] Enabling UART interrupts...
+[boot] Enabling GIC IRQ 33 (UART0)...
+[uart] IMSC: 0x0 -> 0x50 (verify: 0x50)
+[uart] FR=0x90 (RXFE=1), RIS=0x20
+[gic] IRQ 33 state (GICv2):
+  enabled=true, group1=true, pending=false
+  priority=0xa0, GICD_CTLR=0x3
+  GICC_CTLR=0x7, GICC_PMR=0xf0
+[boot] UART interrupts enabled
+[boot] Enabling interrupts...
+[boot] Interrupts enabled: true
+[boot] QEMU PCI ECAM configured at 0x4010000000
+[boot] Initializing device drivers...
+[drivers] Initializing driver subsystem...
+[drivers] Hybrid mode: VirtIO MMIO + PCI AHCI
+[drivers] Found VirtIO MMIO device: network (ID=1, version=1)
+[drivers] Found VirtIO MMIO device: block (ID=2, version=1)
+[drivers] Found VirtIO MMIO device: input (ID=18, version=1)
+[drivers] Found VirtIO MMIO device: input (ID=18, version=1)
+[drivers] Found VirtIO MMIO device: GPU (ID=16, version=1)
+[drivers] Found 5 VirtIO MMIO devices
+[virtio-blk] Searching for block devices...
+[virtio-blk] Found block device 0 at 0xa003800
+[virtio-blk] Device 0 version: 1
+[virtio-blk] Device 0 capacity: 524288 sectors (256 MB)
+[virtio-blk] Device 0 queue max size: 1024
+[virtio-blk] Device 0 using v1 (legacy) queue setup at PFN 0x41b56
+[virtio-blk] Block MMIO IRQ 76 enabled for device 0
+[virtio-blk] Block device 0 initialized successfully
+[virtio-blk] Initialized 1 block device(s)
+[drivers] VirtIO block driver initialized
+[virtio-net] Searching for network device...
+[virtio-net] Found network device at 0xa003600 (slot 27)
+[virtio-net] Device version: 1
+[virtio-net] MAC address: 52:54:00:12:34:56
+[virtio-net] RX queue max size: 1024
+[virtio-net] TX queue max size: 1024
+[virtio-net] Network device initialized successfully
+[virtio-net] Network device IRQ 75 (will enable after net init)
+[drivers] VirtIO network driver initialized
+[virtio-net] Device test - MAC: 52:54:00:12:34:56
+[virtio-net] Test passed!
+[virtio-gpu] Searching for GPU device...
+[virtio-gpu] Found GPU device at 0xa003e00
+[virtio-gpu] Device version: 1
+[virtio-gpu] Control queue max size: 1024
+[virtio-gpu] Display: 1280x800
+[virtio-gpu] GPU device initialized successfully
+[drivers] VirtIO GPU driver initialized
+[virtio-gpu] Device test - Display: 1280x800
+[virtio-gpu] Test passed!
+[virtio-sound] Searching for sound device...
+[drivers] VirtIO sound driver init failed: No VirtIO Sound device found
+[drivers] Driver subsystem initialized (MMIO)
+[drivers] PCI ECAM at 0x4010000000, enumerating PCI bus...
+[drivers] Found 1 PCI devices
+[pci] 00:00.0 [1b36:0008] class=06/00
+[drivers] AHCI PCI init failed: No AHCI controller found
+[drivers] Driver subsystem initialized (hybrid MMIO+PCI)
+[boot] Found 6 devices
+[drivers] Running post-init self-tests...
+[virtio-blk] Testing read of sector 0...
+[virtio-blk] Sector 0 data: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ...
+[virtio-blk] Read test passed!
+[boot] Initializing network stack...
+[net] Initializing network stack...
+[net] MAC address: 52:54:00:12:34:56
+NET: IP address: 10.0.2.15
+NET: Gateway: 10.0.2.2
+Network stack initialized
+NET: Sending ARP request for gateway 10.0.2.2
+ARP request sent successfully
+NET: Gateway ARP not resolved during init; will resolve via IRQ path
+NET: Sending ICMP echo request to gateway 10.0.2.2
+NET: ARP cache miss for 10.0.2.2, sending ARP request
+NET: Failed to send ping: ArpMiss: reply will populate cache via IRQ
+NET: Network initialization complete
+[virtio-net] Enabling IRQ 75 for network device
+NET: pre-primed NetRx softirq for bootstrap callback re-enable
+[boot] Initializing filesystem...
+[ext2] Using VirtIO block device (524288 sectors)
+[boot] ext2 root filesystem mounted
+[boot] No home filesystem: No home block device available (expected at device index 3 or 1) (continuing)
+[boot] devfs initialized at /dev
+[boot] devptsfs initialized at /dev/pts
+[boot] CPU detected: Unknown Unknown
+[boot] procfs initialized at /proc
+[boot] TTY subsystem initialized
+[boot] Initializing graphics...
+[virtio-gpu] GPU device already initialized
+[arm64-fb] Shell framebuffer initialized: 1280x800
+[graphics] Framebuffer: 1280x800
+[graphics] Particle system initialized
+[render_queue] Initialized (64KB buffer)
+[graphics] Split-screen terminal UI initialized
+[boot] Initializing VirtIO keyboard...
+[virtio-input] Searching for input devices (ID=18)...
+[virtio-input] Slot 27 at 0xa003600: device_id=1
+[virtio-input] Slot 28 at 0xa003800: device_id=2
+[virtio-input] Slot 29 at 0xa003a00: device_id=18
+[virtio-input] Found tablet at 0xa003a00 (slot 29, supports EV_ABS)
+[virtio-input] Tablet device version: 1
+[virtio-input] Event queue max size: 1024
+[virtio-input] Enabling IRQ 77 for tablet
+[virtio-input] Tablet initialized (16 buffers)
+[virtio-input] Slot 30 at 0xa003c00: device_id=18
+[virtio-input] Found keyboard at 0xa003c00 (slot 30, no EV_ABS)
+[virtio-input] Keyboard device version: 1
+[virtio-input] Event queue max size: 1024
+[virtio-input] Enabling IRQ 78 for keyboard
+[virtio-input] Keyboard initialized (64 buffers)
+[virtio-input] Slot 31 at 0xa003e00: device_id=16
+[boot] VirtIO keyboard initialized
+[boot] Initializing per-CPU data...
+[boot] Per-CPU data initialized
+[boot] Initializing process manager...
+[boot] Process manager initialized
+[boot] Initializing scheduler...
+[boot] Scheduler initialized
+[boot] Workqueue subsystem initialized
+[boot] Softirq subsystem initialized
+[boot] Render thread spawned (tid=3)
+[boot] Tracing subsystem initialized and enabled
+[boot] Pre-loading /sbin/init from ext2 (before timer)...
+[boot] Init binary pre-loaded: 296776 bytes
+[xhci] post-activation: MSI_EVENT_COUNT=0 EVENT_COUNT=0 POLL_COUNT=0 SPI_ACTIVATED=false
+[boot] Initializing timer interrupt...
+[timer] Timer configured for ~1000 Hz (1000000 ticks per interrupt)
+[timer] Using virtual timer (PPI 27)
+[boot] Timer interrupt initialized
+[smp] CPU 0 MPIDR=0x80000000, stack_base=0x43000000
+[smp] Probing secondary CPUs via PSCI...
+[smp] CPU 1: PSCI CPU_ON1@ succ1ess
+A[smp]2@1AB CPU BC2:C PSCI CPU_ON success
+D[smp] CPU DE3:e P3SCIF@1AEeFG CPU_B1GC2DEeFGON3 success
+[smp] CPU 4: HVC64 failed (ret=-2), trying HVC32...
+T1[smp] PSCI CPU_ON failed for CPU 4: ret=-2 (MPIDR=0x4 entry=0x40080258)
+[smp] CPU 4: PSCI CPU_ON failed (ret=-2), stopping probe
+[smp] 4 CPUs online
+
+========================================
+  Breenix ARM64 Boot Complete!
+========================================
+
+Hello from ARM64!
+
+[boot] Launching init from pre-loaded ELF...
+manager.create_process_with_argv [ARM64]: ENTRY - name='init', elf_size=296776, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 1
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f1f0
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 1
+[boot] Reset 4 idle thread contexts (CPUs online: 4)
+T2[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[FATAL_POSTMORTEM] cpu=0 label=UNHANDLED_EC
+  Deferred requeue snapshots:
+[DEFER_SNAP] cpu=0 stage=3 tid=7 aux=0 flags=0xc02 sp=0x54233000 elr=0x4000f1f0 x30=0x0
+[DEFER_SNAP] cpu=2 stage=3 tid=4 aux=0 flags=0x401 sp=0x54221df0 elr=0x401d3bb4 x30=0x401d34e0
+[DEFER_SNAP] cpu=3 stage=1 tid=2 aux=0 flags=0x403 sp=0x54210ef0 elr=0x40141ff8 x30=0x40141ff4
+
+  Trace buffers:
+[TRACE] ====== TRACE BUFFER DUMP ======
+[TRACE] Tracing enabled: yes
+[TRACE] Timestamp frequency: 1000000000 Hz
+[TRACE] === CPU 0 Buffer ===
+[TRACE] Events: 9 (write_idx=9, dropped=0)
+[TRACE] CPU0 idx=0 ts=107287000 type=0x0102 TIMER_TICK tick_count=1
+[TRACE] CPU0 idx=1 ts=113435000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU0 idx=2 ts=113540000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=458752
+[TRACE] CPU0 idx=3 ts=113549000 type=0x0012 UNKNOWN payload=0
+[TRACE] CPU0 idx=4 ts=113795000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196615
+[TRACE] CPU0 idx=5 ts=113799000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411592192
+[TRACE] CPU0 idx=6 ts=113803000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1073803760
+[TRACE] CPU0 idx=7 ts=113808000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU0 idx=8 ts=113812000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=3074
+[TRACE] === CPU 1 Buffer ===
+[TRACE] Events: 11 (write_idx=11, dropped=0)
+[TRACE] CPU1 idx=0 ts=108395000 type=0x0102 TIMER_TICK tick_count=1
+[TRACE] CPU1 idx=1 ts=109679000 type=0x0102 TIMER_TICK tick_count=1
+[TRACE] CPU1 idx=2 ts=110959000 type=0x0102 TIMER_TICK tick_count=1
+[TRACE] CPU1 idx=3 ts=112905000 type=0x0102 TIMER_TICK tick_count=1
+[TRACE] CPU1 idx=4 ts=113961000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU1 idx=5 ts=115278000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU1 idx=6 ts=116564000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU1 idx=7 ts=117877000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU1 idx=8 ts=119266000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU1 idx=9 ts=120752000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU1 idx=10 ts=122193000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] === CPU 2 Buffer ===
+[TRACE] Events: 133 (write_idx=133, dropped=0)
+[TRACE] CPU2 idx=0 ts=108458000 type=0x0102 TIMER_TICK tick_count=1
+[TRACE] CPU2 idx=1 ts=109651000 type=0x0102 TIMER_TICK tick_count=1
+[TRACE] CPU2 idx=2 ts=110949000 type=0x0102 TIMER_TICK tick_count=1
+[TRACE] CPU2 idx=3 ts=110991000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=262147
+[TRACE] CPU2 idx=4 ts=110992000 type=0x0012 UNKNOWN payload=3
+[TRACE] CPU2 idx=5 ts=110993000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196612
+[TRACE] CPU2 idx=6 ts=110994000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1130364928
+[TRACE] CPU2 idx=7 ts=110994000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU2 idx=8 ts=110995000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075091348
+[TRACE] CPU2 idx=9 ts=110995000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU2 idx=10 ts=112845000 type=0x0102 TIMER_TICK tick_count=1
+[TRACE] CPU2 idx=11 ts=112850000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65540
+[TRACE] CPU2 idx=12 ts=112851000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1130364928
+[TRACE] CPU2 idx=13 ts=112870000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU2 idx=14 ts=112873000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU2 idx=15 ts=112877000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU2 idx=16 ts=112947000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=196612
+[TRACE] CPU2 idx=17 ts=112948000 type=0x0012 UNKNOWN payload=4
+[TRACE] CPU2 idx=18 ts=112952000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196611
+[TRACE] CPU2 idx=19 ts=112952000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411522032
+[TRACE] CPU2 idx=20 ts=112952000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075061380
+[TRACE] CPU2 idx=21 ts=112952000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075655904
+[TRACE] CPU2 idx=22 ts=112953000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1026
+[TRACE] CPU2 idx=23 ts=113976000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU2 idx=24 ts=113985000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65539
+[TRACE] CPU2 idx=25 ts=113990000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411522032
+[TRACE] CPU2 idx=26 ts=113990000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075061380
+[TRACE] CPU2 idx=27 ts=113991000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075655904
+[TRACE] CPU2 idx=28 ts=113991000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1026
+[TRACE] CPU2 idx=29 ts=114191000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=262147
+[TRACE] CPU2 idx=30 ts=114191000 type=0x0012 UNKNOWN payload=3
+[TRACE] CPU2 idx=31 ts=114192000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196612
+[TRACE] CPU2 idx=32 ts=114192000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1130364928
+[TRACE] CPU2 idx=33 ts=114193000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU2 idx=34 ts=114193000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU2 idx=35 ts=114193000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU2 idx=36 ts=115287000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU2 idx=37 ts=115294000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65540
+[TRACE] CPU2 idx=38 ts=115294000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1130364928
+[TRACE] CPU2 idx=39 ts=115295000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU2 idx=40 ts=115295000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU2 idx=41 ts=115296000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU2 idx=42 ts=115314000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=196612
+[TRACE] CPU2 idx=43 ts=115314000 type=0x0012 UNKNOWN payload=4
+[TRACE] CPU2 idx=44 ts=115320000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196611
+[TRACE] CPU2 idx=45 ts=115320000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411522032
+[TRACE] CPU2 idx=46 ts=115321000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075061620
+[TRACE] CPU2 idx=47 ts=115321000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075655904
+[TRACE] CPU2 idx=48 ts=115321000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1026
+[TRACE] CPU2 idx=49 ts=116596000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU2 idx=50 ts=116613000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65539
+[TRACE] CPU2 idx=51 ts=116613000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411522032
+[TRACE] CPU2 idx=52 ts=116613000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075061620
+[TRACE] CPU2 idx=53 ts=116613000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075655904
+[TRACE] CPU2 idx=54 ts=116614000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1026
+[TRACE] CPU2 idx=55 ts=116649000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=262147
+[TRACE] CPU2 idx=56 ts=116649000 type=0x0012 UNKNOWN payload=3
+[TRACE] CPU2 idx=57 ts=116651000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196612
+[TRACE] CPU2 idx=58 ts=116652000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1130364928
+[TRACE] CPU2 idx=59 ts=116652000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU2 idx=60 ts=116652000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU2 idx=61 ts=116653000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU2 idx=62 ts=117869000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU2 idx=63 ts=117888000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65540
+[TRACE] CPU2 idx=64 ts=117889000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1130364928
+[TRACE] CPU2 idx=65 ts=117889000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU2 idx=66 ts=117889000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU2 idx=67 ts=117890000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU2 idx=68 ts=117967000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=196612
+[TRACE] CPU2 idx=69 ts=117968000 type=0x0012 UNKNOWN payload=4
+[TRACE] CPU2 idx=70 ts=117974000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196611
+[TRACE] CPU2 idx=71 ts=117974000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411522032
+[TRACE] CPU2 idx=72 ts=117976000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075657652
+[TRACE] CPU2 idx=73 ts=117976000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075655904
+[TRACE] CPU2 idx=74 ts=117976000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1026
+[TRACE] CPU2 idx=75 ts=119316000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU2 idx=76 ts=119354000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65539
+[TRACE] CPU2 idx=77 ts=119356000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411522032
+[TRACE] CPU2 idx=78 ts=119369000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075657652
+[TRACE] CPU2 idx=79 ts=119370000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075655904
+[TRACE] CPU2 idx=80 ts=119380000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1026
+[TRACE] CPU2 idx=81 ts=119437000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=262147
+[TRACE] CPU2 idx=82 ts=119438000 type=0x0012 UNKNOWN payload=3
+[TRACE] CPU2 idx=83 ts=119442000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196612
+[TRACE] CPU2 idx=84 ts=119444000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1130364928
+[TRACE] CPU2 idx=85 ts=119475000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU2 idx=86 ts=119476000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU2 idx=87 ts=119477000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU2 idx=88 ts=120753000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU2 idx=89 ts=120764000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65540
+[TRACE] CPU2 idx=90 ts=120773000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1130364928
+[TRACE] CPU2 idx=91 ts=120774000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU2 idx=92 ts=120775000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU2 idx=93 ts=120776000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU2 idx=94 ts=120791000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=196612
+[TRACE] CPU2 idx=95 ts=120792000 type=0x0012 UNKNOWN payload=4
+[TRACE] CPU2 idx=96 ts=120798000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196611
+[TRACE] CPU2 idx=97 ts=120799000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411521840
+[TRACE] CPU2 idx=98 ts=120800000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075648060
+[TRACE] CPU2 idx=99 ts=120801000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075659404
+[TRACE] CPU2 idx=100 ts=120802000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1026
+[TRACE] CPU2 idx=101 ts=122348000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU2 idx=102 ts=122852000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65539
+[TRACE] CPU2 idx=103 ts=122879000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411521840
+[TRACE] CPU2 idx=104 ts=122898000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075648060
+[TRACE] CPU2 idx=105 ts=122920000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075659404
+[TRACE] CPU2 idx=106 ts=122923000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1026
+[TRACE] CPU2 idx=107 ts=123007000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=262147
+[TRACE] CPU2 idx=108 ts=123008000 type=0x0012 UNKNOWN payload=3
+[TRACE] CPU2 idx=109 ts=123011000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196612
+[TRACE] CPU2 idx=110 ts=123013000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1130364928
+[TRACE] CPU2 idx=111 ts=123014000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU2 idx=112 ts=123014000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU2 idx=113 ts=123015000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU2 idx=114 ts=123698000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU2 idx=115 ts=123703000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65540
+[TRACE] CPU2 idx=116 ts=123848000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1130364928
+[TRACE] CPU2 idx=117 ts=123895000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU2 idx=118 ts=124062000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU2 idx=119 ts=124063000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU2 idx=120 ts=124192000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=196612
+[TRACE] CPU2 idx=121 ts=124195000 type=0x0012 UNKNOWN payload=4
+[TRACE] CPU2 idx=122 ts=124345000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196611
+[TRACE] CPU2 idx=123 ts=124348000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411522032
+[TRACE] CPU2 idx=124 ts=124448000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075061620
+[TRACE] CPU2 idx=125 ts=124451000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075655904
+[TRACE] CPU2 idx=126 ts=124452000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1026
+[TRACE] CPU2 idx=127 ts=124938000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU2 idx=128 ts=125026000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65539
+[TRACE] CPU2 idx=129 ts=125028000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411522032
+[TRACE] CPU2 idx=130 ts=125028000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075061620
+[TRACE] CPU2 idx=131 ts=125029000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075655904
+[TRACE] CPU2 idx=132 ts=125066000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1026
+[TRACE] === CPU 3 Buffer ===
+[TRACE] Events: 209 (write_idx=209, dropped=0)
+[TRACE] CPU3 idx=0 ts=108379000 type=0x0102 TIMER_TICK tick_count=1
+[TRACE] CPU3 idx=1 ts=108838000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=393218
+[TRACE] CPU3 idx=2 ts=108871000 type=0x0012 UNKNOWN payload=65538
+[TRACE] CPU3 idx=3 ts=109005000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196614
+[TRACE] CPU3 idx=4 ts=109060000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1132462080
+[TRACE] CPU3 idx=5 ts=109085000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU3 idx=6 ts=109111000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075091348
+[TRACE] CPU3 idx=7 ts=109135000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU3 idx=8 ts=109689000 type=0x0102 TIMER_TICK tick_count=1
+[TRACE] CPU3 idx=9 ts=109729000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65542
+[TRACE] CPU3 idx=10 ts=109799000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1132462080
+[TRACE] CPU3 idx=11 ts=109833000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU3 idx=12 ts=109863000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075091348
+[TRACE] CPU3 idx=13 ts=109887000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU3 idx=14 ts=110973000 type=0x0102 TIMER_TICK tick_count=1
+[TRACE] CPU3 idx=15 ts=111115000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=131078
+[TRACE] CPU3 idx=16 ts=111116000 type=0x0012 UNKNOWN payload=6
+[TRACE] CPU3 idx=17 ts=111323000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196610
+[TRACE] CPU3 idx=18 ts=111325000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411452656
+[TRACE] CPU3 idx=19 ts=111325000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075060728
+[TRACE] CPU3 idx=20 ts=111326000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075060724
+[TRACE] CPU3 idx=21 ts=111326000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1027
+[TRACE] CPU3 idx=22 ts=112885000 type=0x0102 TIMER_TICK tick_count=1
+[TRACE] CPU3 idx=23 ts=112991000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65538
+[TRACE] CPU3 idx=24 ts=112992000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411452656
+[TRACE] CPU3 idx=25 ts=112993000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075060728
+[TRACE] CPU3 idx=26 ts=112993000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075060724
+[TRACE] CPU3 idx=27 ts=112993000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1027
+[TRACE] CPU3 idx=28 ts=113960000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU3 idx=29 ts=116573000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU3 idx=30 ts=119269000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU3 idx=31 ts=122193000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU3 idx=32 ts=125026000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU3 idx=33 ts=125339000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=393219
+[TRACE] CPU3 idx=34 ts=125339000 type=0x0012 UNKNOWN payload=3
+[TRACE] CPU3 idx=35 ts=125342000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196614
+[TRACE] CPU3 idx=36 ts=125343000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1132462080
+[TRACE] CPU3 idx=37 ts=125344000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU3 idx=38 ts=125344000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU3 idx=39 ts=125345000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU3 idx=40 ts=125435000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65542
+[TRACE] CPU3 idx=41 ts=125436000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1132462080
+[TRACE] CPU3 idx=42 ts=125442000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU3 idx=43 ts=125443000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU3 idx=44 ts=125443000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU3 idx=45 ts=125457000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=196614
+[TRACE] CPU3 idx=46 ts=125457000 type=0x0012 UNKNOWN payload=6
+[TRACE] CPU3 idx=47 ts=125461000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196611
+[TRACE] CPU3 idx=48 ts=125461000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411522032
+[TRACE] CPU3 idx=49 ts=125461000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075061620
+[TRACE] CPU3 idx=50 ts=125462000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075655904
+[TRACE] CPU3 idx=51 ts=125462000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1026
+[TRACE] CPU3 idx=52 ts=126507000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU3 idx=53 ts=126521000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65539
+[TRACE] CPU3 idx=54 ts=126522000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411522032
+[TRACE] CPU3 idx=55 ts=126584000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075061620
+[TRACE] CPU3 idx=56 ts=126596000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075655904
+[TRACE] CPU3 idx=57 ts=126599000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1026
+[TRACE] CPU3 idx=58 ts=126876000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=393219
+[TRACE] CPU3 idx=59 ts=126877000 type=0x0012 UNKNOWN payload=3
+[TRACE] CPU3 idx=60 ts=126896000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196614
+[TRACE] CPU3 idx=61 ts=126898000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1132462080
+[TRACE] CPU3 idx=62 ts=126899000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU3 idx=63 ts=126962000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU3 idx=64 ts=126964000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU3 idx=65 ts=127822000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU3 idx=66 ts=127931000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65542
+[TRACE] CPU3 idx=67 ts=127933000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1132462080
+[TRACE] CPU3 idx=68 ts=127933000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU3 idx=69 ts=127934000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU3 idx=70 ts=127934000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU3 idx=71 ts=128105000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=196614
+[TRACE] CPU3 idx=72 ts=128106000 type=0x0012 UNKNOWN payload=6
+[TRACE] CPU3 idx=73 ts=128193000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196611
+[TRACE] CPU3 idx=74 ts=128215000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411522032
+[TRACE] CPU3 idx=75 ts=128422000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075061380
+[TRACE] CPU3 idx=76 ts=128424000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075655904
+[TRACE] CPU3 idx=77 ts=128424000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1026
+[TRACE] CPU3 idx=78 ts=129234000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU3 idx=79 ts=129287000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65539
+[TRACE] CPU3 idx=80 ts=129328000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411522032
+[TRACE] CPU3 idx=81 ts=129328000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075061380
+[TRACE] CPU3 idx=82 ts=129328000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075655904
+[TRACE] CPU3 idx=83 ts=129329000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1026
+[TRACE] CPU3 idx=84 ts=129353000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=393219
+[TRACE] CPU3 idx=85 ts=129354000 type=0x0012 UNKNOWN payload=3
+[TRACE] CPU3 idx=86 ts=129354000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196614
+[TRACE] CPU3 idx=87 ts=129355000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1132462080
+[TRACE] CPU3 idx=88 ts=129355000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU3 idx=89 ts=129355000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU3 idx=90 ts=129355000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU3 idx=91 ts=130530000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU3 idx=92 ts=131210000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65542
+[TRACE] CPU3 idx=93 ts=131349000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1132462080
+[TRACE] CPU3 idx=94 ts=131387000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU3 idx=95 ts=131389000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU3 idx=96 ts=131390000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU3 idx=97 ts=131492000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=196614
+[TRACE] CPU3 idx=98 ts=131495000 type=0x0012 UNKNOWN payload=6
+[TRACE] CPU3 idx=99 ts=131584000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196611
+[TRACE] CPU3 idx=100 ts=131596000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411522032
+[TRACE] CPU3 idx=101 ts=131641000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075061620
+[TRACE] CPU3 idx=102 ts=131641000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075655904
+[TRACE] CPU3 idx=103 ts=131653000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1026
+[TRACE] CPU3 idx=104 ts=131743000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU3 idx=105 ts=131847000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65539
+[TRACE] CPU3 idx=106 ts=131848000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411522032
+[TRACE] CPU3 idx=107 ts=131848000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075061620
+[TRACE] CPU3 idx=108 ts=131849000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075655904
+[TRACE] CPU3 idx=109 ts=131849000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1026
+[TRACE] CPU3 idx=110 ts=131908000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=393219
+[TRACE] CPU3 idx=111 ts=131910000 type=0x0012 UNKNOWN payload=3
+[TRACE] CPU3 idx=112 ts=131911000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196614
+[TRACE] CPU3 idx=113 ts=131911000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1132462080
+[TRACE] CPU3 idx=114 ts=131913000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU3 idx=115 ts=131913000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU3 idx=116 ts=131913000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU3 idx=117 ts=134129000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU3 idx=118 ts=134154000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65542
+[TRACE] CPU3 idx=119 ts=134163000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1132462080
+[TRACE] CPU3 idx=120 ts=134165000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU3 idx=121 ts=134166000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU3 idx=122 ts=134166000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU3 idx=123 ts=134440000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=196614
+[TRACE] CPU3 idx=124 ts=134442000 type=0x0012 UNKNOWN payload=6
+[TRACE] CPU3 idx=125 ts=134446000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196611
+[TRACE] CPU3 idx=126 ts=134551000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411522032
+[TRACE] CPU3 idx=127 ts=134553000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075061380
+[TRACE] CPU3 idx=128 ts=134553000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075655904
+[TRACE] CPU3 idx=129 ts=134554000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1026
+[TRACE] CPU3 idx=130 ts=135452000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU3 idx=131 ts=135466000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65539
+[TRACE] CPU3 idx=132 ts=135467000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411522032
+[TRACE] CPU3 idx=133 ts=135492000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075061380
+[TRACE] CPU3 idx=134 ts=135493000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075655904
+[TRACE] CPU3 idx=135 ts=135493000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1026
+[TRACE] CPU3 idx=136 ts=135610000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=393219
+[TRACE] CPU3 idx=137 ts=135610000 type=0x0012 UNKNOWN payload=3
+[TRACE] CPU3 idx=138 ts=135889000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196614
+[TRACE] CPU3 idx=139 ts=135891000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1132462080
+[TRACE] CPU3 idx=140 ts=135891000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU3 idx=141 ts=135891000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU3 idx=142 ts=135892000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU3 idx=143 ts=136980000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU3 idx=144 ts=137014000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65542
+[TRACE] CPU3 idx=145 ts=137020000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1132462080
+[TRACE] CPU3 idx=146 ts=137021000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU3 idx=147 ts=137021000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU3 idx=148 ts=137021000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU3 idx=149 ts=137178000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=196614
+[TRACE] CPU3 idx=150 ts=137179000 type=0x0012 UNKNOWN payload=6
+[TRACE] CPU3 idx=151 ts=137183000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196611
+[TRACE] CPU3 idx=152 ts=137184000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411522032
+[TRACE] CPU3 idx=153 ts=137184000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075061380
+[TRACE] CPU3 idx=154 ts=137184000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075655904
+[TRACE] CPU3 idx=155 ts=137193000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1026
+[TRACE] CPU3 idx=156 ts=138223000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU3 idx=157 ts=138326000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65539
+[TRACE] CPU3 idx=158 ts=138366000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411522032
+[TRACE] CPU3 idx=159 ts=138440000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075061380
+[TRACE] CPU3 idx=160 ts=138443000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075655904
+[TRACE] CPU3 idx=161 ts=138444000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1026
+[TRACE] CPU3 idx=162 ts=138893000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=393219
+[TRACE] CPU3 idx=163 ts=138914000 type=0x0012 UNKNOWN payload=3
+[TRACE] CPU3 idx=164 ts=138918000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196614
+[TRACE] CPU3 idx=165 ts=138920000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1132462080
+[TRACE] CPU3 idx=166 ts=138920000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU3 idx=167 ts=139021000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU3 idx=168 ts=139068000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU3 idx=169 ts=139870000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU3 idx=170 ts=139875000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65542
+[TRACE] CPU3 idx=171 ts=139875000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1132462080
+[TRACE] CPU3 idx=172 ts=139876000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU3 idx=173 ts=139877000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU3 idx=174 ts=139878000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU3 idx=175 ts=139887000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=196614
+[TRACE] CPU3 idx=176 ts=139888000 type=0x0012 UNKNOWN payload=6
+[TRACE] CPU3 idx=177 ts=139895000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196611
+[TRACE] CPU3 idx=178 ts=139896000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411522032
+[TRACE] CPU3 idx=179 ts=139897000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075061380
+[TRACE] CPU3 idx=180 ts=140289000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075655904
+[TRACE] CPU3 idx=181 ts=140291000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1026
+[TRACE] CPU3 idx=182 ts=141750000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU3 idx=183 ts=141761000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65539
+[TRACE] CPU3 idx=184 ts=141764000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411522032
+[TRACE] CPU3 idx=185 ts=141764000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075061380
+[TRACE] CPU3 idx=186 ts=142040000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075655904
+[TRACE] CPU3 idx=187 ts=142046000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1026
+[TRACE] CPU3 idx=188 ts=142219000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=393219
+[TRACE] CPU3 idx=189 ts=142230000 type=0x0012 UNKNOWN payload=3
+[TRACE] CPU3 idx=190 ts=142234000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196614
+[TRACE] CPU3 idx=191 ts=142235000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1132462080
+[TRACE] CPU3 idx=192 ts=142236000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU3 idx=193 ts=142243000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU3 idx=194 ts=142621000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU3 idx=195 ts=143239000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU3 idx=196 ts=143315000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65542
+[TRACE] CPU3 idx=197 ts=143316000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1132462080
+[TRACE] CPU3 idx=198 ts=143358000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU3 idx=199 ts=143360000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU3 idx=200 ts=143390000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU3 idx=201 ts=143397000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=196614
+[TRACE] CPU3 idx=202 ts=143398000 type=0x0012 UNKNOWN payload=6
+[TRACE] CPU3 idx=203 ts=143402000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196611
+[TRACE] CPU3 idx=204 ts=143402000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411522032
+[TRACE] CPU3 idx=205 ts=143418000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075061380
+[TRACE] CPU3 idx=206 ts=143448000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075655904
+[TRACE] CPU3 idx=207 ts=143448000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1026
+[TRACE] CPU3 idx=208 ts=145237000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] === CPU 4 Buffer ===
+[TRACE] Events: 0 (write_idx=0, dropped=0)
+[TRACE] (empty)
+[TRACE] === CPU 5 Buffer ===
+[TRACE] Events: 0 (write_idx=0, dropped=0)
+[TRACE] (empty)
+[TRACE] === CPU 6 Buffer ===
+[TRACE] Events: 0 (write_idx=0, dropped=0)
+[TRACE] (empty)
+[TRACE] === CPU 7 Buffer ===
+[TRACE] Events: 0 (write_idx=0, dropped=0)
+[TRACE] (empty)
+[TRACE] === CPU 8 Buffer ===
+[TRACE] Events: 0 (write_idx=0, dropped=0)
+[TRACE] (empty)
+[TRACE] === CPU 9 Buffer ===
+[TRACE] Events: 0 (write_idx=0, dropped=0)
+[TRACE] (empty)
+[TRACE] === CPU 10 Buffer ===
+[TRACE] Events: 0 (write_idx=0, dropped=0)
+[TRACE] (empty)
+[TRACE] === CPU 11 Buffer ===
+[TRACE] Events: 0 (write_idx=0, dropped=0)
+[TRACE] (empty)
+[TRACE] === CPU 12 Buffer ===
+[TRACE] Events: 0 (write_idx=0, dropped=0)
+[TRACE] (empty)
+[TRACE] === CPU 13 Buffer ===
+[TRACE] Events: 0 (write_idx=0, dropped=0)
+[TRACE] (empty)
+[TRACE] === CPU 14 Buffer ===
+[TRACE] Events: 0 (write_idx=0, dropped=0)
+[TRACE] (empty)
+[TRACE] === CPU 15 Buffer ===
+[TRACE] Events: 0 (write_idx=0, dropped=0)
+[TRACE] (empty)
+[TRACE] ====== END TRACE DUMP ======
+T3[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+T4[UNHANDLED_EC] cpu=0 EC=0x0 ELR=E0xffffL0_SYSCALL: First syscall from userspace (SPSR confirms EL0)
+[ OK ] syscall path verified
+00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+T5[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+T6[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 EL[R=0xffff0in0004010c8d8
+it] Br[UNHAeenix init starting (PID 1)NDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+T7[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+T8[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+T9[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xf[fff000spaw04010c8n] path='d8
+T0/bin/heartbeat'
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0x4
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040239000
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDL
+ED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0x[ffff00004DA010c8d8T
+A[U_NHANDALED_EC]B cpuO=0 ERC=0x0 ELR=0Txffff00]004010c8d 8
+[UNHANDLED_ECFAR=0xe] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=80 EC=0x0 ELR=0xffff00004010c84d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xff8ff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] 2cpu=0 EC=0x0 ELR=0xffff000043010c8d8
+e[UNHANDLED_EC] cpu=07 EC=0x0 ELR=0xffff00004010c8d88
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xff1ff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=50xffff00004010c80d8
+[UNHANDLED_EC] c1pu=0 EC=0x0 ELR=0xfffdf000040107c8d8
+[UNHA9NDLED_EC] cp u=E0 LEC=0xR0 ELR=0xffff000=04010c8d8
+[UNHANDLED_EC]0 cpu=0 EC=0x0 ELR=0xffff00004010c8dx8
+f[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xfffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+f[UNHANDLED_EC] cpu=0 fEC=0x0 ELR=0xffff000004010c8d8
+[UNHANDLED_EC] cpu=00 EC=0x0 E0LR=0xffff00004010c80d8
+4[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+0[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED2_EC] cpu=0 EC=0x0 ELR=0xff2ff00004010c8d28
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=00xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 E0C=0x0 ELR=0xffff00004010c8d8
+0[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010 c8d8
+E[UNHASNDLERD_E=C]0 cpu=0 EC=0x0 ELR=0xffff00x004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_E9C] cpu=0 EC=0x06 ELR=0xffff000004010c8d08
+[UNHA0NDLED_EC0] cpu=00 EC=0x0 ELR=04xffff00004010c 8d8
+[UNDHANDLEDF_EC] cpuS=0C EC==0x0 ELR=00xfffxf00004010c8d84
+[UN HANDLED_EC] cpu=0 EC=0TTxB0 ELR=0xffff00004010c8d8
+[UNHANDLERD_EC] cpu=0 EC=0x0 ELR=0xf0fff00004010c8d=8
+[UNHANDLED_E0xC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c81d8
+[UNHANDLED_EC] cpu=00 EC=0x0 ELR=0xffff000004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC0] cpu=00 EC=0x40 ELR=0x4ffff00004010c80d8
+000[UNHANDLE0D_EC] cp0u=0 EC =0x0f ELR=0xfrfff000o0401m0c8_d8
+el[UNHAND0LED_EC] cpu=0 EC=0x0 ELR==0xfff1f00004010c8d8
+
+[UN
+HANDLED_EC] cpu=0 EC[=0x0 ELR=0PxffTff000_04010c8d8
+W[UNHAANDLLED_EC] cpu=0 KEC=0x0 ELR=0xffff000040]10c8d8
+ VA[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+=[0UNHAxNDLED_EC] cpu=0 EC=0x0 ELR=e0xffff00004010c8d8
+[UNHANDLED_EC] cpu=08 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_E4C] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 E8LR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040120c8d8
+[UNHANDLED_EC] cpu=30 EC=e0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC]7 cpu=0 EC=0x0 ELR=0xf8fff00004010c8d8
+[UNH1ANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d58
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 E0C=0x0 ELR=0x1fffdf000040107c8d8
+9 [UNHANDLETD_EC] cpTu=0 BEC=0xR0 ELR0=0xfff_f0000p4010c8d8
+h[UNHAyNDLED_EC] cpu=0 EC=0x0 ELsR=0xffff000=04010c8d8
+[UNHANDLED_EC] cpu=0 0EC=0x0 ELRx=0xffff0000440410c8d8
+0[0UNHANDLED_EC0] cpu=00 EC=00x0 ELR=0xffff000004010c8d8
+[U NHANDLLED_0EC][ c0xpu=0 EC=0x0 EL4R=07xff]ff00=0040010c8dx8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+0[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 E LR=0xffff00004010c8d8
+([UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELLR=0xff0ff000=04010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8di8
+nv[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UaNHANDLED_EC] cpu=0 lEC=0x0 ELR=0xffff0000i4010dc8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xff)ff00004010c8d
+8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=[UNHANDLED_EC] c
+[pu=DATA_ABORT] FAR=0x2 EC=0x0 ELR=0xffff000040249000
+[FATAL_POSTf8 MORELR=0xffff00TEM004] c01b712c Epu=2 labSR=0xel=UNHANDLED_EC
+  Deferred requeue snap96000005 DFSC=0x5 TTshots:
+BR0[DE=0x10000440FER000_SN00 from_AP] cpu=0el0= stage=3 tid=7 aux0=0 flags= 0xe02 sp=0x54231040 elr=0x40109674 xc30=0x40109614
+[DEFpER_SuN=AP] cpu=01 sta
+ge =1 t id=3 aux=0 flagxs=0x4012 sp=90=x542201df0 xeflr=0x40142374 x3f0=0x401d34e0
+[DEFfER_SNAP] cpu=2 fstage=5 tid=07 aux=0 flags=0xe01 s0p=0x54231040 elr=0x400109674 x30=0x400109614
+[D4EFER_SNAP] cpu=03 stage=3 tid2=6 aux=0 3flags=02x5001 sp=00x4370fff 40 exlr=02x04=010a5bc x300=0x40x10a5bc
+
+  Trace buffers:
+[TRACE] ====== TRACE BUFFER DUMP ======
+[TRACE] Tracing enabled: yes
+[TRACE] Ti0m exstamp f8r=equency0: 1x000000f000 Hz
+[TRACE] === CPU 0f Buffer ===
+f[TRACE] Eventfs: 509 (write_0idx=509, dropped=0)
+0[TRACE] CPU0 idx=0 ts=1007287000 type=0x00102 TIMER_TICK tick_count=14
+[TRACE] C0PU0 idx=1 ts=113435000 type=0x0102 TIMER_TICK tick_count=12
+[TRACE] CPUe0 idx=2 ts=0113540000 type=80x0001 8CTX_SWITCH_ENTRY old_tid<<16|new_tid=458752
+[TRACE] CPU0 idx=30 ts= 113549000 xtype=0x00192 UNKNOWN p=ayl0oad=0
+[TRxACE] CPU0 idx=4 ts=113795000 type=0xff39 DEFER_REQUEUE_STAGE stage<<163|tid=196615
+[TRAC2E] CPU0  idx=5x ts=219137=99000 type=00xff3xa DfEFER_REQUEUE_SP sp_lofw32=1411592192f
+[TRACE] CPU0 idx=f6 ts=113803000 ty0pe=0xff3b DEF0ER_REQUEUE_ELR elr_0low32=100738037604
+[TRACE] CP0U0 idx=7 2ts=113808000 type3=0xff3c DEFE9R_REQUEUE_X30 x30_low32=00
+[TRACE] CPU0 idx=8 t7s=113812000 type0=0xff3d DEFER_REQ UEUE_FLxA3GS aux_tid<<01=6|fl0agxs=3074
+[TRACE] CPU0 idx=9 ts=194007000 type=0x0102 TIMER_TICK tick_count=3
+[TRACE] CPU0 idx=10 ts=194423000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65543
+[TRACE] CPU0 idx=11 ts=194439000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411592192
+[TRACE] CPU0 idx=12 ts=f194444000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1073803760
+[TRACE] CPU0 idx=13 ts=194449000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+f[TRACE] CPU0 idx=14 ts=194453000 type=0xff3df DEFER_REQUEUE_FLAGS aufx_tid<<16|flags=3073
+0[TRACE] CPU0 idx=15 ts=195177000 type=00x0102 TIMER_TICK0 tick_count=4
+[TRACE] CPU00 idx=16 ts=197130000 ty4pe=0x00102 1TIMER8_TICK0 ticdk_coun8t=54
+[TRA CE] CPUs0p =idx=17 ts=01993810x00 type=0fx0102 TIMER_TICK tick_count=6
+[TRACEf] CPU0 idfx=18 ts=200627000f type=0x00102 TI0MER_TI0CK 0tick_count=47
+[TRAC3E] 1CPU0 idx=f19 ts=201782f000 tybpfe=0x0102 0TIMER_TICK tick_count=8
+[TRACE] CPU0 idx=20 ts=203010000 type=0x0102 TIMER_TICK tick_count=9
+[TRACE] CPU0 idx=21 ts=203836000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16| newt_itidd==7
+0[TRACE] CPU0 idx=22 ts=203837000 type=0x0012 UNKNOWN payload=7
+[TRACE] CPU0 idx=23 ts=203839000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196608
+[TRACE] CPU0n idx=24 ts=203839000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1126170624
+[TRACE] CPU0 idx=25 ts=203839000 type=0xff3b DEFER_REQUEUE_ELR elr_laow32m=1074841140
+[TRACE] CPU0 idx=26 ts=e203840000 type=0xff3c DEFER_REQUEUE_X30 =x30_slow32=0wapper/0
+[TRACE] CPU0 idx=27 ts=203840000 type=0xff3d DEFER
+_REQUEUE_F LAGS aux_tid<<16|flags=1025
+[TRACE] CPU0 idx=28 ts=203890000 type=0xff16  RET_DISPATCH_SP sp_low32=p141158465e6
+[rTRACE] CPU0 cidx=29 pts=20392u1000 type=_0xkfsf17t =RET_DISPATCH_LR0 slot20_low32=x10745f52476
+[TRACE] CPU0 idx=30 ts=f204021000 typef=0xff25 SCHEDULE_RESUME_STAGE stage<<16|tid=f65543
+[TRACE] CPU0 idx=31 ts=204048000 type=0xff26 SCHEDULE_RESUME_SP sp_low32=1411584656
+[TRACE] CPU00 idx=32 ts=204085000 type=0xff27 SCHEDULE_RESUME_X30 0x30_low320=1074832828
+[TRACE] CPU0 idx=33 ts=2004230000 type=0xff10 WAIT_TIMEOUT_STAGE 4stage<<16|tid=73
+[TRAC2E] CPU00 idx=034 ts=204240000 type=0xff11 0WAIT_TIMEOUT_SP sp_low32=10411585152
+[TRACE] 0CPU0 i dx=35u ts=2s04245000 type=0xff12 WAIT_TIMEOUTe_X30 x30_low32=1074551764r
+[TRACE] CPU0 _idx=36 ts=r2042490s00 type=0xff28 pWAIT__TIMEOUT_SLOsT20c slort20_alow32=1411585164
+[TRACE]t cCPU0 idx=37h ts=204291000 type=0x=0001 CTX_SWITCH_ENTRY0 xold_tid<<16|new_tid=458752
+[TRACE] CPU0 idx=38 ts=204301000 type=0x0012 UNKNOWN paylofad=0
+[TRACE] CPU0 idx=39 ts=204309000 type=0xff1fc CTX_PUBLISH_STAGE stage<<16|tidf=196615
+[TRAfCE] CPU00 idx=40 ts=2043103000 0type=0xff1d CTX_PUB0LISH_SP 4sp3_low32=1f14115846fbf56
+0[TRACE] CPU0 idx=41 ts=204318000 type=0xff1e CTX_PUBLISH_ELR elr_low32=1074832828
+[TRACE] CPU0 idx=42 ts=204322000 type=0xff1f CTX_PUBLISH_X30 x30_low32=1074832828
+[TRACE] CPU0 idx=43 ts=204326000 type=0xff20 CTX_PUBLISH_FLAGS flags=7
+[TRACE] CPU0 idx=44 ts=204330000 type=0xff21  tCTX_PUBhrLISH_AUX aux_low32=1411585056
+[TRACE] CPU0 eidx=a4d5 t_s=2k04479000 type=0x0s001t =CTX_SWI0TCH_ENTRY xoldf_tid<<16|new_tid=7
+[TRACE] CPU0 idx=46 ts=204479000 type=0x0012 UNKNOWN payload=f7
+[TRACE] CPU0 idx=47 ts=204480000 tyfpe=0xff39 DEFER_REQUEUE_STAGE fstage<<16|tid=196608
+[TRACE] CPU0 idx=48 ts=204480000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1126170624
+[TRACE] CPU0 idx=49 ts=2044870000 type=0xff3b DEFER_R0EQUEUE_ELR elr_low32=10748041140
+[TRACE] CPU0 i0dx=50 ts=204500000 typ4e=0xff3c3 DEFER_2REQUEUE_X30 x30_low32=0
+[TRACE]0 CPU0 idx=51 ts=2045000000 type=0xff3d0 DEFER_REQUEUE_0FLAGS aux_tid<<16|flags=10025
+[TRACE]
+ CPU0 idx =52 ts=2045 01000A typHe=0xffC16 RET_DISPATCH_SPI sp_low32=1411585056
+ [TRACE] CPU0 idx=53 ts=204501000 type=0xff17 RET_DISPATCH_LR aslot20_low32=1074552476
+[TRACE] CPU0 idx=54 ts=204503000 type=0xfrf25 SCHmEDUL E_RESUME_STAGE stage<<16|tid=65543
+[TRACE] CPU0 idx=55 ts=204503000 type=0xfpf26 SCHEDULE_RESUME_SP sp_low32=1411585056
+[TRACE] CPU0 idx=56 ts=204503000 type=0xff27 SCHEDULE_RESUME_X30 x30_olow32=r1074t832828=
+[TRACE] CPU0 idx=57 ts=204641000 type=0xff10 WAIT_TIMEOUT_STAGE stage<<16|tid=7
+[TRACE] CPU0 idx=58 ts=204641000 type=0xff11 WAIT_TIMEOUT4_SP sp_low32=1411585152294967
+[TRACE] CPU0295 idx=59 ts=204641000 type=0xff12 WAIT_TIMEOUT_X30 x30_low32=1074551764
+[TRACE] CPU0  idx=60 ts=204641000 type=0xff28 WAIT_TIMEOUT_SLOT20 slot20_low32=1411585164
+[TRACE] cCPU0 idx=61 ts=204672000 type=0x000m1d =CTX_SWITCH_ENTRY old_tid<<106|new_tid=458752
+[TRACE ] CPUi0s irdx=6 2 ts=204672000 type=0xp0o012 UNKNOWN payload=0
+[TRACE] CPU0 idx=63 ts=204673000 type=r0xff1c CTX_PUBLISH_STAGE stage<<16|tid=196615t=
+[TRACE] CPU0 idx=64 ts=204673000 type=0xff1d CTX_PUBLISH_SP sp_low32=1411585056
+[TRACE] CPU0 idx=65 ts=204674000 type=0xff1e CTX_PUBLISH_ELR elr_low32=1074832828
+[TRACE] CPU0 idx=66 ts=204674000 type42=0xff194967295 cf CTX_PUBLISH_X30 x30_low32=1074832828
+[TRACE] CPU0 idx=67 ts=204674000 type=md=0xff20 CTX0_PUBLISH_FLAGS flags =7w
+[TRACE] CPU0 idx=6a8 ts=204674000 typei=0txff21e CTX_PUBLISH_AUX aux_lrow32_t=1411585056
+[TiRdACE] CPU0 idx==69 ts=204716000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=70
+[TRACE] CPU0 idx=70 ts=204716000 type=0
+x0012 UNKNOWN payload=7
+[TRACE] CPU0 i dx=71 ts=204717000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tidS=196608
+[TRACE] CPU0 idx=72 tTs=2A04721000 type=0xffC3Ka D=EFbER_REQUEUE_SP sp_olow32=1126170624
+[TRACE]ot CPU0 idx=7_3c ts=2p04721000 type=0xff3b uDEFER_REQUEUE_ELR0 elr_low32=1074841140
+[TRACE] CPU0
+[ idx=74 ts=204722000 type=0xff3c DEFEDATR_REQUEUE_X30 x30_low32=0
+[TRACE] CPU0 idx=75 ts=204722000 tA_ABORype=0xfT]f3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1 kernel-025
+[TRACE] CPU0 idx=m7ode fault, defer6 ts=204723000 type=0xff16 RETring_D process cleaInup
+SPATCH_SP sp_low32=1411585056
+[TRACE] CPU0 idx=77 ts=204723000 type=0xff17 RET_DISPATCH_LR slot20_low32=1074552476
+[TRACE] CPU0 idx=78 ts=204725000 type=0xff25 SCHEDULE_RESUME_STAGE stage<<16|tid=65543
+[TRACE] CPU0 idx=79 ts=204725000 type[DATA_=0xff26 SCABORT]HEDULE_RESUME_SP  sp_dlow32=14e1158f5056
+[TReACE] CrPU0 idxr=80 ts=204725000 type=0xff27 SeCdHEDULE_RESUME_X30 x30_low32=107483_2828t
+[TRiACE] CPU0 idx=81 ts=204811000 type=0xff10 WAIT_TIMEOUT_STAGE stage<<16|tid=7
+[TRACE] CPU0 idx=82 ts=20481d2000 type=0xff11 WAIT_TIMEOUT_SP =sp_low32=14115847520
+[TRACE] CPU0  idx=83 ts=q204u812000 typee=0xff12 WAIT_TIMEOUT_X30 xu30_low32=1074551764
+[TRACE] CPU0 idx=84 ts=204812000 type=0xff28 eWAITd_TIME=1OUT_
+SLOT20 slot20_low32=1411584764
+[TRACE] CPU0 idx=85 ts=204822000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=458752
+[TRACE] CPU0 idx=86 ts=204822000 type=0x0012 UNKNOWN payload=0
+[TRACE] CPU0 idx=87 ts=204823000 type=0xff1c CTX_PUBLISH_STAGE stage<<16|tid=196615
+[TRACE] CPU0 idx=88 ts=204823000 type=0xff1d CTX_PUBLISH_SP sp_low32=1411585056
+[TRACE] CPU0 idx=89 ts=204823000 type=0xff1e CTX_PUBLISH_ELR elr_low32=1074832828
+[TRACE] CPU0 idx=90 ts=204823000 type=0xff1f CTX_PUBLISH_X30 x30_low32=1074832828
+[TRACE] CPU0 idx=91 ts=204823000 type=0xff20 CTX_PUBLISH_FLAGS flags=7
+[TRACE] CPU0 idx=92 ts=204824000 type=0xff21 CTX_PUBLISH_AUX aux_low32=1411584656
+[TRACE] CPU0 idx=93 ts=205464000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=7
+[TRACE] CPU0 idx=94 ts=205465000 type=0x0012 UNKNOWN payload=7
+[TRACE] CPU0 idx=95 ts=205465000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196608
+[TRACE] CPU0 idx=96 ts=205465000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1126170624
+[TRACE] CPU0 idx=97 ts=205466000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU0 idx=98 ts=205466000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU0 idx=99 ts=205466000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flag[Us=1025NH
+ANDLE[TRACE]D_EC] cpu=0  CPU0 EC=0x0 ELR=0idx=100xfff ts=205469000 typf000040e=0x10cff16 8REd8
+T_DISPATCH_SP sp_low32=[UNHANDLE141158465D_EC]6
+[TR cpu=0 EC=ACE] CPU0x0 0idx= E101L ts=R=0xfff205469f00004000 ty01pe=0c80xff17 RET_DId8SP
+ATCH_LR slot20_low32=1074552476
+[TRACE] CPU0 idx=102 ts=205473000 type=0xff25 SCHEDULE_RESUME_STAGE stage<<16|tid=65543
+[TRACE] CPU0 idx=103 ts=205478000 type=0xff26 SCHEDULE_RESUME_SP sp_low32=1411584656
+[TRACE] CPU0 idx=104 ts=205480000 type=0xff27 SCHEDULE_RESUME_X30 x30_low32=1074832828
+[TRACE] CPU0 idx=105 ts=205803000 type=0x0301 [UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+SYSCALL_EXIT [UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+result=4294967294
+[TRACE] CPU0 idx=106 ts=2[05819000 typeUN=0HANDx0001 LECTX_SWITCH_ENTRY old_tid<<16|new_tid=458752
+D_EC] cpu=0 EC=[TRACE] CP0x0 U0 idx=107 ts=205819000 tELR=0xfype=0x0012 UNKNOWN paylofffad=00000401
+[TR0cAC8d8
+[UNHANDLED_EC] cpu=0E] CPU0 idx=10 8 ts=2EC=0x05822000 0 ELR=0xffftype=f00000x4010c8d8
+ff39 DE[UFENHANDR_LED_EREQUEUE_STAGE stage<<16|tidC] =cp1u96615=0
+[TEC=0RACEx0] CPU0 ELR=0x iffffdx00=10900 t40s=20582300010c8d typ8
+e=0xff3a DEFER_REQUEUE_SP sp_low32=1411592192
+[TRACE] CPU0 idx=110 ts=[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xf2058230fff0000004010c8d8
+ type=0xff3b DEFER_REQUEUE_ELR e[UNlr_lHANDLED_EC] cpu=0 EC=0x0 ELow32R=0=1073759544
+[TRACE] CPU0 idx=11xffff00004010c8d8
+1 ts=[UNHANDLED_EC] cpu=0 2058EC=0x0 EL23000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1073759520R=0x
+[TRACE] CPU0ffff0 idx=112 ts=205823000 type=0x00040ff3d DEFER_10c8dREQU8
+EUE_FLAGS [UNHaux_tid<<16|flagsAND=307LED_E4
+[TRCA] cpu=0 CE] CPEC=0xU00 ELR= 0xfidx=113 ts=207253000 fftype=0x0102f0 TI00040MER_TIC10K tc8ick_cound8t=10
+
+[TRACE] CPU0 idx=114 ts=207268000[UNHAND typeLE=0xffD_EC3] cp9 DEFEu=0R_ EREQUEC=0x0UE_ST ELR=0xAGE staffffge0000401<<16|0c8d8
+tid=65543
+[TRA[UNHANDLCEED_EC] cp] CPUu=0 idx0 EC==1150 ts=x0 ELR=0207269xf000 type=0xfffff3000a 0DEF401ER0c8d8
+_REQUEUE_SP sp_low32=1411592192
+[TRACE] CPU0 idx=116 ts=207269000 type=0xff3b DEFER_RE[UNHANQUEUE_ELR elr_low32=1073759544
+[TRACE] CPU0 idx=117 ts=207271000 type=0xff3c DEDLEFER_REQUEUE_X30 x30_lowD_EC] cpu=0 EC=0x0 32=1073759520
+[TRACE] CPU0 idx=118 ts=207271000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=3073
+[TRACE] CPU0 idx=119 ts=207631000 type=ELR=0x00010xffff0 CTX_SWITCH_ENTRY old_tid<<16|n0004010ew_tidc8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xfff=7
+[TRACE] CPU0 idx=120 ts=207631000 type=f00004010c8d0x0012 UNKNOWN payl8
+[UNHANDLED_EC] cpu=0 EC=0xo0 ELadR=0xff=7ff00
+[TR004010c8d8
+ACE] CPU0 idx=121 ts=207632000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196608
+[TRACE] CPU0 idx=122 ts=207632000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1126170624
+[TRACE] CPU0 idx=123 ts=207633000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU0 idx=124 ts=207633000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU0 idx=125 ts=207[UNH63ANDLED_EC] cpu=03000 t EC=0x0 Eype=0xff3LR=0xd DEFER_REQUEUE_Fffff00004010c8d8LAGS
+[ aux_tidUNHANDLE<<16|flaD_EC] cgpu=0 s=1025
+E[C=0xTRACE0 ELR] CPU=0xffff00 idx0=0040126 ts=10c8d820
+7636000 type=0xff16 RET_DISPATCH_SP sp_low32=1411583664
+[TRACE] CPU0 idx=127 ts=207637000 type=0xff17 RET_DISPATCH_LR slot20_low32=1074552476
+[TRACE] CPU0 idx=128 ts=207656000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=458752
+[TRACE] CPU0 idx=129 ts=207656000 type=0x0012 UNKNOWN payload=0
+[TRA[UNHANDLED_ECE] CPU0 idx=130 ts=207660000 type=0xff1c CTX_PUBLISH_STAGE stage<<16|C] cpu=0 EC=0tid=13x0 ELR=0xf1079fff0000
+[TRACE] CPU0 idx=131 ts=207669000 type=0xff1d CTX_PUBLISH_SP sp_low324010c8d8
+=1411583664[UNHANDLED_EC
+[T] cpRAu=0CE]  EC=0x0CPU0 idx=1 32 tELR=s=02xffff0000040107675000 tycpe=0xf8d8
+f1e CTX_PUBLISH_ELR elr_low32=1074680268
+[TRACE] CPU0 idx=133 ts=207681000 type=0xff1f CTX_PUBLISH_X30 x30_low32=1074832828
+[TRACE] CPU0 idx=134 ts=207693000 type=0xff20 CTX_PUBLISH_FLAGS flag[s=6
+[TRACEUNHA] CPU0 NDLED_EiC] cpdx=13u=0 E5 tsC=0x=20 ELR0=0x769800ff0 typff000e=0xff040102c8d1 CTX_PUBLISH_AUX aux_low32=08
+
+[TRACE] CPU0 idx=136 ts=[UNHA20NDLE7707000 Dtype=0x_EC] cpu=0ff39 DEFER_REQUEUE_STAGE st ECa=0x0 ELRge<=<16|tid=10xf96fff00004615
+010c8[TRACE] CPd8
+U0 idx=137 ts=207707000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411583664
+[UNHA[TRACE] CPU0 idx=138 ts=207708000 type=0xff3b DNDLED_EC] cpu=0 EC=0x0 ELR=0xffEFERff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0x_REQUEUE_ELRffff00004010c8d8
+ elr_low32=107[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d84
+680[UNHAN268DLED_E
+[TC]R cpuACE] CPU0 id=x=0 139 ts=207EC=0x70800 ELR00 t=0xffff00004010c8d8
+ype=0xff3c DEFER_REQUEUE_X30 x30_low32[UNHAND=1074832828
+[TRACE] CPU0 idx=140 ts=LED_EC] cpu=0 20770EC=0x0 ELR=0xff8000 type=0xff00004010c8d8
+ff3d D[UNHAEFER_REQUEUE_FLAGSNDLED_EC] cpu=0 EC aux_tid<<=0x0 ELR=0xffff00004010c8d8
+16|flags[UNH=3586ANDLED_EC] cpu=0 EC=0x0
+[TRACEELR=0x]ffff00004010c8d CPU8
+0 idx=141 ts=209292000[UNHA typNDLED_EC] cpu=0 EC=0xe=0x0102 TIMER_TICK tick0_count=11 ELR=0x
+[TRfACE]f CPU0ff0000 idx=144010c82 ts=209321000d type8
+=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65543
+[TRACE] CPU0 idx=143 ts=209322000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411583664
+[TRACE] CPU0 idx=144 ts=209322000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+107483[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+2828[UNH
+[ANDLEDT_EC] cpu=0 EC=RACE0x0 ]ELR=0xffff000040 CP10cU0 idx=8d8
+145 ts=[2UNHANDLED_EC] cpu=00932300 EC=0 0xt0 Eype=0xffLR=3c 0xfDEFER_REQUEfffUE_X30 000x040130_lo0c8d8
+w32=1074832828
+[TRACE] CPU0 idx=146 ts=209323000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flag[s=UNHA3847ND
+[LETRACE]D_ CPU0 idx=1EC]47 cpu ts==2090 EC=0x0 EL396000 R=0xffff00004010c8d8ty
+pe=0x0001 CTX_SWI[UNHATCH_ENTRNDLEY D_EC] cpold_u=0 EC=0x0 ELR=0xffff00tid<004<16|ne010c8w_tid8
+d=7
+[TRACE] CPU0 idx=148 ts=209396000 type=0x0012 UNKNOWN payload=7
+[TRACE] CPU0 idx=149 ts=209405000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196608
+[TRACE] CPU0 idx=150 ts=209406000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1126170624
+[TRACE] CPU0 idx=151 ts=209406000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074841140
+[TRACE] CPU0[UNHAND idx=1LED_EC52 ts=209419000 type=0xff3c DEFER_REQUEUE_X3] cpu=0 EC=0x0 ELR=0xfff0 x30_lowf00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff0032=0
+[TRACE] CPU00 i0401dx0c8d=1538
+ ts=209459000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU0 idx=154 ts=209467000 type=0xff16 RET_DISPATCH_SP sp_low32=1411583664
+[TRACE] CPU0 idx=155 ts=2094[6UNH8000 type=0xANDLEDff17 RET_DISPATCH_LR sl_EC] cot20_lpu=0 EC=0x0 ELRow32=1074552476
+[TRAC=0xEffff00004010c8d8]
+ CPU0 idx=156 ts=209475000 type=[UNH0xff25 SCHEDULE_RESUMANDE_STAGE stage<<16|tid=65543
+[TRACLED_EC] cpu=0 EC=0x0 ELR=0xffff0000E] CPU0 idx=157 ts=209476000 type4010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHAND=0xff26 LED_EC] cpu=0 EC=SCHEDULE_RESUME_SP sp_low32=1411583664
+[TRACE] CPU0 idx=1058 ts=209477000 type=0xff27 SCHEDULE_RESUME_X30x0 ELR= x30_l0xffff00004010c8d8
+ow32=1074832828
+[TRACE] CPU0 idx=159 ts=209618000 type=0xff10 WAIT_TIMEOUT_STAGE stage<<16|tid=7
+[TRACE] CPU0 idx=160 ts=209619000 type=0xff11 WAIT_TIMEOUT_SP sp_low32=1411583360
+[TRACE] CPU0 idx=161 ts=209619000 type=0xff12 WAIT_TIMEOUT_X30 x30_low32=1074551764
+[TRACE] CPU0 idx=162 ts=209620000 type=0xff28 WAIT_TIMEOUT_SLOT20 slot20_low32=1411583372
+[TRACE] CPU0 idx=163 ts=209628000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=458752
+[TRACE] CPU0 idx=164 ts=209629000 type=0x0012 UNKNOWN payload=0
+[TRACE] CPU0 idx=165 ts=209630000 type=0xff1[UNHANDLED_EC] cpu=0c CTX_PUBLISH_STAGE stage<<16|tid= EC=0x0 ELR=0xffff00004010c8d8
+196615
+[TRACE] CPU0 idx=166 ts=209631000 type=0xff1d CTX_PUBLISH_SP sp_low32=1411583664
+[TRACE] CPU0 idx=167 ts=209632000 type=0xff1e CTX_PUBLISH_ELR elr_low32=1074832828
+[TRACE] CPU0 idx=168 ts=209632000 type=0xff1f CTX_PUBLISH_X30 x30_low32=1074832828
+[TRACE] CPU0 idx=169 ts=209633000 type=0xff20 CTX_PUBLISH_FLAGS flags=7
+[TRACE] CPU0 idx=170 ts=209633000 type=0xff21 CTX_PUBLISH_AUX aux_low32=1411583264
+[TRACE] CPU0 idx=171 ts=209805000 type=0x0001 CTX_SWITCH_ENTRY [UNHANDLED_EC] cpu=0 Eold_tid<<16|new_tiC=0x0 Ed=7
+[TRACE] CPU0 idx=172 ts=209805000 type=0x0012 LR=0UNKNOWN xpayloafd=7fff
+[000TRACE] C040PU0 10c8id8
+dx=173 ts=209806000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196608
+[TRACE] CPU0 idx=174 ts=209806000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1126170624
+[TRACE] CPU0 idx=175 ts=209806000 type=0xff[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff3b DEFER_REQUEUE_ELR elr_low3200004010c8d8
+=1074841140[U
+[TNHANRACE] CPU0 idx=176 ts=209807000 type=0xff3c DEFER_REQUEUE_X30 DLEDx30__EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004010c8d8
+[UNHANDLED_EC] cpu=0 EC=0xlow32=0
+0 ELR=0xffff000[TRAC04010E] CPUc8d8
+0 idx=1[UNH77 tsANDLED=209807000 typ_EC]e=0xff3 cpu=0 EC=0d DEFERx0 _REQUELR=0EUE_FxfffLf00AGS a004010cux_tid8d<<16|f8
+lags=1025
+[TRACE] CPU0 idx=178 ts=[UNHANDLE2098100D_EC] cpu=0 EC=0x000 typ ELR=e=0xffff00004010c8d8
+[UNH0xANff16 RET_DISPATCH_SP sp_lDLED_ow32=14EC] cpu=0 EC=011583264x0 ELR
+[TRACE=0] xffff0CP00040U0 i10c8ddx=178
+9 ts=[UNHA20983NDLED4000_ tyEC] cppe=0xff17 u=0 EC=0xRET_D0 ELRISPAT=0xffCH_LRff000 slot04010c8d8
+20_low32=1074552476
+[TRACE] CPU0 idx=180 ts=209838000 type=0xff25 SCHEDULE_RESUME_STAGE stage<<16|tid=65543
+[TRACE] CPU0 idx=181 ts=209840000 type=0xff26 SCHEDULE_RESUME_SP sp_low32=1411583264
+[TRACE] CPU0 idx=182 ts=209864000 type=0xff27 SCHEDULE_RESUME_X30 x30_low32=1074832828
+[TRACE] CPU0 idx=183 ts=210036000 type=0xff10 WAIT_TIMEOUT_STAGE stage<<16|tid=7
+[TRACE] CPU0 idx=184 ts=210046000 type=0xff11 WAIT_TIMEOUT_SP sp_low32=1411583760
+[TRACE] CPU0 idx=185 ts=210047000 type=0xff12 WAIT_TIMEOUT_X30 x30_low32=10[U74551764NHAND
+[TRACE]L CPU0ED_EC] cpu=0 EC=0 ix0 ELdx=18R=0xf6 ts=fff0000210044010c8d8
+7000 type=0xff28 WAIT_TIMEOUT_SLOT20 slot20_low32=1411583772
+[TRACE] CPU0 idx=187 ts=210054000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=458752
+[TRACE] CPU0 idx=188 ts=210055000 type=0x0012 UNKNOWN payload=0
+[TRACE] CPU0 idx=189 ts=210056000 type=0xff1c CTX_PUBLISH_STAGE stage<<16|t[UNHANDLED_EC] cpu=0 Eid=196615
+[TRACE] CPU0 idx=190 ts=210056000 type=0xff1d CTX_PUBLISH_SP sp_low32=1411583264
+[TRACE] CPU0 idx=191C=0x0 ELR=0xfff ts=21f00004010c8d8
+0057000 type=0xff1e CTX_PUBLISH_ELR e[lUNHr_low32=10ANDLED_E74832828
+C] cpu=0 EC=0x[TR0 ELRACE] =0xfCfff0PU000400 idx=10c8d192 ts=2100570008
+ type=0xff1f CTX_PUBLISH[UNHANDLED_EC]_ X30 x30_lowcpu=0 EC32=0x0 ELR=0xf=1fff0000401074830c8d82828
+[U

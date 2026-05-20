@@ -1,0 +1,21 @@
+250:[drivers] VirtIO block test failed: Block device not initialized
+345:!!! CPU0 REGRESSION ALARM !!!
+350:  KERNEL PANIC!
+352:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+356:!!! CPU0 REGRESSION ALARM !!!
+361:  KERNEL PANIC!
+363:panicked at kernel/src/arch
+372:  KERNEL PANIC!
+374:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+378:!!! CPU0 REGRESSION ALARM !!!
+383:  KERNEL PANIC!
+385:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+389:!!! CPU0 REGRESSION ALARM !!!
+394:  KERNEL PANIC!
+396:!!!=== =C====P==U0= =REGRESSION ALARM =!!!
+400:rch64/timer_interrupt.rs:598:17:
+405:  KERNEL PANIC!
+407:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+411:!!! CPU0 REGRESSION ALARM !!!
+416:  KERNEL PANIC!
+418:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
