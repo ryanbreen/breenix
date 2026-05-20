@@ -827,35 +827,15 @@ pub fn msi_interrupt_count() -> u32 {
 
 /// Interrupt handler for VirtIO network PCI device (MSI-X).
 ///
-/// Uses NAPI-style two-level suppression to prevent GICv2m SPI storms:
-/// 1. Device-level: sets VRING_AVAIL_F_NO_INTERRUPT so the device stops
-///    writing MSIs to GICv2m entirely.
-/// 2. GIC-level: disables the SPI as a safety net.
+/// Uses NAPI-style device callback suppression to prevent MSI storms:
+/// sets VRING_AVAIL_F_NO_INTERRUPT so the device stops writing MSIs to
+/// GICv2m while NetRx is scheduled.
 ///
-/// Does NOT process packets or raise softirq (locks in the packet
-/// processing path could deadlock with the interrupted thread).
-/// Timer-based NetRx softirq handles packet processing and calls
-/// re_enable_irq() to re-arm both levels.
+/// Does NOT process packets directly (locks in the packet processing path
+/// could deadlock with the interrupted thread). NetRx softirq handles packet
+/// processing and completion.
 pub fn handle_interrupt() {
-    use crate::arch_impl::aarch64::gic;
-
     NET_PCI_MSI_COUNT.fetch_add(1, Ordering::Relaxed);
-
-    let irq = NET_PCI_IRQ.load(Ordering::Relaxed);
-    if irq == 0 {
-        return;
-    }
-
-    // Suppress at the device level FIRST — prevents new MSI writes to GICv2m.
-    unsafe {
-        let q = &raw mut PCI_RX_QUEUE;
-        write_volatile(&mut (*q).avail.flags, VRING_AVAIL_F_NO_INTERRUPT);
-        fence(Ordering::SeqCst);
-    }
-
-    // Mask SPI at the GIC — belt-and-suspenders with device-level suppression.
-    gic::disable_spi(irq);
-    gic::clear_spi_pending(irq);
 
     // Read ISR to clear the VirtIO device's internal interrupt condition.
     let state = &raw const NET_PCI_STATE;
@@ -865,66 +845,45 @@ pub fn handle_interrupt() {
         }
     }
 
-    // Both levels stay suppressed — re_enable_irq() called from timer softirq.
+    // Suppress device callbacks while NetRx is scheduled. The GIC SPI remains
+    // enabled; completion re-enables callbacks after the budgeted poll drains.
+    unsafe {
+        let q = &raw mut PCI_RX_QUEUE;
+        write_volatile(&mut (*q).avail.flags, VRING_AVAIL_F_NO_INTERRUPT);
+        fence(Ordering::SeqCst);
+    }
+
+    crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::NetRx);
+    crate::tracing::providers::counters::NET_PCI_IRQ_RAISED_NETRX.increment();
 }
 
-/// Re-enable the network device's MSI-X interrupt after softirq processing.
+/// Re-enable RX callbacks and report whether work arrived during completion.
 ///
-/// Called by the NetRx softirq handler after draining the used ring.
-/// Follows the Linux virtqueue_enable_cb() pattern:
-/// 1. Read ISR to clear any pending device interrupt condition
-/// 2. Re-enable device-level interrupts (clear NO_INTERRUPT flag)
-/// 3. Memory barrier + check for new used ring entries
-/// 4. If more work: re-suppress and let next softirq handle it
-/// 5. If clean: clear GIC pending + enable SPI
-pub fn re_enable_irq() {
-    use crate::arch_impl::aarch64::gic;
-
-    let irq = NET_PCI_IRQ.load(Ordering::Relaxed);
-    if irq == 0 {
-        return;
+/// Called by the NetRx softirq after a budgeted poll returns Drained.
+/// Follows Linux's virtqueue_enable_cb_prepare/virtqueue_poll shape:
+/// 1. Clear VRING_AVAIL_F_NO_INTERRUPT to re-enable callbacks.
+/// 2. Publish that clear before reading used.idx.
+/// 3. If used.idx advanced beyond rx_last_used_idx, the caller re-raises NetRx.
+pub fn reenable_and_check_race() -> bool {
+    if NET_PCI_IRQ.load(Ordering::Relaxed) == 0 {
+        return false;
     }
 
-    // Read ISR to clear any pending device interrupt condition before re-enabling.
-    let state_ptr = &raw const NET_PCI_STATE;
-    unsafe {
-        if let Some(ref s) = *state_ptr {
-            let _isr = reg_read_u8(s.bar0_virt, REG_ISR_STATUS);
-        }
-    }
-
-    // Re-enable device-level interrupts (Linux: virtqueue_enable_cb)
     unsafe {
         let q = &raw mut PCI_RX_QUEUE;
         write_volatile(&mut (*q).avail.flags, 0);
         fence(Ordering::SeqCst);
     }
 
-    // Check if more work arrived while we were processing (race window).
-    // If so, re-suppress and let the next timer softirq cycle handle it.
-    let has_more = unsafe {
+    unsafe {
         let q = &raw const PCI_RX_QUEUE;
+        let state_ptr = &raw const NET_PCI_STATE;
         let used_idx = read_volatile(&(*q).used.idx);
-        if let Some(ref s) = *state_ptr {
-            used_idx != s.rx_last_used_idx
-        } else {
-            false
+        match (*state_ptr).as_ref() {
+            Some(s) => used_idx != s.rx_last_used_idx,
+            None => false,
         }
-    };
-
-    if has_more {
-        // More work arrived — re-suppress device interrupts, don't enable SPI.
-        unsafe {
-            let q = &raw mut PCI_RX_QUEUE;
-            write_volatile(&mut (*q).avail.flags, VRING_AVAIL_F_NO_INTERRUPT);
-            fence(Ordering::SeqCst);
-        }
-        return;
     }
-
-    // Used ring is drained — safe to re-enable the GIC SPI.
-    gic::clear_spi_pending(irq);
-    gic::enable_spi(irq);
 }
 
 /// Diagnostic: dump RX queue state for debugging MSI-X issues.

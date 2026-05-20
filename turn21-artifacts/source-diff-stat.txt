@@ -1,0 +1,4 @@
+ kernel/src/drivers/virtio/net_pci.rs     | 101 +++++++++----------------------
+ kernel/src/net/mod.rs                    |  19 ++++--
+ kernel/src/tracing/providers/counters.rs |   6 ++
+ 3 files changed, 50 insertions(+), 76 deletions(-)

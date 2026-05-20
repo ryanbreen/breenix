@@ -233,11 +233,11 @@ pub fn drain_loopback_queue() {
 }
 
 /// Softirq handler for network RX processing.
-/// Called from softirq context when NetRx softirq is raised by the timer (every 10ms).
+/// Called from softirq context when NetRx softirq is raised by the network IRQ path.
 ///
-/// The MSI handler does NOT raise softirq (to avoid lock contention in
-/// exception context). Instead, the timer raises NetRx every 10ms. This handler
-/// processes packets and then re-enables the MSI-X SPI so new interrupts can fire.
+/// PCI VirtIO uses a NAPI-shaped completion path: the IRQ handler suppresses
+/// device callbacks and raises NetRx; this handler drains a bounded packet
+/// budget and either re-enables callbacks or re-raises NetRx for more work.
 fn net_rx_softirq_handler(_softirq: SoftirqType) {
     let outcome = process_rx_budgeted(64);
     if outcome == PollOutcome::BudgetExhausted {
@@ -246,7 +246,16 @@ fn net_rx_softirq_handler(_softirq: SoftirqType) {
 
     #[cfg(target_arch = "aarch64")]
     if net_pci::is_initialized() {
-        net_pci::re_enable_irq();
+        match outcome {
+            PollOutcome::Drained => {
+                if net_pci::reenable_and_check_race() {
+                    crate::task::softirqd::raise_softirq(SoftirqType::NetRx);
+                }
+            }
+            PollOutcome::BudgetExhausted => {
+                crate::task::softirqd::raise_softirq(SoftirqType::NetRx);
+            }
+        }
     }
 }
 

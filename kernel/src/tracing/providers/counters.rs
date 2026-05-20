@@ -136,6 +136,11 @@ pub static GPU_PARTIAL_UPLOADS: TraceCounter =
 pub static NET_RX_BUDGET_EXHAUSTED: TraceCounter =
     TraceCounter::new("NET_RX_BUDGET_EXHAUSTED", "NetRx softirq budget exhausted");
 
+/// VirtIO PCI net IRQs that raised NetRx softirq work.
+#[no_mangle]
+pub static NET_PCI_IRQ_RAISED_NETRX: TraceCounter =
+    TraceCounter::new("NET_PCI_IRQ_RAISED_NETRX", "PCI net IRQ raised NetRx");
+
 // =============================================================================
 // Boot Test Counters (BTRT feature)
 // =============================================================================
@@ -192,6 +197,7 @@ pub fn init() {
     register_counter(&GPU_FULL_UPLOADS);
     register_counter(&GPU_PARTIAL_UPLOADS);
     register_counter(&NET_RX_BUDGET_EXHAUSTED);
+    register_counter(&NET_PCI_IRQ_RAISED_NETRX);
 
     #[cfg(feature = "btrt")]
     {
