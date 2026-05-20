@@ -131,6 +131,11 @@ pub static GPU_FULL_UPLOADS: TraceCounter =
 pub static GPU_PARTIAL_UPLOADS: TraceCounter =
     TraceCounter::new("GPU_PARTIAL_UPLOADS", "Partial rect GPU uploads");
 
+/// Network RX softirq polls that exhausted their packet budget.
+#[no_mangle]
+pub static NET_RX_BUDGET_EXHAUSTED: TraceCounter =
+    TraceCounter::new("NET_RX_BUDGET_EXHAUSTED", "NetRx softirq budget exhausted");
+
 // =============================================================================
 // Boot Test Counters (BTRT feature)
 // =============================================================================
@@ -186,6 +191,7 @@ pub fn init() {
     register_counter(&GPU_BYTES_UPLOADED);
     register_counter(&GPU_FULL_UPLOADS);
     register_counter(&GPU_PARTIAL_UPLOADS);
+    register_counter(&NET_RX_BUDGET_EXHAUSTED);
 
     #[cfg(feature = "btrt")]
     {

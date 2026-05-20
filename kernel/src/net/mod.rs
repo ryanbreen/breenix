@@ -239,7 +239,10 @@ pub fn drain_loopback_queue() {
 /// exception context). Instead, the timer raises NetRx every 10ms. This handler
 /// processes packets and then re-enables the MSI-X SPI so new interrupts can fire.
 fn net_rx_softirq_handler(_softirq: SoftirqType) {
-    process_rx();
+    let outcome = process_rx_budgeted(64);
+    if outcome == PollOutcome::BudgetExhausted {
+        crate::tracing::providers::counters::NET_RX_BUDGET_EXHAUSTED.increment();
+    }
 
     #[cfg(target_arch = "aarch64")]
     if net_pci::is_initialized() {
@@ -443,19 +446,39 @@ pub fn config() -> NetConfig {
     c
 }
 
+/// Result of a bounded network RX poll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PollOutcome {
+    Drained,
+    BudgetExhausted,
+}
+
 /// Process incoming packets (called from interrupt handler or polling loop)
 #[cfg(target_arch = "x86_64")]
 pub fn process_rx() {
-    let mut buffer = [0u8; 2048];
+    let _ = process_rx_budgeted(u32::MAX);
+}
 
-    while e1000::can_receive() {
+/// Process incoming packets up to `budget` frames.
+#[cfg(target_arch = "x86_64")]
+pub fn process_rx_budgeted(budget: u32) -> PollOutcome {
+    let mut buffer = [0u8; 2048];
+    let mut remaining = budget;
+
+    while remaining > 0 {
+        if !e1000::can_receive() {
+            return PollOutcome::Drained;
+        }
         match e1000::receive(&mut buffer) {
             Ok(len) => {
                 process_packet(&buffer[..len]);
+                remaining -= 1;
             }
-            Err(_) => break,
+            Err(_) => return PollOutcome::Drained,
         }
     }
+
+    PollOutcome::BudgetExhausted
 }
 
 /// Process incoming packets (ARM64 - polling or interrupt driven)
@@ -465,6 +488,12 @@ pub fn process_rx() {
 /// call process_rx() re-entrantly — the guard skips the nested call.
 #[cfg(target_arch = "aarch64")]
 pub fn process_rx() {
+    let _ = process_rx_budgeted(u32::MAX);
+}
+
+/// Process incoming packets up to `budget` frames.
+#[cfg(target_arch = "aarch64")]
+pub fn process_rx_budgeted(budget: u32) -> PollOutcome {
     // Re-entrancy guard: if we're already inside process_rx (e.g., ARP polling
     // loop interrupted by MSI-X → softirq → process_rx), skip this call.
     use core::sync::atomic::Ordering;
@@ -472,38 +501,57 @@ pub fn process_rx() {
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
-        return;
+        return PollOutcome::Drained;
     }
+
+    let mut remaining = budget;
+    let mut outcome = PollOutcome::Drained;
 
     // Try PCI driver first (Parallels), then e1000 (VMware), then MMIO (QEMU)
     if net_pci::is_initialized() {
         let mut processed = false;
-        while let Some(data) = net_pci::receive() {
+        while remaining > 0 {
+            let Some(data) = net_pci::receive() else {
+                break;
+            };
             process_packet(data);
             processed = true;
+            remaining -= 1;
         }
         if processed {
             net_pci::recycle_rx_buffers();
         }
     } else if e1000::is_initialized() {
         let mut buffer = [0u8; 2048];
-        while e1000::can_receive() {
+        while remaining > 0 {
+            if !e1000::can_receive() {
+                break;
+            }
             match e1000::receive(&mut buffer) {
                 Ok(len) => {
                     process_packet(&buffer[..len]);
+                    remaining -= 1;
                 }
                 Err(_) => break,
             }
         }
     } else {
         let mut processed = false;
-        while let Some(data) = net_mmio::receive() {
+        while remaining > 0 {
+            let Some(data) = net_mmio::receive() else {
+                break;
+            };
             process_packet(data);
             processed = true;
+            remaining -= 1;
         }
         if processed {
             net_mmio::recycle_rx_buffers();
         }
+    }
+
+    if remaining == 0 {
+        outcome = PollOutcome::BudgetExhausted;
     }
 
     // Drain deferred TX queue — packets queued during RX processing (e.g., TCP
@@ -515,6 +563,7 @@ pub fn process_rx() {
     // This avoids re-enabling from multiple code paths.
 
     RX_PROCESSING.store(false, Ordering::Release);
+    outcome
 }
 
 /// Source MAC of the packet currently being processed (for response routing).
