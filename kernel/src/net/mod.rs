@@ -63,8 +63,8 @@ pub(crate) fn irq_save() -> u64 {
 #[inline(always)]
 pub(crate) fn irq_restore(_: u64) {}
 
-/// Re-entrancy guard for process_rx() on aarch64. Prevents the softirq handler
-/// from re-entering process_rx() while the ARP polling loop is already inside it.
+/// Re-entrancy guard for process_rx() on aarch64. Prevents nested RX drains
+/// when interrupt-driven NetRx preempts another RX processing context.
 #[cfg(target_arch = "aarch64")]
 static RX_PROCESSING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
@@ -470,8 +470,8 @@ pub fn process_rx_budgeted(budget: u32) -> PollOutcome {
 /// Process incoming packets (ARM64 - polling or interrupt driven)
 ///
 /// Protected by RX_PROCESSING atomic to prevent re-entrancy. When MSI-X is
-/// active, the softirq handler can preempt the ARP polling loop and try to
-/// call process_rx() re-entrantly — the guard skips the nested call.
+/// active, the softirq handler can preempt another RX drain and try to call
+/// process_rx() re-entrantly; the guard skips the nested call.
 #[cfg(target_arch = "aarch64")]
 pub fn process_rx() {
     let _ = process_rx_budgeted(u32::MAX);
@@ -480,8 +480,8 @@ pub fn process_rx() {
 /// Process incoming packets up to `budget` frames.
 #[cfg(target_arch = "aarch64")]
 pub fn process_rx_budgeted(budget: u32) -> PollOutcome {
-    // Re-entrancy guard: if we're already inside process_rx (e.g., ARP polling
-    // loop interrupted by MSI-X → softirq → process_rx), skip this call.
+    // Re-entrancy guard: if MSI-X -> softirq -> process_rx preempts another RX
+    // drain, skip this nested call.
     use core::sync::atomic::Ordering;
     if RX_PROCESSING
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -635,34 +635,21 @@ pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'
     let dst_mac = match arp::lookup(&next_hop) {
         Some(mac) => mac,
         None => {
-            // On-demand ARP resolution: send request and poll for reply.
+            // ARP resolution is asynchronous: request the next-hop MAC and let
+            // IRQ-driven NetRx populate the cache. Callers should retry on
+            // ArpMiss; higher layers can rely on normal retransmission.
             net_log!(
-                "NET: ARP cache miss for {}.{}.{}.{}, sending on-demand ARP request",
+                "NET: ARP cache miss for {}.{}.{}.{}, sending ARP request",
                 next_hop[0],
                 next_hop[1],
                 next_hop[2],
                 next_hop[3]
             );
             if let Err(e) = arp::request(&next_hop) {
-                net_warn!("NET: On-demand ARP request failed: {}", e);
+                net_warn!("NET: ARP request failed after cache miss: {}", e);
                 return Err("ARP request failed");
             }
-            // Poll for the reply — 50 iterations with ~1ms spin delay each
-            for _ in 0..50 {
-                process_rx();
-                for _ in 0..500_000 {
-                    core::hint::spin_loop();
-                }
-                if let Some(mac) = arp::lookup(&next_hop) {
-                    net_log!("NET: On-demand ARP resolved gateway MAC");
-                    return {
-                        let ip_packet =
-                            ipv4::Ipv4Packet::build(config.ip_addr, dst_ip, protocol, payload);
-                        send_ethernet(&mac, ethernet::ETHERTYPE_IPV4, &ip_packet)
-                    };
-                }
-            }
-            return Err("ARP lookup failed - gateway did not respond");
+            return Err("ArpMiss: reply will populate cache via IRQ");
         }
     };
 
