@@ -1,0 +1,4 @@
+PING 10.211.55.100 (10.211.55.100): 56 data bytes
+
+--- 10.211.55.100 ping statistics ---
+1 packets transmitted, 0 packets received, 100.0% packet loss

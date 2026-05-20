@@ -1,0 +1,6 @@
+
+## interactive ssh procfs session keyed on output
+spawn ssh -tt -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o PreferredAuthentications=password -o PubkeyAuthentication=no -p 2222 root@10.211.55.100
+ERROR: password prompt timeout
+
+EXPECT_DONE
