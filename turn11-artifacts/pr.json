@@ -1,0 +1,1 @@
+{"baseRefName":"main","headRefName":"investigation/virtio-block-sound-irq-completion","number":345,"state":"OPEN","title":"virtio block/sound: convert polling drivers to IRQ-driven completion","url":"https://github.com/ryanbreen/breenix/pull/345"}

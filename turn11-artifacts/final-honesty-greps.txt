@@ -1,0 +1,23 @@
+# Final polling greps
+=== block.rs ===
+0
+=== sound.rs ===
+0
+=== block_mmio.rs ===
+0
+=== sound_mmio.rs ===
+0
+
+# Final completion preconditions
+=== block.rs preconditions ===
+469:            return Err("Block IRQ completion unavailable before interrupts are enabled");
+560:            return Err("Block IRQ completion unavailable before interrupts are enabled");
+=== sound.rs preconditions ===
+476:            return Err("Sound IRQ completion unavailable before interrupts are enabled");
+541:            return Err("Sound IRQ completion unavailable before interrupts are enabled");
+=== block_mmio.rs preconditions ===
+750:        return Err("Block MMIO IRQ completion unavailable before interrupts are enabled");
+880:        return Err("Block MMIO IRQ completion unavailable before interrupts are enabled");
+=== sound_mmio.rs preconditions ===
+587:        return Err("Sound MMIO IRQ completion unavailable before interrupts are enabled");
+703:        return Err("Sound MMIO IRQ completion unavailable before interrupts are enabled");
