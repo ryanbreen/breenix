@@ -1,0 +1,39 @@
+# Linux scheduler source search summary
+
+Source inspected locally after extracting these files from the probe's
+`/usr/src/linux-source-6.8.0.tar.bz2` into `/tmp/linux-source-6.8.0/`:
+
+- `kernel/sched/core.c`
+- `kernel/sched/fair.c`
+- `kernel/sched/rt.c`
+- `kernel/sched/idle.c`
+- `kernel/sched/sched.h`
+
+Commands used:
+
+```sh
+rg -n 'pick_next_task|task_on_cpu|task_on_rq|on_cpu|on_rq' \
+  /tmp/linux-source-6.8.0/kernel/sched/core.c
+
+rg -n 'dispatchable|pop_next|ready queue|ready_queue|skip.*on_cpu|drop.*on_rq|rotate' \
+  /tmp/linux-source-6.8.0/kernel/sched/core.c \
+  /tmp/linux-source-6.8.0/kernel/sched/fair.c \
+  /tmp/linux-source-6.8.0/kernel/sched/rt.c \
+  /tmp/linux-source-6.8.0/kernel/sched/idle.c \
+  /tmp/linux-source-6.8.0/kernel/sched/sched.h
+
+rg -n 'entity_eligible|pick_eevdf|pick_next_entity|set_next_entity|put_prev_entity' \
+  /tmp/linux-source-6.8.0/kernel/sched/fair.c
+```
+
+Findings:
+
+- `task_on_cpu` / `task_on_rq` references in `core.c` are concentrated in wakeup,
+  migration, task-state accounting, and locking comments.
+- No generic Linux scheduler helper matching Breenix's
+  `pop_next_dispatchable_thread*()` model was found.
+- Fair-class ineligible entity handling is in the EEVDF picker and is tied to
+  CFS RB-tree ownership, not to destructive task-ID dequeue filtering.
+
+The profile document carries the exact file:line citations used for the final
+claims.
