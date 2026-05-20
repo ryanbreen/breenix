@@ -71,7 +71,9 @@ pub fn run_post_init_self_tests() {
     log::info!("Running driver post-init self-tests...");
 
     // PIC initialization remaps/masks IRQs, so enable the VirtIO legacy INTx
-    // line after PIC setup and after the block driver exists.
+    // lines after PIC setup and after the block driver exists. QEMU routes
+    // the boot virtio-blk disk on IRQ11 and additional virtio-blk disks on IRQ10.
+    crate::interrupts::enable_irq10();
     crate::interrupts::enable_virtio_irq();
 
     if let Err(e) = virtio::block::test_read() {

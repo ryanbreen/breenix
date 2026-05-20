@@ -583,6 +583,8 @@ extern "x86-interrupt" fn irq10_handler(_stack_frame: InterruptStackFrame) {
     // Enter hardware IRQ context
     crate::per_cpu::irq_enter();
 
+    dispatch_virtio_block_interrupts();
+
     // Dispatch to E1000 network if initialized
     crate::drivers::e1000::handle_interrupt();
 
@@ -604,10 +606,7 @@ extern "x86-interrupt" fn irq11_handler(_stack_frame: InterruptStackFrame) {
     // Enter hardware IRQ context
     crate::per_cpu::irq_enter();
 
-    // Dispatch to VirtIO block if present
-    if let Some(device) = crate::drivers::virtio::block::get_device() {
-        device.handle_interrupt();
-    }
+    dispatch_virtio_block_interrupts();
 
     // Also check E1000 on IRQ 11 - some QEMU configurations route E1000 here
     crate::drivers::e1000::handle_interrupt();
@@ -620,6 +619,19 @@ extern "x86-interrupt" fn irq11_handler(_stack_frame: InterruptStackFrame) {
 
     // Exit hardware IRQ context
     crate::per_cpu::irq_exit();
+}
+
+#[inline]
+fn dispatch_virtio_block_interrupts() {
+    // QEMU exposes boot, test, and ext2 disks as separate legacy PCI functions,
+    // and routes them across IRQ10/IRQ11. Poll each initialized device's ISR
+    // once; devices not asserting the shared line return immediately.
+    for index in 0..4 {
+        let Some(device) = crate::drivers::virtio::block::get_device_by_index(index) else {
+            break;
+        };
+        device.handle_interrupt();
+    }
 }
 
 extern "x86-interrupt" fn divide_by_zero_handler(stack_frame: InterruptStackFrame) {

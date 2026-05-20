@@ -275,29 +275,8 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::NETWORK_STACK_INIT);
 
-    // Initialize ext2 root filesystem (after VirtIO block device is ready)
-    match kernel::fs::ext2::init_root_fs() {
-        Ok(()) => {
-            log::info!("ext2 root filesystem mounted");
-            #[cfg(feature = "btrt")]
-            kernel::test_framework::btrt::pass(kernel::test_framework::catalog::EXT2_MOUNT);
-        }
-        Err(e) => {
-            log::warn!("Failed to mount ext2 root: {:?}", e);
-            #[cfg(feature = "btrt")]
-            kernel::test_framework::btrt::fail(
-                kernel::test_framework::catalog::EXT2_MOUNT,
-                kernel::test_framework::btrt::BtrtErrorCode::IoError,
-                0,
-            );
-        }
-    }
-
-    // Initialize ext2 home filesystem (/home on separate disk)
-    match kernel::fs::ext2::init_home_fs() {
-        Ok(()) => log::info!("ext2 home filesystem mounted at /home"),
-        Err(e) => log::warn!("No home filesystem: {}", e),
-    }
+    // ext2 is backed by IRQ-driven VirtIO block I/O. Mount it later, after
+    // PIC/timer/scheduler setup, inside the temporary interrupt-enabled window.
 
     // Initialize devfs (/dev virtual filesystem)
     kernel::fs::devfs::init();
@@ -616,6 +595,35 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     log::info!("Temporarily enabling interrupts for driver post-init self-tests...");
     x86_64::instructions::interrupts::enable();
     drivers::run_post_init_self_tests();
+
+    // Initialize ext2 root filesystem once IRQ-driven block completions can arrive.
+    match kernel::fs::ext2::init_root_fs() {
+        Ok(()) => {
+            log::info!("ext2 root filesystem mounted");
+            #[cfg(feature = "btrt")]
+            kernel::test_framework::btrt::pass(kernel::test_framework::catalog::EXT2_MOUNT);
+        }
+        Err(e) => {
+            log::warn!("Failed to mount ext2 root: {:?}", e);
+            #[cfg(feature = "btrt")]
+            kernel::test_framework::btrt::fail(
+                kernel::test_framework::catalog::EXT2_MOUNT,
+                kernel::test_framework::btrt::BtrtErrorCode::IoError,
+                0,
+            );
+        }
+    }
+
+    // Initialize ext2 home filesystem only when the x86 home disk is attached.
+    if kernel::block::virtio::VirtioBlockWrapper::new(3).is_some() {
+        match kernel::fs::ext2::init_home_fs() {
+            Ok(()) => log::info!("ext2 home filesystem mounted at /home"),
+            Err(e) => log::warn!("No home filesystem: {}", e),
+        }
+    } else {
+        log::info!("No home filesystem: no home block device attached");
+    }
+
     x86_64::instructions::interrupts::disable();
     log::info!("Driver post-init self-tests complete; interrupts disabled for remaining init");
 
