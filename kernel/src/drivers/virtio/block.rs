@@ -21,9 +21,101 @@ use super::queue::Virtqueue;
 use super::VirtioDevice;
 use crate::drivers::pci::Device as PciDevice;
 use crate::memory::frame_allocator;
+use crate::task::completion::Completion;
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::Mutex;
+
+const BLOCK_COMPLETION_TIMEOUT_NS: u64 = 5_000_000_000;
+const BLOCK_EARLY_COMPLETION_TIMEOUT_NS: u64 = 100_000_000_000;
+const NO_COMPLETED_DESC: u32 = u32::MAX;
+const NO_COMPLETED_STATUS: u32 = u32::MAX;
+
+struct BlockRequestGate {
+    locked: AtomicBool,
+    waiters: crate::task::waitqueue::WaitQueueHead,
+}
+
+struct BlockRequestGuard<'a> {
+    gate: &'a BlockRequestGate,
+    release_on_drop: bool,
+}
+
+impl BlockRequestGate {
+    const fn new() -> Self {
+        Self {
+            locked: AtomicBool::new(false),
+            waiters: crate::task::waitqueue::WaitQueueHead::new(),
+        }
+    }
+
+    fn lock(&self) -> Result<BlockRequestGuard<'_>, &'static str> {
+        loop {
+            if self
+                .locked
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Ok(BlockRequestGuard {
+                    gate: self,
+                    release_on_drop: true,
+                });
+            }
+
+            if !block_request_gate_can_sleep() {
+                return Err("Block request already in progress");
+            }
+
+            if self
+                .waiters
+                .prepare_to_wait(crate::task::thread::ThreadState::BlockedOnIO)
+                .is_none()
+            {
+                return Err("Block request already in progress");
+            }
+
+            if self.locked.load(Ordering::Acquire) {
+                crate::task::waitqueue::schedule_current_wait();
+            }
+            self.waiters.finish_wait();
+        }
+    }
+
+    fn unlock(&self) {
+        self.locked.store(false, Ordering::Release);
+        self.waiters.wake_up_one();
+    }
+}
+
+impl BlockRequestGuard<'_> {
+    fn keep_locked(mut self) {
+        self.release_on_drop = false;
+    }
+}
+
+impl Drop for BlockRequestGuard<'_> {
+    fn drop(&mut self) {
+        if self.release_on_drop {
+            self.gate.unlock();
+        }
+    }
+}
+
+#[inline]
+fn block_request_gate_can_sleep() -> bool {
+    if crate::task::scheduler::current_thread_id().is_none() {
+        return false;
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        crate::per_cpu::preempt_count() > 0
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
 
 /// VirtIO block request types
 mod request_type {
@@ -79,6 +171,18 @@ pub struct VirtioBlockDevice {
     device: VirtioDevice,
     /// Request virtqueue
     queue: Mutex<Virtqueue>,
+    /// Serializes the shared DMA buffers without involving the IRQ handler.
+    request_gate: BlockRequestGate,
+    /// ISR-to-submitter completion for the single outstanding request.
+    completion: Completion,
+    /// Monotonic non-zero token expected by the current waiter.
+    next_token: AtomicU32,
+    /// Token currently armed for IRQ completion; 0 means no armed request.
+    pending_token: AtomicU32,
+    /// Descriptor head drained by the interrupt handler.
+    completed_desc: AtomicU32,
+    /// Status byte read by the interrupt handler.
+    completed_status: AtomicU32,
     /// Disk capacity in sectors
     capacity: u64,
     /// Number of completed operations (for stats)
@@ -102,6 +206,7 @@ impl VirtioBlockDevice {
         // Enable bus mastering for DMA
         pci_dev.enable_bus_master();
         pci_dev.enable_io_space();
+        pci_dev.enable_intx();
 
         // Create VirtIO device
         let mut device = VirtioDevice::new(io_base);
@@ -188,6 +293,12 @@ impl VirtioBlockDevice {
         Ok(VirtioBlockDevice {
             device,
             queue: Mutex::new(queue),
+            request_gate: BlockRequestGate::new(),
+            completion: Completion::new(),
+            next_token: AtomicU32::new(0),
+            pending_token: AtomicU32::new(0),
+            completed_desc: AtomicU32::new(NO_COMPLETED_DESC),
+            completed_status: AtomicU32::new(NO_COMPLETED_STATUS),
             capacity,
             ops_completed: AtomicU64::new(0),
             dma_buffers,
@@ -220,6 +331,84 @@ impl VirtioBlockDevice {
         }
 
         Ok((phys, virt))
+    }
+
+    fn next_completion_token(&self) -> u32 {
+        let mut token = self
+            .next_token
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        if token == 0 {
+            token = self
+                .next_token
+                .fetch_add(1, Ordering::AcqRel)
+                .wrapping_add(1);
+        }
+        token
+    }
+
+    fn prepare_completion_wait(&self) -> u32 {
+        let token = self.next_completion_token();
+        self.completion.reset();
+        self.completed_desc
+            .store(NO_COMPLETED_DESC, Ordering::Release);
+        self.completed_status
+            .store(NO_COMPLETED_STATUS, Ordering::Release);
+        self.pending_token.store(token, Ordering::Release);
+        token
+    }
+
+    fn clear_completion_state(&self) {
+        self.pending_token.store(0, Ordering::Release);
+        self.completed_desc
+            .store(NO_COMPLETED_DESC, Ordering::Release);
+        self.completed_status
+            .store(NO_COMPLETED_STATUS, Ordering::Release);
+    }
+
+    fn wait_for_completion(&self, token: u32) -> Result<(), &'static str> {
+        let scheduler_thread_present = crate::task::scheduler::current_thread_id().is_some();
+        let timeout_ns = if scheduler_thread_present {
+            BLOCK_COMPLETION_TIMEOUT_NS
+        } else {
+            // The x86 early-boot Completion path has no scheduler thread to
+            // park, so it uses its internal no-scheduler wait. Keep that path
+            // long enough for the existing boot-time sector-0 probe.
+            BLOCK_EARLY_COMPLETION_TIMEOUT_NS
+        };
+
+        let result = self.completion.wait_timeout(token, timeout_ns);
+
+        match result {
+            Ok(true) => Ok(()),
+            Ok(false) => Err("Block request timed out"),
+            Err(_eintr) => Err("Block request interrupted"),
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn irq_completion_available(&self) -> bool {
+        crate::task::scheduler::current_thread_id().is_some()
+            || x86_64::instructions::interrupts::are_enabled()
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    fn irq_completion_available(&self) -> bool {
+        true
+    }
+
+    fn take_completed_request(&self) -> Result<(u16, u8), &'static str> {
+        let desc = self
+            .completed_desc
+            .swap(NO_COMPLETED_DESC, Ordering::AcqRel);
+        if desc == NO_COMPLETED_DESC {
+            return Err("Block request woke without completion");
+        }
+        let status = self.completed_status.load(Ordering::Acquire);
+        if status == NO_COMPLETED_STATUS {
+            return Err("Block request woke without status");
+        }
+        Ok((desc as u16, status as u8))
     }
 
     /// Read multiple contiguous sectors into a buffer.
@@ -276,74 +465,66 @@ impl VirtioBlockDevice {
         if sector >= self.capacity {
             return Err("Sector out of range");
         }
+        if !self.irq_completion_available() {
+            return Err("Block IRQ completion unavailable before interrupts are enabled");
+        }
 
-        // Acquire the queue lock BEFORE touching the shared DMA buffers.
-        // The DMA header/data/status buffers are shared across all callers,
-        // so writing the sector number and request type without holding the
-        // lock causes a race when two processes exec() concurrently — one
-        // overwrites the other's sector number, reading the wrong block.
-        let mut queue = self.queue.lock();
+        // The DMA header/data/status buffers are shared across callers. Keep
+        // one request in flight, but do not make the IRQ handler take this gate.
+        let request_guard = self.request_gate.lock()?;
+        let completion_token = self.prepare_completion_wait();
 
         // Use cached DMA buffers (protected by queue mutex)
         let (header_phys, header_virt) = self.dma_buffers.header;
         let (data_phys, data_virt) = self.dma_buffers.data;
         let (status_phys, status_virt) = self.dma_buffers.status;
 
-        // Set up request header using volatile writes
-        // The device will read this memory via DMA
-        unsafe {
-            let header = header_virt as *mut VirtioBlkReq;
-            core::ptr::write_volatile(&mut (*header).type_, request_type::IN);
-            core::ptr::write_volatile(&mut (*header).reserved, 0);
-            core::ptr::write_volatile(&mut (*header).sector, sector);
+        {
+            let mut queue = self.queue.lock();
+
+            // Set up request header using volatile writes.
+            unsafe {
+                let header = header_virt as *mut VirtioBlkReq;
+                core::ptr::write_volatile(&mut (*header).type_, request_type::IN);
+                core::ptr::write_volatile(&mut (*header).reserved, 0);
+                core::ptr::write_volatile(&mut (*header).sector, sector);
+                core::ptr::write_volatile(status_virt as *mut u8, 0xff);
+            }
+            core::sync::atomic::fence(Ordering::SeqCst);
+
+            let buffers = [
+                (header_phys, 16, false),              // Header: device reads
+                (data_phys, SECTOR_SIZE as u32, true), // Data: device writes
+                (status_phys, 1, true),                // Status: device writes
+            ];
+
+            if queue.add_chain(&buffers).is_none() {
+                self.clear_completion_state();
+                return Err("Queue full");
+            }
         }
-        // Ensure header writes are visible before we set up descriptors
-        core::sync::atomic::fence(Ordering::SeqCst);
 
-        // Build descriptor chain
-        let buffers = [
-            (header_phys, 16, false),              // Header: device reads
-            (data_phys, SECTOR_SIZE as u32, true), // Data: device writes
-            (status_phys, 1, true),                // Status: device writes
-        ];
-
-        queue.add_chain(&buffers).ok_or("Queue full")?;
-
-        // Notify device
         core::sync::atomic::fence(Ordering::SeqCst);
         self.device.notify_queue(0);
 
-        // Poll for completion (synchronous for now)
-        // Use a reasonable timeout with delays to give QEMU TCG time to process
-        let mut timeout = 100_000u32;
-        while !queue.has_used() && timeout > 0 {
-            // Do a small spin delay - QEMU TCG needs CPU time to process I/O
-            for _ in 0..1000 {
-                core::hint::spin_loop();
+        if let Err(e) = self.wait_for_completion(completion_token) {
+            request_guard.keep_locked();
+            return Err(e);
+        }
+
+        let (completed_desc, status) = match self.take_completed_request() {
+            Ok(completed) => completed,
+            Err(e) => {
+                self.clear_completion_state();
+                return Err(e);
             }
-            // Read ISR status - this I/O operation helps yield to QEMU
-            let _ = self.device.read_isr();
-            timeout -= 1;
-        }
-
-        if timeout == 0 {
-            // Debug: dump queue state on timeout
-            log::error!("VirtIO block: Read timeout! Dumping queue state...");
-            log::error!(
-                "  used_idx={}, last_used_idx={}",
-                queue.debug_used_idx(),
-                queue.debug_last_used_idx()
-            );
-            log::error!("  ISR status: {:#x}", self.device.read_isr());
-            return Err("Read request timed out");
-        }
-
-        // Get completion
-        let (completed_desc, _bytes) = queue.get_used().ok_or("No completion available")?;
+        };
+        let mut queue = self.queue.lock();
 
         // Check status
-        let status = unsafe { *(status_virt as *const u8) };
         if status != status_code::OK {
+            queue.free_chain(completed_desc);
+            self.clear_completion_state();
             return Err("Device returned error status");
         }
 
@@ -359,7 +540,9 @@ impl VirtioBlockDevice {
         // Free descriptor chain
         queue.free_chain(completed_desc);
 
+        self.clear_completion_state();
         self.ops_completed.fetch_add(1, Ordering::Relaxed);
+        drop(request_guard);
 
         Ok(())
     }
@@ -373,65 +556,72 @@ impl VirtioBlockDevice {
         if sector >= self.capacity {
             return Err("Sector out of range");
         }
+        if !self.irq_completion_available() {
+            return Err("Block IRQ completion unavailable before interrupts are enabled");
+        }
 
-        // Acquire the queue lock BEFORE touching the shared DMA buffers.
-        let mut queue = self.queue.lock();
+        let request_guard = self.request_gate.lock()?;
+        let completion_token = self.prepare_completion_wait();
 
         // Use cached DMA buffers (protected by queue mutex)
         let (header_phys, header_virt) = self.dma_buffers.header;
         let (data_phys, data_virt) = self.dma_buffers.data;
         let (status_phys, status_virt) = self.dma_buffers.status;
 
-        // Set up request header
-        unsafe {
-            let header = header_virt as *mut VirtioBlkReq;
-            (*header).type_ = request_type::OUT;
-            (*header).reserved = 0;
-            (*header).sector = sector;
+        {
+            let mut queue = self.queue.lock();
+
+            unsafe {
+                let header = header_virt as *mut VirtioBlkReq;
+                core::ptr::write_volatile(&mut (*header).type_, request_type::OUT);
+                core::ptr::write_volatile(&mut (*header).reserved, 0);
+                core::ptr::write_volatile(&mut (*header).sector, sector);
+                core::ptr::write_volatile(status_virt as *mut u8, 0xff);
+                core::ptr::copy_nonoverlapping(buffer.as_ptr(), data_virt as *mut u8, SECTOR_SIZE);
+            }
+
+            let buffers = [
+                (header_phys, 16, false),               // Header: device reads
+                (data_phys, SECTOR_SIZE as u32, false), // Data: device reads
+                (status_phys, 1, true),                 // Status: device writes
+            ];
+
+            if queue.add_chain(&buffers).is_none() {
+                self.clear_completion_state();
+                return Err("Queue full");
+            }
         }
 
-        // Copy data to DMA buffer
-        unsafe {
-            core::ptr::copy_nonoverlapping(buffer.as_ptr(), data_virt as *mut u8, SECTOR_SIZE);
-        }
-
-        // Build descriptor chain
-        let buffers = [
-            (header_phys, 16, false),               // Header: device reads
-            (data_phys, SECTOR_SIZE as u32, false), // Data: device reads
-            (status_phys, 1, true),                 // Status: device writes
-        ];
-
-        let _desc_head = queue.add_chain(&buffers).ok_or("Queue full")?;
-
-        // Notify device
         core::sync::atomic::fence(Ordering::SeqCst);
         self.device.notify_queue(0);
 
-        // Poll for completion (synchronous for now)
-        let mut timeout = 1_000_000u32;
-        while !queue.has_used() && timeout > 0 {
-            core::hint::spin_loop();
-            timeout -= 1;
+        if let Err(e) = self.wait_for_completion(completion_token) {
+            request_guard.keep_locked();
+            return Err(e);
         }
 
-        if timeout == 0 {
-            return Err("Write request timed out");
-        }
-
-        // Get completion
-        let (completed_desc, _bytes) = queue.get_used().ok_or("No completion available")?;
+        let (completed_desc, status) = match self.take_completed_request() {
+            Ok(completed) => completed,
+            Err(e) => {
+                self.clear_completion_state();
+                return Err(e);
+            }
+        };
+        let mut queue = self.queue.lock();
 
         // Check status
-        let status = unsafe { *(status_virt as *const u8) };
         if status != status_code::OK {
+            queue.free_chain(completed_desc);
+            self.clear_completion_state();
             return Err("Device returned error status");
         }
 
         // Free descriptor chain
         queue.free_chain(completed_desc);
 
+        self.clear_completion_state();
         self.ops_completed.fetch_add(1, Ordering::Relaxed);
+        drop(request_guard);
 
         Ok(())
     }
@@ -449,9 +639,24 @@ impl VirtioBlockDevice {
             return false;
         }
 
-        // Check for used buffers
-        // Note: The actual completion processing is done in poll_completions
-        // The interrupt just signals that there's work to do.
+        let token = self.pending_token.load(Ordering::Acquire);
+        if token == 0 {
+            return true;
+        }
+
+        let Some(mut queue) = self.queue.try_lock() else {
+            return true;
+        };
+
+        if let Some((completed_desc, _bytes)) = queue.get_used() {
+            let (_, status_virt) = self.dma_buffers.status;
+            let status = unsafe { core::ptr::read_volatile(status_virt as *const u8) };
+            self.completed_status
+                .store(status as u32, Ordering::Release);
+            self.completed_desc
+                .store(completed_desc as u32, Ordering::Release);
+            self.completion.complete(token);
+        }
 
         true
     }
