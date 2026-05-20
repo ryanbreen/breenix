@@ -1,0 +1,181 @@
+kernel/src/drivers/virtio/net_mmio.rs:571:    loop {
+kernel/src/drivers/virtio/net_mmio.rs-572-        fence(Ordering::SeqCst);
+kernel/src/drivers/virtio/net_mmio.rs-573-        let used_idx = unsafe {
+kernel/src/drivers/virtio/net_mmio.rs-574-            let ptr = &raw const TX_QUEUE;
+kernel/src/drivers/virtio/net_mmio.rs-575-            read_volatile(&(*ptr).used.idx)
+kernel/src/drivers/virtio/net_mmio.rs-576-        };
+--
+kernel/src/drivers/virtio/gpu_pci.rs:43:        loop {
+kernel/src/drivers/virtio/gpu_pci.rs-44-            if let Some(guard) = self.try_lock() {
+kernel/src/drivers/virtio/gpu_pci.rs-45-                return guard;
+kernel/src/drivers/virtio/gpu_pci.rs-46-            }
+kernel/src/drivers/virtio/gpu_pci.rs-47-
+kernel/src/drivers/virtio/gpu_pci.rs-48-            if gpu_lock_can_sleep() {
+--
+kernel/src/drivers/virtio/gpu_pci.rs:1432:    loop {
+kernel/src/drivers/virtio/gpu_pci.rs-1433-        let sleep_ms = if monotonic_ms() < 10_000 { 500 } else { 5_000 };
+kernel/src/drivers/virtio/gpu_pci.rs-1434-        freeze_watch_sleep_ms(sleep_ms);
+kernel/src/drivers/virtio/gpu_pci.rs-1435-
+kernel/src/drivers/virtio/gpu_pci.rs-1436-        let uptime_ms = monotonic_ms();
+kernel/src/drivers/virtio/gpu_pci.rs-1437-        let (submits, completes, fails, last_completion_ms, r2_flush_ok, _) =
+--
+kernel/src/drivers/virtio/gpu_pci.rs:1567:    loop {
+kernel/src/drivers/virtio/gpu_pci.rs-1568-        let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+kernel/src/drivers/virtio/gpu_pci.rs-1569-            sched.wake_expired_timers();
+kernel/src/drivers/virtio/gpu_pci.rs-1570-            sched
+kernel/src/drivers/virtio/gpu_pci.rs-1571-                .current_thread_mut()
+kernel/src/drivers/virtio/gpu_pci.rs-1572-                .map(|thread| thread.state == crate::task::thread::ThreadState::BlockedOnTimer)
+--
+kernel/src/drivers/virtio/queue.rs:280:        loop {
+kernel/src/drivers/virtio/queue.rs-281-            let desc = unsafe { &*self.desc.add(head as usize) };
+kernel/src/drivers/virtio/queue.rs-282-            let flags = desc.flags;
+kernel/src/drivers/virtio/queue.rs-283-            let next = desc.next;
+kernel/src/drivers/virtio/queue.rs-284-
+kernel/src/drivers/virtio/queue.rs-285-            self.free_desc(head);
+--
+kernel/src/drivers/virtio/queue.rs:475:        loop {
+kernel/src/drivers/virtio/queue.rs-476-            // Use volatile reads to see what device would see
+kernel/src/drivers/virtio/queue.rs-477-            unsafe {
+kernel/src/drivers/virtio/queue.rs-478-                let desc = self.desc.add(head as usize);
+kernel/src/drivers/virtio/queue.rs-479-                let addr = core::ptr::read_volatile(&(*desc).addr);
+kernel/src/drivers/virtio/queue.rs-480-                let len = core::ptr::read_volatile(&(*desc).len);
+--
+kernel/src/drivers/virtio/block.rs:53:        loop {
+kernel/src/drivers/virtio/block.rs-54-            if self
+kernel/src/drivers/virtio/block.rs-55-                .locked
+kernel/src/drivers/virtio/block.rs-56-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+kernel/src/drivers/virtio/block.rs-57-                .is_ok()
+kernel/src/drivers/virtio/block.rs-58-            {
+--
+kernel/src/drivers/virtio/block_mmio.rs:44:        loop {
+kernel/src/drivers/virtio/block_mmio.rs-45-            if self
+kernel/src/drivers/virtio/block_mmio.rs-46-                .locked
+kernel/src/drivers/virtio/block_mmio.rs-47-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+kernel/src/drivers/virtio/block_mmio.rs-48-                .is_ok()
+kernel/src/drivers/virtio/block_mmio.rs-49-            {
+--
+kernel/src/drivers/vmware/svga3.rs:323:        loop {
+kernel/src/drivers/vmware/svga3.rs-324-            // Invalidate CPU cache for the status field so we see device writes
+kernel/src/drivers/vmware/svga3.rs-325-            cache_invalidate_range(buf_virt, 64);
+kernel/src/drivers/vmware/svga3.rs-326-            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+kernel/src/drivers/vmware/svga3.rs-327-
+kernel/src/drivers/vmware/svga3.rs-328-            let status = core::ptr::read_volatile(&(*header).status);
+--
+kernel/src/drivers/virtio/mod.rs:240:        loop {
+kernel/src/drivers/virtio/mod.rs-241-            // Small delay between polls
+kernel/src/drivers/virtio/mod.rs-242-            for _ in 0..10000 {
+kernel/src/drivers/virtio/mod.rs-243-                core::hint::spin_loop();
+kernel/src/drivers/virtio/mod.rs-244-            }
+kernel/src/drivers/virtio/mod.rs-245-
+--
+kernel/src/drivers/virtio/gpu_mmio.rs:519:    loop {
+kernel/src/drivers/virtio/gpu_mmio.rs-520-        fence(Ordering::SeqCst);
+kernel/src/drivers/virtio/gpu_mmio.rs-521-        let used_idx = unsafe {
+kernel/src/drivers/virtio/gpu_mmio.rs-522-            let ptr = &raw const CTRL_QUEUE;
+kernel/src/drivers/virtio/gpu_mmio.rs-523-            read_volatile(&(*ptr).used.idx)
+kernel/src/drivers/virtio/gpu_mmio.rs-524-        };
+--
+kernel/src/drivers/virtio/sound.rs:39:        loop {
+kernel/src/drivers/virtio/sound.rs-40-            if self
+kernel/src/drivers/virtio/sound.rs-41-                .locked
+kernel/src/drivers/virtio/sound.rs-42-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+kernel/src/drivers/virtio/sound.rs-43-                .is_ok()
+kernel/src/drivers/virtio/sound.rs-44-            {
+--
+kernel/src/drivers/ahci/mod.rs:287:    loop {
+kernel/src/drivers/ahci/mod.rs-288-        let current = AHCI_CMD_COUNT.load(Ordering::Relaxed);
+kernel/src/drivers/ahci/mod.rs-289-        let next = current.wrapping_add(1);
+kernel/src/drivers/ahci/mod.rs-290-        let token = if next == 0 { 1 } else { next };
+kernel/src/drivers/ahci/mod.rs-291-        if AHCI_CMD_COUNT
+kernel/src/drivers/ahci/mod.rs-292-            .compare_exchange_weak(current, token, Ordering::Relaxed, Ordering::Relaxed)
+--
+kernel/src/drivers/ahci/mod.rs:325:    loop {
+kernel/src/drivers/ahci/mod.rs-326-        let guard = PORT_IO_LOCK[port].lock();
+kernel/src/drivers/ahci/mod.rs-327-        if !PORT_IO_IN_PROGRESS[port].load(Ordering::Acquire) {
+kernel/src/drivers/ahci/mod.rs-328-            PORT_IO_IN_PROGRESS[port].store(true, Ordering::Release);
+kernel/src/drivers/ahci/mod.rs-329-            return guard;
+kernel/src/drivers/ahci/mod.rs-330-        }
+--
+kernel/src/drivers/ahci/mod.rs:824:        loop {
+kernel/src/drivers/ahci/mod.rs-825-            let ci = port_read(abar, port, PORT_CI);
+kernel/src/drivers/ahci/mod.rs-826-            if (ci & 1) == 0 {
+kernel/src/drivers/ahci/mod.rs-827-                let is = port_read(abar, port, PORT_IS);
+kernel/src/drivers/ahci/mod.rs-828-                let tfd = port_read(abar, port, PORT_TFD);
+kernel/src/drivers/ahci/mod.rs-829-                ack_port_interrupt(abar, port, is);
+--
+kernel/src/drivers/ahci/mod.rs:2180:    loop {
+kernel/src/drivers/ahci/mod.rs-2181-        let ci = port_read(abar, port_num, PORT_CI);
+kernel/src/drivers/ahci/mod.rs-2182-        if (ci & 1) == 0 {
+kernel/src/drivers/ahci/mod.rs-2183-            completed = true;
+kernel/src/drivers/ahci/mod.rs-2184-            break;
+kernel/src/drivers/ahci/mod.rs-2185-        }
+--
+kernel/src/drivers/ahci/mod.rs:2413:        loop {
+kernel/src/drivers/ahci/mod.rs-2414-            loop_iterations += 1;
+kernel/src/drivers/ahci/mod.rs-2415-
+kernel/src/drivers/ahci/mod.rs-2416-            let sampled_is = is;
+kernel/src/drivers/ahci/mod.rs-2417-            if sampled_is != 0 {
+kernel/src/drivers/ahci/mod.rs-2418-                ack_port_interrupt(abar, port, sampled_is);
+--
+kernel/src/drivers/virtio/sound_mmio.rs:40:        loop {
+kernel/src/drivers/virtio/sound_mmio.rs-41-            if self
+kernel/src/drivers/virtio/sound_mmio.rs-42-                .locked
+kernel/src/drivers/virtio/sound_mmio.rs-43-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+kernel/src/drivers/virtio/sound_mmio.rs-44-                .is_ok()
+kernel/src/drivers/virtio/sound_mmio.rs-45-            {
+--
+kernel/src/drivers/usb/xhci.rs:1415:    loop {
+kernel/src/drivers/usb/xhci.rs-1416-        let now: u64;
+kernel/src/drivers/usb/xhci.rs-1417-        unsafe { core::arch::asm!("mrs {}, cntpct_el0", out(reg) now) };
+kernel/src/drivers/usb/xhci.rs-1418-        if now.wrapping_sub(start) >= ticks {
+kernel/src/drivers/usb/xhci.rs-1419-            break;
+kernel/src/drivers/usb/xhci.rs-1420-        }
+--
+kernel/src/drivers/usb/xhci.rs:1513:    loop {
+kernel/src/drivers/usb/xhci.rs-1514-        unsafe {
+kernel/src/drivers/usb/xhci.rs-1515-            let ring = &raw const EVENT_RING;
+kernel/src/drivers/usb/xhci.rs-1516-            let idx = EVENT_RING_DEQUEUE;
+kernel/src/drivers/usb/xhci.rs-1517-            let cycle = EVENT_RING_CYCLE;
+kernel/src/drivers/usb/xhci.rs-1518-
+--
+kernel/src/drivers/usb/xhci.rs:1978:    loop {
+kernel/src/drivers/usb/xhci.rs-1979-        let event = wait_for_event(state)?;
+kernel/src/drivers/usb/xhci.rs-1980-        let trb_type_val = event.trb_type();
+kernel/src/drivers/usb/xhci.rs-1981-
+kernel/src/drivers/usb/xhci.rs-1982-        if trb_type_val == trb_type::TRANSFER_EVENT {
+kernel/src/drivers/usb/xhci.rs-1983-            let ev_slot = event.slot_id();
+--
+kernel/src/drivers/usb/xhci.rs:3545:        loop {
+kernel/src/drivers/usb/xhci.rs-3546-            let ring = &raw const EVENT_RING;
+kernel/src/drivers/usb/xhci.rs-3547-            let idx = EVENT_RING_DEQUEUE;
+kernel/src/drivers/usb/xhci.rs-3548-            let cycle = EVENT_RING_CYCLE;
+kernel/src/drivers/usb/xhci.rs-3549-
+kernel/src/drivers/usb/xhci.rs-3550-            dma_cache_invalidate(
+--
+kernel/src/drivers/usb/xhci.rs:3664:    loop {
+kernel/src/drivers/usb/xhci.rs-3665-        unsafe {
+kernel/src/drivers/usb/xhci.rs-3666-            let ring = &raw const EVENT_RING;
+kernel/src/drivers/usb/xhci.rs-3667-            let idx = EVENT_RING_DEQUEUE;
+kernel/src/drivers/usb/xhci.rs-3668-            let cycle = EVENT_RING_CYCLE;
+kernel/src/drivers/usb/xhci.rs-3669-
+--
+kernel/src/drivers/usb/xhci.rs:5301:    loop {
+kernel/src/drivers/usb/xhci.rs-5302-        unsafe {
+kernel/src/drivers/usb/xhci.rs-5303-            let ring = &raw const EVENT_RING;
+kernel/src/drivers/usb/xhci.rs-5304-            let idx = EVENT_RING_DEQUEUE;
+kernel/src/drivers/usb/xhci.rs-5305-            let cycle = EVENT_RING_CYCLE;
+kernel/src/drivers/usb/xhci.rs-5306-
+--
+kernel/src/drivers/usb/xhci.rs:5807:    loop {
+kernel/src/drivers/usb/xhci.rs-5808-        unsafe {
+kernel/src/drivers/usb/xhci.rs-5809-            let ring = &raw const EVENT_RING;
+kernel/src/drivers/usb/xhci.rs-5810-            let idx = EVENT_RING_DEQUEUE;
+kernel/src/drivers/usb/xhci.rs-5811-            let cycle = EVENT_RING_CYCLE;
+kernel/src/drivers/usb/xhci.rs-5812-
+--
+kernel/src/drivers/virtio/net_pci.rs:728:    loop {
+kernel/src/drivers/virtio/net_pci.rs-729-        fence(Ordering::SeqCst);
+kernel/src/drivers/virtio/net_pci.rs-730-        let used_idx = unsafe {
+kernel/src/drivers/virtio/net_pci.rs-731-            let q = &raw const PCI_TX_QUEUE;
+kernel/src/drivers/virtio/net_pci.rs-732-            read_volatile(&(*q).used.idx)
+kernel/src/drivers/virtio/net_pci.rs-733-        };

@@ -1,0 +1,16 @@
+kernel/src/drivers/usb/xhci.rs:5539:// Timer-Driven Housekeeping + Event Drain (NOT a fallback)
+kernel/src/drivers/usb/xhci.rs:5554:// is intentional for the rescue scenario in (5). Whether the drain can be
+kernel/src/drivers/usb/xhci.rs:5740:/// This is NOT a "fallback for systems without interrupt support"; it owns
+kernel/src/drivers/usb/xhci.rs:5760:/// That overlap is intentional for the rescue case. Whether the drain can be
+kernel/src/drivers/usb/xhci.rs:6180:        activate_msi_if_ready_locked(state, "timer-fallback", false);
+kernel/src/drivers/virtio/net_pci.rs:347:                "[virtio-net-pci] No MSI or MSI-X capability — polling fallback"
+kernel/src/drivers/virtio/net_pci.rs:363:            crate::serial_println!("[virtio-net-pci] GICv2m not available — polling fallback");
+kernel/src/drivers/virtio/net_pci.rs:370:        crate::serial_println!("[virtio-net-pci] Failed to allocate MSI SPI — polling fallback");
+kernel/src/drivers/virtio/net_pci.rs:426:            "[virtio-net-pci] MSI-X: device rejected RX vector — polling fallback"
+kernel/src/drivers/virtio/net_pci.rs:833:/// 2. GIC-level: disables the SPI as a safety net.
+kernel/src/drivers/virtio/input_mmio.rs:198:/// Get current screen dimensions from the GPU driver (fallback to 1280x800)
+kernel/src/drivers/virtio/gpu_pci.rs:1405:/// Ensures the Turn 6 freeze watchdog kthread is spawned only once.
+kernel/src/drivers/virtio/gpu_pci.rs:1419:pub fn start_freeze_watchdog() {
+kernel/src/drivers/virtio/gpu_pci.rs:1424:    let _ = crate::task::kthread::kthread_run(freeze_watchdog_thread, "freeze-watch");
+kernel/src/drivers/virtio/gpu_pci.rs:1427:fn freeze_watchdog_thread() {
+kernel/src/drivers/ahci/mod.rs:108:            // the actual ordering guarantee. On cacheable memory (fallback),

@@ -1,0 +1,89 @@
+kernel/src/drivers/usb/ehci.rs:344:pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
+kernel/src/drivers/usb/ehci.rs-345-    use crate::serial_println;
+kernel/src/drivers/usb/ehci.rs-346-
+kernel/src/drivers/usb/ehci.rs-347-    serial_println!("[ehci] Initializing EHCI USB 2.0 controller...");
+--
+kernel/src/drivers/ahci/mod.rs:864:    fn init(pci_dev: &pci::Device) -> Result<Self, &'static str> {
+kernel/src/drivers/ahci/mod.rs-865-        // AHCI uses BAR5 (ABAR)
+kernel/src/drivers/ahci/mod.rs-866-        let bar5 = &pci_dev.bars[5];
+kernel/src/drivers/ahci/mod.rs-867-        if !bar5.is_valid() || bar5.is_io {
+--
+kernel/src/drivers/ahci/mod.rs:2763:pub fn init() -> Result<usize, &'static str> {
+kernel/src/drivers/ahci/mod.rs-2764-    if AHCI_INITIALIZED.load(Ordering::Relaxed) {
+kernel/src/drivers/ahci/mod.rs-2765-        return Ok(0);
+kernel/src/drivers/ahci/mod.rs-2766-    }
+--
+kernel/src/drivers/virtio/sound_mmio.rs:389:pub fn init() -> Result<(), &'static str> {
+kernel/src/drivers/virtio/sound_mmio.rs-390-    unsafe {
+kernel/src/drivers/virtio/sound_mmio.rs-391-        let ptr = &raw const SOUND_DEVICE;
+kernel/src/drivers/virtio/sound_mmio.rs-392-        if (*ptr).is_some() {
+--
+kernel/src/drivers/usb/xhci_linux.rs:33:pub fn init(pci_dev: &Device) -> Result<(), &'static str> {
+kernel/src/drivers/usb/xhci_linux.rs-34-    xhci_trace_set_active(true);
+kernel/src/drivers/usb/xhci_linux.rs-35-    xhci_trace_raw(50, 0, 0, b"linux_harness_init");
+kernel/src/drivers/usb/xhci_linux.rs-36-
+--
+kernel/src/drivers/virtio/net_pci.rs:443:pub fn init() -> Result<(), &'static str> {
+kernel/src/drivers/virtio/net_pci.rs-444-    crate::serial_println!("[virtio-net-pci] Searching for VirtIO network device on PCI bus...");
+kernel/src/drivers/virtio/net_pci.rs-445-
+kernel/src/drivers/virtio/net_pci.rs-446-    let net_devices = pci::find_virtio_net_devices();
+--
+kernel/src/drivers/usb/xhci.rs:4471:pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
+kernel/src/drivers/usb/xhci.rs-4472-    XHCI_TRACE_ACTIVE.store(true, Ordering::Relaxed);
+kernel/src/drivers/usb/xhci.rs-4473-    xhci_trace_note(0, "init_start");
+kernel/src/drivers/usb/xhci.rs-4474-
+--
+kernel/src/drivers/virtio/input_mmio.rs:294:pub fn init() -> Result<(), &'static str> {
+kernel/src/drivers/virtio/input_mmio.rs-295-    if KBD_INITIALIZED.load(Ordering::Relaxed) {
+kernel/src/drivers/virtio/input_mmio.rs-296-        return Ok(());
+kernel/src/drivers/virtio/input_mmio.rs-297-    }
+--
+kernel/src/drivers/virtio/block_mmio.rs:460:pub fn init() -> Result<(), &'static str> {
+kernel/src/drivers/virtio/block_mmio.rs-461-    crate::serial_println!("[virtio-blk] Searching for block devices...");
+kernel/src/drivers/virtio/block_mmio.rs-462-
+kernel/src/drivers/virtio/block_mmio.rs-463-    let mut found = 0usize;
+--
+kernel/src/drivers/virtio/net_mmio.rs:254:pub fn init() -> Result<(), &'static str> {
+kernel/src/drivers/virtio/net_mmio.rs-255-    crate::serial_println!("[virtio-net] Searching for network device...");
+kernel/src/drivers/virtio/net_mmio.rs-256-
+kernel/src/drivers/virtio/net_mmio.rs-257-    // Find a network device in MMIO space
+--
+kernel/src/drivers/virtio/input_pci.rs:187:pub fn init() -> Result<(), &'static str> {
+kernel/src/drivers/virtio/input_pci.rs-188-    if is_initialized() {
+kernel/src/drivers/virtio/input_pci.rs-189-        return Ok(());
+kernel/src/drivers/virtio/input_pci.rs-190-    }
+--
+kernel/src/drivers/virtio/sound.rs:685:pub fn init() -> Result<(), &'static str> {
+kernel/src/drivers/virtio/sound.rs-686-    let devices = crate::drivers::pci::find_virtio_sound_devices();
+kernel/src/drivers/virtio/sound.rs-687-
+kernel/src/drivers/virtio/sound.rs-688-    if devices.is_empty() {
+--
+kernel/src/drivers/virtio/block.rs:679:pub fn init() -> Result<(), &'static str> {
+kernel/src/drivers/virtio/block.rs-680-    let devices = crate::drivers::pci::find_virtio_block_devices();
+kernel/src/drivers/virtio/block.rs-681-
+kernel/src/drivers/virtio/block.rs-682-    if devices.is_empty() {
+--
+kernel/src/drivers/virtio/pci_transport.rs:354:    pub fn init(&mut self, requested_features: u64) -> Result<(), &'static str> {
+kernel/src/drivers/virtio/pci_transport.rs-355-        // Reset
+kernel/src/drivers/virtio/pci_transport.rs-356-        self.reset();
+kernel/src/drivers/virtio/pci_transport.rs-357-
+--
+kernel/src/drivers/virtio/mmio.rs:344:    pub fn init(&mut self, requested_features: u64) -> Result<(), &'static str> {
+kernel/src/drivers/virtio/mmio.rs-345-        // Step 1: Reset the device
+kernel/src/drivers/virtio/mmio.rs-346-        self.reset();
+kernel/src/drivers/virtio/mmio.rs-347-
+--
+kernel/src/drivers/virtio/gpu_pci.rs:1857:pub fn init() -> Result<(), &'static str> {
+kernel/src/drivers/virtio/gpu_pci.rs-1858-    // Check if already initialized
+kernel/src/drivers/virtio/gpu_pci.rs-1859-    if is_initialized() {
+kernel/src/drivers/virtio/gpu_pci.rs-1860-        crate::serial_println!("[virtio-gpu-pci] GPU device already initialized");
+--
+kernel/src/drivers/virtio/gpu_mmio.rs:302:pub fn init() -> Result<(), &'static str> {
+kernel/src/drivers/virtio/gpu_mmio.rs-303-    // Check if already initialized
+kernel/src/drivers/virtio/gpu_mmio.rs-304-    unsafe {
+kernel/src/drivers/virtio/gpu_mmio.rs-305-        let ptr = &raw const GPU_DEVICE;
+--
+kernel/src/drivers/virtio/mod.rs:223:    pub fn init(&mut self, requested_features: u32) -> Result<(), &'static str> {
+kernel/src/drivers/virtio/mod.rs-224-        // Step 0: Deactivate all queues BEFORE reset
+kernel/src/drivers/virtio/mod.rs-225-        // This ensures QEMU properly clears its internal queue state (last_avail_idx).
+kernel/src/drivers/virtio/mod.rs-226-        // Without this, QEMU may retain stale state from the UEFI bootloader.

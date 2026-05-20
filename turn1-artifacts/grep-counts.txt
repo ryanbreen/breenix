@@ -1,0 +1,12 @@
+      89 turn1-artifacts/grep-driver-inits.txt
+      30 turn1-artifacts/grep-known-suspects.txt
+     181 turn1-artifacts/grep-loop-blocks.txt
+       7 turn1-artifacts/grep-poll-hid-callers.txt
+      16 turn1-artifacts/grep-rescue-comments.txt
+       7 turn1-artifacts/grep-scheduler-poll.txt
+      33 turn1-artifacts/grep-spin-loop.txt
+     240 turn1-artifacts/grep-timer-callers.txt
+      19 turn1-artifacts/grep-timer-entrypoints.txt
+       1 turn1-artifacts/grep-virtio-used.txt
+       0 turn1-artifacts/grep-while-volatile.txt
+     623 total
