@@ -1,0 +1,19 @@
+kernel/src/terminal_emulator.rs:82:    pub fn poll_output(&mut self, canvas: &mut impl Canvas) -> usize {
+kernel/src/terminal_emulator.rs:204:pub fn poll_terminal_output(canvas: &mut impl Canvas) -> usize {
+kernel/src/serial.rs:324:    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<u8>> {
+kernel/src/ipc/poll.rs:37:pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
+kernel/src/keyboard/stream.rs:58:    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<u8>> {
+kernel/src/task/mod.rs:96:    fn poll(&mut self, context: &mut Context) -> Poll<()> {
+kernel/src/test_framework/registry.rs:3670:        fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+kernel/src/test_framework/registry.rs:3732:        fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+kernel/src/syscall/handlers.rs:3553:fn poll_block_until(wake_ns: u64) {
+kernel/src/syscall/handlers.rs:3600:fn poll_ensure_address_space() {
+kernel/src/syscall/epoll.rs:348:                let poll_events = epoll_to_poll_events(entry.events);
+kernel/src/syscall/epoll.rs:350:                let epoll_revents = poll_to_epoll_events(revents);
+kernel/src/syscall/epoll.rs:404:fn epoll_to_poll_events(epoll_events: u32) -> i16 {
+kernel/src/syscall/epoll.rs:417:fn poll_to_epoll_events(revents: i16) -> u32 {
+kernel/src/drivers/usb/ehci.rs:1206:pub fn poll_keyboard() {
+kernel/src/drivers/usb/hid.rs:465:pub fn poll_modifier_state() -> u32 {
+kernel/src/drivers/virtio/input_mmio.rs:511:pub fn poll_events() -> impl Iterator<Item = VirtioInputEvent> {
+kernel/src/drivers/virtio/input_mmio.rs:655:    for event in poll_events() {
+kernel/src/drivers/virtio/input_mmio.rs:728:fn poll_tablet_events() -> TabletEventIterator {

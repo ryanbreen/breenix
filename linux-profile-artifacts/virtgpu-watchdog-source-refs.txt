@@ -1,0 +1,26 @@
+Linux virtgpu source citation notes for Turn 16 P10 profile.
+
+Runtime trace:
+- Not available. Noninteractive ssh to linux-probe remains blocked by host-key/key-auth failures documented in Turn 15.
+
+Linux source files:
+- turn1-artifacts/linux-source/virtgpu_vq.c
+- turn1-artifacts/linux-probe/linux-v6.8-virtgpu_kms.c
+- turn1-artifacts/linux-probe/linux-v6.8-virtgpu_drv.h
+
+Key source references:
+- virtgpu_vq.c:57-70: control and cursor virtqueue callbacks schedule dequeue work.
+- virtgpu_vq.c:217-241: control dequeue work drains used buffers, disables callbacks, and re-enables callbacks.
+- virtgpu_vq.c:372-399: control queue submission waits on ack_queue when descriptors are unavailable.
+- linux-v6.8-virtgpu_kms.c:60-64: queue helper initializes qlock, ack_queue, and dequeue_work.
+- linux-v6.8-virtgpu_kms.c:120-148: init registers virtqueue callbacks and initializes ctrl/cursor dequeue work.
+- linux-v6.8-virtgpu_kms.c:257-288: init waits with wait_event_timeout and deinit flushes dequeue work.
+- linux-v6.8-virtgpu_drv.h:201: queue struct contains dequeue_work.
+- linux-v6.8-virtgpu_drv.h:398-401: dequeue function prototypes.
+- linux-v6.8-virtgpu_drv.h:472-473: debugfs init hook.
+
+Breenix source references:
+- kernel/src/drivers/virtio/gpu_pci.rs:1386-1388: GPU completed-used-index and Completion state.
+- kernel/src/drivers/virtio/gpu_pci.rs:1419-1583: freeze watchdog start/thread/sleep helpers.
+- kernel/src/drivers/virtio/gpu_pci.rs:1792-1814: GPU PCI MSI-X interrupt completes waiters from used_idx.
+- kernel/src/main_aarch64.rs:886-891: current freeze watchdog call site.
