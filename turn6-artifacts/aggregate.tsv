@@ -1,0 +1,5 @@
+1 cpu=91868 msi=1 irq=1 lock=0 failures=0 data_abort=0 pid1=yes
+2 cpu=84859 msi=0 irq=1 lock=1 failures=0 data_abort=0 pid1=yes
+3 cpu=84385 msi=1 irq=1 lock=0 failures=0 data_abort=0 pid1=yes
+4 cpu=88436 msi=1 irq=1 lock=0 failures=0 data_abort=0 pid1=yes
+5 cpu=78378 msi=1 irq=1 lock=0 failures=0 data_abort=0 pid1=yes
