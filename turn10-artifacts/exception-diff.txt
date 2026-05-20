@@ -1,0 +1,17 @@
+diff --git a/kernel/src/arch_impl/aarch64/exception.rs b/kernel/src/arch_impl/aarch64/exception.rs
+index c9c8c91c..3d71b209 100644
+--- a/kernel/src/arch_impl/aarch64/exception.rs
++++ b/kernel/src/arch_impl/aarch64/exception.rs
+@@ -1275,6 +1275,12 @@ fn dispatch_irq_action(irq_id: u32, frame: *const Aarch64ExceptionFrame) {
+                     }
+                 }
+             }
++            // VirtIO sound MMIO interrupt dispatch
++            if let Some(sound_irq) = crate::drivers::virtio::sound_mmio::get_irq() {
++                if irq_id == sound_irq {
++                    crate::drivers::virtio::sound_mmio::handle_interrupt();
++                }
++            }
+             // XHCI USB interrupt dispatch
+             if let Some(xhci_irq) = crate::drivers::usb::xhci::get_irq() {
+                 if irq_id == xhci_irq {
