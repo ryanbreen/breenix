@@ -1,0 +1,75 @@
+
+=========================================
+Breenix on Parallels Desktop
+=========================================
+
+Skipping builds (--no-build)
+
+--- Configuring Parallels VM ---
+VM name: breenix-1779299373
+Creating fresh VM 'breenix-1779299373'...
+Creating the virtual machine...
+Generate the VM configuration for linux.
+Remove the hdd0 device.
+The VM has been successfully created.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+Remove the cdrom0 device.
+
+The VM has been successfully configured.
+Remove the serial0 device.
+
+The VM has been successfully configured.
+Creating hdd0 (+) sata:0 image='/Users/wrb/fun/code/breenix/target/parallels/breenix-efi.hdd' online-compact=off
+
+Created hdd0 (+) sata:0 image='/Users/wrb/fun/code/breenix/target/parallels/breenix-efi.hdd' type='plain' 64Mb online-compact=on
+
+
+The VM has been successfully configured.
+Creating hdd1 (+) sata:1 image='/Users/wrb/fun/code/breenix/target/parallels/breenix-ext2.hdd' online-compact=off
+
+Created hdd1 (+) sata:1 image='/Users/wrb/fun/code/breenix/target/parallels/breenix-ext2.hdd' type='plain' 256Mb online-compact=on
+
+
+The VM has been successfully configured.
+  hdd0: EFI boot disk (FAT32) at sata:0
+  hdd1: ext2 data disk at sata:1
+
+The VM has been successfully configured.
+Creating serial0 (+) output='/tmp/breenix-parallels-serial.log' state=disconnected
+
+Created serial0 (+) output='/tmp/breenix-parallels-serial.log' state=disconnected
+
+
+The VM has been successfully configured.
+Configured serial0 (+) output='/tmp/breenix-parallels-serial.log'
+
+
+The VM has been successfully configured.
+
+--- Starting VM ---
+Starting the VM...
+The VM has been successfully started.
+
+=========================================
+Breenix running on Parallels
+=========================================
+VM:     breenix-1779299373
+Serial: /tmp/breenix-parallels-serial.log
+Stop:   prlctl stop breenix-1779299373 --kill
+
+Test mode: waiting 90s for boot...

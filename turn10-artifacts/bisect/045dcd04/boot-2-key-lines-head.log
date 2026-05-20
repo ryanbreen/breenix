@@ -1,0 +1,200 @@
+345:[init] Breenix init starting (PID 1)
+356:[spawn] Created child PID 2 for parent PID 1
+359:[spawn] path='/bin/xhci_counters'
+369:[spawn] Created child PID 3 for parent PID 1
+370:[spawn] Success: child PID 3 scheduled
+371:[xhci-counters] XHCI_MSI_EVENT_TOTAL=1
+372:[xhci-counters] XHCI_IRQ_ENTRY_TOTAL=1
+373:[xhci-counters] XHCI_LOCK_CONTENDED_TOTAL=0
+375:[spawn] path='/bin/bwm'
+385:[spawn] Created child PID 4 for parent PID 1
+386:[spawn] Success: child PID 4 scheduled
+387:[bwm] Breenix Window Manager starting... (v2-chromeless-skip)
+389:[bwm] GPU compositing mode (VirGL), display: 1280x960
+391:[bwm] Direct compositor mapping: 1280x960 at 0x7ffffdb4e000
+392:[bwm] using bitmap font fallback for early boot
+393:[bwm] hotkeys: using built-in defaults for early boot
+396:[spawn] path='/sbin/telnetd'
+406:[spawn] Created child PID 5 for parent PID 1
+407:[spawn] Success: child PID 5 scheduled
+408:TELNETD_STARTING
+409:TELNETD_LISTENING
+410:[init] Boot script completed
+411:[spawn] path='/bin/bsshd'
+421:[spawn] Created child PID 6 for parent PID 1
+422:[spawn] Success: child PID 6 scheduled
+425:[init] bsshd started (PID 6)
+426:[freeze-watch] uptime_ms=1751 submits=71 completes=74 fails=0 last_completion_ms=1519 fps_last_5s=6 cpu=1 tid=0 ctx_switches=1838 timer_ticks_cpu0=323 timer_ticks_cpu1=415 timer_ticks_cpu2=413 timer_ticks_cpu3=418 timer_ticks_cpu4=417 timer_ticks_cpu5=415 timer_ticks_cpu6=419 timer_ticks_cpu7=411 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+430:[spawn] path='/bin/bounce'
+440:[spawn] Created child PID 7 for parent PID 1
+441:[spawn] Success: child PID 7 scheduled
+444:[init] bounce started (PID 7)
+446:[init] Process 3 exited (code 0)
+450:[freeze-watch] uptime_ms=2254 submits=324 completes=326 fails=0 last_completion_ms=2251 fps_last_5s=166 cpu=7 tid=3 ctx_switches=3333 timer_ticks_cpu0=645 timer_ticks_cpu1=848 timer_ticks_cpu2=842 timer_ticks_cpu3=847 timer_ticks_cpu4=843 timer_ticks_cpu5=846 timer_ticks_cpu6=848 timer_ticks_cpu7=842 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=3 total_threads=17 blocked_threads=7 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+453:[freeze-watch] uptime_ms=2756 submits=599 completes=602 fails=0 last_completion_ms=2755 fps_last_5s=183 cpu=4 tid=3 ctx_switches=4409 timer_ticks_cpu0=977 timer_ticks_cpu1=1271 timer_ticks_cpu2=1269 timer_ticks_cpu3=1268 timer_ticks_cpu4=1261 timer_ticks_cpu5=1268 timer_ticks_cpu6=1271 timer_ticks_cpu7=1266 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=17 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+454:[freeze-watch] uptime_ms=3260 submits=890 completes=892 fails=0 last_completion_ms=3259 fps_last_5s=190 cpu=6 tid=3 ctx_switches=5577 timer_ticks_cpu0=1306 timer_ticks_cpu1=1707 timer_ticks_cpu2=1703 timer_ticks_cpu3=1696 timer_ticks_cpu4=1676 timer_ticks_cpu5=1693 timer_ticks_cpu6=1704 timer_ticks_cpu7=1696 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=3 cur_cpu7=10 total_threads=17 blocked_threads=7 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+457:[freeze-watch] uptime_ms=3763 submits=1191 completes=1193 fails=0 last_completion_ms=3759 fps_last_5s=200 cpu=5 tid=3 ctx_switches=6766 timer_ticks_cpu0=1636 timer_ticks_cpu1=2140 timer_ticks_cpu2=2131 timer_ticks_cpu3=2125 timer_ticks_cpu4=2101 timer_ticks_cpu5=2121 timer_ticks_cpu6=2132 timer_ticks_cpu7=2128 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=3 cur_cpu6=9 cur_cpu7=10 total_threads=17 blocked_threads=7 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+458:[freeze-watch] uptime_ms=4266 submits=1505 completes=1507 fails=0 last_completion_ms=4265 fps_last_5s=206 cpu=7 tid=3 ctx_switches=7973 timer_ticks_cpu0=1961 timer_ticks_cpu1=2579 timer_ticks_cpu2=2563 timer_ticks_cpu3=2543 timer_ticks_cpu4=2520 timer_ticks_cpu5=2546 timer_ticks_cpu6=2561 timer_ticks_cpu7=2557 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=3 total_threads=17 blocked_threads=7 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+462:[freeze-watch] uptime_ms=4768 submits=1763 completes=1766 fails=0 last_completion_ms=4767 fps_last_5s=173 cpu=7 tid=3 ctx_switches=9098 timer_ticks_cpu0=2300 timer_ticks_cpu1=3003 timer_ticks_cpu2=2995 timer_ticks_cpu3=2963 timer_ticks_cpu4=2942 timer_ticks_cpu5=2970 timer_ticks_cpu6=2985 timer_ticks_cpu7=2983 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=3 total_threads=17 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+463:[freeze-watch] uptime_ms=5271 submits=2042 completes=2045 fails=0 last_completion_ms=5270 fps_last_5s=184 cpu=3 tid=3 ctx_switches=10234 timer_ticks_cpu0=2633 timer_ticks_cpu1=3434 timer_ticks_cpu2=3429 timer_ticks_cpu3=3383 timer_ticks_cpu4=3363 timer_ticks_cpu5=3396 timer_ticks_cpu6=3410 timer_ticks_cpu7=3406 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=3 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=17 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+466:[freeze-watch] uptime_ms=5773 submits=2291 completes=2294 fails=0 last_completion_ms=5768 fps_last_5s=165 cpu=2 tid=0 ctx_switches=11274 timer_ticks_cpu0=2978 timer_ticks_cpu1=3864 timer_ticks_cpu2=3855 timer_ticks_cpu3=3797 timer_ticks_cpu4=3778 timer_ticks_cpu5=3821 timer_ticks_cpu6=3836 timer_ticks_cpu7=3831 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+467:[freeze-watch] uptime_ms=6277 submits=2505 completes=2507 fails=0 last_completion_ms=6273 fps_last_5s=140 cpu=5 tid=3 ctx_switches=12215 timer_ticks_cpu0=3328 timer_ticks_cpu1=4290 timer_ticks_cpu2=4268 timer_ticks_cpu3=4216 timer_ticks_cpu4=4188 timer_ticks_cpu5=4236 timer_ticks_cpu6=4252 timer_ticks_cpu7=4246 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=3 cur_cpu6=9 cur_cpu7=10 total_threads=17 blocked_threads=7 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+470:[freeze-watch] uptime_ms=6781 submits=2756 completes=2759 fails=0 last_completion_ms=6780 fps_last_5s=166 cpu=1 tid=3 ctx_switches=13307 timer_ticks_cpu0=3672 timer_ticks_cpu1=4719 timer_ticks_cpu2=4684 timer_ticks_cpu3=4645 timer_ticks_cpu4=4602 timer_ticks_cpu5=4650 timer_ticks_cpu6=4676 timer_ticks_cpu7=4674 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=3 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=17 blocked_threads=5 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+472:[freeze-watch] uptime_ms=7283 submits=3041 completes=3044 fails=0 last_completion_ms=7281 fps_last_5s=189 cpu=0 tid=3 ctx_switches=14543 timer_ticks_cpu0=4011 timer_ticks_cpu1=5144 timer_ticks_cpu2=5112 timer_ticks_cpu3=5067 timer_ticks_cpu4=5020 timer_ticks_cpu5=5072 timer_ticks_cpu6=5102 timer_ticks_cpu7=5101 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=3 cur_cpu1=4 cur_cpu2=5 cur_cpu3=14 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=17 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+475:[freeze-watch] uptime_ms=7787 submits=3290 completes=3293 fails=0 last_completion_ms=7786 fps_last_5s=164 cpu=3 tid=3 ctx_switches=15625 timer_ticks_cpu0=4342 timer_ticks_cpu1=5572 timer_ticks_cpu2=5543 timer_ticks_cpu3=5487 timer_ticks_cpu4=5437 timer_ticks_cpu5=5489 timer_ticks_cpu6=5522 timer_ticks_cpu7=5531 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=17 cur_cpu1=4 cur_cpu2=5 cur_cpu3=3 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=17 blocked_threads=5 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+477:[freeze-watch] uptime_ms=8290 submits=3542 completes=3545 fails=0 last_completion_ms=8284 fps_last_5s=166 cpu=7 tid=0 ctx_switches=16773 timer_ticks_cpu0=4686 timer_ticks_cpu1=5999 timer_ticks_cpu2=5962 timer_ticks_cpu3=5905 timer_ticks_cpu4=5856 timer_ticks_cpu5=5910 timer_ticks_cpu6=5950 timer_ticks_cpu7=5958 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+480:[freeze-watch] uptime_ms=8793 submits=3762 completes=3764 fails=0 last_completion_ms=8790 fps_last_5s=145 cpu=0 tid=3 ctx_switches=17795 timer_ticks_cpu0=5030 timer_ticks_cpu1=6432 timer_ticks_cpu2=6380 timer_ticks_cpu3=6329 timer_ticks_cpu4=6272 timer_ticks_cpu5=6324 timer_ticks_cpu6=6373 timer_ticks_cpu7=6379 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=3 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=17 blocked_threads=7 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+482:[freeze-watch] uptime_ms=9298 submits=4040 completes=4043 fails=0 last_completion_ms=9298 fps_last_5s=184 cpu=1 tid=3 ctx_switches=19011 timer_ticks_cpu0=5366 timer_ticks_cpu1=6874 timer_ticks_cpu2=6806 timer_ticks_cpu3=6756 timer_ticks_cpu4=6691 timer_ticks_cpu5=6750 timer_ticks_cpu6=6803 timer_ticks_cpu7=6808 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=3 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=17 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+484:[freeze-watch] uptime_ms=9802 submits=4328 completes=4331 fails=0 last_completion_ms=9799 fps_last_5s=190 cpu=4 tid=3 ctx_switches=20287 timer_ticks_cpu0=5695 timer_ticks_cpu1=7299 timer_ticks_cpu2=7233 timer_ticks_cpu3=7177 timer_ticks_cpu4=7123 timer_ticks_cpu5=7173 timer_ticks_cpu6=7226 timer_ticks_cpu7=7233 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=14 cur_cpu7=10 total_threads=17 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+487:[freeze-watch] uptime_ms=10304 submits=4610 completes=4613 fails=0 last_completion_ms=10299 fps_last_5s=187 cpu=4 tid=3 ctx_switches=21496 timer_ticks_cpu0=6031 timer_ticks_cpu1=7735 timer_ticks_cpu2=7652 timer_ticks_cpu3=7601 timer_ticks_cpu4=7541 timer_ticks_cpu5=7600 timer_ticks_cpu6=7652 timer_ticks_cpu7=7662 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=14 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=17 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+499:[freeze-watch] uptime_ms=15307 submits=7403 completes=7405 fails=0 last_completion_ms=15307 fps_last_5s=185 cpu=7 tid=3 ctx_switches=33513 timer_ticks_cpu0=9408 timer_ticks_cpu1=12032 timer_ticks_cpu2=11891 timer_ticks_cpu3=11796 timer_ticks_cpu4=11725 timer_ticks_cpu5=11810 timer_ticks_cpu6=11893 timer_ticks_cpu7=11914 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=3 total_threads=17 blocked_threads=7 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+513:[freeze-watch] uptime_ms=20311 submits=9925 completes=9927 fails=0 last_completion_ms=20311 fps_last_5s=168 cpu=6 tid=3 ctx_switches=44351 timer_ticks_cpu0=12777 timer_ticks_cpu1=16087 timer_ticks_cpu2=15780 timer_ticks_cpu3=15781 timer_ticks_cpu4=15777 timer_ticks_cpu5=15733 timer_ticks_cpu6=16082 timer_ticks_cpu7=16173 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=12 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=3 cur_cpu7=10 total_threads=17 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+527:[freeze-watch] uptime_ms=25316 submits=12605 completes=12608 fails=0 last_completion_ms=25313 fps_last_5s=178 cpu=2 tid=3 ctx_switches=56033 timer_ticks_cpu0=16173 timer_ticks_cpu1=20157 timer_ticks_cpu2=19926 timer_ticks_cpu3=19842 timer_ticks_cpu4=19866 timer_ticks_cpu5=19907 timer_ticks_cpu6=20306 timer_ticks_cpu7=19673 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=14 cur_cpu1=12 cur_cpu2=3 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=17 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+17045:!!! END SOFT LOCKUP DUMP !!!
+17049:!!! SOFT LOCKUP DETECTED !!!
+21942:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+25350:!!! END SOFT LOCKUP DUMP !!!
+25355:!!! SOFT LOCKUP DETECTED !!!
+30247:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+33656:!!! END SOFT LOCKUP DUMP !!!
+33660:!!! SOFT LOCKUP DETECTED !!!
+38553:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+41961:!!! END SOFT LOCKUP DUMP !!!
+41965:!!! SOFT LOCKUP DETECTED !!!
+46862:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+50270:!!! END SOFT LOCKUP DUMP !!!
+50275:!!! SOFT LOCKUP DETECTED !!!
+55167:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+58576:!!! END SOFT LOCKUP DUMP !!!
+58581:!!! SOFT LOCKUP DETECTED !!!
+63474:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+66882:!!! END SOFT LOCKUP DUMP !!!
+66886:!!! SOFT LOCKUP DETECTED !!!
+71728:[TRACE] TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+75091:!!! END SOFT LOCKUP DUMP !!!
+75095:!!! SOFT LOCKUP DETECTED !!!
+79989:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+83355:!!! END SOFT LOCKUP DUMP !!!
+83359:!!! SOFT LOCKUP DETECTED !!!
+88251:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+91660:!!! END SOFT LOCKUP DUMP !!!
+91664:!!! SOFT LOCKUP DETECTED !!!
+96557:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+99965:!!! END SOFT LOCKUP DUMP !!!
+99969:!!! SOFT LOCKUP DETECTED !!!
+104862:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+108270:!!! END SOFT LOCKUP DUMP !!!
+108273:[freeze-watch] uptime_ms=45335 submits=14651 completes=14654 fails=0 last_completion_ms=29119 fps_last_5s=0 cpu=5 tid=3 ctx_switches=64861 timer_ticks_cpu0=20822 timer_ticks_cpu1=36252 timer_ticks_cpu2=22943 timer_ticks_cpu3=35718 timer_ticks_cpu4=35836 timer_ticks_cpu5=36053 timer_ticks_cpu6=36529 timer_ticks_cpu7=35826 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=12 cur_cpu2=14 cur_cpu3=6 cur_cpu4=7 cur_cpu5=3 cur_cpu6=9 cur_cpu7=10 total_threads=17 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+108276:!!! SOFT LOCKUP DETECTED !!!
+113168:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+116577:!!! END SOFT LOCKUP DUMP !!!
+116581:!!! SOFT LOCKUP DETECTED !!!
+121474:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+124882:!!! END SOFT LOCKUP DUMP !!!
+124886:!!! SOFT LOCKUP DETECTED !!!
+129779:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+133187:!!! END SOFT LOCKUP DUMP !!!
+133192:!!! SOFT LOCKUP DETECTED !!!
+138084:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+141494:!!! END SOFT LOCKUP DUMP !!!
+141498:!!! SOFT LOCKUP DETECTED !!!
+146391:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+149799:!!! END SOFT LOCKUP DUMP !!!
+149803:!!! SOFT LOCKUP DETECTED !!!
+154696:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+158104:!!! END SOFT LOCKUP DUMP !!!
+158109:!!! SOFT LOCKUP DETECTED !!!
+163001:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+166410:!!! END SOFT LOCKUP DUMP !!!
+166414:!!! SOFT LOCKUP DETECTED !!!
+171278:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+174686:!!! END SOFT LOCKUP DUMP !!!
+174690:!!! SOFT LOCKUP DETECTED !!!
+179583:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+182991:!!! END SOFT LOCKUP DUMP !!!
+182996:!!! SOFT LOCKUP DETECTED !!!
+187888:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+191297:!!! END SOFT LOCKUP DUMP !!!
+191301:!!! SOFT LOCKUP DETECTED !!!
+196194:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+199602:!!! END SOFT LOCKUP DUMP !!!
+199606:!!! SOFT LOCKUP DETECTED !!!
+204430:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+207838:!!! END SOFT LOCKUP DUMP !!!
+207843:!!! SOFT LOCKUP DETECTED !!!
+212716:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+216125:!!! END SOFT LOCKUP DUMP !!!
+216129:!!! SOFT LOCKUP DETECTED !!!
+221022:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+224430:!!! END SOFT LOCKUP DUMP !!!
+224434:!!! SOFT LOCKUP DETECTED !!!
+229327:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+232735:!!! END SOFT LOCKUP DUMP !!!
+232738:[freeze-watch] uptime_ms=65347 submits=14651 completes=14654 fails=0 last_completion_ms=29119 fps_last_5s=0 cpu=4 tid=3 ctx_switches=64863 timer_ticks_cpu0=23539 timer_ticks_cpu1=52346 timer_ticks_cpu2=22943 timer_ticks_cpu3=51801 timer_ticks_cpu4=51920 timer_ticks_cpu5=52139 timer_ticks_cpu6=52613 timer_ticks_cpu7=51921 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=12 cur_cpu2=14 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=17 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+232744:!!! SOFT LOCKUP DETECTED !!!
+237636:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+241045:!!! END SOFT LOCKUP DUMP !!!
+241049:!!! SOFT LOCKUP DETECTED !!!
+245942:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+249350:!!! END SOFT LOCKUP DUMP !!!
+249354:!!! SOFT LOCKUP DETECTED !!!
+254247:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+257655:!!! END SOFT LOCKUP DUMP !!!
+257659:!!! SOFT LOCKUP DETECTED !!!
+262552:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+265962:!!! END SOFT LOCKUP DUMP !!!
+265966:!!! SOFT LOCKUP DETECTED !!!
+270858:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+274192:!!! END SOFT LOCKUP DUMP !!!
+274196:!!! SOFT LOCKUP DETECTED !!!
+279089:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+282497:!!! END SOFT LOCKUP DUMP !!!
+282501:!!! SOFT LOCKUP DETECTED !!!
+287394:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+290802:!!! END SOFT LOCKUP DUMP !!!
+290806:!!! SOFT LOCKUP DETECTED !!!
+295699:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+299107:!!! END SOFT LOCKUP DUMP !!!
+299110:[freeze-watch] uptime_ms=75354 submits=14651 completes=14654 fails=0 last_completion_ms=29119 fps_last_5s=0 cpu=4 tid=3 ctx_switches=64863 timer_ticks_cpu0=24713 timer_ticks_cpu1=60383 timer_ticks_cpu2=22943 timer_ticks_cpu3=59833 timer_ticks_cpu4=59952 timer_ticks_cpu5=60173 timer_ticks_cpu6=60642 timer_ticks_cpu7=59952 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=12 cur_cpu2=14 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=17 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+299113:!!! SOFT LOCKUP DETECTED !!!
+304005:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+307414:!!! END SOFT LOCKUP DUMP !!!
+307418:!!! SOFT LOCKUP DETECTED !!!
+312234:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+315642:!!! END SOFT LOCKUP DUMP !!!
+315647:!!! SOFT LOCKUP DETECTED !!!
+320540:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+323948:!!! END SOFT LOCKUP DUMP !!!
+323952:!!! SOFT LOCKUP DETECTED !!!
+328845:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+332254:!!! END SOFT LOCKUP DUMP !!!
+332256:[freeze-watch] uptime_ms=80357 submits=14651 completes=14654 fails=0 last_completion_ms=29119 fps_last_5s=0 cpu=4 tid=3 ctx_switches=64863 timer_ticks_cpu0=25288 timer_ticks_cpu1=64387 timer_ticks_cpu2=22943 timer_ticks_cpu3=63835 timer_ticks_cpu4=63955 timer_ticks_cpu5=64175 timer_ticks_cpu6=64648 timer_ticks_cpu7=63961 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=12 cur_cpu2=14 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=17 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+332259:!!! SOFT LOCKUP DETECTED !!!
+337151:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+340560:!!! END SOFT LOCKUP DUMP !!!
+340564:!!! SOFT LOCKUP DETECTED !!!
+345457:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+348865:!!! END SOFT LOCKUP DUMP !!!
+348869:!!! SOFT LOCKUP DETECTED !!!
+353762:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+357170:!!! END SOFT LOCKUP DUMP !!!
+357174:!!! SOFT LOCKUP DETECTED !!!
+361738:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+365136:!!! END SOFT LOCKUP DUMP !!!
+365140:!!! SOFT LOCKUP DETECTED !!!
+370032:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+373416:!!! END SOFT LOCKUP DUMP !!!
+373420:!!! SOFT LOCKUP DETECTED !!!
+378313:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+381721:!!! END SOFT LOCKUP DUMP !!!
+381725:!!! SOFT LOCKUP DETECTED !!!
+386618:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+390026:!!! END SOFT LOCKUP DUMP !!!
+390030:!!! SOFT LOCKUP DETECTED !!!
+394923:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+398331:!!! END SOFT LOCKUP DUMP !!!
+398334:[freeze-watch] uptime_ms=90365 submits=14651 completes=14654 fails=0 last_completion_ms=29119 fps_last_5s=0 cpu=4 tid=3 ctx_switches=64863 timer_ticks_cpu0=26482 timer_ticks_cpu1=72413 timer_ticks_cpu2=22943 timer_ticks_cpu3=71854 timer_ticks_cpu4=71972 timer_ticks_cpu5=72198 timer_ticks_cpu6=72669 timer_ticks_cpu7=71982 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=12 cur_cpu2=14 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=17 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+398337:!!! SOFT LOCKUP DETECTED !!!
+403229:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+406638:!!! END SOFT LOCKUP DUMP !!!
+406642:!!! SOFT LOCKUP DETECTED !!!

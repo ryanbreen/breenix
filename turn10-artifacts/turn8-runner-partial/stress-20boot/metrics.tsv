@@ -1,0 +1,1 @@
+boot	run_status	status	reason	activity	max_uptime_ms	cpu	msi	irq	irq_delta	lock	stale_not_ready	stale_current	stale_deferred	failures	data_abort	pid1

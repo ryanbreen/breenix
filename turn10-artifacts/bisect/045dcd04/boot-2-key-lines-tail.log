@@ -1,0 +1,200 @@
+58581:!!! SOFT LOCKUP DETECTED !!!
+63474:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+66882:!!! END SOFT LOCKUP DUMP !!!
+66886:!!! SOFT LOCKUP DETECTED !!!
+71728:[TRACE] TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+75091:!!! END SOFT LOCKUP DUMP !!!
+75095:!!! SOFT LOCKUP DETECTED !!!
+79989:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+83355:!!! END SOFT LOCKUP DUMP !!!
+83359:!!! SOFT LOCKUP DETECTED !!!
+88251:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+91660:!!! END SOFT LOCKUP DUMP !!!
+91664:!!! SOFT LOCKUP DETECTED !!!
+96557:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+99965:!!! END SOFT LOCKUP DUMP !!!
+99969:!!! SOFT LOCKUP DETECTED !!!
+104862:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+108270:!!! END SOFT LOCKUP DUMP !!!
+108273:[freeze-watch] uptime_ms=45335 submits=14651 completes=14654 fails=0 last_completion_ms=29119 fps_last_5s=0 cpu=5 tid=3 ctx_switches=64861 timer_ticks_cpu0=20822 timer_ticks_cpu1=36252 timer_ticks_cpu2=22943 timer_ticks_cpu3=35718 timer_ticks_cpu4=35836 timer_ticks_cpu5=36053 timer_ticks_cpu6=36529 timer_ticks_cpu7=35826 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=12 cur_cpu2=14 cur_cpu3=6 cur_cpu4=7 cur_cpu5=3 cur_cpu6=9 cur_cpu7=10 total_threads=17 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+108276:!!! SOFT LOCKUP DETECTED !!!
+113168:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+116577:!!! END SOFT LOCKUP DUMP !!!
+116581:!!! SOFT LOCKUP DETECTED !!!
+121474:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+124882:!!! END SOFT LOCKUP DUMP !!!
+124886:!!! SOFT LOCKUP DETECTED !!!
+129779:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+133187:!!! END SOFT LOCKUP DUMP !!!
+133192:!!! SOFT LOCKUP DETECTED !!!
+138084:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+141494:!!! END SOFT LOCKUP DUMP !!!
+141498:!!! SOFT LOCKUP DETECTED !!!
+146391:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+149799:!!! END SOFT LOCKUP DUMP !!!
+149803:!!! SOFT LOCKUP DETECTED !!!
+154696:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+158104:!!! END SOFT LOCKUP DUMP !!!
+158109:!!! SOFT LOCKUP DETECTED !!!
+163001:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+166410:!!! END SOFT LOCKUP DUMP !!!
+166414:!!! SOFT LOCKUP DETECTED !!!
+171278:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+174686:!!! END SOFT LOCKUP DUMP !!!
+174690:!!! SOFT LOCKUP DETECTED !!!
+179583:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+182991:!!! END SOFT LOCKUP DUMP !!!
+182996:!!! SOFT LOCKUP DETECTED !!!
+187888:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+191297:!!! END SOFT LOCKUP DUMP !!!
+191301:!!! SOFT LOCKUP DETECTED !!!
+196194:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+199602:!!! END SOFT LOCKUP DUMP !!!
+199606:!!! SOFT LOCKUP DETECTED !!!
+204430:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+207838:!!! END SOFT LOCKUP DUMP !!!
+207843:!!! SOFT LOCKUP DETECTED !!!
+212716:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+216125:!!! END SOFT LOCKUP DUMP !!!
+216129:!!! SOFT LOCKUP DETECTED !!!
+221022:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+224430:!!! END SOFT LOCKUP DUMP !!!
+224434:!!! SOFT LOCKUP DETECTED !!!
+229327:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+232735:!!! END SOFT LOCKUP DUMP !!!
+232738:[freeze-watch] uptime_ms=65347 submits=14651 completes=14654 fails=0 last_completion_ms=29119 fps_last_5s=0 cpu=4 tid=3 ctx_switches=64863 timer_ticks_cpu0=23539 timer_ticks_cpu1=52346 timer_ticks_cpu2=22943 timer_ticks_cpu3=51801 timer_ticks_cpu4=51920 timer_ticks_cpu5=52139 timer_ticks_cpu6=52613 timer_ticks_cpu7=51921 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=12 cur_cpu2=14 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=17 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+232744:!!! SOFT LOCKUP DETECTED !!!
+237636:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+241045:!!! END SOFT LOCKUP DUMP !!!
+241049:!!! SOFT LOCKUP DETECTED !!!
+245942:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+249350:!!! END SOFT LOCKUP DUMP !!!
+249354:!!! SOFT LOCKUP DETECTED !!!
+254247:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+257655:!!! END SOFT LOCKUP DUMP !!!
+257659:!!! SOFT LOCKUP DETECTED !!!
+262552:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+265962:!!! END SOFT LOCKUP DUMP !!!
+265966:!!! SOFT LOCKUP DETECTED !!!
+270858:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+274192:!!! END SOFT LOCKUP DUMP !!!
+274196:!!! SOFT LOCKUP DETECTED !!!
+279089:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+282497:!!! END SOFT LOCKUP DUMP !!!
+282501:!!! SOFT LOCKUP DETECTED !!!
+287394:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+290802:!!! END SOFT LOCKUP DUMP !!!
+290806:!!! SOFT LOCKUP DETECTED !!!
+295699:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+299107:!!! END SOFT LOCKUP DUMP !!!
+299110:[freeze-watch] uptime_ms=75354 submits=14651 completes=14654 fails=0 last_completion_ms=29119 fps_last_5s=0 cpu=4 tid=3 ctx_switches=64863 timer_ticks_cpu0=24713 timer_ticks_cpu1=60383 timer_ticks_cpu2=22943 timer_ticks_cpu3=59833 timer_ticks_cpu4=59952 timer_ticks_cpu5=60173 timer_ticks_cpu6=60642 timer_ticks_cpu7=59952 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=12 cur_cpu2=14 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=17 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+299113:!!! SOFT LOCKUP DETECTED !!!
+304005:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+307414:!!! END SOFT LOCKUP DUMP !!!
+307418:!!! SOFT LOCKUP DETECTED !!!
+312234:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+315642:!!! END SOFT LOCKUP DUMP !!!
+315647:!!! SOFT LOCKUP DETECTED !!!
+320540:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+323948:!!! END SOFT LOCKUP DUMP !!!
+323952:!!! SOFT LOCKUP DETECTED !!!
+328845:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+332254:!!! END SOFT LOCKUP DUMP !!!
+332256:[freeze-watch] uptime_ms=80357 submits=14651 completes=14654 fails=0 last_completion_ms=29119 fps_last_5s=0 cpu=4 tid=3 ctx_switches=64863 timer_ticks_cpu0=25288 timer_ticks_cpu1=64387 timer_ticks_cpu2=22943 timer_ticks_cpu3=63835 timer_ticks_cpu4=63955 timer_ticks_cpu5=64175 timer_ticks_cpu6=64648 timer_ticks_cpu7=63961 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=12 cur_cpu2=14 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=17 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+332259:!!! SOFT LOCKUP DETECTED !!!
+337151:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+340560:!!! END SOFT LOCKUP DUMP !!!
+340564:!!! SOFT LOCKUP DETECTED !!!
+345457:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+348865:!!! END SOFT LOCKUP DUMP !!!
+348869:!!! SOFT LOCKUP DETECTED !!!
+353762:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+357170:!!! END SOFT LOCKUP DUMP !!!
+357174:!!! SOFT LOCKUP DETECTED !!!
+361738:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+365136:!!! END SOFT LOCKUP DUMP !!!
+365140:!!! SOFT LOCKUP DETECTED !!!
+370032:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+373416:!!! END SOFT LOCKUP DUMP !!!
+373420:!!! SOFT LOCKUP DETECTED !!!
+378313:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+381721:!!! END SOFT LOCKUP DUMP !!!
+381725:!!! SOFT LOCKUP DETECTED !!!
+386618:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+390026:!!! END SOFT LOCKUP DUMP !!!
+390030:!!! SOFT LOCKUP DETECTED !!!
+394923:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+398331:!!! END SOFT LOCKUP DUMP !!!
+398334:[freeze-watch] uptime_ms=90365 submits=14651 completes=14654 fails=0 last_completion_ms=29119 fps_last_5s=0 cpu=4 tid=3 ctx_switches=64863 timer_ticks_cpu0=26482 timer_ticks_cpu1=72413 timer_ticks_cpu2=22943 timer_ticks_cpu3=71854 timer_ticks_cpu4=71972 timer_ticks_cpu5=72198 timer_ticks_cpu6=72669 timer_ticks_cpu7=71982 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=12 cur_cpu2=14 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=17 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+398337:!!! SOFT LOCKUP DETECTED !!!
+403229:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+406638:!!! END SOFT LOCKUP DUMP !!!
+406642:!!! SOFT LOCKUP DETECTED !!!
+411535:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+414943:!!! END SOFT LOCKUP DUMP !!!
+414947:!!! SOFT LOCKUP DETECTED !!!
+419840:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+423248:!!! END SOFT LOCKUP DUMP !!!
+423252:!!! SOFT LOCKUP DETECTED !!!
+428052:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+431465:!!! END SOFT LOCKUP DUMP !!!
+431469:!!! SOFT LOCKUP DETECTED !!!
+436361:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+439770:!!! END SOFT LOCKUP DUMP !!!
+439774:!!! SOFT LOCKUP DETECTED !!!
+444667:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+448075:!!! END SOFT LOCKUP DUMP !!!
+448079:!!! SOFT LOCKUP DETECTED !!!
+452972:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+456380:!!! END SOFT LOCKUP DUMP !!!
+456385:!!! SOFT LOCKUP DETECTED !!!
+461277:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+464687:!!! END SOFT LOCKUP DUMP !!!
+464691:!!! SOFT LOCKUP DETECTED !!!
+469563:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+472972:!!! END SOFT LOCKUP DUMP !!!
+472976:!!! SOFT LOCKUP DETECTED !!!
+477869:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+481277:!!! END SOFT LOCKUP DUMP !!!
+481281:!!! SOFT LOCKUP DETECTED !!!
+486174:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+489582:!!! END SOFT LOCKUP DUMP !!!
+489587:!!! SOFT LOCKUP DETECTED !!!
+494479:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+497889:!!! END SOFT LOCKUP DUMP !!!
+497893:!!! SOFT LOCKUP DETECTED !!!
+502786:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+506194:!!! END SOFT LOCKUP DUMP !!!
+506198:!!! SOFT LOCKUP DETECTED !!!
+511091:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+514499:!!! END SOFT LOCKUP DUMP !!!
+514504:!!! SOFT LOCKUP DETECTED !!!
+519396:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+522805:!!! END SOFT LOCKUP DUMP !!!
+522809:!!! SOFT LOCKUP DETECTED !!!
+527703:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+531111:!!! END SOFT LOCKUP DUMP !!!
+531115:!!! SOFT LOCKUP DETECTED !!!
+536008:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+539416:!!! END SOFT LOCKUP DUMP !!!
+539420:!!! SOFT LOCKUP DETECTED !!!
+544313:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+547722:!!! END SOFT LOCKUP DUMP !!!
+547726:!!! SOFT LOCKUP DETECTED !!!
+552618:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+556027:!!! END SOFT LOCKUP DUMP !!!
+556031:!!! SOFT LOCKUP DETECTED !!!
+560925:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+564333:!!! END SOFT LOCKUP DUMP !!!
+564337:!!! SOFT LOCKUP DETECTED !!!
+569230:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+572639:!!! END SOFT LOCKUP DUMP !!!
+572643:!!! SOFT LOCKUP DETECTED !!!
+577535:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+580944:!!! END SOFT LOCKUP DUMP !!!
+580949:!!! SOFT LOCKUP DETECTED !!!
+585842:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+589250:!!! END SOFT LOCKUP DUMP !!!
+589254:!!! SOFT LOCKUP DETECTED !!!
+594148:[TRACE] CPU4 idx=88 ts=723299031 type=0x0607 DATA_ABORT pid<<16|dfsc=4
+597556:!!! END SOFT LOCKUP DUMP !!!
