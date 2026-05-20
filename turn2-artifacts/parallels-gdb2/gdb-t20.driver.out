@@ -1,0 +1,29 @@
+The target architecture is set to "aarch64".
+warning: while parsing target description (at line 1): Target description specified unknown architecture "org.gnu.gdb.aarch64"
+warning: Could not load XML target description; ignoring
+warning: while parsing target description (at line 1): Target description specified unknown architecture "org.gnu.gdb.aarch64"
+warning: Could not load XML target description; ignoring
+0xffff000040098a00 in curr_el_spx_sync ()
+snapshot=t20
+poll_count=5
+event_count=0
+msi_event_count=0
+psc_count=0
+kbd_event_count=0
+nkro_event_count=0
+xfer_other_count=0
+xo_err_count=0
+endpoint_reset_count=0
+endpoint_reset_fail_count=0
+diag_spi_enable_count=0
+spi_activated=0
+xhci_initialized=1
+xhci_irq=56
+event_ring_dequeue=59
+event_ring_cycle=1
+hid_trbs_queued=1
+needs_reset_kbd_boot=0
+needs_reset_kbd_nkro=0
+needs_reset_mouse=0
+needs_reset_mouse2=0
+[Inferior 1 (Remote target) detached]

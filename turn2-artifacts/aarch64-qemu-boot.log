@@ -1,0 +1,44 @@
+=========================================
+ARM64 Boot Test (Native QEMU)
+=========================================
+Kernel: /Users/wrb/fun/code/breenix/target/aarch64-breenix/release/kernel-aarch64
+ext2 disk: /Users/wrb/fun/code/breenix/target/ext2-aarch64.img
+
+Attempt 1/5...
+qemu-system-aarch64: terminating on signal 15 from pid 86191 (<unknown process>)
+FAIL: Userspace not detected (     530 lines)
+Retrying...
+Attempt 2/5...
+qemu-system-aarch64: terminating on signal 15 from pid 87952 (<unknown process>)
+FAIL: Kernel panic (     643 lines)
+Retrying...
+Attempt 3/5...
+qemu-system-aarch64: terminating on signal 15 from pid 88027 (<unknown process>)
+FAIL: CPU exception (    5474 lines)
+Retrying...
+Attempt 4/5...
+qemu-system-aarch64: terminating on signal 15 from pid 88182 (<unknown process>)
+FAIL: CPU exception (   21095 lines)
+Retrying...
+Attempt 5/5...
+qemu-system-aarch64: terminating on signal 15 from pid 88352 (<unknown process>)
+FAIL: CPU exception (   13579 lines)
+
+=========================================
+ARM64 BOOT TEST: FAILED (after 5 attempts)
+=========================================
+
+NOTE: If this test frequently requires retries or fails repeatedly,
+there may be a regression. Check recent changes to boot code.
+
+Last output:
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+[
