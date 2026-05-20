@@ -746,10 +746,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
 
     // Initialize input devices (capability-based detection)
     if kernel::drivers::usb::xhci::is_initialized() {
-        // USB HID keyboard/mouse via XHCI — already set up during drivers::init()
-        // Polling happens from timer interrupt (poll_hid_events) since PCI
-        // interrupt routing may not be available on all platforms (IRQ=255).
-        serial_println!("[boot] USB HID input active via XHCI (polled from timer)");
+        // USB HID keyboard/mouse via XHCI — already set up during drivers::init().
+        // Runtime input and command completion delivery are IRQ-driven.
+        serial_println!("[boot] USB HID input active via XHCI IRQ");
     } else if kernel::platform_config::is_qemu() {
         // VirtIO keyboard/mouse MMIO (QEMU)
         serial_println!("[boot] Initializing VirtIO keyboard...");
@@ -866,9 +865,6 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     kernel::drivers::usb::xhci::activate_msi_if_ready();
     // Boot-context observability for Parallels MSI delivery. This runs once,
     // before timer init, so it does not depend on CPU0 timer polling.
-    for _ in 0..1_000_000 {
-        core::hint::spin_loop();
-    }
     serial_println!(
         "[xhci] post-activation: MSI_EVENT_COUNT={} EVENT_COUNT={} POLL_COUNT={} SPI_ACTIVATED={}",
         kernel::drivers::usb::xhci::MSI_EVENT_COUNT

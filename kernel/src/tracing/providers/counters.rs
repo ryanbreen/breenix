@@ -131,6 +131,27 @@ pub static GPU_FULL_UPLOADS: TraceCounter =
 pub static GPU_PARTIAL_UPLOADS: TraceCounter =
     TraceCounter::new("GPU_PARTIAL_UPLOADS", "Partial rect GPU uploads");
 
+/// Scheduler: ready-queue entry was not Ready when dequeued.
+#[no_mangle]
+pub static SCHED_STALE_QUEUE_NOT_READY: TraceCounter = TraceCounter::new(
+    "SCHED_STALE_QUEUE_NOT_READY",
+    "Ready-queue entries skipped because thread state was not Ready",
+);
+
+/// Scheduler: ready-queue entry was still current on another CPU.
+#[no_mangle]
+pub static SCHED_STALE_QUEUE_CURRENT: TraceCounter = TraceCounter::new(
+    "SCHED_STALE_QUEUE_CURRENT",
+    "Ready-queue entries skipped because thread was current on another CPU",
+);
+
+/// Scheduler: ready-queue entry was still protected by deferred requeue.
+#[no_mangle]
+pub static SCHED_STALE_QUEUE_DEFERRED: TraceCounter = TraceCounter::new(
+    "SCHED_STALE_QUEUE_DEFERRED",
+    "Ready-queue entries skipped because thread was in deferred requeue",
+);
+
 // =============================================================================
 // Boot Test Counters (BTRT feature)
 // =============================================================================
@@ -186,6 +207,9 @@ pub fn init() {
     register_counter(&GPU_BYTES_UPLOADED);
     register_counter(&GPU_FULL_UPLOADS);
     register_counter(&GPU_PARTIAL_UPLOADS);
+    register_counter(&SCHED_STALE_QUEUE_NOT_READY);
+    register_counter(&SCHED_STALE_QUEUE_CURRENT);
+    register_counter(&SCHED_STALE_QUEUE_DEFERRED);
 
     #[cfg(feature = "btrt")]
     {
