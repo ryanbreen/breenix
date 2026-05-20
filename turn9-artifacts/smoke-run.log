@@ -1,0 +1,13 @@
+[2026-05-20 11:04:18] starting Turn 9 20-boot input gate boots=1 wait=45s
+[2026-05-20 11:04:18] boot-1: cleanup before launch
+[2026-05-20 11:04:19] boot-1: starting ./run.sh --parallels --no-build --test 45
+[2026-05-20 11:04:49] boot-1: monitor elapsed=30s vm=breenix-1779289459 input=no
+[2026-05-20 11:05:04] boot-1: injecting key input attempt=1 trigger=elapsed-45s vm=breenix-1779289459
+[2026-05-20 11:05:52] boot-1: monitor elapsed=93s vm=breenix-1779289459 input=yes
+[2026-05-20 11:06:14] boot-1: boot=1 run_status=0 status=fail reason=failures=12;xhci_msi_irq=0/0;input_evidence=no activity=yes max_uptime_ms=35293 cpu=6 msi=0 irq=0 irq_delta=0 lock=0 stale_not_ready=0 stale_current=0 stale_deferred=0 failures=12 data_abort=0 pid1=yes xhci_kbd=0 usb_hid_nonzero=0 usb_hid_last=0 virtio_input_irq=0 virtio_input_events=0 virtio_input_bytes=0 ehci_irq=0 ehci_completions=0 ehci_errors=0 ehci_bytes=0 input_injected=yes input_evidence=no vm=breenix-1779289459
+boot-1: fail run_status=0 activity=yes msi=0 irq=0 delta=0 stale_not_ready=0 stale_current=0 stale_deferred=0 data_abort=0 pid1=yes input_injected=yes input_evidence=no reason=failures=12;xhci_msi_irq=0/0;input_evidence=no
+overall: fail
+boots: 1 failures=1 data_abort_boots=0 max_msi_irq_delta=0
+scheduler_stale_totals: not_ready=0 current=0 deferred=0
+input: injected_boots=1 evidence_boots=0
+[2026-05-20 11:06:19] Turn 9 20-boot input gate complete

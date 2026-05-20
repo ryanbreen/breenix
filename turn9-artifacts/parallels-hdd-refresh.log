@@ -1,0 +1,4 @@
+target/parallels/breenix-efi.img 66060288 May 20 10:54:03 2026
+target/parallels/breenix-efi.hdd/breenix-efi.hdd.0.{5fbaabe3-6958-40ff-92a7-860e329aab41}.hds 66060288 May 20 11:03:33 2026
+target/ext2-aarch64.img 268435456 May 20 10:53:42 2026
+target/parallels/breenix-ext2.hdd/breenix-ext2.hdd.0.{5fbaabe3-6958-40ff-92a7-860e329aab41}.hds 268435456 May 20 11:03:34 2026
