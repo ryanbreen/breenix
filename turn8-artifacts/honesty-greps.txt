@@ -1,0 +1,10 @@
+block_mmio
+0
+block
+0
+sound
+0
+messages
+610:        "[virtio-blk] Block MMIO IRQ {} enabled for device {}",
+750:        return Err("Block MMIO IRQ completion unavailable before interrupts are enabled");
+880:        return Err("Block MMIO IRQ completion unavailable before interrupts are enabled");
