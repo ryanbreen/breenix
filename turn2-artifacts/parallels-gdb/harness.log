@@ -1,0 +1,6 @@
+[2026-05-20T03:25:56Z] starting run.sh --parallels --no-build
+[2026-05-20T03:25:57Z] detected VM breenix-1779247556
+[2026-05-20T03:25:57Z] starting guest-debugger on port 9610
+[2026-05-20T03:27:28Z] guest-debugger port did not open
+[2026-05-20T03:27:28Z] cleanup start
+[2026-05-20T03:27:30Z] cleanup done

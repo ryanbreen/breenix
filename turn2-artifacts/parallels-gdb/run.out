@@ -1,0 +1,550 @@
+
+=========================================
+Breenix on Parallels Desktop
+=========================================
+
+Skipping builds (--no-build)
+
+--- Configuring Parallels VM ---
+VM name: breenix-1779247556
+Creating fresh VM 'breenix-1779247556'...
+Creating the virtual machine...
+Generate the VM configuration for linux.
+Remove the hdd0 device.
+The VM has been successfully created.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+Remove the cdrom0 device.
+
+The VM has been successfully configured.
+Remove the serial0 device.
+
+The VM has been successfully configured.
+Creating hdd0 (+) sata:0 image='/Users/wrb/fun/code/breenix/target/parallels/breenix-efi.hdd' online-compact=off
+
+Created hdd0 (+) sata:0 image='/Users/wrb/fun/code/breenix/target/parallels/breenix-efi.hdd' type='plain' 64Mb online-compact=on
+
+
+The VM has been successfully configured.
+Creating hdd1 (+) sata:1 image='/Users/wrb/fun/code/breenix/target/parallels/breenix-ext2.hdd' online-compact=off
+
+Created hdd1 (+) sata:1 image='/Users/wrb/fun/code/breenix/target/parallels/breenix-ext2.hdd' type='plain' 256Mb online-compact=on
+
+
+The VM has been successfully configured.
+  hdd0: EFI boot disk (FAT32) at sata:0
+  hdd1: ext2 data disk at sata:1
+
+The VM has been successfully configured.
+Creating serial0 (+) output='/tmp/breenix-parallels-serial.log' state=disconnected
+
+Created serial0 (+) output='/tmp/breenix-parallels-serial.log' state=disconnected
+
+
+The VM has been successfully configured.
+Configured serial0 (+) output='/tmp/breenix-parallels-serial.log'
+
+
+The VM has been successfully configured.
+
+--- Starting VM ---
+Starting the VM...
+The VM has been successfully started.
+
+=========================================
+Breenix running on Parallels
+=========================================
+VM:     breenix-1779247556
+Serial: /tmp/breenix-parallels-serial.log
+Stop:   prlctl stop breenix-1779247556 --kill
+
+Tailing serial output (Ctrl+C to detach)...
+
+[parallels-log] 05-19 23:26:07.439 F /vm:29460:5924fef/ Initing VCPUs
+[parallels-log] 05-19 23:26:07.439 F /StateMachine:29460:5924fef/ VCPU0 state(unknown): initialized to VcpuStateUninitialized
+[parallels-log] 05-19 23:26:07.439 F /StateMachine:29460:5924fef/ VCPU0 state(VcpuStateUninitialized): enqueued 'VcpuCmdInit'(8) command
+[parallels-log] 05-19 23:26:07.439 F /StateMachine:29460:5924fef/ VCPU1 state(unknown): initialized to VcpuStateUninitialized
+[parallels-log] 05-19 23:26:07.439 F /StateMachine:29460:5924fef/ VCPU1 state(VcpuStateUninitialized): enqueued 'VcpuCmdInit'(8) command
+[parallels-log] 05-19 23:26:07.439 F /vm:29460:59250fc/ VCPU #0 initialized (thread 0x16F22F000)
+[parallels-log] 05-19 23:26:07.439 F /StateMachine:29460:5924fef/ VCPU2 state(unknown): initialized to VcpuStateUninitialized
+[parallels-log] 05-19 23:26:07.439 F /StateMachine:29460:5924fef/ VCPU2 state(VcpuStateUninitialized): enqueued 'VcpuCmdInit'(8) command
+[parallels-log] 05-19 23:26:07.439 F /vm:29460:59250fd/ VCPU #1 initialized (thread 0x16F2BB000)
+[parallels-log] 05-19 23:26:07.439 F /StateMachine:29460:5924fef/ VCPU3 state(unknown): initialized to VcpuStateUninitialized
+[parallels-log] 05-19 23:26:07.439 F /StateMachine:29460:5924fef/ VCPU3 state(VcpuStateUninitialized): enqueued 'VcpuCmdInit'(8) command
+[parallels-log] 05-19 23:26:07.439 F /StateMachine:29460:5924fef/ VCPU4 state(unknown): initialized to VcpuStateUninitialized
+[parallels-log] 05-19 23:26:07.439 F /vm:29460:59250fe/ VCPU #2 initialized (thread 0x16F347000)
+[parallels-log] 05-19 23:26:07.439 F /vm:29460:59250ff/ VCPU #3 initialized (thread 0x16F3D3000)
+[parallels-log] 05-19 23:26:07.439 F /StateMachine:29460:5924fef/ VCPU4 state(VcpuStateUninitialized): enqueued 'VcpuCmdInit'(8) command
+[parallels-log] 05-19 23:26:07.439 F /StateMachine:29460:5924fef/ VCPU5 state(unknown): initialized to VcpuStateUninitialized
+[parallels-log] 05-19 23:26:07.439 F /StateMachine:29460:5924fef/ VCPU5 state(VcpuStateUninitialized): enqueued 'VcpuCmdInit'(8) command
+[parallels-log] 05-19 23:26:07.439 F /StateMachine:29460:5924fef/ VCPU6 state(unknown): initialized to VcpuStateUninitialized
+[parallels-log] 05-19 23:26:07.439 F /vm:29460:5925100/ VCPU #4 initialized (thread 0x16F45F000)
+[parallels-log] 05-19 23:26:07.439 F /vm:29460:5925101/ VCPU #5 initialized (thread 0x16F4EB000)
+[parallels-log] 05-19 23:26:07.439 F /StateMachine:29460:5924fef/ VCPU6 state(VcpuStateUninitialized): enqueued 'VcpuCmdInit'(8) command
+[parallels-log] 05-19 23:26:07.439 F /StateMachine:29460:5924fef/ VCPU7 state(unknown): initialized to VcpuStateUninitialized
+[parallels-log] 05-19 23:26:07.439 F /vm:29460:5925102/ VCPU #6 initialized (thread 0x16F577000)
+[parallels-log] 05-19 23:26:07.439 F /StateMachine:29460:5924fef/ VCPU7 state(VcpuStateUninitialized): enqueued 'VcpuCmdInit'(8) command
+[parallels-log] 05-19 23:26:07.439 F /vm:29460:5925103/ VCPU #7 initialized (thread 0x16F603000)
+[parallels-log] 05-19 23:26:07.440 F /StateMachine:29460:59250fc/ VCPU0 state(VcpuStateUninitialized): completed current 'VcpuCmdInit'(8) command with result 0x0
+[parallels-log] 05-19 23:26:07.440 F /StateMachine:29460:5925101/ VCPU5 state(VcpuStateUninitialized): completed current 'VcpuCmdInit'(8) command with result 0x0
+[parallels-log] 05-19 23:26:07.440 F /StateMachine:29460:59250fe/ VCPU2 state(VcpuStateUninitialized): completed current 'VcpuCmdInit'(8) command with result 0x0
+[parallels-log] 05-19 23:26:07.440 F /StateMachine:29460:5925102/ VCPU6 state(VcpuStateUninitialized): completed current 'VcpuCmdInit'(8) command with result 0x0
+[parallels-log] 05-19 23:26:07.440 F /StateMachine:29460:5925103/ VCPU7 state(VcpuStateUninitialized): completed current 'VcpuCmdInit'(8) command with result 0x0
+[parallels-log] 05-19 23:26:07.440 F /StateMachine:29460:5925100/ VCPU4 state(VcpuStateUninitialized): completed current 'VcpuCmdInit'(8) command with result 0x0
+[parallels-log] 05-19 23:26:07.440 F /StateMachine:29460:59250fd/ VCPU1 state(VcpuStateUninitialized): completed current 'VcpuCmdInit'(8) command with result 0x0
+[parallels-log] 05-19 23:26:07.440 F /StateMachine:29460:59250ff/ VCPU3 state(VcpuStateUninitialized): completed current 'VcpuCmdInit'(8) command with result 0x0
+[parallels-log] 05-19 23:26:07.441 F /vm:29460:5924fef/ [Profile] VCPUs initialization time is 1 msecs
+[parallels-log] 05-19 23:26:07.441 F /StateMachine:29460:5924fef/ VCPU0 state(VcpuStateUninitialized): enqueued 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 23:26:07.441 F /StateMachine:29460:59250fc/ VCPU0 state(VcpuStateUninitialized): changed to VcpuStateInitializing
+[parallels-log] 05-19 23:26:07.441 F /StateMachine:29460:59250fc/ VCPU0 state(VcpuStateInitializing): delay 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 23:26:07.441 F /MonitorArm:29460:59250fc/ Initializing VCPU #0...
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250fc/ VCPU1 state(VcpuStateUninitialized): enqueued 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250fc/ VCPU2 state(VcpuStateUninitialized): enqueued 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250fc/ VCPU3 state(VcpuStateUninitialized): enqueued 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250fc/ VCPU4 state(VcpuStateUninitialized): enqueued 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250fd/ VCPU1 state(VcpuStateUninitialized): changed to VcpuStateInitializing
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250fc/ VCPU5 state(VcpuStateUninitialized): enqueued 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250ff/ VCPU3 state(VcpuStateUninitialized): changed to VcpuStateInitializing
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250fe/ VCPU2 state(VcpuStateUninitialized): changed to VcpuStateInitializing
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250fd/ VCPU1 state(VcpuStateInitializing): delay 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250fc/ VCPU6 state(VcpuStateUninitialized): enqueued 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 23:26:07.445 F /MonitorArm:29460:59250fd/ Initializing VCPU #1...
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250fe/ VCPU2 state(VcpuStateInitializing): delay 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:5925100/ VCPU4 state(VcpuStateUninitialized): changed to VcpuStateInitializing
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250ff/ VCPU3 state(VcpuStateInitializing): delay 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 23:26:07.445 F /MonitorArm:29460:59250fd/ Initializing VCPU #1... done
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:5925101/ VCPU5 state(VcpuStateUninitialized): changed to VcpuStateInitializing
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250fc/ VCPU7 state(VcpuStateUninitialized): enqueued 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 23:26:07.445 F /MonitorArm:29460:59250fe/ Initializing VCPU #2...
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:5925100/ VCPU4 state(VcpuStateInitializing): delay 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 23:26:07.445 F /MonitorArm:29460:59250ff/ Initializing VCPU #3...
+[parallels-log] 05-19 23:26:07.445 F /MonitorArm:29460:59250fc/ Initializing VCPU #0... done
+[parallels-log] 05-19 23:26:07.445 F /MonitorArm:29460:5925100/ Initializing VCPU #4...
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250fd/ VCPU1 state(VcpuStateInitializing): changed to VcpuStateTransition
+[parallels-log] 05-19 23:26:07.445 F /MonitorArm:29460:59250ff/ Initializing VCPU #3... done
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250fc/ VCPU0 state(VcpuStateInitializing): changed to VcpuStateTransition
+[parallels-log] 05-19 23:26:07.445 F /MonitorArm:29460:59250fe/ Initializing VCPU #2... done
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250fd/ VCPU1 state(VcpuStateTransition): changed to VcpuStatePaused
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250fc/ VCPU0 state(VcpuStateTransition): changed to VcpuStatePaused
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250fd/ VCPU1 state(VcpuStatePaused): completed current 'VcpuCmdPause'(0) command with result 0x0
+[parallels-log] 05-19 23:26:07.445 F /MonitorArm:29460:5925100/ Initializing VCPU #4... done
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250ff/ VCPU3 state(VcpuStateInitializing): changed to VcpuStateTransition
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250ff/ VCPU3 state(VcpuStateTransition): changed to VcpuStatePaused
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250fe/ VCPU2 state(VcpuStateInitializing): changed to VcpuStateTransition
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250fe/ VCPU2 state(VcpuStateTransition): changed to VcpuStatePaused
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250fe/ VCPU2 state(VcpuStatePaused): completed current 'VcpuCmdPause'(0) command with result 0x0
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250fc/ VCPU0 state(VcpuStatePaused): completed current 'VcpuCmdPause'(0) command with result 0x0
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:59250ff/ VCPU3 state(VcpuStatePaused): completed current 'VcpuCmdPause'(0) command with result 0x0
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:5925100/ VCPU4 state(VcpuStateInitializing): changed to VcpuStateTransition
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:5925100/ VCPU4 state(VcpuStateTransition): changed to VcpuStatePaused
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:5925100/ VCPU4 state(VcpuStatePaused): completed current 'VcpuCmdPause'(0) command with result 0x0
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:5925103/ VCPU7 state(VcpuStateUninitialized): changed to VcpuStateInitializing
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:5925103/ VCPU7 state(VcpuStateInitializing): delay 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 23:26:07.445 F /MonitorArm:29460:5925103/ Initializing VCPU #7...
+[parallels-log] 05-19 23:26:07.445 F /MonitorArm:29460:5925103/ Initializing VCPU #7... done
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:5925102/ VCPU6 state(VcpuStateUninitialized): changed to VcpuStateInitializing
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:5925102/ VCPU6 state(VcpuStateInitializing): delay 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:5925101/ VCPU5 state(VcpuStateInitializing): delay 'VcpuCmdPause'(0) command
+[parallels-log] 05-19 23:26:07.445 F /MonitorArm:29460:5925102/ Initializing VCPU #6...
+[parallels-log] 05-19 23:26:07.445 F /MonitorArm:29460:5925102/ Initializing VCPU #6... done
+[parallels-log] 05-19 23:26:07.445 F /MonitorArm:29460:5925101/ Initializing VCPU #5...
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:5925103/ VCPU7 state(VcpuStateInitializing): changed to VcpuStateTransition
+[parallels-log] 05-19 23:26:07.445 F /MonitorArm:29460:5925101/ Initializing VCPU #5... done
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:5925103/ VCPU7 state(VcpuStateTransition): changed to VcpuStatePaused
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:5925102/ VCPU6 state(VcpuStateInitializing): changed to VcpuStateTransition
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:5925102/ VCPU6 state(VcpuStateTransition): changed to VcpuStatePaused
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:5925103/ VCPU7 state(VcpuStatePaused): completed current 'VcpuCmdPause'(0) command with result 0x0
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:5925101/ VCPU5 state(VcpuStateInitializing): changed to VcpuStateTransition
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:5925102/ VCPU6 state(VcpuStatePaused): completed current 'VcpuCmdPause'(0) command with result 0x0
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:5925101/ VCPU5 state(VcpuStateTransition): changed to VcpuStatePaused
+[parallels-log] 05-19 23:26:07.445 F /StateMachine:29460:5925101/ VCPU5 state(VcpuStatePaused): completed current 'VcpuCmdPause'(0) command with result 0x0
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5924fef/ VCPU0 state(VcpuStatePaused): enqueued 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5924fef/ VCPU1 state(VcpuStatePaused): enqueued 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5924fef/ VCPU2 state(VcpuStatePaused): enqueued 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5924fef/ VCPU3 state(VcpuStatePaused): enqueued 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5924fef/ VCPU4 state(VcpuStatePaused): enqueued 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:59250fc/ VCPU0 state(VcpuStatePaused): changed to VcpuStateUnpausing
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:59250fd/ VCPU1 state(VcpuStatePaused): changed to VcpuStateUnpausing
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:59250fc/ VCPU0 state(VcpuStateUnpausing): delay 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5924fef/ VCPU5 state(VcpuStatePaused): enqueued 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:59250fe/ VCPU2 state(VcpuStatePaused): changed to VcpuStateUnpausing
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:59250fe/ VCPU2 state(VcpuStateUnpausing): delay 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5924fef/ VCPU6 state(VcpuStatePaused): enqueued 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:59250fd/ VCPU1 state(VcpuStateUnpausing): delay 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:59250ff/ VCPU3 state(VcpuStatePaused): changed to VcpuStateUnpausing
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:59250ff/ VCPU3 state(VcpuStateUnpausing): delay 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:59250fc/ VCPU0 state(VcpuStateUnpausing): changed to VcpuStateTransition
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:59250fd/ VCPU1 state(VcpuStateUnpausing): changed to VcpuStateTransition
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:59250fe/ VCPU2 state(VcpuStateUnpausing): changed to VcpuStateTransition
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5924fef/ VCPU7 state(VcpuStatePaused): enqueued 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:59250fd/ VCPU1 state(VcpuStateTransition): changed to VcpuStateRunning
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:59250ff/ VCPU3 state(VcpuStateUnpausing): changed to VcpuStateTransition
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:59250fe/ VCPU2 state(VcpuStateTransition): changed to VcpuStateRunning
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:59250fc/ VCPU0 state(VcpuStateTransition): changed to VcpuStateRunning
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:59250ff/ VCPU3 state(VcpuStateTransition): changed to VcpuStateRunning
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:59250fe/ VCPU2 state(VcpuStateRunning): completed current 'VcpuCmdRun'(1) command with result 0x0
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:59250fc/ VCPU0 state(VcpuStateRunning): completed current 'VcpuCmdRun'(1) command with result 0x0
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:59250fd/ VCPU1 state(VcpuStateRunning): completed current 'VcpuCmdRun'(1) command with result 0x0
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:59250ff/ VCPU3 state(VcpuStateRunning): completed current 'VcpuCmdRun'(1) command with result 0x0
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5925103/ VCPU7 state(VcpuStatePaused): changed to VcpuStateUnpausing
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5925103/ VCPU7 state(VcpuStateUnpausing): delay 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5925100/ VCPU4 state(VcpuStatePaused): changed to VcpuStateUnpausing
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5925102/ VCPU6 state(VcpuStatePaused): changed to VcpuStateUnpausing
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5925100/ VCPU4 state(VcpuStateUnpausing): delay 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5925102/ VCPU6 state(VcpuStateUnpausing): delay 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5925100/ VCPU4 state(VcpuStateUnpausing): changed to VcpuStateTransition
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5925102/ VCPU6 state(VcpuStateUnpausing): changed to VcpuStateTransition
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5925100/ VCPU4 state(VcpuStateTransition): changed to VcpuStateRunning
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5925100/ VCPU4 state(VcpuStateRunning): completed current 'VcpuCmdRun'(1) command with result 0x0
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5925102/ VCPU6 state(VcpuStateTransition): changed to VcpuStateRunning
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5925102/ VCPU6 state(VcpuStateRunning): completed current 'VcpuCmdRun'(1) command with result 0x0
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5925103/ VCPU7 state(VcpuStateUnpausing): changed to VcpuStateTransition
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5925101/ VCPU5 state(VcpuStatePaused): changed to VcpuStateUnpausing
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5925101/ VCPU5 state(VcpuStateUnpausing): delay 'VcpuCmdRun'(1) command
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5925101/ VCPU5 state(VcpuStateUnpausing): changed to VcpuStateTransition
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5925101/ VCPU5 state(VcpuStateTransition): changed to VcpuStateRunning
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5925101/ VCPU5 state(VcpuStateRunning): completed current 'VcpuCmdRun'(1) command with result 0x0
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5925103/ VCPU7 state(VcpuStateTransition): changed to VcpuStateRunning
+[parallels-log] 05-19 23:26:07.494 F /StateMachine:29460:5925103/ VCPU7 state(VcpuStateRunning): completed current 'VcpuCmdRun'(1) command with result 0x0
+  cap 0x10 (PCIe) @ 0x48: dw0=0x00024010 dw1=0x00000fc0
+  cap 0x01 (PM) @ 0x40: dw0=0x0022f401 dw1=0x00000000
+  cap 0x11 (MSI-X) @ 0xf4: dw0=0x00020011 dw1=0x00000001
+[virtio-net-pci] MSI-X cap at 0xf4: 3 vectors
+[virtio-net-pci] MSI-X vector assignments: cfg=0xffff rx=0x0
+[virtio-net-pci] MSI-X enabled: SPI 55 doorbell=0x2250040 vectors=3
+[virtio-net-pci] Network device initialized successfully
+[drivers] VirtIO network (PCI) initialized
+[drivers] SVGA3 init skipped: SVGA3 device not found
+[drivers] Found XHCI at 00:03.0 [1033:0194]
+[parallels-log] 05-19 23:26:08.434 F /MonitorArm:29460:59250fc/ VCPU0: OnExitBootServices()
+[xhci] DMA addrs: DCBAA=0x40259000 CMD_RING=0x4025a000 EVT_RING=0x4026a000 ERST=0x402d6740
+[xhci] Regs: USBCMD=0x5 USBSTS=0x0 CRCR=0x0 DCBAAP=0x40259000
+[xhci] IR0: IMAN=0x2 ERDP=0x4026a000 ERSTBA=0x402d6740
+[xhci] Port scan: 14 ports
+[xhci]   port 1: PORTSC=0x00021203 CCS=1 PED=1 speed=4
+[xhci]   port 2: PORTSC=0x00021203 CCS=1 PED=1 speed=4
+[xhci]   port 3: PORTSC=0x00021203 CCS=1 PED=1 speed=4
+[xhci]   port 4: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 5: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 6: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 7: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 8: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 9: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 10: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 11: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 12: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 13: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 14: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci] port 1 connected: PORTSC=0x00001203 PED=1 speed=4
+[xhci] port 1 EnableSlot -> slot 1
+[xhci] port 1 AddressDevice OK (slot 1)
+[xhci] slot1: vid=0x203a pid=0xfffc class=0x00/0x00/0x00
+[xhci] slot1 iface0: class=0x03 sub=0x00 proto=0x02 numEP=1
+[xhci] HID iface: proto=2 subclass=0 -> mouse (hid_idx=1)
+[xhci] slot1 iface1: class=0x03 sub=0x00 proto=0x02 numEP=1
+[xhci] HID iface: proto=2 subclass=0 -> mouse (hid_idx=3)
+[xhci] port 2 connected: PORTSC=0x00001203 PED=1 speed=4
+[xhci] port 2 EnableSlot -> slot 2
+[xhci] port 2 AddressDevice OK (slot 2)
+[xhci] slot2: vid=0x203a pid=0xfffb class=0x00/0x00/0x00
+[xhci] slot2 iface0: class=0x03 sub=0x01 proto=0x01 numEP=1
+[xhci] HID iface: proto=1 subclass=1 -> keyboard (hid_idx=0)
+[xhci] slot2 iface1: class=0x03 sub=0x00 proto=0x00 numEP=1
+[xhci] HID iface: proto=0 subclass=0 -> NKRO (hid_idx=2)
+[xhci] port 3 connected: PORTSC=0x00001203 PED=1 speed=4
+[xhci] port 3 EnableSlot -> slot 3
+[xhci] port 3 AddressDevice OK (slot 3)
+[xhci] slot3: vid=0x203a pid=0xfff9 class=0xef/0x02/0x01
+[xhci] slot3 iface0: class=0x0e sub=0x01 proto=0x00 numEP=0
+[xhci] slot3 iface1: class=0x0e sub=0x02 proto=0x00 numEP=1
+[xhci] start_hid_polling: kbd=slot2/dci3 nkro=dci5 mouse=slot1/dci3 mouse2=dci5
+[xhci] Initialized: 32 slots, MSI irq=56
+[drivers] XHCI USB controller initialized
+[ahci] Platform AHCI at phys 0x2140000, virt 0xffff000002140000
+[ahci] HBA version 1.256, 6 ports, 32 cmd slots, PI=0x0000003f
+[ahci] Port 0: Sata, 131072 sectors (64 MB)
+[ahci] Port 1: Sata, 524288 sectors (256 MB)
+[ahci] IRQ probe: using port 0 dma_index 0
+[ahci] IRQ probe: ISPENDR before=[0x01000000, 0x00000000, 0x00000000] after=[0x01000004, 0x00000000, 0x00000000]
+[ahci] IRQ probe: PORT_IS=0x00000001 (should have D2H bit set)
+[ahci] Platform IRQ probe: discovered SPI 34
+[ahci] Platform IRQ enabled: SPI 34 (wired, level-triggered, CPU0)
+[drivers] AHCI initialized (platform MMIO): 2 SATA device(s)
+[drivers] Driver subsystem initialized (PCI)
+[boot] Found 7 devices
+[boot] Initializing network stack...
+[net] Initializing network stack...
+[net] Using VirtIO net PCI driver (Parallels)
+[net] MAC address: 00:1c:42:fd:f1:a9
+NET: IP address: 10.211.55.100
+NET: Gateway: 10.211.55.1
+Network stack initialized
+NET: Sending ARP request for gateway 10.211.55.1
+ARP request sent successfully
+[virtio-net-pci] RX diag: used_idx=1 last_used=0 avail_idx=4 isr=0x0 msi_count=0
+[virtio-net-pci] RX diag: used_idx=1 last_used=1 avail_idx=8 isr=0x0 msi_count=0
+NET: ARP resolved gateway MAC: 00:1c:42:00:00:18
+NET: Sending ICMP echo request to gateway 10.211.55.1
+[net] ICMP echo reply received from 10.211.55.1 seq=1
+NET: Network initialization complete
+[virtio-net-pci] MSI-X SPI 55 enabled (post-init)
+[boot] Initializing filesystem...
+[ext2] No VirtIO block device, trying AHCI...
+[ext2] AHCI device 0: 131072 sectors (64 MB)
+[ext2] AHCI device 0: not ext2 (magic=0x0064)
+[ext2] AHCI device 1: 524288 sectors (256 MB)
+[ext2] Found ext2 superblock on AHCI device 1
+[boot] ext2 root filesystem mounted
+[boot] No home filesystem: No home block device available (expected at device index 3 or 1) (continuing)
+[boot] devfs initialized at /dev
+[boot] devptsfs initialized at /dev/pts
+[boot] CPU detected: ARM Unknown
+[boot] procfs initialized at /proc
+[boot] TTY subsystem initialized
+[boot] Initializing graphics...
+[boot] VirGL active — skipping GOP framebuffer init (2D resource already set up in gpu_pci::init)
+[boot] FB_INFO_CACHE populated for VirGL display (1280x960)
+[boot] USB HID input active via XHCI (polled from timer)
+[boot] Initializing per-CPU data...
+[boot] Per-CPU data initialized
+[boot] Initializing process manager...
+[boot] Process manager initialized
+[boot] Initializing scheduler...
+[boot] Scheduler initialized
+[boot] Workqueue subsystem initialized
+[boot] Softirq subsystem initialized
+[boot] Render thread skipped — VirGL owns the display
+[boot] Tracing subsystem initialized and enabled
+[boot] Pre-loading /sbin/init from ext2 (before timer)...
+[boot] Init binary pre-loaded: 296776 bytes
+[boot] Initializing timer interrupt...
+[timer] Timer configured for ~1000 Hz (24000 ticks per interrupt)
+[timer] Using virtual timer (PPI 27)
+[boot] Timer interrupt initialized
+[smp] CPU 0 MPIDR=0x80000000, stack_base=0x43000000
+[smp] GICR covers 8 redistributors, probing CPUs 1..8
+[smp] Probing secondary CPUs via PSCI...
+[s1@1AmBCpDE]eF GCPU 11: PSCI CPU_ON success
+[gi2c@1]AB CDIEeCFGC_2CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[gic] ICC_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[smp] CPU 2: PSCI CPU_ON success
+T1[s3m@1pAB]C DCEePFGU3 3: PSCI CPU_ON success
+[g4i@c1A]B CDIECeFCG_4CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[smp] CPU 4: PSCI CPU_ON success
+[g5i@1AcBC]DE eIFGC5C_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[smp] CPU 5: PSCI CPU_ON success
+[g6@1iABcCD] EeIFGCC6_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[smp] CPU 6: PSCI CPU_ON success
+[g7@i1AcB]CD EeIFGC7C_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[gic] ICC_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[smp] CPU 7: PSCI CPU_ON success
+T2[smp] 8 CPUs online
+
+========================================
+  Breenix ARM64 Boot Complete!
+========================================
+
+Hello from ARM64!
+
+[boot] Launching init from pre-loaded ELF...
+manager.create_process_with_argv [ARM64]: ENTRY - name='init', elf_size=296776, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 1
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f1f0
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 1
+[ahci-poll-attrib] total=72 post_reg=70 pre_sched=70 post_sched=0
+[boot] Reset 8 idle thread contexts (CPUs online: 8)
+T3T4EL0_SYSCALL: First syscall from userspace (SPSR confirms EL0)
+[ OK ] syscall path verified
+[init] Breenix init starting (PID 1)
+T5[spawn] path='/bin/heartbeat'
+T6T7[freeze-watch] uptime_ms=1729 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=1 tid=3 ctx_switches=123 timer_ticks_cpu0=7 timer_ticks_cpu1=336 timer_ticks_cpu2=338 timer_ticks_cpu3=336 timer_ticks_cpu4=336 timer_ticks_cpu5=337 timer_ticks_cpu6=337 timer_ticks_cpu7=337 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=3 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[gpu-pci-lock-attrib] max_hold_ms=6 max_hold_holder_tid=-1
+[wake-attrib] schedule=3 unblock=0 isr_unblock=57 wake_io=57 signal=0 child=0 timer=1
+[enqueue-attrib] same_lock=1 deferred=4 isr_buf=57 deferred_drained=3 isr_buf_drained=56 already_queued=0 isr_buf_full=0
+[parallels-log] 05-19 23:26:09.663 I /MonitorArm:29460:59250fc/ VCPU0 PSCI: CPU_ON(target_cpu = 1, entry_point_addr = 40080258, context_id = 1)
+[parallels-log] 05-19 23:26:09.663 I /MonitorArm:29460:59250fc/ VCPU0 PSCI: CPU_ON(target_cpu = 2, entry_point_addr = 40080258, context_id = 2)
+[parallels-log] 05-19 23:26:09.664 I /MonitorArm:29460:59250fc/ VCPU0 PSCI: CPU_ON(target_cpu = 3, entry_point_addr = 40080258, context_id = 3)
+[parallels-log] 05-19 23:26:09.664 I /MonitorArm:29460:59250fc/ VCPU0 PSCI: CPU_ON(target_cpu = 4, entry_point_addr = 40080258, context_id = 4)
+[parallels-log] 05-19 23:26:09.664 I /MonitorArm:29460:59250fc/ VCPU0 PSCI: CPU_ON(target_cpu = 5, entry_point_addr = 40080258, context_id = 5)
+[parallels-log] 05-19 23:26:09.664 I /MonitorArm:29460:59250fc/ VCPU0 PSCI: CPU_ON(target_cpu = 6, entry_point_addr = 40080258, context_id = 6)
+[parallels-log] 05-19 23:26:09.665 I /MonitorArm:29460:59250fc/ VCPU0 PSCI: CPU_ON(target_cpu = 7, entry_point_addr = 40080258, context_id = 7)
+[freeze-watch] uptime_ms=2232 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=4 tid=0 ctx_switches=125 timer_ticks_cpu0=7 timer_ticks_cpu1=670 timer_ticks_cpu2=672 timer_ticks_cpu3=669 timer_ticks_cpu4=670 timer_ticks_cpu5=671 timer_ticks_cpu6=670 timer_ticks_cpu7=671 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=2734 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=5 tid=3 ctx_switches=127 timer_ticks_cpu0=7 timer_ticks_cpu1=1004 timer_ticks_cpu2=1006 timer_ticks_cpu3=1004 timer_ticks_cpu4=1003 timer_ticks_cpu5=1005 timer_ticks_cpu6=1005 timer_ticks_cpu7=1005 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=3 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=3236 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=1 tid=3 ctx_switches=129 timer_ticks_cpu0=7 timer_ticks_cpu1=1341 timer_ticks_cpu2=1341 timer_ticks_cpu3=1339 timer_ticks_cpu4=1339 timer_ticks_cpu5=1341 timer_ticks_cpu6=1340 timer_ticks_cpu7=1340 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=3 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=3738 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=3 tid=0 ctx_switches=131 timer_ticks_cpu0=7 timer_ticks_cpu1=1677 timer_ticks_cpu2=1676 timer_ticks_cpu3=1676 timer_ticks_cpu4=1676 timer_ticks_cpu5=1677 timer_ticks_cpu6=1677 timer_ticks_cpu7=1677 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=4241 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=4 tid=3 ctx_switches=133 timer_ticks_cpu0=7 timer_ticks_cpu1=2011 timer_ticks_cpu2=2010 timer_ticks_cpu3=2010 timer_ticks_cpu4=2010 timer_ticks_cpu5=2010 timer_ticks_cpu6=2011 timer_ticks_cpu7=2010 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=4744 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=3 tid=0 ctx_switches=135 timer_ticks_cpu0=7 timer_ticks_cpu1=2349 timer_ticks_cpu2=2347 timer_ticks_cpu3=2348 timer_ticks_cpu4=2348 timer_ticks_cpu5=2348 timer_ticks_cpu6=2350 timer_ticks_cpu7=2349 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=5248 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=6 tid=3 ctx_switches=139 timer_ticks_cpu0=7 timer_ticks_cpu1=2686 timer_ticks_cpu2=2685 timer_ticks_cpu3=2684 timer_ticks_cpu4=2685 timer_ticks_cpu5=2686 timer_ticks_cpu6=2687 timer_ticks_cpu7=2685 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=3 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=5751 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=4 tid=0 ctx_switches=141 timer_ticks_cpu0=7 timer_ticks_cpu1=3021 timer_ticks_cpu2=3020 timer_ticks_cpu3=3020 timer_ticks_cpu4=3021 timer_ticks_cpu5=3021 timer_ticks_cpu6=3023 timer_ticks_cpu7=3022 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=6253 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=1 tid=0 ctx_switches=143 timer_ticks_cpu0=7 timer_ticks_cpu1=3357 timer_ticks_cpu2=3357 timer_ticks_cpu3=3357 timer_ticks_cpu4=3356 timer_ticks_cpu5=3357 timer_ticks_cpu6=3358 timer_ticks_cpu7=3357 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=6756 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=3 tid=3 ctx_switches=145 timer_ticks_cpu0=7 timer_ticks_cpu1=3697 timer_ticks_cpu2=3698 timer_ticks_cpu3=3697 timer_ticks_cpu4=3697 timer_ticks_cpu5=3697 timer_ticks_cpu6=3699 timer_ticks_cpu7=3697 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=3 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=7258 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=2 tid=3 ctx_switches=147 timer_ticks_cpu0=7 timer_ticks_cpu1=4037 timer_ticks_cpu2=4039 timer_ticks_cpu3=4037 timer_ticks_cpu4=4037 timer_ticks_cpu5=4037 timer_ticks_cpu6=4038 timer_ticks_cpu7=4036 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=3 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=7760 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=5 tid=3 ctx_switches=149 timer_ticks_cpu0=7 timer_ticks_cpu1=4375 timer_ticks_cpu2=4377 timer_ticks_cpu3=4376 timer_ticks_cpu4=4377 timer_ticks_cpu5=4377 timer_ticks_cpu6=4377 timer_ticks_cpu7=4376 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=3 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=8262 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=7 tid=0 ctx_switches=151 timer_ticks_cpu0=7 timer_ticks_cpu1=4716 timer_ticks_cpu2=4717 timer_ticks_cpu3=4717 timer_ticks_cpu4=4718 timer_ticks_cpu5=4717 timer_ticks_cpu6=4717 timer_ticks_cpu7=4716 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=8764 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=3 tid=3 ctx_switches=153 timer_ticks_cpu0=7 timer_ticks_cpu1=5068 timer_ticks_cpu2=5069 timer_ticks_cpu3=5068 timer_ticks_cpu4=5069 timer_ticks_cpu5=5066 timer_ticks_cpu6=5065 timer_ticks_cpu7=5065 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=3 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=9267 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=1 tid=0 ctx_switches=155 timer_ticks_cpu0=7 timer_ticks_cpu1=5421 timer_ticks_cpu2=5421 timer_ticks_cpu3=5419 timer_ticks_cpu4=5419 timer_ticks_cpu5=5419 timer_ticks_cpu6=5416 timer_ticks_cpu7=5416 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=9770 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=1 tid=3 ctx_switches=157 timer_ticks_cpu0=7 timer_ticks_cpu1=5769 timer_ticks_cpu2=5768 timer_ticks_cpu3=5771 timer_ticks_cpu4=5766 timer_ticks_cpu5=5769 timer_ticks_cpu6=5763 timer_ticks_cpu7=5766 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=3 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=10271 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=1 tid=3 ctx_switches=159 timer_ticks_cpu0=7 timer_ticks_cpu1=6114 timer_ticks_cpu2=6116 timer_ticks_cpu3=6115 timer_ticks_cpu4=6110 timer_ticks_cpu5=6113 timer_ticks_cpu6=6109 timer_ticks_cpu7=6112 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=3 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=15275 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=3 tid=0 ctx_switches=161 timer_ticks_cpu0=7 timer_ticks_cpu1=9488 timer_ticks_cpu2=9491 timer_ticks_cpu3=9495 timer_ticks_cpu4=9489 timer_ticks_cpu5=9487 timer_ticks_cpu6=9480 timer_ticks_cpu7=9488 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=20277 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=7 tid=3 ctx_switches=163 timer_ticks_cpu0=7 timer_ticks_cpu1=12852 timer_ticks_cpu2=12859 timer_ticks_cpu3=12857 timer_ticks_cpu4=12856 timer_ticks_cpu5=12853 timer_ticks_cpu6=12840 timer_ticks_cpu7=12852 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=3 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=25279 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=6 tid=3 ctx_switches=165 timer_ticks_cpu0=7 timer_ticks_cpu1=16202 timer_ticks_cpu2=16205 timer_ticks_cpu3=16204 timer_ticks_cpu4=16203 timer_ticks_cpu5=16198 timer_ticks_cpu6=16189 timer_ticks_cpu7=16201 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=3 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=30281 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=4 tid=3 ctx_switches=167 timer_ticks_cpu0=7 timer_ticks_cpu1=19585 timer_ticks_cpu2=19586 timer_ticks_cpu3=19582 timer_ticks_cpu4=19581 timer_ticks_cpu5=19576 timer_ticks_cpu6=19567 timer_ticks_cpu7=19581 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=35284 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=7 tid=0 ctx_switches=169 timer_ticks_cpu0=7 timer_ticks_cpu1=22945 timer_ticks_cpu2=22945 timer_ticks_cpu3=22941 timer_ticks_cpu4=22941 timer_ticks_cpu5=22939 timer_ticks_cpu6=22928 timer_ticks_cpu7=22946 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+[gpu-pci-lock-attrib] max_hold_ms=6 max_hold_holder_tid=-1
+[wake-attrib] schedule=4 unblock=0 isr_unblock=57 wake_io=57 signal=0 child=0 timer=23
+[enqueue-attrib] same_lock=23 deferred=5 isr_buf=57 deferred_drained=4 isr_buf_drained=56 already_queued=0 isr_buf_full=0
+[freeze-watch] uptime_ms=40287 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=7 tid=3 ctx_switches=171 timer_ticks_cpu0=7 timer_ticks_cpu1=26304 timer_ticks_cpu2=26303 timer_ticks_cpu3=26299 timer_ticks_cpu4=26296 timer_ticks_cpu5=26299 timer_ticks_cpu6=26292 timer_ticks_cpu7=26304 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=3 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[freeze-watch] uptime_ms=45289 submits=62 completes=65 fails=0 last_completion_ms=70 fps_last_5s=0 cpu=5 tid=3 ctx_switches=173 timer_ticks_cpu0=7 timer_ticks_cpu1=29668 timer_ticks_cpu2=29664 timer_ticks_cpu3=29660 timer_ticks_cpu4=29656 timer_ticks_cpu5=29664 timer_ticks_cpu6=29656 timer_ticks_cpu7=29667 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=3 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+
+!!! CPU0 REGRESSION ALARM !!!
+CPU0 tick_count = 7, max peer = 30000
+See docs/planning/cpu0-user-guard-autopsy/README.md
+
+========================================
+  KERNEL PANIC!
+========================================
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=7 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+
+
+!!! CPU0 REGRESSION ALARM !!!
+CPU0 tick_count = 7, max peer = 30000
+See docs/planning/cpu0-user-guard-autopsy/README.md
+
+========================================
+  KERNEL PANIC!
+========================================
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=7 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+
+
+!!! CPU0 REGRESSION ALARM !!!
+CPU0 tick_count = 7, max peer = 30000
+See docs/planning/cpu0-user-guard-autopsy/README.md
+
+========================================
+  KERNEL PANIC!
+========================================
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=7 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+
+
+!!! CPU0 REGRESSION ALARM !!!
+CPU0 tick_count = 7, max peer = 30000
+See docs/planning/cpu0-user-guard-autopsy/README.md
+
+========================================
+  KERNEL PANIC!
+========================================
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=7 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+
+
+!!! CPU0 REGRESSION ALARM !!!
+CPU0 tick_count = 7, max peer = 30000
+See docs/planning/cpu0-user-guard-autopsy/README.md
+
+========================================
+  KERNEL PANIC!
+========================================
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=7 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+
+
+!!! CPU0 REGRESSION ALARM !!!
+CPU0 tick_count = 7, max peer = 30000
+See docs/planning/cpu0-user-guard-autopsy/README.md
+
+========================================
+  KERNEL PANIC!
+========================================
+panicke
+d! !! CaPU0 REGRESSION ALARM !!!
+CPU0 tick_tco unt =k 7,e mrnaelx/ srpecer/a = r3ch0_000imp
+See dlo/caars/planningc/cphu0-user-6gu4ar/d-auttopismye/RrE_iADMEn.terrumd
+pt.rs:598:17:
+CPU0 timer regression: tick_count=7 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+
+
+========================================
+  KERNEL PANIC!
+========================================
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=7 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+
+./run.sh: line 463: 29476 Terminated: 15          ( tail -f "$VM_LOG" 2> /dev/null | while IFS= read -r line; do
+    case "$line" in 
+        *VCPU* | *Exception* | *Synchronous* | *fault* | *FAULT* | *recursive*)
+            echo "[parallels-log] $line"
+        ;;
+    esac;
+done )
+./run.sh: line 463: 29526 Terminated: 15          tail -f "$SERIAL_LOG"
+[parallels-log] 05-19 23:27:29.161 F /StateMachine:29460:5925103/ VCPU7 state(VcpuStateRunning): changed to VcpuStateStopped
+[parallels-log] 05-19 23:27:29.161 F /StateMachine:29460:5925101/ VCPU5 state(VcpuStateRunning): changed to VcpuStateStopped
+[parallels-log] 05-19 23:27:29.161 F /StateMachine:29460:5925102/ VCPU6 state(VcpuStateRunning): changed to VcpuStateStopped
+[parallels-log] 05-19 23:27:29.161 F /StateMachine:29460:5925100/ VCPU4 state(VcpuStateRunning): changed to VcpuStateStopped
+[parallels-log] 05-19 23:27:29.161 F /StateMachine:29460:59250fc/ VCPU0 state(VcpuStateRunning): changed to VcpuStateStopped
+[parallels-log] 05-19 23:27:29.161 F /StateMachine:29460:59250ff/ VCPU3 state(VcpuStateRunning): changed to VcpuStateStopped
+[parallels-log] 05-19 23:27:29.161 F /StateMachine:29460:59250fd/ VCPU1 state(VcpuStateRunning): changed to VcpuStateStopped
+[parallels-log] 05-19 23:27:29.161 F /StateMachine:29460:59250fe/ VCPU2 state(VcpuStateRunning): changed to VcpuStateStopped
+[parallels-log] 05-19 23:27:29.173 F /StateMachine:29460:5924fef/ VCPU7 state(VcpuStateStopped): enqueued 'VcpuCmdTerminate'(4) command
+[parallels-log] 05-19 23:27:29.173 F /StateMachine:29460:5924fef/ VCPU6 state(VcpuStateStopped): enqueued 'VcpuCmdTerminate'(4) command
+[parallels-log] 05-19 23:27:29.173 F /StateMachine:29460:5924fef/ VCPU5 state(VcpuStateStopped): enqueued 'VcpuCmdTerminate'(4) command
+[parallels-log] 05-19 23:27:29.173 F /StateMachine:29460:5924fef/ VCPU4 state(VcpuStateStopped): enqueued 'VcpuCmdTerminate'(4) command
+[parallels-log] 05-19 23:27:29.173 F /StateMachine:29460:5925103/ VCPU7 state(VcpuStateStopped): changed to VcpuStateTerminated
+[parallels-log] 05-19 23:27:29.173 F /StateMachine:29460:5925103/ VCPU7 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0x0
+[parallels-log] 05-19 23:27:29.173 F /StateMachine:29460:5924fef/ VCPU3 state(VcpuStateStopped): enqueued 'VcpuCmdTerminate'(4) command
+[parallels-log] 05-19 23:27:29.173 F /StateMachine:29460:5925102/ VCPU6 state(VcpuStateStopped): changed to VcpuStateTerminated
+[parallels-log] 05-19 23:27:29.173 F /StateMachine:29460:5925102/ VCPU6 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0x0
+[parallels-log] 05-19 23:27:29.173 F /StateMachine:29460:5925101/ VCPU5 state(VcpuStateStopped): changed to VcpuStateTerminated
+[parallels-log] 05-19 23:27:29.173 F /StateMachine:29460:5924fef/ VCPU2 state(VcpuStateStopped): enqueued 'VcpuCmdTerminate'(4) command
+[parallels-log] 05-19 23:27:29.173 F /StateMachine:29460:5925101/ VCPU5 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0x0
+[parallels-log] 05-19 23:27:29.173 F /StateMachine:29460:5925100/ VCPU4 state(VcpuStateStopped): changed to VcpuStateTerminated
+[parallels-log] 05-19 23:27:29.173 F /StateMachine:29460:5925100/ VCPU4 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0x0
+[parallels-log] 05-19 23:27:29.173 F /StateMachine:29460:5924fef/ VCPU1 state(VcpuStateStopped): enqueued 'VcpuCmdTerminate'(4) command
+[parallels-log] 05-19 23:27:29.173 F /StateMachine:29460:59250ff/ VCPU3 state(VcpuStateStopped): changed to VcpuStateTerminated
+[parallels-log] 05-19 23:27:29.173 F /StateMachine:29460:59250ff/ VCPU3 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0x0
+[parallels-log] 05-19 23:27:29.173 F /StateMachine:29460:5924fef/ VCPU0 state(VcpuStateStopped): enqueued 'VcpuCmdTerminate'(4) command
+[parallels-log] 05-19 23:27:29.173 F /vm:29460:5924fef/ Wait for the VCPU threads to stop
+[parallels-log] 05-19 23:27:29.173 F /StateMachine:29460:59250fd/ VCPU1 state(VcpuStateStopped): changed to VcpuStateTerminated
+[parallels-log] 05-19 23:27:29.173 F /StateMachine:29460:59250fd/ VCPU1 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0x0
+[parallels-log] 05-19 23:27:29.173 F /StateMachine:29460:59250fc/ VCPU0 state(VcpuStateStopped): changed to VcpuStateTerminated
+[parallels-log] 05-19 23:27:29.173 F /StateMachine:29460:59250fc/ VCPU0 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0x0
+[parallels-log] 05-19 23:27:29.173 F /StateMachine:29460:59250fe/ VCPU2 state(VcpuStateStopped): changed to VcpuStateTerminated
+[parallels-log] 05-19 23:27:29.173 F /StateMachine:29460:59250fe/ VCPU2 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0x0
+[parallels-log] 05-19 23:27:29.200 F /StateMachine:29460:5924fef/ VCPU7 state(VcpuStateTerminated): enqueued 'VcpuCmdTerminate'(4) command
+[parallels-log] 05-19 23:27:29.200 F /StateMachine:29460:5924fef/ VCPU6 state(VcpuStateTerminated): enqueued 'VcpuCmdTerminate'(4) command
+[parallels-log] 05-19 23:27:29.200 F /StateMachine:29460:5924fef/ VCPU5 state(VcpuStateTerminated): enqueued 'VcpuCmdTerminate'(4) command
+[parallels-log] 05-19 23:27:29.200 F /StateMachine:29460:5924fef/ VCPU4 state(VcpuStateTerminated): enqueued 'VcpuCmdTerminate'(4) command
+[parallels-log] 05-19 23:27:29.200 F /StateMachine:29460:5924fef/ VCPU3 state(VcpuStateTerminated): enqueued 'VcpuCmdTerminate'(4) command
+[parallels-log] 05-19 23:27:29.200 F /StateMachine:29460:5924fef/ VCPU2 state(VcpuStateTerminated): enqueued 'VcpuCmdTerminate'(4) command
+[parallels-log] 05-19 23:27:29.200 F /StateMachine:29460:5924fef/ VCPU1 state(VcpuStateTerminated): enqueued 'VcpuCmdTerminate'(4) command
+[parallels-log] 05-19 23:27:29.200 F /StateMachine:29460:5924fef/ VCPU0 state(VcpuStateTerminated): enqueued 'VcpuCmdTerminate'(4) command
+[parallels-log] 05-19 23:27:29.247 F /StateMachine:29460:5924fef/ VCPU7 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0xfffffff7
+[parallels-log] 05-19 23:27:29.247 F /StateMachine:29460:5924fef/ VCPU6 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0xfffffff7
+[parallels-log] 05-19 23:27:29.247 F /StateMachine:29460:5924fef/ VCPU5 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0xfffffff7
+[parallels-log] 05-19 23:27:29.247 F /StateMachine:29460:5924fef/ VCPU4 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0xfffffff7
+[parallels-log] 05-19 23:27:29.247 F /StateMachine:29460:5924fef/ VCPU3 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0xfffffff7
+[parallels-log] 05-19 23:27:29.247 F /StateMachine:29460:5924fef/ VCPU2 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0xfffffff7
+[parallels-log] 05-19 23:27:29.247 F /StateMachine:29460:5924fef/ VCPU1 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0xfffffff7
+[parallels-log] 05-19 23:27:29.247 F /StateMachine:29460:5924fef/ VCPU0 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0xfffffff7

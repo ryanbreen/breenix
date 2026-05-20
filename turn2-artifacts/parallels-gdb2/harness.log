@@ -1,0 +1,13 @@
+[2026-05-20T03:28:37Z] starting run.sh --parallels --no-build
+[2026-05-20T03:28:51Z] detected running VM breenix-1779247717
+[2026-05-20T03:28:51Z] starting guest-debugger on port 9611
+[2026-05-20T03:28:53Z] waiting 10s after VM running
+[2026-05-20T03:29:03Z] running GDB snapshot t10
+[2026-05-20T03:29:13Z] sending key sequence first
+[2026-05-20T03:29:37Z] running GDB snapshot t20
+[2026-05-20T03:29:37Z] sending key sequence second
+[2026-05-20T03:29:54Z] running GDB snapshot t30
+[2026-05-20T03:30:02Z] running GDB snapshot t38
+[2026-05-20T03:30:02Z] snapshots complete
+[2026-05-20T03:30:02Z] cleanup start
+[2026-05-20T03:30:03Z] cleanup done

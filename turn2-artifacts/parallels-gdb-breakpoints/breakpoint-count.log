@@ -1,0 +1,5 @@
+breakpoint-count.gdb:9: Error in sourced command file:
+Remote communication error.  Target disconnected: error while reading: Connection reset by peer.
+(gdb) warning: Exception condition detected on fd 0
+error detected on stdin
+gdb_timeout_rc=0

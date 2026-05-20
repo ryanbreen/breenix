@@ -1,0 +1,7 @@
+[2026-05-20T03:32:05Z] starting run.sh --parallels --no-build
+[2026-05-20T03:32:28Z] detected running VM breenix-1779247925
+[2026-05-20T03:32:28Z] starting guest-debugger on port 9612
+[2026-05-20T03:32:29Z] running GDB breakpoint counter for 35s
+[2026-05-20T03:32:39Z] breakpoint run complete
+[2026-05-20T03:32:39Z] cleanup start
+[2026-05-20T03:32:44Z] cleanup done
