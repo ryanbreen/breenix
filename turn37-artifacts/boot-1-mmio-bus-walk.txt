@@ -1,0 +1,9 @@
+35:[drivers] Hybrid mode: VirtIO MMIO + PCI AHCI
+36:[drivers] Found VirtIO MMIO device: network (ID=1, version=1)
+37:[drivers] Found VirtIO MMIO device: block (ID=2, version=1)
+38:[drivers] Found VirtIO MMIO device: input (ID=18, version=1)
+39:[drivers] Found VirtIO MMIO device: input (ID=18, version=1)
+40:[drivers] Found VirtIO MMIO device: GPU (ID=16, version=1)
+41:[drivers] Found 5 VirtIO MMIO devices
+74:[drivers] Driver subsystem initialized (MMIO)
+79:[drivers] Driver subsystem initialized (hybrid MMIO+PCI)

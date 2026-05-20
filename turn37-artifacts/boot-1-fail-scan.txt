@@ -1,0 +1,5 @@
+73:[drivers] VirtIO sound driver init failed: No VirtIO Sound device found
+78:[drivers] AHCI PCI init failed: No AHCI controller found
+156:3[smp] CPU 4: HVC64 failed (ret=-2), trying HVC32...
+157:T1[smp] PSCI CPU_ON failed for CPU 4: ret=-2 (MPIDR=0x4 entry=0x40080258)
+158:[smp] CPU 4: PSCI CPU_ON failed (ret=-2), stopping probe
