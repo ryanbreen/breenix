@@ -555,13 +555,17 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // this is a no-op if no PCI devices are attached (scan returns quickly).
     if kernel::platform_config::is_qemu() {
         kernel::platform_config::init_qemu_pci();
-        serial_println!("[boot] QEMU PCI ECAM configured at {:#x}", kernel::platform_config::pci_ecam_base());
+        serial_println!(
+            "[boot] QEMU PCI ECAM configured at {:#x}",
+            kernel::platform_config::pci_ecam_base()
+        );
     }
 
     // Initialize device drivers (VirtIO MMIO enumeration)
     serial_println!("[boot] Initializing device drivers...");
     let device_count = kernel::drivers::init();
     serial_println!("[boot] Found {} devices", device_count);
+    kernel::drivers::run_post_init_self_tests();
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::PCI_ENUMERATION);
 

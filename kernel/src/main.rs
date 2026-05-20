@@ -611,6 +611,14 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::KTHREAD_SUBSYSTEM);
 
+    // IRQ-driven driver self-tests must run after PIC/timer/scheduler setup
+    // and with IF=1 so device completions can arrive on hardware IRQ lines.
+    log::info!("Temporarily enabling interrupts for driver post-init self-tests...");
+    x86_64::instructions::interrupts::enable();
+    drivers::run_post_init_self_tests();
+    x86_64::instructions::interrupts::disable();
+    log::info!("Driver post-init self-tests complete; interrupts disabled for remaining init");
+
     // Spawn render thread for deferred framebuffer rendering (interactive mode only)
     // This must be done after kthread infrastructure is ready.
     //
