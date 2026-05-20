@@ -1,0 +1,82 @@
+
+## interactive ssh procfs session keyed on output
+spawn ssh -tt -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o PreferredAuthentications=password -o PubkeyAuthentication=no -p 2222 root@10.211.55.100
+root@10.211.55.100's password:
+Welcome to Breenix OS
+breenish v0.5.0 -- ECMAScript shell for Breenix
+bsh /> bsh /> c[Kbsh /> ca[Kbsh /> cat[Kbsh /> cat [Kbsh /> cat /[Kbsh /> cat /p[Kbsh /> cat /pr[Kbsh /> cat /pro[Kbsh /> cat /proc[Kbsh /> cat /proc/[Kbsh /> cat /proc/s[Kbsh /> cat /proc/st[Kbsh /> cat /proc/sta[Kbsh /> cat /proc/stat[K
+cpu0 93349 83432
+cpu1 112275 98720
+cpu2 111878 103386
+cpu3 110874 107392
+cpu4 110490 109265
+cpu5 110856 110227
+cpu6 111440 110884
+cpu7 111743 111559
+syscalls 210649
+interrupts 1672132
+context_switches 277597
+timer_ticks 872905
+global_ticks 93349
+forks 3
+execs 2
+cow_faults 50
+gpu_bytes 0
+gpu_full 0
+gpu_partial 0
+net_msi_irqs 36
+bsh /> bsh /> c[Kbsh /> ca[Kbsh /> cat[Kbsh /> cat [Kbsh /> cat /[Kbsh /> cat /p[Kbsh /> cat /pr[Kbsh /> cat /pro[Kbsh /> cat /proc[Kbsh /> cat /proc/[Kbsh /> cat /proc/t[Kbsh /> cat /proc/tr[Kbsh /> cat /proc/tra[Kbsh /> cat /proc/trac[Kbsh /> cat /proc/trace[Kbsh /> cat /proc/trace/[Kbsh /> cat /proc/trace/c[Kbsh /> cat /proc/trace/co[Kbsh /> cat /proc/trace/cou[Kbsh /> cat /proc/trace/coun[Kbsh /> cat /proc/trace/count[Kbsh /> cat /proc/trace/counte[Kbsh /> cat /proc/trace/counter[Kbsh /> cat /proc/trace/counters[K
+# 50 registered counters
+
+VIRTGPU_SUBMIT_TOTAL: 59249 (cpu0=38721, cpu1=8509, cpu2=5264, cpu3=2235, cpu4=1156, cpu5=1001, cpu6=1264, cpu7=1099)
+VIRTGPU_COMPLETE_TOTAL: 59252 (cpu0=52582, cpu1=1538, cpu2=961, cpu3=559, cpu4=618, cpu5=788, cpu6=1081, cpu7=1125)
+VIRTGPU_FAIL_TOTAL: 0
+VIRTGPU_WAIT_TIMEOUT_COUNT: 0
+BWM_COMPOSITE_FRAME_ENTER_TOTAL: 19730 (cpu0=4920, cpu1=7226, cpu2=4476, cpu3=1773, cpu4=653, cpu5=321, cpu6=285, cpu7=76)
+BWM_COMPOSITE_FRAME_EXIT_TOTAL: 19729 (cpu0=18779, cpu1=255, cpu2=172, cpu3=96, cpu4=115, cpu5=108, cpu6=102, cpu7=102)
+VIRTGPU_FLUSH_ENTER_TOTAL: 19732 (cpu0=15303, cpu1=894, cpu2=525, cpu3=316, cpu4=359, cpu5=561, cpu6=864, cpu7=910)
+VIRTGPU_FLUSH_EXIT_TOTAL: 19732 (cpu0=18782, cpu1=255, cpu2=172, cpu3=96, cpu4=115, cpu5=108, cpu6=102, cpu7=102)
+VIRTGPU_SUBMIT_3D_ENTER_TOTAL: 2 (cpu0=2)
+VIRTGPU_SUBMIT_3D_EXIT_TOTAL: 2 (cpu0=2)
+VIRTGPU_WAIT_COMPLETION_ENTER_TOTAL: 59252 (cpu0=38724, cpu1=8509, cpu2=5264, cpu3=2235, cpu4=1156, cpu5=1001, cpu6=1264, cpu7=1099)
+VIRTGPU_WAIT_COMPLETION_EXIT_TOTAL: 59252 (cpu0=52582, cpu1=1538, cpu2=961, cpu3=559, cpu4=618, cpu5=788, cpu6=1081, cpu7=1125)
+VIRTGPU_R2_CREATE: 1 (cpu0=1)
+VIRTGPU_R2_ATTACH_BACKING: 1 (cpu0=1)
+VIRTGPU_R2_CTX_ATTACH: 1 (cpu0=1)
+VIRTGPU_R2_TRANSFER: 19730 (cpu0=4922, cpu1=7226, cpu2=4475, cpu3=1772, cpu4=653, cpu5=321, cpu6=285, cpu7=76)
+VIRTGPU_R2_SET_SCANOUT: 19732 (cpu0=18441, cpu1=389, cpu2=264, cpu3=147, cpu4=144, cpu5=119, cpu6=115, cpu7=113)
+VIRTGPU_R2_FLUSH_OK: 19732 (cpu0=18782, cpu1=255, cpu2=172, cpu3=96, cpu4=115, cpu5=108, cpu6=102, cpu7=102)
+VIRTGPU_R2_FLUSH_FAIL: 0
+VIRTGPU_R2_UNREF_OR_DETACH: 0
+VIRTGPU_FLUSH_WITH_ZERO_RES: 0
+VIRTGPU_FLUSH_BY_CALLER_2D_FULL: 0
+VIRTGPU_FLUSH_BY_CALLER_2D_RECT: 0
+VIRTGPU_FLUSH_BY_CALLER_2D_ONLY: 0
+VIRTGPU_FLUSH_BY_CALLER_VIRGL_RENDER_FRAME: 0
+VIRTGPU_FLUSH_BY_CALLER_VIRGL_RENDER_RECTS: 0
+VIRTGPU_FLUSH_BY_CALLER_VIRGL_COMPOSITE_FRAME: 0
+VIRTGPU_FLUSH_BY_CALLER_VIRGL_COMPOSITE_FRAME_TEXTURED: 0
+VIRTGPU_FLUSH_BY_CALLER_VIRGL_COMPOSITE_SINGLE_QUAD: 0
+VIRTGPU_FLUSH_BY_CALLER_VIRGL_FLUSH: 0
+VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_PRIME: 0
+VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_STEP7: 0
+VIRTGPU_FLUSH_BY_CALLER_VIRGL_INIT_STEP10: 0
+VIRTGPU_FLUSH_BY_CALLER_VIRGL_TEST_TEXTURED_QUAD: 0
+XHCI_MSI_EVENT_TOTAL: 50 (cpu0=50)
+XHCI_IRQ_ENTRY_TOTAL: 47 (cpu0=47)
+XHCI_LOCK_CONTENDED_TOTAL: 0
+SYSCALL_TOTAL: 212419 (cpu0=70149, cpu1=57288, cpu2=39765, cpu3=19590, cpu4=11504, cpu5=7460, cpu6=4014, cpu7=2649)
+IRQ_TOTAL: 1685136 (cpu0=179722, cpu1=217119, cpu2=216819, cpu3=214293, cpu4=214777, cpu5=213577, cpu6=213009, cpu7=215820)
+CTX_SWITCH_TOTAL: 280137 (cpu0=144401, cpu1=38825, cpu2=26456, cpu3=17915, cpu4=15900, cpu5=15212, cpu6=14214, cpu7=7214)
+TIMER_TICK_TOTAL: 880230 (cpu0=94290, cpu1=113187, cpu2=112785, cpu3=111768, cpu4=111402, cpu5=111772, cpu6=112358, cpu7=112668)
+FORK_TOTAL: 4 (cpu1=3, cpu6=1)
+EXEC_TOTAL: 3 (cpu0=2, cpu1=1)
+COW_FAULT_TOTAL: 82 (cpu0=4, cpu1=46, cpu2=20, cpu4=4, cpu5=4, cpu6=4)
+IDLE_TICK_TOTAL: 840109 (cpu0=83432, cpu1=99525, cpu2=104242, cpu3=107392, cpu4=110143, cpu5=111119, cpu6=111785, cpu7=112471)
+GPU_BYTES_UPLOADED: 0
+GPU_FULL_UPLOADS: 0
+GPU_PARTIAL_UPLOADS: 0
+NET_RX_BUDGET_EXHAUSTED: 0
+NET_PCI_IRQ_RAISED_NETRX: 40 (cpu0=40)
+bsh />
+EXPECT_EXIT=

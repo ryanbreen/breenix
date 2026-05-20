@@ -462,6 +462,15 @@ pub enum PollOutcome {
     BudgetExhausted,
 }
 
+#[cfg(target_arch = "aarch64")]
+fn reclaim_driver_tx_completed() {
+    if net_pci::is_initialized() {
+        let _ = net_pci::reclaim_tx_completed();
+    } else if !e1000::is_initialized() {
+        let _ = net_mmio::reclaim_tx_completed();
+    }
+}
+
 /// Process incoming packets (called from interrupt handler or polling loop)
 #[cfg(target_arch = "x86_64")]
 pub fn process_rx() {
@@ -512,6 +521,8 @@ pub fn process_rx_budgeted(budget: u32) -> PollOutcome {
     {
         return PollOutcome::Drained;
     }
+
+    reclaim_driver_tx_completed();
 
     let mut remaining = budget;
     let mut outcome = PollOutcome::Drained;
