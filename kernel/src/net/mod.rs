@@ -368,42 +368,13 @@ fn init_common() {
     );
     if let Err(e) = arp::request(&gateway) {
         net_log!("NET: Failed to send ARP request: {}", e);
-        return;
     }
     net_log!("ARP request sent successfully");
 
-    // Wait for ARP reply (poll RX a few times to get the gateway MAC)
-    // The reply comes via interrupt, so we just need to give it time to arrive
-    for _i in 0..100 {
-        process_rx();
-        // Delay to let packets arrive and timer-based polling process them
-        for _ in 0..1_000_000 {
-            core::hint::spin_loop();
-        }
-        // Diagnostic: dump RX queue state on first few iterations
-        #[cfg(target_arch = "aarch64")]
-        if _i < 5 || _i % 20 == 0 {
-            net_pci::dump_rx_state();
-        }
-        // Check if we got the ARP reply yet
-        if let Some(gateway_mac) = arp::lookup(&gateway) {
-            net_log!(
-                "NET: ARP resolved gateway MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                gateway_mac[0],
-                gateway_mac[1],
-                gateway_mac[2],
-                gateway_mac[3],
-                gateway_mac[4],
-                gateway_mac[5]
-            );
-            break;
-        }
-    }
-
-    // Check if ARP resolved the gateway
+    // ARP resolution completes through interrupt-driven RX after init. Do not
+    // spin-poll here; that hides whether MSI-X/softirq networking works.
     if arp::lookup(&gateway).is_none() {
-        net_log!("NET: Gateway ARP not resolved, skipping ping test");
-        return;
+        net_log!("NET: Gateway ARP not resolved during init; will resolve via IRQ path");
     }
 
     // Send ICMP echo request (ping) to gateway
@@ -416,33 +387,30 @@ fn init_common() {
     );
     if let Err(e) = ping(gateway) {
         net_log!("NET: Failed to send ping: {}", e);
-        return;
-    }
-
-    // Poll for the ping reply (just process RX to handle incoming packets)
-    for _ in 0..20 {
-        process_rx();
-        // Delay to let packets arrive and interrupts fire
-        for _ in 0..500000 {
-            core::hint::spin_loop();
-        }
     }
 
     net_log!("NET: Network initialization complete");
 
-    // Enable network device interrupt now that init polling is done.
-    // This must happen AFTER the synchronous ARP/ICMP polling loop so
-    // interrupt-driven RX doesn't interfere with the polling.
+    // Enable network device interrupt unconditionally at the end of init.
+    // All post-init RX must flow through IRQ -> NetRx softirq, not init polling.
     #[cfg(target_arch = "aarch64")]
     {
         if net_pci::is_initialized() {
-            // Enable MSI-X SPI at GIC now that the used ring is drained.
-            // During init, timer-based polling handled RX. Now switch to
-            // interrupt-driven NAPI-style processing.
+            // Enable MSI-X SPI at GIC now that init has completed.
             net_pci::enable_msi_spi();
         } else {
             net_mmio::enable_net_irq();
         }
+
+        // Substep 4 bootstrap: pre-prime NetRx softirq so its first dispatch
+        // calls reenable_and_check_race() to clear VRING_AVAIL_F_NO_INTERRUPT.
+        // Without this, virtio callbacks remain suppressed from device init,
+        // no MSI fires for the first inbound packet, and the IRQ path is dead.
+        // softirqd::init_softirq() runs later in boot; when it starts, it'll
+        // dispatch pending NetRx, run the handler with empty RX, and clear the
+        // suppression flag.
+        crate::task::softirqd::raise_softirq(SoftirqType::NetRx);
+        net_log!("NET: pre-primed NetRx softirq for bootstrap callback re-enable");
     }
 }
 

@@ -1,0 +1,29 @@
+88:  cap 0x11 (MSI-X) @ 0xb0: dw0=0x0001bc11 dw1=0x00000001
+94:[virtio-gpu-pci] MSI-X cap at 0xb0: 2 vectors
+95:[virtio-gpu-pci] MSI-X enabled: config_spi=53 queue_spi=54 doorbell=0x2250040 vectors=2
+102:[virtio-gpu-pci] MSI-X active: config_spi=53 queue_spi=54 queue_vector=1
+177:[virtio-net-pci] Searching for VirtIO network device on PCI bus...
+178:[virtio-net-pci] Found at 00:05.0 [1af4:1000]
+179:[virtio-net-pci] BAR0: phys=0x18010000 virt=0xffff000018010000 size=4096
+180:[virtio-net-pci] Device features: 0x6187bfa3
+181:[virtio-net-pci] MAC: 00:1c:42:67:14:43
+182:[virtio-net-pci] Queue 0 max size: 256
+183:[virtio-net-pci] Queue 0 PFN=0x4125c (phys=0x4125c000)
+184:[virtio-net-pci] Queue 1 max size: 256
+185:[virtio-net-pci] Queue 1 PFN=0x4125f (phys=0x4125f000)
+189:  cap 0x11 (MSI-X) @ 0xf4: dw0=0x00020011 dw1=0x00000001
+190:[virtio-net-pci] MSI-X cap at 0xf4: 3 vectors
+191:[virtio-net-pci] MSI-X vector assignments: cfg=0xffff rx=0x0
+192:[virtio-net-pci] MSI-X enabled: SPI 55 doorbell=0x2250040 vectors=3
+193:[virtio-net-pci] Network device initialized successfully
+259:NET: IP address: 10.211.55.100
+260:NET: Gateway: 10.211.55.1
+261:Network stack initialized
+262:NET: Sending ARP request for gateway 10.211.55.1
+264:NET: Gateway ARP not resolved during init; will resolve via IRQ path
+265:NET: Sending ICMP echo request to gateway 10.211.55.1
+266:NET: ARP cache miss for 10.211.55.1, sending on-demand ARP request
+267:NET: On-demand ARP resolved gateway MAC
+268:NET: Network initialization complete
+269:[virtio-net-pci] MSI-X SPI 55 enabled (post-init)
+270:NET: pre-primed NetRx softirq for bootstrap callback re-enable
