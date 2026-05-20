@@ -402,13 +402,14 @@ fn init_common() {
             net_mmio::enable_net_irq();
         }
 
-        // Substep 4 bootstrap: pre-prime NetRx softirq so its first dispatch
-        // calls reenable_and_check_race() to clear VRING_AVAIL_F_NO_INTERRUPT.
-        // Without this, virtio callbacks remain suppressed from device init,
-        // no MSI fires for the first inbound packet, and the IRQ path is dead.
-        // softirqd::init_softirq() runs later in boot; when it starts, it'll
-        // dispatch pending NetRx, run the handler with empty RX, and clear the
-        // suppression flag.
+        // Substep 4 bootstrap plus Substep 6 hardening: synchronously clear
+        // virtio RX callback suppression so the next inbound MSI can fire even
+        // if softirqd has not run its first NetRx dispatch yet. The softirq
+        // raise remains as a redundant path for any RX state already present.
+        if net_pci::is_initialized() {
+            let _ = net_pci::reenable_and_check_race();
+            net_log!("NET: synchronously cleared virtio callback suppression");
+        }
         crate::task::softirqd::raise_softirq(SoftirqType::NetRx);
         net_log!("NET: pre-primed NetRx softirq for bootstrap callback re-enable");
     }
