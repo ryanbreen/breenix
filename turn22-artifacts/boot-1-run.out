@@ -1,0 +1,545 @@
+
+=========================================
+Breenix on Parallels Desktop
+=========================================
+
+[1/6] Building UEFI loader...
+    Finished `release` profile [optimized] target(s) in 0.01s
+
+[2/6] Building kernel...
+    Finished `release` profile [optimized] target(s) in 0.04s
+
+[3/6] Building userspace binaries (aarch64)...
+========================================
+  STD USERSPACE BUILD (Rust std library)
+========================================
+  Architecture: aarch64
+
+[1/3] Building libbreenix-libc (aarch64)...
+  Finished `release` profile [optimized] target(s) in 0.02s
+  libbreenix-libc built successfully
+
+[2/3] Building userspace (aarch64)...
+  Finished `release` profile [optimized] target(s) in 0.05s
+  Userspace build successful
+
+[3/3] Installing std binaries...
+  Installed hello_world.elf (351216 bytes)
+  Installed syscall_enosys.elf (290176 bytes)
+  Installed clock_gettime_test.elf (295096 bytes)
+  Installed file_read_test.elf (292328 bytes)
+  Installed lseek_test.elf (292544 bytes)
+  Installed fs_write_test.elf (293432 bytes)
+  Installed fs_rename_test.elf (297336 bytes)
+  Installed fs_large_file_test.elf (292296 bytes)
+  Installed fs_directory_test.elf (293208 bytes)
+  Installed fs_link_test.elf (293256 bytes)
+  Installed access_test.elf (291528 bytes)
+  Installed devfs_test.elf (292560 bytes)
+  Installed cwd_test.elf (292504 bytes)
+  Installed getdents_test.elf (293888 bytes)
+  Installed pipe_test.elf (299256 bytes)
+  Installed pipe2_test.elf (304296 bytes)
+  Installed dup_test.elf (305112 bytes)
+  Installed fcntl_test.elf (299648 bytes)
+  Installed poll_test.elf (304712 bytes)
+  Installed select_test.elf (304440 bytes)
+  Installed nonblock_test.elf (303992 bytes)
+  Installed brk_test.elf (292880 bytes)
+  Installed signal_handler_test.elf (298032 bytes)
+  Installed signal_return_test.elf (299304 bytes)
+  Installed signal_regs_test.elf (298616 bytes)
+  Installed sigaltstack_test.elf (305296 bytes)
+  Installed sigsuspend_test.elf (304816 bytes)
+  Installed pause_test.elf (299408 bytes)
+  Installed tty_test.elf (303352 bytes)
+  Installed session_test.elf (304824 bytes)
+  Installed unix_socket_test.elf (323008 bytes)
+  Installed unix_named_socket_test.elf (310280 bytes)
+  Installed fifo_test.elf (317304 bytes)
+  Installed fork_test.elf (298128 bytes)
+  Installed fork_memory_test.elf (304344 bytes)
+  Installed fork_state_test.elf (305000 bytes)
+  Installed waitpid_test.elf (298944 bytes)
+  Installed exec_argv_test.elf (291240 bytes)
+  Installed cloexec_test.elf (307552 bytes)
+  Installed kill_process_group_test.elf (299304 bytes)
+  Installed sigchld_test.elf (292040 bytes)
+  Installed sigchld_job_test.elf (294632 bytes)
+  Installed ctrl_c_test.elf (298680 bytes)
+  Installed job_control_test.elf (298536 bytes)
+  Installed signal_fork_test.elf (298800 bytes)
+  Installed signal_exec_test.elf (299712 bytes)
+  Installed wnohang_timing_test.elf (292496 bytes)
+  Installed fork_pending_signal_test.elf (297664 bytes)
+  Installed shell_pipe_test.elf (293192 bytes)
+  Installed pipeline_test.elf (305704 bytes)
+  Installed cow_cleanup_test.elf (292368 bytes)
+  Installed cow_sole_owner_test.elf (293600 bytes)
+  Installed cow_stress_test.elf (293672 bytes)
+  Installed cow_readonly_test.elf (293488 bytes)
+  Installed cow_signal_test.elf (299168 bytes)
+  Installed resolution.elf (301448 bytes)
+  Installed init_shell.elf (388856 bytes)
+  Installed argv_test.elf (298184 bytes)
+  Installed job_table_test.elf (308504 bytes)
+  Installed test_mmap.elf (291968 bytes)
+  Installed stdin_test.elf (291856 bytes)
+  Installed true_test.elf (291904 bytes)
+  Installed false_test.elf (291904 bytes)
+  Installed echo_argv_test.elf (291736 bytes)
+  Installed mkdir_argv_test.elf (292200 bytes)
+  Installed rm_argv_test.elf (291840 bytes)
+  Installed cp_mv_argv_test.elf (292896 bytes)
+  Installed nonblock_eagain_test.elf (293344 bytes)
+  Installed blocking_recv_test.elf (293848 bytes)
+  Installed tcp_client_test.elf (297192 bytes)
+  Installed wait_stress.elf (306120 bytes)
+  Installed simple_exit.elf (276816 bytes)
+  Installed counter.elf (290448 bytes)
+  Installed spinner.elf (290472 bytes)
+  Installed hello_time.elf (290328 bytes)
+  Installed heartbeat.elf (290128 bytes)
+  Installed xhci_counters.elf (292264 bytes)
+  Installed fbinfo_test.elf (297224 bytes)
+  Installed demo.elf (304008 bytes)
+  Installed bounce.elf (388152 bytes)
+  Installed rectangles.elf (305352 bytes)
+  Installed particles.elf (304200 bytes)
+  Installed confetti.elf (303536 bytes)
+  Installed tones.elf (294304 bytes)
+  Installed fart.elf (302392 bytes)
+  Installed http_test.elf (622792 bytes)
+  Installed register_init_test.elf (288888 bytes)
+  Installed head_test.elf (293328 bytes)
+  Installed tail_test.elf (293272 bytes)
+  Installed wc_test.elf (297880 bytes)
+  Installed which_test.elf (293152 bytes)
+  Installed cat_test.elf (293560 bytes)
+  Installed ls_test.elf (298616 bytes)
+  Installed exec_stack_argv_test.elf (292888 bytes)
+  Installed exec_from_ext2_test.elf (298784 bytes)
+  Installed pipe_fork_test.elf (305080 bytes)
+  Installed pipe_concurrent_test.elf (304320 bytes)
+  Installed fs_block_alloc_test.elf (300200 bytes)
+  Installed cow_oom_test.elf (292784 bytes)
+  Installed signal_test.elf (298280 bytes)
+  Installed alarm_test.elf (293376 bytes)
+  Installed itimer_test.elf (293832 bytes)
+  Installed timer_test.elf (291496 bytes)
+  Installed sleep_debug_test.elf (304584 bytes)
+  Installed pipe_refcount_test.elf (316608 bytes)
+  Installed udp_socket_test.elf (305616 bytes)
+  Installed tcp_socket_test.elf (318696 bytes)
+  Installed tcp_blocking_test.elf (320008 bytes)
+  Installed concurrent_recv_stress.elf (303336 bytes)
+  Installed dns_test.elf (306952 bytes)
+  Installed net_test.elf (303200 bytes)
+  Installed http_fetch_test.elf (616784 bytes)
+  Installed syscall_diagnostic_test.elf (289072 bytes)
+  Installed pty_test.elf (293456 bytes)
+  Installed signal_exec_check.elf (291080 bytes)
+  Installed bsh.elf (734392 bytes)
+  Installed bwm.elf (429208 bytes)
+  Installed btop.elf (293112 bytes)
+  Installed burl.elf (636224 bytes)
+  Installed init.elf (296776 bytes)
+  Installed telnetd.elf (298632 bytes)
+  Installed blogd.elf (291528 bytes)
+  Installed btrace.elf (306896 bytes)
+  Installed bless.elf (294680 bytes)
+  Installed bcheck.elf (422256 bytes)
+  Installed biconkit.elf (358184 bytes)
+  Installed guskit.elf (538784 bytes)
+  Installed bterm.elf (476584 bytes)
+  Installed blog.elf (467888 bytes)
+  Installed bfontpicker.elf (484760 bytes)
+  Installed blauncher.elf (460632 bytes)
+  Installed bsshd.elf (441008 bytes)
+  Installed bssh.elf (408848 bytes)
+
+========================================
+  STD BUILD COMPLETE (aarch64)
+  Installed: 133 binaries
+========================================
+  Userspace build successful
+
+[4/6] Creating ext2 data disk image...
+Creating ext2 disk image...
+  Arch: aarch64
+  Output: /Users/wrb/fun/code/breenix/target/ext2-aarch64.img
+  Size: 256MB
+  Using Docker to create ext2 filesystem...
+  Installed BusyBox with hardlinks in /bin and /sbin
+Installing other binaries...
+  Installed 51 binaries in /bin
+  Installed 3 binaries in /sbin
+  Installed 5 C binaries in /usr/local/cbin
+  Installed 95 test binaries in /usr/local/test/bin
+  Installed 29 fonts in /usr/share/fonts
+  Created /etc/fonts.conf
+  Created /etc/hotkeys.conf
+  Created /etc/init.js
+
+ext2 filesystem contents:
+  Binaries in /bin:
+total 33440
+drwxr-xr-x    2 root     root          3072 May 20 20:42 .
+drwxr-xr-x   12 root     root          1024 May 20 20:42 ..
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 ash
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 awk
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 basename
+-rwxr-xr-x    1 root     root        311600 May 20 20:42 bcat
+-rwxr-xr-x    1 root     root        422256 May 20 20:42 bcheck
+-rwxr-xr-x    1 root     root        305128 May 20 20:42 bcp
+-rwxr-xr-x    1 root     root        297456 May 20 20:42 becho
+-rwxr-xr-x    1 root     root        276808 May 20 20:42 bfalse
+-rwxr-xr-x    1 root     root        484760 May 20 20:42 bfontpicker
+-rwxr-xr-x    1 root     root        313408 May 20 20:42 bhead
+-rwxr-xr-x    1 root     root        358184 May 20 20:42 biconkit
+-rwxr-xr-x    1 root     root        460632 May 20 20:42 blauncher
+-rwxr-xr-x    1 root     root        294680 May 20 20:42 bless
+-rwxr-xr-x    1 root     root        467888 May 20 20:42 blog
+-rwxr-xr-x    1 root     root        325832 May 20 20:42 bls
+-rwxr-xr-x    1 root     root        306520 May 20 20:42 bmkdir
+-rwxr-xr-x    1 root     root        302608 May 20 20:42 bmv
+-rwxr-xr-x    1 root     root        388152 May 20 20:42 bounce
+-rwxr-xr-x    1 root     root        302184 May 20 20:42 brm
+-rwxr-xr-x    1 root     root        302184 May 20 20:42 brmdir
+-rwxr-xr-x    1 root     root        734392 May 20 20:42 bsh
+-rwxr-xr-x    1 root     root        408848 May 20 20:42 bssh
+-rwxr-xr-x    1 root     root        441008 May 20 20:42 bsshd
+-rwxr-xr-x    1 root     root        315816 May 20 20:42 btail
+-rwxr-xr-x    1 root     root        476584 May 20 20:42 bterm
+-rwxr-xr-x    1 root     root        293112 May 20 20:42 btop
+-rwxr-xr-x    1 root     root        306896 May 20 20:42 btrace
+-rwxr-xr-x    1 root     root        276800 May 20 20:42 btrue
+-rwxr-xr-x    1 root     root        636224 May 20 20:42 burl
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 busybox
+-rwxr-xr-x    1 root     root        312144 May 20 20:42 bwc
+-rwxr-xr-x    1 root     root        303160 May 20 20:42 bwhich
+-rwxr-xr-x    1 root     root        429208 May 20 20:42 bwm
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 cat
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 chgrp
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 chmod
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 chown
+-rwxr-xr-x    1 root     root        303336 May 20 20:42 concurrent_recv_stress
+-rwxr-xr-x    1 root     root        303536 May 20 20:42 confetti
+-rwxr-xr-x    1 root     root        290448 May 20 20:42 counter
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 cp
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 cut
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 date
+-rwxr-xr-x    1 root     root        304008 May 20 20:42 demo
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 df
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 dirname
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 du
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 echo
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 env
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 expr
+-rwxr-xr-x    1 root     root        294184 May 20 20:42 f32o_perfdiag
+-rwxr-xr-x    1 root     root        302392 May 20 20:42 fart
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 find
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 free
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 grep
+-rwxr-xr-x    1 root     root        538784 May 20 20:42 guskit
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 head
+-rwxr-xr-x    1 root     root        290128 May 20 20:42 heartbeat
+-rwxr-xr-x    1 root     root        278000 May 20 20:42 hello_raw
+-rwxr-xr-x    1 root     root        290328 May 20 20:42 hello_time
+-rwxr-xr-x    1 root     root        351216 May 20 20:42 hello_world
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 hexdump
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 hostname
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 id
+-rwxr-xr-x    1 root     root        388856 May 20 20:42 init_shell
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 ls
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 md5sum
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 mkdir
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 more
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 mv
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 od
+-rwxr-xr-x    1 root     root        304200 May 20 20:42 particles
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 printf
+-rwxr-xr-x    1 root     root        305352 May 20 20:42 rectangles
+-rwxr-xr-x    1 root     root        301448 May 20 20:42 resolution
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 rm
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 rmdir
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 sed
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 seq
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 sh
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 sha256sum
+-rwxr-xr-x    1 root     root        291080 May 20 20:42 signal_exec_check
+-rwxr-xr-x    1 root     root        276816 May 20 20:42 simple_exit
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 sleep
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 sort
+-rwxr-xr-x    1 root     root        290472 May 20 20:42 spinner
+-rwxr-xr-x    1 root     root        290176 May 20 20:42 syscall_enosys
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 tail
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 tee
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 test
+-rwxr-xr-x    1 root     root        294304 May 20 20:42 tones
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 tr
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 uniq
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 vi
+-rwxr-xr-x    1 root     root        306120 May 20 20:42 wait_stress
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 wc
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 which
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 whoami
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 xargs
+-rwxr-xr-x    1 root     root        292264 May 20 20:42 xhci_counters
+  Test binaries in /usr/local/test/bin:
+total 28663
+drwxr-xr-x    2 root     root          5120 May 20 20:42 .
+drwxr-xr-x    3 root     root          1024 May 20 20:42 ..
+-rwxr-xr-x    1 root     root        291528 May 20 20:42 access_test
+-rwxr-xr-x    1 root     root        293376 May 20 20:42 alarm_test
+-rwxr-xr-x    1 root     root        298184 May 20 20:42 argv_test
+-rwxr-xr-x    1 root     root        293848 May 20 20:42 blocking_recv_test
+-rwxr-xr-x    1 root     root        292880 May 20 20:42 brk_test
+-rwxr-xr-x    1 root     root        293560 May 20 20:42 cat_test
+-rwxr-xr-x    1 root     root        295096 May 20 20:42 clock_gettime_test
+-rwxr-xr-x    1 root     root        307552 May 20 20:42 cloexec_test
+-rwxr-xr-x    1 root     root        292368 May 20 20:42 cow_cleanup_test
+-rwxr-xr-x    1 root     root        292784 May 20 20:42 cow_oom_test
+-rwxr-xr-x    1 root     root        293488 May 20 20:42 cow_readonly_test
+-rwxr-xr-x    1 root     root        299168 May 20 20:42 cow_signal_test
+-rwxr-xr-x    1 root     root        293600 May 20 20:42 cow_sole_owner_test
+-rwxr-xr-x    1 root     root        293672 May 20 20:42 cow_stress_test
+-rwxr-xr-x    1 root     root        292896 May 20 20:42 cp_mv_argv_test
+-rwxr-xr-x    1 root     root        298680 May 20 20:42 ctrl_c_test
+-rwxr-xr-x    1 root     root        292504 May 20 20:42 cwd_test
+-rwxr-xr-x    1 root     root        292560 May 20 20:42 devfs_test
+-rwxr-xr-x    1 root     root        306952 May 20 20:42 dns_test
+-rwxr-xr-x    1 root     root        305112 May 20 20:42 dup_test
+-rwxr-xr-x    1 root     root        291736 May 20 20:42 echo_argv_test
+-rwxr-xr-x    1 root     root        291240 May 20 20:42 exec_argv_test
+-rwxr-xr-x    1 root     root        298784 May 20 20:42 exec_from_ext2_test
+-rwxr-xr-x    1 root     root        292888 May 20 20:42 exec_stack_argv_test
+-rwxr-xr-x    1 root     root        291904 May 20 20:42 false_test
+-rwxr-xr-x    1 root     root        297224 May 20 20:42 fbinfo_test
+-rwxr-xr-x    1 root     root        299648 May 20 20:42 fcntl_test
+-rwxr-xr-x    1 root     root        317304 May 20 20:42 fifo_test
+-rwxr-xr-x    1 root     root        292328 May 20 20:42 file_read_test
+-rwxr-xr-x    1 root     root        304344 May 20 20:42 fork_memory_test
+-rwxr-xr-x    1 root     root        297664 May 20 20:42 fork_pending_signal_test
+-rwxr-xr-x    1 root     root        305000 May 20 20:42 fork_state_test
+-rwxr-xr-x    1 root     root        298128 May 20 20:42 fork_test
+-rwxr-xr-x    1 root     root        300200 May 20 20:42 fs_block_alloc_test
+-rwxr-xr-x    1 root     root        293208 May 20 20:42 fs_directory_test
+-rwxr-xr-x    1 root     root        292296 May 20 20:42 fs_large_file_test
+-rwxr-xr-x    1 root     root        293256 May 20 20:42 fs_link_test
+-rwxr-xr-x    1 root     root        297336 May 20 20:42 fs_rename_test
+-rwxr-xr-x    1 root     root        293432 May 20 20:42 fs_write_test
+-rwxr-xr-x    1 root     root        293888 May 20 20:42 getdents_test
+-rwxr-xr-x    1 root     root        293328 May 20 20:42 head_test
+-rwxr-xr-x    1 root     root        616784 May 20 20:42 http_fetch_test
+-rwxr-xr-x    1 root     root        622792 May 20 20:42 http_test
+-rwxr-xr-x    1 root     root        293832 May 20 20:42 itimer_test
+-rwxr-xr-x    1 root     root        298536 May 20 20:42 job_control_test
+-rwxr-xr-x    1 root     root        308504 May 20 20:42 job_table_test
+-rwxr-xr-x    1 root     root        299304 May 20 20:42 kill_process_group_test
+-rwxr-xr-x    1 root     root        298616 May 20 20:42 ls_test
+-rwxr-xr-x    1 root     root        292544 May 20 20:42 lseek_test
+-rwxr-xr-x    1 root     root        292200 May 20 20:42 mkdir_argv_test
+-rwxr-xr-x    1 root     root        303200 May 20 20:42 net_test
+-rwxr-xr-x    1 root     root        293344 May 20 20:42 nonblock_eagain_test
+-rwxr-xr-x    1 root     root        303992 May 20 20:42 nonblock_test
+-rwxr-xr-x    1 root     root        299408 May 20 20:42 pause_test
+-rwxr-xr-x    1 root     root        304296 May 20 20:42 pipe2_test
+-rwxr-xr-x    1 root     root        304320 May 20 20:42 pipe_concurrent_test
+-rwxr-xr-x    1 root     root        305080 May 20 20:42 pipe_fork_test
+-rwxr-xr-x    1 root     root        316608 May 20 20:42 pipe_refcount_test
+-rwxr-xr-x    1 root     root        299256 May 20 20:42 pipe_test
+-rwxr-xr-x    1 root     root        305704 May 20 20:42 pipeline_test
+-rwxr-xr-x    1 root     root        304712 May 20 20:42 poll_test
+-rwxr-xr-x    1 root     root        293456 May 20 20:42 pty_test
+-rwxr-xr-x    1 root     root        288888 May 20 20:42 register_init_test
+-rwxr-xr-x    1 root     root        291840 May 20 20:42 rm_argv_test
+-rwxr-xr-x    1 root     root        304440 May 20 20:42 select_test
+-rwxr-xr-x    1 root     root        304824 May 20 20:42 session_test
+-rwxr-xr-x    1 root     root        293192 May 20 20:42 shell_pipe_test
+-rwxr-xr-x    1 root     root        305296 May 20 20:42 sigaltstack_test
+-rwxr-xr-x    1 root     root        294632 May 20 20:42 sigchld_job_test
+-rwxr-xr-x    1 root     root        292040 May 20 20:42 sigchld_test
+-rwxr-xr-x    1 root     root        299712 May 20 20:42 signal_exec_test
+-rwxr-xr-x    1 root     root        298800 May 20 20:42 signal_fork_test
+-rwxr-xr-x    1 root     root        298032 May 20 20:42 signal_handler_test
+-rwxr-xr-x    1 root     root        298616 May 20 20:42 signal_regs_test
+-rwxr-xr-x    1 root     root        299304 May 20 20:42 signal_return_test
+-rwxr-xr-x    1 root     root        298280 May 20 20:42 signal_test
+-rwxr-xr-x    1 root     root        304816 May 20 20:42 sigsuspend_test
+-rwxr-xr-x    1 root     root        304584 May 20 20:42 sleep_debug_test
+-rwxr-xr-x    1 root     root        291856 May 20 20:42 stdin_test
+-rwxr-xr-x    1 root     root        289072 May 20 20:42 syscall_diagnostic_test
+-rwxr-xr-x    1 root     root        293272 May 20 20:42 tail_test
+-rwxr-xr-x    1 root     root        320008 May 20 20:42 tcp_blocking_test
+-rwxr-xr-x    1 root     root        297192 May 20 20:42 tcp_client_test
+-rwxr-xr-x    1 root     root        318696 May 20 20:42 tcp_socket_test
+-rwxr-xr-x    1 root     root        291968 May 20 20:42 test_mmap
+-rwxr-xr-x    1 root     root        291496 May 20 20:42 timer_test
+-rwxr-xr-x    1 root     root        291904 May 20 20:42 true_test
+-rwxr-xr-x    1 root     root        303352 May 20 20:42 tty_test
+-rwxr-xr-x    1 root     root        305616 May 20 20:42 udp_socket_test
+-rwxr-xr-x    1 root     root        310280 May 20 20:42 unix_named_socket_test
+-rwxr-xr-x    1 root     root        323008 May 20 20:42 unix_socket_test
+-rwxr-xr-x    1 root     root        298944 May 20 20:42 waitpid_test
+-rwxr-xr-x    1 root     root        297880 May 20 20:42 wc_test
+-rwxr-xr-x    1 root     root        293152 May 20 20:42 which_test
+-rwxr-xr-x    1 root     root        292496 May 20 20:42 wnohang_timing_test
+  Test files:
+-rwxr-xr-x    1 root     root        296776 May 20 20:42 /mnt/ext2/sbin/init
+-rwxr-xr-x    1 root     root        298632 May 20 20:42 /mnt/ext2/sbin/telnetd
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 /mnt/ext2/sbin/true
+-rwxr-xr-x    1 root     root        291528 May 20 20:42 /mnt/ext2/sbin/blogd
+-rwxr-xr-x   51 root     root        329400 May 20 20:42 /mnt/ext2/sbin/false
+-rw-r--r--    1 root     root            20 May 20 20:42 /mnt/ext2/test/nested.txt
+-rw-r--r--    1 root     root           349 May 20 20:42 /mnt/ext2/etc/hotkeys.conf
+-rw-r--r--    1 root     root           445 May 20 20:42 /mnt/ext2/etc/fonts.conf
+-rw-r--r--    1 root     root            83 May 20 20:42 /mnt/ext2/etc/passwd
+-rw-r--r--    1 root     root           367 May 20 20:42 /mnt/ext2/etc/bshrc
+-rw-r--r--    1 root     root            26 May 20 20:42 /mnt/ext2/etc/group
+-rw-r--r--    1 root     root           679 May 20 20:42 /mnt/ext2/etc/init.js
+-rw-r--r--    1 root     root            20 May 20 20:42 /mnt/ext2/deep/path/to/file/data.txt
+-rw-r--r--    1 root     root           111 May 20 20:42 /mnt/ext2/lines.txt
+-rw-r--r--    1 root     root             0 May 20 20:42 /mnt/ext2/empty.txt
+-rw-r--r--    1 root     root            19 May 20 20:42 /mnt/ext2/trunctest.txt
+-rw-r--r--    1 root     root        273900 May 20 20:42 /mnt/ext2/usr/share/fonts/JetBrainsMono-Regular.ttf
+-rw-r--r--    1 root     root        260364 May 20 20:42 /mnt/ext2/usr/share/fonts/FiraCode-Regular.ttf
+-rw-r--r--    1 root     root        340712 May 20 20:42 /mnt/ext2/usr/share/fonts/DejaVuSansMono.ttf
+-rw-r--r--    1 root     root        135580 May 20 20:42 /mnt/ext2/usr/share/fonts/IBMPlexMono-Regular.ttf
+-rw-r--r--    1 root     root        205748 May 20 20:42 /mnt/ext2/usr/share/fonts/UbuntuMono-Regular.ttf
+-rw-r--r--    1 root     root        876576 May 20 20:42 /mnt/ext2/usr/share/fonts/Inter-Regular.ttf
+-rw-r--r--    1 root     root       1209508 May 20 20:42 /mnt/ext2/usr/share/fonts/SourceSerif4-Regular.ttf
+-rw-r--r--    1 root     root        312352 May 20 20:42 /mnt/ext2/usr/share/fonts/Raleway-Regular.ttf
+-rw-r--r--    1 root     root        212340 May 20 20:42 /mnt/ext2/usr/share/fonts/SourceCodePro-Regular.ttf
+-rw-r--r--    1 root     root        351884 May 20 20:42 /mnt/ext2/usr/share/fonts/Ubuntu-Regular.ttf
+-rw-r--r--    1 root     root        757076 May 20 20:42 /mnt/ext2/usr/share/fonts/DejaVuSans.ttf
+-rw-r--r--    1 root     root        212196 May 20 20:42 /mnt/ext2/usr/share/fonts/Lora-Regular.ttf
+-rw-r--r--    1 root     root        300724 May 20 20:42 /mnt/ext2/usr/share/fonts/PlayfairDisplay-Regular.ttf
+-rw-r--r--    1 root     root       2049096 May 20 20:42 /mnt/ext2/usr/share/fonts/NotoSans-Regular.ttf
+-rw-r--r--    1 root     root        598060 May 20 20:42 /mnt/ext2/usr/share/fonts/CascadiaCode-Regular.ttf
+-rw-r--r--    1 root     root        309408 May 20 20:42 /mnt/ext2/usr/share/fonts/Hack-Regular.ttf
+-rw-r--r--    1 root     root       1708408 May 20 20:42 /mnt/ext2/usr/share/fonts/NotoSansMono-Regular.ttf
+-rw-r--r--    1 root     root        656568 May 20 20:42 /mnt/ext2/usr/share/fonts/Lato-Regular.ttf
+-rw-r--r--    1 root     root        646340 May 20 20:42 /mnt/ext2/usr/share/fonts/SourceSans3-Regular.ttf
+-rw-r--r--    1 root     root        359048 May 20 20:42 /mnt/ext2/usr/share/fonts/PTSerif-Regular.ttf
+-rw-r--r--    1 root     root        488584 May 20 20:42 /mnt/ext2/usr/share/fonts/Roboto-Regular.ttf
+-rw-r--r--    1 root     root        276932 May 20 20:42 /mnt/ext2/usr/share/fonts/Nunito-Regular.ttf
+-rw-r--r--    1 root     root       1887192 May 20 20:42 /mnt/ext2/usr/share/fonts/NotoSerif-Regular.ttf
+-rw-r--r--    1 root     root        108684 May 20 20:42 /mnt/ext2/usr/share/fonts/Inconsolata-Regular.ttf
+-rw-r--r--    1 root     root        282844 May 20 20:42 /mnt/ext2/usr/share/fonts/Merriweather-Regular.ttf
+-rw-r--r--    1 root     root        160316 May 20 20:42 /mnt/ext2/usr/share/fonts/Poppins-Regular.ttf
+-rw-r--r--    1 root     root        183700 May 20 20:42 /mnt/ext2/usr/share/fonts/RobotoMono-Regular.ttf
+-rw-r--r--    1 root     root        532636 May 20 20:42 /mnt/ext2/usr/share/fonts/OpenSans-Regular.ttf
+-rw-r--r--    1 root     root        744936 May 20 20:42 /mnt/ext2/usr/share/fonts/Montserrat-Regular.ttf
+-rwxr-xr-x    1 root     root        108720 May 20 20:42 /mnt/ext2/usr/local/cbin/hello_musl
+-rwxr-xr-x    1 root     root        108904 May 20 20:42 /mnt/ext2/usr/local/cbin/uname_musl_test
+-rwxr-xr-x    1 root     root        108816 May 20 20:42 /mnt/ext2/usr/local/cbin/rlimit_musl_test
+-rwxr-xr-x    1 root     root        109624 May 20 20:42 /mnt/ext2/usr/local/cbin/env_musl_test
+-rwxr-xr-x    1 root     root        133160 May 20 20:42 /mnt/ext2/usr/local/cbin/identity_musl_test
+-rw-r--r--    1 root     root            17 May 20 20:42 /mnt/ext2/hello.txt
+
+ext2 image created successfully
+
+ext2 disk created and copied to testdata/:
+  /Users/wrb/fun/code/breenix/target/ext2-aarch64.img
+  /Users/wrb/fun/code/breenix/testdata/ext2-aarch64.img
+  Size: 256M
+
+Contents:
+  /bin/busybox - BusyBox multi-call binary
+  /bin/{cat,ls,head,...} - BusyBox hardlinks
+  /sbin/{true,false} - BusyBox hardlinks
+  /bin/* - Other userspace binaries (demos)
+  /usr/local/test/bin/* - Test binaries (*_test, test_*)
+  /sbin/telnetd - telnet daemon
+  /hello.txt - test file (1 line)
+  /lines.txt - multi-line test file (15 lines) for head/tail/wc
+  /test/nested.txt - nested test file
+  /deep/path/to/file/data.txt - deep nested test file
+
+[5/6] Creating FAT32 EFI disk image...
+  Loader: 80896 bytes
+  Kernel: 2428360 bytes
+
+[6/6] Creating Parallels disks...
+  Patched 1 partition(s) to EFI System Partition type
+  EFI disk: /Users/wrb/fun/code/breenix/target/parallels/breenix-efi.hdd
+  ext2 disk: /Users/wrb/fun/code/breenix/target/parallels/breenix-ext2.hdd (256MB)
+
+--- Configuring Parallels VM ---
+VM name: breenix-1779309785
+Creating fresh VM 'breenix-1779309785'...
+Creating the virtual machine...
+Generate the VM configuration for linux.
+Remove the hdd0 device.
+The VM has been successfully created.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+
+The VM has been successfully configured.
+Remove the cdrom0 device.
+
+The VM has been successfully configured.
+Remove the serial0 device.
+
+The VM has been successfully configured.
+Creating hdd0 (+) sata:0 image='/Users/wrb/fun/code/breenix/target/parallels/breenix-efi.hdd' online-compact=off
+
+Created hdd0 (+) sata:0 image='/Users/wrb/fun/code/breenix/target/parallels/breenix-efi.hdd' type='plain' 64Mb online-compact=on
+
+
+The VM has been successfully configured.
+Creating hdd1 (+) sata:1 image='/Users/wrb/fun/code/breenix/target/parallels/breenix-ext2.hdd' online-compact=off
+
+Created hdd1 (+) sata:1 image='/Users/wrb/fun/code/breenix/target/parallels/breenix-ext2.hdd' type='plain' 256Mb online-compact=on
+
+
+The VM has been successfully configured.
+  hdd0: EFI boot disk (FAT32) at sata:0
+  hdd1: ext2 data disk at sata:1
+
+The VM has been successfully configured.
+Creating serial0 (+) output='/tmp/breenix-parallels-serial.log' state=disconnected
+
+Created serial0 (+) output='/tmp/breenix-parallels-serial.log' state=disconnected
+
+
+The VM has been successfully configured.
+Configured serial0 (+) output='/tmp/breenix-parallels-serial.log'
+
+
+The VM has been successfully configured.
+
+--- Starting VM ---
+Starting the VM...
+The VM has been successfully started.
+
+=========================================
+Breenix running on Parallels
+=========================================
+VM:     breenix-1779309785
+Serial: /tmp/breenix-parallels-serial.log
+Stop:   prlctl stop breenix-1779309785 --kill
+
+Test mode: waiting 60s for boot...
+
+=== Screenshot ===
+ERROR: No Parallels window found matching 'breenix-1779309785'
+Capture the VM screen...
+The VM screen is stored in /tmp/breenix-screenshot.png.
+Screenshot: /tmp/breenix-screenshot.png
+
+Serial log: /tmp/breenix-parallels-serial.log
+Screenshot: /tmp/breenix-screenshot.png
