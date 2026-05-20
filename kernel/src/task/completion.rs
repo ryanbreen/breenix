@@ -119,6 +119,19 @@ fn restore_syscall_preempt_state() {
     crate::per_cpu::preempt_disable();
 }
 
+#[inline]
+fn syscall_sleep_path_available() -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::per_cpu_aarch64::preempt_count() > 0
+            && crate::arch_impl::aarch64::timer_interrupt::is_initialized()
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        crate::per_cpu::preempt_count() > 0
+    }
+}
+
 /// Completion primitive — pairs one waiter thread with one ISR.
 pub struct Completion {
     /// 0 = not done, otherwise the completion token published by `complete()`.
@@ -166,16 +179,7 @@ impl Completion {
     pub fn wait_timeout(&self, expected_token: u32, timeout_ns: u64) -> Result<bool, i32> {
         // Fast path: already done (e.g., very fast device, or spurious call).
         if self.done.load(Ordering::Acquire) == expected_token {
-            let in_syscall = {
-                #[cfg(target_arch = "aarch64")]
-                {
-                    crate::per_cpu_aarch64::preempt_count() > 0
-                }
-                #[cfg(not(target_arch = "aarch64"))]
-                {
-                    crate::per_cpu::preempt_count() > 0
-                }
-            };
+            let in_syscall = syscall_sleep_path_available();
             if in_syscall {
                 clear_blocked_in_syscall_current();
             }
@@ -231,20 +235,11 @@ impl Completion {
             // Detect whether we are in syscall context (preempt_count > 0).
             //
             // Syscall handlers call preempt_disable() on entry, so
-            // preempt_count ≥ 1 when called from userspace-initiated I/O.
-            // The boot thread runs with preempt_count = 0 — it must NOT
-            // underflow the counter and must NOT use the WFI/sleep path
-            // (there is no timer to rescue a stuck WFI before timer init).
-            let in_syscall = {
-                #[cfg(target_arch = "aarch64")]
-                {
-                    crate::per_cpu_aarch64::preempt_count() > 0
-                }
-                #[cfg(not(target_arch = "aarch64"))]
-                {
-                    crate::per_cpu::preempt_count() > 0
-                }
-            };
+            // preempt_count >= 1 when called from userspace-initiated I/O.
+            // On aarch64, the boot thread is also deliberately preempt-disabled
+            // before timer init; it must remain on the yield path because there
+            // is no timer to rescue a sleeping boot thread.
+            let in_syscall = syscall_sleep_path_available();
 
             if in_syscall {
                 // ============================================================

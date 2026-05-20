@@ -1,0 +1,33 @@
+Stress gate command: ./docker/qemu/run-boot-parallel.sh 5
+Harness result: 5 passed, 0 failed out of 5
+
+## boot-1
+KERNEL_POST_TESTS_COMPLETE: PASS
+VirtIO block read success: PASS
+ext2 root mount: PASS
+forbidden markers: PASS
+
+## boot-2
+KERNEL_POST_TESTS_COMPLETE: PASS
+VirtIO block read success: PASS
+ext2 root mount: PASS
+forbidden markers: PASS
+
+## boot-3
+KERNEL_POST_TESTS_COMPLETE: PASS
+VirtIO block read success: PASS
+ext2 root mount: PASS
+forbidden markers: PASS
+
+## boot-4
+KERNEL_POST_TESTS_COMPLETE: PASS
+VirtIO block read success: PASS
+ext2 root mount: PASS
+forbidden markers: PASS
+
+## boot-5
+KERNEL_POST_TESTS_COMPLETE: PASS
+VirtIO block read success: PASS
+ext2 root mount: PASS
+forbidden markers: PASS
+

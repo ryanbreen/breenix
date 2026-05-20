@@ -1,0 +1,9 @@
+Linux source files fetched from upstream Linux stable v6.8:
+https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/block/virtio_blk.c?h=v6.8
+https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/virtio/virtio_ring.c?h=v6.8
+https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/sound/virtio/virtio_card.c?h=v6.8
+https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/sound/virtio/virtio_ctl_msg.c?h=v6.8
+https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/sound/virtio/virtio_pcm.c?h=v6.8
+https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/sound/virtio/virtio_pcm.h?h=v6.8
+https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/sound/virtio/virtio_pcm_msg.c?h=v6.8
+https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/sound/virtio/virtio_pcm_ops.c?h=v6.8

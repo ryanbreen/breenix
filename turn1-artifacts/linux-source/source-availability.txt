@@ -1,0 +1,5 @@
+Warning: Permanently added '10.211.55.3' (ED25519) to the list of known hosts.
+[sudo] password for wrb: ---uname---
+6.8.0-111-generic
+---headers-candidates---
+---apt-source-setting---

@@ -1,0 +1,7 @@
+default-no-sound INT=0x2a 4
+default-no-sound INT=0x2b 1
+default-no-sound check_exception 0
+with-virtio-sound INT=0x2b 1
+with-virtio-sound check_exception 0
+forced-legacy INT=0x2b 1
+forced-legacy check_exception 0

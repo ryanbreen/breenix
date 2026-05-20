@@ -1,0 +1,182 @@
+--- drivers/block/virtio_blk.c: virtblk_done ---
+   340	
+   341		virtblk_unmap_data(req, vbr);
+   342		virtblk_cleanup_cmd(req);
+   343	
+   344		if (req_op(req) == REQ_OP_ZONE_APPEND)
+   345			req->__sector = virtio64_to_cpu(vblk->vdev,
+   346							vbr->in_hdr.zone_append.sector);
+   347	
+   348		blk_mq_end_request(req, status);
+   349	}
+   350	
+   351	static void virtblk_done(struct virtqueue *vq)
+   352	{
+   353		struct virtio_blk *vblk = vq->vdev->priv;
+   354		bool req_done = false;
+   355		int qid = vq->index;
+   356		struct virtblk_req *vbr;
+   357		unsigned long flags;
+   358		unsigned int len;
+   359	
+   360		spin_lock_irqsave(&vblk->vqs[qid].lock, flags);
+   361		do {
+   362			virtqueue_disable_cb(vq);
+   363			while ((vbr = virtqueue_get_buf(vblk->vqs[qid].vq, &len)) != NULL) {
+   364				struct request *req = blk_mq_rq_from_pdu(vbr);
+   365	
+   366				if (likely(!blk_should_fake_timeout(req->q)))
+   367					blk_mq_complete_request(req);
+   368				req_done = true;
+   369			}
+   370		} while (!virtqueue_enable_cb(vq));
+   371	
+   372		/* In case queue is stopped waiting for more buffers. */
+   373		if (req_done)
+   374			blk_mq_start_stopped_hw_queues(vblk->disk->queue, true);
+   375		spin_unlock_irqrestore(&vblk->vqs[qid].lock, flags);
+--- drivers/block/virtio_blk.c: virtio_queue_rq ---
+   420		vbr->sg_table.nents = num;
+   421	
+   422		blk_mq_start_request(req);
+   423	
+   424		return BLK_STS_OK;
+   425	}
+   426	
+   427	static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
+   428				   const struct blk_mq_queue_data *bd)
+   429	{
+   430		struct virtio_blk *vblk = hctx->queue->queuedata;
+   431		struct request *req = bd->rq;
+   432		struct virtblk_req *vbr = blk_mq_rq_to_pdu(req);
+   433		unsigned long flags;
+   434		int qid = hctx->queue_num;
+   435		bool notify = false;
+   436		blk_status_t status;
+   437		int err;
+   438	
+   439		status = virtblk_prep_rq(hctx, vblk, req, vbr);
+   440		if (unlikely(status))
+   441			return status;
+   442	
+   443		spin_lock_irqsave(&vblk->vqs[qid].lock, flags);
+   444		err = virtblk_add_req(vblk->vqs[qid].vq, vbr);
+   445		if (err) {
+   446			virtqueue_kick(vblk->vqs[qid].vq);
+   447			/* Don't stop the queue if -ENOMEM: we may have failed to
+   448			 * bounce the buffer due to global resource outage.
+   449			 */
+   450			if (err == -ENOSPC)
+   451				blk_mq_stop_hw_queue(hctx);
+   452			spin_unlock_irqrestore(&vblk->vqs[qid].lock, flags);
+   453			virtblk_unmap_data(req, vbr);
+   454			return virtblk_fail_to_queue(req, err);
+   455		}
+   456	
+   457		if (bd->last && virtqueue_kick_prepare(vblk->vqs[qid].vq))
+   458			notify = true;
+   459		spin_unlock_irqrestore(&vblk->vqs[qid].lock, flags);
+   460	
+   461		if (notify)
+   462			virtqueue_notify(vblk->vqs[qid].vq);
+   463		return BLK_STS_OK;
+   464	}
+   465	
+   466	static bool virtblk_prep_rq_batch(struct request *req)
+   467	{
+   468		struct virtio_blk *vblk = req->mq_hctx->queue->queuedata;
+   469		struct virtblk_req *vbr = blk_mq_rq_to_pdu(req);
+   470	
+   471		return virtblk_prep_rq(req->mq_hctx, vblk, req, vbr) == BLK_STS_OK;
+   472	}
+   473	
+   474	static bool virtblk_add_req_batch(struct virtio_blk_vq *vq,
+   475						struct request **rqlist)
+   476	{
+   477		unsigned long flags;
+   478		int err;
+   479		bool kick;
+   480	
+   481		spin_lock_irqsave(&vq->lock, flags);
+   482	
+   483		while (!rq_list_empty(*rqlist)) {
+   484			struct request *req = rq_list_pop(rqlist);
+   485			struct virtblk_req *vbr = blk_mq_rq_to_pdu(req);
+   486	
+   487			err = virtblk_add_req(vq->vq, vbr);
+   488			if (err) {
+   489				virtblk_unmap_data(req, vbr);
+   490				virtblk_cleanup_cmd(req);
+   491				blk_mq_requeue_request(req, true);
+   492			}
+   493		}
+   494	
+   495		kick = virtqueue_kick_prepare(vq->vq);
+   496		spin_unlock_irqrestore(&vq->lock, flags);
+   497	
+   498		return kick;
+   499	}
+   500	
+--- drivers/block/virtio_blk.c: callback registration ---
+  1008			return -ENOMEM;
+  1009	
+  1010		names = kmalloc_array(num_vqs, sizeof(*names), GFP_KERNEL);
+  1011		callbacks = kmalloc_array(num_vqs, sizeof(*callbacks), GFP_KERNEL);
+  1012		vqs = kmalloc_array(num_vqs, sizeof(*vqs), GFP_KERNEL);
+  1013		if (!names || !callbacks || !vqs) {
+  1014			err = -ENOMEM;
+  1015			goto out;
+  1016		}
+  1017	
+  1018		for (i = 0; i < num_vqs - num_poll_vqs; i++) {
+  1019			callbacks[i] = virtblk_done;
+  1020			snprintf(vblk->vqs[i].name, VQ_NAME_LEN, "req.%u", i);
+  1021			names[i] = vblk->vqs[i].name;
+  1022		}
+  1023	
+  1024		for (; i < num_vqs; i++) {
+  1025			callbacks[i] = NULL;
+--- drivers/virtio/virtio_ring.c: vring_interrupt ---
+  2558	{
+  2559		return vq->packed_ring ? more_used_packed(vq) : more_used_split(vq);
+  2560	}
+  2561	
+  2562	/**
+  2563	 * vring_interrupt - notify a virtqueue on an interrupt
+  2564	 * @irq: the IRQ number (ignored)
+  2565	 * @_vq: the struct virtqueue to notify
+  2566	 *
+  2567	 * Calls the callback function of @_vq to process the virtqueue
+  2568	 * notification.
+  2569	 */
+  2570	irqreturn_t vring_interrupt(int irq, void *_vq)
+  2571	{
+  2572		struct vring_virtqueue *vq = to_vvq(_vq);
+  2573	
+  2574		if (!more_used(vq)) {
+  2575			pr_debug("virtqueue interrupt with no work for %p\n", vq);
+  2576			return IRQ_NONE;
+  2577		}
+  2578	
+  2579		if (unlikely(vq->broken)) {
+  2580	#ifdef CONFIG_VIRTIO_HARDEN_NOTIFICATION
+  2581			dev_warn_once(&vq->vq.vdev->dev,
+  2582				      "virtio vring IRQ raised before DRIVER_OK");
+  2583			return IRQ_NONE;
+  2584	#else
+  2585			return IRQ_HANDLED;
+  2586	#endif
+  2587		}
+  2588	
+  2589		/* Just a hint for performance: so it's ok that this can be racy! */
+  2590		if (vq->event)
+  2591			vq->event_triggered = true;
+  2592	
+  2593		pr_debug("virtqueue callback for %p (%p)\n", vq, vq->vq.callback);
+  2594		if (vq->vq.callback)
+  2595			vq->vq.callback(&vq->vq);
+  2596	
+  2597		return IRQ_HANDLED;
+  2598	}
+  2599	EXPORT_SYMBOL_GPL(vring_interrupt);
+  2600	

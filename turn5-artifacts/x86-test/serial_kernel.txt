@@ -1,0 +1,537 @@
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[8;056;240t0[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[8;042;160t0[2J[01;01HBdsDxe: loading Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x4,0x0)
+BdsDxe: starting Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x4,0x0)
+=== Buffered Boot Messages ===
+[ INFO] kernel: Kernel entry point reached
+[DEBUG] kernel: Boot info address: 0x38000000000
+[ INFO] kernel: Initializing serial port...
+
+=== End Buffered Messages ===
+[ INFO] kernel: Serial port initialized and buffer flushed
+[ INFO] kernel: Setting up framebuffer...
+[ INFO] kernel::logger: Logger fully initialized - output to both framebuffer and serial
+[ INFO] kernel: Initializing kernel systems...
+[ INFO] kernel::gdt: TSS I/O permission bitmap disabled (iomap_base=104)
+[ INFO] kernel::gdt: TSS located at 0x1000036e5e8 (PML4 index 2)
+[ INFO] kernel::gdt: GDT loaded at 0x1000036e658 (PML4 index 2)
+[ INFO] kernel::gdt: GDT initialized with kernel and user segments
+[DEBUG] kernel::gdt:   Kernel code: 0x8
+[DEBUG] kernel::gdt:   Kernel data: 0x10
+[DEBUG] kernel::gdt:   TSS: 0x18
+[DEBUG] kernel::gdt:   User data: 0x2b
+[DEBUG] kernel::gdt:   User code: 0x33
+[DEBUG] kernel::gdt: GDT base: 0x1000036e658, limit: 0x37
+[DEBUG] kernel::gdt: Raw user data descriptor (0x2b): 0x00cff3000000ffff
+[DEBUG] kernel::gdt: Raw user code descriptor (0x33): 0x00affb000000ffff
+[DEBUG] kernel::gdt:   User data: P=1 DPL=3 S=1 Type=0x3
+[DEBUG] kernel::gdt:   User code: P=1 DPL=3 S=1 Type=0xb L=1 D=0
+[DEBUG] kernel::gdt:   TSS RSP0 (kernel stack): 0x0
+[DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0
+[ERROR] kernel::interrupts: INVALID timer_interrupt_entry address: 0x10000326341
+[ WARN] kernel::interrupts: Using low-half address for timer entry (temporary workaround)
+[ERROR] kernel::interrupts: INVALID syscall_entry address: 0x1000032619f
+[ WARN] kernel::interrupts: Using low-half address for syscall entry (temporary workaround)
+[ INFO] kernel::interrupts: IDT[0x80] gate attributes:
+[ INFO] kernel::interrupts:   Handler address: 0x1000032619f (low-half, validation failed)
+[ INFO] kernel::interrupts:   DPL (privilege level): Ring3 (allowing userspace access)
+[ INFO] kernel::interrupts:   Gate type: Interrupt gate (interrupts disabled on entry)
+[ INFO] kernel::interrupts: Syscall handler configured with assembly entry point
+[ INFO] kernel::interrupts: IDT address: 0x10000380260
+[ INFO] kernel::interrupts: IDT is in PML4 entry 2
+[ INFO] kernel::interrupts: IDT loaded successfully at 0x10000380260
+[ INFO] kernel: GDT and IDT initialized
+[ INFO] kernel: Running GDT validation tests...
+[ INFO] kernel::gdt_tests: === Running GDT Tests ===
+[ INFO] kernel::gdt_tests: Testing GDT segment registers...
+[ INFO] kernel::gdt_tests: CS selector: SegmentSelector { index: 1, rpl: Ring0 } (index: 1, RPL: Ring0)
+[ INFO] kernel::gdt_tests: DS selector: SegmentSelector { index: 2, rpl: Ring0 } (index: 2, RPL: Ring0)
+[ INFO] kernel::gdt_tests: ✅ GDT segment test passed!
+[ INFO] kernel::gdt_tests: Testing GDT readability...
+[ INFO] kernel::gdt_tests: GDT base: 0x1000036e658, limit: 0x37
+[ INFO] kernel::gdt_tests: GDT limit + 1 = 56
+[ INFO] kernel::gdt_tests: GDT has space for 7 entries
+[ INFO] kernel::gdt_tests: After spin loop delay
+[ INFO] kernel::gdt_tests: About to check assertion: 7 >= 5
+[ INFO] kernel::gdt_tests: ✓ Assertion passed: 7 >= 5
+[ INFO] kernel::gdt_tests: ✅ GDT readability test passed!
+[ INFO] kernel::gdt_tests: Testing user segment configuration...
+[ INFO] kernel::gdt_tests: User code selector: 0x33 (index: 6, RPL: Ring3)
+[ INFO] kernel::gdt_tests: User data selector: 0x2b (index: 5, RPL: Ring3)
+[ INFO] kernel::gdt_tests: ✅ User segment configuration test passed!
+[ INFO] kernel::gdt_tests: Testing user segment descriptor validity...
+[ INFO] kernel::gdt_tests: User data descriptor: 0x00cff3000000ffff
+[ INFO] kernel::gdt_tests:   User data - Present: 1, DPL: 3, S: 1, Type: 0x3
+[ INFO] kernel::gdt_tests: User code descriptor: 0x00affb000000ffff
+[ INFO] kernel::gdt_tests:   User code - Present: 1, DPL: 3, S: 1, Type: 0xb, L: 1, D: 0
+[ INFO] kernel::gdt_tests: ✅ User segment descriptor validation passed!
+[ INFO] kernel::gdt_tests: Testing TSS descriptor...
+[ INFO] kernel::gdt_tests: TSS descriptor low:  0x00008b36e5e80067
+[ INFO] kernel::gdt_tests: TSS descriptor high: 0x0000000000000100
+[ INFO] kernel::gdt_tests: TSS Present: 1
+[ INFO] kernel::gdt_tests: TSS DPL: 0
+[ INFO] kernel::gdt_tests: TSS Type: 0xb
+[ INFO] kernel::gdt_tests: TSS base address: 0x1000036e5e8
+[ INFO] kernel::gdt_tests: ✅ TSS descriptor test passed!
+[ INFO] kernel::gdt_tests: Testing TSS.RSP0 configuration...
+[ INFO] kernel::gdt_tests: TSS.RSP0: 0x0
+[ WARN] kernel::gdt_tests: TSS.RSP0 is zero - kernel stack not yet configured (acceptable at this stage)
+[ INFO] kernel::gdt_tests: ✅ TSS.RSP0 test passed!
+[ INFO] kernel::gdt_tests: Skipping double fault stack test (temporarily disabled)
+[ INFO] kernel::gdt_tests: === All GDT Tests Passed ===
+[ INFO] kernel: GDT tests completed
+[ INFO] kernel::per_cpu: Initializing per-CPU data via GS segment
+[ INFO] kernel::per_cpu: Per-CPU data initialized at 0x100003c5800
+[DEBUG] kernel::per_cpu:   GS_BASE = 0x100003c5800
+[DEBUG] kernel::per_cpu:   KERNEL_GS_BASE = 0x100003c5800
+[ INFO] kernel::per_cpu: HAL read-back verification passed: GS-relative operations working
+[ INFO] kernel::per_cpu: Per-CPU data marked as initialized - preempt_count functions now use per-CPU storage
+[ INFO] kernel::per_cpu: Storing initial kernel_cr3 = 0x101000 in per-CPU data (bootloader PT)
+[ INFO] kernel::per_cpu: kernel_cr3 stored successfully - interrupt handlers can now switch to kernel page tables
+[ INFO] kernel::per_cpu: HAL_PERCPU_INITIALIZED: Per-CPU data setup via HAL complete
+[ INFO] kernel: Per-CPU data initialized
+[ INFO] kernel: Running preempt_count comprehensive tests...
+[ INFO] kernel::preempt_count_test: === PREEMPT_COUNT COMPREHENSIVE TEST START ===
+[ INFO] kernel::preempt_count_test: TEST 1: Initial preempt_count = 0x0
+[ INFO] kernel::preempt_count_test: TEST 2: Testing preempt_disable/enable...
+[ INFO] kernel::preempt_count_test:   After preempt_disable: 0x1
+[ INFO] kernel::preempt_count_test:   After preempt_enable: 0x0
+[ INFO] kernel::preempt_count_test: TEST 3: Testing nested preempt_disable/enable...
+[ INFO] kernel::preempt_count_test:   After 3x preempt_disable: 0x3
+[ INFO] kernel::preempt_count_test:   After 1x preempt_enable: 0x2
+[ INFO] kernel::preempt_count_test:   After all preempt_enable: 0x0
+[ INFO] kernel::preempt_count_test: TEST 4: Simulating IRQ context...
+[ INFO] kernel::preempt_count_test:   After irq_enter: 0x10000
+[ INFO] kernel::preempt_count_test:   After preempt_disable in IRQ: 0x10001
+[ INFO] kernel::preempt_count_test:   After irq_exit: 0x0
+[ INFO] kernel::preempt_count_test: TEST 5: Testing softirq context...
+[ INFO] kernel::preempt_count_test:   After softirq_enter: 0x100
+[ INFO] kernel::preempt_count_test:   After softirq_exit: 0x0
+[ INFO] kernel::preempt_count_test: TEST 6: Testing NMI context...
+[ INFO] kernel::preempt_count_test:   After nmi_enter: 0x4000000
+[ INFO] kernel::preempt_count_test:   After nmi_exit: 0x0
+[ INFO] kernel::preempt_count_test: TEST 7: Testing mixed contexts...
+[ INFO] kernel::preempt_count_test:   Mixed (preempt+irq+softirq): 0x10101
+[ INFO] kernel::preempt_count_test:   After clearing mixed: 0x0
+[ INFO] kernel::preempt_count_test: TEST 8: Testing nested IRQ context...
+[ INFO] kernel::preempt_count_test:   First irq_enter: 0x10000
+[ INFO] kernel::preempt_count_test:   Second irq_enter: 0x20000
+[ INFO] kernel::preempt_count_test:   After first irq_exit: 0x10000
+[ INFO] kernel::preempt_count_test:   After second irq_exit: 0x0
+[ INFO] kernel::preempt_count_test: TEST 9: Testing query functions...
+[ INFO] kernel::preempt_count_test: TEST 10: Testing spinlock integration...
+[ INFO] kernel::spinlock: Testing spinlock preemption integration...
+[ INFO] kernel::spinlock: Initial preempt_count: 0x0
+[ INFO] kernel::spinlock: With spinlock held: 0x1
+[ INFO] kernel::spinlock: After spinlock release: 0x0
+[ INFO] kernel::spinlock: ✅ Spinlock preemption integration test passed
+[ INFO] kernel::preempt_count_test: === PREEMPT_COUNT COMPREHENSIVE TEST PASSED ===
+[ INFO] kernel::preempt_count_test: ✅ All preempt_count functions validated successfully
+[ INFO] kernel::preempt_count_test: === PREEMPT_COUNT SCHEDULING TEST START ===
+[ INFO] kernel::preempt_count_test: Initial preempt_count: 0x0
+[ INFO] kernel::preempt_count_test: Set need_resched flag
+[ INFO] kernel::preempt_count_test: Entered IRQ context: 0x10000
+[ INFO] kernel::preempt_count_test: preempt_enable in IRQ did not schedule (correct)
+[ INFO] kernel::preempt_count_test: Exited IRQ context: 0x0
+[ INFO] kernel::preempt_count_test: Preemption disabled: 0x1
+[ INFO] kernel::preempt_count_test: Preemption enabled and may have scheduled
+[ INFO] kernel::preempt_count_test: Cleared need_resched flag after test
+[ INFO] kernel::preempt_count_test: === PREEMPT_COUNT SCHEDULING TEST PASSED ===
+[ INFO] kernel: ✅ preempt_count tests completed successfully
+[ INFO] kernel: Checking physical memory offset availability...
+[ INFO] kernel: Physical memory offset available: 0x28000000000
+[ INFO] kernel::memory: Initializing memory management...
+[ INFO] kernel::memory: Physical memory offset: VirtAddr(0x28000000000)
+[ INFO] kernel::memory: STEP 1: Establishing canonical kernel layout...
+[ INFO] kernel::memory::layout: LAYOUT: Kernel memory layout initialized:
+[ INFO] kernel::memory::layout: LAYOUT: percpu stack base=0xffffc90000000000, size=32 KiB, stride=2 MiB, guard=4 KiB
+[ INFO] kernel::memory::layout: LAYOUT: Max CPUs supported: 256
+[ INFO] kernel::memory::layout: LAYOUT: Total stack region size: 512 MiB
+[ INFO] kernel::memory::layout: LAYOUT: CPU 0 stack: base=0xffffc90000000000, top=0xffffc90000008000
+[ INFO] kernel::memory::layout: LAYOUT: CPU 1 stack: base=0xffffc90000200000, top=0xffffc90000208000
+[ INFO] kernel::memory::layout: LAYOUT: CPU 2 stack: base=0xffffc90000400000, top=0xffffc90000408000
+[ INFO] kernel::memory::layout: LAYOUT: CPU 3 stack: base=0xffffc90000600000, top=0xffffc90000608000
+[ INFO] kernel::memory: Initializing frame allocator...
+[DEBUG] kernel::memory::frame_allocator: Skipping low memory region 0x0..0xa0000 (below floor 0x100000)
+[ INFO] kernel::memory::frame_allocator: Frame allocator initialized with 495 MiB of usable memory in 105 regions (floor=0x100000)
+[ WARN] kernel::memory::frame_allocator: Ignored 1 memory regions (0 MiB) due to MAX_REGIONS limit
+[ INFO] kernel::memory: Initializing paging...
+[ INFO] kernel::memory::paging: Page table initialized
+[ INFO] kernel::memory::process_memory: Saved kernel page table frame: PhysFrame[4KiB](0x101000)
+[ INFO] kernel::memory: Initializing global kernel page tables...
+[ INFO] kernel::memory::kernel_page_table: Initializing global kernel page table system
+[ INFO] kernel::memory::kernel_page_table: Allocated kernel PDPT at frame PhysFrame[4KiB](0x5d5000)
+[ INFO] kernel::memory::kernel_page_table: Global kernel page table initialized successfully
+[ INFO] kernel::memory::kernel_page_table: STEP 2: Building master kernel PML4 with upper-half mappings and per-CPU stacks
+[ INFO] kernel::memory::kernel_page_table: Allocated fresh PDPTs: PML4[402]=PhysFrame[4KiB](0x5d7000), PML4[403]=PhysFrame[4KiB](0x5d8000)
+[ INFO] kernel::memory::kernel_page_table: PHASE2: Preserved all lower-half entries (0-255) from bootloader
+[ INFO] kernel::memory::kernel_page_table: PHASE2-TEMP: Preserved PML4[0] in master for low-half kernel execution
+[ INFO] kernel::memory::kernel_page_table: PHASE2: Aliased kernel from PML4[0] to PML4[511] (0xffffffff80000000)
+[ INFO] kernel::memory::kernel_page_table: PHASE2: Master PML4[510] -> frame PhysFrame[4KiB](0x5d5000)
+[ INFO] kernel::memory::kernel_page_table: STEP 2: Pre-building page table hierarchy for kernel stacks (without leaf mappings)
+[ INFO] kernel::memory::kernel_page_table: STEP 2: Using existing PDPT for kernel stacks at frame PhysFrame[4KiB](0x5d7000)
+[ INFO] kernel::memory::kernel_page_table: STEP 2: Building hierarchy for kernel stack region 0xffffc90000000000-0xffffc90008000000
+[ INFO] kernel::memory::kernel_page_table: STEP 2: Allocated PD for kernel stacks at frame PhysFrame[4KiB](0x5d9000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[0] for kernel stacks at frame PhysFrame[4KiB](0x5da000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[1] for kernel stacks at frame PhysFrame[4KiB](0x5db000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[2] for kernel stacks at frame PhysFrame[4KiB](0x5dc000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[3] for kernel stacks at frame PhysFrame[4KiB](0x5dd000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[4] for kernel stacks at frame PhysFrame[4KiB](0x5de000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[5] for kernel stacks at frame PhysFrame[4KiB](0x5df000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[6] for kernel stacks at frame PhysFrame[4KiB](0x5e0000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[7] for kernel stacks at frame PhysFrame[4KiB](0x5e1000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[8] for kernel stacks at frame PhysFrame[4KiB](0x5e2000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[9] for kernel stacks at frame PhysFrame[4KiB](0x5e3000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[10] for kernel stacks at frame PhysFrame[4KiB](0x5e4000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[11] for kernel stacks at frame PhysFrame[4KiB](0x5e5000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[12] for kernel stacks at frame PhysFrame[4KiB](0x5e6000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[13] for kernel stacks at frame PhysFrame[4KiB](0x5e7000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[14] for kernel stacks at frame PhysFrame[4KiB](0x5e8000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[15] for kernel stacks at frame PhysFrame[4KiB](0x5e9000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[16] for kernel stacks at frame PhysFrame[4KiB](0x5ea000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[17] for kernel stacks at frame PhysFrame[4KiB](0x5eb000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[18] for kernel stacks at frame PhysFrame[4KiB](0x5ec000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[19] for kernel stacks at frame PhysFrame[4KiB](0x5ed000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[20] for kernel stacks at frame PhysFrame[4KiB](0x5ee000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[21] for kernel stacks at frame PhysFrame[4KiB](0x5ef000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[22] for kernel stacks at frame PhysFrame[4KiB](0x5f0000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[23] for kernel stacks at frame PhysFrame[4KiB](0x5f1000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[24] for kernel stacks at frame PhysFrame[4KiB](0x5f2000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[25] for kernel stacks at frame PhysFrame[4KiB](0x5f3000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[26] for kernel stacks at frame PhysFrame[4KiB](0x5f4000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[27] for kernel stacks at frame PhysFrame[4KiB](0x5f5000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[28] for kernel stacks at frame PhysFrame[4KiB](0x5f6000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[29] for kernel stacks at frame PhysFrame[4KiB](0x5f7000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[30] for kernel stacks at frame PhysFrame[4KiB](0x5f8000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[31] for kernel stacks at frame PhysFrame[4KiB](0x5f9000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[32] for kernel stacks at frame PhysFrame[4KiB](0x5fa000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[33] for kernel stacks at frame PhysFrame[4KiB](0x5fb000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[34] for kernel stacks at frame PhysFrame[4KiB](0x5fc000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[35] for kernel stacks at frame PhysFrame[4KiB](0x5fd000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[36] for kernel stacks at frame PhysFrame[4KiB](0x5fe000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[37] for kernel stacks at frame PhysFrame[4KiB](0x5ff000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[38] for kernel stacks at frame PhysFrame[4KiB](0x600000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[39] for kernel stacks at frame PhysFrame[4KiB](0x601000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[40] for kernel stacks at frame PhysFrame[4KiB](0x602000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[41] for kernel stacks at frame PhysFrame[4KiB](0x603000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[42] for kernel stacks at frame PhysFrame[4KiB](0x604000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[43] for kernel stacks at frame PhysFrame[4KiB](0x605000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[44] for kernel stacks at frame PhysFrame[4KiB](0x606000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[45] for kernel stacks at frame PhysFrame[4KiB](0x607000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[46] for kernel stacks at frame PhysFrame[4KiB](0x608000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[47] for kernel stacks at frame PhysFrame[4KiB](0x609000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[48] for kernel stacks at frame PhysFrame[4KiB](0x60a000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[49] for kernel stacks at frame PhysFrame[4KiB](0x60b000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[50] for kernel stacks at frame PhysFrame[4KiB](0x60c000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[51] for kernel stacks at frame PhysFrame[4KiB](0x60d000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[52] for kernel stacks at frame PhysFrame[4KiB](0x60e000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[53] for kernel stacks at frame PhysFrame[4KiB](0x60f000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[54] for kernel stacks at frame PhysFrame[4KiB](0x610000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[55] for kernel stacks at frame PhysFrame[4KiB](0x611000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[56] for kernel stacks at frame PhysFrame[4KiB](0x612000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[57] for kernel stacks at frame PhysFrame[4KiB](0x613000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[58] for kernel stacks at frame PhysFrame[4KiB](0x614000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[59] for kernel stacks at frame PhysFrame[4KiB](0x615000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[60] for kernel stacks at frame PhysFrame[4KiB](0x616000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[61] for kernel stacks at frame PhysFrame[4KiB](0x617000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[62] for kernel stacks at frame PhysFrame[4KiB](0x618000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 2: Allocated PT[63] for kernel stacks at frame PhysFrame[4KiB](0x619000)
+[ INFO] kernel::memory::kernel_page_table: STEP 2: Page table hierarchy built for kernel stack region:
+[ INFO] kernel::memory::kernel_page_table:   PML4[402] -> PDPT frame PhysFrame[4KiB](0x5d7000)
+[ INFO] kernel::memory::kernel_page_table:   PDPT[0] -> PD frame PhysFrame[4KiB](0x5d9000)
+[ INFO] kernel::memory::kernel_page_table:   PD[0-63] -> PT frames allocated for 128MB region
+[ INFO] kernel::memory::kernel_page_table:   PTEs: Left unmapped (will be populated by allocate_kernel_stack)
+[ INFO] kernel::memory::kernel_page_table: STEP 2: Successfully pre-built page table hierarchy for kernel stacks
+[ INFO] kernel::memory::kernel_page_table: STEP 3: Pre-building page table hierarchy for IST stacks (without leaf mappings)
+[ INFO] kernel::memory::kernel_page_table: STEP 3: Using existing PDPT for IST stacks at frame PhysFrame[4KiB](0x5d8000)
+[ INFO] kernel::memory::kernel_page_table: STEP 3: Building hierarchy for IST stack region 0xffffc98000000000-0xffffc98001000000
+[ INFO] kernel::memory::kernel_page_table: STEP 3: Allocated PD for IST stacks at frame PhysFrame[4KiB](0x61a000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 3: Allocated PT[0] for IST stacks at frame PhysFrame[4KiB](0x61b000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 3: Allocated PT[1] for IST stacks at frame PhysFrame[4KiB](0x61c000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 3: Allocated PT[2] for IST stacks at frame PhysFrame[4KiB](0x61d000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 3: Allocated PT[3] for IST stacks at frame PhysFrame[4KiB](0x61e000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 3: Allocated PT[4] for IST stacks at frame PhysFrame[4KiB](0x61f000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 3: Allocated PT[5] for IST stacks at frame PhysFrame[4KiB](0x620000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 3: Allocated PT[6] for IST stacks at frame PhysFrame[4KiB](0x621000)
+[DEBUG] kernel::memory::kernel_page_table: STEP 3: Allocated PT[7] for IST stacks at frame PhysFrame[4KiB](0x622000)
+[ INFO] kernel::memory::kernel_page_table: STEP 3: Page table hierarchy built for IST stack region:
+[ INFO] kernel::memory::kernel_page_table:   PML4[403] -> PDPT frame PhysFrame[4KiB](0x5d8000)
+[ INFO] kernel::memory::kernel_page_table:   PDPT[0] -> PD frame PhysFrame[4KiB](0x61a000)
+[ INFO] kernel::memory::kernel_page_table:   PD[0-7] -> PT frames allocated
+[ INFO] kernel::memory::kernel_page_table:   PTEs: Left unmapped (will be populated by per_cpu_stack)
+[ INFO] kernel::memory::kernel_page_table: STEP 3: Successfully pre-built page table hierarchy for IST stacks
+[ INFO] kernel::memory::kernel_page_table: Verified: PML4[402]=PhysFrame[4KiB](0x5d7000) != PML4[403]=PhysFrame[4KiB](0x5d8000)
+[ INFO] kernel::memory::kernel_page_table: STORING: master_pml4_frame=PhysFrame[4KiB](0x5d6000)
+[ INFO] kernel::memory::kernel_page_table: Switching CR3 to master kernel PML4: PhysFrame[4KiB](0x5d6000)
+[ INFO] kernel::memory::kernel_page_table: CR3 switched to master PML4
+[ INFO] kernel::memory::kernel_page_table: Post-CR3 verification: PML4[402]=PhysFrame[4KiB](0x5d7000) != PML4[403]=PhysFrame[4KiB](0x5d8000)
+[ INFO] kernel::memory::kernel_page_table: PHASE2: Master kernel PML4 built and active at frame PhysFrame[4KiB](0x5d6000)
+[ INFO] kernel::memory: CRITICAL: Updating kernel_cr3 to master PML4: 0x5d6000
+[ INFO] kernel::per_cpu: Setting kernel_cr3 in per-CPU data to 0x5d6000
+[ INFO] kernel::memory::kernel_page_table: Process migration will occur as new processes are created
+[ INFO] kernel::memory::paging: PHASE2: Enabled global pages support (CR4.PGE)
+[ INFO] kernel::memory::paging: Page table initialized
+[ INFO] kernel::memory: Initializing heap allocator...
+[ INFO] kernel::memory::heap: Mapping heap pages from Page[4KiB](0x444444440000) to Page[4KiB](0x44444843f000)
+[ INFO] kernel::memory::heap: Heap initialized at 0x444444440000 with size 65536 KiB
+[ INFO] kernel::memory::slab: Slab cache 'fd_table' initialized: 64 slots x 12288 bytes = 768 KiB
+[ INFO] kernel::memory::slab: Slab cache 'signal_handlers' initialized: 64 slots x 2048 bytes = 128 KiB
+[ INFO] kernel::memory: Initializing stack allocation system...
+[ INFO] kernel::memory::stack: Stack allocation system initialized
+[ INFO] kernel::memory: Initializing kernel stack allocator...
+[ INFO] kernel::memory::kernel_stack: Kernel stack allocator initialized: 254 slots available
+[ INFO] kernel::memory::kernel_stack:   Stack range: 0xffffc90000000000 - 0xffffc90008000000
+[ INFO] kernel::memory::kernel_stack:   Stack size: 512 KiB + 4 KiB guard
+[ INFO] kernel::memory: Initializing per-CPU emergency stacks...
+[ INFO] kernel::memory::per_cpu_stack: Initializing per-CPU emergency stacks for 1 CPUs
+[DEBUG] kernel::memory::per_cpu_stack: CPU 0 emergency stack: 0xffffc98000000000 - 0xffffc98000004000
+[ INFO] kernel::memory::per_cpu_stack: Initialized 1 per-CPU emergency stacks
+[ INFO] kernel::memory: Memory management initialized
+[ INFO] kernel::memory::layout: KLAYOUT: image=0x100000..0x300000 text=0x100000..0x200000 rodata=0x200000..0x250000 data=0x250000..0x280000 bss=0x280000..0x300000
+[ INFO] kernel::memory::layout: KLAYOUT: GDT base=0x1000036e658 limit=55
+[ INFO] kernel::memory::layout: KLAYOUT: IDT base=0x10000380260 limit=4095
+[ INFO] kernel::memory::layout: KLAYOUT: TSS base=0x1000036e5e8 RSP0=0x0
+[ INFO] kernel::memory::layout: KLAYOUT: Per-CPU base=0x100003c5800 size=0xc0
+[ INFO] kernel::drivers: Initializing driver subsystem...
+[ INFO] kernel::drivers::pci: PCI: Starting bus enumeration...
+[ INFO] kernel::drivers::pci: PCI: 00:00.0 [8086:1237] Intel Bridge/0x00 IRQ=255
+[ INFO] kernel::drivers::pci: PCI: 00:01.0 [8086:7000] Intel Bridge/0x01 IRQ=255
+[ INFO] kernel::drivers::pci: PCI: 00:01.1 [8086:7010] Intel MassStorage/0x01 IRQ=255
+[ INFO] kernel::drivers::pci: PCI: 00:01.3 [8086:7113] Intel Bridge/0x80 IRQ=10
+[ INFO] kernel::drivers::pci: PCI: 00:02.0 [1234:1111] Unknown Display/0x00 IRQ=255
+[DEBUG] kernel::drivers::pci: PCI:   BAR0: addr=0x80000000 size=0x1000000 MMIO
+[DEBUG] kernel::drivers::pci: PCI:   BAR2: addr=0x810a3000 size=0x1000 MMIO
+[ INFO] kernel::drivers::pci: PCI: 00:03.0 [8086:100e] Intel Network/0x00 IRQ=11
+[DEBUG] kernel::drivers::pci: PCI:   BAR0: addr=0x81080000 size=0x20000 MMIO
+[DEBUG] kernel::drivers::pci: PCI:   BAR1: addr=0xc180 size=0x40 I/O
+[ INFO] kernel::drivers::pci: PCI:   -> Network controller detected!
+[ INFO] kernel::drivers::pci: E1000 network device found
+[ INFO] kernel::drivers::pci: PCI: 00:04.0 [1af4:1001] VirtIO MassStorage/0x00 IRQ=11
+[DEBUG] kernel::drivers::pci: PCI:   BAR0: addr=0xc100 size=0x80 I/O
+[DEBUG] kernel::drivers::pci: PCI:   BAR1: addr=0x810a2000 size=0x1000 MMIO
+[ INFO] kernel::drivers::pci: PCI: 00:05.0 [1af4:1001] VirtIO MassStorage/0x00 IRQ=10
+[DEBUG] kernel::drivers::pci: PCI:   BAR0: addr=0xc080 size=0x80 I/O
+[DEBUG] kernel::drivers::pci: PCI:   BAR1: addr=0x810a1000 size=0x1000 MMIO
+[ INFO] kernel::drivers::pci: PCI: 00:06.0 [1af4:1001] VirtIO MassStorage/0x00 IRQ=10
+[DEBUG] kernel::drivers::pci: PCI:   BAR0: addr=0xc000 size=0x80 I/O
+[DEBUG] kernel::drivers::pci: PCI:   BAR1: addr=0x810a0000 size=0x1000 MMIO
+[ INFO] kernel::drivers::pci: PCI: Enumeration complete. Found 9 devices (3 VirtIO block, 1 network)
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Found 3 device(s)
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Initializing device 0 at 00:04.0
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Initializing device at I/O base 0xc100
+[DEBUG] kernel::drivers::virtio: VirtIO: Reset complete after 0 attempts
+[DEBUG] kernel::drivers::virtio: VirtIO: Device features=0x71006ef4, requested=0x206, negotiated=0x204
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Capacity = 12416 sectors (6 MB)
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Device queue size = 256 (must use exactly)
+[DEBUG] kernel::drivers::virtio::queue: VirtIO queue: Allocated 3 pages starting at phys=0x4742000
+[DEBUG] kernel::drivers::virtio::queue: VirtIO queue: Layout - desc_offset=0, avail_offset=4096, used_offset=8192
+[DEBUG] kernel::drivers::virtio::queue: VirtIO queue: Pointers - desc=0x28004742000, avail=0x28004743000, used=0x28004744000
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Setting queue address phys=0x4742000, PFN=0x4742
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Queue address verified: PFN=0x4742
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Device initialization complete (with cached DMA buffers)
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Device 0 initialized successfully
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Initializing device 1 at 00:05.0
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Initializing device at I/O base 0xc080
+[DEBUG] kernel::drivers::virtio: VirtIO: Reset complete after 0 attempts
+[DEBUG] kernel::drivers::virtio: VirtIO: Device features=0x71006ef4, requested=0x206, negotiated=0x204
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Capacity = 55440 sectors (27 MB)
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Device queue size = 256 (must use exactly)
+[DEBUG] kernel::drivers::virtio::queue: VirtIO queue: Allocated 3 pages starting at phys=0x4748000
+[DEBUG] kernel::drivers::virtio::queue: VirtIO queue: Layout - desc_offset=0, avail_offset=4096, used_offset=8192
+[DEBUG] kernel::drivers::virtio::queue: VirtIO queue: Pointers - desc=0x28004748000, avail=0x28004749000, used=0x2800474a000
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Setting queue address phys=0x4748000, PFN=0x4748
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Queue address verified: PFN=0x4748
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Device initialization complete (with cached DMA buffers)
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Device 1 initialized successfully
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Initializing device 2 at 00:06.0
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Initializing device at I/O base 0xc000
+[DEBUG] kernel::drivers::virtio: VirtIO: Reset complete after 0 attempts
+[DEBUG] kernel::drivers::virtio: VirtIO: Device features=0x71006ef4, requested=0x206, negotiated=0x204
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Capacity = 131072 sectors (64 MB)
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Device queue size = 256 (must use exactly)
+[DEBUG] kernel::drivers::virtio::queue: VirtIO queue: Allocated 3 pages starting at phys=0x474e000
+[DEBUG] kernel::drivers::virtio::queue: VirtIO queue: Layout - desc_offset=0, avail_offset=4096, used_offset=8192
+[DEBUG] kernel::drivers::virtio::queue: VirtIO queue: Pointers - desc=0x2800474e000, avail=0x2800474f000, used=0x28004750000
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Setting queue address phys=0x474e000, PFN=0x474e
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Queue address verified: PFN=0x474e
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Device initialization complete (with cached DMA buffers)
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Device 2 initialized successfully
+[ INFO] kernel::drivers::virtio::block: VirtIO block: Driver initialized with 3 device(s)
+[ INFO] kernel::drivers: VirtIO block driver initialized successfully
+[ INFO] kernel::drivers::e1000: E1000: Found device 100e at 00:03.0 IRQ=11
+[ INFO] kernel::drivers::e1000: E1000: MMIO at 0x81080000 size 0x20000
+[ INFO] kernel::memory: MMIO: Mapping 0x81080000 -> 0xffffe00000000000 (32 pages)
+[ INFO] kernel::drivers::e1000: E1000: Mapped MMIO to 0xffffe00000000000
+[ INFO] kernel::drivers::e1000: E1000: MAC address 52:54:00:12:34:56
+[ INFO] kernel::drivers::e1000: E1000: RX initialized with 32 descriptors
+[ INFO] kernel::drivers::e1000: E1000: TX initialized with 32 descriptors
+[ INFO] kernel::drivers::e1000: E1000: Link up at 1000 Mbps
+[ INFO] kernel::drivers::e1000: E1000 driver initialized
+[ INFO] kernel::drivers: E1000 network driver initialized successfully
+[DEBUG] kernel::interrupts: IRQ 10 enabled (E1000)
+[ WARN] kernel::drivers: VirtIO sound driver initialization failed: No VirtIO sound devices found
+[ INFO] kernel::drivers: Driver subsystem initialized
+[ INFO] kernel: PCI subsystem initialized: 9 devices found
+[ INFO] kernel::task::softirqd: SOFTIRQ_REGISTER: NetRx handler registered
+[ INFO] kernel::net: NET: Initializing network stack...
+[ INFO] kernel::net: NET: MAC address: 52:54:00:12:34:56
+[ INFO] kernel::net: NET: IP address: 10.0.2.15
+[ INFO] kernel::net: NET: Gateway: 10.0.2.2
+[DEBUG] kernel::net::arp: ARP: Cache initialized (16 entries)
+[ INFO] kernel::net: Network stack initialized
+[ INFO] kernel::net: NET: Sending ARP request for gateway 10.0.2.2
+[DEBUG] kernel::net::arp: ARP: Sent request for 10.0.2.2
+[ INFO] kernel::net: ARP request sent successfully
+[DEBUG] kernel::net::arp: ARP: Reply from 10.0.2.2 -> 52:55:0a:00:02:02
+[ INFO] kernel::net: NET: ARP resolved gateway MAC: 52:55:0a:00:02:02
+[ INFO] kernel::net: NET: Sending ICMP echo request to gateway 10.0.2.2
+[ INFO] kernel::net::icmp: NET: ICMP echo reply received from 10.0.2.2 seq=1
+[ INFO] kernel::net: NET: Network initialization complete
+[ WARN] kernel: Failed to mount ext2 root: "Failed to read ext2 superblock"
+[ WARN] kernel: No home filesystem: Failed to read ext2 superblock
+[ INFO] kernel::fs::devfs: devfs: initialized with 4 devices
+[ INFO] kernel: devfs initialized at /dev
+[ INFO] kernel::fs::devptsfs: devpts: initialized at /dev/pts
+[ INFO] kernel: devptsfs initialized at /dev/pts
+[ INFO] kernel: CPU detected: QEMU Virtual CPU version 2.5+
+[ INFO] kernel::fs::procfs: procfs: initialized with 20 entries
+[ INFO] kernel: procfs initialized at /proc
+[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000
+[ INFO] kernel::gdt: Updated IST[1] (page fault stack) to 0xffffc98000004000
+[ INFO] kernel: Updated IST stacks with per-CPU emergency and page fault stacks
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 0
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 0 at 0xffffc90000001000-0xffffc90000081000 (guard at 0xffffc90000000000)
+[ INFO] kernel: Initial TSS.RSP0 set to 0xffffc90000081000
+[ INFO] kernel: Running contract tests...
+[ INFO] kernel::contract_runner: === Running Contract Tests ===
+[ INFO] kernel::contract_runner: Testing current page table (CR3)...
+[ INFO] kernel::contract_runner:   [PASS] PML4[402]/[403] frame separation
+[ INFO] kernel::contract_runner:   [PASS] PML4[2] (kernel code mapping)
+[ INFO] kernel::contract_runner:   [PASS] Stack regions present
+[ INFO] kernel::contract_runner:   [PASS] TSS RSP0 valid
+[ INFO] kernel::contract_runner: Testing master kernel PML4...
+[ INFO] kernel::contract_runner:   [PASS] Master PML4 all kernel entries valid
+[ INFO] kernel::contract_runner:   [PASS] Master PML4[402]/[403] frame separation
+[ INFO] kernel::contract_runner: Testing TSS invariants...
+[ INFO] kernel::contract_runner:   [PASS] TSS configuration
+[ INFO] kernel::contract_runner:   [PASS] IST stacks valid
+[ INFO] kernel::contract_runner:   [PASS] IST[0]/[1] separation
+[ INFO] kernel::contract_runner: Testing process page tables...
+[ INFO] kernel::contract_runner:   [SKIP] Process manager not initialized
+[ INFO] kernel::contract_runner: === Contract Tests Complete: 9 passed, 0 failed ===
+[ INFO] kernel: Contract tests: 9 passed, 0 failed
+[ INFO] kernel: Testing heap allocation...
+[ INFO] kernel: Heap test: created vector with 10 elements
+[ INFO] kernel: Heap test: sum of elements = 45
+[ INFO] kernel: Heap allocation test passed!
+[ INFO] kernel::tls: Initializing Thread Local Storage (TLS) system...
+[DEBUG] kernel::tls: Set FS base to 0xffffc90030000000
+[ INFO] kernel::tls: Kernel TLS block allocated at 0xffffc90030000000
+[ INFO] kernel::tls: TLS system initialized successfully
+[ INFO] kernel: TLS initialized
+[ INFO] kernel::tls: SWAPGS support configured: GS always per-CPU = 0x100003c5800, user TLS uses FS
+[ INFO] kernel: SWAPGS support enabled
+[ INFO] kernel: Keyboard queue initialized
+[ INFO] kernel::tty::driver: Console TTY initialized
+[ INFO] kernel::tty::pty: PTY subsystem initialized
+[ INFO] kernel::tty: TTY subsystem initialized
+[ INFO] kernel: Initializing PIC...
+[ INFO] kernel: PIC initialized
+[ INFO] kernel::arch_impl::x86_64::timer: Calibrating TSC frequency using PIT...
+[ INFO] kernel::arch_impl::x86_64::timer: TSC calibration complete: 1000 MHz (1000290840 Hz)
+[ INFO] kernel::arch_impl::x86_64::timer: TSC cycles during 50ms calibration: 50014542
+[ INFO] kernel::arch_impl::x86_64::timer: HAL_TIMER_CALIBRATED: TSC calibration via HAL complete
+[ INFO] kernel::time::timer: Timer initialized at 200 Hz (5ms per tick)
+[ INFO] kernel::time::rtc: RTC initialized: 2026-05-20 01:03:50 UTC
+[ INFO] kernel: Timer initialized
+[ INFO] kernel::tracing::core: Tracing subsystem initialized (16 per-CPU buffers)
+[ INFO] kernel: Tracing subsystem initialized and enabled
+[ INFO] kernel: CHECKPOINT A: PIT initialized at 100 Hz
+[ INFO] kernel: Timer interrupt unmasked
+[ INFO] kernel::serial: Serial input interrupts enabled
+[ INFO] kernel: Initializing system call infrastructure...
+[ INFO] kernel::syscall: Initializing system call infrastructure
+[ INFO] kernel::syscall: System call infrastructure initialized
+[ INFO] kernel: System call infrastructure initialized
+[ INFO] kernel: Initializing threading subsystem...
+[ INFO] kernel: Allocating kernel stack for idle thread from upper half...
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 1
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 1 at 0xffffc90000082000-0xffffc90000102000 (guard at 0xffffc90000081000)
+[ INFO] kernel: Idle thread kernel stack allocated at 0xffffc90000102000 (PML4[402])
+[ INFO] kernel: TSS.RSP0 set to kernel stack at 0xffffc90000102000
+[ INFO] kernel: About to switch from bootstrap stack at 0x18000013640 (PML4[3]) to kernel stack
+[ INFO] kernel: Successfully switched to kernel stack! RSP=0xffffc90000101958 (PML4[402])
+[ INFO] kernel: TSS.RSP0 verified at 0xffffc90000102000
+Scheduler initialized with current thread 0 as idle task
+[ INFO] kernel: Threading subsystem initialized with init_task (swapper/0)
+[ INFO] kernel: percpu: cpu0 base=0x100003c5800, current=swapper/0, rsp0=0xffffc90000102000
+[ INFO] kernel: Initializing process management...
+[ INFO] kernel::process: Process management initialized
+[ INFO] kernel: Process management initialized
+[ INFO] kernel::task::workqueue: WORKQUEUE_INIT: workqueue system initialized
+[ INFO] kernel::task::softirqd: SOFTIRQ_INIT: Initializing softirq subsystem
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 2
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 2 at 0xffffc90000103000-0xffffc90000183000 (guard at 0xffffc90000102000)
+Added thread 2 'ksoftirqd/0' to scheduler (user: false, target_cpu: 0)
+[ INFO] kernel::task::softirqd: SOFTIRQ_INIT: ksoftirqd spawned successfully
+[ INFO] kernel::task::softirqd: SOFTIRQ_INIT: Softirq subsystem initialized
+[ INFO] kernel: Temporarily enabling interrupts for driver post-init self-tests...
+Next thread from queue: 2, cpu: 0
+Switching from thread 0 to thread 2
+[ INFO] kernel::task::softirqd: KSOFTIRQD_SPAWN: ksoftirqd/0 started
+Next thread from queue: 0, cpu: 0
+Switching from thread 2 to thread 0
+[ INFO] kernel::drivers: Running driver post-init self-tests...
+[DEBUG] kernel::interrupts: IRQ 11 enabled (VirtIO + E1000)
+[ INFO] kernel::drivers::virtio::block: VirtIO block test: Reading sector 0...
+[DEBUG] kernel::drivers::e1000: E1000: RX interrupt
+[DEBUG] kernel::drivers::e1000: E1000: TX interrupt
+[ INFO] kernel::drivers::virtio::block: VirtIO block test: Read successful!
+[ INFO] kernel::drivers::virtio::block:   First 16 bytes: [00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00]
+[ INFO] kernel::drivers::virtio::block:   MBR signature found (0x55AA)
+[ INFO] kernel: Driver post-init self-tests complete; interrupts disabled for remaining init
+[ INFO] kernel::task::kthread_tests: === KTHREAD TEST: Starting kernel thread lifecycle test ===
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 3
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 3 at 0xffffc90000184000-0xffffc90000204000 (guard at 0xffffc90000183000)
+Added thread 3 'test_kthread' to scheduler (user: false, target_cpu: 0)
+[ INFO] kernel::task::kthread_tests: KTHREAD_CREATE: kthread created
+Next thread from queue: 3, cpu: 0
+Switching from thread 0 to thread 3
+[ INFO] kernel::task::kthread_tests: KTHREAD_RUN: kthread running
+Next thread from queue: 0, cpu: 0
+Switching from thread 3 to thread 0
+unblock(3): Added to per_cpu_queues[0]
+[ INFO] kernel::task::kthread_tests: KTHREAD_STOP_SENT: stop signal sent successfully
+Next thread from queue: 3, cpu: 0
+Switching from thread 0 to thread 3
+[ INFO] kernel::task::kthread_tests: KTHREAD_VERIFY: kthread_should_stop() = true
+[ INFO] kernel::task::kthread_tests: KTHREAD_STOP: kthread received stop signal
+[ INFO] kernel::task::kthread_tests: KTHREAD_EXIT: kthread exited cleanly
+[ INFO] kernel::task::kthread_tests: === KTHREAD TEST: Completed ===
+[ INFO] kernel::task::kthread_tests: === KTHREAD JOIN TEST: Starting ===
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 4
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 4 at 0xffffc90000205000-0xffffc90000285000 (guard at 0xffffc90000204000)
+Added thread 4 'join_test_kthread' to scheduler (user: false, target_cpu: 0)
+[ INFO] kernel::task::kthread_tests: KTHREAD_JOIN_TEST: kthread about to exit
+[ INFO] kernel::task::kthread_tests: KTHREAD_JOIN_TEST: join returned exit_code=0
+[ INFO] kernel::task::kthread_tests: === KTHREAD JOIN TEST: Completed ===
+[ INFO] kernel::task::workqueue_tests: === WORKQUEUE TEST: Starting workqueue test ===
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: Testing basic execution...
+[DEBUG] kernel::memory::kernel_stack: Mapping 128 pages for kernel stack 5
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 5 at 0xffffc90000286000-0xffffc90000306000 (guard at 0xffffc90000285000)
+Added thread 5 'kworker/0' to scheduler (user: false, target_cpu: 0)
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: work1 executed
+[ INFO] kernel::task::workqueue: KWORKER_SPAWN: kworker/0 started
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: basic execution passed
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: Testing multiple work items...
+unblock(5): Added to per_cpu_queues[0]
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: work2 executed (order=1)
+unblock(5): Added to per_cpu_queues[0]
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: work3 executed (order=2)
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: work4 executed (order=3)
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: multiple work items passed
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: Testing flush...
+unblock(5): Added to per_cpu_queues[0]
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: flush_work executed
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: flush completed
+[ INFO] kernel::task::workqueue_tests: WORKQUEUE_TEST: Testing re-queue rejection...
+unblock(5): Added to per_cpu_queues[0]
+[ WARN] kernel::task::workqueue: workqueue(kworker/0): work 'requeue_work' already pending, rejecting

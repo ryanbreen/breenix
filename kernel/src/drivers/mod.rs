@@ -31,15 +31,6 @@ pub fn init() -> usize {
     match virtio::block::init() {
         Ok(()) => {
             log::info!("VirtIO block driver initialized successfully");
-
-            // Enable VirtIO IRQ now that driver is initialized
-            // IMPORTANT: Must be done AFTER driver init, not during PIC init
-            crate::interrupts::enable_virtio_irq();
-
-            // Run a quick test
-            if let Err(e) = virtio::block::test_read() {
-                log::warn!("VirtIO block test failed: {}", e);
-            }
         }
         Err(e) => {
             log::warn!("VirtIO block driver initialization failed: {}", e);
@@ -72,6 +63,28 @@ pub fn init() -> usize {
 
     log::info!("Driver subsystem initialized");
     device_count
+}
+
+/// Run driver self-tests that require fully initialized interrupts.
+#[cfg(target_arch = "x86_64")]
+pub fn run_post_init_self_tests() {
+    log::info!("Running driver post-init self-tests...");
+
+    // PIC initialization remaps/masks IRQs, so enable the VirtIO legacy INTx
+    // lines after PIC setup and after the drivers exist. QEMU routes the boot
+    // virtio-blk disk on IRQ11 and additional VirtIO devices on IRQ10/IRQ11.
+    crate::interrupts::enable_irq10();
+    crate::interrupts::enable_virtio_irq();
+
+    if let Err(e) = virtio::block::test_read() {
+        log::warn!("VirtIO block test failed: {}", e);
+    }
+
+    if virtio::sound::is_initialized() {
+        if let Err(e) = virtio::sound::test_silence() {
+            log::warn!("VirtIO sound test failed: {}", e);
+        }
+    }
 }
 
 /// Initialize the driver subsystem (ARM64 version)
@@ -110,9 +123,13 @@ pub fn init() -> usize {
             for dev in &devices {
                 serial_println!(
                     "[pci] {:02x}:{:02x}.{} [{:04x}:{:04x}] class={:02x}/{:02x}",
-                    dev.bus, dev.device, dev.function,
-                    dev.vendor_id, dev.device_id,
-                    dev.class as u8, dev.subclass
+                    dev.bus,
+                    dev.device,
+                    dev.function,
+                    dev.vendor_id,
+                    dev.device_id,
+                    dev.class as u8,
+                    dev.subclass
                 );
                 for (i, bar) in dev.bars.iter().enumerate() {
                     if bar.is_valid() {
@@ -314,10 +331,6 @@ fn init_virtio_mmio() -> usize {
     match virtio::block_mmio::init() {
         Ok(()) => {
             serial_println!("[drivers] VirtIO block driver initialized");
-            // Run a quick read test
-            if let Err(e) = virtio::block_mmio::test_read() {
-                serial_println!("[drivers] VirtIO block test failed: {}", e);
-            }
         }
         Err(e) => {
             serial_println!("[drivers] VirtIO block driver init failed: {}", e);
@@ -363,4 +376,15 @@ fn init_virtio_mmio() -> usize {
 
     serial_println!("[drivers] Driver subsystem initialized (MMIO)");
     device_count
+}
+
+/// Run driver self-tests that require fully initialized interrupts.
+#[cfg(target_arch = "aarch64")]
+pub fn run_post_init_self_tests() {
+    use crate::serial_println;
+
+    serial_println!("[drivers] Running post-init self-tests...");
+    if let Err(e) = virtio::block_mmio::test_read() {
+        serial_println!("[drivers] VirtIO block test failed: {}", e);
+    }
 }

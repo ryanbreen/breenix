@@ -1,0 +1,45 @@
+    Updating git repository `https://github.com/rust-osdev/bootloader.git`
+    Updating crates.io index
+     Locking 174 packages to latest compatible versions
+      Adding aarch64-cpu v9.4.0 (available: v11.2.0)
+      Adding acpi v5.2.0 (available: v6.1.1)
+      Adding az v1.2.1 (available: v1.3.0)
+      Adding generic-array v0.14.7 (available: v0.14.9)
+      Adding pic8259 v0.10.4 (available: v0.11.0)
+      Adding spin v0.9.8 (available: v0.11.0)
+      Adding tock-registers v0.8.1 (available: v0.10.1)
+      Adding uart_16550 v0.3.2 (available: v0.6.0)
+      Adding uefi v0.33.0 (available: v0.37.0)
+   Compiling compiler_builtins v0.1.160 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins)
+   Compiling core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+   Compiling autocfg v1.5.0
+   Compiling az v1.2.1
+   Compiling crossbeam-utils v0.8.21
+   Compiling bootloader_api v0.11.15 (https://github.com/rust-osdev/bootloader.git?branch=main#5d97b89f)
+   Compiling kernel v0.1.0 (/private/tmp/breenix-turn9-base/kernel)
+   Compiling num-traits v0.2.19
+   Compiling alloc v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc)
+   Compiling scopeguard v1.2.0
+   Compiling byteorder v1.5.0
+   Compiling futures-core v0.3.32
+   Compiling tock-registers v0.8.1
+   Compiling pin-project-lite v0.2.17
+   Compiling futures-task v0.3.32
+   Compiling slab v0.4.12
+   Compiling micromath v2.1.0
+   Compiling conquer-util v0.3.0
+   Compiling log v0.4.29
+   Compiling noto-sans-mono-bitmap v0.3.2
+   Compiling rlibc v1.0.0
+   Compiling lock_api v0.4.14
+   Compiling conquer-once v0.4.0
+   Compiling aarch64-cpu v9.4.0
+   Compiling futures-util v0.3.32
+   Compiling spinning_top v0.2.5
+   Compiling spin v0.9.8
+   Compiling crossbeam-queue v0.3.12
+   Compiling linked_list_allocator v0.10.6
+   Compiling float-cmp v0.9.0
+   Compiling embedded-graphics-core v0.4.1
+   Compiling embedded-graphics v0.8.2
+    Finished `release` profile [optimized] target(s) in 11.17s

@@ -1,0 +1,22 @@
+# Polling greps
+kernel/src/drivers/virtio/block.rs:0
+kernel/src/drivers/virtio/sound.rs:0
+kernel/src/drivers/virtio/block_mmio.rs:0
+kernel/src/drivers/virtio/sound_mmio.rs:0
+
+# Completion precondition greps
+kernel/src/drivers/virtio/block.rs:2
+kernel/src/drivers/virtio/block_mmio.rs:2
+kernel/src/drivers/virtio/gpu_mmio.rs:0
+kernel/src/drivers/virtio/gpu_pci.rs:1
+kernel/src/drivers/virtio/input_mmio.rs:0
+kernel/src/drivers/virtio/input_pci.rs:0
+kernel/src/drivers/virtio/mmio.rs:0
+kernel/src/drivers/virtio/mod.rs:0
+kernel/src/drivers/virtio/net_mmio.rs:0
+kernel/src/drivers/virtio/net_pci.rs:0
+kernel/src/drivers/virtio/pci_transport.rs:0
+kernel/src/drivers/virtio/queue.rs:0
+kernel/src/drivers/virtio/sound.rs:2
+kernel/src/drivers/virtio/sound_mmio.rs:2
+kernel/src/drivers/virtio/virgl.rs:0

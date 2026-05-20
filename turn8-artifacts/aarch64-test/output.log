@@ -1,0 +1,44 @@
+=========================================
+ARM64 Boot Test (Native QEMU)
+=========================================
+Kernel: /Users/wrb/fun/code/breenix/target/aarch64-breenix/release/kernel-aarch64
+ext2 disk: /Users/wrb/fun/code/breenix/target/ext2-aarch64.img
+
+Attempt 1/5...
+qemu-system-aarch64: terminating on signal 15 from pid 52622 (<unknown process>)
+FAIL: Kernel panic (    1126 lines)
+Retrying...
+Attempt 2/5...
+qemu-system-aarch64: terminating on signal 15 from pid 52671 (<unknown process>)
+FAIL: Kernel panic (    1252 lines)
+Retrying...
+Attempt 3/5...
+qemu-system-aarch64: terminating on signal 15 from pid 52773 (<unknown process>)
+FAIL: Userspace not detected (  357282 lines)
+Retrying...
+Attempt 4/5...
+qemu-system-aarch64: terminating on signal 15 from pid 54568 (<unknown process>)
+FAIL: CPU exception (    6606 lines)
+Retrying...
+Attempt 5/5...
+qemu-system-aarch64: terminating on signal 15 from pid 54856 (<unknown process>)
+FAIL: CPU exception (    5100 lines)
+
+=========================================
+ARM64 BOOT TEST: FAILED (after 5 attempts)
+=========================================
+
+NOTE: If this test frequently requires retries or fails repeatedly,
+there may be a regression. Check recent changes to boot code.
+
+Last output:
+[TRACE] === CPU 13 Buffer ===
+[TRACE] Events: 0 (write_idx=0, dropped=0)
+[TRACE] (empty)
+[TRACE] === CPU 14 Buffer ===
+[TRACE] Events: 0 (write_idx=0, dropped=0)
+[TRACE] (empty)
+[TRACE] === CPU 15 Buffer ===
+[TRACE] Events: 0 (write_idx=0, dropped=0)
+[TRACE] (empty)
+[TRACE] ====== END TRACE DUMP ======

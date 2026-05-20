@@ -1,0 +1,40 @@
+turn1-artifacts/linux-source/virtio_pcm_msg.c:286: * virtsnd_pcm_msg_complete() - Complete an I/O message.
+turn1-artifacts/linux-source/virtio_pcm_msg.c:301:static void virtsnd_pcm_msg_complete(struct virtio_pcm_msg *msg,
+turn1-artifacts/linux-source/virtio_pcm_msg.c:345: * virtsnd_pcm_notify_cb() - Process all completed I/O messages.
+turn1-artifacts/linux-source/virtio_pcm_msg.c:350:static inline void virtsnd_pcm_notify_cb(struct virtio_snd_queue *queue)
+turn1-artifacts/linux-source/virtio_pcm_msg.c:360:			virtsnd_pcm_msg_complete(msg, written_bytes);
+turn1-artifacts/linux-source/virtio_pcm_msg.c:366: * virtsnd_pcm_tx_notify_cb() - Process all completed TX messages.
+turn1-artifacts/linux-source/virtio_pcm_msg.c:371:void virtsnd_pcm_tx_notify_cb(struct virtqueue *vqueue)
+turn1-artifacts/linux-source/virtio_pcm_msg.c:375:	virtsnd_pcm_notify_cb(virtsnd_tx_queue(snd));
+turn1-artifacts/linux-source/virtio_pcm_msg.c:379: * virtsnd_pcm_rx_notify_cb() - Process all completed RX messages.
+turn1-artifacts/linux-source/virtio_pcm_msg.c:384:void virtsnd_pcm_rx_notify_cb(struct virtqueue *vqueue)
+turn1-artifacts/linux-source/virtio_pcm_msg.c:388:	virtsnd_pcm_notify_cb(virtsnd_rx_queue(snd));
+turn1-artifacts/linux-source/virtio_blk.c:351:static void virtblk_done(struct virtqueue *vq)
+turn1-artifacts/linux-source/virtio_blk.c:367:				blk_mq_complete_request(req);
+turn1-artifacts/linux-source/virtio_blk.c:427:static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
+turn1-artifacts/linux-source/virtio_blk.c:501:static void virtio_queue_rqs(struct request **rqlist)
+turn1-artifacts/linux-source/virtio_blk.c:1019:		callbacks[i] = virtblk_done;
+turn1-artifacts/linux-source/virtio_blk.c:1225:		if (!blk_mq_complete_request_remote(req) &&
+turn1-artifacts/linux-source/virtio_blk.c:1240:	.queue_rq	= virtio_queue_rq,
+turn1-artifacts/linux-source/virtio_blk.c:1241:	.queue_rqs	= virtio_queue_rqs,
+turn1-artifacts/linux-source/virtio_ctl_msg.c:103:	/* This reference is dropped in virtsnd_ctl_msg_complete(). */
+turn1-artifacts/linux-source/virtio_ctl_msg.c:165:		 * Since in this case virtsnd_ctl_msg_complete() will not be
+turn1-artifacts/linux-source/virtio_ctl_msg.c:213: * virtsnd_ctl_msg_complete() - Complete a control message.
+turn1-artifacts/linux-source/virtio_ctl_msg.c:219:void virtsnd_ctl_msg_complete(struct virtio_snd_msg *msg)
+turn1-artifacts/linux-source/virtio_ctl_msg.c:222:	complete(&msg->notify);
+turn1-artifacts/linux-source/virtio_ctl_msg.c:244:		virtsnd_ctl_msg_complete(msg);
+turn1-artifacts/linux-source/virtio_ctl_msg.c:285: * virtsnd_ctl_notify_cb() - Process all completed control messages.
+turn1-artifacts/linux-source/virtio_ctl_msg.c:293:void virtsnd_ctl_notify_cb(struct virtqueue *vqueue)
+turn1-artifacts/linux-source/virtio_ctl_msg.c:305:			virtsnd_ctl_msg_complete(msg);
+turn1-artifacts/linux-source/virtio_pcm.h:105:void virtsnd_pcm_tx_notify_cb(struct virtqueue *vqueue);
+turn1-artifacts/linux-source/virtio_pcm.h:107:void virtsnd_pcm_rx_notify_cb(struct virtqueue *vqueue);
+turn1-artifacts/linux-source/virtio_card.c:71: * virtsnd_event_notify_cb() - Dispatch all reported events from the event queue.
+turn1-artifacts/linux-source/virtio_card.c:79:static void virtsnd_event_notify_cb(struct virtqueue *vqueue)
+turn1-artifacts/linux-source/virtio_card.c:111:		[VIRTIO_SND_VQ_CONTROL] = virtsnd_ctl_notify_cb,
+turn1-artifacts/linux-source/virtio_card.c:112:		[VIRTIO_SND_VQ_EVENT] = virtsnd_event_notify_cb,
+turn1-artifacts/linux-source/virtio_card.c:113:		[VIRTIO_SND_VQ_TX] = virtsnd_pcm_tx_notify_cb,
+turn1-artifacts/linux-source/virtio_card.c:114:		[VIRTIO_SND_VQ_RX] = virtsnd_pcm_rx_notify_cb
+turn1-artifacts/linux-source/virtio_card.c:165:		virtsnd_event_notify_cb(queue->vqueue);
+turn1-artifacts/linux-source/virtio_ring.c:2563: * vring_interrupt - notify a virtqueue on an interrupt
+turn1-artifacts/linux-source/virtio_ring.c:2570:irqreturn_t vring_interrupt(int irq, void *_vq)
+turn1-artifacts/linux-source/virtio_ring.c:2599:EXPORT_SYMBOL_GPL(vring_interrupt);

@@ -1,0 +1,10 @@
+Running 1 parallel Docker full boot tests...
+Image: /Users/wrb/fun/code/breenix/target/release/build/breenix-094ec28b036212ff/out/breenix-uefi.img
+  Started test 1
+Waiting for kthread tests to complete (120s timeout)...
+  Test 1: PASS
+7c932e32ac5c
+
+=========================================
+Results: 1 passed, 0 failed out of 1
+=========================================

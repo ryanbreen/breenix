@@ -1,0 +1,645 @@
+diff --git a/kernel/src/drivers/virtio/block_mmio.rs b/kernel/src/drivers/virtio/block_mmio.rs
+index e680459d..26527926 100644
+--- a/kernel/src/drivers/virtio/block_mmio.rs
++++ b/kernel/src/drivers/virtio/block_mmio.rs
+@@ -6,22 +6,204 @@
+ use super::mmio::{
+     device_id, VirtioMmioDevice, VIRTIO_MMIO_BASE, VIRTIO_MMIO_COUNT, VIRTIO_MMIO_SIZE,
+ };
+-use core::ptr::read_volatile;
+-use core::sync::atomic::{fence, Ordering};
+-use spin::Mutex;
++use crate::arch_impl::aarch64::cpu::{dsb_sy, Aarch64Cpu};
++use crate::arch_impl::aarch64::gic;
++use crate::arch_impl::traits::{CpuOps, InterruptController};
++use crate::task::completion::Completion;
++use crate::task::waitqueue::WaitQueueHead;
++use core::ptr::{read_volatile, write_volatile};
++use core::sync::atomic::{fence, AtomicBool, AtomicU32, Ordering};
+ 
+ /// Maximum number of block devices supported
+ pub const MAX_BLOCK_DEVICES: usize = 2;
+ 
+-/// Per-device locks protecting DMA buffers.
+-///
+-/// The x86_64 PCI block driver uses Mutex<Virtqueue> for the same purpose (block.rs:81).
+-/// Without this lock, concurrent exec() calls (e.g., init spawning telnetd + bsh) corrupt
+-/// each other's request headers mid-flight, causing ELF load failures.
+-static BLOCK_IO_LOCKS: [Mutex<()>; MAX_BLOCK_DEVICES] = [Mutex::new(()), Mutex::new(())];
++const VIRTIO_IRQ_BASE: u32 = 48;
++const BLOCK_MMIO_COMPLETION_TIMEOUT_NS: u64 = 5_000_000_000;
++const NO_COMPLETED_DESC: u32 = u32::MAX;
++const NO_COMPLETED_STATUS: u32 = u32::MAX;
++
++struct BlockMmioRequestGate {
++    locked: AtomicBool,
++    waiters: WaitQueueHead,
++}
++
++struct BlockMmioRequestGuard<'a> {
++    gate: &'a BlockMmioRequestGate,
++    release_on_drop: bool,
++}
++
++impl BlockMmioRequestGate {
++    const fn new() -> Self {
++        Self {
++            locked: AtomicBool::new(false),
++            waiters: WaitQueueHead::new(),
++        }
++    }
++
++    fn lock(&self) -> Result<BlockMmioRequestGuard<'_>, &'static str> {
++        loop {
++            if self
++                .locked
++                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
++                .is_ok()
++            {
++                return Ok(BlockMmioRequestGuard {
++                    gate: self,
++                    release_on_drop: true,
++                });
++            }
++
++            if !block_mmio_request_gate_can_sleep() {
++                return Err("Block MMIO request already in progress");
++            }
++
++            if self
++                .waiters
++                .prepare_to_wait(crate::task::thread::ThreadState::BlockedOnIO)
++                .is_none()
++            {
++                return Err("Block MMIO request already in progress");
++            }
++
++            if self.locked.load(Ordering::Acquire) {
++                crate::task::waitqueue::schedule_current_wait();
++            }
++            self.waiters.finish_wait();
++        }
++    }
++
++    fn unlock(&self) {
++        self.locked.store(false, Ordering::Release);
++        self.waiters.wake_up_one();
++    }
++}
++
++impl BlockMmioRequestGuard<'_> {
++    fn keep_locked(mut self) {
++        self.release_on_drop = false;
++    }
++}
++
++impl Drop for BlockMmioRequestGuard<'_> {
++    fn drop(&mut self) {
++        if self.release_on_drop {
++            self.gate.unlock();
++        }
++    }
++}
++
++#[inline]
++fn block_mmio_request_gate_can_sleep() -> bool {
++    crate::task::scheduler::current_thread_id().is_some()
++        && crate::per_cpu_aarch64::preempt_count() > 0
++        && crate::arch_impl::aarch64::timer_interrupt::is_initialized()
++}
++
++struct BlockMmioCompletion {
++    completion: Completion,
++    next_token: AtomicU32,
++    pending_token: AtomicU32,
++    completed_desc: AtomicU32,
++    completed_status: AtomicU32,
++    last_used_idx: AtomicU32,
++}
++
++impl BlockMmioCompletion {
++    const fn new() -> Self {
++        Self {
++            completion: Completion::new(),
++            next_token: AtomicU32::new(1),
++            pending_token: AtomicU32::new(0),
++            completed_desc: AtomicU32::new(NO_COMPLETED_DESC),
++            completed_status: AtomicU32::new(NO_COMPLETED_STATUS),
++            last_used_idx: AtomicU32::new(0),
++        }
++    }
+ 
+-// Import dsb_sy from the shared CPU module to avoid duplication
+-use crate::arch_impl::aarch64::cpu::dsb_sy;
++    fn next_completion_token(&self) -> u32 {
++        let mut token = self
++            .next_token
++            .fetch_add(1, Ordering::AcqRel)
++            .wrapping_add(1);
++        if token == 0 {
++            token = self
++                .next_token
++                .fetch_add(1, Ordering::AcqRel)
++                .wrapping_add(1);
++        }
++        token
++    }
++
++    fn prepare_wait(&self) -> u32 {
++        let token = self.next_completion_token();
++        self.completion.reset();
++        self.completed_desc
++            .store(NO_COMPLETED_DESC, Ordering::Release);
++        self.completed_status
++            .store(NO_COMPLETED_STATUS, Ordering::Release);
++        self.pending_token.store(token, Ordering::Release);
++        token
++    }
++
++    fn clear(&self) {
++        self.pending_token.store(0, Ordering::Release);
++        self.completed_desc
++            .store(NO_COMPLETED_DESC, Ordering::Release);
++        self.completed_status
++            .store(NO_COMPLETED_STATUS, Ordering::Release);
++    }
++
++    fn wait_for_completion(
++        &self,
++        token: u32,
++        timeout_error: &'static str,
++        interrupted_error: &'static str,
++    ) -> Result<(), &'static str> {
++        match self
++            .completion
++            .wait_timeout(token, BLOCK_MMIO_COMPLETION_TIMEOUT_NS)
++        {
++            Ok(true) => Ok(()),
++            Ok(false) => Err(timeout_error),
++            Err(_eintr) => Err(interrupted_error),
++        }
++    }
++
++    fn take_completed_request(&self) -> Result<(u16, u8), &'static str> {
++        let desc = self
++            .completed_desc
++            .swap(NO_COMPLETED_DESC, Ordering::AcqRel);
++        if desc == NO_COMPLETED_DESC {
++            return Err("Block MMIO request woke without completion");
++        }
++
++        let status = self
++            .completed_status
++            .swap(NO_COMPLETED_STATUS, Ordering::AcqRel);
++        if status == NO_COMPLETED_STATUS {
++            return Err("Block MMIO request woke without status");
++        }
++
++        Ok((desc as u16, status as u8))
++    }
++
++    fn pending_token(&self) -> u32 {
++        self.pending_token.load(Ordering::Acquire)
++    }
++
++    fn complete(&self, desc: u32, status: u8, token: u32) {
++        self.completed_status
++            .store(status as u32, Ordering::Release);
++        self.completed_desc.store(desc, Ordering::Release);
++        self.completion.complete(token);
++    }
++}
++
++static REQUEST_GATES: [BlockMmioRequestGate; MAX_BLOCK_DEVICES] =
++    [BlockMmioRequestGate::new(), BlockMmioRequestGate::new()];
++
++static COMPLETIONS: [BlockMmioCompletion; MAX_BLOCK_DEVICES] =
++    [BlockMmioCompletion::new(), BlockMmioCompletion::new()];
+ 
+ /// VirtIO block request types
+ mod request_type {
+@@ -204,11 +386,12 @@ struct BlockDeviceState {
+     capacity: u64,
+     #[allow(dead_code)] // Will be used by is_read_only() for write tests
+     device_features: u64,
+-    last_used_idx: u16,
++    slot: usize,
+ }
+ 
+ /// Helper struct providing raw pointers to a device's static DMA buffers.
+-/// These pointers are only valid while the corresponding BLOCK_IO_LOCKS entry is held.
++/// The submitter owns these buffers while the per-device request gate is held.
++/// The IRQ handler may read the used/status rings for the same in-flight request.
+ struct DeviceBuffers {
+     queue_mem: *mut QueueMemory,
+     req_header: *mut RequestHeader,
+@@ -219,7 +402,8 @@ struct DeviceBuffers {
+ /// Get pointers to the static DMA buffers for a given device index.
+ ///
+ /// # Safety
+-/// Caller must hold BLOCK_IO_LOCKS[device_index] before accessing returned pointers.
++/// Submitters must hold REQUEST_GATES[device_index]. The IRQ handler may access
++/// the used ring and status buffer for the armed request without taking the gate.
+ fn device_buffers(device_index: usize) -> DeviceBuffers {
+     match device_index {
+         0 => DeviceBuffers {
+@@ -287,7 +471,7 @@ pub fn init() -> Result<(), &'static str> {
+         if let Some(mut device) = VirtioMmioDevice::probe(base) {
+             if device.device_id() == device_id::BLOCK {
+                 crate::serial_println!("[virtio-blk] Found block device {} at {:#x}", found, base);
+-                init_device(&mut device, base, found)?;
++                init_device(&mut device, base, found, i)?;
+                 found += 1;
+             }
+         }
+@@ -307,6 +491,7 @@ fn init_device(
+     device: &mut VirtioMmioDevice,
+     base: u64,
+     device_index: usize,
++    slot: usize,
+ ) -> Result<(), &'static str> {
+     let version = device.version();
+     crate::serial_println!("[virtio-blk] Device {} version: {}", device_index, version);
+@@ -404,6 +589,10 @@ fn init_device(
+     // Mark device as ready
+     device.driver_ok();
+ 
++    COMPLETIONS[device_index]
++        .last_used_idx
++        .store(0, Ordering::Release);
++
+     // Store device state
+     unsafe {
+         let ptr = &raw mut BLOCK_DEVICES;
+@@ -411,10 +600,18 @@ fn init_device(
+             base,
+             capacity,
+             device_features,
+-            last_used_idx: 0,
++            slot,
+         });
+     }
+ 
++    let irq = VIRTIO_IRQ_BASE + slot as u32;
++    gic::Gicv2::enable_irq(irq as u8);
++    crate::serial_println!(
++        "[virtio-blk] Block MMIO IRQ {} enabled for device {}",
++        irq,
++        device_index
++    );
++
+     crate::serial_println!(
+         "[virtio-blk] Block device {} initialized successfully",
+         device_index
+@@ -422,56 +619,29 @@ fn init_device(
+     Ok(())
+ }
+ 
+-/// Read a sector from the block device at given device_index.
+-///
+-/// Serializes access with per-device BLOCK_IO_LOCKS to prevent concurrent DMA buffer corruption.
+-/// Disables interrupts before acquiring the lock to prevent same-core deadlock
+-/// (matches the pattern in `kernel/src/process/mod.rs:85-88`).
+-pub fn read_sector(
+-    device_index: usize,
+-    sector: u64,
+-    buffer: &mut [u8; SECTOR_SIZE],
+-) -> Result<(), &'static str> {
++fn block_device_state(device_index: usize) -> Result<&'static BlockDeviceState, &'static str> {
+     if device_index >= MAX_BLOCK_DEVICES {
+         return Err("Invalid device index");
+     }
+ 
+-    // Save DAIF and disable interrupts to prevent same-core deadlock:
+-    // if a timer interrupt preempts while we hold the spinlock, the scheduler
+-    // could switch to another thread on this core that tries to acquire the
+-    // same lock, spinning forever.
+-    let saved_daif: u64;
+     unsafe {
+-        core::arch::asm!("mrs {}, daif", out(reg) saved_daif, options(nomem, nostack));
+-        core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
+-    }
+-
+-    let _guard = BLOCK_IO_LOCKS[device_index].lock();
+-    let result = read_sector_inner(device_index, sector, buffer);
+-    drop(_guard);
+-
+-    // Restore interrupt state
+-    unsafe {
+-        core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
++        let ptr = &raw const BLOCK_DEVICES;
++        (*ptr)[device_index]
++            .as_ref()
++            .ok_or("Block device not initialized")
+     }
++}
+ 
+-    result
++#[inline]
++fn irq_completion_available() -> bool {
++    crate::task::scheduler::current_thread_id().is_some() || Aarch64Cpu::interrupts_enabled()
+ }
+ 
+-/// Inner implementation of read_sector, called with BLOCK_IO_LOCKS[device_index] held.
+-fn read_sector_inner(
++fn submit_read_sector(
+     device_index: usize,
++    state: &BlockDeviceState,
+     sector: u64,
+-    buffer: &mut [u8; SECTOR_SIZE],
+ ) -> Result<(), &'static str> {
+-    // Use raw pointers to avoid references to mutable statics
+-    let state = unsafe {
+-        let ptr = &raw mut BLOCK_DEVICES;
+-        (*ptr)[device_index]
+-            .as_mut()
+-            .ok_or("Block device not initialized")?
+-    };
+-
+     if sector >= state.capacity {
+         return Err("Sector out of range");
+     }
+@@ -536,91 +706,79 @@ fn read_sector_inner(
+     let device = VirtioMmioDevice::probe(state.base).ok_or("Device disappeared")?;
+     device.notify_queue(0);
+ 
+-    // Poll for completion - use a longer timeout for sequential reads
+-    let mut timeout = 100_000_000u32;
+-
+-    // Raw serial character for debugging (no locks)
+-    #[inline(always)]
+-    fn raw_char(c: u8) {
+-        let addr = crate::platform_config::uart_virt() as *mut u32;
+-        unsafe {
+-            core::ptr::write_volatile(addr, c as u32);
+-        }
+-    }
++    Ok(())
++}
+ 
+-    loop {
+-        fence(Ordering::SeqCst);
+-        let used_idx = unsafe { read_volatile(&(*bufs.queue_mem).used.idx) };
+-        if used_idx != state.last_used_idx {
+-            state.last_used_idx = used_idx;
+-            break;
+-        }
+-        timeout -= 1;
+-        if timeout == 0 {
+-            raw_char(b'!'); // Timeout!
+-            return Err("Block read timeout");
+-        }
+-        // Just yield to prevent tight spin
+-        core::hint::spin_loop();
++fn finish_read_sector(
++    device_index: usize,
++    buffer: &mut [u8; SECTOR_SIZE],
++) -> Result<(), &'static str> {
++    let completion = &COMPLETIONS[device_index];
++    let (completed_desc, status) = completion.take_completed_request()?;
++    if completed_desc != 0 {
++        completion.clear();
++        return Err("Block MMIO read completed unexpected descriptor");
+     }
+-
+-    // Check status
+-    let status = unsafe { read_volatile(&(*bufs.status_buf).status) };
+     if status != status_code::OK {
+-        return Err("Block read failed");
++        completion.clear();
++        return Err("Block MMIO read failed");
+     }
+ 
+-    // Copy data to caller's buffer
++    dsb_sy();
++    fence(Ordering::SeqCst);
++
++    let bufs = device_buffers(device_index);
+     unsafe {
+         buffer.copy_from_slice(&(*bufs.data_buf).data);
+     }
+ 
++    completion.clear();
+     Ok(())
+ }
+ 
+-/// Write a sector to the block device at given device_index.
+-///
+-/// Serializes access with per-device BLOCK_IO_LOCKS (same as read_sector).
+-pub fn write_sector(
++/// Read a sector from the block device at given device_index.
++pub fn read_sector(
+     device_index: usize,
+     sector: u64,
+-    buffer: &[u8; SECTOR_SIZE],
++    buffer: &mut [u8; SECTOR_SIZE],
+ ) -> Result<(), &'static str> {
+-    if device_index >= MAX_BLOCK_DEVICES {
+-        return Err("Invalid device index");
++    let state = block_device_state(device_index)?;
++    if sector >= state.capacity {
++        return Err("Sector out of range");
+     }
+-
+-    let saved_daif: u64;
+-    unsafe {
+-        core::arch::asm!("mrs {}, daif", out(reg) saved_daif, options(nomem, nostack));
+-        core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
++    if !irq_completion_available() {
++        return Err("Block MMIO IRQ completion unavailable before interrupts are enabled");
+     }
+ 
+-    let _guard = BLOCK_IO_LOCKS[device_index].lock();
+-    let result = write_sector_inner(device_index, sector, buffer);
+-    drop(_guard);
++    let request_guard = REQUEST_GATES[device_index].lock()?;
++    let completion = &COMPLETIONS[device_index];
++    let completion_token = completion.prepare_wait();
+ 
+-    unsafe {
+-        core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
++    if let Err(e) = submit_read_sector(device_index, state, sector) {
++        completion.clear();
++        return Err(e);
+     }
+ 
+-    result
++    if let Err(e) = completion.wait_for_completion(
++        completion_token,
++        "Block MMIO read timeout",
++        "Block MMIO read interrupted",
++    ) {
++        request_guard.keep_locked();
++        return Err(e);
++    }
++
++    finish_read_sector(device_index, buffer)?;
++    drop(request_guard);
++    Ok(())
+ }
+ 
+-/// Inner implementation of write_sector, called with BLOCK_IO_LOCKS[device_index] held.
+-fn write_sector_inner(
++fn submit_write_sector(
+     device_index: usize,
++    state: &BlockDeviceState,
+     sector: u64,
+     buffer: &[u8; SECTOR_SIZE],
+ ) -> Result<(), &'static str> {
+-    // Use raw pointers to avoid references to mutable statics
+-    let state = unsafe {
+-        let ptr = &raw mut BLOCK_DEVICES;
+-        (*ptr)[device_index]
+-            .as_mut()
+-            .ok_or("Block device not initialized")?
+-    };
+-
+     if sector >= state.capacity {
+         return Err("Sector out of range");
+     }
+@@ -686,31 +844,127 @@ fn write_sector_inner(
+     let device = VirtioMmioDevice::probe(state.base).ok_or("Device disappeared")?;
+     device.notify_queue(0);
+ 
+-    // Poll for completion - use same timeout as read_sector for sequential writes
+-    let mut timeout = 100_000_000u32;
+-    loop {
+-        fence(Ordering::SeqCst);
+-        let used_idx = unsafe { read_volatile(&(*bufs.queue_mem).used.idx) };
+-        if used_idx != state.last_used_idx {
+-            state.last_used_idx = used_idx;
+-            break;
+-        }
+-        timeout -= 1;
+-        if timeout == 0 {
+-            return Err("Block write timeout");
+-        }
+-        core::hint::spin_loop();
+-    }
++    Ok(())
++}
+ 
+-    // Check status
+-    let status = unsafe { read_volatile(&(*bufs.status_buf).status) };
++fn finish_write_sector(device_index: usize) -> Result<(), &'static str> {
++    let completion = &COMPLETIONS[device_index];
++    let (completed_desc, status) = completion.take_completed_request()?;
++    if completed_desc != 0 {
++        completion.clear();
++        return Err("Block MMIO write completed unexpected descriptor");
++    }
+     if status != status_code::OK {
+-        return Err("Block write failed");
++        completion.clear();
++        return Err("Block MMIO write failed");
++    }
++
++    dsb_sy();
++    fence(Ordering::SeqCst);
++
++    completion.clear();
++    Ok(())
++}
++
++/// Write a sector to the block device at given device_index.
++pub fn write_sector(
++    device_index: usize,
++    sector: u64,
++    buffer: &[u8; SECTOR_SIZE],
++) -> Result<(), &'static str> {
++    let state = block_device_state(device_index)?;
++    if sector >= state.capacity {
++        return Err("Sector out of range");
++    }
++    if !irq_completion_available() {
++        return Err("Block MMIO IRQ completion unavailable before interrupts are enabled");
++    }
++
++    let request_guard = REQUEST_GATES[device_index].lock()?;
++    let completion = &COMPLETIONS[device_index];
++    let completion_token = completion.prepare_wait();
++
++    if let Err(e) = submit_write_sector(device_index, state, sector, buffer) {
++        completion.clear();
++        return Err(e);
+     }
+ 
++    if let Err(e) = completion.wait_for_completion(
++        completion_token,
++        "Block MMIO write timeout",
++        "Block MMIO write interrupted",
++    ) {
++        request_guard.keep_locked();
++        return Err(e);
++    }
++
++    finish_write_sector(device_index)?;
++    drop(request_guard);
+     Ok(())
+ }
+ 
++/// Return the GIC SPI assigned to a VirtIO MMIO block device.
++pub fn get_irq(device_index: usize) -> Option<u32> {
++    if device_index >= MAX_BLOCK_DEVICES {
++        return None;
++    }
++
++    unsafe {
++        let ptr = &raw const BLOCK_DEVICES;
++        (*ptr)[device_index]
++            .as_ref()
++            .map(|state| VIRTIO_IRQ_BASE + state.slot as u32)
++    }
++}
++
++#[inline]
++fn block_mmio_virt_base(state: &BlockDeviceState) -> u64 {
++    crate::memory::physical_memory_offset().as_u64() + state.base
++}
++
++/// Handle a VirtIO MMIO block interrupt.
++///
++/// Hard IRQ path: no logging, allocation, locks, or unbounded work.
++pub fn handle_interrupt(device_index: usize) {
++    let Ok(state) = block_device_state(device_index) else {
++        return;
++    };
++
++    let base = block_mmio_virt_base(state);
++    let interrupt_status = unsafe { read_volatile((base + 0x60) as *const u32) };
++    if interrupt_status == 0 {
++        return;
++    }
++
++    unsafe {
++        write_volatile((base + 0x64) as *mut u32, interrupt_status);
++    }
++    dsb_sy();
++
++    let completion = &COMPLETIONS[device_index];
++    let token = completion.pending_token();
++    if token == 0 {
++        return;
++    }
++
++    let bufs = device_buffers(device_index);
++    fence(Ordering::SeqCst);
++
++    let previous_used_idx = completion.last_used_idx.load(Ordering::Acquire) as u16;
++    let used_idx = unsafe { read_volatile(&(*bufs.queue_mem).used.idx) };
++    if used_idx == previous_used_idx {
++        return;
++    }
++
++    let ring_index = (previous_used_idx % 16) as usize;
++    let used_elem = unsafe { read_volatile(&(*bufs.queue_mem).used.ring[ring_index]) };
++    let status = unsafe { read_volatile(&(*bufs.status_buf).status) };
++    completion
++        .last_used_idx
++        .store(used_idx as u32, Ordering::Release);
++    completion.complete(used_elem.id, status, token);
++}
++
+ /// Get the number of initialized block devices
+ pub fn device_count() -> usize {
+     DEVICE_COUNT.load(core::sync::atomic::Ordering::Acquire)

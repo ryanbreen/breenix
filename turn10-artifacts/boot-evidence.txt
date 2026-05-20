@@ -1,0 +1,290 @@
+# x86 key serial lines
+turn10-artifacts/x86-test/run-boot-parallel-output.log:5:  Test 1: PASS
+turn10-artifacts/x86-test/run-boot-parallel-output.log:9:Results: 1 passed, 0 failed out of 1
+turn10-artifacts/x86-test/serial_kernel.txt:126:[ INFO] kernel::preempt_count_test: === PREEMPT_COUNT COMPREHENSIVE TEST PASSED ===
+turn10-artifacts/x86-test/serial_kernel.txt:137:[ INFO] kernel::preempt_count_test: === PREEMPT_COUNT SCHEDULING TEST PASSED ===
+turn10-artifacts/x86-test/serial_kernel.txt:370:[ WARN] kernel::drivers: VirtIO sound driver initialization failed: No VirtIO sound devices found
+turn10-artifacts/x86-test/serial_kernel.txt:404:[ INFO] kernel::contract_runner:   [PASS] PML4[402]/[403] frame separation
+turn10-artifacts/x86-test/serial_kernel.txt:405:[ INFO] kernel::contract_runner:   [PASS] PML4[2] (kernel code mapping)
+turn10-artifacts/x86-test/serial_kernel.txt:406:[ INFO] kernel::contract_runner:   [PASS] Stack regions present
+turn10-artifacts/x86-test/serial_kernel.txt:407:[ INFO] kernel::contract_runner:   [PASS] TSS RSP0 valid
+turn10-artifacts/x86-test/serial_kernel.txt:409:[ INFO] kernel::contract_runner:   [PASS] Master PML4 all kernel entries valid
+turn10-artifacts/x86-test/serial_kernel.txt:410:[ INFO] kernel::contract_runner:   [PASS] Master PML4[402]/[403] frame separation
+turn10-artifacts/x86-test/serial_kernel.txt:412:[ INFO] kernel::contract_runner:   [PASS] TSS configuration
+turn10-artifacts/x86-test/serial_kernel.txt:413:[ INFO] kernel::contract_runner:   [PASS] IST stacks valid
+turn10-artifacts/x86-test/serial_kernel.txt:414:[ INFO] kernel::contract_runner:   [PASS] IST[0]/[1] separation
+turn10-artifacts/x86-test/serial_kernel.txt:510:[ INFO] kernel::task::kthread_tests: === KTHREAD TEST: Completed ===
+turn10-artifacts/x86-test/serial_kernel.txt:517:[ INFO] kernel::task::kthread_tests: === KTHREAD JOIN TEST: Completed ===
+
+# aarch64 key serial lines
+turn10-artifacts/aarch64-test/run-aarch64-boot-test-native-output.log:21:FAIL: Userspace not detected (    1609 lines)
+turn10-artifacts/aarch64-test/run-aarch64-boot-test-native-output.log:25:FAIL: Userspace not detected (     759 lines)
+turn10-artifacts/aarch64-test/run-aarch64-boot-test-native-output.log:28:ARM64 BOOT TEST: FAILED (after 5 attempts)
+turn10-artifacts/aarch64-test/run-aarch64-boot-test-native-output.log:35:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/run-aarch64-boot-test-native-output.log:36:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/run-aarch64-boot-test-native-output.log:37:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/run-aarch64-boot-test-native-output.log:38:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/run-aarch64-boot-test-native-output.log:39:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/run-aarch64-boot-test-native-output.log:40:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0x7
+turn10-artifacts/aarch64-test/serial.txt:36:[drivers] Found VirtIO MMIO device: network (ID=1, version=1)
+turn10-artifacts/aarch64-test/serial.txt:37:[drivers] Found VirtIO MMIO device: block (ID=2, version=1)
+turn10-artifacts/aarch64-test/serial.txt:38:[drivers] Found VirtIO MMIO device: input (ID=18, version=1)
+turn10-artifacts/aarch64-test/serial.txt:39:[drivers] Found VirtIO MMIO device: input (ID=18, version=1)
+turn10-artifacts/aarch64-test/serial.txt:40:[drivers] Found VirtIO MMIO device: GPU (ID=16, version=1)
+turn10-artifacts/aarch64-test/serial.txt:41:[drivers] Found 5 VirtIO MMIO devices
+turn10-artifacts/aarch64-test/serial.txt:72:[virtio-sound] Searching for sound device...
+turn10-artifacts/aarch64-test/serial.txt:73:[drivers] VirtIO sound driver init failed: No VirtIO Sound device found
+turn10-artifacts/aarch64-test/serial.txt:175:T2[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:176:[FATAL_POSTMORTEM] cpu=0 label=UNHANDLED_EC
+turn10-artifacts/aarch64-test/serial.txt:502:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:503:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:504:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:505:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:506:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:507:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:508:T4[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:509:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:510:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:511:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:512:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:513:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:514:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:515:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:516:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:517:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:518:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:519:T5[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:520:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:521:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:522:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:523:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:524:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:525:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:526:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121[468
+turn10-artifacts/aarch64-test/serial.txt:527:[UNHANDLED_EC] cpu=0 EC=0inix0 ELR=0xffff000040t121468
+turn10-artifacts/aarch64-test/serial.txt:529:[UNHANDLED_EC] cpu=0 EC=0x0 ELPIDR=0xffff0 1)00040121468
+turn10-artifacts/aarch64-test/serial.txt:531:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:532:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:533:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:534:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:535:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:536:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:537:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:538:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:539:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:540:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:541:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:542:T7[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:543:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:544:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:545:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:546:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:547:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:548:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:549:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:550:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:551:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:552:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:553:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:554:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:555:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:556:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:557:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:558:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:559:T8[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:560:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:561:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:562:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:563:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:564:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:565:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:566:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:567:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:568:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:569:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:570:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:571:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:572:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:573:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:574:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:575:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:576:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:577:T9[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:578:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:579:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:580:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:581:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:582:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:583:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:584:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:585:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:586:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:587:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:588:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:589:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:590:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:591:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:592:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:593:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:594:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:595:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:596:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:597:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:598:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:599:T0[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:600:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:601:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:602:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:603:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:604:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:605:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:606:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:607:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:608:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:609:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:610:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:611:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:612:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:613:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:614:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:615:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:616:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:617:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:618:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:619:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:620:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:621:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:622:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:623:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:624:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:625:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:626:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:627:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:628:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:629:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:630:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:631:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:632:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:633:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:634:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:635:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:636:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:637:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:638:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:639:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:640:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:641:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:642:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:643:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:644:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:645:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:646:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:647:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:648:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:649:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:650:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:651:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:652:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:653:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:654:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:655:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:656:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:657:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:658:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:659:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:660:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:661:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:662:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:663:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:664:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:665:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:666:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:668:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:669:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:670:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:671:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:672:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:673:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:674:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:675:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:676:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:677:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:678:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:679:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:680:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:681:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:682:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:683:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:684:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:685:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:686:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:687:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:688:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:689:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:690:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:691:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:692:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:693:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:694:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:695:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:696:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:697:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:698:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:699:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:700:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:701:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:702:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:703:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:704:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:705:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:706:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:707:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:708:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:709:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:710:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:711:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:712:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:713:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:714:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:715:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:716:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:717:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:718:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:719:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:720:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:721:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:722:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:723:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:724:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:725:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:726:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:727:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:728:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:729:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:730:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:731:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:732:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:733:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:734:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:735:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:736:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:737:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:738:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:739:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:740:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:741:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:742:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:743:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:744:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:745:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:746:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:747:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:748:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:749:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:750:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:751:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:752:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:753:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:754:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:755:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff000040121468
+turn10-artifacts/aarch64-test/serial.txt:756:[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0x7

@@ -1,0 +1,44 @@
+=========================================
+ARM64 Boot Test (Native QEMU)
+=========================================
+Kernel: /tmp/breenix-turn9-C/target/aarch64-breenix/release/kernel-aarch64
+ext2 disk: /tmp/breenix-turn9-C/target/ext2-aarch64.img
+
+Attempt 1/5...
+qemu-system-aarch64: terminating on signal 15 from pid 87545 (<unknown process>)
+FAIL: Userspace not detected (      82 lines)
+Retrying...
+Attempt 2/5...
+qemu-system-aarch64: terminating on signal 15
+FAIL: Userspace not detected (      82 lines)
+Retrying...
+Attempt 3/5...
+qemu-system-aarch64: terminating on signal 15 from pid 89142 (<unknown process>)
+FAIL: Userspace not detected (      82 lines)
+Retrying...
+Attempt 4/5...
+qemu-system-aarch64: terminating on signal 15 from pid 89710 (<unknown process>)
+FAIL: Userspace not detected (      82 lines)
+Retrying...
+Attempt 5/5...
+qemu-system-aarch64: terminating on signal 15 from pid 90454 (<unknown process>)
+FAIL: Userspace not detected (      82 lines)
+
+=========================================
+ARM64 BOOT TEST: FAILED (after 5 attempts)
+=========================================
+
+NOTE: If this test frequently requires retries or fails repeatedly,
+there may be a regression. Check recent changes to boot code.
+
+Last output:
+[drivers] VirtIO sound driver init failed: No VirtIO Sound device found
+[drivers] Driver subsystem initialized (MMIO)
+[drivers] PCI ECAM at 0x4010000000, enumerating PCI bus...
+[drivers] Found 1 PCI devices
+[pci] 00:00.0 [1b36:0008] class=06/00
+[drivers] AHCI PCI init failed: No AHCI controller found
+[drivers] Driver subsystem initialized (hybrid MMIO+PCI)
+[boot] Found 6 devices
+[drivers] Running post-init self-tests...
+[virtio-blk] Testing read of sector 0...

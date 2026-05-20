@@ -1,0 +1,44 @@
+=========================================
+ARM64 Boot Test (Native QEMU)
+=========================================
+Kernel: /tmp/breenix-turn9-base/target/aarch64-breenix/release/kernel-aarch64
+ext2 disk: /tmp/breenix-turn9-base/target/ext2-aarch64.img
+
+Attempt 1/5...
+qemu-system-aarch64: terminating on signal 15 from pid 92634 (<unknown process>)
+FAIL: Userspace not detected (  331010 lines)
+Retrying...
+Attempt 2/5...
+qemu-system-aarch64: terminating on signal 15 from pid 93419 (<unknown process>)
+FAIL: Userspace not detected (  328364 lines)
+Retrying...
+Attempt 3/5...
+qemu-system-aarch64: terminating on signal 15 from pid 94152 (<unknown process>)
+FAIL: Userspace not detected (  333046 lines)
+Retrying...
+Attempt 4/5...
+qemu-system-aarch64: terminating on signal 15 from pid 94792 (<unknown process>)
+FAIL: Userspace not detected (  323379 lines)
+Retrying...
+Attempt 5/5...
+qemu-system-aarch64: terminating on signal 15 from pid 95843 (<unknown process>)
+FAIL: Userspace not detected (  329890 lines)
+
+=========================================
+ARM64 BOOT TEST: FAILED (after 5 attempts)
+=========================================
+
+NOTE: If this test frequently requires retries or fails repeatedly,
+there may be a regression. Check recent changes to boot code.
+
+Last output:
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff0000401902e0
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff0000401902e0
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff0000401902e0
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff0000401902e0
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff0000401902e0
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff0000401902e0
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff0000401902e0
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff0000401902e0
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff0000401902e0
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff0000401902e0
