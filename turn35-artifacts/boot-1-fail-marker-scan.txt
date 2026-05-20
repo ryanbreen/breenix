@@ -1,0 +1,15 @@
+254:[drivers] VirtIO block test failed: Block device not initialized
+404:  KERNEL PANIC!
+406:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+415:  KERNEL PANIC!
+417:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+426:  KERNEL PANIC!
+428:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+437:  KERNEL PANIC!
+439:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+448:  KERNEL PANIC!
+450:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+459:  KERNEL PANIC!
+461:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+470:  KERNEL PANIC!
+472:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:

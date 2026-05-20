@@ -1,0 +1,291 @@
+Creating ext2 disk image...
+  Arch: aarch64
+  Output: /Users/wrb/fun/code/breenix/target/ext2-aarch64.img
+  Size: 256MB
+  Using Docker to create ext2 filesystem...
+  Installed BusyBox with hardlinks in /bin and /sbin
+Installing other binaries...
+  Installed 51 binaries in /bin
+  Installed 3 binaries in /sbin
+  Installed 5 C binaries in /usr/local/cbin
+  Installed 95 test binaries in /usr/local/test/bin
+  Installed 29 fonts in /usr/share/fonts
+  Created /etc/fonts.conf
+  Created /etc/hotkeys.conf
+  Created /etc/init.js
+
+ext2 filesystem contents:
+  Binaries in /bin:
+total 33440
+drwxr-xr-x    2 root     root          3072 May 20 23:12 .
+drwxr-xr-x   12 root     root          1024 May 20 23:12 ..
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 ash
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 awk
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 basename
+-rwxr-xr-x    1 root     root        311600 May 20 23:12 bcat
+-rwxr-xr-x    1 root     root        422256 May 20 23:12 bcheck
+-rwxr-xr-x    1 root     root        305128 May 20 23:12 bcp
+-rwxr-xr-x    1 root     root        297456 May 20 23:12 becho
+-rwxr-xr-x    1 root     root        276808 May 20 23:12 bfalse
+-rwxr-xr-x    1 root     root        484760 May 20 23:12 bfontpicker
+-rwxr-xr-x    1 root     root        313408 May 20 23:12 bhead
+-rwxr-xr-x    1 root     root        358184 May 20 23:12 biconkit
+-rwxr-xr-x    1 root     root        460632 May 20 23:12 blauncher
+-rwxr-xr-x    1 root     root        294680 May 20 23:12 bless
+-rwxr-xr-x    1 root     root        467888 May 20 23:12 blog
+-rwxr-xr-x    1 root     root        325832 May 20 23:12 bls
+-rwxr-xr-x    1 root     root        306520 May 20 23:12 bmkdir
+-rwxr-xr-x    1 root     root        302608 May 20 23:12 bmv
+-rwxr-xr-x    1 root     root        388152 May 20 23:12 bounce
+-rwxr-xr-x    1 root     root        302184 May 20 23:12 brm
+-rwxr-xr-x    1 root     root        302184 May 20 23:12 brmdir
+-rwxr-xr-x    1 root     root        734392 May 20 23:12 bsh
+-rwxr-xr-x    1 root     root        408848 May 20 23:12 bssh
+-rwxr-xr-x    1 root     root        441008 May 20 23:12 bsshd
+-rwxr-xr-x    1 root     root        315816 May 20 23:12 btail
+-rwxr-xr-x    1 root     root        476584 May 20 23:12 bterm
+-rwxr-xr-x    1 root     root        293112 May 20 23:12 btop
+-rwxr-xr-x    1 root     root        306896 May 20 23:12 btrace
+-rwxr-xr-x    1 root     root        276800 May 20 23:12 btrue
+-rwxr-xr-x    1 root     root        636224 May 20 23:12 burl
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 busybox
+-rwxr-xr-x    1 root     root        312144 May 20 23:12 bwc
+-rwxr-xr-x    1 root     root        303160 May 20 23:12 bwhich
+-rwxr-xr-x    1 root     root        429208 May 20 23:12 bwm
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 cat
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 chgrp
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 chmod
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 chown
+-rwxr-xr-x    1 root     root        303336 May 20 23:12 concurrent_recv_stress
+-rwxr-xr-x    1 root     root        303536 May 20 23:12 confetti
+-rwxr-xr-x    1 root     root        290448 May 20 23:12 counter
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 cp
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 cut
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 date
+-rwxr-xr-x    1 root     root        304008 May 20 23:12 demo
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 df
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 dirname
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 du
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 echo
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 env
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 expr
+-rwxr-xr-x    1 root     root        294184 May 20 23:12 f32o_perfdiag
+-rwxr-xr-x    1 root     root        302392 May 20 23:12 fart
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 find
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 free
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 grep
+-rwxr-xr-x    1 root     root        538784 May 20 23:12 guskit
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 head
+-rwxr-xr-x    1 root     root        290128 May 20 23:12 heartbeat
+-rwxr-xr-x    1 root     root        278000 May 20 23:12 hello_raw
+-rwxr-xr-x    1 root     root        290328 May 20 23:12 hello_time
+-rwxr-xr-x    1 root     root        351216 May 20 23:12 hello_world
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 hexdump
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 hostname
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 id
+-rwxr-xr-x    1 root     root        388856 May 20 23:12 init_shell
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 ls
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 md5sum
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 mkdir
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 more
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 mv
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 od
+-rwxr-xr-x    1 root     root        304200 May 20 23:12 particles
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 printf
+-rwxr-xr-x    1 root     root        305352 May 20 23:12 rectangles
+-rwxr-xr-x    1 root     root        301448 May 20 23:12 resolution
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 rm
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 rmdir
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 sed
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 seq
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 sh
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 sha256sum
+-rwxr-xr-x    1 root     root        291080 May 20 23:12 signal_exec_check
+-rwxr-xr-x    1 root     root        276816 May 20 23:12 simple_exit
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 sleep
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 sort
+-rwxr-xr-x    1 root     root        290472 May 20 23:12 spinner
+-rwxr-xr-x    1 root     root        290176 May 20 23:12 syscall_enosys
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 tail
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 tee
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 test
+-rwxr-xr-x    1 root     root        294304 May 20 23:12 tones
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 tr
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 uniq
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 vi
+-rwxr-xr-x    1 root     root        306120 May 20 23:12 wait_stress
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 wc
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 which
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 whoami
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 xargs
+-rwxr-xr-x    1 root     root        292264 May 20 23:12 xhci_counters
+  Test binaries in /usr/local/test/bin:
+total 28663
+drwxr-xr-x    2 root     root          5120 May 20 23:12 .
+drwxr-xr-x    3 root     root          1024 May 20 23:12 ..
+-rwxr-xr-x    1 root     root        291528 May 20 23:12 access_test
+-rwxr-xr-x    1 root     root        293376 May 20 23:12 alarm_test
+-rwxr-xr-x    1 root     root        298184 May 20 23:12 argv_test
+-rwxr-xr-x    1 root     root        293848 May 20 23:12 blocking_recv_test
+-rwxr-xr-x    1 root     root        292880 May 20 23:12 brk_test
+-rwxr-xr-x    1 root     root        293560 May 20 23:12 cat_test
+-rwxr-xr-x    1 root     root        295096 May 20 23:12 clock_gettime_test
+-rwxr-xr-x    1 root     root        307552 May 20 23:12 cloexec_test
+-rwxr-xr-x    1 root     root        292368 May 20 23:12 cow_cleanup_test
+-rwxr-xr-x    1 root     root        292784 May 20 23:12 cow_oom_test
+-rwxr-xr-x    1 root     root        293488 May 20 23:12 cow_readonly_test
+-rwxr-xr-x    1 root     root        299168 May 20 23:12 cow_signal_test
+-rwxr-xr-x    1 root     root        293600 May 20 23:12 cow_sole_owner_test
+-rwxr-xr-x    1 root     root        293672 May 20 23:12 cow_stress_test
+-rwxr-xr-x    1 root     root        292896 May 20 23:12 cp_mv_argv_test
+-rwxr-xr-x    1 root     root        298680 May 20 23:12 ctrl_c_test
+-rwxr-xr-x    1 root     root        292504 May 20 23:12 cwd_test
+-rwxr-xr-x    1 root     root        292560 May 20 23:12 devfs_test
+-rwxr-xr-x    1 root     root        306952 May 20 23:12 dns_test
+-rwxr-xr-x    1 root     root        305112 May 20 23:12 dup_test
+-rwxr-xr-x    1 root     root        291736 May 20 23:12 echo_argv_test
+-rwxr-xr-x    1 root     root        291240 May 20 23:12 exec_argv_test
+-rwxr-xr-x    1 root     root        298784 May 20 23:12 exec_from_ext2_test
+-rwxr-xr-x    1 root     root        292888 May 20 23:12 exec_stack_argv_test
+-rwxr-xr-x    1 root     root        291904 May 20 23:12 false_test
+-rwxr-xr-x    1 root     root        297224 May 20 23:12 fbinfo_test
+-rwxr-xr-x    1 root     root        299648 May 20 23:12 fcntl_test
+-rwxr-xr-x    1 root     root        317304 May 20 23:12 fifo_test
+-rwxr-xr-x    1 root     root        292328 May 20 23:12 file_read_test
+-rwxr-xr-x    1 root     root        304344 May 20 23:12 fork_memory_test
+-rwxr-xr-x    1 root     root        297664 May 20 23:12 fork_pending_signal_test
+-rwxr-xr-x    1 root     root        305000 May 20 23:12 fork_state_test
+-rwxr-xr-x    1 root     root        298128 May 20 23:12 fork_test
+-rwxr-xr-x    1 root     root        300200 May 20 23:12 fs_block_alloc_test
+-rwxr-xr-x    1 root     root        293208 May 20 23:12 fs_directory_test
+-rwxr-xr-x    1 root     root        292296 May 20 23:12 fs_large_file_test
+-rwxr-xr-x    1 root     root        293256 May 20 23:12 fs_link_test
+-rwxr-xr-x    1 root     root        297336 May 20 23:12 fs_rename_test
+-rwxr-xr-x    1 root     root        293432 May 20 23:12 fs_write_test
+-rwxr-xr-x    1 root     root        293888 May 20 23:12 getdents_test
+-rwxr-xr-x    1 root     root        293328 May 20 23:12 head_test
+-rwxr-xr-x    1 root     root        616784 May 20 23:12 http_fetch_test
+-rwxr-xr-x    1 root     root        622792 May 20 23:12 http_test
+-rwxr-xr-x    1 root     root        293832 May 20 23:12 itimer_test
+-rwxr-xr-x    1 root     root        298536 May 20 23:12 job_control_test
+-rwxr-xr-x    1 root     root        308504 May 20 23:12 job_table_test
+-rwxr-xr-x    1 root     root        299304 May 20 23:12 kill_process_group_test
+-rwxr-xr-x    1 root     root        298616 May 20 23:12 ls_test
+-rwxr-xr-x    1 root     root        292544 May 20 23:12 lseek_test
+-rwxr-xr-x    1 root     root        292200 May 20 23:12 mkdir_argv_test
+-rwxr-xr-x    1 root     root        303200 May 20 23:12 net_test
+-rwxr-xr-x    1 root     root        293344 May 20 23:12 nonblock_eagain_test
+-rwxr-xr-x    1 root     root        303992 May 20 23:12 nonblock_test
+-rwxr-xr-x    1 root     root        299408 May 20 23:12 pause_test
+-rwxr-xr-x    1 root     root        304296 May 20 23:12 pipe2_test
+-rwxr-xr-x    1 root     root        304320 May 20 23:12 pipe_concurrent_test
+-rwxr-xr-x    1 root     root        305080 May 20 23:12 pipe_fork_test
+-rwxr-xr-x    1 root     root        316608 May 20 23:12 pipe_refcount_test
+-rwxr-xr-x    1 root     root        299256 May 20 23:12 pipe_test
+-rwxr-xr-x    1 root     root        305704 May 20 23:12 pipeline_test
+-rwxr-xr-x    1 root     root        304712 May 20 23:12 poll_test
+-rwxr-xr-x    1 root     root        293456 May 20 23:12 pty_test
+-rwxr-xr-x    1 root     root        288888 May 20 23:12 register_init_test
+-rwxr-xr-x    1 root     root        291840 May 20 23:12 rm_argv_test
+-rwxr-xr-x    1 root     root        304440 May 20 23:12 select_test
+-rwxr-xr-x    1 root     root        304824 May 20 23:12 session_test
+-rwxr-xr-x    1 root     root        293192 May 20 23:12 shell_pipe_test
+-rwxr-xr-x    1 root     root        305296 May 20 23:12 sigaltstack_test
+-rwxr-xr-x    1 root     root        294632 May 20 23:12 sigchld_job_test
+-rwxr-xr-x    1 root     root        292040 May 20 23:12 sigchld_test
+-rwxr-xr-x    1 root     root        299712 May 20 23:12 signal_exec_test
+-rwxr-xr-x    1 root     root        298800 May 20 23:12 signal_fork_test
+-rwxr-xr-x    1 root     root        298032 May 20 23:12 signal_handler_test
+-rwxr-xr-x    1 root     root        298616 May 20 23:12 signal_regs_test
+-rwxr-xr-x    1 root     root        299304 May 20 23:12 signal_return_test
+-rwxr-xr-x    1 root     root        298280 May 20 23:12 signal_test
+-rwxr-xr-x    1 root     root        304816 May 20 23:12 sigsuspend_test
+-rwxr-xr-x    1 root     root        304584 May 20 23:12 sleep_debug_test
+-rwxr-xr-x    1 root     root        291856 May 20 23:12 stdin_test
+-rwxr-xr-x    1 root     root        289072 May 20 23:12 syscall_diagnostic_test
+-rwxr-xr-x    1 root     root        293272 May 20 23:12 tail_test
+-rwxr-xr-x    1 root     root        320008 May 20 23:12 tcp_blocking_test
+-rwxr-xr-x    1 root     root        297192 May 20 23:12 tcp_client_test
+-rwxr-xr-x    1 root     root        318696 May 20 23:12 tcp_socket_test
+-rwxr-xr-x    1 root     root        291968 May 20 23:12 test_mmap
+-rwxr-xr-x    1 root     root        291496 May 20 23:12 timer_test
+-rwxr-xr-x    1 root     root        291904 May 20 23:12 true_test
+-rwxr-xr-x    1 root     root        303352 May 20 23:12 tty_test
+-rwxr-xr-x    1 root     root        305616 May 20 23:12 udp_socket_test
+-rwxr-xr-x    1 root     root        310280 May 20 23:12 unix_named_socket_test
+-rwxr-xr-x    1 root     root        323008 May 20 23:12 unix_socket_test
+-rwxr-xr-x    1 root     root        298944 May 20 23:12 waitpid_test
+-rwxr-xr-x    1 root     root        297880 May 20 23:12 wc_test
+-rwxr-xr-x    1 root     root        293152 May 20 23:12 which_test
+-rwxr-xr-x    1 root     root        292496 May 20 23:12 wnohang_timing_test
+  Test files:
+-rw-r--r--    1 root     root           349 May 20 23:12 /mnt/ext2/etc/hotkeys.conf
+-rw-r--r--    1 root     root            83 May 20 23:12 /mnt/ext2/etc/passwd
+-rw-r--r--    1 root     root            26 May 20 23:12 /mnt/ext2/etc/group
+-rw-r--r--    1 root     root           367 May 20 23:12 /mnt/ext2/etc/bshrc
+-rw-r--r--    1 root     root           679 May 20 23:12 /mnt/ext2/etc/init.js
+-rw-r--r--    1 root     root           445 May 20 23:12 /mnt/ext2/etc/fonts.conf
+-rw-r--r--    1 root     root             0 May 20 23:12 /mnt/ext2/empty.txt
+-rw-r--r--    1 root     root            19 May 20 23:12 /mnt/ext2/trunctest.txt
+-rw-r--r--    1 root     root        532636 May 20 23:12 /mnt/ext2/usr/share/fonts/OpenSans-Regular.ttf
+-rw-r--r--    1 root     root        351884 May 20 23:12 /mnt/ext2/usr/share/fonts/Ubuntu-Regular.ttf
+-rw-r--r--    1 root     root        282844 May 20 23:12 /mnt/ext2/usr/share/fonts/Merriweather-Regular.ttf
+-rw-r--r--    1 root     root        160316 May 20 23:12 /mnt/ext2/usr/share/fonts/Poppins-Regular.ttf
+-rw-r--r--    1 root     root        309408 May 20 23:12 /mnt/ext2/usr/share/fonts/Hack-Regular.ttf
+-rw-r--r--    1 root     root        757076 May 20 23:12 /mnt/ext2/usr/share/fonts/DejaVuSans.ttf
+-rw-r--r--    1 root     root       1887192 May 20 23:12 /mnt/ext2/usr/share/fonts/NotoSerif-Regular.ttf
+-rw-r--r--    1 root     root        646340 May 20 23:12 /mnt/ext2/usr/share/fonts/SourceSans3-Regular.ttf
+-rw-r--r--    1 root     root        108684 May 20 23:12 /mnt/ext2/usr/share/fonts/Inconsolata-Regular.ttf
+-rw-r--r--    1 root     root       1209508 May 20 23:12 /mnt/ext2/usr/share/fonts/SourceSerif4-Regular.ttf
+-rw-r--r--    1 root     root        876576 May 20 23:12 /mnt/ext2/usr/share/fonts/Inter-Regular.ttf
+-rw-r--r--    1 root     root        260364 May 20 23:12 /mnt/ext2/usr/share/fonts/FiraCode-Regular.ttf
+-rw-r--r--    1 root     root       1708408 May 20 23:12 /mnt/ext2/usr/share/fonts/NotoSansMono-Regular.ttf
+-rw-r--r--    1 root     root        135580 May 20 23:12 /mnt/ext2/usr/share/fonts/IBMPlexMono-Regular.ttf
+-rw-r--r--    1 root     root        656568 May 20 23:12 /mnt/ext2/usr/share/fonts/Lato-Regular.ttf
+-rw-r--r--    1 root     root        300724 May 20 23:12 /mnt/ext2/usr/share/fonts/PlayfairDisplay-Regular.ttf
+-rw-r--r--    1 root     root       2049096 May 20 23:12 /mnt/ext2/usr/share/fonts/NotoSans-Regular.ttf
+-rw-r--r--    1 root     root        183700 May 20 23:12 /mnt/ext2/usr/share/fonts/RobotoMono-Regular.ttf
+-rw-r--r--    1 root     root        340712 May 20 23:12 /mnt/ext2/usr/share/fonts/DejaVuSansMono.ttf
+-rw-r--r--    1 root     root        744936 May 20 23:12 /mnt/ext2/usr/share/fonts/Montserrat-Regular.ttf
+-rw-r--r--    1 root     root        598060 May 20 23:12 /mnt/ext2/usr/share/fonts/CascadiaCode-Regular.ttf
+-rw-r--r--    1 root     root        276932 May 20 23:12 /mnt/ext2/usr/share/fonts/Nunito-Regular.ttf
+-rw-r--r--    1 root     root        212340 May 20 23:12 /mnt/ext2/usr/share/fonts/SourceCodePro-Regular.ttf
+-rw-r--r--    1 root     root        273900 May 20 23:12 /mnt/ext2/usr/share/fonts/JetBrainsMono-Regular.ttf
+-rw-r--r--    1 root     root        488584 May 20 23:12 /mnt/ext2/usr/share/fonts/Roboto-Regular.ttf
+-rw-r--r--    1 root     root        312352 May 20 23:12 /mnt/ext2/usr/share/fonts/Raleway-Regular.ttf
+-rw-r--r--    1 root     root        212196 May 20 23:12 /mnt/ext2/usr/share/fonts/Lora-Regular.ttf
+-rw-r--r--    1 root     root        205748 May 20 23:12 /mnt/ext2/usr/share/fonts/UbuntuMono-Regular.ttf
+-rw-r--r--    1 root     root        359048 May 20 23:12 /mnt/ext2/usr/share/fonts/PTSerif-Regular.ttf
+-rwxr-xr-x    1 root     root        108816 May 20 23:12 /mnt/ext2/usr/local/cbin/rlimit_musl_test
+-rwxr-xr-x    1 root     root        109624 May 20 23:12 /mnt/ext2/usr/local/cbin/env_musl_test
+-rwxr-xr-x    1 root     root        133160 May 20 23:12 /mnt/ext2/usr/local/cbin/identity_musl_test
+-rwxr-xr-x    1 root     root        108720 May 20 23:12 /mnt/ext2/usr/local/cbin/hello_musl
+-rwxr-xr-x    1 root     root        108904 May 20 23:12 /mnt/ext2/usr/local/cbin/uname_musl_test
+-rwxr-xr-x    1 root     root        291528 May 20 23:12 /mnt/ext2/sbin/blogd
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 /mnt/ext2/sbin/true
+-rwxr-xr-x    1 root     root        298632 May 20 23:12 /mnt/ext2/sbin/telnetd
+-rwxr-xr-x    1 root     root        296776 May 20 23:12 /mnt/ext2/sbin/init
+-rwxr-xr-x   51 root     root        329400 May 20 23:12 /mnt/ext2/sbin/false
+-rw-r--r--    1 root     root           111 May 20 23:12 /mnt/ext2/lines.txt
+-rw-r--r--    1 root     root            20 May 20 23:12 /mnt/ext2/test/nested.txt
+-rw-r--r--    1 root     root            17 May 20 23:12 /mnt/ext2/hello.txt
+-rw-r--r--    1 root     root            20 May 20 23:12 /mnt/ext2/deep/path/to/file/data.txt
+
+ext2 image created successfully
+
+ext2 disk created and copied to testdata/:
+  /Users/wrb/fun/code/breenix/target/ext2-aarch64.img
+  /Users/wrb/fun/code/breenix/testdata/ext2-aarch64.img
+  Size: 256M
+
+Contents:
+  /bin/busybox - BusyBox multi-call binary
+  /bin/{cat,ls,head,...} - BusyBox hardlinks
+  /sbin/{true,false} - BusyBox hardlinks
+  /bin/* - Other userspace binaries (demos)
+  /usr/local/test/bin/* - Test binaries (*_test, test_*)
+  /sbin/telnetd - telnet daemon
+  /hello.txt - test file (1 line)
+  /lines.txt - multi-line test file (15 lines) for head/tail/wc
+  /test/nested.txt - nested test file
+  /deep/path/to/file/data.txt - deep nested test file
