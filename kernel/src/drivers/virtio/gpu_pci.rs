@@ -1697,11 +1697,12 @@ pub fn disable_virgl() {
 // MSI Interrupt Support
 // =============================================================================
 
-/// Set up PCI MSI-X or MSI for the VirtIO GPU through GICv2m.
+/// Set up PCI MSI-X for the VirtIO GPU through GICv2m.
 ///
 /// VirtIO modern GPU devices use MSI-X (cap 0x11), not plain MSI (cap 0x05).
 /// Breenix requires the same two-vector layout Linux uses on Parallels:
 /// vector 0 for config and vector 1 shared by all virtqueues.
+/// Plain MSI is logged as unusable below and returns GpuMsiConfig::NONE.
 ///
 /// Returns the allocated config and shared-virtqueue SPIs, or NONE if MSI-X is unavailable.
 #[cfg(target_arch = "aarch64")]
@@ -1711,7 +1712,7 @@ fn setup_gpu_msi(pci_dev: &crate::drivers::pci::Device) -> GpuMsiConfig {
     // Dump PCI capabilities for diagnostic visibility
     pci_dev.dump_capabilities();
 
-    // Step 1: Probe GICv2m (needed for both MSI-X and MSI)
+    // Step 1: Probe GICv2m for the required MSI-X vectors.
     const PARALLELS_GICV2M_BASE: u64 = 0x0225_0000;
     let gicv2m_base = crate::platform_config::gicv2m_base_phys();
     let base = if gicv2m_base != 0 {

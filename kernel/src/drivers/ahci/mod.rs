@@ -2276,11 +2276,15 @@ fn probe_platform_irq(ctrl: &AhciController) {
     );
 }
 
-/// AHCI MSI interrupt handler — called from the IRQ dispatch in `exception.rs`.
+/// AHCI interrupt handler — called from the IRQ dispatch in `exception.rs`.
 ///
 /// Reads HBA_IS to identify which port(s) fired, acknowledges the sampled
 /// PORT_IS, then derives completions from the per-port active-slot mask and
 /// PORT_CI until the port is stable.
+///
+/// Handles both PCI MSI/MSI-X edge-triggered delivery and platform wired,
+/// level-triggered IRQs. AHCI_IRQ_EDGE selects whether the ISR can trust
+/// HBA_IS alone or must also scan PORT_IS for all ports.
 ///
 /// This function must be lock-free and allocation-free (called from IRQ context).
 const AHCI_CI_COMPLETION_LOOP_LIMIT: u32 = 8;
