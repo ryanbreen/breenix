@@ -1,0 +1,9 @@
+[timer] cpu0 ticks=5000
+[timer] cpu0 ticks=10000
+[timer] cpu0 ticks=15000
+[timer] cpu0 ticks=20000
+[timer] cpu0 ticks=25000
+[timer] cpu0 ticks=30000
+[timer] cpu0 ticks=35000
+[timer] cpu0 ticks=40000
+[timer] cpu0 ticks=45000

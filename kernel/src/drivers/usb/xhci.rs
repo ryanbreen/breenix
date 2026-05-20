@@ -466,7 +466,7 @@ pub static DIAG_KBD_EP_STATE: AtomicU32 = AtomicU32::new(0);
 pub static DIAG_SPI_ENABLE_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Set once after the first deferred SPI activation; handle_interrupt
 /// keeps SPI alive after that, so poll_hid_events doesn't re-enable.
-static SPI_ACTIVATED: AtomicBool = AtomicBool::new(false);
+pub static SPI_ACTIVATED: AtomicBool = AtomicBool::new(false);
 /// Diagnostic counter for doorbell/transfer events (shown as `db=` in heartbeat).
 pub static DIAG_DOORBELL_EP_STATE: AtomicU32 = AtomicU32::new(0);
 /// Diagnostic: last CC received for any GET_REPORT Transfer Event (0xFF = none seen yet).
@@ -5495,6 +5495,42 @@ pub fn handle_interrupt() {
     }
 }
 
+/// Activate the xHCI GIC SPI exactly once.
+///
+/// Idempotent: subsequent calls are no-ops via `SPI_ACTIVATED`.
+/// Safe to call from any context that holds `XHCI_LOCK`.
+///
+/// Must be called only after boot-critical storage/filesystem work is complete.
+/// Enabling at the end of xHCI init is too early: the reverted `703db7de`
+/// attempt could starve AHCI/ext2 I/O before `/sbin/init` was preloaded.
+fn activate_msi_if_ready_locked(state: &XhciState, source: &str, log_success: bool) -> bool {
+    if state.irq == 0 {
+        return false;
+    }
+
+    if SPI_ACTIVATED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return false;
+    }
+
+    crate::arch_impl::aarch64::gic::clear_spi_pending(state.irq);
+    crate::arch_impl::aarch64::gic::enable_spi(state.irq);
+    let count = DIAG_SPI_ENABLE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+
+    if log_success {
+        crate::serial_println!(
+            "[xhci] activate_msi_if_ready: source={} spi={} DIAG_SPI_ENABLE_COUNT={}",
+            source,
+            state.irq,
+            count
+        );
+    }
+
+    true
+}
+
 // =============================================================================
 // Polling Mode (fallback for systems without interrupt support)
 // =============================================================================
@@ -6094,16 +6130,11 @@ pub fn poll_hid_events() {
         }
     }
 
-    // Deferred MSI activation.
-    // Enable SPI after a short stabilization period (50 polls = 250ms)
-    // so xHCI init completes before interrupts start firing.
-    // Once enabled, handle_interrupt() re-enables SPI after each invocation,
-    // so this only matters for the very first activation.
+    // TRANSITIONAL FALLBACK: enable SPI from the timer poller if the
+    // system-ready boot path did not beat it. This should disappear once
+    // Parallels MSI delivery is proven independent of CPU0 timer polling.
     if state.irq != 0 && poll >= 50 && !SPI_ACTIVATED.load(Ordering::Relaxed) {
-        SPI_ACTIVATED.store(true, Ordering::Release);
-        crate::arch_impl::aarch64::gic::clear_spi_pending(state.irq);
-        crate::arch_impl::aarch64::gic::enable_spi(state.irq);
-        DIAG_SPI_ENABLE_COUNT.fetch_add(1, Ordering::Relaxed);
+        activate_msi_if_ready_locked(state, "timer-fallback", false);
     }
 
     // Ensure HID_TRBS_QUEUED is set after initialization completes.
@@ -6268,6 +6299,31 @@ pub fn poll_hid_events() {
 /// Check if the XHCI controller has been initialized.
 pub fn is_initialized() -> bool {
     XHCI_INITIALIZED.load(Ordering::Acquire)
+}
+
+/// Activate the xHCI MSI SPI after boot-critical storage/filesystem work.
+pub fn activate_msi_if_ready() -> bool {
+    if !XHCI_INITIALIZED.load(Ordering::Acquire) {
+        return false;
+    }
+
+    if SPI_ACTIVATED.load(Ordering::Acquire) {
+        return false;
+    }
+
+    let _guard = match XHCI_LOCK.try_lock() {
+        Some(g) => g,
+        None => return false,
+    };
+
+    let state = unsafe {
+        match (*(&raw const XHCI_STATE)).as_ref() {
+            Some(s) => s,
+            None => return false,
+        }
+    };
+
+    activate_msi_if_ready_locked(state, "system-ready", true)
 }
 
 /// Get the GIC INTID for the XHCI controller's interrupt.

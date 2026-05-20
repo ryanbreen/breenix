@@ -859,6 +859,21 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         None
     };
 
+    kernel::drivers::usb::xhci::activate_msi_if_ready();
+    // Boot-context observability for Parallels MSI delivery. This runs once,
+    // before timer init, so it does not depend on CPU0 timer polling.
+    for _ in 0..1_000_000 {
+        core::hint::spin_loop();
+    }
+    serial_println!(
+        "[xhci] post-activation: MSI_EVENT_COUNT={} EVENT_COUNT={} POLL_COUNT={} SPI_ACTIVATED={}",
+        kernel::drivers::usb::xhci::MSI_EVENT_COUNT
+            .load(core::sync::atomic::Ordering::Relaxed),
+        kernel::drivers::usb::xhci::EVENT_COUNT.load(core::sync::atomic::Ordering::Relaxed),
+        kernel::drivers::usb::xhci::POLL_COUNT.load(core::sync::atomic::Ordering::Relaxed),
+        kernel::drivers::usb::xhci::SPI_ACTIVATED.load(core::sync::atomic::Ordering::Relaxed),
+    );
+
     // Initialize timer interrupt for preemptive scheduling
     // This MUST come after per-CPU data and scheduler are initialized
     serial_println!("[boot] Initializing timer interrupt...");
