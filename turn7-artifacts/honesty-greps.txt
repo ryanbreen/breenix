@@ -1,0 +1,10 @@
+sound polling:
+0
+block polling:
+0
+block precondition:
+469:            return Err("Block IRQ completion unavailable before interrupts are enabled");
+560:            return Err("Block IRQ completion unavailable before interrupts are enabled");
+sound precondition:
+476:            return Err("Sound IRQ completion unavailable before interrupts are enabled");
+541:            return Err("Sound IRQ completion unavailable before interrupts are enabled");
