@@ -71,6 +71,10 @@ name = "syscall_enosys"
 path = "src/syscall_enosys.rs"
 
 [[bin]]
+name = "xhci_counters"
+path = "src/xhci_counters.rs"
+
+[[bin]]
 name = "clock_gettime_test"
 path = "src/clock_gettime_test.rs"
 

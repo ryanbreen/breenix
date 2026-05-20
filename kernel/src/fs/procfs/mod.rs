@@ -88,6 +88,8 @@ pub enum ProcEntryType {
     XhciDir,
     /// /proc/xhci/trace - xHCI trace buffer
     XhciTrace,
+    /// /proc/xhci/counters - xHCI trace counters
+    XhciCounters,
     /// /proc/[pid] - per-process directory (dynamic, not registered)
     PidDir(u64),
     /// /proc/[pid]/status - per-process status (dynamic, not registered)
@@ -121,6 +123,7 @@ impl ProcEntryType {
             ProcEntryType::Kmsg => "kmsg",
             ProcEntryType::XhciDir => "xhci",
             ProcEntryType::XhciTrace => "trace",
+            ProcEntryType::XhciCounters => "counters",
             ProcEntryType::PidDir(_) => "pid",
             ProcEntryType::PidStatus(_) => "status",
         }
@@ -152,6 +155,7 @@ impl ProcEntryType {
             ProcEntryType::Kmsg => "/proc/kmsg",
             ProcEntryType::XhciDir => "/proc/xhci",
             ProcEntryType::XhciTrace => "/proc/xhci/trace",
+            ProcEntryType::XhciCounters => "/proc/xhci/counters",
             // Dynamic entries don't have static paths
             ProcEntryType::PidDir(_) => "/proc/<pid>",
             ProcEntryType::PidStatus(_) => "/proc/<pid>/status",
@@ -185,6 +189,7 @@ impl ProcEntryType {
             ProcEntryType::Kmsg => 10,
             ProcEntryType::XhciDir => 300,
             ProcEntryType::XhciTrace => 301,
+            ProcEntryType::XhciCounters => 302,
             ProcEntryType::PidDir(pid) => 10000 + pid,
             ProcEntryType::PidStatus(pid) => 20000 + pid,
         }
@@ -269,6 +274,9 @@ pub fn init() {
     procfs
         .entries
         .push(ProcEntry::new(ProcEntryType::XhciTrace));
+    procfs
+        .entries
+        .push(ProcEntry::new(ProcEntryType::XhciCounters));
 
     // Register /proc/trace directory and entries
     procfs.entries.push(ProcEntry::new(ProcEntryType::TraceDir));
@@ -372,6 +380,7 @@ pub fn list_entries() -> Vec<String> {
                         | ProcEntryType::TraceProviders
                         | ProcEntryType::BreenixTesting
                         | ProcEntryType::XhciTrace
+                        | ProcEntryType::XhciCounters
                 )
             })
             .map(|e| String::from(e.entry_type.name()))
@@ -418,7 +427,12 @@ pub fn list_xhci_entries() -> Vec<String> {
     procfs
         .entries
         .iter()
-        .filter(|e| matches!(e.entry_type, ProcEntryType::XhciTrace))
+        .filter(|e| {
+            matches!(
+                e.entry_type,
+                ProcEntryType::XhciTrace | ProcEntryType::XhciCounters
+            )
+        })
         .map(|e| String::from(e.entry_type.name()))
         .collect()
 }
@@ -474,8 +488,12 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<String, i32> {
         }
         #[cfg(target_arch = "aarch64")]
         ProcEntryType::XhciTrace => Ok(xhci::generate_xhci_trace()),
+        #[cfg(target_arch = "aarch64")]
+        ProcEntryType::XhciCounters => Ok(xhci::generate_xhci_counters()),
         #[cfg(not(target_arch = "aarch64"))]
         ProcEntryType::XhciTrace => Ok(String::from("")),
+        #[cfg(not(target_arch = "aarch64"))]
+        ProcEntryType::XhciCounters => Ok(String::from("")),
         ProcEntryType::BreenixDir => {
             // Directory listing
             Ok(String::from("testing\n"))

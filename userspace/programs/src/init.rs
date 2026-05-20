@@ -83,7 +83,12 @@ fn run_boot_script() {
         // proof clear within the Parallels validation window. Start the
         // heartbeat first so scheduler liveness is visible even if BWM wedges
         // immediately after spawn.
-        const SERVICES: &[&[u8]] = &[b"/bin/heartbeat\0", b"/bin/bwm\0", b"/sbin/telnetd\0"];
+        const SERVICES: &[&[u8]] = &[
+            b"/bin/heartbeat\0",
+            b"/bin/xhci_counters\0",
+            b"/bin/bwm\0",
+            b"/sbin/telnetd\0",
+        ];
         for path in SERVICES {
             if let Err(e) = spawn(path) {
                 print!("[init] Warning: failed to spawn service: {}\n", e);

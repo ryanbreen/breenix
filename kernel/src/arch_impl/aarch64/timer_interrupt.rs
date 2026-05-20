@@ -747,19 +747,6 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
     // Increment timer interrupt counter (used for debugging when needed)
     let _count = TIMER_INTERRUPT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
 
-    // CPU 0 only: poll input devices (single-device, not safe from multiple CPUs)
-    if cpu_id == 0 {
-        poll_keyboard_to_stdin();
-        crate::drivers::usb::ehci::poll_keyboard();
-        crate::drivers::usb::xhci::poll_hid_events();
-        if (crate::drivers::virtio::net_pci::is_initialized()
-            || crate::drivers::e1000::is_initialized())
-            && _count % 10 == 0
-        {
-            crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::NetRx);
-        }
-    }
-
     // CPU 0 only: soft lockup detector
     if cpu_id == 0 {
         check_soft_lockup(_count);
@@ -1276,62 +1263,6 @@ fn dump_trace_counters() {
     raw_serial_str(b"\n  Timer IRQ count:  ");
     print_timer_count_decimal(TIMER_INTERRUPT_COUNT.load(Ordering::Relaxed));
     raw_serial_str(b"\n");
-}
-
-/// Poll VirtIO keyboard and push characters to TTY
-///
-/// This routes keyboard input through the TTY subsystem for:
-/// 1. Echo (so you can see what you type)
-/// 2. Line discipline processing (backspace, Ctrl-C, etc.)
-/// 3. Proper stdin delivery to userspace via TTY read
-fn poll_keyboard_to_stdin() {
-    use crate::drivers::virtio::input_mmio::{self, event_type};
-
-    // Track shift state across calls
-    static SHIFT_PRESSED: core::sync::atomic::AtomicBool =
-        core::sync::atomic::AtomicBool::new(false);
-
-    if !input_mmio::is_initialized() {
-        return;
-    }
-
-    for event in input_mmio::poll_events() {
-        if event.event_type == event_type::EV_KEY {
-            let keycode = event.code;
-            let pressed = event.value != 0;
-
-            // Track modifier key state
-            if input_mmio::is_shift(keycode) {
-                SHIFT_PRESSED.store(pressed, core::sync::atomic::Ordering::Relaxed);
-                continue;
-            }
-
-            // Only process key presses and repeats (not releases)
-            if pressed {
-                // Generate VT100 escape sequences for special keys
-                // (F-keys, arrows, Home, End, Delete)
-                if let Some(seq) = input_mmio::keycode_to_escape_seq(keycode) {
-                    for &b in seq {
-                        if !crate::tty::push_char_nonblock(b) {
-                            crate::ipc::stdin::push_byte_from_irq(b);
-                        }
-                    }
-                    continue;
-                }
-
-                let shift = SHIFT_PRESSED.load(core::sync::atomic::Ordering::Relaxed);
-                if let Some(c) = input_mmio::keycode_to_char(keycode, shift) {
-                    // Route through TTY for echo and line discipline processing.
-                    // This is the non-blocking version safe for interrupt context.
-                    if !crate::tty::push_char_nonblock(c as u8) {
-                        // TTY busy - fall back to raw stdin buffer
-                        // (no echo, but at least input isn't lost)
-                        crate::ipc::stdin::push_byte_from_irq(c as u8);
-                    }
-                }
-            }
-        }
-    }
 }
 
 /// Reset the quantum counter for the current CPU (called when switching threads)

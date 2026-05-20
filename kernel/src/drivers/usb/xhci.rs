@@ -5248,6 +5248,8 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
 /// IMAN/ERDP acknowledgment, then re-enables it before returning so the
 /// next event gets a real interrupt with no polling delay.
 pub fn handle_interrupt() {
+    crate::tracing::providers::xhci::count_irq_entry();
+
     if !XHCI_INITIALIZED.load(Ordering::Acquire) {
         // SPI should not be enabled during init (it's deferred until
         // XHCI_INITIALIZED), but if we somehow get here, disable it
@@ -5283,7 +5285,14 @@ pub fn handle_interrupt() {
     // try_lock: IRQ context must never spin on a lock.
     let _guard = match XHCI_LOCK.try_lock() {
         Some(g) => g,
-        None => return, // Lock contended, skip — poll_hid_events will handle events
+        None => {
+            crate::tracing::providers::xhci::count_lock_contended();
+            if state.irq != 0 {
+                crate::arch_impl::aarch64::gic::clear_spi_pending(state.irq);
+                crate::arch_impl::aarch64::gic::enable_spi(state.irq);
+            }
+            return;
+        }
     };
 
     // Acknowledge IMAN and USBSTS
@@ -5318,6 +5327,7 @@ pub fn handle_interrupt() {
             }
 
             MSI_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
+            crate::tracing::providers::xhci::count_msi_event();
 
             let trb_type_val = trb.trb_type();
             match trb_type_val {
@@ -5522,6 +5532,7 @@ fn activate_msi_if_ready_locked(state: &XhciState, source: &str, log_success: bo
     crate::arch_impl::aarch64::gic::clear_spi_pending(state.irq);
     crate::arch_impl::aarch64::gic::enable_spi(state.irq);
     let count = DIAG_SPI_ENABLE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    queue_msi_probe_noop(state);
 
     if log_success {
         crate::serial_println!(
@@ -5533,6 +5544,25 @@ fn activate_msi_if_ready_locked(state: &XhciState, source: &str, log_success: bo
     }
 
     true
+}
+
+static MSI_PROBE_NOOP_QUEUED: AtomicBool = AtomicBool::new(false);
+
+fn queue_msi_probe_noop(state: &XhciState) {
+    if MSI_PROBE_NOOP_QUEUED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+
+    let trb = Trb {
+        param: 0,
+        status: 0,
+        control: trb_type::NOOP << 10,
+    };
+    enqueue_command(trb);
+    ring_doorbell(state, 0, 0);
 }
 
 // =============================================================================

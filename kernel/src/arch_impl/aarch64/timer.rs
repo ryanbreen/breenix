@@ -184,6 +184,24 @@ pub fn arm_timer(ticks: u64) {
         // Enable timer (bit 0 = ENABLE, bit 1 = IMASK - we want interrupts)
         core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
     }
+    sync_parallels_vtimer_after_arm();
+}
+
+#[inline(always)]
+fn sync_parallels_vtimer_after_arm() {
+    if !crate::platform_config::is_parallels() {
+        return;
+    }
+
+    // Parallels/HVF only observes the re-armed virtual timer reliably after a
+    // VM exit. A single GICD_CTLR MMIO read provides that exit without polling
+    // any device status or changing interrupt state.
+    unsafe {
+        const HHDM_BASE: usize = 0xFFFF_0000_0000_0000;
+        let gicd_base = crate::platform_config::gicd_base_phys() as usize;
+        let addr = (HHDM_BASE + gicd_base) as *const u32;
+        core::ptr::read_volatile(addr);
+    }
 }
 
 /// Disable the virtual timer
