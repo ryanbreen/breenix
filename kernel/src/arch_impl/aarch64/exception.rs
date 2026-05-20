@@ -1267,6 +1267,14 @@ fn dispatch_irq_action(irq_id: u32, frame: *const Aarch64ExceptionFrame) {
                     crate::drivers::virtio::net_mmio::handle_interrupt();
                 }
             }
+            // VirtIO block MMIO interrupt dispatch
+            for device_index in 0..crate::drivers::virtio::block_mmio::MAX_BLOCK_DEVICES {
+                if let Some(block_irq) = crate::drivers::virtio::block_mmio::get_irq(device_index) {
+                    if irq_id == block_irq {
+                        crate::drivers::virtio::block_mmio::handle_interrupt(device_index);
+                    }
+                }
+            }
             // XHCI USB interrupt dispatch
             if let Some(xhci_irq) = crate::drivers::usb::xhci::get_irq() {
                 if irq_id == xhci_irq {
