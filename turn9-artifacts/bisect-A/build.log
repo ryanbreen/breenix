@@ -1,0 +1,33 @@
+   Compiling compiler_builtins v0.1.160 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins)
+   Compiling core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+   Compiling autocfg v1.5.0
+   Compiling az v1.2.1
+   Compiling crossbeam-utils v0.8.21
+   Compiling bootloader_api v0.11.15 (https://github.com/rust-osdev/bootloader.git?branch=main#5d97b89f)
+   Compiling kernel v0.1.0 (/private/tmp/breenix-turn9-A/kernel)
+   Compiling num-traits v0.2.19
+   Compiling alloc v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc)
+   Compiling scopeguard v1.2.0
+   Compiling byteorder v1.5.0
+   Compiling slab v0.4.12
+   Compiling tock-registers v0.8.1
+   Compiling pin-project-lite v0.2.17
+   Compiling micromath v2.1.0
+   Compiling futures-core v0.3.32
+   Compiling futures-task v0.3.32
+   Compiling conquer-util v0.3.0
+   Compiling noto-sans-mono-bitmap v0.3.2
+   Compiling log v0.4.29
+   Compiling rlibc v1.0.0
+   Compiling lock_api v0.4.14
+   Compiling conquer-once v0.4.0
+   Compiling aarch64-cpu v9.4.0
+   Compiling futures-util v0.3.32
+   Compiling spinning_top v0.2.5
+   Compiling spin v0.9.8
+   Compiling crossbeam-queue v0.3.12
+   Compiling linked_list_allocator v0.10.6
+   Compiling float-cmp v0.9.0
+   Compiling embedded-graphics-core v0.4.1
+   Compiling embedded-graphics v0.8.2
+    Finished `release` profile [optimized] target(s) in 10.97s

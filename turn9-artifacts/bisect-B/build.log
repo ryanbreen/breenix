@@ -1,0 +1,80 @@
+   Compiling compiler_builtins v0.1.160 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins)
+   Compiling core v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+   Compiling autocfg v1.5.0
+   Compiling az v1.2.1
+   Compiling crossbeam-utils v0.8.21
+   Compiling bootloader_api v0.11.15 (https://github.com/rust-osdev/bootloader.git?branch=main#5d97b89f)
+   Compiling kernel v0.1.0 (/private/tmp/breenix-turn9-B/kernel)
+   Compiling num-traits v0.2.19
+   Compiling alloc v0.0.0 (/Users/wrb/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc)
+   Compiling scopeguard v1.2.0
+   Compiling byteorder v1.5.0
+   Compiling slab v0.4.12
+   Compiling conquer-util v0.3.0
+   Compiling tock-registers v0.8.1
+   Compiling micromath v2.1.0
+   Compiling futures-task v0.3.32
+   Compiling futures-core v0.3.32
+   Compiling pin-project-lite v0.2.17
+   Compiling rlibc v1.0.0
+   Compiling noto-sans-mono-bitmap v0.3.2
+   Compiling log v0.4.29
+   Compiling lock_api v0.4.14
+   Compiling conquer-once v0.4.0
+   Compiling aarch64-cpu v9.4.0
+   Compiling futures-util v0.3.32
+   Compiling spinning_top v0.2.5
+   Compiling spin v0.9.8
+   Compiling crossbeam-queue v0.3.12
+   Compiling linked_list_allocator v0.10.6
+   Compiling float-cmp v0.9.0
+   Compiling embedded-graphics-core v0.4.1
+   Compiling embedded-graphics v0.8.2
+error[E0425]: cannot find function `get_irq` in module `crate::drivers::virtio::block_mmio`
+    --> kernel/src/arch_impl/aarch64/exception.rs:1272:78
+     |
+1272 |                 if let Some(block_irq) = crate::drivers::virtio::block_mmio::get_irq(device_index) {
+     |                                                                              ^^^^^^^ not found in `crate::drivers::virtio::block_mmio`
+     |
+help: consider importing one of these functions
+     |
+12   + use crate::drivers::ahci::get_irq;
+     |
+12   + use crate::drivers::usb::xhci::get_irq;
+     |
+12   + use crate::drivers::virtio::gpu_pci::get_irq;
+     |
+12   + use crate::drivers::virtio::input_mmio::get_irq;
+     |
+       and 2 other candidates
+help: if you import `get_irq`, refer to it directly
+     |
+1272 -                 if let Some(block_irq) = crate::drivers::virtio::block_mmio::get_irq(device_index) {
+1272 +                 if let Some(block_irq) = get_irq(device_index) {
+     |
+
+error[E0425]: cannot find function `handle_interrupt` in module `crate::drivers::virtio::block_mmio`
+    --> kernel/src/arch_impl/aarch64/exception.rs:1274:61
+     |
+1274 |                         crate::drivers::virtio::block_mmio::handle_interrupt(device_index);
+     |                                                             ^^^^^^^^^^^^^^^^ not found in `crate::drivers::virtio::block_mmio`
+     |
+help: consider importing one of these functions
+     |
+12   + use crate::drivers::ahci::handle_interrupt;
+     |
+12   + use crate::drivers::usb::xhci::handle_interrupt;
+     |
+12   + use crate::drivers::virtio::gpu_pci::handle_interrupt;
+     |
+12   + use crate::drivers::virtio::input_mmio::handle_interrupt;
+     |
+       and 2 other candidates
+help: if you import `handle_interrupt`, refer to it directly
+     |
+1274 -                         crate::drivers::virtio::block_mmio::handle_interrupt(device_index);
+1274 +                         handle_interrupt(device_index);
+     |
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `kernel` (lib) due to 2 previous errors

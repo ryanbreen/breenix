@@ -1,0 +1,44 @@
+=========================================
+ARM64 Boot Test (Native QEMU)
+=========================================
+Kernel: /Users/wrb/fun/code/breenix/target/aarch64-breenix/release/kernel-aarch64
+ext2 disk: /Users/wrb/fun/code/breenix/target/ext2-aarch64.img
+
+Attempt 1/5...
+qemu-system-aarch64: terminating on signal 15 from pid 68656 (<unknown process>)
+FAIL: CPU exception (     594 lines)
+Retrying...
+Attempt 2/5...
+qemu-system-aarch64: terminating on signal 15 from pid 68745 (<unknown process>)
+FAIL: CPU exception (    1723 lines)
+Retrying...
+Attempt 3/5...
+qemu-system-aarch64: terminating on signal 15
+FAIL: Userspace not detected (    3628 lines)
+Retrying...
+Attempt 4/5...
+qemu-system-aarch64: terminating on signal 15 from pid 69387 (<unknown process>)
+FAIL: CPU exception (    6392 lines)
+Retrying...
+Attempt 5/5...
+qemu-system-aarch64: terminating on signal 15
+FAIL: Userspace not detected (     500 lines)
+
+=========================================
+ARM64 BOOT TEST: FAILED (after 5 attempts)
+=========================================
+
+NOTE: If this test frequently requires retries or fails repeatedly,
+there may be a regression. Check recent changes to boot code.
+
+Last output:
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004016aa6c
+[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff00004016aa6c
+[UNHANDLED_EC] cpu=0 EC
+=0x0 ELR=0xffff00004016aa====================6c
+====================
+
+
+[[PPCC__AALLIIGGNN]]  EELLRR==00xx11  FFAARR==00xx11  ffrroomm__eell00==00  ccppuu==01 
+sp=0xffff0000431ffe90
+  x29=0xffff0000431ffe50 x30=0x1 x0=0xffff000040346688 x1=0xffff000040322000
