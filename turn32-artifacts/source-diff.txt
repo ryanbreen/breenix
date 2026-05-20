@@ -1,0 +1,34 @@
+diff --git a/kernel/src/main.rs b/kernel/src/main.rs
+index 30c96425..8b0c06bf 100644
+--- a/kernel/src/main.rs
++++ b/kernel/src/main.rs
+@@ -808,9 +808,6 @@ fn dns_test_only_main() -> ! {
+         // Yield to give scheduler a chance
+         task::scheduler::yield_current();
+ 
+-        // Poll for received packets (workaround for softirq timing)
+-        net::process_rx();
+-
+         // Drain loopback queue for localhost packets
+         net::drain_loopback_queue();
+     }
+@@ -874,9 +871,6 @@ fn blocking_recv_test_main() -> ! {
+         // Yield to give scheduler a chance
+         task::scheduler::yield_current();
+ 
+-        // Poll for received packets (workaround for softirq timing)
+-        net::process_rx();
+-
+         // Drain loopback queue for localhost packets
+         net::drain_loopback_queue();
+     }
+@@ -943,9 +937,6 @@ fn nonblock_eagain_test_main() -> ! {
+         // Yield to give scheduler a chance
+         task::scheduler::yield_current();
+ 
+-        // Poll for received packets (workaround for softirq timing)
+-        net::process_rx();
+-
+         // Drain loopback queue for localhost packets
+         net::drain_loopback_queue();
+     }
