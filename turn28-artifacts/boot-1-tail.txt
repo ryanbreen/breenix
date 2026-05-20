@@ -1,0 +1,140 @@
+[bwm-fps] frames_since_last=154 elapsed_ms=1002 instantaneous_fps=153
+[heartbeat] tid=11 uptime_ms=26196
+[bwm-fps] frames_since_last=156 elapsed_ms=1003 instantaneous_fps=155
+[virgl-composite] Frame #4000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=11 uptime_ms=27197
+[bwm-fps] frames_since_last=156 elapsed_ms=1000 instantaneous_fps=156
+[heartbeat] tid=11 uptime_ms=28198
+[bwm-fps] frames_since_last=147 elapsed_ms=1001 instantaneous_fps=146
+[heartbeat] tid=11 uptime_ms=29198
+[bwm-fps] frames_since_last=163 elapsed_ms=1000 instantaneous_fps=163
+[virgl-composite] Frame #4500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=11 uptime_ms=30199
+[bwm-fps] frames_since_last=166 elapsed_ms=1002 instantaneous_fps=165
+[heartbeat] tid=11 uptime_ms=31200
+[bwm-fps] frames_since_last=150 elapsed_ms=1001 instantaneous_fps=149
+[heartbeat] tid=11 uptime_ms=32200
+[bwm-fps] frames_since_last=141 elapsed_ms=1002 instantaneous_fps=140
+[timer] cpu0 ticks=20000
+[heartbeat] tid=11 uptime_ms=33201
+[bwm-fps] frames_since_last=151 elapsed_ms=1002 instantaneous_fps=150
+[virgl-composite] Frame #5000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=11 uptime_ms=34201
+[bwm-fps] frames_since_last=169 elapsed_ms=1005 instantaneous_fps=168
+[heartbeat] tid=11 uptime_ms=35201
+[bwm-fps] frames_since_last=163 elapsed_ms=1003 instantaneous_fps=162
+[heartbeat] tid=11 uptime_ms=36202
+[bwm-fps] frames_since_last=164 elapsed_ms=1002 instantaneous_fps=163
+[virgl-composite] Frame #5500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=11 uptime_ms=37202
+[bwm-fps] frames_since_last=146 elapsed_ms=1000 instantaneous_fps=146
+[heartbeat] tid=11 uptime_ms=38202
+[bwm-fps] frames_since_last=150 elapsed_ms=1006 instantaneous_fps=149
+[heartbeat] tid=11 uptime_ms=39203
+[bwm-fps] frames_since_last=169 elapsed_ms=1000 instantaneous_fps=169
+[virgl-composite] Frame #6000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=11 uptime_ms=40203
+[bwm-fps] frames_since_last=171 elapsed_ms=1000 instantaneous_fps=171
+[timer] cpu0 ticks=25000
+[heartbeat] tid=11 uptime_ms=41203
+[bwm-fps] frames_since_last=155 elapsed_ms=1003 instantaneous_fps=154
+[heartbeat] tid=11 uptime_ms=42204
+[bwm-fps] frames_since_last=157 elapsed_ms=1005 instantaneous_fps=156
+[virgl-composite] Frame #6500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=11 uptime_ms=43206
+[bwm-fps] frames_since_last=162 elapsed_ms=1000 instantaneous_fps=162
+[heartbeat] tid=11 uptime_ms=44206
+[bwm-fps] frames_since_last=146 elapsed_ms=1008 instantaneous_fps=144
+[heartbeat] tid=11 uptime_ms=45207
+[bwm-fps] frames_since_last=164 elapsed_ms=1005 instantaneous_fps=163
+[virgl-composite] Frame #7000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=11 uptime_ms=46207
+[bwm-fps] frames_since_last=164 elapsed_ms=1005 instantaneous_fps=163
+[heartbeat] tid=11 uptime_ms=47208
+[bwm-fps] frames_since_last=144 elapsed_ms=1005 instantaneous_fps=143
+[heartbeat] tid=11 uptime_ms=48209
+[timer] cpu0 ticks=30000
+[bwm-fps] frames_since_last=157 elapsed_ms=1000 instantaneous_fps=157
+[heartbeat] tid=11 uptime_ms=49209
+[virgl-composite] Frame #7500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[bwm-fps] frames_since_last=145 elapsed_ms=1002 instantaneous_fps=144
+[heartbeat] tid=11 uptime_ms=50210
+[bwm-fps] frames_since_last=155 elapsed_ms=1003 instantaneous_fps=154
+[heartbeat] tid=11 uptime_ms=51210
+[bwm-fps] frames_since_last=152 elapsed_ms=1001 instantaneous_fps=151
+[heartbeat] tid=11 uptime_ms=52211
+[bwm-fps] frames_since_last=163 elapsed_ms=1004 instantaneous_fps=162
+[virgl-composite] Frame #8000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=11 uptime_ms=53211
+[bwm-fps] frames_since_last=157 elapsed_ms=1002 instantaneous_fps=156
+[heartbeat] tid=11 uptime_ms=54211
+[bwm-fps] frames_since_last=168 elapsed_ms=1000 instantaneous_fps=168
+[heartbeat] tid=11 uptime_ms=55212
+[bwm-fps] frames_since_last=163 elapsed_ms=1003 instantaneous_fps=162
+[virgl-composite] Frame #8500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=11 uptime_ms=56212
+[timer] cpu0 ticks=35000
+[bwm-fps] frames_since_last=159 elapsed_ms=1003 instantaneous_fps=158
+[heartbeat] tid=11 uptime_ms=57213
+[bwm-fps] frames_since_last=161 elapsed_ms=1008 instantaneous_fps=159
+[heartbeat] tid=11 uptime_ms=58213
+[bwm-fps] frames_since_last=153 elapsed_ms=1003 instantaneous_fps=152
+[virgl-composite] Frame #9000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=11 uptime_ms=59214
+[bwm-fps] frames_since_last=162 elapsed_ms=1006 instantaneous_fps=161
+[heartbeat] tid=11 uptime_ms=60214
+[bwm-fps] frames_since_last=145 elapsed_ms=1000 instantaneous_fps=145
+[heartbeat] tid=11 uptime_ms=61214
+[bwm-fps] frames_since_last=150 elapsed_ms=1000 instantaneous_fps=150
+[virgl-composite] Frame #9500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=11 uptime_ms=62214
+[bwm-fps] frames_since_last=160 elapsed_ms=1001 instantaneous_fps=159
+[heartbeat] tid=11 uptime_ms=63214
+[bwm-fps] frames_since_last=147 elapsed_ms=1003 instantaneous_fps=146
+[timer] cpu0 ticks=40000
+[heartbeat] tid=11 uptime_ms=64215
+[bwm-fps] frames_since_last=148 elapsed_ms=1003 instantaneous_fps=147
+[heartbeat] tid=11 uptime_ms=65215
+[virgl-composite] Frame #10000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[bwm-fps] frames_since_last=152 elapsed_ms=1003 instantaneous_fps=151
+[heartbeat] tid=11 uptime_ms=66216
+[bwm-fps] frames_since_last=141 elapsed_ms=1000 instantaneous_fps=141
+[heartbeat] tid=11 uptime_ms=67216
+[bwm-fps] frames_since_last=156 elapsed_ms=1004 instantaneous_fps=155
+[heartbeat] tid=11 uptime_ms=68217
+[bwm-fps] frames_since_last=163 elapsed_ms=1005 instantaneous_fps=162
+[virgl-composite] Frame #10500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=11 uptime_ms=69217
+[bwm-fps] frames_since_last=146 elapsed_ms=1007 instantaneous_fps=144
+[heartbeat] tid=11 uptime_ms=70218
+[bwm-fps] frames_since_last=155 elapsed_ms=1003 instantaneous_fps=154
+[heartbeat] tid=11 uptime_ms=71218
+[bwm-fps] frames_since_last=164 elapsed_ms=1002 instantaneous_fps=163
+[virgl-composite] Frame #11000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[timer] cpu0 ticks=45000
+[heartbeat] tid=11 uptime_ms=72219
+[bwm-fps] frames_since_last=164 elapsed_ms=1000 instantaneous_fps=164
+[heartbeat] tid=11 uptime_ms=73220
+[bwm-fps] frames_since_last=159 elapsed_ms=1003 instantaneous_fps=158
+[heartbeat] tid=11 uptime_ms=74220
+[bwm-fps] frames_since_last=167 elapsed_ms=1003 instantaneous_fps=166
+[virgl-composite] Frame #11500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=11 uptime_ms=75222
+[bwm-fps] frames_since_last=151 elapsed_ms=1006 instantaneous_fps=150
+[heartbeat] tid=11 uptime_ms=76223
+[bwm-fps] frames_since_last=159 elapsed_ms=1006 instantaneous_fps=158
+[heartbeat] tid=11 uptime_ms=77223
+[bwm-fps] frames_since_last=155 elapsed_ms=1001 instantaneous_fps=154
+[heartbeat] tid=11 uptime_ms=78223
+[virgl-composite] Frame #12000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[bwm-fps] frames_since_last=161 elapsed_ms=1002 instantaneous_fps=160
+[heartbeat] tid=11 uptime_ms=79224
+[bwm-fps] frames_since_last=157 elapsed_ms=1004 instantaneous_fps=156
+[timer] cpu0 ticks=50000
+[heartbeat] tid=11 uptime_ms=80225
+[bwm-fps] frames_since_last=162 elapsed_ms=1003 instantaneous_fps=161
+[heartbeat] tid=11 uptime_ms=81225
+[virgl-composite] Frame #12500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[bwm-fps] frames_since_last=155 elapsed_ms=1003 instantaneous_fps=154
+[heartbeat] tid=11 uptime_ms=82226
+[bwm-fps] frames_since_last=167 elapsed_ms=1001 instantaneous_fps=166

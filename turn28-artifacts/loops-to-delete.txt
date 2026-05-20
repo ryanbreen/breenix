@@ -1,0 +1,14 @@
+Source: kernel/src/net/mod.rs before Turn 28 edit.
+
+Gateway ARP polling loop:
+- lines 375-401
+- `for _i in 0..100`
+- body calls `process_rx()`, spins `1_000_000` iterations, dumps aarch64 RX state on selected iterations, checks `arp::lookup(&gateway)`, logs resolved gateway MAC, then breaks.
+
+ICMP reply polling loop:
+- lines 422-429
+- `for _ in 0..20`
+- body calls `process_rx()` and spins `500000` iterations.
+
+Turn 28 deletes only these two loop bodies/ranges and leaves ARP send,
+ARP resolution check, ICMP send, and IRQ/MSI enable position unchanged.

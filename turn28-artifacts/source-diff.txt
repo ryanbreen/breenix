@@ -1,0 +1,55 @@
+diff --git a/kernel/src/net/mod.rs b/kernel/src/net/mod.rs
+index 6eae3c01..287375de 100644
+--- a/kernel/src/net/mod.rs
++++ b/kernel/src/net/mod.rs
+@@ -372,34 +372,6 @@ fn init_common() {
+     }
+     net_log!("ARP request sent successfully");
+ 
+-    // Wait for ARP reply (poll RX a few times to get the gateway MAC)
+-    // The reply comes via interrupt, so we just need to give it time to arrive
+-    for _i in 0..100 {
+-        process_rx();
+-        // Delay to let packets arrive and timer-based polling process them
+-        for _ in 0..1_000_000 {
+-            core::hint::spin_loop();
+-        }
+-        // Diagnostic: dump RX queue state on first few iterations
+-        #[cfg(target_arch = "aarch64")]
+-        if _i < 5 || _i % 20 == 0 {
+-            net_pci::dump_rx_state();
+-        }
+-        // Check if we got the ARP reply yet
+-        if let Some(gateway_mac) = arp::lookup(&gateway) {
+-            net_log!(
+-                "NET: ARP resolved gateway MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+-                gateway_mac[0],
+-                gateway_mac[1],
+-                gateway_mac[2],
+-                gateway_mac[3],
+-                gateway_mac[4],
+-                gateway_mac[5]
+-            );
+-            break;
+-        }
+-    }
+-
+     // Check if ARP resolved the gateway
+     if arp::lookup(&gateway).is_none() {
+         net_log!("NET: Gateway ARP not resolved, skipping ping test");
+@@ -419,15 +391,6 @@ fn init_common() {
+         return;
+     }
+ 
+-    // Poll for the ping reply (just process RX to handle incoming packets)
+-    for _ in 0..20 {
+-        process_rx();
+-        // Delay to let packets arrive and interrupts fire
+-        for _ in 0..500000 {
+-            core::hint::spin_loop();
+-        }
+-    }
+-
+     net_log!("NET: Network initialization complete");
+ 
+     // Enable network device interrupt now that init polling is done.
