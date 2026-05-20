@@ -408,7 +408,11 @@ static XHCI_IRQ: AtomicU32 = AtomicU32::new(0);
 
 /// Diagnostic counters for heartbeat visibility.
 pub static POLL_COUNT: AtomicU64 = AtomicU64::new(0);
-/// Whether start_hid_polling has been called (deferred from init to after MSI active).
+/// Whether start_hid_polling has been called.
+///
+/// With DEFERRED_TRB_POLL=0, init() calls start_hid_polling() before the GIC
+/// SPI is enabled; the current SPI activation path runs later in
+/// poll_hid_events() at poll >= 50.
 static HID_POLLING_STARTED: AtomicBool = AtomicBool::new(false);
 pub static EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static KBD_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -566,15 +570,14 @@ pub static DIAG_PORTSC_PRE_SWEEP: AtomicU32 = AtomicU32::new(0);
 static MOUSE_GET_REPORT_PENDING: AtomicBool = AtomicBool::new(false);
 
 /// Whether the first keyboard interrupt TRBs have been queued.
-/// Keyboard TRBs are deferred to poll=300 (after SPI enable at poll=200)
-/// to avoid CC=12 that occurs when TRBs are queued during initialization
-/// before the MSI pathway is active. Only set once; re-queue via MSI/error handlers.
+/// With DEFERRED_TRB_POLL=0, start_hid_polling() queues these during init()
+/// before the GIC SPI is enabled; SPI activation is later in poll_hid_events()
+/// at poll >= 50. Only set once; re-queue via MSI/error handlers.
 static KBD_TRB_FIRST_QUEUED: AtomicBool = AtomicBool::new(false);
 
-/// Whether initial HID interrupt TRBs have been queued post-init.
-/// TRBs are deferred until after XHCI_INITIALIZED and SPI enable so the full
-/// MSI → GIC SPI → CPU ISR → IMAN.IP ack pathway is active when the xHC
-/// processes the first interrupt endpoint transfer.
+/// Whether initial HID interrupt TRBs have been queued.
+/// init() sets XHCI_INITIALIZED before calling start_hid_polling(), but the
+/// current branch does not wait for GIC SPI enable before queuing HID TRBs.
 static HID_TRBS_QUEUED: AtomicBool = AtomicBool::new(false);
 
 // =============================================================================
@@ -2928,8 +2931,9 @@ fn configure_endpoints_batch(
 // HID Configuration and Transfer Queueing
 // =============================================================================
 
-/// Parse configuration descriptor, find HID interfaces, configure endpoints,
-/// and start polling for HID reports.
+/// Parse configuration descriptor, find HID interfaces, and configure endpoints.
+/// HID interrupt TRB queueing is performed later by start_hid_polling(), which
+/// init() calls after enumeration completes.
 ///
 /// # Initialization Ordering (matches Linux xHCI driver)
 ///
@@ -4382,14 +4386,15 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
 // Initialization
 // =============================================================================
 
-/// Set up PCI MSI for the XHCI controller through GICv2m.
+/// Program PCI MSI for the XHCI controller through GICv2m.
 ///
 /// Walks the PCI capability list to find the MSI capability, probes for
 /// GICv2m at the known Parallels address, allocates an SPI, programs the
-/// MSI registers, configures the GIC, and enables the interrupt.
+/// MSI registers, and configures the GIC SPI as edge-triggered.
 ///
 /// Returns the GIC INTID (SPI number) for the allocated interrupt.
-/// Falls back to polling (returns 0) if MSI or GICv2m is unavailable.
+/// Returns 0 if MSI or GICv2m is unavailable; the GIC SPI is enabled later
+/// by poll_hid_events() after XHCI_STATE and XHCI_INITIALIZED are ready.
 fn setup_xhci_msi(pci_dev: &crate::drivers::pci::Device) -> u32 {
     use crate::arch_impl::aarch64::gic;
 
@@ -4445,9 +4450,9 @@ fn setup_xhci_msi(pci_dev: &crate::drivers::pci::Device) -> u32 {
 
     // Step 5: Configure GIC for this SPI (edge-triggered).
     //
-    // The SPI is NOT enabled here — init() enables it after disabling IMAN.IE
-    // to prevent an interrupt storm. With IMAN.IE=0, the XHCI won't write MSI
-    // doorbell writes, so the SPI won't fire even though it's enabled.
+    // The SPI is NOT enabled here. setup_xhci_msi() only programs PCI MSI and
+    // configures the GIC trigger mode; poll_hid_events() enables the SPI later
+    // once XHCI_STATE and XHCI_INITIALIZED are ready.
     gic::configure_spi_edge_triggered(intid);
 
     intid
@@ -4955,11 +4960,9 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     ms_regs(M_DATA_STRUC, op_base, ir0);
     ms_pass!(M_DATA_STRUC);
 
-    // 10. MSI is NOT configured here — matching Linux module order.
-    // The Linux module (breenix_xhci_probe.c) calls pci_alloc_irq_vectors()
-    // AFTER all enumeration, TRB queuing, and doorbell ringing (line 2229).
-    // During enumeration, Linux has: no MSI configured, INTx enabled.
-    // MSI will be configured after start_hid_polling() below.
+    // 10. Event ring is ready; MSI is programmed shortly below before
+    // enumeration. setup_xhci_msi(pci_dev) runs before scan_ports() and before
+    // start_hid_polling(), but the GIC SPI is enabled later by poll_hid_events().
 
     // 11. Enable interrupts on Interrupter 0 (needed for event ring operation).
     // IMOD already written above (matching Linux's order: IMOD before event ring regs).
@@ -6097,8 +6100,10 @@ pub fn poll_hid_events() {
         }
     }
 
-    // MSI requeue fallback: if the MSI handler failed to requeue (e.g., lock
-    // contention caused the handler to bail early), requeue here as a safety net.
+    // Command-wait recovery requeue: wait_for_event_inner() sets these flags
+    // when it consumes CC=12 Transfer Events during command waits. The timer
+    // path drains them here because IRQ context must not run the reset/requeue
+    // recovery sequence directly.
     if MSI_KBD_NEEDS_REQUEUE.swap(false, Ordering::AcqRel) {
         if state.kbd_slot != 0 && state.kbd_endpoint != 0 {
             let _ = queue_hid_transfer(state, 0, state.kbd_slot, state.kbd_endpoint);
@@ -6221,8 +6226,9 @@ pub fn poll_hid_events() {
     // initial enumeration — the initial ConfigureEndpoint + BW dance creates proper
     // internal state, but any subsequent re-ConfigureEndpoint breaks it.
     //
-    // TRBs are now queued inline during enumeration (Phase 3), matching Linux's flow.
-    // The deferred path is no longer needed.
+    // TRBs are now queued by start_hid_polling() after enumeration completes
+    // when DEFERRED_TRB_POLL=0. The poll=600 re-configure path is no longer
+    // needed.
 
     // NOTE: Mouse EP0 GET_REPORT polling is disabled.
     // The Parallels virtual xHC echoes the 8-byte setup packet back as the "data"

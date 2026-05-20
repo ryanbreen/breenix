@@ -1,0 +1,311 @@
+kernel/src/drivers/vmware/svga3.rs:33:use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+kernel/src/drivers/vmware/svga3.rs:551:/// Initialize the SVGA3 driver (device detection, register setup, VRAM traces).
+kernel/src/drivers/vmware/svga3.rs:682:    let traces_val = unsafe { reg_read(SVGA_REG_TRACES) };
+kernel/src/drivers/vmware/svga3.rs:684:        "[svga3] VRAM traces: {}",
+kernel/src/drivers/vmware/svga3.rs:685:        if traces_val != 0 {
+kernel/src/drivers/vmware/svga3.rs:912:/// to VRAM via its trace mechanism and updates the display automatically.
+kernel/src/drivers/vmware/svga3.rs:998:/// via its trace mechanism and updates the display automatically.
+kernel/src/drivers/vmware/svga3.rs:1034:/// With VRAM traces enabled, the device monitors writes automatically.
+kernel/src/drivers/vmware/svga3.rs:1040:    // VRAM traces handle display updates automatically.
+kernel/src/drivers/vmware/svga3.rs:1188:/// Fill VRAM with a solid color (legacy path, VRAM traces mode).
+kernel/src/drivers/mod.rs:215:                // SVGA3 with VRAM traces provides GPU-level compositing:
+kernel/src/drivers/mod.rs:220:                serial_println!("[drivers] Compositor backend: SVGA3 (VRAM traces)");
+kernel/src/drivers/usb/ehci.rs:27:use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+kernel/src/drivers/usb/xhci.rs:31:use core::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering};
+kernel/src/drivers/usb/xhci.rs:58:/// Linux ftrace confirmed: Linux DOES perform the bandwidth dance for HID devices
+kernel/src/drivers/usb/xhci.rs:392:    /// Linux ftrace shows the Parallels virtual mouse has two interrupt endpoints.
+kernel/src/drivers/usb/xhci.rs:664:// XHCI Trace Infrastructure (lock-free ring buffer)
+kernel/src/drivers/usb/xhci.rs:667:/// Maximum number of trace records.
+kernel/src/drivers/usb/xhci.rs:669:/// Maximum bytes for trace payload data.
+kernel/src/drivers/usb/xhci.rs:672:/// Trace operation codes.
+kernel/src/drivers/usb/xhci.rs:676:enum XhciTraceOp {
+kernel/src/drivers/usb/xhci.rs:695:/// A single trace record.
+kernel/src/drivers/usb/xhci.rs:697:struct XhciTraceRecord {
+kernel/src/drivers/usb/xhci.rs:709:// MMIO Write Trace — captures every write32() from HCRST through first doorbell
+kernel/src/drivers/usb/xhci.rs:712:/// Maximum entries in the MMIO write trace buffer.
+kernel/src/drivers/usb/xhci.rs:724:/// Trace buffer: (offset_from_BAR, value) pairs.
+kernel/src/drivers/usb/xhci.rs:725:/// offset and value are each u32, packed into a u64 for atomic-free static init.
+kernel/src/drivers/usb/xhci.rs:730:/// Monotonic sequence number for trace records.
+kernel/src/drivers/usb/xhci.rs:735:/// Trace record ring buffer.
+kernel/src/drivers/usb/xhci.rs:736:static mut XHCI_TRACE_RECORDS: [XhciTraceRecord; XHCI_TRACE_MAX_RECORDS] = {
+kernel/src/drivers/usb/xhci.rs:737:    const ZERO: XhciTraceRecord = XhciTraceRecord {
+kernel/src/drivers/usb/xhci.rs:750:/// Trace data payload buffer.
+kernel/src/drivers/usb/xhci.rs:755:fn trace_timestamp() -> u64 {
+kernel/src/drivers/usb/xhci.rs:763:/// Record a trace event with optional payload data.
+kernel/src/drivers/usb/xhci.rs:764:fn xhci_trace_impl(op: u8, slot: u8, dci: u8, data: &[u8]) {
+kernel/src/drivers/usb/xhci.rs:771:    let ts = trace_timestamp();
+kernel/src/drivers/usb/xhci.rs:797:            .cast::<XhciTraceRecord>()
+kernel/src/drivers/usb/xhci.rs:809:/// Record a trace event with optional payload data.
+kernel/src/drivers/usb/xhci.rs:810:fn xhci_trace(op: XhciTraceOp, slot: u8, dci: u8, data: &[u8]) {
+kernel/src/drivers/usb/xhci.rs:811:    xhci_trace_impl(op as u8, slot, dci, data);
+kernel/src/drivers/usb/xhci.rs:815:pub(crate) fn xhci_trace_raw(op: u8, slot: u8, dci: u8, data: &[u8]) {
+kernel/src/drivers/usb/xhci.rs:816:    xhci_trace_impl(op, slot, dci, data);
+kernel/src/drivers/usb/xhci.rs:820:pub(crate) fn xhci_trace_set_active(active: bool) {
+kernel/src/drivers/usb/xhci.rs:829:pub(crate) fn xhci_trace_dump_public() {
+kernel/src/drivers/usb/xhci.rs:830:    xhci_trace_dump();
+kernel/src/drivers/usb/xhci.rs:851:/// Record a short text note (up to 64 chars) in the trace buffer.
+kernel/src/drivers/usb/xhci.rs:852:fn xhci_trace_note(slot: u8, note: &str) {
+kernel/src/drivers/usb/xhci.rs:855:    xhci_trace(XhciTraceOp::Note, slot, 0, &bytes[..len]);
+kernel/src/drivers/usb/xhci.rs:858:/// Trace a TRB (16 bytes) with the given operation.
+kernel/src/drivers/usb/xhci.rs:860:fn xhci_trace_trb(op: XhciTraceOp, slot: u8, dci: u8, trb: &Trb) {
+kernel/src/drivers/usb/xhci.rs:862:    xhci_trace(op, slot, dci, &bytes);
+kernel/src/drivers/usb/xhci.rs:865:/// Trace an Input Context before a command.
+kernel/src/drivers/usb/xhci.rs:867:fn xhci_trace_input_ctx(slot: u8, base: *const u8, ctx_size: usize, max_dci: u8) {
+kernel/src/drivers/usb/xhci.rs:871:    xhci_trace(XhciTraceOp::InputContext, slot, max_dci, data);
+kernel/src/drivers/usb/xhci.rs:874:/// Trace an Output Context after a command.
+kernel/src/drivers/usb/xhci.rs:876:fn xhci_trace_output_ctx(slot: u8, base: *const u8, ctx_size: usize, max_dci: u8) {
+kernel/src/drivers/usb/xhci.rs:879:    xhci_trace(XhciTraceOp::OutputContext, slot, max_dci, data);
+kernel/src/drivers/usb/xhci.rs:882:/// Trace a doorbell write.
+kernel/src/drivers/usb/xhci.rs:884:fn xhci_trace_doorbell(db_base: u64, slot: u8, target: u8) {
+kernel/src/drivers/usb/xhci.rs:889:    xhci_trace(XhciTraceOp::Doorbell, slot, target, &buf);
+kernel/src/drivers/usb/xhci.rs:892:/// Trace a 32-bit MMIO write.
+kernel/src/drivers/usb/xhci.rs:894:fn xhci_trace_mmio_w32(addr: u64, val: u32) {
+kernel/src/drivers/usb/xhci.rs:898:    xhci_trace(XhciTraceOp::MmioWrite32, 0, 0, &buf);
+kernel/src/drivers/usb/xhci.rs:901:/// Trace a 64-bit MMIO write.
+kernel/src/drivers/usb/xhci.rs:903:fn xhci_trace_mmio_w64(addr: u64, val: u64) {
+kernel/src/drivers/usb/xhci.rs:907:    xhci_trace(XhciTraceOp::MmioWrite64, 0, 0, &buf);
+kernel/src/drivers/usb/xhci.rs:910:/// Trace a cache operation.
+kernel/src/drivers/usb/xhci.rs:912:fn xhci_trace_cache_op(addr: u64, len: u32) {
+kernel/src/drivers/usb/xhci.rs:916:    xhci_trace(XhciTraceOp::CacheOp, 0, 0, &buf);
+kernel/src/drivers/usb/xhci.rs:919:/// Format the xHCI trace buffer as a String for procfs consumption.
+kernel/src/drivers/usb/xhci.rs:920:/// Same data as xhci_trace_dump() but writes to a String instead of serial.
+kernel/src/drivers/usb/xhci.rs:921:pub fn format_trace_buffer() -> alloc::string::String {
+kernel/src/drivers/usb/xhci.rs:946:                .cast::<XhciTraceRecord>()
+kernel/src/drivers/usb/xhci.rs:1003:    // Append diagnostic counters for btrace to parse
+kernel/src/drivers/usb/xhci.rs:1131:/// Dump the xHCI trace buffer to serial in a parseable hex format.
+kernel/src/drivers/usb/xhci.rs:1134:fn xhci_trace_dump() {
+kernel/src/drivers/usb/xhci.rs:1156:                .cast::<XhciTraceRecord>()
+kernel/src/drivers/usb/xhci.rs:1335:    // Record to MMIO trace buffer if tracing is active
+kernel/src/drivers/usb/xhci.rs:1611:        xhci_trace_note(0, "err:noop");
+kernel/src/drivers/usb/xhci.rs:1614:    xhci_trace_note(0, "noop_ok");
+kernel/src/drivers/usb/xhci.rs:1632:        xhci_trace_note(0, "err:enable_slot");
+kernel/src/drivers/usb/xhci.rs:1636:    xhci_trace_note(slot_id, "enable_slot");
+kernel/src/drivers/usb/xhci.rs:1748:        // Note: the ftrace agent misidentified the cycle bit (b:C) as the BSR bit —
+kernel/src/drivers/usb/xhci.rs:1794:        xhci_trace_note(slot_id, "address_device");
+kernel/src/drivers/usb/xhci.rs:2243:    xhci_trace_note(slot_id, "set_configuration");
+kernel/src/drivers/usb/xhci.rs:2391:/// From Linux ftrace: mouse if0 uses feature_id=0x11, mouse if1 uses 0x12.
+kernel/src/drivers/usb/xhci.rs:2467:        // sequence). Report descriptor data is captured by the trace system
+kernel/src/drivers/usb/xhci.rs:2696:            xhci_trace_input_ctx(slot_id, input_base, ctx_size, max_dci as u8);
+kernel/src/drivers/usb/xhci.rs:2703:            xhci_trace_trb(XhciTraceOp::CommandSubmit, slot_id, 0, &trb);
+kernel/src/drivers/usb/xhci.rs:2708:            xhci_trace_trb(XhciTraceOp::CommandComplete, slot_id, 0, &event);
+kernel/src/drivers/usb/xhci.rs:2783:                    xhci_trace_trb(XhciTraceOp::CommandSubmit, slot_id, dci, &stop_trb);
+kernel/src/drivers/usb/xhci.rs:2787:                    xhci_trace_trb(XhciTraceOp::CommandComplete, slot_id, dci, &stop_event);
+kernel/src/drivers/usb/xhci.rs:2857:                    xhci_trace_input_ctx(slot_id, reconfig_base, ctx_size, max_dci as u8);
+kernel/src/drivers/usb/xhci.rs:2863:                    xhci_trace_trb(XhciTraceOp::CommandSubmit, slot_id, 0, &reconfig_trb);
+kernel/src/drivers/usb/xhci.rs:2867:                    xhci_trace_trb(XhciTraceOp::CommandComplete, slot_id, 0, &reconfig_event);
+kernel/src/drivers/usb/xhci.rs:2885:                    xhci_trace_output_ctx(slot_id, (*dev_ctx).0.as_ptr(), ctx_size, max_dci as u8);
+kernel/src/drivers/usb/xhci.rs:3088:                            // Linux ftrace: mouse has TWO interrupt EPs (DCI 3 + DCI 5),
+kernel/src/drivers/usb/xhci.rs:3192:        xhci_trace_note(slot_id, "no_hid_ifaces");
+kernel/src/drivers/usb/xhci.rs:3218:    xhci_trace_note(slot_id, "post_cfgep_ctx");
+kernel/src/drivers/usb/xhci.rs:3226:                xhci_trace_output_ctx(slot_id, (*dev_ctx).0.as_ptr(), ctx_size, max_dci);
+kernel/src/drivers/usb/xhci.rs:3243:    // Phase 2+3 (merged): Per-interface atomic setup — matches Linux ordering.
+kernel/src/drivers/usb/xhci.rs:3248:    // per-interface atomic ordering as the Linux kernel module.
+kernel/src/drivers/usb/xhci.rs:3471:    xhci_trace_trb(XhciTraceOp::TransferSubmit, slot_id, dci, &trb);
+kernel/src/drivers/usb/xhci.rs:3576:        xhci_trace_note(0, "drain_stale");
+kernel/src/drivers/usb/xhci.rs:4309:        // Linux USB 3.0 enumeration sequence (from ftrace):
+kernel/src/drivers/usb/xhci.rs:4316:        // This exact ordering is confirmed by Parallels Linux VM ftrace capture.
+kernel/src/drivers/usb/xhci.rs:4399:            xhci_trace_note(0, "no_msi_cap");
+kernel/src/drivers/usb/xhci.rs:4422:        xhci_trace_note(0, "err:gicv2m");
+kernel/src/drivers/usb/xhci.rs:4427:        xhci_trace_note(0, "err:no_spis");
+kernel/src/drivers/usb/xhci.rs:4434:        xhci_trace_note(0, "err:alloc_spi");
+kernel/src/drivers/usb/xhci.rs:4467:    xhci_trace_note(0, "init_start");
+kernel/src/drivers/usb/xhci.rs:4587:    xhci_trace_note(
+kernel/src/drivers/usb/xhci.rs:4656:                    xhci_trace_note(0, "usblegsup_claimed");
+kernel/src/drivers/usb/xhci.rs:4660:                    xhci_trace_note(0, "usblegsup_no_bios");
+kernel/src/drivers/usb/xhci.rs:4742:        xhci_trace_note(0, "ctrl_stopped");
+kernel/src/drivers/usb/xhci.rs:4750:        xhci_trace_note(0, "inherit_uefi");
+kernel/src/drivers/usb/xhci.rs:4758:        xhci_trace_note(0, "ctrl_halt_no_reset");
+kernel/src/drivers/usb/xhci.rs:4766:        xhci_trace_note(0, "ctrl_reset");
+kernel/src/drivers/usb/xhci.rs:5001:        xhci_trace_note(0, "err:ctrl_halted");
+kernel/src/drivers/usb/xhci.rs:5010:        xhci_trace_note(0, "err:halted_after_delay");
+kernel/src/drivers/usb/xhci.rs:5129:                xhci_trace_note(0, "err:port_scan");
+kernel/src/drivers/usb/xhci.rs:5133:        xhci_trace_note(0, "err:port_scan");
+kernel/src/drivers/usb/xhci.rs:5193:    xhci_trace_note(0, "portsc_cleared");
+kernel/src/drivers/usb/xhci.rs:5214:    xhci_trace_note(0, "init_complete");
+kernel/src/drivers/usb/xhci.rs:5215:    // Trace data available via GDB (call trace_dump()) or /proc/xhci/trace
+kernel/src/drivers/usb/xhci.rs:5223:    // Keep XHCI_TRACE_ACTIVE enabled so btrace (/proc/xhci/trace) shows
+kernel/src/drivers/usb/xhci.rs:5324:                    xhci_trace_trb(XhciTraceOp::TransferEvent, slot, endpoint, &trb);
+kernel/src/drivers/usb/xhci.rs:5753:            // Use atomic counters (reported by heartbeat) instead of logging.
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:16:extern void breenix_xhci_trace_raw_c(uint8_t op, uint8_t slot, uint8_t dci, const uint8_t *data, size_t len);
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:17:extern void breenix_xhci_trace_note_c(uint8_t slot, const uint8_t *data, size_t len);
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:50:static void trace_note(uint8_t slot, const char *s) {
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:55:    breenix_xhci_trace_note_c(slot, (const uint8_t *)s, len);
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:58:static void trace_port_found(uint8_t port_num) {
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:87:    trace_note(0, buf);
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:91:// Trace op codes (match Rust XhciTraceOp)
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:105:static void trace_mmio_w32(uint64_t addr, uint32_t val) {
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:109:    breenix_xhci_trace_raw_c(TRACE_MMIO_W32, 0, 0, buf, sizeof(buf));
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:112:static void trace_mmio_w64(uint64_t addr, uint64_t val) {
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:116:    breenix_xhci_trace_raw_c(TRACE_MMIO_W64, 0, 0, buf, sizeof(buf));
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:119:static void trace_input_ctx(uint8_t slot, const uint8_t *base, size_t ctx_size, uint8_t max_dci) {
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:124:    breenix_xhci_trace_raw_c(TRACE_INPUT_CTX, slot, max_dci, base, total);
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:127:static void trace_output_ctx(uint8_t slot, const uint8_t *base, size_t ctx_size, uint8_t max_dci) {
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:132:    breenix_xhci_trace_raw_c(TRACE_OUTPUT_CTX, slot, max_dci, base, total);
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:135:static void trace_trb(uint8_t op, uint8_t slot, uint8_t dci, const void *trb) {
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:136:    breenix_xhci_trace_raw_c(op, slot, dci, (const uint8_t *)trb, 16);
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:148:    trace_mmio_w32(addr, val);
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:157:    trace_mmio_w64(addr, val);
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:756:                trace_trb(TRACE_XFER_EVENT,
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:836:    breenix_xhci_trace_raw_c(TRACE_DOORBELL, slot, target, buf, 12);
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:843:    trace_trb(TRACE_CMD_SUBMIT, (cmd_trb->field[3] >> TRB_SLOT_ID_SHIFT) & 0xff, 0, cmd_trb);
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:849:    trace_trb(TRACE_CMD_COMPLETE, (ev_out->field[3] >> TRB_SLOT_ID_SHIFT) & 0xff, 0, ev_out);
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:905:    trace_trb(TRACE_XFER_EVENT, (ev.field[3] >> TRB_SLOT_ID_SHIFT) & 0xff,
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:1040:    trace_input_ctx(udev->slot_id, in_ctx, vdev->ctx_size, 1);
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:1091:    trace_input_ctx(udev->slot_id, in_ctx, vdev->ctx_size, max_dci);
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:1106:    trace_output_ctx(udev->slot_id, vdev->out_ctx, vdev->ctx_size, max_dci);
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:1149:            trace_input_ctx(udev->slot_id, reconfig_ctx, vdev->ctx_size, max_dci);
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:1163:            trace_output_ctx(udev->slot_id, vdev->out_ctx, vdev->ctx_size, max_dci);
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:1165:            breenix_xhci_trace_raw_c(TRACE_OUTPUT_CTX, vdev->slot_id, max_dci, vdev->out_ctx,
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:1329:    trace_port_found((uint8_t)(port + 1u));
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:1558:    trace_note(0, "linux_xhci_begin");
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:1573:        trace_note(0, "linux_xhci_init_fail");
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:1593:    trace_note(0, "all_devices_enumerated");
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:1601:        trace_output_ctx(vdev->slot_id, vdev->out_ctx, vdev->ctx_size, 5);
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:1638:        trace_trb(TRACE_XFER_SUBMIT, info->slot_id, info->dci, &trb);
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:1650:            trace_note(0, "cmd_ring_alive");
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:1652:            trace_note(0, "cmd_ring_dead");
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:1656:        trace_note(0, "linux_xhci_wait_intr");
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:1660:                trace_trb(TRACE_XFER_EVENT, (uint8_t)((ev.field[3] >> TRB_SLOT_ID_SHIFT) & 0xff),
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:1668:            trace_mmio_w32(usbsts_addr, usbsts);
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:1671:            trace_mmio_w32(iman_addr, iman);
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:1679:                trace_output_ctx(slot_id, vdev->out_ctx, vdev->ctx_size, 5);
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:1683:            trace_note(0, "linux_xhci_intr_timeout");
+kernel/src/drivers/usb/linux_xhci/linux_xhci.c:1687:    trace_note(0, "linux_xhci_done");
+kernel/src/drivers/usb/xhci_linux.rs:6:use crate::drivers::usb::xhci::{xhci_trace_dump_public, xhci_trace_raw, xhci_trace_set_active};
+kernel/src/drivers/usb/xhci_linux.rs:34:    xhci_trace_set_active(true);
+kernel/src/drivers/usb/xhci_linux.rs:35:    xhci_trace_raw(50, 0, 0, b"linux_harness_init");
+kernel/src/drivers/usb/xhci_linux.rs:70:    xhci_trace_raw(50, 0, 0, b"linux_harness_done");
+kernel/src/drivers/usb/xhci_linux.rs:71:    xhci_trace_dump_public();
+kernel/src/drivers/usb/xhci_linux.rs:72:    xhci_trace_set_active(false);
+kernel/src/drivers/usb/xhci_linux.rs:82:pub extern "C" fn breenix_xhci_trace_raw_c(op: u8, slot: u8, dci: u8, data: *const u8, len: usize) {
+kernel/src/drivers/usb/xhci_linux.rs:87:    xhci_trace_raw(op, slot, dci, bytes);
+kernel/src/drivers/usb/xhci_linux.rs:91:pub extern "C" fn breenix_xhci_trace_note_c(slot: u8, data: *const u8, len: usize) {
+kernel/src/drivers/usb/xhci_linux.rs:96:    xhci_trace_raw(50, slot, 0, bytes);
+kernel/src/drivers/usb/hid.rs:5://! TTY subsystem and mouse events to the input atomics, using the same
+kernel/src/drivers/usb/hid.rs:12:use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
+kernel/src/drivers/usb/hid.rs:43:/// Mouse position in screen coordinates (shared with VirtIO input atomics).
+kernel/src/drivers/usb/hid.rs:66:/// Cleared atomically by mouse_state_consume() when BWM reads the mouse state.
+kernel/src/drivers/usb/hid.rs:330:/// Updates the global mouse position atomics with clamping to screen bounds.
+kernel/src/drivers/usb/hid.rs:333:/// (like VMware's dual HID mouse) don't race on button state. Each endpoint's
+kernel/src/drivers/usb/hid.rs:526:/// cleared atomically on read so the next call returns only live hardware state.
+kernel/src/drivers/pci.rs:23:use core::{fmt, sync::atomic::AtomicBool};
+kernel/src/drivers/pci.rs:1212:    PCI_INITIALIZED.store(true, core::sync::atomic::Ordering::Release);
+kernel/src/drivers/virtio/sound_mmio.rs:10:use core::sync::atomic::{fence, Ordering};
+kernel/src/drivers/virtio/net_pci.rs:20:use core::sync::atomic::{fence, AtomicBool, AtomicU32, Ordering};
+kernel/src/drivers/virtio/net_pci.rs:903:    // Check if more work arrived while we were processing (race window).
+kernel/src/drivers/virtio/input_mmio.rs:20:use core::sync::atomic::{fence, AtomicBool, AtomicU16, AtomicU32, Ordering};
+kernel/src/drivers/virtio/input_mmio.rs:647:    static SHIFT_PRESSED: core::sync::atomic::AtomicBool =
+kernel/src/drivers/virtio/input_mmio.rs:648:        core::sync::atomic::AtomicBool::new(false);
+kernel/src/drivers/virtio/input_mmio.rs:649:    static CTRL_PRESSED: core::sync::atomic::AtomicBool =
+kernel/src/drivers/virtio/input_mmio.rs:650:        core::sync::atomic::AtomicBool::new(false);
+kernel/src/drivers/virtio/input_mmio.rs:651:    static CAPS_LOCK_ACTIVE: core::sync::atomic::AtomicBool =
+kernel/src/drivers/virtio/input_mmio.rs:652:        core::sync::atomic::AtomicBool::new(false);
+kernel/src/drivers/virtio/input_mmio.rs:662:                SHIFT_PRESSED.store(value != 0, core::sync::atomic::Ordering::Relaxed);
+kernel/src/drivers/virtio/input_mmio.rs:668:                CTRL_PRESSED.store(value != 0, core::sync::atomic::Ordering::Relaxed);
+kernel/src/drivers/virtio/input_mmio.rs:675:                    let prev = CAPS_LOCK_ACTIVE.load(core::sync::atomic::Ordering::Relaxed);
+kernel/src/drivers/virtio/input_mmio.rs:676:                    CAPS_LOCK_ACTIVE.store(!prev, core::sync::atomic::Ordering::Relaxed);
+kernel/src/drivers/virtio/input_mmio.rs:695:                let shift = SHIFT_PRESSED.load(core::sync::atomic::Ordering::Relaxed);
+kernel/src/drivers/virtio/input_mmio.rs:696:                let caps = CAPS_LOCK_ACTIVE.load(core::sync::atomic::Ordering::Relaxed);
+kernel/src/drivers/virtio/input_mmio.rs:697:                let ctrl = CTRL_PRESSED.load(core::sync::atomic::Ordering::Relaxed);
+kernel/src/drivers/virtio/input_mmio.rs:849:/// Mouse position is stored in atomics for the render thread to read.
+kernel/src/drivers/virtio/net_mmio.rs:10:use core::sync::atomic::{fence, AtomicBool, Ordering};
+kernel/src/drivers/virtio/block.rs:25:use core::sync::atomic::{AtomicU64, Ordering};
+kernel/src/drivers/virtio/block.rs:283:        // lock causes a race when two processes exec() concurrently — one
+kernel/src/drivers/virtio/block.rs:301:        core::sync::atomic::fence(Ordering::SeqCst);
+kernel/src/drivers/virtio/block.rs:313:        core::sync::atomic::fence(Ordering::SeqCst);
+kernel/src/drivers/virtio/block.rs:408:        core::sync::atomic::fence(Ordering::SeqCst);
+kernel/src/drivers/virtio/mmio.rs:209:        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+kernel/src/drivers/virtio/gpu_pci.rs:13:use core::sync::atomic::{fence, AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
+kernel/src/drivers/virtio/gpu_pci.rs:1801:    let used_idx = virtgpu_trace_used_idx();
+kernel/src/drivers/virtio/gpu_pci.rs:2224:fn virtgpu_next_trace_seq() -> u16 {
+kernel/src/drivers/virtio/gpu_pci.rs:2302:fn virtgpu_trace_submission(cmd_type: u32, resource_id: u32) {
+kernel/src/drivers/virtio/gpu_pci.rs:2303:    let seq = virtgpu_next_trace_seq();
+kernel/src/drivers/virtio/gpu_pci.rs:2304:    virtgpu::trace_cmd_submit(cmd_type, seq);
+kernel/src/drivers/virtio/gpu_pci.rs:2305:    virtgpu::trace_cmd_resource(resource_id);
+kernel/src/drivers/virtio/gpu_pci.rs:2310:fn virtgpu_trace_flush_pre_notify(cmd_type: u32, resource_id: u32) {
+kernel/src/drivers/virtio/gpu_pci.rs:2312:        virtgpu::trace_flush_buffer_pre_notify_if_zero(resource_id);
+kernel/src/drivers/virtio/gpu_pci.rs:2347:fn virtgpu_trace_used_idx() -> u16 {
+kernel/src/drivers/virtio/gpu_pci.rs:2379:    let cur = virtgpu_trace_used_idx();
+kernel/src/drivers/virtio/gpu_pci.rs:2384:        virtgpu::trace_stale_drain(diff, cur);
+kernel/src/drivers/virtio/gpu_pci.rs:2453:            virtgpu::trace_wait_completion_exit(cmd_type, resource_id, wait_path, false);
+kernel/src/drivers/virtio/gpu_pci.rs:2458:            virtgpu::trace_wait_completion_exit(cmd_type, resource_id, wait_path, false);
+kernel/src/drivers/virtio/gpu_pci.rs:2465:    let used_idx = virtgpu_trace_used_idx();
+kernel/src/drivers/virtio/gpu_pci.rs:2467:        virtgpu::trace_wait_completion_exit(cmd_type, resource_id, wait_path, false);
+kernel/src/drivers/virtio/gpu_pci.rs:2471:    virtgpu::trace_q_complete(0, used_idx);
+kernel/src/drivers/virtio/gpu_pci.rs:2472:    virtgpu::trace_wait_completion_exit(cmd_type, resource_id, wait_path, true);
+kernel/src/drivers/virtio/gpu_pci.rs:2553:    virtgpu_trace_flush_pre_notify(cmd_type, resource_id);
+kernel/src/drivers/virtio/gpu_pci.rs:2554:    virtgpu::trace_q_notify(0, virtgpu_trace_used_idx());
+kernel/src/drivers/virtio/gpu_pci.rs:2555:    virtgpu::trace_wait_completion_enter(cmd_type, resource_id, virtgpu::WAIT_PATH_2DESC);
+kernel/src/drivers/virtio/gpu_pci.rs:2581:    virtgpu_trace_submission(cmd_type, resource_id);
+kernel/src/drivers/virtio/gpu_pci.rs:2660:    virtgpu_trace_flush_pre_notify(cmd_type, resource_id);
+kernel/src/drivers/virtio/gpu_pci.rs:2661:    virtgpu::trace_q_notify(0, virtgpu_trace_used_idx());
+kernel/src/drivers/virtio/gpu_pci.rs:2662:    virtgpu::trace_wait_completion_enter(cmd_type, resource_id, wait_path);
+kernel/src/drivers/virtio/gpu_pci.rs:2681:    virtgpu::trace_response(resp_type);
+kernel/src/drivers/virtio/gpu_pci.rs:2702:    virtgpu_trace_submission(cmd_type, resource_id);
+kernel/src/drivers/virtio/gpu_pci.rs:2757:    virtgpu::trace_response(resp_type);
+kernel/src/drivers/virtio/gpu_pci.rs:2761:        crate::tracing::output::trace_dump_latest(256);
+kernel/src/drivers/virtio/gpu_pci.rs:2762:        crate::tracing::output::trace_dump_counters();
+kernel/src/drivers/virtio/gpu_pci.rs:3111:    virtgpu::trace_flush_enter(virtgpu::FLUSH_HELPER_2D, caller_tag, resource_id);
+kernel/src/drivers/virtio/gpu_pci.rs:3112:    virtgpu::trace_flush_construct_if_unexpected(
+kernel/src/drivers/virtio/gpu_pci.rs:3139:            virtgpu::trace_flush_readback_mismatch(resource_id, readback);
+kernel/src/drivers/virtio/gpu_pci.rs:3141:        core::sync::atomic::compiler_fence(Ordering::Release);
+kernel/src/drivers/virtio/gpu_pci.rs:3145:    virtgpu::trace_flush_exit(
+kernel/src/drivers/virtio/gpu_pci.rs:3160:static VIRGL_HEX_DUMP_ENABLED: core::sync::atomic::AtomicBool =
+kernel/src/drivers/virtio/gpu_pci.rs:3161:    core::sync::atomic::AtomicBool::new(false);
+kernel/src/drivers/virtio/gpu_pci.rs:3166:    let enabled = VIRGL_HEX_DUMP_ENABLED.load(core::sync::atomic::Ordering::SeqCst);
+kernel/src/drivers/virtio/gpu_pci.rs:3190:    if !VIRGL_HEX_DUMP_ENABLED.load(core::sync::atomic::Ordering::SeqCst) {
+kernel/src/drivers/virtio/gpu_pci.rs:3639:    virtgpu::trace_flush_enter(virtgpu::FLUSH_HELPER_3D, caller_tag, resource_id);
+kernel/src/drivers/virtio/gpu_pci.rs:3640:    virtgpu::trace_flush_construct_if_unexpected(
+kernel/src/drivers/virtio/gpu_pci.rs:3667:            virtgpu::trace_flush_readback_mismatch(resource_id, readback);
+kernel/src/drivers/virtio/gpu_pci.rs:3669:        core::sync::atomic::compiler_fence(Ordering::Release);
+kernel/src/drivers/virtio/gpu_pci.rs:3677:    virtgpu::trace_flush_exit(
+kernel/src/drivers/virtio/gpu_pci.rs:3878:    virtgpu::trace_submit_3d_enter(submit_id, cmds.len() as u32);
+kernel/src/drivers/virtio/gpu_pci.rs:3922:            virtgpu::trace_submit_3d_exit(submit_id, 0xffff, false);
+kernel/src/drivers/virtio/gpu_pci.rs:3938:        virtgpu::trace_submit_3d_exit(submit_id, resp_type, false);
+kernel/src/drivers/virtio/gpu_pci.rs:3957:    virtgpu::trace_submit_3d_exit(submit_id, resp_type, true);
+kernel/src/drivers/virtio/gpu_pci.rs:4199:    static FRAME_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+kernel/src/drivers/virtio/gpu_pci.rs:4200:    let frame = FRAME_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+kernel/src/drivers/virtio/gpu_pci.rs:4382:    static RECT_FRAME_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+kernel/src/drivers/virtio/gpu_pci.rs:4383:    let frame = RECT_FRAME_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+kernel/src/drivers/virtio/gpu_pci.rs:4516:    // Linux ftrace proves SET_SCANOUT is issued every frame, not just once.
+kernel/src/drivers/virtio/gpu_pci.rs:4542:    static COMPOSITE_FRAME_COUNT: core::sync::atomic::AtomicU32 =
+kernel/src/drivers/virtio/gpu_pci.rs:4543:        core::sync::atomic::AtomicU32::new(0);
+kernel/src/drivers/virtio/gpu_pci.rs:4544:    let frame = COMPOSITE_FRAME_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+kernel/src/drivers/virtio/gpu_pci.rs:4674:    static TEX_FRAME_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+kernel/src/drivers/virtio/gpu_pci.rs:4675:    let frame = TEX_FRAME_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+kernel/src/drivers/virtio/gpu_pci.rs:5297:    static COMPOSITE_WIN_FRAME: core::sync::atomic::AtomicU32 =
+kernel/src/drivers/virtio/gpu_pci.rs:5298:        core::sync::atomic::AtomicU32::new(0);
+kernel/src/drivers/virtio/gpu_pci.rs:5299:    let frame = COMPOSITE_WIN_FRAME.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+kernel/src/drivers/virtio/gpu_pci.rs:5394:    use core::sync::atomic::AtomicI32;
+kernel/src/drivers/virtio/gpu_pci.rs:5540:        use core::sync::atomic::AtomicU64;
+kernel/src/drivers/virtio/gpu_pci.rs:6174:    // Without this, the display refresh can race with async VirGL execution.
+kernel/src/drivers/virtio/block_mmio.rs:10:use core::sync::atomic::{fence, Ordering};
+kernel/src/drivers/virtio/block_mmio.rs:273:static DEVICE_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+kernel/src/drivers/virtio/block_mmio.rs:296:    DEVICE_COUNT.store(found, core::sync::atomic::Ordering::Release);
+kernel/src/drivers/virtio/block_mmio.rs:716:    DEVICE_COUNT.load(core::sync::atomic::Ordering::Acquire)
+kernel/src/drivers/virtio/block_mmio.rs:942:        return Ok(()); // Skip gracefully
+kernel/src/drivers/virtio/block_mmio.rs:948:        return Ok(()); // Skip gracefully
+kernel/src/drivers/virtio/block_mmio.rs:986:            return Ok(()); // Skip gracefully
+kernel/src/drivers/virtio/queue.rs:16:use core::sync::atomic::{fence, Ordering};
+kernel/src/drivers/virtio/sound.rs:10:use core::sync::atomic::{fence, Ordering};
+kernel/src/drivers/virtio/input_pci.rs:17:use core::sync::atomic::{AtomicBool, AtomicU32, Ordering, fence};
+kernel/src/drivers/virtio/pci_transport.rs:59:/// Configuration atomicity generation counter
+kernel/src/drivers/virtio/gpu_mmio.rs:10:use core::sync::atomic::{fence, Ordering};
+kernel/src/drivers/e1000/mod.rs:16:use core::sync::atomic::{AtomicBool, Ordering};
+kernel/src/drivers/e1000/mod.rs:124:        core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
+kernel/src/drivers/e1000/mod.rs:410:        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+kernel/src/drivers/ahci/mod.rs:22:use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+kernel/src/drivers/ahci/mod.rs:31:/// 32-bit atomics in IRQ context. Keep these per-port ISR atomics on 8-byte
+kernel/src/drivers/ahci/mod.rs:206:    AHCI_IRQ.load(core::sync::atomic::Ordering::Acquire)
+kernel/src/drivers/ahci/mod.rs:245:/// AtomicU32 for lock-free access from the ISR.
+kernel/src/drivers/ahci/mod.rs:779:        // No lock is held here.  Completion::wait_timeout() atomically
+kernel/src/drivers/ahci/mod.rs:781:        // lock, preventing a race with complete() from the ISR.
+kernel/src/drivers/ahci/mod.rs:1586:                .load(core::sync::atomic::Ordering::Relaxed),
+kernel/src/drivers/ahci/mod.rs:1637:            crate::serial_println!("[ahci]   dumping trace buffer cpu0");
+kernel/src/drivers/ahci/mod.rs:1640:                crate::serial_println!("[ahci]   dumping trace buffer timeout_cpu={}", timeout_cpu);
+kernel/src/drivers/ahci/mod.rs:1743:        core::sync::atomic::fence(Ordering::SeqCst);
+kernel/src/drivers/ahci/mod.rs:1852:            core::sync::atomic::fence(Ordering::SeqCst);
+kernel/src/drivers/ahci/mod.rs:1910:            core::sync::atomic::fence(Ordering::SeqCst);
+kernel/src/drivers/ahci/mod.rs:1943:            core::sync::atomic::fence(Ordering::SeqCst);
+kernel/src/drivers/ahci/mod.rs:2164:        core::sync::atomic::fence(Ordering::SeqCst);
+kernel/src/drivers/ahci/mod.rs:2285:/// This function must be lock-free and allocation-free (called from IRQ context).

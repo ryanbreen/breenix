@@ -1,0 +1,17 @@
+kernel/src/drivers/vmware/svga3.rs:779:/// be composited via `composite_frame()`.
+kernel/src/drivers/vmware/svga3.rs:781:/// Must be called AFTER `init()` and AFTER the heap is available.
+kernel/src/drivers/vmware/svga3.rs:1017:/// BWM can write pixels directly to this buffer, then call `present_rect()`
+kernel/src/drivers/usb/xhci.rs:1383:/// Spin-wait until `f()` returns true, or fail after `max_iters` iterations.
+kernel/src/drivers/usb/xhci.rs:2499:/// xhci_check_bandwidth() behavior. The re-ConfigureEndpoint uses a SEPARATE
+kernel/src/drivers/usb/xhci.rs:2935:/// Linux's `usb_set_configuration()` calls `xhci_check_bandwidth()` which issues
+kernel/src/drivers/pci.rs:1223:/// Must be called after `enumerate()`.
+kernel/src/drivers/virtio/net_pci.rs:838:/// re_enable_irq() to re-arm both levels.
+kernel/src/drivers/virtio/gpu_pci.rs:687:/// Initialized by `init_vb_backing()` during VirGL init.
+kernel/src/drivers/virtio/gpu_pci.rs:728:/// Used by `virgl_composite_frame()` to upload pixel buffers as GPU textures.
+kernel/src/drivers/virtio/gpu_pci.rs:879:/// remove_for_pid() which runs in the process cleanup path (including from
+kernel/src/drivers/virtio/gpu_pci.rs:1086:/// The cursor is rendered as a GPU quad in `virgl_composite_single_quad()`,
+kernel/src/drivers/virtio/pci_transport.rs:191:    /// Populated by `cache_queue_notify_addr()` after queue setup.
+kernel/src/drivers/virtio/pci_transport.rs:494:    /// Cache the notify address for a queue so `notify_queue_fast()` avoids
+kernel/src/drivers/virtio/pci_transport.rs:510:    /// Falls back to `notify_queue()` if the address hasn't been cached.
+kernel/src/drivers/ahci/mod.rs:761:///   The ISR calls `complete()` → `unblock_for_io()` to wake us.
+kernel/src/drivers/ahci/mod.rs:1794:    /// call `finish_read_sectors()` after the wait.
