@@ -1,0 +1,62 @@
+=== c077c6ba ===
+commit c077c6ba581f0cc918ab76373f9a409e744d68bd
+Author: Ryan Breen <ryan@ryanbreen.com>
+Date:   Tue Apr 21 08:10:46 2026 -0400
+
+    Revert "fix(usb): F32t Phase 5a move xHCI SPI enable to end of init"
+    
+    This reverts commit 703db7def129c0c5c1d7b799283948e8e796191c.
+
+=== 703db7de ===
+commit 703db7def129c0c5c1d7b799283948e8e796191c
+Author: Ryan Breen <ryan@ryanbreen.com>
+Date:   Tue Apr 21 07:43:22 2026 -0400
+
+    fix(usb): F32t Phase 5a move xHCI SPI enable to end of init
+    
+    Previously the GIC SPI for xHCI was enabled lazily inside poll_hid_events()
+    when its poll counter reached 50 (~250ms after init). That coupled MSI
+    activation to the timer-driven polling path.
+    
+    Move SPI enable to the end of xhci::init(), after:
+    - PCI MSI capability programmed with Linux-order sequence (Phase 2)
+    - state.irq = early_irq stored (Phase 4)
+    - IMAN.IE = 1, USBCMD.RS=1 set
+    - Enumeration complete, TRBs queued for HID endpoints
+    
+    This is where Linux enables interrupts at the end of controller bring-up
+    (drivers/usb/host/xhci.c::xhci_run_finished_at). poll_hid_events() no longer
+    holds the only path to activation; Phase 5b will delete that function.
+    
+    Validation: clean aarch64 kernel build. Runtime test pending.
+    
+    Co-authored-by: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+=== 0f641606 ===
+commit 0f641606f360ac0c628e1e1fafa4ce1064b1c669
+Author: Ryan Breen <ryan@ryanbreen.com>
+Date:   Sun Mar 1 19:19:51 2026 -0500
+
+    feat: interrupt-driven xHCI keyboard — eliminate 20ms poll latency
+    
+    The xHCI MSI handler was disabling the GIC SPI after each interrupt and
+    relying on a rate-limited timer poll (50 Hz / 20ms) to re-enable it.
+    This meant every keystroke after the first waited up to 20ms+ for the
+    next poll tick, defeating the purpose of MSI interrupts entirely.
+    
+    Now handle_interrupt() re-enables the SPI after draining the event ring,
+    so the next USB event gets a real interrupt immediately. The timer poll
+    remains as housekeeping (endpoint resets, deferred init) but no longer
+    gates keyboard responsiveness.
+    
+    Changes:
+    - Re-enable GIC SPI at end of handle_interrupt() after event drain
+    - Remove poll % 4 rate-limiting from poll_hid_events() (every tick now)
+    - One-shot SPI activation via SPI_ACTIVATED flag (250ms after init)
+    - Reduce deferred doorbell re-ring from poll=300 to poll=75
+    - Gate procfs xhci module behind cfg(target_arch = "aarch64")
+    - Graphics and page table performance experiments (WIP)
+    
+    Co-Authored-By: Ryan Breen <rbreen@gmail.com>
+    Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+

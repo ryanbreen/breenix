@@ -1,0 +1,200 @@
+commit c077c6ba581f0cc918ab76373f9a409e744d68bd
+Author: Ryan Breen <ryan@ryanbreen.com>
+Date:   Tue Apr 21 08:10:46 2026 -0400
+
+    Revert "fix(usb): F32t Phase 5a move xHCI SPI enable to end of init"
+    
+    This reverts commit 703db7def129c0c5c1d7b799283948e8e796191c.
+
+diff --git a/kernel/src/drivers/usb/xhci.rs b/kernel/src/drivers/usb/xhci.rs
+index 917f247a..ce4a9242 100644
+--- a/kernel/src/drivers/usb/xhci.rs
++++ b/kernel/src/drivers/usb/xhci.rs
+@@ -5211,18 +5211,6 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
+     // Store the IRQ from the early setup.
+     XHCI_IRQ.store(early_irq, Ordering::Release);
+ 
+-    // F32t Phase 5a: enable the GIC SPI inline now that TRBs are queued and
+-    // IMAN.IE + USBCMD.RS are set. This replaces the deferred activation that
+-    // lived at poll=50 inside poll_hid_events(). Linux parity:
+-    // /tmp/linux-v6.8/drivers/usb/host/xhci.c::xhci_run_finished_at enables
+-    // interrupts at the end of controller bring-up.
+-    if early_irq != 0 && !SPI_ACTIVATED.swap(true, Ordering::AcqRel) {
+-        crate::arch_impl::aarch64::gic::clear_spi_pending(early_irq);
+-        crate::arch_impl::aarch64::gic::enable_spi(early_irq);
+-        DIAG_SPI_ENABLE_COUNT.fetch_add(1, Ordering::Relaxed);
+-        crate::serial_println!("[xhci] SPI {} enabled at init complete", early_irq);
+-    }
+-
+     xhci_trace_note(0, "init_complete");
+     // Trace data available via GDB (call trace_dump()) or /proc/xhci/trace
+ 
+@@ -6106,8 +6094,17 @@ pub fn poll_hid_events() {
+         }
+     }
+ 
+-    // F32t Phase 5a: SPI activation moved to end of xhci::init() so the
+-    // deferred poll-counter path is no longer required to enable MSI.
++    // Deferred MSI activation.
++    // Enable SPI after a short stabilization period (50 polls = 250ms)
++    // so xHCI init completes before interrupts start firing.
++    // Once enabled, handle_interrupt() re-enables SPI after each invocation,
++    // so this only matters for the very first activation.
++    if state.irq != 0 && poll >= 50 && !SPI_ACTIVATED.load(Ordering::Relaxed) {
++        SPI_ACTIVATED.store(true, Ordering::Release);
++        crate::arch_impl::aarch64::gic::clear_spi_pending(state.irq);
++        crate::arch_impl::aarch64::gic::enable_spi(state.irq);
++        DIAG_SPI_ENABLE_COUNT.fetch_add(1, Ordering::Relaxed);
++    }
+ 
+     // Ensure HID_TRBS_QUEUED is set after initialization completes.
+     if poll >= 100 && !HID_TRBS_QUEUED.load(Ordering::Acquire) {
+
+commit 703db7def129c0c5c1d7b799283948e8e796191c
+Author: Ryan Breen <ryan@ryanbreen.com>
+Date:   Tue Apr 21 07:43:22 2026 -0400
+
+    fix(usb): F32t Phase 5a move xHCI SPI enable to end of init
+    
+    Previously the GIC SPI for xHCI was enabled lazily inside poll_hid_events()
+    when its poll counter reached 50 (~250ms after init). That coupled MSI
+    activation to the timer-driven polling path.
+    
+    Move SPI enable to the end of xhci::init(), after:
+    - PCI MSI capability programmed with Linux-order sequence (Phase 2)
+    - state.irq = early_irq stored (Phase 4)
+    - IMAN.IE = 1, USBCMD.RS=1 set
+    - Enumeration complete, TRBs queued for HID endpoints
+    
+    This is where Linux enables interrupts at the end of controller bring-up
+    (drivers/usb/host/xhci.c::xhci_run_finished_at). poll_hid_events() no longer
+    holds the only path to activation; Phase 5b will delete that function.
+    
+    Validation: clean aarch64 kernel build. Runtime test pending.
+    
+    Co-authored-by: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+diff --git a/kernel/src/drivers/usb/xhci.rs b/kernel/src/drivers/usb/xhci.rs
+index ce4a9242..917f247a 100644
+--- a/kernel/src/drivers/usb/xhci.rs
++++ b/kernel/src/drivers/usb/xhci.rs
+@@ -5211,6 +5211,18 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
+     // Store the IRQ from the early setup.
+     XHCI_IRQ.store(early_irq, Ordering::Release);
+ 
++    // F32t Phase 5a: enable the GIC SPI inline now that TRBs are queued and
++    // IMAN.IE + USBCMD.RS are set. This replaces the deferred activation that
++    // lived at poll=50 inside poll_hid_events(). Linux parity:
++    // /tmp/linux-v6.8/drivers/usb/host/xhci.c::xhci_run_finished_at enables
++    // interrupts at the end of controller bring-up.
++    if early_irq != 0 && !SPI_ACTIVATED.swap(true, Ordering::AcqRel) {
++        crate::arch_impl::aarch64::gic::clear_spi_pending(early_irq);
++        crate::arch_impl::aarch64::gic::enable_spi(early_irq);
++        DIAG_SPI_ENABLE_COUNT.fetch_add(1, Ordering::Relaxed);
++        crate::serial_println!("[xhci] SPI {} enabled at init complete", early_irq);
++    }
++
+     xhci_trace_note(0, "init_complete");
+     // Trace data available via GDB (call trace_dump()) or /proc/xhci/trace
+ 
+@@ -6094,17 +6106,8 @@ pub fn poll_hid_events() {
+         }
+     }
+ 
+-    // Deferred MSI activation.
+-    // Enable SPI after a short stabilization period (50 polls = 250ms)
+-    // so xHCI init completes before interrupts start firing.
+-    // Once enabled, handle_interrupt() re-enables SPI after each invocation,
+-    // so this only matters for the very first activation.
+-    if state.irq != 0 && poll >= 50 && !SPI_ACTIVATED.load(Ordering::Relaxed) {
+-        SPI_ACTIVATED.store(true, Ordering::Release);
+-        crate::arch_impl::aarch64::gic::clear_spi_pending(state.irq);
+-        crate::arch_impl::aarch64::gic::enable_spi(state.irq);
+-        DIAG_SPI_ENABLE_COUNT.fetch_add(1, Ordering::Relaxed);
+-    }
++    // F32t Phase 5a: SPI activation moved to end of xhci::init() so the
++    // deferred poll-counter path is no longer required to enable MSI.
+ 
+     // Ensure HID_TRBS_QUEUED is set after initialization completes.
+     if poll >= 100 && !HID_TRBS_QUEUED.load(Ordering::Acquire) {
+
+commit 0f641606f360ac0c628e1e1fafa4ce1064b1c669
+Author: Ryan Breen <ryan@ryanbreen.com>
+Date:   Sun Mar 1 19:19:51 2026 -0500
+
+    feat: interrupt-driven xHCI keyboard — eliminate 20ms poll latency
+    
+    The xHCI MSI handler was disabling the GIC SPI after each interrupt and
+    relying on a rate-limited timer poll (50 Hz / 20ms) to re-enable it.
+    This meant every keystroke after the first waited up to 20ms+ for the
+    next poll tick, defeating the purpose of MSI interrupts entirely.
+    
+    Now handle_interrupt() re-enables the SPI after draining the event ring,
+    so the next USB event gets a real interrupt immediately. The timer poll
+    remains as housekeeping (endpoint resets, deferred init) but no longer
+    gates keyboard responsiveness.
+    
+    Changes:
+    - Re-enable GIC SPI at end of handle_interrupt() after event drain
+    - Remove poll % 4 rate-limiting from poll_hid_events() (every tick now)
+    - One-shot SPI activation via SPI_ACTIVATED flag (250ms after init)
+    - Reduce deferred doorbell re-ring from poll=300 to poll=75
+    - Gate procfs xhci module behind cfg(target_arch = "aarch64")
+    - Graphics and page table performance experiments (WIP)
+    
+    Co-Authored-By: Ryan Breen <rbreen@gmail.com>
+    Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+diff --git a/kernel/src/drivers/usb/xhci.rs b/kernel/src/drivers/usb/xhci.rs
+index ebb33941..c1cf7665 100644
+--- a/kernel/src/drivers/usb/xhci.rs
++++ b/kernel/src/drivers/usb/xhci.rs
+@@ -466,6 +466,9 @@ pub static DIAG_KBD_PORTSC: AtomicU32 = AtomicU32::new(0);
+ pub static DIAG_KBD_EP_STATE: AtomicU32 = AtomicU32::new(0);
+ /// Periodic diagnostic: SPI enable count (how many times SPI was re-enabled).
+ pub static DIAG_SPI_ENABLE_COUNT: AtomicU64 = AtomicU64::new(0);
++/// Set once after the first deferred SPI activation; handle_interrupt
++/// keeps SPI alive after that, so poll_hid_events doesn't re-enable.
++static SPI_ACTIVATED: AtomicBool = AtomicBool::new(false);
+ /// Diagnostic counter for doorbell/transfer events (shown as `db=` in heartbeat).
+ pub static DIAG_DOORBELL_EP_STATE: AtomicU32 = AtomicU32::new(0);
+ /// Diagnostic: last CC received for any GET_REPORT Transfer Event (0xFF = none seen yet).
+@@ -4777,9 +4780,9 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
+ /// Handle an XHCI interrupt.
+ ///
+ /// Called from the GIC interrupt handler when the XHCI IRQ fires.
+-/// Immediately disables the GIC SPI to prevent re-delivery storms,
+-/// then processes all pending events. The SPI is re-enabled by
+-/// poll_hid_events() on the next timer tick (~5ms later).
++/// Disables the GIC SPI while processing to prevent re-delivery during
++/// IMAN/ERDP acknowledgment, then re-enables it before returning so the
++/// next event gets a real interrupt with no polling delay.
+ pub fn handle_interrupt() {
+     if !XHCI_INITIALIZED.load(Ordering::Acquire) {
+         // SPI should not be enabled during init (it's deferred until
+@@ -5012,6 +5015,17 @@ pub fn handle_interrupt() {
+         }
+     }
+ 
++    // Re-enable the GIC SPI now that we've drained the event ring.
++    // Any MSI generated by the IMAN/ERDP writes above will fire as a
++    // new interrupt after we return.  That second invocation will find
++    // an empty ring (IP=0, no cycle-bit match) and return quickly —
++    // no storm, because we only write IMAN/USBSTS when their bits are
++    // actually set.
++    if state.irq != 0 {
++        crate::arch_impl::aarch64::gic::clear_spi_pending(state.irq);
++        crate::arch_impl::aarch64::gic::enable_spi(state.irq);
++    }
++
+ }
+ 
+ // =============================================================================
+@@ -5186,10 +5200,14 @@ fn deferred_queue_trbs(state: &XhciState) {
+     }
+ }
+ 
++/// Timer-tick housekeeping for xHCI.
+ ///
+-/// Called from the timer interrupt at ~200 Hz. Uses `try_lock()` to avoid
+-/// deadlocking if the lock is held by non-interrupt code. Bypasses the
