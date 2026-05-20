@@ -1,0 +1,18 @@
+315:[smp] 8 CPUs online
+323:[boot] deferred network primer scheduled (tid=10)
+324:[boot] Launching init from pre-loaded ELF...
+338:[init] Breenix init starting (PID 1)
+341:!!! CPU0 REGRESSION ALARM !!!
+349:CPU0 timer regression: tick_count=8 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+352:!!! CPU0 REGRESSION ALARM !!!
+360:CPU0 timer regression: tick_count=8 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+363:!!! CPU0 REGRESSION ALARM !!!
+371:CPU0 timer regression: tick_count=8 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+374:!!! CPU0 REGRESSION ALARM !!!
+382:CPU0 timer regression: tick_count=8 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+385:!!! CPU0 REGRESSION ALARM !!!
+393:CPU0 timer regression: tick_count=8 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+396:!!! CPU0 REGRESSION ALARM !!!
+404:CPU0 timer regression: tick_count=8 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+407:!!! CPU0 REGRESSION ALARM !!!
+415:CPU0 timer regression: tick_count=8 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything

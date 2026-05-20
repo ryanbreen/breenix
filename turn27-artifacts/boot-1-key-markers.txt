@@ -1,0 +1,26 @@
+315:[smp] 8 CPUs online
+323:[boot] deferred network primer scheduled (tid=10)
+324:[boot] Launching init from pre-loaded ELF...
+338:[init] Breenix init starting (PID 1)
+339:T8[spawn] path='/bin/heartbeat'
+346:  KERNEL PANIC!
+348:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+349:CPU0 timer regression: tick_count=8 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+357:  KERNEL PANIC!
+359:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+360:CPU0 timer regression: tick_count=8 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+368:  KERNEL PANIC!
+370:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+371:CPU0 timer regression: tick_count=8 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+379:  KERNEL PANIC!
+381:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+382:CPU0 timer regression: tick_count=8 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+390:  KERNEL PANIC!
+392:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+393:CPU0 timer regression: tick_count=8 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+401:  KERNEL PANIC!
+403:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+404:CPU0 timer regression: tick_count=8 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+412:  KERNEL PANIC!
+414:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+415:CPU0 timer regression: tick_count=8 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
