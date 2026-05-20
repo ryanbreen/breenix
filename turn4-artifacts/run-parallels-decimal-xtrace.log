@@ -1,0 +1,5220 @@
++ set -e
++++ dirname ./run.sh
+++ cd .
+++ pwd
++ SCRIPT_DIR=/Users/wrb/fun/code/breenix
++ BREENIX_ROOT=/Users/wrb/fun/code/breenix
++ cd /Users/wrb/fun/code/breenix
++ ARCH=arm64
++ HEADLESS=false
++ CLEAN=false
++ NO_BUILD=false
++ BTRT=false
++ PARALLELS=false
++ PARALLELS_VM=breenix-dev
++ PARALLELS_TEST=false
++ PARALLELS_TEST_WAIT=35
++ VMWARE=false
++ DEBUG=false
++ REBUILD_HOME=false
++ RESOLUTION=
++ USE_AHCI=false
++ [[ 1 -gt 0 ]]
++ case $1 in
++ PARALLELS=true
++ ARCH=arm64
++ shift
++ [[ 0 -gt 0 ]]
++ '[' false = true ']'
++ '[' true = true ']'
++ echo ''
+
++ echo =========================================
+=========================================
++ echo 'Breenix on Parallels Desktop'
+Breenix on Parallels Desktop
++ echo =========================================
+=========================================
++ echo ''
+
++ command -v prlctl
++ command -v prl_disk_tool
++ PARALLELS_DIR=/Users/wrb/fun/code/breenix/target/parallels
++ SERIAL_LOG=/tmp/breenix-parallels-serial.log
++ HDD_DIR=/Users/wrb/fun/code/breenix/target/parallels/breenix-efi.hdd
++ EXT2_HDD_DIR=/Users/wrb/fun/code/breenix/target/parallels/breenix-ext2.hdd
++ EXT2_DISK=/Users/wrb/fun/code/breenix/target/ext2-aarch64.img
+++ prlctl list --all
+++ grep breenix-
+++ awk '{print $NF}'
++ for OLD_VM in $(prlctl list --all 2> /dev/null | grep 'breenix-' | awk '{print $NF}')
+++ prlctl status breenix-1779252083
+++ awk '{print $NF}'
++ VM_STATUS=stopped
++ '[' stopped = running ']'
++ '[' stopped = paused ']'
++ '[' stopped = suspended ']'
++ '[' false = true ']'
++ '[' false = true ']'
++ echo '[1/6] Building UEFI loader...'
+[1/6] Building UEFI loader...
++ cargo build --release --target aarch64-unknown-uefi -p parallels-loader
+    Finished `release` profile [optimized] target(s) in 0.02s
++ echo ''
+
++ echo '[2/6] Building kernel...'
+[2/6] Building kernel...
++ cargo build --release --target aarch64-breenix.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
+    Finished `release` profile [optimized] target(s) in 0.06s
++ LOADER_EFI=/Users/wrb/fun/code/breenix/target/aarch64-unknown-uefi/release/parallels-loader.efi
++ KERNEL_ELF=/Users/wrb/fun/code/breenix/target/aarch64-breenix/release/kernel-aarch64
++ '[' '!' -f /Users/wrb/fun/code/breenix/target/aarch64-unknown-uefi/release/parallels-loader.efi ']'
++ '[' '!' -f /Users/wrb/fun/code/breenix/target/aarch64-breenix/release/kernel-aarch64 ']'
++ echo ''
+
++ echo '[3/6] Building userspace binaries (aarch64)...'
+[3/6] Building userspace binaries (aarch64)...
++ /Users/wrb/fun/code/breenix/userspace/programs/build.sh --arch aarch64
+========================================
+  STD USERSPACE BUILD (Rust std library)
+========================================
+  Architecture: aarch64
+
+[1/3] Building libbreenix-libc (aarch64)...
+  Finished `release` profile [optimized] target(s) in 0.02s
+  libbreenix-libc built successfully
+
+[2/3] Building userspace (aarch64)...
+  error: failed to get `std_detect` as a dependency of package `std v0.0.0 (/Users/wrb/fun/code/breenix/rust-fork/library/std)`
+  
+  Caused by:
+  failed to load source for dependency `std_detect`
+  
+  Caused by:
+  Unable to update /Users/wrb/fun/code/breenix/rust-fork/library/stdarch/crates/std_detect
+  
+  Caused by:
+  failed to read `/Users/wrb/fun/code/breenix/rust-fork/library/stdarch/crates/std_detect/Cargo.toml`
+  
+  Caused by:
+  No such file or directory (os error 2)
+  Userspace build successful
+
+[3/3] Installing std binaries...
+  Installed hello_world.elf (351216 bytes)
+  Installed syscall_enosys.elf (290176 bytes)
+  Installed clock_gettime_test.elf (295096 bytes)
+  Installed file_read_test.elf (292328 bytes)
+  Installed lseek_test.elf (292544 bytes)
+  Installed fs_write_test.elf (293432 bytes)
+  Installed fs_rename_test.elf (297336 bytes)
+  Installed fs_large_file_test.elf (292296 bytes)
+  Installed fs_directory_test.elf (293208 bytes)
+  Installed fs_link_test.elf (293256 bytes)
+  Installed access_test.elf (291528 bytes)
+  Installed devfs_test.elf (292560 bytes)
+  Installed cwd_test.elf (292504 bytes)
+  Installed getdents_test.elf (293888 bytes)
+  Installed pipe_test.elf (299256 bytes)
+  Installed pipe2_test.elf (304296 bytes)
+  Installed dup_test.elf (305112 bytes)
+  Installed fcntl_test.elf (299648 bytes)
+  Installed poll_test.elf (304712 bytes)
+  Installed select_test.elf (304440 bytes)
+  Installed nonblock_test.elf (303992 bytes)
+  Installed brk_test.elf (292880 bytes)
+  Installed signal_handler_test.elf (298032 bytes)
+  Installed signal_return_test.elf (299304 bytes)
+  Installed signal_regs_test.elf (298616 bytes)
+  Installed sigaltstack_test.elf (305296 bytes)
+  Installed sigsuspend_test.elf (304816 bytes)
+  Installed pause_test.elf (299408 bytes)
+  Installed tty_test.elf (303352 bytes)
+  Installed session_test.elf (304824 bytes)
+  Installed unix_socket_test.elf (323008 bytes)
+  Installed unix_named_socket_test.elf (310280 bytes)
+  Installed fifo_test.elf (317304 bytes)
+  Installed fork_test.elf (298128 bytes)
+  Installed fork_memory_test.elf (304344 bytes)
+  Installed fork_state_test.elf (305000 bytes)
+  Installed waitpid_test.elf (298944 bytes)
+  Installed exec_argv_test.elf (291240 bytes)
+  Installed cloexec_test.elf (307552 bytes)
+  Installed kill_process_group_test.elf (299304 bytes)
+  Installed sigchld_test.elf (292040 bytes)
+  Installed sigchld_job_test.elf (294632 bytes)
+  Installed ctrl_c_test.elf (298680 bytes)
+  Installed job_control_test.elf (298536 bytes)
+  Installed signal_fork_test.elf (298800 bytes)
+  Installed signal_exec_test.elf (299712 bytes)
+  Installed wnohang_timing_test.elf (292496 bytes)
+  Installed fork_pending_signal_test.elf (297664 bytes)
+  Installed shell_pipe_test.elf (293192 bytes)
+  Installed pipeline_test.elf (305704 bytes)
+  Installed cow_cleanup_test.elf (292368 bytes)
+  Installed cow_sole_owner_test.elf (293600 bytes)
+  Installed cow_stress_test.elf (293672 bytes)
+  Installed cow_readonly_test.elf (293488 bytes)
+  Installed cow_signal_test.elf (299168 bytes)
+  Installed resolution.elf (301448 bytes)
+  Installed init_shell.elf (388856 bytes)
+  Installed argv_test.elf (298184 bytes)
+  Installed job_table_test.elf (308504 bytes)
+  Installed test_mmap.elf (291968 bytes)
+  Installed stdin_test.elf (291856 bytes)
+  Installed true_test.elf (291904 bytes)
+  Installed false_test.elf (291904 bytes)
+  Installed echo_argv_test.elf (291736 bytes)
+  Installed mkdir_argv_test.elf (292200 bytes)
+  Installed rm_argv_test.elf (291840 bytes)
+  Installed cp_mv_argv_test.elf (292896 bytes)
+  Installed nonblock_eagain_test.elf (293344 bytes)
+  Installed blocking_recv_test.elf (293848 bytes)
+  Installed tcp_client_test.elf (297192 bytes)
+  Installed wait_stress.elf (306120 bytes)
+  Installed simple_exit.elf (276816 bytes)
+  Installed counter.elf (290448 bytes)
+  Installed spinner.elf (290472 bytes)
+  Installed hello_time.elf (290328 bytes)
+  Installed heartbeat.elf (290128 bytes)
+  Installed fbinfo_test.elf (297224 bytes)
+  Installed demo.elf (304008 bytes)
+  Installed bounce.elf (388152 bytes)
+  Installed rectangles.elf (305352 bytes)
+  Installed particles.elf (304200 bytes)
+  Installed confetti.elf (303536 bytes)
+  Installed tones.elf (294304 bytes)
+  Installed fart.elf (302392 bytes)
+  Installed http_test.elf (622792 bytes)
+  Installed register_init_test.elf (288888 bytes)
+  Installed head_test.elf (293328 bytes)
+  Installed tail_test.elf (293272 bytes)
+  Installed wc_test.elf (297880 bytes)
+  Installed which_test.elf (293152 bytes)
+  Installed cat_test.elf (293560 bytes)
+  Installed ls_test.elf (298616 bytes)
+  Installed exec_stack_argv_test.elf (292888 bytes)
+  Installed exec_from_ext2_test.elf (298784 bytes)
+  Installed pipe_fork_test.elf (305080 bytes)
+  Installed pipe_concurrent_test.elf (304320 bytes)
+  Installed fs_block_alloc_test.elf (300200 bytes)
+  Installed cow_oom_test.elf (292784 bytes)
+  Installed signal_test.elf (298280 bytes)
+  Installed alarm_test.elf (293376 bytes)
+  Installed itimer_test.elf (293832 bytes)
+  Installed timer_test.elf (291496 bytes)
+  Installed sleep_debug_test.elf (304584 bytes)
+  Installed pipe_refcount_test.elf (316608 bytes)
+  Installed udp_socket_test.elf (305616 bytes)
+  Installed tcp_socket_test.elf (318696 bytes)
+  Installed tcp_blocking_test.elf (320008 bytes)
+  Installed concurrent_recv_stress.elf (303336 bytes)
+  Installed dns_test.elf (306952 bytes)
+  Installed net_test.elf (303200 bytes)
+  Installed http_fetch_test.elf (616784 bytes)
+  Installed syscall_diagnostic_test.elf (289072 bytes)
+  Installed pty_test.elf (293456 bytes)
+  Installed signal_exec_check.elf (291080 bytes)
+  Installed bsh.elf (734392 bytes)
+  Installed bwm.elf (429208 bytes)
+  Installed btop.elf (293112 bytes)
+  Installed burl.elf (636224 bytes)
+  Installed init.elf (296776 bytes)
+  Installed telnetd.elf (298632 bytes)
+  Installed blogd.elf (291528 bytes)
+  Installed btrace.elf (306896 bytes)
+  Installed bless.elf (294680 bytes)
+  Installed bcheck.elf (422256 bytes)
+  Installed biconkit.elf (358184 bytes)
+  Installed guskit.elf (538784 bytes)
+  Installed bterm.elf (476584 bytes)
+  Installed blog.elf (467888 bytes)
+  Installed bfontpicker.elf (484760 bytes)
+  Installed blauncher.elf (460632 bytes)
+  Installed bsshd.elf (441008 bytes)
+  Installed bssh.elf (408848 bytes)
+
+========================================
+  STD BUILD COMPLETE (aarch64)
+  Installed: 132 binaries
+========================================
++ echo '  Userspace build successful'
+  Userspace build successful
++ echo ''
+
++ echo '[4/6] Creating ext2 data disk image...'
+[4/6] Creating ext2 data disk image...
++ /Users/wrb/fun/code/breenix/scripts/create_ext2_disk.sh --arch aarch64
+Creating ext2 disk image...
+  Arch: aarch64
+  Output: /Users/wrb/fun/code/breenix/target/ext2-aarch64.img
+  Size: 256MB
+  Using Docker to create ext2 filesystem...
+  Installed BusyBox with hardlinks in /bin and /sbin
+Installing other binaries...
+  Installed 50 binaries in /bin
+  Installed 3 binaries in /sbin
+  Installed 5 C binaries in /usr/local/cbin
+  Installed 95 test binaries in /usr/local/test/bin
+  Installed 29 fonts in /usr/share/fonts
+  Created /etc/fonts.conf
+  Created /etc/hotkeys.conf
+  Created /etc/init.js
+
+ext2 filesystem contents:
+  Binaries in /bin:
+total 33151
+drwxr-xr-x    2 root     root          3072 May 20 04:43 .
+drwxr-xr-x   12 root     root          1024 May 20 04:43 ..
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 ash
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 awk
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 basename
+-rwxr-xr-x    1 root     root        311600 May 20 04:43 bcat
+-rwxr-xr-x    1 root     root        422256 May 20 04:43 bcheck
+-rwxr-xr-x    1 root     root        305128 May 20 04:43 bcp
+-rwxr-xr-x    1 root     root        297456 May 20 04:43 becho
+-rwxr-xr-x    1 root     root        276808 May 20 04:43 bfalse
+-rwxr-xr-x    1 root     root        484760 May 20 04:43 bfontpicker
+-rwxr-xr-x    1 root     root        313408 May 20 04:43 bhead
+-rwxr-xr-x    1 root     root        358184 May 20 04:43 biconkit
+-rwxr-xr-x    1 root     root        460632 May 20 04:43 blauncher
+-rwxr-xr-x    1 root     root        294680 May 20 04:43 bless
+-rwxr-xr-x    1 root     root        467888 May 20 04:43 blog
+-rwxr-xr-x    1 root     root        325832 May 20 04:43 bls
+-rwxr-xr-x    1 root     root        306520 May 20 04:43 bmkdir
+-rwxr-xr-x    1 root     root        302608 May 20 04:43 bmv
+-rwxr-xr-x    1 root     root        388152 May 20 04:43 bounce
+-rwxr-xr-x    1 root     root        302184 May 20 04:43 brm
+-rwxr-xr-x    1 root     root        302184 May 20 04:43 brmdir
+-rwxr-xr-x    1 root     root        734392 May 20 04:43 bsh
+-rwxr-xr-x    1 root     root        408848 May 20 04:43 bssh
+-rwxr-xr-x    1 root     root        441008 May 20 04:43 bsshd
+-rwxr-xr-x    1 root     root        315816 May 20 04:43 btail
+-rwxr-xr-x    1 root     root        476584 May 20 04:43 bterm
+-rwxr-xr-x    1 root     root        293112 May 20 04:43 btop
+-rwxr-xr-x    1 root     root        306896 May 20 04:43 btrace
+-rwxr-xr-x    1 root     root        276800 May 20 04:43 btrue
+-rwxr-xr-x    1 root     root        636224 May 20 04:43 burl
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 busybox
+-rwxr-xr-x    1 root     root        312144 May 20 04:43 bwc
+-rwxr-xr-x    1 root     root        303160 May 20 04:43 bwhich
+-rwxr-xr-x    1 root     root        429208 May 20 04:43 bwm
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 cat
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 chgrp
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 chmod
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 chown
+-rwxr-xr-x    1 root     root        303336 May 20 04:43 concurrent_recv_stress
+-rwxr-xr-x    1 root     root        303536 May 20 04:43 confetti
+-rwxr-xr-x    1 root     root        290448 May 20 04:43 counter
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 cp
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 cut
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 date
+-rwxr-xr-x    1 root     root        304008 May 20 04:43 demo
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 df
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 dirname
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 du
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 echo
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 env
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 expr
+-rwxr-xr-x    1 root     root        294184 May 20 04:43 f32o_perfdiag
+-rwxr-xr-x    1 root     root        302392 May 20 04:43 fart
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 find
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 free
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 grep
+-rwxr-xr-x    1 root     root        538784 May 20 04:43 guskit
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 head
+-rwxr-xr-x    1 root     root        290128 May 20 04:43 heartbeat
+-rwxr-xr-x    1 root     root        278000 May 20 04:43 hello_raw
+-rwxr-xr-x    1 root     root        290328 May 20 04:43 hello_time
+-rwxr-xr-x    1 root     root        351216 May 20 04:43 hello_world
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 hexdump
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 hostname
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 id
+-rwxr-xr-x    1 root     root        388856 May 20 04:43 init_shell
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 ls
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 md5sum
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 mkdir
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 more
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 mv
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 od
+-rwxr-xr-x    1 root     root        304200 May 20 04:43 particles
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 printf
+-rwxr-xr-x    1 root     root        305352 May 20 04:43 rectangles
+-rwxr-xr-x    1 root     root        301448 May 20 04:43 resolution
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 rm
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 rmdir
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 sed
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 seq
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 sh
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 sha256sum
+-rwxr-xr-x    1 root     root        291080 May 20 04:43 signal_exec_check
+-rwxr-xr-x    1 root     root        276816 May 20 04:43 simple_exit
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 sleep
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 sort
+-rwxr-xr-x    1 root     root        290472 May 20 04:43 spinner
+-rwxr-xr-x    1 root     root        290176 May 20 04:43 syscall_enosys
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 tail
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 tee
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 test
+-rwxr-xr-x    1 root     root        294304 May 20 04:43 tones
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 tr
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 uniq
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 vi
+-rwxr-xr-x    1 root     root        306120 May 20 04:43 wait_stress
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 wc
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 which
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 whoami
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 xargs
+  Test binaries in /usr/local/test/bin:
+total 28662
+drwxr-xr-x    2 root     root          4096 May 20 04:43 .
+drwxr-xr-x    3 root     root          1024 May 20 04:43 ..
+-rwxr-xr-x    1 root     root        291528 May 20 04:43 access_test
+-rwxr-xr-x    1 root     root        293376 May 20 04:43 alarm_test
+-rwxr-xr-x    1 root     root        298184 May 20 04:43 argv_test
+-rwxr-xr-x    1 root     root        293848 May 20 04:43 blocking_recv_test
+-rwxr-xr-x    1 root     root        292880 May 20 04:43 brk_test
+-rwxr-xr-x    1 root     root        293560 May 20 04:43 cat_test
+-rwxr-xr-x    1 root     root        295096 May 20 04:43 clock_gettime_test
+-rwxr-xr-x    1 root     root        307552 May 20 04:43 cloexec_test
+-rwxr-xr-x    1 root     root        292368 May 20 04:43 cow_cleanup_test
+-rwxr-xr-x    1 root     root        292784 May 20 04:43 cow_oom_test
+-rwxr-xr-x    1 root     root        293488 May 20 04:43 cow_readonly_test
+-rwxr-xr-x    1 root     root        299168 May 20 04:43 cow_signal_test
+-rwxr-xr-x    1 root     root        293600 May 20 04:43 cow_sole_owner_test
+-rwxr-xr-x    1 root     root        293672 May 20 04:43 cow_stress_test
+-rwxr-xr-x    1 root     root        292896 May 20 04:43 cp_mv_argv_test
+-rwxr-xr-x    1 root     root        298680 May 20 04:43 ctrl_c_test
+-rwxr-xr-x    1 root     root        292504 May 20 04:43 cwd_test
+-rwxr-xr-x    1 root     root        292560 May 20 04:43 devfs_test
+-rwxr-xr-x    1 root     root        306952 May 20 04:43 dns_test
+-rwxr-xr-x    1 root     root        305112 May 20 04:43 dup_test
+-rwxr-xr-x    1 root     root        291736 May 20 04:43 echo_argv_test
+-rwxr-xr-x    1 root     root        291240 May 20 04:43 exec_argv_test
+-rwxr-xr-x    1 root     root        298784 May 20 04:43 exec_from_ext2_test
+-rwxr-xr-x    1 root     root        292888 May 20 04:43 exec_stack_argv_test
+-rwxr-xr-x    1 root     root        291904 May 20 04:43 false_test
+-rwxr-xr-x    1 root     root        297224 May 20 04:43 fbinfo_test
+-rwxr-xr-x    1 root     root        299648 May 20 04:43 fcntl_test
+-rwxr-xr-x    1 root     root        317304 May 20 04:43 fifo_test
+-rwxr-xr-x    1 root     root        292328 May 20 04:43 file_read_test
+-rwxr-xr-x    1 root     root        304344 May 20 04:43 fork_memory_test
+-rwxr-xr-x    1 root     root        297664 May 20 04:43 fork_pending_signal_test
+-rwxr-xr-x    1 root     root        305000 May 20 04:43 fork_state_test
+-rwxr-xr-x    1 root     root        298128 May 20 04:43 fork_test
+-rwxr-xr-x    1 root     root        300200 May 20 04:43 fs_block_alloc_test
+-rwxr-xr-x    1 root     root        293208 May 20 04:43 fs_directory_test
+-rwxr-xr-x    1 root     root        292296 May 20 04:43 fs_large_file_test
+-rwxr-xr-x    1 root     root        293256 May 20 04:43 fs_link_test
+-rwxr-xr-x    1 root     root        297336 May 20 04:43 fs_rename_test
+-rwxr-xr-x    1 root     root        293432 May 20 04:43 fs_write_test
+-rwxr-xr-x    1 root     root        293888 May 20 04:43 getdents_test
+-rwxr-xr-x    1 root     root        293328 May 20 04:43 head_test
+-rwxr-xr-x    1 root     root        616784 May 20 04:43 http_fetch_test
+-rwxr-xr-x    1 root     root        622792 May 20 04:43 http_test
+-rwxr-xr-x    1 root     root        293832 May 20 04:43 itimer_test
+-rwxr-xr-x    1 root     root        298536 May 20 04:43 job_control_test
+-rwxr-xr-x    1 root     root        308504 May 20 04:43 job_table_test
+-rwxr-xr-x    1 root     root        299304 May 20 04:43 kill_process_group_test
+-rwxr-xr-x    1 root     root        298616 May 20 04:43 ls_test
+-rwxr-xr-x    1 root     root        292544 May 20 04:43 lseek_test
+-rwxr-xr-x    1 root     root        292200 May 20 04:43 mkdir_argv_test
+-rwxr-xr-x    1 root     root        303200 May 20 04:43 net_test
+-rwxr-xr-x    1 root     root        293344 May 20 04:43 nonblock_eagain_test
+-rwxr-xr-x    1 root     root        303992 May 20 04:43 nonblock_test
+-rwxr-xr-x    1 root     root        299408 May 20 04:43 pause_test
+-rwxr-xr-x    1 root     root        304296 May 20 04:43 pipe2_test
+-rwxr-xr-x    1 root     root        304320 May 20 04:43 pipe_concurrent_test
+-rwxr-xr-x    1 root     root        305080 May 20 04:43 pipe_fork_test
+-rwxr-xr-x    1 root     root        316608 May 20 04:43 pipe_refcount_test
+-rwxr-xr-x    1 root     root        299256 May 20 04:43 pipe_test
+-rwxr-xr-x    1 root     root        305704 May 20 04:43 pipeline_test
+-rwxr-xr-x    1 root     root        304712 May 20 04:43 poll_test
+-rwxr-xr-x    1 root     root        293456 May 20 04:43 pty_test
+-rwxr-xr-x    1 root     root        288888 May 20 04:43 register_init_test
+-rwxr-xr-x    1 root     root        291840 May 20 04:43 rm_argv_test
+-rwxr-xr-x    1 root     root        304440 May 20 04:43 select_test
+-rwxr-xr-x    1 root     root        304824 May 20 04:43 session_test
+-rwxr-xr-x    1 root     root        293192 May 20 04:43 shell_pipe_test
+-rwxr-xr-x    1 root     root        305296 May 20 04:43 sigaltstack_test
+-rwxr-xr-x    1 root     root        294632 May 20 04:43 sigchld_job_test
+-rwxr-xr-x    1 root     root        292040 May 20 04:43 sigchld_test
+-rwxr-xr-x    1 root     root        299712 May 20 04:43 signal_exec_test
+-rwxr-xr-x    1 root     root        298800 May 20 04:43 signal_fork_test
+-rwxr-xr-x    1 root     root        298032 May 20 04:43 signal_handler_test
+-rwxr-xr-x    1 root     root        298616 May 20 04:43 signal_regs_test
+-rwxr-xr-x    1 root     root        299304 May 20 04:43 signal_return_test
+-rwxr-xr-x    1 root     root        298280 May 20 04:43 signal_test
+-rwxr-xr-x    1 root     root        304816 May 20 04:43 sigsuspend_test
+-rwxr-xr-x    1 root     root        304584 May 20 04:43 sleep_debug_test
+-rwxr-xr-x    1 root     root        291856 May 20 04:43 stdin_test
+-rwxr-xr-x    1 root     root        289072 May 20 04:43 syscall_diagnostic_test
+-rwxr-xr-x    1 root     root        293272 May 20 04:43 tail_test
+-rwxr-xr-x    1 root     root        320008 May 20 04:43 tcp_blocking_test
+-rwxr-xr-x    1 root     root        297192 May 20 04:43 tcp_client_test
+-rwxr-xr-x    1 root     root        318696 May 20 04:43 tcp_socket_test
+-rwxr-xr-x    1 root     root        291968 May 20 04:43 test_mmap
+-rwxr-xr-x    1 root     root        291496 May 20 04:43 timer_test
+-rwxr-xr-x    1 root     root        291904 May 20 04:43 true_test
+-rwxr-xr-x    1 root     root        303352 May 20 04:43 tty_test
+-rwxr-xr-x    1 root     root        305616 May 20 04:43 udp_socket_test
+-rwxr-xr-x    1 root     root        310280 May 20 04:43 unix_named_socket_test
+-rwxr-xr-x    1 root     root        323008 May 20 04:43 unix_socket_test
+-rwxr-xr-x    1 root     root        298944 May 20 04:43 waitpid_test
+-rwxr-xr-x    1 root     root        297880 May 20 04:43 wc_test
+-rwxr-xr-x    1 root     root        293152 May 20 04:43 which_test
+-rwxr-xr-x    1 root     root        292496 May 20 04:43 wnohang_timing_test
+  Test files:
+-rw-r--r--    1 root     root            83 May 20 04:43 /mnt/ext2/etc/passwd
+-rw-r--r--    1 root     root           445 May 20 04:43 /mnt/ext2/etc/fonts.conf
+-rw-r--r--    1 root     root           349 May 20 04:43 /mnt/ext2/etc/hotkeys.conf
+-rw-r--r--    1 root     root            26 May 20 04:43 /mnt/ext2/etc/group
+-rw-r--r--    1 root     root           679 May 20 04:43 /mnt/ext2/etc/init.js
+-rw-r--r--    1 root     root           367 May 20 04:43 /mnt/ext2/etc/bshrc
+-rw-r--r--    1 root     root            20 May 20 04:43 /mnt/ext2/test/nested.txt
+-rw-r--r--    1 root     root           111 May 20 04:43 /mnt/ext2/lines.txt
+-rw-r--r--    1 root     root            19 May 20 04:43 /mnt/ext2/trunctest.txt
+-rwxr-xr-x    1 root     root        108720 May 20 04:43 /mnt/ext2/usr/local/cbin/hello_musl
+-rwxr-xr-x    1 root     root        133160 May 20 04:43 /mnt/ext2/usr/local/cbin/identity_musl_test
+-rwxr-xr-x    1 root     root        109624 May 20 04:43 /mnt/ext2/usr/local/cbin/env_musl_test
+-rwxr-xr-x    1 root     root        108904 May 20 04:43 /mnt/ext2/usr/local/cbin/uname_musl_test
+-rwxr-xr-x    1 root     root        108816 May 20 04:43 /mnt/ext2/usr/local/cbin/rlimit_musl_test
+-rw-r--r--    1 root     root        205748 May 20 04:43 /mnt/ext2/usr/share/fonts/UbuntuMono-Regular.ttf
+-rw-r--r--    1 root     root        273900 May 20 04:43 /mnt/ext2/usr/share/fonts/JetBrainsMono-Regular.ttf
+-rw-r--r--    1 root     root        212196 May 20 04:43 /mnt/ext2/usr/share/fonts/Lora-Regular.ttf
+-rw-r--r--    1 root     root        282844 May 20 04:43 /mnt/ext2/usr/share/fonts/Merriweather-Regular.ttf
+-rw-r--r--    1 root     root        276932 May 20 04:43 /mnt/ext2/usr/share/fonts/Nunito-Regular.ttf
+-rw-r--r--    1 root     root        309408 May 20 04:43 /mnt/ext2/usr/share/fonts/Hack-Regular.ttf
+-rw-r--r--    1 root     root        212340 May 20 04:43 /mnt/ext2/usr/share/fonts/SourceCodePro-Regular.ttf
+-rw-r--r--    1 root     root        744936 May 20 04:43 /mnt/ext2/usr/share/fonts/Montserrat-Regular.ttf
+-rw-r--r--    1 root     root        160316 May 20 04:43 /mnt/ext2/usr/share/fonts/Poppins-Regular.ttf
+-rw-r--r--    1 root     root       2049096 May 20 04:43 /mnt/ext2/usr/share/fonts/NotoSans-Regular.ttf
+-rw-r--r--    1 root     root        300724 May 20 04:43 /mnt/ext2/usr/share/fonts/PlayfairDisplay-Regular.ttf
+-rw-r--r--    1 root     root        488584 May 20 04:43 /mnt/ext2/usr/share/fonts/Roboto-Regular.ttf
+-rw-r--r--    1 root     root       1887192 May 20 04:43 /mnt/ext2/usr/share/fonts/NotoSerif-Regular.ttf
+-rw-r--r--    1 root     root        656568 May 20 04:43 /mnt/ext2/usr/share/fonts/Lato-Regular.ttf
+-rw-r--r--    1 root     root        646340 May 20 04:43 /mnt/ext2/usr/share/fonts/SourceSans3-Regular.ttf
+-rw-r--r--    1 root     root        598060 May 20 04:43 /mnt/ext2/usr/share/fonts/CascadiaCode-Regular.ttf
+-rw-r--r--    1 root     root        108684 May 20 04:43 /mnt/ext2/usr/share/fonts/Inconsolata-Regular.ttf
+-rw-r--r--    1 root     root       1708408 May 20 04:43 /mnt/ext2/usr/share/fonts/NotoSansMono-Regular.ttf
+-rw-r--r--    1 root     root        359048 May 20 04:43 /mnt/ext2/usr/share/fonts/PTSerif-Regular.ttf
+-rw-r--r--    1 root     root       1209508 May 20 04:43 /mnt/ext2/usr/share/fonts/SourceSerif4-Regular.ttf
+-rw-r--r--    1 root     root        757076 May 20 04:43 /mnt/ext2/usr/share/fonts/DejaVuSans.ttf
+-rw-r--r--    1 root     root        260364 May 20 04:43 /mnt/ext2/usr/share/fonts/FiraCode-Regular.ttf
+-rw-r--r--    1 root     root        340712 May 20 04:43 /mnt/ext2/usr/share/fonts/DejaVuSansMono.ttf
+-rw-r--r--    1 root     root        135580 May 20 04:43 /mnt/ext2/usr/share/fonts/IBMPlexMono-Regular.ttf
+-rw-r--r--    1 root     root        351884 May 20 04:43 /mnt/ext2/usr/share/fonts/Ubuntu-Regular.ttf
+-rw-r--r--    1 root     root        532636 May 20 04:43 /mnt/ext2/usr/share/fonts/OpenSans-Regular.ttf
+-rw-r--r--    1 root     root        876576 May 20 04:43 /mnt/ext2/usr/share/fonts/Inter-Regular.ttf
+-rw-r--r--    1 root     root        312352 May 20 04:43 /mnt/ext2/usr/share/fonts/Raleway-Regular.ttf
+-rw-r--r--    1 root     root        183700 May 20 04:43 /mnt/ext2/usr/share/fonts/RobotoMono-Regular.ttf
+-rw-r--r--    1 root     root             0 May 20 04:43 /mnt/ext2/empty.txt
+-rw-r--r--    1 root     root            20 May 20 04:43 /mnt/ext2/deep/path/to/file/data.txt
+-rwxr-xr-x    1 root     root        296776 May 20 04:43 /mnt/ext2/sbin/init
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 /mnt/ext2/sbin/false
+-rwxr-xr-x    1 root     root        298632 May 20 04:43 /mnt/ext2/sbin/telnetd
+-rwxr-xr-x   51 root     root        329400 May 20 04:43 /mnt/ext2/sbin/true
+-rwxr-xr-x    1 root     root        291528 May 20 04:43 /mnt/ext2/sbin/blogd
+-rw-r--r--    1 root     root            17 May 20 04:43 /mnt/ext2/hello.txt
+
+ext2 image created successfully
+
+ext2 disk created and copied to testdata/:
+  /Users/wrb/fun/code/breenix/target/ext2-aarch64.img
+  /Users/wrb/fun/code/breenix/testdata/ext2-aarch64.img
+  Size: 256M
+
+Contents:
+  /bin/busybox - BusyBox multi-call binary
+  /bin/{cat,ls,head,...} - BusyBox hardlinks
+  /sbin/{true,false} - BusyBox hardlinks
+  /bin/* - Other userspace binaries (demos)
+  /usr/local/test/bin/* - Test binaries (*_test, test_*)
+  /sbin/telnetd - telnet daemon
+  /hello.txt - test file (1 line)
+  /lines.txt - multi-line test file (15 lines) for head/tail/wc
+  /test/nested.txt - nested test file
+  /deep/path/to/file/data.txt - deep nested test file
++ echo ''
+
++ echo '[5/6] Creating FAT32 EFI disk image...'
+[5/6] Creating FAT32 EFI disk image...
++ mkdir -p /Users/wrb/fun/code/breenix/target/parallels
++ DMG_PATH=/Users/wrb/fun/code/breenix/target/parallels/efi-temp.dmg
++ rm -f /Users/wrb/fun/code/breenix/target/parallels/efi-temp.dmg
++ hdiutil create -size 64m -fs FAT32 -volname BREENIX -layout GPTSPUD /Users/wrb/fun/code/breenix/target/parallels/efi-temp.dmg
+++ hdiutil attach /Users/wrb/fun/code/breenix/target/parallels/efi-temp.dmg
+++ grep -o '/Volumes/[^ ]*'
+++ head -1
++ VOLUME=/Volumes/BREENIX
++ '[' -z /Volumes/BREENIX ']'
++ '[' '!' -d /Volumes/BREENIX ']'
++ mkdir -p /Volumes/BREENIX/EFI/BOOT
++ mkdir -p /Volumes/BREENIX/EFI/BREENIX
++ cp /Users/wrb/fun/code/breenix/target/aarch64-unknown-uefi/release/parallels-loader.efi /Volumes/BREENIX/EFI/BOOT/BOOTAA64.EFI
++ cp /Users/wrb/fun/code/breenix/target/aarch64-breenix/release/kernel-aarch64 /Volumes/BREENIX/EFI/BREENIX/KERNEL
++ hdiutil detach /Volumes/BREENIX
+++ stat -f%z /Users/wrb/fun/code/breenix/target/aarch64-unknown-uefi/release/parallels-loader.efi
++ echo '  Loader: 80896 bytes'
+  Loader: 80896 bytes
+++ stat -f%z /Users/wrb/fun/code/breenix/target/aarch64-breenix/release/kernel-aarch64
++ echo '  Kernel: 2426928 bytes'
+  Kernel: 2426928 bytes
++ echo ''
+
++ echo '[6/6] Creating Parallels disks...'
+[6/6] Creating Parallels disks...
++ RAW_IMG=/Users/wrb/fun/code/breenix/target/parallels/efi-raw.img
++ rm -f /Users/wrb/fun/code/breenix/target/parallels/efi-raw.img /Users/wrb/fun/code/breenix/target/parallels/efi-raw.img.cdr
++ hdiutil convert /Users/wrb/fun/code/breenix/target/parallels/efi-temp.dmg -format UDTO -o /Users/wrb/fun/code/breenix/target/parallels/efi-raw.img
++ mv /Users/wrb/fun/code/breenix/target/parallels/efi-raw.img.cdr /Users/wrb/fun/code/breenix/target/parallels/efi-raw.img
++ rm -f /Users/wrb/fun/code/breenix/target/parallels/efi-temp.dmg
++ python3 /Users/wrb/fun/code/breenix/scripts/parallels/patch-gpt-esp.py /Users/wrb/fun/code/breenix/target/parallels/efi-raw.img
+  Patched 1 partition(s) to EFI System Partition type
++ rm -rf /Users/wrb/fun/code/breenix/target/parallels/breenix-efi.hdd
++ prl_disk_tool create --hdd /Users/wrb/fun/code/breenix/target/parallels/breenix-efi.hdd --size 64M
+++ find /Users/wrb/fun/code/breenix/target/parallels/breenix-efi.hdd -name '*.hds'
+++ head -1
++ HDS_FILE='/Users/wrb/fun/code/breenix/target/parallels/breenix-efi.hdd/breenix-efi.hdd.0.{5fbaabe3-6958-40ff-92a7-860e329aab41}.hds'
++ '[' -z '/Users/wrb/fun/code/breenix/target/parallels/breenix-efi.hdd/breenix-efi.hdd.0.{5fbaabe3-6958-40ff-92a7-860e329aab41}.hds' ']'
++ cp /Users/wrb/fun/code/breenix/target/parallels/efi-raw.img '/Users/wrb/fun/code/breenix/target/parallels/breenix-efi.hdd/breenix-efi.hdd.0.{5fbaabe3-6958-40ff-92a7-860e329aab41}.hds'
++ rm -f /Users/wrb/fun/code/breenix/target/parallels/efi-raw.img
++ echo '  EFI disk: /Users/wrb/fun/code/breenix/target/parallels/breenix-efi.hdd'
+  EFI disk: /Users/wrb/fun/code/breenix/target/parallels/breenix-efi.hdd
++ '[' -f /Users/wrb/fun/code/breenix/target/ext2-aarch64.img ']'
+++ stat -f%z /Users/wrb/fun/code/breenix/target/ext2-aarch64.img
++ EXT2_SIZE_MB=256
++ rm -rf /Users/wrb/fun/code/breenix/target/parallels/breenix-ext2.hdd
++ prl_disk_tool create --hdd /Users/wrb/fun/code/breenix/target/parallels/breenix-ext2.hdd --size 256M
+++ find /Users/wrb/fun/code/breenix/target/parallels/breenix-ext2.hdd -name '*.hds'
+++ head -1
++ HDS_FILE='/Users/wrb/fun/code/breenix/target/parallels/breenix-ext2.hdd/breenix-ext2.hdd.0.{5fbaabe3-6958-40ff-92a7-860e329aab41}.hds'
++ '[' -z '/Users/wrb/fun/code/breenix/target/parallels/breenix-ext2.hdd/breenix-ext2.hdd.0.{5fbaabe3-6958-40ff-92a7-860e329aab41}.hds' ']'
++ cp /Users/wrb/fun/code/breenix/target/ext2-aarch64.img '/Users/wrb/fun/code/breenix/target/parallels/breenix-ext2.hdd/breenix-ext2.hdd.0.{5fbaabe3-6958-40ff-92a7-860e329aab41}.hds'
++ echo '  ext2 disk: /Users/wrb/fun/code/breenix/target/parallels/breenix-ext2.hdd (256MB)'
+  ext2 disk: /Users/wrb/fun/code/breenix/target/parallels/breenix-ext2.hdd (256MB)
++ echo ''
+
++ echo '--- Configuring Parallels VM ---'
+--- Configuring Parallels VM ---
+++ date +%s
++ PARALLELS_VM=breenix-1779252213
++ echo 'VM name: breenix-1779252213'
+VM name: breenix-1779252213
+++ prlctl list --all
+++ grep breenix-
+++ awk '{print $NF}'
++ for OLD_VM in $(prlctl list --all 2> /dev/null | grep 'breenix-' | awk '{print $NF}')
++ '[' breenix-1779252083 '!=' breenix-1779252213 ']'
++ echo '  Cleaning up old VM: breenix-1779252083'
+  Cleaning up old VM: breenix-1779252083
++ prlctl stop breenix-1779252083 --kill
+Stopping the VM...
++ prlctl delete breenix-1779252083
+Removing the VM...
+The VM has been successfully removed.
++ echo 'Creating fresh VM '\''breenix-1779252213'\''...'
+Creating fresh VM 'breenix-1779252213'...
++ prlctl create breenix-1779252213 --ostype linux --distribution linux --no-hdd
+Creating the virtual machine...
+Generate the VM configuration for linux.
+Remove the hdd0 device.
+The VM has been successfully created.
++ prlctl set breenix-1779252213 --memsize 8192
+
+The VM has been successfully configured.
++ prlctl set breenix-1779252213 --cpus 8
+
+The VM has been successfully configured.
++ prlctl set breenix-1779252213 --autostop shutdown
+
+The VM has been successfully configured.
++ prlctl set breenix-1779252213 --efi-boot on
+
+The VM has been successfully configured.
++ prlctl set breenix-1779252213 --3d-accelerate highest
+
+The VM has been successfully configured.
++ prlctl set breenix-1779252213 --videosize 2048
+
+The VM has been successfully configured.
++ prlctl set breenix-1779252213 --high-resolution on
+
+The VM has been successfully configured.
++ prlctl set breenix-1779252213 --vertical-sync on
+
+The VM has been successfully configured.
++ for dev in hdd0 hdd1 hdd2 cdrom0 cdrom1 serial0 serial1
++ prlctl set breenix-1779252213 --device-del hdd0
++ true
++ for dev in hdd0 hdd1 hdd2 cdrom0 cdrom1 serial0 serial1
++ prlctl set breenix-1779252213 --device-del hdd1
++ true
++ for dev in hdd0 hdd1 hdd2 cdrom0 cdrom1 serial0 serial1
++ prlctl set breenix-1779252213 --device-del hdd2
++ true
++ for dev in hdd0 hdd1 hdd2 cdrom0 cdrom1 serial0 serial1
++ prlctl set breenix-1779252213 --device-del cdrom0
+Remove the cdrom0 device.
+
+The VM has been successfully configured.
++ for dev in hdd0 hdd1 hdd2 cdrom0 cdrom1 serial0 serial1
++ prlctl set breenix-1779252213 --device-del cdrom1
++ true
++ for dev in hdd0 hdd1 hdd2 cdrom0 cdrom1 serial0 serial1
++ prlctl set breenix-1779252213 --device-del serial0
+Remove the serial0 device.
+
+The VM has been successfully configured.
++ for dev in hdd0 hdd1 hdd2 cdrom0 cdrom1 serial0 serial1
++ prlctl set breenix-1779252213 --device-del serial1
++ true
++ prlctl set breenix-1779252213 --device-add hdd --image /Users/wrb/fun/code/breenix/target/parallels/breenix-efi.hdd --type plain --position 0
+Creating hdd0 (+) sata:0 image='/Users/wrb/fun/code/breenix/target/parallels/breenix-efi.hdd' online-compact=off
+
+Created hdd0 (+) sata:0 image='/Users/wrb/fun/code/breenix/target/parallels/breenix-efi.hdd' type='plain' 64Mb online-compact=on
+
+
+The VM has been successfully configured.
++ '[' -d /Users/wrb/fun/code/breenix/target/parallels/breenix-ext2.hdd ']'
++ prlctl set breenix-1779252213 --device-add hdd --image /Users/wrb/fun/code/breenix/target/parallels/breenix-ext2.hdd --type plain --position 1
+Creating hdd1 (+) sata:1 image='/Users/wrb/fun/code/breenix/target/parallels/breenix-ext2.hdd' online-compact=off
+
+Created hdd1 (+) sata:1 image='/Users/wrb/fun/code/breenix/target/parallels/breenix-ext2.hdd' type='plain' 256Mb online-compact=on
+
+
+The VM has been successfully configured.
++ echo '  hdd0: EFI boot disk (FAT32) at sata:0'
+  hdd0: EFI boot disk (FAT32) at sata:0
++ echo '  hdd1: ext2 data disk at sata:1'
+  hdd1: ext2 data disk at sata:1
++ prlctl set breenix-1779252213 --device-bootorder hdd0
+
+The VM has been successfully configured.
++ prlctl set breenix-1779252213 --device-add serial --output /tmp/breenix-parallels-serial.log
+Creating serial0 (+) output='/tmp/breenix-parallels-serial.log' state=disconnected
+
+Created serial0 (+) output='/tmp/breenix-parallels-serial.log' state=disconnected
+
+
+The VM has been successfully configured.
++ prlctl set breenix-1779252213 --device-set serial0 --connect
+Configured serial0 (+) output='/tmp/breenix-parallels-serial.log'
+
+
+The VM has been successfully configured.
++ echo ''
+
++ echo '--- Starting VM ---'
+--- Starting VM ---
++ rm -f /tmp/breenix-parallels-serial.log
++ prlctl start breenix-1779252213
+Starting the VM...
+The VM has been successfully started.
++ echo ''
+
++ echo =========================================
+=========================================
++ echo 'Breenix running on Parallels'
+Breenix running on Parallels
++ echo =========================================
+=========================================
++ echo 'VM:     breenix-1779252213'
+VM:     breenix-1779252213
++ echo 'Serial: /tmp/breenix-parallels-serial.log'
+Serial: /tmp/breenix-parallels-serial.log
++ echo 'Stop:   prlctl stop breenix-1779252213 --kill'
+Stop:   prlctl stop breenix-1779252213 --kill
++ echo ''
+
++ '[' false = true ']'
++ echo 'Tailing serial output (Ctrl+C to detach)...'
+Tailing serial output (Ctrl+C to detach)...
++ echo ''
+
++ VM_DIR=/Users/wrb/Parallels/breenix-1779252213.pvm
++ VM_LOG=/Users/wrb/Parallels/breenix-1779252213.pvm/parallels.log
++ '[' -f /Users/wrb/Parallels/breenix-1779252213.pvm/parallels.log ']'
++ LOGMON_PID=78325
++ trap 'kill 78325 2>/dev/null' EXIT
++ sleep 1
++ tail -f /Users/wrb/Parallels/breenix-1779252213.pvm/parallels.log
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /vm:78292:59c31b6/ Initing VCPUs'
+[parallels-log] 05-20 00:43:45.262 F /vm:78292:59c31b6/ Initing VCPUs
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU0 state(unknown): initialized to VcpuStateUninitialized'
+[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU0 state(unknown): initialized to VcpuStateUninitialized
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU0 state(VcpuStateUninitialized): enqueued '\''VcpuCmdInit'\''(8) command'
+[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU0 state(VcpuStateUninitialized): enqueued 'VcpuCmdInit'(8) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU1 state(unknown): initialized to VcpuStateUninitialized'
+[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU1 state(unknown): initialized to VcpuStateUninitialized
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU1 state(VcpuStateUninitialized): enqueued '\''VcpuCmdInit'\''(8) command'
+[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU1 state(VcpuStateUninitialized): enqueued 'VcpuCmdInit'(8) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU2 state(unknown): initialized to VcpuStateUninitialized'
+[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU2 state(unknown): initialized to VcpuStateUninitialized
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /vm:78292:59c32c7/ VCPU #0 initialized (thread 0x16E8EB000)'
+[parallels-log] 05-20 00:43:45.262 F /vm:78292:59c32c7/ VCPU #0 initialized (thread 0x16E8EB000)
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU2 state(VcpuStateUninitialized): enqueued '\''VcpuCmdInit'\''(8) command'
+[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU2 state(VcpuStateUninitialized): enqueued 'VcpuCmdInit'(8) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU3 state(unknown): initialized to VcpuStateUninitialized'
+[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU3 state(unknown): initialized to VcpuStateUninitialized
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /vm:78292:59c32c8/ VCPU #1 initialized (thread 0x16E977000)'
+[parallels-log] 05-20 00:43:45.262 F /vm:78292:59c32c8/ VCPU #1 initialized (thread 0x16E977000)
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU3 state(VcpuStateUninitialized): enqueued '\''VcpuCmdInit'\''(8) command'
+[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU3 state(VcpuStateUninitialized): enqueued 'VcpuCmdInit'(8) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU4 state(unknown): initialized to VcpuStateUninitialized'
+[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU4 state(unknown): initialized to VcpuStateUninitialized
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /vm:78292:59c32ca/ VCPU #3 initialized (thread 0x16EA8F000)'
+[parallels-log] 05-20 00:43:45.262 F /vm:78292:59c32ca/ VCPU #3 initialized (thread 0x16EA8F000)
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU4 state(VcpuStateUninitialized): enqueued '\''VcpuCmdInit'\''(8) command'
+[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU4 state(VcpuStateUninitialized): enqueued 'VcpuCmdInit'(8) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU5 state(unknown): initialized to VcpuStateUninitialized'
+[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU5 state(unknown): initialized to VcpuStateUninitialized
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU5 state(VcpuStateUninitialized): enqueued '\''VcpuCmdInit'\''(8) command'
+[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU5 state(VcpuStateUninitialized): enqueued 'VcpuCmdInit'(8) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU6 state(unknown): initialized to VcpuStateUninitialized'
+[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU6 state(unknown): initialized to VcpuStateUninitialized
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /vm:78292:59c32c9/ VCPU #2 initialized (thread 0x16EA03000)'
+[parallels-log] 05-20 00:43:45.262 F /vm:78292:59c32c9/ VCPU #2 initialized (thread 0x16EA03000)
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU6 state(VcpuStateUninitialized): enqueued '\''VcpuCmdInit'\''(8) command'
+[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU6 state(VcpuStateUninitialized): enqueued 'VcpuCmdInit'(8) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU7 state(unknown): initialized to VcpuStateUninitialized'
+[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU7 state(unknown): initialized to VcpuStateUninitialized
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU7 state(VcpuStateUninitialized): enqueued '\''VcpuCmdInit'\''(8) command'
+[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c31b6/ VCPU7 state(VcpuStateUninitialized): enqueued 'VcpuCmdInit'(8) command
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStateUninitialized): completed current '\''VcpuCmdInit'\''(8) command with result 0x0'
+[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStateUninitialized): completed current 'VcpuCmdInit'(8) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /vm:78292:59c32cb/ VCPU #4 initialized (thread 0x16EB1B000)'
+[parallels-log] 05-20 00:43:45.262 F /vm:78292:59c32cb/ VCPU #4 initialized (thread 0x16EB1B000)
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /vm:78292:59c32ce/ VCPU #7 initialized (thread 0x16ECBF000)'
+[parallels-log] 05-20 00:43:45.262 F /vm:78292:59c32ce/ VCPU #7 initialized (thread 0x16ECBF000)
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStateUninitialized): completed current '\''VcpuCmdInit'\''(8) command with result 0x0'
+[parallels-log] 05-20 00:43:45.262 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStateUninitialized): completed current 'VcpuCmdInit'(8) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /vm:78292:59c32cd/ VCPU #6 initialized (thread 0x16EC33000)'
+[parallels-log] 05-20 00:43:45.262 F /vm:78292:59c32cd/ VCPU #6 initialized (thread 0x16EC33000)
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.262 F /vm:78292:59c32cc/ VCPU #5 initialized (thread 0x16EBA7000)'
+[parallels-log] 05-20 00:43:45.262 F /vm:78292:59c32cc/ VCPU #5 initialized (thread 0x16EBA7000)
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.263 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStateUninitialized): completed current '\''VcpuCmdInit'\''(8) command with result 0x0'
+[parallels-log] 05-20 00:43:45.263 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStateUninitialized): completed current 'VcpuCmdInit'(8) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.263 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStateUninitialized): completed current '\''VcpuCmdInit'\''(8) command with result 0x0'
+[parallels-log] 05-20 00:43:45.263 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStateUninitialized): completed current 'VcpuCmdInit'(8) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.263 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStateUninitialized): completed current '\''VcpuCmdInit'\''(8) command with result 0x0'
+[parallels-log] 05-20 00:43:45.263 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStateUninitialized): completed current 'VcpuCmdInit'(8) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.263 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStateUninitialized): completed current '\''VcpuCmdInit'\''(8) command with result 0x0'
+[parallels-log] 05-20 00:43:45.263 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStateUninitialized): completed current 'VcpuCmdInit'(8) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.263 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStateUninitialized): completed current '\''VcpuCmdInit'\''(8) command with result 0x0'
+[parallels-log] 05-20 00:43:45.263 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStateUninitialized): completed current 'VcpuCmdInit'(8) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.263 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStateUninitialized): completed current '\''VcpuCmdInit'\''(8) command with result 0x0'
+[parallels-log] 05-20 00:43:45.263 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStateUninitialized): completed current 'VcpuCmdInit'(8) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.264 F /vm:78292:59c31b6/ [Profile] VCPUs initialization time is 1 msecs'
+[parallels-log] 05-20 00:43:45.264 F /vm:78292:59c31b6/ [Profile] VCPUs initialization time is 1 msecs
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.264 F /StateMachine:78292:59c31b6/ VCPU0 state(VcpuStateUninitialized): enqueued '\''VcpuCmdPause'\''(0) command'
+[parallels-log] 05-20 00:43:45.264 F /StateMachine:78292:59c31b6/ VCPU0 state(VcpuStateUninitialized): enqueued 'VcpuCmdPause'(0) command
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.264 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStateUninitialized): changed to VcpuStateInitializing'
+[parallels-log] 05-20 00:43:45.264 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStateUninitialized): changed to VcpuStateInitializing
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.264 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStateInitializing): delay '\''VcpuCmdPause'\''(0) command'
+[parallels-log] 05-20 00:43:45.264 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStateInitializing): delay 'VcpuCmdPause'(0) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.264 F /MonitorArm:78292:59c32c7/ Initializing VCPU #0...'
+[parallels-log] 05-20 00:43:45.264 F /MonitorArm:78292:59c32c7/ Initializing VCPU #0...
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c7/ VCPU1 state(VcpuStateUninitialized): enqueued '\''VcpuCmdPause'\''(0) command'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c7/ VCPU1 state(VcpuStateUninitialized): enqueued 'VcpuCmdPause'(0) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c7/ VCPU2 state(VcpuStateUninitialized): enqueued '\''VcpuCmdPause'\''(0) command'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c7/ VCPU2 state(VcpuStateUninitialized): enqueued 'VcpuCmdPause'(0) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c7/ VCPU3 state(VcpuStateUninitialized): enqueued '\''VcpuCmdPause'\''(0) command'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c7/ VCPU3 state(VcpuStateUninitialized): enqueued 'VcpuCmdPause'(0) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c7/ VCPU4 state(VcpuStateUninitialized): enqueued '\''VcpuCmdPause'\''(0) command'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c7/ VCPU4 state(VcpuStateUninitialized): enqueued 'VcpuCmdPause'(0) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c7/ VCPU5 state(VcpuStateUninitialized): enqueued '\''VcpuCmdPause'\''(0) command'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c7/ VCPU5 state(VcpuStateUninitialized): enqueued 'VcpuCmdPause'(0) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStateUninitialized): changed to VcpuStateInitializing'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStateUninitialized): changed to VcpuStateInitializing
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStateUninitialized): changed to VcpuStateInitializing'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStateUninitialized): changed to VcpuStateInitializing
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c7/ VCPU6 state(VcpuStateUninitialized): enqueued '\''VcpuCmdPause'\''(0) command'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c7/ VCPU6 state(VcpuStateUninitialized): enqueued 'VcpuCmdPause'(0) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStateInitializing): delay '\''VcpuCmdPause'\''(0) command'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStateInitializing): delay 'VcpuCmdPause'(0) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStateInitializing): delay '\''VcpuCmdPause'\''(0) command'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStateInitializing): delay 'VcpuCmdPause'(0) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32c8/ Initializing VCPU #1...'
+[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32c8/ Initializing VCPU #1...
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32c9/ Initializing VCPU #2...'
+[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32c9/ Initializing VCPU #2...
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32c8/ Initializing VCPU #1... done'
+[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32c8/ Initializing VCPU #1... done
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c7/ VCPU7 state(VcpuStateUninitialized): enqueued '\''VcpuCmdPause'\''(0) command'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c7/ VCPU7 state(VcpuStateUninitialized): enqueued 'VcpuCmdPause'(0) command
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStateUninitialized): changed to VcpuStateInitializing'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStateUninitialized): changed to VcpuStateInitializing
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32c7/ Initializing VCPU #0... done'
+[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32c7/ Initializing VCPU #0... done
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStateUninitialized): changed to VcpuStateInitializing'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStateUninitialized): changed to VcpuStateInitializing
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStateUninitialized): changed to VcpuStateInitializing'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStateUninitialized): changed to VcpuStateInitializing
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStateInitializing): changed to VcpuStateTransition'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStateInitializing): changed to VcpuStateTransition
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStateTransition): changed to VcpuStatePaused'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStateTransition): changed to VcpuStatePaused
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStatePaused): completed current '\''VcpuCmdPause'\''(0) command with result 0x0'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStatePaused): completed current 'VcpuCmdPause'(0) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStateInitializing): delay '\''VcpuCmdPause'\''(0) command'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStateInitializing): delay 'VcpuCmdPause'(0) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStateInitializing): delay '\''VcpuCmdPause'\''(0) command'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStateInitializing): delay 'VcpuCmdPause'(0) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32ca/ Initializing VCPU #3...'
+[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32ca/ Initializing VCPU #3...
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32cb/ Initializing VCPU #4...'
+[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32cb/ Initializing VCPU #4...
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32ca/ Initializing VCPU #3... done'
+[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32ca/ Initializing VCPU #3... done
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32cb/ Initializing VCPU #4... done'
+[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32cb/ Initializing VCPU #4... done
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStateInitializing): changed to VcpuStateTransition'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStateInitializing): changed to VcpuStateTransition
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStateTransition): changed to VcpuStatePaused'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStateTransition): changed to VcpuStatePaused
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStateInitializing): changed to VcpuStateTransition'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStateInitializing): changed to VcpuStateTransition
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStatePaused): completed current '\''VcpuCmdPause'\''(0) command with result 0x0'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStatePaused): completed current 'VcpuCmdPause'(0) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStateTransition): changed to VcpuStatePaused'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStateTransition): changed to VcpuStatePaused
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStateInitializing): changed to VcpuStateTransition'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStateInitializing): changed to VcpuStateTransition
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStateTransition): changed to VcpuStatePaused'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStateTransition): changed to VcpuStatePaused
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStatePaused): completed current '\''VcpuCmdPause'\''(0) command with result 0x0'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStatePaused): completed current 'VcpuCmdPause'(0) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStatePaused): completed current '\''VcpuCmdPause'\''(0) command with result 0x0'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStatePaused): completed current 'VcpuCmdPause'(0) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStateUninitialized): changed to VcpuStateInitializing'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStateUninitialized): changed to VcpuStateInitializing
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStateInitializing): delay '\''VcpuCmdPause'\''(0) command'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStateInitializing): delay 'VcpuCmdPause'(0) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32cd/ Initializing VCPU #6...'
+[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32cd/ Initializing VCPU #6...
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32cd/ Initializing VCPU #6... done'
+[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32cd/ Initializing VCPU #6... done
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32c9/ Initializing VCPU #2... done'
+[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32c9/ Initializing VCPU #2... done
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStateInitializing): changed to VcpuStateTransition'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStateInitializing): changed to VcpuStateTransition
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStateTransition): changed to VcpuStatePaused'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStateTransition): changed to VcpuStatePaused
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStatePaused): completed current '\''VcpuCmdPause'\''(0) command with result 0x0'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStatePaused): completed current 'VcpuCmdPause'(0) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStateInitializing): changed to VcpuStateTransition'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStateInitializing): changed to VcpuStateTransition
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStateTransition): changed to VcpuStatePaused'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStateTransition): changed to VcpuStatePaused
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStatePaused): completed current '\''VcpuCmdPause'\''(0) command with result 0x0'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStatePaused): completed current 'VcpuCmdPause'(0) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStateInitializing): delay '\''VcpuCmdPause'\''(0) command'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStateInitializing): delay 'VcpuCmdPause'(0) command
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32cc/ Initializing VCPU #5...'
+[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32cc/ Initializing VCPU #5...
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStateUninitialized): changed to VcpuStateInitializing'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStateUninitialized): changed to VcpuStateInitializing
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStateInitializing): delay '\''VcpuCmdPause'\''(0) command'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStateInitializing): delay 'VcpuCmdPause'(0) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32cc/ Initializing VCPU #5... done'
+[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32cc/ Initializing VCPU #5... done
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32ce/ Initializing VCPU #7...'
+[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32ce/ Initializing VCPU #7...
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32ce/ Initializing VCPU #7... done'
+[parallels-log] 05-20 00:43:45.268 F /MonitorArm:78292:59c32ce/ Initializing VCPU #7... done
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStateInitializing): changed to VcpuStateTransition'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStateInitializing): changed to VcpuStateTransition
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStateInitializing): changed to VcpuStateTransition'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStateInitializing): changed to VcpuStateTransition
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStateTransition): changed to VcpuStatePaused'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStateTransition): changed to VcpuStatePaused
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStateTransition): changed to VcpuStatePaused'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStateTransition): changed to VcpuStatePaused
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStatePaused): completed current '\''VcpuCmdPause'\''(0) command with result 0x0'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStatePaused): completed current 'VcpuCmdPause'(0) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStatePaused): completed current '\''VcpuCmdPause'\''(0) command with result 0x0'
+[parallels-log] 05-20 00:43:45.268 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStatePaused): completed current 'VcpuCmdPause'(0) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c31b6/ VCPU0 state(VcpuStatePaused): enqueued '\''VcpuCmdRun'\''(1) command'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c31b6/ VCPU0 state(VcpuStatePaused): enqueued 'VcpuCmdRun'(1) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c31b6/ VCPU1 state(VcpuStatePaused): enqueued '\''VcpuCmdRun'\''(1) command'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c31b6/ VCPU1 state(VcpuStatePaused): enqueued 'VcpuCmdRun'(1) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c31b6/ VCPU2 state(VcpuStatePaused): enqueued '\''VcpuCmdRun'\''(1) command'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c31b6/ VCPU2 state(VcpuStatePaused): enqueued 'VcpuCmdRun'(1) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c31b6/ VCPU3 state(VcpuStatePaused): enqueued '\''VcpuCmdRun'\''(1) command'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c31b6/ VCPU3 state(VcpuStatePaused): enqueued 'VcpuCmdRun'(1) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStatePaused): changed to VcpuStateUnpausing'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStatePaused): changed to VcpuStateUnpausing
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c31b6/ VCPU4 state(VcpuStatePaused): enqueued '\''VcpuCmdRun'\''(1) command'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c31b6/ VCPU4 state(VcpuStatePaused): enqueued 'VcpuCmdRun'(1) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStateUnpausing): delay '\''VcpuCmdRun'\''(1) command'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStateUnpausing): delay 'VcpuCmdRun'(1) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c31b6/ VCPU5 state(VcpuStatePaused): enqueued '\''VcpuCmdRun'\''(1) command'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c31b6/ VCPU5 state(VcpuStatePaused): enqueued 'VcpuCmdRun'(1) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStateUnpausing): changed to VcpuStateTransition'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStateUnpausing): changed to VcpuStateTransition
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStateTransition): changed to VcpuStateRunning'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStateTransition): changed to VcpuStateRunning
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStateRunning): completed current '\''VcpuCmdRun'\''(1) command with result 0x0'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStateRunning): completed current 'VcpuCmdRun'(1) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c31b6/ VCPU6 state(VcpuStatePaused): enqueued '\''VcpuCmdRun'\''(1) command'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c31b6/ VCPU6 state(VcpuStatePaused): enqueued 'VcpuCmdRun'(1) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c31b6/ VCPU7 state(VcpuStatePaused): enqueued '\''VcpuCmdRun'\''(1) command'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c31b6/ VCPU7 state(VcpuStatePaused): enqueued 'VcpuCmdRun'(1) command
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStatePaused): changed to VcpuStateUnpausing'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStatePaused): changed to VcpuStateUnpausing
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStatePaused): changed to VcpuStateUnpausing'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStatePaused): changed to VcpuStateUnpausing
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStatePaused): changed to VcpuStateUnpausing'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStatePaused): changed to VcpuStateUnpausing
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStateUnpausing): delay '\''VcpuCmdRun'\''(1) command'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStateUnpausing): delay 'VcpuCmdRun'(1) command
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStatePaused): changed to VcpuStateUnpausing'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStatePaused): changed to VcpuStateUnpausing
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStatePaused): changed to VcpuStateUnpausing'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStatePaused): changed to VcpuStateUnpausing
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStatePaused): changed to VcpuStateUnpausing'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStatePaused): changed to VcpuStateUnpausing
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStateUnpausing): delay '\''VcpuCmdRun'\''(1) command'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStateUnpausing): delay 'VcpuCmdRun'(1) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStateUnpausing): changed to VcpuStateTransition'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStateUnpausing): changed to VcpuStateTransition
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStateUnpausing): delay '\''VcpuCmdRun'\''(1) command'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStateUnpausing): delay 'VcpuCmdRun'(1) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStateUnpausing): delay '\''VcpuCmdRun'\''(1) command'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStateUnpausing): delay 'VcpuCmdRun'(1) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStateUnpausing): changed to VcpuStateTransition'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStateUnpausing): changed to VcpuStateTransition
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStateUnpausing): delay '\''VcpuCmdRun'\''(1) command'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStateUnpausing): delay 'VcpuCmdRun'(1) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStateUnpausing): delay '\''VcpuCmdRun'\''(1) command'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStateUnpausing): delay 'VcpuCmdRun'(1) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStateTransition): changed to VcpuStateRunning'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStateTransition): changed to VcpuStateRunning
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStateTransition): changed to VcpuStateRunning'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStateTransition): changed to VcpuStateRunning
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStatePaused): changed to VcpuStateUnpausing'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStatePaused): changed to VcpuStateUnpausing
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStateRunning): completed current '\''VcpuCmdRun'\''(1) command with result 0x0'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStateRunning): completed current 'VcpuCmdRun'(1) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStateRunning): completed current '\''VcpuCmdRun'\''(1) command with result 0x0'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStateRunning): completed current 'VcpuCmdRun'(1) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStateUnpausing): changed to VcpuStateTransition'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStateUnpausing): changed to VcpuStateTransition
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStateUnpausing): changed to VcpuStateTransition'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStateUnpausing): changed to VcpuStateTransition
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStateUnpausing): changed to VcpuStateTransition'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStateUnpausing): changed to VcpuStateTransition
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStateUnpausing): changed to VcpuStateTransition'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStateUnpausing): changed to VcpuStateTransition
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStateTransition): changed to VcpuStateRunning'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStateTransition): changed to VcpuStateRunning
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStateTransition): changed to VcpuStateRunning'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStateTransition): changed to VcpuStateRunning
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStateRunning): completed current '\''VcpuCmdRun'\''(1) command with result 0x0'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStateRunning): completed current 'VcpuCmdRun'(1) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStateRunning): completed current '\''VcpuCmdRun'\''(1) command with result 0x0'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStateRunning): completed current 'VcpuCmdRun'(1) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStateTransition): changed to VcpuStateRunning'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStateTransition): changed to VcpuStateRunning
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStateTransition): changed to VcpuStateRunning'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStateTransition): changed to VcpuStateRunning
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStateRunning): completed current '\''VcpuCmdRun'\''(1) command with result 0x0'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStateRunning): completed current 'VcpuCmdRun'(1) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStateRunning): completed current '\''VcpuCmdRun'\''(1) command with result 0x0'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStateRunning): completed current 'VcpuCmdRun'(1) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStateUnpausing): delay '\''VcpuCmdRun'\''(1) command'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStateUnpausing): delay 'VcpuCmdRun'(1) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStateUnpausing): changed to VcpuStateTransition'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStateUnpausing): changed to VcpuStateTransition
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStateTransition): changed to VcpuStateRunning'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStateTransition): changed to VcpuStateRunning
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStateRunning): completed current '\''VcpuCmdRun'\''(1) command with result 0x0'
+[parallels-log] 05-20 00:43:45.319 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStateRunning): completed current 'VcpuCmdRun'(1) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ tail -f /tmp/breenix-parallels-serial.log
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=1 res_id=11 1280x960
+[virgl] attach_backing: phys=0x515a2000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x41285dc0(32B), entries=0x51a52000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=2 res_id=12 1280x960
+[virgl] attach_backing: phys=0x51a52000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x41285dc0(32B), entries=0x51f02000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=3 res_id=13 1280x960
+[virgl] attach_backing: phys=0x51f02000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x41285dc0(32B), entries=0x523b2000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=4 res_id=14 1280x960
+[virgl] attach_backing: phys=0x523b2000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x41285dc0(32B), entries=0x52862000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=5 res_id=15 1280x960
+[virgl] attach_backing: phys=0x52862000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x41285dc0(32B), entries=0x52d12000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=6 res_id=16 1280x960
+[virgl] attach_backing: phys=0x52d12000, len=4915200, nr_pages=1200
+[virgl] attach_backing: sending 3-desc chain: hdr=0x41285dc0(32B), entries=0x531c2000(19200B)
+[virgl] attach_backing: OK (1200 pages attached)
+[virgl-pool] Pre-allocated slot=7 res_id=17 1280x960
+[virgl] attach_backing: phys=0x531c2000, len=8192, nr_pages=2
+[virgl] attach_backing: sending 3-desc chain: hdr=0x41285dc0(32B), entries=0x502e0040(32B)
+[virgl] attach_backing: OK (2 pages attached)
+[virgl-cursor] Cursor texture initialized (id=6, 16x80, 5 shapes)
+[virgl] attach_backing: phys=0x531c4000, len=4096, nr_pages=1
+[virgl] attach_backing: sending 3-desc chain: hdr=0x41285dc0(32B), entries=0x502e0040(16B)
+[virgl] attach_backing: OK (1 pages attached)
+[virgl-dimmer] Dimmer texture initialized (id=7, 4x4)
+[virgl] Step 8: Compositor texture initialized
+[virgl] Step 9: full pipeline+draw batch (191 DWORDs)
+[virgl] SUBMIT_3D OK: id=2 used_len=0 resp_flags=0x1 resp_fence=2
+[virgl] Step 10: SET_SCANOUT + RESOURCE_FLUSH
+[virgl] VirGL 3D pipeline initialized successfully
+[drivers] VirGL 3D acceleration active
+[drivers] Compositor backend: VirGL
+[virtio-gpu-pci] GPU command waits use scheduler waitqueue
+[virtio-net-pci] Searching for VirtIO network device on PCI bus...
+[virtio-net-pci] Found at 00:05.0 [1af4:1000]
+[virtio-net-pci] BAR0: phys=0x18010000 virt=0xffff000018010000 size=4096
+[virtio-net-pci] Device features: 0x6187bfa3
+[virtio-net-pci] MAC: 00:1c:42:49:a9:79
+[virtio-net-pci] Queue 0 max size: 256
+[virtio-net-pci] Queue 0 PFN=0x402c8 (phys=0x402c8000)
+[virtio-net-pci] Queue 1 max size: 256
+[virtio-net-pci] Queue 1 PFN=0x402cb (phys=0x402cb000)
+[pci] 00:05.0: capabilities:
+  cap 0x10 (PCIe) @ 0x48: dw0=0x00024010 dw1=0x00000fc0
+  cap 0x01 (PM) @ 0x40: dw0=0x0022f401 dw1=0x00000000
+  cap 0x11 (MSI-X) @ 0xf4: dw0=0x00020011 dw1=0x00000001
+[virtio-net-pci] MSI-X cap at 0xf4: 3 vectors
+[virtio-net-pci] MSI-X vector assignments: cfg=0xffff rx=0x0
+[virtio-net-pci] MSI-X enabled: SPI 55 doorbell=0x2250040 vectors=3
+[virtio-net-pci] Network device initialized successfully
+[drivers] VirtIO network (PCI) initialized
+[drivers] SVGA3 init skipped: SVGA3 device not found
+[drivers] Found XHCI at 00:03.0 [1033:0194]
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:46.278 F /MonitorArm:78292:59c32c7/ VCPU0: OnExitBootServices()'
+[parallels-log] 05-20 00:43:46.278 F /MonitorArm:78292:59c32c7/ VCPU0: OnExitBootServices()
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[xhci] DMA addrs: DCBAA=0x40251000 CMD_RING=0x40252000 EVT_RING=0x40262000 ERST=0x402ce740
+[xhci] Regs: USBCMD=0x5 USBSTS=0x0 CRCR=0x0 DCBAAP=0x40251000
+[xhci] IR0: IMAN=0x2 ERDP=0x40262000 ERSTBA=0x402ce740
+[xhci] Port scan: 14 ports
+[xhci]   port 1: PORTSC=0x00021203 CCS=1 PED=1 speed=4
+[xhci]   port 2: PORTSC=0x00021203 CCS=1 PED=1 speed=4
+[xhci]   port 3: PORTSC=0x00021203 CCS=1 PED=1 speed=4
+[xhci]   port 4: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 5: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 6: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 7: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 8: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 9: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 10: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 11: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 12: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 13: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci]   port 14: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+[xhci] port 1 connected: PORTSC=0x00001203 PED=1 speed=4
+[xhci] port 1 EnableSlot -> slot 1
+[xhci] port 1 AddressDevice OK (slot 1)
+[xhci] slot1: vid=0x203a pid=0xfffc class=0x00/0x00/0x00
+[xhci] slot1 iface0: class=0x03 sub=0x00 proto=0x02 numEP=1
+[xhci] HID iface: proto=2 subclass=0 -> mouse (hid_idx=1)
+[xhci] slot1 iface1: class=0x03 sub=0x00 proto=0x02 numEP=1
+[xhci] HID iface: proto=2 subclass=0 -> mouse (hid_idx=3)
+[xhci] port 2 connected: PORTSC=0x00001203 PED=1 speed=4
+[xhci] port 2 EnableSlot -> slot 2
+[xhci] port 2 AddressDevice OK (slot 2)
+[xhci] slot2: vid=0x203a pid=0xfffb class=0x00/0x00/0x00
+[xhci] slot2 iface0: class=0x03 sub=0x01 proto=0x01 numEP=1
+[xhci] HID iface: proto=1 subclass=1 -> keyboard (hid_idx=0)
+[xhci] slot2 iface1: class=0x03 sub=0x00 proto=0x00 numEP=1
+[xhci] HID iface: proto=0 subclass=0 -> NKRO (hid_idx=2)
+[xhci] port 3 connected: PORTSC=0x00001203 PED=1 speed=4
+[xhci] port 3 EnableSlot -> slot 3
+[xhci] port 3 AddressDevice OK (slot 3)
+[xhci] slot3: vid=0x203a pid=0xfff9 class=0xef/0x02/0x01
+[xhci] slot3 iface0: class=0x0e sub=0x01 proto=0x00 numEP=0
+[xhci] slot3 iface1: class=0x0e sub=0x02 proto=0x00 numEP=1
+[xhci] start_hid_polling: kbd=slot2/dci3 nkro=dci5 mouse=slot0/dci0 mouse2=dci0
+[xhci] Initialized: 32 slots, MSI irq=56
+[drivers] XHCI USB controller initialized
+[ahci] Platform AHCI at phys 0x2140000, virt 0xffff000002140000
+[ahci] HBA version 1.256, 6 ports, 32 cmd slots, PI=0x0000003f
+[ahci] Port 0: Sata, 131072 sectors (64 MB)
+[ahci] Port 1: Sata, 524288 sectors (256 MB)
+[ahci] IRQ probe: using port 0 dma_index 0
+[ahci] IRQ probe: ISPENDR before=[0x01000000, 0x00000000, 0x00000000] after=[0x01000004, 0x00000000, 0x00000000]
+[ahci] IRQ probe: PORT_IS=0x00000001 (should have D2H bit set)
+[ahci] Platform IRQ probe: discovered SPI 34
+[ahci] Platform IRQ enabled: SPI 34 (wired, level-triggered, CPU0)
+[drivers] AHCI initialized (platform MMIO): 2 SATA device(s)
+[drivers] Driver subsystem initialized (PCI)
+[boot] Found 7 devices
+[boot] Initializing network stack...
+[net] Initializing network stack...
+[net] Using VirtIO net PCI driver (Parallels)
+[net] MAC address: 00:1c:42:49:a9:79
+NET: IP address: 10.211.55.100
+NET: Gateway: 10.211.55.1
+Network stack initialized
+NET: Sending ARP request for gateway 10.211.55.1
+ARP request sent successfully
+[virtio-net-pci] RX diag: used_idx=1 last_used=0 avail_idx=4 isr=0x0 msi_count=0
+[virtio-net-pci] RX diag: used_idx=1 last_used=1 avail_idx=8 isr=0x0 msi_count=0
+NET: ARP resolved gateway MAC: 00:1c:42:00:00:18
+NET: Sending ICMP echo request to gateway 10.211.55.1
+[net] ICMP echo reply received from 10.211.55.1 seq=1
+NET: Network initialization complete
+[virtio-net-pci] MSI-X SPI 55 enabled (post-init)
+[boot] Initializing filesystem...
+[ext2] No VirtIO block device, trying AHCI...
+[ext2] AHCI device 0: 131072 sectors (64 MB)
+[ext2] AHCI device 0: not ext2 (magic=0x0064)
+[ext2] AHCI device 1: 524288 sectors (256 MB)
+[ext2] Found ext2 superblock on AHCI device 1
+[boot] ext2 root filesystem mounted
+[boot] No home filesystem: No home block device available (expected at device index 3 or 1) (continuing)
+[boot] devfs initialized at /dev
+[boot] devptsfs initialized at /dev/pts
+[boot] CPU detected: ARM Unknown
+[boot] procfs initialized at /proc
+[boot] TTY subsystem initialized
+[boot] Initializing graphics...
+[boot] VirGL active — skipping GOP framebuffer init (2D resource already set up in gpu_pci::init)
+[boot] FB_INFO_CACHE populated for VirGL display (1280x960)
+[boot] USB HID input active via XHCI (polled from timer)
+[boot] Initializing per-CPU data...
+[boot] Per-CPU data initialized
+[boot] Initializing process manager...
+[boot] Process manager initialized
+[boot] Initializing scheduler...
+[boot] Scheduler initialized
+[boot] Workqueue subsystem initialized
+[boot] Softirq subsystem initialized
+[boot] Render thread skipped — VirGL owns the display
+[boot] Tracing subsystem initialized and enabled
+[boot] Pre-loading /sbin/init from ext2 (before timer)...
+[boot] Init binary pre-loaded: 296776 bytes
+[xhci] activate_msi_if_ready: source=system-ready spi=56 DIAG_SPI_ENABLE_COUNT=1
+[xhci] post-activation: MSI_EVENT_COUNT=0 EVENT_COUNT=0 POLL_COUNT=0 SPI_ACTIVATED=true
+[boot] Initializing timer interrupt...
+[timer] Timer configured for ~1000 Hz (24000 ticks per interrupt)
+[timer] Using virtual timer (PPI 27)
+[boot] Timer interrupt initialized
+[smp] CPU 0 MPIDR=0x80000000, stack_base=0x43000000
+[smp] GICR covers 8 redistributors, probing CPUs 1..8
+[smp] Probing secondary CPUs via PSCI...
+[sm1@1pAB]C DECeFPGU 11: PSCI CPU_ON success
+[gi2@c1A]BC DEICeFCG_2CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[gic] ICC_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[smp] CPU 2: PSCI CPU_ON success
+T1[sm3@p1]AB CDCEPeFUG 33: PSCI CPU_ON success
+[g4@i1AcBC]D EeIFGC4C_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[gic] ICC_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[smp] CPU 4: PSCI CPU_ON success
+[5@s1mABpCD] EeCFGPU5 5: PSCI CPU_ON success
+[gi6@c1]AB CDIEeCFCG_6CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[smp] CPU 6: PSCI CPU_ON success
+[g7@1iABcCD] EeIFCGC7_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[smp] CPU 7: PSCI CPU_ON success
+[T2gic] ICC_CTLR_EL1: 0x40400 -> 0x40402 (EOImode=1)
+[smp] 8 CPUs online
+
+========================================
+  Breenix ARM64 Boot Complete!
+========================================
+
+Hello from ARM64!
+
+[boot] Launching init from pre-loaded ELF...
+manager.create_process_with_argv [ARM64]: ENTRY - name='init', elf_size=296776, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 1
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f1f0
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 1
+[ahci-poll-attrib] total=72 post_reg=70 pre_sched=70 post_sched=0
+[boot] Reset 8 idle thread contexts (CPUs online: 8)
+T3T4EL0_SYSCALL: First syscall from userspace (SPSR confirms EL0)
+[ OK ] syscall path verified
+[init] Breenix init starting (PID 1)
+T5[spawn] path='/bin/heartbeat'
+T6T7T8T9manager.create_process_with_argv [ARM64]: ENTRY - name='heartbeat', elf_size=290128, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 2
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000edac
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 2
+[spawn] Created child PID 2 for parent PID 1
+T0[spawn] Success: child PID 2 scheduled
+[heartbeat] tid=12 uptime_ms=1276
+[spawn] path='/bin/bwm'
+manager.create_process_with_argv [ARM64]: ENTRY - name='bwm', elf_size=429208, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 3
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x400190b8
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffee0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 3
+[spawn] Created child PID 3 for parent PID 1
+[spawn] Success: child PID 3 scheduled
+[bwm] Breenix Window Manager starting... (v2-chromeless-skip)
+[virgl-composite] Frame #0: 1x1 → 1280x960 display (first1k: 1 nonzero, first=0xff000000)
+[bwm] GPU compositing mode (VirGL), display: 1280x960
+[compositor] Mapped compositor buffer into process: virt=0x7ffffdb4e000, 1280x960, 1200 pages (backend=VirGL)
+[bwm] Direct compositor mapping: 1280x960 at 0x7ffffdb4e000
+[bwm] using bitmap font fallback for early boot
+[bwm] hotkeys: using built-in defaults for early boot
+[virgl-composite] Frame #1: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x00121832)
+[virgl-composite] Frame #2: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x00121832)
+[spawn] path='/sbin/telnetd'
+manager.create_process_with_argv [ARM64]: ENTRY - name='telnetd', elf_size=298632, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 4
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000fdd0
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 4
+[spawn] Created child PID 4 for parent PID 1
+[spawn] Success: child PID 4 scheduled
+TELNETD_STARTING
+TELNETD_LISTENING
+[init] Boot script completed
+[spawn] path='/bin/bsshd'
+manager.create_process_with_argv [ARM64]: ENTRY - name='bsshd', elf_size=441008, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 5
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4001c39c
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 5
+[spawn] Created child PID 5 for parent PID 1
+[spawn] Success: child PID 5 scheduled
+bsshd: starting on port 2222
+bsshd: listening on 0.0.0.0:2222
+[init] bsshd started (PID 5)
+[spawn] path='/bin/bounce'
+[freeze-watch] uptime_ms=1754 submits=71 completes=74 fails=0 last_completion_ms=1425 fps_last_5s=6 cpu=2 tid=3 ctx_switches=2226 timer_ticks_cpu0=271 timer_ticks_cpu1=358 timer_ticks_cpu2=370 timer_ticks_cpu3=365 timer_ticks_cpu4=365 timer_ticks_cpu5=369 timer_ticks_cpu6=363 timer_ticks_cpu7=365 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=3 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=15 blocked_threads=5 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[gpu-pci-lock-attrib] max_hold_ms=6 max_hold_holder_tid=-1
+[wake-attrib] schedule=142 unblock=0 isr_unblock=1015 wake_io=1013 signal=0 child=0 timer=5
+[enqueue-attrib] same_lock=5 deferred=187 isr_buf=1018 deferred_drained=142 isr_buf_drained=971 already_queued=9 isr_buf_full=0
+manager.create_process_with_argv [ARM64]: ENTRY - name='bounce', elf_size=388152, argc=1
+manager.create_process_with_argv [ARM64]: Generated PID 6
+manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+manager.create_process_with_argv [ARM64]: Loading ELF into page table
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x400188f4
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 6
+[spawn] Created child PID 6 for parent PID 1
+[spawn] Success: child PID 6 scheduled
+Bounce spheres demo starting (for Gus!) [boot_id=00000000693f55a7]
+[window] create_window_buffer: 400x300 (480000 bytes, 118 pages)
+[window] Created buffer id=1 for pid=6: 400x300 at virt=0x7ffffdf86000 phys=0x44172000
+[bounce] Window mode: id=1 400x300 [boot_id=00000000693f55a7]
+[init] bounce started (PID 6)
+[bwm] Discovered window 'Bounce' (id=1, 400x300) at (30,38)
+[compositor] Mapped window 1 into BWM: virt=0x7ffffdad4000, 400x300, 118 pages
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:47.533 I /MonitorArm:78292:59c32c7/ VCPU0 PSCI: CPU_ON(target_cpu = 1, entry_point_addr = 40080258, context_id = 1)'
+[parallels-log] 05-20 00:43:47.533 I /MonitorArm:78292:59c32c7/ VCPU0 PSCI: CPU_ON(target_cpu = 1, entry_point_addr = 40080258, context_id = 1)
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:47.533 I /MonitorArm:78292:59c32c7/ VCPU0 PSCI: CPU_ON(target_cpu = 2, entry_point_addr = 40080258, context_id = 2)'
+[parallels-log] 05-20 00:43:47.533 I /MonitorArm:78292:59c32c7/ VCPU0 PSCI: CPU_ON(target_cpu = 2, entry_point_addr = 40080258, context_id = 2)
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:47.533 I /MonitorArm:78292:59c32c7/ VCPU0 PSCI: CPU_ON(target_cpu = 3, entry_point_addr = 40080258, context_id = 3)'
+[parallels-log] 05-20 00:43:47.533 I /MonitorArm:78292:59c32c7/ VCPU0 PSCI: CPU_ON(target_cpu = 3, entry_point_addr = 40080258, context_id = 3)
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:47.533 I /MonitorArm:78292:59c32c7/ VCPU0 PSCI: CPU_ON(target_cpu = 4, entry_point_addr = 40080258, context_id = 4)'
+[parallels-log] 05-20 00:43:47.533 I /MonitorArm:78292:59c32c7/ VCPU0 PSCI: CPU_ON(target_cpu = 4, entry_point_addr = 40080258, context_id = 4)
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:47.534 I /MonitorArm:78292:59c32c7/ VCPU0 PSCI: CPU_ON(target_cpu = 5, entry_point_addr = 40080258, context_id = 5)'
+[parallels-log] 05-20 00:43:47.534 I /MonitorArm:78292:59c32c7/ VCPU0 PSCI: CPU_ON(target_cpu = 5, entry_point_addr = 40080258, context_id = 5)
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:47.534 I /MonitorArm:78292:59c32c7/ VCPU0 PSCI: CPU_ON(target_cpu = 6, entry_point_addr = 40080258, context_id = 6)'
+[parallels-log] 05-20 00:43:47.534 I /MonitorArm:78292:59c32c7/ VCPU0 PSCI: CPU_ON(target_cpu = 6, entry_point_addr = 40080258, context_id = 6)
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:43:47.534 I /MonitorArm:78292:59c32c7/ VCPU0 PSCI: CPU_ON(target_cpu = 7, entry_point_addr = 40080258, context_id = 7)'
+[parallels-log] 05-20 00:43:47.534 I /MonitorArm:78292:59c32c7/ VCPU0 PSCI: CPU_ON(target_cpu = 7, entry_point_addr = 40080258, context_id = 7)
++ IFS=
++ read -r line
+[freeze-watch] uptime_ms=2258 submits=293 completes=296 fails=0 last_completion_ms=2247 fps_last_5s=146 cpu=2 tid=3 ctx_switches=3277 timer_ticks_cpu0=579 timer_ticks_cpu1=751 timer_ticks_cpu2=761 timer_ticks_cpu3=737 timer_ticks_cpu4=737 timer_ticks_cpu5=742 timer_ticks_cpu6=742 timer_ticks_cpu7=745 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=3 cur_cpu3=13 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[heartbeat] tid=12 uptime_ms=2277
+[bwm-fps] frames_since_last=98 elapsed_ms=1001 instantaneous_fps=97
+[freeze-watch] uptime_ms=2761 submits=497 completes=499 fails=0 last_completion_ms=2761 fps_last_5s=133 cpu=4 tid=3 ctx_switches=4176 timer_ticks_cpu0=896 timer_ticks_cpu1=1134 timer_ticks_cpu2=1150 timer_ticks_cpu3=1109 timer_ticks_cpu4=1111 timer_ticks_cpu5=1114 timer_ticks_cpu6=1119 timer_ticks_cpu7=1121 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=7 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+[freeze-watch] uptime_ms=3265 submits=705 completes=707 fails=0 last_completion_ms=3259 fps_last_5s=138 cpu=5 tid=3 ctx_switches=5056 timer_ticks_cpu0=1221 timer_ticks_cpu1=1524 timer_ticks_cpu2=1531 timer_ticks_cpu3=1476 timer_ticks_cpu4=1478 timer_ticks_cpu5=1487 timer_ticks_cpu6=1493 timer_ticks_cpu7=1494 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=3 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=7 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+[heartbeat] tid=12 uptime_ms=3277
+[bwm-fps] frames_since_last=140 elapsed_ms=1003 instantaneous_fps=139
+[freeze-watch] uptime_ms=3768 submits=951 completes=953 fails=0 last_completion_ms=3758 fps_last_5s=163 cpu=6 tid=3 ctx_switches=6070 timer_ticks_cpu0=1529 timer_ticks_cpu1=1913 timer_ticks_cpu2=1918 timer_ticks_cpu3=1856 timer_ticks_cpu4=1856 timer_ticks_cpu5=1863 timer_ticks_cpu6=1873 timer_ticks_cpu7=1876 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=3 cur_cpu7=10 total_threads=16 blocked_threads=7 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+[freeze-watch] uptime_ms=4270 submits=1205 completes=1207 fails=0 last_completion_ms=4270 fps_last_5s=167 cpu=1 tid=3 ctx_switches=7090 timer_ticks_cpu0=1838 timer_ticks_cpu1=2305 timer_ticks_cpu2=2305 timer_ticks_cpu3=2232 timer_ticks_cpu4=2231 timer_ticks_cpu5=2242 timer_ticks_cpu6=2251 timer_ticks_cpu7=2254 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=3 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=7 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+[heartbeat] tid=12 uptime_ms=4278
+[bwm-fps] frames_since_last=169 elapsed_ms=1002 instantaneous_fps=168
+[freeze-watch] uptime_ms=4773 submits=1482 completes=1484 fails=0 last_completion_ms=4769 fps_last_5s=184 cpu=2 tid=3 ctx_switches=8219 timer_ticks_cpu0=2140 timer_ticks_cpu1=2704 timer_ticks_cpu2=2697 timer_ticks_cpu3=2621 timer_ticks_cpu4=2614 timer_ticks_cpu5=2628 timer_ticks_cpu6=2638 timer_ticks_cpu7=2641 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=3 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=7 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+[virgl-composite] Frame #500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[freeze-watch] uptime_ms=5275 submits=1715 completes=1718 fails=0 last_completion_ms=5271 fps_last_5s=155 cpu=1 tid=3 ctx_switches=9187 timer_ticks_cpu0=2461 timer_ticks_cpu1=3097 timer_ticks_cpu2=3075 timer_ticks_cpu3=3002 timer_ticks_cpu4=2989 timer_ticks_cpu5=3003 timer_ticks_cpu6=3016 timer_ticks_cpu7=3017 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=3 cur_cpu2=5 cur_cpu3=13 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[heartbeat] tid=12 uptime_ms=5278
+[bwm-fps] frames_since_last=165 elapsed_ms=1002 instantaneous_fps=164
+[freeze-watch] uptime_ms=5779 submits=1930 completes=1932 fails=0 last_completion_ms=5778 fps_last_5s=140 cpu=1 tid=3 ctx_switches=10127 timer_ticks_cpu0=2775 timer_ticks_cpu1=3486 timer_ticks_cpu2=3449 timer_ticks_cpu3=3374 timer_ticks_cpu4=3350 timer_ticks_cpu5=3364 timer_ticks_cpu6=3382 timer_ticks_cpu7=3384 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=3 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+[heartbeat] tid=12 uptime_ms=6279
+[freeze-watch] uptime_ms=6282 submits=2165 completes=2168 fails=0 last_completion_ms=6280 fps_last_5s=157 cpu=5 tid=3 ctx_switches=11117 timer_ticks_cpu0=3084 timer_ticks_cpu1=3861 timer_ticks_cpu2=3838 timer_ticks_cpu3=3746 timer_ticks_cpu4=3720 timer_ticks_cpu5=3739 timer_ticks_cpu6=3762 timer_ticks_cpu7=3765 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=13 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=3 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=151 elapsed_ms=1005 instantaneous_fps=150
+[freeze-watch] uptime_ms=6785 submits=2399 completes=2402 fails=0 last_completion_ms=6783 fps_last_5s=155 cpu=1 tid=0 ctx_switches=12095 timer_ticks_cpu0=3402 timer_ticks_cpu1=4238 timer_ticks_cpu2=4226 timer_ticks_cpu3=4122 timer_ticks_cpu4=4095 timer_ticks_cpu5=4110 timer_ticks_cpu6=4139 timer_ticks_cpu7=4149 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+[heartbeat] tid=12 uptime_ms=7283
+[freeze-watch] uptime_ms=7287 submits=2597 completes=2600 fails=0 last_completion_ms=7285 fps_last_5s=131 cpu=7 tid=3 ctx_switches=13056 timer_ticks_cpu0=3718 timer_ticks_cpu1=4615 timer_ticks_cpu2=4599 timer_ticks_cpu3=4496 timer_ticks_cpu4=4467 timer_ticks_cpu5=4476 timer_ticks_cpu6=4509 timer_ticks_cpu7=4527 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=13 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=3 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=141 elapsed_ms=1006 instantaneous_fps=140
+[freeze-watch] uptime_ms=7792 submits=2861 completes=2864 fails=0 last_completion_ms=7786 fps_last_5s=174 cpu=6 tid=3 ctx_switches=14146 timer_ticks_cpu0=4023 timer_ticks_cpu1=5011 timer_ticks_cpu2=4989 timer_ticks_cpu3=4874 timer_ticks_cpu4=4837 timer_ticks_cpu5=4857 timer_ticks_cpu6=4893 timer_ticks_cpu7=4910 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=13 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=3 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[virgl-composite] Frame #1000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=12 uptime_ms=8283
+[freeze-watch] uptime_ms=8294 submits=3179 completes=3182 fails=0 last_completion_ms=8294 fps_last_5s=211 cpu=3 tid=3 ctx_switches=15409 timer_ticks_cpu0=4298 timer_ticks_cpu1=5411 timer_ticks_cpu2=5378 timer_ticks_cpu3=5254 timer_ticks_cpu4=5218 timer_ticks_cpu5=5245 timer_ticks_cpu6=5281 timer_ticks_cpu7=5300 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=3 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=200 elapsed_ms=1001 instantaneous_fps=199
+[freeze-watch] uptime_ms=8797 submits=3479 completes=3482 fails=0 last_completion_ms=8794 fps_last_5s=198 cpu=5 tid=3 ctx_switches=16650 timer_ticks_cpu0=4585 timer_ticks_cpu1=5803 timer_ticks_cpu2=5770 timer_ticks_cpu3=5639 timer_ticks_cpu4=5596 timer_ticks_cpu5=5634 timer_ticks_cpu6=5667 timer_ticks_cpu7=5690 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=3 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[heartbeat] tid=12 uptime_ms=9284
+[freeze-watch] uptime_ms=9298 submits=3778 completes=3780 fails=0 last_completion_ms=9298 fps_last_5s=197 cpu=2 tid=3 ctx_switches=17861 timer_ticks_cpu0=4871 timer_ticks_cpu1=6187 timer_ticks_cpu2=6161 timer_ticks_cpu3=6015 timer_ticks_cpu4=5965 timer_ticks_cpu5=6009 timer_ticks_cpu6=6049 timer_ticks_cpu7=6073 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=3 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+[bwm-fps] frames_since_last=199 elapsed_ms=1001 instantaneous_fps=198
+[timer] cpu0 ticks=5000
+[freeze-watch] uptime_ms=9800 submits=4061 completes=4064 fails=0 last_completion_ms=9800 fps_last_5s=189 cpu=5 tid=3 ctx_switches=19090 timer_ticks_cpu0=5156 timer_ticks_cpu1=6585 timer_ticks_cpu2=6552 timer_ticks_cpu3=6405 timer_ticks_cpu4=6343 timer_ticks_cpu5=6390 timer_ticks_cpu6=6435 timer_ticks_cpu7=6464 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=16 cur_cpu3=6 cur_cpu4=7 cur_cpu5=3 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=5 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[heartbeat] tid=12 uptime_ms=10285
+[freeze-watch] uptime_ms=10302 submits=4352 completes=4355 fails=0 last_completion_ms=10300 fps_last_5s=193 cpu=2 tid=3 ctx_switches=20336 timer_ticks_cpu0=5448 timer_ticks_cpu1=6972 timer_ticks_cpu2=6941 timer_ticks_cpu3=6784 timer_ticks_cpu4=6720 timer_ticks_cpu5=6775 timer_ticks_cpu6=6819 timer_ticks_cpu7=6848 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=13 cur_cpu2=3 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=195 elapsed_ms=1003 instantaneous_fps=194
+[virgl-composite] Frame #1500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[heartbeat] tid=12 uptime_ms=11285
+[bwm-fps] frames_since_last=201 elapsed_ms=1003 instantaneous_fps=200
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[heartbeat] tid=12 uptime_ms=12286
+[bwm-fps] frames_since_last=206 elapsed_ms=1000 instantaneous_fps=206
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[virgl-composite] Frame #2000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=12 uptime_ms=13286
+[bwm-fps] frames_since_last=211 elapsed_ms=1002 instantaneous_fps=210
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[heartbeat] tid=12 uptime_ms=14286
+[bwm-fps] frames_since_last=204 elapsed_ms=1001 instantaneous_fps=203
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[heartbeat] tid=12 uptime_ms=15288
+[freeze-watch] uptime_ms=15305 submits=7403 completes=7406 fails=0 last_completion_ms=15304 fps_last_5s=203 cpu=0 tid=3 ctx_switches=32968 timer_ticks_cpu0=8289 timer_ticks_cpu1=10920 timer_ticks_cpu2=10841 timer_ticks_cpu3=10582 timer_ticks_cpu4=10498 timer_ticks_cpu5=10609 timer_ticks_cpu6=10658 timer_ticks_cpu7=10727 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=3 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=193 elapsed_ms=1000 instantaneous_fps=193
+[virgl-composite] Frame #2500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[heartbeat] tid=12 uptime_ms=16290
+[bwm-fps] frames_since_last=205 elapsed_ms=1002 instantaneous_fps=204
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[heartbeat] tid=12 uptime_ms=17290
+[bwm-fps] frames_since_last=197 elapsed_ms=1001 instantaneous_fps=196
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[virgl-composite] Frame #3000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=12 uptime_ms=18291
+[timer] cpu0 ticks=10000
+[bwm-fps] frames_since_last=201 elapsed_ms=1001 instantaneous_fps=200
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[heartbeat] tid=12 uptime_ms=19291
+[bwm-fps] frames_since_last=199 elapsed_ms=1000 instantaneous_fps=199
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[heartbeat] tid=12 uptime_ms=20292
+[freeze-watch] uptime_ms=20307 submits=10382 completes=10385 fails=0 last_completion_ms=20306 fps_last_5s=198 cpu=1 tid=3 ctx_switches=45500 timer_ticks_cpu0=11143 timer_ticks_cpu1=14823 timer_ticks_cpu2=14735 timer_ticks_cpu3=14366 timer_ticks_cpu4=14245 timer_ticks_cpu5=14433 timer_ticks_cpu6=14502 timer_ticks_cpu7=14610 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=3 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=192 elapsed_ms=1000 instantaneous_fps=192
+[virgl-composite] Frame #3500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[heartbeat] tid=12 uptime_ms=21293
+[bwm-fps] frames_since_last=206 elapsed_ms=1004 instantaneous_fps=205
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[heartbeat] tid=12 uptime_ms=22294
+[bwm-fps] frames_since_last=194 elapsed_ms=1004 instantaneous_fps=193
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[virgl-composite] Frame #4000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=12 uptime_ms=23295
+[bwm-fps] frames_since_last=188 elapsed_ms=1002 instantaneous_fps=187
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[heartbeat] tid=12 uptime_ms=24295
+[bwm-fps] frames_since_last=202 elapsed_ms=1002 instantaneous_fps=201
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[heartbeat] tid=12 uptime_ms=25295
+[freeze-watch] uptime_ms=25316 submits=13295 completes=13298 fails=0 last_completion_ms=25316 fps_last_5s=193 cpu=4 tid=0 ctx_switches=57853 timer_ticks_cpu0=14030 timer_ticks_cpu1=18728 timer_ticks_cpu2=18604 timer_ticks_cpu3=18182 timer_ticks_cpu4=18019 timer_ticks_cpu5=18264 timer_ticks_cpu6=18347 timer_ticks_cpu7=18480 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=176 elapsed_ms=1005 instantaneous_fps=175
+[virgl-composite] Frame #4500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=12 uptime_ms=26295
+[bwm-fps] frames_since_last=167 elapsed_ms=1004 instantaneous_fps=166
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[timer] cpu0 ticks=15000
+[heartbeat] tid=12 uptime_ms=27296
+[bwm-fps] frames_since_last=197 elapsed_ms=1000 instantaneous_fps=197
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[heartbeat] tid=12 uptime_ms=28297
+[bwm-fps] frames_since_last=201 elapsed_ms=1000 instantaneous_fps=201
+[virgl-composite] Frame #5000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[heartbeat] tid=12 uptime_ms=29297
+[bwm-fps] frames_since_last=202 elapsed_ms=1000 instantaneous_fps=202
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[heartbeat] tid=12 uptime_ms=30299
+[freeze-watch] uptime_ms=30319 submits=16196 completes=16199 fails=0 last_completion_ms=30318 fps_last_5s=193 cpu=6 tid=3 ctx_switches=70117 timer_ticks_cpu0=16898 timer_ticks_cpu1=22648 timer_ticks_cpu2=22493 timer_ticks_cpu3=21987 timer_ticks_cpu4=21783 timer_ticks_cpu5=22090 timer_ticks_cpu6=22185 timer_ticks_cpu7=22346 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=3 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=208 elapsed_ms=1002 instantaneous_fps=207
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[virgl-composite] Frame #5500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=12 uptime_ms=31299
+[bwm-fps] frames_since_last=198 elapsed_ms=1004 instantaneous_fps=197
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[heartbeat] tid=12 uptime_ms=32299
+[bwm-fps] frames_since_last=195 elapsed_ms=1000 instantaneous_fps=195
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[heartbeat] tid=12 uptime_ms=33300
+[bwm-fps] frames_since_last=190 elapsed_ms=1002 instantaneous_fps=189
+[virgl-composite] Frame #6000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[heartbeat] tid=12 uptime_ms=34301
+[bwm-fps] frames_since_last=197 elapsed_ms=1005 instantaneous_fps=196
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+[heartbeat] tid=12 uptime_ms=35301
+[freeze-watch] uptime_ms=35321 submits=19065 completes=19067 fails=0 last_completion_ms=35318 fps_last_5s=191 cpu=2 tid=3 ctx_switches=82372 timer_ticks_cpu0=19839 timer_ticks_cpu1=26606 timer_ticks_cpu2=26404 timer_ticks_cpu3=25828 timer_ticks_cpu4=25598 timer_ticks_cpu5=25934 timer_ticks_cpu6=26044 timer_ticks_cpu7=26226 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=4 cur_cpu2=3 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=7 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy
+[gpu-pci-lock-attrib] max_hold_ms=9 max_hold_holder_tid=13
+[wake-attrib] schedule=15305 unblock=0 isr_unblock=19961 wake_io=27681 signal=0 child=0 timer=1680
+[enqueue-attrib] same_lock=9680 deferred=16721 isr_buf=19961 deferred_drained=15687 isr_buf_drained=18267 already_queued=1199 isr_buf_full=0
+[bwm-fps] frames_since_last=172 elapsed_ms=1003 instantaneous_fps=171
+[timer] cpu0 ticks=20000
+[heartbeat] tid=12 uptime_ms=36301
+[virgl-composite] Frame #6500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[bwm-fps] frames_since_last=149 elapsed_ms=1002 instantaneous_fps=148
+[heartbeat] tid=12 uptime_ms=37302
+[bwm-fps] frames_since_last=159 elapsed_ms=1002 instantaneous_fps=158
+[heartbeat] tid=12 uptime_ms=38302
+[bwm-fps] frames_since_last=153 elapsed_ms=1002 instantaneous_fps=152
+[heartbeat] tid=12 uptime_ms=39303
+[bwm-fps] frames_since_last=150 elapsed_ms=1006 instantaneous_fps=149
+[virgl-composite] Frame #7000: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=12 uptime_ms=40304
+[freeze-watch] uptime_ms=40324 submits=21371 completes=21374 fails=0 last_completion_ms=40323 fps_last_5s=153 cpu=1 tid=3 ctx_switches=92714 timer_ticks_cpu0=22951 timer_ticks_cpu1=30473 timer_ticks_cpu2=30233 timer_ticks_cpu3=29601 timer_ticks_cpu4=29305 timer_ticks_cpu5=29659 timer_ticks_cpu6=29806 timer_ticks_cpu7=30006 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=3 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=16 blocked_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+[bwm-fps] frames_since_last=167 elapsed_ms=1001 instantaneous_fps=166
+[heartbeat] tid=12 uptime_ms=41304
+[bwm-fps] frames_since_last=157 elapsed_ms=1007 instantaneous_fps=155
+[heartbeat] tid=12 uptime_ms=42306
+[bwm-fps] frames_since_last=154 elapsed_ms=1002 instantaneous_fps=153
+[virgl-composite] Frame #7500: 1280x960 → 1280x960 display (first1k: 1000 nonzero, first=0x0014161e)
+[heartbeat] tid=12 uptime_ms=43307
+[bwm-fps] frames_since_last=148 elapsed_ms=1005 instantaneous_fps=147
+[timer] cpu0 ticks=25000
+[heartbeat] tid=12 uptime_ms=44307
+[bwm-fps] frames_since_last=151 elapsed_ms=1006 instantaneous_fps=150
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.891 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStateRunning): changed to VcpuStateStopped'
+[parallels-log] 05-20 00:44:30.891 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStateRunning): changed to VcpuStateStopped
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.891 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStateRunning): changed to VcpuStateStopped'
+[parallels-log] 05-20 00:44:30.891 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStateRunning): changed to VcpuStateStopped
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.891 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStateRunning): changed to VcpuStateStopped'
+[parallels-log] 05-20 00:44:30.891 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStateRunning): changed to VcpuStateStopped
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.891 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStateRunning): changed to VcpuStateStopped'
+[parallels-log] 05-20 00:44:30.891 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStateRunning): changed to VcpuStateStopped
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.891 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStateRunning): changed to VcpuStateStopped'
+[parallels-log] 05-20 00:44:30.891 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStateRunning): changed to VcpuStateStopped
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.891 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStateRunning): changed to VcpuStateStopped'
+[parallels-log] 05-20 00:44:30.891 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStateRunning): changed to VcpuStateStopped
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.891 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStateRunning): changed to VcpuStateStopped'
+[parallels-log] 05-20 00:44:30.891 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStateRunning): changed to VcpuStateStopped
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.891 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStateRunning): changed to VcpuStateStopped'
+[parallels-log] 05-20 00:44:30.891 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStateRunning): changed to VcpuStateStopped
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c31b6/ VCPU7 state(VcpuStateStopped): enqueued '\''VcpuCmdTerminate'\''(4) command'
+[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c31b6/ VCPU7 state(VcpuStateStopped): enqueued 'VcpuCmdTerminate'(4) command
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c31b6/ VCPU6 state(VcpuStateStopped): enqueued '\''VcpuCmdTerminate'\''(4) command'
+[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c31b6/ VCPU6 state(VcpuStateStopped): enqueued 'VcpuCmdTerminate'(4) command
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c31b6/ VCPU5 state(VcpuStateStopped): enqueued '\''VcpuCmdTerminate'\''(4) command'
+[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c31b6/ VCPU5 state(VcpuStateStopped): enqueued 'VcpuCmdTerminate'(4) command
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c31b6/ VCPU4 state(VcpuStateStopped): enqueued '\''VcpuCmdTerminate'\''(4) command'
+[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c31b6/ VCPU4 state(VcpuStateStopped): enqueued 'VcpuCmdTerminate'(4) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStateStopped): changed to VcpuStateTerminated'
+[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStateStopped): changed to VcpuStateTerminated
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStateTerminated): completed current '\''VcpuCmdTerminate'\''(4) command with result 0x0'
+[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32ce/ VCPU7 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c31b6/ VCPU3 state(VcpuStateStopped): enqueued '\''VcpuCmdTerminate'\''(4) command'
+[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c31b6/ VCPU3 state(VcpuStateStopped): enqueued 'VcpuCmdTerminate'(4) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStateStopped): changed to VcpuStateTerminated'
+[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStateStopped): changed to VcpuStateTerminated
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStateStopped): changed to VcpuStateTerminated'
+[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStateStopped): changed to VcpuStateTerminated
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStateTerminated): completed current '\''VcpuCmdTerminate'\''(4) command with result 0x0'
+[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32cd/ VCPU6 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStateTerminated): completed current '\''VcpuCmdTerminate'\''(4) command with result 0x0'
+[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32cc/ VCPU5 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStateStopped): changed to VcpuStateTerminated'
+[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStateStopped): changed to VcpuStateTerminated
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c31b6/ VCPU2 state(VcpuStateStopped): enqueued '\''VcpuCmdTerminate'\''(4) command'
+[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c31b6/ VCPU2 state(VcpuStateStopped): enqueued 'VcpuCmdTerminate'(4) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStateTerminated): completed current '\''VcpuCmdTerminate'\''(4) command with result 0x0'
+[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32cb/ VCPU4 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStateStopped): changed to VcpuStateTerminated'
+[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStateStopped): changed to VcpuStateTerminated
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c31b6/ VCPU1 state(VcpuStateStopped): enqueued '\''VcpuCmdTerminate'\''(4) command'
+[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c31b6/ VCPU1 state(VcpuStateStopped): enqueued 'VcpuCmdTerminate'(4) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStateTerminated): completed current '\''VcpuCmdTerminate'\''(4) command with result 0x0'
+[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32ca/ VCPU3 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c31b6/ VCPU0 state(VcpuStateStopped): enqueued '\''VcpuCmdTerminate'\''(4) command'
+[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c31b6/ VCPU0 state(VcpuStateStopped): enqueued 'VcpuCmdTerminate'(4) command
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /vm:78292:59c31b6/ Wait for the VCPU threads to stop'
+[parallels-log] 05-20 00:44:30.898 F /vm:78292:59c31b6/ Wait for the VCPU threads to stop
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStateStopped): changed to VcpuStateTerminated'
+[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStateStopped): changed to VcpuStateTerminated
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStateTerminated): completed current '\''VcpuCmdTerminate'\''(4) command with result 0x0'
+[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32c7/ VCPU0 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStateStopped): changed to VcpuStateTerminated'
+[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStateStopped): changed to VcpuStateTerminated
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStateStopped): changed to VcpuStateTerminated'
+[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStateStopped): changed to VcpuStateTerminated
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStateTerminated): completed current '\''VcpuCmdTerminate'\''(4) command with result 0x0'
+[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32c8/ VCPU1 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStateTerminated): completed current '\''VcpuCmdTerminate'\''(4) command with result 0x0'
+[parallels-log] 05-20 00:44:30.898 F /StateMachine:78292:59c32c9/ VCPU2 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0x0
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.925 F /StateMachine:78292:59c31b6/ VCPU7 state(VcpuStateTerminated): enqueued '\''VcpuCmdTerminate'\''(4) command'
+[parallels-log] 05-20 00:44:30.925 F /StateMachine:78292:59c31b6/ VCPU7 state(VcpuStateTerminated): enqueued 'VcpuCmdTerminate'(4) command
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.925 F /StateMachine:78292:59c31b6/ VCPU6 state(VcpuStateTerminated): enqueued '\''VcpuCmdTerminate'\''(4) command'
+[parallels-log] 05-20 00:44:30.925 F /StateMachine:78292:59c31b6/ VCPU6 state(VcpuStateTerminated): enqueued 'VcpuCmdTerminate'(4) command
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.925 F /StateMachine:78292:59c31b6/ VCPU5 state(VcpuStateTerminated): enqueued '\''VcpuCmdTerminate'\''(4) command'
+[parallels-log] 05-20 00:44:30.925 F /StateMachine:78292:59c31b6/ VCPU5 state(VcpuStateTerminated): enqueued 'VcpuCmdTerminate'(4) command
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.925 F /StateMachine:78292:59c31b6/ VCPU4 state(VcpuStateTerminated): enqueued '\''VcpuCmdTerminate'\''(4) command'
+[parallels-log] 05-20 00:44:30.925 F /StateMachine:78292:59c31b6/ VCPU4 state(VcpuStateTerminated): enqueued 'VcpuCmdTerminate'(4) command
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.925 F /StateMachine:78292:59c31b6/ VCPU3 state(VcpuStateTerminated): enqueued '\''VcpuCmdTerminate'\''(4) command'
+[parallels-log] 05-20 00:44:30.925 F /StateMachine:78292:59c31b6/ VCPU3 state(VcpuStateTerminated): enqueued 'VcpuCmdTerminate'(4) command
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.925 F /StateMachine:78292:59c31b6/ VCPU2 state(VcpuStateTerminated): enqueued '\''VcpuCmdTerminate'\''(4) command'
+[parallels-log] 05-20 00:44:30.925 F /StateMachine:78292:59c31b6/ VCPU2 state(VcpuStateTerminated): enqueued 'VcpuCmdTerminate'(4) command
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.925 F /StateMachine:78292:59c31b6/ VCPU1 state(VcpuStateTerminated): enqueued '\''VcpuCmdTerminate'\''(4) command'
+[parallels-log] 05-20 00:44:30.925 F /StateMachine:78292:59c31b6/ VCPU1 state(VcpuStateTerminated): enqueued 'VcpuCmdTerminate'(4) command
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.925 F /StateMachine:78292:59c31b6/ VCPU0 state(VcpuStateTerminated): enqueued '\''VcpuCmdTerminate'\''(4) command'
+[parallels-log] 05-20 00:44:30.925 F /StateMachine:78292:59c31b6/ VCPU0 state(VcpuStateTerminated): enqueued 'VcpuCmdTerminate'(4) command
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.977 F /StateMachine:78292:59c31b6/ VCPU7 state(VcpuStateTerminated): completed current '\''VcpuCmdTerminate'\''(4) command with result 0xfffffff7'
+[parallels-log] 05-20 00:44:30.977 F /StateMachine:78292:59c31b6/ VCPU7 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0xfffffff7
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.977 F /StateMachine:78292:59c31b6/ VCPU6 state(VcpuStateTerminated): completed current '\''VcpuCmdTerminate'\''(4) command with result 0xfffffff7'
+[parallels-log] 05-20 00:44:30.977 F /StateMachine:78292:59c31b6/ VCPU6 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0xfffffff7
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.977 F /StateMachine:78292:59c31b6/ VCPU5 state(VcpuStateTerminated): completed current '\''VcpuCmdTerminate'\''(4) command with result 0xfffffff7'
+[parallels-log] 05-20 00:44:30.977 F /StateMachine:78292:59c31b6/ VCPU5 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0xfffffff7
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.977 F /StateMachine:78292:59c31b6/ VCPU4 state(VcpuStateTerminated): completed current '\''VcpuCmdTerminate'\''(4) command with result 0xfffffff7'
+[parallels-log] 05-20 00:44:30.977 F /StateMachine:78292:59c31b6/ VCPU4 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0xfffffff7
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.977 F /StateMachine:78292:59c31b6/ VCPU3 state(VcpuStateTerminated): completed current '\''VcpuCmdTerminate'\''(4) command with result 0xfffffff7'
+[parallels-log] 05-20 00:44:30.977 F /StateMachine:78292:59c31b6/ VCPU3 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0xfffffff7
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.977 F /StateMachine:78292:59c31b6/ VCPU2 state(VcpuStateTerminated): completed current '\''VcpuCmdTerminate'\''(4) command with result 0xfffffff7'
+[parallels-log] 05-20 00:44:30.977 F /StateMachine:78292:59c31b6/ VCPU2 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0xfffffff7
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.977 F /StateMachine:78292:59c31b6/ VCPU1 state(VcpuStateTerminated): completed current '\''VcpuCmdTerminate'\''(4) command with result 0xfffffff7'
+[parallels-log] 05-20 00:44:30.977 F /StateMachine:78292:59c31b6/ VCPU1 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0xfffffff7
++ IFS=
++ read -r line
++ case "$line" in
++ echo '[parallels-log] 05-20 00:44:30.977 F /StateMachine:78292:59c31b6/ VCPU0 state(VcpuStateTerminated): completed current '\''VcpuCmdTerminate'\''(4) command with result 0xfffffff7'
+[parallels-log] 05-20 00:44:30.977 F /StateMachine:78292:59c31b6/ VCPU0 state(VcpuStateTerminated): completed current 'VcpuCmdTerminate'(4) command with result 0xfffffff7
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
++ case "$line" in
++ IFS=
++ read -r line
+++ kill 78325

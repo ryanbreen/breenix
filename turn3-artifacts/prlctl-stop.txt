@@ -1,0 +1,3 @@
+Stopping the VM...
+The VM has been forcibly stopped
+{3d4aff36-4a8f-4bfc-844d-1d455e94484b}  stopped      -               breenix-1779251152

@@ -1,0 +1,3 @@
+c077c6ba Revert "fix(usb): F32t Phase 5a move xHCI SPI enable to end of init"
+703db7de fix(usb): F32t Phase 5a move xHCI SPI enable to end of init
+0f641606 feat: interrupt-driven xHCI keyboard — eliminate 20ms poll latency

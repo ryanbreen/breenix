@@ -1,0 +1,11 @@
+[xhci] activate_msi_if_ready: source=system-ready spi=56 DIAG_SPI_ENABLE_COUNT=1
+[xhci] post-activation: MSI_EVENT_COUNT=0 EVENT_COUNT=0 POLL_COUNT=0 SPI_ACTIVATED=true
+[timer] cpu0 ticks=5000
+[timer] cpu0 ticks=10000
+[timer] cpu0 ticks=15000
+[timer] cpu0 ticks=20000
+[timer] cpu0 ticks=25000
+[timer] cpu0 ticks=30000
+[timer] cpu0 ticks=35000
+[timer] cpu0 ticks=40000
+[timer] cpu0 ticks=45000

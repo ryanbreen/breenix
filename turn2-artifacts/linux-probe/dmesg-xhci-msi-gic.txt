@@ -1,0 +1,26 @@
+[    0.000000] CPU features: detected: GIC system register CPU interface
+[    0.000000] GICv3: 988 SPIs implemented
+[    0.000000] GICv3: 0 Extended SPIs implemented
+[    0.000000] Root IRQ handler: gic_handle_irq
+[    0.000000] GICv3: GICv3 features: 16 PPIs, RSS
+[    0.000000] GICv3: CPU0: found redistributor 0 region 0:0x0000000002500000
+[    0.000000] GICv2m: range[mem 0x02250000-0x02250fff], SPI[53:116]
+[    0.010613] GICv3: CPU1: found redistributor 1 region 0:0x0000000002520000
+[    0.010986] GICv3: CPU2: found redistributor 2 region 0:0x0000000002560000
+[    0.011306] GICv3: CPU3: found redistributor 3 region 0:0x0000000002540000
+[    0.014691] ACPI: Using GIC for interrupt routing
+[    0.015322] acpi PNP0A08:00: _OSC: OS supports [ExtendedConfig ASPM ClockPM Segments MSI EDR HPX-Type3]
+[    0.206969] xhci_hcd 0000:00:03.0: xHCI Host Controller
+[    0.207133] xhci_hcd 0000:00:03.0: new USB bus registered, assigned bus number 2
+[    0.207395] xhci_hcd 0000:00:03.0: hcc params 0x01c15001 hci version 0x110 quirks 0x0000000000000014
+[    0.207690] xhci_hcd 0000:00:03.0: xHCI Host Controller
+[    0.207879] xhci_hcd 0000:00:03.0: new USB bus registered, assigned bus number 3
+[    0.207983] xhci_hcd 0000:00:03.0: Host supports USB 3.1 Enhanced SuperSpeed
+[    0.209206] usb usb2: Product: xHCI Host Controller
+[    0.209294] usb usb2: Manufacturer: Linux 6.8.0-111-generic xhci-hcd
+[    0.211215] usb usb3: Product: xHCI Host Controller
+[    0.211308] usb usb3: Manufacturer: Linux 6.8.0-111-generic xhci-hcd
+[    0.535389] sd 0:0:0:0: [sda] 67108864 512-byte logical blocks: (34.4 GB/32.0 GiB)
+[    0.546068] usb 3-1: new SuperSpeed USB device number 2 using xhci_hcd
+[    0.682777] usb 3-2: new SuperSpeed USB device number 3 using xhci_hcd
+[    0.824157] usb 3-4: new SuperSpeed USB device number 4 using xhci_hcd

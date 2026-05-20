@@ -1,0 +1,28 @@
+send-key-event key=0x14 press
+An invalid value was specified for --key: 0x14
+send-key-event key=0x14 release
+An invalid value was specified for --key: 0x14
+send-key-event key=0x18 press
+An invalid value was specified for --key: 0x18
+send-key-event key=0x18 release
+An invalid value was specified for --key: 0x18
+send-key-event key=0x12 press
+An invalid value was specified for --key: 0x12
+send-key-event key=0x12 release
+An invalid value was specified for --key: 0x12
+send-key-event key=0x39 press
+An invalid value was specified for --key: 0x39
+send-key-event key=0x39 release
+An invalid value was specified for --key: 0x39
+send-key-event key=0x14 press
+An invalid value was specified for --key: 0x14
+send-key-event key=0x14 release
+An invalid value was specified for --key: 0x14
+send-key-event key=0x18 press
+An invalid value was specified for --key: 0x18
+send-key-event key=0x18 release
+An invalid value was specified for --key: 0x18
+send-key-event key=0x12 press
+An invalid value was specified for --key: 0x12
+send-key-event key=0x12 release
+An invalid value was specified for --key: 0x12

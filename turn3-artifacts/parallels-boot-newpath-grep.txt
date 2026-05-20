@@ -1,0 +1,72 @@
+21:[boot] DIAG_MARKER_XHCI_A
+22:[boot] DIAG_MARKER_XHCI_B
+23:[boot] DIAG_MARKER_XHCI_C
+24:[boot] loader xhci_hcrst_raw=0x0 ecam=0x2300000
+196:[drivers] Found XHCI at 00:03.0 [1033:0194]
+197:[xhci] DMA addrs: DCBAA=0x402ab000 CMD_RING=0x402ac000 EVT_RING=0x402bc000 ERST=0x40331100
+198:[xhci] Regs: USBCMD=0x5 USBSTS=0x0 CRCR=0x0 DCBAAP=0x402ab000
+199:[xhci] IR0: IMAN=0x2 ERDP=0x402bc000 ERSTBA=0x40331100
+200:[xhci] Port scan: 14 ports
+201:[xhci]   port 1: PORTSC=0x00021203 CCS=1 PED=1 speed=4
+202:[xhci]   port 2: PORTSC=0x00021203 CCS=1 PED=1 speed=4
+203:[xhci]   port 3: PORTSC=0x00021203 CCS=1 PED=1 speed=4
+204:[xhci]   port 4: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+205:[xhci]   port 5: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+206:[xhci]   port 6: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+207:[xhci]   port 7: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+208:[xhci]   port 8: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+209:[xhci]   port 9: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+210:[xhci]   port 10: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+211:[xhci]   port 11: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+212:[xhci]   port 12: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+213:[xhci]   port 13: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+214:[xhci]   port 14: PORTSC=0x000002a0 CCS=0 PED=0 speed=0
+215:[xhci] port 1 connected: PORTSC=0x00001203 PED=1 speed=4
+216:[xhci] port 1 EnableSlot -> slot 1
+217:[xhci] port 1 AddressDevice OK (slot 1)
+218:[xhci] slot1: vid=0x203a pid=0xfffc class=0x00/0x00/0x00
+219:[xhci] slot1 iface0: class=0x03 sub=0x00 proto=0x02 numEP=1
+220:[xhci] HID iface: proto=2 subclass=0 -> mouse (hid_idx=1)
+221:[xhci] slot1 iface1: class=0x03 sub=0x00 proto=0x02 numEP=1
+222:[xhci] HID iface: proto=2 subclass=0 -> mouse (hid_idx=3)
+223:[xhci] port 2 connected: PORTSC=0x00001203 PED=1 speed=4
+224:[xhci] port 2 EnableSlot -> slot 2
+225:[xhci] port 2 AddressDevice OK (slot 2)
+226:[xhci] slot2: vid=0x203a pid=0xfffb class=0x00/0x00/0x00
+227:[xhci] slot2 iface0: class=0x03 sub=0x01 proto=0x01 numEP=1
+228:[xhci] HID iface: proto=1 subclass=1 -> keyboard (hid_idx=0)
+229:[xhci] slot2 iface1: class=0x03 sub=0x00 proto=0x00 numEP=1
+230:[xhci] HID iface: proto=0 subclass=0 -> NKRO (hid_idx=2)
+231:[xhci] port 3 connected: PORTSC=0x00001203 PED=1 speed=4
+232:[xhci] port 3 EnableSlot -> slot 3
+233:[xhci] port 3 AddressDevice OK (slot 3)
+234:[xhci] slot3: vid=0x203a pid=0xfff9 class=0xef/0x02/0x01
+235:[xhci] slot3 iface0: class=0x0e sub=0x01 proto=0x00 numEP=0
+236:[xhci] slot3 iface1: class=0x0e sub=0x02 proto=0x00 numEP=1
+237:[xhci] start_hid_polling: kbd=slot2/dci3 nkro=dci5 mouse=slot1/dci3 mouse2=dci5
+238:[xhci] Initialized: 32 slots, MSI irq=56
+239:[drivers] XHCI USB controller initialized
+261:[virtio-net-pci] RX diag: used_idx=1 last_used=0 avail_idx=4 isr=0x0 msi_count=0
+262:[virtio-net-pci] RX diag: used_idx=1 last_used=1 avail_idx=8 isr=0x0 msi_count=0
+284:[boot] USB HID input active via XHCI (polled from timer)
+297:[xhci] activate_msi_if_ready: source=system-ready spi=56 DIAG_SPI_ENABLE_COUNT=1
+380:  KERNEL PANIC!
+382:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+383:CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+391:  KERNEL PANIC!
+393:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+394:CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+402:  KERNEL PANIC!
+404:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+405:CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+417:  KERNEL PANIC!
+424:CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+428:  KERNEL PANIC!
+430:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+431:CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+435:  KERNEL PANIC!
+437:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+438:CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-
+446:  KERNEL PANIC!
+448:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+449:CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything

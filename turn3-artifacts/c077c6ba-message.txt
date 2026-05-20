@@ -1,0 +1,5 @@
+c077c6ba581f0cc918ab76373f9a409e744d68bd
+Revert "fix(usb): F32t Phase 5a move xHCI SPI enable to end of init"
+
+This reverts commit 703db7def129c0c5c1d7b799283948e8e796191c.
+
