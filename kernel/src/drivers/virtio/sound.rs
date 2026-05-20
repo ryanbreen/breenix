@@ -7,8 +7,194 @@ use super::queue::Virtqueue;
 use super::VirtioDevice;
 use crate::drivers::pci::Device as PciDevice;
 use crate::memory::frame_allocator;
-use core::sync::atomic::{fence, Ordering};
+use crate::task::completion::Completion;
+use alloc::sync::Arc;
+use core::sync::atomic::{fence, AtomicBool, AtomicU32, Ordering};
 use spin::Mutex;
+
+const SOUND_COMPLETION_TIMEOUT_NS: u64 = 5_000_000_000;
+const SOUND_EARLY_COMPLETION_TIMEOUT_NS: u64 = 100_000_000_000;
+const NO_COMPLETED_DESC: u32 = u32::MAX;
+const SOUND_TEST_SILENCE: [u8; 16_384] = [0; 16_384];
+
+struct SoundRequestGate {
+    locked: AtomicBool,
+    waiters: crate::task::waitqueue::WaitQueueHead,
+}
+
+struct SoundRequestGuard<'a> {
+    gate: &'a SoundRequestGate,
+    release_on_drop: bool,
+}
+
+impl SoundRequestGate {
+    const fn new() -> Self {
+        Self {
+            locked: AtomicBool::new(false),
+            waiters: crate::task::waitqueue::WaitQueueHead::new(),
+        }
+    }
+
+    fn lock(&self) -> Result<SoundRequestGuard<'_>, &'static str> {
+        loop {
+            if self
+                .locked
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Ok(SoundRequestGuard {
+                    gate: self,
+                    release_on_drop: true,
+                });
+            }
+
+            if !sound_request_gate_can_sleep() {
+                return Err("Sound request already in progress");
+            }
+
+            if self
+                .waiters
+                .prepare_to_wait(crate::task::thread::ThreadState::BlockedOnIO)
+                .is_none()
+            {
+                return Err("Sound request already in progress");
+            }
+
+            if self.locked.load(Ordering::Acquire) {
+                crate::task::waitqueue::schedule_current_wait();
+            }
+            self.waiters.finish_wait();
+        }
+    }
+
+    fn unlock(&self) {
+        self.locked.store(false, Ordering::Release);
+        self.waiters.wake_up_one();
+    }
+}
+
+impl SoundRequestGuard<'_> {
+    fn keep_locked(&mut self) {
+        self.release_on_drop = false;
+    }
+}
+
+impl Drop for SoundRequestGuard<'_> {
+    fn drop(&mut self) {
+        if self.release_on_drop {
+            self.gate.unlock();
+        }
+    }
+}
+
+#[inline]
+fn sound_request_gate_can_sleep() -> bool {
+    if crate::task::scheduler::current_thread_id().is_none() {
+        return false;
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        crate::per_cpu::preempt_count() > 0
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
+struct SoundQueueCompletion {
+    completion: Completion,
+    next_token: AtomicU32,
+    pending_token: AtomicU32,
+    completed_desc: AtomicU32,
+}
+
+impl SoundQueueCompletion {
+    fn new() -> Self {
+        Self {
+            completion: Completion::new(),
+            next_token: AtomicU32::new(0),
+            pending_token: AtomicU32::new(0),
+            completed_desc: AtomicU32::new(NO_COMPLETED_DESC),
+        }
+    }
+
+    fn next_completion_token(&self) -> u32 {
+        let mut token = self
+            .next_token
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        if token == 0 {
+            token = self
+                .next_token
+                .fetch_add(1, Ordering::AcqRel)
+                .wrapping_add(1);
+        }
+        token
+    }
+
+    fn prepare_wait(&self) -> u32 {
+        let token = self.next_completion_token();
+        self.completion.reset();
+        self.completed_desc
+            .store(NO_COMPLETED_DESC, Ordering::Release);
+        self.pending_token.store(token, Ordering::Release);
+        token
+    }
+
+    fn clear(&self) {
+        self.pending_token.store(0, Ordering::Release);
+        self.completed_desc
+            .store(NO_COMPLETED_DESC, Ordering::Release);
+    }
+
+    fn wait_for_completion(
+        &self,
+        token: u32,
+        timeout_error: &'static str,
+        interrupted_error: &'static str,
+    ) -> Result<(), &'static str> {
+        let scheduler_thread_present = crate::task::scheduler::current_thread_id().is_some();
+        let timeout_ns = if scheduler_thread_present {
+            SOUND_COMPLETION_TIMEOUT_NS
+        } else {
+            SOUND_EARLY_COMPLETION_TIMEOUT_NS
+        };
+
+        match self.completion.wait_timeout(token, timeout_ns) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(timeout_error),
+            Err(_eintr) => Err(interrupted_error),
+        }
+    }
+
+    fn take_completed_desc(&self, missing_error: &'static str) -> Result<u16, &'static str> {
+        let desc = self
+            .completed_desc
+            .swap(NO_COMPLETED_DESC, Ordering::AcqRel);
+        if desc == NO_COMPLETED_DESC {
+            return Err(missing_error);
+        }
+        Ok(desc as u16)
+    }
+
+    fn has_pending(&self) -> bool {
+        self.pending_token.load(Ordering::Acquire) != 0
+    }
+
+    fn complete_desc(&self, completed_desc: u16) -> bool {
+        let token = self.pending_token.load(Ordering::Acquire);
+        if token == 0 {
+            return false;
+        }
+
+        self.completed_desc
+            .store(completed_desc as u32, Ordering::Release);
+        self.completion.complete(token);
+        true
+    }
+}
 
 /// VirtIO Sound command codes
 mod cmd {
@@ -94,10 +280,14 @@ struct DmaBuffers {
 /// VirtIO sound device driver
 struct VirtioSoundDevice {
     device: VirtioDevice,
-    ctrl_queue: Virtqueue,
-    tx_queue: Virtqueue,
+    ctrl_queue: Mutex<Virtqueue>,
+    tx_queue: Mutex<Virtqueue>,
+    ctrl_gate: SoundRequestGate,
+    tx_gate: SoundRequestGate,
+    ctrl_completion: SoundQueueCompletion,
+    tx_completion: SoundQueueCompletion,
     dma: DmaBuffers,
-    stream_started: bool,
+    stream_started: AtomicBool,
 }
 
 impl VirtioSoundDevice {
@@ -112,6 +302,12 @@ impl VirtioSoundDevice {
 
         pci_dev.enable_bus_master();
         pci_dev.enable_io_space();
+        pci_dev.enable_intx();
+        log::info!(
+            "VirtIO sound: PCI INTx IRQ line {} pin {}",
+            pci_dev.interrupt_line,
+            pci_dev.interrupt_pin
+        );
 
         let mut device = VirtioDevice::new(io_base);
         device.init(0)?; // No special features
@@ -157,10 +353,14 @@ impl VirtioSoundDevice {
 
         Ok(VirtioSoundDevice {
             device,
-            ctrl_queue,
-            tx_queue,
+            ctrl_queue: Mutex::new(ctrl_queue),
+            tx_queue: Mutex::new(tx_queue),
+            ctrl_gate: SoundRequestGate::new(),
+            tx_gate: SoundRequestGate::new(),
+            ctrl_completion: SoundQueueCompletion::new(),
+            tx_completion: SoundQueueCompletion::new(),
             dma,
-            stream_started: false,
+            stream_started: AtomicBool::new(false),
         })
     }
 
@@ -191,7 +391,13 @@ impl VirtioSoundDevice {
         Ok((phys, virt))
     }
 
-    fn send_ctrl(&mut self, cmd_len: u32, resp_len: u32) -> Result<(), &'static str> {
+    fn send_ctrl_locked(
+        &self,
+        request_guard: &mut SoundRequestGuard<'_>,
+        cmd_len: u32,
+        resp_len: u32,
+    ) -> Result<(), &'static str> {
+        let completion_token = self.ctrl_completion.prepare_wait();
         let (cmd_phys, _) = self.dma.cmd;
         let (resp_phys, _) = self.dma.resp;
 
@@ -200,28 +406,45 @@ impl VirtioSoundDevice {
             (resp_phys, resp_len, true), // Device writes response
         ];
 
-        self.ctrl_queue
-            .add_chain(&buffers)
-            .ok_or("Control queue full")?;
+        {
+            let mut queue = self.ctrl_queue.lock();
+            if queue.add_chain(&buffers).is_none() {
+                self.ctrl_completion.clear();
+                return Err("Control queue full");
+            }
+        }
+
         fence(Ordering::SeqCst);
         self.device.notify_queue(0);
 
-        // Poll for completion
-        let mut timeout = 100_000u32;
-        while !self.ctrl_queue.has_used() && timeout > 0 {
-            for _ in 0..1000 {
-                core::hint::spin_loop();
-            }
-            let _ = self.device.read_isr();
-            timeout -= 1;
-        }
-        if timeout == 0 {
-            return Err("Sound control command timeout");
+        if let Err(e) = self.ctrl_completion.wait_for_completion(
+            completion_token,
+            "Sound control command timeout",
+            "Sound control command interrupted",
+        ) {
+            request_guard.keep_locked();
+            return Err(e);
         }
 
-        let (desc, _) = self.ctrl_queue.get_used().ok_or("No completion")?;
-        self.ctrl_queue.free_chain(desc);
-        Ok(())
+        let completed_desc = match self
+            .ctrl_completion
+            .take_completed_desc("Sound control command woke without completion")
+        {
+            Ok(desc) => desc,
+            Err(e) => {
+                self.ctrl_completion.clear();
+                return Err(e);
+            }
+        };
+
+        {
+            let mut queue = self.ctrl_queue.lock();
+            queue.free_chain(completed_desc);
+        }
+
+        let result = self.check_response();
+        self.ctrl_completion.clear();
+        result
     }
 
     fn check_response(&self) -> Result<(), &'static str> {
@@ -234,8 +457,28 @@ impl VirtioSoundDevice {
         Ok(())
     }
 
-    fn do_setup_stream(&mut self) -> Result<(), &'static str> {
-        if self.stream_started {
+    #[cfg(target_arch = "x86_64")]
+    fn irq_completion_available(&self) -> bool {
+        crate::task::scheduler::current_thread_id().is_some()
+            || x86_64::instructions::interrupts::are_enabled()
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    fn irq_completion_available(&self) -> bool {
+        true
+    }
+
+    fn do_setup_stream(&self) -> Result<(), &'static str> {
+        if self.stream_started.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if !self.irq_completion_available() {
+            return Err("Sound IRQ completion unavailable before interrupts are enabled");
+        }
+
+        let mut request_guard = self.ctrl_gate.lock()?;
+
+        if self.stream_started.load(Ordering::Acquire) {
             return Ok(());
         }
 
@@ -255,11 +498,11 @@ impl VirtioSoundDevice {
             (*params).rate = pcm_rate::RATE_44100;
             (*params)._padding = 0;
         }
-        self.send_ctrl(
+        self.send_ctrl_locked(
+            &mut request_guard,
             core::mem::size_of::<VirtioSndPcmSetParams>() as u32,
             hdr_size,
         )?;
-        self.check_response()?;
 
         // 2. PREPARE
         unsafe {
@@ -267,8 +510,11 @@ impl VirtioSoundDevice {
             (*ctrl).hdr.code = cmd::PREPARE;
             (*ctrl).stream_id = 0;
         }
-        self.send_ctrl(core::mem::size_of::<VirtioSndPcmCtrl>() as u32, hdr_size)?;
-        self.check_response()?;
+        self.send_ctrl_locked(
+            &mut request_guard,
+            core::mem::size_of::<VirtioSndPcmCtrl>() as u32,
+            hdr_size,
+        )?;
 
         // 3. START
         unsafe {
@@ -276,17 +522,23 @@ impl VirtioSoundDevice {
             (*ctrl).hdr.code = cmd::START;
             (*ctrl).stream_id = 0;
         }
-        self.send_ctrl(core::mem::size_of::<VirtioSndPcmCtrl>() as u32, hdr_size)?;
-        self.check_response()?;
+        self.send_ctrl_locked(
+            &mut request_guard,
+            core::mem::size_of::<VirtioSndPcmCtrl>() as u32,
+            hdr_size,
+        )?;
 
-        self.stream_started = true;
+        self.stream_started.store(true, Ordering::Release);
         log::info!("VirtIO sound: Stream started (S16_LE, 44100 Hz, stereo)");
         Ok(())
     }
 
-    fn do_write_pcm(&mut self, data: &[u8]) -> Result<usize, &'static str> {
-        if !self.stream_started {
+    fn do_write_pcm(&self, data: &[u8]) -> Result<usize, &'static str> {
+        if !self.stream_started.load(Ordering::Acquire) {
             return Err("Stream not started");
+        }
+        if !self.irq_completion_available() {
+            return Err("Sound IRQ completion unavailable before interrupts are enabled");
         }
 
         let len = core::cmp::min(data.len(), 16384);
@@ -294,6 +546,8 @@ impl VirtioSoundDevice {
             return Ok(0);
         }
 
+        let mut request_guard = self.tx_gate.lock()?;
+        let completion_token = self.tx_completion.prepare_wait();
         let (xfer_phys, xfer_virt) = self.dma.tx_xfer;
         let (pcm_phys, pcm_virt) = self.dma.tx_pcm;
         let (status_phys, status_virt) = self.dma.tx_status;
@@ -333,32 +587,99 @@ impl VirtioSoundDevice {
             ),
         ];
 
-        self.tx_queue.add_chain(&buffers).ok_or("TX queue full")?;
+        {
+            let mut queue = self.tx_queue.lock();
+            if queue.add_chain(&buffers).is_none() {
+                self.tx_completion.clear();
+                return Err("TX queue full");
+            }
+        }
+
         fence(Ordering::SeqCst);
         self.device.notify_queue(2);
 
-        // Poll for completion
-        let mut timeout = 100_000u32;
-        while !self.tx_queue.has_used() && timeout > 0 {
-            for _ in 0..1000 {
-                core::hint::spin_loop();
-            }
-            let _ = self.device.read_isr();
-            timeout -= 1;
-        }
-        if timeout == 0 {
-            return Err("Sound TX timeout");
+        if let Err(e) = self.tx_completion.wait_for_completion(
+            completion_token,
+            "Sound TX timeout",
+            "Sound TX interrupted",
+        ) {
+            request_guard.keep_locked();
+            return Err(e);
         }
 
-        let (desc, _) = self.tx_queue.get_used().ok_or("No TX completion")?;
-        self.tx_queue.free_chain(desc);
+        let completed_desc = match self
+            .tx_completion
+            .take_completed_desc("Sound TX woke without completion")
+        {
+            Ok(desc) => desc,
+            Err(e) => {
+                self.tx_completion.clear();
+                return Err(e);
+            }
+        };
+
+        fence(Ordering::SeqCst);
+        let status = unsafe { core::ptr::read_volatile(status_virt as *const u32) };
+
+        {
+            let mut queue = self.tx_queue.lock();
+            queue.free_chain(completed_desc);
+        }
+
+        self.tx_completion.clear();
+        if status != resp::OK {
+            log::warn!("VirtIO sound: TX failed with code {:#x}", status);
+            return Err("Sound TX failed");
+        }
 
         Ok(len)
+    }
+
+    /// Handle interrupt from the PCI sound device.
+    ///
+    /// CRITICAL: This function must be extremely fast. No logging, no allocations.
+    pub fn handle_interrupt(&self) -> bool {
+        let isr = self.device.read_isr();
+        if isr == 0 {
+            return false;
+        }
+
+        self.drain_ctrl_completion();
+        self.drain_tx_completion();
+        true
+    }
+
+    fn drain_ctrl_completion(&self) {
+        if !self.ctrl_completion.has_pending() {
+            return;
+        }
+
+        let Some(mut queue) = self.ctrl_queue.try_lock() else {
+            return;
+        };
+
+        if let Some((completed_desc, _bytes)) = queue.get_used() {
+            self.ctrl_completion.complete_desc(completed_desc);
+        }
+    }
+
+    fn drain_tx_completion(&self) {
+        if !self.tx_completion.has_pending() {
+            return;
+        }
+
+        let Some(mut queue) = self.tx_queue.try_lock() else {
+            return;
+        };
+
+        if let Some((completed_desc, _bytes)) = queue.get_used() {
+            self.tx_completion.complete_desc(completed_desc);
+        }
     }
 }
 
 // Global sound device
-static SOUND_DEVICE: Mutex<Option<VirtioSoundDevice>> = Mutex::new(None);
+static SOUND_DEVICE: Mutex<Option<Arc<VirtioSoundDevice>>> = Mutex::new(None);
 
 /// Initialize the VirtIO sound driver
 pub fn init() -> Result<(), &'static str> {
@@ -371,23 +692,48 @@ pub fn init() -> Result<(), &'static str> {
     log::info!("VirtIO sound: Found {} device(s)", devices.len());
 
     let pci_dev = &devices[0];
-    let sound_dev = VirtioSoundDevice::new(pci_dev)?;
+    let sound_dev = Arc::new(VirtioSoundDevice::new(pci_dev)?);
     *SOUND_DEVICE.lock() = Some(sound_dev);
 
     log::info!("VirtIO sound: Driver initialized");
     Ok(())
 }
 
+/// Get a reference to the initialized sound device.
+fn get_device() -> Option<Arc<VirtioSoundDevice>> {
+    SOUND_DEVICE.lock().clone()
+}
+
+/// Dispatch a pending sound interrupt, if the device is initialized.
+pub fn handle_interrupt() -> bool {
+    let Some(device) = get_device() else {
+        return false;
+    };
+    device.handle_interrupt()
+}
+
+/// Return whether a PCI VirtIO sound device initialized successfully.
+pub fn is_initialized() -> bool {
+    get_device().is_some()
+}
+
+/// Exercise the control and TX queues once after interrupts are enabled.
+pub fn test_silence() -> Result<(), &'static str> {
+    log::info!("VirtIO sound test: setting up stream...");
+    setup_stream()?;
+    write_pcm(&SOUND_TEST_SILENCE)?;
+    log::info!("VirtIO sound test: silence write successful!");
+    Ok(())
+}
+
 /// Set up the PCM stream for playback
 pub fn setup_stream() -> Result<(), &'static str> {
-    let mut guard = SOUND_DEVICE.lock();
-    let dev = guard.as_mut().ok_or("Sound device not initialized")?;
+    let dev = get_device().ok_or("Sound device not initialized")?;
     dev.do_setup_stream()
 }
 
 /// Write PCM data to the sound device
 pub fn write_pcm(data: &[u8]) -> Result<usize, &'static str> {
-    let mut guard = SOUND_DEVICE.lock();
-    let dev = guard.as_mut().ok_or("Sound device not initialized")?;
+    let dev = get_device().ok_or("Sound device not initialized")?;
     dev.do_write_pcm(data)
 }

@@ -584,6 +584,7 @@ extern "x86-interrupt" fn irq10_handler(_stack_frame: InterruptStackFrame) {
     crate::per_cpu::irq_enter();
 
     dispatch_virtio_block_interrupts();
+    dispatch_virtio_sound_interrupts();
 
     // Dispatch to E1000 network if initialized
     crate::drivers::e1000::handle_interrupt();
@@ -607,6 +608,7 @@ extern "x86-interrupt" fn irq11_handler(_stack_frame: InterruptStackFrame) {
     crate::per_cpu::irq_enter();
 
     dispatch_virtio_block_interrupts();
+    dispatch_virtio_sound_interrupts();
 
     // Also check E1000 on IRQ 11 - some QEMU configurations route E1000 here
     crate::drivers::e1000::handle_interrupt();
@@ -632,6 +634,11 @@ fn dispatch_virtio_block_interrupts() {
         };
         device.handle_interrupt();
     }
+}
+
+#[inline]
+fn dispatch_virtio_sound_interrupts() {
+    crate::drivers::virtio::sound::handle_interrupt();
 }
 
 extern "x86-interrupt" fn divide_by_zero_handler(stack_frame: InterruptStackFrame) {

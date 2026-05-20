@@ -71,13 +71,19 @@ pub fn run_post_init_self_tests() {
     log::info!("Running driver post-init self-tests...");
 
     // PIC initialization remaps/masks IRQs, so enable the VirtIO legacy INTx
-    // lines after PIC setup and after the block driver exists. QEMU routes
-    // the boot virtio-blk disk on IRQ11 and additional virtio-blk disks on IRQ10.
+    // lines after PIC setup and after the drivers exist. QEMU routes the boot
+    // virtio-blk disk on IRQ11 and additional VirtIO devices on IRQ10/IRQ11.
     crate::interrupts::enable_irq10();
     crate::interrupts::enable_virtio_irq();
 
     if let Err(e) = virtio::block::test_read() {
         log::warn!("VirtIO block test failed: {}", e);
+    }
+
+    if virtio::sound::is_initialized() {
+        if let Err(e) = virtio::sound::test_silence() {
+            log::warn!("VirtIO sound test failed: {}", e);
+        }
     }
 }
 
