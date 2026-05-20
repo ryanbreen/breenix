@@ -505,18 +505,6 @@ pub fn trace_wait_completion_exit(cmd_type: u32, resource_id: u32, path: u8, ok:
     );
 }
 
-#[inline]
-pub fn freeze_watch_snapshot() -> (u64, u64, u64, u64, u64, u64) {
-    (
-        VIRTGPU_SUBMIT_TOTAL.aggregate(),
-        VIRTGPU_COMPLETE_TOTAL.aggregate(),
-        VIRTGPU_FAIL_TOTAL.aggregate(),
-        VIRTGPU_LAST_COMPLETION_MS.load(Ordering::Relaxed),
-        VIRTGPU_R2_FLUSH_OK.aggregate(),
-        VIRTGPU_WAIT_TIMEOUT_COUNT.aggregate(),
-    )
-}
-
 #[inline(always)]
 fn now_ms() -> u64 {
     let (secs, nanos) = crate::time::get_monotonic_time_ns();
