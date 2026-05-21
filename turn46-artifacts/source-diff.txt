@@ -1,0 +1,12 @@
+diff --git a/kernel/src/drivers/virtio/gpu_mmio.rs b/kernel/src/drivers/virtio/gpu_mmio.rs
+index 31fb169f..b0a68a63 100644
+--- a/kernel/src/drivers/virtio/gpu_mmio.rs
++++ b/kernel/src/drivers/virtio/gpu_mmio.rs
+@@ -511,6 +511,7 @@ fn init_device(device: &mut VirtioMmioDevice, base: u64, _slot: u32) -> Result<(
+     attach_backing()?;
+     set_scanout()?;
+     flush()?;
++    record_mmio_irq_state(base, _slot);
+ 
+     crate::serial_println!("[virtio-gpu] GPU device initialized successfully");
+     Ok(())

@@ -1,0 +1,21 @@
+406:!!! CPU0 REGRESSION ALARM !!!
+407:CPU0 tick_count = 65, max peer = 30000
+413:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+417:!!! CPU0 REGRESSION ALARM !!!
+418:CPU0 tick_count = 65, max peer = 30000
+424:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+428:!!! CPU0 REGRESSION ALARM !!!
+429:CPU0 tick_count = 65, max peer = 30000
+435:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+439:!!! CPU0 REGRESSION ALARM !!!
+440:CPU0 tick_count = 65, max peer = 30000
+446:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+450:!!! CPU0 REGRESSION ALARM !!!
+451:CPU0 tick_count = 65, max peer = 30000
+457:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+461:!!! CPU0 REGRESSION ALARM !!!
+462:CPU0 tick_count = 65, max peer = 30000
+468:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+472:!!! CPU0 REGRESSION ALARM !!!
+473:CPU0 tick_count = 65, max peer = 30000
+479:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
