@@ -7,6 +7,7 @@ use super::mmio::{
     device_id, VirtioMmioDevice, VIRTIO_MMIO_BASE, VIRTIO_MMIO_COUNT, VIRTIO_MMIO_SIZE,
 };
 use core::ptr::read_volatile;
+use core::sync::atomic::{AtomicU16, AtomicU32, AtomicU64};
 use core::sync::atomic::{fence, Ordering};
 use spin::Mutex;
 
@@ -239,6 +240,20 @@ const FB_SIZE: usize = (FB_MAX_WIDTH * FB_MAX_HEIGHT * 4) as usize;
 const BYTES_PER_PIXEL: usize = 4;
 const RESOURCE_ID: u32 = 1;
 
+// T39 bisect: dead statics intentionally added to measure whether even
+// pure BSS additions to gpu_mmio.rs perturb the Parallels CPU0 guard.
+// These will be referenced by future P9 turns (T40+) and are NOT
+// permanent dead code — they're a bisect probe.
+#[allow(dead_code)]
+static MMIO_SLOT: AtomicU32 = AtomicU32::new(u32::MAX);
+#[allow(dead_code)]
+static MMIO_BASE: AtomicU64 = AtomicU64::new(0);
+#[allow(dead_code)]
+static GPU_MMIO_IRQ_COUNT: AtomicU32 = AtomicU32::new(0);
+#[allow(dead_code)]
+static GPU_MMIO_USED_IDX_ADVANCED: AtomicU32 = AtomicU32::new(0);
+#[allow(dead_code)]
+static GPU_MMIO_LAST_USED_IDX: AtomicU16 = AtomicU16::new(0);
 /// Requested resolution from fw_cfg (set during init, before GPU probe)
 static mut REQUESTED_WIDTH: u32 = 0;
 static mut REQUESTED_HEIGHT: u32 = 0;
