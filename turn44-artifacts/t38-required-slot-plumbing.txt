@@ -1,0 +1,11 @@
+37:+    let slot = MMIO_SLOT.load(Ordering::Acquire);
+38:+    if slot == MMIO_SLOT_UNINITIALIZED {
+41:+        Some(VIRTIO_IRQ_BASE + slot)
+54:+fn record_mmio_irq_state(base: u64, slot: u32) {
+63:+    MMIO_SLOT.store(slot, Ordering::Release);
+106:-                return init_device(&mut device, base);
+107:+                return init_device(&mut device, base, i as u32);
+115:-fn init_device(device: &mut VirtioMmioDevice, base: u64) -> Result<(), &'static str> {
+116:+fn init_device(device: &mut VirtioMmioDevice, base: u64, slot: u32) -> Result<(), &'static str> {
+120:@@ -418,6 +490,8 @@ fn init_device(device: &mut VirtioMmioDevice, base: u64) -> Result<(), &'static
+124:+    record_mmio_irq_state(base, slot);

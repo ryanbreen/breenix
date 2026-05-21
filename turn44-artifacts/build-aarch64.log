@@ -1,0 +1,9 @@
+   Compiling kernel v0.1.0 (/Users/wrb/fun/code/breenix/kernel)
+error[E0425]: cannot find value `slot` in this scope
+   --> kernel/src/drivers/virtio/gpu_mmio.rs:514:33
+    |
+514 |     record_mmio_irq_state(base, slot);
+    |                                 ^^^^ not found in this scope
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `kernel` (lib) due to 1 previous error
