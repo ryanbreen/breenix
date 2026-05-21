@@ -821,6 +821,9 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
         // ============================================================
         let (start, freq) = read_cntpct_and_freq();
         let deadline = start + freq * AHCI_TIMEOUT_SECS;
+        // P12-Site-2 allowlist: AHCI analog of P18 early-boot fallback.
+        // Runtime uses Completion::wait_timeout(); this runs pre-scheduler.
+        // Cap: AHCI_TIMEOUT_SECS CNTPCT deadline; see docs/polling-allowlist.md.
         loop {
             let ci = port_read(abar, port, PORT_CI);
             if (ci & 1) == 0 {
