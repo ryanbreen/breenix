@@ -964,6 +964,14 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             let expected = 1 + launched; // boot CPU + launched
             let start = timer::rdtsc();
             let timeout_ticks = timer::frequency_hz() / 10; // 100ms timeout
+            // SMP secondary CPU bring-up wait: boot CPU spins until all
+            // released secondary CPUs increment cpus_online. Bounded CPU-
+            // management handshake (NOT event polling) — no IRQ available
+            // for "CPU online" because GIC isn't fully wired across CPUs
+            // until each is up. Linux uses wait_for_completion_timeout()
+            // in __cpu_up() for the equivalent transition. Bounded by the
+            // explicit timeout check inside the loop. Allowlisted per
+            // docs/polling-allowlist.md.
             while kernel::arch_impl::aarch64::smp::cpus_online() < expected {
                 if timer::rdtsc() - start > timeout_ticks {
                     serial_println!(
