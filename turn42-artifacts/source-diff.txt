@@ -1,0 +1,23 @@
+diff --git a/kernel/src/drivers/virtio/gpu_mmio.rs b/kernel/src/drivers/virtio/gpu_mmio.rs
+index de14818a..4eb5be47 100644
+--- a/kernel/src/drivers/virtio/gpu_mmio.rs
++++ b/kernel/src/drivers/virtio/gpu_mmio.rs
+@@ -304,6 +304,18 @@ pub fn handle_interrupt() {
+         GPU_MMIO_USED_IDX_ADVANCED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+     }
+ }
++// T42 bisect: last simple reader probe — pure tuple-load of the 3 counters.
++// Public so it would be readable from a non-IRQ-context observer in future
++// turns, but NOT called from anywhere in this turn's binary. allow(dead_code)
++// is legitimate per CLAUDE.md (bisect probe pending T43+ wiring).
++#[allow(dead_code)]
++pub fn snapshot_counters() -> (u32, u32, u16) {
++    (
++        GPU_MMIO_IRQ_COUNT.load(core::sync::atomic::Ordering::Relaxed),
++        GPU_MMIO_USED_IDX_ADVANCED.load(core::sync::atomic::Ordering::Relaxed),
++        GPU_MMIO_LAST_USED_IDX.load(core::sync::atomic::Ordering::Relaxed),
++    )
++}
+ /// Requested resolution from fw_cfg (set during init, before GPU probe)
+ static mut REQUESTED_WIDTH: u32 = 0;
+ static mut REQUESTED_HEIGHT: u32 = 0;
