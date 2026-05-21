@@ -1,0 +1,1 @@
+{"baseRefName":"main","headRefName":"investigation/polling-elimination-linux-gate","number":349,"state":"OPEN","title":"polling: eliminate polling in IO + CPU mgmt paths (Phase 1 — ALLOWLIST + SHIPPED)","url":"https://github.com/ryanbreen/breenix/pull/349"}

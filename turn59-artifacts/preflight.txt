@@ -1,0 +1,18 @@
+=== branch ===
+investigation/polling-elimination-linux-gate
+=== recent commits ===
+e6c66313 docs(polling): turn 58 PR description draft for Option C (hybrid)
+3ab1d379 docs(polling): turn 57 polling-elimination gate RETROSPECTIVE
+f78f81fc docs(polling): P12 AHCI Site 7 ISR PORT_IS/PORT_CI drain loop ALLOWLISTED
+397dd3f1 docs(polling): P12 AHCI Site 2 early-boot PORT_CI fallback ALLOWLISTED (P18 analog)
+65051f93 docs(polling): P12 AHCI engine + taskfile bounded register handshakes ALLOWLISTED (Sites 3, 4, 5)
+1e7f5ed1 docs(polling): turn 53 P12 AHCI polling sites SURVEY
+fb66d0dc docs(polling): P17 SMP secondary CPU online wait ALLOWLISTED
+086b7164 docs(polling): P18 Completion::wait_timeout() early-boot fallback ALLOWLISTED
+=== status ===
+ M turn5-artifacts/build-aarch64.log
+ M turn5-artifacts/build-efi.log
+ M turn5-artifacts/build-x86.log
+=== draft file ===
+-rw-r--r-- 1 wrb staff 11785 May 20 23:19 turn58-artifacts/pr-description.md
+     199 turn58-artifacts/pr-description.md
