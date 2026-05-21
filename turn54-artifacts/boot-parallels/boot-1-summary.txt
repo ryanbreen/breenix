@@ -1,0 +1,5 @@
+max_heartbeat=118241
+max_cpu0_ticks=70000
+cpu0_regression_scan_bytes=0
+ping_loss=0.0% packet loss
+ahci_ext2=[ext2] Found ext2 superblock on AHCI device 1

@@ -1072,6 +1072,9 @@ impl AhciController {
         cmd &= !PORT_CMD_ST;
         port_write(abar, port, PORT_CMD, cmd);
 
+        // P12 allowlist: bounded AHCI engine register handshake.
+        // Linux: ahci_stop_engine() uses ata_wait_register() in libahci.c.
+        // Cap: 1,000,000 iterations; applies to CR/FR engine waits here.
         // Wait for CR (Command List Running) to clear
         for _ in 0..1_000_000 {
             if (port_read(abar, port, PORT_CMD) & PORT_CMD_CR) == 0 {
@@ -1118,6 +1121,9 @@ impl AhciController {
     /// Wait for port to be not busy.
     fn wait_ready(&self, port: usize) -> Result<(), &'static str> {
         let abar = self.abar_virt;
+        // P12 allowlist: bounded ATA taskfile readiness handshake.
+        // Linux: ata_wait_after_reset()/ata_wait_ready() in libata-core.c.
+        // Cap: 1,000,000 iterations before reporting port busy timeout.
         for _ in 0..1_000_000 {
             let tfd = port_read(abar, port, PORT_TFD);
             if (tfd & (PORT_TFD_BSY | PORT_TFD_DRQ)) == 0 {
@@ -2122,6 +2128,9 @@ fn probe_platform_irq(ctrl: &AhciController) {
     // Ensure the port is clean before probing.
     ack_port_interrupt(abar, port_num, 0xFFFF_FFFF);
 
+    // P12 allowlist: bounded ATA taskfile readiness handshake.
+    // Linux: ata_wait_after_reset()/ata_wait_ready() in libata-core.c.
+    // Cap: 100,000 iterations during platform IRQ probe.
     // Wait for port ready.
     for _ in 0..100_000 {
         let tfd = port_read(abar, port_num, PORT_TFD);

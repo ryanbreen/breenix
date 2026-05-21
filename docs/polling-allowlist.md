@@ -60,3 +60,15 @@ This document formalizes the **Linux-rigor polling-elimination gate** for cases 
 - **Bounded:** Explicit timeout check inside the loop exits with a `[smp] Timeout waiting for CPUs ...` message after a bounded wall-clock interval.
 - **Frequency:** Once at boot, after PSCI CPU_ON broadcast.
 - **Status:** ALLOWLISTED — not subject to polling-elimination conversion.
+
+## P12: AHCI engine + taskfile bounded register handshakes (Sites 3, 4, 5)
+
+- **File:** `kernel/src/drivers/ahci/mod.rs:1075-1106` (Site 3: `PORT_CMD.CR` / `PORT_CMD.FR` command-engine state handshakes in `stop_cmd()` / `start_cmd()`)
+- **File:** `kernel/src/drivers/ahci/mod.rs:1119-1128` (Site 4: `wait_ready()` taskfile `BSY` / `DRQ` readiness handshake)
+- **File:** `kernel/src/drivers/ahci/mod.rs:2125-2132` (Site 5: platform IRQ probe taskfile `BSY` / `DRQ` readiness handshake)
+- **Loop:** Bounded `for` loops polling AHCI/ATA register state bits with `core::hint::spin_loop()` as the `cpu_relax` equivalent.
+- **Justification:** These are hardware register-state handshakes required by AHCI/ATA sequencing, not event polling for future completions. The command engine must report `CR`/`FR` clear during stop/start transitions, and the taskfile must report `BSY`/`DRQ` clear before command issue/probe. There is no scheduler-backed alternative during AHCI engine reset, initialization, and platform probe paths.
+- **Linux precedent:** `drivers/ata/libahci.c::ahci_stop_engine()` clears the AHCI engine start bit and uses `ata_wait_register()` for the equivalent command-engine state transition. `drivers/ata/libata-core.c::ata_wait_after_reset()` and `ata_wait_ready()` perform bounded ATA device/taskfile readiness waits. See `turn53-artifacts/p12-ahci-classification.md` for the full classification and Linux reference notes.
+- **Bounded:** Site 3 and Site 4 cap at 1,000,000 iterations per wait. Site 5 caps at 100,000 iterations.
+- **Frequency:** Boot/init and platform IRQ probing; Site 4 can also run before runtime command issue as a required device readiness handshake.
+- **Status:** ALLOWLISTED — first P12 batch; not subject to polling-elimination conversion.
