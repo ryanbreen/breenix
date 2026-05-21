@@ -410,7 +410,7 @@ pub fn init() -> Result<(), &'static str> {
         if let Some(mut device) = VirtioMmioDevice::probe(base) {
             if device.device_id() == device_id::GPU {
                 crate::serial_println!("[virtio-gpu] Found GPU device at {:#x}", base);
-                return init_device(&mut device, base);
+                return init_device(&mut device, base, i as u32);
             }
         }
     }
@@ -418,7 +418,7 @@ pub fn init() -> Result<(), &'static str> {
     Err("No VirtIO GPU device found")
 }
 
-fn init_device(device: &mut VirtioMmioDevice, base: u64) -> Result<(), &'static str> {
+fn init_device(device: &mut VirtioMmioDevice, base: u64, _slot: u32) -> Result<(), &'static str> {
     let version = device.version();
     crate::serial_println!("[virtio-gpu] Device version: {}", version);
 
