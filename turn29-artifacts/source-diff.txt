@@ -1,0 +1,100 @@
+diff --git a/kernel/src/net/mod.rs b/kernel/src/net/mod.rs
+index 6eae3c01..c13d7549 100644
+--- a/kernel/src/net/mod.rs
++++ b/kernel/src/net/mod.rs
+@@ -357,7 +357,7 @@ fn init_common() {
+ 
+     net_log!("Network stack initialized");
+ 
+-    // Send ARP request for gateway to test network connectivity
++    // Prime gateway ARP resolution without blocking init on the reply.
+     let gateway = gw;
+     net_log!(
+         "NET: Sending ARP request for gateway {}.{}.{}.{}",
+@@ -368,45 +368,25 @@ fn init_common() {
+     );
+     if let Err(e) = arp::request(&gateway) {
+         net_log!("NET: Failed to send ARP request: {}", e);
+-        return;
+-    }
+-    net_log!("ARP request sent successfully");
+-
+-    // Wait for ARP reply (poll RX a few times to get the gateway MAC)
+-    // The reply comes via interrupt, so we just need to give it time to arrive
+-    for _i in 0..100 {
+-        process_rx();
+-        // Delay to let packets arrive and timer-based polling process them
+-        for _ in 0..1_000_000 {
+-            core::hint::spin_loop();
+-        }
+-        // Diagnostic: dump RX queue state on first few iterations
+-        #[cfg(target_arch = "aarch64")]
+-        if _i < 5 || _i % 20 == 0 {
+-            net_pci::dump_rx_state();
+-        }
+-        // Check if we got the ARP reply yet
+-        if let Some(gateway_mac) = arp::lookup(&gateway) {
+-            net_log!(
+-                "NET: ARP resolved gateway MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+-                gateway_mac[0],
+-                gateway_mac[1],
+-                gateway_mac[2],
+-                gateway_mac[3],
+-                gateway_mac[4],
+-                gateway_mac[5]
+-            );
+-            break;
+-        }
++    } else {
++        net_log!("ARP request sent successfully");
+     }
+ 
+-    // Check if ARP resolved the gateway
+-    if arp::lookup(&gateway).is_none() {
+-        net_log!("NET: Gateway ARP not resolved, skipping ping test");
+-        return;
++    if let Some(gateway_mac) = arp::lookup(&gateway) {
++        net_log!(
++            "NET: ARP resolved gateway MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
++            gateway_mac[0],
++            gateway_mac[1],
++            gateway_mac[2],
++            gateway_mac[3],
++            gateway_mac[4],
++            gateway_mac[5]
++        );
++    } else {
++        net_log!("NET: Gateway ARP not resolved during init; will resolve via IRQ path");
+     }
+ 
+-    // Send ICMP echo request (ping) to gateway
++    // Attempt an ICMP probe; do not gate IRQ enable on probe success.
+     net_log!(
+         "NET: Sending ICMP echo request to gateway {}.{}.{}.{}",
+         gateway[0],
+@@ -416,23 +396,12 @@ fn init_common() {
+     );
+     if let Err(e) = ping(gateway) {
+         net_log!("NET: Failed to send ping: {}", e);
+-        return;
+-    }
+-
+-    // Poll for the ping reply (just process RX to handle incoming packets)
+-    for _ in 0..20 {
+-        process_rx();
+-        // Delay to let packets arrive and interrupts fire
+-        for _ in 0..500000 {
+-            core::hint::spin_loop();
+-        }
+     }
+ 
+     net_log!("NET: Network initialization complete");
+ 
+-    // Enable network device interrupt now that init polling is done.
+-    // This must happen AFTER the synchronous ARP/ICMP polling loop so
+-    // interrupt-driven RX doesn't interfere with the polling.
++    // Enable network device interrupt even if init-time ARP/ICMP probes have
++    // not resolved yet; replies are handled through IRQ -> NetRx softirq.
+     #[cfg(target_arch = "aarch64")]
+     {
+         if net_pci::is_initialized() {

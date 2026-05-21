@@ -1,0 +1,22 @@
+=== Building Breenix Parallels UEFI Loader ===
+    Finished `release` profile [optimized] target(s) in 0.02s
+Loader built: /Users/wrb/fun/code/breenix/target/aarch64-unknown-uefi/release/parallels-loader.efi (80896 bytes)
+=== Building Breenix ARM64 Kernel ===
+    Finished `release` profile [optimized] target(s) in 0.04s
+Kernel built: /Users/wrb/fun/code/breenix/target/aarch64-breenix/release/kernel-aarch64 (2491240 bytes)
+=== Creating EFI System Partition ===
+Kernel ELF copied to ESP at EFI/BREENIX/KERNEL
+=== Creating GPT Disk Image ===
+Files copied to FAT32 image via mtools
+
+=== Build Complete ===
+EFI disk image: /Users/wrb/fun/code/breenix/target/parallels/breenix-efi.img
+ESP directory:  /Users/wrb/fun/code/breenix/target/parallels/esp
+
+To test with QEMU:
+  qemu-system-aarch64 -M virt -cpu cortex-a72 -m 512M \
+    -drive if=pflash,format=raw,file=QEMU_EFI.fd,readonly=on \
+    -drive format=raw,file=/Users/wrb/fun/code/breenix/target/parallels/breenix-efi.img
+
+To deploy to Parallels:
+  ./scripts/parallels/deploy-to-vm.sh

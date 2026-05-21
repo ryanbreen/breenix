@@ -1,0 +1,240 @@
+kernel/src/arch_impl/aarch64/context.rs-227-        // boot stack between the user thread's IRQ handling and the idle
+kernel/src/arch_impl/aarch64/context.rs-228-        // thread, leading to stack corruption and crashes (e.g., x19=0 in
+kernel/src/arch_impl/aarch64/context.rs:229:        // handle_irq after timer_interrupt_handler returns).
+kernel/src/arch_impl/aarch64/context.rs-230-        //
+kernel/src/arch_impl/aarch64/context.rs-231-        // Per-CPU layout: tpidr_el1 + 16 = kernel_stack_top
+kernel/src/arch_impl/aarch64/context.rs-232-        "mrs x0, tpidr_el1",
+kernel/src/arch_impl/aarch64/context.rs-233-        "cbz x0, 1f",
+kernel/src/arch_impl/aarch64/context.rs-234-        "ldr x0, [x0, #16]",
+--
+kernel/src/arch_impl/aarch64/mod.rs-27-pub mod syscall_entry;
+kernel/src/arch_impl/aarch64/mod.rs-28-pub mod timer;
+kernel/src/arch_impl/aarch64/mod.rs:29:pub mod timer_interrupt;
+kernel/src/arch_impl/aarch64/mod.rs-30-pub mod trace;
+kernel/src/arch_impl/aarch64/mod.rs-31-
+kernel/src/arch_impl/aarch64/mod.rs-32-// Re-export commonly used items
+kernel/src/arch_impl/aarch64/mod.rs-33-// These re-exports are part of the complete HAL API
+kernel/src/arch_impl/aarch64/mod.rs-34-#[allow(unused_imports)]
+--
+kernel/src/arch_impl/aarch64/exception.rs-1198-        // Timer interrupt — virtual (PPI 27) or physical (PPI 30)
+kernel/src/arch_impl/aarch64/exception.rs-1199-        // This is the scheduling timer - calls into scheduler
+kernel/src/arch_impl/aarch64/exception.rs:1200:        irq if irq == crate::arch_impl::aarch64::timer_interrupt::timer_irq() => {
+kernel/src/arch_impl/aarch64/exception.rs-1201-            // Call the timer interrupt handler which handles:
+kernel/src/arch_impl/aarch64/exception.rs-1202-            // - Re-arming the timer
+kernel/src/arch_impl/aarch64/exception.rs-1203-            // - Updating global time
+kernel/src/arch_impl/aarch64/exception.rs-1204-            // - Decrementing time quantum
+kernel/src/arch_impl/aarch64/exception.rs-1205-            // - Setting need_resched flag
+kernel/src/arch_impl/aarch64/exception.rs:1206:            crate::arch_impl::aarch64::timer_interrupt::timer_interrupt_handler(frame);
+kernel/src/arch_impl/aarch64/exception.rs-1207-        }
+kernel/src/arch_impl/aarch64/exception.rs-1208-
+kernel/src/arch_impl/aarch64/exception.rs-1209-        // UART0 receive interrupt (SPI 1 = IRQ 33)
+kernel/src/arch_impl/aarch64/exception.rs-1210-        UART0_IRQ => {
+kernel/src/arch_impl/aarch64/exception.rs-1211-            handle_uart_interrupt();
+--
+kernel/src/arch_impl/aarch64/exception.rs-1223-                // proves the CPU CAN receive interrupts, so re-arming the
+kernel/src/arch_impl/aarch64/exception.rs-1224-                // timer here should make PPI 27 deliverable again.
+kernel/src/arch_impl/aarch64/exception.rs:1225:                crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
+kernel/src/arch_impl/aarch64/exception.rs-1226-            }
+kernel/src/arch_impl/aarch64/exception.rs-1227-        }
+kernel/src/arch_impl/aarch64/exception.rs-1228-
+kernel/src/arch_impl/aarch64/exception.rs-1229-        // PPIs (16-31) - Private peripheral interrupts (excluding timer)
+kernel/src/arch_impl/aarch64/exception.rs-1230-        // On VMware, we enable both virtual (27) and physical (30) timers
+kernel/src/arch_impl/aarch64/exception.rs-1231-        // to discover which fires. Handle either as a timer interrupt.
+kernel/src/arch_impl/aarch64/exception.rs-1232-        irq @ 16..=31 => {
+kernel/src/arch_impl/aarch64/exception.rs:1233:            if irq == crate::arch_impl::aarch64::timer_interrupt::VIRT_TIMER_IRQ
+kernel/src/arch_impl/aarch64/exception.rs:1234:                || irq == crate::arch_impl::aarch64::timer_interrupt::PHYS_TIMER_IRQ
+kernel/src/arch_impl/aarch64/exception.rs-1235-            {
+kernel/src/arch_impl/aarch64/exception.rs:1236:                crate::arch_impl::aarch64::timer_interrupt::timer_interrupt_handler(frame);
+kernel/src/arch_impl/aarch64/exception.rs-1237-            }
+kernel/src/arch_impl/aarch64/exception.rs-1238-            // Diagnostic: emit raw serial for any unexpected PPI
+kernel/src/arch_impl/aarch64/exception.rs:1239:            if irq != crate::arch_impl::aarch64::timer_interrupt::timer_irq()
+kernel/src/arch_impl/aarch64/exception.rs:1240:                && irq != crate::arch_impl::aarch64::timer_interrupt::VIRT_TIMER_IRQ
+kernel/src/arch_impl/aarch64/exception.rs:1241:                && irq != crate::arch_impl::aarch64::timer_interrupt::PHYS_TIMER_IRQ
+kernel/src/arch_impl/aarch64/exception.rs-1242-            {
+kernel/src/arch_impl/aarch64/exception.rs-1243-                crate::serial_aarch64::raw_serial_char(b'P');
+kernel/src/arch_impl/aarch64/exception.rs-1244-                crate::serial_aarch64::raw_serial_char(b'0' + (irq / 10) as u8);
+kernel/src/arch_impl/aarch64/exception.rs-1245-                crate::serial_aarch64::raw_serial_char(b'0' + (irq % 10) as u8);
+kernel/src/arch_impl/aarch64/exception.rs-1246-            }
+--
+kernel/src/arch_impl/aarch64/exception.rs-1414-    //
+kernel/src/arch_impl/aarch64/exception.rs-1415-    // The flow is:
+kernel/src/arch_impl/aarch64/exception.rs:1416:    // 1. Timer IRQ fires -> timer_interrupt_handler() sets need_resched
+kernel/src/arch_impl/aarch64/exception.rs-1417-    // 2. IRQ handler returns
+kernel/src/arch_impl/aarch64/exception.rs-1418-    // 3. Assembly exception return path calls check_need_resched_and_switch_arm64
+kernel/src/arch_impl/aarch64/exception.rs-1419-    // 4. Context switch happens if needed
+kernel/src/arch_impl/aarch64/exception.rs-1420-    // 5. ERET returns to new thread
+kernel/src/arch_impl/aarch64/exception.rs-1421-}
+--
+kernel/src/arch_impl/aarch64/smp.rs-332-
+kernel/src/arch_impl/aarch64/smp.rs-333-    // Initialize timer for this CPU (arm virtual timer, enable PPI 27)
+kernel/src/arch_impl/aarch64/smp.rs:334:    super::timer_interrupt::init_secondary();
+kernel/src/arch_impl/aarch64/smp.rs-335-
+kernel/src/arch_impl/aarch64/smp.rs-336-    // Create and register this CPU's idle thread with the scheduler.
+kernel/src/arch_impl/aarch64/smp.rs-337-    // This must happen before enabling interrupts — the scheduler needs
+kernel/src/arch_impl/aarch64/smp.rs-338-    // an idle thread for this CPU before timer interrupts fire.
+kernel/src/arch_impl/aarch64/smp.rs-339-    create_and_register_idle_thread(cpu_id as usize);
+--
+kernel/src/arch_impl/aarch64/timer_interrupt.rs-11-//! 1. Timer fires (IRQ 27 = virtual timer PPI)
+kernel/src/arch_impl/aarch64/timer_interrupt.rs-12-//! 2. GIC routes interrupt to handle_irq()
+kernel/src/arch_impl/aarch64/timer_interrupt.rs:13://! 3. handle_irq() calls timer_interrupt_handler()
+kernel/src/arch_impl/aarch64/timer_interrupt.rs-14-//! 4. Handler updates time, checks quantum, sets need_resched
+kernel/src/arch_impl/aarch64/timer_interrupt.rs-15-//! 5. On exception return, check need_resched and perform context switch if needed
+kernel/src/arch_impl/aarch64/timer_interrupt.rs-16-
+kernel/src/arch_impl/aarch64/timer_interrupt.rs-17-use crate::task::scheduler;
+kernel/src/arch_impl/aarch64/timer_interrupt.rs-18-use super::exception_frame::Aarch64ExceptionFrame;
+--
+kernel/src/arch_impl/aarch64/timer_interrupt.rs-466-/// 5. CPU 0 only: sets need_resched if quantum expired (Phase 2: only CPU 0 schedules)
+kernel/src/arch_impl/aarch64/timer_interrupt.rs-467-#[no_mangle]
+kernel/src/arch_impl/aarch64/timer_interrupt.rs:468:pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
+kernel/src/arch_impl/aarch64/timer_interrupt.rs-469-    let resume_irq_kind = if frame.is_null() {
+kernel/src/arch_impl/aarch64/timer_interrupt.rs-470-        None
+kernel/src/arch_impl/aarch64/timer_interrupt.rs-471-    } else {
+kernel/src/arch_impl/aarch64/timer_interrupt.rs-472-        crate::arch_impl::aarch64::context_switch::classify_kernel_resume_irq_elr(
+kernel/src/arch_impl/aarch64/timer_interrupt.rs-473-            unsafe { &*frame }.elr,
+--
+kernel/src/arch_impl/aarch64/timer_interrupt.rs-734-    // CPU 0 only: update global wall clock time (single atomic operation)
+kernel/src/arch_impl/aarch64/timer_interrupt.rs-735-    if cpu_id == 0 {
+kernel/src/arch_impl/aarch64/timer_interrupt.rs:736:        crate::time::timer_interrupt();
+kernel/src/arch_impl/aarch64/timer_interrupt.rs-737-    }
+kernel/src/arch_impl/aarch64/timer_interrupt.rs-738-
+kernel/src/arch_impl/aarch64/timer_interrupt.rs-739-    // Trace timer tick (lock-free counter + optional event recording)
+kernel/src/arch_impl/aarch64/timer_interrupt.rs-740-    trace_timer_tick(crate::time::get_ticks());
+kernel/src/arch_impl/aarch64/timer_interrupt.rs-741-
+--
+kernel/src/arch_impl/aarch64/syscall_entry.rs-891-    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+kernel/src/arch_impl/aarch64/syscall_entry.rs-892-    if cpu_id == 0 {
+kernel/src/arch_impl/aarch64/syscall_entry.rs:893:        crate::arch_impl::aarch64::timer_interrupt::CPU0_BREADCRUMB_ID
+kernel/src/arch_impl/aarch64/syscall_entry.rs-894-            .store(50, core::sync::atomic::Ordering::Relaxed);
+kernel/src/arch_impl/aarch64/syscall_entry.rs-895-        let ctl: u64;
+kernel/src/arch_impl/aarch64/syscall_entry.rs-896-        unsafe {
+kernel/src/arch_impl/aarch64/syscall_entry.rs-897-            core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) ctl, options(nomem, nostack));
+kernel/src/arch_impl/aarch64/syscall_entry.rs-898-        }
+kernel/src/arch_impl/aarch64/syscall_entry.rs:899:        crate::arch_impl::aarch64::timer_interrupt::CPU0_BREADCRUMB_CTL
+kernel/src/arch_impl/aarch64/syscall_entry.rs-900-            .store(ctl, core::sync::atomic::Ordering::Relaxed);
+kernel/src/arch_impl/aarch64/syscall_entry.rs-901-    }
+kernel/src/arch_impl/aarch64/syscall_entry.rs-902-    crate::serial_aarch64::raw_serial_char(b'F'); // Fork entry
+kernel/src/arch_impl/aarch64/syscall_entry.rs-903-
+kernel/src/arch_impl/aarch64/syscall_entry.rs-904-    // Read SP_EL0 (user stack pointer) which isn't in the exception frame
+--
+kernel/src/arch_impl/aarch64/syscall_entry.rs-986-                crate::serial_aarch64::raw_serial_char(b'C'); // Child created
+kernel/src/arch_impl/aarch64/syscall_entry.rs-987-                if cpu_id == 0 {
+kernel/src/arch_impl/aarch64/syscall_entry.rs:988:                    crate::arch_impl::aarch64::timer_interrupt::CPU0_BREADCRUMB_ID
+kernel/src/arch_impl/aarch64/syscall_entry.rs-989-                        .store(51, core::sync::atomic::Ordering::Relaxed);
+kernel/src/arch_impl/aarch64/syscall_entry.rs-990-                    let ctl: u64;
+kernel/src/arch_impl/aarch64/syscall_entry.rs-991-                    unsafe {
+kernel/src/arch_impl/aarch64/syscall_entry.rs-992-                        core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) ctl, options(nomem, nostack));
+kernel/src/arch_impl/aarch64/syscall_entry.rs-993-                    }
+kernel/src/arch_impl/aarch64/syscall_entry.rs:994:                    crate::arch_impl::aarch64::timer_interrupt::CPU0_BREADCRUMB_CTL
+kernel/src/arch_impl/aarch64/syscall_entry.rs-995-                        .store(ctl, core::sync::atomic::Ordering::Relaxed);
+kernel/src/arch_impl/aarch64/syscall_entry.rs-996-                }
+kernel/src/arch_impl/aarch64/syscall_entry.rs-997-                child_pid.as_u64()
+kernel/src/arch_impl/aarch64/syscall_entry.rs-998-            } else {
+kernel/src/arch_impl/aarch64/syscall_entry.rs-999-                (-12_i64) as u64 // -ENOMEM
+--
+kernel/src/arch_impl/aarch64/context_switch.rs-2158-        //   5. Obtain PR signoff from the project owner.
+kernel/src/arch_impl/aarch64/context_switch.rs-2159-        //
+kernel/src/arch_impl/aarch64/context_switch.rs:2160:        // The boot-time regression alarm in timer_interrupt.rs (panics if
+kernel/src/arch_impl/aarch64/context_switch.rs-2161-        // CPU0 tick_count < 10% of max peer at 30s) will catch you if any
+kernel/src/arch_impl/aarch64/context_switch.rs-2162-        // change to this region reintroduces the loop.
+kernel/src/arch_impl/aarch64/context_switch.rs-2163-        //
+kernel/src/arch_impl/aarch64/context_switch.rs-2164-        // DO NOT REMOVE OR RELAX THIS COMMENT BLOCK.
+kernel/src/arch_impl/aarch64/context_switch.rs-2165-        // ═══════════════════════════════════════════════════════════════════
+--
+kernel/src/arch_impl/aarch64/context_switch.rs-2633-        }
+kernel/src/arch_impl/aarch64/context_switch.rs-2634-        drop(guard);
+kernel/src/arch_impl/aarch64/context_switch.rs:2635:        crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
+kernel/src/arch_impl/aarch64/context_switch.rs:2636:        crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
+kernel/src/arch_impl/aarch64/context_switch.rs-2637-        unsafe {
+kernel/src/arch_impl/aarch64/context_switch.rs-2638-            aarch64_ret_to_kernel_context(ctx_ptr, resume_pc);
+kernel/src/arch_impl/aarch64/context_switch.rs-2639-        }
+kernel/src/arch_impl/aarch64/context_switch.rs-2640-    }
+kernel/src/arch_impl/aarch64/context_switch.rs-2641-
+--
+kernel/src/arch_impl/aarch64/context_switch.rs-2704-        Aarch64PerCpu::set_preempt_active();
+kernel/src/arch_impl/aarch64/context_switch.rs-2705-    }
+kernel/src/arch_impl/aarch64/context_switch.rs:2706:    crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
+kernel/src/arch_impl/aarch64/context_switch.rs-2707-
+kernel/src/arch_impl/aarch64/context_switch.rs-2708-    cpu0_breadcrumb(cpu_id, 106); // before function return
+kernel/src/arch_impl/aarch64/context_switch.rs-2709-    cpu0_breadcrumb(cpu_id, 14); // return
+kernel/src/arch_impl/aarch64/context_switch.rs-2710-    if let Some(trace_tid) = trace_eret_tid {
+kernel/src/arch_impl/aarch64/context_switch.rs-2711-        trace_resched_tail(TRACE_RESCHED_TAIL_BEFORE_RETURN, trace_tid);
+--
+kernel/src/arch_impl/aarch64/context_switch.rs-2757-            Aarch64PerCpu::clear_preempt_active();
+kernel/src/arch_impl/aarch64/context_switch.rs-2758-        }
+kernel/src/arch_impl/aarch64/context_switch.rs:2759:        crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
+kernel/src/arch_impl/aarch64/context_switch.rs:2760:        if crate::arch_impl::aarch64::timer_interrupt::is_initialized() {
+kernel/src/arch_impl/aarch64/context_switch.rs:2761:            crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
+kernel/src/arch_impl/aarch64/context_switch.rs-2762-        }
+kernel/src/arch_impl/aarch64/context_switch.rs-2763-
+kernel/src/arch_impl/aarch64/context_switch.rs-2764-        inline_schedule_breadcrumb(cpu_id, INLINE_BC_IDLE_RET_BRANCH, 1);
+kernel/src/arch_impl/aarch64/context_switch.rs-2765-        let idle_addr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
+kernel/src/arch_impl/aarch64/context_switch.rs-2766-        unsafe {
+--
+kernel/src/arch_impl/aarch64/context_switch.rs-2851-        }
+kernel/src/arch_impl/aarch64/context_switch.rs-2852-
+kernel/src/arch_impl/aarch64/context_switch.rs:2853:        crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
+kernel/src/arch_impl/aarch64/context_switch.rs:2854:        crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
+kernel/src/arch_impl/aarch64/context_switch.rs-2855-
+kernel/src/arch_impl/aarch64/context_switch.rs-2856-        cpu0_breadcrumb(cpu_id, 36); // before aarch64_ret_to_kernel_context
+kernel/src/arch_impl/aarch64/context_switch.rs-2857-        unsafe {
+kernel/src/arch_impl/aarch64/context_switch.rs-2858-            aarch64_ret_to_kernel_context(ctx_ptr, resume_pc);
+kernel/src/arch_impl/aarch64/context_switch.rs-2859-        }
+--
+kernel/src/arch_impl/aarch64/context_switch.rs-2919-    // Capture what CPU 0 is dispatching via ERET and where it's going
+kernel/src/arch_impl/aarch64/context_switch.rs-2920-    if cpu_id == 0 {
+kernel/src/arch_impl/aarch64/context_switch.rs:2921:        use crate::arch_impl::aarch64::timer_interrupt::{
+kernel/src/arch_impl/aarch64/context_switch.rs-2922-            CPU0_DISPATCH_TID, CPU0_DISPATCH_ELR, CPU0_DISPATCH_SPSR,
+kernel/src/arch_impl/aarch64/context_switch.rs-2923-        };
+kernel/src/arch_impl/aarch64/context_switch.rs-2924-        CPU0_DISPATCH_TID.store(new_id, Ordering::Relaxed);
+kernel/src/arch_impl/aarch64/context_switch.rs-2925-        CPU0_DISPATCH_ELR.store(frame.elr, Ordering::Relaxed);
+kernel/src/arch_impl/aarch64/context_switch.rs-2926-        CPU0_DISPATCH_SPSR.store(frame.spsr, Ordering::Relaxed);
+kernel/src/arch_impl/aarch64/context_switch.rs-2927-    }
+kernel/src/arch_impl/aarch64/context_switch.rs-2928-
+kernel/src/arch_impl/aarch64/context_switch.rs:2929:    crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
+kernel/src/arch_impl/aarch64/context_switch.rs-2930-
+kernel/src/arch_impl/aarch64/context_switch.rs-2931-    if is_idle {
+kernel/src/arch_impl/aarch64/context_switch.rs-2932-        // ret-based dispatch for idle — avoids ERET which kills HVF vtimer on Parallels.
+kernel/src/arch_impl/aarch64/context_switch.rs-2933-        // setup_idle_return_locked already set kernel_stack_top and current_thread_ptr.
+kernel/src/arch_impl/aarch64/context_switch.rs-2934-        // We just set SP to the idle stack, enable IRQs, and branch directly.
+--
+kernel/src/arch_impl/aarch64/context_switch.rs-2961-fn cpu0_breadcrumb(cpu_id: usize, id: u64) {
+kernel/src/arch_impl/aarch64/context_switch.rs-2962-    if cpu_id == 0 {
+kernel/src/arch_impl/aarch64/context_switch.rs:2963:        super::timer_interrupt::CPU0_BREADCRUMB_ID.store(id, Ordering::Relaxed);
+kernel/src/arch_impl/aarch64/context_switch.rs-2964-        let ctl: u64;
+kernel/src/arch_impl/aarch64/context_switch.rs-2965-        unsafe {
+kernel/src/arch_impl/aarch64/context_switch.rs-2966-            core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) ctl, options(nomem, nostack));
+kernel/src/arch_impl/aarch64/context_switch.rs-2967-        }
+kernel/src/arch_impl/aarch64/context_switch.rs:2968:        super::timer_interrupt::CPU0_BREADCRUMB_CTL.store(ctl, Ordering::Relaxed);
+kernel/src/arch_impl/aarch64/context_switch.rs-2969-    }
+kernel/src/arch_impl/aarch64/context_switch.rs-2970-}
+kernel/src/arch_impl/aarch64/context_switch.rs-2971-
+kernel/src/arch_impl/aarch64/context_switch.rs-2972-pub fn schedule_from_kernel() {
+kernel/src/arch_impl/aarch64/context_switch.rs-2973-    crate::task::process_task::drain_deferred_fault_sigsegv_exits();
+--
+kernel/src/arch_impl/aarch64/context_switch.rs-3026-        // bug), re-arming here gives the VMM another chance on the next
+kernel/src/arch_impl/aarch64/context_switch.rs-3027-        // interrupt or WFI.
+kernel/src/arch_impl/aarch64/context_switch.rs:3028:        if crate::arch_impl::aarch64::timer_interrupt::is_initialized() {
+kernel/src/arch_impl/aarch64/context_switch.rs:3029:            crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
+kernel/src/arch_impl/aarch64/context_switch.rs-3030-        }
+kernel/src/arch_impl/aarch64/context_switch.rs-3031-        return;
+kernel/src/arch_impl/aarch64/context_switch.rs-3032-    };
+kernel/src/arch_impl/aarch64/context_switch.rs-3033-
+kernel/src/arch_impl/aarch64/context_switch.rs-3034-    if old_id == new_id {
+--
+kernel/src/arch_impl/aarch64/context_switch.rs-3390-//     docs/planning/cpu0-user-guard-autopsy/README.md)
+kernel/src/arch_impl/aarch64/context_switch.rs-3391-//
+kernel/src/arch_impl/aarch64/context_switch.rs:3392:// The regression alarm in timer_interrupt.rs fires if CPU0 tick_count
+kernel/src/arch_impl/aarch64/context_switch.rs-3393-// diverges from peer CPUs at 30s uptime.
+kernel/src/arch_impl/aarch64/context_switch.rs-3394-// ═══════════════════════════════════════════════════════════════════════════
+kernel/src/arch_impl/aarch64/context_switch.rs-3395-pub extern "C" fn idle_loop_arm64() -> ! {
+kernel/src/arch_impl/aarch64/context_switch.rs-3396-    // Get CPU ID once (cheap MRS).
+kernel/src/arch_impl/aarch64/context_switch.rs-3397-    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+--
+kernel/src/arch_impl/aarch64/context_switch.rs-3408-        // Diagnostic: track idle loop iterations per CPU.
+kernel/src/arch_impl/aarch64/context_switch.rs-3409-        if cpu_id < 8 {
+kernel/src/arch_impl/aarch64/context_switch.rs:3410:            crate::arch_impl::aarch64::timer_interrupt::IDLE_LOOP_COUNT[cpu_id]
+kernel/src/arch_impl/aarch64/context_switch.rs-3411-                .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+kernel/src/arch_impl/aarch64/context_switch.rs-3412-        }
+kernel/src/arch_impl/aarch64/context_switch.rs-3413-
+kernel/src/arch_impl/aarch64/context_switch.rs-3414-        // CPU 0 diagnostic: read GIC CPU interface + timer registers BEFORE
+kernel/src/arch_impl/aarch64/context_switch.rs-3415-        // enabling IRQs, so we see the state that prevents interrupt delivery.

@@ -1,0 +1,33 @@
+diff --git a/docs/polling-allowlist.md b/docs/polling-allowlist.md
+index 99ad94c4..d7b5bb03 100644
+--- a/docs/polling-allowlist.md
++++ b/docs/polling-allowlist.md
+@@ -40,3 +40,13 @@ This document formalizes the **Linux-rigor polling-elimination gate** for cases
+ - **Frequency:** Once per CPU at boot (`init_gicv3_redistributor` is called per-CPU).
+ - **Status:** ALLOWLISTED — not subject to polling-elimination conversion.
+ - **Note:** Location is in a Tier-2 file (`gic.rs`). The inline comment is placed BEFORE the GICR_WAKER spin, OUTSIDE the gold-master SGI enable block (which is later in the same function at the `GICR_ISENABLER0` write). Gold-master constraint preserved.
++
++## P18: Completion::wait_timeout() early-boot polling fallback
++
++- **File:** `kernel/src/task/completion.rs:415-446+` (the `else` branch in `Completion::wait_timeout()` taken when `current_thread_id()` returns `None`)
++- **Loop:** Bounded spin on `self.done.load(Acquire) == 0`, exits on `done` set OR CNTPCT deadline exceeded.
++- **Justification:** Used ONLY in early boot before the scheduler exists. The IRQ-driven wait-queue path requires `current_thread_id()` to return a thread to park; early boot has no such thread. Linux's equivalent: kernel pre-scheduler-init phase uses `mdelay()`/`udelay()`-style busy-spin for similar handshakes (e.g., serial port readiness, ACPI events) — there is no architectural alternative until threads exist.
++- **Linux precedent:** Linux completions (`wait_for_completion_timeout()`) require the scheduler. Pre-scheduler boot phase in Linux uses bounded busy-wait primitives. Breenix's fallback is the same pattern.
++- **Bounded:** CNTPCT deadline (matching the interrupt-path's deadline). The caller passes `timeout_ns` which sets the upper bound — typically milliseconds to seconds at most.
++- **Frequency:** Limited to early boot (before scheduler is up). Once Breenix's scheduler initializes, `current_thread_id()` returns `Some(tid)` and the IRQ-driven path is taken.
++- **Status:** ALLOWLISTED — not subject to polling-elimination conversion. Architecturally necessary fallback for pre-scheduler boot.
+diff --git a/kernel/src/task/completion.rs b/kernel/src/task/completion.rs
+index b9d3598c..311ad154 100644
+--- a/kernel/src/task/completion.rs
++++ b/kernel/src/task/completion.rs
+@@ -415,6 +415,10 @@ impl Completion {
+         } else {
+             // Early boot polling path — no scheduler, spin on done flag.
+             // Uses the same CNTPCT deadline as the interrupt path.
++            // Bounded fallback for pre-scheduler boot phase (NOT event polling).
++            // Linux equivalent: pre-scheduler-init busy-spin primitives like
++            // mdelay() — completions require the scheduler, but early boot has
++            // no thread to park. Allowlisted per docs/polling-allowlist.md.
+             #[cfg(target_arch = "aarch64")]
+             {
+                 let cnt: u64;

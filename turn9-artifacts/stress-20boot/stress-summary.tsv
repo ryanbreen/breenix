@@ -1,0 +1,1 @@
+1 run_status=0 status=fail reason=failures=12;xhci_msi_irq=0/0;input_evidence=no activity=yes cpu=6 msi=0 irq=0 stale=0/0/0 data_abort=0 pid1=yes xhci_kbd=0 usb_hid_nonzero=0 virtio_input=0/0/0 ehci=0/0/0/0 input=yes evidence=no

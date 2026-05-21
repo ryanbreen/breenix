@@ -1,0 +1,47 @@
+diff --git a/kernel/src/drivers/virtio/gpu_mmio.rs b/kernel/src/drivers/virtio/gpu_mmio.rs
+index 5298f737..de14818a 100644
+--- a/kernel/src/drivers/virtio/gpu_mmio.rs
++++ b/kernel/src/drivers/virtio/gpu_mmio.rs
+@@ -268,6 +268,42 @@ pub fn get_irq() -> Option<u32> {
+         Some(48 + slot)
+     }
+ }
++// T41 bisect: heaviest function probe — volatile MMIO read/ack/used.idx read
++// + atomic CAS. Body matches T38's handle_interrupt() verbatim to test
++// whether THIS specific function body (not just any function) trips the
++// Parallels CPU0 guard. NOT wired into exception.rs dispatch — pure dead
++// code in this turn's binary. allow(dead_code) is legitimate per CLAUDE.md
++// because this is a bisect probe pending T42+ wiring decisions.
++#[allow(dead_code)]
++pub fn handle_interrupt() {
++    let base = MMIO_BASE.load(core::sync::atomic::Ordering::Acquire);
++    if base == 0 {
++        return;
++    }
++
++    let interrupt_status = unsafe { read_volatile((base + 0x60) as *const u32) };
++    if interrupt_status == 0 {
++        return;
++    }
++
++    GPU_MMIO_IRQ_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
++
++    unsafe {
++        core::ptr::write_volatile((base + 0x64) as *mut u32, interrupt_status);
++    }
++    crate::arch_impl::aarch64::cpu::dsb_sy();
++    fence(core::sync::atomic::Ordering::SeqCst);
++
++    let used_idx = unsafe {
++        let ptr = &raw const CTRL_QUEUE;
++        read_volatile(&(*ptr).used.idx)
++    };
++    let previous = GPU_MMIO_LAST_USED_IDX.load(core::sync::atomic::Ordering::Acquire);
++    if used_idx != previous {
++        GPU_MMIO_LAST_USED_IDX.store(used_idx, core::sync::atomic::Ordering::Release);
++        GPU_MMIO_USED_IDX_ADVANCED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
++    }
++}
+ /// Requested resolution from fw_cfg (set during init, before GPU probe)
+ static mut REQUESTED_WIDTH: u32 = 0;
+ static mut REQUESTED_HEIGHT: u32 = 0;

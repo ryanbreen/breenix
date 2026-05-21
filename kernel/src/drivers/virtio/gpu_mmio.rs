@@ -7,6 +7,7 @@ use super::mmio::{
     device_id, VirtioMmioDevice, VIRTIO_MMIO_BASE, VIRTIO_MMIO_COUNT, VIRTIO_MMIO_SIZE,
 };
 use core::ptr::read_volatile;
+use core::sync::atomic::{AtomicU16, AtomicU32, AtomicU64};
 use core::sync::atomic::{fence, Ordering};
 use spin::Mutex;
 
@@ -239,6 +240,99 @@ const FB_SIZE: usize = (FB_MAX_WIDTH * FB_MAX_HEIGHT * 4) as usize;
 const BYTES_PER_PIXEL: usize = 4;
 const RESOURCE_ID: u32 = 1;
 
+// T39 bisect: dead statics intentionally added to measure whether even
+// pure BSS additions to gpu_mmio.rs perturb the Parallels CPU0 guard.
+// These will be referenced by future P9 turns (T40+) and are NOT
+// permanent dead code — they're a bisect probe.
+#[allow(dead_code)]
+static MMIO_SLOT: AtomicU32 = AtomicU32::new(u32::MAX);
+#[allow(dead_code)]
+static MMIO_BASE: AtomicU64 = AtomicU64::new(0);
+#[allow(dead_code)]
+static GPU_MMIO_IRQ_COUNT: AtomicU32 = AtomicU32::new(0);
+#[allow(dead_code)]
+static GPU_MMIO_USED_IDX_ADVANCED: AtomicU32 = AtomicU32::new(0);
+#[allow(dead_code)]
+static GPU_MMIO_LAST_USED_IDX: AtomicU16 = AtomicU16::new(0);
+// T40 bisect: minimal function probe — pure read of MMIO_SLOT.
+// Public so it would be callable from exception.rs dispatch in a future
+// turn, but NOT called from anywhere in this turn's binary. Per CLAUDE.md
+// zero-warnings rule, allow(dead_code) is legitimate because this is a
+// bisect probe pending T41+ wiring.
+#[allow(dead_code)]
+pub fn get_irq() -> Option<u32> {
+    let slot = MMIO_SLOT.load(core::sync::atomic::Ordering::Acquire);
+    if slot == u32::MAX {
+        None
+    } else {
+        Some(48 + slot)
+    }
+}
+// T41 bisect: heaviest function probe — volatile MMIO read/ack/used.idx read
+// + atomic CAS. Body matches T38's handle_interrupt() verbatim to test
+// whether THIS specific function body (not just any function) trips the
+// Parallels CPU0 guard. NOT wired into exception.rs dispatch — pure dead
+// code in this turn's binary. allow(dead_code) is legitimate per CLAUDE.md
+// because this is a bisect probe pending T42+ wiring decisions.
+#[allow(dead_code)]
+pub fn handle_interrupt() {
+    let base = MMIO_BASE.load(core::sync::atomic::Ordering::Acquire);
+    if base == 0 {
+        return;
+    }
+
+    let interrupt_status = unsafe { read_volatile((base + 0x60) as *const u32) };
+    if interrupt_status == 0 {
+        return;
+    }
+
+    GPU_MMIO_IRQ_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+
+    unsafe {
+        core::ptr::write_volatile((base + 0x64) as *mut u32, interrupt_status);
+    }
+    crate::arch_impl::aarch64::cpu::dsb_sy();
+    fence(core::sync::atomic::Ordering::SeqCst);
+
+    let used_idx = unsafe {
+        let ptr = &raw const CTRL_QUEUE;
+        read_volatile(&(*ptr).used.idx)
+    };
+    let previous = GPU_MMIO_LAST_USED_IDX.load(core::sync::atomic::Ordering::Acquire);
+    if used_idx != previous {
+        GPU_MMIO_LAST_USED_IDX.store(used_idx, core::sync::atomic::Ordering::Release);
+        GPU_MMIO_USED_IDX_ADVANCED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
+}
+// T42 bisect: last simple reader probe — pure tuple-load of the 3 counters.
+// Public so it would be readable from a non-IRQ-context observer in future
+// turns, but NOT called from anywhere in this turn's binary. allow(dead_code)
+// is legitimate per CLAUDE.md (bisect probe pending T43+ wiring).
+#[allow(dead_code)]
+pub fn snapshot_counters() -> (u32, u32, u16) {
+    (
+        GPU_MMIO_IRQ_COUNT.load(core::sync::atomic::Ordering::Relaxed),
+        GPU_MMIO_USED_IDX_ADVANCED.load(core::sync::atomic::Ordering::Relaxed),
+        GPU_MMIO_LAST_USED_IDX.load(core::sync::atomic::Ordering::Relaxed),
+    )
+}
+// T43 bisect: function body verbatim from T38's preserved diff. UNCALLED
+// (no invocation from init_device or anywhere else). Tests whether the body
+// alone trips Parallels CPU0, isolating it from the init-time call site
+// hypothesis tested in T44. allow(dead_code) is legitimate per CLAUDE.md
+// — this is a bisect probe pending T44 wiring decision.
+#[allow(dead_code)]
+fn record_mmio_irq_state(base: u64, slot: u32) {
+    let virt_base = crate::memory::physical_memory_offset().as_u64() + base;
+    let used_idx = unsafe {
+        let ptr = &raw const CTRL_QUEUE;
+        read_volatile(&(*ptr).used.idx)
+    };
+
+    GPU_MMIO_LAST_USED_IDX.store(used_idx, core::sync::atomic::Ordering::Release);
+    MMIO_BASE.store(virt_base, core::sync::atomic::Ordering::Release);
+    MMIO_SLOT.store(slot, core::sync::atomic::Ordering::Release);
+}
 /// Requested resolution from fw_cfg (set during init, before GPU probe)
 static mut REQUESTED_WIDTH: u32 = 0;
 static mut REQUESTED_HEIGHT: u32 = 0;
@@ -316,7 +410,7 @@ pub fn init() -> Result<(), &'static str> {
         if let Some(mut device) = VirtioMmioDevice::probe(base) {
             if device.device_id() == device_id::GPU {
                 crate::serial_println!("[virtio-gpu] Found GPU device at {:#x}", base);
-                return init_device(&mut device, base);
+                return init_device(&mut device, base, i as u32);
             }
         }
     }
@@ -324,7 +418,7 @@ pub fn init() -> Result<(), &'static str> {
     Err("No VirtIO GPU device found")
 }
 
-fn init_device(device: &mut VirtioMmioDevice, base: u64) -> Result<(), &'static str> {
+fn init_device(device: &mut VirtioMmioDevice, base: u64, _slot: u32) -> Result<(), &'static str> {
     let version = device.version();
     crate::serial_println!("[virtio-gpu] Device version: {}", version);
 

@@ -1,0 +1,63 @@
+347:T6[spawn] path='/bin/heartbeat'
+348:manager.create_process_with_argv [ARM64]: ENTRY - name='heartbeat', elf_size=290128, argc=1
+359:[heartbeat] tid=11 uptime_ms=1204
+361:[heartbeat] tid=11 uptime_ms=2205
+362:[heartbeat] tid=11 uptime_ms=3206
+363:[heartbeat] tid=11 uptime_ms=4206
+364:[heartbeat] tid=11 uptime_ms=5206
+365:[heartbeat] tid=11 uptime_ms=6207
+366:[heartbeat] tid=11 uptime_ms=7207
+367:[heartbeat] tid=11 uptime_ms=8208
+368:[heartbeat] tid=11 uptime_ms=9208
+369:[heartbeat] tid=11 uptime_ms=10208
+370:[heartbeat] tid=11 uptime_ms=11211
+371:[heartbeat] tid=11 uptime_ms=12212
+372:[heartbeat] tid=11 uptime_ms=13213
+373:[heartbeat] tid=11 uptime_ms=14214
+374:[heartbeat] tid=11 uptime_ms=15214
+375:[heartbeat] tid=11 uptime_ms=16214
+376:[heartbeat] tid=11 uptime_ms=17214
+377:[heartbeat] tid=11 uptime_ms=18215
+378:[heartbeat] tid=11 uptime_ms=19215
+379:[heartbeat] tid=11 uptime_ms=20215
+380:[heartbeat] tid=11 uptime_ms=21216
+381:[heartbeat] tid=11 uptime_ms=22217
+382:[heartbeat] tid=11 uptime_ms=23217
+383:[heartbeat] tid=11 uptime_ms=24218
+384:[heartbeat] tid=11 uptime_ms=25218
+385:[heartbeat] tid=11 uptime_ms=26218
+386:[heartbeat] tid=11 uptime_ms=27218
+387:[heartbeat] tid=11 uptime_ms=28219
+388:[heartbeat] tid=11 uptime_ms=29219
+389:[heartbeat] tid=11 uptime_ms=30220
+390:[heartbeat] tid=11 uptime_ms=31220
+391:[heartbeat] tid=11 uptime_ms=32221
+392:[heartbeat] tid=11 uptime_ms=33222
+393:[heartbeat] tid=11 uptime_ms=34223
+394:[heartbeat] tid=11 uptime_ms=35224
+395:[heartbeat] tid=11 uptime_ms=36224
+396:[heartbeat] tid=11 uptime_ms=37224
+397:[heartbeat] tid=11 uptime_ms=38225
+399:!!! CPU0 REGRESSION ALARM !!!
+400:CPU0 tick_count = 70, max peer = 30000
+404:  KERNEL PANIC!
+406:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+410:!!! CPU0 REGRESSION ALARM !!!
+411:CPU0 tick_count = 70, max peer = 30000
+415:  KERNEL PANIC!
+417:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+426:  KERNEL PANIC!
+428:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+432:!!! CPU0 REGRESSION ALARM !!!
+433:CPU0 tick_count = 70, max peer = 30000
+437:  KERNEL PANIC!
+439:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+448:  KERNEL PANIC!
+450:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+455:CPU0 tick_count = 70, max peer = 30000
+459:  KERNEL PANIC!
+461:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+465:!!! CPU0 REGRESSION ALARM !!!
+466:CPU0 tick_count = 70, max peer = 30000
+470:  KERNEL PANIC!
+472:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:

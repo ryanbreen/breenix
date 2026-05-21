@@ -28,8 +28,11 @@
 
 #![cfg(target_arch = "aarch64")]
 
+use alloc::sync::Arc;
 use core::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::Mutex;
+
+use crate::task::completion::Completion;
 
 use super::descriptors::{
     class_code, descriptor_type, hid_protocol, hid_request, request, ConfigDescriptor,
@@ -85,13 +88,6 @@ const INHERIT_UEFI: bool = false;
 /// StopEndpoint + Set TR Dequeue Pointer before queueing the first Normal TRB.
 /// This tests whether the xHC accepts the transfer ring address when set via
 /// command (read from the command ring, which is proven to work) rather than
-/// Deferred TRB queue: poll count at which to first queue interrupt TRBs.
-/// 0 = queue immediately during init (current behavior).
-/// 400 = defer to poll=400 (~2s after timer starts, matching Linux's msleep(2000)).
-/// When > 0, start_hid_polling() is NOT called during init; instead,
-/// poll_hid_events checks this value and queues TRBs on the first matching poll.
-const DEFERRED_TRB_POLL: u64 = 0;
-
 /// Post-enumeration delay in milliseconds before first doorbell ring.
 /// The Linux kernel module has msleep(2000) between ConfigureEndpoint and
 /// the first interrupt TRB doorbell. This gives the Parallels virtual xHC
@@ -354,6 +350,7 @@ pub static KBD_GET_REPORT_OK: AtomicU64 = AtomicU64::new(0);
 // =============================================================================
 
 /// XHCI controller state, populated during initialization.
+#[derive(Clone, Copy)]
 struct XhciState {
     /// HHDM virtual address of BAR0 (retained for runtime register access if needed)
     #[allow(dead_code)]
@@ -406,14 +403,28 @@ static XHCI_INITIALIZED: AtomicBool = AtomicBool::new(false);
 /// can disable the SPI to prevent storms during enumeration.
 static XHCI_IRQ: AtomicU32 = AtomicU32::new(0);
 
+const XHCI_COMPLETION_TOKEN: u32 = 1;
+const XHCI_COMPLETION_TIMEOUT_NS: u64 = 5_000_000_000;
+
+/// Serializes xHCI command ring submissions while the issuing thread sleeps for
+/// the IRQ-side Command Completion event.
+static XHCI_COMMAND_LOCK: Mutex<()> = Mutex::new(());
+
+static XHCI_COMMAND_COMPLETION: Completion = Completion::new();
+static XHCI_COMMAND_WAITING: AtomicBool = AtomicBool::new(false);
+static XHCI_COMMAND_PARAM: AtomicU64 = AtomicU64::new(0);
+static XHCI_COMMAND_STATUS: AtomicU32 = AtomicU32::new(0);
+static XHCI_COMMAND_CONTROL: AtomicU32 = AtomicU32::new(0);
+
+static XHCI_TRANSFER_COMPLETION: Completion = Completion::new();
+static XHCI_TRANSFER_WAITING: AtomicBool = AtomicBool::new(false);
+static XHCI_TRANSFER_WAIT_KEY: AtomicU32 = AtomicU32::new(0);
+static XHCI_TRANSFER_PARAM: AtomicU64 = AtomicU64::new(0);
+static XHCI_TRANSFER_STATUS: AtomicU32 = AtomicU32::new(0);
+static XHCI_TRANSFER_CONTROL: AtomicU32 = AtomicU32::new(0);
+
 /// Diagnostic counters for heartbeat visibility.
 pub static POLL_COUNT: AtomicU64 = AtomicU64::new(0);
-/// Whether start_hid_polling has been called.
-///
-/// With DEFERRED_TRB_POLL=0, init() calls start_hid_polling() before the GIC
-/// SPI is enabled; the current SPI activation path runs later in
-/// poll_hid_events() at poll >= 50.
-static HID_POLLING_STARTED: AtomicBool = AtomicBool::new(false);
 pub static EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static KBD_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Counts transfer events from NKRO keyboard endpoint (DCI 5).
@@ -433,14 +444,6 @@ pub static XO_ERR_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static PSC_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Counts events processed via MSI interrupt handler (handle_interrupt).
 pub static MSI_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
-
-/// Flags set by wait_for_command_completion() when timer-side recovery consumes
-/// transfer events while waiting for recovery commands.
-/// The next timer poll requeues the corresponding HID endpoint after recovery.
-static MSI_KBD_NEEDS_REQUEUE: AtomicBool = AtomicBool::new(false);
-static MSI_MOUSE_NEEDS_REQUEUE: AtomicBool = AtomicBool::new(false);
-static MSI_NKRO_NEEDS_REQUEUE: AtomicBool = AtomicBool::new(false);
-static MSI_MOUSE2_NEEDS_REQUEUE: AtomicBool = AtomicBool::new(false);
 
 /// Sentinel diagnostic: counts reports where the sentinel byte (0xDE) was NOT overwritten by DMA.
 pub static DMA_SENTINEL_SURVIVED: AtomicU64 = AtomicU64::new(0);
@@ -469,8 +472,9 @@ pub static DIAG_KBD_PORTSC: AtomicU32 = AtomicU32::new(0);
 pub static DIAG_KBD_EP_STATE: AtomicU32 = AtomicU32::new(0);
 /// Periodic diagnostic: SPI enable count (how many times SPI was re-enabled).
 pub static DIAG_SPI_ENABLE_COUNT: AtomicU64 = AtomicU64::new(0);
-/// Set once after the first deferred SPI activation; handle_interrupt
-/// keeps SPI alive after that, so poll_hid_events doesn't re-enable.
+/// Set once after the system-ready SPI activation; handle_interrupt keeps SPI
+/// alive after that. Early command waits may transiently enable/disable the SPI
+/// without setting this flag.
 pub static SPI_ACTIVATED: AtomicBool = AtomicBool::new(false);
 /// Diagnostic counter for doorbell/transfer events (shown as `db=` in heartbeat).
 pub static DIAG_DOORBELL_EP_STATE: AtomicU32 = AtomicU32::new(0);
@@ -491,57 +495,28 @@ pub static DIAG_FIRST_XFER_STATUS: AtomicU32 = AtomicU32::new(0);
 /// Diagnostic: Full control DW of the first Transfer Event.
 pub static DIAG_FIRST_XFER_CONTROL: AtomicU32 = AtomicU32::new(0);
 
-/// Flags set when Transfer Events arrive with non-CC=12 error completion codes
-/// (e.g., CC=4 USB_TRANSACTION_ERROR, CC=6 STALL_ERROR). These error codes halt
-/// the endpoint; poll_hid_events issues Reset Endpoint + Set TR Dequeue Pointer.
-/// CC=12 (Endpoint Not Enabled) is handled separately: just re-queue the TRB.
-static NEEDS_RESET_KBD_BOOT: AtomicBool = AtomicBool::new(false);
-static NEEDS_RESET_KBD_NKRO: AtomicBool = AtomicBool::new(false);
-static NEEDS_RESET_MOUSE: AtomicBool = AtomicBool::new(false);
-static NEEDS_RESET_MOUSE2: AtomicBool = AtomicBool::new(false);
+/// Endpoint recovery work pending bits. These suppress duplicate work items while
+/// the single system worker performs Reset Endpoint + Set TR Dequeue Pointer.
+static RECOVERY_KBD_BOOT_PENDING: AtomicBool = AtomicBool::new(false);
+static RECOVERY_KBD_NKRO_PENDING: AtomicBool = AtomicBool::new(false);
+static RECOVERY_MOUSE_PENDING: AtomicBool = AtomicBool::new(false);
+static RECOVERY_MOUSE2_PENDING: AtomicBool = AtomicBool::new(false);
 /// Diagnostic: counts successful endpoint resets.
 pub static ENDPOINT_RESET_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Diagnostic: counts failed endpoint reset attempts.
 pub static ENDPOINT_RESET_FAIL_COUNT: AtomicU64 = AtomicU64::new(0);
-/// Minimum poll ticks between consecutive resets of the same endpoint.
-/// At 200Hz, 20 ticks = 100ms. Prevents the CC=12 reset storm from burning
-/// 200 command ring entries per second when no keys are pressed.
-const RESET_INTERVAL_TICKS: u64 = 20;
-/// Poll tick of the last successful reset for each HID endpoint (for rate limiting).
-static KBD_BOOT_RESET_POLL: AtomicU64 = AtomicU64::new(0);
-static KBD_NKRO_RESET_POLL: AtomicU64 = AtomicU64::new(0);
-static MOUSE_RESET_POLL: AtomicU64 = AtomicU64::new(0);
-static MOUSE2_RESET_POLL: AtomicU64 = AtomicU64::new(0);
 /// Diagnostic: endpoint output context state immediately after first error CC (0xFF = not seen).
 /// Packed: slot<<16 | dci<<8 | state_bits[2:0]. State: 0=Disabled, 1=Running, 3=Halted, 4=Error.
 pub static DIAG_EP_STATE_AFTER_CC12: AtomicU32 = AtomicU32::new(0xFF);
 /// Diagnostic: endpoint output context state after NEC quirk + SetTRDeq reset (0xFF = not seen).
 /// Packed: slot<<16 | dci<<8 | state_bits[2:0]. Should be 1=Running if reset worked.
 pub static DIAG_EP_STATE_AFTER_RESET: AtomicU32 = AtomicU32::new(0xFF);
-/// Diagnostic: raw EP context DWORDs at first CC=12 event (captured once).
-/// DW0: EP State[2:0], Mult[9:8], MaxPStreams[14:10], Interval[23:16], MaxESITHi[31:24]
-/// DW1: CErr[2:1], EPType[5:3], MaxBurst[15:8], MaxPacketSize[31:16]
-/// DW2-3: TR Dequeue Pointer (64-bit) with DCS[0]
-/// DW4: AvgTRBLen[15:0], MaxESITLo[31:16]
-static DIAG_CC12_EP_DW0: AtomicU32 = AtomicU32::new(0xDEAD);
-static DIAG_CC12_EP_DW1: AtomicU32 = AtomicU32::new(0xDEAD);
-static DIAG_CC12_EP_DW2: AtomicU32 = AtomicU32::new(0xDEAD);
-static DIAG_CC12_EP_DW3: AtomicU32 = AtomicU32::new(0xDEAD);
-static DIAG_CC12_EP_DW4: AtomicU32 = AtomicU32::new(0xDEAD);
-/// Diagnostic: Slot Context DW0 at first CC=12 (Context Entries in bits 31:27).
-static DIAG_CC12_SLOT_DW0: AtomicU32 = AtomicU32::new(0xDEAD);
-/// Diagnostic: Slot Context DW3 at first CC=12 (Slot State in bits 31:27, USB Addr in 7:0).
-static DIAG_CC12_SLOT_DW3: AtomicU32 = AtomicU32::new(0xDEAD);
-/// Diagnostic: DCBAA entry for the slot at first CC=12 (physical address of device context).
-static DIAG_CC12_DCBAA: AtomicU64 = AtomicU64::new(0xDEAD);
 /// Diagnostic: MFINDEX register value (microframe index) for timing analysis.
 pub static DIAG_MFINDEX: AtomicU32 = AtomicU32::new(0);
-/// Diagnostic: counts Transfer Events silently consumed during enumeration
-/// by wait_for_event_inner (command_only mode) and control_transfer (non-EP0 skip).
+/// Diagnostic: counts Transfer Events consumed during enumeration.
 pub static CONSUMED_XFER_DURING_ENUM: AtomicU64 = AtomicU64::new(0);
 /// Diagnostic: source of first queue_hid_transfer call.
-/// 0=unset, 1=inline init, 2=deferred poll=300, 3=reset_halted_endpoint,
-/// 4=MSI requeue, 5=CC=SUCCESS requeue, 6=poll CC=SUCCESS requeue
+/// 0=unset, 1=inline init, 3=reset_halted_endpoint, 5=CC=SUCCESS requeue.
 pub static DIAG_FIRST_QUEUE_SOURCE: AtomicU32 = AtomicU32::new(0);
 /// Diagnostic: EP output context state BEFORE first doorbell ring on interrupt EP.
 /// Packed: slot<<16 | dci<<8 | ep_state. State: 0=Disabled, 1=Running, 2=Halted, 3=Stopped.
@@ -570,9 +545,8 @@ pub static DIAG_PORTSC_PRE_SWEEP: AtomicU32 = AtomicU32::new(0);
 static MOUSE_GET_REPORT_PENDING: AtomicBool = AtomicBool::new(false);
 
 /// Whether the first keyboard interrupt TRBs have been queued.
-/// With DEFERRED_TRB_POLL=0, start_hid_polling() queues these during init()
-/// before the GIC SPI is enabled; SPI activation is later in poll_hid_events()
-/// at poll >= 50. Only set once; re-queue via MSI/error handlers.
+/// start_hid_polling() queues these during init before the GIC SPI's sustained
+/// system-ready activation. Only set once; re-queue via MSI/error handlers.
 static KBD_TRB_FIRST_QUEUED: AtomicBool = AtomicBool::new(false);
 
 /// Whether initial HID interrupt TRBs have been queued.
@@ -1384,19 +1358,35 @@ fn write64(addr: u64, val: u64) {
 // Timeout Helper
 // =============================================================================
 
-/// Spin-wait until `f()` returns true, or fail after `max_iters` iterations.
+#[inline(always)]
+fn cpu_relax() {
+    unsafe {
+        core::arch::asm!("yield", options(nomem, nostack));
+    }
+}
+
+/// Bounded MMIO handshake until `f()` returns true, or fail after `max_iters`.
+///
+/// LINUX_EQUIVALENT: Linux xHCI keeps these hardware handshakes as bounded
+/// polling via `drivers/usb/host/xhci.c:85 xhci_handshake()` and
+/// `readl_poll_timeout_atomic()` because controller halt/reset/CNR/port-reset
+/// status bits have no command-completion IRQ source.
 fn wait_for<F: Fn() -> bool>(f: F, max_iters: u32) -> Result<(), &'static str> {
     for _ in 0..max_iters {
         if f() {
             return Ok(());
         }
-        core::hint::spin_loop();
+        cpu_relax();
     }
     Err("XHCI timeout")
 }
 
-/// Busy-wait for `ms` milliseconds using the ARM64 generic timer.
-/// Falls back to a spin loop if the timer frequency is unavailable.
+/// Bounded early-boot delay using the ARM64 generic timer.
+///
+/// LINUX_EQUIVALENT: Linux uses sleep-backed waits such as `msleep()` once the
+/// scheduler exists. Breenix calls this only during xHCI early init before the
+/// scheduler/timer are available, so the delay is bounded by CNTPCT and uses the
+/// architecture `yield` hint instead of a raw spin loop.
 fn delay_ms(ms: u32) {
     let freq: u64;
     unsafe { core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq) };
@@ -1404,7 +1394,7 @@ fn delay_ms(ms: u32) {
         // Fallback: ~1ms per iteration at ~1GHz
         for _ in 0..ms {
             for _ in 0..200_000u32 {
-                core::hint::spin_loop();
+                cpu_relax();
             }
         }
         return;
@@ -1418,7 +1408,7 @@ fn delay_ms(ms: u32) {
         if now.wrapping_sub(start) >= ticks {
             break;
         }
-        core::hint::spin_loop();
+        cpu_relax();
     }
 }
 
@@ -1498,99 +1488,100 @@ fn ring_doorbell(state: &XhciState, slot: u8, target: u8) {
     write32(state.db_base + (slot as u64) * 4, target as u32);
 }
 
-/// Wait for an event on the event ring, with timeout.
-///
-/// Returns Command Completion and Transfer Event TRBs.
-/// Skips asynchronous events (Port Status Change) that may arrive
-/// at any time and don't correspond to a specific command or transfer.
-///
-/// If `command_only` is true, only returns Command Completion events (type 33).
-/// Transfer Events from interrupt endpoints are silently consumed — this
-/// prevents confusion when interrupt TRBs are queued during enumeration
-/// and the xHC returns Transfer Events before Command Completions.
-fn wait_for_event_inner(state: &XhciState, command_only: bool) -> Result<Trb, &'static str> {
-    let mut timeout = 2_000_000u32;
-    loop {
-        unsafe {
-            let ring = &raw const EVENT_RING;
-            let idx = EVENT_RING_DEQUEUE;
-            let cycle = EVENT_RING_CYCLE;
-
-            // Invalidate cache to see controller-written TRBs
-            dma_cache_invalidate(
-                &(*ring).0[idx] as *const Trb as *const u8,
-                core::mem::size_of::<Trb>(),
-            );
-
-            let trb = core::ptr::read_volatile(&(*ring).0[idx]);
-            let trb_cycle = trb.control & 1 != 0;
-
-            if trb_cycle == cycle {
-                // New event available — advance dequeue
-                EVENT_RING_DEQUEUE = (idx + 1) % EVENT_RING_SIZE;
-                if EVENT_RING_DEQUEUE == 0 {
-                    EVENT_RING_CYCLE = !cycle;
-                }
-
-                // Update ERDP to acknowledge the event
-                let erdp_phys =
-                    virt_to_phys(&raw const EVENT_RING as u64) + (EVENT_RING_DEQUEUE as u64) * 16;
-                let ir0 = state.rt_base + 0x20; // Interrupter 0
-                write64(ir0 + 0x18, erdp_phys | (1 << 3));
-
-                // Unconditionally clear IMAN.IP (W1C bit 0) and USBSTS.EINT (W1C bit 3)
-                // after every event, matching Linux xhci-ring.c ack_event().
-                // Writing 1 to W1C bits clears them; writing 1 when already clear is a no-op.
-                write32(ir0, read32(ir0) | 1); // W1C IMAN.IP
-                write32(
-                    state.op_base + 0x04,
-                    read32(state.op_base + 0x04) | (1 << 3),
-                ); // W1C EINT
-
-                let trb_type_val = trb.trb_type();
-                if trb_type_val == trb_type::COMMAND_COMPLETION {
-                    return Ok(trb);
-                }
-                if trb_type_val == trb_type::TRANSFER_EVENT && !command_only {
-                    return Ok(trb);
-                }
-                // Log consumed Transfer Events — these indicate interrupt TRBs
-                // completing while we're waiting for a command completion.
-                if trb_type_val == trb_type::TRANSFER_EVENT && command_only {
-                    let _cc = trb.completion_code();
-                    CONSUMED_XFER_DURING_ENUM.fetch_add(1, Ordering::Relaxed);
-                }
-                // Port Status Change: acknowledge PORTSC change bits so the
-                // xHC knows we've seen the change and won't keep re-signaling.
-                if trb_type_val == trb_type::PORT_STATUS_CHANGE {
-                    let port_id = ((trb.param >> 24) & 0xFF) as u8;
-                    if port_id > 0 && port_id <= state.max_ports {
-                        acknowledge_port_changes(state.op_base, port_id);
-                    }
-                }
-                // Consumed non-matching event (Port Status Change, or Transfer
-                // Event in command_only mode) — fall through to timeout check.
-            }
-        }
-        timeout -= 1;
-        if timeout == 0 {
-            return Err("XHCI event timeout");
-        }
-        core::hint::spin_loop();
+fn stored_command_event() -> Trb {
+    Trb {
+        param: XHCI_COMMAND_PARAM.load(Ordering::Acquire),
+        status: XHCI_COMMAND_STATUS.load(Ordering::Acquire),
+        control: XHCI_COMMAND_CONTROL.load(Ordering::Acquire),
     }
 }
 
-/// Wait for any command completion or transfer event.
-fn wait_for_event(state: &XhciState) -> Result<Trb, &'static str> {
-    wait_for_event_inner(state, false)
+fn stored_transfer_event() -> Trb {
+    Trb {
+        param: XHCI_TRANSFER_PARAM.load(Ordering::Acquire),
+        status: XHCI_TRANSFER_STATUS.load(Ordering::Acquire),
+        control: XHCI_TRANSFER_CONTROL.load(Ordering::Acquire),
+    }
 }
 
-/// Wait for a command completion event only (skip transfer events).
-///
-/// Used during enumeration when interrupt TRBs may be queued on the ring
-/// and the xHC may return Transfer Events before Command Completions.
-fn wait_for_command(state: &XhciState) -> Result<Trb, &'static str> {
-    wait_for_event_inner(state, true)
+fn enable_irq_for_wait(state: &XhciState) -> bool {
+    if state.irq == 0 || SPI_ACTIVATED.load(Ordering::Acquire) {
+        return false;
+    }
+
+    crate::arch_impl::aarch64::gic::clear_spi_pending(state.irq);
+    crate::arch_impl::aarch64::gic::enable_spi(state.irq);
+    true
+}
+
+fn disable_transient_irq_after_wait(state: &XhciState, transient: bool) {
+    if transient && state.irq != 0 {
+        crate::arch_impl::aarch64::gic::disable_spi(state.irq);
+        crate::arch_impl::aarch64::gic::clear_spi_pending(state.irq);
+    }
+}
+
+fn finish_completion_wait(result: Result<bool, i32>, timeout_msg: &'static str) -> Result<(), &'static str> {
+    match result {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(timeout_msg),
+        Err(_) => Err("XHCI completion interrupted"),
+    }
+}
+
+fn submit_command_and_wait(state: &XhciState, trb: Trb) -> Result<Trb, &'static str> {
+    if state.irq == 0 {
+        return Err("XHCI command IRQ unavailable");
+    }
+
+    let _command_guard = XHCI_COMMAND_LOCK.lock();
+    XHCI_COMMAND_COMPLETION.reset();
+    XHCI_COMMAND_PARAM.store(0, Ordering::Release);
+    XHCI_COMMAND_STATUS.store(0, Ordering::Release);
+    XHCI_COMMAND_CONTROL.store(0, Ordering::Release);
+    XHCI_COMMAND_WAITING.store(true, Ordering::Release);
+
+    enqueue_command(trb);
+    ring_doorbell(state, 0, 0);
+
+    let transient_irq = enable_irq_for_wait(state);
+    let wait = XHCI_COMMAND_COMPLETION.wait_timeout(
+        XHCI_COMPLETION_TOKEN,
+        XHCI_COMPLETION_TIMEOUT_NS,
+    );
+    XHCI_COMMAND_WAITING.store(false, Ordering::Release);
+    disable_transient_irq_after_wait(state, transient_irq);
+    finish_completion_wait(wait, "XHCI command completion timeout")?;
+    Ok(stored_command_event())
+}
+
+fn prepare_transfer_wait(slot_id: u8, endpoint: u8) {
+    XHCI_TRANSFER_COMPLETION.reset();
+    XHCI_TRANSFER_PARAM.store(0, Ordering::Release);
+    XHCI_TRANSFER_STATUS.store(0, Ordering::Release);
+    XHCI_TRANSFER_CONTROL.store(0, Ordering::Release);
+    XHCI_TRANSFER_WAIT_KEY.store(
+        ((slot_id as u32) << 8) | endpoint as u32,
+        Ordering::Release,
+    );
+    XHCI_TRANSFER_WAITING.store(true, Ordering::Release);
+}
+
+fn wait_for_prepared_transfer(state: &XhciState) -> Result<Trb, &'static str> {
+    if state.irq == 0 {
+        XHCI_TRANSFER_WAITING.store(false, Ordering::Release);
+        return Err("XHCI transfer IRQ unavailable");
+    }
+
+    let transient_irq = enable_irq_for_wait(state);
+    let wait = XHCI_TRANSFER_COMPLETION.wait_timeout(
+        XHCI_COMPLETION_TOKEN,
+        XHCI_COMPLETION_TIMEOUT_NS,
+    );
+    XHCI_TRANSFER_WAITING.store(false, Ordering::Release);
+    disable_transient_irq_after_wait(state, transient_irq);
+    finish_completion_wait(wait, "XHCI transfer completion timeout")?;
+    Ok(stored_transfer_event())
 }
 
 // =============================================================================
@@ -1606,10 +1597,7 @@ fn send_noop(state: &XhciState) -> Result<(), &'static str> {
         status: 0,
         control: trb_type::NOOP << 10,
     };
-    enqueue_command(trb);
-    ring_doorbell(state, 0, 0);
-
-    let event = wait_for_command(state)?;
+    let event = submit_command_and_wait(state, trb)?;
     let cc = event.completion_code();
     if cc != completion_code::SUCCESS {
         xhci_trace_note(0, "err:noop");
@@ -1626,10 +1614,7 @@ fn enable_slot(state: &XhciState) -> Result<u8, &'static str> {
         status: 0,
         control: trb_type::ENABLE_SLOT << 10,
     };
-    enqueue_command(trb);
-    ring_doorbell(state, 0, 0);
-
-    let event = wait_for_command(state)?;
+    let event = submit_command_and_wait(state, trb)?;
     let cc = event.completion_code();
     let slot_id = event.slot_id();
     if cc != completion_code::SUCCESS {
@@ -1775,10 +1760,7 @@ fn address_device(state: &XhciState, slot_id: u8, port_id: u8) -> Result<(), &'s
             control: (trb_type::ADDRESS_DEVICE << 10) | ((slot_id as u32) << 24),
         };
         ms_trb(M_ADDR_DEV, "AddressDevice_TRB", &trb);
-        enqueue_command(trb);
-        ring_doorbell(state, 0, 0);
-
-        let event = wait_for_command(state)?;
+        let event = submit_command_and_wait(state, trb)?;
         let cc = event.completion_code();
         ms_kv!(M_ADDR_DEV, "CC={} slot={}", cc, slot_id);
         if cc != completion_code::SUCCESS {
@@ -1867,9 +1849,7 @@ fn reset_control_endpoint(state: &XhciState, slot_id: u8) {
         status: 0,
         control: (trb_type::RESET_ENDPOINT << 10) | ((slot_id as u32) << 24) | (1u32 << 16),
     };
-    enqueue_command(reset_trb);
-    ring_doorbell(state, 0, 0);
-    let _ = wait_for_command(state);
+    let _ = submit_command_and_wait(state, reset_trb);
 
     // Step 2: Reset EP0 transfer ring
     unsafe {
@@ -1890,9 +1870,7 @@ fn reset_control_endpoint(state: &XhciState, slot_id: u8) {
         status: 0,
         control: (trb_type::SET_TR_DEQUEUE_POINTER << 10) | ((slot_id as u32) << 24) | (1u32 << 16),
     };
-    enqueue_command(set_deq_trb);
-    ring_doorbell(state, 0, 0);
-    let _ = wait_for_command(state);
+    let _ = submit_command_and_wait(state, set_deq_trb);
 }
 
 /// Execute a control transfer on a device's default control endpoint (EP0).
@@ -1969,40 +1947,22 @@ fn control_transfer(
     };
     enqueue_transfer(slot_idx, status_trb);
 
+    // Arm the IRQ-side EP0 completion before ringing the doorbell so a fast
+    // Transfer Event cannot race ahead of the waiter.
+    prepare_transfer_wait(slot_id, 1);
+
     // Ring doorbell for EP0 (DCI = 1 for the default control endpoint)
     ring_doorbell(state, slot_id, 1);
 
-    // Wait for EP0 completion event, skipping stale interrupt endpoint events.
-    // When interrupt TRBs are queued inline during enumeration, their CC=12
-    // Transfer Events may arrive before our EP0 completion. We must skip them.
-    loop {
-        let event = wait_for_event(state)?;
-        let trb_type_val = event.trb_type();
-
-        if trb_type_val == trb_type::TRANSFER_EVENT {
-            let ev_slot = event.slot_id();
-            let ev_ep = ((event.control >> 16) & 0x1F) as u8;
-
-            if ev_slot == slot_id && ev_ep == 1 {
-                // This is our EP0 completion
-                let cc = event.completion_code();
-                if cc != completion_code::SUCCESS && cc != completion_code::SHORT_PACKET {
-                    // Any error on EP0 halts the endpoint (xHCI spec 4.10.2.2).
-                    // Reset it so subsequent control transfers on this slot work.
-                    reset_control_endpoint(state, slot_id);
-                    return Err("XHCI control transfer failed");
-                }
-                return Ok(());
-            }
-
-            // Not our EP0 event — stale interrupt endpoint event, skip it
-            CONSUMED_XFER_DURING_ENUM.fetch_add(1, Ordering::Relaxed);
-            continue;
-        }
-
-        // Command Completion shouldn't arrive here, skip
-        continue;
+    let event = wait_for_prepared_transfer(state)?;
+    let cc = event.completion_code();
+    if cc != completion_code::SUCCESS && cc != completion_code::SHORT_PACKET {
+        // Any error on EP0 halts the endpoint (xHCI spec 4.10.2.2).
+        // Reset it so subsequent control transfers on this slot work.
+        reset_control_endpoint(state, slot_id);
+        return Err("XHCI control transfer failed");
     }
+    Ok(())
 }
 
 /// Get the device descriptor from a USB device.
@@ -2705,10 +2665,7 @@ fn configure_endpoints_batch(
             };
             ms_trb(M_EP_CONFIG, "ConfigureEndpoint_TRB", &trb);
             xhci_trace_trb(XhciTraceOp::CommandSubmit, slot_id, 0, &trb);
-            enqueue_command(trb);
-            ring_doorbell(state, 0, 0);
-
-            let event = wait_for_command(state)?;
+            let event = submit_command_and_wait(state, trb)?;
             xhci_trace_trb(XhciTraceOp::CommandComplete, slot_id, 0, &event);
             let cc = event.completion_code();
             ms_kv!(
@@ -2785,9 +2742,7 @@ fn configure_endpoints_batch(
                             | ((dci as u32) << 16),
                     };
                     xhci_trace_trb(XhciTraceOp::CommandSubmit, slot_id, dci, &stop_trb);
-                    enqueue_command(stop_trb);
-                    ring_doorbell(state, 0, 0);
-                    let stop_event = wait_for_command(state)?;
+                    let stop_event = submit_command_and_wait(state, stop_trb)?;
                     xhci_trace_trb(XhciTraceOp::CommandComplete, slot_id, dci, &stop_event);
                     let _stop_cc = stop_event.completion_code();
                     ms_kv!(
@@ -2865,9 +2820,7 @@ fn configure_endpoints_batch(
                         control: (trb_type::CONFIGURE_ENDPOINT << 10) | ((slot_id as u32) << 24),
                     };
                     xhci_trace_trb(XhciTraceOp::CommandSubmit, slot_id, 0, &reconfig_trb);
-                    enqueue_command(reconfig_trb);
-                    ring_doorbell(state, 0, 0);
-                    let reconfig_event = wait_for_command(state)?;
+                    let reconfig_event = submit_command_and_wait(state, reconfig_trb)?;
                     xhci_trace_trb(XhciTraceOp::CommandComplete, slot_id, 0, &reconfig_event);
                     let _reconfig_cc = reconfig_event.completion_code();
                     ms_kv!(
@@ -3320,9 +3273,8 @@ fn configure_hid(
                 state.kbd_slot = slot_id;
                 state.kbd_nkro_endpoint = info.dci;
 
-                // TRB queueing deferred to post-enumeration in init() to prevent
-                // Transfer Events from being silently consumed by subsequent
-                // control_transfer() and wait_for_command() calls.
+                // TRB queueing deferred to post-enumeration so interface setup
+                // control transfers remain the only EP0 completion waiters.
             } else if info.is_keyboard {
                 // Boot keyboard: SET_IDLE + GET_HID_REPORT_DESC + SET_REPORT(LED=0).
                 if !MINIMAL_INIT {
@@ -3350,9 +3302,8 @@ fn configure_hid(
                 state.kbd_slot = slot_id;
                 state.kbd_endpoint = info.dci;
 
-                // TRB queueing deferred to post-enumeration in start_hid_polling()
-                // to prevent Transfer Events from being silently consumed by
-                // subsequent control_transfer() and wait_for_command() calls.
+                // TRB queueing deferred to post-enumeration so interface setup
+                // control transfers remain the only EP0 completion waiters.
             } else {
                 // Mouse: SET_IDLE + GET_HID_REPORT_DESC + GET_REPORT(Feature) + SET_REPORT(Feature).
                 // Linux sends SET_IDLE and fetches the HID report descriptor for ALL
@@ -3388,9 +3339,8 @@ fn configure_hid(
                     state.mouse_endpoint = info.dci;
                 }
 
-                // TRB queueing deferred to post-enumeration in start_hid_polling()
-                // to prevent Transfer Events from being silently consumed by
-                // subsequent control_transfer() and wait_for_command() calls.
+                // TRB queueing deferred to post-enumeration so interface setup
+                // control transfers remain the only EP0 completion waiters.
             }
         }
     }
@@ -3648,130 +3598,14 @@ fn dump_endpoint_contexts(state: &XhciState) {
     }
 }
 
-/// Wait for a Command Completion event, passing through Transfer Events and other
-/// async events. Used during endpoint recovery in timer context — no logging.
+/// Submit a command and return its completion code.
 ///
-/// Transfer Events consumed here are re-flagged via NEEDS_RESET_* so the poll
-/// loop doesn't miss endpoint errors that arrive while waiting for commands.
-///
-/// Returns the completion code, or an error on timeout.
-fn wait_for_command_completion(state: &XhciState) -> Result<u32, &'static str> {
-    // 10K iterations × ~60ns = ~600μs max. Virtual xHC (Parallels) responds in
-    // microseconds; real hardware would need more. Keeping this short is critical:
-    // this function is called from poll_hid_events in the timer IRQ handler, so
-    // blocking here starves the scheduler and prevents heartbeats.
-    let mut timeout = 10_000u32;
-    loop {
-        unsafe {
-            let ring = &raw const EVENT_RING;
-            let idx = EVENT_RING_DEQUEUE;
-            let cycle = EVENT_RING_CYCLE;
-
-            dma_cache_invalidate(
-                &(*ring).0[idx] as *const Trb as *const u8,
-                core::mem::size_of::<Trb>(),
-            );
-
-            let trb = core::ptr::read_volatile(&(*ring).0[idx]);
-            let trb_cycle = trb.control & 1 != 0;
-
-            if trb_cycle == cycle {
-                // Advance dequeue
-                EVENT_RING_DEQUEUE = (idx + 1) % EVENT_RING_SIZE;
-                if EVENT_RING_DEQUEUE == 0 {
-                    EVENT_RING_CYCLE = !cycle;
-                }
-
-                // Update ERDP
-                let erdp_phys =
-                    virt_to_phys(&raw const EVENT_RING as u64) + (EVENT_RING_DEQUEUE as u64) * 16;
-                let ir0 = state.rt_base + 0x20;
-                write64(ir0 + 0x18, erdp_phys | (1 << 3));
-
-                let trb_type_val = trb.trb_type();
-                if trb_type_val == trb_type::COMMAND_COMPLETION {
-                    return Ok(trb.completion_code());
-                }
-                // For Transfer Events consumed while waiting: re-flag NEEDS_RESET_*
-                // so the next poll_hid_events call handles them. Without this, error
-                // completions for other endpoints are silently lost, leaving those
-                // endpoints permanently halted with no pending TRBs.
-                if trb_type_val == trb_type::TRANSFER_EVENT {
-                    let slot = trb.slot_id();
-                    let endpoint = ((trb.control >> 16) & 0x1F) as u8;
-                    let cc = trb.completion_code();
-
-                    // GET_REPORT EP0 response: handle it here since the event arrives
-                    // while we're spinning for the interrupt endpoint Reset Endpoint
-                    // command completion. Without PENDING check, late responses that
-                    // arrive after the 200-tick stale-clear are also caught here.
-                    // Post-enumeration, the only EP0 events from mouse_slot are GET_REPORT.
-                    if slot == state.mouse_slot && endpoint == 1 {
-                        MOUSE_GET_REPORT_PENDING.store(false, Ordering::Release);
-                        // Record last CC seen (fd= heartbeat field, 0xFF = no event yet).
-                        DIAG_FIRST_DB.store(cc, Ordering::Relaxed);
-                        if cc == completion_code::SUCCESS || cc == completion_code::SHORT_PACKET {
-                            GET_REPORT_OK.fetch_add(1, Ordering::Relaxed);
-                            let buf = &raw const CTRL_DATA_BUF;
-                            dma_cache_invalidate((*buf).0.as_ptr(), 8);
-                            let report = &(&(*buf).0)[..8];
-                            if report.iter().any(|&b| b != 0) {
-                                GET_REPORT_NONZERO.fetch_add(1, Ordering::Relaxed);
-                                super::hid::process_mouse_report(report, 0);
-                            }
-                        }
-                    } else if cc != completion_code::SUCCESS && cc != completion_code::SHORT_PACKET
-                    {
-                        // CC=12 during a command wait: endpoint is halted but re-flagging
-                        // NEEDS_RESET_* here causes cascading resets (each reset's command
-                        // wait sees the other endpoint's CC=12, triggering another reset).
-                        // Use MSI_*_NEEDS_REQUEUE to defer: the next timer tick's state
-                        // check will set NEEDS_RESET_* if the endpoint is still Halted.
-                        // Other error CCs (CC=4, CC=6) are genuine errors: reset directly.
-                        if cc == completion_code::ENDPOINT_NOT_ENABLED {
-                            if slot == state.kbd_slot && endpoint == state.kbd_endpoint {
-                                MSI_KBD_NEEDS_REQUEUE.store(true, Ordering::Release);
-                            } else if slot == state.kbd_slot
-                                && state.kbd_nkro_endpoint != 0
-                                && endpoint == state.kbd_nkro_endpoint
-                            {
-                                MSI_NKRO_NEEDS_REQUEUE.store(true, Ordering::Release);
-                            } else if slot == state.mouse_slot && endpoint == state.mouse_endpoint {
-                                MSI_MOUSE_NEEDS_REQUEUE.store(true, Ordering::Release);
-                            } else if slot == state.mouse_slot
-                                && state.mouse_nkro_endpoint != 0
-                                && endpoint == state.mouse_nkro_endpoint
-                            {
-                                MSI_MOUSE2_NEEDS_REQUEUE.store(true, Ordering::Release);
-                            }
-                        } else {
-                            if slot == state.kbd_slot && endpoint == state.kbd_endpoint {
-                                NEEDS_RESET_KBD_BOOT.store(true, Ordering::Release);
-                            } else if slot == state.kbd_slot
-                                && state.kbd_nkro_endpoint != 0
-                                && endpoint == state.kbd_nkro_endpoint
-                            {
-                                NEEDS_RESET_KBD_NKRO.store(true, Ordering::Release);
-                            } else if slot == state.mouse_slot && endpoint == state.mouse_endpoint {
-                                NEEDS_RESET_MOUSE.store(true, Ordering::Release);
-                            } else if slot == state.mouse_slot
-                                && state.mouse_nkro_endpoint != 0
-                                && endpoint == state.mouse_nkro_endpoint
-                            {
-                                NEEDS_RESET_MOUSE2.store(true, Ordering::Release);
-                            }
-                        }
-                    }
-                }
-                // Consumed non-command event — fall through to timeout check.
-            }
-        }
-        timeout -= 1;
-        if timeout == 0 {
-            return Err("XHCI command completion timeout");
-        }
-        core::hint::spin_loop();
-    }
+/// LINUX_EQUIVALENT: Linux queues xHCI commands and then blocks on a command
+/// completion (`drivers/usb/host/xhci.c:2928`, `:3418`) which is completed by
+/// `drivers/usb/host/xhci-ring.c:1703 handle_cmd_completion()`.
+fn wait_for_command_completion(state: &XhciState, trb: Trb) -> Result<u32, &'static str> {
+    let event = submit_command_and_wait(state, trb)?;
+    Ok(event.completion_code())
 }
 
 /// Reset a halted endpoint and requeue a HID transfer TRB.
@@ -3787,7 +3621,8 @@ fn wait_for_command_completion(state: &XhciState) -> Result<u32, &'static str> {
 /// new TRB there and ringing the doorbell resumes the endpoint without disrupting
 /// the HC's ring state.
 ///
-/// Called from poll_hid_events (timer context). Uses wait_for_command_completion (no logging).
+    /// Called from xHCI recovery workqueue context. Command waits block on IRQ
+    /// completions and must not hold XHCI_LOCK while sleeping.
 fn reset_halted_endpoint(
     state: &XhciState,
     slot_id: u8,
@@ -3803,10 +3638,7 @@ fn reset_halted_endpoint(
         // Reset Endpoint: type=14, slot_id in bits [31:24], DCI in bits [20:16]
         control: (trb_type::RESET_ENDPOINT << 10) | ((slot_id as u32) << 24) | ((dci as u32) << 16),
     };
-    enqueue_command(reset_trb);
-    ring_doorbell(state, 0, 0); // Command ring doorbell
-
-    let cc = wait_for_command_completion(state)?;
+    let cc = wait_for_command_completion(state, reset_trb)?;
     if cc != completion_code::SUCCESS {
         ENDPOINT_RESET_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
         // Endpoint is Running or Stopped (not Halted). Reset Endpoint is only valid
@@ -3851,10 +3683,7 @@ fn reset_halted_endpoint(
             | ((slot_id as u32) << 24)
             | ((dci as u32) << 16),
     };
-    enqueue_command(set_deq_trb);
-    ring_doorbell(state, 0, 0);
-
-    let cc2 = wait_for_command_completion(state)?;
+    let cc2 = wait_for_command_completion(state, set_deq_trb)?;
     if cc2 != completion_code::SUCCESS {
         ENDPOINT_RESET_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
         // Don't abort — fall through to requeue anyway so the endpoint has a fresh TRB.
@@ -4093,9 +3922,7 @@ fn inherit_uefi_endpoints(state: &mut XhciState) -> Result<(), &'static str> {
                         | ((slot_id as u32) << 24)
                         | ((dci as u32) << 16),
                 };
-                enqueue_command(reset_trb);
-                ring_doorbell(state, 0, 0);
-                let _ = wait_for_command(state);
+                let _ = submit_command_and_wait(state, reset_trb);
             } else {
                 // Running → StopEndpoint to get to Stopped
                 let stop_trb = Trb {
@@ -4105,9 +3932,7 @@ fn inherit_uefi_endpoints(state: &mut XhciState) -> Result<(), &'static str> {
                         | ((slot_id as u32) << 24)
                         | ((dci as u32) << 16),
                 };
-                enqueue_command(stop_trb);
-                ring_doorbell(state, 0, 0);
-                let _ = wait_for_command(state);
+                let _ = submit_command_and_wait(state, stop_trb);
             }
         }
 
@@ -4133,9 +3958,7 @@ fn inherit_uefi_endpoints(state: &mut XhciState) -> Result<(), &'static str> {
                 | ((slot_id as u32) << 24)
                 | ((dci as u32) << 16),
         };
-        enqueue_command(set_deq_trb);
-        ring_doorbell(state, 0, 0);
-        let _ = wait_for_command(state);
+        let _ = submit_command_and_wait(state, set_deq_trb);
     }
     Ok(())
 }
@@ -4393,8 +4216,8 @@ fn scan_ports(state: &mut XhciState) -> Result<(), &'static str> {
 /// MSI registers, and configures the GIC SPI as edge-triggered.
 ///
 /// Returns the GIC INTID (SPI number) for the allocated interrupt.
-/// Returns 0 if MSI or GICv2m is unavailable; the GIC SPI is enabled later
-/// by poll_hid_events() after XHCI_STATE and XHCI_INITIALIZED are ready.
+/// Returns 0 if MSI or GICv2m is unavailable. Command waits transiently enable
+/// this SPI during init; sustained HID delivery is enabled later at system-ready.
 fn setup_xhci_msi(pci_dev: &crate::drivers::pci::Device) -> u32 {
     use crate::arch_impl::aarch64::gic;
 
@@ -4448,11 +4271,9 @@ fn setup_xhci_msi(pci_dev: &crate::drivers::pci::Device) -> u32 {
     let msi_data = spi as u16;
     pci_dev.configure_msi(msi_cap, msi_address, msi_data);
 
-    // Step 5: Configure GIC for this SPI (edge-triggered).
-    //
-    // The SPI is NOT enabled here. setup_xhci_msi() only programs PCI MSI and
-    // configures the GIC trigger mode; poll_hid_events() enables the SPI later
-    // once XHCI_STATE and XHCI_INITIALIZED are ready.
+    // Step 5: Configure GIC for this SPI (edge-triggered). The SPI is enabled
+    // only around command/EP0 completion waits during init, then sustained at
+    // system-ready after boot-critical storage/filesystem work is done.
     gic::configure_spi_edge_triggered(intid);
 
     intid
@@ -4650,15 +4471,10 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
                 // DW0 bits: [16] HC BIOS Owned Semaphore, [24] HC OS Owned Semaphore
                 let bios_owned = (ecap_dw0 >> 16) & 1;
                 if bios_owned != 0 {
-                    // Set OS Owned Semaphore (bit 24), wait for BIOS to release (bit 16 clears)
+                    // Set OS Owned Semaphore (bit 24), then use the bounded
+                    // xHCI handshake helper to wait for BIOS ownership to clear.
                     write32(ecap_addr, ecap_dw0 | (1 << 24));
-                    for _ in 0..1_000_000u32 {
-                        let v = read32(ecap_addr);
-                        if (v >> 16) & 1 == 0 {
-                            break;
-                        }
-                        core::hint::spin_loop();
-                    }
+                    let _ = wait_for(|| (read32(ecap_addr) >> 16) & 1 == 0, 1_000_000);
                     xhci_trace_note(0, "usblegsup_claimed");
                 } else {
                     // BIOS doesn't own it, just set OS owned
@@ -4962,7 +4778,7 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
 
     // 10. Event ring is ready; MSI is programmed shortly below before
     // enumeration. setup_xhci_msi(pci_dev) runs before scan_ports() and before
-    // start_hid_polling(), but the GIC SPI is enabled later by poll_hid_events().
+    // start_hid_polling(); command waits transiently enable its GIC SPI.
 
     // 11. Enable interrupts on Interrupter 0 (needed for event ring operation).
     // IMOD already written above (matching Linux's order: IMOD before event ring regs).
@@ -5042,6 +4858,15 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
         mouse_endpoint: 0,
         mouse_nkro_endpoint: 0,
     };
+
+    // Publish minimal state before the first command wait. Enumeration command
+    // and EP0 transfer waits now complete from handle_interrupt(), so the IRQ
+    // handler needs state as soon as the MSI SPI is transiently enabled.
+    XHCI_IRQ.store(early_irq, Ordering::Release);
+    unsafe {
+        *(&raw mut XHCI_STATE) = Some(xhci_state);
+    }
+    XHCI_INITIALIZED.store(true, Ordering::Release);
 
     // Diagnostic: print DMA addresses used for XHCI data structures.
     // On VMware (ram_base_offset=0x40000000), these must be IPAs in the 0x80XXXXXX range.
@@ -5137,7 +4962,7 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
         xhci_trace_note(0, "err:port_scan");
     }
 
-    // 15. Store state and set INITIALIZED before enabling GIC SPI.
+    // 15. Store the final enumerated state before system-ready SPI activation.
     //
     // Once the SPI is enabled, pending MSI writes will immediately fire
     // the interrupt handler. The handler needs XHCI_INITIALIZED=true and
@@ -5145,7 +4970,6 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
     unsafe {
         *(&raw mut XHCI_STATE) = Some(xhci_state);
     }
-    XHCI_INITIALIZED.store(true, Ordering::Release);
 
     // 16. Queue initial HID transfers.
     let xhci_state_ref = unsafe { (*(&raw const XHCI_STATE)).as_ref().unwrap() };
@@ -5204,12 +5028,9 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
         delay_ms(POST_ENUM_DELAY_MS);
     }
 
-    // Queue TRBs immediately after PORTSC clearing + delay.
-    if DEFERRED_TRB_POLL == 0 {
-        start_hid_polling(xhci_state_ref);
-        HID_POLLING_STARTED.store(true, Ordering::Release);
-    }
-    // else: TRBs will be queued at poll == DEFERRED_TRB_POLL in poll_hid_events.
+    // Queue TRBs immediately after PORTSC clearing + delay. The GIC SPI remains
+    // disabled for sustained HID delivery until activate_msi_if_ready().
+    start_hid_polling(xhci_state_ref);
 
     // 16. MSI was already configured BEFORE enumeration (experiment).
     // Store the IRQ from the early setup.
@@ -5248,6 +5069,8 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
 /// IMAN/ERDP acknowledgment, then re-enables it before returning so the
 /// next event gets a real interrupt with no polling delay.
 pub fn handle_interrupt() {
+    crate::tracing::providers::xhci::count_irq_entry();
+
     if !XHCI_INITIALIZED.load(Ordering::Acquire) {
         // SPI should not be enabled during init (it's deferred until
         // XHCI_INITIALIZED), but if we somehow get here, disable it
@@ -5283,7 +5106,14 @@ pub fn handle_interrupt() {
     // try_lock: IRQ context must never spin on a lock.
     let _guard = match XHCI_LOCK.try_lock() {
         Some(g) => g,
-        None => return, // Lock contended, skip — poll_hid_events will handle events
+        None => {
+            crate::tracing::providers::xhci::count_lock_contended();
+            if state.irq != 0 {
+                crate::arch_impl::aarch64::gic::clear_spi_pending(state.irq);
+                crate::arch_impl::aarch64::gic::enable_spi(state.irq);
+            }
+            return;
+        }
     };
 
     // Acknowledge IMAN and USBSTS
@@ -5318,6 +5148,7 @@ pub fn handle_interrupt() {
             }
 
             MSI_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
+            crate::tracing::providers::xhci::count_msi_event();
 
             let trb_type_val = trb.trb_type();
             match trb_type_val {
@@ -5327,8 +5158,7 @@ pub fn handle_interrupt() {
                     let cc = trb.completion_code();
                     xhci_trace_trb(XhciTraceOp::TransferEvent, slot, endpoint, &trb);
 
-                    // Record first Transfer Event diagnostics (MSI handler often
-                    // processes events before poll_hid_events sees them).
+                    // Record first Transfer Event diagnostics.
                     let _ = DIAG_FIRST_XFER_CC.compare_exchange(
                         0xFF,
                         cc,
@@ -5348,7 +5178,9 @@ pub fn handle_interrupt() {
                         Ordering::Relaxed,
                     );
 
-                    if cc == completion_code::SUCCESS || cc == completion_code::SHORT_PACKET {
+                    if complete_waiting_transfer(slot, endpoint, &trb) {
+                        // The issuing thread owns this EP0 transfer result.
+                    } else if cc == completion_code::SUCCESS || cc == completion_code::SHORT_PACKET {
                         // NKRO keyboard (DCI 5, interface 1) — check first
                         if slot == state.kbd_slot
                             && state.kbd_nkro_endpoint != 0
@@ -5409,8 +5241,7 @@ pub fn handle_interrupt() {
                             && HID_TRBS_QUEUED.load(Ordering::Relaxed)
                         {
                             // EP0 GET_REPORT response consumed by MSI handler.
-                            // The MSI fires before the timer event loop runs, so all
-                            // GET_REPORT Transfer Events arrive here, not in poll_hid_events.
+                            // GET_REPORT Transfer Events arrive through IRQ delivery.
                             MOUSE_GET_REPORT_PENDING.store(false, Ordering::Release);
                             DIAG_FIRST_DB.store(cc, Ordering::Relaxed);
                             GET_REPORT_OK.fetch_add(1, Ordering::Relaxed);
@@ -5428,36 +5259,19 @@ pub fn handle_interrupt() {
                             }
                         }
                     } else {
-                        // Error CC on HID interrupt endpoint. All error CCs (including
-                        // CC=12) halt the endpoint on Parallels virtual xHC. Reset
-                        // Endpoint is required to recover. The rate limiter in
-                        // poll_hid_events caps reset rate to RESET_INTERVAL_TICKS to
-                        // prevent command ring saturation.
+                        // Error CC on HID interrupt endpoint. Recovery runs in the
+                        // system workqueue so Reset Endpoint and Set TR Dequeue
+                        // Pointer can block on IRQ-side command completions.
                         XO_ERR_COUNT.fetch_add(1, Ordering::Relaxed);
                         XO_LAST_INFO.store(
                             ((slot as u64) << 16) | ((endpoint as u64) << 8) | (cc as u64),
                             Ordering::Relaxed,
                         );
-                        if slot == state.kbd_slot && endpoint == state.kbd_endpoint {
-                            NEEDS_RESET_KBD_BOOT.store(true, Ordering::Release);
-                        } else if slot == state.kbd_slot
-                            && state.kbd_nkro_endpoint != 0
-                            && endpoint == state.kbd_nkro_endpoint
-                        {
-                            NEEDS_RESET_KBD_NKRO.store(true, Ordering::Release);
-                        } else if slot == state.mouse_slot && endpoint == state.mouse_endpoint {
-                            NEEDS_RESET_MOUSE.store(true, Ordering::Release);
-                        } else if slot == state.mouse_slot
-                            && state.mouse_nkro_endpoint != 0
-                            && endpoint == state.mouse_nkro_endpoint
-                        {
-                            NEEDS_RESET_MOUSE2.store(true, Ordering::Release);
-                        }
+                        schedule_endpoint_recovery_for_event(state, slot, endpoint);
                     }
                 }
                 trb_type::COMMAND_COMPLETION => {
-                    // Command completions during enumeration are handled by wait_for_event.
-                    // Any stray completions during interrupt handling are ignored.
+                    complete_waiting_command(&trb);
                 }
                 trb_type::PORT_STATUS_CHANGE => {
                     // Acknowledge PORTSC change bits for this port.
@@ -5522,6 +5336,7 @@ fn activate_msi_if_ready_locked(state: &XhciState, source: &str, log_success: bo
     crate::arch_impl::aarch64::gic::clear_spi_pending(state.irq);
     crate::arch_impl::aarch64::gic::enable_spi(state.irq);
     let count = DIAG_SPI_ENABLE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    queue_msi_probe_noop(state);
 
     if log_success {
         crate::serial_println!(
@@ -5535,804 +5350,102 @@ fn activate_msi_if_ready_locked(state: &XhciState, source: &str, log_success: bo
     true
 }
 
-// =============================================================================
-// Timer-Driven Housekeeping + Event Drain (NOT a fallback)
-//
-// Despite the legacy section name, this is NOT optional polling that disables
-// when MSI is available. On aarch64, the timer path is load-bearing for:
-//   1. First-time xHCI GIC SPI activation (poll >= 50, one-shot)
-//   2. Endpoint reset recovery for CC=12 errors (per-endpoint rate-limited)
-//   3. Doorbell re-ring after SPI activation (poll == 75, one-shot)
-//   4. Requeue from events consumed inside recovery command waits
-//   5. Rescue drain when handle_interrupt() bails on XHCI_LOCK try_lock
-//      contention (handle_interrupt() disables the GIC SPI BEFORE try_lock()
-//      and returns without re-enabling on contention; only this timer path can
-//      drain after that)
-//   6. Periodic diagnostics every 2000 polls
-//
-// The event-ring drain done here overlaps with handle_interrupt(). That overlap
-// is intentional for the rescue scenario in (5). Whether the drain can be
-// narrowed to housekeeping-only requires runtime measurement that is currently
-// blocked by an unrelated pre-existing CPU0 timer regression on Parallels; see
-// the follow-up issue for the audit conclusion.
-// =============================================================================
+static MSI_PROBE_NOOP_QUEUED: AtomicBool = AtomicBool::new(false);
 
-/// Phase 1 of deferred init (DISABLED — see comment in poll_hid_events).
-#[allow(dead_code)]
-fn deferred_reconfigure_only(state: &XhciState) {
-    // Drain any stale events from the event ring first.
-    drain_stale_events(state);
-
-    // Re-configure mouse slot (slot 1) if it has interrupt endpoints.
-    if state.mouse_slot != 0 && state.mouse_endpoint != 0 {
-        let slot_id = state.mouse_slot;
-
-        let mut pending_eps: [Option<PendingEp>; 4] = [None, None, None, None];
-        let mut ep_count = 0usize;
-
-        pending_eps[ep_count] = Some(PendingEp {
-            dci: state.mouse_endpoint,
-            hid_idx: 1,
-            max_pkt: 64,
-            b_interval: 4,
-            ss_max_burst: 0,
-            ss_bytes_per_interval: 64,
-            _ss_mult: 0,
-        });
-        ep_count += 1;
-
-        if state.mouse_nkro_endpoint != 0 {
-            pending_eps[ep_count] = Some(PendingEp {
-                dci: state.mouse_nkro_endpoint,
-                hid_idx: 3,
-                max_pkt: 64,
-                b_interval: 4,
-                ss_max_burst: 0,
-                ss_bytes_per_interval: 64,
-                _ss_mult: 0,
-            });
-            ep_count += 1;
-        }
-
-        // Reinitialize the transfer rings (zero + Link TRB) before ConfigEP.
-        for i in 0..ep_count {
-            if let Some(ref ep) = pending_eps[i] {
-                let ring_idx = HID_RING_BASE + ep.hid_idx;
-                unsafe {
-                    let ring = &raw mut TRANSFER_RINGS[ring_idx];
-                    core::ptr::write_bytes(ring as *mut u8, 0, TRANSFER_RING_SIZE * 16);
-                    TRANSFER_ENQUEUE[ring_idx] = 0;
-                    TRANSFER_CYCLE[ring_idx] = true;
-                    let ring_phys = virt_to_phys(&raw const TRANSFER_RINGS[ring_idx] as u64);
-                    let link_trb = Trb {
-                        param: ring_phys,
-                        status: 0,
-                        control: (trb_type::LINK << 10) | (1 << 1) | 1,
-                    };
-                    core::ptr::write_volatile(
-                        &mut (*ring)[TRANSFER_RING_SIZE - 1] as *mut Trb,
-                        link_trb,
-                    );
-                    dma_cache_clean(
-                        &TRANSFER_RINGS[ring_idx] as *const _ as *const u8,
-                        TRANSFER_RING_SIZE * 16,
-                    );
-                }
-            }
-        }
-
-        // Deconfigure (DC=1) REMOVED: Parallels vxHC hangs on this command.
-        // The virtual xHC does not implement ConfigureEndpoint with DC=1,
-        // causing wait_for_command to block forever (no Command Completion event).
-
-        if let Err(e) = configure_endpoints_batch(state, slot_id, &pending_eps, ep_count) {
-            crate::serial_println!(
-                "[xhci] deferred mouse slot {} cfg_ep FAIL: {} (ep_count={})",
-                slot_id,
-                e,
-                ep_count
-            );
-        }
-    }
-
-    // Re-configure keyboard slot (slot 2) if it has interrupt endpoints.
-    if state.kbd_slot != 0 && state.kbd_endpoint != 0 {
-        let slot_id = state.kbd_slot;
-
-        let mut pending_eps: [Option<PendingEp>; 4] = [None, None, None, None];
-        let mut ep_count = 0usize;
-
-        pending_eps[ep_count] = Some(PendingEp {
-            dci: state.kbd_endpoint,
-            hid_idx: 0,
-            max_pkt: 64,
-            b_interval: 4,
-            ss_max_burst: 0,
-            ss_bytes_per_interval: 64,
-            _ss_mult: 0,
-        });
-        ep_count += 1;
-
-        if state.kbd_nkro_endpoint != 0 {
-            pending_eps[ep_count] = Some(PendingEp {
-                dci: state.kbd_nkro_endpoint,
-                hid_idx: 2,
-                max_pkt: 64,
-                b_interval: 4,
-                ss_max_burst: 0,
-                ss_bytes_per_interval: 64,
-                _ss_mult: 0,
-            });
-            ep_count += 1;
-        }
-
-        for i in 0..ep_count {
-            if let Some(ref ep) = pending_eps[i] {
-                let ring_idx = HID_RING_BASE + ep.hid_idx;
-                unsafe {
-                    let ring = &raw mut TRANSFER_RINGS[ring_idx];
-                    core::ptr::write_bytes(ring as *mut u8, 0, TRANSFER_RING_SIZE * 16);
-                    TRANSFER_ENQUEUE[ring_idx] = 0;
-                    TRANSFER_CYCLE[ring_idx] = true;
-                    let ring_phys = virt_to_phys(&raw const TRANSFER_RINGS[ring_idx] as u64);
-                    let link_trb = Trb {
-                        param: ring_phys,
-                        status: 0,
-                        control: (trb_type::LINK << 10) | (1 << 1) | 1,
-                    };
-                    core::ptr::write_volatile(
-                        &mut (*ring)[TRANSFER_RING_SIZE - 1] as *mut Trb,
-                        link_trb,
-                    );
-                    dma_cache_clean(
-                        &TRANSFER_RINGS[ring_idx] as *const _ as *const u8,
-                        TRANSFER_RING_SIZE * 16,
-                    );
-                }
-            }
-        }
-
-        // Deconfigure (DC=1) REMOVED: Parallels vxHC hangs on this command.
-
-        if let Err(e) = configure_endpoints_batch(state, slot_id, &pending_eps, ep_count) {
-            crate::serial_println!(
-                "[xhci] deferred kbd slot {} cfg_ep FAIL: {} (ep_count={})",
-                slot_id,
-                e,
-                ep_count
-            );
-        }
-    }
-}
-
-/// Phase 2 of deferred init: queue TRBs and ring doorbells for all HID
-/// endpoints. Called at poll=1200 (~6s after timer start), 3 seconds after
-/// the deferred ConfigureEndpoint to allow any secondary internal reset to settle.
-#[allow(dead_code)]
-fn deferred_queue_trbs(state: &XhciState) {
-    // Drain any events that appeared between ConfigEP and now.
-    drain_stale_events(state);
-
-    KBD_TRB_FIRST_QUEUED.store(true, Ordering::Release);
-    HID_TRBS_QUEUED.store(true, Ordering::Release);
-
-    // Keyboard boot
-    if state.kbd_slot != 0 && state.kbd_endpoint != 0 {
-        let _ = queue_hid_transfer(state, 0, state.kbd_slot, state.kbd_endpoint);
-    }
-    // Keyboard NKRO
-    if state.kbd_slot != 0 && state.kbd_nkro_endpoint != 0 {
-        let _ = queue_hid_transfer(state, 2, state.kbd_slot, state.kbd_nkro_endpoint);
-    }
-    // Mouse boot
-    if state.mouse_slot != 0 && state.mouse_endpoint != 0 {
-        let _ = queue_hid_transfer(state, 1, state.mouse_slot, state.mouse_endpoint);
-    }
-    // Mouse2
-    if state.mouse_slot != 0 && state.mouse_nkro_endpoint != 0 {
-        let _ = queue_hid_transfer(state, 3, state.mouse_slot, state.mouse_nkro_endpoint);
-    }
-}
-
-/// Timer-driven xHCI housekeeping and event drain (aarch64).
-///
-/// Called from the aarch64 CPU0 timer interrupt at 200 Hz (every 5ms).
-/// This is NOT a "fallback for systems without interrupt support"; it owns
-/// responsibilities that handle_interrupt() does not:
-///
-/// - One-time SPI activation at `poll >= 50` (~250ms after init). Until this
-///   runs, the xHCI GIC SPI is disabled and handle_interrupt() cannot be
-///   triggered for HID events. Deleting this path would break MSI delivery.
-/// - Doorbell re-ring at `poll == 75`, one-shot, after SPI activation.
-/// - Endpoint reset recovery for CC=12 errors (per-endpoint rate-limited via
-///   RESET_INTERVAL_TICKS). handle_interrupt() only flags NEEDS_RESET_*; the
-///   actual Reset Endpoint + Set TR Dequeue Pointer is timer-side.
-/// - Requeue from MSI_*_NEEDS_REQUEUE flags set by
-///   wait_for_command_completion() when it consumes transfer events while
-///   waiting for recovery commands.
-/// - Rescue event-ring drain for the case where handle_interrupt() disabled
-///   the GIC SPI before its try_lock(), lost the lock to a concurrent
-///   timer-side holder, and returned WITHOUT re-enabling the SPI. In that
-///   scenario this timer path is the only remaining drain path.
-/// - Periodic diagnostics every 2000 polls.
-///
-/// The event-ring drain done here overlaps with handle_interrupt()'s drain.
-/// That overlap is intentional for the rescue case. Whether the drain can be
-/// narrowed away (keeping only housekeeping) requires runtime evidence that is
-/// environmentally blocked on Parallels by a pre-existing CPU0 timer regression
-/// (timer_interrupt.rs:598). See follow-up issue.
-pub fn poll_hid_events() {
-    if !XHCI_INITIALIZED.load(Ordering::Acquire) {
+fn queue_msi_probe_noop(state: &XhciState) {
+    if MSI_PROBE_NOOP_QUEUED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
         return;
     }
 
-    POLL_COUNT.fetch_add(1, Ordering::Relaxed);
-
-    // try_lock: if someone else holds the lock, skip this poll cycle
-    let _guard = match XHCI_LOCK.try_lock() {
-        Some(g) => g,
-        None => return,
+    let trb = Trb {
+        param: 0,
+        status: 0,
+        control: trb_type::NOOP << 10,
     };
+    enqueue_command(trb);
+    ring_doorbell(state, 0, 0);
+}
 
-    let state = unsafe {
-        match (*(&raw const XHCI_STATE)).as_ref() {
-            Some(s) => s,
-            None => return,
-        }
-    };
-
-    let ir0 = state.rt_base + 0x20;
-
-    // Clear IMAN.IP and USBSTS.EINT if set (acknowledge any pending state)
-    let iman = read32(ir0);
-    if iman & 1 != 0 {
-        write32(ir0, iman | 1); // W1C to clear IP
-    }
-    let usbsts = read32(state.op_base + 0x04);
-    if usbsts & (1 << 3) != 0 {
-        write32(state.op_base + 0x04, 1 << 3); // W1C to clear EINT
+fn complete_waiting_command(trb: &Trb) {
+    if !XHCI_COMMAND_WAITING.load(Ordering::Acquire) {
+        return;
     }
 
-    // Deferred TRB queue: queue interrupt TRBs after a delay (matching Linux's msleep).
-    let poll = POLL_COUNT.load(Ordering::Relaxed);
-    if DEFERRED_TRB_POLL > 0
-        && poll == DEFERRED_TRB_POLL
-        && !HID_POLLING_STARTED.load(Ordering::Acquire)
+    XHCI_COMMAND_PARAM.store(trb.param, Ordering::Release);
+    XHCI_COMMAND_STATUS.store(trb.status, Ordering::Release);
+    XHCI_COMMAND_CONTROL.store(trb.control, Ordering::Release);
+    XHCI_COMMAND_COMPLETION.complete(XHCI_COMPLETION_TOKEN);
+}
+
+fn complete_waiting_transfer(slot: u8, endpoint: u8, trb: &Trb) -> bool {
+    if !XHCI_TRANSFER_WAITING.load(Ordering::Acquire) {
+        return false;
+    }
+
+    let key = ((slot as u32) << 8) | endpoint as u32;
+    if XHCI_TRANSFER_WAIT_KEY.load(Ordering::Acquire) != key {
+        return false;
+    }
+
+    XHCI_TRANSFER_PARAM.store(trb.param, Ordering::Release);
+    XHCI_TRANSFER_STATUS.store(trb.status, Ordering::Release);
+    XHCI_TRANSFER_CONTROL.store(trb.control, Ordering::Release);
+    XHCI_TRANSFER_COMPLETION.complete(XHCI_COMPLETION_TOKEN);
+    true
+}
+
+fn schedule_endpoint_recovery_for_event(state: &XhciState, slot: u8, endpoint: u8) {
+    if slot == state.kbd_slot && endpoint == state.kbd_endpoint {
+        schedule_endpoint_recovery(slot, endpoint, 0, &RECOVERY_KBD_BOOT_PENDING);
+    } else if slot == state.kbd_slot
+        && state.kbd_nkro_endpoint != 0
+        && endpoint == state.kbd_nkro_endpoint
     {
-        start_hid_polling(state);
-        HID_POLLING_STARTED.store(true, Ordering::Release);
+        schedule_endpoint_recovery(slot, endpoint, 2, &RECOVERY_KBD_NKRO_PENDING);
+    } else if slot == state.mouse_slot && endpoint == state.mouse_endpoint {
+        schedule_endpoint_recovery(slot, endpoint, 1, &RECOVERY_MOUSE_PENDING);
+    } else if slot == state.mouse_slot
+        && state.mouse_nkro_endpoint != 0
+        && endpoint == state.mouse_nkro_endpoint
+    {
+        schedule_endpoint_recovery(slot, endpoint, 3, &RECOVERY_MOUSE2_PENDING);
+    }
+}
+
+fn schedule_endpoint_recovery(
+    slot_id: u8,
+    dci: u8,
+    hid_idx: usize,
+    pending: &'static AtomicBool,
+) {
+    if pending
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
     }
 
-    // Process all pending events on the event ring
-    loop {
-        unsafe {
-            let ring = &raw const EVENT_RING;
-            let idx = EVENT_RING_DEQUEUE;
-            let cycle = EVENT_RING_CYCLE;
-
-            dma_cache_invalidate(
-                &(*ring).0[idx] as *const Trb as *const u8,
-                core::mem::size_of::<Trb>(),
-            );
-
-            let trb = core::ptr::read_volatile(&(*ring).0[idx]);
-            let trb_cycle = trb.control & 1 != 0;
-
-            if trb_cycle != cycle {
-                break; // No more events
+    let work = crate::task::workqueue::Work::new(
+        move || {
+            let result = unsafe {
+                (*(&raw const XHCI_STATE))
+                    .as_ref()
+                    .ok_or("XHCI state missing")
+                    .and_then(|state| reset_halted_endpoint(state, slot_id, dci, hid_idx))
+            };
+            if result.is_err() {
+                ENDPOINT_RESET_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
             }
+            pending.store(false, Ordering::Release);
+        },
+        "xhci_ep_recovery",
+    );
 
-            let _evt_num = EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
-
-            let trb_type_val = trb.trb_type();
-
-            // No serial_println here — this runs in timer interrupt context.
-            // Use atomic counters (reported by heartbeat) instead of logging.
-
-            match trb_type_val {
-                trb_type::TRANSFER_EVENT => {
-                    let slot = trb.slot_id();
-                    let endpoint = ((trb.control >> 16) & 0x1F) as u8;
-                    let cc = trb.completion_code();
-                    // Record first Transfer Event details (CC, TRB Pointer, slot/ep)
-                    let _ = DIAG_FIRST_XFER_PTR.compare_exchange(
-                        0,
-                        trb.param,
-                        Ordering::AcqRel,
-                        Ordering::Relaxed,
-                    );
-                    let _ = DIAG_FIRST_XFER_STATUS.compare_exchange(
-                        0,
-                        trb.status | 1,
-                        Ordering::AcqRel,
-                        Ordering::Relaxed,
-                    );
-                    let _ = DIAG_FIRST_XFER_CONTROL.compare_exchange(
-                        0,
-                        trb.control | 1,
-                        Ordering::AcqRel,
-                        Ordering::Relaxed,
-                    );
-                    let _ = DIAG_FIRST_XFER_SLEP.compare_exchange(
-                        0,
-                        ((slot as u32) << 8) | (endpoint as u32),
-                        Ordering::AcqRel,
-                        Ordering::Relaxed,
-                    );
-                    // Record first Transfer Event CC (0xFF = unset sentinel)
-                    let _ = DIAG_FIRST_XFER_CC.compare_exchange(
-                        0xFF,
-                        cc,
-                        Ordering::AcqRel,
-                        Ordering::Relaxed,
-                    );
-
-                    // EP0 GET_REPORT response (non-blocking async path).
-                    // Primary path: PENDING=true means we're expecting a response right now.
-                    // Secondary path: PENDING=false (stale-cleared) but event still arrived —
-                    //   late responses are valid and must update gk/fd.
-                    // Post-enumeration, the only EP0 events for mouse_slot are GET_REPORT.
-                    if slot == state.mouse_slot
-                        && endpoint == 1
-                        && MOUSE_GET_REPORT_PENDING.load(Ordering::Acquire)
-                    {
-                        MOUSE_GET_REPORT_PENDING.store(false, Ordering::Release);
-                        // Record last CC seen (fd= heartbeat field, 0xFF = no event yet).
-                        DIAG_FIRST_DB.store(cc, Ordering::Relaxed);
-                        if cc == completion_code::SUCCESS || cc == completion_code::SHORT_PACKET {
-                            GET_REPORT_OK.fetch_add(1, Ordering::Relaxed);
-                            let buf = &raw const CTRL_DATA_BUF;
-                            dma_cache_invalidate((*buf).0.as_ptr(), 8);
-                            let report = &(&(*buf).0)[..8];
-                            if report.iter().any(|&b| b != 0) {
-                                GET_REPORT_NONZERO.fetch_add(1, Ordering::Relaxed);
-                                super::hid::process_mouse_report(report, 0);
-                            }
-                        }
-                        // Event consumed — advance dequeue and continue event loop
-                    } else if slot == state.mouse_slot && endpoint == 1 {
-                        // Late response: PENDING was stale-cleared but Transfer Event arrived
-                        // anyway. Catch it here so gk and fd reflect these successes.
-                        DIAG_FIRST_DB.store(cc, Ordering::Relaxed);
-                        if cc == completion_code::SUCCESS || cc == completion_code::SHORT_PACKET {
-                            GET_REPORT_OK.fetch_add(1, Ordering::Relaxed);
-                            let buf = &raw const CTRL_DATA_BUF;
-                            dma_cache_invalidate((*buf).0.as_ptr(), 8);
-                            let report = &(&(*buf).0)[..8];
-                            if report.iter().any(|&b| b != 0) {
-                                GET_REPORT_NONZERO.fetch_add(1, Ordering::Relaxed);
-                                super::hid::process_mouse_report(report, 0);
-                            }
-                        }
-                    } else if cc == completion_code::SUCCESS || cc == completion_code::SHORT_PACKET
-                    {
-                        // NKRO keyboard interrupt endpoint (DCI 5, interface 1)
-                        // Parallels sends actual keystrokes on this endpoint.
-                        if slot == state.kbd_slot
-                            && state.kbd_nkro_endpoint != 0
-                            && endpoint == state.kbd_nkro_endpoint
-                        {
-                            NKRO_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
-                            DMA_SENTINEL_REPLACED.fetch_add(1, Ordering::SeqCst);
-
-                            let report_buf = &raw const NKRO_REPORT_BUF;
-                            dma_cache_invalidate((*report_buf).0.as_ptr(), 9);
-                            let nkro = &(*report_buf).0;
-
-                            // Store first 8 bytes for heartbeat diagnostics
-                            let nkro_snap = u64::from_le_bytes([
-                                nkro[0], nkro[1], nkro[2], nkro[3], nkro[4], nkro[5], nkro[6],
-                                nkro[7],
-                            ]);
-                            LAST_NKRO_REPORT_U64.store(nkro_snap, Ordering::Relaxed);
-
-                            // NKRO report (after report ID) has NO reserved byte:
-                            //   [report_id=1, modifier, key1, key2, ..., key7] = 9 bytes
-                            // Reformat to boot keyboard layout for process_keyboard_report:
-                            //   [modifier, reserved=0, key1, ..., key6]
-                            if nkro[0] == 1 {
-                                KBD_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
-                                let boot_fmt: [u8; 8] = [
-                                    nkro[1], 0, // modifier, reserved
-                                    nkro[2], nkro[3], nkro[4], nkro[5], nkro[6], nkro[7],
-                                ];
-                                super::hid::process_keyboard_report(&boot_fmt);
-                            }
-
-                            let _ = queue_hid_transfer(
-                                state,
-                                2,
-                                state.kbd_slot,
-                                state.kbd_nkro_endpoint,
-                            );
-                        }
-                        // Boot keyboard interrupt endpoint (DCI 3, interface 0)
-                        else if slot == state.kbd_slot && endpoint == state.kbd_endpoint {
-                            KBD_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
-                            DMA_SENTINEL_REPLACED.fetch_add(1, Ordering::SeqCst);
-
-                            let report_buf = &raw const KBD_REPORT_BUF;
-                            dma_cache_invalidate((*report_buf).0.as_ptr(), 8);
-                            let report = &(*report_buf).0;
-
-                            super::hid::process_keyboard_report(report);
-                            let _ =
-                                queue_hid_transfer(state, 0, state.kbd_slot, state.kbd_endpoint);
-                        }
-                        // Mouse interrupt endpoint event (DCI 3)
-                        else if slot == state.mouse_slot && endpoint == state.mouse_endpoint {
-                            let report_buf = &raw const MOUSE_REPORT_BUF;
-                            dma_cache_invalidate((*report_buf).0.as_ptr(), 8);
-                            let report = &(*report_buf).0;
-                            super::hid::process_mouse_report(report, 0);
-                            let _ = queue_hid_transfer(
-                                state,
-                                1,
-                                state.mouse_slot,
-                                state.mouse_endpoint,
-                            );
-                        }
-                        // Mouse2 interrupt endpoint event (DCI 5)
-                        else if slot == state.mouse_slot
-                            && state.mouse_nkro_endpoint != 0
-                            && endpoint == state.mouse_nkro_endpoint
-                        {
-                            let report_buf = &raw const MOUSE2_REPORT_BUF;
-                            dma_cache_invalidate((*report_buf).0.as_ptr(), 9);
-                            let report = &(*report_buf).0;
-                            super::hid::process_mouse_report(report, 1);
-                            let _ = queue_hid_transfer(
-                                state,
-                                3,
-                                state.mouse_slot,
-                                state.mouse_nkro_endpoint,
-                            );
-                        } else {
-                            XFER_OTHER_COUNT.fetch_add(1, Ordering::Relaxed);
-                            XO_LAST_INFO.store(
-                                ((slot as u64) << 16) | ((endpoint as u64) << 8) | (cc as u64),
-                                Ordering::Relaxed,
-                            );
-                        }
-                    } else {
-                        // Error CC on HID interrupt endpoint. All error CCs (including
-                        // CC=12) halt the endpoint on Parallels virtual xHC. Reset
-                        // Endpoint is required to recover. The rate limiter in the
-                        // NEEDS_RESET_* block below caps reset rate to RESET_INTERVAL_TICKS
-                        // to prevent command ring saturation.
-                        XFER_OTHER_COUNT.fetch_add(1, Ordering::Relaxed);
-                        XO_ERR_COUNT.fetch_add(1, Ordering::Relaxed);
-                        XO_LAST_INFO.store(
-                            ((slot as u64) << 16) | ((endpoint as u64) << 8) | (cc as u64),
-                            Ordering::Relaxed,
-                        );
-                        // Read full endpoint + slot context on first error CC.
-                        if DIAG_EP_STATE_AFTER_CC12.load(Ordering::Relaxed) == 0xFF
-                            && slot > 0
-                            && (slot as usize) <= MAX_SLOTS
-                        {
-                            let slot_idx = (slot - 1) as usize;
-                            let ctx_base = DEVICE_CONTEXTS[slot_idx].0.as_ptr();
-                            dma_cache_invalidate(ctx_base, 4096);
-                            let ep_out = ctx_base.add(endpoint as usize * state.context_size);
-                            let dw0 = core::ptr::read_volatile(ep_out as *const u32);
-                            let ep_state = dw0 & 0x7;
-                            DIAG_EP_STATE_AFTER_CC12.store(
-                                ((slot as u32) << 16) | ((endpoint as u32) << 8) | ep_state,
-                                Ordering::Relaxed,
-                            );
-                            // Capture full EP context DW0-DW4
-                            DIAG_CC12_EP_DW0.store(dw0, Ordering::Relaxed);
-                            DIAG_CC12_EP_DW1.store(
-                                core::ptr::read_volatile(ep_out.add(4) as *const u32),
-                                Ordering::Relaxed,
-                            );
-                            DIAG_CC12_EP_DW2.store(
-                                core::ptr::read_volatile(ep_out.add(8) as *const u32),
-                                Ordering::Relaxed,
-                            );
-                            DIAG_CC12_EP_DW3.store(
-                                core::ptr::read_volatile(ep_out.add(12) as *const u32),
-                                Ordering::Relaxed,
-                            );
-                            DIAG_CC12_EP_DW4.store(
-                                core::ptr::read_volatile(ep_out.add(16) as *const u32),
-                                Ordering::Relaxed,
-                            );
-                            // Capture Slot Context DW0 and DW3
-                            DIAG_CC12_SLOT_DW0.store(
-                                core::ptr::read_volatile(ctx_base as *const u32),
-                                Ordering::Relaxed,
-                            );
-                            DIAG_CC12_SLOT_DW3.store(
-                                core::ptr::read_volatile(ctx_base.add(12) as *const u32),
-                                Ordering::Relaxed,
-                            );
-                            // Capture DCBAA entry for this slot
-                            let dcbaa = &raw const DCBAA;
-                            dma_cache_invalidate(
-                                &(*dcbaa).0[slot as usize] as *const u64 as *const u8,
-                                8,
-                            );
-                            DIAG_CC12_DCBAA.store((*dcbaa).0[slot as usize], Ordering::Relaxed);
-                        }
-                        if slot == state.kbd_slot && endpoint == state.kbd_endpoint {
-                            NEEDS_RESET_KBD_BOOT.store(true, Ordering::Release);
-                        } else if slot == state.kbd_slot
-                            && state.kbd_nkro_endpoint != 0
-                            && endpoint == state.kbd_nkro_endpoint
-                        {
-                            NEEDS_RESET_KBD_NKRO.store(true, Ordering::Release);
-                        } else if slot == state.mouse_slot && endpoint == state.mouse_endpoint {
-                            NEEDS_RESET_MOUSE.store(true, Ordering::Release);
-                        } else if slot == state.mouse_slot
-                            && state.mouse_nkro_endpoint != 0
-                            && endpoint == state.mouse_nkro_endpoint
-                        {
-                            NEEDS_RESET_MOUSE2.store(true, Ordering::Release);
-                        }
-                    }
-                }
-                trb_type::COMMAND_COMPLETION => {
-                    // Stray command completions — may arrive from recovery commands.
-                    // Ignore safely; wait_for_command_completion handles expected ones.
-                }
-                trb_type::PORT_STATUS_CHANGE => {
-                    PSC_COUNT.fetch_add(1, Ordering::Relaxed);
-                    let port_id = ((trb.param >> 24) & 0xFF) as u8;
-                    if port_id > 0 {
-                        acknowledge_port_changes(state.op_base, port_id);
-                    }
-                }
-                _ => {}
-            }
-
-            // Advance dequeue pointer
-            EVENT_RING_DEQUEUE = (idx + 1) % EVENT_RING_SIZE;
-            if EVENT_RING_DEQUEUE == 0 {
-                EVENT_RING_CYCLE = !cycle;
-            }
-
-            // Update ERDP with EHB bit
-            let erdp_phys =
-                virt_to_phys(&raw const EVENT_RING as u64) + (EVENT_RING_DEQUEUE as u64) * 16;
-            write64(ir0 + 0x18, erdp_phys | (1 << 3));
-        }
-    }
-
-    // Command-wait recovery requeue: wait_for_event_inner() sets these flags
-    // when it consumes CC=12 Transfer Events during command waits. The timer
-    // path drains them here because IRQ context must not run the reset/requeue
-    // recovery sequence directly.
-    if MSI_KBD_NEEDS_REQUEUE.swap(false, Ordering::AcqRel) {
-        if state.kbd_slot != 0 && state.kbd_endpoint != 0 {
-            let _ = queue_hid_transfer(state, 0, state.kbd_slot, state.kbd_endpoint);
-        }
-    }
-    if MSI_NKRO_NEEDS_REQUEUE.swap(false, Ordering::AcqRel) {
-        if state.kbd_slot != 0 && state.kbd_nkro_endpoint != 0 {
-            let _ = queue_hid_transfer(state, 2, state.kbd_slot, state.kbd_nkro_endpoint);
-        }
-    }
-    if MSI_MOUSE_NEEDS_REQUEUE.swap(false, Ordering::AcqRel) {
-        if state.mouse_slot != 0 && state.mouse_endpoint != 0 {
-            let _ = queue_hid_transfer(state, 1, state.mouse_slot, state.mouse_endpoint);
-        }
-    }
-    if MSI_MOUSE2_NEEDS_REQUEUE.swap(false, Ordering::AcqRel) {
-        if state.mouse_slot != 0 && state.mouse_nkro_endpoint != 0 {
-            let _ = queue_hid_transfer(state, 3, state.mouse_slot, state.mouse_nkro_endpoint);
-        }
-    }
-
-    let poll = POLL_COUNT.load(Ordering::Relaxed);
-
-    // Reset state machine: on CC=12 (or any error CC), the endpoint may be
-    // Halted internally even if the output context says Running. Issue Reset
-    // Endpoint → Set TR Dequeue → requeue to recover. Rate-limited to avoid
-    // command ring saturation.
-    if NEEDS_RESET_KBD_BOOT.load(Ordering::Acquire) {
-        let last = KBD_BOOT_RESET_POLL.load(Ordering::Relaxed);
-        if poll >= last + RESET_INTERVAL_TICKS {
-            NEEDS_RESET_KBD_BOOT.store(false, Ordering::Release);
-            KBD_BOOT_RESET_POLL.store(poll, Ordering::Relaxed);
-            if state.kbd_slot != 0 && state.kbd_endpoint != 0 {
-                let _ = reset_halted_endpoint(state, state.kbd_slot, state.kbd_endpoint, 0);
-            }
-        }
-    }
-    if NEEDS_RESET_KBD_NKRO.load(Ordering::Acquire) {
-        let last = KBD_NKRO_RESET_POLL.load(Ordering::Relaxed);
-        if poll >= last + RESET_INTERVAL_TICKS {
-            NEEDS_RESET_KBD_NKRO.store(false, Ordering::Release);
-            KBD_NKRO_RESET_POLL.store(poll, Ordering::Relaxed);
-            if state.kbd_slot != 0 && state.kbd_nkro_endpoint != 0 {
-                let _ = reset_halted_endpoint(state, state.kbd_slot, state.kbd_nkro_endpoint, 2);
-            }
-        }
-    }
-    if NEEDS_RESET_MOUSE.load(Ordering::Acquire) {
-        let last = MOUSE_RESET_POLL.load(Ordering::Relaxed);
-        if poll >= last + RESET_INTERVAL_TICKS {
-            NEEDS_RESET_MOUSE.store(false, Ordering::Release);
-            MOUSE_RESET_POLL.store(poll, Ordering::Relaxed);
-            if state.mouse_slot != 0 && state.mouse_endpoint != 0 {
-                let _ = reset_halted_endpoint(state, state.mouse_slot, state.mouse_endpoint, 1);
-            }
-        }
-    }
-    if NEEDS_RESET_MOUSE2.load(Ordering::Acquire) {
-        let last = MOUSE2_RESET_POLL.load(Ordering::Relaxed);
-        if poll >= last + RESET_INTERVAL_TICKS {
-            NEEDS_RESET_MOUSE2.store(false, Ordering::Release);
-            MOUSE2_RESET_POLL.store(poll, Ordering::Relaxed);
-            if state.mouse_slot != 0 && state.mouse_nkro_endpoint != 0 {
-                let _ =
-                    reset_halted_endpoint(state, state.mouse_slot, state.mouse_nkro_endpoint, 3);
-            }
-        }
-    }
-
-    // TRANSITIONAL FALLBACK: enable SPI from the timer poller if the
-    // system-ready boot path did not beat it. This should disappear once
-    // Parallels MSI delivery is proven independent of CPU0 timer polling.
-    if state.irq != 0 && poll >= 50 && !SPI_ACTIVATED.load(Ordering::Relaxed) {
-        activate_msi_if_ready_locked(state, "timer-fallback", false);
-    }
-
-    // Ensure HID_TRBS_QUEUED is set after initialization completes.
-    if poll >= 100 && !HID_TRBS_QUEUED.load(Ordering::Acquire) {
-        HID_TRBS_QUEUED.store(true, Ordering::Release);
-    }
-
-    // Re-ring doorbells shortly after SPI activation (poll=75, ~375ms).
-    // Tells the xHC to re-check transfer rings now that the interrupt path is live.
-    static DOORBELLS_RE_RUNG: AtomicBool = AtomicBool::new(false);
-    if poll == 75 && !DOORBELLS_RE_RUNG.load(Ordering::Acquire) {
-        DOORBELLS_RE_RUNG.store(true, Ordering::Release);
-        // Mouse EP3
-        if state.mouse_slot != 0 && state.mouse_endpoint != 0 {
-            ring_doorbell(state, state.mouse_slot, state.mouse_endpoint);
-        }
-        // Mouse EP5 (mouse2)
-        if state.mouse_slot != 0 && state.mouse_nkro_endpoint != 0 {
-            ring_doorbell(state, state.mouse_slot, state.mouse_nkro_endpoint);
-        }
-        // Keyboard EP3
-        if state.kbd_slot != 0 && state.kbd_endpoint != 0 {
-            ring_doorbell(state, state.kbd_slot, state.kbd_endpoint);
-        }
-        // Keyboard EP5 (NKRO)
-        if state.kbd_slot != 0 && state.kbd_nkro_endpoint != 0 {
-            ring_doorbell(state, state.kbd_slot, state.kbd_nkro_endpoint);
-        }
-    }
-
-    // Deferred re-enumerate + TRB queue.
-    //
-    // The Parallels vxHC fires an internal XHC reset ~400ms after HCRST that
-    // destroys interrupt endpoint state (while output context still reads
-    // "Running"). The C harness avoids CC=12 by waiting 2s then re-enumerating.
-    //
-    // At poll=600 (~3s after timer start), we re-issue ConfigureEndpoint + BW
-    // dance to re-create endpoints after the internal reset has settled, then
-    // queue interrupt TRBs.
-    // Deferred re-configure + TRB queue DISABLED.
-    //
-    // Breakthrough: queuing TRBs during init (inline, matching Linux's flow) produces
-    // xe=0, fc=255 (NO CC=12 errors). The CC=12 was caused by the deferred re-
-    // ConfigureEndpoint at poll=600 which destroyed and rebuilt transfer rings.
-    // The Parallels vxHC returns CC=12 when endpoints are re-configured AFTER the
-    // initial enumeration — the initial ConfigureEndpoint + BW dance creates proper
-    // internal state, but any subsequent re-ConfigureEndpoint breaks it.
-    //
-    // TRBs are now queued by start_hid_polling() after enumeration completes
-    // when DEFERRED_TRB_POLL=0. The poll=600 re-configure path is no longer
-    // needed.
-
-    // NOTE: Mouse EP0 GET_REPORT polling is disabled.
-    // The Parallels virtual xHC echoes the 8-byte setup packet back as the "data"
-    // response (LAST_GET_REPORT_U64 = 0x00080000010001a1 = GET_REPORT setup bytes),
-    // causing phantom mouse clicks (buttons=0xA1) and cursor drift (deltaX=1).
-    // Mouse input will be handled via interrupt IN endpoints when that path is working.
-
-    // Periodic diagnostic: dump controller + endpoint state every 2000 polls (~10s)
-    if poll > 0 && poll % 2000 == 0 {
-        unsafe {
-            // USBCMD (bit 0 = RS, bit 2 = INTE)
-            let usbcmd = read32(state.op_base);
-            DIAG_USBCMD.store(usbcmd, Ordering::Relaxed);
-
-            // USBSTS (bit 0 = HCH halted, bit 3 = EINT)
-            let usbsts = read32(state.op_base + 0x04);
-            DIAG_USBSTS.store(usbsts, Ordering::Relaxed);
-
-            // IMAN for Interrupter 0 (bit 0 = IP, bit 1 = IE)
-            let ir0 = state.rt_base + 0x20;
-            let iman = read32(ir0);
-            DIAG_IMAN.store(iman, Ordering::Relaxed);
-
-            // ERDP readback — verify our last ERDP write took effect
-            let erdp_readback = read64(ir0 + 0x18);
-            DIAG_ERDP_READBACK.store(erdp_readback, Ordering::Relaxed);
-
-            // Event ring state: dequeue index + cycle bit
-            let er_idx = EVENT_RING_DEQUEUE;
-            let er_cycle = EVENT_RING_CYCLE;
-            DIAG_ER_STATE.store(
-                ((er_idx as u32) << 1) | if er_cycle { 1 } else { 0 },
-                Ordering::Relaxed,
-            );
-
-            // Raw event ring TRB at current dequeue index
-            {
-                let ring = &raw const EVENT_RING;
-                dma_cache_invalidate(
-                    &(*ring).0[er_idx] as *const Trb as *const u8,
-                    core::mem::size_of::<Trb>(),
-                );
-                let trb = core::ptr::read_volatile(&(*ring).0[er_idx]);
-                DIAG_ER_TRB_CONTROL.store(trb.control, Ordering::Relaxed);
-            }
-
-            // Runtime output context TRDP for mouse EP3
-            if state.mouse_slot != 0 && state.mouse_endpoint != 0 {
-                let slot_idx = (state.mouse_slot - 1) as usize;
-                let ctx_size = state.context_size;
-                let dev_ctx = &raw const DEVICE_CONTEXTS[slot_idx];
-                dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
-                let ep_base = (*dev_ctx)
-                    .0
-                    .as_ptr()
-                    .add(state.mouse_endpoint as usize * ctx_size);
-                let trdp_lo = core::ptr::read_volatile(ep_base.add(8) as *const u32);
-                let trdp_hi = core::ptr::read_volatile(ep_base.add(12) as *const u32);
-                DIAG_RUNTIME_TRDP.store(
-                    ((trdp_hi as u64) << 32) | (trdp_lo as u64),
-                    Ordering::Relaxed,
-                );
-            }
-
-            // Raw transfer ring TRB at position 0 for mouse ring (hid_idx=1)
-            {
-                let ring_idx = HID_RING_BASE + 1; // mouse
-                let trb = core::ptr::read_volatile(&TRANSFER_RINGS[ring_idx][0]);
-                DIAG_TR_TRB_CONTROL.store(trb.control, Ordering::Relaxed);
-            }
-
-            // PORTSC for keyboard port (port 1 = slot 2 typically)
-            let kbd_port = 1u64; // Port index for keyboard
-            let portsc = read32(state.op_base + 0x400 + kbd_port * 0x10);
-            DIAG_KBD_PORTSC.store(portsc, Ordering::Relaxed);
-
-            // Endpoint context state for keyboard DCI=3 and DCI=5
-            if state.kbd_slot != 0 {
-                let slot_idx = (state.kbd_slot - 1) as usize;
-                let ctx_size = state.context_size;
-                let dev_ctx = &raw const DEVICE_CONTEXTS[slot_idx];
-                dma_cache_invalidate((*dev_ctx).0.as_ptr(), 4096);
-
-                let dci3_state = if state.kbd_endpoint != 0 {
-                    let ep_base = (*dev_ctx)
-                        .0
-                        .as_ptr()
-                        .add(state.kbd_endpoint as usize * ctx_size);
-                    core::ptr::read_volatile(ep_base as *const u32) & 0x7
-                } else {
-                    0
-                };
-                let dci5_state = if state.kbd_nkro_endpoint != 0 {
-                    let ep_base = (*dev_ctx)
-                        .0
-                        .as_ptr()
-                        .add(state.kbd_nkro_endpoint as usize * ctx_size);
-                    core::ptr::read_volatile(ep_base as *const u32) & 0x7
-                } else {
-                    0
-                };
-                DIAG_KBD_EP_STATE.store((dci3_state << 4) | dci5_state, Ordering::Relaxed);
-            }
-        }
+    if !crate::task::workqueue::schedule_work(Arc::clone(&work)) {
+        pending.store(false, Ordering::Release);
     }
 }
 

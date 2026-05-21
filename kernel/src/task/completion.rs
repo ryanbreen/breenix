@@ -415,6 +415,10 @@ impl Completion {
         } else {
             // Early boot polling path — no scheduler, spin on done flag.
             // Uses the same CNTPCT deadline as the interrupt path.
+            // Bounded fallback for pre-scheduler boot phase (NOT event polling).
+            // Linux equivalent: pre-scheduler-init busy-spin primitives like
+            // mdelay() — completions require the scheduler, but early boot has
+            // no thread to park. Allowlisted per docs/polling-allowlist.md.
             #[cfg(target_arch = "aarch64")]
             {
                 let cnt: u64;

@@ -1,0 +1,9 @@
+308:[smp] GICR covers 8 redistributors, probing CPUs 1..8
+310:[s1@m1ApB]CD ECeFPGU 1:1 PSCI CPU_ON success
+313:[smp] CPU 2: PSCI CPU_ON success
+314:T1[3s@1mABpCD] EeCFGPU3 3: PSCI CPU_ON success
+316:[smp] CPU 4: PSCI CPU_ON success
+319:[smp] CPU 5: PSCI CPU_ON success
+320:[6@s1AmBCpDE]e FGC6PU 6: PSCI CPU_ON success
+322:[smp] CPU 7: PSCI CPU_ON success
+324:[smp] 8 CPUs online

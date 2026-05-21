@@ -1,0 +1,3 @@
+ kernel/src/net/mod.rs                    | 63 ++++++++++++++++++++++++++++----
+ kernel/src/tracing/providers/counters.rs |  6 +++
+ 2 files changed, 62 insertions(+), 7 deletions(-)

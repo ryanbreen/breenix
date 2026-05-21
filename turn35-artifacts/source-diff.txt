@@ -1,0 +1,179 @@
+diff --git a/kernel/src/arch_impl/aarch64/exception.rs b/kernel/src/arch_impl/aarch64/exception.rs
+index 3d71b209..31fe7308 100644
+--- a/kernel/src/arch_impl/aarch64/exception.rs
++++ b/kernel/src/arch_impl/aarch64/exception.rs
+@@ -1281,6 +1281,12 @@ fn dispatch_irq_action(irq_id: u32, frame: *const Aarch64ExceptionFrame) {
+                     crate::drivers::virtio::sound_mmio::handle_interrupt();
+                 }
+             }
++            // VirtIO GPU MMIO interrupt dispatch
++            if let Some(gpu_mmio_irq) = crate::drivers::virtio::gpu_mmio::get_irq() {
++                if irq_id == gpu_mmio_irq {
++                    crate::drivers::virtio::gpu_mmio::handle_interrupt();
++                }
++            }
+             // XHCI USB interrupt dispatch
+             if let Some(xhci_irq) = crate::drivers::usb::xhci::get_irq() {
+                 if irq_id == xhci_irq {
+diff --git a/kernel/src/drivers/virtio/gpu_mmio.rs b/kernel/src/drivers/virtio/gpu_mmio.rs
+index 7399c656..9dcc7f12 100644
+--- a/kernel/src/drivers/virtio/gpu_mmio.rs
++++ b/kernel/src/drivers/virtio/gpu_mmio.rs
+@@ -6,8 +6,8 @@
+ use super::mmio::{
+     device_id, VirtioMmioDevice, VIRTIO_MMIO_BASE, VIRTIO_MMIO_COUNT, VIRTIO_MMIO_SIZE,
+ };
+-use core::ptr::read_volatile;
+-use core::sync::atomic::{fence, Ordering};
++use core::ptr::{read_volatile, write_volatile};
++use core::sync::atomic::{fence, AtomicU16, AtomicU32, AtomicU64, Ordering};
+ use spin::Mutex;
+ 
+ /// Lock protecting the GPU command path (CMD_BUF, RESP_BUF, CTRL_QUEUE, GPU_DEVICE).
+@@ -238,6 +238,14 @@ const FB_MAX_HEIGHT: u32 = 1200;
+ const FB_SIZE: usize = (FB_MAX_WIDTH * FB_MAX_HEIGHT * 4) as usize;
+ const BYTES_PER_PIXEL: usize = 4;
+ const RESOURCE_ID: u32 = 1;
++const VIRTIO_IRQ_BASE: u32 = 48;
++const MMIO_SLOT_UNINITIALIZED: u32 = u32::MAX;
++
++static MMIO_SLOT: AtomicU32 = AtomicU32::new(MMIO_SLOT_UNINITIALIZED);
++static MMIO_BASE: AtomicU64 = AtomicU64::new(0);
++pub static GPU_MMIO_IRQ_COUNT: AtomicU32 = AtomicU32::new(0);
++pub static GPU_MMIO_USED_IDX_ADVANCED: AtomicU32 = AtomicU32::new(0);
++pub static GPU_MMIO_LAST_USED_IDX: AtomicU16 = AtomicU16::new(0);
+ 
+ /// Requested resolution from fw_cfg (set during init, before GPU probe)
+ static mut REQUESTED_WIDTH: u32 = 0;
+@@ -298,6 +306,95 @@ fn virt_to_phys(addr: u64) -> u64 {
+     addr - crate::memory::physical_memory_offset().as_u64()
+ }
+ 
++/// Return the GIC SPI used by this VirtIO MMIO GPU device, if initialized.
++pub fn get_irq() -> Option<u32> {
++    let slot = MMIO_SLOT.load(Ordering::Acquire);
++    if slot == MMIO_SLOT_UNINITIALIZED {
++        None
++    } else {
++        Some(VIRTIO_IRQ_BASE + slot)
++    }
++}
++
++/// Snapshot MMIO GPU IRQ observation counters for non-IRQ logging.
++pub fn snapshot_counters() -> (u32, u32, u16) {
++    (
++        GPU_MMIO_IRQ_COUNT.load(Ordering::Acquire),
++        GPU_MMIO_USED_IDX_ADVANCED.load(Ordering::Acquire),
++        GPU_MMIO_LAST_USED_IDX.load(Ordering::Acquire),
++    )
++}
++
++fn record_mmio_irq_state(base: u64, slot: u32) {
++    let virt_base = crate::memory::physical_memory_offset().as_u64() + base;
++    MMIO_BASE.store(virt_base, Ordering::Release);
++    MMIO_SLOT.store(slot, Ordering::Release);
++    GPU_MMIO_LAST_USED_IDX.store(0, Ordering::Release);
++}
++
++fn enable_mmio_irq(slot: u32) {
++    #[cfg(target_arch = "aarch64")]
++    {
++        use crate::arch_impl::aarch64::gic;
++        use crate::arch_impl::traits::InterruptController;
++
++        let irq = VIRTIO_IRQ_BASE + slot;
++        gic::Gicv2::enable_irq(irq as u8);
++        crate::serial_println!("[virtio-gpu] MMIO IRQ {} enabled", irq);
++    }
++
++    #[cfg(not(target_arch = "aarch64"))]
++    {
++        let _ = slot;
++    }
++}
++
++fn log_irq_counters() {
++    let (irq_count, used_idx_advanced, last_used_idx) = snapshot_counters();
++    crate::serial_println!(
++        "[virtio-gpu] GPU_MMIO_IRQ_COUNT={} GPU_MMIO_USED_IDX_ADVANCED={} GPU_MMIO_LAST_USED_IDX={}",
++        irq_count,
++        used_idx_advanced,
++        last_used_idx
++    );
++}
++
++/// Handle a VirtIO MMIO GPU interrupt.
++///
++/// Hard IRQ path: no logging, allocation, locks, or unbounded work.
++pub fn handle_interrupt() {
++    let base = MMIO_BASE.load(Ordering::Acquire);
++    if base == 0 {
++        return;
++    }
++
++    let interrupt_status = unsafe { read_volatile((base + 0x60) as *const u32) };
++    if interrupt_status == 0 {
++        return;
++    }
++
++    GPU_MMIO_IRQ_COUNT.fetch_add(1, Ordering::Relaxed);
++
++    unsafe {
++        write_volatile((base + 0x64) as *mut u32, interrupt_status);
++    }
++
++    #[cfg(target_arch = "aarch64")]
++    crate::arch_impl::aarch64::cpu::dsb_sy();
++
++    fence(Ordering::SeqCst);
++
++    let used_idx = unsafe {
++        let ptr = &raw const CTRL_QUEUE;
++        read_volatile(&(*ptr).used.idx)
++    };
++    let previous = GPU_MMIO_LAST_USED_IDX.load(Ordering::Acquire);
++    if used_idx != previous {
++        GPU_MMIO_LAST_USED_IDX.store(used_idx, Ordering::Release);
++        GPU_MMIO_USED_IDX_ADVANCED.fetch_add(1, Ordering::Relaxed);
++    }
++}
++
+ /// Initialize the VirtIO GPU device
+ pub fn init() -> Result<(), &'static str> {
+     // Check if already initialized
+@@ -316,7 +413,7 @@ pub fn init() -> Result<(), &'static str> {
+         if let Some(mut device) = VirtioMmioDevice::probe(base) {
+             if device.device_id() == device_id::GPU {
+                 crate::serial_println!("[virtio-gpu] Found GPU device at {:#x}", base);
+-                return init_device(&mut device, base);
++                return init_device(&mut device, base, i as u32);
+             }
+         }
+     }
+@@ -324,7 +421,7 @@ pub fn init() -> Result<(), &'static str> {
+     Err("No VirtIO GPU device found")
+ }
+ 
+-fn init_device(device: &mut VirtioMmioDevice, base: u64) -> Result<(), &'static str> {
++fn init_device(device: &mut VirtioMmioDevice, base: u64, slot: u32) -> Result<(), &'static str> {
+     let version = device.version();
+     crate::serial_println!("[virtio-gpu] Device version: {}", version);
+ 
+@@ -374,6 +471,9 @@ fn init_device(device: &mut VirtioMmioDevice, base: u64) -> Result<(), &'static
+     // Mark device ready
+     device.driver_ok();
+ 
++    record_mmio_irq_state(base, slot);
++    enable_mmio_irq(slot);
++
+     // Store initial state with configured resolution
+     let (init_w, init_h) = configured_resolution();
+     unsafe {
+@@ -418,6 +518,7 @@ fn init_device(device: &mut VirtioMmioDevice, base: u64) -> Result<(), &'static
+     set_scanout()?;
+     flush()?;
+ 
++    log_irq_counters();
+     crate::serial_println!("[virtio-gpu] GPU device initialized successfully");
+     Ok(())
+ }

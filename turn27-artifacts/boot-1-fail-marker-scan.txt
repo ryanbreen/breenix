@@ -1,0 +1,28 @@
+CPU0 tick_count = 8, max peer = 30000
+  KERNEL PANIC!
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=8 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+CPU0 tick_count = 8, max peer = 30000
+  KERNEL PANIC!
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=8 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+CPU0 tick_count = 8, max peer = 30000
+  KERNEL PANIC!
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=8 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+CPU0 tick_count = 8, max peer = 30000
+  KERNEL PANIC!
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=8 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+CPU0 tick_count = 8, max peer = 30000
+  KERNEL PANIC!
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=8 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+CPU0 tick_count = 8, max peer = 30000
+  KERNEL PANIC!
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=8 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+CPU0 tick_count = 8, max peer = 30000
+  KERNEL PANIC!
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=8 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything

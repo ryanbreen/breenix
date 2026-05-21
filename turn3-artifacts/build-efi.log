@@ -1,9 +1,9 @@
 === Building Breenix Parallels UEFI Loader ===
-    Finished `release` profile [optimized] target(s) in 0.02s
+    Finished `release` profile [optimized] target(s) in 0.04s
 Loader built: /Users/wrb/fun/code/breenix/target/aarch64-unknown-uefi/release/parallels-loader.efi (80896 bytes)
 === Building Breenix ARM64 Kernel ===
-    Finished `release` profile [optimized] target(s) in 0.04s
-Kernel built: /Users/wrb/fun/code/breenix/target/aarch64-breenix/release/kernel-aarch64 (2425488 bytes)
+    Finished `release` profile [optimized] target(s) in 0.08s
+Kernel built: /Users/wrb/fun/code/breenix/target/aarch64-breenix/release/kernel-aarch64 (2426232 bytes)
 === Creating EFI System Partition ===
 Kernel ELF copied to ESP at EFI/BREENIX/KERNEL
 === Creating GPT Disk Image ===

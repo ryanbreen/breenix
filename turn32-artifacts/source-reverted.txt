@@ -1,0 +1,1 @@
+kernel/src/main.rs reverted after failed external ping; working tree has no Turn 32 source diff. Attempted diff preserved in source-diff.txt.

@@ -1,0 +1,19 @@
+kernel/src/drivers/usb/ehci.rs:1206:pub fn poll_keyboard() {
+kernel/src/drivers/usb/xhci.rs:3542:fn drain_stale_events(state: &XhciState) {
+kernel/src/drivers/usb/xhci.rs:5764:pub fn poll_hid_events() {
+kernel/src/drivers/usb/hid.rs:190:pub fn process_keyboard_report(report: &[u8]) {
+kernel/src/drivers/usb/hid.rs:335:pub fn process_mouse_report(report: &[u8], ep_idx: u8) {
+kernel/src/drivers/usb/hid.rs:465:pub fn poll_modifier_state() -> u32 {
+kernel/src/drivers/virtio/sound_mmio.rs:679:fn check_response(cmd_name: &str) -> Result<(), &'static str> {
+kernel/src/drivers/virtio/sound_mmio.rs:852:fn drain_queue_completion(completion: &SoundMmioQueueCompletion, queue: *const QueueMemory) {
+kernel/src/drivers/virtio/input_mmio.rs:511:pub fn poll_events() -> impl Iterator<Item = VirtioInputEvent> {
+kernel/src/drivers/virtio/input_mmio.rs:728:fn poll_tablet_events() -> TabletEventIterator {
+kernel/src/drivers/virtio/gpu_pci.rs:1544:fn process_manager_lock_status() -> &'static str {
+kernel/src/drivers/virtio/gpu_pci.rs:2379:fn drain_stale_ctrlq_completions(state: &mut GpuPciDeviceState) {
+kernel/src/drivers/virtio/sound.rs:450:    fn check_response(&self) -> Result<(), &'static str> {
+kernel/src/drivers/virtio/sound.rs:652:    fn drain_ctrl_completion(&self) {
+kernel/src/drivers/virtio/sound.rs:666:    fn drain_tx_completion(&self) {
+kernel/src/drivers/virtio/input_pci.rs:373:pub fn poll_events() {
+kernel/src/drivers/virtio/input_pci.rs:450:fn process_event(event: &VirtioInputEvent) {
+kernel/src/drivers/virtio/input_pci.rs:468:fn process_key_event(keycode: u16, value: u32) {
+kernel/src/drivers/virtio/input_pci.rs:534:fn process_abs_event(code: u16, value: u32) {

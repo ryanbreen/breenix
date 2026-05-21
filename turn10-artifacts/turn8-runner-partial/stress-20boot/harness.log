@@ -1,0 +1,3 @@
+[2026-05-20 13:49:33] starting Turn 8 20-boot scheduler gate boots=2 wait=90s
+[2026-05-20 13:49:33] boot-1: cleanup before launch
+[2026-05-20 13:49:33] boot-1: starting ./run.sh --parallels --no-build --test 90

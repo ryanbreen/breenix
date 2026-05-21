@@ -1,0 +1,47 @@
+Turn 15 input IRQ profile source/probe notes
+
+Probe access attempts:
+- ssh linux-probe: failed host-key verification for the alias.
+- ssh wrb@10.211.55.3: reached SSH, but available public keys were rejected.
+- ssh parallels@10.211.55.3: reached SSH, but available public keys were rejected.
+
+Runtime trace status:
+- BLOCKED. Could not collect bpftrace/ftrace from the actual linux-probe VM.
+
+Linux source citations used:
+- turn1-artifacts/linux-source/virtio_input.c:36-56
+  virtinput_recv_events() drains the event virtqueue callback path.
+- turn1-artifacts/linux-source/virtio_input.c:186-199
+  virtinput_init_vqs() registers the events/status virtqueue callbacks.
+- turn1-artifacts/linux-source/virtio_input.c:323
+  virtio-input registers the input device.
+- turn1-artifacts/linux-source/virtio_pci_common.c:82-92
+  virtio-pci dispatches virtqueue IRQs through vring_interrupt().
+- turn1-artifacts/linux-source/virtio_pci_common.c:167-187
+  virtio-pci requests IRQ handlers for virtqueues.
+- turn1-artifacts/linux-source/ehci-hcd.c:712-760
+  ehci_irq() reads/filters/acknowledges controller interrupt status.
+- turn1-artifacts/linux-source/ehci-hcd.c:1247
+  the generic EHCI hc_driver registers .irq = ehci_irq.
+- /Users/wrb/fun/code/backups/transcode/home/wrb/code/linux/drivers/input/input.c:128-145
+  input_pass_values() distributes input events to handlers.
+- /Users/wrb/fun/code/backups/transcode/home/wrb/code/linux/drivers/input/input.c:433-442
+  input_event() feeds input_handle_event().
+- /Users/wrb/fun/code/backups/transcode/home/wrb/code/linux/drivers/tty/tty_buffer.c:446-465
+  tty_ldisc_receive_buf() forwards received bytes to the line discipline.
+- /Users/wrb/fun/code/backups/transcode/home/wrb/code/linux/drivers/tty/tty_buffer.c:544-558
+  tty_flip_buffer_push() schedules buffer delivery.
+- /Users/wrb/fun/code/backups/transcode/home/wrb/code/linux/drivers/tty/n_tty.c:1666-1778
+  n_tty_receive_buf_common()/receive_buf callbacks process line discipline input.
+
+Breenix mapping commands:
+- rg -n "poll_events\\(|poll_keyboard\\(|input_pci::poll_events|input_mmio::poll_events|ehci::poll_keyboard" kernel/src
+- rg -n "get_irq|handle_interrupt|handle_tablet_interrupt|Enabling IRQ|poll_events" kernel/src/drivers/virtio/input_mmio.rs kernel/src/arch_impl/aarch64/exception.rs
+- rg -n "USBINTR|poll_keyboard|get_irq|handle_interrupt|Keyboard polling|write32\\(op_base \\+ op_reg::USBINTR" kernel/src/drivers/usb/ehci.rs kernel/src/arch_impl/aarch64/exception.rs
+
+Breenix mapping result:
+- No live timer caller for input_mmio::poll_events() found.
+- No live timer caller for ehci::poll_keyboard() found.
+- VirtIO MMIO input already has IRQ dispatch through exception.rs.
+- EHCI disables interrupts with USBINTR=0 and has no get_irq()/handle_interrupt() path.
+- input_pci.rs still contains dormant polling code with no live caller.

@@ -1,0 +1,144 @@
+variant=Variant A (xHCI reverted, scheduler fix kept)
+vm=breenix-1779301184
+run_exit=0
+
+--- key serial markers ---
+176:[virtio-gpu-pci] GPU command waits use scheduler waitqueue
+292:[boot] Initializing scheduler...
+301:[xhci] post-activation: MSI_EVENT_COUNT=1 EVENT_COUNT=0 POLL_COUNT=0 SPI_ACTIVATED=true
+303:[timer] Timer configured for ~1000 Hz (24000 ticks per interrupt)
+345:[init] Breenix init starting (PID 1)
+346:[freeze-watch] uptime_ms=1762 submits=62 completes=65 fails=0 last_completion_ms=80 fps_last_5s=0 cpu=6 tid=3 ctx_switches=21 timer_ticks_cpu0=5 timer_ticks_cpu1=404 timer_ticks_cpu2=403 timer_ticks_cpu3=404 timer_ticks_cpu4=403 timer_ticks_cpu5=403 timer_ticks_cpu6=404 timer_ticks_cpu7=402 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=3 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+350:[freeze-watch] uptime_ms=2265 submits=62 completes=65 fails=0 last_completion_ms=80 fps_last_5s=0 cpu=6 tid=3 ctx_switches=23 timer_ticks_cpu0=5 timer_ticks_cpu1=809 timer_ticks_cpu2=809 timer_ticks_cpu3=811 timer_ticks_cpu4=809 timer_ticks_cpu5=810 timer_ticks_cpu6=809 timer_ticks_cpu7=810 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=3 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+351:[freeze-watch] uptime_ms=2768 submits=62 completes=65 fails=0 last_completion_ms=80 fps_last_5s=0 cpu=3 tid=3 ctx_switches=25 timer_ticks_cpu0=5 timer_ticks_cpu1=1215 timer_ticks_cpu2=1214 timer_ticks_cpu3=1217 timer_ticks_cpu4=1214 timer_ticks_cpu5=1216 timer_ticks_cpu6=1212 timer_ticks_cpu7=1216 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=3 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+352:[freeze-watch] uptime_ms=3270 submits=62 completes=65 fails=0 last_completion_ms=80 fps_last_5s=0 cpu=1 tid=3 ctx_switches=27 timer_ticks_cpu0=5 timer_ticks_cpu1=1619 timer_ticks_cpu2=1618 timer_ticks_cpu3=1620 timer_ticks_cpu4=1619 timer_ticks_cpu5=1621 timer_ticks_cpu6=1618 timer_ticks_cpu7=1622 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=3 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+353:[freeze-watch] uptime_ms=3773 submits=62 completes=65 fails=0 last_completion_ms=80 fps_last_5s=0 cpu=4 tid=3 ctx_switches=29 timer_ticks_cpu0=5 timer_ticks_cpu1=2022 timer_ticks_cpu2=2022 timer_ticks_cpu3=2024 timer_ticks_cpu4=2023 timer_ticks_cpu5=2024 timer_ticks_cpu6=2023 timer_ticks_cpu7=2025 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+354:[freeze-watch] uptime_ms=4275 submits=62 completes=65 fails=0 last_completion_ms=80 fps_last_5s=0 cpu=5 tid=3 ctx_switches=31 timer_ticks_cpu0=5 timer_ticks_cpu1=2425 timer_ticks_cpu2=2425 timer_ticks_cpu3=2428 timer_ticks_cpu4=2425 timer_ticks_cpu5=2428 timer_ticks_cpu6=2426 timer_ticks_cpu7=2429 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=3 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+355:[freeze-watch] uptime_ms=4777 submits=62 completes=65 fails=0 last_completion_ms=80 fps_last_5s=0 cpu=7 tid=3 ctx_switches=33 timer_ticks_cpu0=5 timer_ticks_cpu1=2831 timer_ticks_cpu2=2830 timer_ticks_cpu3=2833 timer_ticks_cpu4=2830 timer_ticks_cpu5=2832 timer_ticks_cpu6=2831 timer_ticks_cpu7=2835 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=3 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+356:[freeze-watch] uptime_ms=5279 submits=62 completes=65 fails=0 last_completion_ms=80 fps_last_5s=0 cpu=3 tid=3 ctx_switches=35 timer_ticks_cpu0=5 timer_ticks_cpu1=3237 timer_ticks_cpu2=3236 timer_ticks_cpu3=3238 timer_ticks_cpu4=3234 timer_ticks_cpu5=3237 timer_ticks_cpu6=3235 timer_ticks_cpu7=3240 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=3 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+357:[freeze-watch] uptime_ms=5781 submits=62 completes=65 fails=0 last_completion_ms=80 fps_last_5s=0 cpu=3 tid=3 ctx_switches=37 timer_ticks_cpu0=5 timer_ticks_cpu1=3645 timer_ticks_cpu2=3643 timer_ticks_cpu3=3647 timer_ticks_cpu4=3642 timer_ticks_cpu5=3646 timer_ticks_cpu6=3642 timer_ticks_cpu7=3647 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=3 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+358:[freeze-watch] uptime_ms=6284 submits=62 completes=65 fails=0 last_completion_ms=80 fps_last_5s=0 cpu=7 tid=0 ctx_switches=39 timer_ticks_cpu0=5 timer_ticks_cpu1=4054 timer_ticks_cpu2=4054 timer_ticks_cpu3=4056 timer_ticks_cpu4=4054 timer_ticks_cpu5=4059 timer_ticks_cpu6=4054 timer_ticks_cpu7=4060 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=0 cur_cpu1=0 cur_cpu2=0 cur_cpu3=0 cur_cpu4=0 cur_cpu5=0 cur_cpu6=0 cur_cpu7=0 total_threads=0 blocked_threads=0 sched_lock=busy procmgr_lock=ok gpu_pci_lock=ok
+359:[freeze-watch] uptime_ms=6787 submits=62 completes=65 fails=0 last_completion_ms=80 fps_last_5s=0 cpu=2 tid=3 ctx_switches=41 timer_ticks_cpu0=5 timer_ticks_cpu1=4461 timer_ticks_cpu2=4460 timer_ticks_cpu3=4460 timer_ticks_cpu4=4460 timer_ticks_cpu5=4462 timer_ticks_cpu6=4460 timer_ticks_cpu7=4462 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=3 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+360:[freeze-watch] uptime_ms=7290 submits=62 completes=65 fails=0 last_completion_ms=80 fps_last_5s=0 cpu=1 tid=3 ctx_switches=43 timer_ticks_cpu0=5 timer_ticks_cpu1=4868 timer_ticks_cpu2=4863 timer_ticks_cpu3=4866 timer_ticks_cpu4=4866 timer_ticks_cpu5=4869 timer_ticks_cpu6=4867 timer_ticks_cpu7=4869 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=3 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+361:[freeze-watch] uptime_ms=7792 submits=62 completes=65 fails=0 last_completion_ms=80 fps_last_5s=0 cpu=7 tid=3 ctx_switches=45 timer_ticks_cpu0=5 timer_ticks_cpu1=5276 timer_ticks_cpu2=5274 timer_ticks_cpu3=5275 timer_ticks_cpu4=5277 timer_ticks_cpu5=5279 timer_ticks_cpu6=5277 timer_ticks_cpu7=5279 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=3 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+362:[freeze-watch] uptime_ms=8295 submits=62 completes=65 fails=0 last_completion_ms=80 fps_last_5s=0 cpu=4 tid=3 ctx_switches=47 timer_ticks_cpu0=5 timer_ticks_cpu1=5679 timer_ticks_cpu2=5679 timer_ticks_cpu3=5680 timer_ticks_cpu4=5681 timer_ticks_cpu5=5683 timer_ticks_cpu6=5684 timer_ticks_cpu7=5684 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+363:[freeze-watch] uptime_ms=8797 submits=62 completes=65 fails=0 last_completion_ms=80 fps_last_5s=0 cpu=5 tid=3 ctx_switches=49 timer_ticks_cpu0=5 timer_ticks_cpu1=6082 timer_ticks_cpu2=6085 timer_ticks_cpu3=6085 timer_ticks_cpu4=6087 timer_ticks_cpu5=6087 timer_ticks_cpu6=6089 timer_ticks_cpu7=6090 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=3 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+364:[freeze-watch] uptime_ms=9300 submits=62 completes=65 fails=0 last_completion_ms=80 fps_last_5s=0 cpu=2 tid=3 ctx_switches=51 timer_ticks_cpu0=5 timer_ticks_cpu1=6486 timer_ticks_cpu2=6490 timer_ticks_cpu3=6489 timer_ticks_cpu4=6491 timer_ticks_cpu5=6490 timer_ticks_cpu6=6494 timer_ticks_cpu7=6494 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=3 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+365:[freeze-watch] uptime_ms=9803 submits=62 completes=65 fails=0 last_completion_ms=80 fps_last_5s=0 cpu=1 tid=3 ctx_switches=53 timer_ticks_cpu0=5 timer_ticks_cpu1=6894 timer_ticks_cpu2=6895 timer_ticks_cpu3=6897 timer_ticks_cpu4=6898 timer_ticks_cpu5=6897 timer_ticks_cpu6=6900 timer_ticks_cpu7=6900 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=3 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+366:[freeze-watch] uptime_ms=10305 submits=62 completes=65 fails=0 last_completion_ms=80 fps_last_5s=0 cpu=2 tid=3 ctx_switches=55 timer_ticks_cpu0=5 timer_ticks_cpu1=7299 timer_ticks_cpu2=7301 timer_ticks_cpu3=7301 timer_ticks_cpu4=7303 timer_ticks_cpu5=7303 timer_ticks_cpu6=7305 timer_ticks_cpu7=7304 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=3 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+367:[freeze-watch] uptime_ms=15307 submits=62 completes=65 fails=0 last_completion_ms=80 fps_last_5s=0 cpu=6 tid=3 ctx_switches=57 timer_ticks_cpu0=5 timer_ticks_cpu1=11340 timer_ticks_cpu2=11342 timer_ticks_cpu3=11341 timer_ticks_cpu4=11346 timer_ticks_cpu5=11349 timer_ticks_cpu6=11350 timer_ticks_cpu7=11346 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=3 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+368:[freeze-watch] uptime_ms=20310 submits=62 completes=65 fails=0 last_completion_ms=80 fps_last_5s=0 cpu=4 tid=3 ctx_switches=59 timer_ticks_cpu0=5 timer_ticks_cpu1=15382 timer_ticks_cpu2=15383 timer_ticks_cpu3=15390 timer_ticks_cpu4=15390 timer_ticks_cpu5=15393 timer_ticks_cpu6=15402 timer_ticks_cpu7=15393 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+369:[freeze-watch] uptime_ms=25312 submits=62 completes=65 fails=0 last_completion_ms=80 fps_last_5s=0 cpu=2 tid=3 ctx_switches=61 timer_ticks_cpu0=5 timer_ticks_cpu1=19379 timer_ticks_cpu2=19378 timer_ticks_cpu3=19385 timer_ticks_cpu4=19384 timer_ticks_cpu5=19387 timer_ticks_cpu6=19398 timer_ticks_cpu7=19388 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=3 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+370:[freeze-watch] uptime_ms=30315 submits=62 completes=65 fails=0 last_completion_ms=80 fps_last_5s=0 cpu=4 tid=3 ctx_switches=63 timer_ticks_cpu0=5 timer_ticks_cpu1=23403 timer_ticks_cpu2=23401 timer_ticks_cpu3=23408 timer_ticks_cpu4=23401 timer_ticks_cpu5=23409 timer_ticks_cpu6=23418 timer_ticks_cpu7=23408 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=4 cur_cpu2=5 cur_cpu3=6 cur_cpu4=3 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+371:[freeze-watch] uptime_ms=35317 submits=62 completes=65 fails=0 last_completion_ms=80 fps_last_5s=0 cpu=1 tid=3 ctx_switches=65 timer_ticks_cpu0=5 timer_ticks_cpu1=27415 timer_ticks_cpu2=27412 timer_ticks_cpu3=27417 timer_ticks_cpu4=27409 timer_ticks_cpu5=27420 timer_ticks_cpu6=27428 timer_ticks_cpu7=27419 rq_total=0 rq_cpu0=0 rq_cpu1=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu7=0 cur_cpu0=11 cur_cpu1=3 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7 cur_cpu5=8 cur_cpu6=9 cur_cpu7=10 total_threads=11 blocked_threads=1 sched_lock=ok procmgr_lock=ok gpu_pci_lock=ok
+376:!!! CPU0 REGRESSION ALARM !!!
+377:CPU0 tick_count = 5, max peer = 30000
+381:  KERNEL PANIC!
+383:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+384:CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+387:!!! CPU0 REGRESSION ALARM !!!
+388:CPU0 tick_count = 5, max peer = 30000
+392:  KERNEL PANIC!
+394:panicked 
+399: regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+403:  KERNEL PANIC!
+405:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+406:CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+409:!!! CPU0 REGRESSION ALARM !!!
+410:CPU0 tick_count = 5, max peer = 30000
+414:  KERNEL PANIC!
+416:panicked at kernel/src/arch_impl/aarch6
+418:nCtPUer0 tickrupt_count. =r 5, msax :pe5er = 30000
+421:n: tick_count=5 but peer max=30000; r
+423:/CPU0p ltick_acnounnti n= g5,/ max peer c= 3p00u00-0
+429:  KERNEL PANIC!
+431:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+432:CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+436:  KERNEL PANIC!
+438:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+439:CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README
+447:  KERNEL PANIC!
+449:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+450:CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+
+--- final 80 serial lines ---
+[gpu-pci-lock-attrib] max_hold_ms=8 max_hold_holder_tid=-1
+[wake-attrib] schedule=2 unblock=0 isr_unblock=7 wake_io=7 signal=0 child=0 timer=23
+[enqueue-attrib] same_lock=23 deferred=3 isr_buf=7 deferred_drained=2 isr_buf_drained=6 already_queued=0 isr_buf_full=0
+
+!!! CPU0 REGRESSION ALARM !!!
+CPU0 tick_count = 5, max peer = 30000
+See docs/planning/cpu0-user-guard-autopsy/README.md
+
+========================================
+  KERNEL PANIC!
+========================================
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+
+
+!!! CPU0 REGRESSION ALARM !!!
+CPU0 tick_count = 5, max peer = 30000
+See docs/planning/cpu0-user-guard-autopsy/README.md
+
+========================================
+  KERNEL PANIC!
+========================================
+panicked 
+a!t! ! kCPeUr0 nREeGRlE/SSIOsN rALcA/RMa !r!c!
+hCP_Ui0 mtipck_lco/uant = 5a, rmax cpeher6 =4 3/00t00i
+mSeee dorcs_/pliannnitnegr/crpuu0p-utse.r-rgus:598:17:
+arCd-PauUto0ps y/RtEAiDMmEe.mrd
+ regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+
+
+========================================
+  KERNEL PANIC!
+========================================
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+
+
+!!! CPU0 REGRESSION ALARM !!!
+CPU0 tick_count = 5, max peer = 30000
+See docs/planning/cpu0-user-guard-autopsy/README.md
+
+========================================
+  KERNEL PANIC!
+========================================
+panicked at kernel/src/arch_impl/aarch6
+!4/!! CPU0 REGREStSIOiN mAeLArR_Mi !!!
+nCtPUer0 tickrupt_count. =r 5, msax :pe5er = 30000
+S9ee8 :17d:o
+cs/plaCnninPg/Ucp0u0 tim-ueser-guarrd-aut opsregyr/eRsEADsMEi.mod
+n: tick_count=5 but peer max=30000; r
+e!ad!! CPU d0o RcEGRESSION ALARM !!s!
+/CPU0p ltick_acnounnti n= g5,/ max peer c= 3p00u00-0
+See docs/planninug/scpeu0-ruser-guard--augutardopsy-a/READMEu.mtodp
+sy/README.md before touching anything
+
+
+========================================
+  KERNEL PANIC!
+========================================
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+
+
+========================================
+  KERNEL PANIC!
+========================================
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README
+.!!! CPmU0 dRE GRESSbIeOfNo AreL AtRoM !!!
+CPUu0 cthiick_ncount =g 5 ,a mnyaxt peheri ng
+= 
+30000
+See docs/planning/cpu0-user-guard-autopsy/README.md
+
+========================================
+  KERNEL PANIC!
+========================================
+panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+

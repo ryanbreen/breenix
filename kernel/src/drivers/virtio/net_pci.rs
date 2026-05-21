@@ -17,7 +17,7 @@
 
 use crate::drivers::pci;
 use core::ptr::{read_volatile, write_volatile};
-use core::sync::atomic::{fence, AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{fence, AtomicBool, AtomicU16, AtomicU32, Ordering};
 
 // Legacy VirtIO PCI register offsets (from BAR0)
 const REG_DEVICE_FEATURES: usize = 0x00;
@@ -124,10 +124,24 @@ struct RxBuffer {
 
 /// TX buffer with header
 #[repr(C, align(16))]
+#[derive(Clone, Copy)]
 struct TxBuffer {
     hdr: VirtioNetHdr,
     data: [u8; MAX_PACKET_SIZE],
 }
+
+const PCI_TX_POOL_SIZE: usize = 16;
+const EMPTY_PCI_TX_BUFFER: TxBuffer = TxBuffer {
+    hdr: VirtioNetHdr {
+        flags: 0,
+        gso_type: 0,
+        hdr_len: 0,
+        gso_size: 0,
+        csum_start: 0,
+        csum_offset: 0,
+    },
+    data: [0; MAX_PACKET_SIZE],
+};
 
 // Static buffers
 static mut PCI_RX_QUEUE: QueueMemory = QueueMemory {
@@ -215,17 +229,11 @@ static mut PCI_RX_BUFFER_3: RxBuffer = RxBuffer {
     data: [0; MAX_PACKET_SIZE],
 };
 
-static mut PCI_TX_BUFFER: TxBuffer = TxBuffer {
-    hdr: VirtioNetHdr {
-        flags: 0,
-        gso_type: 0,
-        hdr_len: 0,
-        gso_size: 0,
-        csum_start: 0,
-        csum_offset: 0,
-    },
-    data: [0; MAX_PACKET_SIZE],
-};
+static mut PCI_TX_BUFFERS: [TxBuffer; PCI_TX_POOL_SIZE] =
+    [EMPTY_PCI_TX_BUFFER; PCI_TX_POOL_SIZE];
+static PCI_TX_SLOT_IN_FLIGHT: [AtomicBool; PCI_TX_POOL_SIZE] =
+    [const { AtomicBool::new(false) }; PCI_TX_POOL_SIZE];
+static PCI_TX_AVAIL_HEAD: AtomicU16 = AtomicU16::new(0);
 
 /// HHDM base for physical-to-virtual translation
 const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
@@ -549,6 +557,7 @@ pub fn init() -> Result<(), &'static str> {
 
     // Set up TX queue (queue 1)
     setup_legacy_queue(bar0_virt, 1, &raw const PCI_TX_QUEUE as u64)?;
+    reset_tx_slots();
 
     // DRIVER_OK
     let cur_status = reg_read_u8(bar0_virt, REG_DEVICE_STATUS);
@@ -622,6 +631,31 @@ fn setup_legacy_queue(
     Ok(())
 }
 
+fn reset_tx_slots() {
+    for slot in PCI_TX_SLOT_IN_FLIGHT.iter() {
+        slot.store(false, Ordering::Release);
+    }
+    PCI_TX_AVAIL_HEAD.store(0, Ordering::Release);
+}
+
+fn claim_tx_slot() -> Option<usize> {
+    for (idx, slot) in PCI_TX_SLOT_IN_FLIGHT.iter().enumerate() {
+        if slot
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+fn release_tx_slot(idx: usize) {
+    if idx < PCI_TX_POOL_SIZE {
+        PCI_TX_SLOT_IN_FLIGHT[idx].store(false, Ordering::Release);
+    }
+}
+
 /// Get the physical address of an RX buffer by index
 fn rx_buffer_phys(idx: usize) -> u64 {
     match idx {
@@ -687,63 +721,75 @@ pub fn transmit(data: &[u8]) -> Result<(), &'static str> {
         return Err("Packet too large");
     }
 
-    let state = unsafe {
-        let ptr = &raw mut NET_PCI_STATE;
-        (*ptr).as_mut().ok_or("Network device not initialized")?
+    let bar0_virt = unsafe {
+        let ptr = &raw const NET_PCI_STATE;
+        (*ptr)
+            .as_ref()
+            .ok_or("Network device not initialized")?
+            .bar0_virt
     };
 
-    // Set up TX buffer
+    let slot = claim_tx_slot().ok_or("TX queue full")?;
+    let tx_ptr = unsafe { (&raw mut PCI_TX_BUFFERS).cast::<TxBuffer>().add(slot) };
+
     unsafe {
-        let tx_ptr = &raw mut PCI_TX_BUFFER;
         (*tx_ptr).hdr = VirtioNetHdr::default();
-        (&mut (*tx_ptr).data)[..data.len()].copy_from_slice(data);
+        core::ptr::copy_nonoverlapping(data.as_ptr(), (*tx_ptr).data.as_mut_ptr(), data.len());
     }
 
-    // Build descriptor
-    let tx_phys = virt_to_phys(&raw const PCI_TX_BUFFER as u64);
+    let tx_phys = virt_to_phys(tx_ptr as u64);
     let total_len = core::mem::size_of::<VirtioNetHdr>() + data.len();
+    let avail_idx = PCI_TX_AVAIL_HEAD.fetch_add(1, Ordering::AcqRel);
 
     unsafe {
         let q = &raw mut PCI_TX_QUEUE;
 
-        (*q).desc[0] = VirtqDesc {
+        (*q).desc[slot] = VirtqDesc {
             addr: tx_phys,
             len: total_len as u32,
             flags: 0,
             next: 0,
         };
 
-        let avail_idx = (*q).avail.idx;
-        (*q).avail.ring[(avail_idx % VIRTQ_SIZE as u16) as usize] = 0;
-        fence(Ordering::SeqCst);
+        (*q).avail.ring[(avail_idx % VIRTQ_SIZE as u16) as usize] = slot as u16;
+        fence(Ordering::Release);
         (*q).avail.idx = avail_idx.wrapping_add(1);
-        fence(Ordering::SeqCst);
+        fence(Ordering::Release);
     }
 
     // Notify device about TX queue (queue 1)
-    reg_write_u16(state.bar0_virt, REG_QUEUE_NOTIFY, 1);
-
-    // Wait for completion
-    let mut timeout = 1_000_000u32;
-    loop {
-        fence(Ordering::SeqCst);
-        let used_idx = unsafe {
-            let q = &raw const PCI_TX_QUEUE;
-            read_volatile(&(*q).used.idx)
-        };
-        if used_idx != state.tx_last_used_idx {
-            state.tx_last_used_idx = used_idx;
-            break;
-        }
-        timeout -= 1;
-        if timeout == 0 {
-            crate::serial_println!("[virtio-net-pci] TX timeout!");
-            return Err("TX timeout");
-        }
-        core::hint::spin_loop();
-    }
+    reg_write_u16(bar0_virt, REG_QUEUE_NOTIFY, 1);
 
     Ok(())
+}
+
+/// Reclaim completed TX descriptors and free their buffer slots.
+pub fn reclaim_tx_completed() -> usize {
+    let mut reclaimed = 0usize;
+
+    unsafe {
+        let state_ptr = &raw mut NET_PCI_STATE;
+        let Some(state) = (*state_ptr).as_mut() else {
+            return 0;
+        };
+
+        let q = &raw const PCI_TX_QUEUE;
+        let used_idx = read_volatile(&(*q).used.idx);
+        fence(Ordering::Acquire);
+
+        while state.tx_last_used_idx != used_idx {
+            let used_slot = (state.tx_last_used_idx % VIRTQ_SIZE as u16) as usize;
+            let elem = read_volatile(&(*q).used.ring[used_slot]);
+            let slot = elem.id as usize;
+            if slot < PCI_TX_POOL_SIZE {
+                release_tx_slot(slot);
+                reclaimed += 1;
+            }
+            state.tx_last_used_idx = state.tx_last_used_idx.wrapping_add(1);
+        }
+    }
+
+    reclaimed
 }
 
 /// Check for received packets (non-blocking).
@@ -827,35 +873,15 @@ pub fn msi_interrupt_count() -> u32 {
 
 /// Interrupt handler for VirtIO network PCI device (MSI-X).
 ///
-/// Uses NAPI-style two-level suppression to prevent GICv2m SPI storms:
-/// 1. Device-level: sets VRING_AVAIL_F_NO_INTERRUPT so the device stops
-///    writing MSIs to GICv2m entirely.
-/// 2. GIC-level: disables the SPI as a safety net.
+/// Uses NAPI-style device callback suppression to prevent MSI storms:
+/// sets VRING_AVAIL_F_NO_INTERRUPT so the device stops writing MSIs to
+/// GICv2m while NetRx is scheduled.
 ///
-/// Does NOT process packets or raise softirq (locks in the packet
-/// processing path could deadlock with the interrupted thread).
-/// Timer-based NetRx softirq handles packet processing and calls
-/// re_enable_irq() to re-arm both levels.
+/// Does NOT process packets directly (locks in the packet processing path
+/// could deadlock with the interrupted thread). NetRx softirq handles packet
+/// processing and completion.
 pub fn handle_interrupt() {
-    use crate::arch_impl::aarch64::gic;
-
     NET_PCI_MSI_COUNT.fetch_add(1, Ordering::Relaxed);
-
-    let irq = NET_PCI_IRQ.load(Ordering::Relaxed);
-    if irq == 0 {
-        return;
-    }
-
-    // Suppress at the device level FIRST — prevents new MSI writes to GICv2m.
-    unsafe {
-        let q = &raw mut PCI_RX_QUEUE;
-        write_volatile(&mut (*q).avail.flags, VRING_AVAIL_F_NO_INTERRUPT);
-        fence(Ordering::SeqCst);
-    }
-
-    // Mask SPI at the GIC — belt-and-suspenders with device-level suppression.
-    gic::disable_spi(irq);
-    gic::clear_spi_pending(irq);
 
     // Read ISR to clear the VirtIO device's internal interrupt condition.
     let state = &raw const NET_PCI_STATE;
@@ -865,66 +891,45 @@ pub fn handle_interrupt() {
         }
     }
 
-    // Both levels stay suppressed — re_enable_irq() called from timer softirq.
+    // Suppress device callbacks while NetRx is scheduled. The GIC SPI remains
+    // enabled; completion re-enables callbacks after the budgeted poll drains.
+    unsafe {
+        let q = &raw mut PCI_RX_QUEUE;
+        write_volatile(&mut (*q).avail.flags, VRING_AVAIL_F_NO_INTERRUPT);
+        fence(Ordering::SeqCst);
+    }
+
+    crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::NetRx);
+    crate::tracing::providers::counters::NET_PCI_IRQ_RAISED_NETRX.increment();
 }
 
-/// Re-enable the network device's MSI-X interrupt after softirq processing.
+/// Re-enable RX callbacks and report whether work arrived during completion.
 ///
-/// Called by the NetRx softirq handler after draining the used ring.
-/// Follows the Linux virtqueue_enable_cb() pattern:
-/// 1. Read ISR to clear any pending device interrupt condition
-/// 2. Re-enable device-level interrupts (clear NO_INTERRUPT flag)
-/// 3. Memory barrier + check for new used ring entries
-/// 4. If more work: re-suppress and let next softirq handle it
-/// 5. If clean: clear GIC pending + enable SPI
-pub fn re_enable_irq() {
-    use crate::arch_impl::aarch64::gic;
-
-    let irq = NET_PCI_IRQ.load(Ordering::Relaxed);
-    if irq == 0 {
-        return;
+/// Called by the NetRx softirq after a budgeted poll returns Drained.
+/// Follows Linux's virtqueue_enable_cb_prepare/virtqueue_poll shape:
+/// 1. Clear VRING_AVAIL_F_NO_INTERRUPT to re-enable callbacks.
+/// 2. Publish that clear before reading used.idx.
+/// 3. If used.idx advanced beyond rx_last_used_idx, the caller re-raises NetRx.
+pub fn reenable_and_check_race() -> bool {
+    if NET_PCI_IRQ.load(Ordering::Relaxed) == 0 {
+        return false;
     }
 
-    // Read ISR to clear any pending device interrupt condition before re-enabling.
-    let state_ptr = &raw const NET_PCI_STATE;
-    unsafe {
-        if let Some(ref s) = *state_ptr {
-            let _isr = reg_read_u8(s.bar0_virt, REG_ISR_STATUS);
-        }
-    }
-
-    // Re-enable device-level interrupts (Linux: virtqueue_enable_cb)
     unsafe {
         let q = &raw mut PCI_RX_QUEUE;
         write_volatile(&mut (*q).avail.flags, 0);
         fence(Ordering::SeqCst);
     }
 
-    // Check if more work arrived while we were processing (race window).
-    // If so, re-suppress and let the next timer softirq cycle handle it.
-    let has_more = unsafe {
+    unsafe {
         let q = &raw const PCI_RX_QUEUE;
+        let state_ptr = &raw const NET_PCI_STATE;
         let used_idx = read_volatile(&(*q).used.idx);
-        if let Some(ref s) = *state_ptr {
-            used_idx != s.rx_last_used_idx
-        } else {
-            false
+        match (*state_ptr).as_ref() {
+            Some(s) => used_idx != s.rx_last_used_idx,
+            None => false,
         }
-    };
-
-    if has_more {
-        // More work arrived — re-suppress device interrupts, don't enable SPI.
-        unsafe {
-            let q = &raw mut PCI_RX_QUEUE;
-            write_volatile(&mut (*q).avail.flags, VRING_AVAIL_F_NO_INTERRUPT);
-            fence(Ordering::SeqCst);
-        }
-        return;
     }
-
-    // Used ring is drained — safe to re-enable the GIC SPI.
-    gic::clear_spi_pending(irq);
-    gic::enable_spi(irq);
 }
 
 /// Diagnostic: dump RX queue state for debugging MSI-X issues.

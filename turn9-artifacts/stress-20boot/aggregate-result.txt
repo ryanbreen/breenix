@@ -1,0 +1,5 @@
+boot-1: fail run_status=0 activity=yes msi=0 irq=0 delta=0 stale_not_ready=0 stale_current=0 stale_deferred=0 data_abort=0 pid1=yes input_injected=yes input_evidence=no reason=failures=12;xhci_msi_irq=0/0;input_evidence=no
+overall: fail
+boots: 1 failures=1 data_abort_boots=0 max_msi_irq_delta=0
+scheduler_stale_totals: not_ready=0 current=0 deferred=0
+input: injected_boots=1 evidence_boots=0

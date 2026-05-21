@@ -1,0 +1,2 @@
+boot	run_status	status	reason	activity	max_uptime_ms	cpu	msi	irq	irq_delta	lock	stale_not_ready	stale_current	stale_deferred	failures	data_abort	pid1	xhci_kbd	usb_hid_nonzero	usb_hid_last	virtio_input_irq	virtio_input_events	virtio_input_bytes	ehci_irq	ehci_completions	ehci_errors	ehci_bytes	input_injected	input_evidence
+1	0	fail	failures=12;xhci_msi_irq=0/0;input_evidence=no	yes	35293	6	0	0	0	0	0	0	0	12	0	yes	0	0	0	0	0	0	0	0	0	0	yes	no

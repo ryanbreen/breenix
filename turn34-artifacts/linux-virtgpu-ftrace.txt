@@ -1,0 +1,751 @@
+# tracer: function
+#
+# entries-in-buffer/entries-written: 739/739   #P:4
+#
+#                                _-----=> irqs-off/BH-disabled
+#                               / _----=> need-resched
+#                              | / _---=> hardirq/softirq
+#                              || / _--=> preempt-depth
+#                              ||| / _-=> migrate-disable
+#                              |||| /     delay
+#           TASK-PID     CPU#  |||||  TIMESTAMP  FUNCTION
+#              | |         |   |||||     |         |
+          <idle>-0       [000] dnh1. 83409.073155: irq_handler_entry: irq=1 name=IPI
+          <idle>-0       [000] dNh1. 83409.073157: irq_handler_exit: irq=1 ret=handled
+              dd-6447    [000] d.h.. 83409.073390: irq_handler_entry: irq=10 name=arch_timer
+              dd-6447    [000] d.h.. 83409.073400: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.073431: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [001] d.h1. 83409.073432: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [002] d.h1. 83409.073440: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [002] dNh1. 83409.073450: irq_handler_exit: irq=2 ret=handled
+              dd-6447    [000] d.h.. 83409.074393: irq_handler_entry: irq=10 name=arch_timer
+              dd-6447    [000] d.h.. 83409.074406: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.074414: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [001] d.h1. 83409.074415: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [003] d.h1. 83409.074529: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [003] dNh1. 83409.074532: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [000] dnh1. 83409.074706: irq_handler_entry: irq=1 name=IPI
+          <idle>-0       [000] dNh1. 83409.074706: irq_handler_exit: irq=1 ret=handled
+           sleep-6448    [000] d.h.. 83409.075396: irq_handler_entry: irq=10 name=arch_timer
+           sleep-6448    [000] d.h.. 83409.075406: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.075565: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.075568: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.076501: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.076507: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.076650: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.076655: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.077581: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.077585: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.077626: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.077630: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.078387: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.078390: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.078583: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.078585: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.078594: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.078596: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.079593: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.079595: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.079597: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.079597: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.080595: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.080595: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.080597: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.080597: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.081601: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.081603: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.081616: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.081618: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.082590: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.082591: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.082592: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.082593: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.082594: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.082596: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.083593: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.083595: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.083598: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.083600: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.084593: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.084594: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.084609: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [002] dNh1. 83409.084611: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [003] d.h1. 83409.085595: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.085596: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.086590: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.086591: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.087597: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.087599: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.088596: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.088599: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.089338: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.089340: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.089528: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.089529: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.099380: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.099385: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.147384: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.147391: irq_handler_exit: irq=10 ret=handled
+     kworker/1:1-6214    [001] ..... 83409.147470: virtio_gpu_notify <-virtio_gpu_primary_plane_update
+     kworker/1:1-6214    [001] ...1. 83409.147470: virtqueue_kick_prepare <-virtio_gpu_notify
+     kworker/1:1-6214    [001] ..... 83409.147470: virtqueue_notify <-virtio_gpu_notify
+          <idle>-0       [000] d.h1. 83409.148066: irq_handler_entry: irq=28 name=virtio2-virtqueues
+          <idle>-0       [000] d.h1. 83409.148067: vp_vring_interrupt <-__handle_irq_event_percpu
+          <idle>-0       [000] d.h2. 83409.148067: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83409.148068: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83409.148068: virtio_gpu_ctrl_ack <-vring_interrupt
+          <idle>-0       [000] dNh1. 83409.148072: irq_handler_exit: irq=28 ret=handled
+     kworker/0:0-5760    [000] ..... 83409.148079: virtio_gpu_dequeue_ctrl_func <-process_one_work
+     kworker/0:0-5760    [000] ...1. 83409.148080: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83409.148080: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+     kworker/0:0-5760    [000] ...1. 83409.148081: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83409.148081: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+          <idle>-0       [000] d.h1. 83409.148375: irq_handler_entry: irq=28 name=virtio2-virtqueues
+          <idle>-0       [000] d.h1. 83409.148376: vp_vring_interrupt <-__handle_irq_event_percpu
+          <idle>-0       [000] d.h2. 83409.148376: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83409.148376: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83409.148376: virtio_gpu_ctrl_ack <-vring_interrupt
+          <idle>-0       [000] dNh1. 83409.148379: irq_handler_exit: irq=28 ret=handled
+     kworker/0:0-5760    [000] ..... 83409.148385: virtio_gpu_dequeue_ctrl_func <-process_one_work
+     kworker/0:0-5760    [000] ...1. 83409.148385: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] d.h1. 83409.148389: irq_handler_entry: irq=10 name=arch_timer
+     kworker/0:0-5760    [000] d.h1. 83409.148398: irq_handler_exit: irq=10 ret=handled
+     kworker/0:0-5760    [000] ...1. 83409.148402: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+     kworker/0:0-5760    [000] ...1. 83409.148402: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83409.148402: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+          <idle>-0       [001] d.h1. 83409.148408: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [001] d.h1. 83409.148409: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [000] d.h1. 83409.180502: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] dNh1. 83409.180514: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.180643: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [003] dNh1. 83409.180647: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [001] dnh1. 83409.180783: irq_handler_entry: irq=1 name=IPI
+          <idle>-0       [001] dNh1. 83409.180783: irq_handler_exit: irq=1 ret=handled
+          <idle>-0       [003] d.h1. 83409.181333: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [003] dNh1. 83409.181335: irq_handler_exit: irq=2 ret=handled
+            bash-6444    [003] d.h.. 83409.181389: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] dnh1. 83409.181394: irq_handler_entry: irq=1 name=IPI
+            bash-6444    [003] d.h.. 83409.181394: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] dNh1. 83409.181394: irq_handler_exit: irq=1 ret=handled
+          <idle>-0       [001] dNh1. 83409.181397: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] dNh1. 83409.181408: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.181417: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [000] d.h1. 83409.181418: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [000] d.H1. 83409.181421: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.H1. 83409.181422: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.181424: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [002] dNh1. 83409.181426: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [001] d.h1. 83409.182587: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.182588: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.182633: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.182634: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.182634: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.182636: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.183580: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.183582: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.183582: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.183583: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.183587: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.183588: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.184595: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.184595: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.184596: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.184597: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.184597: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.184597: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.185595: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.185596: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.185596: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.185597: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.185598: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.185598: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.186395: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.186396: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.186590: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.186591: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.186592: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.186592: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.186598: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.186599: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.187590: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.187591: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.187591: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.187592: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.188595: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.188596: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.188597: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.188598: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.189592: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.189593: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.189594: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.189594: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.190494: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.190498: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.190502: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.190505: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.190593: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.190594: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.191614: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.191615: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.191627: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [002] dNh1. 83409.191629: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [003] d.h1. 83409.192586: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.192588: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.193605: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.193607: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.194615: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.194621: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.195594: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.195596: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.196338: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.196339: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.196590: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.196591: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.202085: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] dNh1. 83409.202107: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.202123: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [000] d.h1. 83409.202124: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [000] d.h1. 83409.202148: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [000] dNh1. 83409.202149: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [002] d.h1. 83409.266554: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.266563: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.282849: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] dNh1. 83409.282863: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.283045: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [003] dNh1. 83409.283052: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [000] dnh1. 83409.283257: irq_handler_entry: irq=1 name=IPI
+          <idle>-0       [000] dNh1. 83409.283258: irq_handler_exit: irq=1 ret=handled
+              dd-6451    [000] d.h.. 83409.283390: irq_handler_entry: irq=10 name=arch_timer
+              dd-6451    [000] d.h.. 83409.283402: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.283415: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [001] d.h1. 83409.283415: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [001] d.H1. 83409.283420: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.H1. 83409.283424: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.283431: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.283435: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.283475: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [002] dNh1. 83409.283481: irq_handler_exit: irq=2 ret=handled
+              dd-6451    [000] d.h.. 83409.284394: irq_handler_entry: irq=10 name=arch_timer
+              dd-6451    [000] d.h.. 83409.284412: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.284433: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [001] d.h1. 83409.284434: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [001] d.H1. 83409.284440: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.H1. 83409.284444: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.284472: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [003] dNh1. 83409.284477: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [003] dNh1. 83409.284482: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] dNh1. 83409.284485: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] dnh1. 83409.284629: irq_handler_entry: irq=1 name=IPI
+          <idle>-0       [000] dNh1. 83409.284630: irq_handler_exit: irq=1 ret=handled
+          <idle>-0       [000] d.h1. 83409.285439: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.285445: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.285587: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.285589: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.285590: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.285592: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.286612: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.286616: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.286620: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.286626: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.286643: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.286647: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.287598: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.287598: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.287599: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.287601: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.287602: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.287603: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.288386: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.288389: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.288598: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.288601: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.288611: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.288614: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.288616: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.288620: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.289596: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.289599: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.289607: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.289611: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.290596: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.290598: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.290599: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.290601: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.291615: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.291615: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.291618: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.291619: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.292453: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.292461: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.292598: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.292603: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.292610: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.292613: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.292643: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [002] dNh1. 83409.292648: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [003] d.h1. 83409.293594: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.293600: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.294595: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.294599: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.295601: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.295607: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.296597: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.296601: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.297336: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.297341: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.297598: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.297602: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.298590: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.298593: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.299593: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.299597: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.299600: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.299604: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.300601: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.300606: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.300786: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.300788: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.301435: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.301438: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.355023: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.355032: irq_handler_exit: irq=10 ret=handled
+     kworker/1:1-6214    [001] ..... 83409.355143: virtio_gpu_notify <-virtio_gpu_primary_plane_update
+     kworker/1:1-6214    [001] ...1. 83409.355144: virtqueue_kick_prepare <-virtio_gpu_notify
+     kworker/1:1-6214    [001] ..... 83409.355144: virtqueue_notify <-virtio_gpu_notify
+          <idle>-0       [000] d.h1. 83409.356611: irq_handler_entry: irq=28 name=virtio2-virtqueues
+          <idle>-0       [000] d.h1. 83409.356613: vp_vring_interrupt <-__handle_irq_event_percpu
+          <idle>-0       [000] d.h2. 83409.356614: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83409.356615: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83409.356615: virtio_gpu_ctrl_ack <-vring_interrupt
+          <idle>-0       [000] dNh1. 83409.356623: irq_handler_exit: irq=28 ret=handled
+     kworker/0:0-5760    [000] ..... 83409.356638: virtio_gpu_dequeue_ctrl_func <-process_one_work
+     kworker/0:0-5760    [000] ...1. 83409.356638: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83409.356638: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+     kworker/0:0-5760    [000] ...1. 83409.356640: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83409.356640: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+          <idle>-0       [000] d.h1. 83409.359867: irq_handler_entry: irq=28 name=virtio2-virtqueues
+          <idle>-0       [000] d.h1. 83409.359868: vp_vring_interrupt <-__handle_irq_event_percpu
+          <idle>-0       [000] d.h2. 83409.359869: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83409.359870: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83409.359871: virtio_gpu_ctrl_ack <-vring_interrupt
+          <idle>-0       [000] dNh1. 83409.359879: irq_handler_exit: irq=28 ret=handled
+     kworker/0:0-5760    [000] ..... 83409.359892: virtio_gpu_dequeue_ctrl_func <-process_one_work
+     kworker/0:0-5760    [000] ...1. 83409.359893: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83409.359893: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+     kworker/0:0-5760    [000] ...1. 83409.359894: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83409.359894: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+          <idle>-0       [000] d.h1. 83409.388449: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] dNh1. 83409.388469: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.388712: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [003] dNh1. 83409.388722: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [002] dnh1. 83409.389030: irq_handler_entry: irq=1 name=IPI
+          <idle>-0       [002] dNh1. 83409.389031: irq_handler_exit: irq=1 ret=handled
+              dd-6453    [002] d.h.. 83409.389394: irq_handler_entry: irq=10 name=arch_timer
+              dd-6453    [002] d.h.. 83409.389416: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.389438: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [000] d.h1. 83409.389439: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [000] d.H1. 83409.389447: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.H1. 83409.389452: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.389492: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.389498: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.390240: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [003] dNh1. 83409.390243: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [002] dnh1. 83409.390352: irq_handler_entry: irq=1 name=IPI
+          <idle>-0       [002] dNh1. 83409.390352: irq_handler_exit: irq=1 ret=handled
+           sleep-6454    [002] d.h1. 83409.390386: irq_handler_entry: irq=10 name=arch_timer
+           sleep-6454    [002] d.h1. 83409.390390: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.390395: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.390397: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.390620: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.390622: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.391578: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.391582: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.391596: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.391599: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.391601: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.391605: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.392618: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.392623: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.392625: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.392628: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.392651: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.392656: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.393585: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.393589: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.393593: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.393597: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.393597: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.393600: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.394582: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.394583: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.394591: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.394592: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.394595: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.394598: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.395593: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.395595: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.395599: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.395601: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.396597: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.396599: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.396599: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.396603: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.397614: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.397623: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.397625: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.397626: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.397630: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.397641: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.398587: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.398590: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.398591: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.398595: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.399599: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.399601: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.399604: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.399605: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.400604: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.400607: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.400609: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.400614: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.401594: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.401595: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.401598: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.401599: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.402333: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.402336: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.402594: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.402595: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.402596: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.402597: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.403593: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.403596: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.403632: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [000] dNh1. 83409.403637: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [003] d.h1. 83409.404590: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.404594: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.405589: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.405592: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.406595: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.406598: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.407595: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.407599: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.408351: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.408356: irq_handler_exit: irq=10 ret=handled
+     rcu_preempt-17      [000] d.h1. 83409.408390: irq_handler_entry: irq=10 name=arch_timer
+     rcu_preempt-17      [000] d.h1. 83409.408403: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.408422: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [001] d.h1. 83409.408423: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [003] d.h1. 83409.408604: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.408607: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.495790: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] dNh1. 83409.495830: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.495863: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [001] dNh1. 83409.495873: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [001] dNh1. 83409.495883: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] dNh1. 83409.495898: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.495922: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [003] dNh1. 83409.495931: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [003] d.h1. 83409.496049: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [003] dNh1. 83409.496054: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [000] dnh1. 83409.496316: irq_handler_entry: irq=1 name=IPI
+          <idle>-0       [000] dNh1. 83409.496317: irq_handler_exit: irq=1 ret=handled
+           sleep-6455    [000] d.h1. 83409.496393: irq_handler_entry: irq=10 name=arch_timer
+           sleep-6455    [000] d.h1. 83409.496402: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.496407: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.496411: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.496486: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.496490: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.496508: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.496511: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.497434: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.497452: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.497618: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.497621: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.497624: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.497627: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.497627: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.497631: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.498592: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.498594: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.498595: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.498597: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.498597: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.498600: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.498603: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.498608: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.499601: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.499602: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.499602: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.499604: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.499604: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.499605: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.499606: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.499607: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.500601: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.500604: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.500608: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.500611: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.500615: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.500619: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.500621: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.500625: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.501590: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.501594: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.501595: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.501596: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.501598: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.501599: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.501599: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.501601: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.502586: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.502590: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.502594: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.502597: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.502598: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.502600: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.502601: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.502603: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.503593: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.503596: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.503596: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.503597: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.503599: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.503600: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.503600: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.503604: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.504596: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.504600: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.504601: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.504601: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.504602: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.504604: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.504605: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.504605: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.505594: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.505597: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.505598: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.505600: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.505600: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.505603: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.505606: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.505610: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.506593: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.506598: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.506599: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.506600: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.506601: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.506602: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.506604: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.506604: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.507594: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.507597: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.507599: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.507600: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.507602: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83409.507602: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.507609: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.507614: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.508594: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.508596: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.509627: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.509636: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.510587: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.510590: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.511590: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.511592: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83409.548447: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83409.548456: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.566436: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.566446: irq_handler_exit: irq=10 ret=handled
+     kworker/1:1-6214    [001] ..... 83409.566596: virtio_gpu_notify <-virtio_gpu_primary_plane_update
+     kworker/1:1-6214    [001] ...1. 83409.566596: virtqueue_kick_prepare <-virtio_gpu_notify
+     kworker/1:1-6214    [001] ..... 83409.566596: virtqueue_notify <-virtio_gpu_notify
+          <idle>-0       [000] d.h1. 83409.568583: irq_handler_entry: irq=28 name=virtio2-virtqueues
+          <idle>-0       [000] d.h1. 83409.568585: vp_vring_interrupt <-__handle_irq_event_percpu
+          <idle>-0       [000] d.h2. 83409.568586: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83409.568587: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83409.568588: virtio_gpu_ctrl_ack <-vring_interrupt
+          <idle>-0       [000] dNh1. 83409.568599: irq_handler_exit: irq=28 ret=handled
+     kworker/0:0-5760    [000] ..... 83409.568620: virtio_gpu_dequeue_ctrl_func <-process_one_work
+     kworker/0:0-5760    [000] ...1. 83409.568621: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83409.568621: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+     kworker/0:0-5760    [000] ...1. 83409.568622: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83409.568622: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+          <idle>-0       [000] d.h1. 83409.569220: irq_handler_entry: irq=28 name=virtio2-virtqueues
+          <idle>-0       [000] d.h1. 83409.569220: vp_vring_interrupt <-__handle_irq_event_percpu
+          <idle>-0       [000] d.h2. 83409.569221: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83409.569221: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83409.569221: virtio_gpu_ctrl_ack <-vring_interrupt
+          <idle>-0       [000] dNh1. 83409.569225: irq_handler_exit: irq=28 ret=handled
+     kworker/0:0-5760    [000] ..... 83409.569235: virtio_gpu_dequeue_ctrl_func <-process_one_work
+     kworker/0:0-5760    [000] ...1. 83409.569235: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83409.569235: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+     kworker/0:0-5760    [000] ...1. 83409.569236: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83409.569236: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+          <idle>-0       [002] d.h1. 83409.697791: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83409.697803: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.763862: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.763872: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83409.763993: irq_handler_entry: irq=15 name=ahci[PRL4010:00]
+          <idle>-0       [000] d.h1. 83409.764017: irq_handler_exit: irq=15 ret=handled
+          <idle>-0       [001] d.h1. 83409.764051: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [001] dNh1. 83409.764054: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [001] d.h1. 83409.770758: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.770779: irq_handler_exit: irq=10 ret=handled
+     kworker/1:1-6214    [001] ..... 83409.771031: virtio_gpu_notify <-virtio_gpu_primary_plane_update
+     kworker/1:1-6214    [001] ...1. 83409.771032: virtqueue_kick_prepare <-virtio_gpu_notify
+     kworker/1:1-6214    [001] ..... 83409.771033: virtqueue_notify <-virtio_gpu_notify
+          <idle>-0       [000] d.h1. 83409.772776: irq_handler_entry: irq=28 name=virtio2-virtqueues
+          <idle>-0       [000] d.h1. 83409.772778: vp_vring_interrupt <-__handle_irq_event_percpu
+          <idle>-0       [000] d.h2. 83409.772779: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83409.772780: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83409.772782: virtio_gpu_ctrl_ack <-vring_interrupt
+          <idle>-0       [000] dNh1. 83409.772794: irq_handler_exit: irq=28 ret=handled
+     kworker/0:0-5760    [000] ..... 83409.772814: virtio_gpu_dequeue_ctrl_func <-process_one_work
+     kworker/0:0-5760    [000] ...1. 83409.772815: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83409.772815: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+     kworker/0:0-5760    [000] ...1. 83409.772816: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83409.772816: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+          <idle>-0       [000] d.h1. 83409.773705: irq_handler_entry: irq=28 name=virtio2-virtqueues
+          <idle>-0       [000] d.h1. 83409.773707: vp_vring_interrupt <-__handle_irq_event_percpu
+          <idle>-0       [000] d.h2. 83409.773707: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83409.773708: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83409.773709: virtio_gpu_ctrl_ack <-vring_interrupt
+          <idle>-0       [000] dNh1. 83409.773715: irq_handler_exit: irq=28 ret=handled
+     kworker/0:0-5760    [000] ..... 83409.773728: virtio_gpu_dequeue_ctrl_func <-process_one_work
+     kworker/0:0-5760    [000] ...1. 83409.773729: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83409.773729: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+     kworker/0:0-5760    [000] ...1. 83409.773730: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83409.773730: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+          <idle>-0       [001] d.h1. 83409.805297: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.805305: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83409.980123: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83409.980132: irq_handler_exit: irq=10 ret=handled
+     kworker/1:1-6214    [001] ..... 83409.980238: virtio_gpu_notify <-virtio_gpu_primary_plane_update
+     kworker/1:1-6214    [001] ...1. 83409.980238: virtqueue_kick_prepare <-virtio_gpu_notify
+     kworker/1:1-6214    [001] ..... 83409.980239: virtqueue_notify <-virtio_gpu_notify
+          <idle>-0       [000] d.h1. 83409.981439: irq_handler_entry: irq=28 name=virtio2-virtqueues
+          <idle>-0       [000] d.h1. 83409.981440: vp_vring_interrupt <-__handle_irq_event_percpu
+          <idle>-0       [000] d.h2. 83409.981441: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83409.981442: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83409.981442: virtio_gpu_ctrl_ack <-vring_interrupt
+          <idle>-0       [000] dNh1. 83409.981451: irq_handler_exit: irq=28 ret=handled
+     kworker/0:0-5760    [000] ..... 83409.981468: virtio_gpu_dequeue_ctrl_func <-process_one_work
+     kworker/0:0-5760    [000] ...1. 83409.981468: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83409.981469: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+     kworker/0:0-5760    [000] ...1. 83409.981470: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83409.981470: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+          <idle>-0       [000] d.h1. 83409.981915: irq_handler_entry: irq=28 name=virtio2-virtqueues
+          <idle>-0       [000] d.h1. 83409.981916: vp_vring_interrupt <-__handle_irq_event_percpu
+          <idle>-0       [000] d.h2. 83409.981916: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83409.981916: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83409.981917: virtio_gpu_ctrl_ack <-vring_interrupt
+          <idle>-0       [000] dNh1. 83409.981921: irq_handler_exit: irq=28 ret=handled
+     kworker/0:0-5760    [000] ..... 83409.981927: virtio_gpu_dequeue_ctrl_func <-process_one_work
+     kworker/0:0-5760    [000] ...1. 83409.981928: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83409.981928: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+     kworker/0:0-5760    [000] ...1. 83409.981928: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83409.981928: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+          <idle>-0       [000] d.h1. 83409.982503: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83409.982513: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83410.150320: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83410.150330: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83410.150384: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83410.150386: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83410.186007: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83410.186017: irq_handler_exit: irq=10 ret=handled
+     kworker/1:1-6214    [001] ..... 83410.186137: virtio_gpu_notify <-virtio_gpu_primary_plane_update
+     kworker/1:1-6214    [001] ...1. 83410.186138: virtqueue_kick_prepare <-virtio_gpu_notify
+     kworker/1:1-6214    [001] ..... 83410.186138: virtqueue_notify <-virtio_gpu_notify
+          <idle>-0       [000] d.h1. 83410.187610: irq_handler_entry: irq=28 name=virtio2-virtqueues
+          <idle>-0       [000] d.h1. 83410.187612: vp_vring_interrupt <-__handle_irq_event_percpu
+          <idle>-0       [000] d.h2. 83410.187613: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83410.187613: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83410.187614: virtio_gpu_ctrl_ack <-vring_interrupt
+          <idle>-0       [000] dNh1. 83410.187623: irq_handler_exit: irq=28 ret=handled
+     kworker/0:0-5760    [000] ..... 83410.187639: virtio_gpu_dequeue_ctrl_func <-process_one_work
+     kworker/0:0-5760    [000] ...1. 83410.187639: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83410.187639: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+     kworker/0:0-5760    [000] ...1. 83410.187640: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83410.187640: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+          <idle>-0       [000] d.h1. 83410.199208: irq_handler_entry: irq=28 name=virtio2-virtqueues
+          <idle>-0       [000] d.h1. 83410.199210: vp_vring_interrupt <-__handle_irq_event_percpu
+          <idle>-0       [000] d.h2. 83410.199211: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83410.199212: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83410.199212: virtio_gpu_ctrl_ack <-vring_interrupt
+          <idle>-0       [000] dNh1. 83410.199223: irq_handler_exit: irq=28 ret=handled
+     kworker/0:0-5760    [000] ..... 83410.199242: virtio_gpu_dequeue_ctrl_func <-process_one_work
+     kworker/0:0-5760    [000] ...1. 83410.199243: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83410.199243: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+     kworker/0:0-5760    [000] ...1. 83410.199244: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83410.199244: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+          <idle>-0       [003] d.h1. 83410.202285: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] dNh1. 83410.202302: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83410.202385: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83410.202390: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83410.202399: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [000] dNh1. 83410.202403: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [001] d.h1. 83410.202422: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [001] dNh1. 83410.202426: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [000] d.h1. 83410.209803: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83410.209815: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83410.273808: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83410.273826: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83410.276404: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [003] d.h1. 83410.276415: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83410.278428: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83410.278446: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83410.278446: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83410.278454: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83410.307464: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83410.307473: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [002] d.h1. 83410.342131: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [002] d.h1. 83410.342145: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83410.398420: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [001] d.h1. 83410.398430: irq_handler_exit: irq=10 ret=handled
+     kworker/1:1-6214    [001] ..... 83410.398529: virtio_gpu_notify <-virtio_gpu_primary_plane_update
+     kworker/1:1-6214    [001] ...1. 83410.398529: virtqueue_kick_prepare <-virtio_gpu_notify
+     kworker/1:1-6214    [001] ..... 83410.398529: virtqueue_notify <-virtio_gpu_notify
+          <idle>-0       [000] d.h1. 83410.399599: irq_handler_entry: irq=28 name=virtio2-virtqueues
+          <idle>-0       [000] d.h1. 83410.399600: vp_vring_interrupt <-__handle_irq_event_percpu
+          <idle>-0       [000] d.h2. 83410.399600: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83410.399601: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83410.399601: virtio_gpu_ctrl_ack <-vring_interrupt
+          <idle>-0       [000] dNh1. 83410.399608: irq_handler_exit: irq=28 ret=handled
+     kworker/0:0-5760    [000] ..... 83410.399618: virtio_gpu_dequeue_ctrl_func <-process_one_work
+     kworker/0:0-5760    [000] ...1. 83410.399619: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83410.399619: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+     kworker/0:0-5760    [000] ...1. 83410.399619: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83410.399619: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+          <idle>-0       [000] d.h1. 83410.399936: irq_handler_entry: irq=28 name=virtio2-virtqueues
+          <idle>-0       [000] d.h1. 83410.399937: vp_vring_interrupt <-__handle_irq_event_percpu
+          <idle>-0       [000] d.h2. 83410.399937: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83410.399937: vring_interrupt <-vp_vring_interrupt
+          <idle>-0       [000] d.h2. 83410.399937: virtio_gpu_ctrl_ack <-vring_interrupt
+          <idle>-0       [000] dNh1. 83410.399939: irq_handler_exit: irq=28 ret=handled
+     kworker/0:0-5760    [000] ..... 83410.399943: virtio_gpu_dequeue_ctrl_func <-process_one_work
+     kworker/0:0-5760    [000] ...1. 83410.399943: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83410.399943: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+     kworker/0:0-5760    [000] ...1. 83410.399943: virtqueue_get_buf <-reclaim_vbufs
+     kworker/0:0-5760    [000] ...1. 83410.399943: virtqueue_get_buf_ctx_split <-virtqueue_get_buf
+          <idle>-0       [000] d.h1. 83410.401752: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.h1. 83410.401765: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83410.401792: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [001] dNh1. 83410.401796: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [000] d.h1. 83410.401987: irq_handler_entry: irq=15 name=ahci[PRL4010:00]
+          <idle>-0       [000] d.h1. 83410.402001: irq_handler_exit: irq=15 ret=handled
+          <idle>-0       [000] d.h1. 83410.405234: irq_handler_entry: irq=15 name=ahci[PRL4010:00]
+          <idle>-0       [000] d.h1. 83410.405270: irq_handler_exit: irq=15 ret=handled
+          <idle>-0       [000] d.h1. 83410.498071: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] dNh1. 83410.498087: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [003] d.h1. 83410.498285: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [003] dNh1. 83410.498290: irq_handler_exit: irq=2 ret=handled
+            bash-6444    [003] d.h1. 83410.498379: irq_handler_entry: irq=10 name=arch_timer
+            bash-6444    [003] d.h1. 83410.498390: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [000] d.h1. 83410.498402: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [000] d.h1. 83410.498404: irq_handler_exit: irq=2 ret=handled
+          <idle>-0       [000] d.H1. 83410.498408: irq_handler_entry: irq=10 name=arch_timer
+          <idle>-0       [000] d.H1. 83410.498411: irq_handler_exit: irq=10 ret=handled
+          <idle>-0       [001] d.h1. 83410.498424: irq_handler_entry: irq=2 name=IPI
+          <idle>-0       [001] dNh1. 83410.498427: irq_handler_exit: irq=2 ret=handled

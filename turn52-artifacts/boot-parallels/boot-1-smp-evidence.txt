@@ -1,0 +1,9 @@
+307:[smp] CPU 0 MPIDR=0x80000000, stack_base=0x43000000
+308:[smp] GICR covers 8 redistributors, probing CPUs 1..8
+309:[smp] Probing secondary CPUs via PSCI...
+312:[smp] CPU 2: PSCI CPU_ON success
+314:[smp] CPU 3: PSCI CPU_ON success
+316:[smp] CPU 4: PSCI CPU_ON success
+318:[smp] CPU 5: PSCI CPU_ON success
+321:[smp] CPU 6: PSCI CPU_ON success
+324:[smp] 8 CPUs online

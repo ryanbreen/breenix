@@ -1,0 +1,45 @@
+Live procfs reads from the single Turn 21 Parallels boot
+========================================================
+
+Access method:
+- OpenSSH from host to Breenix bsshd on 10.211.55.100:2222.
+- Password auth as root using the existing bsshd path.
+- Commands were run in an interactive bsh session on the same VM boot.
+
+Boot-time baseline from serial:
+- line 264: [virtio-net-pci] RX diag: used_idx=1 last_used=0 avail_idx=4 isr=0x0 msi_count=0
+- line 265: [virtio-net-pci] RX diag: used_idx=1 last_used=1 avail_idx=8 isr=0x0 msi_count=0
+
+First /proc/stat read:
+- net_msi_irqs 119
+
+Second /proc/stat read:
+- cpu0 166244 152492
+- cpu1 287571 262883
+- cpu2 286455 239440
+- cpu3 284550 277805
+- cpu4 283939 281987
+- cpu5 285057 284345
+- cpu6 286838 250080
+- cpu7 287531 287399
+- syscalls 460702
+- interrupts 3417603
+- context_switches 410413
+- timer_ticks 2168185
+- global_ticks 166244
+- forks 16
+- execs 9
+- cow_faults 386
+- gpu_bytes 0
+- gpu_full 0
+- gpu_partial 0
+- net_msi_irqs 179
+
+/proc/trace/counters read:
+- NET_RX_BUDGET_EXHAUSTED: 0
+- NET_PCI_IRQ_RAISED_NETRX: 187 (cpu0=187)
+
+Conclusion:
+- net_msi_irqs advanced from 0 at boot diagnostics to 119, then 179.
+- NET_PCI_IRQ_RAISED_NETRX was non-zero and tracked the same IRQ-to-NetRx scheduling path.
+- NET_RX_BUDGET_EXHAUSTED remained 0, so the budgeted softirq did not spin or storm during validation.

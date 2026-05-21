@@ -1,0 +1,6 @@
+max_heartbeat_ms=147346
+max_cpu0_ticks=95000
+max_virgl_frame=25000
+bwm_fps_samples=146
+bwm_fps_ge_160_samples=120
+max_bwm_fps=200

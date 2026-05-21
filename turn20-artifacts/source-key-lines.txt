@@ -1,0 +1,19 @@
+kernel/src/tracing/providers/counters.rs:136:pub static NET_RX_BUDGET_EXHAUSTED: TraceCounter =
+kernel/src/tracing/providers/counters.rs:137:    TraceCounter::new("NET_RX_BUDGET_EXHAUSTED", "NetRx softirq budget exhausted");
+kernel/src/tracing/providers/counters.rs:194:    register_counter(&NET_RX_BUDGET_EXHAUSTED);
+kernel/src/net/mod.rs:241:fn net_rx_softirq_handler(_softirq: SoftirqType) {
+kernel/src/net/mod.rs:242:    let outcome = process_rx_budgeted(64);
+kernel/src/net/mod.rs:243:    if outcome == PollOutcome::BudgetExhausted {
+kernel/src/net/mod.rs:244:        crate::tracing::providers::counters::NET_RX_BUDGET_EXHAUSTED.increment();
+kernel/src/net/mod.rs:256:    register_softirq_handler(SoftirqType::NetRx, net_rx_softirq_handler);
+kernel/src/net/mod.rs:451:pub enum PollOutcome {
+kernel/src/net/mod.rs:459:    let _ = process_rx_budgeted(u32::MAX);
+kernel/src/net/mod.rs:464:pub fn process_rx_budgeted(budget: u32) -> PollOutcome {
+kernel/src/net/mod.rs:470:            return PollOutcome::Drained;
+kernel/src/net/mod.rs:477:            Err(_) => return PollOutcome::Drained,
+kernel/src/net/mod.rs:481:    PollOutcome::BudgetExhausted
+kernel/src/net/mod.rs:491:    let _ = process_rx_budgeted(u32::MAX);
+kernel/src/net/mod.rs:496:pub fn process_rx_budgeted(budget: u32) -> PollOutcome {
+kernel/src/net/mod.rs:504:        return PollOutcome::Drained;
+kernel/src/net/mod.rs:508:    let mut outcome = PollOutcome::Drained;
+kernel/src/net/mod.rs:554:        outcome = PollOutcome::BudgetExhausted;

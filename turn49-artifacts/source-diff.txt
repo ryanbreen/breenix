@@ -1,0 +1,36 @@
+diff --git a/docs/polling-allowlist.md b/docs/polling-allowlist.md
+index cefa84fe..f047272e 100644
+--- a/docs/polling-allowlist.md
++++ b/docs/polling-allowlist.md
+@@ -19,3 +19,13 @@ This document formalizes the **Linux-rigor polling-elimination gate** for cases
+ - **Bounded:** 10M iterations on aarch64 = ~10ms at 1 GHz. Safe upper bound.
+ - **Frequency:** Once per PCI device that needs PM transition (boot only).
+ - **Status:** ALLOWLISTED — not subject to polling-elimination conversion.
++
++## P11: VirtIO reset status handshake
++
++- **File:** `kernel/src/drivers/virtio/mod.rs:240-260` (in `VirtioDevice::init()`)
++- **Loop:** Outer `loop` polling `read_status()` until 0 with inner `for _ in 0..10000 { spin_loop }` delay; bounded by `reset_attempts >= 100`.
++- **Justification:** VirtIO spec §3.1.1 ("Driver Initialization") requires the driver to reset the device and wait for the device to indicate completion by setting `Device Status` to 0. This is a hardware handshake (the device's internal state machine takes a bounded time to clear), not event polling.
++- **Linux precedent:** `drivers/virtio/virtio_pci_modern.c::vp_modern_reset()` writes `Device Status = 0` and then loops on `cpu_relax()` reading the same register until it returns 0. Functionally equivalent to Breenix's `spin_loop` pattern. Linux's `vp_modern_reset` is also bounded — it relies on the device behaving correctly per spec.
++- **Bounded:** 100 attempts × 10000 spin_loop iterations × ~1ns/iter ≈ 1ms total maximum on aarch64. Safe upper bound for a hardware reset handshake.
++- **Frequency:** Once per VirtIO device at driver init (boot only).
++- **Status:** ALLOWLISTED — not subject to polling-elimination conversion.
+diff --git a/kernel/src/drivers/virtio/mod.rs b/kernel/src/drivers/virtio/mod.rs
+index 5a500a21..4ab2f83b 100644
+--- a/kernel/src/drivers/virtio/mod.rs
++++ b/kernel/src/drivers/virtio/mod.rs
+@@ -234,8 +234,11 @@ impl VirtioDevice {
+         // This is CRITICAL for QEMU when taking over from UEFI bootloader.
+         self.reset();
+
+-        // Wait for reset to complete - poll status until it reads 0
+-        // VirtIO spec says device must set status to 0 to indicate reset complete
++        // Wait for reset to complete - poll status until it reads 0.
++        // VirtIO spec §3.1.1 requires device must set status to 0 to indicate
++        // reset complete. Hardware handshake (NOT event polling) — Linux uses
++        // cpu_relax() in vp_modern_reset() for the equivalent loop. Bounded by
++        // reset_attempts >= 100. Allowlisted per docs/polling-allowlist.md.
+         let mut reset_attempts = 0;
+         loop {
+             // Small delay between polls

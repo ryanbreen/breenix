@@ -1,0 +1,162 @@
+347:T6[spawn] path='/bin/heartbeat'
+348:T7manager.create_process_with_argv [ARM64]: ENTRY - name='heartbeat', elf_size=290128, argc=1
+359:[heartbeat] tid=11 uptime_ms=1199
+376:[spawn] path='/bin/bwm'
+377:manager.create_process_with_argv [ARM64]: ENTRY - name='bwm', elf_size=429208, argc=1
+388:[bwm] Breenix Window Manager starting... (v2-chromeless-skip)
+390:[bwm] GPU compositing mode (VirGL), display: 1280x960
+391:[compositor] Mapped compositor buffer into process: virt=0x7ffffdb4e000, 1280x960, 1200 pages (backend=VirGL)
+392:[bwm] Direct compositor mapping: 1280x960 at 0x7ffffdb4e000
+393:[bwm] using bitmap font fallback for early boot
+394:[bwm] hotkeys: using built-in defaults for early boot
+411:[init] Boot script completed
+412:[spawn] path='/bin/bsshd'
+413:manager.create_process_with_argv [ARM64]: ENTRY - name='bsshd', elf_size=441008, argc=1
+424:bsshd: starting on port 2222
+425:bsshd: listening on 0.0.0.0:2222
+426:[init] bsshd started (PID 6)
+427:[spawn] path='/bin/bounce'
+428:manager.create_process_with_argv [ARM64]: ENTRY - name='bounce', elf_size=388152, argc=1
+442:[bwm] Discovered window 'Bounce' (id=1, 400x300) at (30,38)
+443:[compositor] Mapped window 1 into BWM: virt=0x7ffffdad4000, 400x300, 118 pages
+444:[bounce] Window mode: id=1 400x300 [boot_id=000000005eac6f04]
+445:[init] bounce started (PID 7)
+447:[heartbeat] tid=11 uptime_ms=2199
+448:[bwm-fps] frames_since_last=84 elapsed_ms=1007 instantaneous_fps=83
+449:[heartbeat] tid=11 uptime_ms=3200
+450:[bwm-fps] frames_since_last=116 elapsed_ms=1015 instantaneous_fps=114
+451:[heartbeat] tid=11 uptime_ms=4200
+452:[bwm-fps] frames_since_last=113 elapsed_ms=1001 instantaneous_fps=112
+453:[heartbeat] tid=11 uptime_ms=5200
+454:[bwm-fps] frames_since_last=110 elapsed_ms=1003 instantaneous_fps=109
+456:[heartbeat] tid=11 uptime_ms=6201
+457:[bwm-fps] frames_since_last=109 elapsed_ms=1020 instantaneous_fps=106
+458:[heartbeat] tid=11 uptime_ms=7202
+459:[bwm-fps] frames_since_last=115 elapsed_ms=1003 instantaneous_fps=114
+460:[timer] cpu0 ticks=5000
+461:[heartbeat] tid=11 uptime_ms=8202
+462:[bwm-fps] frames_since_last=107 elapsed_ms=1002 instantaneous_fps=106
+463:[heartbeat] tid=11 uptime_ms=9203
+464:[bwm-fps] frames_since_last=106 elapsed_ms=1020 instantaneous_fps=103
+465:[heartbeat] tid=11 uptime_ms=10203
+466:[bwm-fps] frames_since_last=112 elapsed_ms=1002 instantaneous_fps=111
+468:[heartbeat] tid=11 uptime_ms=11204
+469:[bwm-fps] frames_since_last=110 elapsed_ms=1021 instantaneous_fps=107
+470:[heartbeat] tid=11 uptime_ms=12205
+471:[bwm-fps] frames_since_last=118 elapsed_ms=1012 instantaneous_fps=116
+472:[heartbeat] tid=11 uptime_ms=13205
+473:[bwm-fps] frames_since_last=114 elapsed_ms=1000 instantaneous_fps=114
+474:[heartbeat] tid=11 uptime_ms=14206
+475:[bwm-fps] frames_since_last=114 elapsed_ms=1000 instantaneous_fps=114
+476:[timer] cpu0 ticks=10000
+478:[heartbeat] tid=11 uptime_ms=15206
+479:[bwm-fps] frames_since_last=114 elapsed_ms=1008 instantaneous_fps=113
+480:[heartbeat] tid=11 uptime_ms=16206
+481:[bwm-fps] frames_since_last=116 elapsed_ms=1002 instantaneous_fps=115
+482:[heartbeat] tid=11 uptime_ms=17207
+483:[bwm-fps] frames_since_last=113 elapsed_ms=1000 instantaneous_fps=113
+484:[heartbeat] tid=11 uptime_ms=18207
+485:[bwm-fps] frames_since_last=114 elapsed_ms=1001 instantaneous_fps=113
+486:[heartbeat] tid=11 uptime_ms=19208
+487:[bwm-fps] frames_since_last=111 elapsed_ms=1011 instantaneous_fps=109
+489:[heartbeat] tid=11 uptime_ms=20208
+490:[bwm-fps] frames_since_last=122 elapsed_ms=1002 instantaneous_fps=121
+491:[heartbeat] tid=11 uptime_ms=21208
+492:[bwm-fps] frames_since_last=167 elapsed_ms=1004 instantaneous_fps=166
+493:[timer] cpu0 ticks=15000
+494:[heartbeat] tid=11 uptime_ms=22208
+495:[bwm-fps] frames_since_last=183 elapsed_ms=1001 instantaneous_fps=182
+497:[heartbeat] tid=11 uptime_ms=23209
+498:[bwm-fps] frames_since_last=181 elapsed_ms=1000 instantaneous_fps=181
+499:[heartbeat] tid=11 uptime_ms=24209
+500:[bwm-fps] frames_since_last=166 elapsed_ms=1004 instantaneous_fps=165
+501:[heartbeat] tid=11 uptime_ms=25210
+503:[bwm-fps] frames_since_last=185 elapsed_ms=1000 instantaneous_fps=185
+504:[heartbeat] tid=11 uptime_ms=26210
+505:[bwm-fps] frames_since_last=169 elapsed_ms=1005 instantaneous_fps=168
+506:[heartbeat] tid=11 uptime_ms=27210
+507:[bwm-fps] frames_since_last=174 elapsed_ms=1001 instantaneous_fps=173
+508:[heartbeat] tid=11 uptime_ms=28211
+510:[bwm-fps] frames_since_last=177 elapsed_ms=1003 instantaneous_fps=176
+511:[timer] cpu0 ticks=20000
+512:[heartbeat] tid=11 uptime_ms=29212
+513:[bwm-fps] frames_since_last=188 elapsed_ms=1001 instantaneous_fps=187
+514:[heartbeat] tid=11 uptime_ms=30212
+515:[bwm-fps] frames_since_last=184 elapsed_ms=1003 instantaneous_fps=183
+517:[heartbeat] tid=11 uptime_ms=31212
+518:[bwm-fps] frames_since_last=181 elapsed_ms=1002 instantaneous_fps=180
+519:[heartbeat] tid=11 uptime_ms=32213
+520:[bwm-fps] frames_since_last=183 elapsed_ms=1001 instantaneous_fps=182
+521:[heartbeat] tid=11 uptime_ms=33213
+522:[bwm-fps] frames_since_last=191 elapsed_ms=1003 instantaneous_fps=190
+524:[heartbeat] tid=11 uptime_ms=34214
+525:[bwm-fps] frames_since_last=182 elapsed_ms=1003 instantaneous_fps=181
+526:[heartbeat] tid=11 uptime_ms=35215
+527:[bwm-fps] frames_since_last=189 elapsed_ms=1003 instantaneous_fps=188
+528:[heartbeat] tid=11 uptime_ms=36215
+529:[timer] cpu0 ticks=25000
+530:[bwm-fps] frames_since_last=180 elapsed_ms=1001 instantaneous_fps=179
+532:[heartbeat] tid=11 uptime_ms=37216
+533:[bwm-fps] frames_since_last=183 elapsed_ms=1003 instantaneous_fps=182
+534:[heartbeat] tid=11 uptime_ms=38216
+535:[bwm-fps] frames_since_last=181 elapsed_ms=1002 instantaneous_fps=180
+536:[heartbeat] tid=11 uptime_ms=39217
+538:[bwm-fps] frames_since_last=176 elapsed_ms=1003 instantaneous_fps=175
+539:[heartbeat] tid=11 uptime_ms=40217
+540:[bwm-fps] frames_since_last=179 elapsed_ms=1002 instantaneous_fps=178
+541:[heartbeat] tid=11 uptime_ms=41218
+542:[bwm-fps] frames_since_last=185 elapsed_ms=1007 instantaneous_fps=183
+544:[heartbeat] tid=11 uptime_ms=42218
+545:[bwm-fps] frames_since_last=180 elapsed_ms=1000 instantaneous_fps=180
+546:[heartbeat] tid=11 uptime_ms=43218
+547:[bwm-fps] frames_since_last=190 elapsed_ms=1000 instantaneous_fps=190
+548:[timer] cpu0 ticks=30000
+549:[heartbeat] tid=11 uptime_ms=44219
+550:[bwm-fps] frames_since_last=177 elapsed_ms=1002 instantaneous_fps=176
+552:[heartbeat] tid=11 uptime_ms=45219
+553:[bwm-fps] frames_since_last=178 elapsed_ms=1000 instantaneous_fps=178
+554:[heartbeat] tid=11 uptime_ms=46220
+555:[bwm-fps] frames_since_last=180 elapsed_ms=1002 instantaneous_fps=179
+556:[heartbeat] tid=11 uptime_ms=47220
+557:[bwm-fps] frames_since_last=161 elapsed_ms=1001 instantaneous_fps=160
+559:[heartbeat] tid=11 uptime_ms=48220
+560:[bwm-fps] frames_since_last=155 elapsed_ms=1002 instantaneous_fps=154
+561:[heartbeat] tid=11 uptime_ms=49221
+562:[bwm-fps] frames_since_last=155 elapsed_ms=1007 instantaneous_fps=153
+563:[heartbeat] tid=11 uptime_ms=50222
+564:[bwm-fps] frames_since_last=157 elapsed_ms=1000 instantaneous_fps=157
+566:[timer] cpu0 ticks=35000
+567:[heartbeat] tid=11 uptime_ms=51222
+568:[bwm-fps] frames_since_last=163 elapsed_ms=1003 instantaneous_fps=162
+569:[heartbeat] tid=11 uptime_ms=52223
+570:[bwm-fps] frames_since_last=159 elapsed_ms=1002 instantaneous_fps=158
+571:[heartbeat] tid=11 uptime_ms=53223
+572:[bwm-fps] frames_since_last=165 elapsed_ms=1008 instantaneous_fps=163
+574:[heartbeat] tid=11 uptime_ms=54224
+575:[bwm-fps] frames_since_last=171 elapsed_ms=1001 instantaneous_fps=170
+576:[heartbeat] tid=11 uptime_ms=55225
+577:[bwm-fps] frames_since_last=191 elapsed_ms=1000 instantaneous_fps=191
+578:[heartbeat] tid=11 uptime_ms=56225
+579:[bwm-fps] frames_since_last=179 elapsed_ms=1003 instantaneous_fps=178
+581:[heartbeat] tid=11 uptime_ms=57226
+582:[bwm-fps] frames_since_last=180 elapsed_ms=1006 instantaneous_fps=178
+583:[heartbeat] tid=11 uptime_ms=58226
+584:[timer] cpu0 ticks=40000
+585:[bwm-fps] frames_since_last=176 elapsed_ms=1001 instantaneous_fps=175
+586:[heartbeat] tid=11 uptime_ms=59227
+588:[bwm-fps] frames_since_last=184 elapsed_ms=1003 instantaneous_fps=183
+589:[heartbeat] tid=11 uptime_ms=60227
+590:[bwm-fps] frames_since_last=193 elapsed_ms=1005 instantaneous_fps=192
+591:[heartbeat] tid=11 uptime_ms=61228
+592:[bwm-fps] frames_since_last=178 elapsed_ms=1002 instantaneous_fps=177
+593:[heartbeat] tid=11 uptime_ms=62229
+595:[bwm-fps] frames_since_last=184 elapsed_ms=1005 instantaneous_fps=183
+596:[heartbeat] tid=11 uptime_ms=63229
+597:[bwm-fps] frames_since_last=183 elapsed_ms=1004 instantaneous_fps=182
+598:[heartbeat] tid=11 uptime_ms=64229
+599:[bwm-fps] frames_since_last=187 elapsed_ms=1001 instantaneous_fps=186
+601:[heartbeat] tid=11 uptime_ms=65230
+602:[timer] cpu0 ticks=45000
+603:[bwm-fps] frames_since_last=174 elapsed_ms=1011 instantaneous_fps=172
+604:[heartbeat] tid=11 uptime_ms=66230
+605:[bwm-fps] frames_since_last=114 elapsed_ms=1012 instantaneous_fps=112

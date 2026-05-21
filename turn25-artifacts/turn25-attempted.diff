@@ -1,0 +1,179 @@
+diff --git a/kernel/src/drivers/virtio/net_mmio.rs b/kernel/src/drivers/virtio/net_mmio.rs
+index a0f28bf1..78fdbcf1 100644
+--- a/kernel/src/drivers/virtio/net_mmio.rs
++++ b/kernel/src/drivers/virtio/net_mmio.rs
+@@ -280,11 +280,11 @@ pub fn init() -> Result<(), &'static str> {
+                         crate::memory::physical_memory_offset().as_u64() + base;
+                 }
+
+-                // Note: IRQ will be enabled later by enable_net_irq() after
+-                // the network stack is fully initialized.
++                // Note: IRQ will be enabled later by net::init() after NetRx
++                // registration and ARP-cache initialization.
+                 let irq = VIRTIO_IRQ_BASE + i as u32;
+                 crate::serial_println!(
+-                    "[virtio-net] Network device IRQ {} (will enable after net init)",
++                    "[virtio-net] Network device IRQ {} (will enable during net init)",
+                     irq
+                 );
+
+@@ -730,8 +730,8 @@ pub fn mac_address() -> Option<[u8; 6]> {
+
+ /// Enable the network device's interrupt in the GIC.
+ ///
+-/// Called after the network stack is fully initialized (ARP resolved, etc.)
+-/// to avoid interrupt storms during the synchronous init polling loop.
++/// Called after NetRx registration and ARP-cache initialization, before the
++/// gateway ARP request is sent from net::init().
+ pub fn enable_net_irq() {
+     if !DEVICE_INITIALIZED.load(Ordering::Acquire) {
+         return;
+diff --git a/kernel/src/drivers/virtio/net_pci.rs b/kernel/src/drivers/virtio/net_pci.rs
+index 45352557..8e2e575c 100644
+--- a/kernel/src/drivers/virtio/net_pci.rs
++++ b/kernel/src/drivers/virtio/net_pci.rs
+@@ -385,11 +385,9 @@ fn setup_net_pci_msi(pci_dev: &crate::drivers::pci::Device) {
+     }
+
+     gic::configure_spi_edge_triggered(spi);
+-    // Store IRQ but do NOT enable the SPI yet. The SPI is enabled by
+-    // enable_msi_spi() after init_common() completes its synchronous
+-    // ARP/ICMP polling. This avoids the GICv2m level-triggered SPI storm
+-    // during init (the device fires MSIs for ARP replies, and the level
+-    // stays asserted through EOI).
++    // Store IRQ but do NOT enable the SPI during driver probe. net::init()
++    // enables it after NetRx registration and ARP-cache initialization, before
++    // sending the gateway ARP request.
+     NET_PCI_IRQ.store(spi, Ordering::Release);
+
+     // Enable MSI-X at PCI level and disable legacy INTx
+@@ -961,12 +959,11 @@ pub fn dump_rx_state() {
+     );
+ }
+
+-/// Enable the MSI-X SPI at the GIC after init polling is complete.
++/// Enable the MSI-X SPI at the GIC once the network stack can process RX.
+ ///
+-/// During init, the ARP/ICMP polling loop processes RX via timer-based softirq.
+-/// The SPI must NOT be enabled during init because the GICv2m level-triggered
+-/// storm would prevent the main thread from making progress. After init drains
+-/// all used ring entries, it's safe to enable the SPI for interrupt-driven RX.
++/// net::init() calls this after registering NetRx and initializing the ARP
++/// cache, before sending the gateway ARP request. Replies are then handled by
++/// the normal interrupt-driven NetRx path rather than by init polling.
+ pub fn enable_msi_spi() {
+     use crate::arch_impl::aarch64::gic;
+
+@@ -975,7 +972,7 @@ pub fn enable_msi_spi() {
+         return;
+     }
+
+-    // Read ISR to clear any pending device interrupt from init polling
++    // Read ISR to clear any stale device interrupt before enabling the SPI.
+     let state_ptr = &raw const NET_PCI_STATE;
+     unsafe {
+         if let Some(ref s) = *state_ptr {
+diff --git a/kernel/src/net/mod.rs b/kernel/src/net/mod.rs
+index 6eae3c01..4939bad6 100644
+--- a/kernel/src/net/mod.rs
++++ b/kernel/src/net/mod.rs
+@@ -357,7 +357,19 @@ fn init_common() {
+
+     net_log!("Network stack initialized");
+
+-    // Send ARP request for gateway to test network connectivity
++    // Enable network interrupts before the first outbound packet so any gateway
++    // reply is handled by the normal IRQ -> NetRx path instead of init polling.
++    #[cfg(target_arch = "aarch64")]
++    {
++        if net_pci::is_initialized() {
++            net_pci::enable_msi_spi();
++        } else {
++            net_mmio::enable_net_irq();
++        }
++    }
++
++    // Prime the gateway ARP cache asynchronously. If the reply arrives, NetRx
++    // will process it; if not, send_ipv4() still performs on-demand ARP.
+     let gateway = gw;
+     net_log!(
+         "NET: Sending ARP request for gateway {}.{}.{}.{}",
+@@ -372,78 +384,7 @@ fn init_common() {
+     }
+     net_log!("ARP request sent successfully");
+
+-    // Wait for ARP reply (poll RX a few times to get the gateway MAC)
+-    // The reply comes via interrupt, so we just need to give it time to arrive
+-    for _i in 0..100 {
+-        process_rx();
+-        // Delay to let packets arrive and timer-based polling process them
+-        for _ in 0..1_000_000 {
+-            core::hint::spin_loop();
+-        }
+-        // Diagnostic: dump RX queue state on first few iterations
+-        #[cfg(target_arch = "aarch64")]
+-        if _i < 5 || _i % 20 == 0 {
+-            net_pci::dump_rx_state();
+-        }
+-        // Check if we got the ARP reply yet
+-        if let Some(gateway_mac) = arp::lookup(&gateway) {
+-            net_log!(
+-                "NET: ARP resolved gateway MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+-                gateway_mac[0],
+-                gateway_mac[1],
+-                gateway_mac[2],
+-                gateway_mac[3],
+-                gateway_mac[4],
+-                gateway_mac[5]
+-            );
+-            break;
+-        }
+-    }
+-
+-    // Check if ARP resolved the gateway
+-    if arp::lookup(&gateway).is_none() {
+-        net_log!("NET: Gateway ARP not resolved, skipping ping test");
+-        return;
+-    }
+-
+-    // Send ICMP echo request (ping) to gateway
+-    net_log!(
+-        "NET: Sending ICMP echo request to gateway {}.{}.{}.{}",
+-        gateway[0],
+-        gateway[1],
+-        gateway[2],
+-        gateway[3]
+-    );
+-    if let Err(e) = ping(gateway) {
+-        net_log!("NET: Failed to send ping: {}", e);
+-        return;
+-    }
+-
+-    // Poll for the ping reply (just process RX to handle incoming packets)
+-    for _ in 0..20 {
+-        process_rx();
+-        // Delay to let packets arrive and interrupts fire
+-        for _ in 0..500000 {
+-            core::hint::spin_loop();
+-        }
+-    }
+-
+     net_log!("NET: Network initialization complete");
+-
+-    // Enable network device interrupt now that init polling is done.
+-    // This must happen AFTER the synchronous ARP/ICMP polling loop so
+-    // interrupt-driven RX doesn't interfere with the polling.
+-    #[cfg(target_arch = "aarch64")]
+-    {
+-        if net_pci::is_initialized() {
+-            // Enable MSI-X SPI at GIC now that the used ring is drained.
+-            // During init, timer-based polling handled RX. Now switch to
+-            // interrupt-driven NAPI-style processing.
+-            net_pci::enable_msi_spi();
+-        } else {
+-            net_mmio::enable_net_irq();
+-        }
+-    }
+ }
+
+ /// Get the current network configuration.

@@ -1,0 +1,28 @@
+diff --git a/kernel/src/drivers/virtio/gpu_mmio.rs b/kernel/src/drivers/virtio/gpu_mmio.rs
+index 4eb5be47..0ec60edc 100644
+--- a/kernel/src/drivers/virtio/gpu_mmio.rs
++++ b/kernel/src/drivers/virtio/gpu_mmio.rs
+@@ -316,6 +316,23 @@ pub fn snapshot_counters() -> (u32, u32, u16) {
+         GPU_MMIO_LAST_USED_IDX.load(core::sync::atomic::Ordering::Relaxed),
+     )
+ }
++// T43 bisect: function body verbatim from T38's preserved diff. UNCALLED
++// (no invocation from init_device or anywhere else). Tests whether the body
++// alone trips Parallels CPU0, isolating it from the init-time call site
++// hypothesis tested in T44. allow(dead_code) is legitimate per CLAUDE.md
++// — this is a bisect probe pending T44 wiring decision.
++#[allow(dead_code)]
++fn record_mmio_irq_state(base: u64, slot: u32) {
++    let virt_base = crate::memory::physical_memory_offset().as_u64() + base;
++    let used_idx = unsafe {
++        let ptr = &raw const CTRL_QUEUE;
++        read_volatile(&(*ptr).used.idx)
++    };
++
++    GPU_MMIO_LAST_USED_IDX.store(used_idx, core::sync::atomic::Ordering::Release);
++    MMIO_BASE.store(virt_base, core::sync::atomic::Ordering::Release);
++    MMIO_SLOT.store(slot, core::sync::atomic::Ordering::Release);
++}
+ /// Requested resolution from fw_cfg (set during init, before GPU probe)
+ static mut REQUESTED_WIDTH: u32 = 0;
+ static mut REQUESTED_HEIGHT: u32 = 0;

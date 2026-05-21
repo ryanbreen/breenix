@@ -1,0 +1,19 @@
+1317:const GPU_COMPLETION_TIMEOUT_NS: u64 = 5_000_000_000;
+1320:static GPU_COMPLETED_USED_IDX: AtomicU32 = AtomicU32::new(0);
+1321:static GPU_COMPLETION: crate::task::completion::Completion =
+1544:pub fn handle_interrupt() {
+1555:    let previous = GPU_COMPLETED_USED_IDX.load(Ordering::Acquire) as u16;
+1557:        GPU_COMPLETED_USED_IDX.store(used_idx as u32, Ordering::Release);
+1558:        GPU_COMPLETION.complete(ctrlq_completion_token(used_idx));
+1830:        GPU_COMPLETED_USED_IDX.store(0, Ordering::Release);
+1831:        GPU_COMPLETION.reset();
+2136:        GPU_COMPLETED_USED_IDX.store(cur as u32, Ordering::Release);
+2142:fn ctrlq_completion_token(used_idx: u16) -> u32 {
+2155:fn prepare_ctrlq_completion_wait(previous_used_idx: u16) -> Result<(), &'static str> {
+2160:    GPU_COMPLETION.reset();
+2161:    GPU_COMPLETED_USED_IDX.store(previous_used_idx as u32, Ordering::Release);
+2201:    let expected_token = ctrlq_completion_token(expected_used_idx);
+2202:    match GPU_COMPLETION.wait_timeout(expected_token, GPU_COMPLETION_TIMEOUT_NS) {
+2228:    GPU_COMPLETED_USED_IDX.store(used_idx as u32, Ordering::Release);
+2250:    prepare_ctrlq_completion_wait(previous_used_idx)?;
+2338:    prepare_ctrlq_completion_wait(previous_used_idx)?;

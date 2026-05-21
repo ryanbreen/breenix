@@ -808,9 +808,6 @@ fn dns_test_only_main() -> ! {
         // Yield to give scheduler a chance
         task::scheduler::yield_current();
 
-        // Poll for received packets (workaround for softirq timing)
-        net::process_rx();
-
         // Drain loopback queue for localhost packets
         net::drain_loopback_queue();
     }
@@ -873,9 +870,6 @@ fn blocking_recv_test_main() -> ! {
 
         // Yield to give scheduler a chance
         task::scheduler::yield_current();
-
-        // Poll for received packets (workaround for softirq timing)
-        net::process_rx();
 
         // Drain loopback queue for localhost packets
         net::drain_loopback_queue();
@@ -942,9 +936,6 @@ fn nonblock_eagain_test_main() -> ! {
 
         // Yield to give scheduler a chance
         task::scheduler::yield_current();
-
-        // Poll for received packets (workaround for softirq timing)
-        net::process_rx();
 
         // Drain loopback queue for localhost packets
         net::drain_loopback_queue();

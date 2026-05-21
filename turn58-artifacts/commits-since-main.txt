@@ -1,0 +1,55 @@
+3ab1d379 docs(polling): turn 57 polling-elimination gate RETROSPECTIVE
+f78f81fc docs(polling): P12 AHCI Site 7 ISR PORT_IS/PORT_CI drain loop ALLOWLISTED
+397dd3f1 docs(polling): P12 AHCI Site 2 early-boot PORT_CI fallback ALLOWLISTED (P18 analog)
+65051f93 docs(polling): P12 AHCI engine + taskfile bounded register handshakes ALLOWLISTED (Sites 3, 4, 5)
+1e7f5ed1 docs(polling): turn 53 P12 AHCI polling sites SURVEY
+fb66d0dc docs(polling): P17 SMP secondary CPU online wait ALLOWLISTED
+086b7164 docs(polling): P18 Completion::wait_timeout() early-boot fallback ALLOWLISTED
+d10bb99f docs(polling): P16 GICR_WAKER ChildrenAsleep handshake ALLOWLISTED
+8a6515a4 docs(polling): P11 VirtIO reset status handshake ALLOWLISTED
+5c882371 docs(polling): P15 PCI PM D3hot→D0 settle delay ALLOWLISTED
+9d715676 docs(polling): turn 47 P9 implementation step 1 — call-site relocation also trips CPU0
+338dc76b docs(polling): turn 46 P9 bisect TRUE ENDPOINT — call instruction IS the T38 CPU0 trigger
+6d20f1a3 feat(virtio-gpu): P9 bisect — T38 slot-plumbing only (Parallels CPU0 still safe)
+62e566ff docs(polling): turn 44 inconclusive — one-line call site lacks slot scope
+f553aecf feat(virtio-gpu): P9 substep 1 bisect — add record_mmio_irq_state() UNCALLED (Parallels CPU0 still safe)
+f59ab395 feat(virtio-gpu): P9 substep 1 bisect — add snapshot_counters() (Parallels CPU0 still safe)
+2dab6d82 feat(virtio-gpu): P9 substep 1 bisect — add handle_interrupt() (Parallels CPU0 still safe)
+477f64a5 feat(virtio-gpu): P9 substep 1 bisect — add get_irq() (Parallels CPU0 still safe)
+f5e4834b feat(virtio-gpu): P9 substep 1 bisect — atomic statics only (Parallels CPU0 safe)
+b1efbf7c docs(polling): turn 38 dormant MMIO GPU scaffold inconclusive
+7ba3c332 docs(polling): turn 37 QEMU MMIO GPU baseline blocked by userspace exception
+b2aca1c3 docs(polling): turn 36 P9 diagnostic — gpu_mmio reachability + CPU0 regression bisect
+f025c44c docs(polling): turn 35 MMIO GPU IRQ observer inconclusive
+6a720880 docs(polling): turn 34 P9 Linux-profile scout — VirtIO GPU MMIO control queue
+412b2c1a fix: P6/P7/P8 Substep 6 — remove x86 hlt-loop polling + harden Substep 4 bootstrap
+a927815c docs(polling): turn 32 x86 hlt-loop deletion inconclusive
+98949e98 fix(arm64): P6/P7/P8 Substep 5 — remove synchronous on-demand ARP polling
+c3397f82 fix(arm64): P6/P7/P8 Substep 4 — pre-prime NetRx softirq for callback re-enable
+8e6745e1 docs(polling): turn 29 unconditional MSI-X still leaves network silent
+967c00d4 docs(polling): turn 28 minimal polling deletion ALSO fails — loops are load-bearing
+33a84418 docs(polling): turn 27 deferred primer fails before MSI-X
+79d4fd3d docs(polling): turn 26 deferred ARP primer inconclusive
+c9a7c29c docs(polling): turn 25 init polling removal inconclusive
+a093f9f0 fix(arm64): P6/P7 Substep 3 lock-free — async TX completion via atomics
+d740a1e7 docs(polling): turn 23 diagnostic boot of post-revert HEAD
+e63004b9 docs(polling): record turn22 async TX inconclusive
+acb62bab fix(arm64): P6 Substep 2 - PCI MSI schedules NetRx
+0d024438 fix(polling): make NetRx processing budgeted
+60dd0f93 docs(polling): P6/P7/P8 conversion plan + stale-contract investigation
+94431f11 docs(polling): P6 Linux profile + Breenix delta map (no source changes)
+747ce88c fix(arm64): remove P10 GPU PCI freeze watchdog kthread
+1b4a2dfc docs(polling): P5a dormant input_pci cleanup + Turn 1 inventory refresh + P6-P18 survey
+f80c8e8d docs: turn 15 input IRQ profile blocked by probe access
+35d5670b fix(arm64): full revert of turn 8 scheduler dequeue helpers (3-file revert)
+7ccbfaae docs: turn 13 inconclusive scheduler revert attempt
+393313ec docs: turn 12 Linux scheduler-dequeue behavioral profile
+bb1aab54 docs: turn 11 cb73f6e3 sub-change isolation
+cec708c3 docs: turn 10 fresh-deploy regression diagnosis
+85d431d3 docs: turn 9 input polling blocked by fresh-deploy regression
+f08c5328 docs: turn 8 scheduler race validation artifacts
+cb73f6e3 fix(arm64): close scheduler dequeue race and xHCI IRQ completion
+045dcd04 docs: turn 7 DATA_ABORT diagnostic + root-cause hypothesis
+c90647b7 docs: turn 6 baseline 5-boot DATA_ABORT pre-existence test
+18c88a01 kernel/userspace: CPU0 liveness fix + /proc/xhci/counters
+361c5a6c docs: comprehensive polling inventory + Linux comparison for elimination Ralph

@@ -546,8 +546,9 @@ impl Device {
             // Not in D0 — transition to D0 by clearing bits [1:0]
             let new_pmcsr = pmcsr & !0x03;
             pci_write_config_word(self.bus, self.device, self.function, pm_cap + 4, new_pmcsr);
-            // PCI spec requires 10ms delay after D3hot->D0 transition
-            // (We always wait this since it's safe)
+            // PCI spec PM 3.0 §5.4.2 requires 10ms delay after D3hot->D0 transition.
+            // Hardware-settle delay (NOT event polling) — Linux uses msleep(10) at the
+            // equivalent pci_set_power_state() site. Allowlisted per docs/polling-allowlist.md.
             for _ in 0..10_000_000u64 {
                 core::hint::spin_loop();
             }

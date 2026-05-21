@@ -1,0 +1,5 @@
+commit	boot	command	status	signature	xhci_post_msi	first_cpu0	last_cpu0	last_peer_max	notes
+045dcd04	1	./run.sh --parallels --test 45	pass	no CPU0 regression	1	330	62948	80125	init, xhci_counters, bwm, telnetd, bsshd, heartbeat all ran
+045dcd04	2	./run.sh --parallels --test 45	mixed	old DATA_ABORT/soft-lockup path, not CPU0-at-5	1	323	26482	72413	services started; GPU submissions stopped after uptime 29119ms; CPU0 continued ticking
+18c88a01	1	./run.sh --parallels --test 45	pass	no CPU0 regression	1	281	63067	80199	init, xhci_counters, bwm, telnetd, bsshd, heartbeat all ran
+cb73f6e3	1	./run.sh --parallels --test 45	fail	CPU0 timer regression before first service spawn	60	5	5	27324	PID1 printed init start only; CPU0 guard panicked at peer max 30000

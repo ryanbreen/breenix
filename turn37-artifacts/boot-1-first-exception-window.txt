@@ -1,0 +1,59 @@
+manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f1f0
+manager.create_process_with_argv [ARM64]: Allocating user stack
+manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 1
+[boot] Reset 4 idle thread contexts (CPUs online: 4)
+T2[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff0000400fc338
+[FATAL_POSTMORTEM] cpu=0 label=UNHANDLED_EC
+  Deferred requeue snapshots:
+[DEFER_SNAP] cpu=0 stage=3 tid=7 aux=0 flags=0xc02 sp=0x54233000 elr=0x4000f1f0 x30=0x0
+[DEFER_SNAP] cpu=1 stage=1 tid=3 aux=0 flags=0x402 sp=0x54221e10 elr=0x401de0fc x30=0x4014897c
+[DEFER_SNAP] cpu=2 stage=1 tid=2 aux=0 flags=0x403 sp=0x54210ef0 elr=0x401dde70 x30=0x401dde6c
+[DEFER_SNAP] cpu=3 stage=1 tid=3 aux=0 flags=0x402 sp=0x54221e10 elr=0x401de1ec x30=0x4014897c
+
+  Trace buffers:
+[TRACE] ====== TRACE BUFFER DUMP ======
+[TRACE] Tracing enabled: yes
+[TRACE] Timestamp frequency: 1000000000 Hz
+[TRACE] === CPU 0 Buffer ===
+[TRACE] Events: 9 (write_idx=9, dropped=0)
+[TRACE] CPU0 idx=0 ts=144712000 type=0x0102 TIMER_TICK tick_count=1
+[TRACE] CPU0 idx=1 ts=153915000 type=0x0102 TIMER_TICK tick_count=2
+[TRACE] CPU0 idx=2 ts=154050000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=458752
+[TRACE] CPU0 idx=3 ts=154060000 type=0x0012 UNKNOWN payload=0
+[TRACE] CPU0 idx=4 ts=154351000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196615
+[TRACE] CPU0 idx=5 ts=154356000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411592192
+[TRACE] CPU0 idx=6 ts=154361000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1073803760
+[TRACE] CPU0 idx=7 ts=154366000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=0
+[TRACE] CPU0 idx=8 ts=154371000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=3074
+[TRACE] === CPU 1 Buffer ===
+[TRACE] Events: 60 (write_idx=60, dropped=0)
+[TRACE] CPU1 idx=0 ts=145546000 type=0x0102 TIMER_TICK tick_count=1
+[TRACE] CPU1 idx=1 ts=146093000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=262147
+[TRACE] CPU1 idx=2 ts=146130000 type=0x0012 UNKNOWN payload=65539
+[TRACE] CPU1 idx=3 ts=146258000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196612
+[TRACE] CPU1 idx=4 ts=146359000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1128267776
+[TRACE] CPU1 idx=5 ts=146389000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074774164
+[TRACE] CPU1 idx=6 ts=146414000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075029156
+[TRACE] CPU1 idx=7 ts=146443000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU1 idx=8 ts=147197000 type=0x0102 TIMER_TICK tick_count=1
+[TRACE] CPU1 idx=9 ts=147247000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65540
+[TRACE] CPU1 idx=10 ts=147565000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1128267776
+[TRACE] CPU1 idx=11 ts=147618000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074774164
+[TRACE] CPU1 idx=12 ts=147645000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075029156
+[TRACE] CPU1 idx=13 ts=147674000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1025
+[TRACE] CPU1 idx=14 ts=148230000 type=0x0102 TIMER_TICK tick_count=1
+[TRACE] CPU1 idx=15 ts=149628000 type=0x0102 TIMER_TICK tick_count=1
+[TRACE] CPU1 idx=16 ts=149876000 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=196612
+[TRACE] CPU1 idx=17 ts=149876000 type=0x0012 UNKNOWN payload=4
+[TRACE] CPU1 idx=18 ts=150226000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196611
+[TRACE] CPU1 idx=19 ts=150227000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411522064
+[TRACE] CPU1 idx=20 ts=150228000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075699964
+[TRACE] CPU1 idx=21 ts=150228000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075087740
+[TRACE] CPU1 idx=22 ts=150229000 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1026
+[TRACE] CPU1 idx=23 ts=150914000 type=0x0102 TIMER_TICK tick_count=1
+[TRACE] CPU1 idx=24 ts=150956000 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=65539
+[TRACE] CPU1 idx=25 ts=150962000 type=0xff3a DEFER_REQUEUE_SP sp_low32=1411522064
+[TRACE] CPU1 idx=26 ts=150962000 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1075699964
+[TRACE] CPU1 idx=27 ts=150963000 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1075087740

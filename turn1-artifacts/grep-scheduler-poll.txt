@@ -1,0 +1,7 @@
+kernel/src/task/workqueue_tests.rs:7://! 4. Re-queue rejection while work is pending
+kernel/src/task/workqueue_tests.rs:136:        "re-queue should be rejected while work is pending"
+kernel/src/task/workqueue_tests.rs:226:        "schedule_work should reject re-queue while work is pending"
+kernel/src/task/executor.rs:91:            core::hint::spin_loop();
+kernel/src/task/softirqd.rs:189:        while pending_work != 0 {
+kernel/src/task/completion.rs:411:                        core::hint::spin_loop();
+kernel/src/task/completion.rs:454:                    core::hint::spin_loop();

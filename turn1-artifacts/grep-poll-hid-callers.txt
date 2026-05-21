@@ -1,0 +1,7 @@
+kernel/src/drivers/usb/xhci.rs:415:/// poll_hid_events() at poll >= 50.
+kernel/src/drivers/usb/xhci.rs:574:/// before the GIC SPI is enabled; SPI activation is later in poll_hid_events()
+kernel/src/drivers/usb/xhci.rs:4397:/// by poll_hid_events() after XHCI_STATE and XHCI_INITIALIZED are ready.
+kernel/src/drivers/usb/xhci.rs:4454:    // configures the GIC trigger mode; poll_hid_events() enables the SPI later
+kernel/src/drivers/usb/xhci.rs:4965:    // start_hid_polling(), but the GIC SPI is enabled later by poll_hid_events().
+kernel/src/drivers/usb/xhci.rs:5764:pub fn poll_hid_events() {
+kernel/src/arch_impl/aarch64/timer_interrupt.rs:754:        crate::drivers::usb::xhci::poll_hid_events();

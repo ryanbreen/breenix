@@ -1,0 +1,638 @@
+diff --git a/kernel/src/arch_impl/aarch64/exception.rs b/kernel/src/arch_impl/aarch64/exception.rs
+index 3d71b209..7afd33f2 100644
+--- a/kernel/src/arch_impl/aarch64/exception.rs
++++ b/kernel/src/arch_impl/aarch64/exception.rs
+@@ -1287,6 +1287,12 @@ fn dispatch_irq_action(irq_id: u32, frame: *const Aarch64ExceptionFrame) {
+                     crate::drivers::usb::xhci::handle_interrupt();
+                 }
+             }
++            // EHCI USB keyboard interrupt dispatch
++            if let Some(ehci_irq) = crate::drivers::usb::ehci::get_irq() {
++                if irq_id == ehci_irq {
++                    crate::drivers::usb::ehci::handle_interrupt();
++                }
++            }
+             // VirtIO GPU PCI interrupt dispatch (MSI completion)
+             if let Some(gpu_config_irq) = crate::drivers::virtio::gpu_pci::get_config_irq() {
+                 if irq_id == gpu_config_irq {
+diff --git a/kernel/src/drivers/usb/ehci.rs b/kernel/src/drivers/usb/ehci.rs
+index ea31463b..ac5572a5 100644
+--- a/kernel/src/drivers/usb/ehci.rs
++++ b/kernel/src/drivers/usb/ehci.rs
+@@ -76,6 +76,14 @@ mod usbsts_bits {
+     pub const HCHALTED: u32 = 1 << 12; // HC Halted
+ }
+ 
++const EHCI_IRQ_STATUS_MASK: u32 = usbsts_bits::USBINT
++    | usbsts_bits::USBERRINT
++    | usbsts_bits::PCD
++    | usbsts_bits::FLR
++    | usbsts_bits::HSE
++    | usbsts_bits::IAA;
++const EHCI_TRANSFER_IRQ_MASK: u32 = usbsts_bits::USBINT | usbsts_bits::USBERRINT;
++
+ /// PORTSC bit definitions
+ #[allow(dead_code)]
+ mod portsc_bits {
+@@ -210,26 +218,35 @@ struct EhciState {
+     n_ports: u8,
+     /// Whether 64-bit addressing is supported.
+     addr64: bool,
++    /// GIC SPI used for EHCI MSI delivery (0 = unavailable).
++    irq: u32,
+     /// Device address assigned to keyboard device (0 = none).
+     kbd_addr: u8,
+     /// Keyboard endpoint number (from endpoint descriptor).
+     kbd_ep: u8,
+     /// Keyboard max packet size.
+     kbd_max_pkt: u16,
+-    /// Keyboard polling interval in frames (ms).
++    /// Keyboard interrupt interval in frames (ms).
+     kbd_interval: u8,
+-    /// Whether keyboard interrupt polling is active.
+-    kbd_polling: bool,
++    /// Whether the keyboard interrupt pipe is linked into the periodic schedule.
++    kbd_irq_active: bool,
+ }
+ 
+ static INITIALIZED: AtomicBool = AtomicBool::new(false);
+ static mut EHCI_STATE: Option<EhciState> = None;
++static EHCI_IRQ: AtomicU32 = AtomicU32::new(0);
+ 
+ /// Next device address to assign (1-127).
+ static NEXT_ADDR: AtomicU8 = AtomicU8::new(1);
+ 
+ /// Counter: interrupt qTD completions.
+ pub static EHCI_INT_COMPLETIONS: AtomicU32 = AtomicU32::new(0);
++/// Counter: EHCI IRQ handler entries.
++pub static EHCI_IRQ_TOTAL: AtomicU32 = AtomicU32::new(0);
++/// Counter: EHCI IRQs that reported an error status.
++pub static EHCI_IRQ_ERROR_TOTAL: AtomicU32 = AtomicU32::new(0);
++/// Counter: non-zero keyboard usage bytes seen on EHCI keyboard reports.
++pub static EHCI_KBD_BYTES_TOTAL: AtomicU32 = AtomicU32::new(0);
+ /// Counter: control transfer completions.
+ pub static EHCI_CTL_COMPLETIONS: AtomicU32 = AtomicU32::new(0);
+ /// Counter: control transfer errors.
+@@ -326,6 +343,78 @@ fn delay_ms(ms: u32) {
+     }
+ }
+ 
++fn resolve_gicv2m_doorbell() -> Option<u64> {
++    const PARALLELS_GICV2M_BASE: u64 = 0x0225_0000;
++    let gicv2m_base = crate::platform_config::gicv2m_base_phys();
++    let base = if gicv2m_base != 0 {
++        gicv2m_base
++    } else if crate::platform_config::probe_gicv2m(PARALLELS_GICV2M_BASE) {
++        PARALLELS_GICV2M_BASE
++    } else {
++        return None;
++    };
++    Some(base + 0x40)
++}
++
++fn allocate_ehci_spi() -> Option<u32> {
++    let spi = crate::platform_config::allocate_msi_spi();
++    if spi == 0 {
++        None
++    } else {
++        Some(spi)
++    }
++}
++
++fn setup_ehci_irq(pci_dev: &crate::drivers::pci::Device) -> u32 {
++    use crate::arch_impl::aarch64::gic;
++
++    let Some(doorbell) = resolve_gicv2m_doorbell() else {
++        crate::serial_println!("[ehci] GICv2m not available; EHCI IRQ disabled");
++        return 0;
++    };
++
++    if let Some(msix_cap) = pci_dev.find_msix_capability() {
++        let Some(spi) = allocate_ehci_spi() else {
++            crate::serial_println!("[ehci] No MSI-X SPI available; EHCI IRQ disabled");
++            return 0;
++        };
++        let table_size = pci_dev.msix_table_size(msix_cap);
++        for vector in 0..table_size {
++            pci_dev.configure_msix_entry(msix_cap, vector, doorbell, spi);
++        }
++        gic::configure_spi_edge_triggered(spi);
++        pci_dev.enable_msix(msix_cap);
++        pci_dev.disable_intx();
++        EHCI_IRQ.store(spi, Ordering::Release);
++        crate::serial_println!(
++            "[ehci] MSI-X configured: SPI {} doorbell={:#x} vectors={}",
++            spi,
++            doorbell,
++            table_size
++        );
++        return spi;
++    }
++
++    if let Some(msi_cap) = pci_dev.find_msi_capability() {
++        let Some(spi) = allocate_ehci_spi() else {
++            crate::serial_println!("[ehci] No MSI SPI available; EHCI IRQ disabled");
++            return 0;
++        };
++        pci_dev.configure_msi(msi_cap, doorbell as u32, spi as u16);
++        gic::configure_spi_edge_triggered(spi);
++        EHCI_IRQ.store(spi, Ordering::Release);
++        crate::serial_println!(
++            "[ehci] MSI configured: SPI {} doorbell={:#x}",
++            spi,
++            doorbell
++        );
++        return spi;
++    }
++
++    crate::serial_println!("[ehci] No MSI/MSI-X capability; EHCI IRQ disabled");
++    0
++}
++
+ // =============================================================================
+ // Initialization
+ // =============================================================================
+@@ -357,6 +446,7 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
+     // 1. Enable PCI
+     pci_dev.enable_bus_master();
+     pci_dev.enable_memory_space();
++    let irq = setup_ehci_irq(pci_dev);
+ 
+     // 2. Map BAR0
+     let bar = pci_dev.get_mmio_bar().ok_or("EHCI: no MMIO BAR")?;
+@@ -456,9 +546,9 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
+ 
+     write32(op_base + op_reg::ASYNCLISTADDR, head_qh_phys as u32);
+ 
+-    // 7. Clear all status bits, configure interrupts
++    // 7. Clear all status bits. Device interrupts are enabled only after the
++    // keyboard interrupt pipe is linked and driver state is published.
+     write32(op_base + op_reg::USBSTS, 0x3F); // Write-clear all status bits
+-                                             // We'll use polling, so disable all interrupts
+     write32(op_base + op_reg::USBINTR, 0);
+ 
+     // 8. Start controller: enable both schedules, run
+@@ -488,33 +578,44 @@ pub fn init(pci_dev: &crate::drivers::pci::Device) -> Result<(), &'static str> {
+         op_base,
+         n_ports,
+         addr64,
++        irq,
+         kbd_addr: 0,
+         kbd_ep: 0,
+         kbd_max_pkt: 0,
+         kbd_interval: 0,
+-        kbd_polling: false,
++        kbd_irq_active: false,
+     };
+ 
+     // 11. Scan and enumerate ports
+     scan_ports(&mut state);
+ 
+-    // 12. If keyboard found, set up periodic polling
++    // 12. If keyboard found, set up the periodic interrupt pipe.
+     if state.kbd_addr != 0 {
+-        setup_keyboard_polling(&mut state);
++        setup_keyboard_interrupt_pipe(&mut state);
+     }
+ 
+     serial_println!(
+-        "[ehci] Init complete: kbd_addr={} kbd_ep={} polling={}",
++        "[ehci] Init complete: kbd_addr={} kbd_ep={} irq_active={} irq={}",
+         state.kbd_addr,
+         state.kbd_ep,
+-        state.kbd_polling,
++        state.kbd_irq_active,
++        state.irq,
+     );
+ 
++    let enable_irq = state.irq != 0 && state.kbd_irq_active;
+     unsafe {
+         EHCI_STATE = Some(state);
+     }
+     INITIALIZED.store(true, Ordering::Release);
+ 
++    if enable_irq {
++        write32(op_base + op_reg::USBSTS, EHCI_IRQ_STATUS_MASK);
++        write32(op_base + op_reg::USBINTR, EHCI_TRANSFER_IRQ_MASK);
++        crate::arch_impl::aarch64::gic::clear_spi_pending(irq);
++        crate::arch_impl::aarch64::gic::enable_spi(irq);
++        serial_println!("[ehci] Transfer IRQs enabled on SPI {}", irq);
++    }
++
+     Ok(())
+ }
+ 
+@@ -1119,11 +1220,11 @@ fn control_transfer(
+ }
+ 
+ // =============================================================================
+-// Periodic Schedule - Keyboard Interrupt Polling
++// Periodic Schedule - Keyboard Interrupt Pipe
+ // =============================================================================
+ 
+-/// Set up the interrupt QH and qTD for keyboard polling via the periodic schedule.
+-fn setup_keyboard_polling(state: &mut EhciState) {
++/// Set up the interrupt QH and qTD for keyboard reports via the periodic schedule.
++fn setup_keyboard_interrupt_pipe(state: &mut EhciState) {
+     use crate::serial_println;
+ 
+     if state.kbd_addr == 0 || state.kbd_ep == 0 {
+@@ -1190,20 +1291,17 @@ fn setup_keyboard_polling(state: &mut EhciState) {
+         dma_cache_clean(FRAME_LIST.0.as_ptr() as *const u8, FRAME_LIST_SIZE * 4);
+     }
+ 
+-    state.kbd_polling = true;
++    state.kbd_irq_active = true;
+ 
+     serial_println!(
+-        "[ehci] Keyboard polling: QH linked every {}ms, endpoint IN{}",
++        "[ehci] Keyboard interrupt pipe: QH linked every {}ms, endpoint IN{}",
+         interval,
+         state.kbd_ep,
+     );
+ }
+ 
+-/// Poll for keyboard events. Called from the timer interrupt handler.
+-///
+-/// Checks if the interrupt qTD completed. If so, processes the keyboard report
+-/// and resubmits the qTD.
+-pub fn poll_keyboard() {
++/// Drain a completed keyboard interrupt qTD and resubmit it.
++fn drain_keyboard_completion() {
+     if !INITIALIZED.load(Ordering::Acquire) {
+         return;
+     }
+@@ -1215,7 +1313,7 @@ pub fn poll_keyboard() {
+         }
+     };
+ 
+-    if !state.kbd_polling {
++    if !state.kbd_irq_active {
+         return;
+     }
+ 
+@@ -1247,10 +1345,9 @@ pub fn poll_keyboard() {
+ 
+         let report = unsafe { &REPORT_BUF.0 };
+ 
+-        // Update diagnostic counters
+-        let any_nonzero = report.iter().any(|&b| b != 0);
+-        if any_nonzero {
+-            super::hid::NONZERO_KBD_COUNT.fetch_add(1, Ordering::Relaxed);
++        let key_bytes = report[2..8].iter().filter(|&&b| b != 0).count() as u32;
++        if key_bytes != 0 {
++            EHCI_KBD_BYTES_TOTAL.fetch_add(key_bytes, Ordering::Relaxed);
+         }
+ 
+         // Pack report into u64 for heartbeat display
+@@ -1298,8 +1395,48 @@ pub fn poll_keyboard() {
+     }
+ }
+ 
+-/// Check if EHCI keyboard polling is active.
++/// Get the GIC INTID for EHCI MSI delivery, if configured.
++pub fn get_irq() -> Option<u32> {
++    let irq = EHCI_IRQ.load(Ordering::Relaxed);
++    if irq != 0 {
++        Some(irq)
++    } else {
++        None
++    }
++}
++
++/// Handle EHCI transfer interrupts.
++pub fn handle_interrupt() {
++    if !INITIALIZED.load(Ordering::Acquire) {
++        return;
++    }
++
++    let op_base = unsafe {
++        match &EHCI_STATE {
++            Some(state) => state.op_base,
++            None => return,
++        }
++    };
++
++    let status = read32(op_base + op_reg::USBSTS);
++    let active = status & EHCI_IRQ_STATUS_MASK;
++    if active == 0 {
++        return;
++    }
++
++    EHCI_IRQ_TOTAL.fetch_add(1, Ordering::Relaxed);
++    write32(op_base + op_reg::USBSTS, active);
++
++    if active & (usbsts_bits::USBERRINT | usbsts_bits::HSE) != 0 {
++        EHCI_IRQ_ERROR_TOTAL.fetch_add(1, Ordering::Relaxed);
++    }
++    if active & EHCI_TRANSFER_IRQ_MASK != 0 {
++        drain_keyboard_completion();
++    }
++}
++
++/// Check if EHCI keyboard interrupt pipe is active.
+ pub fn is_keyboard_active() -> bool {
+     INITIALIZED.load(Ordering::Acquire)
+-        && unsafe { EHCI_STATE.as_ref().map_or(false, |s| s.kbd_polling) }
++        && unsafe { EHCI_STATE.as_ref().map_or(false, |s| s.kbd_irq_active) }
+ }
+diff --git a/kernel/src/drivers/virtio/input_mmio.rs b/kernel/src/drivers/virtio/input_mmio.rs
+index c4c78c24..657a0d9f 100644
+--- a/kernel/src/drivers/virtio/input_mmio.rs
++++ b/kernel/src/drivers/virtio/input_mmio.rs
+@@ -188,6 +188,13 @@ static mut TABLET_DEVICE_SLOT: usize = 0;
+ static TABLET_INITIALIZED: AtomicBool = AtomicBool::new(false);
+ static TABLET_LAST_USED_IDX: AtomicU16 = AtomicU16::new(0);
+ 
++/// Count of VirtIO MMIO keyboard IRQ handler entries.
++pub static VIRTIO_INPUT_IRQ_TOTAL: AtomicU32 = AtomicU32::new(0);
++/// Count of keyboard events drained from the VirtIO used ring.
++pub static VIRTIO_INPUT_EVENT_TOTAL: AtomicU32 = AtomicU32::new(0);
++/// Count of bytes generated into the keyboard input path.
++pub static VIRTIO_INPUT_KEY_BYTES_TOTAL: AtomicU32 = AtomicU32::new(0);
++
+ // =============================================================================
+ // Mouse State (written by tablet interrupt, read by render thread)
+ // =============================================================================
+@@ -504,11 +511,11 @@ fn init_input_device_queue(
+ }
+ 
+ // =============================================================================
+-// Keyboard Polling and Interrupt Handling
++// Keyboard IRQ Handling
+ // =============================================================================
+ 
+-/// Poll for new keyboard input events.
+-pub fn poll_events() -> impl Iterator<Item = VirtioInputEvent> {
++/// Drain new keyboard input events from the used ring.
++fn drain_events() -> impl Iterator<Item = VirtioInputEvent> {
+     let mut events = [VirtioInputEvent::empty(); NUM_KBD_BUFFERS];
+     let mut count = 0;
+ 
+@@ -642,6 +649,7 @@ pub fn handle_interrupt() {
+             core::ptr::write_volatile(ack_addr, status);
+         }
+     }
++    VIRTIO_INPUT_IRQ_TOTAL.fetch_add(1, Ordering::Relaxed);
+ 
+     // Track modifier key state
+     static SHIFT_PRESSED: core::sync::atomic::AtomicBool =
+@@ -652,7 +660,8 @@ pub fn handle_interrupt() {
+         core::sync::atomic::AtomicBool::new(false);
+ 
+     // Process all pending events
+-    for event in poll_events() {
++    for event in drain_events() {
++        VIRTIO_INPUT_EVENT_TOTAL.fetch_add(1, Ordering::Relaxed);
+         if event.event_type == event_type::EV_KEY {
+             let keycode = event.code;
+             let value = event.value; // 0=release, 1=press, 2=repeat
+@@ -685,6 +694,7 @@ pub fn handle_interrupt() {
+                 // as a single character.
+                 if let Some(seq) = keycode_to_escape_seq(keycode) {
+                     for &b in seq {
++                        VIRTIO_INPUT_KEY_BYTES_TOTAL.fetch_add(1, Ordering::Relaxed);
+                         if !crate::tty::push_char_nonblock(b) {
+                             crate::ipc::stdin::push_byte_from_irq(b);
+                         }
+@@ -711,6 +721,7 @@ pub fn handle_interrupt() {
+ 
+                 if let Some(c) = c {
+                     // Route through TTY for echo and line discipline processing.
++                    VIRTIO_INPUT_KEY_BYTES_TOTAL.fetch_add(1, Ordering::Relaxed);
+                     if !crate::tty::push_char_nonblock(c as u8) {
+                         crate::ipc::stdin::push_byte_from_irq(c as u8);
+                     }
+@@ -721,11 +732,11 @@ pub fn handle_interrupt() {
+ }
+ 
+ // =============================================================================
+-// Tablet Polling and Interrupt Handling
++// Tablet IRQ Handling
+ // =============================================================================
+ 
+-/// Poll for new tablet events.
+-fn poll_tablet_events() -> TabletEventIterator {
++/// Drain new tablet events from the used ring.
++fn drain_tablet_events() -> TabletEventIterator {
+     let mut events = [VirtioInputEvent::empty(); NUM_TABLET_BUFFERS];
+     let mut count = 0;
+ 
+@@ -864,7 +875,7 @@ pub fn handle_tablet_interrupt() {
+         }
+     }
+ 
+-    for event in poll_tablet_events() {
++    for event in drain_tablet_events() {
+         match event.event_type {
+             event_type::EV_ABS => match event.code {
+                 abs_code::ABS_X => {
+diff --git a/kernel/src/drivers/virtio/input_pci.rs b/kernel/src/drivers/virtio/input_pci.rs
+index b4539282..3cd8f95a 100644
+--- a/kernel/src/drivers/virtio/input_pci.rs
++++ b/kernel/src/drivers/virtio/input_pci.rs
+@@ -361,74 +361,6 @@ pub fn init() -> Result<(), &'static str> {
+     Ok(())
+ }
+ 
+-// =============================================================================
+-// Event Polling
+-// =============================================================================
+-
+-/// Poll for new input events from the VirtIO input device.
+-///
+-/// Called from the timer interrupt handler. Processes all pending events
+-/// in the used ring, dispatches keyboard characters to TTY, and re-posts
+-/// consumed buffers to the available ring.
+-pub fn poll_events() {
+-    if !INPUT_PCI_INITIALIZED.load(Ordering::Acquire) {
+-        return;
+-    }
+-
+-    unsafe {
+-        let state_ptr = &raw mut INPUT_PCI_STATE;
+-        let state = match (*state_ptr).as_mut() {
+-            Some(s) => s,
+-            None => return,
+-        };
+-
+-        let q = &raw mut INPUT_EVENT_QUEUE;
+-        let events = &raw const INPUT_EVENT_BUFFERS;
+-
+-        fence(Ordering::SeqCst);
+-        let current_used = core::ptr::read_volatile(&(*q).used.idx);
+-        fence(Ordering::SeqCst);
+-
+-        if current_used == state.last_used_idx {
+-            return; // No new events
+-        }
+-
+-        let mut idx = state.last_used_idx;
+-        while idx != current_used {
+-            let ring_idx = (idx as usize) % NUM_EVENT_BUFFERS;
+-            let used_elem = core::ptr::read_volatile(&(*q).used.ring[ring_idx]);
+-            let desc_idx = used_elem.id as usize;
+-
+-            if desc_idx < NUM_EVENT_BUFFERS {
+-                let event = core::ptr::read_volatile(&(*events).events[desc_idx]);
+-                process_event(&event);
+-
+-                // Re-post this buffer to the available ring
+-                let avail_idx = core::ptr::read_volatile(&(*q).avail.idx) as usize;
+-                core::ptr::write_volatile(
+-                    &mut (*q).avail.ring[avail_idx % NUM_EVENT_BUFFERS],
+-                    desc_idx as u16,
+-                );
+-                fence(Ordering::SeqCst);
+-                core::ptr::write_volatile(
+-                    &mut (*q).avail.idx,
+-                    (avail_idx as u16).wrapping_add(1),
+-                );
+-            }
+-
+-            idx = idx.wrapping_add(1);
+-        }
+-
+-        state.last_used_idx = current_used;
+-
+-        // Notify device that new buffers are available
+-        if current_used != state.last_used_idx.wrapping_sub(1) {
+-            fence(Ordering::SeqCst);
+-            state.device.notify_queue(0);
+-        }
+-    }
+-}
+-
+ // =============================================================================
+ // Event Processing
+ // =============================================================================
+diff --git a/kernel/src/fs/procfs/xhci.rs b/kernel/src/fs/procfs/xhci.rs
+index d7ab5197..dec56adc 100644
+--- a/kernel/src/fs/procfs/xhci.rs
++++ b/kernel/src/fs/procfs/xhci.rs
+@@ -20,13 +20,75 @@ pub fn generate_xhci_counters() -> String {
+     };
+     use alloc::format;
+ 
++    #[cfg(target_arch = "aarch64")]
++    let (
++        xhci_kbd_event_count,
++        usb_hid_nonzero_kbd_count,
++        usb_hid_last_kbd_report,
++        virtio_input_irq_total,
++        virtio_input_event_total,
++        virtio_input_key_bytes_total,
++        ehci_irq_total,
++        ehci_int_completions,
++        ehci_irq_error_total,
++        ehci_kbd_bytes_total,
++    ) = {
++        use crate::drivers::usb::{
++            ehci::{
++                EHCI_INT_COMPLETIONS, EHCI_IRQ_ERROR_TOTAL, EHCI_IRQ_TOTAL, EHCI_KBD_BYTES_TOTAL,
++            },
++            hid::{LAST_KBD_REPORT_U64, NONZERO_KBD_COUNT},
++            xhci::KBD_EVENT_COUNT,
++        };
++        use crate::drivers::virtio::input_mmio::{
++            VIRTIO_INPUT_EVENT_TOTAL, VIRTIO_INPUT_IRQ_TOTAL, VIRTIO_INPUT_KEY_BYTES_TOTAL,
++        };
++        let ordering = core::sync::atomic::Ordering::Relaxed;
++        (
++            KBD_EVENT_COUNT.load(ordering) as u64,
++            NONZERO_KBD_COUNT.load(ordering),
++            LAST_KBD_REPORT_U64.load(ordering),
++            VIRTIO_INPUT_IRQ_TOTAL.load(ordering) as u64,
++            VIRTIO_INPUT_EVENT_TOTAL.load(ordering) as u64,
++            VIRTIO_INPUT_KEY_BYTES_TOTAL.load(ordering) as u64,
++            EHCI_IRQ_TOTAL.load(ordering) as u64,
++            EHCI_INT_COMPLETIONS.load(ordering) as u64,
++            EHCI_IRQ_ERROR_TOTAL.load(ordering) as u64,
++            EHCI_KBD_BYTES_TOTAL.load(ordering) as u64,
++        )
++    };
++
++    #[cfg(not(target_arch = "aarch64"))]
++    let (
++        xhci_kbd_event_count,
++        usb_hid_nonzero_kbd_count,
++        usb_hid_last_kbd_report,
++        virtio_input_irq_total,
++        virtio_input_event_total,
++        virtio_input_key_bytes_total,
++        ehci_irq_total,
++        ehci_int_completions,
++        ehci_irq_error_total,
++        ehci_kbd_bytes_total,
++    ) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
++
+     format!(
+-        "XHCI_MSI_EVENT_TOTAL={}\nXHCI_IRQ_ENTRY_TOTAL={}\nXHCI_LOCK_CONTENDED_TOTAL={}\nSCHED_STALE_QUEUE_NOT_READY={}\nSCHED_STALE_QUEUE_CURRENT={}\nSCHED_STALE_QUEUE_DEFERRED={}\n",
++        "XHCI_MSI_EVENT_TOTAL={}\nXHCI_IRQ_ENTRY_TOTAL={}\nXHCI_LOCK_CONTENDED_TOTAL={}\nSCHED_STALE_QUEUE_NOT_READY={}\nSCHED_STALE_QUEUE_CURRENT={}\nSCHED_STALE_QUEUE_DEFERRED={}\nXHCI_KBD_EVENT_COUNT={}\nUSB_HID_NONZERO_KBD_COUNT={}\nUSB_HID_LAST_KBD_REPORT_U64={}\nVIRTIO_INPUT_IRQ_TOTAL={}\nVIRTIO_INPUT_EVENT_TOTAL={}\nVIRTIO_INPUT_KEY_BYTES_TOTAL={}\nEHCI_IRQ_TOTAL={}\nEHCI_INT_COMPLETIONS={}\nEHCI_IRQ_ERROR_TOTAL={}\nEHCI_KBD_BYTES_TOTAL={}\n",
+         XHCI_MSI_EVENT_TOTAL.aggregate(),
+         XHCI_IRQ_ENTRY_TOTAL.aggregate(),
+         XHCI_LOCK_CONTENDED_TOTAL.aggregate(),
+         SCHED_STALE_QUEUE_NOT_READY.aggregate(),
+         SCHED_STALE_QUEUE_CURRENT.aggregate(),
+-        SCHED_STALE_QUEUE_DEFERRED.aggregate()
++        SCHED_STALE_QUEUE_DEFERRED.aggregate(),
++        xhci_kbd_event_count,
++        usb_hid_nonzero_kbd_count,
++        usb_hid_last_kbd_report,
++        virtio_input_irq_total,
++        virtio_input_event_total,
++        virtio_input_key_bytes_total,
++        ehci_irq_total,
++        ehci_int_completions,
++        ehci_irq_error_total,
++        ehci_kbd_bytes_total
+     )
+ }
+diff --git a/kernel/src/task/scheduler.rs b/kernel/src/task/scheduler.rs
+index 28943f54..b8ab9a47 100644
+--- a/kernel/src/task/scheduler.rs
++++ b/kernel/src/task/scheduler.rs
+@@ -49,8 +49,10 @@
+ use super::thread::{Thread, ThreadState};
+ use crate::log_serial_println;
+ use crate::tracing::providers::counters::{
+-    SCHED_STALE_QUEUE_CURRENT, SCHED_STALE_QUEUE_DEFERRED, SCHED_STALE_QUEUE_NOT_READY,
++    SCHED_STALE_QUEUE_CURRENT, SCHED_STALE_QUEUE_NOT_READY,
+ };
++#[cfg(target_arch = "aarch64")]
++use crate::tracing::providers::counters::SCHED_STALE_QUEUE_DEFERRED;
+ use alloc::{boxed::Box, collections::BinaryHeap, collections::VecDeque};
+ use core::cmp::Reverse;
+ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+diff --git a/userspace/programs/src/init.rs b/userspace/programs/src/init.rs
+index 240cd661..351c3acd 100644
+--- a/userspace/programs/src/init.rs
++++ b/userspace/programs/src/init.rs
+@@ -19,6 +19,8 @@ fn main() {
+     start_bsshd();
+     #[cfg(target_arch = "aarch64")]
+     start_bounce();
++    #[cfg(target_arch = "aarch64")]
++    dump_late_input_counters();
+ 
+     // Reap zombies forever
+     let mut status: i32 = 0;
+@@ -144,6 +146,18 @@ fn start_bounce() {
+     }
+ }
+ 
++#[cfg(target_arch = "aarch64")]
++fn dump_late_input_counters() {
++    let ts = libbreenix::types::Timespec {
++        tv_sec: 10,
++        tv_nsec: 0,
++    };
++    let _ = libbreenix::time::nanosleep(&ts);
++    if let Err(e) = spawn(b"/bin/xhci_counters\0") {
++        print!("[init] Warning: failed to spawn late xhci_counters: {}\n", e);
++    }
++}
++
+ fn start_bsshd() {
+     // Start bsshd after the boot script to avoid overlapping early exec reads
+     // against the AHCI-backed ext2 root during initial userspace bring-up.

@@ -1,0 +1,20 @@
+kernel/src/main_aarch64.rs:750:        // Polling happens from timer interrupt (poll_hid_events) since PCI
+kernel/src/arch_impl/aarch64/timer_interrupt.rs:754:        crate::drivers::usb::xhci::poll_hid_events();
+kernel/src/drivers/usb/xhci.rs:92:/// poll_hid_events checks this value and queues TRBs on the first matching poll.
+kernel/src/drivers/usb/xhci.rs:415:/// poll_hid_events() at poll >= 50.
+kernel/src/drivers/usb/xhci.rs:473:/// keeps SPI alive after that, so poll_hid_events doesn't re-enable.
+kernel/src/drivers/usb/xhci.rs:496:/// the endpoint; poll_hid_events issues Reset Endpoint + Set TR Dequeue Pointer.
+kernel/src/drivers/usb/xhci.rs:574:/// before the GIC SPI is enabled; SPI activation is later in poll_hid_events()
+kernel/src/drivers/usb/xhci.rs:3661:    // this function is called from poll_hid_events in the timer IRQ handler, so
+kernel/src/drivers/usb/xhci.rs:3696:                // so the next poll_hid_events call handles them. Without this, error
+kernel/src/drivers/usb/xhci.rs:3790:/// Called from poll_hid_events (timer context). Uses wait_for_command_completion (no logging).
+kernel/src/drivers/usb/xhci.rs:4397:/// by poll_hid_events() after XHCI_STATE and XHCI_INITIALIZED are ready.
+kernel/src/drivers/usb/xhci.rs:4454:    // configures the GIC trigger mode; poll_hid_events() enables the SPI later
+kernel/src/drivers/usb/xhci.rs:4965:    // start_hid_polling(), but the GIC SPI is enabled later by poll_hid_events().
+kernel/src/drivers/usb/xhci.rs:5212:    // else: TRBs will be queued at poll == DEFERRED_TRB_POLL in poll_hid_events.
+kernel/src/drivers/usb/xhci.rs:5286:        None => return, // Lock contended, skip — poll_hid_events will handle events
+kernel/src/drivers/usb/xhci.rs:5331:                    // processes events before poll_hid_events sees them).
+kernel/src/drivers/usb/xhci.rs:5413:                            // GET_REPORT Transfer Events arrive here, not in poll_hid_events.
+kernel/src/drivers/usb/xhci.rs:5434:                        // poll_hid_events caps reset rate to RESET_INTERVAL_TICKS to
+kernel/src/drivers/usb/xhci.rs:5560:/// Phase 1 of deferred init (DISABLED — see comment in poll_hid_events).
+kernel/src/drivers/usb/xhci.rs:5764:pub fn poll_hid_events() {

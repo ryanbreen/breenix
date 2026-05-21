@@ -1,0 +1,81 @@
+[bwm-fps] frames_since_last=180 elapsed_ms=1004 instantaneo\
+us_fps=179$
+[virgl-composite] Frame #8500: 1280x960 → 1280x960 display \
+(first1k: 1000 nonzero, first=0x0014161e)$
+[freeze-watch] uptime_ms=55293 submits=25813 completes=2581\
+5 fails=0 last_completion_ms=55292 fps_last_5s=165 cpu=5 ti\
+d=3 ctx_switches=114658 timer_ticks_cpu0=32879 timer_ticks_\
+cpu1=41267 timer_ticks_cpu2=40731 timer_ticks_cpu3=40176 ti\
+mer_ticks_cpu4=40430 timer_ticks_cpu5=41075 timer_ticks_cpu\
+6=41502 timer_ticks_cpu7=41666 rq_total=0 rq_cpu0=0 rq_cpu1\
+=0 rq_cpu2=0 rq_cpu3=0 rq_cpu4=0 rq_cpu5=0 rq_cpu6=0 rq_cpu\
+7=0 cur_cpu0=0 cur_cpu1=12 cur_cpu2=5 cur_cpu3=6 cur_cpu4=7\
+ cur_cpu5=3 cur_cpu6=9 cur_cpu7=10 total_threads=17 blocked\
+_threads=6 sched_lock=ok procmgr_lock=ok gpu_pci_lock=busy$
+[heartbeat] tid=12 uptime_ms=55300$
+[bwm-fps] frames_since_last=161 elapsed_ms=1000 instantaneo\
+us_fps=161$
+[heartbeat] tid=12 uptime_ms=56300$
+[bwm-fps] frames_since_last=154 elapsed_ms=1004 instantaneo\
+us_fps=153$
+$
+$
+[IN[SITNRSUTCRTUICOTNI_OANB_OARBTO]R T]F AFRA=R0=x00x 0E LE\
+RL=R0=x00x 0E SERS=R0=x08x680600000000055  IIFFSSCC==00xx55\
+  TTTTBBRR00==0x100x0100004409040040400 9f4r0o0m0_ eflr0o=m\
+0_$
+e[ELl10_=I0NLINE_ABORT] tid=9 x29=0xd45c97ddc x30=0x0 sp=0x\
+ffff000054265ef0 slot20=0x0 saved_sp=0xffff000043dfff40 sav\
+ed_lr=0xffff0000400d0acc saved_slot20=0x50000[F$
+A[TAELL_1P_OISNTLMIONRE_TAEBMO]R Tc]p ut=i6d =l8a bxe2l9==I\
+0NxSfTfRfUfC0T0I0O0N4_0A23B5O0R0T0$
+  x 3D0e=f0exr0r eds pr=e0qxufefufef 0s0n0a0p5s4h2o6t5se:9$
+0[ DsElFoEtR2_0S=N0AxP0]  scapvue=d0_ sspt=a0gxef=f1f f00t0\
+0id4=314bf fafux4=00  sfalvaegd_sl=r0=x0cx0f2f fsfp0=000x50\
+4420606d000a0 cecl r=0sxa40v0edd0_bsdl4o xt3200==00xx45000d\
+00b80$
+[DEFER_SNAP] cpu=010 $
+s ta gTer=a1c et ibduf=1f4e rasu:x=$
+[T0R AfClEa]g s===0=x=c=02=  sTpR=A0xC5E 4B2UF6F5EcR 30D Ue\
+MPl r===0=x==4=0\r0$
+d17[fT8RA CxE3] 0T=r0acxi4n0g0 ae7bnea0b$
+[lDeEdF:ER _ySeNAsP\r]$
+ c[pTuR=A2C Es]t age=T1 itmides=t5a mapu xf=r0e qfuleangsc=\
+y0:x 52041 s0p0=000x0403 5Hffz\rf$
+4[0T ReAlCrE=]0x =4=0=0 cCe9PU9 c0  x3Bu0f=f0exr4 0=0=c=e\r\
+9$
+9[cT$
+R[ADECEF]E RE_vSeNAnPt]s :cp 1u0=234  s(twagrei=t1 et_iidd=\
+x6= 1a0u5x0=6093 f,l agdsr=o0pxp5e0d1= s10p4=906x6493)7\rf$
+ff[4T0R AeClrE]= 0CxPU04 00icdex=9699c  txs=3103=903x049020\
+99ce29 9tcy$
+p[eD=E0FxE0R1_S0N2A PT]I McEpRu_=T4I CsKt atgiec=k1_c outin\
+dt==73 4a0u4x9=\r$
+0[ TfRlAaCEg]s =C0PxU0 5i0d1x =s7p0= 0txs4=1393f9f1f64004 e\
+36l5r =t0yxp4e0=00cxe09390c1  xS3Y0S=CA0Lx4L_0E0XcIeT 99rec\
+su$
+l[DtE=F0E\rR$
+_[SNTRAAPCE]]  cCPpUu0= 5i dsxt=7ag1e =t1s =t13i9d1=6084 a4\
+u5x7= 0ty pfel=0axg03s=000x 5S0Y1S CAspL=L0_xE4N3TRYb fsfyf\
+sc40a lell_nr=r0=x441001\rc$
+e[9T9Rc AxC3E0]= 0CxP40U00c ei99dcx$
+=[D7E2 FtEsR=_S1391604465 type=0xN0AP3]0 1c pu=S6Y sStCaAgL\
+eL=_3E XtIiTd =r1e4s ualutx==00 \rf$
+l[aTgRsA=C0xc0E2]  sCpP=U00x 5i4d2x6=67030 0t esl=r1=309x14\
+60107d008b2d 4t yxp3e0==00xx0430000d 0SbY8S0C$
+A[LDELF_ERE_NSTRNYA Ps]y sccpaul=l7_ nsrt=a4g1e1=\r5$
+ [tTiRdA=C1E0 ]a uCxP=U00  fildaxgs==704x5 t0s1= 1s3p9=1061\
+x4731f4f2f ft4y0p ee=l0rx=00x04001 0CcTeX9_9ScW IxT3C0H=_0E\
+xN4TR00Yc eo9l9dc_$
+t$
+[iPd<C_<1A6L|nIeGwN_] tiEdL=R1=101x4f1f2f6f\r0$
+0[0U03N2H3A4N31D3L7E FDA_RE=C0]x fcfpfuf0=050 0E3C2=304x301\
+ 37E LfRr=o0m_xeflf0=ff00 c0p0u0=461 sp2=102x0fef0f$
+f[0F0A0T0A5L4_2P6O5SaTbM0O$
+R T ExM2] 9=c0pxu3=153 6l3a13b9e3l3=3UN10H0A0N0D LxE3D0_=0E\
+xCf$
+f f fD00e0f0e3r2r3e4d3 1r3e7q uex0u=e0 xs0n axp1sh=o0txs0:$
+$
+ [ DcEuFrErRe_nStN_AtPi]d =c9pu =o0w nstera_gpei=d1= 0t bii\
+sd==01 4sa vead_uexl=r0= 0fxlffafgfs0=000x0c40020 csep99=c0\
+ xsa5v4e2d6_6x0300=00x feflfrf0=000x0440000cde09b9dc4$

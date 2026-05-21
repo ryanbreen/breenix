@@ -1,0 +1,11 @@
+kernel/src/fs/procfs/trace.rs:194:pub fn generate_counters() -> String {
+kernel/src/tracing/providers/counters.rs:194:    register_counter(&NET_RX_BUDGET_EXHAUSTED);
+kernel/src/fs/procfs/mod.rs:114:            ProcEntryType::TraceCounters => "counters",
+kernel/src/fs/procfs/mod.rs:146:            ProcEntryType::TraceCounters => "/proc/trace/counters",
+kernel/src/fs/procfs/mod.rs:180:            ProcEntryType::TraceCounters => 104,
+kernel/src/fs/procfs/mod.rs:294:        .push(ProcEntry::new(ProcEntryType::TraceCounters));
+kernel/src/fs/procfs/mod.rs:379:                        | ProcEntryType::TraceCounters
+kernel/src/fs/procfs/mod.rs:416:                    | ProcEntryType::TraceCounters
+kernel/src/fs/procfs/mod.rs:477:        ProcEntryType::TraceCounters => Ok(trace::generate_counters()),
+kernel/src/fs/procfs/mod.rs:836:            "net_msi_irqs {}\n",
+kernel/src/fs/procfs/mod.rs:837:            crate::drivers::virtio::net_pci::msi_interrupt_count()

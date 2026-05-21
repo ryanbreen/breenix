@@ -1,0 +1,5 @@
+264:NET: Gateway ARP not resolved during init; will resolve via IRQ path
+267:NET: On-demand ARP resolved gateway MAC
+268:NET: Network initialization complete
+269:[virtio-net-pci] MSI-X SPI 55 enabled (post-init)
+270:NET: pre-primed NetRx softirq for bootstrap callback re-enable

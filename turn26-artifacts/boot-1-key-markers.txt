@@ -1,0 +1,6 @@
+124:[virgl-composite] Texture backing: heap ptr=0xffff000050792000, phys=0x50792000, 1280x960 (4915200B, 1200 pages)
+128:[virgl-composite] Texture resource initialized (id=5)
+287:[boot] Softirq subsystem initialized
+289:[boot] Tracing subsystem initialized and enabled
+290:[boot] net_arp_primer spawned (tid=3)
+314:[T2virt7i@1oAB-CDnEeteF-Gp7ci] MSI-X SPI 55 enabled (post-init)

@@ -1,0 +1,111 @@
+[TRACE] CPU7 idx=489 ts=1392968414 type=0x0102 TIMER_TICK tick_count=34045
+[TRACE] CPU7 idx=490 ts=1392998432 type=0x0102 TIMER_TICK tick_count=34046
+[TRACE] CPU7 idx=491 ts=1393028698 type=0x0102 TIMER_TICK tick_count=34047
+[TRACE] CPU7 idx=492 ts=1393059242 type=0x0102 TIMER_TICK tick_count=34048
+[TRACE] CPU7 idx=493 ts=1393088999 type=0x0102 TIMER_TICK tick_count=34048
+[TRACE] CPU7 idx=494 ts=1393119319 type=0x0102 TIMER_TICK tick_count=34049
+[TRACE] CPU7 idx=495 ts=1393149638 type=0x0102 TIMER_TICK tick_count=34050
+[TRACE] CPU7 idx=496 ts=1393179952 type=0x0102 TIMER_TICK tick_count=34051
+[TRACE] CPU7 idx=497 ts=1393180045 type=0x0001 CTX_SWITCH_ENTRY old_tid<<16|new_tid=655374
+[TRACE] CPU7 idx=498 ts=1393180046 type=0x0012 UNKNOWN payload=14
+[TRACE] CPU7 idx=499 ts=1393180047 type=0xff39 DEFER_REQUEUE_STAGE stage<<16|tid=196618
+[TRACE] CPU7 idx=500 ts=1393180047 type=0xff3a DEFER_REQUEUE_SP sp_low32=1140850496
+[TRACE] CPU7 idx=501 ts=1393180048 type=0xff3b DEFER_REQUEUE_ELR elr_low32=1074588060
+[TRACE] CPU7 idx=502 ts=1393180048 type=0xff3c DEFER_REQUEUE_X30 x30_low32=1074588060
+[TRACE] CPU7 idx=503 ts=1393180048 type=0xff3d DEFER_REQUEUE_FLAGS aux_tid<<16|flags=1281
+[TRACE] CPU7 idx=504 ts=1393180077 type=0x0607 DATA_ABORT pid<<16|dfsc=6
+[TRACE] === CPU 8 Buffer ===
+[TRACE] Events: 0 (write_idx=0, dropped=0)
+[TRACE] (empty)
+[TRACE] === CPU 9 Buffer ===
+[TRACE] Events: 0 (write_idx=0, dropped=0)
+[TRACE] (empty)
+[TRACE] === CPU 10 Buffer ===
+[TRACE] Events: 0 (write_idx=0, dropped=0)
+[TRACE] (empty)
+[TRACE] === CPU 11 Buffer ===
+[TRACE] Events: 0 (write_idx=0, dropped=0)
+[TRACE] (empty)
+[TRACE] === CPU 12 Buffer ===
+[TRACE] Events: 0 (write_idx=0, dropped=0)
+[TRACE] (empty)
+[TRACE] === CPU 13 Buffer ===
+[TRACE] Events: 0 (write_idx=0, dropped=0)
+[TRACE] (empty)
+[TRACE] === CPU 14 Buffer ===
+[TRACE] Events: 0 (write_idx=0, dropped=0)
+[TRACE] (empty)
+[TRACE] === CPU 15 Buffer ===
+[TRACE] Events: 0 (write_idx=0, dropped=0)
+[TRACE] (empty)
+[TRACE] ====== END TRACE DUMP ======
+Process manager lock: acquired
+  Total processes: 5
+  Running: 1
+  Blocked: 0
+  PID 1 [running] init
+  PID 2 [ready] heartbeat
+  PID 5 [ready] telnetd
+  PID 6 [ready] bsshd
+  PID 7 [ready] bounce
+Trace counters:
+  SYSCALL_TOTAL:    80924
+  IRQ_TOTAL:        689102
+  CTX_SWITCH_TOTAL: 118349
+  TIMER_TICK_TOTAL: 339669
+  FORK_TOTAL:       0
+  EXEC_TOTAL:       0
+  Global ticks:     34200
+  Timer IRQ count:  339669
+!!! END SOFT LOCKUP DUMP !!!
+
+
+
+!!! SOFT LOCKUP DETECTED !!!
+No context switch for ~1 seconds (1004 ticks)
+Scheduler lock: acquired
+  Ready queue length: 0
+  Total threads: 17
+  Blocked threads: 7
+  Per-CPU state:
+    CPU 0: current=0 previous=0
+    CPU 1: current=12 previous=0
+    CPU 2: current=5 previous=0
+    CPU 3: current=6 previous=0
+    CPU 4: current=7 previous=0
+    CPU 5: current=8 previous=0
+    CPU 6: current=9 previous=0
+    CPU 7: current=10 previous=0
+  Ready queue: []
+  Threads:
+    tid=0 state=X inl elr=0xffff0000400ce99c x30=0xffff0000400ce99c sp=0xffff000041ffff40
+    tid=2 state=B elr=0xffff0000401473b4 x30=0xffff0000401473b0 sp=0xffff000054210ef0
+    tid=3 state=T bis wt elr=0xffff000040124a6c x30=0xffff000040124a64 sp=0xffff000054221890
+    tid=4 state=X inl elr=0xffff0000400ce99c x30=0xffff0000400ce99c sp=0xffff0000433fff40
+    tid=5 state=X inl elr=0xffff0000400ce99c x30=0xffff0000400ce99c sp=0xffff0000435fff40
+    tid=6 state=X inl elr=0xffff0000400ce99c x30=0xffff0000400ce99c sp=0xffff0000437fff40
+    tid=7 state=X inl elr=0xffff0000400ce99c x30=0xffff0000400ce99c sp=0xffff0000439fff40
+    tid=8 state=X inl elr=0xffff0000400ce99c x30=0xffff0000400ce99c sp=0xffff000043bfff40
+    tid=9 state=X inl elr=0xffff0000400ce99c x30=0xffff0000400ce99c sp=0xffff000043dfff40
+    tid=10 state=X inl elr=0xffff0000400ce99c x30=0xffff0000400ce99c sp=0xffff000043ffff40
+    tid=11 state=C bis user pid=1 elr=0xffff00004014aba8 x30=0xffff00004014ab9c sp=0xffff000054232a70
+    tid=12 state=T bis wt user pid=2 elr=0xffff0000400dafa4 x30=0xffff0000400dafb0 sp=0xffff000054243bf0
+    tid=13 state=D user pid=3 elr=0xffff0000400d425c x30=0xffff0000400d4274 sp=0xffff000054254ad0
+    tid=14 state=D user pid=4 elr=0xffff0000400d0bd4 x30=0xffff0000400d0b80 sp=0xffff000054266000
+    tid=15 state=B bis user pid=5 elr=0xffff0000400f7530 x30=0xffff0000400f7528 sp=0xffff000054276a30
+    tid=16 state=B bis user pid=6 elr=0xffff0000400f7530 x30=0xffff0000400f7528 sp=0xffff000054287a30
+    tid=17 state=? bis inl user pid=7 elr=0xffff0000400ce99c x30=0xffff0000400ce99c sp=0xffff0000542987d0 saved_lr=0xffff0000401197c0 saved_sp=0xffff0000542987d0 sp_delta=0x0 lr_rel=0x20 f20=0xffff0000401197c0 f30=0xffff000040236000 f40=0x11 f50=0x1 f60=0xfffffefff680 f70=0x1
+
+  Deferred requeue snapshots:
+[DEFER_SNAP] cpu=0 stage=1 tid=11 aux=0 flags=0xe05 sp=0x54232a70 elr=0x4014aba8 x30=0x4014ab9c
+[DEFER_SNAP] cpu=1 stage=1 tid=14 aux=0 flags=0xc02 sp=0x54265c30 elr=0x400d17f8 x30=0x400a7be0
+[DEFER_SNAP] cpu=2 stage=1 tid=5 aux=0 flags=0x501 sp=0x435fff40 elr=0x400ce99c x30=0x400ce99c
+[DEFER_SNAP] cpu=3 stage=1 tid=6 aux=0 flags=0x501 sp=0x437fff40 elr=0x400ce99c x30=0x400ce99c
+[DEFER_SNAP] cpu=4 stage=1 tid=7 aux=0 flags=0x501 sp=0x439fff40 elr=0x400ce99c x30=0x400ce99c
+[DEFER_SNAP] cpu=5 stage=1 tid=8 aux=0 flags=0x501 sp=0x43bfff40 elr=0x400ce99c x30=0x400ce99c
+[DEFER_SNAP] cpu=6 stage=1 tid=14 aux=0 flags=0xc01 sp=0x54266000 elr=0x400d0bd4 x30=0x400d0b80
+[DEFER_SNAP] cpu=7 stage=1 tid=10 aux=0 flags=0x501 sp=0x43ffff40 elr=0x400ce99c x30=0x400ce99c
+
+  Trace buffers:
+[TRACE] ====== TRACE BUFFER DUMP ======
+[TRACE] Tracing enabled: no

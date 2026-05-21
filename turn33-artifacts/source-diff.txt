@@ -1,0 +1,60 @@
+diff --git a/kernel/src/main.rs b/kernel/src/main.rs
+index 30c96425..8b0c06bf 100644
+--- a/kernel/src/main.rs
++++ b/kernel/src/main.rs
+@@ -808,9 +808,6 @@ fn dns_test_only_main() -> ! {
+         // Yield to give scheduler a chance
+         task::scheduler::yield_current();
+ 
+-        // Poll for received packets (workaround for softirq timing)
+-        net::process_rx();
+-
+         // Drain loopback queue for localhost packets
+         net::drain_loopback_queue();
+     }
+@@ -874,9 +871,6 @@ fn blocking_recv_test_main() -> ! {
+         // Yield to give scheduler a chance
+         task::scheduler::yield_current();
+ 
+-        // Poll for received packets (workaround for softirq timing)
+-        net::process_rx();
+-
+         // Drain loopback queue for localhost packets
+         net::drain_loopback_queue();
+     }
+@@ -943,9 +937,6 @@ fn nonblock_eagain_test_main() -> ! {
+         // Yield to give scheduler a chance
+         task::scheduler::yield_current();
+ 
+-        // Poll for received packets (workaround for softirq timing)
+-        net::process_rx();
+-
+         // Drain loopback queue for localhost packets
+         net::drain_loopback_queue();
+     }
+diff --git a/kernel/src/net/mod.rs b/kernel/src/net/mod.rs
+index fb28b486..0e53ff6a 100644
+--- a/kernel/src/net/mod.rs
++++ b/kernel/src/net/mod.rs
+@@ -402,13 +402,14 @@ fn init_common() {
+             net_mmio::enable_net_irq();
+         }
+ 
+-        // Substep 4 bootstrap: pre-prime NetRx softirq so its first dispatch
+-        // calls reenable_and_check_race() to clear VRING_AVAIL_F_NO_INTERRUPT.
+-        // Without this, virtio callbacks remain suppressed from device init,
+-        // no MSI fires for the first inbound packet, and the IRQ path is dead.
+-        // softirqd::init_softirq() runs later in boot; when it starts, it'll
+-        // dispatch pending NetRx, run the handler with empty RX, and clear the
+-        // suppression flag.
++        // Substep 4 bootstrap plus Substep 6 hardening: synchronously clear
++        // virtio RX callback suppression so the next inbound MSI can fire even
++        // if softirqd has not run its first NetRx dispatch yet. The softirq
++        // raise remains as a redundant path for any RX state already present.
++        if net_pci::is_initialized() {
++            let _ = net_pci::reenable_and_check_race();
++            net_log!("NET: synchronously cleared virtio callback suppression");
++        }
+         crate::task::softirqd::raise_softirq(SoftirqType::NetRx);
+         net_log!("NET: pre-primed NetRx softirq for bootstrap callback re-enable");
+     }

@@ -1,0 +1,32 @@
+248:[ahci] Platform IRQ enabled: SPI 34 (wired, level-triggered, CPU0)
+347:T5[spawn] path='/bin/heartbeat'
+349:!!! CPU0 REGRESSION ALARM !!!
+350:CPU0 tick_count = 5, max peer = 30000
+354:  KERNEL PANIC!
+356:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+357:CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+360:!!! CPU0 REGRESSION ALARM !!!
+361:CPU0 tick_count = 5, max peer = 30000
+365:  KERNEL PANIC!
+367:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+368:CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+371:!!! CPU0 REGRESSION ALARM !!!
+372:CPU0 tick_count = 5, max peer = 30000
+376:  KERNEL PANIC!
+378:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+379:CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before t
+387:  KERNEL PANIC!
+389:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+390:CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-gu
+391:!!! CPU0 REaGRErSSdI-ONa AutopsLARM !!!
+398:  KERNEL PANIC!
+400:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+401:CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+405:!!!! !! CCPU0 REPGU0R REGRESSION ALAERM !!!
+406:CPU0S ticSk_couInON ALARtM !!!
+413:  KERNEL PANIC!
+415:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+416:CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+420:  KERNEL PANIC!
+422:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+423:CPU0 timer regression: tick_count=5 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything

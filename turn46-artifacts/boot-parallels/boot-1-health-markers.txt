@@ -1,0 +1,83 @@
+248:[ahci] Platform IRQ enabled: SPI 34 (wired, level-triggered, CPU0)
+347:T6[spawn] path='/bin/heartbeat'
+348:T7T8manager.create_process_with_argv [ARM64]: ENTRY - name='heartbeat', elf_size=290128, argc=1
+359:[heartbeat] tid=11 uptime_ms=1169
+361:[heartbeat] tid=11 uptime_ms=2170
+362:[heartbeat] tid=11 uptime_ms=3170
+363:[heartbeat] tid=11 uptime_ms=4171
+364:[heartbeat] tid=11 uptime_ms=5172
+365:[heartbeat] tid=11 uptime_ms=6173
+366:[heartbeat] tid=11 uptime_ms=7174
+367:[heartbeat] tid=11 uptime_ms=8175
+368:[heartbeat] tid=11 uptime_ms=9176
+369:[heartbeat] tid=11 uptime_ms=10177
+370:[heartbeat] tid=11 uptime_ms=11177
+371:[heartbeat] tid=11 uptime_ms=12178
+372:[heartbeat] tid=11 uptime_ms=13178
+373:[heartbeat] tid=11 uptime_ms=14180
+374:[heartbeat] tid=11 uptime_ms=15184
+375:[heartbeat] tid=11 uptime_ms=16185
+376:[heartbeat] tid=11 uptime_ms=17186
+377:[heartbeat] tid=11 uptime_ms=18186
+378:[heartbeat] tid=11 uptime_ms=19187
+379:[heartbeat] tid=11 uptime_ms=20187
+380:[heartbeat] tid=11 uptime_ms=21188
+381:[heartbeat] tid=11 uptime_ms=22188
+382:[heartbeat] tid=11 uptime_ms=23189
+383:[heartbeat] tid=11 uptime_ms=24200
+384:[heartbeat] tid=11 uptime_ms=25201
+385:[heartbeat] tid=11 uptime_ms=26202
+386:[heartbeat] tid=11 uptime_ms=27202
+387:[heartbeat] tid=11 uptime_ms=28203
+388:[heartbeat] tid=11 uptime_ms=29204
+389:[heartbeat] tid=11 uptime_ms=30204
+390:[heartbeat] tid=11 uptime_ms=31205
+391:[heartbeat] tid=11 uptime_ms=32205
+392:[heartbeat] tid=11 uptime_ms=33207
+393:[heartbeat] tid=11 uptime_ms=34207
+394:[heartbeat] tid=11 uptime_ms=35208
+395:[heartbeat] tid=11 uptime_ms=36209
+396:[heartbeat] tid=11 uptime_ms=37210
+397:[heartbeat] tid=11 uptime_ms=38210
+398:[heartbeat] tid=11 uptime_ms=39212
+399:[heartbeat] tid=11 uptime_ms=40212
+400:[heartbeat] tid=11 uptime_ms=41213
+401:[heartbeat] tid=11 uptime_ms=42213
+402:[heartbeat] tid=11 uptime_ms=43216
+403:[heartbeat] tid=11 uptime_ms=44219
+404:[heartbeat] tid=11 uptime_ms=45219
+406:!!! CPU0 REGRESSION ALARM !!!
+407:CPU0 tick_count = 65, max peer = 30000
+411:  KERNEL PANIC!
+413:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+414:CPU0 timer regression: tick_count=65 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+417:!!! CPU0 REGRESSION ALARM !!!
+418:CPU0 tick_count = 65, max peer = 30000
+422:  KERNEL PANIC!
+424:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+425:CPU0 timer regression: tick_count=65 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+428:!!! CPU0 REGRESSION ALARM !!!
+429:CPU0 tick_count = 65, max peer = 30000
+433:  KERNEL PANIC!
+435:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+436:CPU0 timer regression: tick_count=65 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+439:!!! CPU0 REGRESSION ALARM !!!
+440:CPU0 tick_count = 65, max peer = 30000
+444:  KERNEL PANIC!
+446:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+447:CPU0 timer regression: tick_count=65 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+450:!!! CPU0 REGRESSION ALARM !!!
+451:CPU0 tick_count = 65, max peer = 30000
+455:  KERNEL PANIC!
+457:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+458:CPU0 timer regression: tick_count=65 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+461:!!! CPU0 REGRESSION ALARM !!!
+462:CPU0 tick_count = 65, max peer = 30000
+466:  KERNEL PANIC!
+468:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+469:CPU0 timer regression: tick_count=65 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything
+472:!!! CPU0 REGRESSION ALARM !!!
+473:CPU0 tick_count = 65, max peer = 30000
+477:  KERNEL PANIC!
+479:panicked at kernel/src/arch_impl/aarch64/timer_interrupt.rs:598:17:
+480:CPU0 timer regression: tick_count=65 but peer max=30000; read docs/planning/cpu0-user-guard-autopsy/README.md before touching anything

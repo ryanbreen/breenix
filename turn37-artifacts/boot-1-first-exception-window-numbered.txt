@@ -1,0 +1,31 @@
+   160
+   161	========================================
+   162	  Breenix ARM64 Boot Complete!
+   163	========================================
+   164
+   165	Hello from ARM64!
+   166
+   167	[boot] Launching init from pre-loaded ELF...
+   168	manager.create_process_with_argv [ARM64]: ENTRY - name='init', elf_size=296776, argc=1
+   169	manager.create_process_with_argv [ARM64]: Generated PID 1
+   170	manager.create_process_with_argv [ARM64]: Creating ProcessPageTable
+   171	manager.create_process_with_argv [ARM64]: Loading ELF into page table
+   172	manager.create_process_with_argv [ARM64]: ELF loaded, entry=0x4000f1f0
+   173	manager.create_process_with_argv [ARM64]: Allocating user stack
+   174	manager.create_process_with_argv [ARM64]: User stack will be at 0xfffffeff0000-0xffffff000000
+   175	manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP=0xfffffefffed0
+   176	manager.create_process_with_argv [ARM64]: SUCCESS - returning PID 1
+   177	[boot] Reset 4 idle thread contexts (CPUs online: 4)
+   178	T2[UNHANDLED_EC] cpu=0 EC=0x0 ELR=0xffff0000400fc338
+   179	[FATAL_POSTMORTEM] cpu=0 label=UNHANDLED_EC
+   180	  Deferred requeue snapshots:
+   181	[DEFER_SNAP] cpu=0 stage=3 tid=7 aux=0 flags=0xc02 sp=0x54233000 elr=0x4000f1f0 x30=0x0
+   182	[DEFER_SNAP] cpu=1 stage=1 tid=3 aux=0 flags=0x402 sp=0x54221e10 elr=0x401de0fc x30=0x4014897c
+   183	[DEFER_SNAP] cpu=2 stage=1 tid=2 aux=0 flags=0x403 sp=0x54210ef0 elr=0x401dde70 x30=0x401dde6c
+   184	[DEFER_SNAP] cpu=3 stage=1 tid=3 aux=0 flags=0x402 sp=0x54221e10 elr=0x401de1ec x30=0x4014897c
+   185
+   186	  Trace buffers:
+   187	[TRACE] ====== TRACE BUFFER DUMP ======
+   188	[TRACE] Tracing enabled: yes
+   189	[TRACE] Timestamp frequency: 1000000000 Hz
+   190	[TRACE] === CPU 0 Buffer ===

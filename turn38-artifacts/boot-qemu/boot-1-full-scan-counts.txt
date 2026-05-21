@@ -1,0 +1,4 @@
+  785519 turn38-artifacts/boot-qemu/boot-1-fail-scan.txt
+  785521 turn38-artifacts/boot-qemu/boot-1-exception-scan.txt
+       0 turn38-artifacts/boot-qemu/boot-1-pre-init-fail-scan.txt
+ 1571040 total

@@ -234,8 +234,11 @@ impl VirtioDevice {
         // This is CRITICAL for QEMU when taking over from UEFI bootloader.
         self.reset();
 
-        // Wait for reset to complete - poll status until it reads 0
-        // VirtIO spec says device must set status to 0 to indicate reset complete
+        // Wait for reset to complete - poll status until it reads 0.
+        // VirtIO spec §3.1.1 requires device must set status to 0 to indicate
+        // reset complete. Hardware handshake (NOT event polling) — Linux uses
+        // cpu_relax() in vp_modern_reset() for the equivalent loop. Bounded by
+        // reset_attempts >= 100. Allowlisted per docs/polling-allowlist.md.
         let mut reset_attempts = 0;
         loop {
             // Small delay between polls

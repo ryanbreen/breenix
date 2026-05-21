@@ -1,0 +1,21 @@
+83:[virtio-gpu-pci] Device features: 0x0000000100000001
+84:[virtio-gpu-pci] VIRGL offered: true
+85:[virtio-gpu-pci] Negotiated: 0x0000000100000001 (VIRGL=true)
+86:[virtio-gpu-pci] VIRGL_ENABLED stored=true, readback=true, addr=0xffff00004120e144
+94:[virtio-gpu-pci] MSI-X cap at 0xb0: 2 vectors
+95:[virtio-gpu-pci] MSI-X enabled: config_spi=53 queue_spi=54 doorbell=0x2250040 vectors=2
+96:[virtio-gpu-pci] config_msix_vector: wrote=0x0 readback=0x0
+97:[virtio-gpu-pci] Device has 2 queues
+98:[virtio-gpu-pci] Queue 0 msix_vector: wrote=0x1 readback=0x1
+99:[virtio-gpu-pci] Queue 1 msix_vector: wrote=0x1 readback=0x1
+100:[virtio-gpu-pci] Cursor queue (q1) set up: size=16
+101:[virtio-gpu-pci] Config: num_scanouts=16, num_capsets=1
+102:[virtio-gpu-pci] MSI-X active: config_spi=53 queue_spi=54 queue_vector=1
+103:[virtio-gpu-pci] Capset 0: id=2, max_ver=2, max_size=768
+104:[virtio-gpu-pci] GET_CAPSET(id=2, ver=2): resp=0x1103
+105:[virtio-gpu-pci] Display reports: 1024x768
+106:[virtio-gpu-pci] Resolution: 1280x960 (display=1024x768, GOP=1024x768, min=1280x960)
+107:[virtio-gpu-pci] 2D resource created and scanout set
+108:[virtio-gpu-pci] Initialized: 1280x960
+109:[drivers] VirtIO GPU (PCI) initialized
+176:[virtio-gpu-pci] GPU command waits use scheduler waitqueue

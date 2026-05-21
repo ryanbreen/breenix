@@ -1,0 +1,100 @@
+611:[DEFER_SNAP] cpu=2 stage=3 tid=5 aux=0 flags=0x501 sp=0x435fff40 elr=0x400ce99c x30=0x400ce99c
+612:[DEFER_SNAP] cpu=3 stage=5 tid=6 aux=0 flags=0x501 sp=0x437fff40 elr=0x400ce99c x30=0x400ce99c
+613:[DEFER_SNAP] cpu=4 stage=5 tid=7 aux=0 flags=0x501 sp=0x439fff40 elr=0x400ce99c x30=0x400ce99c
+614:[DEFER_SNAP] cpu=5 stage=1 tid=14 aux=0 flags=0xc02 sp=0x54266000 elr=0x40009104 x30=0x40009138
+615:[DEFER_SNAP] cpu=6 stage=1 tid=9 aux=0 flags=0x501 sp=0x43dfff40 elr=0x400ce99c x30=0x400ce99c
+616:[DEFER_SNAP] cpu=7 stage=1 tid=10 aux=0 flags=0x501 sp=0x43ffff40 elr=0x400ce99c x30=0x400ce99c
+618:[DATA_ABORT] FAR=0x2a0 ELR=0xffff0000401bfe50 ESR=0x96000005 DFSC=0x5 TTBR0=0x1000044094000 from_el0=0 cpu=2
+621:  AHCI arm port=1 cmd=1185 isr port=1 cmd=1185 waiter_tid=11
+623:[DATA_ABORT] kernel-mode fault, deferring process cleanup
+624:[DATA_ABORT] deferred_tid=14 queued=1
+664:[DEFER_SNAP] cpu=0 stage=1 tid=11 aux=0 flags=0xe05 sp=0x54232a70 elr=0x4014aba8 x30=0x4014ab9c
+665:[DEFER_SNAP] cpu=1 stage=1 tid=14 aux=0 flags=0xc02 sp=0x54265c30 elr=0x400d17f8 x30=0x400a7be0
+666:[DEFER_SNAP] cpu=2 stage=1 tid=5 aux=0 flags=0x501 sp=0x435fff40 elr=0x400ce99c x30=0x400ce99c
+667:[DEFER_SNAP] cpu=3 stage=5 tid=6 aux=0 flags=0x501 sp=0x437fff40 elr=0x400ce99c x30=0x400ce99c
+668:[DEFER_SNAP] cpu=4 stage=5 tid=7 aux=0 flags=0x501 sp=0x439fff40 elr=0x400ce99c x30=0x400ce99c
+669:[DEFER_SNAP] cpu=5 stage=1 tid=14 aux=0 flags=0xc02 sp=0x54266000 elr=0x40009104 x30=0x40009138
+670:[DEFER_SNAP] cpu=6 stage=1 tid=9 aux=0 flags=0x501 sp=0x43dfff40 elr=0x400ce99c x30=0x400ce99c
+671:[DEFER_SNAP] cpu=7 stage=1 tid=10 aux=0 flags=0x501 sp=0x43ffff40 elr=0x400ce99c x30=0x400ce99c
+3620:[TRACE] CPU2 idx=883 ts=1273646199 type=0x0607 DATA_ABORT pid<<16|dfsc=5
+8970:[DEFER_SNAP] cpu=0 stage=1 tid=11 aux=0 flags=0xe05 sp=0x54232a70 elr=0x4014aba8 x30=0x4014ab9c
+8971:[DEFER_SNAP] cpu=1 stage=1 tid=14 aux=0 flags=0xc02 sp=0x54265c30 elr=0x400d17f8 x30=0x400a7be0
+8972:[DEFER_SNAP] cpu=2 stage=1 tid=5 aux=0 flags=0x501 sp=0x435fff40 elr=0x400ce99c x30=0x400ce99c
+8973:[DEFER_SNAP] cpu=3 stage=5 tid=6 aux=0 flags=0x501 sp=0x437fff40 elr=0x400ce99c x30=0x400ce99c
+8974:[DEFER_SNAP] cpu=4 stage=5 tid=7 aux=0 flags=0x501 sp=0x439fff40 elr=0x400ce99c x30=0x400ce99c
+8975:[DEFER_SNAP] cpu=5 stage=1 tid=14 aux=0 flags=0xc02 sp=0x54266000 elr=0x40009104 x30=0x40009138
+8976:[DEFER_SNAP] cpu=6 stage=1 tid=9 aux=0 flags=0x501 sp=0x43dfff40 elr=0x400ce99c x30=0x400ce99c
+8977:[DEFER_SNAP] cpu=7 stage=1 tid=10 aux=0 flags=0x501 sp=0x43ffff40 elr=0x400ce99c x30=0x400ce99c
+11925:[TRACE] CPU2 idx=883 ts=1273646199 type=0x0607 DATA_ABORT pid<<16|dfsc=5
+17275:[DEFER_SNAP] cpu=0 stage=1 tid=11 aux=0 flags=0xe05 sp=0x54232a70 elr=0x4014aba8 x30=0x4014ab9c
+17276:[DEFER_SNAP] cpu=1 stage=1 tid=14 aux=0 flags=0xc02 sp=0x54265c30 elr=0x400d17f8 x30=0x400a7be0
+17277:[DEFER_SNAP] cpu=2 stage=1 tid=5 aux=0 flags=0x501 sp=0x435fff40 elr=0x400ce99c x30=0x400ce99c
+17278:[DEFER_SNAP] cpu=3 stage=5 tid=6 aux=0 flags=0x501 sp=0x437fff40 elr=0x400ce99c x30=0x400ce99c
+17279:[DEFER_SNAP] cpu=4 stage=5 tid=7 aux=0 flags=0x501 sp=0x439fff40 elr=0x400ce99c x30=0x400ce99c
+17280:[DEFER_SNAP] cpu=5 stage=1 tid=14 aux=0 flags=0xc02 sp=0x54266000 elr=0x40009104 x30=0x40009138
+17281:[DEFER_SNAP] cpu=6 stage=1 tid=9 aux=0 flags=0x501 sp=0x43dfff40 elr=0x400ce99c x30=0x400ce99c
+17282:[DEFER_SNAP] cpu=7 stage=1 tid=10 aux=0 flags=0x501 sp=0x43ffff40 elr=0x400ce99c x30=0x400ce99c
+20230:[TRACE] CPU2 idx=883 ts=1273646199 type=0x0607 DATA_ABORT pid<<16|dfsc=5
+25581:[DEFER_SNAP] cpu=0 stage=1 tid=11 aux=0 flags=0xe05 sp=0x54232a70 elr=0x4014aba8 x30=0x4014ab9c
+25582:[DEFER_SNAP] cpu=1 stage=1 tid=14 aux=0 flags=0xc02 sp=0x54265c30 elr=0x400d17f8 x30=0x400a7be0
+25583:[DEFER_SNAP] cpu=2 stage=5 tid=3 aux=0 flags=0x606 sp=0x54221890 elr=0x40124a6c x30=0x40124a64
+25584:[DEFER_SNAP] cpu=3 stage=5 tid=6 aux=0 flags=0x501 sp=0x437fff40 elr=0x400ce99c x30=0x400ce99c
+25585:[DEFER_SNAP] cpu=4 stage=5 tid=7 aux=0 flags=0x501 sp=0x439fff40 elr=0x400ce99c x30=0x400ce99c
+25586:[DEFER_SNAP] cpu=5 stage=1 tid=14 aux=0 flags=0xc02 sp=0x54266000 elr=0x40009104 x30=0x40009138
+25587:[DEFER_SNAP] cpu=6 stage=1 tid=9 aux=0 flags=0x501 sp=0x43dfff40 elr=0x400ce99c x30=0x400ce99c
+25588:[DEFER_SNAP] cpu=7 stage=1 tid=10 aux=0 flags=0x501 sp=0x43ffff40 elr=0x400ce99c x30=0x400ce99c
+28537:[TRACE] CPU2 idx=883 ts=1273646199 type=0x0607 DATA_ABORT pid<<16|dfsc=5
+33886:[DEFER_SNAP] cpu=0 stage=1 tid=11 aux=0 flags=0xe05 sp=0x54232a70 elr=0x4014aba8 x30=0x4014ab9c
+33887:[DEFER_SNAP] cpu=1 stage=1 tid=14 aux=0 flags=0xc02 sp=0x54265c30 elr=0x400d17f8 x30=0x400a7be0
+33888:[DEFER_SNAP] cpu=2 stage=5 tid=3 aux=0 flags=0x606 sp=0x54221890 elr=0x40124a6c x30=0x40124a64
+33889:[DEFER_SNAP] cpu=3 stage=5 tid=6 aux=0 flags=0x501 sp=0x437fff40 elr=0x400ce99c x30=0x400ce99c
+33890:[DEFER_SNAP] cpu=4 stage=5 tid=7 aux=0 flags=0x501 sp=0x439fff40 elr=0x400ce99c x30=0x400ce99c
+33891:[DEFER_SNAP] cpu=5 stage=1 tid=14 aux=0 flags=0xc02 sp=0x54266000 elr=0x40009104 x30=0x40009138
+33892:[DEFER_SNAP] cpu=6 stage=1 tid=9 aux=0 flags=0x501 sp=0x43dfff40 elr=0x400ce99c x30=0x400ce99c
+33893:[DEFER_SNAP] cpu=7 stage=1 tid=10 aux=0 flags=0x501 sp=0x43ffff40 elr=0x400ce99c x30=0x400ce99c
+36842:[TRACE] CPU2 idx=883 ts=1273646199 type=0x0607 DATA_ABORT pid<<16|dfsc=5
+42192:[DEFER_SNAP] cpu=0 stage=1 tid=11 aux=0 flags=0xe05 sp=0x54232a70 elr=0x4014aba8 x30=0x4014ab9c
+42193:[DEFER_SNAP] cpu=1 stage=1 tid=14 aux=0 flags=0xc02 sp=0x54265c30 elr=0x400d17f8 x30=0x400a7be0
+42194:[DEFER_SNAP] cpu=2 stage=5 tid=3 aux=0 flags=0x606 sp=0x54221890 elr=0x40124a6c x30=0x40124a64
+42195:[DEFER_SNAP] cpu=3 stage=5 tid=6 aux=0 flags=0x501 sp=0x437fff40 elr=0x400ce99c x30=0x400ce99c
+42196:[DEFER_SNAP] cpu=4 stage=5 tid=7 aux=0 flags=0x501 sp=0x439fff40 elr=0x400ce99c x30=0x400ce99c
+42197:[DEFER_SNAP] cpu=5 stage=1 tid=14 aux=0 flags=0xc02 sp=0x54266000 elr=0x40009104 x30=0x40009138
+42198:[DEFER_SNAP] cpu=6 stage=1 tid=9 aux=0 flags=0x501 sp=0x43dfff40 elr=0x400ce99c x30=0x400ce99c
+42199:[DEFER_SNAP] cpu=7 stage=1 tid=10 aux=0 flags=0x501 sp=0x43ffff40 elr=0x400ce99c x30=0x400ce99c
+45147:[TRACE] CPU2 idx=883 ts=1273646199 type=0x0607 DATA_ABORT pid<<16|dfsc=5
+50497:[DEFER_SNAP] cpu=0 stage=1 tid=11 aux=0 flags=0xe05 sp=0x54232a70 elr=0x4014aba8 x30=0x4014ab9c
+50498:[DEFER_SNAP] cpu=1 stage=1 tid=14 aux=0 flags=0xc02 sp=0x54265c30 elr=0x400d17f8 x30=0x400a7be0
+50499:[DEFER_SNAP] cpu=2 stage=5 tid=3 aux=0 flags=0x606 sp=0x54221890 elr=0x40124a6c x30=0x40124a64
+50500:[DEFER_SNAP] cpu=3 stage=5 tid=6 aux=0 flags=0x501 sp=0x437fff40 elr=0x400ce99c x30=0x400ce99c
+50501:[DEFER_SNAP] cpu=4 stage=5 tid=7 aux=0 flags=0x501 sp=0x439fff40 elr=0x400ce99c x30=0x400ce99c
+50502:[DEFER_SNAP] cpu=5 stage=1 tid=14 aux=0 flags=0xc02 sp=0x54266000 elr=0x40009104 x30=0x40009138
+50503:[DEFER_SNAP] cpu=6 stage=1 tid=9 aux=0 flags=0x501 sp=0x43dfff40 elr=0x400ce99c x30=0x400ce99c
+50504:[DEFER_SNAP] cpu=7 stage=1 tid=10 aux=0 flags=0x501 sp=0x43ffff40 elr=0x400ce99c x30=0x400ce99c
+53452:[TRACE] CPU2 idx=883 ts=1273646199 type=0x0607 DATA_ABORT pid<<16|dfsc=5
+58782:[DEFER_SNAP] cpu=0 stage=1 tid=11 aux=0 flags=0xe05 sp=0x54232a70 elr=0x4014aba8 x30=0x4014ab9c
+58783:[DEFER_SNAP] cpu=1 stage=1 tid=14 aux=0 flags=0xc02 sp=0x54265c30 elr=0x400d17f8 x30=0x400a7be0
+58784:[DEFER_SNAP] cpu=2 stage=5 tid=3 aux=0 flags=0x606 sp=0x54221890 elr=0x40124a6c x30=0x40124a64
+58785:[DEFER_SNAP] cpu=3 stage=5 tid=6 aux=0 flags=0x501 sp=0x437fff40 elr=0x400ce99c x30=0x400ce99c
+58786:[DEFER_SNAP] cpu=4 stage=5 tid=7 aux=0 flags=0x501 sp=0x439fff40 elr=0x400ce99c x30=0x400ce99c
+58787:[DEFER_SNAP] cpu=5 stage=1 tid=14 aux=0 flags=0xc02 sp=0x54266000 elr=0x40009104 x30=0x40009138
+58788:[DEFER_SNAP] cpu=6 stage=1 tid=9 aux=0 flags=0x501 sp=0x43dfff40 elr=0x400ce99c x30=0x400ce99c
+58789:[DEFER_SNAP] cpu=7 stage=1 tid=10 aux=0 flags=0x501 sp=0x43ffff40 elr=0x400ce99c x30=0x400ce99c
+61738:[TRACE] CPU2 idx=883 ts=1273646199 type=0x0607 DATA_ABORT pid<<16|dfsc=5
+67088:[DEFER_SNAP] cpu=0 stage=1 tid=11 aux=0 flags=0xe05 sp=0x54232a70 elr=0x4014aba8 x30=0x4014ab9c
+67089:[DEFER_SNAP] cpu=1 stage=1 tid=14 aux=0 flags=0xc02 sp=0x54265c30 elr=0x400d17f8 x30=0x400a7be0
+67090:[DEFER_SNAP] cpu=2 stage=5 tid=3 aux=0 flags=0x606 sp=0x54221890 elr=0x40124a6c x30=0x40124a64
+67091:[DEFER_SNAP] cpu=3 stage=5 tid=6 aux=0 flags=0x501 sp=0x437fff40 elr=0x400ce99c x30=0x400ce99c
+67092:[DEFER_SNAP] cpu=4 stage=5 tid=7 aux=0 flags=0x501 sp=0x439fff40 elr=0x400ce99c x30=0x400ce99c
+67093:[DEFER_SNAP] cpu=5 stage=1 tid=14 aux=0 flags=0xc02 sp=0x54266000 elr=0x40009104 x30=0x40009138
+67094:[DEFER_SNAP] cpu=6 stage=1 tid=9 aux=0 flags=0x501 sp=0x43dfff40 elr=0x400ce99c x30=0x400ce99c
+67095:[DEFER_SNAP] cpu=7 stage=1 tid=10 aux=0 flags=0x501 sp=0x43ffff40 elr=0x400ce99c x30=0x400ce99c
+70043:[TRACE] CPU2 idx=883 ts=1273646199 type=0x0607 DATA_ABORT pid<<16|dfsc=5
+75393:[DEFER_SNAP] cpu=0 stage=1 tid=11 aux=0 flags=0xe05 sp=0x54232a70 elr=0x4014aba8 x30=0x4014ab9c
+75394:[DEFER_SNAP] cpu=1 stage=1 tid=14 aux=0 flags=0xc02 sp=0x54265c30 elr=0x400d17f8 x30=0x400a7be0
+75395:[DEFER_SNAP] cpu=2 stage=5 tid=3 aux=0 flags=0x606 sp=0x54221890 elr=0x40124a6c x30=0x40124a64
+75396:[DEFER_SNAP] cpu=3 stage=5 tid=6 aux=0 flags=0x501 sp=0x437fff40 elr=0x400ce99c x30=0x400ce99c
+75397:[DEFER_SNAP] cpu=4 stage=5 tid=7 aux=0 flags=0x501 sp=0x439fff40 elr=0x400ce99c x30=0x400ce99c
+75398:[DEFER_SNAP] cpu=5 stage=1 tid=14 aux=0 flags=0xc02 sp=0x54266000 elr=0x40009104 x30=0x40009138
+75399:[DEFER_SNAP] cpu=6 stage=1 tid=9 aux=0 flags=0x501 sp=0x43dfff40 elr=0x400ce99c x30=0x400ce99c
+75400:[DEFER_SNAP] cpu=7 stage=1 tid=10 aux=0 flags=0x501 sp=0x43ffff40 elr=0x400ce99c x30=0x400ce99c
+78348:[TRACE] CPU2 idx=883 ts=1273646199 type=0x0607 DATA_ABORT pid<<16|dfsc=5

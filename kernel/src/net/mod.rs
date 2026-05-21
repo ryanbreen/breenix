@@ -63,8 +63,8 @@ pub(crate) fn irq_save() -> u64 {
 #[inline(always)]
 pub(crate) fn irq_restore(_: u64) {}
 
-/// Re-entrancy guard for process_rx() on aarch64. Prevents the softirq handler
-/// from re-entering process_rx() while the ARP polling loop is already inside it.
+/// Re-entrancy guard for process_rx() on aarch64. Prevents nested RX drains
+/// when interrupt-driven NetRx preempts another RX processing context.
 #[cfg(target_arch = "aarch64")]
 static RX_PROCESSING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
@@ -233,17 +233,29 @@ pub fn drain_loopback_queue() {
 }
 
 /// Softirq handler for network RX processing.
-/// Called from softirq context when NetRx softirq is raised by the timer (every 10ms).
+/// Called from softirq context when NetRx softirq is raised by the network IRQ path.
 ///
-/// The MSI handler does NOT raise softirq (to avoid lock contention in
-/// exception context). Instead, the timer raises NetRx every 10ms. This handler
-/// processes packets and then re-enables the MSI-X SPI so new interrupts can fire.
+/// PCI VirtIO uses a NAPI-shaped completion path: the IRQ handler suppresses
+/// device callbacks and raises NetRx; this handler drains a bounded packet
+/// budget and either re-enables callbacks or re-raises NetRx for more work.
 fn net_rx_softirq_handler(_softirq: SoftirqType) {
-    process_rx();
+    let outcome = process_rx_budgeted(64);
+    if outcome == PollOutcome::BudgetExhausted {
+        crate::tracing::providers::counters::NET_RX_BUDGET_EXHAUSTED.increment();
+    }
 
     #[cfg(target_arch = "aarch64")]
     if net_pci::is_initialized() {
-        net_pci::re_enable_irq();
+        match outcome {
+            PollOutcome::Drained => {
+                if net_pci::reenable_and_check_race() {
+                    crate::task::softirqd::raise_softirq(SoftirqType::NetRx);
+                }
+            }
+            PollOutcome::BudgetExhausted => {
+                crate::task::softirqd::raise_softirq(SoftirqType::NetRx);
+            }
+        }
     }
 }
 
@@ -356,42 +368,13 @@ fn init_common() {
     );
     if let Err(e) = arp::request(&gateway) {
         net_log!("NET: Failed to send ARP request: {}", e);
-        return;
     }
     net_log!("ARP request sent successfully");
 
-    // Wait for ARP reply (poll RX a few times to get the gateway MAC)
-    // The reply comes via interrupt, so we just need to give it time to arrive
-    for _i in 0..100 {
-        process_rx();
-        // Delay to let packets arrive and timer-based polling process them
-        for _ in 0..1_000_000 {
-            core::hint::spin_loop();
-        }
-        // Diagnostic: dump RX queue state on first few iterations
-        #[cfg(target_arch = "aarch64")]
-        if _i < 5 || _i % 20 == 0 {
-            net_pci::dump_rx_state();
-        }
-        // Check if we got the ARP reply yet
-        if let Some(gateway_mac) = arp::lookup(&gateway) {
-            net_log!(
-                "NET: ARP resolved gateway MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                gateway_mac[0],
-                gateway_mac[1],
-                gateway_mac[2],
-                gateway_mac[3],
-                gateway_mac[4],
-                gateway_mac[5]
-            );
-            break;
-        }
-    }
-
-    // Check if ARP resolved the gateway
+    // ARP resolution completes through interrupt-driven RX after init. Do not
+    // spin-poll here; that hides whether MSI-X/softirq networking works.
     if arp::lookup(&gateway).is_none() {
-        net_log!("NET: Gateway ARP not resolved, skipping ping test");
-        return;
+        net_log!("NET: Gateway ARP not resolved during init; will resolve via IRQ path");
     }
 
     // Send ICMP echo request (ping) to gateway
@@ -404,33 +387,31 @@ fn init_common() {
     );
     if let Err(e) = ping(gateway) {
         net_log!("NET: Failed to send ping: {}", e);
-        return;
-    }
-
-    // Poll for the ping reply (just process RX to handle incoming packets)
-    for _ in 0..20 {
-        process_rx();
-        // Delay to let packets arrive and interrupts fire
-        for _ in 0..500000 {
-            core::hint::spin_loop();
-        }
     }
 
     net_log!("NET: Network initialization complete");
 
-    // Enable network device interrupt now that init polling is done.
-    // This must happen AFTER the synchronous ARP/ICMP polling loop so
-    // interrupt-driven RX doesn't interfere with the polling.
+    // Enable network device interrupt unconditionally at the end of init.
+    // All post-init RX must flow through IRQ -> NetRx softirq, not init polling.
     #[cfg(target_arch = "aarch64")]
     {
         if net_pci::is_initialized() {
-            // Enable MSI-X SPI at GIC now that the used ring is drained.
-            // During init, timer-based polling handled RX. Now switch to
-            // interrupt-driven NAPI-style processing.
+            // Enable MSI-X SPI at GIC now that init has completed.
             net_pci::enable_msi_spi();
         } else {
             net_mmio::enable_net_irq();
         }
+
+        // Substep 4 bootstrap plus Substep 6 hardening: synchronously clear
+        // virtio RX callback suppression so the next inbound MSI can fire even
+        // if softirqd has not run its first NetRx dispatch yet. The softirq
+        // raise remains as a redundant path for any RX state already present.
+        if net_pci::is_initialized() {
+            let _ = net_pci::reenable_and_check_race();
+            net_log!("NET: synchronously cleared virtio callback suppression");
+        }
+        crate::task::softirqd::raise_softirq(SoftirqType::NetRx);
+        net_log!("NET: pre-primed NetRx softirq for bootstrap callback re-enable");
     }
 }
 
@@ -443,67 +424,123 @@ pub fn config() -> NetConfig {
     c
 }
 
+/// Result of a bounded network RX poll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PollOutcome {
+    Drained,
+    BudgetExhausted,
+}
+
+#[cfg(target_arch = "aarch64")]
+fn reclaim_driver_tx_completed() {
+    if net_pci::is_initialized() {
+        let _ = net_pci::reclaim_tx_completed();
+    } else if !e1000::is_initialized() {
+        let _ = net_mmio::reclaim_tx_completed();
+    }
+}
+
 /// Process incoming packets (called from interrupt handler or polling loop)
 #[cfg(target_arch = "x86_64")]
 pub fn process_rx() {
-    let mut buffer = [0u8; 2048];
+    let _ = process_rx_budgeted(u32::MAX);
+}
 
-    while e1000::can_receive() {
+/// Process incoming packets up to `budget` frames.
+#[cfg(target_arch = "x86_64")]
+pub fn process_rx_budgeted(budget: u32) -> PollOutcome {
+    let mut buffer = [0u8; 2048];
+    let mut remaining = budget;
+
+    while remaining > 0 {
+        if !e1000::can_receive() {
+            return PollOutcome::Drained;
+        }
         match e1000::receive(&mut buffer) {
             Ok(len) => {
                 process_packet(&buffer[..len]);
+                remaining -= 1;
             }
-            Err(_) => break,
+            Err(_) => return PollOutcome::Drained,
         }
     }
+
+    PollOutcome::BudgetExhausted
 }
 
 /// Process incoming packets (ARM64 - polling or interrupt driven)
 ///
 /// Protected by RX_PROCESSING atomic to prevent re-entrancy. When MSI-X is
-/// active, the softirq handler can preempt the ARP polling loop and try to
-/// call process_rx() re-entrantly — the guard skips the nested call.
+/// active, the softirq handler can preempt another RX drain and try to call
+/// process_rx() re-entrantly; the guard skips the nested call.
 #[cfg(target_arch = "aarch64")]
 pub fn process_rx() {
-    // Re-entrancy guard: if we're already inside process_rx (e.g., ARP polling
-    // loop interrupted by MSI-X → softirq → process_rx), skip this call.
+    let _ = process_rx_budgeted(u32::MAX);
+}
+
+/// Process incoming packets up to `budget` frames.
+#[cfg(target_arch = "aarch64")]
+pub fn process_rx_budgeted(budget: u32) -> PollOutcome {
+    // Re-entrancy guard: if MSI-X -> softirq -> process_rx preempts another RX
+    // drain, skip this nested call.
     use core::sync::atomic::Ordering;
     if RX_PROCESSING
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
-        return;
+        return PollOutcome::Drained;
     }
+
+    reclaim_driver_tx_completed();
+
+    let mut remaining = budget;
+    let mut outcome = PollOutcome::Drained;
 
     // Try PCI driver first (Parallels), then e1000 (VMware), then MMIO (QEMU)
     if net_pci::is_initialized() {
         let mut processed = false;
-        while let Some(data) = net_pci::receive() {
+        while remaining > 0 {
+            let Some(data) = net_pci::receive() else {
+                break;
+            };
             process_packet(data);
             processed = true;
+            remaining -= 1;
         }
         if processed {
             net_pci::recycle_rx_buffers();
         }
     } else if e1000::is_initialized() {
         let mut buffer = [0u8; 2048];
-        while e1000::can_receive() {
+        while remaining > 0 {
+            if !e1000::can_receive() {
+                break;
+            }
             match e1000::receive(&mut buffer) {
                 Ok(len) => {
                     process_packet(&buffer[..len]);
+                    remaining -= 1;
                 }
                 Err(_) => break,
             }
         }
     } else {
         let mut processed = false;
-        while let Some(data) = net_mmio::receive() {
+        while remaining > 0 {
+            let Some(data) = net_mmio::receive() else {
+                break;
+            };
             process_packet(data);
             processed = true;
+            remaining -= 1;
         }
         if processed {
             net_mmio::recycle_rx_buffers();
         }
+    }
+
+    if remaining == 0 {
+        outcome = PollOutcome::BudgetExhausted;
     }
 
     // Drain deferred TX queue — packets queued during RX processing (e.g., TCP
@@ -515,6 +552,7 @@ pub fn process_rx() {
     // This avoids re-enabling from multiple code paths.
 
     RX_PROCESSING.store(false, Ordering::Release);
+    outcome
 }
 
 /// Source MAC of the packet currently being processed (for response routing).
@@ -598,34 +636,21 @@ pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'
     let dst_mac = match arp::lookup(&next_hop) {
         Some(mac) => mac,
         None => {
-            // On-demand ARP resolution: send request and poll for reply.
+            // ARP resolution is asynchronous: request the next-hop MAC and let
+            // IRQ-driven NetRx populate the cache. Callers should retry on
+            // ArpMiss; higher layers can rely on normal retransmission.
             net_log!(
-                "NET: ARP cache miss for {}.{}.{}.{}, sending on-demand ARP request",
+                "NET: ARP cache miss for {}.{}.{}.{}, sending ARP request",
                 next_hop[0],
                 next_hop[1],
                 next_hop[2],
                 next_hop[3]
             );
             if let Err(e) = arp::request(&next_hop) {
-                net_warn!("NET: On-demand ARP request failed: {}", e);
+                net_warn!("NET: ARP request failed after cache miss: {}", e);
                 return Err("ARP request failed");
             }
-            // Poll for the reply — 50 iterations with ~1ms spin delay each
-            for _ in 0..50 {
-                process_rx();
-                for _ in 0..500_000 {
-                    core::hint::spin_loop();
-                }
-                if let Some(mac) = arp::lookup(&next_hop) {
-                    net_log!("NET: On-demand ARP resolved gateway MAC");
-                    return {
-                        let ip_packet =
-                            ipv4::Ipv4Packet::build(config.ip_addr, dst_ip, protocol, payload);
-                        send_ethernet(&mac, ethernet::ETHERTYPE_IPV4, &ip_packet)
-                    };
-                }
-            }
-            return Err("ARP lookup failed - gateway did not respond");
+            return Err("ArpMiss: reply will populate cache via IRQ");
         }
     };
 

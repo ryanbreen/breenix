@@ -7,7 +7,7 @@ use super::mmio::{
     device_id, VirtioMmioDevice, VIRTIO_MMIO_BASE, VIRTIO_MMIO_COUNT, VIRTIO_MMIO_SIZE,
 };
 use core::ptr::read_volatile;
-use core::sync::atomic::{fence, AtomicBool, Ordering};
+use core::sync::atomic::{fence, AtomicBool, AtomicU16, Ordering};
 
 /// VirtIO network header flags
 #[allow(dead_code)]
@@ -118,10 +118,24 @@ struct RxBuffer {
 
 /// TX buffer with header
 #[repr(C, align(16))]
+#[derive(Clone, Copy)]
 struct TxBuffer {
     hdr: VirtioNetHdr,
     data: [u8; MAX_PACKET_SIZE],
 }
+
+const TX_POOL_SIZE: usize = 16;
+const EMPTY_TX_BUFFER: TxBuffer = TxBuffer {
+    hdr: VirtioNetHdr {
+        flags: 0,
+        gso_type: gso_type::NONE,
+        hdr_len: 0,
+        gso_size: 0,
+        csum_start: 0,
+        csum_offset: 0,
+    },
+    data: [0; MAX_PACKET_SIZE],
+};
 
 // Static buffers for the network driver
 static mut RX_QUEUE: RxQueueMemory = RxQueueMemory {
@@ -210,17 +224,10 @@ static mut RX_BUFFER_3: RxBuffer = RxBuffer {
     data: [0; MAX_PACKET_SIZE],
 };
 
-static mut TX_BUFFER: TxBuffer = TxBuffer {
-    hdr: VirtioNetHdr {
-        flags: 0,
-        gso_type: 0,
-        hdr_len: 0,
-        gso_size: 0,
-        csum_start: 0,
-        csum_offset: 0,
-    },
-    data: [0; MAX_PACKET_SIZE],
-};
+static mut TX_BUFFERS: [TxBuffer; TX_POOL_SIZE] = [EMPTY_TX_BUFFER; TX_POOL_SIZE];
+static TX_SLOT_IN_FLIGHT: [AtomicBool; TX_POOL_SIZE] =
+    [const { AtomicBool::new(false) }; TX_POOL_SIZE];
+static TX_AVAIL_HEAD: AtomicU16 = AtomicU16::new(0);
 
 /// Network device state
 static mut NET_DEVICE: Option<NetDeviceState> = None;
@@ -428,7 +435,33 @@ fn setup_tx_queue(device: &mut VirtioMmioDevice, version: u32) -> Result<(), &'s
         device.set_queue_ready(true);
     }
 
+    reset_tx_slots();
     Ok(())
+}
+
+fn reset_tx_slots() {
+    for slot in TX_SLOT_IN_FLIGHT.iter() {
+        slot.store(false, Ordering::Release);
+    }
+    TX_AVAIL_HEAD.store(0, Ordering::Release);
+}
+
+fn claim_tx_slot() -> Option<usize> {
+    for (idx, slot) in TX_SLOT_IN_FLIGHT.iter().enumerate() {
+        if slot
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+fn release_tx_slot(idx: usize) {
+    if idx < TX_POOL_SIZE {
+        TX_SLOT_IN_FLIGHT[idx].store(false, Ordering::Release);
+    }
 }
 
 /// Get the physical address of an RX buffer by index
@@ -521,16 +554,16 @@ pub fn transmit(data: &[u8]) -> Result<(), &'static str> {
         return Err("Packet too large");
     }
 
-    let state = unsafe {
-        let ptr = &raw mut NET_DEVICE;
-        (*ptr).as_mut().ok_or("Network device not initialized")?
+    let base = unsafe {
+        let ptr = &raw const NET_DEVICE;
+        (*ptr).as_ref().ok_or("Network device not initialized")?.base
     };
 
-    let device = VirtioMmioDevice::probe(state.base).ok_or("Device disappeared")?;
+    let device = VirtioMmioDevice::probe(base).ok_or("Device disappeared")?;
+    let slot = claim_tx_slot().ok_or("TX queue full")?;
+    let tx_ptr = unsafe { (&raw mut TX_BUFFERS).cast::<TxBuffer>().add(slot) };
 
-    // Set up TX buffer
     unsafe {
-        let tx_ptr = &raw mut TX_BUFFER;
         (*tx_ptr).hdr = VirtioNetHdr {
             flags: 0,
             gso_type: gso_type::NONE,
@@ -539,54 +572,62 @@ pub fn transmit(data: &[u8]) -> Result<(), &'static str> {
             csum_start: 0,
             csum_offset: 0,
         };
-        (&mut (*tx_ptr).data)[..data.len()].copy_from_slice(data);
+        core::ptr::copy_nonoverlapping(data.as_ptr(), (*tx_ptr).data.as_mut_ptr(), data.len());
     }
 
-    // Build descriptor
-    let tx_phys = virt_to_phys(&raw const TX_BUFFER as u64);
+    let tx_phys = virt_to_phys(tx_ptr as u64);
     let total_len = core::mem::size_of::<VirtioNetHdr>() + data.len();
+    let avail_idx = TX_AVAIL_HEAD.fetch_add(1, Ordering::AcqRel);
 
     unsafe {
         let queue_ptr = &raw mut TX_QUEUE;
 
-        (*queue_ptr).desc[0] = VirtqDesc {
+        (*queue_ptr).desc[slot] = VirtqDesc {
             addr: tx_phys,
             len: total_len as u32,
             flags: 0, // Device reads this
             next: 0,
         };
 
-        let avail_idx = (*queue_ptr).avail.idx;
-        (*queue_ptr).avail.ring[(avail_idx % 16) as usize] = 0;
-        fence(Ordering::SeqCst);
+        (*queue_ptr).avail.ring[(avail_idx % 16) as usize] = slot as u16;
+        fence(Ordering::Release);
         (*queue_ptr).avail.idx = avail_idx.wrapping_add(1);
-        fence(Ordering::SeqCst);
+        fence(Ordering::Release);
     }
 
     // Notify device about TX queue (queue 1)
     device.notify_queue(1);
 
-    // Wait for completion
-    let mut timeout = 1_000_000u32;
-    loop {
-        fence(Ordering::SeqCst);
-        let used_idx = unsafe {
-            let ptr = &raw const TX_QUEUE;
-            read_volatile(&(*ptr).used.idx)
+    Ok(())
+}
+
+/// Reclaim completed TX descriptors and free their buffer slots.
+pub fn reclaim_tx_completed() -> usize {
+    let mut reclaimed = 0usize;
+
+    unsafe {
+        let state_ptr = &raw mut NET_DEVICE;
+        let Some(state) = (*state_ptr).as_mut() else {
+            return 0;
         };
-        if used_idx != state.tx_last_used_idx {
-            state.tx_last_used_idx = used_idx;
-            break;
+
+        let queue_ptr = &raw const TX_QUEUE;
+        let used_idx = read_volatile(&(*queue_ptr).used.idx);
+        fence(Ordering::Acquire);
+
+        while state.tx_last_used_idx != used_idx {
+            let used_slot = (state.tx_last_used_idx % 16) as usize;
+            let elem = read_volatile(&(*queue_ptr).used.ring[used_slot]);
+            let slot = elem.id as usize;
+            if slot < TX_POOL_SIZE {
+                release_tx_slot(slot);
+                reclaimed += 1;
+            }
+            state.tx_last_used_idx = state.tx_last_used_idx.wrapping_add(1);
         }
-        timeout -= 1;
-        if timeout == 0 {
-            crate::serial_println!("[virtio-net] TX timeout!");
-            return Err("TX timeout");
-        }
-        core::hint::spin_loop();
     }
 
-    Ok(())
+    reclaimed
 }
 
 /// Check for received packets (non-blocking)

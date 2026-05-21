@@ -1,0 +1,43 @@
+diff --git a/docs/polling-allowlist.md b/docs/polling-allowlist.md
+new file mode 100644
+index 00000000..cefa84fe
+--- /dev/null
++++ b/docs/polling-allowlist.md
+@@ -0,0 +1,21 @@
++# Polling Allowlist
++
++This document formalizes the **Linux-rigor polling-elimination gate** for cases where a bounded spin is the architecturally-correct primitive (hardware settle, register handshake) rather than event polling that should be converted to IRQ-driven completion.
++
++**Policy:** Allowlisted spins MUST:
++1. Be bounded by a maximum iteration count (no infinite spin)
++2. Be on a hardware-handshake or hardware-settle code path (not event polling)
++3. Have a Linux precedent (Linux uses an equivalent bounded primitive like `udelay()`, `msleep()`, or `readl_poll_timeout()`)
++4. Be documented inline with a comment referencing this allowlist
++
++**Allowlisted sites:**
++
++## P15: PCI PM D3hot→D0 settle delay
++
++- **File:** `kernel/src/drivers/pci.rs:551-554` (in `Pci::set_power_state_d0()`)
++- **Loop:** `for _ in 0..10_000_000u64 { core::hint::spin_loop(); }`
++- **Justification:** PCI spec PM 3.0 §5.4.2 requires a 10ms delay after the D3hot→D0 power-state transition before any device access. This is a hardware-settle delay (the device's internal state machine needs time to re-power), not event polling.
++- **Linux precedent:** `drivers/pci/pci.c::pci_set_power_state()` calls `msleep(pci_pm_d3hot_delay)` (default 10ms) after the same transition. Breenix's bounded spin is functionally equivalent; Linux's `msleep()` yields to scheduler, Breenix's `spin_loop` is appropriate at this stage because PCI PM transitions happen during early boot/device probe when scheduler may not be available or device access must serialize with this single CPU.
++- **Bounded:** 10M iterations on aarch64 = ~10ms at 1 GHz. Safe upper bound.
++- **Frequency:** Once per PCI device that needs PM transition (boot only).
++- **Status:** ALLOWLISTED — not subject to polling-elimination conversion.
+diff --git a/kernel/src/drivers/pci.rs b/kernel/src/drivers/pci.rs
+index 7a7ceec6..f32e099d 100644
+--- a/kernel/src/drivers/pci.rs
++++ b/kernel/src/drivers/pci.rs
+@@ -546,8 +546,9 @@ impl Device {
+             // Not in D0 — transition to D0 by clearing bits [1:0]
+             let new_pmcsr = pmcsr & !0x03;
+             pci_write_config_word(self.bus, self.device, self.function, pm_cap + 4, new_pmcsr);
+-            // PCI spec requires 10ms delay after D3hot->D0 transition
+-            // (We always wait this since it's safe)
++            // PCI spec PM 3.0 §5.4.2 requires 10ms delay after D3hot->D0 transition.
++            // Hardware-settle delay (NOT event polling) — Linux uses msleep(10) at the
++            // equivalent pci_set_power_state() site. Allowlisted per docs/polling-allowlist.md.
+             for _ in 0..10_000_000u64 {
+                 core::hint::spin_loop();
+             }

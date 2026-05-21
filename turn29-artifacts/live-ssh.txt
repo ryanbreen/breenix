@@ -1,0 +1,2 @@
+Pseudo-terminal will not be allocated because stdin is not a terminal.
+ssh: connect to host 10.211.55.100 port 2222: Operation timed out

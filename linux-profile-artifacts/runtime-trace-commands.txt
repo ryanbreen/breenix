@@ -1,0 +1,43 @@
+# linux-probe runtime trace commands
+
+Probe:
+
+- Host: `wrb@10.211.55.3`
+- Kernel: `Linux probe 6.8.0-111-generic #111-Ubuntu SMP PREEMPT_DYNAMIC Sat Apr 11 22:59:23 UTC 2026 aarch64`
+- `bpftrace`: `/usr/bin/bpftrace`
+- `perf`: `/usr/bin/perf`
+- `stress-ng`: unavailable
+
+Load generator:
+
+```sh
+for i in 1 2 3 4; do yes > /dev/null & echo $! >> /tmp/load.pids; done
+```
+
+Counts trace:
+
+```sh
+sudo bpftrace -e '
+tracepoint:sched:sched_switch { @switches[cpu] = count(); }
+tracepoint:sched:sched_wakeup { @wakeups_target[args->target_cpu] = count(); }
+tracepoint:sched:sched_migrate_task { @migrations[args->orig_cpu, args->dest_cpu] = count(); }
+interval:s:10 { exit(); }
+' 2>&1 | tee /tmp/bpftrace-sched-counts.txt
+```
+
+Switch stream:
+
+```sh
+sudo bpftrace -e '
+tracepoint:sched:sched_switch {
+  printf("%d -> %d on cpu %d, prev_state=%d\n",
+         args->prev_pid, args->next_pid, cpu, args->prev_state);
+}
+interval:s:5 { exit(); }
+' 2>&1 | tail -60 | tee /tmp/bpftrace-switches.txt
+```
+
+Artifacts copied back:
+
+- `linux-profile-artifacts/sched-bpftrace-counts.txt`
+- `linux-profile-artifacts/sched-bpftrace-switches.txt`

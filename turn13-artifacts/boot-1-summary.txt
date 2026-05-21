@@ -1,0 +1,37 @@
+Turn 13 single fresh-deploy boot summary
+
+Result: FAIL
+
+Command:
+./run.sh --parallels --test 90
+
+VM:
+breenix-1779302795
+
+Build gates:
+- userspace aarch64 build completed
+- ext2 image creation completed
+- aarch64 kernel build completed
+- x86 qemu-uefi build completed
+- EFI build completed
+- all warning/error grep files are empty
+
+Observed boot markers:
+- xHCI post-activation line present:
+  [xhci] post-activation: MSI_EVENT_COUNT=59 EVENT_COUNT=0 POLL_COUNT=0 SPI_ACTIVATED=true
+- PID 1 reached userspace:
+  [init] Breenix init starting (PID 1)
+- freeze-watch output continued until uptime_ms=40278
+
+Failure markers:
+- CPU0 remained at timer_ticks_cpu0=8 while peer CPUs advanced to about 30000 ticks
+- CPU0 regression guard fired:
+  CPU0 timer regression: tick_count=8 but peer max=30000
+- KERNEL PANIC markers present
+- no [heartbeat] output, no bsshd started marker, and no Boot script completed marker
+
+Interpretation:
+The Turn 13 scheduler dequeue revert did not restore a passing single-boot
+baseline when keeping the Turn 5 xHCI IRQ-completion work. MSI delivery and
+USB completion are still alive, but CPU0 timer progress stalls before the
+system reaches the expected ongoing heartbeat/compositor state.
