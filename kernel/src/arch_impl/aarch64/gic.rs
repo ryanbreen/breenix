@@ -1415,7 +1415,12 @@ fn init_gicv3_redistributor(cpu_id: usize) {
     let waker = gicr_read_at_rd_base(rd_base, GICR_WAKER);
     gicr_write_at_rd_base(rd_base, GICR_WAKER, waker & !(1 << 1)); // Clear ProcessorSleep
 
-    // Wait for ChildrenAsleep to clear
+    // Wait for ChildrenAsleep to clear.
+    // GICv3 spec: redistributor's ChildrenAsleep bit must clear after we
+    // clear ProcessorSleep. CPU-management handshake (NOT event polling) —
+    // Linux uses cpu_relax() in gic_redist_wait_for_rwp() for the equivalent
+    // loop. Bounded by 10,000 iterations. Allowlisted per
+    // docs/polling-allowlist.md.
     for _ in 0..10_000 {
         let w = gicr_read_at_rd_base(rd_base, GICR_WAKER);
         if (w & (1 << 2)) == 0 {
