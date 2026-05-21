@@ -82,3 +82,13 @@ This document formalizes the **Linux-rigor polling-elimination gate** for cases 
 - **Bounded:** CNTPCT deadline `start + freq * AHCI_TIMEOUT_SECS`, with timeout dumping state and returning `AHCI: command timeout`.
 - **Frequency:** Early boot/pre-scheduler fallback only; runtime command completion remains IRQ-driven and scheduler-backed.
 - **Status:** ALLOWLISTED — AHCI-specific P18 analog; not subject to polling-elimination conversion.
+
+## P12-Site-7: AHCI ISR PORT_IS/PORT_CI drain loop
+
+- **File:** `kernel/src/drivers/ahci/mod.rs:2413-2466` (ISR drain loop in `handle_irq()` / AHCI interrupt handling)
+- **Loop:** Bounded `loop` drains already-observed `PORT_IS` and tracked `PORT_CI` completion state until both are stable.
+- **Justification:** This is interrupt-context stabilization, not a wait for a future external event. The loop acknowledges observed `PORT_IS`, detects completed tracked slots, then rechecks `PORT_IS`/`PORT_CI` so a waiter is not woken while the wired level interrupt remains asserted.
+- **Linux precedent:** `drivers/ata/libahci.c::ahci_port_intr()` reads and clears `PORT_IRQ_STAT`; `ahci_handle_port_interrupt()` then completes queued commands via `ahci_qc_complete()`.
+- **Bounded:** `AHCI_CI_COMPLETION_LOOP_LIMIT` caps the drain at 8 iterations.
+- **Frequency:** Runtime AHCI interrupt handling.
+- **Status:** ALLOWLISTED — interrupt-context site with deliberately minimal inline comment; not subject to polling-elimination conversion.

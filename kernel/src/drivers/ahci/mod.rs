@@ -2422,6 +2422,8 @@ pub fn handle_interrupt() {
         let mut is_after_clear: u32;
         let mut ci_after_clear: u32;
 
+        // ALLOWLIST: P12-Site-7 ISR drain capped at AHCI_CI_COMPLETION_LOOP_LIMIT.
+        // Linux: libahci.c::ahci_port_intr; see docs/polling-allowlist.md.
         loop {
             loop_iterations += 1;
 
