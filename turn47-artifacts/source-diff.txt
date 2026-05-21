@@ -1,0 +1,16 @@
+diff --git a/kernel/src/drivers/virtio/gpu_mmio.rs b/kernel/src/drivers/virtio/gpu_mmio.rs
+index 31fb169f..c9ce05fa 100644
+--- a/kernel/src/drivers/virtio/gpu_mmio.rs
++++ b/kernel/src/drivers/virtio/gpu_mmio.rs
+@@ -410,7 +410,10 @@ pub fn init() -> Result<(), &'static str> {
+         if let Some(mut device) = VirtioMmioDevice::probe(base) {
+             if device.device_id() == device_id::GPU {
+                 crate::serial_println!("[virtio-gpu] Found GPU device at {:#x}", base);
+-                return init_device(&mut device, base, i as u32);
++                let slot = i as u32;
++                init_device(&mut device, base, slot)?;
++                record_mmio_irq_state(base, slot);
++                return Ok(());
+             }
+         }
+     }
