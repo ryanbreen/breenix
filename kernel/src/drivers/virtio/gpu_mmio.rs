@@ -254,6 +254,20 @@ static GPU_MMIO_IRQ_COUNT: AtomicU32 = AtomicU32::new(0);
 static GPU_MMIO_USED_IDX_ADVANCED: AtomicU32 = AtomicU32::new(0);
 #[allow(dead_code)]
 static GPU_MMIO_LAST_USED_IDX: AtomicU16 = AtomicU16::new(0);
+// T40 bisect: minimal function probe — pure read of MMIO_SLOT.
+// Public so it would be callable from exception.rs dispatch in a future
+// turn, but NOT called from anywhere in this turn's binary. Per CLAUDE.md
+// zero-warnings rule, allow(dead_code) is legitimate because this is a
+// bisect probe pending T41+ wiring.
+#[allow(dead_code)]
+pub fn get_irq() -> Option<u32> {
+    let slot = MMIO_SLOT.load(core::sync::atomic::Ordering::Acquire);
+    if slot == u32::MAX {
+        None
+    } else {
+        Some(48 + slot)
+    }
+}
 /// Requested resolution from fw_cfg (set during init, before GPU probe)
 static mut REQUESTED_WIDTH: u32 = 0;
 static mut REQUESTED_HEIGHT: u32 = 0;
