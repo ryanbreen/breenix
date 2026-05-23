@@ -1186,7 +1186,7 @@ fn redraw_all_windows(fb: &mut FrameBuf, windows: &[Window], focused_win: usize,
 
 #[cfg(target_arch = "aarch64")]
 fn blit_window_contents(vram: &mut [u32], screen_w: usize, screen_h: usize, windows: &[Window]) {
-    for win in windows {
+    for (idx, win) in windows.iter().enumerate() {
         if win.minimized {
             continue;
         }
@@ -1216,10 +1216,81 @@ fn blit_window_contents(vram: &mut [u32], screen_w: usize, screen_h: usize, wind
 
         let _ = graphics::check_window_dirty(win.window_id);
 
+        let has_occluders = windows[idx + 1..].iter().any(|occ| {
+            !occ.minimized
+                && occ.mapped_pixels.is_some()
+                && occ.content_width() > 0
+                && occ.content_height() > 0
+        });
+        if !has_occluders {
+            for row in 0..copy_h {
+                let src_start = row * win.mapped_width;
+                let dst_start = (dst_y + row) * screen_w + dst_x;
+                vram[dst_start..dst_start + copy_w].copy_from_slice(&src[src_start..src_start + copy_w]);
+            }
+            continue;
+        }
+
         for row in 0..copy_h {
-            let src_start = row * win.mapped_width;
-            let dst_start = (dst_y + row) * screen_w + dst_x;
-            vram[dst_start..dst_start + copy_w].copy_from_slice(&src[src_start..src_start + copy_w]);
+            let py = dst_y + row;
+
+            // Port of 34a6c51e lines 438-461: start with the full row span,
+            // then subtract columns covered by higher-z window content.
+            let mut spans = [(0usize, 0usize); 8];
+            let mut n_spans = 1;
+            spans[0] = (dst_x, dst_x + copy_w);
+
+            for occ in &windows[idx + 1..] {
+                if occ.minimized || occ.mapped_pixels.is_none() {
+                    continue;
+                }
+
+                let ox0 = occ.content_x();
+                let oy0 = occ.content_y();
+                let ox1 = ox0 + occ.content_width() as i32;
+                let oy1 = oy0 + occ.content_height() as i32;
+                if py as i32 >= oy1 || (py as i32) < oy0 {
+                    continue;
+                }
+
+                let os = ox0.max(0) as usize;
+                let oe = ox1.max(0) as usize;
+                let mut new_spans = [(0usize, 0usize); 8];
+                let mut nc = 0;
+                for &(sx, ex) in spans[..n_spans].iter() {
+                    if sx >= ex {
+                        continue;
+                    }
+                    if oe <= sx || os >= ex {
+                        if nc < 8 {
+                            new_spans[nc] = (sx, ex);
+                            nc += 1;
+                        }
+                    } else {
+                        if sx < os && nc < 8 {
+                            new_spans[nc] = (sx, os);
+                            nc += 1;
+                        }
+                        if ex > oe && nc < 8 {
+                            new_spans[nc] = (oe, ex);
+                            nc += 1;
+                        }
+                    }
+                }
+                spans = new_spans;
+                n_spans = nc;
+            }
+
+            let src_row = row * win.mapped_width;
+            for &(sx, ex) in spans[..n_spans].iter() {
+                if sx >= ex {
+                    continue;
+                }
+                let count = ex - sx;
+                let src_start = src_row + (sx - dst_x);
+                let dst_start = py * screen_w + sx;
+                vram[dst_start..dst_start + count].copy_from_slice(&src[src_start..src_start + count]);
+            }
         }
     }
 }
