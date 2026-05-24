@@ -163,6 +163,8 @@ impl ArpPacket {
 
 /// Handle an incoming ARP packet
 pub fn handle_arp(eth_frame: &EthernetFrame, arp: &ArpPacket) {
+    crate::tracing::providers::net_rx::count_arp();
+
     let config = super::config();
     let our_mac = match get_mac_address() {
         Some(mac) => mac,

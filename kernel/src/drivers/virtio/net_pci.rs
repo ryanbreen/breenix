@@ -820,6 +820,7 @@ pub fn receive() -> Option<&'static [u8]> {
         (elem.id as usize, elem.len as usize)
     };
 
+    crate::tracing::providers::net_rx::count_ring_drain();
     state.rx_last_used_idx = state.rx_last_used_idx.wrapping_add(1);
 
     let hdr_size = core::mem::size_of::<VirtioNetHdr>();
@@ -881,6 +882,7 @@ pub fn msi_interrupt_count() -> u32 {
 /// could deadlock with the interrupted thread). NetRx softirq handles packet
 /// processing and completion.
 pub fn handle_interrupt() {
+    crate::tracing::providers::net_rx::count_msi();
     NET_PCI_MSI_COUNT.fetch_add(1, Ordering::Relaxed);
 
     // Read ISR to clear the VirtIO device's internal interrupt condition.

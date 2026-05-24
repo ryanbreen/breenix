@@ -613,6 +613,7 @@ pub fn current_packet_src_mac() -> [u8; 6] {
 /// Process a received Ethernet frame
 fn process_packet(data: &[u8]) {
     if let Some(frame) = ethernet::EthernetFrame::parse(data) {
+        crate::tracing::providers::net_rx::count_frame();
         // Save source MAC so TCP can use it for SYN-ACK routing
         *CURRENT_PACKET_SRC_MAC.lock() = frame.src_mac;
         match frame.ethertype {
@@ -622,11 +623,13 @@ fn process_packet(data: &[u8]) {
                 }
             }
             ethernet::ETHERTYPE_IPV4 => {
+                crate::tracing::providers::net_rx::count_ethertype_other();
                 if let Some(ip_packet) = ipv4::Ipv4Packet::parse(frame.payload) {
                     ipv4::handle_ipv4(&frame, &ip_packet);
                 }
             }
             _ => {
+                crate::tracing::providers::net_rx::count_ethertype_other();
                 // Unknown ethertype, ignore
             }
         }
