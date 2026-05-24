@@ -163,112 +163,6 @@ impl E1000 {
         unsafe { write_volatile((self.mmio_base + reg as usize) as *mut u32, value) }
     }
 
-    /// Poll MDIC until the MAC finishes a PHY transaction.
-    ///
-    /// Linux e1000e does the same bounded READY poll in
-    /// drivers/net/ethernet/intel/e1000e/phy.c:141-156 and :195-210.
-    fn poll_mdic_ready(&self) -> Result<u32, &'static str> {
-        for _ in 0..100_000 {
-            let mdic = self.read_reg(REG_MDIC);
-            if mdic & MDIC_READY != 0 {
-                return Ok(mdic);
-            }
-            core::hint::spin_loop();
-        }
-
-        Err("MDIC timeout")
-    }
-
-    /// Read one PHY register through MDIC.
-    ///
-    /// Matches Linux e1000e's MDIC read command shape in
-    /// drivers/net/ethernet/intel/e1000e/phy.c:119-170.
-    fn read_phy_reg(&self, reg: u32) -> Result<u16, &'static str> {
-        if reg > 0x1f {
-            return Err("PHY register out of range");
-        }
-
-        let mdic = (reg << MDIC_REG_SHIFT) | (PHY_ADDR_82574 << MDIC_PHY_SHIFT) | MDIC_OP_READ;
-        self.write_reg(REG_MDIC, mdic);
-
-        let mdic = self.poll_mdic_ready()?;
-        if mdic & MDIC_ERROR != 0 {
-            return Err("MDIC read error");
-        }
-        if ((mdic & MDIC_REG_MASK) >> MDIC_REG_SHIFT) != reg {
-            return Err("MDIC read offset mismatch");
-        }
-
-        Ok((mdic & MDIC_DATA_MASK) as u16)
-    }
-
-    /// Write one PHY register through MDIC.
-    ///
-    /// Matches Linux e1000e's MDIC write command shape in
-    /// drivers/net/ethernet/intel/e1000e/phy.c:176-224.
-    fn write_phy_reg(&self, reg: u32, data: u16) -> Result<(), &'static str> {
-        if reg > 0x1f {
-            return Err("PHY register out of range");
-        }
-
-        let mdic = (data as u32)
-            | (reg << MDIC_REG_SHIFT)
-            | (PHY_ADDR_82574 << MDIC_PHY_SHIFT)
-            | MDIC_OP_WRITE;
-        self.write_reg(REG_MDIC, mdic);
-
-        let mdic = self.poll_mdic_ready()?;
-        if mdic & MDIC_ERROR != 0 {
-            return Err("MDIC write error");
-        }
-        if ((mdic & MDIC_REG_MASK) >> MDIC_REG_SHIFT) != reg {
-            return Err("MDIC write offset mismatch");
-        }
-
-        Ok(())
-    }
-
-    /// Restart copper PHY autoneg on VMware's 82574L.
-    ///
-    /// This is the minimal BM/M88 setup path from Linux e1000e:
-    /// MDIC transactions from phy.c:119-232, copper setup from phy.c:675-812,
-    /// and autoneg start/check flow from phy.c:1135-1175 and :1728-1762.
-    fn init_phy_82574(&self) {
-        let control = match self.read_phy_reg(PHY_CONTROL) {
-            Ok(control) => control,
-            Err(err) => {
-                #[cfg(target_arch = "x86_64")]
-                log::warn!("E1000: 82574 PHY control read failed: {}", err);
-                #[cfg(target_arch = "aarch64")]
-                crate::serial_println!("[e1000] 82574 PHY control read failed: {}", err);
-                return;
-            }
-        };
-
-        let new_control = control | PHY_CONTROL_AUTONEG_EN | PHY_CONTROL_RESTART_AUTONEG;
-        if let Err(err) = self.write_phy_reg(PHY_CONTROL, new_control) {
-            #[cfg(target_arch = "x86_64")]
-            log::warn!("E1000: 82574 PHY autoneg restart failed: {}", err);
-            #[cfg(target_arch = "aarch64")]
-            crate::serial_println!("[e1000] 82574 PHY autoneg restart failed: {}", err);
-            return;
-        }
-
-        let status = self.read_phy_reg(PHY_STATUS).unwrap_or(0);
-        #[cfg(target_arch = "x86_64")]
-        log::info!(
-            "E1000: 82574 PHY autoneg restarted (PHY_CONTROL={:#x}, PHY_STATUS={:#x})",
-            new_control,
-            status
-        );
-        #[cfg(target_arch = "aarch64")]
-        crate::serial_println!(
-            "[e1000] 82574 PHY autoneg restarted (PHY_CONTROL={:#x}, PHY_STATUS={:#x})",
-            new_control,
-            status
-        );
-    }
-
     /// Read MAC address from EEPROM (with timeout)
     /// Returns None if the EEPROM doesn't respond within the timeout.
     fn read_eeprom(&self, addr: u8) -> Option<u16> {
@@ -421,20 +315,6 @@ impl E1000 {
         // IPG transmit time: 10 + 8 + 6 (for IEEE 802.3 standard)
         self.write_reg(REG_TIPG, 10 | (8 << 10) | (6 << 20));
 
-        if self.device_id == E1000E_DEVICE_ID {
-            let threshold_mask = TXDCTL_PTHRESH | TXDCTL_HTHRESH | TXDCTL_WTHRESH;
-            let mut txdctl = self.read_reg(REG_TXDCTL);
-            txdctl &= !threshold_mask;
-            txdctl |= TXDCTL_MAX_TX_DESC_PREFETCH | TXDCTL_FULL_TX_DESC_WB | TXDCTL_COUNT_DESC;
-            self.write_reg(REG_TXDCTL, txdctl);
-            self.write_reg(REG_TXDCTL1, txdctl);
-
-            #[cfg(target_arch = "x86_64")]
-            log::info!("E1000: 82574 TXDCTL writeback policy {:#x}", txdctl);
-            #[cfg(target_arch = "aarch64")]
-            crate::serial_println!("[e1000] 82574 TXDCTL writeback policy {:#x}", txdctl);
-        }
-
         #[cfg(target_arch = "x86_64")]
         log::info!("E1000: TX initialized with {} descriptors", TX_RING_SIZE);
         #[cfg(target_arch = "aarch64")]
@@ -465,13 +345,8 @@ impl E1000 {
     /// Enable link
     fn enable_link(&self) {
         let ctrl = self.read_reg(REG_CTRL);
-        // Set Link Up and Auto-Speed Detection Enable, matching Linux
-        // drivers/net/ethernet/intel/e1000e/82571.c:1421-1429.
+        // Set Link Up, Auto-Speed Detection Enable
         self.write_reg(REG_CTRL, ctrl | CTRL_SLU | CTRL_ASDE);
-
-        if self.device_id == E1000E_DEVICE_ID {
-            self.init_phy_82574();
-        }
     }
 
     /// Check if link is up

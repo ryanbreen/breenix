@@ -241,11 +241,6 @@ static USE_GROUP0: AtomicBool = AtomicBool::new(false);
 /// the hypervisor/firmware maps Group 0 physical delivery to Group 1 NS.
 static DS_ENABLED: AtomicBool = AtomicBool::new(false);
 
-/// Whether this platform supports split EOI/DIR interrupt deactivation.
-/// VMware Fusion's HVF rejects two-step deactivation, so it stays in
-/// EOImode=0 and performs EOI+deactivate together after the handler.
-static SPLIT_DEACTIVATE_SUPPORTED: AtomicBool = AtomicBool::new(false);
-
 /// Tracks which group the last acknowledged interrupt came from.
 /// 0 = Group 1 (normal), 1 = Group 0. Per-CPU would be ideal but
 /// a single atomic suffices for the boot CPU (VMware is single-CPU for now).
@@ -699,8 +694,15 @@ pub fn acknowledge_irq() -> Option<u32> {
 pub fn priority_drop_irq(irq_id: u32) {
     let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
     if version >= 3 {
-        if SPLIT_DEACTIVATE_SUPPORTED.load(Ordering::Acquire) {
-            write_gicv3_eoir(irq_id);
+        let group = LAST_ACK_GROUP.load(Ordering::Relaxed);
+        if group == 0 && DS_ENABLED.load(Ordering::Relaxed) {
+            unsafe {
+                core::arch::asm!("msr icc_eoir0_el1, {}", in(reg) irq_id as u64, options(nomem, nostack));
+            }
+        } else {
+            unsafe {
+                core::arch::asm!("msr icc_eoir1_el1, {}", in(reg) irq_id as u64, options(nomem, nostack));
+            }
         }
     }
 }
@@ -710,30 +712,12 @@ pub fn priority_drop_irq(irq_id: u32) {
 pub fn deactivate_irq(irq_id: u32) {
     let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed);
     if version >= 3 {
-        if SPLIT_DEACTIVATE_SUPPORTED.load(Ordering::Acquire) {
-            unsafe {
-                core::arch::asm!("msr icc_dir_el1, {}", in(reg) irq_id as u64, options(nomem, nostack));
-            }
-        } else {
-            write_gicv3_eoir(irq_id);
+        unsafe {
+            core::arch::asm!("msr icc_dir_el1, {}", in(reg) irq_id as u64, options(nomem, nostack));
         }
     } else {
         // GICv2: Write GICC_EOIR
         gicc_write(GICC_EOIR, irq_id);
-    }
-}
-
-#[inline(always)]
-fn write_gicv3_eoir(irq_id: u32) {
-    let group = LAST_ACK_GROUP.load(Ordering::Relaxed);
-    if group == 0 && DS_ENABLED.load(Ordering::Relaxed) {
-        unsafe {
-            core::arch::asm!("msr icc_eoir0_el1, {}", in(reg) irq_id as u64, options(nomem, nostack));
-        }
-    } else {
-        unsafe {
-            core::arch::asm!("msr icc_eoir1_el1, {}", in(reg) irq_id as u64, options(nomem, nostack));
-        }
     }
 }
 
@@ -1538,26 +1522,15 @@ fn init_gicv3_cpu_interface() {
         core::arch::asm!("msr icc_sre_el1, {}", in(reg) sre, options(nomem, nostack));
         core::arch::asm!("isb", options(nomem, nostack));
 
-        let supports_split = !crate::platform_config::is_vmware();
-        SPLIT_DEACTIVATE_SUPPORTED.store(supports_split, Ordering::Release);
-
-        // Set ICC_CTLR_EL1.EOImode from platform support. Split mode matches
-        // Linux's regular gic_handle_irq() path; VMware Fusion stays in
-        // single-step mode because HVF rejects ICC_DIR_EL1 deactivation.
+        // Explicitly set ICC_CTLR_EL1.EOImode = 1 (bit 1) so GICv3 uses split
+        // priority-drop and deactivate semantics. This matches Linux's regular
+        // gic_handle_irq() admission path: EOIR before handler dispatch, DIR
+        // after the handler body completes.
         let icc_ctlr: u64;
         core::arch::asm!("mrs {}, icc_ctlr_el1", out(reg) icc_ctlr, options(nomem, nostack));
-        let new_ctlr = if supports_split {
-            icc_ctlr | (1u64 << 1)
-        } else {
-            icc_ctlr & !(1u64 << 1)
-        };
+        let new_ctlr = icc_ctlr | (1u64 << 1);
         core::arch::asm!("msr icc_ctlr_el1, {}", in(reg) new_ctlr, options(nomem, nostack));
         core::arch::asm!("isb", options(nostack, preserves_flags));
-        if supports_split {
-            crate::serial_println!("[gic] EOImode=1 (split EOI/DIR) - non-VMware path");
-        } else {
-            crate::serial_println!("[gic] EOImode=0 (single-step EOI+deactivate) - VMware path");
-        }
         crate::serial_println!(
             "[gic] ICC_CTLR_EL1: {:#x} -> {:#x} (EOImode={})",
             icc_ctlr,
