@@ -1245,11 +1245,10 @@ fn blit_window_contents(vram: &mut [u32], screen_w: usize, screen_h: usize, wind
                     continue;
                 }
 
-                // Use full window bounds (chrome + border + shadow), not
-                // content rect, so an occluder's title bar and borders also
-                // protect the underlying window's chrome from being overpainted.
-                // Matches gold-master at 34a6c51e:766-771.
-                let (ox0, oy0, ox1, oy1) = occ.bounds();
+                let ox0 = occ.content_x();
+                let oy0 = occ.content_y();
+                let ox1 = ox0 + occ.content_width() as i32;
+                let oy1 = oy0 + occ.content_height() as i32;
                 if py as i32 >= oy1 || (py as i32) < oy0 {
                     continue;
                 }
