@@ -31,9 +31,6 @@ use crate::drivers::virtio::net_pci;
 
 use crate::task::softirqd::{register_softirq_handler, SoftirqType};
 
-const E1000_CARRIER_WAIT_MS: u32 = 5000;
-const E1000_CARRIER_POLL_MS: u32 = 50;
-
 /// Disable IRQs and return saved DAIF state. Prevents timer interrupt →
 /// softirq → process_rx from deadlocking on shared locks (ARP_CACHE,
 /// NET_CONFIG) that the interrupted thread may hold.
@@ -125,9 +122,6 @@ fn get_mac_address() -> Option<[u8; 6]> {
 fn driver_transmit(data: &[u8]) -> Result<(), &'static str> {
     #[cfg(target_arch = "x86_64")]
     {
-        if !e1000::link_up() {
-            return Err("e1000 link down");
-        }
         e1000::transmit(data)
     }
     #[cfg(target_arch = "aarch64")]
@@ -135,24 +129,10 @@ fn driver_transmit(data: &[u8]) -> Result<(), &'static str> {
         if net_pci::is_initialized() {
             net_pci::transmit(data)
         } else if e1000::is_initialized() {
-            if !e1000::link_up() {
-                return Err("e1000 link down");
-            }
             e1000::transmit(data)
         } else {
             net_mmio::transmit(data)
         }
-    }
-}
-
-fn active_tx_driver_is_e1000() -> bool {
-    #[cfg(target_arch = "x86_64")]
-    {
-        e1000::is_initialized()
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        !net_pci::is_initialized() && e1000::is_initialized()
     }
 }
 
@@ -376,32 +356,6 @@ fn init_common() {
     arp::init();
 
     net_log!("Network stack initialized");
-
-    if active_tx_driver_is_e1000() {
-        // Linux e1000e only wakes TX/carrier after link is confirmed:
-        // drivers/net/ethernet/intel/e1000e/netdev.c:5197-5304.
-        let mut elapsed_ms = 0;
-        while !e1000::link_up() && elapsed_ms < E1000_CARRIER_WAIT_MS {
-            for _ in 0..2_500_000u32 {
-                core::hint::spin_loop();
-            }
-            elapsed_ms += E1000_CARRIER_POLL_MS;
-        }
-
-        if e1000::link_up() {
-            net_log!(
-                "[net] e1000 link up after {}ms -- proceeding with ARP",
-                elapsed_ms
-            );
-        } else {
-            net_log!(
-                "[net] e1000 link did not come up after {}ms -- skipping ARP (carrier-gated)",
-                E1000_CARRIER_WAIT_MS
-            );
-            net_log!("NET: Network initialization complete");
-            return;
-        }
-    }
 
     // Send ARP request for gateway to test network connectivity
     let gateway = gw;

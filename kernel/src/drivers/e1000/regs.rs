@@ -36,8 +36,6 @@ pub const REG_ICS: u32 = 0x00C8;
 pub const REG_IMS: u32 = 0x00D0;
 /// Interrupt Mask Clear
 pub const REG_IMC: u32 = 0x00D8;
-/// MDI Control (Linux e1000e regs.h:13)
-pub const REG_MDIC: u32 = 0x0020;
 
 // Receive Registers
 /// Receive Control Register
@@ -82,41 +80,6 @@ pub const REG_TDT: u32 = 0x3818;
 pub const REG_TIDV: u32 = 0x3820;
 /// Transmit Absolute Interrupt Delay Value
 pub const REG_TADV: u32 = 0x382C;
-/// Transmit Descriptor Control 0 (Linux e1000e regs.h:104)
-pub const REG_TXDCTL: u32 = 0x3828;
-/// Transmit Descriptor Control 1 (Linux e1000e regs.h:104)
-pub const REG_TXDCTL1: u32 = 0x3928;
-
-// TXDCTL bitfields match Linux e1000e defines.h:458-465.
-pub const TXDCTL_PTHRESH: u32 = 0x0000003F;
-pub const TXDCTL_HTHRESH: u32 = 0x00003F00;
-pub const TXDCTL_WTHRESH: u32 = 0x003F0000;
-pub const TXDCTL_GRAN: u32 = 0x01000000;
-pub const TXDCTL_FULL_TX_DESC_WB: u32 = 0x01010000;
-pub const TXDCTL_MAX_TX_DESC_PREFETCH: u32 = 0x0100001F;
-pub const TXDCTL_COUNT_DESC: u32 = 0x00400000;
-
-// MDIC bitfields match Linux e1000e defines.h:797-803 and e1000_hw.h:1585-1594.
-pub const MDIC_DATA_MASK: u32 = 0x0000FFFF;
-pub const MDIC_REG_MASK: u32 = 0x001F0000;
-pub const MDIC_REG_SHIFT: u32 = 16;
-pub const MDIC_PHY_SHIFT: u32 = 21;
-pub const MDIC_OP_WRITE: u32 = 0x04000000;
-pub const MDIC_OP_READ: u32 = 0x08000000;
-pub const MDIC_READY: u32 = 0x10000000;
-pub const MDIC_INT_EN: u32 = 0x20000000;
-pub const MDIC_ERROR: u32 = 0x40000000;
-
-// 82574 PHY address follows Linux e1000e phy.c MDIC access via hw->phy.addr.
-pub const PHY_ADDR_82574: u32 = 1;
-
-// Standard MII registers and BMCR/BMSR bits match Linux include/uapi/linux/mii.h:16-57.
-pub const PHY_CONTROL: u32 = 0x00;
-pub const PHY_STATUS: u32 = 0x01;
-pub const PHY_AUTONEG_ADV: u32 = 0x04;
-pub const PHY_CONTROL_RESTART_AUTONEG: u16 = 0x0200;
-pub const PHY_CONTROL_AUTONEG_EN: u16 = 0x1000;
-pub const PHY_STATUS_LINK_UP: u16 = 0x0004;
 
 // Receive Address Registers
 /// Receive Address Low
