@@ -2591,6 +2591,14 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         }
     }
 
+    // Drain this CPU's PENDING_HANDOFF buffer: wakes that landed for threads
+    // that were "current on this CPU" or in this CPU's deferred-requeue slot
+    // were pushed here by wake_io_thread_locked Case B and trust this trampoline
+    // to convert them into ready-queue enqueues now that commit_cpu_state_after_save
+    // has removed those threads as "current". Linux equivalent: sched_ttwu_pending()
+    // at the __schedule() tail.
+    sched.drain_pending_handoff_for_current_cpu();
+
     let is_idle = sched.is_idle_thread_inner(new_id);
     let ret_dispatch_info = if !is_idle {
         inline_ret_dispatch_info_if_ready(sched, new_id)
@@ -2795,6 +2803,14 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     if should_requeue_old || old_ready_after_save {
         sched.requeue_thread_after_save(old_id);
     }
+    // Explicit wake handoff drain (Linux ttwu_pending equivalent): any wake
+    // pushed to this CPU's PENDING_HANDOFF buffer by wake_io_thread_locked
+    // Case B (because the target was current on this CPU at wake time) is
+    // converted to a ready-queue enqueue now that commit removed the thread
+    // as "current". Without this, such wakes were silently trusted to the
+    // owner and could be lost if neither should_requeue_old nor
+    // old_ready_after_save was true at the trampoline's state-read window.
+    sched.drain_pending_handoff_for_current_cpu();
     cpu0_breadcrumb(cpu_id, 33); // after requeue_thread_after_save
 
     // Determine dispatch mode for the new thread.
