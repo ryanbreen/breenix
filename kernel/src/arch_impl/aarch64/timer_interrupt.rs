@@ -1243,27 +1243,33 @@ fn dump_lockup_state(stall_ticks: u64) {
 /// Dump trace counter values using lock-free serial output.
 /// Safe to call from interrupt context since TraceCounter uses per-CPU atomics.
 fn dump_trace_counters() {
-    // Sub-J: address-take only -- force CPU0_* symbols into the binary
-    // without loads, prints, or string literals.
+    // Sub-K: inert load + address-take, no strings, no prints.
     core::hint::black_box(
-        &crate::tracing::providers::cpu0_timer_forensics::CPU0_TIMER_ISR_ENTRY_TOTAL,
+        crate::tracing::providers::cpu0_timer_forensics::CPU0_TIMER_ISR_ENTRY_TOTAL.get_cpu(0),
     );
     core::hint::black_box(
-        &crate::tracing::providers::cpu0_timer_forensics::CPU0_TIMER_ISR_EXIT_TOTAL,
+        crate::tracing::providers::cpu0_timer_forensics::CPU0_TIMER_ISR_EXIT_TOTAL.get_cpu(0),
     );
     core::hint::black_box(
-        &crate::tracing::providers::cpu0_timer_forensics::CPU0_LAST_TIMER_CNTVCT,
+        crate::tracing::providers::cpu0_timer_forensics::CPU0_LAST_TIMER_CNTVCT
+            .load(core::sync::atomic::Ordering::Relaxed),
     );
     core::hint::black_box(
-        &crate::tracing::providers::cpu0_timer_forensics::CPU0_LAST_TIMER_DAIF,
+        crate::tracing::providers::cpu0_timer_forensics::CPU0_LAST_TIMER_DAIF
+            .load(core::sync::atomic::Ordering::Relaxed),
     );
     core::hint::black_box(
-        &crate::tracing::providers::cpu0_timer_forensics::CPU0_LAST_TIMER_ELR_EL1,
+        crate::tracing::providers::cpu0_timer_forensics::CPU0_LAST_TIMER_ELR_EL1
+            .load(core::sync::atomic::Ordering::Relaxed),
     );
     core::hint::black_box(
-        &crate::tracing::providers::cpu0_timer_forensics::CPU0_LAST_SCHED_FROM_KERNEL_RIP,
+        crate::tracing::providers::cpu0_timer_forensics::CPU0_LAST_SCHED_FROM_KERNEL_RIP
+            .load(core::sync::atomic::Ordering::Relaxed),
     );
-    core::hint::black_box(&crate::arch_impl::aarch64::context_switch::CPU0_IDLE_ITERATIONS);
+    core::hint::black_box(
+        crate::arch_impl::aarch64::context_switch::CPU0_IDLE_ITERATIONS
+            .load(core::sync::atomic::Ordering::Relaxed),
+    );
 
     use crate::tracing::providers::counters;
 
