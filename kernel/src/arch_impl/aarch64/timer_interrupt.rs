@@ -1262,6 +1262,22 @@ fn dump_trace_counters() {
     print_timer_count_decimal(crate::time::get_ticks());
     raw_serial_str(b"\n  Timer IRQ count:  ");
     print_timer_count_decimal(TIMER_INTERRUPT_COUNT.load(Ordering::Relaxed));
+    // PR #355 wake-handoff visibility: PUSHED counts Case B deferred wakes,
+    // DRAINED counts trampoline-tail consumptions, FULL counts buffer-saturation
+    // fallbacks (should stay 0). PUSHED > DRAINED at lockup time means the owning
+    // CPU's trampoline never ran (CPU stuck in non-preemptible loop with IRQs masked).
+    raw_serial_str(b"\n  PENDING_HANDOFF_PUSHED:  ");
+    print_timer_count_decimal(
+        crate::task::scheduler::PENDING_HANDOFF_PUSHED.load(Ordering::Relaxed),
+    );
+    raw_serial_str(b"\n  PENDING_HANDOFF_DRAINED: ");
+    print_timer_count_decimal(
+        crate::task::scheduler::PENDING_HANDOFF_DRAINED.load(Ordering::Relaxed),
+    );
+    raw_serial_str(b"\n  PENDING_HANDOFF_FULL:    ");
+    print_timer_count_decimal(
+        crate::task::scheduler::PENDING_HANDOFF_FULL.load(Ordering::Relaxed),
+    );
     raw_serial_str(b"\n");
 }
 
