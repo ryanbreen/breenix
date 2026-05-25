@@ -27,7 +27,6 @@
 //! ```
 
 pub mod counters;
-pub mod cpu0_timer_forensics;
 pub mod irq;
 pub mod net_rx;
 pub mod process;
@@ -39,7 +38,6 @@ pub mod xhci;
 // pub mod boot_test;
 
 // Re-export providers for convenient access
-pub use cpu0_timer_forensics::CPU0_TIMER_FORENSICS_PROVIDER;
 pub use irq::IRQ_PROVIDER;
 pub use net_rx::NET_RX_PROVIDER;
 pub use process::PROCESS_PROVIDER;
