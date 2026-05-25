@@ -65,21 +65,19 @@ pub fn init() {
     process::init();
     virtgpu::init();
     xhci::init();
-    cpu0_timer_forensics::init();
     // #[cfg(feature = "btrt")]
     // boot_test::init();
     counters::init();
 
     log::info!(
-        "Tracing providers initialized: syscall={:#x}, sched={:#x}, irq={:#x}, net_rx={:#x}, process={:#x}, virtgpu={:#x}, xhci={:#x}, cpu0_timer_forensics={:#x}",
+        "Tracing providers initialized: syscall={:#x}, sched={:#x}, irq={:#x}, net_rx={:#x}, process={:#x}, virtgpu={:#x}, xhci={:#x}",
         syscall::PROVIDER_ID,
         sched::PROVIDER_ID,
         irq::PROVIDER_ID,
         net_rx::PROVIDER_ID,
         process::PROVIDER_ID,
         virtgpu::PROVIDER_ID,
-        xhci::PROVIDER_ID,
-        cpu0_timer_forensics::PROVIDER_ID
+        xhci::PROVIDER_ID
     );
 }
 
@@ -93,7 +91,6 @@ pub fn enable_all() {
     PROCESS_PROVIDER.enable_all();
     VIRTGPU_PROVIDER.enable_all();
     XHCI_PROVIDER.enable_all();
-    CPU0_TIMER_FORENSICS_PROVIDER.enable_all();
     // #[cfg(feature = "btrt")]
     // BOOT_TEST_PROVIDER.enable_all();
 }
@@ -108,7 +105,6 @@ pub fn disable_all() {
     PROCESS_PROVIDER.disable_all();
     VIRTGPU_PROVIDER.disable_all();
     XHCI_PROVIDER.disable_all();
-    CPU0_TIMER_FORENSICS_PROVIDER.disable_all();
     // #[cfg(feature = "btrt")]
     // BOOT_TEST_PROVIDER.disable_all();
 }
