@@ -1243,6 +1243,28 @@ fn dump_lockup_state(stall_ticks: u64) {
 /// Dump trace counter values using lock-free serial output.
 /// Safe to call from interrupt context since TraceCounter uses per-CPU atomics.
 fn dump_trace_counters() {
+    // Sub-J: address-take only -- force CPU0_* symbols into the binary
+    // without loads, prints, or string literals.
+    core::hint::black_box(
+        &crate::tracing::providers::cpu0_timer_forensics::CPU0_TIMER_ISR_ENTRY_TOTAL,
+    );
+    core::hint::black_box(
+        &crate::tracing::providers::cpu0_timer_forensics::CPU0_TIMER_ISR_EXIT_TOTAL,
+    );
+    core::hint::black_box(
+        &crate::tracing::providers::cpu0_timer_forensics::CPU0_LAST_TIMER_CNTVCT,
+    );
+    core::hint::black_box(
+        &crate::tracing::providers::cpu0_timer_forensics::CPU0_LAST_TIMER_DAIF,
+    );
+    core::hint::black_box(
+        &crate::tracing::providers::cpu0_timer_forensics::CPU0_LAST_TIMER_ELR_EL1,
+    );
+    core::hint::black_box(
+        &crate::tracing::providers::cpu0_timer_forensics::CPU0_LAST_SCHED_FROM_KERNEL_RIP,
+    );
+    core::hint::black_box(&crate::arch_impl::aarch64::context_switch::CPU0_IDLE_ITERATIONS);
+
     use crate::tracing::providers::counters;
 
     raw_serial_str(b"Trace counters:\n");
