@@ -94,6 +94,12 @@ pub mod provider;
 pub mod providers;
 mod timestamp;
 
+/// Sub-O: BSS padding probe -- testing whether kernel binary layout
+/// perturbation alone rescues CPU0 timer death.
+#[used]
+pub static SUB_O_BSS_PADDING: [::core::sync::atomic::AtomicU64; 2048] =
+    [const { ::core::sync::atomic::AtomicU64::new(0) }; 2048];
+
 // Re-export public API from core
 pub use self::buffer::{TraceCpuBuffer, TRACE_BUFFER_SIZE};
 pub use self::core::{
