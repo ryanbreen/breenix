@@ -1245,10 +1245,14 @@ fn blit_window_contents(vram: &mut [u32], screen_w: usize, screen_h: usize, wind
                     continue;
                 }
 
-                let ox0 = occ.content_x();
-                let oy0 = occ.content_y();
-                let ox1 = ox0 + occ.content_width() as i32;
-                let oy1 = oy0 + occ.content_height() as i32;
+                // Use full window bounds (chrome + border + shadow), not
+                // content rect. The lower window's content row at y just below
+                // an upper window's bottom border was overpainting that border
+                // pixel (and the +3 drop shadow), because the content-rect-only
+                // occluder span stopped at content_y + content_height — leaving
+                // the title bar / borders / shadow unprotected. Matches the
+                // gold-master span-clip occluder at 34a6c51e:766-771.
+                let (ox0, oy0, ox1, oy1) = occ.bounds();
                 if py as i32 >= oy1 || (py as i32) < oy0 {
                     continue;
                 }
