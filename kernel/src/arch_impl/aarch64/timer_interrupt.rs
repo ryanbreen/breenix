@@ -681,18 +681,6 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
     }
     // ═══════════════════════════════════════════════════════════════════════
 
-    if cpu_id == 0 {
-        let cntvct: u64;
-        let elr: u64;
-        unsafe {
-            core::arch::asm!("mrs {}, cntvct_el0", out(reg) cntvct, options(nomem, nostack));
-            core::arch::asm!("mrs {}, elr_el1", out(reg) elr, options(nomem, nostack));
-        }
-        crate::tracing::providers::cpu0_timer_forensics::trace_cpu0_timer_isr_entry(
-            cntvct, spsr, elr,
-        );
-    }
-
     // Snapshot CNTV_CTL_EL0 for this CPU — captures the timer hardware state
     // after re-arm. Should show CTL=1 (ENABLE=1, IMASK=0) or CTL=5 if ISTATUS.
     let cntv_ctl: u64;
@@ -820,9 +808,6 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
         trace_kernel_resume_timer_irq(unsafe { &*frame }, kind | 0x100);
     }
 
-    if cpu_id == 0 {
-        crate::tracing::providers::cpu0_timer_forensics::trace_cpu0_timer_isr_exit();
-    }
 }
 
 /// Dump GIC register state for VMware timer debugging.
