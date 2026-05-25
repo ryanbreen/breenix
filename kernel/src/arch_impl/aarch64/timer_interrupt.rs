@@ -1243,31 +1243,8 @@ fn dump_lockup_state(stall_ticks: u64) {
 /// Dump trace counter values using lock-free serial output.
 /// Safe to call from interrupt context since TraceCounter uses per-CPU atomics.
 fn dump_trace_counters() {
-    // Sub-M: print calls without CPU0 strings.
-    let v_entry =
-        crate::tracing::providers::cpu0_timer_forensics::CPU0_TIMER_ISR_ENTRY_TOTAL.get_cpu(0);
-    let v_exit =
-        crate::tracing::providers::cpu0_timer_forensics::CPU0_TIMER_ISR_EXIT_TOTAL.get_cpu(0);
-    let v_cntvct = crate::tracing::providers::cpu0_timer_forensics::CPU0_LAST_TIMER_CNTVCT
-        .load(core::sync::atomic::Ordering::Relaxed);
-    let v_daif = crate::tracing::providers::cpu0_timer_forensics::CPU0_LAST_TIMER_DAIF
-        .load(core::sync::atomic::Ordering::Relaxed);
-    let v_elr = crate::tracing::providers::cpu0_timer_forensics::CPU0_LAST_TIMER_ELR_EL1
-        .load(core::sync::atomic::Ordering::Relaxed);
-    let v_lr = crate::tracing::providers::cpu0_timer_forensics::CPU0_LAST_SCHED_FROM_KERNEL_RIP
-        .load(core::sync::atomic::Ordering::Relaxed);
-    let v_idle = crate::arch_impl::aarch64::context_switch::CPU0_IDLE_ITERATIONS
-        .load(core::sync::atomic::Ordering::Relaxed);
-
-    print_timer_count_decimal(v_entry);
-    print_timer_count_decimal(v_exit);
-    print_hex_u64(v_cntvct);
-    print_hex_u64(v_daif);
-    print_hex_u64(v_elr);
-    print_hex_u64(v_lr);
-    print_timer_count_decimal(v_idle);
-
     use crate::tracing::providers::counters;
+    use crate::tracing::providers::cpu0_timer_forensics;
 
     raw_serial_str(b"Trace counters:\n");
 
@@ -1287,6 +1264,27 @@ fn dump_trace_counters() {
     print_timer_count_decimal(crate::time::get_ticks());
     raw_serial_str(b"\n  Timer IRQ count:  ");
     print_timer_count_decimal(TIMER_INTERRUPT_COUNT.load(Ordering::Relaxed));
+    raw_serial_str(b"\n");
+
+    raw_serial_str(b"[COUNTER] CPU0_TIMER_ISR_ENTRY_TOTAL: ");
+    print_timer_count_decimal(cpu0_timer_forensics::CPU0_TIMER_ISR_ENTRY_TOTAL.get_cpu(0));
+    raw_serial_str(b"\n[COUNTER] CPU0_TIMER_ISR_EXIT_TOTAL: ");
+    print_timer_count_decimal(cpu0_timer_forensics::CPU0_TIMER_ISR_EXIT_TOTAL.get_cpu(0));
+    raw_serial_str(b"\n[COUNTER] CPU0_LAST_TIMER_CNTVCT: 0x");
+    print_hex_u64(cpu0_timer_forensics::CPU0_LAST_TIMER_CNTVCT.load(Ordering::Relaxed));
+    raw_serial_str(b"\n[COUNTER] CPU0_LAST_TIMER_DAIF: 0x");
+    print_hex_u64(cpu0_timer_forensics::CPU0_LAST_TIMER_DAIF.load(Ordering::Relaxed));
+    raw_serial_str(b"\n[COUNTER] CPU0_LAST_TIMER_ELR_EL1: 0x");
+    print_hex_u64(cpu0_timer_forensics::CPU0_LAST_TIMER_ELR_EL1.load(Ordering::Relaxed));
+    raw_serial_str(b"\n[COUNTER] CPU0_LAST_SCHED_FROM_KERNEL_RIP: 0x");
+    print_hex_u64(
+        cpu0_timer_forensics::CPU0_LAST_SCHED_FROM_KERNEL_RIP.load(Ordering::Relaxed),
+    );
+    raw_serial_str(b"\n[COUNTER] CPU0_IDLE_LOOP_ITERATIONS: ");
+    print_timer_count_decimal(
+        crate::arch_impl::aarch64::context_switch::CPU0_IDLE_ITERATIONS
+            .load(Ordering::Relaxed),
+    );
     raw_serial_str(b"\n");
 }
 
