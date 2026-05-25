@@ -1270,6 +1270,13 @@ fn dump_trace_counters() {
         crate::arch_impl::aarch64::context_switch::CPU0_IDLE_ITERATIONS
             .load(core::sync::atomic::Ordering::Relaxed),
     );
+    raw_serial_str(b"[COUNTER] CPU0_TIMER_ISR_ENTRY_TOTAL: ");
+    raw_serial_str(b"\n[COUNTER] CPU0_TIMER_ISR_EXIT_TOTAL: ");
+    raw_serial_str(b"\n[COUNTER] CPU0_LAST_TIMER_CNTVCT: 0x");
+    raw_serial_str(b"\n[COUNTER] CPU0_LAST_TIMER_DAIF: 0x");
+    raw_serial_str(b"\n[COUNTER] CPU0_LAST_TIMER_ELR_EL1: 0x");
+    raw_serial_str(b"\n[COUNTER] CPU0_LAST_SCHED_FROM_KERNEL_RIP: 0x");
+    raw_serial_str(b"\n[COUNTER] CPU0_IDLE_LOOP_ITERATIONS: ");
 
     use crate::tracing::providers::counters;
 
