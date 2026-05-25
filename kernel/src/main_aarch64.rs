@@ -1764,6 +1764,10 @@ fn panic(info: &PanicInfo) -> ! {
     serial_println!("{}", info);
     serial_println!();
 
+    // Turn 3 net triage: panic is the only reliable serial-side rendezvous
+    // when the RX probe triggers the CPU0 regression before userspace can dump.
+    kernel::tracing::output::trace_dump_counters();
+
     loop {
         unsafe {
             core::arch::asm!("wfi", options(nomem, nostack));

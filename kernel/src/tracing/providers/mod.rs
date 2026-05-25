@@ -28,6 +28,7 @@
 
 pub mod counters;
 pub mod irq;
+pub mod net_rx;
 pub mod process;
 pub mod sched;
 pub mod syscall;
@@ -38,6 +39,7 @@ pub mod xhci;
 
 // Re-export providers for convenient access
 pub use irq::IRQ_PROVIDER;
+pub use net_rx::NET_RX_PROVIDER;
 pub use process::PROCESS_PROVIDER;
 pub use sched::SCHED_PROVIDER;
 pub use syscall::SYSCALL_PROVIDER;
@@ -57,6 +59,7 @@ pub fn init() {
     syscall::init();
     sched::init();
     irq::init();
+    net_rx::init();
     process::init();
     virtgpu::init();
     xhci::init();
@@ -65,10 +68,11 @@ pub fn init() {
     counters::init();
 
     log::info!(
-        "Tracing providers initialized: syscall={:#x}, sched={:#x}, irq={:#x}, process={:#x}, virtgpu={:#x}, xhci={:#x}",
+        "Tracing providers initialized: syscall={:#x}, sched={:#x}, irq={:#x}, net_rx={:#x}, process={:#x}, virtgpu={:#x}, xhci={:#x}",
         syscall::PROVIDER_ID,
         sched::PROVIDER_ID,
         irq::PROVIDER_ID,
+        net_rx::PROVIDER_ID,
         process::PROVIDER_ID,
         virtgpu::PROVIDER_ID,
         xhci::PROVIDER_ID
@@ -81,6 +85,7 @@ pub fn enable_all() {
     SYSCALL_PROVIDER.enable_all();
     SCHED_PROVIDER.enable_all();
     IRQ_PROVIDER.enable_all();
+    NET_RX_PROVIDER.enable_all();
     PROCESS_PROVIDER.enable_all();
     VIRTGPU_PROVIDER.enable_all();
     XHCI_PROVIDER.enable_all();
@@ -94,6 +99,7 @@ pub fn disable_all() {
     SYSCALL_PROVIDER.disable_all();
     SCHED_PROVIDER.disable_all();
     IRQ_PROVIDER.disable_all();
+    NET_RX_PROVIDER.disable_all();
     PROCESS_PROVIDER.disable_all();
     VIRTGPU_PROVIDER.disable_all();
     XHCI_PROVIDER.disable_all();
