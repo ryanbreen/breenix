@@ -137,6 +137,23 @@ static ISR_WAKEUP_BUFFERS: [IsrWakeupBuffer; 8] = [const { IsrWakeupBuffer::new(
 /// vulnerable to lost wakeups after the rescue infrastructure was deleted in PR #344.
 static PENDING_HANDOFF_BUFFERS: [IsrWakeupBuffer; 8] = [const { IsrWakeupBuffer::new() }; 8];
 
+/// Number of PENDING_HANDOFF buffers (one per logical CPU).
+pub const PENDING_HANDOFF_BUFFER_COUNT: usize = 8;
+
+/// Lock-free probe: returns true if the given CPU's PENDING_HANDOFF buffer
+/// contains at least one entry. Safe to call from interrupt context. Used by
+/// the path-1 fast-path drain to avoid taking the scheduler lock when there
+/// is nothing to do.
+pub fn pending_handoff_buffer_has_entries(cpu: usize) -> bool {
+    if cpu >= PENDING_HANDOFF_BUFFER_COUNT {
+        return false;
+    }
+    PENDING_HANDOFF_BUFFERS[cpu]
+        .slots
+        .iter()
+        .any(|slot| slot.load(Ordering::Acquire) != ISR_WAKEUP_EMPTY)
+}
+
 /// Counter: TID pushed to PENDING_HANDOFF in Case B of wake_io_thread_locked.
 pub static PENDING_HANDOFF_PUSHED: AtomicU64 = AtomicU64::new(0);
 /// Counter: TID successfully drained from PENDING_HANDOFF by a trampoline tail.

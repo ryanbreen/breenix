@@ -2335,12 +2335,51 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             );
             sched.cpu_state[cpu_id].previous_thread = None;
             sched.requeue_thread_after_save(deferred_tid);
+            // Also drain PENDING_HANDOFF: a wake observed for a thread owned by
+            // this CPU was pushed here by wake_io_thread_locked Case B and is
+            // waiting for us to enqueue it. We piggyback on the lock we just
+            // acquired.
+            sched.drain_pending_handoff_for_current_cpu();
         }
         drop(guard);
         true
     } else {
         false
     };
+
+    // Drain PENDING_HANDOFF even when no DEFERRED_REQUEUE was pending. Wake
+    // pushes in Case B set NEED_RESCHED globally, but that flag is consumed by
+    // the first CPU to read it — the owning CPU might never see it set when its
+    // path-1 timer fires, in which case the fast-path early-return below would
+    // skip the slow path's drain at the bottom of this function. We must drain
+    // here unconditionally so every timer tick on every CPU drains its own
+    // pending-handoff buffer, with at most a 1ms latency from wake-push to
+    // ready-queue enqueue.
+    //
+    // Safety: drain_pending_handoff_for_current_cpu calls requeue_thread_after_save,
+    // which re-checks "still current on any CPU" / "is_in_deferred_requeue" / state
+    // == Ready / not already queued before pushing. We are running at exception
+    // return — the current thread is still set to cpu_state[cpu_id].current_thread
+    // (no commit has happened yet), so any TID equal to that current thread will
+    // be correctly skipped by requeue_thread_after_save's "current on any CPU"
+    // check, and we won't double-process it later in the slow path.
+    if !deferred_already_processed {
+        // Cheap probe: only take the lock if there is at least one pending
+        // entry in our buffer. The buffer is per-CPU and accessed via atomics.
+        let buf_idx = cpu_id;
+        let have_pending = if buf_idx < crate::task::scheduler::PENDING_HANDOFF_BUFFER_COUNT {
+            crate::task::scheduler::pending_handoff_buffer_has_entries(buf_idx)
+        } else {
+            false
+        };
+        if have_pending {
+            let mut guard = crate::task::scheduler::lock_for_context_switch();
+            if let Some(sched) = guard.as_mut() {
+                sched.drain_pending_handoff_for_current_cpu();
+            }
+            drop(guard);
+        }
+    }
 
     if (preempt_count & PREEMPT_GUARD_MASK) != 0 {
         // Kernel or interrupt context is not safe to preempt.
