@@ -2364,7 +2364,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     // be correctly skipped by requeue_thread_after_save's "current on any CPU"
     // check, and we won't double-process it later in the slow path.
     if !deferred_already_processed {
-        // Cheap probe: only take the lock if there is at least one pending
+        // Cheap probe: only attempt the lock if there is at least one pending
         // entry in our buffer. The buffer is per-CPU and accessed via atomics.
         let buf_idx = cpu_id;
         let have_pending = if buf_idx < crate::task::scheduler::PENDING_HANDOFF_BUFFER_COUNT {
@@ -2373,11 +2373,23 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             false
         };
         if have_pending {
-            let mut guard = crate::task::scheduler::lock_for_context_switch();
-            if let Some(sched) = guard.as_mut() {
-                sched.drain_pending_handoff_for_current_cpu();
+            // try_lock, not lock: this path runs on EVERY exception return
+            // (timer ticks + IRQs + syscall returns) on every CPU. If we used
+            // a blocking lock here, the global SCHEDULER mutex would serialize
+            // every CPU on every exception return, producing severe contention
+            // that manifests as an apparent hard-lockup (all CPUs spinning on
+            // lock-acquire, lock holder cycling too fast for the soft-lockup
+            // detector to trip its 1-second threshold). If the lock is held by
+            // another CPU, skip the drain — the buffer is per-CPU and will be
+            // drained on this CPU's next path-1 entry (at most 1ms later via
+            // the next timer tick), or by the slow-path drain at the bottom
+            // of this function when need_resched is set.
+            if let Some(mut guard) = crate::task::scheduler::try_lock_for_context_switch() {
+                if let Some(sched) = guard.as_mut() {
+                    sched.drain_pending_handoff_for_current_cpu();
+                }
+                drop(guard);
             }
-            drop(guard);
         }
     }
 

@@ -321,6 +321,16 @@ pub fn lock_for_context_switch() -> spin::MutexGuard<'static, Option<Scheduler>>
     SCHEDULER.lock()
 }
 
+/// Non-blocking lock acquisition. Returns None if the scheduler lock is
+/// currently held by another CPU. Used by best-effort paths (e.g. the
+/// path-1 PENDING_HANDOFF drain) that can safely defer their work to a
+/// later iteration if the lock is contended.
+#[cfg(target_arch = "aarch64")]
+pub fn try_lock_for_context_switch(
+) -> Option<spin::MutexGuard<'static, Option<Scheduler>>> {
+    SCHEDULER.try_lock()
+}
+
 /// Force-unlock the scheduler mutex after an inline AArch64 context switch.
 ///
 /// The inline scheduler path intentionally leaks the lock guard before hopping
