@@ -2970,10 +2970,24 @@ fn cpu0_breadcrumb(cpu_id: usize, id: u64) {
 }
 
 pub fn schedule_from_kernel() {
+    let schedule_lr: u64;
+    unsafe {
+        core::arch::asm!(
+            "mov {}, x30",
+            out(reg) schedule_lr,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+
     crate::task::process_task::drain_deferred_fault_sigsegv_exits();
 
     let saved_daif = read_daif();
     let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+    if cpu_id == 0 {
+        crate::tracing::providers::cpu0_timer_forensics::trace_cpu0_sched_from_kernel(
+            schedule_lr,
+        );
+    }
     cpu0_breadcrumb(cpu_id, 1); // entry
     unsafe {
         crate::arch_impl::aarch64::cpu::disable_interrupts();
