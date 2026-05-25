@@ -2347,51 +2347,19 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         false
     };
 
-    // Drain PENDING_HANDOFF even when no DEFERRED_REQUEUE was pending. Wake
-    // pushes in Case B set NEED_RESCHED globally, but that flag is consumed by
-    // the first CPU to read it — the owning CPU might never see it set when its
-    // path-1 timer fires, in which case the fast-path early-return below would
-    // skip the slow path's drain at the bottom of this function. We must drain
-    // here unconditionally so every timer tick on every CPU drains its own
-    // pending-handoff buffer, with at most a 1ms latency from wake-push to
-    // ready-queue enqueue.
-    //
-    // Safety: drain_pending_handoff_for_current_cpu calls requeue_thread_after_save,
-    // which re-checks "still current on any CPU" / "is_in_deferred_requeue" / state
-    // == Ready / not already queued before pushing. We are running at exception
-    // return — the current thread is still set to cpu_state[cpu_id].current_thread
-    // (no commit has happened yet), so any TID equal to that current thread will
-    // be correctly skipped by requeue_thread_after_save's "current on any CPU"
-    // check, and we won't double-process it later in the slow path.
-    if !deferred_already_processed {
-        // Cheap probe: only attempt the lock if there is at least one pending
-        // entry in our buffer. The buffer is per-CPU and accessed via atomics.
-        let buf_idx = cpu_id;
-        let have_pending = if buf_idx < crate::task::scheduler::PENDING_HANDOFF_BUFFER_COUNT {
-            crate::task::scheduler::pending_handoff_buffer_has_entries(buf_idx)
-        } else {
-            false
-        };
-        if have_pending {
-            // try_lock, not lock: this path runs on EVERY exception return
-            // (timer ticks + IRQs + syscall returns) on every CPU. If we used
-            // a blocking lock here, the global SCHEDULER mutex would serialize
-            // every CPU on every exception return, producing severe contention
-            // that manifests as an apparent hard-lockup (all CPUs spinning on
-            // lock-acquire, lock holder cycling too fast for the soft-lockup
-            // detector to trip its 1-second threshold). If the lock is held by
-            // another CPU, skip the drain — the buffer is per-CPU and will be
-            // drained on this CPU's next path-1 entry (at most 1ms later via
-            // the next timer tick), or by the slow-path drain at the bottom
-            // of this function when need_resched is set.
-            if let Some(mut guard) = crate::task::scheduler::try_lock_for_context_switch() {
-                if let Some(sched) = guard.as_mut() {
-                    sched.drain_pending_handoff_for_current_cpu();
-                }
-                drop(guard);
-            }
-        }
-    }
+    // NOTE: PR #357 added an unconditional top-of-path-1 PENDING_HANDOFF
+    // drain here that regressed the long-standing CPU0 timer death watchdog
+    // (PR #334) — the added work in path-1 disrupted CPU0 timer delivery
+    // somehow. Reverted in PR #360. The remaining drain points are:
+    //   - inside the deferred_tid != 0 block above (piggybacks on existing lock)
+    //   - inside the slow-path schedule below
+    //   - inline_schedule_trampoline tail (path-2)
+    // These cover normal cases. If the wake-handoff race re-emerges, the next
+    // attempt should NOT add new top-of-path-1 lock acquisitions; instead
+    // investigate sending a directed IPI from Case B to the target CPU
+    // (Linux's ttwu_queue_wakelist pattern) so the existing trampoline-tail
+    // drains fire on the owner CPU without needing to acquire the lock at the
+    // top of every exception return.
 
     if (preempt_count & PREEMPT_GUARD_MASK) != 0 {
         // Kernel or interrupt context is not safe to preempt.
