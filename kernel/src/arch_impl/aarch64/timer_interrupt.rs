@@ -1243,40 +1243,29 @@ fn dump_lockup_state(stall_ticks: u64) {
 /// Dump trace counter values using lock-free serial output.
 /// Safe to call from interrupt context since TraceCounter uses per-CPU atomics.
 fn dump_trace_counters() {
-    // Sub-K: inert load + address-take, no strings, no prints.
-    core::hint::black_box(
-        crate::tracing::providers::cpu0_timer_forensics::CPU0_TIMER_ISR_ENTRY_TOTAL.get_cpu(0),
-    );
-    core::hint::black_box(
-        crate::tracing::providers::cpu0_timer_forensics::CPU0_TIMER_ISR_EXIT_TOTAL.get_cpu(0),
-    );
-    core::hint::black_box(
-        crate::tracing::providers::cpu0_timer_forensics::CPU0_LAST_TIMER_CNTVCT
-            .load(core::sync::atomic::Ordering::Relaxed),
-    );
-    core::hint::black_box(
-        crate::tracing::providers::cpu0_timer_forensics::CPU0_LAST_TIMER_DAIF
-            .load(core::sync::atomic::Ordering::Relaxed),
-    );
-    core::hint::black_box(
-        crate::tracing::providers::cpu0_timer_forensics::CPU0_LAST_TIMER_ELR_EL1
-            .load(core::sync::atomic::Ordering::Relaxed),
-    );
-    core::hint::black_box(
-        crate::tracing::providers::cpu0_timer_forensics::CPU0_LAST_SCHED_FROM_KERNEL_RIP
-            .load(core::sync::atomic::Ordering::Relaxed),
-    );
-    core::hint::black_box(
-        crate::arch_impl::aarch64::context_switch::CPU0_IDLE_ITERATIONS
-            .load(core::sync::atomic::Ordering::Relaxed),
-    );
-    raw_serial_str(b"[COUNTER] CPU0_TIMER_ISR_ENTRY_TOTAL: ");
-    raw_serial_str(b"\n[COUNTER] CPU0_TIMER_ISR_EXIT_TOTAL: ");
-    raw_serial_str(b"\n[COUNTER] CPU0_LAST_TIMER_CNTVCT: 0x");
-    raw_serial_str(b"\n[COUNTER] CPU0_LAST_TIMER_DAIF: 0x");
-    raw_serial_str(b"\n[COUNTER] CPU0_LAST_TIMER_ELR_EL1: 0x");
-    raw_serial_str(b"\n[COUNTER] CPU0_LAST_SCHED_FROM_KERNEL_RIP: 0x");
-    raw_serial_str(b"\n[COUNTER] CPU0_IDLE_LOOP_ITERATIONS: ");
+    // Sub-M: print calls without CPU0 strings.
+    let v_entry =
+        crate::tracing::providers::cpu0_timer_forensics::CPU0_TIMER_ISR_ENTRY_TOTAL.get_cpu(0);
+    let v_exit =
+        crate::tracing::providers::cpu0_timer_forensics::CPU0_TIMER_ISR_EXIT_TOTAL.get_cpu(0);
+    let v_cntvct = crate::tracing::providers::cpu0_timer_forensics::CPU0_LAST_TIMER_CNTVCT
+        .load(core::sync::atomic::Ordering::Relaxed);
+    let v_daif = crate::tracing::providers::cpu0_timer_forensics::CPU0_LAST_TIMER_DAIF
+        .load(core::sync::atomic::Ordering::Relaxed);
+    let v_elr = crate::tracing::providers::cpu0_timer_forensics::CPU0_LAST_TIMER_ELR_EL1
+        .load(core::sync::atomic::Ordering::Relaxed);
+    let v_lr = crate::tracing::providers::cpu0_timer_forensics::CPU0_LAST_SCHED_FROM_KERNEL_RIP
+        .load(core::sync::atomic::Ordering::Relaxed);
+    let v_idle = crate::arch_impl::aarch64::context_switch::CPU0_IDLE_ITERATIONS
+        .load(core::sync::atomic::Ordering::Relaxed);
+
+    print_timer_count_decimal(v_entry);
+    print_timer_count_decimal(v_exit);
+    print_hex_u64(v_cntvct);
+    print_hex_u64(v_daif);
+    print_hex_u64(v_elr);
+    print_hex_u64(v_lr);
+    print_timer_count_decimal(v_idle);
 
     use crate::tracing::providers::counters;
 
