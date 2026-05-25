@@ -820,9 +820,6 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
         trace_kernel_resume_timer_irq(unsafe { &*frame }, kind | 0x100);
     }
 
-    if cpu_id == 0 {
-        crate::tracing::providers::cpu0_timer_forensics::trace_cpu0_timer_isr_exit();
-    }
 }
 
 /// Dump GIC register state for VMware timer debugging.
