@@ -127,40 +127,6 @@ impl IsrWakeupBuffer {
 
 static ISR_WAKEUP_BUFFERS: [IsrWakeupBuffer; 8] = [const { IsrWakeupBuffer::new() }; 8];
 
-/// Per-CPU pending-handoff buffers for wakes that observed the target thread
-/// as "owned" (still current on a CPU or sitting in that CPU's deferred-requeue
-/// slot). Pushed from `wake_io_thread_locked` Case B; drained unconditionally
-/// by the owning CPU's context-switch trampolines AFTER commit_cpu_state_after_save
-/// has run (so the thread is no longer current). Equivalent shape to Linux's
-/// per-CPU `wake_list` drained by `sched_ttwu_pending()` at every `__schedule()`
-/// tail. Replaces the prior silent-defer-then-trust-the-owner pattern that was
-/// vulnerable to lost wakeups after the rescue infrastructure was deleted in PR #344.
-static PENDING_HANDOFF_BUFFERS: [IsrWakeupBuffer; 8] = [const { IsrWakeupBuffer::new() }; 8];
-
-/// Number of PENDING_HANDOFF buffers (one per logical CPU).
-pub const PENDING_HANDOFF_BUFFER_COUNT: usize = 8;
-
-/// Lock-free probe: returns true if the given CPU's PENDING_HANDOFF buffer
-/// contains at least one entry. Safe to call from interrupt context. Used by
-/// the path-1 fast-path drain to avoid taking the scheduler lock when there
-/// is nothing to do.
-pub fn pending_handoff_buffer_has_entries(cpu: usize) -> bool {
-    if cpu >= PENDING_HANDOFF_BUFFER_COUNT {
-        return false;
-    }
-    PENDING_HANDOFF_BUFFERS[cpu]
-        .slots
-        .iter()
-        .any(|slot| slot.load(Ordering::Acquire) != ISR_WAKEUP_EMPTY)
-}
-
-/// Counter: TID pushed to PENDING_HANDOFF in Case B of wake_io_thread_locked.
-pub static PENDING_HANDOFF_PUSHED: AtomicU64 = AtomicU64::new(0);
-/// Counter: TID successfully drained from PENDING_HANDOFF by a trampoline tail.
-pub static PENDING_HANDOFF_DRAINED: AtomicU64 = AtomicU64::new(0);
-/// Counter: PENDING_HANDOFF push failed because target CPU's buffer was full.
-pub static PENDING_HANDOFF_FULL: AtomicU64 = AtomicU64::new(0);
-
 const WAKE_ATTRIB_MAX_TIDS: usize = 4096;
 const READY_SITE_NONE: u64 = 0;
 const READY_SITE_SCHEDULE: u64 = 1;
@@ -319,16 +285,6 @@ pub fn increment_context_switch_count() {
 #[cfg(target_arch = "aarch64")]
 pub fn lock_for_context_switch() -> spin::MutexGuard<'static, Option<Scheduler>> {
     SCHEDULER.lock()
-}
-
-/// Non-blocking lock acquisition. Returns None if the scheduler lock is
-/// currently held by another CPU. Used by best-effort paths (e.g. the
-/// path-1 PENDING_HANDOFF drain) that can safely defer their work to a
-/// later iteration if the lock is contended.
-#[cfg(target_arch = "aarch64")]
-pub fn try_lock_for_context_switch(
-) -> Option<spin::MutexGuard<'static, Option<Scheduler>>> {
-    SCHEDULER.try_lock()
 }
 
 /// Force-unlock the scheduler mutex after an inline AArch64 context switch.
@@ -1317,27 +1273,6 @@ impl Scheduler {
     /// This completes the deferred requeue from `schedule_deferred_requeue()`.
     /// Must be called only after the thread's context has been fully saved
     /// to prevent other CPUs from dispatching it with stale state.
-    /// Drain this CPU's PENDING_HANDOFF buffer and requeue each TID.
-    ///
-    /// Called by both context-switch trampolines AFTER `commit_cpu_state_after_save`
-    /// has run (so threads pushed here by `wake_io_thread_locked` Case B can be
-    /// safely enqueued — they are no longer "current on this CPU"). This is the
-    /// explicit-handoff side of the wake protocol that matches Linux's
-    /// `sched_ttwu_pending()` shape and replaces the prior silent-defer pattern.
-    #[cfg(target_arch = "aarch64")]
-    pub fn drain_pending_handoff_for_current_cpu(&mut self) {
-        let cpu = Self::current_cpu_id();
-        if cpu >= PENDING_HANDOFF_BUFFERS.len() {
-            return;
-        }
-        let mut drained: alloc::vec::Vec<u64> = alloc::vec::Vec::with_capacity(8);
-        PENDING_HANDOFF_BUFFERS[cpu].drain(&mut drained);
-        for tid in drained {
-            PENDING_HANDOFF_DRAINED.fetch_add(1, Ordering::Relaxed);
-            self.requeue_thread_after_save(tid);
-        }
-    }
-
     #[cfg(target_arch = "aarch64")]
     pub fn requeue_thread_after_save(&mut self, thread_id: u64) {
         // Don't requeue idle threads (they are never in the ready queue)
@@ -1975,37 +1910,6 @@ impl Scheduler {
                         ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
                     }
                 } else if published_ready && (wake.current_cpu.is_some() || is_in_deferred) {
-                    // Explicit handoff: push the TID to the owning CPU's pending-handoff
-                    // buffer instead of trusting the owner to requeue. The owner's
-                    // trampoline drains this buffer unconditionally after commit
-                    // (see context_switch.rs and inline_schedule_trampoline below).
-                    // Replaces the prior silent-defer pattern that depended on
-                    // `should_requeue_old || old_ready_after_save` being true at the
-                    // trampoline's state read — a race window where the wake could be
-                    // observed only AFTER both flags were sampled false, losing the wake.
-                    let target_cpu = if let Some(cpu) = wake.current_cpu {
-                        cpu
-                    } else {
-                        // is_in_deferred is true: find the CPU whose previous_thread
-                        // marker holds this TID. Falls back to current CPU if not
-                        // located (should not happen given is_in_deferred==true).
-                        (0..MAX_CPUS)
-                            .find(|&c| self.cpu_state[c].previous_thread == Some(tid))
-                            .unwrap_or_else(Self::current_cpu_id)
-                    };
-                    if target_cpu < PENDING_HANDOFF_BUFFERS.len() {
-                        if PENDING_HANDOFF_BUFFERS[target_cpu].push(tid) {
-                            PENDING_HANDOFF_PUSHED.fetch_add(1, Ordering::Relaxed);
-                        } else {
-                            // Buffer full — fall back to direct enqueue. This is
-                            // safe because requeue_thread_after_save is idempotent
-                            // and re-checks "still current on any CPU" / "already
-                            // queued" before pushing.
-                            PENDING_HANDOFF_FULL.fetch_add(1, Ordering::Relaxed);
-                            self.per_cpu_queues[self.find_target_cpu_for_wakeup(tid)]
-                                .push_back(tid);
-                        }
-                    }
                     ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
                 } else if already_queued {
                     ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
