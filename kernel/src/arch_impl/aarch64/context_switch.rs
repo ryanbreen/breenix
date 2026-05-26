@@ -19,6 +19,7 @@
 //! - Memory barriers (DSB, ISB) required after page table switches
 
 use core::mem::MaybeUninit;
+use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use super::exception_frame::Aarch64ExceptionFrame;
@@ -725,6 +726,17 @@ pub static TTBR_PROCESS_GONE_COUNT: AtomicU64 = AtomicU64::new(0);
 /// (PROCESS_MANAGER lock was contended during TTBR0 lookup).
 pub static TTBR_PM_LOCK_BUSY_COUNT: AtomicU64 = AtomicU64::new(0);
 
+#[repr(align(64))]
+struct CacheLineAligned<T>(T);
+
+impl<T> Deref for CacheLineAligned<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 /// Per-CPU deferred requeue storage.
 ///
 /// CRITICAL SMP FIX: After a context switch, the old thread must NOT be
@@ -741,7 +753,7 @@ pub static TTBR_PM_LOCK_BUSY_COUNT: AtomicU64 = AtomicU64::new(0);
 /// the boot stack after ERET).
 ///
 /// Value 0 = no pending requeue. Non-zero = thread ID to requeue.
-static DEFERRED_REQUEUE: [AtomicU64; 8] = [
+static DEFERRED_REQUEUE: CacheLineAligned<[AtomicU64; 8]> = CacheLineAligned([
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
@@ -750,12 +762,16 @@ static DEFERRED_REQUEUE: [AtomicU64; 8] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
-];
+]);
 
-static LAST_DEFER_REQUEUE_INFO: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
-static LAST_DEFER_REQUEUE_SP: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
-static LAST_DEFER_REQUEUE_ELR: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
-static LAST_DEFER_REQUEUE_X30: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+static LAST_DEFER_REQUEUE_INFO: CacheLineAligned<[AtomicU64; 8]> =
+    CacheLineAligned([const { AtomicU64::new(0) }; 8]);
+static LAST_DEFER_REQUEUE_SP: CacheLineAligned<[AtomicU64; 8]> =
+    CacheLineAligned([const { AtomicU64::new(0) }; 8]);
+static LAST_DEFER_REQUEUE_ELR: CacheLineAligned<[AtomicU64; 8]> =
+    CacheLineAligned([const { AtomicU64::new(0) }; 8]);
+static LAST_DEFER_REQUEUE_X30: CacheLineAligned<[AtomicU64; 8]> =
+    CacheLineAligned([const { AtomicU64::new(0) }; 8]);
 
 struct InlineScheduleState {
     scheduler_ptr: AtomicUsize,
