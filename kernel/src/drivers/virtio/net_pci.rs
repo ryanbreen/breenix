@@ -345,6 +345,36 @@ pub fn get_irq() -> Option<u32> {
 const MSIX_CONFIG_VECTOR: usize = 0x14;
 const MSIX_QUEUE_VECTOR: usize = 0x16;
 
+fn log_rx_queue_activation_readback(stage: &str, bar0_virt: u64) {
+    reg_write_u16(bar0_virt, REG_QUEUE_SELECT, 0);
+    let pfn = reg_read_u32(bar0_virt, REG_QUEUE_PFN);
+    let size = reg_read_u16(bar0_virt, REG_QUEUE_SIZE);
+    let vector = reg_read_u16(bar0_virt, MSIX_QUEUE_VECTOR);
+    let status = reg_read_u8(bar0_virt, REG_DEVICE_STATUS);
+    let isr = reg_read_u8(bar0_virt, REG_ISR_STATUS);
+    let (avail_flags, avail_idx, used_idx) = unsafe {
+        let q = &raw const PCI_RX_QUEUE;
+        (
+            read_volatile(&(*q).avail.flags),
+            read_volatile(&(*q).avail.idx),
+            read_volatile(&(*q).used.idx),
+        )
+    };
+
+    crate::serial_println!(
+        "[virtio-net-pci] RX queue activation stage={} transport=legacy pfn={:#x} size={} vector={:#x} status={:#x} isr={:#x} avail_flags={:#x} avail_idx={} used_idx={}",
+        stage,
+        pfn,
+        size,
+        vector,
+        status,
+        isr,
+        avail_flags,
+        avail_idx,
+        used_idx
+    );
+}
+
 /// Resolve a GICv2m doorbell address. Returns the MSI_SETSPI_NS physical address.
 fn resolve_gicv2m_doorbell() -> Option<u64> {
     const PARALLELS_GICV2M_BASE: u64 = 0x0225_0000;
@@ -526,6 +556,7 @@ fn setup_net_pci_msi(pci_dev: &crate::drivers::pci::Device) {
         cfg_rb,
         rx_rb
     );
+    log_rx_queue_activation_readback("after_msix_vector", bar0_virt);
     #[cfg(target_arch = "aarch64")]
     trace_msix_programming(pci_dev, msix_cap, doorbell, spi, table_size, cfg_rb, rx_rb);
 
@@ -656,6 +687,7 @@ pub fn init() -> Result<(), &'static str> {
     // Set up RX queue (queue 0)
     let (rx_queue_size, rx_queue_pfn) =
         setup_legacy_queue(bar0_virt, 0, &raw const PCI_RX_QUEUE as u64)?;
+    log_rx_queue_activation_readback("after_rx_pfn", bar0_virt);
 
     // Set up TX queue (queue 1)
     let (tx_queue_size, tx_queue_pfn) =
@@ -665,6 +697,7 @@ pub fn init() -> Result<(), &'static str> {
     // DRIVER_OK
     let cur_status = reg_read_u8(bar0_virt, REG_DEVICE_STATUS);
     reg_write_u8(bar0_virt, REG_DEVICE_STATUS, cur_status | STATUS_DRIVER_OK);
+    log_rx_queue_activation_readback("after_driver_ok", bar0_virt);
 
     // Store state
     unsafe {
@@ -685,6 +718,7 @@ pub fn init() -> Result<(), &'static str> {
 
     // Post initial RX buffers
     post_rx_buffers()?;
+    log_rx_queue_activation_readback("after_rx_notify", bar0_virt);
 
     DEVICE_INITIALIZED.store(true, Ordering::Release);
     setup_net_pci_msi(pci_dev);
