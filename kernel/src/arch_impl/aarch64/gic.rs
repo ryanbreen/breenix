@@ -901,6 +901,67 @@ pub fn spi_diag_registers(irq: u32) -> Option<(u32, u32, u32, u32, u64)> {
     Some((isenabler, ispendr, isactiver, icfgr, irouter))
 }
 
+/// Full diagnostic snapshot for an SPI. Intended for non-hot-path procfs
+/// sampling while investigating MSI delivery.
+pub struct SpiDiagSnapshot {
+    pub irq: u32,
+    pub version: u32,
+    pub isenabler_bit: u32,
+    pub ispendr_bit: u32,
+    pub isactiver_bit: u32,
+    pub igroupr_bit: u32,
+    pub priority: u32,
+    pub icfgr_reg: u32,
+    pub irouter: u64,
+    pub itargetsr_byte: u32,
+    pub gicd_ctlr: u32,
+}
+
+pub fn spi_diag_snapshot(irq: u32) -> Option<SpiDiagSnapshot> {
+    if irq < 32 {
+        return None;
+    }
+
+    let reg_index = irq / 32;
+    let bit = irq % 32;
+    let cfg_reg_index = irq / 16;
+    let priority_reg_index = irq / 4;
+    let priority_shift = (irq % 4) * 8;
+    let target_reg = irq / 4;
+    let target_shift = (irq % 4) * 8;
+    let version = ACTIVE_GIC_VERSION.load(Ordering::Relaxed) as u32;
+    let isenabler = gicd_read(GICD_ISENABLER + (reg_index as usize * 4)) & (1 << bit);
+    let ispendr = gicd_read(GICD_ISPENDR + (reg_index as usize * 4)) & (1 << bit);
+    let isactiver = gicd_read(GICD_ISACTIVER + (reg_index as usize * 4)) & (1 << bit);
+    let igroupr = gicd_read(GICD_IGROUPR + (reg_index as usize * 4)) & (1 << bit);
+    let ipriorityr = gicd_read(GICD_IPRIORITYR + (priority_reg_index as usize * 4));
+    let priority = (ipriorityr >> priority_shift) & 0xff;
+    let icfgr = gicd_read(GICD_ICFGR + (cfg_reg_index as usize * 4));
+    let irouter = if version >= 3 {
+        gicd_read(GICD_IROUTER + (irq as usize * 8)) as u64
+            | ((gicd_read(GICD_IROUTER + (irq as usize * 8) + 4) as u64) << 32)
+    } else {
+        0
+    };
+    let itargetsr = gicd_read(GICD_ITARGETSR + (target_reg as usize * 4));
+    let itargetsr_byte = (itargetsr >> target_shift) & 0xff;
+    let gicd_ctlr = gicd_read(GICD_CTLR);
+
+    Some(SpiDiagSnapshot {
+        irq,
+        version,
+        isenabler_bit: isenabler,
+        ispendr_bit: ispendr,
+        isactiver_bit: isactiver,
+        igroupr_bit: igroupr,
+        priority,
+        icfgr_reg: icfgr,
+        irouter,
+        itargetsr_byte,
+        gicd_ctlr,
+    })
+}
+
 /// Enable an SPI in the GIC distributor (GICD_ISENABLER).
 ///
 /// Also routes the SPI to the current CPU via ITARGETSR (GICv2) or
@@ -1353,7 +1414,6 @@ fn refresh_gicr_rdist_map(max_cpus: usize) {
             break;
         }
     }
-
 }
 
 /// Build the Linux-style redistributor map.
@@ -1636,12 +1696,7 @@ fn init_gicv3_cpu_interface() {
         core::arch::asm!("mrs {}, icc_ctlr_el1", out(reg) ctlr_readback, options(nomem, nostack));
         core::arch::asm!("mrs {}, icc_pmr_el1", out(reg) pmr_readback, options(nomem, nostack));
         core::arch::asm!("mrs {}, icc_igrpen1_el1", out(reg) igrpen1_readback, options(nomem, nostack));
-        core::hint::black_box((
-            sre_readback,
-            ctlr_readback,
-            pmr_readback,
-            igrpen1_readback,
-        ));
+        core::hint::black_box((sre_readback, ctlr_readback, pmr_readback, igrpen1_readback));
     }
 }
 

@@ -214,6 +214,37 @@ pub fn gicv2m_spi_count() -> u32 {
     GICV2M_SPI_COUNT.load(Ordering::Relaxed) as u32
 }
 
+#[cfg(target_arch = "aarch64")]
+pub struct Gicv2mDiagSnapshot {
+    pub base_phys: u64,
+    pub doorbell_phys: u64,
+    pub msi_typer: u32,
+    pub spi_base: u32,
+    pub spi_count: u32,
+    pub next_index: u32,
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn gicv2m_diag_snapshot() -> Option<Gicv2mDiagSnapshot> {
+    let base = GICV2M_BASE_PHYS.load(Ordering::Relaxed);
+    if base == 0 {
+        return None;
+    }
+
+    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
+    let virt = (HHDM_BASE + base) as *const u32;
+    let msi_typer = unsafe { core::ptr::read_volatile(virt.add(2)) };
+
+    Some(Gicv2mDiagSnapshot {
+        base_phys: base,
+        doorbell_phys: base + 0x40,
+        msi_typer,
+        spi_base: GICV2M_SPI_BASE.load(Ordering::Relaxed) as u32,
+        spi_count: GICV2M_SPI_COUNT.load(Ordering::Relaxed) as u32,
+        next_index: GICV2M_NEXT_SPI.load(Ordering::Relaxed) as u32,
+    })
+}
+
 /// Probe for GICv2m at the given physical address.
 ///
 /// Reads MSI_TYPER (offset 0x008) to discover SPI range.

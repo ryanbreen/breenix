@@ -223,11 +223,56 @@ pub fn generate_counters() -> String {
         output.push('\n');
     }
 
+    #[cfg(target_arch = "aarch64")]
+    append_gicv2m_diag(&mut output);
+
     if count == 0 {
         output.push_str("# (no counters registered)\n");
     }
 
     output
+}
+
+#[cfg(target_arch = "aarch64")]
+fn append_gicv2m_diag(output: &mut String) {
+    let Some(irq) = crate::drivers::virtio::net_pci::get_irq() else {
+        return;
+    };
+
+    if let Some(frame) = crate::platform_config::gicv2m_diag_snapshot() {
+        output.push_str(&format!("GICV2M_BASE_PHYS: {:#x}\n", frame.base_phys));
+        output.push_str(&format!(
+            "GICV2M_DOORBELL_PHYS: {:#x}\n",
+            frame.doorbell_phys
+        ));
+        output.push_str(&format!("GICV2M_MSI_TYPER: {:#x}\n", frame.msi_typer));
+        output.push_str(&format!("GICV2M_SPI_BASE: {}\n", frame.spi_base));
+        output.push_str(&format!("GICV2M_SPI_COUNT: {}\n", frame.spi_count));
+        output.push_str(&format!("GICV2M_NEXT_INDEX: {}\n", frame.next_index));
+    }
+
+    if let Some(spi) = crate::arch_impl::aarch64::gic::spi_diag_snapshot(irq) {
+        output.push_str(&format!("GIC_SPI55_IRQ: {}\n", spi.irq));
+        output.push_str(&format!("GIC_SPI55_VERSION: {}\n", spi.version));
+        output.push_str(&format!(
+            "GIC_SPI55_ISENABLER_BIT: {:#x}\n",
+            spi.isenabler_bit
+        ));
+        output.push_str(&format!("GIC_SPI55_ISPENDR_BIT: {:#x}\n", spi.ispendr_bit));
+        output.push_str(&format!(
+            "GIC_SPI55_ISACTIVER_BIT: {:#x}\n",
+            spi.isactiver_bit
+        ));
+        output.push_str(&format!("GIC_SPI55_IGROUPR_BIT: {:#x}\n", spi.igroupr_bit));
+        output.push_str(&format!("GIC_SPI55_PRIORITY: {:#x}\n", spi.priority));
+        output.push_str(&format!("GIC_SPI55_ICFGR_REG: {:#x}\n", spi.icfgr_reg));
+        output.push_str(&format!("GIC_SPI55_IROUTER: {:#x}\n", spi.irouter));
+        output.push_str(&format!(
+            "GIC_SPI55_ITARGETSR_BYTE: {:#x}\n",
+            spi.itargetsr_byte
+        ));
+        output.push_str(&format!("GIC_SPI55_GICD_CTLR: {:#x}\n", spi.gicd_ctlr));
+    }
 }
 
 /// Generate content for /proc/trace/providers
