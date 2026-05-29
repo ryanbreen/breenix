@@ -225,6 +225,8 @@ pub fn generate_counters() -> String {
 
     #[cfg(target_arch = "aarch64")]
     append_gicv2m_diag(&mut output);
+    #[cfg(target_arch = "aarch64")]
+    append_net_pci_diag(&mut output);
 
     if count == 0 {
         output.push_str("# (no counters registered)\n");
@@ -273,6 +275,75 @@ fn append_gicv2m_diag(output: &mut String) {
         ));
         output.push_str(&format!("GIC_SPI55_GICD_CTLR: {:#x}\n", spi.gicd_ctlr));
     }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn append_net_pci_diag(output: &mut String) {
+    let Some(net) = crate::drivers::virtio::net_pci::diag_snapshot() else {
+        return;
+    };
+
+    output.push_str(&format!(
+        "NET_PCI_DEVICE_STATUS: {:#x}\n",
+        net.device_status
+    ));
+    output.push_str(&format!("NET_PCI_ISR_STATUS: {:#x}\n", net.isr_status));
+    output.push_str(&format!(
+        "NET_PCI_DEVICE_FEATURES: {:#x}\n",
+        net.device_features
+    ));
+    output.push_str(&format!(
+        "NET_PCI_GUEST_FEATURES: {:#x}\n",
+        net.guest_features
+    ));
+    output.push_str(&format!("NET_PCI_RX_QUEUE_PFN: {:#x}\n", net.rx_queue_pfn));
+    output.push_str(&format!("NET_PCI_TX_QUEUE_PFN: {:#x}\n", net.tx_queue_pfn));
+    output.push_str(&format!("NET_PCI_RX_QUEUE_SIZE: {}\n", net.rx_queue_size));
+    output.push_str(&format!("NET_PCI_TX_QUEUE_SIZE: {}\n", net.tx_queue_size));
+    output.push_str(&format!("NET_PCI_RX_QUEUE_ALIGN: {}\n", net.rx_queue_align));
+    output.push_str(&format!(
+        "NET_PCI_RX_QUEUE_VECTOR: {:#x}\n",
+        net.rx_queue_vector
+    ));
+    output.push_str(&format!(
+        "NET_PCI_TX_QUEUE_VECTOR: {:#x}\n",
+        net.tx_queue_vector
+    ));
+    output.push_str(&format!(
+        "NET_PCI_RX_AVAIL_FLAGS: {:#x}\n",
+        net.rx_avail_flags
+    ));
+    output.push_str(&format!("NET_PCI_RX_AVAIL_IDX: {}\n", net.rx_avail_idx));
+    output.push_str(&format!(
+        "NET_PCI_RX_USED_FLAGS: {:#x}\n",
+        net.rx_used_flags
+    ));
+    output.push_str(&format!("NET_PCI_RX_USED_IDX: {}\n", net.rx_used_idx));
+    output.push_str(&format!(
+        "NET_PCI_RX_LAST_USED_IDX: {}\n",
+        net.rx_last_used_idx
+    ));
+    output.push_str(&format!("NET_PCI_RX_POSTED_GAP: {}\n", net.rx_posted_gap));
+    output.push_str(&format!(
+        "NET_PCI_RX_DESC0: addr={:#x} len={} flags={:#x}\n",
+        net.rx_desc0_addr, net.rx_desc0_len, net.rx_desc0_flags
+    ));
+    output.push_str(&format!(
+        "NET_PCI_RX_DESC1: addr={:#x} len={} flags={:#x}\n",
+        net.rx_desc1_addr, net.rx_desc1_len, net.rx_desc1_flags
+    ));
+    output.push_str(&format!(
+        "NET_PCI_RX_DESC2: addr={:#x} len={} flags={:#x}\n",
+        net.rx_desc2_addr, net.rx_desc2_len, net.rx_desc2_flags
+    ));
+    output.push_str(&format!(
+        "NET_PCI_RX_DESC3: addr={:#x} len={} flags={:#x}\n",
+        net.rx_desc3_addr, net.rx_desc3_len, net.rx_desc3_flags
+    ));
+    output.push_str(&format!(
+        "NET_PCI_RX_RING_HEADS: {},{},{},{}\n",
+        net.rx_ring0, net.rx_ring1, net.rx_ring2, net.rx_ring3
+    ));
 }
 
 /// Generate content for /proc/trace/providers

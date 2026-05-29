@@ -229,8 +229,7 @@ static mut PCI_RX_BUFFER_3: RxBuffer = RxBuffer {
     data: [0; MAX_PACKET_SIZE],
 };
 
-static mut PCI_TX_BUFFERS: [TxBuffer; PCI_TX_POOL_SIZE] =
-    [EMPTY_PCI_TX_BUFFER; PCI_TX_POOL_SIZE];
+static mut PCI_TX_BUFFERS: [TxBuffer; PCI_TX_POOL_SIZE] = [EMPTY_PCI_TX_BUFFER; PCI_TX_POOL_SIZE];
 static PCI_TX_SLOT_IN_FLIGHT: [AtomicBool; PCI_TX_POOL_SIZE] =
     [const { AtomicBool::new(false) }; PCI_TX_POOL_SIZE];
 static PCI_TX_AVAIL_HEAD: AtomicU16 = AtomicU16::new(0);
@@ -243,8 +242,51 @@ struct NetPciState {
     /// BAR0 virtual address (HHDM-mapped)
     bar0_virt: u64,
     mac: [u8; 6],
+    device_features: u32,
+    guest_features: u32,
+    rx_queue_pfn: u32,
+    tx_queue_pfn: u32,
+    rx_queue_size: u16,
+    tx_queue_size: u16,
     rx_last_used_idx: u16,
     tx_last_used_idx: u16,
+}
+
+/// Non-hot-path virtio-net queue/register diagnostics for procfs snapshots.
+pub struct NetPciDiagSnapshot {
+    pub device_status: u8,
+    pub isr_status: u8,
+    pub device_features: u32,
+    pub guest_features: u32,
+    pub rx_queue_pfn: u32,
+    pub tx_queue_pfn: u32,
+    pub rx_queue_size: u16,
+    pub tx_queue_size: u16,
+    pub rx_queue_align: u32,
+    pub rx_queue_vector: u16,
+    pub tx_queue_vector: u16,
+    pub rx_avail_flags: u16,
+    pub rx_avail_idx: u16,
+    pub rx_used_flags: u16,
+    pub rx_used_idx: u16,
+    pub rx_last_used_idx: u16,
+    pub rx_posted_gap: u16,
+    pub rx_desc0_addr: u64,
+    pub rx_desc0_len: u32,
+    pub rx_desc0_flags: u16,
+    pub rx_desc1_addr: u64,
+    pub rx_desc1_len: u32,
+    pub rx_desc1_flags: u16,
+    pub rx_desc2_addr: u64,
+    pub rx_desc2_len: u32,
+    pub rx_desc2_flags: u16,
+    pub rx_desc3_addr: u64,
+    pub rx_desc3_len: u32,
+    pub rx_desc3_flags: u16,
+    pub rx_ring0: u16,
+    pub rx_ring1: u16,
+    pub rx_ring2: u16,
+    pub rx_ring3: u16,
 }
 
 static mut NET_PCI_STATE: Option<NetPciState> = None;
@@ -612,10 +654,12 @@ pub fn init() -> Result<(), &'static str> {
     );
 
     // Set up RX queue (queue 0)
-    setup_legacy_queue(bar0_virt, 0, &raw const PCI_RX_QUEUE as u64)?;
+    let (rx_queue_size, rx_queue_pfn) =
+        setup_legacy_queue(bar0_virt, 0, &raw const PCI_RX_QUEUE as u64)?;
 
     // Set up TX queue (queue 1)
-    setup_legacy_queue(bar0_virt, 1, &raw const PCI_TX_QUEUE as u64)?;
+    let (tx_queue_size, tx_queue_pfn) =
+        setup_legacy_queue(bar0_virt, 1, &raw const PCI_TX_QUEUE as u64)?;
     reset_tx_slots();
 
     // DRIVER_OK
@@ -628,6 +672,12 @@ pub fn init() -> Result<(), &'static str> {
         *ptr = Some(NetPciState {
             bar0_virt,
             mac,
+            device_features,
+            guest_features,
+            rx_queue_pfn,
+            tx_queue_pfn,
+            rx_queue_size,
+            tx_queue_size,
             rx_last_used_idx: 0,
             tx_last_used_idx: 0,
         });
@@ -646,7 +696,7 @@ fn setup_legacy_queue(
     bar0_virt: u64,
     queue_idx: u16,
     queue_virt_addr: u64,
-) -> Result<(), &'static str> {
+) -> Result<(u16, u32), &'static str> {
     // Select queue
     reg_write_u16(bar0_virt, REG_QUEUE_SELECT, queue_idx);
 
@@ -687,7 +737,7 @@ fn setup_legacy_queue(
         queue_phys
     );
 
-    Ok(())
+    Ok((queue_max, queue_pfn))
 }
 
 fn reset_tx_slots() {
@@ -1020,6 +1070,77 @@ pub fn dump_rx_state() {
         isr,
         msi_count
     );
+}
+
+/// Snapshot RX queue and legacy transport state for `/proc/trace/counters`.
+///
+/// Reading the legacy ISR register clears it; this is intentionally only used
+/// from low-frequency diagnostics after traffic has been driven.
+pub fn diag_snapshot() -> Option<NetPciDiagSnapshot> {
+    let state = unsafe {
+        let ptr = &raw const NET_PCI_STATE;
+        (*ptr).as_ref()?
+    };
+
+    let device_status = reg_read_u8(state.bar0_virt, REG_DEVICE_STATUS);
+    let isr_status = reg_read_u8(state.bar0_virt, REG_ISR_STATUS);
+
+    reg_write_u16(state.bar0_virt, REG_QUEUE_SELECT, 0);
+    let rx_queue_vector = reg_read_u16(state.bar0_virt, MSIX_QUEUE_VECTOR);
+    reg_write_u16(state.bar0_virt, REG_QUEUE_SELECT, 1);
+    let tx_queue_vector = reg_read_u16(state.bar0_virt, MSIX_QUEUE_VECTOR);
+
+    unsafe {
+        let q = &raw const PCI_RX_QUEUE;
+        let rx_avail_flags = read_volatile(&(*q).avail.flags);
+        let rx_avail_idx = read_volatile(&(*q).avail.idx);
+        let rx_used_flags = read_volatile(&(*q).used.flags);
+        let rx_used_idx = read_volatile(&(*q).used.idx);
+        let rx_desc0 = read_volatile(&(*q).desc[0]);
+        let rx_desc1 = read_volatile(&(*q).desc[1]);
+        let rx_desc2 = read_volatile(&(*q).desc[2]);
+        let rx_desc3 = read_volatile(&(*q).desc[3]);
+        let rx_ring0 = read_volatile(&(*q).avail.ring[0]);
+        let rx_ring1 = read_volatile(&(*q).avail.ring[1]);
+        let rx_ring2 = read_volatile(&(*q).avail.ring[2]);
+        let rx_ring3 = read_volatile(&(*q).avail.ring[3]);
+
+        Some(NetPciDiagSnapshot {
+            device_status,
+            isr_status,
+            device_features: state.device_features,
+            guest_features: state.guest_features,
+            rx_queue_pfn: state.rx_queue_pfn,
+            tx_queue_pfn: state.tx_queue_pfn,
+            rx_queue_size: state.rx_queue_size,
+            tx_queue_size: state.tx_queue_size,
+            rx_queue_align: 4096,
+            rx_queue_vector,
+            tx_queue_vector,
+            rx_avail_flags,
+            rx_avail_idx,
+            rx_used_flags,
+            rx_used_idx,
+            rx_last_used_idx: state.rx_last_used_idx,
+            rx_posted_gap: rx_avail_idx.wrapping_sub(state.rx_last_used_idx),
+            rx_desc0_addr: rx_desc0.addr,
+            rx_desc0_len: rx_desc0.len,
+            rx_desc0_flags: rx_desc0.flags,
+            rx_desc1_addr: rx_desc1.addr,
+            rx_desc1_len: rx_desc1.len,
+            rx_desc1_flags: rx_desc1.flags,
+            rx_desc2_addr: rx_desc2.addr,
+            rx_desc2_len: rx_desc2.len,
+            rx_desc2_flags: rx_desc2.flags,
+            rx_desc3_addr: rx_desc3.addr,
+            rx_desc3_len: rx_desc3.len,
+            rx_desc3_flags: rx_desc3.flags,
+            rx_ring0,
+            rx_ring1,
+            rx_ring2,
+            rx_ring3,
+        })
+    }
 }
 
 /// Enable the MSI-X SPI at the GIC after init polling is complete.

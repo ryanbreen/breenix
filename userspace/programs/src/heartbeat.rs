@@ -13,6 +13,28 @@ const NET_RX_COUNTER_PREFIXES: &[&str] = &[
     "NET_RX_ARP_TOTAL:",
     "NET_RX_ETHERTYPE_OTHER_TOTAL:",
     "NET_PCI_IRQ_RAISED_NETRX:",
+    "NET_PCI_DEVICE_STATUS:",
+    "NET_PCI_ISR_STATUS:",
+    "NET_PCI_DEVICE_FEATURES:",
+    "NET_PCI_GUEST_FEATURES:",
+    "NET_PCI_RX_QUEUE_PFN:",
+    "NET_PCI_TX_QUEUE_PFN:",
+    "NET_PCI_RX_QUEUE_SIZE:",
+    "NET_PCI_TX_QUEUE_SIZE:",
+    "NET_PCI_RX_QUEUE_ALIGN:",
+    "NET_PCI_RX_QUEUE_VECTOR:",
+    "NET_PCI_TX_QUEUE_VECTOR:",
+    "NET_PCI_RX_AVAIL_FLAGS:",
+    "NET_PCI_RX_AVAIL_IDX:",
+    "NET_PCI_RX_USED_FLAGS:",
+    "NET_PCI_RX_USED_IDX:",
+    "NET_PCI_RX_LAST_USED_IDX:",
+    "NET_PCI_RX_POSTED_GAP:",
+    "NET_PCI_RX_DESC0:",
+    "NET_PCI_RX_DESC1:",
+    "NET_PCI_RX_DESC2:",
+    "NET_PCI_RX_DESC3:",
+    "NET_PCI_RX_RING_HEADS:",
     "GIC_SPI55_ACK_TOTAL:",
     "GICV2M_BASE_PHYS:",
     "GICV2M_DOORBELL_PHYS:",
@@ -48,7 +70,7 @@ fn dump_net_rx_counters(sample: u32) {
         }
     };
 
-    let mut buf = [0u8; 4096];
+    let mut buf = [0u8; 16 * 1024];
     let n = match io::read(fd, &mut buf) {
         Ok(n) => n,
         Err(e) => {
