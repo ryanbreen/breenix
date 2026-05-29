@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Breenix — Interrupt/IO Roadmap (Ralph Tracker)</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2230; --border:#30363d;
+    --text:#e6edf3; --muted:#8b949e; --accent:#58a6ff;
+    --done:#3fb950; --prog:#d29922; --todo:#6e7681; --block:#f85149;
+    --clean:#2ea043; --warn:#bb8009;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+  header{padding:28px 32px 18px;border-bottom:1px solid var(--border);
+    background:linear-gradient(180deg,#11161f,#0d1117)}
+  h1{margin:0 0 4px;font-size:22px;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:13px}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 32px 80px}
+  h2{margin:34px 0 6px;font-size:16px;border-left:3px solid var(--accent);
+    padding-left:10px}
+  .epic-note{color:var(--muted);font-size:12.5px;margin:0 0 12px 13px}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;margin:14px 0 0;font-size:12px}
+  .legend span{display:inline-flex;align-items:center;gap:6px;color:var(--muted)}
+  .dot{width:9px;height:9px;border-radius:50%}
+  table{width:100%;border-collapse:collapse;margin-top:8px;
+    background:var(--panel);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--border);
+    vertical-align:top;font-size:13px}
+  th{background:var(--panel2);color:var(--muted);font-weight:600;
+    text-transform:uppercase;font-size:10.5px;letter-spacing:.6px}
+  tr:last-child td{border-bottom:none}
+  td.id{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--accent);
+    white-space:nowrap;font-size:12px}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    background:#0b0f16;border:1px solid var(--border);border-radius:4px;
+    padding:1px 5px;font-size:11.5px;color:#c9d1d9}
+  .pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:10.5px;
+    font-weight:700;letter-spacing:.4px;white-space:nowrap}
+  .s-done{background:rgba(63,185,80,.15);color:var(--done);border:1px solid rgba(63,185,80,.4)}
+  .s-prog{background:rgba(210,153,34,.15);color:var(--prog);border:1px solid rgba(210,153,34,.4)}
+  .s-todo{background:rgba(110,118,129,.15);color:#adbac7;border:1px solid rgba(110,118,129,.4)}
+  .s-block{background:rgba(248,81,73,.15);color:var(--block);border:1px solid rgba(248,81,73,.4)}
+  .s-clean{background:rgba(46,160,67,.12);color:var(--clean);border:1px solid rgba(46,160,67,.35)}
+  .summary{display:flex;gap:12px;flex-wrap:wrap;margin-top:16px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:8px;
+    padding:12px 16px;min-width:120px}
+  .card .n{font-size:24px;font-weight:700}
+  .card .l{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+  .verdict{background:var(--panel2);border:1px solid var(--border);border-radius:8px;
+    padding:14px 18px;margin-top:14px;font-size:13px}
+  .verdict b{color:var(--clean)}
+  footer{color:var(--muted);font-size:11.5px;margin-top:40px;border-top:1px solid var(--border);
+    padding-top:14px}
+  .how{background:var(--panel);border:1px dashed var(--border);border-radius:8px;
+    padding:12px 16px;margin-top:10px;color:var(--muted);font-size:12.5px}
+  .directive{background:rgba(248,81,73,.09);border:2px solid var(--block);border-radius:10px;
+    padding:16px 20px;margin:18px 0 0}
+  .directive h3{margin:0 0 8px;color:var(--block);font-size:15px;letter-spacing:.4px;
+    text-transform:uppercase}
+  .directive ol,.directive ul{margin:8px 0 0;padding-left:20px}
+  .directive li{margin:4px 0}
+  .directive .proof{background:#0b0f16;border:1px solid var(--border);border-radius:6px;
+    padding:8px 12px;margin-top:8px}
+  .protocol{background:rgba(88,166,255,.08);border:2px solid var(--accent);border-radius:10px;
+    padding:16px 20px;margin-top:14px}
+  .protocol h3{margin:0 0 8px;color:var(--accent);font-size:15px;letter-spacing:.4px;
+    text-transform:uppercase}
+  .protocol ol{margin:8px 0 0;padding-left:20px}
+  .protocol li{margin:4px 0}
+  .mini-directive{background:rgba(248,81,73,.07);border-left:3px solid var(--block);
+    border-radius:0 6px 6px 0;padding:8px 13px;margin:10px 0 0;font-size:12px;color:#f0a9a5}
+  .mini-directive b{color:var(--block)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Breenix — Interrupt / I/O Roadmap</h1>
+  <div class="sub">Ralph-turn progress tracker · arch: x86_64 + aarch64 · primary HW target: Parallels HVF (Apple Silicon)</div>
+  <div class="legend">
+    <span><span class="dot" style="background:var(--done)"></span>Done</span>
+    <span><span class="dot" style="background:var(--prog)"></span>In&nbsp;progress</span>
+    <span><span class="dot" style="background:var(--todo)"></span>To&nbsp;do</span>
+    <span><span class="dot" style="background:var(--block)"></span>Blocked&nbsp;/&nbsp;needs&nbsp;operator</span>
+    <span><span class="dot" style="background:var(--clean)"></span>Audited&nbsp;clean</span>
+  </div>
+  <div class="summary">
+    <div class="card"><div class="n">9</div><div class="l">Prior Ralph PRs merged (#342–349,351)</div></div>
+    <div class="card"><div class="n">2</div><div class="l">Real open bugs (E5, diagnosed)</div></div>
+    <div class="card"><div class="n">3</div><div class="l">E3 closure items (non-runtime)</div></div>
+    <div class="card"><div class="n">7</div><div class="l">Subsystems audited clean</div></div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <div class="directive">
+    <h3>🚫 Prime directive — Parallels is reference hardware. Never blame the hypervisor.</h3>
+    Under <b>NO circumstances</b> may Codex, a Ralph turn, or any Opus orchestrator declare a bug a
+    "Parallels quirk", "HVF limitation", "hypervisor bug", or "Parallels doesn't support X."
+    <b>There is no such thing.</b> Parallels implements the VirtIO / VirGL / GIC / PCI specs correctly —
+    Linux proves this on the same machine every single time. If something does not work, <b>it is a
+    Breenix bug.</b> Go find it.
+    <div class="proof">
+      The <em>only</em> two ways this claim may ever be made — and only with attached evidence:
+      <ol>
+        <li><b>Reproduce-broken-on-Linux:</b> the identical operation, exercised on the Linux probe VM
+          (<code>10.211.55.3</code>, virtio_gpu/DRM), fails the same way — captured via bpftrace/ftrace/dmesg.</li>
+        <li><b>Linux-works-around-it:</b> Linux/Mesa source or a trace shows Linux itself special-casing
+          the same Parallels behavior.</li>
+      </ol>
+      Absent (1) or (2), "it's Parallels" is forbidden. The mandatory move is: form the hypothesis →
+      <b>validate it on Linux FIRST</b> → then fix Breenix. Reverting + moving on without root-causing is a violation.
+      <br>(History: every prior "Parallels can't do X" claim was disproven — head=39 descriptors, BSS-DMA,
+      used-ring IDs. All were Breenix bugs.)
+    </div>
+  </div>
+
+  <div class="protocol">
+    <h3>🔁 Per-turn protocol — every Ralph turn does this BEFORE any work</h3>
+    Each stage of this roadmap is executed by a dispatched Ralph turn (which delegates implementation to
+    Codex). The Opus orchestrator dispatches and manages one Ralph turn per stage. <b>On every single turn:</b>
+    <ol>
+      <li><b>Re-read this entire roadmap.</b> It is the live source of truth and changes between turns — never trust your memory of it.</li>
+      <li><b>Re-validate your assigned section against the ACTUAL current code + test output.</b> Do not trust a prior turn's status pill: re-confirm "DONE" is still done and "IN PROGRESS" reflects reality on disk.</li>
+      <li><b>Honor the Prime Directive above.</b> No "Parallels quirk" without proof (1) or (2).</li>
+      <li><b>Update</b> status pills + notes with <code>file:line</code> evidence; <b>append</b> any newly-found issue to the Backlog as <code>B-N</code>.</li>
+      <li><b>Respect the gate &amp; deferrals:</b> finish E3 (Parallels) before E5 bugs; do not action any Deferred (VMware) item.</li>
+    </ol>
+  </div>
+
+  <div class="verdict">
+    <b>Level-set I/O audit verdict (2026-05-29):</b> The steady-state completion paths across
+    GPU, network, input, storage, timer, and the scheduler wake-side are <b>genuinely
+    interrupt-driven / block-and-wake — no load-bearing busy-polling on the primary runtime paths.</b>
+    Threads truly sleep (WFI/HLT) and are woken by ISRs via lock-free wakeup buffers. The exceptions
+    are enumerated below (E3): one Parallels-relevant fallback busy-poll and one architectural
+    weakness (per-tick re-check in some blocking syscalls). A third busy-poll (VMware SVGA3) is
+    <b>deferred</b> per operator. Existing discipline:
+    <code>docs/polling-allowlist.md</code> already documents the bounded init-time spins.
+  </div>
+
+  <div class="verdict" style="border-color:var(--prog)">
+    <b style="color:var(--prog)">Execution policy (operator, 2026-05-29):</b>
+    <b>Strict gate</b> — clear the E3 (Parallels) polling-elimination items before starting the three
+    open bugs (E5). <b>All VMware work is deferred</b> until the operator re-opens it — see the Deferred
+    section; do not action those items.
+  </div>
+
+  <!-- ============================================================ -->
+  <div class="verdict" style="border-color:var(--done)">
+    <b style="color:var(--done)">Prior-work reconciliation (2026-05-29):</b> A prior Ralph campaign already
+    <b>shipped the entire polling-elimination effort</b> — PR <b>#349</b> (the "linux-gate") plus siblings
+    <b>#342</b> (AHCI IRQ), <b>#343</b> (virtio-gpu IRQ), <b>#344</b> (scheduler wake-atomic), <b>#345</b>
+    (virtio block/sound IRQ), <b>#346</b> (xHCI HID: <em>keep — load-bearing</em>), <b>#347</b> (MSI routing),
+    <b>#348</b> (comment honesty). This session's fresh 5-agent audit <b>independently re-confirmed</b> the
+    result. The "linux-gate" methodology that campaign established <em>is</em> the Prime Directive above
+    (validate on the Linux probe before blaming the hypervisor). What remains in E3 is only non-Parallels-runtime
+    closure bookkeeping (dead-on-Parallels code, x86/VMware, pre-scheduler handshakes). The real open work is E5,
+    where both live bugs already have precise root causes. Source projects: <code>~/Downloads/Ralph/breenix-*</code>.
+  </div>
+
+  <!-- ============================================================ -->
+  <h2>E1 · CPU0 timer death under Parallels HVF</h2>
+  <p class="epic-note">The 56-day blocker. Root cause: 5 deferred-requeue context-switch statics straddling 64-byte cache lines.</p>
+  <table>
+    <tr><th>ID</th><th>Item</th><th>Status</th><th>Notes</th></tr>
+    <tr><td class="id">E1-1</td><td>Cache-line-align deferred-requeue statics (<code>CacheLineAligned&lt;T&gt;</code>)</td>
+      <td><span class="pill s-done">DONE</span></td>
+      <td>PR&nbsp;#364, commit <code>4c10f8e8</code> → main <code>5e2dfcbe</code>. 5/5 boots ≥100K ticks. <code>context_switch.rs:729</code></td></tr>
+    <tr><td class="id">E1-2</td><td>Retire obsolete BSS-padding workaround</td>
+      <td><span class="pill s-done">DONE</span></td>
+      <td><b>Finding:</b> workaround (<code>cpu0_layout_stabilizer.rs</code>, commit <code>0c8903e7</code>) was <em>never merged to main</em> — nothing to revert; main is clean. Stale branch <code>fix/cpu0-ahci-isr-storm</code> deleted (local+remote). Forensic counters salvaged to <code>archive/cpu0-timer-forensic-counters</code> (commit <code>94f8ac70</code>).</td></tr>
+  </table>
+
+  <!-- ============================================================ -->
+  <h2>E2 · Level-set I/O audit — subsystems confirmed clean</h2>
+  <p class="epic-note">Audited 2026-05-29. Listed here as standing evidence; revisit if any path regresses.</p>
+  <table>
+    <tr><th>ID</th><th>Subsystem</th><th>Status</th><th>Completion mechanism (evidence)</th></tr>
+    <tr><td class="id">E2-1</td><td>GPU VirGL primary (Parallels)</td><td><span class="pill s-clean">CLEAN</span></td>
+      <td>MSI-X ISR → blocking <code>Completion</code>; refuses to fall back to polling (errors instead). <code>gpu_pci.rs:1544,2183</code></td></tr>
+    <tr><td class="id">E2-2</td><td>Compositor wait (op=23)</td><td><span class="pill s-clean">CLEAN</span></td>
+      <td>True wait-queue sleep; woken by dirty/mouse/registry. <code>graphics.rs:1312</code></td></tr>
+    <tr><td class="id">E2-3</td><td>Network RX/TX + sockets</td><td><span class="pill s-clean">CLEAN</span></td>
+      <td>IRQ→softirq NAPI drain (budget 64); socket recv block-and-wake. <code>net/mod.rs:261</code>, <code>socket.rs:666</code></td></tr>
+    <tr><td class="id">E2-4</td><td>Input (xHCI HID, PS/2, virtio-input)</td><td><span class="pill s-clean">CLEAN</span></td>
+      <td>All IRQ-driven; ISR-driven reader wake. "poll" names are vestigial. <code>xhci.rs:5071</code>, <code>hid.rs:279</code></td></tr>
+    <tr><td class="id">E2-5</td><td>Storage virtio-blk (PCI+MMIO)</td><td><span class="pill s-clean">CLEAN</span></td>
+      <td>IRQ block-and-wake; refuses to issue before IRQs enabled. <code>block.rs:369</code>, <code>block_mmio.rs:164</code></td></tr>
+    <tr><td class="id">E2-6</td><td>Storage AHCI (runtime path)</td><td><span class="pill s-clean">CLEAN</span></td>
+      <td>IRQ block-and-wake; PORT_CI poll gated to pre-scheduler boot only, instrumented. <code>ahci/mod.rs:784,2486</code></td></tr>
+    <tr><td class="id">E2-7</td><td>Idle loops + timer + wake-side</td><td><span class="pill s-clean">CLEAN</span></td>
+      <td>WFI/HLT idle; lock-free ISR wakeup buffers + need_resched. <code>scheduler.rs:2699</code>, gold-master timer.</td></tr>
+  </table>
+
+  <!-- ============================================================ -->
+  <h2>E3 · Polling elimination — Parallels gate (clear before E5 bug work)</h2>
+  <p class="epic-note">GATE STATUS: effectively satisfied. The runtime polling campaign already shipped (PR #342–349, audit-reconfirmed). Remaining items are non-Parallels-runtime closure only. VMware SVGA3 deferred.</p>
+  <div class="mini-directive"><b>Turn check:</b> re-read the Prime Directive + Per-turn protocol at the top before touching this section. <b>No bug here is ever a "Parallels quirk"</b> without Linux-probe proof. Re-validate the status pills below against current code before claiming anything done.</div>
+  <table>
+    <tr><th>ID</th><th>Item</th><th>Status</th><th>Notes</th></tr>
+    <tr><td class="id">E3-A</td><td>Polling-elimination campaign (7 IRQ conversions + 10 allowlist entries)</td>
+      <td><span class="pill s-done">DONE</span></td>
+      <td>PR #349 (linux-gate) + #342/#343/#344/#345/#346/#347/#348. Committed <code>docs/linux-rigor-comparison.md</code>. Re-confirmed by this session's audit. <b>Do not re-scope shipped/allowlisted sites.</b></td></tr>
+    <tr><td class="id">E3-2</td><td>virtio-gpu MMIO 2D busy-poll (prior P9) — close out</td>
+      <td><span class="pill s-todo">TO DO (light)</span></td>
+      <td><b>Evidence:</b> dead-on-Parallels — Parallels takes the PCI branch (<code>drivers/mod.rs:156-303</code>), so <code>gpu_mmio::init()</code> never runs; QEMU-only fallback. Resolution = <b>Option B</b>: allowlist entry + one-time <code>warn!</code> guard if hit at runtime. Spec ready. <code>gpu_mmio.rs:612</code>. (Prior P9 was BLOCKED on Parallels codegen-sensitivity; <code>p9-codegen-analysis</code> recommends Makefile-boundary codegen exclusion if ever wired.)</td></tr>
+    <tr><td class="id">E3-B</td><td>AHCI slot-0 software mutex contention (prior P12 Site 1)</td>
+      <td><span class="pill s-todo">TO DO</span></td>
+      <td>Deferred-as-infra by PR #349. Needs a scheduler-aware lock (not a hardware poll). Decide: fix vs allowlist with Parallels evidence.</td></tr>
+    <tr><td class="id">E3-C</td><td>AHCI platform IRQ-probe <code>PORT_CI</code> poll (prior P12 Site 6)</td>
+      <td><span class="pill s-todo">TO DO</span></td>
+      <td>Pre-scheduler init probe; medium priority per #349. Needs DTB/ACPI IRQ-resource discovery to replace the poll. May relate to the E5-2 SPI-routing theme on aarch64.</td></tr>
+    <tr><td class="id">E3-3</td><td>Wait-queue park migration (block+HLT-loop+re-check)</td>
+      <td><span class="pill s-todo">BACKLOG</span></td>
+      <td><b>Re-classified: NOT polling, not a gate blocker.</b> The CPU genuinely sleeps (WFI/HLT); the per-1000Hz-tick re-check is a latency/efficiency refinement vs the op=23 waitqueue's true park. Defer to the <code>f32-waitqueue</code> line as an optimization.</td></tr>
+  </table>
+
+  <!-- ============================================================ -->
+  <h2>E4 · Honesty / dead-code cleanup (cheap, do alongside)</h2>
+  <table>
+    <tr><th>ID</th><th>Item</th><th>Status</th><th>Notes</th></tr>
+    <tr><td class="id">E4-1</td><td>Driver comment-honesty pass (incl. stale "aarch64 polling" comment)</td><td><span class="pill s-done">DONE</span></td>
+      <td>PR #348 — 11 comment-only edits across xhci/ahci/virtio. Verify <code>e1000/mod.rs:879</code> was covered; if not, fold into a follow-up (trivial).</td></tr>
+    <tr><td class="id">E4-2</td><td>xHCI HID "poll" naming audit</td><td><span class="pill s-prog">MOSTLY DONE</span></td>
+      <td>PR #346 verdict KEEP+RELABEL: <code>poll_hid_events()</code> is <b>load-bearing</b> (only code enabling xHCI GIC SPI on aarch64) — do NOT delete. Residual dead statics (<code>POLL_COUNT</code>, <code>MOUSE_GET_REPORT_PENDING</code>) may remain per this audit — verify &amp; remove if truly dead. <code>xhci.rs:427,545</code></td></tr>
+  </table>
+
+  <!-- ============================================================ -->
+  <h2>E5 · Open Parallels bugs (root-caused) <span class="pill s-clean" style="font-size:9.5px;vertical-align:middle">E3 GATE EFFECTIVELY MET</span></h2>
+  <p class="epic-note">The runtime-polling gate is satisfied (E3-A merged + audit-reconfirmed); only light E3 closure bookkeeping remains. These are the real targets. Both live bugs (E5-1, E5-2) already have precise root causes from prior Ralphs.</p>
+  <div class="mini-directive"><b>Turn check:</b> re-read the Prime Directive + Per-turn protocol at the top. These three are Parallels-visible symptoms — <b>they are Breenix bugs, not "Parallels quirks."</b> Validate every hypothesis on the Linux probe before blaming the hypervisor.</div>
+  <table>
+    <tr><th>ID</th><th>Item</th><th>Status</th><th>Notes / lead from audit</th></tr>
+    <tr><td class="id">E5-1</td><td>Userspace text-page protection bug (the real "ls hang" blocker)</td><td><span class="pill s-todo">TO DO — high</span></td>
+      <td><b>Re-pointed.</b> Prior <code>bsh-ls-hang</code> Ralph found the ls hang is unreachable because an earlier bug fires first: post-<code>execv</code>, parent <b>and</b> child page-fault at the identical user RIP <code>~0x1000013c472</code> (instruction-fetch, err 0x15, P=1/U=1/I=1) — affects ALL forking processes. Root cause narrowed to a userspace text page at <b>PML4[2]</b> mapped with wrong protection (NX). <b>Next:</b> walk page tables with the faulting CR3, find the kernel fn mapping that VA. GDB-only.</td></tr>
+    <tr><td class="id">E5-2</td><td>VirtIO-net RX MSI-X SPI 55 never delivers on Parallels (DNS/HTTP root cause)</td><td><span class="pill s-prog">INCONCLUSIVE — no repro</span></td>
+      <td><b>Revalidation changed the picture.</b> Prior <code>net-dns-http-triage</code> proved: init OK, TX/ARP leave the box (pcap-confirmed), gateway OK — but 20 inbound pings → all 6 RX counters = 0 while <code>XHCI_MSI_EVENT_TOTAL=60</code> in the same dump → only <b>SPI 55</b> was silently dropped. <b>Turn&nbsp;1 (2026-05-29):</b> fresh Parallels boot on <code>fix/net-rx-msix-spi55</code> did <em>not</em> reproduce: linux-probe 20/20 pings to <code>10.211.55.100</code> succeeded, and RX counters advanced (<code>NET_RX_MSI_TOTAL=38</code>, <code>NET_RX_RING_DRAIN_TOTAL=40</code>, <code>NET_RX_FRAME_TOTAL=40</code>) while <code>XHCI_MSI_EVENT_TOTAL=60</code>. Per directive, no GIC ack counter was added because the stop condition fired. Evidence: <code>turn1-artifacts/step1-linux-probe-ping.txt</code>, <code>turn1-artifacts/step1-serial-final.log:380,717-724</code>. Next reviewer should decide whether to reclassify E5-2 as incidentally fixed or request a repeated repro run.</td></tr>
+    <tr><td class="id">E5-3</td><td>Window-overlap clipping</td><td><span class="pill s-done">DONE</span></td>
+      <td>Merged as PR #351 ("use full window bounds as occluder for span clip"); operator visual-verified. Closed.</td></tr>
+    <tr><td class="id">E5-4</td><td>CPU0 timer-death root-cause MECHANISM (still unexplained)</td><td><span class="pill s-todo">LURKING</span></td>
+      <td>PR #364 (cache-line align) + #337 <b>stabilized</b> CPU0, but <em>why</em> an AHCI ISR on CPU0 starves the CPU0 vtimer is still unexplained. 3 prior Ralphs: <code>ahci-cpu0-root-cause</code> (refuted CPU2-routing), <code>strict-fail-other</code> (parked unmerged workaround), <code>cpu0-linux</code> (#337). Watch for regressions; revisit if CPU0 death recurs.</td></tr>
+  </table>
+
+  <!-- ============================================================ -->
+  <h2>E6 · Ralph loop housekeeping</h2>
+  <table>
+    <tr><th>ID</th><th>Item</th><th>Status</th><th>Notes</th></tr>
+    <tr><td class="id">E6-1</td><td>Resolve idling Ralph project state</td><td><span class="pill s-todo">TO DO</span></td>
+      <td><code>breenix-cpu0-timer-death-1779729262</code> still <code>WAITING_CODEX</code>; cron cancelled but loop awaits STOP.</td></tr>
+  </table>
+
+  <!-- ============================================================ -->
+  <h2>Deferred · VMware (do NOT action until operator re-opens)</h2>
+  <p class="epic-note">Frozen 2026-05-29 per operator: entire priority is Parallels. Operator will signal when to re-investigate VMware.</p>
+  <table>
+    <tr><th>ID</th><th>Item</th><th>Status</th><th>Notes</th></tr>
+    <tr><td class="id">D-1</td><td>VMware SVGA3 backend busy-polls status reg (was E3-1)</td>
+      <td><span class="pill s-block">DEFERRED</span></td>
+      <td>≤10M spin on <code>header.status</code>/<code>SVGA_REG_BUSY</code> per flush. Primary path for SVGA3 backend; VMware-only. <code>vmware/svga3.rs:323,732</code></td></tr>
+    <tr><td class="id">D-2</td><td>Fix SVGA3 "MSI-X interrupt support" header (it polls) (was E4-3)</td>
+      <td><span class="pill s-block">DEFERRED</span></td>
+      <td>Folds into D-1. <code>svga3.rs:6</code></td></tr>
+    <tr><td class="id">D-3</td><td>VMware Fusion support line (RAM base 0x80000000, branch <code>feat/vmware-support</code>)</td>
+      <td><span class="pill s-block">DEFERRED</span></td>
+      <td>All VMware Fusion bring-up work parked. Note: aarch64 e1000 path (E4-1) is also VMware-only.</td></tr>
+  </table>
+
+  <!-- ============================================================ -->
+  <h2>Backlog · newly discovered issues (stack here)</h2>
+  <div class="mini-directive"><b>Turn check:</b> when stacking a new issue, describe the <b>observed Breenix behavior</b> — never file it as a "Parallels quirk." If you suspect the hypervisor, the backlog entry must include (or commit to producing) Linux-probe evidence per the Prime Directive.</div>
+  <table>
+    <tr><th>ID</th><th>Item</th><th>Status</th><th>Discovered</th></tr>
+    <tr><td class="id">B-…</td><td><em>(append new findings as Ralph turns surface them)</em></td><td><span class="pill s-todo">—</span></td><td>—</td></tr>
+  </table>
+
+  <div class="how">
+    <b>How to use this tracker:</b> Committed at <code>docs/planning/ralph-roadmap.html</code> so every Ralph turn sees and updates it.
+    Each turn: flip the relevant <code>&lt;span class="pill"&gt;</code> status, add a one-line note with <code>file:line</code> evidence,
+    and append any newly-found issue to the Backlog with a <code>B-N</code> id. Open locally with
+    <code>/usr/bin/open docs/planning/ralph-roadmap.html</code>
+  </div>
+
+  <footer>
+    Breenix interrupt/IO roadmap · initialized 2026-05-29 from the level-set I/O audit · branch: main ·
+    audit covered both x86_64 and aarch64; primary hardware target is Parallels HVF on Apple Silicon.
+  </footer>
+</div>
+</body>
+</html>
